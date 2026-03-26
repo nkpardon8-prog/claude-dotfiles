@@ -128,7 +128,7 @@ Get user confirmation before proceeding.
 
 **Present the changes made**:
    ```
-   I've updated the plan at `thoughts/shared/plans/[filename].md`
+   I've updated the plan at `./tmp/ready-plans/[filename].md`
 
    Changes made:
    - [Specific change 1]
