@@ -48,11 +48,11 @@ For each new function, hook, component, or utility in the diff:
 1. Extract the function/hook/component name
 2. Use Grep to search for similar names in codebase
 3. Use Grep to search for similar functionality (key terms from the implementation)
-4. Check these locations specifically:
-   - `libs/shared/` - shared utilities
-   - `apps/webapp/src/hooks/` - existing hooks
-   - `apps/webapp/src/components/` - existing components
-   - `apps/api/src/shared/` - API utilities
+4. Check these locations specifically (detect actual paths from project structure or CLAUDE.md):
+   - The project's shared utilities directory (e.g. `libs/shared/`, `packages/shared/`, `src/shared/`)
+   - The frontend's hooks directory
+   - The frontend's components directory
+   - The backend's shared utilities directory
 
 ### 2.2 Check for Copy-Paste
 
