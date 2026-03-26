@@ -148,20 +148,21 @@ export function useFeedPage() {
 **Check file locations:**
 
 ```
-app/workspaces/[id]/feed/
+# Example structure (adjust paths for this project's actual structure)
+app/feature/
   page.tsx
-  _components/          # Local to feed page
-    FeedList.tsx
-    FeedItem.tsx
-  _hooks/               # Local to feed page
-    useFeedPage.ts
+  _components/          # Local to this page/feature
+    FeatureList.tsx
+    FeatureItem.tsx
+  _hooks/               # Local to this page/feature
+    useFeaturePage.ts
 
-src/components/         # Shared across features
+src/components/         # Shared across features (detect actual shared path from project)
   Button.tsx
   Modal.tsx
 
-src/hooks/              # Shared across features
-  useFeed.ts
+src/hooks/              # Shared across features (detect actual shared path from project)
+  useSharedHook.ts
 ```
 
 **Flag violations:**
