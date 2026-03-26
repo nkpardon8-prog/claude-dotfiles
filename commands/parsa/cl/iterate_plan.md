@@ -21,9 +21,9 @@ When this command is invoked:
    ```
    I'll help you iterate on an existing implementation plan.
 
-   Which plan would you like to update? Please provide the path to the plan file (e.g., `thoughts/shared/plans/2025-10-16-feature.md`).
+   Which plan would you like to update? Please provide the path to the plan file (e.g., `./tmp/ready-plans/2025-10-16-feature.md`).
 
-   Tip: You can list recent plans with `ls -lt thoughts/shared/plans/ | head`
+   Tip: You can list recent plans with `ls -lt ./tmp/ready-plans/ | head`
    ```
    Wait for user input, then re-check for feedback.
 
