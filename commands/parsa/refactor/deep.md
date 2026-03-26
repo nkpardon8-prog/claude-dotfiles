@@ -204,8 +204,8 @@ Find exemplar files by analyzing the codebase — look for well-structured pages
 **DRY (Don't Repeat Yourself):**
 - No duplicate code blocks
 - Shared logic in utilities or base classes
-- Common types in `@doozy/shared`
-- Reusable components/hooks in `src/`
+- Common types in the project's shared package (detect from package.json or CLAUDE.md)
+- Reusable components/hooks in shared source directories (detect from project structure)
 
 **Configuration Object Pattern (CRITICAL):**
 - ❌ Multiple similar functions → consolidate with options parameter
