@@ -215,13 +215,13 @@ When spawning research sub-tasks:
 
 **Scenario 1: User provides everything upfront**
 ```
-User: /iterate_plan thoughts/shared/plans/2025-10-16-feature.md - add phase for error handling
+User: /iterate_plan ./tmp/ready-plans/2025-10-16-feature.md - add phase for error handling
 Assistant: [Reads plan, researches error handling patterns, updates plan]
 ```
 
 **Scenario 2: User provides just plan file**
 ```
-User: /iterate_plan thoughts/shared/plans/2025-10-16-feature.md
+User: /iterate_plan ./tmp/ready-plans/2025-10-16-feature.md
 Assistant: I've found the plan. What changes would you like to make?
 User: Split Phase 2 into two phases - one for backend, one for frontend
 Assistant: [Proceeds with update]
@@ -231,7 +231,7 @@ Assistant: [Proceeds with update]
 ```
 User: /iterate_plan
 Assistant: Which plan would you like to update? Please provide the path...
-User: thoughts/shared/plans/2025-10-16-feature.md
+User: ./tmp/ready-plans/2025-10-16-feature.md
 Assistant: I've found the plan. What changes would you like to make?
 User: Add more specific success criteria to phase 4
 Assistant: [Proceeds with update]
