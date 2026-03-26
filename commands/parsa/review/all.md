@@ -411,23 +411,16 @@ prompt: |
   4. Correct Invalidation: Invalidation keys must structurally match query keys (same prefix hierarchy).
 
   ## Gold Standard Exemplars
-  - Query key factory: apps/webapp/src/hooks/feed/feedKeys.ts
-  - Query key factory: apps/webapp/src/hooks/conversations/conversationKeys.ts
-  - Optimistic update: apps/webapp/src/hooks/todos/useTodo.ts (useUpdateTodoTitle)
-  - Cache seeding: apps/webapp/src/hooks/feed/useFeedItem.ts (findFeedItemInCache)
-  - Full infinite query: apps/webapp/src/hooks/feed/useFeed.ts
+  Analyze the project's codebase to find exemplar files. Read the project's CLAUDE.md and docs/OVERVIEW.md if they exist for established patterns. Search for `*Keys.ts` files in the frontend hooks directory to find query key factories, and look for hooks using `onMutate` for optimistic updates and `initialData` for cache seeding.
 
   ## What to Check
   1. Get the full diff: git diff main...HEAD
   2. Search for raw string query keys: `queryKey: ['`
-  3. Search for `qk.` usage — check if domain factory should be used instead
+  3. Search for flat query key object usage — check if a domain factory should be used instead
   4. Check new mutations for `onMutate` with snapshot/rollback pattern
   5. Check new detail hooks for `initialData` cache seeding
   6. Verify invalidation keys match query keys structurally
   7. Check for `setQueryData`/`setQueriesData` outside of `onMutate`
-
-  ## Known Issues (for context, don't re-report)
-  - `qk` has duplicate conversation keys that conflict with `conversationKeys` — this is a known tech debt item
 
   ## Output Format
   Return a structured report:
