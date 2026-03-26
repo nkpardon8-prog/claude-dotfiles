@@ -41,11 +41,11 @@ Read the relevant CLAUDE.md files to understand established patterns:
 - Circular import risks
 - Importing from internal module paths instead of public exports
 
-**This codebase requires:**
+**This codebase requires (check CLAUDE.md for project-specific alias conventions):**
 ```typescript
-// CORRECT
+// CORRECT — use the project's configured path aliases
 import { Something } from '@/modules/feature/service';
-import { Shared } from '@doozy/shared';
+import { Shared } from '@org/shared'; // or the project's shared package alias
 
 // WRONG
 import { Something } from '../../../modules/feature/service';
