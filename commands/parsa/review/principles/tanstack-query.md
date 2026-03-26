@@ -77,7 +77,7 @@ invalidateWorkspaceConversations(queryClient, workspaceId);
 
 All optimistic state changes happen inside `useMutation`'s `onMutate` with snapshot + rollback. Never mutate cache from component handlers.
 
-**Exemplar:** `apps/webapp/src/hooks/todos/useTodo.ts` (`useUpdateTodoTitle`)
+**Exemplar:** Find a hook in the project that uses the optimistic update pattern (search for `onMutate` in the frontend hooks directory). Read it to understand the expected 6-step structure.
 
 **Required 6-step pattern:**
 1. `cancelQueries` — prevent race conditions
