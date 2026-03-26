@@ -130,7 +130,7 @@ Then wait for the user's research query.
      [Current patterns, conventions, and design implementations found in the codebase]
 
      ## Related Research
-     [Links to other research documents in thoughts/shared/research/]
+     [Links to other research documents in ./tmp/research/]
 
      ## Open Questions
      [Any areas that need further investigation]
