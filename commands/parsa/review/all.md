@@ -338,7 +338,7 @@ prompt: |
      - Mid-function = should be top-level
 
   ## Reference
-  Proper DI pattern: apps/api/src/bootstrap/services.ts
+  Find the project's service bootstrap or dependency injection wiring file. Check the backend CLAUDE.md or docs/OVERVIEW.md if they exist to locate it.
 
   ## Output Format
   Return a structured report:
