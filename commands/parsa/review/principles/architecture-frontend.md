@@ -37,17 +37,17 @@ Hooks return data and functions only. Components render JSX.
 git rev-parse --abbrev-ref HEAD
 
 # Get changed files (frontend only)
-git diff main...HEAD --name-only | grep "apps/webapp"
+git diff main...HEAD --name-only | grep -E "(webapp|frontend|web|client)"  # adjust pattern for this project
 
 # Get full diff for frontend
-git diff main...HEAD -- "apps/webapp/"
+git diff main...HEAD -- "$(detect frontend directory from project structure)"
 ```
 
 Read the frontend patterns:
-- `apps/webapp/CLAUDE.md` - Complete frontend architecture
-- `apps/webapp/src/hooks/CLAUDE.md` - Hook patterns, TanStack Query
-- `apps/webapp/src/components/CLAUDE.md` - Component patterns
-- `CLAUDE.md` - Import conventions
+- Frontend CLAUDE.md (detect path from project structure — e.g. `apps/webapp/CLAUDE.md`, `frontend/CLAUDE.md`, etc.)
+- Hooks CLAUDE.md if present (e.g. inside the frontend's hooks directory)
+- Components CLAUDE.md if present (e.g. inside the frontend's components directory)
+- Root `CLAUDE.md` — import conventions
 
 ## Phase 2: Check Frontend Patterns
 
