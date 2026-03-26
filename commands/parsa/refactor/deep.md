@@ -122,16 +122,14 @@ Find exemplar files by analyzing the codebase — look for well-structured contr
 ### Phase 2: Frontend Analysis
 
 **Reference patterns from:**
-- `apps/webapp/CLAUDE.md` - Complete frontend architecture
-- `apps/webapp/src/hooks/CLAUDE.md` - Hook patterns, TanStack Query
-- `apps/webapp/src/components/CLAUDE.md` - Component patterns
-- `CLAUDE.md` - Import conventions
+
+Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
+
+Read each one to understand the complete frontend architecture, hook patterns, component patterns, and import conventions.
 
 **Exemplar files to study:**
-- Page: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/feed/page.tsx`
-- Orchestration Hook: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/archive/useArchivePage.ts`
-- Shared Hook: `apps/webapp/src/hooks/feed/useFeed.ts`
-- Component: Study underscore-prefix `_components/` vs `src/components/`
+
+Find exemplar files by analyzing the codebase — look for well-structured pages, orchestration hooks, shared hooks, and components in the project's source directories (detect from project structure). Study the distinction between locally-scoped code (e.g., underscore-prefix folders) vs. shared code.
 
 **Check patterns:**
 
