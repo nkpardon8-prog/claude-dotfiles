@@ -28,8 +28,8 @@ git diff main...HEAD
 
 Read the relevant CLAUDE.md files to understand established patterns:
 - `/CLAUDE.md` - Root conventions
-- `/apps/webapp/CLAUDE.md` - Frontend conventions
-- `/apps/api/CLAUDE.md` - Backend conventions
+- Frontend CLAUDE.md (detect path from project structure)
+- Backend CLAUDE.md (detect path from project structure)
 
 ## Phase 2: Check for Anti-Patterns
 
