@@ -54,11 +54,11 @@ TanStack Query's `invalidateQueries({ queryKey })` uses **prefix matching**. Cal
 **The trap:**
 ```typescript
 // BAD: Factory call includes default params, misses other param variants
-queryClient.invalidateQueries({ queryKey: conversationKeys.lists(workspaceId) });
-// Produces ['conversations', 'list', workspaceId, {}] — misses { includeMessages: true }
+queryClient.invalidateQueries({ queryKey: domainKeys.lists(workspaceId) });
+// Produces ['domain', 'list', workspaceId, {}] — misses variants with non-default params
 
 // GOOD: Use the predicate helper
-invalidateWorkspaceConversations(queryClient, workspaceId);
+invalidateWorkspaceDomain(queryClient, workspaceId);
 ```
 
 **Rule:** Any domain with parameterized list queries must have an invalidation helper (`<domain>Invalidation.ts`) that uses a predicate to match all variants. Use the predicate helper in all mutations, not raw factory calls.
