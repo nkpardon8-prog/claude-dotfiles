@@ -201,18 +201,9 @@ For each raw key found:
 
 Check if changed files import `qk` and use it for keys that belong to a domain factory.
 
-**Known domain factories (all 6):**
+**Known domain factories:** Search the project's frontend hooks directory for `*Keys.ts` files to discover all existing domain factories. Build the inventory dynamically by reading those files. For each factory found, note what base key it owns.
 
-| Factory | Owns | Base Key |
-|---------|------|----------|
-| `feedKeys` | all `['feed', ...]` keys | `['feed']` |
-| `conversationKeys` | all `['conversations', ...]` keys | `['conversations']` |
-| `todoKeys` | all `['todos', ...]` keys | `['todos']` |
-| `skillKeys` | all `['skills', ...]` keys | `['skills']` |
-| `templateKeys` | all `['skill-templates', ...]` keys | `['skill-templates']` |
-| `toolkitKeys` | all `['toolkits', ...]` keys | `['toolkits']` |
-
-If code uses `qk.conversations*`, `qk.todos*`, `qk.feed*`, `qk.skills*`, etc. when a domain factory exists → **FAIL**.
+If code uses a flat `qk` object for keys that belong to an existing domain factory → **FAIL**.
 
 ### 3.3 Missing Domain Factory
 
