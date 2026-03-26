@@ -7,7 +7,7 @@ description: Check for TanStack Query pattern violations (query keys, optimistic
 
 You are reviewing code changes for violations of **TanStack Query patterns** established in this codebase.
 
-**Canonical reference:** `tmp/research/tanstack-query-guidelines.md` — read this first for full context.
+**Canonical reference:** Read `tmp/research/tanstack-query-guidelines.md` if it exists for full project-specific context. Otherwise analyze the project's CLAUDE.md and existing query key factories for established patterns.
 
 ## The Principles
 
