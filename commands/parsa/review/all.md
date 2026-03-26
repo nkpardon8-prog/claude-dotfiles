@@ -257,15 +257,14 @@ prompt: |
   4. Hooks Never Return JSX: Hooks return data/functions only
 
   ## What to Check
-  1. Get the full diff: git diff main...HEAD -- "apps/webapp/"
-  2. Read apps/webapp/CLAUDE.md and apps/webapp/src/hooks/CLAUDE.md
+  1. Get the full diff for frontend files: git diff main...HEAD (filter to frontend directory — detect from project structure)
+  2. Read the frontend CLAUDE.md and hooks CLAUDE.md if present (detect paths from project structure)
   3. For each page: verify thin composition, uses orchestration hook
   4. For each hook: verify returns data not JSX, proper query patterns
-  5. Check locality: local code in _folders/, shared code in src/
+  5. Check locality: local code in underscore-prefixed folders, shared code in src/
 
   ## Exemplars
-  - Page: apps/webapp/src/app/(protected)/workspaces/[workspaceId]/feed/page.tsx
-  - Hook: apps/webapp/src/app/(protected)/workspaces/[workspaceId]/archive/useArchivePage.ts
+  Analyze the project's codebase to find exemplar files. Read the project's CLAUDE.md and docs/OVERVIEW.md if they exist for established patterns. Look for representative thin page and orchestration hook files in the frontend directory.
 
   ## Output Format
   Return a structured report:
