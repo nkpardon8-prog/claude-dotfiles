@@ -135,7 +135,7 @@ npm run typecheck          # TypeScript compilation
 - [ ] No linting errors: `npm run lint`
 - [ ] No type errors: `npm run typecheck`
 - [ ] Error cases handled gracefully
-- [ ] Shared types exported from @doozy/shared if used across apps
+- [ ] Shared types exported from the project's shared library if used across apps
 
 ## Anti-Patterns to Avoid
 
