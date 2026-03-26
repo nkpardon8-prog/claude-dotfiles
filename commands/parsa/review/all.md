@@ -59,7 +59,7 @@ prompt: |
   ## What to Check
   1. Get the full diff: git diff main...HEAD
   2. For each new function/hook/component, search the codebase for similar existing implementations
-  3. Check libs/shared/ for utilities that could have been reused
+  3. Check the project's shared directory for utilities that could have been reused (detect from project structure or CLAUDE.md)
   4. Look for copy-pasted code blocks
   5. Identify new abstractions where existing ones would work
 
