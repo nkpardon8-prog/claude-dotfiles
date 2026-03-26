@@ -330,7 +330,7 @@ After structure approval:
    - Research actual code patterns using parallel sub-tasks
    - Include specific file paths and line numbers
    - Write measurable success criteria with clear automated vs manual distinction
-   - automated steps should use `make` whenever possible - for example `make -C apps/humanlayer-wui check` instead of `cd humanlayer-wui && bun run fmt`
+   - automated steps should use the project's build system whenever possible — detect and use commands from Makefile, package.json scripts, or Cargo.toml rather than chaining shell commands manually
 
 4. **Be Practical**:
    - Focus on incremental, testable changes
