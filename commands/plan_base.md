@@ -108,17 +108,17 @@ Task N:
 
 ```yaml
 DATABASE:
-  - schema: "Add table definition to apps/api/src/shared/db/schema.ts"
-  - diff: "User runs: cd apps/api && npm run db:diff (then applies SQL manually in DataGrip)"
+  - schema: "Add table definition to the project's schema file (detect path from project structure)"
+  - diff: "User runs the project's database migration command (detect from package.json scripts or project docs)"
 
 ROUTES:
-  - add to: apps/api/src/routes/index.ts
-  - create: apps/api/src/routes/feature.routes.ts
+  - add to: the project's main routes index file (detect path from project structure)
+  - create: a new routes file for the feature in the project's routes directory
 
 FRONTEND:
-  - api client: apps/webapp/src/lib/api/feature.ts
-  - hook: apps/webapp/src/app/<route>/_hooks/use-feature.ts
-  - component: apps/webapp/src/app/<route>/_components/
+  - api client: the project's frontend API client directory (detect from project structure)
+  - hook: the project's hooks directory for the relevant route or feature
+  - component: the project's components directory for the relevant route or feature
 ```
 
 ## Validation Loop
