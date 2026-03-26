@@ -108,10 +108,10 @@ Find exemplar files by analyzing the codebase — look for well-structured contr
 - ✓ Validation NOT in controllers/services
 
 **Import Patterns (Backend):**
-- ✓ Uses `@/` for local API imports
-- ✓ Uses `@doozy/shared` for shared types
+- ✓ Uses the project's path alias convention for local imports (detect from tsconfig or CLAUDE.md)
+- ✓ Uses the project's shared package for shared types (detect from package.json or CLAUDE.md)
 - ✓ ZERO relative imports (`../`, `../../`)
-- ✓ Imports organized: external, @doozy/shared, @/
+- ✓ Imports organized as the project's CLAUDE.md specifies
 
 **Database & Error Handling:**
 - ✓ Drizzle ORM queries in services only
