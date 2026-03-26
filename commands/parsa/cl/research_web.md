@@ -124,7 +124,7 @@ Launch multiple **web-search-researcher** agents in parallel, each focused on a 
 
 ### Step 4: Generate Research Document
 
-Write the research document to: `thoughts/shared/research/YYYY-MM-DD-web-description.md`
+Write the research document to: `./tmp/research/YYYY-MM-DD-web-description.md`
 
 **Document structure**:
 
