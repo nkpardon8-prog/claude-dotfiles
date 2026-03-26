@@ -30,10 +30,7 @@ The global `QueryClient` defaults handle freshness. Do NOT add per-query overrid
 
 Every domain gets its own `<domain>Keys.ts` factory with hierarchical, self-referential keys. Never use raw string arrays. Never add domain keys to the flat `qk` object.
 
-**Gold standard exemplars:**
-- `apps/webapp/src/hooks/feed/feedKeys.ts`
-- `apps/webapp/src/hooks/conversations/conversationKeys.ts`
-- `apps/webapp/src/hooks/todos/todoKeys.ts`
+**Gold standard exemplars:** Analyze the project's codebase to find exemplar query key factory files. Read the frontend CLAUDE.md and docs/OVERVIEW.md if they exist for established patterns. Search for `*Keys.ts` files in the frontend's hooks directory.
 
 **Required structure:**
 ```typescript
