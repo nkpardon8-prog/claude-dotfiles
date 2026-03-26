@@ -157,10 +157,10 @@ prompt: |
   7. Verify file structure conventions are followed
 
   ## Codebase Conventions to Check
-  - Imports must use @/ path aliases (not ../../../)
-  - Shared code goes in libs/shared/
-  - API follows MVC with service layer pattern
-  - Frontend uses TanStack Query for data fetching
+  - Imports must use the project's configured path aliases (not deep relative paths like ../../../)
+  - Shared code goes in the project's shared directory (detect from project structure or CLAUDE.md)
+  - API follows the project's established architecture pattern (check CLAUDE.md)
+  - Frontend uses the project's established data-fetching pattern (check CLAUDE.md)
 
   ## Output Format
   Return a structured report:
