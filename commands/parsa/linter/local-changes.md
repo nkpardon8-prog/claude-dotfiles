@@ -1,5 +1,5 @@
 ---
-allowed-tools: Read, Edit, Bash(git diff:*), Bash(npm run typecheck:*), Bash(npm run lint:*), Bash(npx nx typecheck:*), Bash(npx nx lint:*), Bash(npx tsc:*), Bash(npx eslint:*), TodoWrite, Grep
+allowed-tools: Read, Edit, Bash(git diff:*), Bash(npm run typecheck:*), Bash(npm run lint:*), Bash(npx tsc:*), Bash(npx eslint:*), TodoWrite, Grep
 description: Fix linting and type errors in files changed on the current branch, with sequential resolution
 ---
 
@@ -18,30 +18,24 @@ git diff --name-only
 git diff --cached --name-only
 ```
 
-Combine and deduplicate the results. Filter to only TypeScript/TSX files:
-- `apps/webapp/src/**/*.{ts,tsx}`
-- `apps/api/src/**/*.{ts,tsx}`
-- `libs/shared/src/**/*.{ts,tsx}`
+Combine and deduplicate the results. Filter to TypeScript/TSX/JS/JSX files relevant to the project structure (detect source directories from the project — look for `src/`, `app/`, `lib/`, `packages/`, or similar based on what exists).
 
-If there are no TypeScript files changed, inform the user and exit.
+If there are no relevant source files changed, inform the user and exit.
 
 ## 2. Run Diagnostics on Changed Files
 
-For each changed file, run diagnostics:
+First, detect the project's TypeScript and lint commands by reading `package.json`.
 
 **TypeScript Type Checking:**
 
 IMPORTANT: Use the TypeScript compiler (`tsc`) rather than relying on VS Code's language server, as it's more authoritative and doesn't have caching issues.
 
 ```bash
-# For webapp files - run full project check, then filter to changed files
-npx tsc --noEmit --project apps/webapp/tsconfig.json 2>&1 | grep -E "error TS"
-
-# For API files - run full project check, then filter to changed files
-npx tsc --noEmit --project apps/api/tsconfig.json 2>&1 | grep -E "error TS"
-
-# For shared library files
-npx tsc --noEmit --project libs/shared/tsconfig.json 2>&1 | grep -E "error TS"
+# Detect tsconfig location (check project root, src/, app/, or sub-packages)
+# Common locations: tsconfig.json, tsconfig.base.json, packages/*/tsconfig.json
+# Run: npx tsc --noEmit --project <detected-tsconfig> 2>&1 | grep -E "error TS"
+# Or if the project exposes a typecheck script: npm run typecheck 2>&1 | grep -E "error TS"
+<run the project's typecheck command, filtering to changed files>
 ```
 
 Parse the TypeScript output to extract errors. Each error line follows this format:
@@ -53,8 +47,9 @@ Filter the errors to only include files from the changed files list.
 
 **ESLint:**
 ```bash
-# Run eslint on specific files
+# Run eslint on specific changed files
 npx eslint <file1> <file2> <file3> --max-warnings=0
+# Or use the project's lint script if it supports file arguments
 ```
 
 Collect all issues with:
@@ -118,19 +113,16 @@ Order todos by:
 
 ## 5. Verification Phase
 
-After all issues are fixed:
+After all issues are fixed, re-run the project's typecheck and lint commands (detected from `package.json`):
 
 ```bash
-# Run full typecheck for affected projects using TypeScript compiler (source of truth)
-npx tsc --noEmit --project apps/webapp/tsconfig.json 2>&1 | grep -E "error TS"
-npx tsc --noEmit --project apps/api/tsconfig.json 2>&1 | grep -E "error TS"
-
-# Alternative: Use nx typecheck commands
-npx nx typecheck @doozy/webapp
-npx nx typecheck @doozy/api
+# Run full typecheck using the project's command (source of truth)
+# e.g., npm run typecheck, or: npx tsc --noEmit --project <tsconfig> 2>&1 | grep -E "error TS"
+<run the project's typecheck command>
 
 # Run lint on changed files
 npx eslint <all-changed-files> --max-warnings=0
+# Or: <run the project's lint command>
 ```
 
 Report:
@@ -144,20 +136,20 @@ Report:
 
 Provide a concise summary:
 ```
-✓ Fixed 15 issues across 8 files:
+Fixed 15 issues across 8 files:
   - 7 TypeScript type errors
   - 5 unused imports removed
   - 3 React Hook dependency warnings
 
 Modified files:
-  - apps/webapp/src/components/TodoCard.tsx
-  - apps/webapp/src/hooks/useStartTodoConversation.ts
+  - src/components/ExampleCard.tsx
+  - src/hooks/useExampleHook.ts
   ...
 
-✓ All files now pass typecheck and lint (verified with tsc compiler)
+All files now pass typecheck and lint (verified with tsc compiler)
 
 Note: If VS Code still shows red underlines, restart the TypeScript server:
-  Ctrl+Shift+P → "TypeScript: Restart TS Server"
+  Ctrl+Shift+P -> "TypeScript: Restart TS Server"
 ```
 
 ## Arguments Support
