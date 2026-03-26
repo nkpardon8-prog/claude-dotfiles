@@ -141,7 +141,7 @@ export function useFeedPage() {
 }
 ```
 
-**Study exemplar:** `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/archive/useArchivePage.ts`
+**Study exemplar:** Find a representative orchestration hook in the project's frontend directory. Analyze the codebase to identify the established hook pattern (check frontend CLAUDE.md and existing orchestration hook files).
 
 ### 2.3 Underscore-Prefix Locality
 
