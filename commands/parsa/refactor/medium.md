@@ -150,12 +150,11 @@ Scan each file line-by-line. After line 40, check for:
 ## 🎓 References
 
 Similar patterns to study:
-- Controller pattern: apps/api/src/modules/feed/controllers/feed.controller.ts
-- Service pattern: apps/api/src/modules/feed/services/feed.service.ts
+- Controller pattern: Find exemplar controllers by analyzing the project's source directories (detect from project structure)
+- Service pattern: Find exemplar services by analyzing the project's source directories
 
 Documentation:
-- Backend patterns: apps/api/CLAUDE.md
-- Frontend patterns: apps/webapp/CLAUDE.md
+- Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
 ```
 
 ### 4. Show Classification First
