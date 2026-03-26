@@ -149,7 +149,7 @@ git diff main...HEAD --name-only
 git diff main...HEAD
 ```
 
-Read the guidelines doc for full context:
+Read the guidelines doc for full context if it exists:
 - `tmp/research/tanstack-query-guidelines.md`
 
 Use TodoWrite to track each violation to investigate.
