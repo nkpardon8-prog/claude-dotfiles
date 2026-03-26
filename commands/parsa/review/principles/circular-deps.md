@@ -222,7 +222,7 @@ class ServiceA {
 ## Reference
 
 **Proper dependency injection pattern:**
-See `apps/api/src/bootstrap/services.ts` for how services are wired together.
+Find the project's service bootstrap or dependency injection wiring file (e.g. the file where services are instantiated and composed together). Check the backend CLAUDE.md or docs/OVERVIEW.md if they exist to locate it.
 
 ## Files to Refactor
 
