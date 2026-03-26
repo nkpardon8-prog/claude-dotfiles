@@ -100,7 +100,7 @@ For EACH new pattern identified:
 1. Grep for similar function/component names
 2. Grep for similar functionality (key terms)
 3. Read similar files to understand existing patterns
-4. Check libs/shared/ for shared implementations
+4. Check the project's shared directory for shared implementations (detect from project structure or CLAUDE.md)
 ```
 
 ### 3.2 Document Pattern Proliferation Risk
