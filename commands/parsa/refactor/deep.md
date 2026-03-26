@@ -102,7 +102,7 @@ Find exemplar files by analyzing the codebase — look for well-structured contr
 - ✓ File-level documentation
 - ✓ No controller logic leaking in
 
-**Validators (apps/api/src/modules/*/validators/):**
+**Validators (detect validator directories from project structure):**
 - ✓ Uses Zod schemas
 - ✓ Exports both schema and inferred types
 - ✓ Validation NOT in controllers/services
