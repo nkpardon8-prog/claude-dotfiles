@@ -55,7 +55,7 @@ You are tasked with generating a comprehensive pull request description followin
 6. **Handle verification requirements:**
    - Look for any checklist items in the "How to verify it" section of the template
    - For each verification step:
-     - If it's a command you can run (like `make check test`, `npm test`, etc.), run it
+     - If it's a command you can run (detect from Makefile, package.json scripts, or Cargo.toml — e.g., a `check`, `test`, or `lint` target), run it
      - If it passes, mark the checkbox as checked: `- [x]`
      - If it fails, keep it unchecked and note what failed: `- [ ]` with explanation
      - If it requires manual testing (UI interactions, external services), leave unchecked and note for user
