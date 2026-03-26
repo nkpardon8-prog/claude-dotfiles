@@ -101,7 +101,7 @@ For each new abstraction (class, hook, utility):
 
 ## Code That Could Be Shared
 
-{List any new code that should move to libs/shared/}
+{List any new code that should move to the project's shared directory}
 
 ## Recommendations
 
