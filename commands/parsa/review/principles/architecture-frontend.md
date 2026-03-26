@@ -100,7 +100,7 @@ export default function FeedPage() {
 - Most interactive pages need it
 - Flag if missing when using hooks/state
 
-**Study exemplar:** `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/feed/page.tsx`
+**Study exemplar:** Find a representative page file in the project's frontend directory. Analyze the codebase to identify the established thin-page pattern (check frontend CLAUDE.md and existing page files).
 
 ### 2.2 Orchestration Hook Pattern
 
