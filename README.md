@@ -104,15 +104,24 @@ Read `~/.claude/settings.json`. If it doesn't exist, create it. Ensure it contai
   "hooks": {
     "SessionStart": [
       {
-        "type": "command",
-        "command": "git -C $HOME/dotfiles/claude pull --ff-only 2>/dev/null || true"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -C $HOME/dotfiles/claude pull --ff-only 2>/dev/null || true"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
-        "type": "command",
-        "command": "$HOME/dotfiles/claude/scripts/dotfiles-sync.sh"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/dotfiles/claude/scripts/dotfiles-sync.sh",
+            "async": true
+          }
+        ]
       }
     ]
   }
