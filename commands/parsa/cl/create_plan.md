@@ -371,9 +371,9 @@ After structure approval:
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Database migration runs successfully: `make migrate`
-- [ ] All unit tests pass: `go test ./...`
-- [ ] No linting errors: `golangci-lint run`
+- [ ] Database migration runs successfully: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
+- [ ] All unit tests pass: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
+- [ ] No linting errors: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
 - [ ] API endpoint returns 200: `curl localhost:8080/api/new-endpoint`
 
 #### Manual Verification:
