@@ -79,7 +79,7 @@ Scan each file line-by-line. After line 40, check for:
 **Root cause diagnosis:**
 1. Check if the late import is inside a constructor → Likely circular dependency
 2. Check if the late import is conditional → Architectural smell (dependency should be injected)
-3. Provide fix: Reference `apps/api/src/bootstrap/services.ts` for proper dependency injection pattern
+3. Provide fix: Reference the project's dependency injection bootstrap file (detect from project structure) for proper dependency injection pattern
 
 ### 3. Generate Report
 
