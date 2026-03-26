@@ -467,7 +467,7 @@ Check WebSocket reconnect handlers:
 
 - **Per-query staleTime overrides** add unnecessary complexity and silently cause stale data when the wrong tier is chosen
 - **Raw string keys** cause silent cache invalidation failures — data appears stale with no errors
-- **Duplicate key structures** (e.g., `qk.conversations` vs `conversationKeys.lists`) mean invalidation hits one cache but misses the other
+- **Duplicate key structures** (e.g., a flat `qk.domain` entry vs a `domainKeys.lists()` factory) mean invalidation hits one cache but misses the other
 - **Prefix matching trap** — calling `domainKeys.lists(wsId)` for invalidation produces trailing default params that miss other param variants
 - **Missing `onMutate` rollback** causes UI to show stale optimistic state after server errors
 - **Mismatched prefetch keys** waste network requests and still show loading spinners
