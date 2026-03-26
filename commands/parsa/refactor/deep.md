@@ -143,7 +143,7 @@ Find exemplar files by analyzing the codebase — look for well-structured pages
 - ✓ No state management (uses hooks)
 - ✓ No business logic
 
-**Orchestration Hooks (*/_hooks/usePage.ts):**
+**Orchestration Hooks (detect hook file conventions from project structure):**
 - ✓ Has file-level JSDoc explaining purpose
 - ✓ Combines multiple hooks
 - ✓ Contains business logic & event handlers
