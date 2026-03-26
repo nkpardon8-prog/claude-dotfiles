@@ -224,15 +224,14 @@ prompt: |
   4. Controller-Service Separation: Controllers delegate to services, no business logic
 
   ## What to Check
-  1. Get the full diff: git diff main...HEAD -- "apps/api/"
-  2. Read apps/api/CLAUDE.md for backend patterns
-  3. For each controller: verify authenticatedHandler usage, no try/catch, no business logic
-  4. For each service: verify BaseService extension, ApiError usage, single responsibility
-  5. Check validators use Zod schemas
+  1. Get the full diff for backend files: git diff main...HEAD (filter to backend directory — detect from project structure)
+  2. Read the backend CLAUDE.md for backend patterns (detect path from project structure)
+  3. For each controller: verify the established handler wrapper usage, no try/catch, no business logic
+  4. For each service: verify base service extension, typed error usage, single responsibility
+  5. Check validators use the project's established validation library (e.g. Zod)
 
   ## Exemplars
-  - Controller: apps/api/src/modules/feed/controllers/feed.controller.ts
-  - Service: apps/api/src/modules/feed/services/feed.service.ts
+  Analyze the project's codebase to find exemplar files. Read the project's CLAUDE.md and docs/OVERVIEW.md if they exist for established patterns. Look for representative controller and service files in the backend directory.
 
   ## Output Format
   Return a structured report:
