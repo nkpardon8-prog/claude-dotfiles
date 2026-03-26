@@ -92,7 +92,7 @@ Find exemplar files by analyzing the codebase — look for well-structured contr
 - ✓ No try/catch blocks (authenticatedHandler handles)
 - ✓ File-level documentation
 
-**Services (apps/api/src/modules/*/services/):**
+**Services (detect service directories from project structure):**
 - ✓ Extends `BaseService` when using database
 - ✓ Uses `this.db` for database access
 - ✓ Contains ALL business logic
