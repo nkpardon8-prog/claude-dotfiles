@@ -164,12 +164,10 @@ Write refactor plan to `./tmp/simple-refactor-plan-[timestamp].md`:
 ## References
 
 Similar patterns to study:
-- [Exemplar file paths from codebase]
+- [Exemplar file paths from codebase — find via analysis of project source directories]
 
 Documentation:
-- Backend patterns: `apps/api/CLAUDE.md`
-- Frontend patterns: `apps/webapp/CLAUDE.md`
-- Hook patterns: `apps/webapp/src/hooks/CLAUDE.md`
+- Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
 ```
 
 ### 6. Show Next Steps
