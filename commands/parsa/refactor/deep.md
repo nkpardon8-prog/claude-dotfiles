@@ -82,7 +82,7 @@ Find exemplar files by analyzing the codebase — look for well-structured contr
 
 **Check patterns:**
 
-**Controllers (apps/api/src/modules/*/controllers/):**
+**Controllers (detect controller directories from project structure):**
 - ✓ Uses `authenticatedHandler` wrapper for auth routes
 - ✓ Accesses `req.user` (provided by authenticatedHandler)
 - ✓ Extracts params/query clearly at top
