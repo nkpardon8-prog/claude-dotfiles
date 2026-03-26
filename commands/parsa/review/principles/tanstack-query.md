@@ -97,10 +97,7 @@ All optimistic state changes happen inside `useMutation`'s `onMutate` with snaps
 
 List-to-detail navigation uses `initialData` to pull from list cache. Eliminates loading spinners.
 
-**Exemplars:**
-- `apps/webapp/src/hooks/todos/useTodo.ts` (`findTodoInCache` + `useTodoDetail`)
-- `apps/webapp/src/hooks/feed/useFeedItem.ts` (`findFeedItemInCache`)
-- `apps/webapp/src/hooks/conversations/useConversation.ts` (`findConversationInCache`)
+**Exemplars:** Find hooks in the project that use the `initialData` cache seeding pattern (search for `findXInCache` helpers or `initialData` usage in the frontend hooks directory). Read them to understand the expected pattern.
 
 **Required pattern:**
 - `findXInCache` helper searches `domainKeys.all` across all query shapes
