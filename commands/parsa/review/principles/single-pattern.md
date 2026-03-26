@@ -70,7 +70,7 @@ Search for:
 
 For each:
 1. Note the functionality
-2. Search `libs/shared/` for existing utilities
+2. Search the project's shared directory for existing utilities (detect from project structure or CLAUDE.md)
 3. Search local utils for similar functions
 4. Flag duplication
 
