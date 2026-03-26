@@ -186,7 +186,7 @@ Get user confirmation before proceeding.
 When updating success criteria, always maintain the two-category structure:
 
 1. **Automated Verification** (can be run by execution agents):
-   - Commands that can be run: `make test`, `npm run lint`, etc.
+   - Commands that can be run: detect from Makefile, package.json scripts, or Cargo.toml (e.g., `npm run lint`, `cargo test`, etc.)
    - Specific files that should exist
    - Code compilation/type checking
 
