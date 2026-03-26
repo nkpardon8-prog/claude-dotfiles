@@ -74,6 +74,7 @@ If the user's feedback requires understanding new code patterns or validating as
    - **codebase-pattern-finder** - To find similar patterns
 
    **Be EXTREMELY specific about directories**:
+   - Identify the relevant directories for the change at hand
    - Include full path context in prompts
 
 3. **Read any new files identified by research**:
