@@ -139,7 +139,7 @@ if (!name || name.length < 1) {
 }
 ```
 
-**Study exemplar:** `apps/api/src/modules/feed/validators/feed-tag.validator.ts`
+**Study exemplar:** Find a representative validator in the project's backend directory. Analyze the codebase to identify the established validation pattern (check backend CLAUDE.md and existing validator files).
 
 ### 2.4 Complex Service Organization
 
