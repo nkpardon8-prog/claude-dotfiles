@@ -71,14 +71,14 @@ Proceeding with comprehensive analysis...
 ### Phase 1: Backend Analysis
 
 **Reference patterns from:**
-- `apps/api/CLAUDE.md` - Complete backend architecture
-- `CLAUDE.md` - Import conventions, shared library usage
+
+Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
+
+Read each one to understand the complete backend architecture, import conventions, and shared library usage.
 
 **Exemplar files to study:**
-- Controller: `apps/api/src/modules/feed/controllers/feed.controller.ts`
-- Service: `apps/api/src/modules/feed/services/feed.service.ts`
-- Validator: `apps/api/src/modules/feed/validators/feed-tag.validator.ts`
-- Complex service: `apps/api/src/modules/audio/services/recording/` (folder pattern)
+
+Find exemplar files by analyzing the codebase — look for well-structured controllers, services, and validators in the project's source directories (detect from project structure). Pay attention to complex services organized in subfolders with an index file as the entry point.
 
 **Check patterns:**
 
