@@ -65,7 +65,7 @@ For each new function, hook, component, or utility in the diff:
 For each new abstraction (class, hook, utility):
 - Could an existing abstraction be extended instead?
 - Is this solving a problem already solved elsewhere?
-- Could this live in `libs/shared/` for reuse?
+- Could this live in the project's shared directory for reuse? (Detect from project structure or CLAUDE.md)
 
 ## Phase 3: Generate Report
 
