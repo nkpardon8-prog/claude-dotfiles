@@ -328,9 +328,9 @@ Analyze the project's codebase to find exemplar files. Read the frontend CLAUDE.
 |---------|---------|-------|
 | Page logic | In orchestration hook | In page component |
 | Hook returns | `{ data, handlers }` | `<JSX />` |
-| Local component | `page/_components/Foo.tsx` | `src/components/Foo.tsx` (if only used once) |
-| Shared component | `src/components/Foo.tsx` | `page/_components/Foo.tsx` (if used 2+ places) |
-| Query key | `['feed', workspaceId, filter]` | `['feed']` (missing deps) |
+| Local component | `feature/_components/Foo.tsx` | shared components dir (if only used once) |
+| Shared component | shared components dir | `feature/_components/Foo.tsx` (if used 2+ places) |
+| Query key | `['domain', scopeId, filter]` | `['domain']` (missing deps) |
 | Conditional query | `enabled: !!id` | `if (id) { useQuery(...) }` |
 | Mutation | Has `onSuccess` invalidation | Missing invalidation |
 
