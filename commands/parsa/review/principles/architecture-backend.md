@@ -78,7 +78,7 @@ router.get('/', async (req, res) => {
 - Controllers should only: extract params, call service, return response
 - Flag any: database queries, complex logic, data transformations
 
-**Study exemplar:** `apps/api/src/modules/feed/controllers/feed.controller.ts`
+**Study exemplar:** Find a representative controller in the project's backend directory. Analyze the codebase to identify the established controller pattern (check backend CLAUDE.md and existing controller files).
 
 ### 2.2 Service Pattern
 
