@@ -1,0 +1,7 @@
+*.jsonl
+debug/
+cache/
+telemetry/
+session-env/
+*.log
+.DS_Store
