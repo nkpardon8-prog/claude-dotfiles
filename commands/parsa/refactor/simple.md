@@ -65,17 +65,14 @@ git diff main --name-only
 ```
 
 **Check patterns from:**
-- `CLAUDE.md` - Import conventions, monorepo structure
-- `apps/api/CLAUDE.md` - Backend architecture (authenticatedHandler, BaseService, ApiError)
-- `apps/webapp/CLAUDE.md` - Frontend architecture (thin pages, orchestration hooks)
-- `apps/webapp/src/hooks/CLAUDE.md` - TanStack Query patterns, query keys
-- `apps/webapp/src/components/CLAUDE.md` - Component patterns
+
+Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
+
+Read each one to understand the project's conventions for imports, backend architecture, frontend architecture, hook patterns, and component patterns.
 
 **Study exemplar files:**
-- Controller: `apps/api/src/modules/feed/controllers/feed.controller.ts`
-- Service: `apps/api/src/modules/feed/services/feed.service.ts`
-- Page: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/feed/page.tsx`
-- Hook: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/archive/useArchivePage.ts`
+
+Find exemplar files by analyzing the codebase — look for well-structured controllers, services, pages, and hooks in the project's source directories (detect from project structure). Use these as the reference for what good code looks like in this specific project.
 
 ### 4. Detect Code Smells
 
