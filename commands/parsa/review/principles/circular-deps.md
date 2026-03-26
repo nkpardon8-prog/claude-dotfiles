@@ -189,7 +189,7 @@ class ServiceA {
   constructor(private readonly serviceB: ServiceB) {}
 }
 
-// In bootstrap/services.ts
+// In the project's bootstrap/DI wiring file
 const serviceB = new ServiceB();
 const serviceA = new ServiceA(serviceB);
 ```
