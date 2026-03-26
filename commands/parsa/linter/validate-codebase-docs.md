@@ -12,8 +12,11 @@ This command orchestrates multiple specialized agents to systematically validate
 First, gather information about the documentation landscape and recent changes:
 
 ```bash
-# Get list of all documentation files
-ls -la docs/
+# Get list of all documentation files (detect the docs directory from project structure)
+ls -la docs/ 2>/dev/null || ls -la .
+
+# Discover all CLAUDE.md files
+find . -name "CLAUDE.md" -not -path "*/node_modules/*"
 
 # Review recent changes that might affect docs
 git log --oneline -30
@@ -22,7 +25,7 @@ git log --oneline -30
 git status
 ```
 
-Create a comprehensive list of all markdown files in the docs folder, categorizing them by:
+Create a comprehensive list of all markdown files in the docs folder (or wherever documentation lives in this project), categorizing them by:
 - Technical documentation (architecture, API, database)
 - Guidelines and principles
 - PRDs and feature specs
@@ -71,10 +74,8 @@ Tasks:
 Focus: Validate API endpoints and route definitions
 Input: List of API endpoints from documentation
 Tasks:
-1. Read current route definitions from:
-   - apps/api/src/routes/
-   - apps/api/src/controllers/
-   - apps/webapp/app/api/
+1. Detect where route/controller definitions live in this project
+   (e.g., search for route files using: find . -type f -name "*.ts" | xargs grep -l "router\." | grep -v node_modules)
 2. Compare documented endpoints with actual implementation
 3. Check HTTP methods match (GET, POST, etc.)
 4. Verify request/response schemas if documented
@@ -87,7 +88,8 @@ Tasks:
 Focus: Verify database schemas and models
 Input: Database documentation references
 Tasks:
-1. Read current schema from apps/api/src/db/schema.ts
+1. Detect the schema definition file(s) in this project
+   (e.g., search for schema.ts, schema.prisma, models/, migrations/)
 2. Compare with documented tables and fields
 3. Check for new tables or columns
 4. Verify relationships and constraints
@@ -114,12 +116,7 @@ Focus: Identify recent changes requiring doc updates
 Tasks:
 1. Analyze git log for last 30-50 commits
 2. Review merged PRs and their descriptions
-3. Identify major features and breaking changes:
-   - Authentication system changes
-   - New workspace features
-   - AI agent implementations
-   - Audio recording improvements
-   - Dashboard architecture changes
+3. Identify major features and breaking changes introduced recently
 4. Check if these are reflected in docs
 5. Return list of missing documentation
 ```
@@ -162,9 +159,10 @@ Tasks:
 
 **CLAUDE.md Synchronization Agent:**
 ```
-Focus: Ensure consistency with CLAUDE.md
+Focus: Ensure consistency with CLAUDE.md files
 Tasks:
-1. Read CLAUDE.md as source of truth
+1. Read all CLAUDE.md files as source of truth
+   (discover with: find . -name "CLAUDE.md" -not -path "*/node_modules/*")
 2. Update other docs to match CLAUDE.md
 3. Propagate command changes
 4. Sync environment setup instructions
@@ -251,24 +249,24 @@ After all validation and updates complete, generate comprehensive report:
 
 ### For Different Doc Types:
 
-**Architecture Docs** (backend-architecture.md, frontend-architecture.md):
+**Architecture Docs** (e.g., backend-architecture.md, frontend-architecture.md):
 - Focus on structural accuracy
 - Validate technology stack
 - Update directory structures
 - Verify service boundaries
 
-**PRD/Feature Docs** (in-progress/*, archived-complete/*):
+**PRD/Feature Docs** (e.g., in-progress/*, archived-complete/*):
 - Check implementation status
 - Update with actual implementation details
 - Move completed items to archived
 - Add implementation notes
 
-**Guidelines** (UI-GUIDELINES.md, UX-PRINCIPLES.md):
+**Guidelines** (e.g., UI guidelines, UX principles):
 - Verify referenced components exist
 - Update example code
 - Check for consistency with current practices
 
-**Integration Docs** (audio-recording-architecture.md, authentication.md):
+**Integration Docs** (e.g., third-party API integrations, authentication):
 - Validate API endpoints
 - Update configuration examples
 - Check third-party SDK versions

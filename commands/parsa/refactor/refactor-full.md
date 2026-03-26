@@ -354,11 +354,7 @@ Write unified plan to `./tmp/refactor-full-plan-[timestamp].md`:
 
 ### Documentation to Review
 
-- Backend patterns: `apps/api/CLAUDE.md`
-- Frontend patterns: `apps/webapp/CLAUDE.md`
-- Hook patterns: `apps/webapp/src/hooks/CLAUDE.md`
-- Component patterns: `apps/webapp/src/components/CLAUDE.md`
-- Import conventions: `CLAUDE.md`
+- Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## Analysis Insights
