@@ -12,7 +12,7 @@ You are tasked with updating existing implementation plans based on user feedbac
 When this command is invoked:
 
 1. **Parse the input to identify**:
-   - Plan file path (e.g., `thoughts/shared/plans/2025-10-16-feature.md`)
+   - Plan file path (e.g., `./tmp/ready-plans/2025-10-16-feature.md`)
    - Requested changes/feedback
 
 2. **Handle different input scenarios**:
