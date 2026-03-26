@@ -156,8 +156,8 @@ Commits:
 - <commit summaries>
 
 Build:
-  webapp: PASS
-  api: PASS
+  <app/target name>: PASS
+  <app/target name>: PASS
 
 Codex Review: PASS (no issues)
 
