@@ -10,18 +10,15 @@ Launches parallel subagents to update CLAUDE.md files across the codebase with c
 
 ## Process
 
-### 1. Launch Parallel Subagents
+### 1. Discover CLAUDE.md Locations
 
-Spawn agents for each CLAUDE.md location:
+First, discover all CLAUDE.md files in the project (excluding node_modules):
 
+```bash
+find . -name "CLAUDE.md" -not -path "*/node_modules/*"
 ```
-- Root (/)
-- API Backend (apps/api/)
-- Webapp Frontend (apps/webapp/)
-- Webapp Hooks (apps/webapp/src/hooks/)
-- Webapp Components (apps/webapp/src/components/)
-- Documentation (docs/)
-```
+
+Spawn one agent per discovered CLAUDE.md file.
 
 ### 2. Agent Task
 
@@ -59,11 +56,11 @@ After all agents complete:
 - Updated: [outdated info]
 - Preserved: [core instructions]
 
-### apps/api/CLAUDE.md
+### <path>/CLAUDE.md
 - Added: [patterns/sections]
 - Updated: [outdated info]
 
-[... for each location ...]
+[... for each discovered location ...]
 
 ## Next Steps
 - Review git diff to verify changes
@@ -79,16 +76,17 @@ After all agents complete:
 ## Example Usage
 
 ```bash
-# Update all CLAUDE.md files
+# Update all CLAUDE.md files (auto-discovered)
 /update-claude-docs
 
 # Update specific location
-/update-claude-docs --location apps/api
+/update-claude-docs --location src/api
 ```
 
 ## Success Checklist
 
-- [ ] Subagents launched in parallel
+- [ ] CLAUDE.md files discovered via `find`
+- [ ] Subagents launched in parallel (one per file)
 - [ ] Each agent analyzes its relative directory
 - [ ] Files updated with current patterns
 - [ ] Summary report generated
