@@ -36,15 +36,15 @@ Backend code must throw `ApiError` with proper status codes, not generic `Error`
 git rev-parse --abbrev-ref HEAD
 
 # Get changed files (backend only)
-git diff main...HEAD --name-only | grep "apps/api"
+git diff main...HEAD --name-only | grep -E "(api|server|backend)"  # adjust pattern for this project
 
 # Get full diff for backend
-git diff main...HEAD -- "apps/api/"
+git diff main...HEAD -- "$(detect backend directory from project structure)"
 ```
 
 Read the backend patterns:
-- `apps/api/CLAUDE.md` - Complete backend architecture
-- `CLAUDE.md` - Import conventions
+- Backend CLAUDE.md (detect path from project structure — e.g. `apps/api/CLAUDE.md`, `server/CLAUDE.md`, etc.)
+- Root `CLAUDE.md` — import conventions
 
 ## Phase 2: Check Backend Patterns
 
