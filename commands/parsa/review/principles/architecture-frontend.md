@@ -296,10 +296,11 @@ export function useModal() {
 
 ## Exemplars to Study
 
-- Page pattern: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/feed/page.tsx`
-- Orchestration hook: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/archive/useArchivePage.ts`
-- Shared hook: `apps/webapp/src/hooks/feed/useFeed.ts`
-- Locality: Compare `_components/` vs `src/components/`
+Analyze the project's codebase to find exemplar files. Read the frontend CLAUDE.md and docs/OVERVIEW.md if they exist for established patterns. Look for:
+- A well-structured thin page in the frontend directory
+- A well-structured orchestration hook co-located with a page
+- A well-structured shared hook in the frontend's shared hooks directory
+- Examples of correct locality: local `_components/` vs shared `src/components/` (or project equivalents)
 
 ## Recommendations
 
