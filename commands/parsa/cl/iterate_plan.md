@@ -121,7 +121,7 @@ Get user confirmation before proceeding.
 3. **Preserve quality standards**:
    - Include specific file paths and line numbers for new content
    - Write measurable success criteria
-   - Use `make` commands for automated verification
+   - Use the project's build system commands for automated verification (detect from Makefile, package.json scripts, or Cargo.toml)
    - Keep language clear and actionable
 
 ### Step 5: Sync and Review
