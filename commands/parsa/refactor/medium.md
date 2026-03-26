@@ -99,12 +99,12 @@ Scan each file line-by-line. After line 40, check for:
 
 ### Critical (Must Fix)
 - [file:line] Relative import: import { X } from '../../utils'
-  → Fix: Use @/ path alias
+  → Fix: Use the project's path alias convention (detect from tsconfig or CLAUDE.md)
   → Auto-fixable: Yes
 
-- [file:45] Late import: require('@/shared/services/notification.service')
+- [file:45] Late import: require statement after line 40
   → Root cause: Circular dependency - service loaded inside constructor
-  → Fix: Use constructor injection (see apps/api/src/bootstrap/services.ts)
+  → Fix: Use constructor injection (see the project's dependency injection bootstrap file — detect from project structure)
   → Auto-fixable: No
 
 - [file:line] Controller has business logic
