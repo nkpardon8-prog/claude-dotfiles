@@ -221,11 +221,11 @@ After structure approval:
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Migration applies cleanly: `make migrate`
-- [ ] Unit tests pass: `make test-component`
-- [ ] Type checking passes: `npm run typecheck`
-- [ ] Linting passes: `make lint`
-- [ ] Integration tests pass: `make test-integration`
+- [ ] Migration applies cleanly: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
+- [ ] Unit tests pass: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
+- [ ] Type checking passes: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
+- [ ] Linting passes: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
+- [ ] Integration tests pass: run the project's equivalent command (detect from Makefile, package.json scripts, or Cargo.toml)
 
 #### Manual Verification:
 - [ ] Feature works as expected when tested via UI
