@@ -34,16 +34,14 @@ git diff main --stat
 ### 2. Analyze Files
 
 **Read changed files and check patterns from:**
-- `CLAUDE.md` (import conventions, shared library)
-- `apps/api/CLAUDE.md` (backend patterns)
-- `apps/webapp/CLAUDE.md` (frontend patterns)
-- `apps/webapp/src/hooks/CLAUDE.md` (hook patterns)
+
+Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
+
+Read each one to understand import conventions, backend patterns, frontend patterns, and hook patterns for this specific project.
 
 **Study exemplar files:**
-- Controllers: `apps/api/src/modules/feed/controllers/feed.controller.ts`
-- Services: `apps/api/src/modules/feed/services/feed.service.ts`
-- Pages: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/feed/page.tsx`
-- Hooks: `apps/webapp/src/app/(protected)/workspaces/[workspaceId]/archive/useArchivePage.ts`
+
+Find exemplar files by analyzing the codebase — look for well-structured controllers, services, pages, and hooks in the project's source directories (detect from project structure).
 
 **Check for patterns based on classification:**
 
