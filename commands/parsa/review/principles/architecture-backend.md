@@ -205,10 +205,11 @@ services/
 
 ## Exemplars to Study
 
-- Controller pattern: `apps/api/src/modules/feed/controllers/feed.controller.ts`
-- Service pattern: `apps/api/src/modules/feed/services/feed.service.ts`
-- Validator pattern: `apps/api/src/modules/feed/validators/feed-tag.validator.ts`
-- Complex service: `apps/api/src/modules/audio/services/recording/`
+Analyze the project's codebase to find exemplar files. Read the backend CLAUDE.md and docs/OVERVIEW.md if they exist for established patterns. Look for:
+- A well-structured controller in the backend directory
+- A well-structured service in the backend directory
+- A well-structured validator in the backend directory
+- A complex service with subfolder organization (if applicable)
 
 ## Recommendations
 
