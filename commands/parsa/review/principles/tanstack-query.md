@@ -346,11 +346,11 @@ Check WebSocket reconnect handlers:
 |----------|---------|------------|
 | {file:line} | `['domain', id]` | `domainKeys.detail(id)` |
 
-### Wrong Factory (using `qk` instead of domain factory)
+### Wrong Factory (using flat key object instead of domain factory)
 
 | Location | Current | Should Use |
 |----------|---------|------------|
-| {file:line} | `qk.conversations(wsId)` | `conversationKeys.lists(wsId)` |
+| {file:line} | `qk.domainName(scopeId)` | `domainKeys.lists(scopeId)` |
 
 ### Missing Domain Factory
 
