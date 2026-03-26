@@ -133,7 +133,7 @@ Find exemplar files by analyzing the codebase — look for well-structured pages
 
 **Check patterns:**
 
-**Pages (apps/webapp/src/app/*/page.tsx):**
+**Pages (detect page file conventions from project structure):**
 - ✓ Has `'use client'` directive (most pages need it)
 - ✓ Has file-level documentation comment
 - ✓ Thin composition layer (mostly JSX)
