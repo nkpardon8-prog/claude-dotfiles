@@ -1,5 +1,5 @@
 ---
-allowed-tools: Task, Bash(npm run typecheck:*), Bash(npm run lint:*), Bash(npx nx typecheck:*), Bash(npx nx lint:*), TodoWrite
+allowed-tools: Task, Bash(npm run typecheck:*), Bash(npm run lint:*), Bash(npx tsc:*), Bash(npx eslint:*), TodoWrite
 description: Fix all TypeScript type errors and ESLint warnings in parallel using multiple specialized agents
 ---
 
@@ -7,20 +7,25 @@ Fix all TypeScript type errors and ESLint warnings in the codebase using multipl
 
 ## 1. Initial Analysis Phase
 
-First, run diagnostics to identify all issues:
+First, detect the project's available commands by reading `package.json`, then run diagnostics to identify all issues:
 
 ```bash
-# Run TypeScript type checking for webapp
-npx nx typecheck @doozy/webapp
+# Detect available scripts
+cat package.json | grep -A 50 '"scripts"'
+
+# Run TypeScript type checking (detect the correct command from package.json scripts,
+# e.g., `npm run typecheck`, `npx tsc --noEmit`, or the project's equivalent)
+<run the project's typecheck command>
 
 # Run ESLint with warnings
-npx nx lint @doozy/webapp --max-warnings=0
+# (detect from package.json scripts, e.g., `npm run lint`, `npx eslint . --max-warnings=0`)
+<run the project's lint command> --max-warnings=0
 ```
 
 Capture and categorize all errors and warnings by type:
 - Type errors (TS2xxx errors)
 - Unused variables and imports
-- React Hooks dependency issues
+- React Hooks dependency issues (if applicable)
 - Missing type definitions
 - Date/Time type mismatches
 - Other linting warnings
@@ -55,7 +60,7 @@ Tasks:
 - Keep code that might be used in future (commented with TODO)
 ```
 
-**React Optimization Agent:**
+**React Optimization Agent (if project uses React):**
 ```
 Focus: Fix React-specific issues
 Files: All React component files with hook warnings
@@ -70,12 +75,12 @@ Tasks:
 **Data Type Consistency Agent:**
 ```
 Focus: Fix date/time and data type issues
-Files: mock-archive-store.ts and similar data files
+Files: Data files, mock/fixture files, and any file with type mismatch errors
 Tasks:
-- Convert string dates to Date objects
-- Fix type mismatches in mock data
+- Convert string dates to Date objects where required
+- Fix type mismatches in mock/test data
 - Ensure consistent data types across interfaces
-- Fix ArrayBuffer type issues
+- Fix buffer and binary type issues
 ```
 
 **Code Quality Agent:**
@@ -105,18 +110,14 @@ Each agent should:
 
 ## 4. Verification Phase
 
-After all agents complete:
+After all agents complete, re-run the project's typecheck and lint commands (detected from `package.json` in step 1):
 
 ```bash
 # Verify TypeScript compilation
-npm run typecheck
+<run the project's typecheck command>
 
 # Verify no lint warnings remain
-npm run lint
-
-# Check specific problem areas if needed
-npx nx typecheck @doozy/webapp
-npx nx lint @doozy/webapp --max-warnings=0
+<run the project's lint command> --max-warnings=0
 ```
 
 ## 5. Summary Report
