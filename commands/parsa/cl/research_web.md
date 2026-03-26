@@ -239,7 +239,7 @@ last_updated: [Current date in YYYY-MM-DD format]
 
    **Recommendation:** [If applicable]
 
-   The full research document is at: `thoughts/shared/research/[filename].md`
+   The full research document is at: `./tmp/research/[filename].md`
 
    Would you like me to:
    - Dive deeper into any specific area?
