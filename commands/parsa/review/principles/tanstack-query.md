@@ -15,7 +15,7 @@ You are reviewing code changes for violations of **TanStack Query patterns** est
 
 The global `QueryClient` defaults handle freshness. Do NOT add per-query overrides.
 
-**Global defaults (in `providers/QueryProvider.tsx`):**
+**Global defaults (find the project's QueryClient/QueryProvider file — check the frontend CLAUDE.md or search for `QueryClient` instantiation):**
 - `staleTime: 0` — always stale, always refetch on mount/focus/reconnect
 - `refetchOnWindowFocus: true`
 - `refetchOnReconnect: true`
