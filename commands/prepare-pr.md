@@ -49,16 +49,21 @@ For each group:
 
 ## Step 3: Build and Fix Errors
 
-Run both builds and fix any errors:
+Run all builds and fix any errors.
 
-### Build webapp
-```bash
-npx nx build @doozy/webapp
-```
+### Detect build commands
 
-### Build API
+Inspect `package.json` (and any monorepo config such as `nx.json`, `turbo.json`, or `pnpm-workspace.yaml`) at the project root to determine the correct build commands. Common patterns:
+- Single-package project: `npm run build` / `bun run build` / `yarn build`
+- Nx monorepo: `npx nx run-many -t build` or `npx nx build <project-name>`
+- Turborepo: `npx turbo build`
+- Multiple apps: run the build for each app (frontend, API, etc.) separately
+
+Run each applicable build command, for example:
+
 ```bash
-npx nx build @doozy/api
+# Example — replace with the actual commands detected from the project
+npm run build        # or the project's equivalent
 ```
 
 For each build:
@@ -66,7 +71,7 @@ For each build:
 2. If it **fails**, read the error output carefully:
    - Fix type errors, missing imports, and build issues.
    - After fixing, re-run the failing build to confirm the fix.
-   - Repeat until both builds pass.
+   - Repeat until all builds pass.
 3. If a fix requires non-trivial changes (architectural issues, missing dependencies), tell the user and ask how to proceed.
 
 **Commit build fixes** as a separate commit: `fix: resolve build errors`
