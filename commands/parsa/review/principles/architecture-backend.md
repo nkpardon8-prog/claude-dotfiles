@@ -94,7 +94,7 @@ export class FeedService extends BaseService {
 }
 
 // WRONG - Direct db import
-import { db } from '@/shared/db';
+import { db } from '@/shared/db'; // bypasses the base service pattern
 export class FeedService {
   async getItems() {
     const items = await db.query...
