@@ -197,7 +197,7 @@ prompt: |
      - New hooks: Do similar hooks already exist?
      - New API patterns: Is this consistent with other endpoints?
      - New component patterns: How do similar components work?
-     - New utilities: Check libs/shared/ and local utils
+     - New utilities: Check the project's shared directory and local utils
 
   ## Output Format
   Return a structured report:
