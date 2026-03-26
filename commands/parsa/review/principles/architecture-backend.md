@@ -115,7 +115,7 @@ throw new Error('Item not found');
 - Each service should handle one domain concept
 - Flag services doing unrelated things
 
-**Study exemplar:** `apps/api/src/modules/feed/services/feed.service.ts`
+**Study exemplar:** Find a representative service in the project's backend directory. Analyze the codebase to identify the established service pattern (check backend CLAUDE.md and existing service files).
 
 ### 2.3 Validator Pattern
 
