@@ -356,10 +356,7 @@ Similar implementations to reference:
 - Hooks: [Exemplar file paths]
 
 ### Documentation to Review
-- Backend patterns: `apps/api/CLAUDE.md`
-- Frontend patterns: `apps/webapp/CLAUDE.md`
-- Hook patterns: `apps/webapp/src/hooks/CLAUDE.md`
-- Component patterns: `apps/webapp/src/components/CLAUDE.md`
+- Find all CLAUDE.md files in the project: `find . -name 'CLAUDE.md' -not -path '*/node_modules/*'`
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## Quality Score Breakdown
