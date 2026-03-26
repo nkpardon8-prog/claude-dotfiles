@@ -117,8 +117,7 @@ Build the PR description from the done-plans. List work in **chronological order
 - Key changes and what they accomplish
 
 ## Build Verification
-- [x] `npx nx build @doozy/webapp` passes
-- [x] `npx nx build @doozy/api` passes
+- [x] All project builds pass (commands detected from project config)
 ```
 
 Use `$ARGUMENTS` as the PR title if provided, otherwise derive one from the done-plans.
