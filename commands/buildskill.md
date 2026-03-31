@@ -36,6 +36,7 @@ If it exists, continue to Step 2.
 
 Read `./SKILLSET.md` and extract:
 - **Industry name** from the `# Skillset:` header
+- **Skillset roadmap** from `## Skillset Roadmap` — the full vision for all planned skills, how they connect, and what workflows they support. This is critical context for understanding where the current skill fits in the larger picture.
 - **Base skills** from the `## Base Skills (Always Available)` table — skill names, categories, descriptions
 - **Excluded skills** from the `## Excluded Skills (Permission Required)` table
 - **Industry skills** from the `## Industry Skills (This Project)` table — what's already been built
