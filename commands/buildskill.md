@@ -359,5 +359,8 @@ task to update SKILLSET.md and SKILLSET-LOG.md with the new skill entry.
 - Read at most **3-4 base skill source files** during the conversation. If more are relevant, list them in the brief for `/plan` to read during plan generation.
 - Read **all** briefs in `./tmp/briefs/`, not just `*buildskill*` ones — `/discussion` briefs about skills are equally important for workflow context.
 - The isolation rules from `SKILLSET.md` apply: base skills are free to reference, excluded/other-project skills require permission.
+- Deep research runs automatically before orchestration design. Results are saved to `./tmp/research/` and key findings are included in the brief for `/plan`.
+- If research fails or returns no results, the skill is designed without external research. This is noted explicitly in the brief.
+- Tool setup (MCPs, packages, existing configs) is allowed with explicit user permission, even though this is otherwise a conversation-only skill. Do not create new project source files during setup.
 
 Skill to build: $ARGUMENTS
