@@ -286,6 +286,13 @@ Create the `./tmp/briefs/` directory if it doesn't exist.
 [What industry skills have been built so far and how this skill relates]
 [Other skills discussed this session and their workflow connections]
 
+### Research Findings
+- **Full research**: ./tmp/research/[filename]
+- **Key tools recommended**: [list with brief reasons]
+- **Best practices applied**: [practices that inform the skill design]
+- **Tools integrated into design**: [tools the user approved for the orchestration]
+- **Tools available but not integrated**: [noted for future consideration]
+
 ## Orchestration Design
 - **Calls**: [list of base skills referenced, with reasons for each]
 - **Order**: [step flow — sequential and parallel steps, numbered]
