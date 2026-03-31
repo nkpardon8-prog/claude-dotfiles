@@ -100,7 +100,17 @@ IF the agent fails or returns no results:
 
 Collect findings for the `## Tools & Resources` section.
 
-### 2d. Create SKILLSET.md
+### 2d. Skillset Roadmap
+
+Ask the user to describe the full skillset they envision building for this industry:
+
+**"What skills do you want to build for [industry_name]? Describe the full vision — all the skills you're imagining, how they'd connect, and what workflows they'd support. This becomes your roadmap."**
+
+Wait for the user's response. This can be as detailed or high-level as they want.
+
+The response is captured verbatim into the `## Skillset Roadmap` section of `SKILLSET.md`. This gives `/buildskill` the big picture of where each individual skill fits in the larger workflow.
+
+### 2e. Create SKILLSET.md
 
 Write `./SKILLSET.md` using this template, populated with scan results:
 
