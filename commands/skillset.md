@@ -112,7 +112,7 @@ The response is captured verbatim into the `## Skillset Roadmap` section of `SKI
 
 ### 2e. Create SKILLSET.md
 
-Write `./SKILLSET.md` using this template, populated with scan results:
+Write `./SKILLSET.md` using this template, populated with scan and roadmap results:
 
 ```markdown
 # Skillset: [Industry Name]
