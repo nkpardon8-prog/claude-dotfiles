@@ -7,39 +7,32 @@ argument-hint: "[path to estimate JSON, or 'export last estimate as PDF']"
 
 ## Locate estimate data
 
-1. If the user provides a path to a JSON file, use that directly as `$FILE`.
-2. If estimate data exists in the current conversation (from a prior `/plan2bid:run` or pasted by the user), structure it as valid JSON and write it to a temp file: `/tmp/plan2bid_estimate_<timestamp>.json`. Use that as `$FILE`.
-3. If the user says "last estimate", look for the most recent `.json` file in `~/Desktop/Projects/Plan2BidAgent/output/` or the current directory. Confirm with the user before proceeding.
-
-If no estimate data can be found, stop and ask the user to provide it.
+1. If the user provides a JSON file path, use it directly as `$FILE`.
+2. If estimate data is in conversation (from `/plan2bid:run` or pasted), write it as JSON to `/tmp/plan2bid_estimate_<timestamp>.json`.
+3. If "last estimate", find the most recent `.json` in `~/Desktop/Projects/Plan2BidAgent/output/` or cwd. Confirm before proceeding.
+If no data found, stop and ask.
 
 ## Determine detail level
 
-Ask the user which detail level they want:
+Ask the user which level (default to **standard** if unspecified):
 - **summary** — totals by trade only, no line items
-- **standard** (default) — line items with lump-sum pricing, no unit rates or markup breakdown
+- **standard** — line items with lump-sum pricing, no unit rates or markup breakdown
 - **detailed** — full unit rates, markup percentages, and cost breakdown
 
-**If the user picks detailed, warn before proceeding:**
-> "This exposes unit rates and markup breakdown. Standard mode protects competitive info."
-
-Only continue with detailed after explicit confirmation.
+**If detailed is selected, warn first:** "This exposes unit rates and markup breakdown. Standard mode protects competitive info." Only proceed after explicit confirmation.
 
 ## Embed company info
 
-Read any profile files from `~/plan2bid-profile/` (company name, logo path, license number, contact info). Merge this data into the estimate JSON under a `"company"` key before calling the script. Write the enriched JSON back to `$FILE`.
+Read profile files from `~/plan2bid-profile/` (company name, logo, license, contact). Merge into the estimate JSON under a `"company"` key. Write enriched JSON back to `$FILE`.
 
 ## Generate the PDF
-
-Run:
 
 ```
 source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python ~/Desktop/Projects/Plan2BidAgent/scripts/generate_pdf.py --input $FILE --output $OUTPUT --detail $LEVEL
 ```
 
-Default `$OUTPUT` to `./estimate.pdf` unless the user specifies otherwise. `$LEVEL` is one of `summary`, `standard`, `detailed`.
-
-If the script exits non-zero, show the full error and suggest fixes.
+Default `$OUTPUT` to `./estimate.pdf`. `$LEVEL` is `summary`, `standard`, or `detailed`.
+If the script fails, show the full error and suggest fixes.
 
 ## Return result
 
