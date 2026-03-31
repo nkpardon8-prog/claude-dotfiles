@@ -305,7 +305,7 @@ If skills were removed from dotfiles:
 
 After classification, update the `## Base Skills` and `## Excluded Skills` tables in `./SKILLSET.md`.
 
-**Important:** Do NOT overwrite the `## Industry Context`, `## Industry Skills`, `## Other Industry Skills`, or `## Isolation Rules` sections — those are user-managed content. Only update the Base Skills and Excluded Skills tables.
+**Important:** Do NOT overwrite the `## Industry Context`, `## Tools & Resources`, `## Industry Skills`, `## Other Industry Skills`, or `## Isolation Rules` sections — those are user-managed content. Only update the Base Skills and Excluded Skills tables.
 
 Use `Read` to get the current file, then `Write` to save the updated version.
 
