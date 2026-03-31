@@ -251,7 +251,7 @@ Would you like to:
 **Wait for the user to respond.** Do not proceed with any domain action without explicit input.
 
 ### Option A: Default Subdomain
-No action needed. Confirm the URL and move to Phase 8.
+No action needed. Confirm the URL and move to Phase 9.
 
 ### Option B: Connect Existing Domain
 Walk the user through DNS configuration step by step:
