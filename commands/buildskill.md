@@ -299,6 +299,7 @@ Create the `./tmp/briefs/` directory if it doesn't exist.
 - **Artifacts**: reads [X], produces [Y]
 - **Workflow links**: [connections to other industry skills, or 'standalone']
 - **Additional skills for /plan to read**: [any beyond the 3-4 read here, or 'none']
+- **External tools/APIs**: [any external tools the skill uses, discovered through research]
 
 ## Decisions
 - [Decision 1] — [reasoning]
