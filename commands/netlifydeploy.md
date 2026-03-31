@@ -175,13 +175,63 @@ Using the Netlify MCP tools:
 
 ---
 
-## Phase 6: Deploy
+## Phase 6: Link GitHub Repo for Continuous Deployment
 
-1. **Preview first**: Deploy a draft/preview build
-2. **Show the preview URL** to the user
-3. **Ask for confirmation**: "Preview is live at [URL]. Deploy to production?"
-4. **Production deploy** on confirmation
-5. **Report the live URL**
+**Always set up Git-connected continuous deployment.** This means every push to the repo auto-triggers a build and deploy on Netlify — no manual deploys needed after initial setup.
+
+### 6A: Detect the Git Remote
+
+1. Run `git remote -v` to find the GitHub repo URL
+2. If no remote exists, ask the user: "This project doesn't have a GitHub remote. What repo should I link? (e.g., `username/repo-name`)"
+3. Confirm the repo with the user: "I'll link this Netlify site to `[owner/repo]` so pushes auto-deploy. Correct?"
+
+### 6B: Connect the Repo to Netlify
+
+1. **Check if the Netlify MCP has a tool to link a repo** (look for project update/create tools that accept a `repo` parameter or similar)
+2. **If the MCP supports repo linking**:
+   - Use the appropriate MCP tool to connect the GitHub repo to the Netlify site
+   - Set the **production branch** (typically `main` or `master` — detect from `git branch --show-current` or ask the user)
+   - Set the **build command** and **publish directory** from the framework research in Phase 2A
+3. **If the MCP does NOT support repo linking**:
+   - Tell the user: "The MCP doesn't support repo linking directly. Here's how to do it in the Netlify Dashboard:"
+   - "Go to Site Configuration → Build & deploy → Link site to Git → Select your GitHub repo → Set production branch to `[branch]`, build command to `[command]`, publish directory to `[dir]`"
+   - Alternatively, check if the Netlify CLI can do it: `netlify link --gitRemoteUrl [url]` or `netlify init`
+
+### 6C: Configure Branch Deploy Settings
+
+Set up the deployment triggers:
+
+- **Production branch** (`main`/`master`): Auto-deploy on push → production URL
+- **Deploy previews**: Auto-deploy on pull requests → unique preview URL per PR (recommend enabling this)
+- **Branch deploys** (optional): Ask the user if they want other branches (e.g., `staging`, `develop`) to auto-deploy to their own URLs
+
+Present to the user:
+```
+Continuous deployment configured:
+  - Push to [main] → auto-deploys to production
+  - Pull requests → auto-generate preview URLs
+  - Branch deploys: [enabled for X branches / disabled]
+
+Build settings:
+  - Command: [build command]
+  - Publish: [publish dir]
+  - Node version: [detected or default]
+```
+
+### 6D: Verify the Connection
+
+1. Confirm the Netlify site shows the linked repo (use MCP project reader tool)
+2. If possible, trigger a test build to verify the pipeline works end-to-end
+3. Tell the user: "Your site is now connected to GitHub. Every push to `[branch]` will auto-deploy."
+
+---
+
+## Phase 7: Initial Deploy & Verify
+
+1. **Trigger the first deploy** via the GitHub connection (push to the linked branch) or use the MCP deploy tool for the initial build
+2. **Show the deploy URL** to the user
+3. **Verify the site is working** — check that the deploy succeeded
+4. If the deploy fails, read the build logs (if accessible via MCP), diagnose the issue, and help the user fix it before retrying
 
 ---
 
