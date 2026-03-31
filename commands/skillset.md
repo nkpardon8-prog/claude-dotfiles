@@ -1,10 +1,9 @@
 ---
 description: Session initializer and skill registry manager for industry-specific projects. Creates or loads SKILLSET.md + SKILLSET-LOG.md, dynamically scans available skills, enforces cross-industry isolation rules. Use at the start of any industry skill-building session.
 argument-hint: "[optional: industry name for first-run, e.g. 'construction']"
-allowed-tools: Read, Write, Glob, Grep, Bash, Agent
 ---
 
-# /skillset — Industry Skill Registry & Session Initializer
+# Skillset Agent
 
 Initialize or resume an industry-specific skill-building session. Manages two project-level files:
 - `SKILLSET.md` — Skill registry, isolation rules, industry context
