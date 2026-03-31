@@ -15,7 +15,7 @@ This skill is for **conversation and brief-writing only**. You must **NEVER**:
 - Make implementation changes of any kind
 - Create the skill `.md` file — that happens through `/plan` → `/implement`
 
-You **may** read any files (skills, code, configs) to inform the design, and write the brief file (Step 5).
+You **may** read any files (skills, code, configs) to inform the design, write the brief file (Step 5), and — with explicit user permission — install or configure tools discovered during research (add MCPs to `~/.claude/mcp.json`, install packages via `npm`/`pip`, modify existing tool configuration files). Do not create new project source files during setup.
 
 ## Step 1: Gate Check
 
