@@ -235,7 +235,7 @@ Build settings:
 
 ---
 
-## Phase 7: Domain Setup
+## Phase 8: Domain Setup
 
 After a successful deploy, ask the user:
 
