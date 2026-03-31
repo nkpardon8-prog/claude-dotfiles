@@ -326,6 +326,12 @@ Create the `./tmp/briefs/` directory if it doesn't exist.
 [1-3 sentences on the agreed approach]
 ```
 
+If research returned no results or failed, use instead:
+```markdown
+### Research Findings
+No relevant external tools or practices found — skill built from first principles.
+```
+
 ## Step 6: Prompt Next Step
 
 Output:
