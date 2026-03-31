@@ -90,6 +90,108 @@ Gather answers before proceeding to Step 4.
 
 ## Step 4: Orchestration Design
 
+### 4-pre. Deep Skill Research
+
+Before designing the orchestration, research the specific problem this skill solves. Create `./tmp/research/` directory if it doesn't exist.
+
+Use the skill description from Step 3 as the research topic and the industry name from Step 2a as the industry context.
+
+Spawn 2-3 research agents in parallel via the Agent tool:
+
+**Agent 1 (tools & integrations):**
+  prompt: "Research tools for [skill description] in the [industry] industry.
+   Use WebSearch to find and WebFetch to read about:
+   - Existing tools, APIs, MCP servers, or libraries that solve this problem
+   - Open-source projects that handle this or parts of it
+   - SaaS/cloud services available for this
+   - Claude MCP servers or AI-native tools for this
+   Return: a table of tools (name, type, description, relevance, URL)."
+
+**Agent 2 (best practices & workflows):**
+  prompt: "Research best practices for [skill description] in [industry].
+   Use WebSearch to find and WebFetch to read about:
+   - Industry-standard approaches to solving this problem
+   - Recommended workflows and methodologies
+   - Common patterns experts use
+   - Pitfalls and anti-patterns to avoid
+   Return: numbered list of best practices with source URLs."
+
+**Agent 3 (optional — spawn only if the problem involves integration or automation):**
+  prompt: "Research integration patterns for [skill description] in [industry].
+   Use WebSearch to find and WebFetch to read about:
+   - How existing tools integrate with each other for this problem
+   - Common automation patterns and pipelines
+   - API-to-API workflows
+   Return: integration patterns with tool combinations and URLs."
+
+Save full results to: `./tmp/research/YYYY-MM-DD-buildskill-[skill_name].md` using this format:
+```
+---
+date: YYYY-MM-DD
+topic: [skill description]
+type: buildskill-research
+industry: [industry name]
+---
+# Research: [skill_name] in [industry]
+## Executive Summary
+[Key findings]
+## Tools & Integrations
+| Tool | Type | What It Does | Relevance | URL |
+|------|------|-------------|-----------|-----|
+## Best Practices
+[Numbered list with sources]
+## Methodologies & Workflows
+[Standard workflows]
+## Sources
+[All URLs]
+```
+
+**IF research succeeds:**
+
+Present findings as a batch table:
+```
+Research findings for [skill description]:
+
+Tools & integrations found:
+| # | Tool | Type | What It Does | Could Help With | Set up? | Integrate? |
+|---|------|------|-------------|-----------------|---------|------------|
+| 1 | [tool1] | MCP | [desc] | [how it helps] | y/n | y/n |
+| 2 | [tool2] | API | [desc] | [how it helps] | y/n | y/n |
+
+Best practices:
+- [practice 1 with source]
+- [practice 2 with source]
+
+Recommended approach:
+[Brief synthesis of how research should inform the skill design]
+
+Full research: ./tmp/research/[filename]
+
+Which tools should I set up? Which should be integrated into the skill design?
+(e.g., 'set up 1, 3 — integrate 1, 2' or 'none')
+```
+
+Wait for user response.
+
+For tools marked "set up":
+- MCPs: add to `~/.claude/mcp.json`
+- Packages: `npm install` / `pip install`
+- Existing config files: modify as needed
+- Credentials required: document steps for user
+Do NOT create new project source files.
+
+For tools marked "integrate":
+Note them for the orchestration design in Steps 4a-4e. These tools become part of the skill's step flow.
+
+Research findings feed directly into Steps 4a-4e:
+- Tools to integrate → may become steps in the skill
+- Best practices → inform step flow and constraints
+- Integrations → shape how the skill connects to external systems
+
+**IF research fails:**
+Output: "Research encountered issues — proceeding without external research. You can run `/research-web [topic]` later for a deeper investigation."
+Continue to Step 4a without research context.
+
 ### 4a. Identify Relevant Base Skills
 
 Scan the base skills list extracted from `SKILLSET.md` in Step 2a. Based on the new skill's purpose and I/O from Step 3, select the skills most likely to be referenced or called by the new skill.
