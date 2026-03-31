@@ -284,3 +284,5 @@ Ready to work. What are we building?
 - The dynamic scan always uses `~/dotfiles/claude/commands/` as the source for available skills.
 - On resume, preserve all user-written sections (`Industry Context`, `Industry Skills`, `Other Industry Skills`, `Isolation Rules`). Only the `Base Skills` and `Excluded Skills` tables are machine-managed.
 - If both files are perfectly up to date and no new skills are detected, the command simply loads context and updates the log — minimal output, fast resume.
+
+Industry context: $ARGUMENTS
