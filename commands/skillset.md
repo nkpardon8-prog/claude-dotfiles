@@ -110,6 +110,14 @@ Write `./SKILLSET.md` using this template, populated with scan results:
 ## Industry Context
 [User-provided description from 2a]
 
+## Tools & Resources
+> Industry tools, APIs, MCPs, and open-source projects discovered through research.
+> Full research: ./tmp/research/[filename]
+
+| Tool/Resource | Type | Description | Status |
+|---------------|------|-------------|--------|
+| [populated from research] | MCP/API/OSS/SaaS | [what it does] | Available/Installed |
+
 ## Base Skills (Always Available)
 | Skill | Category | Description |
 |-------|----------|-------------|
