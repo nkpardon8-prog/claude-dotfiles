@@ -196,6 +196,21 @@ Recent activity:
 - [last 3 log entries, one line each]
 ```
 
+### 3c. Research Refresh
+
+Read the `## Tools & Resources` section from `./SKILLSET.md`. Extract the research file path from the `> Full research:` line.
+
+IF a research file path is found AND the file exists:
+  Extract the date from the filename (YYYY-MM-DD prefix).
+  Output: `"Industry research was last run on [date]. Want me to refresh the industry research? (y/n)"`
+  - IF yes: Re-run the light research (same as Step 2c). Update ONLY the `## Tools & Resources` table rows in `./SKILLSET.md` (Read full file → replace table rows and research file path → write back. Preserve all other sections.)
+  - IF no: Continue to Step 4
+
+IF no research file path found OR file doesn't exist:
+  Output: `"No industry research on file. Want me to run a quick scan of tools and integrations for [industry]? (y/n)"`
+  - IF yes: Run the research (Step 2c logic), update `./SKILLSET.md` with the new `## Tools & Resources` content
+  - IF no: Continue to Step 4
+
 Then proceed to Step 4.
 
 ## Step 4: Dynamic Skill Scan
