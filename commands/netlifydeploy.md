@@ -185,11 +185,69 @@ Using the Netlify MCP tools:
 
 ---
 
-## Phase 7: Post-Deploy
+## Phase 7: Domain Setup
+
+After a successful deploy, ask the user:
+
+```
+Your site is live at [netlify-subdomain].netlify.app
+
+Would you like to:
+  A) Keep the default Netlify subdomain ([name].netlify.app)
+  B) Connect a domain you already own
+  C) Register a new domain through Netlify
+```
+
+**Wait for the user to respond.** Do not proceed with any domain action without explicit input.
+
+### Option A: Default Subdomain
+No action needed. Confirm the URL and move to Phase 8.
+
+### Option B: Connect Existing Domain
+Walk the user through DNS configuration step by step:
+
+1. Ask for their domain name (e.g., `myapp.com`)
+2. Use the Netlify MCP project updater tool to add the custom domain to the site (if the MCP supports this — check your available tools)
+3. Provide the exact DNS records they need to set at their registrar:
+   - **For apex domain** (e.g., `myapp.com`): ALIAS or ANAME record pointing to the Netlify load balancer, OR an A record to Netlify's IP (research the current IP via WebSearch — it changes)
+   - **For subdomain** (e.g., `www.myapp.com` or `app.myapp.com`): CNAME record pointing to `[site-name].netlify.app`
+4. Explain that Netlify auto-provisions HTTPS via Let's Encrypt once DNS propagates
+5. Tell the user: "DNS propagation can take up to 48 hours but usually completes within minutes. Netlify will automatically provision an SSL certificate once it detects the DNS records."
+6. If the user doesn't know how to access their registrar's DNS settings, ask who their registrar is (GoDaddy, Namecheap, Cloudflare, Google Domains, etc.) and give registrar-specific instructions
+
+### Option C: Register New Domain Through Netlify
+
+**CRITICAL: This costs money. Require explicit confirmation before ANY purchase.**
+
+1. Ask the user what domain they want (e.g., `myapp.com`)
+2. Research whether Netlify's MCP tools support domain registration/purchase — check your available Netlify tools for anything related to domains
+3. **If the MCP supports domain purchase**:
+   - Look up availability and price
+   - Present to the user: "The domain [name] is available for $[price]/year through Netlify. Do you want to proceed with the purchase? Type 'yes, purchase [domain] for $[price]' to confirm."
+   - **Do NOT proceed unless the user replies with explicit confirmation that includes the domain name and price.**
+   - After purchase, the domain auto-configures with the Netlify site — no manual DNS needed
+4. **If the MCP does NOT support domain purchase**:
+   - Tell the user: "Domain registration isn't available through the MCP tools. You can buy a domain directly in the Netlify Dashboard (Domains → Add or register domain) or through a registrar like Namecheap, Cloudflare, or Google Domains."
+   - If they buy through Netlify Dashboard, it auto-configures
+   - If they buy elsewhere, fall back to Option B instructions
+
+### Domain Spending Safeguard
+
+**NEVER execute a domain purchase, plan upgrade, or any action that costs money without ALL of these:**
+1. The user has been told the exact price
+2. The user has explicitly confirmed with a clear affirmative that references the action and cost
+3. You have re-stated the action before executing: "Confirming: purchasing [domain] for $[price]/year. Proceeding now."
+
+If there is ANY ambiguity in the user's response, ask again. Err on the side of asking too many times rather than spending money without clear consent.
+
+---
+
+## Phase 8: Post-Deploy
 
 Tell the user:
-- The production URL
-- Any manual steps remaining (custom domain, DNS, webhooks)
+- The production URL (and custom domain if configured)
+- SSL/HTTPS status
+- Any manual steps remaining
 - Suggest: deploy previews for PRs, build notifications, branch deploys
 
 ---
