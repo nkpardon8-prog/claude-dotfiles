@@ -40,7 +40,67 @@ Then ask: **"Brief description of what you're building in this space?"**
 
 Execute the scan from Step 4 to build the initial base skills table.
 
-### 2c. Create SKILLSET.md
+### 2c. Light Industry Research
+
+Spawn a research agent to scan the industry landscape for existing tools and integrations. Create `./tmp/research/` directory if it doesn't exist.
+
+Spawn 1 Agent via the Agent tool:
+  prompt: "Research [industry_name] software ecosystem. Use WebSearch to find and
+   WebFetch to read about:
+   - Existing tools, APIs, and MCP servers used in the [industry_name] industry
+   - SaaS platforms commonly used for automation in [industry_name]
+   - Active open-source projects in this space
+   - Any Claude MCP servers or AI-native tools relevant to [industry_name]
+   Return: a table of tools found (name, type, description, URL) and a brief
+   summary of the ecosystem."
+
+IF the agent returns results:
+  Save full research to: `./tmp/research/YYYY-MM-DD-skillset-[industry].md` using this format:
+  ```
+  ---
+  date: YYYY-MM-DD
+  topic: [industry_name]
+  type: skillset-research
+  industry: [industry_name]
+  ---
+  # [industry_name] Industry Research
+  ## Executive Summary
+  [Key findings]
+  ## Tools & Integrations
+  | Tool | Type | What It Does | Relevance | URL |
+  |------|------|-------------|-----------|-----|
+  ## Sources
+  [All URLs referenced]
+  ```
+
+  Present tools as a batch table:
+  ```
+  Industry tools found for [industry_name]:
+
+  | # | Tool | Type | Description | Set up? |
+  |---|------|------|-------------|---------|
+  | 1 | [tool1] | MCP | [what it does] | y/n |
+  | 2 | [tool2] | API | [what it does] | y/n |
+
+  Which tools should I set up? (e.g., '1, 3' or 'all' or 'none')
+  For tools requiring accounts/API keys, I'll document the setup steps.
+  ```
+
+  Wait for user response. For selected tools:
+  - MCPs: add to `~/.claude/mcp.json`
+  - Packages: `npm install` / `pip install`
+  - Configs: modify existing config files
+  - Credentials needed: document steps for user
+  Do NOT create new project source files. Do NOT store API keys or secrets.
+  Mark each as "Installed" or "Available" for the Tools & Resources table.
+
+IF the agent fails or returns no results:
+  Output: "Research encountered issues — proceeding without external research. You can run `/research-web [industry]` later for a deeper scan."
+  Use an empty Tools & Resources table in SKILLSET.md.
+
+Collect findings for the `## Tools & Resources` section.
+
+### 2d. Create SKILLSET.md
 
 Write `./SKILLSET.md` using this template, populated with scan results:
 
