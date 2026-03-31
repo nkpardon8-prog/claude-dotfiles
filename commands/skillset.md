@@ -141,6 +141,12 @@ Write `./SKILLSET.md` using this template, populated with scan and roadmap resul
 |-------|--------|
 | [populated from exclusion list] | |
 
+## Skillset Roadmap
+> The full vision for what skills will be built in this project.
+> Captured during `/skillset` first run. Updated as the vision evolves.
+
+[User-provided roadmap from Step 2d — describes all planned skills, how they connect, and what workflows they support]
+
 ## Industry Skills (This Project)
 | Skill | Description | Status | Date Added |
 |-------|-------------|--------|------------|
