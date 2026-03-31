@@ -103,7 +103,7 @@ Write `./SKILLSET-LOG.md` using this template:
 - Notes: [Industry context from user]
 ```
 
-Then proceed to Step 5 (skip Steps 3 and 4 since scan already ran in 2b).
+Then proceed to Step 5 (skip Steps 3, 4, and 6 — scan already ran in 2b, and the log was just created in 2d with the initial entry).
 
 ## Step 3: Resume Flow
 
