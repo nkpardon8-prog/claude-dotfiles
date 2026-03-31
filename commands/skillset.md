@@ -367,5 +367,7 @@ Ready to work. What are we building?
 - The dynamic scan always uses `~/dotfiles/claude/commands/` as the source for available skills.
 - On resume, preserve all user-written sections (`Industry Context`, `Industry Skills`, `Other Industry Skills`, `Isolation Rules`). Only the `Base Skills` and `Excluded Skills` tables are machine-managed.
 - If both files are perfectly up to date and no new skills are detected, the command simply loads context and updates the log — minimal output, fast resume.
+- Industry research is saved to `./tmp/research/` and summarized in the `## Tools & Resources` section of SKILLSET.md. If research fails, the command proceeds without it — research never blocks the core workflow.
+- Tool setup (MCPs, packages, configs) is offered during research. Setup requires explicit user permission and never creates new project source files or stores secrets.
 
 Industry context: $ARGUMENTS
