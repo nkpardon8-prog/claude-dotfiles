@@ -195,6 +195,7 @@ Then proceed to Step 5 (skip Steps 3, 4, and 6 — scan already ran in 2b, resea
 
 Read `./SKILLSET.md` and extract:
 - Industry name (from `# Skillset:` header)
+- Skillset roadmap (from `## Skillset Roadmap` — the full vision for planned skills)
 - Current base skills (from `## Base Skills` table)
 - Current exclusions (from `## Excluded Skills` table)
 - Industry skills built so far (from `## Industry Skills` table)
