@@ -292,7 +292,7 @@ If there is ANY ambiguity in the user's response, ask again. Err on the side of 
 
 ---
 
-## Phase 8: Post-Deploy
+## Phase 9: Post-Deploy
 
 Tell the user:
 - The production URL (and custom domain if configured)
