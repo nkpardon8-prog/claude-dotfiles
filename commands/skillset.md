@@ -143,7 +143,7 @@ Write `./SKILLSET.md` using this template, populated with scan results:
 - **Excluded skills**: Require explicit permission to reference. Claude may ask "Would [excluded-skill] be useful here?" but must not use it without a yes
 ```
 
-### 2d. Create SKILLSET-LOG.md
+### 2e. Create SKILLSET-LOG.md
 
 Write `./SKILLSET-LOG.md` using this template:
 
