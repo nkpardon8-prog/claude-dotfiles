@@ -117,6 +117,14 @@ State where every price comes from. "Profile rate," "web-sourced (Home Depot, Ma
 - Adjust for: project complexity, site conditions, prevailing wage requirements, overtime expectations, crew productivity factors
 - Labor = quantity x hours-per-unit x hourly rate. Show the math.
 
+**Price categories the way they're actually bid in the real world:**
+
+- **MEP (mechanical, electrical, plumbing)** — Price as systems, not individual pieces. Don't count every fitting and elbow in the plumbing — price the rough-in as a system cost because that's how subs actually bid it. An RTU swap is a package price (equipment + rigging + startup), not a parts list.
+- **Finishes (flooring, paint, tile, ceilings)** — Price granularly. Every tile type, every paint spec, every linear foot of base. This is where the money is on retail/commercial and where scope creep lives. Different products = different installed costs.
+- **General conditions (super, dumpster, barricade, temp facilities)** — Price by duration, not area. Estimate how many weeks this project takes, then price GC items as weekly rates × duration. A 1,500 SF retail remodel takes 6-8 weeks; a 10,000 SF office TI takes 12-16 weeks.
+- **Landlord-mandated subs (fire protection, fire alarm, roofing)** — These captive contractors know they're the only option. Price at a premium — they will.
+- **Tenant-supplied / GC-installed items** — The material isn't in your number but the receiving, storage, and installation labor IS. Don't miss this.
+
 ### 7. Markups
 
 Do NOT apply hardcoded default percentages. Think about what's appropriate for this specific project:
