@@ -1,3 +1,8 @@
+---
+description: "Prepare a protein target for docking — fetch from RCSB PDB, clean, add hydrogens, convert to PDBQT, detect binding site."
+argument-hint: "[PDB ID or protein name]"
+---
+
 Prepare a protein target for docking. Fetches the structure from RCSB PDB, cleans it
 (removes water, adds hydrogens, fixes missing atoms), converts to PDBQT format, and
 detects the binding site from any co-crystallized ligand.
