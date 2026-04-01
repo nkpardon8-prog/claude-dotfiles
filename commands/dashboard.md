@@ -1,3 +1,7 @@
+---
+description: "Launch the MoleCopilot Streamlit web dashboard — finds a free port, starts the server, and opens the browser."
+---
+
 Launch the MoleCopilot web dashboard. Checks for a free port, starts the Streamlit server,
 waits for it to respond, and opens the browser.
 
