@@ -1,3 +1,7 @@
+---
+description: "Full verification pipeline — build→typecheck→lint→test→security with hard gates at each step."
+---
+
 # /user:verify — Full Verification Pipeline
 
 Run a complete build→typecheck→lint→test→security verification pipeline. Hard-gates on each step — if one fails, stop and fix before continuing.
