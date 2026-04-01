@@ -67,6 +67,16 @@ python3 ~/Desktop/Projects/Plan2BidAgent/scripts/pdf_to_images.py input.pdf --cr
 3. **Section-by-section detail** — use `--grid 2x2` or `--crop` to zoom in. Count symbols methodically per section.
 4. **Tally and reconcile** — sum section counts. Compare against any schedules on the drawings.
 
+## Balancing Text and Vision
+
+Read everything as text first — it's fast and gets you schedules, specs, notes, and annotations in one pass. Then look at what you have. If schedules give you clear counts for an item, you don't need to vision-verify that particular sheet.
+
+For any sheet where you're not confident in your counts from text alone — **use vision.** Don't skip it. Missing items in an estimate is always worse than spending an extra turn on vision analysis.
+
+You don't need to grid-split every single page. But if a drawing sheet has devices, fixtures, or equipment that aren't fully captured in a schedule, vision it. **When in doubt, use vision.** It's better to over-analyze than to miss something. A few extra turns on vision is cheap compared to an inaccurate estimate.
+
+A typical 20-page plan set might need vision on 5-8 sheets — not all 20, but definitely not zero.
+
 ## 4. Cross-Check: Schedules vs. Counts
 
 When both a schedule (table) and visual counts exist for the same items (e.g., door schedule vs. doors on plan, panel schedule vs. panels on electrical), compare them. **Schedules are generally more reliable** than visual counts. Flag any discrepancy with both numbers and let the user decide.
