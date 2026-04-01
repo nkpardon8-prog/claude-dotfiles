@@ -44,6 +44,7 @@ Use these as suggestions, not rigid rules. Reason about what the user actually n
 - **"What if we used..."** or "run a scenario" → `/plan2bid:scenarios`
 - **"Are these prices right"** or "check current pricing" → `/plan2bid:price-check`
 - **"Grade this estimate"** or "how accurate is this" → `/plan2bid:grade`
+- **"Find in the docs"** or "what does the spec say about..." → `/plan2bid:rag`
 
 When a request spans multiple skills, chain them. For example: "estimate this and export to Excel" → `/plan2bid:run` then `/plan2bid:excel`.
 
