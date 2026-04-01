@@ -32,6 +32,21 @@ Request: $ARGUMENTS
 
 This is the general shape of a good estimate. Adapt it.
 
+### 0. Project Classification
+
+Before you read a single document in detail, pattern-match the project type. What you're looking at drives everything — how you read the documents, what to look for, how to price, and what the common gotchas are.
+
+Ask yourself: Is this a branded retail rollout? Office TI? Restaurant buildout? Medical? Ground-up? Renovation? The type tells you a lot before you count a single item.
+
+Signs to look for:
+- Corporate program indicators (standardized layouts, brand design codes, fixture catalogs) → scope is highly defined, site conditions are the wildcard
+- Renovation vs new construction → existing conditions drive complexity and cost
+- Tenant vs landlord scope split → look for a responsibility schedule
+- Mall/outlet/strip center → landlord-mandated subs, access restrictions, after-hours work
+- Multi-location rollout → the client has done this before, there's a playbook, price accordingly
+
+This classification step takes 30 seconds and saves you from pricing a gut reno as a cosmetic refresh or vice versa.
+
 ### 1. Intake
 
 Gather what you need to start:
