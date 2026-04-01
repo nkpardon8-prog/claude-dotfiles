@@ -1,5 +1,5 @@
 ---
-description: "Interactive discussion about a topic or approach. Researches codebase, talks through options."
+description: Have an interactive discussion about a topic, approach, or feature. Researches the codebase as needed, talks through options, and updates ./tmp/context.md with decisions. Use when you want to think through an approach before planning.
 argument-hint: "[topic or question to discuss]"
 ---
 

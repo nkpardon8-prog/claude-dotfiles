@@ -1,5 +1,5 @@
 ---
-description: "Industry skill registry manager — loads SKILLSET.md, scans skills, enforces isolation rules."
+description: Session initializer and skill registry manager for industry-specific projects. Creates or loads SKILLSET.md + SKILLSET-LOG.md, dynamically scans available skills, enforces cross-industry isolation rules. Use at the start of any industry skill-building session.
 argument-hint: "[optional: industry name for first-run, e.g. 'construction']"
 ---
 

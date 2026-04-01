@@ -1,8 +1,3 @@
----
-description: "Test-driven development workflow — enforces RED→GREEN→REFACTOR cycle for implementing a feature or fix."
-argument-hint: "[feature or fix description]"
----
-
 # /user:tdd — Test-Driven Development Workflow
 
 Enforce a RED→GREEN→REFACTOR cycle for implementing a feature or fix.

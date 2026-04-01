@@ -1,8 +1,3 @@
----
-description: "Scaffold three-tier project documentation (hot/warm/cold). Run before new projects or adding docs."
-argument-hint: "[project name or directory]"
----
-
 # /user:architect — Interactive Project Documentation Scaffolding
 
 Scaffold a structured documentation web for a project. This is designed to be run BEFORE starting a new project or when adding documentation to an existing one.

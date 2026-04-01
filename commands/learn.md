@@ -1,7 +1,3 @@
----
-description: "Extract behavioral patterns from this session and save to global patterns directory."
----
-
 # /user:learn — Extract Behavioral Patterns
 
 Extract reusable behavioral patterns from the current session and save them to the global patterns directory. Run this at the end of a productive session.

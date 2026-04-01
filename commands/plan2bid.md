@@ -1,5 +1,5 @@
 ---
-description: "Construction estimation orchestrator — takeoffs, bids, pricing, scope, blueprints. Routes to sub-skills."
+description: Construction estimation orchestrator — handles takeoffs, bids, plans, blueprints, pricing, cost estimation, material pricing, labor estimation, scope analysis, bid comparison, construction documents, drawings, specs, Plan2Bid workflows, and anything construction-related. Routes to specialized sub-skills or answers directly.
 argument-hint: "[anything about construction estimation, bids, plans, or pricing]"
 ---
 

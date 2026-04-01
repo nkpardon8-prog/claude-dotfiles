@@ -1,5 +1,5 @@
 ---
-description: "One-shot Netlify deployment — researches docs + codebase, then deploys via Netlify MCP."
+description: One-shot Netlify deployment — deeply researches Netlify docs AND the codebase in parallel, synthesizes a deployment strategy, then deploys via the Netlify MCP. Works on any project.
 argument-hint: "[optional: specific instructions like 'preview only' or 'use Supabase']"
 ---
 
