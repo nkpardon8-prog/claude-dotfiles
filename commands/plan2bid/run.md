@@ -90,6 +90,8 @@ Apply the document hierarchy when resolving conflicts: SOW > Specs > Addenda > D
 
 Produce clear IN SCOPE / OUT OF SCOPE lists per trade. Every exclusion should be explicit — never silently omit something.
 
+**Look for a responsibility schedule or supply/install matrix.** On retail, corporate, and multi-location projects, the tenant often supplies a massive amount (millwork, lighting, fixtures, monitors, POS equipment) while the GC receives, stores, and installs everything. That install labor is real cost even though the material isn't in your number. If you find a responsibility schedule, it's the estimator's cheat sheet — it tells you who supplies and who installs every single item.
+
 ### 5. Material Takeoff
 
 This is where construction knowledge matters most.
