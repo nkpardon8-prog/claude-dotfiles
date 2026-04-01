@@ -44,6 +44,33 @@ For structured tables embedded in PDFs, use pdfplumber:
 python3 -c "import pdfplumber; pdf = pdfplumber.open('file.pdf'); [print(t) for p in pdf.pages for t in p.extract_tables()]"
 ```
 
+## Reading Large PDFs
+
+The Read tool can only read 20 pages per PDF call. For any document over 18 pages, you MUST read in batches. Missing half a document because you only read the first 20 pages will produce an incomplete estimate — this is how entire MEP scopes get missed.
+
+**Before reading any PDF, check the page count:**
+```bash
+source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python3 -c "import pdfplumber; pdf = pdfplumber.open('FILE.pdf'); print(f'Total pages: {len(pdf.pages)}')"
+```
+
+**Batch strategy — 18 pages per batch:**
+- Pages 1-18, then 19-36, then 37-54, etc.
+- 18-page batches give a 2-page buffer under the 20-page limit
+
+**After each batch, save what you found to files in the project's analysis directory.** Create an `analysis/` folder alongside the uploaded files and write your findings there:
+
+- `analysis/doc-manifest.md` — Document index: what sheets exist, classifications, page ranges
+- `analysis/batch-N-findings.md` — Raw findings from each batch: schedules, counts, scope items, notes
+- `analysis/schedules.md` — All extracted schedule data consolidated (panel schedules, fixture schedules, equipment schedules)
+- `analysis/scope-items.md` — Running IN/OUT scope list, updated after each batch
+- `analysis/takeoff-counts.md` — Accumulated material and device counts with provenance
+
+This serves two purposes:
+1. **Preserves context** — raw page text can scroll out of your context window, but extracted findings persist in files you can re-read
+2. **Reusable across runs** — if the user re-runs the estimate or asks follow-up questions, the analysis files are already there. Check for existing analysis before re-reading everything.
+
+When all batches are complete, you have the full picture across all pages, organized by what you found rather than by page number.
+
 ## 3. Drawing Sheets — Vision Mode
 
 When you need to read drawings, count symbols, or understand spatial layout, convert to images and use vision.
