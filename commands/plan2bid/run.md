@@ -60,14 +60,16 @@ If the user gives you everything upfront, acknowledge and move. If critical info
 
 ### 2. Document Analysis
 
+**First: check page counts.** Before reading any PDF, find out how many pages it has. The Read tool can only process 20 pages per call. Documents over 18 pages need multiple Read passes in 18-page batches (pages 1-18, 19-36, 37-54, etc.). Don't start pricing until you've read the ENTIRE document set — missing the MEP sheets on a 40-page set because you only read the first 20 pages will produce an incomplete estimate.
+
+Save your findings from each batch to `analysis/` files in the project upload directory. These persist and can be re-read later without re-processing the entire document.
+
 Use `/plan2bid:doc-reader` (Skill tool) on uploaded documents. Get back:
 - Document manifest (what you have, classified)
 - Extracted schedules and tables
 - Scope summary by trade
 - Cross-references and conflicts
 - Confidence notes on anything uncertain
-
-For large document sets, process in batches. Summarize findings as you go and save intermediate results to files to preserve context.
 
 ### 3. Clarifying Questions
 
