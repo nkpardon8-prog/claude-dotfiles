@@ -1,3 +1,8 @@
+---
+description: "Run a virtual screening campaign — screen a compound library against a protein target and report top hits."
+argument-hint: "[compound library or search query + protein target PDB ID]"
+---
+
 Run a virtual screening campaign. Parse the user's request to identify:
 1. The compound library or search query
 2. The protein target (PDB ID or name)
