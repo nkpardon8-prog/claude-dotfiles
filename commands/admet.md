@@ -1,3 +1,8 @@
+---
+description: "Run ADMET/drug-likeness analysis on a compound — accepts name, SMILES, or PubChem CID. Uses MoleCopilot MCP tools."
+argument-hint: "[compound name, SMILES string, or PubChem CID]"
+---
+
 Run ADMET/drug-likeness analysis on a compound. Accepts a compound name, SMILES string, or PubChem CID.
 
 Use MoleCopilot MCP tools:
