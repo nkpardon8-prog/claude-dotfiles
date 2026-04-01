@@ -1,3 +1,8 @@
+---
+description: "Create a named git checkpoint (tag) to mark a known-good state. Use before risky changes or major refactors."
+argument-hint: "[checkpoint name, e.g. pre-refactor, working-auth]"
+---
+
 # /user:checkpoint — Named Git Snapshot
 
 Create a named checkpoint (git tag) to mark a known-good state. Useful before risky changes, integration work, or major refactors.
