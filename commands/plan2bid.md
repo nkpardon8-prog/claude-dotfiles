@@ -27,6 +27,7 @@ These are the specialized sub-skills available. Each handles a specific part of 
 | `/plan2bid:price-check` | Verify pricing against current market via web research |
 | `/plan2bid:reverse-engineer` | Extract methodology and assumptions from a human estimate |
 | `/plan2bid:pricing-profile` | Manage the user's rates, vendors, markups, and preferences |
+| `/plan2bid:rag` | Semantic search across project documents (RAG for large doc sets) |
 
 ## Routing Guidelines
 
