@@ -15,6 +15,7 @@ Request: $ARGUMENTS
 - `/plan2bid:doc-reader` — Classify and analyze construction documents, extract schedules, read drawings via vision
 - `/plan2bid:scope` — IN/OUT scope boundary analysis per trade
 - `/research-web` — Current material pricing, vendor lookups, regional cost data
+- `/plan2bid:rag` — Semantic search across project documents. Returns relevant chunks with source citations. Tends to be helpful on large document sets (100+ pages), for finding specific spec clauses or schedules, and for answering follow-up questions after an estimate is complete.
 
 **Agent tool** — Spawn trade-specific sub-agents for multi-trade projects. Sub-agents cannot use the Skill tool, so pass them everything they need inline (document summaries, scope lists, pricing data, instructions).
 
