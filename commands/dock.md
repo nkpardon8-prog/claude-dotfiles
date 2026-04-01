@@ -1,3 +1,8 @@
+---
+description: "Run a molecular docking job — identifies compound, protein target, and parameters, then executes via MoleCopilot."
+argument-hint: "[compound name/SMILES + protein target PDB ID]"
+---
+
 Run a molecular docking job. Parse the user's request to identify:
 1. The compound to dock (name, SMILES, or CID)
 2. The protein target (PDB ID or name)
