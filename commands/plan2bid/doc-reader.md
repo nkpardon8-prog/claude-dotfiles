@@ -93,3 +93,5 @@ Present findings organized for estimation:
 Estimation workflow guidelines: `~/Desktop/Projects/Plan2BidAgent/guidelines/estimation-workflow.md`
 
 Consult this for how extracted data feeds into the broader estimation pipeline.
+
+For large document sets, you can also use `/plan2bid:rag` to semantically search for specific sections or cross-reference across documents.
