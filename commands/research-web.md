@@ -1,5 +1,5 @@
 ---
-description: Conducts extensive web research on technical topics with validated references and citations. Use when you need external documentation, library comparisons, or best practices research.
+description: "Web research on technical topics with validated references. For docs, comparisons, best practices."
 argument-hint: "[technical topic or question]"
 ---
 

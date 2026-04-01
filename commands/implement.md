@@ -1,5 +1,5 @@
 ---
-description: Executes an approved plan by breaking work into parallelizable chunks and spawning implementation sub-agents. Automatically reviews the result for completeness. Use after a plan is approved.
+description: "Execute an approved plan — breaks into parallel chunks, spawns sub-agents, reviews result."
 argument-hint: "[plan file path]"
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: Investigates bugs through hypothesis-driven root cause analysis. Automatically invoked when the user reports a bug, error, broken behavior, or something not working as expected. Use when something is broken, failing, or behaving unexpectedly.
+description: "Hypothesis-driven bug investigation and root cause analysis. Auto-invoked on bug reports."
 argument-hint: "[bug description, error message, or unexpected behavior]"
 ---
 

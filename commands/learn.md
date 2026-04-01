@@ -1,5 +1,5 @@
 ---
-description: "Extract reusable behavioral patterns from the current session and save to the global patterns directory. Run at the end of a productive session."
+description: "Extract behavioral patterns from this session and save to global patterns directory."
 ---
 
 # /user:learn — Extract Behavioral Patterns

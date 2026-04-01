@@ -1,5 +1,5 @@
 ---
-description: "Interactive project documentation scaffolding — three-tier doc architecture (hot/warm/cold). Run before starting a new project or adding docs to an existing one."
+description: "Scaffold three-tier project documentation (hot/warm/cold). Run before new projects or adding docs."
 argument-hint: "[project name or directory]"
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: Quick gut-check before implementing when the user directly asks you to do something (e.g. "add X", "fix Y", "change Z"). Investigates, proposes a lightweight plan, and implements after approval. Use this instead of /plan when the user wants something done, not a formal plan.
+description: "Quick gut-check plan before implementing. Use instead of /plan for direct requests."
 argument-hint: "[what the user wants done]"
 allowed-tools: Read, Grep, Glob, WebFetch
 ---

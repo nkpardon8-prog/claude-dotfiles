@@ -1,5 +1,5 @@
 ---
-description: Conductor skill for designing and building one new industry-specific command at a time. Loads SKILLSET.md context, reads base skill source files for orchestration design, asks targeted questions, saves a brief for /plan. Use after /skillset to build individual skills within an industry workflow.
+description: "Build one industry-specific command — loads SKILLSET.md, asks questions, saves a brief for /plan."
 argument-hint: "[skill name and/or description, e.g. 'estimate-job generates cost estimates from project specs']"
 ---
 

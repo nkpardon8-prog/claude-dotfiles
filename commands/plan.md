@@ -1,5 +1,5 @@
 ---
-description: Creates an implementation plan with thorough codebase and web research. Auto-reviews the plan after creation and iterates with user feedback. Use when planning a new feature or significant change.
+description: "Create an implementation plan with codebase and web research. Auto-reviews and iterates."
 argument-hint: "[feature description or ticket reference]"
 allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Task
 ---
