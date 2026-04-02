@@ -112,7 +112,11 @@ Apollo searches cost ~1 credit per enriched contact. Always:
 5. Credits don't roll over — gate reveals behind intent signals when possible
 6. Tier your ICP — reveal Tier 1 (best-fit) contacts before spending on Tier 2-3
 
-## Rule 6: Email Quality
+## Rule 6: Default Template
+
+There is a default outreach email template stored in memory (`default_email_template.md`). When the user asks to send an email or create a campaign **without specifying content**, ask: **"Want me to use your default template?"** before applying it. Never use it silently. Replace `{{firstName}}` with the lead's actual first name.
+
+## Rule 7: Email Quality
 
 When composing emails:
 - Write professional, concise copy — **50-75 words** is the sweet spot (12% response vs 2% for 200+ words)
