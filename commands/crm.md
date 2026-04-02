@@ -142,7 +142,7 @@ When working with leads, use statuses meaningfully:
 
 Suggest status updates when context warrants it (e.g. after sending an email, suggest moving from cold to lukewarm).
 
-## Rule 8: Industry Intelligence
+## Rule 9: Industry Intelligence
 
 When recommending industries to target or crafting outreach for a vertical, reference this data (from 2026 research). For deeper dives, check `~/.claude/skills/skillset/tmp/research/2026-04-01-skillset-connect-crm.md` or run fresh web research.
 
