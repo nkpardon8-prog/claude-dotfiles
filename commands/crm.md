@@ -138,6 +138,22 @@ When working with leads, use statuses meaningfully:
 
 Suggest status updates when context warrants it (e.g. after sending an email, suggest moving from cold to lukewarm).
 
+## Rule 8: Industry Intelligence
+
+When recommending industries to target or crafting outreach for a vertical, reference this data (from 2026 research). For deeper dives, check `~/.claude/skills/skillset/tmp/research/2026-04-01-skillset-connect-crm.md` or run fresh web research.
+
+**Top verticals by reply rate:**
+1. Legal (~10%) — target managing partners, heads of BD. 3-touch max. LinkedIn InMail 18-25% reply.
+2. Consulting (7.88%) — target founders, principals. Peer reference framing works best.
+3. Healthcare (7.49%) — target VP Ops, practice admins. Compliance/operational framing.
+4. SaaS (7.42%) — target VP Sales, RevOps. Toolstack-specific hooks. Inbox saturated — must be sharp.
+5. Financial Services (6.72%) — target agency owners, VPs. ROI-quantified, compliance-aware.
+6. Recruiting/Staffing (6-8%) — target agency owners. Speed framing. Phone + email essential.
+7. Manufacturing (7-10%) — target VP Sales, national sales managers. Data-oriented, long cycles.
+8. Real Estate (5-7%) — target brokers/owners. Hyper-local personalization required.
+9. Construction (5-7%) — target GCs, project execs. Project-trigger outreach. Phone essential.
+10. E-commerce (6%+) — target Dir. Ops, VP Marketing. Conversion metrics framing.
+
 ## Execution
 
 Now handle the user's request following all rules above. Be direct — don't recite the rules back. Just apply them.
