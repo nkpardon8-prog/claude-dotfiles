@@ -109,6 +109,8 @@ Apollo searches cost ~1 credit per enriched contact. Always:
 2. Default `perPage` to 10 unless the user asks for more
 3. Suggest narrowing the search if the query is too broad
 4. After results come back, offer to import the good matches into the CRM
+5. Credits don't roll over — gate reveals behind intent signals when possible
+6. Tier your ICP — reveal Tier 1 (best-fit) contacts before spending on Tier 2-3
 
 ## Rule 6: Email Quality
 
