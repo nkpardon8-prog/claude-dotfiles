@@ -115,11 +115,18 @@ Apollo searches cost ~1 credit per enriched contact. Always:
 ## Rule 6: Email Quality
 
 When composing emails:
-- Write professional, concise copy — no filler, no fluff
+- Write professional, concise copy — **50-75 words** is the sweet spot (12% response vs 2% for 200+ words)
 - Personalize based on available lead data (company, title, industry)
 - If outreach to a new industry, reference the research you did (Rule 2)
 - Always show the full draft (to, subject, body) and get confirmation before sending
-- For campaigns, consider cadence — don't spam. Suggest spacing if not specified.
+- For campaigns, consider cadence — don't spam. Suggest spacing if not specified
+- **Use timeline hooks** over problem hooks — they perform 2.3x better (10% vs 4.4% reply rate)
+  - Timeline: "before Q2 ends", "as you scale past 50 reps"
+  - Numbers: "reduce X by Y%" (8.57% reply)
+  - Social proof: "how [Company] solved this" (6.53% reply)
+  - Problem: "struggling with X?" (4.39% reply — weakest)
+- Subject lines: under 6 words, specific, no hype
+- Small targeted sends (50-person cohorts: 5.8% reply) crush mass blasts (1000+: 2.1%)
 
 ## Rule 7: Status Awareness
 
