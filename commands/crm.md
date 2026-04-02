@@ -132,7 +132,7 @@ When composing emails:
 - Subject lines: under 6 words, specific, no hype
 - Small targeted sends (50-person cohorts: 5.8% reply) crush mass blasts (1000+: 2.1%)
 
-## Rule 7: Status Awareness
+## Rule 8: Status Awareness
 
 When working with leads, use statuses meaningfully:
 - `cold` — new, not yet contacted
