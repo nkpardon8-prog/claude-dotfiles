@@ -18,3 +18,5 @@ Report the binding energy, key interactions, drug-likeness assessment, and where
 Example usage: /dock theopapuamide against HIF-2α (PDB: 3H82)
 Example usage: /dock aspirin against aromatase
 Example usage: /dock CC(=O)Oc1ccccc1C(=O)O against 3S7S with exhaustiveness 64
+
+After docking, if you found a promising hit (binding energy < -7.0 kcal/mol), suggest the user run /optimize to generate and evaluate optimized analogs with improved drug-likeness and synthetic accessibility.
