@@ -20,3 +20,5 @@ Report progress as you go. At the end, provide:
 
 Example usage: /screen marine depsipeptides against HIF-2α
 Example usage: /screen "aromatase inhibitors" against 3S7S top 20
+
+After screening, suggest the user run /optimize on the top hit(s) to generate optimized analogs with improved drug-likeness and synthetic accessibility.
