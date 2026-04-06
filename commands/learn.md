@@ -64,7 +64,7 @@ Update `~/.claude/patterns/INDEX.md` with the new or updated entry:
 After saving all patterns, sync the dotfiles repo:
 
 ```bash
-cd ~/dotfiles/claude && git add -A && git commit -m "learn: [summary of patterns] ([domain], confidence [score])" && git push
+cd ~/.claude-dotfiles && git add -A && git commit -m "learn: [summary of patterns] ([domain], confidence [score])" && git push
 ```
 
 This is an auto-push to the dotfiles repo — no user approval needed (per global CLAUDE.md push rules).

@@ -118,5 +118,5 @@ Show the tree of created files with line counts. Tell the user:
 
 If this command created or modified any files in `~/.claude/` (rules, etc.):
 ```bash
-cd ~/dotfiles/claude && git add -A && git commit -m "architect: add rules for [project-name]" && git push
+cd ~/.claude-dotfiles && git add -A && git commit -m "architect: add rules for [project-name]" && git push
 ```

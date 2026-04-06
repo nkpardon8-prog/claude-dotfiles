@@ -1,9 +1,9 @@
 #!/bin/bash
 # Auto-sync claude dotfiles to GitHub
-# Called by PostToolUse hook when files in ~/dotfiles/claude/ are modified
+# Called by PostToolUse hook when files in ~/.claude-dotfiles/ are modified
 # and by /user:learn after saving patterns
 
-DOTFILES_DIR="$HOME/dotfiles/claude"
+DOTFILES_DIR="$HOME/.claude-dotfiles"
 
 cd "$DOTFILES_DIR" || exit 0
 

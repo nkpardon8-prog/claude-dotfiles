@@ -237,7 +237,7 @@ Then proceed to Step 4.
 ### 4a. Scan All Skills
 
 ```bash
-Glob ~/dotfiles/claude/commands/**/*.md
+Glob ~/.claude-dotfiles/commands/**/*.md
 ```
 
 For each file found:
@@ -381,7 +381,7 @@ Ready to work. What are we building?
 ## Notes
 
 - `SKILLSET.md` lives in the **project working directory** (not `~/.claude/`). It is the source of truth for this project's skill context and should be git-tracked.
-- The dynamic scan always uses `~/dotfiles/claude/commands/` as the source for available skills.
+- The dynamic scan always uses `~/.claude-dotfiles/commands/` as the source for available skills.
 - On resume, preserve all user-written sections (`Industry Context`, `Industry Skills`, `Other Industry Skills`, `Isolation Rules`). Only the `Base Skills` and `Excluded Skills` tables are machine-managed.
 - If both files are perfectly up to date and no new skills are detected, the command simply loads context and updates the log — minimal output, fast resume.
 - Industry research is saved to `./tmp/research/` and summarized in the `## Tools & Resources` section of SKILLSET.md. If research fails, the command proceeds without it — research never blocks the core workflow.

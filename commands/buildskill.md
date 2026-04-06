@@ -205,7 +205,7 @@ If more than 4 seem relevant, note the extras — they'll be listed in the brief
 
 ### 4b. Read Source Files (max 3-4)
 
-For each of the top 3-4 relevant base skills, read its actual source file at `~/dotfiles/claude/commands/[path].md`.
+For each of the top 3-4 relevant base skills, read its actual source file at `~/.claude-dotfiles/commands/[path].md`.
 
 Extract from each:
 - What it expects as input (arguments, files, context)
@@ -308,7 +308,7 @@ Create the `./tmp/briefs/` directory if it doesn't exist.
 
 ## Skill Specification
 - **Name**: /[name]
-- **File**: ~/dotfiles/claude/commands/[name].md (or subdirectory if appropriate)
+- **File**: ~/.claude-dotfiles/commands/[name].md (or subdirectory if appropriate)
 - **Description**: [one-line for frontmatter description field]
 - **Argument hint**: [what $ARGUMENTS expects]
 - **Trigger**: [when would someone run this]
