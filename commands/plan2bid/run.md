@@ -142,15 +142,11 @@ If the user's profile has markups, use those. Otherwise, propose percentages wit
 
 ### 8. Output
 
-**In chat:** Present the complete estimate in a clear, readable format. Organize by trade, then by category within each trade. Show subtotals, markups, and grand total. Include your confidence notes and assumptions.
+**To file:** Save the structured estimate as JSON to `./estimate_output.json`. If a JSON schema was provided in the system prompt, follow it precisely. If no schema was provided, use a reasonable structured format with line items grouped by trade.
 
-**To file:** Save the structured estimate as JSON to `tmp/estimate-{project-name}.json` (or similar). This file is the handoff point for `/plan2bid:excel` and `/plan2bid:pdf`.
+**In chat:** Present a brief summary of the estimate — total cost, number of line items, key trades, and any warnings or low-confidence items.
 
-**Offer next steps:**
-- `/plan2bid:excel` — export to styled Excel workbook
-- `/plan2bid:pdf` — export to GC-ready PDF
-- `/plan2bid:scenarios` — run what-if variants
-- `/plan2bid:price-check` — verify pricing against current market
+Do NOT offer next steps like `/plan2bid:excel` or `/plan2bid:pdf`.
 
 ## Multi-Trade Projects
 
