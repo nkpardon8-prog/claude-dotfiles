@@ -52,16 +52,23 @@ WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 - Check for branch diff or uncommitted changes (below). Use Codex review engine.
 - Append "Focus especially on files in [directory]" to each Claude agent prompt.
 
-**If no file/dir argument, check git state:**
+**If `$ARGUMENTS` is a description/question that relates to code** (e.g., "review the auth system", "check the API routes", "find bugs in the database layer"):
+- → MODE="describe" — use Codex exec to review based on the description
+- Engine: Codex exec with the description as the prompt (it has read-only repo access)
+
+**If no file/dir argument and no code-related description, check git state:**
 1. `git diff $BASE_BRANCH...HEAD --stat` has content → MODE="branch"
 2. `git status --short` shows changes → MODE="uncommitted"
-3. No diff, no changes, no file → NOT a code target
+3. No diff, no changes, no file, no code description → check conversation context
+   - If the conversation involves code/files → MODE="describe" (use Codex exec with context summary as prompt)
+   - If clearly non-code (plan, idea, conceptual question) → Claude-only
 
 **Engine selection:**
 - MODE="branch" → **Codex review engine** (`codex review --base $BASE_BRANCH`)
 - MODE="uncommitted" → **Codex review engine** (`codex review --uncommitted`)
 - MODE="file" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C $WORKDIR`)
-- NOT a code target (plan, idea, question, debugging concept) → **Claude-only engine** (skip to Step 4)
+- MODE="describe" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C $WORKDIR "[description]"`)
+- Clearly non-code (plan, idea, conceptual) → **Claude-only engine** (skip to Step 4)
 
 ---
 
@@ -105,6 +112,24 @@ timeout: 120000
 **Bash 2 (Codex Run B):**
 ```bash
 codex exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+```
+timeout: 120000
+
+**For MODE="describe":**
+
+Codex exec with the user's description as the prompt. It has read-only access to the full repo so it can find and review the relevant code itself.
+
+Spawn BOTH Bash calls in a SINGLE message (parallel execution):
+
+**Bash 1 (Codex Run A):**
+```bash
+codex exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+```
+timeout: 120000
+
+**Bash 2 (Codex Run B):**
+```bash
+codex exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
 ```
 timeout: 120000
 
