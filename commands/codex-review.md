@@ -263,25 +263,82 @@ Review the findings:
 
 ---
 
-## Step 6: Consolidate and Output
+## Step 6: Codex Verification Pass (Code Targets Only)
 
-### 6a. Collect
-Gather all findings: Codex Run A, Codex Run B, Claude Depth, Claude Breadth, Claude Adversary, Claude Gaps, Claude Meta-Review.
+After the meta-review, run one final Codex exec call to verify the consolidated findings. This is quality control — Codex (GPT-5.4) independently validates what the entire pipeline produced.
 
-### 6b. Deduplicate
+**Skip this step for non-code targets (Claude-only engine).**
+
+### 6a. Build the verification prompt
+
+Construct a prompt that includes:
+- The draft consolidated findings list (all findings from Steps 3-5, after dedup and confidence mapping)
+- A summary of the code being reviewed (file paths, what changed, key context)
+
+The prompt should instruct Codex to:
+1. **Validate each finding** — Is it a real issue or a false positive? Mark each as CONFIRMED, FALSE_POSITIVE, or UNCERTAIN.
+2. **Check severity** — Is each finding rated correctly? Flag any that should be upgraded or downgraded.
+3. **Final sweep** — With all these findings as context, is there anything obvious that every prior reviewer missed?
+
+### 6b. Run verification
+
+```bash
+codex exec -o /tmp/codex-verify.txt --ephemeral -s read-only -C $WORKDIR "You are a code review verifier. Here are findings from a multi-agent review of this codebase:
+
+[PASTE CONSOLIDATED FINDINGS LIST]
+
+For each finding:
+1. Verify it against the actual code. Mark as CONFIRMED (real issue), FALSE_POSITIVE (not actually a problem), or UNCERTAIN (needs human judgment).
+2. If the severity is wrong, note what it should be.
+
+Then do one final sweep: with all these findings as context, is there anything obvious that was missed entirely? List any new findings with CRITICAL/IMPORTANT/MINOR and a category tag.
+
+Be ruthless about false positives. Only CONFIRM findings you can verify in the code."
+```
+timeout: 120000
+
+### 6c. Process verification results
+
+Read `/tmp/codex-verify.txt` and apply:
+
+- **FALSE_POSITIVE findings** → remove from the report entirely. Note count in Meta-Review Notes: "Verification removed X false positives."
+- **CONFIRMED findings** → boost confidence by one level (investigate→likely, likely→definite). Tag with "(verified)".
+- **UNCERTAIN findings** → keep as-is, tag with "(unverified)"
+- **New findings from final sweep** → add to report tagged "(codex/verify)", map CRITICAL/IMPORTANT/MINOR to definite/likely/investigate
+- **Severity adjustments** → apply them
+
+### 6d. Handle verification failure
+
+- If the verification call fails or times out: skip it, proceed with unverified findings. Note in Meta-Review: "Verification pass unavailable."
+- Do NOT block the report on a failed verification.
+
+### 7e. Cleanup verification temp file
+
+```bash
+rm -f /tmp/codex-verify.txt
+```
+
+---
+
+## Step 7: Consolidate and Output
+
+### 7a. Collect
+Gather all findings: Codex Run A, Codex Run B, Claude Depth, Claude Breadth, Claude Adversary, Claude Gaps, Claude Meta-Review, and Codex Verification (if available).
+
+### 7b. Deduplicate
 Same root cause across sources → merge into one finding. Note which sources found it:
 - "(codex-a + codex-b)" — both Codex passes found it (high confidence)
 - "(codex-a + claude/depth)" — cross-model agreement (very high confidence)
 - "(claude/depth + claude/adversary)" — multi-lens agreement
 - "(claude/meta)" — found only by meta-review
 
-### 6c. Promote Confidence
+### 7c. Promote Confidence
 Multiple independent sources finding the same issue upgrades confidence:
 - `[investigate]` found by 2+ sources → `[likely]`
 - `[likely]` found by 2+ sources → `[definite]`
 - Cross-model agreement (Codex + Claude) → automatic upgrade by one level
 
-### 6d. Map to Sections
+### 7d. Map to Sections
 
 | Confidence | Category | → Section |
 |------------|----------|-----------|
@@ -294,19 +351,19 @@ Multiple independent sources finding the same issue upgrades confidence:
 
 MISSING, ASSUMPTION, and CONTRADICTION are cross-cutting — they go to their dedicated sections regardless of confidence. If a finding is both `[definite]` and `ASSUMPTION`, it goes in Assumptions.
 
-### 6e. Cleanup
+### 7e. Cleanup
 
 ```bash
-rm -f /tmp/codex-review-a.txt /tmp/codex-review-b.txt
+rm -f /tmp/codex-review-a.txt /tmp/codex-review-b.txt /tmp/codex-verify.txt
 ```
 
-### 6f. Output the Final Report
+### 7f. Output the Final Report
 
 Output this directly to the conversation (not to a file):
 
 ```markdown
 # Codex Review: [target summary]
-Engine: 2x Codex (GPT-5.4) + 4x Claude | Sources: [X] findings from [Y] sources
+Engine: 2x Codex (GPT-5.4) + 4x Claude + Codex Verification | Verified: [Y/N]
 
 ## Critical [must fix]
 - [ ] [definite] Finding — file:line — explanation (codex-a + codex-b + claude/depth)
@@ -333,4 +390,5 @@ Engine: 2x Codex (GPT-5.4) + 4x Claude | Sources: [X] findings from [Y] sources
 **Rules:**
 - Omit any section that has zero findings
 - Within each section, sort by specificity (findings with file:line references first, then cross-model findings, then single-source findings)
-- If the review found nothing significant: "Clean review — no significant findings across 2 Codex passes and 4 Claude agents."
+- Verified findings should be marked with "(verified)" suffix
+- If the review found nothing significant: "Clean review — no significant findings across 2 Codex passes, 4 Claude agents, and Codex verification."
