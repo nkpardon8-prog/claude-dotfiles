@@ -9,14 +9,18 @@ Save the current estimate to the Plan2Bid database. This skill writes structured
 
 ## Steps
 
-1. Verify `./estimate_output.json` exists in the current working directory
-2. Run the save script:
+1. Verify `./estimate_output.json` exists in the current working directory. Resolve it to an absolute path.
+2. Find the worker directory. Check these paths in order and use the first one that exists:
+   - `$WORKER_DIR` environment variable (if set)
+   - `~/plan2bid-worker`
+   - `~/Desktop/CODEBASES/estim8r/plan2bid-worker`
+3. Run the save script:
 
 ```bash
-python ~/Desktop/CODEBASES/estim8r/plan2bid-worker/save_estimate.py --input ./estimate_output.json --project-id $ARGUMENTS
+cd {worker_dir} && python save_estimate.py --input {absolute path to estimate_output.json} --project-id $ARGUMENTS
 ```
 
-3. Check the output for success or errors
-4. Report the result: total estimate amount, number of line items, trades processed
+4. Check the output for success or errors
+5. Report the result: total estimate amount, number of line items, trades processed
 
 If the script fails, read the error output and report it. Do not attempt to fix the JSON or retry — the estimation data must be preserved as-is.

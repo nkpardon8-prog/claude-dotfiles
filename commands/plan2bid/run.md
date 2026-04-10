@@ -26,6 +26,8 @@ Request: $ARGUMENTS
 - `generate_excel.py` — Generate styled .xlsx from estimate data
 - `generate_pdf.py` — Generate formatted PDF from estimate data
 
+Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDFs instead of `pdf_to_images.py` for vision analysis. The Read tool can handle PDF files natively.
+
 **Guidelines** — `~/Desktop/Projects/Plan2BidAgent/guidelines/estimation-workflow.md` (load if it exists for additional methodology context)
 
 ## Suggested Workflow
@@ -142,7 +144,7 @@ If the user's profile has markups, use those. Otherwise, propose percentages wit
 
 ### 8. Output
 
-**To file:** Save the structured estimate as JSON to `./estimate_output.json`. If a JSON schema was provided in the system prompt, follow it precisely. If no schema was provided, use a reasonable structured format with line items grouped by trade.
+**To file:** Save the structured estimate as JSON. Use the absolute path of your current working directory: `{pwd}/estimate_output.json`. If a JSON schema was provided in the system prompt, follow it precisely. If no schema was provided, use a reasonable structured format with line items grouped by trade.
 
 **In chat:** Present a brief summary of the estimate — total cost, number of line items, key trades, and any warnings or low-confidence items.
 

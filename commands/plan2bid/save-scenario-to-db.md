@@ -9,15 +9,19 @@ Save the current scenario results to the Plan2Bid database.
 
 ## Steps
 
-1. Verify `./scenario_output.json` exists in the current working directory
+1. Verify `./scenario_output.json` exists in the current working directory. Resolve it to an absolute path.
 2. Parse arguments: first argument is the scenario_id, second is the project_id
-3. Run the save script:
+3. Find the worker directory. Check these paths in order and use the first one that exists:
+   - `$WORKER_DIR` environment variable (if set)
+   - `~/plan2bid-worker`
+   - `~/Desktop/CODEBASES/estim8r/plan2bid-worker`
+4. Run the save script:
 
 ```bash
-python ~/Desktop/CODEBASES/estim8r/plan2bid-worker/save_scenario.py --input ./scenario_output.json --scenario-id {first_arg} --project-id {second_arg}
+cd {worker_dir} && python save_scenario.py --input {absolute path to scenario_output.json} --scenario-id {first_arg} --project-id {second_arg}
 ```
 
-4. Check the output for success or errors
-5. Report the result
+5. Check the output for success or errors
+6. Report the result
 
 If the script fails, read the error output and report it.
