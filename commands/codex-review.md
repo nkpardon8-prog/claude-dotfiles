@@ -131,13 +131,13 @@ Spawn BOTH Bash calls in a SINGLE message (parallel execution):
 
 **Bash 1 (Codex Run A):**
 ```bash
-codex exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
 ```
 timeout: 120000
 
 **Bash 2 (Codex Run B):**
 ```bash
-codex exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
 ```
 timeout: 120000
 
