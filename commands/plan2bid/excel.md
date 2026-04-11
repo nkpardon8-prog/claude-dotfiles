@@ -31,6 +31,8 @@ Run:
 source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python ~/Desktop/Projects/Plan2BidAgent/scripts/generate_excel.py --input $FILE --output $OUTPUT
 ```
 
+Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDF files instead. The Read tool handles PDFs natively for text extraction. For vision-based analysis of drawings, read the PDF as an image file.
+
 If the script exits non-zero, show the full error output and suggest fixes.
 
 ## Return result

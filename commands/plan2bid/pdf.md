@@ -31,6 +31,8 @@ Read profile files from `~/plan2bid-profile/` (company name, logo, license, cont
 source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python ~/Desktop/Projects/Plan2BidAgent/scripts/generate_pdf.py --input $FILE --output $OUTPUT --detail $LEVEL
 ```
 
+Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDF files instead. The Read tool handles PDFs natively for text extraction. For vision-based analysis of drawings, read the PDF as an image file.
+
 Default `$OUTPUT` to `./estimate.pdf`. `$LEVEL` is `summary`, `standard`, or `detailed`.
 If the script fails, show the full error and suggest fixes.
 

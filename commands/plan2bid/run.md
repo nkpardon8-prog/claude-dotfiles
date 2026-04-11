@@ -144,7 +144,80 @@ If the user's profile has markups, use those. Otherwise, propose percentages wit
 
 ### 8. Output
 
-**To file:** Save the structured estimate as JSON. Use the absolute path of your current working directory: `{pwd}/estimate_output.json`. If a JSON schema was provided in the system prompt, follow it precisely. If no schema was provided, use a reasonable structured format with line items grouped by trade.
+**Output Format:** Save the estimate as JSON to `{pwd}/estimate_output.json` using this EXACT schema:
+
+```json
+{
+  "line_items": [
+    {
+      "item_id": "ELEC-001",
+      "trade": "electrical",
+      "description": "Install duplex receptacle",
+      "quantity": 10,
+      "unit": "EA",
+      "is_material": true,
+      "is_labor": true,
+      "spec_reference": "",
+      "model_number": "",
+      "manufacturer": "",
+      "material_description": "Duplex receptacle, 20A, ivory",
+      "notes": "",
+      "work_action": "install",
+      "line_item_type": "material_and_labor",
+      "bid_group": "",
+      "source_refs": [{"doc_filename": "E-101", "page_number": 3}],
+      "extraction_confidence": "high",
+      "unit_cost_low": 8.0,
+      "unit_cost_expected": 10.0,
+      "unit_cost_high": 12.0,
+      "extended_cost_low": 80.0,
+      "extended_cost_expected": 100.0,
+      "extended_cost_high": 120.0,
+      "material_confidence": "medium",
+      "price_sources": [{"source_name": "Home Depot Pro", "url": ""}],
+      "pricing_method": "web_search",
+      "pricing_notes": "",
+      "material_reasoning": "",
+      "crew": [{"role": "Journeyman Electrician", "count": 1}],
+      "total_labor_hours": 0.5,
+      "blended_hourly_rate": 65.0,
+      "labor_cost": 32.5,
+      "hours_low": 0.4,
+      "hours_expected": 0.5,
+      "hours_high": 0.7,
+      "cost_low": 26.0,
+      "cost_expected": 32.5,
+      "cost_high": 45.5,
+      "labor_confidence": "medium",
+      "labor_reasoning": "",
+      "site_adjustments": [],
+      "economies_of_scale_applied": false,
+      "base_hours": 0.5,
+      "adjusted_hours": 0.5,
+      "productivity_rate": "standard"
+    }
+  ],
+  "anomalies": [],
+  "site_intelligence": {},
+  "brief_data": {},
+  "warnings": [],
+  "bls_area_used": "",
+  "bls_wage_rates": {},
+  "documents_searched": 0,
+  "pages_searched": 0
+}
+```
+
+CRITICAL RULES for the output JSON:
+- `line_items` MUST be a flat array at the top level, NOT nested by trade
+- Each item MUST have `is_material: true/false` AND `is_labor: true/false` boolean flags
+- Each item MUST have a unique `item_id` string (format: TRADE_ABBREV-NNN, e.g. ELEC-001, PLMB-012)
+- Confidence values MUST be lowercase strings: "high", "medium", or "low"
+- All cost fields MUST be numbers, not formatted strings like "$1,250"
+- Include BOTH `labor_cost` AND `cost_expected` for each labor item (set to same value)
+- Items that are material-only should have `is_material: true, is_labor: false`
+- Items that are labor-only should have `is_material: false, is_labor: true`
+- Items with both should have `is_material: true, is_labor: true`
 
 **In chat:** Present a brief summary of the estimate — total cost, number of line items, key trades, and any warnings or low-confidence items.
 

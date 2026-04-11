@@ -77,6 +77,8 @@ When you need to read drawings, count symbols, or understand spatial layout, con
 
 **Conversion script:** `~/Desktop/Projects/Plan2BidAgent/scripts/pdf_to_images.py`
 
+Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDF files instead. The Read tool handles PDFs natively for text extraction. For vision-based analysis of drawings, read the PDF as an image file.
+
 ```bash
 # Convert specific pages to images
 python3 ~/Desktop/Projects/Plan2BidAgent/scripts/pdf_to_images.py input.pdf --pages 1-5 --dpi 200

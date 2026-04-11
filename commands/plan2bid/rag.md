@@ -19,6 +19,8 @@ curl -s "http://localhost:3001/api/search?projectId={ID}&q={QUERY}&n=5"
 source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python3 ~/Desktop/Projects/Plan2BidAgent/scripts/search_docs.py --project-id {ID} --query "{QUERY}" --top-n 5
 ```
 
+Note: If the Plan2BidAgent scripts directory does not exist, semantic search is not available. Use the Read tool and Grep to search documents manually.
+
 Returns JSON with results: `text`, source `filename`, `page` number, `type`, and relevance `score`.
 
 ## When this tends to be helpful
