@@ -16,10 +16,10 @@ Save the current scenario results to the Plan2Bid database.
    - `~/plan2bid-worker`
    - `~/workermacmini`
    - `~/Desktop/CODEBASES/estim8r/plan2bid-worker`
-4. Run the save script (use `python3`, not `python`):
+4. Run the save script (activate venv first, use `python3`):
 
 ```bash
-cd {worker_dir} && python3 save_scenario.py --input {absolute path to scenario_output.json} --scenario-id {first_arg} --project-id {second_arg}
+cd {worker_dir} && source .venv/bin/activate 2>/dev/null; python3 save_scenario.py --input {absolute path to scenario_output.json} --scenario-id {first_arg} --project-id {second_arg}
 ```
 
 5. Check the output for success or errors
