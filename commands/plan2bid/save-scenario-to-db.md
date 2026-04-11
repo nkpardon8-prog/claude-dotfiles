@@ -25,4 +25,9 @@ cd {worker_dir} && source .venv/bin/activate 2>/dev/null; python3 save_scenario.
 5. Check the output for success or errors
 6. Report the result
 
-If the script fails, read the error output and report it.
+If the script fails with a format error (e.g., "No line_items found"):
+1. Read save_scenario.py to understand the expected schema
+2. Reformat scenario_output.json to match — ensure `line_items` is a flat top-level array
+3. Run the save command again
+
+If it fails with a database error, report the error — do not retry.

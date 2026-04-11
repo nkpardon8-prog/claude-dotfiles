@@ -24,4 +24,9 @@ cd {worker_dir} && source .venv/bin/activate 2>/dev/null; python3 save_estimate.
 4. Check the output for success or errors
 5. Report the result: total estimate amount, number of line items, trades processed
 
-If the script fails, read the error output and report it. Do not attempt to fix the JSON or retry — the estimation data must be preserved as-is.
+If the script fails with a format error (e.g., "No line_items array found"):
+1. Read save_estimate.py to understand the expected schema
+2. Reformat estimate_output.json to match — ensure `line_items` is a flat top-level array where each item has `is_material`, `is_labor`, `trade`, `description`, `quantity` and all required pricing fields
+3. Run the save command again
+
+If the script fails with a database or connection error, report the error — do not retry.
