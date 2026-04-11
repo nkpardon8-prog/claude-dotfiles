@@ -14,11 +14,12 @@ Save the current scenario results to the Plan2Bid database.
 3. Find the worker directory. Check these paths in order and use the first one that exists:
    - `$WORKER_DIR` environment variable (if set)
    - `~/plan2bid-worker`
+   - `~/workermacmini`
    - `~/Desktop/CODEBASES/estim8r/plan2bid-worker`
-4. Run the save script:
+4. Run the save script (use `python3`, not `python`):
 
 ```bash
-cd {worker_dir} && python save_scenario.py --input {absolute path to scenario_output.json} --scenario-id {first_arg} --project-id {second_arg}
+cd {worker_dir} && python3 save_scenario.py --input {absolute path to scenario_output.json} --scenario-id {first_arg} --project-id {second_arg}
 ```
 
 5. Check the output for success or errors

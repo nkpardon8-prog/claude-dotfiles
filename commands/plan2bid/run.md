@@ -198,8 +198,21 @@ If the user's profile has markups, use those. Otherwise, propose percentages wit
     }
   ],
   "anomalies": [],
-  "site_intelligence": {},
-  "brief_data": {},
+  "site_intelligence": {
+    "item_annotations": {},
+    "project_findings": {"location": "", "facility_type": "", "project_type": ""},
+    "procurement_intel": {"labor_market": "", "key_suppliers": []},
+    "estimation_guidance": {"renovation_risk": "", "document_warning": ""}
+  },
+  "brief_data": {
+    "project_classification": "",
+    "facility_description": "",
+    "key_findings": "",
+    "scope_summary": "",
+    "document_summary": "",
+    "extraction_focus": "",
+    "generation_notes": ""
+  },
   "warnings": [],
   "bls_area_used": "",
   "bls_wage_rates": {},

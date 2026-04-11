@@ -13,11 +13,12 @@ Save the current estimate to the Plan2Bid database. This skill writes structured
 2. Find the worker directory. Check these paths in order and use the first one that exists:
    - `$WORKER_DIR` environment variable (if set)
    - `~/plan2bid-worker`
+   - `~/workermacmini`
    - `~/Desktop/CODEBASES/estim8r/plan2bid-worker`
-3. Run the save script:
+3. Run the save script (use `python3`, not `python`):
 
 ```bash
-cd {worker_dir} && python save_estimate.py --input {absolute path to estimate_output.json} --project-id $ARGUMENTS
+cd {worker_dir} && python3 save_estimate.py --input {absolute path to estimate_output.json} --project-id $ARGUMENTS
 ```
 
 4. Check the output for success or errors
