@@ -13,6 +13,29 @@ Before completing a task or pushing code, run both unit/line-level tests and end
 
 ---
 
+## FRAIM — Global Job Execution Framework
+
+FRAIM is always available via the `fraim` MCP server. It provides structured, multi-phase jobs that orchestrate work across any domain.
+
+### How FRAIM activates
+- Before acting on any user request, scan FRAIM job stubs (via `list_fraim_jobs()`) to identify if a matching job exists.
+- If a job matches, call `get_fraim_job({ job: "<job-name>" })` to load full phased instructions before doing work.
+- For skills: call `get_fraim_file({ path: "skills/<category>/<skill-name>.md" })`.
+- For rules: call `get_fraim_file({ path: "rules/<category>/<rule-name>.md" })`.
+- Job stubs are for discovery only — never execute from stub content alone.
+
+### When a project has a `fraim/` directory
+If the current repo has a `fraim/` directory with local stubs, use those for faster discovery. The `personalized-employee/` subdirectory contains repo-specific overrides that take precedence over the synced baseline.
+
+### When a project does NOT have a `fraim/` directory
+FRAIM still works — use `list_fraim_jobs()` and `get_fraim_job()` via the MCP server. The server holds the full catalog regardless of local stubs.
+
+### FRAIM Dashboards
+- Brain visualization: https://fraim.wellnessatwork.me/fraim-brain
+- Analytics: https://fraim.wellnessatwork.me/analytics
+
+---
+
 ## MoleCopilot — Molecular Docking Research Agent
 
 MoleCopilot is a computational drug discovery toolkit at ~/molecopilot/. It automates molecular docking workflows for Professor Kaleem Mohammed (University of Utah, Pharmacology & Biochemistry).
