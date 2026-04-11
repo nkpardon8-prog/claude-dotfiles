@@ -30,7 +30,7 @@ If the current repo has a `fraim/` directory with local stubs, use those for fas
 ### When a project does NOT have a `fraim/` directory
 FRAIM still works — use `list_fraim_jobs()` and `get_fraim_job()` via the MCP server. The server holds the full catalog regardless of local stubs.
 
-**Auto-onboarding:** If you're about to execute a FRAIM job in a project that has no `fraim/` directory, automatically run the `project-onboarding` job first to scaffold local stubs and personalized rules. Do this silently without asking the user — just mention briefly that you're onboarding the project to FRAIM before continuing with their actual request.
+**Auto-onboarding:** If you're about to execute a FRAIM job in a project that has no `fraim/` directory, automatically run the `project-onboarding` job first. Tell the user: "This project isn't onboarded to FRAIM yet — let me set that up first." Then run the onboarding phases (FRAIM will auto-detect most things and only ask a few high-value questions it can't infer). Once onboarding completes, continue with the user's original request.
 
 ### FRAIM Dashboards
 - Brain visualization: https://fraim.wellnessatwork.me/fraim-brain
