@@ -187,10 +187,12 @@ Use the `Agent` tool 4 times in one response. Each agent gets a fully self-conta
 - The merged Codex review output from Step 3d
 - The actual code: either read the files, or include the git diff
 - For large diffs (over 500 lines of actual diff output): use `git diff --stat` + the most-changed files rather than the full diff
+- **If `$FRAIM_CONTEXT` is non-empty**: include it under a "## Project Context (from FRAIM)" header. Tell the agent: "This code should conform to these project rules and implement this spec. Flag any deviations as ARCHITECTURE or CONTRADICTION findings."
 - The agent's specific lens instructions
 
 **For non-code targets (Claude-only engine):**
 - The full context: plan text, idea description, error output, conversation summary
+- **If `$FRAIM_CONTEXT` is non-empty**: include it as above
 - The agent's specific lens instructions
 
 ### Agent lens adaptation:
