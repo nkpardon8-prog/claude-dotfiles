@@ -32,6 +32,32 @@ Output to the user: **"Reviewing: [target summary]"**
 
 ---
 
+## Step 1b: Load FRAIM Project Context (if available)
+
+Check if the project has FRAIM context that should inform the review:
+
+```bash
+FRAIM_RULES=""; FRAIM_CONFIG=""
+[ -f fraim/personalized-employee/rules/project_rules.md ] && FRAIM_RULES=$(cat fraim/personalized-employee/rules/project_rules.md)
+[ -f fraim/config.json ] && FRAIM_CONFIG=$(cat fraim/config.json)
+```
+
+**If FRAIM context exists**, also check for relevant specs/RFCs:
+- Look for `docs/evidence/*-rfc.md`, `docs/evidence/*-spec.md`, `docs/rfcs/*.md`, or similar design documents
+- If the review target maps to a specific issue/feature, find its associated spec: `docs/evidence/{issue}-*.md`
+- Glob for: `docs/evidence/*.md`, `docs/rfcs/*.md`, `docs/specs/*.md`
+
+**Collect into `$FRAIM_CONTEXT`** (used in Step 4 agent prompts):
+- Project rules (coding standards, architectural constraints, conventions)
+- Relevant spec/RFC content (what the code is supposed to implement)
+- Config metadata (tech stack, frameworks, key decisions)
+
+If no `fraim/` directory exists, set `$FRAIM_CONTEXT=""` and continue without it.
+
+**When FRAIM context is available**, output: "FRAIM context loaded — reviewing against project rules and specs."
+
+---
+
 ## Step 2: Detect Review Type and Select Engine
 
 ### Step 2a: Detect base branch and working directory
