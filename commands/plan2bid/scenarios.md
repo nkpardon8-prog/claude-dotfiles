@@ -25,7 +25,7 @@ Understand what the user is asking. Common scenario types:
 
 Do NOT re-analyze documents or re-estimate from scratch. Only touch items affected by the scenario:
 - Look up new pricing from `~/plan2bid-profile/` rate tables if available.
-- Use `/research-web` for current material pricing when rates are not on file.
+- Use WebSearch directly for current material pricing when rates are not on file.
 - Recalculate labor if crew composition or productivity changes.
 - Cascade changes — if a material swap changes weight, check if structural or rigging costs are affected.
 
@@ -41,6 +41,16 @@ Show the comparison inline (do not call `/plan2bid:compare` as a separate skill)
 
 Scenarios can branch from other scenarios. When the user says "now what if we also...", apply the new change on top of the current scenario, not the original base. Track the chain: Base -> Scenario A -> Scenario A2.
 
-## 6. Save
+## 6. MANDATORY FINAL STEP — Save to Database
 
-Save the scenario estimate as a new JSON file alongside the base so it can be used in future `/plan2bid:compare` or `/plan2bid:grade` calls.
+Save the scenario estimate as `scenario_output.json` in the current directory.
+
+Then save to the database by running:
+
+```
+/plan2bid:save-scenario-to-db {scenario_id} {project_id}
+```
+
+The scenario_id and project_id are in your prompt (look for "Scenario ID:" and "Project ID:").
+
+**The scenario is NOT complete until the save succeeds.**

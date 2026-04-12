@@ -11,11 +11,16 @@ Request: $ARGUMENTS
 
 ## Your Toolkit
 
-**Sub-skills (via Skill tool):**
-- `/plan2bid:doc-reader` — Classify and analyze construction documents, extract schedules, read drawings via vision
-- `/plan2bid:scope` — IN/OUT scope boundary analysis per trade
-- `/research-web` — Current material pricing, vendor lookups, regional cost data
-- `/plan2bid:rag` — Semantic search across project documents. Returns relevant chunks with source citations. Tends to be helpful on large document sets (100+ pages), for finding specific spec clauses or schedules, and for answering follow-up questions after an estimate is complete.
+**Tools to use directly (do NOT load these as skills — use the built-in tools instead):**
+- To analyze documents: Use the Read tool on PDFs directly (vision-capable, 20 pages per call)
+- To search documents: Use Grep/Glob on extracted text files
+- To research pricing: Use WebSearch and WebFetch directly — do NOT invoke /research-web
+- To search project docs semantically: Use Grep with relevant keywords
+
+**Skills you MAY invoke:**
+- `/plan2bid:save-to-db` — Save the final estimate to the database (MANDATORY final step — see end of this file)
+
+IMPORTANT: Do NOT invoke /research-web, /plan2bid:doc-reader, /plan2bid:scope, or /plan2bid:rag as skills. They are designed for interactive use and will break the automated pipeline.
 
 **Agent tool** — Spawn trade-specific sub-agents for multi-trade projects. Sub-agents cannot use the Skill tool, so pass them everything they need inline (document summaries, scope lists, pricing data, instructions).
 
@@ -33,6 +38,8 @@ Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Rea
 ## Suggested Workflow
 
 This is the general shape of a good estimate. Adapt it.
+
+**Before starting:** Check if `analysis/` files exist in the working directory from a prior attempt. If they do, read them — you may be resuming a partially completed estimation. Use what's already been done and continue from there.
 
 ### 0. Project Classification
 
@@ -64,10 +71,12 @@ If the user gives you everything upfront, acknowledge and move. If critical info
 
 **First: check page counts.** Before reading any PDF, find out how many pages it has. The Read tool can only process 20 pages per call. Documents over 18 pages need multiple Read passes in 18-page batches (pages 1-18, 19-36, 37-54, etc.). Don't start pricing until you've read the ENTIRE document set — missing the MEP sheets on a 40-page set because you only read the first 20 pages will produce an incomplete estimate.
 
-Save your findings from each batch to `analysis/` files in the project upload directory. These persist and can be re-read later without re-processing the entire document.
+After reading each batch, WRITE your findings to `analysis/` files before reading the next batch. Include specific quantities, model numbers, specifications, and drawing references — not just summaries. This is critical: on large documents (50-200+ pages), earlier batches will be compressed out of your context window. Anything not written to disk will be lost. Your `analysis/` directory is your external memory — use it aggressively.
 
-Use `/plan2bid:doc-reader` (Skill tool) on uploaded documents. Get back:
-- Document manifest (what you have, classified)
+The same applies to pricing research: after a round of web searches, write your findings to `analysis/pricing.md` before doing more searches. Specific prices, sources, and confidence levels must be on disk, not just in context.
+
+Use the Read tool directly on PDFs (20 pages per call, use offset/limit for larger documents). For each batch, extract and record:
+- Document manifest (what you have, classified by type)
 - Extracted schedules and tables
 - Scope summary by trade
 - Cross-references and conflicts
@@ -88,7 +97,7 @@ Over-ask rather than under-ask. A question that seems obvious to you might revea
 
 ### 4. Scope Definition
 
-Use `/plan2bid:scope` (Skill tool) if the project is complex enough to warrant formal scope boundaries. For simpler projects, define scope inline.
+For complex projects, define formal scope boundaries by analyzing the documents directly. For simpler projects, define scope inline.
 
 Apply the document hierarchy when resolving conflicts: SOW > Specs > Addenda > Drawings > Handbook.
 
@@ -112,7 +121,7 @@ This is where construction knowledge matters most.
 
 **Pricing hierarchy:**
 1. User's pricing profile (`~/plan2bid-profile/`) — always check first
-2. `/research-web` (Skill tool) — current market pricing for the user's region
+2. WebSearch tool — current market pricing for the user's region (search directly, do not load /research-web)
 3. Your construction industry knowledge — last resort, and always flagged as an assumption
 
 State where every price comes from. "Profile rate," "web-sourced (Home Depot, March 2026)," or "industry estimate — verify" are all acceptable as long as you're transparent.
@@ -235,6 +244,18 @@ CRITICAL RULES for the output JSON:
 **In chat:** Present a brief summary of the estimate — total cost, number of line items, key trades, and any warnings or low-confidence items.
 
 Do NOT offer next steps like `/plan2bid:excel` or `/plan2bid:pdf`.
+
+## MANDATORY FINAL STEP — Save to Database
+
+After writing `estimate_output.json`, you MUST run `/plan2bid:save-to-db` to save the results to the database. This is not optional.
+
+```
+/plan2bid:save-to-db {project_id}
+```
+
+The project_id is in your prompt (look for "Project ID: ..."). If the prompt also includes "Worker directory:", the save skill will use that path.
+
+**The estimation is NOT complete until the save succeeds.** Do not stop, do not present a summary first, do not wait for input. Run the save immediately after writing the JSON.
 
 ## Multi-Trade Projects
 
