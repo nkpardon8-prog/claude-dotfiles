@@ -41,6 +41,62 @@ Show the comparison inline (do not call `/plan2bid:compare` as a separate skill)
 
 Scenarios can branch from other scenarios. When the user says "now what if we also...", apply the new change on top of the current scenario, not the original base. Track the chain: Base -> Scenario A -> Scenario A2.
 
+## scenario_output.json Schema
+
+Your output MUST be a JSON file with this exact structure:
+
+```json
+{
+  "line_items": [
+    {
+      "item_id": "TRADE-NNN",
+      "trade": "electrical",
+      "description": "...",
+      "quantity": 10,
+      "unit": "EA",
+      "is_material": true,
+      "is_labor": true,
+      "unit_cost_low": 8.0,
+      "unit_cost_expected": 10.0,
+      "unit_cost_high": 12.0,
+      "extended_cost_low": 80.0,
+      "extended_cost_expected": 100.0,
+      "extended_cost_high": 120.0,
+      "material_confidence": "medium",
+      "pricing_method": "web_search",
+      "material_reasoning": "...",
+      "price_sources": [{"source_name": "...", "url": "..."}],
+      "total_labor_hours": 0.5,
+      "hours_expected": 0.5,
+      "hours_low": 0.4,
+      "hours_high": 0.7,
+      "blended_hourly_rate": 65.0,
+      "labor_cost": 32.5,
+      "cost_expected": 32.5,
+      "cost_low": 26.0,
+      "cost_high": 45.5,
+      "labor_confidence": "medium",
+      "labor_reasoning": "...",
+      "crew": [{"role": "...", "count": 1}],
+      "site_adjustments": []
+    }
+  ],
+  "summary": "One sentence summarizing the scenario impact",
+  "reasoning": "2-3 sentences explaining the pricing logic",
+  "anomalies": [
+    {"trade": "electrical", "anomaly_type": "noted", "category": "...", "description": "...", "affected_items": ["TRADE-NNN"], "cost_impact": 0}
+  ]
+}
+```
+
+### CRITICAL RULES:
+- `is_material` and `is_labor` MUST be boolean on every item
+- `trade` MUST match the trade from the base estimate (on items AND anomalies)
+- `item_id` MUST match the base estimate item IDs for items being modified
+- Include ALL items from the base estimate (not just changed ones) -- copy unchanged items as-is
+- Numbers must be numeric, never formatted strings
+- Confidence: lowercase "high", "medium", "low" only
+
 ## 6. MANDATORY FINAL STEP — Save to Database
 
 Save the scenario estimate as `scenario_output.json` in the current directory.
