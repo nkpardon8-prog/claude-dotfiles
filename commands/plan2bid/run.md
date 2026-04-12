@@ -22,7 +22,7 @@ Request: $ARGUMENTS
 
 IMPORTANT: Do NOT invoke /research-web, /plan2bid:doc-reader, /plan2bid:scope, or /plan2bid:rag as skills. They are designed for interactive use and will break the automated pipeline.
 
-**Agent tool** — Spawn trade-specific sub-agents for multi-trade projects. Sub-agents cannot use the Skill tool, so pass them everything they need inline (document summaries, scope lists, pricing data, instructions).
+**Agent tool** — Spawn trade-specific sub-agents for multi-trade projects. Sub-agents cannot use the Skill tool but CAN use Read, Write, WebSearch, Bash, Grep. Coordinate through files in `analysis/` — see Multi-Trade Projects below.
 
 **Pricing profile** — `~/plan2bid-profile/` contains the user's labor rates, material prices, markups, vendor preferences, waste factors, and company info. If this directory exists, load and use it. If it doesn't, mention that `/plan2bid:pricing-profile` can set one up, but proceed without it.
 
@@ -259,20 +259,52 @@ The project_id is in your prompt (look for "Project ID: ..."). If the prompt als
 
 ## Multi-Trade Projects
 
-For projects spanning multiple trades, use the **Agent tool** to create trade-specific sub-agents.
+For projects spanning multiple trades, use the **Agent tool** to create trade-specific sub-agents. Coordinate through files on disk — not inline data.
 
-**How it works:**
-- You (the parent) do document analysis, scope, and clarifying questions first.
-- Then spawn one sub-agent per trade with INLINE instructions. Sub-agents cannot call the Skill tool — they get everything from you: document summaries, scope boundaries, pricing profile data, and specific instructions for their trade.
-- Run sub-agents **sequentially** (not parallel) to manage context and avoid conflicts.
-- Collect results from each sub-agent, reconcile overlaps, and assemble the combined estimate.
+**Step 1: Parent analyzes documents and writes per-trade files**
+- Read all documents (batched, with `analysis/` files as described above)
+- Write one scope file per trade: `analysis/scope_{trade}.md` — that trade's IN/OUT scope, relevant drawing pages, schedule extracts, quantities found, spec references
+- Write shared context: `analysis/project_context.md` — project type, location, facility type, general conditions
+- Write shared pricing: `analysis/pricing.md` — any pricing data already researched
 
-**What to pass each sub-agent:**
-- Relevant document extracts and schedule data for their trade
-- Scope boundaries (IN/OUT) for their trade
-- Pricing profile rates relevant to their trade
-- Any clarifying question answers that affect their trade
-- The output format you expect back
+**Step 2: Spawn sub-agents sequentially, one per trade**
+- Sub-agents CAN use Read, Write, WebSearch, Bash, Grep — they just cannot invoke Skills
+- Each sub-agent reads its scope file + shared context from disk (use ABSOLUTE paths — e.g., `{cwd}/analysis/scope_electrical.md`)
+- Each sub-agent does its own pricing research via WebSearch for items not in the shared pricing file
+- Each sub-agent writes results to `{cwd}/analysis/trade_{trade}_items.json`
+- Run sub-agents sequentially to manage context and API usage across trades
+
+**Step 3: Parent assembles the combined estimate**
+- Read back all `{cwd}/analysis/trade_*_items.json` files
+- Validate each: must be a JSON array where each item has at minimum `item_id`, `trade`, `description`, `quantity`, `unit`, `is_material`, `is_labor`. Log and skip trades that produced invalid output.
+- Merge into a single `line_items` array for `estimate_output.json`
+- Add cross-trade items (general conditions, overhead, markup) that span all trades
+- Reconcile any overlaps between trades
+
+**Sub-agent prompt template:**
+
+You are estimating the {trade} scope for a construction project.
+
+Read these files for your context (use absolute paths):
+- {cwd}/analysis/scope_{trade}.md — your trade's scope, quantities, and drawing references
+- {cwd}/analysis/project_context.md — project type, location, facility info
+- {cwd}/analysis/pricing.md — pricing data already researched (use if relevant, skip if not)
+
+Use WebSearch for any pricing not already in the pricing file.
+
+Write your line items as a JSON array to {cwd}/analysis/trade_{trade}_items.json.
+
+Each item must have these fields:
+  item_id (string, format: TRADE-NNN e.g. ELEC-001),
+  trade (string), description (string), quantity (number), unit (string),
+  is_material (boolean), is_labor (boolean),
+  unit_cost_low/expected/high (numbers), extended_cost_low/expected/high (numbers),
+  material_confidence (string: high/medium/low), price_sources (array),
+  crew (array), total_labor_hours (number), blended_hourly_rate (number),
+  labor_cost (number), hours_low/expected/high (numbers), cost_low/expected/high (numbers),
+  labor_confidence (string: high/medium/low)
+
+Do NOT write estimate_output.json — the parent will assemble the combined estimate.
 
 ## Context Management
 
