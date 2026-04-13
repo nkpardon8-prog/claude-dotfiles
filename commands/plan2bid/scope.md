@@ -55,4 +55,4 @@ Compare scope lists against schedules (door, finish, panel, fixture), drawing co
 
 ## Reference
 
-Guidelines: `~/Desktop/Projects/Plan2BidAgent/guidelines/estimation-workflow.md`
+Pricing profile: `~/plan2bid-profile/` (load if it exists)

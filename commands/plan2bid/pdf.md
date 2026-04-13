@@ -9,7 +9,7 @@ argument-hint: "[path to estimate JSON, or 'export last estimate as PDF']"
 
 1. If the user provides a JSON file path, use it directly as `$FILE`.
 2. If estimate data is in conversation (from `/plan2bid:run` or pasted), write it as JSON to `/tmp/plan2bid_estimate_<timestamp>.json`.
-3. If "last estimate", find the most recent `.json` in `~/Desktop/Projects/Plan2BidAgent/output/` or cwd. Confirm before proceeding.
+3. If "last estimate", find the most recent `.json` in cwd. Confirm before proceeding.
 If no data found, stop and ask.
 
 ## Determine detail level
@@ -27,11 +27,7 @@ Read profile files from `~/plan2bid-profile/` (company name, logo, license, cont
 
 ## Generate the PDF
 
-```
-source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python ~/Desktop/Projects/Plan2BidAgent/scripts/generate_pdf.py --input $FILE --output $OUTPUT --detail $LEVEL
-```
-
-Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDF files instead. The Read tool handles PDFs natively for text extraction. For vision-based analysis of drawings, read the PDF as an image file.
+Read the JSON estimate data and generate a professional PDF using Python (fpdf2 or reportlab). Apply the selected detail level to control what's shown.
 
 Default `$OUTPUT` to `./estimate.pdf`. `$LEVEL` is `summary`, `standard`, or `detailed`.
 If the script fails, show the full error and suggest fixes.

@@ -9,7 +9,7 @@ argument-hint: "[path to estimate JSON, or 'export last estimate']"
 
 1. If the user provides a path to a JSON file, use that directly as `$FILE`.
 2. If estimate data exists in the current conversation (from a prior `/plan2bid:run` or pasted by the user), structure it as valid JSON and write it to a temp file: `/tmp/plan2bid_estimate_<timestamp>.json`. Use that as `$FILE`.
-3. If the user says "last estimate", look for the most recent `.json` file in `~/Desktop/Projects/Plan2BidAgent/output/` or the current working directory. Confirm the file with the user before proceeding.
+3. If the user says "last estimate", look for the most recent `.json` file in the current working directory. Confirm the file with the user before proceeding.
 
 If no estimate data can be found, stop and ask the user to provide it.
 
@@ -27,11 +27,7 @@ Determine an output path. Default to `./estimate.xlsx` in the current directory 
 
 Run:
 
-```
-source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python ~/Desktop/Projects/Plan2BidAgent/scripts/generate_excel.py --input $FILE --output $OUTPUT
-```
-
-Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDF files instead. The Read tool handles PDFs natively for text extraction. For vision-based analysis of drawings, read the PDF as an image file.
+Read the JSON estimate data and generate the Excel workbook using Python with openpyxl. Structure it with a Summary tab plus per-trade breakdown tabs. Style with headers, borders, and number formatting.
 
 If the script exits non-zero, show the full error output and suggest fixes.
 

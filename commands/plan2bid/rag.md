@@ -14,12 +14,7 @@ Pick whichever is more convenient:
 curl -s "http://localhost:3001/api/search?projectId={ID}&q={QUERY}&n=5"
 ```
 
-**Via script** (always works):
-```bash
-source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python3 ~/Desktop/Projects/Plan2BidAgent/scripts/search_docs.py --project-id {ID} --query "{QUERY}" --top-n 5
-```
-
-Note: If the Plan2BidAgent scripts directory does not exist, semantic search is not available. Use the Read tool and Grep to search documents manually.
+**Primary approach:** Use the Read tool and Grep to search documents manually. Read PDFs directly (20 pages per call) and use Grep for keyword search across extracted text files.
 
 Returns JSON with results: `text`, source `filename`, `page` number, `type`, and relevance `score`.
 
@@ -38,11 +33,7 @@ Returns JSON with results: `text`, source `filename`, `page` number, `type`, and
 
 ## If embeddings don't exist yet
 
-Trigger indexing first:
-```bash
-source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python3 ~/Desktop/Projects/Plan2BidAgent/scripts/chunk_and_embed.py --project-id {ID} --uploads-dir ~/Desktop/Projects/Plan2BidAgent/webapp/uploads/{ID}
-```
-Or POST to the API: `curl -X POST http://localhost:3001/api/embed -H 'Content-Type: application/json' -d '{"projectId":"{ID}"}'`
+If document embeddings aren't available, fall back to reading the documents directly with the Read tool and searching with Grep.
 
 ## If no API key
 

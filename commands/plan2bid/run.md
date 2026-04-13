@@ -26,14 +26,7 @@ IMPORTANT: Do NOT invoke /research-web, /plan2bid:doc-reader, /plan2bid:scope, o
 
 **Pricing profile** — `~/plan2bid-profile/` contains the user's labor rates, material prices, markups, vendor preferences, waste factors, and company info. If this directory exists, load and use it. If it doesn't, mention that `/plan2bid:pricing-profile` can set one up, but proceed without it.
 
-**Python scripts** — `~/Desktop/Projects/Plan2BidAgent/scripts/`
-- `pdf_to_images.py` — Convert PDF pages to images for vision analysis
-- `generate_excel.py` — Generate styled .xlsx from estimate data
-- `generate_pdf.py` — Generate formatted PDF from estimate data
-
-Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDFs instead of `pdf_to_images.py` for vision analysis. The Read tool can handle PDF files natively.
-
-**Guidelines** — `~/Desktop/Projects/Plan2BidAgent/guidelines/estimation-workflow.md` (load if it exists for additional methodology context)
+**PDF reading** — Use the Read tool directly on PDFs (it handles them natively, 20 pages per call). For large documents, batch in 18-page chunks.
 
 ## Suggested Workflow
 
@@ -142,16 +135,30 @@ State where every price comes from. "Profile rate," "web-sourced (Home Depot, Ma
 
 ### 7. Markups
 
-Do NOT apply hardcoded default percentages. Think about what's appropriate for this specific project:
+**IMPORTANT: Do NOT bake markups into line item costs.** Line items must always be direct costs (material + labor). The frontend applies markups separately — if you inflate line items, the user will double-mark-up.
+
+Instead, include markup recommendations in your summary output so the user has a starting point. Think about what's appropriate for this specific project:
 
 - **Overhead** — what does the contractor's overhead actually look like for this project size and duration?
 - **Profit** — what margin is competitive for this market and trade?
 - **Contingency** — how much uncertainty is in this estimate? More unknowns = higher contingency.
 - **Other** — bonding, insurance, escalation, mobilization, permits — include what applies.
 
-If the user's profile has markups, use those. Otherwise, propose percentages with your reasoning and confirm before applying. Never silently apply markups the user hasn't agreed to.
+If the user's profile has markups, reference those. For automated runs, state your recommended percentages and reasoning in the output summary — the system will surface them to the user for review.
 
-### 8. Output
+### 8. Sanity Check
+
+Before writing your final output, review the estimate you've built:
+
+- **Total vs project size** — does the $/SF make sense for this project type and market? Rough benchmarks: retail renovation $150-400/SF, office TI $80-250/SF, medical $300-600/SF, restaurant $200-500/SF. If you're well below the low end for your project type, you're probably missing scope.
+- **All major systems covered?** — scan your line items against what you found in the documents. If you read about an HVAC system but have zero HVAC items, something got dropped.
+- **Labor/material ratio** — for most commercial projects, labor is 40-60% of direct costs. If labor is 15% or 80%, check your pricing approach.
+- **Tenant-supplied items** — if the documents mention tenant-supplied fixtures, millwork, lighting, or equipment, you should have corresponding GC receiving/installation labor items even though the material isn't in your number.
+- **Item count** — a 1,500 SF retail renovation typically has 80-150 line items across all trades. If you have 30, you're under-decomposed. If you have 500, you may be over-splitting.
+
+These aren't hard rules — they're sanity checks. If something looks off, go back to the documents before finalizing.
+
+### 9. Output
 
 **Output Format:** Save the estimate as JSON to `{pwd}/estimate_output.json` using this EXACT schema:
 
@@ -263,9 +270,19 @@ For projects spanning multiple trades, use the **Agent tool** to create trade-sp
 
 **Step 1: Parent analyzes documents and writes per-trade files**
 - Read all documents (batched, with `analysis/` files as described above)
-- Write one scope file per trade: `analysis/scope_{trade}.md` — that trade's IN/OUT scope, relevant drawing pages, schedule extracts, quantities found, spec references
+- Write one scope file per trade: `analysis/scope_{trade}.md`
 - Write shared context: `analysis/project_context.md` — project type, location, facility type, general conditions
 - Write shared pricing: `analysis/pricing.md` — any pricing data already researched
+
+**Scope files are the sub-agent's only view of the project.** Sub-agents cannot re-read the source documents. Each scope file must contain enough detail for the sub-agent to produce a complete takeoff on its own:
+- **Exact quantities with drawing references** — "24x duplex receptacles (E210, floor plan)" not "receptacles per drawings"
+- **Device/fixture schedules extracted verbatim** — copy the schedule data, don't summarize it
+- **Material specs and model numbers** — "Trane YHC060 5-ton packaged RTU" not "new RTU"
+- **Manufacturer and vendor names** when specified in documents
+- **IN/OUT scope boundaries** — what's explicitly included vs excluded for this trade
+- **Drawing sheet references** — which sheets contain this trade's scope (e.g., E-101, M200, P200)
+
+If a scope file is thin, the sub-agent will guess. Take the time to extract thoroughly.
 
 **Step 2: Spawn sub-agents sequentially, one per trade**
 - Sub-agents CAN use Read, Write, WebSearch, Bash, Grep — they just cannot invoke Skills
@@ -274,12 +291,28 @@ For projects spanning multiple trades, use the **Agent tool** to create trade-sp
 - Each sub-agent writes results to `{cwd}/analysis/trade_{trade}_items.json`
 - Run sub-agents sequentially to manage context and API usage across trades
 
-**Step 3: Parent assembles the combined estimate**
+**Step 3: GC coordination scope pass**
+
+After all trade sub-agents finish, go back to the documents and look for scope that falls between trades. Think like a GC superintendent reviewing the assembled bid — what did nobody price?
+
+Common gaps on multi-trade projects:
+- **General conditions** — supervision, barricade, temp utilities, permits, cleaning, closeout documentation, insurance, landlord coordination
+- **Doors, frames & hardware** — often not owned by any single trade
+- **Storefront & glazing** — facade work, security film, riot glass, storefront repairs
+- **Signage & graphics** — blocking, power, substrate prep for signs and LED walls
+- **Millwork receiving & install** — if tenant supplies fixtures/casework, the receiving, storage, and installation labor is GC scope
+- **Specialties** — fire extinguisher cabinets, ADA accessories, grab bars, corner guards
+- **Ceiling systems** — ACT, custom sprinkler caps, access panels (may not be owned by drywall or fire protection sub)
+
+Don't force categories that don't apply. A simple project may not need any of these. But for a retail fit-out, office TI, or renovation — if you're missing most of these, something is wrong.
+
+Price these items yourself (the parent agent) and add them to the combined output. Write them as their own trade entries (e.g., trade: "general_conditions", trade: "doors_hardware").
+
+**Step 4: Assemble the combined estimate**
 - Read back all `{cwd}/analysis/trade_*_items.json` files
 - Validate each: must be a JSON array where each item has at minimum `item_id`, `trade`, `description`, `quantity`, `unit`, `is_material`, `is_labor`. Log and skip trades that produced invalid output.
-- Merge into a single `line_items` array for `estimate_output.json`
-- Add cross-trade items (general conditions, overhead, markup) that span all trades
-- Reconcile any overlaps between trades
+- Merge into a single `line_items` array, including your GC coordination items from Step 3
+- Reconcile any overlaps between trades (e.g., demo might appear in both a trade sub-agent and GC scope — deduplicate)
 
 **Sub-agent prompt template:**
 
@@ -291,6 +324,11 @@ Read these files for your context (use absolute paths):
 - {cwd}/analysis/pricing.md — pricing data already researched (use if relevant, skip if not)
 
 Use WebSearch for any pricing not already in the pricing file.
+
+**Pricing guidance:**
+- For **fixtures and equipment** (RTUs, water closets, lavatories, panels, air handlers, light fixtures), price at the **furnished-and-installed** cost — what a sub would actually bid, not the catalog price of just the material. Use `is_material: true, is_labor: false` — the installed price already includes labor, so don't create a separate labor entry. A water closet isn't $475 material + $280 labor — a plumbing sub bids $1,600-2,200 installed including rough-in, trim, and testing. When you price an item furnished-and-installed, don't also create separate rough-in or trim items for the same scope — that's double-counting.
+- For **bulk materials** (wire, pipe, ductwork, drywall, tile), price the material per-unit and labor separately. These are correctly split.
+- For **lump-sum scope** (demolition, permits, coordination), use `is_labor: true` with a single LS price.
 
 Write your line items as a JSON array to {cwd}/analysis/trade_{trade}_items.json.
 

@@ -50,7 +50,7 @@ The Read tool can only read 20 pages per PDF call. For any document over 18 page
 
 **Before reading any PDF, check the page count:**
 ```bash
-source ~/Desktop/Projects/Plan2BidAgent/.venv/bin/activate && python3 -c "import pdfplumber; pdf = pdfplumber.open('FILE.pdf'); print(f'Total pages: {len(pdf.pages)}')"
+python3 -c "import pdfplumber; pdf = pdfplumber.open('FILE.pdf'); print(f'Total pages: {len(pdf.pages)}')"
 ```
 
 **Batch strategy — 18 pages per batch:**
@@ -75,20 +75,7 @@ When all batches are complete, you have the full picture across all pages, organ
 
 When you need to read drawings, count symbols, or understand spatial layout, convert to images and use vision.
 
-**Conversion script:** `~/Desktop/Projects/Plan2BidAgent/scripts/pdf_to_images.py`
-
-Note: If `~/Desktop/Projects/Plan2BidAgent/scripts/` does not exist, use the Read tool directly on PDF files instead. The Read tool handles PDFs natively for text extraction. For vision-based analysis of drawings, read the PDF as an image file.
-
-```bash
-# Convert specific pages to images
-python3 ~/Desktop/Projects/Plan2BidAgent/scripts/pdf_to_images.py input.pdf --pages 1-5 --dpi 200
-
-# Grid mode for dense sheets — splits each page into sections
-python3 ~/Desktop/Projects/Plan2BidAgent/scripts/pdf_to_images.py input.pdf --grid 2x2 --pages 3
-
-# Crop a specific region for detail
-python3 ~/Desktop/Projects/Plan2BidAgent/scripts/pdf_to_images.py input.pdf --crop x1,y1,x2,y2 --pages 3
-```
+Use the Read tool directly on PDF files — it handles them natively (20 pages per call, use `pages` parameter for specific ranges). For vision-based analysis of drawings, the Read tool renders PDF pages visually.
 
 **Approach for drawing analysis:**
 1. **Read the legend/symbol schedule FIRST.** Know what every symbol means before counting anything.
@@ -129,7 +116,7 @@ Present findings organized for estimation:
 
 ## 7. Reference
 
-Estimation workflow guidelines: `~/Desktop/Projects/Plan2BidAgent/guidelines/estimation-workflow.md`
+Pricing profile: `~/plan2bid-profile/` (load if it exists for labor rates and material pricing)
 
 Consult this for how extracted data feeds into the broader estimation pipeline.
 
