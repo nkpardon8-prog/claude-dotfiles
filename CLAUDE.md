@@ -88,6 +88,8 @@ After establishing FRAIM context, check whether any available skill applies to t
 
 **Cascade behavior:** Some skills spawn sub-agents internally and should not be individually auto-routed. `/parsa:review:all` automatically runs all 11 review-principles agents (circular-deps, antipatterns, architecture-backend, architecture-frontend, tanstack-query, clarity, documentation, single-pattern, scope, self-contained, reuse). `/plan2bid` owns its sub-commands (compare, grade, price-check, pricing-profile, reverse-engineer, scenarios, doc-reader, rag, run, scope, validate) as cascade-only. Sub-agents in both groups fire when their parent runs. Users can invoke any sub-agent directly via its slash command for a focused single check.
 
+**FRAIM job entries** use the notation `fraim → job-name`. These call `get_fraim_job({ job: "job-name" })` via MCP rather than a slash command. Announce as "using fraim → job-name" before running.
+
 ### Skill Trigger Table
 
 | Skill | Trigger | Consequence |
@@ -118,6 +120,20 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/parsa:cl:commit` | User asks to commit but wants to approve what gets staged first | YES — git write |
 | `/parsa:cl:research_codebase` | User asks a deep question about how the codebase works and wants file-level references | No |
 | `/parsa:cl:research_web` | User asks to research a technical topic, find docs, or look up implementation patterns | No |
+| `fraim → create-clarity` | User has a vague or under-specified ask that needs scoping before work starts | No |
+| `fraim → fully-delegate` | User explicitly says "handle this", "just do it", or hands off full decision authority | No |
+| `fraim → need-pov` | User has no strong preference and wants Claude to recommend before acting | No |
+| `fraim → strong-pov` | User is confident in a specific direction and wants direct execution without debate | No |
+| `fraim → hire-right-ai-for-the-job` | User asks which AI, model, or tool is best suited for a specific task | No |
+| `fraim → what-should-i-review` | User has PRs to review and wants risk scoring, prioritization, or "what should I focus on" | No |
+| `fraim → how-should-i-verify` | User asks how to verify Claude's work or what the right validation method is | No |
+| `fraim → recommend-next-job` | User asks "what should I do next", "where am I in the process", "am I ready to run X", or wants a journey overview | No |
+| `fraim → code-quality-assessment` | User asks for a deep codebase quality analysis or health report | No |
+| `fraim → broken-windows-detection-and-remediation` | User asks to find pattern deviations, files teaching bad habits, or "clean up inconsistencies" | No |
+| `fraim → iterative-quality-improvement` | User wants systematic quality improvement with iterative Review-Critique-Fix cycles | No |
+| `fraim → browser-application-validation` | User wants the app tested end-to-end in a browser | No |
+| `fraim → implementation-design-review` | User wants to verify implementation matches the RFC or technical design | No |
+| `fraim → implementation-feature-review` | User wants to verify implementation solves the problem described in the feature spec | No |
 | `/plan` | User asks to plan a non-code task or feature using the structured plan workflow | No |
 | `/simple-plan` | Non-code quick planning — gut-check for decisions, tasks, or general work | No |
 | `/implement` | User says to implement and references a non-parsa plan | No |
@@ -133,7 +149,7 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/netlifydeploy` | User asks to deploy, publish, or push to Netlify | YES — external deploy |
 | `/renderdeploy` | User asks to deploy to Render | YES — external deploy |
 | `/crm` | Any action involving leads, deals, emails, campaigns, or CRM sequences | YES — external CRM write |
-| `/fraim` | User references a FRAIM job directly or needs FRAIM orchestration | No |
+| `/fraim` | User references a FRAIM job by name that is not listed above | No |
 | `/dock` | Molecular docking workflow (MoleCopilot) | No |
 | `/screen` | Virtual screening campaign (MoleCopilot) | No |
 | `/admet` | ADMET / drug-likeness analysis (MoleCopilot) | No |
@@ -147,7 +163,72 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/plan2bid:pdf` | Export estimate to PDF | No |
 | `/ui-ux-pro-max` | Any UI/UX design, brand, slides, styling, or design system work | No |
 
-**Adding new skills:** Add one row to this table. Column 1 = slash command, column 2 = when to trigger it (natural language — what the user would actually say), column 3 = YES or No for real-world consequences. No other changes needed.
+**Adding new skills:** Add one row to this table. Column 1 = slash command or `fraim → job-name`, column 2 = when to trigger it (natural language — what the user would actually say), column 3 = YES or No for real-world consequences. No other changes needed.
+
+---
+
+## FRAIM Lifecycle Hooks
+
+These behaviors activate from context and model judgment — not from explicit user requests. They run alongside skill routing and respect the project's autonomy level.
+
+### Autonomy Level
+
+Read from `fraim/config.json` at session start under `agent_behavior.autonomy`. Three levels:
+
+- **autonomous** — proceed and report; only confirm before git push, file deletion, or operations marked destructive
+- **confirm** — ask before any action with real-world consequences
+- **manual** — always ask before proceeding
+
+Default when no config exists: **confirm**.
+
+### After Implementation Work Completes
+
+When any implementation, bug fix, or significant code change finishes:
+
+**`fraim → issue-retrospective`** — Capture learnings, feed the L0 learning layer.
+- Autonomous mode, small change (1–5 files, scoped fix): run automatically, report result inline
+- Any change touching 6+ files, architecture, or spanning multiple sessions: ask permission first — "This feels like a significant change. Want me to run an issue-retrospective to capture learnings? (y/n)"
+
+**Quality check** — After large changes (10+ files, new features, architectural shifts), proactively suggest: "Want me to run a quick quality check (`fraim → code-quality-assessment`) on what was just built? (y/n)"
+
+### After Merge / Work Completion
+
+When work is confirmed merged to main or the user says "we're done", "ship it", "merge this":
+
+**`fraim → work-completion`** — Merges to main, verifies integrity, deletes feature branch and worktree.
+- Always ask regardless of autonomy level: "Ready to run work-completion? This will merge to main and delete the feature branch. (y/n)"
+- This is the only lifecycle hook that requires confirmation at all autonomy levels — it modifies main.
+
+### Learning Loop
+
+The L0/L1/L2 learning system builds permanent memory from sessions. It activates around natural session boundaries:
+
+**End of session with meaningful work done** — When a session included implementation, debugging, or significant decisions, suggest: "Want me to run `end-of-day-debrief` to synthesize today's learnings into your L1 files? (y/n)"
+- Consequence = YES (writes to learning files). Always ask.
+
+**Start of session after a prior debrief** — If L0 artifacts exist from a previous session (unconfirmed pending proposals), proactively run `start-of-day-debrief` to confirm and promote them before starting new work.
+- Consequence = YES (writes to L1 files). Ask: "There are pending learning proposals from last session. Want to confirm them before we start? (y/n)"
+
+### recommend-next-job — Proactive Mode
+
+Beyond responding to direct questions, proactively offer `recommend-next-job` in these situations:
+- User just finished a FRAIM job and hasn't indicated what's next
+- User seems uncertain about direction ("not sure what to do next", "what now", silence after completion)
+- User mentions a goal but hasn't connected it to a workflow
+
+Ask: "Want me to check what the recommended next step is in your FRAIM journey? (y/n)"
+
+### Permission Gate Summary
+
+| Hook | Autonomous | Confirm | Manual |
+|---|---|---|---|
+| `issue-retrospective` (small, ≤5 files) | Auto-run | Ask | Ask |
+| `issue-retrospective` (large, 6+ files) | Ask | Ask | Ask |
+| `work-completion` | Always ask | Always ask | Always ask |
+| Quality check suggestion | Suggest inline | Ask | Ask |
+| `end-of-day-debrief` | Ask at session end | Ask | Ask |
+| `start-of-day-debrief` (pending L0) | Ask at session start | Ask | Ask |
+| `recommend-next-job` (proactive) | Suggest inline | Suggest inline | Ask |
 
 ---
 
