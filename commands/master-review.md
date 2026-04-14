@@ -12,9 +12,24 @@ You are the Master Review orchestrator. You run an iterative multi-agent review-
 
 ---
 
-## Phase 0: Identify Target & Establish Baseline
+## Phase 0: Connect Browser & Identify Target
 
-### 0a: Determine review target
+### 0a: Connect to Chrome DevTools FIRST
+
+**This must happen BEFORE anything else.** The user expects to fire this command and walk away, so establish the browser connection immediately.
+
+1. Call `mcp__chrome-devtools__list_pages` to connect and see what's open.
+2. If the app is already loaded (look for localhost:8080 or the project URL), select that page.
+3. If no app page is open, call `mcp__chrome-devtools__navigate_page` to open `http://localhost:8080` (or whatever the frontend dev server URL is).
+4. Take an initial snapshot: `mcp__chrome-devtools__take_snapshot` — this is your baseline for the UI state.
+5. Check for console errors immediately: `mcp__chrome-devtools__list_console_messages` with types `["error", "warn"]`.
+6. Store any existing console errors as `$BASELINE_CONSOLE_ERRORS` — these are pre-existing issues to include in the review.
+
+**If the browser connection fails:** Continue with code-only review but note: "Browser DevTools unavailable — skipping live UI/network checks."
+
+Output to user: **"Browser connected. [N] pages open. App loaded at [URL]. [N] existing console errors."**
+
+### 0b: Determine review target
 
 **If `$ARGUMENTS` is provided:**
 - File or directory path → that's the review scope
@@ -26,7 +41,7 @@ You are the Master Review orchestrator. You run an iterative multi-agent review-
 - Check `git diff --stat` and `git status --short` for recent changes
 - If nothing is obvious, stop and ask: "What should I review? Provide a file, directory, feature name, or description."
 
-### 0b: Detect review mode
+### 0c: Detect review mode
 
 ```bash
 BASE_BRANCH=$(git rev-parse --verify main 2>/dev/null && echo "main" || (git rev-parse --verify master 2>/dev/null && echo "master" || echo ""))
@@ -40,18 +55,68 @@ Determine MODE:
 - Uncommitted changes → MODE="uncommitted"
 - No diff but feature description → MODE="feature"
 
-### 0c: Build context package
+### 0d: Build context package
 
 Gather context that ALL agents will receive:
 1. **Code scope**: The relevant files, diff, or feature area
 2. **Project context**: Read CLAUDE.md and any relevant docs
 3. **Git context**: Recent commits in the area (`git log --oneline -20 -- [relevant paths]`)
+4. **Browser context**: Baseline console errors from 0a, initial page snapshot, any network failures seen during initial load
 
 For large diffs (>500 lines), use `git diff --stat` + targeted reads of the most-changed files.
 
 Store this as `$CONTEXT_PACKAGE` — every agent prompt includes it.
 
-Output to user: **"Master Review: [target summary] | Mode: [mode] | Starting Round 1..."**
+### 0e: Initial Browser Audit
+
+Before agents launch, run a quick automated browser sweep:
+
+1. **Console errors**: `mcp__chrome-devtools__list_console_messages` with types `["error", "warn"]` — log every error
+2. **Network failures**: `mcp__chrome-devtools__list_network_requests` — scan for any requests with 4xx/5xx status codes or failed requests
+3. **Lighthouse quick audit**: `mcp__chrome-devtools__lighthouse_audit` with mode "snapshot" — get accessibility, SEO, best practices scores
+4. **Performance trace**: `mcp__chrome-devtools__performance_start_trace` with autoStop=true and reload=true — capture Core Web Vitals (LCP, INP, CLS)
+5. **Screenshot**: `mcp__chrome-devtools__take_screenshot` with fullPage=true — save to `/tmp/master-review-baseline.png` for visual reference
+6. **Key page navigation**: Navigate through 3-5 critical routes of the app (home, main feature pages, settings) and at each:
+   - Take a snapshot (`take_snapshot`)
+   - Check console for new errors (`list_console_messages`)
+   - Check network for failed requests (`list_network_requests`)
+
+Compile all browser findings into `$BROWSER_FINDINGS` — include these in agent context packages AND as standalone findings.
+
+### 0f: Active Browser Bug Hunting
+
+Don't just passively check — actively USE the app to find bugs:
+
+1. **Test user flows**: Based on the review target, interact with the relevant features:
+   - Navigate to the feature page
+   - `mcp__chrome-devtools__take_snapshot` to see available UI elements
+   - `mcp__chrome-devtools__click` buttons, links, tabs — do they work?
+   - `mcp__chrome-devtools__fill` forms with valid data — does submission work?
+   - `mcp__chrome-devtools__fill` forms with INVALID data — does validation catch it? (empty strings, extremely long strings, special characters like `<script>alert(1)</script>`)
+   - Check console after each interaction for new errors
+   - Check network after each interaction for failed API calls
+
+2. **Edge case testing**:
+   - Rapid-click buttons — does the UI handle double-submit?
+   - Navigate away mid-operation then come back — does state recover?
+   - `mcp__chrome-devtools__emulate` with networkConditions="Slow 3G" — does the app handle slow networks? Loading states?
+   - `mcp__chrome-devtools__emulate` with viewport="375x667x2,mobile,touch" — does mobile layout work? Are touch targets big enough?
+   - `mcp__chrome-devtools__emulate` with colorScheme="dark" — does dark mode render correctly?
+
+3. **API response inspection**: For every network request the app makes:
+   - `mcp__chrome-devtools__get_network_request` to inspect the actual response body
+   - Does the response match what the frontend expects?
+   - Are there fields being returned that shouldn't be? (over-fetching, data leaks)
+   - Are error responses properly formatted?
+
+4. **Memory & performance**:
+   - `mcp__chrome-devtools__evaluate_script` with `() => { return { heapUsed: performance.memory?.usedJSHeapSize, heapTotal: performance.memory?.totalJSHeapSize } }` — check memory usage
+   - Navigate between pages 5-10 times, check if memory grows (leak detection)
+   - `mcp__chrome-devtools__performance_start_trace` on heavy pages — check for long tasks
+
+**Every bug found through browser testing is a finding.** Add to `$BROWSER_FINDINGS` with category BROWSER_BUG, the exact steps to reproduce, and console/network evidence.
+
+Output to user: **"Master Review: [target summary] | Mode: [mode] | Browser: [N] console errors, [N] failed requests, [N] interaction bugs, Lighthouse: [scores] | Starting Round 1..."**
 
 ---
 
@@ -539,7 +604,29 @@ Compile validated findings into a structured fix plan. Write it to `./tmp/ready-
 
 **This is a fully autonomous pipeline. No user intervention or approval gates.** The synthesis agent (you) is the quality gate — your validation in steps 2a-2d IS the review. If you validated a finding and built a fix plan, execute it. Do not pause, do not ask, do not wait.
 
-Output to user: **"Fixes implemented. Starting verification round..."**
+### 2f: Browser Verification After Fixes
+
+After `/implement` completes, verify fixes didn't break the UI:
+
+1. **Reload the app**: `mcp__chrome-devtools__navigate_page` with type="reload"
+2. **Check console**: `mcp__chrome-devtools__list_console_messages` with types `["error", "warn"]` — compare against `$BASELINE_CONSOLE_ERRORS`. Any NEW errors = regression.
+3. **Check network**: `mcp__chrome-devtools__list_network_requests` — any new failed requests?
+4. **Take snapshot**: `mcp__chrome-devtools__take_snapshot` — compare key UI elements against baseline. Are things missing, broken, or visually wrong?
+5. **Screenshot**: `mcp__chrome-devtools__take_screenshot` with fullPage=true — save to `/tmp/master-review-round-[N].png`
+6. **Navigate critical routes**: Visit the same 3-5 routes from Phase 0e. At each:
+   - Check for new console errors
+   - Check for broken network requests
+   - Take snapshot — does the page render correctly?
+   - Click key interactive elements — do they respond?
+7. **Run JS health checks**: `mcp__chrome-devtools__evaluate_script` to check:
+   - `() => { return { errors: window.__REACT_ERROR_COUNT || 0, hydrated: !!document.querySelector('[data-reactroot]') || !!document.getElementById('root')?.children.length } }` — React hydration and error boundary status
+   - Any app-specific health indicators
+
+**If new console errors or broken network requests appear after fixes:**
+- Flag as REGRESSION — these go into the next round with highest priority
+- Include the exact error messages in the regression finding
+
+Output to user: **"Fixes implemented. Browser check: [N] new errors, [N] failed requests. Starting verification round..."**
 
 ---
 
@@ -742,9 +829,23 @@ If ANY fix caused a regression:
 
 ---
 
-## Phase 4: Final Report
+## Phase 4: Final Browser Audit & Report
 
-After 3 consecutive clean passes, output the final summary:
+After 3 consecutive clean passes, run one final comprehensive browser check before declaring victory:
+
+### 4a: Final Browser Sweep
+
+1. **Reload the app**: `mcp__chrome-devtools__navigate_page` with type="reload" and ignoreCache=true
+2. **Console check**: `mcp__chrome-devtools__list_console_messages` with types `["error", "warn"]` — compare against original baseline. Were any pre-existing errors FIXED? Any new ones introduced?
+3. **Network check**: `mcp__chrome-devtools__list_network_requests` — all API calls succeeding?
+4. **Lighthouse audit**: `mcp__chrome-devtools__lighthouse_audit` with mode="navigation" — compare scores against Phase 0e baseline. Did accessibility/SEO/best-practices improve or regress?
+5. **Performance trace**: `mcp__chrome-devtools__performance_start_trace` with autoStop=true — compare Core Web Vitals against baseline
+6. **Full page navigation**: Visit ALL major routes, at each check console + network + take snapshot
+7. **Dark mode check**: `mcp__chrome-devtools__emulate` with colorScheme="dark" → take screenshot → check for broken styles
+8. **Mobile check**: `mcp__chrome-devtools__emulate` with viewport="375x667x2,mobile,touch" → take screenshot → check responsive layout
+9. **Final screenshot**: `mcp__chrome-devtools__take_screenshot` with fullPage=true — save to `/tmp/master-review-final.png`
+
+### 4b: Output the Final Report
 
 ```markdown
 # Master Review Complete
@@ -768,12 +869,29 @@ After 3 consecutive clean passes, output the final summary:
 ## False Positives Removed
 - [count] false positives identified and removed across all rounds
 
+## Browser Audit
+| Metric | Before | After | Delta |
+|--------|--------|-------|-------|
+| Console errors | [N] | [N] | [+/-N] |
+| Console warnings | [N] | [N] | [+/-N] |
+| Failed network requests | [N] | [N] | [+/-N] |
+| Lighthouse Accessibility | [N] | [N] | [+/-N] |
+| Lighthouse Best Practices | [N] | [N] | [+/-N] |
+| Lighthouse SEO | [N] | [N] | [+/-N] |
+| LCP (ms) | [N] | [N] | [+/-N] |
+| Dark mode | [pass/fail] | [pass/fail] | |
+| Mobile layout | [pass/fail] | [pass/fail] | |
+
+## Browser Bugs Found & Fixed
+- [list of bugs discovered through active browser testing, with reproduction steps]
+
 ## Statistics
 - Total agent invocations: [count]
 - Total findings (raw): [count]
 - After dedup + false positive removal: [count]
 - Fixes applied: [count]
 - Regressions caught and fixed: [count]
+- Browser interactions tested: [count]
 ```
 
 ### Cleanup
@@ -796,3 +914,4 @@ rm -f /tmp/master-review-codex-{1,2,3}.txt /tmp/master-review-codex-v{1,2}.txt
 8. **Do not suppress findings to end the loop early.** Every finding gets validated. If it's real, the counter resets.
 9. **The synthesis agent (you) is the final arbiter.** Agent findings are suggestions — you verify each one against the actual code before acting.
 10. **Fully autonomous — no user approval gates.** Do not pause for user input at any point in the pipeline. The synthesis agent's validation is the quality gate. Show the user what you're doing but never wait for a response. Just keep going.
+11. **Use Chrome DevTools aggressively throughout.** Connect first thing. Use it to find bugs by actively interacting with the app — click, fill forms, navigate, check console, inspect network, test edge cases (slow network, mobile, dark mode, invalid input, double-click). Browser-found bugs are first-class findings that go through the same fix pipeline. After every round of fixes, reload and re-test in the browser to catch regressions that only show up at runtime. The browser is your testing lab — code review finds potential bugs, browser testing finds actual bugs.
