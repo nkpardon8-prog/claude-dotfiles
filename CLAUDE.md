@@ -70,7 +70,7 @@ After establishing FRAIM context, check whether any available skill applies to t
 
 **Consequence = YES means:** the action writes to git, deploys to an external service, mutates a database, or sends data outside the local machine.
 
-Sub-commands not listed in this table (e.g. `/parsa:review:principles:*`, `/plan2bid:rag`, etc.) are triggered only by direct slash invocation — not by auto-routing. They still require confirmation if their parent category is marked YES.
+**Cascade behavior:** Some skills spawn sub-agents internally and should not be individually auto-routed. `/parsa:review:all` automatically runs all 11 review-principles agents (circular-deps, antipatterns, architecture-backend, architecture-frontend, tanstack-query, clarity, documentation, single-pattern, scope, self-contained, reuse). `/plan2bid` owns its sub-commands (compare, grade, price-check, pricing-profile, reverse-engineer, scenarios, doc-reader, rag, run, scope, validate) as cascade-only. Sub-agents in both groups fire when their parent runs. Users can invoke any sub-agent directly via its slash command for a focused single check.
 
 ### Skill Trigger Table
 
@@ -79,17 +79,39 @@ Sub-commands not listed in this table (e.g. `/parsa:review:principles:*`, `/plan
 | `/commit` | User asks to commit, save progress, or checkpoint code | YES — git write |
 | `/prepare-pr` | User asks to open a PR, push to GitHub, or publish changes | YES — git + GitHub |
 | `/checkpoint` | User asks to snapshot a named point in git history | YES — git write |
-| `/plan` | User asks to plan a feature, design an approach, or figure out how to build something | No |
-| `/simple-plan` | Small change that needs a quick gut-check before implementing | No |
-| `/implement` | User approves a plan and says to build it | No |
+| `/parsa:fix-bug` | User reports a bug, something is broken, unexpected behavior, or an error they can't explain | No |
+| `/parsa:create-prp` | User asks to plan a code feature in detail, create an implementation plan, or "make a PRP" | No |
+| `/parsa:simple-plan` | Small code change or quick task that needs a gut-check before touching files | No |
+| `/parsa:review-plan` | User shares a plan and asks for a review, second opinion, or gap check | No |
+| `/parsa:review-prp` | User asks to review or validate a PRP document | No |
+| `/parsa:implement-plan` | User approves a plan and says to build it, "go ahead", or "implement this" | No |
+| `/parsa:review:all` | User asks for a code review, "review my PR", "review these changes", or "check the code" | No |
+| `/parsa:linter:codebase` | User asks to fix all type errors or lint errors across the entire codebase | No |
+| `/parsa:linter:local-changes` | User asks to fix lint or type errors only in changed files | No |
+| `/parsa:linter:commit` | User asks to commit with validation — "clean commit", "lint before committing" | YES — git write |
+| `/parsa:linter:update-claude-docs` | User asks to update CLAUDE.md to reflect current patterns, "sync the claude docs" | No |
+| `/parsa:linter:validate-codebase-docs` | User asks to validate that documentation matches the actual codebase | No |
+| `/parsa:refactor:simple` | User asks for a quick quality check or "is this clean" on a small change | No |
+| `/parsa:refactor:medium` | User asks for a refactor analysis or quality score on a medium-sized change | No |
+| `/parsa:refactor:deep` | User asks for a deep refactor or architectural review of a large change | No |
+| `/parsa:refactor:refactor-full` | User asks for a comprehensive full refactor analysis across all dimensions | No |
+| `/parsa:cl:create_plan` | User wants to create a plan interactively with back-and-forth on approach | No |
+| `/parsa:cl:implement_plan` | User explicitly references a plan file by path or says "run the plan from ready-plans" | No |
+| `/parsa:cl:iterate_plan` | User wants to update or revise an existing plan based on feedback | No |
+| `/parsa:cl:describe_pr` | User asks to write a PR description or generate PR notes | No |
+| `/parsa:cl:commit` | User asks to commit but wants to approve what gets staged first | YES — git write |
+| `/parsa:cl:research_codebase` | User asks a deep question about how the codebase works and wants file-level references | No |
+| `/parsa:cl:research_web` | User asks to research a technical topic, find docs, or look up implementation patterns | No |
+| `/plan` | User asks to plan a non-code task or feature using the structured plan workflow | No |
+| `/simple-plan` | Non-code quick planning — gut-check for decisions, tasks, or general work | No |
+| `/implement` | User says to implement and references a non-parsa plan | No |
 | `/discussion` | User wants to explore ideas or decisions before acting or planning | No |
-| `/investigate` | User reports a bug, unexpected behavior, or error | No |
 | `/verify` | User asks to test, validate, or confirm something works | No |
 | `/tdd` | User asks to write tests first or use test-driven development | No |
-| `/research-web` | User asks to look something up, research a topic, or find documentation | No |
+| `/research-web` | User asks to research a non-technical topic or general question | No |
 | `/architect` | User wants high-level system design or architecture decisions | No |
-| `/codex-review` | User asks for a code review or second opinion | No |
-| `/buildskill` | User wants to create a new Claude skill/command | No |
+| `/codex-review` | User asks for a second-opinion code review from a different perspective | No |
+| `/buildskill` | User wants to create a new Claude skill or command | No |
 | `/learn` | User wants Claude to extract and save behavioral patterns from this session | YES — writes to dotfiles |
 | `/skillset` | User asks what skills are available or wants to initialize the skill registry | No |
 | `/netlifydeploy` | User asks to deploy, publish, or push to Netlify | YES — external deploy |
@@ -108,16 +130,8 @@ Sub-commands not listed in this table (e.g. `/parsa:review:principles:*`, `/plan
 | `/plan2bid:excel` | Export estimate to Excel | No |
 | `/plan2bid:pdf` | Export estimate to PDF | No |
 | `/ui-ux-pro-max` | Any UI/UX design, brand, slides, styling, or design system work | No |
-| `/parsa:fix-bug` | Systematic debugging with hypothesis-driven approach | No |
-| `/parsa:create-prp` | Create a PRP (detailed implementation plan) | No |
-| `/parsa:implement-plan` | Execute from an approved PRP | No |
-| `/parsa:review:all` | Comprehensive code review spawning multiple sub-reviewers | No |
-| `/parsa:linter:codebase` | Fix TypeScript / ESLint errors across the full codebase | No |
-| `/parsa:linter:local-changes` | Fix lint/type errors in changed files only | No |
-| `/parsa:refactor:medium` | Mid-size refactor | No |
-| `/parsa:refactor:deep` | Deep refactor | No |
 
-**Adding new skills:** Add one row to this table. Column 1 = slash command, column 2 = when to trigger it, column 3 = YES or No for real-world consequences. No other changes needed.
+**Adding new skills:** Add one row to this table. Column 1 = slash command, column 2 = when to trigger it (natural language — what the user would actually say), column 3 = YES or No for real-world consequences. No other changes needed.
 
 ---
 
