@@ -38,6 +38,228 @@ FRAIM still works — use `list_fraim_jobs()` and `get_fraim_job()` via the MCP 
 
 ---
 
+## Session Context
+
+### FRAIM Project Detection
+
+At the start of each session (when no project has been referenced yet in the conversation):
+1. Check if the current repo has a `fraim/` directory. If yes, read the project name from local stubs.
+2. If no `fraim/` directory, call `list_fraim_jobs()` and match by repo name or working directory path.
+3. Display `[Project: <name>]` as the first line of the first response.
+4. On every subsequent response, include `[Project: <name>]` at the top (one line only).
+5. Re-run detection only if the working directory changes to a different repository, or if there is no earlier reference to a project name in the current conversation.
+
+This section takes precedence over the auto-onboarding language in the FRAIM block above. The new behavior is ask-first.
+
+### No Project Found
+
+If no FRAIM project matches the current repo:
+- Ask: "No FRAIM project found for this repo. Would you like to create one? (y/n)"
+- If yes: run `get_fraim_job({ job: "project-onboarding" })`. Ask only what FRAIM cannot auto-detect: project name, domain, autonomy level, key stakeholders.
+- If no: continue without project context. Note the repo is untracked.
+
+### Memory Check
+
+At session start, check `~/.claude/projects/<project>/memory/MEMORY.md` for relevant context. Reference memory entries when they apply to the current task. If memory conflicts with what is currently observed in the codebase, trust what is observed and update the stale memory entry.
+
+---
+
+## Skill Routing
+
+After establishing FRAIM context, check whether any available skill applies to the current prompt. Announce briefly before using: "using /skill-name." Skills marked YES in the Consequence column require explicit user confirmation before running.
+
+**Consequence = YES means:** the action writes to git, deploys to an external service, mutates a database, or sends data outside the local machine.
+
+Sub-commands not listed in this table (e.g. `/parsa:review:principles:*`, `/plan2bid:rag`, etc.) are triggered only by direct slash invocation — not by auto-routing. They still require confirmation if their parent category is marked YES.
+
+### Skill Trigger Table
+
+| Skill | Trigger | Consequence |
+|---|---|---|
+| `/commit` | User asks to commit, save progress, or checkpoint code | YES — git write |
+| `/prepare-pr` | User asks to open a PR, push to GitHub, or publish changes | YES — git + GitHub |
+| `/checkpoint` | User asks to snapshot a named point in git history | YES — git write |
+| `/plan` | User asks to plan a feature, design an approach, or figure out how to build something | No |
+| `/simple-plan` | Small change that needs a quick gut-check before implementing | No |
+| `/implement` | User approves a plan and says to build it | No |
+| `/discussion` | User wants to explore ideas or decisions before acting or planning | No |
+| `/investigate` | User reports a bug, unexpected behavior, or error | No |
+| `/verify` | User asks to test, validate, or confirm something works | No |
+| `/tdd` | User asks to write tests first or use test-driven development | No |
+| `/research-web` | User asks to look something up, research a topic, or find documentation | No |
+| `/architect` | User wants high-level system design or architecture decisions | No |
+| `/codex-review` | User asks for a code review or second opinion | No |
+| `/buildskill` | User wants to create a new Claude skill/command | No |
+| `/learn` | User wants Claude to extract and save behavioral patterns from this session | YES — writes to dotfiles |
+| `/skillset` | User asks what skills are available or wants to initialize the skill registry | No |
+| `/netlifydeploy` | User asks to deploy, publish, or push to Netlify | YES — external deploy |
+| `/renderdeploy` | User asks to deploy to Render | YES — external deploy |
+| `/crm` | Any action involving leads, deals, emails, campaigns, or CRM sequences | YES — external CRM write |
+| `/fraim` | User references a FRAIM job directly or needs FRAIM orchestration | No |
+| `/dock` | Molecular docking workflow (MoleCopilot) | No |
+| `/screen` | Virtual screening campaign (MoleCopilot) | No |
+| `/admet` | ADMET / drug-likeness analysis (MoleCopilot) | No |
+| `/optimize` | Drug hit optimization into lead compound (MoleCopilot) | No |
+| `/prep-target` | Protein target preparation for docking (MoleCopilot) | No |
+| `/dashboard` | Launch MoleCopilot web dashboard | No |
+| `/plan2bid` | Construction estimation — full pipeline | No |
+| `/plan2bid:save-to-db` | Save estimate results to Supabase | YES — Supabase write |
+| `/plan2bid:save-scenario-to-db` | Save scenario results to Supabase | YES — Supabase write |
+| `/plan2bid:excel` | Export estimate to Excel | No |
+| `/plan2bid:pdf` | Export estimate to PDF | No |
+| `/ui-ux-pro-max` | Any UI/UX design, brand, slides, styling, or design system work | No |
+| `/parsa:fix-bug` | Systematic debugging with hypothesis-driven approach | No |
+| `/parsa:create-prp` | Create a PRP (detailed implementation plan) | No |
+| `/parsa:implement-plan` | Execute from an approved PRP | No |
+| `/parsa:review:all` | Comprehensive code review spawning multiple sub-reviewers | No |
+| `/parsa:linter:codebase` | Fix TypeScript / ESLint errors across the full codebase | No |
+| `/parsa:linter:local-changes` | Fix lint/type errors in changed files only | No |
+| `/parsa:refactor:medium` | Mid-size refactor | No |
+| `/parsa:refactor:deep` | Deep refactor | No |
+
+**Adding new skills:** Add one row to this table. Column 1 = slash command, column 2 = when to trigger it, column 3 = YES or No for real-world consequences. No other changes needed.
+
+---
+
+## Credential and MCP Handling
+
+### When a credential is shared in conversation
+
+Any time an API key, auth token, webhook secret, or other credential appears in conversation:
+1. Ask: "Should I store this in `~/.zshrc`? (y/n)"
+2. If yes: append `export VAR_NAME="value"` under the `# API Keys & Auth Tokens` section in `~/.zshrc`. Remove it from any config file where it appeared in plaintext. Confirm where it was stored.
+3. If no: note it will not persist.
+
+### Before using a stored credential
+
+The first time a credential from `~/.zshrc` is used in a conversation, ask:
+"Using [VAR_NAME] from `~/.zshrc` — OK? (y/n)"
+
+After confirmation, use without re-asking for the rest of the conversation.
+
+### Adding a new MCP server
+
+When a new MCP server is being added to `~/.claude/mcp.json`:
+1. Ask the user to define: what this server does, when to use it, what actions are destructive, and what auth it requires.
+2. Add a row to the MCP Catalog below.
+3. Do not write to `mcp.json` until the user confirms the definition.
+
+### MCP Catalog
+
+| Server | Purpose | Use When | Destructive Actions | Auth |
+|---|---|---|---|---|
+| `fraim` | FRAIM job orchestration | Any structured multi-phase work; project onboarding; skill/rule lookup | None (read + orchestrate only) | None |
+| `supabase` | Supabase database management | DB queries, schema changes, migrations, edge functions — only in Supabase-backed projects | Any write, migration, schema change, edge function deploy | OAuth 2.1 via browser (tokens in macOS Keychain under "Claude Code-credentials"). No env var needed. Re-auth via `claude mcp add --transport http supabase https://mcp.supabase.com/mcp` if auth breaks. |
+| `netlify` | Netlify site deployment | Deploying sites, managing env vars, checking deploy logs | Deploy, env var changes, site config changes | `NETLIFY_AUTH_TOKEN` in `~/.zshrc` |
+
+**Adding a new MCP:** Ask the user to fill in all five columns before editing `mcp.json`.
+
+---
+
+## Supabase Safety
+
+Supabase work only surfaces when: the user says "use Supabase," the task involves database queries or schema changes, or code changes imply data layer modifications.
+
+### Before any Supabase write
+
+1. Read `supabase/config.toml` or `.env` in the current repo to identify the project name or ref.
+2. If no config file exists, ask: "Which Supabase project should I use for this repo?"
+3. Ask: "About to edit Supabase project **[project name]** — confirm? (y/n)"
+4. If confirmed: proceed. No further confirmation needed until the working directory changes.
+5. If denied: stop. Do not execute any writes.
+
+### Hard rules
+
+- One repo = one Supabase project. Never commingle.
+- If the detected project does not match what the user expects, stop and clarify before proceeding.
+- Read-only queries (SELECT, explain, list tables) do not require confirmation.
+- Destructive actions (DROP, DELETE without WHERE, TRUNCATE, breaking schema changes) get an additional explicit warning even within a confirmed session.
+- If the working directory changes to a different repository, confirmation resets. Re-confirm before any writes in the new repo context.
+
+---
+
+## Netlify Safety
+
+Netlify actions only surface when the user asks to deploy, publish, or manage a Netlify site.
+
+### Before any Netlify deploy
+
+1. Read `netlify.toml` in the current repo to identify the site name or ID.
+2. If no `netlify.toml` exists, ask: "Which Netlify site should I deploy to?"
+3. Ask: "About to deploy to Netlify site **[site name]** — confirm? (y/n)"
+4. If confirmed: proceed. No further confirmation needed until the working directory changes.
+5. If denied: stop.
+
+### Hard rules
+
+- One repo = one Netlify site. Do not deploy one repo to a different site without asking.
+- Production deploys always require confirmation regardless of prior session state.
+- Environment variable changes on Netlify require explicit approval each time — they are not covered by the deploy confirmation.
+- If the working directory changes to a different repository, confirmation resets.
+
+---
+
+## Writing Style Guide
+
+Apply this guide ONLY when the user explicitly requests written output: "write this for me," "draft this," "match my writing style," "edit this," or "revise this." Do not apply to technical explanations, code comments, or conversational responses. Never include AI tool disclosures in written outputs.
+
+Writing style samples are stored per-project in `~/.claude/projects/<project>/memory/writing_style.md`. When the user shares prose they wrote (emails, assignments, proposals), extract voice patterns and update that file without being asked.
+
+### Voice
+
+Short declarative sentences. No warmup. Start with the point.
+Specific over vague — named entities, exact numbers, dollar amounts, dates.
+Active voice. Subject does the action.
+No filler openers. Never start with context-setting fluff.
+Contrast for emphasis: "X is not the problem. Y is the problem."
+Short punchy sentences as landing blows after longer setup.
+Conversational but not casual.
+Numbers in the prose, not in parentheses.
+
+### Hard Rules
+
+- No em dashes
+- No dashes as separators
+- Human punctuation only: periods, commas, question marks used correctly and sparingly
+- As simple as possible, no simpler
+- Short, concise, fluff-free
+
+### Banned Openers
+
+Never start a response or paragraph with:
+Certainly, Great question, Absolutely, Of course, I'd be happy to help, That's a great point, Let me clarify, I want to address, You've identified a key issue
+
+### Banned Transitions
+
+Avoid clustering these — use sparingly or not at all:
+Moreover, Furthermore, Additionally, Consequently, Subsequently, Accordingly, Hence, Notably, Importantly, Undoubtedly, Indeed, Nevertheless, Notwithstanding, In conclusion, In summary, In essence, It is worth noting that, It's important to note, It should be noted
+
+### Banned Vocabulary
+
+**Verbs:** Delve, Leverage, Utilize (use "use"), Harness, Streamline, Underscore, Showcase, Foster, Facilitate, Augment, Embark, Commence (use "start"), Garner
+
+**Adjectives:** Robust, Seamless, Comprehensive, Holistic, Multifaceted, Cutting-edge, Pivotal, Crucial, Paramount, Meticulous, Intricate, Transformative, Revolutionary, Groundbreaking, Innovative, Dynamic, Vibrant, Invaluable, Commendable, Exemplary, Unprecedented, Game-changing, Scalable, Agile, Future-proof, Proactive, Best-in-class, State-of-the-art
+
+**Nouns:** Landscape (as metaphor), Realm, Tapestry, Synergy, Testament, Underpinnings, Ecosystem (as metaphor)
+
+**Phrases:** "In today's fast-paced world", "In today's digital age", "Ever-evolving landscape", "At the forefront of", "Unlock the potential of", "Unleash the power of", "Harness the power of", "Pave the way for", "Embark on a journey", "Serves as a testament to", "Bridging the gap", "Push the boundaries", "Take it to the next level", "Elevate your X", "Drive results", "Data-driven decisions", "Holistic approach", "Tailored to your needs", "Actionable insights", "Seamless experience"
+
+### Banned Structure
+
+- Bullet lists for content that should be prose
+- Bold header + colon + description bullets on every point
+- A header above every paragraph
+- Uniform paragraph length — vary it
+- The "challenges" formula: "Despite its strengths, X faces challenges..."
+- Rhetorical mid-text questions: "But what does this mean for you?"
+- "Not just X, but also Y" framing used repeatedly
+- Rule of three applied indiscriminately to every sentence
+- Closing with "In conclusion" or "To summarize"
+- Appending present participial phrases to every sentence
+- Using "serves as," "functions as," "stands as," "marks," "remains" as synonyms for "is"
+
+---
+
 ## MoleCopilot — Molecular Docking Research Agent
 
 MoleCopilot is a computational drug discovery toolkit at ~/molecopilot/. It automates molecular docking workflows for Professor Kaleem Mohammed (University of Utah, Pharmacology & Biochemistry).
