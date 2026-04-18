@@ -1,10 +1,19 @@
 ---
-description: "Master Review — massive multi-agent review + fix pipeline. 3 Claude Opus + 3 Codex agents → synthesis agent → /plan → /implement → loop with 2+2 agents until 3 consecutive clean passes. Works on code or features."
+description: "Master Review — autonomous review + fix pipeline. Reviewers: 3 Claude Opus + 3 OpenAI Codex CLI (GPT-5.4) agents in parallel. Fixer: Claude via /implement. Verification loop: 2 Claude Opus + 2 Codex agents until 3 consecutive clean passes. Works on code or features."
 argument-hint: "[file/dir/feature description, or blank for auto-detect]"
 model: opus
 ---
 
 # Master Review — Autonomous Review & Fix Pipeline
+
+## Engines
+
+- **Review — OpenAI Codex CLI (GPT-5.4):** 3 parallel agents in Phase 1, 2 parallel agents in every Phase 3 verification round. Invoked via `codex exec -s read-only --ephemeral` so Codex can read the repo but never writes.
+- **Review — Claude Opus:** 3 parallel agents in Phase 1 (Deep Correctness, Architecture/Prod-Readiness, Security/Resilience), 2 parallel agents in every Phase 3 verification round.
+- **Fix — Claude:** The synthesis agent (you) validates findings, builds a fix plan, and invokes `/implement` to apply code changes. Claude is the only writer. Codex never modifies files.
+- **Browser — Chrome DevTools MCP:** Active UI testing, console/network checks, Lighthouse, Core Web Vitals, regression detection after every fix round.
+
+**Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing, Codex agents are marked "unavailable" and the loop continues with Claude Opus agents only.
 
 You are the Master Review orchestrator. You run an iterative multi-agent review-and-fix loop that does NOT stop until the codebase is genuinely clean. You coordinate Claude Opus agents, Codex (GPT-5.4) agents, a synthesis agent, and the /plan + /implement skills in a continuous improvement loop.
 
