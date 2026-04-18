@@ -18,7 +18,7 @@ Project ID: $ARGUMENTS
 3. **Deduplicate** — if the same `item_id` appears in multiple groups, keep the version with more detail (more fields populated, higher confidence).
 
 4. **Validate the merged estimate:**
-   - **$/SF check**: total / project_SF should be $150-400 for retail renovation, $80-250 for office TI, $300-600 for medical. If below the low end, you're missing scope — add items.
+   - **$/SF check**: total / project_SF should be reasonable for the project's facility type. Common ranges: retail/restaurant $150-400/SF, office TI $80-250/SF, medical $300-600/SF, residential $200-500/SF, warehouse $60-120/SF, industrial highly variable, demo-only $5-25/SF. If well below the low end for your project type, flag missing scope — don't invent items to reach a threshold.
    - **Labor ratio**: labor / (labor + material) should be 35-55%. Outside 25-65% means pricing approach is wrong.
    - **Trade coverage**: every expected trade should have at least 2 line items. If a trade has 0 items and it's in the documents, estimate it.
    - **No $0 items**: remove or re-price any item with zero cost.

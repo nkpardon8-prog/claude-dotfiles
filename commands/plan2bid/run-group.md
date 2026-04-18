@@ -67,6 +67,28 @@ Request: $ARGUMENTS
 }
 ```
 
+## Cross-Trade Coordination Sweep
+
+Every group terminal does a coordination sweep for items that commonly sit between trades and get missed when each trade is estimated in isolation. Pick the block matching your group name. Use these as search categories, not a required list.
+
+**If your group is `mep`** — CROSS-TRADE COORDINATION ITEMS at MEP boundaries:
+- Equipment electrical connections — disconnects, whips, controls wiring for HVAC/plumbing/fire-suppression equipment; dedicated circuits noted in equipment schedules
+- Piping between systems — gas to HVAC equipment, refrigerant between split-system components, condensate drains, trap primers, roof/wall/floor penetrations for MEP runs
+- Controls and interlocks — smoke detector interlocks with HVAC, thermostat locations/types, BACnet/BMS wiring, freeze-stats, occupancy sensors tied to equipment
+
+**If your group is `arch`** — CROSS-TRADE COORDINATION ITEMS at architectural boundaries:
+- Structural-finishes interfaces — in-wall blocking for fixtures, casework, grab bars, wall-mounted TVs/signage; headers at storefronts and new openings; backing steel for suspended items (video walls, pendant fixtures)
+- Ceiling system layers — framing/grid scope separate from gypsum/panel scope; acoustical tile in back-of-house areas distinct from architectural ceilings in public areas
+- Consumables and trim — joint tape/compound/beads for drywall, transition strips and cove base for flooring, reveals and corner protection
+
+**If your group is `gc`** — CROSS-TRADE COORDINATION ITEMS at GC/specialty boundaries:
+- Fire-life-safety integrations — fire stopping at rated-wall penetrations, sprinkler head coordination with ceiling types, fire extinguisher cabinets
+- Site conditions and temporary work — construction barricades, temp utilities, portable sanitation, site protection, dust control, phasing coordination
+- Permits, coordination, closeout — landlord coordination fees, permit runners, closeout documentation, attic stock, punch-list reserves
+- Specialty accessories — toilet room accessories, corner guards, wall protection, FRP panels, signage receiving & install
+
+**Anti-fabrication guard.** Include ONLY items the drawings or specs actually show. Do not fabricate items to fit categories. Every item must have `source_refs` with `doc_filename` and `page_number` pointing to where the scope is documented. If a category doesn't apply to this project, skip it.
+
 ## Rules
 
 - `line_items` is a FLAT array, NOT nested by trade
@@ -75,5 +97,6 @@ Request: $ARGUMENTS
 - All cost fields MUST be numbers, not formatted strings
 - `confidence`: "high", "medium", or "low" (lowercase)
 - Line items are DIRECT COSTS only — no markup baked in
+- Every item MUST have `source_refs` — items with empty source_refs get flagged as possibly fabricated
 - Do NOT run `/plan2bid:save-to-db` — the merge terminal handles that
 - Do NOT write `estimate_output.json` — only write `trade_items.json`

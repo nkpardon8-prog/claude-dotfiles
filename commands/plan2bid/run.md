@@ -318,6 +318,15 @@ Common gaps on multi-trade projects:
 
 Don't force categories that don't apply. A simple project may not need any of these. But for a retail fit-out, office TI, or renovation — if you're missing most of these, something is wrong.
 
+**Cross-trade coordination items** — in addition to the GC gap list above, look specifically at trade boundaries where line items commonly fall through the cracks:
+- **MEP boundaries** — equipment disconnects/whips/controls, gas/refrigerant/condensate piping between systems, smoke-detector-to-HVAC interlocks
+- **Structural-finishes boundaries** — in-wall blocking for fixtures/casework/TVs, headers at new openings, backing steel for suspended items
+- **Ceiling assemblies** — framing/grid scope separate from gypsum/panel scope, back-of-house ACT distinct from public-area architectural ceilings
+- **Fire-life-safety integrations** — fire stopping at rated-wall penetrations, sprinkler coordination with ceiling types
+- **Finishes consumables** — drywall joint tape/compound/beads, flooring transition strips and cove base
+
+Every added item must have `source_refs` pointing to the drawing/spec where the scope is documented. Don't fabricate to fill categories.
+
 Price these items yourself (the parent agent) and add them to the combined output. Write them as their own trade entries (e.g., trade: "general_conditions", trade: "doors_hardware").
 
 **Step 4: Assemble the combined estimate**
