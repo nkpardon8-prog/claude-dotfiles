@@ -46,16 +46,21 @@ python3 -c "import pdfplumber; pdf = pdfplumber.open('file.pdf'); [print(t) for 
 
 ## Reading Large PDFs
 
-The Read tool can only read 20 pages per PDF call. For any document over 18 pages, you MUST read in batches. Missing half a document because you only read the first 20 pages will produce an incomplete estimate — this is how entire MEP scopes get missed.
+Construction-drawing PDFs render larger than Anthropic's 2000px many-image ceiling. ALWAYS rasterize drawing PDFs to ≤1800px PNGs first and Read the PNGs one at a time. For small text-only PDFs (single-page specs, addenda, cover letters) you can skip rasterization and Read the PDF directly since you won't cross the 20-image threshold.
 
-**Before reading any PDF, check the page count:**
-```bash
-python3 -c "import pdfplumber; pdf = pdfplumber.open('FILE.pdf'); print(f'Total pages: {len(pdf.pages)}')"
-```
+**PDF Rasterization (for drawing PDFs)**
 
-**Batch strategy — 18 pages per batch:**
-- Pages 1-18, then 19-36, then 37-54, etc.
-- 18-page batches give a 2-page buffer under the 20-page limit
+    mkdir -p analysis/pages
+    find . -maxdepth 1 -type f \( -iname '*.pdf' \) -print0 \
+      | while IFS= read -r -d '' pdf; do
+          stem=$(basename "$pdf"); stem="${stem%.*}"
+          mkdir -p "analysis/pages/${stem}"
+          pdftoppm -scale-to 1800 "$pdf" "analysis/pages/${stem}/page" -png
+        done
+
+Then Read the PNGs one at a time (one Read call per PNG), per-PDF in page order.
+
+**Batch your findings writes every ~18 PNGs.** After reading each group of ~18 rasterized PNGs, write an `analysis/batch_NNN.md` file before continuing. This offloads detail to disk so earlier pages compressing out of context doesn't lose data. Read the PNGs one at a time, per-PDF in page order — never cross-PDF interleaved.
 
 **After each batch, save what you found to files in the project's analysis directory.** Create an `analysis/` folder alongside the uploaded files and write your findings there:
 
@@ -75,7 +80,7 @@ When all batches are complete, you have the full picture across all pages, organ
 
 When you need to read drawings, count symbols, or understand spatial layout, convert to images and use vision.
 
-Use the Read tool directly on PDF files — it handles them natively (20 pages per call, use `pages` parameter for specific ranges). For vision-based analysis of drawings, the Read tool renders PDF pages visually.
+Rasterize drawing PDFs to PNGs first (see Reading Large PDFs above). Read PNGs one at a time for vision analysis. Pre-capped dimensions (≤1800px long side) keep the conversation under the Anthropic API image ceiling regardless of how many sheets you end up reading.
 
 **Approach for drawing analysis:**
 1. **Read the legend/symbol schedule FIRST.** Know what every symbol means before counting anything.

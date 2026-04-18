@@ -12,7 +12,7 @@ Request: $ARGUMENTS
 ## Your Toolkit
 
 **Tools to use directly (do NOT load these as skills — use the built-in tools instead):**
-- To analyze documents: Use the Read tool on PDFs directly (vision-capable, 20 pages per call)
+- To analyze documents: First rasterize every PDF to ≤1800px PNGs using pdftoppm, then Read the PNGs one at a time. Construction drawings rendered by Claude Code's default PDF handling exceed Anthropic's 2000px many-image ceiling and permanently break sessions once the conversation crosses 20 images. See "PDF Rasterization" below.
 - To search documents: Use Grep/Glob on extracted text files
 - To research pricing: Use WebSearch and WebFetch directly — do NOT invoke /research-web
 - To search project docs semantically: Use Grep with relevant keywords
@@ -26,7 +26,19 @@ IMPORTANT: Do NOT invoke /research-web, /plan2bid:doc-reader, /plan2bid:scope, o
 
 **Pricing profile** — `~/plan2bid-profile/` contains the user's labor rates, material prices, markups, vendor preferences, waste factors, and company info. If this directory exists, load and use it. If it doesn't, mention that `/plan2bid:pricing-profile` can set one up, but proceed without it.
 
-**PDF reading** — Use the Read tool directly on PDFs (it handles them natively, 20 pages per call). For large documents, batch in 18-page chunks.
+**PDF Rasterization (MANDATORY first step for any PDF input)**
+
+Claude Code's Read tool on a raw PDF renders each page at a DPI that produces images >2000px on the long side for construction drawings. Anthropic's API enforces a 2000px per-image cap retroactively once a conversation accumulates more than 20 images, and the session cannot recover without /compact or a new session. To avoid this, rasterize every PDF to PNG up front:
+
+    mkdir -p analysis/pages
+    find . -maxdepth 1 -type f \( -iname '*.pdf' \) -print0 \
+      | while IFS= read -r -d '' pdf; do
+          stem=$(basename "$pdf"); stem="${stem%.*}"
+          mkdir -p "analysis/pages/${stem}"
+          pdftoppm -scale-to 1800 "$pdf" "analysis/pages/${stem}/page" -png
+        done
+
+Then Read the PNGs one at a time (one Read call per PNG). Organize by PDF stem and iterate in page order within each PDF — do not read cross-PDF interleaved order.
 
 ## Suggested Workflow
 
@@ -62,13 +74,13 @@ If the user gives you everything upfront, acknowledge and move. If critical info
 
 ### 2. Document Analysis
 
-**First: check page counts.** Before reading any PDF, find out how many pages it has. The Read tool can only process 20 pages per call. Documents over 18 pages need multiple Read passes in 18-page batches (pages 1-18, 19-36, 37-54, etc.). Don't start pricing until you've read the ENTIRE document set — missing the MEP sheets on a 40-page set because you only read the first 20 pages will produce an incomplete estimate.
+**First: rasterize all PDFs** (see "PDF Rasterization" above). Once PNGs exist under analysis/pages/<stem>/, read them one at a time, per-PDF in page order. Still write analysis/batch_NNN.md findings every ~18 pages so earlier context compresses gracefully. Missing the MEP sheets at the end is still the worst failure mode — read every PNG.
 
 After reading each batch, WRITE your findings to `analysis/` files before reading the next batch. Include specific quantities, model numbers, specifications, and drawing references — not just summaries. This is critical: on large documents (50-200+ pages), earlier batches will be compressed out of your context window. Anything not written to disk will be lost. Your `analysis/` directory is your external memory — use it aggressively.
 
 The same applies to pricing research: after a round of web searches, write your findings to `analysis/pricing.md` before doing more searches. Specific prices, sources, and confidence levels must be on disk, not just in context.
 
-Use the Read tool directly on PDFs (20 pages per call, use offset/limit for larger documents). For each batch, extract and record:
+For each batch of PNGs you read (see PDF Rasterization — never Read a raw PDF), extract and record:
 - Document manifest (what you have, classified by type)
 - Extracted schedules and tables
 - Scope summary by trade

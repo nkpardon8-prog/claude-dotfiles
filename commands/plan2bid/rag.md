@@ -14,7 +14,7 @@ Pick whichever is more convenient:
 curl -s "http://localhost:3001/api/search?projectId={ID}&q={QUERY}&n=5"
 ```
 
-**Primary approach:** Use the Read tool and Grep to search documents manually. Read PDFs directly (20 pages per call) and use Grep for keyword search across extracted text files.
+**Primary approach:** Use the Read tool and Grep to search documents manually. For any PDF vision reading, rasterize the PDF to ≤1800px PNGs first with pdftoppm (see /plan2bid:run for the exact command) and Read the PNGs one at a time. Use Grep for keyword search across extracted text files (pdftotext output).
 
 Returns JSON with results: `text`, source `filename`, `page` number, `type`, and relevance `score`.
 
@@ -33,7 +33,7 @@ Returns JSON with results: `text`, source `filename`, `page` number, `type`, and
 
 ## If embeddings don't exist yet
 
-If document embeddings aren't available, fall back to reading the documents directly with the Read tool and searching with Grep.
+If document embeddings aren't available, fall back to (a) pdftotext extraction + Grep for text search, and (b) rasterized-PNG Reads for visual analysis. Do not use Read directly on PDFs — it exceeds the 2000px image ceiling for construction drawings.
 
 ## If no API key
 

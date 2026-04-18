@@ -11,7 +11,14 @@ Request: $ARGUMENTS
 
 ## Instructions
 
-1. **Read all documents** in the current directory using the Read tool (batch in 20-page calls for PDFs over 18 pages)
+1a. **Rasterize all PDFs first.** Run:
+    mkdir -p analysis/pages
+    find . -maxdepth 1 -type f \( -iname '*.pdf' \) -print0 | while IFS= read -r -d '' pdf; do
+      stem=$(basename "$pdf"); stem="${stem%.*}"
+      mkdir -p "analysis/pages/${stem}"
+      pdftoppm -scale-to 1800 "$pdf" "analysis/pages/${stem}/page" -png
+    done
+1b. **Read the PNGs one at a time**, per-PDF in page order. Claude Code's Read on raw PDFs produces images >2000px that trip Anthropic's many-image ceiling and permanently break the session. Rasterizing to ≤1800px PNGs avoids this. Write batch findings every ~18 pages before moving on.
 2. **Extract scope** for your assigned trades only — quantities, specs, model numbers, drawing references
 3. **Price using WebSearch** — search for current market pricing in the project's location. Minimum 5 web searches per group. Search for specific model numbers when available.
 4. **Apply correct pricing approach:**
