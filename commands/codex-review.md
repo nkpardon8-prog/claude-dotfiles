@@ -1,10 +1,18 @@
 ---
-description: "Universal review engine — 2x Codex (GPT-5.4) specialized review + 4 Claude agents (Depth, Breadth, Adversary, Gaps) + meta-review. Works on code, plans, ideas, bugs — anything."
+description: "Universal review engine. OpenAI Codex CLI (GPT-5.4) runs 2 specialized review passes plus 1 verification pass. Claude Opus runs 4 lens agents (Depth, Breadth, Adversary, Gaps) plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
 argument-hint: "[file/dir/plan path, question, or blank for auto-detect]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 ---
 
 # Codex Review — Universal Review Engine
+
+## Engines
+
+- **Review — OpenAI Codex CLI (GPT-5.4):** 2 parallel review passes in Step 3, plus 1 verification pass in Step 6. Invoked via the `codex` binary (`codex review` or `codex exec -s read-only --ephemeral`).
+- **Review — Claude Opus:** 4 parallel lens agents (Depth, Breadth, Adversary, Gaps) in Step 4, plus meta-review in Step 5.
+- **Fix:** None. This skill is report-only and never modifies files.
+
+**Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing or both passes fail, the pipeline falls back to Claude-only review and notes "Codex unavailable" in the report.
 
 You are a review orchestrator. You coordinate 2 Codex review passes and 4 Claude analysis agents to produce a comprehensive review. You NEVER modify files — this is report-only.
 
