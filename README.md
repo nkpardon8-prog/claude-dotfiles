@@ -21,8 +21,13 @@ You are Claude Code, helping set up a Claude Code development environment on a n
 ├── rules/                  # Global rules applied to all projects
 ├── patterns/               # Learned behavioral patterns (populated by /learn)
 │   └── INDEX.md            # Pattern index with confidence scores
-└── scripts/
-    └── dotfiles-sync.sh    # Auto-push script for PostToolUse hook
+├── docs/                   # Long-form docs for individual commands
+│   └── transcribe.md       # /transcribe setup and usage
+├── scripts/
+│   ├── dotfiles-sync.sh    # Auto-push script for PostToolUse hook
+│   └── whisper-transcribe.sh  # Audio → text via OpenAI Whisper (used by /transcribe)
+├── .env.example            # Template for .env (API keys used by commands)
+└── .env                    # Your API keys (gitignored, never committed)
 ```
 
 ---
@@ -292,6 +297,7 @@ Then start a Claude Code session and verify:
 | `/plan_base` | Base plan template |
 | `/skillset` | Industry skill registry manager |
 | `/buildskill` | Design and build new industry-specific commands |
+| `/transcribe` | Transcribe audio (Voice Memos, calls) via OpenAI Whisper + project-aware report — see [docs/transcribe.md](docs/transcribe.md) |
 
 ### Industry-Specific Commands
 
