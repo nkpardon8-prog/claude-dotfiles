@@ -5,3 +5,8 @@ telemetry/
 session-env/
 *.log
 .DS_Store
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
