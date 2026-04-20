@@ -11,6 +11,9 @@ Before completing a task or pushing code, run both unit/line-level tests and end
 
 **All other repos** (project code, applications, libraries): NEVER push to GitHub without explicit user approval. Always show what will be pushed and ask for confirmation first. This applies to all branches, all remotes, no exceptions.
 
+## Browser MCP Cleanup
+After any session that uses `chrome-devtools` or `playwright` MCP tools, remind the user to terminate those processes to free RAM. A `Stop` hook auto-kills them on session end, but if the user manually stops a task mid-session, suggest running: `ps aux | grep -E 'chrome-devtools-mcp|playwright-mcp' | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null`. These processes accumulate across sessions and consume significant memory.
+
 ---
 
 ## FRAIM — Global Job Execution Framework
