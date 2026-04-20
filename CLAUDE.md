@@ -16,6 +16,29 @@ After any session that uses `chrome-devtools` or `playwright` MCP tools, remind 
 
 ---
 
+## Dead Process Cleaning
+
+### When to trigger
+- At the end of any development phase (feature complete, PR merged, project wrapped up, session ending after significant work)
+- If the user mentions RAM is low, the machine feels slow, or asks about stale processes
+- A cron job runs automatically every 2 days at 10AM — no need to remind for routine cleanup
+
+### What the cleanup does
+Kills: orphaned MCP servers (chrome-devtools, playwright, fraim, git-mcp-server) from dead Claude sessions, debug Chrome instances (`--user-data-dir=/tmp/chrome-debug`), and stale dev servers (next, vite, tsx watch) that have been running for more than 2 days.
+
+### How to run manually
+```bash
+~/.claude-dotfiles/scripts/clean-dead-processes.sh
+```
+Logs are written to `~/.claude/logs/process-cleanup.log`.
+
+### What NOT to kill automatically
+- Active Claude sessions in open terminals
+- Dev servers started within the last 2 days (user may still need them)
+- Named dev servers the user explicitly asks to keep
+
+---
+
 ## FRAIM — Global Job Execution Framework
 
 FRAIM is always available via the `fraim` MCP server. It provides structured, multi-phase jobs that orchestrate work across any domain.
