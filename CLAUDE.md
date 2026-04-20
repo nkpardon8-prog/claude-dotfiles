@@ -1,3 +1,12 @@
+# ⚠️ CRITICAL — DO NOT UPDATE NEXT.JS ⚠️
+
+> **NEVER upgrade, update, or change the Next.js version in ANY project until the user explicitly says it is OK to do so.**
+> The current Next.js version was involved in a security incident. Touching it — including patch bumps, lock file regeneration, or indirect upgrades through other package updates — is FORBIDDEN without direct user approval.
+> This applies to `npm update`, `npm install`, `yarn upgrade`, dependency PRs, and any automated tooling.
+> **If in doubt: do not touch Next.js. Ask first.**
+
+---
+
 # Global Rules
 
 ## Documentation Discipline
