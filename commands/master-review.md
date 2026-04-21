@@ -991,7 +991,7 @@ After 3 consecutive clean passes, run one final comprehensive browser check befo
 
 ## Target: [target summary]
 ## Rounds: [total rounds] | Clean passes: 3/3
-## Engine: [N]x Claude Opus + [N]x Codex (GPT-5.4) per round
+## Engine: [N]x Claude Opus + [N]x Codex (GPT-5.4) + [N]x Antigravity (Google AI) per round
 
 ## Fixes Applied
 | # | Finding | Severity | File(s) | Fixed In | Verified |
