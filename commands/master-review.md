@@ -845,9 +845,9 @@ prompt: |
   - If NOTHING new: "No new findings in unreviewed areas."
 ```
 
-**Codex Agent 1 — Verify + Cross-Layer (Bash — parallel):**
+**Codex Agent 1 — Verify + Cross-Layer (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-codex exec -o /tmp/master-review-codex-v1.txt --ephemeral -s read-only -C $WORKDIR "You are verifying code fixes and searching the ENTIRE codebase for new issues. Fixes applied: [FIXES SUMMARY]. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
+CODEX_HOME=$CODEX_HOME_1 $CODEX_BIN exec -o /tmp/master-review-codex-v1.txt --ephemeral -s read-only -C $WORKDIR "You are verifying code fixes and searching the ENTIRE codebase for new issues. Fixes applied: [FIXES SUMMARY]. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 JOB 1 - VERIFY: Check each fix is correct, didn't introduce regressions, didn't break callers.
 
