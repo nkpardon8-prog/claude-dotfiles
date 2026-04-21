@@ -178,6 +178,7 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/research-web` | User asks to research a non-technical topic or general question | No |
 | `/architect` | User wants high-level system design or architecture decisions | No |
 | `/codex-review` | User asks for a second-opinion code review from a different perspective | No |
+| `/antigravity` | User wants to switch Antigravity accounts, check account status, or open a Google Pro profile for auth | No |
 | `/buildskill` | User wants to create a new Claude skill or command | No |
 | `/learn` | User wants Claude to extract and save behavioral patterns from this session | YES — writes to dotfiles |
 | `/skillset` | User asks what skills are available or wants to initialize the skill registry | No |
