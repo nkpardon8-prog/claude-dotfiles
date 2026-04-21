@@ -733,10 +733,10 @@ Build a new `$CONTEXT_PACKAGE` that includes:
 3. Areas NOT yet explored (`$EXPLORED_AREAS` tracking)
 4. The current state of the code (re-read modified files)
 
-### 3b: Launch 4 agents in parallel (SINGLE message)
+### 3b: Launch 6 agents in parallel (SINGLE message)
 
 ```bash
-rm -f /tmp/master-review-codex-v{1,2}.txt
+rm -f /tmp/master-review-codex-v{1,2}.txt /tmp/master-review-ag-v{1,2}.txt
 ```
 
 **Claude Agent 1 — Verification + Deep Dive (Opus):**
