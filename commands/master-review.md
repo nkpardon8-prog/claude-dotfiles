@@ -434,9 +434,9 @@ prompt: |
   - If you find nothing: "No security or resilience issues found."
 ```
 
-**Codex Agent 1 — Cross-Layer Gaps & Data Integrity (Bash — parallel):**
+**Codex Agent 1 — Cross-Layer Gaps & Data Integrity (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-codex exec -o /tmp/master-review-codex-1.txt --ephemeral -s read-only -C $WORKDIR "You are a senior reviewer focused on CROSS-LAYER INTEGRITY and DATA CORRECTNESS. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
+CODEX_HOME=$CODEX_HOME_1 $CODEX_BIN exec -o /tmp/master-review-codex-1.txt --ephemeral -s read-only -C $WORKDIR "You are a senior reviewer focused on CROSS-LAYER INTEGRITY and DATA CORRECTNESS. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 CROSS-LAYER GAPS:
 - DB columns the API never reads/writes
