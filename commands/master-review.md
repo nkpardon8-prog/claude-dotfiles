@@ -548,12 +548,10 @@ For each: CRITICAL/IMPORTANT/MINOR, category, file:line, code snippet, explanati
 ```
 timeout: 300000
 
-**Antigravity Agent 1 — Bugs, Cross-Layer & Security (Bash — parallel):**
+**Antigravity Agent 1 — Bugs, Cross-Layer & Security (Bash — parallel, uses first configured Antigravity account):**
 ```bash
-AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
-AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-1
-echo "# Antigravity Agent 1 — google-pro-1" > /tmp/master-review-ag-1.txt
-timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 1" chat --mode agent \
+echo "# Antigravity Agent 1 — $AG_NAME_1" > /tmp/master-review-ag-1.txt
+timeout 30 "$AG_BIN" --user-data-dir "$AG_DIR_1" --profile "$AG_NAME_1" chat --mode agent \
   "You are a senior code reviewer. Review this codebase: [SCOPE DESCRIPTION]. Working directory: $WORKDIR. IMPORTANT: The checklist below is a STARTING POINT — report ANYTHING wrong you find. Check this list THEN go beyond:
 
 BUGS & CROSS-LAYER GAPS:
