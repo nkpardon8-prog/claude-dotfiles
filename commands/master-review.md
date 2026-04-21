@@ -880,7 +880,11 @@ prompt: |
 
 **Codex Agent 1 — Verify + Cross-Layer (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-CODEX_HOME=$CODEX_HOME_1 $CODEX_BIN exec -o /tmp/master-review-codex-v1.txt --ephemeral -s read-only -C $WORKDIR "You are verifying code fixes and searching the ENTIRE codebase for new issues. Fixes applied: [FIXES SUMMARY]. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
+/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
+  /tmp/master-review-codex-v1.txt \
+  "$CODEX_BIN" "$WORKDIR" \
+  "$CODEX_HOME_1" "$CODEX_HOME_2" \
+  "You are verifying code fixes and searching the ENTIRE codebase for new issues. Fixes applied: [FIXES SUMMARY]. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 JOB 1 - VERIFY: Check each fix is correct, didn't introduce regressions, didn't break callers.
 
