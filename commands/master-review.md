@@ -1025,7 +1025,7 @@ After 3 consecutive clean passes, run one final comprehensive browser check befo
 ### Cleanup
 
 ```bash
-rm -f /tmp/master-review-codex-{1,2,3}.txt /tmp/master-review-codex-v{1,2}.txt
+rm -f /tmp/master-review-codex-{1,2,3}.txt /tmp/master-review-codex-v{1,2}.txt /tmp/master-review-ag-{1,2}.txt /tmp/master-review-ag-v{1,2}.txt
 ```
 
 ---
