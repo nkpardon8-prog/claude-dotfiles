@@ -868,6 +868,51 @@ For each: CRITICAL/IMPORTANT/MINOR, category, file:line, code, explanation. Do 3
 ```
 timeout: 300000
 
+**Antigravity Verification Agent 1 — Verify Fixes + Bug Hunt (Bash — parallel):**
+```bash
+AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
+AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-1
+echo "# Antigravity Verification Agent 1 — Round $ROUND_NUMBER" > /tmp/master-review-ag-v1.txt
+timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 1" chat --mode agent \
+  "You are verifying code fixes and searching for new issues. Working directory: $WORKDIR. Fixes applied: [FIXES_SUMMARY]. Known issues — do NOT re-report these: [PREVIOUS_FINDINGS].
+
+JOB 1 - VERIFY FIXES: For each fix applied, check: did it solve the reported problem? Did it introduce a regression or new bug? Did it break any callers? Did it change any API contracts?
+
+JOB 2 - SEARCH THE WHOLE CODEBASE for new issues. Prioritize less-reviewed areas: [UNEXPLORED_AREAS] — but also revisit already-reviewed code with fresh eyes. Apply full checklist:
+- Bugs: off-by-ones, null checks, wrong comparisons, missing await, race conditions
+- Cross-layer gaps: DB vs API vs frontend mismatches, enum drift, type mismatches
+- Security: injection, auth bypass, IDOR, missing validation, data leaks
+- Safeguards: missing idempotency, missing bounds checks, missing cleanup on failure
+- Dead code: unused functions, imports, endpoints, stale TODOs
+- Scalability: N+1 queries, missing indexes, missing pagination
+- Contradictions: docs vs code, frontend vs backend validation, DB constraints vs app logic
+
+For each: VERIFIED/REGRESSION for fix checks; CRITICAL/IMPORTANT/MINOR, category, file:line for new findings. Output plain text." \
+  >> /tmp/master-review-ag-v1.txt 2>&1 || echo "Antigravity Verification Agent 1: timed out or GUI opened — findings unavailable" >> /tmp/master-review-ag-v1.txt
+```
+timeout: 45000
+
+**Antigravity Verification Agent 2 — Fresh Eyes Full Sweep (Bash — parallel):**
+```bash
+AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
+AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-2
+echo "# Antigravity Verification Agent 2 — Round $ROUND_NUMBER" > /tmp/master-review-ag-v2.txt
+timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 2" chat --mode agent \
+  "You are a fresh-eyes reviewer with NO prior context. Codebase: $WORKDIR. Prioritize unexplored areas: [UNEXPLORED_AREAS] but look everywhere. Known issues — do NOT re-report: [PREVIOUS_FINDINGS].
+
+Search the ENTIRE codebase for ANYTHING wrong. Apply the full checklist:
+- Architecture: coupling, god functions, circular deps, wrong-layer responsibilities
+- Production readiness: missing rate limits, missing timeouts, unbounded queries, environment-specific code
+- Code quality: magic numbers, copy-paste, inconsistent naming, functions >50 lines, console.log in prod
+- Documentation: comments describing old behavior, outdated README, stale type definitions
+- Cross-cutting: auth checks inconsistently applied, error response format inconsistent, timezone handling, missing monitoring
+- System-level: dependency vulnerabilities, missing env var validation at startup, config that breaks in prod
+
+For each: CRITICAL/IMPORTANT/MINOR, category, file:line, code snippet, explanation. Output plain text." \
+  >> /tmp/master-review-ag-v2.txt 2>&1 || echo "Antigravity Verification Agent 2: timed out or GUI opened — findings unavailable" >> /tmp/master-review-ag-v2.txt
+```
+timeout: 45000
+
 ### 3c: Process round results
 
 1. Collect all 4 agent outputs
