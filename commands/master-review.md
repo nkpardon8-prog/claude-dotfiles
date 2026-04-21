@@ -603,10 +603,11 @@ timeout: 45000
 
 1. Read Claude agent results from their return values
 2. Read Codex results from `/tmp/master-review-codex-{1,2,3}.txt`
-3. Handle Codex failures gracefully (empty/missing file = "Codex Agent N: unavailable")
-4. Compile all findings into `$ROUND_1_FINDINGS`
+3. Read Antigravity results from `/tmp/master-review-ag-{1,2}.txt`
+4. Handle failures gracefully — empty/missing file or "timed out" message = "Agent N: unavailable"
+5. Compile all findings into `$ROUND_1_FINDINGS`
 
-Output to user: **"Round 1 complete: [N] findings from 6 agents. Starting synthesis..."**
+Output to user: **"Round 1 complete: [N] findings from 8 agents (3 Claude + 3 Codex + 2 Antigravity). Starting synthesis..."**
 
 ---
 
