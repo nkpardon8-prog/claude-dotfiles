@@ -530,7 +530,76 @@ For each: CRITICAL/IMPORTANT/MINOR, category, file:line, code snippet, explanati
 ```
 timeout: 300000
 
-### After all 6 return:
+**Antigravity Agent 1 — Bugs, Cross-Layer & Security (Bash — parallel):**
+```bash
+AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
+AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-1
+echo "# Antigravity Agent 1 — google-pro-1" > /tmp/master-review-ag-1.txt
+timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 1" chat --mode agent \
+  "You are a senior code reviewer. Review this codebase: [SCOPE DESCRIPTION]. Working directory: $WORKDIR. IMPORTANT: The checklist below is a STARTING POINT — report ANYTHING wrong you find. Check this list THEN go beyond:
+
+BUGS & CROSS-LAYER GAPS:
+- Off-by-ones, null checks, wrong comparison operators, boolean logic errors
+- DB columns the API never reads/writes; API fields frontend expects but backend doesn't send
+- Enum values in DB not handled in code; status transitions that skip states
+- Type mismatches between layers (DB int vs API string, snake_case vs camelCase)
+- Missing transactions for multi-step writes; orphaned data from incomplete operations
+- Race conditions; missing await on async functions; unhandled promise rejections
+
+SECURITY:
+- SQL/XSS/command injection; path traversal; SSRF; IDOR
+- Endpoints missing auth guards; privilege escalation paths
+- Secrets in source code; error responses leaking internals
+- Missing input validation at system boundaries; missing rate limiting
+- Missing idempotency guards (double-submit); missing bounds checking
+
+PRODUCTION READINESS:
+- Missing timeouts on external calls; unbounded queries without LIMIT
+- N+1 queries; missing DB indexes; console.log left in production code
+- Missing retry logic; environment-specific code that breaks in prod
+
+For each finding: CRITICAL/IMPORTANT/MINOR, category, file:line, code snippet, explanation. Do 3 passes. Output results as plain text." \
+  >> /tmp/master-review-ag-1.txt 2>&1 || echo "Antigravity Agent 1: timed out or GUI opened — findings unavailable" >> /tmp/master-review-ag-1.txt
+```
+timeout: 45000
+
+**Antigravity Agent 2 — Architecture, Scalability & Dead Code (Bash — parallel):**
+```bash
+AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
+AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-2
+echo "# Antigravity Agent 2 — google-pro-2" > /tmp/master-review-ag-2.txt
+timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 2" chat --mode agent \
+  "You are a senior software architect and production readiness reviewer. Review this codebase: [SCOPE DESCRIPTION]. Working directory: $WORKDIR. IMPORTANT: The checklist below is a STARTING POINT — report ANYTHING wrong you find. Check this list THEN go beyond:
+
+ARCHITECTURE & DEAD CODE:
+- Tight coupling; leaky abstractions; god functions; circular dependencies
+- Responsibilities in the wrong layer (business logic in routes, DB queries in components)
+- Inconsistent patterns — same thing done multiple ways; missing abstraction for copy-pasted logic
+- Unused imports, variables, functions, components, files
+- TODO/FIXME/HACK comments never addressed; commented-out code blocks
+- Unused API endpoints, DB columns, npm packages
+
+SCALABILITY & PERFORMANCE:
+- N+1 queries (querying inside a loop instead of batching)
+- Missing DB indexes on WHERE/JOIN/ORDER BY columns
+- Large payloads without pagination; missing caching for repeated expensive queries
+- Synchronous operations that should be async; memory leaks
+- Frontend re-renders without memoization where performance matters
+
+CODE QUALITY & DOCUMENTATION:
+- Magic numbers/strings without named constants; functions longer than 50 lines
+- Deeply nested conditionals (3+ levels); copy-pasted code with slight variations
+- Inconsistent naming conventions; inconsistent error response shapes
+- API documentation that doesn't match actual endpoint behavior
+- Comments describing old behavior; README with wrong instructions
+- Type definitions that don't match runtime data; .env.example missing required vars
+
+For each finding: CRITICAL/IMPORTANT/MINOR, category, file:line, code snippet, explanation. Do 3 passes. Output results as plain text." \
+  >> /tmp/master-review-ag-2.txt 2>&1 || echo "Antigravity Agent 2: timed out or GUI opened — findings unavailable" >> /tmp/master-review-ag-2.txt
+```
+timeout: 45000
+
+### After all 8 return:
 
 1. Read Claude agent results from their return values
 2. Read Codex results from `/tmp/master-review-codex-{1,2,3}.txt`
