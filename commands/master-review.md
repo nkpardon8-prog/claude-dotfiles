@@ -864,9 +864,9 @@ For each: CRITICAL/IMPORTANT/MINOR, category, file:line, code, explanation. Do 3
 ```
 timeout: 300000
 
-**Codex Agent 2 — Fresh Eyes Full Sweep (Bash — parallel):**
+**Codex Agent 2 — Fresh Eyes Full Sweep (Bash — parallel, uses CODEX_HOME_2 account):**
 ```bash
-codex exec -o /tmp/master-review-codex-v2.txt --ephemeral -s read-only -C $WORKDIR "You are a fresh-eyes reviewer with NO prior context. Read the ENTIRE codebase: [SCOPE]. Search everywhere — prioritize less-reviewed areas [UNEXPLORED_AREAS] but also look at already-reviewed code with fresh eyes. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
+CODEX_HOME=$CODEX_HOME_2 $CODEX_BIN exec -o /tmp/master-review-codex-v2.txt --ephemeral -s read-only -C $WORKDIR "You are a fresh-eyes reviewer with NO prior context. Read the ENTIRE codebase: [SCOPE]. Search everywhere — prioritize less-reviewed areas [UNEXPLORED_AREAS] but also look at already-reviewed code with fresh eyes. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 Apply the FULL checklist — miss nothing:
 - Bugs: off-by-ones, null checks, wrong comparisons, async errors, race conditions
