@@ -751,6 +751,7 @@ Build a new `$CONTEXT_PACKAGE` that includes:
 
 ```bash
 rm -f /tmp/master-review-codex-v{1,2}.txt /tmp/master-review-ag-v{1,2}.txt
+# AG_BIN, AG_DIR_1/2, AG_NAME_1/2, CODEX_BIN, CODEX_HOME_1/2 were set in Phase 1 — they persist across rounds
 ```
 
 **Claude Agent 1 — Verification + Deep Dive (Opus):**
