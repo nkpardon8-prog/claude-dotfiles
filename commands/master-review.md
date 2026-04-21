@@ -491,7 +491,11 @@ timeout: 300000
 
 **Codex Agent 2 — Production Readiness & Scalability (Bash — parallel, uses CODEX_HOME_2 account):**
 ```bash
-CODEX_HOME=$CODEX_HOME_2 $CODEX_BIN exec -o /tmp/master-review-codex-2.txt --ephemeral -s read-only -C $WORKDIR "You are a senior production readiness and scalability reviewer. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
+/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
+  /tmp/master-review-codex-2.txt \
+  "$CODEX_BIN" "$WORKDIR" \
+  "$CODEX_HOME_2" "$CODEX_HOME_1" \
+  "You are a senior production readiness and scalability reviewer. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 PRODUCTION READINESS:
 - Missing rate limiting on public API endpoints
