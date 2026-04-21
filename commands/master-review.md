@@ -883,12 +883,10 @@ For each: CRITICAL/IMPORTANT/MINOR, category, file:line, code, explanation. Do 3
 ```
 timeout: 300000
 
-**Antigravity Verification Agent 1 — Verify Fixes + Bug Hunt (Bash — parallel):**
+**Antigravity Verification Agent 1 — Verify Fixes + Bug Hunt (Bash — parallel, uses first Antigravity account):**
 ```bash
-AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
-AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-1
-echo "# Antigravity Verification Agent 1 — Round $ROUND_NUMBER" > /tmp/master-review-ag-v1.txt
-timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 1" chat --mode agent \
+echo "# Antigravity Verification Agent 1 — $AG_NAME_1 — Round $ROUND_NUMBER" > /tmp/master-review-ag-v1.txt
+timeout 30 "$AG_BIN" --user-data-dir "$AG_DIR_1" --profile "$AG_NAME_1" chat --mode agent \
   "You are verifying code fixes and searching for new issues. Working directory: $WORKDIR. Fixes applied: [FIXES_SUMMARY]. Known issues — do NOT re-report these: [PREVIOUS_FINDINGS].
 
 JOB 1 - VERIFY FIXES: For each fix applied, check: did it solve the reported problem? Did it introduce a regression or new bug? Did it break any callers? Did it change any API contracts?
