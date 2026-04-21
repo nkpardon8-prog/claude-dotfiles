@@ -579,12 +579,10 @@ For each finding: CRITICAL/IMPORTANT/MINOR, category, file:line, code snippet, e
 ```
 timeout: 45000
 
-**Antigravity Agent 2 — Architecture, Scalability & Dead Code (Bash — parallel):**
+**Antigravity Agent 2 — Architecture, Scalability & Dead Code (Bash — parallel, uses second configured Antigravity account):**
 ```bash
-AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
-AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-2
-echo "# Antigravity Agent 2 — google-pro-2" > /tmp/master-review-ag-2.txt
-timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 2" chat --mode agent \
+echo "# Antigravity Agent 2 — $AG_NAME_2" > /tmp/master-review-ag-2.txt
+timeout 30 "$AG_BIN" --user-data-dir "$AG_DIR_2" --profile "$AG_NAME_2" chat --mode agent \
   "You are a senior software architect and production readiness reviewer. Review this codebase: [SCOPE DESCRIPTION]. Working directory: $WORKDIR. IMPORTANT: The checklist below is a STARTING POINT — report ANYTHING wrong you find. Check this list THEN go beyond:
 
 ARCHITECTURE & DEAD CODE:
