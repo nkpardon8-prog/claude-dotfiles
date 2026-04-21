@@ -132,14 +132,14 @@ Output to user: **"Master Review: [target summary] | Mode: [mode] | Browser: [N]
 
 ---
 
-## Phase 1: Initial Review — 3 Claude Opus + 3 Codex (6 agents in parallel)
+## Phase 1: Initial Review — 3 Claude Opus + 3 Codex + 2 Antigravity (8 agents in parallel)
 
-**CRITICAL: ALL 6 agents must launch in a SINGLE message for true parallel execution.**
+**CRITICAL: ALL 8 agents must launch in a SINGLE message for true parallel execution.**
 
 ### Prepare temp files
 
 ```bash
-rm -f /tmp/master-review-codex-{1,2,3}.txt
+rm -f /tmp/master-review-codex-{1,2,3}.txt /tmp/master-review-ag-{1,2}.txt
 ```
 
 ### Launch ALL 6 simultaneously:
