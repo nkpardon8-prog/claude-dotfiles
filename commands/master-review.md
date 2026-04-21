@@ -136,10 +136,28 @@ Output to user: **"Master Review: [target summary] | Mode: [mode] | Browser: [N]
 
 **CRITICAL: ALL 8 agents must launch in a SINGLE message for true parallel execution.**
 
-### Prepare temp files
+### Prepare temp files and read account configuration
 
 ```bash
 rm -f /tmp/master-review-codex-{1,2,3}.txt /tmp/master-review-ag-{1,2}.txt
+
+# Read profile configuration dynamically from router.json so taskbar account switches are respected
+ROUTER_CONFIG=/Users/nickpardon/claude-hybrid-control/config/router.json
+
+AG_BIN=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); print(c['commands'].get('antigravity', 'antigravity'))")
+CODEX_BIN=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); print(c['commands'].get('codex', 'codex'))")
+
+# Antigravity: first 2 profiles from config (switch accounts in taskbar to change these)
+AG_DIR_1=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); p=list(c['profiles']['antigravity'].values()); print(p[0]['user_data_dir']) if p else print('')")
+AG_NAME_1=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); p=list(c['profiles']['antigravity'].values()); print(p[0].get('profile_name','Profile 1')) if p else print('Profile 1')")
+AG_DIR_2=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); p=list(c['profiles']['antigravity'].values()); print(p[1]['user_data_dir']) if len(p)>1 else print('')")
+AG_NAME_2=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); p=list(c['profiles']['antigravity'].values()); print(p[1].get('profile_name','Profile 2')) if len(p)>1 else print('Profile 2')")
+
+# Codex: first 2 profiles from config (each has its own CODEX_HOME = its own OpenAI account)
+CODEX_HOME_1=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); p=list(c['profiles']['codex'].values()); print(p[0]['codex_home']) if p else print('')")
+CODEX_HOME_2=$(/usr/bin/python3 -c "import json; c=json.load(open('$ROUTER_CONFIG')); p=list(c['profiles']['codex'].values()); print(p[1]['codex_home']) if len(p)>1 else print(p[0]['codex_home'] if p else '')")
+
+echo "Accounts: Codex[$CODEX_HOME_1, $CODEX_HOME_2] | Antigravity[$AG_NAME_1, $AG_NAME_2]"
 ```
 
 ### Launch ALL 6 simultaneously:
