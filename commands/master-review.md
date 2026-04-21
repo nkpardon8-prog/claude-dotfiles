@@ -903,7 +903,11 @@ timeout: 300000
 
 **Codex Agent 2 — Fresh Eyes Full Sweep (Bash — parallel, uses CODEX_HOME_2 account):**
 ```bash
-CODEX_HOME=$CODEX_HOME_2 $CODEX_BIN exec -o /tmp/master-review-codex-v2.txt --ephemeral -s read-only -C $WORKDIR "You are a fresh-eyes reviewer with NO prior context. Read the ENTIRE codebase: [SCOPE]. Search everywhere — prioritize less-reviewed areas [UNEXPLORED_AREAS] but also look at already-reviewed code with fresh eyes. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
+/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
+  /tmp/master-review-codex-v2.txt \
+  "$CODEX_BIN" "$WORKDIR" \
+  "$CODEX_HOME_2" "$CODEX_HOME_1" \
+  "You are a fresh-eyes reviewer with NO prior context. Read the ENTIRE codebase: [SCOPE]. Search everywhere — prioritize less-reviewed areas [UNEXPLORED_AREAS] but also look at already-reviewed code with fresh eyes. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 Apply the FULL checklist — miss nothing:
 - Bugs: off-by-ones, null checks, wrong comparisons, async errors, race conditions
