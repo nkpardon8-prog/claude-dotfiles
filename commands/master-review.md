@@ -915,10 +915,11 @@ timeout: 45000
 
 ### 3c: Process round results
 
-1. Collect all 4 agent outputs
-2. Validate findings yourself (read the code, verify each one)
-3. Remove false positives and duplicates of previous findings
-4. Check for regressions from fixes
+1. Collect all 6 agent outputs (2 Claude + 2 Codex + 2 Antigravity)
+2. Read Antigravity results from `/tmp/master-review-ag-v{1,2}.txt` — handle "timed out" gracefully
+3. Validate findings yourself (read the code, verify each one)
+4. Remove false positives and duplicates of previous findings
+5. Check for regressions from fixes
 
 ### 3d: Determine loop continuation
 
