@@ -905,12 +905,10 @@ For each: VERIFIED/REGRESSION for fix checks; CRITICAL/IMPORTANT/MINOR, category
 ```
 timeout: 45000
 
-**Antigravity Verification Agent 2 — Fresh Eyes Full Sweep (Bash — parallel):**
+**Antigravity Verification Agent 2 — Fresh Eyes Full Sweep (Bash — parallel, uses second Antigravity account):**
 ```bash
-AG=/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity
-AG_DIR=/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-2
-echo "# Antigravity Verification Agent 2 — Round $ROUND_NUMBER" > /tmp/master-review-ag-v2.txt
-timeout 30 "$AG" --user-data-dir "$AG_DIR" --profile "Google Pro 2" chat --mode agent \
+echo "# Antigravity Verification Agent 2 — $AG_NAME_2 — Round $ROUND_NUMBER" > /tmp/master-review-ag-v2.txt
+timeout 30 "$AG_BIN" --user-data-dir "$AG_DIR_2" --profile "$AG_NAME_2" chat --mode agent \
   "You are a fresh-eyes reviewer with NO prior context. Codebase: $WORKDIR. Prioritize unexplored areas: [UNEXPLORED_AREAS] but look everywhere. Known issues — do NOT re-report: [PREVIOUS_FINDINGS].
 
 Search the ENTIRE codebase for ANYTHING wrong. Apply the full checklist:
