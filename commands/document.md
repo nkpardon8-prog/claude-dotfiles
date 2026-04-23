@@ -11,12 +11,18 @@ Audit existing documentation or create it from scratch. Output lives in `./docs/
 
 ## Step 1: Detect current state
 
-Run in parallel:
-- `Glob docs/**/*.md` and `Glob **/README.md` and `Glob CLAUDE.md` — find existing docs
+Batch these independent tool calls in one message:
+- `Glob docs/**/*.md`, `Glob **/README.md`, `Glob **/CLAUDE.md` — find existing docs
+- `Read ./CLAUDE.md` if present at repo root
 - Detect stack: check for `package.json`, `pyproject.toml`, `Cargo.toml`, `supabase/`, `next.config.*`, `vite.config.*`, framework markers
+- Detect monorepo: `workspaces` in package.json, `pnpm-workspace.yaml`, `turbo.json`, `lerna.json`, `nx.json`
 - Check for DB: `supabase/`, `prisma/`, `drizzle/`, `migrations/`, `*.sql`
 - Check for API surface: `app/api/`, `pages/api/`, `routes/`, `src/api/`, `functions/`, edge functions
-- Check for external integrations: grep `.env.example` keys, search code for fetch calls to non-local URLs, look for SDK imports (stripe, supabase, openai, anthropic, netlify, etc.)
+- Check for auth: middleware files, `lib/auth`, NextAuth/Clerk/Supabase-auth imports
+- Check for deployment: `netlify.toml`, `render.yaml`, `vercel.json`, `Dockerfile`, `fly.toml`
+- Check for external integrations: `Read .env.example` if present, search code for SDK imports (stripe, supabase, openai, anthropic, netlify, etc.)
+
+**Monorepo handling:** if detected, ask the user: "Monorepo detected. Document the root, or per-package? (root / per-package / both)" and proceed accordingly. Per-package creates `packages/<name>/docs/` per package.
 
 ## Step 2: Classify
 
