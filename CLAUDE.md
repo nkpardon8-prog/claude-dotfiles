@@ -182,6 +182,8 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/buildskill` | User wants to create a new Claude skill or command | No |
 | `/learn` | User wants Claude to extract and save behavioral patterns from this session | YES — writes to dotfiles |
 | `/skillset` | User asks what skills are available or wants to initialize the skill registry | No |
+| `/document` | User asks to document the project, audit docs, update docs, or bootstrap missing docs | No |
+| `/pre-compact` | User says they want to prepare for compaction, save state before compact, or "dump context before you forget" | No |
 | `/netlifydeploy` | User asks to deploy, publish, or push to Netlify | YES — external deploy |
 | `/renderdeploy` | User asks to deploy to Render | YES — external deploy |
 | `/crm` | Any action involving leads, deals, emails, campaigns, or CRM sequences | YES — external CRM write |
