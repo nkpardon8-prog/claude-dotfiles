@@ -32,33 +32,48 @@ Batch these independent tool calls in one message:
 
 ## Step 3a: BOOTSTRAP mode
 
-Create `./docs/` with this skeleton, skipping files for areas that don't apply:
+Create `./docs/` with this skeleton, skipping files for areas that don't apply. If an existing file in `docs/` covers the same area under a different filename (e.g. `api.md` vs `apis.md`), reuse the existing filename rather than creating a duplicate.
 
 ```
 docs/
   README.md          index, "start here" for humans and LLMs
-  architecture.md    system overview, data flow, major components
+  INDEX.json         machine-readable manifest for LLM navigation
+  architecture.md    system overview, data flow, major components, auth flow
   database.md        schema, migrations, RLS (if applicable)
   backend.md         services, routes, business logic
   frontend.md        components, state, routing, build
   apis.md            internal API surface, request/response shapes
-  integrations.md    external services, webhooks, credentials
+  integrations.md    external services, webhooks, env var names
+  operations.md      deployment, runtime, observability, background jobs
 ```
 
-Each file starts with frontmatter:
+Each `.md` file starts with frontmatter:
 ```yaml
 ---
 title: [Area]
 source_files: [list of files/dirs this doc describes]
+entry_points: [main exported symbols, route paths, or key identifiers]
 last_verified: YYYY-MM-DD
 ---
 ```
 
-`docs/README.md` is the index. It lists every doc file with a one-line summary and a "Start here if you want to..." section pointing to the right entry point for common tasks.
+`docs/README.md` is the human index: list every doc file with a one-line summary and a "Start here if you want to..." section pointing to the right entry point for common tasks.
 
-Spawn parallel `Explore` agents (one per applicable area) to gather source material. Each agent returns: purpose of the area, key files and their roles, data shapes, entry points, gotchas. Write each doc from the agent's findings.
+`docs/INDEX.json` is the LLM manifest:
+```json
+{
+  "docs": [
+    {"path": "docs/architecture.md", "title": "Architecture", "summary": "...", "source_files": [...], "entry_points": [...]}
+  ]
+}
+```
+This lets an LLM load one small file and decide what to read next.
 
-For `integrations.md`: list each external service, what it's used for, which env vars it needs, and where in the code it's invoked. Never write actual credential values.
+Spawn parallel sub-agents using the Task tool with `subagent_type: Explore` (one per applicable area) to gather source material. Each agent returns: purpose of the area, key files and their roles, data shapes, entry points, gotchas. Write each doc from the agent's findings.
+
+For `integrations.md`: list each external service, what it's used for, which env vars it needs (names only, never values), and where in the code it's invoked.
+
+Target 150–250 lines per doc. If an area is larger, split by subtopic (e.g. `backend/routes.md`, `backend/services.md`) and link from the parent doc and from `INDEX.json`.
 
 ## Step 3b: AUDIT mode
 
