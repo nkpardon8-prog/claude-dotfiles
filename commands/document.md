@@ -91,6 +91,8 @@ If `CLAUDE.md` exists, cross-reference it and flag conflicts between `CLAUDE.md`
 
 Rewrite `docs/README.md` so it accurately reflects the current set of files and their summaries. Keep it short. One line per file plus a small "Start here if..." map.
 
+Regenerate `docs/INDEX.json` from the current set of docs and their frontmatter.
+
 ## Step 5: Report
 
 Output a compact summary:
