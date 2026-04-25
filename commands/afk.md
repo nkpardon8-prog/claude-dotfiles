@@ -59,8 +59,21 @@ Use the Bash tool to run `mkdir -p <session_dir>`.
 
 ## Step 3 — Concurrency guard
 
-For each existing `<base_dir>/*-session/state.json`:
-- If its `deadline_at > now` AND no `STOP` file in that session dir, it is **active**.
+Reject if both `--force` AND `--takeover` are passed (conflicting):
+```
+Conflicting flags: --force and --takeover are mutually exclusive.
+```
+EXIT.
+
+A session is **active** if EITHER:
+- `deadline_at != null AND deadline_at > now` (finite, not yet expired), OR
+- `deadline_at == null` (infinite — only stops on STOP sentinel)
+
+…AND the session has no `STOP` file.
+
+Worktree-aware glob: also check the shared `tmp/afk` derived from
+`git rev-parse --git-common-dir` (parent dir → `/tmp/afk`) so sibling
+worktrees see each other's sessions.
 
 If any active session exists:
 - `--takeover` provided → `touch <other_session>/STOP`, continue.
@@ -72,6 +85,14 @@ If any active session exists:
     --takeover   stop the existing session and start fresh
   ```
   EXIT.
+
+Also at this step: prune session dirs older than 7 days whose
+`summary.md` exists (i.e. cleanly finalized). Skip dirs with no
+summary — those may be crashed-mid-run sessions worth keeping for
+forensics.
+
+Clamp `hours` to `[0, 168]` (1 week max). If user passed `> 168`,
+clamp and warn in the status line. `0` (infinite) is unaffected.
 
 ---
 
