@@ -131,7 +131,9 @@ if default_branch is non-null:
 timeout 30s grep -RInE "TODO|FIXME|XXX" \
   --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=tmp \
   --exclude-dir=vendor --exclude-dir=dist --exclude-dir=build . \
-  | head -500
+  | head -501
+# Use head -501 (NOT 500) so a count > 500 is observable. If the
+# captured list has 501 lines, the cap was hit and there are more.
 # (grep exit 1 = no matches → OK; treat as empty)
 
 # Markdown files
@@ -141,8 +143,9 @@ timeout 30s find . -name "*.md" -not -path "*/node_modules/*" -not -path "*/tmp/
 timeout 30s git log --oneline -20
 ```
 
-If the TODO list exceeds 500, create one `todo_triage` task per
-top-level directory bucket instead of a single global task.
+If the TODO list has > 500 lines (i.e. 501 captured), the cap was hit:
+create one `todo_triage` task per top-level directory bucket instead
+of a single global task.
 
 **Modules** = top-level subdirs of `src/`, `packages/`, `apps/`, `lib/`, `internal/` that exist. If none exist, modules = `["."]`.
 
