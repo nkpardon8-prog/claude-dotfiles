@@ -93,6 +93,8 @@ forensics.
 
 Clamp `hours` to `[0, 168]` (1 week max). If user passed `> 168`,
 clamp and warn in the status line. `0` (infinite) is unaffected.
+**`deadline_at` is computed from the CLAMPED `hours`:**
+`deadline_at = started_at + clamped_hours * 3600` (or `null` if infinite).
 
 ---
 
