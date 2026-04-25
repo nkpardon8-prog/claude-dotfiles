@@ -1,8 +1,31 @@
-# Claude Dotfiles — Agent-Directed Setup Guide
+# Claude Dotfiles
+
+Personal Claude Code configuration that syncs across devices. Slash commands, sub-agents, global rules, learned patterns, and a 1Password-backed credentials catalog — all version-controlled in one repo.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  ~/.claude-dotfiles/   ← edit here, push from here              │
+│        │                                                         │
+│        │   symlinks                                              │
+│        ▼                                                         │
+│  ~/.claude/CLAUDE.md, /commands, /agents, /rules, /patterns     │
+│        │                                                         │
+│        ▼                                                         │
+│  Claude Code session    SessionStart: git pull (auto)           │
+│                         PostToolUse:  git push  (auto)          │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Three docs:**
+- This file — setup on a new machine.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how it all wires together (with diagrams).
+- [`docs/COMMANDS.md`](docs/COMMANDS.md) — full slash-command reference.
+
+---
 
 ## For AI Agents
 
-You are Claude Code, helping set up a Claude Code development environment on a new device. Follow these steps **IN ORDER**. Where you see `[USER INPUT]`, ask the user to provide the value. Do not skip steps. Do not guess values for `[USER INPUT]` markers.
+You are Claude Code, helping set up a Claude Code development environment on a new device. Follow the steps below **IN ORDER**. Where you see `[USER INPUT]`, ask the user to provide the value. Do not skip steps. Do not guess values for `[USER INPUT]` markers.
 
 **Important context:** This dotfiles repo auto-syncs across devices. Changes are pulled at session start and pushed automatically after any config modifications. Project code repos are NEVER pushed without explicit user approval — only this dotfiles repo auto-syncs.
 
@@ -277,90 +300,39 @@ Then start a Claude Code session and verify:
 
 ---
 
-## Command Reference
+## Commands at a glance
 
-### Core Commands
+Full reference (every command, grouped by purpose, with what they do): **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
 
-| Command | Purpose |
-|---------|---------|
-| `/plan` | Create implementation plans with codebase + web research |
-| `/simple-plan` | Quick gut-check plan before implementing |
-| `/implement` | Execute an approved plan via parallel sub-agents |
-| `/investigate` | Hypothesis-driven bug root cause analysis |
-| `/commit` | Selective git commit (only session-related changes) |
-| `/prepare-pr` | Commit, rebase, build, and create/update a PR |
-| `/discussion` | Interactive discussion about approach/features |
-| `/research-web` | Web research with validated references |
-| `/learn` | Extract behavioral patterns from the session |
-| `/architect` | Interactive project documentation scaffolding |
-| `/verify` | Full build/typecheck/lint/test/security pipeline |
-| `/checkpoint` | Named git snapshot for safe rollback |
-| `/tdd` | RED/GREEN/REFACTOR test-driven development |
-| `/plan_base` | Base plan template |
-| `/skillset` | Industry skill registry manager |
-| `/buildskill` | Design and build new industry-specific commands |
-| `/transcribe` | Transcribe audio (Voice Memos, calls) via OpenAI Whisper + project-aware report — see [docs/transcribe.md](docs/transcribe.md) |
-| `/load-creds` | Inject API keys from 1Password into a project's `.env` via `op inject`. Reads `~/.claude-dotfiles/credentials.md` catalog. |
+The high-level categories:
 
-### Industry-Specific Commands
+| Category | Highlights |
+|---|---|
+| **Plan & implement** | `/discussion` → `/plan` → `/implement`. Plus `/simple-plan` for one-offs. |
+| **Investigate & review** | `/investigate`, `/codex-review`, `/master-review`, `/local-review`, `/supabase-audit` |
+| **Git, commits, PRs** | `/commit`, `/checkpoint`, `/prepare-pr` |
+| **Sessions & context** | `/pre-compact` (calibrated handoffs across compactions), `/learn`, `/document`, `/architect` |
+| **Verify** | `/verify`, `/tdd` |
+| **Research** | `/research-web`, `/transcribe` ([setup](docs/transcribe.md)) |
+| **Credentials** | `/load-creds` (1Password → `.env`) |
+| **Account / mode** | `/antigravity`, `/hybrid-status`, `/set-primary-cloud`, `/set-primary-local`, `/toggle-local-review` |
+| **Deploy** | `/netlifydeploy`, `/renderdeploy` |
+| **CRM** | `/crm` |
+| **Construction estimation** | `/plan2bid` + 16 sub-commands (`:run`, `:scope`, `:compare`, `:pdf`, etc.) |
+| **UI/UX** | `/ui-ux-pro-max` + 6 sub-commands (`:design`, `:design-system`, `:brand`, `:ui-styling`, `:slides`, `:banner-design`) |
+| **Drug discovery (MoleCopilot)** | `/dock`, `/screen`, `/admet`, `/optimize`, `/prep-target`, `/dashboard` |
+| **FRAIM** | `/fraim` (job orchestration via MCP) |
+| **Partner suite** | `/parsa:*` (~25 commands across plan, review, linter, refactor, cl) |
 
-| Command | Purpose |
-|---------|---------|
-| `/plan2bid` | Construction estimation orchestrator |
-| `/plan2bid:run` | Full estimation pipeline (docs to estimate) |
-| `/plan2bid:doc-reader` | Analyze construction PDFs and blueprints |
-| `/plan2bid:rag` | Semantic search across construction docs |
-| `/plan2bid:scope` | Scope boundary analysis per trade |
-| `/plan2bid:compare` | Side-by-side estimate comparison |
-| `/plan2bid:grade` | Grade estimate against human reference |
-| `/plan2bid:price-check` | Verify material pricing against web sources |
-| `/plan2bid:pricing-profile` | Manage labor rates, markups, vendor prefs |
-| `/plan2bid:scenarios` | What-if scenario generator |
-| `/plan2bid:validate` | Pre-flight validation for estimation |
-| `/plan2bid:pdf` | Export estimate to professional PDF |
-| `/plan2bid:excel` | Export estimate to styled Excel workbook |
-| `/plan2bid:reverse-engineer` | Reverse-engineer estimator methodology |
-| `/crm` | CRM agent (leads, emails, campaigns, Apollo) |
-| `/netlifydeploy` | One-shot Netlify deployment |
-| `/dock` | Molecular docking job |
-| `/screen` | Virtual screening campaign |
-| `/optimize` | Optimize docking hits via MolMIM AI |
-| `/admet` | ADMET/drug-likeness analysis |
-| `/dashboard` | Launch MoleCopilot web dashboard |
-| `/prep-target` | Prepare protein target for docking |
-
-### Partner Commands (parsa/)
-
-| Command | Purpose |
-|---------|---------|
-| `/parsa:simple-plan` | Quick plan |
-| `/parsa:implement-plan` | Execute plan from file |
-| `/parsa:review-plan` | Review plan for gaps and simplification |
-| `/parsa:fix-bug` | Systematic debugging with hypothesis-driven logging |
-| `/parsa:create-prp` | Create PRP |
-| `/parsa:review-prp` | Review PRP |
-| `/parsa:review:all` | Comprehensive 11-principle code review |
-| `/parsa:linter:codebase` | Fix all TS type errors + ESLint warnings |
-| `/parsa:linter:local-changes` | Fix lint in changed files only |
-| `/parsa:linter:commit` | Commit |
-| `/parsa:refactor:simple` | Simple refactor |
-| `/parsa:refactor:medium` | Medium refactor |
-| `/parsa:refactor:deep` | Deep refactor |
-| `/parsa:cl:create_plan` | Implementation plan |
-| `/parsa:cl:implement_plan` | Execute plan |
-| `/parsa:cl:commit` | Git commit |
-| `/parsa:cl:research_web` | Web research |
-| `/parsa:cl:research_codebase` | Codebase research |
-
-## Agent Reference
+### Sub-agents (spawned by skills, not invoked directly)
 
 | Agent | Purpose |
-|-------|---------|
-| `codebase-explorer` | Read-only agent for exploring and understanding codebases |
-| `implementation-reviewer` | Reviews completed implementation against the original plan |
-| `implementer` | Executes implementation plans by writing code changes |
-| `plan-reviewer` | Reviews plans for gaps, risks, and feasibility |
-| `researcher` | Performs web and codebase research |
+|---|---|
+| `codebase-explorer` | Read-only codebase exploration |
+| `implementation-reviewer` | Reviews completed implementation vs the original plan |
+| `implementer` | Executes plans by writing code changes |
+| `plan-reviewer` | Reviews plans for gaps, risks, feasibility |
+| `researcher` | Web + codebase research |
 
 ---
 
@@ -377,36 +349,20 @@ On other devices, changes appear at next session start (auto-pull).
 
 ---
 
-## Adding New Commands, Agents, or Rules
+## Adding new commands, agents, or rules
 
-**Adding a new command:** Create `~/.claude-dotfiles/commands/[name].md` — it becomes `/[name]` globally. The sync script auto-pushes.
+| To add | Create file at | Becomes |
+|---|---|---|
+| Command | `commands/foo.md` | `/foo` |
+| Namespaced command | `commands/<ns>/foo.md` | `/<ns>:foo` |
+| Sub-agent | `agents/foo.md` | `subagent_type: "foo"` |
+| Global rule | `rules/foo.md` | Loaded every session |
 
-**Adding a new agent:** Create `~/.claude-dotfiles/agents/[name].md` — it becomes available as a sub-agent type globally. Auto-pushed.
+The PostToolUse hook auto-pushes after the edit lands. On other devices, the change appears at next session start (auto-pull).
 
-**Adding a new rule:** Create `~/.claude-dotfiles/rules/[name].md` — it applies to all projects. Auto-pushed.
+If a new command should match natural-language requests, add one row to the Skill Routing table in `CLAUDE.md`.
 
-**Editing CLAUDE.md:** Edit `~/.claude-dotfiles/CLAUDE.md` (the symlink target). Auto-pushed.
-
-**Subdirectory commands:** Commands in subdirectories (e.g., `parsa/fix-bug.md`) are available as `/parsa:fix-bug`. The directory name becomes a namespace prefix.
-
-**On other devices:** Changes auto-pull at next session start.
-
----
-
-## What Each Core File Does
-
-| File | Purpose |
-|------|---------|
-| `CLAUDE.md` | Global rules: doc discipline, test before done, push policies, credential handling (1Password-backed via `/load-creds`), Skill Routing table, MCP catalog, FRAIM lifecycle, MoleCopilot context |
-| `credentials.md` | 1Password CLI catalog. Maps env var names → `op://` references. Read by `/load-creds`. **Never contains real secret values** — only references. |
-| `commands/learn.md` | Extract behavioral patterns from session, auto-push to this repo |
-| `commands/architect.md` | Interactive project doc scaffolding (three-tier: hot/warm/cold) |
-| `commands/verify.md` | Build/typecheck/lint/test/security pipeline with hard gates |
-| `commands/checkpoint.md` | Named git snapshots for safe rollback |
-| `commands/tdd.md` | RED/GREEN/REFACTOR test-driven development cycle |
-| `rules/backend-patterns.md` | Global rules: repository pattern, N+1 prevention, service layers, error handling |
-| `patterns/INDEX.md` | Index of all learned patterns with confidence scores |
-| `scripts/dotfiles-sync.sh` | Auto-push script called by PostToolUse hook when dotfiles change |
+For deeper architecture (load order, sync flow, credential flow, skill routing): see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
