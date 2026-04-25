@@ -441,33 +441,38 @@ PROCEDURE:
    If gate fails: append the proposed fix as a finding in findings.md
    with the gate-failure reason. Do NOT modify any code.
 
-8. Append the task's findings section to <SESSION_DIR>/findings.md.
+9. Append the task's findings section to <SESSION_DIR>/findings.md.
+   Cap each task's appended block at 32 KB; if longer, truncate and
+   append "[truncated for length]" — prevents one runaway tick from
+   bloating findings.md.
    Increment state.findings_count by the count of bullet findings.
    Reset state.errors_streak = 0.
 
-9. On any exception during steps 5–8:
-   Append to <SESSION_DIR>/errors.md:
-     ### <iso>: task=<kind>(<target>)
-     <error message + brief context>
-   Increment state.errors_streak.
-   The errored task IS still moved to tasks_done (step 10) so it does not
-   retry forever. This is intentional — broken tasks shouldn't churn.
-   Do NOT crash the tick — proceed to step 10.
+10. On any exception during steps 6–9:
+    Append to <SESSION_DIR>/errors.md:
+      ### <iso>: task=<kind>(<target>)
+      <error message + brief context>
+    Increment state.errors_streak.
+    The errored task IS still moved to tasks_done (step 11) so it does
+    not retry forever. This is intentional — broken tasks shouldn't churn.
+    Do NOT crash the tick — proceed to step 11.
 
-10. Update state:
+11. Update state:
     state.tasks_done.append(task)
     state.tasks_done_hashes.append(task.hash)
     state.tick_count += 1
     state.last_tick_at = now
-    Write state.json atomically: write to <SESSION_DIR>/state.json.tmp,
-    fsync if available, then `mv` over <SESSION_DIR>/state.json.
-    This prevents corruption if the tick is interrupted mid-write.
+    Write state.json atomically:
+      cp state.json state.json.bak       (backup BEFORE writing)
+      write to state.json.tmp
+      mv state.json.tmp state.json       (same dir → atomic rename)
 
-11. Re-check stop conditions (deadline may have passed mid-task):
-    If any stop condition is true, write summary.md and RETURN
-    without rescheduling.
+12. Re-check stop conditions (deadline may have passed mid-task):
+    If any stop condition is true, write summary.md, remove tick.lock,
+    and RETURN without rescheduling.
 
-12. ScheduleWakeup(
+13. Remove tick.lock (release re-entrancy lock).
+    ScheduleWakeup(
       delaySeconds = 240,
       prompt = THIS SAME PROMPT,
       reason = "afk tick <state.tick_count>"
@@ -475,7 +480,7 @@ PROCEDURE:
     RETURN.
 
 generate_alt_tasks(state):
-  # Caller (step 4) has ALREADY bumped state.refill_generation. Do NOT bump again.
+  # Caller (step 5) has ALREADY bumped state.refill_generation. Do NOT bump again.
   modules = list_modules(state.git_root)   (same heuristic as survey)
   if not modules: modules = ["."]
   kinds_cycle = ["bug_hunt", "dead_code_hunt", "naming_audit",
