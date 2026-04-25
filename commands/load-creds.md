@@ -129,45 +129,58 @@ done
 `.env` is treated as **authoritative for non-catalog values** (manual entries, local overrides). Never overwrite it blindly.
 
 ```bash
-# 7a. Resolve op:// → real values into a temp file (NOT directly to .env)
-TMP_RESOLVED="$(mktemp -t loadcreds.XXXXXX)"
-trap 'rm -f "$TMP_RESOLVED"' EXIT
+# Use temp files in the PROJECT DIR so the final mv is a same-filesystem rename (truly atomic).
+TMP_RESOLVED=".env.tmp.resolved.$$"
+TMP_MERGED=".env.tmp.merged.$$"
+trap 'rm -f "$TMP_RESOLVED" "$TMP_MERGED"' EXIT INT TERM
 
+# 7a. Resolve op:// → real values into a temp file (NOT directly to .env)
 if ! op $OP_ACC inject -i .env.op -o "$TMP_RESOLVED"; then
-  echo "ERROR: op inject failed. Check ~/.config/claude/credentials.md and verify each ref with: op $OP_ACC read 'op://...'" >&2
+  echo "ERROR: op inject failed. Verify each ref with: op $OP_ACC read 'op://...'" >&2
   exit 1
 fi
+chmod 600 "$TMP_RESOLVED"
 
 # 7b. Verify no unresolved op:// strings remain (partial resolution defense)
-if grep -q 'op://' "$TMP_RESOLVED"; then
+if grep -q 'op://' "$TMP_RESOLVED" 2>/dev/null; then
   echo "ERROR: Resolved file still contains op:// strings — partial resolution. Refusing to write .env." >&2
   grep -n 'op://' "$TMP_RESOLVED" >&2
   exit 1
 fi
 
-# 7c. Merge into existing .env (preserve any keys not in .env.op)
-TMP_MERGED="$(mktemp -t loadcreds.XXXXXX)"
-trap 'rm -f "$TMP_RESOLVED" "$TMP_MERGED"' EXIT
+# 7c. Merge: preserve existing .env keys NOT being overwritten, append freshly-resolved values.
+# Build the set of keys being injected as a NUL-delimited list passed via env to awk.
+# Newline-delimited would tempt awk to split on space, which breaks with 2+ keys.
+INJECTED_KEYS=$(grep -E '^[A-Z][A-Z0-9_]*=' .env.op | sed 's/=.*$//' | tr '\n' '\037')
 
-# Build set of keys being injected (from .env.op, before resolution)
-INJECTED_KEYS=$(grep -E '^[A-Z][A-Z0-9_]*=' .env.op | cut -d= -f1)
-
-# Start with existing .env entries that are NOT being overwritten
 if [ -f .env ]; then
-  # Keep lines that are: comments, blanks, OR keys not in INJECTED_KEYS
-  awk -v keys="$INJECTED_KEYS" 'BEGIN{split(keys,a," "); for(k in a) inj[a[k]]=1}
-       /^[[:space:]]*#/ || /^[[:space:]]*$/ {print; next}
-       /^[A-Z][A-Z0-9_]*=/ {key=$0; sub(/=.*$/,"",key); if(!inj[key]) print; next}
-       {print}' .env > "$TMP_MERGED"
+  awk -v keys="$INJECTED_KEYS" '
+    BEGIN {
+      n = split(keys, a, "\037")
+      for (i = 1; i <= n; i++) if (a[i] != "") inj[a[i]] = 1
+    }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
+    /^[A-Z][A-Z0-9_]*=/ {
+      key = $0
+      sub(/=.*$/, "", key)
+      if (!(key in inj)) print
+      next
+    }
+    { print }
+  ' .env > "$TMP_MERGED"
+else
+  : > "$TMP_MERGED"
 fi
 
-# Append the freshly-resolved values
+# Append the resolved values (these win over any matched keys from .env)
 cat "$TMP_RESOLVED" >> "$TMP_MERGED"
+chmod 600 "$TMP_MERGED"
 
-# Atomic replace
-mv "$TMP_MERGED" .env
-chmod 600 .env
+# Atomic same-filesystem rename
+mv -f "$TMP_MERGED" .env
 ```
+
+The merge logic: keep comments/blanks from old `.env`, drop any line whose key is being re-injected, append the resolved values. Idempotent — re-running with the same catalog yields the same `.env`.
 
 May trigger a Touch ID prompt during step 7a.
 
