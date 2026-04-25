@@ -295,7 +295,7 @@ Read `~/.claude/settings.json`. If it doesn't exist, create it. Merge the follow
 ```
 
 **What the hooks do:**
-- `SessionStart`: Auto-pulls latest dotfiles when you start a Claude session, then runs a non-blocking secret-leak check against `~/.config/claude/credentials.md` (sk-/sk-ant-/sk-proj-/AKIA/AIza/ghp_/gho_/ghs_/github_pat_/xox[bpa]-/hf_/ya29./whsec_/rk_live_/sk_live_/PEM blocks). The PostToolUse sync script does a stricter scan that **blocks** the push entirely if a real secret is detected anywhere in the dotfiles tree.
+- `SessionStart`: Auto-pulls latest dotfiles when you start a Claude session, then runs a non-blocking secret-leak check against `~/.config/claude/credentials.md` (sk-/sk-ant-/sk-proj-/AKIA/AIza/ghp_/gho_/ghs_/github_pat_/xox[abposr]-/hf_/ya29./whsec_/rk_live_/sk_live_/PEM blocks). The PostToolUse sync script does a stricter scan that **blocks** the push entirely if a real secret is detected anywhere in the dotfiles tree.
 - `PostToolUse` (Edit|Write): Auto-pushes dotfiles changes after any file edit. Runs a hard pre-push secret scan first; on any match, the push is blocked (exit 2) and the user is told to rotate.
 
 ---
@@ -460,7 +460,7 @@ The `/load-creds` slash command + a 1Password catalog let any Claude session inj
 - **The template** at `~/.claude-dotfiles/credentials.template.md` (in this synced repo) is a reference — copy it to the local path on a fresh machine and edit.
 - `/load-creds` writes a temporary `.env.op` (op://-references file, gitignored), runs `op inject` to a temp file, verifies no `op://` strings remain (partial-resolution defense), and **merges** the resolved values into the existing `.env` (preserving manual non-catalog entries). Touch ID prompt fires once.
 - **Two layers of leak defense:**
-  - Pre-push: `dotfiles-sync.sh` scans staged + untracked files for known secret patterns (sk-/sk-ant-/sk-proj-/AKIA/AIza/ghp_/gho_/ghs_/github_pat_/xox[bpa]-/hf_/ya29./whsec_/(rk|sk|pk)_(live|test)/PEM). On match, the push is **blocked** (exit 2) — never silent.
+  - Pre-push: `dotfiles-sync.sh` scans staged + untracked files for known secret patterns (sk-/sk-ant-/sk-proj-/AKIA/AIza/ghp_/gho_/ghs_/github_pat_/xox[abposr]-/hf_/ya29./whsec_/(rk|sk|pk)_(live|test)/PEM). On match, the push is **blocked** (exit 2) — never silent.
   - SessionStart: warns (non-blocking) on the same patterns in `~/.config/claude/credentials.md`.
 - **Safety in the slash command:** `/load-creds` aborts (not warns) if `.env` or `.env.op` is currently tracked by git, refuses to write through symlinks pointing outside the project, threads `--account` through every `op` call when multiple 1Password accounts are signed in, and `chmod 600`s the resulting `.env`.
 
