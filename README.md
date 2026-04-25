@@ -87,7 +87,7 @@ Full reference: **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
 |---|---|
 | `/research-web` | Web research with validated references and citations. |
 | `/transcribe` | Voice memo / call recording → Whisper transcript → project-aware analysis report. ([setup](docs/transcribe.md)) |
-| `/load-creds` | Inject API keys from 1Password into the project's `.env` via `op inject`. Reads the catalog at `credentials.md`. |
+| `/load-creds` | Inject API keys from 1Password into the project's `.env` via `op inject`. Reads the catalog at `~/.config/claude/credentials.md` (local-only, never synced). |
 
 ### Industry suites
 
@@ -153,7 +153,7 @@ You are Claude Code, helping set up a Claude Code development environment on a n
 ```
 ~/.claude-dotfiles/
 ├── CLAUDE.md               # Global rules (loaded every session)
-├── credentials.md          # 1Password-backed API key catalog (op:// refs only, no secrets)
+├── credentials.template.md # Template for the 1Password catalog. Real catalog lives at ~/.config/claude/credentials.md (local-only, gitignored)
 ├── commands/               # Slash commands (available as /command-name)
 │   ├── *.md                # Core commands (plan, implement, investigate, ...)
 │   ├── parsa/              # Partner commands  (/parsa:*)
@@ -271,7 +271,7 @@ Read `~/.claude/settings.json`. If it doesn't exist, create it. Merge the follow
         "hooks": [
           {
             "type": "command",
-            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if grep -nE '(sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)' ~/.claude-dotfiles/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value detected in credentials.md - should be op:// references only' >&2; fi; true",
+            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if [ -f ~/.config/claude/credentials.md ] && grep -nIE '(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +)?PRIVATE +KEY-----)' ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value in ~/.config/claude/credentials.md — should be op:// references only. Rotate the leaked secret.' >&2; fi; true",
             "timeout": 10,
             "statusMessage": "Syncing dotfiles..."
           }
@@ -295,8 +295,8 @@ Read `~/.claude/settings.json`. If it doesn't exist, create it. Merge the follow
 ```
 
 **What the hooks do:**
-- `SessionStart`: Auto-pulls latest dotfiles when you start a Claude session, then runs a non-blocking secret-leak check against `credentials.md` (catches accidental `sk-*`, `AIza*`, full JWTs).
-- `PostToolUse` (Edit|Write): Auto-pushes dotfiles changes after any file edit (the script checks if the edited file is in the dotfiles dir)
+- `SessionStart`: Auto-pulls latest dotfiles when you start a Claude session, then runs a non-blocking secret-leak check against `~/.config/claude/credentials.md` (sk-/sk-ant-/sk-proj-/AKIA/AIza/ghp_/gho_/ghs_/github_pat_/xox[bpa]-/hf_/ya29./whsec_/rk_live_/sk_live_/PEM blocks). The PostToolUse sync script does a stricter scan that **blocks** the push entirely if a real secret is detected anywhere in the dotfiles tree.
+- `PostToolUse` (Edit|Write): Auto-pushes dotfiles changes after any file edit. Runs a hard pre-push secret scan first; on any match, the push is blocked (exit 2) and the user is told to rotate.
 
 ---
 
@@ -452,29 +452,48 @@ For deeper architecture (load order, sync flow, credential flow, skill routing):
 
 ## Credentials System (1Password-backed)
 
-The `credentials.md` catalog + `/load-creds` slash command let any Claude session inject API keys into a project's `.env` without copy/paste, while keeping zero secrets at rest in this repo.
+The `/load-creds` slash command + a 1Password catalog let any Claude session inject API keys into a project's `.env` without copy/paste, **without ever putting secrets at rest in any synced file**.
 
-**How it works:**
-1. Real secrets live in 1Password (encrypted, biometric-unlock).
-2. `~/.claude-dotfiles/credentials.md` is a non-secret catalog: env var name → `op://` reference (e.g. `OPENAI_API_KEY → op://<VAULT>/OpenAI/credential`). Synced via this dotfiles repo.
-3. `/load-creds` (or its flow): writes `.env.op` containing the references, then runs `op inject -i .env.op -o .env` to materialize the real `.env`. May trigger a Touch ID prompt.
-4. Both `.env` and `.env.op` get added to `.gitignore` *before* injection.
-5. The `SessionStart` hook scans `credentials.md` for accidentally-pasted real secrets and warns (non-blocking).
+**Architecture:**
+- **Real secrets** live in your 1Password vault (encrypted, biometric-unlock).
+- **The catalog** lives at `~/.config/claude/credentials.md` — **local-only, never synced via git**, never pushed anywhere. Maps env var names → `op://` references.
+- **The template** at `~/.claude-dotfiles/credentials.template.md` (in this synced repo) is a reference — copy it to the local path on a fresh machine and edit.
+- `/load-creds` writes a temporary `.env.op` (op://-references file, gitignored), runs `op inject` to a temp file, verifies no `op://` strings remain (partial-resolution defense), and **merges** the resolved values into the existing `.env` (preserving manual non-catalog entries). Touch ID prompt fires once.
+- **Two layers of leak defense:**
+  - Pre-push: `dotfiles-sync.sh` scans staged + untracked files for known secret patterns (sk-/sk-ant-/sk-proj-/AKIA/AIza/ghp_/gho_/ghs_/github_pat_/xox[bpa]-/hf_/ya29./whsec_/(rk|sk|pk)_(live|test)/PEM). On match, the push is **blocked** (exit 2) — never silent.
+  - SessionStart: warns (non-blocking) on the same patterns in `~/.config/claude/credentials.md`.
+- **Safety in the slash command:** `/load-creds` aborts (not warns) if `.env` or `.env.op` is currently tracked by git, refuses to write through symlinks pointing outside the project, threads `--account` through every `op` call when multiple 1Password accounts are signed in, and `chmod 600`s the resulting `.env`.
 
 **One-time setup on each device:**
-1. Install: `brew install --cask 1password-cli` (or use the 1Password desktop app).
-2. Open 1Password → **Settings → Developer → "Integrate with 1Password CLI"**. This enables Touch ID unlock for `op` commands. `op signin` (eval-based) does NOT persist into slash-command shells, so desktop integration is required.
-3. Verify: `op whoami` should return your account info.
-4. Edit `credentials.md` and replace placeholder `op://<VAULT>/...` paths with real ones from your vault. Discover paths with:
+1. Install 1Password CLI: `brew install --cask 1password-cli` (macOS) or follow the 1Password CLI install for your OS.
+2. Pick an auth mode and enable it:
+   - **Desktop app integration** (recommended for interactive use): 1Password app → Settings → Developer → "Integrate with 1Password CLI". Biometric/Touch ID unlock.
+   - **Service account token** (non-interactive / CI): export `OP_SERVICE_ACCOUNT_TOKEN`.
+   - **`eval $(op signin)`** in your main shell before invoking Claude (only persists in that shell).
+3. Verify: `op whoami`.
+4. Create your local catalog:
    ```bash
+   mkdir -p ~/.config/claude
+   cp ~/.claude-dotfiles/credentials.template.md ~/.config/claude/credentials.md
+   ```
+5. Edit `~/.config/claude/credentials.md`: replace `<VAULT>` placeholders with your real vault name (commonly `Personal`, but `op vault list` will tell you). Verify each ref:
+   ```bash
+   op vault list
    op item list --vault <VAULT>
    op item get "OpenAI" --format json | jq '.fields[] | {label, id}'
+   op read 'op://<VAULT>/OpenAI/credential'   # smoke test
    ```
-   Verify a ref with: `op read 'op://<VAULT>/OpenAI/credential'`.
+6. Smoke-test `/load-creds`:
+   ```bash
+   cd /tmp && mkdir test-creds && cd test-creds && git init
+   ```
+   Then in a Claude session: `/load-creds OPENAI_API_KEY`. Should produce `.env` with the real key, `.env.op` with the ref, and both gitignored.
 
-**Editing the catalog:** add a row to the appropriate table in `credentials.md`. The file auto-syncs via the dotfiles push hook. Never paste real secret values — only `op://` references and human-readable names.
+**Editing the catalog:** add rows to the appropriate table in `~/.config/claude/credentials.md`. The file is local-only — no auto-sync. Copy your edits to other machines manually (it's small). Never paste real secret values.
 
-**Multi-account:** if `op account list` shows >1 account, `/load-creds` prompts to pick one and uses `--account <shorthand>`.
+**Multi-account 1Password:** if `op account list` shows >1 account, `/load-creds` prompts to pick one and threads `--account <addr>` through every `op` call (or you can export `OP_ACCOUNT`).
+
+**Cross-platform:** the slash command is OS-agnostic; install instructions for `op` differ. Linux: package per distro, then desktop integration via 1Password Linux app. Windows: `winget install AgileBits.1Password.CLI`.
 
 ---
 
@@ -489,6 +508,9 @@ The `credentials.md` catalog + `/load-creds` slash command let any Claude sessio
 | Git pull conflicts | `cd ~/.claude-dotfiles && git stash && git pull && git stash pop` |
 | Sync script not running | Check it's executable: `chmod +x ~/.claude-dotfiles/scripts/dotfiles-sync.sh` |
 | Plugin install fails | `npm cache clean --force` then retry |
-| `/load-creds` says "not signed in" | Open 1Password app → Settings → Developer → enable "Integrate with 1Password CLI" |
-| `op inject` fails on a specific reference | Verify with `op read 'op://...'`. Likely the catalog ref doesn't match your vault's actual item/field names — fix in `credentials.md`. |
-| SessionStart warns about secret in `credentials.md` | A real secret value got pasted in. Replace with the `op://` reference and rotate the leaked key. |
+| `/load-creds` says "not signed in" | Open 1Password app → Settings → Developer → enable "Integrate with 1Password CLI", OR export `OP_SERVICE_ACCOUNT_TOKEN`, OR run `eval $(op signin)` in your main shell. |
+| `op inject` fails on a specific reference | Verify with `op read 'op://...'`. Vault name probably differs — `op vault list` to confirm, fix `~/.config/claude/credentials.md`. |
+| SessionStart warns about secret in catalog | A real secret got pasted into `~/.config/claude/credentials.md`. Replace with `op://` ref and **rotate the leaked secret immediately**. |
+| Auto-push blocked with "BLOCKED: possible secret detected" | The pre-push scanner (`dotfiles-sync.sh`) found a real-looking secret in a staged or untracked file. Remove it, rotate the credential, and rerun. |
+| `/load-creds` aborts: ".env is currently tracked by git" | Project committed `.env` historically. Fix: `git rm --cached .env && git commit -m 'untrack .env'`, then rerun. |
+| Catalog missing on fresh machine | `mkdir -p ~/.config/claude && cp ~/.claude-dotfiles/credentials.template.md ~/.config/claude/credentials.md`, then edit. |

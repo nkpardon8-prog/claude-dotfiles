@@ -275,21 +275,24 @@ Ask: "Want me to check what the recommended next step is in your FRAIM journey? 
 
 ### Primary: 1Password-backed catalog
 
-The user keeps a personal API-key catalog at `~/.claude-dotfiles/credentials.md` (env var names + `op://` references, no secret values). When a project needs API keys (OpenAI, Anthropic, OpenRouter, Google AI, Supabase, etc.):
+The user keeps a personal API-key catalog at `~/.config/claude/credentials.md` (env var names + `op://` references, no secret values). This file is **local-only and never synced via git** — the dotfiles repo only ships a `credentials.template.md`. When a project needs API keys (OpenAI, Anthropic, OpenRouter, Google AI, Supabase, etc.):
 
-1. Read the catalog to see what's available.
-2. Use the `/load-creds` slash command, or its flow directly: ensure `.env` and `.env.op` are in `.gitignore` first, write `.env.op` with `op://` refs from the catalog, then run `op inject -i .env.op -o .env`.
+1. Read `~/.config/claude/credentials.md` to see what's available. If it doesn't exist on this machine, tell the user to copy `~/.claude-dotfiles/credentials.template.md` to that path and edit.
+2. **Always invoke `/load-creds`** — do NOT inline the bash flow. The slash command enforces safety gates (gitignore-before-write, abort-on-tracked, atomic merge, partial-resolution check, multi-account threading) that an inlined flow can skip.
 3. Use the same env var names as the catalog when generating `.env.example` so `/load-creds` can match them later.
-4. Never echo resolved secret values back to the user; reference them by env var name only.
-5. If `op whoami` fails, instruct the user to enable 1Password desktop app integration (Settings → Developer → "Integrate with 1Password CLI").
+4. Never echo resolved secret values back to the user; reference them by env var name only. Never read `.env` after injection just to "verify" — Claude doesn't need to see the values.
+5. If `op whoami` fails, the three valid auth modes are: 1Password desktop app integration (Settings → Developer), `OP_SERVICE_ACCOUNT_TOKEN` env var (non-interactive), or `eval $(op signin)` in the user's main shell before invoking Claude. Pick the one the user already has set up; do not nag.
+6. **Vault names are per-user.** The catalog ships with `op://<VAULT>/...` placeholders but the user may use `Private`, a team vault, or anything else. If a ref fails, suggest `op vault list` to discover.
+7. **Multi-account 1Password**: if `op account list` returns 2+ accounts, all `op` calls in the flow must use the same `--account <addr>` (or `OP_ACCOUNT` env var). `/load-creds` handles this; don't bypass it.
 
 ### When a credential is shared in conversation
 
 Any time an API key, auth token, webhook secret, or other credential appears in conversation:
-1. Ask: "Want me to add this to your 1Password vault and reference it from `~/.claude-dotfiles/credentials.md` as `op://...`? (y/n)"
-2. If yes: instruct the user to create/update the 1Password item (Claude can't write to 1Password directly), then add a row to `credentials.md` with the env var name and the `op://` reference. Remove the raw value from any file where it appeared in plaintext.
-3. If the user declines or 1Password isn't available, fall back to: "Should I store this in `~/.zshrc` instead? (y/n)" — append `export VAR_NAME="value"` under the `# API Keys & Auth Tokens` section. Note this is the legacy path and won't sync across devices.
-4. Never commit raw secrets to any repo, including dotfiles.
+1. **Treat the shared value as compromised** — the user just typed it where it could end up in chat history, telemetry, or context windows. Suggest rotating it.
+2. Ask: "Want me to add this to your 1Password vault and reference it from `~/.config/claude/credentials.md` as `op://...`? (y/n)"
+3. If yes: instruct the user to create/update the 1Password item (Claude can't write to 1Password directly), then add a row to `~/.config/claude/credentials.md` with the env var name and the `op://` reference. Remove the raw value from any file where it appeared in plaintext.
+4. If the user declines or 1Password isn't available, fall back to: "Should I store this in `~/.zshrc` instead? (y/n)" — append `export VAR_NAME="value"` under the `# API Keys & Auth Tokens` section. Note this is the legacy path and won't sync across devices.
+5. **Never commit raw secrets to any repo**, including dotfiles. The dotfiles auto-push hook now blocks pushes containing recognized secret patterns, but don't rely on the guard — keep the secret out of any file in `~/.claude-dotfiles/` or any project repo in the first place.
 
 ### Before using a stored credential
 
