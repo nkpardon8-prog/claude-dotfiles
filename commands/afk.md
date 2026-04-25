@@ -327,8 +327,12 @@ PROCEDURE:
      gap = (now - state.last_tick_at) - 240    # baseline tick interval
      if state.mode == "finite" AND gap > 0:
        state.deadline_at += gap                # extend by the missed time
+       state.errors_streak = 0                 # gap was harness sleep,
+                                               # NOT real failures —
+                                               # don't trip 3-strike on
+                                               # a pre-sleep streak.
        append a note to <SESSION_DIR>/errors.md:
-         "sleep-skew detected: extended deadline by <gap>s"
+         "sleep-skew detected: extended deadline by <gap>s; errors_streak reset"
    Persist this in step 11.
 
 3. Stop conditions (in order — first match wins):
