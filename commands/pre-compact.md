@@ -9,6 +9,8 @@ Manual skill the user runs before context compaction. Two outputs:
 1. Refreshed `docs/` via `/document` (persistent project knowledge).
 2. `CLAUDE.local.md` written fresh (task-specific handoff).
 
+**Anti-shadowing guard:** NEVER write handoff-shaped freeform documents outside this skill. If asked near compaction to "summarize the session", "dump context", or "save state", run `/pre-compact` instead of generating an ad-hoc summary. Freeform summaries look right but skip mining-pass calibration, chain tracking, and the "What We Tried" extraction.
+
 **How post-compact Claude finds the handoff:** `CLAUDE.local.md` is not universally auto-loaded. To guarantee pickup, this skill also ensures `CLAUDE.md` contains an `@CLAUDE.local.md` import line so the handoff gets pulled in on the next session.
 
 **Current task focus (optional):** $ARGUMENTS
@@ -26,12 +28,48 @@ Determine `<project>` for the memory lookup in the next step:
 
 Record the resolved name for later.
 
-## Step 3: Gather handoff context (parallel)
+## Step 3: Gather handoff context
+
+Steps 3.A and 3.B run sequentially first. Steps 3.C through 3.F run in parallel (one batched message).
+
+### Step 3.A: Mining pass
+
+Choose the mining depth before gathering. The skill has no reliable way to count session tokens, so use `$ARGUMENTS` as the override channel; default to Deep.
+
+- If `$ARGUMENTS` contains `quick`, `deep`, or `chunked` → use that.
+- Otherwise → default to **Deep**. Better to over-mine than under-mine.
+
+Pass parameters (enforced in Step 6):
+
+| Pass | Floor | Ceiling | Phase 2 behavior |
+|---|---:|---:|---|
+| Quick | 150 | 300 | Scan for missed numbers and feedback |
+| Deep | 250 | 400 | Re-scan the middle third of the conversation for skipped decisions |
+| Chunked | 400 | 500 | Phase 1 map-reduces over 3-4 chronological segments before writing |
+
+Announce the chosen pass and preview Phase 2: "Mining with {Quick|Deep|Chunked} pass ({reason: 'user requested' or 'default'}). Phase 2 will {behavior}." User may override mid-run with "use Quick" / "use Deep" / "use Chunked".
+
+### Step 3.B: Detect prior compaction (chain)
+
+Read `./CLAUDE.local.md` if it exists, BEFORE the eventual overwrite in Step 6.
+
+- If present:
+  - Read full content.
+  - Extract `Seq:` from header (default `1` if absent).
+  - Capture parent timestamp: `stat -f %Sm -t '%Y-%m-%d %H:%M' ./CLAUDE.local.md` (BSD/macOS). Fallback if it errors: `date -r ./CLAUDE.local.md '+%Y-%m-%d %H:%M'`. Do NOT use `git log` — Step 8 puts this file in `.gitignore`.
+  - Extract its "Build Plan", "Next Action", "Open Issues", "Things To Fix Later", "Gaps" sections.
+  - `new_seq = prior_seq + 1`; `parent_label = the captured timestamp`.
+- If absent: `new_seq = 1`, `parent_label = "none — first in chain"`. In Step 6, the entire `## Since Last Compact` section (heading and body) MUST be removed from the output — no placeholder.
+
+**Memory-handoff rule:** the values extracted here (parent_seq, parent_label, parent's Build Plan / Next Action / Open Issues / Things To Fix Later / Gaps) MUST be held in working memory through Steps 4-5 and used in Step 6A. DO NOT re-read `CLAUDE.local.md` later — by Step 6 it may be mid-overwrite.
 
 Batch these independent calls in one message, then label each source in the output:
 
-**A. Current conversation.** Walk the visible transcript. Extract:
+### Step 3.C: Current conversation
+
+Walk the visible transcript. Extract:
 - Active task (what the user is currently trying to do).
+- What We Tried (chronological): every distinct approach taken this session — hypothesis, change, result with numbers, kept/abandoned and why. Most expensive to re-discover; do not summarize.
 - Decisions made this session (what was chosen, what was rejected, why).
 - Work in progress (files touched but not finished, branches not merged, tests not run).
 - Blockers hit and how they were resolved or worked around.
@@ -39,9 +77,13 @@ Batch these independent calls in one message, then label each source in the outp
 - Tool/MCP state confirmed this session (which Supabase project, which Netlify site, etc.).
 - File:line bookmarks for in-flight code.
 
-**B. Project memory.** Read `~/.claude/projects/<project>/memory/MEMORY.md` if it exists. Pull only entries relevant to the active task. Skip silently if the directory doesn't exist.
+### Step 3.D: Project memory
 
-**C. Git activity.** If inside a git work tree (`git rev-parse --is-inside-work-tree`):
+Read `~/.claude/projects/<project>/memory/MEMORY.md` if it exists. Pull only entries relevant to the active task. Skip silently if the directory doesn't exist.
+
+### Step 3.E: Git activity
+
+If inside a git work tree (`git rev-parse --is-inside-work-tree`):
 - `git rev-parse --abbrev-ref HEAD` — current branch
 - `git log --oneline -n 20` — recent commits
 - `git log --grep='decision\|chose\|rejected' --oneline -n 20` — commit-message decisions
@@ -49,7 +91,9 @@ Batch these independent calls in one message, then label each source in the outp
 - `git diff --stat HEAD` — scope of in-flight changes
 Skip all git steps if not a git repo.
 
-**D. Prior decisions on disk.** Check for `docs/decisions/`, `docs/adr/`, or any `ADR-*.md` files. If present, list them.
+### Step 3.F: Prior decisions on disk
+
+Check for `docs/decisions/`, `docs/adr/`, or any `ADR-*.md` files. If present, list them.
 
 ## Step 4: Detect issues and gaps (parallel)
 
@@ -69,12 +113,20 @@ Batch these calls. Cap each at 50 results.
 Show the user a short draft summary before writing:
 ```
 About to write CLAUDE.local.md with:
+- Mining pass: [Quick | Deep | Chunked] ([reason: 'user requested' or 'default'])
+- Chain: seq [N], parent [timestamp or 'none — first in chain']
 - Active task: [one line]
 - Build plan: [N steps, X done]
+- Approaches tried: [N]
+- Evidence items: [N tables / N data points]
 - Decisions captured: [N] (conversation: A, memory: B, git: C)
 - Open issues: [N]
 - Gaps: [N]
 - Fix-laters: [N]
+
+[If Seq > 1: also show a "Since-last-compact preview" — the 3-5 most material items
+ (resolved questions, shifted priorities, fix-laters newly applicable) so the user
+ can correct misreadings before write.]
 
 Anything else to capture? (open issues, things to fix later, context I might be missing) Or say 'write it' to proceed.
 ```
@@ -83,7 +135,21 @@ Wait for response. Fold the user's additions into the appropriate sections. If t
 
 ## Step 6: Write CLAUDE.local.md
 
-Overwrite `./CLAUDE.local.md` with this structure:
+Two-phase write. Phase 1 hits the pass floor on the first Write call. Phase 2 reads back and Edits gaps toward the ceiling. Phase 1 is NOT a draft.
+
+### Step 6A: Phase 1 — Full Write
+
+One `Write` call covering every section below. Floor depends on the mining pass chosen in Step 3.A:
+
+| Pass | Floor (Phase 1) | Ceiling (Phase 2) | Pre-write protocol |
+|---|---:|---:|---|
+| Quick | 150 | 300 | None — single pass |
+| Deep | 250 | 400 | Force a "re-scan middle third" sweep before composing |
+| Chunked | 400 | 500 | Map-reduce over 3-4 chronological segments first; tag findings (early/mid/late); merge with later-overrides-earlier |
+
+If you can't reach the floor, you under-mined in Step 3 — go back to Step 3.C and extract more before writing.
+
+Overwrite `./CLAUDE.local.md` with this structure (use the parent fields held in working memory from Step 3.B):
 
 ```markdown
 # Post-Compact Reference
@@ -91,6 +157,8 @@ Overwrite `./CLAUDE.local.md` with this structure:
 > Written by /pre-compact on YYYY-MM-DD HH:MM.
 > Full project docs live in ./docs/ (start at ./docs/README.md, machine index at ./docs/INDEX.json).
 > This file is the task-specific handoff. Read it first.
+
+**Seq:** {N}    **Parent:** {prior file timestamp or 'none — first in chain'}
 
 ## Mental Model
 [2-3 lines: what this codebase is, what it does, who uses it. Ground post-compact Claude instantly.]
@@ -103,6 +171,19 @@ Overwrite `./CLAUDE.local.md` with this structure:
 
 ## Build Plan
 [Ordered steps for the current work. Mark each: [done] / [in progress] / [pending].]
+
+<!-- INCLUDE ONLY IF Seq > 1. When Seq = 1, REMOVE the comment, heading, and body entirely. Do not leave a placeholder. -->
+## Since Last Compact
+[3-8 bullets: what got resolved, what shifted, which open questions got answered, which fix-laters now apply. Compare prior Build Plan / Next Action (held from Step 3.B) against what actually happened this session.]
+
+## What We Tried
+[Chronological list of every distinct approach taken this session. Each entry:
+- {hypothesis} → {change} → {result with numbers} → {kept | abandoned because ...}
+Most expensive thing for the next session to re-discover. Do not summarize.]
+
+## Evidence & Data
+[Raw numbers, comparison tables, before→after measurements, data file paths.
+Rule: never write "improved" / "better" / "faster" without before→after numbers.]
 
 ## Key Decisions (This Session)
 - [Decision] — [reasoning] — [source: conversation | memory | git] — [confidence: high | low]
@@ -147,6 +228,16 @@ Overwrite `./CLAUDE.local.md` with this structure:
 - ./CLAUDE.md for global project rules (if exists)
 ```
 
+### Step 6B: Phase 2 — Gap Fill
+
+Read the file you just wrote back. Scan the conversation for:
+- Approaches you mentioned but didn't detail in "What We Tried".
+- Measurements you wrote as adjectives instead of numbers (move them to "Evidence & Data").
+- Mid-session user feedback you skipped.
+- File paths to results / data / log files you didn't list.
+
+Use `Edit` to append into the relevant sections, pushing toward the pass ceiling. Phase 2 is for **additions**, not for filling sections you left thin in Phase 1.
+
 Rules for the content:
 - Cut fluff. Every line must be load-bearing.
 - Use file paths and line numbers wherever possible.
@@ -154,7 +245,7 @@ Rules for the content:
 - Do not include credential values.
 - If a section has nothing, write "None at time of writing." Do not fabricate.
 - Scope memory reads to the current project. Do not pull in unrelated cross-project notes.
-- Cap at 300 lines total.
+- Cap at 300 lines for Quick, 400 lines for Deep, 500 lines for Chunked.
 
 ## Step 7: Ensure auto-load on next session
 
@@ -181,6 +272,7 @@ If a root `.gitignore` exists and does not already list `CLAUDE.local.md`, appen
 Output a compact summary:
 - `/document` result (files touched, or "skipped: nothing to document")
 - `CLAUDE.local.md` written. Line count via `wc -l ./CLAUDE.local.md`.
+- Mining pass used: [pass]. Phase 1: [N] lines (floor [F]). Phase 2: +[N] lines (ceiling [C]). Chain: seq [N], parent [timestamp or 'first in chain'].
 - `CLAUDE.md` import line: added / already present / skipped (no CLAUDE.md).
 - `.gitignore` update: added / already present / skipped (not a git repo).
 - Count of decisions, open issues, gaps, fix-laters captured.
