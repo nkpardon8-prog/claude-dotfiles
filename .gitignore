@@ -12,3 +12,31 @@ session-env/
 !.env.example
 credentials.md
 credentials.local.md
+
+# Common secret-bearing files (defense in depth)
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_ecdsa
+id_ecdsa.*
+.ssh/
+.aws/credentials
+.aws/config
+.gcp/
+*.credentials.json
+*service-account*.json
+*-key.json
+.netrc
+.npmrc.local
+.pypirc
+
+# Editor / OS swap files that may contain partial buffer contents
+*.swp
+*.swo
+*~
+.#*
