@@ -288,12 +288,20 @@ HARD RULES (re-stated each tick — never violate):
 
 PROCEDURE:
 
-0. Re-entrancy lock. Check <SESSION_DIR>/tick.lock:
-   - If file exists AND its mtime is within last 5 minutes → another
-     tick is in flight or was killed. Reschedule in 60s and RETURN.
-   - Otherwise (no lock OR stale lock >5min old): write a fresh
-     tick.lock containing the current ISO timestamp. Always remove
-     this file at end of tick (success path AND error path).
+0. Re-entrancy lock. Use **atomic** lock-acquire via `mkdir`:
+   - Try `mkdir <SESSION_DIR>/tick.lock` (atomic on POSIX — fails if
+     dir exists). On success, you hold the lock.
+   - On failure: stat the dir's mtime.
+       * If mtime within last 15 minutes → another tick is in flight
+         (raised from 5 min: full_file_deep_review on large files can
+         exceed 5 min). Reschedule in 60s and RETURN without writing.
+       * If mtime >15 min old → previous tick crashed. `rm -rf
+         <SESSION_DIR>/tick.lock` and retry the mkdir once.
+   - **Always remove this dir at EVERY exit path** — including the
+     unparseable-state finalize in step 1, the stop-condition finalize
+     in step 3, the throttle reschedule in step 4, and the normal
+     reschedule in step 13. If you forget once, the session blocks for
+     15 minutes before self-healing.
 
 1. Read <SESSION_DIR>/state.json. Call it `state`.
    On JSON parse failure:
