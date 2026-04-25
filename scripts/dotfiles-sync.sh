@@ -50,7 +50,10 @@ HITS=$(
         f="$1"
         [ -f "$f" ] || exit 0
         case "$f" in *.git/*|.git/*) exit 0 ;; esac
-        grep -aInEH -e "$RX" -- "$f"
+        # Strip NUL bytes (BSD grep on macOS misses matches in files containing
+        # NULs even with -a). Re-prefix matches with the filename for output.
+        match=$(tr -d "\000" < "$f" | grep -anEH -e "$RX")
+        [ -n "$match" ] && printf "%s:%s\n" "$f" "$match"
     ' _ {} < "$FILES_LIST" 2>/tmp/.dotfiles-sync-grep-err.$$
 )
 SCAN_RC=$?
