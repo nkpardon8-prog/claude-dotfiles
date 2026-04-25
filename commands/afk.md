@@ -286,18 +286,42 @@ HARD RULES (re-stated each tick — never violate):
 
 PROCEDURE:
 
-1. Read <SESSION_DIR>/state.json. Call it `state`.
+0. Re-entrancy lock. Check <SESSION_DIR>/tick.lock:
+   - If file exists AND its mtime is within last 5 minutes → another
+     tick is in flight or was killed. Reschedule in 60s and RETURN.
+   - Otherwise (no lock OR stale lock >5min old): write a fresh
+     tick.lock containing the current ISO timestamp. Always remove
+     this file at end of tick (success path AND error path).
 
-2. Stop conditions (in order — first match wins):
+1. Read <SESSION_DIR>/state.json. Call it `state`.
+   On JSON parse failure:
+     - If <SESSION_DIR>/state.json.bak exists, restore it as state.json.
+     - Append a parse-failure entry to <SESSION_DIR>/errors.md.
+     - Increment errors_streak (working in memory; will be persisted in step 10).
+     - If still unparseable, finalize with an error summary and STOP.
+   Always copy state.json → state.json.bak BEFORE any write in step 10.
+
+2. Sleep-skew detection (laptop-sleep guard).
+   If state.last_tick_at is set AND (now - state.last_tick_at) > 600s,
+   the harness was likely asleep. Add the sleep gap to deadline_at:
+     gap = (now - state.last_tick_at) - 240    # baseline tick interval
+     if state.mode == "finite" AND gap > 0:
+       state.deadline_at += gap                # extend by the missed time
+       append a note to <SESSION_DIR>/errors.md:
+         "sleep-skew detected: extended deadline by <gap>s"
+   Persist this in step 10.
+
+3. Stop conditions (in order — first match wins):
    a. state.mode == "finite" AND now >= state.deadline_at
    b. <SESSION_DIR>/STOP exists
    c. state.errors_streak >= 3
    If any: write <SESSION_DIR>/summary.md (rollup of tick_count,
-   findings_count, fixes_applied_count, top 10 findings, reason for stop)
-   and RETURN WITHOUT calling ScheduleWakeup. Session ends here.
+   findings_count, fixes_applied_count, top 10 findings, reason for stop),
+   remove tick.lock, and RETURN WITHOUT calling ScheduleWakeup.
 
-3. Throttle (cost guard, especially for infinite mode):
+4. Throttle (cost guard, especially for infinite mode):
    If state.last_tick_at is set AND (now - state.last_tick_at) < 60s:
+     remove tick.lock
      ScheduleWakeup(
        delaySeconds = max(60, 240 - (now - state.last_tick_at)),
        prompt = THIS SAME PROMPT,
