@@ -271,7 +271,7 @@ Read `~/.claude/settings.json`. If it doesn't exist, create it. Merge the follow
         "hooks": [
           {
             "type": "command",
-            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if [ -f ~/.config/claude/credentials.md ] && grep -nIE '(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +)?PRIVATE +KEY-----)' ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value in ~/.config/claude/credentials.md — should be op:// references only. Rotate the leaked secret.' >&2; fi; true",
+            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if [ -f ~/.config/claude/credentials.md ] && grep -nIE '(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +)?PRIVATE +KEY-----)' ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value in ~/.config/claude/credentials.md — should be op:// references only. Rotate the leaked secret.' >&2; fi; true",
             "timeout": 10,
             "statusMessage": "Syncing dotfiles..."
           }
