@@ -452,7 +452,7 @@ For deeper architecture (load order, sync flow, credential flow, skill routing):
 
 ## Credentials System (1Password-backed)
 
-The `/load-creds` slash command + a 1Password catalog let any Claude session inject API keys into a project's `.env` without copy/paste, **without ever putting secrets at rest in any synced file**.
+The `/load-creds` slash command + a 1Password catalog let any Claude session inject API keys into a project's `.env` without copy/paste. **Real secret values never live in this synced repo** — the catalog (which contains only `op://` references) lives outside the repo at a local path, and a regex-based pre-push guard blocks commits whose contents match common API-key/PEM shapes. The guard is best-effort: novel or obfuscated secret formats can still slip through, so don't paste raw secrets anywhere in `~/.claude-dotfiles/`.
 
 **Architecture:**
 - **Real secrets** live in your 1Password vault (encrypted, biometric-unlock).
