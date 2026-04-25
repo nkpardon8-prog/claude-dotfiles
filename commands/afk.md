@@ -362,6 +362,9 @@ PROCEDURE:
          except for the named improvement.
      (6) File is NOT in: generated/, dist/, build/, vendor/, node_modules/,
          any *.lock or *.lockfile, anything matching .gitignore.
+         Verify gitignore membership with `git check-ignore -q <file>`
+         (exit 0 = ignored = SKIP the fix). Path-prefix checks for
+         the directory exclusions are sufficient (no shell needed).
    NEVER auto-fix: logic, control flow, error handling, async code,
    constants in conditionals (reachability is unprovable without execution).
 
