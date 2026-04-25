@@ -309,7 +309,7 @@ PROCEDURE:
        state.deadline_at += gap                # extend by the missed time
        append a note to <SESSION_DIR>/errors.md:
          "sleep-skew detected: extended deadline by <gap>s"
-   Persist this in step 10.
+   Persist this in step 11.
 
 3. Stop conditions (in order — first match wins):
    a. state.mode == "finite" AND now >= state.deadline_at
