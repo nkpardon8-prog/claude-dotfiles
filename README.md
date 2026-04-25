@@ -1,58 +1,178 @@
 # Claude Dotfiles
 
-Personal Claude Code configuration that syncs across devices. Slash commands, sub-agents, global rules, learned patterns, and a 1Password-backed credentials catalog — all version-controlled in one repo.
+**A proprietary slash-command operating system for Claude Code.**
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  ~/.claude-dotfiles/   ← edit here, push from here              │
-│        │                                                         │
-│        │   symlinks                                              │
-│        ▼                                                         │
-│  ~/.claude/CLAUDE.md, /commands, /agents, /rules, /patterns     │
-│        │                                                         │
-│        ▼                                                         │
-│  Claude Code session    SessionStart: git pull (auto)           │
-│                         PostToolUse:  git push  (auto)          │
-└──────────────────────────────────────────────────────────────────┘
-```
+~80 commands that web together into a working software-engineering practice: discuss → plan → review → implement → review → verify → commit → ship. Plus full industry suites for construction estimation, drug discovery, UI/UX design, partner-project workflows, and a session-continuity layer that survives context compaction across days.
 
-**Three docs:**
-- This file — setup on a new machine.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how it all wires together (with diagrams).
-- [`docs/COMMANDS.md`](docs/COMMANDS.md) — full slash-command reference.
+Years of refining how to get real work done with Claude — distilled into commands that compose. Every workflow below is one slash away.
 
 ---
 
-## For AI Agents
+## The flow
+
+```
+                  ┌──────────────────────────────────────────────┐
+                  │              FEATURE LIFECYCLE                │
+                  └──────────────────────────────────────────────┘
+
+   /discussion ──▶ /plan ──▶ /implement ──▶ /verify ──▶ /prepare-pr
+       │            │           │             │
+       │            │           │             └─▶ /codex-review
+       │            │           │                 /master-review
+       │            │           │                 /local-review
+       │            │           │
+       │            │           └─▶ implementer agents (parallel)
+       │            │               implementation-reviewer
+       │            │
+       │            └─▶ plan-reviewer (auto, iterative)
+       │
+       └─▶ ./tmp/briefs/  ──▶  ./tmp/ready-plans/  ──▶  ./tmp/done-plans/
+
+         At any point: /pre-compact  ─▶  CLAUDE.local.md  ─▶  next session
+                       /checkpoint   ─▶  named git tag
+                       /learn        ─▶  patterns/  (auto-pushed)
+```
+
+Every arrow above is a real command, in this repo, that hands its output to the next stage. Not a diagram of an idea — a diagram of the actual file pipeline.
+
+---
+
+## Commands at a glance
+
+Full reference: **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
+
+### Build software
+
+| Command | What it does |
+|---|---|
+| `/discussion` | Conversation-only mode. Researches the codebase, talks through tradeoffs, saves a brief to `./tmp/briefs/`. No code changes. |
+| `/plan` | Thorough plan with codebase + web research. Auto-runs plan-reviewer twice and iterates. Saves to `./tmp/ready-plans/`. |
+| `/simple-plan` | Lightweight gut-check before doing what the user just asked. |
+| `/implement <plan>` | Executes a plan via parallel implementer sub-agents. Auto-runs implementation-reviewer at the end. Moves plan to `./tmp/done-plans/`. |
+| `/investigate` | Hypothesis-driven root-cause analysis when something breaks. |
+| `/tdd` | RED → GREEN → REFACTOR cycle. |
+
+### Review
+
+| Command | What it does |
+|---|---|
+| `/codex-review` | Universal review engine. Codex CLI runs 2 specialist passes + 1 verify; Claude Opus runs 4 lens agents (Depth, Breadth, Adversary, Gaps) + meta. Report-only. |
+| `/master-review` | Autonomous review + fix loop. 3 Opus + 3 Codex + 2 Antigravity reviewers in parallel; Claude fixes via `/implement`; verification loop until 3 consecutive clean passes. |
+| `/local-review` | Offline second opinion via LM Studio (paired with `/toggle-local-review`, `/set-primary-local`, `/hybrid-status`). |
+| `/parsa:review:all` | Eleven principle-by-principle review agents in parallel (single-pattern, reuse, scope, clarity, antipatterns, circular-deps, frontend & backend architecture, TanStack Query, self-contained, documentation). |
+| `/supabase-audit` | Read-only schema/RLS/security/prod audit. Refuses prod without `--env=prod`. |
+
+### Verify, commit, ship
+
+| Command | What it does |
+|---|---|
+| `/verify` | Build → typecheck → lint → test → security. Hard-gates each step. |
+| `/commit` | Stages and commits only the files related to this session — leaves unrelated edits alone. |
+| `/checkpoint <name>` | Named git tag for safe rollback before risky changes. |
+| `/prepare-pr` | Commit by-plan, rebase main, build, open or update a PR. |
+| `/netlifydeploy` / `/renderdeploy` | One-shot deploys. Confirm-before-deploy. |
+
+### Sessions, memory, docs
+
+| Command | What it does |
+|---|---|
+| `/pre-compact` | Calibrated handoff before context compaction. Quick/Deep/Chunked mining passes, chain tracking across compactions (`Seq:` + `Parent:`), two-phase write with line floors, "What We Tried" + "Evidence & Data" sections. The single dialed-in tool for session continuity. |
+| `/learn` | Extracts behavioral patterns from this session, indexes them in `patterns/INDEX.md`, auto-pushes. |
+| `/document` | Audits or bootstraps the project's `docs/` tree. |
+| `/architect` | Interactive scaffolding for a new project's three-tier doc system. |
+
+### Research, audio, credentials
+
+| Command | What it does |
+|---|---|
+| `/research-web` | Web research with validated references and citations. |
+| `/transcribe` | Voice memo / call recording → Whisper transcript → project-aware analysis report. ([setup](docs/transcribe.md)) |
+| `/load-creds` | Inject API keys from 1Password into the project's `.env` via `op inject`. Reads the catalog at `credentials.md`. |
+
+### Industry suites
+
+| Suite | Top-level | Sub-commands | Purpose |
+|---|---|---:|---|
+| **plan2bid** | `/plan2bid` | 16 | Full construction estimation: read drawings/specs, extract scope, price labor + materials, scenario analysis, GC-ready PDF/Excel exports. |
+| **ui-ux-pro-max** | `/ui-ux-pro-max` | 6 | Design intelligence: brand, design tokens, shadcn/Tailwind UI, Chart.js slides, banners, logos. 161 palettes, 57 font pairings, 25 chart types across 10 stacks. |
+| **MoleCopilot** | (no umbrella) | 6 | Drug discovery: docking, virtual screening, ADMET, MolMIM AI optimization, target prep, dashboard. 22 MCP tools. |
+| **parsa partner suite** | (namespaced) | ~25 | Mirror of the core flow with `parsa:` namespace — `:create-prp`, `:fix-bug`, `:review:*`, `:linter:*`, `:refactor:*`, `:cl:*`. |
+| **FRAIM** | `/fraim` | (MCP) | Job orchestration via the `fraim` MCP server. Discovers and runs phased jobs. |
+| **CRM** | `/crm` | — | Leads, deals, emails, campaigns, Apollo prospecting. |
+
+### Toolkit
+
+| Command | What it does |
+|---|---|
+| `/skillset` / `/buildskill` | Initialize an industry skill registry; build new commands within it. |
+| `/antigravity` | Switch Google AI profiles for review loops. |
+| `/set-primary-cloud` / `/set-primary-local` | Switch Claude Code routing between Anthropic and LM Studio. |
+
+### Sub-agents (used by skills, not invoked directly)
+
+| Agent | Purpose |
+|---|---|
+| `plan-reviewer` | Reviews plans for gaps, risks, feasibility |
+| `implementer` | Writes code from a plan |
+| `implementation-reviewer` | Reviews completed work vs the plan |
+| `codebase-explorer` | Read-only repo exploration |
+| `researcher` | Web + codebase research |
+
+---
+
+## Why this works
+
+Three properties make these commands more than a pile of prompts:
+
+1. **They web together.** `/discussion` → brief → `/plan` → ready-plan → `/implement` → done-plan → `/prepare-pr` → PR. Each command consumes the previous command's artifact. No manual copy-paste between stages.
+
+2. **They review themselves.** `/plan` runs the plan-reviewer twice automatically. `/implement` runs the implementation-reviewer at the end. `/master-review` loops 3 Opus + 3 Codex + 2 Antigravity reviewers until three consecutive clean passes. Quality is built into the pipeline, not bolted on.
+
+3. **They survive compaction.** `/pre-compact` writes a structured `CLAUDE.local.md` with a `Seq:` chain, a "What We Tried" log, and an "Evidence & Data" section. The next session auto-loads it via `@CLAUDE.local.md`. Multi-day work doesn't lose context.
+
+This is what the dotfiles are. Everything below — symlinks, hooks, sync scripts, credential injection — is plumbing that makes the commands always available, always in sync, always loaded.
+
+For the plumbing details: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
+
+For the full command spec, every flag, every sub-command: **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
+
+---
+
+## Setup on a new machine
+
+The rest of this README is the install guide. It's written for a Claude Code session — paste the README into a fresh session and it'll walk through the steps.
+
+### For AI Agents
 
 You are Claude Code, helping set up a Claude Code development environment on a new device. Follow the steps below **IN ORDER**. Where you see `[USER INPUT]`, ask the user to provide the value. Do not skip steps. Do not guess values for `[USER INPUT]` markers.
 
 **Important context:** This dotfiles repo auto-syncs across devices. Changes are pulled at session start and pushed automatically after any config modifications. Project code repos are NEVER pushed without explicit user approval — only this dotfiles repo auto-syncs.
 
----
-
-## What's In This Repo
+### What's in this repo
 
 ```
 ~/.claude-dotfiles/
 ├── CLAUDE.md               # Global rules (loaded every session)
 ├── credentials.md          # 1Password-backed API key catalog (op:// refs only, no secrets)
 ├── commands/               # Slash commands (available as /command-name)
-│   ├── load-creds.md       # /load-creds — inject 1Password creds into a project's .env
-│   ├── *.md                # Core commands (plan, commit, investigate, etc.)
-│   ├── parsa/              # Partner commands (review, linter, refactor, cl/)
-│   └── plan2bid/           # Construction estimation suite
-├── agents/                 # Custom sub-agents (plan-reviewer, implementer, etc.)
+│   ├── *.md                # Core commands (plan, implement, investigate, ...)
+│   ├── parsa/              # Partner commands  (/parsa:*)
+│   ├── plan2bid/           # Construction estimation suite (/plan2bid:*)
+│   └── ui-ux-pro-max/      # UI/UX design suite (/ui-ux-pro-max:*)
+├── agents/                 # Sub-agents spawned by skills
 ├── rules/                  # Global rules applied to all projects
-├── patterns/               # Learned behavioral patterns (populated by /learn)
-│   └── INDEX.md            # Pattern index with confidence scores
-├── docs/                   # Long-form docs for individual commands
-│   └── transcribe.md       # /transcribe setup and usage
+├── patterns/               # Learned behavioral patterns (filled by /learn)
+│   └── INDEX.md
+├── docs/                   # Long-form documentation
+│   ├── ARCHITECTURE.md     # How everything wires together
+│   ├── COMMANDS.md         # Full slash-command reference
+│   └── transcribe.md       # /transcribe setup
 ├── scripts/
-│   ├── dotfiles-sync.sh    # Auto-push script for PostToolUse hook
-│   └── whisper-transcribe.sh  # Audio → text via OpenAI Whisper (used by /transcribe)
-├── .env.example            # Template for .env (API keys used by commands)
-└── .env                    # Your API keys (gitignored, never committed)
+│   ├── dotfiles-sync.sh    # Auto-push hook script
+│   ├── clean-dead-processes.sh  # RAM cleanup (cron 2-day)
+│   └── whisper-transcribe.sh    # Audio → text (used by /transcribe)
+├── .env.example            # Whisper key template
+└── .env                    # Your API keys (gitignored)
 ```
 
 ---
@@ -297,42 +417,6 @@ test -x "$HOME/.claude-dotfiles/scripts/dotfiles-sync.sh" && echo "Sync script O
 Then start a Claude Code session and verify:
 - Global rules load (CLAUDE.md content should be in context)
 - Slash commands are available (type `/` to see the list)
-
----
-
-## Commands at a glance
-
-Full reference (every command, grouped by purpose, with what they do): **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
-
-The high-level categories:
-
-| Category | Highlights |
-|---|---|
-| **Plan & implement** | `/discussion` → `/plan` → `/implement`. Plus `/simple-plan` for one-offs. |
-| **Investigate & review** | `/investigate`, `/codex-review`, `/master-review`, `/local-review`, `/supabase-audit` |
-| **Git, commits, PRs** | `/commit`, `/checkpoint`, `/prepare-pr` |
-| **Sessions & context** | `/pre-compact` (calibrated handoffs across compactions), `/learn`, `/document`, `/architect` |
-| **Verify** | `/verify`, `/tdd` |
-| **Research** | `/research-web`, `/transcribe` ([setup](docs/transcribe.md)) |
-| **Credentials** | `/load-creds` (1Password → `.env`) |
-| **Account / mode** | `/antigravity`, `/hybrid-status`, `/set-primary-cloud`, `/set-primary-local`, `/toggle-local-review` |
-| **Deploy** | `/netlifydeploy`, `/renderdeploy` |
-| **CRM** | `/crm` |
-| **Construction estimation** | `/plan2bid` + 16 sub-commands (`:run`, `:scope`, `:compare`, `:pdf`, etc.) |
-| **UI/UX** | `/ui-ux-pro-max` + 6 sub-commands (`:design`, `:design-system`, `:brand`, `:ui-styling`, `:slides`, `:banner-design`) |
-| **Drug discovery (MoleCopilot)** | `/dock`, `/screen`, `/admet`, `/optimize`, `/prep-target`, `/dashboard` |
-| **FRAIM** | `/fraim` (job orchestration via MCP) |
-| **Partner suite** | `/parsa:*` (~25 commands across plan, review, linter, refactor, cl) |
-
-### Sub-agents (spawned by skills, not invoked directly)
-
-| Agent | Purpose |
-|---|---|
-| `codebase-explorer` | Read-only codebase exploration |
-| `implementation-reviewer` | Reviews completed implementation vs the original plan |
-| `implementer` | Executes plans by writing code changes |
-| `plan-reviewer` | Reviews plans for gaps, risks, feasibility |
-| `researcher` | Web + codebase research |
 
 ---
 
