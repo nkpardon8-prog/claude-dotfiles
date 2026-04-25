@@ -53,7 +53,7 @@ session_id = current ISO-8601 timestamp, colons replaced with hyphens
 session_dir = <base_dir>/<session_id>-session
 ```
 
-Use Bash to `mkdir -p <session_dir>`.
+Use the Bash tool to run `mkdir -p <session_dir>`.
 
 ---
 
