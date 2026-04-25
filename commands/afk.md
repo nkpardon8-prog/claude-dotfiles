@@ -297,9 +297,9 @@ PROCEDURE:
    On JSON parse failure:
      - If <SESSION_DIR>/state.json.bak exists, restore it as state.json.
      - Append a parse-failure entry to <SESSION_DIR>/errors.md.
-     - Increment errors_streak (working in memory; will be persisted in step 10).
+     - Increment errors_streak (working in memory; will be persisted in step 11).
      - If still unparseable, finalize with an error summary and STOP.
-   Always copy state.json → state.json.bak BEFORE any write in step 10.
+   Always copy state.json → state.json.bak BEFORE any write in step 11.
 
 2. Sleep-skew detection (laptop-sleep guard).
    If state.last_tick_at is set AND (now - state.last_tick_at) > 600s,
