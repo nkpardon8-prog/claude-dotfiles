@@ -402,13 +402,18 @@ PROCEDURE:
    followed by bulleted findings each citing file:line, optionally
    followed by a `### Proposed fix` block per finding.
 
-7. For each Proposed fix from step 6, evaluate the FIX GATE.
+8. For each Proposed fix from step 7, evaluate the FIX GATE.
    The fix is allowed iff ALL of these are true:
      (1) Local change (one function/block).
      (2) No externally observable behavior change (return values, side
          effects, error types, timing, async semantics).
      (3) Change is one of:
            - Dead code removal (verified unreferenced via repo-wide grep)
+             AND the symbol is FILE-LOCAL (not exported / not at module
+             top-level / no `export`/`pub`/public modifiers). NEVER
+             auto-remove an exported symbol — dynamic imports, DI,
+             reflection, JSX string lookups, Rails autoload, Django URL
+             strings won't show up in grep.
            - Typo in comments only
            - Typo in a user-facing string that is NOT used as a key/identifier
            - Pure formatting/whitespace
@@ -423,7 +428,8 @@ PROCEDURE:
          (exit 0 = ignored = SKIP the fix). Path-prefix checks for
          the directory exclusions are sufficient (no shell needed).
    NEVER auto-fix: logic, control flow, error handling, async code,
-   constants in conditionals (reachability is unprovable without execution).
+   constants in conditionals (reachability is unprovable without execution),
+   exported symbols (even if grep shows zero references).
 
    If gate passes: apply the fix with Edit. Append to <SESSION_DIR>/fixes.md:
      ### <iso>: <file>:<line>
