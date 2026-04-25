@@ -123,15 +123,15 @@ Spawn BOTH Bash calls in a SINGLE message (parallel execution):
 
 **Bash 1 (Codex Run A):**
 ```bash
-cd $WORKDIR && codex review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-a.txt 2>&1
+cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-a.txt 2>&1
 ```
-timeout: 120000
+timeout: 600000
 
 **Bash 2 (Codex Run B):**
 ```bash
-cd $WORKDIR && codex review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-b.txt 2>&1
+cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-b.txt 2>&1
 ```
-timeout: 120000
+timeout: 600000
 
 **For MODE="file":**
 
@@ -139,13 +139,13 @@ Spawn BOTH Bash calls in a SINGLE message (parallel execution):
 
 **Bash 1 (Codex Run A):**
 ```bash
-codex exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
 ```
 timeout: 120000
 
 **Bash 2 (Codex Run B):**
 ```bash
-codex exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
 ```
 timeout: 120000
 
@@ -157,13 +157,13 @@ Spawn BOTH Bash calls in a SINGLE message (parallel execution):
 
 **Bash 1 (Codex Run A):**
 ```bash
-codex exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
 ```
 timeout: 120000
 
 **Bash 2 (Codex Run B):**
 ```bash
-codex exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
 ```
 timeout: 120000
 
@@ -319,7 +319,7 @@ The prompt should instruct Codex to:
 ### 6b. Run verification
 
 ```bash
-codex exec -o /tmp/codex-verify.txt --ephemeral -s read-only -C $WORKDIR "You are a code review verifier. Here are findings from a multi-agent review of this codebase:
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-verify.txt --ephemeral -s read-only -C $WORKDIR "You are a code review verifier. Here are findings from a multi-agent review of this codebase:
 
 [PASTE CONSOLIDATED FINDINGS LIST]
 
