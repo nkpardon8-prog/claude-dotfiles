@@ -412,7 +412,7 @@ PROCEDURE:
     RETURN.
 
 generate_alt_tasks(state):
-  state.refill_generation += 1
+  # Caller (step 4) has ALREADY bumped state.refill_generation. Do NOT bump again.
   modules = list_modules(state.git_root)   (same heuristic as survey)
   if not modules: modules = ["."]
   kinds_cycle = ["bug_hunt", "dead_code_hunt", "naming_audit",
@@ -425,7 +425,10 @@ generate_alt_tasks(state):
     new_tasks.append({
       kind: kind,
       target: target,
-      weight: weight_for(kind),
+      # weight is the value for this kind from the TASK_COMPLEXITY_WEIGHTS
+      # table above (e.g. bug_hunt=40, dead_code_hunt=25, naming_audit=20,
+      # test_gap_audit=25, architectural_drift_scan=60).
+      weight: <look up in TASK_COMPLEXITY_WEIGHTS>,
       hash: sha1(kind + "|" + target + "|" + state.refill_generation + "|" + "")
     })
   state.module_rotation_offset = (offset + len(kinds_cycle)) % max(1, len(modules))
