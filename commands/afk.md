@@ -329,7 +329,7 @@ PROCEDURE:
      )
      RETURN.
 
-4. Refill if queue empty:
+5. Refill if queue empty:
    If state.tasks_pending is empty:
      state.refill_generation += 1                       # bumped EXACTLY ONCE per refill
      Re-run the survey (same commands as bootstrap).
@@ -340,9 +340,9 @@ PROCEDURE:
      state.tasks_pending = greedy-pack(new, weights, budget=120)
      state.last_survey_at = now
 
-5. Pop the first task from state.tasks_pending.
+6. Pop the first task from state.tasks_pending.
 
-6. Execute the task wrapped in try/except:
+7. Execute the task wrapped in try/except:
 
    Read context: tail of <SESSION_DIR>/findings.md (last 200 lines).
    If the file is shorter than 200 lines, read the whole file.
