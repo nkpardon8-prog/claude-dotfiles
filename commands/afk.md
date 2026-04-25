@@ -384,6 +384,8 @@ PROCEDURE:
      ### <iso>: task=<kind>(<target>)
      <error message + brief context>
    Increment state.errors_streak.
+   The errored task IS still moved to tasks_done (step 10) so it does not
+   retry forever. This is intentional — broken tasks shouldn't churn.
    Do NOT crash the tick — proceed to step 10.
 
 10. Update state:
@@ -391,7 +393,9 @@ PROCEDURE:
     state.tasks_done_hashes.append(task.hash)
     state.tick_count += 1
     state.last_tick_at = now
-    Write state.json atomically.
+    Write state.json atomically: write to <SESSION_DIR>/state.json.tmp,
+    fsync if available, then `mv` over <SESSION_DIR>/state.json.
+    This prevents corruption if the tick is interrupted mid-write.
 
 11. Re-check stop conditions (deadline may have passed mid-task):
     If any stop condition is true, write summary.md and RETURN
