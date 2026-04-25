@@ -59,6 +59,7 @@ Full reference: **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
 | `/codex-review` | Universal review engine. Codex CLI runs 2 specialist passes + 1 verify; Claude Opus runs 4 lens agents (Depth, Breadth, Adversary, Gaps) + meta. Report-only. |
 | `/master-review` | Autonomous review + fix loop. 3 Opus + 3 Codex + 2 Antigravity reviewers in parallel; Claude fixes via `/implement`; verification loop until 3 consecutive clean passes. |
 | `/local-review` | Offline second opinion via LM Studio (paired with `/toggle-local-review`, `/set-primary-local`, `/hybrid-status`). |
+| `/afk [hours]` | Fire-and-forget unattended review. Walks-away mode: surveys repo, packs tasks by complexity weight, ticks via `ScheduleWakeup` for the requested duration. Default 3h, `0` = infinite (stops on `STOP` sentinel). Single-agent Opus 4.7 medium effort. Auto-fixes only on 100%-confidence purely-additive changes. Output to `<git_root>/tmp/afk/<session>/`. |
 | `/parsa:review:all` | Eleven principle-by-principle review agents in parallel (single-pattern, reuse, scope, clarity, antipatterns, circular-deps, frontend & backend architecture, TanStack Query, self-contained, documentation). |
 | `/supabase-audit` | Read-only schema/RLS/security/prod audit. Refuses prod without `--env=prod`. |
 
