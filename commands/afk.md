@@ -368,7 +368,9 @@ PROCEDURE:
      if len(state.tasks_done_hashes) > 5000:
        state.tasks_done_hashes = state.tasks_done_hashes[-5000:]
 
-6. Pop the first task from state.tasks_pending.
+6. Initialize `task = None`. Pop the first task from state.tasks_pending
+   into `task`. (The explicit None init lets step 11 safely append even
+   if step 7 raises before `task` is bound.)
 
 7. Execute the task wrapped in try/except:
 
