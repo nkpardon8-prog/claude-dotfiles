@@ -115,24 +115,32 @@ Store in `state.default_branch`.
 
 ## Step 5 — Survey the repo (one-time)
 
-Run these **exact** commands. Do not "fix" the regex.
+Run these **exact** commands. Do not "fix" the regex. Wrap each in
+`timeout 30s ...` so a huge monorepo can't blow the bootstrap turn.
+Treat exit code 1 from `grep` as "no matches" (not an error).
 
 ```bash
 # Diff vs default branch
 if default_branch is non-null:
-  git diff <default_branch>...HEAD --shortstat
+  timeout 30s git diff <default_branch>...HEAD --shortstat
 
 # TODOs — extended regex, alternation with |, pinned excludes
-grep -RInE "TODO|FIXME|XXX" \
+# Cap at first 500 matches to avoid 50k-TODO blow-up.
+timeout 30s grep -RInE "TODO|FIXME|XXX" \
   --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=tmp \
-  --exclude-dir=vendor --exclude-dir=dist --exclude-dir=build .
+  --exclude-dir=vendor --exclude-dir=dist --exclude-dir=build . \
+  | head -500
+# (grep exit 1 = no matches → OK; treat as empty)
 
 # Markdown files
-find . -name "*.md" -not -path "*/node_modules/*" -not -path "*/tmp/*"
+timeout 30s find . -name "*.md" -not -path "*/node_modules/*" -not -path "*/tmp/*"
 
 # Recent commits (context only)
-git log --oneline -20
+timeout 30s git log --oneline -20
 ```
+
+If the TODO list exceeds 500, create one `todo_triage` task per
+top-level directory bucket instead of a single global task.
 
 **Modules** = top-level subdirs of `src/`, `packages/`, `apps/`, `lib/`, `internal/` that exist. If none exist, modules = `["."]`.
 
