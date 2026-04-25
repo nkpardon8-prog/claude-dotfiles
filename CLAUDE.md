@@ -181,6 +181,7 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/antigravity` | User wants to switch Antigravity accounts, check account status, or open a Google Pro profile for auth | No |
 | `/buildskill` | User wants to create a new Claude skill or command | No |
 | `/learn` | User wants Claude to extract and save behavioral patterns from this session | YES — writes to dotfiles |
+| `/load-creds` | User asks to load API keys, fill in `.env`, set up credentials, or scaffold a project that needs API keys | YES — writes `.env` from 1Password |
 | `/skillset` | User asks what skills are available or wants to initialize the skill registry | No |
 | `/document` | User asks to document the project, audit docs, update docs, or bootstrap missing docs | No |
 | `/pre-compact` | User says they want to prepare for compaction, save state before compact, or "dump context before you forget" | No |
@@ -272,19 +273,29 @@ Ask: "Want me to check what the recommended next step is in your FRAIM journey? 
 
 ## Credential and MCP Handling
 
+### Primary: 1Password-backed catalog
+
+The user keeps a personal API-key catalog at `~/.claude-dotfiles/credentials.md` (env var names + `op://` references, no secret values). When a project needs API keys (OpenAI, Anthropic, OpenRouter, Google AI, Supabase, etc.):
+
+1. Read the catalog to see what's available.
+2. Use the `/load-creds` slash command, or its flow directly: ensure `.env` and `.env.op` are in `.gitignore` first, write `.env.op` with `op://` refs from the catalog, then run `op inject -i .env.op -o .env`.
+3. Use the same env var names as the catalog when generating `.env.example` so `/load-creds` can match them later.
+4. Never echo resolved secret values back to the user; reference them by env var name only.
+5. If `op whoami` fails, instruct the user to enable 1Password desktop app integration (Settings → Developer → "Integrate with 1Password CLI").
+
 ### When a credential is shared in conversation
 
 Any time an API key, auth token, webhook secret, or other credential appears in conversation:
-1. Ask: "Should I store this in `~/.zshrc`? (y/n)"
-2. If yes: append `export VAR_NAME="value"` under the `# API Keys & Auth Tokens` section in `~/.zshrc`. Remove it from any config file where it appeared in plaintext. Confirm where it was stored.
-3. If no: note it will not persist.
+1. Ask: "Want me to add this to your 1Password vault and reference it from `~/.claude-dotfiles/credentials.md` as `op://...`? (y/n)"
+2. If yes: instruct the user to create/update the 1Password item (Claude can't write to 1Password directly), then add a row to `credentials.md` with the env var name and the `op://` reference. Remove the raw value from any file where it appeared in plaintext.
+3. If the user declines or 1Password isn't available, fall back to: "Should I store this in `~/.zshrc` instead? (y/n)" — append `export VAR_NAME="value"` under the `# API Keys & Auth Tokens` section. Note this is the legacy path and won't sync across devices.
+4. Never commit raw secrets to any repo, including dotfiles.
 
 ### Before using a stored credential
 
-The first time a credential from `~/.zshrc` is used in a conversation, ask:
-"Using [VAR_NAME] from `~/.zshrc` — OK? (y/n)"
+When `op inject` or `op read` would resolve a credential for the first time in a conversation, briefly note which `op://` reference is being used (env var name + reference path, never the resolved value) and proceed. No per-use confirmation needed once the user has approved the flow for the session.
 
-After confirmation, use without re-asking for the rest of the conversation.
+For legacy `~/.zshrc` credentials, the first use in a conversation: ask "Using [VAR_NAME] from `~/.zshrc` — OK? (y/n)". After confirmation, use without re-asking for the rest of the conversation.
 
 ### Adding a new MCP server
 
