@@ -363,6 +363,10 @@ PROCEDURE:
        new = generate_alt_tasks(state)                  # does NOT bump again
      state.tasks_pending = greedy-pack(new, weights, budget=120)
      state.last_survey_at = now
+     # Cap tasks_done_hashes to last 5000 entries (FIFO drop) to keep
+     # state.json small over long sessions.
+     if len(state.tasks_done_hashes) > 5000:
+       state.tasks_done_hashes = state.tasks_done_hashes[-5000:]
 
 6. Pop the first task from state.tasks_pending.
 
