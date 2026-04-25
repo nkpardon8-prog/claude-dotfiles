@@ -9,27 +9,58 @@ Usage:
 
 ## Steps
 
-### 1. Verify `op` is available and signed in
+### 1. Verify `op` is available and authenticated
 
 ```bash
-op whoami
+which op || { echo "op not installed. Install: brew install --cask 1password-cli (macOS) or per OS." >&2; exit 1; }
 ```
-- If "command not found": tell user to install — `brew install --cask 1password-cli` (macOS), or 1Password CLI for Linux/Windows. Stop.
-- If "not signed in": three valid auth modes; pick whichever the user has set up:
-  - **Desktop app integration** (interactive macOS/Windows/Linux): open 1Password app → Settings → Developer → "Integrate with 1Password CLI". Touch ID / biometric unlock.
-  - **`OP_SERVICE_ACCOUNT_TOKEN`** env var: non-interactive, for headless/CI.
-  - **`op signin`** eval: interactive but **only persists in the same shell**, so it does not work across slash-command shells unless the user runs `eval $(op signin)` in their main terminal before invoking Claude.
-- Stop and tell the user which option to use. Do not proceed with a stale-auth workaround.
+
+Three valid auth modes — detect in this order:
+
+```bash
+# Mode A: service account (non-interactive, headless/CI)
+if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+  if op whoami >/dev/null 2>&1; then
+    OP_AUTH=service
+  else
+    echo "OP_SERVICE_ACCOUNT_TOKEN is set but op whoami failed — token may be invalid." >&2
+    exit 1
+  fi
+
+# Mode B: signed-in account (desktop integration OR persisted op signin)
+elif op whoami >/dev/null 2>&1; then
+  OP_AUTH=user
+
+# Mode C: not authenticated
+else
+  echo "op is not authenticated. Pick ONE:" >&2
+  echo "  - Desktop integration: open 1Password app → Settings → Developer → 'Integrate with 1Password CLI' (recommended for interactive use)." >&2
+  echo "  - Service account: export OP_SERVICE_ACCOUNT_TOKEN=<token> in your shell." >&2
+  echo "  - eval signin: run 'eval \$(op signin)' in the SAME shell that launched Claude (does not persist across new shells)." >&2
+  exit 1
+fi
+```
 
 ### 2. Multi-account: pin the account for the whole flow
 
+Service accounts have exactly one account scope, so skip multi-account handling for `OP_AUTH=service`.
+
 ```bash
-op account list --format=json
+OP_ACC=""
+if [ "$OP_AUTH" = "user" ]; then
+  N=$(op account list --format=json | jq 'length')
+  if [ "$N" -gt 1 ] && [ -z "$OP_ACCOUNT" ]; then
+    # Show accounts and ask user which to use
+    op account list --format=json | jq -r '.[] | "\(.url)\t\(.account_uuid)\t\(.email)"'
+    # User selects an address (preferred) or account_uuid
+    # Set OP_ACC for use on every subsequent op call
+    OP_ACC="--account <chosen-address-or-uuid>"
+  fi
+  # If OP_ACCOUNT is already exported, op picks it up automatically — leave OP_ACC empty.
+fi
 ```
-- If 0 accounts → not signed in (already handled above).
-- If 1 account → set `OP_ACC=""` (no `--account` needed).
-- If 2+ accounts AND `$OP_ACCOUNT` is unset → ask the user which to use, then set `OP_ACC="--account <chosen>"` where `<chosen>` is the **sign-in address** or **account ID** from the JSON (`url` or `account_uuid` field), per 1Password docs. Use this on **every** `op` call below — `op read`, `op inject`, etc.
-- If `$OP_ACCOUNT` is already set in the env, set `OP_ACC=""` and trust the env var.
+
+Use `$OP_ACC` on **every** `op` call below — `op read`, `op inject`, etc.
 
 ### 3. Read the catalog
 
