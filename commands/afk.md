@@ -98,12 +98,16 @@ clamp and warn in the status line. `0` (infinite) is unaffected.
 
 ## Step 4 — Detect default branch
 
-Order (first that succeeds):
+**Skip entirely** if `git_root` came from the fallback (i.e. not in a git repo).
+Set `state.default_branch = null` and proceed.
+
+Otherwise, order (first that succeeds):
 1. `git symbolic-ref refs/remotes/origin/HEAD --short` → strip `origin/`
 2. `git rev-parse --verify main` → `main`
 3. `git rev-parse --verify master` → `master`
 4. `git rev-parse --verify develop` → `develop`
-5. None → `null` (skip diff-based tasks)
+5. None → `null` (skip diff-based tasks). Note this in `plan.md` so the
+   user understands why no `diff_review` tasks were packed.
 
 Store in `state.default_branch`.
 
