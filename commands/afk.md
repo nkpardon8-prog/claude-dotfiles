@@ -499,10 +499,10 @@ PROCEDURE:
       mv state.json.tmp state.json       (same dir → atomic rename)
 
 12. Re-check stop conditions (deadline may have passed mid-task):
-    If any stop condition is true, write summary.md, remove tick.lock,
-    and RETURN without rescheduling.
+    If any stop condition is true, write summary.md, `rm -rf
+    <SESSION_DIR>/tick.lock`, and RETURN without rescheduling.
 
-13. Remove tick.lock (release re-entrancy lock).
+13. `rm -rf <SESSION_DIR>/tick.lock` (release re-entrancy lock).
     ScheduleWakeup(
       delaySeconds = 240,
       prompt = THIS SAME PROMPT,
