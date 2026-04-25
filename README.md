@@ -493,7 +493,7 @@ The `/load-creds` slash command + a 1Password catalog let any Claude session inj
 
 **Multi-account 1Password:** if `op account list` shows >1 account, `/load-creds` prompts to pick one and threads `--account <addr>` through every `op` call (or you can export `OP_ACCOUNT`).
 
-**Cross-platform:** the slash command is OS-agnostic; install instructions for `op` differ. Linux: package per distro, then desktop integration via 1Password Linux app. Windows: `winget install AgileBits.1Password.CLI`.
+**Platform support:** `/load-creds` assumes a POSIX shell + `op`, `awk`, `grep`, `mktemp`, `mv`, `chmod`, `git`. Tested on macOS. Linux works (install `op` per distro, then desktop integration via the 1Password Linux app). Native Windows is not supported without WSL or git-bash.
 
 ---
 
