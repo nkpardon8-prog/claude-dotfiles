@@ -76,7 +76,9 @@ Worktree-aware glob: also check the shared `tmp/afk` derived from
 worktrees see each other's sessions.
 
 If any active session exists:
-- `--takeover` provided → `touch <other_session>/STOP`, continue.
+- `--takeover` provided → `touch <other_session>/STOP`, then sleep 5s
+  to give the other session's in-flight tick a chance to observe the
+  sentinel before its next ScheduleWakeup re-fires; continue.
 - `--force` provided → log warning, continue (DO NOT touch the other STOP).
 - Neither → print:
   ```
