@@ -305,11 +305,21 @@ PROCEDURE:
 
 1. Read <SESSION_DIR>/state.json. Call it `state`.
    On JSON parse failure:
-     - If <SESSION_DIR>/state.json.bak exists, restore it as state.json.
+     - If <SESSION_DIR>/state.json.bak exists, restore it as state.json
+       and re-parse.
      - Append a parse-failure entry to <SESSION_DIR>/errors.md.
      - Increment errors_streak (working in memory; will be persisted in step 11).
-     - If still unparseable, finalize with an error summary and STOP.
-   Always copy state.json → state.json.bak BEFORE any write in step 11.
+     - If still unparseable, write summary.md (error variant), `rm -rf
+       <SESSION_DIR>/tick.lock`, and RETURN without rescheduling.
+   On successful parse: **immediately** copy current state.json
+   → state.json.bak (the *known-good* snapshot from BEFORE this tick's
+   mutations). This is the only place state.json.bak is written —
+   step 11 does NOT re-copy. This prevents corruption-cascade where a
+   bad state.json would also corrupt the bak.
+
+   Clamp negative deltas: if `state.last_tick_at` is in the future
+   (clock jumped backward), treat `(now - last_tick_at) = 0` for all
+   subsequent calculations.
 
 2. Sleep-skew detection (laptop-sleep guard).
    If state.last_tick_at is set AND (now - state.last_tick_at) > 600s,
