@@ -274,12 +274,12 @@ PROCEDURE:
 
 4. Refill if queue empty:
    If state.tasks_pending is empty:
-     state.refill_generation += 1
+     state.refill_generation += 1                       # bumped EXACTLY ONCE per refill
      Re-run the survey (same commands as bootstrap).
      Compute hashes with the new refill_generation.
      new = [t for t in survey_tasks if t.hash not in state.tasks_done_hashes]
      If new is empty:
-       new = generate_alt_tasks(state)   (see below)
+       new = generate_alt_tasks(state)                  # does NOT bump again
      state.tasks_pending = greedy-pack(new, weights, budget=120)
      state.last_survey_at = now
 
