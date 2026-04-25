@@ -7,7 +7,7 @@ Cheat sheet of the categories below:
 | Category | Commands |
 |---|---|
 | [Planning & implementation](#planning--implementation) | `/plan`, `/simple-plan`, `/discussion`, `/implement` |
-| [Investigation & review](#investigation--review) | `/investigate`, `/codex-review`, `/master-review`, `/local-review`, `/supabase-audit` |
+| [Investigation & review](#investigation--review) | `/investigate`, `/codex-review`, `/master-review`, `/local-review`, `/afk`, `/supabase-audit` |
 | [Git, commits, PRs](#git-commits-prs) | `/commit`, `/checkpoint`, `/prepare-pr` |
 | [Sessions & context](#sessions--context) | `/pre-compact`, `/learn`, `/document`, `/architect` |
 | [Verification](#verification) | `/verify`, `/tdd` |
