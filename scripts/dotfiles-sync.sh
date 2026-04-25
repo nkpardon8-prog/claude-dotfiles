@@ -41,14 +41,16 @@ if [ ! -s "$FILES_LIST" ]; then
     exit 0
 fi
 
-# Scan each candidate file. -I makes grep skip binary files (treats as no match).
-# We tee grep stderr to detect runtime failures; on any sh-level error we fail closed.
+# Scan each candidate file. `-a` forces grep to treat all files as text — we
+# scan binaries too, since the dotfiles repo has no legitimate binary content
+# and we don't want a secret pasted into a binary file to slip through.
+# We capture grep stderr to detect runtime failures; on sh-level error → fail closed.
 HITS=$(
     xargs -0 -I {} sh -c '
         f="$1"
         [ -f "$f" ] || exit 0
         case "$f" in *.git/*|.git/*) exit 0 ;; esac
-        grep -InIEH -e "$RX" -- "$f"
+        grep -aInEH -e "$RX" -- "$f"
     ' _ {} < "$FILES_LIST" 2>/tmp/.dotfiles-sync-grep-err.$$
 )
 SCAN_RC=$?
