@@ -10,3 +10,5 @@ session-env/
 .env
 .env.*
 !.env.example
+credentials.md
+credentials.local.md
