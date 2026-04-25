@@ -22,13 +22,13 @@ if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null &&
 fi
 
 # Pre-push secret scan (working tree + untracked files about to be staged)
-if ! "$DOTFILES_DIR/scripts/secret-scan.sh" --working; then
-    rc=$?
-    case "$rc" in
-        2) echo "(secret-scan blocked auto-push)" >&2; exit 2 ;;
-        *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; exit 3 ;;
-    esac
-fi
+"$DOTFILES_DIR/scripts/secret-scan.sh" --working
+rc=$?
+case "$rc" in
+    0) ;;  # clean — proceed
+    2) echo "(secret-scan blocked auto-push)" >&2; exit 2 ;;
+    *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; exit 3 ;;
+esac
 
 # Auto-commit and push
 git add -A
