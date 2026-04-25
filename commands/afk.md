@@ -488,12 +488,13 @@ PROCEDURE:
     Do NOT crash the tick — proceed to step 11.
 
 11. Update state:
-    state.tasks_done.append(task)
-    state.tasks_done_hashes.append(task.hash)
+    if task is not None:
+      state.tasks_done.append(task)
+      state.tasks_done_hashes.append(task.hash)
     state.tick_count += 1
     state.last_tick_at = now
-    Write state.json atomically:
-      cp state.json state.json.bak       (backup BEFORE writing)
+    Write state.json atomically (state.json.bak was already written
+    in step 1 from a known-good parse — do NOT re-copy here):
       write to state.json.tmp
       mv state.json.tmp state.json       (same dir → atomic rename)
 
