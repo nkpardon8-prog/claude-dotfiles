@@ -345,7 +345,7 @@ PROCEDURE:
 
 4. Throttle (cost guard, especially for infinite mode):
    If state.last_tick_at is set AND (now - state.last_tick_at) < 60s:
-     remove tick.lock
+     `rm -rf <SESSION_DIR>/tick.lock`
      ScheduleWakeup(
        delaySeconds = max(60, 240 - (now - state.last_tick_at)),
        prompt = THIS SAME PROMPT,
