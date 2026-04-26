@@ -440,6 +440,7 @@ func (c *Client) Run(req RunRequest) (*RunResp, error) {
 	if err != nil {
 		return nil, &TransportError{Op: "run", Err: err}
 	}
+	hreq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	hreq.Header.Set("Content-Type", "application/json")
 	if req.IdempotencyKey != "" {
 		hreq.Header.Set("Idempotency-Key", req.IdempotencyKey)
