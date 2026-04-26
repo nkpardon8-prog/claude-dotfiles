@@ -262,12 +262,11 @@ func main() {
 		if err != nil {
 			os.Exit(reportErr(err))
 		}
-		if resp.Stdout != "" {
-			_, _ = io.WriteString(os.Stdout, resp.Stdout)
+		if opts.JSON {
+			_ = json.NewEncoder(os.Stdout).Encode(resp)
+			os.Exit(resp.ExitCode)
 		}
-		if resp.Stderr != "" {
-			_, _ = io.WriteString(os.Stderr, resp.Stderr)
-		}
+		printRunHuman(opts.Command, resp)
 		os.Exit(resp.ExitCode)
 
 	case "run-stream":
@@ -277,7 +276,7 @@ func main() {
 			os.Exit(2)
 		}
 		c := transport.New()
-		code, err := c.RunStream(transport.RunRequest{
+		result, err := c.RunStream(transport.RunRequest{
 			Command:        opts.Command,
 			CWD:            opts.CWD,
 			TimeoutSeconds: opts.Timeout,
@@ -285,7 +284,11 @@ func main() {
 		if err != nil {
 			os.Exit(reportErr(err))
 		}
-		os.Exit(code)
+		if !opts.JSON {
+			fmt.Fprintf(os.Stderr, "↳ exit: %d · duration: %.2fs\n",
+				result.ExitCode, float64(result.DurationMS)/1000.0)
+		}
+		os.Exit(result.ExitCode)
 
 	case "shot":
 		opts := parseShotArgs(args)
