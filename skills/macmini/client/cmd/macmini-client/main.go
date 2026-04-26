@@ -102,19 +102,30 @@ func parseRunArgs(args []string, allowIdem bool) (*runOpts, error) {
 	return o, nil
 }
 
-// parsePushArgs returns local + remote with the documented default.
+// parsePushArgs returns local + remote with the documented default. The
+// `--overwrite` flag (presence = true) may appear in any position before the
+// positional args.
 func parsePushArgs(args []string) (*pushOpts, error) {
-	if len(args) == 0 {
-		return nil, errors.New("usage: push <local> [remote]")
+	o := &pushOpts{}
+	rest := []string{}
+	for _, a := range args {
+		switch {
+		case a == "--overwrite":
+			o.Overwrite = true
+		default:
+			rest = append(rest, a)
+		}
 	}
-	local := args[0]
-	var remote string
-	if len(args) >= 2 {
-		remote = args[1]
+	if len(rest) == 0 {
+		return nil, errors.New("usage: push [--overwrite] <local> [remote]")
+	}
+	o.Local = rest[0]
+	if len(rest) >= 2 {
+		o.Remote = rest[1]
 	} else {
-		remote = "~/Documents/macmini-skill/" + filepath.Base(local)
+		o.Remote = "~/Documents/macmini-skill/" + filepath.Base(o.Local)
 	}
-	return &pushOpts{Local: local, Remote: remote}, nil
+	return o, nil
 }
 
 func parsePullArgs(args []string) (*pullOpts, error) {
