@@ -1,6 +1,7 @@
 package shot
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
