@@ -59,8 +59,9 @@ LOG_PATH="${HOME}/Library/Logs/macmini-server.log"
 CONFIG_DIR="${HOME}/.config/macmini-server"
 TOKEN_PATH="${CONFIG_DIR}/token"
 
-SERVER_DEST="/usr/local/bin/macmini-server"
-CLIENT_DEST="/usr/local/bin/macmini-client"
+# Defaults overridden after MODE is parsed.
+SERVER_DEST=""
+CLIENT_DEST=""
 
 PROBE_PNG="/tmp/__macmini-perm-probe.png"
 
@@ -68,24 +69,29 @@ PROBE_PNG="/tmp/__macmini-perm-probe.png"
 # Flags
 # ---------------------------------------------------------------------------
 
+MODE="userspace"
 ROTATE_TOKEN=0
 REINSTALL=0
 SKIP_PMSET=0
+FORCE_PMSET=0
 SKIP_SCREENCAP_PROBE=0
 PRINT_TOKEN=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --mode=userspace)       MODE="userspace"; shift ;;
+        --mode=cask)            MODE="cask"; shift ;;
         --rotate-token)         ROTATE_TOKEN=1; shift ;;
         --reinstall)            REINSTALL=1; shift ;;
         --uninstall)
             exec bash "${SCRIPT_DIR}/uninstall.sh"
             ;;
         --skip-pmset)           SKIP_PMSET=1; shift ;;
+        --pmset)                FORCE_PMSET=1; shift ;;
         --skip-screencap-probe) SKIP_SCREENCAP_PROBE=1; shift ;;
         --print-token)          PRINT_TOKEN=1; shift ;;
         -h|--help)
-            sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -95,6 +101,19 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Mode-dependent defaults.
+if [[ "$MODE" == "userspace" ]]; then
+    SERVER_DEST="${HOME}/.local/bin/macmini-server"
+    CLIENT_DEST="${HOME}/.local/bin/macmini-client"
+    # In userspace mode, pmset (sudo) is opt-in only.
+    if [[ $FORCE_PMSET -eq 0 ]]; then
+        SKIP_PMSET=1
+    fi
+else
+    SERVER_DEST="/usr/local/bin/macmini-server"
+    CLIENT_DEST="/usr/local/bin/macmini-client"
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
