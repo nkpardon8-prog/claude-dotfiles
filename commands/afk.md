@@ -169,19 +169,19 @@ These are **complexity weights for packing/ordering**, NOT wall-clock minutes. W
 
 ```
 TASK_COMPLEXITY_WEIGHTS:
-  diff_review (≤200 LOC):                      15
-  diff_review (200–1000 LOC):                  45
-  diff_review (>1000 LOC):                     90
-  full_file_deep_review (file <500 LOC):       20
-  full_file_deep_review (file 500–2000 LOC):   45
-  architectural_drift_scan (whole repo):       60
-  todo_triage:                                 30
-  test_gap_audit (per module):                 25
-  doc_drift_check (per .md file):               5
-  dependency_audit:                            20
-  bug_hunt (per module):                       40
-  dead_code_hunt (per module):                 25
-  naming_audit (per module):                   20
+  diff_review (≤200 LOC):                       8
+  diff_review (200–1000 LOC):                  15
+  diff_review (>1000 LOC):                     20
+  full_file_deep_review (file <500 LOC):       10
+  full_file_deep_review (file 500–2000 LOC):   18
+  architectural_drift_scan (whole repo):       20
+  todo_triage:                                 12
+  test_gap_audit (per module):                 12
+  doc_drift_check (per .md file):               3
+  dependency_audit:                            10
+  bug_hunt (per module):                       18
+  dead_code_hunt (per module):                 12
+  naming_audit (per module):                   10
 ```
 
 **Fallback rule:** for any task not listed, pick the closest analogous entry above and use that weight. Do NOT estimate from scratch. Between two plausible matches, pick the LARGER one.
