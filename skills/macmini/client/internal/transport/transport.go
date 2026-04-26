@@ -293,55 +293,80 @@ func (c *Client) Paste(text string) error {
 }
 
 // Push uploads a local file to remote via POST /files/push (multipart).
+//
+// The request body is constructed via GetBody so retries do NOT buffer the
+// full file in memory — on each attempt the source file is reopened and the
+// multipart envelope is re-encoded streamingly. The boundary is fixed across
+// attempts so Content-Type stays consistent.
 func (c *Client) Push(local, remote string, overwrite bool) (*PushResp, error) {
-	f, err := os.Open(local)
+	// Probe the file once so we surface "not found" before sending.
+	if _, err := os.Stat(local); err != nil {
+		return nil, &TransportError{Op: "push.open", Err: err}
+	}
+
+	// Pick a stable boundary so all attempts use the same Content-Type.
+	boundary := multipart.NewWriter(io.Discard).Boundary()
+	contentType := "multipart/form-data; boundary=" + boundary
+
+	getBody := func() (io.ReadCloser, error) {
+		f, err := os.Open(local)
+		if err != nil {
+			return nil, err
+		}
+		pr, pw := io.Pipe()
+		mw := multipart.NewWriter(pw)
+		if err := mw.SetBoundary(boundary); err != nil {
+			_ = f.Close()
+			_ = pw.Close()
+			return nil, err
+		}
+		go func() {
+			defer f.Close()
+			defer pw.Close()
+			if err := mw.WriteField("remote_path", remote); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+			if overwrite {
+				if err := mw.WriteField("overwrite", "true"); err != nil {
+					_ = pw.CloseWithError(err)
+					return
+				}
+			}
+			fw, err := mw.CreateFormFile("file", filepath.Base(local))
+			if err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+			if _, err := io.Copy(fw, f); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+			if err := mw.Close(); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}()
+		return pr, nil
+	}
+
+	body, err := getBody()
 	if err != nil {
 		return nil, &TransportError{Op: "push.open", Err: err}
 	}
-	defer f.Close()
 
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	errCh := make(chan error, 1)
-	go func() {
-		defer pw.Close()
-		defer mw.Close()
-		if err := mw.WriteField("remote_path", remote); err != nil {
-			errCh <- err
-			return
-		}
-		if overwrite {
-			if err := mw.WriteField("overwrite", "true"); err != nil {
-				errCh <- err
-				return
-			}
-		}
-		fw, err := mw.CreateFormFile("file", filepath.Base(local))
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if _, err := io.Copy(fw, f); err != nil {
-			errCh <- err
-			return
-		}
-		errCh <- nil
-	}()
-
-	req, err := c.newRequest(http.MethodPost, "/files/push", pr, true)
+	req, err := c.newRequest(http.MethodPost, "/files/push", body, true)
 	if err != nil {
 		return nil, &TransportError{Op: "push", Err: err}
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
+	req.GetBody = getBody
 
 	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if werr := <-errCh; werr != nil {
-		return nil, &TransportError{Op: "push.write", Err: werr}
-	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, readError(resp)
 	}
