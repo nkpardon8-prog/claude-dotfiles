@@ -444,10 +444,16 @@ fi
 mkdir -p "$(dirname "$PLIST")"
 TMP_PLIST="${PLIST}.tmp.$$"
 
+# PATH for the LaunchAgent. Put ~/.local/bin first so userspace-mode binaries
+# can shell out (e.g. /run uses /bin/zsh -lc which inherits this PATH).
+LAUNCH_PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 sed \
+    -e "s|@@BINARY_PATH@@|${SERVER_DEST}|g" \
     -e "s|@@TOKEN_PATH@@|${TOKEN_PATH}|g" \
     -e "s|@@LOG_PATH@@|${LOG_PATH}|g" \
     -e "s|@@LISTEN_ADDR@@|${LISTEN_ADDR}|g" \
+    -e "s|@@PATH@@|${LAUNCH_PATH}|g" \
     "$PLIST_TEMPLATE" > "$TMP_PLIST"
 chmod 644 "$TMP_PLIST"
 
