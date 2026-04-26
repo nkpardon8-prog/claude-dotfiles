@@ -131,7 +131,8 @@ Two separate components communicating over Tailscale:
 ┌───────────────────────────────────────────────▼───────────────────────────┐
 │                                  Mac mini                                  │
 │                                                                            │
-│   launchd ──► /usr/local/bin/macmini-server (Go static binary)             │
+│   launchd ──► ~/.local/bin/macmini-server  (userspace, default; no sudo)   │
+│         or    /usr/local/bin/macmini-server (cask mode; legacy)            │
 │                bound to Tailscale-interface IP:8765 (NOT 0.0.0.0)          │
 │                                │                                           │
 │                                ├── bearer-token middleware                 │
