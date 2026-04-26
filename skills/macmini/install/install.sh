@@ -537,6 +537,21 @@ for _ in $(seq 1 20); do
     sleep 0.5
 done
 
+# Userspace tailscaled forwards inbound tailnet traffic to localhost listeners,
+# so if the tailnet IP bind didn't work, also check 127.0.0.1 — it's the same
+# server under userspace mode.
+if [[ $healthy -ne 1 && "$MODE" == "userspace" ]]; then
+    warn "no response on ${LISTEN_ADDR} — probing 127.0.0.1:8765 (userspace fallback)"
+    for _ in $(seq 1 10); do
+        if curl -sf "http://127.0.0.1:8765/health" >/dev/null 2>&1; then
+            healthy=1
+            info "/health OK on 127.0.0.1 (userspace tailscaled forwards from tailnet IP)"
+            break
+        fi
+        sleep 0.5
+    done
+fi
+
 if [[ $healthy -ne 1 ]]; then
     err "server did not respond on http://${LISTEN_ADDR}/health within 10s."
     err "Last 50 log lines from ${LOG_PATH}:"
