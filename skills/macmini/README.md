@@ -234,6 +234,11 @@ This is the canonical reference. Each command links to its own doc.
 | Mac mini reboots → server down | Run `macmini-client health` after reboot | Auto-login not enabled | System Settings → Users & Groups → "Automatically log in as" → user. (FileVault still requires FV password at cold boot.) |
 | Mac mini hostname/IP changed | `tailscale status` | Tailscale rejoin or rename | Re-run `bash ~/.claude-dotfiles/skills/macmini/install/install.sh` (idempotent — picks up new values from `tailscale status --json`, re-renders plist) |
 | `install.sh` says "GUI session required" | `who am i` | Running over SSH as different user | Run from a logged-in GUI session (Terminal in the Mac mini's actual desktop, OR ssh to the Mac mini as the same user that's logged into the GUI) |
+| Mac mini's `git push` fails silently in auto-sync hook | `git push` from Mac mini Terminal | HTTPS remote with no cached credentials, or no SSH key | Force-push from a credentialed dev machine: `git push origin main --force-with-lease`. Then on Mac mini: `git fetch origin && git reset --hard origin/main`. |
+| `tailscale up` auth URL too long to type through CRD | n/a | URL has `?`, `=`, mixed case (CRD-mangled) | On the Mac mini side run `open <url>` to pop the URL in its own browser; click through visually. |
+| `Cmd+Tab` through CRD lands focus on wrong app | observe — keystrokes go where you didn't intend | CRD's modifier shortcut routes to the dev OS's task-switcher, not the Mac mini's | Use `Cmd+Space → type lowercase app name → Enter` instead. Spotlight is reliable; Cmd+Tab is not. |
+| `/health` works on `127.0.0.1` but not on tailnet IP | `curl http://<tailnet-ip>:8765/health` from dev | Server bound to tailnet IP didn't take, but userspace tailscaled forwards from tailnet IP → 127.0.0.1 | This is fine; install.sh's smoke probe handles it. The tunnel still works because userspace tailscaled forwards inbound. |
+| Server is `nohup`-running but not LaunchAgent-managed | `launchctl print gui/$(id -u)/com.macmini-skill.server` | Initial install via `nohup`; LaunchAgent never bootstrapped | Re-run `bash install.sh` from a logged-in GUI Terminal session. It is idempotent. |
 
 ---
 
