@@ -490,7 +490,7 @@ if [[ $SKIP_SCREENCAP_PROBE -eq 0 ]]; then
     if [[ ! -s "$PROBE_PNG" ]]; then
         warn "screencapture produced no file. Screen Recording permission likely DENIED."
         warn "Open System Settings → Privacy & Security → Screen Recording, enable"
-        warn "  /usr/local/bin/macmini-server"
+        warn "  ${SERVER_DEST}"
         warn "then run: launchctl kickstart -k gui/\$(id -u)/${LABEL}"
         warn "and re-run this installer to verify."
     else
