@@ -374,7 +374,13 @@ That's it. No edits to `internal/auth`, `internal/config`, or any other handler.
 
 ---
 
+## See also
+
+- `docs/AGENT-GUIDE.md` — guide for AI agents driving the Mac mini through CRD + Tailscale. Read first if you're an autonomous agent.
+- `docs/HARDWARE-TEST-NOTES.md` — what was actually validated end-to-end on real hardware, what was deferred, friction points, and a 10-step reproduction recipe.
+- `commands/macmini/setup.md` — full setup walkthrough with both userspace (default) and cask (legacy) install paths.
+
 ## Footer
 
-- Locked plan: `tmp/ready-plans/2026-04-25-chrome-devtools-mac-mini-remote-skill.md`
+- Locked plan: `tmp/done-plans/2026-04-25-chrome-devtools-mac-mini-remote-skill.md`
 - Brief: `tmp/briefs/2026-04-25-chrome-devtools-mac-mini-remote-skill.md`
