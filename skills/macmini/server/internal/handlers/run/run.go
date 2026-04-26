@@ -263,18 +263,28 @@ func handleStream(w http.ResponseWriter, r *http.Request, redactList []string) {
 		return
 	}
 
-	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		emit(errorResponse{Error: "run.start_failed", Detail: err.Error(), RequestID: rid})
-		return
-	}
-
 	var emitMu sync.Mutex
 	safeEmit := func(obj any) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
 		emit(obj)
 	}
+
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		safeEmit(errorResponse{Error: "run.start_failed", Detail: err.Error(), RequestID: rid})
+		return
+	}
+
+	exitCode := 1
+	defer func() {
+		safeEmit(map[string]any{
+			"event":       "exit",
+			"code":        exitCode,
+			"duration_ms": time.Since(start).Milliseconds(),
+			"request_id":  rid,
+		})
+	}()
 
 	pumpDone := make(chan struct{}, 2)
 	pump := func(stream string, src io.Reader) {
