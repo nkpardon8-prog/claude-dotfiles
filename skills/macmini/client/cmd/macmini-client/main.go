@@ -155,6 +155,37 @@ func parseShotArgs(args []string) *shotOpts {
 	return o
 }
 
+// printRunHuman renders a buffered RunResp per the run.md spec:
+//
+//	$ <command>
+//	<stdout>
+//	↳ stderr: <stderr>   (only if non-empty)
+//	↳ exit: <code> · duration: <Xs>
+func printRunHuman(command string, resp *transport.RunResp) {
+	fmt.Fprintf(os.Stdout, "$ %s\n", command)
+	if resp.Stdout != "" {
+		_, _ = io.WriteString(os.Stdout, resp.Stdout)
+		if !strings.HasSuffix(resp.Stdout, "\n") {
+			_, _ = io.WriteString(os.Stdout, "\n")
+		}
+	}
+	if resp.Stderr != "" {
+		lines := strings.Split(strings.TrimRight(resp.Stderr, "\n"), "\n")
+		for i, line := range lines {
+			if i == 0 {
+				fmt.Fprintf(os.Stderr, "↳ stderr: %s\n", line)
+			} else {
+				fmt.Fprintf(os.Stderr, "         %s\n", line)
+			}
+		}
+	}
+	trailer := fmt.Sprintf("↳ exit: %d · duration: %.2fs", resp.ExitCode, resp.DurationSeconds)
+	if resp.Truncated {
+		trailer += " (truncated)"
+	}
+	fmt.Fprintln(os.Stderr, trailer)
+}
+
 // reportErr scrubs hostname strings before printing and exits with the
 // appropriate code (1 = server error, 2 = transport/auth/setup).
 func reportErr(err error) int {
