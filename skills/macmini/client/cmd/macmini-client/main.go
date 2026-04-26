@@ -42,6 +42,7 @@ type runOpts struct {
 	Timeout int
 	CWD     string
 	IdemKey string
+	JSON    bool
 	Command string
 }
 
