@@ -355,14 +355,21 @@ That's it. No edits to `internal/auth`, `internal/config`, or any other handler.
 
 | Thing | Path | Mode |
 |---|---|---|
-| Server binary (Mac mini) | `/usr/local/bin/macmini-server` | 755 |
-| Client binary (any machine) | `/usr/local/bin/macmini-client` | 755 |
+| Server binary (Mac mini, userspace) | `~/.local/bin/macmini-server` | 755 |
+| Server binary (Mac mini, cask) | `/usr/local/bin/macmini-server` | 755 |
+| Client binary (any machine, userspace) | `~/.local/bin/macmini-client` | 755 |
+| Client binary (any machine, cask) | `/usr/local/bin/macmini-client` | 755 |
 | Bearer token (Mac mini) | `~/.config/macmini-server/token` | 600 |
 | LaunchAgent plist | `~/Library/LaunchAgents/com.macmini-skill.server.plist` | 644 |
 | Server logs | `~/Library/Logs/macmini-server.log` | rotated at 50 MB |
+| Tailscale state (userspace) | `~/.config/tailscaled/` | — |
+| tailscaled socket (userspace) | `~/.config/tailscaled/tailscaled.sock` | — |
+| tailscaled logs (userspace) | `~/Library/Logs/tailscaled.log` | — |
 | Source tree | `~/.claude-dotfiles/skills/macmini/` | — |
 | Install script | `~/.claude-dotfiles/skills/macmini/install/install.sh` | 755 |
 | Uninstall script | `~/.claude-dotfiles/skills/macmini/install/uninstall.sh` | 755 |
+| Agent guide | `~/.claude-dotfiles/skills/macmini/docs/AGENT-GUIDE.md` | — |
+| Hardware test notes | `~/.claude-dotfiles/skills/macmini/docs/HARDWARE-TEST-NOTES.md` | — |
 | Screenshots (docs) | `~/.claude-dotfiles/skills/macmini/docs/screenshots/` | — |
 
 ---
