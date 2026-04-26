@@ -47,8 +47,9 @@ type runOpts struct {
 
 // pushOpts captures parsed args for `push`.
 type pushOpts struct {
-	Local  string
-	Remote string
+	Local     string
+	Remote    string
+	Overwrite bool
 }
 
 // pullOpts captures parsed args for `pull`.
