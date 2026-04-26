@@ -492,6 +492,7 @@ func (c *Client) RunStream(req RunRequest, w io.Writer) (*RunStreamResult, error
 	if err != nil {
 		return &RunStreamResult{ExitCode: 2}, &TransportError{Op: "run-stream", Err: err}
 	}
+	hreq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/x-ndjson")
 
