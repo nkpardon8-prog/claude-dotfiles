@@ -251,33 +251,31 @@ func handlePull(w http.ResponseWriter, r *http.Request, roots []string) {
 	}
 	defer f.Close()
 
-	// Hash and stream simultaneously by Tee-ing into a hasher.
+	// Pre-compute the sha256 in a streaming pass so we can set X-SHA256 as a
+	// regular response header (no HTTP trailers, which curl callers ignore by
+	// default). The double read is acceptable: pull is bounded by /files/push
+	// upload limits (100 MiB) and uses the local SSD.
 	hasher := sha256.New()
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("X-Filename", filepath.Base(resolved))
-	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
-	// X-SHA256 is set as a trailer because we don't know it until the stream
-	// ends. To stay backwards-compatible with simple curl callers we ALSO
-	// compute it before sending — read once, hash, then stream from disk.
-	// For files large enough that double-read is painful (>50 MiB), accept the
-	// trade-off and document; the simpler path keeps callers happy.
-	if st.Size() <= 50*(1<<20) {
-		// Pre-compute hash so X-SHA256 is set on the response headers.
-		if _, err := io.Copy(hasher, f); err == nil {
-			w.Header().Set("X-SHA256", hex.EncodeToString(hasher.Sum(nil)))
-		}
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			// Fall through; hash header may still be set.
-		}
-		_, _ = io.Copy(w, f)
+	if _, err := io.Copy(hasher, f); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		writeErr(w, http.StatusInternalServerError, errorResponse{
+			Error: "files.hash_failed", Detail: err.Error(), RequestID: rid,
+		})
 		return
 	}
-	// Large file: stream while hashing; emit X-SHA256 as a trailer.
-	w.Header().Set("Trailer", "X-SHA256")
-	tr := io.TeeReader(f, hasher)
-	if _, err := io.Copy(w, tr); err == nil {
-		w.Header().Set("X-SHA256", hex.EncodeToString(hasher.Sum(nil)))
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		writeErr(w, http.StatusInternalServerError, errorResponse{
+			Error: "files.seek_failed", Detail: err.Error(), RequestID: rid,
+		})
+		return
 	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Filename", filepath.Base(resolved))
+	w.Header().Set("X-SHA256", hex.EncodeToString(hasher.Sum(nil)))
+	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+	_, _ = io.Copy(w, f)
 }
 
 func writeErr(w http.ResponseWriter, status int, body errorResponse) {
