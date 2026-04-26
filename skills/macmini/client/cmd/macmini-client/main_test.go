@@ -78,3 +78,39 @@ func TestParsePullArgs_DefaultsLocal(t *testing.T) {
 		t.Errorf("local: want ./foo.log, got %q", got.Local)
 	}
 }
+
+func TestParsePushArgs_OverwriteFlag(t *testing.T) {
+	got, err := parsePushArgs([]string{"--overwrite", "./a.txt", "/tmp/b.txt"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.Overwrite {
+		t.Errorf("overwrite: want true, got false")
+	}
+	if got.Local != "./a.txt" {
+		t.Errorf("local: want ./a.txt, got %q", got.Local)
+	}
+	if got.Remote != "/tmp/b.txt" {
+		t.Errorf("remote: want /tmp/b.txt, got %q", got.Remote)
+	}
+}
+
+func TestParsePushArgs_NoOverwriteByDefault(t *testing.T) {
+	got, err := parsePushArgs([]string{"./a.txt", "/tmp/b.txt"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Overwrite {
+		t.Errorf("overwrite: want false (default), got true")
+	}
+}
+
+func TestParseRunArgs_JSONFlag(t *testing.T) {
+	got, err := parseRunArgs([]string{"--json", "echo", "hi"}, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.JSON {
+		t.Errorf("json: want true, got false")
+	}
+}
