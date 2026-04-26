@@ -293,9 +293,10 @@ if [[ -z "$TS_BIN" ]]; then
 fi
 info "Tailscale CLI: ${TS_BIN} (mode=${MODE})"
 
-# If TS_BIN lives inside the .app bundle, drop a wrapper at /usr/local/bin/tailscale
-# so the path survives Tailscale auto-updates that replace the bundle.
-if [[ "$TS_BIN" == /Applications/Tailscale.app/* ]]; then
+# In cask mode: if TS_BIN lives inside the .app bundle, drop a wrapper at
+# /usr/local/bin/tailscale so the path survives Tailscale auto-updates.
+# Userspace mode does not need this — brew formula installs to a stable path.
+if [[ "$MODE" == "cask" && "$TS_BIN" == /Applications/Tailscale.app/* ]]; then
     WRAPPER="/usr/local/bin/tailscale"
     EXPECTED_CONTENT=$'#!/bin/sh\nexec "'"$TS_BIN"'" "$@"\n'
 
@@ -324,9 +325,14 @@ fi
 # Step c: Tailscale online check.
 # ---------------------------------------------------------------------------
 
-if ! "$TS_BIN" status --json 2>/dev/null | jq -e '.Self.Online == true' >/dev/null; then
+if ! ts_cli status --json 2>/dev/null | jq -e '.Self.Online == true' >/dev/null; then
     err "Tailscale is not online."
-    err "Open Tailscale.app, sign in, ensure online, then re-run this installer."
+    if [[ "$MODE" == "userspace" ]]; then
+        err "Run: ${TS_BIN} --socket=${TS_SOCKET} up"
+        err "(Visit the printed auth URL in a browser to authorize this node.)"
+    else
+        err "Open Tailscale.app, sign in, ensure online, then re-run this installer."
+    fi
     exit 2
 fi
 info "Tailscale online"
@@ -336,7 +342,7 @@ info "Tailscale online"
 # Pick the first IPv4 from TailscaleIPs (the one containing '.'), not blindly index 0.
 # ---------------------------------------------------------------------------
 
-TS_STATUS_JSON="$("$TS_BIN" status --json)"
+TS_STATUS_JSON="$(ts_cli status --json)"
 
 TS_HOSTNAME="$(echo "$TS_STATUS_JSON" | jq -r '.Self.HostName')"
 TS_DNS_NAME="$(echo "$TS_STATUS_JSON" | jq -r '.Self.DNSName' | sed 's/\.$//')"
