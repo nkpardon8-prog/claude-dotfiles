@@ -40,3 +40,7 @@ id_ecdsa.*
 *.swo
 *~
 .#*
+
+# Mac mini CRD skill — built Go binaries (not committed)
+skills/macmini/server/dist/
+skills/macmini/client/dist/

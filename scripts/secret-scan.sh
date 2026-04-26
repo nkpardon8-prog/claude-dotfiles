@@ -22,7 +22,10 @@ RX='(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-
 export RX
 
 # Mac mini CRD skill secondary patterns (path-aware allowlisting applied per-file)
-RX_TSNET='[A-Za-z0-9-]+\.tail-[A-Za-z0-9]+\.ts\.net'
+# Real Tailscale tail IDs are lowercase alphanumeric (e.g. tail-abc123). We require at
+# least one lowercase letter in the tail segment so uppercase placeholders like
+# `tail-XXXX` (used in docs) don't match.
+RX_TSNET='[A-Za-z0-9-]+\.tail-[A-Za-z0-9]*[a-z][A-Za-z0-9]*\.ts\.net'
 RX_PIN='([Pp][Ii][Nn]|CRD_PIN)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*[0-9]{6}([^0-9]|$)'
 RX_TOKEN='(TOKEN|token)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*[A-Za-z0-9+/]{43}='
 export RX_TSNET RX_PIN RX_TOKEN
