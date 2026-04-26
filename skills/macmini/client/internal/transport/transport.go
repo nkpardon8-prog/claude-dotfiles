@@ -426,14 +426,21 @@ func clientTimeoutFor(serverTimeoutSeconds int) time.Duration {
 	return time.Duration(serverTimeoutSeconds+10) * time.Second
 }
 
+// RunStreamResult captures the trailing {"event":"exit",...} record so the
+// caller can format a human-readable trailer.
+type RunStreamResult struct {
+	ExitCode   int
+	DurationMS int64
+}
+
 // RunStream calls POST /run/stream and pipes raw NDJSON lines to w as they
 // arrive. It returns the remote exit code reported by the final
 // {"event":"exit","code":N,...} line.
-func (c *Client) RunStream(req RunRequest, w io.Writer) (int, error) {
+func (c *Client) RunStream(req RunRequest, w io.Writer) (*RunStreamResult, error) {
 	body, _ := json.Marshal(req)
 	hreq, err := c.newRequest(http.MethodPost, "/run/stream", bytes.NewReader(body), true)
 	if err != nil {
-		return 2, &TransportError{Op: "run-stream", Err: err}
+		return &RunStreamResult{ExitCode: 2}, &TransportError{Op: "run-stream", Err: err}
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/x-ndjson")
@@ -445,29 +452,31 @@ func (c *Client) RunStream(req RunRequest, w io.Writer) (int, error) {
 	}
 	resp, err := streamingClient.Do(hreq)
 	if err != nil {
-		return 2, &TransportError{Op: "run-stream.do", Err: errors.New(redact.Scrub(err.Error()))}
+		return &RunStreamResult{ExitCode: 2}, &TransportError{Op: "run-stream.do", Err: errors.New(redact.Scrub(err.Error()))}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 1, readError(resp)
+		return &RunStreamResult{ExitCode: 1}, readError(resp)
 	}
 
-	exitCode := 0
+	result := &RunStreamResult{}
 	br := bufio.NewReaderSize(resp.Body, 64<<10)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
 			if _, werr := w.Write(line); werr != nil {
-				return 2, &TransportError{Op: "run-stream.write", Err: werr}
+				return &RunStreamResult{ExitCode: 2}, &TransportError{Op: "run-stream.write", Err: werr}
 			}
 			// Inspect for the final exit record.
 			var probe struct {
-				Event string `json:"event"`
-				Code  int    `json:"code"`
+				Event      string `json:"event"`
+				Code       int    `json:"code"`
+				DurationMS int64  `json:"duration_ms"`
 			}
 			if jerr := json.Unmarshal(bytes.TrimSpace(line), &probe); jerr == nil {
 				if probe.Event == "exit" {
-					exitCode = probe.Code
+					result.ExitCode = probe.Code
+					result.DurationMS = probe.DurationMS
 				}
 			}
 		}
@@ -475,10 +484,10 @@ func (c *Client) RunStream(req RunRequest, w io.Writer) (int, error) {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			return 2, &TransportError{Op: "run-stream.read", Err: errors.New(redact.Scrub(err.Error()))}
+			return &RunStreamResult{ExitCode: 2}, &TransportError{Op: "run-stream.read", Err: errors.New(redact.Scrub(err.Error()))}
 		}
 	}
-	return exitCode, nil
+	return result, nil
 }
 
 // Shot calls POST /shot and writes the PNG to w.
