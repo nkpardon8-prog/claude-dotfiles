@@ -86,6 +86,8 @@ func parseRunArgs(args []string, allowIdem bool) (*runOpts, error) {
 				return nil, errors.New("--idem-key not supported here")
 			}
 			o.IdemKey = strings.TrimPrefix(a, "--idem-key=")
+		case a == "--json":
+			o.JSON = true
 		case a == "--":
 			rest = append(rest, args[i+1:]...)
 			i = len(args)
