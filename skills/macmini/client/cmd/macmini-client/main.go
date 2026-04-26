@@ -27,10 +27,10 @@ Usage:
 Commands:
   health
   paste <text> | paste -
-  push <local> [remote]
+  push [--overwrite] <local> [remote]
   pull <remote> [local]
-  run [--timeout=N] [--cwd=PATH] [--idem-key=KEY] <command...>
-  run-stream [--timeout=N] [--cwd=PATH] <command...>
+  run [--timeout=N] [--cwd=PATH] [--idem-key=KEY] [--json] <command...>
+  run-stream [--timeout=N] [--cwd=PATH] [--json] <command...>
   shot [--out=PATH]
   rotate-token
   version
