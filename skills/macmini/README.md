@@ -27,10 +27,10 @@ If the Mac mini is not listed, sign it into the same tailnet before continuing.
 
 ### 2. Populate credentials
 
-The skill needs three secrets in `~/.config/claude/credentials.md`: `CRD_PIN`, `CRD_SERVER_TOKEN`, `CRD_MAC_MINI_HOSTNAME`. Add them as `op://` references, then:
+The skill needs four secrets in `~/.config/claude/credentials.md`: `CRD_PIN`, `CRD_MAC_MINI_HOSTNAME`, `CRD_DEVICE_NAME`, `CRD_SERVER_TOKEN`. Add them as `op://` references, then:
 
 ```bash
-/load-creds CRD_PIN CRD_SERVER_TOKEN CRD_MAC_MINI_HOSTNAME
+/load-creds CRD_PIN,CRD_MAC_MINI_HOSTNAME,CRD_DEVICE_NAME,CRD_SERVER_TOKEN
 ```
 
 Expected output:
