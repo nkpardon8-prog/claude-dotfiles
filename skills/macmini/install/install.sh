@@ -574,7 +574,7 @@ if [[ $SKIP_SCREENCAP_PROBE -eq 0 ]]; then
             if [[ "$sz" -lt 2048 ]]; then
                 warn "/shot returned a suspiciously small PNG (${sz} bytes; height=${mean}). Likely all-black."
                 warn "Open System Settings → Privacy & Security → Screen Recording, enable"
-                warn "  /usr/local/bin/macmini-server"
+                warn "  ${SERVER_DEST}"
                 warn "then: launchctl kickstart -k gui/\$(id -u)/${LABEL}"
             else
                 info "/shot OK (${sz} bytes)"
