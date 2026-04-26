@@ -126,15 +126,16 @@ type retryingTransport struct {
 }
 
 func (rt *retryingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Buffer the body so we can replay it on retry.
-	var bodyBytes []byte
+	// If the caller supplied a GetBody, retries reuse it without buffering the
+	// full body. Otherwise (defensive: only happens for empty-body requests
+	// today) we fall back to buffering once.
 	if req.Body != nil && req.GetBody == nil {
 		b, err := io.ReadAll(req.Body)
 		if err != nil {
 			return nil, err
 		}
 		_ = req.Body.Close()
-		bodyBytes = b
+		bodyBytes := b
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		req.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
