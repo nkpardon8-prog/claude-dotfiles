@@ -175,14 +175,15 @@ Two separate components communicating over Tailscale:
 
 Read this before doing anything inside a CRD canvas. It is the single most common source of wasted time with this skill.
 
-- **CRD drops the Shift modifier on outbound keystrokes.** `HELLO_WORLD` typed through the canvas arrives at the Mac mini as `hello-world`. Capitals and `_ : | & $ ~ > <` are all mangled. Empirically verified, not a config issue.
+- **CRD drops the Shift modifier on outbound keystrokes.** `HELLO_WORLD` typed through the canvas arrives at the Mac mini as `hello-world`. Capitals and `_ : | & $ ~ > <` are all mangled. **Empirically validated** during the hardware test pass: the canonical payload `HELLO_WORLD with $special chars: |&>~` survived the data plane (clipboard contents matched exactly), and would not have survived the canvas keyboard.
 - **The side-channel exists for exactly this reason.** `/macmini paste`, `/macmini push`, and `/macmini run` never go through the canvas. They use the HTTP server, which receives bytes verbatim.
 - **The PIN is digits-only**, so it types fine through the canvas. That is the only thing you should ever type into the canvas as a plain keystroke sequence.
 - Inside a CRD session, the agent must:
-  - Use `Cmd+Space` to open Spotlight, then type **lowercase** queries only (`terminal`, `safari`, `system settings`).
+  - Use `Cmd+Space` to open Spotlight, then type **lowercase** queries only (`terminal`, `safari`, `system settings`). `Cmd+Tab` through the canvas can land focus on the wrong app — Spotlight is more reliable.
   - Use `/macmini paste` for any payload with mixed case, special characters, or whitespace structure.
   - Use `/macmini run` for anything programmatic — shell commands, `osascript`, file edits.
   - **Never** type tokens, paths containing `$`, JSON, env-var assignments, or anything Shift-modified through the canvas.
+  - For arbitrary work, prefer **delegating to a Claude Code session running on the Mac mini itself** (open Terminal, type `claude`, talk to it in lowercase prose). Its Bash tool sidesteps the CRD keyboard channel entirely. See `docs/AGENT-GUIDE.md`.
 
 If you find yourself wanting to "just type it really carefully," stop and use `/macmini paste`.
 
