@@ -414,9 +414,19 @@ install_binary() {
         fi
     fi
 
-    info "installing ${component} → ${dest} (sudo)"
-    sudo cp "$src" "$dest"
-    sudo chmod 755 "$dest"
+    case "$dest" in
+        "${HOME}/"*)
+            info "installing ${component} → ${dest} (no sudo)"
+            mkdir -p "$(dirname "$dest")"
+            cp "$src" "$dest"
+            chmod 755 "$dest"
+            ;;
+        *)
+            info "installing ${component} → ${dest} (sudo)"
+            sudo cp "$src" "$dest"
+            sudo chmod 755 "$dest"
+            ;;
+    esac
 }
 
 install_binary server "$SERVER_DEST"
