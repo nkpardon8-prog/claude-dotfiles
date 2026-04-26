@@ -396,14 +396,15 @@ func (c *Client) Run(req RunRequest) (*RunResp, error) {
 		hreq.Header.Set("Idempotency-Key", req.IdempotencyKey)
 	}
 	// Buffered runs may take longer than the default 30s if the user passed
-	// a longer server-side timeout.
-	hreq = hreq.WithContext(hreq.Context())
-	c.httpc.Timeout = clientTimeoutFor(req.TimeoutSeconds)
-	defer func() { c.httpc.Timeout = requestTimeout }()
-
-	resp, err := c.do(hreq)
+	// a longer server-side timeout. Use a one-shot client so we don't mutate
+	// shared state.
+	runClient := &http.Client{
+		Timeout:   clientTimeoutFor(req.TimeoutSeconds),
+		Transport: c.httpc.Transport,
+	}
+	resp, err := runClient.Do(hreq)
 	if err != nil {
-		return nil, err
+		return nil, &TransportError{Op: "run.do", Err: errors.New(redact.Scrub(err.Error()))}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
