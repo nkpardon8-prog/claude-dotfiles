@@ -48,23 +48,65 @@ func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current := TokenPtr.Load()
 		if current == nil || *current == "" {
-			http.Error(w, `{"error":"unauthorized","detail":"server has no token loaded"}`, http.StatusUnauthorized)
+			writeUnauth(w, "server has no token loaded")
 			return
 		}
 
 		hdr := r.Header.Get("Authorization")
 		const prefix = "Bearer "
 		if !strings.HasPrefix(hdr, prefix) {
-			http.Error(w, `{"error":"unauthorized","detail":"missing or malformed Authorization header"}`, http.StatusUnauthorized)
+			writeUnauth(w, "missing or malformed Authorization header")
 			return
 		}
 		provided := hdr[len(prefix):]
 
 		// crypto/subtle.ConstantTimeCompare returns int (1 = equal, 0 = not equal).
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(*current)) != 1 {
-			http.Error(w, `{"error":"unauthorized","detail":"invalid token"}`, http.StatusUnauthorized)
+			writeUnauth(w, "invalid token")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func writeUnauth(w http.ResponseWriter, detail string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	// Hand-build the JSON to avoid pulling encoding/json into auth — keeps the
+	// auth middleware a tight stdlib leaf.
+	body := `{"error":"unauthorized","detail":` + jsonString(detail) + `}`
+	_, _ = w.Write([]byte(body))
+}
+
+// jsonString returns a JSON-quoted form of s. Only escapes the characters that
+// must be escaped in a JSON string literal.
+func jsonString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				b.WriteString(`\u00`)
+				const hexd = "0123456789abcdef"
+				b.WriteByte(hexd[r>>4])
+				b.WriteByte(hexd[r&0xF])
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
