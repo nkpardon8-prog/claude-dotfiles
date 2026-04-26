@@ -352,7 +352,10 @@ func (c *Client) Push(local, remote string, overwrite bool) (*PushResp, error) {
 	return &out, nil
 }
 
-// Pull streams remote → local file via GET /files/pull.
+// Pull streams remote → local file via GET /files/pull. The local file's
+// SHA-256 is computed during the copy and verified against the server's
+// X-SHA256 header. On mismatch, the partial file is removed and a
+// ServerError is returned.
 func (c *Client) Pull(remote, local string) (*PullResp, error) {
 	q := url.Values{}
 	q.Set("remote_path", remote)
@@ -368,20 +371,37 @@ func (c *Client) Pull(remote, local string) (*PullResp, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, readError(resp)
 	}
+	expected := strings.ToLower(strings.TrimSpace(resp.Header.Get("X-SHA256")))
 	out, err := os.Create(local)
 	if err != nil {
 		return nil, &TransportError{Op: "pull.create", Err: err}
 	}
-	defer out.Close()
-	n, err := io.Copy(out, resp.Body)
-	if err != nil {
-		return nil, &TransportError{Op: "pull.copy", Err: err}
+	hasher := sha256.New()
+	mw := io.MultiWriter(out, hasher)
+	n, copyErr := io.Copy(mw, resp.Body)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(local)
+		return nil, &TransportError{Op: "pull.copy", Err: copyErr}
+	}
+	if closeErr != nil {
+		_ = os.Remove(local)
+		return nil, &TransportError{Op: "pull.close", Err: closeErr}
+	}
+	got := hex.EncodeToString(hasher.Sum(nil))
+	if expected != "" && !strings.EqualFold(got, expected) {
+		_ = os.Remove(local)
+		return nil, &ServerError{
+			Status: http.StatusBadGateway,
+			Code:   "sha256_mismatch",
+			Detail: fmt.Sprintf("pull integrity check failed: expected %s, got %s", expected, got),
+		}
 	}
 	return &PullResp{
 		OK:         true,
 		LocalPath:  local,
 		BytesRead:  n,
-		SHA256:     resp.Header.Get("X-SHA256"),
+		SHA256:     got,
 		RemotePath: remote,
 	}, nil
 }
