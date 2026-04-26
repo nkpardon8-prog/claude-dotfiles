@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -14,7 +15,7 @@ import (
 )
 
 const (
-	maxLogSize     int64 = 50 * 1024 * 1024 // 50 MiB
+	maxLogSize      int64 = 50 * 1024 * 1024 // 50 MiB
 	keepGenerations       = 3
 )
 
@@ -78,13 +79,14 @@ func (w *RotatingWriter) rotateLocked() error {
 	}
 	// Shift .N-1 -> .N, ..., .1 -> .2, current -> .1.
 	for i := keepGenerations; i >= 1; i-- {
-		src := fmt.Sprintf("%s.%d", w.path, i-1)
+		var src string
 		if i-1 == 0 {
 			src = w.path
+		} else {
+			src = fmt.Sprintf("%s.%d", w.path, i-1)
 		}
 		dst := fmt.Sprintf("%s.%d", w.path, i)
 		if i == keepGenerations {
-			// Drop the oldest if it exists.
 			_ = os.Remove(dst)
 		}
 		if _, err := os.Stat(src); err == nil {
@@ -111,7 +113,6 @@ func NewLogger(w io.Writer) *slog.Logger {
 func NewRequestID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// Fallback to time-based id; collision probability is acceptable for logs.
 		return fmt.Sprintf("t%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
@@ -170,7 +171,7 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rid := NewRequestID()
-			ctx := contextWithRequestID(r.Context(), rid)
+			ctx := context.WithValue(r.Context(), ctxKeyRequestID, rid)
 			r = r.WithContext(ctx)
 
 			route := r.Method + " " + r.URL.Path
@@ -180,9 +181,8 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("route", route),
 			)
 
-			rec := &statusRecorder{ResponseWriter: w}
-			// Set request id on the response header so clients can correlate.
 			w.Header().Set("X-Request-ID", rid)
+			rec := &statusRecorder{ResponseWriter: w}
 
 			next.ServeHTTP(rec, r)
 
@@ -194,42 +194,4 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			)
 		})
 	}
-}
-
-// contextWithRequestID is split out so we can swap context implementations
-// without touching call sites.
-func contextWithRequestID(ctx ctxLike, rid string) ctxLike {
-	return ctxWith(ctx, ctxKeyRequestID, rid)
-}
-
-// ctxLike avoids importing context twice; we only need the methods used here.
-type ctxLike = interface {
-	Deadline() (time.Time, bool)
-	Done() <-chan struct{}
-	Err() error
-	Value(any) any
-}
-
-func ctxWith(parent ctxLike, key any, val any) ctxLike {
-	type valueCtx struct {
-		ctxLike
-		key, val any
-	}
-	return &valueCtxImpl{parent: parent, key: key, val: val}
-}
-
-type valueCtxImpl struct {
-	parent ctxLike
-	key    any
-	val    any
-}
-
-func (c *valueCtxImpl) Deadline() (time.Time, bool) { return c.parent.Deadline() }
-func (c *valueCtxImpl) Done() <-chan struct{}       { return c.parent.Done() }
-func (c *valueCtxImpl) Err() error                  { return c.parent.Err() }
-func (c *valueCtxImpl) Value(k any) any {
-	if k == c.key {
-		return c.val
-	}
-	return c.parent.Value(k)
 }
