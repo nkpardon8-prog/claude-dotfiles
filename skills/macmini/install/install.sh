@@ -190,32 +190,108 @@ require_cmd launchctl
 require_cmd jq
 
 # ---------------------------------------------------------------------------
-# Step b: Tailscale CLI discovery.
+# Step b: Tailscale setup. Userspace mode preferred (no sudo).
 # ---------------------------------------------------------------------------
 
-TS_CANDIDATES=(
-    "/usr/local/bin/tailscale"
-    "/opt/homebrew/bin/tailscale"
-    "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    "/Applications/Tailscale.app/Contents/MacOS/Tailscale-IPN"
-)
-
 TS_BIN=""
-for candidate in "${TS_CANDIDATES[@]}"; do
-    if [[ -x "$candidate" ]]; then
-        TS_BIN="$candidate"
-        break
+TS_SOCKET=""
+
+try_install_userspace_tailscale() {
+    # Returns 0 if userspace tailscaled is up and tailscale CLI works against it.
+    local brew_bin tailscale_bin tailscaled_bin
+    brew_bin="$(command -v brew 2>/dev/null || true)"
+    if [[ -z "$brew_bin" ]]; then
+        warn "Homebrew not found — userspace mode requires brew. Falling back to cask discovery."
+        return 1
     fi
-done
+
+    # Probe formula install state.
+    if ! brew list tailscale >/dev/null 2>&1; then
+        info "installing Homebrew formula 'tailscale' (no sudo)"
+        if ! brew install tailscale; then
+            warn "brew install tailscale failed. Falling back to cask discovery."
+            return 1
+        fi
+    fi
+
+    tailscale_bin="$(brew --prefix)/bin/tailscale"
+    tailscaled_bin="$(brew --prefix)/bin/tailscaled"
+    if [[ ! -x "$tailscale_bin" ]] || [[ ! -x "$tailscaled_bin" ]]; then
+        warn "tailscale/tailscaled binaries not found under $(brew --prefix)/bin. Falling back."
+        return 1
+    fi
+
+    mkdir -p "${HOME}/.config/tailscaled"
+    mkdir -p "${HOME}/Library/Logs"
+    TS_SOCKET="${HOME}/.config/tailscaled/tailscaled.sock"
+
+    # Start userspace tailscaled if not already running for this user.
+    if ! pgrep -u "$(id -u)" -f "tailscaled.*${TS_SOCKET}" >/dev/null 2>&1; then
+        info "starting userspace tailscaled (no sudo, --tun=userspace-networking)"
+        nohup "$tailscaled_bin" \
+            --tun=userspace-networking \
+            --socket="$TS_SOCKET" \
+            --statedir="${HOME}/.config/tailscaled" \
+            > "${HOME}/Library/Logs/tailscaled.log" 2>&1 &
+        # Give the daemon a moment to create the socket.
+        for _ in $(seq 1 20); do
+            [[ -S "$TS_SOCKET" ]] && break
+            sleep 0.5
+        done
+    fi
+
+    if [[ ! -S "$TS_SOCKET" ]]; then
+        warn "userspace tailscaled did not produce socket at $TS_SOCKET. Falling back."
+        return 1
+    fi
+
+    TS_BIN="$tailscale_bin"
+    info "userspace tailscaled up; CLI=${TS_BIN} socket=${TS_SOCKET}"
+    return 0
+}
+
+ts_cli() {
+    # Wrapper that routes to the userspace socket when set.
+    if [[ -n "$TS_SOCKET" ]]; then
+        "$TS_BIN" --socket="$TS_SOCKET" "$@"
+    else
+        "$TS_BIN" "$@"
+    fi
+}
+
+if [[ "$MODE" == "userspace" ]]; then
+    if ! try_install_userspace_tailscale; then
+        warn "userspace mode unavailable — falling back to cask discovery."
+        MODE="cask"
+        SERVER_DEST="/usr/local/bin/macmini-server"
+        CLIENT_DEST="/usr/local/bin/macmini-client"
+    fi
+fi
 
 if [[ -z "$TS_BIN" ]]; then
-    err "Tailscale CLI not found in any of:"
-    for c in "${TS_CANDIDATES[@]}"; do err "  $c"; done
-    err "Install Tailscale (App Store or tailscale.com/download), sign in to your tailnet,"
-    err "then re-run this installer."
-    exit 2
+    TS_CANDIDATES=(
+        "/usr/local/bin/tailscale"
+        "/opt/homebrew/bin/tailscale"
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale-IPN"
+    )
+
+    for candidate in "${TS_CANDIDATES[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            TS_BIN="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$TS_BIN" ]]; then
+        err "Tailscale CLI not found in any of:"
+        for c in "${TS_CANDIDATES[@]}"; do err "  $c"; done
+        err "Install Tailscale (brew install tailscale, App Store, or tailscale.com/download),"
+        err "sign in to your tailnet, then re-run this installer."
+        exit 2
+    fi
 fi
-info "Tailscale CLI: ${TS_BIN}"
+info "Tailscale CLI: ${TS_BIN} (mode=${MODE})"
 
 # If TS_BIN lives inside the .app bundle, drop a wrapper at /usr/local/bin/tailscale
 # so the path survives Tailscale auto-updates that replace the bundle.
