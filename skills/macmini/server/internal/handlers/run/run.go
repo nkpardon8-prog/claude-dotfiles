@@ -337,7 +337,6 @@ func handleStream(w http.ResponseWriter, r *http.Request, redactList []string) {
 	<-pumpDone
 	<-pumpDone
 
-	exitCode := 0
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	switch {
 	case timedOut:
@@ -352,15 +351,6 @@ func handleStream(w http.ResponseWriter, r *http.Request, redactList []string) {
 			exitCode = 1
 		}
 	}
-
-	defer func() {
-		safeEmit(map[string]any{
-			"event":       "exit",
-			"code":        exitCode,
-			"duration_ms": time.Since(start).Milliseconds(),
-			"request_id":  rid,
-		})
-	}()
 }
 
 // curatedEnv returns the explicit allowlist of env vars to pass to spawned
