@@ -331,6 +331,12 @@ func handleStream(w http.ResponseWriter, r *http.Request, redactList []string) {
 			_ = killGroup(cmd.Process.Pid)
 		}
 		waitErr = <-doneCh
+	case <-ctx.Done():
+		// Timeout tripped — kill the whole process group, not just the shell.
+		if cmd.Process != nil {
+			_ = killGroup(cmd.Process.Pid)
+		}
+		waitErr = <-doneCh
 	}
 
 	// Drain pumps so the final exit JSON appears AFTER all output lines.
