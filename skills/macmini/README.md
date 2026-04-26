@@ -10,97 +10,97 @@ This split exists for one specific reason: **CRD's keystroke forwarding drops th
 
 ## First 5 minutes
 
-This walkthrough mirrors `commands/macmini/setup.md`. Run from the dev machine unless a step says otherwise.
+This walkthrough mirrors `commands/macmini/setup.md`. The default install path is **userspace mode** — no sudo, no system extension, no kext loader. `brew install tailscale` (formula, not cask) plus `tailscaled --tun=userspace-networking` provides a working tailnet for this user, and userspace tailscaled forwards inbound tailnet traffic to localhost listeners so the server stays reachable on the tailnet IP. Run from the dev machine unless a step says otherwise.
 
-### 1. Confirm Tailscale on both ends
+### 1. Confirm Tailscale on the dev machine
 
 ```bash
 tailscale status
 ```
 
-Expected output (something like this — you should see the Mac mini listed and `online`):
+Self should be online. The Mac mini may not yet be listed if this is its very first install — Step 3 handles that.
 
-```text
-100.64.0.1   dev-laptop          you@      macOS   -
-100.64.0.7   <your-hostname>     you@      macOS   online
+### 2. Set up Chrome Remote Desktop on the Mac mini (one time)
+
+On the Mac mini desktop (physically or via Screen Sharing for this single bootstrap):
+
+1. System Settings → General → Sharing → toggle **Remote Management** ON. Allow access for your user.
+2. Open Chrome on the Mac mini, go to <https://remotedesktop.google.com/access>, sign in with the Google account you'll use on the dev side, click "Set up via SSH" → "Turn on", set a 6-digit PIN, store that PIN in 1Password as `CRD_PIN`.
+
+Expected: the device appears as **Online** at <https://remotedesktop.google.com/access>.
+
+### 3. Install the side-channel server on the Mac mini
+
+From a Terminal logged into the Mac mini's GUI session (the LaunchAgent needs your aqua user session — not a headless `ssh-as-different-user`):
+
+```bash
+# Default: userspace mode (no sudo). Installs ~/.local/bin/macmini-{server,client}.
+bash ~/.claude-dotfiles/skills/macmini/install/install.sh
+
+# Legacy fallback: cask mode (needs sudo, system extension, /usr/local/bin/).
+# Pass --mode=cask only if userspace mode fails.
 ```
 
-If the Mac mini is not listed, sign it into the same tailnet before continuing.
+If this is the very first install on this user, the script will tell you to run `tailscale --socket=$HOME/.config/tailscaled/tailscaled.sock up` — visit the printed auth URL in any browser to authorize the node, then re-run install.sh.
 
-### 2. Populate credentials
+Expected final output:
 
-The skill needs four secrets in `~/.config/claude/credentials.md`: `CRD_PIN`, `CRD_MAC_MINI_HOSTNAME`, `CRD_DEVICE_NAME`, `CRD_SERVER_TOKEN`. Add them as `op://` references, then:
+```text
+==> /health OK
+=== Mac mini server installed ===
+Tailnet hostname:   <hostname>.<your-tailnet>.ts.net
+Listen address:     100.x.y.z:8765
+Token fingerprint:  abcd1234
+...
+```
+
+### 4. Enable auto-login (boot survival)
+
+System Settings → Users & Groups → "Automatically log in as" → your user. Required because the LaunchAgent only runs once a GUI session exists. See [Boot survival](#boot-survival). Optional: enable Touch ID for sudo (`/etc/pam.d/sudo_local` with `pam_tid.so`) — makes the few sudo prompts pleasant when working through CRD.
+
+### 5. Transfer the server token to dev
+
+The token lives at `~/.config/macmini-server/token` on the Mac mini. Move it once into 1Password under `op://<VAULT>/Mac mini CRD/Server Token`:
+
+```bash
+# On the Mac mini (uses Tailscale's file-drop, no extra deps):
+tailscale --socket=$HOME/.config/tailscaled/tailscaled.sock file cp \
+    ~/.config/macmini-server/token <dev-tailnet-name>:
+
+# On the dev machine:
+tailscale file get .   # creates ./token
+```
+
+Or just dump it once: `bash ~/.claude-dotfiles/skills/macmini/install/install.sh --print-token`.
+
+### 6. Populate credentials on dev
+
+Add the four entries to `~/.config/claude/credentials.md`: `CRD_PIN`, `CRD_MAC_MINI_HOSTNAME`, `CRD_DEVICE_NAME`, `CRD_SERVER_TOKEN`. Each is an `op://` reference. Then:
 
 ```bash
 /load-creds CRD_PIN,CRD_MAC_MINI_HOSTNAME,CRD_DEVICE_NAME,CRD_SERVER_TOKEN
 ```
 
-Expected output:
-
-```text
-loaded CRD_PIN              from op://Personal/...
-loaded CRD_SERVER_TOKEN     from op://Personal/...
-loaded CRD_MAC_MINI_HOSTNAME from op://Personal/...
-3 secrets resolved, 0 failed
-```
-
-### 3. Set up Chrome Remote Desktop on the Mac mini
-
-On the Mac mini desktop (physically or via Screen Sharing for this one-time bootstrap):
-
-1. System Settings → General → Sharing → toggle **Remote Management** ON. Allow access for your user.
-2. Open Chrome on the Mac mini, go to <https://remotedesktop.google.com/access>, sign in with the Google account you'll also use on the dev side, click "Set up via SSH" → "Turn on", set a 6-digit PIN, store that PIN in 1Password as `CRD_PIN`.
-
-Expected: the device appears as **Online** at <https://remotedesktop.google.com/access>.
-
-### 4. Install the side-channel server on the Mac mini
-
-From a Terminal that is logged into the Mac mini's GUI session (not a headless ssh session — the LaunchAgent needs your aqua user session):
-
-```bash
-bash ~/.claude-dotfiles/skills/macmini/install/install.sh
-```
-
-Expected output:
-
-```text
-[install] tailscale interface IP: 100.64.0.7
-[install] writing token to ~/.config/macmini-server/token (mode 600)
-[install] installing /usr/local/bin/macmini-server
-[install] installing /usr/local/bin/macmini-client
-[install] rendering ~/Library/LaunchAgents/com.macmini-skill.server.plist
-[install] launchctl bootstrap gui/501 ... ok
-[install] /health: {"ok":true,"version":"0.1.0","uptime_seconds":0.4}
-[install] done
-```
-
-### 5. Enable auto-login (boot survival)
-
-System Settings → Users & Groups → "Automatically log in as" → your user. Required because the LaunchAgent only runs once a GUI session exists. See [Boot survival](#boot-survival).
-
-### 6. Smoke-test from the dev machine
+### 7. Smoke-test from the dev machine
 
 ```bash
 macmini-client health
+macmini-client paste 'HELLO_WORLD with $special chars: |&>~'
+# On Mac mini: pbpaste — must equal exactly the input.
+macmini-client shot /tmp/shot.png && file /tmp/shot.png
 ```
 
-Expected:
+The paste payload is the canonical proof that the data plane survives where the CRD canvas mangles. If `pbpaste` returns exactly those 65 bytes, you're done.
 
-```text
-{"ok":true,"version":"0.1.0","uptime_seconds":42.1}
+### 8. Connect
+
 ```
-
-### 7. Bootstrap the Claude-CRD Chrome profile
-
-```bash
 /macmini connect
 ```
 
-First run opens a dedicated Chrome profile, signs into the same Google account, lands on <https://remotedesktop.google.com/access>, clicks the device tile, types the 6-digit PIN, and lands you on the live canvas.
+In most cases the chrome-devtools MCP attaches to your **existing running Chrome** and reuses your existing Google login. No dedicated profile is needed unless you want CRD isolated from your daily Chrome — see [setup.md Step 7](../../commands/macmini/setup.md) for the optional dedicated-profile flow.
 
-Expected: a screenshot of the Mac mini desktop comes back.
-
-You're done. From here, daily flow is `/macmini connect`, work, `/macmini disconnect`.
+You're done. Daily flow is `/macmini connect`, work, `/macmini disconnect`.
 
 ---
 
