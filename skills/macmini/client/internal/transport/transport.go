@@ -280,6 +280,7 @@ func (c *Client) Paste(text string) error {
 	if err != nil {
 		return &TransportError{Op: "paste", Err: err}
 	}
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.do(req)
 	if err != nil {
