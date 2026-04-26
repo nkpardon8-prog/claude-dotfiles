@@ -225,7 +225,7 @@ func main() {
 			os.Exit(2)
 		}
 		c := transport.New()
-		resp, err := c.Push(opts.Local, opts.Remote, true)
+		resp, err := c.Push(opts.Local, opts.Remote, opts.Overwrite)
 		if err != nil {
 			os.Exit(reportErr(err))
 		}
