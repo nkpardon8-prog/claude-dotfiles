@@ -163,7 +163,7 @@ Two separate components communicating over Tailscale:
 | Requirement | Details |
 |---|---|
 | macOS on both ends | Sonoma (14) or newer tested. Older may work; not guaranteed. |
-| Tailscale | Installed and signed into the same tailnet on both machines. `tailscale status` should list both nodes. |
+| Tailscale | Default (userspace) install path: `brew install tailscale` (formula, NOT cask). No sudo, no system extension. Cask path is a fallback. Both ends signed into the same tailnet — `tailscale status` should list both nodes. |
 | Mac mini awake | The LaunchAgent only runs while a GUI user session exists. Auto-login required for boot survival — see [Boot survival](#boot-survival). |
 | Chrome Remote Desktop host | On the Mac mini: System Settings → Sharing → **Remote Management** ON, then <https://remotedesktop.google.com/access> set up with a 6-digit PIN. Device must show **Online**. |
 | Go 1.22+ | Only needed if you build binaries locally. Pre-built static binaries ship in `server/dist/` and `client/dist/` after `make build`. |
