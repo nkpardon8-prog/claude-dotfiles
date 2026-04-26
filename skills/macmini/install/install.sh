@@ -1,23 +1,37 @@
 #!/usr/bin/env bash
 # install.sh — One-time, idempotent installer for the macmini-server LaunchAgent.
 #
+# TWO MODES:
+#   userspace (default, NO SUDO) — uses Homebrew formula `tailscale` + tailscaled
+#                                  --tun=userspace-networking, installs binaries
+#                                  to ~/.local/bin/. Userspace tailscaled forwards
+#                                  inbound tailnet traffic to localhost listeners,
+#                                  so the server still becomes reachable on the
+#                                  tailnet IP. This is the empirically validated
+#                                  no-sudo happy path.
+#   cask (legacy) — uses /Applications/Tailscale.app (the system extension cask),
+#                   installs binaries to /usr/local/bin/ via sudo. Pass --mode=cask.
+#
 # Run this ON the Mac mini (NOT over SSH-as-different-user). It will:
-#   - probe Tailscale CLI and require an online tailnet
+#   - detect or set up Tailscale (formula preferred, cask if --mode=cask)
 #   - generate a server bearer token (preserved across re-runs)
-#   - install /usr/local/bin/macmini-server and /usr/local/bin/macmini-client
+#   - install macmini-server and macmini-client (location depends on mode)
 #   - render and bootstrap the per-user LaunchAgent
-#   - configure power management (no sleep)
+#   - configure power management (sudo, only in --mode=cask or with --pmset)
 #   - probe Screen Recording permission via screencapture
 #   - smoke-test the server's /health endpoint
 #   - print a credentials.md block ready to paste
 #
 # Flags:
+#   --mode=userspace          Default. No sudo. ~/.local/bin install paths.
+#   --mode=cask               Legacy. /usr/local/bin install paths, requires sudo.
 #   --rotate-token            Replace the existing bearer token. Existing clients
 #                             stop working until they pick up the new value.
 #   --reinstall               Force re-render of plist and re-bootstrap even if
 #                             everything looks current.
 #   --uninstall               Delegate to uninstall.sh (no --purge).
 #   --skip-pmset              Don't run pmset (useful for laptops/test rigs).
+#   --pmset                   Force pmset attempt even in userspace mode.
 #   --skip-screencap-probe    Don't probe Screen Recording permission.
 #   --print-token             DUMP THE CURRENT TOKEN VALUE TO STDOUT (one-time,
 #                             intentional, for entering into 1Password). The token
