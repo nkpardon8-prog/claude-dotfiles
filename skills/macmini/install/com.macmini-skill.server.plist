@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/macmini-server</string>
+        <string>@@BINARY_PATH@@</string>
     </array>
 
     <key>EnvironmentVariables</key>
@@ -18,6 +18,8 @@
         <string>@@LOG_PATH@@</string>
         <key>MACMINI_LISTEN_ADDR</key>
         <string>@@LISTEN_ADDR@@</string>
+        <key>PATH</key>
+        <string>@@PATH@@</string>
     </dict>
 
     <key>StandardOutPath</key>
