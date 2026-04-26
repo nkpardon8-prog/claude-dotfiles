@@ -87,23 +87,7 @@ func handleShot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Width", strconv.Itoa(width))
 	w.Header().Set("X-Height", strconv.Itoa(height))
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	_, _ = io.Copy(w, bytesReader(data))
-}
-
-func bytesReader(b []byte) io.Reader { return &readerAt{b: b} }
-
-type readerAt struct {
-	b []byte
-	i int
-}
-
-func (r *readerAt) Read(p []byte) (int, error) {
-	if r.i >= len(r.b) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.i:])
-	r.i += n
-	return n, nil
+	_, _ = io.Copy(w, bytes.NewReader(data))
 }
 
 func randHex(nBytes int) string {
