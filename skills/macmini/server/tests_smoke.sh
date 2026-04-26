@@ -23,9 +23,26 @@ if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
   exit 2
 fi
 
-# Sort for deterministic order.
+# Sort for deterministic order, then push the admin handler to the end because
+# it mutates server-side state (token rotation). Skip admin entirely unless
+# MACMINI_SMOKE_ADMIN=1 — rotating the token mid-test stream would invalidate
+# MACMINI_TOKEN for any later run.
 IFS=$'\n' SORTED=($(printf '%s\n' "${SCRIPTS[@]}" | sort))
 unset IFS
+
+NON_ADMIN=()
+ADMIN=()
+for s in "${SORTED[@]}"; do
+  if [[ "$(basename "$(dirname "$s")")" == "admin" ]]; then
+    ADMIN+=("$s")
+  else
+    NON_ADMIN+=("$s")
+  fi
+done
+SORTED=("${NON_ADMIN[@]}")
+if [[ "${MACMINI_SMOKE_ADMIN:-0}" == "1" ]]; then
+  SORTED+=("${ADMIN[@]}")
+fi
 
 FAIL=()
 for s in "${SORTED[@]}"; do
