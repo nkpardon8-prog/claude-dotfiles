@@ -21,23 +21,23 @@
 │   ↓                      │   ┌─────────────┐   │   ↓                  │
 │ chrome-devtools MCP      │   │ CRD WebRTC  │   │ macOS apps:          │
 │   ↓ (CDP :9222)          │   │ canvas +    │   │ • Terminal (claude)  │
-│ auto-grant ── policy ──┐ │   │ clipboard   │   │ • Chrome / Safari    │
-│   (clipboard pre-grant)│ │   │ data channel│   │ • Editors            │
-│   ↓                    ↓ │   └─────────────┘   │                      │
-│ Chrome ── CRD page ──────┼──→             │──→ │                      │
-│   - canvas (pixels)      │                     │                      │
-│   - press_key            │                     │                      │
-│ pbcopy/pbpaste           │←───clipboard sync──→│ pbcopy/pbpaste       │
+│ Chrome ── CRD page ──────┼──→│ keystrokes  │──→│ • Chrome / Safari    │
+│   - canvas (pixels)      │   └─────────────┘   │ • Editors            │
+│   - type_text (lowercase)│                     │                      │
+│   - press_key (Cmd+...)  │                     │                      │
+│                          │                     │                      │
+│ gh gist create ──────────┼──→ github.com ──────┼──→ gh gist clone     │
+│   (arbitrary text)       │                     │   /tmp/p/payload.sh  │
 └──────────────────────────┘                     └──────────────────────┘
 ```
 
-The `auto-grant` lane is `skills/macmini/scripts/auto-grant-clipboard.sh`
-(setup-time policy write) plus the per-session CDP `Browser.grantPermissions`
-call. It pre-authorizes Chrome's clipboard read/write for
-`https://remotedesktop.google.com` so paste/grab never block on a permission
-prompt.
+Three channels, each verified 2026-04-27:
 
-DevTools MCP attaches to the user's running Chrome on the dev side, finds the CRD tab (`https://remotedesktop.google.com/access/session/...`), and drives it. The CRD canvas renders the Mac mini's live desktop pixels via WebRTC; keystrokes injected through CDP `Input.dispatchKeyEvent` arrive as trusted events on the canvas and forward to the Mac mini. CRD's WebRTC data channel also carries clipboard sync events when both sides have permission granted and the side-menu toggle is on. That data path is the *only* programmatic transport in this skill — there is no HTTP server, no SSH, no Tailscale, no compiled binary on either machine. The previous Tailscale-and-Go-server version lived on `main` before the strip; see [Migration](#migration-from-the-tailscale-based-version) for rollback.
+1. **Vision** (`mcp.take_screenshot()`) — always-on feedback loop. CRD's canvas IS the Mac mini's pixels.
+2. **Keyboard** (`mcp.type_text` lowercase, `mcp.press_key` for Enter / Cmd+v / etc.) — for shell commands without shifted symbols. Shift modifier is stripped by CRD; capitals and `$@!#%^&*()_+{}[]|\:"<>?~` arrive corrupted.
+3. **gh gist** — arbitrary-text channel. Dev creates secret gist → agent types lowercase `gh gist clone <id> /tmp/p` on mini → bash the resulting file. Survives full Unicode + all symbols + multi-line.
+
+There is no HTTP server, no SSH, no Tailscale, no compiled binary on either machine. The previous Tailscale-and-Go-server version lived on `main` before the strip; see [Migration](#migration-from-the-tailscale-based-version) for rollback.
 
 ---
 
