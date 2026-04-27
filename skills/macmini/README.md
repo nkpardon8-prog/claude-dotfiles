@@ -145,7 +145,7 @@ This is the single most common source of wasted time with the skill. Read it bef
 
 CRD's keystroke forwarding **drops the Shift modifier** on outbound keystrokes — a long-standing Chromium bug ([issue 40355503](https://issues.chromium.org/issues/40355503), [issue 40933947](https://issues.chromium.org/issues/40933947)). `HELLO_WORLD` typed character-by-character through the canvas arrives at the Mac mini as `hello-world`. Capitals, `_`, `:`, `$`, `|`, `&`, `>`, `<`, `~`, `(`, `)`, `*`, `?`, `'`, `"`, `@`, `#`, `+`, `=`, `\` all corrupt. This is NOT a DevTools MCP defect — `press_key` produces CDP-trusted events; CRD itself drops the Shift modifier between dev keyboard and Mac mini.
 
-`/macmini paste` exists for exactly this reason. The clipboard sync delivers the buffer as a binary blob through the WebRTC data channel, not as a stream of key events, so Shift mangling doesn't apply. Inside a CRD session:
+`/macmini paste` exists for exactly this reason. It uploads your text to a SECRET gist, then types a lowercase-only `gh gist clone <id> /tmp/...; bash run.sh` command on the mini, which puts the original bytes on mini's pasteboard. Bypasses both Shift mangling AND CRD's broken programmatic clipboard sync. Inside a CRD session:
 
 - Use `Cmd+Space` Spotlight with **lowercase queries only** (`terminal`, `chrome`, `system settings`).
 - Use `/macmini paste` for any payload with mixed case, special characters, or whitespace structure.
