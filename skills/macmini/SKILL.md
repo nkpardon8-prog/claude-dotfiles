@@ -24,9 +24,18 @@ You can assume the Mac mini has:
 - **Claude Code installed** — invoke it as `claude` from Terminal. This is the
   delegation target for anything multi-step, anything needing sudo, or anything
   where local file/git context matters more than visual feedback.
+- **Same GitHub account as dev** — `gh` CLI is signed in to the same user. You
+  can `gh repo clone`, `gh pr create`, `gh api`, etc. without re-auth. Private
+  repos accessible from dev are accessible here too.
+- **Same iCloud account as dev** — iCloud Drive, Keychain, Notes, Reminders all
+  sync. Useful for moving files between machines without setting up file
+  transfer (drop in `~/Library/Mobile Documents/com~apple~CloudDocs/`).
+- **Chrome installed and signed into the same Google account** — so any
+  bookmarks, extensions, autofill, and `remotedesktop.google.com` device list
+  state are mirrored. Useful for testing web flows that need a logged-in user.
 - Standard dev tools: Homebrew, git, go, python3, node (verify before assuming
   specific tools by running `which <tool>` via paste-into-Terminal)
-- Chrome, Safari, Terminal.app, plus whatever's in the dock
+- Safari, Terminal.app, plus whatever's in the dock
 
 ## How to control it
 
