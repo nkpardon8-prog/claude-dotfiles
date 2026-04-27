@@ -1,8 +1,14 @@
 # macmini — Chrome DevTools + CRD-only skill
 
+> **Hardware-tested 2026-04-27.** Read `docs/HARDWARE-FINDINGS-2026-04-27.md`
+> first. Production reality is narrower than the design intent below — the
+> auto-grant `cdp` and `ui` modes do not work against a stock Chrome+CRD setup,
+> and programmatic clipboard sync does not propagate dev → mini. Use vision +
+> lowercase typing + Cmd-modifier shortcuts + gh gist transport.
+
 ## TL;DR
 
-**No daemons, no binaries, no Tailscale.** Just Chrome DevTools MCP driving a Chrome Remote Desktop (CRD) tab on your dev MacBook into the Mac mini's canvas. Text moves both directions through CRD's built-in clipboard sync; the agent reads pixels via `take_screenshot` and sends keystrokes via `press_key`. Five slash commands cover the surface: `/macmini connect`, `/macmini paste`, `/macmini grab`, `/macmini disconnect`, `/macmini status`. Anything more complex than a one-off keystroke or paste — delegate to a `claude` session running on the Mac mini itself.
+**No daemons, no binaries, no Tailscale.** Just Chrome DevTools MCP driving a Chrome Remote Desktop (CRD) tab on your dev MacBook into the Mac mini's canvas. The agent reads pixels via `take_screenshot` and sends keystrokes via `press_key`/`type_text` (lowercase + unshifted only — Shift modifier is stripped by CRD). For arbitrary multi-case text, route through `gh gist`. Anything more complex than a one-off keystroke — delegate to a `claude` session running on the Mac mini itself.
 
 ---
 
