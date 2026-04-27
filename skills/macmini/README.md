@@ -61,12 +61,14 @@ The skill is a thin wrapper around the chrome-devtools MCP. Confirm it's loaded 
 
 Restart Claude Code (or your MCP host) after editing the config so the flag takes effect.
 
-### 2. Credentials
+### 2. Credentials (optional)
 
-Add `CRD_PIN` and `CRD_DEVICE_NAME` to `~/.config/claude/credentials.md` as `op://` references (template at `~/.claude-dotfiles/credentials.template.md`). `CRD_PIN` is the 6-digit PIN you set during CRD host setup; `CRD_DEVICE_NAME` is the EXACT aria-label on the Mac mini's tile at <https://remotedesktop.google.com/access>. Then load them:
+**The CRD PIN is never stored.** The user types it themselves when the PIN page appears — the agent waits for the canvas to mount and picks back up automatically. Only `CRD_DEVICE_NAME` is optional, and only needed if you have multiple devices in your CRD device list (the agent auto-picks the single Online tile if just one exists).
+
+If you want it, add `| CRD_DEVICE_NAME | op://<VAULT>/Mac mini CRD/Device Name |` to `~/.config/claude/credentials.md`, then:
 
 ```
-/load-creds CRD_PIN,CRD_DEVICE_NAME
+/load-creds CRD_DEVICE_NAME
 ```
 
 ### 3. `gh` authenticated on both sides + first connect
