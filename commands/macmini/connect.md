@@ -143,11 +143,14 @@ Or just skip the screenshot for that state. **Sign-in screen: never screenshot.*
 
 ### 12. Focus discipline
 
+Focus the canvas so subsequent `press_key` calls go to the Mac mini (not a stray DOM control). Take an a11y snapshot, find the canvas element's `uid`, and click it:
+
 ```
-mcp.click('canvas', 1, 1)
+mcp.take_snapshot()           # locate the canvas element's uid in the returned snapshot
+mcp.click({uid: <canvas_uid>})
 ```
 
-Tiny offset into the canvas to put keyboard focus on it (so subsequent `press_key` calls go to the Mac mini, not a stray DOM control).
+If the canvas isn't in the a11y snapshot (it usually IS the page-level focus target), fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`.
 
 ### 13. Auto-click in-canvas controls
 
