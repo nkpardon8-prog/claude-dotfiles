@@ -24,31 +24,37 @@ If no CRD tab exists, surface it as a row in the audit table below (CRD session 
 
 ### 3. Run the audit battery
 
-Run a battery of audit checks. For each row, execute the bash on the right and surface the result in the table.
+Run a battery of audit checks. Two tables follow: shell-side audits (run in your dev terminal) and MCP-side audits (run via chrome-devtools MCP against the CRD page). Execute each row's command exactly as shown and surface the result in the results table in step 5.
+
+#### 3a. Bash audits (run in dev terminal)
 
 | Check                       | Bash to run                                                                       | Expected      |
 |-----------------------------|-----------------------------------------------------------------------------------|---------------|
-| user-policy clipboard       | `bash skills/macmini/scripts/auto-grant-clipboard.sh --status`                    | "ALLOWED"     |
+| user-policy clipboard       | `BUNDLE_ID=$(bash skills/macmini/scripts/chrome-bundle-id.sh)` then `bash skills/macmini/scripts/auto-grant-clipboard.sh --status --bundle-id "$BUNDLE_ID"` | "ALLOWED"     |
 | CDP grant (last result)     | `cat ~/.cache/macmini/last-cdp-grant.json 2>/dev/null \|\| echo "NEVER RUN"`      | exit 0        |
 | Chrome debug port 9222      | `curl -fsS http://127.0.0.1:9222/json/version > /dev/null`                        | exit 0        |
+
+#### 3b. MCP audits (run via chrome-devtools MCP)
+
+| Check                       | MCP call                                                                          | Expected      |
+|-----------------------------|-----------------------------------------------------------------------------------|---------------|
 | CRD session tab             | `mcp.list_pages` → match url ~ `remotedesktop.google.com/access/session`          | "OPEN"        |
-| Clipboard runtime probe     | single-call try/catch `readText()` in CRD page context (see step 4)               | "granted"     |
-| CRD canvas (DOM check)      | `mcp.evaluate_script: !!document.querySelector('canvas')`                         | true          |
-| Sign-in valid               | `mcp.evaluate_script: !!document.querySelector('a[href*="accounts.google.com/signin"]') \|\| /accounts\.google\.com/.test(location.href)` | no match      |
+| Clipboard runtime probe     | `mcp.evaluate_script` with the async-IIFE body in step 4                          | "granted"     |
+| CRD canvas (DOM check)      | `mcp.evaluate_script({function: "() => !!document.querySelector('canvas')"})`     | true          |
+| Sign-in valid               | `mcp.evaluate_script({function: "() => !!document.querySelector('a[href*=\\"accounts.google.com/signin\\"]') \|\| /accounts\\.google\\.com/.test(location.href)"})` | no match      |
 
-### 4. Clipboard runtime probe (single-call try/catch)
+### 4. Clipboard runtime probe (single-call try/catch, async IIFE)
 
-In the CRD page context:
+The `evaluate_script` body must be wrapped in an async IIFE because top-level `await` is a syntax error in plain JS. Pass `awaitPromise: true` so chrome-devtools MCP awaits the returned promise.
 
-```js
-let clipboardOk;
-try { await navigator.clipboard.readText(); clipboardOk = true; }
-catch (err) { clipboardOk = false; }
-const advisory = (await navigator.permissions.query({name:'clipboard-read'})).state;
-return { clipboardOk, advisory };
+```
+mcp.evaluate_script({
+  function: "(async () => { try { await navigator.clipboard.readText(); return 'granted'; } catch (e) { const advisory = (await navigator.permissions.query({name:'clipboard-read'})).state; return advisory; } })()",
+  awaitPromise: true
+})
 ```
 
-If `clipboardOk === true`, surface "granted". Otherwise surface "denied" and include the advisory state for diagnostics. Treat `permissions.query` as advisory only — `readText()` is the source of truth.
+If the call returns `"granted"`, surface "granted" in the results table. Any other return value is the advisory permission state (`"prompt"`, `"denied"`, etc.); surface that as the diagnostic. Treat `permissions.query` as advisory only — `readText()` is the source of truth.
 
 ### 5. Print results table
 
