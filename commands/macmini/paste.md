@@ -62,48 +62,15 @@ trap 'rm -f "$TEMPFILE"' EXIT INT TERM
 
 For each chunk:
 
-```bash
-# 5a. Write THIS chunk to tempfile (overwrite)
-printf '%s' "<chunk>" > "$TEMPFILE" && chmod 600 "$TEMPFILE"
-```
-
-```
-# 5b. Re-select CRD page
-mcp.select_page(crd_page)
-
-# 5c. Bring CRD tab to front. Try mcp.bring_to_front; on not-available,
-#     fall back to AppleScript targeting the CRD window specifically.
-try:
-    mcp.bring_to_front()
-except not_available:
-    bash: osascript -e 'tell application "Google Chrome"
-      set crdWin to first window whose URL of active tab starts with "https://remotedesktop.google.com"
-      set index of crdWin to 1
-      activate
-    end tell'
-```
-
-```bash
-# 5d. pbcopy from tempfile
-pbcopy < "$TEMPFILE"
-```
-
-```
-# 5e. Force CRD clipboard sync trigger via blur+focus
-mcp.evaluate_script("(() => { window.blur(); window.focus(); return true; })()")
-
-# 5f. Sync wait (tune in Phase 6)
-sleep 800ms
-
-# 5g. Focus canvas via mcp.click — DOM .focus() is a no-op on canvas
-mcp.click('canvas', 1, 1)
-
-# 5h. Cmd+V — LOWERCASE v (uppercase V = Cmd+Shift+V)
-mcp.press_key("Meta+v")
-
-# 5i. Wait for paste to land
-sleep 200ms
-```
+- 5a. `printf '%s' "<chunk>" > "$TEMPFILE" && chmod 600 "$TEMPFILE"` — overwrite tempfile.
+- 5b. `mcp.select_page(crd_page)`.
+- 5c. Bring CRD tab to front: try `mcp.bring_to_front()`; on not-available, fall back to AppleScript targeting the CRD window specifically (`tell application "Google Chrome" ... set crdWin to first window whose URL of active tab starts with "https://remotedesktop.google.com" ... set index of crdWin to 1 ... activate`).
+- 5d. `pbcopy < "$TEMPFILE"`.
+- 5e. Force CRD clipboard sync trigger via blur+focus: `mcp.evaluate_script("(() => { window.blur(); window.focus(); return true; })()")`.
+- 5f. `sleep 800ms` (sync wait — tune in Phase 6).
+- 5g. `mcp.click('canvas', 1, 1)` — focus canvas (DOM `.focus()` is a no-op on canvas).
+- 5h. `mcp.press_key("Meta+v")` — Cmd+V, **LOWERCASE v** (uppercase V = Cmd+Shift+V).
+- 5i. `sleep 200ms` — wait for paste to land.
 
 ### 6. Cleanup
 
