@@ -121,7 +121,7 @@ Closes the CRD tab. Quick cleanup; nothing else to tear down because there are n
 
 ### `/macmini status`
 
-Pure DevTools-side health check: does a CRD page exist, is the canvas present, is sign-in visible (i.e., session expired), is clipboard-read permission granted, and is the page in fullscreen mode. Prints findings as a table.
+Pure DevTools-side health check: does a CRD page exist, is the canvas present, is sign-in visible (i.e., session expired), is clipboard-read permission granted, is the user-policy clipboard pre-grant in place, did the latest CDP grant land, and is Chrome reachable on the remote-debugging port. Prints findings as a table plus a remediation matrix.
 
 ```
 /macmini status
