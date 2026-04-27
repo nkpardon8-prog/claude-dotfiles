@@ -1,11 +1,11 @@
 ---
-description: Pure DevTools check — is the CRD canvas up, is sign-in valid, is clipboard-read permission granted?
+description: Pure DevTools + bash audit — is the canvas up, is sign-in valid, are auto-grant policies and CDP grants in place?
 argument-hint: ""
 ---
 
 # /macmini status
 
-Quick health summary using only chrome-devtools MCP. Tells you whether the canvas is rendered, the Google session is valid, and the prerequisite Chrome permissions are in place.
+Quick health summary using chrome-devtools MCP plus the auto-grant audit scripts. Tells you whether the user-policy is set, the latest CDP grant landed, Chrome is on the remote-debugging port, the CRD canvas is rendered, the runtime clipboard probe works, and the Google session is valid.
 
 ## Sequence
 
@@ -16,73 +16,64 @@ pages = mcp.list_pages()
 crd_page = first page where url startsWith "https://remotedesktop.google.com/"
 ```
 
-If no CRD tab exists, print:
+If no CRD tab exists, surface it as a row in the audit table below (CRD session tab = CLOSED) — but still run the rest of the checks.
 
-```
-| Layer        | State | Detail                                    |
-|--------------|-------|-------------------------------------------|
-| CRD session  | FAIL  | not connected — run /macmini connect      |
-```
-
-and exit.
-
-### 2. Select the page
+### 2. Select the page (if found)
 
 `mcp.select_page(crd_page)`
 
-### 3. Probe canvas + sign-in (single evaluate_script)
+### 3. Run the audit battery
 
-```
-mcp.evaluate_script("(() => ({
-  canvas_present: !!document.querySelector('canvas'),
-  signin_visible:
-    !!document.querySelector('a[href*=\"accounts.google.com/signin\"]') ||
-    /accounts\\.google\\.com/.test(location.href),
-}))()")
-```
+Run a battery of audit checks. For each row, execute the bash on the right and surface the result in the table.
 
-### 4. Probe clipboard-read permission (TWO-CALL workaround)
+| Check                       | Bash to run                                                                       | Expected      |
+|-----------------------------|-----------------------------------------------------------------------------------|---------------|
+| user-policy clipboard       | `bash skills/macmini/scripts/auto-grant-clipboard.sh --status`                    | "ALLOWED"     |
+| CDP grant (last result)     | `cat ~/.cache/macmini/last-cdp-grant.json 2>/dev/null \|\| echo "NEVER RUN"`      | exit 0        |
+| Chrome debug port 9222      | `curl -fsS http://127.0.0.1:9222/json/version > /dev/null`                        | exit 0        |
+| CRD session tab             | `mcp.list_pages` → match url ~ `remotedesktop.google.com/access/session`          | "OPEN"        |
+| Clipboard runtime probe     | single-call try/catch `readText()` in CRD page context (see step 4)               | "granted"     |
+| CRD canvas (DOM check)      | `mcp.evaluate_script: !!document.querySelector('canvas')`                         | true          |
+| Sign-in valid               | `mcp.evaluate_script: !!document.querySelector('a[href*="accounts.google.com/signin"]') \|\| /accounts\.google\.com/.test(location.href)` | no match      |
 
-The async-IIFE single-call form is unreliable across MCP versions. Use two calls:
+### 4. Clipboard runtime probe (single-call try/catch)
 
-```
-mcp.evaluate_script(
-  "navigator.permissions.query({name:'clipboard-read'}).then(p => { window.__clipState = p.state; });"
-)
-sleep 100ms
-clipboard_state = mcp.evaluate_script("window.__clipState")
-```
+In the CRD page context:
 
-### 5. Probe fullscreen state (TWO-CALL workaround for symmetry)
-
-The Fullscreen API check is best-effort — CRD has its own internal fullscreen mode that may not set `document.fullscreenElement`. This check is informational, not authoritative.
-
-```
-mcp.evaluate_script(
-  "window.__fsState = !!document.fullscreenElement || !!document.webkitFullscreenElement;"
-)
-sleep 50ms
-fullscreen_state = mcp.evaluate_script("window.__fsState")
+```js
+let clipboardOk;
+try { await navigator.clipboard.readText(); clipboardOk = true; }
+catch (err) { clipboardOk = false; }
+const advisory = (await navigator.permissions.query({name:'clipboard-read'})).state;
+return { clipboardOk, advisory };
 ```
 
-### 6. Print results table
+If `clipboardOk === true`, surface "granted". Otherwise surface "denied" and include the advisory state for diagnostics. Treat `permissions.query` as advisory only — `readText()` is the source of truth.
+
+### 5. Print results table
 
 ```
-| Layer            | State    | Detail                                        |
-|------------------|----------|-----------------------------------------------|
-| CRD tab          | OK       | <crd_page.url>                                |
-| Canvas           | OK/FAIL  | canvas element <present|missing>              |
-| Google sign-in   | OK/FAIL  | <signed in | sign-in page detected>           |
-| Clipboard perm   | OK/FAIL  | granted | prompt | denied                     |
-| Fullscreen (API) | OK/hint  | <true | false — see hint below>               |
+| Layer                       | State    | Detail                                        |
+|-----------------------------|----------|-----------------------------------------------|
+| user-policy clipboard       | OK/FAIL  | <ALLOWED | NOT SET>                          |
+| CDP grant (last result)     | OK/FAIL  | <timestamp / NEVER RUN>                       |
+| Chrome debug port 9222      | OK/FAIL  | <reachable | UNREACHABLE>                     |
+| CRD session tab             | OK/FAIL  | <crd_page.url | CLOSED>                       |
+| Clipboard runtime probe     | OK/FAIL  | <granted | denied (advisory: <state>)>        |
+| CRD canvas (DOM check)      | OK/FAIL  | canvas element <present | missing>            |
+| Sign-in valid               | OK/FAIL  | <signed in | sign-in page detected>           |
 ```
 
-Use `OK` when the check passes, `FAIL` when it fails. Use `hint` for the fullscreen row when the API reports false (it is not a hard failure — see Fullscreen note above).
+### 6. Remediation matrix
 
-### 7. Inline remediation hints
+Print this matrix after the results table; map each row's failure mode to the exact fix command.
 
-- **Canvas FAIL** — `/macmini connect` to drive the PIN/sign-in flow.
-- **Sign-in FAIL** — Google session expired. Sign in inside the open Chrome window, then re-run `/macmini connect`.
-- **Clipboard perm = prompt** — paste any small string via `/macmini paste "test"` to trigger Chrome's permission prompt.
-- **Clipboard perm = denied** — visit `chrome://settings/content/clipboard`, find `https://remotedesktop.google.com`, set to Allow.
-- **Fullscreen hint** — if `Cmd+Space` / `Cmd+Tab` don't forward to the Mac mini, click the right-edge arrow → Full-screen + enable "Send System Keys".
+| Failure                                  | Fix                                                  |
+|------------------------------------------|------------------------------------------------------|
+| user-policy NOT SET                      | `/macmini auto-grant install`                        |
+| user-policy ALLOWED but UI shows DENIED  | re-run install with `--mandatory`                    |
+| CDP grant FAILED                         | `/macmini auto-grant cdp` (or relaunch Chrome)       |
+| debug-port-9222 UNREACHABLE              | relaunch Chrome with `--remote-debugging-port=9222`  |
+| CRD session tab CLOSED                   | `/macmini connect`                                   |
+| Clipboard probe DENIED                   | `/macmini auto-grant install` + restart Chrome; check `chrome://settings/content/clipboard` |
+| Sign-in EXPIRED                          | sign in inside Chrome, then `/macmini connect`       |
