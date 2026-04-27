@@ -64,7 +64,7 @@ For each chunk:
 
 - 5a. `printf '%s' "<chunk>" > "$TEMPFILE" && chmod 600 "$TEMPFILE"` — overwrite tempfile.
 - 5b. `mcp.select_page(crd_page)`.
-- 5c. Bring CRD tab to front: try `mcp.bring_to_front()`; on not-available, fall back to AppleScript targeting the CRD window specifically (`tell application "Google Chrome" ... set crdWin to first window whose URL of active tab starts with "https://remotedesktop.google.com" ... set index of crdWin to 1 ... activate`).
+- 5c. Bring CRD tab to foreground: call `mcp.select_page({pageIdx: <crd_page.idx>, bringToFront: true})`. For OS-level Chrome window activation, fall back to AppleScript targeting the CRD window specifically (`osascript -e 'tell application "Google Chrome" to activate'`, or for more precision: `tell application "Google Chrome" ... set crdWin to first window whose URL of active tab starts with "https://remotedesktop.google.com" ... set index of crdWin to 1 ... activate`).
 - 5d. `pbcopy < "$TEMPFILE"`.
 - 5e. Force CRD clipboard sync trigger via blur+focus: `mcp.evaluate_script("(() => { window.blur(); window.focus(); return true; })()")`.
 - 5f. `sleep 800ms` (sync wait — tune in Phase 6).
