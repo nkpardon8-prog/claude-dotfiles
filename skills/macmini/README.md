@@ -47,7 +47,7 @@ This mirrors `commands/macmini/setup.md`. Three steps from zero to a working `/m
 
 ### 1. chrome-devtools MCP installed and configured
 
-The skill is a thin wrapper around the chrome-devtools MCP. Confirm it's loaded in your Claude Code MCP configuration. Recommended: start it with the `--experimental-vision` flag so `click_at(x, y)` is available for pixel-precise canvas clicks (without it you can only click the canvas centerpoint).
+The skill is a thin wrapper around the chrome-devtools MCP. Confirm it's loaded in your Claude Code MCP configuration. The skill uses only the standard MCP surface (`list_pages`, `select_page`, `take_snapshot`, `click({uid})`, `take_screenshot`, `type_text`, `press_key`, `evaluate_script`, `wait_for({text})`, `new_page`, `navigate_page`).
 
 ```json
 {
