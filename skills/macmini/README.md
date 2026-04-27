@@ -156,6 +156,9 @@ The agent-facing capability map lives in `SKILL.md` (always loaded with the skil
 | Stray `Cmd+,` opens System Settings on Mac mini | Modifier-Shift confusion; one of your earlier keystrokes accidentally chorded | `press_key("Meta+w")` to close the panel. If wrong app stays focused, `press_key("Meta+q")` then re-Spotlight to the intended app. |
 | `/macmini paste` succeeds but the payload appears in dev-side Chrome URL bar instead of Mac mini | Canvas didn't have focus; the Cmd+V went to dev Chrome | Click the CRD canvas first, then re-paste. The recipe does click the canvas as a step — verify Chrome's CRD tab is the foreground window (not a different Chrome window). |
 | Side-menu "Begin" button reset after a CRD reload | Per-session toggle in some CRD configurations | Re-open the right-edge side menu → "Enable clipboard synchronization" → Begin. Permission grant separately persists. |
+| Clipboard prompt fires on every paste | auto-grant install not run, or Chrome wasn't restarted | `/macmini auto-grant install` + restart Chrome |
+| `/macmini auto-grant cdp` prints "WARN: not on debug port" | Chrome relaunched without `--remote-debugging-port=9222` | relaunch with the flag (see `setup.md` Step 4c) |
+| `auto-grant ui` prints "no aria-label match" for Begin | CRD UI shipped new labels | run `discover-crd-selectors.js`; JSON-writeback updates `skills/macmini/data/crd-selectors.json` (no manual edit needed) |
 
 ---
 
