@@ -32,19 +32,34 @@ Otherwise `chunks = [ARGUMENTS]`.
 
 `pages = mcp.list_pages()`; pick the first page whose URL starts with `https://remotedesktop.google.com/access/session/`. If none, abort: `not connected to CRD — run /macmini connect first`. Then `mcp.select_page(crd_page)`.
 
-### 3. Verify clipboard-read permission (TWO-CALL workaround)
+### 3. Verify clipboard-read works (single-call try/catch)
 
-The async-IIFE single-call form is unreliable across MCP versions. Use two calls:
+Don't trust `permissions.query` — it can return `'prompt'` even after policy is set, before state has propagated. The source of truth is whether `readText()` actually works. Treat `permissions.query` as advisory only.
 
+```js
+// Pre-flight: verify clipboard works (don't trust permissions.query —
+// it can return 'prompt' when policy is set but state hasn't propagated)
+let clipboardOk;
+try {
+  await navigator.clipboard.readText();
+  clipboardOk = true;
+} catch (err) {
+  clipboardOk = false;
+  console.warn("Clipboard access failed:", err.message);
+}
+
+if (!clipboardOk) {
+  const advisory = (await navigator.permissions.query({name:'clipboard-read'})).state;
+  return {
+    ok: false,
+    reason: "clipboard-blocked",
+    permissionAdvisory: advisory,  // 'prompt'|'denied'|'granted' — diagnostic only
+    fix: "Run /macmini auto-grant install (then restart Chrome) and /macmini auto-grant cdp"
+  };
+}
 ```
-mcp.evaluate_script(
-  "navigator.permissions.query({name:'clipboard-read'}).then(p => { window.__clipState = p.state; });"
-)
-sleep 100ms
-state = mcp.evaluate_script("window.__clipState")
-```
 
-If `state != 'granted'`, abort with: `Chrome clipboard-read permission not granted on remotedesktop.google.com. Fix: in the CRD page, grant clipboard permission when Chrome prompts; OR visit chrome://settings/content/clipboard, find https://remotedesktop.google.com, set to Allow. Then re-run.`
+If the call returns `ok: false`, abort with the `fix` message above.
 
 ### 4. Tempfile (NOT shell-expanded string)
 
