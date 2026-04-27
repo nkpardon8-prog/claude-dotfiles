@@ -1,27 +1,40 @@
 # macmini — drive a remote Mac mini through Chrome Remote Desktop
 
 > **Hardware-tested 2026-04-27.** See `docs/HARDWARE-FINDINGS-2026-04-27.md` for
-> what actually works. Several items in this file (auto-grant install/cdp/ui
-> modes, programmatic clipboard sync) are documented as broken in production —
-> the reliable channels are vision + lowercase typing + Cmd-modifier shortcuts +
-> gh gist for arbitrary text.
+> the full reality matrix. Reliable channels: vision + lowercase typing +
+> Cm­d-modifier shortcuts + gh gist for arbitrary text. Auto-grant install/cdp/ui
+> have been removed — they don't work in stock Chrome+CRD.
 
-You're driving a Mac mini through Chrome DevTools MCP attached to the user's
-running Chrome instance. CRD renders the Mac mini desktop into a single canvas;
-you control it via keyboard (press_key), screenshots (take_screenshot), and
-gist transport for arbitrary text. **Programmatic clipboard sync (the
-`/macmini paste` premise) does NOT work — CRD's onPaste requires user
-gestures, which CDP-injected events don't provide.** Use gist transport
-instead.
+You drive a Mac mini through Chrome DevTools MCP attached to the user's running
+Chrome instance. CRD renders the Mac mini desktop into a single canvas; you
+control it via keyboard (`press_key`/`type_text`), screenshots
+(`take_screenshot`), and **gh gist transport** for arbitrary text. There is no
+side-channel server, no Tailscale, no clipboard auto-grant. CRD's "Synchronize
+clipboard" and "Send system keys" toggles are clicked **once by the user** at
+first connection — they persist across reconnects.
+
+## How to send anything to the Mac mini — the channel matrix
+
+| Want to send | Use | Why |
+|---|---|---|
+| Lowercase shell command (`ls`, `pwd`, `cd /tmp/p`, `git status`) | `mcp.type_text("...", "Enter")` | Lowercase + unshifted symbols (`-`, `/`, `.`, `;`, `=`, `,`, `'`, backtick, space) survive CRD's keyboard pipeline intact. |
+| Single key or Cmd-shortcut (`Enter`, `Tab`, `Esc`, `Meta+v`, `Meta+w`, `Control+c`) | `mcp.press_key("...")` | System keys forward correctly when "Send system keys" toggle is on. |
+| Arbitrary text — capitals, `$@!#%^&*()`, `_+{}[]|\\:"<>?~`, unicode (日本語), multi-line, scripts | **`/macmini paste`** (gist transport) | Direct typing strips Shift modifier and remaps shifted keys to wrong chars. CRD's clipboard sync requires real user gestures (CDP-injected events are synthetic). gh gist clone is the only working channel. |
+| File on Mac mini | gh gist (delivered as `/tmp/p/<filename>` via clone) | Same as above. |
+| Read terminal output back to dev | screenshot (cheap), or `gh gist create` from mini side (lossless) | Vision OCR is unreliable for `l`/`1`/`I`, `0`/`O`. For verbatim text use a reverse gist. |
+
+**Rule of thumb:** If the string contains anything other than lowercase letters,
+digits, and `-/.;=,' ` and backtick, route it through gist. Don't try to be
+clever with `type_text` — Shift IS stripped, and Shift+key gets remapped wrong.
 
 ## Slash commands
 
 - `/macmini connect`          — open or resume the CRD session
-- `/macmini paste "text"`     — send text to Mac mini's clipboard, then Cmd+V
+- `/macmini paste "text"`     — gist-based arbitrary-text → Mac mini clipboard
 - `/macmini grab`             — pull text from Mac mini's clipboard to dev (manual: Mac mini side does Cmd+C first)
-- `/macmini grab driven`      — same, but auto-sends Cmd+A then Cmd+C on canvas (fragile — see Limitations)
 - `/macmini disconnect`       — close the CRD session
 - `/macmini status`           — quick "is the canvas up + signed in?" check
+- `/macmini setup`            — one-time setup walkthrough
 
 ## Your full Chrome is also reachable
 
