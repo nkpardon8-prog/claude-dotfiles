@@ -145,7 +145,20 @@ mcp.click('canvas', 1, 1)
 
 Tiny offset into the canvas to put keyboard focus on it (so subsequent `press_key` calls go to the Mac mini, not a stray DOM control).
 
-### 12. Reconnect overlay check
+### 12. Soft fullscreen check (NON-BLOCKING)
+
+The Fullscreen API is incomplete — CRD has its own internal fullscreen mode that may not set `document.fullscreenElement`. Phase 6 will determine the actual reliable detector. Until then, this is a soft hint only — do NOT abort.
+
+```js
+(() => ({
+  fullscreen_api_state: !!document.fullscreenElement || !!document.webkitFullscreenElement,
+  // The actual CRD-internal fullscreen detector is TBD in Phase 6.
+}))()
+```
+
+If `fullscreen_api_state` is `false`, print: `Hint: if Cmd+Space or Cmd+Tab don't forward to Mac mini, click the right-edge arrow → Full-screen + enable 'Send System Keys'.` Continue regardless.
+
+### 13. Reconnect overlay check
 
 ```js
 !!document.querySelector('button[aria-label*="Reconnect"]')
@@ -156,17 +169,34 @@ If `true`:
 - `mcp.click('button[aria-label*="Reconnect"]')`
 - `mcp.wait_for('canvas', 30s)`
 
-### 13. Side-channel handshake
+### 14. Clipboard-read permission check (TWO-CALL workaround)
 
-```bash
-macmini-client health
+The async-IIFE single-call pattern is unreliable across MCP versions. Use two calls:
+
+```
+mcp.evaluate_script(
+  "navigator.permissions.query({name:'clipboard-read'}).then(p => { window.__clipState = p.state; });"
+)
+sleep 100ms
+state = mcp.evaluate_script("window.__clipState")
 ```
 
-Must return `ok=true` within 2s. If it fails, the visual session is up but the data side-channel isn't reachable — tell the user to run `/macmini status` to localize the failure (Tailscale vs server process).
+- If `state == 'granted'`: continue.
+- If `state == 'prompt'`: print `Clipboard permission not yet granted. Paste any small string via /macmini paste "test" — Chrome will trigger the permission prompt.` Continue.
+- If `state == 'denied'`: print `Clipboard permission denied. Visit chrome://settings/content/clipboard, find https://remotedesktop.google.com, set to Allow, then re-run /macmini connect.` Continue.
 
-### 14. Done
+### 15. CRD clipboard-sync side-menu reminder (once per session)
 
-Return `OK`.
+There is no programmatic detector for the CRD side-menu "Begin" button. Print this reminder once per session:
+
+```
+First time? Open the CRD side menu (right-edge arrow) → "Enable clipboard synchronization" → Begin.
+Permission and side-menu state persist across sessions.
+```
+
+### 16. Done
+
+Print: `Connected to Mac mini. See SKILL.md for capabilities (scrolling, Spotlight, delegation, etc.).`
 
 ---
 
