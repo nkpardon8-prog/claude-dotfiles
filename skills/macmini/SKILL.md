@@ -441,17 +441,16 @@ For any task that's multi-step, needs sudo, involves complex shell pipelines,
 or where the Mac mini's local context (file tree, git state, running
 processes) matters more than what's visible on screen:
 
-1. `/macmini paste "claude"`   (focus a Terminal first via Spotlight)
-2. `press_key("Enter")`
-3. Wait for the Mac mini Claude session to start
-4. `/macmini paste "<your instruction in lowercase prose>"`
-5. `press_key("Enter")`
-6. `take_screenshot` to read the response; scroll if needed
-7. Iterate as needed
+1. Make sure Mac mini Terminal is focused (`mcp.press_key("Meta+space")`, `mcp.type_text("terminal", "Enter")`, screenshot to confirm).
+2. `mcp.type_text("claude --dangerously-skip-permissions", "Enter")` — all lowercase + dashes, types intact through CRD. The flag eliminates "Allow / Deny" permission dialogs that the Shift-strip pipeline can't reliably navigate.
+3. `take_screenshot` to confirm Claude Code's TUI started (you'll see its prompt).
+4. `/macmini paste "<your instruction in lowercase prose, but capitals/symbols/unicode allowed since gist transport handles them>"` — this puts your instruction on Mac mini's clipboard.
+5. **Cmd+V into the Claude prompt:** `mcp.press_key("Meta+v")` to paste the instruction.
+6. `mcp.press_key("Enter")` to submit.
+7. `take_screenshot` to read the response; scroll if needed (`mcp.press_key("PageUp")`).
+8. Iterate as needed.
 
-Lowercase prose forwards through CRD reliably. Mac mini Claude has full
-local privileges and can do anything you'd do in a normal Claude Code session
-on that machine.
+Mac mini Claude has full local privileges and shares this dotfiles checkout (same skills, same CLAUDE.md, same MCP servers, same credentials catalog at `~/.config/claude/credentials.md`). You don't need to re-explain conventions — it has identical context.
 
 ## Limitations & gotchas
 
