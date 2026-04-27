@@ -91,35 +91,30 @@ Use `mcp.wait_for({text: [...], timeout: ...})` with text strings expected on ea
 
 Whichever resolves first wins. If branch A wins, jump to step 11.
 
-### 9. PIN entry — handle both variants
+### 8. PIN entry — handle both variants
 
-Determine which PIN UI is showing:
+Determine which PIN UI is showing via `mcp.evaluate_script`:
 
 ```js
 document.querySelectorAll('input[inputmode="numeric"][maxlength="1"]').length
 ```
 
-- If the count is `>= 6` → **6-input variant**:
-  - `mcp.click('input[inputmode="numeric"][maxlength="1"]')` — focuses the first input.
-  - For each digit in `${CRD_PIN}`: `mcp.press_key(digit)`.
-- Else → **single-input variant**:
-  - `mcp.fill('input[type="tel"], input[autocomplete="one-time-code"]', "${CRD_PIN}")`.
+- If the count is `>= 6` → **6-input variant**: `take_snapshot`, find the first PIN-input uid, `mcp.click({uid: <pin0>})` to focus, then for each digit in `${CRD_PIN}` call `mcp.press_key(digit)`.
+- Else → **single-input variant**: take_snapshot, find the input uid (it'll have name "Enter PIN" or similar), `mcp.fill({uid: <input_uid>, value: "${CRD_PIN}"})`.
 
 **NEVER log `${CRD_PIN}` in any output, error message, or screenshot caption.**
 
-### 10. Submit
+### 9. Submit
 
-CRD often auto-submits when 6 digits land. Check if you're already on the canvas:
+CRD often auto-submits when 6 digits land. Check via `mcp.evaluate_script`:
 
 ```js
 !!document.querySelector('canvas')
 ```
 
-If `false`: `mcp.click('button[aria-label="Connect"]')`.
+If `false`: take_snapshot, find the Connect button uid, `mcp.click({uid: <connect_uid>})`. Then `mcp.wait_for({text: ["Send system keys"], timeout: 30000})` (the side-panel labels appear once the canvas is interactive).
 
-Then `mcp.wait_for('canvas', 30s)`.
-
-### 11. Failure-path screenshots over the PIN page
+### 10. Failure-path screenshots over the PIN page
 
 If you must take a debug screenshot while the PIN field is on screen, **first** overlay the PIN-input region with a black rectangle via `mcp.evaluate_script`:
 
