@@ -1,170 +1,148 @@
 ---
-description: One-time end-to-end setup for the Mac mini remote skill (Tailscale + side-channel server + optional CRD profile bootstrap).
+description: One-time setup for the Mac mini remote skill — chrome-devtools MCP, credentials, first connect.
 argument-hint: ""
 ---
 
 # /macmini setup
 
-## What this does
+Three steps from zero to a working `/macmini connect`. The skill drives the Mac mini through the chrome-devtools MCP attached to your existing Chrome — no daemons, no binaries, no servers. Data flows in/out via CRD's built-in clipboard sync.
 
-Walks you through the first-time install of the Mac mini remote skill. The architecture has two cooperating channels: the **chrome-devtools MCP** drives the visual side (Chrome Remote Desktop canvas, clicks, screenshots), and a **Tailscale-only HTTP server** running on the Mac mini handles the data side (clipboard paste, file push/pull, command run, screen capture). The two together let an agent operate a Mac mini reliably without exposing anything to the public internet.
+CRITICAL warning: **CRD's keystroke forwarding is broken for Shift-modified characters.** The Shift modifier gets dropped in transit, so capital letters, underscores, `$`, `|`, `&`, `~`, `:` and other shifted glyphs come through corrupted (`HELLO_WORLD` arrives as `hello-world`). The `/macmini paste` command exists specifically to bypass this. Use it for any payload with mixed case, special characters, or anything programmatic.
 
-CRITICAL warning: **CRD's keystroke forwarding is broken for Shift-modified characters.** The Shift modifier gets dropped in transit, so capital letters, underscores, `$`, `|`, `&`, `~`, `:` and other shifted glyphs come through corrupted (e.g. `HELLO_WORLD` → `hello-world`). The Tailscale side-channel exists specifically to bypass this. Use `/macmini paste`, `/macmini push`, and `/macmini run` for any payload with mixed case, special characters, or anything programmatic. The CRD canvas is for clicking, scrolling, and visual confirmation only.
-
-For agent operators driving this remotely, also read `skills/macmini/docs/AGENT-GUIDE.md`. For what's been verified end-to-end on real hardware, see `skills/macmini/docs/HARDWARE-TEST-NOTES.md`.
+For the full capability map, read `~/.claude-dotfiles/skills/macmini/SKILL.md`. For agent operational notes, read `~/.claude-dotfiles/skills/macmini/docs/AGENT-GUIDE.md`.
 
 ---
 
-## Step 1 — DEV: Tailscale present and signed in
+## Step 1 — chrome-devtools MCP installed and configured
 
-```bash
-tailscale status
+The skill is a thin wrapper around the chrome-devtools MCP. Confirm it's loaded in your Claude Code MCP configuration. If you don't have it yet, install per its docs (typically a Node-based MCP server entry).
+
+**Recommended**: start it with the `--experimental-vision` flag — that exposes `click_at(x, y)` for pixel-precise clicks on the CRD canvas. Without it, you can only click the canvas centerpoint, which limits where you can interact on the Mac mini's screen.
+
+Example MCP config snippet:
+
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["chrome-devtools-mcp", "--experimental-vision"]
+    }
+  }
+}
 ```
 
-You must see Self online AND the Mac mini node listed. If not, install Tailscale (`brew install tailscale`, App Store, or tailscale.com/download) and sign both ends into the same tailnet before proceeding.
+After editing the MCP config, **restart Claude Code (or your MCP host)** so the new flag takes effect. Verify by listing available chrome-devtools MCP tools — `click_at` should be present.
 
-## Step 2 — DEV: Build and install the dev-machine client
+---
 
-Two options:
+## Step 2 — Credentials
 
-```bash
-# Option A — user-local (no sudo)
-cd ~/.claude-dotfiles/skills/macmini/client
-make build
-mkdir -p ~/.local/bin && cp dist/macmini-client-darwin-* ~/.local/bin/macmini-client
-# Ensure ~/.local/bin is on PATH (add to ~/.zprofile if not).
+The skill needs two values:
 
-# Option B — system-wide (sudo)
-cd ~/.claude-dotfiles/skills/macmini/client
-make build && sudo make install
+- `CRD_PIN` — the 6-digit PIN you set when you registered the Mac mini as a CRD host.
+- `CRD_DEVICE_NAME` — the EXACT aria-label shown on the Mac mini's tile at <https://remotedesktop.google.com/access>. This is whatever you typed during CRD host setup (often the macOS hostname). Open the device list page in your daily Chrome and copy the name verbatim.
+
+Add these to `~/.config/claude/credentials.md` as `op://` references (template lives in `~/.claude-dotfiles/credentials.template.md`):
+
+```markdown
+## Mac mini remote (CRD skill)
+
+| Env var          | 1Password ref                                |
+|------------------|----------------------------------------------|
+| CRD_PIN          | op://<VAULT>/Mac mini CRD/PIN                |
+| CRD_DEVICE_NAME  | op://<VAULT>/Mac mini CRD/Device Name        |
 ```
 
-Verify:
-
-```bash
-macmini-client version
-```
-
-Use Option A if you want a clean no-sudo path. Use Option B if multiple users on the dev machine need the binary.
-
-## Step 3 — MAC MINI (one time): Run the installer ON the Mac mini
-
-You need physical or pre-existing remote access to the Mac mini for this single bootstrap step. On the Mac mini directly:
-
-```bash
-# Default: userspace mode, NO sudo. Uses brew formula 'tailscale' +
-# tailscaled --tun=userspace-networking. Binaries land in ~/.local/bin/.
-bash ~/.claude-dotfiles/skills/macmini/install/install.sh
-
-# Legacy fallback: cask mode (requires sudo, system extension, /usr/local/bin/).
-bash ~/.claude-dotfiles/skills/macmini/install/install.sh --mode=cask
-```
-
-Userspace tailscaled forwards inbound tailnet traffic to localhost listeners, so the server stays reachable on the tailnet IP without any kernel TUN device or system extension.
-
-If this is the very first time tailscaled has come up on this user, the installer will tell you to run `tailscale --socket=$HOME/.config/tailscaled/tailscaled.sock up`. Visit the auth URL in a browser — easiest path is `open <url>` on the Mac mini itself so the browser there can complete the SSO.
-
-When it finishes, the installer prints a ready-to-paste credentials block. Keep that terminal open — you'll need the values in Step 5.
-
-## Step 4 — MAC MINI (manual): Auto-login + Touch ID for sudo
-
-Auto-login is **required** for boot survival because the LaunchAgent only runs once a GUI session exists. This step is intentionally manual — it needs your password.
-
-1. System Settings → Users & Groups → "Automatically log in as" → select your account.
-2. Enter the user password when prompted.
-
-If FileVault is enabled, the Mac will still require the FV password at cold boot, but auto-login resumes after that. Verify by rebooting the Mac mini and then, from the dev machine:
-
-```bash
-macmini-client health
-```
-
-Must return ok.
-
-**Recommended one-time quality-of-life setup**: enable Touch ID for sudo. CRD mangles passwords typed through the canvas, so any sudo prompt taken via CRD is painful. Touch ID makes those prompts a fingerprint tap.
-
-```bash
-# On the Mac mini, with a Terminal you'll keep open (in case it breaks sudo):
-echo 'auth       sufficient     pam_tid.so' | sudo tee /etc/pam.d/sudo_local
-```
-
-Test by running any harmless `sudo` command. The fingerprint reader should light up.
-
-## Step 5 — DEV: Add credentials
-
-1. Paste the credentials block from `install.sh` output into `~/.config/claude/credentials.md`.
-2. Store the actual secret values in 1Password under:
-   - `op://<VAULT>/Mac mini CRD/PIN`
-   - `op://<VAULT>/Mac mini CRD/Hostname`
-   - `op://<VAULT>/Mac mini CRD/Device Name`
-   - `op://<VAULT>/Mac mini CRD/Server Token`
-3. For `CRD_DEVICE_NAME`: open <https://remotedesktop.google.com/access> in your daily Chrome and copy the **EXACT** name shown on the Mac mini's tile (whatever you typed during CRD host setup; usually the macOS hostname). This is the CRD-side display name and is **not** the same as the Tailscale node name.
-4. **Transfer the server token from Mac mini to dev**. The token lives at `~/.config/macmini-server/token` on the Mac mini. The cleanest cross-machine recipe uses Tailscale's file-drop:
-
-   ```bash
-   # On the Mac mini:
-   tailscale --socket=$HOME/.config/tailscaled/tailscaled.sock file cp \
-       ~/.config/macmini-server/token <dev-tailnet-name>:
-
-   # On the dev machine (same dir as wherever you want to land it):
-   tailscale file get .
-   # then read the file and paste the value into 1Password under Server Token
-   ```
-
-   Once it's in 1Password, delete the local copy. The token is also dumpable via `bash install.sh --print-token` if you'd rather just type it once at the Mac mini's keyboard.
-
-5. Load the env into the current session:
-
-   ```
-   /load-creds CRD_PIN,CRD_MAC_MINI_HOSTNAME,CRD_DEVICE_NAME,CRD_SERVER_TOKEN
-   ```
-
-## Step 6 — DEV: Smoke test status
+Store the actual values in 1Password under those refs, then load them into the current session:
 
 ```
-/macmini status
+/load-creds CRD_PIN,CRD_DEVICE_NAME
 ```
 
-All three columns (Tailscale | Server | CRD session) must be green. If anything is red, fix it before continuing.
+---
 
-## Step 7 — DEV (optional): Dedicated Chrome profile for CRD
-
-In most cases the chrome-devtools MCP attaches to your **existing running Chrome** and reuses your existing Google login — no dedicated profile required. **Skip this step** unless you specifically want CRD isolated from your daily Chrome (e.g. multiple Google accounts, separate cookie jar).
-
-If you do want isolation, create a `Claude-CRD` profile and configure the chrome-devtools MCP to launch with `--user-data-dir` pointing at it. Quit Chrome **entirely** before copying — Chrome locks the profile directory.
-
-```bash
-pkill -f 'Google Chrome' || true
-mkdir -p "$HOME/Library/Application Support/Claude-CRD"
-cp -R "$HOME/Library/Application Support/Google/Chrome/Default" \
-      "$HOME/Library/Application Support/Claude-CRD/Default"
-```
-
-Then sign that profile into the same Google account that owns the Mac mini's CRD host registration, and verify the Mac mini's tile is visible at <https://remotedesktop.google.com/access>.
-
-## Step 8 — DEV: Full smoke test
+## Step 3 — First `/macmini connect`
 
 ```
 /macmini connect
 ```
 
-Should land you in the CRD canvas. Then prove the side-channel beats CRD's keystroke mangling with the canonical test payload:
+The first run lands you in the CRD canvas after PIN entry. Two one-time grants are needed before paste/grab work:
+
+1. **Chrome's clipboard-read permission for `https://remotedesktop.google.com`.** When you run `/macmini paste "test"` for the first time, Chrome will prompt — click Allow. (Or pre-grant via `chrome://settings/content/clipboard` → Add → `https://remotedesktop.google.com`.)
+2. **CRD's clipboard sync side-menu toggle.** In the CRD canvas, click the right-edge arrow → "Enable clipboard synchronization" → Begin. This persists across sessions per CRD profile.
+
+After both are set, run a smoke test:
 
 ```
 /macmini paste "HELLO_WORLD with $special chars: |&>~"
 ```
 
-Switch to the Mac mini and check its clipboard (Cmd+V into a text field). The pasted contents must be **exactly** `HELLO_WORLD with $special chars: |&>~` — capitals, underscore, `$`, `|`, `&`, `>`, `~`, all surviving. If it arrives mangled, the canvas keyboard channel is being used somewhere it shouldn't be; recheck `/macmini status` and the server log at `~/Library/Logs/macmini-server.log` on the Mac mini.
-
-Two more checks worth running once:
-
-```
-/macmini run "uname -a && whoami"
-/macmini shot
-```
-
-The first must return real output through the data plane (not the canvas). The second must return a non-black PNG.
+Switch focus to a Mac mini text field (e.g., open TextEdit via Spotlight) and `Cmd+V`. The pasted contents must be exactly `HELLO_WORLD with $special chars: |&>~` — capitals, underscore, `$`, `|`, `&`, `>`, `~`, all surviving. If anything arrives mangled, the canvas keyboard channel is being used somewhere it shouldn't be — re-run `/macmini status` to localize.
 
 ---
 
-You're done. From here on, day-to-day usage is `/macmini connect`, `/macmini paste`, `/macmini run`, etc. Run `/macmini` with no args for the index.
+## Migration appendix — upgrading from the Tailscale-based version
+
+If you had the previous Tailscale + Go server version installed, clean up the Mac mini side. **First, audit the Mac mini's git state for any local-only commits** (the Mac mini's auto-sync hook silently fails to push, so divergence is possible). On the Mac mini:
+
+```bash
+cd ~/.claude-dotfiles
+git fetch origin
+git status
+git log origin/main..HEAD
+```
+
+If `git log origin/main..HEAD` shows nothing surprising, proceed. If it shows commits you want to keep, decide before resetting.
+
+```bash
+cd ~/.claude-dotfiles
+git fetch origin
+git reset --hard origin/macmini-strip
+bash skills/macmini/cleanup-mini.sh
+```
+
+`cleanup-mini.sh` removes the LaunchAgent (`com.macmini-skill.server`), kills any running `macmini-server` process, deletes installed binaries from `~/.local/bin/` and `/usr/local/bin/`, and removes `~/.config/macmini-server/`. Tailscale itself is left alone — uninstall it manually if you no longer use it for anything else.
+
+Verify on Mac mini:
+
+```bash
+ps aux | grep -v grep | grep macmini-server
+```
+
+Returns nothing.
+
+Note: dev side is now the source of truth. The Mac mini's auto-sync hook will continue to silently fail to push (no git creds), which is expected.
+
+---
+
+## Recommended Mac mini one-time quality-of-life appendix
+
+These are not required for the skill to work, but they make delegated work on the Mac mini smoother. All optional.
+
+- **Auto-login** — System Settings → Users & Groups → "Automatically log in as". Manual; cannot be automated without your password. Lets the Mac mini come back without a human after reboot (FileVault still needs the FV password at cold boot).
+- **Touch ID for sudo** — on Mac mini: `sudo cp /etc/pam.d/sudo_local.template /etc/pam.d/sudo_local`, then edit it to enable `auth sufficient pam_tid.so`. Lets delegated `claude` sessions on the Mac mini resolve sudo prompts via fingerprint instead of typing the password through CRD (which mangles capitals).
+- **Screen Recording permission for `screencapture`** — System Settings → Privacy & Security → Screen Recording → enable Terminal.app. Lets Mac mini Claude programmatically take screenshots for its own visual feedback loop.
+
+---
+
+## Rollback — back to the Tailscale version
+
+The old Tailscale-based version is preserved on the `main` branch before the strip commits.
+
+```bash
+cd ~/.claude-dotfiles && git checkout main
+```
+
+On the Mac mini:
+
+```bash
+bash skills/macmini/install/install.sh
+```
+
+Re-installs the Go server and LaunchAgent. Then re-add the credentials this version dropped (`CRD_SERVER_TOKEN`, `CRD_MAC_MINI_HOSTNAME`) per the old setup.md.
+
+---
+
+You're done. From here on, day-to-day usage is `/macmini connect`, `/macmini paste`, `/macmini grab`, `/macmini status`, `/macmini disconnect`. Run `/macmini` with no args for the index.
