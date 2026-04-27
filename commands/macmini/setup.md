@@ -133,7 +133,7 @@ If you had the previous Tailscale + Go server version installed, clean up the Ma
 ```bash
 cd ~/.claude-dotfiles
 git fetch origin
-git reset --hard origin/macmini-strip
+git reset --hard origin/main
 bash skills/macmini/cleanup-mini.sh
 ```
 
