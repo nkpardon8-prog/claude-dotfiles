@@ -16,7 +16,7 @@ Most "my keystroke didn't land where I expected" problems are focus problems. A 
   mcp.click({uid: <canvas_uid>})      # click by uid (the only click form chrome-devtools MCP exposes)
   mcp.press_key("...")
   ```
-  If the canvas isn't in the a11y snapshot (it usually IS the page-level focus target), fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`. With `--experimental-vision` you can also `click_at(x, y)` for precision — pick a non-center offset so you don't accidentally activate something centered on the canvas.
+  If the canvas isn't in the a11y snapshot, fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`. The canvas wrapper textbox (`name="Desktop"`) usually IS in the snapshot — match by name and use that uid.
 - **Bring the CRD tab to front before paste.** If the dev-side user has multiple Chrome windows open, `pbcopy` then `Cmd+V` will paste into whichever Chrome window is foreground — which may not be CRD. Use `mcp.select_page({pageIdx: <crd_page.idx>, bringToFront: true})` (this is the only "bring to front" the MCP exposes — there is no separate `bring_to_front` tool). For OS-level Chrome window activation, fall back to AppleScript:
   ```
   osascript -e 'tell application "Google Chrome" to activate'
