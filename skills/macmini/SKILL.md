@@ -28,14 +28,17 @@ The chrome-devtools MCP attaches to your existing Chrome instance via
   passwords (if you ask Chrome to autofill — DON'T read the password
   store directly).
 
-Practical implications:
+Practical implications (only act on these when the user EXPLICITLY asks
+— do not browse opportunistically for context, atmosphere, or
+"helpfulness"):
 
-- Need to check the user's email or calendar mid-task? Just
-  `mcp.list_pages()` lists ALL tabs; `mcp.select_page(uid)` switches
-  to one.
-- Need to look something up? Open a new tab via
-  `mcp.new_page("https://...")` — it lands in the same Chrome.
-- Need to test a logged-in web flow? You already have the session.
+- If the user explicitly asks you to check their email or calendar, you
+  can — they're accessible via `mcp.list_pages()` →
+  `mcp.select_page(uid)`.
+- If the user explicitly asks you to look something up, open a new tab
+  via `mcp.new_page("https://...")` — it lands in the same Chrome.
+- Logged-in web flows can be tested when the user asks for them — you
+  have the session.
 
 **Treat this access with care.** You're driving a real human's logged-in
 browser — not a sandboxed test profile. Don't:
