@@ -135,48 +135,28 @@ If you must take a debug screenshot while the PIN field is on screen, **first** 
 
 Or just skip the screenshot for that state. **Sign-in screen: never screenshot.**
 
-### 12. Focus discipline
+### 11. Focus discipline
 
-Focus the canvas so subsequent `press_key` calls go to the Mac mini (not a stray DOM control). Take an a11y snapshot, find the canvas element's `uid`, and click it:
+Focus the canvas so subsequent `press_key` calls go to the Mac mini (not a stray DOM control). Per HARDWARE-FINDINGS, the canvas exposes only one usable a11y node — the textbox wrapper "Desktop". Take a snapshot, find the textbox uid (it has `name="Desktop"` and is `focusable`), and click it:
 
 ```
-mcp.take_snapshot()           # locate the canvas element's uid in the returned snapshot
-mcp.click({uid: <canvas_uid>})
+mcp.take_snapshot()           # locate the "Desktop" textbox uid
+mcp.click({uid: <desktop_textbox_uid>})
 ```
 
-If the canvas isn't in the a11y snapshot (it usually IS the page-level focus target), fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`.
+If the textbox isn't in the snapshot, fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`.
 
-### 13. First-time toggles (USER, ONE-TIME)
+### 12. First-time toggles (USER, ONE-TIME)
 
-If this is the user's first connection in a fresh CRD profile, they should manually click two toggles in CRD's right-edge side panel: **"Synchronize clipboard"** and **"Send system keys"**. These persist across reconnects — once on, stay on. The agent CANNOT click them (CRD's a11y tree is stripped + synthetic clicks fail). Tell the user once; they never have to do it again.
+If this is the user's first connection in a fresh CRD profile, they need to manually click two toggles in CRD's right-edge side panel: **"Synchronize clipboard"** (Data transfer section) and **"Send system keys"** (Input controls section). Both persist across reconnects — once on, stay on. The agent CANNOT click them (CRD strips its own a11y tree, and synthetic clicks fail the `isTrusted` check). Print to the user one-time: `If this is your first connection in this CRD profile, hover the right edge of the canvas, click 'Synchronize clipboard' and 'Send system keys' to ON. Persists from now on.`
 
-### 14. Soft fullscreen check (NON-BLOCKING)
+### 13. Reconnect overlay check
 
-The Fullscreen API is incomplete — CRD has its own internal fullscreen mode that may not set `document.fullscreenElement`. Phase 6 will determine the actual reliable detector. Until then, this is a soft hint only — do NOT abort.
+`mcp.take_snapshot()` and look for a node whose name matches `Reconnect`. If found, `mcp.click({uid: <reconnect_uid>})`, then `mcp.wait_for({text: ["Send system keys"], timeout: 30000})`.
 
-```js
-(() => ({
-  fullscreen_api_state: !!document.fullscreenElement || !!document.webkitFullscreenElement,
-  // The actual CRD-internal fullscreen detector is TBD in Phase 6.
-}))()
-```
+### 14. Done
 
-If `fullscreen_api_state` is `false`, print: `Hint: if Cmd+Space or Cmd+Tab don't forward to Mac mini, click the right-edge arrow → Full-screen + enable 'Send System Keys'.` Continue regardless.
-
-### 15. Reconnect overlay check
-
-```js
-!!document.querySelector('button[aria-label*="Reconnect"]')
-```
-
-If `true`:
-
-- `mcp.click('button[aria-label*="Reconnect"]')`
-- `mcp.wait_for('canvas', 30s)`
-
-### 16. Done
-
-Print: `Connected to Mac mini. Auto-grant ran (clipboard sync + Send System Keys attempted — verify via /macmini status if anything seems off). See SKILL.md for capabilities.`
+Print: `Connected to Mac mini. See SKILL.md for the channel matrix (vision / lowercase typing / /macmini paste for arbitrary text).`
 
 ---
 
