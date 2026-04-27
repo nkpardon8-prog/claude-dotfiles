@@ -70,13 +70,13 @@ Add `CRD_PIN` and `CRD_DEVICE_NAME` to `~/.config/claude/credentials.md` as `op:
 /load-creds CRD_PIN,CRD_DEVICE_NAME
 ```
 
-### 3. Auto-grant install (one-time, no sudo) + first connect
+### 3. `gh` authenticated on both sides + first connect
 
-```
-/macmini auto-grant install
-```
+`/macmini paste` (the arbitrary-text channel) requires `gh` CLI authenticated to the same GitHub account on dev AND Mac mini.
 
-This writes a Chrome user-policy entry that pre-grants clipboard read/write to `https://remotedesktop.google.com` ONLY. No sudo needed; the policy lives in your user defaults. **Restart Chrome** afterward so the policy is loaded.
+**Dev side:** `gh auth status` should show authenticated. Otherwise `gh auth login`.
+
+**Mac mini side (one-time):** in Mac mini Terminal, run `brew install gh` (if not already installed) and `gh auth login`. The user does this manually one time — the device-flow prompts need a browser.
 
 Then connect:
 
@@ -84,9 +84,11 @@ Then connect:
 /macmini connect
 ```
 
-`/macmini connect` lands you in the canvas, then auto-grants CDP permissions and auto-clicks the in-canvas "Begin" (clipboard sync) and "Send System Keys" controls. All subsequent `/macmini connect` calls re-run the same auto-grant steps (idempotent). No manual prompts to dismiss.
+The first time, Chrome will prompt to allow clipboard for `https://remotedesktop.google.com` — click **Allow**. The grant persists.
 
-Smoke test: `/macmini paste "HELLO_WORLD with $special chars: |&>~"` then Cmd+V into a Mac mini TextEdit window. If the payload arrives verbatim, you're done.
+Once in the canvas, the user manually clicks two toggles in CRD's right-edge side panel: **"Synchronize clipboard"** (Data transfer section) and **"Send system keys"** (Input controls section). Both persist across reconnects. The agent can't click them — CRD's a11y tree is stripped and synthetic clicks fail the `isTrusted` check.
+
+Smoke test: `/macmini paste "HELLO_WORLD with $special chars: |&>~ and 日本語"` then on Mac mini Terminal type `pbpaste`. The output should match the input verbatim, including capitals, special chars, and unicode.
 
 ---
 
