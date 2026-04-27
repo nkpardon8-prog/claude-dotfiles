@@ -115,16 +115,12 @@ include a black or stale `take_screenshot`, dropped keystrokes inside
 the canvas, or `/macmini connect` succeeding but no real input
 forwarding to the Mac mini.
 
-Recipe:
+Recipe (manual — there's no helper script anymore; tell the user where to go):
 
-```bash
-bash ~/.claude-dotfiles/skills/macmini/scripts/open-tcc-pane.sh <screencapture|accessibility|inputmonitoring>
-```
+1. On the dev side: `open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"` opens the Screen Recording pane. For Accessibility use `Privacy_Accessibility`; for Input Monitoring use `Privacy_ListenEvent` on macOS 13 and earlier or `Privacy_InputMonitoring` on macOS 14+ (Sonoma+).
+2. The user toggles the CRD host (typically `Chrome Remote Desktop Host` or `org.chromium.chromoting.me2me_host`) ON for the relevant capability.
 
-This deep-links into the correct pane in System Settings → Privacy &
-Security. Toggle the CRD host (typically `Chrome Remote Desktop Host`
-or `org.chromium.chromoting.me2me_host`) ON for the relevant
-capability.
+If running this recipe ON the Mac mini via /macmini paste delegation, paste a script that wraps the right `open` URL for the Mac mini's macOS major (detect via `sw_vers -productVersion`).
 
 After re-toggling, restart the CRD host process so it picks up the new
 grant:
