@@ -464,33 +464,17 @@ Mac mini Claude has full local privileges and shares this dotfiles checkout (sam
 
 ## Recovery patterns
 
-- **Stray Cmd+modifier opened the wrong app** → `press_key("Meta+q")` to
-  close, Spotlight again to refocus.
-- **Lost focus on canvas** → `mcp.click(canvas_uid)` (or `click_at(1,1)` if
-  `--experimental-vision`) to re-grab focus.
-- **Mac mini Claude session died** → re-paste `claude`, press Enter.
+- **Stray Cmd+modifier opened the wrong app** → `mcp.press_key("Meta+q")` to close, Spotlight again to refocus.
+- **Lost focus on canvas** → `mcp.take_snapshot()` to find the "Desktop" textbox uid, then `mcp.click({uid: <desktop_uid>})` to re-grab focus.
+- **Mac mini Claude session died** → re-type `claude --dangerously-skip-permissions` via `mcp.type_text`, Enter.
 - **Sign-in expired** → `/macmini connect` will detect and tell you to sign in.
-- **Clipboard sync stopped working** → reload the CRD tab, re-enable sync via
-  the side menu (right-edge arrow → "Enable clipboard synchronization" →
-  Begin); permission grant should still be in effect. If permission itself
-  was revoked, visit `chrome://settings/content/clipboard`, find
-  `https://remotedesktop.google.com`, set to Allow.
-- **Rogue keystrokes opened System Settings or another app mid-task** —
-  Cmd+Q to close, Spotlight back to the intended app, `pwd` or `clear` in
-  Terminal to re-confirm focus state before resuming.
+- **Clipboard sync side-panel toggle reset** → the user manually re-clicks "Synchronize clipboard" and "Send system keys" in CRD's right-edge side panel. Persists.
+- **Chrome clipboard permission was revoked** → user visits `chrome://settings/content/clipboard`, finds `https://remotedesktop.google.com`, sets to Allow.
+- **Rogue keystrokes opened System Settings or another app mid-task** — `mcp.press_key("Meta+q")` to close, Spotlight back to the intended app, screenshot to confirm focus state before resuming.
 
 ## Security model
 
-- chrome-devtools MCP attaches to your running Chrome via
-  `--remote-debugging-port=9222`. This port exposes your full browsing
-  session to anything on localhost. Mitigations: bind to `127.0.0.1`
-  only (Chrome's default; setup.md makes it explicit) and consider
-  `--user-data-dir=/tmp/chrome-cdp` to isolate from your main browsing.
-- `/macmini auto-grant install` writes a Chrome user-policy entry that
-  pre-grants clipboard read/write to `https://remotedesktop.google.com`
-  ONLY. It does not affect any other origin.
-- CDP `Browser.grantPermissions` calls land per browser context and last
-  for the browser's lifetime. Browser restart re-prompts unless
-  user-policy is set.
-- TCC grants for CRD's host process are SIP-protected and managed by
-  macOS. We never attempt to bypass; we only deep-link to the right pane.
+- **chrome-devtools MCP exposes localhost:9222.** Anything that can connect to localhost (other apps, malicious processes) gets full DevTools control over your Chrome session. Mitigation: trusted dev machine only; consider `--user-data-dir=/tmp/chrome-cdp` to isolate from your main browsing if running anything you don't trust on the same host.
+- **gh gist transport ships text through GitHub.** Secret gists are unlisted but NOT encrypted. GitHub staff can read them; URL leak grants access to anyone. The `/macmini paste` command auto-deletes after successful clone+execute, but never paste tokens, `op://`-resolved values, env-var dumps, or auth headers (see `commands/macmini/paste.md` "What NOT to do").
+- **Full Chrome scope.** The skill attaches to your main Chrome profile (every tab, login, cookie). Discipline rules in "Your full Chrome is also reachable" above apply — don't click Buy/Send/Pay/Confirm/OAuth/2FA without explicit user instruction. The list is hard prohibitions, not "ask first" — even if the user says "log in to X," surface the OAuth/2FA screen for them rather than approving on their behalf.
+- **TCC grants for CRD's host process** are SIP-protected and managed by macOS. We never attempt to bypass; the user grants Screen Recording / Accessibility / Input Monitoring once via System Settings.
