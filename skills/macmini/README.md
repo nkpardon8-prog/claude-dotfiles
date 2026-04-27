@@ -53,7 +53,7 @@ The skill is a thin wrapper around the chrome-devtools MCP. Confirm it's loaded 
   "mcpServers": {
     "chrome-devtools": {
       "command": "npx",
-      "args": ["chrome-devtools-mcp", "--experimental-vision"]
+      "args": ["chrome-devtools-mcp"]
     }
   }
 }
