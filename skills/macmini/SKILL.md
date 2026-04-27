@@ -96,6 +96,223 @@ Unreliable: per-character typing of capitals or `_:$|&>~` (Shift mangling).
 Captures the CRD canvas, which is the actual Mac mini desktop pixels.
 Use this liberally to verify state before/after actions.
 
+## Vision is your primary feedback loop
+
+You are driving the Mac mini THROUGH ITS SCREEN. The whole reason this
+skill exists (and not SSH) is that you have a live video feed of the
+target machine. Use it. Vision is your eyes — keep them on.
+
+### Default loop for any action
+
+```
+take_screenshot           # before-state: what's the screen showing now?
+[do the thing]            # paste, press_key, click, navigate, etc.
+take_screenshot           # after-state: did it land?
+[verify visually]         # is the focused window the one you intended?
+                          # did the text appear? did the menu close?
+                          # is there an error dialog? a permission prompt?
+```
+
+### Page-selection footgun (CRITICAL)
+
+`take_screenshot` captures the page that's currently selected via
+`select_page` — NOT necessarily the CRD tab. If you navigate away to
+check Gmail or any other tab, the next screenshot lands on THAT tab,
+not the Mac mini desktop.
+
+**Rule:** at the start of every session, capture the CRD tab's `uid`
+into a variable. After any `select_page(other_tab)` call, you MUST
+`select_page(crd_uid)` BEFORE the next `take_screenshot` if you intend
+to verify Mac mini state. If you forget, you'll be reasoning about
+the wrong screen.
+
+```
+crd_uid = first page where url starts with "https://remotedesktop.google.com/access/session/"
+# ... agent does whatever ...
+# Wants to check Mac mini state again:
+mcp.select_page(crd_uid)   # MUST do this first
+mcp.take_screenshot()      # now this captures the Mac mini canvas
+```
+
+This isn't paranoid — it's how you avoid the failure mode of "I sent
+the keystrokes, I assume they worked, I'm now operating against a
+mental model that diverged from reality 4 steps ago." Without
+screenshots you ARE that other agent.
+
+### When vision matters most
+
+- **Before any `press_key`** — verify the right app/window has focus.
+  CRD's keystrokes go to whatever's focused on the Mac mini, not the
+  app you THINK is focused.
+- **After `Cmd+Space`** — Spotlight may have opened on dev-side
+  Chrome instead of Mac mini. Screenshot to confirm Mac mini Spotlight
+  is showing.
+- **After `Cmd+Tab`** — verify you cycled to the intended app, not a
+  hidden window.
+- **After typing a command in Terminal** — verify the prompt is in
+  the right shell (zsh vs bash vs Python REPL vs `claude` REPL).
+- **After pasting** — verify the paste landed in the intended field
+  (sometimes focus shifts mid-paste).
+- **After CRD reconnects** — verify which Mac mini state you've
+  reconnected to (locked screen vs logged-in vs prior app state).
+- **When ANYTHING UNEXPECTED happens** — first action: screenshot,
+  read it carefully, recover from observed state. Never recover from
+  imagined state.
+
+### Combining vision with structured text feedback
+
+For STRUCTURED OUTPUT (logs, JSON, long terminal stdout, command
+results), screenshot OCR is unreliable — fonts are small, characters
+ambiguous (`l`/`1`/`I`, `0`/`O`), usernames similar-looking. Use the
+gist-transport pattern (next section) for verbatim text round-trip.
+
+**See also:** the "Terminal output discipline — scroll up before
+concluding" section (later in this file) covers the related case of
+reading multi-page terminal scrollback. Vision says "screenshot to
+verify state"; that section says "scroll up + screenshot multiple to
+read the full output." They're complementary — screenshot to know the
+command finished; gist (or scroll-then-screenshot) to read what it
+printed.
+
+But keep screenshotting too — vision tells you "the command finished
+and the prompt is back" while gist tells you "here's exactly what it
+printed." Both are useful, often together. Vision is never optional;
+gist is supplementary for cases where text fidelity matters.
+
+### Anti-patterns
+
+- **Acting on assumed state.** "I just pressed Enter, so the dialog
+  must be closed." Maybe. Screenshot.
+- **Single screenshot then 5 actions.** State drifts. Screenshot
+  between meaningful actions, not just at session start.
+- **Skipping screenshots because the previous action was simple.**
+  The simple actions are the ones that silently fail (focus shifted,
+  modifier mangled, wrong window in front).
+- **Reading screenshot ONCE and proceeding.** When something looks
+  off, screenshot AGAIN — terminal output may still be streaming,
+  windows may still be animating. Wait + reshoot.
+
+## Agent operational discipline (real-world CRD lessons)
+
+### Direct typing — unshifted chars ONLY
+
+`press_key` types one character at a time. CRD strips Shift modifiers,
+so ANY character that requires Shift gets corrupted to its unshifted
+base.
+
+**Note:** the table below is for **US keyboard layout**. International
+layouts may differ (e.g. AZERTY, QWERTZ shift-mapping is different);
+when in doubt, ALWAYS paste rather than type.
+
+| Affected (US layout) | Becomes |
+|---|---|
+| `:` | `;` |
+| `\|` | `\` |
+| `&` | `7` |
+| `_` | `-` |
+| `~` | backtick |
+| `< > ( ) ? " * + { } [ ] ^ ! @ # $ %` | corresponding unshifted |
+
+URLs (`https://`), pipes (`|`), shell substitution (`$()`), variable
+refs (`$VAR`), redirection (`>`), and most code break under direct
+typing.
+
+**Rule:** for ANY string with mixed case OR any of the affected chars
+OR length > 20 chars, use `/macmini paste` — never `press_key` per
+char.
+
+**Allowed for direct `press_key`:** lowercase letters, digits, `-`,
+`/`, `.`, `;`, `=`, `,`, `'`, backtick, space, single function keys
+(Enter, Tab, Escape, Arrow*, Page*, Home, End), Cmd+single-letter
+shortcuts (`Meta+v`, `Meta+w`, `Meta+q`, `Meta+space`, `Meta+tab`).
+
+### Reading STRUCTURED output — gist transport supplements vision
+
+(For visual state — focus, window position, dialog presence, what's on
+screen — keep using `take_screenshot`. See "Vision is your primary
+feedback loop" above; this section is about lossless text round-trip
+for command output, not a replacement for vision.)
+
+When the Mac mini produces verbatim text you need character-perfect
+(logs, JSON, long stdout, command results), screenshot OCR is
+unreliable: small terminal fonts, ambiguous characters (`l` vs `1` vs
+`I`, `0` vs `O`), unusual usernames. Route it through GitHub Gists:
+
+```bash
+# On Mac mini (paste this in via /macmini paste):
+# NOTE: omit -p — the default is a SECRET gist (unlisted, requires the
+# URL or gh auth to access). -p makes the gist PUBLICLY LISTED, which
+# leaks any tokenized stdout, internal hostnames, or sensitive content.
+my-script-that-prints-stuff 2>&1 | gh gist create -f output.log -
+
+# On dev side (read it):
+gh gist list --limit 1
+gh gist clone <id> /tmp/macmini-output
+cat /tmp/macmini-output/output.log
+```
+
+This works because both machines are signed into the same `gh` account
+(per "What's on the Mac mini" — same GitHub account as dev). Secret
+gists are accessible only to the gh-authenticated user. Round-trip
+is roughly 5 seconds and produces verbatim, lossless text.
+
+**Caveat:** `gh gist clone` ignores `--filename` when there's only one
+file in the gist; the cloned file keeps the source filename you used
+in `-f`. So pick filenames you'll recognize on the dev side.
+
+### Scripting on the Mac mini — defensive patterns
+
+When pasting bash commands or scripts in via `/macmini paste`, follow
+these rules to avoid silent failures:
+
+1. **Use `$HOME` not `~`** — tilde expansion sometimes fails inside
+   here-docs, scripts pasted into TUIs, and pipelines. `$HOME` always
+   works.
+2. **`pkill -9` before restarts** — long-running processes (uvicorn,
+   nohup'd daemons) hold ports. A simple `pkill <name>` may not free
+   them; `pkill -9 <name>` then a 1-second sleep then restart.
+3. **One-line chained commands in unshifted-chars-only when typing** —
+   if you somehow can't paste and must type:
+   ```
+   rm -rf /tmp/x ; gh gist clone <id> /tmp/x ; bash /tmp/x/<file>.sh
+   ```
+   This pattern (rm + clone + bash) avoids URLs, redirection, and
+   substitution while still letting you transport arbitrary content
+   via gist.
+4. **Hardcode IDs over substitution** — `gui/501` beats `gui/$(id -u)`
+   when typing direct (`$(...)` is shifted-char heavy and frequently
+   mangles).
+5. **`launchctl bootstrap` errors are opaque** — when you see "Could
+   not find specified service" or "Unsupported target specifier",
+   enumerate first: `launchctl print gui/$(id -u) | grep <label>` (or
+   hardcode the user ID per item 4).
+6. **Editable Python installs need cache nuke** — for repos installed
+   as `pip install -e .`, `git pull` doesn't always pick up changes.
+   Recipe: `pkill -9 uvicorn ; find . -name __pycache__ -delete ; uv pip install -e . ; nohup uv run uvicorn ...`
+7. **launchd plist filenames vary by app** — for cloudflared and
+   similar, don't hardcode: `find $HOME/Library/LaunchAgents -iname "*cloudflar*"` then operate on the discovered path.
+
+### What NOT to attempt (current setup)
+
+These have been tried and don't work in the CURRENT setup. If a future
+setup change adds them, update this list:
+
+- **SSH back to Mac mini over Tailscale** — port 22 is closed by default
+  on this setup; `ssh 100.x.x.x` times out. Use Mac mini Claude
+  (delegation pattern) instead. (If `tailscale ssh` is later enabled
+  on the tailnet, this becomes available.)
+- **Reverse netcat dev → Mac mini** — macOS Application Firewall on dev
+  blocks unsolicited inbound; `nc -l` listeners on dev don't receive
+  Mac mini connections in the default firewall config.
+- **Tailscale `file cp` / `tailscale ssh`** — not configured on this
+  setup. Use the gist transport pattern above. (If Taildrop is later
+  enabled, prefer it for binary transfer.)
+- **CRD-canvas synthetic clicks via `evaluate_script`** —
+  `isTrusted=false`, rejected by the canvas. ALWAYS use
+  `mcp.click({uid})` after `take_snapshot()`. This is architectural
+  (CDP `Input.dispatchMouseEvent` vs DOM `el.click()`), not a setup
+  limitation.
+
 ### Scroll to see content beyond the viewport
 
 **You can and should scroll.** If you take a screenshot and don't see what you
