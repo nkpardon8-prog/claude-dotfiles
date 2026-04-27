@@ -97,27 +97,24 @@ DEFAULT, deliberately, is to attach to their main Chrome — that's
 what makes the skill seamless. But the privilege comes with the
 discipline above.
 
-## What's on the Mac mini
+## What's on the Mac mini (rely on these — fully dialed)
 
-You can assume the Mac mini has:
+You can assume the Mac mini has the following — no setup required, no need to verify before use:
 
-- macOS (ARM64 / Apple Silicon)
-- A user account with admin rights
-- **Claude Code installed** — invoke it as `claude` from Terminal. This is the
-  delegation target for anything multi-step, anything needing sudo, or anything
-  where local file/git context matters more than visual feedback.
-- **Same GitHub account as dev** — `gh` CLI is signed in to the same user. You
-  can `gh repo clone`, `gh pr create`, `gh api`, etc. without re-auth. Private
-  repos accessible from dev are accessible here too.
-- **Same iCloud account as dev** — iCloud Drive, Keychain, Notes, Reminders all
-  sync. Useful for moving files between machines without setting up file
-  transfer (drop in `~/Library/Mobile Documents/com~apple~CloudDocs/`).
-- **Chrome installed and signed into the same Google account** — so any
-  bookmarks, extensions, autofill, and `remotedesktop.google.com` device list
-  state are mirrored. Useful for testing web flows that need a logged-in user.
-- Standard dev tools: Homebrew, git, go, python3, node (verify before assuming
-  specific tools by running `which <tool>` via paste-into-Terminal)
-- Safari, Terminal.app, plus whatever's in the dock
+- macOS (ARM64 / Apple Silicon), user account with admin rights.
+- **Claude Code installed.** Invoke it as `claude` in Terminal. **For agent-driven sessions on the mini, run it as `claude --dangerously-skip-permissions`** — this is a trusted machine fully owned by the same user, and skipping permission prompts removes the keyboard-typing dance for "Allow / Deny" dialogs that the Shift-strip pipeline can't reliably handle. The `claude` command is all lowercase so `mcp.type_text("claude --dangerously-skip-permissions", "Enter")` works directly.
+- **Same GitHub account as dev** — `gh` CLI signed in. You can `gh repo clone`, `gh pr create`, `gh api`, `gh gist clone/create` without re-auth. Private repos accessible from dev are accessible here too. **This is what makes `/macmini paste` work** (gist transport requires gh on both sides — already done).
+- **Same dotfiles repo loaded** — `~/.claude-dotfiles/` is checked out on the mini and tracking the same upstream as dev. Mac mini Claude has the same skills, slash commands, rules, and CLAUDE.md. So when you delegate to mini Claude, it has identical tooling — including the macmini skill itself if you ever need recursion (don't).
+- **Same iCloud account** — iCloud Drive, Keychain, Notes, Reminders sync. Drop a file in `~/Library/Mobile Documents/com~apple~CloudDocs/` on either side and it appears on the other (slower than gist; gist is preferred for agent-driven transfer).
+- **Chrome signed into the same Google account** — bookmarks, extensions, autofill, and `remotedesktop.google.com` device list state are mirrored. Useful for testing web flows that need a logged-in user.
+- **Standard dev tools available**: Homebrew, git, go, python3, node. Don't burn keystrokes verifying `which <tool>` unless something breaks — assume they're there.
+- Safari, Terminal.app, plus whatever's in the dock.
+
+### Practical implications for the agent
+
+- **Default to delegation for anything non-trivial.** Three+ Mac-mini-local steps, anything needing sudo, anything reading multiple files: type `claude --dangerously-skip-permissions` in mini Terminal (via `mcp.type_text`), then send the prompt via `/macmini paste`. Mac mini Claude finishes the work natively in seconds; you keep watching via vision.
+- **The dotfiles parity means** mini Claude already knows project conventions, has the same MCP servers configured, and shares the credentials catalog at `~/.config/claude/credentials.md`. Don't re-explain context that's in CLAUDE.md — mini Claude has the same one.
+- **For multi-step work, the typical flow is:** (1) `/macmini connect` to land in the canvas, (2) `mcp.type_text("claude --dangerously-skip-permissions", "Enter")`, (3) wait ~3s for Claude to spin up (screenshot to verify), (4) `/macmini paste "<your detailed prompt>"`, (5) press Enter, (6) screenshot every ~10s to track progress, (7) when done, gist the result back via `gh gist create` from mini side if you need verbatim output.
 
 ## How to control it
 
