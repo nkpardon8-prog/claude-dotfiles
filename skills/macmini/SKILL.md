@@ -268,6 +268,19 @@ This works because both machines are signed into the same `gh` account
 gists are accessible only to the gh-authenticated user. Round-trip
 is roughly 5 seconds and produces verbatim, lossless text.
 
+SECURITY: secret gists are unlisted but NOT encrypted — GitHub staff can
+read them, they persist forever, and the URL (if leaked) gives anyone
+access. NEVER pipe through gist transport:
+
+- Anything containing tokens, passwords, or `Authorization:` headers
+- `op://` references (after they've been resolved to plaintext)
+- `gh auth status` or any `~/.config/` credential file content
+- The output of any command that prints env vars (`env`, `printenv`)
+
+If you need to debug a command that handles secrets, run it without
+`-v` or `2>&1`; redirect the secret part to `/dev/null` and gist only
+the non-sensitive structured output.
+
 **Caveat:** `gh gist clone` ignores `--filename` when there's only one
 file in the gist; the cloned file keeps the source filename you used
 in `-f`. So pick filenames you'll recognize on the dev side.
