@@ -15,6 +15,45 @@ command which uses CRD's built-in clipboard sync.
 - `/macmini disconnect`       — close the CRD session
 - `/macmini status`           — quick "is the canvas up + signed in?" check
 
+## Your full Chrome is also reachable
+
+The chrome-devtools MCP attaches to your existing Chrome instance via
+`--remote-debugging-port=9222`. That means you control:
+
+- The CRD tab (the Mac mini canvas) — main use case.
+- **EVERY OTHER TAB the user has open.** Inbox, calendar, docs,
+  whatever. Same Chrome session, same logins, same cookies, same
+  autofill, same extensions.
+- The user's full browsing context. Bookmarks, history, saved
+  passwords (if you ask Chrome to autofill — DON'T read the password
+  store directly).
+
+Practical implications:
+
+- Need to check the user's email or calendar mid-task? Just
+  `mcp.list_pages()` lists ALL tabs; `mcp.select_page(uid)` switches
+  to one.
+- Need to look something up? Open a new tab via
+  `mcp.new_page("https://...")` — it lands in the same Chrome.
+- Need to test a logged-in web flow? You already have the session.
+
+**Treat this access with care.** You're driving a real human's logged-in
+browser — not a sandboxed test profile. Don't:
+
+- Click "Buy", "Send", "Pay", "Confirm payment", or "Delete" without explicit user instruction.
+- Read DM threads, email contents, or sensitive documents for context unless the user asks.
+- Modify settings, install/remove extensions, or change passwords.
+- Approve OAuth consent screens, 2FA approval prompts, or biometric prompts.
+- Dismiss security warnings (cert errors, phishing warnings, mixed-content blocks) without surfacing them to the user first.
+- Read or copy values from `chrome://settings/passwords`,
+  `chrome://settings/autofill`, or any password manager extension.
+
+If the user wants isolation, they can opt into a separate Chrome via
+`--user-data-dir=/tmp/chrome-cdp` (documented in setup.md). The
+DEFAULT, deliberately, is to attach to their main Chrome — that's
+what makes the skill seamless. But the privilege comes with the
+discipline above.
+
 ## What's on the Mac mini
 
 You can assume the Mac mini has:
