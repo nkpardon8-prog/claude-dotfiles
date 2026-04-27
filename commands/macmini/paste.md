@@ -106,8 +106,10 @@ Only AFTER the prompt returns and clone+bash both look clean: the Mac mini's pas
 By default, delete the gist after successful clone+execute:
 
 ```bash
-gh gist delete "$GIST_ID" 2>/dev/null
+gh gist delete "$GIST_ID" --yes 2>/dev/null
 ```
+
+The `--yes` flag is required — `gh gist delete` exits non-zero in non-interactive shells without it.
 
 This prevents secret-gist accumulation on the user's GitHub account. Only skip deletion if the user passed `--keep-gist` (currently not parsed — feature TBD, behavior is always-delete).
 
