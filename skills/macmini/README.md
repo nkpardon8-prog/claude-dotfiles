@@ -166,7 +166,7 @@ The agent-facing capability map lives in `SKILL.md` (always loaded with the skil
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `/macmini paste` returns empty / payload doesn't arrive | Clipboard-read permission not granted on `remotedesktop.google.com` | Visit `chrome://settings/content/clipboard`, find `https://remotedesktop.google.com`, set to Allow. Run `/macmini status` to verify. |
+| `/macmini paste` runs but mini's clipboard isn't updated | Mini Terminal wasn't focused when the clone command was typed (it landed in another app) | Bring mini Terminal forward (Spotlight: `mcp.press_key("Meta+space")`, type `terminal`, Enter), screenshot to verify, retry `/macmini paste`. |
 | Canvas is blank or black | Mac mini display asleep, OR you're looking at the sign-in interstitial | `press_key("Shift")` to wake without typing anything destructive; if a Google sign-in form is visible, sign in and re-run `/macmini connect`. |
 | Sign-in expired ("Sign in" button visible in CRD) | Google session timed out | Sign back in inside the CRD tab; `/macmini connect` will detect and prompt you. |
 | Chrome clipboard permission denied | First-time grant never happened, OR was revoked | `chrome://settings/content/clipboard` → Add `https://remotedesktop.google.com` → Allow. Permission persists per-origin. |
