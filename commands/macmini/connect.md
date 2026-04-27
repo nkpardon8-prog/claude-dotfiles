@@ -69,11 +69,7 @@ If `true`:
 
 If canvas present and no Reconnect overlay, return `OK`.
 
-### 5. Pre-grant CDP permissions
-
-Follow the steps documented in `commands/macmini/auto-grant.md` mode=cdp. (The agent reads `auto-grant.md`'s `mode == cdp` block and executes the bash invocation it specifies. Soft-fails if port 9222 unreachable — the policy fallback set by `auto-grant install` still covers us.)
-
-### 6. Locate device tile
+### 5. Locate device tile
 
 - `mcp.wait_for('[aria-label="${CRD_DEVICE_NAME}"]', 8s)` — exact match first.
 - On miss: `mcp.wait_for('[aria-label*="${CRD_DEVICE_NAME}"]', 8s)` — substring fallback.
