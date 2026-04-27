@@ -114,13 +114,12 @@ Survives full Unicode + capitals + all symbols + multi-line. Verified 2026-04-27
 
 **SECURITY:** secret gists are unlisted, NOT encrypted. Don't `/macmini paste` tokens, `op://`-resolved values, or env-var dumps. (gh staff can read; URL leak grants access.)
 
-### `/macmini grab` (and `/macmini grab driven`)
+### `/macmini grab`
 
-Reads the Mac mini's clipboard back to the dev side. Default `manual` mode assumes you (or a Mac mini Claude session) already did `pbcopy` on the Mac mini side and just need to pull the bytes across. `driven` mode auto-sends `Cmd+A` then `Cmd+C` on whatever's focused on the canvas — fragile, works for TextEdit-style fields, does NOT work for Terminal scrollback.
+Reads the Mac mini's clipboard back to the dev side. Manual mode: you (or a Mac mini Claude session) already did `pbcopy` on the Mac mini side, the agent reads via `navigator.clipboard.readText()` on the CRD page. For verbatim text fidelity, prefer the reverse-gist pattern (mini runs `gh gist create`, dev runs `gh gist clone`).
 
 ```
 /macmini grab
-/macmini grab driven
 ```
 
 ### `/macmini disconnect`
