@@ -182,7 +182,7 @@ If `true`:
 
 ### 16. Done
 
-Print: `Connected to Mac mini. Clipboard sync + Send System Keys auto-enabled. See SKILL.md for capabilities.`
+Print: `Connected to Mac mini. Auto-grant ran (clipboard sync + Send System Keys attempted — verify via /macmini status if anything seems off). See SKILL.md for capabilities.`
 
 ---
 
