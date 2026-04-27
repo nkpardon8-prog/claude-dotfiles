@@ -177,34 +177,9 @@ If `true`:
 - `mcp.click('button[aria-label*="Reconnect"]')`
 - `mcp.wait_for('canvas', 30s)`
 
-### 14. Clipboard-read permission check (TWO-CALL workaround)
-
-The async-IIFE single-call pattern is unreliable across MCP versions. Use two calls:
-
-```
-mcp.evaluate_script(
-  "navigator.permissions.query({name:'clipboard-read'}).then(p => { window.__clipState = p.state; });"
-)
-sleep 100ms
-state = mcp.evaluate_script("window.__clipState")
-```
-
-- If `state == 'granted'`: continue.
-- If `state == 'prompt'`: print `Clipboard permission not yet granted. Paste any small string via /macmini paste "test" — Chrome will trigger the permission prompt.` Continue.
-- If `state == 'denied'`: print `Clipboard permission denied. Visit chrome://settings/content/clipboard, find https://remotedesktop.google.com, set to Allow, then re-run /macmini connect.` Continue.
-
-### 15. CRD clipboard-sync side-menu reminder (once per session)
-
-There is no programmatic detector for the CRD side-menu "Begin" button. Print this reminder once per session:
-
-```
-First time? Open the CRD side menu (right-edge arrow) → "Enable clipboard synchronization" → Begin.
-Permission and side-menu state persist across sessions.
-```
-
 ### 16. Done
 
-Print: `Connected to Mac mini. See SKILL.md for capabilities (scrolling, Spotlight, delegation, etc.).`
+Print: `Connected to Mac mini. Clipboard sync + Send System Keys auto-enabled. See SKILL.md for capabilities.`
 
 ---
 
