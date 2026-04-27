@@ -426,8 +426,7 @@ If Spotlight fails, fall back to clicking the dock or using App Switcher
 ### Click somewhere specific on the canvas
 
 The MCP `click(uid)` only clicks the centerpoint of the canvas. For
-pixel-precise clicks, the MCP needs to be started with `--experimental-vision`
-which exposes `click_at(x, y)`. If it isn't, your only option for off-center
+pixel-precise clicks would require the experimental `click_at(x, y)` extension, which is NOT part of the default chrome-devtools MCP surface. Treat as unavailable. Your only option for off-center
 clicking is to use Mac mini's keyboard-only navigation (Tab, arrow keys).
 
 ### Run shell commands
