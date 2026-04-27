@@ -67,7 +67,7 @@ If `true`:
 !document.querySelector('button[aria-label*="Reconnect"]')
 ```
 
-If `true`: run `macmini-client health` to cross-check the side-channel, then return `OK`.
+If canvas present and no Reconnect overlay, return `OK`.
 
 ### 5. Locate device tile
 
