@@ -1,10 +1,9 @@
 # macmini — Chrome DevTools + CRD-only skill
 
 > **Hardware-tested 2026-04-27.** Read `docs/HARDWARE-FINDINGS-2026-04-27.md`
-> first. Production reality is narrower than the design intent below — the
-> auto-grant `cdp` and `ui` modes do not work against a stock Chrome+CRD setup,
-> and programmatic clipboard sync does not propagate dev → mini. Use vision +
-> lowercase typing + Cmd-modifier shortcuts + gh gist transport.
+> first. Verified channels: vision + lowercase typing + Cmd-modifier shortcuts +
+> `gh gist` transport (`/macmini paste`). All auto-grant modes were removed
+> after hardware testing showed they don't work in stock Chrome+CRD.
 
 ## TL;DR
 
