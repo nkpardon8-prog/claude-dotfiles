@@ -21,7 +21,12 @@ Before completing a task or pushing code, run both unit/line-level tests and end
 **All other repos** (project code, applications, libraries): NEVER push to GitHub without explicit user approval. Always show what will be pushed and ask for confirmation first. This applies to all branches, all remotes, no exceptions.
 
 ## Browser MCP Cleanup
-After any session that uses `chrome-devtools` or `playwright` MCP tools, remind the user to terminate those processes to free RAM. A `Stop` hook auto-kills them on session end, but if the user manually stops a task mid-session, suggest running: `ps aux | grep -E 'chrome-devtools-mcp|playwright-mcp' | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null`. These processes accumulate across sessions and consume significant memory.
+**Pre-flight (before driving anything via `chrome-devtools` / `playwright` MCP):**
+Run `pgrep -f 'chrome-devtools-mcp|playwright-mcp' | wc -l`. If the count is greater than 1 (one current instance per server is normal), the prior session's instances are stale and will fight the active one for the Chrome remote-debugging socket. Symptom: tool calls succeed once or twice then `MCP error -32000: Connection closed` on every subsequent call. Fix: `pkill -f 'chrome-devtools-mcp'` (or `playwright-mcp`), have the user `/mcp` reconnect, then proceed.
+
+**Heavy-page note:** the `take_snapshot` and `take_screenshot` tools can crash the MCP connection on pages with large WebRTC streams (e.g. Chrome Remote Desktop canvas). If snapshots crash repeatedly on a specific page after the pre-flight check is clean, switch to blind keystroke driving (press_key + type_text + verifying state changes through a side channel like the app's own HTTP API) rather than reconnecting endlessly.
+
+**Post-session:** after any session that uses these MCPs, remind the user to terminate those processes to free RAM. A `Stop` hook auto-kills them on session end, but if the user manually stops a task mid-session, suggest running: `ps aux | grep -E 'chrome-devtools-mcp|playwright-mcp' | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null`. These processes accumulate across sessions and consume significant memory.
 
 ---
 
