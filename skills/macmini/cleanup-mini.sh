@@ -2,17 +2,6 @@
 # NO `set -e` — idempotent cleanup must continue on partial state.
 set -u
 
-# --revert-policy is a dev-side-only short-circuit: revert the Chrome
-# user-policy clipboard pre-grant (mirror of /macmini auto-grant revert)
-# and exit. Mac mini-side cleanup is NOT performed in this mode.
-case "${1:-}" in
-  --revert-policy)
-    bash "$(dirname "$0")/scripts/auto-grant-clipboard.sh" --revert
-    echo "INFO: Mac mini-side cleanup not run (--revert-policy is dev-side only)"
-    exit 0
-    ;;
-esac
-
 REMOVE_TAILSCALE=0
 INTERACTIVE=0
 for arg in "$@"; do
@@ -20,14 +9,16 @@ for arg in "$@"; do
     --remove-tailscale) REMOVE_TAILSCALE=1 ;;
     --interactive) INTERACTIVE=1 ;;
     --help|-h)
-      echo "Usage: $0 [--remove-tailscale] [--interactive] [--revert-policy]"
+      echo "Usage: $0 [--remove-tailscale] [--interactive]"
       echo "  Default: do NOT remove tailscale, do NOT prompt."
       echo "  --remove-tailscale: also uninstall tailscaled."
       echo "  --interactive: prompt for tailscale removal if not specified via flag."
-      echo "  --revert-policy: dev-side ONLY; revert Chrome clipboard user-policy and exit."
       exit 0 ;;
   esac
 done
+
+echo "Killing any running macmini-server process (if present)..."
+pkill -u "$(id -u)" -f "macmini-server" 2>/dev/null || true
 
 echo "Removing macmini server LaunchAgent (if present)..."
 launchctl bootout "gui/$(id -u)/com.macmini-skill.server" 2>/dev/null || true
