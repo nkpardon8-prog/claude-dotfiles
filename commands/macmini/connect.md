@@ -148,9 +148,9 @@ mcp.click({uid: <canvas_uid>})
 
 If the canvas isn't in the a11y snapshot (it usually IS the page-level focus target), fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`.
 
-### 13. Auto-click in-canvas controls
+### 13. First-time toggles (USER, ONE-TIME)
 
-Follow the steps documented in `commands/macmini/auto-grant.md` mode=ui. Clicks "Begin" (clipboard sync) and toggles "Send System Keys" ON if not already (idempotent). Reads selectors from `skills/macmini/data/crd-selectors.json`.
+If this is the user's first connection in a fresh CRD profile, they should manually click two toggles in CRD's right-edge side panel: **"Synchronize clipboard"** and **"Send system keys"**. These persist across reconnects — once on, stay on. The agent CANNOT click them (CRD's a11y tree is stripped + synthetic clicks fail). Tell the user once; they never have to do it again.
 
 ### 14. Soft fullscreen check (NON-BLOCKING)
 
