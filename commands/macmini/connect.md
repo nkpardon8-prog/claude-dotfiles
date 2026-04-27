@@ -33,10 +33,10 @@ crd:
 ### 1. Load credentials (idempotent)
 
 ```
-/load-creds CRD_PIN,CRD_MAC_MINI_HOSTNAME,CRD_DEVICE_NAME,CRD_SERVER_TOKEN
+/load-creds CRD_PIN,CRD_DEVICE_NAME
 ```
 
-If any of these resolve empty, abort and tell the user to fix `~/.config/claude/credentials.md` and the 1Password vault entries before re-running.
+If either of these resolves empty, abort and tell the user to fix `~/.config/claude/credentials.md` and the 1Password vault entries before re-running.
 
 ### 2. Find or open the CRD tab
 
