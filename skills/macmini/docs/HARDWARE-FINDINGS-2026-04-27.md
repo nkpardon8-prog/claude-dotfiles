@@ -35,16 +35,16 @@ These are **real-world test results** from running the auto-grant + CRD skill ag
 4. **`auto-grant cdp` (Browser.grantPermissions via WebSocket)** — script cannot find Chrome's WebSocket URL because `/json/version` returns 404. Would need Chrome relaunched with `--remote-allow-origins=*` — and that disconnects the live CRD session.
 5. **`auto-grant ui` (clicking Begin / toggles)** — `take_snapshot` returns `ignored` for all CRD controls. No uids to click.
 
-## Confirmed-correct CRD selector schema
+## CRD selector observations (informational only — `data/crd-selectors.json` was deleted)
 
-`data/crd-selectors.json` has been updated with **hardware-confirmed** selectors. Original hypotheses were wrong:
+Original hypotheses were wrong; the live DOM shape is:
 
 - `Synchronize clipboard` (NOT "Enable clipboard sync") — `<div role="checkbox" aria-checked>` (NOT `<mwc-switch>`)
 - `Send system keys` — `<div role="checkbox" aria-checked>` (NOT `aria-pressed`)
 - `Begin` — `<div role="button">` (NOT `<button>`)
 - All side-panel options live under `<section role="region" aria-label="Session options">` in collapsed sections (`Show/hide section: Data transfer`, `Show/hide section: Input controls`).
 
-`document.querySelectorAll('[role="..."]')` finds them — no shadow piercing needed. `getBoundingClientRect()` returns 0×0 when panel auto-hides (DOM unchanged, just CSS-hidden).
+`document.querySelectorAll('[role="..."]')` finds them — no shadow piercing needed. `getBoundingClientRect()` returns 0×0 when panel auto-hides (DOM unchanged, just CSS-hidden). However the agent CANNOT reliably click them: synthetic clicks fail CRD's `isTrusted` check, and `mcp.click({uid})` is impossible because the a11y tree exposes them as `ignored`. The user clicks the two toggles (Synchronize clipboard, Send system keys) once manually at first connect; both persist across reconnects.
 
 ## Architectural recommendations
 
