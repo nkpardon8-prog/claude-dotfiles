@@ -327,9 +327,13 @@ button so paste lands verbatim.
 
 - **Verify:**
   - `/macmini auto-grant cdp` output contains the substring
-    `result: "OK"` (or `result: \"OK\"` depending on shell
-    quoting). The last-run cache is at
-    `~/.cache/macmini/last-cdp-grant.json` for inspection.
+    `OK: granted` (the script's actual stdout format is
+    `OK: granted [<perm-list>] on <target>`). The last-run cache is at
+    `~/.cache/macmini/last-cdp-grant.json` for inspection — verify it
+    parses as valid JSON (`cat ~/.cache/macmini/last-cdp-grant.json |
+    python3 -m json.tool`) with at minimum the keys written by
+    `auto-grant.md` mode=cdp (e.g. `timestamp`, `target`, `permissions`,
+    `result`).
   - The Send System Keys `aria-pressed` probe returns `"true"`.
   - The pasted payload arrives verbatim — `HELLO_WORLD`, `$special`,
     `|&>~` all intact, no Shift mangling.
