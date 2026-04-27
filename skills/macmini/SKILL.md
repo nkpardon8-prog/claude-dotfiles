@@ -1,10 +1,18 @@
 # macmini — drive a remote Mac mini through Chrome Remote Desktop
 
+> **Hardware-tested 2026-04-27.** See `docs/HARDWARE-FINDINGS-2026-04-27.md` for
+> what actually works. Several items in this file (auto-grant install/cdp/ui
+> modes, programmatic clipboard sync) are documented as broken in production —
+> the reliable channels are vision + lowercase typing + Cmd-modifier shortcuts +
+> gh gist for arbitrary text.
+
 You're driving a Mac mini through Chrome DevTools MCP attached to the user's
 running Chrome instance. CRD renders the Mac mini desktop into a single canvas;
-you control it via keyboard (press_key), screenshots (take_screenshot), and a
-focused click on the canvas. Paste payloads via the dedicated /macmini paste
-command which uses CRD's built-in clipboard sync.
+you control it via keyboard (press_key), screenshots (take_screenshot), and
+gist transport for arbitrary text. **Programmatic clipboard sync (the
+`/macmini paste` premise) does NOT work — CRD's onPaste requires user
+gestures, which CDP-injected events don't provide.** Use gist transport
+instead.
 
 ## Slash commands
 
