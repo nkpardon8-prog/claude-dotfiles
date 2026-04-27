@@ -29,9 +29,12 @@ Sends ARBITRARY text to the Mac mini's clipboard via `gh gist`. CRD strips Shift
 
 The classic heredoc collision (`PAYLOAD` or `EOF` appearing in the payload) MUST be prevented. Generate a random terminator per invocation, validate it's not in the payload, and **always quote the heredoc terminator** so $-expansion doesn't fire on dev side.
 
+**The gist filename matters.** The Mac mini's `gh gist clone <id> /tmp/macmini-paste` produces `/tmp/macmini-paste/<filename>`, and step 5 hard-codes `bash /tmp/macmini-paste/run.sh`. So the file uploaded to the gist MUST be named exactly `run.sh`. `gh gist create` derives the gist filename from the basename of the local file path — there's no `--filename` flag for `gist create`. Build the script in a fresh tempdir with a known basename:
+
 ```bash
-TMPFILE="$(mktemp -t macmini-paste.XXXXXX)"
-trap 'rm -f "$TMPFILE"' EXIT INT TERM
+TMPDIR_LOCAL="$(mktemp -d -t macmini-paste.XXXXXX)"
+trap 'rm -rf "$TMPDIR_LOCAL"' EXIT INT TERM
+RUN_FILE="$TMPDIR_LOCAL/run.sh"
 
 # Random heredoc terminator — must NOT appear in $ARGUMENTS.
 TERMINATOR="MACMINI_$(openssl rand -hex 8)_END"
@@ -42,10 +45,10 @@ case "$ARGUMENTS" in
     ;;
 esac
 
-# Build the run.sh by writing the literal payload through pbcopy. Dev shell
-# expands NOTHING because we use process substitution + a heredoc with a
-# QUOTED terminator. The pipe-into-pbcopy at run-time on the mini is the
-# only thing that reads the bytes; the heredoc terminator is unique.
+# Build run.sh by writing the literal payload through pbcopy. Dev shell
+# expands NOTHING because we use a heredoc with a QUOTED terminator. The
+# pipe-into-pbcopy at run-time on the mini is the only thing that reads
+# the bytes; the heredoc terminator is unique.
 {
   printf '%s\n' '#!/bin/bash'
   printf '%s%s%s\n' "cat <<'" "$TERMINATOR" "' | pbcopy"
@@ -56,15 +59,15 @@ esac
     *) printf '\n' ;;
   esac
   printf '%s\n' "$TERMINATOR"
-} > "$TMPFILE"
+} > "$RUN_FILE"
 ```
 
-This guarantees: (a) no dev-side shell expansion of payload, (b) heredoc terminator collision impossible (256-bit entropy in name), (c) NUL-byte safety enforced upstream by Step 2, (d) no extra trailing newline appended if payload already ends with one.
+This guarantees: (a) no dev-side shell expansion of payload, (b) heredoc terminator collision impossible (256-bit entropy in name), (c) NUL-byte safety enforced upstream by Step 2, (d) no extra trailing newline appended if payload already ends with one, (e) gist filename will be `run.sh` because `gh gist create` uses the basename.
 
 ### 4. Upload as a SECRET gist
 
 ```bash
-GIST_URL=$(gh gist create -f run.sh "$TMPFILE" 2>/dev/null | tail -n1)
+GIST_URL=$(gh gist create "$RUN_FILE" 2>/dev/null | tail -n1)
 GIST_ID=$(printf '%s' "$GIST_URL" | sed -E 's#.*/##' | sed 's/[?#].*//')
 case "$GIST_ID" in
   [a-f0-9]*) ;;
