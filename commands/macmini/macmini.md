@@ -24,6 +24,7 @@ disconnect, and a quick status probe. There is no Mac mini-side daemon.
 - `/macmini status`           — quick "is the canvas up + signed in?" check.
 - `/macmini setup`            — first-time configuration walkthrough (MCP,
   credentials, Chrome clipboard permission, CRD side-menu sync enable).
+- `/macmini auto-grant <install|cdp|ui|revert|status>` — one-time + per-session permission grants.
 
 ## Capability map
 
