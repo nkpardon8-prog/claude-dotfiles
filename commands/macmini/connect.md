@@ -23,7 +23,7 @@ crd:
   connect_button: 'button[aria-label="Connect"]'
   canvas: 'canvas'
   reconnect_overlay: 'button[aria-label*="Reconnect"]'
-  sign_in_indicator: 'input[type="email"], a[href*="accounts.google.com/signin"]'
+  sign_in_indicator: 'a[href*="accounts.google.com/signin"]'
 ```
 
 ---
