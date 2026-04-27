@@ -141,7 +141,7 @@ If you must take a debug screenshot while the PIN field is on screen, **first** 
 
 Or just skip the screenshot for that state. **Sign-in screen: never screenshot.**
 
-### 11. Focus discipline
+### 12. Focus discipline
 
 ```
 mcp.click('canvas', 1, 1)
@@ -149,7 +149,11 @@ mcp.click('canvas', 1, 1)
 
 Tiny offset into the canvas to put keyboard focus on it (so subsequent `press_key` calls go to the Mac mini, not a stray DOM control).
 
-### 12. Soft fullscreen check (NON-BLOCKING)
+### 13. Auto-click in-canvas controls
+
+Follow the steps documented in `commands/macmini/auto-grant.md` mode=ui. Clicks "Begin" (clipboard sync) and toggles "Send System Keys" ON if not already (idempotent). Reads selectors from `skills/macmini/data/crd-selectors.json`.
+
+### 14. Soft fullscreen check (NON-BLOCKING)
 
 The Fullscreen API is incomplete — CRD has its own internal fullscreen mode that may not set `document.fullscreenElement`. Phase 6 will determine the actual reliable detector. Until then, this is a soft hint only — do NOT abort.
 
