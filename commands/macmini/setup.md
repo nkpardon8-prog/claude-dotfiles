@@ -68,12 +68,64 @@ Store the actual values in 1Password under those refs, then load them into the c
 /macmini connect
 ```
 
-The first run lands you in the CRD canvas after PIN entry. Two one-time grants are needed before paste/grab work:
+The first run lands you in the CRD canvas after PIN entry. Step 4 below pre-grants the Chrome permissions needed for paste/grab to work without per-session prompts.
 
-1. **Chrome's clipboard-read permission for `https://remotedesktop.google.com`.** When you run `/macmini paste "test"` for the first time, Chrome will prompt — click Allow. (Or pre-grant via `chrome://settings/content/clipboard` → Add → `https://remotedesktop.google.com`.)
-2. **CRD's clipboard sync side-menu toggle.** In the CRD canvas, click the right-edge arrow → "Enable clipboard synchronization" → Begin. This persists across sessions per CRD profile.
+---
 
-After both are set, run a smoke test:
+## Step 4 — Pre-grant Chrome permissions (one-time)
+
+This step writes a Chrome user-policy entry pre-granting clipboard read/write to `https://remotedesktop.google.com` and verifies Chrome is reachable on the remote-debugging port that the chrome-devtools MCP uses.
+
+### 4a. Install the policy
+
+```
+/macmini auto-grant install
+```
+
+This writes a Chrome user-policy entry pre-granting clipboard read/write to `https://remotedesktop.google.com`.
+
+### 4b. RESTART CHROME for the policy to take effect
+
+**WARNING:** if you have an active CRD session in Chrome right now, restarting will disconnect it; you'll re-PIN on the next `/macmini connect`. Quit Chrome fully (Cmd+Q on the Chrome menu, not just close window) before relaunching.
+
+### 4c. Relaunch Chrome with remote debugging
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222 \
+  --remote-debugging-address=127.0.0.1 &
+```
+
+**DEFAULT (recommended):** no `--user-data-dir` flag. Chrome attaches to your existing main profile, so the agent has access to ALL your tabs, sessions, autofill, and the CRD device list (since you're already signed in). This is what makes the skill seamless.
+
+**OPT-IN ISOLATION (paranoid users only):** add
+
+```
+--user-data-dir=/tmp/chrome-cdp
+```
+
+This launches a fresh empty Chrome with no signed-in accounts, no tabs, no autofill. You will need to sign into Google AND `remotedesktop.google.com` inside this isolated Chrome before `/macmini connect` works. Use only if you're doing something sensitive and don't want the agent to have access to your main browsing context. **Most users should NOT use this flag** — without your main profile, the agent can't reach the CRD device list and you lose the seamless drop-in behaviour.
+
+### 4d. Verify Chrome is on debug port
+
+```bash
+curl -fsS http://127.0.0.1:9222/json/version
+```
+
+Expected: a JSON response with a `Browser` key. If it fails, Chrome was relaunched WITHOUT the flag — quit Chrome completely and try Step 4c again.
+
+### 4e. Verify policy in effect
+
+- Open `chrome://policy` → search "Clipboard". Expected: `ClipboardAllowedForUrls = [https://remotedesktop.google.com]`.
+- Open `chrome://settings/content/clipboard`. Expected: our origin shows "Allowed by your administrator".
+
+If either looks wrong, re-run `/macmini auto-grant install` and restart Chrome again.
+
+---
+
+## Step 5 — Smoke test
+
+After Step 4 is complete, run a smoke test:
 
 ```
 /macmini paste "HELLO_WORLD with $special chars: |&>~"
