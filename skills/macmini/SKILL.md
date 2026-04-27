@@ -44,6 +44,15 @@ Practical implications (only act on these when the user EXPLICITLY asks
 browser — not a sandboxed test profile. Don't:
 
 - Click "Buy", "Send", "Pay", "Confirm payment", or "Delete" without explicit user instruction.
+- Submit forms, Confirm actions, or Approve requests outside of
+  payment wording — account changes, friend/connection requests,
+  membership changes, profile updates, contact removals, calendar
+  invite responses, etc. — without explicit user instruction.
+- Initiate password resets, account recovery flows, "forgot password"
+  links, or any flow that triggers a verification email/SMS.
+- Click links inside emails — phishing surface; if a link needs to be
+  followed, copy the URL, surface it to the user, and let them
+  approve.
 - Read DM threads, email contents, or sensitive documents for context unless the user asks.
 - Modify settings, install/remove extensions, or change passwords.
 - Approve OAuth consent screens, 2FA approval prompts, or biometric prompts.
