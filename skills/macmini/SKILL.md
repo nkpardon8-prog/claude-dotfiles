@@ -15,17 +15,27 @@ first connection — they persist across reconnects.
 
 ## How to send anything to the Mac mini — the channel matrix
 
-| Want to send | Use | Why |
-|---|---|---|
-| Lowercase shell command (`ls`, `pwd`, `cd /tmp/p`, `git status`) | `mcp.type_text("...", "Enter")` | Lowercase + unshifted symbols (`-`, `/`, `.`, `;`, `=`, `,`, `'`, backtick, space) survive CRD's keyboard pipeline intact. |
-| Single key or Cmd-shortcut (`Enter`, `Tab`, `Esc`, `Meta+v`, `Meta+w`, `Control+c`) | `mcp.press_key("...")` | System keys forward correctly when "Send system keys" toggle is on. |
-| Arbitrary text — capitals, `$@!#%^&*()`, `_+{}[]|\\:"<>?~`, unicode (日本語), multi-line, scripts | **`/macmini paste`** (gist transport) | Direct typing strips Shift modifier and remaps shifted keys to wrong chars. CRD's clipboard sync requires real user gestures (CDP-injected events are synthetic). gh gist clone is the only working channel. |
-| File on Mac mini | gh gist (delivered as `/tmp/p/<filename>` via clone) | Same as above. |
-| Read terminal output back to dev | screenshot (cheap), or `gh gist create` from mini side (lossless) | Vision OCR is unreliable for `l`/`1`/`I`, `0`/`O`. For verbatim text use a reverse gist. |
+This is your decision tree. Match the kind of thing you want to send to the row, then call the EXACT slash command or MCP tool listed. Do NOT improvise — the listed channel is the only one verified to survive CRD's keyboard pipeline (hardware-tested 2026-04-27).
 
-**Rule of thumb:** If the string contains anything other than lowercase letters,
-digits, and `-/.;=,' ` and backtick, route it through gist. Don't try to be
-clever with `type_text` — Shift IS stripped, and Shift+key gets remapped wrong.
+| Want to send / do | Channel — call this verbatim | Why |
+|---|---|---|
+| **Lowercase shell command** (`ls`, `pwd`, `cd /tmp/p`, `git fetch`, `pgrep -fl foo`) | `mcp.type_text("<cmd>", "Enter")` | Lowercase + unshifted symbols (`-`, `/`, `.`, `;`, `=`, `,`, `'`, backtick, space) survive CRD intact. |
+| **Single key or Cmd-shortcut** (`Enter`, `Tab`, `Esc`, `Meta+v`, `Meta+w`, `Meta+space`, `Control+c`) | `mcp.press_key("<key>")` | Forwarded by CRD's "Send system keys" (already on after one-time setup). |
+| **Arbitrary text** — anything with capitals, `$@!#%^&*()`, `_+{}[]\|\\:"<>?~`, unicode, multi-line | **Run `/macmini paste "<text>"`** | The skill handles the gist round-trip. Don't reimplement it — the slash command exists for this exact reason. |
+| **A whole script / bash payload** to run on Mac mini | **Run `/macmini paste`** with the script as a `bash <<'EOF' ... EOF` block, or wrap it in `cat > /tmp/p/run.sh <<'EOF' ... EOF; bash /tmp/p/run.sh` | Same gist channel; full Unicode + arbitrary chars preserved. |
+| **A file** on Mac mini | Either `/macmini paste` with the content (mini ends up with `/tmp/p/<filename>`), or have mini Claude `gh gist clone` itself | gist transport is the file channel too. |
+| **Read terminal output back to dev** | Two paths: (a) `mcp.take_screenshot()` for a quick visual; (b) on mini, type `<cmd> > /tmp/o.log; gh gist create -f o.log /tmp/o.log` and on dev `gh gist clone <id> /tmp/back; cat /tmp/back/o.log` | Vision OCR is unreliable for `l`/`1`/`I`, `0`/`O`. Reverse gist for verbatim text. |
+| **See current screen state** | `mcp.take_screenshot()` | Always-on feedback loop. Cheap. Use liberally before/after every action. |
+| **Open or resume the CRD session** | **Run `/macmini connect`** | Handles PIN entry, sign-in detection, reconnect overlay. |
+| **Set up the skill the first time** | **Run `/macmini setup`** | One-time: MCP, gh on both sides, credentials, side-panel toggles. |
+| **Quick health check** ("is the canvas up?") | **Run `/macmini status`** | Audit: CRD canvas, sign-in, clipboard permission, gh auth. |
+| **Pull text from Mac mini → dev clipboard** (one-shot) | **Run `/macmini grab`** | User does Cmd+C on mini side; agent reads via `navigator.clipboard.readText()` on the CRD page. |
+| **End the session** | **Run `/macmini disconnect`** | Closes the CRD tab. No server-side cleanup needed. |
+| **Run multi-step Mac-mini-local work** (sudo, multi-file edits, anything where local file/git context matters more than vision) | Type `claude` in mini's Terminal (lowercase — works) and delegate to Mac mini Claude via `/macmini paste`-delivered prompts | Faster + more reliable than driving every keystroke from dev. |
+
+**The rule that matters most:** if the string you want to send contains ANY of `A-Z`, `$@!#%^&*()_+{}[]\|\\:"<>?~`, or any non-ASCII (日本語, é, etc.), you MUST use `/macmini paste`. Don't call `mcp.type_text` with that string — CRD strips Shift and remaps shifted keys to the wrong character. Verified failure mode: `HELLO_WORLD` → `hello-world`, `$(date)` → `+%date+`, `(test)` → `;test;`.
+
+**The other rule that matters most:** before reasoning about Mac mini state, take a screenshot. Vision is the source of truth — your assumptions about which window is focused, whether a command finished, whether a dialog is up, are wrong more often than you'd think. After `mcp.select_page(other_tab)`, you MUST `mcp.select_page(crd_uid, bringToFront: true)` before the next `take_screenshot` if you want to see the Mac mini.
 
 ## Slash commands
 
