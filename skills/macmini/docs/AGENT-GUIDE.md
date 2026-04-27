@@ -142,43 +142,18 @@ If you're not sure which pane is failing, run all three in sequence
 toggle CRD host in each, then `pkill -f ChromeRemoteDesktopHost`
 once at the end.
 
-## Discovering CRD selectors empirically
+## CRD's a11y tree is stripped — design implications
 
-CRD is a closed-source web app and Google ships UI changes
-unannounced. When `/macmini connect` or `/macmini auto-grant ui`
-reports "no aria-label match" for the Begin button, the
-clipboard-sync toggle, or the Send System Keys toggle, the cached
-hypotheses in `skills/macmini/data/crd-selectors.json` are stale.
-Re-derive them from the live DOM with the discovery script:
+CRD's main canvas exposes only one usable a11y node (the textbox wrapper). Every interesting control — Begin, Synchronize clipboard, Send system keys, Show remote keyboard, Pin options panel — appears in `mcp.take_snapshot()` output as `ignored`. There's no uid to pass to `mcp.click({uid})`.
 
-1. Make sure the CRD tab is selected in chrome-devtools MCP:
-   `mcp.list_pages()` → find the page where `url` starts with
-   `https://remotedesktop.google.com/access/session/` → capture its
-   `uid` and `mcp.select_page(uid)`.
-2. Open the right-edge side menu in the canvas first if you want
-   selectors for the clipboard-sync / Send System Keys toggles —
-   they're not in the DOM until the menu is shown.
-3. Invoke `mcp.evaluate_script` with the contents of
-   `~/.claude-dotfiles/skills/macmini/scripts/discover-crd-selectors.js`
-   as the `function` argument. The script does a shadow-DOM walk and
-   returns a JSON string.
-4. Pipe / save the JSON output directly to
-   `~/.claude-dotfiles/skills/macmini/data/crd-selectors.json`. No
-   markdown editing required:
+This is intentional CRD behavior: they strip a11y to prevent automation tools from clicking through the desktop session boundary. The only ways to click those controls are:
 
-```bash
-cat > ~/.claude-dotfiles/skills/macmini/data/crd-selectors.json <<'JSON'
-<paste the JSON output from evaluate_script here>
-JSON
-```
+1. **Real mouse via macOS automation** — AppleScript `tell application "System Events" to click at {x, y}`, OR `cliclick c:x,y`. Requires Accessibility TCC. Brittle (depends on viewport coordinates).
+2. **The user clicks once at first connect.** Both toggles ("Synchronize clipboard" and "Send system keys") persist across reconnects. This is the chosen approach.
 
-5. Re-run the failing slash command. Both `/macmini connect` (Send
-   System Keys path) and `/macmini auto-grant ui` (Begin path) read
-   from the JSON file at runtime, so no restart is needed.
+For the agent: do NOT try to click CRD's side-panel controls programmatically. If the user reports the toggles got reset (rare — only happens on profile rebuild or "Forget device"), tell them which two toggles to flip and where to find them.
 
-The JSON includes a `_last_verified` ISO timestamp updated on every
-discovery run — useful for spotting stale hypotheses without diffing
-the whole file.
+If CRD's UI changes and you need to discover new selectors for documentation purposes (NOT to click), use `mcp.evaluate_script` with a shadow-DOM walker that filters by `[role="button"]` and `[role="checkbox"]` — `document.querySelectorAll('[role="..."]')` reaches them (no shadow piercing required, despite the a11y stripping).
 
 ## What's NOT in this guide
 
