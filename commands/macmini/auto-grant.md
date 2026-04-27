@@ -85,104 +85,109 @@ Step 2 — Grant clipboard + keyboardLock
 ## mode == "ui"
 ────────────────────────────────────────────────────────────
 
-Step 1 — Confirm CRD tab is selected
-  pages = mcp.list_pages()
-  crd_page = first page where url starts with "https://remotedesktop.google.com/access/session/"
-  if not crd_page:
-    print "Skip: no CRD session page open"
-    exit 0
-  mcp.select_page(crd_page.uid)
+This mode auto-clicks in-canvas CRD controls (Begin clipboard sync, Send System
+Keys toggle) so the user is never asked to click "Allow" mid-flow. It reads
+selector hypotheses from `skills/macmini/data/crd-selectors.json`. Each selector
+has fields: `role`, `name_pattern` (regex source), `name_flags` (JS regex flags
+like `"i"`), `kind` (`"button"` or `"toggle"`), `aria_attr` (for toggles, the
+attribute holding ON/OFF state, typically `aria-checked` or `aria-pressed`).
 
-Step 2 — Load selector hypotheses
-  selectors = JSON.parse(read("~/.claude-dotfiles/skills/macmini/data/crd-selectors.json"))
+Execute the following steps in order. The agent runs each step explicitly.
 
-Step 3 — For each selector, attempt click (idempotent)
+### Step 1 — Confirm the CRD tab is selected
 
-(The agent runs this loop. For each selector entry from the JSON,
-execute the sub-steps. All variables are simple text substitutions —
-no embedded mini-language; the agent fills `${...}` placeholders
-explicitly using values from the JSON object.)
+Call `mcp.list_pages()`. Find the first page whose `url` starts with
+`https://remotedesktop.google.com/access/session/`. If none, print
+`Skip: no CRD session page open` and exit cleanly. Otherwise call
+`mcp.select_page({pageIdx: <crd_page.idx>, bringToFront: true})`.
 
-  for each (key, sel) in selectors:
-    if key starts with "_": continue   # skip metadata
-    
-    # 3a. Wait for UI hydration via CSS-selector wait_for.
-    # First word of name_pattern serves as a coarse aria-label hint;
-    # if no [aria-label*=...] match in 5s, fall back to plain role match.
-    name_hint = first_word_of(sel.name_pattern)   # "^begin$" → "begin"
-    role_str  = sel.role
-    
-    try:
-      mcp.wait_for("[role='${role_str}'][aria-label*='${name_hint}' i]", "5s")
-    except timeout:
-      try:
-        mcp.wait_for("[role='${role_str}']", "5s")
-      except timeout:
-        print "Skip ${key}: role=${role_str} not in DOM within 5s (already done OR CRD UI changed)"
-        continue
-    
-    # 3b. Take snapshot, parse markdown line-by-line for a uid match.
-    # take_snapshot returns lines like:
-    #   button "Begin" [uid:1234] role=button
-    # Match: a line containing role=${role_str} (or quoted role) AND a
-    # name matching the regex.
-    snap_text = mcp.take_snapshot()
-    target_uid = null
-    for line in snap_text.split('\n'):
-      # Filter to candidate role lines:
-      if 'role=${role_str}' not in line and '${role_str}' not in line:
-        continue
-      uid_match = re.search(r'\[uid:(\w+)\]', line)
-      if not uid_match:
-        continue
-      # Extract a name token from the line (typically a quoted string after role)
-      name_match = re.search(r'"([^"]+)"', line)
-      if not name_match:
-        continue
-      candidate_name = name_match.group(1)
-      # Build regex with explicit pattern + flags (NO inline (?i) — JS-incompat,
-      # but our Python parsing also separates them for consistency)
-      if re.search(sel.name_pattern, candidate_name, flags=flags_to_python(sel.name_flags or "")):
-        target_uid = uid_match.group(1)
-        break
-    
-    if not target_uid:
-      print "Skip ${key}: no name match in snapshot. Run discovery:"
-      print "  See AGENT-GUIDE.md → 'Discovering CRD selectors empirically'"
-      continue
-    
-    # 3c. For toggles, probe current state via evaluate_script DOM read.
-    # CRITICAL: build the regex with separate pattern + flags, NOT inline (?i).
-    # JS rejects inline flag syntax.
-    if sel.kind == "toggle":
-      # Inject the pattern + flags + aria_attr + role as JSON-encoded constants
-      js_function_body = '''
-(opts) => {
-  const els = document.querySelectorAll('[role="' + opts.role + '"]');
-  const re = new RegExp(opts.pattern, opts.flags);
-  for (const el of els) {
-    const label = el.getAttribute('aria-label') || el.textContent.trim();
-    if (re.test(label)) return el.getAttribute(opts.aria_attr);
-  }
-  return null;
-}
-'''
-      state = mcp.evaluate_script(
-        function = js_function_body,
-        args = [{
-          "role": sel.role,
-          "pattern": sel.name_pattern,
-          "flags": sel.name_flags or "",
-          "aria_attr": sel.aria_attr
-        }]
-      )
-      if state == "true":
-        print "Skip ${key}: already ON (${sel.aria_attr}=${state})"
-        continue
-    
-    # 3d. Click
-    mcp.click(target_uid)
-    print "Clicked ${key} (${target_uid})"
+### Step 2 — Load selector hypotheses
+
+Read the JSON file at `~/.claude-dotfiles/skills/macmini/data/crd-selectors.json`.
+This is a flat object whose keys are selector names (e.g. `begin_button`,
+`send_system_keys`) and values are selector objects. Skip any key that starts
+with `_` (those are metadata like `_last_verified`).
+
+### Step 3 — For each selector entry (in iteration order)
+
+For each `(key, sel)` pair in the JSON, do the following sub-steps. If any
+sub-step decides to skip this selector, move on to the next one.
+
+#### 3a. Compute a CSS-safe name hint from the regex pattern
+
+The `sel.name_pattern` is a regex source string. CSS attribute selectors
+(`[aria-label*='...' i]`) cannot contain regex metachars — they must be plain
+text. The agent computes the hint by stripping regex special chars before
+using `name_pattern` in a CSS selector.
+
+Strip these chars from `sel.name_pattern`: `^ $ . * + ? ( ) [ ] { } \ |`
+Then trim whitespace and take the first whitespace-delimited word.
+
+Examples:
+- `"^begin$"` → strip to `"begin"` → first word `"begin"`
+- `"send system keys"` → strip leaves `"send system keys"` → first word `"send"`
+- `"^connect|join$"` → strip to `"connectjoin"` → first word `"connectjoin"`
+
+The agent does this transformation in prose (no Python `re.sub` call needed —
+just substitute manually based on the JSON it just read). Call the result
+`name_hint`. Call `sel.role` simply `role_str`.
+
+#### 3b. Wait for UI hydration
+
+Try `mcp.wait_for` with a CSS selector built from `role_str` + `name_hint`:
+
+  selector = `[role='` + role_str + `'][aria-label*='` + name_hint + `' i]`
+
+Call `mcp.wait_for(selector, "5s")`.
+
+If it times out, fall back to the plain role match:
+
+  fallback = `[role='` + role_str + `']`
+
+Call `mcp.wait_for(fallback, "5s")`. If THAT also times out, print
+`Skip <key>: role=<role_str> not in DOM within 5s (already done OR CRD UI changed)`
+and continue to the next selector.
+
+#### 3c. Find the matching uid via accessibility snapshot
+
+Call `mcp.take_snapshot()` and read the returned text. The snapshot lists
+elements line-by-line in a format like:
+
+  button "Begin" [uid:1234] role=button
+
+The agent walks the lines and for each line:
+- Skip the line if it does not contain `role_str` anywhere in the text.
+- Extract the uid by finding the substring matching `[uid:XXXX]` (alphanumeric).
+- Extract the name by finding the first quoted string `"..."`.
+- Test whether the name matches `sel.name_pattern` using `sel.name_flags`. The
+  agent does this match itself (it knows JS regex semantics — pattern + flags,
+  NEVER inline `(?i)`). If it matches, record this `uid` and stop scanning.
+
+If no line matches, print:
+  `Skip <key>: no name match in snapshot. See AGENT-GUIDE.md → 'Discovering CRD selectors empirically' to refresh hypotheses.`
+and continue to the next selector.
+
+#### 3d. For toggles, probe current ON/OFF state via DOM
+
+If `sel.kind == "toggle"`, run this exact `evaluate_script` to read the toggle's
+current aria attribute. Pass the function source as a string and supply runtime
+values via the `args` array — DO NOT string-interpolate values into the source.
+
+```
+mcp.evaluate_script({
+  function: "(opts) => { const els = document.querySelectorAll('[role=\"' + opts.role + '\"]'); const re = new RegExp(opts.pattern, opts.flags); for (const el of els) { const label = el.getAttribute('aria-label') || el.textContent.trim(); if (re.test(label)) return el.getAttribute(opts.aria_attr); } return null; }",
+  args: [{role: sel.role, pattern: sel.name_pattern, flags: sel.name_flags || "", aria_attr: sel.aria_attr}]
+})
+```
+
+If the returned value is the string `"true"`, the toggle is already ON. Print
+`Skip <key>: already ON (<sel.aria_attr>=true)` and continue to the next
+selector.
+
+#### 3e. Click the target
+
+Call `mcp.click({uid: <recorded uid from 3c>})`. Then print
+`Clicked <key> (<uid>)`.
 
 ────────────────────────────────────────────────────────────
 ## mode == "revert"
