@@ -64,16 +64,21 @@ Add `CRD_PIN` and `CRD_DEVICE_NAME` to `~/.config/claude/credentials.md` as `op:
 /load-creds CRD_PIN,CRD_DEVICE_NAME
 ```
 
-### 3. First connect + permission grants + side-menu Begin
+### 3. Auto-grant install (one-time, no sudo) + first connect
+
+```
+/macmini auto-grant install
+```
+
+This writes a Chrome user-policy entry that pre-grants clipboard read/write to `https://remotedesktop.google.com` ONLY. No sudo needed; the policy lives in your user defaults. **Restart Chrome** afterward so the policy is loaded.
+
+Then connect:
 
 ```
 /macmini connect
 ```
 
-After PIN entry lands you in the canvas, two one-time grants are needed before paste/grab work:
-
-1. **Chrome's clipboard-read permission for `https://remotedesktop.google.com`.** Run `/macmini paste "test"` once — Chrome will prompt; click Allow. (Or pre-grant via `chrome://settings/content/clipboard`.)
-2. **CRD's clipboard sync side-menu toggle.** In the CRD canvas, click the right-edge arrow → "Enable clipboard synchronization" → Begin. Persists across sessions per CRD profile.
+`/macmini connect` lands you in the canvas, then auto-grants CDP permissions and auto-clicks the in-canvas "Begin" (clipboard sync) and "Send System Keys" controls. All subsequent `/macmini connect` calls re-run the same auto-grant steps (idempotent). No manual prompts to dismiss.
 
 Smoke test: `/macmini paste "HELLO_WORLD with $special chars: |&>~"` then Cmd+V into a Mac mini TextEdit window. If the payload arrives verbatim, you're done.
 
