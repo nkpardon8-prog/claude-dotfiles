@@ -50,8 +50,8 @@ Use `mcp.list_pages`. Pick the first tab whose URL starts with `https://remotede
 Run `mcp.evaluate_script` with:
 
 ```js
-!!document.querySelector('input[type="email"]') ||
-!!document.querySelector('a[href*="accounts.google.com/signin"]')
+!!document.querySelector('a[href*="accounts.google.com/signin"]') ||
+/accounts\.google\.com/.test(location.href)
 ```
 
 If `true`:
