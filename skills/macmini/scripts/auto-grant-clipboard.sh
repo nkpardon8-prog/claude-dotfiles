@@ -22,7 +22,15 @@ KEY="ClipboardAllowedForUrls"
 MODE="${1:-grant}"; shift || true
 while [ $# -gt 0 ]; do
   case "$1" in
-    --bundle-id) USER_DOMAIN="$2"; MANDATORY_PLIST="/Library/Managed Preferences/${USER_DOMAIN}.plist"; shift 2 ;;
+    --bundle-id)
+      USER_DOMAIN="$2"
+      if ! [[ "$USER_DOMAIN" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        echo "ERROR: invalid bundle-id: $USER_DOMAIN (expected ^[A-Za-z0-9._-]+$)"
+        exit 2
+      fi
+      MANDATORY_PLIST="/Library/Managed Preferences/${USER_DOMAIN}.plist"
+      shift 2
+      ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
