@@ -443,3 +443,19 @@ on that machine.
 - **Rogue keystrokes opened System Settings or another app mid-task** —
   Cmd+Q to close, Spotlight back to the intended app, `pwd` or `clear` in
   Terminal to re-confirm focus state before resuming.
+
+## Security model
+
+- chrome-devtools MCP attaches to your running Chrome via
+  `--remote-debugging-port=9222`. This port exposes your full browsing
+  session to anything on localhost. Mitigations: bind to `127.0.0.1`
+  only (Chrome's default; setup.md makes it explicit) and consider
+  `--user-data-dir=/tmp/chrome-cdp` to isolate from your main browsing.
+- `/macmini auto-grant install` writes a Chrome user-policy entry that
+  pre-grants clipboard read/write to `https://remotedesktop.google.com`
+  ONLY. It does not affect any other origin.
+- CDP `Browser.grantPermissions` calls land per browser context and last
+  for the browser's lifetime. Browser restart re-prompts unless
+  user-policy is set.
+- TCC grants for CRD's host process are SIP-protected and managed by
+  macOS. We never attempt to bypass; we only deep-link to the right pane.
