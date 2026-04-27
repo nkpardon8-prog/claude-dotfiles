@@ -29,9 +29,9 @@ rm -f "$HOME/.local/bin/macmini-client"
 if [ -e "/usr/local/bin/macmini-server" ] || [ -e "/usr/local/bin/macmini-client" ]; then
   if sudo -n true 2>/dev/null; then
     sudo rm -f "/usr/local/bin/macmini-server" "/usr/local/bin/macmini-client"
-    echo "  ✓ Removed cask-mode binaries from /usr/local/bin/"
+    echo "  OK: removed cask-mode binaries from /usr/local/bin/"
   else
-    echo "  ⚠ Cask-mode binaries in /usr/local/bin/ — needs sudo. Run:"
+    echo "  WARN: cask-mode binaries in /usr/local/bin/ — needs sudo. Run:"
     echo "      sudo rm -f /usr/local/bin/macmini-server /usr/local/bin/macmini-client"
   fi
 fi
