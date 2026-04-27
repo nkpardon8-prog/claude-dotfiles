@@ -129,5 +129,5 @@ Print: `pasted <char_len> chars (<n> chunks)`. If `n > 1`, also print: `WARNING:
 
 - **MCP unreachable** — chrome-devtools MCP not configured/running. Check MCP settings.
 - **No CRD tab** — run `/macmini connect` first.
-- **Clipboard permission not granted** — see step 3 fix message.
-- **Paste empty/stale on Mac mini** — CRD clipboard sync may not be enabled. Open CRD side menu (right-edge arrow) → "Enable clipboard synchronization" → Begin.
+- **Clipboard blocked** — see step 3 fix message; run `/macmini auto-grant install` then restart Chrome, and `/macmini auto-grant cdp`.
+- **Paste empty/stale on Mac mini** — CRD clipboard sync not enabled in this canvas. Run `/macmini auto-grant ui`.
