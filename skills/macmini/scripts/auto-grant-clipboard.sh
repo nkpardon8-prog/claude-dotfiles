@@ -43,8 +43,7 @@ case "$MODE" in
   --mandatory)
     [ "$EUID" -ne 0 ] && { echo "ERROR: --mandatory needs sudo"; exit 2; }
     if [ ! -f "$MANDATORY_PLIST" ]; then
-      /usr/libexec/PlistBuddy -c "Save" "$MANDATORY_PLIST"
-      plutil -convert xml1 "$MANDATORY_PLIST"
+      plutil -create xml1 "$MANDATORY_PLIST" || { echo "ERROR: cannot create $MANDATORY_PLIST"; exit 3; }
     fi
     /usr/libexec/PlistBuddy -c "Add :$KEY array" "$MANDATORY_PLIST" 2>/dev/null || true
     if /usr/libexec/PlistBuddy -c "Print :$KEY" "$MANDATORY_PLIST" 2>/dev/null | grep -qFx "    $ORIGIN"; then
