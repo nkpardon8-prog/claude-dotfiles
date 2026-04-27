@@ -405,6 +405,14 @@ on that machine.
 - **Shift mangling on direct typing** — always paste for shifted characters.
 - **`Cmd+Tab` and `Cmd+Space` need full-screen + Send System Keys** to be
   reliable; `/macmini connect` sets this for you.
+- **Clipboard pre-granted by `/macmini auto-grant install`** (one-time
+  setup). If you ever see the clipboard prompt again, the policy was
+  reverted; re-run install + restart Chrome.
+- **Send System Keys auto-toggled ON by `/macmini connect`** (idempotent).
+- **macOS Screen Recording / Accessibility / Input Monitoring grants for
+  CRD host** are one-time on first install. To recover after a macOS
+  major upgrade or CRD reinstall:
+    `bash skills/macmini/scripts/open-tcc-pane.sh <screencapture|accessibility|inputmonitoring>`
 - **Sudo prompts need physical password typing** unless Touch ID is configured
   on the Mac mini (it isn't by default). For sudo-needing tasks, delegate to
   Mac mini Claude or have the user enter the password.
