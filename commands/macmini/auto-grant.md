@@ -28,27 +28,19 @@ Step 1 — Detect Chrome bundle ID
     #                 com.google.Chrome.canary | org.chromium.Chromium
   print "Detected Chrome: $BUNDLE_ID"
 
-Step 2 — Pre-install denial check (pass-2 rec #11)
-  bash:
-    if curl -fsS http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
-      RESULT=$(node skills/macmini/scripts/check-cdp-permission.mjs \
-        --origin "https://remotedesktop.google.com" \
-        --permission clipboard-read 2>/dev/null || echo "unreachable")
-      if [ "$RESULT" = "denied" ]; then
-        echo "WARN: clipboard-read is DENIED at user level for remotedesktop.google.com"
-        echo "  Recommended user policy will be IGNORED while denial stands."
-        echo "  Fix one of:"
-        echo "    (a) Open chrome://settings/content/clipboard, find https://remotedesktop.google.com, change Block to Default"
-        echo "    (b) Run: sudo bash skills/macmini/scripts/auto-grant-clipboard.sh --mandatory"
-        echo "        (mandatory policy overrides user denial)"
-        echo "  Aborting install. Re-run after resolving."
-        exit 2
-      fi
-    else
-      echo "Note: Chrome debug port unreachable — skipping pre-install denial check."
-      echo "If clipboard prompt fires after restart, run /macmini auto-grant install --force"
-      echo "or use --mandatory to override any prior denial."
-    fi
+Step 2 — Note on prior denials (limitation)
+  # CDP doesn't expose a permission-state getter, so we cannot programmatically
+  # detect a prior chrome://settings denial. If the user has previously denied
+  # clipboard at chrome://settings/content/clipboard for remotedesktop.google.com,
+  # the recommended user policy will be silently overridden. Fix: clear the denial
+  # in chrome://settings, or use --mandatory (sudo) which overrides user UI choices.
+  print:
+    "Note: cannot programmatically detect prior chrome://settings denials."
+    "If clipboard still prompts after restart, either:"
+    "  (a) Visit chrome://settings/content/clipboard, find https://remotedesktop.google.com,"
+    "      change Block to Default, then rerun after clearing chrome://settings denial, OR"
+    "  (b) Use --mandatory: sudo bash skills/macmini/scripts/auto-grant-clipboard.sh --mandatory"
+    "      (mandatory policy overrides user UI choices)"
 
 Step 3 — Write user policy (idempotent)
   bash:
