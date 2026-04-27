@@ -166,7 +166,7 @@ The Fullscreen API is incomplete — CRD has its own internal fullscreen mode th
 
 If `fullscreen_api_state` is `false`, print: `Hint: if Cmd+Space or Cmd+Tab don't forward to Mac mini, click the right-edge arrow → Full-screen + enable 'Send System Keys'.` Continue regardless.
 
-### 13. Reconnect overlay check
+### 15. Reconnect overlay check
 
 ```js
 !!document.querySelector('button[aria-label*="Reconnect"]')
