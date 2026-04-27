@@ -358,6 +358,8 @@ This applies symmetrically to any scrollable content — long Chrome pages,
 chat threads, log viewers, code editors. Same pattern: scroll up, capture,
 read in order, return to live tail.
 
+## More control primitives
+
 ### Focus an app → Spotlight
 
 `press_key("Meta+Space")` → `/macmini paste "<appname>"` → `press_key("Enter")`.
