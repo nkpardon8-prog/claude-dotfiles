@@ -313,6 +313,8 @@ setup change adds them, update this list:
   (CDP `Input.dispatchMouseEvent` vs DOM `el.click()`), not a setup
   limitation.
 
+## Scrolling
+
 ### Scroll to see content beyond the viewport
 
 **You can and should scroll.** If you take a screenshot and don't see what you
