@@ -120,7 +120,7 @@ If `false`: `mcp.click('button[aria-label="Connect"]')`.
 
 Then `mcp.wait_for('canvas', 30s)`.
 
-### 10. Failure-path screenshots over the PIN page
+### 11. Failure-path screenshots over the PIN page
 
 If you must take a debug screenshot while the PIN field is on screen, **first** overlay the PIN-input region with a black rectangle via `mcp.evaluate_script`:
 
