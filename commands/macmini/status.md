@@ -1,60 +1,88 @@
 ---
-description: One-screen health summary — Tailscale, Mac mini server side-channel, and CRD session.
+description: Pure DevTools check — is the CRD canvas up, is sign-in valid, is clipboard-read permission granted?
 argument-hint: ""
 ---
 
 # /macmini status
 
-## What this does
+Quick health summary using only chrome-devtools MCP. Tells you whether the canvas is rendered, the Google session is valid, and the prerequisite Chrome permissions are in place.
 
-Three quick checks rolled into one table. Use this first whenever something looks broken — it tells you which layer to investigate (network vs server process vs visual session).
+## Sequence
 
----
-
-## Checks
-
-### 1. Tailscale
-
-```bash
-tailscale status --json
-```
-
-Parse the JSON. Verify:
-- `Self.Online == true`
-- A peer node matching `${CRD_MAC_MINI_HOSTNAME}` exists AND `Online == true`.
-
-If either fails, the network layer is broken — neither side-channel nor CRD canvas will work.
-
-### 2. Server side-channel
-
-```bash
-macmini-client health
-```
-
-Use a 2-second timeout. The client should return `{ok: true, ...}`. Any timeout or non-2xx means the Mac mini's `macmini-server` LaunchAgent isn't reachable — check the Mac mini is awake, that the server is running (`launchctl print gui/$(id -u)/com.macmini-skill.server` from on the Mac mini), and that the bearer token in env matches what the server has on disk.
-
-### 3. CRD session (optional)
-
-`mcp.list_pages` and check if any tab URL starts with `https://remotedesktop.google.com/`. Report whether a CRD tab is currently open. (No tab open is fine — just means no active visual session.)
-
----
-
-## Output
-
-Print a one-screen table:
+### 1. Find the CRD tab
 
 ```
-| Layer        | State  | Detail                                    |
-|--------------|--------|-------------------------------------------|
-| Tailscale    | green  | Self online; mac mini online              |
-| Server       | green  | health ok (12ms)                          |
-| CRD session  | green  | tab open at https://remotedesktop....     |
+pages = mcp.list_pages()
+crd_page = first page where url startsWith "https://remotedesktop.google.com/"
 ```
 
-Use `red` with the failing reason inline when a check fails. Example failing row:
+If no CRD tab exists, print:
 
 ```
-| Server       | red    | timeout after 2s — check Mac mini is awake |
+| Layer        | State | Detail                                    |
+|--------------|-------|-------------------------------------------|
+| CRD session  | FAIL  | not connected — run /macmini connect      |
 ```
 
-If all three are green, the system is fully ready. If only Tailscale + Server are green and CRD session is empty, that's normal — just run `/macmini connect` when you need the canvas.
+and exit.
+
+### 2. Select the page
+
+`mcp.select_page(crd_page)`
+
+### 3. Probe canvas + sign-in (single evaluate_script)
+
+```
+mcp.evaluate_script("(() => ({
+  canvas_present: !!document.querySelector('canvas'),
+  signin_visible:
+    !!document.querySelector('a[href*=\"accounts.google.com/signin\"]') ||
+    /accounts\\.google\\.com/.test(location.href),
+}))()")
+```
+
+### 4. Probe clipboard-read permission (TWO-CALL workaround)
+
+The async-IIFE single-call form is unreliable across MCP versions. Use two calls:
+
+```
+mcp.evaluate_script(
+  "navigator.permissions.query({name:'clipboard-read'}).then(p => { window.__clipState = p.state; });"
+)
+sleep 100ms
+clipboard_state = mcp.evaluate_script("window.__clipState")
+```
+
+### 5. Probe fullscreen state (TWO-CALL workaround for symmetry)
+
+The Fullscreen API check is best-effort — CRD has its own internal fullscreen mode that may not set `document.fullscreenElement`. This check is informational, not authoritative.
+
+```
+mcp.evaluate_script(
+  "window.__fsState = !!document.fullscreenElement || !!document.webkitFullscreenElement;"
+)
+sleep 50ms
+fullscreen_state = mcp.evaluate_script("window.__fsState")
+```
+
+### 6. Print results table
+
+```
+| Layer            | State    | Detail                                        |
+|------------------|----------|-----------------------------------------------|
+| CRD tab          | OK       | <crd_page.url>                                |
+| Canvas           | OK/FAIL  | canvas element <present|missing>              |
+| Google sign-in   | OK/FAIL  | <signed in | sign-in page detected>           |
+| Clipboard perm   | OK/FAIL  | granted | prompt | denied                     |
+| Fullscreen (API) | OK/hint  | <true | false — see hint below>               |
+```
+
+Use `OK` when the check passes, `FAIL` when it fails. Use `hint` for the fullscreen row when the API reports false (it is not a hard failure — see Fullscreen note above).
+
+### 7. Inline remediation hints
+
+- **Canvas FAIL** — `/macmini connect` to drive the PIN/sign-in flow.
+- **Sign-in FAIL** — Google session expired. Sign in inside the open Chrome window, then re-run `/macmini connect`.
+- **Clipboard perm = prompt** — paste any small string via `/macmini paste "test"` to trigger Chrome's permission prompt.
+- **Clipboard perm = denied** — visit `chrome://settings/content/clipboard`, find `https://remotedesktop.google.com`, set to Allow.
+- **Fullscreen hint** — if `Cmd+Space` / `Cmd+Tab` don't forward to the Mac mini, click the right-edge arrow → Full-screen + enable "Send System Keys".
