@@ -11,20 +11,19 @@ disconnect, and a quick status probe. There is no Mac mini-side daemon.
 ## Sub-commands
 
 - `/macmini connect`          — open or resume the CRD session; lands the
-  canvas, verifies sign-in, and soft-hints fullscreen + Send System Keys.
-- `/macmini paste "text"`     — copy `text` to dev's clipboard, force CRD's
-  sync trigger, then `Cmd+V` into the canvas. Handles multi-line, special
-  chars, and chunks payloads larger than ~50KB.
+  canvas, verifies sign-in, prompts for one-time toggles on first run.
+- `/macmini paste "text"`     — gist-based arbitrary-text channel. Creates
+  a secret gist, types the lowercase clone command on the Mac mini side,
+  bash-executes a self-pasting script. Survives capitals, `$@!#%`, unicode,
+  and multi-line.
 - `/macmini grab`             — pull text from Mac mini's clipboard back to
-  dev (manual mode: someone on the Mac mini side runs `pbcopy` first).
-- `/macmini grab driven`      — auto-send `Cmd+A` then `Cmd+C` against the
-  focused canvas, then sync back. Fragile — does NOT work for Terminal
-  scrollback. Default to manual mode.
+  dev (manual mode: someone on the Mac mini side runs `pbcopy` first; agent
+  reads via `navigator.clipboard.readText()` on the CRD page).
 - `/macmini disconnect`       — close the CRD session.
-- `/macmini status`           — quick "is the canvas up + signed in?" check.
+- `/macmini status`           — quick health audit (CRD canvas, sign-in,
+  clipboard permission, gh auth).
 - `/macmini setup`            — first-time configuration walkthrough (MCP,
-  credentials, Chrome clipboard permission, CRD side-menu sync enable).
-- `/macmini auto-grant <install|cdp|ui|revert|status>` — one-time + per-session permission grants.
+  gh on both sides, credentials, side-panel toggles).
 
 ## Capability map
 
