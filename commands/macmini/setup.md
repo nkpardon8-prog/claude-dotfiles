@@ -57,28 +57,28 @@ gh auth login
 
 ---
 
-## Step 3 — Credentials
+## Step 3 — Credentials (optional)
 
-The skill needs two values:
+The skill needs ONE optional value:
 
-- `CRD_PIN` — the 6-digit PIN you set when you registered the Mac mini as a CRD host.
-- `CRD_DEVICE_NAME` — the EXACT aria-label shown on the Mac mini's tile at <https://remotedesktop.google.com/access>.
+- `CRD_DEVICE_NAME` — the EXACT aria-label shown on the Mac mini's tile at <https://remotedesktop.google.com/access>. Only needed if you have multiple devices in your CRD device list and want the agent to pick the right one without asking. If you only have one Mac mini, the skill auto-picks the single Online tile.
 
-Add these to `~/.config/claude/credentials.md` as `op://` references (template lives in `~/.claude-dotfiles/credentials.template.md`):
+The CRD PIN is **never stored** — you type it yourself when the page comes up. The agent watches for the canvas to mount and picks back up automatically.
+
+If you want `CRD_DEVICE_NAME`, add it to `~/.config/claude/credentials.md`:
 
 ```markdown
 ## Mac mini remote (CRD skill)
 
 | Env var          | 1Password ref                                |
 |------------------|----------------------------------------------|
-| CRD_PIN          | op://<VAULT>/Mac mini CRD/PIN                |
 | CRD_DEVICE_NAME  | op://<VAULT>/Mac mini CRD/Device Name        |
 ```
 
-Store the actual values in 1Password under those refs, then load them into the current session:
+Then load it into the session:
 
 ```
-/load-creds CRD_PIN,CRD_DEVICE_NAME
+/load-creds CRD_DEVICE_NAME
 ```
 
 ---
