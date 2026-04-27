@@ -13,17 +13,17 @@ INPUT_ANCHOR="Privacy_InputMonitoring"
 case "${1:-}" in
   screencapture)
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-    echo "Opened: Privacy & Security -> Screen Recording"
+    echo "Opened: Privacy & Security → Screen Recording"
     echo "Toggle 'Chrome Remote Desktop' OFF then ON to re-grant."
     ;;
   accessibility)
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-    echo "Opened: Privacy & Security -> Accessibility"
+    echo "Opened: Privacy & Security → Accessibility"
     echo "Toggle 'ChromeRemoteDesktopHost' OFF then ON to re-grant."
     ;;
   inputmonitoring|listenevent)
     open "x-apple.systempreferences:com.apple.preference.security?$INPUT_ANCHOR"
-    echo "Opened: Privacy & Security -> Input Monitoring (anchor=$INPUT_ANCHOR)"
+    echo "Opened: Privacy & Security → Input Monitoring (anchor=$INPUT_ANCHOR)"
     echo "Toggle 'ChromeRemoteDesktopHost' OFF then ON to re-grant."
     ;;
   *)
