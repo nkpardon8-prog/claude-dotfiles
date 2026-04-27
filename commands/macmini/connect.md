@@ -71,22 +71,25 @@ If canvas present and no Reconnect overlay, return `OK`.
 
 ### 5. Locate device tile
 
-- `mcp.wait_for('[aria-label="${CRD_DEVICE_NAME}"]', 8s)` — exact match first.
-- On miss: `mcp.wait_for('[aria-label*="${CRD_DEVICE_NAME}"]', 8s)` — substring fallback.
-- On miss again: take a screenshot of the device-list page (this page is PIN-safe), then abort with an actionable error: "Device tile `${CRD_DEVICE_NAME}` not found. Check that the Mac mini is online at https://remotedesktop.google.com/access and that `CRD_DEVICE_NAME` matches the EXACT name shown on the tile."
+`mcp.take_snapshot()` and find a node whose label matches `CRD_DEVICE_NAME` exactly, then substring. The chrome-devtools MCP only exposes `wait_for({text})` and `click({uid})` — there is NO selector-based wait_for / click. Match against snapshot labels:
 
-### 7. Click the tile
+- Exact match: line in snapshot has `name="${CRD_DEVICE_NAME}"` (or `aria-label`).
+- Substring fallback: line contains `${CRD_DEVICE_NAME}` anywhere in its label.
 
-`mcp.click(<device tile selector that matched>)`.
+If neither matches, `mcp.wait_for({text: ["${CRD_DEVICE_NAME}"], timeout: 8000})`. If still missing: take a screenshot of the device-list page (PIN-safe), then abort with: `Device tile '${CRD_DEVICE_NAME}' not found. Check that the Mac mini is online at https://remotedesktop.google.com/access and that CRD_DEVICE_NAME matches the EXACT name shown on the tile.`
 
-### 8. Race: canvas vs PIN input
+### 6. Click the tile
 
-Run two `wait_for` calls in parallel:
+`mcp.click({uid: <device_tile_uid_from_snapshot>})`.
 
-- `mcp.wait_for('canvas', 30s)` — branch A: PIN was remembered, you're already in.
-- `mcp.wait_for('input[type="tel"], input[autocomplete="one-time-code"], input[inputmode="numeric"][maxlength="1"]', 8s)` — branch B: PIN entry needed.
+### 7. Race: canvas vs PIN input
 
-Whichever resolves first wins. If branch A wins, jump to step 12.
+Use `mcp.wait_for({text: [...], timeout: ...})` with text strings expected on each branch:
+
+- Branch A (canvas mounted, no PIN needed): `mcp.wait_for({text: ["Send system keys", "Synchronize clipboard"], timeout: 30000})` — these labels live in the side panel and only appear once connected.
+- Branch B (PIN screen): `mcp.wait_for({text: ["Enter PIN", "Connect"], timeout: 8000})`.
+
+Whichever resolves first wins. If branch A wins, jump to step 11.
 
 ### 9. PIN entry — handle both variants
 
