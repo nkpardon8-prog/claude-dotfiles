@@ -34,28 +34,16 @@ Otherwise `chunks = [ARGUMENTS]`.
 
 ### 3. Verify clipboard-read works (single-call try/catch)
 
-Don't trust `permissions.query` — it can return `'prompt'` even after policy is set, before state has propagated. The source of truth is whether `readText()` actually works. Treat `permissions.query` as advisory only.
+Don't trust `permissions.query` — it can return `'prompt'` even after policy is set. Source of truth is whether `readText()` actually works; treat `permissions.query` as advisory only.
 
 ```js
-// Pre-flight: verify clipboard works (don't trust permissions.query —
-// it can return 'prompt' when policy is set but state hasn't propagated)
 let clipboardOk;
-try {
-  await navigator.clipboard.readText();
-  clipboardOk = true;
-} catch (err) {
-  clipboardOk = false;
-  console.warn("Clipboard access failed:", err.message);
-}
-
+try { await navigator.clipboard.readText(); clipboardOk = true; }
+catch (err) { clipboardOk = false; console.warn("Clipboard access failed:", err.message); }
 if (!clipboardOk) {
   const advisory = (await navigator.permissions.query({name:'clipboard-read'})).state;
-  return {
-    ok: false,
-    reason: "clipboard-blocked",
-    permissionAdvisory: advisory,  // 'prompt'|'denied'|'granted' — diagnostic only
-    fix: "Run /macmini auto-grant install (then restart Chrome) and /macmini auto-grant cdp"
-  };
+  return { ok: false, reason: "clipboard-blocked", permissionAdvisory: advisory,
+    fix: "Run /macmini auto-grant install (then restart Chrome) and /macmini auto-grant cdp" };
 }
 ```
 
