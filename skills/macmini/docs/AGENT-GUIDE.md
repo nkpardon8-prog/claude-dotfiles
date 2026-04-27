@@ -101,6 +101,82 @@ Spotlight requires CRD fullscreen + Send System Keys (see [Focus discipline](#cr
 
 ---
 
+## TCC permission recovery (Mac mini side)
+
+macOS Privacy & Security grants for the CRD host process (Screen
+Recording, Accessibility, Input Monitoring) are SIP-protected and
+managed by macOS — the skill never bypasses them, only deep-links to
+the right pane. They're typically a one-time grant on first install,
+but a macOS major upgrade or a CRD reinstall can wipe them. Symptoms
+include a black or stale `take_screenshot`, dropped keystrokes inside
+the canvas, or `/macmini connect` succeeding but no real input
+forwarding to the Mac mini.
+
+Recipe:
+
+```bash
+bash ~/.claude-dotfiles/skills/macmini/scripts/open-tcc-pane.sh <screencapture|accessibility|inputmonitoring>
+```
+
+This deep-links into the correct pane in System Settings → Privacy &
+Security. Toggle the CRD host (typically `Chrome Remote Desktop Host`
+or `org.chromium.chromoting.me2me_host`) ON for the relevant
+capability.
+
+After re-toggling, restart the CRD host process so it picks up the new
+grant:
+
+```bash
+pkill -f ChromeRemoteDesktopHost
+```
+
+The host auto-respawns via launchd. Re-run `/macmini connect` from
+dev once the canvas comes back, then re-take a screenshot to confirm
+input + display are working.
+
+If you're not sure which pane is failing, run all three in sequence
+(`screencapture`, then `accessibility`, then `inputmonitoring`),
+toggle CRD host in each, then `pkill -f ChromeRemoteDesktopHost`
+once at the end.
+
+## Discovering CRD selectors empirically
+
+CRD is a closed-source web app and Google ships UI changes
+unannounced. When `/macmini connect` or `/macmini auto-grant ui`
+reports "no aria-label match" for the Begin button, the
+clipboard-sync toggle, or the Send System Keys toggle, the cached
+hypotheses in `skills/macmini/data/crd-selectors.json` are stale.
+Re-derive them from the live DOM with the discovery script:
+
+1. Make sure the CRD tab is selected in chrome-devtools MCP:
+   `mcp.list_pages()` → find the page where `url` starts with
+   `https://remotedesktop.google.com/access/session/` → capture its
+   `uid` and `mcp.select_page(uid)`.
+2. Open the right-edge side menu in the canvas first if you want
+   selectors for the clipboard-sync / Send System Keys toggles —
+   they're not in the DOM until the menu is shown.
+3. Invoke `mcp.evaluate_script` with the contents of
+   `~/.claude-dotfiles/skills/macmini/scripts/discover-crd-selectors.js`
+   as the `function` argument. The script does a shadow-DOM walk and
+   returns a JSON string.
+4. Pipe / save the JSON output directly to
+   `~/.claude-dotfiles/skills/macmini/data/crd-selectors.json`. No
+   markdown editing required:
+
+```bash
+cat > ~/.claude-dotfiles/skills/macmini/data/crd-selectors.json <<'JSON'
+<paste the JSON output from evaluate_script here>
+JSON
+```
+
+5. Re-run the failing slash command. Both `/macmini connect` (Send
+   System Keys path) and `/macmini auto-grant ui` (Begin path) read
+   from the JSON file at runtime, so no restart is needed.
+
+The JSON includes a `_last_verified` ISO timestamp updated on every
+discovery run — useful for spotting stale hypotheses without diffing
+the whole file.
+
 ## What's NOT in this guide
 
 - **The full capability map** — that's `SKILL.md`. What's installed on the Mac mini, the full scroll primitive table, the limitations & gotchas list, the recovery patterns. SKILL.md is always loaded with the skill so the agent has it on first reference.
