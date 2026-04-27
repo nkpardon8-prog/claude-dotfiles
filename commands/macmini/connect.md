@@ -108,7 +108,7 @@ document.querySelectorAll('input[inputmode="numeric"][maxlength="1"]').length
 
 **NEVER log `${CRD_PIN}` in any output, error message, or screenshot caption.**
 
-### 9. Submit
+### 10. Submit
 
 CRD often auto-submits when 6 digits land. Check if you're already on the canvas:
 
