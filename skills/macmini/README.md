@@ -196,7 +196,7 @@ On the Mac mini:
 ```bash
 cd ~/.claude-dotfiles
 git fetch origin
-git reset --hard origin/macmini-strip   # or origin/main once merged
+git reset --hard origin/main
 bash skills/macmini/cleanup-mini.sh
 ```
 
