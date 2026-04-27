@@ -1,300 +1,110 @@
-# macmini — Testing recipes
+# macmini smoke tests
 
-This document drives the Phase 6 hardware test pass. The user grants the agent
-access to the Mac mini via the new `/macmini connect` flow; the agent then
-runs the smoke tests below in order, records actual latencies, and updates
-SKILL.md / AGENT-GUIDE.md / README.md with empirical findings at the end.
+Run these end-to-end on a fresh setup, and after any change to `paste.md` / `connect.md` / `grab.md` / `setup.md`. Each test has a precondition, an action, an explicit verification step, and a recovery hint on failure.
 
-## Rollback recipe (read first)
+## Test 1 — `gh` authenticated on both sides
 
-If testing reveals fundamental breakage and you want the previous
-Tailscale-based version back:
+**Precondition:** Mac mini reachable via CRD; canvas live (`/macmini connect` returned OK).
 
-- Dev side: `cd ~/.claude-dotfiles && git checkout main`. The `main` branch
-  preserves the previous skill before the strip commits.
-- Mac mini side: `bash skills/macmini/install/install.sh` to reinstall the
-  Go server from the `main` checkout.
-- The strip commits stay on the `macmini-strip` branch and can be re-attempted
-  later.
+**Action:**
 
-## Test dependency graph
+1. Dev side: `gh auth status` (run via the dev shell).
+2. Mac mini side: bring Terminal forward, then `mcp.type_text("gh auth status", "Enter")` and `mcp.take_screenshot()`.
+3. Compare the GitHub login string from each side.
 
-Run in this order — later tests assume earlier ones passed.
+**Verify:** Both sides report the same `Logged in to github.com account <user>` line.
 
-| Test | What it covers | Depends on |
-|---|---|---|
-| 0 | disconnect / reconnect roundtrip | none — runs first |
-| 1 | small ASCII paste | 0 |
-| 2 | CRD-killer payload (Shift modifier) | 1 |
-| 3 | chunked sha256 paste | 1; also requires Test 7 to focus Terminal |
-| 4 | manual grab (mini → dev) | 0 |
-| 5 | driven grab (TextEdit) | 7 (Spotlight to open TextEdit) |
-| 6 | scrolling primitives | 1 (paste a path), 7 (open file via Spotlight) |
-| 7 | Spotlight focus | 0 |
-| 8 | delegation to Mac mini Claude | 7 — if 7 fails, skip 8 with note |
-| 9 | recovery: close + reconnect | 0 |
-| 10 | asleep Mac mini | optional — only if testable |
+**Recovery on fail:**
+- Dev not authed: `gh auth login` on dev.
+- Mini not authed: have user open Mac mini Terminal manually and run `brew install gh && gh auth login`. Device flow needs a browser; the agent can't do this.
+- Different accounts: pick one (likely dev's), reauth the other side.
 
-## Pre-flight checklist (run BEFORE any smoke test)
+## Test 2 — `/macmini paste` round-trip (gist transport)
 
-**Bootstrap-order resolution (critical for Phase 6 first run):**
+**Precondition:** Test 1 passed; CRD canvas live; Mac mini Terminal focused.
 
-The new skill needs the new skill to ferry itself to Mac mini, which deadlocks
-if anything's broken. Resolution: **the cleanup-mini.sh transport happens
-BEFORE Phase 1 strips begin**, while the OLD `/macmini run` (Tailscale Go
-server) is still functional and can SSH-equivalent the script to Mac mini.
+**Action:**
 
-Concretely, BEFORE Phase 1 deletions are merged:
+```
+/macmini paste "HELLO_WORLD with $special chars: |&>~ and 日本語 émoji"
+```
 
-- On dev: `cd ~/.claude-dotfiles && git checkout macmini-strip` (the new
-  branch has cleanup-mini.sh).
-- With OLD `/macmini run` still working: ferry the script with
-  `/macmini run "cd ~/.claude-dotfiles && git fetch origin && git checkout
-  macmini-strip && bash skills/macmini/cleanup-mini.sh"`.
-- This uses the existing infrastructure to clean itself up. After this run
-  completes, the Mac mini's server is gone and we proceed.
+After paste reports `pasted N chars via gist <id> (deleted)`:
 
-Alternative bootstrap (if OLD infra fully gone before this point):
+```
+mcp.type_text("pbpaste", "Enter")
+mcp.take_screenshot()
+```
 
-- User opens Mac mini Terminal physically OR via CRD with manual typing.
-- `cd ~/.claude-dotfiles && git fetch origin && git reset --hard
-  origin/macmini-strip && bash skills/macmini/cleanup-mini.sh`.
+**Verify:** The screenshot's Terminal output equals the original input byte-for-byte: `HELLO_WORLD with $special chars: |&>~ and 日本語 émoji`. Capitals, `$`, `|`, `&`, `>`, `~`, unicode all intact.
 
-**Standard pre-flight (after bootstrap above succeeded):**
+**Recovery on fail:**
+- Output is empty: paste's `bash run.sh` didn't run because mini Terminal lost focus. Re-focus mini Terminal, retry.
+- Output is mangled or truncated: heredoc terminator collision (1-in-2^64; should never hit). Retry.
+- Output is from a previous paste: clone command went to wrong app. Bring Terminal forward, retry.
+- `gh: command not found` or `gist clone 404`: see Test 1 recovery.
 
-- chrome-devtools MCP is reachable: `mcp.list_pages` returns a list (not an
-  error).
-- Mac mini is awake; CRD device tile visible at
-  `https://remotedesktop.google.com/access`.
-- `/macmini connect` lands in canvas successfully.
-- `clipboard-read` permission granted on `https://remotedesktop.google.com`
-  (verify via `navigator.permissions.query({name:'clipboard-read'})`).
-- CRD is in fullscreen + Send System Keys enabled (verify behaviorally: a
-  Cmd+Space test forwards to Mac mini Spotlight, not dev-side Spotlight).
-- Mac mini cleanup verified: `/macmini paste "ps aux | grep -v grep | grep
-  macmini-server"`, press Enter, take_screenshot, expected output: empty.
-  Also `/macmini paste "ls -la ~/.local/bin/macmini-server 2>&1"`, expected
-  `No such file or directory`.
+## Test 3 — Vision feedback loop
 
-## Smoke Test 0 — disconnect / reconnect
+**Precondition:** CRD canvas live.
 
-- **Setup:** an active CRD canvas from a fresh `/macmini connect`.
-- **Action:** `/macmini disconnect` → `/macmini status` → `/macmini connect`.
-- **Verify:** disconnect closes the CRD tab; status reports "not connected";
-  connect re-opens and lands back in canvas.
-- **Recovery on fail:** investigate which step misbehaved. If `disconnect`
-  didn't close, manually close the tab and rerun status. If `connect` failed,
-  check the CRD device tile is still visible at
-  `https://remotedesktop.google.com/access`.
+**Action:** `mcp.take_screenshot()`. Review the screenshot to confirm the Mac mini desktop is visible (wallpaper, dock, Terminal window if open).
 
-## Smoke Test 1 — small ASCII paste
+**Verify:** Image is non-black, shows recognizable macOS chrome.
 
-- **Setup:** Test 0 passed; canvas focused.
-- **Action:** focus a Mac mini Terminal (Test 7 path or click), then
-  `/macmini paste "hello world"`. Press Enter.
-- **Verify:** take_screenshot. The Terminal shows `hello world` typed at the
-  prompt verbatim.
-- **Recovery on fail:** check the dev-side `pbcopy` worked (run `pbpaste` on
-  dev, should match). If pbcopy is fine but the canvas didn't receive,
-  reload the CRD tab and re-enable clipboard sync.
+**Recovery on fail:**
+- Black image: mini display asleep. `mcp.press_key("Shift")` to wake without typing anything destructive, retry.
+- Wrong page: `mcp.list_pages()`, find the CRD page, `mcp.select_page({pageId, bringToFront: true})`, retry.
 
-## Smoke Test 2 — CRD-killer payload (Shift modifier)
+## Test 4 — Lowercase keystroke forwarding
 
-- **Setup:** Test 1 passed.
-- **Action:** `/macmini paste "HELLO_WORLD with \$special chars: |&>~ \"quoted\"
-  'apostrophes' newlines\nyes"` → press Enter.
-- **Verify:** the Terminal shows the payload verbatim. No `_` → `-`
-  corruption, capitals preserved, special chars intact.
-- **Recovery on fail:** if Shift mangling is observed, that means paste isn't
-  using clipboard — verify the paste.md recipe actually does Cmd+V via
-  press_key("Meta+v"), not per-character typing.
+**Precondition:** CRD canvas live; Mac mini Terminal focused.
 
-## Smoke Test 3 — chunked sha256 paste
+**Action:** `mcp.type_text("clear; pwd", "Enter")` then screenshot.
 
-- **Setup:** Tests 1 and 7 passed; Mac mini Terminal focused.
-- **Action:**
-  - On dev: `openssl rand -base64 50000 | tr -d '\n' > /tmp/payload.txt &&
-    shasum -a 256 /tmp/payload.txt`. Note the hash.
-  - On Mac mini Terminal (via `/macmini paste`): `cat > /tmp/received.txt`
-    then Enter.
-  - On dev: `/macmini paste "$(cat /tmp/payload.txt)"`.
-  - On Mac mini Terminal: Ctrl+D to close `cat`, then
-    `shasum -a 256 /tmp/received.txt`.
-- **Verify:** the hashes match exactly. If they don't, the chunking logic
-  corrupted the payload.
-- **Recovery on fail:** examine paste.md chunking code — most likely a
-  byte-vs-character split issue at a UTF-8 boundary (the plan flagged this:
-  use the JS `[...str]` spread iterator, not bash byte slicing).
+**Verify:** Screenshot shows the Terminal cleared, then a single line with the Mac mini's home directory path.
 
-## Smoke Test 4 — manual grab (mini → dev)
+**Recovery on fail:** keystrokes not landing on mini → "Send system keys" toggle off in CRD side panel. User manually re-toggles it on. Retry.
 
-- **Setup:** Test 0 passed.
-- **Action:**
-  - On Mac mini Terminal (paste the command):
-    `echo "ROUND_TRIP_TEST_$(date +%s)" | pbcopy`. Press Enter.
-  - On dev: `/macmini grab`.
-- **Verify:** the returned string matches what was piped to `pbcopy` on Mac
-  mini, including the timestamp.
-- **Recovery on fail:** mini→dev sync is historically brittle. Reload the CRD
-  tab; re-enable clipboard sync via the side menu; retry.
+## Test 5 — Cmd-modifier shortcut forwarding
 
-## Smoke Test 5 — driven grab (TextEdit, NOT Terminal)
+**Precondition:** CRD canvas live; Mac mini Terminal focused; some short text in mini's clipboard (run Test 2 first).
 
-- **Setup:** Test 7 passed.
-- **Action:**
-  - Spotlight to open TextEdit (`Meta+Space`, paste `textedit`, Enter).
-  - In TextEdit, paste a known string (`/macmini paste "drivengrab_test_42"`)
-    and press Enter or just leave it as the only content.
-  - On dev: `/macmini grab driven`.
-- **Verify:** the returned string contains `drivengrab_test_42`.
-- **Document:** "Driven grab does NOT work for Terminal scrollback — Cmd+A
-  only selects visible region or nothing in Terminal. For Terminal output,
-  use manual mode." This caveat is already in SKILL.md and grab.md but
-  reconfirm empirically.
+**Action:** `mcp.press_key("Meta+v")` then `mcp.press_key("Enter")` then screenshot.
 
-## Smoke Test 6 — scrolling primitives
+**Verify:** The text from Test 2 was pasted as a command (likely "command not found" since it's not a shell command, but the text itself appears verbatim in Terminal).
 
-- **Setup:** Test 1 (paste a path) and Test 7 (focus Terminal) passed.
-- **Action:**
-  - In Mac mini Terminal: `/macmini paste "man bash"` → Enter.
-  - take_screenshot — note the visible content (top of `man bash` page).
-  - `press_key("PageDown")` × 3.
-  - take_screenshot — verify content shifted down.
-  - `press_key("End")` (or `Meta+ArrowDown` fallback) — should jump to
-    bottom of buffer.
-  - `press_key("Home")` (or `Meta+ArrowUp` fallback) — should jump to top.
-- **Verify:** each scroll primitive moved the viewport in the expected
-  direction. Document any that didn't work in SKILL.md table.
-- **Recovery on fail:** record which keys failed; the table in SKILL.md may
-  need adjustment based on app-specific behavior.
+**Recovery on fail:** "Send system keys" toggle off → user toggles on, retry.
 
-## Smoke Test 7 — Spotlight focus
+## Test 6 — Sign-in detection
 
-- **Setup:** Test 0 passed; canvas focused.
-- **Action:**
-  - From a clean canvas state, `press_key("Meta+Space")`.
-  - `/macmini paste "terminal"`.
-  - `press_key("Enter")`.
-  - take_screenshot.
-- **Verify:** Terminal.app is now focused on Mac mini side (not dev side).
-  Repeat with `chrome` to test multi-app focus (the second invocation must
-  also forward to Mac mini, not dev).
-- **Recovery on fail:** Cmd+Space probably opened dev-side Spotlight. Verify
-  CRD is in fullscreen mode AND Send System Keys is enabled (right-edge
-  arrow → Full-screen + "Send System Keys"). Re-test.
+**Precondition:** none — dev Chrome may or may not be signed into Google.
 
-## Smoke Test 8 — delegation to Mac mini Claude
+**Action:** `/macmini connect` from a state where the user has signed out of Google in the dev Chrome.
 
-- **Setup:** Test 7 passed; Terminal focused on Mac mini.
-- **Action:**
-  - `/macmini paste "claude"` → `press_key("Enter")`.
-  - Wait ~5s.
-  - take_screenshot — verify the Mac mini Claude session started (banner
-    visible, prompt indicator changed).
-  - `/macmini paste "list files in home directory in lowercase"`.
-  - `press_key("Enter")`.
-  - take_screenshot — verify a response. Apply terminal-output discipline
-    (scroll up if response exceeds viewport, read top-to-bottom).
-- **Verify:** Mac mini Claude responded with file listing.
-- **Recovery on fail:** if `claude` not on PATH on Mac mini, delegate fails
-  cleanly with "command not found" — install Claude Code on Mac mini per
-  setup.md migration appendix and retry. If Test 7 failed, skip this test
-  with a note.
+**Verify:** Returns `NEEDS_REAUTH` and prints the sign-in prompt without screenshotting (the sign-in page may show the user's email).
 
-## Smoke Test 9 — recovery (close + reconnect)
+**Recovery on fail:** if the command screenshots the sign-in page, the agent has a PII regression. File a bug.
 
-- **Setup:** Test 0 passed.
-- **Action:** close the CRD tab manually (`mcp.close_page` or click the
-  tab's X). Then `/macmini connect`.
-- **Verify:** connect re-opens and lands in canvas.
-- **Valid alternate passes:** if `NEEDS_REAUTH` is returned, sign in with
-  the user, re-run connect — that's a valid pass too (it exercises the
-  re-auth path).
-- **Note:** `NEEDS_FULLSCREEN` is NOT returned by connect.md in this initial
-  implementation — fullscreen check is non-blocking; only soft-hint logged.
-  Phase 6 will determine if fullscreen detection is reliable enough to
-  upgrade to a blocking check.
+## Test 7 — Spotlight focus discipline
 
-## Smoke Test 10 — asleep Mac mini (optional)
+**Precondition:** CRD canvas live.
 
-- **Setup:** Mac mini display has gone to sleep (waited several minutes, or
-  forced via `pmset displaysleepnow` if accessible).
-- **Action:** take_screenshot. If output is black, `press_key("Shift")` to
-  wake without typing anything destructive, retry screenshot.
-- **Verify:** wake-via-Shift produces a usable canvas. Document the outcome
-  (pass / fail / skipped with reason).
-- **Recovery on fail:** if Shift doesn't wake the display, document the
-  alternative (move mouse via canvas click, send wake-on-LAN, ask user to
-  physically wake).
+**Action:** `mcp.press_key("Meta+space")` then `mcp.type_text("terminal", "Enter")` then `mcp.take_screenshot()`.
 
-## Smoke Test 11 — gh on both sides + first connect
+**Verify:** Mac mini's Terminal is now the foreground app (not dev's Terminal).
 
-Validates the new dependency: `gh` CLI authenticated on dev AND Mac mini, same GitHub account.
+**Recovery on fail:** Cmd+Space went to dev Chrome instead of mini → "Send system keys" off OR CRD canvas wasn't focused. Run Test 4 first to confirm keystroke forwarding, then retry.
 
-- **Setup:** Mac mini reachable, CRD session live. Open Mac mini Terminal via `/macmini connect`.
-- **Action:**
-
-  ```bash
-  # Dev side — confirm authenticated.
-  gh auth status
-
-  # Mac mini side — type via type_text then verify via screenshot.
-  # mcp.type_text("gh auth status", "Enter")
-  # mcp.take_screenshot()
-  ```
-
-- **Verify:**
-  - Dev-side `gh auth status` exit 0; the same login appears.
-  - Mac-mini-side screenshot shows `Logged in to github.com account <user>` with the same `<user>` as dev.
-- **Failure threshold:** either side returns "not logged in".
-- **Recovery on fail:**
-  - Dev side: `gh auth login`.
-  - Mac mini side: open Terminal manually, run `gh auth login`, follow device flow in a browser. Then re-run smoke test.
-
-## Smoke Test 12 — End-to-end gist transport (`/macmini paste` verbatim)
-
-Validates the arbitrary-text channel. Capitals + symbols + unicode survive round-trip.
-
-- **Setup:** Smoke Test 11 passed; CRD canvas live; Mac mini Terminal focused.
-- **Action:**
-
-  ```
-  /macmini paste "HELLO_WORLD with $special chars: |&>~ and 日本語 émoji"
-  ```
-
-  After paste completes, on Mac mini Terminal type `pbpaste` (lowercase, works fine) and Enter, then `take_screenshot`.
-
-- **Verify:** `pbpaste` output equals the original input byte-for-byte: `HELLO_WORLD with $special chars: |&>~ and 日本語 émoji`. Capitals, `$`, `|`, `&`, `>`, `~`, unicode chars all intact.
-- **Failure threshold:** Any character in the output diverges from input.
-- **Recovery on fail:**
-  - If `gh: command not found` on mini: see Smoke Test 11.
-  - If clone fails with 404: gh auth user mismatch. `gh auth status` on both sides; ensure same user.
-  - If clone succeeds but `pbpaste` returns prior content: the bash script wasn't run after clone, OR mini Terminal lost focus. Screenshot, verify, re-paste.
-
-## Latency table
-
-Fill in the **Actual** column during testing.
+## Latency table (fill in during testing)
 
 | Measurement | Expected | Actual |
 |---|---|---|
-| dev→mini paste sync (small) | <1s | __ms |
-| dev→mini paste sync (50KB chunked) | <5s total | __ms |
-| mini→dev grab sync (manual) | <2s | __ms |
-| canvas focus → press_key forward | <500ms | __ms |
-| first take_screenshot post-connect | <2s | __ms |
+| `/macmini paste` (small payload) | <8s end-to-end (gist create + clone + bash) | __s |
+| `/macmini paste` (50KB payload) | <12s | __s |
+| keyboard forward latency (single keystroke visible on mini) | <500ms | __ms |
+| first `take_screenshot` after `/macmini connect` | <2s | __s |
 
 ## After testing
 
-Update `SKILL.md`, `AGENT-GUIDE.md`, and `README.md` with empirical findings:
-
-- Latencies measured (replace placeholders with real numbers; flag any >2×
-  expected).
-- Edge cases discovered (e.g., scroll keys that didn't behave as expected;
-  apps where driven grab worked / failed).
-- Recipes that needed adjustment (e.g., sleep durations in paste.md /
-  grab.md tuned to measured sync times; chunk size adjusted from 50KB if
-  needed).
-- The actual CRD-fullscreen detector that works (replacing the soft-hint
-  Fullscreen API check in connect.md with a blocking detector).
-- README.md gains a "Hardware-tested on YYYY-MM-DD" stamp with the latency
-  numbers and any caveats discovered.
+Document any new failure mode in `commands/macmini/connect.md`, `commands/macmini/paste.md`, or `commands/macmini/grab.md` "Errors" sections. Update the channel matrix in `SKILL.md` if a previously-allowed character class turns out to mangle, or a previously-broken channel becomes reliable.
