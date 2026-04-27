@@ -26,7 +26,7 @@ This is your decision tree. Match the kind of thing you want to send to the row,
 | **A file** on Mac mini | Either `/macmini paste` with the content (mini ends up with `/tmp/p/<filename>`), or have mini Claude `gh gist clone` itself | gist transport is the file channel too. |
 | **Read terminal output back to dev** | Two paths: (a) `mcp.take_screenshot()` for a quick visual; (b) on mini, type `<cmd> > /tmp/o.log; gh gist create -f o.log /tmp/o.log` and on dev `gh gist clone <id> /tmp/back; cat /tmp/back/o.log` | Vision OCR is unreliable for `l`/`1`/`I`, `0`/`O`. Reverse gist for verbatim text. |
 | **See current screen state** | `mcp.take_screenshot()` | Always-on feedback loop. Cheap. Use liberally before/after every action. |
-| **Open or resume the CRD session** | **Run `/macmini connect`** | Handles PIN entry, sign-in detection, reconnect overlay. |
+| **Open or resume the CRD session** | **Run `/macmini connect`** | Handles sign-in detection, device tile click, reconnect overlay. The user types the PIN themselves — the agent never types, stores, or reads the CRD PIN. |
 | **Set up the skill the first time** | **Run `/macmini setup`** | One-time: MCP, gh on both sides, credentials, side-panel toggles. |
 | **Quick health check** ("is the canvas up?") | **Run `/macmini status`** | Audit: CRD canvas, sign-in, clipboard permission, gh auth. |
 | **Pull text from Mac mini → dev clipboard** (one-shot) | **Run `/macmini grab`** | User does Cmd+C on mini side; agent reads via `navigator.clipboard.readText()` on the CRD page. |
