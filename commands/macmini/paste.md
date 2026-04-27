@@ -1,88 +1,115 @@
 ---
-description: Send text to the Mac mini's clipboard via CRD's built-in bidirectional clipboard sync, then Cmd+V via DevTools MCP.
-argument-hint: "<text — multi-line OK, up to ~50KB safe>"
+description: Send arbitrary text (capitals, symbols, unicode, multi-line) to the Mac mini via gh gist transport — the only channel that survives CRD's Shift-stripping keyboard pipeline.
+argument-hint: "<text — multi-line OK, full Unicode, any characters>"
 ---
 
 # /macmini paste
 
-Pushes a string into the Mac mini's clipboard via CRD's clipboard sync, then issues `Cmd+V` on the canvas. Bypasses CRD's broken keystroke forwarding (Shift mangling: `HELLO_WORLD` typed via `press_key` arrives as `hello-world`). Paste is a bytes-blob event, so it survives intact.
+Sends ARBITRARY text to the Mac mini's clipboard via `gh gist`. CRD's keystroke forwarding strips the Shift modifier (capitals → lowercase, `$@!#%` → digits, `(` → `;`), so direct typing only handles unshifted ASCII. Programmatic clipboard sync via DevTools doesn't work either — CRD's onPaste handler requires a real user gesture, and CDP-injected events are synthetic. Gist transport bypasses both: text is uploaded to a private GitHub gist, then the Mac mini clones it locally with a lowercase-only command (`gh gist clone <id> /tmp/p`).
+
+## Pre-requisites (one-time)
+
+- `gh` CLI authenticated on BOTH dev and Mac mini sides to the same GitHub account.
+- chrome-devtools MCP attached to the running Chrome with a live CRD canvas (page URL starts with `https://remotedesktop.google.com/access/session/`).
+- Mac mini Terminal is the focused window inside the CRD canvas (otherwise the typed command lands in the wrong app).
 
 ## Sequence
 
-### 0. Pre-flight — chrome-devtools MCP must be reachable
+### 1. Pre-flight
 
-Try `mcp.list_pages()`. If it raises, abort with: `chrome-devtools MCP not reachable — verify it's configured in your MCP settings. Recommended: start with --experimental-vision flag for canvas pixel clicks.`
+`mcp.list_pages()`. Find the CRD page (URL starts with `https://remotedesktop.google.com/access/session/`). If none, abort: `not connected — run /macmini connect first`. `mcp.select_page({pageId, bringToFront: true})`.
 
-### 1. Size check + character-aware chunking (>50KB)
-
-Compute char length in JS (spread-iterator is UTF-8 safe): `[...str].length`. If `> 50000`, print a warning and chunk via `evaluate_script` (NOT shell byte-slicing — multi-byte glyphs corrupt at byte boundaries):
-
-```js
-const arr = [...str];
-const chunks = [];
-for (let i = 0; i < arr.length; i += 50000) {
-  chunks.push(arr.slice(i, i + 50000).join(''));
-}
-return chunks;
-```
-
-Otherwise `chunks = [ARGUMENTS]`.
-
-### 2. Find the CRD tab
-
-`pages = mcp.list_pages()`; pick the first page whose URL starts with `https://remotedesktop.google.com/access/session/`. If none, abort: `not connected to CRD — run /macmini connect first`. Then `mcp.select_page(crd_page)`.
-
-### 3. Verify clipboard-read works (single-call try/catch)
-
-Don't trust `permissions.query` — it can return `'prompt'` even after policy is set. Source of truth is whether `readText()` actually works; treat `permissions.query` as advisory only.
-
-```js
-let clipboardOk;
-try { await navigator.clipboard.readText(); clipboardOk = true; }
-catch (err) { clipboardOk = false; console.warn("Clipboard access failed:", err.message); }
-if (!clipboardOk) {
-  const advisory = (await navigator.permissions.query({name:'clipboard-read'})).state;
-  return { ok: false, reason: "clipboard-blocked", permissionAdvisory: advisory,
-    fix: "Run /macmini auto-grant install (then restart Chrome) and /macmini auto-grant cdp" };
-}
-```
-
-If the call returns `ok: false`, abort with the `fix` message above.
-
-### 4. Tempfile (NOT shell-expanded string)
-
-`pbcopy "$VAR"` corrupts payloads with `$VAR`, backslashes, embedded quotes. Use a tempfile:
+### 2. Write payload to a local file
 
 ```bash
-TEMPFILE="/tmp/macmini-paste.$$"
-trap 'rm -f "$TEMPFILE"' EXIT INT TERM
+TMPFILE="/tmp/macmini-paste.$$"
+trap 'rm -f "$TMPFILE"' EXIT INT TERM
+printf '%s' "$ARGUMENTS" > "$TMPFILE"
 ```
 
-### 5. Per-chunk loop
+Tempfile (NOT shell-substitution) — preserves arbitrary bytes including embedded quotes, dollar signs, backslashes.
 
-For each chunk:
+### 3. Upload as a SECRET gist
 
-- 5a. `printf '%s' "<chunk>" > "$TEMPFILE" && chmod 600 "$TEMPFILE"` — overwrite tempfile.
-- 5b. `mcp.select_page(crd_page)`.
-- 5c. Bring CRD tab to foreground: call `mcp.select_page({pageIdx: <crd_page.idx>, bringToFront: true})`. For OS-level Chrome window activation, fall back to AppleScript targeting the CRD window specifically (`osascript -e 'tell application "Google Chrome" to activate'`, or for more precision: `tell application "Google Chrome" ... set crdWin to first window whose URL of active tab starts with "https://remotedesktop.google.com" ... set index of crdWin to 1 ... activate`).
-- 5d. `pbcopy < "$TEMPFILE"`.
-- 5e. Force CRD clipboard sync trigger via blur+focus: `mcp.evaluate_script("(() => { window.blur(); window.focus(); return true; })()")`.
-- 5f. `sleep 800ms` (sync wait — tune in Phase 6).
-- 5g. Focus canvas before keystrokes: call `mcp.take_snapshot()`, find the canvas element's `uid`, then `mcp.click({uid: <canvas_uid>})`. If the canvas is not in the a11y snapshot (often the case — canvas is the page-level focus target by default), fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`. DOM `.focus()` may be a no-op on a non-tabindex canvas, but `mcp.click` on the canvas element works.
-- 5h. `mcp.press_key("Meta+v")` — Cmd+V, **LOWERCASE v** (uppercase V = Cmd+Shift+V).
-- 5i. `sleep 200ms` — wait for paste to land.
+```bash
+GIST_URL=$(gh gist create -f payload.txt "$TMPFILE")
+GIST_ID=$(basename "$GIST_URL")
+echo "gist id: $GIST_ID"
+```
 
-### 6. Cleanup
+`-f payload.txt` controls the gist filename. Default is SECRET (no `-p`); only the gh-authenticated user can access. Per SKILL.md SECURITY rules: NEVER paste tokens, `op://`-resolved values, env-var dumps, or auth headers — gists are unlisted but not encrypted.
 
-`rm -f "$TEMPFILE"`
+### 4. Type the clone command on Mac mini side
 
-### 7. Final report
+The Mac mini Terminal must be focused. The clone command uses ONLY lowercase letters, digits, dashes, slashes, and a semicolon — all unshifted on US keyboard, so CRD forwards them intact.
 
-Print: `pasted <char_len> chars (<n> chunks)`. If `n > 1`, also print: `WARNING: chunked paste — verify integrity on Mac mini with shasum if payload matters.` Never log the payload itself.
+```
+mcp.type_text("rm -rf /tmp/p; gh gist clone " + GIST_ID + " /tmp/p", "Enter")
+```
+
+`gist clone` produces a directory `/tmp/p/` containing `payload.txt` (or whatever filename the gist had).
+
+### 5. Verify clone
+
+`mcp.take_screenshot()`. The Terminal output should show "Cloning into /tmp/p/" + a "Receiving objects: 100%" line. If the screenshot shows an error (e.g., "could not resolve host"), abort.
+
+### 6. Apply the payload — pick one
+
+Common destinations:
+
+- **To clipboard for paste-into-app**: gist filename must be a `.sh` that does `cat <<'EOF' | pbcopy ... EOF`. Type `bash /tmp/p/payload.sh` (lowercase only).
+- **As a script to execute**: type `bash /tmp/p/payload.sh`.
+- **As text content for an editor**: type `open -a textedit /tmp/p/payload.txt` to open in TextEdit, or just `cat /tmp/p/payload.txt` to display.
+
+For the most common case (push text to mini clipboard so user can Cmd+V it anywhere), use this gist template instead:
+
+```bash
+# Write a self-pasting script, not a raw text file
+cat > "$TMPFILE" <<EOF
+#!/bin/bash
+cat <<'PAYLOAD' | pbcopy
+$ARGUMENTS
+PAYLOAD
+EOF
+GIST_URL=$(gh gist create -f run.sh "$TMPFILE")
+GIST_ID=$(basename "$GIST_URL")
+```
+
+Then on mini: `rm -rf /tmp/p; gh gist clone <ID> /tmp/p; bash /tmp/p/run.sh`.
+
+After this, Mac mini's pasteboard has the original text. Cmd+V into any app on mini works.
+
+### 7. Cleanup
+
+`rm -f "$TMPFILE"` is handled by the trap. The gist persists on GitHub by default — to delete after use:
+
+```bash
+gh gist delete "$GIST_ID"
+```
+
+Optional. Secret gists are user-only, so leaving them is low-risk.
+
+### 8. Final report
+
+Print: `pasted <char_len> chars via gist <id>`. If `--keep-gist` was passed, omit the delete step. Never log the payload itself — only its char length.
+
+## Why this works
+
+1. The dev → mini channel is **lowercase-only typing** (`type_text` of `gh gist clone <id> /tmp/p`), which CRD forwards intact.
+2. The arbitrary-text payload is delivered via **GitHub's HTTPS** between dev and mini — no keyboard layer involved.
+3. The Mac mini's `gh` is authenticated (same account as dev), so private gists work without re-auth.
+4. End-to-end fidelity: full Unicode, all ASCII symbols, capitals, multi-line, executable scripts. Verified 2026-04-27.
 
 ## Errors
 
-- **MCP unreachable** — chrome-devtools MCP not configured/running. Check MCP settings.
 - **No CRD tab** — run `/macmini connect` first.
-- **Clipboard blocked** — see step 3 fix message; run `/macmini auto-grant install` then restart Chrome, and `/macmini auto-grant cdp`.
-- **Paste empty/stale on Mac mini** — CRD clipboard sync not enabled in this canvas. Run `/macmini auto-grant ui`.
+- **`gh: command not found` (mini side)** — install gh on the Mac mini once: have the user open Terminal and run `brew install gh && gh auth login`. After that this skill works forever.
+- **`gh: not authenticated`** — same fix.
+- **clone hangs** — Mac mini's network may be down. Screenshot to verify, then ask user to reconnect Wi-Fi.
+- **Cmd+V on Mac mini side pastes the wrong thing** — script wasn't run yet, or focus drifted to a different app between bash and Cmd+V. Re-run `bash /tmp/p/run.sh` and screenshot to verify.
+
+## What NOT to do
+
+- Do NOT use `dev pbcopy → CRD sync → mini pasteboard`. CRD's clipboard sync requires real user gestures; CDP-injected events don't trigger it. (Verified broken 2026-04-27.)
+- Do NOT use `navigator.clipboard.writeText()` then Cmd+V on the canvas. Same reason.
+- Do NOT type text containing capitals, `$`, `!`, `@`, `#`, `%`, `^`, `&`, `*`, `(`, `)`, `_`, `+`, `{`, `}`, `[`, `]`, `|`, `\`, `:`, `"`, `<`, `>`, `?`, `~` directly via `type_text` or `press_key`. CRD strips/remaps these.
