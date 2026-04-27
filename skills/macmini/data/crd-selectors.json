@@ -1,0 +1,24 @@
+{
+  "_comment": "CRD UI element selectors. Update via discover-crd-selectors.js if CRD UI changes.",
+  "_last_verified": "2026-04-27 (hypothesis only — Phase E will confirm)",
+  "begin_button": {
+    "role": "button",
+    "name_pattern": "^begin$",
+    "name_flags": "i",
+    "kind": "button-once"
+  },
+  "clipboard_sync_toggle": {
+    "role": "switch",
+    "name_pattern": "enable clipboard sync",
+    "name_flags": "i",
+    "kind": "toggle",
+    "aria_attr": "aria-checked"
+  },
+  "send_system_keys_toggle": {
+    "role": "switch",
+    "name_pattern": "send system keys",
+    "name_flags": "i",
+    "kind": "toggle",
+    "aria_attr": "aria-pressed"
+  }
+}
