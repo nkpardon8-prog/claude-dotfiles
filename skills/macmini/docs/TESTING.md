@@ -227,6 +227,139 @@ Alternative bootstrap (if OLD infra fully gone before this point):
   alternative (move mouse via canvas click, send wake-on-LAN, ask user to
   physically wake).
 
+## Smoke Test 11 — Auto-grant install (one-time setup)
+
+Validates the setup-time `/macmini auto-grant install` path: the
+Chrome user-policy clipboard pre-grant lands, is idempotent, and
+survives a Chrome restart.
+
+- **Setup:** dev-side terminal; Chrome may or may not be running. No
+  prior `auto-grant install` invocation required.
+- **Action:**
+
+  ```bash
+  # Status before any grant — expect a not-allowed indicator.
+  bash ~/.claude-dotfiles/skills/macmini/scripts/auto-grant-clipboard.sh --status
+
+  # Grant the policy. Must NOT require sudo by default.
+  bash ~/.claude-dotfiles/skills/macmini/scripts/auto-grant-clipboard.sh grant
+
+  # Idempotency — second invocation must not duplicate the array entry.
+  bash ~/.claude-dotfiles/skills/macmini/scripts/auto-grant-clipboard.sh grant
+
+  # Verify entry count == 1.
+  defaults read com.google.Chrome ClipboardAllowedForUrls 2>/dev/null \
+    | grep -c "remotedesktop.google.com"
+
+  # Status after grant — expect ALLOWED.
+  bash ~/.claude-dotfiles/skills/macmini/scripts/auto-grant-clipboard.sh --status
+  ```
+
+  Restart Chrome (the user does this; auto-grant install reminds
+  them). After Chrome relaunches, open `chrome://policy` and search
+  for `Clipboard`.
+
+- **Verify:**
+  - The pre-grant `--status` output contains `NOT SET` (or any
+    non-`ALLOWED` substring).
+  - The post-grant `--status` output contains the substring
+    `ALLOWED`.
+  - The entry count is exactly `1` after two grant invocations
+    (idempotency).
+  - `chrome://policy` shows
+    `ClipboardAllowedForUrls = [https://remotedesktop.google.com]`
+    after Chrome restart.
+  - `chrome://settings/content/clipboard` shows our origin as
+    "Allowed by your administrator."
+- **Failure threshold:** any of the four checks above failing means
+  `auto-grant install` is not honored by Chrome. Most likely cause:
+  a managed-config conflict (MDM-pushed policy overrides user
+  policy) or Chrome was not actually restarted.
+- **Recovery on fail:**
+  - If `--status` reports `NOT SET` after grant: confirm the
+    Chrome bundle ID resolved correctly via
+    `bash ~/.claude-dotfiles/skills/macmini/scripts/chrome-bundle-id.sh`.
+    Re-run grant with explicit `--bundle-id "$BUNDLE_ID"`.
+  - If `chrome://policy` shows the entry but UI still prompts:
+    re-run with `--mandatory` (sudo-required) to write the
+    machine-policy plist that overrides user-set blocks.
+  - Run `bash ~/.claude-dotfiles/skills/macmini/scripts/auto-grant-clipboard.sh --revert`
+    to clean up between attempts.
+
+## Smoke Test 12 — Auto-grant CDP + UI (per-session)
+
+Validates the per-session path that runs inside `/macmini connect`:
+CDP `Browser.grantPermissions` succeeds before canvas mount, and the
+post-mount UI step toggles Send System Keys and the side-menu Begin
+button so paste lands verbatim.
+
+- **Setup:** Smoke Test 11 passed; Chrome is running with
+  `--remote-debugging-port=9222`; CRD device tile visible at
+  `https://remotedesktop.google.com/access`. No active CRD canvas.
+- **Action:**
+
+  ```bash
+  # CDP grant — runs against debug port 9222 directly.
+  /macmini auto-grant cdp
+
+  # Then connect (which runs the post-mount UI step internally).
+  /macmini connect
+
+  # UI step alone (idempotent re-run for verification).
+  /macmini auto-grant ui
+  ```
+
+  After `/macmini connect` lands in canvas, probe the Send System
+  Keys toggle state via `mcp.evaluate_script`:
+
+  ```js
+  // Returns the aria-pressed attribute on the Send System Keys switch.
+  document.querySelector('[aria-label*="Send system keys" i]')?.getAttribute('aria-pressed')
+  ```
+
+  Then run a verbatim payload landing test:
+
+  ```
+  /macmini paste "HELLO_WORLD with $special chars: |&>~ landed verbatim"
+  ```
+
+  Press Enter into a Mac mini Terminal and `take_screenshot`.
+
+- **Verify:**
+  - `/macmini auto-grant cdp` output contains the substring
+    `result: "OK"` (or `result: \"OK\"` depending on shell
+    quoting). The last-run cache is at
+    `~/.cache/macmini/last-cdp-grant.json` for inspection.
+  - The Send System Keys `aria-pressed` probe returns `"true"`.
+  - The pasted payload arrives verbatim — `HELLO_WORLD`, `$special`,
+    `|&>~` all intact, no Shift mangling.
+- **Failure threshold:**
+  - `cdp` step prints `WARN: not on debug port` → Chrome was
+    relaunched without `--remote-debugging-port=9222`. Re-launch
+    with the flag (see `setup.md` Step 4c).
+  - `ui` step prints `no aria-label match` for Begin or for the
+    Send System Keys toggle → CRD UI shipped new selectors.
+  - `aria-pressed` probe returns `"false"` or `null` → the toggle
+    didn't actually flip; UI step located the wrong element or the
+    click didn't dispatch.
+  - Pasted payload arrives mangled (`hello-world`, `;` instead of
+    `:`, etc.) → Send System Keys didn't take effect, OR the
+    clipboard pre-grant from Test 11 isn't honored at runtime.
+- **Recovery on fail:**
+  - For selector-mismatch failures, follow the AGENT-GUIDE
+    "Discovering CRD selectors empirically" recipe — invoke
+    `discover-crd-selectors.js` via `mcp.evaluate_script` and
+    pipe its JSON output into
+    `skills/macmini/data/crd-selectors.json`. Both `connect` and
+    `auto-grant ui` re-read the file at runtime, so no restart
+    needed.
+  - For the `aria-pressed` mismatch, re-run `/macmini auto-grant ui`
+    twice; the toggle is idempotent and a second click can settle a
+    racy first attempt.
+  - For payload mangling after both grants succeeded, fall back to
+    the chunked sha256 paste recipe in Smoke Test 3 to confirm
+    whether paste itself is broken or only Send System Keys.
+
 ## Latency table
 
 Fill in the **Actual** column during testing.
