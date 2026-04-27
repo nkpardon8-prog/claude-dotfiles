@@ -104,11 +104,15 @@ Opens or resumes the CRD session and lands focus on the Mac mini canvas. If you'
 
 ### `/macmini paste "<text>"`
 
-Puts text on the dev Mac's clipboard via `pbcopy`, triggers CRD's clipboard sync via a brief blur+focus on the CRD page, focuses the canvas, then sends `Cmd+V`. Bypasses the Shift-modifier mangling entirely because the bytes arrive as a clipboard blob, not as a stream of key events. Chunks payloads larger than ~50KB to stay under the WebRTC data-channel limit.
+Uploads `<text>` as a SECRET GitHub gist, then types `rm -rf /tmp/p; gh gist clone <id> /tmp/p; bash /tmp/p/run.sh` on the Mac mini (every char unshifted lowercase, so CRD forwards intact). The bash script puts the original text on Mac mini's pasteboard. Bypasses CRD's broken keystroke pipeline + broken programmatic clipboard sync.
+
+Survives full Unicode + capitals + all symbols + multi-line. Verified 2026-04-27.
 
 ```
 /macmini paste "DATABASE_URL=postgres://user:p@ss/db"
 ```
+
+**SECURITY:** secret gists are unlisted, NOT encrypted. Don't `/macmini paste` tokens, `op://`-resolved values, or env-var dumps. (gh staff can read; URL leak grants access.)
 
 ### `/macmini grab` (and `/macmini grab driven`)
 
