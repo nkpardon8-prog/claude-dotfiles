@@ -12,12 +12,15 @@ Most "my keystroke didn't land where I expected" problems are focus problems. A 
 
 - **Click the canvas before any `press_key`.** Chrome may have moved focus to its own URL bar, a sidebar, an extension, or another tab between your previous DevTools call and this one. The reliable pattern:
   ```
-  mcp.click('canvas', 1, 1)   # offset (1,1) into the canvas — never the center
+  mcp.take_snapshot()                 # locate the canvas element's uid
+  mcp.click({uid: <canvas_uid>})      # click by uid (the only click form chrome-devtools MCP exposes)
   mcp.press_key("...")
   ```
-  Use `(1, 1)` (or any non-center offset) so you don't accidentally activate something centered on the canvas. With `--experimental-vision` you can use `click_at(x, y)` for precision; without it, the MCP `click(uid)` only hits the centerpoint, which can interact with whatever's there.
-- **Bring the CRD tab to front before paste.** If the dev-side user has multiple Chrome windows open, `pbcopy` then `Cmd+V` will paste into whichever Chrome window is foreground — which may not be CRD. Use `mcp.bring_to_front()` if available, or fall back to AppleScript:
+  If the canvas isn't in the a11y snapshot (it usually IS the page-level focus target), fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`. With `--experimental-vision` you can also `click_at(x, y)` for precision — pick a non-center offset so you don't accidentally activate something centered on the canvas.
+- **Bring the CRD tab to front before paste.** If the dev-side user has multiple Chrome windows open, `pbcopy` then `Cmd+V` will paste into whichever Chrome window is foreground — which may not be CRD. Use `mcp.select_page({pageIdx: <crd_page.idx>, bringToFront: true})` (this is the only "bring to front" the MCP exposes — there is no separate `bring_to_front` tool). For OS-level Chrome window activation, fall back to AppleScript:
   ```
+  osascript -e 'tell application "Google Chrome" to activate'
+  # Or, for more precision (raises the CRD-bearing window specifically):
   osascript -e 'tell application "Google Chrome"
     set crdWin to first window whose URL of active tab starts with "https://remotedesktop.google.com"
     set index of crdWin to 1
