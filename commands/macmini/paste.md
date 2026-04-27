@@ -68,7 +68,7 @@ For each chunk:
 - 5d. `pbcopy < "$TEMPFILE"`.
 - 5e. Force CRD clipboard sync trigger via blur+focus: `mcp.evaluate_script("(() => { window.blur(); window.focus(); return true; })()")`.
 - 5f. `sleep 800ms` (sync wait — tune in Phase 6).
-- 5g. `mcp.click('canvas', 1, 1)` — focus canvas (DOM `.focus()` is a no-op on canvas).
+- 5g. Focus canvas before keystrokes: call `mcp.take_snapshot()`, find the canvas element's `uid`, then `mcp.click({uid: <canvas_uid>})`. If the canvas is not in the a11y snapshot (often the case — canvas is the page-level focus target by default), fall back to `mcp.evaluate_script({function: "() => { const c = document.querySelector('canvas'); if (c) c.focus(); return !!c; }"})`. DOM `.focus()` may be a no-op on a non-tabindex canvas, but `mcp.click` on the canvas element works.
 - 5h. `mcp.press_key("Meta+v")` — Cmd+V, **LOWERCASE v** (uppercase V = Cmd+Shift+V).
 - 5i. `sleep 200ms` — wait for paste to land.
 
