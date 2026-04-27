@@ -7,7 +7,7 @@ argument-hint: ""
 
 ## What this does
 
-Drives the chrome-devtools MCP to land you in the Mac mini's CRD canvas. Detects an expired Google sign-in, locates the device tile, races canvas-vs-PIN to handle the case where CRD remembered the PIN, enters the PIN (handling both the single-input and 6-input variants of CRD's PIN page), dismisses any reconnect overlay, and finally cross-checks the Tailscale side-channel via `macmini-client health`. Never logs the PIN. Never screenshots the PIN page or the sign-in page (the latter may show the user's email).
+Drives the chrome-devtools MCP to land you in the Mac mini's CRD canvas. Detects an expired Google sign-in, locates the device tile, races canvas-vs-PIN to handle the case where CRD remembered the PIN, enters the PIN (handling both the single-input and 6-input variants of CRD's PIN page), and dismisses any reconnect overlay. Never logs the PIN. Never screenshots the PIN page or the sign-in page (the latter may show the user's email).
 
 ---
 
