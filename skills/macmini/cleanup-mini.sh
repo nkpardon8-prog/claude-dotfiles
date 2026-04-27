@@ -66,10 +66,10 @@ if [ "$should_remove_ts" = "1" ]; then
   rm -f "$HOME/Library/Logs/tailscaled.log"
   # Uninstall the formula or cask
   brew uninstall tailscale 2>/dev/null || true
-  echo "  ✓ Tailscale removed (userspace process killed, state cleared)."
+  echo "  OK: Tailscale removed (userspace process killed, state cleared)."
 else
-  echo "  ⓘ Leaving Tailscale installed. Pass --remove-tailscale to remove."
+  echo "  INFO: leaving Tailscale installed. Pass --remove-tailscale to remove."
 fi
 
-echo "✓ Mac mini cleaned. CRD itself untouched — keep it enabled for the new skill."
+echo "OK: Mac mini cleaned. CRD itself untouched — keep it enabled for the new skill."
 echo "Verify: ps aux | grep -v grep | grep macmini-server  (should be empty)"
