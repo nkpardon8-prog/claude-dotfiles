@@ -79,11 +79,11 @@ Follow the steps documented in `commands/macmini/auto-grant.md` mode=cdp. (The a
 - On miss: `mcp.wait_for('[aria-label*="${CRD_DEVICE_NAME}"]', 8s)` — substring fallback.
 - On miss again: take a screenshot of the device-list page (this page is PIN-safe), then abort with an actionable error: "Device tile `${CRD_DEVICE_NAME}` not found. Check that the Mac mini is online at https://remotedesktop.google.com/access and that `CRD_DEVICE_NAME` matches the EXACT name shown on the tile."
 
-### 6. Click the tile
+### 7. Click the tile
 
 `mcp.click(<device tile selector that matched>)`.
 
-### 7. Race: canvas vs PIN input
+### 8. Race: canvas vs PIN input
 
 Run two `wait_for` calls in parallel:
 
