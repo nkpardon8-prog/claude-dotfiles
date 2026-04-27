@@ -458,30 +458,13 @@ on that machine.
 
 ## Limitations & gotchas
 
-- **Shift mangling on direct typing** — always paste for shifted characters.
-- **`Cmd+Tab` and `Cmd+Space` need full-screen + Send System Keys** to be
-  reliable; `/macmini connect` sets this for you.
-- **Clipboard pre-granted by `/macmini auto-grant install`** (one-time
-  setup). If you ever see the clipboard prompt again, the policy was
-  reverted; re-run install + restart Chrome.
-- **Send System Keys auto-toggled ON by `/macmini connect`** (idempotent).
-- **macOS Screen Recording / Accessibility / Input Monitoring grants for
-  CRD host** are one-time on first install. To recover after a macOS
-  major upgrade or CRD reinstall:
-    `bash skills/macmini/scripts/open-tcc-pane.sh <screencapture|accessibility|inputmonitoring>`
-- **Sudo prompts need physical password typing** unless Touch ID is configured
-  on the Mac mini (it isn't by default). For sudo-needing tasks, delegate to
-  Mac mini Claude or have the user enter the password.
-- **No built-in file transfer** — paste a `curl` URL into Mac mini and have
-  it download. For binaries, host on a public URL or have Mac mini Claude
-  fetch from a known location.
-- **Clipboard sync ceiling ~64KB** — `/macmini paste` chunks anything larger;
-  recipient must concatenate.
-- **Mini → dev clipboard direction is brittle** — if `/macmini grab` returns
-  empty or stale, retry; or have Mac mini Claude `pbcopy` explicitly first.
-- **Driven grab (`/macmini grab driven`)** does NOT work for Terminal
-  scrollback — Cmd+A only selects visible region or nothing in Terminal. Use
-  manual mode for Terminal output.
+- **Shift mangling on direct typing** — `mcp.type_text` strips Shift. Capitals → lowercase, `$@!#%^&*()_+{}[]|\\:"<>?~` get remapped to wrong characters. **Always use `/macmini paste` for anything other than lowercase shell commands.** Verified failure mode 2026-04-27.
+- **CRD's a11y tree is stripped** — `mcp.take_snapshot()` returns `ignored` for nearly every CRD control. `mcp.click({uid})` cannot reach the side-panel toggles. The user clicks "Synchronize clipboard" + "Send system keys" ONCE manually at first connect (they persist). Don't try to automate it.
+- **Programmatic clipboard sync (dev → mini) is broken** — CRD's onPaste handler requires real user gestures; CDP-injected events are synthetic. `pbcopy` on dev followed by `mcp.press_key("Meta+v")` on the canvas pastes whatever was in mini's LOCAL clipboard, not what dev just copied. **This is why `/macmini paste` uses gist transport instead.**
+- **`Cmd+Tab` and `Cmd+Space` need full-screen + Send System Keys** to be reliable. The user's one-time toggle covers this.
+- **Sudo prompts need physical password typing** unless Touch ID is configured on the Mac mini. For sudo-needing tasks, delegate to Mac mini Claude (`claude` in mini Terminal — lowercase command works) or have the user enter the password.
+- **No built-in file transfer beyond gist** — for files use `gh gist clone` (handled by `/macmini paste`). For binaries that don't fit in a gist, host on a public URL and `curl` from mini.
+- **Mini → dev clipboard direction is also brittle** — if `/macmini grab` returns empty or stale, retry; or have Mac mini Claude `pbcopy` explicitly, then run `/macmini grab` again.
 
 ## Recovery patterns
 
