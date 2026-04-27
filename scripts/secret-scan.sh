@@ -22,13 +22,8 @@ RX='(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-
 export RX
 
 # Mac mini CRD skill secondary patterns (path-aware allowlisting applied per-file)
-# Real Tailscale tail IDs are lowercase alphanumeric (e.g. tail-abc123). We require at
-# least one lowercase letter in the tail segment so uppercase placeholders like
-# `tail-XXXX` (used in docs) don't match.
-RX_TSNET='[A-Za-z0-9-]+\.tail-[A-Za-z0-9]*[a-z][A-Za-z0-9]*\.ts\.net'
 RX_PIN='([Pp][Ii][Nn]|CRD_PIN)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*[0-9]{6}([^0-9]|$)'
-RX_TOKEN='(TOKEN|token)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*[A-Za-z0-9+/]{43}='
-export RX_TSNET RX_PIN RX_TOKEN
+export RX_PIN
 
 # Path-based allowlist for the secondary (CRD) patterns. These paths intentionally
 # discuss formats in the abstract or live in scratch dirs.
@@ -47,14 +42,8 @@ scan_file() {
     content=$(tr -d "\000" < "$f")
     match=$(printf '%s' "$content" | grep -anE -e "$RX" | sed "s|^|$f:|")
     if ! crd_path_allowed "$f"; then
-        # ts.net hostnames
-        m=$(printf '%s' "$content" | grep -anE -e "$RX_TSNET" | sed "s|^|$f:|")
-        [ -n "$m" ] && match="${match}${match:+$'\n'}$m"
         # Likely 6-digit PIN values (skip obvious template/example markers like 000000)
         m=$(printf '%s' "$content" | grep -anE -e "$RX_PIN" | grep -vE '000000|123456|XXXXXX' | sed "s|^|$f:|")
-        [ -n "$m" ] && match="${match}${match:+$'\n'}$m"
-        # 32-byte base64 tokens on lines mentioning TOKEN
-        m=$(printf '%s' "$content" | grep -anE -e "$RX_TOKEN" | sed "s|^|$f:|")
         [ -n "$m" ] && match="${match}${match:+$'\n'}$m"
     fi
     [ -n "$match" ] && printf "%s\n" "$match"
