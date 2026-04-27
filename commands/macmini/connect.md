@@ -90,9 +90,9 @@ Run two `wait_for` calls in parallel:
 - `mcp.wait_for('canvas', 30s)` — branch A: PIN was remembered, you're already in.
 - `mcp.wait_for('input[type="tel"], input[autocomplete="one-time-code"], input[inputmode="numeric"][maxlength="1"]', 8s)` — branch B: PIN entry needed.
 
-Whichever resolves first wins. If branch A wins, jump to step 11.
+Whichever resolves first wins. If branch A wins, jump to step 12.
 
-### 8. PIN entry — handle both variants
+### 9. PIN entry — handle both variants
 
 Determine which PIN UI is showing:
 
