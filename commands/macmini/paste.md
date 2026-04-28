@@ -197,6 +197,26 @@ Then go to Step 7 (gist cleanup) — skip Steps 1-6. The whole point of `--secur
 
 **Why this is safe even though gh gist is involved:** the gist file is the bootstrap script (a `read -s` prompt). GitHub secret-scanning has nothing to match against because the script literally contains no secret bytes. The user's typed secret never leaves the mini's local filesystem.
 
+### 0b. `--repaste` mode — re-fire the existing clipboard into a different focused app
+
+**Trigger:** the user's prompt contains `--repaste`, OR the user says "paste it again" / "do it once more in <other app>" right after a successful `/macmini paste` in the same session.
+
+**Mechanism:** no gist activity. The Mac mini's pasteboard still holds the bytes from the prior `/macmini paste` (provided no reboot, no other `Cmd+C` over it, no sleep-cycle clipboard wipe). Bring the new target app to focus, fire the same `Meta+v` + `Enter` sequence as Step 6.
+
+```
+1. mcp.list_pages() + mcp.select_page({pageId: <crd_uid>, bringToFront: true})
+2. mcp.take_screenshot() — confirm the intended target app is foreground on the canvas. If not, instruct user to bring it forward (or use Spotlight: mcp.press_key("Meta+space"); mcp.type_text("<app>", "Enter")).
+3. mcp.press_key("Meta+v")
+4. (default) mcp.press_key("Enter")
+5. mcp.take_screenshot() — confirm submission landed.
+```
+
+Skip step 4 (`Enter`) if the user used a clipboard-only trigger phrase from Step 6's list (`"don't submit"`, `"let me review"`, etc.). Default is auto-paste + Enter.
+
+**Verify the clipboard hasn't been clobbered.** Before firing, optionally run `mcp.type_text("pbpaste | head -c 80", "Enter")` (in a non-destructive context like an extra Terminal tab) and screenshot — if the output isn't the expected payload prefix, the clipboard was overwritten and `--repaste` will deliver the wrong bytes. In that case fall back to a fresh `/macmini paste` (or `/macmini paste --secure` for secrets).
+
+Then skip Steps 0-7 — `--repaste` is the entire flow.
+
 ### 1. Pre-flight
 
 `mcp.list_pages()`. Find the CRD page. If none, abort: `not connected — run /macmini connect first`. `mcp.select_page({pageId, bringToFront: true})`.
