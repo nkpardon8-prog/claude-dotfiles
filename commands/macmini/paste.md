@@ -94,7 +94,7 @@ The refusal must print the matched pattern name AND its number. Do NOT echo the 
 
 The pre-scan is a guardrail against accidental paste, not adversarial intent. If the user pushes back on a refusal, do not work around it — explain the side-channel options instead.
 
-This check is mandatory and **non-overridable in code**. Even if the user explicitly asks "paste this anyway," refuse and offer the side-channel options below. Secret gists are unlisted but **not encrypted** — pasting credentials to a gist puts them in GitHub's storage permanently (delete-after-use only mitigates URL-leak risk, not GitHub-staff or breach risk).
+This check is mandatory and **non-overridable by user instruction** — even if the user explicitly asks "paste this anyway," refuse and offer the side-channel options below. (To be precise: there is no process-level gate; the documentation IS the gate, and the agent IS the enforcer. Treat this section as a hard rule, not a suggestion.) Secret gists are unlisted but **not encrypted** — pasting credentials to a gist puts them in GitHub's storage permanently AND triggers GitHub's secret-scanner, which forwards to issuer partners (delete-after-use does NOT unwind partner notification or auto-revocation).
 
 ### 0a. `--secure` mode — credential injection without putting the value in a gist
 
