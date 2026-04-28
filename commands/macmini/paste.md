@@ -222,7 +222,9 @@ gh gist delete "$GIST_ID" --yes 2>/dev/null
 
 The `--yes` flag is required — `gh gist delete` exits non-zero in non-interactive shells without it.
 
-This prevents secret-gist accumulation on the user's GitHub account. Only skip deletion if the user passed `--keep-gist` (currently not parsed — feature TBD, behavior is always-delete).
+**Ordering note:** Step 7 runs on the dev side and is decoupled from any mini-side command that the user's `Enter` in Step 6 may have just kicked off. The dev-side `gh gist delete` and the mini-side execution proceed in parallel. The mini cloned `run.sh` to `/tmp/macmini-paste/run.sh` already, so deleting the gist now does NOT break the running script — the local clone is independent of the upstream gist.
+
+This prevents secret-gist accumulation on the user's GitHub account. Behavior is always-delete; there is no `--keep-gist` mode. If you need a gist that persists for re-cloning by another mini-side process, build it directly via `gh gist create` outside the `/macmini paste` flow rather than trying to bypass Step 7.
 
 ### 8. Final report
 
