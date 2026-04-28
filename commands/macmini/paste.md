@@ -1,11 +1,29 @@
 ---
-description: Send arbitrary text (capitals, symbols, unicode, multi-line) to the Mac mini's clipboard via gh gist transport — the only channel that survives CRD's Shift-stripping keyboard pipeline.
-argument-hint: "<text — multi-line OK, full Unicode, any printable characters>"
+description: Send arbitrary text (capitals, symbols, unicode, multi-line) to the Mac mini's clipboard via gh gist transport — the only channel that survives CRD's Shift-stripping keyboard pipeline. CREDENTIALS ARE BLOCKED — gist transport leaks them to GitHub secret-scanning partners; use --secure for credential injection.
+argument-hint: "<text — multi-line OK, full Unicode, any printable characters>     [--secure | --repaste]"
 ---
 
 # /macmini paste
 
 Sends ARBITRARY text to the Mac mini's clipboard via `gh gist`. CRD strips Shift on outbound keystrokes (`HELLO_WORLD` → `hello-world`, `$@!#%^&*()` get remapped to wrong chars), and CRD's clipboard sync needs real user gestures (CDP-injected events are synthetic). gist transport bypasses both: byte-perfect text is uploaded to a SECRET gist, then the Mac mini clones it locally with a clone command consisting only of unshifted chars.
+
+## ⚠ THREAT MODEL — secrets cannot ride this transport
+
+**GitHub runs secret-scanning on every gist, including unlisted/secret gists.** Detected credentials are forwarded to issuer partners (OpenAI, Anthropic, OpenRouter, AWS, Google Cloud, Stripe, Twilio, Slack, ~50 others — see [GitHub secret-scanning partner program](https://docs.github.com/en/code-security/secret-scanning/secret-scanning-partner-program)) within minutes. Issuers then **automatically revoke the key** — typically inside 5 minutes. **Deleting the gist after use does NOT unwind the revocation.**
+
+Real incident (logged in this skill's history): two OpenRouter keys were burned in <10 minutes each by routing them through a `/macmini paste` deploy script. The keys died before the deploy's smoke tests finished.
+
+**This is why Step 0 below is a HARD GATE, not a soft check.** The agent MUST refuse credential-shaped payloads with a loud, specific error message, NOT silently fall back to documentation. If the user pushes back, do not work around it — point them at `--secure` mode.
+
+For credential injection, use **`/macmini paste --secure <ENV_VAR_NAME>`** (Step 0a below). That mode never puts the value in a gist — it has the user paste the value directly into the mini Terminal via `read -s`, into a 0600-mode `.env` file. Zero git/gist exposure.
+
+## Modes
+
+| Mode | When to use | Mechanism |
+|---|---|---|
+| Default (auto-paste) | Non-secret text, scripts, code patches, multi-line bash | gist contains the payload, mini clones, bash runs, `pbcopy` puts it on the clipboard, agent fires `Meta+v` + `Enter`. |
+| `--secure <ENV_VAR_NAME>` | ANY credential value (API keys, tokens, passwords, op://-resolved secrets, .env contents) | gist contains a `read -s` prompt only — the value never touches GitHub. User pastes the secret into the mini Terminal directly. |
+| `--repaste` | Same payload needs to land in a different focused app, mid-session | Re-fires `Meta+v` against the focused app. Clipboard must still be valid (no reboot, no other `Cmd+C` over it). No new gist built. |
 
 ## Pre-requisites
 
