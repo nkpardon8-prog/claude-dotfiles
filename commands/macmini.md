@@ -25,7 +25,8 @@ When the user invokes `/macmini` (with or without arguments) **or references the
 | "connect" / "open the mini" | `/macmini connect` |
 | "disconnect" / "close session" | `/macmini disconnect` |
 | "status" / "is the mini up?" | `/macmini status` |
-| "send X" / "paste X" / "put X on mini's clipboard" | `/macmini paste "<X>"` (gist transport) |
+| "send X" / "paste X" / "put X on mini's clipboard" — non-secret | `/macmini paste "<X>"` (gist transport) |
+| "set the API key on the mini" / "deploy with my OPENROUTER key" / anything involving a credential value | `/macmini paste --secure <ENV_VAR_NAME>` (the agent surfaces a `read -s` prompt on the mini, the user types the secret directly — the value never enters a gist or git history) |
 | "what's on mini's clipboard?" / "grab" | `/macmini grab` |
 | "what's on the screen?" / "show me" | `mcp.take_screenshot()` direct |
 | "type lowercase command" / "run ls/pwd" | `mcp.type_text("<cmd>", "Enter")` |
