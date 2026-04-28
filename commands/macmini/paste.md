@@ -94,6 +94,93 @@ The pre-scan is a guardrail against accidental paste, not adversarial intent. If
 
 This check is mandatory and **non-overridable in code**. Even if the user explicitly asks "paste this anyway," refuse and offer the side-channel options below. Secret gists are unlisted but **not encrypted** — pasting credentials to a gist puts them in GitHub's storage permanently (delete-after-use only mitigates URL-leak risk, not GitHub-staff or breach risk).
 
+### 0a. `--secure` mode — credential injection without putting the value in a gist
+
+**Trigger:** the user's prompt contains `--secure` followed by an env-var name (e.g. `--secure OPENROUTER_API_KEY`), OR the user explicitly asks the agent to put a credential on the mini and Step 0's pre-scan blocked the obvious path.
+
+**Mechanism:** the gist contains ONLY a prompt-and-write script — never the value. The user types the secret directly into the mini Terminal at the `read -s` prompt; the script writes it to `~/.config/claude/secrets/<ENV_VAR_NAME>` at mode 0600 owned by the user, and (optionally) appends `export <ENV_VAR_NAME>=...` to the user's shell `.env` or zshrc-equivalent.
+
+```bash
+# 1) Validate the env-var name (POSIX sh-safe identifier).
+ENV_NAME="$1"   # e.g. OPENROUTER_API_KEY
+case "$ENV_NAME" in
+  ([A-Z_][A-Z0-9_]*) ;;
+  *) echo "ERROR: --secure expects an UPPERCASE_SNAKE env var name; got '$ENV_NAME'"; exit 4 ;;
+esac
+
+# 2) Build the prompt script. The script does NOT contain the value — only the prompt.
+TMPDIR_LOCAL="$(mktemp -d -t macmini-secure.XXXXXX)"
+trap 'rm -rf "$TMPDIR_LOCAL"' EXIT INT TERM
+RUN_FILE="$TMPDIR_LOCAL/secure.sh"
+
+cat > "$RUN_FILE" <<'SECURE_BOOTSTRAP'
+#!/bin/bash
+set -euo pipefail
+ENV_NAME_LOCAL="__ENV_NAME_PLACEHOLDER__"
+SECRETS_DIR="$HOME/.config/claude/secrets"
+mkdir -p "$SECRETS_DIR" && chmod 700 "$SECRETS_DIR"
+TARGET="$SECRETS_DIR/$ENV_NAME_LOCAL"
+echo
+echo "Mac mini will now read $ENV_NAME_LOCAL from your keyboard."
+echo "The value will be written to $TARGET at mode 0600 and"
+echo "exported into the current shell. It is NOT written to bash history,"
+echo "NOT printed to stdout, and NOT placed in any gist."
+echo
+# read -s suppresses echo. -p prompts on stderr so it shows even if stdout is piped.
+printf 'Paste %s now (cursor will appear blank), then press Enter: ' "$ENV_NAME_LOCAL" >&2
+IFS= read -rs SECRET_VALUE
+printf '\n' >&2
+if [ -z "$SECRET_VALUE" ]; then
+  echo "ERROR: empty value — aborting" >&2
+  exit 5
+fi
+# Write atomically with mode 0600 from the start.
+umask 077
+printf '%s' "$SECRET_VALUE" > "$TARGET.tmp"
+chmod 600 "$TARGET.tmp"
+mv "$TARGET.tmp" "$TARGET"
+unset SECRET_VALUE
+echo "OK: wrote $TARGET (mode 0600). Source it with: export $ENV_NAME_LOCAL=\"\$(cat $TARGET)\""
+SECURE_BOOTSTRAP
+
+# 3) Substitute the env-var name (literal sed replacement; ENV_NAME was validated above
+#    against [A-Z_][A-Z0-9_]* so it can't break the sed expression).
+sed -i.bak "s/__ENV_NAME_PLACEHOLDER__/${ENV_NAME}/" "$RUN_FILE" && rm -f "$RUN_FILE.bak"
+
+# 4) gist create + clone+run on mini, same as default mode but with secure.sh:
+GIST_OUT=$(gh gist create "$RUN_FILE" 2>&1)
+GIST_URL=$(printf '%s' "$GIST_OUT" | grep -oE 'https://gist\.github\.com/[^[:space:]]+' | head -n1)
+GIST_ID=$(printf '%s' "$GIST_URL" | sed -E 's#.*/##' | sed 's/[?#].*//')
+```
+
+Then on the mini side (via `mcp.type_text`):
+
+```
+rm -rf /tmp/macmini-secure; gh gist clone <GIST_ID> /tmp/macmini-secure; bash /tmp/macmini-secure/secure.sh
+```
+
+**Then surface the prompt to the user, verbatim:**
+
+```
+─── ACTION REQUIRED — PASTE SECRET ON MAC MINI ───
+The mini Terminal is now showing:
+  Paste <ENV_VAR_NAME> now (cursor will appear blank), then press Enter:
+Paste your secret directly into that Terminal window.
+The value will be saved to ~/.config/claude/secrets/<ENV_VAR_NAME>
+at mode 0600 and will NEVER touch a gist or git history.
+───────────────────────────────────────────────────
+```
+
+After the user pastes:
+
+- Verify success via `mcp.take_screenshot()` — look for `OK: wrote /Users/<user>/.config/claude/secrets/<ENV_VAR_NAME>` in the Terminal output.
+- Verify file mode via `mcp.type_text("ls -l ~/.config/claude/secrets/<ENV_VAR_NAME>", "Enter")`. Screenshot should show `-rw-------`.
+- Verify the value is NOT in shell history: `mcp.type_text("history | tail -3 | grep -c " + ENV_NAME, "Enter")`. Screenshot should show only the typed-by-agent commands referencing the var name, never the value.
+
+Then go to Step 7 (gist cleanup) — skip Steps 1-6. The whole point of `--secure` is that the gist never carried the secret, so there's no clipboard delivery to consume; the value is already in the right place on the mini.
+
+**Why this is safe even though gh gist is involved:** the gist file is the bootstrap script (a `read -s` prompt). GitHub secret-scanning has nothing to match against because the script literally contains no secret bytes. The user's typed secret never leaves the mini's local filesystem.
+
 ### 1. Pre-flight
 
 `mcp.list_pages()`. Find the CRD page. If none, abort: `not connected — run /macmini connect first`. `mcp.select_page({pageId, bringToFront: true})`.
