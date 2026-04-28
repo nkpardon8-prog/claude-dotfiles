@@ -15,6 +15,47 @@ Sends ARBITRARY text to the Mac mini's clipboard via `gh gist`. CRD strips Shift
 
 ## Sequence (single flow — no alternatives, no branching)
 
+### 0. Credential pre-scan — REFUSE if payload looks like a secret
+
+Before doing anything else, scan `$ARGUMENTS` against the patterns below. If ANY match, abort with the exact message:
+
+```
+BLOCKED: payload contains an apparent credential (matched: <pattern-name>).
+Re-run without the secret. Options:
+  (a) Reference the secret by env var name only — let the mini resolve it from its own keychain.
+  (b) For one-off injection: `op read 'op://<vault>/<item>/<field>' | gh gist create -f run.sh -` and have the mini clone it directly without /macmini paste.
+  (c) If you really need to paste a credential to the mini, paste a script that fetches it from 1Password / Keychain on the mini side, NOT the credential value itself.
+```
+
+Patterns to refuse — **check in this order** (first match wins, so the more specific patterns must come before more general ones):
+
+| # | Pattern name | Regex | Examples |
+|---|---|---|---|
+| 1 | `anthropic-key` | `\bsk-ant-[A-Za-z0-9_-]{16,}\b` | `sk-ant-api03-...` |
+| 2 | `openai-key` | `\bsk-(?!ant-)[A-Za-z0-9_-]{16,}\b` | `sk-...`, `sk-proj-...`, `sk-or-v1-...` |
+| 3 | `github-token` | `\bgh[pousr]_[A-Za-z0-9_]{20,}\b` | `ghp_...`, `gho_...`, `ghs_...` |
+| 4 | `aws-access-key` | `\b(AKIA\|ASIA)[0-9A-Z]{16}\b` | `AKIA...` (permanent), `ASIA...` (STS temp) |
+| 5 | `aws-secret-key-named` | `(?i)aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}` | `aws_secret_access_key=...`. Bare 40-char base64 secrets without the env var name are NOT detected — too generic to scan blindly. |
+| 6 | `slack-token` | `\bxox[baprs]-[A-Za-z0-9-]{10,}\b` | `xoxb-...` |
+| 7 | `google-api-key` | `\bAIza[0-9A-Za-z_-]{35}\b` | `AIza...` |
+| 8 | `private-key-block` | `-----BEGIN ((RSA\|EC\|OPENSSH\|DSA\|PGP\|ENCRYPTED) )?PRIVATE KEY-----` | PEM/SSH/PKCS8 private keys, encrypted or unencrypted |
+| 9 | `auth-header` | `(?i)\b(Authorization\|Proxy-Authorization)\s*[:=]\s*(Bearer\|Token)\s+\S{12,}` or `(?i)\bX-(API\|Auth)-Key\s*[:=]\s*\S{12,}` | `Authorization: Bearer ey...`, `X-API-Key: abc...` |
+| 10 | `1password-resolved` | `\bop://\S+\s+[A-Za-z0-9_/+=-]{20,}\b` or reverse — an `op://` ref appearing in the same payload as a long alphanumeric run is a strong "resolved-and-pasted" signal | resolved op refs leaked alongside the value |
+| 11 | `high-entropy-env-credential` | `(?i)\b(API_KEY\|PASSWORD\|PASSPHRASE\|PRIVATE_KEY\|SECRET_KEY\|ACCESS_KEY)\s*=\s*["']?(?!YOUR_\|EXAMPLE\|PLACEHOLDER\|REPLACE_ME\|CHANGEME\|xxx\|\*\*\*\|<)[A-Za-z0-9_/+=.-]{20,}["']?` | `API_KEY=abc123...`. Excludes obvious placeholders. `SECRET` and `TOKEN` alone are NOT in the alternation — too generic, false-positive prone (would refuse paste of plain prose like "the SECRET = see vault entry"). |
+
+The refusal must print the matched pattern name AND its number. Do NOT echo the matched bytes back — the redaction is part of the safety guarantee.
+
+**Bypass limits — known weaknesses the agent should call out to the user.** This pre-scan catches casual leaks (raw paste of an env var or a curl command). It does NOT defeat:
+
+- Multi-line splits (`sk-` on one line, hex on the next)
+- Base64-wrapped secrets (`echo c2stcHJvai0...| base64 -d`)
+- Unicode confusables / zero-width spaces (`ѕk-...` Cyrillic `s`, `sk​-proj-...`)
+- Adversarial encodings (rot13, URL-encoding, etc.)
+
+The pre-scan is a guardrail against accidental paste, not adversarial intent. If the user pushes back on a refusal, do not work around it — explain the side-channel options instead.
+
+This check is mandatory and **non-overridable in code**. Even if the user explicitly asks "paste this anyway," refuse and offer the side-channel options below. Secret gists are unlisted but **not encrypted** — pasting credentials to a gist puts them in GitHub's storage permanently (delete-after-use only mitigates URL-leak risk, not GitHub-staff or breach risk).
+
 ### 1. Pre-flight
 
 `mcp.list_pages()`. Find the CRD page. If none, abort: `not connected — run /macmini connect first`. `mcp.select_page({pageId, bringToFront: true})`.
@@ -77,17 +118,31 @@ esac
 
 Default is SECRET (no `-p`). Per the SECURITY rules below, NEVER paste tokens, `op://`-resolved values, env-var dumps, or `Authorization:` headers — secret gists are unlisted but **not** encrypted, are readable by GitHub staff, persist forever, and grant access to anyone who obtains the URL.
 
-### 5. Type the clone+execute command on Mac mini
+### 5. Validate the clone command is unshifted-safe, then type it
 
-The command uses ONLY lowercase letters, digits, dashes, slashes, and a semicolon — all unshifted on US keyboard, so CRD forwards them intact. The trailing `bash /tmp/macmini-paste/run.sh` runs the self-extracting script, which writes the payload to Mac mini's pasteboard via `pbcopy`.
+The clone+execute command MUST consist of ONLY characters in the unshifted-safe set: `[a-z0-9 \-/.;:_]`. Anything else (`>`, `&`, `|`, `~`, `$`, capitals, `*`, `?`, `(`, `)`, `{`, `}`, `[`, `]`, `\`, `'`, `"`, `<`, `=`, `+`, `^`, `%`, `#`, `@`, `!`, `&&`, `||`) will be Shift-stripped or remapped by CRD, silently mangling the command. The agent MUST validate before typing:
+
+```bash
+CLONE_CMD="rm -rf /tmp/macmini-paste; gh gist clone $GIST_ID /tmp/macmini-paste; bash /tmp/macmini-paste/run.sh"
+case "$CLONE_CMD" in
+  *[!a-z0-9\ \-/\.\;:_]*)
+    echo "ERROR: clone command contains shifted/unsafe chars — refusing to type"
+    exit 3
+    ;;
+esac
+```
+
+The hardcoded clone command above is shift-safe by construction (gist IDs are hex `[a-f0-9]{32}`). The validation step is a guard against future edits that introduce unsafe characters.
+
+Then type it:
 
 ```
 mcp.type_text("rm -rf /tmp/macmini-paste; gh gist clone " + GIST_ID + " /tmp/macmini-paste; bash /tmp/macmini-paste/run.sh", "Enter")
 ```
 
-Path `/tmp/macmini-paste` is namespaced (less collision-prone than `/tmp/p`). Note: this is still a TOCTOU pattern; on a single-user dev mini it's effectively safe.
+Path `/tmp/macmini-paste` is namespaced (less collision-prone than `/tmp/p`).
 
-### 6. Verify clone + execute landed cleanly
+### 6. Verify clone + execute landed cleanly, THEN consume the clipboard with Cmd+V + Enter
 
 ```
 mcp.take_screenshot()
@@ -95,11 +150,31 @@ mcp.take_screenshot()
 
 Visually confirm the Terminal output shows BOTH:
 - `Cloning into '/tmp/macmini-paste/'` (or `Receiving objects: 100%`) — clone succeeded
-- A fresh shell prompt at the bottom — `bash run.sh` exited cleanly (non-zero exit prints to stderr; if the prompt isn't returned, something is still running)
+- A fresh shell prompt at the bottom — `bash run.sh` exited cleanly
 
-If the screenshot shows `gh: command not found`, abort with: `Mac mini missing gh — install via 'brew install gh && gh auth login' on the mini once`. If 404 from clone, abort with: `gist clone 404 — mini's gh authenticated to a different account?`. If the prompt hasn't returned within 5 seconds, screenshot again — slow network can take 5-15s.
+**Detect Shift-strip mangling FIRST.** If the screenshot shows ANY of the following, the typed command was mangled by CRD:
+- `bquote>` or `quote>` continuation prompt (zsh waiting for matching backtick or quote)
+- `>` continuation prompt (zsh waiting for matching paren / brace / quote)
+- `cmdand>` or `cmdor>` (zsh waiting after `&&` or `||`)
+- `cmdsubst>` (zsh waiting for matching `$(...)`)
+- `gh: command not found` after a clone command (means `gh` got typed as something else)
 
-Only AFTER the prompt returns and clone+bash both look clean: the Mac mini's pasteboard now holds the original text. The agent (or a downstream Cmd+V on a focused mini-side app) can use it.
+If ANY of those are visible, abort with: `CRD shift-strip detected — typed command was mangled (continuation prompt visible). Press Control+c then Control+c to recover the prompt, then retry. If retry also mangles, the canvas keystroke pipeline is degraded — disconnect and reconnect.` Press `Control+c` twice yourself to clear the line, then return.
+
+If the screenshot shows `gh: command not found` cleanly (no continuation prompt, just the error), abort with: `Mac mini missing gh — install via 'brew install gh && gh auth login' on the mini once`. If 404 from clone, abort with: `gist clone 404 — mini's gh authenticated to a different account?`. If the prompt hasn't returned within 5 seconds, screenshot again — slow network can take 5-15s.
+
+**Only AFTER the prompt returns cleanly:** the Mac mini's pasteboard now holds the original text. To **consume** it (paste into the focused app — Terminal, editor, Claude Code TUI, whatever was foreground BEFORE you ran /macmini paste), fire the keys:
+
+```
+mcp.press_key("Meta+v")    # paste clipboard into focused field
+mcp.press_key("Enter")     # submit
+```
+
+This is the **default behavior** — the agent must do this last step. The wrapper script's job is to put the bytes on the clipboard; this step delivers them into the app the user actually wanted them in. Skip the `Enter` ONLY if the user explicitly said "just put it on the clipboard, don't submit" (e.g., they want to paste into a multi-line editor and review before submitting).
+
+If you skip the `Enter`: still fire `Meta+v` so the clipboard contents land in the editor; the user submits manually.
+
+**Idempotent re-paste:** if the same payload needs to land in a different app (or the same app a second time), the clipboard is still valid — just bring the target app to focus and re-fire `mcp.press_key("Meta+v")`. No new gist needed. Only build a new gist if `$ARGUMENTS` actually changed.
 
 ### 7. Cleanup the gist
 
