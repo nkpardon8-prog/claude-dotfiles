@@ -160,11 +160,15 @@ GIST_URL=$(printf '%s' "$GIST_OUT" | grep -oE 'https://gist\.github\.com/[^[:spa
 GIST_ID=$(printf '%s' "$GIST_URL" | sed -E 's#.*/##' | sed 's/[?#].*//')
 ```
 
-Then on the mini side (via `mcp.type_text`):
+Then on the mini side, type the clone+execute command via `mcp.type_text` — interpolate the `$GIST_ID` from the dev-side bash, do not type the literal `<GIST_ID>` token:
 
 ```
-rm -rf /tmp/macmini-secure; gh gist clone <GIST_ID> /tmp/macmini-secure; bash /tmp/macmini-secure/secure.sh
+mcp.type_text("rm -rf /tmp/macmini-secure; gh gist clone " + GIST_ID + " /tmp/macmini-secure; bash /tmp/macmini-secure/secure.sh", "Enter")
 ```
+
+**Filename invariant.** The `gh gist create` call above uploaded `secure.sh` (the basename of `$RUN_FILE`); `gh gist clone <id>` lands files at `/tmp/macmini-secure/<filename>`. The hardcoded `bash /tmp/macmini-secure/secure.sh` only works if the gist filename is exactly `secure.sh`. Don't rename `$RUN_FILE` without updating the typed command.
+
+**Validate the typed string is shift-safe** before sending it (Step 5's `LC_ALL=C` `case` glob applies — gist IDs are hex `[a-f0-9]{32}` so this is shift-safe by construction).
 
 **Then surface the prompt to the user, verbatim:**
 
