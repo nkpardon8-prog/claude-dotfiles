@@ -33,16 +33,36 @@ For credential injection, use **`/macmini paste --secure <ENV_VAR_NAME>`** (Step
 
 ## Sequence (single flow — no alternatives, no branching)
 
-### 0. Credential pre-scan — REFUSE if payload looks like a secret
+### 0. Credential pre-scan — HARD GATE: refuse and surface the threat
 
-Before doing anything else, scan `$ARGUMENTS` against the patterns below. If ANY match, abort with the exact message:
+Before doing anything else, scan `$ARGUMENTS` against the patterns below. If ANY match, **abort immediately** with this exact, loud error message — print it verbatim to the user's terminal, do NOT silently return docs, do NOT proceed to Step 1:
 
 ```
-BLOCKED: payload contains an apparent credential (matched: <pattern-name>).
-Re-run without the secret. Options:
-  (a) Reference the secret by env var name only — let the mini resolve it from its own keychain.
-  (b) For one-off injection: `op read 'op://<vault>/<item>/<field>' | gh gist create -f run.sh -` and have the mini clone it directly without /macmini paste.
-  (c) If you really need to paste a credential to the mini, paste a script that fetches it from 1Password / Keychain on the mini side, NOT the credential value itself.
+═══════════════════════════════════════════════════════════════════════
+BLOCKED: payload contains an apparent credential (matched pattern #<N>: <pattern-name>).
+═══════════════════════════════════════════════════════════════════════
+
+Why this is blocked:
+  GitHub runs secret-scanning on every gist (including unlisted/secret).
+  Detected credentials are forwarded to issuer partners (OpenAI, Anthropic,
+  OpenRouter, AWS, Google Cloud, Stripe, ~50 others) within minutes.
+  Issuers AUTO-REVOKE the key — typically inside 5 minutes. Deleting the
+  gist does NOT unwind the revocation.
+
+What to do instead:
+  • For credential injection — run:
+      /macmini paste --secure <ENV_VAR_NAME>
+    The agent will create a gist containing only a `read -s` prompt
+    (no value), and you'll paste the secret directly into the mini
+    Terminal. Zero gist/git exposure.
+
+  • For 1Password references — use /load-creds on the mini side instead
+    of pasting op:// strings.
+
+  • For deploy scripts that need to USE a credential — have the deploy
+    script reference the env var by name (e.g. `$OPENROUTER_API_KEY`)
+    and inject the value separately with `--secure`.
+═══════════════════════════════════════════════════════════════════════
 ```
 
 Patterns to refuse — **check in this order** (first match wins, so the more specific patterns must come before more general ones):
