@@ -9,7 +9,7 @@ Sends ARBITRARY text to the Mac mini's clipboard via `gh gist`. CRD strips Shift
 
 ## ⚠ THREAT MODEL — secrets cannot ride this transport
 
-**GitHub runs secret-scanning on every gist, including unlisted/secret gists.** Detected credentials are forwarded to issuer partners (OpenAI, Anthropic, OpenRouter, AWS, Google Cloud, Stripe, Twilio, Slack, ~50 others — see [GitHub secret-scanning partner program](https://docs.github.com/en/code-security/secret-scanning/secret-scanning-partner-program)) within minutes. Issuers then **automatically revoke the key** — typically inside 5 minutes. **Deleting the gist after use does NOT unwind the revocation.**
+**GitHub runs secret-scanning on every gist, including unlisted/secret gists.** Detected credentials are forwarded to issuer partners (OpenAI, Anthropic, OpenRouter, AWS, Google Cloud, Stripe, Twilio, Slack, ~50 others — see [GitHub secret-scanning partner program](https://docs.github.com/en/code-security/secret-scanning/secret-scanning-partner-program)) within minutes. Issuers then **automatically revoke the key** — typically minutes (seconds-to-minutes for major providers like OpenAI / Anthropic / OpenRouter; some smaller partners take longer). **Deleting the gist after use does NOT unwind the revocation.**
 
 Real incident (logged in this skill's history): two OpenRouter keys were burned in <10 minutes each by routing them through a `/macmini paste` deploy script. The keys died before the deploy's smoke tests finished.
 
