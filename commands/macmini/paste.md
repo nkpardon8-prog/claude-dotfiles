@@ -96,16 +96,23 @@ This check is mandatory and **non-overridable in code**. Even if the user explic
 
 ### 0a. `--secure` mode — credential injection without putting the value in a gist
 
-**Trigger:** the user's prompt contains `--secure` followed by an env-var name (e.g. `--secure OPENROUTER_API_KEY`), OR the user explicitly asks the agent to put a credential on the mini and Step 0's pre-scan blocked the obvious path.
+**Trigger:** the user's prompt contains `--secure` followed by an env-var name (e.g. `/macmini paste --secure OPENROUTER_API_KEY`), OR the user explicitly asks the agent to put a credential on the mini and Step 0's pre-scan blocked the obvious path.
 
-**Mechanism:** the gist contains ONLY a prompt-and-write script — never the value. The user types the secret directly into the mini Terminal at the `read -s` prompt; the script writes it to `~/.config/claude/secrets/<ENV_VAR_NAME>` at mode 0600 owned by the user, and (optionally) appends `export <ENV_VAR_NAME>=...` to the user's shell `.env` or zshrc-equivalent.
+**Mechanism:** the gist contains ONLY a prompt-and-write script — never the value. The user types the secret directly into the mini Terminal at the `read -s` prompt; the script writes it to `~/.config/claude/secrets/<ENV_VAR_NAME>` at mode 0600 owned by the user. The deploy script that needs the value loads it via `export <ENV_VAR_NAME>="$(cat ~/.config/claude/secrets/<ENV_VAR_NAME>)"` — never `source`, since the file contains a raw value (not a shell assignment).
 
 ```bash
-# 1) Validate the env-var name (POSIX sh-safe identifier).
-ENV_NAME="$1"   # e.g. OPENROUTER_API_KEY
+# 1) Parse $ARGUMENTS for --secure <NAME>. Slash commands deliver the full
+#    user prompt as the single $ARGUMENTS variable — $1 is empty here.
+#    Use `set --` to position-split, then look for the --secure token.
+set -- $ARGUMENTS
+ENV_NAME=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--secure" ]; then ENV_NAME="${2:-}"; break; fi
+  shift
+done
 case "$ENV_NAME" in
   ([A-Z_][A-Z0-9_]*) ;;
-  *) echo "ERROR: --secure expects an UPPERCASE_SNAKE env var name; got '$ENV_NAME'"; exit 4 ;;
+  *) echo "ERROR: --secure expects an UPPERCASE_SNAKE env var name; got '${ENV_NAME:-<empty>}'"; exit 4 ;;
 esac
 
 # 2) Build the prompt script. The script does NOT contain the value — only the prompt.
