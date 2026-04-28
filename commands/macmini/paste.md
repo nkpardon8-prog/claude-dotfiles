@@ -189,13 +189,25 @@ If the screenshot shows `gh: command not found` cleanly (no continuation prompt,
 ```
 mcp.press_key("Meta+v")    # paste clipboard into focused field
 mcp.press_key("Enter")     # submit
+mcp.take_screenshot()      # confirm submission landed
 ```
 
-This is the **default behavior** — the agent must do this last step. The wrapper script's job is to put the bytes on the clipboard; this step delivers them into the app the user actually wanted them in. Skip the `Enter` ONLY if the user explicitly said "just put it on the clipboard, don't submit" (e.g., they want to paste into a multi-line editor and review before submitting).
+This is the **default behavior** — the agent must do all three. The wrapper script's job is to put the bytes on the clipboard; the `Meta+v` delivers them into the app the user actually wanted them in; the `Enter` submits; the screenshot is the receipt that the submission was accepted (e.g., agent prompt-line cleared, target app shows the new content).
 
-If you skip the `Enter`: still fire `Meta+v` so the clipboard contents land in the editor; the user submits manually.
+**Skip the `Enter` ONLY if the user explicitly used one of these clipboard-only trigger phrases:**
 
-**Idempotent re-paste:** if the same payload needs to land in a different app (or the same app a second time), the clipboard is still valid — just bring the target app to focus and re-fire `mcp.press_key("Meta+v")`. No new gist needed. Only build a new gist if `$ARGUMENTS` actually changed.
+- "just to clipboard" / "just put it on the clipboard"
+- "don't submit" / "don't send" / "don't run it"
+- "let me review" / "let me check first" / "stage it" / "queue it up"
+- "no enter" / "hold off"
+
+If the user's request is ambiguous (e.g., "send this to the mini" without "submit" or "review"), default to auto-paste + Enter. If unclear AND the destination is destructive (running shell commands, sending messages, submitting forms), ask the user one short question rather than guessing.
+
+When skipping `Enter`: still fire `Meta+v` so the clipboard contents land in the focused editor / input field; the user submits manually.
+
+**Idempotent re-paste — Cmd+V replay only.** The Mac mini's system pasteboard retains the bytes after Step 6, so to land the SAME payload in a different focused app, just bring it forward and re-fire `mcp.press_key("Meta+v")`. No new gist needed.
+
+**This is replay-only. The gist itself is deleted in Step 7**, so re-cloning it on the mini side (e.g., for mini Claude in another terminal to fetch the script independently) is not possible from a default-mode paste. If you anticipate that case (rare), build a new gist with a fresh `/macmini paste` invocation. Clipboard-replay also breaks if the mini reboots or if any other app does its own `Cmd+C` and overwrites the pasteboard — in that case, also re-paste fresh.
 
 ### 7. Cleanup the gist
 
