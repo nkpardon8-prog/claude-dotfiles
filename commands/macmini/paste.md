@@ -178,11 +178,16 @@ at mode 0600 and will NEVER touch a gist or git history.
 ───────────────────────────────────────────────────
 ```
 
-After the user pastes:
+After the user pastes, verify with REAL checks (not theater):
 
-- Verify success via `mcp.take_screenshot()` — look for `OK: wrote /Users/<user>/.config/claude/secrets/<ENV_VAR_NAME>` in the Terminal output.
-- Verify file mode via `mcp.type_text("ls -l ~/.config/claude/secrets/<ENV_VAR_NAME>", "Enter")`. Screenshot should show `-rw-------`.
-- Verify the value is NOT in shell history: `mcp.type_text("history | tail -3 | grep -c " + ENV_NAME, "Enter")`. Screenshot should show only the typed-by-agent commands referencing the var name, never the value.
+- `mcp.take_screenshot()` — look for `OK: wrote /Users/<user>/.config/claude/secrets/<ENV_VAR_NAME>` in the Terminal output.
+- File mode + non-empty: `mcp.type_text("stat -f %Lp ~/.config/claude/secrets/" + ENV_NAME + " && wc -c < ~/.config/claude/secrets/" + ENV_NAME, "Enter")`. Screenshot should show `600` on one line and a plausible byte count (≥20 for any real API key) on the next.
+
+**Why no shell-history check?** `read -rs` doesn't echo or push the value into history; the secret was never typed at the prompt, so `history | grep $ENV_NAME` would find only the agent's own commands and confirm nothing about safety. It's theater. The mode-0600 + non-empty check above is the real verification.
+
+**Multi-line secret caveat.** `IFS= read -rs SECRET_VALUE` reads ONE line. If the user pastes a multi-line PEM/private-key, only the first line lands in the file. For multi-line secrets, instruct the user instead: bring mini Terminal forward, run `cat > ~/.config/claude/secrets/<NAME> && chmod 600 ~/.config/claude/secrets/<NAME>` (single quotes around the heredoc terminator if pasting from clipboard with `Ctrl+D` to end), paste the multi-line content, then `Ctrl+D`. `--secure` mode is single-line-only by design.
+
+**Rotation.** Re-running `/macmini paste --secure OPENROUTER_API_KEY` for the same env var name overwrites the file atomically (the bootstrap writes `$TARGET.tmp` then `mv`s into place). Old value is replaced on success; if the user aborts at the prompt, the old value is retained.
 
 Then go to Step 7 (gist cleanup) — skip Steps 1-6. The whole point of `--secure` is that the gist never carried the secret, so there's no clipboard delivery to consume; the value is already in the right place on the mini.
 
