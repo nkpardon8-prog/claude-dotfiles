@@ -120,19 +120,28 @@ Default is SECRET (no `-p`). Per the SECURITY rules below, NEVER paste tokens, `
 
 ### 5. Validate the clone command is unshifted-safe, then type it
 
-The clone+execute command MUST consist of ONLY characters in the unshifted-safe set: `[a-z0-9 \-/.;:_]`. Anything else (`>`, `&`, `|`, `~`, `$`, capitals, `*`, `?`, `(`, `)`, `{`, `}`, `[`, `]`, `\`, `'`, `"`, `<`, `=`, `+`, `^`, `%`, `#`, `@`, `!`, `&&`, `||`) will be Shift-stripped or remapped by CRD, silently mangling the command. The agent MUST validate before typing:
+The clone+execute command MUST consist of ONLY characters in the unshifted-safe set: `[a-z0-9 /.;:_-]`. Anything else (`>`, `&`, `|`, `~`, `$`, capitals A-Z, `*`, `?`, `(`, `)`, `{`, `}`, `[`, `]`, `\`, `'`, `"`, `<`, `=`, `+`, `^`, `%`, `#`, `@`, `!`, `&&`, `||`) will be Shift-stripped or remapped by CRD, silently mangling the command. The agent MUST validate before typing:
 
 ```bash
 CLONE_CMD="rm -rf /tmp/macmini-paste; gh gist clone $GIST_ID /tmp/macmini-paste; bash /tmp/macmini-paste/run.sh"
-case "$CLONE_CMD" in
-  *[!a-z0-9\ \-/\.\;:_]*)
-    echo "ERROR: clone command contains shifted/unsafe chars — refusing to type"
-    exit 3
-    ;;
-esac
+
+# CRITICAL: force C locale, otherwise [a-z] under en_US.UTF-8 matches A-Z too,
+# silently letting capitals through. Use ^ (POSIX) for negation, not ! (bash-only).
+# Inside [ ], dot/semicolon/colon/underscore are literal — no backslash escapes needed.
+# Put `-` last so it's literal, not a range delimiter.
+if LC_ALL=C bash -c '
+  case "$1" in
+    (*[^a-z0-9\ /.\;:_-]*) exit 3 ;;
+  esac
+' _ "$CLONE_CMD"; then
+  : # safe
+else
+  echo "ERROR: clone command contains shifted/unsafe chars — refusing to type"
+  exit 3
+fi
 ```
 
-The hardcoded clone command above is shift-safe by construction (gist IDs are hex `[a-f0-9]{32}`). The validation step is a guard against future edits that introduce unsafe characters.
+The hardcoded clone command above is shift-safe by construction (gist IDs are hex `[a-f0-9]{32}`). The validation step is a load-bearing guard against future edits that parameterize the command and accidentally introduce unsafe characters. **Do not delete this check** — it costs nothing and prevents silent canvas-mangling regressions.
 
 Then type it:
 
