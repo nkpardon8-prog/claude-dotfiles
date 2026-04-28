@@ -161,12 +161,24 @@ Visually confirm the Terminal output shows BOTH:
 - `Cloning into '/tmp/macmini-paste/'` (or `Receiving objects: 100%`) — clone succeeded
 - A fresh shell prompt at the bottom — `bash run.sh` exited cleanly
 
-**Detect Shift-strip mangling FIRST.** If the screenshot shows ANY of the following, the typed command was mangled by CRD:
-- `bquote>` or `quote>` continuation prompt (zsh waiting for matching backtick or quote)
-- `>` continuation prompt (zsh waiting for matching paren / brace / quote)
-- `cmdand>` or `cmdor>` (zsh waiting after `&&` or `||`)
-- `cmdsubst>` (zsh waiting for matching `$(...)`)
-- `gh: command not found` after a clone command (means `gh` got typed as something else)
+**Detect Shift-strip mangling FIRST.** The universal signal across shells is **a fresh line ending in `> ` (or some other prompt-2 / continuation prompt) instead of the user's normal prompt returning**. The shell-specific keyword variants below help identify the cause, but the universal heuristic is "the prompt didn't come back; instead a `>`-style continuation marker is on the last line."
+
+Universal signal:
+- Last line of the screenshot is a continuation prompt (`> `, `>>`, `… `, or any line with no normal `% `/`$ `/`# ` PS1 marker after the typed command). The user's PS2 is whatever they configured; under default zsh it's `%_> ` and expands to keyword names below.
+
+Default-zsh keyword continuation prompts (your `PS2='%_> '` produces these):
+- `bquote>` (waiting for matching backtick)
+- `quote>` / `dquote>` (waiting for matching single / double quote)
+- `cmdand>` / `cmdor>` (waiting after `&&` / `||`)
+- `cmdsubst>` (waiting for matching `$(...)`)
+- `heredoc>` (inside an unterminated heredoc body)
+- `for>` / `while>` / `if>` / `then>` / `else>` / `select>` (compound-command continuation)
+
+Bash, fish, and customized PS2 simply show `> ` or whatever the user set — same diagnosis: shell expected more input.
+
+Other mangling signs:
+- `gh: command not found` after a clone command (means `gh` got remapped by Shift-stripping into something else)
+- The clone command itself appears in the screenshot with visibly wrong characters (e.g., `>` instead of `;`, missing dashes)
 
 If ANY of those are visible, abort with: `CRD shift-strip detected — typed command was mangled (continuation prompt visible). Press Control+c then Control+c to recover the prompt, then retry. If retry also mangles, the canvas keystroke pipeline is degraded — disconnect and reconnect.` Press `Control+c` twice yourself to clear the line, then return.
 
