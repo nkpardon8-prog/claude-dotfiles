@@ -108,11 +108,14 @@ This guarantees: (a) no dev-side shell expansion of payload, (b) heredoc termina
 ### 4. Upload as a SECRET gist
 
 ```bash
-GIST_URL=$(gh gist create "$RUN_FILE" 2>/dev/null | tail -n1)
+# Extract URL via grep — gh may print login nags or warnings to stdout in some
+# configs, so `tail -n1` would catch the wrong line. Pin to the gist URL shape.
+GIST_OUT=$(gh gist create "$RUN_FILE" 2>&1)
+GIST_URL=$(printf '%s' "$GIST_OUT" | grep -oE 'https://gist\.github\.com/[^[:space:]]+' | head -n1)
 GIST_ID=$(printf '%s' "$GIST_URL" | sed -E 's#.*/##' | sed 's/[?#].*//')
 case "$GIST_ID" in
-  [a-f0-9]*) ;;
-  *) echo "ERROR: unexpected gist URL: $GIST_URL"; exit 2 ;;
+  ([a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]*) ;;
+  *) echo "ERROR: gh did not produce a recognizable gist URL. Output: $GIST_OUT"; exit 2 ;;
 esac
 ```
 
