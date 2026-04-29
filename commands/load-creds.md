@@ -120,7 +120,7 @@ done
 
 - Parse existing `.env.op` if present into a key-value map (preserve comments and blank lines as a separate ordered list — re-emit them in their original positions if possible; otherwise put them at the top).
 - For each requested env var found in the catalog: upsert the key. Last write wins on duplicates.
-- **Quote values containing spaces or special characters**: emit `KEY="op://Personal/Google AI/credential"`, not `KEY=op://Personal/Google AI/credential`.
+- **Quote values containing spaces or special characters**: emit `KEY="op://<VAULT>/Google AI/credential"`, not `KEY=op://<VAULT>/Google AI/credential`.
 - Warn the user about any requested vars NOT in the catalog — those need to be added to `~/.config/claude/credentials.md` or pasted manually.
 - Write the merged result back to `.env.op`.
 

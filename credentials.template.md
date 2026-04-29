@@ -40,4 +40,13 @@ The examples below use `<VAULT>` as a placeholder. Replace with your actual 1Pas
 | SUPABASE_ANON_KEY             | op://<VAULT>/Supabase Default/anon key               | Public client key     |
 | SUPABASE_SERVICE_ROLE_KEY     | op://<VAULT>/Supabase Default/service role key       | Server-side admin key |
 
+## Mac mini remote (CRD skill)
+
+> CRD_PIN is set when you create the CRD device on the Mac mini. CRD_DEVICE_NAME is the aria-label shown on the device tile at https://remotedesktop.google.com/access (typically the Mac mini's macOS hostname or a user-set name).
+
+| Env Var               | op:// Reference                          | Used For                                                                                                                                                                  |
+|-----------------------|------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| CRD_PIN               | op://<VAULT>/Mac mini CRD/PIN            | 6-digit Chrome Remote Desktop connection PIN                                                                                                                              |
+| CRD_DEVICE_NAME       | op://<VAULT>/Mac mini CRD/Device Name    | CRD device-tile aria-label — the name on remotedesktop.google.com/access. Often the macOS hostname; check by visiting that URL.                                           |
+
 ## (extend as you add services — DB URLs, OAuth secrets, webhook secrets, signing keys, etc.)
