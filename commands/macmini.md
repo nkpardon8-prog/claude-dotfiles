@@ -31,6 +31,8 @@ When the user invokes `/macmini` (with or without arguments) **or references the
 | "what's on the screen?" / "show me" | `mcp.take_screenshot()` direct |
 | "type lowercase command" / "run ls/pwd" | `mcp.type_text("<cmd>", "Enter")` |
 | "press Enter / Cmd+V / Cmd+space" | `mcp.press_key("<key>")` |
+| "click <something visible>" / "click the X button" / "click on Y" | `mcp.click_at({x, y})` after geometry conversion (validated 2026-04-30 — see `skills/macmini/docs/AGENT-GUIDE.md` → "Clicking on the canvas" for the recipe). Requires `--experimental-vision` enabled (one-time setup). Convert screenshot pixels → CSS pixels via `devicePixelRatio`, verify on-canvas + `elementFromPoint` returns canvas (not popup/toolbar), then click. |
+| "drag X to Y" / "right-click" / "Cmd-click" | cliclick fallback on mini side (one-time `brew install cliclick` + Accessibility TCC). See AGENT-GUIDE.md for measure-once procedure (cliclick uses mini physical pixels, not CSS). |
 | "open <app>" / "switch to <app>" | Spotlight: `press_key("Meta+space")` → `type_text("<app lowercase>", "Enter")` |
 | Multi-step / sudo / multi-file work | Delegate to Mac mini Claude: `type_text("claude --dangerously-skip-permissions", "Enter")`, screenshot to confirm, then `/macmini paste` the prompt → Cmd+V → Enter |
 | Any text with capitals / `$@!#%` / unicode | **Always** `/macmini paste`, never `type_text` |
