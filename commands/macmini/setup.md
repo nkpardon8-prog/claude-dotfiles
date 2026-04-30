@@ -24,11 +24,13 @@ Example MCP config snippet:
   "mcpServers": {
     "chrome-devtools": {
       "command": "npx",
-      "args": ["chrome-devtools-mcp"]
+      "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect", "--experimental-vision"]
     }
   }
 }
 ```
+
+The `--experimental-vision` flag unlocks `mcp.click_at(x, y)` — pixel-precise clicking on anything visible in the CRD canvas. Without it, the agent can only click via a11y `uid`s, which is severely limited inside the CRD canvas because CRD strips its accessibility tree. For fresh-machine setup, run `~/.claude-dotfiles/scripts/enable-experimental-vision.sh` instead of hand-editing the JSON — the script idempotently adds the flag via `jq` and is safe to re-run.
 
 After editing the MCP config, **restart Claude Code (or your MCP host)** so the MCP loads.
 
