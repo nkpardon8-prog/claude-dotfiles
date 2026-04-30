@@ -141,7 +141,13 @@ For non-mandatory cases (focus changes, app launches, scrolling), verify-after i
 
 ### Modifier + click is NOT supported via click_at
 
-Cmd-click, Shift-click, Option-click via separate `press_key("Meta")` + `click_at(...)` calls is RACY — modifier-down state is not held across MCP-call boundaries. Use cliclick instead (atomic single shell command). See fallback section below.
+Cmd-click, Shift-click, Option-click via separate `press_key("Meta")` + `click_at(...)` calls is RACY — modifier-down state is not held across MCP-call boundaries. Use cliclick instead (atomic single shell command — the modifier down/click/up sequence happens in a single shell invocation). See fallback section below.
+
+**If cliclick scale is unmeasured for this mini** (the measure-once procedure in the fallback section hasn't been run yet), the agent CANNOT compute correct cliclick coords. Options when blocked:
+- For Cmd-click on a link in a browser: Tab to the link via `press_key("Tab")` repeatedly until the link is focused, then `mcp.press_key("Meta+Return")` to open in a new tab — same effect as Cmd-click, no clicking needed.
+- For Cmd-click on a Finder file (multi-select): use `mcp.press_key("Meta+a")` to select all, or arrow-key navigation + `mcp.press_key("Space")` for Quick Look.
+- For Shift-click range select: arrow keys + `Shift+ArrowDown` extends selection without clicking.
+- If keyboard equivalents don't exist for the target action: ask the user to run the cliclick measure-once procedure for this mini before proceeding.
 
 ### Fallback: cliclick on the mini side
 
