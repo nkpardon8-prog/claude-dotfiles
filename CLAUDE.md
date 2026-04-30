@@ -153,13 +153,6 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/parsa:refactor:medium` | User asks for a refactor analysis or quality score on a medium-sized change | No |
 | `/parsa:refactor:deep` | User asks for a deep refactor or architectural review of a large change | No |
 | `/parsa:refactor:refactor-full` | User asks for a comprehensive full refactor analysis across all dimensions | No |
-| `/parsa:cl:create_plan` | User wants to create a plan interactively with back-and-forth on approach | No |
-| `/parsa:cl:implement_plan` | User explicitly references a plan file by path or says "run the plan from ready-plans" | No |
-| `/parsa:cl:iterate_plan` | User wants to update or revise an existing plan based on feedback | No |
-| `/parsa:cl:describe_pr` | User asks to write a PR description or generate PR notes | No |
-| `/parsa:cl:commit` | User asks to commit but wants to approve what gets staged first | YES — git write |
-| `/parsa:cl:research_codebase` | User asks a deep question about how the codebase works and wants file-level references | No |
-| `/parsa:cl:research_web` | User asks to research a technical topic, find docs, or look up implementation patterns | No |
 | `fraim → create-clarity` | User has a vague or under-specified ask that needs scoping before work starts | No |
 | `fraim → fully-delegate` | User explicitly says "handle this", "just do it", or hands off full decision authority | No |
 | `fraim → need-pov` | User has no strong preference and wants Claude to recommend before acting | No |
@@ -480,3 +473,5 @@ The MCP server "molecopilot" exposes 22 tools for the full docking pipeline. Use
 - Ligands: ~/molecopilot/data/ligands/
 - Results: ~/molecopilot/data/results/{project_name}/
 - Reports: ~/molecopilot/reports/
+
+@CLAUDE.local.md

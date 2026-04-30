@@ -1,5 +1,5 @@
 ---
-description: Commits changes grouped by done-plans, rebases main, builds API and webapp, then creates or updates a PR. Replaces the commit command. Use when you're ready to open or update a pull request.
+description: Commits changes grouped by done-plans, rebases main, builds the project, then creates or updates a PR. Replaces the commit command. Use when you're ready to open or update a pull request.
 argument-hint: "[optional: PR title or description]"
 ---
 
@@ -47,6 +47,32 @@ For each group:
    - If the resolution is **ambiguous** (e.g., both sides changed the same logic, semantic conflicts), show the user the conflict with context and ask them how to resolve it. Wait for their response before continuing.
 4. After rebase completes, verify with `git log --oneline -10` that history looks correct.
 
+## Step 2.5: Generate Production Migration SQL (If Schema Changed)
+
+Check if a schema file was modified in any commit on this branch vs origin/main.
+Discover the schema source-of-truth from the project (common patterns:
+`schema.ts`, `schema.prisma`, `migrations/`, `db/schema/`, `models.py`, etc.):
+
+```bash
+git diff origin/main...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
+```
+
+If a schema file was changed:
+
+1. **Tell the user to run** the project's prod schema-diff command (e.g.
+   `npm run db:diff:prod`, `npx prisma migrate diff --to-schema-datamodel`,
+   `alembic upgrade --sql head`, etc. — discover from package manifest or
+   project scripts) and capture the actual output SQL. **Do not run prod
+   schema-diff commands automatically** — they may hit a production database.
+2. Wrap the captured SQL in a transaction block (`BEGIN; ... COMMIT;`).
+3. Include the **actual SQL** in the PR description under the **Schema Changes**
+   section — not instructions to run a command.
+4. Only include additive SQL (CREATE, ADD). If destructive SQL (DROP, ALTER
+   type) appears, flag it for the user to review and confirm.
+
+If no schema file was changed, omit the **Schema Changes** section from the PR
+template entirely.
+
 ## Step 3: Build and Fix Errors
 
 Run all builds and fix any errors.
@@ -58,6 +84,7 @@ Inspect `package.json` (and any monorepo config such as `nx.json`, `turbo.json`,
 - Nx monorepo: `npx nx run-many -t build` or `npx nx build <project-name>`
 - Turborepo: `npx turbo build`
 - Multiple apps: run the build for each app (frontend, API, etc.) separately
+- Non-JS projects: discover via `Makefile`, `Cargo.toml`, `pyproject.toml`, `go.mod`, etc.
 
 Run each applicable build command, for example:
 
@@ -104,7 +131,7 @@ Build the PR description from the done-plans. List work in **chronological order
 
 ```markdown
 ## Summary
-[1-3 sentence overview derived from done-plans and context.md]
+[1-3 sentence overview derived from done-plans and any briefs/intent artifacts]
 
 ## Work Completed
 ### 1. [Plan/Feature Name from earliest done-plan]
@@ -115,6 +142,25 @@ Build the PR description from the done-plans. List work in **chronological order
 
 ### 3. [Plan/Feature Name from latest done-plan]
 - Key changes and what they accomplish
+
+## Pre-Merge Testing
+- [ ] [Short, specific thing to test based on the changes — e.g., "Verify new endpoint returns 200 with valid payload"]
+- [ ] [Another key behavior to verify]
+- [ ] [Edge case or integration point worth checking]
+
+## Schema Changes
+<!-- Only include this section if a schema file was modified -->
+- [ ] Migration SQL reviewed
+- [ ] Migration applied to staging
+- [ ] Migration applied to production
+
+### Production Migration SQL
+⚠️ Run this SQL against the production database BEFORE deploying:
+```sql
+BEGIN;
+-- actual generated SQL from the project's prod schema-diff command
+COMMIT;
+```
 
 ## Build Verification
 - [x] All project builds pass (commands detected from project config)
@@ -128,9 +174,10 @@ Use `$ARGUMENTS` as the PR title if provided, otherwise derive one from the done
    - Use `--force-with-lease` since we rebased (safer than `--force`).
 2. If `--force-with-lease` fails (remote has new commits not in local), tell the user and ask how to proceed.
 
-## Step 6: Codex Review Loop
+## Step 6: Codex Review Loop (If Codex Available)
 
-Run `codex review --base main` in a subagent and read its full output.
+If Codex is available in this session (`command -v codex` succeeds), run a
+review loop. If Codex is unavailable, skip this step.
 
 ### Review loop
 
@@ -159,7 +206,7 @@ Build:
   <app/target name>: PASS
   <app/target name>: PASS
 
-Codex Review: PASS (no issues)
+Codex Review: PASS (no issues) | SKIPPED (codex unavailable)
 
 PR: <url>
 Branch: <branch name> (rebased on main)

@@ -7,23 +7,39 @@ description: Check for backend architecture pattern violations
 
 You are reviewing code changes for violations of **backend architecture patterns**.
 
+This skill is stack-agnostic. Discover the project's specific patterns by reading
+its backend `CLAUDE.md`, `docs/`, and existing controller/service/validator files
+before flagging violations.
+
 ## The Principles
 
-### authenticatedHandler Pattern
-Controllers must use `authenticatedHandler` wrapper for authenticated routes. This wrapper:
-- Handles authentication
-- Provides `req.user`
-- Catches errors automatically
+### Authenticated Route Wrapper Pattern
 
-**Controllers should NEVER have try/catch blocks.**
+Authenticated routes should use a project-specific wrapper that handles
+authentication, populates the user context, and catches errors automatically.
 
-### BaseService Pattern
-Services accessing the database must extend `BaseService` to get `this.db`.
+Search the codebase for the project's wrapper. Common names include:
+`authenticatedHandler`, `requireAuth`, `withAuth`, `@authenticated`,
+`authMiddleware`, `protectedRoute`, etc.
 
-### ApiError Pattern
-Backend code must throw `ApiError` with proper status codes, not generic `Error`.
+**Controllers using the wrapper should NEVER have try/catch blocks** — the
+wrapper is responsible for error handling.
+
+### Base Service Pattern
+
+Services that access the database typically extend a project-specific base
+class (e.g. `BaseService`, `Repository`, `DataService`) that provides shared
+infrastructure like `this.db` or `this.context`. Search the codebase for the
+established pattern before flagging direct DB imports as violations.
+
+### Error Class Pattern
+
+Backend code should throw a project-specific error class with proper status
+codes, not generic `Error`. Common names include `ApiError`, `AppError`,
+`HttpError`, `DomainError`. Search for custom Error subclasses.
 
 ### Controller-Service Separation
+
 - Controllers: Extract params, delegate to services, return response
 - Services: Contain ALL business logic, database queries, validation
 
@@ -35,16 +51,21 @@ Backend code must throw `ApiError` with proper status codes, not generic `Error`
 # Get current branch
 git rev-parse --abbrev-ref HEAD
 
-# Get changed files (backend only)
-git diff main...HEAD --name-only | grep -E "(api|server|backend)"  # adjust pattern for this project
+# Get changed files (backend only — adjust pattern for the current project)
+git diff main...HEAD --name-only | grep -E "(api|server|backend)"
 
 # Get full diff for backend
 git diff main...HEAD -- "$(detect backend directory from project structure)"
 ```
 
 Read the backend patterns:
-- Backend CLAUDE.md (detect path from project structure — e.g. `apps/api/CLAUDE.md`, `server/CLAUDE.md`, etc.)
+- Backend `CLAUDE.md` (detect path from project structure — e.g. `apps/api/CLAUDE.md`, `server/CLAUDE.md`, `backend/CLAUDE.md`, etc.)
 - Root `CLAUDE.md` — import conventions
+- `docs/OVERVIEW.md` if present
+
+**Discover the project's actual wrapper / base service / error class names**
+before evaluating any file. Do not assume `authenticatedHandler`, `BaseService`,
+or `ApiError` — those are example names.
 
 ## Phase 2: Check Backend Patterns
 
@@ -52,15 +73,15 @@ Read the backend patterns:
 
 For each controller file changed:
 
-**Check for authenticatedHandler:**
+**Check for the project's authenticated route wrapper:**
 ```typescript
-// CORRECT
+// CORRECT (illustrative — substitute the project's wrapper name)
 router.get('/', authenticatedHandler(async (req, res) => {
   const userId = req.user.id;
   // ...
 }));
 
-// WRONG - Missing wrapper
+// WRONG - Missing wrapper, raw try/catch
 router.get('/', async (req, res) => {
   try {
     // ...
@@ -72,7 +93,7 @@ router.get('/', async (req, res) => {
 
 **Check for try/catch blocks:**
 - Controllers should NOT have try/catch
-- authenticatedHandler handles errors
+- The project's wrapper handles errors
 
 **Check for business logic:**
 - Controllers should only: extract params, call service, return response
@@ -84,17 +105,17 @@ router.get('/', async (req, res) => {
 
 For each service file changed:
 
-**Check for BaseService extension:**
+**Check for base service extension:**
 ```typescript
-// CORRECT
+// CORRECT (illustrative — substitute the project's base class name)
 export class FeedService extends BaseService {
   async getItems() {
     const items = await this.db.query...
   }
 }
 
-// WRONG - Direct db import
-import { db } from '@/shared/db'; // bypasses the base service pattern
+// WRONG - Direct db import that bypasses the base service pattern
+import { db } from '@/shared/db';
 export class FeedService {
   async getItems() {
     const items = await db.query...
@@ -102,14 +123,18 @@ export class FeedService {
 }
 ```
 
-**Check for ApiError usage:**
+If the project does not use a base service pattern, skip this check.
+
+**Check for the project's error class:**
 ```typescript
-// CORRECT
+// CORRECT (illustrative — substitute the project's error class name)
 throw new ApiError(404, 'Item not found');
 
-// WRONG
+// WRONG - Generic Error
 throw new Error('Item not found');
 ```
+
+If the project does not have a custom error class, skip this check.
 
 **Check for single responsibility:**
 - Each service should handle one domain concept
@@ -121,9 +146,9 @@ throw new Error('Item not found');
 
 For validator files:
 
-**Check for Zod usage:**
+**Check for schema-based validation (Zod, Joi, Yup, etc.):**
 ```typescript
-// CORRECT
+// CORRECT (Zod illustration)
 import { z } from 'zod';
 
 export const createItemSchema = z.object({
@@ -139,13 +164,15 @@ if (!name || name.length < 1) {
 }
 ```
 
+If the project uses a different validation library, swap in its idiom.
+
 **Study exemplar:** Find a representative validator in the project's backend directory. Analyze the codebase to identify the established validation pattern (check backend CLAUDE.md and existing validator files).
 
 ### 2.4 Complex Service Organization
 
 For large services:
 
-**Check folder structure:**
+**Check folder structure (typical pattern):**
 ```
 services/
   recording/
@@ -169,12 +196,12 @@ services/
 
 ## Patterns Checked
 
-- [x] authenticatedHandler usage
+- [x] Authenticated route wrapper usage
 - [x] No try/catch in controllers
 - [x] Controller-service separation
-- [x] BaseService extension
-- [x] ApiError usage
-- [x] Zod validators
+- [x] Base service extension (if project uses this pattern)
+- [x] Custom error class usage (if project uses this pattern)
+- [x] Schema-based validation
 - [x] Single responsibility
 
 ## Violations Found
@@ -201,7 +228,7 @@ services/
 
 | Service | Issue | Fix |
 |---------|-------|-----|
-| {file} | {not extending BaseService / throwing Error / multiple responsibilities} | {fix} |
+| {file} | {not extending base service / throwing generic Error / multiple responsibilities} | {fix} |
 
 ## Exemplars to Study
 
@@ -229,16 +256,18 @@ Analyze the project's codebase to find exemplar files. Read the backend CLAUDE.m
 
 - **PASS**: All backend patterns followed correctly
 - **WARN**: Minor deviations (e.g., missing documentation, but patterns correct)
-- **FAIL**: Core patterns violated (try/catch in controller, business logic in controller, not extending BaseService)
+- **FAIL**: Core patterns violated (try/catch in controller despite wrapper being available, business logic in controller, services bypassing the established base pattern)
 
 ## Pattern Quick Reference
 
+(Substitute the project's actual wrapper / base / error names where shown.)
+
 | Pattern | Correct | Wrong |
 |---------|---------|-------|
-| Controller auth | `authenticatedHandler(async (req, res) => ...)` | `async (req, res) => { try {...} catch {...} }` |
+| Controller auth | `<project wrapper>(async (req, res) => ...)` | `async (req, res) => { try {...} catch {...} }` |
 | Controller logic | Delegates to service | Contains business logic |
-| Service DB | `extends BaseService`, uses `this.db` | Direct `db` import |
-| Service errors | `throw new ApiError(404, 'msg')` | `throw new Error('msg')` |
-| Validation | Zod schemas in validators/ | Manual validation in controller |
+| Service DB | `extends <project base service>`, uses `this.db` | Direct `db` import |
+| Service errors | `throw new <project error class>(404, 'msg')` | `throw new Error('msg')` |
+| Validation | Schema in validators/ | Manual validation in controller |
 
 Run this analysis now on the current branch.
