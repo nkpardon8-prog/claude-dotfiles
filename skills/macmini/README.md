@@ -1,13 +1,36 @@
 # macmini — Chrome DevTools + CRD-only skill
 
-> **Hardware-tested 2026-04-27.** Read `docs/HARDWARE-FINDINGS-2026-04-27.md`
-> first. Verified channels: vision + lowercase typing + Cmd-modifier shortcuts +
-> `gh gist` transport (`/macmini paste`). All auto-grant modes were removed
-> after hardware testing showed they don't work in stock Chrome+CRD.
+> **New here? Read [`ONBOARDING.md`](./ONBOARDING.md) first** — it's a 30-minute
+> walkthrough of the file order, the six core invariants, and the common
+> cold-start questions. After that, the table of contents below gives you the
+> direct links.
+
+> **Hardware-tested 2026-04-27.** See [`docs/HARDWARE-FINDINGS-2026-04-27.md`](./docs/HARDWARE-FINDINGS-2026-04-27.md)
+> for the reality matrix and [`docs/INCIDENTS.md`](./docs/INCIDENTS.md) for the
+> incident log behind every defensive design choice. Verified channels: vision
+> + lowercase typing + Cmd-modifier shortcuts + `gh gist` transport
+> (`/macmini paste`). All auto-grant modes were removed after hardware testing
+> showed they don't work in stock Chrome+CRD.
+
+## Documentation map
+
+| File | What's inside |
+|---|---|
+| [`ONBOARDING.md`](./ONBOARDING.md) | Cold-start entry point — read order, invariants, FAQ. |
+| [`SKILL.md`](./SKILL.md) | Agent-facing capability map + channel matrix (PRIMARY runtime reference). |
+| `README.md` (this file) | Architecture diagram, first-5-min setup, troubleshooting matrix. |
+| [`docs/INCIDENTS.md`](./docs/INCIDENTS.md) | Real-world failures driving every defensive design — read before "simplifying" anything. |
+| [`docs/HARDWARE-FINDINGS-2026-04-27.md`](./docs/HARDWARE-FINDINGS-2026-04-27.md) | What works and what's broken in stock Chrome+CRD. |
+| [`docs/AGENT-GUIDE.md`](./docs/AGENT-GUIDE.md) | Operational notes — focus discipline, recovery patterns. |
+| [`docs/TESTING.md`](./docs/TESTING.md) | Smoke tests for hardware verification. |
+| `commands/macmini.md` (in `~/.claude-dotfiles/commands/`) | Top-level slash-command dispatcher. |
+| `commands/macmini/{connect,paste,grab,disconnect,status,setup}.md` | Sub-command implementations. |
 
 ## TL;DR
 
 **No daemons, no binaries, no Tailscale.** Just Chrome DevTools MCP driving a Chrome Remote Desktop (CRD) tab on your dev MacBook into the Mac mini's canvas. The agent reads pixels via `take_screenshot` and sends keystrokes via `press_key`/`type_text` (lowercase + unshifted only — Shift modifier is stripped by CRD). For arbitrary multi-case text, route through `gh gist`. Anything more complex than a one-off keystroke — delegate to a `claude` session running on the Mac mini itself.
+
+**Credentials cannot ride this transport.** GitHub's secret-scanning service forwards detected keys in gists (yes, even unlisted/secret ones) to issuer partners; auto-revocation typically lands in minutes. The default `/macmini paste` HARD-BLOCKS credential-shaped payloads at Step 0. For credential injection, use `/macmini paste --secure <ENV_VAR_NAME>` — the gist contains only a `read -s` prompt; the user pastes the secret directly into the mini Terminal; the value lands at `~/.config/claude/secrets/<ENV_VAR_NAME>` mode 0600 and never enters GitHub. See [`docs/INCIDENTS.md`](./docs/INCIDENTS.md) for the OpenRouter incident that drove this design.
 
 ---
 

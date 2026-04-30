@@ -96,6 +96,75 @@ mcp.take_screenshot()
 
 **Recovery on fail:** Cmd+Space went to dev Chrome instead of mini → "Send system keys" off OR CRD canvas wasn't focused. Run Test 4 first to confirm keystroke forwarding, then retry.
 
+## Test 8 — Credential pre-scan blocks correctly (REGRESSION CHECK)
+
+**Precondition:** none — runs on the dev side only, no canvas needed.
+
+**Note on test fixtures.** The dotfiles repo has a five-layer secret-scan defense (see `scripts/secret-scan.sh`); writing literal credential-shaped strings into this file would be blocked at commit. So this test describes payloads by **pattern reference** rather than literal example. To run the test, construct a payload matching each pattern at runtime — do not hardcode a literal example into a tracked file.
+
+**Action:** for each pattern below, construct a payload matching it (via your own scratch buffer, not committed to git), then invoke `/macmini paste "<that payload>"`. Verify the skill aborts at Step 0 with the exact `═══ BLOCKED ═══` banner naming the pattern.
+
+| Pattern # | Pattern name | Payload shape (refer to paste.md Step 0 table for exact regex) | Expected match |
+|---|---|---|---|
+| 1 | `anthropic-key` | Anthropic-prefix + 16+ chars from `[A-Za-z0-9_-]` | `anthropic-key` |
+| 2 | `openai-key` | OpenAI/OpenRouter-prefix (NOT anthropic) + 16+ chars from `[A-Za-z0-9_-]` | `openai-key` |
+| 3 | `github-token` | `gh[pousr]_` prefix + 20+ chars from `[A-Za-z0-9_]` | `github-token` |
+| 4 | `aws-access-key` | AWS access-key prefix (`AKIA` or `ASIA`) + exactly 16 uppercase-alphanumeric chars | `aws-access-key` |
+| 6 | `slack-token` | `xox[baprs]-` prefix + 10+ chars from `[A-Za-z0-9-]` | `slack-token` |
+| 7 | `google-api-key` | Google API key prefix + exactly 35 chars from `[0-9A-Za-z_-]` | `google-api-key` |
+| 8 | `private-key-block` | Literal PEM/SSH/PKCS8 BEGIN-PRIVATE-KEY armor line | `private-key-block` |
+| 9 | `auth-header` | `Authorization:` or `X-API-Key:` header with a 12+ char value | `auth-header` |
+| 10 | `1password-resolved` | An `op://` ref string in the same payload as a 20+ char alphanumeric run | `1password-resolved` |
+| 11 | `high-entropy-env-credential` | `API_KEY=` (or PASSWORD/PASSPHRASE/PRIVATE_KEY/SECRET_KEY/ACCESS_KEY) followed by 20+ non-placeholder chars | `high-entropy-env-credential` |
+
+**Verify:** the skill aborts at Step 0 with the exact `═══ ... BLOCKED: ... ═══` banner. The matched pattern name and number are named in the error. The error points at `--secure <ENV_VAR_NAME>` mode. The skill must NOT proceed to Step 1 or upload anything to GitHub.
+
+**Negative cases** that should NOT trigger the block (verify these proceed past Step 0):
+
+| Payload (safe to write — these are designed to evade the patterns) | Reason |
+|---|---|
+| `API_KEY=YOUR_KEY_HERE` | placeholder (allowed by the negative-lookahead) |
+| `the SECRET = see vault entry foo-bar-baz-quux` | prose, no `=` cred pattern with high-entropy value |
+| `PASSWORD=<fill in>` | placeholder (allowed) |
+| `API_KEY=test_local_dev_value` | placeholder prefix `test_` (allowed) |
+| `Hello, World!` | benign text (allowed) |
+
+**Recovery on fail:** if a positive case slips through, the regex needs tightening. If a negative case is incorrectly blocked, the placeholder allow-list (Step 0 pattern #11) needs widening. Edit `paste.md` Step 0 patterns table; do NOT relax the broader threat-model gate.
+
+## Test 9 — `--secure` mode end-to-end
+
+**Precondition:** Tests 1, 3, 7 passed (gh auth on both sides; gist transport works; Spotlight focus works).
+
+**Action:**
+
+1. `/macmini paste --secure SMOKE_TEST_KEY` from the dev side.
+2. The skill should:
+   - Skip the credential pre-scan (no value in `$ARGUMENTS`, just the env-var name).
+   - Build a `secure.sh` containing only the `read -s` prompt + atomic write to `~/.config/claude/secrets/SMOKE_TEST_KEY`.
+   - Upload as a SECRET gist; verify gist filename is exactly `secure.sh`.
+   - Type the lowercase clone+execute command on the mini side.
+3. Wait for the mini Terminal to show `Paste SMOKE_TEST_KEY now (cursor will appear blank), then press Enter:`.
+4. **User pastes** a fake test value (any plausible 32-char hex string — NOT a real credential).
+5. Skill verifies via `mcp.take_screenshot()` that `OK: wrote /Users/<user>/.config/claude/secrets/SMOKE_TEST_KEY` is visible.
+6. Skill types `mcp.type_text("stat -f %Lp ~/.config/claude/secrets/SMOKE_TEST_KEY && wc -c < ~/.config/claude/secrets/SMOKE_TEST_KEY", "Enter")`.
+
+**Verify:**
+
+- Screenshot shows `600` on one line (mode 0600 — owner read/write only) and the byte count of the test value on the next line.
+- The test value is **NOT** visible anywhere on screen (suppressed by `read -s`).
+- The agent's typed command echoes the env var NAME but never the value.
+- The gist URL appears nowhere in the agent's output (or appears only in the deletion confirmation, AFTER Step 7 deleted it).
+
+**Re-run** `/macmini paste --secure SMOKE_TEST_KEY` with a different fake value. Verify atomic rotation: the file is overwritten with the new value, mode 0600 preserved, no temp-file artifacts left in `~/.config/claude/secrets/`.
+
+**Cleanup:** on the mini Terminal, `rm ~/.config/claude/secrets/SMOKE_TEST_KEY`. (Don't leave fake credentials lying around even in tests.)
+
+**Recovery on fail:**
+- If `$ARGUMENTS` parsing failed (`ENV_NAME` empty): regression in the `set -- $ARGUMENTS` block. Re-check paste.md Step 0a.
+- If gist filename is wrong (anything other than `secure.sh`): the `RUN_FILE` basename was changed, breaking the typed clone command. Restore `secure.sh`.
+- If file mode is not 0600: `umask 077` was missing or the atomic-mv pattern broke. Re-check the `SECURE_BOOTSTRAP` heredoc.
+- If value is visible on screen: `read -rs` flag dropped or PROMPT was emitted with `>&1` instead of `>&2`. Re-check the bootstrap script.
+
 ## Latency table (fill in during testing)
 
 | Measurement | Expected | Actual |

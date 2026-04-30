@@ -1,9 +1,15 @@
 # macmini — drive a remote Mac mini through Chrome Remote Desktop
 
-> **Hardware-tested 2026-04-27.** See `docs/HARDWARE-FINDINGS-2026-04-27.md` for
-> the full reality matrix. Reliable channels: vision + lowercase typing +
-> Cm­d-modifier shortcuts + gh gist for arbitrary text. Auto-grant install/cdp/ui
-> have been removed — they don't work in stock Chrome+CRD.
+> **First-time agent? Read [`ONBOARDING.md`](./ONBOARDING.md)** for the file
+> read-order, six core invariants, and common questions. This file (SKILL.md)
+> is the primary runtime reference — channel matrix below tells you which
+> channel to use for each kind of request.
+
+> **Hardware-tested 2026-04-27.** See [`docs/HARDWARE-FINDINGS-2026-04-27.md`](./docs/HARDWARE-FINDINGS-2026-04-27.md)
+> for the reality matrix and [`docs/INCIDENTS.md`](./docs/INCIDENTS.md) for the
+> incident log behind every defensive design. Reliable channels: vision +
+> lowercase typing + Cmd-modifier shortcuts + gh gist for arbitrary text.
+> Auto-grant install/cdp/ui were removed — they don't work in stock Chrome+CRD.
 
 You drive a Mac mini through Chrome DevTools MCP attached to the user's running
 Chrome instance. CRD renders the Mac mini desktop into a single canvas; you
