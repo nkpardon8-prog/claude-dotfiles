@@ -162,6 +162,21 @@ Health check: CRD canvas present, sign-in valid, clipboard permission granted, g
 /macmini status
 ```
 
+### `mcp.click_at(x, y)` — pixel-precise clicking on the canvas
+
+This is a **regular MCP tool, not a slash command**. The agent reaches for it elastically — same as `take_screenshot`, `type_text`, `press_key`. It clicks at viewport CSS pixel `(x, y)` on the focused page (which, after `/macmini connect`, is the CRD canvas — so coords map to a position on the mini's screen).
+
+**Setup (one-time):** `--experimental-vision` flag in the chrome-devtools-mcp args. See `commands/macmini/setup.md` Step 1, or run `~/.claude-dotfiles/scripts/enable-experimental-vision.sh` for an idempotent installer (uses `jq`; takes a `.bak` of `~/.claude.json` before swapping).
+
+**Coord conversion the agent must do:** screenshot pixels are device-pixel resolution (DPR=2 on Retina), but `click_at` takes viewport CSS pixels. Conversion: `vx = sx / dpr`, `vy = sy / dpr`. Plus a check that `(vx, vy)` is inside the canvas rect AND that `document.elementFromPoint(vx, vy)` returns the canvas (catches CRD's auto-hiding toolbar overlay). Full recipe in `docs/AGENT-GUIDE.md` → "Clicking on the canvas."
+
+**What it does and doesn't do:**
+- Single left-click at any pixel on the canvas: ✅ ~50ms, validated 2026-04-30 against live CRD.
+- Double-click: ✅ via `{x, y, dblClick: true}` — for small targets (<30 px) expect to need verify-after-click.
+- Drag, right-click, Cmd-click, Shift-click: ❌ NOT supported by `click_at`. Use `cliclick` on mini side via `/macmini paste` (one-time `brew install cliclick` + Accessibility TCC).
+
+**Validated 2026-04-30** end-to-end against live CRD: focused a Terminal window, ran a command, confirmed output. Plus a real-world dev → mini-Claude conversation. See `docs/HARDWARE-FINDINGS-2026-04-27.md` → "click_at(x, y) forwarding through CRD canvas (validated 2026-04-30)" for the per-test outcome table.
+
 ---
 
 ## CRD typing limitations — IMPORTANT
