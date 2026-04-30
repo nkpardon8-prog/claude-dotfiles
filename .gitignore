@@ -12,6 +12,7 @@ session-env/
 !.env.example
 credentials.md
 credentials.local.md
+CLAUDE.local.md
 
 # Common secret-bearing files (defense in depth)
 *.pem
