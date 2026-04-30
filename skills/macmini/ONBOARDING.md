@@ -26,6 +26,7 @@ These are the load-bearing rules. INCIDENTS.md explains *why* each one exists; t
 4. **Two CRD side-panel toggles are a one-time user click.** "Synchronize clipboard" + "Send system keys" need to be ON once per CRD profile. Agent CANNOT click them (a11y tree is stripped). Tell the user once.
 5. **Programmatic clipboard sync (dev → mini via `pbcopy` + `Meta+v`) does not work.** CRD's onPaste needs real user gestures. That's why `/macmini paste` uses gist transport, not `pbcopy`.
 6. **Don't browse opportunistically.** chrome-devtools MCP attaches to the user's full Chrome — every tab, every login. Only navigate / click outside the CRD tab when the user explicitly asks. Never click Buy / Send / Pay / Confirm / OAuth / 2FA without explicit user instruction.
+7. **Pixel-precise clicks via `mcp.click_at(x, y)` (requires `--experimental-vision`).** Agent converts screenshot pixels to CSS pixels via `devicePixelRatio` × browser-zoom (`window.outerWidth/innerWidth`), then verifies the click target is inside `canvas.getBoundingClientRect()` AND that `document.elementFromPoint(vx, vy)` returns the canvas (not a popup/toolbar overlay), then clicks. Drag, right-click, and modifier+click MUST go through `cliclick` on mini side via `/macmini paste` — never combine `press_key` + `click_at` (race condition). See `docs/AGENT-GUIDE.md` → "Clicking on the canvas" for the full recipe.
 
 ## Common cold-start questions
 
