@@ -7,6 +7,26 @@ Entries are reverse-chronological (newest first). Each follows the format:
 
 ---
 
+## 2026-04-30 — click_at(x,y) validated through CRD canvas (PREVENTIVE — NOT a failure)
+
+**What "broke" / preventive validation.** Before this date, off-center clicking on the CRD canvas was unavailable — `mcp.click({uid})` could only hit the canvas centerpoint because CRD strips its own a11y tree. Anything more granular needed keyboard navigation (Spotlight + Tab + arrow keys). Vision-feedback agents wanted pixel-precise clicking on whatever's visible, like a human pointing and clicking.
+
+**Root cause / opportunity.** chrome-devtools-mcp ships `click_at(x, y)` natively but gates it behind the `--experimental-vision` CLI flag. We had documented the flag as unavailable in earlier HARDWARE-FINDINGS — that was wrong; we just hadn't enabled it. One CLI flag in `~/.claude.json` + Claude Code restart unlocks the tool.
+
+**Fix (commits leading up to validation; HEAD ~`a7084bc..`).** Added `--experimental-vision` to chrome-devtools-mcp args in `~/.claude.json`. Created idempotent installer at `scripts/enable-experimental-vision.sh` (with JSON validation + atomic write + backup). Documented `click_at` as a regular tool in SKILL.md channel matrix (NOT a slash command — keep elastic). Added a four-step recipe to AGENT-GUIDE.md → "Clicking on the canvas": screenshot → fetch geometry (DPR + zoom + canvas rect) → convert + verify on-canvas + verify non-occluded via `elementFromPoint` → click. Added cliclick fallback documentation for drag/right-click/modifier+click/CRD-doesn't-forward edge cases. Plus mandatory verify-after contexts list (OAuth/payment/destructive/send-message/file-overwrite/2FA). 3 plan-review rounds + 2 implementation-reviewer rounds caught and fixed: stale "click_at unavailable" paragraph in SKILL.md, missing JSON validation in installer script, gitignore not covering CLAUDE.local.md handoff, modifier-click race condition, off-by-one rect bounds, browser-zoom formula, multi-canvas null guard, CRD UI overlay edge case.
+
+**Outcome (validated 2026-04-30).** End-to-end test against live CRD session into `plan2bid-minim4`:
+- Smoke 0–5 + 9 + bonus mini-Claude conversation: ALL PASS or expected behavior. See [HARDWARE-FINDINGS-2026-04-27.md → "click_at(x, y) forwarding through CRD canvas (validated 2026-04-30)"](./HARDWARE-FINDINGS-2026-04-27.md) for the per-test outcome table with latencies.
+- Critical-path validation: `click_at(250, 500)` focused the LEFT Terminal on the mini, subsequent `type_text("date", Enter)` ran on mini, output visible in screenshot.
+- Real-world bonus: clicked into Mac mini Claude TUI, sent a message, mini Claude responded "confirmed" — full dev → mini → dev round-trip.
+- Off-canvas refusal: recipe correctly refused (600, 50) — `inside: false`, `isCanvas: false`, occluding element was a CRD-UI `<div>`.
+
+**Why we kept the design.** CDP-injected mouse events forward through CRD's canvas as predicted (canvas mouse handlers don't enforce `isTrusted`, unlike clipboard onPaste — that's why the credential incident needed `--secure` mode but click_at didn't need anything special). Click latency is ~50ms, ~100× faster than gist transport for non-text interactions. The agent now reaches for click_at elastically (no slash command wrapper, just like `take_screenshot` or `type_text`).
+
+**Pattern, not bug.** Pixel-precise clicking is now an always-available primitive in the agent's toolbox. The geometry recipe (DPR conversion, rect-bounds check, occlusion check) is mandatory; the verify-after-click is recommended for small targets and mandatory for destructive actions. The cliclick fallback is documented but unused so far — preserve it for drag/right-click/modifier+click cases the click_at tool can't do alone.
+
+---
+
 ## 2026-04-27 — Credential leak via gist transport (CRITICAL)
 
 **What broke.** A field agent ran `/macmini paste` with a deploy script that had `OPENROUTER_API_KEY=sk-or-v1-...` baked in. The agent uploaded the script to a SECRET gist, the mini cloned it, the deploy started — and the OpenRouter key was dead within 10 minutes. A second key burned the same way before the team understood what was happening.
