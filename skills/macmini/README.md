@@ -42,22 +42,25 @@
 │ Claude Code agent        │                     │ Chrome Remote Desktop│
 │   ↓                      │   ┌─────────────┐   │   ↓                  │
 │ chrome-devtools MCP      │   │ CRD WebRTC  │   │ macOS apps:          │
-│   ↓ (CDP :9222)          │   │ canvas +    │   │ • Terminal (claude)  │
-│ Chrome ── CRD page ──────┼──→│ keystrokes  │──→│ • Chrome / Safari    │
-│   - canvas (pixels)      │   └─────────────┘   │ • Editors            │
+│   ↓ (CDP :9222,          │   │ canvas +    │   │ • Terminal (claude)  │
+│    --experimental-vision)│   │ keystrokes  │──→│ • Chrome / Safari    │
+│ Chrome ── CRD page ──────┼──→│ + mouse     │   │ • Editors            │
+│   - canvas (pixels)      │   └─────────────┘   │ • Finder / Dock      │
 │   - type_text (lowercase)│                     │                      │
 │   - press_key (Cmd+...)  │                     │                      │
+│   - click_at (x,y) ──────┼──→ CDP mouse  ──────┼──→ canvas → mini    │
 │                          │                     │                      │
-│ gh gist create ──────────┼──→ github.com ──────┼──→ gh gist clone     │
+│ gh gist create ──────────┼──→ github.com ──────┼──→ gh gist clone    │
 │   (arbitrary text)       │                     │   /tmp/p/payload.sh  │
 └──────────────────────────┘                     └──────────────────────┘
 ```
 
-Three channels, each verified 2026-04-27:
+Four channels, validated 2026-04-27 + 2026-04-30:
 
 1. **Vision** (`mcp.take_screenshot()`) — always-on feedback loop. CRD's canvas IS the Mac mini's pixels.
 2. **Keyboard** (`mcp.type_text` lowercase, `mcp.press_key` for Enter / Cmd+v / etc.) — for shell commands without shifted symbols. Shift modifier is stripped by CRD; capitals and `$@!#%^&*()_+{}[]|\:"<>?~` arrive corrupted.
-3. **gh gist** — arbitrary-text channel. Dev creates secret gist → agent types lowercase `gh gist clone <id> /tmp/p` on mini → bash the resulting file. Survives full Unicode + all symbols + multi-line.
+3. **Mouse** (`mcp.click_at({x, y})`, requires `--experimental-vision`) — pixel-precise clicks on anything visible on the mini's screen. CDP-injected mouse events forward through CRD canvas to mini (validated 2026-04-30). Single-click and double-click. Drag/right-click/modifier+click via `cliclick` fallback.
+4. **gh gist** — arbitrary-text channel. Dev creates secret gist → agent types lowercase `gh gist clone <id> /tmp/p` on mini → bash the resulting file. Survives full Unicode + all symbols + multi-line.
 
 There is no HTTP server, no SSH, no Tailscale, no compiled binary on either machine. The previous Tailscale-and-Go-server version lived on `main` before the strip; see [Migration](#migration-from-the-tailscale-based-version) for rollback.
 
