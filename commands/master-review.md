@@ -16,7 +16,7 @@ model: opus
 
 **Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing, Codex agents are marked "unavailable" and the loop continues with Claude Opus and Antigravity agents.
 
-**Requires:** Antigravity app at `/Applications/Antigravity.app` with google-pro-1 and google-pro-2 profiles authenticated. Use `/antigravity open google-pro-1` to authenticate a profile. If Antigravity is missing or unauthenticated, those agents are marked "unavailable" and the loop continues with Claude Opus and Codex agents.
+**Requires (optional):** Antigravity app at `$ANTIGRAVITY_APP_PATH` (default: `/Applications/Antigravity.app`) with at least one authenticated profile. Profile names read from `$ANTIGRAVITY_PROFILE_1` and `$ANTIGRAVITY_PROFILE_2` (defaults: `google-pro-1`, `google-pro-2`). Use `/antigravity open <profile>` to authenticate a profile. If Antigravity is missing, the app path doesn't exist, profile names are unset, or profiles are unauthenticated, those agents are marked "unavailable" and the loop continues with Claude Opus and Codex agents.
 
 You are the Master Review orchestrator. You run an iterative multi-agent review-and-fix loop that does NOT stop until the codebase is genuinely clean. You coordinate Claude Opus agents, Codex (GPT-5.4) agents, a synthesis agent, and the /plan + /implement skills in a continuous improvement loop.
 
@@ -31,8 +31,8 @@ You are the Master Review orchestrator. You run an iterative multi-agent review-
 **This must happen BEFORE anything else.** The user expects to fire this command and walk away, so establish the browser connection immediately.
 
 1. Call `mcp__chrome-devtools__list_pages` to connect and see what's open.
-2. If the app is already loaded (look for localhost:8080 or the project URL), select that page.
-3. If no app page is open, call `mcp__chrome-devtools__navigate_page` to open `http://localhost:8080` (or whatever the frontend dev server URL is).
+2. If the app is already loaded, select that page. Discover the project's dev-server URL by reading package.json scripts (look for 'dev', 'start' commands and their --port flags), checking vite.config / next.config / similar framework configs, or asking the user.
+3. If no app page is open and you discovered a dev-server URL in step 2, call `mcp__chrome-devtools__navigate_page` to open it. If no URL discoverable, skip the browser portion and proceed with code-only review.
 4. Take an initial snapshot: `mcp__chrome-devtools__take_snapshot` — this is your baseline for the UI state.
 5. Check for console errors immediately: `mcp__chrome-devtools__list_console_messages` with types `["error", "warn"]`.
 6. Store any existing console errors as `$BASELINE_CONSOLE_ERRORS` — these are pre-existing issues to include in the review.
@@ -143,8 +143,35 @@ rm -f /tmp/master-review-codex-{1,2,3}.txt /tmp/master-review-ag-{1,2}.txt
 
 # Read loop_profiles from router.json — respects taskbar slot assignments
 LOOP_JSON=$(/usr/bin/python3 << 'PYEOF'
-import json, sys
-c = json.load(open('/Users/nickpardon/claude-hybrid-control/config/router.json'))
+import os, json, sys
+router_path = os.environ.get('CLAUDE_HYBRID_CONTROL_HOME', '') or os.path.expanduser('~/claude-hybrid-control')
+router_file = os.path.join(router_path, 'config', 'router.json')
+if os.path.exists(router_file):
+    c = json.load(open(router_file))
+else:
+    c = {
+        'commands': {
+            'antigravity': os.environ.get('ANTIGRAVITY_BIN', 'antigravity'),
+            'codex': os.environ.get('CODEX_BIN', 'codex'),
+        },
+        'profiles': {
+            'codex': {
+                'default-1': {'codex_home': os.environ.get('CODEX_HOME_1', '')},
+                'default-2': {'codex_home': os.environ.get('CODEX_HOME_2', '')},
+            },
+            'antigravity': {
+                'default-1': {
+                    'user_data_dir': os.environ.get('ANTIGRAVITY_USER_DATA_DIR_1', ''),
+                    'profile_name': os.environ.get('ANTIGRAVITY_PROFILE_1', 'google-pro-1'),
+                },
+                'default-2': {
+                    'user_data_dir': os.environ.get('ANTIGRAVITY_USER_DATA_DIR_2', ''),
+                    'profile_name': os.environ.get('ANTIGRAVITY_PROFILE_2', 'google-pro-2'),
+                },
+            },
+        },
+        'loop_profiles': {},
+    }
 lp = c.get('loop_profiles', {})
 
 AG_BIN = c['commands'].get('antigravity', 'antigravity')
@@ -457,10 +484,21 @@ prompt: |
 
 **Codex Agent 1 — Cross-Layer Gaps & Data Integrity (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-1.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_1" "$CODEX_HOME_2" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are a senior reviewer focused on CROSS-LAYER INTEGRITY and DATA CORRECTNESS. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 CROSS-LAYER GAPS:
@@ -491,10 +529,21 @@ timeout: 300000
 
 **Codex Agent 2 — Production Readiness & Scalability (Bash — parallel, uses CODEX_HOME_2 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-2.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_2" "$CODEX_HOME_1" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
   "You are a senior production readiness and scalability reviewer. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 PRODUCTION READINESS:
@@ -538,10 +587,21 @@ timeout: 300000
 
 **Codex Agent 3 — Security, Safeguards & Contradictions (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-3.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_1" "$CODEX_HOME_2" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-3.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are a senior security engineer and defensive programming specialist. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING exploitable, fragile, or dangerous you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 SECURITY:
@@ -880,10 +940,21 @@ prompt: |
 
 **Codex Agent 1 — Verify + Cross-Layer (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-v1.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_1" "$CODEX_HOME_2" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-v1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are verifying code fixes and searching the ENTIRE codebase for new issues. Fixes applied: [FIXES SUMMARY]. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 JOB 1 - VERIFY: Check each fix is correct, didn't introduce regressions, didn't break callers.
@@ -903,10 +974,21 @@ timeout: 300000
 
 **Codex Agent 2 — Fresh Eyes Full Sweep (Bash — parallel, uses CODEX_HOME_2 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-v2.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_2" "$CODEX_HOME_1" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-v2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
   "You are a fresh-eyes reviewer with NO prior context. Read the ENTIRE codebase: [SCOPE]. Search everywhere — prioritize less-reviewed areas [UNEXPLORED_AREAS] but also look at already-reviewed code with fresh eyes. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 Apply the FULL checklist — miss nothing:

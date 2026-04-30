@@ -1,0 +1,80 @@
+{
+  "_template_note": "Copy this file to ~/.claude/settings.json on each machine. ~/.claude/settings.json is per-machine and not tracked in this dotfiles repo. Re-run on every fresh setup.",
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm install:*)",
+      "Bash(npm run build)",
+      "Bash(npm run build:*)",
+      "Bash(npm run dev)",
+      "Bash(npm run dev:*)",
+      "Bash(npm run lint)",
+      "Bash(npm run lint:*)",
+      "Bash(npm run test)",
+      "Bash(npm run test:*)",
+      "Bash(npm run typecheck)",
+      "Bash(npm ls --depth=0)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx vite --port :*)",
+      "Bash(node -e :*)",
+      "Bash(node :*)",
+      "Bash(python -c :*)",
+      "Bash(python3 -c :*)",
+      "Bash(python -m py_compile :*)",
+      "Bash(python3 -m py_compile :*)",
+      "Bash(python -m pytest :*)",
+      "Bash(python3 -m pytest :*)",
+      "Bash(pip install :*)",
+      "Bash(pip install postgrest)",
+      "Bash(pip install pytest-asyncio)",
+      "Bash(curl -s :*)",
+      "Bash(curl -fsS :*)",
+      "Bash(open :*)",
+      "Bash(lsof :*)",
+      "Bash(fgrep :*)",
+      "mcp__supabase__apply_migration",
+      "mcp__supabase__list_branches",
+      "mcp__supabase__execute_sql",
+      "mcp__supabase__list_tables",
+      "mcp__supabase__search_docs",
+      "mcp__supabase__get_logs",
+      "Read(//tmp/**)",
+      "Read(//private/tmp/**)"
+    ],
+    "defaultMode": "auto"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if [ -f ~/.config/claude/credentials.md ] && grep -nIE '(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +)?PRIVATE +KEY-----)' ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value detected in ~/.config/claude/credentials.md — should be op:// references only. Rotate the leaked secret at the provider.' >&2; fi; true",
+            "timeout": 10,
+            "statusMessage": "Syncing dotfiles..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/dotfiles-sync.sh",
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "swift-lsp@claude-plugins-official": true
+  },
+  "effortLevel": "high",
+  "skipDangerousModePermissionPrompt": true,
+  "remoteControlAtStartup": false,
+  "agentPushNotifEnabled": true,
+  "skipAutoPermissionPrompt": true
+}
