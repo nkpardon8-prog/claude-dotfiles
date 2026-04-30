@@ -102,9 +102,16 @@ mcp.evaluate_script({
 
 #### 3d. CRD's own UI overlay edge case
 
-CRD shows a top toolbar (~60px tall) on mouse activity for ~3 seconds, and may show a bottom strip in some configurations. Both render INSIDE the canvas rect — `getBoundingClientRect` doesn't catch them. Mitigation:
+CRD shows a top toolbar (~60px tall) on mouse activity for ~3 seconds, and may show a bottom strip in some configurations. Both render INSIDE the canvas rect — `getBoundingClientRect` doesn't catch them, but step 3c's `elementFromPoint` check WILL catch them (when the toolbar is on top, `elementFromPoint` returns a CRD-toolbar `div` instead of the canvas, so the occlusion check refuses).
 
-- For clicks within the top 60px or bottom 30px of the canvas: take a fresh screenshot first. If CRD's toolbar/strip is visible, either (a) wait 3s and retry, or (b) move the cursor to canvas-center via a benign click first (e.g., empty desktop area), let CRD's UI auto-hide, then re-take the screenshot and retry the original click.
+For clicks within the top 60px or bottom 30px of the canvas (where CRD UI overlays appear), do NOT skip step 3c — let it refuse. The recovery flow:
+
+1. **First**: take a fresh screenshot. If CRD's toolbar/strip is visible in the screenshot, the overlay is up.
+2. **Wait 3 seconds** without sending any input (CRD's UI auto-hides on inactivity). Re-screenshot to confirm it's gone.
+3. **Re-fetch geometry** (the canvas rect doesn't change but the occlusion state does), re-run step 3c. If `isCanvas === true` now, proceed to step 4.
+4. **If after 3 seconds the overlay is still up** (rare; happens during CRD reconnect attempts), fall back to the mini-side equivalent: open Spotlight (`mcp.press_key("Meta+space")`), navigate to the target via keyboard, or delegate the action to Mac mini Claude.
+
+Do NOT use a "benign click" to dismiss the overlay — that would loop (the click itself triggers CRD UI to reappear).
 
 #### 4. Click
 
