@@ -21,10 +21,10 @@ Parse `$ARGUMENTS`:
 
 ```bash
 # Read current state
-cat /Users/nickpardon/claude-hybrid-control/state/router-state.json 2>/dev/null || echo "{}"
+cat ${CLAUDE_HYBRID_CONTROL_HOME:-$HOME/claude-hybrid-control}/state/router-state.json 2>/dev/null || echo "{}"
 ```
 
-Then read `/Users/nickpardon/claude-hybrid-control/state/agent-router-status.md` for human-readable status.
+Then read `${CLAUDE_HYBRID_CONTROL_HOME:-$HOME/claude-hybrid-control}/state/agent-router-status.md` for human-readable status.
 
 Report to user:
 ```
@@ -34,13 +34,13 @@ Antigravity Profiles:
   google-pro-3  — Google Pro 3  — [active/inactive]
 
 Active route: [provider] / [profile]
-Reports: /Users/nickpardon/claude-hybrid-control/reports/
+Reports: ${CLAUDE_HYBRID_CONTROL_HOME:-$HOME/claude-hybrid-control}/reports/
 ```
 
 ### Switch Profile ("switch google-pro-N")
 
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/set-review-route.sh antigravity google-pro-N
+${CLAUDE_HYBRID_CONTROL_HOME:-$HOME/claude-hybrid-control}/bin/set-review-route.sh antigravity google-pro-N
 ```
 
 Where N is 1, 2, or 3 based on the argument.
@@ -52,7 +52,7 @@ Remind the user: the SwiftBar taskbar will reflect the change on its next refres
 ### Open Profile ("open google-pro-N")
 
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/setup-review-profile.sh antigravity google-pro-N
+${CLAUDE_HYBRID_CONTROL_HOME:-$HOME/claude-hybrid-control}/bin/setup-review-profile.sh antigravity google-pro-N
 ```
 
 This opens the Antigravity app with the isolated Google Pro N profile. Use this to sign into a Google account or verify the profile is authenticated.
@@ -76,7 +76,7 @@ Commands:
 ## Notes
 
 - Each profile is fully isolated — separate Google accounts, cookies, and sessions
-- Profile data lives at `/Users/nickpardon/claude-hybrid-control/profiles/antigravity/google-pro-N/`
+- Profile data lives at `${CLAUDE_HYBRID_CONTROL_HOME:-$HOME/claude-hybrid-control}/profiles/antigravity/google-pro-N/`
 - To clear a profile (log out / reset): use the SwiftBar menu → Accounts → Danger Zone → Clear Antigravity Google Pro N
 - The active route is used by the single-route review system. The master-review loop always uses google-pro-1 AND google-pro-2 in parallel regardless of active route.
-- To check recent review output: open `/Users/nickpardon/claude-hybrid-control/reports/`
+- To check recent review output: open `${CLAUDE_HYBRID_CONTROL_HOME:-$HOME/claude-hybrid-control}/reports/`

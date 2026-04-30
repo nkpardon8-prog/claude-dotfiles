@@ -218,9 +218,9 @@ prompt: |
   Changed files: {file_list}
 
   ## The Principles
-  1. authenticatedHandler Pattern: Controllers must use authenticatedHandler wrapper, no try/catch
-  2. BaseService Pattern: Services using DB must extend BaseService to get this.db
-  3. ApiError Pattern: Throw ApiError with status codes, not generic Error
+  1. Authenticated Route Wrapper: Controllers must use the project's auth wrapper (search the codebase for: authenticatedHandler, requireAuth, withAuth, @authenticated, etc.) and avoid raw try/catch
+  2. Base Service Pattern: Services accessing DB should extend the project's base service (if any — search for: BaseService, Repository, DataService, etc.)
+  3. Error Class Pattern: Throw the project's error class with status codes (search for: ApiError, AppError, HttpError, etc.), not generic Error
   4. Controller-Service Separation: Controllers delegate to services, no business logic
 
   ## What to Check
@@ -237,7 +237,7 @@ prompt: |
   Return a structured report:
   - PASS/WARN/FAIL status
   - Controller issues (missing wrapper, try/catch, business logic)
-  - Service issues (not extending BaseService, throwing Error)
+  - Service issues (not extending the project's base service, throwing generic Error)
   - Recommendations
 ```
 

@@ -47,7 +47,7 @@ Use TodoWrite to track files needing documentation review.
  * FeedService handles all feed-related operations including
  * fetching, filtering, and updating feed items.
  */
-export class FeedService extends BaseService {
+export class FeedService {
   // ...
 }
 
@@ -79,7 +79,7 @@ export function DictationButton({ size = 'md', ...props }) {
 }
 
 // WRONG - No file documentation
-export class FeedService extends BaseService {
+export class FeedService {
   // ...
 }
 ```

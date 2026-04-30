@@ -140,7 +140,7 @@ Proceed with deployment?
 ### 6A: Create Backend Web Service (if applicable)
 
 Use the Render MCP tools to create the web service. If the MCP has a `create_web_service` tool, use it with:
-- `name`: derived from project name (e.g., `estim8r-api`)
+- `name`: derived from project name (e.g., `myapp-api`)
 - `repo`: GitHub repo URL
 - `branch`: the confirmed branch
 - `rootDir`: backend directory
@@ -165,7 +165,7 @@ After creation, set environment variables using the MCP env var tools or REST AP
 ### 6B: Create Frontend Static Site (if applicable)
 
 Use the Render MCP tools to create the static site with:
-- `name`: derived from project name (e.g., `estim8r-app`)
+- `name`: derived from project name (e.g., `myapp-web`)
 - `repo`: GitHub repo URL
 - `branch`: the confirmed branch
 - `rootDir`: frontend directory
@@ -178,8 +178,8 @@ After creation, set any frontend env vars (like the backend API URL — which yo
 ### 6C: Link Frontend to Backend
 
 After both services are created:
-1. Get the backend's live URL (e.g., `https://estim8r-api.onrender.com`)
-2. Set the frontend's API URL env var (e.g., `VITE_API_URL=https://estim8r-api.onrender.com`) so the frontend knows where to call
+1. Get the backend's live URL (e.g., `https://myapp-api.onrender.com`)
+2. Set the frontend's API URL env var (e.g., `VITE_API_URL=https://myapp-api.onrender.com`) so the frontend knows where to call
 
 ---
 

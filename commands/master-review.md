@@ -11,12 +11,13 @@ model: opus
 - **Review — OpenAI Codex CLI (GPT-5.4):** 3 parallel agents in Phase 1, 2 parallel agents in every Phase 3 verification round. Invoked via `codex exec -s read-only --ephemeral` so Codex can read the repo but never writes.
 - **Review — Antigravity (Google AI):** 2 parallel agents in Phase 1 (google-pro-1 and google-pro-2), 2 parallel agents in every Phase 3 verification round. Invoked via the Antigravity CLI in agent mode with isolated profiles. Read-only — findings only, never writes files. If Antigravity times out (30s) or is unavailable, agents are marked "unavailable" and the loop continues with the remaining agents.
 - **Review — Claude Opus:** 3 parallel agents in Phase 1 (Deep Correctness, Architecture/Prod-Readiness, Security/Resilience), 2 parallel agents in every Phase 3 verification round.
+- **Review — Claude Lens Agents:** 6 specialized parallel lens agents in Phase 1 (`lens-single-pattern`, `lens-circular-deps` always-on; `lens-tanstack-query`, `lens-architecture-frontend`, `lens-architecture-backend`, `lens-self-contained` stack-gated by `HAS_TANSTACK_QUERY`/`HAS_APP_ROUTER`/`HAS_AUTHED_HANDLER`/`HAS_UI_PROJECT`). Each lens self-gates: gated lenses return `(skipped — pattern not detected)` when the matching signal is empty. The two always-on lenses also run in every Phase 3 verification round.
 - **Fix — Claude:** The synthesis agent (you) validates findings, builds a fix plan, and invokes `/implement` to apply code changes. Claude is the only writer. Codex and Antigravity never modify files.
 - **Browser — Chrome DevTools MCP:** Active UI testing, console/network checks, Lighthouse, Core Web Vitals, regression detection after every fix round.
 
 **Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing, Codex agents are marked "unavailable" and the loop continues with Claude Opus and Antigravity agents.
 
-**Requires:** Antigravity app at `/Applications/Antigravity.app` with google-pro-1 and google-pro-2 profiles authenticated. Use `/antigravity open google-pro-1` to authenticate a profile. If Antigravity is missing or unauthenticated, those agents are marked "unavailable" and the loop continues with Claude Opus and Codex agents.
+**Requires (optional):** Antigravity app at `$ANTIGRAVITY_APP_PATH` (default: `/Applications/Antigravity.app`) with at least one authenticated profile. Profile names read from `$ANTIGRAVITY_PROFILE_1` and `$ANTIGRAVITY_PROFILE_2` (defaults: `google-pro-1`, `google-pro-2`). Use `/antigravity open <profile>` to authenticate a profile. If Antigravity is missing, the app path doesn't exist, profile names are unset, or profiles are unauthenticated, those agents are marked "unavailable" and the loop continues with Claude Opus and Codex agents.
 
 You are the Master Review orchestrator. You run an iterative multi-agent review-and-fix loop that does NOT stop until the codebase is genuinely clean. You coordinate Claude Opus agents, Codex (GPT-5.4) agents, a synthesis agent, and the /plan + /implement skills in a continuous improvement loop.
 
@@ -31,8 +32,8 @@ You are the Master Review orchestrator. You run an iterative multi-agent review-
 **This must happen BEFORE anything else.** The user expects to fire this command and walk away, so establish the browser connection immediately.
 
 1. Call `mcp__chrome-devtools__list_pages` to connect and see what's open.
-2. If the app is already loaded (look for localhost:8080 or the project URL), select that page.
-3. If no app page is open, call `mcp__chrome-devtools__navigate_page` to open `http://localhost:8080` (or whatever the frontend dev server URL is).
+2. If the app is already loaded, select that page. Discover the project's dev-server URL by reading package.json scripts (look for 'dev', 'start' commands and their --port flags), checking vite.config / next.config / similar framework configs, or asking the user.
+3. If no app page is open and you discovered a dev-server URL in step 2, call `mcp__chrome-devtools__navigate_page` to open it. If no URL discoverable, skip the browser portion and proceed with code-only review.
 4. Take an initial snapshot: `mcp__chrome-devtools__take_snapshot` — this is your baseline for the UI state.
 5. Check for console errors immediately: `mcp__chrome-devtools__list_console_messages` with types `["error", "warn"]`.
 6. Store any existing console errors as `$BASELINE_CONSOLE_ERRORS` — these are pre-existing issues to include in the review.
@@ -58,6 +59,13 @@ Output to user: **"Browser connected. [N] pages open. App loaded at [URL]. [N] e
 ```bash
 BASE_BRANCH=$(git rev-parse --verify main 2>/dev/null && echo "main" || (git rev-parse --verify master 2>/dev/null && echo "master" || echo ""))
 WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+# Stack detection — populated as non-empty marker paths if the pattern is detected, empty otherwise.
+# Lens agents read these to self-gate (skipping when empty).
+HAS_TANSTACK_QUERY=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l "@tanstack/react-query" {} \; 2>/dev/null | head -1)
+HAS_APP_ROUTER=$(find "$WORKDIR" -maxdepth 6 -type f -name "page.tsx" -path "*/app/*" 2>/dev/null | head -1)
+HAS_AUTHED_HANDLER=$(find "$WORKDIR" -maxdepth 5 -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) -exec grep -l "authenticatedHandler\|requireAuth\|@authenticated" {} \; 2>/dev/null | head -1)
+HAS_UI_PROJECT=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"' {} \; 2>/dev/null | head -1)
 ```
 
 Determine MODE:
@@ -132,7 +140,7 @@ Output to user: **"Master Review: [target summary] | Mode: [mode] | Browser: [N]
 
 ---
 
-## Phase 1: Initial Review — 3 Claude Opus + 3 Codex + 2 Antigravity (8 agents in parallel)
+## Phase 1: Initial Review — 3 Claude Opus + 3 Codex + 2 Antigravity + 6 Lens (up to 14 agents in parallel)
 
 **CRITICAL: ALL 8 agents must launch in a SINGLE message for true parallel execution.**
 
@@ -143,8 +151,35 @@ rm -f /tmp/master-review-codex-{1,2,3}.txt /tmp/master-review-ag-{1,2}.txt
 
 # Read loop_profiles from router.json — respects taskbar slot assignments
 LOOP_JSON=$(/usr/bin/python3 << 'PYEOF'
-import json, sys
-c = json.load(open('/Users/nickpardon/claude-hybrid-control/config/router.json'))
+import os, json, sys
+router_path = os.environ.get('CLAUDE_HYBRID_CONTROL_HOME', '') or os.path.expanduser('~/claude-hybrid-control')
+router_file = os.path.join(router_path, 'config', 'router.json')
+if os.path.exists(router_file):
+    c = json.load(open(router_file))
+else:
+    c = {
+        'commands': {
+            'antigravity': os.environ.get('ANTIGRAVITY_BIN', 'antigravity'),
+            'codex': os.environ.get('CODEX_BIN', 'codex'),
+        },
+        'profiles': {
+            'codex': {
+                'default-1': {'codex_home': os.environ.get('CODEX_HOME_1', '')},
+                'default-2': {'codex_home': os.environ.get('CODEX_HOME_2', '')},
+            },
+            'antigravity': {
+                'default-1': {
+                    'user_data_dir': os.environ.get('ANTIGRAVITY_USER_DATA_DIR_1', ''),
+                    'profile_name': os.environ.get('ANTIGRAVITY_PROFILE_1', 'google-pro-1'),
+                },
+                'default-2': {
+                    'user_data_dir': os.environ.get('ANTIGRAVITY_USER_DATA_DIR_2', ''),
+                    'profile_name': os.environ.get('ANTIGRAVITY_PROFILE_2', 'google-pro-2'),
+                },
+            },
+        },
+        'loop_profiles': {},
+    }
 lp = c.get('loop_profiles', {})
 
 AG_BIN = c['commands'].get('antigravity', 'antigravity')
@@ -457,10 +492,21 @@ prompt: |
 
 **Codex Agent 1 — Cross-Layer Gaps & Data Integrity (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-1.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_1" "$CODEX_HOME_2" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are a senior reviewer focused on CROSS-LAYER INTEGRITY and DATA CORRECTNESS. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 CROSS-LAYER GAPS:
@@ -491,10 +537,21 @@ timeout: 300000
 
 **Codex Agent 2 — Production Readiness & Scalability (Bash — parallel, uses CODEX_HOME_2 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-2.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_2" "$CODEX_HOME_1" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
   "You are a senior production readiness and scalability reviewer. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 PRODUCTION READINESS:
@@ -538,10 +595,21 @@ timeout: 300000
 
 **Codex Agent 3 — Security, Safeguards & Contradictions (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-3.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_1" "$CODEX_HOME_2" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-3.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are a senior security engineer and defensive programming specialist. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING exploitable, fragile, or dangerous you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 SECURITY:
@@ -646,15 +714,88 @@ For each finding: CRITICAL/IMPORTANT/MINOR, category, file:line, code snippet, e
 ```
 timeout: 45000
 
-### After all 8 return:
+### Lens Agents (6 in parallel — spawned alongside the 8 reviewers)
 
-1. Read Claude agent results from their return values
+Spawn all 6 lens agents unconditionally in the same parallel batch as the 8
+reviewers above. Each lens agent self-gates in its own prompt — the
+stack-detection vars from Phase 0c (`HAS_TANSTACK_QUERY`, `HAS_APP_ROUTER`,
+`HAS_AUTHED_HANDLER`, `HAS_UI_PROJECT`) are passed in, and gated lenses return
+`(skipped — ...)` when the matching signal is empty. Always-on lenses
+(`lens-single-pattern`, `lens-circular-deps`) ignore the vars entirely.
+
+Spawn each via the Task tool with the agent name. Pass the diff context and
+detection vars in the prompt:
+
+```
+description: "Master Review R1 — Single-Pattern Lens"
+subagent_type: "lens-single-pattern"
+prompt: |
+  Review the changed files in this diff for Single Pattern violations.
+  Working directory: $WORKDIR
+  Branch: $BASE_BRANCH...HEAD
+  Context: $CONTEXT_PACKAGE
+```
+
+```
+description: "Master Review R1 — Circular Dependencies Lens"
+subagent_type: "lens-circular-deps"
+prompt: |
+  Review the changed files in this diff for circular dependencies and late imports.
+  Working directory: $WORKDIR
+  Branch: $BASE_BRANCH...HEAD
+  Context: $CONTEXT_PACKAGE
+```
+
+```
+description: "Master Review R1 — TanStack Query Lens"
+subagent_type: "lens-tanstack-query"
+prompt: |
+  Review the diff for TanStack Query pattern violations.
+  HAS_TANSTACK_QUERY signal: $HAS_TANSTACK_QUERY
+  Working directory: $WORKDIR
+  Context: $CONTEXT_PACKAGE
+```
+
+```
+description: "Master Review R1 — Frontend Architecture Lens"
+subagent_type: "lens-architecture-frontend"
+prompt: |
+  Review the diff for frontend architecture pattern violations.
+  HAS_APP_ROUTER signal: $HAS_APP_ROUTER
+  Working directory: $WORKDIR
+  Context: $CONTEXT_PACKAGE
+```
+
+```
+description: "Master Review R1 — Backend Architecture Lens"
+subagent_type: "lens-architecture-backend"
+prompt: |
+  Review the diff for backend architecture pattern violations.
+  HAS_AUTHED_HANDLER signal: $HAS_AUTHED_HANDLER
+  Working directory: $WORKDIR
+  Context: $CONTEXT_PACKAGE
+```
+
+```
+description: "Master Review R1 — Self-Contained Components Lens"
+subagent_type: "lens-self-contained"
+prompt: |
+  Review the diff for Self-Contained Components principle violations.
+  HAS_UI_PROJECT signal: $HAS_UI_PROJECT
+  Working directory: $WORKDIR
+  Context: $CONTEXT_PACKAGE
+```
+
+### After all 8 reviewers + 6 lens agents return:
+
+1. Read Claude agent results from their return values (3 reviewers + 6 lenses = 9 Task() returns)
 2. Read Codex results from `/tmp/master-review-codex-{1,2,3}.txt`
 3. Read Antigravity results from `/tmp/master-review-ag-{1,2}.txt`
-4. Handle failures gracefully — empty/missing file or "timed out" message = "Agent N: unavailable"
-5. Compile all findings into `$ROUND_1_FINDINGS`
+4. Capture each lens-agent return value into `$LENS_FINDINGS` — track which lenses returned `(skipped — ...)` so synthesis can record them as N/A rather than as failures.
+5. Handle failures gracefully — empty/missing file or "timed out" message = "Agent N: unavailable"
+6. Compile all findings into `$ROUND_1_FINDINGS` (8 reviewers + active lenses)
 
-Output to user: **"Round 1 complete: [N] findings from 8 agents (3 Claude + 3 Codex + 2 Antigravity). Starting synthesis..."**
+Output to user: **"Round 1 complete: [N] findings from 8 reviewers (3 Claude + 3 Codex + 2 Antigravity) + [active count]/6 lens agents. Starting synthesis..."**
 
 ---
 
@@ -673,10 +814,27 @@ Before acting on any findings, you MUST understand the codebase deeply enough to
 
 ### 2b: Validate and Deduplicate Findings
 
+Synthesis input has THREE sources:
+- **Reviewer findings** (8 agents): Claude × 3 from Task() return values, Codex × 3 from `/tmp/master-review-codex-{1,2,3}.txt`, Antigravity × 2 from `/tmp/master-review-ag-{1,2}.txt`
+- **Lens findings** (up to 6 agents): from `$LENS_FINDINGS` collected above. Format each lens block as:
+  ```
+  LENS AGENT RESULTS:
+  - lens-single-pattern: <result>
+  - lens-circular-deps: <result>
+  - lens-tanstack-query: <result if HAS_TANSTACK_QUERY else "(skipped)">
+  - lens-architecture-frontend: <result if HAS_APP_ROUTER else "(skipped)">
+  - lens-architecture-backend: <result if HAS_AUTHED_HANDLER else "(skipped)">
+  - lens-self-contained: <result if HAS_UI_PROJECT else "(skipped)">
+  ```
+- **Browser findings**: from `$BROWSER_FINDINGS` collected in Phase 0e/0f
+
+Then:
+
 1. **Remove false positives**: If you verify the code and the finding is wrong, drop it. Note: "Removed N false positives."
-2. **Deduplicate**: Same root cause across agents → merge. Note which agents found it (cross-agent = high confidence).
-3. **Promote confidence**: Found by 2+ agents → upgrade confidence. Cross-model (Claude + Codex) → automatic upgrade.
-4. **Classify**: Sort into MUST_FIX (definite bugs, security holes), SHOULD_FIX (likely issues, architecture), and INVESTIGATE (uncertain).
+2. **Deduplicate**: Same root cause across agents → merge. Note which agents found it (cross-agent = high confidence). When deduplicating, treat lens-agent findings and reviewer findings as cross-agent: a finding flagged by both is high confidence.
+3. **Promote confidence**: Found by 2+ agents → upgrade confidence. Cross-model (Claude + Codex) → automatic upgrade. Cross-source (reviewer + lens) → automatic upgrade.
+4. **Tag with provenance**: For each finding, record `flagged by: [agent list]` so the report shows which engines surfaced it.
+5. **Classify**: Sort into MUST_FIX (definite bugs, security holes), SHOULD_FIX (likely issues, architecture), and INVESTIGATE (uncertain).
 
 ### 2c: Impact Audit — Will Fixes Break Anything?
 
@@ -784,8 +942,33 @@ Build a new `$CONTEXT_PACKAGE` that includes:
 
 ```bash
 rm -f /tmp/master-review-codex-v{1,2}.txt /tmp/master-review-ag-v{1,2}.txt
-# AG_BIN, AG_DIR_1/2, AG_NAME_1/2, CODEX_BIN, CODEX_HOME_1/2 were set in Phase 1 — they persist across rounds
+# AG_BIN, AG_DIR_1/2, AG_NAME_1/2, CODEX_BIN, CODEX_HOME_1/2 were set in Phase 1 — they persist across rounds.
+# Detection vars need to be re-set inline — markdown bash fences don't share scope with Phase 0c.
+HAS_TANSTACK_QUERY=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l "@tanstack/react-query" {} \; 2>/dev/null | head -1)
+HAS_APP_ROUTER=$(find "$WORKDIR" -maxdepth 6 -type f -name "page.tsx" -path "*/app/*" 2>/dev/null | head -1)
+HAS_AUTHED_HANDLER=$(find "$WORKDIR" -maxdepth 5 -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) -exec grep -l "authenticatedHandler\|requireAuth\|@authenticated" {} \; 2>/dev/null | head -1)
+HAS_UI_PROJECT=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"' {} \; 2>/dev/null | head -1)
 ```
+
+**Always-on lens agents (spawned alongside the 6 verifier agents):**
+
+```
+description: "Master Review R[N] — Single-Pattern Lens (verification)"
+subagent_type: "lens-single-pattern"
+prompt: |
+  Re-check the just-fixed diff for Single Pattern violations. Working directory: $WORKDIR. Branch: $BASE_BRANCH...HEAD. Context: $CONTEXT_PACKAGE.
+```
+
+```
+description: "Master Review R[N] — Circular Dependencies Lens (verification)"
+subagent_type: "lens-circular-deps"
+prompt: |
+  Re-check the just-fixed diff for circular dependencies and late imports. Working directory: $WORKDIR. Branch: $BASE_BRANCH...HEAD. Context: $CONTEXT_PACKAGE.
+```
+
+(Stack-gated lenses run only in Phase 1 to keep the verification loop tight. The
+two always-on lenses run every round.)
+
 
 **Claude Agent 1 — Verification + Deep Dive (Opus):**
 ```
@@ -880,10 +1063,21 @@ prompt: |
 
 **Codex Agent 1 — Verify + Cross-Layer (Bash — parallel, uses CODEX_HOME_1 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-v1.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_1" "$CODEX_HOME_2" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-v1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are verifying code fixes and searching the ENTIRE codebase for new issues. Fixes applied: [FIXES SUMMARY]. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 JOB 1 - VERIFY: Check each fix is correct, didn't introduce regressions, didn't break callers.
@@ -903,10 +1097,21 @@ timeout: 300000
 
 **Codex Agent 2 — Fresh Eyes Full Sweep (Bash — parallel, uses CODEX_HOME_2 account):**
 ```bash
-/Users/nickpardon/claude-hybrid-control/bin/run-codex-with-fallback.sh \
-  /tmp/master-review-codex-v2.txt \
-  "$CODEX_BIN" "$WORKDIR" \
-  "$CODEX_HOME_2" "$CODEX_HOME_1" \
+codex_invoke() {
+  local outfile="$1" primary="$2" fallback="$3" prompt="$4"
+  if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
+  fi
+  if [ -n "$primary" ]; then
+    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if [ -n "$fallback" ]; then
+      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+    fi
+    return 1
+  fi
+  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+}
+codex_invoke /tmp/master-review-codex-v2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
   "You are a fresh-eyes reviewer with NO prior context. Read the ENTIRE codebase: [SCOPE]. Search everywhere — prioritize less-reviewed areas [UNEXPLORED_AREAS] but also look at already-reviewed code with fresh eyes. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
 
 Apply the FULL checklist — miss nothing:
