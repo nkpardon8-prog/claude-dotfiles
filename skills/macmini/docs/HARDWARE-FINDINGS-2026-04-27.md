@@ -1,8 +1,10 @@
-# Phase E Hardware Findings — 2026-04-27 (updated post-credential-incident)
+# Phase E Hardware Findings — 2026-04-27 (updated 2026-04-30 with click_at validation)
 
 These are **real-world test results** from running the auto-grant + CRD skill against a live Chrome Remote Desktop session on the user's actual Mac mini. Read this before assuming any documentation written before 2026-04-27 reflects reality.
 
-> **Update — credential leak incident (same day, post-Phase-E).** A field instance of the skill leaked an OPENROUTER_API_KEY through `/macmini paste`'s gist transport. GitHub's secret-scanning service forwards detected keys to issuer partners; auto-revocation followed within minutes. Two keys burned this way before the team realized what was happening. The skill now hard-blocks credential-shaped payloads at Step 0 of `paste.md` and routes credential injection through `--secure` mode (gist contains only a `read -s` prompt, never the value). Full incident write-up in [`INCIDENTS.md`](./INCIDENTS.md). The findings below are unchanged — they describe the keyboard/clipboard transport reality, which is orthogonal to the secret-scanning issue.
+> **Update — credential leak incident (2026-04-27, post-Phase-E).** A field instance of the skill leaked an OPENROUTER_API_KEY through `/macmini paste`'s gist transport. GitHub's secret-scanning service forwards detected keys to issuer partners; auto-revocation followed within minutes. Two keys burned this way before the team realized what was happening. The skill now hard-blocks credential-shaped payloads at Step 0 of `paste.md` and routes credential injection through `--secure` mode (gist contains only a `read -s` prompt, never the value). Full incident write-up in [`INCIDENTS.md`](./INCIDENTS.md). The findings below are unchanged — they describe the keyboard/clipboard transport reality, which is orthogonal to the secret-scanning issue.
+
+> **Update — click_at(x,y) validated through CRD canvas (2026-04-30).** The chrome-devtools-mcp `--experimental-vision` flag was enabled and `mcp.click_at(x, y)` was tested end-to-end against the live CRD session into `plan2bid-minim4`. **CDP-injected mouse events forward through CRD's canvas to the Mac mini** — confirming the prediction in the implementation plan and closing the last big capability gap (off-center clicks on the CRD canvas were keyboard-only before this). See "click_at(x, y) forwarding through CRD canvas (validated 2026-04-30)" section below for the per-test outcome table.
 
 ## TL;DR — what the agent can and cannot rely on
 
