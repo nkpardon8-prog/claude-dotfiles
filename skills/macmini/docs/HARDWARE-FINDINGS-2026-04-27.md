@@ -1,6 +1,8 @@
-# Phase E Hardware Findings — 2026-04-27
+# Phase E Hardware Findings — 2026-04-27 (updated post-credential-incident)
 
 These are **real-world test results** from running the auto-grant + CRD skill against a live Chrome Remote Desktop session on the user's actual Mac mini. Read this before assuming any documentation written before 2026-04-27 reflects reality.
+
+> **Update — credential leak incident (same day, post-Phase-E).** A field instance of the skill leaked an OPENROUTER_API_KEY through `/macmini paste`'s gist transport. GitHub's secret-scanning service forwards detected keys to issuer partners; auto-revocation followed within minutes. Two keys burned this way before the team realized what was happening. The skill now hard-blocks credential-shaped payloads at Step 0 of `paste.md` and routes credential injection through `--secure` mode (gist contains only a `read -s` prompt, never the value). Full incident write-up in [`INCIDENTS.md`](./INCIDENTS.md). The findings below are unchanged — they describe the keyboard/clipboard transport reality, which is orthogonal to the secret-scanning issue.
 
 ## TL;DR — what the agent can and cannot rely on
 
