@@ -439,9 +439,21 @@ If Spotlight fails, fall back to clicking the dock or using App Switcher
 
 ### Click somewhere specific on the canvas
 
-The MCP `click(uid)` only clicks the centerpoint of the canvas. For
-pixel-precise clicks would require the experimental `click_at(x, y)` extension, which is NOT part of the default chrome-devtools MCP surface. Treat as unavailable. Your only option for off-center
-clicking is to use Mac mini's keyboard-only navigation (Tab, arrow keys).
+`mcp.click_at({x, y})` is the pixel-precise click tool — available when the
+chrome-devtools MCP is launched with `--experimental-vision` (see
+`commands/macmini/setup.md` Step 1). Use it to click on anything visible on
+the mini's screen. Coords are dev-viewport CSS pixels (NOT screenshot pixels);
+the geometry math + occlusion check + CRD-toolbar caveat + cliclick fallback
+for drag/right-click/modifier-click are documented in
+`docs/AGENT-GUIDE.md` → "Clicking on the canvas". Read that recipe before
+using `click_at`.
+
+If the agent has only the legacy a11y-uid `mcp.click({uid})` available
+(no `--experimental-vision`), then click capability is limited to the canvas
+centerpoint and any element with a uid in `take_snapshot()`. Per
+HARDWARE-FINDINGS, the CRD canvas exposes only the `Desktop` textbox uid —
+so without `click_at`, off-center clicking falls back to keyboard-only
+navigation (Tab, arrow keys, Cmd+Space Spotlight).
 
 ### Run shell commands
 
