@@ -144,6 +144,12 @@ Unreliable: per-character typing of capitals or `_:$|&>~` (Shift mangling).
 Captures the CRD canvas, which is the actual Mac mini desktop pixels.
 Use this liberally to verify state before/after actions.
 
+### Clicking on the canvas
+
+`mcp.click_at({x, y})` lets you click pixel-precisely on anything visible on the Mac mini's screen, treating the streamed CRD canvas as a normal click target. The full recipe — including the screenshot-pixel → viewport-CSS-pixel conversion math, the `document.elementFromPoint` occlusion check, the CRD top-toolbar / bottom-strip overlay caveat, and the `cliclick` fallback for drag / right-click / modifier-click — lives in `docs/AGENT-GUIDE.md` → "Clicking on the canvas".
+
+Coords passed to `mcp.click_at` are dev-viewport CSS pixels, NOT screenshot pixels. The agent must compute conversion factors (`devicePixelRatio`, browser zoom via `visualViewport.scale` or `outerWidth/innerWidth`) and verify on-canvas + non-occluded before clicking. Read the recipe before using `click_at` — short-circuiting the conversion or skipping the occlusion check produces wrong-coordinate clicks that hit Chrome notifications, password-manager dropdowns, or CRD's own UI overlay instead of the intended mini target.
+
 ## Vision is your primary feedback loop
 
 You are driving the Mac mini THROUGH ITS SCREEN. The whole reason this
