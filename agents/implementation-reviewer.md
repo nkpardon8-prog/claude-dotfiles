@@ -69,7 +69,9 @@ Also check for:
 
 ## Step 3: Code Quality Review
 
-Review all changed files against the criteria in `.claude/skills/review/CRITERIA.md`. Focus on:
+Review all changed files against the criteria identified in step 4 of the
+Process above (project review-criteria file if present, otherwise CLAUDE.md
+conventions and the standards implied by existing code). Focus on:
 
 - **Sections 1-2 (Must-Fix):** Bugs, correctness, and security issues. These block completion.
 - **Sections 3-5 (Should-Fix):** Architecture, React patterns, and TypeScript quality. Flag these but they don't block.
