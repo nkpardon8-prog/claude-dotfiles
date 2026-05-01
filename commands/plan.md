@@ -150,7 +150,7 @@ normalize that brief into the intent artifact rather than starting from scratch.
 
 ### Step 2c: Spawn a Research Dossier Sub-Agent
 
-Spawn one fresh `research-dossier-writer` sub-agent from the same brief.
+Spawn one fresh `research-dossier-writer` sub-agent from the same brief and **wait for it to finish** (i.e. the Task tool returns) before continuing to Step 3. The reconciliation step in Step 3 reads the dossier file at the path below — if you start reconciliation before the sub-agent completes, you will reconcile against a missing or partial file and the dossier's anchors/gotchas will silently drop out of the final plan.
 
 Save the dossier as:
 `./tmp/plan-artifacts/YYYY-MM-DD-description-research-dossier.md`
