@@ -60,9 +60,10 @@ Output to user: **"Browser connected. [N] pages open. App loaded at [URL]. [N] e
 # Detect the base branch — capture only the branch name, never the SHA.
 # Probe local first, then remote (origin/) refs across common base names.
 BASE_BRANCH=""
+# Prefer remote refs (they reflect the latest team-shared state); fall back to local.
 for cand in main master develop trunk; do
-  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
   if git rev-parse --verify "origin/$cand" >/dev/null 2>&1; then BASE_BRANCH="origin/$cand"; break; fi
+  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
 done
 WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
