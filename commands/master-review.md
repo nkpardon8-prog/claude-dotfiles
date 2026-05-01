@@ -992,8 +992,61 @@ Build a new `$CONTEXT_PACKAGE` that includes:
 
 ```bash
 rm -f /tmp/master-review-codex-v{1,2}.txt /tmp/master-review-ag-v{1,2}.txt
-# AG_BIN, AG_DIR_1/2, AG_NAME_1/2, CODEX_BIN, CODEX_HOME_1/2 were set in Phase 1 — they persist across rounds.
-# Detection vars and BASE_BRANCH/WORKDIR need to be re-set inline — markdown bash fences don't share scope with Phase 0c.
+# Markdown bash fences DO NOT share variable scope across phases — every account/binary/path
+# var must be re-derived here even though Phase 0c also computes them. Otherwise Codex/Antigravity
+# verification lanes silently degrade to "unavailable" and the 3-consecutive-clean-passes finish
+# line gets weaker than specified.
+LOOP_JSON=$(/usr/bin/python3 << 'PYEOF'
+import os, json
+router_path = os.environ.get('CLAUDE_HYBRID_CONTROL_HOME', '') or os.path.expanduser('~/claude-hybrid-control')
+router_file = os.path.join(router_path, 'config', 'router.json')
+if os.path.exists(router_file):
+    c = json.load(open(router_file))
+else:
+    c = {
+        'commands': {
+            'antigravity': os.environ.get('AG_BIN', 'antigravity'),
+            'codex': os.environ.get('CODEX_BIN', 'codex'),
+        },
+        'loop_profiles': {
+            'antigravity': {'agent-1': {'profile': 'default-1'}, 'agent-2': {'profile': 'default-2'}},
+            'codex': {
+                'default-1': {'codex_home': os.environ.get('CODEX_HOME_1', '')},
+                'default-2': {'codex_home': os.environ.get('CODEX_HOME_2', '')},
+            },
+            'profiles': {
+                'default-1': {'user_data_dir': '', 'profile_name': 'default-1'},
+                'default-2': {'user_data_dir': '', 'profile_name': 'default-2'},
+            },
+        },
+    }
+loop = c.get('loop_profiles', {})
+ag_loop = loop.get('antigravity', {})
+codex_loop = loop.get('codex', {})
+profiles = loop.get('profiles', {})
+ag1 = ag_loop.get('agent-1', {}).get('profile', 'default-1')
+ag2 = ag_loop.get('agent-2', {}).get('profile', 'default-2')
+p1 = profiles.get(ag1, {}); p2 = profiles.get(ag2, {})
+AG_BIN = c['commands'].get('antigravity', 'antigravity')
+CODEX_BIN_VAL = c['commands'].get('codex', 'codex')
+CODEX_HOME_1 = codex_loop.get(ag1, {}).get('codex_home', '')
+CODEX_HOME_2 = codex_loop.get(ag2, {}).get('codex_home', '')
+print('|'.join([
+    AG_BIN, CODEX_BIN_VAL, CODEX_HOME_1, CODEX_HOME_2,
+    p1.get('user_data_dir', ''), p1.get('profile_name', ag1),
+    p2.get('user_data_dir', ''), p2.get('profile_name', ag2),
+]))
+PYEOF
+)
+AG_BIN=$(echo "$LOOP_JSON" | cut -d'|' -f1)
+CODEX_BIN=$(echo "$LOOP_JSON" | cut -d'|' -f2)
+CODEX_HOME_1=$(echo "$LOOP_JSON" | cut -d'|' -f3)
+CODEX_HOME_2=$(echo "$LOOP_JSON" | cut -d'|' -f4)
+AG_DIR_1=$(echo "$LOOP_JSON" | cut -d'|' -f5)
+AG_NAME_1=$(echo "$LOOP_JSON" | cut -d'|' -f6)
+AG_DIR_2=$(echo "$LOOP_JSON" | cut -d'|' -f7)
+AG_NAME_2=$(echo "$LOOP_JSON" | cut -d'|' -f8)
+# Detection vars and BASE_BRANCH/WORKDIR are re-set immediately below — markdown bash fences don't share scope with Phase 0c.
 BASE_BRANCH=""
 if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
   BASE_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
