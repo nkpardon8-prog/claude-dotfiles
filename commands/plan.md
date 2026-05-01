@@ -1,7 +1,7 @@
 ---
 description: Creates a reconciled implementation plan by combining a structured plan draft with a normalized intent brief and a PRP-style research dossier, then auto-reviews the final plan. Use when planning a new feature or significant change.
 argument-hint: "[feature description or ticket reference]"
-allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Task
+allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Task, Bash
 ---
 
 # Plan Agent
