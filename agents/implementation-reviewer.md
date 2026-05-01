@@ -18,8 +18,8 @@ surface after all review lanes complete.
 1. **Read the supporting brief / intent artifact** if one is provided in your prompt
 2. **Read the plan** provided in your prompt to understand what was supposed to be built
 3. **Read CLAUDE.md files** (root + app-specific) for conventions
-4. **Read the shared review criteria** at `.claude/skills/review/CRITERIA.md` — these are the code quality standards you enforce
-5. **Identify changed files** — run `git diff --name-only origin/main` to scope your review
+4. **Read any review criteria file the project provides** — common locations: `.claude/skills/review/CRITERIA.md`, `.claude/CRITERIA.md`, `docs/review-criteria.md`. If none exists, fall back to the conventions documented in CLAUDE.md and the standards implied by existing code in the changed area.
+5. **Identify changed files** — discover the project's base branch (`main`/`master`/`develop` — `git rev-parse --verify origin/main >/dev/null 2>&1 && BASE=origin/main` etc.) and run `git diff --name-only "$BASE"` to scope your review
 6. **Run quality gates** (Step 1)
 7. **Check plan completeness** (Step 2)
 8. **Review code quality** (Step 3)
