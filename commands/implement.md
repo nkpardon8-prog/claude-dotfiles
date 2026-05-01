@@ -185,7 +185,8 @@ elif git rev-parse --verify main >/dev/null 2>&1; then BASE_REF=main
 elif git rev-parse --verify master >/dev/null 2>&1; then BASE_REF=master
 else BASE_REF=""
 fi
-[ -n "$BASE_REF" ] && git diff "$BASE_REF" --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
+[ -n "$BASE_REF" ] && git diff "$BASE_REF"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
+# Triple-dot diff so schema detection only fires on changes introduced by this branch, not unrelated upstream schema edits.
 ```
 
 If a schema file was changed:
