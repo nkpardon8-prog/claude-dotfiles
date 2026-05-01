@@ -181,11 +181,23 @@ the project (common patterns: `schema.ts`, `schema.prisma`, `migrations/`,
 ```bash
 # Discover the base branch first — prefer remote refs (latest team-shared state).
 BASE_REF=""
-for cand in main master develop trunk; do
-  if git rev-parse --verify "origin/$cand" >/dev/null 2>&1; then BASE_REF="origin/$cand"; break; fi
-  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi
-done
-[ -n "$BASE_REF" ] && git diff "$BASE_REF"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql|py|rb|kt|swift)$|models?/.*\.(py|rb)$|migrations/|db/schema/|alembic/versions/'
+# Try origin/HEAD first — this is the actual remote default branch (works for `release`, `production`, etc.).
+if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+  BASE_REF=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+fi
+if [ -z "$BASE_REF" ]; then
+  for cand in main master develop trunk release production; do
+    if git rev-parse --verify "origin/$cand" >/dev/null 2>&1; then BASE_REF="origin/$cand"; break; fi
+    if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi
+  done
+fi
+SCHEMA_RX='schema\.(ts|prisma|sql|py|rb|kt|swift)$|models?/.*\.(py|rb)$|migrations/|db/schema/|alembic/versions/'
+# Three-way detection: committed branch changes (triple-dot), staged, AND unstaged — /implement runs before commit, so uncommitted edits matter.
+{
+  [ -n "$BASE_REF" ] && git diff "$BASE_REF"...HEAD --name-only
+  git diff --cached --name-only
+  git diff --name-only
+} | sort -u | grep -E "$SCHEMA_RX"
 # Triple-dot diff so schema detection only fires on changes introduced by this branch, not unrelated upstream schema edits.
 ```
 
