@@ -32,6 +32,7 @@ Templates and base files (not invoked directly): `commands/plan_base.md`.
 | Command | What it does |
 |---|---|
 | `/plan` | Build a thorough implementation plan with codebase + web research. Spawns a fresh plan-reviewer each iteration and loops with you until you confirm before saving to `./tmp/ready-plans/`. |
+| `/share-fix` | After a non-trivial fix lands (especially upstream-library workarounds), find related GitHub issues, draft human-sounding outreach comments, and optionally file upstream issues. Always asks for explicit approval before posting publicly. |
 | `/simple-plan` | Lightweight gut-check before doing something the user just asked for. Investigates, proposes, implements after approval. |
 | `/discussion` | Conversation-only mode. Researches the codebase, talks through tradeoffs, saves a brief to `./tmp/briefs/` for `/plan` to consume. No code changes. |
 | `/implement <plan path>` | Executes an approved plan from `./tmp/ready-plans/`. Defaults to one primary implementer end-to-end (bounded sidecars only when write scopes are truly disjoint). Runs the Claude implementation-reviewer plus a Codex review lane in parallel if Codex is available, then moves the plan to `./tmp/done-plans/`. |
