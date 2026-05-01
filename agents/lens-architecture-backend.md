@@ -1,6 +1,7 @@
 ---
 name: lens-architecture-backend
 description: Reviews a code diff for backend architecture pattern violations — controller/service separation, authenticated route wrappers, base service patterns, error class usage. Stack-gated lens for master-review (fires when an authenticated handler or backend pattern is detected).
+tools: Read, Grep, Glob, Bash
 model: opus
 color: orange
 ---
