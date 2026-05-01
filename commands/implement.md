@@ -178,7 +178,14 @@ the project (common patterns: `schema.ts`, `schema.prisma`, `migrations/`,
 `db/schema/`, `models.py`, etc.). For example:
 
 ```bash
-git diff origin/main --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
+# Discover the base branch first
+if git rev-parse --verify origin/main >/dev/null 2>&1; then BASE_REF=origin/main
+elif git rev-parse --verify origin/master >/dev/null 2>&1; then BASE_REF=origin/master
+elif git rev-parse --verify main >/dev/null 2>&1; then BASE_REF=main
+elif git rev-parse --verify master >/dev/null 2>&1; then BASE_REF=master
+else BASE_REF=""
+fi
+[ -n "$BASE_REF" ] && git diff "$BASE_REF" --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
 ```
 
 If a schema file was changed:
