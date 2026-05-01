@@ -949,11 +949,17 @@ Build a new `$CONTEXT_PACKAGE` that includes:
 ```bash
 rm -f /tmp/master-review-codex-v{1,2}.txt /tmp/master-review-ag-v{1,2}.txt
 # AG_BIN, AG_DIR_1/2, AG_NAME_1/2, CODEX_BIN, CODEX_HOME_1/2 were set in Phase 1 — they persist across rounds.
-# Detection vars need to be re-set inline — markdown bash fences don't share scope with Phase 0c.
-HAS_TANSTACK_QUERY=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l "@tanstack/react-query" {} \; 2>/dev/null | head -1)
-HAS_APP_ROUTER=$(find "$WORKDIR" -maxdepth 6 -type f -name "page.tsx" -path "*/app/*" 2>/dev/null | head -1)
-HAS_AUTHED_HANDLER=$(find "$WORKDIR" -maxdepth 5 -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) -exec grep -l "authenticatedHandler\|requireAuth\|@authenticated" {} \; 2>/dev/null | head -1)
-HAS_UI_PROJECT=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"' {} \; 2>/dev/null | head -1)
+# Detection vars and BASE_BRANCH/WORKDIR need to be re-set inline — markdown bash fences don't share scope with Phase 0c.
+if git rev-parse --verify main >/dev/null 2>&1; then BASE_BRANCH=main
+elif git rev-parse --verify master >/dev/null 2>&1; then BASE_BRANCH=master
+else BASE_BRANCH=""
+fi
+WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+PRUNE_DIRS='( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" ) -prune -o'
+HAS_TANSTACK_QUERY=$(eval "find \"$WORKDIR\" -maxdepth 3 $PRUNE_DIRS -name package.json -print" 2>/dev/null | xargs grep -l "@tanstack/react-query" 2>/dev/null | head -1)
+HAS_APP_ROUTER=$(eval "find \"$WORKDIR\" -maxdepth 6 $PRUNE_DIRS -type f -name page.tsx -path '*/app/*' -print" 2>/dev/null | head -1)
+HAS_AUTHED_HANDLER=$(eval "find \"$WORKDIR\" -maxdepth 5 $PRUNE_DIRS -type f \( -name '*.ts' -o -name '*.js' -o -name '*.py' \) -print" 2>/dev/null | xargs grep -l "authenticatedHandler\|requireAuth\|withAuth\|@authenticated\|protectedRoute" 2>/dev/null | head -1)
+HAS_UI_PROJECT=$(eval "find \"$WORKDIR\" -maxdepth 3 $PRUNE_DIRS -name package.json -print" 2>/dev/null | xargs grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"\|"solid-js"\|"preact"\|"lit"\|"@builder.io/qwik"\|"astro"' 2>/dev/null | head -1)
 ```
 
 **Always-on lens agents (spawned alongside the 6 verifier agents):**
