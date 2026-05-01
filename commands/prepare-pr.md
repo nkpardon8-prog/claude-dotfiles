@@ -58,7 +58,13 @@ fi
 [ -z "$BASE_BRANCH" ] && echo "No base branch found — abort. Set origin/HEAD with: git remote set-head origin --auto" && exit 1
 ```
 
-1. Fetch latest base: `git fetch origin "${BASE_BRANCH#origin/}"` (skip if no `origin` remote)
+1. Fetch latest base — only when an `origin` remote exists AND the detected base actually came from `origin/` (local-only repos and repos with a non-`origin` remote name should skip the fetch entirely instead of hitting an unconditional `git fetch origin` that errors out):
+
+   ```bash
+   if git remote get-url origin >/dev/null 2>&1 && [[ "$BASE_BRANCH" == origin/* ]]; then
+     git fetch origin "${BASE_BRANCH#origin/}"
+   fi
+   ```
 2. Rebase: `git rebase "$BASE_BRANCH"`
 3. If conflicts occur:
    - Read the conflicting files and the incoming vs current changes.
