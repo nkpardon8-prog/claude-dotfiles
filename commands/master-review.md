@@ -70,6 +70,13 @@ if [ -z "$BASE_BRANCH" ]; then
     if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
   done
 fi
+# Hard-fail if no base branch is detectable — without it, every later `git diff $BASE_BRANCH...HEAD`
+# becomes the invalid revspec `...HEAD` and the review silently produces an empty/broken diff.
+if [ -z "$BASE_BRANCH" ]; then
+  echo "master-review: no base branch found (origin/HEAD unset; main/master/develop/trunk/release/production all missing). Aborting." >&2
+  echo "Fix: run \`git remote set-head origin --auto\` or check out the default branch locally before retrying." >&2
+  exit 1
+fi
 WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 # Stack detection — populated as non-empty marker paths if the pattern is detected, empty otherwise.
