@@ -114,6 +114,7 @@ If the executor is **Codex** and Codex is available:
 Suggested Codex executor invocation (Bash, requires `codex` CLI on PATH):
 
 ```bash
+WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 codex exec --cd "$WORKDIR" "Implement the plan at [plan path]. Supporting brief / intent artifact: [path if available]. Treat the brief as the source of truth for why and the plan as the source of truth for how. You are the primary implementation authority for this run. Do not silently simplify or defer scope. A task is not complete until the end-to-end runtime or user-facing path is wired and still preserves the intended outcome. Run the project's typecheck and lint commands as you work (discover from package manifest or scripts). Update the plan progress where practical and report any remaining manual steps or unresolved blockers clearly."
 ```
 
