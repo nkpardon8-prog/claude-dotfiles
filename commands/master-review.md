@@ -96,6 +96,8 @@ Determine MODE:
 - Uncommitted changes → MODE="uncommitted"
 - No diff but feature description → MODE="feature"
 
+If MODE resolves to `branch` or `uncommitted` AND `$BASE_BRANCH` is empty (the warning above fired), abort here with: `master-review: branch/uncommitted mode needs a base branch. Run \`git remote set-head origin --auto\` or rerun with a file/dir target to use targeted/feature mode instead.` Targeted and feature modes can proceed even without a base branch.
+
 ### 0d: Build context package
 
 Gather context that ALL agents will receive:
