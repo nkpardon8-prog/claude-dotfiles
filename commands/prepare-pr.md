@@ -65,7 +65,7 @@ Discover the schema source-of-truth from the project (common patterns:
 `schema.ts`, `schema.prisma`, `migrations/`, `db/schema/`, `models.py`, etc.):
 
 ```bash
-git diff "$BASE_BRANCH"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
+git diff "$BASE_BRANCH"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql|py|rb|kt|swift)$|models?/.*\.(py|rb)$|migrations/|db/schema/|alembic/versions/'
 ```
 
 If a schema file was changed:

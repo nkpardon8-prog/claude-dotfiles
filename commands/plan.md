@@ -241,6 +241,12 @@ Suggested placeholder/factuality grep before finalizing:
 
 ## Step 4: Save the Final Plan and Supporting Artifacts
 
+First ensure all output directories exist:
+
+```bash
+mkdir -p ./tmp/ready-plans ./tmp/plan-artifacts ./tmp/done-plans ./tmp/cancelled-plans
+```
+
 Save the **final reconciled plan** as:
 `./tmp/ready-plans/YYYY-MM-DD-description.md`
 

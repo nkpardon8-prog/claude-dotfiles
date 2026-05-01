@@ -184,7 +184,7 @@ for cand in main master develop trunk; do
   if git rev-parse --verify "origin/$cand" >/dev/null 2>&1; then BASE_REF="origin/$cand"; break; fi
   if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi
 done
-[ -n "$BASE_REF" ] && git diff "$BASE_REF"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
+[ -n "$BASE_REF" ] && git diff "$BASE_REF"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql|py|rb|kt|swift)$|models?/.*\.(py|rb)$|migrations/|db/schema/|alembic/versions/'
 # Triple-dot diff so schema detection only fires on changes introduced by this branch, not unrelated upstream schema edits.
 ```
 
