@@ -1306,11 +1306,12 @@ timeout: 45000
 
 ### 3c: Process round results
 
-1. Collect all 6 agent outputs (2 Claude + 2 Codex + 2 Antigravity)
+1. Collect all 8 agent outputs: 2 Claude verifiers + 2 Codex verifiers + 2 Antigravity verifiers + the 2 always-on lens agents (`lens-single-pattern`, `lens-circular-deps`). Lens findings count toward the round's NEW-finding total just like reviewer findings.
 2. Read Antigravity results from `/tmp/master-review-ag-v{1,2}.txt` — handle "timed out" gracefully
-3. Validate findings yourself (read the code, verify each one)
-4. Remove false positives and duplicates of previous findings
-5. Check for regressions from fixes
+3. Read each lens agent's return value from its Task tool result. A lens that emits `(skipped — pattern not detected)` contributes zero findings; otherwise treat its output as first-class findings.
+4. Validate findings yourself (read the code, verify each one)
+5. Remove false positives and duplicates of previous findings
+6. Check for regressions from fixes
 
 ### 3d: Determine loop continuation
 
