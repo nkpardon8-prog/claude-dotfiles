@@ -100,7 +100,8 @@ If you choose to parallelize, keep it bounded:
 
 If the executor is **Codex** and Codex is available:
 
-- Use **one** primary Codex invocation via `codex exec` (note: `codex` is a read-only CLI; for *implementation* via Codex you must invoke the binary in write mode if your install supports it, otherwise hand the implementation back to Claude). The skill is read-only by default — Codex executor is a documented alias and behaves like Claude unless the operator has configured a write-capable Codex backend.
+- **Pre-check write capability before doing anything.** Stock `codex exec` runs in read-only sandbox mode and CANNOT modify files. Probe whether this install supports write mode (`codex exec --help 2>&1 | grep -E '\-\-write|--full-access|--no-sandbox|--workspace-write'`). If write mode is NOT available, **tell the user explicitly: "Codex is read-only on this machine; I'm falling back to Claude as the implementer"** and switch to the Claude path above. Do NOT silently launch a read-only Codex run as the implementer — it will produce zero file edits and look like progress.
+- If write mode IS supported, use **one** primary Codex invocation with the appropriate write flag — the example below uses `codex exec --cd "$WORKDIR"` for documentation, but you must add whatever write flag your install requires (e.g. `--workspace-write` or `--full-access` depending on the build).
 - Pass the same implementation contract used for the Claude implementer:
   - brief / intent artifact first, plan second
   - one primary owner for the whole stream
