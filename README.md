@@ -21,10 +21,10 @@ Years of refining how to get real work done with Claude — distilled into comma
        │            │           │                 /master-review
        │            │           │                 /local-review
        │            │           │
-       │            │           └─▶ one primary implementer + bounded sidecars
-       │            │               implementation-reviewer (+ Codex review lane if available)
+       │            │           └─▶ implementer agents (parallel)
+       │            │               implementation-reviewer
        │            │
-       │            └─▶ plan-reviewer (auto, iterative until you approve)
+       │            └─▶ plan-reviewer (auto, iterative)
        │
        └─▶ ./tmp/briefs/  ──▶  ./tmp/ready-plans/  ──▶  ./tmp/done-plans/
 
