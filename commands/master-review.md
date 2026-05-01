@@ -507,7 +507,7 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     return $?
   fi
@@ -562,7 +562,7 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     return $?
   fi
@@ -630,7 +630,7 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     return $?
   fi
@@ -1114,7 +1114,7 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     return $?
   fi
@@ -1158,7 +1158,7 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     return $?
   fi
