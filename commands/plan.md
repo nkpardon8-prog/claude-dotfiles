@@ -59,7 +59,7 @@ Otherwise, proceed directly.
 
 Produce **three artifacts** from the same brief:
 
-1. A **provisional implementation plan** using `.claude/commands/plan_base.md`
+1. A **provisional implementation plan** using `~/.claude/commands/plan_base.md (the user-level dotfiles plan template; symlink-resolved through the harness)`
 2. A **normalized brief / intent artifact** that preserves the why, locked
    decisions, non-goals, and success criteria in a compact downstream-friendly
    form
@@ -70,7 +70,7 @@ The final output shown to the user is the **reconciled plan**, not the dossier.
 
 ### Step 2a: Draft the Provisional Plan
 
-Using `.claude/commands/plan_base.md` as template.
+Using `~/.claude/commands/plan_base.md (the user-level dotfiles plan template; symlink-resolved through the harness)` as template.
 
 ### Critical Context to Include
 
