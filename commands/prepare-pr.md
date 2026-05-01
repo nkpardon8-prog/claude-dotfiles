@@ -44,10 +44,18 @@ Detect the project's base branch first — do not assume `main`. Check
 and use the first one that exists.
 
 ```bash
-for cand in origin/main origin/master origin/develop origin/trunk main master; do
-  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
-done
-[ -z "$BASE_BRANCH" ] && echo "No base branch found — abort" && exit 1
+BASE_BRANCH=""
+# Try origin/HEAD first — this is the actual remote default branch (works for `release`, `production`, etc.).
+if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+  BASE_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+fi
+# Fall back to common conventional names if origin/HEAD is unset.
+if [ -z "$BASE_BRANCH" ]; then
+  for cand in origin/main origin/master origin/develop origin/trunk origin/release origin/production main master develop trunk; do
+    if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
+  done
+fi
+[ -z "$BASE_BRANCH" ] && echo "No base branch found — abort. Set origin/HEAD with: git remote set-head origin --auto" && exit 1
 ```
 
 1. Fetch latest base: `git fetch origin "${BASE_BRANCH#origin/}"` (skip if no `origin` remote)
