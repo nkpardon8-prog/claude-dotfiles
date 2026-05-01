@@ -76,7 +76,7 @@ Discover the schema source-of-truth from the project (common patterns:
 git diff "$BASE_BRANCH"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql|py|rb|kt|swift)$|models?/.*\.(py|rb)$|migrations/|db/schema/|alembic/versions/'
 ```
 
-If a schema file was changed:
+If a schema file was changed: **HALT** the workflow here. Do not proceed to Step 3 or beyond until the user has provided the actual generated SQL.
 
 1. **Tell the user to run** the project's prod schema-diff command (e.g.
    `npm run db:diff:prod`, `npx prisma migrate diff --to-schema-datamodel`,
