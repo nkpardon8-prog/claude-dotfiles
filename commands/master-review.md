@@ -528,9 +528,23 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
+    # No isolated profile available. Multiple Codex calls sharing the default ~/.codex can stomp each
+    # other's session/account state, so serialize on a global lock-file rather than running in parallel.
+    # `flock` is the portable POSIX-ish path; on macOS it lives in coreutils — fall back to a directory
+    # mkdir-spinlock if flock is missing.
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
+    if command -v flock >/dev/null 2>&1; then
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      return $?
+    fi
+    LOCKDIR=/tmp/codex-default-home.lock.d
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
+    trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
-    return $?
+    rc=$?
+    rmdir "$LOCKDIR" 2>/dev/null
+    trap - EXIT INT TERM
+    return $rc
   fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
@@ -583,9 +597,23 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
+    # No isolated profile available. Multiple Codex calls sharing the default ~/.codex can stomp each
+    # other's session/account state, so serialize on a global lock-file rather than running in parallel.
+    # `flock` is the portable POSIX-ish path; on macOS it lives in coreutils — fall back to a directory
+    # mkdir-spinlock if flock is missing.
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
+    if command -v flock >/dev/null 2>&1; then
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      return $?
+    fi
+    LOCKDIR=/tmp/codex-default-home.lock.d
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
+    trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
-    return $?
+    rc=$?
+    rmdir "$LOCKDIR" 2>/dev/null
+    trap - EXIT INT TERM
+    return $rc
   fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
@@ -651,9 +679,23 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
+    # No isolated profile available. Multiple Codex calls sharing the default ~/.codex can stomp each
+    # other's session/account state, so serialize on a global lock-file rather than running in parallel.
+    # `flock` is the portable POSIX-ish path; on macOS it lives in coreutils — fall back to a directory
+    # mkdir-spinlock if flock is missing.
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
+    if command -v flock >/dev/null 2>&1; then
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      return $?
+    fi
+    LOCKDIR=/tmp/codex-default-home.lock.d
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
+    trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
-    return $?
+    rc=$?
+    rmdir "$LOCKDIR" 2>/dev/null
+    trap - EXIT INT TERM
+    return $rc
   fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
@@ -1193,9 +1235,23 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
+    # No isolated profile available. Multiple Codex calls sharing the default ~/.codex can stomp each
+    # other's session/account state, so serialize on a global lock-file rather than running in parallel.
+    # `flock` is the portable POSIX-ish path; on macOS it lives in coreutils — fall back to a directory
+    # mkdir-spinlock if flock is missing.
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
+    if command -v flock >/dev/null 2>&1; then
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      return $?
+    fi
+    LOCKDIR=/tmp/codex-default-home.lock.d
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
+    trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
-    return $?
+    rc=$?
+    rmdir "$LOCKDIR" 2>/dev/null
+    trap - EXIT INT TERM
+    return $rc
   fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
@@ -1237,9 +1293,23 @@ codex_invoke() {
   # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
   # output so synthesis knows account-isolation was unavailable.
   if [ -z "$primary" ] && [ -z "$fallback" ]; then
-    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." > "$outfile"
+    # No isolated profile available. Multiple Codex calls sharing the default ~/.codex can stomp each
+    # other's session/account state, so serialize on a global lock-file rather than running in parallel.
+    # `flock` is the portable POSIX-ish path; on macOS it lives in coreutils — fall back to a directory
+    # mkdir-spinlock if flock is missing.
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
+    if command -v flock >/dev/null 2>&1; then
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      return $?
+    fi
+    LOCKDIR=/tmp/codex-default-home.lock.d
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
+    trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
     "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
-    return $?
+    rc=$?
+    rmdir "$LOCKDIR" 2>/dev/null
+    trap - EXIT INT TERM
+    return $rc
   fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
