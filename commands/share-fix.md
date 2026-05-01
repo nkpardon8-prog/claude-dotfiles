@@ -120,7 +120,9 @@ Present the full plan:
 - Full draft of any upstream issue
 - Ask: "approve all, approve some, edit any, or skip any?"
 
-When the user approves, post via:
+When the user approves, post via the channel that matches the target type:
+
+**Issue comment** (`/issues/<n>` URL):
 
 ```
 gh issue comment <n> --repo owner/repo --body "$(cat <<'EOF'
@@ -129,7 +131,7 @@ EOF
 )"
 ```
 
-and file new issues via:
+**New issue** (no existing thread upstream):
 
 ```
 gh issue create --repo owner/repo --title "..." --body "$(cat <<'EOF'
@@ -138,7 +140,43 @@ EOF
 )"
 ```
 
-Use heredocs for multi-line bodies. Confirm each post succeeded and report back the final URLs.
+**PR comment** (`/pull/<n>` URL — `gh issue comment` works on PRs too since GitHub treats PRs as issues, but `gh pr comment` is clearer intent):
+
+```
+gh pr comment <n> --repo owner/repo --body "$(cat <<'EOF'
+...
+EOF
+)"
+```
+
+**Discussion comment** (`/discussions/<n>` URL — `gh issue comment` does NOT work here; use the GraphQL API):
+
+```bash
+DISCUSSION_ID=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){id}}}' \
+  -F o=owner -F r=repo -F n=<n> --jq '.data.repository.discussion.id')
+gh api graphql -f query='mutation($d:ID!,$b:String!){addDiscussionComment(input:{discussionId:$d,body:$b}){comment{url}}}' \
+  -F d="$DISCUSSION_ID" -F b="$(cat <<'EOF'
+...
+EOF
+)" --jq '.data.addDiscussionComment.comment.url'
+```
+
+**New discussion** (filing a fresh discussion thread upstream — also GraphQL-only):
+
+```bash
+REPO_ID=$(gh api graphql -f query='query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:25){nodes{id name}}}}' \
+  -F o=owner -F r=repo)
+# Pick a category id from the response — usually "Q&A" or "General".
+CATEGORY_ID="..."
+gh api graphql -f query='mutation($r:ID!,$c:ID!,$t:String!,$b:String!){createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){discussion{url}}}' \
+  -F r="$(echo "$REPO_ID" | jq -r .data.repository.id)" -F c="$CATEGORY_ID" \
+  -F t="title here" -F b="$(cat <<'EOF'
+...
+EOF
+)" --jq '.data.createDiscussion.discussion.url'
+```
+
+Pick the channel from the URL of each approved target (issue / pull / discussion). Use heredocs for multi-line bodies. Confirm each post succeeded and report back the final URLs. If a target is a discussion thread but `gh api graphql` is unavailable in the current environment, do not silently fall back to `gh issue comment` — that will fail or post in the wrong place. Instead, surface the target as "needs manual posting" in the final report.
 
 ## Step 6: Record Outreach
 
