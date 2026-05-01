@@ -296,7 +296,7 @@ Task tool:
    against the current repo rather than free-associating:
 
 ```
-codex exec -s read-only --ephemeral --cd "$WORKDIR" "Audit the plan at [plan path] against the current repository and the supporting brief at [brief path]. Focus on ghost paths, missing runtime wiring, auth/permission gaps, transaction boundaries, async/job registration, query params or routes with no consumer, brief-to-plan intent drift, and any task definitions that are likely to let an implementation stop short of the finish line. Return numbered findings with exact file references when possible and say explicitly whether the plan seems implementation-ready."
+codex exec -s read-only --ephemeral --cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "Audit the plan at [plan path] against the current repository and the supporting brief at [brief path]. Focus on ghost paths, missing runtime wiring, auth/permission gaps, transaction boundaries, async/job registration, query params or routes with no consumer, brief-to-plan intent drift, and any task definitions that are likely to let an implementation stop short of the finish line. Return numbered findings with exact file references when possible and say explicitly whether the plan seems implementation-ready."
 ```
 
    If Codex is unavailable, run only the Claude review lane and treat it as the
