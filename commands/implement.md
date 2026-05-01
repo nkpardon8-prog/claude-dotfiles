@@ -162,8 +162,8 @@ present one combined set of user-facing questions or decisions.
 
 If you apply fixes after either lane reports issues:
 - rerun the Claude `implementation-reviewer`
-- rerun `/codex:review` if Codex is available
-- rerun `/codex:adversarial-review` too when the fixes affect architecture,
+- rerun the Codex review `codex exec` invocation if Codex is available
+- rerun the Codex adversarial review too when the fixes affect architecture,
   flow control, auth, async work, or finish-line wiring
 - wait for all active review lanes again before continuing
 
