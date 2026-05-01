@@ -207,14 +207,14 @@ review loop. If Codex is unavailable, skip this step.
 
 ### Review loop
 
-1. Launch a **Bash subagent** (via the Task tool) that runs `codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."` in the repo root. Wait for the full output.
+1. Launch a **Bash subagent** (via the Task tool) that runs `codex exec -s read-only --ephemeral --cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."` in the repo root. Wait for the full output.
 2. Read the response carefully.
 3. **If codex reports issues**:
    - Fix every issue it raised in the codebase.
    - Commit the fixes: `fix: address codex review feedback`
    - **Ask the user** for explicit approval before pushing the follow-up commits (same policy as Step 4): "Codex review found issues. I committed fixes locally. Push to <remote>? type 'yes' to push or 'no' to stop here."
    - Only after the user confirms: `git push origin <branch>`
-   - Go back to step 1 — run `codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."` again.
+   - Go back to step 1 — run `codex exec -s read-only --ephemeral --cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."` again.
 4. **If codex reports no issues** (e.g., "no defects", "no issues", "changes appear consistent"), the loop is done. Move on.
 
 **Important**: Do not summarize or skip the codex output. Read it in full each iteration so you can act on every finding.
