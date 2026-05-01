@@ -57,15 +57,21 @@ Output to user: **"Browser connected. [N] pages open. App loaded at [URL]. [N] e
 ### 0c: Detect review mode
 
 ```bash
-BASE_BRANCH=$(git rev-parse --verify main 2>/dev/null && echo "main" || (git rev-parse --verify master 2>/dev/null && echo "master" || echo ""))
+# Detect the base branch — capture only the branch name, never the SHA.
+if git rev-parse --verify main >/dev/null 2>&1; then BASE_BRANCH=main
+elif git rev-parse --verify master >/dev/null 2>&1; then BASE_BRANCH=master
+else BASE_BRANCH=""
+fi
 WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 # Stack detection — populated as non-empty marker paths if the pattern is detected, empty otherwise.
 # Lens agents read these to self-gate (skipping when empty).
-HAS_TANSTACK_QUERY=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l "@tanstack/react-query" {} \; 2>/dev/null | head -1)
-HAS_APP_ROUTER=$(find "$WORKDIR" -maxdepth 6 -type f -name "page.tsx" -path "*/app/*" 2>/dev/null | head -1)
-HAS_AUTHED_HANDLER=$(find "$WORKDIR" -maxdepth 5 -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) -exec grep -l "authenticatedHandler\|requireAuth\|@authenticated" {} \; 2>/dev/null | head -1)
-HAS_UI_PROJECT=$(find "$WORKDIR" -maxdepth 3 -name "package.json" -exec grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"' {} \; 2>/dev/null | head -1)
+# All find commands prune node_modules / .git / vendor / dist / build to avoid transitive-dep false positives.
+PRUNE_DIRS='( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" ) -prune -o'
+HAS_TANSTACK_QUERY=$(eval "find \"$WORKDIR\" -maxdepth 3 $PRUNE_DIRS -name package.json -print" 2>/dev/null | xargs grep -l "@tanstack/react-query" 2>/dev/null | head -1)
+HAS_APP_ROUTER=$(eval "find \"$WORKDIR\" -maxdepth 6 $PRUNE_DIRS -type f -name page.tsx -path '*/app/*' -print" 2>/dev/null | head -1)
+HAS_AUTHED_HANDLER=$(eval "find \"$WORKDIR\" -maxdepth 5 $PRUNE_DIRS -type f \( -name '*.ts' -o -name '*.js' -o -name '*.py' \) -print" 2>/dev/null | xargs grep -l "authenticatedHandler\|requireAuth\|withAuth\|@authenticated\|protectedRoute" 2>/dev/null | head -1)
+HAS_UI_PROJECT=$(eval "find \"$WORKDIR\" -maxdepth 3 $PRUNE_DIRS -name package.json -print" 2>/dev/null | xargs grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"\|"solid-js"\|"preact"\|"lit"\|"@builder.io/qwik"\|"astro"' 2>/dev/null | head -1)
 ```
 
 Determine MODE:
