@@ -68,17 +68,28 @@ After saving the plan, enter an iterative review cycle. **Do not skip this step.
 
 ### Loop:
 
-1. **Spawn a plan-reviewer sub-agent** to review the plan:
+1. **Spawn TWO fresh plan-reviewer sub-agents in parallel** (single message, two `Task` tool calls). Two independent reviews catch more than one — overlap is signal, divergence is signal too.
 
 ```
-Task tool:
+Task tool (call 1):
+  subagent_type: "plan-reviewer"
+  prompt: "Review the plan at [path]. Produce a numbered list of specific,
+    actionable recommendations covering gaps, simplification opportunities,
+    correctness issues, and better alternatives."
+
+Task tool (call 2, sent in the same message as call 1):
   subagent_type: "plan-reviewer"
   prompt: "Review the plan at [path]. Produce a numbered list of specific,
     actionable recommendations covering gaps, simplification opportunities,
     correctness issues, and better alternatives."
 ```
 
-2. **Present the review summary to the user.** When the reviewer finishes, provide the user with:
+   When both return, merge the findings:
+   - If both reviewers raised the same issue → list it once, mark as `(both reviewers)` for higher confidence
+   - If only one raised it → keep it, mark as `(reviewer 1)` or `(reviewer 2)`
+   - Dedupe near-duplicates by topic, not by exact wording
+
+2. **Present the merged review summary to the user.** Provide the user with:
 
    **a) Plan Summary** — Summarize the key points of the plan in 3-5 bullet points so the user can quickly recall what the plan covers without re-reading it.
 
