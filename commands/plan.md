@@ -124,6 +124,12 @@ The AI agent only gets the context in the plan plus codebase access. Include:
 
 ### Step 2b: Create a Normalized Brief / Intent Artifact
 
+First ensure the artifact directory exists:
+
+```bash
+mkdir -p ./tmp/plan-artifacts
+```
+
 Create a normalized brief / intent artifact and save it as:
 `./tmp/plan-artifacts/YYYY-MM-DD-description-brief.md`
 
