@@ -191,7 +191,7 @@ fi
 
 If a schema file was changed:
 
-1. Run the project's schema-diff command if one exists (e.g. `npm run db:diff:dev`, `npx prisma migrate diff`, `alembic revision --autogenerate`, etc.) and capture the output. **Tell the user to run this themselves** — schema-diff commands hit the dev database and should not run automatically.
+1. **Do NOT run the schema-diff command yourself.** Identify the project's schema-diff command (e.g. `npm run db:diff:dev`, `npx prisma migrate diff`, `alembic revision --autogenerate`, etc.) by reading `package.json`, `pyproject.toml`, or the project's developer docs. Then **tell the user the exact command to run** — schema-diff commands typically connect to a live dev database and may mutate migration state, so they must stay user-invoked.
 2. Present TWO separate blocks to the user:
 
 **Schema changes (migration SQL):**
