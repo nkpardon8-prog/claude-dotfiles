@@ -109,7 +109,7 @@ PASS/FAIL
 [Check or uncheck each as appropriate]
 
 ### Schema Changes
-[Run: git diff origin/main --name-only | grep schema.ts]
+[Run against the discovered base branch: git diff "$BASE" --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/']
 - If schema.ts was modified: "⚠️ Schema changes detected — migration SQL will be generated after this review."
 - If not modified: omit this section entirely.
 
