@@ -1,4 +1,7 @@
-name: "Base Plan Template v2 - Context-Rich with Validation Loops" description: |
+---
+name: "Base Plan Template v2 - Context-Rich with Validation Loops"
+description: "Reusable plan template loaded by /plan as the base structure for new implementation plans."
+---
 
 ## Purpose
 
