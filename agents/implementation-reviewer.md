@@ -103,7 +103,7 @@ PASS/FAIL
 ### Integration Check
 - [ ] All new routes registered
 - [ ] All new exports added to barrel files
-- [ ] All new types exported from @doozy/shared (if cross-app)
+- [ ] All new types exported from the project's shared types package (if monorepo / cross-app)
 - [ ] Frontend components wired to API endpoints
 - [ ] Database schema changes reflected in types
 [Check or uncheck each as appropriate]
