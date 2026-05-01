@@ -29,15 +29,18 @@ surface after all review lanes complete.
 
 ## Step 1: Quality Gates
 
-Run these checks and record exact output for failures:
+Run the project's typecheck and lint commands and record exact output for
+failures. Discover the commands from the project's package manifest, scripts,
+or build files. Examples:
 
-```bash
-npm run typecheck
-```
+- Node: `npm run typecheck` / `npm run lint` (or `pnpm`/`yarn` equivalents — check `package.json` scripts)
+- Rust: `cargo check` / `cargo clippy`
+- Python: `mypy .` / `ruff check .`
+- Go: `go vet ./...` / `golangci-lint run`
+- Multi-package monorepos: run for each affected package
 
-```bash
-npm run lint
-```
+If the project has no typecheck or lint command, skip the corresponding gate
+and note "no [typecheck|lint] command available" in the report.
 
 ## Step 2: Plan Completeness
 
