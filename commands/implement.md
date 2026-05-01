@@ -212,8 +212,15 @@ If no schema file was changed, skip this step silently.
 
 ## Step 6: Move Plan to Done
 
-Once all tasks pass the review gates, brief intent is still preserved, and the
-implementation is complete, move the plan file from `./tmp/ready-plans/` to
+If Step 5.5 detected schema changes, **HALT** here until the user has provided
+the actual generated dev migration SQL and confirmed it was reviewed/applied.
+Do not move the plan to `done-plans/` while a schema-changing implementation
+still has placeholder migration SQL — the schema handoff is part of the plan's
+finish-line completeness.
+
+Once all tasks pass the review gates, brief intent is still preserved, the
+implementation is complete, and (if applicable) the schema migration SQL has
+been collected, move the plan file from `./tmp/ready-plans/` to
 `./tmp/done-plans/`:
 
 ```bash
