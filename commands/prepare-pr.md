@@ -60,7 +60,7 @@ done
 
 ## Step 2.5: Generate Production Migration SQL (If Schema Changed)
 
-Check if a schema file was modified in any commit on this branch vs origin/main.
+Check if a schema file was modified in any commit on this branch vs the detected `$BASE_BRANCH` from Step 2.
 Discover the schema source-of-truth from the project (common patterns:
 `schema.ts`, `schema.prisma`, `migrations/`, `db/schema/`, `models.py`, etc.):
 
