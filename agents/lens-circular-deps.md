@@ -1,6 +1,7 @@
 ---
 name: lens-circular-deps
 description: Reviews a code diff for circular dependencies and late imports. Always-on lens for master-review.
+tools: Read, Grep, Glob, Bash
 model: opus
 color: red
 ---
