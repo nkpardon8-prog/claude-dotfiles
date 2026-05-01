@@ -111,11 +111,13 @@ If the executor is **Codex** and Codex is available:
 - Do **not** launch multiple Codex rescue jobs for the same primary stream unless the user explicitly asks for more delegation
 - Do **not** also spawn a Claude implementer for the same primary stream
 
-Suggested Codex executor prompt:
+Suggested Codex executor invocation (Bash, requires `codex` CLI on PATH):
 
+```bash
+codex exec --cd "$WORKDIR" "Implement the plan at [plan path]. Supporting brief / intent artifact: [path if available]. Treat the brief as the source of truth for why and the plan as the source of truth for how. You are the primary implementation authority for this run. Do not silently simplify or defer scope. A task is not complete until the end-to-end runtime or user-facing path is wired and still preserves the intended outcome. Run the project's typecheck and lint commands as you work (discover from package manifest or scripts). Update the plan progress where practical and report any remaining manual steps or unresolved blockers clearly."
 ```
-/codex:rescue --wait --fresh --model gpt-5.4 --effort high implement the plan at [plan path]. Supporting brief / intent artifact: [path if available]. Treat the brief as the source of truth for why and the plan as the source of truth for how. You are the primary implementation authority for this run. Do not silently simplify or defer scope. A task is not complete until the end-to-end runtime or user-facing path is wired and still preserves the intended outcome. Run the project's typecheck and lint commands as you work (discover from package manifest or scripts). Update the plan progress where practical and report any remaining manual steps or unresolved blockers clearly.
-```
+
+If your `codex` CLI install does not support write mode (the default `codex exec -s read-only` cannot write files), tell the user and fall back to the Claude executor — do not silently downgrade.
 
 ## Step 5: Parallel Review Gates
 
