@@ -19,7 +19,23 @@ surface after all review lanes complete.
 2. **Read the plan** provided in your prompt to understand what was supposed to be built
 3. **Read CLAUDE.md files** (root + app-specific) for conventions
 4. **Read any review criteria file the project provides** — common locations: `.claude/skills/review/CRITERIA.md`, `.claude/CRITERIA.md`, `docs/review-criteria.md`. If none exists, fall back to the conventions documented in CLAUDE.md and the standards implied by existing code in the changed area.
-5. **Identify changed files** — discover the project's base branch (`main`/`master`/`develop` — `git rev-parse --verify origin/main >/dev/null 2>&1 && BASE=origin/main` etc.) and use a merge-base / triple-dot diff to scope to changes introduced by *this branch only*: `git diff --name-only "$BASE"...HEAD`. Do NOT use a two-dot diff — that includes upstream changes that landed on the base after this branch forked, which falsely flags unrelated files as part of the implementation.
+5. **Identify changed files** — discover the project's base branch and use a merge-base / triple-dot diff to scope to changes introduced by *this branch only*. Detection order: `origin/HEAD` first (the actual remote default — works for `release`/`production`/etc.), then fall back to `origin/main`, `origin/master`, `origin/develop`, `origin/trunk`, `origin/release`, `origin/production`, then the same names without the `origin/` prefix:
+
+   ```bash
+   BASE=""
+   if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+     BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+   fi
+   if [ -z "$BASE" ]; then
+     for cand in origin/main origin/master origin/develop origin/trunk origin/release origin/production main master develop trunk; do
+       if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE="$cand"; break; fi
+     done
+   fi
+   [ -z "$BASE" ] && echo "implementation-reviewer: no base branch detected — abort scope detection" && exit 1
+   git diff --name-only "$BASE"...HEAD
+   ```
+
+   Do NOT use a two-dot diff — that includes upstream changes that landed on the base after this branch forked, which falsely flags unrelated files as part of the implementation.
 6. **Run quality gates** (Step 1)
 7. **Check plan completeness** (Step 2)
 8. **Review code quality** (Step 3)
