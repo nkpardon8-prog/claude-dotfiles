@@ -234,40 +234,6 @@ COMMIT;
 
 Use `$ARGUMENTS` as the PR title if provided, otherwise derive one from the done-plans.
 
-## Step 6: Codex Review Loop (If Codex Available)
-
-If Codex is available in this session (`command -v codex` succeeds), run a
-review loop. If Codex is unavailable, skip this step.
-
-### Review loop
-
-1. Launch a **Bash subagent** (via the Task tool) and recompute the base branch inside it (the parent shell's `BASE_BRANCH` does not propagate to a fresh subagent shell). The subagent should run:
-
-```bash
-WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-BASE_BRANCH=""
-if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
-  BASE_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
-fi
-if [ -z "$BASE_BRANCH" ]; then
-  for cand in origin/main origin/master origin/develop origin/trunk origin/release origin/production main master develop trunk; do
-    if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
-  done
-fi
-codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."
-```
-   Wait for the full output.
-2. Read the response carefully.
-3. **If codex reports issues**:
-   - Fix every issue it raised in the codebase.
-   - Commit the fixes: `fix: address codex review feedback`
-   - **Ask the user** for explicit approval before pushing the follow-up commits (same policy as Step 4): "Codex review found issues. I committed fixes locally. Push to <remote>? type 'yes' to push or 'no' to stop here."
-   - Only after the user confirms: `git push origin <branch>`
-   - Go back to step 1 — re-launch the Bash subagent with the same `WORKDIR`/`BASE_BRANCH` recomputation block above so the fresh shell does not inherit stale or empty `$BASE_BRANCH` from the parent. Do not call `codex exec` directly here without first recomputing both vars.
-4. **If codex reports no issues** (e.g., "no defects", "no issues", "changes appear consistent"), the loop is done. Move on.
-
-**Important**: Do not summarize or skip the codex output. Read it in full each iteration so you can act on every finding.
-
 ## Step 7: Summary
 
 Present the final result:
