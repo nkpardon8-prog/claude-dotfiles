@@ -129,7 +129,7 @@ Three properties make these commands more than a pile of prompts:
 
 2. **They review themselves.** `/plan` spawns a fresh plan-reviewer each round and iterates until you sign off. `/implement` runs the implementation-reviewer plus an optional Codex review lane at the end. `/master-review` loops 3 Opus + 3 Codex + 2 Antigravity reviewers (plus 6 lens agents) until three consecutive clean passes. Quality is built into the pipeline, not bolted on.
 
-3. **They survive compaction.** `/pre-compact` writes a structured `CLAUDE.local.md` with a `Seq:` chain, a "What We Tried" log, and an "Evidence & Data" section. The next session auto-loads it via `@CLAUDE.local.md`. Multi-day work doesn't lose context.
+3. **They survive compaction.** `/pre-compact` writes a structured `CLAUDE.local.md` with a `Seq:` chain, a "What We Tried" log, and an "Evidence & Data" section. As part of the same run, `/pre-compact` also appends `@CLAUDE.local.md` to your project's `CLAUDE.md` (if one exists) so the next session auto-loads the handoff. Multi-day work doesn't lose context. (The dotfiles repo's own `CLAUDE.md` deliberately does NOT carry that import — it is meta-config, not a project handoff.)
 
 This is what the dotfiles are. Everything below — symlinks, hooks, sync scripts, credential injection — is plumbing that makes the commands always available, always in sync, always loaded.
 
