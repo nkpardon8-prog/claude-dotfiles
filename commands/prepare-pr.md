@@ -229,7 +229,7 @@ codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BA
    - Commit the fixes: `fix: address codex review feedback`
    - **Ask the user** for explicit approval before pushing the follow-up commits (same policy as Step 4): "Codex review found issues. I committed fixes locally. Push to <remote>? type 'yes' to push or 'no' to stop here."
    - Only after the user confirms: `git push origin <branch>`
-   - Go back to step 1 — run `codex exec -s read-only --ephemeral --cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."` again.
+   - Go back to step 1 — re-launch the Bash subagent with the same `WORKDIR`/`BASE_BRANCH` recomputation block above so the fresh shell does not inherit stale or empty `$BASE_BRANCH` from the parent. Do not call `codex exec` directly here without first recomputing both vars.
 4. **If codex reports no issues** (e.g., "no defects", "no issues", "changes appear consistent"), the loop is done. Move on.
 
 **Important**: Do not summarize or skip the codex output. Read it in full each iteration so you can act on every finding.
