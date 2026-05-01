@@ -230,18 +230,6 @@ A second slash-command set used in partner projects. Same shape as the core suit
 | `/parsa:implement-plan` | Execute implementation from a plan file. |
 | `/parsa:fix-bug` | Hypothesis-driven debug → logging → analysis → PRP generation. |
 
-### Continuous-loop variants (`parsa:cl:`)
-
-| Command | What it does |
-|---|---|
-| `/parsa:cl:create_plan` | Interactive plan creation with back-and-forth on approach. |
-| `/parsa:cl:iterate_plan` | Update or revise an existing plan based on feedback. |
-| `/parsa:cl:implement_plan` | Run a plan from `ready-plans/` end-to-end. |
-| `/parsa:cl:research_codebase` | Deep codebase research with file-level references. |
-| `/parsa:cl:research_web` | Web research with validated references. |
-| `/parsa:cl:describe_pr` | Generate PR descriptions following the repo template. |
-| `/parsa:cl:commit` | Commit with user approval, no Claude attribution. |
-
 ### Code review by principle
 
 `/parsa:review:all` is the cascade — runs all 11 in parallel.
