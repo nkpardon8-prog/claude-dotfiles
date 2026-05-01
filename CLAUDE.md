@@ -474,4 +474,4 @@ The MCP server "molecopilot" exposes 22 tools for the full docking pipeline. Use
 - Results: ~/molecopilot/data/results/{project_name}/
 - Reports: ~/molecopilot/reports/
 
-@CLAUDE.local.md
+<!-- @CLAUDE.local.md was a temporary import for the master-rebuild handoff (2026-04-30); removed post-rebuild because that handoff is now stale and was steering unrelated future sessions toward already-completed tasks. If you need a fresh post-compact handoff, re-run /pre-compact. -->
