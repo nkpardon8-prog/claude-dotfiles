@@ -249,8 +249,8 @@ For each file found:
    - Prepend `/`
    - Examples:
      - `commands/commit.md` → `/commit`
-     - `commands/parsa/cl/create_plan.md` → `/parsa:cl:create_plan`
      - `commands/parsa/review/principles/clarity.md` → `/parsa:review:principles:clarity`
+     - `commands/master-review.md` → `/master-review`
 
 2. **Extract description:**
    - Read the first 10 lines of the file
