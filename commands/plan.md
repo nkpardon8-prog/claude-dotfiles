@@ -10,11 +10,17 @@ allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Task, Bash
 
 Generate a complete plan for feature implementation with thorough research. The plan must contain enough context for an AI agent to implement the feature in a single pass.
 
-## Step 0: Load Discussion Briefs
+## Step 0: Load Discussion Briefs (selectively)
 
-Check `./tmp/briefs/` for any existing brief files. If briefs exist, read them all. These contain prior decisions, rejected alternatives, context, and direction from `/discussion` sessions. Incorporate them as **settled decisions** — do not re-litigate what was already decided unless you spot a clear technical problem.
+Check `./tmp/briefs/` for existing brief files. **Do not load all of them by default** — that would silently merge constraints from unrelated past discussions into a new plan. Instead:
 
-If no briefs exist, skip this step.
+1. List the briefs (`ls -lt ./tmp/briefs/` — newest first).
+2. **Select only briefs whose filename or first-paragraph topic clearly matches the current `$ARGUMENTS`**. Filename pattern is `YYYY-MM-DD-topic.md`; the topic slug is the load-bearing match signal.
+3. If multiple briefs plausibly match, ask the user which to load (or "none"). Do not silently merge.
+4. If a single recent brief unambiguously matches the request topic, load it and proceed.
+5. If no brief matches, skip this step.
+
+When loaded, treat the brief's contents as **settled decisions** — do not re-litigate what was already decided unless you spot a clear technical problem.
 
 ## Step 1: Mandatory Repo Audit
 
