@@ -1,6 +1,7 @@
 ---
 name: lens-self-contained
 description: Reviews a code diff for violations of the "Self-Contained Components" principle — components that reach into global state, parents' internals, or sibling features inappropriately. Stack-gated lens for master-review (fires when a UI project is detected).
+tools: Read, Grep, Glob, Bash
 model: opus
 color: orange
 ---
