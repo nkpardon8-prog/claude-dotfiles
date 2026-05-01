@@ -178,13 +178,12 @@ the project (common patterns: `schema.ts`, `schema.prisma`, `migrations/`,
 `db/schema/`, `models.py`, etc.). For example:
 
 ```bash
-# Discover the base branch first
-if git rev-parse --verify origin/main >/dev/null 2>&1; then BASE_REF=origin/main
-elif git rev-parse --verify origin/master >/dev/null 2>&1; then BASE_REF=origin/master
-elif git rev-parse --verify main >/dev/null 2>&1; then BASE_REF=main
-elif git rev-parse --verify master >/dev/null 2>&1; then BASE_REF=master
-else BASE_REF=""
-fi
+# Discover the base branch first — prefer remote refs (latest team-shared state).
+BASE_REF=""
+for cand in main master develop trunk; do
+  if git rev-parse --verify "origin/$cand" >/dev/null 2>&1; then BASE_REF="origin/$cand"; break; fi
+  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi
+done
 [ -n "$BASE_REF" ] && git diff "$BASE_REF"...HEAD --name-only | grep -E 'schema\.(ts|prisma|sql)$|migrations/|db/schema/'
 # Triple-dot diff so schema detection only fires on changes introduced by this branch, not unrelated upstream schema edits.
 ```
