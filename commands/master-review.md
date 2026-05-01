@@ -982,10 +982,11 @@ Build a new `$CONTEXT_PACKAGE` that includes:
 rm -f /tmp/master-review-codex-v{1,2}.txt /tmp/master-review-ag-v{1,2}.txt
 # AG_BIN, AG_DIR_1/2, AG_NAME_1/2, CODEX_BIN, CODEX_HOME_1/2 were set in Phase 1 — they persist across rounds.
 # Detection vars and BASE_BRANCH/WORKDIR need to be re-set inline — markdown bash fences don't share scope with Phase 0c.
-if git rev-parse --verify main >/dev/null 2>&1; then BASE_BRANCH=main
-elif git rev-parse --verify master >/dev/null 2>&1; then BASE_BRANCH=master
-else BASE_BRANCH=""
-fi
+BASE_BRANCH=""
+for cand in main master develop trunk; do
+  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
+  if git rev-parse --verify "origin/$cand" >/dev/null 2>&1; then BASE_BRANCH="origin/$cand"; break; fi
+done
 WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 # Run via /bin/bash explicitly — zsh interprets unquoted ( in find expressions as glob qualifiers.
 HAS_TANSTACK_QUERY=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -name package.json -print' _ "$WORKDIR" 2>/dev/null | xargs grep -l "@tanstack/react-query" 2>/dev/null | head -1)
