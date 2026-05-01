@@ -1,5 +1,6 @@
 {
   "_template_note": "Copy this file to ~/.claude/settings.json on each machine. ~/.claude/settings.json is per-machine and not tracked in this dotfiles repo. Re-run on every fresh setup.",
+  "_security_note": "This template auto-allows mcp__supabase__apply_migration / execute_sql and pip install / npm install commands, AND sets skipDangerousModePermissionPrompt + skipAutoPermissionPrompt to true. That is acceptable ONLY for a personal dev machine the operator fully trusts. Before copying to a shared machine, a CI runner, or any environment that should not auto-approve database mutations or arbitrary package installs, REVIEW the allow-list and the two skip* keys and remove anything you do not want auto-approved.",
   "permissions": {
     "allow": [
       "Bash(npm install)",
