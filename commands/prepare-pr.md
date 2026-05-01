@@ -207,7 +207,22 @@ review loop. If Codex is unavailable, skip this step.
 
 ### Review loop
 
-1. Launch a **Bash subagent** (via the Task tool) that runs `codex exec -s read-only --ephemeral --cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."` in the repo root. Wait for the full output.
+1. Launch a **Bash subagent** (via the Task tool) and recompute the base branch inside it (the parent shell's `BASE_BRANCH` does not propagate to a fresh subagent shell). The subagent should run:
+
+```bash
+WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+BASE_BRANCH=""
+if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+  BASE_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+fi
+if [ -z "$BASE_BRANCH" ]; then
+  for cand in origin/main origin/master origin/develop origin/trunk origin/release origin/production main master develop trunk; do
+    if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
+  done
+fi
+codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."
+```
+   Wait for the full output.
 2. Read the response carefully.
 3. **If codex reports issues**:
    - Fix every issue it raised in the codebase.
