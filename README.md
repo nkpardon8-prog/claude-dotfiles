@@ -127,7 +127,7 @@ Three properties make these commands more than a pile of prompts:
 
 1. **They web together.** `/discussion` → brief → `/plan` → ready-plan → `/implement` → done-plan → `/prepare-pr` → PR. Each command consumes the previous command's artifact. No manual copy-paste between stages.
 
-2. **They review themselves.** `/plan` runs the plan-reviewer twice automatically. `/implement` runs the implementation-reviewer at the end. `/master-review` loops 3 Opus + 3 Codex + 2 Antigravity reviewers until three consecutive clean passes. Quality is built into the pipeline, not bolted on.
+2. **They review themselves.** `/plan` spawns a fresh plan-reviewer each round and iterates until you sign off. `/implement` runs the implementation-reviewer plus an optional Codex review lane at the end. `/master-review` loops 3 Opus + 3 Codex + 2 Antigravity reviewers (plus 6 lens agents) until three consecutive clean passes. Quality is built into the pipeline, not bolted on.
 
 3. **They survive compaction.** `/pre-compact` writes a structured `CLAUDE.local.md` with a `Seq:` chain, a "What We Tried" log, and an "Evidence & Data" section. The next session auto-loads it via `@CLAUDE.local.md`. Multi-day work doesn't lose context.
 
