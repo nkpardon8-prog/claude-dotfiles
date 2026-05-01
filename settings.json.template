@@ -29,8 +29,6 @@
       "Bash(pip install :*)",
       "Bash(pip install postgrest)",
       "Bash(pip install pytest-asyncio)",
-      "Bash(curl -s :*)",
-      "Bash(curl -fsS :*)",
       "Bash(open :*)",
       "Bash(lsof :*)",
       "Bash(fgrep :*)",
