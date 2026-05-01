@@ -182,6 +182,7 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/learn` | User wants Claude to extract and save behavioral patterns from this session | YES — writes to dotfiles |
 | `/load-creds` | User asks to load API keys, fill in `.env`, set up credentials, or scaffold a project that needs API keys | YES — writes `.env` from 1Password |
 | `/skillset` | User asks what skills are available or wants to initialize the skill registry | No |
+| `/share-fix` | After shipping a non-trivial fix (especially one that works around an upstream library bug), user wants to find related GitHub issues across the ecosystem and post helpful pointers to the fix | YES — public GitHub comments / issues |
 | `/document` | User asks to document the project, audit docs, update docs, or bootstrap missing docs | No |
 | `/pre-compact` | User says they want to prepare for compaction, save state before compact, or "dump context before you forget" | No |
 | `/netlifydeploy` | User asks to deploy, publish, or push to Netlify | YES — external deploy |
