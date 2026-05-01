@@ -503,6 +503,14 @@ codex_invoke() {
   if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
   fi
+  # If neither primary nor fallback profile is configured, fall back to whatever
+  # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
+  # output so synthesis knows account-isolation was unavailable.
+  if [ -z "$primary" ] && [ -z "$fallback" ]; then
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    return $?
+  fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
@@ -510,7 +518,9 @@ codex_invoke() {
     fi
     return 1
   fi
-  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  # primary empty but fallback non-empty: just use the fallback profile.
+  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  return $?
 }
 codex_invoke /tmp/master-review-codex-1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are a senior reviewer focused on CROSS-LAYER INTEGRITY and DATA CORRECTNESS. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
@@ -548,6 +558,14 @@ codex_invoke() {
   if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
   fi
+  # If neither primary nor fallback profile is configured, fall back to whatever
+  # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
+  # output so synthesis knows account-isolation was unavailable.
+  if [ -z "$primary" ] && [ -z "$fallback" ]; then
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    return $?
+  fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
@@ -555,7 +573,9 @@ codex_invoke() {
     fi
     return 1
   fi
-  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  # primary empty but fallback non-empty: just use the fallback profile.
+  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  return $?
 }
 codex_invoke /tmp/master-review-codex-2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
   "You are a senior production readiness and scalability reviewer. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING wrong you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
@@ -606,6 +626,14 @@ codex_invoke() {
   if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
   fi
+  # If neither primary nor fallback profile is configured, fall back to whatever
+  # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
+  # output so synthesis knows account-isolation was unavailable.
+  if [ -z "$primary" ] && [ -z "$fallback" ]; then
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    return $?
+  fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
@@ -613,9 +641,11 @@ codex_invoke() {
     fi
     return 1
   fi
-  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  # primary empty but fallback non-empty: just use the fallback profile.
+  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  return $?
 }
-codex_invoke /tmp/master-review-codex-3.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
+codex_invoke /tmp/master-review-codex-3.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
   "You are a senior security engineer and defensive programming specialist. Review: [SCOPE DESCRIPTION]. Read the actual files. IMPORTANT: The checklist below is a starting point — report ANYTHING exploitable, fragile, or dangerous you find, even if it's not on this list. You are looking for everything. Check this list THEN go beyond:
 
 SECURITY:
@@ -1080,6 +1110,14 @@ codex_invoke() {
   if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
   fi
+  # If neither primary nor fallback profile is configured, fall back to whatever
+  # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
+  # output so synthesis knows account-isolation was unavailable.
+  if [ -z "$primary" ] && [ -z "$fallback" ]; then
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    return $?
+  fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
@@ -1087,7 +1125,9 @@ codex_invoke() {
     fi
     return 1
   fi
-  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  # primary empty but fallback non-empty: just use the fallback profile.
+  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  return $?
 }
 codex_invoke /tmp/master-review-codex-v1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
   "You are verifying code fixes and searching the ENTIRE codebase for new issues. Fixes applied: [FIXES SUMMARY]. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
@@ -1114,6 +1154,14 @@ codex_invoke() {
   if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     echo "[unavailable] codex binary not found on PATH" > "$outfile"; return 0
   fi
+  # If neither primary nor fallback profile is configured, fall back to whatever
+  # CODEX_HOME the user already has set (typically ~/.codex). Note this in the
+  # output so synthesis knows account-isolation was unavailable.
+  if [ -z "$primary" ] && [ -z "$fallback" ]; then
+    echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable; results may collide if other Codex agents run in parallel." >> "$outfile"
+    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    return $?
+  fi
   if [ -n "$primary" ]; then
     if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
@@ -1121,7 +1169,9 @@ codex_invoke() {
     fi
     return 1
   fi
-  "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  # primary empty but fallback non-empty: just use the fallback profile.
+  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  return $?
 }
 codex_invoke /tmp/master-review-codex-v2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
   "You are a fresh-eyes reviewer with NO prior context. Read the ENTIRE codebase: [SCOPE]. Search everywhere — prioritize less-reviewed areas [UNEXPLORED_AREAS] but also look at already-reviewed code with fresh eyes. Known issues (do NOT re-report): [PREVIOUS_FINDINGS].
