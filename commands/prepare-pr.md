@@ -204,7 +204,8 @@ review loop. If Codex is unavailable, skip this step.
 3. **If codex reports issues**:
    - Fix every issue it raised in the codebase.
    - Commit the fixes: `fix: address codex review feedback`
-   - Push: `git push origin <branch>`
+   - **Ask the user** for explicit approval before pushing the follow-up commits (same policy as Step 4): "Codex review found issues. I committed fixes locally. Push to <remote>? type 'yes' to push or 'no' to stop here."
+   - Only after the user confirms: `git push origin <branch>`
    - Go back to step 1 — run `codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."` again.
 4. **If codex reports no issues** (e.g., "no defects", "no issues", "changes appear consistent"), the loop is done. Move on.
 
