@@ -67,11 +67,11 @@ WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 # Stack detection — populated as non-empty marker paths if the pattern is detected, empty otherwise.
 # Lens agents read these to self-gate (skipping when empty).
 # All find commands prune node_modules / .git / vendor / dist / build to avoid transitive-dep false positives.
-PRUNE_DIRS='( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" ) -prune -o'
-HAS_TANSTACK_QUERY=$(eval "find \"$WORKDIR\" -maxdepth 3 $PRUNE_DIRS -name package.json -print" 2>/dev/null | xargs grep -l "@tanstack/react-query" 2>/dev/null | head -1)
-HAS_APP_ROUTER=$(eval "find \"$WORKDIR\" -maxdepth 6 $PRUNE_DIRS -type f -name page.tsx -path '*/app/*' -print" 2>/dev/null | head -1)
-HAS_AUTHED_HANDLER=$(eval "find \"$WORKDIR\" -maxdepth 5 $PRUNE_DIRS -type f \( -name '*.ts' -o -name '*.js' -o -name '*.py' \) -print" 2>/dev/null | xargs grep -l "authenticatedHandler\|requireAuth\|withAuth\|@authenticated\|protectedRoute" 2>/dev/null | head -1)
-HAS_UI_PROJECT=$(eval "find \"$WORKDIR\" -maxdepth 3 $PRUNE_DIRS -name package.json -print" 2>/dev/null | xargs grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"\|"solid-js"\|"preact"\|"lit"\|"@builder.io/qwik"\|"astro"' 2>/dev/null | head -1)
+# Run via `/bin/bash -c` explicitly — zsh interprets unquoted `(` in find expressions as glob qualifiers.
+HAS_TANSTACK_QUERY=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -name package.json -print' _ "$WORKDIR" 2>/dev/null | xargs grep -l "@tanstack/react-query" 2>/dev/null | head -1)
+HAS_APP_ROUTER=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -type f -name page.tsx -path "*/app/*" -print' _ "$WORKDIR" 2>/dev/null | head -1)
+HAS_AUTHED_HANDLER=$(/bin/bash -c 'find "$1" -maxdepth 5 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) -print' _ "$WORKDIR" 2>/dev/null | xargs grep -l "authenticatedHandler\|requireAuth\|withAuth\|@authenticated\|protectedRoute" 2>/dev/null | head -1)
+HAS_UI_PROJECT=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -name package.json -print' _ "$WORKDIR" 2>/dev/null | xargs grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"\|"solid-js"\|"preact"\|"lit"\|"@builder.io/qwik"\|"astro"' 2>/dev/null | head -1)
 ```
 
 Determine MODE:
