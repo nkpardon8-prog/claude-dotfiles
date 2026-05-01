@@ -100,7 +100,7 @@ If you choose to parallelize, keep it bounded:
 
 If the executor is **Codex** and Codex is available:
 
-- Use **one** primary `/codex:rescue --wait --fresh --model gpt-5.4 --effort high` run for the end-to-end implementation
+- Use **one** primary Codex invocation via `codex exec` (note: `codex` is a read-only CLI; for *implementation* via Codex you must invoke the binary in write mode if your install supports it, otherwise hand the implementation back to Claude). The skill is read-only by default — Codex executor is a documented alias and behaves like Claude unless the operator has configured a write-capable Codex backend.
 - Pass the same implementation contract used for the Claude implementer:
   - brief / intent artifact first, plan second
   - one primary owner for the whole stream
