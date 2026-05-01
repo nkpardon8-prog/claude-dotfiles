@@ -168,10 +168,13 @@ You are Claude Code, helping set up a Claude Code development environment on a n
 ├── docs/                   # Long-form documentation
 │   ├── ARCHITECTURE.md     # How everything wires together
 │   ├── COMMANDS.md         # Full slash-command reference
+│   ├── STATUSLINE.md       # 6-field status line (ctx, time-left, sess%, wk%, model, repo)
 │   └── transcribe.md       # /transcribe setup
 ├── scripts/
 │   ├── dotfiles-sync.sh    # Auto-push hook script
 │   ├── clean-dead-processes.sh  # RAM cleanup (cron 2-day)
+│   ├── statusline.sh       # Claude Code status-line command (see docs/STATUSLINE.md)
+│   ├── refresh-ratelimit.sh  # Background rate-limit refresher for status line
 │   └── whisper-transcribe.sh    # Audio → text (used by /transcribe)
 ├── .env.example            # Whisper key template
 └── .env                    # Your API keys (gitignored)
