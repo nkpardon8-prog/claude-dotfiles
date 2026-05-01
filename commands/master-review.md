@@ -58,10 +58,12 @@ Output to user: **"Browser connected. [N] pages open. App loaded at [URL]. [N] e
 
 ```bash
 # Detect the base branch — capture only the branch name, never the SHA.
-if git rev-parse --verify main >/dev/null 2>&1; then BASE_BRANCH=main
-elif git rev-parse --verify master >/dev/null 2>&1; then BASE_BRANCH=master
-else BASE_BRANCH=""
-fi
+# Probe local first, then remote (origin/) refs across common base names.
+BASE_BRANCH=""
+for cand in main master develop trunk; do
+  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
+  if git rev-parse --verify "origin/$cand" >/dev/null 2>&1; then BASE_BRANCH="origin/$cand"; break; fi
+done
 WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 # Stack detection — populated as non-empty marker paths if the pattern is detected, empty otherwise.
