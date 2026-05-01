@@ -101,7 +101,13 @@ For large diffs (>500 lines), use `git diff --stat` + targeted reads of the most
 
 Store this as `$CONTEXT_PACKAGE` — every agent prompt includes it.
 
-### 0e: Initial Browser Audit
+### 0e: Initial Browser Audit (skip if no browser/UI)
+
+**Gate:** Only run this section if Phase 0a established a working Chrome
+DevTools connection AND the project has a discoverable UI (frontend route or
+running dev server). For backend-only repos, libraries, CLIs, or sessions
+where DevTools is unavailable, skip Phase 0e and 0f entirely and set
+`$BROWSER_FINDINGS=""` — code-only review proceeds.
 
 Before agents launch, run a quick automated browser sweep:
 
