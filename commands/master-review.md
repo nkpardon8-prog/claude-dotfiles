@@ -162,7 +162,7 @@ Output to user: **"Master Review: [target summary] | Mode: [mode] | Browser: [N]
 
 ## Phase 1: Initial Review — 3 Claude Opus + 3 Codex + 2 Antigravity + 6 Lens (up to 14 agents in parallel)
 
-**CRITICAL: ALL 8 agents must launch in a SINGLE message for true parallel execution.**
+**CRITICAL: ALL 14 agents (8 reviewers + 6 lens) must launch in a SINGLE message for true parallel execution.** Stack-gated lenses still appear in that message and self-skip when their detection signal is empty.
 
 ### Prepare temp files and read account configuration
 
