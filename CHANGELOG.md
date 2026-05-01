@@ -84,9 +84,9 @@ Pane's structure:
   migration SQL with stack-detection) and Pre-Merge Testing + Schema Changes
   PR template sections. Made the Codex review loop conditional on
   `command -v codex`. Kept team's existing stack-detection build commands.
-- **`commands/commit.md`**: kept team's confirmation step (a deliberate
-  divergence from Pane's autonomous behavior — the team chose more cautious
-  UX).
+- **`commands/commit.md`**: left untouched in this rebuild — the team's
+  confirmation step is a deliberate divergence from Pane's autonomous
+  behavior, so `commit.md` is unchanged in `pre-rebuild-2026-04-30..HEAD`.
 
 ### Master review pipeline
 
