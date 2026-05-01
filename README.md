@@ -46,10 +46,10 @@ Full reference: **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
 | Command | What it does |
 |---|---|
 | `/discussion` | Conversation-only mode. Researches the codebase, talks through tradeoffs, saves a brief to `./tmp/briefs/`. No code changes. |
-| `/plan` | Thorough plan with codebase + web research. Spawns a fresh plan-reviewer each round and iterates with you until you say it is ready. Saves to `./tmp/ready-plans/`. |
+| `/plan` | Thorough plan with codebase + web research. Auto-runs plan-reviewer and iterates with you. Saves to `./tmp/ready-plans/`. |
 | `/share-fix` | After shipping a non-trivial fix (especially around an upstream library bug), find related GitHub issues across the ecosystem and post helpful pointers. Always asks for approval before posting publicly. |
 | `/simple-plan` | Lightweight gut-check before doing what the user just asked. |
-| `/implement <plan>` | Executes a plan with one primary implementer end-to-end (bounded sidecars only when write scopes are clearly disjoint). Runs the Claude implementation-reviewer plus a Codex review lane in parallel if Codex is available. Moves the plan to `./tmp/done-plans/`. |
+| `/implement <plan>` | Executes a plan via parallel implementer sub-agents. Auto-runs implementation-reviewer at the end. Moves plan to `./tmp/done-plans/`. |
 | `/investigate` | Hypothesis-driven root-cause analysis when something breaks. |
 | `/tdd` | RED → GREEN → REFACTOR cycle. |
 
