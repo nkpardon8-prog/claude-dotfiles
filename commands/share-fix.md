@@ -18,7 +18,7 @@ Use this skill whenever a merged fix works around or documents an upstream bug t
 
 Before drafting anything, load voice context:
 
-1. **Read memory files.** Check `~/.claude/projects/*/memory/` for files like `feedback_comment_style.md`, `feedback_no_em_dashes.md`, `user_*.md`. Read the bodies, not just the MEMORY.md index. These carry the user's voice rules, honest project positioning, and hard writing constraints (em dashes, "we" vs "i", etc).
+1. **Read memory files — current project ONLY.** Resolve the active project's memory directory via the rules in `~/.claude/CLAUDE.md` (typically `~/.claude/projects/<current-project>/memory/`). Read files there like `feedback_comment_style.md`, `feedback_no_em_dashes.md`, `user_*.md` — bodies, not just the MEMORY.md index. These carry the user's voice rules, honest project positioning, and hard writing constraints (em dashes, "we" vs "i", etc). **Do not glob across `~/.claude/projects/*/memory/`** — pulling in unrelated projects' memory risks leaking private positioning, internal-only context, or other users' rules into a public GitHub comment. If the current project has no memory directory, proceed with calibration only from Step 2 (recent comment samples) and tell the user the voice prior is weak.
 2. **Sample recent comments from the user in the target repo.** For each target repo:
    ```
    gh search issues --commenter <user> --repo <owner>/<name> --limit 10 --include-prs
