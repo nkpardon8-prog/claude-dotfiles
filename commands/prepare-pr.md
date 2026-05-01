@@ -192,19 +192,6 @@ COMMIT;
 
 Use `$ARGUMENTS` as the PR title if provided, otherwise derive one from the done-plans.
 
-## Step 5: Push to Remote (REQUIRES USER APPROVAL)
-
-Per the global push policy in `~/.claude/CLAUDE.md`: **NEVER push to GitHub
-without explicit user approval** for non-dotfiles repos. Show the user what
-will be pushed and wait for confirmation.
-
-1. Show pending commits: `git log @{u}..HEAD --oneline` (or vs the detected base if no upstream)
-2. Show the branch and remote: `git rev-parse --abbrev-ref HEAD` and `git remote get-url origin`
-3. **Ask the user**: "Push <branch> to <remote-url>? This is a force-with-lease push since we rebased — type 'yes' to push or 'no' to stop here."
-4. Only after the user confirms: `git push -u origin <branch> --force-with-lease`
-   - Use `--force-with-lease` since we rebased (safer than `--force`).
-5. If `--force-with-lease` fails (remote has new commits not in local), tell the user and ask how to proceed.
-
 ## Step 6: Codex Review Loop (If Codex Available)
 
 If Codex is available in this session (`command -v codex` succeeds), run a
