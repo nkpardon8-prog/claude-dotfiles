@@ -1,6 +1,7 @@
 ---
 name: lens-architecture-frontend
 description: Reviews a code diff for frontend architecture pattern violations — component organization, locality, hook patterns, page composition. Stack-gated lens for master-review (fires when an app router or component framework is detected).
+tools: Read, Grep, Glob, Bash
 model: opus
 color: orange
 ---
