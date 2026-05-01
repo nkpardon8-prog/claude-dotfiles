@@ -74,10 +74,12 @@ Pane's structure:
 - **`commands/simple-plan.md`**: adopted Pane's primary-implementer rule and
   dual-lane review with Codex fallback.
 - **`commands/implement.md`**: adopted Pane's executor resolution
-  (Claude/Codex), parallel review gates (Claude `implementation-reviewer` +
-  optional `/codex:review` + `/codex:adversarial-review`), and Step 5.5 schema
-  migration handling. Replaced Drizzle-specific `npm run db:diff:dev` and
-  `npx nx build` with stack-detection language.
+  (Claude/Codex), parallel review gates (Claude `implementation-reviewer` plus
+  two direct `codex exec -s read-only --ephemeral` calls — one straight review,
+  one adversarial — when `command -v codex` succeeds; the project-wide
+  `/codex-review` skill remains the user-facing entry point), and Step 5.5
+  schema migration handling. Replaced Drizzle-specific `npm run db:diff:dev`
+  and `npx nx build` with stack-detection language.
 - **`commands/prepare-pr.md`**: added Pane's Step 2.5 (production schema
   migration SQL with stack-detection) and Pre-Merge Testing + Schema Changes
   PR template sections. Made the Codex review loop conditional on
