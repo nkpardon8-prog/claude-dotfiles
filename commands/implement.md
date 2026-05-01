@@ -141,14 +141,14 @@ Task tool:
     Report completeness status for each plan task."
 ```
 
-**Codex review lane (if available):**
+**Codex review lane (if available — uses `codex exec` directly, no plugin required):**
 
-```
-/codex:review --wait review the implementation diff against the supporting brief / intent artifact first, then against [plan path]. Treat the brief as the source of truth for why and the plan as the source of truth for how. Focus on whether the code preserves the brief's intended outcome, still respects its constraints and non-goals, actually satisfies the plan, and reaches the finish line at runtime.
+```bash
+codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the implementation diff against the supporting brief / intent artifact first, then against [plan path]. Treat the brief as the source of truth for why and the plan as the source of truth for how. Focus on whether the code preserves the brief's intended outcome, still respects its constraints and non-goals, actually satisfies the plan, and reaches the finish line at runtime."
 ```
 
-```
-/codex:adversarial-review --wait focus on missing plan tasks, brief-intent regressions, runtime wiring, auth and permission gaps, transaction boundaries, race conditions, background-job registration, dead query-param flows, and whether the implementation actually reached the finish line
+```bash
+codex exec -s read-only --ephemeral --cd "$WORKDIR" "Adversarial review: focus on missing plan tasks, brief-intent regressions, runtime wiring, auth and permission gaps, transaction boundaries, race conditions, background-job registration, dead query-param flows, and whether the implementation actually reached the finish line."
 ```
 
 After both lanes finish, combine the findings into one review result. Triage the
