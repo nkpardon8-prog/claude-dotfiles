@@ -1,6 +1,6 @@
 {
   "_template_note": "Copy this file to ~/.claude/settings.json on each machine. ~/.claude/settings.json is per-machine and not tracked in this dotfiles repo. Re-run on every fresh setup.",
-  "_security_note": "This template auto-allows mcp__supabase__apply_migration / execute_sql and pip install / npm install commands, AND sets skipDangerousModePermissionPrompt + skipAutoPermissionPrompt to true. That is acceptable ONLY for a personal dev machine the operator fully trusts. Before copying to a shared machine, a CI runner, or any environment that should not auto-approve database mutations or arbitrary package installs, REVIEW the allow-list and the two skip* keys and remove anything you do not want auto-approved.",
+  "_security_note": "Destructive Supabase tools (mcp__supabase__apply_migration, mcp__supabase__execute_sql) are intentionally NOT auto-allowed here so a malicious prompt cannot silently mutate your database; only read-only Supabase tools (list_branches, list_tables, search_docs, get_logs) are pre-approved. This template still auto-allows pip install / npm install AND sets skipDangerousModePermissionPrompt + skipAutoPermissionPrompt to true, which only makes sense on a personal dev machine the operator fully trusts. Before copying to a shared machine, a CI runner, or any environment that should not auto-approve arbitrary package installs, REVIEW the Bash allow-list and the two skip* keys and remove anything you do not want auto-approved.",
   "permissions": {
     "allow": [
       "Bash(npm install)",
