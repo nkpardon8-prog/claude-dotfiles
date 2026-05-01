@@ -122,20 +122,54 @@ For each build:
 
 **Commit build fixes** as a separate commit: `fix: resolve build errors`
 
-## Step 4: Push to Remote (REQUIRES USER APPROVAL — must run before Step 5 PR creation)
+## Step 4: Codex Review Loop (If Codex Available) — runs BEFORE push
+
+If Codex is available in this session (`command -v codex` succeeds), run the
+review loop here, **before pushing or opening any PR**. The whole point of this
+gate is that nothing reaches the remote until Codex has signed off. If Codex is
+unavailable, skip this step and continue to Step 5.
+
+### Review loop
+
+1. Launch a **Bash subagent** (via the Task tool) and recompute the base branch inside it (the parent shell's `BASE_BRANCH` does not propagate to a fresh subagent shell). The subagent should run:
+
+```bash
+WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+BASE_BRANCH=""
+if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+  BASE_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+fi
+if [ -z "$BASE_BRANCH" ]; then
+  for cand in origin/main origin/master origin/develop origin/trunk origin/release origin/production main master develop trunk; do
+    if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
+  done
+fi
+codex exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."
+```
+   Wait for the full output.
+2. Read the response carefully.
+3. **If codex reports issues**:
+   - Fix every issue it raised in the codebase.
+   - Commit the fixes locally: `fix: address codex review feedback` (no push yet — the gate is still open).
+   - Go back to step 1 — re-launch the Bash subagent with the same `WORKDIR`/`BASE_BRANCH` recomputation block so the fresh shell does not inherit stale or empty `$BASE_BRANCH` from the parent. Do not call `codex exec` directly without first recomputing both vars.
+4. **If codex reports no issues** (e.g., "no defects", "no issues", "changes appear consistent"), the loop is done. Continue to Step 5.
+
+**Important**: Do not summarize or skip the codex output. Read it in full each iteration so you can act on every finding. The review gate stays in effect — code does not reach the remote until this loop finishes clean.
+
+## Step 5: Push to Remote (REQUIRES USER APPROVAL — must run before Step 6 PR creation)
 
 `gh pr create` requires the head branch to exist on the remote, so push first.
 Per the global push policy in `~/.claude/CLAUDE.md`: **NEVER push to GitHub
 without explicit user approval** for non-dotfiles repos.
 
-1. Show pending commits: `git log @{u}..HEAD --oneline 2>/dev/null` (or `git log "$BASE_BRANCH"..HEAD --oneline` if no upstream is set)
+1. Show pending commits: `git log @{u}..HEAD --oneline 2>/dev/null` (or `git log "$BASE_BRANCH"..HEAD --oneline` if no upstream is set) — including any `fix: address codex review feedback` commits added in Step 4.
 2. Show the branch and remote: `git rev-parse --abbrev-ref HEAD` and `git remote get-url origin`
 3. **Ask the user**: "Push <branch> to <remote-url>? This is a force-with-lease push since we rebased — type 'yes' to push or 'no' to stop here."
 4. Only after the user confirms: `git push -u origin <branch> --force-with-lease`
    - Use `--force-with-lease` since we rebased (safer than `--force`).
 5. If `--force-with-lease` fails (remote has new commits not in local), tell the user and ask how to proceed.
 
-## Step 5: Create or Update Pull Request
+## Step 6: Create or Update Pull Request
 
 1. Check for existing PR: `gh pr view --json number,title,body,url,state 2>/dev/null`
 
