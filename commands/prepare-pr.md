@@ -37,10 +37,21 @@ For each group:
 
 **Conventions**: Reference the plan name in the commit body if helpful. Keep subjects concise.
 
-## Step 2: Rebase Main onto Current Branch
+## Step 2: Rebase the Base Branch onto Current Branch
 
-1. Fetch latest main: `git fetch origin main`
-2. Rebase: `git rebase origin/main`
+Detect the project's base branch first — do not assume `main`. Check
+`origin/main`, `origin/master`, `origin/develop`, `origin/trunk` in that order
+and use the first one that exists.
+
+```bash
+for cand in origin/main origin/master origin/develop origin/trunk main master; do
+  if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
+done
+[ -z "$BASE_BRANCH" ] && echo "No base branch found — abort" && exit 1
+```
+
+1. Fetch latest base: `git fetch origin "${BASE_BRANCH#origin/}"` (skip if no `origin` remote)
+2. Rebase: `git rebase "$BASE_BRANCH"`
 3. If conflicts occur:
    - Read the conflicting files and the incoming vs current changes.
    - If the resolution is **obvious** (e.g., non-overlapping additions, trivial formatting), resolve it yourself, `git add` the resolved files, and `git rebase --continue`.
