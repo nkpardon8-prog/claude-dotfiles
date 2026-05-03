@@ -32,12 +32,12 @@
     ├── README.md           (this file)
     └── docs/AGENT-GUIDE.md (operational rules: Retina, safety, verify)
 
-~/.claude/commands/         (mirror of dotfiles commands; the running CLI reads here)
+~/.claude/commands/         (auto-mirrored from dotfiles via hook; the running CLI reads here)
 ├── desktop.md
 └── desktop/{shot,click,type,key,status,setup}.md
 ```
 
-Skills are NOT mirrored — referenced by absolute path from the command files.
+Skills are NOT mirrored to `~/.claude/` — referenced by absolute path from the command files.
 
 ## Architecture
 
