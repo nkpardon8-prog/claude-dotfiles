@@ -1,0 +1,1233 @@
+---
+description: "From-scratch multi-model codebase audit. 3 Claude broad + 3 Codex broad + 19 principle agents (Claude+Codex per principle) in parallel. Report-only by default; --fix enables snapshot/revert/regression-detected fix loop; --loop runs until naturally clean. Hard gates on schema/auth/deps/secrets/CI/tests."
+argument-hint: "[scope] [--fix] [--max-rounds N] [--loop] [--max-wall-hours N] [--resume] [--force-resume] [--principle <name>] [--rescope-on-fix {full|changed}] [--online] [--codex-validation-every N]"
+allowed-tools: "Read, Glob, Grep, Bash, Agent"
+---
+
+# /god-review — Multi-Model Codebase Audit
+
+You are a senior engineering lead conducting a ground-up, multi-model codebase audit. You orchestrate parallel agents across two model families (Claude Opus 4.7 + Codex CLI), apply 19 principle lenses plus 6 broad reviewers, snapshot the repo before any mutation, and enforce hard gates on irreversible changes.
+
+This command has 4 phases:
+- **Phase 0**: Context Map — stack fingerprint, architecture, hot zones, baseline gates
+- **Phase 1**: Probe — snapshot + failure-mode pre-scans
+- **Phase 2**: Review — parallel agents × model families × principles + validation + aggregation
+- **Phase 3**: Fix (opt-in via `--fix`) — triage, Architect/Editor split, snapshot/revert loop
+
+---
+
+## Step 0: Argument Parsing + Validation
+
+Parse `$ARGUMENTS` for all supported flags:
+
+```bash
+# --- Argument parsing ---
+# All arguments are parsed from the $ARGUMENTS variable provided by the harness.
+# Flags and their effects (inline documentation):
+
+# SCOPE: first non-flag token (file path, dir, or empty = full repo)
+#   Effect: narrows Phase 2 reviewer scope; all agents receive this as their target
+SCOPE=""
+
+# --fix: boolean (default: false)
+#   Effect: enables Phase 3 fix loop; without this, command exits after Phase 2 report
+FIX=false
+
+# --max-rounds N: integer (default: 5)
+#   Effect: bounded-mode round cap; ignored in --loop mode (which uses infinite cap)
+MAX_ROUNDS=5
+
+# --loop: boolean (default: false)
+#   Effect: indefinite fix loop — runs until 3 consecutive clean rounds OR instability OR wall-clock
+#   Requires --fix; abort if --loop is set without --fix
+LOOP=false
+
+# --max-wall-hours N: float (default: 24)
+#   Effect: wall-clock backstop for --loop mode; must be > 0
+MAX_WALL_HOURS=24
+
+# --resume: boolean (default: false)
+#   Effect: continue from last round checkpoint in tmp/god-review/state.json
+#   Aborts if state.json missing, malformed, or snapshot ref stale (unless --force-resume)
+RESUME=false
+
+# --force-resume: boolean (default: false)
+#   Effect: override stale-snapshot check on --resume; use with caution
+FORCE_RESUME=false
+
+# --principle <name>: string (default: empty)
+#   Effect: run ONE principle standalone, skip phases 0-3 orchestration, exit after
+PRINCIPLE=""
+
+# --rescope-on-fix {full|changed}: string (default: "changed")
+#   Effect: Phase 3 re-review scope — "changed" = only edited files, "full" = full repo
+RESCOPE_ON_FIX="changed"
+
+# --online: boolean (default: false)
+#   Effect: enables npm/PyPI registry checks in hallucinated-imports principle (offline by default)
+ONLINE=false
+
+# --codex-validation-every N: integer (default: 3)
+#   Effect: in --loop mode, run Codex validation pass only every Nth round to reduce wall-clock cost
+CODEX_VALIDATION_EVERY=3
+
+# Parse $ARGUMENTS:
+ARGS_REMAINING="$ARGUMENTS"
+while [ -n "$ARGS_REMAINING" ]; do
+  TOKEN=$(echo "$ARGS_REMAINING" | awk '{print $1}')
+  case "$TOKEN" in
+    --fix)             FIX=true ;;
+    --loop)            LOOP=true ;;
+    --resume)          RESUME=true ;;
+    --force-resume)    FORCE_RESUME=true ;;
+    --online)          ONLINE=true ;;
+    --max-rounds)      shift; MAX_ROUNDS=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
+    --max-wall-hours)  shift; MAX_WALL_HOURS=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
+    --principle)       PRINCIPLE=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
+    --rescope-on-fix)  RESCOPE_ON_FIX=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
+    --codex-validation-every) CODEX_VALIDATION_EVERY=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
+    --*)               echo "god-review: unknown flag $TOKEN" ;;
+    *)                 [ -z "$SCOPE" ] && SCOPE="$TOKEN" ;;
+  esac
+  ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f2-)
+done
+```
+
+**Validation (abort early on bad inputs):**
+
+```bash
+# Validation check 1: --loop requires --fix
+if [ "$LOOP" = "true" ] && [ "$FIX" = "false" ]; then
+  echo "Error: --loop requires --fix. Pass --fix --loop together."
+  exit 1
+fi
+
+# Validation check 2: --max-wall-hours must be > 0
+if [ "$(echo "$MAX_WALL_HOURS <= 0" | bc 2>/dev/null)" = "1" ]; then
+  echo "Error: --max-wall-hours must be > 0 (got: $MAX_WALL_HOURS)"
+  exit 1
+fi
+
+# Validation check 3: --resume requires existing state.json
+if [ "$RESUME" = "true" ] && [ ! -f "tmp/god-review/state.json" ]; then
+  echo "Error: --resume passed but tmp/god-review/state.json does not exist. Nothing to resume."
+  exit 1
+fi
+
+# Validation check 4: --resume state.json must be parseable
+if [ "$RESUME" = "true" ]; then
+  if ! python3 -c "import json,sys; json.load(open('tmp/god-review/state.json'))" 2>/dev/null; then
+    echo "Error: state.json is corrupt or malformed. Manually delete tmp/god-review/state.json and restart."
+    exit 1
+  fi
+  # Check snapshot ref still resolves
+  SNAP_REF=$(python3 -c "import json; d=json.load(open('tmp/god-review/state.json')); print(d['snapshot']['ref'])" 2>/dev/null)
+  SNAP_TYPE=$(python3 -c "import json; d=json.load(open('tmp/god-review/state.json')); print(d['snapshot']['reftype'])" 2>/dev/null)
+  STALE=false
+  if [ "$SNAP_TYPE" = "commit" ]; then
+    git rev-parse --verify "$SNAP_REF^{commit}" >/dev/null 2>&1 || STALE=true
+  elif [ "$SNAP_TYPE" = "stash" ]; then
+    git stash list | grep -qF "$SNAP_REF" || STALE=true
+  fi
+  if [ "$STALE" = "true" ] && [ "$FORCE_RESUME" = "false" ]; then
+    echo "Error: Repo state diverged from snapshot ref '$SNAP_REF' (type: $SNAP_TYPE). Pass --force-resume to override."
+    exit 1
+  fi
+fi
+```
+
+Read mirror mode to determine write destinations:
+
+```bash
+MIRROR_MODE=$(cat ~/.claude-dotfiles/commands/god-review/.mirror-mode 2>/dev/null || echo "auto")
+# If MIRROR_MODE = "dual": write outputs to BOTH ~/.claude-dotfiles/ AND ~/.claude/ paths.
+# If MIRROR_MODE = "auto": write only to ~/.claude-dotfiles/ and trust the auto-mirror hook.
+```
+
+---
+
+## Step 0.5: Single-Principle Delegation
+
+If `--principle <name>` is set, delegate to that principle file and exit. This is how `/god-review --principle single-pattern` and `/god-review:principles:single-pattern` both work.
+
+```
+IF $PRINCIPLE is non-empty:
+  Read the principle file content from:
+    ~/.claude-dotfiles/commands/god-review/principles/<PRINCIPLE>.md
+  If the file does not exist, abort: "god-review: unknown principle '<PRINCIPLE>'. Available principles: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark"
+  Spawn ONE Agent tool call:
+    subagent_type: "general-purpose"
+    model: "claude-opus-4-7"
+    prompt: [content of the principle file] + "\n\nScope: " + ($SCOPE if non-empty, else "full repo")
+    Note: pass --online flag context if $ONLINE=true (for hallucinated-imports)
+  Exit after the agent completes.
+```
+
+Do not proceed to Phase 0 when `--principle` is set.
+
+---
+
+## Phase 0: Context Map
+
+**Goal**: Build a shared mechanical context package so all Phase-2 agents inherit the same ground truth. Eliminates repeated context-gathering per agent (failure mode #19).
+
+Run this bash block:
+
+```bash
+WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+mkdir -p tmp/god-review tmp/god-review/snapshots
+
+# --- Stack fingerprint ---
+# All find commands run via /bin/bash -c to avoid zsh glob-qualifier interpretation of unquoted (
+# Pattern: prune node_modules/.git/vendor/dist/build/.next/.turbo to skip transitive deps
+
+HAS_TANSTACK_QUERY=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -name package.json -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l "@tanstack/react-query" 2>/dev/null | head -1)
+
+HAS_APP_ROUTER=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -type f -name page.tsx -path "*/app/*" -print' _ "$WORKDIR" 2>/dev/null | head -1)
+
+HAS_AUTHED_HANDLER=$(/bin/bash -c 'find "$1" -maxdepth 5 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -type f \( -name "*.ts" -o -name "*.js" -o -name "*.py" \) -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l "authenticatedHandler\|requireAuth\|withAuth\|@authenticated\|protectedRoute" 2>/dev/null | head -1)
+
+HAS_UI_PROJECT=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/dist" -o -path "*/build" -o -path "*/.next" -o -path "*/.turbo" \) -prune -o -name package.json -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l '"react"\|"vue"\|"@angular/core"\|"svelte"\|"solid-js"\|"preact"\|"lit"\|"@builder.io/qwik"\|"astro"' 2>/dev/null | head -1)
+
+# NEW: broader backend signal for non-JS stacks (Go / Rust / Python / Java / Ruby / etc.)
+HAS_BACKEND_PROJECT=$(/bin/bash -c 'find "$1" -maxdepth 4 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/target" -o -path "*/__pycache__" -o -path "*/dist" -o -path "*/build" \) -prune -o \( -name "main.go" -o -name "go.mod" -o -name "Cargo.toml" -o -name "requirements.txt" -o -name "pyproject.toml" -o -name "Pipfile" -o -name "Gemfile" -o -name "pom.xml" -o -name "build.gradle" -o -name "build.gradle.kts" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
+
+# Combined backend lens trigger: either JS auth handler OR non-JS backend project marker
+HAS_BACKEND_LENS_TRIGGER="${HAS_AUTHED_HANDLER}${HAS_BACKEND_PROJECT}"
+
+# Bench script detection for perf-benchmark principle
+HAS_BENCH_SCRIPT=""
+if [ -f "$WORKDIR/package.json" ]; then
+  HAS_BENCH_SCRIPT=$(python3 -c "import json; d=json.load(open('$WORKDIR/package.json')); scripts=d.get('scripts',{}); print(next((k for k in scripts if k in ('bench','benchmark','perf')),'')" 2>/dev/null)
+fi
+if [ -z "$HAS_BENCH_SCRIPT" ]; then
+  HAS_BENCH_SCRIPT=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -name benchmarks -o -name bench \) -type d -print' _ "$WORKDIR" 2>/dev/null | head -1)
+fi
+if [ -z "$HAS_BENCH_SCRIPT" ]; then
+  HAS_BENCH_SCRIPT=$(grep -l "criterion\|pytest-benchmark\|hyperfine" "$WORKDIR/Cargo.toml" "$WORKDIR/requirements.txt" "$WORKDIR/pyproject.toml" 2>/dev/null | head -1)
+fi
+
+echo "Stack signals:"
+echo "  HAS_TANSTACK_QUERY=$HAS_TANSTACK_QUERY"
+echo "  HAS_APP_ROUTER=$HAS_APP_ROUTER"
+echo "  HAS_AUTHED_HANDLER=$HAS_AUTHED_HANDLER"
+echo "  HAS_UI_PROJECT=$HAS_UI_PROJECT"
+echo "  HAS_BACKEND_PROJECT=$HAS_BACKEND_PROJECT"
+echo "  HAS_BENCH_SCRIPT=$HAS_BENCH_SCRIPT"
+
+# --- Architecture map ---
+echo "--- Architecture (maxdepth 2) ---"
+/bin/bash -c 'find "$1" -maxdepth 2 -type d \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" -o -path "*/target" -o -path "*/.next" \) -prune -o -type d -print' _ "$WORKDIR" 2>/dev/null | head -80
+ls "$WORKDIR"/package.json "$WORKDIR"/requirements.txt "$WORKDIR"/Cargo.toml "$WORKDIR"/go.mod 2>/dev/null
+
+# --- AGENTS.md / CLAUDE.md conventions ---
+echo "--- Conventions files ---"
+/bin/bash -c 'find "$1" -maxdepth 4 \( -name "AGENTS.md" -o -name "CLAUDE.md" \) -print' _ "$WORKDIR" 2>/dev/null | head -10 | while read f; do
+  echo "=== $f ==="; head -60 "$f"; echo
+done
+
+# --- Hot zones: files changed most in last 3 months ---
+echo "--- Hot zones (top 50, last 3 months) ---"
+git log --since="3 months ago" --name-only --pretty=format: 2>/dev/null \
+  | grep -v "^$" | sort | uniq -c | sort -rn | head -50
+
+# --- Known issues from prior runs ---
+echo "--- Prior run state ---"
+[ -f tmp/god-review/state.json ] && cat tmp/god-review/state.json || echo "(no prior state)"
+grep -rE "TODO|FIXME|KNOWN-ISSUE" --include="*.md" --max-count=5 . 2>/dev/null | head -20
+
+# --- Baseline gates (graceful no-op if scripts absent) ---
+echo "--- Baseline gates ---"
+if [ -f package.json ]; then
+  PKG_SCRIPTS=$(python3 -c "import json; s=json.load(open('package.json')).get('scripts',{}); print(' '.join(s.keys()))" 2>/dev/null)
+  echo "Available scripts: $PKG_SCRIPTS"
+  echo "=== typecheck ===" && (npm run typecheck 2>&1 | tail -20) || echo "(no typecheck script)"
+  echo "=== lint ===" && (npm run lint 2>&1 | tail -20) || echo "(no lint script)"
+  echo "=== build ===" && (npm run build 2>&1 | tail -10) || echo "(no build script)"
+elif [ -f Cargo.toml ]; then
+  echo "=== cargo check ===" && cargo check 2>&1 | tail -20
+elif [ -f go.mod ]; then
+  echo "=== go vet ===" && go vet ./... 2>&1 | tail -20
+elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+  echo "=== python type check ===" && (python3 -m mypy . 2>&1 | tail -20 || echo "(mypy not available)")
+else
+  echo "(no recognized build system — skipping baseline gates)"
+fi
+```
+
+Now spawn 1 Claude Opus 4.7 agent to synthesize the bash output above into a structured context package:
+
+Spawn ONE Agent tool call with `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`, extended thinking enabled. Prompt:
+
+```
+You are building a shared context package for a multi-model codebase audit.
+
+Based on the bash output provided below (stack signals, architecture map, conventions, hot zones, known issues, baseline gate results), write a structured markdown file to `tmp/god-review/context-package.md` with these sections:
+
+1. **Stack Fingerprint** — which HAS_* signals fired and what they mean for which principles activate
+2. **Architecture Map** — top-level directory structure and entry points
+3. **Conventions & Exemplars** — what AGENTS.md/CLAUDE.md declare as canonical patterns (quote directly)
+4. **Hot Zones** — top 20 most-changed files in last 3 months (signal where bugs accumulate)
+5. **Known Issues / Do Not Re-Report** — any prior god-review findings from state.json that were kept, plus any TODO/FIXME patterns found
+6. **Baseline Gate State** — typecheck/lint/build results: PASS / WARN (with errors) / SKIP (script absent)
+
+Write the file using Bash heredoc (cat > tmp/god-review/context-package.md). Then print "Context package written."
+
+Bash output follows:
+[BASH OUTPUT GOES HERE — orchestrator passes the captured bash output as context]
+```
+
+Output: `Phase 0 complete. Context map at tmp/god-review/context-package.md`
+
+---
+
+## Phase 1: Probe
+
+### 1a: Failure-mode pre-scans (fast, synchronous, runs BEFORE snapshot)
+
+```bash
+WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+echo "=== Phase 1 pre-scans ==="
+
+# Pre-scan 1: Secrets in .env files appearing in source code
+PRE_SCAN_SECRETS=""
+for envfile in .env .env.local .env.production .env.staging; do
+  [ ! -f "$WORKDIR/$envfile" ] && continue
+  while IFS='=' read -r key val; do
+    [ -z "$val" ] || [ "${#val}" -lt 16 ] && continue
+    [ "${key:0:1}" = "#" ] && continue
+    HITS=$(grep -rn --include="*.ts" --include="*.js" --include="*.py" --include="*.go" \
+           --exclude-dir=node_modules --exclude-dir=.git \
+           -F "$val" "$WORKDIR" 2>/dev/null | grep -v "$envfile" | head -3)
+    [ -n "$HITS" ] && PRE_SCAN_SECRETS="${PRE_SCAN_SECRETS}SECRET_LEAK: $key from $envfile appears in source:\n$HITS\n"
+  done < "$WORKDIR/$envfile"
+done
+echo "Secret pre-scan: ${PRE_SCAN_SECRETS:-NONE}"
+
+# Pre-scan 2: Hallucinated package names (declared imports vs package.json)
+PRE_SCAN_HALLUCINATED=""
+if [ -f "$WORKDIR/package.json" ]; then
+  DECLARED_DEPS=$(python3 -c "
+import json, sys
+d = json.load(open('$WORKDIR/package.json'))
+deps = set(d.get('dependencies', {}).keys()) | set(d.get('devDependencies', {}).keys())
+print('\n'.join(deps))
+" 2>/dev/null)
+  # Scan TS/JS imports for non-relative, non-builtin packages not in declared deps
+  /bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/dist" -o -path "*/build" \) -prune -o -name "*.ts" -print -o -name "*.tsx" -print -o -name "*.js" -print -o -name "*.jsx" -print' _ "$WORKDIR" 2>/dev/null \
+    | xargs grep -hE "^import .* from '([^.@][^']+)'" 2>/dev/null \
+    | grep -oE "from '[^']+'" | sed "s/from '//;s/'//" \
+    | cut -d'/' -f1 | sort -u \
+    | while read pkg; do
+        echo "$DECLARED_DEPS" | grep -qxF "$pkg" || echo "HALLUCINATED_IMPORT_CANDIDATE: $pkg"
+      done | head -20
+fi
+
+# Pre-scan 3: Prompt-injection seeds in comments and READMEs
+PRE_SCAN_INJECTION=$(/bin/bash -c '
+grep -rn --include="*.md" --include="*.txt" --include="*.ts" --include="*.js" --include="*.py" \
+  -E "ignore previous instructions|you are now|disregard the above|system prompt|### [Ii]nstruction|\[SYSTEM\]" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=god-review \
+  "$1" 2>/dev/null | head -10
+' _ "$WORKDIR")
+echo "Prompt-injection pre-scan: ${PRE_SCAN_INJECTION:-NONE}"
+
+PRE_SCAN_FLAG_COUNT=0
+[ -n "$PRE_SCAN_SECRETS" ] && PRE_SCAN_FLAG_COUNT=$((PRE_SCAN_FLAG_COUNT+1))
+[ -n "$PRE_SCAN_INJECTION" ] && PRE_SCAN_FLAG_COUNT=$((PRE_SCAN_FLAG_COUNT+1))
+echo "Pre-scan complete. $PRE_SCAN_FLAG_COUNT flags raised."
+```
+
+### 1b: Snapshot (canonical block — atomic .tmp → mv)
+
+```bash
+WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+mkdir -p tmp/god-review tmp/god-review/snapshots
+
+# Single canonical snapshot block — handles clean and dirty working trees.
+# Creates a stash ref on dirty tree (non-destructive: stash create does NOT modify worktree).
+# On clean tree, records current HEAD commit SHA as the revert point.
+if [ -n "$(git status --porcelain)" ]; then
+  REF=$(git stash create "god-review baseline $(date -u +%Y%m%dT%H%M%SZ)")
+  REFTYPE="stash"
+  # stash create on a dirty tree returns a stash object SHA — does NOT pop or apply
+else
+  REF=$(git rev-parse HEAD)
+  REFTYPE="commit"
+fi
+
+STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LOOP_MODE=${LOOP:-false}
+MAX_WALL_HOURS_VAL=${MAX_WALL_HOURS:-24}
+
+# Atomic write: write to .tmp then mv to prevent corruption on SIGKILL
+cat > tmp/god-review/state.json.tmp << 'STATEOF'
+{
+  "snapshot": {"ref": "REFPLACEHOLDER", "reftype": "REFTYPEPLACEHOLDER"},
+  "churn_ledger": {},
+  "frozen_units": [],
+  "false_positives": [],
+  "round": 0,
+  "consecutive_no_change_rounds": 0,
+  "consecutive_clean_rounds": 0,
+  "architect_malformed_count": 0,
+  "started_at_iso": "STARTEDPLACEHOLDER",
+  "elapsed_hours": 0.0,
+  "loop_mode": LOOPMODEPLACEHOLDER,
+  "max_wall_hours": MAXWALLPLACEHOLDER,
+  "finding_history_hashes": [],
+  "kept_fixes": [],
+  "reverted_fixes": []
+}
+STATEOF
+
+# Substitute placeholders with actual values
+sed -i.bak \
+  -e "s|REFPLACEHOLDER|$REF|g" \
+  -e "s|REFTYPEPLACEHOLDER|$REFTYPE|g" \
+  -e "s|STARTEDPLACEHOLDER|$STARTED_AT|g" \
+  -e "s|LOOPMODEPLACEHOLDER|$LOOP_MODE|g" \
+  -e "s|MAXWALLPLACEHOLDER|$MAX_WALL_HOURS_VAL|g" \
+  tmp/god-review/state.json.tmp
+rm -f tmp/god-review/state.json.tmp.bak
+
+mv tmp/god-review/state.json.tmp tmp/god-review/state.json
+
+echo "Snapshot taken: REF=$REF REFTYPE=$REFTYPE"
+echo "State written to tmp/god-review/state.json"
+```
+
+### 1c: Baseline perf capture (only if HAS_BENCH_SCRIPT)
+
+```bash
+# If HAS_BENCH_SCRIPT is non-empty, capture benchmark baseline for Phase 3 perf-regression detection.
+# This runs ONCE at Phase 1; Phase 3 compares post-fix timings against this baseline.
+if [ -n "$HAS_BENCH_SCRIPT" ]; then
+  echo "Capturing perf baseline..."
+  if [ -f package.json ]; then
+    npm run bench 2>&1 > tmp/god-review/perf-baseline.json || \
+    npm run benchmark 2>&1 > tmp/god-review/perf-baseline.json || \
+    npm run perf 2>&1 > tmp/god-review/perf-baseline.json || true
+  elif [ -f Cargo.toml ]; then
+    cargo bench 2>&1 > tmp/god-review/perf-baseline.json || true
+  elif grep -q "pytest-benchmark" requirements.txt pyproject.toml 2>/dev/null; then
+    python3 -m pytest --benchmark-json=tmp/god-review/perf-baseline.json 2>&1 || true
+  fi
+  echo "Perf baseline captured at tmp/god-review/perf-baseline.json"
+fi
+```
+
+Output: `Phase 1 complete. Snapshot: $REFTYPE=$REF. [N] pre-scan flags raised.`
+
+---
+
+## Phase 2: Review (the heart)
+
+### 2a: Build active_principles list
+
+Based on stack signals from Phase 0, determine which principles activate:
+
+```
+# Always-on (run regardless of stack):
+ALWAYS_ON_PRINCIPLES = [
+  "single-pattern",      # Tier 1, promoted
+  "reuse",
+  "clarity",
+  "scope",
+  "antipatterns",
+  "documentation",
+  "circular-deps",
+  "dead-code-conservatism",
+  "test-deletion",       # Tier 1, promoted
+  "ci-yaml-tampering",   # Tier 1, promoted
+  "hallucinated-imports",# Tier 1, promoted
+  "secret-leak",         # Tier 1, promoted
+  "prompt-injection",    # Tier 1, promoted
+  "perf-heuristic",
+]
+
+# Stack-gated (included only if signal non-empty):
+STACK_GATED_PRINCIPLES = {
+  "architecture-backend":  HAS_BACKEND_LENS_TRIGGER,  # HAS_AUTHED_HANDLER OR HAS_BACKEND_PROJECT
+  "architecture-frontend": HAS_APP_ROUTER,
+  "self-contained":        HAS_UI_PROJECT,
+  "tanstack-query":        HAS_TANSTACK_QUERY,
+  "perf-benchmark":        HAS_BENCH_SCRIPT,
+}
+
+ACTIVE_PRINCIPLES = ALWAYS_ON_PRINCIPLES + [p for p,sig in STACK_GATED_PRINCIPLES if sig != ""]
+
+# Note: stack-gated lenses still self-skip in Phase 1 of their own file if the signal is empty.
+# The activation check here is the orchestrator-level gate.
+```
+
+### 2b: Check Codex availability
+
+```bash
+CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null)}"
+if [ -n "$CODEX_BIN" ]; then
+  echo "Codex available at: $CODEX_BIN"
+  CODEX_AVAILABLE=true
+else
+  echo "(Codex unavailable — running Claude-only. Install via: npm i -g @openai/codex)"
+  CODEX_AVAILABLE=false
+fi
+```
+
+### 2c: Spawn all review agents
+
+**CRITICAL: All agents are launched in ONE or more assistant messages with mixed Agent + Bash tool calls. Up to ~20 tool calls per message. 3-4 round-trips worst case.**
+
+The canonical schedule for full 19-principle × 2-family pipeline:
+- **Message 1**: 10 Agent calls (3 broad-Claude + 7 principle-Claude) + 10 Bash calls (3 broad-Codex + 7 principle-Codex) = 20 in parallel
+- **Message 2**: 10 Agent calls (next 10 principle-Claude) + 10 Bash calls (next 10 principle-Codex) = 20 in parallel
+- **Message 3**: remaining 2 principle-Claude + remaining 2 principle-Codex = up to 4 in parallel
+- **Message 4**: 2 batched validation calls (1 Claude + 1 Codex)
+
+With Codex unavailable, drop all Codex Bash calls — Claude-only pipeline needs 2-3 round-trips.
+
+Each finding is tagged at collection time with source:
+- `claude-broad:<name>` for Layer A Claude broad reviewers
+- `codex-broad:<name>` for Layer A Codex broad reviewers
+- `claude-principle:<name>` for Layer B Claude principle agents
+- `codex-principle:<name>` for Layer B Codex principle agents
+
+**Layer A — 3 Claude broad reviewers** (always-on, full-codebase generalists):
+
+For each of the three Claude broad reviewers, spawn an Agent tool call:
+- `subagent_type: "general-purpose"`
+- `model: "claude-opus-4-7"` with extended thinking enabled (high reasoning effort)
+- Prompt loaded from `~/.claude-dotfiles/commands/god-review/broad-reviewers/<name>.md`
+- Scope passed as `$SCOPE` (or full repo if empty)
+- Context package path: `tmp/god-review/context-package.md`
+
+Agents:
+1. `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-deep-correctness.md` — bugs, logic errors, async/race, cross-layer integrity
+2. `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-architecture-prod.md` — architecture, dead code, prod readiness, scalability
+3. `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-security-resilience.md` — injection, auth, IDOR, data leaks, resilience
+
+**Layer A — 3 Codex broad reviewers** (only if $CODEX_AVAILABLE=true):
+
+Invoke via Bash:
+```bash
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-broad-cross-layer.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-cross-layer.md)" \
+  "$WORKDIR"
+
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-broad-prod-scalability.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-prod-scalability.md)" \
+  "$WORKDIR"
+
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-broad-security-safeguards.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-security-safeguards.md)" \
+  "$WORKDIR"
+```
+
+**Layer B — Claude principle agents** (1 per active principle):
+
+For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
+- `subagent_type: "general-purpose"`
+- `model: "claude-opus-4-7"` with extended thinking enabled
+- Prompt loaded from `~/.claude-dotfiles/commands/god-review/principles/<principle-name>.md`
+- Include path to context package: `tmp/god-review/context-package.md`
+- Scope: `$SCOPE` if set, else full repo
+- Pass `ONLINE=$ONLINE` to hallucinated-imports principle
+
+**Principle file absolute paths (all 19):**
+```
+~/.claude-dotfiles/commands/god-review/principles/single-pattern.md
+~/.claude-dotfiles/commands/god-review/principles/reuse.md
+~/.claude-dotfiles/commands/god-review/principles/clarity.md
+~/.claude-dotfiles/commands/god-review/principles/scope.md
+~/.claude-dotfiles/commands/god-review/principles/antipatterns.md
+~/.claude-dotfiles/commands/god-review/principles/documentation.md
+~/.claude-dotfiles/commands/god-review/principles/circular-deps.md
+~/.claude-dotfiles/commands/god-review/principles/dead-code-conservatism.md
+~/.claude-dotfiles/commands/god-review/principles/test-deletion.md
+~/.claude-dotfiles/commands/god-review/principles/ci-yaml-tampering.md
+~/.claude-dotfiles/commands/god-review/principles/hallucinated-imports.md
+~/.claude-dotfiles/commands/god-review/principles/secret-leak.md
+~/.claude-dotfiles/commands/god-review/principles/prompt-injection.md
+~/.claude-dotfiles/commands/god-review/principles/perf-heuristic.md
+~/.claude-dotfiles/commands/god-review/principles/architecture-backend.md
+~/.claude-dotfiles/commands/god-review/principles/architecture-frontend.md
+~/.claude-dotfiles/commands/god-review/principles/self-contained.md
+~/.claude-dotfiles/commands/god-review/principles/tanstack-query.md
+~/.claude-dotfiles/commands/god-review/principles/perf-benchmark.md
+```
+
+**Layer B — Codex principle agents** (1 per active principle, only if $CODEX_AVAILABLE=true):
+
+```bash
+# For each active principle, invoke Codex with the principle file content as the prompt:
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-principle-<NAME>.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/principles/<NAME>.md)\n\nScope: $SCOPE\nContext: see tmp/god-review/context-package.md" \
+  "$WORKDIR"
+```
+
+### 2d: Collect findings and run validation pass
+
+After all agents complete, collect all findings. Tag each finding with its source.
+
+**Step 2c validation — batched cross-family verification:**
+
+In `--loop` mode, Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0`. On skipped rounds, tag all Claude-found findings as `(unverified-this-round)`.
+
+**Claude-found findings → ONE Codex validation call** (only if $CODEX_AVAILABLE=true):
+```bash
+# Build consolidated finding list from all Claude-sourced findings
+# Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
+
+CLAUDE_FINDINGS_PROMPT="You are validating a list of code-review findings produced by Claude Opus 4.7.
+For each finding below, respond with: CONFIRMED / FALSE_POSITIVE / UNCERTAIN and a one-line reason.
+Format: FINDING_ID: STATUS — reason
+
+Findings to validate:
+$(cat /tmp/claude-findings-consolidated.txt)
+
+Codebase is at: $WORKDIR
+Read the relevant files to verify each finding. Be skeptical — only CONFIRM if you can reproduce the issue in the code."
+
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-validation-output.txt \
+  "$CLAUDE_FINDINGS_PROMPT" \
+  "$WORKDIR"
+```
+
+If Codex unavailable: skip Codex validation pass; tag all Claude-found findings `(unverified)`. Do NOT spawn a second Claude validator on Claude-found findings — same-family validation is failure mode #6.
+
+**Codex-found findings → ONE Claude validation Agent call:**
+
+Spawn one Agent tool call with the consolidated Codex-found findings list. The agent reads the files and returns CONFIRMED / FALSE_POSITIVE / UNCERTAIN per finding.
+
+**Apply verification post-processing:**
+- `FALSE_POSITIVE` → drop from findings; track count in Meta-Review Notes
+- `CONFIRMED` → eligible for confidence promotion (one level); tag `(verified)`
+- `UNCERTAIN` → keep as-is; tag `(unverified)`
+
+### 2e: Aggregate findings (you, the orchestrator, ARE the aggregator)
+
+**STEP 1 — Pre-promotion merge by hash:**
+
+Hash each finding using: `sha256(file_path + line_range_normalized + category)`
+- `line_range_normalized`: round start/end lines to nearest 5 (e.g., lines 42-47 → "40-50")
+- Do NOT include `root_cause` in the hash — LLM prose varies per run
+- Findings sharing the same hash → MERGE into one finding
+- Merged finding's `source` field = union of all merged sources (e.g., `claude-broad:claude-deep-correctness + codex-principle:secret-leak`)
+- Merging happens BEFORE any promotion logic
+
+**STEP 2 — Single promotion pass (max 1 promotion per finding):**
+
+Apply in order (stop after first promotion fires):
+1. **Cross-model agreement** `(both)`: if merged source includes ANY Claude source + ANY Codex source → promote confidence by 1 level (`investigate→likely`, `likely→definite`). Tag `(both)`.
+2. **Single-pattern / failure-class promotion**: if finding was reported by principle `single-pattern`, `secret-leak`, `prompt-injection`, `hallucinated-imports`, `test-deletion`, or `ci-yaml-tampering` → promote by 1 level. Tag `(tier1-promoted)`.
+3. **CONFIRMED by validator**: if validator returned CONFIRMED → promote by 1 level. Tag `(verified)`.
+Only ONE of these three fires per finding.
+
+**STEP 3 — Category override routing:**
+
+Regardless of confidence:
+- Category `MISSING` → Gaps section
+- Category `ASSUMPTION` → Assumptions section
+- Category `CONTRADICTION` → Contradictions section
+
+Otherwise use standard mapping (post-promotion confidence):
+- `[definite]` → Critical
+- `[likely]` → Important
+- `[investigate]` → Minor
+
+**STEP 4 — Write report:**
+
+Write `tmp/god-review/report.md` atomically (`.tmp` → `mv`):
+
+```
+cat > tmp/god-review/report.md.tmp << 'REPORTEOF'
+# god-review Report
+
+**Generated**: <timestamp>
+**Scope**: <SCOPE or "full repo">
+**Rounds run**: <N>
+**Stack**: <which HAS_* signals fired>
+**Active principles**: <count> of 19
+
+---
+
+## Critical [must fix]
+<[definite] non-special findings, sorted by severity>
+Format per finding:
+### [definite] CATEGORY: Short description
+**Location**: `file.ts:line_start-line_end`
+**Source**: `claude-principle:single-pattern + codex-broad:codex-security-safeguards` (both)
+**Promotion**: cross-model agreement
+**Evidence**:
+```code snippet```
+**Recommendation**: specific fix
+
+---
+
+## Gaps [missing entirely]
+<MISSING category findings regardless of confidence>
+
+---
+
+## Important [should fix]
+<[likely] non-special findings>
+
+---
+
+## Assumptions [verify these]
+<ASSUMPTION category findings>
+
+---
+
+## Contradictions
+<CONTRADICTION category findings>
+
+---
+
+## Minor [low priority]
+<[investigate] non-special findings>
+
+---
+
+## Human Gate Required [never auto-applied]
+<All HUMAN_GATE findings from Phase 3, with proposed diffs>
+<Emitted ONCE per finding; subsequent rounds only update "still pending as of round N">
+
+---
+
+## Meta-Review Notes
+- Total findings: N (Critical: X, Gaps: Y, Important: Z, Assumptions: A, Contradictions: B, Minor: C)
+- False positives dropped: N
+- Unverified findings (Codex unavailable or validation skipped): N
+- Principles with zero findings: [list]
+- Principles with most findings: [list]
+REPORTEOF
+mv tmp/god-review/report.md.tmp tmp/god-review/report.md
+```
+
+Output: `Phase 2 complete. [N] findings ([X] critical, [Y] important, [Z] minor). Report: tmp/god-review/report.md`
+
+---
+
+## Phase 3: Fix Loop (gated on --fix)
+
+```
+IF NOT --fix:
+  Print: "Report-only run complete. Pass --fix to enable the fix loop."
+  Print: "Report at: tmp/god-review/report.md"
+  EXIT
+```
+
+**Phase 3 runs only when `--fix` is set.**
+
+Read state from `tmp/god-review/state.json`. Load churn ledger, frozen units, false positives, round counter.
+
+### Per-round loop structure
+
+For each round (1 through MAX_ROUNDS, or indefinite if --loop):
+
+#### Step 3a: Triage findings into two buckets
+
+**AUTO_FIX** — all of the following must be true:
+- Single-file change only (Architect cannot target >1 file)
+- Category is NOT in hard-gate list: no schema migrations, no auth files, no package.json/requirements.txt/Cargo.toml/go.mod/Pipfile/Gemfile/pom.xml/build.gradle changes, no `.env`/`.env.*`/`*secrets*`/`*credentials*` files, no CI YAML (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `.circleci/config.yml`, `azure-pipelines*.yml`, `bitbucket-pipelines.yml`, `Jenkinsfile*`, `.pre-commit-config.yaml`, `.husky/**`), no test file modification (`*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `tests/**`, `__tests__/**`, `spec/**`), no dead-code quarantine moves (any `_deprecated/` path)
+- Not in `frozen_units` list
+- Has not been attempted and reverted in a prior round of this session (check `finding_history_hashes`)
+- Has a clear, unambiguous single-file remediation
+
+**HUMAN_GATE** — everything else. Emit proposed diff to report ONCE per finding (track by hash; subsequent rounds update "still pending as of round N" only).
+
+#### Step 3b: HUMAN_GATE diff emission
+
+For each new HUMAN_GATE finding (first time seen this session):
+
+```bash
+FINDING_HASH="<sha256 of this finding>"
+# Check if already emitted
+if ! python3 -c "import json; d=json.load(open('tmp/god-review/state.json')); print('yes' if '$FINDING_HASH' in [f.get('hash') for f in d.get('human_gate_emitted',[])] else 'no')" | grep -q yes; then
+  # Append to Human Gate section of report.md
+  # Include: finding description, proposed diff, reason it requires human review
+  echo "HUMAN_GATE (new): $FINDING_ID emitted to report"
+else
+  # Update "still pending as of round N" marker in report.md
+  echo "HUMAN_GATE (still pending): $FINDING_ID"
+fi
+```
+
+#### Step 3c: Per-AUTO_FIX processing (sequential — one at a time)
+
+For each AUTO_FIX finding:
+
+**1. Pre-fix snapshot** (canonical block — same pattern as Phase 1):
+```bash
+# Since the previous fix was committed, working tree should be clean.
+# REF will be HEAD commit SHA.
+PRE_FIX_REF=$(git rev-parse HEAD)
+echo "Pre-fix snapshot: commit $PRE_FIX_REF"
+```
+
+**2. Spawn Architect agent** (Claude Opus — describes the fix, produces structured output):
+
+Spawn one Agent tool call:
+- `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`, extended thinking enabled
+- Prompt includes: finding description, file content, line range, context-package, and instruction:
+
+```
+You are the Architect in a godreview fix loop. Describe ONE precise fix for the finding below.
+
+Finding: <description>
+File: <file>
+Lines: <line_start>-<line_end>
+
+IMPACT AUDIT (required — include in rationale):
+- What depends on this code?
+- What would break if this fix is wrong?
+- What test coverage exists for this area?
+- Risk assessment: LOW / MEDIUM / HIGH
+
+Output ONLY valid JSON (no markdown wrapping, no explanation outside the JSON):
+{
+  "file": "relative/path/to/file.ext",
+  "line_start": <integer>,
+  "line_end": <integer>,
+  "before": "exact current content at those lines",
+  "after": "replacement content",
+  "rationale": "one sentence describing the fix plus impact assessment"
+}
+
+Constraints:
+- "file" must be a single file (no multi-file changes)
+- "file" must NOT be in a hard-gate category (tests, CI YAML, .env, deps, schema migrations, _deprecated/)
+- "before" must be exact current file content (copy-paste it, do not paraphrase)
+- "after" must be non-empty and different from "before"
+- If you cannot produce a safe, single-file fix, output: {"error": "cannot fix safely: <reason>"}
+```
+
+**3. Validate Architect output schema** (Locked Decision #23):
+
+```bash
+# Orchestrator validates Architect output BEFORE spawning Editor
+ARCH_OUTPUT="<architect agent output>"
+
+# Check for error response
+if echo "$ARCH_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if 'error' not in d else 1)" 2>/dev/null; then
+  echo "Architect reported cannot-fix: skip finding, mark HUMAN_GATE"
+  continue
+fi
+
+# Validate all required fields present and non-empty
+VALID=$(python3 << 'PYEOF'
+import json, sys
+try:
+    d = json.loads("""$ARCH_OUTPUT""")
+    required = ['file', 'line_start', 'line_end', 'before', 'after', 'rationale']
+    for field in required:
+        if field not in d or d[field] == '' or d[field] is None:
+            print(f"INVALID: field '{field}' missing or empty")
+            sys.exit(1)
+    if not isinstance(d['line_start'], int) or not isinstance(d['line_end'], int):
+        print("INVALID: line_start and line_end must be integers")
+        sys.exit(1)
+    print("VALID")
+except json.JSONDecodeError as e:
+    print(f"INVALID: malformed JSON — {e}")
+    sys.exit(1)
+PYEOF
+)
+
+if [ "$VALID" != "VALID" ]; then
+  echo "Architect output malformed: $VALID"
+  # Increment architect_malformed_count in state.json (atomic)
+  python3 -c "
+import json
+with open('tmp/god-review/state.json') as f: d=json.load(f)
+d['architect_malformed_count'] = d.get('architect_malformed_count', 0) + 1
+import tempfile, os
+tmp = 'tmp/god-review/state.json.tmp'
+with open(tmp,'w') as f: json.dump(d,f,indent=2)
+os.rename(tmp, 'tmp/god-review/state.json')
+"
+  # Mark finding as HUMAN_GATE with reason "Architect output malformed"
+  continue
+fi
+```
+
+**4. Spawn Editor agent** (different model family when Codex available):
+
+If `$CODEX_AVAILABLE=true`: spawn Codex as editor via bash:
+```bash
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/editor-output.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/lib/editor-agent.md)\n\nApply this change:\n$ARCH_JSON" \
+  "$WORKDIR"
+```
+
+If Codex unavailable: spawn a second Claude Agent tool call (different instance, same model):
+- Prompt: load `~/.claude-dotfiles/commands/god-review/lib/editor-agent.md` content + architect JSON
+- `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`
+
+**5. Re-run gates:**
+
+```bash
+GATES_PASS=true
+if [ -f package.json ]; then
+  echo "=== typecheck ===" && npm run typecheck 2>&1 | tail -20 || GATES_PASS=false
+  echo "=== lint ===" && npm run lint 2>&1 | tail -20 || GATES_PASS=false
+  # Build is optional — some projects don't have a build script
+  npm run build 2>&1 | tail -10 || true
+  # Tests — run if script exists
+  npm run test -- --passWithNoTests 2>&1 | tail -20 || GATES_PASS=false
+elif [ -f Cargo.toml ]; then
+  cargo check 2>&1 | tail -20 || GATES_PASS=false
+  cargo test 2>&1 | tail -20 || GATES_PASS=false
+elif [ -f go.mod ]; then
+  go vet ./... 2>&1 | tail -20 || GATES_PASS=false
+  go test ./... 2>&1 | tail -20 || GATES_PASS=false
+elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+  python3 -m mypy . 2>&1 | tail -20 || true  # mypy non-fatal
+  python3 -m pytest 2>&1 | tail -20 || GATES_PASS=false
+fi
+echo "Gates: $GATES_PASS"
+```
+
+**6. Regression detectors (run BEFORE deciding keep/revert):**
+
+```bash
+REGRESSION_DETECTED=false
+REGRESSION_REASON=""
+
+# Detector 1: Test deletion
+# Check if any test files were deleted or significantly shrunk
+EDITED_FILE="$ARCH_FILE"  # from Architect output
+if echo "$EDITED_FILE" | grep -qE "\.(test|spec)\.(ts|tsx|js|jsx|py|go|rb)$|_test\.(go|py)$|^test_.*\.py$"; then
+  # The edit touched a test file — this is a HUMAN_GATE violation
+  REGRESSION_DETECTED=true
+  REGRESSION_REASON="test file modification — should be HUMAN_GATE"
+fi
+# Check for test file deletion via git diff
+TEST_DELETED=$(git diff --diff-filter=D --name-only 2>/dev/null | grep -E "\.(test|spec)\.(ts|tsx|js|jsx|py|go|rb)$|_test\.(go|py)$|^test_.*\.py$" | head -3)
+if [ -n "$TEST_DELETED" ]; then
+  REGRESSION_DETECTED=true
+  REGRESSION_REASON="test file deleted: $TEST_DELETED"
+fi
+# Check for test file significant shrinkage (>20% lines removed, floor 6 lines on files >= 25 lines)
+if git diff --numstat 2>/dev/null | awk '{if ($2+$1 > 0 && $2/($2+$1) > 0.2 && ($2+$1) >= 25) print $3}' | grep -qE "\.(test|spec)\.(ts|tsx|js|jsx|py|go)$"; then
+  REGRESSION_DETECTED=true
+  REGRESSION_REASON="test file significantly shrunk (>20% line reduction)"
+fi
+
+# Detector 2: CI YAML tampering
+CI_MODIFIED=$(git diff --name-only 2>/dev/null | grep -E "\.github/workflows/.*\.yml$|\.gitlab-ci\.yml$|\.circleci/config\.yml$|azure-pipelines.*\.yml$|bitbucket-pipelines\.yml$|Jenkinsfile|\.pre-commit-config\.yaml$|\.husky/" | head -3)
+if [ -n "$CI_MODIFIED" ]; then
+  REGRESSION_DETECTED=true
+  REGRESSION_REASON="CI YAML modification: $CI_MODIFIED"
+fi
+
+# Detector 3: Churn check — freeze files edited 2+ times this session
+python3 << 'PYEOF'
+import json, os, sys
+
+with open('tmp/god-review/state.json') as f:
+    d = json.load(f)
+
+edited_file = os.environ.get('EDITED_FILE', '')
+churn = d.get('churn_ledger', {})
+churn[edited_file] = churn.get(edited_file, 0) + 1
+d['churn_ledger'] = churn
+
+if churn[edited_file] >= 2:
+    if edited_file not in d.get('frozen_units', []):
+        d.setdefault('frozen_units', []).append(edited_file)
+        print(f"FREEZE: {edited_file} (edited {churn[edited_file]} times this session)")
+        # Signal freeze to shell
+        with open('/tmp/god-review-freeze-signal', 'w') as sf:
+            sf.write(f"FREEZE:{edited_file}")
+
+tmp = 'tmp/god-review/state.json.tmp'
+with open(tmp, 'w') as f:
+    json.dump(d, f, indent=2)
+os.rename(tmp, 'tmp/god-review/state.json')
+PYEOF
+
+if [ -f /tmp/god-review-freeze-signal ]; then
+  REGRESSION_DETECTED=true
+  REGRESSION_REASON="churn freeze: $(cat /tmp/god-review-freeze-signal)"
+  rm -f /tmp/god-review-freeze-signal
+fi
+
+echo "Regression check: REGRESSION_DETECTED=$REGRESSION_DETECTED REASON=$REGRESSION_REASON"
+```
+
+**7. Keep or revert (canonical revert table):**
+
+```bash
+if [ "$GATES_PASS" = "true" ] && [ "$REGRESSION_DETECTED" = "false" ]; then
+  # KEEP: commit the fix
+  git commit --no-verify -m "god-review: $FINDING_ID"
+  COMMITTED=true
+  echo "Kept: $FINDING_ID committed as $(git rev-parse HEAD)"
+
+  # Perf-benchmark check (only if HAS_BENCH_SCRIPT)
+  if [ -n "$HAS_BENCH_SCRIPT" ] && [ -f "tmp/god-review/perf-baseline.json" ]; then
+    echo "Running perf comparison..."
+    if [ -f package.json ]; then
+      npm run bench 2>&1 > tmp/god-review/perf-current.json || \
+      npm run benchmark 2>&1 > tmp/god-review/perf-current.json || true
+    elif [ -f Cargo.toml ]; then
+      cargo bench 2>&1 > tmp/god-review/perf-current.json || true
+    fi
+    # Compare timings (simplified: look for regressions > 5%)
+    PERF_REGRESSED=$(python3 -c "
+import json, re, sys
+baseline = open('tmp/god-review/perf-baseline.json').read()
+current = open('tmp/god-review/perf-current.json').read()
+# Extract timing values (ms) from output — heuristic extraction
+def extract_timings(text):
+    return {m.group(1): float(m.group(2)) for m in re.finditer(r'(\w[\w\-]+).*?(\d+\.?\d*)\s*ms', text)}
+b = extract_timings(baseline)
+c = extract_timings(current)
+regressions = []
+for name in b:
+    if name in c and b[name] > 0:
+        delta = (c[name] - b[name]) / b[name]
+        if delta > 0.05:
+            regressions.append(f'{name}: +{delta:.1%} ({b[name]:.1f}ms -> {c[name]:.1f}ms)')
+print('\n'.join(regressions) if regressions else 'NONE')
+" 2>/dev/null || echo "NONE")
+
+    if [ "$PERF_REGRESSED" != "NONE" ]; then
+      echo "PERF REGRESSION detected: $PERF_REGRESSED — reverting"
+      git reset --hard HEAD~1
+      COMMITTED=false
+      REVERT_REASON="perf regression: $PERF_REGRESSED"
+      # Update audit trail (reverted_fixes in state.json)
+      python3 -c "
+import json, os
+with open('tmp/god-review/state.json') as f: d=json.load(f)
+d.setdefault('reverted_fixes',[]).append({'finding_id':'$FINDING_ID','reason':'$REVERT_REASON'})
+tmp='tmp/god-review/state.json.tmp'
+with open(tmp,'w') as f: json.dump(d,f,indent=2)
+os.rename(tmp,'tmp/god-review/state.json')
+"
+    else
+      echo "Perf OK — no regression detected"
+      # Update kept_fixes
+      python3 -c "
+import json, os
+with open('tmp/god-review/state.json') as f: d=json.load(f)
+d.setdefault('kept_fixes',[]).append('$FINDING_ID')
+tmp='tmp/god-review/state.json.tmp'
+with open(tmp,'w') as f: json.dump(d,f,indent=2)
+os.rename(tmp,'tmp/god-review/state.json')
+"
+      FIXES_KEPT_THIS_ROUND=$((FIXES_KEPT_THIS_ROUND+1))
+    fi
+  else
+    # No perf benchmark — just update kept_fixes
+    python3 -c "
+import json, os
+with open('tmp/god-review/state.json') as f: d=json.load(f)
+d.setdefault('kept_fixes',[]).append('$FINDING_ID')
+tmp='tmp/god-review/state.json.tmp'
+with open(tmp,'w') as f: json.dump(d,f,indent=2)
+os.rename(tmp,'tmp/god-review/state.json')
+"
+    FIXES_KEPT_THIS_ROUND=$((FIXES_KEPT_THIS_ROUND+1))
+  fi
+
+else
+  # REVERT: use canonical revert table
+  if [ "$COMMITTED" = "true" ]; then
+    # Fix was committed but regression detected after commit (perf-benchmark path above handles this)
+    git reset --hard HEAD~1
+    echo "Reverted committed fix: $FINDING_ID"
+  else
+    # Fix not yet committed — targeted revert of only the Architect's target file
+    ARCH_FILE=$(echo "$ARCH_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['file'])" 2>/dev/null)
+    git checkout -- "$ARCH_FILE"
+    echo "Targeted revert of: $ARCH_FILE (fix was not committed)"
+  fi
+
+  # Record in reverted_fixes
+  REVERT_REASON="${REGRESSION_REASON:-gate failure}"
+  python3 -c "
+import json, os
+with open('tmp/god-review/state.json') as f: d=json.load(f)
+d.setdefault('reverted_fixes',[]).append({'finding_id':'$FINDING_ID','reason':'$REVERT_REASON'})
+tmp='tmp/god-review/state.json.tmp'
+with open(tmp,'w') as f: json.dump(d,f,indent=2)
+os.rename(tmp,'tmp/god-review/state.json')
+"
+  echo "Reverted: $FINDING_ID — reason: $REVERT_REASON"
+fi
+```
+
+#### Step 3d: Write round audit trail
+
+```bash
+cat > tmp/god-review/round-${ROUND}-findings.md.tmp << 'ROUNDEOF'
+# god-review Round <N> Audit Trail
+
+**Timestamp**: <ISO>
+**Findings processed**: <total>
+**AUTO_FIX attempted**: <N>
+**HUMAN_GATE emitted**: <N>
+**Fixes kept**: <N>
+**Fixes reverted**: <N>
+
+## Per-Finding Detail
+
+### <FINDING_ID>
+- **Source**: <claude-principle:X + codex-broad:Y>
+- **Triage**: AUTO_FIX / HUMAN_GATE
+- **Architect output**: <JSON or "N/A — HUMAN_GATE">
+- **Editor applied**: YES / NO / ABORT (with reason)
+- **Gates**: PASS / FAIL (with output)
+- **Regression check**: PASS / FAIL (with reason)
+- **Decision**: KEPT (commit <sha>) / REVERTED (<reason>) / HUMAN_GATE_EMITTED
+ROUNDEOF
+mv tmp/god-review/round-${ROUND}-findings.md.tmp tmp/god-review/round-${ROUND}-findings.md
+```
+
+#### Step 3e: Termination check
+
+**Bounded mode (`--loop` is false):**
+
+```
+IF round >= MAX_ROUNDS: break with "max rounds reached (cap: $MAX_ROUNDS)"
+IF total_open_findings < 2: break with "near-clean — fewer than 2 open findings remain"
+IF frozen_units_count > 3: break with "too many frozen units ($N) — escalate to human"
+IF FIXES_KEPT_THIS_ROUND == 0: break with "no progress this round — fix loop cannot make further progress"
+```
+
+**Indefinite mode (`--loop` is true):**
+
+```
+# Net-new findings = findings whose hash is NOT already in finding_history_hashes
+# (Repeat HUMAN_GATE findings recognized via hash don't count as "new")
+
+IF net_new_findings_this_round == 0 AND FIXES_KEPT_THIS_ROUND == 0:
+  consecutive_clean_rounds += 1
+ELSE:
+  consecutive_clean_rounds = 0
+
+IF consecutive_clean_rounds >= 3:
+  break with "naturally clean — 3 consecutive rounds with zero new findings and zero kept fixes"
+
+# Rate-based instability check (per-round rate, NOT cumulative count)
+# Measure instability over last 3 rounds to avoid false aborts on long healthy sessions
+avg_instability = mean(frozen_added_per_round + architect_malformed_per_round) over last 3 rounds
+IF avg_instability > 5:
+  break with "instability rate too high (avg $avg_instability events/round over last 3 rounds)"
+
+# Wall-clock backstop
+ELAPSED_HOURS=$(python3 -c "
+from datetime import datetime, timezone
+start = datetime.fromisoformat(open('tmp/god-review/state.json').read() and __import__('json').load(open('tmp/god-review/state.json'))['started_at_iso'].replace('Z','+00:00'))
+now = datetime.now(timezone.utc)
+print(round((now-start).total_seconds()/3600, 2))
+")
+IF ELAPSED_HOURS >= MAX_WALL_HOURS:
+  break with "wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)"
+
+# Re-scan scope for next round (per Locked Decision loop rule 5)
+IF FIXES_KEPT_THIS_ROUND == 0:
+  NEXT_SCAN_SCOPE = "$SCOPE"  # full repo or original scope — NOT changed-files-only
+  # This prevents 3 trivial "clean" rounds on empty scope
+ELSE:
+  IF RESCOPE_ON_FIX == "full":
+    NEXT_SCAN_SCOPE = "$SCOPE"
+  ELSE:
+    NEXT_SCAN_SCOPE = "$(git diff HEAD~$FIXES_KEPT_THIS_ROUND --name-only | tr '\n' ' ')"
+
+# Update round counter atomically
+python3 -c "
+import json, os
+with open('tmp/god-review/state.json') as f: d=json.load(f)
+d['round'] = $ROUND
+d['consecutive_clean_rounds'] = $consecutive_clean_rounds
+d['elapsed_hours'] = $ELAPSED_HOURS
+tmp='tmp/god-review/state.json.tmp'
+with open(tmp,'w') as f: json.dump(d,f,indent=2)
+os.rename(tmp,'tmp/god-review/state.json')
+"
+
+# Continue — re-run Phase 2 on NEXT_SCAN_SCOPE
+SCOPE="$NEXT_SCAN_SCOPE"
+# (Loop back to Phase 2 for next round)
+```
+
+**In `--loop` mode**, Codex validation runs only every `CODEX_VALIDATION_EVERY` rounds:
+```
+IF loop_mode AND round % CODEX_VALIDATION_EVERY != 0:
+  # Skip Codex validation this round
+  Tag all Claude-found findings as (unverified-this-round)
+  # Codex principle review still runs every round
+```
+
+---
+
+## Final Summary Output
+
+After all phases complete (Phase 2 exit or Phase 3 termination):
+
+```
+god-review complete.
+
+Rounds run: <N>
+Total findings: <N> (Critical: X, Gaps: Y, Important: Z, Assumptions: A, Contradictions: B, Minor: C)
+Kept fixes: <N> (committed as individual god-review commits)
+Reverted fixes: <N>
+Frozen units: <N> files (require human attention)
+Human-gate items: <N> (proposed diffs in report — apply manually)
+
+Report: tmp/god-review/report.md
+Round trails: tmp/god-review/round-N-findings.md
+
+If you want to squash all god-review commits into one:
+  git reset --soft HEAD~<N> && git commit -m 'god-review: apply fixes'
+
+To resume from this state after interruption:
+  /god-review --fix [--loop] --resume
+```
+
+---
+
+## Reference: Canonical Revert Table
+
+| Situation | Command | Why |
+|---|---|---|
+| Fix was committed (gate or perf regression failed after commit) | `git reset --hard HEAD~1` | Undoes only the most-recent god-review commit |
+| Fix applied but NOT yet committed (gate failed mid-fix) | `git checkout -- "<file-from-architect>"` | Targeted: discards only the Architect's target file working-tree changes |
+| Final bailout (whole pipeline abort) | If `$REFTYPE = "stash"`: `git stash apply $REF`; if `$REFTYPE = "commit"`: `git reset --hard $REF` | Bisect on stored ref-type from state.json |
+
+Never use repo-wide `git checkout .` or `git restore .` — always use targeted per-file reverts except for the final-bailout scenario.
+
+---
+
+## Reference: Hard Gates (NEVER auto-applied even with --fix)
+
+These categories are ALWAYS HUMAN_GATE, no exceptions:
+- Schema migration files (`migrations/`, `db/migrate/`, `*.migration.ts`, `*_migration.go`)
+- Auth/authentication code files (matching auth pattern signals)
+- Dependency manifests (`package.json`, `requirements.txt`, `Cargo.toml`, `go.mod`, `Pipfile`, `Gemfile`, `pom.xml`, `build.gradle*`)
+- Environment / secret files (`.env`, `.env.*`, `*secrets*`, `*credentials*`)
+- CI/CD YAML (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `.circleci/config.yml`, `azure-pipelines*.yml`, `bitbucket-pipelines.yml`, `Jenkinsfile*`, `.pre-commit-config.yaml`, `.husky/**`)
+- Test files (`*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `tests/**`, `__tests__/**`, `spec/**`)
+- Dead-code quarantine moves (any `_deprecated/` path operation)
+- Multi-file changes (any Architect output targeting more than 1 file)
+
+---
+
+## Reference: CRITERIA.md
+
+All confidence taxonomy, section mapping, category enum, risk levels, PASS/WARN/FAIL definitions, and the promotion priority order are defined in:
+
+`~/.claude-dotfiles/commands/god-review/CRITERIA.md`
+
+This is the single source of truth. Do not redefine severity here.
