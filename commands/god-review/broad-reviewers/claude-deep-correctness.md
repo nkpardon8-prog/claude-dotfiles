@@ -1,7 +1,7 @@
 ---
 name: claude-deep-correctness
 description: "God Review Layer A — Deep Correctness & Cross-Layer Integrity. Finds bugs spanning DB/API/frontend/worker boundaries, async issues, error paths, and data integrity gaps."
-model: opus
+model: claude-opus-4-7
 ---
 
 > This is a BROAD reviewer (Layer A). You review the ENTIRE scope, not a single principle. Findings here complement the per-principle Layer B agents — overlap is expected and will be deduplicated by the orchestrator.

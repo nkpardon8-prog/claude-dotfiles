@@ -204,7 +204,15 @@ if [ -z "$HAS_BENCH_SCRIPT" ]; then
   HAS_BENCH_SCRIPT=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -name benchmarks -o -name bench \) -type d -print' _ "$WORKDIR" 2>/dev/null | head -1)
 fi
 if [ -z "$HAS_BENCH_SCRIPT" ]; then
-  HAS_BENCH_SCRIPT=$(grep -l "criterion\|pytest-benchmark\|hyperfine" "$WORKDIR/Cargo.toml" "$WORKDIR/requirements.txt" "$WORKDIR/pyproject.toml" 2>/dev/null | head -1)
+  HAS_BENCH_SCRIPT=$(grep -l "criterion\|pytest-benchmark\|hyperfine\|asv" "$WORKDIR/Cargo.toml" "$WORKDIR/requirements.txt" "$WORKDIR/pyproject.toml" "$WORKDIR/Pipfile" 2>/dev/null | head -1)
+fi
+# Python bench file naming patterns (asv, pytest-benchmark conventions)
+if [ -z "$HAS_BENCH_SCRIPT" ]; then
+  HAS_BENCH_SCRIPT=$(/bin/bash -c 'find "$1" -maxdepth 4 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/__pycache__" \) -prune -o -type f \( -name "bench_*.py" -o -name "*_bench.py" -o -name "benchmark_*.py" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
+fi
+# Go bench convention (Benchmark* funcs in *_test.go)
+if [ -z "$HAS_BENCH_SCRIPT" ]; then
+  HAS_BENCH_SCRIPT=$(/bin/bash -c 'find "$1" -maxdepth 5 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" \) -prune -o -type f -name "*_test.go" -print' _ "$WORKDIR" 2>/dev/null | xargs grep -l "^func Benchmark" 2>/dev/null | head -1)
 fi
 
 echo "Stack signals:"

@@ -1,46 +1,36 @@
 #!/bin/bash
 # codex-invoke.sh — Thin wrapper around `codex exec` for god-review.
 #
-# Usage: bash lib/codex-invoke.sh <outfile> <primary_home> <fallback_home> <prompt>
+# Usage: bash lib/codex-invoke.sh <outfile> <prompt> <workdir>
 #
-#   outfile       — Path to write Codex output (appended, not overwritten, on retries).
-#   primary_home  — Value of CODEX_HOME for the primary account profile. Pass "" to skip.
-#   fallback_home — Value of CODEX_HOME for the fallback account profile. Pass "" to skip.
-#   prompt        — The review prompt string (quoted by the caller).
+#   outfile  — Path to write Codex output (appended on retries).
+#   prompt   — The review prompt string (quoted by the caller).
+#   workdir  — Working directory passed to `--cd`.
 #
-# Optional env vars (set before calling):
-#   CODEX_HOME_1  — If set, overrides primary_home arg when arg is empty.
-#   CODEX_HOME_2  — If set, overrides fallback_home arg when arg is empty.
-#   WORKDIR       — Working directory passed to `--cd`. Defaults to $PWD.
+# Optional env vars (set before calling for two-account threading):
+#   CODEX_HOME_1  — CODEX_HOME for primary account profile.
+#   CODEX_HOME_2  — CODEX_HOME for fallback account profile (used if primary fails).
 #   CODEX_BIN     — Path or name of the codex binary. Defaults to "codex".
 #
 # Account isolation strategy:
-#   - If primary_home (or CODEX_HOME_1) is set: use it. On failure, try fallback.
-#   - If neither primary nor fallback is set: fall back to shared ~/.codex with
-#     flock serialization (or mkdir-spinlock if flock unavailable) to prevent
-#     concurrent calls from stomping each other's session state.
+#   - If CODEX_HOME_1 is set: use it. On failure, try CODEX_HOME_2 if set.
+#   - If neither is set: fall back to shared ~/.codex with flock serialization
+#     (or mkdir-spinlock if flock unavailable) to prevent concurrent calls from
+#     stomping each other's session state.
 #   - If codex binary is not on PATH: write "(unavailable)" note and exit 0.
 #
 # This script intentionally drops multi-account router.json threading from master-review.md.
-# Two-profile alternation (CODEX_HOME_1 / CODEX_HOME_2) is the maximum supported here.
+# Two-profile alternation (CODEX_HOME_1 / CODEX_HOME_2) is the maximum supported.
 
 set -euo pipefail
 
 OUTFILE="${1:?outfile argument required}"
-PRIMARY_HOME="${2:-}"
-FALLBACK_HOME="${3:-}"
-PROMPT="${4:?prompt argument required}"
+PROMPT="${2:?prompt argument required}"
+WORKDIR="${3:?workdir argument required}"
 
 CODEX_BIN="${CODEX_BIN:-codex}"
-WORKDIR="${WORKDIR:-$PWD}"
-
-# Resolve profile homes: explicit args take precedence; env vars fill in when arg is empty.
-if [ -z "$PRIMARY_HOME" ] && [ -n "${CODEX_HOME_1:-}" ]; then
-  PRIMARY_HOME="$CODEX_HOME_1"
-fi
-if [ -z "$FALLBACK_HOME" ] && [ -n "${CODEX_HOME_2:-}" ]; then
-  FALLBACK_HOME="$CODEX_HOME_2"
-fi
+PRIMARY_HOME="${CODEX_HOME_1:-}"
+FALLBACK_HOME="${CODEX_HOME_2:-}"
 
 # Guard: codex binary must exist.
 if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
@@ -64,11 +54,10 @@ if [ -n "$PRIMARY_HOME" ]; then
   fi
   # Primary failed; try fallback if available.
   if [ -n "$FALLBACK_HOME" ]; then
-    echo "[primary-failed] falling back to FALLBACK_HOME=${FALLBACK_HOME}" >> "$OUTFILE"
+    echo "[primary-failed] falling back to CODEX_HOME_2=${FALLBACK_HOME}" >> "$OUTFILE"
     run_with_home "$FALLBACK_HOME"
     exit $?
   fi
-  # No fallback — surface the failure.
   exit 1
 fi
 
@@ -78,9 +67,7 @@ if [ -n "$FALLBACK_HOME" ]; then
   exit $?
 fi
 
-# --- Case 3: no isolated profile — use shared ~/.codex with lock-file serialization ---
-# Multiple concurrent Codex calls sharing the default ~/.codex can stomp each other's
-# session/account state. Serialize with flock (preferred) or mkdir-spinlock (fallback).
+# --- Case 3: no isolated profile — use shared ~/.codex with lock serialization ---
 echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account isolation unavailable — serializing on /tmp/codex-default-home.lock." >> "$OUTFILE"
 
 LOCK_FILE=/tmp/codex-default-home.lock
@@ -93,8 +80,14 @@ run_codex_default() {
 }
 
 if command -v flock >/dev/null 2>&1; then
-  flock "$LOCK_FILE" bash -c "$(declare -f run_codex_default); run_codex_default"
-  exit $?
+  # Use file descriptor 200 for the lock; function runs in same shell, inherits all vars.
+  exec 200>"$LOCK_FILE"
+  flock 200
+  run_codex_default
+  rc=$?
+  flock -u 200
+  exec 200>&-
+  exit $rc
 fi
 
 # flock unavailable — mkdir-spinlock fallback.
