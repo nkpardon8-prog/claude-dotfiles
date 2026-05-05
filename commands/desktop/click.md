@@ -14,7 +14,11 @@ Click a vision-identified target. Retina-aware. Safety-classified. Verified.
    now_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
    ts=$(jq -r .timestamp_ms /tmp/desktop/last.json 2>/dev/null)
    ```
-   If `last.json` is missing or `(now_ms - ts) > 2000` → run `/desktop shot` first.
+   **Validate `ts` is an integer** before comparing. If `ts` is missing, the literal `null`, or a non-integer string (e.g. `%3N` from a stale-bug regression), treat as stale and re-snap:
+   ```bash
+   if ! [[ "$ts" =~ ^[0-9]+$ ]]; then ts=0; fi
+   ```
+   If `last.json` is missing or `(now_ms - ts) > 2000` → run `/desktop shot` first (or `/desktop window <app>` if a focused capture is appropriate).
 
 2. **Vision identifies target.** Use the Read tool to view `/tmp/desktop/last.png`. Find the target described in args. Return `{x_pixel, y_pixel, label}`. If not found → abort, ask user to clarify or move the target into view.
 
