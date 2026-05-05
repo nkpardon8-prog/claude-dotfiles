@@ -2,6 +2,21 @@
 
 A modular slash-command family that lets Claude Code take over the local Mac screen via vision + screenshots + coordinate clicks. The local-machine sibling of `/macmini` (which drives a remote Mac via Chrome Remote Desktop).
 
+## Usage (user-facing surface)
+
+The user only ever types `/desktop` (with or without a free-form description) or references the screen in plain English. **The agent picks the tier and sub-command itself** — the user doesn't need to know `shot`/`window`/`click`/etc. exist.
+
+```
+/desktop                                    → agent pre-flights, asks what to do (or infers from context)
+/desktop click the Allow button             → agent picks Tier 4 (vision-click)
+/desktop send Arezu 'bruh' on iMessage      → agent picks Tier 1 (osascript Messages.send)
+/desktop screenshot Chrome                  → agent picks Tier 3 (window-only capture)
+/desktop run a smoke test                   → agent runs status --smoke-test
+"accept that prompt"  (plain English)       → agent self-resolves
+```
+
+Sub-commands (`desktop:shot`, `desktop:window`, `desktop:click`, `desktop:type`, `desktop:key`, `desktop:status`, `desktop:setup`) are **internal primitives** the dispatcher routes to. They show up in the skill registry because every markdown file in the directory auto-registers — but they're not required user syntax. The agent only mentions a sub-command name when reporting what it just did (via the `[desktop] Tier N: <tool>` trace).
+
 ## When to use
 
 - A GUI prompt is blocking progress and there's no CLI / MCP equivalent (macOS permission dialog, app-specific confirm modal, app with no scriptable surface).
