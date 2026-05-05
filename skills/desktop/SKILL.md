@@ -38,12 +38,17 @@ State at `/tmp/desktop/`:
 
 | Action | Tool |
 |---|---|
-| Take screenshot | `screencapture -x` (built-in) |
+| Take screenshot (full) | `screencapture -x` (built-in) |
+| Take screenshot (window-only) | `screencapture -x -l <id>` (id via Quartz / pyobjc) |
 | Get pixel dims | `sips -g pixelWidth/Height` (built-in) |
 | Get logical dims | `python3 -c 'from AppKit import NSScreen; ...'` (primary) → `system_profiler SPDisplaysDataType` (fallback) |
-| Click | `cliclick c:X,Y` (brew install cliclick) |
-| Type | `cliclick t:'text'` |
-| Key press | `cliclick kp:<name>` (with `kd:`/`ku:` for modifiers) |
+| Open URL / launch app (Tier 0) | `open <url>` / `open -a <app>` (built-in) |
+| Scriptable app action (Tier 1) | `osascript -e 'tell application "<App>" to ...'` (built-in) |
+| UI scripting click-by-name (Tier 2) | `osascript -e 'tell application "System Events" to click button "<X>" of window 1 of process "<App>"'` |
+| Vision-click (Tier 3/4) | `cliclick c:X,Y` (brew install cliclick) |
+| Type | `cliclick t:'text'` (letters/digits/symbols all use t:) |
+| Key press (named) | `cliclick kp:<name>` — return, esc, tab, arrow-*, f1–f16, etc. |
+| Key combo (mods + letter) | `cliclick kd:<mod> t:'<char>' ku:<mod>` — letters/digits use t:, NOT kp: |
 | Open System Settings | `open "x-apple.systempreferences:..."` (built-in) |
 | Verify | second `screencapture` + vision compare |
 
