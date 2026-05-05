@@ -54,13 +54,46 @@ One-screen preflight. Detects: cliclick installed?, Screen Recording granted?, A
    Or run: /desktop setup
    ```
 
+## Smoke test (`--smoke-test` flag, or natural language "run a smoke test")
+
+End-to-end validation of the full /desktop pipeline. **Always confirm with the user before running** — moves cursor, opens Calculator, types keys.
+
+Procedure (keyboard-driven for input; vision only on result):
+
+1. Confirm with user: "Run smoke test? Will open Calculator and type 1+1= via keyboard. (y/n)"
+2. `open -a Calculator`
+3. `sleep 1.0` (let Calculator gain focus)
+4. `cliclick t:'1'` (keyboard, no vision)
+5. `cliclick t:'+'` (cliclick handles shifted symbols natively)
+6. `cliclick t:'1'`
+7. `cliclick kp:return` (`=` on Mac Calculator triggers via Return)
+8. `sleep 0.4`
+9. Run `/desktop window Calculator` for a focused snapshot. If Quartz is unavailable, fall back to `/desktop shot` and crop to Calculator.
+10. Use Read on `/tmp/desktop/last.png`. **Read the DISPLAY REGISTER** (the large numeric area at top of the Calculator window) — NOT a keypad button.
+11. Report PASS if the register reads `2`. FAIL with the actual value otherwise.
+12. Close Calculator: `cliclick kd:cmd t:'w' ku:cmd` (auto-fire — user opted in).
+
+The smoke test validates: TCC, scale detection, cliclick keyboard input, screencapture, vision read. ~5 seconds end-to-end. Failure modes typically point to the broken link in the chain (e.g., wallpaper-only screenshot → Screen Recording denied; cliclick exits non-zero → Accessibility denied; register reads `0` → focus didn't reach Calculator).
+
+## Quartz availability check
+
+Add to the preflight summary so `/desktop window` failures are diagnosable:
+
+```bash
+python3 -c 'from Quartz import CGWindowListCopyWindowInfo' 2>/dev/null && QUARTZ=ok || QUARTZ=missing
+```
+
+If missing: `/desktop window` will fall back to `/desktop shot`. pyobjc-framework-Quartz ships with system Python 3 on macOS 11+; if the user has shimmed `python3` to a venv, it may be missing.
+
 ## Gotchas
 
 - TCC fields are NOT honored from cache — always re-probe. Probe is < 200ms total.
 - cliclick probe moves the user's cursor to (1,1) — brief, harmless, but visible.
 - macOS deep-link URL syntax can drift between versions; if `open` fails, AGENT-GUIDE has manual nav fallback.
+- Smoke test side-effects: opens Calculator, moves cursor, types keys. Always opt-in.
 
 ## See also
 
 - Setup walkthrough: `/desktop setup`
 - AGENT-GUIDE: `~/.claude-dotfiles/skills/desktop/docs/AGENT-GUIDE.md`
+- Window capture (used by smoke test): `/desktop window`
