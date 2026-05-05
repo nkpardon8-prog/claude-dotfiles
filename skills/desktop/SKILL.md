@@ -56,11 +56,12 @@ State at `/tmp/desktop/`:
 
 | Sub-command | Purpose |
 |---|---|
-| `/desktop shot` | Capture + sidecar metadata. Foundation primitive. |
+| `/desktop shot` | Full-screen screenshot + sidecar metadata. Foundation primitive. |
+| `/desktop window <app>` | Window-only screenshot for higher-accuracy vision targeting. |
 | `/desktop click "<target>"` | Vision-guided click with Retina math + safety classifier. |
-| `/desktop type "<text>"` | Type text. Always confirms first. |
-| `/desktop key <key-or-combo>` | Press key or combo. Dialog-aware classifier. |
-| `/desktop status` | Preflight: cliclick? perms? scale? |
+| `/desktop type "<text>"` | Type text. Confirms unless under auto-pilot mode (see AGENT-GUIDE). |
+| `/desktop key <combo>` | Press key or combo. Combo-string parser (`cmd+shift+s` etc.). |
+| `/desktop status` | Preflight: cliclick? TCC? scale? Quartz? Optional `--smoke-test`. |
 | `/desktop setup` | brew install + TCC walkthrough. |
 
 ## See also
