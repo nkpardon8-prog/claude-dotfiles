@@ -1,0 +1,255 @@
+# /god-review — Multi-Model Codebase Audit Command
+
+## Overview
+
+`/god-review` is a 4-phase codebase audit command combining Claude Opus and Codex CLI reviewers across a principle-as-lens framework. It is report-only by default; an optional fix loop requires the explicit `--fix` flag.
+
+### 4-Phase Architecture
+
+| Phase | Name | What happens |
+|-------|------|-------------|
+| 0 | Context Map | Builds a shared `context-package.md`: stack fingerprint, architecture overview, hot zones, baseline gate summary. All Phase-2 agents inherit this as ground truth. |
+| 1 | Snapshot + Pre-scan | Snapshots the repo state, captures perf/test gate baselines, and pre-scans for failure-mode triggers (secrets, hallucinated deps, prompt injection). |
+| 2 | Parallel Principle Review | Spawns all principle agents + broad reviewers in a SINGLE message for true parallelism. Cross-model agreement promotes severity; a different-model validation sub-agent verifies findings before they are posted. |
+| 3 (opt-in) | Fix Loop | Triggered by `--fix`. Triages findings, uses Architect/Editor split per fix, snapshot/revert/re-verify per fix with churn detection and hard gates on irreversibles. |
+
+### Phase-2 Two-Layer Model
+
+**Layer A — Broad Reviewers (6 total):**
+- 3 Claude broad reviewers: `claude-deep-correctness`, `claude-architecture-prod`, `claude-security-resilience`
+- 3 Codex broad reviewers: `codex-cross-layer`, `codex-prod-scalability`, `codex-security-safeguards`
+
+Each Claude broad reviewer reads the ENTIRE codebase scope and is the most expensive call in the round.
+
+**Layer B — Principle Agents (up to 19 pairs):**
+Each principle runs as a Claude agent + Codex validation sub-agent pair. Principles are in `principles/` and are also runnable standalone via `--principle <name>`.
+
+---
+
+## Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--fix` | Enable Phase 3 fix loop. Without this flag, output is report-only. | off |
+| `--max-rounds N` | In bounded mode (with `--fix` but without `--loop`), cap fix rounds at N. | 5 |
+| `--loop` | Indefinite mode: run until naturally clean for 3 consecutive rounds, instability self-abort, or wall-clock cap. Requires `--fix`. | off |
+| `--max-wall-hours N` | Indefinite-mode wall-clock cap in hours. Must be > 0. | 24 |
+| `--resume` | Continue from last per-round `state.json` checkpoint. Aborts if repo state diverged from snapshot. | off |
+| `--force-resume` | Override stale-snapshot check on `--resume`. Use when you know divergence is intentional. | off |
+| `--principle <name>` | Run ONE principle standalone, skipping orchestration. Example: `--principle single-pattern`. | off |
+| `--rescope-on-fix {full\|changed}` | Phase-3 re-review scope after applying a fix. `changed` = only modified files; `full` = full codebase. Auto-promoted to `full` on no-progress rounds. | changed |
+| `--online` | Enable npm/PyPI registry checks for hallucinated-imports detection. Default is offline (local node_modules / requirements.txt checks only). | off |
+| `--codex-validation-every N` | Run a Codex validation pass every N rounds in `--loop` mode. | 3 |
+
+---
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Clean — no findings above threshold, or all findings resolved. |
+| 1 | Findings reported — report-only mode completed with unresolved findings. |
+| 2 | Fix loop hit max rounds — bounded fix loop exhausted `--max-rounds` cap. |
+| 3 | Fix loop frozen — no net progress across consecutive rounds (churn ledger triggered). |
+| 4 | Instability self-abort — oscillation detected across fix rounds; reverted to last clean snapshot. |
+| 5 | Wall-clock cap — `--loop` mode hit `--max-wall-hours` limit. |
+| 6 | Corrupt `state.json` on `--resume` — checkpoint file is unreadable or schema-invalid. |
+| 7 | Stale snapshot on `--resume` — repo state diverged from checkpoint; use `--force-resume` to override. |
+
+---
+
+## Output Paths
+
+All outputs are relative to the project root (the directory where `/god-review` is invoked):
+
+| Path | Description |
+|------|-------------|
+| `tmp/god-review/context-package.md` | Phase 0 shared context map — stack fingerprint, architecture, hot zones, baseline gates. |
+| `tmp/god-review/round-N-findings.md` | Per-round audit trail (Phase 3 fix loop only). One file per round. |
+| `tmp/god-review/report.md` | Final sectioned report: Critical / Gaps / Important / Assumptions / Contradictions / Minor / Meta. Includes per-finding provenance (which principle, which model, confidence tag). |
+| `tmp/god-review/state.json` | Persistent state: repo snapshot SHA, churn ledger, frozen units, kept/reverted fixes, round count, wall-clock start. |
+| `tmp/god-review/perf-baseline.json` | Phase 1 benchmark baseline (only created if `HAS_BENCH_SCRIPT` is detected). |
+| `tmp/god-review/perf-current.json` | Per-fix benchmark capture in Phase 3, compared against baseline. |
+
+---
+
+## `--fix` Utility Warning
+
+AUTO_FIX is **intentionally narrow**. A fix is auto-applied only when ALL of the following hold:
+
+1. The change is confined to a single file.
+2. The change is non-irreversible (can be snapshot-reverted without data loss).
+3. The change does not touch any test file.
+4. The change does not touch any CI YAML file.
+5. The change does not touch any hard-gated path (see Hard Gates below).
+
+In practice, most findings are architectural, structural, or multi-file. **Expect `--fix` to auto-apply 10–30% of findings.** The rest appear as `HUMAN_GATE` diffs in `report.md` for manual review. Do not expect `--fix` to handle 90% of findings; that expectation leads to disappointment and over-trust of automated patching.
+
+---
+
+## `--loop` Cost Warning
+
+Indefinite mode runs Phase 2 (~46 agents per round):
+- 3 Claude broad reviewers (each reviews the ENTIRE codebase scope — most expensive calls)
+- 3 Codex broad reviewers
+- Up to 19 principle pairs (Claude + Codex sub-agent each)
+
+**Round time: 15–30 minutes** with single-account Codex serialization.
+
+**24h cap = 48–96 rounds = potentially 2,200–4,400 agent invocations.**
+
+To halve round time: set `CODEX_HOME_1` and `CODEX_HOME_2` environment variables to two separate `~/.codex` profile directories. The `lib/codex-invoke.sh` script alternates between them, eliminating most serialization overhead.
+
+```bash
+export CODEX_HOME_1=~/.codex-account1
+export CODEX_HOME_2=~/.codex-account2
+```
+
+**Always pass an explicit `--max-wall-hours` when using `--loop`.** The default 24h cap is intentionally conservative. For most audits, 4–8 hours is sufficient:
+
+```bash
+/god-review --fix --loop --max-wall-hours 6
+```
+
+---
+
+## `--loop` Repo Restrictions
+
+`--loop` is **forbidden on the `~/.claude-dotfiles/` repo**.
+
+The dotfiles repo has an auto-push hook that commits and pushes every change. Running `--loop` (which implies `--fix`) would push N broken-state commits to the remote — one per fix attempt per round. This corrupts the dotfiles history and can push half-applied changes.
+
+**Rule:** Run `/god-review --fix --loop` only on:
+- A project repo with no auto-push hook, OR
+- A worktree branch you can review and squash before merging
+
+Self-test on the dotfiles repo is report-only (Phase 0–2, no `--fix`, no `--loop`).
+
+---
+
+## `--resume` Semantics
+
+After a Ctrl-C, system reboot, or agent timeout, resume from the last checkpoint:
+
+```bash
+/god-review --fix --loop --resume
+```
+
+The checkpoint is `tmp/god-review/state.json`. It stores the repo snapshot SHA taken at Phase 1. On `--resume`, the command checks whether the current repo HEAD matches the snapshot. If it has diverged (e.g., you made commits while the loop was paused), you will be prompted to use `--force-resume`:
+
+```bash
+/god-review --fix --loop --resume --force-resume
+```
+
+`--force-resume` skips the stale-snapshot check and continues from the ledger state. Use only when you understand how the interim commits interact with the pending findings.
+
+---
+
+## Self-Test Guidance
+
+**Smoke test (Phase 0–2 only, report-only mode):**
+
+```bash
+cd ~/.claude-dotfiles
+/god-review
+```
+
+Expected: `tmp/god-review/report.md` exists, contains all expected sections (Critical / Gaps / Important / Assumptions / Contradictions / Minor / Meta), zero or more findings (any count acceptable — the dotfiles repo is markdown-heavy; most code-shaped lenses produce zero findings). No agent crashes.
+
+**E2E validation on a JS/TS project:**
+
+```bash
+bash ~/.claude-dotfiles/commands/god-review/lib/e2e-test.sh
+```
+
+This generates a synthetic test project at `/tmp/god-review-e2e-test-<pid>/` with intentional violations across 6+ principles. Follow the printed instructions to run `/god-review` against it and verify findings. See `lib/e2e-test.sh` for the full expected-findings checklist.
+
+---
+
+## Cleanup After Fix Loop
+
+After N fix-loop rounds, god-review leaves N commits (one per applied fix). To squash them into a single reviewed commit:
+
+```bash
+# Squash the last N god-review commits into one
+git reset --soft HEAD~N && git commit -m "god-review: apply fixes"
+```
+
+Replace N with the actual round count shown in the final report summary.
+
+---
+
+## Hard Gates — Never Auto-Applied
+
+These paths and patterns are **always** `HUMAN_GATE`, regardless of `--fix`. The command will propose a diff in `report.md` but will never write the file:
+
+**Schema and data:**
+- `schema.ts`, `*.sql`, `migrations/**` — database schema migrations
+
+**Auth and security:**
+- `auth/**`, `middleware/auth*`, any file matching `requireAuth`, `withAuth`, or `@authenticated`
+
+**Package manifests:**
+- `package.json`, `requirements.txt`, `Cargo.toml`, `go.mod`, `Gemfile`
+
+**Environment and secrets:**
+- `.env*` files, any line containing a secret value
+
+**CI/CD:**
+- All paths matched by the `ci-yaml-tampering.md` lens (`.github/**`, `.gitlab-ci.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, `circleci/**`, etc.)
+
+**Tests:**
+- All paths matched by the `test-deletion.md` lens (`*.test.*`, `*.spec.*`, `__tests__/**`, `tests/**`, `test/**`, `cypress/**`, `e2e/**`, `jest.config.*`, `vitest.config.*`)
+
+**Quarantine:**
+- `_deprecated/**`, any dead-code quarantine moves
+
+---
+
+## Extension Guide — How to Add a New Principle
+
+1. **Create `principles/<name>.md`** following the template structure:
+   - Frontmatter: `allowed-tools`, `description`
+   - 5 phases: Gather Context, Identify Candidates, Deep Analysis, Generate Report, Output
+   - Scoring Criteria section with confidence levels and severity ratings
+   - "Why This Matters" section with concrete impact examples
+   - "Known Issues / False Positive Patterns" section
+
+2. **Reference `CRITERIA.md`** for canonical confidence/severity definitions. Thresholds are principle-specific — a LIKELY in `secret-leak` is more urgent than a LIKELY in `documentation`. Don't copy severity definitions inline; reference the file.
+
+3. **Add to `CRITERIA.md` principle index table:** specify Tier (1 = always runs, 2 = stack-gated), whether it is a stack gate trigger, and whether it participates in cross-model promotion.
+
+4. **Add to the orchestrator's `active_principles` list** in `~/.claude-dotfiles/commands/god-review.md`.
+
+5. **Stack-gated principles:** if the principle only applies to certain stacks (e.g., `tanstack-query` applies only when `@tanstack/react-query` is detected), add the detection variable to the Phase 0 `stack-detect` bash block in the orchestrator. The principle's Phase 1 step should exit early with `STACK_GATE: not applicable` when the detection variable is unset.
+
+6. **Test standalone:**
+   ```bash
+   /god-review --principle <name>
+   # or invoke directly as a slash command:
+   /god-review:principles:<name>
+   ```
+
+---
+
+## Architecture Summary
+
+```
+/god-review (orchestrator at commands/god-review.md)
+├── Phase 0: context-package.md (stack fingerprint, architecture map)
+├── Phase 1: state.json snapshot, perf baseline, pre-scan triggers
+├── Phase 2: parallel spawn (single message)
+│   ├── Layer A: broad-reviewers/ (3 Claude + 3 Codex)
+│   └── Layer B: principles/ (up to 19 × Claude+Codex pairs)
+├── Phase 3 (--fix): lib/editor-agent.md per fix
+│   └── snapshot → fix → re-verify → keep/revert → churn-ledger check
+└── Outputs: tmp/god-review/{context-package,report,state,round-N-findings}.md
+```
+
+Key supporting files:
+- `CRITERIA.md` — single source of truth for severity/confidence definitions and principle index
+- `lib/codex-invoke.sh` — Codex CLI invocation with optional 2-account threading
+- `lib/editor-agent.md` — Editor sub-agent spawned by Phase 3 for atomic single-file fixes
+- `lib/e2e-test.sh` — Synthetic test project generator for E2E regression testing
+
+**Reference:** Plan at `tmp/ready-plans/2026-05-04-god-review-command.md` · Memory files at `~/.claude/projects/-Users-omidzahrai/memory/god_review_*.md`
