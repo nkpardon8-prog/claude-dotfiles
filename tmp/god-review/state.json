@@ -1,0 +1,17 @@
+{
+  "snapshot": {"ref": "ae5d2cc9e1741efe6b3ebe0cef26605abccbfc7c", "reftype": "commit"},
+  "churn_ledger": {},
+  "frozen_units": [],
+  "false_positives": [],
+  "round": 0,
+  "consecutive_no_change_rounds": 0,
+  "consecutive_clean_rounds": 0,
+  "architect_malformed_count": 0,
+  "started_at_iso": "2026-05-05T18:46:41Z",
+  "elapsed_hours": 0.0,
+  "loop_mode": false,
+  "max_wall_hours": 24,
+  "finding_history_hashes": [],
+  "kept_fixes": [],
+  "reverted_fixes": []
+}
