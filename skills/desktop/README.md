@@ -19,22 +19,23 @@
 ```
 ~/.claude-dotfiles/
 ├── commands/
-│   ├── desktop.md          (dispatcher)
+│   ├── desktop.md          (dispatcher — tool hierarchy + routing)
 │   └── desktop/
-│       ├── shot.md         (capture + sidecar)
-│       ├── click.md        (vision-guided click)
-│       ├── type.md         (type text, confirms first)
-│       ├── key.md          (key press, dialog-aware)
-│       ├── status.md       (preflight)
+│       ├── shot.md         (full-screen capture + sidecar)
+│       ├── window.md       (window-only capture for focused vision targeting)
+│       ├── click.md        (vision-guided click with Retina math)
+│       ├── type.md         (type text)
+│       ├── key.md          (key press / combo — dialog-aware)
+│       ├── status.md       (preflight + optional smoke test)
 │       └── setup.md        (one-time onboarding)
 └── skills/desktop/
-    ├── SKILL.md            (capability map)
+    ├── SKILL.md            (capability map + channel matrix)
     ├── README.md           (this file)
-    └── docs/AGENT-GUIDE.md (operational rules: Retina, safety, verify)
+    └── docs/AGENT-GUIDE.md (operational rules: tiers, Retina, safety, AppleScript recipes, parser, auto-pilot, recovery, smoke test)
 
 ~/.claude/commands/         (auto-mirrored from dotfiles via hook; the running CLI reads here)
 ├── desktop.md
-└── desktop/{shot,click,type,key,status,setup}.md
+└── desktop/{shot,window,click,type,key,status,setup}.md
 ```
 
 Skills are NOT mirrored to `~/.claude/` — referenced by absolute path from the command files.
