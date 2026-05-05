@@ -58,6 +58,7 @@ If you've decided vision-click is the right tier, here's how to pick the sub-com
 
 ## Hard rules
 
+- **NEVER ask the user which sub-command to use.** The user types `/desktop <free-form description>` or describes the task in plain English ("send Arezu 'bruh'", "click the Allow button", "screenshot Chrome"). YOU pick the tier and sub-command from the Tool hierarchy + Routing table above. Sub-commands (`shot`, `window`, `click`, `type`, `key`, `status`, `setup`) are internal primitives, not required user syntax. Only mention a sub-command name to the user when reporting what you did.
 - **Try higher tiers first.** Don't reach for vision-click when `osascript` would do it in one line.
 - **Always re-snap before clicking.** Stale screenshots (> 2s by `last.json.timestamp_ms`, validated as integer) → `/desktop shot` or `/desktop window` first.
 - **Retina math is mandatory.** `x_logical = round(x_pixel / scale)`. Forgetting it misses by half on Retina (the #1 failure mode).
