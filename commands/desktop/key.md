@@ -10,7 +10,11 @@ Press a key or combo. Dialog-aware safety.
 ## Steps
 
 1. **Take a fresh screenshot** (or use one if < 2s old by `last.json.timestamp_ms`):
-   - Read `/tmp/desktop/last.json` if present; if missing or stale, run `/desktop shot`.
+   - Read `/tmp/desktop/last.json` if present.
+   - **Validate `timestamp_ms` is an integer.** If missing, `null`, or non-integer (e.g. `%3N` regression), treat as stale.
+   - If missing or stale → run `/desktop shot`.
+
+   **Combo input parsing:** if the user supplied a combo-string like `cmd+shift+s`, translate to cliclick syntax via the parser at `~/.claude-dotfiles/skills/desktop/docs/AGENT-GUIDE.md` → "Combo-string parser". The parser handles edge cases (empty input, unknown modifiers, bare modifiers, symbols).
 
 2. **Vision-detect:** is a dialog/modal/sheet visible on screen?
 
