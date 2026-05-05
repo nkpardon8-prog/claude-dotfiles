@@ -234,6 +234,10 @@ Use the `Agent` tool 4 times in one response. Each agent gets a fully self-conta
 ### Agent output format instructions (include in every agent prompt):
 
 ```
+Stance: Lean fully into your assigned lens. Don't dilute it by covering
+angles the other 3 lenses are responsible for. State your lens's concerns
+directly without hedging — the meta-review pass will calibrate.
+
 For EVERY finding, include:
 - Confidence tag: [definite], [likely], or [investigate]
 - Category: one of BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, FRAGILITY

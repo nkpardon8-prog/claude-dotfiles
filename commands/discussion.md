@@ -57,6 +57,12 @@ Relevant codebase context discovered during the discussion — files, patterns, 
 ## Rejected Alternatives
 - [Alternative] — [why it was rejected]
 
+## Where Reasoning Clashed
+Genuine disagreements during the discussion that did not collapse into a single answer — present both sides and explain why a reasonable person could go either way. Empty if there were no real clashes.
+
+## One Thing to Do First
+A single concrete next step. Not a list. The smallest action that moves this forward.
+
 ## Direction
 [1-3 sentences describing the agreed approach going forward]
 ```

@@ -89,7 +89,44 @@ Task tool (call 2, sent in the same message as call 1):
    - If only one raised it → keep it, mark as `(reviewer 1)` or `(reviewer 2)`
    - Dedupe near-duplicates by topic, not by exact wording
 
-2. **Present the merged review summary to the user.** Provide the user with:
+2. **Anonymized peer-review meta-pass.**
+
+   Skip this entire item if either reviewer's Task call failed or returned empty content — fall back to presenting the merged review as before (preserves existing feel when degraded).
+
+   - Decide A/B assignment by simple non-positional ordering: if `($(date +%s) % 2) == 0` then reviewer-1 → Review A and reviewer-2 → Review B, else swap. The meta-agent never sees the reviewer-1/reviewer-2 mapping.
+
+   - Spawn ONE additional plan-reviewer sub-agent in the same Task-tool style as the existing two reviewers in step 1:
+
+   ```
+   Task tool:
+     subagent_type: "plan-reviewer"
+     prompt: "Two reviewers independently reviewed the plan at [path].
+              Their full anonymized outputs are below as Review A and Review B
+              (the same numbered findings format the parallel reviewers produced).
+              Answer:
+              (a) Which review (A or B) raises the strongest concern, and why?
+              (b) Which review (A or B) has the biggest blind spot, and what is it?
+              (c) What did BOTH reviews miss that matters for this plan?
+              Reference reviews by their wrapper letter (A/B) and individual
+              findings by the reviewer's own numbering (e.g. 'Review A finding #3').
+              Keep under 250 words.
+
+              Review A:
+              [paste full text of one reviewer's numbered findings here]
+
+              Review B:
+              [paste full text of the other reviewer's numbered findings here]"
+   ```
+
+   The `[path]` placeholder uses the same literal-placeholder convention as the two parallel reviewer prompts above — the orchestrator substitutes the actual saved-plan path at runtime.
+
+   - If the meta-pass agent fails or times out: skip silently and proceed to step 3 with only the merged review (preserves existing behavior).
+
+   - The meta-pass output is rendered to the user inside step 3 (Present the merged review summary) as a single bold-prose section placed BEFORE existing sub-item a) Plan Summary. Format as: `**Meta-pass:** [the meta-agent's response, lightly formatted]`. Use bold prose, NOT a level-2 H2 heading — H2 inside a numbered list item conflicts with the file's H2 hierarchy.
+
+3. **Present the merged review summary to the user.** Provide the user with:
+
+   **Meta-pass:** When the meta-pass from step 2 produced output, paste it here as the first thing the user sees in this presentation, formatted as a single paragraph or short bullet list. Skip this prefix if step 2 was skipped.
 
    **a) Plan Summary** — Summarize the key points of the plan in 3-5 bullet points so the user can quickly recall what the plan covers without re-reading it.
 
@@ -104,11 +141,11 @@ Task tool (call 2, sent in the same message as call 1):
 
    **d) Questions** — Ask the user whether they want to incorporate, skip, or modify each recommendation.
 
-3. **Update the plan** based on the user's decisions. Save the updated file.
+4. **Update the plan** based on the user's decisions. Save the updated file.
 
-4. **Check with the user**: Ask if the plan is ready or if they want another review pass.
+5. **Check with the user**: Ask if the plan is ready or if they want another review pass.
    - If ready → exit the loop, proceed to Step 5.
-   - Otherwise → go back to step 1 with a fresh plan-reviewer.
+   - Otherwise → go back to loop step 1 with a fresh plan-reviewer.
 
 ### Important:
 - Each review pass uses a **fresh plan-reviewer** so it evaluates the current state without bias.
