@@ -21,6 +21,7 @@ This command has 4 phases:
 Parse `$ARGUMENTS` for all supported flags:
 
 ```bash
+set -o pipefail
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # --- Argument parsing ---
@@ -911,24 +912,68 @@ If Codex unavailable: spawn a second Claude Agent tool call (different instance,
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 GATES_PASS=true
+GATE_FAIL_REASON=""
 if [ -f package.json ]; then
-  echo "=== typecheck ===" && npm run typecheck 2>&1 | tail -20 || GATES_PASS=false
-  echo "=== lint ===" && npm run lint 2>&1 | tail -20 || GATES_PASS=false
+  echo "=== typecheck ==="
+  if ! npm run typecheck > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="typecheck"
+  fi
+  tail -20 /tmp/gate-output.txt
+  echo "=== lint ==="
+  if ! npm run lint > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}lint"
+  fi
+  tail -20 /tmp/gate-output.txt
   # Build is optional — some projects don't have a build script
-  npm run build 2>&1 | tail -10 || true
+  npm run build > /tmp/gate-output.txt 2>&1 || true
+  tail -10 /tmp/gate-output.txt
   # Tests — run if script exists
-  npm run test -- --passWithNoTests 2>&1 | tail -20 || GATES_PASS=false
+  echo "=== tests ==="
+  if ! npm run test -- --passWithNoTests > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}test"
+  fi
+  tail -20 /tmp/gate-output.txt
 elif [ -f Cargo.toml ]; then
-  cargo check 2>&1 | tail -20 || GATES_PASS=false
-  cargo test 2>&1 | tail -20 || GATES_PASS=false
+  echo "=== cargo check ==="
+  if ! cargo check > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="cargo-check"
+  fi
+  tail -20 /tmp/gate-output.txt
+  echo "=== cargo test ==="
+  if ! cargo test > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}cargo-test"
+  fi
+  tail -20 /tmp/gate-output.txt
 elif [ -f go.mod ]; then
-  go vet ./... 2>&1 | tail -20 || GATES_PASS=false
-  go test ./... 2>&1 | tail -20 || GATES_PASS=false
+  echo "=== go vet ==="
+  if ! go vet ./... > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="go-vet"
+  fi
+  tail -20 /tmp/gate-output.txt
+  echo "=== go test ==="
+  if ! go test ./... > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}go-test"
+  fi
+  tail -20 /tmp/gate-output.txt
 elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
-  python3 -m mypy . 2>&1 | tail -20 || true  # mypy non-fatal
-  python3 -m pytest 2>&1 | tail -20 || GATES_PASS=false
+  echo "=== mypy ==="
+  python3 -m mypy . > /tmp/gate-output.txt 2>&1 || true  # mypy non-fatal
+  tail -20 /tmp/gate-output.txt
+  echo "=== pytest ==="
+  if ! python3 -m pytest > /tmp/gate-output.txt 2>&1; then
+    GATES_PASS=false
+    GATE_FAIL_REASON="pytest"
+  fi
+  tail -20 /tmp/gate-output.txt
 fi
-echo "Gates: $GATES_PASS"
+echo "Gates: $GATES_PASS${GATE_FAIL_REASON:+ (failed: $GATE_FAIL_REASON)}"
 ```
 
 **6. Regression detectors (run BEFORE deciding keep/revert):**
