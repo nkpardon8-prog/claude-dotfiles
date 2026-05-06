@@ -36,10 +36,11 @@ This lens runs ONLY if `HAS_BENCH_SCRIPT` is non-empty. It self-skips silently o
 ## Phase 1: Gather Context and Detect Bench Script
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
+
 # Load shared context if available
 [ -f tmp/god-review/context-package.md ] && cat tmp/god-review/context-package.md | head -80
-
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 
 # Detect HAS_BENCH_SCRIPT
 HAS_BENCH_SCRIPT=""
@@ -323,7 +324,7 @@ mkdir -p tmp/god-review/principles
 
 ## Scoring Criteria
 
-See CRITERIA.md for confidence/severity definitions. The thresholds below are principle-specific.
+See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
 - **PASS**: All benchmarks within ±5% of baseline. Or: report-only mode with baseline captured successfully.
 - **WARN**: Stack gate passed but baseline cannot be captured (bench script fails to run, output unparseable).

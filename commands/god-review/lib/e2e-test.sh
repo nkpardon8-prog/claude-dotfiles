@@ -133,7 +133,10 @@ echo "    5. secret-leak (sk- key in leaks-secret.ts matches .env)"
 echo "    6. hallucinated-imports (this-package-does-not-exist-987654 in uses-nonexistent.ts)"
 echo ""
 echo "=== Test directory will auto-cleanup on script exit ==="
-echo "=== To preserve, copy elsewhere first ==="
+echo "=== Set KEEP_TEST_DIR=true to preserve it instead ==="
 
-# Hold the test dir for inspection (user can ctrl-c to clean up)
-read -p "Press Enter to cleanup, or Ctrl-C to keep $TEST_DIR..."
+# Optional: keep test dir for inspection by setting KEEP_TEST_DIR=true.
+if [ "${KEEP_TEST_DIR:-false}" = "true" ]; then
+  echo "Keeping test dir at $TEST_DIR (KEEP_TEST_DIR=true)"
+  trap - EXIT  # disable the cleanup trap
+fi

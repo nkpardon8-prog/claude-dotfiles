@@ -104,8 +104,10 @@ Reference: `~/.claude/projects/-Users-omidzahrai/memory/god_review_problems.md` 
 - Get scope: `$ARGUMENTS` or frontend files from `git diff main...HEAD --name-only`
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 git rev-parse --abbrev-ref HEAD
-git diff main...HEAD --name-only 2>/dev/null | grep -E '\.(ts|tsx)$' | head -100 || true
+git diff main...HEAD --name-only 2>/dev/null | grep -E '\.(tsx|ts)$' | head -100 || true
 git diff main...HEAD 2>/dev/null || true
 ```
 

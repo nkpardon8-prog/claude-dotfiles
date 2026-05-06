@@ -25,10 +25,11 @@ Comments, documentation, fixture files, and any text an AI agent reads while rev
 ## Phase 1: Gather Context
 
 ```bash
-# Load shared context if available
-[ -f tmp/god-review/context-package.md ] && cat tmp/god-review/context-package.md | head -80
-
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
+
+# Load shared context if available
+[ -f tmp/god-review/context-package.md ] && head -80 tmp/god-review/context-package.md
 
 # Show what paths to scan
 find "$WORKDIR" -maxdepth 2 \( -name "*.md" -o -name "*.txt" \) -not -path "*/.git/*" -not -path "*/node_modules/*" | head -20
@@ -185,7 +186,7 @@ mkdir -p tmp/god-review/principles
 
 ## Scoring Criteria
 
-See CRITERIA.md for confidence/severity definitions. The thresholds below are principle-specific.
+See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
 - **PASS**: No injection patterns found in comments, README files, fixtures, or markdown.
 - **LIKELY**: Any pattern match found — default severity because legitimate documentation about prompt injection exists and coincidental overlaps occur.

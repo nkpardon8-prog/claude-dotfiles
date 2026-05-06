@@ -25,8 +25,11 @@ CI/CD pipeline files, pre-commit hooks, and build gate configurations must never
 ## Phase 1: Gather Context
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
+
 # Load shared context if available
-[ -f tmp/god-review/context-package.md ] && cat tmp/god-review/context-package.md | head -80
+[ -f tmp/god-review/context-package.md ] && head -80 tmp/god-review/context-package.md
 
 # Read AGENTS.md / CLAUDE.md for CI patterns
 find . -maxdepth 2 \( -name "AGENTS.md" -o -name "CLAUDE.md" \) -print 2>/dev/null | head -5 | xargs -I{} cat {}
@@ -42,8 +45,11 @@ Use TodoWrite to log each candidate CI file modification.
 
 ### 2.1 Modified CI/CD Files
 
+CI path patterns are sourced from the single canonical list:
+`~/.claude-dotfiles/commands/god-review/lib/hard-gates.txt` (CI/CD section).
+
 ```bash
-# Check for any modification (Added, Modified, Deleted, Renamed, Copied) to known CI paths
+# Check for any modification to known CI paths (patterns from lib/hard-gates.txt CI section)
 git diff --name-only HEAD 2>/dev/null | grep -E '^\.(github/workflows/.*\.ya?ml|gitlab-ci\.ya?ml|circleci/config\.ya?ml)$|^azure-pipelines.*\.ya?ml$|^bitbucket-pipelines\.ya?ml$|^Jenkinsfile(\..*)?$|^\.(pre-commit-config\.ya?ml|husky/)' || true
 
 # Also catch files added freshly that match CI patterns (A = added)
@@ -56,7 +62,7 @@ git diff --name-only HEAD 2>/dev/null | grep -E '^\.(github|gitlab|circleci)/' |
 ### 2.2 Pre-commit and Hook Configurations
 
 ```bash
-# Pre-commit configs
+# Pre-commit configs (from lib/hard-gates.txt)
 git diff --name-only HEAD 2>/dev/null | grep -E '^\.(pre-commit-config\.ya?ml|pre-commit-hooks\.ya?ml)$' || true
 
 # Husky hooks (any file inside .husky/)
@@ -65,6 +71,9 @@ git diff --name-only HEAD 2>/dev/null | grep -E '^\.(husky/)' || true
 # Lefthook, lint-staged, commitlint
 git diff --name-only HEAD 2>/dev/null | grep -E '^(lefthook\.ya?ml|\.lefthook\.ya?ml|lint-staged\.config\.(js|ts|cjs|mjs)|commitlint\.config\.(js|ts|cjs|mjs)|\.commitlintrc\.(js|ya?ml|json))$' || true
 ```
+
+The canonical CI/CD path list lives in `~/.claude-dotfiles/commands/god-review/lib/hard-gates.txt`.
+If you find a CI path not covered by the patterns above, verify it is in that file — do not add it inline here.
 
 ### 2.3 Deep Inspection of Flagged Files
 
@@ -160,7 +169,7 @@ mkdir -p tmp/god-review/principles
 
 ## Scoring Criteria
 
-See CRITERIA.md for confidence/severity definitions. The thresholds below are principle-specific.
+See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
 - **PASS**: No CI/CD configuration files modified in the diff.
 - **FAIL**: Any modification to any file matching the CI/CD path patterns — added, modified, deleted, or renamed.

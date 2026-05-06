@@ -25,13 +25,14 @@ Certain code patterns reliably indicate performance problems without needing a b
 ## Phase 1: Gather Context
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
+
 # Load shared context if available
-[ -f tmp/god-review/context-package.md ] && cat tmp/god-review/context-package.md | head -80
+[ -f tmp/god-review/context-package.md ] && head -80 tmp/god-review/context-package.md
 
 # Read AGENTS.md / CLAUDE.md for hot-path conventions
 find . -maxdepth 2 \( -name "AGENTS.md" -o -name "CLAUDE.md" \) -print 2>/dev/null | head -5 | xargs -I{} cat {}
-
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 
 # Detect stack
 ls "$WORKDIR/package.json" 2>/dev/null && echo "NODE=yes"
@@ -221,7 +222,7 @@ mkdir -p tmp/god-review/principles
 
 ## Scoring Criteria
 
-See CRITERIA.md for confidence/severity definitions. The thresholds below are principle-specific.
+See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
 - **PASS**: No nested loops with non-constant bounds in hot paths, no synchronous I/O in request/event handlers, no unguarded expensive computations in React renders.
 - **WARN**: Any of the above patterns found after verification. All findings are `likely` confidence — they are heuristic signals, not confirmed performance bugs.

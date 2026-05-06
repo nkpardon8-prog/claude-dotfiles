@@ -25,10 +25,11 @@ Secret values — API keys, tokens, passwords, signing secrets — must never ap
 ## Phase 1: Gather Context
 
 ```bash
-# Load shared context if available
-[ -f tmp/god-review/context-package.md ] && cat tmp/god-review/context-package.md | head -80
-
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
+
+# Load shared context if available
+[ -f tmp/god-review/context-package.md ] && head -80 tmp/god-review/context-package.md
 
 # Find all .env files (including .env.local, .env.production, .env.example, etc.)
 find "$WORKDIR" -maxdepth 3 -name ".env*" -not -path "*/.git/*" -not -path "*/node_modules/*" 2>/dev/null
@@ -219,7 +220,7 @@ mkdir -p tmp/god-review/principles
 
 ## Scoring Criteria
 
-See CRITERIA.md for confidence/severity definitions. The thresholds below are principle-specific.
+See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
 - **PASS**: No `.env` secret values (≥16 chars or matching known prefixes) appear in any non-`.env*` tracked file. No high-entropy (>4.5 bits/char) strings matching known API key patterns found in non-test source files.
 - **FAIL**: Any `.env` value matching criteria found in source code, OR any high-entropy string with a known key-pattern prefix found in non-test tracked source.

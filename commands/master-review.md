@@ -6,6 +6,8 @@ model: opus
 
 # Master Review — Autonomous Review & Fix Pipeline
 
+> **Note (2026-05-05):** `/master-review` is superseded by `/god-review`, which adds 23 principle lenses + a `--ruthless` redteam reviewer + cross-block var persistence. `/master-review` continues to work; new audits should prefer `/god-review`.
+
 ## Engines
 
 - **Review — OpenAI Codex CLI (GPT-5.4):** 3 parallel agents in Phase 1, 2 parallel agents in every Phase 3 verification round. Invoked via `codex exec -s read-only --ephemeral` so Codex can read the repo but never writes.

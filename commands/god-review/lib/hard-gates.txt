@@ -1,0 +1,62 @@
+# Hard gates — files NEVER auto-modified by /god-review --fix.
+# Read by orchestrator (Phase 3 triage), editor-agent.md (defense-in-depth), README.md.
+# DO NOT inline this list anywhere else.
+# Patterns are globs; orchestrator converts to regex via glob_to_regex (see god-review.md).
+
+# Schema migrations
+migrations/**
+db/migrate/**
+*.migration.ts
+*_migration.go
+*.sql
+
+# Dependency manifests
+package.json
+requirements.txt
+Cargo.toml
+go.mod
+Pipfile
+Gemfile
+pom.xml
+build.gradle
+build.gradle.kts
+
+# Environment / secrets
+.env
+.env.*
+*secrets*
+*credentials*
+
+# CI/CD
+.github/workflows/**.yml
+.gitlab-ci.yml
+.circleci/config.yml
+azure-pipelines*.yml
+bitbucket-pipelines.yml
+Jenkinsfile*
+.pre-commit-config.yaml
+.husky/**
+
+# Test files
+*.test.*
+*.spec.*
+*_test.go
+test_*.py
+tests/**
+__tests__/**
+spec/**
+*_spec.rb
+*_test.rb
+
+# Auth (path-based heuristic)
+**/auth/**
+**/middleware/auth*
+middleware.ts
+
+# Build/runtime config
+next.config.*
+Dockerfile
+docker-compose*.yml
+
+# Already quarantined
+_deprecated/**

@@ -32,6 +32,8 @@ Reference: `~/.claude/projects/-Users-omidzahrai/memory/god_review_problems.md` 
 - Get scope: `$ARGUMENTS` or full repo via git diff stats
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 git rev-parse --abbrev-ref HEAD
 git diff main...HEAD --stat 2>/dev/null || true
 git diff main...HEAD --name-only 2>/dev/null || true

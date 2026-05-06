@@ -4,6 +4,8 @@ description: Run comprehensive code review spawning parallel agents for each of 
 
 # /review:all - Comprehensive Code Review
 
+> **Note (2026-05-05):** principles in this command have been ported and extended to `/god-review:principles:*` with stack-gating, severity promotion, and 4 new failure-class detectors (dead-end, info-loss, contradiction, gap). New audits should prefer `/god-review` or its standalone principle commands.
+
 You are orchestrating a code review that checks 11 core principles in parallel. Each principle is checked by a dedicated subagent.
 
 **Individual principle commands** (can be run standalone):

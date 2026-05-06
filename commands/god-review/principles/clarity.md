@@ -30,8 +30,10 @@ Reference: `~/.claude/projects/-Users-omidzahrai/memory/god_review_problems.md` 
 - Get scope: `$ARGUMENTS` or full repo via `git diff main...HEAD --name-only` or full file list
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 git rev-parse --abbrev-ref HEAD
-git diff main...HEAD --name-only 2>/dev/null || find . -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.go" -o -name "*.rs" | grep -v node_modules | grep -v .git | head -200
+git diff main...HEAD --name-only 2>/dev/null || find . -name "*.tsx" -o -name "*.ts" -o -name "*.jsx" -o -name "*.js" -o -name "*.py" -o -name "*.go" -o -name "*.rs" | grep -v node_modules | grep -v .git | head -200
 git diff main...HEAD 2>/dev/null || true
 ```
 

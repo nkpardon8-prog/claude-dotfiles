@@ -61,6 +61,8 @@ Reference: `~/.claude/projects/-Users-omidzahrai/memory/god_review_problems.md` 
 - Get scope: `$ARGUMENTS` or frontend files from `git diff main...HEAD --name-only`
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 git rev-parse --abbrev-ref HEAD
 # Frontend files only — adjust pattern for this project's structure
 git diff main...HEAD --name-only 2>/dev/null | grep -E "(app/|webapp/|frontend/|web/|client/)" | head -100 || true

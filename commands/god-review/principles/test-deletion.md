@@ -25,14 +25,17 @@ Test files must never be deleted or significantly shrunk as a side-effect of cod
 ## Phase 1: Gather Context
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
+
 # Load shared context if available
-[ -f tmp/god-review/context-package.md ] && cat tmp/god-review/context-package.md | head -80
+[ -f tmp/god-review/context-package.md ] && head -80 tmp/god-review/context-package.md
 
 # Read AGENTS.md / CLAUDE.md for known test patterns
 find . -maxdepth 2 \( -name "AGENTS.md" -o -name "CLAUDE.md" \) -print 2>/dev/null | head -5 | xargs -I{} cat {}
 
 # Determine scope
-SCOPE="${ARGUMENTS:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+SCOPE="${ARGUMENTS:-$WORKDIR}"
 echo "Scope: $SCOPE"
 
 # Show current branch and base
@@ -48,7 +51,8 @@ Use TodoWrite to log each candidate test-file deletion or shrinkage to investiga
 
 ```bash
 # Find deleted test files in the diff (D = deleted)
-git diff --diff-filter=D --name-only HEAD 2>/dev/null | grep -E '\.(test|spec)\.(js|ts|jsx|tsx|py|rb|go|java|rs|cpp|c)$|_test\.(go|py|rb|cpp|c)$|test_.*\.(py|rb)$' || true
+# Includes Ruby *_spec.rb and *_test.rb patterns
+git diff --diff-filter=D --name-only HEAD 2>/dev/null | grep -E '\.(test|spec)\.(js|ts|jsx|tsx|py|rb|go|java|rs|cpp|c)$|_test\.(go|py|rb|cpp|c)$|test_.*\.(py|rb)$|_spec\.rb$|_test\.rb$' || true
 
 # Also catch test directories
 git diff --diff-filter=D --name-only HEAD 2>/dev/null | grep -E '^(tests|__tests__|spec|__spec__|test)/' || true
@@ -61,20 +65,23 @@ git diff --diff-filter=D --name-only HEAD 2>/dev/null | grep -E '(tests/|__tests
 
 ```bash
 # Get line count changes for test-related files (additions deletions filename)
-git diff --numstat HEAD 2>/dev/null | grep -E '\.(test|spec)\.(js|ts|jsx|tsx|py|rb|go|java|rs|cpp|c)$|_test\.(go|py|rb|cpp|c)$|test_.*\.(py|rb)$|(tests|__tests__|spec|test)/' | while read additions deletions filename; do
+# Includes Ruby *_spec.rb and *_test.rb patterns
+git diff --numstat HEAD 2>/dev/null | grep -E '\.(test|spec)\.(js|ts|jsx|tsx|py|rb|go|java|rs|cpp|c)$|_test\.(go|py|rb|cpp|c)$|test_.*\.(py|rb)$|_spec\.rb$|_test\.rb$|(tests|__tests__|spec|test)/' | while read additions deletions filename; do
   # Skip binary files (shown as -)
   [ "$additions" = "-" ] && continue
-  # Calculate shrinkage ratio: deletions / (deletions + additions + 1)
-  ratio=$(awk "BEGIN { printf \"%.4f\", $deletions / ($deletions + $additions + 1) }")
-  # Get original file line count (before the diff)
+  # Get original file line count (before the diff) — needed for the floor check
   original_lines=$(git show HEAD:"$filename" 2>/dev/null | wc -l | tr -d ' ')
+  # Calculate shrinkage ratio on the file's net deletion relative to its pre-fix size.
+  # Flag if: original file had ≥25 lines AND deletions exceed 20% of (original_lines + 1).
+  # (Not: ratio of total churn — that's wrong. We want: deletions > 20% of original size.)
+  ratio=$(awk "BEGIN { printf \"%.4f\", $deletions / ($original_lines + 1) }")
   echo "FILE=$filename DELETIONS=$deletions ADDITIONS=$additions RATIO=$ratio ORIGINAL_LINES=$original_lines"
 done
 ```
 
 Flag a file if BOTH conditions hold:
-- `deletions / (deletions + additions + 1) > 0.20` (more than 20% of net churn is deletion)
-- `original_lines >= 25` (floor: small files naturally fluctuate; don't false-positive on tiny test stubs)
+- `deletions / (original_lines + 1) > 0.20` (deletions exceed 20% of the file's pre-fix line count)
+- `original_lines >= 25` (floor: files under 25 lines naturally fluctuate; don't false-positive on tiny test stubs)
 
 ### 2.3 Deep Inspection of Flagged Files
 
@@ -157,10 +164,10 @@ mkdir -p tmp/god-review/principles
 
 ## Scoring Criteria
 
-See CRITERIA.md for confidence/severity definitions. The thresholds below are principle-specific.
+See `~/.claude-dotfiles/commands/god-review/CRITERIA.md` for confidence/severity definitions; the thresholds below are principle-specific.
 
-- **PASS**: No test files deleted. No test files shrunk by >20% of net churn (with 25-line floor).
-- **FAIL**: Any test file deleted, OR any test file where `deletions/(deletions+additions+1) > 0.20` AND original file had ≥25 lines.
+- **PASS**: No test files deleted. No test files shrunk by >20% relative to their pre-fix line count (with 25-line floor on the original file size).
+- **FAIL**: Any test file deleted, OR any test file where `deletions/(original_lines+1) > 0.20` AND the file had ≥25 lines before the change.
 
 This is a binary lens — there is no WARN state. Any hit is FAIL.
 
