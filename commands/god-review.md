@@ -1,6 +1,6 @@
 ---
 description: "From-scratch multi-model codebase audit. 3 Claude broad + 3 Codex broad + 19 principle agents (Claude+Codex per principle) in parallel. Report-only by default; --fix enables snapshot/revert/regression-detected fix loop; --loop runs until naturally clean. Hard gates on schema/auth/deps/secrets/CI/tests."
-argument-hint: "[scope] [--fix] [--max-rounds N] [--loop] [--max-wall-hours N] [--resume] [--force-resume] [--principle <name>] [--rescope-on-fix {full|changed}] [--online] [--codex-validation-every N]"
+argument-hint: "[scope] [--fix] [--max-rounds N] [--loop] [--max-wall-hours N] [--resume] [--force-resume] [--principle <name>] [--rescope-on-fix {full|changed}] [--online] [--codex-validation-every N] [--ruthless]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 ---
 
@@ -26,73 +26,53 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # --- Argument parsing ---
 # All arguments are parsed from the $ARGUMENTS variable provided by the harness.
-# Flags and their effects (inline documentation):
+# Positional $1..$N are set by splitting $ARGUMENTS on whitespace.
 
-# SCOPE: first non-flag token (file path, dir, or empty = full repo)
-#   Effect: narrows Phase 2 reviewer scope; all agents receive this as their target
+# Defaults:
 SCOPE=""
+FIX=false; LOOP=false; RESUME=false; FORCE_RESUME=false; ONLINE=false; RUTHLESS=false
+MAX_ROUNDS=5; MAX_WALL_HOURS=24; CODEX_VALIDATION_EVERY=3
+PRINCIPLE=""; RESCOPE_ON_FIX="changed"
+MAX_ROUNDS_EXPLICIT=false  # tracks whether --max-rounds was passed explicitly (used by B12 ceiling in --loop)
 
-# --fix: boolean (default: false)
-#   Effect: enables Phase 3 fix loop; without this, command exits after Phase 2 report
-FIX=false
+# Split $ARGUMENTS into positional parameters for clean while-shift parsing
+eval set -- $ARGUMENTS
 
-# --max-rounds N: integer (default: 5)
-#   Effect: bounded-mode round cap; ignored in --loop mode (which uses infinite cap)
-MAX_ROUNDS=5
-
-# --loop: boolean (default: false)
-#   Effect: indefinite fix loop — runs until 3 consecutive clean rounds OR instability OR wall-clock
-#   Requires --fix; abort if --loop is set without --fix
-LOOP=false
-
-# --max-wall-hours N: float (default: 24)
-#   Effect: wall-clock backstop for --loop mode; must be > 0
-MAX_WALL_HOURS=24
-
-# --resume: boolean (default: false)
-#   Effect: continue from last round checkpoint in tmp/god-review/state.json
-#   Aborts if state.json missing, malformed, or snapshot ref stale (unless --force-resume)
-RESUME=false
-
-# --force-resume: boolean (default: false)
-#   Effect: override stale-snapshot check on --resume; use with caution
-FORCE_RESUME=false
-
-# --principle <name>: string (default: empty)
-#   Effect: run ONE principle standalone, skip phases 0-3 orchestration, exit after
-PRINCIPLE=""
-
-# --rescope-on-fix {full|changed}: string (default: "changed")
-#   Effect: Phase 3 re-review scope — "changed" = only edited files, "full" = full repo
-RESCOPE_ON_FIX="changed"
-
-# --online: boolean (default: false)
-#   Effect: enables npm/PyPI registry checks in hallucinated-imports principle (offline by default)
-ONLINE=false
-
-# --codex-validation-every N: integer (default: 3)
-#   Effect: in --loop mode, run Codex validation pass only every Nth round to reduce wall-clock cost
-CODEX_VALIDATION_EVERY=3
-
-# Parse $ARGUMENTS:
-ARGS_REMAINING="$ARGUMENTS"
-while [ -n "$ARGS_REMAINING" ]; do
-  TOKEN=$(echo "$ARGS_REMAINING" | awk '{print $1}')
-  case "$TOKEN" in
-    --fix)             FIX=true ;;
-    --loop)            LOOP=true ;;
-    --resume)          RESUME=true ;;
-    --force-resume)    FORCE_RESUME=true ;;
-    --online)          ONLINE=true ;;
-    --max-rounds)      shift; MAX_ROUNDS=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
-    --max-wall-hours)  shift; MAX_WALL_HOURS=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
-    --principle)       PRINCIPLE=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
-    --rescope-on-fix)  RESCOPE_ON_FIX=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
-    --codex-validation-every) CODEX_VALIDATION_EVERY=$(echo "$ARGS_REMAINING" | awk '{print $2}'); ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f3-); continue ;;
-    --*)               echo "god-review: unknown flag $TOKEN" ;;
-    *)                 [ -z "$SCOPE" ] && SCOPE="$TOKEN" ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fix)
+      FIX=true; shift ;;
+    --loop)
+      LOOP=true; shift ;;
+    --resume)
+      RESUME=true; shift ;;
+    --force-resume)
+      FORCE_RESUME=true; shift ;;
+    --online)
+      ONLINE=true; shift ;;
+    --ruthless)
+      RUTHLESS=true; shift ;;
+    --max-rounds)
+      [ "$2" -ge 1 ] 2>/dev/null || { echo "Error: --max-rounds must be an integer >= 1 (got: ${2:-missing})" >&2; exit 1; }
+      MAX_ROUNDS="$2"; MAX_ROUNDS_EXPLICIT=true; shift 2 ;;
+    --max-wall-hours)
+      python3 -c "v=float('${2:-0}'); assert v>0, 'must be > 0'" 2>/dev/null || { echo "Error: --max-wall-hours must be a float > 0 (got: ${2:-missing})" >&2; exit 1; }
+      MAX_WALL_HOURS="$2"; shift 2 ;;
+    --principle)
+      [ -f "$HOME/.claude-dotfiles/commands/god-review/principles/${2}.md" ] || { echo "Error: unknown principle '${2:-missing}'. Check ~/.claude-dotfiles/commands/god-review/principles/ for valid names." >&2; exit 1; }
+      PRINCIPLE="$2"; shift 2 ;;
+    --rescope-on-fix)
+      [ "$2" = "full" ] || [ "$2" = "changed" ] || { echo "Error: --rescope-on-fix must be 'full' or 'changed' (got: ${2:-missing})" >&2; exit 1; }
+      RESCOPE_ON_FIX="$2"; shift 2 ;;
+    --codex-validation-every)
+      [ "$2" -ge 1 ] 2>/dev/null || { echo "Error: --codex-validation-every must be an integer >= 1 (got: ${2:-missing})" >&2; exit 1; }
+      CODEX_VALIDATION_EVERY="$2"; shift 2 ;;
+    --*)
+      echo "Error: unknown flag $1" >&2; exit 1 ;;
+    *)
+      [ -z "$SCOPE" ] && SCOPE="$1" || { echo "Error: unexpected extra positional argument '$1'" >&2; exit 1; }
+      shift ;;
   esac
-  ARGS_REMAINING=$(echo "$ARGS_REMAINING" | cut -d' ' -f2-)
 done
 ```
 
