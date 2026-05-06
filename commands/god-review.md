@@ -741,7 +741,45 @@ Read state from `tmp/god-review/state.json`. Load churn ledger, frozen units, fa
 
 ### Per-round loop structure
 
-For each round (1 through MAX_ROUNDS, or indefinite if --loop):
+Initialize round state and enter the real shell loop:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+
+# Initialize loop counters
+ROUND=1
+FIXES_KEPT_THIS_ROUND=0
+CONSECUTIVE_CLEAN_ROUNDS=0
+FROZEN_UNITS_COUNT=0
+NET_NEW_FINDINGS_THIS_ROUND=0
+
+# Initialize TOTAL_OPEN_FINDINGS from Phase 2 report (count non-HUMAN_GATE findings)
+TOTAL_OPEN_FINDINGS=$(python3 -c "
+import json, re
+try:
+    report = open('$WORKDIR/tmp/god-review/report.md').read()
+    in_human_gate = False
+    count = 0
+    for line in report.splitlines():
+        if line.startswith('## Human Gate Required'):
+            in_human_gate = True
+        if not in_human_gate and line.startswith('### '):
+            count += 1
+    print(count)
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
+
+echo "=== Phase 3 Fix Loop starting: TOTAL_OPEN_FINDINGS=$TOTAL_OPEN_FINDINGS MAX_ROUNDS=$MAX_ROUNDS LOOP=$LOOP ==="
+
+while [ "$LOOP" = "true" ] || [ "$ROUND" -le "${MAX_ROUNDS:-5}" ]; do
+  echo "=== Round $ROUND ==="
+  FIXES_KEPT_THIS_ROUND=0
+  NET_NEW_FINDINGS_THIS_ROUND=0
+```
+
+For each round (1 through MAX_ROUNDS in bounded mode, or indefinite if --loop):
 
 #### Step 3a: Triage findings into two buckets
 
@@ -1207,80 +1245,134 @@ ROUNDEOF
 mv tmp/god-review/round-${ROUND}-findings.md.tmp tmp/god-review/round-${ROUND}-findings.md
 ```
 
-#### Step 3e: Termination check
+#### Step 3e: Termination check (real shell — executed at end of every round)
 
-**Bounded mode (`--loop` is false):**
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 
-```
-IF round >= MAX_ROUNDS: echo "max rounds reached (cap: $MAX_ROUNDS)"; exit 2
-IF total_open_findings < 2: break with "near-clean — fewer than 2 open findings remain"
-IF frozen_units_count > 3: echo "too many frozen units ($N) — escalate to human"; exit 3
-IF FIXES_KEPT_THIS_ROUND == 0: break with "no progress this round — fix loop cannot make further progress"
-```
+# Re-read frozen units count from state.json (updated by churn detector above)
+FROZEN_UNITS_COUNT=$(python3 -c "
+import json
+try:
+    d = json.load(open('$WORKDIR/tmp/god-review/state.json'))
+    print(len(d.get('frozen_units', [])))
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
 
-**Indefinite mode (`--loop` is true):**
+if [ "$LOOP" = "true" ]; then
+  # --- Indefinite mode termination checks ---
 
-```
-# Net-new findings = findings whose hash is NOT already in finding_history_hashes
-# (Repeat HUMAN_GATE findings recognized via hash don't count as "new")
+  # Convergence: 3 consecutive clean rounds
+  if [ "$NET_NEW_FINDINGS_THIS_ROUND" -eq 0 ] && [ "$FIXES_KEPT_THIS_ROUND" -eq 0 ]; then
+    CONSECUTIVE_CLEAN_ROUNDS=$((CONSECUTIVE_CLEAN_ROUNDS + 1))
+  else
+    CONSECUTIVE_CLEAN_ROUNDS=0
+  fi
+  if [ "$CONSECUTIVE_CLEAN_ROUNDS" -ge 3 ]; then
+    echo "Naturally clean x 3 — converged after $ROUND rounds"
+    break
+  fi
 
-IF net_new_findings_this_round == 0 AND FIXES_KEPT_THIS_ROUND == 0:
-  consecutive_clean_rounds += 1
-ELSE:
-  consecutive_clean_rounds = 0
+  # Rate-based instability abort (per-round rate, NOT cumulative)
+  AVG_INSTABILITY=$(python3 -c "
+import json
+try:
+    d = json.load(open('$WORKDIR/tmp/god-review/state.json'))
+    frozen_added = d.get('frozen_added_per_round', [])
+    malformed = d.get('architect_malformed_per_round', [])
+    combined = [f+m for f,m in zip(frozen_added[-3:], malformed[-3:])]
+    print(sum(combined)/len(combined) if combined else 0)
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
+  if python3 -c "import sys; sys.exit(0 if float('${AVG_INSTABILITY:-0}') > 5 else 1)" 2>/dev/null; then
+    echo "Instability rate too high (avg $AVG_INSTABILITY events/round over last 3 rounds)" >&2
+    exit 4
+  fi
 
-IF consecutive_clean_rounds >= 3:
-  break with "naturally clean — 3 consecutive rounds with zero new findings and zero kept fixes"
-
-# Rate-based instability check (per-round rate, NOT cumulative count)
-# Measure instability over last 3 rounds to avoid false aborts on long healthy sessions
-avg_instability = mean(frozen_added_per_round + architect_malformed_per_round) over last 3 rounds
-IF avg_instability > 5:
-  echo "instability rate too high (avg $avg_instability events/round over last 3 rounds)"; exit 4
-
-# Wall-clock backstop
-ELAPSED_HOURS=$(python3 -c "
+  # Wall-clock backstop
+  ELAPSED_HOURS=$(python3 -c "
 from datetime import datetime, timezone
-start = datetime.fromisoformat(open('tmp/god-review/state.json').read() and __import__('json').load(open('tmp/god-review/state.json'))['started_at_iso'].replace('Z','+00:00'))
+import json
+d = json.load(open('$WORKDIR/tmp/god-review/state.json'))
+start = datetime.fromisoformat(d['started_at_iso'].replace('Z','+00:00'))
 now = datetime.now(timezone.utc)
 print(round((now-start).total_seconds()/3600, 2))
-")
-IF ELAPSED_HOURS >= MAX_WALL_HOURS:
-  echo "wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)"; exit 5
+" 2>/dev/null || echo 0)
+  if python3 -c "import sys; sys.exit(0 if float('${ELAPSED_HOURS:-0}') >= float('${MAX_WALL_HOURS:-24}') else 1)" 2>/dev/null; then
+    echo "Wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)" >&2
+    exit 5
+  fi
 
-# Re-scan scope for next round (per Locked Decision loop rule 5)
-IF FIXES_KEPT_THIS_ROUND == 0:
-  NEXT_SCAN_SCOPE = "$SCOPE"  # full repo or original scope — NOT changed-files-only
-  # This prevents 3 trivial "clean" rounds on empty scope
-ELSE:
-  IF RESCOPE_ON_FIX == "full":
-    NEXT_SCAN_SCOPE = "$SCOPE"
-  ELSE:
-    NEXT_SCAN_SCOPE = "$(git diff HEAD~$FIXES_KEPT_THIS_ROUND --name-only | tr '\n' ' ')"
+else
+  # --- Bounded mode termination checks ---
 
-# Update round counter atomically
+  if [ "$TOTAL_OPEN_FINDINGS" -lt 2 ]; then
+    echo "Near-clean — fewer than 2 open findings remain"
+    break
+  fi
+  if [ "$FROZEN_UNITS_COUNT" -gt "${FROZEN_UNITS_CAP:-3}" ]; then
+    echo "Too many frozen units ($FROZEN_UNITS_COUNT > ${FROZEN_UNITS_CAP:-3}) — escalate to human" >&2
+    exit 3
+  fi
+  if [ "$FIXES_KEPT_THIS_ROUND" -eq 0 ]; then
+    echo "No progress this round — fix loop cannot make further progress"
+    break
+  fi
+  if [ "$ROUND" -ge "${MAX_ROUNDS:-5}" ]; then
+    echo "Max rounds reached (cap: $MAX_ROUNDS)" >&2
+    exit 2
+  fi
+fi
+
+# Re-scope for next round
+if [ "$FIXES_KEPT_THIS_ROUND" -eq 0 ]; then
+  NEXT_SCAN_SCOPE="$SCOPE"
+else
+  if [ "$RESCOPE_ON_FIX" = "full" ]; then
+    NEXT_SCAN_SCOPE="$SCOPE"
+  else
+    NEXT_SCAN_SCOPE="$(git diff HEAD~"$FIXES_KEPT_THIS_ROUND" --name-only 2>/dev/null | tr '\n' ' ')"
+  fi
+fi
+
+# Atomic state.json update
+ELAPSED_HOURS=${ELAPSED_HOURS:-0}
 python3 -c "
 import json, os
-with open('tmp/god-review/state.json') as f: d=json.load(f)
+sj = '$WORKDIR/tmp/god-review/state.json'
+with open(sj) as f: d=json.load(f)
 d['round'] = $ROUND
-d['consecutive_clean_rounds'] = $consecutive_clean_rounds
-d['elapsed_hours'] = $ELAPSED_HOURS
-tmp='tmp/god-review/state.json.tmp'
+d['consecutive_clean_rounds'] = $CONSECUTIVE_CLEAN_ROUNDS
+d['elapsed_hours'] = float('${ELAPSED_HOURS:-0}')
+tmp = sj + '.tmp'
 with open(tmp,'w') as f: json.dump(d,f,indent=2)
-os.rename(tmp,'tmp/god-review/state.json')
-"
+os.rename(tmp, sj)
+" 2>/dev/null
 
-# Continue — re-run Phase 2 on NEXT_SCAN_SCOPE
 SCOPE="$NEXT_SCAN_SCOPE"
-# (Loop back to Phase 2 for next round)
+ROUND=$((ROUND + 1))
+write_env  # persist round counter and updated scope via env-helpers.sh
+
+done  # end of while loop (opened in Per-round loop structure block above)
+echo "Phase 3 fix loop complete after $((ROUND - 1)) rounds."
 ```
 
 **In `--loop` mode**, Codex validation runs only every `CODEX_VALIDATION_EVERY` rounds:
-```
-IF loop_mode AND round % CODEX_VALIDATION_EVERY != 0:
-  # Skip Codex validation this round
-  Tag all Claude-found findings as (unverified-this-round)
-  # Codex principle review still runs every round
+
+At the start of Phase 2 in each loop iteration, check:
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# Skip Codex validation on non-milestone rounds to reduce wall-clock cost
+if [ "$LOOP" = "true" ] && [ $(( ROUND % CODEX_VALIDATION_EVERY )) -ne 0 ]; then
+  SKIP_CODEX_VALIDATION=true
+  echo "Skipping Codex validation this round ($ROUND % $CODEX_VALIDATION_EVERY != 0) — findings tagged (unverified-this-round)"
+else
+  SKIP_CODEX_VALIDATION=false
+fi
 ```
 
 ---
