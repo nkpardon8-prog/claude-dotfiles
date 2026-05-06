@@ -856,25 +856,21 @@ if echo "$ARCH_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); sy
   continue
 fi
 
-# Validate all required fields present and non-empty
-VALID=$(python3 << 'PYEOF'
-import json, sys
+# Validate all required fields present and non-empty (env-var pattern per Locked Decision #17)
+VALID=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "
+import json, os, sys
 try:
-    d = json.loads("""$ARCH_OUTPUT""")
+    d = json.loads(os.environ['ARCH_OUTPUT'])
     required = ['file', 'line_start', 'line_end', 'before', 'after', 'rationale']
     for field in required:
         if field not in d or d[field] == '' or d[field] is None:
-            print(f"INVALID: field '{field}' missing or empty")
-            sys.exit(1)
+            print(f\"INVALID: field '{field}' missing or empty\"); sys.exit(1)
     if not isinstance(d['line_start'], int) or not isinstance(d['line_end'], int):
-        print("INVALID: line_start and line_end must be integers")
-        sys.exit(1)
-    print("VALID")
+        print('INVALID: line_start and line_end must be integers'); sys.exit(1)
+    print('VALID')
 except json.JSONDecodeError as e:
-    print(f"INVALID: malformed JSON — {e}")
-    sys.exit(1)
-PYEOF
-)
+    print(f'INVALID: malformed JSON — {e}'); sys.exit(1)
+")
 
 if [ "$VALID" != "VALID" ]; then
   echo "Architect output malformed: $VALID"
