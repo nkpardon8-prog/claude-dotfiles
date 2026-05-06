@@ -265,7 +265,7 @@ elif [ -f Cargo.toml ]; then
 elif [ -f go.mod ]; then
   echo "=== go vet ===" && go vet ./... 2>&1 | tail -20
 elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
-  echo "=== python type check ===" && (python3 -m mypy . 2>&1 | tail -20 || echo "(mypy not available)")
+  echo "=== python type check ===" && { python3 -m mypy . > /tmp/gate-output.txt 2>&1 && tail -20 /tmp/gate-output.txt; } || echo "(mypy not available)"
 else
   echo "(no recognized build system — skipping baseline gates)"
 fi
