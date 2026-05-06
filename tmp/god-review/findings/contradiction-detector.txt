@@ -1,0 +1,101 @@
+# Contradiction Detector — Findings
+# Scope: ~/.claude-dotfiles/commands/god-review/ + commands/god-review.md
+# Verdict: FAIL  (multiple definite contradictions including a runtime-impacting unknown-principle gate)
+
+================================================================================
+[1] [definite] CRITICAL — Principle count: 23 vs 19
+   Sources:
+     - god-review/README.md:24  "up to 23 pairs"; line 93 "up to 23 principle pairs"; CRITERIA.md:113-141 lists 23 entries; principles/ dir has 23 files.
+     - god-review.md:9   "apply 19 principle lenses plus 6 broad reviewers"
+     - god-review.md (frontmatter):2  description: "...19 principle agents..."
+     - god-review.md:144 unknown-principle error message lists only the ORIGINAL 19 — the 4 new principles (dead-end-detector, info-loss-detector, contradiction-detector, gap-detector) are MISSING from this list.
+   Impact: RUNTIME. The Step 0.5 validation at line 62 already checks the principles/ directory for the file, so `--principle dead-end-detector` works, BUT the user-facing error message at line 144 lies about availability — anyone who typos a name will be told the 4 new principles do not exist. Frontmatter description ("19 principle agents") is also surfaced in the slash-command picker UI.
+   Canonical: CRITERIA.md Principle Index (23). Fix orchestrator's frontmatter and lines 9 + 144.
+
+================================================================================
+[2] [definite] HIGH — Hard-gate list duplicated across 4 sites; orchestrator's own Phase 3 triage and editor-agent hard-coded patterns drift from lib/hard-gates.txt
+   Sources:
+     - lib/hard-gates.txt (declared canonical: top of file says "DO NOT inline this list anywhere else")
+     - god-review.md:821       inlines a near-duplicate list in Step 3a triage rules
+     - god-review.md:1467-1475 second inline copy in "Reference: Hard Gates" section
+     - lib/editor-agent.md:52-58 third inline copy
+     - README.md:190-209       fourth inline copy
+   Drift examples:
+     - hard-gates.txt has `Pipfile`, `pom.xml`, `build.gradle`, `build.gradle.kts`; editor-agent.md drops Pipfile/pom/gradle entirely.
+     - hard-gates.txt has `next.config.*`, `Dockerfile`, `docker-compose*.yml` (Build/runtime config); NONE of the 4 inline copies mention these — orchestrator and editor-agent will auto-modify next.config.* and Dockerfile despite hard-gates.txt forbidding it.
+     - hard-gates.txt has `**/auth/**` and `middleware.ts`; editor-agent.md is missing the auth section entirely.
+     - hard-gates.txt has `*secrets*` / `*credentials*`; editor-agent uses `**/secrets.*` / `**/*credentials*` (different glob semantics — `secrets.config.json` would NOT match the editor's pattern).
+     - README.md mentions `schema.ts` and `cypress/**`/`e2e/**`/`jest.config.*`/`vitest.config.*`; none of these appear in hard-gates.txt or any other site.
+   Impact: RUNTIME. The orchestrator does not actually source lib/hard-gates.txt anywhere — `is_hard_gate` (called at line 965) presumably comes from env-helpers.sh, but the Phase 3 triage at line 821 uses an inline literal list as the gate. So the canonical file is documentation only; the inline lists drive behavior. Files protected in one site get auto-modified via another.
+   Canonical: lib/hard-gates.txt. Fix: load it via env-helpers.sh and replace all 4 inline lists with a reference; or delete hard-gates.txt's "DO NOT inline" claim if duplication is intentional.
+
+================================================================================
+[3] [definite] HIGH — `--ruthless` flag surface count claim
+   Verified consistent across 5 sites:
+     - README.md:43 (flags table)
+     - god-review.md:3 (argument-hint frontmatter)
+     - god-review.md:33,53-54 (parser default + case branch)
+     - god-review.md:534-544 (Phase 2 spawn block)
+     - CRITERIA.md:143
+     - broad-reviewers/claude-ruthless-redteam.md:3 (frontmatter description)
+   But: README.md:93 says "up to 47 agents per round (3 broad-Claude + 1 ruthless when active + 3 broad-Codex + up to 23 principle pairs + 2 batched validation)". 3+1+3+(23*2)+2 = 55, not 47. Without ruthless the same arithmetic gives 54, not 46. README:103 then says "47 agents per round instead of 46" — both numbers are inconsistent with the explicit decomposition that immediately precedes them. Confidence: definite (arithmetic).
+   Impact: cost-projection prose in README is wrong. No runtime impact, but undermines the "Cost Warning" section's credibility.
+   Canonical: recompute. If "principle pairs" counts as 1 agent rather than 2, decomposition needs to say so.
+
+================================================================================
+[4] [definite] HIGH — Tunable Constants exist ONLY in orchestrator; README references them implicitly but documents none
+   Sources:
+     - god-review.md:157-172 declares 8 tunables: SHRINKAGE_PCT (0.20), PERF_REGRESS_PCT (0.05), INSTABILITY_RATE (5), FROZEN_UNITS_CAP (NO DEFAULT — "$FROZEN_UNITS_CAP"), SECRET_LEN_FLOOR (16), TEST_FILE_LINE_FLOOR (25), LATE_IMPORT_LINE (40), SPINLOCK_TIMEOUT_SEC (600).
+     - README.md, CRITERIA.md: ZERO mentions of any of these names. README has no Tunable Constants section. CRITERIA.md does not describe any threshold values.
+   Sub-finding [definite]: god-review.md:167 sets `FROZEN_UNITS_CAP="$FROZEN_UNITS_CAP"`. This has NO default — if the env var is unset, the constant is empty string. Then line 1363 `if [ "$FROZEN_UNITS_COUNT" -gt "$FROZEN_UNITS_CAP" ]` will error with "integer expression expected" or compare against empty string. All other tunables on lines 164-171 use `${VAR:-default}` syntax. This is an outright bug, not just a doc gap.
+   Impact: RUNTIME bug at line 1363 (FROZEN_UNITS_CAP undefined in bounded mode). Doc gap: a user override-via-env-var promise without enumerating the names.
+   Canonical: orchestrator. Fix the FROZEN_UNITS_CAP default; document tunables in README.
+
+================================================================================
+[5] [definite] MEDIUM — Exit codes documented in README vs emitted in orchestrator
+   README.md:47-58 documents exit codes 0-7 with meanings.
+   Orchestrator emissions confirmed in god-review.md:
+     - exit 1: lines 71, 87, 93, 99 (argument errors / generic failure) — README says exit 1 = "Findings reported (report-only)". Mismatch: code 1 is emitted on parse errors / setup failures, NOT on report-only-with-findings. There is NO emission point in the orchestrator that uses exit 1 to mean "findings present"; in fact report-only mode just falls through and exits 0.
+     - exit 2: lines 1311, 1373 (max-rounds in --loop and bounded modes) — matches README.
+     - exit 3: line 1365 — emitted ONLY for "Too many frozen units > FROZEN_UNITS_CAP". README says exit 3 = "Fix loop frozen — no net progress (churn ledger triggered)". The semantics drifted: bounded-mode exit-3 is the frozen-units-cap path, not the no-progress path. The "no net progress" path at line 1367 calls `break`, exiting 0.
+     - exit 4: line 1339 (instability) — matches README.
+     - exit 5: line 1353 (wall-clock cap in --loop) — matches README.
+     - exit 6: line 106 (corrupt state.json on --resume) — matches README.
+     - exit 7: line 119 (stale snapshot on --resume) — matches README.
+   Definite divergences: exit 1 (semantic drift) and exit 3 (semantic drift, churn-ledger language).
+   Impact: CI / wrapper scripts that distinguish "findings reported" from "command failed" will misclassify on exit 1.
+   Canonical: orchestrator emissions. Fix README descriptions for codes 1 and 3, OR add a real exit-1 emission for the report-only-with-findings path.
+
+================================================================================
+[6] [definite] MEDIUM — Locked Decision #8 cross-model promotion rule consistency
+   Sources verified:
+     - CRITERIA.md:143 "findings require Codex confirmation for cross-model promotion per Locked Decision #8"
+     - broad-reviewers/claude-ruthless-redteam.md:81 same claim, attributed to "Locked Decision #8 in the god-review fix plan"
+     - god-review.md:544 "findings from this reviewer require Codex confirmation for cross-model promotion (Locked Decision #8)"
+     - README.md:43 "Findings require Codex confirmation for promotion." — does NOT cite Locked Decision #8, but the substance matches.
+   Subtle drift: CRITERIA.md and the redteam file say cross-model promotion specifically; README says simply "promotion". Promotion Priority Order (CRITERIA.md:147-157) has THREE promotion rules — cross-model agreement, Tier-1, and Codex-validator-CONFIRMED. The constraint that ruthless findings need Codex confirmation only blocks rule #1 (and arguably rule #3), but the redteam file's wording "they are NOT auto-promoted as same-family-different-perspective" is ambiguous about rule #2 (Tier-1 promotion). Ruthless reviewer findings are tagged `[redteam]`, not assigned a principle, so Tier-1 doesn't apply — but this is implicit, not stated.
+   Impact: LOW (semantic, not behavioral, given ruthless findings have no principle). Confidence definite on README's missing citation; likely on the rule-#2 ambiguity.
+   Canonical: CRITERIA.md.
+
+================================================================================
+[7] [likely] MEDIUM — 4 new principles' "Why This Matters" reference a different document than CRITERIA's category enum
+   Sources:
+     - dead-end-detector.md:23  refs "failure mode #7, #14" in `~/.claude/projects/.../god_review_problems.md`
+     - info-loss-detector.md:22 refs "failure mode #1, #10" in same file
+     - contradiction-detector.md:23 refs "failure mode #3, #11" in same file
+     - gap-detector.md:25      refs "failure mode #5, #8" in same file
+     - CRITERIA.md has NO "failure-class taxonomy" — only a Category Enum (lines 49-84). The phrase "failure-class promotion" appears once at CRITERIA.md:154 inside Promotion rule #2, but there is no enumerated failure-class list anywhere in CRITERIA.
+   The task specification says these Why-This-Matters sections should "match the failure-class taxonomy in CRITERIA.md". They DO NOT — they reference an external memory file (`~/.claude/projects/-Users-omidzahrai/memory/god_review_problems.md`) that is outside the dotfiles repo and not user-readable from CRITERIA.
+   Impact: documentation-only. Readers of CRITERIA cannot resolve the failure-mode numbers. If the external file is renumbered, the principle docs silently drift.
+   Canonical: ambiguous. Either (a) inline the failure-class taxonomy into CRITERIA.md and renumber consistently, or (b) explicitly note in CRITERIA that the failure-class taxonomy lives in the external memory file and is referenced by Tier-1 principles.
+
+================================================================================
+[8] [likely] LOW — Layer-A reviewer count: README says 6 standard, orchestrator agrees, but cost block double-counts
+   - README.md:18 "Layer A — Broad Reviewers (6 total)" listing 3 Claude + 3 Codex.
+   - README.md:93 cost block "up to 47 agents per round (3 broad-Claude + 1 ruthless when active + 3 broad-Codex + up to 23 principle pairs + 2 batched validation)" — implicitly says base = 6 broad. ✓
+   - README.md:103 "up to 47 agents per round instead of 46" — internally consistent (delta = 1 ruthless agent), but inconsistent with the actual decomposition (see finding #3).
+   - god-review.md:9 "19 principle lenses plus 6 broad reviewers" — broad count agrees, but principle count disagrees (covered in #1).
+   Impact: principle count is the load-bearing drift; broad count is consistent at 6.
+
+================================================================================
+END OF FINDINGS (8 of 8 budget used)
