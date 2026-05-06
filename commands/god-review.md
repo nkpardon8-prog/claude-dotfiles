@@ -123,7 +123,7 @@ fi
 if [ "$RESUME" = "true" ]; then
   if ! python3 -c "import json,sys; json.load(open('tmp/god-review/state.json'))" 2>/dev/null; then
     echo "Error: state.json is corrupt or malformed. Manually delete tmp/god-review/state.json and restart."
-    exit 1
+    exit 6
   fi
   # Check snapshot ref still resolves
   SNAP_REF=$(python3 -c "import json; d=json.load(open('tmp/god-review/state.json')); print(d['snapshot']['ref'])" 2>/dev/null)
@@ -136,7 +136,7 @@ if [ "$RESUME" = "true" ]; then
   fi
   if [ "$STALE" = "true" ] && [ "$FORCE_RESUME" = "false" ]; then
     echo "Error: Repo state diverged from snapshot ref '$SNAP_REF' (type: $SNAP_TYPE). Pass --force-resume to override."
-    exit 1
+    exit 7
   fi
 fi
 ```
@@ -1226,9 +1226,9 @@ mv tmp/god-review/round-${ROUND}-findings.md.tmp tmp/god-review/round-${ROUND}-f
 **Bounded mode (`--loop` is false):**
 
 ```
-IF round >= MAX_ROUNDS: break with "max rounds reached (cap: $MAX_ROUNDS)"
+IF round >= MAX_ROUNDS: echo "max rounds reached (cap: $MAX_ROUNDS)"; exit 2
 IF total_open_findings < 2: break with "near-clean — fewer than 2 open findings remain"
-IF frozen_units_count > 3: break with "too many frozen units ($N) — escalate to human"
+IF frozen_units_count > 3: echo "too many frozen units ($N) — escalate to human"; exit 3
 IF FIXES_KEPT_THIS_ROUND == 0: break with "no progress this round — fix loop cannot make further progress"
 ```
 
@@ -1250,7 +1250,7 @@ IF consecutive_clean_rounds >= 3:
 # Measure instability over last 3 rounds to avoid false aborts on long healthy sessions
 avg_instability = mean(frozen_added_per_round + architect_malformed_per_round) over last 3 rounds
 IF avg_instability > 5:
-  break with "instability rate too high (avg $avg_instability events/round over last 3 rounds)"
+  echo "instability rate too high (avg $avg_instability events/round over last 3 rounds)"; exit 4
 
 # Wall-clock backstop
 ELAPSED_HOURS=$(python3 -c "
@@ -1260,7 +1260,7 @@ now = datetime.now(timezone.utc)
 print(round((now-start).total_seconds()/3600, 2))
 ")
 IF ELAPSED_HOURS >= MAX_WALL_HOURS:
-  break with "wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)"
+  echo "wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)"; exit 5
 
 # Re-scan scope for next round (per Locked Decision loop rule 5)
 IF FIXES_KEPT_THIS_ROUND == 0:
