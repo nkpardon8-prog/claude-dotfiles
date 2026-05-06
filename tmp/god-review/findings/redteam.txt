@@ -1,0 +1,402 @@
+# claude-ruthless-redteam findings (Layer A, --ruthless pass)
+# Scope: ~/.claude-dotfiles/commands/god-review/ + ~/.claude-dotfiles/commands/god-review.md
+# Pass: SECOND review after 21 fix commits e138239..2423ab1 + e371d52
+# Reviewer: claude-ruthless-redteam (skeptic-first)
+
+The bottom line: the orchestrator looks like it has been carefully hardened, but several
+of the most load-bearing fixes are structurally inert — the code that was supposed to
+enforce them either silently no-ops, never runs, never had a chance to run because of
+how the bash blocks are structured, or rejects far more than it should. Three of these
+findings (#1, #2, #5) are catastrophic — they neutralize entire safety regimes the
+orchestrator claims it has.
+
+================================================================================
+[redteam] LOAD_BEARING_FRAGILITY: The "real Phase 3 round loop" is split across separate
+                                  ```bash``` fences and cannot execute as a loop.
+                                  — god-review.md:779-813 (while opens) → 1291-1408 (done closes)
+Confidence: definite
+Evidence:
+  Line 779-813 contains the block:
+      ```bash
+      ...
+      while [ "$LOOP" = "true" ] || [ "$ROUND" -le "${MAX_ROUNDS:-5}" ]; do
+        echo "=== Round $ROUND ==="
+        ...
+      ```
+  The matching `done` is at line 1406, inside a *different* fenced bash block
+  (fence range 1291-1408). Between them, eight independent ```bash``` fences exist
+  (832-845, 852-866, 907-969, 974-981, 989-1055, 1059-1125, 1129-1258, 1262-1287) —
+  each is a separate bash invocation by the agent harness.
+  Bash will error at the end of the first block with `syntax error: unexpected end of file`
+  because `do` was never closed. The intermediate blocks then run as their own one-shot
+  shells. The `done` at 1406 also runs in isolation and errors with `done: command not found`
+  or `syntax error near unexpected token done`.
+Attack/Failure Scenario:
+  - Bounded mode never actually loops. ROUND is always 1 — set in the failed first block,
+    persisted via write_env, but never incremented because the increment lives inside the
+    "loop body" that is never inside a real loop.
+  - --loop mode is even worse: the convergence check (3 consecutive clean rounds) never
+    fires because CONSECUTIVE_CLEAN_ROUNDS only ever increments inside the unreachable
+    "loop body" path of block 1291-1408.
+  - All exit codes 2-7 wired in 2dd64ec are reachable only via the never-running termination
+    block.
+  - Commit 93812eb claims "real Phase 3 round loop — while construct with bounded + indefinite
+    branches". That commit message is wrong. The construct is syntactically a loop, but at
+    runtime the loop body never executes the post-fix branching.
+Fix: Either collapse Phase 3 into ONE bash fence (keeping the python heredocs as files invoked
+  externally), or replace the markdown-narrative orchestration with a single dispatcher script
+  in lib/ that the agent invokes once per round. The current "narrative + multiple fences"
+  pattern fundamentally cannot host a shell loop.
+
+================================================================================
+[redteam] INVARIANT_NOT_ENFORCED: glob_to_regex produces wrong regex for nearly every
+                                  hard-gate pattern. is_hard_gate() silently approves
+                                  files it must reject.
+                                  — lib/env-helpers.sh:32-60 + hard-gates.txt
+Confidence: definite
+Evidence:
+  Live test of the existing glob_to_regex() against hard-gates.txt patterns:
+      GLOB=migrations/**         REGEX=^migrations/(?:.*/)?$
+      GLOB=tests/**              REGEX=^tests/(?:.*/)?$
+      GLOB=**/auth/**            REGEX=^(?:.*/)?auth/(?:.*/)?$
+      GLOB=*.test.*              REGEX=^[^/]*\.test\.[^/]*$
+      GLOB=package.json          REGEX=^package\.json$
+  Live match results:
+      migrations/001_init.sql     vs  migrations/**         → MISS (regex requires trailing /)
+      tests/foo.spec.ts           vs  tests/**              → MISS
+      src/auth/login.ts           vs  **/auth/**            → MISS
+      src/foo.test.ts             vs  *.test.*              → MISS (regex anchors `^[^/]*` only matches no-slash)
+      frontend/package.json       vs  package.json          → MISS
+      .env.local                  vs  .env.*                → MATCH (this is the only one that works)
+  Two algorithm bugs:
+    1. `**` followed by `/` is consumed and emits `(?:.*/)?` — but **the `/` after `**` is
+       then ALSO consumed** in the i+=1 fall-through, and the rest of the pattern after
+       `tests/**` is empty. So `tests/**` produces `^tests/(?:.*/)?$`, which does NOT match
+       `tests/foo.spec.ts`. The regex needs `.*` after the `(?:.*/)?` to match the basename.
+    2. `^[^/]*\.test\.[^/]*$` cannot match `src/foo.test.ts` because of the path-anchor.
+       Hard-gate intent is "any *.test.* in any directory" — pattern needs a leading
+       `(?:.*/)?` prefix, OR the matcher should run on basename only, OR globs need a
+       leading `**/` recursive wildcard auto-applied.
+    3. `package.json` matches only the top-level file, not `frontend/package.json` —
+        the hard-gates.txt does not anchor `**/package.json`. Either the patterns must
+        all start with `**/`, or glob_to_regex must auto-recurse single-segment patterns.
+Attack/Failure Scenario:
+  - The Architect produces a fix that targets `migrations/2026_drop_users.sql`. is_hard_gate
+    returns 1 (not gated). The hard-gate check at line 965 prints nothing, the Editor
+    applies the change, gates pass (cargo/npm don't typecheck SQL), and the migration is
+    committed and pushed. The README/CRITERIA.md promise that schema migrations are NEVER
+    auto-modified is silently violated.
+  - Same path for `*.test.*`, `tests/**`, `**/auth/**`, monorepo `frontend/package.json`,
+    nested `db/migrate/2026_users.rb`. All five entire categories of hard-gates are bypassed.
+  - The earlier filename-prefix injection guard (case pattern at line 953-957) does NOT
+    catch any of these — it only blocks shell metacharacters, not category violations.
+  - The fallback defense in lib/editor-agent.md (line 47-58) is a documented prompt to the
+    sub-agent — that is "safety by documentation", not enforcement. A tired or misinstructed
+    Editor agent will gladly apply the change.
+Fix: Replace glob_to_regex with `python3 -c "import fnmatch,sys; sys.exit(0 if fnmatch.fnmatch(sys.argv[1], sys.argv[2]) else 1)"`,
+  OR rewrite glob_to_regex to (a) emit `.*` after `**/` not just `(?:.*/)?`, (b) auto-prefix
+  patterns lacking a leading `/` or `**` with `(?:.*/)?`, (c) handle basename-only patterns.
+  Then ADD a unit test in lib/e2e-test.sh that runs every pattern in hard-gates.txt against
+  a known-positive and known-negative path. Any future change must keep that test green.
+
+================================================================================
+[redteam] SILENT_FAILURE: HAS_BENCH_SCRIPT python one-liner has unbalanced parentheses
+                          and always errors silently.
+                          — god-review.md:208
+Confidence: definite
+Evidence:
+  Line 208:
+      HAS_BENCH_SCRIPT=$(python3 -c "import json; d=json.load(open('$WORKDIR/package.json')); scripts=d.get('scripts',{}); print(next((k for k in scripts if k in ('bench','benchmark','perf')),'')" 2>/dev/null)
+  Counting parens in the Python source: 7 opens, 6 closes. Reproduced live:
+      $ python3 -c "import json; d=json.load(open('/tmp/foo/package.json')); scripts=d.get('scripts',{}); print(next((k for k in scripts if k in ('bench','benchmark','perf')),'')"
+        SyntaxError: '(' was never closed
+        exit=1
+  The orchestrator captures stderr to /dev/null and assigns the empty stdout to
+  HAS_BENCH_SCRIPT, then falls through to the next detection branch (find -name benchmarks).
+  Commit 803dad3 says "A8: HAS_BENCH_SCRIPT audit — expression is balanced (false positive
+  confirmed via ast.parse)". That audit is wrong: ast.parse was likely run on a different
+  string (e.g. the inner generator only). The shipped bash one-liner is unbalanced.
+Attack/Failure Scenario:
+  - The primary detection branch (package.json scripts.bench / scripts.benchmark / scripts.perf)
+    is permanently dead. Any project whose ONLY perf signal is a `bench` npm script will fall
+    back to the secondary branches: directory `benchmarks/`, `criterion`/`pytest-benchmark`
+    deps, or `bench_*.py`. None of these fire for, e.g., a typical pnpm/yarn workspace with
+    just `"bench": "vitest bench"`.
+  - perf-benchmark principle never activates → perf regressions slip through unnoticed.
+  - The git commit message documenting the audit asserts the bug was confirmed not-a-bug.
+    This is the worst kind of regression: someone "verified" the bug doesn't exist.
+Fix: Add the missing `)` after `print(next(...,'')` → `print(next(...,''))`. Add a smoke
+  test in lib/e2e-test.sh that creates a tmp package.json with `"bench": "x"` and asserts
+  HAS_BENCH_SCRIPT is non-empty.
+
+================================================================================
+[redteam] LOAD_BEARING_FRAGILITY: FROZEN_UNITS_CAP has no default value — the entire
+                                  bounded-mode termination check is undefined.
+                                  — god-review.md:167
+Confidence: definite
+Evidence:
+  Line 167 in the Tunable Constants section:
+      FROZEN_UNITS_CAP="$FROZEN_UNITS_CAP"        # bounded-mode freeze cap
+  Compare to the other tunables on the same block:
+      SHRINKAGE_PCT="${SHRINKAGE_PCT:-0.20}"
+      PERF_REGRESS_PCT="${PERF_REGRESS_PCT:-0.05}"
+      INSTABILITY_RATE="${INSTABILITY_RATE:-5}"
+      ...
+  Every other entry uses `${VAR:-default}`. FROZEN_UNITS_CAP uses `"$FROZEN_UNITS_CAP"`,
+  which is just the existing value (empty if unset). Then at line 1363:
+      if [ "$FROZEN_UNITS_COUNT" -gt "$FROZEN_UNITS_CAP" ]; then
+  When unset, this expands to `[ N -gt  ]` → bash error: `integer expression expected`.
+  The B12 ceiling block at line 1309 also relies on integer comparison and would not
+  trigger this directly, but the cap check at 1363 is sandwiched between LOOP=true checks
+  and would error in bounded mode.
+Attack/Failure Scenario:
+  - Bounded-mode user runs `/god-review --fix` (no FROZEN_UNITS_CAP exported).
+  - The termination check at line 1363 errors with `integer expression expected`.
+  - In `set -e` context this would kill the loop; without it the comparison is treated
+    as false (`-gt empty` is undefined under bash 3.2), so the cap NEVER triggers.
+  - The whole "exit 3 on too many frozen units" exit-code (commit 2dd64ec) is wired but
+    unreachable.
+  - Commit b8907f1 ("Tunable Constants section + magic-number sweep") introduced this
+    regression. The Tunable Constants section was supposed to fix magic numbers — instead
+    it dropped the working hard-coded value of FROZEN_UNITS_CAP (originally something like 5).
+Fix: Change line 167 to `FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-5}"` (or whatever the
+  documented original value was). Audit the same commit for any other self-referential
+  defaults.
+
+================================================================================
+[redteam] ASSUMPTION_VIOLATION: ARCH_JSON is referenced in two places but never assigned.
+                                Editor input + Phase 3 revert path both feed empty/literal data.
+                                — god-review.md:979 (Editor spawn), 1230 (revert path)
+Confidence: definite
+Evidence:
+  Line 979 (Codex-as-editor):
+      "$(cat ~/.claude-dotfiles/commands/god-review/lib/editor-agent.md)\n\nApply this change:\n$ARCH_JSON" \
+  Line 1230 (revert path):
+      ARCH_FILE=$(echo "$ARCH_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('file',''))" 2>/dev/null)
+  Grep for any assignment:
+      $ grep -n 'ARCH_JSON=' god-review.md
+      (empty — no matches)
+  The variable that IS set by the orchestrator is ARCH_OUTPUT (line 911):
+      ARCH_OUTPUT="<architect agent output>"
+  Lines 952, 920, 914 all use ARCH_OUTPUT. ARCH_JSON is a leftover name from an earlier
+  draft. write_env in env-helpers.sh does not include ARCH_JSON in the persistence list,
+  so even sourcing wouldn't recover it.
+Attack/Failure Scenario:
+  - Editor (Codex case) receives a prompt with an empty `Apply this change:\n` payload.
+    Codex either errors out, hallucinates a JSON, or asks "what change?" — failure mode
+    depends on Codex behavior, but the keep/revert path then can't read coherent output.
+  - Revert path at line 1230: ARCH_JSON is empty → the python heredoc reads empty stdin,
+    json.load throws, ARCH_FILE becomes "" → the case at 1232 enters the empty-string arm
+    and prints "FINDING_REJECTED: filename invalid for revert: " — but the actual revert
+    (`git checkout -- "$ARCH_FILE"`) never happens. The bad fix is left in the working
+    tree and may even be committed by the next iteration.
+  - The Claude-as-editor branch (line 983-985) is described in narrative ("load editor-agent.md
+    content + architect JSON") and may be implemented correctly by the orchestrator agent,
+    but the Codex branch in shell is broken.
+Fix: Replace every ARCH_JSON with ARCH_OUTPUT in the orchestrator. Add ARCH_OUTPUT to
+  env-helpers.sh write_env list (or pass it via /tmp/arch.json file rather than env).
+
+================================================================================
+[redteam] SAFETY_BY_CONVENTION: env-helpers.sh defines is_hard_gate() twice. The first
+                                definition is dead code; the second works only if WORKDIR
+                                is the dotfiles repo. The override is silent.
+                                — lib/env-helpers.sh:62-91
+Confidence: likely
+Evidence:
+  Lines 62-75 define is_hard_gate() reading from `$WORKDIR/.claude-dotfiles/...`.
+  Then a comment at line 73 admits the path is wrong if WORKDIR is not the dotfiles repo.
+  Lines 78-91 redefine the function with the corrected `$HOME/.claude-dotfiles/...` path.
+  Bash silently uses the second definition (function redefinition is a no-op warning at most).
+  The dead code remains as a future trap: anyone reading line 62-75 will trust it,
+  and any future edit that "consolidates" the duplicate by removing the second copy
+  will silently re-introduce the WORKDIR-relative bug.
+Attack/Failure Scenario:
+  - A future maintainer notices the duplication, deletes lines 78-91 thinking they're
+    redundant, and breaks hard-gate detection for any repo that isn't ~/.claude-dotfiles.
+  - This is "safety by distance": two pieces of code that work today will conflict
+    after one cleanup commit.
+  - Combined with finding #2 (glob_to_regex broken), is_hard_gate is doubly-fragile.
+Fix: Delete the first (broken) definition entirely. Add a comment above the surviving
+  one: "# Always read from $HOME — hard-gates.txt lives with the orchestrator, not the
+  audit target."
+
+================================================================================
+[redteam] SILENT_FAILURE: PRE_SCAN_HALLUCINATED is computed and immediately discarded.
+                          PRE_SCAN_FLAG_COUNT undercounts pre-scan flags by ⅓.
+                          — god-review.md:326-356
+Confidence: definite
+Evidence:
+  Line 326: `PRE_SCAN_HALLUCINATED=""`
+  Lines 327-342: pre-scan logic runs, but the output goes to a `while read pkg; do echo ...`
+  pipeline, never assigned to PRE_SCAN_HALLUCINATED. The variable stays "".
+  Line 353-355:
+      PRE_SCAN_FLAG_COUNT=0
+      [ -n "$PRE_SCAN_SECRETS" ] && PRE_SCAN_FLAG_COUNT=$((PRE_SCAN_FLAG_COUNT+1))
+      [ -n "$PRE_SCAN_INJECTION" ] && PRE_SCAN_FLAG_COUNT=$((PRE_SCAN_FLAG_COUNT+1))
+  PRE_SCAN_HALLUCINATED is never checked. Three-way pre-scan is now a two-way pre-scan.
+  Findings are never propagated to Phase 2 — the principle agents have to re-discover
+  every hallucinated import from scratch, even though the orchestrator scanned for them.
+  This is exactly what the "info-loss-detector" principle (added in Wave 1) is designed
+  to catch — and it would catch it, IF the orchestrator ran info-loss-detector against
+  itself, which it doesn't (god-review never reviews god-review).
+Attack/Failure Scenario:
+  - The orchestrator gathers hallucinated-import candidates in Phase 1, displays them
+    inline (head -20), then forgets them. hallucinated-imports principle agent re-discovers
+    them. The orchestrator burns wall-clock on the duplicate work, and the pre-scan
+    "early signal" claim in the README is theatrical, not functional.
+  - PRE_SCAN_FLAG_COUNT being wrong means the "[N] pre-scan flags raised" line in the
+    Phase 1 output undercounts — operators trust a smaller number than reality.
+Fix: (1) Assign the pipeline to PRE_SCAN_HALLUCINATED via process-substitution capture.
+  (2) Add `[ -n "$PRE_SCAN_HALLUCINATED" ] && PRE_SCAN_FLAG_COUNT=$((PRE_SCAN_FLAG_COUNT+1))`.
+  (3) Pass all three pre-scan blobs into Phase 2 via a tmp/god-review/pre-scan.json file
+  so principle agents can dedupe instead of re-scanning.
+
+================================================================================
+[redteam] INVARIANT_NOT_ENFORCED: finding_history_hashes is initialized but never written.
+                                  The "do not retry reverted fixes" check is permanently false.
+                                  — god-review.md:397, 823
+Confidence: definite
+Evidence:
+  Line 397 (state.json schema): `"finding_history_hashes": [],`
+  Line 823 (AUTO_FIX criterion): `Has not been attempted and reverted in a prior round
+                                  of this session (check finding_history_hashes)`
+  No write path exists in the entire orchestrator. Grep:
+      $ grep -n 'finding_history_hashes' god-review.md
+      397:  "finding_history_hashes": [],
+      823:- Has not been attempted and reverted in a prior round of this session (check `finding_history_hashes`)
+  Compare to `kept_fixes` and `reverted_fixes`, which DO have explicit python heredoc
+  writers at lines 1145, 1191, 1199-1206, 1210-1219, 1247-1254. Those work. But the
+  reverted-finding HASH is never computed and never appended to finding_history_hashes.
+Attack/Failure Scenario:
+  - Round 1: finding F is auto-fixed, gates fail, fix is reverted. reverted_fixes gets
+    {finding_id: F, reason: ...} but the hash is never recorded.
+  - Round 2: same finding F re-emerges from the same principle agent. The triage check
+    at 823 reads finding_history_hashes (empty array) and concludes "never attempted".
+    Architect runs again, Editor runs again, gates fail again, revert again.
+  - Loop mode without --max-rounds: this can iterate forever (until INSTABILITY_RATE
+    triggers or wall-clock expires). The cost is ~2 agent calls per round per stuck
+    finding, paid in API credits.
+  - Cross-reference with finding #1: even in bounded mode, the loop doesn't actually
+    iterate, so this finding is dormant. But once finding #1 is fixed, this becomes
+    immediately exploitable.
+Fix: After every revert, compute finding hash (file + line range + category, same hash
+  used in 2e merge logic) and append to state.json.finding_history_hashes via the same
+  atomic .tmp→mv pattern used elsewhere. Then in 3a, gate AUTO_FIX on `hash NOT IN
+  finding_history_hashes`.
+
+================================================================================
+[redteam] TRUST_WITHOUT_VERIFY: Step 0.5 single-principle delegation is a markdown
+                                pseudocode block, not executable. Lists 19 principles —
+                                the 4 new detectors (dead-end, info-loss, contradiction,
+                                gap) are silently unreachable via --principle.
+                                — god-review.md:140-152
+Confidence: definite
+Evidence:
+  Line 138-152 wraps in ``` … ``` (no language tag) the pseudocode:
+      IF $PRINCIPLE is non-empty:
+        Read the principle file content from:
+          ~/.claude-dotfiles/commands/god-review/principles/<PRINCIPLE>.md
+        ...
+  This is narrative, not bash — the orchestrator agent has to interpret it. That is
+  brittle but workable. Worse: line 144 enumerates the available principles in the
+  abort message:
+      "Available principles: single-pattern, reuse, clarity, scope, antipatterns,
+       documentation, circular-deps, architecture-backend, architecture-frontend,
+       self-contained, tanstack-query, test-deletion, ci-yaml-tampering,
+       hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism,
+       perf-heuristic, perf-benchmark"
+  Count: 19. The README and CRITERIA.md have been updated to 23 principles (commits
+  fe7628d, dfbfe3b). The Step 0.5 list was missed: dead-end-detector, info-loss-detector,
+  contradiction-detector, gap-detector are not listed.
+  Line 62 (the actual flag parser) does check for file existence:
+      [ -f "$HOME/.claude-dotfiles/commands/god-review/principles/${2}.md" ]
+  So `--principle dead-end-detector` will pass parser validation (the file exists),
+  but if anyone trips the abort path, they'll see a misleading error message saying
+  the principle doesn't exist when it does.
+Attack/Failure Scenario:
+  - User runs `/god-review --principle dead-end-detectr` (typo). The parser at line 62
+    correctly errors out with the file-not-found message — fine.
+  - User runs `/god-review --principle info-loss-detectr` (typo). Parser errors out.
+    But the printed list of "valid names" is incomplete (missing the 4 new ones), so
+    the user spends time confused why a principle they read about in the README is
+    "not real".
+  - Same Step 0.5 narrative is duplicated by intent in CRITERIA.md / README.md. Three
+    sources of truth, two updated, one not. This is exactly the pattern that
+    contradiction-detector principle is supposed to find — and god-review never reviews
+    god-review.
+Fix: (1) Replace pseudocode with a real bash block that lists files dynamically:
+  `for f in ~/.claude-dotfiles/commands/god-review/principles/*.md; do basename "$f" .md; done`
+  (2) Centralize the principle list in lib/principle-list.txt and have all sites read it.
+
+================================================================================
+[redteam] ADVERSARIAL_INPUT: --ruthless flag is parsed and persisted, but the spawn
+                             block is a stub comment, not an actual Agent invocation.
+                             Promotion logic at 2e never references claude-broad:claude-ruthless-redteam.
+                             — god-review.md:536-546, 657-674
+Confidence: definite
+Evidence:
+  Lines 536-546:
+      ```bash
+      ...
+      if [ "$RUTHLESS" = "true" ]; then
+        echo "Spawning ruthless redteam reviewer (--ruthless flag set)..."
+        # Spawn 4th Claude broad reviewer alongside the existing 3.
+        # Use Agent tool with prompt loaded from broad-reviewers/claude-ruthless-redteam.md
+        # subagent_type: "general-purpose", model: "claude-opus-4-7"
+        # Note: findings from this reviewer require Codex confirmation for cross-model promotion (Locked Decision #8).
+      fi
+      ```
+  Every line after the echo is a comment. The block instructs the orchestrator (a separate
+  Claude agent reading this file) to spawn an Agent tool call, but the bash itself does
+  nothing. This is "safety by documentation" — works ONLY if the orchestrator agent
+  remembers to read this comment and act on it.
+  Lines 668-674 (promotion logic) describe THREE promotion rules:
+    1. cross-model agreement → +1 level
+    2. Tier 1 / failure-class principle → +1 level
+    3. CONFIRMED by validator → +1 level
+  Locked Decision #8 (per CRITERIA.md:143) requires redteam findings to require Codex
+  confirmation BEFORE promotion. There is NO "redteam findings need extra validation"
+  rule in the orchestrator. Rule 1 (cross-model agreement) would over-promote any
+  redteam finding that happens to overlap with a Codex finding. Rule 3 would promote
+  redteam findings the same way as any other Claude finding once Codex returns CONFIRMED
+  — but a CONFIRMED-by-Codex doesn't actually require both sources, just one CONFIRMED.
+Attack/Failure Scenario:
+  - User runs `/god-review --ruthless`. RUTHLESS=true, parsed correctly, persisted via
+    write_env. Hits line 539, prints "Spawning ruthless redteam reviewer...", and runs
+    zero comments. The redteam reviewer is never spawned.
+  - The promise that --ruthless adds a 4th reviewer is theater — only the README believes it.
+  - Even if the orchestrator agent does spawn the reviewer based on the comment text,
+    the promotion path treats redteam findings identically to any other Claude broad
+    finding. Locked Decision #8 (extra Codex confirmation gate) is not enforced anywhere
+    in shell.
+Fix: (1) Replace the comment block with an actual Agent tool spec. Since markdown can't
+  spawn agents directly, this requires the orchestrator-narrative pattern: an explicit
+  text directive saying "Spawn an Agent now with prompt=cat ~/.claude-dotfiles/...".
+  (2) Add a Step 2e.5 promotion rule: "If finding source includes claude-broad:claude-ruthless-redteam
+  AND no Codex source CONFIRMED it, do NOT promote — keep at original confidence."
+
+================================================================================
+## Redteam Summary
+- Total findings: 10
+- Findings overlapping with checklist agents (expected): ~3 (loop-structure could be
+  caught by gap-detector; FROZEN_UNITS_CAP empty default by clarity/dead-end-detector;
+  finding_history_hashes orphaned by info-loss-detector — IF those principles were run
+  against god-review itself, which they aren't).
+- Findings unique to redteam pass: ~7 (the broken glob_to_regex, broken HAS_BENCH_SCRIPT
+  one-liner, ARCH_JSON vs ARCH_OUTPUT, dead-PRE_SCAN_HALLUCINATED, double-defined
+  is_hard_gate, --ruthless stub, Step-0.5 stale principle list).
+- Most dangerous finding: **#1 (Phase 3 while-loop split across markdown fences)** —
+  the entire Phase 3 fix loop is structurally non-functional. Every other finding in
+  this report is moot until #1 is fixed, because the round counter never advances and
+  the termination block at line 1306-1374 (where exit codes 2-7 live) never runs.
+
+Second most dangerous: **#2 (glob_to_regex broken on hard-gate paths)** — auto-fix can
+silently modify migrations, tests, auth, monorepo package.json. The orchestrator
+believes it has hard gates; in practice it has wishes.
+
+Promotion note: per Locked Decision #8 these redteam findings require Codex confirmation
+before being promoted as "definite". Recommend running the codex-cross-layer reviewer
+specifically against the Phase 3 while-loop structure (finding #1), the glob_to_regex
+function (#2), and the HAS_BENCH_SCRIPT line (#3) before treating them as ground truth.
+
+I read this codebase three times. I am writing what I found, not what I hoped not to find.
