@@ -1,0 +1,99 @@
+# Gap Detector — Findings
+# Scope: ~/.claude-dotfiles/commands/god-review/ + god-review.md
+# Status: FAIL
+# Risk Level: CRITICAL
+
+## SUMMARY
+8 gaps found. 3 CRITICAL (orchestrator never spawns 4 new principles, --ruthless flag is comment-only, "For each AUTO_FIX" is prose with no for-loop), 2 HIGH, 3 MEDIUM.
+
+---
+
+## FINDING 1 [definite] CRITICAL — 4 new Tier-1 principle files exist but are NEVER spawned by orchestrator
+**Location:** `~/.claude-dotfiles/commands/god-review.md:454-480` (ALWAYS_ON_PRINCIPLES)
+**Category:** MISSING — implementation-not-wired
+**Evidence:** `grep -c "gap-detector\|dead-end-detector\|info-loss-detector\|contradiction-detector" god-review.md` returns **0**. The principle files exist on disk (`principles/gap-detector.md`, `dead-end-detector.md`, `info-loss-detector.md`, `contradiction-detector.md`) and are listed in `CRITERIA.md:138-141` as Tier-1 always-on with cross-model promotion enabled. They are also exposed as slash commands. But:
+- They are absent from `ALWAYS_ON_PRINCIPLES` (line 454-470) → never spawned in Layer B
+- They are absent from the absolute-path list block (line 581-601) — that list still says "all 19" but only contains the original 19
+- They are absent from Step 0.5's "unknown principle" error message (line 144) — `--principle gap-detector` will pass the file-exists check at line 62 but the available-principles list shown to users doesn't mention them
+- README.md description still says "19 principle agents", and line 24 says "up to 23 pairs" (lifted), but ACTIVE_PRINCIPLES math still resolves to 14+5=19
+
+**Impact:** The 4 detectors that this very review depends on never run during a normal `/god-review` invocation. Phase 2 silently produces a smaller-than-advertised audit. Users believe Tier-1 promotion is firing on these classes when in fact no agent was spawned.
+
+---
+
+## FINDING 2 [definite] CRITICAL — `--ruthless` flag spawn block contains zero executable spawn code
+**Location:** `~/.claude-dotfiles/commands/god-review.md:536-546`
+**Category:** MISSING — flag honored only by echo, never invokes Agent
+**Evidence:**
+```bash
+if [ "$RUTHLESS" = "true" ]; then
+  echo "Spawning ruthless redteam reviewer (--ruthless flag set)..."
+  # Spawn 4th Claude broad reviewer alongside the existing 3.
+  # Use Agent tool with prompt loaded from broad-reviewers/claude-ruthless-redteam.md
+  # subagent_type: "general-purpose", model: "claude-opus-4-7"
+  # Note: findings from this reviewer require Codex confirmation for cross-model promotion (Locked Decision #8).
+fi
+```
+The body is one `echo` and four `#` comments. There is no Agent invocation, no pseudocode-to-real-shell substitution. README.md:43, 95-103 advertise this reviewer as a real fourth broad-Claude lens with cost projections. The flag is parsed (line 33, 53-54), validated, and stored — but never causes any reviewer to spawn. Pure flag-parsed-but-never-honored gap.
+
+---
+
+## FINDING 3 [definite] CRITICAL — "For each AUTO_FIX finding" is a prose header; there is NO real for-loop construct, and the inner `continue` statements escape into the wrong loop scope
+**Location:** `~/.claude-dotfiles/commands/god-review.md:847-1258` (Step 3c entire section)
+**Category:** MISSING — Phase pseudocode never becoming real shell
+**Evidence:** Line 849 reads `For each AUTO_FIX finding:` as plain markdown prose. The bash blocks that follow (steps 1-7: pre-fix snapshot, Architect spawn, schema validate, hard-gate check, Editor spawn, gates, regression, keep/revert) are NEVER wrapped in `for finding in $AUTO_FIX_LIST; do ... done`. There is exactly one `while` (the round loop opened at line 809) and one matching `done` at line 1406. So:
+- The `continue` at line 916 (Architect cannot-fix) skips to the next ROUND, not the next finding
+- The `continue` at line 948 (malformed Architect output) skips to the next ROUND
+- The `continue` at lines 956 / 961 (filename injection / path-escape guards) skip to the next ROUND
+- The `continue` at line 967 (`if is_hard_gate "$ARCH_FILE"`) skips to the next ROUND, NOT the next finding — so a single hard-gate finding aborts the entire round before any other finding is even attempted
+
+This is exactly the failure mode named in the implementer prompt ("does the continue land in the wrong loop scope?") — answer: yes. The implementer-prompt comment `# ... existing per-round content ...` was replaced with the inner phase code but the enclosing `for finding in ...; do` / `done` was never added.
+
+---
+
+## FINDING 4 [definite] HIGH — Editor agent spawn (Phase 3 step 4) is not a real Agent tool call when Codex is unavailable
+**Location:** `~/.claude-dotfiles/commands/god-review.md:971-986`
+**Category:** MISSING — pseudocode for Editor fallback path
+**Evidence:** When `$CODEX_AVAILABLE=true`, the Codex path uses `bash codex-invoke.sh` (real). When Codex is unavailable, lines 983-985 say in prose:
+> "spawn a second Claude Agent tool call (different instance, same model):
+> Prompt: load `editor-agent.md` content + architect JSON
+> subagent_type: 'general-purpose', model: 'claude-opus-4-7'"
+This is instructions to the orchestrator-LLM, not bash, not a JSON block, not a marker the harness can act on. Combined with finding 3 (no for-loop), there is no place an actual Agent call can be hooked. Result: in Codex-unavailable environments, the entire fix-loop is a no-op after the architect runs — no Editor ever applies the change, gates run against unchanged worktree, regressions show "NONE" trivially.
+
+---
+
+## FINDING 5 [likely] HIGH — README "Extension Guide" lists 3 orchestrator sites; 4 new principles violate all 3
+**Location:** `~/.claude-dotfiles/commands/god-review/README.md:226-229`
+**Category:** CONTRADICTION + MISSING
+**Evidence:** README says principles must be registered at exactly 3 sites: (a) `ALWAYS_ON_PRINCIPLES`/`STACK_GATED_PRINCIPLES`, (b) the unknown-principle error message in Step 0.5, (c) the absolute-path list block. Per Finding 1, the 4 new detectors are missing from ALL 3 sites. Additionally the guide is silent on a 4th de-facto site that does need updating: `CRITERIA.md` principle index. CRITERIA was updated; the orchestrator was not. README's claim "3 sites must be updated" is therefore both (a) accurate to the spec and (b) violated in this commit.
+
+---
+
+## FINDING 6 [definite] MEDIUM — `tmp/god-review/known-deferred.txt` exists but at wrong path relative to E0 spec
+**Location:** existing file: `~/.claude-dotfiles/commands/god-review/lib/known-deferred.txt`
+**Category:** MISSING — at the path the orchestrator/principles would actually consult
+**Evidence:** The file exists at `lib/known-deferred.txt` with 4 deferred entries (clarity orchestrator-line-count, two single-pattern entries, documentation agent-count-math-drift). However:
+- No bash block in `god-review.md`, no principle file, and no library script references `known-deferred.txt` by name (`grep -r known-deferred ~/.claude-dotfiles/commands/god-review/` returns only the file itself).
+- The principle files reference deferred-finding suppression via `state.json` known-issues, not via this file.
+- The implementer prompt expected this file under `tmp/god-review/known-deferred.txt` per E0; the actual location is in `lib/`, with no consumer.
+Result: the file is a documentation artifact only; deferred findings will be re-flagged each run because no code subtracts them.
+
+---
+
+## FINDING 7 [likely] MEDIUM — `MAX_ROUNDS_EXPLICIT` is set on `--max-rounds` but the bounded-mode termination still uses raw `$ROUND -ge $MAX_ROUNDS` regardless
+**Location:** `~/.claude-dotfiles/commands/god-review.md:1305-1374`
+**Category:** flag-parsed-with-partial-honor
+**Evidence:** Line 36 declares `MAX_ROUNDS_EXPLICIT=false`. Line 57 sets it `true` on `--max-rounds`. In `--loop` mode (line 1309) it correctly gates the hard ceiling. But in bounded mode (line 1371: `if [ "$ROUND" -ge "${MAX_ROUNDS:-5}" ]`) the flag is irrelevant because `MAX_ROUNDS` always has a value. The B12 fix is half-implemented: the loop-mode branch checks the explicit flag, the bounded branch ignores it. The outer while-condition at line 809 (`while [ "$LOOP" = "true" ] || [ "$ROUND" -le "${MAX_ROUNDS:-5}" ]`) also doesn't reference `MAX_ROUNDS_EXPLICIT`. Risk: a user passing `--loop` with no `--max-rounds` enters indefinite mode correctly, but the documented intent ("--max-rounds caps --loop only when explicit") works only because of the new flag — the symmetric case in bounded mode shows the variable is dead-coded for that path.
+
+---
+
+## FINDING 8 [likely] MEDIUM — claude-ruthless-redteam.md effort split (30/40/30) is a prose claim; review of file body shows Phase 1 and Phase 2 are roughly balanced text, Phase 3 is a thin paragraph
+**Location:** `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-ruthless-redteam.md:21-54`
+**Category:** ASSUMPTION — documentation describing absent rigor
+**Evidence:** File is 85 lines total. Phase 1 (line 21-35): 15 lines, mostly bullet questions. Phase 2 (37-44): 8 lines, 5 bullets. Phase 3 (46-54): 9 lines, 4 bullets. The header says "30% / 40% / 30% of effort" but Phase 2 has the smallest body, and Phase 3 (per spec the "cross-reference notes from Phase 1 against codebase") gives only 4 examples and no instruction on how to consolidate. The 30/40/30 ratio is asserted, not enforced by any evidence in the prose. The reviewer prompt (when activated — see Finding 2) would receive instructions that under-specify Phase 2 relative to its supposed share. Combined with Finding 2, this gap is currently dormant; it becomes active the moment `--ruthless` is wired.
+
+---
+
+## STATUS
+- 0 findings already in known-deferred.txt (the deferred file does not address any of these)
+- All 8 are net-new gaps introduced or left by the recent fix attempts (B1/B12/E0/4-new-principles work)
