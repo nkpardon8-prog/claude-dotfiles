@@ -1,0 +1,94 @@
+# Dead-End Detector — Findings
+
+Scope: ~/.claude-dotfiles/commands/god-review/ + god-review.md
+Status: FAIL
+Risk: HIGH (4 dead-end state fields drive critical termination logic; 1 dead Tunable Constant; 1 self-referencing constant; 1 flag dies at bash-fence boundary; 4 principle files orphaned from orchestrator)
+
+---
+
+## F1 [definite, CRITICAL] frozen_added_per_round + architect_malformed_per_round — read but never written
+
+Location: god-review.md:1330-1331 (read sites in AVG_INSTABILITY computation)
+Evidence: grep -rFn "frozen_added_per_round" returns ONE hit (the read at 1330). grep -rFn "architect_malformed_per_round" returns ONE hit (the read at 1331). Neither field is in the state.json initializer (lines 384-401) and no python block writes them. The churn detector (lines 1093-1116) appends to `frozen_units` but never to `frozen_added_per_round`. The malformed-architect handler (lines 938-947) increments `architect_malformed_count` but never `architect_malformed_per_round`.
+Impact: AVG_INSTABILITY is permanently 0. The --loop instability abort (line 1337, "if AVG > INSTABILITY_RATE") is dead code — the loop can never terminate via this path. INSTABILITY_RATE constant (line 166) becomes a partial dead-end too because its consumer is never fed real data.
+Fix: Either (a) write to these fields each round (push len(frozen_units_added) and architect_malformed_count delta into the per-round arrays), or (b) read from existing fields (frozen_units length delta, architect_malformed_count delta).
+
+---
+
+## F2 [definite, HIGH] LATE_IMPORT_LINE — Tunable Constant declared, used nowhere
+
+Location: god-review.md:170 (declaration)
+Evidence: `LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"` is declared with comment "circular-deps cutoff" but grep across god-review.md, lib/, principles/ shows ZERO additional references. The circular-deps.md principle (which would consume this) does not import or reference LATE_IMPORT_LINE.
+Impact: User cannot tune circular-deps cutoff via env var as documented. Constant exists only to mislead.
+Fix: Either wire LATE_IMPORT_LINE into circular-deps.md as a threshold parameter, or remove the declaration.
+
+---
+
+## F3 [definite, HIGH] SPINLOCK_TIMEOUT_SEC — Tunable Constant orphaned from its consumer
+
+Location: god-review.md:171 (declaration); codex-invoke.sh:98 (hardcoded duplicate)
+Evidence: `SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"` declared in orchestrator. codex-invoke.sh:98 hardcodes `LOCK_TIMEOUT=600` instead of reading SPINLOCK_TIMEOUT_SEC. codex-invoke.sh is run via `bash` (not source) and does not export the constant from the orchestrator's environment in any case.
+Impact: Override via env var has no effect on actual spinlock; the documented tunable is a lie.
+Fix: In codex-invoke.sh, replace the hardcoded `LOCK_TIMEOUT=600` with `LOCK_TIMEOUT="${SPINLOCK_TIMEOUT_SEC:-600}"` — and ensure the orchestrator exports SPINLOCK_TIMEOUT_SEC before invoking the script.
+
+---
+
+## F4 [definite, HIGH] FROZEN_UNITS_CAP — self-referencing assignment with no default
+
+Location: god-review.md:167
+Evidence: `FROZEN_UNITS_CAP="$FROZEN_UNITS_CAP"` (note the missing `:-N` fallback, unlike every other Tunable Constant on lines 164-171). If the env var is unset, FROZEN_UNITS_CAP is the empty string. Then line 1363 `[ "$FROZEN_UNITS_COUNT" -gt "$FROZEN_UNITS_CAP" ]` fails with "integer expression expected" and the bounded-mode escalation never triggers.
+Impact: The frozen-units escalation gate is silently broken in default usage. A user not setting FROZEN_UNITS_CAP gets no protection.
+Fix: `FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-3}"` (or chosen default).
+
+---
+
+## F5 [definite, HIGH] MAX_ROUNDS_EXPLICIT — flag parsed, dies at bash-fence boundary
+
+Location: god-review.md:36, 57, 1309 (parser sets it; termination check reads it; intervening write_env does NOT persist it)
+Evidence: Parsed at line 57 (`MAX_ROUNDS_EXPLICIT=true`). env-helpers.sh:20-24 (write_env's persisted-var list) does NOT include MAX_ROUNDS_EXPLICIT. Many bash blocks between Step 0 (parsing) and Phase 3 (line 1309) source .env.sh and run write_env, so by the time the termination check reads `$MAX_ROUNDS_EXPLICIT` it is empty (sourced from .env.sh which doesn't define it).
+Impact: B12 ceiling check (`if [ "$MAX_ROUNDS_EXPLICIT" = "true" ] && [ "$ROUND" -ge "${MAX_ROUNDS:-9999}" ]`) always evaluates false. The user-facing guarantee that --max-rounds caps --loop is broken.
+Fix: Add MAX_ROUNDS_EXPLICIT to env-helpers.sh write_env var list.
+
+---
+
+## F6 [definite, MEDIUM] consecutive_no_change_rounds — state field initialized, never read or written again
+
+Location: god-review.md:390 (only reference)
+Evidence: Initialized to 0 in state.json. Zero subsequent reads, zero subsequent writes anywhere in god-review.md, lib/, or principles/. Note CONSECUTIVE_CLEAN_ROUNDS (a different field) handles convergence; this field appears to be a vestigial duplicate.
+Impact: state.json bloat; misleads maintainers into thinking there's a separate no-change tracker.
+Fix: Remove from the state.json initializer.
+
+---
+
+## F7 [definite, MEDIUM] false_positives — state field initialized, never read or written
+
+Location: god-review.md:388 (only reference)
+Evidence: `"false_positives": []` initialized. Zero reads, zero appends anywhere in the codebase. The validation pass (Phase 2d) drops false positives but does not record them here. Phase 2 meta-review notes count false positives "in-memory" but never persists.
+Impact: state.json contains a permanently-empty array; the `--resume` feature claims to inherit prior false positives but cannot.
+Fix: Either wire false-positive recording at Phase 2d aggregation (append finding hashes), or delete the field.
+
+---
+
+## F8 [definite, MEDIUM] Four principle files exist on disk but are never invoked by the orchestrator
+
+Location: god-review/principles/{contradiction-detector,dead-end-detector,gap-detector,info-loss-detector}.md
+Evidence: These four files are listed in the available-skills system and are non-trivial (8-12KB each), but god-review.md ALWAYS_ON_PRINCIPLES (lines 454-469) does not include them, and the absolute-path enumeration (lines 581-601, comment "all 19") lists 19 OTHER files. The orchestrator's banner says "19 principle agents" — these four are the orphans.
+Impact: Significant authored work (40KB+ of principle prompts) computed but never consumed by the orchestrator. Users invoking /god-review never get these lenses despite the files existing. Single-principle delegation (Step 0.5) does invoke them by `--principle <name>` lookup, so they are reachable individually — but the broad pipeline drops them.
+Fix: Add the four to ALWAYS_ON_PRINCIPLES and to the absolute-path list. Also update the count in the banner ("19 principle agents") if intent is 23.
+
+---
+
+## False Positives Ruled Out (verifying analysis was thorough)
+
+- `finding_history_hashes` (line 397): initialized but only mentioned as a doc-string check at line 823 — the AUTO_FIX triage prose says to consult it, but no python block reads it. **Borderline dead-end**, kept off the top-8 list because the comment at line 823 implies the documented-but-unimplemented gap belongs more squarely to gap-detector.
+- `human_gate_emitted` (line 837): READ but never WRITTEN in the visible diff — this is a real bug too, but it overlaps thematically with F1/F2-style read-only fields. Kept off list to stay under 8 findings; report this in gap-detector instead since the WRITE side is the missing artifact (gap, not dead-end).
+- `RUTHLESS`, `RESCOPE_ON_FIX`, `CODEX_VALIDATION_EVERY`, `FORCE_RESUME`, `ONLINE`, `RESUME`, `LOOP`, `FIX`, `PRINCIPLE` flags: each parsed AND honored at runtime decision points. Confirmed live.
+- `SHRINKAGE_PCT`, `PERF_REGRESS_PCT`, `INSTABILITY_RATE`, `SECRET_LEN_FLOOR`, `TEST_FILE_LINE_FLOOR`: all consumed at runtime. Confirmed live. (INSTABILITY_RATE is technically read-but-fed-by-dead-data per F1, but the constant itself is wired.)
+- `write_env`, `glob_to_regex`, `is_hard_gate`: all called at least once. is_hard_gate has TWO definitions in env-helpers.sh (lines 63 and 78) with the second silently overriding the first — that's a single-pattern/contradiction violation, not a dead-end (the second def IS used).
+- `HAS_BACKEND_PROJECT` and `HAS_BACKEND_LENS_TRIGGER`: distinct (BACKEND_PROJECT is the find-based marker; LENS_TRIGGER concatenates AUTHED_HANDLER+BACKEND_PROJECT for the gate). Both are referenced. Confirmed live.
+- `HAS_AUTHED_HANDLER`: live (echoed at line 228, consumed at line 203 via concatenation, referenced in architecture-backend.md gate).
+- e2e-test.sh: referenced from README.md as a documented manual-run helper. Not orchestrator-invoked, but documented as an intentional standalone tool. Not a dead-end.
+
+---
+
+Summary: 8 findings — 1 CRITICAL (dead state fields silently kill --loop instability abort), 4 HIGH (broken Tunable Constants and a flag that dies at fence boundary), 3 MEDIUM (state.json bloat + 4 orphaned principle files representing meaningful authored work). Recommend FAIL grade per the principle's own thresholds: "Any flag parsed but never honored at runtime; any state field written in a critical path but never read; 4+ dead-end variables" — F5 alone meets the flag criterion, F1 alone meets the state-field criterion.
