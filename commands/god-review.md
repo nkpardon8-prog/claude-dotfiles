@@ -182,7 +182,7 @@ Run this bash block:
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-mkdir -p tmp/god-review tmp/god-review/snapshots
+mkdir -p tmp/god-review
 
 # --- Stack fingerprint ---
 # All find commands run via /bin/bash -c to avoid zsh glob-qualifier interpretation of unquoted (
@@ -361,7 +361,7 @@ echo "Pre-scan complete. $PRE_SCAN_FLAG_COUNT flags raised."
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-mkdir -p tmp/god-review tmp/god-review/snapshots
+mkdir -p tmp/god-review
 
 # Single canonical snapshot block — handles clean and dirty working trees.
 # Creates a stash ref on dirty tree (non-destructive: stash create does NOT modify worktree).
