@@ -112,7 +112,7 @@ Used in the Meta-Review section of the final report and in Phase 1 baseline gate
 
 ## Principle Index
 
-All 19 principles classified into tiers. **Tier 1 = always promote on hit** (single-level confidence promotion before section assignment). Tier 2 = standard severity, no promotion. Stack-gating applies regardless of tier — a stack-gated principle self-skips in Phase 1 if its signal is empty.
+All 23 principles classified into tiers. **Tier 1 = always promote on hit** (single-level confidence promotion before section assignment). Tier 2 = standard severity, no promotion. Stack-gating applies regardless of tier — a stack-gated principle self-skips in Phase 1 if its signal is empty.
 
 | Principle | Tier | Stack gate | Promotion |
 |---|---|---|---|
@@ -135,6 +135,12 @@ All 19 principles classified into tiers. **Tier 1 = always promote on hit** (sin
 | tanstack-query | 2 | HAS_TANSTACK_QUERY | no |
 | perf-heuristic | 2 | always-on | no |
 | perf-benchmark | 2 | HAS_BENCH_SCRIPT | no |
+| dead-end-detector | 1 | always-on | yes |
+| info-loss-detector | 1 | always-on | yes |
+| contradiction-detector | 1 | always-on | yes |
+| gap-detector | 1 | always-on | yes |
+
+The `--ruthless` flag activates `claude-ruthless-redteam` as a 4th broad reviewer in Layer A alongside the standard 3 Claude broad reviewers. This reviewer uses a skeptic-first prompt (see `broad-reviewers/claude-ruthless-redteam.md`) and its findings require Codex confirmation for cross-model promotion per Locked Decision #8.
 
 ---
 
