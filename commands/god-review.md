@@ -512,6 +512,20 @@ Agents:
 2. `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-architecture-prod.md` — architecture, dead code, prod readiness, scalability
 3. `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-security-resilience.md` — injection, auth, IDOR, data leaks, resilience
 
+**Layer A — 4th Claude broad reviewer (conditional — `--ruthless` only):**
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+if [ "$RUTHLESS" = "true" ]; then
+  echo "Spawning ruthless redteam reviewer (--ruthless flag set)..."
+  # Spawn 4th Claude broad reviewer alongside the existing 3.
+  # Use Agent tool with prompt loaded from broad-reviewers/claude-ruthless-redteam.md
+  # subagent_type: "general-purpose", model: "claude-opus-4-7"
+  # Note: findings from this reviewer require Codex confirmation for cross-model promotion (Locked Decision #8).
+fi
+```
+
 **Layer A — 3 Codex broad reviewers** (only if $CODEX_AVAILABLE=true):
 
 Invoke via Bash:
