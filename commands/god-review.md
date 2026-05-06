@@ -1264,6 +1264,12 @@ except Exception:
 if [ "$LOOP" = "true" ]; then
   # --- Indefinite mode termination checks ---
 
+  # B12: Hard ceiling — if user explicitly passed --max-rounds, it caps --loop too
+  if [ "$MAX_ROUNDS_EXPLICIT" = "true" ] && [ "$ROUND" -ge "${MAX_ROUNDS:-9999}" ] 2>/dev/null; then
+    echo "Max rounds ceiling reached in --loop mode (--max-rounds $MAX_ROUNDS explicitly set)" >&2
+    exit 2
+  fi
+
   # Convergence: 3 consecutive clean rounds
   if [ "$NET_NEW_FINDINGS_THIS_ROUND" -eq 0 ] && [ "$FIXES_KEPT_THIS_ROUND" -eq 0 ]; then
     CONSECUTIVE_CLEAN_ROUNDS=$((CONSECUTIVE_CLEAN_ROUNDS + 1))
