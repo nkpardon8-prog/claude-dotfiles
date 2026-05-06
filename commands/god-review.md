@@ -902,6 +902,12 @@ case "$ABS" in
   "$WORKDIR"/*) ;;
   *) echo "PATH_ESCAPE: $ARCH_FILE resolves outside WORKDIR"; continue ;;
 esac
+
+# Hard-gate check (A9) — BEFORE Editor spawn; is_hard_gate sourced from env-helpers.sh
+if is_hard_gate "$ARCH_FILE"; then
+  echo "HUMAN_GATE: $ARCH_FILE matches hard-gate pattern — skipping Editor spawn"
+  continue
+fi
 ```
 
 **4. Spawn Editor agent** (different model family when Codex available):
