@@ -21,7 +21,7 @@
 
 Each Claude broad reviewer reads the ENTIRE codebase scope and is the most expensive call in the round.
 
-**Layer B — Principle Agents (up to 19 pairs):**
+**Layer B — Principle Agents (up to 23 pairs):**
 Each principle runs as a Claude agent + Codex validation sub-agent pair. Principles are in `principles/` and are also runnable standalone via `--principle <name>`.
 
 ---
@@ -40,6 +40,7 @@ Each principle runs as a Claude agent + Codex validation sub-agent pair. Princip
 | `--rescope-on-fix {full\|changed}` | Phase-3 re-review scope after applying a fix. `changed` = only modified files; `full` = full codebase. Auto-promoted to `full` on no-progress rounds. | changed |
 | `--online` | Enable npm/PyPI registry checks for hallucinated-imports detection. Default is offline (local node_modules / requirements.txt checks only). | off |
 | `--codex-validation-every N` | Run a Codex validation pass every N rounds in `--loop` mode. | 3 |
+| `--ruthless` | Add the skeptic-first redteam broad reviewer (Layer A). Findings require Codex confirmation for promotion. | off |
 
 ---
 
@@ -89,14 +90,17 @@ In practice, most findings are architectural, structural, or multi-file. **Expec
 
 ## `--loop` Cost Warning
 
-Indefinite mode runs Phase 2 (~46 agents per round):
+Indefinite mode runs Phase 2 (up to 47 agents per round: 3 broad-Claude + 1 ruthless when active + 3 broad-Codex + up to 23 principle pairs + 2 batched validation). Note that with stack-gating the typical round is ~36-40 agents:
 - 3 Claude broad reviewers (each reviews the ENTIRE codebase scope — most expensive calls)
+- 1 ruthless redteam reviewer (only when `--ruthless` is set)
 - 3 Codex broad reviewers
-- Up to 19 principle pairs (Claude + Codex sub-agent each)
+- Up to 23 principle pairs (Claude + Codex sub-agent each)
 
 **Round time: 15–30 minutes** with single-account Codex serialization.
 
 **24h cap = 48–96 rounds = potentially 2,200–4,400 agent invocations.**
+
+With `--ruthless`: up to 47 agents per round instead of 46. Adjust cost projections accordingly — a 24h `--loop --ruthless` run may invoke ~100–200 additional agents over the session vs. a non-ruthless run.
 
 To halve round time: set `CODEX_HOME_1` and `CODEX_HOME_2` environment variables to two separate `~/.codex` profile directories. The `lib/codex-invoke.sh` script alternates between them, eliminating most serialization overhead.
 
@@ -219,7 +223,10 @@ These paths and patterns are **always** `HUMAN_GATE`, regardless of `--fix`. The
 
 3. **Add to `CRITERIA.md` principle index table:** specify Tier (1 = always runs, 2 = stack-gated), whether it is a stack gate trigger, and whether it participates in cross-model promotion.
 
-4. **Add to the orchestrator's `active_principles` list** in `~/.claude-dotfiles/commands/god-review.md`.
+4. **Register at 3 sites in the orchestrator** (`~/.claude-dotfiles/commands/god-review.md`):
+   - The `ALWAYS_ON_PRINCIPLES` or `STACK_GATED_PRINCIPLES` array (principle activation list)
+   - The unknown-principle error-message list (the `case`/`if` block that validates `--principle <name>` values)
+   - The absolute-path list block (the section listing all principle file paths, used for reference and documentation)
 
 5. **Stack-gated principles:** if the principle only applies to certain stacks (e.g., `tanstack-query` applies only when `@tanstack/react-query` is detected), add the detection variable to the Phase 0 `stack-detect` bash block in the orchestrator. The principle's Phase 1 step should exit early with `STACK_GATE: not applicable` when the detection variable is unset.
 
@@ -240,7 +247,7 @@ These paths and patterns are **always** `HUMAN_GATE`, regardless of `--fix`. The
 ├── Phase 1: state.json snapshot, perf baseline, pre-scan triggers
 ├── Phase 2: parallel spawn (single message)
 │   ├── Layer A: broad-reviewers/ (3 Claude + 3 Codex)
-│   └── Layer B: principles/ (up to 19 × Claude+Codex pairs)
+│   └── Layer B: principles/ (up to 23 × Claude+Codex pairs)
 ├── Phase 3 (--fix): lib/editor-agent.md per fix
 │   └── snapshot → fix → re-verify → keep/revert → churn-ledger check
 └── Outputs: tmp/god-review/{context-package,report,state,round-N-findings}.md
