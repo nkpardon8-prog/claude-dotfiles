@@ -307,17 +307,18 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 echo "=== Phase 1 pre-scans ==="
 
-# Pre-scan 1: Secrets in .env files appearing in source code
+# Pre-scan 1: Secrets in .env files appearing in source code (filename-only, never raw value)
 PRE_SCAN_SECRETS=""
 for envfile in .env .env.local .env.production .env.staging; do
   [ ! -f "$WORKDIR/$envfile" ] && continue
   while IFS='=' read -r key val; do
     [ -z "$val" ] || [ "${#val}" -lt 16 ] && continue
     [ "${key:0:1}" = "#" ] && continue
-    HITS=$(grep -rn --include="*.ts" --include="*.js" --include="*.py" --include="*.go" \
+    val_hash=$(echo -n "$val" | shasum -a 256 | head -c 8)
+    HIT_FILES=$(grep -rlF "$val" --include="*.ts" --include="*.js" --include="*.py" --include="*.go" \
            --exclude-dir=node_modules --exclude-dir=.git \
-           -F "$val" "$WORKDIR" 2>/dev/null | grep -v "$envfile" | head -3)
-    [ -n "$HITS" ] && PRE_SCAN_SECRETS="${PRE_SCAN_SECRETS}SECRET_LEAK: $key from $envfile appears in source:\n$HITS\n"
+           "$WORKDIR" 2>/dev/null | grep -v "$envfile" | head -3)
+    [ -n "$HIT_FILES" ] && PRE_SCAN_SECRETS="${PRE_SCAN_SECRETS}SECRET_LEAK: $key (hash: $val_hash) from $envfile leaks into:\n$HIT_FILES\n"
   done < "$WORKDIR/$envfile"
 done
 echo "Secret pre-scan: ${PRE_SCAN_SECRETS:-NONE}"
