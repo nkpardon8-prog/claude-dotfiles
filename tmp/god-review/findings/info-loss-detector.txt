@@ -1,0 +1,71 @@
+# Info-Loss Detector Report
+**Scope:** ~/.claude-dotfiles/commands/god-review/ + god-review.md
+**Status:** FAIL
+**Risk Level:** CRITICAL
+
+The cross-block-var-persistence FIX is partially working (env-helpers.sh exists; sourced from 23 of 24 bash blocks) BUT the write_env whitelist is incomplete — it persists stack signals and CLI flags but NOT the loop counters, pre-scan results, or tunable constants that downstream fences depend on. Findings 1, 2, 3 are CRITICAL data-loss in the critical path.
+
+---
+
+## Findings (8 limit)
+
+### 1. [CRITICAL / definite] Tunable Constants block has no persistence at all
+**Location:** god-review.md:161-172 (block) + lib/env-helpers.sh:20-24 (whitelist)
+**Set in:** block at line 161 (SHRINKAGE_PCT, PERF_REGRESS_PCT, INSTABILITY_RATE, FROZEN_UNITS_CAP, SECRET_LEN_FLOOR, TEST_FILE_LINE_FLOOR, LATE_IMPORT_LINE, SPINLOCK_TIMEOUT_SEC)
+**Read in:** Phase 1 pre-scan block (line 314: `$SECRET_LEN_FLOOR`), Phase 3 churn block (line 1080: `$SHRINKAGE_PCT`, `$TEST_FILE_LINE_FLOOR`), Phase 3 perf block (line 1163: `$PERF_REGRESS_PCT`), termination check (line 1337: `$INSTABILITY_RATE`, line 1363: `$FROZEN_UNITS_CAP`).
+**Gap:** (a) the Tunable-Constants block does NOT source env-helpers.sh (only block in file lacking the pattern). (b) None of these eight vars are in the write_env whitelist in lib/env-helpers.sh:20-24, so even adding the source line would not persist them. Every downstream comparison silently sees an empty value — `[ "$FROZEN_UNITS_COUNT" -gt "" ]` triggers a bash "integer expression expected" error, and `awk -v shrink="" '$2/($2+$1) > shrink'` divides by/compares against unset. The pre-scan secret length floor falls back to "" which `[ "${#val}" -lt "" ]` likewise breaks.
+**Fix:** add `WORKDIR=...; source env-helpers.sh` at block start, add a `write_env` at end, AND extend the whitelist to include all eight tunables.
+
+### 2. [CRITICAL / definite] Phase 3 round-loop counters never persisted across fences
+**Location:** god-review.md:784-788 (init), 1207/1219/1257 (read+write), 1262 (read), 1291 (read), 1403 (increment)
+**Set in:** Step 3a init (line 779 block) — ROUND=1, FIXES_KEPT_THIS_ROUND=0, NET_NEW_FINDINGS_THIS_ROUND=0, CONSECUTIVE_CLEAN_ROUNDS=0, FROZEN_UNITS_COUNT=0, TOTAL_OPEN_FINDINGS=…
+**Read in:** later blocks at lines 1262 (`round-${ROUND}-findings.md.tmp`), 1291 (termination check uses ROUND, FIXES_KEPT_THIS_ROUND, NET_NEW_FINDINGS_THIS_ROUND, CONSECUTIVE_CLEAN_ROUNDS, TOTAL_OPEN_FINDINGS, FROZEN_UNITS_COUNT, MAX_ROUNDS_EXPLICIT).
+**Gap:** None of these counters appear in the write_env whitelist (env-helpers.sh:20-24). `write_env` calls at lines 1257/1404 only persist the existing whitelist vars. Every subsequent fence reads these counters as empty/unset. ROUND stays at "" instead of incrementing, the convergence check `[ "$NET_NEW_FINDINGS_THIS_ROUND" -eq 0 ]` errors with "integer expression expected", and audit-trail filenames become `round--findings.md` (stomping each other across rounds). The round loop CANNOT make progress.
+**Fix:** add ROUND, FIXES_KEPT_THIS_ROUND, NET_NEW_FINDINGS_THIS_ROUND, CONSECUTIVE_CLEAN_ROUNDS, FROZEN_UNITS_COUNT, TOTAL_OPEN_FINDINGS, MAX_ROUNDS_EXPLICIT, NEXT_SCAN_SCOPE, REGRESSION_REASON, FINDING_ID to the whitelist.
+
+### 3. [CRITICAL / definite] /tmp/claude-findings-consolidated.txt is read but never produced
+**Location:** god-review.md:635 (reader) — no writer anywhere in the file
+**Set in:** never (verified by `grep -n "claude-findings-consolidated"` returning only line 635)
+**Read in:** Phase 2d Codex validation prompt (line 635: `$(cat /tmp/claude-findings-consolidated.txt)`)
+**Gap:** The cross-family validation pass concatenates a non-existent file. `cat` will print nothing (or stderr "No such file or directory") — the validation prompt then receives an empty findings list, Codex returns nothing meaningful, and every Claude-found finding stays tagged `(unverified)`. The aggregation step in Phase 2e instructs the orchestrator-agent to merge findings but never directs anyone to write the per-Claude-agent results to that path. Aggregation gap that drops cross-family verification entirely.
+**Fix:** add an explicit "after all Agent calls return, write each Agent's finding output to /tmp/claude-findings-<name>.txt and concatenate to /tmp/claude-findings-consolidated.txt" step before line 624.
+
+### 4. [HIGH / likely] Layer A broad reviewers have no specified output channel
+**Location:** god-review.md:520-533, broad-reviewers/claude-deep-correctness.md (and the other 3)
+**Set in:** the 3 (or 4 with --ruthless) Claude broad-reviewer Agent calls in Phase 2c
+**Read in:** Phase 2e aggregator ("you, the orchestrator, ARE the aggregator")
+**Gap:** None of the broad-reviewer prompt files specifies a `Save findings to <path>` step (verified by grepping the broad-reviewers directory — zero hits). The output format section says only `[definite|likely|investigate] CATEGORY: description — file:line`. The orchestrator must capture the Agent tool's return text (which the Claude Code harness DOES surface), but Phase 2e never writes "read each Agent's returned text and serialize to a file" — it just says "tag findings with source." If the orchestrator-agent forgets, broad-reviewer findings are lost.
+**Fix:** add a "Save findings to $WORKDIR/tmp/god-review/broad/<name>-findings.md" step to each broad-reviewer prompt, mirroring what the principle agents already do.
+
+### 5. [HIGH / likely] state.json full-rewrite at Phase 1b destroys prior-run fields on non-resume
+**Location:** god-review.md:383-413
+**Write pattern:** heredoc → sed → mv (atomic write to disk, but FULL replacement of contents)
+**Gap:** When invoked WITHOUT --resume on a tree where tmp/god-review/state.json already exists (e.g., user ran a fix loop, killed it, started again without --resume), Phase 1b unconditionally writes the fixed-schema heredoc — destroying any prior `human_gate_emitted`, `kept_fixes`, `reverted_fixes`, `frozen_units`, `churn_ledger`, `frozen_added_per_round`, `architect_malformed_per_round` entries. The atomic-write mechanism is correct (.tmp → mv), but the operation is replace-not-merge, so atomicity protects against SIGKILL but not against logical data loss across invocations.
+**Fix:** wrap the heredoc init in `if [ ! -f tmp/god-review/state.json ]; then ... fi`, OR read + json-merge with python instead of overwriting.
+
+### 6. [HIGH / likely] Phase 1a pre-scan results die at fence boundary
+**Location:** god-review.md:309-356 (set), referenced implicitly by Phase 2 prompts
+**Set in:** Phase 1a block — PRE_SCAN_SECRETS, PRE_SCAN_HALLUCINATED, PRE_SCAN_INJECTION, PRE_SCAN_FLAG_COUNT
+**Read in:** the block ends at 357 with `echo "Pre-scan complete. $PRE_SCAN_FLAG_COUNT flags raised."` and Phase 1 output line 442 says "[N] pre-scan flags raised" — but PRE_SCAN_FLAG_COUNT is referenced by the Phase 1 status echo only, AND the prompt-injection / hallucinated-import / secret-leak principle agents in Phase 2 are supposed to incorporate these (they're documented as the seed for those principle reviews).
+**Gap:** No write_env at end of the Phase 1a block. The four PRE_SCAN_* vars are also NOT in the whitelist. They never reach the principle agents that should consume them, defeating the "fast pre-scan seeds the deep review" design.
+**Fix:** persist PRE_SCAN_SECRETS / PRE_SCAN_HALLUCINATED / PRE_SCAN_INJECTION to disk files (not env vars — they contain newlines that don't round-trip cleanly through shlex.quote-stored env), and have principle agents read those files.
+
+### 7. [MEDIUM / likely] FROZEN_UNITS_CAP has no default fallback
+**Location:** god-review.md:167 — `FROZEN_UNITS_CAP="$FROZEN_UNITS_CAP"`
+**Gap:** All other tunables use `${VAR:-default}` form. This one self-assigns with no default. Combined with finding 1, the variable is unset at line 1363 (`if [ "$FROZEN_UNITS_COUNT" -gt "$FROZEN_UNITS_CAP" ]`) → bash errors with "integer expression expected" and the bounded-mode escalation gate is silently dead. Even when the Tunable Constants block is fixed to source/persist, this line still leaves the var empty unless the user exports FROZEN_UNITS_CAP themselves.
+**Fix:** `FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-10}"` (or whatever the intended default is).
+
+### 8. [LOW / investigate] Phase 0 context-package.md producer is implicit, not specified
+**Location:** god-review.md:274-296 (Phase 0 spawns ONE Agent call to write context-package.md)
+**Gap:** The 4 new principle agents (info-loss, dead-end, contradiction, gap) all source `gather-context.sh`, which falls back to inline gathering if context-package.md is missing — verified working (gather-context.sh:14-20). HOWEVER: the Phase 0 spawn instructs the agent to "Write the file using Bash heredoc (cat > tmp/god-review/context-package.md)" with no atomic .tmp+rename, no `mkdir -p`, no validation, and no guarantee that the agent actually completes that step before Phase 1 starts. If the spawn fails or the agent hallucinates, every Phase 2 principle silently falls back to the minimal inline context, masking the failure.
+**Fix:** after the Phase 0 spawn returns, the orchestrator should `[ -f tmp/god-review/context-package.md ] || { echo "FATAL: Phase 0 did not produce context-package.md"; exit 1; }` and ideally also size-check it.
+
+---
+
+## False Positives Ruled Out
+
+- **`source env-helpers.sh` count vs bash block count:** 23 of 24 bash blocks include the source line. Only the Tunable Constants block (line 161) is missing it — counted as finding #1, not a separate finding.
+- **state.json atomic writes:** all six python3 update sites (lines 940-945, 1096-1115, 1190-1194, 1200-1205, 1213-1217, 1247-1253, 1390-1399) DO use the .tmp + os.rename pattern correctly. The one non-atomic concern is finding #5 (overwrite-not-merge), not atomicity.
+- **gather-context.sh access from 4 new principle agents:** verified — info-loss, dead-end, contradiction, and gap detector files all source gather-context.sh and reference $WORKDIR/tmp/god-review/context-package.md correctly.
+- **Per-principle output paths:** info-loss, dead-end, contradiction, gap all save to `$WORKDIR/tmp/god-review/principles/<name>-findings.md` consistently. Aggregation gap (finding #3) is about the Phase 2d consolidation step, not these per-principle saves.
+- **write_env at 4 phase boundaries:** writes exist at Phase 0 end (271), Phase 1b end (417), Phase 2b end (499), Phase 3 step 3c end (1257), and Phase 3 round-end (1404). Five sites in total — the rubric claim of "all 4 phase boundaries" holds (Phase 1c at line 422 has no write_env, but it sets no new vars worth persisting). The deeper bug is whitelist scope (findings 1, 2, 6), not write_env call placement.
