@@ -154,6 +154,25 @@ Do not proceed to Phase 0 when `--principle` is set.
 
 ---
 
+## Tunable Constants
+
+Override any of these via env var before invoking the command.
+
+```bash
+# === Tunable Constants ===
+# Override via env var if needed.
+SHRINKAGE_PCT="${SHRINKAGE_PCT:-0.20}"           # test-deletion threshold
+PERF_REGRESS_PCT="${PERF_REGRESS_PCT:-0.05}"     # perf-benchmark threshold
+INSTABILITY_RATE="${INSTABILITY_RATE:-5}"        # avg events/round to abort --loop
+FROZEN_UNITS_CAP="$FROZEN_UNITS_CAP"        # bounded-mode freeze cap
+SECRET_LEN_FLOOR="${SECRET_LEN_FLOOR:-16}"       # secret-leak min char length
+TEST_FILE_LINE_FLOOR="${TEST_FILE_LINE_FLOOR:-25}"  # test-deletion shrinkage floor
+LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"       # circular-deps cutoff
+SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"  # codex-invoke spinlock max
+```
+
+---
+
 ## Phase 0: Context Map
 
 **Goal**: Build a shared mechanical context package so all Phase-2 agents inherit the same ground truth. Eliminates repeated context-gathering per agent (failure mode #19).
@@ -292,7 +311,7 @@ PRE_SCAN_SECRETS=""
 for envfile in .env .env.local .env.production .env.staging; do
   [ ! -f "$WORKDIR/$envfile" ] && continue
   while IFS='=' read -r key val; do
-    [ -z "$val" ] || [ "${#val}" -lt 16 ] && continue
+    [ -z "$val" ] || [ "${#val}" -lt "$SECRET_LEN_FLOOR" ] && continue
     [ "${key:0:1}" = "#" ] && continue
     val_hash=$(echo -n "$val" | shasum -a 256 | head -c 8)
     HIT_FILES=$(grep -rlF "$val" --include="*.ts" --include="*.js" --include="*.py" --include="*.go" \
@@ -1050,10 +1069,10 @@ if [ -n "$TEST_DELETED" ]; then
   REGRESSION_DETECTED=true
   REGRESSION_REASON="test file deleted: $TEST_DELETED"
 fi
-# Check for test file significant shrinkage (>20% lines removed, floor 6 lines on files >= 25 lines)
-if git diff --numstat 2>/dev/null | awk '{if ($2+$1 > 0 && $2/($2+$1) > 0.2 && ($2+$1) >= 25) print $3}' | grep -qE "\.(test|spec)\.(ts|tsx|js|jsx|py|go)$"; then
+# Check for test file significant shrinkage (>SHRINKAGE_PCT lines removed, floor files >= TEST_FILE_LINE_FLOOR lines)
+if git diff --numstat 2>/dev/null | awk -v shrink="$SHRINKAGE_PCT" -v floor="$TEST_FILE_LINE_FLOOR" '{if ($2+$1 > 0 && $2/($2+$1) > shrink && ($2+$1) >= floor) print $3}' | grep -qE "\.(test|spec)\.(ts|tsx|js|jsx|py|go)$"; then
   REGRESSION_DETECTED=true
-  REGRESSION_REASON="test file significantly shrunk (>20% line reduction)"
+  REGRESSION_REASON="test file significantly shrunk (>${SHRINKAGE_PCT} line reduction)"
 fi
 
 # Detector 2: CI YAML tampering
@@ -1133,11 +1152,12 @@ os.rename(tmp, sj)
     elif [ -f Cargo.toml ]; then
       cargo bench 2>&1 > tmp/god-review/perf-current.json || true
     fi
-    # Compare timings (simplified: look for regressions > 5%)
-    PERF_REGRESSED=$(python3 -c "
-import json, re, sys
+    # Compare timings (simplified: look for regressions > PERF_REGRESS_PCT)
+    PERF_REGRESSED=$(PERF_REGRESS_PCT="$PERF_REGRESS_PCT" python3 -c "
+import json, re, sys, os
 baseline = open('tmp/god-review/perf-baseline.json').read()
 current = open('tmp/god-review/perf-current.json').read()
+perf_threshold = float(os.environ.get('PERF_REGRESS_PCT', '0.05'))
 # Extract timing values (ms) from output — heuristic extraction
 def extract_timings(text):
     return {m.group(1): float(m.group(2)) for m in re.finditer(r'(\w[\w\-]+).*?(\d+\.?\d*)\s*ms', text)}
@@ -1147,7 +1167,7 @@ regressions = []
 for name in b:
     if name in c and b[name] > 0:
         delta = (c[name] - b[name]) / b[name]
-        if delta > 0.05:
+        if delta > perf_threshold:
             regressions.append(f'{name}: +{delta:.1%} ({b[name]:.1f}ms -> {c[name]:.1f}ms)')
 print('\n'.join(regressions) if regressions else 'NONE')
 " 2>/dev/null || echo "NONE")
@@ -1307,7 +1327,7 @@ try:
 except Exception:
     print(0)
 " 2>/dev/null || echo 0)
-  if python3 -c "import sys; sys.exit(0 if float('${AVG_INSTABILITY:-0}') > 5 else 1)" 2>/dev/null; then
+  if python3 -c "import sys; sys.exit(0 if float('${AVG_INSTABILITY:-0}') > $INSTABILITY_RATE else 1)" 2>/dev/null; then
     echo "Instability rate too high (avg $AVG_INSTABILITY events/round over last 3 rounds)" >&2
     exit 4
   fi
@@ -1333,8 +1353,8 @@ else
     echo "Near-clean — fewer than 2 open findings remain"
     break
   fi
-  if [ "$FROZEN_UNITS_COUNT" -gt "${FROZEN_UNITS_CAP:-3}" ]; then
-    echo "Too many frozen units ($FROZEN_UNITS_COUNT > ${FROZEN_UNITS_CAP:-3}) — escalate to human" >&2
+  if [ "$FROZEN_UNITS_COUNT" -gt "$FROZEN_UNITS_CAP" ]; then
+    echo "Too many frozen units ($FROZEN_UNITS_COUNT > $FROZEN_UNITS_CAP) — escalate to human" >&2
     exit 3
   fi
   if [ "$FIXES_KEPT_THIS_ROUND" -eq 0 ]; then
