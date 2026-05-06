@@ -21,6 +21,8 @@ This command has 4 phases:
 Parse `$ARGUMENTS` for all supported flags:
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # --- Argument parsing ---
 # All arguments are parsed from the $ARGUMENTS variable provided by the harness.
 # Flags and their effects (inline documentation):
@@ -96,6 +98,8 @@ done
 **Validation (abort early on bad inputs):**
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # Validation check 1: --loop requires --fix
 if [ "$LOOP" = "true" ] && [ "$FIX" = "false" ]; then
   echo "Error: --loop requires --fix. Pass --fix --loop together."
@@ -139,6 +143,8 @@ fi
 Read mirror mode to determine write destinations:
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 MIRROR_MODE=$(cat ~/.claude-dotfiles/commands/god-review/.mirror-mode 2>/dev/null || echo "auto")
 # If MIRROR_MODE = "dual": write outputs to BOTH ~/.claude-dotfiles/ AND ~/.claude/ paths.
 # If MIRROR_MODE = "auto": write only to ~/.claude-dotfiles/ and trust the auto-mirror hook.
@@ -174,7 +180,8 @@ Do not proceed to Phase 0 when `--principle` is set.
 Run this bash block:
 
 ```bash
-WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 mkdir -p tmp/god-review tmp/god-review/snapshots
 
 # --- Stack fingerprint ---
@@ -261,6 +268,7 @@ elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
 else
   echo "(no recognized build system — skipping baseline gates)"
 fi
+write_env
 ```
 
 Now spawn 1 Claude Opus 4.7 agent to synthesize the bash output above into a structured context package:
@@ -294,7 +302,8 @@ Output: `Phase 0 complete. Context map at tmp/god-review/context-package.md`
 ### 1a: Failure-mode pre-scans (fast, synchronous, runs BEFORE snapshot)
 
 ```bash
-WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 echo "=== Phase 1 pre-scans ==="
 
 # Pre-scan 1: Secrets in .env files appearing in source code
@@ -349,7 +358,8 @@ echo "Pre-scan complete. $PRE_SCAN_FLAG_COUNT flags raised."
 ### 1b: Snapshot (canonical block — atomic .tmp → mv)
 
 ```bash
-WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 mkdir -p tmp/god-review tmp/god-review/snapshots
 
 # Single canonical snapshot block — handles clean and dirty working trees.
@@ -403,11 +413,14 @@ mv tmp/god-review/state.json.tmp tmp/god-review/state.json
 
 echo "Snapshot taken: REF=$REF REFTYPE=$REFTYPE"
 echo "State written to tmp/god-review/state.json"
+write_env
 ```
 
 ### 1c: Baseline perf capture (only if HAS_BENCH_SCRIPT)
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # If HAS_BENCH_SCRIPT is non-empty, capture benchmark baseline for Phase 3 perf-regression detection.
 # This runs ONCE at Phase 1; Phase 3 compares post-fix timings against this baseline.
 if [ -n "$HAS_BENCH_SCRIPT" ]; then
@@ -472,6 +485,8 @@ ACTIVE_PRINCIPLES = ALWAYS_ON_PRINCIPLES + [p for p,sig in STACK_GATED_PRINCIPLE
 ### 2b: Check Codex availability
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null)}"
 if [ -n "$CODEX_BIN" ]; then
   echo "Codex available at: $CODEX_BIN"
@@ -480,6 +495,7 @@ else
   echo "(Codex unavailable — running Claude-only. Install via: npm i -g @openai/codex)"
   CODEX_AVAILABLE=false
 fi
+write_env
 ```
 
 ### 2c: Spawn all review agents
@@ -518,6 +534,8 @@ Agents:
 
 Invoke via Bash:
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/codex-broad-cross-layer.txt \
   "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-cross-layer.md)" \
@@ -570,6 +588,8 @@ For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
 **Layer B — Codex principle agents** (1 per active principle, only if $CODEX_AVAILABLE=true):
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # For each active principle, invoke Codex with the principle file content as the prompt:
 bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/codex-principle-<NAME>.txt \
@@ -587,6 +607,8 @@ In `--loop` mode, Codex validation runs only on rounds where `round % CODEX_VALI
 
 **Claude-found findings → ONE Codex validation call** (only if $CODEX_AVAILABLE=true):
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # Build consolidated finding list from all Claude-sourced findings
 # Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 
@@ -755,6 +777,8 @@ For each round (1 through MAX_ROUNDS, or indefinite if --loop):
 For each new HUMAN_GATE finding (first time seen this session):
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 FINDING_HASH="<sha256 of this finding>"
 # Check if already emitted
 if ! python3 -c "import json; d=json.load(open('tmp/god-review/state.json')); print('yes' if '$FINDING_HASH' in [f.get('hash') for f in d.get('human_gate_emitted',[])] else 'no')" | grep -q yes; then
@@ -773,6 +797,8 @@ For each AUTO_FIX finding:
 
 **1. Pre-fix snapshot** (canonical block — same pattern as Phase 1):
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # Since the previous fix was committed, working tree should be clean.
 # REF will be HEAD commit SHA.
 PRE_FIX_REF=$(git rev-parse HEAD)
@@ -819,6 +845,8 @@ Constraints:
 **3. Validate Architect output schema** (Locked Decision #23):
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # Orchestrator validates Architect output BEFORE spawning Editor
 ARCH_OUTPUT="<architect agent output>"
 
@@ -869,6 +897,8 @@ fi
 
 If `$CODEX_AVAILABLE=true`: spawn Codex as editor via bash:
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/editor-output.txt \
   "$(cat ~/.claude-dotfiles/commands/god-review/lib/editor-agent.md)\n\nApply this change:\n$ARCH_JSON" \
@@ -882,6 +912,8 @@ If Codex unavailable: spawn a second Claude Agent tool call (different instance,
 **5. Re-run gates:**
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 GATES_PASS=true
 if [ -f package.json ]; then
   echo "=== typecheck ===" && npm run typecheck 2>&1 | tail -20 || GATES_PASS=false
@@ -906,6 +938,8 @@ echo "Gates: $GATES_PASS"
 **6. Regression detectors (run BEFORE deciding keep/revert):**
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 REGRESSION_DETECTED=false
 REGRESSION_REASON=""
 
@@ -974,6 +1008,8 @@ echo "Regression check: REGRESSION_DETECTED=$REGRESSION_DETECTED REASON=$REGRESS
 **7. Keep or revert (canonical revert table):**
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 if [ "$GATES_PASS" = "true" ] && [ "$REGRESSION_DETECTED" = "false" ]; then
   # KEEP: commit the fix
   git commit --no-verify -m "god-review: $FINDING_ID"
@@ -1073,11 +1109,14 @@ os.rename(tmp,'tmp/god-review/state.json')
 "
   echo "Reverted: $FINDING_ID — reason: $REVERT_REASON"
 fi
+write_env
 ```
 
 #### Step 3d: Write round audit trail
 
 ```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 cat > tmp/god-review/round-${ROUND}-findings.md.tmp << 'ROUNDEOF'
 # god-review Round <N> Audit Trail
 
