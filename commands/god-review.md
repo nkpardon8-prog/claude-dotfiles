@@ -889,6 +889,19 @@ os.rename(tmp, 'tmp/god-review/state.json')
   # Mark finding as HUMAN_GATE with reason "Architect output malformed"
   continue
 fi
+
+# Extract and validate ARCH_FILE (injection guard — site 1: pre-Editor spawn)
+ARCH_FILE=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "import json,os; print(json.loads(os.environ['ARCH_OUTPUT']).get('file',''))" 2>/dev/null)
+case "$ARCH_FILE" in
+  *[\;\&\|\`\$\(\)\<\>\\]* | *$'\n'* | *$'\r'* | '')
+    echo "FINDING_REJECTED: filename invalid: $ARCH_FILE"
+    continue ;;
+esac
+ABS=$(python3 -c "import os.path,sys; print(os.path.realpath(sys.argv[1]))" "$WORKDIR/$ARCH_FILE" 2>/dev/null)
+case "$ABS" in
+  "$WORKDIR"/*) ;;
+  *) echo "PATH_ESCAPE: $ARCH_FILE resolves outside WORKDIR"; continue ;;
+esac
 ```
 
 **4. Spawn Editor agent** (different model family when Codex available):
@@ -1134,8 +1147,18 @@ else
     echo "Reverted committed fix: $FINDING_ID"
   else
     # Fix not yet committed — targeted revert of only the Architect's target file
-    ARCH_FILE=$(echo "$ARCH_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['file'])" 2>/dev/null)
-    git checkout -- "$ARCH_FILE"
+    ARCH_FILE=$(echo "$ARCH_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('file',''))" 2>/dev/null)
+    # Injection guard — site 2: revert path
+    case "$ARCH_FILE" in
+      *[\;\&\|\`\$\(\)\<\>\\]* | *$'\n'* | *$'\r'* | '')
+        echo "FINDING_REJECTED: filename invalid for revert: $ARCH_FILE"; ;;
+      *)
+        ABS=$(python3 -c "import os.path,sys; print(os.path.realpath(sys.argv[1]))" "$WORKDIR/$ARCH_FILE" 2>/dev/null)
+        case "$ABS" in
+          "$WORKDIR"/*) git checkout -- "$ARCH_FILE" ;;
+          *) echo "PATH_ESCAPE on revert: $ARCH_FILE resolves outside WORKDIR" ;;
+        esac ;;
+    esac
     echo "Targeted revert of: $ARCH_FILE (fix was not committed)"
   fi
 
