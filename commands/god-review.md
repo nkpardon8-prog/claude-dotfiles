@@ -616,7 +616,7 @@ bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
 
 After all agents complete, collect all findings. Tag each finding with its source.
 
-**Step 2c validation — batched cross-family verification:**
+**Step 2d validation — batched cross-family verification:**
 
 In `--loop` mode, Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0`. On skipped rounds, tag all Claude-found findings as `(unverified-this-round)`.
 
