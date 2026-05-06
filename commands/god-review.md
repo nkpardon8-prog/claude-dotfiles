@@ -1066,10 +1066,25 @@ echo "Regression check: REGRESSION_DETECTED=$REGRESSION_DETECTED REASON=$REGRESS
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 if [ "$GATES_PASS" = "true" ] && [ "$REGRESSION_DETECTED" = "false" ]; then
-  # KEEP: commit the fix
-  git commit --no-verify -m "god-review: $FINDING_ID"
-  COMMITTED=true
-  echo "Kept: $FINDING_ID committed as $(git rev-parse HEAD)"
+  # KEEP: commit the fix (no --no-verify per Locked Decision #6 — pre-commit hook must run)
+  if git commit -m "god-review: $FINDING_ID"; then
+    COMMITTED=true
+    echo "Kept: $FINDING_ID committed as $(git rev-parse HEAD)"
+  else
+    COMMITTED=false
+    REVERT_REASON="pre-commit hook rejected: $(git status --porcelain | head -3)"
+    git checkout -- "$ARCH_FILE"
+    FINDING_ID="$FINDING_ID" REVERT_REASON="$REVERT_REASON" WORKDIR="$WORKDIR" python3 -c "
+import json, os
+sj = os.environ['WORKDIR'] + '/tmp/god-review/state.json'
+with open(sj) as f: d=json.load(f)
+d.setdefault('reverted_fixes',[]).append({'finding_id': os.environ['FINDING_ID'], 'reason': os.environ['REVERT_REASON']})
+tmp = sj + '.tmp'
+with open(tmp,'w') as f: json.dump(d,f,indent=2)
+os.rename(tmp, sj)
+"
+    echo "Pre-commit hook rejected fix $FINDING_ID — reverted and recorded in reverted_fixes"
+  fi
 
   # Perf-benchmark check (only if HAS_BENCH_SCRIPT)
   if [ -n "$HAS_BENCH_SCRIPT" ] && [ -f "tmp/god-review/perf-baseline.json" ]; then
