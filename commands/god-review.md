@@ -848,14 +848,21 @@ fi
 
 For each AUTO_FIX finding:
 
-**1. Pre-fix snapshot** (canonical block — same pattern as Phase 1):
+**1. Pre-fix snapshot** (canonical block — same pattern as Phase 1b):
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-# Since the previous fix was committed, working tree should be clean.
-# REF will be HEAD commit SHA.
-PRE_FIX_REF=$(git rev-parse HEAD)
-echo "Pre-fix snapshot: commit $PRE_FIX_REF"
+# Canonical snapshot block (mirrors Phase 1b) — handles clean and dirty working trees.
+# After the previous fix was committed, working tree is typically clean (REF = HEAD commit).
+# If worktree is unexpectedly dirty, stash-create to capture it non-destructively.
+if [ -n "$(git status --porcelain)" ]; then
+  PRE_FIX_REF=$(git stash create "god-review pre-fix $(date -u +%Y%m%dT%H%M%SZ)")
+  PRE_FIX_REFTYPE="stash"
+else
+  PRE_FIX_REF=$(git rev-parse HEAD)
+  PRE_FIX_REFTYPE="commit"
+fi
+echo "Pre-fix snapshot: $PRE_FIX_REFTYPE $PRE_FIX_REF"
 ```
 
 **2. Spawn Architect agent** (Claude Opus — describes the fix, produces structured output):
