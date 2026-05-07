@@ -12,7 +12,7 @@ This command has 4 phases:
 - **Phase 0**: Context Map — stack fingerprint, architecture, hot zones, baseline gates
 - **Phase 1**: Probe — snapshot + failure-mode pre-scans
 - **Phase 2**: Review — parallel agents × model families × principles + validation + aggregation
-- **Phase 3**: Fix (opt-in via `--fix`) — triage, Architect/Editor split, snapshot/revert loop
+- **Phase 3**: Fix loop (always-on; orchestrator-driven) — triage, Architect/Editor split, snapshot/revert per fix, 3-consecutive-clean termination
 
 ---
 
