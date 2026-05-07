@@ -643,7 +643,12 @@ In `--loop` mode, Codex validation runs only on rounds where `round % CODEX_VALI
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-# Build consolidated finding list from all Claude-sourced findings
+# Build consolidated finding list from all Claude-sourced findings.
+# Concatenate all per-agent claude-broad/claude-principle finding files into
+# /tmp/claude-findings-consolidated.txt before the validation read below.
+# This is the single canonical write site (Phase F).
+mkdir -p "$WORKDIR/tmp/god-review/findings"
+cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt 2>/dev/null > /tmp/claude-findings-consolidated.txt || true
 # Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 
 CLAUDE_FINDINGS_PROMPT="You are validating a list of code-review findings produced by Claude Opus 4.7.
