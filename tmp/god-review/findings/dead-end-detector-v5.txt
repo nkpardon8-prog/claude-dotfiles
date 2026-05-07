@@ -1,0 +1,268 @@
+# dead-end-detector v5 — Phase E v5 audit (post Phase G3)
+
+Scope: G3's 6 newly-whitelisted vars (FINDING_DESCRIPTION, FINDING_ROOT_CAUSE,
+FINDING_SEVERITY, FINDING_PROPOSED_DIFF, LOOP_EXIT, VERIFIER_NEW_COUNT),
+verifier TSV pipeline end-to-end, ARCH_OUTPUT_FILE handoff.
+
+---
+
+### [high] FINDING_SEVERITY persisted but never consumed by any bash block
+**Source:** dead-end-detector
+**Evidence:** lib/env-helpers.sh:32 (whitelist), god-review.md:996 (declared as
+per-finding env var the orchestrator substitutes "before each call"). No
+consumer: `grep -nE 'FINDING_SEVERITY' god-review.md` returns only the comment
+at line 996. The HUMAN_GATE bash block at lines 1002-1017 references
+FINDING_ID/FINDING_FILE/FINDING_LINE_RANGE/FINDING_DESC/FINDING_DIFF but never
+$FINDING_SEVERITY. The auto-fix pipeline (3e) at 1073 lists severity-relevant
+fields too but again does not read $FINDING_SEVERITY.
+**Impact:** Severity routing decisions documented in 3b ("severity ≥ likely"
+gates AUTO_FIX bucket) are reasoned by the orchestrator from the parsed
+finding dict, not from the env var. Persisting it via write_env is dead-end
+plumbing — looks load-bearing, isn't. If a future block tries to read
+$FINDING_SEVERITY across rounds, it will get last-iteration-of-prior-round
+leak (write_env runs every iteration). Concretely a state hazard.
+**Fix:** Either (a) drop FINDING_SEVERITY from write_env's whitelist (it's
+in-context-only), or (b) make 3c/3e bash actually consume it (e.g.,
+include severity in HUMAN_GATE_QUEUE entry, in commit message, in the
+auto-defer reason rejection threshold).
+
+---
+
+### [high] FINDING_ROOT_CAUSE consumed only inside the Architect prompt body — never read by bash
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1114 references `$FINDING_ROOT_CAUSE` inside the
+Architect-prompt heredoc. That string is interpolated at orchestrator-substitution
+time (the orchestrator literally types the prompt text); the bash block at
+1095-1102 (compute ARCH_OUTPUT_FILE) does NOT use the var, and no other bash
+block reads it. Yet it's in write_env's whitelist (lib/env-helpers.sh:31).
+**Impact:** Same dead-end-plumbing pattern as FINDING_SEVERITY. The persistence
+is unnecessary because the value is consumed in the same orchestrator turn it's
+produced. Worse, it survives across rounds via .env.sh and could leak
+prior-finding's root_cause into a Phase 3a re-entry where the orchestrator
+forgets to re-substitute. Concretely: if round N+1's parse misses
+root_cause for finding F2, the Architect prompt for F2 would silently get
+F1's stale root_cause from the persisted env.
+**Fix:** Drop FINDING_ROOT_CAUSE and FINDING_DESCRIPTION from write_env (they
+are per-Architect-call substitution targets, not cross-block state). At
+minimum, the 3a "reset per-round counters" block at 915-922 must also clear
+FINDING_* between findings within the same round.
+
+---
+
+### [high] FINDING_PROPOSED_DIFF only consumed inside HUMAN_GATE markdown emit — never used by AUTO_FIX
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1004 reads `FINDING_DIFF="$FINDING_PROPOSED_DIFF"`
+to construct the HUMAN_GATE_QUEUE entry. The AUTO_FIX pipeline at 1073 lists
+the var in the comment as something the orchestrator substitutes, but the
+Architect prompt body (1106-1137) does NOT include it — the Architect is
+intentionally given file/lines/category/desc/root_cause and is asked to
+generate its OWN before/after. So in AUTO_FIX, FINDING_PROPOSED_DIFF is
+written via write_env but never consumed.
+**Impact:** Wasted state surface; risk of stale value bleeding into next
+HUMAN_GATE finding's report.md entry if the orchestrator forgets to
+re-substitute (the python3 script at 1004-1017 reads FINDING_DIFF env var,
+which is set from the persisted FINDING_PROPOSED_DIFF if not re-set).
+**Fix:** Either (a) feed FINDING_PROPOSED_DIFF to the Architect as a hint
+("as a starting sketch") inside the prompt at 1106, OR (b) drop it from
+write_env and make 3c clear it after each finding.
+
+---
+
+### [catastrophic] verifier TSV pipeline cannot run — relies on orchestrator-prose step that no bash block performs
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1448-1495. The text at 1448 says: "Each verifier's
+output is markdown; you (the orchestrator) parse each finding block and emit
+one TSV line per finding to /tmp/verifier-all-findings.tsv". The bash block at
+1462-1494 then runs python3 over `$WORKDIR/tmp/god-review/findings/verifier-*.txt`
+to do exactly that parse — making the prose direction redundant. BUT the
+prose says the orchestrator must "produce this TSV before running the bash
+below" (line 1506), implying a separate manual step. AND `write_agent_finding`
+is called PER-VERIFIER in prose at 1443-1446 with the captured Agent result
+text — the bash filter at 1499-1521 reads from disk only. If the orchestrator
+forgets the write_agent_finding calls, the TSV builder at 1468 finds no
+verifier-*.txt files (`for path in sys.argv[1:]: if not os.path.isfile`),
+the TSV is empty, VERIFIER_NEW_COUNT=0 always, and the loop terminates after
+3 rounds regardless of what the verifiers actually found.
+**Impact:** Silent termination on verifier blindness. The whole point of the
+verifier sub-pass — catching regressions the per-finding pipeline introduced
+— is bypassed. A failed run looks identical to a successful one (3 clean
+rounds → LOOP_EXIT=converged). This is the same class of bug as the original
+"--ruthless spawn comment-only" Phase E v1 catastrophic finding.
+**Fix:** Either (a) make the parse fully mechanical: have the verifiers
+themselves write structured output (one Agent-tool call per verifier writes
+its own TSV row directly to /tmp/verifier-N.tsv via a Bash sub-call inside
+the agent), then `cat /tmp/verifier-*.tsv > /tmp/verifier-all-findings.tsv`
+in a single bash block. OR (b) add a hard assertion at line 1494: if
+`wc -l /tmp/verifier-all-findings.tsv == 0` AND the orchestrator's narrative
+claimed verifiers found ≥1 issue, abort the round with exit 6 ("verifier-
+parse-failure"). Right now silent zero is treated as "clean".
+
+---
+
+### [high] verifier TSV format incompatible with finding_id values containing tabs/newlines
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1480-1481 — `fid_m.group(1).strip()[:60].replace('\t',' ')`
+strips tabs from the finding_id but NOT newlines or other whitespace. The
+TSV writer at 1491 does `out.write(f"{fid}\t{f}\t{lrange}\t{cat}\n")`. If
+the verifier's heading has an embedded `\n` or carriage-return (not unusual
+in markdown), the line splits and the next read at 1509 (`while IFS=$'\t' read -r`)
+gets two malformed rows.
+**Impact:** Off-by-N corruption of verifier counts. VERIFIER_NEW_COUNT can be
+inflated (treats split fragments as new findings) OR deflated (later legitimate
+rows shifted into wrong columns and rejected via `[ -z "$vfid" ] && continue`).
+Either way, NEW_NEW_FINDINGS at 3g is wrong, and the loop's termination logic
+is wrong by exactly that count.
+**Fix:** At 1481, also `.replace('\n',' ').replace('\r',' ')`. Better: write
+to JSON-lines, not TSV, since the consumer is python3-parseable.
+
+---
+
+### [medium] verifier-N.txt write timing race vs. TSV parse
+**Source:** dead-end-detector
+**Evidence:** Prose at 1443-1446 says the orchestrator calls `write_agent_finding`
+per-verifier after the Agent batch returns. The bash at 1462-1494 then parses
+those files. There is no bash assertion that all 4 files exist before the
+parse. If verifier-3 (Codex) wasn't run because $CODEX_AVAILABLE != true
+(comment at 1437 says "only if"), the parse silently includes 3 files instead
+of 4, and the orchestrator's narrative count of "expected 4 verifier outputs"
+is unenforced.
+**Impact:** Codex-down conditions silently degrade verifier coverage by 50%
+without surfacing in any state.json field. No log line says "verifier-3
+skipped".
+**Fix:** Replace the prose with a bash block: `for n in 1 2 3 4; do
+test -f "$WORKDIR/tmp/god-review/findings/verifier-$n.txt" || \
+echo "WARN: verifier-$n missing — Codex unavailable? counted as 0 findings"; done`
+before the python3 parse. Persist the missing-set to state.json under
+`verifiers_skipped_per_round[]` for instability detection.
+
+---
+
+### [medium] LOOP_EXIT only set to "converged" — no other terminal value, makes log/postmortem ambiguous
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1628 `LOOP_EXIT=converged`. The wall-clock
+backstop at 1568-1571 calls `exit 5` directly (LOOP_EXIT untouched).
+Instability at 1585-1588 calls `exit 4`. --max-rounds at 1591-1594 calls
+`exit 2`. So the persisted LOOP_EXIT can only ever be `""` or `"converged"`.
+**Impact:** state.json's last LOOP_EXIT (via write_env) tells you nothing
+about WHY the run terminated when the cause was a backstop — the var is
+literally empty in those cases. Postmortem and Phase 3h reporting can't
+distinguish "converged cleanly" from "killed by wall-clock" by reading
+.env.sh alone.
+**Fix:** Set LOOP_EXIT before each `exit N`: `LOOP_EXIT=wall-clock; write_env;
+exit 5`, etc. Then 3h's report can include the canonical exit reason.
+
+---
+
+### [medium] VERIFIER_NEW_COUNT computed but never used in 3g termination decision
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1520 `echo "VERIFIER_NEW_COUNT=$VERIFIER_NEW_COUNT"`
++ write_env via the 3f bash. The 3g block at 1547-1610 uses `NEW_NEW_FINDINGS`
+which the prose at 1539 says equals `|VERIFIER_NEW|` PLUS HUMAN_GATE first-emits.
+But NEW_NEW_FINDINGS is set by orchestrator-prose substitution at 1551
+(`NEW_NEW_FINDINGS=${NEW_NEW_FINDINGS:-0}`), with VERIFIER_NEW_COUNT not
+referenced. So the orchestrator must mentally re-read $VERIFIER_NEW_COUNT
+and add GATED_THIS_ROUND, but bash never wires it.
+**Impact:** Two failure modes: (a) orchestrator forgets to add VERIFIER_NEW_COUNT
+into NEW_NEW_FINDINGS → undercount → premature convergence. (b) orchestrator
+double-counts (HUMAN_GATE first-emits already inflate VERIFIER_NEW via the
+filter loop at 1509-1517 which only excludes hashes already in
+human_gate_emitted) → overcount → never converges.
+**Fix:** Replace orchestrator-prose at 1551 with mechanical:
+`NEW_NEW_FINDINGS=$((VERIFIER_NEW_COUNT + GATED_THIS_ROUND))`. Document
+that GATED_THIS_ROUND only counts NEW emits (sub-step 3c already gates on
+`is_human_gate_already_emitted` at line 997, so it's safe).
+
+---
+
+### [medium] ARCH_OUTPUT_FILE persisted but only used same-block — risk of cross-finding leak via .env.sh
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1098 sets ARCH_OUTPUT_FILE per finding, calls
+`write_env` at 1101. The same path is recomputed identically at 1148, 1187 —
+deterministic from FINDING_ID, so re-derivation is safe. BUT ARCH_OUTPUT_FILE
+is in write_env's whitelist (lib/env-helpers.sh:29) so it persists between
+findings. If a later bash block sources .env.sh and references
+$ARCH_OUTPUT_FILE without first re-deriving from current FINDING_ID
+(e.g., the EDITOR_ABORT revert path at 1236-1257), it will get the previous
+finding's path.
+**Impact:** Potential mis-targeted operations across findings within the
+same round. Specifically: if an Editor revert block ever references
+$ARCH_OUTPUT_FILE (it doesn't today, but the surface allows it), the bug
+is silent.
+**Fix:** Drop ARCH_OUTPUT_FILE from write_env's whitelist. It's deterministic
+from FINDING_ID — derive on every read site. Currently 1148 and 1187 both
+re-derive, so removing the persistence is safe.
+
+---
+
+### [low] FINDING_DESCRIPTION is whitelisted twice as a concept — once raw, once mapped to FINDING_DESC inline
+**Source:** dead-end-detector
+**Evidence:** lib/env-helpers.sh:31 has FINDING_DESCRIPTION. god-review.md:1003
+remaps to FINDING_DESC for the python3 environment. Two name spaces for
+the same value increase the chance of a typo causing silent empty-string
+substitution into the HUMAN_GATE_QUEUE markdown.
+**Impact:** Future-edit hazard, not currently broken.
+**Fix:** Standardize on one name. Use FINDING_DESCRIPTION end-to-end and
+adjust the python3 inline at 1009 to read os.environ["FINDING_DESCRIPTION"].
+
+---
+
+### [low] PRE_FIX_BASE_REF set in 3a, only read in 3f verifier prompt — could be stale after revert
+**Source:** dead-end-detector
+**Evidence:** god-review.md:908 sets PRE_FIX_BASE_REF at round start.
+god-review.md:1434 references `$PRE_FIX_BASE_REF` inside the verifier prompt
+template (`git diff $PRE_FIX_BASE_REF..HEAD`). PRE_FIX_BASE_REF is NOT in
+write_env's whitelist. So the var only survives if the orchestrator hasn't
+crossed a "fresh sourcing" boundary. Across the ~500 lines from 908 to 1434
+there are dozens of bash fences each re-sourcing env-helpers.sh. The
+persisted .env.sh won't carry this var.
+**Impact:** Verifier diff prompt at 1434 silently substitutes empty string
+for $PRE_FIX_BASE_REF, becoming `git diff ..HEAD` which is a syntax error
+(bash) or treated as `git diff HEAD` (one-arg) showing the working-tree
+diff against HEAD, not the round-baseline diff. Verifiers re-flag every
+file ever modified in this session, not just this round's fixes.
+**Fix:** Add PRE_FIX_BASE_REF to write_env's whitelist in env-helpers.sh:28.
+
+---
+
+### [low] write_env at 919-922 resets per-round counters but not FINDING_* — within-round leak
+**Source:** dead-end-detector
+**Evidence:** Lines 915-919 reset NEW_NEW_FINDINGS, DEFERRED_THIS_ROUND,
+GATED_THIS_ROUND, FIXES_KEPT_THIS_ROUND, LOOP_EXIT, VERIFIER_NEW_COUNT —
+NOT FINDING_* family. So between findings within the same round, the prior
+finding's FINDING_DESCRIPTION/ROOT_CAUSE/SEVERITY/PROPOSED_DIFF are still
+in .env.sh.
+**Impact:** Failure mode described in earlier findings — substitution gaps
+silently use previous finding's values.
+**Fix:** Add a per-finding reset block to be called by orchestrator before
+each finding's pipeline starts: `for v in FINDING_ID FINDING_HASH FINDING_FILE
+FINDING_LINE_RANGE FINDING_LINE_NORMALIZED FINDING_CATEGORY FINDING_DESCRIPTION
+FINDING_ROOT_CAUSE FINDING_SEVERITY FINDING_PROPOSED_DIFF; do unset $v; done; write_env`.
+
+---
+
+### [minor] frozen_added_per_round and architect_malformed_per_round arrays grow unbounded
+**Source:** dead-end-detector
+**Evidence:** lib/env-helpers.sh:217-248 — both helpers `arr.append(0)` until
+len(arr) > round, then `arr[r] += 1`. No cap. After 100+ rounds (e.g., a
+runaway --loop session) state.json grows linearly.
+**Impact:** Slow file I/O and memory in extreme cases; not a correctness bug.
+**Fix:** Cap arrays to last N rounds (slice on read), or store only nonzero
+rounds as `{round: count}` dict.
+
+---
+
+### [deferred] orchestrator-prose Architect spawn at 1104-1137 cannot be mechanically verified
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1104 "Then spawn the Agent with prompt: ...".
+There is no bash assertion that the Agent was actually invoked (no marker
+file, no log line). The validation at 1150 only checks that ARCH_OUTPUT_FILE
+exists post-spawn. If the orchestrator skips the Agent call entirely (LLM
+context confusion), the missing file is treated as "Architect malformed"
+and the finding is demoted to HUMAN_GATE — which is a safe degradation,
+NOT a dead-end. Including for completeness.
+**Fix:** None required (existing handling is safe-fail). Could add a
+counter `architect_invoked_per_round[]` if forensic clarity matters.
+
+---
+
+Total: 13 findings (catastrophic: 1, high: 4, medium: 4, low: 3, minor: 1, deferred: 1)
