@@ -803,18 +803,20 @@ Output: `Phase 2 complete. [N] findings ([X] critical, [Y] important, [Z] minor)
 
 ---
 
-## Phase 3: Fix Loop (gated on --fix)
+## Phase 3: Fix Loop (always-on; orchestrator-driven)
 
-```
-IF NOT --fix:
-  Print: "Report-only run complete. Pass --fix to enable the fix loop."
-  Print: "Report at: tmp/god-review/report.md"
-  EXIT
-```
+**Phase 3 is always-on for `/god-review`.** For report-only behavior, use
+`/god-report` instead — it runs Phase 0–2 and exits without entering Phase 3.
 
-**Phase 3 runs only when `--fix` is set.**
+This phase is **orchestrator-driven, not bash-driven** (per master-review.md
+pattern at lines 1395-1430). Bash blocks below do mechanical work (state writes,
+hash computation, snapshots). Agent tool calls do parallel review/fix work.
+The loop control flow lives in **YOUR (the orchestrator's) reasoning** as
+explicit prose — there is no outer `while [...]; do` bash construct wrapping
+Agent invocations. Each round is a sequence of sub-steps you execute, then
+you make the loop-back decision based on round results.
 
-Read state from `tmp/god-review/state.json`. Load churn ledger, frozen units, false positives, round counter.
+Read state from `tmp/god-review/state.json` at the start of every round.
 
 ### Per-round loop structure
 
