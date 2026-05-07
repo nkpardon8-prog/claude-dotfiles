@@ -595,6 +595,14 @@ bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/codex-broad-security-safeguards.txt \
   "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-security-safeguards.md)" \
   "$WORKDIR"
+
+# Phase G: copy Codex outputs into findings/ for Phase 2d consolidation.
+# (cat-glob at line ~660 reads findings/codex-*.txt + findings/claude-*.txt;
+# without this step the Codex side is silently inert.)
+mkdir -p "$WORKDIR/tmp/god-review/findings"
+[ -f /tmp/codex-broad-cross-layer.txt ]        && cp /tmp/codex-broad-cross-layer.txt        "$WORKDIR/tmp/god-review/findings/codex-broad-cross-layer.txt"
+[ -f /tmp/codex-broad-prod-scalability.txt ]   && cp /tmp/codex-broad-prod-scalability.txt   "$WORKDIR/tmp/god-review/findings/codex-broad-prod-scalability.txt"
+[ -f /tmp/codex-broad-security-safeguards.txt ] && cp /tmp/codex-broad-security-safeguards.txt "$WORKDIR/tmp/god-review/findings/codex-broad-security-safeguards.txt"
 ```
 
 **Layer B — Claude principle agents** (1 per active principle):
