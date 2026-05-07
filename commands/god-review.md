@@ -976,7 +976,7 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/editor-output.txt \
-  "$(cat ~/.claude-dotfiles/commands/god-review/lib/editor-agent.md)\n\nApply this change:\n$ARCH_JSON" \
+  "$(cat ~/.claude-dotfiles/commands/god-review/lib/editor-agent.md)\n\nApply this change:\n$ARCH_OUTPUT" \
   "$WORKDIR"
 ```
 
