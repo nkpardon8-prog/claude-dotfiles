@@ -400,7 +400,12 @@ cat > tmp/god-review/state.json.tmp << 'STATEOF'
   "max_wall_hours": MAXWALLPLACEHOLDER,
   "finding_history_hashes": [],
   "kept_fixes": [],
-  "reverted_fixes": []
+  "reverted_fixes": [],
+  "human_gate_emitted": [],
+  "frozen_added_per_round": [],
+  "architect_malformed_per_round": [],
+  "auto_deferred": [],
+  "round_finding_counts": []
 }
 STATEOF
 
