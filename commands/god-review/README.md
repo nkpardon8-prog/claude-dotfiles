@@ -211,7 +211,7 @@ Replace N with the actual round count shown in the final report summary.
 
 ## Hard Gates — Never Auto-Applied
 
-These paths and patterns are **always** `HUMAN_GATE`, regardless of `--fix`. The command will propose a diff in `report.md` but will never write the file.
+These paths and patterns are **always** `HUMAN_GATE`, regardless of command. /god-review proposes a diff in `report.md`'s HUMAN_GATE_QUEUE section but never writes the file. /god-report flags them in the report and exits.
 
 > **Canonical source:** `lib/hard-gates.txt`. The orchestrator's `is_hard_gate <path>`
 > (in `lib/env-helpers.sh`) reads that file at runtime. If the categories below
