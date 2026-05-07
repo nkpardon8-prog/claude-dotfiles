@@ -1,0 +1,109 @@
+### [high] PRE_SCAN_HALLUCINATED / PRE_SCAN_SECRETS / PRE_SCAN_INJECTION computed but never reach principle agents
+**Source:** dead-end-detector
+**Evidence:** god-review.md:311-361 — three pre-scan variables are populated, echoed locally, and counted into PRE_SCAN_FLAG_COUNT, but no later phase reads them. They are NOT in the env-helpers.sh:20-27 write_env whitelist, NOT written to context-package.md, and Phase 2 principle agents (secret-leak, hallucinated-imports, prompt-injection) re-do the scans from scratch.
+**Impact:** Phase 1's failure-mode pre-scans are dead-end output. The 3 corresponding principle agents redo identical work, doubling cost and latency. The whole "fast pre-scans before expensive agents" rationale (mode #19) doesn't actually save the agents any work because they never see the pre-scan results.
+**Fix:** Either (a) write `tmp/god-review/pre-scans.txt` and append references into context-package.md so the relevant principles short-circuit when the pre-scan is empty, or (b) export PRE_SCAN_* via write_env and instruct each principle's prompt to read them.
+
+### [high] PRE_SCAN_FLAG_COUNT computed for a side-effect echo only
+**Source:** dead-end-detector
+**Evidence:** god-review.md:357-361 — counter is computed and printed but never gates anything downstream. No `if [ "$PRE_SCAN_FLAG_COUNT" -gt 0 ]` branch, no inclusion in state.json, no influence on triage/promotion.
+**Impact:** Phase 1 "N flags raised" output is informational only. The "pre-scan flags raised" message at Phase 1's end (line 446) implies these are actionable signals, but nothing acts on them.
+**Fix:** Either gate `--ruthless` auto-on when PRE_SCAN_FLAG_COUNT >= 2, persist the count to state.json under `pre_scan_flags`, or delete the counter and remove the misleading "pre-scan flags raised" output.
+
+### [high] MIRROR_MODE read but never branched on
+**Source:** dead-end-detector
+**Evidence:** god-review.md:129-131 — `MIRROR_MODE` is captured from `.mirror-mode`, comments describe what `dual` vs `auto` should do, but no later code does `if [ "$MIRROR_MODE" = "dual" ]; then`. All writes go to `tmp/god-review/` only.
+**Impact:** Documented behavior contradicts code: comment on line 130 promises `dual` mode writes outputs to BOTH `~/.claude-dotfiles/` AND `~/.claude/`, but no branch exists. If the auto-mirror hook is disabled and a user sets `.mirror-mode=dual`, outputs silently go to one location only.
+**Fix:** Either implement the dual-write branch where reports/state.json are written, or delete MIRROR_MODE entirely and rely on the mirror hook + remove the misleading comments.
+
+### [high] CONTEXT_PACKAGE export from gather-context.sh never consumed
+**Source:** dead-end-detector
+**Evidence:** lib/gather-context.sh:23 exports `CONTEXT_PACKAGE`. Grep across orchestrator + principles + lib shows zero readers (only the export site).
+**Impact:** Principle files that source gather-context.sh as a fallback receive an unused env var. Future code that intends to honor `$CONTEXT_PACKAGE` will silently get an empty string in shells that didn't source the helper.
+**Fix:** Either reference `$CONTEXT_PACKAGE` from at least one principle's bash block as the canonical context-path source-of-truth, or drop the export and inline the path.
+
+### [high] SKIP_CODEX_VALIDATION set but never read
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1431-1436 sets `SKIP_CODEX_VALIDATION=true|false` based on round-modulo. No subsequent code in Phase 2d (lines 642-668, the actual codex-invoke.sh call) reads it. The Codex validation call always runs unconditionally.
+**Impact:** The documented "Codex validation runs only every CODEX_VALIDATION_EVERY rounds in --loop" cost-saving feature does not work. Each --loop round still pays full Codex validation cost. Failure mode #14 (cost runaway) reintroduced.
+**Fix:** Wrap the Phase 2d Codex call in `if [ "$SKIP_CODEX_VALIDATION" != "true" ]; then ... bash codex-invoke.sh ... else echo "(skipped — non-milestone round)"; fi`. Also: SKIP_CODEX_VALIDATION is set AFTER Phase 3 in the orchestrator flow but described as "at the start of Phase 2 in each loop iteration" — the gating block is in the wrong place to even fire.
+
+### [high] SKIP_CODEX_VALIDATION block is positionally orphaned
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1424-1437 — the block lives AFTER the Phase 3 fix-loop closes (`done` at 1420). For --loop iterations to honor it, the entire Phase 2 + Phase 3 sequence must re-execute, but the orchestrator flow has no outer iteration — the inner while-loop is in Phase 3 only and re-runs Phase 3 against the same Phase-2 findings. Phase 2 itself does not re-run per --loop iteration.
+**Impact:** "--loop runs the entire pipeline indefinitely" is not what the orchestrator actually does. Phase 2 runs once; only Phase 3 iterates. Therefore SKIP_CODEX_VALIDATION can never trigger (Phase 2 happens before any round counter increments past 0).
+**Fix:** Either restructure --loop to wrap Phase 2 + Phase 3 (re-running review per round), or delete the SKIP_CODEX_VALIDATION block + its docs since the design only validates once.
+
+### [medium] CODEX_BIN re-set in Phase 2b but already exported by codex-invoke.sh
+**Source:** dead-end-detector
+**Evidence:** god-review.md:499 sets `CODEX_BIN` and writes via write_env, but `CODEX_BIN` is NOT in the write_env whitelist (env-helpers.sh:20-27). Subsequent codex-invoke.sh subprocess calls re-resolve via `command -v codex` at line 36 of that script.
+**Impact:** Detection result thrown away. If user has multiple codex installs and PATH varies between bash blocks, detection at Phase 2b means nothing.
+**Fix:** Add `CODEX_BIN` to the write_env whitelist, OR explicitly export it before each `bash codex-invoke.sh` call.
+
+### [medium] SCOPE field updated each round but not persisted via correct mechanism
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1416 sets `SCOPE="$NEXT_SCAN_SCOPE"` for next-round re-scoping, then write_env at 1418. SCOPE IS in the whitelist, good — but `NEXT_SCAN_SCOPE` itself is NOT persisted, and the rescope logic at 1391-1400 references SCOPE only inside the loop. After --resume, the previous round's narrowed SCOPE is restored but the original-full-scope is lost.
+**Impact:** Re-running with `--resume` resumes from a partial scope, and `--rescope-on-fix=full` cannot recover the original scope on resume because original SCOPE was overwritten.
+**Fix:** Persist `ORIGINAL_SCOPE` separately on first invocation, distinct from rolling `SCOPE`. Read `ORIGINAL_SCOPE` from state.json on `--resume`.
+
+### [medium] frozen_added_per_round / architect_malformed_per_round read but never written
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1344-1346 reads `frozen_added_per_round` and `architect_malformed_per_round` arrays from state.json for instability rate computation. Grep shows zero writers — the only `architect_malformed_count` is a scalar increment at line 966; no per-round array append. `frozen_added_per_round` has no writer at all.
+**Impact:** AVG_INSTABILITY at line 1340-1350 always reads empty lists → averages to 0 → instability-abort termination signal (god-review.md:1351-1354) NEVER fires. `--loop` mode loses one of its 8 documented termination signals.
+**Fix:** At end of each round (~line 1418), append `len(frozen_units_added_this_round)` to `frozen_added_per_round` and append per-round malformed-count delta to `architect_malformed_per_round`. Both via atomic state.json update.
+
+### [medium] consecutive_clean_rounds persisted in state but bounded mode never reads it
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1409 writes `consecutive_clean_rounds` to state.json. Only the indefinite-mode block at 1334 reads it. Bounded mode (1370-1389) doesn't reference it.
+**Impact:** Vestigial in bounded mode. Documented bounded-mode early-exit on convergence is not implemented.
+**Fix:** If bounded mode should also short-circuit on 3 clean rounds, add `[ "$CONSECUTIVE_CLEAN_ROUNDS" -ge 3 ] && break` to the bounded branch. Otherwise omit the field from bounded-mode state writes.
+
+### [medium] STATE field human_gate_emitted read but never initialized or written
+**Source:** dead-end-detector
+**Evidence:** god-review.md:867 reads `human_gate_emitted` from state.json. Phase 1b state.json template (lines 388-405) does not initialize it. No writer exists for human_gate_emitted.
+**Impact:** Replay-suppression for HUMAN_GATE findings is broken — every round emits the same HUMAN_GATE finding fresh. The "still pending as of round N" branch (line 873) never executes because `[]` always negates the `in` check.
+**Fix:** Add `"human_gate_emitted": []` to the state.json initialization template; add an append-write on the new-emission branch (~line 870).
+
+### [medium] kept_fixes is a flat list but state.json initializes it as such — no consumer
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1208, 1220 append to `kept_fixes`. No reader anywhere except potentially the final summary, which actually reads `FIXES_KEPT_THIS_ROUND` round-counter, not state.json kept_fixes.
+**Impact:** Per-fix audit trail accumulates indefinitely with no consumer. On --resume, the previous run's kept_fixes are loaded but never used.
+**Fix:** Either (a) emit a "Kept fixes this session: <count>" line in Final Summary that actually reads state.json kept_fixes (currently the summary template at 1444-1463 has no real binding), or (b) drop kept_fixes and rely on git log of god-review commits.
+
+### [medium] CODEX_VALIDATION_EVERY validated but unused under current --loop semantics
+**Source:** dead-end-detector
+**Evidence:** god-review.md:67-69 parses + validates `--codex-validation-every`. Persisted via write_env. Only consumer is the orphaned SKIP_CODEX_VALIDATION block (see finding #5 above).
+**Impact:** Tied to broken finding #5/#6. Once the SKIP gate is fixed and Phase 2 actually re-runs per loop, this becomes live. As-is: dead.
+**Fix:** Same fix as #5/#6.
+
+### [medium] FIXES_KEPT_THIS_ROUND used to construct git diff range but premise is wrong
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1398 — `git diff HEAD~"$FIXES_KEPT_THIS_ROUND" --name-only`. This assumes each kept fix corresponds to exactly one commit, which is only true when the perf-benchmark branch keeps the commit. The pre-commit-rejected reverts at 1140-1156 increment FIXES_KEPT_THIS_ROUND nowhere, but if a perf revert (1190 `git reset --hard HEAD~1`) fires after the commit, kept_fixes was already appended (1209). Counter and HEAD~N drift.
+**Impact:** `--rescope-on-fix=changed` produces wrong diff scope when perf reverts fire — references a commit that no longer exists. Subsequent round scans wrong file set. Could be silent (empty diff) or produce a git error mid-loop.
+**Fix:** Use git log + grep for "god-review:" subject prefix to count actual surviving commits since session start, OR decrement FIXES_KEPT_THIS_ROUND on perf revert.
+
+### [low] HAS_BENCH_SCRIPT detection has 5 fallback branches but result feeds only one consumer
+**Source:** dead-end-detector
+**Evidence:** god-review.md:207-224 — five-tier detection cascade for HAS_BENCH_SCRIPT. Only consumer is Phase 1c baseline capture (431) + Phase 3 perf comparison (1160). Stack-gated principle activation (485) treats truthy/falsy only.
+**Impact:** Detection cost out of proportion to use. Multiple find walks at startup for a single boolean signal.
+**Fix:** None required. Acceptable cost; flagging only because the surface area is large for one downstream consumer.
+
+### [low] HAS_BACKEND_PROJECT computed but only used via combined HAS_BACKEND_LENS_TRIGGER
+**Source:** dead-end-detector
+**Evidence:** god-review.md:201 sets HAS_BACKEND_PROJECT, then immediately combined into HAS_BACKEND_LENS_TRIGGER at 204. HAS_BACKEND_PROJECT is in write_env whitelist (env-helpers.sh:21), persisted, but only HAS_BACKEND_LENS_TRIGGER drives any decision (orchestrator line 481).
+**Impact:** Minor — HAS_BACKEND_PROJECT is logged in Phase 0 stack-signals echo (line 231), so it's not pure-dead.
+**Fix:** None required.
+
+### [minor] state.json reverted_fixes accumulates with no consumer except round audit
+**Source:** dead-end-detector
+**Evidence:** Multiple writers (1151, 1197, 1256). No reader except potentially round-N-findings.md template (which is itself a templated string, not actually populated from reverted_fixes).
+**Impact:** Audit data grows but never displayed in Final Summary or used to detect repeat-revert patterns.
+**Fix:** Surface "Reverted fixes: N (reasons: ...)" in Final Summary by reading state.json reverted_fixes.
+
+### [minor] STATE field 'snapshot' read on --resume but reftype `stash` lookup uses substring match
+**Source:** dead-end-detector
+**Evidence:** god-review.md:115 — `git stash list | grep -qF "$SNAP_REF"` will match if the SHA appears anywhere in stash list output (stash messages may include partial SHAs). Combined with stash-create returning a commit-like SHA that is NOT in `git stash list` output (stash-create makes a stash object NOT registered in the stash stack), this lookup will likely always set STALE=true.
+**Impact:** `--resume` after a dirty-tree initial run will always require `--force-resume`. The stash-stale detection is structurally broken — `git stash create` produces refs not visible in `git stash list`.
+**Fix:** Use `git rev-parse --verify "$SNAP_REF^{commit}"` for both reftype branches; stash-create refs are commit-shaped objects that survive in the object DB even though they're not in the stash stack.
+
+Total: 18 findings (catastrophic: 0, high: 6, medium: 7, low: 2, minor: 3, deferred: 0)
