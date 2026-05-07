@@ -825,28 +825,17 @@ while [ "$LOOP" = "true" ] || [ "$ROUND" -le "${MAX_ROUNDS:-5}" ]; do
   echo "=== Round $ROUND ==="
   FIXES_KEPT_THIS_ROUND=0
   NET_NEW_FINDINGS_THIS_ROUND=0
-```
 
-For each round (1 through MAX_ROUNDS in bounded mode, or indefinite if --loop):
+# For each round (1 through MAX_ROUNDS in bounded mode, or indefinite if --loop):
 
-#### Step 3a: Triage findings into two buckets
+# Step 3a: Triage findings into two buckets
 
-**AUTO_FIX** — all of the following must be true:
-- Single-file change only (Architect cannot target >1 file)
-- Category is NOT in hard-gate list: no schema migrations, no auth files, no package.json/requirements.txt/Cargo.toml/go.mod/Pipfile/Gemfile/pom.xml/build.gradle changes, no `.env`/`.env.*`/`*secrets*`/`*credentials*` files, no CI YAML (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `.circleci/config.yml`, `azure-pipelines*.yml`, `bitbucket-pipelines.yml`, `Jenkinsfile*`, `.pre-commit-config.yaml`, `.husky/**`), no test file modification (`*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `tests/**`, `__tests__/**`, `spec/**`), no dead-code quarantine moves (any `_deprecated/` path)
-- Not in `frozen_units` list
-- Has not been attempted and reverted in a prior round of this session (check `finding_history_hashes`)
-- Has a clear, unambiguous single-file remediation
 
-**HUMAN_GATE** — everything else. Emit proposed diff to report ONCE per finding (track by hash; subsequent rounds update "still pending as of round N" only).
 
-#### Step 3b: HUMAN_GATE diff emission
+# Step 3b: HUMAN_GATE diff emission
 
-For each new HUMAN_GATE finding (first time seen this session):
+# For each new HUMAN_GATE finding (first time seen this session):
 
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 FINDING_HASH="<sha256 of this finding>"
 # Check if already emitted
 if ! python3 -c "import json; d=json.load(open('tmp/god-review/state.json')); print('yes' if '$FINDING_HASH' in [f.get('hash') for f in d.get('human_gate_emitted',[])] else 'no')" | grep -q yes; then
@@ -857,16 +846,11 @@ else
   # Update "still pending as of round N" marker in report.md
   echo "HUMAN_GATE (still pending): $FINDING_ID"
 fi
-```
 
-#### Step 3c: Per-AUTO_FIX processing (sequential — one at a time)
+# Step 3c: Per-AUTO_FIX processing (sequential — one at a time)
 
-For each AUTO_FIX finding:
+# For each AUTO_FIX finding:
 
-**1. Pre-fix snapshot** (canonical block — same pattern as Phase 1b):
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # Canonical snapshot block (mirrors Phase 1b) — handles clean and dirty working trees.
 # After the previous fix was committed, working tree is typically clean (REF = HEAD commit).
 # If worktree is unexpectedly dirty, stash-create to capture it non-destructively.
@@ -878,50 +862,33 @@ else
   PRE_FIX_REFTYPE="commit"
 fi
 echo "Pre-fix snapshot: $PRE_FIX_REFTYPE $PRE_FIX_REF"
-```
 
-**2. Spawn Architect agent** (Claude Opus — describes the fix, produces structured output):
 
-Spawn one Agent tool call:
-- `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`, extended thinking enabled
-- Prompt includes: finding description, file content, line range, context-package, and instruction:
+# Spawn one Agent tool call:
 
-```
-You are the Architect in a godreview fix loop. Describe ONE precise fix for the finding below.
+# ```
+# You are the Architect in a godreview fix loop. Describe ONE precise fix for the finding below.
 
-Finding: <description>
-File: <file>
-Lines: <line_start>-<line_end>
+# Finding: <description>
+# File: <file>
+# Lines: <line_start>-<line_end>
 
-IMPACT AUDIT (required — include in rationale):
-- What depends on this code?
-- What would break if this fix is wrong?
-- What test coverage exists for this area?
-- Risk assessment: LOW / MEDIUM / HIGH
+# IMPACT AUDIT (required — include in rationale):
 
-Output ONLY valid JSON (no markdown wrapping, no explanation outside the JSON):
-{
-  "file": "relative/path/to/file.ext",
-  "line_start": <integer>,
-  "line_end": <integer>,
-  "before": "exact current content at those lines",
-  "after": "replacement content",
-  "rationale": "one sentence describing the fix plus impact assessment"
-}
+# Output ONLY valid JSON (no markdown wrapping, no explanation outside the JSON):
+# {
+# "file": "relative/path/to/file.ext",
+# "line_start": <integer>,
+# "line_end": <integer>,
+# "before": "exact current content at those lines",
+# "after": "replacement content",
+# "rationale": "one sentence describing the fix plus impact assessment"
+# }
 
-Constraints:
-- "file" must be a single file (no multi-file changes)
-- "file" must NOT be in a hard-gate category (tests, CI YAML, .env, deps, schema migrations, _deprecated/)
-- "before" must be exact current file content (copy-paste it, do not paraphrase)
-- "after" must be non-empty and different from "before"
-- If you cannot produce a safe, single-file fix, output: {"error": "cannot fix safely: <reason>"}
-```
+# Constraints:
+# ```
 
-**3. Validate Architect output schema** (Locked Decision #23):
 
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # Orchestrator validates Architect output BEFORE spawning Editor
 ARCH_OUTPUT="<architect agent output>"
 
@@ -981,29 +948,18 @@ if is_hard_gate "$ARCH_FILE"; then
   echo "HUMAN_GATE: $ARCH_FILE matches hard-gate pattern — skipping Editor spawn"
   continue
 fi
-```
 
-**4. Spawn Editor agent** (different model family when Codex available):
 
-If `$CODEX_AVAILABLE=true`: spawn Codex as editor via bash:
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# If `$CODEX_AVAILABLE=true`: spawn Codex as editor via bash:
 bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/editor-output.txt \
   "$(cat ~/.claude-dotfiles/commands/god-review/lib/editor-agent.md)\n\nApply this change:\n$ARCH_OUTPUT" \
   "$WORKDIR"
-```
 
-If Codex unavailable: spawn a second Claude Agent tool call (different instance, same model):
-- Prompt: load `~/.claude-dotfiles/commands/god-review/lib/editor-agent.md` content + architect JSON
-- `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`
+# If Codex unavailable: spawn a second Claude Agent tool call (different instance, same model):
 
-**5. Re-run gates:**
+# 5. Re-run gates:
 
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 GATES_PASS=true
 GATE_FAIL_REASON=""
 if [ -f package.json ]; then
@@ -1067,13 +1023,9 @@ elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
   tail -20 /tmp/gate-output.txt
 fi
 echo "Gates: $GATES_PASS${GATE_FAIL_REASON:+ (failed: $GATE_FAIL_REASON)}"
-```
 
-**6. Regression detectors (run BEFORE deciding keep/revert):**
+# 6. Regression detectors (run BEFORE deciding keep/revert):
 
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 REGRESSION_DETECTED=false
 REGRESSION_REASON=""
 
@@ -1137,13 +1089,9 @@ if [ -f /tmp/god-review-freeze-signal ]; then
 fi
 
 echo "Regression check: REGRESSION_DETECTED=$REGRESSION_DETECTED REASON=$REGRESSION_REASON"
-```
 
-**7. Keep or revert (canonical revert table):**
+# 7. Keep or revert (canonical revert table):
 
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 if [ "$GATES_PASS" = "true" ] && [ "$REGRESSION_DETECTED" = "false" ]; then
   # KEEP: commit the fix (no --no-verify per Locked Decision #6 — pre-commit hook must run)
   if git commit -m "god-review: $FINDING_ID"; then
@@ -1270,13 +1218,9 @@ os.rename(tmp,'tmp/god-review/state.json')
   echo "Reverted: $FINDING_ID — reason: $REVERT_REASON"
 fi
 write_env
-```
 
-#### Step 3d: Write round audit trail
+# Step 3d: Write round audit trail
 
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 cat > tmp/god-review/round-${ROUND}-findings.md.tmp << 'ROUNDEOF'
 # god-review Round <N> Audit Trail
 
@@ -1299,13 +1243,9 @@ cat > tmp/god-review/round-${ROUND}-findings.md.tmp << 'ROUNDEOF'
 - **Decision**: KEPT (commit <sha>) / REVERTED (<reason>) / HUMAN_GATE_EMITTED
 ROUNDEOF
 mv tmp/god-review/round-${ROUND}-findings.md.tmp tmp/god-review/round-${ROUND}-findings.md
-```
 
-#### Step 3e: Termination check (real shell — executed at end of every round)
+# Step 3e: Termination check (real shell — executed at end of every round)
 
-```bash
-WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 
 # Re-read frozen units count from state.json (updated by churn detector above)
 FROZEN_UNITS_COUNT=$(python3 -c "
