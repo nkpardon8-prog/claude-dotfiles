@@ -1531,30 +1531,62 @@ write_env
 ```
 
 **Now you (the orchestrator) make the loop-back decision based on
-`NEW_NEW_FINDINGS`:**
+`NEW_NEW_FINDINGS`. Persist the new state to disk (`write_env` + `state.json`)
+BEFORE re-entering, then continue executing.**
 
-- **If `NEW_NEW_FINDINGS > 0`:**
-  - Set `CONSECUTIVE_CLEAN_ROUNDS=0`.
-  - Increment `ROUND`.
-  - **Decide whether to re-run full Phase 2 OR re-enter Phase 3 directly:**
-    - If `VERIFIER_NEW` (3f) found bugs in DIFFERENT areas than this round's
-      fixes touched, re-enter at Phase 2 with re-scoped agents — they'll
-      re-discover what changed.
-    - If `NEW_NEW_FINDINGS` came entirely from `bucket_HUMAN_GATE` first-emits
-      (no actionable new bugs, just new hard-gate items queued), skip the
-      full Phase 2 re-run — re-enter Phase 3 sub-step 3a directly. This avoids
-      respawning 52 agents per round when nothing actionable changed.
-  - Update SCOPE for the next round: if `RESCOPE_ON_FIX=changed` and
-    `FIXES_KEPT_THIS_ROUND > 0`, set `SCOPE` to the changed-files list.
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# YOU substitute NEW_NEW_FINDINGS from your tally before this block:
+if [ "${NEW_NEW_FINDINGS:-0}" -gt 0 ]; then
+  CONSECUTIVE_CLEAN_ROUNDS=0
+  ROUND=$((ROUND + 1))
+  echo "DECISION: re-enter — $NEW_NEW_FINDINGS new findings, ROUND advancing to $ROUND, CONSECUTIVE_CLEAN_ROUNDS reset to 0"
+elif [ "${NEW_NEW_FINDINGS:-0}" -eq 0 ]; then
+  CONSECUTIVE_CLEAN_ROUNDS=$((CONSECUTIVE_CLEAN_ROUNDS + 1))
+  if [ "$CONSECUTIVE_CLEAN_ROUNDS" -ge 3 ]; then
+    echo "DECISION: TERMINATE — 3 consecutive clean rounds. Proceeding to Phase 4 (sub-step 3h)."
+    LOOP_EXIT=converged
+  else
+    ROUND=$((ROUND + 1))
+    echo "DECISION: re-enter — clean round ($CONSECUTIVE_CLEAN_ROUNDS/3), ROUND advancing to $ROUND"
+  fi
+fi
+write_env
+# Atomically persist round + clean-counter to state.json (already done above in backstop block;
+# this re-confirms after the prose decision).
+```
 
-- **If `NEW_NEW_FINDINGS == 0`:**
-  - Increment `CONSECUTIVE_CLEAN_ROUNDS`.
-  - **If `CONSECUTIVE_CLEAN_ROUNDS >= 3`:** exit the loop, proceed to sub-step
-    3h (Phase 4 final report). Output: "Naturally clean × 3 — converged after
-    $ROUND rounds."
-  - **Else:** increment `ROUND`. The HUMAN_GATE_QUEUE may still be non-empty —
-    that's intentional, those are punted-to-human-by-design. Re-enter Phase 3
-    sub-step 3a directly (skip full Phase 2 re-run since nothing changed).
+**Loop control flow (orchestrator MUST follow this — it is the actual loop):**
+
+- **If `LOOP_EXIT=converged`** → STOP looping. Execute sub-step 3h ONCE and
+  exit. The /god-review run is complete.
+- **If `LOOP_EXIT` is unset (re-enter)** → **YOU MUST START THE NEXT ROUND
+  RIGHT NOW BY EXECUTING SUB-STEP 3a IN A NEW BATCH OF MESSAGES.** Do NOT
+  stop. Do NOT wait for the user. Do NOT treat the previous round's
+  completion as the natural end of the command. The /god-review command
+  is INDEFINITE-LOOP by design (master-review.md:1417 pattern). The loop
+  terminates ONLY when CONSECUTIVE_CLEAN_ROUNDS reaches 3 OR a backstop
+  fires (wall-clock cap, instability, --max-rounds explicit ceiling).
+
+  Decide which entry point to use for the next round:
+  - **If `VERIFIER_NEW` (3f) found bugs in DIFFERENT areas than this round's
+    fixes touched** → re-enter at **Phase 2** (full review pipeline) with
+    re-scoped agents. They'll re-discover what changed.
+  - **If `NEW_NEW_FINDINGS` came entirely from new HUMAN_GATE first-emits**
+    (no actionable new bugs, just new hard-gate items queued) → skip Phase 2
+    re-run; re-enter at **Phase 3 sub-step 3a** directly. Avoids respawning
+    ~50 agents when nothing actionable changed.
+  - **If clean round (`NEW_NEW_FINDINGS == 0` but not yet 3 consecutive)** →
+    re-enter at **Phase 3 sub-step 3a** directly (verifier sub-pass in 3f
+    re-confirms cleanness; no need to spawn full Phase 2).
+
+  Update SCOPE before re-entering: if `RESCOPE_ON_FIX=changed` and
+  `FIXES_KEPT_THIS_ROUND > 0`, set `SCOPE` via:
+  ```bash
+  SCOPE=$(git diff "$PRE_FIX_BASE_REF"..HEAD --name-only 2>/dev/null | tr '\n' ' ')
+  write_env
+  ```
 
 ---
 
