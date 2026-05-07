@@ -1442,10 +1442,59 @@ After the parallel batch returns, capture each verifier's result text.
 
 **Apply per-agent finding write step:** for each verifier, call
 `write_agent_finding "verifier-<n>" "$verifier_result"` (orchestrator
-substitutes the captured text).
+substitutes the captured text). This writes
+`$WORKDIR/tmp/god-review/findings/verifier-<n>.txt`.
 
-Then run this concrete filter bash (NOT pseudocode — the orchestrator
-extracts each verifier finding into the env-var loop):
+**Then build `/tmp/verifier-all-findings.tsv` from the verifier outputs.**
+Each verifier's output is markdown; you (the orchestrator) parse each
+finding block and emit one TSV line per finding to /tmp/verifier-all-findings.tsv
+in this exact format (tab-separated):
+
+```
+<finding_id>\t<file>\t<line_range_normalized>\t<category>
+```
+
+Use `compute_finding_hash` semantics: `line_range_normalized` is start/end
+rounded to nearest 5 (e.g., 42-47 → "40-50"). Concretely, after capturing
+verifier results, run:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# Prepare empty TSV
+> /tmp/verifier-all-findings.tsv
+# Orchestrator: for each verifier-N.txt, parse the markdown finding blocks
+# and append one line per finding. Use python3 to extract:
+python3 - "$WORKDIR/tmp/god-review/findings"/verifier-*.txt 2>/dev/null << 'PYEOF' || true
+import sys, re, os
+out = open("/tmp/verifier-all-findings.tsv", "a")
+for path in sys.argv[1:]:
+    if not os.path.isfile(path): continue
+    text = open(path).read()
+    # Heuristic block parser: each finding starts with "### " heading.
+    # Look for inline FILE:LINE patterns in the body.
+    blocks = re.split(r'(?m)^### ', text)
+    for i, block in enumerate(blocks):
+        if i == 0: continue  # preamble before first ###
+        # Best-effort extraction
+        fid_m = re.search(r'^\[[^\]]+\]\s*(.+?)$', block, re.MULTILINE)
+        fid = fid_m.group(1).strip()[:60].replace('\t',' ') if fid_m else f"v-{i}"
+        loc_m = re.search(r'\b([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', block)
+        if loc_m:
+            f = loc_m.group(1); s = int(loc_m.group(2))
+            e = int(loc_m.group(3)) if loc_m.group(3) else s
+            lrange = f"{(s//5)*5}-{((e+4)//5)*5}"
+        else:
+            f, lrange = "unknown", "0-0"
+        cat_m = re.search(r'\b(category|principle):\s*(\w[\w\-]*)', block, re.IGNORECASE)
+        cat = cat_m.group(2) if cat_m else "uncategorized"
+        out.write(f"{fid}\t{f}\t{lrange}\t{cat}\n")
+out.close()
+PYEOF
+echo "Built /tmp/verifier-all-findings.tsv ($(wc -l < /tmp/verifier-all-findings.tsv) lines)"
+```
+
+Then run this concrete filter bash (the orchestrator iterates each TSV row):
 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
