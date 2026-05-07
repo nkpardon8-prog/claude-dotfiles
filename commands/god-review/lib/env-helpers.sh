@@ -189,6 +189,16 @@ if [ "${1:-}" = "--test-globs" ]; then
   test_match "package.json" "package.json" MATCH
   test_match "src/index.ts" "*.test.*" NO_MATCH
   test_match "src/index.ts" "migrations/**" NO_MATCH
+  # Phase G: nested-quarantine + workflows-glob fixes
+  test_match ".github/workflows/release.yml" ".github/workflows/**/*.yml" MATCH
+  test_match ".github/workflows/ci/build.yml" ".github/workflows/**/*.yml" MATCH
+  test_match ".github/workflows_extra/foo.yml" ".github/workflows/**/*.yml" NO_MATCH
+  test_match ".github/workflows.yml" ".github/workflows/**/*.yml" NO_MATCH
+  test_match "src/_deprecated/old.ts" "**/_deprecated/**" MATCH
+  test_match "_deprecated/x/y/z.ts" "_deprecated/**" MATCH
+  test_match "src/components/__tests__/foo.test.ts" "**/__tests__/**" MATCH
+  test_match "src/index.ts" "**/_deprecated/**" NO_MATCH
+  test_match "docs/test-guide.md" "**/__tests__/**" NO_MATCH
   echo "glob_to_regex self-test: $pass passed, $fail failed"
   [ "$fail" -eq 0 ]
 fi
