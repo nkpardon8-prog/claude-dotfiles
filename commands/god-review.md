@@ -28,22 +28,18 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # All arguments are parsed from the $ARGUMENTS variable provided by the harness.
 # Positional $1..$N are set by splitting $ARGUMENTS on whitespace.
 
-# Defaults:
+# Defaults (Phase G: --fix and --loop dropped — always-on by definition):
 SCOPE=""
-FIX=false; LOOP=false; RESUME=false; FORCE_RESUME=false; ONLINE=false; RUTHLESS=false
-MAX_ROUNDS=5; MAX_WALL_HOURS=24; CODEX_VALIDATION_EVERY=3
+RESUME=false; FORCE_RESUME=false; ONLINE=false; RUTHLESS=false
+MAX_ROUNDS=999999; MAX_WALL_HOURS=24; CODEX_VALIDATION_EVERY=3
 PRINCIPLE=""; RESCOPE_ON_FIX="changed"
-MAX_ROUNDS_EXPLICIT=false  # tracks whether --max-rounds was passed explicitly (used by B12 ceiling in --loop)
+MAX_ROUNDS_EXPLICIT=false  # tracks whether --max-rounds was passed explicitly
 
 # Split $ARGUMENTS into positional parameters for clean while-shift parsing
 eval set -- $ARGUMENTS
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --fix)
-      FIX=true; shift ;;
-    --loop)
-      LOOP=true; shift ;;
     --resume)
       RESUME=true; shift ;;
     --force-resume)
@@ -56,7 +52,7 @@ while [ $# -gt 0 ]; do
       [ "$2" -ge 1 ] 2>/dev/null || { echo "Error: --max-rounds must be an integer >= 1 (got: ${2:-missing})" >&2; exit 1; }
       MAX_ROUNDS="$2"; MAX_ROUNDS_EXPLICIT=true; shift 2 ;;
     --max-wall-hours)
-      python3 -c "v=float('${2:-0}'); assert v>0, 'must be > 0'" 2>/dev/null || { echo "Error: --max-wall-hours must be a float > 0 (got: ${2:-missing})" >&2; exit 1; }
+      python3 -c "v=float('${2:-0}'); assert v>=0, 'must be >= 0 (0 = no cap)'" 2>/dev/null || { echo "Error: --max-wall-hours must be a float >= 0 (got: ${2:-missing}; 0 disables cap)" >&2; exit 1; }
       MAX_WALL_HOURS="$2"; shift 2 ;;
     --principle)
       [ -f "$HOME/.claude-dotfiles/commands/god-review/principles/${2}.md" ] || { echo "Error: unknown principle '${2:-missing}'. Check ~/.claude-dotfiles/commands/god-review/principles/ for valid names." >&2; exit 1; }
@@ -68,7 +64,7 @@ while [ $# -gt 0 ]; do
       [ "$2" -ge 1 ] 2>/dev/null || { echo "Error: --codex-validation-every must be an integer >= 1 (got: ${2:-missing})" >&2; exit 1; }
       CODEX_VALIDATION_EVERY="$2"; shift 2 ;;
     --*)
-      echo "Error: unknown flag $1" >&2; exit 1 ;;
+      echo "Error: unknown flag $1 (note: --fix, --loop, --report-only dropped in Phase G — fix-loop is always on; use /god-report for report-only)" >&2; exit 1 ;;
     *)
       [ -z "$SCOPE" ] && SCOPE="$1" || { echo "Error: unexpected extra positional argument '$1'" >&2; exit 1; }
       shift ;;
@@ -81,15 +77,9 @@ done
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-# Validation check 1: --loop requires --fix
-if [ "$LOOP" = "true" ] && [ "$FIX" = "false" ]; then
-  echo "Error: --loop requires --fix. Pass --fix --loop together."
-  exit 1
-fi
-
-# Validation check 2: --max-wall-hours must be > 0
-if [ "$(echo "$MAX_WALL_HOURS <= 0" | bc 2>/dev/null)" = "1" ]; then
-  echo "Error: --max-wall-hours must be > 0 (got: $MAX_WALL_HOURS)"
+# Validation check 1: --max-wall-hours must be >= 0 (0 = no cap)
+if [ "$(echo "$MAX_WALL_HOURS < 0" | bc 2>/dev/null)" = "1" ]; then
+  echo "Error: --max-wall-hours must be >= 0 (got: $MAX_WALL_HOURS; 0 disables cap)"
   exit 1
 fi
 
