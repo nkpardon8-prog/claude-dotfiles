@@ -1227,7 +1227,7 @@ else
     echo "Reverted committed fix: $FINDING_ID"
   else
     # Fix not yet committed — targeted revert of only the Architect's target file
-    ARCH_FILE=$(echo "$ARCH_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('file',''))" 2>/dev/null)
+    ARCH_FILE=$(echo "$ARCH_OUTPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('file',''))" 2>/dev/null)
     # Injection guard — site 2: revert path
     case "$ARCH_FILE" in
       *[\;\&\|\`\$\(\)\<\>\\]* | *$'\n'* | *$'\r'* | '')
