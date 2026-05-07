@@ -53,14 +53,15 @@ Use TodoWrite to track files to analyze.
 ### 2.1 Quick Scan for Late Imports
 
 ```bash
+CUTOFF="${LATE_IMPORT_LINE:-40}"
 # Find potential late imports in changed or scoped files (TypeScript/JavaScript)
 for file in $(git diff main...HEAD --name-only 2>/dev/null | grep -E '\.(ts|tsx|js|jsx)$'); do
-  awk 'NR > 40 && /^import .* from|require\(/' "$file" 2>/dev/null && printf "^^^ %s\n" "$file"
+  awk -v c="$CUTOFF" 'NR > c && /^import .* from|require\(/' "$file" 2>/dev/null && printf "^^^ %s\n" "$file"
 done
 
 # Python late imports (inside functions/classes)
 for file in $(git diff main...HEAD --name-only 2>/dev/null | grep '\.py$'); do
-  awk 'NR > 40 && /^\s+import |^\s+from .* import/' "$file" 2>/dev/null && printf "^^^ %s\n" "$file"
+  awk -v c="$CUTOFF" 'NR > c && /^\s+import |^\s+from .* import/' "$file" 2>/dev/null && printf "^^^ %s\n" "$file"
 done
 ```
 
