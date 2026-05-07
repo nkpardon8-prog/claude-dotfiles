@@ -265,3 +265,24 @@ printf "%b  %b  %b  %b  %b  %b\n" \
   "$WEEK_FIELD" \
   "$EFFORT_FIELD" \
   "$REPO_FIELD"
+
+# ── 7. Per-session label (optional line 2) ──────────────────────────────────
+# Reads ~/.claude/session-status/<session_id>.txt and emits it as a dimmed
+# second line. File missing/empty → no second line. Truncated to 100 code
+# points (Unicode-aware via python3) so multi-byte chevrons survive the cut.
+SESSION_ID=$(jq_get '.session_id')
+SESSION_LABEL=""
+SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -cd 'A-Za-z0-9_-' | head -c 128 || true)
+
+if [ -n "$SAFE_SID" ]; then
+  LABEL_FILE="$HOME/.claude/session-status/$SAFE_SID.txt"
+  if [ -f "$LABEL_FILE" ]; then
+    SESSION_LABEL=$(head -n 1 "$LABEL_FILE" 2>/dev/null \
+      | python3 -c "import sys; s=sys.stdin.readline().rstrip(); print(s[:99]+'…' if len(s) > 100 else s)" \
+      2>/dev/null || true)
+  fi
+fi
+
+if [ -n "$SESSION_LABEL" ]; then
+  printf "%b%s%b\n" "$DIM" "$SESSION_LABEL" "$RESET"
+fi

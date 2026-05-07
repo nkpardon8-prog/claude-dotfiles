@@ -32,36 +32,79 @@ write_env() {
 }
 
 # Glob-to-regex conversion for hard-gate matching (per Locked Decision #3 + plan algorithm)
+# Algorithm (fixed in Phase E):
+#   **/X      → (?:.*/)?X        (recursive prefix)
+#   X/**      → X/.*             (recursive suffix)
+#   **/X/**   → (?:.*/)?X/.*
+#   *         → [^/]*            (single-segment wildcard)
+#   bare name → (?:.*/)?name$    (matches anywhere in tree)
 glob_to_regex() {
   local glob="$1"
   python3 -c "
-import re, sys
+import sys
 g = sys.argv[1]
-out = []
-i = 0
-while i < len(g):
-    c = g[i]
-    if c == '*' and i+1 < len(g) and g[i+1] == '*':
-        out.append('(?:.*/)?')
-        i += 2
-        if i < len(g) and g[i] == '/':
-            i += 1
-    elif c == '*':
-        out.append('[^/]*')
-        i += 1
-    elif c == '.':
-        out.append(r'\.')
-        i += 1
-    elif c in '[](){}+?^\$|\\\\':
-        out.append('\\\\' + c)
-        i += 1
-    else:
-        out.append(c)
-        i += 1
-print('^' + ''.join(out) + '\$')
-" "$glob"
-}
 
+# Determine if pattern is bare basename (no slash, no **)
+has_slash = '/' in g
+has_double_star = '**' in g
+
+parts = g.split('/')
+
+def escape_seg(s):
+    import re
+    # Escape regex metacharacters in a single segment (not * wildcards)
+    result = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == '*' and i+1 < len(s) and s[i+1] == '*':
+            result.append('.*')
+            i += 2
+        elif c == '*':
+            result.append('[^/]*')
+            i += 1
+        elif c == '.':
+            result.append(r'\.')
+            i += 1
+        elif c in r'[](){}+?^\$|\\\\':
+            result.append('\\\\' + c)
+            i += 1
+        else:
+            result.append(c)
+            i += 1
+    return ''.join(result)
+
+# Build regex from glob pattern
+regex_parts = []
+i = 0
+while i < len(parts):
+    seg = parts[i]
+    if seg == '**':
+        if i == 0:
+            # Leading ** — matches any prefix (zero or more directories)
+            regex_parts.append('(?:.*/)?')
+        elif i == len(parts) - 1:
+            # Trailing ** — matches any suffix (zero or more path components)
+            regex_parts.append('.*')
+        else:
+            # Middle ** — matches zero or more path segments
+            regex_parts.append('(?:.*/)?')
+    else:
+        if regex_parts and not regex_parts[-1].endswith('/') and not regex_parts[-1].endswith('?'):
+            regex_parts.append('/')
+        regex_parts.append(escape_seg(seg))
+    i += 1
+
+# Bare basename (no slash, no **): anchor to match anywhere in tree
+if not has_slash and not has_double_star:
+    # Wrap: (?:.*/)? + escaped_name + \$
+    regex = '^(?:.*/)?(' + escape_seg(g) + ')$'
+else:
+    regex = '^' + ''.join(regex_parts) + '$'
+
+print(regex)
+" "\$glob"
+}
 # is_hard_gate: returns 0 if path matches any pattern in hard-gates.txt, 1 otherwise
 is_hard_gate() {
   local file="$1"
@@ -92,3 +135,24 @@ is_hard_gate() {
   done < "$hg_file"
   return 1
 }
+
+# Self-test (run with: bash lib/env-helpers.sh --test-globs)
+if [ "${1:-}" = "--test-globs" ]; then
+  pass=0; fail=0
+  test_match() {
+    local file="$1" pat="$2" expect="$3"
+    local r=$(glob_to_regex "$pat")
+    if echo "$file" | grep -qE "$r"; then got="MATCH"; else got="NO_MATCH"; fi
+    if [ "$got" = "$expect" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: '$file' vs '$pat' expected $expect got $got (regex: $r)"; fi
+  }
+  test_match "migrations/001_init.sql" "migrations/**" MATCH
+  test_match "tests/foo.spec.ts" "tests/**" MATCH
+  test_match "src/auth/login.ts" "**/auth/**" MATCH
+  test_match "src/foo.test.ts" "*.test.*" MATCH
+  test_match "frontend/package.json" "package.json" MATCH
+  test_match "package.json" "package.json" MATCH
+  test_match "src/index.ts" "*.test.*" NO_MATCH
+  test_match "src/index.ts" "migrations/**" NO_MATCH
+  echo "glob_to_regex self-test: $pass passed, $fail failed"
+  [ "$fail" -eq 0 ]
+fi
