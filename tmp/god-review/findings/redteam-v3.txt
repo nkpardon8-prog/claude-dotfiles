@@ -1,0 +1,213 @@
+# /god-review Phase E v3 — claude-ruthless-redteam findings
+# Target: post-Phase-G state of god-review.md, god-report.md, god-review/lib + principles + broad-reviewers
+# Effort split: 30% skeptical first-principles read / 40% adversarial / 30% principle-taxonomy
+
+---
+
+### [catastrophic] HAS_BENCH_SCRIPT python3 expression has unbalanced parens (regression of fix-pass v2 fix #64d5e98)
+**Source:** redteam
+**Evidence:** god-review.md:199 — `python3 -c "import json; d=json.load(open('$WORKDIR/package.json')); scripts=d.get('scripts',{}); print(next((k for k in scripts if k in ('bench','benchmark','perf')),'')"` — opens 4 parens in `print(next((k ... ),'')` but closes only 3. Verified with `python3 -c "<expr>"`: `SyntaxError: '(' was never closed`. The `print(...)` outer paren is missing.
+**Impact:** Any repo with `package.json` that lacks `bench`/`benchmark`/`perf` scripts will silently produce empty output via `2>/dev/null`. Any repo whose package.json HAS those scripts ALSO produces empty output because the script crashes before reaching the `print`. The Phase E v1 finding A8 (claimed fixed by commit 64d5e98) is in fact NOT fixed — the false_positives.txt entry was removed under the false belief that this was working. Stack-gating for perf-benchmark principle silently degrades to fall-through path (line 201 onward), which by chance finds bench/benchmark dirs, so the bug is masked unless you only have a package-json scripts-only signal. Fix-pass-v2 commit table verification command would NOT pass.
+**Fix:** Wrap the inner generator: `print(next((k for k in scripts if k in ('bench','benchmark','perf')),''))` — add the missing `)` before the closing `"`. Then re-run `python3 -c "<expr>"` to confirm.
+
+### [catastrophic] Phase 3 sub-step (iii) ARCH_OUTPUT='<paste …>' is an instruction to the orchestrator that will not execute as written
+**Source:** redteam
+**Evidence:** god-review.md:1075 — `ARCH_OUTPUT='<paste the architect output JSON here, single-quoted>'`. This bash literal is the placeholder string that ships in the spec — the orchestrator is supposed to substitute the captured Architect JSON in its place before issuing the bash call. But there is no machine guard: if the orchestrator forgets to substitute (or substitutes incorrectly), the validation downstream parses `<paste the architect output JSON here, single-quoted>` as JSON, which fails, triggering `record_architect_malformed` for every finding. The "exit 0" path on malformed JSON (line 1105) means the loop silently consumes findings without making progress; combined with lack of single-quote escaping in the supplied JSON (Architect rationale text containing apostrophes will break the bash literal), real fixes will collapse to malformed and demote to HUMAN_GATE.
+**Impact:** Phase 3 auto-fix bucket effectively becomes "always demote to HUMAN_GATE" for any Architect output containing an apostrophe in `rationale` or `before/after` content. Real-world failure mode: any English-prose rationale ("can't", "don't", "doesn't") guarantees malformed JSON parse. Fix-pass v2 claimed `--ruthless` stub became real Agent invocation, but the same `<paste here>` pseudocode disease afflicts ARCH_OUTPUT.
+**Fix:** Replace the bash literal pattern with a writefile pattern: orchestrator writes Architect JSON to `tmp/god-review/architect-out.json` via Write tool, bash reads it via `ARCH_OUTPUT=$(cat tmp/god-review/architect-out.json)`. Eliminates quote-escaping risk + ensures pipeline progresses even with apostrophe-bearing rationales.
+
+### [catastrophic] --ruthless block is still a comment-only stub in Phase G — Phase E v1 finding C3 NOT actually fixed by commit 7aaeb74
+**Source:** redteam
+**Evidence:** god-review.md:553-568 — block reads `if [ "$RUTHLESS" = "true" ]; then echo "Spawning..."; RUTHLESS_PROMPT="$(cat ...)"; ` then ALL remaining lines (558-567) are bash COMMENTS starting with `#`. There is no `Agent` tool call, no actual spawn — just a `cat` of the prompt and 11 lines of `#` comments describing what the orchestrator "should" do. The fix-pass v2 verification command `grep -A 5 "RUTHLESS.*true" god-review.md | grep -c "Agent\|Task"` would match the literal word "Agent" in comments and falsely report success. Same as v1.
+**Impact:** `--ruthless` flag is silently a no-op — sets RUTHLESS=true and prints "Spawning..." but spawns nothing. Users running `/god-review --ruthless` get the standard 3-Claude broad pass with the false belief that the redteam reviewer ran. Phase E v1 finding regressed/never-actually-fixed.
+**Fix:** Replace the comment-only block with concrete instruction prose to the orchestrator like Layer A's 3-broad pattern at line 525-535: "When this bash block sets RUTHLESS=true, immediately after this bash returns, spawn a 4th Agent tool call alongside the 3 standard broad-Claude reviewers, with subagent_type general-purpose, model claude-opus-4-7, prompt=<contents of broad-reviewers/claude-ruthless-redteam.md> + scope + context-package path. Tag findings as claude-broad:ruthless." The bash block alone cannot spawn an Agent — it has to be accompanied by orchestrator directive.
+
+### [high] Phase 3 stash-apply revert path leaks stashes (no `git stash drop`)
+**Source:** redteam
+**Evidence:** god-review.md:1151 — `git stash apply "$PRE_FIX_REF" 2>/dev/null || true`. The PRE_FIX_REF is created by `git stash create` (line 1024) which produces a dangling stash object NOT in the stash list. After `apply`, the dangling object remains in `.git/objects` as garbage but more importantly, stash-apply is non-fatal-on-conflict — if the working tree was modified between the stash-create and now (which is the entire purpose of the apply), conflicts produce `<<<<<<< HEAD` markers in the source files with no abort path. No `git checkout --` or `git reset --hard $PRE_FIX_REF` follows.
+**Impact:** Per-finding revert in Phase 3e (Editor abort path) can produce conflict markers in real source files without notification. Subsequent gates (typecheck/lint) will fail on the conflict markers, the loop will mark this as a churn event, freeze the file, and never revert cleanly. Worse: combined with `--no-verify` prohibition, the resulting `git commit` will fail with "fix conflicts" error not understood by the orchestrator's pre-commit-rejected branch.
+**Fix:** Replace `git stash apply` with a hard reset semantics for revert: if PRE_FIX_REFTYPE=stash, do `git checkout -- "$ARCH_FILE"` first (targeted), or `git checkout "$PRE_FIX_REF" -- "$ARCH_FILE"` to restore from the stash tree. Never use stash-apply in an unattended loop.
+
+### [high] glob_to_regex output for non-slash patterns conflates "starts-anywhere" with "matches-anywhere-in-name"
+**Source:** redteam
+**Evidence:** env-helpers.sh:69-71 — bare-name pattern `package.json` becomes `^(?:.*/)?package\.json$`. Self-test passes (`frontend/package.json` → MATCH, `package.json` → MATCH). But pattern `*secrets*` (line 27 of hard-gates.txt) goes through the same code: has no `/`, no `**`, so becomes `^(?:.*/)?[^/]*secrets[^/]*$`. That is correct. However pattern `.env.*` (line 26) becomes `^(?:.*/)?\.env\.[^/]*$` — so `.env.local` matches but `.env` (without trailing dot) does NOT, even though line 25 `.env` is a separate pattern. Risk: someone writes `.env*` thinking of glob shorthand; it becomes `^(?:.*/)?\.env[^/]*$` which incorrectly matches `.environment` and `.envoy` (random unrelated files starting with `.env`). The hard-gates.txt currently has both `.env` AND `.env.*` (lines 25-26), which is fine, but the bare-name rule is fragile against future edits.
+**Impact:** Subtle: future maintainer adding `.env*` (single asterisk wildcard) instead of `.env.*` (literal-dot + wildcard) gets unexpected matches. Minor today, but the `*credentials*` pattern (line 28) already exhibits this: it matches `xcredentialsx.ts` in a normal source dir, which would auto-block legitimate edits. Also affects `*secrets*` (line 27). Defense-in-depth too defensive.
+**Fix:** Either tighten test coverage for bare-name patterns OR document that the convention is "always include explicit dots/slashes; bare names match leaf-name-anywhere". Prefer adding self-test cases for `*credentials*` / `*secrets*` / `.env.*` showing exact match boundaries.
+
+### [high] Phase 3 sub-step 3a hash-computation and bucketing happens in the orchestrator's "reasoning" without a write site — no audit trail
+**Source:** redteam
+**Evidence:** god-review.md:875-908 + 912-933 — the orchestrator parses report.md, computes hashes, and assigns buckets entirely in conversation-prose context. There is NO write to disk of the parsed-finding-list. The bash blocks at 894-903 print individual hashes but never persist a per-finding ledger. Sub-step 3g's `record_round_counts` records aggregated counts (NEW_NEW, total, deferred, gated) but not the individual finding identities. This means: (a) on a SIGKILL mid-round, no resume can reconstruct what was bucketed where; (b) the verifier sub-pass in 3f uses `is_finding_replayed(hash(f))` where f comes from agent prose (no canonical source-of-truth hash list exists); (c) `--resume` validation checks state.json existence (line 87) but doesn't check that bucketing state was preserved. The state.json contains `kept_fixes`, `reverted_fixes`, but no `buckets_per_round` or `pending_findings_this_round`.
+**Impact:** Loss of mid-round state on interruption. Resumability broken in practice — `--resume` lands you at `ROUND=N` but with no bucket assignments, so all findings in the report at that point either re-run from scratch or get silently skipped depending on hash-replay state. Failure mode #2 (error accumulation) returns: a finding tried, failed to fix (e.g., gates), got hash-recorded, survives a SIGKILL — on resume, the pre-revert file state is unrecoverable from state.json since reverted_fixes lists IDs not before/after content.
+**Fix:** Add a `pending_findings_this_round` array to state.json written in sub-step 3a. Fields: `[{finding_id, hash, file, line_range, category, bucket, status: "pending"|"in_progress"|"kept"|"reverted"}]`. Update on every bucket assignment + per-pipeline-step transition. On --resume, scan for `in_progress` and demote to HUMAN_GATE (cannot determine if Editor wrote partial state).
+
+### [high] RATIONALE variable in commit message is never assigned anywhere
+**Source:** redteam
+**Evidence:** god-review.md:1295 — `git commit -m "god-review: $FINDING_ID — ${RATIONALE:-fix}"`. Search for `RATIONALE=` in god-review.md returns zero hits. The Architect output JSON has a `rationale` field (line 1058) but no bash code extracts it into the bash variable RATIONALE. The bash fence at 1109 extracts ARCH_FILE but not rationale.
+**Impact:** Every god-review auto-fix commit will have the message `god-review: <ID> — fix` (the literal `:-fix` default). Loss of context. `git log --grep` cannot find specific fixes by content. Squash-merging via `git reset --soft HEAD~N && git commit -m 'god-review: apply fixes'` (line 1577) drops all rationale. Defeats the whole point of the Architect's required `rationale` field.
+**Fix:** Add a bash extraction step before commit: `RATIONALE=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "import json,os; print(json.loads(os.environ['ARCH_OUTPUT']).get('rationale','fix'))")`. Truncate to 72 chars to keep commit subject line sane.
+
+### [high] Verifier sub-pass references undefined PRE_FIX_BASE_REF
+**Source:** redteam
+**Evidence:** god-review.md:1343 — `git diff $PRE_FIX_BASE_REF..HEAD`. `PRE_FIX_BASE_REF` is never defined. The closest variable is `PRE_FIX_REF` (line 1024) but that is per-finding inside 3e, scoped to one iteration. No round-level base ref is captured before 3e starts. The phase-1 snapshot uses `REF` (line 365). The verifier diff therefore expands to `git diff ..HEAD` which is `git diff HEAD..HEAD` = empty.
+**Impact:** Verifier agents in 3f are told "Re-review this diff" with empty diff. They get no context for what changed this round. They will either (a) hallucinate findings about untouched code, OR (b) report no findings, falsely satisfying the 3-consecutive-clean-rounds termination. Loop terminates prematurely without verifying the actual fixes. Catastrophic for confidence.
+**Fix:** Capture `ROUND_BASE_REF=$(git rev-parse HEAD)` at the start of each round (sub-step 3a), persist via write_env. In 3f, use `git diff $ROUND_BASE_REF..HEAD`. Also add ROUND_BASE_REF to the env-helpers write_env whitelist.
+
+### [high] auto-defer reason validation regex is overly permissive (collides with prose-soup)
+**Source:** redteam
+**Evidence:** env-helpers.sh:259-265 — the structural-anchor regex set includes `r"\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b"` (camelCase, ≥2 segments). This matches "iPhone", "macOS" (false: macOS starts uppercase), but "iOS" → no, "iPhone" yes; "isFoo" yes; "isInTheCity" yes. So a deferral reason like "this is a thing in iPhone code that needs more thought" passes structural-anchor check. Similarly "is_a_b_c" matches snake_case regex. The 30-char floor + permissive regex means deferrals like "this is unnecessary in iPhone development" (44 chars, has "iPhone") get accepted as substantive.
+**Impact:** Auto-defer guardrail much weaker than designed. Minor findings escape via prose-soup with one accidental camelCase word. Combined with the `is_already_session_deferred` skip-by-category check (line 291), one weak deferral suppresses an entire category for the rest of the run.
+**Fix:** Tighten to require ANY of: (a) explicit file-path with extension, (b) a backtick-quoted identifier, (c) issue/PR/CVE ref. Drop the bare camelCase / snake_case patterns.
+
+### [high] is_already_session_deferred suppresses by category alone — same-category future findings get hidden
+**Source:** redteam
+**Evidence:** env-helpers.sh:289-295 — `grep -qE "^${1}:" "$kd"`. If round 1 auto-defers a single `dead-code-conservatism` finding, EVERY future `dead-code-conservatism` finding (different file, different line) gets suppressed via the bucket_REPLAYED branch in 3b. The category match is the sole key.
+**Impact:** Single weak deferral kills an entire principle's coverage for the rest of the loop. If "dead-code in src/utils.ts" gets deferred in round 1, "dead-code in src/api/handler.ts" in round 5 silently disappears. Termination signal becomes trivially gameable: defer one minor finding per principle in round 1, the loop terminates in 3 rounds with all real findings hidden.
+**Fix:** Match by hash, not category. Read session-deferred file via python3 and store {hash, finding_id, category, reason} JSONL; check by hash. If category-level deferral is needed, model it explicitly as a separate "deferred_categories" field with explicit user-provided reason.
+
+### [medium] write_env whitelist missing critical Phase G state vars
+**Source:** redteam
+**Evidence:** env-helpers.sh:20-27 — whitelist includes ROUND, FIXES_KEPT_THIS_ROUND, NET_NEW_FINDINGS_THIS_ROUND, CONSECUTIVE_CLEAN_ROUNDS, FROZEN_UNITS_COUNT, TOTAL_OPEN_FINDINGS. MISSING: NEW_NEW_FINDINGS, DEFERRED_THIS_ROUND, GATED_THIS_ROUND (referenced in 3g at lines 1388-1390), VERIFIER_NEW (the agent-output result), PRE_FIX_REF/PRE_FIX_REFTYPE (per-finding scope, but cross-block), ARCH_FILE, ARCH_OUTPUT, RATIONALE, FINDING_ID, FINDING_HASH, FINDING_FILE, FINDING_LINE_RANGE, FINDING_CATEGORY, FINDING_DESCRIPTION, FINDING_ROOT_CAUSE, FINDING_PROPOSED_DIFF, FINDING_SEVERITY, DEFER_REASON, REVERT_REASON, GATE_FAIL_REASON, REGRESSION, REGRESSION_REASON, GATES_PASS, PERF_REGRESSED, ROUND_BASE_REF (proposed above).
+**Impact:** Per the design (one bash fence per per-finding step), each fence is supposed to source `.env.sh` and access prior state. With ~20 critical per-finding vars missing from write_env, every fence after the first one in the per-finding pipeline (3e ii→iii→iv→v→vi→vii) sees empty values. The pipeline relies on the orchestrator re-substituting them in each fence — adding huge surface for orchestrator-typo regression.
+**Fix:** Add ALL per-finding scope vars to write_env. Also document explicitly: "every per-finding bash fence opens by re-substituting these vars at the top, NOT relying on env-helpers" — so the `#   FINDING_ID, FINDING_HASH, ...` comment blocks are normative not advisory.
+
+### [medium] Phase G stash-create dangling-object accumulation never cleaned up
+**Source:** redteam
+**Evidence:** god-review.md:1024 — every per-finding pipeline calls `git stash create` which produces a dangling stash blob. Across N findings × M rounds, accumulates N×M stash objects in `.git/objects`. No `git stash drop` (which would not work anyway since these aren't in the stash stack). Only `git gc --prune=now` clears them.
+**Impact:** Long `--max-wall-hours 24` runs accumulate hundreds of dangling blobs. Disk pressure for huge repos. More importantly: `git fsck --no-reflogs` warns about every one, and `git gc` will eventually prune them — but if a developer runs `git gc --prune=now` mid-run, the PRE_FIX_REF becomes invalid and `git stash apply` revert fails silently (the `|| true` mask).
+**Fix:** Track per-finding PRE_FIX_REFs in state.json. After each finding completes (either KEEP or REVERT), explicitly `git update-ref -d` is N/A for stash blobs, but you can record them in a list and at end-of-run inform user "X dangling stash objects created during the run; run `git gc` if disk is constrained."
+
+### [medium] Editor abort vs. hard-gate hit are conflated — same exit path drops a finding without HUMAN_GATE emit
+**Source:** redteam
+**Evidence:** god-review.md:1126 — `*) echo "Injection guard rejected ($INJECTION_OK): $ARCH_FILE — demoting $FINDING_ID to HUMAN_GATE"; exit 0 ;;` and 1130-1133 — `if is_hard_gate "$ARCH_FILE"; then echo "HUMAN_GATE: ... — re-run 3c for $FINDING_ID"; exit 0`. Both say "re-run 3c for $FINDING_ID" but the `exit 0` ends THIS bash fence — the orchestrator must explicitly re-trigger 3c logic. There's no automated re-trigger; the orchestrator-prose at "re-run 3c logic for this finding" (1080, 1103, 1131) is a soft instruction. If the orchestrator forgets to re-trigger (long context, many findings, drift), the finding silently disappears: not in HUMAN_GATE_QUEUE, not in auto_deferred, not in kept_fixes, not in reverted_fixes.
+**Impact:** Findings that hit Architect-malformed/injection-guard/hard-gate-defense-in-depth fall through cracks. The state.json `architect_malformed_per_round` increments (good) but no human-visible record exists. Termination logic in 3g counts NEW_NEW correctly only if orchestrator manually re-counts these into the first-emit HUMAN_GATE bucket — error-prone.
+**Fix:** Each exit-path that says "re-run 3c" should INSTEAD inline the human-gate-emit logic directly: call `record_human_gate_emit` + the python3 report-update block right there. Single failure mode, single recovery, no re-trigger needed.
+
+### [medium] glob_to_regex middle-`**` segment "/(?:.*/)?" — risk of edge-case match for paths with literal "//"
+**Source:** redteam
+**Evidence:** env-helpers.sh:85 — `out.append('/(?:.*/)?')`. Self-test cases pass for normal paths but doesn't cover `//` (double-slash) edge cases that appear in glob normalizers / OS-quirks. Also uncovered: pattern `**/X/**` produces `^(?:.*/)?/X/.*$` — note the leading `/` after `(?:.*/)?` since the middle pattern emits `/(?:.*/)?` plus the join logic adds `/` before non-** segments only when the prior segment didn't end with `?`. For a 3-segment `**/auth/**`: parts=[`**`,`auth`,`**`] → out=[`(?:.*/)?`, `auth`, `/.*`]. Joined: `(?:.*/)?auth/.*`. So `^(?:.*/)?auth/.*$`. Test "src/auth/login.ts" matches because `(?:.*/)?` consumes `src/`. Good. But pattern `foo/**/bar` → parts=[`foo`,`**`,`bar`] → out=[`foo`, `/(?:.*/)?`, `/`, `bar`] (wait — `i>0 and not out[-1].endswith('?')` — `/(?:.*/)?` ENDS in `?`, so NO `/` is added before `bar`). Result: `^foo/(?:.*/)?bar$`. Test "foo/x/y/bar" → matches. Test "foo/bar" → `(?:.*/)?` is empty, gives `foo/bar` → matches. Good. But "foo/x/bar/extra" → no match. Good. Edge case: `foo/**` → parts=[`foo`,`**`] → out=[`foo`, `/.*`] → `^foo/.*$`. "foo/" matches (empty `.*`). "foo" alone does NOT match (no trailing slash). Hard-gate `_deprecated/**` will NOT match the bare directory `_deprecated` if someone passes that directory as a path. Self-test doesn't cover bare-dir.
+**Impact:** Edge cases mostly correct but undocumented and untested. A find / git-status output passes file paths not directories, so probably benign for hard-gates today. Risk for future use of glob_to_regex against directory inputs.
+**Fix:** Add self-test cases for: bare-directory (`foo/**` against `foo`), middle-** with multiple segments (`a/**/b/**/c`), pattern with leading `**` plus suffix (`**/x` against `x` — does it match? Depends on `(?:.*/)?` consuming nothing).
+
+### [medium] HUMAN_GATE_QUEUE python3 heredoc has shell-quoting fragility
+**Source:** redteam
+**Evidence:** god-review.md:953-968 — env vars are passed FINDING_ID, FINDING_FILE, FINDING_LINE_RANGE, FINDING_DESC, FINDING_DIFF — but the python3 invocation uses `'...'` single-quoted body that contains backslash-escaped quotes inside f-strings: `os.environ[\"FINDING_ID\"]`. The outer `python3 -c '...'` single-quote is the bash shell's single-quote — so backslashes inside are literal. Python parses `os.environ[\"FINDING_ID\"]` as `os.environ["FINDING_ID"]` correctly. But if FINDING_DIFF contains a triple-backtick (very common — Architect outputs are diffs!), the f-string `f"\n```\n{os.environ[\"FINDING_DIFF\"]}\n```\n"` produces text with nested triple-backticks that break markdown rendering downstream.
+**Impact:** Cosmetic for markdown rendering, but the queue entries become unreadable. More serious: if FINDING_DIFF contains the actual heredoc marker text, the python3 invocation itself doesn't break (it's a Python string, not a bash heredoc), but the resulting report.md sections become malformed. Combined with NO escaping of triple-backticks, the report.md may have broken section boundaries that downstream parsers (e.g., the orchestrator's own re-parse in next round's 3a) misread.
+**Fix:** Wrap FINDING_DIFF in 4-backtick fence instead of 3-backtick: `f"\n````\n{...}\n````\n"`. Or escape the diff via base64 + indicate it's encoded.
+
+### [medium] Phase 3 sub-step 3a finding parser is unspecified
+**Source:** redteam
+**Evidence:** god-review.md:875-879 — "Parse each finding from the markdown sections (Critical, Important, Minor, Gaps, Assumptions, Contradictions, Human Gate Required) into a list with these fields: `{finding_id, file, line_start, line_end, category, severity, source, root_cause, description, proposed_diff_sketch}`." No grammar, no regex, no python helper. The orchestrator has to invent the parser per round. Phase 2 report.md format has variable templates (line 750+) showing `### [definite] CATEGORY: Short description` and `**Location**: file.ts:line_start-line_end` — but no schema enforcing these forms in Phase 2 output.
+**Impact:** Round-to-round parser drift. Round 1's parser sees one format from one batch of agents; round 2's parser sees a slightly different format from a re-run; finding IDs change between rounds; hash changes; replay-skip breaks; `consecutive_clean_rounds` counter resets spuriously; loop never terminates.
+**Fix:** Phase 2 must emit findings to a structured JSONL alongside report.md (e.g., `tmp/god-review/findings.jsonl`). Phase 3a reads the JSONL, not the markdown. Markdown is for humans; JSONL is for the loop.
+
+### [medium] Phase 0 baseline gates run BEFORE snapshot — unsafe if gates have side effects
+**Source:** redteam
+**Evidence:** god-review.md:246-261 — runs `npm run typecheck`, `npm run lint`, `npm run build`, `cargo check`, `go vet`, `mypy` etc. BEFORE Phase 1's snapshot (line 354 onward). Some build scripts have side effects (codegen, schema generation, file writes to dist/). Snapshot-after-side-effect captures the dirty state as baseline.
+**Impact:** If `npm run build` writes generated files, the baseline snapshot includes them. Subsequent revert-to-baseline restores those generated files even after the user wanted to clean them. Worse: pre-commit hooks that re-run build/lint may detect file diffs that didn't exist before.
+**Fix:** Move snapshot to BEFORE Phase 0's gates, OR run gates in `--dry-run` mode where supported, OR document explicitly that gates must be side-effect-free.
+
+### [medium] Pre-scan `PRE_SCAN_INJECTION` regex matches its own command source
+**Source:** redteam
+**Evidence:** god-review.md:339-344 — `grep -rn ... -E "ignore previous instructions|you are now|disregard the above|system prompt|### [Ii]nstruction|\[SYSTEM\]" --exclude-dir=god-review` — the exclude-dir filters out the god-review directory in target repos but NOT in `~/.claude-dotfiles/commands/god-review/`. If `/god-review` runs against the dotfiles repo (which it has, per CLAUDE.local.md), the prompt files at `~/.claude-dotfiles/commands/god-review/principles/prompt-injection.md` contain the literal injection patterns as exemplars and get flagged.
+**Impact:** Self-audit on dotfiles repo produces false positives every round on the principle definition file. Cosmetic but inflates finding counts and breaks `consecutive_clean_rounds` termination.
+**Fix:** Add `--exclude-dir=commands/god-review` (relative path inside dotfiles), OR exclude any path component matching `principles` AND `commands`. Or: detect dotfiles-repo self-audit and skip prompt-injection pre-scan.
+
+### [medium] Phase 0 baseline gates use `|| echo "..."` pattern that hides real failures
+**Source:** redteam
+**Evidence:** god-review.md:250-252 — `(npm run typecheck 2>&1 | tail -20) || echo "(no typecheck script)"`. The `||` triggers on ANY non-zero exit, not just "script not found". A typecheck that ran and reported errors gets the same treatment as a missing script — printed text says "(no typecheck script)" misleadingly.
+**Impact:** Phase 0's baseline-gate report claims "no typecheck script" when the truth is "typecheck failed with N errors". The Architect's IMPACT AUDIT downstream relies on this — sees "no typecheck script", assumes type-system-untested, makes more aggressive changes that don't get caught.
+**Fix:** Pre-check script existence: `if grep -q '"typecheck"' package.json; then npm run typecheck 2>&1 | tail -20; else echo "(no typecheck script)"; fi`. Same pattern for lint, build, test.
+
+### [low] codex-invoke.sh shared-home spinlock has a race between stale-detection and lock-acquisition
+**Source:** redteam
+**Evidence:** codex-invoke.sh:100-113 — checks `[ -d "$LOCKDIR" ]`, computes age, removes if stale, THEN starts `while ! mkdir "$LOCKDIR"`. If two processes detect stale at the same moment, both rmdir, both then mkdir successfully (since dir is gone) — but only one mkdir wins. Other gets EEXIST and retries. So it's not catastrophic, but the rmdir of a not-yet-stale lock by a racing process is possible: process A sees age=599, doesn't rmdir; process B sees age=601 (one second later), rmdirs while A is mid-operation. A's trap-EXIT then rmdir's a lock B is holding.
+**Impact:** Rare. Concurrent codex-invoke calls during shared-home fallback (no CODEX_HOME_1/2 set) can step on each other. State unlikely-corrupted but ephemeral session.json could be lost.
+**Fix:** Use mtime-difference + atomic rename pattern, or make the LOCK_TIMEOUT default longer than any reasonable single Codex run (e.g., 1800s = 30min). Or just require flock and abort if unavailable.
+
+### [low] check_phase_drift uses `awk '/^## Phase 3/{p=0} p; /^## Phase 0/{p=1}'` ordering bug
+**Source:** redteam
+**Evidence:** env-helpers.sh:333 — awk pattern is order-sensitive. In awk, action-by-pattern executes in source order. The pattern `{p=0} p; /^## Phase 0/{p=1}` means: when "## Phase 3" matches, set p=0; then on every line print if p=1; then on "## Phase 0" set p=1. Line "## Phase 0" itself: hits Phase-0 pattern, sets p=1, but the `p;` already fired with the OLD p value before the assignment — so the "## Phase 0" header line is NOT printed. The Phase-3 line IS printed (p=0 hits before its assignment also? Wait: order is `/Phase 3/{p=0} p; /Phase 0/{p=1}`. For line "## Phase 3": pattern Phase-3 fires p=0; then `p;` evaluates with new p (now 0) → not printed. So Phase-3 boundary line itself is excluded. Mostly OK, but awk's evaluation rule is statement-by-statement so the assignment IS visible to the print. Still, the `db` extraction at line 334 is `awk '/^## Phase 0/{p=1} p' "$b"` — reads from Phase 0 to end-of-file. If god-report.md happens to contain Phase 3 headers (it doesn't today, but could in future), the diff is asymmetric: god-review.md cuts at Phase 3, god-report.md keeps everything.
+**Impact:** Drift detection asymmetric. False-positive drift warnings if god-report.md ever gains a Phase 3 section.
+**Fix:** Use the same start/end pattern in both extracts, or use a single awk with `/^## Phase [012]/,/^## Phase 3/` range pattern.
+
+### [low] CODEX_HOME_1/CODEX_HOME_2 unused in actual god-review.md flow
+**Source:** redteam
+**Evidence:** codex-invoke.sh:32-33 supports CODEX_HOME_1 / CODEX_HOME_2 env vars. god-review.md never sets them. The README.md / CHANGELOG.md may document them, but the orchestrator never threads them.
+**Impact:** Two-account threading is dead code in practice. Loop runs all Codex calls against shared ~/.codex with spinlock serialization → much slower than parallel.
+**Fix:** Either remove CODEX_HOME_* support from codex-invoke.sh (simplify), or add explicit env-var check + assignment in god-review.md Step 0.
+
+### [low] Pre-scan "Hallucinated package names" cuts at first /
+**Source:** redteam
+**Evidence:** god-review.md:330 — `cut -d'/' -f1` on the import string. For scoped packages like `@tanstack/react-query`, first `/` split produces `@tanstack` (the org), not `@tanstack/react-query`. So the lookup against `DECLARED_DEPS` (the package.json keys, which contain full `@tanstack/react-query`) always misses scoped packages → flags every scoped import as hallucinated.
+**Impact:** Pre-scan flags every `@tanstack/*`, `@radix-ui/*`, `@supabase/*` import as HALLUCINATED_IMPORT_CANDIDATE. Inflates principle-hallucinated-imports findings round-after-round. Likely a blocker for any modern JS codebase.
+**Fix:** Detect scoped imports: `if [[ "$pkg" == @* ]]; then take first two slash-segments; else take first one`. Or use a python3 helper.
+
+### [low] description claims "23 principle agents" but ALWAYS_ON_PRINCIPLES + STACK_GATED = max 23 (18 + 5 stack-gated). Already-on count is 18, not 19 as claimed at god-review.md:9 ("19 principle lenses plus 6 broad reviewers")
+**Source:** redteam
+**Evidence:** god-review.md:9 says "19 principle lenses". ALWAYS_ON_PRINCIPLES at line 453-472 lists 18 entries (count again: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, dead-code-conservatism, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, perf-heuristic, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector = 18). STACK_GATED has 5 (architecture-backend, architecture-frontend, self-contained, tanstack-query, perf-benchmark). Total = 23 if all signals fire, 18 minimum. Description in front-matter and frontmatter of god-review.md/god-report.md says "23 principle agents". Phase 2 report template at line 744 says "of 19". Inconsistent.
+**Impact:** Documentation drift. Phase E v2 finding (cost arithmetic 47≠55) was about the same root cause and remains unfixed. README.md likely has the same inconsistency.
+**Fix:** Pick one: 23 (all-on) or 18 (always-on baseline). Update god-review.md:9, line 744, README.md, CHANGELOG.md to match.
+
+### [low] god-report.md frontmatter declares `Task, TodoWrite` but god-review.md declares `Bash, Agent` — naming mismatch ("Task" is a tool name in some harnesses; this codebase uses "Agent")
+**Source:** redteam
+**Evidence:** god-report.md:4 — `allowed-tools: Bash, Read, Grep, Glob, Task, TodoWrite`. god-review.md:4 — `allowed-tools: "Read, Glob, Grep, Bash, Agent"`. The body of god-report.md (line 68) says "Spawn ONE Agent tool call" — but Agent is not in its allowed-tools. Conversely god-review.md uses Agent but god-report.md's `Task, TodoWrite` are not used in its body.
+**Impact:** /god-report cannot actually spawn Agent tool calls — the harness will reject. /god-report's --principle delegation (line 68) is broken from day one. The single-pass review described in the description is unexecutable.
+**Fix:** Set god-report.md frontmatter to `allowed-tools: Read, Glob, Grep, Bash, Agent` (match god-review.md). Drop Task/TodoWrite (god-report doesn't use them).
+
+### [low] god-report.md description says "23 principle agents" but the body delegates to god-review.md Phase 2 which itself says 19 in some places
+**Source:** redteam
+**Evidence:** god-report.md:2 — "23 principle agents". god-review.md:9 — "19 principle lenses". Inconsistent self-description, since god-report.md delegates to god-review.md Phase 2.
+**Impact:** User-facing confusion. Same root cause as the previous finding.
+**Fix:** Single-source the principle count in CRITERIA.md, reference from both descriptions.
+
+### [low] `git diff --name-only 2>/dev/null | grep -E '\.github/workflows/.*\.yml'` does not match nested workflows
+**Source:** redteam
+**Evidence:** god-review.md:1204 — pattern `\.github/workflows/.*\.yml` requires the YAML to be DIRECTLY in workflows/ (slash-then-anything-then-yml). But `.github/workflows/ci/build.yml` has an extra slash. The `.*` is greedy but matches across slashes — so `.github/workflows/ci/build.yml` matches: `\.github/workflows/` matches literally, `.*` matches `ci/build`, `\.yml` matches `.yml`. OK, this is fine. But `.github/workflows.yml` (no slash) does NOT match — also fine. So the pattern does work. But it's inconsistent with hard-gates.txt's `**/*.yml` glob which became regex `^(?:.*/)?[^/]*\.yml$` — that matches any `.yml` anywhere. Mismatch between the regression detector and the hard-gate canonical list.
+**Impact:** Phase 3's regression detector for CI modification (line 1204) uses a stricter pattern than is_hard_gate uses. A CI YAML edit that hits `is_hard_gate` would HUMAN_GATE first; this detector is redundant. But if `is_hard_gate` is bypassed (Architect declines, demote, etc.), the regression detector might not catch all CI mods. Defense-in-depth weak.
+**Fix:** Use `is_hard_gate` for the regression check too: `for f in $(git diff --name-only); do is_hard_gate "$f" && { REGRESSION=true; ... } done`. Single source of truth.
+
+### [low] Phase 4 promotion of session-deferrals to lib/known-deferred.txt has no dedup
+**Source:** redteam
+**Evidence:** god-review.md:1547 — `cat "$SESSION_KD" >> "$COMMITTED_KD"`. Just appends. Across N runs, the same auto-deferred reasons accumulate.
+**Impact:** lib/known-deferred.txt grows monotonically with duplicates. Future `is_already_session_deferred` checks (which use category prefix) work but the file becomes noisy. Combined with auto-sync hook on dotfiles repo, every run produces a commit. If the same finding gets auto-deferred in 10 runs, you get 10 identical lines in the committed file.
+**Fix:** Dedup: `sort -u "$SESSION_KD" "$COMMITTED_KD" -o "$COMMITTED_KD"`. Or better: store deferrals as JSONL with `{hash, category, reason, last_seen_round, occurrence_count}`.
+
+### [minor] Pre-scan secrets uses `shasum` which is BSD/macOS only — Linux CI fails
+**Source:** redteam
+**Evidence:** god-review.md:307 — `shasum -a 256`. On Linux, the binary is `sha256sum`. Self-audits on dotfiles work (macOS), but if anyone runs `/god-review` on Linux CI, the secret pre-scan hangs / fails silently.
+**Impact:** Cross-platform incompatibility.
+**Fix:** Use `python3 -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())"` instead. Already python3-dependent everywhere else.
+
+### [minor] env-helpers.sh self-test exit code: returns `[ "$fail" -eq 0 ]` from script but if-block lacks `exit`
+**Source:** redteam
+**Evidence:** env-helpers.sh:367 — last line of self-test block is `[ "$fail" -eq 0 ]`. Since the file is sourced normally, the exit code of the LAST test command becomes the script's exit code. If the script is *invoked* (not sourced) via `bash lib/env-helpers.sh --test-globs`, the test executes then control falls off end-of-file with exit code of that test. Works. But if `set -euo pipefail` were ever added at top of env-helpers.sh, the FIRST test that fails would abort. Currently no `set -e`, so OK.
+**Impact:** None today; latent risk.
+**Fix:** Add explicit `exit $((fail==0?0:1))` at end of test block.
+
+### [minor] god-review.md:9 hardcoded "Claude Opus 4.7 + Codex CLI" model identifiers
+**Source:** redteam
+**Evidence:** god-review.md:9 — "Claude Opus 4.7 + Codex CLI". When models are upgraded, this string drifts.
+**Impact:** Doc drift on model release.
+**Fix:** Reference CRITERIA.md for canonical model list.
+
+### [deferred] Per-round verifier subset (4 agents in 3f) drops 19 of 23 principle lenses for verification
+**Source:** redteam
+**Evidence:** god-review.md:1336-1349 — Phase 3f Verifier sub-pass uses 4 agents (2 Claude + 2 Codex). The full Phase 2 review uses 23 principles × 2 families = 46+ agents. The verifier subset is 4. Findings caught only by, say, prompt-injection or contradiction-detector cannot be re-detected during verification.
+**Impact:** Termination signal (3 consecutive clean) is biased: round-loop converges based on the 4-verifier subset, not the 23-principle full pass. Real bugs in the un-verified principles persist.
+**Fix:** Either (a) periodically re-run full Phase 2 every K rounds (already partially proposed via re-scope-on-fix), or (b) rotate the 4 verifier slots so all 23 principles get a turn over a few rounds.
+
+### [deferred] HUMAN_GATE_QUEUE growth never paged / capped
+**Source:** redteam
+**Evidence:** god-review.md:951-970 — every hard-gate finding gets appended to HUMAN_GATE_QUEUE. No cap. After 50 rounds, a long-running --max-wall-hours 24 job could accumulate hundreds of entries. report.md grows unboundedly.
+**Impact:** Human-review report becomes unreviewable. Defeats batching design.
+**Fix:** Cap HUMAN_GATE_QUEUE at e.g. 100 entries; if exceeded, abort the loop with "human review required before continuing".
+
+### [deferred] No mechanism to detect Architect output JSON containing newlines in `before`/`after` fields
+**Source:** redteam
+**Evidence:** god-review.md:1086-1099 — validates structure (required fields, integer line numbers) but not content. Architect output with multi-line `before`/`after` contains `\n` literals in JSON, which the Editor agent then receives as JSON-decoded multi-line strings. Editor's "exact match within ±5 lines" rule (editor-agent.md:49) becomes hard to satisfy if the multi-line `before` spans more than 5 lines.
+**Impact:** Multi-line fixes silently abort with "before-text not found" — finding gets reverted, hash recorded, never re-attempted. Big-block fixes unsupported in practice.
+**Fix:** Either expand Editor's window to ±20 lines, OR validate that line_end-line_start == count(before.split('\n'))-1.
+
+---
+
+Total: 33 findings (catastrophic: 3, high: 8, medium: 10, low: 9, minor: 3, deferred: 3)
