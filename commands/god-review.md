@@ -1553,6 +1553,8 @@ echo "Phase 3 + Phase 4 complete. Final summary at $WORKDIR/tmp/god-review/final
 
 ---
 
+<!-- LEFTOVER_OLD_PHASE_3_BLOCK_TO_DELETE_START -->
+
 # For each new HUMAN_GATE finding (first time seen this session):
 
 FINDING_HASH="<sha256 of this finding>"
