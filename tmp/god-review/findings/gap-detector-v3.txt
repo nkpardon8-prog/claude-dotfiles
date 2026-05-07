@@ -1,0 +1,141 @@
+# gap-detector v3 — Phase E v3 audit of /god-review + /god-report
+
+### [catastrophic] Phase 3 round-loop has no actual loop construct — orchestrator-prose says "re-enter 3a" with no mechanism
+**Source:** gap-detector
+**Evidence:** god-review.md:867-873, 1449-1473 — prose says "After each round completes, the round-end decision (sub-step 3g) tells you (the orchestrator) whether to re-enter at 3a... Execute these sub-steps in order each round." Then 1449: "Now you (the orchestrator) make the loop-back decision based on `NEW_NEW_FINDINGS`". There is no machine-readable jump target, no harness loop construct, no `goto`, no slash-command-self-invocation. The orchestrator (LLM) is asked to "re-enter Phase 3 sub-step 3a directly" purely via prose. The single bash fences in 3a–3g each exit normally; nothing causes the next iteration to actually happen.
+**Impact:** The "always-on indefinite fix loop" advertised in the frontmatter is not implementable as written. An LLM running the spec will execute round 1, hit 3g, and then have no concrete instruction to physically re-emit sub-step 3a tool calls — there is no enclosing while/for/recursion. In practice the model will probably stop at round 1 or 2, defeating the entire termination criterion ("3 consecutive clean rounds").
+**Fix:** Either (a) wrap the entire 3a-3g sequence in an explicit orchestrator-prose loop counter with a clearly stated rule "if not terminated, you MUST re-issue the 3a bash block as your next assistant message, even if context is large", or (b) add a single canonical bash while-loop scaffold around 3a-3g (one fence containing the round body, with the Agent calls described in prose inside).
+
+### [catastrophic] Architect→ARCH_OUTPUT capture has no defined capture mechanism
+**Source:** gap-detector
+**Evidence:** god-review.md:1065-1067 — "Capture the agent's result text into `ARCH_OUTPUT` (a string variable in your reasoning — when you run the next bash block, you substitute the captured text into `ARCH_OUTPUT='...'` literally)." Then 1075: `ARCH_OUTPUT='<paste the architect output JSON here, single-quoted>'`. The instruction tells the LLM to literally edit the bash fence text between two assistant messages.
+**Impact:** This is the load-bearing data hand-off between the Architect agent and the validation/Editor stages. Asking the orchestrator-LLM to inject Agent tool result text *as a literal Python-quoted string into a placeholder inside a bash fence* is fragile and has no schema for handling: result text containing single quotes, multi-line strings, ANSI color codes, the agent's own preamble before the JSON. There is no `cat > tmp/god-review/arch-output.json` instruction telling the agent to write its JSON to disk. JSON parse errors downstream (line 1097) will fire on every Architect output that contains apostrophes in `"rationale"`.
+**Fix:** Instruct the Architect agent to write its JSON to `tmp/god-review/arch-output-${FINDING_ID}.json` via Bash heredoc, and have the validation block read from that file (`ARCH_OUTPUT=$(cat tmp/god-review/arch-output-${FINDING_ID}.json)`). Eliminate the "paste literal text" hand-off.
+
+### [catastrophic] Sub-step 3f references undefined `$PRE_FIX_BASE_REF`
+**Source:** gap-detector
+**Evidence:** god-review.md:1343 — verifier prompt template includes `$(git diff $PRE_FIX_BASE_REF..HEAD)`. `$PRE_FIX_BASE_REF` is never defined anywhere in the file (grep -n confirms 1 hit, the reference itself). The 3e snapshot uses `PRE_FIX_REF` (line 1024). Round-start snapshot uses `REF` (line 365).
+**Impact:** When verifier-1 prompt is rendered, `$PRE_FIX_BASE_REF` expands to empty string and `git diff ..HEAD` fails or emits no diff. Verifiers either get no diff context (silently re-review whole tree) or the bash interpolation fails outright. Either way, the verifier sub-pass is broken and `VERIFIER_NEW` is unreliable — and that count drives termination at 3g.
+**Fix:** Either rename to `PRE_FIX_REF` (per-finding pre-fix snapshot from 3e), or define `PRE_ROUND_REF` at the top of each round capturing `git rev-parse HEAD` before any 3e fixes ran. Document which is intended; the round-level diff is more useful for verifiers since per-finding snapshots are stomped on each successive 3e iteration.
+
+### [high] Sub-step 3f verifier instructions don't specify the prompts concretely enough to spawn
+**Source:** gap-detector
+**Evidence:** god-review.md:1338-1349 — "Verifier 2: same shape but model `claude-opus-4-7` with different focus prompt (correctness vs. architecture)" and "Verifier 4: another Codex agent, different prompt focus." No prompt template, no principle file path, no broad-reviewer file path. The "different focus" is undefined.
+**Impact:** This is the verifier sub-pass that the catastrophic Phase E finding from v1 specifically demanded be made concrete. The instruction "different prompt focus" is exactly the prose-without-specification anti-pattern the gap-detector exists to find. Two of the four verifiers cannot be spawned; the orchestrator will either skip them or improvise prompts — losing reproducibility.
+**Fix:** Wire each verifier to a concrete file: e.g. Verifier-1 = `broad-reviewers/claude-deep-correctness.md`, Verifier-2 = `broad-reviewers/claude-architecture-prod.md`, Verifier-3 = `broad-reviewers/codex-cross-layer.md`, Verifier-4 = `broad-reviewers/codex-prod-scalability.md`. Or just say "spawn the same 4 broad reviewers from Phase 2 with diff context appended."
+
+### [high] `MIRROR_MODE=dual` documented but never honored at any write site
+**Source:** gap-detector
+**Evidence:** god-review.md:119-122 — "If MIRROR_MODE = 'dual': write outputs to BOTH ~/.claude-dotfiles/ AND ~/.claude/ paths." `MIRROR_MODE` is set but never read again in the file (grep confirms no further reference). All write sites use `tmp/god-review/...` (relative to $WORKDIR, which is the repo, not either dotfiles tree) or `$HOME/.claude-dotfiles/...` (always single).
+**Impact:** Documentation describes a dual-write feature that does not exist in the spec. If a user sets `.mirror-mode` to `dual`, nothing different happens. False assumption hazard — user thinks both trees stay in sync without the auto-sync hook.
+**Fix:** Either implement: every write that targets dotfiles paths must check `[ "$MIRROR_MODE" = "dual" ]` and write to `~/.claude/...` mirror as well, or delete the documentation. Since `tmp/` writes go to the repo (not dotfiles), in practice MIRROR_MODE only affects `lib/known-deferred.txt` promotion at line 1547. Either delete the dual-write prose or wrap that write in the conditional.
+
+### [high] State field `architect_malformed_count` initialized but never written
+**Source:** gap-detector
+**Evidence:** god-review.md:386 — state.json initializes `"architect_malformed_count": 0`. Search shows no helper or python block writes `architect_malformed_count` (only `architect_malformed_per_round` at line 1102 via `record_architect_malformed`). The scalar field is dead.
+**Impact:** Dead state field. Any external consumer reading state.json to gauge total architect malformations will always get 0. Either the per-round array is canonical (then drop the scalar), or the scalar should be incremented in `record_architect_malformed`.
+**Fix:** Drop `architect_malformed_count` from state.json init; or update `record_architect_malformed` in env-helpers.sh to increment both fields atomically.
+
+### [high] State field `loop_mode` written but never read
+**Source:** gap-detector
+**Evidence:** god-review.md:374 sets `LOOP_MODE=true`; line 389 stores `"loop_mode": LOOPMODEPLACEHOLDER`. Never read anywhere afterward. Phase G dropped `--fix` and `--loop` flags (line 31) — the field is now structurally vestigial since /god-review is always-on by definition.
+**Impact:** Vestigial state field. Tooling that reads state.json may incorrectly assume it gates behavior. Documentation reader confusion.
+**Fix:** Drop `loop_mode` and `max_wall_hours` from the state.json schema (the latter is also captured via the orchestrator env var); they're inputs, not state. Or document them as "informational only — read at handoff time for reporting."
+
+### [high] `check_phase_drift` is a no-op for the current architecture but documented as drift detector
+**Source:** gap-detector
+**Evidence:** lib/env-helpers.sh:329-337 — `check_phase_drift` does `awk '/^## Phase 0/{p=1} p' "$b"` on god-report.md. But god-report.md does NOT contain Phase 0/1/2 bodies — it delegates ("Read the spec... Open `god-review.md` and execute exactly the contents of: `## Phase 0: Context Map`..."). So awk extracts nothing meaningful, diff always reports difference (or always empty depending on parsing). god-report.md:130-136 instructs the user to run `check_phase_drift` after edits.
+**Impact:** The drift check is broken for the actual architecture chosen (delegation, not duplication). It will either always pass (vacuously) or always warn — neither is signal. Worse, README/docs imply this is a real safety net.
+**Fix:** Either (a) delete `check_phase_drift` and the documentation invocation, or (b) reimplement: parse god-report.md's "delegated phase" markers and verify god-review.md still has those exact section headers. The current diff-on-extracted-text logic doesn't match the delegated-execution architecture.
+
+### [high] ACTIVE_PRINCIPLES is pseudocode only — never becomes a real shell array used to drive Phase 2 spawns
+**Source:** gap-detector
+**Evidence:** god-review.md:483 defines `ACTIVE_PRINCIPLES = ALWAYS_ON_PRINCIPLES + [p for p,sig in STACK_GATED_PRINCIPLES if sig != ""]` inside a triple-backtick block with no language tag. It's Python-list-comp pseudocode in a fenced block that an LLM might or might not execute. Line 595: "For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call". The orchestrator must construct this list itself from prose; there is no bash block exporting `ACTIVE_PRINCIPLES=("single-pattern" "reuse" ...)` to drive the spawn loop.
+**Impact:** Each round, the orchestrator-LLM must reconstruct the active-principle list from the HAS_* signals via reasoning. Drift risk: the LLM might forget one of the 4 new failure-class detectors (dead-end, info-loss, contradiction, gap) that were added in fix-pass v2 (per CLAUDE.local.md). This is exactly the failure mode caught by Phase E v1 finding "4 new principles never spawn."
+**Fix:** Convert the pseudocode to a real bash block: build a bash array `ACTIVE_PRINCIPLES=()` populated from ALWAYS_ON + stack-gated checks, exported via `write_env`. Then Phase 2c's prose can say "for each name in $ACTIVE_PRINCIPLES, spawn..." and the orchestrator iterates a concrete list.
+
+### [medium] state.json schema header claims 19 principles, but ALWAYS_ON_PRINCIPLES has 18 entries
+**Source:** gap-detector
+**Evidence:** god-review.md:9 says "apply 19 principle lenses". Line 744 says "**Active principles**: <count> of 19". But ALWAYS_ON_PRINCIPLES at lines 453-472 contains 18 entries (count them: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, dead-code-conservatism, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, perf-heuristic, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector = 18). STACK_GATED_PRINCIPLES adds 5 more (architecture-backend, architecture-frontend, self-contained, tanstack-query, perf-benchmark) for a total of 23. The frontmatter at line 2 says "23 principle agents" — correct. But the body uses "19" repeatedly.
+**Impact:** Documentation contradiction. Reports show "X of 19" when 23 are possible. Confusion when interpreting reports across stacks.
+**Fix:** Replace "19 principle lenses" with "23 principles (18 always-on + 5 stack-gated)" everywhere, including line 744 report template.
+
+### [medium] Phase 3f filter pseudocode (`VERIFIER_NEW = [...]`) is Python list-comp, not executable
+**Source:** gap-detector
+**Evidence:** god-review.md:1359-1364 — pure Python list-comp in a code block with no language tag, no bash equivalent. The orchestrator is supposed to filter findings via these three helpers but the only mechanism shown is pseudocode.
+**Impact:** Same class of issue as ACTIVE_PRINCIPLES: load-bearing logic stuck in pseudocode. Orchestrator may skip the filter or apply it inconsistently. The note at 1366-1367 says "without it, hard-gate items repeatedly inflate the new-finding count and the loop never terminates" — meaning if the orchestrator forgets, termination never fires.
+**Fix:** Convert to a concrete per-finding bash check inside the verifier-aggregation prose: "For each verifier finding, run `if is_human_gate_already_emitted "$h" || is_already_session_deferred "$cat" || is_finding_replayed "$h"; then skip; else add to VERIFIER_NEW; fi`."
+
+### [medium] `RATIONALE` referenced in commit message but never extracted from ARCH_OUTPUT
+**Source:** gap-detector
+**Evidence:** god-review.md:1295 — `git commit -m "god-review: $FINDING_ID — ${RATIONALE:-fix}"`. `RATIONALE` is never defined or extracted from ARCH_OUTPUT (which DOES have a `rationale` field per the schema at 1058). No `RATIONALE=$(echo "$ARCH_OUTPUT" | python3 -c "...['rationale']")` block.
+**Impact:** Every god-review commit message will be the literal `god-review: <FID> — fix` (the default fallback). The Architect's per-fix rationale never makes it into commit history, defeating the audit trail.
+**Fix:** After validation in step (iii), add: `RATIONALE=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "import json,os; print(json.loads(os.environ['ARCH_OUTPUT']).get('rationale','fix'))")` and `write_env`.
+
+### [medium] `--principle` delegation Python list contains 23 names, but file says 19 elsewhere
+**Source:** gap-detector
+**Evidence:** god-review.md:134 lists 23 valid principle names in the error message, matching the actual filesystem. Consistent with Step 0 validation at line 58. But the body of the spec (lines 9, 744) says 19. So `--principle` errors reference a 23-item list while the rest of the spec believes there are 19. Internal contradiction.
+**Impact:** Aggregation report `<count> of 19` undercounts. Users running `--principle perf-benchmark` (a stack-gated one) get a list of 23 in error messages that contradicts the "19 lenses" body prose.
+**Fix:** Same as the 19/23 fix above — single canonical count, used everywhere.
+
+### [medium] Editor agent has Bash in allowed-tools but is told never to run anything
+**Source:** gap-detector
+**Evidence:** lib/editor-agent.md:4 — `allowed-tools: Edit, Write, Read, Bash`. Body line 67: "Do not run tests, linters, or type-checkers — the orchestrator does that after you return." Body line 32-33 says only Edit. There's no documented reason for Bash access, and prose explicitly forbids the operations Bash would enable.
+**Impact:** Over-broad permission grant — the Editor could shell out to anything, contradicting "sole writer, edit one file" scope discipline. If the Editor ever decides on its own to run `npm test`, the orchestrator's gate-check is duplicated and may race the post-Editor gate run.
+**Fix:** Remove `Bash` from allowed-tools in editor-agent.md frontmatter. `Read, Edit, Write` is sufficient.
+
+### [medium] Step 3c HUMAN_GATE Python script references "## HUMAN_GATE_QUEUE" marker but Phase 2 report template uses "## Human Gate Required"
+**Source:** gap-detector
+**Evidence:** god-review.md:957 — Python looks for `marker = "## HUMAN_GATE_QUEUE"`. But the Phase 2 report template at line 786 writes `## Human Gate Required [never auto-applied]`. The two strings don't match. The script's `if marker in txt:` will be False the first time, so it falls through to the `else` branch and appends a new `## HUMAN_GATE_QUEUE` section. Now the report has BOTH `## Human Gate Required` (empty, from Phase 2) AND `## HUMAN_GATE_QUEUE` (populated from Phase 3) — two sections claiming the same role.
+**Impact:** Final report has duplicate sections; the empty Phase-2 section misleads. Final summary at line 1515 references "HUMAN_GATE_QUEUE section in report.md" — inconsistent with Phase 2's "Human Gate Required" naming.
+**Fix:** Pick one canonical marker. Recommend renaming Phase 2 template line 786 to `## HUMAN_GATE_QUEUE` to match the Phase 3 + final-summary references.
+
+### [medium] `PRE_FIX_REF` set per-finding but `git checkout -- "$ARCH_FILE"` discards changes ignoring the snapshot
+**Source:** gap-detector
+**Evidence:** god-review.md:1024 captures `PRE_FIX_REF` (stash or commit). On EDITOR_ABORT (1147-1154), the spec uses `git stash apply $PRE_FIX_REF` for stash-type but `git checkout -- "$ARCH_FILE"` for commit-type. But on gate-fail (1229) and perf-fail (1272) and pre-commit-reject (1313), it's always `git checkout -- "$ARCH_FILE"` regardless of `PRE_FIX_REFTYPE`. The PRE_FIX_REF stash created at 1024 is never applied anywhere except in EDITOR_ABORT.
+**Impact:** If the working tree was dirty before the fix (so `PRE_FIX_REF` is a stash), and gates fail post-Editor, `git checkout -- "$ARCH_FILE"` reverts only the Architect's targeted file. Any unrelated dirty state is preserved (correct — that's intended). But the stash created in step (i) is now an orphan — it lives in the stash tree forever, unreferenced. After many fix-cycles, `git stash list` accumulates stale `god-review pre-fix ...` entries.
+**Fix:** Either: (a) drop the stash creation entirely on dirty trees (the targeted `git checkout -- "$ARCH_FILE"` is already sufficient since the Editor only touched one file), or (b) explicitly clean up unused pre-fix stashes at end of round 3g via `git stash drop` for refs not in `kept_fixes`.
+
+### [medium] gather-context.sh referenced nowhere in orchestrator
+**Source:** gap-detector
+**Evidence:** lib/gather-context.sh exists (23 lines per ls). grep -n shows no reference to "gather-context" in god-review.md or god-report.md. Phase 0 inlines its own context-gathering bash — duplicating whatever `gather-context.sh` was meant to provide.
+**Impact:** Dead helper. Maintenance hazard: if someone updates `gather-context.sh` thinking it's the canonical place, the orchestrator won't pick it up. Reverse drift risk.
+**Fix:** Either delete `lib/gather-context.sh`, or refactor Phase 0 to call it. Recommend the former unless there's a reuse plan.
+
+### [medium] e2e-test.sh is documented as the integration harness but never invoked by orchestrator or pre-commit
+**Source:** gap-detector
+**Evidence:** lib/e2e-test.sh exists (142 lines). grep finds no reference from god-review.md, god-report.md, or any pre-commit/CI config in the dotfiles repo. CLAUDE.local.md says "lib/e2e-test.sh creates a synthetic test repo but cannot invoke /god-review programmatically."
+**Impact:** The e2e harness is shelf-ware. The README likely tells users to run it but no automation does. Failure mode #20 from the research dossier (no automated regression test).
+**Fix:** Either wire it to a pre-commit/CI invocation that runs the synthetic-repo bits that CAN run programmatically (everything except the slash-command itself), or document it as "manual smoke-test only."
+
+### [low] State init in 1b uses `LOOPMODEPLACEHOLDER` substituted via sed, but bash `LOOP_MODE=true` produces lowercase `true`, while JSON requires unquoted `true`
+**Source:** gap-detector
+**Evidence:** god-review.md:374 `LOOP_MODE=true`, line 389 `"loop_mode": LOOPMODEPLACEHOLDER`, line 407 `sed -i.bak -e "s|LOOPMODEPLACEHOLDER|$LOOP_MODE|g"`. After sed, the resulting JSON line is `"loop_mode": true,` — that's actually valid JSON. OK on this one, but `MAXWALLPLACEHOLDER` is sed'd with `$MAX_WALL_HOURS_VAL` which defaults to `24` (numeric, fine). However if user passes `--max-wall-hours 0` (disable cap), value becomes `0` — also valid. So this works, but only by luck of bash bool/int looking-like JSON.
+**Impact:** Brittle substitution — any future addition that's a string would need quoting. Document the contract.
+**Fix:** Add a comment noting "placeholders that must remain JSON-valid: bools (`true`/`false`) and numbers only — strings must be wrapped in `\"...\"` in the heredoc."
+
+### [low] `tmp/god-review/state.json` referenced as relative path in many places, but resolution depends on `cd` to repo root
+**Source:** gap-detector
+**Evidence:** Multiple bash blocks (e.g. line 87, 94, 99) reference `tmp/god-review/state.json` (relative). `WORKDIR` is set to repo root via `git rev-parse --show-toplevel`, but `cd "$WORKDIR"` is never executed at the start of bash blocks. Some blocks use `$WORKDIR/tmp/god-review/state.json` (absolute), others don't.
+**Impact:** Bash blocks invoked from anywhere other than repo root will read/write to the wrong path or fail silently. Subprocess `python3 -c` calls open relative paths from the current cwd of the harness, not WORKDIR.
+**Fix:** Either prepend `cd "$WORKDIR"` after every `WORKDIR=...` line, or replace every `tmp/god-review/state.json` literal with `"$WORKDIR/tmp/god-review/state.json"`. The latter is safer.
+
+### [minor] `SPINLOCK_TIMEOUT_SEC` and `LATE_IMPORT_LINE` exported but consumers undocumented
+**Source:** gap-detector
+**Evidence:** god-review.md:831-832 exports both. SPINLOCK_TIMEOUT_SEC is consumed by codex-invoke.sh (verified). LATE_IMPORT_LINE is intended for the circular-deps principle but no principle file in the bundle reads `$LATE_IMPORT_LINE` from env.
+**Impact:** Tunable advertised in Tunable Constants block (line 161) but principle agent never sees it. Override has no effect.
+**Fix:** Either remove the env export (principle agent prompt is text, not bash), or instead inject the value into the principle agent's prompt before spawning ("LATE_IMPORT_LINE: $LATE_IMPORT_LINE" appended to the principle file content).
+
+### [minor] `tmp/god-review/perf-baseline.json` written by 1c using `npm run bench 2>&1 > file` — both stderr and stdout merged
+**Source:** gap-detector
+**Evidence:** god-review.md:429-431 — `npm run bench 2>&1 > tmp/god-review/perf-baseline.json`. The 2>&1 before `>` redirects stderr to old stdout, then `>` redirects stdout to file — leaving stderr on terminal. Should be `> file 2>&1` to capture both. The downstream perf-regression parser at 1265 expects the file to contain bench results parseable as `(\w[\w\-]+).*?(\d+\.?\d*)\s*ms` regex — non-deterministic when stderr noise is missing.
+**Impact:** Half-broken baseline capture. Perf regression detection may fire false positives or false negatives based on whether stderr or stdout had the timing numbers.
+**Fix:** Change to `> tmp/god-review/perf-baseline.json 2>&1` consistently across all four bench script invocations (lines 429-435 + 1255-1258).
+
+### [minor] `tmp/god-review/findings/` not cleared between rounds
+**Source:** gap-detector
+**Evidence:** Phase 2c `write_agent_finding` writes to `findings/<name>.txt`. If a round 2 broad-Claude reviewer is named the same as round 1 (which it always is, single name like "claude-broad-deep-correctness"), round 2 overwrites round 1. That's fine for the current round but the consolidated `cat findings/claude-*.txt` at line 659 has no per-round disambiguation. The verifier sub-pass (3f) at line 1353 uses `verifier-<n>` naming — same overwrite behavior.
+**Impact:** No inter-round audit trail of what each agent said per round. Hard to debug "why did the model find X in round 1 but not round 2?"
+**Fix:** Use `findings/round-${ROUND}/<name>.txt` for per-round subdirs. Phase 2d consolidation reads the latest round only; debugging can `ls findings/round-*/`.
+
+Total: 23 findings (catastrophic: 3, high: 6, medium: 9, low: 2, minor: 3, deferred: 0)
