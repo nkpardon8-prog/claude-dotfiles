@@ -1473,15 +1473,25 @@ Never use repo-wide `git checkout .` or `git restore .` — always use targeted 
 
 ## Reference: Hard Gates (NEVER auto-applied even with --fix)
 
-These categories are ALWAYS HUMAN_GATE, no exceptions:
-- Schema migration files (`migrations/`, `db/migrate/`, `*.migration.ts`, `*_migration.go`)
-- Auth/authentication code files (matching auth pattern signals)
-- Dependency manifests (`package.json`, `requirements.txt`, `Cargo.toml`, `go.mod`, `Pipfile`, `Gemfile`, `pom.xml`, `build.gradle*`)
-- Environment / secret files (`.env`, `.env.*`, `*secrets*`, `*credentials*`)
-- CI/CD YAML (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `.circleci/config.yml`, `azure-pipelines*.yml`, `bitbucket-pipelines.yml`, `Jenkinsfile*`, `.pre-commit-config.yaml`, `.husky/**`)
-- Test files (`*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `tests/**`, `__tests__/**`, `spec/**`)
+The canonical hard-gate path-glob list lives in
+[`lib/hard-gates.txt`](god-review/lib/hard-gates.txt). The orchestrator's
+`is_hard_gate <path>` (in `lib/env-helpers.sh`) reads it at runtime — that
+function is the **single runtime authority**. Categories covered:
+
+- Schema migration files
+- Auth/authentication code files
+- Dependency manifests (`package.json`, `requirements.txt`, `Cargo.toml`, `go.mod`, etc.)
+- Environment / secret files (`.env*`, `*secrets*`, `*credentials*`)
+- CI/CD YAML (`.github/workflows/**`, `.gitlab-ci.yml`, `Jenkinsfile*`, etc.)
+- Test files (`*.test.*`, `*.spec.*`, `tests/**`, `__tests__/**`, etc.)
+- Build/runtime config (`next.config.*`, `Dockerfile`, etc.)
 - Dead-code quarantine moves (any `_deprecated/` path operation)
+
+Plus orchestrator-only additions enforced in code (not in `hard-gates.txt`):
 - Multi-file changes (any Architect output targeting more than 1 file)
+
+**DO NOT** inline the pattern list here or anywhere else — it drifts. Edit
+`lib/hard-gates.txt` and run `bash lib/env-helpers.sh --test-globs` to verify.
 
 ---
 
