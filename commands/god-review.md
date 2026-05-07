@@ -160,7 +160,8 @@ Override any of these via env var before invoking the command.
 
 ```bash
 # === Tunable Constants ===
-# Override via env var if needed.
+# Override via env var if needed. Sources env-helpers.sh for uniform fence pattern.
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 SHRINKAGE_PCT="${SHRINKAGE_PCT:-0.20}"           # test-deletion threshold
 PERF_REGRESS_PCT="${PERF_REGRESS_PCT:-0.05}"     # perf-benchmark threshold
 INSTABILITY_RATE="${INSTABILITY_RATE:-5}"        # avg events/round to abort --loop
