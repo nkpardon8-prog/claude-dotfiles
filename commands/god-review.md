@@ -1009,6 +1009,8 @@ with open(report+".tmp","w") as f: f.write(txt)
 os.rename(report+".tmp", report)
 '
   record_human_gate_emit "$FINDING_ID" "$FINDING_HASH" "$ROUND"
+  GATED_THIS_ROUND=$((GATED_THIS_ROUND + 1))
+  write_env
   echo "HUMAN_GATE (new): $FINDING_ID queued"
 fi
 ```
