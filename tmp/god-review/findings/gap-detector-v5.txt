@@ -1,0 +1,99 @@
+# gap-detector v5 (post-G3) — gaps in /god-review pipeline
+
+### [high] Codex-validation gating prose says "round % CODEX_VALIDATION_EVERY == 0" but no code implements the gate
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:672 (prose); 698-701 (the bash that invokes codex-invoke.sh has no `if (( ROUND % CODEX_VALIDATION_EVERY == 0 ))` guard)
+**Impact:** `--codex-validation-every N` flag is parsed (line 64-65) and validated (≥1) but never honored. Codex validation runs every round regardless. The "(unverified-this-round)" tagging branch the prose describes never fires.
+**Fix:** Wrap the codex-invoke.sh call (lines 698-701) and the Codex-finds Claude-validates Agent call (line ~706) in `if [ "$CODEX_AVAILABLE" = "true" ] && [ $((ROUND % CODEX_VALIDATION_EVERY)) -eq 0 ]; then ... else echo "(skipped: round $ROUND % $CODEX_VALIDATION_EVERY != 0)"; fi`. Also instruct orchestrator to tag findings `(unverified-this-round)` in the else branch.
+
+### [high] FROZEN_UNITS_CAP declared and exported but never compared anywhere
+**Source:** gap-detector
+**Evidence:** god-review.md:158 declares `FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-3}"`; env-helpers.sh:36 omits it from write_env list (so it doesn't even survive cross-block); only references are init at 158 and unused FROZEN_UNITS_COUNT counter at 869. No `[ "$FROZEN_UNITS_COUNT" -ge "$FROZEN_UNITS_CAP" ]` check, no abort, no termination.
+**Impact:** "Bounded-mode freeze cap" is documented in the Tunable Constants block but spec→code dead-end. Frozen units accumulate without bound. Indistinguishable from a runaway churn loop except via the separate INSTABILITY_RATE backstop.
+**Fix:** After `record_frozen` or in 3g backstops, add `if [ "$(python3 -c "import json;print(len(json.load(open('$WORKDIR/tmp/god-review/state.json'))['frozen_units']))")" -ge "$FROZEN_UNITS_CAP" ]; then echo "Frozen-units cap reached"; LOOP_EXIT=frozen_cap; fi`. Add FROZEN_UNITS_CAP to env-helpers.sh:36 export list.
+
+### [high] Codex validation output file (`/tmp/codex-validation-output.txt`) is written but never read/parsed
+**Source:** gap-detector
+**Evidence:** god-review.md:699 writes to `/tmp/codex-validation-output.txt` via codex-invoke.sh. No subsequent grep/parse/read of that file anywhere in god-review.md (verified with grep).
+**Impact:** Codex's CONFIRMED/FALSE_POSITIVE/UNCERTAIN verdicts on Claude-found findings are computed but discarded. The `record_false_positive` call documented at 718-722 has no upstream caller — it's a helper with prose telling the orchestrator to call it but no concrete bash that reads the Codex output file and routes verdicts. Phase 2e promotion logic at 743 ("CONFIRMED by validator → promote") relies on signal that's never extracted.
+**Fix:** After line 701, add a parse block: `python3 -c '...read /tmp/codex-validation-output.txt, regex "FINDING_ID: STATUS — reason", emit FP entries via record_false_positive, emit CONFIRMED list to /tmp/codex-confirmed.txt'`. Then have the orchestrator's promotion pass at 2e read /tmp/codex-confirmed.txt.
+
+### [medium] PRE_SCAN_* variables computed at Phase 1 but never consumed downstream
+**Source:** gap-detector
+**Evidence:** god-review.md:300-351 computes PRE_SCAN_SECRETS, PRE_SCAN_HALLUCINATED, PRE_SCAN_INJECTION, PRE_SCAN_FLAG_COUNT. Only consumer is the echo at 351 ("Pre-scan complete. N flags raised"). Not added to write_env (env-helpers.sh:20-36), not passed into Phase 2 principle prompts, not echoed into context-package.md prompt at line 269-285.
+**Impact:** Phase 1 pre-scan is dead-end output — the secret-leak/hallucinated-imports/prompt-injection principle agents in Phase 2 don't see the pre-scan hits and re-do the same scan. Failure mode #19 (repeated context gathering) reintroduced.
+**Fix:** Either (a) write pre-scan results into context-package.md so principle agents see prior hits, or (b) add PRE_SCAN_* to write_env export list and reference them in the secret-leak / hallucinated-imports / prompt-injection principle prompts.
+
+### [medium] `architect_malformed_count` initialized in state.json but never incremented
+**Source:** gap-detector
+**Evidence:** god-review.md:386 initializes `"architect_malformed_count": 0`. No reference anywhere else (grep confirms). The actual malformed counter that IS used is `architect_malformed_per_round[]` (env-helpers.sh:235-249).
+**Impact:** Schema field `architect_malformed_count` is permanently zero. Either documented metric exposed in final report, or vestigial pre-G3 field that should be removed. Either way it's a contradiction with the per_round array.
+**Fix:** Drop `architect_malformed_count` from state.json schema at line 386, OR have record_architect_malformed bump it alongside the per_round array.
+
+### [medium] `--rounds N` flag in /god-report parsed and validated but report-merge logic is prose-only
+**Source:** gap-detector
+**Evidence:** god-report.md:38-40 parses `--rounds`. Line 95-100 prose says "After Phase 2 completes, repeat Phase 0–2 (ROUNDS-1) more times. Each round writes a separate tmp/god-review/report-round-N.md ... merge ... union-deduplicating findings by hash". No bash, no concrete file naming, no merge code, no `(consistent across rounds)` tagging logic. Phase 0/1/2 in god-review.md unconditionally writes `tmp/god-review/report.md` — running it N times overwrites the same path.
+**Impact:** `/god-report --rounds 3` runs Phase 0–2 once (because god-review.md doesn't loop) and writes report.md once. The N-round de-noising feature is unimplemented prose.
+**Fix:** Either implement the merge in god-report.md as concrete bash (rename report.md→report-round-N.md after each pass; final python3 merge step computing hash-keyed dict + `(consistent across rounds: K/N)` tag), or document that `--rounds` is a no-op pending implementation.
+
+### [medium] Phase 2c "ACTIVE_PRINCIPLES = ALWAYS_ON + stack-gated" lives in pseudocode block, no concrete bash builds the list
+**Source:** gap-detector
+**Evidence:** god-review.md:452-487 declares ACTIVE_PRINCIPLES in a fenced ``` (no `bash` lang tag) pseudocode block. The orchestrator is expected to "spawn one Agent per principle in ACTIVE_PRINCIPLES" but there is no bash array, no `for principle in ${ACTIVE_PRINCIPLES[@]}`, no write_env export. The agent count claim ("23 × 2") relies on the orchestrator interpreting prose.
+**Impact:** Whether stack-gated principles activate depends entirely on the orchestrator's prose-following discipline. No mechanical guarantee architecture-backend / architecture-frontend / self-contained / tanstack-query / perf-benchmark are skipped when their HAS_* signal is empty. A different-prompted orchestrator could spawn all 23 unconditionally or skip 4 randomly.
+**Fix:** Add a concrete bash block that emits `ACTIVE_PRINCIPLES=(...)` based on HAS_* env vars, writes the list to `$WORKDIR/tmp/god-review/active-principles.txt`, and have Phase 2c spawn-instructions reference that file.
+
+### [medium] `human_gate_emitted[].round` field written but never read for "still pending as of round N" tagging
+**Source:** gap-detector
+**Evidence:** env-helpers.sh:188-200 writes `{"finding_id","hash","round"}`. Report template at god-review.md:813-814 prose says "Emitted ONCE per finding; subsequent rounds only update 'still pending as of round N'". No code updates this — only the first-emit append. is_human_gate_already_emitted (env-helpers.sh:204-213) returns 0/1 with no round tracking.
+**Impact:** HUMAN_GATE_QUEUE entries in report.md keep their original round tag forever. Reader can't tell from the report whether a gate has been pending for 1 round or 12 rounds.
+**Fix:** Either drop the prose claim, or add an `update_human_gate_pending` helper called every round for already-emitted gates that bumps a `last_seen_round` field.
+
+### [medium] /god-report Phase 0/1/2 delegation says "execute the contents of god-review.md" but god-review.md Phase 1b unconditionally creates a snapshot ref + state.json
+**Source:** gap-detector
+**Evidence:** god-report.md:80-94 instructs orchestrator to execute god-review.md Phase 0/1/2. god-review.md:362-416 (Phase 1b) creates snapshot refs and writes `tmp/god-review/state.json` with full Phase-3 schema (round, frozen_units, kept_fixes, reverted_fixes, etc.). For /god-report, Phase 3 never runs — but the snapshot+state.json are still emitted.
+**Impact:** /god-report leaves a misleading state.json on disk that looks like a stale Phase-3 run. Next `/god-review --resume` could pick it up. The git stash created at Phase 1b leaks into stash list with no consumer.
+**Fix:** Either (a) make Phase 1b conditional on a `WILL_FIX` flag set by /god-review only, or (b) have /god-report append a final cleanup block that removes state.json and drops the unused stash. Document explicitly that snapshotting is /god-review's domain.
+
+### [low] write_env export list omits PRE_SCAN_* vars and FROZEN_UNITS_CAP, ROUNDS (used only by /god-report)
+**Source:** gap-detector
+**Evidence:** env-helpers.sh:20-36 exports a curated list. Missing: PRE_SCAN_SECRETS, PRE_SCAN_HALLUCINATED, PRE_SCAN_INJECTION, PRE_SCAN_FLAG_COUNT, FROZEN_UNITS_CAP, SHRINKAGE_PCT, PERF_REGRESS_PCT, INSTABILITY_RATE, SECRET_LEN_FLOOR, TEST_FILE_LINE_FLOOR. ROUNDS appears in list but is /god-report's variable — /god-review doesn't use it.
+**Impact:** Cross-block persistence claim ("sourced at top of every bash block") is incomplete. Tunable Constants block at 152-163 declares values that don't survive into Phase 3. PRE_SCAN_* values lost between Phase 1 and any later block.
+**Fix:** Add the Tunable Constants vars + PRE_SCAN_* to write_env export list. Drop ROUNDS (it lives in god-report's local scope only).
+
+### [low] `is_already_session_deferred` (category-only variant) marked DEPRECATED but still defined and discoverable
+**Source:** gap-detector
+**Evidence:** env-helpers.sh:329-336 keeps the deprecated function alongside the new `is_already_session_deferred_by_hash`. Comment says "kept for back-compat" — but no caller exists in god-review.md (grep confirms only the by-hash variant is referenced).
+**Impact:** Future agent could grep, find both, pick the wrong one. Deprecated code with no users is debt.
+**Fix:** Remove the deprecated `is_already_session_deferred` function entirely.
+
+### [low] gather-context.sh exists in lib/ but no command references it
+**Source:** gap-detector
+**Evidence:** ls shows lib/gather-context.sh (executable, 1147 bytes). grep across god-review.md, god-report.md, README.md, CHANGELOG.md, and other lib files yields zero references.
+**Impact:** Orphan helper. Either dead code or undocumented entry point. Phase 0's context-gathering is inlined into god-review.md:174-262 instead.
+**Fix:** Either inline its contents into Phase 0 and delete the file, or add a reference from Phase 0 ("for ad-hoc context refresh: bash lib/gather-context.sh"). Currently it's an unused dependency that drifted from spec.
+
+### [low] Editor-agent prompt examples reference inline patterns that contradict the "DO NOT inline patterns here" rule
+**Source:** gap-detector
+**Evidence:** lib/editor-agent.md:98 example: `EDITOR_ABORT: target file matches hard-gate pattern (tests/**)`. The example bakes the literal `tests/**` glob into the prompt — minor but contradicts the rule at line 67-69 ("DO NOT inline patterns here — they drift").
+**Impact:** Cosmetic. If hard-gates.txt ever drops the `tests/**` pattern, this example becomes a misleading hint.
+**Fix:** Change example to `EDITOR_ABORT: target file matches hard-gate pattern (see lib/hard-gates.txt)`.
+
+### [low] Auto-defer "structural anchor" stop-list includes only English casual phrases — no language-tagged extension point
+**Source:** gap-detector
+**Evidence:** env-helpers.sh:271-273 stop list is hardcoded English camelCase. Non-English LLM output or jargon-rich domain reasons (e.g., "kubeProxy", "envoyFilter") would slip through as "valid" anchors despite being non-substantive.
+**Impact:** Auto-defer reason validation has a narrow precision/recall tradeoff. Edge case — most reasons will pass legitimately.
+**Fix:** Document the stop-list as English-only in CRITERIA.md, or extend with a config knob (env var `AUTO_DEFER_STOP_LIST_FILE`).
+
+### [minor] CHANGELOG.md (15KB) and README.md (17KB) reference "G3" by name — drift surface
+**Source:** gap-detector
+**Evidence:** CLAUDE.local.md mentions "G3 closed" in this audit's prompt but no G3 phase boundary is encoded in code. The orchestrator has no mechanical grasp of "post-G3" state — just whatever the docs say.
+**Impact:** Doc-only milestone. If docs drift, no test catches it.
+**Fix:** Either skip (acceptable doc convention) or add a `phase_marker` field to state.json with a known-good G-version constant.
+
+### [minor] `WORKDIR` exported at env-helpers.sh:8 with `export WORKDIR` but the unbound-default at line 7 uses `${WORKDIR:-...}` — fine on first source but on `set -u` sub-shells the export-then-source pattern subtly relies on inherited env
+**Source:** gap-detector
+**Evidence:** env-helpers.sh:7-8. codex-invoke.sh uses `set -euo pipefail` (line 25); when env-helpers.sh is sourced from there, the `${WORKDIR:-$(...)}` masks unset. Not a real bug, just fragile.
+**Impact:** None today. Latent fragility if a future block does `set -u` before sourcing env-helpers.sh.
+**Fix:** Acceptable as-is.
+
+Total: 16 findings (catastrophic: 0, high: 3, medium: 6, low: 5, minor: 2, deferred: 0)
