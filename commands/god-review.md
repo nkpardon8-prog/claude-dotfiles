@@ -553,20 +553,27 @@ principle-Claude batch returns (use name format `claude-principle-<principle-nam
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 if [ "$RUTHLESS" = "true" ]; then
-  echo "Spawning ruthless redteam reviewer (--ruthless flag set)..."
-  RUTHLESS_PROMPT="$(cat $HOME/.claude-dotfiles/commands/god-review/broad-reviewers/claude-ruthless-redteam.md)"
-  # Spawn 4th Claude broad reviewer alongside the existing 3.
-  # Agent tool call: subagent_type "general-purpose", model "claude-opus-4-7", extended thinking enabled.
-  # Prompt: $RUTHLESS_PROMPT + scope + context-package path.
-  # Tag all findings with source: claude-broad:ruthless for downstream promotion logic.
-  # Invocation pattern (same as the 3 standard broad-Claude reviewers above):
-  #   subagent_type: "general-purpose"
-  #   model: "claude-opus-4-7" (extended thinking, high reasoning effort)
-  #   prompt: $RUTHLESS_PROMPT + "\n\nScope: $SCOPE\nContext package: $WORKDIR/tmp/god-review/context-package.md"
-  #   Collect output, tag each finding line with: source=claude-broad:ruthless
-  # Note: findings from this reviewer require Codex confirmation for cross-model promotion (Locked Decision #8).
+  echo "RUTHLESS=true — orchestrator MUST spawn the 4th Claude broad reviewer below."
+  cat "$HOME/.claude-dotfiles/commands/god-review/broad-reviewers/claude-ruthless-redteam.md" > /tmp/god-review-ruthless-prompt.txt
+  echo "Ruthless prompt staged at /tmp/god-review-ruthless-prompt.txt"
 fi
 ```
+
+**Orchestrator instruction (executed in the same parallel batch as the 3 standard
+broad-Claude reviewers when `RUTHLESS=true`):** spawn ONE additional Agent
+tool call alongside the existing 3:
+- `subagent_type: "general-purpose"`
+- `model: "claude-opus-4-7"` (extended thinking, high reasoning effort)
+- prompt: `$(cat /tmp/god-review-ruthless-prompt.txt)\n\nScope: $SCOPE\nContext package: $WORKDIR/tmp/god-review/context-package.md`
+
+After this Agent returns, capture its result text and call:
+```bash
+write_agent_finding "claude-broad-ruthless" "$RUTHLESS_RESULT"
+```
+(where `$RUTHLESS_RESULT` is the captured text). All findings from this
+reviewer get the source tag `claude-broad:ruthless` for downstream promotion
+logic. Per Locked Decision #8, ruthless findings require Codex confirmation
+for cross-model promotion.
 
 **Layer A — 3 Codex broad reviewers** (only if $CODEX_AVAILABLE=true):
 
