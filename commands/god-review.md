@@ -1433,22 +1433,45 @@ parallel (subset of Phase 2's full suite — for speed). Use ONE message with
 
 After the parallel batch returns, capture each verifier's result text.
 
-**Apply Phase F's per-agent finding write step:** for each verifier, call
+**Apply per-agent finding write step:** for each verifier, call
 `write_agent_finding "verifier-<n>" "$verifier_result"` (orchestrator
 substitutes the captured text).
 
-Parse all verifier outputs into a unified findings list. Compute hash for each
-new finding using `compute_finding_hash`. Filter:
+Then run this concrete filter bash (NOT pseudocode — the orchestrator
+extracts each verifier finding into the env-var loop):
 
-```
-VERIFIER_NEW = [f for f in verifier_findings
-                  if not is_human_gate_already_emitted(hash(f))
-                  and not is_already_session_deferred(category(f))
-                  and not is_finding_replayed(hash(f))]
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+
+# Build the verifier-findings list. The orchestrator parses each verifier-N.txt
+# and emits one line per finding to /tmp/verifier-all-findings.tsv with format:
+#   <finding_id>\t<file>\t<line_range_normalized>\t<category>
+# (Orchestrator: produce this TSV before running the bash below.)
+VERIFIER_NEW_COUNT=0
+if [ -f /tmp/verifier-all-findings.tsv ]; then
+  while IFS=$'\t' read -r vfid vfile vlrange vcat; do
+    [ -z "$vfid" ] && continue
+    vhash=$(compute_finding_hash "$vfile" "$vlrange" "$vcat")
+    if is_human_gate_already_emitted "$vhash"; then continue; fi
+    if is_finding_replayed "$vhash"; then continue; fi
+    if is_already_session_deferred_by_hash "$vhash"; then continue; fi
+    VERIFIER_NEW_COUNT=$((VERIFIER_NEW_COUNT + 1))
+    echo "VERIFIER_NEW: $vfid ($vfile:$vlrange/$vcat)"
+  done < /tmp/verifier-all-findings.tsv
+fi
+write_env
+echo "VERIFIER_NEW_COUNT=$VERIFIER_NEW_COUNT"
 ```
 
 This filter is critical — without it, hard-gate items repeatedly inflate the
-new-finding count and the loop never terminates (Phase G plan B3/B7 fix).
+new-finding count and the loop never terminates.
+
+(Note: `is_already_session_deferred_by_hash` is a stricter variant of
+`is_already_session_deferred` — it keys on the per-finding hash rather than
+the category alone. See `lib/env-helpers.sh`. The category-only variant is too
+coarse: one weak deferral would suppress an entire principle's coverage for
+the rest of the loop.)
 
 ---
 
