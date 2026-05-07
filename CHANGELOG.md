@@ -2,6 +2,38 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-06 — Per-Session Statusline Label
+
+Added a dimmed second line to the statusline (`scripts/statusline.sh`) sourced
+from `~/.claude/session-status/<session_id>.txt`. Lets the user tell apart
+5–10 simultaneous Claude Code windows by `Client › Project › current work` at
+a glance.
+
+### Added
+- **`scripts/statusline.sh` § 7**: optional line 2 reads the per-session label
+  file, sanitizes session_id with `tr -cd 'A-Za-z0-9_-'` (path-traversal safe),
+  and truncates to 100 code points via Python (Unicode-aware, so multi-byte
+  chevrons survive). Line 2 is omitted entirely when the file is missing.
+- **`CLAUDE.md` § Per-Session Status Label**: behavioral rule telling Claude
+  when and how to write the label file. Discovers session_id via the most
+  recently modified `~/.claude/projects/<encoded-pwd>/*.jsonl` (the
+  `$CLAUDE_SESSION_ID` env var is documented as not reliably exposed to the
+  Bash tool).
+- **`~/.claude/session-status/`**: new local directory (mode 700) that holds
+  one `<session_id>.txt` file per active window. Not tracked in this repo —
+  contents are session-scoped and may include client names.
+
+### Format
+```
+Client › Project › what's happening right now
+```
+Chevron `›` separator, single space each side, ≤ 100 chars. Use `Internal`
+for self/team work, `Self` for personal, repo name when no codename exists.
+
+### Plan archive
+See `tmp/done-plans/2026-05-05-per-session-statusline-label.md` (in the
+TOOLS workspace, not this repo) for the full design + 13-finding review trail.
+
 ## 2026-04-30 — Master Rebuild
 
 A 7-phase rebuild that decontaminated the repo of project-specific assumptions
