@@ -49,15 +49,14 @@ Red-flag conditions:
 - The text in `before` does not appear anywhere in the file within ±5 lines of `line_start`. Do not guess an alternative location — abort.
 - The file does not exist at the given path.
 - The `after` field is empty or identical to `before` (no-op change).
-- The change would touch a file in a hard-gate category:
-  - Any file matching `*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `tests/**` (test files)
-  - Any file matching `.github/workflows/*.yml`, `.gitlab-ci.yml`, `.circleci/config.yml`, `azure-pipelines.yml`, `bitbucket-pipelines.yml`, `Jenkinsfile`, `.pre-commit-config.yaml` (CI YAML)
-  - Any file matching `.env`, `.env.*`, `**/secrets.*`, `**/*credentials*` (secret/env files)
-  - Any file in a `_deprecated/` directory
-  - `package.json`, `requirements.txt`, `Cargo.toml`, `go.mod` (dependency manifests)
-  - Any schema migration file (e.g., `migrations/`, `db/migrate/`, `*.migration.ts`)
-
-  These are HUMAN_GATE targets. Report as EDITOR_ABORT with reason "hard-gate file".
+- The change would touch a file in a hard-gate category. The canonical hard-gate
+  pattern list is `~/.claude-dotfiles/commands/god-review/lib/hard-gates.txt` —
+  read that file before deciding. Categories include schema migrations, dependency
+  manifests, `.env*` and secret/credential files, CI/CD YAML, test files, auth
+  paths, and `_deprecated/` quarantine. **DO NOT inline patterns here** — they
+  drift. The orchestrator's `is_hard_gate <path>` (in `lib/env-helpers.sh`) is the
+  runtime authority. Hard-gate hits are HUMAN_GATE targets. Report as EDITOR_ABORT
+  with reason "hard-gate file".
 
 ## Scope Discipline
 
