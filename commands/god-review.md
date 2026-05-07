@@ -899,6 +899,23 @@ you (the orchestrator) whether to re-enter at 3a (next round), exit cleanly
 
 ### Round N — Sub-step 3a: Load and hash findings
 
+**At round start** (before parsing findings), pin the round-baseline ref:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+PRE_FIX_BASE_REF=$(git rev-parse HEAD)
+write_env
+echo "Round $ROUND baseline ref: $PRE_FIX_BASE_REF"
+
+# Reset per-round counters
+NEW_NEW_FINDINGS=0
+DEFERRED_THIS_ROUND=0
+GATED_THIS_ROUND=0
+FIXES_KEPT_THIS_ROUND=0
+write_env
+```
+
 Read the latest aggregated findings from `tmp/god-review/report.md`. Parse each
 finding from the markdown sections (Critical, Important, Minor, Gaps,
 Assumptions, Contradictions, Human Gate Required) into a list with these fields:
