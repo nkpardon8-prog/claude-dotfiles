@@ -1,0 +1,195 @@
+# Phase E v4 — claude-ruthless-redteam findings (post Phase G2)
+
+Target: ~/.claude-dotfiles/commands/god-review.md (1767 lines), god-report.md (136 lines), god-review/lib/env-helpers.sh (407 lines).
+Effort split: 30 skeptic / 40 adversarial / 30 checklist.
+
+Verified live before reporting:
+- `bash lib/env-helpers.sh --test-globs` → 17 passed, 0 failed (good).
+- Phase 3 fence count: 31 ```bash openers vs 49 ``` closers — fences are NOT split inside Phase 3 because of the explicit per-finding sub-fence design, but the imbalance shows trailing closers are mismatched at the file-prose level (closers for non-bash code blocks, JSON examples, etc. — accounted for after manual scan, not a true bug). Recorded for completeness but not flagged.
+
+---
+
+### [catastrophic] `exit 0` inside per-finding bash fences will exit the entire harness shell, terminating /god-review mid-loop
+**Source:** redteam
+**Evidence:** god-review.md:1148, 1156, 1178, 1201, 1207 — sub-step 3e validation fences use `exit 0` to "continue to next AUTO_FIX finding." Comments next to each say "# Continue to next AUTO_FIX finding."
+**Impact:** A Bash tool call invocation in Claude Code runs in a shell session that persists state via the harness wrapper, but `exit 0` in the body terminates THAT bash invocation cleanly — and crucially aborts the rest of the inline orchestration in that fence. More importantly, the orchestrator semantics here are "skip this finding, advance to the next one," but `exit 0` at the orchestrator-prose level means the orchestrator (LLM) sees a clean exit and may interpret it as "this entire sub-step succeeded" rather than "this one finding was skipped." Per the Phase G design, control flow is supposed to live in orchestrator reasoning, NOT in bash exit codes. Using `exit 0` to mean "continue per-finding loop" conflates "bash block ended successfully" with "skip-and-continue" — the LLM has no way to distinguish a malformed-Architect skip (line 1148) from a clean validation success at the end of a normal pipeline. This was supposed to be fixed in Phase G but the `exit 0` pattern survived from the original bash-while-loop design.
+**Fix:** Replace each `exit 0` with `echo "SKIP_TO_NEXT_FINDING: <reason>"; SKIP_THIS_FINDING=true` and have the orchestrator-prose check `$SKIP_THIS_FINDING` before each subsequent sub-step (iv, v, vi, vii). Or: split each sub-step into its own bash fence and let the orchestrator skip subsequent fences for skipped findings via prose-level reasoning.
+
+### [catastrophic] Sub-step 3b uses category-keyed `is_already_session_deferred` but Phase G2 documented the fix as switching to per-hash
+**Source:** redteam
+**Evidence:** god-review.md:963 — bucket_REPLAYED rule still calls `is_already_session_deferred "$FINDING_CATEGORY"`. The Phase G2 changelog and helper file (env-helpers.sh:317-325) added `is_already_session_deferred_by_hash` precisely because the category-keyed variant is "too coarse" (env-helpers.sh:319: "weak deferrals don't suppress an entire principle's coverage").
+**Impact:** The triage in 3b still uses the deprecated category check. So even though 3f (the verifier filter, line 1459) correctly uses the per-hash variant, the pre-fix triage will silently DROP every subsequent finding sharing a category with any one auto-deferred finding for the rest of the session. Example: round 1 auto-defers one trivial `documentation` finding → from round 2 onward, every documentation finding (including catastrophic ones) is bucketed REPLAYED and skipped without fix-attempt. The G2 fix is half-applied: helper exists, verifier uses it, but triage doesn't.
+**Fix:** Change god-review.md:963 to call `is_already_session_deferred_by_hash "$FINDING_HASH"` and pass the per-finding hash, not the category.
+
+### [catastrophic] Architect's prompt instructs it to write JSON to disk but Editor's prompt assumes Read tool can read absolute paths the harness has never granted
+**Source:** redteam
+**Evidence:** god-review.md:1098-1131 (Architect spawn) writes to `$WORKDIR/tmp/god-review/architect-output-${FINDING_ID}.json` — the path is built from `$WORKDIR` which can be an arbitrary repo. god-review.md:1218-1222 (Editor spawn) tells the Editor to "Read it via the Read tool and apply the change exactly: $ARCH_OUTPUT_FILE". But the Editor sub-agent has no guarantee its Read tool is permitted on that absolute path — agents inherit the orchestrator's tool permission scope, but the agent harness routinely sandboxes sub-agents to the cwd they're spawned in.
+**Impact:** If the Editor sub-agent is harness-sandboxed (or simply confused by an absolute path it didn't construct), Read returns "permission denied" or "file not found." Editor returns EDITOR_ABORT, the fix gets reverted, the finding's hash gets added to `finding_history_hashes` (line 1249) — meaning it's now permanently in the replay-skip list. Every fix attempt in /god-review fails this way, and the loop runs to wall-clock cap producing zero kept fixes while marking every finding as "tried-and-reverted."
+**Fix:** Either (a) pass the JSON contents inline to the Editor prompt (defeats the G2 disk-based-output fix's purpose), or (b) explicitly tell the Editor in its prompt "the Architect's JSON is at this path — Read tool is permitted; if Read fails, treat as EDITOR_ABORT with reason 'cannot-read-architect-json'", and augment editor-agent.md with a fallback to read via Bash `cat` if Read tool fails. Better: have the orchestrator read the file itself and pass the parsed JSON fields as separate prompt placeholders to Editor.
+
+### [high] write_env's whitelist still missing `PRE_FIX_REF`, `PRE_FIX_REFTYPE` round-loop persistence guarantees but uses them for revert
+**Source:** redteam
+**Evidence:** env-helpers.sh:28 lists `PRE_FIX_REF PRE_FIX_REFTYPE` — these ARE in the whitelist. BUT god-review.md:1234 uses `$PRE_FIX_REFTYPE` after the architect → editor sub-agent message round-trip, and write_env is only called inside the snapshot fence (line 1077 implicit, no `write_env` call there). The PRE_FIX_REF set on line 1071 is NEVER persisted via `write_env` before the Editor agent is spawned.
+**Impact:** The Editor Agent invocation is a separate orchestrator turn. The next bash fence (sub-step 3e(v) gates check at line 1257) sources `.env.sh` via env-helpers.sh, but `.env.sh` doesn't have PRE_FIX_REF because no `write_env` was called between line 1077 and the Editor spawn. Result: the revert path on line 1234 (`if [ "$PRE_FIX_REFTYPE" = "stash" ]`) sees empty values, falls through to the `else` branch (which uses `git checkout -- "$ARCH_FILE"`), and never applies the stash if one was made. Edit changes on a previously-dirty tree are NOT reverted on EDITOR_ABORT — the dirty state persists into the next finding's pre-fix snapshot, which then captures the un-reverted abort as part of its baseline. Fix-pass corruption cascades.
+**Fix:** Add `write_env` immediately after line 1077 (after computing PRE_FIX_REF/PRE_FIX_REFTYPE, before spawning the Architect Agent).
+
+### [high] sub-step 3g writes round number to state.json but never increments BEFORE the per-round triage; round 1 records as round 0
+**Source:** redteam
+**Evidence:** god-review.md:865-867 — `ROUND=1` set on first entry. Lines 1546-1547 — `d['round'] = $ROUND` written at end of round 3g. But line 1567 increments `ROUND=$((ROUND + 1))` only AFTER the state.json write at 1542-1553. So state.json's `round` field reflects the round just completed, not the round about to start. Then on `--resume` (line 862), the orchestrator reads `round` from state.json and starts there — which means a resumed run repeats the round that was just completed (because we record N at end of round N, then read N at start of resumed round, then re-do N).
+**Impact:** Off-by-one on resume. Findings from "the last completed round" are re-processed on resume; their hashes are already in `finding_history_hashes` (for reverted ones) but NOT for kept ones (per line 1382: KEEP path doesn't record hash). So a kept fix gets re-attempted on resume — applying the same fix twice can produce duplicate edits or "already-applied" pre-commit failures, both of which path through to revert and corrupt the audit trail.
+**Fix:** On resume, `ROUND = state.round + 1`. Or: write state.json's round AFTER incrementing in 3g.
+
+### [high] `is_finding_replayed` returns 1 (true in shell) when state.json doesn't exist or is unreadable — DEFAULT IS REPLAYED
+**Source:** redteam
+**Evidence:** env-helpers.sh:147-162 — `is_finding_replayed` python3 inline catches `Exception` and `sys.exit(1)`. In shell, exit 1 = false. But the helper file body line 153 has `[ -f "$p" ] || return 1` BEFORE the python3 call. `return 1` in a bash function = exit code 1 = falsey. So if state.json missing, the function returns "not replayed" — which is correct. Re-checked: this is fine. Withdrawn.
+
+### [high] HUMAN_GATE re-emit guard (line 991) uses `is_human_gate_already_emitted` keyed on hash, but HUMAN_GATE_QUEUE diff append (line 1003-1011) does dedup-by-`entry not in txt` — false-negative when proposed-diff has any whitespace variation
+**Source:** redteam
+**Evidence:** god-review.md:1006 — `txt = txt.replace(marker, marker + entry, 1) if entry not in txt else txt`. The `entry not in txt` check is byte-exact substring match. The `entry` is a multi-line markdown blob built from FINDING_ID, FINDING_FILE, FINDING_DESC, FINDING_DIFF.
+**Impact:** Two cases:
+(a) On first emit, the python3 successfully appends. `record_human_gate_emit` (line 1012) records the hash. On the next round's same finding, `is_human_gate_already_emitted` (line 991) returns 0, skipping the python3 entirely. Good — no duplicate. So the `entry not in txt` guard is dead code at runtime but defensive. OK.
+(b) BUT if the Architect produces a SLIGHTLY different `proposed_diff` (LLMs are non-deterministic) the next round's same finding (same hash, but Phase 2 re-discovered it with different prose), AND somehow the hash check is bypassed (e.g., state.json was reset), the python3 dedup would NOT match (different diff bytes) and would append a duplicate entry. Severity reduced — this is mostly defensive layer working correctly. Downgraded to medium.
+
+### [high] Phase 2d `cat findings/claude-*.txt` runs BEFORE the orchestrator has been instructed to call `write_agent_finding` for the broad-Claude reviewers — temporal ordering in the spec is wrong
+**Source:** redteam
+**Evidence:** god-review.md:538-549 says "After this batch returns, capture each agent's result text and persist it to disk" via `write_agent_finding`. Lines 666-685 (Phase 2d) consolidate findings via `cat .../claude-*.txt`. But the `write_agent_finding` step is described as ORCHESTRATOR PROSE INSTRUCTION — there is no explicit fence or numbered sub-step ensuring the LLM runs it. The instruction is buried in paragraph form between principle file paths. Easy for the orchestrator to skim past and go directly to the next batch.
+**Impact:** `claude-findings-consolidated.txt` is empty in practice unless the orchestrator strictly follows the prose instruction. The Codex validator gets an empty findings list and produces no validation output. Phase E v2 catastrophic finding C4 was supposed to fix this but the fix is "we wrote prose telling the orchestrator to do it" — not actually structurally enforced.
+**Fix:** Add an explicit numbered "After Layer A Claude broad reviewers complete, run this bash fence" section that loops over `for name in deep-correctness architecture-prod security-resilience` and calls `write_agent_finding "claude-broad-$name" "$RESULT"`. Make the orchestrator-required step a fence, not a paragraph. Same for Layer B.
+
+### [high] `--ruthless` adds 4th broad reviewer prose says "spawn ONE additional Agent" but message-1 batch description (line 510) hardcodes "10 Agent calls (3 broad-Claude + 7 principle-Claude)" — RUTHLESS would push to 11 agents in batch 1, possibly exceeding harness's 10-tool-call-per-message budget claimed earlier
+**Source:** redteam
+**Evidence:** Lines 510-514. Line 514: "With `--ruthless`: add the 4th broad-Claude reviewer (claude-broad-ruthless) to Message 1 = 21 in parallel." Earlier Phase G claim: "Up to ~20 tool calls per message." 21 > 20. The "20 in parallel" is 10 Agent + 10 Bash; ruthless adds 1 Agent only, so it becomes 11+10=21 — but tool-call budget is per-message, not per-tool-type.
+**Impact:** Possible truncation of message-1 if the harness enforces a hard 20-cap. Ruthless mode silently drops 1 reviewer (likely the last principle-Claude in queue). The "21 in parallel" claim is inconsistent with the earlier "~20 per message."
+**Fix:** Either move ruthless to Message 2 (which only has 10+10), or document explicitly that ruthless mode increases Message 1 to 21 and confirm the harness allows it. Or split: 10-Agent batch becomes 9 + ruthless replacement, demoting one of the standard 3 to Message 2.
+
+### [high] `compute_finding_hash` includes `category` in the hash, but Phase 2e STEP 3 promotes findings to category-override sections (Gaps, Assumptions, Contradictions) — same-finding can be hashed differently across rounds depending on which lens reported it first
+**Source:** redteam
+**Evidence:** env-helpers.sh:127 — `printf '%s|%s|%s' "$1" "$2" "$3"` where $3 is category. god-review.md:746 — category override routing happens at aggregation. But the `category` value passed into the hash comes from the raw finding (before category-override). If round 1 the gap-detector reports a finding with category=MISSING, and round 2 the contradiction-detector reports the SAME location with category=CONTRADICTION, the hashes differ — same finding, two replay-skip slots, two HUMAN_GATE entries.
+**Impact:** Replay-skip and HUMAN_GATE dedup both leak. A finding can be re-attempted indefinitely if reported by alternating principles each round. NEW_NEW_FINDINGS inflates falsely. The 3-consecutive-clean termination never fires.
+**Fix:** Hash on (file, line_normalized) only — drop category. Or normalize category to a canonical bucket (e.g., MISSING/CONTRADICTION/ASSUMPTION/OTHER) before hashing.
+
+### [high] `eval set -- $ARGUMENTS` (line 39) is unsafe — any value containing shell metachars from $ARGUMENTS executes
+**Source:** redteam
+**Evidence:** god-review.md:39 and god-report.md:33 — both use `eval set -- $ARGUMENTS`. If a user invokes `/god-review "scope; rm -rf /"`, the eval expands to `set -- scope; rm -rf /`.
+**Impact:** Arbitrary shell injection from the SCOPE argument. Even though Claude Code typically gates the harness, the slash command's $ARGUMENTS is user-supplied prose and the orchestrator passes it through eval without sanitization. A user pasting `--scope $(cat ~/.ssh/id_rsa)` into the command exfiltrates secrets.
+**Fix:** Replace `eval set -- $ARGUMENTS` with shell-safe parsing: `read -ra ARGS <<< "$ARGUMENTS"; set -- "${ARGS[@]}"`. Or use python3 shlex.split before set --.
+
+### [high] write_env's whitelist (env-helpers.sh:20-34) lists `ROUNDS` (no S) at the end but no `ROUNDS` var is set anywhere in /god-review (only `ROUND` singular is used) — and god-report.md DOES set `ROUNDS=$2`
+**Source:** redteam
+**Evidence:** env-helpers.sh:34 — `ROUNDS;` is the last var in the whitelist. god-report.md:40 sets `ROUNDS="$2"`. god-review.md uses only `ROUND` singular. They're different variables.
+**Impact:** Cross-command state-file pollution. If a user runs /god-report (which sets ROUNDS=3) and then /god-review in the same repo, /god-review sources `.env.sh` which has `export ROUNDS=3`. /god-review doesn't read `ROUNDS` so this is benign — but the bigger issue is /god-report doesn't actually use write_env (no call to it in god-report.md), so `ROUNDS` is never persisted. The whitelist entry is dead. AND because /god-review uses only `ROUND` (singular), a typo somewhere like `for i in $(seq 1 $ROUNDS); do` would silently iterate zero times.
+**Fix:** Either remove `ROUNDS` from env-helpers.sh:34, or add explicit `write_env` calls in god-report.md after parsing args. Document that ROUND≠ROUNDS to prevent accidental conflation.
+
+### [high] line 619 says "all 19" principle file paths but lists 23 files — leftover from before Phase E v3 update was supposed to fix
+**Source:** redteam
+**Evidence:** god-review.md:619 — `**Principle file absolute paths (all 19):**` but lines 621-643 list 23 files (count of paths). Counted manually: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, dead-code-conservatism, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, perf-heuristic, architecture-backend, architecture-frontend, self-contained, tanstack-query, perf-benchmark, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector = 23.
+**Impact:** Documentation drift. G2 changelog said "19→23 principle count updated everywhere." This one was missed. Also matches Phase E v2 finding pattern: docs claim X but code shows Y.
+**Fix:** Change "all 19" → "all 23" on line 619.
+
+### [medium] HAS_BENCH_SCRIPT python paren validated by Phase G2 but the python expression on line 199 still has subtle issue when `package.json` has no `scripts` key at all
+**Source:** redteam
+**Evidence:** god-review.md:199 — `d.get('scripts',{})` returns empty dict if missing → `next((k for k in scripts if k in ('bench','benchmark','perf')),'')` returns `''`. OK so far. But the OUTER condition `if [ -f "$WORKDIR/package.json" ]; then` lets a malformed package.json through to python3, which raises JSONDecodeError. The 2>/dev/null swallows it and HAS_BENCH_SCRIPT stays empty, falling through to subsequent detectors. OK — paren is balanced and the swallow is intentional.
+**Impact:** Low. But silent fallback masks a malformed package.json that should be a Phase 0 hard error.
+**Fix:** Fail hard if package.json exists but is malformed: `python3 -c "import json,sys; json.load(open('$WORKDIR/package.json'))" >/dev/null 2>&1 || { echo "ERROR: package.json malformed" >&2; exit 1; }` before the bench-script detection.
+
+### [medium] Phase 2d FALSE_POSITIVE handling: validator returns text, but record_false_positive expects 5 args parsed somehow — there's no parsing logic shown
+**Source:** redteam
+**Evidence:** god-review.md:711-722. Line 720: `record_false_positive "$FINDING_ID" "$FILE_PATH" "$LINE_RANGE" "$CATEGORY" "$VALIDATOR_REASON"`. These vars are not assigned anywhere — the orchestrator is expected to parse the validator output ("FINDING_ID: STATUS — reason" per line 690) into these per-finding env vars. No bash fence does this parse. It's hand-waved as orchestrator prose.
+**Impact:** false_positives recording works only if the orchestrator-LLM remembers to do the parse step manually for each FP entry. In practice, output text formats vary, and the LLM is likely to skip this if it sees "no false positives mentioned" without reading the validator output thoroughly. FPs accumulate as zero. CRITERIA's promotion logic that subtracts FP-confirmed findings never fires. Promotion ladder stays stuck.
+**Fix:** Add an explicit bash fence after line 701 that parses /tmp/codex-validation-output.txt with grep/awk and writes a TSV file the orchestrator iterates over.
+
+### [medium] Phase 1c perf baseline writes to `tmp/god-review/perf-baseline.json` via `npm run bench 2>&1 > path` — the `2>&1` BEFORE redirect order leaks stderr to console, not file (BSD-quirk)
+**Source:** redteam
+**Evidence:** god-review.md:429-431 — `npm run bench 2>&1 > tmp/god-review/perf-baseline.json`. In bash, `2>&1 > file` means: dup-2-onto-stdout (still going to terminal), then redirect stdout to file. Result: stderr goes to terminal, stdout goes to file. Probably user wanted `> file 2>&1`.
+**Impact:** Benchmark stderr (which often contains the actual timing info for some bench tools) goes to terminal/log instead of perf-baseline.json. Baseline file is half-empty. Phase 3 perf-regression detector compares against partial baseline → false-positive regressions trigger reverts of legitimate fixes.
+**Fix:** Reorder: `npm run bench > tmp/god-review/perf-baseline.json 2>&1`. Same for lines 430-435.
+
+### [medium] state.json schema has both `false_positives` and `auto_deferred` and `human_gate_emitted` — three parallel suppression lists with overlapping semantics
+**Source:** redteam
+**Evidence:** state.json schema (god-review.md:378-399) declares all three. `false_positives` records validator-rejected findings. `auto_deferred` records orchestrator-judged-can't-fix findings. `human_gate_emitted` records hard-gate-batched findings. All three should suppress re-emission. But:
+**Impact:** Triage in 3b (lines 957-975) only checks `is_finding_replayed` (finding_history_hashes), `is_human_gate_already_emitted`, and `is_already_session_deferred`. NEVER checks `false_positives`. So a validator-rejected FP from round 1 gets re-flagged in round 2, re-validated, re-rejected — wasting a Codex validation call per round per FP. With 38 FPs and 200 rounds, that's 7600 redundant Codex calls.
+**Fix:** Add `is_already_false_positive "$FINDING_HASH"` helper in env-helpers.sh and check it as bullet 0 in 3b's bucket_REPLAYED rule.
+
+### [medium] CONSECUTIVE_CLEAN_ROUNDS reset (line 1566) only happens inside the bash fence; the prose at line 1565-1577 is a bash fence using exit codes implicitly
+**Source:** redteam
+**Evidence:** Lines 1561-1582 — bash fence. The decision logic uses `if/elif` to set CONSECUTIVE_CLEAN_ROUNDS and ROUND. Then `write_env` at 1579. But the LOOP_EXIT=converged path (line 1573) is also inside this fence; the orchestrator reads stdout to determine which branch fired. That works. BUT the comment at 1581 says "Atomically persist round + clean-counter to state.json (already done above in backstop block; this re-confirms after the prose decision)." The state.json write at 1542-1553 is BEFORE the increment on line 1567, so state.json has the OLD round value. The "already done above" is wrong for the post-increment case.
+**Impact:** Same off-by-one as catastrophic finding above re: ROUND incrementing. Exacerbated: state.json reflects the old round, but CONSECUTIVE_CLEAN_ROUNDS in state.json reflects the new value (set by write_env via .env.sh). State.json becomes internally inconsistent.
+**Fix:** Move the state.json write at 1542-1553 to AFTER the decision block 1561-1582.
+
+### [medium] Phase 2c codex-broad output copy (line 600-606) uses fixed paths `/tmp/codex-broad-*.txt` — multiple concurrent /god-review runs collide
+**Source:** redteam
+**Evidence:** Lines 585-606 — codex-broad outputs go to `/tmp/codex-broad-cross-layer.txt` etc. /tmp is global system-wide.
+**Impact:** Two /god-review runs in different repos at the same time clobber each other's Codex outputs. Run B reads Run A's findings as its own and validates them against Run B's codebase → false-positive cascades.
+**Fix:** Namespace by PID or workdir hash: `/tmp/codex-broad-cross-layer-${RANDOM}-$$.txt` or `$WORKDIR/tmp/god-review/codex-staging/`.
+
+### [medium] /tmp/verifier-all-findings.tsv (3f filter, line 1453) has same /tmp collision risk; orchestrator-prose says "produce this TSV before running the bash" with no per-run namespacing
+**Source:** redteam
+**Evidence:** god-review.md:1449-1462. `/tmp/verifier-all-findings.tsv` is the canonical input.
+**Impact:** Concurrent /god-review and /god-report runs (the latter does NOT use Phase 3 but might run a verifier-equivalent in a future revision) cross-contaminate. Even single-user, two terminal sessions = corrupt verifier counts.
+**Fix:** Move TSV to `$WORKDIR/tmp/god-review/verifier-findings-round-$ROUND.tsv` and reference via that path.
+
+### [medium] god-report.md Phase 3 skip instruction is "STOP" (line 92) but also lists Step 0.5 Single-Principle Delegation (lines 60-76) which is identical to god-review's — drift risk
+**Source:** redteam
+**Evidence:** god-report.md:60-76 inlines the principle-delegation logic that god-review.md:126-143 also defines. Two sources of truth.
+**Impact:** A future edit to one will not propagate. `check_phase_drift` (env-helpers.sh:368-376) only diffs Phase 0/1/2, not Step 0.5. Silent drift.
+**Fix:** Either delegate Step 0.5 the same way Phase 0/1/2 are delegated ("read god-review.md's Step 0.5 and execute"), or extend `check_phase_drift` to include Step 0.5.
+
+### [medium] god-report.md `allowed-tools: Bash, Read, Grep, Glob, Task, Agent, TodoWrite` — uses Task tool but god-review.md only has `Bash, Read, Glob, Grep, Agent`. Inconsistent
+**Source:** redteam
+**Evidence:** god-report.md:4 vs god-review.md:4.
+**Impact:** /god-report has TodoWrite + Task tools available; /god-review doesn't. If god-report.md's flow is truly "exactly Phase 0/1/2 of god-review.md," then any Task or TodoWrite usage in those phases would work in /god-report but break in /god-review. Phase 0/1/2 don't currently use Task/TodoWrite — but if a future edit adds it (innocently, since /god-report allows it), /god-review will fail at runtime with "tool not allowed."
+**Fix:** Align allowed-tools across both commands. Either remove Task+TodoWrite from /god-report, or add them to /god-review.
+
+### [medium] Phase G2 "loop re-entry prose strengthened with YOU MUST START THE NEXT ROUND" (line 1588-1594) is in ALL CAPS but the orchestrator-LLM is not gated structurally — it can still ignore
+**Source:** redteam
+**Evidence:** god-review.md:1588 — "YOU MUST START THE NEXT ROUND RIGHT NOW BY EXECUTING SUB-STEP 3a IN A NEW BATCH OF MESSAGES."
+**Impact:** Caps don't enforce. The harness has no signal "loop must continue." If the orchestrator hits the natural end of a Bash result and the user has not sent a follow-up message, the conversation stalls. The /loop slash command is the proper enforcement mechanism, but god-review.md doesn't reference it. Self-described "always-on indefinite-loop by definition" only works if the LLM happens to honor the prose. With Opus 4.7 this works most of the time; with smaller models / quantized runs / sleepy contexts, it doesn't.
+**Fix:** Either (a) document at the top of god-review.md that the user MUST invoke via `/loop /god-review` for true indefinite operation, or (b) add a tail check in 3g that calls a CronCreate/ScheduleWakeup tool to re-fire if LOOP_EXIT is unset.
+
+### [medium] Architect prompt (line 1098-1131) tells Architect "Confirm the write completed before returning" but Architect Agent has no signal back to orchestrator confirming the write — orchestrator independently checks `[ ! -f "$ARCH_OUTPUT_FILE" ]`
+**Source:** redteam
+**Evidence:** Lines 1129-1131 vs 1144-1149. Architect's "confirmation" is just text in its return; orchestrator ignores it (line 1133-1135).
+**Impact:** Architect could return "wrote it!" but actually wrote nothing (LLM hallucination). Orchestrator catches it via the `[ ! -f ]` check. So the inconsistency is tolerable. But the prose to Architect is misleading — Architect's "confirmation" is dead text.
+**Fix:** Drop the "Confirm the write completed" instruction; replace with "Do not return any text other than 'WROTE: <path>'. The orchestrator reads the file directly."
+
+### [medium] CHANGELOG.md likely missing entry for Phase G2 (per task description "g2 fixes shipped"); README.md still references "--fix" / "--loop" in CHANGELOG section despite README purge claim
+**Source:** redteam
+**Evidence:** README.md grep showed lines 37, 69-71, 85, 89, etc. mentioning "fix loop" / "auto-fix loop" / "Phase 3 fix loop only". Phase G2's "README purged of --fix/--loop invocation examples" claim — this is true for invocation examples but the prose-references to "fix loop" remain heavy. Acceptable since Phase 3 IS a fix loop; reader would expect the term. No real bug.
+**Impact:** Minor — readers unfamiliar with Phase G might think /god-review still takes --fix flag. Status: low.
+**Fix:** Add a one-line note at top of README.md: "As of Phase G, /god-review's fix-loop is always-on; --fix and --loop flags were dropped. Use /god-report for report-only mode."
+
+### [low] env-helpers.sh write_env iterates `for var in ...` and runs `python3 -c "..."` once per variable (~40 invocations per write_env call)
+**Source:** redteam
+**Evidence:** env-helpers.sh:20-37 — loop spawns python3 once per var. ~40 vars × ~50ms python3 startup = 2 seconds per write_env call.
+**Impact:** Phase 3 calls write_env 5-10 times per finding; with 50 findings/round and 30 rounds, that's 50×5×30 = 7500 write_env calls = 4 hours of pure python3 startup overhead. Phase G's "indefinite loop" feasibility partially blocked by this.
+**Fix:** Single python3 invocation that reads all values from env (`os.environ`) and emits all export lines at once.
+
+### [low] `record_finding_hash` (env-helpers.sh:132-145) does NOT acquire a lock — concurrent writes during parallel verifier sub-pass can corrupt state.json
+**Source:** redteam
+**Evidence:** Lines 132-145 — read state.json, modify, atomic mv. But two parallel sub-agents calling record_finding_hash simultaneously: agent A reads state, agent B reads state, A writes (atomic), B writes (atomic, overwriting A's write). A's hash is lost.
+**Impact:** Verifier sub-pass spawns 4 agents in parallel. If any of them call helpers that mutate state.json (they shouldn't per design — verifier output goes through orchestrator post-processing), corruption. Currently low risk because verifiers don't directly call mutating helpers. But the architecture allows it.
+**Fix:** Wrap each mutating helper with `flock` on state.json or a sidecar lockfile.
+
+### [low] `INSTABILITY_RATE` default is 5 events/round (line 157), checked against `frozen_added_per_round + architect_malformed_per_round` averaged over last 3 rounds. With sub-step 3e processing 50 findings/round, 5 instability events is 10% — not 50%
+**Source:** redteam
+**Evidence:** god-review.md:157 + 1518-1530.
+**Impact:** Likely benign — instability detector trips at relatively low threshold, which is conservative (early abort). But "abort if 5+ events/round on average" is undocumented in user-facing docs (README.md). Users hit instability abort and don't know why.
+**Fix:** Document INSTABILITY_RATE default + override in README.md tunable-constants section.
+
+### [minor] Phase 0 baseline gate runs `npm run typecheck`, `npm run lint`, `npm run build` always, swallowing exits with `||` and not checking if the script exists in package.json first
+**Source:** redteam
+**Evidence:** god-review.md:250-253 — `(npm run typecheck 2>&1 | tail -20) || echo "(no typecheck script)"`. The `||` only fires if the entire pipeline exits non-zero, but `tail -20` always succeeds → the `||` never fires → "(no typecheck script)" never prints even when the script doesn't exist.
+**Impact:** Misleading log output. `npm run typecheck` with no script prints "Missing script: typecheck" to stderr; `tail -20` consumes stdout; the OR clause never triggers. The fallback message is dead code.
+**Fix:** Check `$PKG_SCRIPTS` (already computed on line 248) before invoking.
+
+### [minor] `record_auto_defer` regex stop-list (env-helpers.sh:269-271) only contains 13 phrases — many other casual camelCase patterns slip through (`isWeird`, `cantDoIt`, `notMyFault`, ...)
+**Source:** redteam
+**Evidence:** Lines 269-271 enumerate stop words. The Phase G2 fix added "thisFeature" etc. but the LLM has near-infinite ways to construct weak deferral excuses.
+**Impact:** Auto-defer escapes still possible. Stop-list is a leaky filter, not a real anchor check.
+**Fix:** Invert the logic: instead of stop-listing weak words, REQUIRE one of: (a) actual file path with extension, (b) git/issue/CVE reference, (c) quoted external name with quotes. Drop the camelCase-as-anchor heuristic entirely.
+
+### [deferred] env-helpers.sh:153 `[ -f "$p" ] || return 1` — when state.json doesn't exist, `is_finding_replayed` returns truthy in shell semantics. Already verified above — withdrawn.
+**Source:** redteam
+**Evidence:** Withdrawn.
+
+Total: 28 findings (catastrophic: 3, high: 7, medium: 12, low: 3, minor: 2, deferred: 1)
