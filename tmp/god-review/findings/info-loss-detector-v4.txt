@@ -1,0 +1,55 @@
+### [high] FINDING_DESCRIPTION / FINDING_ROOT_CAUSE / FINDING_PROPOSED_DIFF / FINDING_SEVERITY never write_env'd — lost across fences
+**Source:** info-loss-detector
+**Evidence:** god-review.md:989-998, 1066-1067, 1107-1108; lib/env-helpers.sh:20-34
+**Impact:** Sub-step 3c and 3e reference `$FINDING_DESCRIPTION`, `$FINDING_PROPOSED_DIFF`, `$FINDING_ROOT_CAUSE`, `$FINDING_SEVERITY` as if persisted, but write_env's whitelist (env-helpers.sh:20-34) only includes FINDING_HASH, FINDING_ID, FINDING_FILE, FINDING_LINE_RANGE, FINDING_LINE_NORMALIZED, FINDING_CATEGORY. Description/root-cause/diff sketch held only in orchestrator reasoning; if 3c or 3e re-source `.env.sh` in a fresh fence, these expand to empty. Architect prompt (line 1107-1108) gets blank Description/Root cause; HUMAN_GATE entry (line 1003) writes empty Reason/diff fields.
+**Fix:** Either (a) require orchestrator to substitute these literally into each bash fence (already partially the comment-pattern), and remove env-var refs in heredocs; or (b) add FINDING_DESCRIPTION FINDING_ROOT_CAUSE FINDING_PROPOSED_DIFF FINDING_SEVERITY to write_env whitelist. Pick one and document.
+
+### [high] /tmp/verifier-all-findings.tsv read but never written by any committed code
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1448-1462
+**Impact:** The 3f filter loop reads `/tmp/verifier-all-findings.tsv` to dedupe verifier findings. Line 1451 says "(Orchestrator: produce this TSV before running the bash below.)" — this is an unenforceable orchestrator obligation. If the orchestrator forgets, `[ -f ... ]` is false, the entire filter is skipped, VERIFIER_NEW_COUNT stays 0, and NEW_NEW_FINDINGS undercounts → loop terminates prematurely on a false-clean round. There is no `cat > /tmp/verifier-all-findings.tsv` site anywhere in god-review.md.
+**Fix:** Add a concrete bash block before the filter that pipes each `findings/verifier-*.txt` through a parser (regex-extract finding_id/file/lines/category) and emits the TSV. Or change the filter to enumerate `findings/verifier-*.txt` directly and parse inline.
+
+### [high] /tmp dir is shared across runs — codex-principle stale-file leak into next round
+**Source:** info-loss-detector
+**Evidence:** god-review.md:660-663
+**Impact:** Phase 2c Layer B does `for f in /tmp/codex-principle-*.txt; do cp "$f" findings/...; done`. /tmp survives across invocations on macOS until reboot. If a prior /god-review run (or /god-report) wrote `/tmp/codex-principle-foo.txt` and the current round only invokes 2 of the 23 principles, the for-loop picks up the stale 21 files and copies them as if fresh. Findings from a different run/scope leak into this round's aggregation.
+**Fix:** Wipe `rm -f /tmp/codex-principle-*.txt` at top of Phase 2c (BEFORE the codex-invoke calls), OR cp using only the explicit list of principle names that were actually invoked this round.
+
+### [medium] Architect output file path includes FINDING_ID but FINDING_ID may collide across rounds
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1092, 1142
+**Impact:** `architect-output-${FINDING_ID}.json` is reused if the same FINDING_ID re-appears in a later round (e.g. a regression of an earlier fix). Sub-step 3e(i) `rm -f "$ARCH_OUTPUT_FILE"` clears it before each spawn (line 1094), which is good. BUT if the orchestrator crashes between sub-step 3e(i) and 3e(iii), the next run's `[ ! -f "$ARCH_OUTPUT_FILE" ]` check (line 1144) sees stale file from a prior round and proceeds with stale Architect data.
+**Fix:** Include `$ROUND` in the path: `architect-output-r${ROUND}-${FINDING_ID}.json`. Stale-file protection by construction.
+
+### [medium] FINDING_ID not in write_env whitelist either — lost across fences in 3e
+**Source:** info-loss-detector
+**Evidence:** lib/env-helpers.sh:20-34, god-review.md:1092 vs 1142
+**Impact:** Sub-step 3e(i) (line 1092) computes ARCH_OUTPUT_FILE via `${FINDING_ID}` and write_env's it. Sub-step 3e(iii) (line 1142) recomputes the same path and reads it. But FINDING_ID is NOT in the whitelist — only hashed/derived fields are. ARCH_OUTPUT_FILE *is* persisted, so 3e(iii)'s expression `architect-output-${FINDING_ID}.json` recomputes from a possibly-empty FINDING_ID, producing a different path than what was rm'd and what the Architect was told to write. Saved by ARCH_OUTPUT_FILE being write_env'd directly — but the redundant per-block recomputation is a foot-gun.
+**Fix:** Add FINDING_ID to write_env whitelist. Drop the redundant ARCH_OUTPUT_FILE recompute in 3e(iii) and trust the persisted env value.
+
+### [medium] CONSECUTIVE_CLEAN_ROUNDS double-write race between mechanical block and prose-decision block
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1542-1554, 1561-1582
+**Impact:** Backstop block at 1542-1554 writes `consecutive_clean_rounds` to state.json based on its current value, then write_env's. The prose-decision block at 1561-1582 *then* mutates CONSECUTIVE_CLEAN_ROUNDS (resets to 0 or increments), then write_env's, but does NOT re-persist to state.json (the comment at 1580-1582 says "already done above" — incorrect, that block ran with the OLD counter value). On a clean round, state.json shows N but .env.sh shows N+1 → re-source after a crash gives wrong termination decision.
+**Fix:** Move the state.json `consecutive_clean_rounds` persistence to AFTER the prose-decision block, OR re-run the python3 state.json update inside the prose block.
+
+### [medium] PRE_FIX_BASE_REF set once per round, but `git diff $PRE_FIX_BASE_REF..HEAD` (line 1428, 1611) used in next-round meta — stale on round restart
+**Source:** info-loss-detector
+**Evidence:** god-review.md:908, 1428, 1611
+**Impact:** PRE_FIX_BASE_REF is pinned at start of round (3a, line 908) and persisted. Line 1428 (meta-review) and 1611 (re-scope) consume it. If the round terminates and the orchestrator re-enters at 3a for round N+1, line 908 re-pins PRE_FIX_BASE_REF to current HEAD — overwriting the previous round's baseline. Any later use of "this round's diff" inside the new round still sees the new baseline, fine. But if a later sub-step (e.g. a fork-in-control-flow) tries to inspect "what did round N change", that history is lost — only `kept_fixes` array survives.
+**Fix:** Optional — append to `state.json.round_baselines[round] = ref` for historical inspection. Low priority unless meta-review or re-scope logic actually needs N-1 baseline.
+
+### [low] DEFERRED_THIS_ROUND / GATED_THIS_ROUND reset only at top of 3a — survives if orchestrator skips 3a
+**Source:** info-loss-detector
+**Evidence:** god-review.md:914-917 vs 1497-1498
+**Impact:** Reset happens at sub-step 3a (line 914). If orchestrator re-enters at "Phase 2" (line 1597-1599) instead of 3a — which the loop-control flow at line 1596-1599 explicitly allows — these counters are NOT reset between rounds and accumulate cross-round, polluting record_round_counts.
+**Fix:** Move the reset to sub-step 3g start (or 3b — first per-round work after re-entry-decision), so it runs regardless of which entry point the orchestrator chose.
+
+### [low] write_agent_finding is defined but Phase 2 spawns don't reliably call it
+**Source:** info-loss-detector
+**Evidence:** lib/env-helpers.sh:359-363, god-review.md:1437-1439
+**Impact:** Sub-step 3f (line 1437-1439) tells orchestrator to call `write_agent_finding "verifier-<n>" "$verifier_result"`. Phase 2 broad/principle reviewers have no such instruction — they're spawned, results go to orchestrator's reasoning, but findings/<agent>.txt is only sometimes populated (e.g. claude-* files needed at line 683 for cat-consolidation). If the orchestrator forgets to write_agent_finding for Claude broad reviewers, `cat findings/claude-*.txt` produces empty consolidation → Codex validation receives empty input and the validator pass silently no-ops.
+**Fix:** Add an explicit "after each batch returns, call write_agent_finding for each spawned agent" instruction to Phase 2a/2b/2c just like Phase 3f has.
+
+Total: 9 findings (catastrophic: 0, high: 3, medium: 3, low: 2, minor: 1, deferred: 0)
