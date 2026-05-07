@@ -31,80 +31,66 @@ write_env() {
   } > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
-# Glob-to-regex conversion for hard-gate matching (per Locked Decision #3 + plan algorithm)
-# Algorithm (fixed in Phase E):
-#   **/X      → (?:.*/)?X        (recursive prefix)
-#   X/**      → X/.*             (recursive suffix)
-#   **/X/**   → (?:.*/)?X/.*
-#   *         → [^/]*            (single-segment wildcard)
-#   bare name → (?:.*/)?name$    (matches anywhere in tree)
+# Glob-to-regex conversion for hard-gate matching (per Locked Decision #3 + Phase E fix)
+# Algorithm:
+#   **/X      -> (?:.*/)?X     (recursive prefix)
+#   X/**      -> X/.*          (recursive suffix)
+#   **/X/**   -> (?:.*/)?X/.*
+#   *         -> [^/]*         (single-segment wildcard)
+#   bare name -> (?:.*/)?name  (matches anywhere in tree)
 glob_to_regex() {
   local glob="$1"
-  python3 -c "
+  python3 - "$glob" << '__PYEOF__'
 import sys
-g = sys.argv[1]
 
-# Determine if pattern is bare basename (no slash, no **)
+g = sys.argv[1]
 has_slash = '/' in g
 has_double_star = '**' in g
 
-parts = g.split('/')
-
 def escape_seg(s):
-    import re
-    # Escape regex metacharacters in a single segment (not * wildcards)
     result = []
     i = 0
     while i < len(s):
         c = s[i]
-        if c == '*' and i+1 < len(s) and s[i+1] == '*':
-            result.append('.*')
-            i += 2
-        elif c == '*':
+        if c == '*':
             result.append('[^/]*')
             i += 1
         elif c == '.':
             result.append(r'\.')
             i += 1
-        elif c in r'[](){}+?^\$|\\\\':
-            result.append('\\\\' + c)
+        elif c in '[](){}+?^$|\\' :
+            result.append('\\' + c)
             i += 1
         else:
             result.append(c)
             i += 1
     return ''.join(result)
 
-# Build regex from glob pattern
-regex_parts = []
-i = 0
-while i < len(parts):
-    seg = parts[i]
-    if seg == '**':
-        if i == 0:
-            # Leading ** — matches any prefix (zero or more directories)
-            regex_parts.append('(?:.*/)?')
-        elif i == len(parts) - 1:
-            # Trailing ** — matches any suffix (zero or more path components)
-            regex_parts.append('.*')
-        else:
-            # Middle ** — matches zero or more path segments
-            regex_parts.append('(?:.*/)?')
-    else:
-        if regex_parts and not regex_parts[-1].endswith('/') and not regex_parts[-1].endswith('?'):
-            regex_parts.append('/')
-        regex_parts.append(escape_seg(seg))
-    i += 1
-
-# Bare basename (no slash, no **): anchor to match anywhere in tree
 if not has_slash and not has_double_star:
-    # Wrap: (?:.*/)? + escaped_name + \$
-    regex = '^(?:.*/)?(' + escape_seg(g) + ')$'
-else:
-    regex = '^' + ''.join(regex_parts) + '$'
+    print('^(?:.*/)?' + escape_seg(g) + '$')
+    sys.exit(0)
 
-print(regex)
-" "\$glob"
+parts = g.split('/')
+out = []
+for i, seg in enumerate(parts):
+    if seg == '**':
+        if i == 0 and i == len(parts) - 1:
+            out.append('.*')
+        elif i == 0:
+            out.append('(?:.*/)?')
+        elif i == len(parts) - 1:
+            out.append('/.*')
+        else:
+            out.append('(?:/.*)?')
+    else:
+        if i > 0 and (not out or not out[-1].endswith('?')):
+            out.append('/')
+        out.append(escape_seg(seg))
+
+print('^' + ''.join(out) + '$')
+__PYEOF__
 }
+
 # is_hard_gate: returns 0 if path matches any pattern in hard-gates.txt, 1 otherwise
 is_hard_gate() {
   local file="$1"
