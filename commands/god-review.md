@@ -1031,7 +1031,9 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 # Per-finding: FINDING_ID, FINDING_CATEGORY, DEFER_REASON (your supplied reason)
 if record_auto_defer "$FINDING_ID" "$FINDING_CATEGORY" "$DEFER_REASON"; then
-  echo "Deferred: $FINDING_ID"
+  DEFERRED_THIS_ROUND=$((DEFERRED_THIS_ROUND + 1))
+  write_env
+  echo "Deferred: $FINDING_ID (deferred this round: $DEFERRED_THIS_ROUND)"
 else
   # Helper rejected (trivial reason, no structural anchor, or too short).
   # Demote to HUMAN_GATE: re-run sub-step 3c logic for this finding with
