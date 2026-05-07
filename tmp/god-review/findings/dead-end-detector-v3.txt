@@ -1,0 +1,133 @@
+### [high] PRE_SCAN_* values produce a flag count that is never consumed downstream
+**Source:** dead-end-detector
+**Evidence:** god-review.md:300-351 — Pre-scan loops compute `PRE_SCAN_SECRETS`, `PRE_SCAN_HALLUCINATED`, `PRE_SCAN_INJECTION`, then sum into `PRE_SCAN_FLAG_COUNT`. Only `echo` references occur. `write_env` (line 27 of env-helpers.sh) does NOT include any `PRE_SCAN_*` var in its export list. Phase 2 principle agents (`secret-leak`, `hallucinated-imports`, `prompt-injection`) are not given the pre-scan output — they re-scan from scratch.
+**Impact:** Phase 1a's three pre-scans run expensive grep across the repo, then their results are discarded. The Tier-1 promotion logic for these principles claims the pre-scan exists to seed evidence (Phase 0 design), but the seed never reaches the agents. Dead-end work; failure mode #19 (repeated context-gathering) recurs.
+**Fix:** Either persist `PRE_SCAN_SECRETS/HALLUCINATED/INJECTION` to `tmp/god-review/pre-scan.txt` and reference that path in the corresponding principle prompts, or add the three vars to `write_env`'s exported list and have those principles read them. At minimum, route `PRE_SCAN_FLAG_COUNT` into the Phase 1 final echo / state.json so its only purpose isn't a cosmetic count.
+
+### [high] state.json field `architect_malformed_count` is initialized but never written or read
+**Source:** dead-end-detector
+**Evidence:** god-review.md:386 (`"architect_malformed_count": 0` initialized). No subsequent read or write. `record_architect_malformed` (env-helpers.sh:226-240) writes to a *different* field, `architect_malformed_per_round[]`. No other call site touches `architect_malformed_count`.
+**Impact:** Vestigial field shipped in canonical schema. Future readers may rely on it. Two parallel “malformed counter” representations — one used (`architect_malformed_per_round`), one ghost — is exactly the kind of contradiction that breaks resume logic.
+**Fix:** Delete `architect_malformed_count` from the state.json schema in Phase 1b initialization (line 386), or have `record_architect_malformed` increment both fields if a scalar count is actually wanted.
+
+### [high] state.json `false_positives` is written but never read by any orchestrator code
+**Source:** dead-end-detector
+**Evidence:** `record_false_positive` (env-helpers.sh:160) writes to `state.json.false_positives`. Comment at god-review.md:698 claims "The `false_positives` array is read by future rounds to suppress findings the validator already rejected (see Phase 3 triage)" — but Phase 3 triage (god-review.md:912-933) does NOT consult `false_positives`. Sub-step 3b's bucket rules check `is_finding_replayed`, `is_human_gate_already_emitted`, `is_already_session_deferred` — no FP suppression check. `bucket_AUTO_DEFER` rule 3 mentions "validator marked it false_positive in Phase 2d" but provides no helper or read of state.
+**Impact:** Documented suppression contract is fictional. Findings the validator already FP'd will be re-flagged in subsequent rounds, re-scored, re-routed — exactly the regression the comment claims is prevented. Wastes Phase 2 cycles each round.
+**Fix:** Add an `is_known_false_positive <hash>` helper to env-helpers.sh that checks `state.json.false_positives`. Use it as a pre-filter in 3b (insert before bucket_REPLAYED check) so FP'd hashes auto-skip every subsequent round.
+
+### [high] state.json field `consecutive_clean_rounds` initialized in JSON but ALSO has duplicate `consecutive_no_change_rounds` mentioned nowhere — verify no schema drift
+**Source:** dead-end-detector
+**Evidence:** god-review.md:385 initializes `consecutive_clean_rounds`. CLAUDE.local.md (post-compact reference) lists `consecutive_no_change_rounds` as a vestigial field. Searched the codebase — `consecutive_no_change_rounds` is no longer present, but the canonical state schema lacks any documentation listing all fields. CRITERIA.md / README.md may still reference the old name.
+**Impact:** Lower than the others — but if any external consumer (e.g., the user's `--resume` heuristics, doc) still references the old name they'll silently read undefined.
+**Fix:** Add a state.json schema reference table to CRITERIA.md (or CHANGELOG.md) and grep for `consecutive_no_change_rounds` across docs/principles to remove stale references.
+
+### [high] `MIRROR_MODE` is read from disk but never branched on
+**Source:** dead-end-detector
+**Evidence:** god-review.md:119 reads `.mirror-mode` into `$MIRROR_MODE`. Comments at lines 120-121 describe the intended dual-vs-auto branch. No `if [ "$MIRROR_MODE" = "dual" ]` exists anywhere in god-review.md, god-report.md, or env-helpers.sh. All output writes go to `tmp/god-review/...` (relative WORKDIR) regardless of mode.
+**Impact:** The `dual` mode is documented but unimplemented. If the dotfiles repo ever flips `.mirror-mode` to `dual`, behavior is identical to `auto` — silent contract violation. Either the file is decorative or the implementation is missing.
+**Fix:** Either delete the MIRROR_MODE read + comments (auto-sync hook handles mirroring already), or implement the dual-write branch wherever `tmp/god-review/<file>` is written and add a `--test-mirror-mode` self-test.
+
+### [high] `--codex-validation-every` is parsed and exported but the round-skip gate is prose-only, not enforced in code
+**Source:** dead-end-detector
+**Evidence:** god-review.md:63-65 parses `CODEX_VALIDATION_EVERY`. Line 648 in 2d documents "Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0`". The actual Codex validation invocation at lines 651-676 is unconditional — no `if [ $((ROUND % CODEX_VALIDATION_EVERY)) -eq 0 ]` guard exists. The flag's only effect is being saved to `.env.sh`.
+**Impact:** Cost-control feature silently no-op. Users who pass `--codex-validation-every 5` to throttle Codex calls still get Codex validation every round. Documented behavior diverges from runtime behavior — fits the "parsed flag never honored" failure class exactly.
+**Fix:** Wrap the Phase 2d Codex validation bash block (lines 651-676) in `if [ $((ROUND % ${CODEX_VALIDATION_EVERY:-3})) -eq 0 ]; then ... else echo "Skipping Codex validation this round"; fi`. On the skip branch, tag all Claude-found findings `(unverified-this-round)` per the documented contract.
+
+### [high] `RESCOPE_ON_FIX` parsed but only referenced in prose; no bash code consumes the value
+**Source:** dead-end-detector
+**Evidence:** god-review.md:60-62 parses `RESCOPE_ON_FIX`. Validation accepts only `full`/`changed`. The only later reference is prose at line 1463-1464: "if `RESCOPE_ON_FIX=changed` and `FIXES_KEPT_THIS_ROUND > 0`, set `SCOPE` to the changed-files list" — no bash, no orchestrator-instruction telling the LLM HOW to compute the changed-files list, no var assignment. Loop-back sub-step 3g uses prose only.
+**Impact:** "changed" mode (the default) and "full" mode behave identically because there is no code that performs the rescope operation. Phase 2 re-runs always inherit the original SCOPE, defeating the round-2+ efficiency claim.
+**Fix:** Add concrete instruction in 3g: "Run `git diff --name-only $PRE_FIX_BASE_REF..HEAD > tmp/god-review/changed-files.txt`; if `$RESCOPE_ON_FIX = changed` and that file is non-empty, set `SCOPE` for next round to the file list." Provide a bash block that captures `PRE_FIX_BASE_REF` (currently undefined — see separate finding).
+
+### [high] `PRE_FIX_BASE_REF` referenced in 3f verifier prompt but never defined
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1343 — verifier prompt includes `$(git diff $PRE_FIX_BASE_REF..HEAD)`. `PRE_FIX_BASE_REF` is not defined anywhere in the file. The closest var is `PRE_FIX_REF` (line 1024) — a per-finding var that is reassigned every iteration of 3e and not exported via `write_env`.
+**Impact:** When the orchestrator literally substitutes the verifier prompt, `git diff ..HEAD` runs with empty left-side → diff against empty tree → returns the entire repo as "diff" or errors silently. Verifiers see useless context, can't isolate this round's changes.
+**Fix:** Capture the round-start ref BEFORE entering 3e: `ROUND_START_REF=$(git rev-parse HEAD)`, persist via `write_env`, and reference `$ROUND_START_REF` in 3f's verifier prompts. Also add `ROUND_START_REF` to the env-helpers.sh `write_env` whitelist.
+
+### [medium] `RATIONALE` referenced in commit message but never set
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1295 — `git commit -m "god-review: $FINDING_ID — ${RATIONALE:-fix}"`. No assignment to `RATIONALE` exists in god-review.md. The Architect's JSON output contains a `rationale` key (line 1058), but no extraction step (`RATIONALE=$(echo "$ARCH_OUTPUT" | python3 -c '...')`) is shown.
+**Impact:** Every kept fix's commit message defaults to literal `god-review: $FINDING_ID — fix` — the Architect's actual rationale (with impact-audit summary) is discarded. Audit trail is lossy; future grep across god-review commits won't surface the reason.
+**Fix:** In sub-step 3e (vii), before the commit, add an extraction line: `RATIONALE=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "import json,os; print(json.loads(os.environ['ARCH_OUTPUT']).get('rationale','fix'))")`. Truncate to ~200 chars to avoid pre-commit hook rejection.
+
+### [medium] `architect_malformed_per_round[]` written but only one of two consumers reads it
+**Source:** dead-end-detector
+**Evidence:** `record_architect_malformed` (env-helpers.sh:226) appends to `architect_malformed_per_round[]`. Read at god-review.md:1416 (instability detector). However, the Phase 4 final summary (lines 1493-1540) does NOT include malformed count in its kept/reverted/deferred/gated tally. The user can't see "Architect went off the rails N times this run."
+**Impact:** Lossy reporting. A run with 50 malformed Architect outputs looks identical to a clean run in `final-summary.md`.
+**Fix:** Add to Phase 4 summary: `out.append(f"**Architect malformed:** {sum(d.get('architect_malformed_per_round',[]))}")` immediately after the kept/reverted block.
+
+### [medium] `frozen_added_per_round[]` written, read by instability detector — BUT `FROZEN_UNITS_CAP` is dead
+**Source:** dead-end-detector
+**Evidence:** god-review.md:158 — `FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-3}"  # bounded-mode freeze cap`. Searched all files: no read of `FROZEN_UNITS_CAP` after its declaration. `FROZEN_UNITS_COUNT` (line 843) is set to 0 once and never incremented or compared. Nothing enforces the cap.
+**Impact:** A pathological run can freeze 100s of files; documented bounded-mode cap is fiction. The constant exists purely as a placeholder.
+**Fix:** Either delete the constant + `FROZEN_UNITS_COUNT` declaration (failure mode #14 was de-scoped per CLAUDE.local.md), or add an enforcement check in 3e (v) churn-freeze block: `if len(d.get("frozen_units", [])) >= int(os.environ["FROZEN_UNITS_CAP"]): exit 8` (or convert to HUMAN_GATE batch end).
+
+### [medium] `TEST_FILE_LINE_FLOOR` and `SHRINKAGE_PCT` declared as Tunable Constants but no orchestrator consumer
+**Source:** dead-end-detector
+**Evidence:** god-review.md:155-160 declares both. Searched the orchestrator + helpers — no read. The `test-deletion` principle file may use them internally, but they're not exported (write_env list does NOT include them) so subagents won't see overrides anyway.
+**Impact:** User-facing tunables that have zero effect. CHANGELOG.md / README.md cost-control story is misleading.
+**Fix:** Add both to `write_env`'s exported var list AND verify the test-deletion principle file reads from environment. If the principle uses different defaults internally, document that and remove from orchestrator Tunable Constants.
+
+### [medium] `LOOP_MODE` and `max_wall_hours` written into state.json but never read back
+**Source:** dead-end-detector
+**Evidence:** god-review.md:374-389 — `LOOP_MODE=true` placeholder substituted into state.json. No read of `state.json.loop_mode` anywhere. `max_wall_hours` is written from the `MAX_WALL_HOURS` env var, but the wall-clock check at line 1405 reads `${MAX_WALL_HOURS:-24}` from env — not from state.json. On `--resume` a user who passed a different `--max-wall-hours` initially will have it silently overridden.
+**Impact:** `--resume` semantics broken: state.json values for `loop_mode` + `max_wall_hours` look authoritative but are ignored. Vestigial schema fields.
+**Fix:** Either delete both fields from state.json schema (Phase G dropped `--loop` per the orchestrator description), or have the resume logic in Step 0 validation (lines 92-111) restore `MAX_WALL_HOURS` from `state.json.max_wall_hours` when not explicitly overridden.
+
+### [medium] `NET_NEW_FINDINGS_THIS_ROUND` initialized but never assigned
+**Source:** dead-end-detector
+**Evidence:** god-review.md:844 — `NET_NEW_FINDINGS_THIS_ROUND=0`. Persisted via `write_env` (env-helpers.sh:25). No subsequent assignment, no read. Sub-step 3g uses `NEW_NEW_FINDINGS` instead.
+**Impact:** Confusing similarly-named variable that survives in env-helpers.sh's whitelist. Future maintainers will think it's load-bearing. Pure cargo cult.
+**Fix:** Delete the declaration at line 844 and remove from env-helpers.sh:25 whitelist. The terminator-decision logic uses `NEW_NEW_FINDINGS` (computed in 3g prose), which is the actual signal.
+
+### [medium] `check_phase_drift` defined but called only in advisory god-report.md prose, never wired into a CI check
+**Source:** dead-end-detector
+**Evidence:** env-helpers.sh:329 defines `check_phase_drift`. god-report.md:131 invokes it but only as an "advisory" block sitting at the end of the file — never auto-run on edit. The function's docstring claims "drift between the two is currently impossible" because god-report.md delegates Phases 0-2 to god-review.md by reference.
+**Impact:** Function lives, function is correct, but it has no real consumer. If a future commit inlines either side, drift will go undetected. Either delete the function or wire it into a pre-commit hook on the dotfiles repo.
+**Fix:** Either (a) delete `check_phase_drift` since the delegation pattern makes it permanently moot, or (b) add it to `~/.claude-dotfiles/.git/hooks/pre-commit` so any inline-rewrite triggers a warning.
+
+### [medium] `FORCE_RESUME` parsed and used at validation-time only — never persisted, never re-checked mid-run
+**Source:** dead-end-detector
+**Evidence:** god-review.md:46 (`FORCE_RESUME=true; shift`). Single read at line 107 (`if [ "$STALE" = "true" ] && [ "$FORCE_RESUME" = "false" ]`). Not in `write_env` whitelist. After Step 0, the var is effectively dead.
+**Impact:** Lower priority — single-use is correct semantics. But absence from write_env means cross-block sourcing in Phase 1+ sees `FORCE_RESUME=""` (empty), which is OK because nothing reads it later. Flagging only because the surrounding RESUME variable IS in write_env, suggesting intended persistence symmetry.
+**Fix:** None required, but consider documenting in env-helpers.sh comment that FORCE_RESUME is intentionally Step-0-only.
+
+### [low] `--ruthless` Layer A spawn block is comment-only with bash gate but no Agent invocation marker
+**Source:** dead-end-detector
+**Evidence:** god-review.md:553-569 — `if [ "$RUTHLESS" = "true" ]; then ... fi` block contains only `echo` + `RUTHLESS_PROMPT="$(cat ...)"` + a multi-line shell comment describing the intended Agent tool call. No actual Agent tool-call directive (no `Spawn ONE Agent tool call with subagent_type...` outside the comment) appears in the orchestrator-instruction prose surrounding the bash fence. The previous fix-pass v2 commit `7aaeb74` claimed to wire this — but the fence is bash, and the orchestrator only spawns Agents in response to *prose* directives, not bash comments.
+**Impact:** With `--ruthless`, the bash fires, prints "Spawning ruthless redteam reviewer...", reads the prompt — but no Agent ever spawns because the LLM is reading bash, and bash comments do not instruct it. This is the same Phase E v2 catastrophic finding the comment claims to address.
+**Fix:** Replace the bash-comment block (lines 561-567) with explicit prose OUTSIDE the bash fence: "If `RUTHLESS=true`, spawn a 4th Agent tool call with subagent_type='general-purpose', model='claude-opus-4-7', extended thinking high, prompt = the contents of `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-ruthless-redteam.md` followed by the SCOPE + context-package path. Tag findings `claude-broad:ruthless`. Then call `write_agent_finding claude-broad-ruthless <result>`."
+
+### [low] `loop_mode` value substituted as `LOOPMODEPLACEHOLDER` may emit invalid JSON
+**Source:** dead-end-detector
+**Evidence:** god-review.md:389 — `"loop_mode": LOOPMODEPLACEHOLDER` (no quotes). Substitution at line 407 is `s|LOOPMODEPLACEHOLDER|$LOOP_MODE|g` and `LOOP_MODE=true` (line 374). After substitution: `"loop_mode": true`. JSON-valid IF `LOOP_MODE` is exactly `true` or `false`. But if a future patch sets `LOOP_MODE` to a string (e.g., "indefinite"), the substitution emits `"loop_mode": indefinite` — invalid JSON, breaking every state.json read.
+**Impact:** Currently functional but fragile. Adjacent fields like `max_wall_hours` use the same unquoted substitution pattern. A typo or refactor will silently break state.json. Validation at line 94 (`json.load(open(...))`) would catch on the next round but not warn about which placeholder did it.
+**Fix:** Use python3 to write state.json instead of sed-substitution heredoc. Build a dict, json.dump it. Same pattern as every other state.json mutation in env-helpers.sh.
+
+### [low] `PRE_SCAN_FLAG_COUNT` echoed but Phase 1 output line claims "[N] pre-scan flags raised" elsewhere
+**Source:** dead-end-detector
+**Evidence:** god-review.md:351 echoes the count. Phase 1 output at line 441: "Phase 1 complete. Snapshot: $REFTYPE=$REF. [N] pre-scan flags raised." — `[N]` is a literal placeholder, not `$PRE_SCAN_FLAG_COUNT`. The orchestrator-prose final output never substitutes the actual count.
+**Impact:** User-visible status message is templated text, not a runtime value. Cosmetic.
+**Fix:** Replace `[N]` literal at line 441 with `$PRE_SCAN_FLAG_COUNT` and ensure the bash block at lines 295-352 is the same fence (or write_env exports it).
+
+### [low] `MAX_ROUNDS` default is 999999 but `MAX_ROUNDS_EXPLICIT=false` gating means non-explicit value is never used
+**Source:** dead-end-detector
+**Evidence:** god-review.md:34 — `MAX_ROUNDS=999999`. Line 1428 — `if [ "$MAX_ROUNDS_EXPLICIT" = "true" ] && [ "$ROUND" -ge "${MAX_ROUNDS:-9999}" ]`. The default 999999 is never compared against (gate requires explicit flag).
+**Impact:** None functional — but the 999999 default is documentation noise that suggests a default ceiling exists. CLAUDE.local.md / README.md may mislead users.
+**Fix:** Either remove the default value (set `MAX_ROUNDS=""`) or document clearly that the default is "no cap unless explicitly passed."
+
+### [low] `STARTED_AT` written to state.json once, read in 3g elapsed-hours computation, but `started_at_iso` field is the actual key
+**Source:** dead-end-detector
+**Evidence:** god-review.md:373 — `STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)`. State.json key is `started_at_iso` (line 387). Both vars exist; `STARTED_AT` itself is in `write_env` (env-helpers.sh:24) so it persists in `.env.sh` but no later code re-reads `$STARTED_AT` — they all parse from `state.json.started_at_iso`.
+**Impact:** Cargo-cult var in write_env. Cross-block sourcing copies it but no consumer.
+**Fix:** Remove `STARTED_AT` from env-helpers.sh:24 whitelist.
+
+### [minor] codex-broad reviewer outputs go to `/tmp/codex-broad-*.txt` but are never `cat`'d into the consolidation file
+**Source:** dead-end-detector
+**Evidence:** god-review.md:577-590 invokes codex-invoke.sh with output paths `/tmp/codex-broad-cross-layer.txt` etc. Phase 2d consolidation at line 659 reads `$WORKDIR/tmp/god-review/findings/claude-*.txt > /tmp/claude-findings-consolidated.txt` — Claude only. No equivalent `cat /tmp/codex-broad-*.txt` write step. Codex broad findings reach the orchestrator's reasoning context (via tool-result text) but aren't persisted via `write_agent_finding` — the prose only requires this for Claude-broad reviewers (line 540).
+**Impact:** Codex findings are not on disk for cross-validation by Claude validator (god-review.md:680 — Claude validates Codex findings). The Claude validator Agent prompt depends on a "consolidated Codex-found findings list" that doesn't exist as a file.
+**Fix:** After codex-invoke.sh returns each `/tmp/codex-broad-*.txt`, run `cat /tmp/codex-broad-*.txt /tmp/codex-principle-*.txt > /tmp/codex-findings-consolidated.txt` before the Claude validator Agent call. Pass that path in the validator prompt.
+
+Total: 22 findings (catastrophic: 0, high: 8, medium: 7, low: 5, minor: 1, deferred: 1)
