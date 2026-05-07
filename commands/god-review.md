@@ -387,7 +387,6 @@ cat > tmp/god-review/state.json.tmp << 'STATEOF'
   "frozen_units": [],
   "false_positives": [],
   "round": 0,
-  "consecutive_no_change_rounds": 0,
   "consecutive_clean_rounds": 0,
   "architect_malformed_count": 0,
   "started_at_iso": "STARTEDPLACEHOLDER",
