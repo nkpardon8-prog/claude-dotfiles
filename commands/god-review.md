@@ -2133,26 +2133,28 @@ fi
 
 ## Final Summary Output
 
-After all phases complete (Phase 2 exit or Phase 3 termination):
+After Phase 3 sub-step 3h writes the final summary file, print this to stdout:
 
 ```
 god-review complete.
 
 Rounds run: <N>
-Total findings: <N> (Critical: X, Gaps: Y, Important: Z, Assumptions: A, Contradictions: B, Minor: C)
+Wall time: <H> h
 Kept fixes: <N> (committed as individual god-review commits)
 Reverted fixes: <N>
-Frozen units: <N> files (require human attention)
-Human-gate items: <N> (proposed diffs in report — apply manually)
+Auto-deferred: <N> (substantive reasons recorded in tmp/god-review/known-deferred-session.txt
+  and promoted to lib/known-deferred.txt at end of run)
+HUMAN_GATE_QUEUE: <N> (proposed diffs in report.md — apply manually)
+Frozen units: <N> files
 
-Report: tmp/god-review/report.md
-Round trails: tmp/god-review/round-N-findings.md
+Final summary: tmp/god-review/final-summary.md
+Full report: tmp/god-review/report.md (HUMAN_GATE_QUEUE section has diffs)
 
 If you want to squash all god-review commits into one:
   git reset --soft HEAD~<N> && git commit -m 'god-review: apply fixes'
 
 To resume from this state after interruption:
-  /god-review --fix [--loop] --resume
+  /god-review --resume
 ```
 
 ---
