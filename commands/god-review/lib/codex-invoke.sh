@@ -95,7 +95,7 @@ fi
 # A SIGKILLed prior run leaves the lockdir behind indefinitely; detect and remove it
 # if its mtime is older than 600 seconds (10 minutes).
 LOCKDIR=/tmp/codex-default-home.lock.d
-LOCK_TIMEOUT=600
+LOCK_TIMEOUT="${SPINLOCK_TIMEOUT_SEC:-600}"
 
 if [ -d "$LOCKDIR" ]; then
   lock_mtime=$(stat -f "%m" "$LOCKDIR" 2>/dev/null || stat -c "%Y" "$LOCKDIR" 2>/dev/null || echo 0)
