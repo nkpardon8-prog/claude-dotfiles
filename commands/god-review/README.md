@@ -1,8 +1,16 @@
-# /god-review — Multi-Model Codebase Audit Command
+# /god-review + /god-report — Multi-Model Codebase Audit Commands
 
-## Overview
+## Two Commands, One Backbone
 
-`/god-review` is a 4-phase codebase audit command combining Claude Opus and Codex CLI reviewers across a principle-as-lens framework. It is report-only by default; an optional fix loop requires the explicit `--fix` flag.
+Phase G split the original /god-review into two top-level commands sharing the
+same library, principles, and broad-reviewers:
+
+| Command | Behavior | When to use |
+|---------|----------|-------------|
+| **`/god-review`** | Phase 0–3, autonomous indefinite fix-loop. Runs until 3 consecutive rounds yield zero NEW non-deferred findings. Auto-fixes everything that's not a hard-gate; auto-defers (with substantive reason) what genuinely can't be fixed; queues hard-gate items (schema/auth/deps/secrets/CI/tests) for human review at end of run. | "Set this going for hours and come back to a clean codebase + a batch of human-review items." |
+| **`/god-report`** | Phase 0–2 only, single-pass review. Writes `report.md`, exits. No fixes applied. Optional `--rounds N` for de-noising single-agent flukes via N independent passes. | "Just give me a snapshot of what's wrong; I'll fix it myself." |
+
+Both commands share `commands/god-review/{lib,principles,broad-reviewers}/`.
 
 ### 4-Phase Architecture
 
@@ -11,7 +19,7 @@
 | 0 | Context Map | Builds a shared `context-package.md`: stack fingerprint, architecture overview, hot zones, baseline gate summary. All Phase-2 agents inherit this as ground truth. |
 | 1 | Snapshot + Pre-scan | Snapshots the repo state, captures perf/test gate baselines, and pre-scans for failure-mode triggers (secrets, hallucinated deps, prompt injection). |
 | 2 | Parallel Principle Review | Spawns all principle agents + broad reviewers in a SINGLE message for true parallelism. Cross-model agreement promotes severity; a different-model validation sub-agent verifies findings before they are posted. |
-| 3 (opt-in) | Fix Loop | Triggered by `--fix`. Triages findings, uses Architect/Editor split per fix, snapshot/revert/re-verify per fix with churn detection and hard gates on irreversibles. |
+| 3 (`/god-review` only) | Fix Loop | Always-on for `/god-review`. Orchestrator-driven loop (no bash `while`): triages findings into AUTO_FIX / AUTO_DEFER / HUMAN_GATE / REPLAYED buckets, runs Architect→Editor split per fix, snapshot/revert/re-verify, terminates on 3 consecutive zero-new-finding rounds. Hard-gate findings batch to a HUMAN_GATE_QUEUE for end-of-run human review without blocking the loop. |
 
 ### Phase-2 Two-Layer Model
 
