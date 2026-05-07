@@ -108,6 +108,67 @@ is_hard_gate() {
   return 1
 }
 
+# --- Finding-history + false-positive helpers (Phase F) ---
+
+# compute_finding_hash <file_path> <line_range_normalized> <category>
+# Echoes sha256 of the triple. Use line_range_normalized = round to nearest 5
+# (e.g. lines 42-47 → "40-50") per CRITERIA.md.
+compute_finding_hash() {
+  printf '%s|%s|%s' "$1" "$2" "$3" | shasum -a 256 | awk '{print $1}'
+}
+
+# record_finding_hash <hash>
+# Atomically appends hash to state.json.finding_history_hashes.
+record_finding_hash() {
+  local hash="$1"
+  [ -z "$hash" ] && return 1
+  local p="$WORKDIR/tmp/god-review/state.json"
+  [ -f "$p" ] || return 1
+  python3 -c '
+import json, sys
+p = sys.argv[1]
+h = sys.argv[2]
+d = json.load(open(p))
+d.setdefault("finding_history_hashes", []).append(h)
+json.dump(d, open(p + ".tmp", "w"), indent=2)
+' "$p" "$hash" && mv "$p.tmp" "$p"
+}
+
+# is_finding_replayed <hash>
+# Returns 0 if hash is already in finding_history_hashes (already-reverted finding
+# resurfacing). Use to skip retrying fixes that were tried-and-reverted in prior rounds.
+is_finding_replayed() {
+  local hash="$1"
+  local p="$WORKDIR/tmp/god-review/state.json"
+  [ -f "$p" ] || return 1
+  python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    sys.exit(0 if sys.argv[2] in d.get("finding_history_hashes", []) else 1)
+except Exception:
+    sys.exit(1)
+' "$p" "$hash"
+}
+
+# record_false_positive <finding_id> <file_path> <line_range> <category> <reason>
+# Atomically appends FP entry to state.json.false_positives. Called from Phase 2d
+# verification post-processing when validator returns FALSE_POSITIVE.
+record_false_positive() {
+  local p="$WORKDIR/tmp/god-review/state.json"
+  [ -f "$p" ] || return 1
+  python3 -c '
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d.setdefault("false_positives", []).append({
+    "finding_id": sys.argv[2], "file": sys.argv[3], "line": sys.argv[4],
+    "category": sys.argv[5], "reason": sys.argv[6]
+})
+json.dump(d, open(p + ".tmp", "w"), indent=2)
+' "$p" "$1" "$2" "$3" "$4" "$5" && mv "$p.tmp" "$p"
+}
+
 # Self-test (run with: bash lib/env-helpers.sh --test-globs)
 if [ "${1:-}" = "--test-globs" ]; then
   pass=0; fail=0
