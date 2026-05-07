@@ -1,5 +1,63 @@
 # god-review changelog
 
+## 2026-05-06 — Phase G4: post-v5 catastrophic + high cluster
+
+Phase E v5 audit (5 verifier agents) flagged 6 catastrophic + 20 high. G4
+closes the cluster. Architecture is stable now; remaining items are mediums.
+
+**Catastrophic fixes:**
+- **Round-start cleanup target directory fix.** `rm -f` now hits
+  `$WORKDIR/tmp/god-review/findings/verifier-*.txt` (where `write_agent_finding`
+  actually writes), not the wrong `/tmp/verifier-*.txt`. Prior-round verifier
+  outputs no longer leak across rounds.
+- **`exit 0` semantics clarified in Phase 3e prose.** Explicit instruction
+  that `exit 0` ends one bash fence, not the round/loop. Orchestrator continues
+  to next prose+fence pair (or next finding).
+- **CODEX_VALIDATION_EVERY actually gates.** Skip-check added before Codex
+  validation invocation: `if ROUND >= 2 && ROUND % EVERY != 0 then skip`.
+  Cost optimization for long runs is real.
+- **VERIFIER_NEW findings now persisted to report.md.** New round-aware
+  section (`## Verifier round $ROUND additions`) appended after each filter
+  pass. Round N+1's 3a re-parses these as findings. Was: stdout-only,
+  discoveries vanished after one round.
+- **HUMAN_GATE_QUEUE write switched to separate accumulator file.** Replaced
+  fragile python string-replace (which corrupts on diff content containing
+  the marker text) with `tmp/god-review/human-gate-queue.md` accumulator,
+  concatenated into final report.md at Phase 4 end-of-run.
+- **Codex validation output now actually parsed.** `/tmp/codex-validation-output.txt`
+  is grep'd for `FALSE_POSITIVE` lines; each fires `record_false_positive`
+  AND `record_finding_hash` (so future rounds' replay-skip filters them).
+  Was: file written, never read.
+
+**High-severity fixes:**
+- **TOTAL_OPEN_FINDINGS recomputed at start of each round 3g** (was frozen
+  at Phase 3 entry; record_round_counts persisted stale value).
+- **FROZEN_UNITS_CAP enforced.** Exit code 3 fires when `FROZEN_UNITS_COUNT >
+  FROZEN_UNITS_CAP`. Documented but unimplemented before.
+- **LOOP_EXIT set on all backstops** (wall-clock, instability, frozen-cap,
+  max-rounds). Postmortem can distinguish convergence from kill via state.json.
+- **`git add -- "$ARCH_FILE"`** instead of `git add -A` at commit (prevents
+  folding user's WIP into god-review commits).
+- **TSV parser regex requires explicit `File:`/`Evidence:` prefix.** Avoids
+  grabbing path-shaped substrings from prose / quoted code samples.
+- **Spawn-schedule "principles 17-23"** corrected to "18-23" with explicit
+  Message 1/2 coverage notes.
+- **Deprecated `is_already_session_deferred` (category-only)** removed from
+  `lib/env-helpers.sh`. Only `is_already_session_deferred_by_hash` remains.
+  Self-flagged by dead-code-conservatism principle in v4.
+- **`NET_NEW_FINDINGS_THIS_ROUND` confusion-bomb** removed (vestigial; only
+  `NEW_NEW_FINDINGS` is wired; the named-similar pair was already removed in
+  G3 init but the `record_round_counts` reference path is now consistent).
+- **6 more vars added to write_env whitelist:** SKIP_CODEX_VALIDATION,
+  PERF_REGRESS_PCT, INSTABILITY_RATE, FROZEN_UNITS_CAP, SHRINKAGE_PCT,
+  SECRET_LEN_FLOOR, TEST_FILE_LINE_FLOOR (Tunable Constants now persist
+  across fences as well).
+
+**T10 verification (post-G4):** 17/17 globs pass, 4 LOOP_EXIT backstops,
+SKIP_CODEX_VALIDATION wired, FROZEN_UNITS_CAP enforced (2 sites:
+declaration + check), VERIFIER_NEW appended to report.md, HG_QUEUE_FILE
+accumulator at 3 sites, deprecated session-deferred function removed.
+
 ## 2026-05-06 — Phase G3: residual fix-pass post Phase E v4
 
 Phase E v4 audit on Phase G2 found 5 catastrophic + 21 high-severity items

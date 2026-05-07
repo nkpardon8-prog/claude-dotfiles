@@ -33,7 +33,9 @@ write_env() {
                RATIONALE GATES_PASS GATE_FAIL_REASON \
                REGRESSION REGRESSION_REASON REVERT_REASON \
                NEW_NEW_FINDINGS DEFERRED_THIS_ROUND GATED_THIS_ROUND \
-               LOOP_EXIT VERIFIER_NEW_COUNT ROUNDS; do
+               LOOP_EXIT VERIFIER_NEW_COUNT SKIP_CODEX_VALIDATION ROUNDS \
+               PERF_REGRESS_PCT INSTABILITY_RATE FROZEN_UNITS_CAP \
+               SHRINKAGE_PCT SECRET_LEN_FLOOR TEST_FILE_LINE_FLOOR; do
       eval "val=\${$var:-}"
       python3 -c "import shlex,sys; print('export {}={}'.format(sys.argv[1], shlex.quote(sys.argv[2])))" "$var" "$val"
     done
@@ -324,15 +326,6 @@ is_already_session_deferred_by_hash() {
   local kd="$WORKDIR/tmp/god-review/known-deferred-session.txt"
   [ -f "$kd" ] || return 1
   grep -qE "^HASH=${1}	" "$kd"
-}
-
-# is_already_session_deferred <category>  [DEPRECATED — too coarse, kept for back-compat]
-# Returns 0 if any finding of this category already appears in the session-deferred file.
-# Use is_already_session_deferred_by_hash for new code (per-finding granularity).
-is_already_session_deferred() {
-  local kd="$WORKDIR/tmp/god-review/known-deferred-session.txt"
-  [ -f "$kd" ] || return 1
-  grep -qE "	CATEGORY=${1}	" "$kd"
 }
 
 # record_round_counts <new> <total> <deferred_this_round> <gated_this_round>

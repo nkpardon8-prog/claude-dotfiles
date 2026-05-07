@@ -509,7 +509,7 @@ write_env
 The canonical schedule for full 23-principle × 2-family pipeline (covers all 23: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector):
 - **Message 1**: 10 Agent calls (3 broad-Claude + 7 principle-Claude) + 10 Bash calls (3 broad-Codex + 7 principle-Codex) = 20 in parallel
 - **Message 2**: 10 Agent calls (next 10 principle-Claude) + 10 Bash calls (next 10 principle-Codex) = 20 in parallel
-- **Message 3**: remaining 6 principle-Claude + remaining 6 principle-Codex = 12 in parallel (covers principles 17-23 across both families)
+- **Message 3**: remaining 6 principle-Claude + remaining 6 principle-Codex = 12 in parallel (covers principles 18-23 across both families — Message 1 covered 1-7, Message 2 covered 8-17)
 - **Message 4**: 2 batched validation calls (1 Claude validates Codex findings, 1 Codex validates Claude findings)
 - **With `--ruthless`:** add the 4th broad-Claude reviewer (claude-broad-ruthless) to Message 1 = 21 in parallel.
 
@@ -671,10 +671,26 @@ After all agents complete, collect all findings. Tag each finding with its sourc
 
 Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0` (default every 3 rounds). On skipped rounds, tag all Claude-found findings as `(unverified-this-round)`.
 
-**Claude-found findings → ONE Codex validation call** (only if $CODEX_AVAILABLE=true):
+**Claude-found findings → ONE Codex validation call** (only if $CODEX_AVAILABLE=true AND CODEX_VALIDATION_EVERY gate passes):
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+
+# Phase G3: honor --codex-validation-every. Skip Codex validation on rounds
+# where round % CODEX_VALIDATION_EVERY != 0 (cost optimization for long --loop runs).
+# Round 1 always validates (avoids skipping the very first round's findings).
+if [ "${CODEX_AVAILABLE:-false}" = "true" ] && [ "${ROUND:-1}" -ge 2 ] && [ $(( ROUND % ${CODEX_VALIDATION_EVERY:-3} )) -ne 0 ]; then
+  echo "Skipping Codex validation this round ($ROUND % $CODEX_VALIDATION_EVERY != 0). All Claude findings tagged (unverified-this-round)."
+  SKIP_CODEX_VALIDATION=true
+else
+  SKIP_CODEX_VALIDATION=false
+fi
+write_env
+
+if [ "$SKIP_CODEX_VALIDATION" = "true" ]; then
+  echo "(Codex validation skipped this round)"
+  exit 0
+fi
 # Build consolidated finding list from all Claude-sourced findings.
 # Concatenate all per-agent claude-broad/claude-principle finding files into
 # /tmp/claude-findings-consolidated.txt before the validation read below.
@@ -712,17 +728,41 @@ Spawn one Agent tool call with the consolidated Codex-found findings list. The a
 - `CONFIRMED` → eligible for confidence promotion (one level); tag `(verified)`
 - `UNCERTAIN` → keep as-is; tag `(unverified)`
 
-**Record FP entries in state.json (Phase F):** for each finding the validator returned
-as `FALSE_POSITIVE`, call:
+**Record FP entries in state.json:** parse `/tmp/codex-validation-output.txt`
+(Codex validation results) — each line has format `FINDING_ID: STATUS — reason`
+per the prompt. For each line where `STATUS=FALSE_POSITIVE`, call
+`record_false_positive`:
 
 ```bash
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-# record_false_positive <finding_id> <file_path> <line_range> <category> <reason>
-record_false_positive "$FINDING_ID" "$FILE_PATH" "$LINE_RANGE" "$CATEGORY" "$VALIDATOR_REASON"
+
+# Parse codex-validation-output.txt and emit record_false_positive calls.
+# Each finding's source data lives in state.json.kept_fixes / report.md sections;
+# the validator output gives us FINDING_ID and reason. file/line/category come
+# from the per-finding dictionary the orchestrator built in Phase 2e.
+if [ -f /tmp/codex-validation-output.txt ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      *FALSE_POSITIVE*)
+        # Extract finding_id (everything before first colon) and reason (after em-dash)
+        fid=$(echo "$line" | awk -F: '{print $1}' | tr -d ' ')
+        reason=$(echo "$line" | awk -F'—' '{print $2}' | sed 's/^ *//;s/ *$//')
+        # Orchestrator: substitute file/line/category from the per-finding dict
+        # built in Phase 2e for this finding_id. If not available, use placeholders.
+        record_false_positive "$fid" "${FP_FILE:-unknown}" "${FP_LINE:-0-0}" "${FP_CATEGORY:-uncategorized}" "${reason:-no reason}" || true
+        # Also add the FP's hash to finding_history_hashes so future rounds' replay-skip filters it.
+        fp_hash=$(compute_finding_hash "${FP_FILE:-unknown}" "${FP_LINE:-0-0}" "${FP_CATEGORY:-uncategorized}")
+        record_finding_hash "$fp_hash" || true
+      ;;
+    esac
+  done < /tmp/codex-validation-output.txt
+fi
 ```
 
-This is the canonical FP write site. The `false_positives` array is read by future
-rounds to suppress findings the validator already rejected (see Phase 3 triage).
+The `false_positives` array is read by future rounds via the per-finding triage
+in Phase 3b — replayed FPs are filtered before the AUTO_FIX bucket assigns
+them (this filter is implicit via `is_finding_replayed` since FP findings
+also get their hash recorded).
 
 ### 2e: Aggregate findings (you, the orchestrator, ARE the aggregator)
 
@@ -907,9 +947,14 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 PRE_FIX_BASE_REF=$(git rev-parse HEAD)
 
-# Stale-file cleanup (prevents cross-round leak):
-rm -f /tmp/verifier-all-findings.tsv /tmp/verifier-*.txt 2>/dev/null
+# Stale-file cleanup (prevents cross-round leak).
+# IMPORTANT: paths must match where the producers actually write.
+# Verifier findings live at $WORKDIR/tmp/god-review/findings/verifier-*.txt
+# (written by write_agent_finding), NOT /tmp/verifier-*.txt.
+rm -f /tmp/verifier-all-findings.tsv 2>/dev/null
+rm -f "$WORKDIR/tmp/god-review/findings/"verifier-*.txt 2>/dev/null
 rm -f /tmp/codex-principle-*.txt /tmp/codex-broad-*.txt 2>/dev/null
+rm -f "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null
 rm -f "$WORKDIR/tmp/god-review/architect-output-"*.json 2>/dev/null
 
 # Reset per-round counters
@@ -997,24 +1042,28 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 if is_human_gate_already_emitted "$FINDING_HASH"; then
   echo "(still pending: $FINDING_ID — already in human_gate_emitted queue)"
 else
-  # Append to HUMAN_GATE_QUEUE section in report.md (atomic .tmp + mv).
-  # The append happens via python3 to avoid heredoc-quoting issues.
+  # Append to HUMAN_GATE_QUEUE section in report.md.
+  # Use a separate accumulator file (tmp/god-review/human-gate-queue.md) and
+  # concat into report.md at end of run. This avoids the substring-replace
+  # corruption risk when finding diffs contain the section marker text.
+  HG_QUEUE_FILE="$WORKDIR/tmp/god-review/human-gate-queue.md"
+  mkdir -p "$WORKDIR/tmp/god-review"
+  if [ ! -f "$HG_QUEUE_FILE" ]; then
+    printf '## HUMAN_GATE_QUEUE\n\n_Hard-gate findings batched for human review at end of run._\n\n' > "$HG_QUEUE_FILE"
+  fi
   FINDING_ID="$FINDING_ID" FINDING_FILE="$FINDING_FILE" \
   FINDING_LINE_RANGE="$FINDING_LINE_RANGE" FINDING_DESC="$FINDING_DESCRIPTION" \
   FINDING_DIFF="$FINDING_PROPOSED_DIFF" python3 -c '
 import os
-report = "tmp/god-review/report.md"
-with open(report) as f: txt = f.read()
-marker = "## HUMAN_GATE_QUEUE"
-entry = f"\n### {os.environ[\"FINDING_ID\"]}\n- **File:** {os.environ[\"FINDING_FILE\"]}:{os.environ[\"FINDING_LINE_RANGE\"]}\n- **Reason:** {os.environ[\"FINDING_DESC\"]}\n- **Proposed diff:**\n```\n{os.environ[\"FINDING_DIFF\"]}\n```\n"
-if marker in txt:
-    # Insert at end of HUMAN_GATE_QUEUE section
-    txt = txt.replace(marker, marker + entry, 1) if entry not in txt else txt
-else:
-    txt += f"\n\n{marker}\n\n_Hard-gate findings batched for human review at end of run._\n{entry}"
-with open(report+".tmp","w") as f: f.write(txt)
-os.rename(report+".tmp", report)
-'
+out = open(os.environ["HG_QUEUE_FILE"], "a")
+out.write(f"### {os.environ[\"FINDING_ID\"]}\n")
+out.write(f"- **File:** {os.environ[\"FINDING_FILE\"]}:{os.environ[\"FINDING_LINE_RANGE\"]}\n")
+out.write(f"- **Reason:** {os.environ[\"FINDING_DESC\"]}\n")
+out.write("- **Proposed diff:**\n\n```\n")
+out.write(os.environ["FINDING_DIFF"])
+out.write("\n```\n\n")
+out.close()
+' HG_QUEUE_FILE="$HG_QUEUE_FILE"
   record_human_gate_emit "$FINDING_ID" "$FINDING_HASH" "$ROUND"
   GATED_THIS_ROUND=$((GATED_THIS_ROUND + 1))
   write_env
@@ -1064,6 +1113,16 @@ to the next.
 
 **Per-finding pipeline (you, the orchestrator, iterate this for each
 AUTO_FIX finding):**
+
+**IMPORTANT — `exit 0` semantics in this section:** the bash blocks below use
+`exit 0` to mean "this fence is done; orchestrator, move on to the NEXT thing
+in the per-finding pipeline (or NEXT finding)." Each `exit 0` ends one bash
+invocation, NOT the round and NOT the loop. The orchestrator-LLM reads each
+fence as one step; after the fence terminates (cleanly or with `exit 0`), you
+proceed to the next prose+fence pair OR (if a "demote/skip/continue" comment
+is in the fence) MOVE TO THE NEXT FINDING in `bucket_AUTO_FIX`. Do NOT treat
+`exit 0` as the end of Phase 3 — Phase 3 ends only at sub-step 3g's
+termination decision when CONSECUTIVE_CLEAN_ROUNDS >= 3 OR a backstop fires.
 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -1381,7 +1440,9 @@ fi
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-git add -A
+# Stage ONLY the file the Architect targeted (NOT git add -A — that would fold
+# any user WIP in other files into the god-review commit).
+git add -- "$ARCH_FILE"
 COMMIT_MSG=$(printf 'god-review: %s — %s' "$FINDING_ID" "${RATIONALE:-fix}" | head -c 200)
 if git commit -m "$COMMIT_MSG"; then
   echo "Kept: $FINDING_ID committed as $(git rev-parse HEAD)"
@@ -1479,7 +1540,10 @@ for path in sys.argv[1:]:
         # Best-effort extraction
         fid_m = re.search(r'^\[[^\]]+\]\s*(.+?)$', block, re.MULTILINE)
         fid = fid_m.group(1).strip()[:60].replace('\t',' ') if fid_m else f"v-{i}"
-        loc_m = re.search(r'\b([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', block)
+        # Require explicit "File:" / "Evidence:" / "**File:**" / "**Evidence:**" prefix
+        # before the path:line pattern, to avoid grabbing path-shaped substrings
+        # from prose / quoted code samples elsewhere in the finding block.
+        loc_m = re.search(r'(?:File|Evidence|file|evidence)\*?\*?\s*:?\s*[`"]?([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', block)
         if loc_m:
             f = loc_m.group(1); s = int(loc_m.group(2))
             e = int(loc_m.group(3)) if loc_m.group(3) else s
@@ -1518,6 +1582,36 @@ if [ -f /tmp/verifier-all-findings.tsv ]; then
 fi
 write_env
 echo "VERIFIER_NEW_COUNT=$VERIFIER_NEW_COUNT"
+
+# Phase G3 fix: VERIFIER_NEW findings must be appended to report.md so the
+# next round's sub-step 3a re-parses them as findings. Without this, every
+# verifier discovery dies after one stdout line.
+if [ "$VERIFIER_NEW_COUNT" -gt 0 ]; then
+  python3 << PYEOF
+import os
+report_path = "$WORKDIR/tmp/god-review/report.md"
+tsv_path = "/tmp/verifier-all-findings.tsv"
+if not os.path.isfile(report_path) or not os.path.isfile(tsv_path):
+    raise SystemExit(0)
+with open(report_path) as f:
+    txt = f.read()
+# Append a "## Verifier-Round-\$ROUND New Findings" section at the bottom
+# (the round-aware section heading lets sub-step 3a in round N+1 parse them
+# as ### entries in the standard sections — we put them under "Important"
+# severity by default since verifier output severity is heuristic).
+section = "\n\n## Verifier round ${ROUND} additions\n\n"
+with open(tsv_path) as f:
+    for ln in f:
+        parts = ln.rstrip("\n").split("\t")
+        if len(parts) < 4: continue
+        fid, fl, lr, cat = parts[0], parts[1], parts[2], parts[3]
+        section += f"### {fid}\n- File: {fl}:{lr}\n- Category: {cat}\n- Source: verifier-round-${ROUND}\n\n"
+with open(report_path + ".tmp", "w") as f:
+    f.write(txt + section)
+os.rename(report_path + ".tmp", report_path)
+PYEOF
+  echo "Appended VERIFIER_NEW_COUNT=$VERIFIER_NEW_COUNT new findings to report.md"
+fi
 ```
 
 This filter is critical — without it, hard-gate items repeatedly inflate the
@@ -1552,6 +1646,26 @@ NEW_NEW_FINDINGS=${NEW_NEW_FINDINGS:-0}
 DEFERRED_THIS_ROUND=${DEFERRED_THIS_ROUND:-0}
 GATED_THIS_ROUND=${GATED_THIS_ROUND:-0}
 
+# Recompute TOTAL_OPEN_FINDINGS from the latest report.md (was stale — frozen at Phase 3 entry)
+TOTAL_OPEN_FINDINGS=$(python3 -c "
+try:
+    txt = open('$WORKDIR/tmp/god-review/report.md').read()
+    in_human_gate = False
+    count = 0
+    for line in txt.splitlines():
+        if line.startswith('## Human Gate Required') or line.startswith('## HUMAN_GATE_QUEUE'):
+            in_human_gate = True
+            continue
+        if line.startswith('## ') and in_human_gate:
+            in_human_gate = False
+        if not in_human_gate and line.startswith('### '):
+            count += 1
+    print(count)
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
+write_env
+
 # Update state.json with this round's counts
 record_round_counts "$NEW_NEW_FINDINGS" "$TOTAL_OPEN_FINDINGS" "$DEFERRED_THIS_ROUND" "$GATED_THIS_ROUND"
 
@@ -1567,6 +1681,7 @@ print(round((datetime.now(timezone.utc)-start).total_seconds()/3600, 2))
 # Wall-clock cap (0 = disabled)
 if [ "${MAX_WALL_HOURS:-24}" != "0" ] && python3 -c "import sys; sys.exit(0 if float('${ELAPSED_HOURS:-0}') >= float('${MAX_WALL_HOURS:-24}') else 1)" 2>/dev/null; then
   echo "Wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)" >&2
+  LOOP_EXIT=wall-clock; write_env
   exit 5
 fi
 
@@ -1584,13 +1699,30 @@ except Exception:
 " 2>/dev/null || echo 0)
 if python3 -c "import sys; sys.exit(0 if float('${AVG_INSTABILITY:-0}') > ${INSTABILITY_RATE:-5} else 1)" 2>/dev/null; then
   echo "Instability rate too high (avg $AVG_INSTABILITY events/round over last 3 rounds)" >&2
+  LOOP_EXIT=instability; write_env
   exit 4
 fi
 
 # --max-rounds explicit ceiling (only honored if user passed it)
 if [ "$MAX_ROUNDS_EXPLICIT" = "true" ] && [ "$ROUND" -ge "${MAX_ROUNDS:-9999}" ]; then
   echo "--max-rounds ceiling reached ($MAX_ROUNDS rounds)" >&2
+  LOOP_EXIT=max-rounds; write_env
   exit 2
+fi
+
+# Frozen-units cap: hard backstop for runaway churn
+FROZEN_UNITS_COUNT=$(python3 -c "
+import json
+try:
+    d = json.load(open('$WORKDIR/tmp/god-review/state.json'))
+    print(len(d.get('frozen_units', [])))
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
+if [ "$FROZEN_UNITS_COUNT" -gt "${FROZEN_UNITS_CAP:-3}" ]; then
+  echo "Frozen units cap exceeded ($FROZEN_UNITS_COUNT > ${FROZEN_UNITS_CAP:-3}) — escalating to human" >&2
+  LOOP_EXIT=frozen-cap; write_env
+  exit 3
 fi
 
 # Persist round + clean-counter to state.json
@@ -1733,6 +1865,15 @@ with open("$WORKDIR/tmp/god-review/final-summary.md", "w") as f:
     f.write(final)
 print(final)
 PYEOF
+
+# Append HUMAN_GATE_QUEUE accumulator to final report.md (Phase G3 fix —
+# replaces fragile in-place python string-replace).
+HG_QUEUE_FILE="$WORKDIR/tmp/god-review/human-gate-queue.md"
+if [ -f "$HG_QUEUE_FILE" ] && [ -s "$HG_QUEUE_FILE" ]; then
+  printf '\n\n' >> "$WORKDIR/tmp/god-review/report.md"
+  cat "$HG_QUEUE_FILE" >> "$WORKDIR/tmp/god-review/report.md"
+  echo "Appended $(grep -c '^### ' "$HG_QUEUE_FILE") HUMAN_GATE_QUEUE entries to final report.md"
+fi
 
 # Promote session deferrals to committed lib/known-deferred.txt only at end of run.
 SESSION_KD="$WORKDIR/tmp/god-review/known-deferred-session.txt"
