@@ -177,14 +177,16 @@ The checkpoint is `tmp/god-review/state.json`. It stores the repo snapshot SHA t
 
 ## Self-Test Guidance
 
-**Smoke test (Phase 0–2 only, report-only mode):**
+**Smoke test on the dotfiles repo (use `/god-report`, NOT `/god-review` — see Repo Restrictions):**
 
 ```bash
 cd ~/.claude-dotfiles
-/god-review
+/god-report
 ```
 
 Expected: `tmp/god-review/report.md` exists, contains all expected sections (Critical / Gaps / Important / Assumptions / Contradictions / Minor / Meta), zero or more findings (any count acceptable — the dotfiles repo is markdown-heavy; most code-shaped lenses produce zero findings). No agent crashes.
+
+(`/god-review` is forbidden on dotfiles per Repo Restrictions section above — its auto-fix loop would push N broken-state commits to the remote.)
 
 **E2E validation on a JS/TS project:**
 
