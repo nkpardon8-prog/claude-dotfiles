@@ -91,22 +91,8 @@ print('^' + ''.join(out) + '$')
 __PYEOF__
 }
 
-# is_hard_gate: returns 0 if path matches any pattern in hard-gates.txt, 1 otherwise
-is_hard_gate() {
-  local file="$1"
-  local pattern regex
-  while IFS= read -r pattern; do
-    [ -z "$pattern" ] || [[ "$pattern" == "#"* ]] && continue
-    regex=$(glob_to_regex "$pattern")
-    if echo "$file" | grep -qE "$regex"; then
-      return 0
-    fi
-  done < "$WORKDIR/.claude-dotfiles/commands/god-review/lib/hard-gates.txt"
-  # Note: that path is wrong if WORKDIR isn't ~/.claude-dotfiles. Use absolute home.
-  return 1
-}
-
-# Override is_hard_gate with corrected absolute path:
+# is_hard_gate: returns 0 if path matches any pattern in hard-gates.txt, 1 otherwise.
+# Reads patterns from absolute path (independent of WORKDIR) so it works in any repo.
 is_hard_gate() {
   local file="$1"
   local pattern regex
