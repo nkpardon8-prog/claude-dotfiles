@@ -187,28 +187,23 @@ Replace N with the actual round count shown in the final report summary.
 
 ## Hard Gates — Never Auto-Applied
 
-These paths and patterns are **always** `HUMAN_GATE`, regardless of `--fix`. The command will propose a diff in `report.md` but will never write the file:
+These paths and patterns are **always** `HUMAN_GATE`, regardless of `--fix`. The command will propose a diff in `report.md` but will never write the file.
 
-**Schema and data:**
-- `schema.ts`, `*.sql`, `migrations/**` — database schema migrations
+> **Canonical source:** `lib/hard-gates.txt`. The orchestrator's `is_hard_gate <path>`
+> (in `lib/env-helpers.sh`) reads that file at runtime. If the categories below
+> drift from `lib/hard-gates.txt`, the file wins. **DO NOT inline patterns
+> elsewhere** — they go stale.
 
-**Auth and security:**
-- `auth/**`, `middleware/auth*`, any file matching `requireAuth`, `withAuth`, or `@authenticated`
+Categories covered:
 
-**Package manifests:**
-- `package.json`, `requirements.txt`, `Cargo.toml`, `go.mod`, `Gemfile`
-
-**Environment and secrets:**
-- `.env*` files, any line containing a secret value
-
-**CI/CD:**
-- All paths matched by the `ci-yaml-tampering.md` lens (`.github/**`, `.gitlab-ci.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, `circleci/**`, etc.)
-
-**Tests:**
-- All paths matched by the `test-deletion.md` lens (`*.test.*`, `*.spec.*`, `__tests__/**`, `tests/**`, `test/**`, `cypress/**`, `e2e/**`, `jest.config.*`, `vitest.config.*`)
-
-**Quarantine:**
-- `_deprecated/**`, any dead-code quarantine moves
+- **Schema and data** — database schema migrations
+- **Auth and security** — auth path heuristics
+- **Package manifests** — npm / pip / Cargo / Go modules / etc.
+- **Environment and secrets** — `.env*`, credential / secret files
+- **CI/CD** — workflow YAMLs
+- **Tests** — test files (per `test-deletion.md` lens)
+- **Build/runtime config** — `next.config.*`, `Dockerfile`, etc.
+- **Quarantine** — `_deprecated/**` paths
 
 ---
 
