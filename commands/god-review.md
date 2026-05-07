@@ -899,21 +899,28 @@ you (the orchestrator) whether to re-enter at 3a (next round), exit cleanly
 
 ### Round N — Sub-step 3a: Load and hash findings
 
-**At round start** (before parsing findings), pin the round-baseline ref:
+**At round start** (before parsing findings), pin the round-baseline ref AND
+clean stale per-round transient files from prior rounds:
 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 PRE_FIX_BASE_REF=$(git rev-parse HEAD)
-write_env
-echo "Round $ROUND baseline ref: $PRE_FIX_BASE_REF"
+
+# Stale-file cleanup (prevents cross-round leak):
+rm -f /tmp/verifier-all-findings.tsv /tmp/verifier-*.txt 2>/dev/null
+rm -f /tmp/codex-principle-*.txt /tmp/codex-broad-*.txt 2>/dev/null
+rm -f "$WORKDIR/tmp/god-review/architect-output-"*.json 2>/dev/null
 
 # Reset per-round counters
 NEW_NEW_FINDINGS=0
 DEFERRED_THIS_ROUND=0
 GATED_THIS_ROUND=0
 FIXES_KEPT_THIS_ROUND=0
+LOOP_EXIT=""
+VERIFIER_NEW_COUNT=0
 write_env
+echo "Round $ROUND baseline ref: $PRE_FIX_BASE_REF"
 ```
 
 Read the latest aggregated findings from `tmp/god-review/report.md`. Parse each
