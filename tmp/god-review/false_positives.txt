@@ -1,1 +1,0 @@
-A8: HAS_BENCH_SCRIPT line ~209 - audit claimed missing paren but expression is balanced; verified via python3 ast.parse run
