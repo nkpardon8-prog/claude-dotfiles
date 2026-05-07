@@ -26,7 +26,13 @@ Write a one-line identifier for the current Claude Code window to `~/.claude/ses
 **Format:** `Client › Project › what's happening right now`
 
 **How to discover your session_id (do this once per session, near the start):**
-Run `echo $CLAUDE_SESSION_ID` via the Bash tool. Capture the value and reuse it for every subsequent write in this session. The env var is exposed to subprocesses Claude spawns (Bash tool, hooks), but Claude does not see it passively in conversation context — you must run the command to read it.
+The session_id is the basename of the current session's transcript file. Run this via the Bash tool — it walks the project transcript dir and picks the most-recently-modified `.jsonl`:
+```
+ls -t ~/.claude/projects/$(pwd | sed 's|/|-|g; s|^|-|')/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl
+```
+Capture the result and reuse it for every subsequent write in this session.
+
+(Note: `$CLAUDE_SESSION_ID` is NOT reliably exposed to Bash subprocesses spawned from the Bash tool — confirmed empirically. The transcript-filename approach is the fallback that works.)
 
 **Before the first write, ensure the directory exists with the right mode:**
 ```
