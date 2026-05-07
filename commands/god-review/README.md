@@ -23,7 +23,7 @@ Both commands share `commands/god-review/{lib,principles,broad-reviewers}/`.
 
 ### Phase-2 Two-Layer Model
 
-**Layer A — Broad Reviewers (6 total):**
+**Layer A — Broad Reviewers (6 total; 7 with `--ruthless`):**
 - 3 Claude broad reviewers: `claude-deep-correctness`, `claude-architecture-prod`, `claude-security-resilience`
 - 3 Codex broad reviewers: `codex-cross-layer`, `codex-prod-scalability`, `codex-security-safeguards`
 
