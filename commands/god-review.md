@@ -1238,6 +1238,22 @@ os.rename(tmp,'tmp/god-review/state.json')
 "
   echo "Reverted: $FINDING_ID — reason: $REVERT_REASON"
 fi
+
+# Phase F: record finding hash for replay detection.
+# Future rounds use is_finding_replayed to skip findings already tried-and-reverted.
+# Hash inputs: file_path | line_range_normalized (rounded to nearest 5) | category.
+FINDING_LINE_NORMALIZED=$(python3 -c "
+import sys
+try:
+  s,e = [int(x) for x in sys.argv[1].split('-')] if '-' in sys.argv[1] else (int(sys.argv[1]), int(sys.argv[1]))
+  print(f'{(s//5)*5}-{((e+4)//5)*5}')
+except Exception:
+  print(sys.argv[1])
+" "${FINDING_LINE_RANGE:-0-0}" 2>/dev/null)
+FINDING_HASH=$(compute_finding_hash "${FINDING_FILE:-unknown}" "$FINDING_LINE_NORMALIZED" "${FINDING_CATEGORY:-uncategorized}")
+record_finding_hash "$FINDING_HASH"
+echo "Recorded finding hash: $FINDING_HASH"
+
 write_env
 
 # Step 3d: Write round audit trail
