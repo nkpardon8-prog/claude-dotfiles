@@ -1,0 +1,82 @@
+# gap-detector v4 — Phase E v4 audit
+# Target: ~/.claude-dotfiles/commands/god-review.md, god-report.md, god-review/lib/
+
+### [catastrophic] 3f verifier TSV producer is unspecified — orchestrator told to "produce this TSV before running the bash below" but no recipe is given
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:1448-1462
+**Impact:** The 3f filter loop reads `/tmp/verifier-all-findings.tsv` and decides VERIFIER_NEW_COUNT — the single most important loop-termination signal. Lines 1448-1451 say only `(Orchestrator: produce this TSV before running the bash below.)`. Nowhere is the orchestrator told HOW to: (a) parse each verifier-1/2/3/4 result text, (b) extract finding_id/file/line_range/category, (c) normalize the line range (compute_finding_hash requires the rounded "40-50" form per env-helpers.sh:330-345 area), (d) write tab-separated lines, (e) handle Codex verifiers that may not run when CODEX_AVAILABLE=false. Compared to 3a which has a parse recipe and 3c which has full python writers, 3f leaves the most consequential parse to LLM improvisation. If the orchestrator skips writing the TSV (file missing → the `if [ -f ]` falls through silently), VERIFIER_NEW_COUNT stays 0 and the loop terminates after 3 rounds regardless of regressions. This is a silent dead-end identical in shape to the Phase G2-fixed Architect inline-paste bug.
+**Fix:** Add a concrete recipe block immediately above line 1452: a python3 heredoc that reads `$WORKDIR/tmp/god-review/findings/verifier-{1,2,3,4}.txt`, runs the same `### [<severity>] <summary>` regex used by Phase 2d aggregation, extracts file via `**File:**`/`Evidence:` lines, normalizes line ranges (round to nearest 5), assigns synthetic finding_ids `V<round>-<n>`, and writes one TSV line per match to `/tmp/verifier-all-findings.tsv`. Also: change `if [ -f /tmp/verifier-all-findings.tsv ]` to fail loudly when the file is missing (log "VERIFIER_TSV_MISSING — orchestrator skipped TSV write" and force VERIFIER_NEW_COUNT=-1 sentinel so 3g doesn't treat absence as cleanness).
+
+### [high] editor-agent.md still describes the old inline-JSON input format — contradicts Phase G2 ARCH_OUTPUT_FILE pattern
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review/lib/editor-agent.md:11-26
+**Impact:** Phase G2's whole point was switching from inline JSON paste to disk-based handoff (orchestrator god-review.md:1217-1224 only sends the bare `$ARCH_OUTPUT_FILE` path). But editor-agent.md preamble says "The orchestrator will pass you a JSON object (or a markdown block containing it) with this schema:" — which trains the Editor to parse JSON from prompt text, not call Read on a path. When the orchestrator literally substitutes the path string, the Editor either (a) treats the path as a degenerate JSON object and aborts, or (b) hallucinates a JSON shape that satisfies the schema. Either way the apostrophe-corruption fix is undone at the Editor side.
+**Fix:** Rewrite editor-agent.md "Input Format" + "What You Must Do" sections: input is a single absolute path string; step 1 is `Read` that path to obtain the JSON, then proceed. Add a red-flag for "input contains JSON braces — the orchestrator should be passing a path only".
+
+### [high] Stale ARCH_OUTPUT_FILE cleanup is per-finding-only — cross-round/cross-session leftover files can spoof "Architect wrote output"
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:1092-1095, 1142-1149
+**Impact:** `rm -f "$ARCH_OUTPUT_FILE"` runs only inside the per-finding spawn block. If the prior run crashed mid-Phase-3 with a written file, and the next run reuses the same FINDING_ID (likely — IDs are deterministic per finding hash), the spawn step re-removes correctly. BUT: the validator at 1144 (`[ ! -f "$ARCH_OUTPUT_FILE" ]`) only checks file existence, not freshness/mtime. If the Architect Agent silently fails to invoke its Write tool (not unprecedented for general-purpose subagents), and a stale file exists from a prior run that wasn't cleaned (e.g., `ARCH_OUTPUT_FILE` constructed from a slightly different FINDING_ID due to hash differences across rounds), the validator passes and the orchestrator applies a stale fix to the wrong finding. There is no per-round directory rotation and no mtime check.
+**Fix:** Either (a) add a Phase-3 round-start cleanup `rm -f "$WORKDIR/tmp/god-review/architect-output-*.json"` once per round before processing 3e findings, or (b) record the rm-then-spawn timestamp in an env var and assert `[ "$(stat -f %m $ARCH_OUTPUT_FILE)" -gt "$ARCH_RM_TS" ]` in 3e(iii). Option (a) is simpler.
+
+### [high] PRE_FIX_BASE_REF is captured but never persisted via write_env — sourcing in later blocks gets unset
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:908-910 vs lib/env-helpers.sh:13-37
+**Impact:** Line 908 sets `PRE_FIX_BASE_REF=$(git rev-parse HEAD)` but no `write_env` follows. PRE_FIX_BASE_REF is consumed at line 1428 (verifier prompt) and 1611 (rescope `git diff "$PRE_FIX_BASE_REF"..HEAD --name-only`) — both in DIFFERENT bash fences. The env-helpers.sh write_env whitelist (line ~29) does not include PRE_FIX_BASE_REF in its `declare -p` allowlist (it lists ARCH_FILE/ARCH_OUTPUT_FILE/FINDING_HASH/FINDING_ID but NOT PRE_FIX_BASE_REF). Result: in subsequent fences PRE_FIX_BASE_REF is empty, `git diff "..HEAD"` becomes `git diff ..HEAD` which compares to empty tree → diff dump explodes, verifier sees "diff: <entire repo>" and re-flags everything, loop never terminates.
+**Fix:** Add `PRE_FIX_BASE_REF` (and PRE_FIX_REF/PRE_FIX_REFTYPE which have the same problem at 1071-1077) to env-helpers.sh write_env() declare list, and add explicit `write_env` after line 909.
+
+### [high] Loop re-entry directive at line 1588 ("YOU MUST START THE NEXT ROUND RIGHT NOW") is prose-only — no mechanical guard if the orchestrator stops
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:1584-1614
+**Impact:** The directive is strong English but there is zero mechanical enforcement: nothing fails-closed if the orchestrator decides the round is "done" and returns to user. By design the spec acknowledges it relies on prose ("YOU MUST"). If the model interprets the round as a natural stopping point (which has been observed historically per CLAUDE.local.md fix-pass v1 history), the user sees a partial loop with `state.json.consecutive_clean_rounds=0` and no DECISION line. There is no `tmp/god-review/.loop-must-continue` sentinel file checked at session resume; no PostToolUse hook reasserting the loop; no exit code from the bash block that would propagate failure.
+**Fix:** Write a sentinel `$WORKDIR/tmp/god-review/.loop-must-continue` immediately when DECISION=re-enter is computed (lines 1567/1575). On any subsequent /god-review invocation, Phase 0 checks for this sentinel and refuses to start a new run until the prior loop completes or user passes `--abandon-prior`. Pair with a CHANGELOG entry documenting this as the mechanical complement to the prose directive.
+
+### [medium] is_already_session_deferred (deprecated) still referenced in 3b prose, conflicting with 3f's by_hash variant
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:963-964 vs 1459 vs lib/env-helpers.sh:327-334
+**Impact:** Sub-step 3b triage uses `is_already_session_deferred "$FINDING_CATEGORY"` (category-only, deprecated per env-helpers.sh:327 comment "Use is_already_session_deferred_by_hash for new code"). Sub-step 3f filter uses `is_already_session_deferred_by_hash "$vhash"` (per-finding). Same-round results: a finding bucketed as REPLAYED in 3b (because its category was already deferred) gets a different decision in 3f for the same hash. The two sub-steps disagree on what's "session-deferred". The deprecated function will silently suppress entire principles' coverage as the comment warns.
+**Fix:** Migrate 3b to `is_already_session_deferred_by_hash "$FINDING_HASH"`. Delete the deprecated `is_already_session_deferred` function from env-helpers.sh after grep confirms no other callers.
+
+### [medium] FINDING_PROPOSED_DIFF referenced in 3c prose but never produced in 3a parse spec
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:990 (consumes FINDING_PROPOSED_DIFF), 933-936 (3a "parse" spec sets FINDING_FILE/FINDING_LINE_RANGE/FINDING_CATEGORY but no FINDING_PROPOSED_DIFF)
+**Impact:** 3c HUMAN_GATE writer at line 1003 emits `**Proposed diff:**\n{FINDING_DIFF}` into the human-gate report. The variable comes from `os.environ["FINDING_DIFF"]` which the env block at 996-997 sets to `"$FINDING_PROPOSED_DIFF"`. But 3a never instructs the orchestrator to extract a `proposed_diff` field from each finding. Phase 2 report findings have a `### [<severity>]` block with `Fix:` prose, not a structured diff. Result: every HUMAN_GATE entry will have empty/garbage `Proposed diff:` content.
+**Fix:** Either (a) add `FINDING_PROPOSED_DIFF` extraction to the 3a parse spec at line 935 with explicit guidance ("set to the Fix: prose text from the finding"), or (b) rename to `FINDING_FIX_TEXT`, drop the `Proposed diff:` heading from the human-gate template, and rely on the Fix: text as-is.
+
+### [medium] CONSECUTIVE_CLEAN_ROUNDS persistence to state.json on re-enter path is comment-only
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:1580-1582
+**Impact:** The comment says "Atomically persist round + clean-counter to state.json (already done above in backstop block; this re-confirms after the prose decision)" but no code follows. If the backstop block at 1518-1541 was skipped (e.g., because instability check returned early), the re-enter path advances ROUND in shell only and writes via write_env to .env.sh — NOT to state.json. On crash recovery, state.json.round shows the old value and the run resumes one round behind.
+**Fix:** Add a python3 atomic write block after line 1579 that updates state.json.round and state.json.consecutive_clean_rounds from the shell vars.
+
+### [medium] Round-start ARCH_OUTPUT_FILE leftover sweep missing — adjacent to high finding above but separate fix
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:903 (round-start init) — no architect-output-*.json sweep
+**Impact:** Even within a single session, if Phase 3 round 5 architect agent writes architect-output-FOO.json successfully and applies, then round 8 re-encounters finding FOO (regression). The pre-spawn rm at line 1094 removes it correctly — but ONLY after determining FINDING_ID. If 3a's parse step references the file (it doesn't currently, but principle gap-detector flags forward risk), stale data leaks. Lower-severity than the high finding because the per-finding rm at 1094 runs before the spawn — but the round-start sweep is the durable fix.
+**Fix:** At round start (after line 916 init block), add `rm -f "$WORKDIR/tmp/god-review/architect-output-"*.json 2>/dev/null || true`.
+
+### [low] HAS_BENCH_SCRIPT branch in CRITERIA/principles references a perf-benchmark principle that's never wired into 3f verifier subset
+**Source:** gap-detector
+**Evidence:** Skill list shows `god-review:principles:perf-benchmark` exists; god-review.md:424-425 mentions Phase 1 baseline capture; no spawn in 3f or post-fix gate check
+**Impact:** Benchmark baseline is captured in Phase 1 but never compared against post-fix timings — the Phase 3 prose at 1254-1274 (gates) runs typecheck/lint/test/build but no `npm run bench` or equivalent. The principle file is dead code at runtime when triggered by HAS_BENCH_SCRIPT (only spawns in Phase 2 review, not Phase 3 verification).
+**Fix:** Add an optional gate in 3e(v) gated on `[ -n "$HAS_BENCH_SCRIPT" ]` that runs the bench script, parses timings, and treats >20% regression as REGRESSION=true with reason="perf-regression".
+
+### [low] FINDING_HASH whitelisted in write_env but FINDING_FILE/FINDING_LINE_RANGE/FINDING_CATEGORY/FINDING_DESCRIPTION/FINDING_ROOT_CAUSE are not
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review/lib/env-helpers.sh:29 (declare -p list)
+**Impact:** Per-finding fields are set in 3a's reasoning context (line 934 comment: "Hold this in your reasoning context"). They're consumed in 3c/3e across multiple bash fences. Without write_env persistence, each fence depends on the orchestrator re-substituting them at every Bash call. Works as long as orchestrator follows the prose, but provides no failsafe.
+**Fix:** Add FINDING_FILE FINDING_LINE_RANGE FINDING_CATEGORY FINDING_DESCRIPTION FINDING_ROOT_CAUSE FINDING_SEVERITY to env-helpers.sh write_env declare list. Cheap insurance.
+
+### [minor] Architect prompt instructs "Confirm the write completed before returning" but orchestrator has no read-back-loop if the Architect lies
+**Source:** gap-detector
+**Evidence:** ~/.claude-dotfiles/commands/god-review.md:1129
+**Impact:** The Architect could return without writing (general-purpose subagent has no enforced tool-use). Orchestrator's only recourse is the existence check at 1144. Phase G2's design treats absence as HUMAN_GATE demotion — that's safe-fail, but it means LLM-flake silently demotes an AUTO_FIX to HUMAN_GATE, inflating the human queue.
+**Fix:** Acceptable as-is, but add a metric: increment `state.json.architect_no_write_count` separately from `architect_malformed_count` so post-run you can distinguish flake from bad-output.
+
+### [deferred] Whether `claude-ruthless-redteam` is auto-included as a 4th verifier in 3f when --ruthless is set
+**Source:** gap-detector
+**Evidence:** god-review.md:1420-1433 lists Verifier 1/2/3/4 with no --ruthless conditional
+**Impact:** --ruthless is wired into Phase 2 (per CLAUDE.local.md fix-pass v2), but Phase 3 verifier subset is fixed at 4 agents regardless. The 5th ruthless verifier is presumably out of scope for the speed-critical sub-pass.
+**Fix:** Document explicitly in the prose ("Phase 3 verifier sub-pass intentionally excludes --ruthless even when set, for speed").
+
+Total: 13 findings (catastrophic: 1, high: 4, medium: 3, low: 2, minor: 1, deferred: 1)
