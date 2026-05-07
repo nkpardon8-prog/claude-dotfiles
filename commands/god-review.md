@@ -326,21 +326,24 @@ echo "Secret pre-scan: ${PRE_SCAN_SECRETS:-NONE}"
 # Pre-scan 2: Hallucinated package names (declared imports vs package.json)
 PRE_SCAN_HALLUCINATED=""
 if [ -f "$WORKDIR/package.json" ]; then
-  DECLARED_DEPS=$(python3 -c "
+  PRE_SCAN_HALLUCINATED=$(
+    DECLARED_DEPS=$(python3 -c "
 import json, sys
 d = json.load(open('$WORKDIR/package.json'))
 deps = set(d.get('dependencies', {}).keys()) | set(d.get('devDependencies', {}).keys())
 print('\n'.join(deps))
 " 2>/dev/null)
-  # Scan TS/JS imports for non-relative, non-builtin packages not in declared deps
-  /bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/dist" -o -path "*/build" \) -prune -o -name "*.ts" -print -o -name "*.tsx" -print -o -name "*.js" -print -o -name "*.jsx" -print' _ "$WORKDIR" 2>/dev/null \
-    | xargs grep -hE "^import .* from '([^.@][^']+)'" 2>/dev/null \
-    | grep -oE "from '[^']+'" | sed "s/from '//;s/'//" \
-    | cut -d'/' -f1 | sort -u \
-    | while read pkg; do
-        echo "$DECLARED_DEPS" | grep -qxF "$pkg" || echo "HALLUCINATED_IMPORT_CANDIDATE: $pkg"
-      done | head -20
+    # Scan TS/JS imports for non-relative, non-builtin packages not in declared deps
+    /bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/dist" -o -path "*/build" \) -prune -o -name "*.ts" -print -o -name "*.tsx" -print -o -name "*.js" -print -o -name "*.jsx" -print' _ "$WORKDIR" 2>/dev/null \
+      | xargs grep -hE "^import .* from '([^.@][^']+)'" 2>/dev/null \
+      | grep -oE "from '[^']+'" | sed "s/from '//;s/'//" \
+      | cut -d'/' -f1 | sort -u \
+      | while read pkg; do
+          echo "$DECLARED_DEPS" | grep -qxF "$pkg" || echo "HALLUCINATED_IMPORT_CANDIDATE: $pkg"
+        done | head -20
+  )
 fi
+echo "Hallucinated-imports pre-scan: ${PRE_SCAN_HALLUCINATED:-NONE}"
 
 # Pre-scan 3: Prompt-injection seeds in comments and READMEs
 PRE_SCAN_INJECTION=$(/bin/bash -c '
