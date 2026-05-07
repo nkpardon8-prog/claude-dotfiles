@@ -818,29 +818,34 @@ you make the loop-back decision based on round results.
 
 Read state from `tmp/god-review/state.json` at the start of every round.
 
-### Per-round loop structure
+### One-time round-state initialization (run ONCE, before round 1)
 
-Initialize round state and enter the real shell loop:
+Before entering the round-loop, initialize state and export tunables. This
+runs exactly once per `/god-review` invocation.
 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 
-# Phase F: export tunables that codex-invoke.sh consumes (must be exported, not just set,
-# since codex-invoke.sh runs as a subprocess via `bash`).
+# Export tunables that subprocess scripts (codex-invoke.sh) consume.
 export SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"
 export LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"
 
-# Initialize loop counters
-ROUND=1
+# Initialize loop counters (or restore from state.json on --resume)
+if [ "$RESUME" = "true" ]; then
+  ROUND=$(python3 -c "import json; print(json.load(open('$WORKDIR/tmp/god-review/state.json'))['round'])" 2>/dev/null || echo 1)
+  CONSECUTIVE_CLEAN_ROUNDS=$(python3 -c "import json; print(json.load(open('$WORKDIR/tmp/god-review/state.json'))['consecutive_clean_rounds'])" 2>/dev/null || echo 0)
+else
+  ROUND=1
+  CONSECUTIVE_CLEAN_ROUNDS=0
+fi
 FIXES_KEPT_THIS_ROUND=0
-CONSECUTIVE_CLEAN_ROUNDS=0
 FROZEN_UNITS_COUNT=0
 NET_NEW_FINDINGS_THIS_ROUND=0
 
-# Initialize TOTAL_OPEN_FINDINGS from Phase 2 report (count non-HUMAN_GATE findings)
+# Initialize TOTAL_OPEN_FINDINGS from Phase 2 report (non-HUMAN_GATE findings)
 TOTAL_OPEN_FINDINGS=$(python3 -c "
-import json, re
+import json
 try:
     report = open('$WORKDIR/tmp/god-review/report.md').read()
     in_human_gate = False
@@ -855,16 +860,19 @@ except Exception:
     print(0)
 " 2>/dev/null || echo 0)
 
-echo "=== Phase 3 Fix Loop starting: TOTAL_OPEN_FINDINGS=$TOTAL_OPEN_FINDINGS MAX_ROUNDS=$MAX_ROUNDS LOOP=$LOOP ==="
+write_env
+echo "=== Phase 3 starting: TOTAL_OPEN_FINDINGS=$TOTAL_OPEN_FINDINGS, ROUND=$ROUND ==="
+```
 
-while [ "$LOOP" = "true" ] || [ "$ROUND" -le "${MAX_ROUNDS:-5}" ]; do
-  echo "=== Round $ROUND ==="
-  FIXES_KEPT_THIS_ROUND=0
-  NET_NEW_FINDINGS_THIS_ROUND=0
+**Now enter the orchestrator-driven round loop.** What follows is a per-round
+recipe. After each round completes, the round-end decision (sub-step 3g) tells
+you (the orchestrator) whether to re-enter at 3a (next round), exit cleanly
+(3 consecutive clean rounds), or exit with a backstop (wall-clock / instability /
+`--max-rounds` ceiling). Execute these sub-steps in order each round.
 
-# For each round (1 through MAX_ROUNDS in bounded mode, or indefinite if --loop):
+---
 
-# Step 3a: Triage findings into two buckets
+### Round N — Sub-step 3a: Load and hash findings
 
 
 
