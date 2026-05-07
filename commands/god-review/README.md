@@ -260,3 +260,42 @@ Key supporting files:
 - `lib/e2e-test.sh` — Synthetic test project generator for E2E regression testing
 
 **Reference:** Plan at `tmp/ready-plans/2026-05-04-god-review-command.md` · Memory files at `~/.claude/projects/-Users-omidzahrai/memory/god_review_*.md`
+
+---
+
+## Status and Changelog
+
+### 2026-05-06 — Phase E fix pass (8 fixes)
+
+- Fixed Phase 3 while-loop split across 10 separate bash fences (catastrophic) — loop body now one fence
+- Fixed glob_to_regex algorithm for `migrations/**`, `**/auth/**`, `*.test.*`, bare basename patterns (catastrophic)
+- Wired `--ruthless` spawn block to actual Agent invocation pattern (catastrophic)
+- Added 7 round-loop counters (`ROUND`, `FIXES_KEPT_THIS_ROUND`, `NET_NEW_FINDINGS_THIS_ROUND`, `CONSECUTIVE_CLEAN_ROUNDS`, `FROZEN_UNITS_COUNT`, `TOTAL_OPEN_FINDINGS`, `MAX_ROUNDS_EXPLICIT`) to `write_env` whitelist
+- Wired 4 new failure-class principles (`dead-end-detector`, `info-loss-detector`, `contradiction-detector`, `gap-detector`) into `ALWAYS_ON_PRINCIPLES`, absolute-path list, and error-message list — principle count now 23
+- Removed false-positive entry for HAS_BENCH_SCRIPT from `false_positives.txt` (paren count audit was wrong; expression is balanced in current file)
+- Fixed `FROZEN_UNITS_CAP` self-referential default → `${FROZEN_UNITS_CAP:-3}`
+- Renamed phantom `$ARCH_JSON` references (lines 979 and 1230) to `$ARCH_OUTPUT`
+
+### 2026-05-05 — Initial fix pass + 4 new failure-class lenses
+
+- 21 commits across Wave 1 + Wave 2 (Implementer S Groups 1-4)
+- A1: cross-block var persistence via env-helpers.sh
+- A7: exit codes wired (2=max-rounds, 3=frozen, 4=instability, 5=wall-clock, 6=corrupt, 7=stale)
+- A8: HAS_BENCH_SCRIPT audit
+- A9: hard-gate bash check before Editor spawn
+- B1: real Phase 3 round loop
+- B7: argument parser rewrite
+- B12: --max-rounds caps --loop
+- C1: Tunable Constants section
+- C4: Step 2c/2d renumber
+- C5: snapshot dir cleanup
+- C7: pre-fix snapshot canonical
+- D5: --ruthless spawn block
+- D6: CRITERIA.md 19→23 principles
+- D7+C6: README updates
+- E0: known-deferred.txt
+- Added 4 new failure-class principles: dead-end-detector, info-loss-detector, contradiction-detector, gap-detector
+
+### 2026-05-04 — Initial /god-review v1 ship
+
+- Plan at `tmp/done-plans/2026-05-04-god-review-command.md`
