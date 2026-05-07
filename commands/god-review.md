@@ -164,7 +164,7 @@ Override any of these via env var before invoking the command.
 SHRINKAGE_PCT="${SHRINKAGE_PCT:-0.20}"           # test-deletion threshold
 PERF_REGRESS_PCT="${PERF_REGRESS_PCT:-0.05}"     # perf-benchmark threshold
 INSTABILITY_RATE="${INSTABILITY_RATE:-5}"        # avg events/round to abort --loop
-FROZEN_UNITS_CAP="$FROZEN_UNITS_CAP"        # bounded-mode freeze cap
+FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-3}"    # bounded-mode freeze cap
 SECRET_LEN_FLOOR="${SECRET_LEN_FLOOR:-16}"       # secret-leak min char length
 TEST_FILE_LINE_FLOOR="${TEST_FILE_LINE_FLOOR:-25}"  # test-deletion shrinkage floor
 LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"       # circular-deps cutoff
