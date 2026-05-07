@@ -1,0 +1,132 @@
+### [high] god-review.md preamble still claims "19 principle lenses plus 6 broad reviewers"
+**Source:** contradiction-detector
+**Evidence:** god-review.md:9 ("apply 19 principle lenses plus 6 broad reviewers") vs CRITERIA.md:115 ("All 23 principles classified into tiers"), README.md:32 ("up to 23 pairs"), god-review.md:2 frontmatter description ("23 principle agents"), and `ls principles/ | wc -l` = 23.
+**Impact:** Top-of-file source-of-truth contradicts every other file plus the actual filesystem. New readers get conflicting agent counts on their first read; sub-agents may inherit the wrong number when this preamble is included in their context.
+**Fix:** Update god-review.md:9 to "23 principle lenses" (and likewise "7 broad reviewers" if `--ruthless` is counted, otherwise leave 6 — but be explicit). The frontmatter at line 2 is canonical (says 23).
+
+### [high] god-review.md spawn-schedule still describes "19-principle × 2-family pipeline"
+**Source:** contradiction-detector
+**Evidence:** god-review.md:509 ("The canonical schedule for full 19-principle × 2-family pipeline") and the message-by-message agent breakdown in lines 510–513 (3+7, 10, 2 principle-Claude = 19) vs ALWAYS_ON_PRINCIPLES list at lines 453–472 which has 18 entries plus up to 5 stack-gated = 23 active. The message schedule is built around 19, not 23.
+**Impact:** This is not just doc drift — it's an algorithmic spec drift. The orchestrator's own batching plan only schedules 19 principle Claude calls, so 4 of the 23 active principles will silently never be invoked when the LLM follows the schedule literally. Same plan instruction for the Codex side.
+**Fix:** Rewrite lines 509–513 to schedule up to 23 principle pairs (e.g. Message 1: 3 broad-Claude + 7 principle-Claude; Message 2: 10 principle-Claude; Message 3: 6 principle-Claude). Match the Codex side row-for-row.
+
+### [high] README still documents `--fix` and `--loop` as live flags after Phase G dropped them
+**Source:** contradiction-detector
+**Evidence:** README.md:37 ("Phase G — `--fix`/`--loop`/`--report-only` dropped; always-on by definition") vs same README.md:93 (`## --fix Utility Warning`), :103 ("Expect `--fix` to auto-apply…"), :107 (`## --loop Cost Warning`), :130 ("Always pass an explicit `--max-wall-hours` when using `--loop`"), :133 (`/god-review --fix --loop --max-wall-hours 6`), :138 (`## --loop Repo Restrictions`), :144 (`/god-review --fix --loop`), :157 (`/god-review --fix --loop --resume`), :163, :206, :264. Argument parser at god-review.md:42–72 has no `--fix`/`--loop`/`--report-only` cases and the unknown-flag branch (line 67) explicitly errors with "dropped in Phase G".
+**Impact:** Catastrophic doc drift. Users copying the README's example commands (`/god-review --fix --loop --max-wall-hours 6`) will get an "unknown flag" abort. Exit-code table line 72 documents code 5 as `--loop mode hit --max-wall-hours limit` for a flag that doesn't exist.
+**Fix:** Sweep README — remove `--fix`/`--loop` from every example, rename "`--fix` Utility Warning" → "Auto-Apply Utility Warning", "`--loop` Cost Warning" → "Indefinite-mode Cost Warning", "`--loop` Repo Restrictions" → "Indefinite-mode Repo Restrictions". Argument parser is canonical.
+
+### [high] Exit-code table lists `3 = Fix loop frozen` and `2 = max-rounds exhausted` but no code path emits exit 3, and exit 2 is gated behind a non-default flag with no docs warning
+**Source:** contradiction-detector
+**Evidence:** README.md:69 lists `2 | Fix loop hit max rounds — bounded fix loop exhausted --max-rounds cap` and `:70 | 3 | Fix loop frozen — no net progress across consecutive rounds (churn ledger triggered)`. Actual emitters in god-review.md: `exit 1` (validation), `exit 2` only fires if `MAX_ROUNDS_EXPLICIT=true` (line 1428–1430), `exit 4` (instability, line 1424), `exit 5` (wall-clock, line 1407), `exit 6` (corrupt state, line 96), `exit 7` (stale snapshot, line 109). No `exit 3` exists anywhere in god-review.md.
+**Impact:** Documented exit code 3 is a phantom — scripts that branch on `$? == 3` will never see it. The "frozen-units / churn ledger" termination signal exists in the loop body but never converts to the documented exit code; it just keeps going.
+**Fix:** Either wire frozen-units to `exit 3` somewhere in Phase 3 sub-step 3g, or remove row 3 from the README exit-code table. Frozen-units is detected at god-review.md:1214–1215 and fed into instability calc — pick one canonical path.
+
+### [medium] /god-report frontmatter argument-hint omits `--scope`/positional but README and god-review use `[scope]` consistently — and /god-report's parser DOES accept positional scope
+**Source:** contradiction-detector
+**Evidence:** god-report.md:3 `argument-hint: "[scope] [--rounds N] [--ruthless] [--principle <name>] [--online] [--codex-validation-every N]"`. Parser at god-report.md:48 accepts positional. But README.md /god-report flag table (lines 53–59) does NOT mention positional `[scope]` at all.
+**Impact:** Users reading just the README's /god-report flag table will not realize they can pass a scope path. Minor doc gap, not a runtime bug.
+**Fix:** Add a "Positional argument: `[scope]`" row or note above the /god-report flag table to match the existing one for /god-review (which is also missing — both should describe positional scope).
+
+### [medium] README "Reference" line points to `tmp/ready-plans/`; CHANGELOG and earlier README section both point to `tmp/done-plans/`
+**Source:** contradiction-detector
+**Evidence:** README.md:275 `Plan at tmp/ready-plans/2026-05-04-god-review-command.md` vs README.md:314 `Plan at tmp/done-plans/2026-05-04-god-review-command.md` (same file, two references in the same README) and CHANGELOG.md:165 `tmp/done-plans/2026-05-04-god-review-command.md`.
+**Impact:** Same plan file referenced with two different paths in one README. CLAUDE.local.md context confirms plans were moved to `done-plans/` — the `ready-plans/` reference is stale.
+**Fix:** Change README.md:275 to `tmp/done-plans/`.
+
+### [medium] CHANGELOG Phase F claims "duplicate is_hard_gate() definition deleted from lib/env-helpers.sh" but CLAUDE.local.md "Things To Fix Later" still lists it as open
+**Source:** contradiction-detector
+**Evidence:** CHANGELOG.md:128–130 ("Duplicate `is_hard_gate()` definition deleted from `lib/env-helpers.sh` (lines 94-109 — dead first definition…)") vs CLAUDE.local.md "Things To Fix Later": "Remove duplicate `is_hard_gate()` definition in `env-helpers.sh` (lines 62-75 dead, 78-91 active)."
+**Impact:** Either the CHANGELOG is claiming a fix that didn't ship, or the post-compact handoff is stale. Verifiers can't tell whether dedup actually happened.
+**Fix:** Run `grep -c '^is_hard_gate()' lib/env-helpers.sh` — if 1, CHANGELOG is correct and CLAUDE.local.md is stale. If 2, CHANGELOG lies. Canonical is the file itself.
+
+### [medium] /god-report says Phase 0/1/2 are "delegated" to god-review.md, but its own Step 0 inlines argument parsing + tunable exports that drift from god-review.md
+**Source:** contradiction-detector
+**Evidence:** god-report.md:78–96 ("Phases 0, 1, 2 — Mirrored from /god-review … Read the spec. Open ~/.claude-dotfiles/commands/god-review.md and execute exactly the contents of: Phase 0 / Phase 1 / Phase 2") vs god-report.md:54–55 which inlines `export SPINLOCK_TIMEOUT_SEC` and `export LATE_IMPORT_LINE` — but god-review.md exports a much larger Tunable Constants block (god-review.md:155–162: 8 vars including `SHRINKAGE_PCT`, `PERF_REGRESS_PCT`, `INSTABILITY_RATE`, `FROZEN_UNITS_CAP`, `SECRET_LEN_FLOOR`, `TEST_FILE_LINE_FLOOR`).
+**Impact:** When /god-report "delegates" to god-review's Phase 0–2, principle agents that read e.g. `SHRINKAGE_PCT` (test-deletion) or `SECRET_LEN_FLOOR` (secret-leak) get unset env vars under /god-report, fall back to file defaults, and silently use different thresholds vs /god-review. Constants drift not by typo but by scope-of-export.
+**Fix:** Either (a) source the same Tunable Constants block in /god-report Step 0 (cleanest — copy lines 155–163 from god-review.md), or (b) move the export block into `lib/env-helpers.sh` so both commands inherit it via the existing `source` line.
+
+### [medium] god-report.md `unknown principle` error message at line 42 lacks the principle list, but god-review.md provides the full 23-name list
+**Source:** contradiction-detector
+**Evidence:** god-report.md:42 `echo "Error: unknown principle '${2:-missing}'"` vs god-review.md:58 `echo "Error: unknown principle '${2:-missing}'. Check ~/.claude-dotfiles/commands/god-review/principles/ for valid names."` and god-review.md:134 (full enumerated list).
+**Impact:** Same flag (`--principle <name>`) gives different error UX between the two commands. Users debugging a typo get less help from /god-report.
+**Fix:** Mirror god-review.md:58's hint in god-report.md:42 (or, better, factor both error strings into a helper function in `lib/env-helpers.sh`).
+
+### [medium] README claims `--max-wall-hours` default is 24 but warns indefinite mode "potentially 2,200–4,400 agent invocations" assuming 24h
+**Source:** contradiction-detector
+**Evidence:** README.md:42 (`--max-wall-hours N | … default 24`) vs README.md:119 (`24h cap = 48–96 rounds = potentially 2,200–4,400 agent invocations`) is internally consistent — but README.md:130 says "default 24h cap is intentionally conservative. For most audits, 4–8 hours is sufficient" while the same paragraph at :133 shows `/god-review --fix --loop --max-wall-hours 6` (a flag combo that doesn't exist anymore — see high finding above) and the surrounding prose pretends the user "Always pass an explicit `--max-wall-hours` when using `--loop`" — but with `--loop` removed, the advice is unmoored from runtime.
+**Impact:** Conflicting guidance about whether 24h is intended default or always-override. Compounds the `--loop` doc drift.
+**Fix:** After resolving the `--loop` removal sweep, rewrite this section as: "indefinite mode is now the default; pass `--max-wall-hours 6` to bound runtime; pass `--max-wall-hours 0` to disable the cap entirely."
+
+### [medium] Hard-gates list in README "Categories covered" drifts from `lib/hard-gates.txt` semantically
+**Source:** contradiction-detector
+**Evidence:** README.md:213–222 lists "Schema and data, Auth and security, Package manifests, Environment and secrets, CI/CD, Tests, Build/runtime config, Quarantine" (8 categories). Actual `lib/hard-gates.txt` has commented section headers: "Schema migrations, Dependency manifests, Environment / secrets, CI/CD, Test files (root + nested coverage), Auth (path-based heuristic), Build/runtime config, Already quarantined (root + nested)" (8 categories). Order differs and the README itself says (:208) "Canonical source: lib/hard-gates.txt … DO NOT inline patterns elsewhere — they go stale."
+**Impact:** README warns against inlining but inlines a category list anyway. As long as it's category-level not pattern-level it's defensible, but the order drift makes diffs harder.
+**Fix:** Either (a) drop categories from README and just point to hard-gates.txt; or (b) regenerate the README list from hard-gates.txt section comments and match the order exactly.
+
+### [medium] Phase 3 description in README mentions "Architect→Editor split" but lists only `lib/editor-agent.md`; no Architect file exists
+**Source:** contradiction-detector
+**Evidence:** README.md:22 ("Architect→Editor split per fix") and :264 (`├── Phase 3 (--fix): lib/editor-agent.md per fix`). god-review.md:1126 references `ARCH_FILE` and an Architect role; CHANGELOG.md:25 says "Architect → validate → Editor". `ls ~/.claude-dotfiles/commands/god-review/lib/` shows only `editor-agent.md`, not `architect-agent.md`.
+**Impact:** README describes a 2-agent split but only one of the two has a prompt file on disk. Either Architect is implicit (the orchestrator LLM itself), in which case docs should say so, or there's a missing file.
+**Fix:** If Architect is the orchestrator, change README:22 to "Architect (orchestrator) → Editor (sub-agent) split". If Architect is intended as a file like editor-agent.md, the file is missing and Phase 3 won't work as documented.
+
+### [low] CHANGELOG Phase E entry says "glob_to_regex algorithm + added self-test" / "Self-test: 17/17 pass (was 8/8)" but earlier session memory in CLAUDE.local.md says "8 cases passing"
+**Source:** contradiction-detector
+**Evidence:** CHANGELOG.md:52 ("Self-test: 17/17 pass (was 8/8)") vs CLAUDE.local.md fix-pass-v2 description ("added self-test (8 cases passing)") and the v3 verification command listed in CLAUDE.local.md ("should print `8 passed, 0 failed`").
+**Impact:** Verification command in the post-compact handoff will fail (expects 8, file emits 17) — auditors trying to verify Phase G fixes will report a regression that's actually a doc lag.
+**Fix:** Update the verification command to "17 passed, 0 failed". The CHANGELOG number (17/17) is canonical because the file itself is the ground truth.
+
+### [low] `/god-review` argument-hint omits `[--ruthless]` ordering vs README's flag-table ordering
+**Source:** contradiction-detector
+**Evidence:** god-review.md:3 lists flags in this order: `--max-rounds, --max-wall-hours, --resume, --force-resume, --principle, --rescope-on-fix, --online, --codex-validation-every, --ruthless`. README.md flag table (:41–49) has the same set in identical order. god-report.md:3 ordering differs: `--rounds, --ruthless, --principle, --online, --codex-validation-every` vs README.md:53–59 ordering: `--rounds, --principle, --online, --ruthless, --codex-validation-every`.
+**Impact:** Cosmetic. Tab-completion and shell history won't be affected; only docs-readers comparing left-to-right.
+**Fix:** Align README /god-report flag table to argument-hint order (or vice-versa).
+
+### [low] README "/god-review Flags" table `--principle` description differs from /god-report's
+**Source:** contradiction-detector
+**Evidence:** README.md:45 (`--principle <name> | Run ONE principle standalone, skipping orchestration. Example: --principle single-pattern. | off`) vs README.md:56 (`--principle <name> | Run ONE principle standalone. | off`).
+**Impact:** Same flag, two different descriptions. Trivial.
+**Fix:** Use one canonical description; reference once.
+
+### [low] `/god-review` exit-code 1 description in README (`Findings reported — report-only mode completed`) refers to dropped `--report-only` mode
+**Source:** contradiction-detector
+**Evidence:** README.md:68 (`1 | Findings reported — report-only mode completed with unresolved findings.`) vs Phase G: `--report-only` was dropped per README.md:37 + CHANGELOG.md:9.
+**Impact:** Exit code 1 is also emitted by argument-validation failures (god-review.md:52, 55, 58, 61, 64, 67, 69, 83, 89). The "report-only mode" framing is wrong on two counts: the mode doesn't exist, and code 1 also covers validation errors.
+**Fix:** Rewrite as "1 | Argument validation error or fatal pre-flight failure." Move /god-report's "report-only with findings" semantics to its own row.
+
+### [low] /god-report's "Phases 0, 1, 2 — Mirrored" section instructs the LLM to "execute exactly the contents of … `## Phase 2: Review (the heart)`" — but god-review.md's Phase 2 ends, then Phase 3 begins, with no clear marker that /god-report should stop reading
+**Source:** contradiction-detector
+**Evidence:** god-report.md:84–93 ("Read the spec … `## Phase 2: Review (the heart)` … Skip Phase 3. When you reach `## Phase 3: Fix Loop` in god-review.md, STOP."). god-review.md uses `## Phase 3: Fix Loop` as the header — but search shows the actual header is the section starting at the first occurrence of `Phase 3` after Phase 2; section order is OK, but the header text isn't pinned in either file.
+**Impact:** Header rename in god-review.md (e.g. `## Phase 3: Always-on Fix Loop`) silently breaks /god-report's stop signal because the literal string `## Phase 3: Fix Loop` is what /god-report greps for.
+**Fix:** Add a HTML comment marker like `<!-- god-report-stop -->` immediately before the Phase 3 header in god-review.md, and update /god-report to look for the marker rather than the title.
+
+### [low] Phase-3 sub-step list in CHANGELOG (8 sub-steps: 3a–3h) doesn't match the order observed in god-review.md (`3a, 3b, 3c, 3d, 3e, 3f, 3g, 3h`)
+**Source:** contradiction-detector
+**Evidence:** CHANGELOG.md:24–28 lists sub-step semantics. god-review.md actual sub-steps not exhaustively grepped, but at least 3a, 3f, 3g, 3h confirmed (line 1467: "Else increment ROUND … sub-step 3a", line 1477: "sub-step 3h: Phase 4 Final Report"). No catastrophic mismatch found, but CHANGELOG description of 3e ("snapshot → Architect → validate → Editor → gates → perf → commit") is denser than what's actually a 7-step pipeline; verifiers should spot-check.
+**Impact:** Risk of step-numbering drift if anyone re-orders. Minor.
+**Fix:** Each sub-step header in god-review.md Phase 3 should include its 3a/3b/etc tag in the markdown heading itself, not just prose.
+
+### [low] CRITERIA.md Promotion Priority refers to "Tier 1 (see table above)" but Tier-1 promotion criterion in the table is the column "Promotion = yes" — not "Tier"
+**Source:** contradiction-detector
+**Evidence:** CRITERIA.md:154 ("Single-pattern / failure-class promotion — finding's principle is Tier 1 (see table above). Promotes by +1 level.") vs CRITERIA.md:117 column header "Promotion" with `yes`/`no` values. Tier 1 ≠ promotion=yes inherently — the table happens to align them, but the prose says "Tier 1" while the test should be "Promotion=yes".
+**Impact:** If a future Tier-1 principle is added with `Promotion = no` (legitimate, e.g., a checklist-only Tier 1), the prose says it gets promoted but the table says it doesn't. Conflict will manifest at runtime.
+**Fix:** CRITERIA.md:154 reword: "principle's `Promotion` column is `yes` in the table above" — match the actual decision data.
+
+### [minor] README "Self-Test Guidance" at :172–177 invokes `/god-review` for a Phase 0–2-only smoke test, but Phase G dropped report-only — `/god-review` now always runs Phase 3
+**Source:** contradiction-detector
+**Evidence:** README.md:172 ("Smoke test (Phase 0–2 only, report-only mode):") and the example `/god-review` (no flags). Phase G + frontmatter at god-review.md:2 says fix-loop is always-on; report-only is `/god-report`.
+**Impact:** Users following the smoke-test example will trigger the fix loop on their dotfiles repo — exactly what README.md:148 forbids ("Self-test on the dotfiles repo is report-only").
+**Fix:** Change the smoke-test command to `/god-report` (no flags). Update README.md:148 prose accordingly.
+
+### [minor] README architecture summary at :257–267 still shows `Phase 3 (--fix): lib/editor-agent.md per fix` line
+**Source:** contradiction-detector
+**Evidence:** README.md:264 — same `--fix` drift as the high finding above; calling out separately because it's in the diagram.
+**Fix:** Drop `--fix` qualifier from the diagram; Phase 3 is always-on for /god-review.
+
+### [deferred] CHANGELOG Phase E entry "Removed false-positive entry for HAS_BENCH_SCRIPT from `false_positives.txt`" — file `false_positives.txt` not in lib/ listing
+**Source:** contradiction-detector
+**Evidence:** README.md / CHANGELOG.md mention `false_positives.txt`, but `ls lib/` only shows: codex-invoke.sh, e2e-test.sh, editor-agent.md, env-helpers.sh, gather-context.sh, hard-gates.txt, known-deferred.txt — no false_positives.txt.
+**Impact:** May live elsewhere (state.json field, tmp/) — deferring because path-of-record isn't documented.
+**Fix:** Confirm with `find ~/.claude-dotfiles/commands/god-review -name 'false_positives*'` and either commit it or update doc references.
+
+Total: 22 findings (catastrophic: 0, high: 4, medium: 8, low: 7, minor: 2, deferred: 1)
