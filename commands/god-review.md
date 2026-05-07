@@ -852,14 +852,23 @@ cat > tmp/god-review/report.md.tmp << 'REPORTEOF'
 
 ## Critical [must fix]
 <[definite] non-special findings, sorted by severity>
-Format per finding:
+Format per finding (REQUIRED — Phase 3a parses these fields exactly):
 ### [definite] CATEGORY: Short description
 **Location**: `file.ts:line_start-line_end`
+**Category**: <category-name-from-CRITERIA.md, lowercase, hyphenated>
+**Severity**: <definite | likely | investigate>
 **Source**: `claude-principle:single-pattern + codex-broad:codex-security-safeguards` (both)
 **Promotion**: cross-model agreement
+**Description**: <one-paragraph human-readable summary, <= 300 chars>
+**Root cause**: <one-paragraph technical root cause, <= 500 chars>
 **Evidence**:
 ```code snippet```
 **Recommendation**: specific fix
+**Proposed diff sketch**:
+```
+- old line(s)
++ new line(s)
+```
 
 ---
 
@@ -1020,9 +1029,22 @@ echo "Round $ROUND baseline ref: $PRE_FIX_BASE_REF"
 
 Read the latest aggregated findings from `tmp/god-review/report.md`. Parse each
 finding from the markdown sections (Critical, Important, Minor, Gaps,
-Assumptions, Contradictions, Human Gate Required) into a list with these fields:
-`{finding_id, file, line_start, line_end, category, severity, source,
-root_cause, description, proposed_diff_sketch}`.
+Assumptions, Contradictions, HUMAN_GATE_QUEUE). The Phase 2e template at
+line ~853 specifies the exact per-finding format — extract these fields:
+
+| Field | Template line |
+|-------|---------------|
+| `finding_id` | the `### ` heading text |
+| `file`, `line_start`, `line_end` | `**Location**: \`file:start-end\`` |
+| `category` | `**Category**: <name>` |
+| `severity` | `**Severity**: <definite\|likely\|investigate>` |
+| `source` | `**Source**: ...` |
+| `description` | `**Description**: ...` |
+| `root_cause` | `**Root cause**: ...` |
+| `proposed_diff_sketch` | the `**Proposed diff sketch**:` fenced code block |
+
+If any REQUIRED field is missing, skip the finding (don't silently default to
+empty — that poisons downstream Architect prompt + HUMAN_GATE_QUEUE entry).
 
 For each finding, compute a stable hash. Use the helpers in `lib/env-helpers.sh`:
 
@@ -1101,6 +1123,7 @@ else
   if [ ! -f "$HG_QUEUE_FILE" ]; then
     printf '## HUMAN_GATE_QUEUE\n\n_Hard-gate findings batched for human review at end of run._\n\n' > "$HG_QUEUE_FILE"
   fi
+  HG_QUEUE_FILE="$HG_QUEUE_FILE" \
   FINDING_ID="$FINDING_ID" FINDING_FILE="$FINDING_FILE" \
   FINDING_LINE_RANGE="$FINDING_LINE_RANGE" FINDING_DESC="$FINDING_DESCRIPTION" \
   FINDING_DIFF="$FINDING_PROPOSED_DIFF" python3 -c '
@@ -1110,10 +1133,10 @@ out.write(f"### {os.environ[\"FINDING_ID\"]}\n")
 out.write(f"- **File:** {os.environ[\"FINDING_FILE\"]}:{os.environ[\"FINDING_LINE_RANGE\"]}\n")
 out.write(f"- **Reason:** {os.environ[\"FINDING_DESC\"]}\n")
 out.write("- **Proposed diff:**\n\n```\n")
-out.write(os.environ["FINDING_DIFF"])
+out.write(os.environ.get("FINDING_DIFF", ""))
 out.write("\n```\n\n")
 out.close()
-' HG_QUEUE_FILE="$HG_QUEUE_FILE"
+'
   record_human_gate_emit "$FINDING_ID" "$FINDING_HASH" "$ROUND"
   GATED_THIS_ROUND=$((GATED_THIS_ROUND + 1))
   write_env
