@@ -1354,7 +1354,8 @@ fi
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 git add -A
-if git commit -m "god-review: $FINDING_ID — ${RATIONALE:-fix}"; then
+COMMIT_MSG=$(printf 'god-review: %s — %s' "$FINDING_ID" "${RATIONALE:-fix}" | head -c 200)
+if git commit -m "$COMMIT_MSG"; then
   echo "Kept: $FINDING_ID committed as $(git rev-parse HEAD)"
   # KEEP path: record kept_fixes ONLY. Do NOT call record_finding_hash on keep —
   # successful fixes must be re-attemptable on later regression (Phase G design).
