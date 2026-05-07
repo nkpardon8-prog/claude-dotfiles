@@ -645,7 +645,7 @@ After all agents complete, collect all findings. Tag each finding with its sourc
 
 **Step 2d validation — batched cross-family verification:**
 
-In `--loop` mode, Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0`. On skipped rounds, tag all Claude-found findings as `(unverified-this-round)`.
+Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0` (default every 3 rounds). On skipped rounds, tag all Claude-found findings as `(unverified-this-round)`.
 
 **Claude-found findings → ONE Codex validation call** (only if $CODEX_AVAILABLE=true):
 ```bash
