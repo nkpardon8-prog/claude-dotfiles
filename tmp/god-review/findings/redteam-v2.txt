@@ -1,0 +1,187 @@
+### [catastrophic] glob_to_regex breaks recursion when `**` is fused to a literal segment
+**Source:** redteam
+**Evidence:** `lib/env-helpers.sh:73-90` (split-on-/ algorithm) + `lib/hard-gates.txt:31` (`.github/workflows/**.yml`). Test: `glob_to_regex ".github/workflows/**.yml"` → `^\.github/workflows/[^/]*[^/]*\.yml$`. Fails to match `.github/workflows/sub/ci.yml`.
+**Impact:** CI workflow files in subdirectories bypass the hard gate and become AUTO_FIX targets — the canonical irreversibility-prevention layer. A god-review fix-pass can silently disable CI gates living one directory deep. The self-test at `lib/env-helpers.sh:181-188` does not exercise this case.
+**Fix:** Treat any segment containing `**` as a recursive wildcard (split a segment like `**.yml` into `**` + `.yml` and emit `(?:.*/)?[^/]*\.yml`), or change the canonical pattern to `.github/workflows/**/*.yml` and add a self-test for the deep-dir case.
+
+### [catastrophic] `_deprecated/**` does not match nested `_deprecated/` quarantine paths
+**Source:** redteam
+**Evidence:** `lib/hard-gates.txt:62` (`_deprecated/**`). Test: `is_hard_gate "src/lib/_deprecated/foo.ts"` returns NOT-hard-gated. Regex `^_deprecated/.*$` is anchored at start of path — only matches when `_deprecated/` is the top-level directory.
+**Impact:** Per CHANGELOG and README the dead-code-conservatism principle "always quarantines to `_deprecated/`" and that quarantine is a hard gate. Quarantines living anywhere except repo root are AUTO_FIX-eligible — fix-loop can mutate or "clean up" already-quarantined dead code, defeating the entire failure-mode-#9 mitigation.
+**Fix:** Replace `_deprecated/**` with `**/_deprecated/**` in `lib/hard-gates.txt` and add the path `src/lib/_deprecated/foo.ts` (and similar) to the env-helpers self-test.
+
+### [catastrophic] `kept_fixes` and `FIXES_KEPT_THIS_ROUND` incremented even when `git commit` was rejected
+**Source:** redteam
+**Evidence:** `god-review.md:1138-1226`. The `if git commit` at line 1140 sets `COMMITTED=false` and reverts the file at 1146 when the pre-commit hook rejects, but execution then falls straight through (still inside the outer `if [ "$GATES_PASS" = "true" ] && [ "$REGRESSION_DETECTED" = "false" ]` branch) into the perf-benchmark block (1160-1213) and the no-bench `else` (1216-1226). Both branches unconditionally `kept_fixes.append($FINDING_ID)` and increment `FIXES_KEPT_THIS_ROUND`.
+**Impact:** (1) `state.json.kept_fixes` is corrupted with rejected fixes. (2) `FIXES_KEPT_THIS_ROUND` overcounts, so the rescope at 1398 (`git diff HEAD~"$FIXES_KEPT_THIS_ROUND" --name-only`) walks back further than the actual god-review commits, mixing user history into the next round's scope. (3) Bounded-mode termination at 1381 (`FIXES_KEPT_THIS_ROUND -eq 0`) never fires when every fix is being silently rejected — the loop runs MAX_ROUNDS even on a fully blocked tree.
+**Fix:** Wrap the perf check + `kept_fixes` append in `if [ "$COMMITTED" = "true" ]; then ... fi`. Don't fall through after a rejected commit.
+
+### [catastrophic] Phase-3 finding-state vars (`FINDING_ID`, `FINDING_FILE`, `FINDING_LINE_RANGE`, `FINDING_CATEGORY`) are never assigned
+**Source:** redteam
+**Evidence:** `god-review.md:865, 870, 873, 884-895, 1140, 1147, 1151, 1197, 1208, 1220, 1256, 1267-1276`. Greps show these vars are READ ~12 places but ASSIGNED zero places. The orchestrator block treats them as "the orchestrator fills these per finding" but the only loop wrapper is the `while` at 850 — no inner finding iterator sets them.
+**Impact:** When the orchestrator literally runs this fence, every reference resolves to empty string. Replay-guard hash collapses to `compute_finding_hash unknown 0-0 uncategorized` (the `:-default` fallbacks at 891 and 1275) — every finding hashes to the same value, so the SECOND finding in a session is ALWAYS skipped as "already replayed." Commit messages become `god-review:` (empty). State.json `kept_fixes` and `reverted_fixes` accumulate empty-string IDs. Whole replay-guard system is non-functional.
+**Fix:** Add an explicit inner `for finding in $(jq ...)`-style iterator in the orchestrator block with `eval "$(extract_finding_vars "$f")"` setting all four vars before the architect spawn. Document the schema (FINDING_ID derived how? line_range from where? — currently undefined).
+
+### [catastrophic] `human_gate_emitted`, `frozen_added_per_round`, `architect_malformed_per_round` are read but never written
+**Source:** redteam
+**Evidence:** Initial state.json at `god-review.md:388-405` declares 14 fields. Reads at line 867 (`human_gate_emitted`) and 1344-1345 (`frozen_added_per_round`, `architect_malformed_per_round`) all use `.get(name, [])` — they silently return `[]` forever.
+**Impact:** (1) `human_gate_emitted` dedup is broken — the same HUMAN_GATE finding is re-emitted every round, producing N copies in `report.md` over a long `--loop` run. (2) Instability self-abort at 1351 always sees `AVG_INSTABILITY=0` and never fires, so the `--loop` mode loses its only oscillation backstop. The exit-code-4 path is unreachable code.
+**Fix:** Add writes — `human_gate_emitted` append in the HUMAN_GATE branch around line 870; `frozen_added_per_round` append after the churn freeze block (1115); `architect_malformed_per_round` append in the malformed branch at 970. Also add these three keys to the initial state.json so reads use `[]` consistently and `architect_malformed_count` is reconciled with the new per-round list.
+
+### [high] Newline-injection guard does NOT reject newlines on macOS bash 3.2.57
+**Source:** redteam
+**Evidence:** `god-review.md:979` and `1239` use `case "$ARCH_FILE" in *[\;\&\|\`\$\(\)\<\>\\]* | *$'\n'* | *$'\r'* | '') ... ;; esac`. The `$'\n'` C-string escape is bash 4+. On bash 3.2.57 (the documented runtime per CLAUDE.local.md), `$'\n'` evaluates to the literal two-character string `\n`, so the case alternative matches paths containing the literal substring `\n`, not actual newline characters. Verified with `printf "src/foo\nbar.ts"` against the exact case expression — falls through to the `*)` "OK" branch.
+**Impact:** An Architect agent that emits a `file` value containing an embedded newline (`src/foo.ts\nrm -rf /`) bypasses both the pre-Editor injection guard at 979 and the revert guard at 1239. Combined with the lack of quoting around `$ARCH_FILE` in `git checkout -- "$ARCH_FILE"` at 1146/1244 — the file value is quoted, so direct command injection is blunted, but the ABS realpath check that follows can be confused (the newline embeds a second path) and Editor-agent's red-flag test relies on `Read` finding the path verbatim, which can succeed on multi-line.
+**Fix:** Replace `$'\n'` / `$'\r'` with `*"$(printf '\n')"*` or use a python3 validator — `python3 -c 'import sys,re; sys.exit(0 if re.search(r"[\x00-\x1f;&|\`$()<>\\\\]", sys.argv[1]) else 1)' "$ARCH_FILE"`. Add a self-test that feeds a literal newline.
+
+### [high] perf-baseline + perf-current redirects swallow stderr instead of capturing it
+**Source:** redteam
+**Evidence:** `god-review.md:434-438, 1163-1166`. Pattern: `npm run bench 2>&1 > tmp/.../perf-baseline.json`. Order is wrong — `2>&1` runs first, copies fd2 to current fd1 (terminal), THEN `> file` redirects fd1 to file. stderr leaks to terminal, file gets only stdout. Most bench frameworks (criterion, hyperfine, pytest-benchmark) write timing data to stderr.
+**Impact:** Perf baseline is empty or contains only a banner — the regex extractor at 1175-1184 finds zero `\d+\.?\d*\s*ms` matches, so `regressions=[]` always, `PERF_REGRESSED="NONE"`, perf-regression revert path (1188-1201) never triggers. Failure-mode "perf regression after fix" mitigation is silently disabled.
+**Fix:** Reverse to `> tmp/.../perf-baseline.json 2>&1`. Also document that the regex `(\w[\w\-]+).*?(\d+\.?\d*)\s*ms` is heuristic and will mis-extract on any framework that doesn't print "<name> ... <NN>ms" — e.g. cargo bench prints "ns/iter", pytest-benchmark JSON output isn't even regex-parseable.
+
+### [high] `git diff HEAD~$FIXES_KEPT_THIS_ROUND` rescope walks too far when commits were rejected
+**Source:** redteam
+**Evidence:** `god-review.md:1398`. After the catastrophic finding above (rejected commits incrementing FIXES_KEPT_THIS_ROUND), the rescope walks back N god-review-commit slots but only some were real commits. Even WITHOUT that bug: between rounds, an auto-commit hook (per CHANGELOG: "auto-push freely on dotfiles repo") may interleave commits, so HEAD~N is not "N god-review fixes ago."
+**Impact:** Rescope leaks user/auto-sync commits into "files changed by god-review this round," polluting the next round's review scope and fooling `--rescope-on-fix=changed` into reviewing arbitrary unrelated files.
+**Fix:** Track each kept commit's SHA in `state.json.kept_fixes` (currently stores only finding_id strings). Compute scope via `git diff --name-only $FIRST_KEPT_THIS_ROUND^..HEAD`.
+
+### [high] Pre-scan secrets `grep -v "$envfile"` substring-excludes any path containing the env-file name
+**Source:** redteam
+**Evidence:** `god-review.md:317-322`. `grep -v "$envfile"` after a recursive grep — `$envfile` is e.g. `.env.local` (no path), so a hit at `src/dotenv-loader.test.ts` with `.env.local` in its name (or content) gets suppressed.
+**Impact:** A real secret leaking into `src/render-env.local.ts` (or any file/path containing the env-filename substring) is silently dropped from `PRE_SCAN_SECRETS`. False negatives in the secret-leak pre-scan that's supposed to be "defense in depth" before the principle agent.
+**Fix:** Use `grep -vF "/$envfile$"` with explicit path-end anchor or compare against absolute-path equality: `[ "$hit_file" = "$WORKDIR/$envfile" ] && skip`.
+
+### [high] `Dockerfile` hard-gate doesn't cover variants
+**Source:** redteam
+**Evidence:** `lib/hard-gates.txt:58` lists `Dockerfile` (matches `Dockerfile` and `dir/Dockerfile`). Real-world repos have `Dockerfile.prod`, `Dockerfile.dev`, `apps/web.Dockerfile`. Verified `is_hard_gate "Dockerfile.prod"` → NOT-hard-gated.
+**Impact:** Containerization configuration files (which can change runtime behavior, base images, secrets baked in) are AUTO_FIX-eligible. A fix-loop "lint" change to Dockerfile.prod ships a runtime regression directly to whatever pipeline pulls main.
+**Fix:** Add `Dockerfile*` and `*.Dockerfile` and `**/Dockerfile*` patterns to `lib/hard-gates.txt`. Same fix needed for `next.config.*` already covered, but verify `vite.config.*`, `vitest.config.*`, `webpack.config.*`, `tsconfig*.json` are also gated — none are currently.
+
+### [high] Auth hard-gate misses top-level auth files
+**Source:** redteam
+**Evidence:** `lib/hard-gates.txt:52-54` (`**/auth/**`, `**/middleware/auth*`, `middleware.ts`). Patterns require `auth/` to be a directory segment OR file living at `**/middleware/auth*`. Verified `is_hard_gate "src/auth.ts"` → NOT, `is_hard_gate "auth.ts"` → NOT.
+**Impact:** A common real-world layout is `src/auth.ts` (single auth module) or `lib/authenticate.ts` — these are the actual auth code, not gated. Pipeline can AUTO_FIX a token-validation function and merge before a human notices.
+**Fix:** Add `**/auth.*`, `**/auth-*`, `**/authenticate*`, `**/authorize*`, `**/jwt*`, `**/session*` patterns. Or accept the false-positive cost and gate any file whose path or basename matches `(?i)auth|jwt|session|oauth`.
+
+### [high] Replay-guard hashes findings BEFORE Architect spawn but RECORDS the same hash on KEEP
+**Source:** redteam
+**Evidence:** `god-review.md:891-895` (skip if hash in history) and `god-review.md:1264-1276` (always `record_finding_hash` at end of each iteration, regardless of KEPT vs REVERTED). The replay-guard intent (per CHANGELOG: "skip findings already tried-and-reverted") requires recording only on REVERT.
+**Impact:** A finding that was successfully fixed and kept is added to `finding_history_hashes`. If the same file:line:category pair surfaces a NEW, distinct issue in a later round (e.g. the kept fix introduced a new defect at the same line block), the replay-guard skips it as "already tried" — silently suppressing genuine regressions detected by the audit.
+**Fix:** Move `record_finding_hash` into the REVERT branches only (lines 1147-1156 for pre-commit reject, 1190-1201 for perf revert, 1253-1260 for gate/regression revert). Do not record on KEPT.
+
+### [high] `is_hard_gate` reads patterns absolutely but `glob_to_regex` self-test fence at the bottom of `env-helpers.sh` runs on EVERY source
+**Source:** redteam
+**Evidence:** `lib/env-helpers.sh:173`. The self-test guard is `if [ "${1:-}" = "--test-globs" ]; then ... fi`. The file is sourced (not executed) at the top of every Phase fence in `god-review.md` via `source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"`. When sourced, `$1` is the FIRST POSITIONAL ARG OF THE CALLING SHELL — which in the orchestrator's `eval set -- $ARGUMENTS` flow can be `--fix`, `--loop`, `--ruthless`, `--test-globs` (if a user ever names a scope `--test-globs`), or a literal scope path.
+**Impact:** Normally false-positive risk only — `--test-globs` is unlikely as user input. But if the `eval set --` block at line 39 leaves `$1` set to ANY value when other fences subsequently source env-helpers.sh, the self-test guard correctly evaluates to false. Where it backfires: any future shell wrapper that invokes `bash lib/env-helpers.sh "$@"` with `$1` looking innocuous still skips, BUT the test fence at the bottom calls `[ "$fail" -eq 0 ]` — when triggered correctly, file's last command exit status is the test result. If a future caller runs `bash lib/env-helpers.sh --test-globs` and gets exit 1, they assume helpers failed entirely. Brittle.
+**Fix:** Move the self-test into a separate file `lib/env-helpers-test.sh` invoked only as a test. Sourcing should never run tests.
+
+### [medium] codex-invoke.sh `set -euo pipefail` + `run_codex` exit-code propagation breaks fallback
+**Source:** redteam
+**Evidence:** `lib/codex-invoke.sh:25, 60-67`. `set -e` + `if run_codex "$PRIMARY_HOME"; then exit 0; fi` is fine for run_codex returning non-zero (the `if` consumes the failure). But the `>> "$OUTFILE"` redirection on append: if primary leaves a 5KB error then fallback writes a normal output, the consumer can't tell where primary ended. Worse — `set -e` does NOT trip inside an `if` test, so `run_codex` can leave OUTFILE in a partial state from a SIGKILL'd codex process and the fallback appends right after.
+**Impact:** Downstream parsers in Phase 2d see a concatenated `[primary error blob][primary-failed banner][fallback findings]` and either parse the primary blob as findings or fail to find any structured findings. The `[primary-failed]` banner is the only delimiter; if codex writes its banner concurrently, even that's interleaved.
+**Fix:** Truncate OUTFILE before fallback retry: in the `if [ -n "$FALLBACK_HOME" ]` branch, write `: > "$OUTFILE"` first. Move the `[primary-failed]` banner to a separate sidecar file. Document that OUTFILE is single-source-of-truth.
+
+### [medium] `mkdir-spinlock` fallback: trap fires even on stale-lock takeover, removing newly-created lock
+**Source:** redteam
+**Evidence:** `lib/codex-invoke.sh:97-119`. Sequence: stale-lockdir cleanup at 100-108 (`rmdir`), then `while ! mkdir "$LOCKDIR"`, then `trap 'rmdir "$LOCKDIR"' EXIT`. If two parallel god-review fences race past the stale check and both rmdir, then both compete for mkdir; one wins, both set the trap. The loser spins until winner finishes; when winner exits, trap rmdirs; loser then mkdirs — but loser's trap was already set on the SAME lockdir that winner just released — this is correct. However: if winner's process is `exec`-replaced or trap `EXIT INT TERM` fires twice (e.g., both INT and EXIT fire on Ctrl-C), the trap rmdir runs twice, second one fails (lockdir already gone), `set -e` does not catch it (rmdir ... 2>/dev/null || true is in the trap line — wait, it's not).
+**Impact:** A `Ctrl-C` during the codex run can cause the trap to remove a lockdir already removed by the explicit `rmdir` at line 118, exit code from the trap propagates. Probably harmless but uses `set -e` AND traps without idempotency — fragile.
+**Fix:** Trap line: `trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT INT TERM`. Already has `2>/dev/null` but missing `|| true` — under `set -e` the rmdir failure inside trap can re-enter the failure cascade.
+
+### [medium] `e2e-test.sh` synthetic project doesn't exercise hard-gate mass-rejection
+**Source:** redteam
+**Evidence:** README:171 documents `lib/e2e-test.sh` as the E2E validation entry point. Per CLAUDE.local.md: "the `--fix` mode has never been actually run end-to-end." The e2e-test.sh harness creates synthetic violations but cannot invoke `/god-review` programmatically.
+**Impact:** No automated regression test for any of the bugs above. All Phase F + fix-pass v2 fixes are commit-reviewed only. The 14 fence sources of `[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source ...` could be silently failing on any single fence (e.g. typo, path change) and there's no test to catch it.
+**Fix:** Author a programmatic harness: a `lib/test-orchestrator.sh` that simulates `$ARGUMENTS` parsing, runs each fence in isolation via `bash -c`, captures expected env state via `cat tmp/god-review/.env.sh`, and asserts. Add a CI hook on the dotfiles repo's pre-push that runs `bash lib/env-helpers.sh --test-globs` at minimum.
+
+### [medium] `compute_finding_hash` line-range normalization rounds asymmetrically
+**Source:** redteam
+**Evidence:** `god-review.md:884-890, 1267-1273`. Formula: `print(f'{(s//5)*5}-{((e+4)//5)*5}')`. For `s=42, e=47`: bucket `(42//5)*5 = 40`, `((47+4)//5)*5 = (51//5)*5 = 50`. So `42-47` → `40-50`. CRITERIA.md / CHANGELOG describe the normalization as "round to nearest 5." But for `s=44, e=44`, bucket = `40-44+4=48 / 5*5=45` — single line maps to `40-45`. Different agents reporting the SAME line might bucket differently if one reports `44-44` and another `42-46` — they yield `40-45` vs `40-50`. Hash divergence on identical findings.
+**Impact:** Cross-model agreement promotion at god-review.md:707 ("merged source includes ANY Claude source + ANY Codex source") relies on hash equality at the merge step (god-review.md:695-700). Asymmetric normalization breaks the merge — claude reports `42-46`, codex reports `44-44`, hashes differ, `(both)` promotion never fires for that finding. The very mechanism that makes god-review "multi-model" is non-deterministic.
+**Fix:** Symmetric ceiling: `print(f'{(s//5)*5}-{((e//5)+1)*5}')` or use a fixed hash window (file+category only, ignore lines for merge — restore lines for display).
+
+### [medium] `record_false_positive` writes a single-record append per FP but never deduplicates
+**Source:** redteam
+**Evidence:** `lib/env-helpers.sh:157-170`. Schema: list of objects keyed by no unique field. Across rounds, the same FP can be appended N times (once per round it surfaces).
+**Impact:** `state.json.false_positives` grows unboundedly in `--loop` mode. After 100 rounds with a stable 5-FP set, the array is 500 entries. Phase 2 no consumer of `false_positives` exists yet (per CLAUDE.local.md note that Phase 3 triage doesn't read it), but once it's wired the lookup cost is O(N×M).
+**Fix:** Dedup on `(finding_id, file, line)` at append time. Or change schema to a dict keyed on `compute_finding_hash` output. Add a self-test or schema validator.
+
+### [medium] `INSTABILITY_RATE` units mismatch: comparison treats float as int via bash `-gt` would fail; current python comparison is float-correct, but doc says "events/round" — `frozen_added_per_round` is never written
+**Source:** redteam
+**Evidence:** Already covered above (frozen_added_per_round never written). The python at 1340-1350 always returns 0 because both lists are absent. Comparing 0 > $INSTABILITY_RATE is false → never aborts.
+**Impact:** Indefinite loop has no rate-based bailout. The explicit termination signals reduce from 8 (per plan documentation) to effectively 4 (clean-rounds, max-rounds, wall-clock, frozen-units) — and frozen-units only triggers on bounded mode.
+**Fix:** Implement the writes (covered in catastrophic finding above). Cross-reference plan documentation to enumerate all 8 termination signals and verify each has a matching write.
+
+### [medium] CLAUDE.local.md notes mismatch on principle count: "ALWAYS_ON_PRINCIPLES = 18 + STACK_GATED = 5 = 23"
+**Source:** redteam
+**Evidence:** Verified: `god-review.md:458-477` ALWAYS_ON has 18 entries (counted), STACK_GATED has 5 entries, total active 23 — matches CRITERIA.md. README at line 24 says "up to 23 pairs." `--principle <name>` error message at god-review.md:144 lists 23 principle names. CHANGELOG says "principle count now 23." All consistent.
+**Impact:** None — this is the redteam confirming the count is correct, NOT a finding. Recording for traceability.
+**Fix:** N/A.
+
+### [low] state.json `loop_mode` field stored as bash string ("true"/"false") not JSON boolean
+**Source:** redteam
+**Evidence:** `god-review.md:399, 412`. `LOOP_MODE=${LOOP:-false}`, then `s|LOOPMODEPLACEHOLDER|$LOOP_MODE|g`. Result: `"loop_mode": true` (without quotes — invalid JSON if LOOP empty → `"loop_mode": false`) actually works because `false` is a JSON literal. But if `LOOP="true"`, sed substitutes the bare token `true` → valid. If LOOP was `"true"` (quoted string), substitution would inject `"true"` → still valid. OK ish.
+**Impact:** Lucky — bash bool strings happen to be JSON literals. But fragile: if a future contributor sets `LOOP=yes` or `LOOP=1`, state.json becomes `"loop_mode": yes` (invalid JSON) and the next `--resume` parse fails with exit-code-6 (corrupt state.json) — confusing the user.
+**Fix:** Quote in JSON or normalize to a literal: `LOOP_MODE_JSON=$([ "$LOOP" = "true" ] && echo true || echo false)`.
+
+### [low] `set -o pipefail` on Step 0 fence affects all downstream fences via sourced env-helpers
+**Source:** redteam
+**Evidence:** `god-review.md:24` sets `set -o pipefail`. The shell options persist across the sourced env-helpers.sh and into all subsequent fences if they're in the same shell session (slash-command harness convention). Several pipes downstream (e.g. `git status --porcelain | head -3` at 1145) succeed via head exiting first — pipefail makes the upstream `git status` SIGPIPE failure visible. With set -e, this could abort the orchestrator mid-fence.
+**Impact:** Fragile. `head -N` causing SIGPIPE on upstream is a well-known pipefail interaction. The orchestrator doesn't `set +o pipefail` or `|| true` these pipes.
+**Fix:** Either drop pipefail (already not used systemically) or audit every `| head` and add `|| true`.
+
+### [low] `git stash create` leaves an unreferenced stash object that gets GC'd
+**Source:** redteam
+**Evidence:** `god-review.md:375, 901`. `git stash create` returns a SHA but does NOT add to `git stash list`. Without `git stash store`, the object is unreachable from refs and `git gc` will prune it after the default `gc.pruneExpire=2.weeks.ago`. README claims `--resume` checks the snapshot ref — but the stale-snapshot check at line 115 (`git stash list | grep -qF "$SNAP_REF"`) is checking the stash LIST, where stash-create objects DO NOT appear. So the check at 115 ALWAYS reports stale on a stash-type snapshot, requiring `--force-resume`.
+**Impact:** `--resume` on a baseline-was-dirty repo (the stash-create branch fired) ALWAYS hits the stale check and exits with code 7 unless user passes `--force-resume`. Defeats the purpose of `--resume`. Documented as the success path in README but never works.
+**Fix:** Either replace `stash create` with `stash create` + `stash store -m "god-review baseline" $REF` so the stash appears in the list, or change the resume check at line 115 to verify the SHA still resolves: `git rev-parse --verify "$SNAP_REF^{tree}" >/dev/null 2>&1 || STALE=true`.
+
+### [low] `eval set -- $ARGUMENTS` is unquoted — word-splitting breaks scopes with spaces
+**Source:** redteam
+**Evidence:** `god-review.md:39`. `eval set -- $ARGUMENTS` splits on IFS whitespace. A scope like `"my project"` (legitimate path with space) becomes two positional args `my` and `project`, second one fails the unknown-flag check at line 71.
+**Impact:** Any scope path with spaces, or any flag value containing whitespace (e.g. `--max-wall-hours "0.5"` is ok, but `--principle "some name"` would break — though no principle has spaces). User-experience papercut, not a security issue.
+**Fix:** Use `eval "set -- $ARGUMENTS"` with a python3 shlex pre-split, or document that arguments must be shell-quoted by the harness (which the slash-command harness does NOT do).
+
+### [low] `tail -20 /tmp/gate-output.txt` uses /tmp not WORKDIR — pollutes shared /tmp
+**Source:** redteam
+**Evidence:** `god-review.md:1014, 1019, 1027, 1037, 1043, 1050, 1056, 1060, 1067`. The gate output is written to `/tmp/gate-output.txt` (single global file), then immediately re-read via `tail`. Two parallel god-review runs (e.g. user runs one in worktree A while CI runs one in worktree B) clobber each other's gate output.
+**Impact:** Cross-run pollution. Unlikely in single-user dev but a pitfall when god-review is invoked by automation.
+**Fix:** Use `$WORKDIR/tmp/god-review/gate-output.txt` or `$(mktemp)`.
+
+### [minor] CHANGELOG claims "decomposes to 3 broad-Claude + 3 broad-Codex + 23 principle pairs (46) + 2 batched validation = 54" but README at lines 93-94 says "54 max (55 with --ruthless)"
+**Source:** redteam
+**Evidence:** README:94: "3 broad-Claude + 3 broad-Codex + 23 principle pairs (46 agents) + 2 batched validation = 54." With `--ruthless` adds 1 → 55. CHANGELOG matches. But README:104 says "24h cap = 48–96 rounds = potentially 2,200–4,400 agent invocations." 96×54 = 5184, 48×54 = 2592 — README's projected 2200-4400 doesn't match its own per-round count. Off by ~20%.
+**Impact:** Cost-projection misleading. Users underestimate `--loop --max-wall-hours 24` budget.
+**Fix:** Update README to `48 rounds × 54 agents = 2,592` low estimate, `96 × 55 = 5,280` high. Or use a documented round-time of 15-30min and let the agent count multiply.
+
+### [minor] `claude-ruthless-redteam.md` is referenced but only invoked when `RUTHLESS=true`; if user passes `--principle ruthless` (typo for a real principle), error message at line 144 doesn't list it as a principle, which it isn't — but the path test at line 62 looks for `principles/ruthless.md` which doesn't exist
+**Source:** redteam
+**Evidence:** `god-review.md:62`: `[ -f "$HOME/.claude-dotfiles/commands/god-review/principles/${2}.md" ] || { error }`. The error message at 62 doesn't enumerate principles — only the Step 0.5 message at 144 does. Two divergent error texts for the same condition.
+**Impact:** Confused error UX.
+**Fix:** Use a single helper function `list_principles()` that both error messages call.
+
+### [minor] `cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-cross-layer.md` etc. use literal `~` inside Bash command-substitution
+**Source:** redteam
+**Evidence:** `god-review.md:571, 576, 581`. `cat ~/.claude-dotfiles/...` works because tilde-expansion happens. Inside command substitution `"$(cat ~/.claude-dotfiles/...)"` it ALSO works because the `cat` command line is parsed in the calling shell context. OK. But `"$(cat ~/.claude-dotfiles/.../codex-cross-layer.md)"` is then piped as the second arg to `codex-invoke.sh` → that's a HUGE prompt string passed via argv, not a file. Argv length on macOS is limited to ARG_MAX (~262144 bytes). The codex broad-reviewer `.md` files are 2-7KB each — fine. But concatenated multi-prompt scenarios (e.g. CLAUDE_FINDINGS_PROMPT at 654 with cat'd findings file inlined) can blow ARG_MAX on a large finding set.
+**Impact:** Codex-validation step fails with "argument list too long" in production-scale runs (50+ findings × multi-line evidence).
+**Fix:** Pass prompt via stdin or a temp file rather than argv. codex-invoke.sh would need a `--prompt-file` flag.
+
+### [deferred] `set -euo pipefail` in codex-invoke.sh + caller does not re-source — exit propagation only signals; partial failure path narrative is undocumented
+**Source:** redteam
+**Evidence:** `lib/codex-invoke.sh:25`. The script uses strict mode but caller uses `bash codex-invoke.sh ...` (subshell), so strict mode is contained. Documented in CHANGELOG as intentional.
+**Impact:** None observed; recording for traceability.
+**Fix:** Document in codex-invoke.sh header comment.
+
+### [deferred] `LATE_IMPORT_LINE` wired to circular-deps principle but the principle file itself was not re-read for this audit
+**Source:** redteam
+**Evidence:** CHANGELOG claims wiring. Did not verify principle body uses the env var correctly.
+**Impact:** Verification gap — would need a separate principle-file audit.
+**Fix:** Add to next round's verification list.
+
+### [deferred] `gather-context.sh` (23 lines, listed in lib/) — not invoked anywhere I could grep
+**Source:** redteam
+**Evidence:** File exists at `lib/gather-context.sh`. `grep -rn "gather-context" commands/` yields no orchestrator invocations.
+**Impact:** Either dead code or an undocumented helper. CHANGELOG and README don't mention it.
+**Fix:** Either invoke from Phase 0, document as utility, or move to `_deprecated/`.
+
+Total: 31 findings (catastrophic: 5, high: 8, medium: 7, low: 7, minor: 4, deferred: 3)
