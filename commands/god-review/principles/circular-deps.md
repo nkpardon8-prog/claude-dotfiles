@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git rev-parse:*), Bash(git branch:*), Bash(grep:*), Bash(find:*), Read, Grep, Glob, TodoWrite
-description: Check for circular dependencies and late imports past line 40
+description: Check for circular dependencies and late imports past LATE_IMPORT_LINE (default 40)
 argument-hint: "[scope]"
 ---
 
