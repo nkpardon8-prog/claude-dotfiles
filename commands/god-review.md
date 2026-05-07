@@ -872,6 +872,23 @@ fi
 
 # For each AUTO_FIX finding:
 
+# Phase F replay guard: skip findings that have already been tried and reverted in
+# prior rounds. Hash inputs match the post-keep/revert recording at the bottom of
+# this block (compute_finding_hash + is_finding_replayed live in lib/env-helpers.sh).
+FINDING_LINE_NORMALIZED=$(python3 -c "
+import sys
+try:
+  s,e = [int(x) for x in sys.argv[1].split('-')] if '-' in sys.argv[1] else (int(sys.argv[1]), int(sys.argv[1]))
+  print(f'{(s//5)*5}-{((e+4)//5)*5}')
+except Exception:
+  print(sys.argv[1])
+" "${FINDING_LINE_RANGE:-0-0}" 2>/dev/null)
+FINDING_HASH=$(compute_finding_hash "${FINDING_FILE:-unknown}" "$FINDING_LINE_NORMALIZED" "${FINDING_CATEGORY:-uncategorized}")
+if is_finding_replayed "$FINDING_HASH"; then
+  echo "Skipping $FINDING_ID — same hash already in finding_history_hashes (already tried + reverted)"
+  continue
+fi
+
 # Canonical snapshot block (mirrors Phase 1b) — handles clean and dirty working trees.
 # After the previous fix was committed, working tree is typically clean (REF = HEAD commit).
 # If worktree is unexpectedly dirty, stash-create to capture it non-destructively.
