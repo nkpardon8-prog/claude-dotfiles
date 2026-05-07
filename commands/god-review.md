@@ -1057,8 +1057,23 @@ echo "Pre-fix snapshot: $PRE_FIX_REFTYPE $PRE_FIX_REF"
 
 **(ii) Spawn ONE Architect Agent tool call.** You (the orchestrator) issue
 this Agent call with `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`,
-extended thinking enabled. Prompt:
+extended thinking enabled.
 
+**Important — disk-based output capture:** The Architect MUST write its JSON
+output to a file path you provide (NOT return it as inline text). This avoids
+the apostrophe-corruption bug from inline-paste patterns (Phase G2 fix).
+
+Compute the output path before spawning:
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+ARCH_OUTPUT_FILE="$WORKDIR/tmp/god-review/architect-output-${FINDING_ID}.json"
+mkdir -p "$WORKDIR/tmp/god-review"
+rm -f "$ARCH_OUTPUT_FILE"
+write_env
+```
+
+Then spawn the Agent with prompt:
 ```
 You are the Architect in a god-review fix loop. Describe ONE precise fix for
 this finding:
@@ -1073,7 +1088,10 @@ this finding:
 IMPACT AUDIT (required — include in rationale): list every caller / consumer /
 test / config-reference of the changed code. What could break?
 
-Output ONLY valid JSON, no markdown wrapping, no preamble:
+Write your output as valid JSON to this exact path:
+$ARCH_OUTPUT_FILE
+
+JSON shape:
 {
   "file": "<relative path>",
   "line_start": <int>,
@@ -1083,24 +1101,33 @@ Output ONLY valid JSON, no markdown wrapping, no preamble:
   "rationale": "<one sentence + impact summary>"
 }
 
-If the fix requires touching multiple files OR is a hard-gate path, output
-{"error": "requires HUMAN_GATE", "reason": "<why>"} instead.
+If the fix requires touching multiple files OR is a hard-gate path, write
+{"error": "requires HUMAN_GATE", "reason": "<why>"} to that path instead.
+
+Confirm the write completed before returning. Do NOT include the JSON in
+your response text — only the path-write counts.
 ```
 
-Capture the agent's result text into `ARCH_OUTPUT` (a string variable in your
-reasoning — when you run the next bash block, you substitute the captured
-text into `ARCH_OUTPUT="..."` literally).
+The Agent's response text is ignored; the orchestrator reads the file the
+Architect wrote. This is robust against any character in `before`/`after`/
+`rationale` (apostrophes, newlines, backslashes — all fine inside a JSON file).
 
-**(iii) Validate ARCH_OUTPUT:**
+**(iii) Validate the file the Architect wrote:**
 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-# ARCH_OUTPUT is the JSON string from the Architect — YOU paste it here.
-ARCH_OUTPUT='<paste the architect output JSON here, single-quoted>'
+ARCH_OUTPUT_FILE="$WORKDIR/tmp/god-review/architect-output-${FINDING_ID}.json"
+
+if [ ! -f "$ARCH_OUTPUT_FILE" ]; then
+  echo "Architect did not write $ARCH_OUTPUT_FILE — demoting $FINDING_ID to HUMAN_GATE"
+  record_architect_malformed
+  # Continue to next AUTO_FIX finding.
+  exit 0
+fi
 
 # Check for "requires HUMAN_GATE" error response
-if echo "$ARCH_OUTPUT" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); sys.exit(0 if 'error' in d else 1)" 2>/dev/null; then
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if 'error' in d else 1)" "$ARCH_OUTPUT_FILE" 2>/dev/null; then
   echo "Architect declined: HUMAN_GATE — re-run sub-step 3c for $FINDING_ID"
   # Re-process this finding via 3c bucket_HUMAN_GATE logic; record_finding_hash
   # is NOT called (this is a structural decline, not a tried-and-reverted fix).
