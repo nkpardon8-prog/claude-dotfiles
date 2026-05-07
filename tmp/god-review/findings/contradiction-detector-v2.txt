@@ -1,0 +1,103 @@
+### [high] Orchestrator says "19 principles" while README/CRITERIA/ALWAYS_ON_PRINCIPLES + on-disk filesystem all say 23
+**Source:** contradiction-detector
+**Evidence:**
+- `commands/god-review.md:2` (frontmatter description) — "...3 Codex broad + 19 principle agents..."
+- `commands/god-review.md:9` — "...apply 19 principle lenses plus 6 broad reviewers..."
+- `commands/god-review.md:514` — "The canonical schedule for full 19-principle × 2-family pipeline:"
+- `commands/god-review.md:595` — "**Principle file absolute paths (all 19):**" (heading says 19 but the block beneath lists 23 paths)
+- `commands/god-review.md:736` — report template prints `**Active principles**: <count> of 19`
+vs.
+- `commands/god-review/README.md:24,94,247` — "up to 23 pairs", "23 principle pairs (46 agents)"
+- `commands/god-review/CRITERIA.md:115` — "All 23 principles classified into tiers"
+- `commands/god-review.md:458-477` (`ALWAYS_ON_PRINCIPLES`) — 19 always-on entries (not 19 total) + 5 stack-gated = 24 entries listed; on-disk count is 23 .md files
+- `principles/` directory contains 23 .md files
+**Impact:** Report.md will literally print "Active principles: <N> of 19" to users even when N could be up to 23. Also misleads anyone reading the orchestrator frontmatter or maintenance docs about how many lenses run. Skill-listing surfaces (CLI skill descriptions) propagate the stale "19 principle agents" string.
+**Fix:** README/CRITERIA are canonical (23). Update god-review.md frontmatter `description` (line 2), Step 0 narrative (line 9), Phase 2 schedule comment (line 514), absolute-path heading (line 595), and report template (line 736) from 19 → 23.
+
+### [medium] env-helpers.sh write_env whitelist omits INSTABILITY_RATE / FROZEN_UNITS_CAP / SHRINKAGE_PCT / PERF_REGRESS_PCT / SECRET_LEN_FLOOR / TEST_FILE_LINE_FLOOR while the Tunable Constants block declares them as cross-fence-shared
+**Source:** contradiction-detector
+**Evidence:** `commands/god-review.md:162-172` declares 8 tunable constants intended to persist across bash fences. `commands/god-review/lib/env-helpers.sh:20-27` write_env whitelist exports only LATE_IMPORT_LINE and SPINLOCK_TIMEOUT_SEC of those — INSTABILITY_RATE, FROZEN_UNITS_CAP, SHRINKAGE_PCT, PERF_REGRESS_PCT, SECRET_LEN_FLOOR, TEST_FILE_LINE_FLOOR are missing.
+**Impact:** Phase 3 termination (line 1351 INSTABILITY_RATE check, line 1377 FROZEN_UNITS_CAP check) and Phase 1 baseline gates run in different bash fences than the Tunable Constants block. Without the whitelist entry, the values fall back to the inline `${VAR:-default}` defaults — user overrides via env var work, but cross-fence persistence (the whole purpose of write_env per Locked Decision #1) is broken for these. Contradicts the Tunable Constants comment "Override via env var if needed" + the documented cross-fence persistence model.
+**Fix:** env-helpers.sh write_env is the canonical persistence list. Add INSTABILITY_RATE FROZEN_UNITS_CAP SHRINKAGE_PCT PERF_REGRESS_PCT SECRET_LEN_FLOOR TEST_FILE_LINE_FLOOR to the for-loop var list.
+
+### [medium] Heading "all 19" contradicts the 23 paths beneath it in the same block
+**Source:** contradiction-detector
+**Evidence:** `commands/god-review.md:595` heading reads "**Principle file absolute paths (all 19):**" but the literal code block on lines 597-619 contains 23 absolute paths (the original 19 plus dead-end-detector, info-loss-detector, contradiction-detector, gap-detector).
+**Impact:** Self-contradicting block. Any maintainer reading the heading vs. counting the paths sees the disagreement. A future automated tool that counts items by the heading number would over-/under-iterate.
+**Fix:** Heading is wrong, list is correct. Change "all 19" → "all 23".
+
+### [medium] README "3 consecutive clean rounds" termination contradicts orchestrator description "naturally clean"
+**Source:** contradiction-detector
+**Evidence:**
+- `commands/god-review.md:2` — "--loop runs until naturally clean"
+- `commands/god-review/README.md:35` — "run until naturally clean for 3 consecutive rounds, instability self-abort, or wall-clock cap"
+- `commands/god-review.md:1328` (code) — `# Convergence: 3 consecutive clean rounds`
+**Impact:** The frontmatter description (the canonical one-liner that appears in skill listings, e.g., the system reminder list at /god-review skill description in the skill index) says "naturally clean" with no consecutive-rounds qualifier — users may think one clean round suffices. Code requires 3.
+**Fix:** README + code agree on "3 consecutive clean rounds" (canonical). Update god-review.md:2 frontmatter description to match: "--loop runs until 3 consecutive clean rounds, instability self-abort, or wall-clock cap."
+
+### [medium] Skill registry / global skill description still references "19 principle agents"
+**Source:** contradiction-detector
+**Evidence:** The CLI skill listing entry for `god-review` (visible in this session's skills enumeration) reads: "From-scratch multi-model codebase audit. 3 Claude broad + 3 Codex broad + 19 principle agents (Claude+Codex per principle) in parallel..." — sourced from `commands/god-review.md:2` frontmatter, which still says 19.
+**Impact:** Same file-line as the previous high-severity finding — this is the propagation mechanism. Listed separately because the visible user-facing surface is the skills index, not the file itself. Fixing god-review.md:2 fixes both.
+**Fix:** Same fix as the [high] finding (god-review.md:2 → 23).
+
+### [medium] CHANGELOG claims "Step 0.5 --principle <name> error message already lists all 23 principles" but the on-disk error-block lists 23 in a runtime narrative instruction (line 144), while the actual bash dispatch at line 62 only checks `[ -f principles/<name>.md ]` and errors with a generic "unknown principle" message that does NOT list available names
+**Source:** contradiction-detector
+**Evidence:**
+- `commands/god-review/CHANGELOG.md:50-51` — "Step 0.5 `--principle <name>` error message already lists all 23 principles"
+- `commands/god-review.md:62` — actual bash arg validator: `echo "Error: unknown principle '${2:-missing}'. Check ~/.claude-dotfiles/commands/god-review/principles/ for valid names." >&2; exit 1`
+- `commands/god-review.md:144` — narrative Step 0.5 lists 23 principles, but this is markdown instructions to the agent, not the runtime bash error string
+**Impact:** Two different "validate --principle" sites with different behaviors: bash arg parsing fails first (line 62) with a list-less error, never reaching the narrative block on line 144. CHANGELOG implies parity that doesn't exist. User running `--principle foo` sees "Check ... for valid names" not the 23-name list.
+**Fix:** Either (a) make the bash error at line 62 list the 23 names (single canonical authority is the `principles/` dir, so `ls principles/*.md`), or (b) update CHANGELOG to be honest that only the narrative path lists names. (a) is the better fix.
+
+### [low] CHANGELOG claims duplicate `is_hard_gate` lines 94-109 deleted, but in current env-helpers.sh `is_hard_gate` is at line 96 (not 94) and there is now exactly one definition
+**Source:** contradiction-detector
+**Evidence:**
+- `commands/god-review/CHANGELOG.md:36-37` — "Duplicate `is_hard_gate()` definition deleted from `lib/env-helpers.sh` (lines 94-109 — dead first definition + bridging "override" comment)."
+- `commands/god-review/lib/env-helpers.sh:96` — single `is_hard_gate()` definition
+**Impact:** Minor — line numbers in CHANGELOG drift after edits. The fix happened; just the line citation is now stale.
+**Fix:** No code change needed. Optionally update CHANGELOG to drop the line-range citation or note "post-edit lines may differ."
+
+### [low] README cost decomposition double-counts "principle pairs" semantics — "23 principle pairs (46 agents)" + "2 batched validation" = 48, plus 6 broad = 54; but 1 ruthless makes 55. Math is right but README L93-94 says max 54, L96-98 itemizes 3+3+up to 23+up to 23 (not "pairs") and L105 says 55 with --ruthless. Inconsistent referent for "agent" between lines.
+**Source:** contradiction-detector
+**Evidence:**
+- `README.md:94` — "3 broad-Claude + 3 broad-Codex + 23 principle pairs (46 agents) + 2 batched validation = 54"
+- `README.md:96-100` — "3 Claude broad reviewers ... 3 Codex broad reviewers ... Up to 23 principle pairs (Claude + Codex sub-agent each)"
+- `README.md:105` — "With --ruthless: up to 55 agents per round instead of 54"
+- `CHANGELOG.md:28-30` — "54 max (55 with --ruthless), not 47. Decomposes to 3 broad-Claude + 3 broad-Codex + 23 principle pairs (46) + 2 batched validation = 54."
+**Impact:** Arithmetic is correct (3+3+46+2=54, +1=55). But "principle pairs" vs "principle agents" terminology is used inconsistently — line 94 calls it "23 pairs (46 agents)" but the Layer B section in CRITERIA uses "23 principle pairs" without the agent equivalence. Numbers do reconcile if reader does the multiplication, but a reader scanning quickly may compute 3+3+23+2=31 instead.
+**Fix:** Add a single sentence near README:94 making the pair=2agents equivalence explicit: "Each principle pair = 1 Claude agent + 1 Codex sub-agent = 2 agents." Or change "23 principle pairs (46 agents)" to "46 principle agents (23 Claude + 23 Codex)" for direct addition.
+
+### [low] Frontmatter description says "6 broad reviewers" while README and CRITERIA describe 6 + a 4th-Claude redteam under --ruthless = up to 7
+**Source:** contradiction-detector
+**Evidence:**
+- `commands/god-review.md:9` — "apply 19 principle lenses plus 6 broad reviewers"
+- `README.md:18` — "Layer A — Broad Reviewers (6 total)" + line 43 separately documents `--ruthless` adding a 7th
+- `CRITERIA.md:143` — "The `--ruthless` flag activates `claude-ruthless-redteam` as a 4th broad reviewer in Layer A alongside the standard 3 Claude broad reviewers"
+- `broad-reviewers/` directory contains 7 files (3 Claude + 3 Codex + 1 ruthless)
+**Impact:** "6 broad reviewers" is the default-mode count and is correct in default mode but ignores --ruthless. README is honest about the conditional 7th; orchestrator narrative isn't.
+**Fix:** Update god-review.md:9 to "6 broad reviewers (7 with --ruthless)" — minor wording.
+
+### [low] consecutive_no_change_rounds removed from state.json schema per CHANGELOG, but the README/old commit references and the field name "consecutive_clean_rounds" both exist; no contradiction in current state, but the README:54 exit-code-3 description says "no net progress across consecutive rounds (churn ledger triggered)" which uses different vocabulary than the in-code variable CONSECUTIVE_CLEAN_ROUNDS — different concepts, but verbiage may confuse
+**Source:** contradiction-detector
+**Evidence:**
+- `commands/god-review/CHANGELOG.md:17-19` — "consecutive_no_change_rounds: removed from schema (vestigial — termination uses consecutive_clean_rounds)"
+- `commands/god-review/README.md:54` — "Fix loop frozen — no net progress across consecutive rounds (churn ledger triggered)"
+- `commands/god-review.md:395, 1409` — `consecutive_clean_rounds` written
+- `commands/god-review.md:1377` — exit 3 fires when `FROZEN_UNITS_COUNT > FROZEN_UNITS_CAP`, NOT from churn-ledger no-net-progress
+**Impact:** Exit-code 3 in code fires on FROZEN_UNITS_COUNT excess (a frozen-unit count, not a "no net progress" rounds counter). README:54 conflates frozen-units cap with churn-ledger no-progress. After CHANGELOG removed consecutive_no_change_rounds, the README description for exit-code 3 became orphan vocabulary.
+**Fix:** Update README:54 to: "Frozen-units cap exceeded — too many fix targets in churn-ledger freeze (`FROZEN_UNITS_COUNT > FROZEN_UNITS_CAP`)."
+
+### [minor] README:43 says --ruthless findings "require Codex confirmation for promotion" while CRITERIA:143 says "require Codex confirmation for cross-model promotion" — same intent, slight wording drift
+**Source:** contradiction-detector
+**Evidence:** README.md:43 "Findings require Codex confirmation for promotion." vs CRITERIA.md:143 "findings require Codex confirmation for cross-model promotion per Locked Decision #8."
+**Impact:** Wording differs; ambiguity about whether ALL promotion (including Tier 1 single-pattern auto-promotion) requires Codex confirmation, or only cross-model. Per Locked Decision #8 (cited in CRITERIA), it's specifically cross-model promotion.
+**Fix:** Sync README:43 to CRITERIA wording — "...require Codex confirmation for cross-model promotion."
+
+### [deferred] CRITERIA principle-index column "Stack gate" uses "always-on" for non-stack-gated rows but the orchestrator's Python pseudo-code uses two separate dicts (ALWAYS_ON_PRINCIPLES list vs STACK_GATED_PRINCIPLES dict). Different representations of the same data — not strictly a contradiction (both express the same thing), but a single source could simplify maintenance.
+**Source:** contradiction-detector
+**Evidence:** `CRITERIA.md:117-141` table column "Stack gate" vs `commands/god-review.md:458-486` (two dict structures). Both are derivable from each other but neither auto-generates the other.
+**Impact:** Future maintainer adds a principle to the orchestrator dict but forgets the CRITERIA table row, or vice versa. No bug today.
+**Fix:** Deferred — would require a single source of truth (e.g., a YAML file in lib/) generating both. Out of scope for Phase E v2 verification.
+
+Total: 12 findings (catastrophic: 0, high: 1, medium: 5, low: 4, minor: 1, deferred: 1)
