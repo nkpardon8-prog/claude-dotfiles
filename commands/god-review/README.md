@@ -306,7 +306,7 @@ Key supporting files:
 - A9: hard-gate bash check before Editor spawn
 - B1: real Phase 3 round loop
 - B7: argument parser rewrite
-- B12: --max-rounds caps --loop
+- B12: --max-rounds caps the always-on loop when explicitly passed
 - C1: Tunable Constants section
 - C4: Step 2c/2d renumber
 - C5: snapshot dir cleanup
