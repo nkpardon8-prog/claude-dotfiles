@@ -960,7 +960,7 @@ For each finding from 3a, assign exactly ONE bucket based on these rules
 1. **`bucket_REPLAYED`** — `is_finding_replayed "$FINDING_HASH"` returns 0 (already
    tried-and-reverted in a prior round, hash in `finding_history_hashes`) OR
    `is_human_gate_already_emitted "$FINDING_HASH"` returns 0 (already in
-   `human_gate_emitted` queue) OR `is_already_session_deferred "$FINDING_CATEGORY"`
+   `human_gate_emitted` queue) OR `is_already_session_deferred_by_hash "$FINDING_HASH"`
    returns 0 (already in `tmp/god-review/known-deferred-session.txt`).
 2. **`bucket_HUMAN_GATE`** — `is_hard_gate "$FINDING_FILE"` returns 0 (matches
    `lib/hard-gates.txt`), OR Architect output would be multi-file, OR
