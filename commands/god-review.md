@@ -816,6 +816,11 @@ Initialize round state and enter the real shell loop:
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 
+# Phase F: export tunables that codex-invoke.sh consumes (must be exported, not just set,
+# since codex-invoke.sh runs as a subprocess via `bash`).
+export SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"
+export LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"
+
 # Initialize loop counters
 ROUND=1
 FIXES_KEPT_THIS_ROUND=0
