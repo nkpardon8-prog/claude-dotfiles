@@ -28,7 +28,7 @@ build.gradle.kts
 *credentials*
 
 # CI/CD
-.github/workflows/**.yml
+.github/workflows/**/*.yml
 .gitlab-ci.yml
 .circleci/config.yml
 azure-pipelines*.yml
@@ -37,14 +37,17 @@ Jenkinsfile*
 .pre-commit-config.yaml
 .husky/**
 
-# Test files
+# Test files (root + nested coverage)
 *.test.*
 *.spec.*
 *_test.go
 test_*.py
 tests/**
+**/tests/**
 __tests__/**
+**/__tests__/**
 spec/**
+**/spec/**
 *_spec.rb
 *_test.rb
 
@@ -58,5 +61,6 @@ next.config.*
 Dockerfile
 docker-compose*.yml
 
-# Already quarantined
+# Already quarantined (root + nested)
 _deprecated/**
+**/_deprecated/**
