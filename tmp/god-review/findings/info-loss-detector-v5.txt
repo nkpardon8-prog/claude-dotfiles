@@ -1,0 +1,84 @@
+### [catastrophic] Stale-file cleanup at round start targets wrong directory — verifier outputs persist across rounds and corrupt next round's TSV
+**Source:** info-loss-detector
+**Evidence:** god-review.md:910-913 cleans `/tmp/verifier-all-findings.tsv /tmp/verifier-*.txt` and `$WORKDIR/tmp/god-review/architect-output-*.json`; god-review.md:1444-1446 writes verifier text via `write_agent_finding "verifier-<n>"` which (env-helpers.sh:361-365) writes to `$WORKDIR/tmp/god-review/findings/verifier-<n>.txt`; god-review.md:1468 globs `"$WORKDIR/tmp/god-review/findings"/verifier-*.txt`.
+**Impact:** Verifier-N.txt files from round N-1 stay on disk into round N. The TSV builder globs them and re-emits prior rounds' findings as fresh "VERIFIER_NEW" entries every round, inflating NEW_NEW_FINDINGS forever and preventing the 3-clean-round termination. The cleanup glob `/tmp/verifier-*.txt` matches nothing because verifier files live under `$WORKDIR/tmp/god-review/findings/`.
+**Fix:** Add `rm -f "$WORKDIR/tmp/god-review/findings/verifier-*.txt" 2>/dev/null` to god-review.md:911. Keep the `/tmp/verifier-all-findings.tsv` cleanup (that path is correct).
+
+### [high] TOTAL_OPEN_FINDINGS computed once at Phase-3 start and never decremented after kept fixes
+**Source:** info-loss-detector
+**Evidence:** god-review.md:872-886 initializes TOTAL_OPEN_FINDINGS from report.md only on Phase-3 entry; the only mutation is the `FIXES_KEPT_THIS_ROUND` increment at god-review.md:1399. record_round_counts at god-review.md:1556 passes the unchanged TOTAL_OPEN_FINDINGS into state.json.round_finding_counts every round.
+**Impact:** state.json.round_finding_counts[].total is wrong after round 1 — kept fixes are not subtracted, deferred items not subtracted, gated items not subtracted. Downstream analytics (instability detector reads adjacent fields, future dashboards, post-run reports) consume corrupted counts. Information about each round's actual outstanding-finding state is lost.
+**Fix:** After 3e completes each round, recompute: `TOTAL_OPEN_FINDINGS=$((TOTAL_OPEN_FINDINGS - FIXES_KEPT_THIS_ROUND - DEFERRED_THIS_ROUND - GATED_THIS_ROUND + VERIFIER_NEW_COUNT))` before record_round_counts call.
+
+### [high] TSV parser silently collapses findings without parseable `file:line` to a single shared hash
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1482-1488 — when `loc_m` doesn't match, parser writes `f, lrange = "unknown", "0-0"`. compute_finding_hash for any such finding becomes `sha256("unknown|0-0|<category>")`.
+**Impact:** All location-less verifier findings within a category share one hash. The first such finding gets through 3f's dedup filter; every subsequent one is silently swallowed by `is_human_gate_already_emitted` / `is_finding_replayed` / `is_already_session_deferred_by_hash` in later rounds. Distinct bugs reported in prose (no inline `path.ext:line` token) are aggregated into a single phantom and counted once.
+**Fix:** When location can't be parsed, use a per-finding salt — e.g. include first 80 chars of the block body in the hash, or skip the finding entirely with a `WARN: unparseable verifier block` log so the orchestrator knows data was dropped.
+
+### [high] Verifier filter discards severity — HUMAN_GATE / hard-gate routing for new findings is impossible
+**Source:** info-loss-detector
+**Evidence:** TSV format at god-review.md:1454, 1505 is exactly `<finding_id>\t<file>\t<line_range_normalized>\t<category>` — 4 cols, no severity. The filter loop at god-review.md:1509-1517 only computes vhash and increments VERIFIER_NEW_COUNT.
+**Impact:** Verifier-discovered hard-gate findings (e.g. .github/workflows changes, schema files) are counted as plain "new" findings rather than being routed into HUMAN_GATE_QUEUE in the same round. They re-surface next round's 3a parse only if VERIFIER_NEW lines were appended to report.md (they aren't — see next finding). Severity-driven triage in 3b can't run on verifier output because severity is lost at the TSV boundary.
+**Fix:** Extend TSV to 5 cols (add severity) and route is_hard_gate hits in the 3f filter to record_human_gate_emit before incrementing VERIFIER_NEW_COUNT.
+
+### [catastrophic] VERIFIER_NEW findings echoed to stdout but never persisted — next round's 3a re-parses report.md and finds nothing new
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1516 only `echo "VERIFIER_NEW: $vfid …"`. No append to report.md, no write to findings/verifier-consolidated.txt, no state.json mutation. Round N+1's 3a (god-review.md:926) reads `tmp/god-review/report.md` to seed findings.
+**Impact:** Verifier-discovered findings live for one stdout line, then evaporate. Round N+1 can't process them because they're not in report.md. The fix loop processes Phase-2 findings only, ignoring everything verifiers find post-fix. Massive information loss between Phase 3f and the next round's 3a.
+**Fix:** Each VERIFIER_NEW row must be appended atomically to report.md (Critical / Important / Minor section based on severity) before round-end. Use a python-backed `.tmp + mv` write similar to the HUMAN_GATE_QUEUE append at god-review.md:1004-1017.
+
+### [high] FIXES_KEPT_THIS_ROUND incremented but never persisted into round_finding_counts
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1399 increments FIXES_KEPT_THIS_ROUND. record_round_counts (env-helpers.sh:340-356) takes only `new, total, deferred_this_round, gated_this_round` — no kept-fixes parameter. write_env (env-helpers.sh:25) does persist FIXES_KEPT_THIS_ROUND so it survives cross-fence, but it gets reset to 0 at god-review.md:919 each round before being aggregated anywhere.
+**Impact:** Per-round kept-fix count is never written to state.json.round_finding_counts. The only kept-fixes record is state.json.kept_fixes (god-review.md:1394, append-only list) which has no round attribution. Post-run analytics ("how many fixes per round?", "is fix-rate decaying?") cannot be answered. Diminishing-returns termination heuristic can't be implemented.
+**Fix:** Add a 5th positional arg to record_round_counts (`kept`) and update env-helpers.sh:347-353 to write `kept_this_round` into the dict.
+
+### [medium] PERF_REGRESS_PCT and INSTABILITY_RATE absent from write_env whitelist — user-supplied non-default values lost cross-fence
+**Source:** info-loss-detector
+**Evidence:** god-review.md:156-157 set `PERF_REGRESS_PCT="${PERF_REGRESS_PCT:-0.05}"` and `INSTABILITY_RATE="${INSTABILITY_RATE:-5}"` once at Phase-1. env-helpers.sh:20-36 write_env whitelist does not include either name. After the next bash fence sources env-helpers.sh, it falls back to env-var (if user exported them) or default.
+**Impact:** If the user invokes `/god-review` from a shell that does NOT export these (the common case — they're documented as Tunable Constants, not env-required), the round-loop bash fences re-default them. A user-set PERF_REGRESS_PCT=0.10 at Phase 1 silently becomes 0.05 by Phase 3e(vi). INSTABILITY_RATE same story. Tunable values lost cross-fence.
+**Fix:** Add `PERF_REGRESS_PCT INSTABILITY_RATE` to the for-loop var list in env-helpers.sh write_env.
+
+### [medium] Stale-file cleanup misses verifier-all-findings.tsv from prior partial-round failures
+**Source:** info-loss-detector
+**Evidence:** god-review.md:911 removes `/tmp/verifier-all-findings.tsv` but the build at god-review.md:1465 uses `> /tmp/verifier-all-findings.tsv` (truncate-at-start). However, if a round dies between 1465-1493 (e.g. python heredoc fails), the TSV is half-written. Round 3a cleanup re-runs OK — but only at round start. If the same bash fence sources env-helpers and read fails mid-loop, partial TSV state leaks.
+**Impact:** Low-frequency but real: failed verifier batch leaves a TSV with N/2 lines; downstream filter counts those as VERIFIER_NEW, consuming hashes that record_finding_hash later treats as legitimate. State drifts.
+**Fix:** Move TSV truncate immediately before the python parse so half-failures don't leak. Better: write to `/tmp/verifier-all-findings.tsv.tmp` and `mv` on success.
+
+### [medium] Architect output validation discards the `before` field after extracting `file` and `rationale`
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1188-1189 extracts only `file` and `rationale` from ARCH_OUTPUT_FILE into env vars. The `before`/`after`/`line_start`/`line_end` fields stay only in the JSON file. Editor agent reads ARCH_OUTPUT_FILE from disk (god-review.md:1227), so this is OK — but if the orchestrator wants to log the patch in commit messages or post-run reports, only the rationale field survives in env vars.
+**Impact:** Information about WHAT was changed (the `before`/`after` content) is not propagated into commit message metadata or state.json.kept_fixes. state.json.kept_fixes (god-review.md:1394) appends only the finding_id string — no diff, no file, no line. Post-run reconstruction of "what did round 5 actually change?" requires git log spelunking.
+**Fix:** When appending to kept_fixes, capture `{finding_id, file, line_start, line_end, rationale, commit_sha}` instead of bare finding_id string.
+
+### [medium] check_phase_drift reports drift but doesn't gate or escalate — drift accumulates silently
+**Source:** info-loss-detector
+**Evidence:** env-helpers.sh:370-378 — function only echoes "WARN: …" if drift detected. god-report.md:130-131 calls it advisory-only. No state.json field, no exit code, no failure on drift.
+**Impact:** If god-review.md Phase 0/1/2 diverges from god-report.md (e.g. someone inlines Phase 2 in god-report rather than delegating), drift goes unnoticed across many sessions because `WARN:` lines blend into ordinary stdout. Silent information loss about config sync.
+**Fix:** check_phase_drift should write drift status to state.json.last_drift_check (timestamp + boolean) so post-run audits surface it.
+
+### [low] god-report.md round-merge step described in prose only — no concrete bash for round_N → final report.md aggregation
+**Source:** info-loss-detector
+**Evidence:** god-report.md:95-100 says "merge all round reports into one tmp/god-review/report.md, union-deduplicating findings by hash". No bash fence implementing this; relies entirely on orchestrator prose execution. Per-round files: `tmp/god-review/report-round-N.md`. Atomic write semantics not specified.
+**Impact:** A non-deterministic merge step. Findings unique to round 3 (say, an instability that only one verifier saw) may be lost or deduplicated incorrectly depending on orchestrator parser quality. The `(consistent across rounds)` tag application logic has no reference implementation. With ROUNDS=5, real signal can be lost in merge.
+**Fix:** Inline a concrete bash + python merge implementation that hashes each finding via compute_finding_hash, counts occurrences, and writes one canonical block per unique hash with a `seen_in_rounds=[1,3,4]` annotation.
+
+### [low] EDITOR_ABORT path doesn't log the Editor's reason text
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1232 says Editor returns `EDITOR_ABORT: <reason>`; the abort branch at god-review.md:1238-1257 sets `REVERT_REASON="EDITOR_ABORT"` (literal string), discarding the `<reason>` payload from the Editor's response.
+**Impact:** Diagnostic info from the Editor about WHY it aborted (path mismatch, before-content missing, line-range wrong) is dropped. state.json.reverted_fixes shows generic "EDITOR_ABORT" instead of "EDITOR_ABORT: before-content not found at file:42-47".
+**Fix:** Capture the full Editor response line into REVERT_REASON when persisting reverted_fixes.
+
+### [minor] Verifier 3/4 (Codex) disabled-but-untracked when CODEX_AVAILABLE=false
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1437-1439 conditional only-if CODEX_AVAILABLE. No state.json field records "round N had verifier coverage = Claude-only" vs "Claude+Codex".
+**Impact:** Post-run, can't tell which rounds had degraded verifier coverage. Findings missed because Codex was offline are indistinguishable from genuinely-clean rounds. Not data-loss in itself but loss of confidence-in-cleanness signal.
+**Fix:** state.json.round_finding_counts entry should include `verifier_engines: ["claude","claude","codex","codex"]` (or just the count by engine) so coverage degradation is auditable.
+
+### [deferred] FINDING_PROPOSED_DIFF whitelisted in write_env but never sourced from report.md parse
+**Source:** info-loss-detector
+**Evidence:** env-helpers.sh:32 includes FINDING_PROPOSED_DIFF in write_env list. god-review.md:929-930 lists it as a parse field. But no concrete bash extracts proposed_diff_sketch from report.md — it's prose-only. The HUMAN_GATE bash at god-review.md:1003-1004 reads `$FINDING_PROPOSED_DIFF` env var.
+**Impact:** Latent — depends on orchestrator following prose. If orchestrator forgets to populate FINDING_PROPOSED_DIFF before 3c bash, HUMAN_GATE_QUEUE entries get empty `Proposed diff:` blocks. Information from Phase 2 reviewer's diff sketch lost in 3c emission.
+
+Total: 14 findings (catastrophic: 2, high: 4, medium: 4, low: 2, minor: 1, deferred: 1)
