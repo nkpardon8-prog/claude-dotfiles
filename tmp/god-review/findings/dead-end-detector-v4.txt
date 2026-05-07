@@ -1,0 +1,73 @@
+### [high] FIXES_KEPT_THIS_ROUND incremented but never read by termination logic
+**Source:** dead-end-detector
+**Evidence:** god-review.md:868,916 (init), 1393 (increment); only read at 1609 inside *prose* describing rescope ("If FIXES_KEPT_THIS_ROUND > 0, set SCOPE..."). No bash `if`/`-gt`/`-eq` test against it anywhere; not passed to `record_round_counts` (whose 4 args are NEW_NEW_FINDINGS, TOTAL_OPEN_FINDINGS, DEFERRED_THIS_ROUND, GATED_THIS_ROUND — line 1501).
+**Impact:** Counter is computed every round but never feeds rescope, termination, churn-freeze, or state.json. The Phase G2 spec says "counter increments… feed into record_round_counts and termination" — this one does neither. Rescope branch at line 1611 keys off `git diff PRE_FIX_BASE_REF..HEAD --name-only`, not the counter, so the var is purely dead.
+**Fix:** Either (a) add `FIXES_KEPT_THIS_ROUND` as 5th arg to `record_round_counts` and extend the helper's signature + state.json schema, or (b) gate the rescope at line 1611 on `[ "${FIXES_KEPT_THIS_ROUND:-0}" -gt 0 ]` so the prose at 1609 is actually enforced. Pick one; current code does neither.
+
+### [high] NET_NEW_FINDINGS_THIS_ROUND initialized but never read or written elsewhere
+**Source:** dead-end-detector
+**Evidence:** god-review.md:870 (`NET_NEW_FINDINGS_THIS_ROUND=0` initial assignment), env-helpers.sh:25 (whitelisted in `write_env`). Zero other references across god-review.md, god-report.md, principles/, broad-reviewers/, lib/. The variable everyone *actually* uses is `NEW_NEW_FINDINGS` (god-review.md:913, 1496, 1501, 1565). Two near-identically-named counters — only one is wired.
+**Impact:** Persistent dead variable taking up a slot in `write_env`. Worse: someone reading the orchestrator can't tell if `NET_NEW_FINDINGS_THIS_ROUND` is the canonical name and `NEW_NEW_FINDINGS` is a typo, or vice-versa. Future agents will write to the wrong one and silently break termination.
+**Fix:** Delete `NET_NEW_FINDINGS_THIS_ROUND=0` from line 870 and remove from `write_env` list at env-helpers.sh:25. Standardize on `NEW_NEW_FINDINGS`.
+
+### [high] FINDING_FILE / FINDING_CATEGORY persisted but never assigned in any bash block
+**Source:** dead-end-detector
+**Evidence:** env-helpers.sh:30-31 — both whitelisted for `write_env` persistence. Reads exist (god-review.md:945, 996, 1003, 1034, 1104, 1106). But `grep -E "^[[:space:]]*FINDING_(FILE|CATEGORY)="` returns ZERO assignments anywhere in source — only comments at 934, 936 saying `# FINDING_FILE="<finding's file from parse>"` (pseudocode, not real shell).
+**Impact:** Phase 3a's hash computation at line 945 will compute hashes from `${FINDING_FILE:-unknown}` / `${FINDING_CATEGORY:-uncategorized}` for every finding because the orchestrator never extracts them from the parsed finding JSON. Every finding hash collapses to `compute_finding_hash unknown <line> uncategorized` per category bucket, defeating dedup and `is_finding_replayed`. This is a gap-detector overlap but flagged here because the persisted-var slot is dead end.
+**Fix:** Add real assignment block in Phase 3a between the parse-finding pseudocode and line 945, e.g. `FINDING_FILE=$(jq -r .file <(echo "$FINDING_JSON"))`. Either that, or remove FINDING_FILE/FINDING_CATEGORY from `write_env` and pass them inline to `compute_finding_hash` from the parser.
+
+### [medium] PRE_FIX_REF/PRE_FIX_REFTYPE persistence pointless — set + consumed in same fenced block
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1071-1077 set `PRE_FIX_REF`/`PRE_FIX_REFTYPE`; consumed at 1234-1235 in same Phase 3 round-loop fence (consolidated post fix-pass v2 commit `96394ff`). They're whitelisted in `write_env` (env-helpers.sh:28) but the round loop never crosses a fence boundary between snapshot and revert — the persistence is purely insurance against a refactor that doesn't currently exist.
+**Impact:** Minor surface area in `write_env` and dead persistence cycles each iteration. Not actively broken. But misleads future readers that PRE_FIX_REF is a cross-block contract.
+**Fix:** Drop `PRE_FIX_REF PRE_FIX_REFTYPE` from `write_env` whitelist at env-helpers.sh:28 OR add a comment in env-helpers.sh stating they're persisted only for crash-resume. Either is fine.
+
+### [medium] GATE_FAIL_REASON written 8x but read only by `echo` and one revert path
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1259, 1261-1273 (8 writes), 1275 (echo), 1314 (concatenated into REVERT_REASON). It's persisted via `write_env` (env-helpers.sh:31) so cross-block survival exists, but the only consumer outside echo/revert is REVERT_REASON, which is itself only echoed (see below).
+**Impact:** GATE_FAIL_REASON's persistence slot mostly carries display text, not control flow. No state.json field captures it for telemetry/post-hoc analysis.
+**Fix:** Either (a) add a state.json field `gate_failures_per_round[]` populated when GATES_PASS=false, so the data has a consumer beyond `echo`; or (b) drop from `write_env` since it's fence-local.
+
+### [medium] REVERT_REASON persisted but only ever consumed by `echo`
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1314, 1357, 1399 (3 writes), env-helpers.sh:32 (persisted). Reads at 1316, 1358, 1400, 1409, 1611 — every single consumer is an `echo "Reverting: $REVERT_REASON"` style log line. No state.json record, no file artifact, no termination influence.
+**Impact:** Revert reasons vanish into stdout. Failure-mode analysis after a `--loop` run loses the revert taxonomy. Persistence slot is overhead with no payoff.
+**Fix:** Add a `record_revert <finding_id> <reason>` helper to env-helpers.sh that appends to `state.json.reverts[]`, and call it at each of 1314/1357/1399 alongside the existing echo.
+
+### [medium] REGRESSION_REASON same dead-end pattern as REVERT_REASON
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1278 (init), 1281, 1285, 1289, 1306 (4 writes); only consumer is the `${REGRESSION_REASON:-gate failure...}` fallback at 1314 (i.e. it merges into REVERT_REASON, which itself is only echoed — see prior finding). env-helpers.sh:32 persists it.
+**Impact:** Persistence slot for a write-only variable. Compounds the prior finding — neither REGRESSION_REASON nor REVERT_REASON ever lands in state.json.
+**Fix:** Same as above — capture in `state.json.reverts[].regression_reason` field via a new helper.
+
+### [low] RATIONALE persisted in write_env but only used inline in one block
+**Source:** dead-end-detector
+**Evidence:** env-helpers.sh:31 persists it. Set at god-review.md:1183, consumed at 1379 (commit message). Both lines live inside the same Phase 3 round-loop fence consolidated post `96394ff`. Cross-block persistence unnecessary.
+**Impact:** Minimal. Just slot bloat in `write_env`.
+**Fix:** Remove from write_env list, OR keep and document that it's there for crash-recovery into Phase 3i.
+
+### [low] SPINLOCK_TIMEOUT_SEC and LATE_IMPORT_LINE persisted but not used in this codebase
+**Source:** dead-end-detector
+**Evidence:** env-helpers.sh:27 lists both. `LATE_IMPORT_LINE` used only by `principles/circular-deps.md` (subagent-spawned, not orchestrator). `SPINLOCK_TIMEOUT_SEC` — zero hits in god-review.md, god-report.md, lib/, principles/, broad-reviewers/ outside the env-helpers.sh whitelist itself.
+**Impact:** SPINLOCK_TIMEOUT_SEC is fully dead at the orchestrator level. LATE_IMPORT_LINE is "soft-dead" — the orchestrator persists it for a subagent that re-reads CRITERIA.md anyway.
+**Fix:** Remove `SPINLOCK_TIMEOUT_SEC` from write_env. Keep LATE_IMPORT_LINE if circular-deps.md is documented to read it from env.
+
+### [low] is_already_session_deferred (no-hash variant) marked deprecated but still in lib
+**Source:** dead-end-detector
+**Evidence:** env-helpers.sh:330-334 — `is_already_session_deferred()` self-labeled DEPRECATED. Zero callers in god-review.md / god-report.md / principles/ / broad-reviewers/. Replacement `is_already_session_deferred_by_hash` is the only one called (god-review.md:1459).
+**Impact:** Dead helper. Per Locked Decision on dead-code-conservatism this should move to `_deprecated/` not stay in lib.
+**Fix:** Remove from env-helpers.sh entirely (no callers, deprecation comment is in-tree dead code).
+
+### [minor] `check_phase_drift` helper defined but never invoked
+**Source:** dead-end-detector
+**Evidence:** env-helpers.sh:368-376 defines `check_phase_drift`. Zero call sites in god-review.md / god-report.md / lib/.
+**Impact:** Best-effort safety net never runs.
+**Fix:** Add a `check_phase_drift` call to Phase 0 of god-review.md (post-Step 0.5) so drift between god-review and god-report is detected each session.
+
+### [minor] /tmp/gate-output.txt overwritten by every gate command, never read
+**Source:** dead-end-detector
+**Evidence:** god-review.md:1261-1273 — typecheck/lint/test/cargo/go/pytest each redirect output to `/tmp/gate-output.txt` via `>`, clobbering each predecessor. Nowhere in the file is `/tmp/gate-output.txt` ever `cat`/grepped/read.
+**Impact:** Gate failure diagnostics are computed and discarded. Operator has only `GATE_FAIL_REASON="lint"` (label), no failure detail. Triage requires re-running the gate manually.
+**Fix:** (a) Use `>>` instead of `>` so all gate outputs accumulate; AND (b) on revert at line 1313, copy `/tmp/gate-output.txt` to `$WORKDIR/tmp/god-review/gate-failures/${FINDING_ID}.txt` so failure context survives.
+
+Total: 12 findings (catastrophic: 0, high: 3, medium: 4, low: 3, minor: 2, deferred: 0)
