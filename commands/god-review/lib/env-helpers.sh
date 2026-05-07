@@ -258,22 +258,40 @@ record_auto_defer() {
     return 1
   fi
   # Structural-anchor requirement: reason must reference a file path,
-  # identifier (camelCase/snake_case/PascalCase, >=4 chars), quoted external name,
-  # or issue/PR/CVE ref. Pure adjective-soup deferrals are rejected.
+  # identifier (camelCase/snake_case/PascalCase, >=4 chars, NOT in stop-list),
+  # quoted external name, or issue/PR/CVE ref. Adjective-soup is rejected
+  # even if it contains a casual camelCase word.
   if ! echo "$reason" | python3 -c '
 import sys, re
 r = sys.stdin.read()
+# Stop-list of casual camelCase/snake_case words that must not count as anchors
+# (pulled from common English phrases that LLMs use in deferral reasons).
+stop = {"isHard","isComplex","tooHard","tooComplex","cantFix","wontFix",
+        "needMore","tooLong","tooMuch","fairly_complex","very_complex",
+        "thisFeature","thisCode","thisFunction","thisModule"}
 patterns = [
-    r"\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|md|yml|yaml|json|sh|toml|sql|rb|java|c|h|cpp|hpp)\b",
-    r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b",
-    r"\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b",
-    r"\b[A-Z][a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]+\b",
-    r"[\"\x27][\w./-]{4,}[\"\x27]",
-    r"#\d{2,}\b|CVE-\d{4}-\d+",
+    # File path with extension (real anchor)
+    (r"\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|md|yml|yaml|json|sh|toml|sql|rb|java|c|h|cpp|hpp)\b", lambda m: True),
+    # snake_case (>=2 underscores OR clearly identifier-shaped) — but not in stop list
+    (r"\b[a-z][a-z0-9_]*_[a-z0-9_]+\b", lambda m: m.group(0) not in stop),
+    # camelCase — but not in stop list
+    (r"\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b", lambda m: m.group(0) not in stop),
+    # PascalCase
+    (r"\b[A-Z][a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]+\b", lambda m: m.group(0) not in stop),
+    # Quoted external name
+    (r"[\"\x27][\w./-]{4,}[\"\x27]", lambda m: True),
+    # Issue / CVE ref
+    (r"#\d{2,}\b|CVE-\d{4}-\d+", lambda m: True),
 ]
-sys.exit(0 if any(re.search(p, r) for p in patterns) else 1)
+ok = False
+for pat, validate in patterns:
+    for m in re.finditer(pat, r):
+        if validate(m):
+            ok = True; break
+    if ok: break
+sys.exit(0 if ok else 1)
 '; then
-    echo "REJECTED auto-defer: reason lacks structural anchor (need file/identifier/quoted-name/ref). Reason: '$reason'" >&2
+    echo "REJECTED auto-defer: reason lacks structural anchor (need file/identifier/quoted-name/ref; stop-list-filtered). Reason: '$reason'" >&2
     return 1
   fi
   local kd="$WORKDIR/tmp/god-review/known-deferred-session.txt"
