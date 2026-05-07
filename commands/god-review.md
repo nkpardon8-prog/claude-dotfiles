@@ -196,7 +196,7 @@ HAS_BACKEND_LENS_TRIGGER="${HAS_AUTHED_HANDLER}${HAS_BACKEND_PROJECT}"
 # Bench script detection for perf-benchmark principle
 HAS_BENCH_SCRIPT=""
 if [ -f "$WORKDIR/package.json" ]; then
-  HAS_BENCH_SCRIPT=$(python3 -c "import json; d=json.load(open('$WORKDIR/package.json')); scripts=d.get('scripts',{}); print(next((k for k in scripts if k in ('bench','benchmark','perf')),'')" 2>/dev/null)
+  HAS_BENCH_SCRIPT=$(python3 -c "import json; d=json.load(open('$WORKDIR/package.json')); scripts=d.get('scripts',{}); print(next((k for k in scripts if k in ('bench','benchmark','perf')),''))" 2>/dev/null)
 fi
 if [ -z "$HAS_BENCH_SCRIPT" ]; then
   HAS_BENCH_SCRIPT=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -name benchmarks -o -name bench \) -type d -print' _ "$WORKDIR" 2>/dev/null | head -1)
