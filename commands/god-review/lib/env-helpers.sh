@@ -278,7 +278,10 @@ sys.exit(0 if any(re.search(p, r) for p in patterns) else 1)
   fi
   local kd="$WORKDIR/tmp/god-review/known-deferred-session.txt"
   mkdir -p "$WORKDIR/tmp/god-review"
-  printf '%s:%s (auto-deferred round %s, finding %s)\n' "$category" "$reason" "${ROUND:-0}" "$fid" >> "$kd"
+  # Format: HASH=<hash>\tCATEGORY=<cat>\tREASON=<reason> (auto-deferred round N, finding ID)
+  # The leading HASH= field enables exact-match lookup via is_already_session_deferred_by_hash.
+  local fhash="${FINDING_HASH:-no-hash}"
+  printf 'HASH=%s\tCATEGORY=%s\tREASON=%s (auto-deferred round %s, finding %s)\n' "$fhash" "$category" "$reason" "${ROUND:-0}" "$fid" >> "$kd"
   local p="$WORKDIR/tmp/god-review/state.json"
   python3 -c '
 import json, sys
