@@ -69,7 +69,7 @@ Each principle runs as a Claude agent + Codex validation sub-agent pair. Princip
 | 2 | Fix loop hit max rounds — bounded fix loop exhausted `--max-rounds` cap. |
 | 3 | Fix loop frozen — no net progress across consecutive rounds (churn ledger triggered). |
 | 4 | Instability self-abort — oscillation detected across fix rounds; reverted to last clean snapshot. |
-| 5 | Wall-clock cap — `--loop` mode hit `--max-wall-hours` limit. |
+| 5 | Wall-clock cap — `--max-wall-hours` limit hit (when non-zero). |
 | 6 | Corrupt `state.json` on `--resume` — checkpoint file is unreadable or schema-invalid. |
 | 7 | Stale snapshot on `--resume` — repo state diverged from checkpoint; use `--force-resume` to override. |
 
