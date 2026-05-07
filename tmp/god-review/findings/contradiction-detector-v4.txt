@@ -1,0 +1,75 @@
+# contradiction-detector-v4 findings
+
+### [catastrophic] Smoke-test example invokes /god-review on dotfiles repo, directly violating the "forbidden on ~/.claude-dotfiles/" repo restriction documented 35 lines earlier
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:183-184 (`cd ~/.claude-dotfiles` then `/god-review`) vs god-review/README.md:144-156 ("`/god-review` is **forbidden on the `~/.claude-dotfiles/` repo`" + "For audit-only on the dotfiles repo, use `/god-report` instead")
+**Impact:** Following the README's own smoke-test instructions violates its own hard rule. Any user who copy-pastes will trigger N broken-state auto-pushes to the dotfiles remote. README:180 also calls this "report-only mode" but `/god-review` is Phase 0–3 always-on fix-loop after Phase G — the only report-only command is `/god-report`.
+**Fix:** README is canonical for user guidance; change the smoke-test block to `/god-report` (matching the Repo Restrictions section). god-review.md and god-review's behavior are both correct.
+
+### [high] Exit-code table documents code 1 = "report-only mode completed" but --report-only flag was dropped in Phase G; /god-review can never emit exit 1 for this reason
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:68 ("1 | Findings reported — report-only mode completed with unresolved findings") vs god-review.md:67 ("`--report-only` dropped in Phase G") and god-review.md exit emits at lines 83/89/96/109/1148/1156/1178/1201/1207/1515/1532/1538 — every `exit 1` is a flag-validation/error path, not a "findings reported" terminal state
+**Impact:** Documents an exit semantic the code cannot produce. Users wiring CI on `$? == 1` will never get the documented signal. Phase G removed the report-only mode without updating the exit-code table.
+**Fix:** README is the drift; either redefine code 1 as "argument/setup error" (matching what the code emits) or remove the row. god-review.md is canonical.
+
+### [high] Exit code 3 ("Fix loop frozen") documented in README but never emitted anywhere in code
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:70 ("3 | Fix loop frozen — no net progress across consecutive rounds (churn ledger triggered)") vs god-review.md — `grep -nE "exit 3"` returns 0 hits; only exit 0/1/2/4/5/6/7 are emitted (see lines 1515/1532/1538 for 5/4/2). FROZEN_UNITS_COUNT logic exists at lines 158/869/1298-1308 but does not exit with code 3.
+**Impact:** Documented frozen-state exit code is unreachable. Either the code is missing the `exit 3` branch in the frozen-cap termination path, or the docs invented an exit code. Cross-model promotion logic for hard gates depends on accurate exit semantics.
+**Fix:** Decide which is canonical. If frozen-cap should be a distinct exit, add `exit 3` to the FROZEN_UNITS_COUNT >= FROZEN_UNITS_CAP termination branch; otherwise remove row 3 from README.
+
+### [high] god-review.md:619 labels the principle list "(all 19)" but the list contains 23 entries and the rest of the file says 23
+**Source:** contradiction-detector
+**Evidence:** god-review.md:619 ("**Principle file absolute paths (all 19):**") vs god-review.md:9 ("apply 23 principle lenses"), god-review.md:509 ("full 23-principle × 2-family pipeline (covers all 23: …)"), god-review.md:621-643 (count of paths in the actual list = 23)
+**Impact:** A residual "19" Phase G2 was supposed to purge. Anyone reading the section header will believe the list is incomplete or the count is wrong; conversely if any tool greps "19 principles" it still matches inside the canonical orchestrator. CHANGELOG line 63 already claims this residual was purged.
+**Fix:** god-review.md:619 — change "(all 19)" to "(all 23)". CHANGELOG entry at line 63 is then accurate.
+
+### [high] Layer A "Broad Reviewers (6 total)" header in README contradicts orchestrator's "6 broad reviewers (7 with --ruthless)" caveat
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:26 ("**Layer A — Broad Reviewers (6 total):**") vs god-review.md:9 ("apply 23 principle lenses plus 6 broad reviewers (7 with `--ruthless`)") and god-review/README.md:113-125 (decomposes 54/55 with the +1 ruthless caveat)
+**Impact:** The Layer A header describes the layer as 6-total without acknowledging the 7th conditional reviewer. Same fact, two different statements within README. Cost arithmetic three sections later (54/55 with --ruthless) implicitly contradicts the "6 total" header.
+**Fix:** README:26 — change header to "Broad Reviewers (6, or 7 with --ruthless)" or add a sentence below mentioning the conditional 4th Claude reviewer to match line 113-125 and orchestrator line 9.
+
+### [medium] principles/contradiction-detector.md cites "19 principles" as an example numeric claim to verify — itself stale by the principle's own logic
+**Source:** contradiction-detector
+**Evidence:** god-review/principles/contradiction-detector.md:107 ('Identify any numeric claims in documentation ("19 principles", "8 broad reviewers", "exit code range 1-7")') vs CRITERIA.md:115 ("All 23 principles") and the actual /god-review state of 23 principles + 6 (or 7) broad reviewers
+**Impact:** The principle file uses the wrong count as an example, undermining its credibility. "8 broad reviewers" is also wrong (it's 6, or 7 with --ruthless). "Exit code range 1-7" is correct as a range but masks the missing exit 3.
+**Fix:** principles/contradiction-detector.md:107 — update example to "23 principles", "6 broad reviewers (7 with --ruthless)" so the example matches reality.
+
+### [medium] README:69 says exit code 2 = "bounded fix loop exhausted --max-rounds cap" but Phase G dropped --loop and the README/orchestrator describe the loop as "always-on indefinite", with --max-rounds being a rare opt-in cap
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:69 ("Fix loop hit max rounds — bounded fix loop exhausted `--max-rounds` cap") vs god-review/README.md:37 ("Phase G — `--fix`/`--loop`/`--report-only` dropped; always-on by definition"), README:309 ("--max-rounds caps the always-on loop when explicitly passed"), god-review.md:374 ("LOOP_MODE=true   # Phase G: /god-review is always-on indefinite-loop by definition")
+**Impact:** "Bounded fix loop" is the dropped pre-Phase-G mode. The current model is always-on indefinite with an optional --max-rounds cap. Calling it "bounded fix loop" in the exit-code table contradicts the always-on framing used everywhere else.
+**Fix:** README:69 — re-word as "always-on loop hit explicit --max-rounds cap" to match the Phase G framing in README:37/309 and orchestrator:374.
+
+### [medium] README cost arithmetic: 54 max claim vs orchestrator's batch description (Message 1+2+3 = 6+46 = 52, +2 validation = 54, +1 ruthless = 55; but Message 4 in orchestrator says 2 validation calls and the ruthless agent goes into Message 1 not as an addition)
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:113-114 ("up to **54 agents per round** (55 with `--ruthless`)... 3 broad-Claude + 3 broad-Codex + 23 principle pairs (46 agents) + 2 batched validation = 54") vs god-review.md:510-514 ("Message 1: 20 in parallel; Message 2: 20; Message 3: 12; Message 4: 2 batched validation; With --ruthless: add the 4th broad-Claude reviewer to Message 1 = 21 in parallel")
+**Impact:** Orchestrator describes 20+20+12+2 = 54 (without ruthless) and 21+20+12+2 = 55 (with ruthless), which matches README arithmetically. But the README's decomposition counts each principle as a "pair" (46 agents = 23 × 2 family), while the orchestrator's Messages 1-3 batches counts each individual Claude/Codex agent. This is internally consistent (46 agents = 23 pairs), so the math reconciles, BUT — a separate count in README:115 says "the typical round is ~36-40 agents" with stack-gating, which is not corroborated anywhere else and the 36-40 vs 54 gap is not explained. Low-severity ambiguity.
+**Fix:** README:115 — add a one-line note that "~36-40" is the post-stack-gating typical; the 54 max is theoretical with all stack gates active. Or remove the typical-round figure if there's no source.
+
+### [low] god-review.md:158 comment says "bounded-mode freeze cap" but bounded mode no longer exists per Phase G
+**Source:** contradiction-detector
+**Evidence:** god-review.md:158 (`FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-3}"    # bounded-mode freeze cap`) vs god-review.md:374 (Phase G: always-on indefinite, no bounded mode)
+**Impact:** Inline comment references the dropped bounded mode. Not user-visible but contradicts the Phase G framing.
+**Fix:** god-review.md:158 — change comment to "freeze cap (applies to always-on loop)".
+
+### [minor] god-report.md:34 has `while [ $# -gt 0 ]; do` and god-review.md:41 has the same — the README's "no bash `while`" guarantee is about Phase 3, not arg parsing, but the README's phrasing could mislead
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:22 ("Orchestrator-driven loop (no bash `while`)") vs god-review.md:41/god-report.md:34 (arg parser uses `while [ $# -gt 0 ]; do`) vs god-review.md:841 ("there is no outer `while [...]; do` bash construct wrapping" the Phase 3 round loop)
+**Impact:** Strictly accurate — the "no while" claim applies to Phase 3 round-loop construct only — but a reader might grep "while [" and find two hits and think the docs lied. Phase E v4 hunt list specifically called this out.
+**Fix:** README:22 — clarify "(Phase 3 round loop has no bash `while`)" so the scope of the no-while claim is explicit.
+
+### [minor] README:304 changelog line claims A7 wired exit codes 2/3/4/5/6/7 but code emits 2/4/5/6/7 (no 3)
+**Source:** contradiction-detector
+**Evidence:** god-review/README.md:304 ("A7: exit codes wired (2=max-rounds, 3=frozen, 4=instability, 5=wall-clock, 6=corrupt, 7=stale)") vs the code (no `exit 3` anywhere)
+**Impact:** Audit-trail lie. The CHANGELOG-equivalent claim in README says 6 exit codes were wired; only 5 were.
+**Fix:** README:304 — update parenthetical to remove "3=frozen" or add the actual `exit 3` branch to god-review.md (preferred — frozen termination should be distinguishable from max-rounds).
+
+### [deferred] Phase 3 "no bash while" claim is supported by orchestrator prose; not re-verified mechanically here
+**Source:** contradiction-detector
+**Evidence:** god-review.md:841/893 (Phase 3 prose), god-review/CHANGELOG.md:72-89 (Phase G refactor description)
+**Impact:** Validates the Phase G goal at the prose level; mechanical bash-fence-count check is a different audit.
+**Fix:** Out of scope for contradiction-detector — this is a fence-counting audit better suited to gap-detector or info-loss-detector.
+
+Total: 12 findings (catastrophic: 1, high: 4, medium: 3, low: 1, minor: 2, deferred: 1)
