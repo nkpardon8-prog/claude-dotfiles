@@ -1190,9 +1190,18 @@ echo "Architect output validated for $FINDING_ID. Spawning Editor."
 
 **(iv) Spawn ONE Editor Agent tool call.** Use `subagent_type: "general-purpose"`,
 `model: "claude-opus-4-7"`, low reasoning effort. Prompt is the contents of
-`lib/editor-agent.md` followed by the validated ARCH_OUTPUT JSON. The Editor
-returns one line: `APPLIED: <file>:<line_start>-<line_end>` or
-`EDITOR_ABORT: <reason>`.
+`lib/editor-agent.md` followed by:
+
+```
+The Architect's instructions are in this JSON file. Read it via the Read tool
+and apply the change exactly:
+
+$ARCH_OUTPUT_FILE
+```
+
+(The orchestrator substitutes `$ARCH_OUTPUT_FILE` literally — it's the disk
+path from sub-step 3e(iii).) The Editor returns one line:
+`APPLIED: <file>:<line_start>-<line_end>` or `EDITOR_ABORT: <reason>`.
 
 If the Editor returns `EDITOR_ABORT`:
 
