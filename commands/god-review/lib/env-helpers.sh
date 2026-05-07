@@ -296,12 +296,23 @@ json.dump(d, open(p+".tmp","w"), indent=2)
   echo "Auto-deferred $fid (${category}): $reason"
 }
 
-# is_already_session_deferred <category>
-# Returns 0 if a finding of this category already appears in the session-deferred file.
+# is_already_session_deferred_by_hash <hash>
+# Returns 0 if a finding with this exact hash is already in the session-deferred
+# file. Per-finding granularity (NOT per-category), so weak deferrals don't
+# suppress an entire principle's coverage.
+is_already_session_deferred_by_hash() {
+  local kd="$WORKDIR/tmp/god-review/known-deferred-session.txt"
+  [ -f "$kd" ] || return 1
+  grep -qE "^HASH=${1}	" "$kd"
+}
+
+# is_already_session_deferred <category>  [DEPRECATED — too coarse, kept for back-compat]
+# Returns 0 if any finding of this category already appears in the session-deferred file.
+# Use is_already_session_deferred_by_hash for new code (per-finding granularity).
 is_already_session_deferred() {
   local kd="$WORKDIR/tmp/god-review/known-deferred-session.txt"
   [ -f "$kd" ] || return 1
-  grep -qE "^${1}:" "$kd"
+  grep -qE "	CATEGORY=${1}	" "$kd"
 }
 
 # record_round_counts <new> <total> <deferred_this_round> <gated_this_round>
