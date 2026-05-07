@@ -141,7 +141,7 @@ If `--principle <name>` is set, delegate to that principle file and exit. This i
 IF $PRINCIPLE is non-empty:
   Read the principle file content from:
     ~/.claude-dotfiles/commands/god-review/principles/<PRINCIPLE>.md
-  If the file does not exist, abort: "god-review: unknown principle '<PRINCIPLE>'. Available principles: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark"
+  If the file does not exist, abort: "god-review: unknown principle '<PRINCIPLE>'. Available principles: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector"
   Spawn ONE Agent tool call:
     subagent_type: "general-purpose"
     model: "claude-opus-4-7"
