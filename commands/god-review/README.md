@@ -34,21 +34,29 @@ Each principle runs as a Claude agent + Codex validation sub-agent pair. Princip
 
 ---
 
-## Flags
+## /god-review Flags (Phase G — `--fix`/`--loop`/`--report-only` dropped; always-on by definition)
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--fix` | Enable Phase 3 fix loop. Without this flag, output is report-only. | off |
-| `--max-rounds N` | In bounded mode (with `--fix` but without `--loop`), cap fix rounds at N. | 5 |
-| `--loop` | Indefinite mode: run until naturally clean for 3 consecutive rounds, instability self-abort, or wall-clock cap. Requires `--fix`. | off |
-| `--max-wall-hours N` | Indefinite-mode wall-clock cap in hours. Must be > 0. | 24 |
+| `--max-rounds N` | Hard ceiling on round count (rare — usually you want to let it run to natural convergence). Only applied if explicitly passed. | unlimited |
+| `--max-wall-hours N` | Wall-clock backstop. **0 disables the cap** (truly indefinite). | 24 |
 | `--resume` | Continue from last per-round `state.json` checkpoint. Aborts if repo state diverged from snapshot. | off |
 | `--force-resume` | Override stale-snapshot check on `--resume`. Use when you know divergence is intentional. | off |
 | `--principle <name>` | Run ONE principle standalone, skipping orchestration. Example: `--principle single-pattern`. | off |
-| `--rescope-on-fix {full\|changed}` | Phase-3 re-review scope after applying a fix. `changed` = only modified files; `full` = full codebase. Auto-promoted to `full` on no-progress rounds. | changed |
-| `--online` | Enable npm/PyPI registry checks for hallucinated-imports detection. Default is offline (local node_modules / requirements.txt checks only). | off |
-| `--codex-validation-every N` | Run a Codex validation pass every N rounds in `--loop` mode. | 3 |
-| `--ruthless` | Add the skeptic-first redteam broad reviewer (Layer A). Findings require Codex confirmation for promotion. | off |
+| `--rescope-on-fix {full\|changed}` | Phase-3 re-review scope after applying a fix. `changed` = only modified files; `full` = full codebase. | changed |
+| `--online` | Enable npm/PyPI registry checks for hallucinated-imports detection. | off |
+| `--codex-validation-every N` | Run a Codex validation pass every N rounds (cost optimization). | 3 |
+| `--ruthless` | Add the skeptic-first redteam broad reviewer (Layer A). | off |
+
+## /god-report Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--rounds N` | Run N independent Phase 0–2 passes and aggregate findings (de-noises single-agent flukes). | 1 |
+| `--principle <name>` | Run ONE principle standalone. | off |
+| `--online` | Enable npm/PyPI registry checks. | off |
+| `--ruthless` | Add the skeptic-first redteam broad reviewer. | off |
+| `--codex-validation-every N` | Cost-optimization knob (only meaningful with `--rounds > 1`). | 3 |
 
 ---
 
