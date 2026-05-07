@@ -542,9 +542,16 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 if [ "$RUTHLESS" = "true" ]; then
   echo "Spawning ruthless redteam reviewer (--ruthless flag set)..."
+  RUTHLESS_PROMPT="$(cat $HOME/.claude-dotfiles/commands/god-review/broad-reviewers/claude-ruthless-redteam.md)"
   # Spawn 4th Claude broad reviewer alongside the existing 3.
-  # Use Agent tool with prompt loaded from broad-reviewers/claude-ruthless-redteam.md
-  # subagent_type: "general-purpose", model: "claude-opus-4-7"
+  # Agent tool call: subagent_type "general-purpose", model "claude-opus-4-7", extended thinking enabled.
+  # Prompt: $RUTHLESS_PROMPT + scope + context-package path.
+  # Tag all findings with source: claude-broad:ruthless for downstream promotion logic.
+  # Invocation pattern (same as the 3 standard broad-Claude reviewers above):
+  #   subagent_type: "general-purpose"
+  #   model: "claude-opus-4-7" (extended thinking, high reasoning effort)
+  #   prompt: $RUTHLESS_PROMPT + "\n\nScope: $SCOPE\nContext package: $WORKDIR/tmp/god-review/context-package.md"
+  #   Collect output, tag each finding line with: source=claude-broad:ruthless
   # Note: findings from this reviewer require Codex confirmation for cross-model promotion (Locked Decision #8).
 fi
 ```
