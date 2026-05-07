@@ -674,9 +674,21 @@ If Codex unavailable: skip Codex validation pass; tag all Claude-found findings 
 Spawn one Agent tool call with the consolidated Codex-found findings list. The agent reads the files and returns CONFIRMED / FALSE_POSITIVE / UNCERTAIN per finding.
 
 **Apply verification post-processing:**
-- `FALSE_POSITIVE` → drop from findings; track count in Meta-Review Notes
+- `FALSE_POSITIVE` → drop from findings; track count in Meta-Review Notes; record entry in `state.json.false_positives` via `record_false_positive` helper (see below)
 - `CONFIRMED` → eligible for confidence promotion (one level); tag `(verified)`
 - `UNCERTAIN` → keep as-is; tag `(unverified)`
+
+**Record FP entries in state.json (Phase F):** for each finding the validator returned
+as `FALSE_POSITIVE`, call:
+
+```bash
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# record_false_positive <finding_id> <file_path> <line_range> <category> <reason>
+record_false_positive "$FINDING_ID" "$FILE_PATH" "$LINE_RANGE" "$CATEGORY" "$VALIDATOR_REASON"
+```
+
+This is the canonical FP write site. The `false_positives` array is read by future
+rounds to suppress findings the validator already rejected (see Phase 3 triage).
 
 ### 2e: Aggregate findings (you, the orchestrator, ARE the aggregator)
 
