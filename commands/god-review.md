@@ -2171,7 +2171,7 @@ Never use repo-wide `git checkout .` or `git restore .` — always use targeted 
 
 ---
 
-## Reference: Hard Gates (NEVER auto-applied even with --fix)
+## Reference: Hard Gates (NEVER auto-applied — always batched to HUMAN_GATE_QUEUE)
 
 The canonical hard-gate path-glob list lives in
 [`lib/hard-gates.txt`](god-review/lib/hard-gates.txt). The orchestrator's
