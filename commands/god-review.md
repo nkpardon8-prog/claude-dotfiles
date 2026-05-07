@@ -1134,11 +1134,11 @@ if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if 'e
   exit 0
 fi
 
-# Validate required fields (env-var pattern, Locked Decision #17)
-VALID=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "
-import json, os, sys
+# Validate required fields (read from disk, no env-var passthrough — ARCH_OUTPUT_FILE is canonical)
+VALID=$(python3 -c "
+import json, sys
 try:
-    d = json.loads(os.environ['ARCH_OUTPUT'])
+    d = json.load(open(sys.argv[1]))
     required = ['file', 'line_start', 'line_end', 'before', 'after', 'rationale']
     for field in required:
         if field not in d or d[field] == '' or d[field] is None:
@@ -1148,17 +1148,18 @@ try:
     print('VALID')
 except json.JSONDecodeError as e:
     print(f'INVALID: malformed JSON — {e}'); sys.exit(1)
-")
+" "$ARCH_OUTPUT_FILE")
 if [ "$VALID" != "VALID" ]; then
   echo "Architect output malformed: $VALID"
   record_architect_malformed
   echo "Demoting $FINDING_ID to HUMAN_GATE (Architect output malformed)"
-  # Re-run 3c logic for this finding; then continue to next AUTO_FIX finding.
   exit 0
 fi
 
-# Extract ARCH_FILE for injection guard + hard-gate check
-ARCH_FILE=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "import json,os; print(json.loads(os.environ['ARCH_OUTPUT']).get('file',''))" 2>/dev/null)
+# Extract ARCH_FILE + RATIONALE from disk (used for injection guard + commit message)
+ARCH_FILE=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('file',''))" "$ARCH_OUTPUT_FILE" 2>/dev/null)
+RATIONALE=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('rationale','fix'))" "$ARCH_OUTPUT_FILE" 2>/dev/null)
+write_env
 
 # Injection guard via python3 (NOT bash $'\n'/$'\r' — those are literal
 # backslash-n on macOS bash 3.2.57; per Phase G plan).
