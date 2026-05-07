@@ -8,11 +8,11 @@ argument-hint: "[scope]"
 
 ## The Principle
 
-Imports should appear at the top of files (within the first 40 lines). Late imports indicate circular dependencies, missing dependency injection, or structural architectural smells. This codebase has **zero tolerance for late imports past line 40**.
+Imports should appear at the top of files (within the first `$LATE_IMPORT_LINE` lines — defaults to 40, configurable via env var or `Tunable Constants` block in `god-review.md`). Late imports indicate circular dependencies, missing dependency injection, or structural architectural smells. This codebase has **zero tolerance for late imports past `$LATE_IMPORT_LINE`**.
 
 **What counts as a late import:**
-- ES6 static imports (`import ... from`) after line 40
-- CommonJS `require()` after line 40
+- ES6 static imports (`import ... from`) after line `$LATE_IMPORT_LINE`
+- CommonJS `require()` after line `$LATE_IMPORT_LINE`
 - Non-lazy `await import(...)` mid-function (not in `React.lazy` or Next.js `dynamic()` context)
 
 **Acceptable late imports (do NOT flag):**
