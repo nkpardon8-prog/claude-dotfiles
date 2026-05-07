@@ -1,5 +1,74 @@
 # god-review changelog
 
+## 2026-05-06 — Phase G2: catastrophic fix-pass on Phase G
+
+Phase E v3 audit (5 verifier agents) found 9 catastrophic bugs in Phase G's
+implementation (architecture was sound; execution had real bugs). G2 closes
+all 9 + 6 high-severity items.
+
+**Catastrophic fixes (9):**
+- **C1 ARCH_OUTPUT capture from disk, not paste.** Architect now writes JSON to
+  `tmp/god-review/architect-output-<finding_id>.json`. The orchestrator reads
+  from disk via `python3 ... open(ARCH_OUTPUT_FILE)`. Eliminates the
+  apostrophe-corrupts-fix bug from inline-paste pattern.
+- **C2 `--ruthless` real Agent invocation.** Replaced comment-only stub with
+  concrete cat-prompt-to-disk + orchestrator-instruction prose for spawning
+  the 4th broad-Claude reviewer. Phase F's claimed fix was illusory; G2 ships
+  the real thing.
+- **C3 cross-fence persistence.** Added 17 Phase 3 vars to `write_env`
+  whitelist: PRE_FIX_REF, PRE_FIX_REFTYPE, PRE_FIX_BASE_REF, ARCH_FILE,
+  ARCH_OUTPUT_FILE, FINDING_HASH, FINDING_ID, FINDING_FILE,
+  FINDING_LINE_RANGE, FINDING_LINE_NORMALIZED, FINDING_CATEGORY, RATIONALE,
+  GATES_PASS, GATE_FAIL_REASON, REGRESSION, REGRESSION_REASON, REVERT_REASON,
+  NEW_NEW_FINDINGS, DEFERRED_THIS_ROUND, GATED_THIS_ROUND, ROUNDS. Replay-guard
+  now records non-empty hashes; revert paths use real file paths; commit
+  messages include the Architect's actual rationale.
+- **C4 HAS_BENCH_SCRIPT python paren imbalance.** Phase F claimed to fix this
+  in commit 64d5e98 but the `print(next((...),'')` was still missing a close
+  paren. G2 actually fixes it. Verified via live python3 invocation.
+- **C5 Loop re-entry prose strengthened.** Sub-step 3g now has explicit
+  "YOU MUST START THE NEXT ROUND RIGHT NOW BY EXECUTING SUB-STEP 3a IN A NEW
+  BATCH OF MESSAGES" instruction with reference to master-review.md:1417.
+  Distinguishes converged-exit vs re-enter cases concretely.
+- **C6 PRE_FIX_BASE_REF=$REF at round start.** Defined at sub-step 3a entry
+  via `git rev-parse HEAD`. The 3f verifier diff now has a real baseline.
+- **C7 Codex output consolidation.** After codex-broad bash invocations,
+  outputs are copied from `/tmp/codex-broad-*.txt` to
+  `findings/codex-broad-*.txt`. Same for codex-principle. Phase 2d cat now
+  globs both `claude-*.txt` AND `codex-*.txt`. The Claude-validates-Codex
+  validation pass gets real input (was reading empty before).
+- **C8 god-report.md `allowed-tools`.** Added `Agent` permission. Single-
+  principle delegation no longer broken from day one.
+- **C9 README purge `--fix`/`--loop` invocation examples.** Updated 8
+  invocation examples + 4 section headers to reflect Phase G's always-on
+  fix-loop. Copy-pasting README commands no longer hits "unknown flag".
+
+**High-severity fixes (6):**
+- **`is_already_session_deferred_by_hash`** added (per-finding granularity).
+  The category-only variant was too coarse — one weak deferral suppressed an
+  entire principle's coverage.
+- **session-deferred file format** changed to TSV: `HASH=<h>\tCATEGORY=<c>\tREASON=<r>`.
+  Enables exact-hash lookup. Old grep-by-category retained for back-compat.
+- **Auto-defer regex hardened.** Added stop-list of casual camelCase/snake_case
+  words (`thisFeature`, `tooHard`, `cantFix`, etc.) that must not count as
+  structural anchors. Prose-soup deferrals like "thisFeature is hard to fix
+  because it is complex" now correctly rejected.
+- **DEFERRED_THIS_ROUND / GATED_THIS_ROUND counters** incremented in 3c (per
+  HUMAN_GATE first-emit) and 3d (per accepted auto-defer). `record_round_counts`
+  now writes real numbers instead of hardcoded 0.
+- **3f verifier filter** is now concrete bash (was pseudocode in prose).
+  Reads `/tmp/verifier-all-findings.tsv`, computes hashes, applies the
+  3-clause filter (human_gate_emitted + finding_history_hashes + session-
+  deferred-by-hash), exports `VERIFIER_NEW_COUNT`.
+- **god-review.md "19 principles" residuals purged.** Frontmatter description,
+  Phase 2 spawn schedule (now 23 with explicit list), report template
+  "(N of 23)". README and CRITERIA already correct.
+
+**T10 verification (post-G2):** 17/17 globs pass, 9 helpers exist,
+0 placeholder strings, 0 `--fix`/`--loop` arg-parser refs, 0 `$LOOP`/`$FIX`
+residuals, both commands registered, auto-defer rejects camelCase prose-soup,
+counters wired.
+
 ## 2026-05-06 — Phase G: split + orchestrator-driven loop
 
 The biggest architectural change since v1 ship. Split `/god-review` into two
