@@ -544,6 +544,19 @@ Agents:
 2. `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-architecture-prod.md` — architecture, dead code, prod readiness, scalability
 3. `~/.claude-dotfiles/commands/god-review/broad-reviewers/claude-security-resilience.md` — injection, auth, IDOR, data leaks, resilience
 
+**After this batch returns, capture each agent's result text and persist it to
+disk so Phase 2d can consolidate it.** For each broad-Claude reviewer, after
+its Agent tool call returns, you (the orchestrator) MUST run a Bash block that
+calls `write_agent_finding <agent_name> <result_text>`. The agent name uses
+the format `claude-broad-<name>` (e.g. `claude-broad-deep-correctness`).
+This writes to `$WORKDIR/tmp/god-review/findings/<agent_name>.txt`, which
+Phase 2d reads via `cat findings/claude-*.txt > /tmp/claude-findings-consolidated.txt`.
+Without this orchestrator-instruction step the consolidation reads an empty
+directory (Phase E v2 catastrophic finding C4).
+
+Apply the same `write_agent_finding` instruction after each Layer B
+principle-Claude batch returns (use name format `claude-principle-<principle-name>`).
+
 **Layer A — 4th Claude broad reviewer (conditional — `--ruthless` only):**
 
 ```bash
