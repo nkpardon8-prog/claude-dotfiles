@@ -1,0 +1,91 @@
+### [catastrophic] Claude per-agent finding files are never written — consolidation read returns empty
+**Source:** info-loss-detector
+**Evidence:** god-review.md:651 reads `cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt > /tmp/claude-findings-consolidated.txt`, but no block in the orchestrator ever writes to `$WORKDIR/tmp/god-review/findings/claude-*.txt`. The Layer A Claude broad reviewers (lines 530–561) and Layer B Claude principle agents (lines 585–620) are described as Agent tool calls; their textual outputs are not redirected to per-agent files. The `mkdir -p findings/` at line 650 creates an empty directory; the `2>/dev/null || true` at line 651 silently swallows the empty glob.
+**Impact:** Codex validation pass at line 664 receives an empty findings list. All Claude-found findings effectively vanish before validation. The `(unverified)` tagging logic (line 670) silently passes everything through unverified. This breaks the core cross-model verification loop — failure mode #6 (same-family validation) becomes the actual behavior.
+**Fix:** Add an explicit "after each Agent invocation, write its findings to `$WORKDIR/tmp/god-review/findings/claude-broad-<name>.txt` / `claude-principle-<name>.txt`" instruction at the spawn sites (lines 530, 544, 587). Make the consolidate step error if the glob is empty rather than `|| true`.
+
+### [catastrophic] Phase 3 round loop spans markdown prose between bash statements — `while`/`done` semantics broken
+**Source:** info-loss-detector
+**Evidence:** god-review.md:815 opens a single ```bash fence containing the entire `while...do` loop through line 1422 `done`. Inside that fence, lines 855, 859, 861, 876, 909, 919–933 (Architect prompt), 1295–1303 (audit-trail markdown sections) are non-bash content sitting inside an unbroken bash code fence. Lines 912–933 contain a markdown nested code fence (```...```) inside the bash block — bash parses the inner backticks as command substitution. Specifically line 912 `# \`\`\`` is a comment but lines 913 onward are not commented and contain raw English (e.g. `Finding: <description>`).
+**Impact:** When the orchestrator literally executes this fenced bash block, the loop body contains uninterpretable English between `do` and `done`. The shell will either error out with syntax errors at the heredoc-like prose, or worse, execute `<description>` and `<file>` as redirections. Either way no fix loop iteration happens — Phase 3 never runs at all. The `# Spawn one Agent tool call` comment (line 910) and Architect-prompt body (lines 911–933) are pseudocode, not bash, but live inside the bash fence.
+**Fix:** Close the bash fence after `echo "=== Round $ROUND ==="` (line 851), put the Architect spawn instructions as markdown prose, then re-open a bash fence for the validation/keep/revert steps. Or move the entire Architect spawn into a sub-script invoked from inside the loop. See similar earlier fix-pass v2 which "consolidated Phase 3 loop into single fence" — the consolidation went the wrong direction (everything inside one fence, but the fence body contains non-bash).
+
+### [high] `human_gate_emitted` array read but never written
+**Source:** info-loss-detector
+**Evidence:** god-review.md:867 reads `d.get('human_gate_emitted',[])` to check whether a HUMAN_GATE finding was already emitted. No write site exists anywhere in the orchestrator — grep for `human_gate_emitted` returns only the read on line 867. The state.json initial template (lines 388–404) does not declare the field either.
+**Impact:** Every HUMAN_GATE finding is treated as "new" every round. The `else` branch at line 871 ("still pending as of round N") is unreachable. Report.md accumulates duplicate HUMAN_GATE entries on each round — N rounds × M human-gates = N×M emitted entries. User can't distinguish new vs persistent gates.
+**Fix:** Add a write block right after line 870: append `{'hash': FINDING_HASH, 'finding_id': FINDING_ID, 'first_seen_round': ROUND}` to `human_gate_emitted` array via the same atomic-write pattern used for `reverted_fixes`. Initialize `"human_gate_emitted": []` in state.json template at line 403.
+
+### [high] `frozen_added_per_round` and `architect_malformed_per_round` read for instability detection but never written
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1344–1345 reads `d.get('frozen_added_per_round', [])` and `d.get('architect_malformed_per_round', [])` to compute average instability rate. Neither field is initialized in state.json template (lines 388–404), and no write site appends to them. The freeze logic at line 1116 only appends to `frozen_units` (cumulative set), not `frozen_added_per_round` (per-round count). The malformed counter at line 966 increments `architect_malformed_count` (cumulative), not `architect_malformed_per_round`.
+**Impact:** `AVG_INSTABILITY` always evaluates to 0 → instability-abort guard at line 1351 (`exit 4`) can never fire. `--loop` mode loses its rate-based safety net. A pathological codebase that freezes 50 files in 3 rounds will keep iterating instead of bailing.
+**Fix:** At the end of each round (before line 1418 `write_env`), append to both arrays: `d['frozen_added_per_round'].append(round_freeze_count); d['architect_malformed_per_round'].append(round_malformed_count)`. Reset round-local counters at the top of each round (line 853).
+
+### [high] `consecutive_clean_rounds` counter is round-local — bash `CONSECUTIVE_CLEAN_ROUNDS` not synced from state.json
+**Source:** info-loss-detector
+**Evidence:** god-review.md:827 initializes `CONSECUTIVE_CLEAN_ROUNDS=0` once before the while loop, then increments at line 1330 in --loop mode. write_env (env-helpers.sh:25) does persist `CONSECUTIVE_CLEAN_ROUNDS`. The state.json field `consecutive_clean_rounds` is updated atomically at line 1409. But on `--resume`, no block reads either back into the bash variable. The state.json template (line 395) initializes it to 0, and the resume validation block (line 96–110) only reads `snapshot.ref` and `snapshot.reftype`, not the round counter or clean-round counter.
+**Impact:** A `--resume` after 2 consecutive clean rounds restarts the counter at 0, so convergence requires 3 *more* clean rounds. The 3-clean-round termination signal (line 1334) is broken across resumption boundaries.
+**Fix:** In the `--resume` branch (around line 109), also read `round`, `consecutive_clean_rounds`, `elapsed_hours` from state.json and export them. Have the Phase 3 init block (line 825) skip re-initialization if already set.
+
+### [medium] `architect_malformed_count` incremented but never read
+**Source:** info-loss-detector
+**Evidence:** god-review.md:966 increments `d['architect_malformed_count'] = d.get(...,0)+1` on each malformed Architect output. No read site exists for the field — grep confirms it appears only at the increment. The state.json template at line 396 initializes it.
+**Impact:** Field is dead-state. Was likely intended to feed instability detection (which actually reads `architect_malformed_per_round`, see prior finding) or termination, but neither path uses it. Cumulative malformed count is invisible to the loop.
+**Fix:** Either delete the field, or wire it into termination — e.g. abort if `architect_malformed_count > N * round` (architect consistently broken).
+
+### [medium] `false_positives` array written via record_false_positive but never read by Phase 3 triage
+**Source:** info-loss-detector
+**Evidence:** env-helpers.sh:157–169 implements `record_false_positive` which appends to `state.json.false_positives`. god-review.md:690–691 claims "The `false_positives` array is read by future rounds to suppress findings the validator already rejected (see Phase 3 triage)". Phase 3 triage section (lines 857–895) reads `is_finding_replayed` (a different array — `finding_history_hashes`) but never consults `false_positives`. Grep confirms no read of `false_positives` outside the record helper itself.
+**Impact:** Validator-rejected findings re-appear every round and re-trigger the Architect → Editor → revert pipeline, wasting Codex calls and bumping churn ledgers. Documented behavior at lines 690–691 doesn't match implementation.
+**Fix:** Add a `is_false_positive($FINDING_HASH)` helper to env-helpers.sh and call it as the first check in Step 3c (above line 891), before `is_finding_replayed`.
+
+### [medium] Codex per-principle finding files written to /tmp but orchestrator never aggregates them
+**Source:** info-loss-detector
+**Evidence:** god-review.md:629 writes to `/tmp/codex-principle-<NAME>.txt` per-principle (and lines 570/575/580 to `/tmp/codex-broad-*.txt`). The aggregation step (Phase 2e, lines 693+) describes hashing/merging findings but no concrete read site collects `/tmp/codex-*.txt` files. The "Codex-found findings → ONE Claude validation Agent call" instruction (line 672) is prose only — no bash block aggregates or passes the consolidated Codex output to the validation Agent.
+**Impact:** Codex findings exist on disk but never enter the report. The aggregation logic at line 695 ("Pre-promotion merge by hash") receives only Claude findings (which themselves aren't written — see catastrophic finding #1).
+**Fix:** Add an explicit bash block before Phase 2d (after line 632) that does `cat /tmp/codex-broad-*.txt /tmp/codex-principle-*.txt > $WORKDIR/tmp/god-review/findings/codex-consolidated.txt` and feed that into the Claude-side validator.
+
+### [medium] `/tmp/editor-output.txt` written by Editor but never read or applied
+**Source:** info-loss-detector
+**Evidence:** god-review.md:998 invokes editor-agent with output file `/tmp/editor-output.txt`. After this line, no read of `/tmp/editor-output.txt` exists — gates run (line 1004), regression detectors run (line 1070), keep/revert decision is made (line 1138). The Editor-agent output (success/failure/diff applied) is discarded. The orchestrator assumes the edit was applied successfully and moves to running gates.
+**Impact:** If the Editor agent reported a failure (e.g. "couldn't find the `before` string in the file"), the orchestrator can't tell — it runs gates against the unchanged file, gates pass, the fix is "kept" with no actual change made. `kept_fixes` array at line 1208 then contains phantom entries.
+**Fix:** After line 1000, parse `/tmp/editor-output.txt` for an explicit success marker (e.g. `EDIT_APPLIED: ok`). If missing, set `GATES_PASS=false` and `GATE_FAIL_REASON=editor_failed` before reaching line 1138.
+
+### [medium] Editor's actual edited file path discarded — orchestrator infers from Architect input
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1077 sets `EDITED_FILE="$ARCH_FILE"` (from Architect's intended target). Regression detectors (lines 1078–1100) test against this assumed path. If the Editor agent edited a different file (e.g. expanded a refactor across multiple files, or substituted a related file), the orchestrator never learns. The Editor's lib/editor-agent.md scope-binds it to one file, but its ability to enforce that binding without orchestrator-side check is unverified.
+**Impact:** Multi-file edits by Editor escape the test-deletion / churn / hard-gate detectors that operate on a single `EDITED_FILE` variable. `is_hard_gate "$ARCH_FILE"` at line 990 is also pre-Editor; if Editor edits a hard-gate file beyond the architect-specified one, no post-check catches it.
+**Fix:** Replace `EDITED_FILE="$ARCH_FILE"` at line 1077 with `EDITED_FILES=$(git diff --name-only)`. Iterate regression checks across the actual changed file set. Re-run `is_hard_gate` post-Editor on each touched file.
+
+### [low] Phase F exports SPINLOCK_TIMEOUT_SEC + LATE_IMPORT_LINE only inside Phase 3 fence
+**Source:** info-loss-detector
+**Evidence:** god-review.md:821–822 exports SPINLOCK_TIMEOUT_SEC and LATE_IMPORT_LINE only at the start of the Phase 3 fix-loop bash block. Phase 2 (lines 624–632) also invokes codex-invoke.sh with principle prompts, but those Phase 2 invocations happen before line 821 in execution order. Phase 1's pre-scans (line 305+) and Phase 2's principle calls don't see the exports.
+**Impact:** Phase 2 codex-invoke.sh subprocesses spawn without the late-import / spinlock-timeout tunables. circular-deps principle's LATE_IMPORT_LINE check inside Codex spawns gets the default, not the user-tuned value. Behavior diverges between Phase 2 and Phase 3 invocations of the same Codex helper.
+**Fix:** Move the two `export` lines from line 821–822 to the early initialization block at line 167–170 (Tunable Constants), or add them to write_env's whitelist (already there per env-helpers.sh:27) AND make sure write_env is called once at the very start, before Phase 1 runs.
+
+### [low] LOOP_MODE local variable shadows persisted LOOP
+**Source:** info-loss-detector
+**Evidence:** god-review.md:384 declares `LOOP_MODE=${LOOP:-false}`, then line 399 templates `LOOPMODEPLACEHOLDER` substituted with `$LOOP_MODE` (via line 412 sed). write_env's whitelist (env-helpers.sh:23) persists `LOOP` not `LOOP_MODE`. So if Phase 1b's bash block re-sources .env.sh on resume, `LOOP` is restored but the local `LOOP_MODE` is recomputed. Mostly fine, but the state.json `loop_mode` field is set ONCE at snapshot time and never refreshed if the user re-invokes with a different `--loop` flag.
+**Impact:** state.json's `loop_mode` field becomes stale on `--resume` if the resume invocation toggles --loop. The wall-clock cap check at line 1365 reads `MAX_WALL_HOURS` from env (current invocation), but the original state.json snapshot reflects the first invocation. Inconsistency between persisted state and live env.
+**Fix:** On resume, refresh `state.json.loop_mode` and `state.json.max_wall_hours` from current env before entering Phase 3.
+
+### [low] gate-output.txt repeatedly overwritten — earlier gate failures lost
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1010, 1016, 1022, 1026 (and Cargo/Go/Python branches) all redirect to `/tmp/gate-output.txt`. Each `tail -20` runs immediately after, but `GATE_FAIL_REASON` only tracks WHICH gate failed, not the output. By the time keep/revert runs at line 1138, only the last gate's output remains.
+**Impact:** Round audit trail (line 1283) has no record of typecheck/lint/test stderr — debugging a flaky-fix revert requires re-running the gate. Diagnostic info lost across the round boundary.
+**Fix:** Concatenate gate outputs to `tmp/god-review/round-${ROUND}-gates.txt` instead of overwriting one shared file. Or capture output into a per-gate variable that gets written into the round-N audit-trail markdown.
+
+### [minor] write_env whitelist has no PRE_SCAN_* vars
+**Source:** info-loss-detector
+**Evidence:** env-helpers.sh:20–27 whitelist excludes PRE_SCAN_SECRETS, PRE_SCAN_HALLUCINATED, PRE_SCAN_INJECTION, PRE_SCAN_FLAG_COUNT (god-review.md:311, 327, 349, 357).
+**Impact:** Phase 1a pre-scan results compute and echo, then evaporate at the next bash fence. Phase 2 reviewer prompts can't include "pre-scan already flagged X". Pre-scan flag count echoed but not consumed downstream.
+**Fix:** Either write pre-scan results to a file under tmp/god-review/pre-scans/ (and have Phase 2 reviewers include them in context), or add to write_env whitelist.
+
+### [minor] perf-baseline / perf-current overwritten without keeping per-round history
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1163–1166 writes `tmp/god-review/perf-current.json` per round; the comparison at line 1171 always compares current vs the original baseline, never round-N vs round-N+1.
+**Impact:** Slow drift across rounds (each round under threshold but cumulative regression > threshold) is invisible. Final result could be 20% slower than baseline despite no single round triggering the 5% regression check.
+**Fix:** After each round's perf comparison, also append cumulative-vs-baseline timing to `tmp/god-review/perf-history.json`. Add a rolling-sum check.
+
+Total: 15 findings (catastrophic: 2, high: 3, medium: 5, low: 3, minor: 2, deferred: 0)
