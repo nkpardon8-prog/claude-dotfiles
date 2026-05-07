@@ -1,5 +1,45 @@
 # god-review changelog
 
+## 2026-05-06 — Phase G3: residual fix-pass post Phase E v4
+
+Phase E v4 audit on Phase G2 found 5 catastrophic + 21 high-severity items
+(down from 9+31 in v3). G3 closes the remaining cluster.
+
+**Catastrophic fixes:**
+- **3b triage now uses `is_already_session_deferred_by_hash`** instead of the
+  deprecated category-only variant. One weak deferral no longer suppresses an
+  entire principle's coverage for the rest of the session.
+- **3f verifier filter now has concrete TSV producer prose.** The orchestrator
+  is given a python3 block that parses each verifier-N.txt markdown into TSV
+  rows (`finding_id\tfile\tline_range_normalized\tcategory`) before the filter
+  bash reads them. Was pseudocode; now executable.
+- **Stale-file cleanup at round start.** Removes prior round's
+  `architect-output-*.json`, `/tmp/verifier-*`, `/tmp/codex-*` before the
+  new round produces fresh ones. Eliminates cross-round leak.
+- **README dotfiles smoke-test now uses `/god-report`** (was `/god-review`,
+  contradicting the Repo Restrictions section).
+
+**High-severity fixes:**
+- **god-review.md:619 "(all 19)" residual** updated to "(all 23)".
+- **`editor-agent.md` rewritten** to read from `$ARCH_OUTPUT_FILE` path
+  instead of expecting inline JSON. Matches Phase G2's disk-based Architect
+  output protocol. Output now: single line `APPLIED: <file>:<lines>`.
+- **6 new vars added to `write_env` whitelist:** `FINDING_DESCRIPTION`,
+  `FINDING_ROOT_CAUSE`, `FINDING_SEVERITY`, `FINDING_PROPOSED_DIFF`,
+  `LOOP_EXIT`, `VERIFIER_NEW_COUNT`.
+- **`NET_NEW_FINDINGS_THIS_ROUND`** removed from `write_env` whitelist and
+  init (vestigial confusion-bomb — `NEW_NEW_FINDINGS` is the wired counter).
+- **Exit code 1 redocumented** as "Argument-parse error" (was the stale
+  "report-only mode completed" — `--report-only` was dropped in Phase G).
+- **Exit code 3 marked reserved** (no code path emits it).
+- **README "Layer A — Broad Reviewers (6 total)"** acknowledges 7th with
+  `--ruthless`.
+
+**T10 verification (post-G3):** 17/17 globs pass, 0 "all 19" residuals,
+0 deprecated `is_already_session_deferred` callers in 3b, 0 vestigial
+`NET_NEW_FINDINGS_THIS_ROUND`, ARCH_OUTPUT_FILE pattern in place, smoke-test
+points at /god-report.
+
 ## 2026-05-06 — Phase G2: catastrophic fix-pass on Phase G
 
 Phase E v3 audit (5 verifier agents) found 9 catastrophic bugs in Phase G's
