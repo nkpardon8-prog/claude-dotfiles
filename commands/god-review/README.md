@@ -90,7 +90,9 @@ In practice, most findings are architectural, structural, or multi-file. **Expec
 
 ## `--loop` Cost Warning
 
-Indefinite mode runs Phase 2 (up to 47 agents per round: 3 broad-Claude + 1 ruthless when active + 3 broad-Codex + up to 23 principle pairs + 2 batched validation). Note that with stack-gating the typical round is ~36-40 agents:
+Indefinite mode runs Phase 2 with up to **54 agents per round** (55 with `--ruthless`):
+3 broad-Claude + 3 broad-Codex + 23 principle pairs (46 agents) + 2 batched validation = 54.
+With stack-gating the typical round is ~36-40 agents:
 - 3 Claude broad reviewers (each reviews the ENTIRE codebase scope — most expensive calls)
 - 1 ruthless redteam reviewer (only when `--ruthless` is set)
 - 3 Codex broad reviewers
