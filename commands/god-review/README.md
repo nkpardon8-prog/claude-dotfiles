@@ -90,7 +90,7 @@ All outputs are relative to the project root (the directory where `/god-review` 
 
 ---
 
-## `--fix` Utility Warning
+## AUTO_FIX Utility Note
 
 AUTO_FIX is **intentionally narrow**. A fix is auto-applied only when ALL of the following hold:
 
@@ -100,13 +100,17 @@ AUTO_FIX is **intentionally narrow**. A fix is auto-applied only when ALL of the
 4. The change does not touch any CI YAML file.
 5. The change does not touch any hard-gated path (see Hard Gates below).
 
-In practice, most findings are architectural, structural, or multi-file. **Expect `--fix` to auto-apply 10–30% of findings.** The rest appear as `HUMAN_GATE` diffs in `report.md` for manual review. Do not expect `--fix` to handle 90% of findings; that expectation leads to disappointment and over-trust of automated patching.
+In practice, most findings are architectural, structural, or multi-file.
+**Expect AUTO_FIX to auto-apply 10–30% of findings.** The rest queue to the
+`HUMAN_GATE_QUEUE` section of `report.md` for manual review at end of run.
+Do not expect autonomous coverage of 90% of findings; that expectation leads
+to over-trust of automated patching.
 
 ---
 
-## `--loop` Cost Warning
+## `/god-review` Cost Profile
 
-Indefinite mode runs Phase 2 with up to **54 agents per round** (55 with `--ruthless`):
+The autonomous loop runs Phase 2 with up to **54 agents per round** (55 with `--ruthless`):
 3 broad-Claude + 3 broad-Codex + 23 principle pairs (46 agents) + 2 batched validation = 54.
 With stack-gating the typical round is ~36-40 agents:
 - 3 Claude broad reviewers (each reviews the ENTIRE codebase scope — most expensive calls)
@@ -118,7 +122,7 @@ With stack-gating the typical round is ~36-40 agents:
 
 **24h cap = 48–96 rounds = potentially 2,200–4,400 agent invocations.**
 
-With `--ruthless`: up to 55 agents per round instead of 54. Adjust cost projections accordingly — a 24h `--loop --ruthless` run may invoke ~100–200 additional agents over the session vs. a non-ruthless run.
+With `--ruthless`: up to 55 agents per round instead of 54. Adjust cost projections accordingly — a 24h `--ruthless` run may invoke ~100–200 additional agents over the session vs. a non-ruthless run.
 
 To halve round time: set `CODEX_HOME_1` and `CODEX_HOME_2` environment variables to two separate `~/.codex` profile directories. The `lib/codex-invoke.sh` script alternates between them, eliminating most serialization overhead.
 
@@ -127,25 +131,29 @@ export CODEX_HOME_1=~/.codex-account1
 export CODEX_HOME_2=~/.codex-account2
 ```
 
-**Always pass an explicit `--max-wall-hours` when using `--loop`.** The default 24h cap is intentionally conservative. For most audits, 4–8 hours is sufficient:
+**Always pass an explicit `--max-wall-hours` when running long.** The default 24h cap is intentionally conservative. For most audits, 4–8 hours is sufficient. Pass `--max-wall-hours 0` for truly indefinite runs:
 
 ```bash
-/god-review --fix --loop --max-wall-hours 6
+/god-review --max-wall-hours 6
 ```
 
 ---
 
-## `--loop` Repo Restrictions
+## Repo Restrictions
 
-`--loop` is **forbidden on the `~/.claude-dotfiles/` repo**.
+`/god-review` is **forbidden on the `~/.claude-dotfiles/` repo** (the
+auto-fix loop).
 
-The dotfiles repo has an auto-push hook that commits and pushes every change. Running `--loop` (which implies `--fix`) would push N broken-state commits to the remote — one per fix attempt per round. This corrupts the dotfiles history and can push half-applied changes.
+The dotfiles repo has an auto-push hook that commits and pushes every change.
+Running `/god-review` would push N broken-state commits to the remote — one
+per fix attempt per round. This corrupts the dotfiles history.
 
-**Rule:** Run `/god-review --fix --loop` only on:
+**Rule:** Run `/god-review` only on:
 - A project repo with no auto-push hook, OR
 - A worktree branch you can review and squash before merging
 
-Self-test on the dotfiles repo is report-only (Phase 0–2, no `--fix`, no `--loop`).
+For audit-only on the dotfiles repo, use `/god-report` instead — it's
+Phase 0–2 (report-only) and never writes source files.
 
 ---
 
@@ -154,13 +162,13 @@ Self-test on the dotfiles repo is report-only (Phase 0–2, no `--fix`, no `--lo
 After a Ctrl-C, system reboot, or agent timeout, resume from the last checkpoint:
 
 ```bash
-/god-review --fix --loop --resume
+/god-review --resume
 ```
 
 The checkpoint is `tmp/god-review/state.json`. It stores the repo snapshot SHA taken at Phase 1. On `--resume`, the command checks whether the current repo HEAD matches the snapshot. If it has diverged (e.g., you made commits while the loop was paused), you will be prompted to use `--force-resume`:
 
 ```bash
-/god-review --fix --loop --resume --force-resume
+/god-review --resume --force-resume
 ```
 
 `--force-resume` skips the stale-snapshot check and continues from the ledger state. Use only when you understand how the interim commits interact with the pending findings.
