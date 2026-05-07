@@ -269,7 +269,7 @@ Categories covered:
 ├── Phase 2: parallel spawn (single message)
 │   ├── Layer A: broad-reviewers/ (3 Claude + 3 Codex)
 │   └── Layer B: principles/ (up to 23 × Claude+Codex pairs)
-├── Phase 3 (--fix): lib/editor-agent.md per fix
+├── Phase 3 (always-on for /god-review): lib/editor-agent.md per fix
 │   └── snapshot → fix → re-verify → keep/revert → churn-ledger check
 └── Outputs: tmp/god-review/{context-package,report,state,round-N-findings}.md
 ```
