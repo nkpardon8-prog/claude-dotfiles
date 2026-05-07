@@ -20,6 +20,37 @@ Before completing a task or pushing code, run both unit/line-level tests and end
 
 **All other repos** (project code, applications, libraries): NEVER push to GitHub without explicit user approval. Always show what will be pushed and ask for confirmation first. This applies to all branches, all remotes, no exceptions.
 
+## Per-Session Status Label
+Write a one-line identifier for the current Claude Code window to `~/.claude/session-status/<session_id>.txt` so it shows up as a dimmed line 2 of the statusline. The user runs many Claude Code windows simultaneously; this label is how they tell them apart at a glance.
+
+**Format:** `Client › Project › what's happening right now`
+
+**How to discover your session_id (do this once per session, near the start):**
+Run `echo $CLAUDE_SESSION_ID` via the Bash tool. Capture the value and reuse it for every subsequent write in this session. The env var is exposed to subprocesses Claude spawns (Bash tool, hooks), but Claude does not see it passively in conversation context — you must run the command to read it.
+
+**Before the first write, ensure the directory exists with the right mode:**
+```
+mkdir -p ~/.claude/session-status && chmod 700 ~/.claude/session-status
+```
+Idempotent; safe to run every time. The unconditional `chmod` fixes the mode even if the directory was created earlier with a wider mode.
+
+**Format rules:**
+- Chevron `›` separator with single space on each side.
+- Use `Internal` if working for self/team, `Self` for personal projects.
+- Use the repo name when there is no project codename.
+- Keep the whole line under 100 characters.
+- Write exactly **one line** of plain text. A trailing newline is harmless; embedded newlines are silently dropped (the statusline reads only the first line).
+
+**When to write/update the file:**
+- (a) The first real task in this session is clear.
+- (b) The topic genuinely shifts to a different client/project/area.
+- (c) The user explicitly asks for a status update.
+- Not every reply. Updating noisily defeats the purpose.
+
+**File handling:** Overwrite the file each time (use the `Write` tool, not append). One line. No metadata, no JSON, no formatting markers.
+
+Once this label is being written, **stop prepending `STATUS:` lines to in-conversation responses** — the statusline replaces that mechanism.
+
 ## Browser MCP Cleanup
 **Pre-flight (before driving anything via `chrome-devtools` / `playwright` MCP):**
 Run `pgrep -f 'chrome-devtools-mcp|playwright-mcp' | wc -l`. If the count is greater than 1 (one current instance per server is normal), the prior session's instances are stale and will fight the active one for the Chrome remote-debugging socket. Symptom: tool calls succeed once or twice then `MCP error -32000: Connection closed` on every subsequent call. Fix: `pkill -f 'chrome-devtools-mcp'` (or `playwright-mcp`), have the user `/mcp` reconnect, then proceed.
