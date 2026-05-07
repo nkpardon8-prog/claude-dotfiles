@@ -1,0 +1,75 @@
+# contradiction-detector v5 (post-G3)
+
+### [high] CHANGELOG claims `git tag` snapshot but orchestrator still uses `git stash create` / `git rev-parse HEAD`
+**Source:** contradiction-detector
+**Evidence:** CHANGELOG.md:205-206 ("Snapshot baseline now via `git tag` instead of stash") vs god-review.md:364-371 (`git stash create` / `git rev-parse HEAD`) and README.md:87 (state.json snapshot semantics) and env-helpers.sh / state.json schema with `reftype` enum `stash` | `commit` only.
+**Impact:** Anyone reading CHANGELOG for "what Phase G shipped" will look for tag-based snapshot logic that does not exist; resume-stale check at god-review.md:104-109 only knows `commit` and `stash` reftypes. The "survives auto-push cleanup cycles" justification is stale and misleading.
+**Fix:** CHANGELOG.md is wrong (orchestrator is canonical). Either delete that bullet or rewrite to match: "Snapshot baseline uses `git stash create` (dirty tree) or `git rev-parse HEAD` (clean tree); reftype recorded in state.json."
+
+### [high] Spawn schedule says Message 3 "covers principles 17-23" — off-by-one (covers 18-23, which is 6 principles)
+**Source:** contradiction-detector
+**Evidence:** god-review.md:510-512 — Message 1 = 7 principle-Claude (1-7), Message 2 = next 10 principle-Claude (8-17), Message 3 = remaining 6 principle-Claude. The label says "covers principles 17-23" but 17-23 inclusive is 7 principles, not 6, and principle 17 is already done in Message 2.
+**Impact:** If anyone takes the principle-index labels literally to derive the spawn list (e.g., for telemetry, debugging an absent agent), they will double-spawn principle 17 and skip principle 18.
+**Fix:** Change "covers principles 17-23" to "covers principles 18-23" in god-review.md:512.
+
+### [medium] ALWAYS_ON_PRINCIPLES inline comments only mark 6 principles as "Tier 1, promoted" but CRITERIA Tier-1 list has 10
+**Source:** contradiction-detector
+**Evidence:** god-review.md:454-466 marks single-pattern, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection as `# Tier 1, promoted`. CRITERIA.md:138-141 also classifies dead-end-detector, info-loss-detector, contradiction-detector, gap-detector as Tier 1 with promotion. The 4 new failure-class detectors at god-review.md:468-471 carry no Tier-1 comment.
+**Impact:** A reader maintaining the orchestrator who relies on the inline comments to understand which principles get cross-model promotion will conclude the 4 new detectors are Tier 2, contradicting CRITERIA.md (the canonical source).
+**Fix:** Append `# Tier 1, promoted` to god-review.md:468-471 to match CRITERIA.md:138-141.
+
+### [medium] README documents `--principle <name>` for /god-review but flag table omits `--principle` from /god-report flag list (it IS supported)
+**Source:** contradiction-detector
+**Evidence:** README.md:56 lists `--principle <name>` under /god-report flags — OK. But god-report.md:3 argument-hint shows `--principle` and god-report.md:41-43 parses it. Consistent on /god-report. The drift is subtle: README.md:45 says /god-review's `--principle <name>` "skipping orchestration"; god-review.md:128 documents it the same way. So this is actually consistent.
+**Impact:** Negligible — both sides agree.
+**Fix:** None needed. (Withdrawn.)
+
+### [medium] Source-tag convention drift: `claude-broad-<name>` (hyphen, write_agent_finding agent_name) vs `claude-broad:<name>` (colon, downstream source tag)
+**Source:** contradiction-detector
+**Evidence:** god-review.md:519 declares `claude-broad:<name>` as the source tag. god-review.md:542 instructs `write_agent_finding "claude-broad-<name>"` (hyphen — used as filename). god-review.md:572 example: `write_agent_finding "claude-broad-ruthless"`. god-review.md:575 then says findings carry source tag `claude-broad:ruthless` (colon).
+**Impact:** Two distinct identifiers (agent_name vs source tag) collapse the boundary in nearby prose without explicitly naming the boundary; new contributors will conflate them and break the cat-glob (`findings/claude-*.txt`) or the promotion logic (which keys on the colon form).
+**Fix:** Add one prose sentence at god-review.md:519-522 explicitly: "agent_name (used in filenames and as write_agent_finding's first arg) uses hyphen form; source tag (used in cross-model promotion + report source field) uses colon form. Convert via simple s/-/:/ on the first segment boundary."
+
+### [medium] god-review.md cost decomposition not explicitly stated; only README.md has the 3+3+46+2=54 math
+**Source:** contradiction-detector
+**Evidence:** README.md:113-119 lists "54 agents per round (55 with --ruthless): 3 broad-Claude + 3 broad-Codex + 23 principle pairs (46 agents) + 2 batched validation = 54". CHANGELOG.md:233-235 echoes the math. god-review.md frontmatter:2 says "3 Claude broad + 3 Codex broad + 23 principle agents (Claude+Codex per principle)" — leaves out the 2 validation agents and the +1 ruthless. god-review.md:9 also omits validation count.
+**Impact:** Reader of orchestrator alone cannot reconcile the 54 number; if README and orchestrator drift further, no on-disk source of truth exists.
+**Fix:** Add one sentence to god-review.md frontmatter or top-of-file: "Per-round agent count: 3 broad-Claude + 3 broad-Codex + 23 principle pairs + 2 validation = 54 (55 with --ruthless)."
+
+### [low] /god-report says it shares Phase 0/1/2 with /god-review but its `argument-hint` includes `--codex-validation-every` even though /god-report has no validation pass when `--rounds=1`
+**Source:** contradiction-detector
+**Evidence:** god-report.md:3 argument-hint advertises `[--codex-validation-every N]`. README.md:59 notes "only meaningful with --rounds > 1". The flag is parsed at god-report.md:44-46 but never wired to anything inside god-report (the validation pass lives in /god-review's Phase 2d which /god-report inherits via "Mirrored from /god-review" prose).
+**Impact:** User passing `--codex-validation-every 5` to a default `/god-report` (rounds=1) will think it took effect; it has no effect in single-round mode.
+**Fix:** Either (a) reject the flag at god-report.md:44-46 when `ROUNDS == 1`, or (b) document explicitly in /god-report's flag table that the flag is silently ignored at rounds=1.
+
+### [low] CHANGELOG Phase G3 says "all 19 residual updated to (all 23)" but CHANGELOG.md itself still has the literal "(all 19" string at line 38
+**Source:** contradiction-detector
+**Evidence:** CHANGELOG.md:38 contains `0 "all 19" residuals` as a verification claim. The grep used to count "all 19" residuals (`grep -cn "all 19\|of 19\|(19 "`) returns hits only inside CHANGELOG.md itself (the verification line and historical bullet text). Within god-review.md / README.md / CRITERIA.md / god-report.md / lib/ / principles/ / broad-reviewers/, count is 0.
+**Impact:** Self-audit verification claim is technically true (CHANGELOG.md is excluded from "the codebase" since it documents history), but a future T10 grep that includes CHANGELOG.md will erroneously report a residual.
+**Fix:** When future T10 verifications grep for "all 19", explicitly exclude CHANGELOG.md (`grep -v CHANGELOG.md`).
+
+### [low] README "Architecture Summary" tree at lines 267-277 shows "Layer A: broad-reviewers/ (3 Claude + 3 Codex)" — does not mention the optional 4th ruthless reviewer
+**Source:** contradiction-detector
+**Evidence:** README.md:272 says "Layer A: broad-reviewers/ (3 Claude + 3 Codex)" while README.md:26 ("6 total; 7 with --ruthless") and README.md:113 ("54 agents per round (55 with --ruthless)") explicitly account for it. The tree omits parenthetical "+ 1 ruthless when --ruthless".
+**Impact:** Cosmetic — minor drift between the prose summary and the architecture tree.
+**Fix:** Update README.md:272 to "Layer A: broad-reviewers/ (3 Claude + 3 Codex; +1 ruthless with --ruthless)".
+
+### [low] CHANGELOG Phase G "perf-baseline" file not mentioned but README and orchestrator describe it
+**Source:** contradiction-detector
+**Evidence:** README.md:88-89 documents `tmp/god-review/perf-baseline.json` and `perf-current.json`. god-review.md:429-437 writes them. CHANGELOG.md does not list either file as a tracked output anywhere; only the Phase F changelog (lines 240-245) hints at LATE_IMPORT_LINE wiring.
+**Impact:** Negligible. CHANGELOG is incomplete-by-design (only documents deltas), not contradictory.
+**Fix:** None needed. (Borderline finding; including for completeness.)
+
+### [minor] Hard-gate category names drift slightly between README and hard-gates.txt section headers
+**Source:** contradiction-detector
+**Evidence:** README.md:225-232 says "Schema and data", "Auth and security", "Package manifests", "Environment and secrets", "CI/CD", "Tests", "Build/runtime config", "Quarantine". hard-gates.txt comment headers: "Schema migrations" (not "Schema and data"), "Dependency manifests" (not "Package manifests"), "Environment / secrets" (not "Environment and secrets"), "CI/CD" (matches), "Test files" (not "Tests"), "Auth (path-based heuristic)" (not "Auth and security"), "Build/runtime config" (matches), "Already quarantined" (not "Quarantine").
+**Impact:** Minor — both files agree on what's hard-gated, but a future "list all hard-gate categories" generator would produce different strings depending on which source it reads.
+**Fix:** Pick one set of category names (recommend hard-gates.txt — closer to disk truth) and update README.md:225-232 to match exactly.
+
+### [deferred] Spawn-schedule pseudocount with `--ruthless`: "= 21 in parallel"
+**Source:** contradiction-detector
+**Evidence:** god-review.md:514 "add the 4th broad-Claude reviewer (claude-broad-ruthless) to Message 1 = 21 in parallel". Message 1 baseline is 10 Agent + 10 Bash = 20. Adding 1 Agent → 11 Agent + 10 Bash = 21. Correct.
+**Impact:** None — math checks out.
+**Fix:** Deferred (not a contradiction).
+
+Total: 12 findings (catastrophic: 0, high: 2, medium: 4, low: 4, minor: 1, deferred: 1)
