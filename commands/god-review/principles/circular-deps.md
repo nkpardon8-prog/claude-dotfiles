@@ -40,6 +40,7 @@ Reference: `~/.claude/projects/-Users-omidzahrai/memory/god_review_problems.md` 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
+LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"   # late-import cutoff (Tunable Constants)
 git rev-parse --abbrev-ref HEAD
 git diff main...HEAD --name-only 2>/dev/null || find . -name "*.tsx" -o -name "*.ts" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.go" | grep -v node_modules | grep -v .git | head -200
 git diff main...HEAD 2>/dev/null || true
