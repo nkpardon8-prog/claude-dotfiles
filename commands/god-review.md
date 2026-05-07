@@ -687,18 +687,19 @@ else
 fi
 write_env
 
-if [ "$SKIP_CODEX_VALIDATION" = "true" ]; then
-  echo "(Codex validation skipped this round)"
-  exit 0
-fi
-# Build consolidated finding list from all Claude-sourced findings.
-# Concatenate all per-agent claude-broad/claude-principle finding files into
-# /tmp/claude-findings-consolidated.txt before the validation read below.
-# This is the single canonical write site (Phase F).
+# Build consolidated finding lists ALWAYS (regardless of skip) — they're used
+# by FP extraction in Phase 2d's post-processing AND by aggregation in Phase 2e.
+# This must run BEFORE the skip-check exit; otherwise FP recording on the
+# 2-of-3 skipped rounds reads a stale consolidated.txt and records garbage.
 mkdir -p "$WORKDIR/tmp/god-review/findings"
 cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt 2>/dev/null > /tmp/claude-findings-consolidated.txt || true
-# Phase G: also consolidate Codex findings (used by the Claude-validates-Codex-findings pass below)
 cat "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null > /tmp/codex-findings-consolidated.txt || true
+
+if [ "$SKIP_CODEX_VALIDATION" = "true" ]; then
+  echo "(Codex validation skipped this round; consolidated files refreshed for FP extraction)"
+  exit 0
+fi
+# Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 # Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 
 CLAUDE_FINDINGS_PROMPT="You are validating a list of code-review findings produced by Claude Opus 4.7.
@@ -754,10 +755,14 @@ with open("/tmp/claude-findings-consolidated.txt") as f:
     text = f.read()
 blocks = re.split(r'(?m)^### ', text)
 for blk in blocks[1:]:
-    fid_m = re.match(r'\[?[^\]]*\]?\s*(.+?)$', blk, re.MULTILINE)
+    # Capture the WHOLE first line as the finding id (matches the validator's
+    # parser, which uses everything-before-first-colon). This handles ids like
+    # "[catastrophic] Round-start cleanup" → key = "[catastrophic] Round-start cleanup".
+    fid_m = re.match(r'^(.+?)$', blk, re.MULTILINE)
     if not fid_m: continue
     fid = fid_m.group(1).strip()[:80]
-    loc_m = re.search(r'(?:File|Evidence|file|evidence)\*?\*?\s*:?\s*[`"]?([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', blk)
+    # Accept File / Location / Evidence prefixes (Phase 2 emits **Location:**)
+    loc_m = re.search(r'(?:File|Location|Evidence|file|location|evidence)\*?\*?\s*:?\s*[`"]?([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', blk)
     cat_m = re.search(r'(?:category|principle)\*?\*?\s*:\s*(\w[\w\-]*)', blk, re.IGNORECASE)
     if loc_m:
         f_, s, e = loc_m.group(1), int(loc_m.group(2)), int(loc_m.group(3) or loc_m.group(2))
@@ -775,11 +780,14 @@ def call(cmd, *args):
 with open("/tmp/codex-validation-output.txt") as f:
     for ln in f:
         if "FALSE_POSITIVE" not in ln: continue
-        fid_m = re.match(r'^\s*([^:]+):', ln)
-        if not fid_m: continue
-        fid = fid_m.group(1).strip()
-        reason_m = re.search(r'—\s*(.+)$', ln)
-        reason = reason_m.group(1).strip() if reason_m else "no reason"
+        # Format spec'd as "FINDING_ID: STATUS — reason". FINDING_ID is the
+        # full text up to the LAST colon followed by " STATUS" (handles ids
+        # containing colons, e.g. "[catastrophic] X: Y"). We split on the
+        # rightmost ": FALSE_POSITIVE" / ": CONFIRMED" / ": UNCERTAIN".
+        m = re.match(r'^(.+?)\s*:\s*(?:FALSE_POSITIVE|CONFIRMED|UNCERTAIN)\b\s*(?:—\s*(.+))?$', ln.strip())
+        if not m: continue
+        fid = m.group(1).strip()
+        reason = (m.group(2) or "no reason").strip()
         f_, lr, cat = idx.get(fid, ("unknown", "0-0", "uncategorized"))
         call("record_false_positive", fid, f_, lr, cat, reason)
         # Also record hash for replay-skip
@@ -880,11 +888,10 @@ Format per finding:
 
 ---
 
-## HUMAN_GATE_QUEUE
-<All HUMAN_GATE findings from Phase 3, with proposed diffs>
-<Emitted ONCE per finding; subsequent rounds only update "still pending as of round N">
-
----
+<!-- HUMAN_GATE_QUEUE section is appended dynamically at end of Phase 4 from
+     tmp/god-review/human-gate-queue.md (the accumulator file). Phase 2e does
+     NOT pre-write the section header; otherwise Phase 4 cat would create a
+     duplicate ## HUMAN_GATE_QUEUE heading in the final report. -->
 
 ## Meta-Review Notes
 - Total findings: N (Critical: X, Gaps: Y, Important: Z, Assumptions: A, Contradictions: B, Minor: C)
@@ -1282,7 +1289,10 @@ except json.JSONDecodeError as e:
 if [ "$VALID" != "VALID" ]; then
   echo "Architect output malformed: $VALID"
   record_architect_malformed
-  echo "Demoting $FINDING_ID to HUMAN_GATE (Architect output malformed)"
+  # Record hash so future rounds skip this finding (else same-finding re-tries
+  # the same Architect call indefinitely until churn-freeze fires).
+  record_finding_hash "$FINDING_HASH" || true
+  echo "Demoting $FINDING_ID to HUMAN_GATE (Architect output malformed). Hash recorded."
   exit 0
 fi
 
@@ -1841,8 +1851,20 @@ elif [ "${NEW_NEW_FINDINGS:-0}" -eq 0 ]; then
   fi
 fi
 write_env
-# Atomically persist round + clean-counter to state.json (already done above in backstop block;
-# this re-confirms after the prose decision).
+# Persist NEW round + clean-counter to state.json AFTER the prose decision
+# updated them. The earlier persist (before this block) wrote stale values;
+# without this re-persist, --resume on the next session reads the stale state.
+python3 -c "
+import json
+sj = '$WORKDIR/tmp/god-review/state.json'
+with open(sj) as f: d = json.load(f)
+d['round'] = $ROUND
+d['consecutive_clean_rounds'] = $CONSECUTIVE_CLEAN_ROUNDS
+import os
+tmp = sj + '.tmp'
+with open(tmp,'w') as f: json.dump(d, f, indent=2)
+os.rename(tmp, sj)
+"
 ```
 
 **Loop control flow (orchestrator MUST follow this — it is the actual loop):**

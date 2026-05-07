@@ -323,10 +323,19 @@ json.dump(d, open(p+".tmp","w"), indent=2)
 # Returns 0 if a finding with this exact hash is already in the session-deferred
 # file. Per-finding granularity (NOT per-category), so weak deferrals don't
 # suppress an entire principle's coverage.
+# Uses python3 (NOT grep with literal-tab regex — BSD grep doesn't reliably
+# interpret \t in a regex string; the previous version was a silent no-op).
 is_already_session_deferred_by_hash() {
   local kd="$WORKDIR/tmp/god-review/known-deferred-session.txt"
   [ -f "$kd" ] || return 1
-  grep -qE "^HASH=${1}	" "$kd"
+  python3 -c '
+import sys
+target = "HASH=" + sys.argv[1] + "\t"
+for ln in open(sys.argv[2]):
+    if ln.startswith(target):
+        sys.exit(0)
+sys.exit(1)
+' "$1" "$kd"
 }
 
 # record_round_counts <new> <total> <deferred_this_round> <gated_this_round>

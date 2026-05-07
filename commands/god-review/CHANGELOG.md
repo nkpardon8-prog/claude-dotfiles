@@ -1,5 +1,59 @@
 # god-review changelog
 
+## 2026-05-06 — Phase G5+G6: convergence on production-readiness
+
+Phase E v6 found 5 cat / 20 high; G5 closed those. Phase E v7 found 3 cat /
+12 high; G6 closes those. Trajectory: 100→74→88→65→51 (de-duped actionable).
+
+**G6 catastrophic fixes:**
+- **Consolidated cat moved before skip-check.** `/tmp/claude-findings-consolidated.txt`
+  and codex-findings-consolidated.txt are now refreshed every round, regardless
+  of whether Codex validation runs. Was: skipped rounds left stale consolidated
+  files; FP extraction recorded garbage from prior rounds.
+- **FP extraction regex aligned across both sides.** idx-builder regex now
+  captures full first-line as `fid` (matches validator-output parser); both
+  accept `File|Location|Evidence` prefixes. FPs now record real file/line/
+  category; future rounds' replay-skip filters them by accurate hash.
+- **HUMAN_GATE_QUEUE template removed from Phase 2e.** Final report's
+  HUMAN_GATE_QUEUE section is now written exclusively by the Phase 4
+  cat-append from the accumulator file. Was: Phase 2e wrote a placeholder
+  header AND Phase 4 cat-appended → duplicate `## HUMAN_GATE_QUEUE` headings.
+
+**G6 high-severity fixes:**
+- **Architect-malformed path now records finding hash.** Without this, repeated
+  bad JSON output triggered indefinite re-attempt until churn-freeze fired.
+- **`is_already_session_deferred_by_hash` switched to python3** (was BSD grep
+  with literal-tab regex — silent no-op on macOS).
+- **Post-decision state.json persist** added after the prose increment of
+  `CONSECUTIVE_CLEAN_ROUNDS` and `ROUND`. Was: state.json had stale values
+  on `--resume`, dropping one round.
+
+**G5 catastrophic fixes (recap):**
+- Round-start codex-*.txt cleanup gated on RE_ENTERED_PHASE_2 (was wiping
+  stable Codex output on no-Phase-2 re-entry branch)
+- Backstops route through LOOP_EXIT/LOOP_EXIT_CODE; Phase 4 `exit ${LOOP_EXIT_CODE:-0}`
+  after final report (was bare exit N — final report never written)
+- VERIFIER_NEW injected into "## Important [should fix]" canonical section
+  (was phantom "## Verifier round N additions" that 3a doesn't parse)
+- Codex FP extraction reads consolidated metadata for real file/line/category
+- HG_QUEUE heading aligned (canonical: "## HUMAN_GATE_QUEUE")
+
+**G5 high fixes (recap):** TSV regex accepts `Location|File|Evidence`;
+HG_QUEUE accumulator cleared on fresh start (preserved on --resume); phantom
+round-N-findings.md replaced with state.json.round_finding_counts ref;
+exit code 3 README aligned with code (frozen-units cap); CHANGELOG `git tag`
+claim clarified (plan baseline only); LOOP_EXIT_CODE + RE_ENTERED_PHASE_2
+in write_env whitelist.
+
+**T10 verification (post-G6):**
+- 17/17 glob self-test
+- Consolidated cat at line 695 BEFORE skip-check at line 698
+- FP regex accepts File|Location|Evidence
+- Phase 2e no longer pre-writes ## HUMAN_GATE_QUEUE
+- Architect-malformed records finding_history_hash
+- is_already_session_deferred_by_hash uses python3 (BSD-grep-safe)
+- Post-decision state.json re-persist present
+
 ## 2026-05-06 — Phase G4: post-v5 catastrophic + high cluster
 
 Phase E v5 audit (5 verifier agents) flagged 6 catastrophic + 20 high. G4
