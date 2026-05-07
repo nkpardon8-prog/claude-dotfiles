@@ -680,6 +680,8 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # This is the single canonical write site (Phase F).
 mkdir -p "$WORKDIR/tmp/god-review/findings"
 cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt 2>/dev/null > /tmp/claude-findings-consolidated.txt || true
+# Phase G: also consolidate Codex findings (used by the Claude-validates-Codex-findings pass below)
+cat "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null > /tmp/codex-findings-consolidated.txt || true
 # Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 
 CLAUDE_FINDINGS_PROMPT="You are validating a list of code-review findings produced by Claude Opus 4.7.
