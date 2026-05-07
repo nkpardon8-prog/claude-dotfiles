@@ -1,6 +1,6 @@
 ---
-description: "From-scratch multi-model codebase audit. 3 Claude broad + 3 Codex broad + 19 principle agents (Claude+Codex per principle) in parallel. Report-only by default; --fix enables snapshot/revert/regression-detected fix loop; --loop runs until naturally clean. Hard gates on schema/auth/deps/secrets/CI/tests."
-argument-hint: "[scope] [--fix] [--max-rounds N] [--loop] [--max-wall-hours N] [--resume] [--force-resume] [--principle <name>] [--rescope-on-fix {full|changed}] [--online] [--codex-validation-every N] [--ruthless]"
+description: "Autonomous multi-model codebase audit + fix loop. 3 Claude broad + 3 Codex broad + 23 principle agents (Claude+Codex per principle) in parallel. Always-on indefinite fix loop — runs until 3 consecutive rounds yield zero new non-deferred findings. Hard gates on schema/auth/deps/secrets/CI/tests are batched for human review at end. Use /god-report for single-pass review-only."
+argument-hint: "[scope] [--max-rounds N] [--max-wall-hours N] [--resume] [--force-resume] [--principle <name>] [--rescope-on-fix {full|changed}] [--online] [--codex-validation-every N] [--ruthless]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 ---
 
