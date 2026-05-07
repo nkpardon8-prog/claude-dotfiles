@@ -874,9 +874,684 @@ you (the orchestrator) whether to re-enter at 3a (next round), exit cleanly
 
 ### Round N — Sub-step 3a: Load and hash findings
 
+Read the latest aggregated findings from `tmp/god-review/report.md`. Parse each
+finding from the markdown sections (Critical, Important, Minor, Gaps,
+Assumptions, Contradictions, Human Gate Required) into a list with these fields:
+`{finding_id, file, line_start, line_end, category, severity, source,
+root_cause, description, proposed_diff_sketch}`.
 
+For each finding, compute a stable hash. Use the helpers in `lib/env-helpers.sh`:
 
-# Step 3b: HUMAN_GATE diff emission
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# For each finding (you, the orchestrator, iterate over the parsed list and
+# substitute concrete values from your parse — these vars are placeholders YOU
+# fill in per-finding before each call):
+#   FINDING_FILE="<finding's file from parse>"
+#   FINDING_LINE_RANGE="<line_start>-<line_end>"
+#   FINDING_CATEGORY="<finding's category>"
+FINDING_LINE_NORMALIZED=$(python3 -c "
+import sys
+try:
+  s,e = [int(x) for x in sys.argv[1].split('-')] if '-' in sys.argv[1] else (int(sys.argv[1]), int(sys.argv[1]))
+  print(f'{(s//5)*5}-{((e+4)//5)*5}')
+except Exception:
+  print(sys.argv[1])
+" "${FINDING_LINE_RANGE:-0-0}")
+FINDING_HASH=$(compute_finding_hash "${FINDING_FILE:-unknown}" "$FINDING_LINE_NORMALIZED" "${FINDING_CATEGORY:-uncategorized}")
+echo "Finding $FINDING_ID hash: $FINDING_HASH"
+```
+
+Build a per-finding dictionary keyed by `finding_id` with at least: `file`,
+`line_range_normalized`, `category`, `hash`, plus the original parse fields.
+Hold this in your reasoning context for sub-steps 3b–3g.
+
+---
+
+### Round N — Sub-step 3b: Triage findings into 4 buckets
+
+For each finding from 3a, assign exactly ONE bucket based on these rules
+(check in order; first match wins):
+
+1. **`bucket_REPLAYED`** — `is_finding_replayed "$FINDING_HASH"` returns 0 (already
+   tried-and-reverted in a prior round, hash in `finding_history_hashes`) OR
+   `is_human_gate_already_emitted "$FINDING_HASH"` returns 0 (already in
+   `human_gate_emitted` queue) OR `is_already_session_deferred "$FINDING_CATEGORY"`
+   returns 0 (already in `tmp/god-review/known-deferred-session.txt`).
+2. **`bucket_HUMAN_GATE`** — `is_hard_gate "$FINDING_FILE"` returns 0 (matches
+   `lib/hard-gates.txt`), OR Architect output would be multi-file, OR
+   category is `assumption` / `contradiction` requiring human judgment.
+3. **`bucket_AUTO_DEFER`** — finding is `minor` severity AND not security-critical,
+   OR validator marked it false_positive in Phase 2d, OR you (orchestrator)
+   judge this requires deferral and have a substantive technical reason
+   (≥30 chars, references a specific file path / identifier / quoted external
+   name / issue ref — `record_auto_defer` will reject trivial reasons).
+4. **`bucket_AUTO_FIX`** — everything else: severity ≥ likely, non-hard-gate,
+   not deferrable, not replayed.
+
+Print the bucket counts: `Round $ROUND triage: REPLAYED=X, HUMAN_GATE=Y, AUTO_DEFER=Z, AUTO_FIX=W`.
+
+---
+
+### Round N — Sub-step 3c: Process bucket_HUMAN_GATE
+
+For each finding in `bucket_HUMAN_GATE`, run this bash block (substitute
+per-finding values for the env vars at the top):
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# Per-finding env vars YOU substitute before each call:
+#   FINDING_ID, FINDING_HASH, FINDING_FILE, FINDING_LINE_RANGE, FINDING_CATEGORY,
+#   FINDING_SEVERITY, FINDING_DESCRIPTION, FINDING_PROPOSED_DIFF (the sketch from 3a)
+if is_human_gate_already_emitted "$FINDING_HASH"; then
+  echo "(still pending: $FINDING_ID — already in human_gate_emitted queue)"
+else
+  # Append to HUMAN_GATE_QUEUE section in report.md (atomic .tmp + mv).
+  # The append happens via python3 to avoid heredoc-quoting issues.
+  FINDING_ID="$FINDING_ID" FINDING_FILE="$FINDING_FILE" \
+  FINDING_LINE_RANGE="$FINDING_LINE_RANGE" FINDING_DESC="$FINDING_DESCRIPTION" \
+  FINDING_DIFF="$FINDING_PROPOSED_DIFF" python3 -c '
+import os
+report = "tmp/god-review/report.md"
+with open(report) as f: txt = f.read()
+marker = "## HUMAN_GATE_QUEUE"
+entry = f"\n### {os.environ[\"FINDING_ID\"]}\n- **File:** {os.environ[\"FINDING_FILE\"]}:{os.environ[\"FINDING_LINE_RANGE\"]}\n- **Reason:** {os.environ[\"FINDING_DESC\"]}\n- **Proposed diff:**\n```\n{os.environ[\"FINDING_DIFF\"]}\n```\n"
+if marker in txt:
+    # Insert at end of HUMAN_GATE_QUEUE section
+    txt = txt.replace(marker, marker + entry, 1) if entry not in txt else txt
+else:
+    txt += f"\n\n{marker}\n\n_Hard-gate findings batched for human review at end of run._\n{entry}"
+with open(report+".tmp","w") as f: f.write(txt)
+os.rename(report+".tmp", report)
+'
+  record_human_gate_emit "$FINDING_ID" "$FINDING_HASH" "$ROUND"
+  echo "HUMAN_GATE (new): $FINDING_ID queued"
+fi
+```
+
+These findings are first-emit "new this round" and DO count toward
+`NEW_NEW_FINDINGS` in 3g. They never block the loop; they queue for end-batch.
+
+---
+
+### Round N — Sub-step 3d: Process bucket_AUTO_DEFER
+
+For each finding in `bucket_AUTO_DEFER`, you (the orchestrator) supply a
+substantive technical reason (≥30 chars, with a structural anchor — see
+`record_auto_defer`'s validation in `lib/env-helpers.sh`). Run:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# Per-finding: FINDING_ID, FINDING_CATEGORY, DEFER_REASON (your supplied reason)
+if record_auto_defer "$FINDING_ID" "$FINDING_CATEGORY" "$DEFER_REASON"; then
+  echo "Deferred: $FINDING_ID"
+else
+  # Helper rejected (trivial reason, no structural anchor, or too short).
+  # Demote to HUMAN_GATE: re-run sub-step 3c logic for this finding with
+  # description annotated "(auto-defer rejected: <DEFER_REASON>)".
+  echo "DEFER_REJECTED: $FINDING_ID — promoting to HUMAN_GATE"
+fi
+```
+
+Accepted deferrals do NOT count toward `NEW_NEW_FINDINGS`. Rejected deferrals
+fall through to HUMAN_GATE and then DO count (handled by 3c logic when you
+re-run for the demoted finding).
+
+---
+
+### Round N — Sub-step 3e: Process bucket_AUTO_FIX (sequential per-finding)
+
+For each finding in `bucket_AUTO_FIX`, execute the per-finding pipeline below.
+**Process findings one at a time, sequentially** — no parallel auto-fix. Each
+finding's pipeline is its own bash fence. After each finding completes, move
+to the next.
+
+**Per-finding pipeline (you, the orchestrator, iterate this for each
+AUTO_FIX finding):**
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# Per-finding env vars YOU substitute:
+#   FINDING_ID, FINDING_HASH, FINDING_FILE, FINDING_LINE_RANGE,
+#   FINDING_CATEGORY, FINDING_DESCRIPTION, FINDING_ROOT_CAUSE
+
+# (i) Pre-fix snapshot
+if [ -n "$(git status --porcelain)" ]; then
+  PRE_FIX_REF=$(git stash create "god-review pre-fix $(date -u +%Y%m%dT%H%M%SZ)")
+  PRE_FIX_REFTYPE="stash"
+else
+  PRE_FIX_REF=$(git rev-parse HEAD)
+  PRE_FIX_REFTYPE="commit"
+fi
+echo "Pre-fix snapshot: $PRE_FIX_REFTYPE $PRE_FIX_REF"
+```
+
+**(ii) Spawn ONE Architect Agent tool call.** You (the orchestrator) issue
+this Agent call with `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`,
+extended thinking enabled. Prompt:
+
+```
+You are the Architect in a god-review fix loop. Describe ONE precise fix for
+this finding:
+
+- Finding ID: $FINDING_ID
+- File: $FINDING_FILE
+- Lines: $FINDING_LINE_RANGE
+- Category: $FINDING_CATEGORY
+- Description: $FINDING_DESCRIPTION
+- Root cause: $FINDING_ROOT_CAUSE
+
+IMPACT AUDIT (required — include in rationale): list every caller / consumer /
+test / config-reference of the changed code. What could break?
+
+Output ONLY valid JSON, no markdown wrapping, no preamble:
+{
+  "file": "<relative path>",
+  "line_start": <int>,
+  "line_end": <int>,
+  "before": "<exact current content at those lines, verbatim>",
+  "after": "<replacement content>",
+  "rationale": "<one sentence + impact summary>"
+}
+
+If the fix requires touching multiple files OR is a hard-gate path, output
+{"error": "requires HUMAN_GATE", "reason": "<why>"} instead.
+```
+
+Capture the agent's result text into `ARCH_OUTPUT` (a string variable in your
+reasoning — when you run the next bash block, you substitute the captured
+text into `ARCH_OUTPUT="..."` literally).
+
+**(iii) Validate ARCH_OUTPUT:**
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# ARCH_OUTPUT is the JSON string from the Architect — YOU paste it here.
+ARCH_OUTPUT='<paste the architect output JSON here, single-quoted>'
+
+# Check for "requires HUMAN_GATE" error response
+if echo "$ARCH_OUTPUT" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); sys.exit(0 if 'error' in d else 1)" 2>/dev/null; then
+  echo "Architect declined: HUMAN_GATE — re-run sub-step 3c for $FINDING_ID"
+  # Re-process this finding via 3c bucket_HUMAN_GATE logic; record_finding_hash
+  # is NOT called (this is a structural decline, not a tried-and-reverted fix).
+  exit 0
+fi
+
+# Validate required fields (env-var pattern, Locked Decision #17)
+VALID=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "
+import json, os, sys
+try:
+    d = json.loads(os.environ['ARCH_OUTPUT'])
+    required = ['file', 'line_start', 'line_end', 'before', 'after', 'rationale']
+    for field in required:
+        if field not in d or d[field] == '' or d[field] is None:
+            print(f\"INVALID: field '{field}' missing or empty\"); sys.exit(1)
+    if not isinstance(d['line_start'], int) or not isinstance(d['line_end'], int):
+        print('INVALID: line_start and line_end must be integers'); sys.exit(1)
+    print('VALID')
+except json.JSONDecodeError as e:
+    print(f'INVALID: malformed JSON — {e}'); sys.exit(1)
+")
+if [ "$VALID" != "VALID" ]; then
+  echo "Architect output malformed: $VALID"
+  record_architect_malformed
+  echo "Demoting $FINDING_ID to HUMAN_GATE (Architect output malformed)"
+  # Re-run 3c logic for this finding; then continue to next AUTO_FIX finding.
+  exit 0
+fi
+
+# Extract ARCH_FILE for injection guard + hard-gate check
+ARCH_FILE=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "import json,os; print(json.loads(os.environ['ARCH_OUTPUT']).get('file',''))" 2>/dev/null)
+
+# Injection guard via python3 (NOT bash $'\n'/$'\r' — those are literal
+# backslash-n on macOS bash 3.2.57; per Phase G plan).
+INJECTION_OK=$(ARCH_FILE="$ARCH_FILE" WORKDIR="$WORKDIR" python3 -c '
+import os, sys
+f = os.environ.get("ARCH_FILE","")
+forbidden = ["\n","\r","\\","$","`","(",")","<",">",";","|","&"]
+if not f or any(c in f for c in forbidden):
+    print("REJECT"); sys.exit(0)
+abs_path = os.path.realpath(os.path.join(os.environ["WORKDIR"], f))
+if not abs_path.startswith(os.path.realpath(os.environ["WORKDIR"]) + os.sep):
+    print("ESCAPE"); sys.exit(0)
+print("OK")
+')
+case "$INJECTION_OK" in
+  OK) ;;
+  *) echo "Injection guard rejected ($INJECTION_OK): $ARCH_FILE — demoting $FINDING_ID to HUMAN_GATE"; exit 0 ;;
+esac
+
+# Defense-in-depth hard-gate check
+if is_hard_gate "$ARCH_FILE"; then
+  echo "HUMAN_GATE: $ARCH_FILE matches hard-gate pattern (defense-in-depth) — re-run 3c for $FINDING_ID"
+  exit 0
+fi
+
+echo "Architect output validated for $FINDING_ID. Spawning Editor."
+```
+
+**(iv) Spawn ONE Editor Agent tool call.** Use `subagent_type: "general-purpose"`,
+`model: "claude-opus-4-7"`, low reasoning effort. Prompt is the contents of
+`lib/editor-agent.md` followed by the validated ARCH_OUTPUT JSON. The Editor
+returns one line: `APPLIED: <file>:<line_start>-<line_end>` or
+`EDITOR_ABORT: <reason>`.
+
+If the Editor returns `EDITOR_ABORT`:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# Targeted revert
+if [ "$PRE_FIX_REFTYPE" = "stash" ]; then
+  git stash apply "$PRE_FIX_REF" 2>/dev/null || true
+else
+  git checkout -- "$ARCH_FILE" 2>/dev/null || true
+fi
+# Record reverted_fixes + replay-guard hash (REVERT path → record_finding_hash)
+FINDING_ID="$FINDING_ID" REVERT_REASON="EDITOR_ABORT" WORKDIR="$WORKDIR" python3 -c '
+import json, os
+sj = os.environ["WORKDIR"] + "/tmp/god-review/state.json"
+with open(sj) as f: d = json.load(f)
+d.setdefault("reverted_fixes", []).append({"finding_id": os.environ["FINDING_ID"], "reason": os.environ["REVERT_REASON"]})
+tmp = sj + ".tmp"
+with open(tmp,"w") as f: json.dump(d, f, indent=2)
+os.rename(tmp, sj)
+'
+record_finding_hash "$FINDING_HASH"
+echo "Reverted $FINDING_ID (EDITOR_ABORT). Hash recorded for replay-skip."
+# Continue to next AUTO_FIX finding.
+```
+
+**(v) If Editor returned APPLIED, run baseline gates:**
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+GATES_PASS=true; GATE_FAIL_REASON=""
+if [ -f package.json ]; then
+  npm run typecheck > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="typecheck"; }
+  npm run lint > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}lint"; }
+  npm run build > /tmp/gate-output.txt 2>&1 || true   # build optional
+  npm run test -- --passWithNoTests > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}test"; }
+elif [ -f Cargo.toml ]; then
+  cargo check > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="cargo-check"; }
+  cargo test > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}cargo-test"; }
+elif [ -f go.mod ]; then
+  go vet ./... > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="go-vet"; }
+  go test ./... > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="${GATE_FAIL_REASON:+$GATE_FAIL_REASON,}go-test"; }
+elif [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+  python3 -m mypy . > /tmp/gate-output.txt 2>&1 || true   # mypy non-fatal
+  python3 -m pytest > /tmp/gate-output.txt 2>&1 || { GATES_PASS=false; GATE_FAIL_REASON="pytest"; }
+fi
+echo "Gates: $GATES_PASS${GATE_FAIL_REASON:+ (failed: $GATE_FAIL_REASON)}"
+
+# Regression detectors
+REGRESSION=false; REGRESSION_REASON=""
+# (a) Test-deletion / shrinkage
+if echo "$ARCH_FILE" | grep -qE '\.(test|spec)\.(ts|tsx|js|jsx|py|go|rb)$|_test\.(go|py)$|^test_.*\.py$'; then
+  REGRESSION=true; REGRESSION_REASON="edit touched a test file (should be HUMAN_GATE)"
+fi
+TEST_DELETED=$(git diff --diff-filter=D --name-only 2>/dev/null | grep -E '\.(test|spec)\.(ts|tsx|js|jsx|py|go|rb)$' | head -3)
+if [ -n "$TEST_DELETED" ]; then
+  REGRESSION=true; REGRESSION_REASON="test deleted: $TEST_DELETED"
+fi
+# (b) CI YAML modification
+CI_MODIFIED=$(git diff --name-only 2>/dev/null | grep -E '\.github/workflows/.*\.yml|\.gitlab-ci\.yml|Jenkinsfile|\.husky/' | head -3)
+[ -n "$CI_MODIFIED" ] && { REGRESSION=true; REGRESSION_REASON="CI modified: $CI_MODIFIED"; }
+# (c) Churn freeze (file edited 2+ times this session)
+EDITED_FILE="$ARCH_FILE" python3 << 'PYEOF'
+import json, os
+sj = os.environ.get("WORKDIR",".") + "/tmp/god-review/state.json"
+with open(sj) as f: d = json.load(f)
+edited = os.environ.get("EDITED_FILE","")
+churn = d.setdefault("churn_ledger", {})
+churn[edited] = churn.get(edited, 0) + 1
+if churn[edited] >= 2 and edited not in d.get("frozen_units", []):
+    d.setdefault("frozen_units", []).append(edited)
+    open("/tmp/god-review-freeze-signal","w").write(f"FREEZE:{edited}")
+tmp = sj + ".tmp"
+open(tmp,"w").write(json.dumps(d, indent=2))
+os.rename(tmp, sj)
+PYEOF
+if [ -f /tmp/god-review-freeze-signal ]; then
+  REGRESSION=true; REGRESSION_REASON="churn freeze: $(cat /tmp/god-review-freeze-signal)"
+  rm -f /tmp/god-review-freeze-signal
+  record_frozen
+fi
+
+if [ "$GATES_PASS" = "false" ] || [ "$REGRESSION" = "true" ]; then
+  # REVERT path
+  git checkout -- "$ARCH_FILE" 2>/dev/null || true
+  REVERT_REASON="${REGRESSION_REASON:-gate failure: $GATE_FAIL_REASON}"
+  FINDING_ID="$FINDING_ID" REVERT_REASON="$REVERT_REASON" WORKDIR="$WORKDIR" python3 -c '
+import json, os
+sj = os.environ["WORKDIR"] + "/tmp/god-review/state.json"
+with open(sj) as f: d = json.load(f)
+d.setdefault("reverted_fixes", []).append({"finding_id": os.environ["FINDING_ID"], "reason": os.environ["REVERT_REASON"]})
+tmp = sj + ".tmp"
+with open(tmp,"w") as f: json.dump(d, f, indent=2)
+os.rename(tmp, sj)
+'
+  record_finding_hash "$FINDING_HASH"   # REVERT path → record for replay-skip
+  echo "Reverted $FINDING_ID — $REVERT_REASON. Hash recorded."
+  # Continue to next AUTO_FIX finding.
+fi
+```
+
+**(vi) If gates passed AND no regression, optionally run perf benchmark
+(only if HAS_BENCH_SCRIPT non-empty):**
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+PERF_REGRESSED="NONE"
+if [ -n "$HAS_BENCH_SCRIPT" ] && [ -f "tmp/god-review/perf-baseline.json" ]; then
+  if [ -f package.json ]; then
+    npm run bench > tmp/god-review/perf-current.json 2>&1 || \
+    npm run benchmark > tmp/god-review/perf-current.json 2>&1 || true
+  elif [ -f Cargo.toml ]; then
+    cargo bench > tmp/god-review/perf-current.json 2>&1 || true
+  fi
+  PERF_REGRESSED=$(PERF_REGRESS_PCT="$PERF_REGRESS_PCT" python3 -c "
+import json, re, os
+b = open('tmp/god-review/perf-baseline.json').read()
+c = open('tmp/god-review/perf-current.json').read()
+t = float(os.environ.get('PERF_REGRESS_PCT', '0.05'))
+def ext(s): return {m.group(1): float(m.group(2)) for m in re.finditer(r'(\w[\w\-]+).*?(\d+\.?\d*)\s*ms', s)}
+bt, ct = ext(b), ext(c)
+regs = [f'{n}: +{(ct[n]-bt[n])/bt[n]:.1%}' for n in bt if n in ct and bt[n]>0 and (ct[n]-bt[n])/bt[n] > t]
+print('\n'.join(regs) if regs else 'NONE')
+" 2>/dev/null || echo "NONE")
+fi
+if [ "$PERF_REGRESSED" != "NONE" ]; then
+  git checkout -- "$ARCH_FILE" 2>/dev/null || true
+  REVERT_REASON="perf regression: $PERF_REGRESSED"
+  FINDING_ID="$FINDING_ID" REVERT_REASON="$REVERT_REASON" WORKDIR="$WORKDIR" python3 -c '
+import json, os
+sj = os.environ["WORKDIR"] + "/tmp/god-review/state.json"
+with open(sj) as f: d = json.load(f)
+d.setdefault("reverted_fixes", []).append({"finding_id": os.environ["FINDING_ID"], "reason": os.environ["REVERT_REASON"]})
+tmp = sj + ".tmp"
+with open(tmp,"w") as f: json.dump(d, f, indent=2)
+os.rename(tmp, sj)
+'
+  record_finding_hash "$FINDING_HASH"   # REVERT path
+  echo "Reverted $FINDING_ID — $REVERT_REASON. Hash recorded."
+  # Continue to next AUTO_FIX finding.
+fi
+```
+
+**(vii) If gates and perf both pass, COMMIT (NEVER --no-verify):**
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+git add -A
+if git commit -m "god-review: $FINDING_ID — ${RATIONALE:-fix}"; then
+  echo "Kept: $FINDING_ID committed as $(git rev-parse HEAD)"
+  # KEEP path: record kept_fixes ONLY. Do NOT call record_finding_hash on keep —
+  # successful fixes must be re-attemptable on later regression (Phase G design).
+  FINDING_ID="$FINDING_ID" WORKDIR="$WORKDIR" python3 -c '
+import json, os
+sj = os.environ["WORKDIR"] + "/tmp/god-review/state.json"
+with open(sj) as f: d = json.load(f)
+d.setdefault("kept_fixes", []).append(os.environ["FINDING_ID"])
+tmp = sj + ".tmp"
+with open(tmp,"w") as f: json.dump(d, f, indent=2)
+os.rename(tmp, sj)
+'
+  FIXES_KEPT_THIS_ROUND=$((FIXES_KEPT_THIS_ROUND+1))
+  write_env
+else
+  # Pre-commit hook rejected the fix
+  REVERT_REASON="pre-commit hook rejected: $(git status --porcelain | head -3 | tr '\n' ';')"
+  git checkout -- "$ARCH_FILE" 2>/dev/null || true
+  FINDING_ID="$FINDING_ID" REVERT_REASON="$REVERT_REASON" WORKDIR="$WORKDIR" python3 -c '
+import json, os
+sj = os.environ["WORKDIR"] + "/tmp/god-review/state.json"
+with open(sj) as f: d = json.load(f)
+d.setdefault("reverted_fixes", []).append({"finding_id": os.environ["FINDING_ID"], "reason": os.environ["REVERT_REASON"]})
+tmp = sj + ".tmp"
+with open(tmp,"w") as f: json.dump(d, f, indent=2)
+os.rename(tmp, sj)
+'
+  record_finding_hash "$FINDING_HASH"   # REVERT path (pre-commit reject)
+  echo "Reverted $FINDING_ID — pre-commit hook rejected. Hash recorded."
+fi
+```
+
+After all `bucket_AUTO_FIX` findings are processed (or after the loop iteration
+hits the next finding), advance to sub-step 3f.
+
+---
+
+### Round N — Sub-step 3f: Verifier sub-pass
+
+After all per-finding pipelines in 3e complete, spawn 4 verifier agents in
+parallel (subset of Phase 2's full suite — for speed). Use ONE message with
+4 Agent tool calls:
+
+- **Verifier 1**: `claude-opus-4-7`, `subagent_type: general-purpose`, prompt
+  = "Re-review this diff and surrounding code. List any NEW issues. Do NOT
+  re-flag findings already in `state.json.human_gate_emitted` or in
+  `tmp/god-review/known-deferred-session.txt`. Diff:
+  `$(git diff $PRE_FIX_BASE_REF..HEAD)`. Prior findings list: ..."
+- **Verifier 2**: same shape but model `claude-opus-4-7` with different focus
+  prompt (correctness vs. architecture).
+- **Verifier 3**: Codex via `bash $WORKDIR/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh`
+  (only if `$CODEX_AVAILABLE=true`).
+- **Verifier 4**: another Codex agent, different prompt focus.
+
+After the parallel batch returns, capture each verifier's result text.
+
+**Apply Phase F's per-agent finding write step:** for each verifier, call
+`write_agent_finding "verifier-<n>" "$verifier_result"` (orchestrator
+substitutes the captured text).
+
+Parse all verifier outputs into a unified findings list. Compute hash for each
+new finding using `compute_finding_hash`. Filter:
+
+```
+VERIFIER_NEW = [f for f in verifier_findings
+                  if not is_human_gate_already_emitted(hash(f))
+                  and not is_already_session_deferred(category(f))
+                  and not is_finding_replayed(hash(f))]
+```
+
+This filter is critical — without it, hard-gate items repeatedly inflate the
+new-finding count and the loop never terminates (Phase G plan B3/B7 fix).
+
+---
+
+### Round N — Sub-step 3g: Termination decision (orchestrator-prose)
+
+Compute the round's NEW-finding count:
+
+```
+NEW_NEW_FINDINGS = |VERIFIER_NEW|                     (from 3f, post-filter)
+                 + (count of first-emit HUMAN_GATE items from 3c this round)
+                 - (any auto-defers from 3d that were rejected and demoted to
+                    HUMAN_GATE — already counted in the 3c first-emit count)
+```
+
+Run mechanical bash to record the round count and check backstops:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+# YOU substitute these from the orchestrator's tally:
+NEW_NEW_FINDINGS=${NEW_NEW_FINDINGS:-0}
+DEFERRED_THIS_ROUND=${DEFERRED_THIS_ROUND:-0}
+GATED_THIS_ROUND=${GATED_THIS_ROUND:-0}
+
+# Update state.json with this round's counts
+record_round_counts "$NEW_NEW_FINDINGS" "$TOTAL_OPEN_FINDINGS" "$DEFERRED_THIS_ROUND" "$GATED_THIS_ROUND"
+
+# Termination backstops (mechanical):
+ELAPSED_HOURS=$(python3 -c "
+from datetime import datetime, timezone
+import json
+d = json.load(open('$WORKDIR/tmp/god-review/state.json'))
+start = datetime.fromisoformat(d['started_at_iso'].replace('Z','+00:00'))
+print(round((datetime.now(timezone.utc)-start).total_seconds()/3600, 2))
+" 2>/dev/null || echo 0)
+
+# Wall-clock cap (0 = disabled)
+if [ "${MAX_WALL_HOURS:-24}" != "0" ] && python3 -c "import sys; sys.exit(0 if float('${ELAPSED_HOURS:-0}') >= float('${MAX_WALL_HOURS:-24}') else 1)" 2>/dev/null; then
+  echo "Wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)" >&2
+  exit 5
+fi
+
+# Instability detector (avg per-round events over last 3 rounds > INSTABILITY_RATE)
+AVG_INSTABILITY=$(python3 -c "
+import json
+try:
+    d = json.load(open('$WORKDIR/tmp/god-review/state.json'))
+    fa = d.get('frozen_added_per_round', [])
+    am = d.get('architect_malformed_per_round', [])
+    combined = [f+m for f,m in zip(fa[-3:], am[-3:])]
+    print(sum(combined)/len(combined) if combined else 0)
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
+if python3 -c "import sys; sys.exit(0 if float('${AVG_INSTABILITY:-0}') > ${INSTABILITY_RATE:-5} else 1)" 2>/dev/null; then
+  echo "Instability rate too high (avg $AVG_INSTABILITY events/round over last 3 rounds)" >&2
+  exit 4
+fi
+
+# --max-rounds explicit ceiling (only honored if user passed it)
+if [ "$MAX_ROUNDS_EXPLICIT" = "true" ] && [ "$ROUND" -ge "${MAX_ROUNDS:-9999}" ]; then
+  echo "--max-rounds ceiling reached ($MAX_ROUNDS rounds)" >&2
+  exit 2
+fi
+
+# Persist round + clean-counter to state.json
+python3 -c "
+import json
+sj = '$WORKDIR/tmp/god-review/state.json'
+with open(sj) as f: d = json.load(f)
+d['round'] = $ROUND
+d['consecutive_clean_rounds'] = $CONSECUTIVE_CLEAN_ROUNDS
+d['elapsed_hours'] = float('${ELAPSED_HOURS:-0}')
+import os
+tmp = sj + '.tmp'
+with open(tmp,'w') as f: json.dump(d, f, indent=2)
+os.rename(tmp, sj)
+"
+write_env
+```
+
+**Now you (the orchestrator) make the loop-back decision based on
+`NEW_NEW_FINDINGS`:**
+
+- **If `NEW_NEW_FINDINGS > 0`:**
+  - Set `CONSECUTIVE_CLEAN_ROUNDS=0`.
+  - Increment `ROUND`.
+  - **Decide whether to re-run full Phase 2 OR re-enter Phase 3 directly:**
+    - If `VERIFIER_NEW` (3f) found bugs in DIFFERENT areas than this round's
+      fixes touched, re-enter at Phase 2 with re-scoped agents — they'll
+      re-discover what changed.
+    - If `NEW_NEW_FINDINGS` came entirely from `bucket_HUMAN_GATE` first-emits
+      (no actionable new bugs, just new hard-gate items queued), skip the
+      full Phase 2 re-run — re-enter Phase 3 sub-step 3a directly. This avoids
+      respawning 52 agents per round when nothing actionable changed.
+  - Update SCOPE for the next round: if `RESCOPE_ON_FIX=changed` and
+    `FIXES_KEPT_THIS_ROUND > 0`, set `SCOPE` to the changed-files list.
+
+- **If `NEW_NEW_FINDINGS == 0`:**
+  - Increment `CONSECUTIVE_CLEAN_ROUNDS`.
+  - **If `CONSECUTIVE_CLEAN_ROUNDS >= 3`:** exit the loop, proceed to sub-step
+    3h (Phase 4 final report). Output: "Naturally clean × 3 — converged after
+    $ROUND rounds."
+  - **Else:** increment `ROUND`. The HUMAN_GATE_QUEUE may still be non-empty —
+    that's intentional, those are punted-to-human-by-design. Re-enter Phase 3
+    sub-step 3a directly (skip full Phase 2 re-run since nothing changed).
+
+---
+
+### Round N — Sub-step 3h: Phase 4 Final Report (runs ONCE after loop exit)
+
+After the loop terminates (via 3 consecutive clean rounds or backstop), write
+the final combined report:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+ELAPSED_HOURS=$(python3 -c "
+from datetime import datetime, timezone
+import json
+d = json.load(open('$WORKDIR/tmp/god-review/state.json'))
+start = datetime.fromisoformat(d['started_at_iso'].replace('Z','+00:00'))
+print(round((datetime.now(timezone.utc)-start).total_seconds()/3600, 2))
+" 2>/dev/null || echo 0)
+
+python3 << PYEOF
+import json
+from datetime import datetime, timezone
+
+sj = "$WORKDIR/tmp/god-review/state.json"
+with open(sj) as f:
+    d = json.load(f)
+
+elapsed = float("${ELAPSED_HOURS:-0}")
+kept = len(d.get("kept_fixes", []))
+reverted = len(d.get("reverted_fixes", []))
+deferred = len(d.get("auto_deferred", []))
+gated = len(d.get("human_gate_emitted", []))
+rounds = d.get("round", 0)
+
+out = []
+out.append("# /god-review Final Report\n")
+out.append(f"**Rounds run:** {rounds}")
+out.append(f"**Wall time:** {elapsed} h")
+out.append(f"**Kept fixes:** {kept}")
+out.append(f"**Reverted fixes:** {reverted}")
+out.append(f"**Auto-deferred:** {deferred} (see tmp/god-review/known-deferred-session.txt)")
+out.append(f"**HUMAN_GATE_QUEUE:** {gated} (see HUMAN_GATE_QUEUE section in report.md)")
+out.append("")
+out.append("## Kept Fixes")
+for fid in d.get("kept_fixes", []):
+    out.append(f"- {fid}")
+out.append("")
+out.append("## Reverted Fixes")
+for entry in d.get("reverted_fixes", []):
+    out.append(f"- {entry.get('finding_id')}: {entry.get('reason')}")
+out.append("")
+out.append("## Auto-Deferred (with reasons)")
+for entry in d.get("auto_deferred", []):
+    out.append(f"- {entry.get('finding_id')} ({entry.get('category')}, round {entry.get('round')}): {entry.get('reason')}")
+out.append("")
+out.append("## HUMAN_GATE_QUEUE (apply manually after review)")
+out.append("See the HUMAN_GATE_QUEUE section appended to tmp/god-review/report.md for proposed diffs.")
+out.append("")
+out.append("## Round-by-round counts")
+for rc in d.get("round_finding_counts", []):
+    out.append(f"- Round {rc['round']}: new={rc['new']}, total={rc['total']}, deferred={rc['deferred_this_round']}, gated={rc['gated_this_round']}")
+
+final = "\n".join(out) + "\n"
+with open("$WORKDIR/tmp/god-review/final-summary.md", "w") as f:
+    f.write(final)
+print(final)
+PYEOF
+
+# Promote session deferrals to committed lib/known-deferred.txt only at end of run.
+SESSION_KD="$WORKDIR/tmp/god-review/known-deferred-session.txt"
+COMMITTED_KD="$HOME/.claude-dotfiles/commands/god-review/lib/known-deferred.txt"
+if [ -f "$SESSION_KD" ] && [ -s "$SESSION_KD" ]; then
+  echo "Promoting $(wc -l < "$SESSION_KD") session deferrals to $COMMITTED_KD"
+  cat "$SESSION_KD" >> "$COMMITTED_KD"
+  echo "(committed file updated; auto-sync hook will commit + push)"
+fi
+
+echo "Phase 3 + Phase 4 complete. Final summary at $WORKDIR/tmp/god-review/final-summary.md"
+```
+
+---
 
 # For each new HUMAN_GATE finding (first time seen this session):
 
