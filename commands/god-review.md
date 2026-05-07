@@ -652,6 +652,14 @@ bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/codex-principle-<NAME>.txt \
   "$(cat ~/.claude-dotfiles/commands/god-review/principles/<NAME>.md)\n\nScope: $SCOPE\nContext: see tmp/god-review/context-package.md" \
   "$WORKDIR"
+
+# Phase G: copy each Codex principle output to findings/ for Phase 2d cat-consolidate.
+# After ALL Codex principle calls return, run:
+mkdir -p "$WORKDIR/tmp/god-review/findings"
+for f in /tmp/codex-principle-*.txt; do
+  [ -f "$f" ] || continue
+  cp "$f" "$WORKDIR/tmp/god-review/findings/codex-principle-$(basename "$f" .txt | sed 's/^codex-principle-//').txt"
+done
 ```
 
 ### 2d: Collect findings and run validation pass
