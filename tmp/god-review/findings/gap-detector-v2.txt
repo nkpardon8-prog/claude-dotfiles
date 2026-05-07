@@ -1,0 +1,144 @@
+### [catastrophic] Phase 3 round-loop pseudocode never becomes real shell — Architect/Editor/HUMAN_GATE/Triage are all comments
+**Source:** gap-detector
+**Evidence:** god-review.md:857-1004 — the actual loop body is comments only ("# Step 3a: Triage findings into two buckets" at :857 with NO code beneath; "# Step 3b: HUMAN_GATE diff emission" at :861 with the FINDING_HASH var assigned to a literal string `"<sha256 of this finding>"` at :865; "# Spawn one Agent tool call:" at :910 followed by a commented-out prompt block :912-932; ARCH_OUTPUT initialized to `"<architect agent output>"` literal at :936). The loop never iterates over findings — there is no `for finding in ...` or any source of FINDING_ID, FINDING_FILE, FINDING_LINE_RANGE, FINDING_CATEGORY. These are all referenced (:865, :891, :1077, :1140, :1197, :1208, :1220, :1256, :1275) but never assigned.
+**Impact:** `--fix` mode is non-functional. Whole Phase 3 executes once with placeholder strings, no fixes are ever proposed or applied, but the loop terminates "normally" because COMMITTED/GATES_PASS/REGRESSION_DETECTED branches all evaluate against unset/literal vars.
+**Fix:** Replace pseudocode comments with real shell: parse report.md for findings, iterate, spawn Architect Agent (real Agent tool invocation, not commented), capture stdout into ARCH_OUTPUT, spawn Editor (Codex or Claude), set FINDING_ID/FILE/LINE_RANGE/CATEGORY from each finding before the per-AUTO_FIX block.
+
+### [catastrophic] HUMAN_GATE deduplication reads `human_gate_emitted` state field that is never written
+**Source:** gap-detector
+**Evidence:** god-review.md:867 — `if ! python3 -c "...d.get('human_gate_emitted',[])..."` reads this array; nothing in the orchestrator, env-helpers.sh, editor-agent.md, or Phase 1b state.json initialization (:388-405) ever appends to or initializes `human_gate_emitted`. It is also missing from the canonical state.json schema written at :388.
+**Impact:** Every HUMAN_GATE finding is re-emitted every round — duplicate diffs in report.md grow unboundedly across rounds. The "still pending" branch (:872) is unreachable.
+**Fix:** Initialize `"human_gate_emitted": []` in state.json template (:388-405); add a `record_human_gate_emitted <hash>` helper alongside `record_finding_hash` in env-helpers.sh; call it after the "new" branch echoes at :870.
+
+### [catastrophic] Instability-rate detector reads `frozen_added_per_round` and `architect_malformed_per_round` arrays that are never populated
+**Source:** gap-detector
+**Evidence:** god-review.md:1344-1346 — `frozen_added = d.get('frozen_added_per_round', [])` and `malformed = d.get('architect_malformed_per_round', [])`; no append site exists anywhere. The bare counter `architect_malformed_count` IS incremented at :966 but it's a scalar, not a per-round array. `frozen_units` is appended to (line 1116) but no per-round delta tracking is recorded.
+**Impact:** AVG_INSTABILITY always evaluates to 0; the rate-based --loop abort gate (:1351) can never fire. --loop has no instability backstop.
+**Fix:** At end of each round (before write_env at :1418), record this round's frozen-added count and malformed count into the two arrays via env-helpers.sh helpers. Initialize both arrays in the state.json template.
+
+### [high] `record_false_positive` helper exists and is documented as the canonical FP write site, but is never actually called from any bash block
+**Source:** gap-detector
+**Evidence:** lib/env-helpers.sh:157-170 defines the helper; god-review.md:686-691 shows the call signature in a comment block ("for each finding the validator returned as FALSE_POSITIVE, call: record_false_positive ..."); the call appears only inside a fenced example block, never inside the actual Phase 2d collection logic. Phase 2d step (:634-691) has no shell loop that iterates the validator output and dispatches CONFIRMED/FALSE_POSITIVE/UNCERTAIN — that dispatch is prose at :676-680.
+**Impact:** Phase F's FP suppression — "false_positives array is read by future rounds to suppress findings" (:691) — never accumulates entries. Every round re-discovers same FPs. Same with state.json `false_positives` initialized at :393 but only ever read by Phase 3 triage (which is itself comment-only).
+**Fix:** Add real shell after the codex-invoke.sh call at :667 that parses /tmp/codex-validation-output.txt line-by-line, matches `FINDING_ID: STATUS — reason`, and calls `record_false_positive` per FALSE_POSITIVE row. Same for the Claude-validating-Codex path at :672.
+
+### [high] Phase 3 triage logic (FP suppression read of state.json.false_positives) referenced but never implemented
+**Source:** gap-detector
+**Evidence:** god-review.md:691 declares "The `false_positives` array is read by future rounds to suppress findings the validator already rejected (see Phase 3 triage)." Triage section header is at :857 ("# Step 3a: Triage findings into two buckets") with empty body. No code in Phase 3 reads `state.json.false_positives` at all (verified: `grep -n "false_positives" god-review.md` only hits the schema init line :393).
+**Impact:** Even if record_false_positive were wired up, the suppression promise is empty — the orchestrator would never check FPs before proposing fixes. The replay-protection (finding_history_hashes) does NOT cover FPs because they were never tried, never recorded as hashes.
+**Fix:** Implement Step 3a as real shell: load state.json.false_positives, build hash set, skip findings whose hash is in that set BEFORE the AUTO_FIX block.
+
+### [high] `consecutive_no_change_rounds` state field initialized but never read or written
+**Source:** gap-detector
+**Evidence:** Listed in CLAUDE.local.md "8 minor findings deferred" as vestigial. State.json template at :388-404 does NOT actually initialize it (verified — only `consecutive_clean_rounds` exists at :395). The narrative deferred-list claim is itself stale: the field is not in the schema, but `consecutive_clean_rounds` IS used at :1330-1334. So the docs/known-deferred reference may point at a phantom field.
+**Impact:** Documentation/code drift — known-deferred.txt or design notes likely reference an absent field; anyone trying to satisfy it has nothing to satisfy.
+**Fix:** Either add the field to the schema and use it (e.g., separate "no fixes kept this round" vs "no findings net-new this round"), or delete the reference from CLAUDE.local.md / known-deferred.txt.
+
+### [high] `kept_fixes` and `reverted_fixes` written but never read by any termination/audit logic
+**Source:** gap-detector
+**Evidence:** state.json append sites at :1208, :1220, :1151, :1197, :1256 all write to these arrays. No read site exists in god-review.md (`grep -nE "(kept_fixes|reverted_fixes).*get|d\['kept|d\['reverted"` returns no read accesses). Final summary at :1441-1463 prints "Kept fixes: <N>" as a literal placeholder, not a value pulled from state.
+**Impact:** Audit trail is write-only; the final summary reports "<N>" placeholder instead of real counts. Resume mode (`--resume`) cannot use historical kept/reverted to skip already-attempted findings (only finding_history_hashes covers replay).
+**Fix:** Compute counts from state.json at the end of Phase 3 and substitute into the summary template; consider reading kept_fixes for "skip already-fixed in resume" semantics.
+
+### [high] `--rescope-on-fix full` flag is honored only in scope re-computation but `changed` mode produces empty SCOPE if no commits made
+**Source:** gap-detector
+**Evidence:** god-review.md:1395-1399 — when `RESCOPE_ON_FIX=changed` and `FIXES_KEPT_THIS_ROUND > 0`, computes `git diff HEAD~$FIXES_KEPT_THIS_ROUND --name-only`. If pre-commit hook rejected commits (:1140-1156, COMMITTED=false path), FIXES_KEPT_THIS_ROUND is still incremented in the no-perf path (:1225) BUT in the perf-revert path (`git reset --hard HEAD~1` at :1190) the increment is skipped — so HEAD~N may not point where expected.
+**Impact:** `git diff HEAD~3` when only 1 commit was actually kept resolves to an unrelated commit's diff, scoping next round to wrong files.
+**Fix:** Track a separate KEPT_COMMITS counter that increments only on actual `git commit` success, and use it in the diff range; or capture the pre-round HEAD ref and diff against that.
+
+### [medium] `tmp/god-review/perf-current.json` written but never compared in the no-bench-script branch — phantom artifact
+**Source:** gap-detector
+**Evidence:** :1162-1167 only writes perf-current.json when HAS_BENCH_SCRIPT is non-empty AND perf-baseline.json exists. The compare-and-revert path (:1169-1190) is gated correctly, but the file is never cleaned up between rounds — round N+1 sees stale round-N file if HAS_BENCH_SCRIPT becomes empty (e.g., script deleted by a fix). Also there is no explicit no-op in the branch where HAS_BENCH_SCRIPT empties mid-loop.
+**Impact:** Stale perf data survives into later rounds; not catastrophic but adds noise.
+**Fix:** Remove perf-current.json at start of each round if HAS_BENCH_SCRIPT is empty.
+
+### [medium] `--online` flag parsed and passed to hallucinated-imports principle, but no shell code actually delivers it to that subagent
+**Source:** gap-detector
+**Evidence:** :51-52 parses --online into ONLINE; :149 ("Note: pass --online flag context if $ONLINE=true") and :593 ("Pass `ONLINE=$ONLINE` to hallucinated-imports principle") describe the intent in prose only. The Layer-B Claude principle spawn (:585-594) is itself prose-only ("For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call"); no shell loop iterates ACTIVE_PRINCIPLES. The Codex side (:625-632) shows the bash invocation but uses literal `<NAME>` placeholders — never expanded by an actual loop, and ONLINE is not in the prompt template.
+**Impact:** --online has no runtime effect on hallucinated-imports; the principle never sees the flag and cannot toggle online registry checks.
+**Fix:** Replace prose with real bash that iterates ACTIVE_PRINCIPLES, and inject `\n\nONLINE=$ONLINE` into each principle prompt for hallucinated-imports.
+
+### [medium] Layer B principle agent spawning is described in prose ("spawn one Agent tool call") but no shell or tool-call enumeration exists for the orchestrator to execute
+**Source:** gap-detector
+**Evidence:** :585-594 (Claude principles) and :622-632 (Codex principles, with `<NAME>` placeholder). The bash block at :622 has a single literal `<NAME>` placeholder; no `for NAME in $ACTIVE_PRINCIPLES; do` loop. ACTIVE_PRINCIPLES itself is computed in pseudocode at :454-491, never executed.
+**Impact:** The orchestrator AS WRITTEN cannot mechanically dispatch principle agents — it depends entirely on the LLM running the command following the prose. Inconsistent across runs, unverifiable.
+**Fix:** Add real bash loop that iterates ACTIVE_PRINCIPLES and emits one Agent tool call per principle (or, since Agent tool invocations cannot be emitted from bash, document a deterministic message-by-message round-trip schedule the orchestrator follows).
+
+### [medium] Editor agent abort signal `EDITOR_ABORT:` is never parsed by the orchestrator
+**Source:** gap-detector
+**Evidence:** lib/editor-agent.md:39-44 defines the `EDITOR_ABORT: <reason>` output format. god-review.md never greps for it: `grep -n "EDITOR_ABORT" god-review.md` returns nothing. After the Codex-editor codex-invoke.sh call (:997-1000) and the prose Claude-editor fallback (:1002), execution proceeds straight to gate re-runs at :1006 regardless of abort.
+**Impact:** Architect/Editor mismatch (e.g., before-text not found) is silently treated as "successful edit" — gates run on unchanged files, the fix is "kept" with no diff, churn ledger increments incorrectly.
+**Fix:** After the editor call, grep /tmp/editor-output.txt for `^EDITOR_ABORT:`; if present, treat as REGRESSION_DETECTED with reason "editor abort", skip gate re-run, mark finding HUMAN_GATE.
+
+### [medium] State.json `architect_malformed_count` written (line 966) but no termination check or threshold uses it
+**Source:** gap-detector
+**Evidence:** :966 atomically increments. No read site reaches a comparison: `grep -n architect_malformed_count god-review.md` finds only the increment and the schema field at :397. Failure-mode #4 (Architect schema validation) was supposed to abort if architect_malformed_count exceeds a threshold per the original plan.
+**Impact:** A persistently broken Architect (e.g., model returning prose instead of JSON every call) loops forever in --loop mode; no escape signal.
+**Fix:** Add `if architect_malformed_count > N` check in the bounded-mode and --loop termination gates near :1370 and :1319.
+
+### [medium] `mkdir -p tmp/god-review/findings` at :650 is only path that creates findings/ directory; the per-agent finding write sites are pseudocode
+**Source:** gap-detector
+**Evidence:** Phase 2d cats `"$WORKDIR/tmp/god-review/findings/"claude-*.txt` into the consolidated file. No bash block writes individual `claude-<agent>.txt` files; the agent-spawn descriptions (:528-540, :585-620) tell the orchestrator to "tag findings with source" but never instruct it to write per-agent files. Codex outputs go to `/tmp/codex-broad-*.txt` and `/tmp/codex-principle-<NAME>.txt` (system /tmp, NOT $WORKDIR/tmp/god-review/findings).
+**Impact:** The cat at :651 will always read empty / nonexistent files; consolidated.txt is always empty; Codex validation receives an empty finding list and produces nothing useful.
+**Fix:** Standardize all per-agent outputs to `$WORKDIR/tmp/god-review/findings/{claude,codex}-{broad,principle}-<name>.txt`; update codex-invoke.sh callers to use those paths; explicitly instruct broad/principle Claude agents to write their findings to those paths.
+
+### [medium] `tmp/god-review/round-${ROUND}-findings.md` audit trail is a heredoc with literal `<N>` placeholders never substituted
+**Source:** god-review.md:1283-1304 — `cat > tmp/god-review/round-${ROUND}-findings.md.tmp << 'ROUNDEOF'` uses single-quoted heredoc (so no var expansion) AND template body has `<N>`, `<ISO>`, `<total>`, `<FINDING_ID>` literal placeholders. Quoted heredoc means even `$ROUND` doesn't expand.
+**Impact:** Every round audit trail file is identical literal-template text — useless for forensics.
+**Fix:** Either drop the quotes on the heredoc (`<< ROUNDEOF`) and replace `<N>` with `$ROUND`, or build the file with python3/jq from collected per-round vars.
+
+### [medium] CRITERIA.md is referenced as "single source of truth" for confidence taxonomy but Phase 2e promotion logic inlines it
+**Source:** gap-detector
+**Evidence:** :1503-1508 says CRITERIA.md is canonical. Phase 2e steps :695-721 inline the entire promotion priority order, section mapping, and category enum. If CRITERIA.md is updated, Phase 2e drifts.
+**Impact:** Same drift problem the orchestrator explicitly warns about for hard-gates.txt, but uncaught for confidence rules.
+**Fix:** Move promotion priority + section mapping into a shell helper (e.g., `lib/promotion.sh`) that reads CRITERIA.md or hardcoded constants, called from Phase 2e.
+
+### [low] `gather-context.sh` exists in lib/ but is never invoked by god-review.md
+**Source:** gap-detector
+**Evidence:** `ls lib/` shows gather-context.sh (23 lines). `grep -n "gather-context" god-review.md` returns nothing. Phase 0 inlines all context-gathering shell directly (:184-272).
+**Impact:** Dead helper; adds documentation drift risk if it diverges from inline Phase 0 logic.
+**Fix:** Either delete gather-context.sh or refactor Phase 0 to source it.
+
+### [low] e2e-test.sh exists in lib/ but is not referenced from god-review.md
+**Source:** gap-detector
+**Evidence:** lib/e2e-test.sh (142 lines). Not invoked from orchestrator; intended for manual harness-side testing per CLAUDE.local.md but no doc inside god-review/ explains how to run it.
+**Impact:** Test harness is hidden; users won't discover it.
+**Fix:** Add an "## Testing" section to god-review/README.md pointing at e2e-test.sh.
+
+### [low] PRE_SCAN_SECRETS / PRE_SCAN_HALLUCINATED / PRE_SCAN_INJECTION variables are computed in Phase 1a but never persisted via write_env or read by Phase 2
+**Source:** gap-detector
+**Evidence:** :311-361 builds the three vars; write_env() at lib/env-helpers.sh:20-27 does NOT include them in the persisted var list. No Phase 2 agent reads them. They are echoed to stdout (:324, :346, :355) for human visibility only.
+**Impact:** Pre-scan results don't seed Phase 2 principle agents — secret-leak/hallucinated-imports/prompt-injection principles re-do the same work, wasting tokens. Failure mode #19 (repeated context-gathering) the design claimed to eliminate.
+**Fix:** Add the three PRE_SCAN_* vars to write_env() and explicitly inject them into the relevant principle agent prompts.
+
+### [low] `is_hard_gate` self-test exit (env-helpers.sh:191) returns from sourced context, not script context
+**Source:** gap-detector
+**Evidence:** lib/env-helpers.sh:173-191 — the `--test-globs` block runs only when `$1 = "--test-globs"`. The file is normally `source`d (god-review.md:26, :83, etc.), in which case `$1` is the orchestrator's positional, not the helper's. The block as designed only fires when invoked as `bash lib/env-helpers.sh --test-globs` (verified safe). However the trailing `[ "$fail" -eq 0 ]` at :190 returns the helper's last-test result as the script's exit; if sourced with `$1=--test-globs` somehow it would corrupt the orchestrator's exit code.
+**Impact:** Latent risk; not currently exercised.
+**Fix:** Wrap the self-test block in `if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--test-globs" ]` so it only ever runs as a script, never as sourced.
+
+### [low] `--codex-validation-every` parsed but only honored in --loop mode (:1431); bounded mode always runs Codex validation
+**Source:** gap-detector
+**Evidence:** :67-69 parses; :640 ("In `--loop` mode, Codex validation runs only on rounds where round % CODEX_VALIDATION_EVERY == 0"). Bounded mode has no equivalent gate. The flag was intended for cost control across both modes.
+**Impact:** Cost-conscious bounded runs cannot reduce Codex validation frequency.
+**Fix:** Either document the limitation in --help text / README or apply the modulo gate in bounded mode too.
+
+### [minor] `tmp/god-review/.env.sh` cleanup never happens between sessions
+**Source:** gap-detector
+**Evidence:** write_env at lib/env-helpers.sh:15-32 always writes; nothing in Phase 0 or final summary deletes it. A subsequent /god-review run inherits stale ROUND, FIXES_KEPT_THIS_ROUND, etc. unless `tmp/god-review/` is cleared by the user.
+**Impact:** Resume semantics get muddled when the user runs a fresh /god-review (without --resume) in a directory where prior state.json + .env.sh persist.
+**Fix:** Add explicit `rm -f tmp/god-review/.env.sh` at Phase 0 entry when not in --resume mode.
+
+### [minor] CHANGELOG.md last entry is 2026-05-06; fix-pass v2 commits on 2026-05-06 are not all enumerated
+**Source:** gap-detector
+**Evidence:** CLAUDE.local.md "Fix-Pass v2 Commit→Bug Mapping" lists 9 fixes; CHANGELOG.md (per CLAUDE.local.md "files touched") was added in fix-pass v2 but verification command in mapping table says only `grep -c "2026-05-06" CHANGELOG.md ≥1` — bare-minimum threshold means it could legitimately be missing 8 of 9 fix entries.
+**Impact:** Documentation incompleteness — future debugging won't have full context.
+**Fix:** Verify CHANGELOG.md enumerates all 9 fix-pass-v2 changes by id/file:line.
+
+### [deferred] `SPINLOCK_TIMEOUT_SEC` and `LATE_IMPORT_LINE` exported for codex-invoke.sh subprocess (god-review.md:821-822) but the latter is never consumed by codex-invoke.sh (only used by circular-deps principle)
+**Source:** gap-detector
+**Evidence:** :821 exports SPINLOCK_TIMEOUT_SEC (used at codex-invoke.sh:98 — correct); :822 exports LATE_IMPORT_LINE but `grep -n LATE_IMPORT_LINE codex-invoke.sh` returns nothing. The principle subagents read it from prompt context, not env.
+**Impact:** Cosmetic; no functional impact since the export is harmless.
+**Fix:** Move the LATE_IMPORT_LINE export closer to the principle-agent spawn site, or drop it from the Phase-3 export block.
+
+Total: 24 findings (catastrophic: 3, high: 5, medium: 7, low: 5, minor: 2, deferred: 2)
