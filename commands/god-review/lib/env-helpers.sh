@@ -72,17 +72,20 @@ if not has_slash and not has_double_star:
 
 parts = g.split('/')
 out = []
+last = len(parts) - 1
 for i, seg in enumerate(parts):
     if seg == '**':
-        if i == 0 and i == len(parts) - 1:
-            out.append('.*')
+        if i == 0 and i == last:
+            out.append('.*')                # lone '**'
         elif i == 0:
-            out.append('(?:.*/)?')
-        elif i == len(parts) - 1:
-            out.append('/.*')
+            out.append('(?:.*/)?')         # leading '**/'
+        elif i == last:
+            out.append('/.*')              # trailing '/**'
         else:
-            out.append('(?:/.*)?')
+            out.append('/(?:.*/)?')        # middle '/**/' — consumes leading /, allows zero-or-more dirs ending in /
     else:
+        # Non-** segment. Insert '/' separator unless previous emit already ends
+        # with the optional path group ('?'-terminated) which has consumed the slash.
         if i > 0 and (not out or not out[-1].endswith('?')):
             out.append('/')
         out.append(escape_seg(seg))
