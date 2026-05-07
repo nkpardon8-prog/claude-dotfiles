@@ -21,7 +21,10 @@ write_env() {
                HAS_BACKEND_PROJECT HAS_BACKEND_LENS_TRIGGER HAS_BENCH_SCRIPT \
                FIX LOOP MAX_ROUNDS MAX_WALL_HOURS RESUME FORCE_RESUME PRINCIPLE \
                RESCOPE_ON_FIX ONLINE CODEX_VALIDATION_EVERY RUTHLESS SCOPE \
-               REF REFTYPE STARTED_AT CODEX_AVAILABLE; do
+               REF REFTYPE STARTED_AT CODEX_AVAILABLE \
+               ROUND FIXES_KEPT_THIS_ROUND NET_NEW_FINDINGS_THIS_ROUND \
+               CONSECUTIVE_CLEAN_ROUNDS FROZEN_UNITS_COUNT TOTAL_OPEN_FINDINGS \
+               MAX_ROUNDS_EXPLICIT; do
       eval "val=\${$var:-}"
       python3 -c "import shlex,sys; print('export {}={}'.format(sys.argv[1], shlex.quote(sys.argv[2])))" "$var" "$val"
     done
