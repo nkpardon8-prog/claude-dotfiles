@@ -1,0 +1,115 @@
+### [catastrophic] PRE_FIX_REF / PRE_FIX_REFTYPE / ARCH_FILE / FINDING_HASH lost between 3e sub-fences (i)→(iii)→(iv)→(v)→(vii)
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1015-1325 — sub-step 3e per-finding pipeline is split across at least 5 separate ```bash``` fences (i pre-snapshot, iii validate, v gates, vi perf, vii commit). Each fence sources env-helpers.sh which calls `source .env.sh`, but `PRE_FIX_REF`, `PRE_FIX_REFTYPE`, `ARCH_FILE`, `ARCH_OUTPUT`, `FINDING_HASH`, `FINDING_ID`, `RATIONALE`, `GATES_PASS`, `REGRESSION_REASON`, `PERF_REGRESSED` are never written to .env.sh by `write_env` (env-helpers.sh:20-27 whitelist excludes all of them). When fence (v) runs `git checkout -- "$ARCH_FILE"` after a gate fail, `$ARCH_FILE` is unset/empty → `git checkout --` with no path is a no-op or errors. When fence (vii) commits with `${RATIONALE:-fix}`, RATIONALE is always empty so every commit message is literally "god-review: <id> — fix".
+**Impact:** Revert paths silently fail to restore files; commit messages lose Architect rationale; `record_finding_hash "$FINDING_HASH"` writes empty hash → replay-guard (Phase 3a is_finding_replayed) is permanently broken — the same finding will be retried-and-reverted forever, blocking termination.
+**Fix:** Either (a) collapse all 3e per-finding sub-fences into a single bash fence per finding (matches Phase E v2 fix-pass that consolidated Phase 3 round-loop into one fence), OR (b) add PRE_FIX_REF, PRE_FIX_REFTYPE, ARCH_FILE, ARCH_OUTPUT, FINDING_HASH, FINDING_ID, RATIONALE to write_env's whitelist and call write_env at the end of every sub-fence.
+
+### [catastrophic] FINDING_HASH never persisted across rounds — replay-guard hash recording silently writes empty string
+**Source:** info-loss-detector
+**Evidence:** god-review.md:902 computes `FINDING_HASH=$(compute_finding_hash ...)` in sub-step 3a's bash fence. Sub-step 3b (triage) is orchestrator-prose (no bash fence). Sub-step 3e (per-finding pipeline) calls `record_finding_hash "$FINDING_HASH"` at lines 1165, 1240, 1283, 1323. env-helpers.sh:20-27 `write_env` whitelist does NOT include `FINDING_HASH`. The 3a bash fence ends; the next 3e fence sources .env.sh which does NOT contain FINDING_HASH → unset.
+**Impact:** Every `record_finding_hash` call records an empty string. `is_finding_replayed` at 3b:917 always returns false (or errors). Loop never terminates because reverted findings keep re-entering bucket_AUTO_FIX every round.
+**Fix:** Add FINDING_HASH (and FINDING_ID, FINDING_FILE, FINDING_LINE_RANGE, FINDING_CATEGORY) to env-helpers.sh:20-27 `write_env` whitelist, OR generate the hash inside the same fence that consumes it (move compute_finding_hash into 3e per-finding fence).
+
+### [catastrophic] Architect/Editor/Verifier sub-agent outputs are never captured to disk for orchestrator read-back
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1065-1067 instructs orchestrator: `Capture the agent's result text into ARCH_OUTPUT (a string variable in your reasoning — when you run the next bash block, you substitute the captured text into ARCH_OUTPUT="..." literally)`. Line 1075: `ARCH_OUTPUT='<paste the architect output JSON here, single-quoted>'`. Same pattern for Editor (iv) and Verifier (3f). There is no write_agent_finding call for Architect/Editor outputs. If the orchestrator forgets to paste, the literal placeholder string runs through python3's json.loads → "INVALID: malformed JSON" → finding falsely demoted to HUMAN_GATE.
+**Impact:** Single source of truth for fix decisions is "the orchestrator's reasoning context" with no on-disk audit trail. Cannot resume cleanly (--resume reads state.json but ARCH_OUTPUT for the in-flight finding is gone). Single-quote escaping: if the JSON contains a single quote in a string field (any rationale with apostrophe), pasting into `ARCH_OUTPUT='...'` breaks bash parsing.
+**Fix:** Have orchestrator write each Agent's raw result to `tmp/god-review/architect-outputs/<finding_id>.json` (and `editor-outputs/<finding_id>.txt`) immediately after the Agent returns, then the next bash fence reads via `ARCH_OUTPUT=$(cat tmp/god-review/architect-outputs/$FINDING_ID.json)`. Same for verifiers — extend write_agent_finding usage.
+
+### [high] Layer A ruthless reviewer findings are never written to disk for Phase 2d consolidation
+**Source:** info-loss-detector
+**Evidence:** god-review.md:552-569 — the `--ruthless` block describes spawning the reviewer and tagging findings `claude-broad:ruthless`, but the entire block (553-568) is bash COMMENTS (`# Spawn 4th...`) inside an `if [ "$RUTHLESS" = "true" ]` shell that only echoes a banner. There is no Agent invocation actually wired and no `write_agent_finding "claude-broad-ruthless"` after-call. The Phase 2d consolidation at line 659 globs `findings/claude-*.txt` — even if the orchestrator does spawn the reviewer per the prose, no write_agent_finding step is documented for it (compare 537-548 which explicitly mandates write_agent_finding for the 3 standard broad-Claude reviewers).
+**Impact:** Even when --ruthless is invoked, ruthless findings never reach the codex validator nor the Phase 2e aggregator. The `(both)` cross-model promotion can never fire on ruthless findings.
+**Fix:** Convert the comment-only spawn block at 558-567 into an explicit "After this Agent returns, run: `write_agent_finding claude-broad-ruthless "$result_text"`" instruction matching lines 537-548.
+
+### [high] Codex broad/principle outputs in /tmp/codex-broad-*.txt are never copied into findings/codex-*.txt for Phase 2d consolidation
+**Source:** info-loss-detector
+**Evidence:** god-review.md:578, 583, 588, 637 write Codex outputs to `/tmp/codex-broad-cross-layer.txt`, `/tmp/codex-broad-prod-scalability.txt`, `/tmp/codex-broad-security-safeguards.txt`, `/tmp/codex-principle-<NAME>.txt`. Phase 2d at line 659 reads `cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt > /tmp/claude-findings-consolidated.txt` — only Claude findings. There is no symmetric `cat /tmp/codex-broad-*.txt /tmp/codex-principle-*.txt > /tmp/codex-findings-consolidated.txt` step, and no write_agent_finding call for codex agents. The Codex-found-findings → Claude validation Agent call at line 680 has no documented input source.
+**Impact:** Codex findings produced by Layer A and Layer B exist on disk at /tmp paths but are never aggregated, validated, or routed into the report. The cross-model promotion `(both)` and the Codex-side validation pass have no input. Half the multi-model architecture is silently inert.
+**Fix:** Add an explicit "After all Codex calls return, consolidate via `cat /tmp/codex-broad-*.txt /tmp/codex-principle-*.txt > $WORKDIR/tmp/god-review/findings/codex-consolidated.txt` and pass this to the Claude validation Agent" block. Update Phase 2d:659 to also concat codex-*.txt for downstream promotion logic.
+
+### [high] Verifier sub-pass (3f) filter cannot read live state — write_agent_finding output never re-aggregated this round
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1336-1364 — 3f instructs orchestrator to spawn 4 verifiers, capture results, call `write_agent_finding "verifier-<n>"` per agent, then filter `VERIFIER_NEW = [f for f in verifier_findings if not is_human_gate_already_emitted(hash(f)) and not is_already_session_deferred(category(f)) and not is_finding_replayed(hash(f))]`. This filter is pseudocode in orchestrator-prose — there is no bash block that reads `findings/verifier-*.txt` and computes hashes and runs the filter. Without that, NEW_NEW_FINDINGS at line 1388 falls back to its `:-0` default → loop ALWAYS thinks zero new findings → CONSECUTIVE_CLEAN_ROUNDS hits 3 in 3 rounds regardless of whether bugs exist. Conversely if orchestrator double-counts in reasoning, loop never converges.
+**Impact:** Termination decision (3g) is based on a variable the orchestrator computes in reasoning context with no mechanical disk-anchored verification. Resume cannot reconstruct VERIFIER_NEW (it's not in state.json). Loop may either falsely converge or never converge.
+**Fix:** Add a bash fence after 3f that: (1) cats verifier-*.txt, (2) parses each finding line, (3) computes hash via compute_finding_hash, (4) filters via is_human_gate_already_emitted / is_already_session_deferred / is_finding_replayed, (5) writes `tmp/god-review/round-$ROUND-verifier-new.json` and exports `NEW_NEW_FINDINGS=$(jq length round-$ROUND-verifier-new.json)` via write_env.
+
+### [high] CONSECUTIVE_CLEAN_ROUNDS / FIXES_KEPT_THIS_ROUND / FROZEN_UNITS_COUNT are mutated in orchestrator-prose without bash persistence
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1453 `Set CONSECUTIVE_CLEAN_ROUNDS=0`, 1454 `Increment ROUND`, 1467 `Increment CONSECUTIVE_CLEAN_ROUNDS`, 1468 `If CONSECUTIVE_CLEAN_ROUNDS >= 3` — all in orchestrator-prose, no bash assignment. The state.json persistence at 1437-1444 reads `$CONSECUTIVE_CLEAN_ROUNDS` from the shell which still holds the value from the round-start init at 840 (or the resume-load at 837). Prose increments don't actually mutate the shell var. Same problem for ROUND.
+**Impact:** state.json's `consecutive_clean_rounds` and `round` never advance past their initial values. Persistence is correct shape but always writes 0/1. --resume restores wrong values. Loop in practice never sees CCR>=3 unless explicit shell increments are added — orchestrator's "in reasoning" increments are not real assignments.
+**Fix:** Replace the prose increments at 1453-1473 with explicit bash assignments (`CONSECUTIVE_CLEAN_ROUNDS=$((CONSECUTIVE_CLEAN_ROUNDS+1))`, `ROUND=$((ROUND+1))`) immediately followed by `write_env`. The values must be touched by shell, not narrated by orchestrator.
+
+### [high] PRE_FIX_BASE_REF used at 3f:1343 is never defined anywhere
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1343 — verifier prompt embeds `$(git diff $PRE_FIX_BASE_REF..HEAD)`. Searching the file: only `PRE_FIX_REF` (per-finding) and `REF` (Phase 1b snapshot) are defined. `PRE_FIX_BASE_REF` has zero definition sites. At runtime `git diff ..HEAD` with empty LHS returns the entire commit (or errors), losing the round-scoped diff the verifier needs.
+**Impact:** Verifiers receive either the entire repo history diff or a parse error. Their "re-review this diff" instruction is unanchored — they hallucinate scope or refuse. NEW finding detection becomes unreliable.
+**Fix:** Either define `PRE_FIX_BASE_REF` at round start (e.g. `PRE_FIX_BASE_REF=$(git rev-parse HEAD)` before 3e begins) and add to write_env whitelist, OR change 1343 to use `$REF` (Phase 1 baseline) which is already persisted.
+
+### [medium] write_agent_finding never deletes/overwrites stale per-agent files between rounds
+**Source:** info-loss-detector
+**Evidence:** env-helpers.sh:320-324 — `write_agent_finding` does `printf '%s\n' "$text" > "$WORKDIR/tmp/god-review/findings/${name}.txt"` (overwrites by name). But verifier names in 3f are `verifier-1..4` which collide with EVERY round. Phase 2d consolidation at 659 cats `findings/claude-*.txt` — round 2's claude-broad-deep-correctness.txt overwrites round 1's. There's no per-round subdirectory and no rotation. The `cat /tmp/claude-findings-consolidated.txt` write at 659 also overwrites with no round suffix.
+**Impact:** Multi-round runs lose all prior-round findings except the most recent. Cross-round trend analysis (round_finding_counts) shows counts but the underlying evidence is gone. --resume sees stale files claiming to be from "this round" when they are the prior round's leftovers.
+**Fix:** Namespace per-agent files by round: `findings/round-$ROUND/<name>.txt`. Update consolidation glob at 659 to read from `findings/round-$ROUND/`. Add `rm -rf findings/round-$ROUND` at sub-step 3a entry to clear stale verifier files of the same round number on resume.
+
+### [medium] Phase 2d consolidation cannot find files when WORKDIR differs from default at fence boundary
+**Source:** info-loss-detector
+**Evidence:** god-review.md:659 — `cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt > /tmp/claude-findings-consolidated.txt`. Earlier write_agent_finding calls (env-helpers.sh:322-323) write to `$WORKDIR/tmp/god-review/findings/...`. Both source env-helpers.sh which sources .env.sh which exports WORKDIR (line 20 whitelist includes WORKDIR). However, the GLOB expansion `claude-*.txt` happens in shell BEFORE the cat — if no claude-*.txt exists yet (e.g. orchestrator forgot the write_agent_finding step), the literal pattern `$WORKDIR/tmp/god-review/findings/claude-*.txt` is passed to cat (with `nullglob` off, which is bash default), producing "No such file or directory". The `2>/dev/null > /tmp/...` swallows the error AND writes an empty consolidated file; the codex validator then receives an empty findings prompt and "validates" nothing.
+**Impact:** Silent zero-input to validator. Validator returns no CONFIRMED/FALSE_POSITIVE results → no promotions, no FP recording, no quality signal. The pipeline appears to run but produces no validated findings.
+**Fix:** Before line 659, assert: `compgen -G "$WORKDIR/tmp/god-review/findings/claude-*.txt" > /dev/null || { echo "FATAL: no claude findings written — orchestrator missed write_agent_finding"; exit 1; }`. Same check for codex-*.txt.
+
+### [medium] Architect's RATIONALE field never extracted into shell var before commit
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1295 — `git commit -m "god-review: $FINDING_ID — ${RATIONALE:-fix}"`. ARCH_OUTPUT JSON has a `rationale` field validated at 1086-1099 but NEVER extracted into a `$RATIONALE` shell variable. Compare line 1109 which does extract `ARCH_FILE` via python3. RATIONALE is parameter-expanded with `:-fix` default → every commit message is literally "god-review: <id> — fix".
+**Impact:** Audit trail loss: kept-fix commits do not carry the Architect's reasoning. `git log --grep` cannot search for fix rationale. Fix-pass v2 commit→bug mapping pattern (referenced in CLAUDE.local.md) is broken for autonomous runs.
+**Fix:** Add line near 1109: `RATIONALE=$(ARCH_OUTPUT="$ARCH_OUTPUT" python3 -c "import json,os; print(json.loads(os.environ['ARCH_OUTPUT']).get('rationale',''))" 2>/dev/null)`. Add RATIONALE to write_env whitelist if needed across fences (or compute in same fence as commit).
+
+### [medium] DEFERRED_THIS_ROUND and GATED_THIS_ROUND fall back to 0 because never assigned
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1389-1390 `DEFERRED_THIS_ROUND=${DEFERRED_THIS_ROUND:-0}; GATED_THIS_ROUND=${GATED_THIS_ROUND:-0}`. Sub-step 3c (HUMAN_GATE processing) at 942-972 calls `record_human_gate_emit` but never increments a `GATED_THIS_ROUND` counter. Sub-step 3d at 985-997 calls `record_auto_defer` but never increments `DEFERRED_THIS_ROUND`. These vars are also not in write_env whitelist (env-helpers.sh:20-27).
+**Impact:** `record_round_counts "$NEW_NEW_FINDINGS" "$TOTAL_OPEN_FINDINGS" "$DEFERRED_THIS_ROUND" "$GATED_THIS_ROUND"` at 1393 always passes 0,0 for the last two. `state.json.round_finding_counts[].deferred_this_round` and `gated_this_round` are permanently 0 → final report at 1532-1534 shows wrong counts.
+**Fix:** In 3c bash fence after `record_human_gate_emit`: `GATED_THIS_ROUND=$((GATED_THIS_ROUND+1))`. In 3d after `record_auto_defer`: `DEFERRED_THIS_ROUND=$((DEFERRED_THIS_ROUND+1))`. Reset both to 0 at start of each round (3a). Add both to write_env whitelist.
+
+### [medium] god-report.md delegates to god-review.md "execute exactly the contents of Phase 0/1/2" but variables don't survive cross-command boundary
+**Source:** info-loss-detector
+**Evidence:** god-report.md:84-90 instructs the harness to execute god-review.md's Phase 0/1/2 sections. But god-report.md:33-50 sets ROUNDS, CODEX_VALIDATION_EVERY, RUTHLESS, ONLINE, SCOPE, PRINCIPLE in its own argv-parse block, then expects those to flow into Phase 0 of god-review.md. There is no write_env call in god-report.md Step 0 — env-helpers.sh:20-27 whitelist DOES include RUTHLESS, ONLINE, CODEX_VALIDATION_EVERY, PRINCIPLE, SCOPE, MAX_ROUNDS, MAX_WALL_HOURS, RESUME, FORCE_RESUME but god-report.md never calls write_env. So when god-report's "execute Phase 0" begins, it sources .env.sh which holds STALE values from a prior god-review run (or none).
+**Impact:** /god-report --ruthless silently runs without --ruthless. /god-report scope arg silently lost. /god-report --rounds 3 may run 1 round if a prior god-review run left ROUNDS unset and the loop var resets.
+**Fix:** Add `write_env` at end of god-report.md:57 (Step 0 closing). Add ROUNDS to env-helpers.sh:20-27 whitelist (currently missing — only MAX_ROUNDS is there).
+
+### [medium] check_phase_drift compares text but never read by any caller in the orchestrator
+**Source:** info-loss-detector
+**Evidence:** env-helpers.sh:329-337 defines `check_phase_drift` which diffs Phase sections of god-review.md vs god-report.md. god-report.md:130-132 calls it. But god-review.md never invokes it. The function writes warnings to stdout via `echo`, never to state.json or any persisted log. Output info is lost — orchestrator running god-review never sees drift warnings, and god-report's drift output isn't captured to disk.
+**Impact:** Drift between the two commands' shared backbone goes unnoticed unless the operator runs god-report manually. The "delegate Phase 0/1/2 to god-review.md" pattern depends on no drift, but drift detection is best-effort and ephemeral.
+**Fix:** Persist drift output: `check_phase_drift > $WORKDIR/tmp/god-review/drift-warnings.txt 2>&1`. Call it from god-review.md Step 0 right after sourcing env-helpers.sh.
+
+### [low] Architect's ARCH_OUTPUT JSON validation discards parse-error message but doesn't preserve it for HUMAN_GATE description
+**Source:** info-loss-detector
+**Evidence:** god-review.md:1100-1106 — when VALID != "VALID", the script echoes `Architect output malformed: $VALID`, calls `record_architect_malformed`, then says "Demoting $FINDING_ID to HUMAN_GATE". `record_architect_malformed` (env-helpers.sh:226-240) only increments a per-round counter — it doesn't store the malformed JSON or the parse error. When the orchestrator then re-runs 3c logic for the demoted finding, the HUMAN_GATE description includes the original Phase 2 description but NOT "Architect produced malformed JSON: <error>". The user reviewing HUMAN_GATE_QUEUE has no signal that this finding was attempted-and-failed.
+**Impact:** Human reviewer cannot distinguish "originally hard-gate" from "Architect couldn't propose a fix" — both look identical in HUMAN_GATE_QUEUE.
+**Fix:** Extend record_architect_malformed signature to accept the error message and finding_id; store list of (finding_id, error) per round in state.json; sub-step 3c append the malformed-error to HUMAN_GATE description.
+
+### [low] FROZEN_UNITS_COUNT initialized at round 1 but never re-derived from state.json on subsequent rounds
+**Source:** info-loss-detector
+**Evidence:** god-review.md:843 sets `FROZEN_UNITS_COUNT=0` once. The churn-freeze logic at 1207-1225 appends to `state.json.frozen_units` and calls `record_frozen` (env-helpers.sh:208-222) which appends to `frozen_added_per_round`. But `FROZEN_UNITS_COUNT` shell var is never re-read from `len(state.json.frozen_units)` — the final report at line 1571 prints "Frozen units: <N>" and the only source for this is FROZEN_UNITS_COUNT which stayed 0 the whole run.
+**Impact:** Final summary always reports "Frozen units: 0" even when freezes occurred. FROZEN_UNITS_CAP bounded-mode termination check (referenced in plan but I don't see explicit bash use of FROZEN_UNITS_COUNT for termination) is broken.
+**Fix:** At sub-step 3a or 3g, refresh `FROZEN_UNITS_COUNT=$(python3 -c "import json; print(len(json.load(open('$WORKDIR/tmp/god-review/state.json')).get('frozen_units',[])))")`. Use this value (not the stale 0) anywhere FROZEN_UNITS_CAP is compared.
+
+### [low] auto_deferred entries are written to state.json but the orchestrator never reads them in subsequent rounds for replay-skip
+**Source:** info-loss-detector
+**Evidence:** env-helpers.sh:247-287 `record_auto_defer` writes to `state.json.auto_deferred[]` AND to `tmp/god-review/known-deferred-session.txt`. Sub-step 3b's REPLAYED bucket at 920-921 only checks `is_already_session_deferred` (which reads the .txt file), not the state.json field. If the .txt file is deleted between rounds (e.g., user cleanup) but state.json persists, deferred findings re-enter AUTO_FIX bucket and get re-attempted.
+**Impact:** Soft inconsistency between two stores of the same data. Recovery semantics unclear.
+**Fix:** Either make is_already_session_deferred read from state.json (canonical), or remove the .txt entirely and rely on state.json. Single source of truth.
+
+### [minor] write_env whitelist (env-helpers.sh:20-27) missing variables currently in active use
+**Source:** info-loss-detector
+**Evidence:** Active vars NOT in whitelist: ROUNDS (god-report), DEFERRED_THIS_ROUND, GATED_THIS_ROUND (god-review.md:1389-1390), PRE_FIX_REF, PRE_FIX_REFTYPE, PRE_FIX_BASE_REF, ARCH_FILE, ARCH_OUTPUT, FINDING_ID, FINDING_HASH, FINDING_FILE, FINDING_LINE_RANGE, FINDING_CATEGORY, FINDING_DESCRIPTION, FINDING_ROOT_CAUSE, FINDING_PROPOSED_DIFF, FINDING_SEVERITY, RATIONALE, GATES_PASS, REGRESSION, REGRESSION_REASON, PERF_REGRESSED, EDITED_FILE.
+**Impact:** Any value computed in one fence and consumed in a later fence is lost. This is the structural root cause of multiple [catastrophic] findings above.
+**Fix:** Audit every shell var consumed in a fence other than where it's assigned; add to whitelist. Better: switch from explicit allow-list to `compgen -v | grep -E '^(GR_|FINDING_|ARCH_|PRE_FIX_|GATES_|REGRESSION|PERF_)'` for namespaced vars.
+
+### [minor] Phase 1c perf-baseline writes `tmp/god-review/perf-baseline.json` but stdout from `npm run bench` is captured AS THE JSON — not actual JSON
+**Source:** info-loss-detector
+**Evidence:** god-review.md:429-431 — `npm run bench 2>&1 > tmp/god-review/perf-baseline.json` captures stdout+stderr (npm progress lines, build output, then bench results) verbatim. Phase 3 perf comparison at 1262-1268 reads this file with `open('tmp/god-review/perf-baseline.json').read()` and runs a regex over it for `(ms)` patterns. This isn't truly JSON — it's terminal output.
+**Impact:** Brittle parsing. Different npm versions or bench output formats silently produce empty regex matches → PERF_REGRESSED="NONE" always → perf-regression detection never fires.
+**Fix:** Detect actual benchmark JSON output convention (e.g. `tinybench --json`, `pytest-benchmark --benchmark-json`) and route stdout there. Or rename the file to `.txt` to be honest about its content.
+
+Total: 19 findings (catastrophic: 3, high: 5, medium: 6, low: 3, minor: 2, deferred: 0)
