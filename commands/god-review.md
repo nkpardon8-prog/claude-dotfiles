@@ -737,25 +737,56 @@ per the prompt. For each line where `STATUS=FALSE_POSITIVE`, call
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 
 # Parse codex-validation-output.txt and emit record_false_positive calls.
-# Each finding's source data lives in state.json.kept_fixes / report.md sections;
-# the validator output gives us FINDING_ID and reason. file/line/category come
-# from the per-finding dictionary the orchestrator built in Phase 2e.
-if [ -f /tmp/codex-validation-output.txt ]; then
-  while IFS= read -r line; do
-    case "$line" in
-      *FALSE_POSITIVE*)
-        # Extract finding_id (everything before first colon) and reason (after em-dash)
-        fid=$(echo "$line" | awk -F: '{print $1}' | tr -d ' ')
-        reason=$(echo "$line" | awk -F'—' '{print $2}' | sed 's/^ *//;s/ *$//')
-        # Orchestrator: substitute file/line/category from the per-finding dict
-        # built in Phase 2e for this finding_id. If not available, use placeholders.
-        record_false_positive "$fid" "${FP_FILE:-unknown}" "${FP_LINE:-0-0}" "${FP_CATEGORY:-uncategorized}" "${reason:-no reason}" || true
-        # Also add the FP's hash to finding_history_hashes so future rounds' replay-skip filters it.
-        fp_hash=$(compute_finding_hash "${FP_FILE:-unknown}" "${FP_LINE:-0-0}" "${FP_CATEGORY:-uncategorized}")
-        record_finding_hash "$fp_hash" || true
-      ;;
-    esac
-  done < /tmp/codex-validation-output.txt
+# Build a finding_id → {file, line, category} index from the consolidated
+# input file the orchestrator just wrote, so we can record real metadata
+# (NOT placeholder "unknown / 0-0 / uncategorized" sentinels).
+if [ -f /tmp/codex-validation-output.txt ] && [ -f /tmp/claude-findings-consolidated.txt ]; then
+  python3 << 'PYEOF'
+import os, re, subprocess
+
+WORKDIR = os.environ.get("WORKDIR", ".")
+ROUND = os.environ.get("ROUND", "0")
+
+# Build finding_id → metadata index from consolidated findings.
+# Heuristic parse: each finding starts with "### <id>" or similar.
+idx = {}
+with open("/tmp/claude-findings-consolidated.txt") as f:
+    text = f.read()
+blocks = re.split(r'(?m)^### ', text)
+for blk in blocks[1:]:
+    fid_m = re.match(r'\[?[^\]]*\]?\s*(.+?)$', blk, re.MULTILINE)
+    if not fid_m: continue
+    fid = fid_m.group(1).strip()[:80]
+    loc_m = re.search(r'(?:File|Evidence|file|evidence)\*?\*?\s*:?\s*[`"]?([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', blk)
+    cat_m = re.search(r'(?:category|principle)\*?\*?\s*:\s*(\w[\w\-]*)', blk, re.IGNORECASE)
+    if loc_m:
+        f_, s, e = loc_m.group(1), int(loc_m.group(2)), int(loc_m.group(3) or loc_m.group(2))
+        lr = f"{(s//5)*5}-{((e+4)//5)*5}"
+    else:
+        f_, lr = "unknown", "0-0"
+    cat = cat_m.group(1) if cat_m else "uncategorized"
+    idx[fid] = (f_, lr, cat)
+
+# Parse validator output and call helpers
+def call(cmd, *args):
+    return subprocess.call(["bash", "-c", f'source ~/.claude-dotfiles/commands/god-review/lib/env-helpers.sh && {cmd} "$@"', "_"] + list(args),
+                           env={**os.environ, "ROUND": ROUND})
+
+with open("/tmp/codex-validation-output.txt") as f:
+    for ln in f:
+        if "FALSE_POSITIVE" not in ln: continue
+        fid_m = re.match(r'^\s*([^:]+):', ln)
+        if not fid_m: continue
+        fid = fid_m.group(1).strip()
+        reason_m = re.search(r'—\s*(.+)$', ln)
+        reason = reason_m.group(1).strip() if reason_m else "no reason"
+        f_, lr, cat = idx.get(fid, ("unknown", "0-0", "uncategorized"))
+        call("record_false_positive", fid, f_, lr, cat, reason)
+        # Also record hash for replay-skip
+        import hashlib
+        h = hashlib.sha256(f"{f_}|{lr}|{cat}".encode()).hexdigest()
+        call("record_finding_hash", h)
+PYEOF
 fi
 ```
 
@@ -849,7 +880,7 @@ Format per finding:
 
 ---
 
-## Human Gate Required [never auto-applied]
+## HUMAN_GATE_QUEUE
 <All HUMAN_GATE findings from Phase 3, with proposed diffs>
 <Emitted ONCE per finding; subsequent rounds only update "still pending as of round N">
 
@@ -916,7 +947,7 @@ try:
     in_human_gate = False
     count = 0
     for line in report.splitlines():
-        if line.startswith('## Human Gate Required'):
+        if line.startswith('## HUMAN_GATE_QUEUE'):
             in_human_gate = True
         if not in_human_gate and line.startswith('### '):
             count += 1
@@ -927,6 +958,11 @@ except Exception:
 
 write_env
 echo "=== Phase 3 starting: TOTAL_OPEN_FINDINGS=$TOTAL_OPEN_FINDINGS, ROUND=$ROUND ==="
+
+# Clear cross-run accumulators ONLY on fresh start (not on --resume).
+if [ "${RESUME:-false}" != "true" ]; then
+  rm -f "$WORKDIR/tmp/god-review/human-gate-queue.md" 2>/dev/null
+fi
 ```
 
 **Now enter the orchestrator-driven round loop.** What follows is a per-round
@@ -951,10 +987,17 @@ PRE_FIX_BASE_REF=$(git rev-parse HEAD)
 # IMPORTANT: paths must match where the producers actually write.
 # Verifier findings live at $WORKDIR/tmp/god-review/findings/verifier-*.txt
 # (written by write_agent_finding), NOT /tmp/verifier-*.txt.
+# Verifier outputs are produced FRESH every round — always safe to clean.
 rm -f /tmp/verifier-all-findings.tsv 2>/dev/null
 rm -f "$WORKDIR/tmp/god-review/findings/"verifier-*.txt 2>/dev/null
-rm -f /tmp/codex-principle-*.txt /tmp/codex-broad-*.txt 2>/dev/null
-rm -f "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null
+# Codex findings: ONLY clean if Phase 2 will re-run this round (because
+# only Phase 2 writes them). The "re-enter 3a directly" loop branch skips
+# Phase 2, and we'd otherwise wipe stable Codex output. The orchestrator
+# sets $RE_ENTERED_PHASE_2 before this cleanup runs (true|false).
+if [ "${RE_ENTERED_PHASE_2:-true}" = "true" ]; then
+  rm -f /tmp/codex-principle-*.txt /tmp/codex-broad-*.txt 2>/dev/null
+  rm -f "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null
+fi
 rm -f "$WORKDIR/tmp/god-review/architect-output-"*.json 2>/dev/null
 
 # Reset per-round counters
@@ -1540,10 +1583,11 @@ for path in sys.argv[1:]:
         # Best-effort extraction
         fid_m = re.search(r'^\[[^\]]+\]\s*(.+?)$', block, re.MULTILINE)
         fid = fid_m.group(1).strip()[:60].replace('\t',' ') if fid_m else f"v-{i}"
-        # Require explicit "File:" / "Evidence:" / "**File:**" / "**Evidence:**" prefix
-        # before the path:line pattern, to avoid grabbing path-shaped substrings
-        # from prose / quoted code samples elsewhere in the finding block.
-        loc_m = re.search(r'(?:File|Evidence|file|evidence)\*?\*?\s*:?\s*[`"]?([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', block)
+        # Require explicit "File:" / "Location:" / "Evidence:" prefix (with
+        # optional ** markdown bolding) before the path:line pattern, to avoid
+        # grabbing path-shaped substrings from prose / quoted code samples.
+        # Phase 2 emits "**Location:**", verifier prompts use "Evidence:" — both supported.
+        loc_m = re.search(r'(?:File|Location|Evidence|file|location|evidence)\*?\*?\s*:?\s*[`"]?([\w./\-]+\.[a-z]+):(\d+)(?:-(\d+))?', block)
         if loc_m:
             f = loc_m.group(1); s = int(loc_m.group(2))
             e = int(loc_m.group(3)) if loc_m.group(3) else s
@@ -1587,30 +1631,52 @@ echo "VERIFIER_NEW_COUNT=$VERIFIER_NEW_COUNT"
 # next round's sub-step 3a re-parses them as findings. Without this, every
 # verifier discovery dies after one stdout line.
 if [ "$VERIFIER_NEW_COUNT" -gt 0 ]; then
-  python3 << PYEOF
-import os
-report_path = "$WORKDIR/tmp/god-review/report.md"
+  ROUND="$ROUND" python3 << 'PYEOF'
+import os, re
+report_path = os.environ.get("WORKDIR", ".") + "/tmp/god-review/report.md"
 tsv_path = "/tmp/verifier-all-findings.tsv"
 if not os.path.isfile(report_path) or not os.path.isfile(tsv_path):
     raise SystemExit(0)
 with open(report_path) as f:
     txt = f.read()
-# Append a "## Verifier-Round-\$ROUND New Findings" section at the bottom
-# (the round-aware section heading lets sub-step 3a in round N+1 parse them
-# as ### entries in the standard sections — we put them under "Important"
-# severity by default since verifier output severity is heuristic).
-section = "\n\n## Verifier round ${ROUND} additions\n\n"
+# Insert verifier findings into the "## Important" section (canonical
+# section that 3a parses). If "## Important" doesn't exist, fall back to
+# "## Critical [must fix]". If neither, append a new "## Important" section.
+round_n = os.environ.get("ROUND", "?")
+new_entries = []
 with open(tsv_path) as f:
     for ln in f:
         parts = ln.rstrip("\n").split("\t")
         if len(parts) < 4: continue
         fid, fl, lr, cat = parts[0], parts[1], parts[2], parts[3]
-        section += f"### {fid}\n- File: {fl}:{lr}\n- Category: {cat}\n- Source: verifier-round-${ROUND}\n\n"
+        new_entries.append(
+            f"### {fid}\n"
+            f"- File: {fl}:{lr}\n"
+            f"- Category: {cat}\n"
+            f"- Source: verifier-round-{round_n}\n"
+        )
+new_block = "\n".join(new_entries) + "\n"
+
+# Pick injection point
+for marker in ("## Important [should fix]", "## Important", "## Critical [must fix]"):
+    if marker in txt:
+        # Insert AFTER the marker line + blank line
+        idx = txt.index(marker)
+        nl = txt.index("\n", idx) + 1   # end of marker line
+        # Skip one optional blank line
+        if txt[nl:nl+1] == "\n":
+            nl += 1
+        txt = txt[:nl] + new_block + txt[nl:]
+        break
+else:
+    # No section to inject into — append a new Important section
+    txt += "\n\n## Important [should fix]\n\n" + new_block
+
 with open(report_path + ".tmp", "w") as f:
-    f.write(txt + section)
+    f.write(txt)
 os.rename(report_path + ".tmp", report_path)
 PYEOF
-  echo "Appended VERIFIER_NEW_COUNT=$VERIFIER_NEW_COUNT new findings to report.md"
+  echo "Inserted $VERIFIER_NEW_COUNT verifier findings into report.md (## Important section)"
 fi
 ```
 
@@ -1646,14 +1712,17 @@ NEW_NEW_FINDINGS=${NEW_NEW_FINDINGS:-0}
 DEFERRED_THIS_ROUND=${DEFERRED_THIS_ROUND:-0}
 GATED_THIS_ROUND=${GATED_THIS_ROUND:-0}
 
-# Recompute TOTAL_OPEN_FINDINGS from the latest report.md (was stale — frozen at Phase 3 entry)
+# Recompute TOTAL_OPEN_FINDINGS from the latest report.md (was stale — frozen at Phase 3 entry).
+# Counts every "### " entry in non-HUMAN_GATE_QUEUE sections, including verifier
+# additions in ## Important (verifier findings ARE legitimate open findings;
+# they're injected into Important by the 3f appender).
 TOTAL_OPEN_FINDINGS=$(python3 -c "
 try:
     txt = open('$WORKDIR/tmp/god-review/report.md').read()
     in_human_gate = False
     count = 0
     for line in txt.splitlines():
-        if line.startswith('## Human Gate Required') or line.startswith('## HUMAN_GATE_QUEUE'):
+        if line.startswith('## HUMAN_GATE_QUEUE'):
             in_human_gate = True
             continue
         if line.startswith('## ') and in_human_gate:
@@ -1678,11 +1747,15 @@ start = datetime.fromisoformat(d['started_at_iso'].replace('Z','+00:00'))
 print(round((datetime.now(timezone.utc)-start).total_seconds()/3600, 2))
 " 2>/dev/null || echo 0)
 
+# Backstops set LOOP_EXIT and FALL THROUGH to sub-step 3h (Phase 4 final report).
+# The orchestrator-prose loop controller checks LOOP_EXIT and routes to 3h on any
+# non-empty value, then exits with the right code AFTER the final report is written.
 # Wall-clock cap (0 = disabled)
 if [ "${MAX_WALL_HOURS:-24}" != "0" ] && python3 -c "import sys; sys.exit(0 if float('${ELAPSED_HOURS:-0}') >= float('${MAX_WALL_HOURS:-24}') else 1)" 2>/dev/null; then
   echo "Wall-clock cap reached ($ELAPSED_HOURS h >= $MAX_WALL_HOURS h)" >&2
-  LOOP_EXIT=wall-clock; write_env
-  exit 5
+  LOOP_EXIT=wall-clock
+  LOOP_EXIT_CODE=5
+  write_env
 fi
 
 # Instability detector (avg per-round events over last 3 rounds > INSTABILITY_RATE)
@@ -1699,15 +1772,17 @@ except Exception:
 " 2>/dev/null || echo 0)
 if python3 -c "import sys; sys.exit(0 if float('${AVG_INSTABILITY:-0}') > ${INSTABILITY_RATE:-5} else 1)" 2>/dev/null; then
   echo "Instability rate too high (avg $AVG_INSTABILITY events/round over last 3 rounds)" >&2
-  LOOP_EXIT=instability; write_env
-  exit 4
+  LOOP_EXIT=instability
+  LOOP_EXIT_CODE=4
+  write_env
 fi
 
 # --max-rounds explicit ceiling (only honored if user passed it)
-if [ "$MAX_ROUNDS_EXPLICIT" = "true" ] && [ "$ROUND" -ge "${MAX_ROUNDS:-9999}" ]; then
+if [ -z "$LOOP_EXIT" ] && [ "$MAX_ROUNDS_EXPLICIT" = "true" ] && [ "$ROUND" -ge "${MAX_ROUNDS:-9999}" ]; then
   echo "--max-rounds ceiling reached ($MAX_ROUNDS rounds)" >&2
-  LOOP_EXIT=max-rounds; write_env
-  exit 2
+  LOOP_EXIT=max-rounds
+  LOOP_EXIT_CODE=2
+  write_env
 fi
 
 # Frozen-units cap: hard backstop for runaway churn
@@ -1719,10 +1794,11 @@ try:
 except Exception:
     print(0)
 " 2>/dev/null || echo 0)
-if [ "$FROZEN_UNITS_COUNT" -gt "${FROZEN_UNITS_CAP:-3}" ]; then
+if [ -z "$LOOP_EXIT" ] && [ "$FROZEN_UNITS_COUNT" -gt "${FROZEN_UNITS_CAP:-3}" ]; then
   echo "Frozen units cap exceeded ($FROZEN_UNITS_COUNT > ${FROZEN_UNITS_CAP:-3}) — escalating to human" >&2
-  LOOP_EXIT=frozen-cap; write_env
-  exit 3
+  LOOP_EXIT=frozen-cap
+  LOOP_EXIT_CODE=3
+  write_env
 fi
 
 # Persist round + clean-counter to state.json
@@ -1758,6 +1834,7 @@ elif [ "${NEW_NEW_FINDINGS:-0}" -eq 0 ]; then
   if [ "$CONSECUTIVE_CLEAN_ROUNDS" -ge 3 ]; then
     echo "DECISION: TERMINATE — 3 consecutive clean rounds. Proceeding to Phase 4 (sub-step 3h)."
     LOOP_EXIT=converged
+    LOOP_EXIT_CODE=0
   else
     ROUND=$((ROUND + 1))
     echo "DECISION: re-enter — clean round ($CONSECUTIVE_CLEAN_ROUNDS/3), ROUND advancing to $ROUND"
@@ -1770,8 +1847,12 @@ write_env
 
 **Loop control flow (orchestrator MUST follow this — it is the actual loop):**
 
-- **If `LOOP_EXIT=converged`** → STOP looping. Execute sub-step 3h ONCE and
-  exit. The /god-review run is complete.
+- **If `LOOP_EXIT` is non-empty** (any value: `converged`, `wall-clock`,
+  `instability`, `frozen-cap`, `max-rounds`) → STOP looping. Execute
+  sub-step 3h (Phase 4 final report) ONCE, then exit with status
+  `${LOOP_EXIT_CODE:-0}`. The final report is written for ALL exit reasons
+  (not just converged) — backstops still produce a summary including kept
+  fixes, deferrals, and HUMAN_GATE_QUEUE so the user sees what happened.
 - **If `LOOP_EXIT` is unset (re-enter)** → **YOU MUST START THE NEXT ROUND
   RIGHT NOW BY EXECUTING SUB-STEP 3a IN A NEW BATCH OF MESSAGES.** Do NOT
   stop. Do NOT wait for the user. Do NOT treat the previous round's
@@ -1885,6 +1966,8 @@ if [ -f "$SESSION_KD" ] && [ -s "$SESSION_KD" ]; then
 fi
 
 echo "Phase 3 + Phase 4 complete. Final summary at $WORKDIR/tmp/god-review/final-summary.md"
+echo "Exit reason: ${LOOP_EXIT:-converged} (code: ${LOOP_EXIT_CODE:-0})"
+exit ${LOOP_EXIT_CODE:-0}
 ```
 
 ---

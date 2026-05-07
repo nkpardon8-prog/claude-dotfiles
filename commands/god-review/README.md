@@ -67,7 +67,7 @@ Each principle runs as a Claude agent + Codex validation sub-agent pair. Princip
 | 0 | Clean — no findings above threshold, or all findings resolved. |
 | 1 | Argument-parse error — invalid flag, missing value, etc. |
 | 2 | Fix loop hit `--max-rounds` ceiling (only when explicitly passed). |
-| 3 | (reserved) — was "frozen units" in earlier versions; freeze now records to state.json without exit. |
+| 3 | Frozen units cap exceeded — `FROZEN_UNITS_COUNT > FROZEN_UNITS_CAP` (default 3). Runaway churn detected; loop escalates to human. |
 | 4 | Instability self-abort — oscillation detected across fix rounds; reverted to last clean snapshot. |
 | 5 | Wall-clock cap — `--max-wall-hours` limit hit (when non-zero). |
 | 6 | Corrupt `state.json` on `--resume` — checkpoint file is unreadable or schema-invalid. |
@@ -82,7 +82,7 @@ All outputs are relative to the project root (the directory where `/god-review` 
 | Path | Description |
 |------|-------------|
 | `tmp/god-review/context-package.md` | Phase 0 shared context map — stack fingerprint, architecture, hot zones, baseline gates. |
-| `tmp/god-review/round-N-findings.md` | Per-round audit trail (Phase 3 fix loop only). One file per round. |
+| `tmp/god-review/state.json.round_finding_counts` | Per-round audit trail (round number, new/total/deferred/gated counts). Stored in state.json, not as separate files. |
 | `tmp/god-review/report.md` | Final sectioned report: Critical / Gaps / Important / Assumptions / Contradictions / Minor / Meta. Includes per-finding provenance (which principle, which model, confidence tag). |
 | `tmp/god-review/state.json` | Persistent state: repo snapshot SHA, churn ledger, frozen units, kept/reverted fixes, round count, wall-clock start. |
 | `tmp/god-review/perf-baseline.json` | Phase 1 benchmark baseline (only created if `HAS_BENCH_SCRIPT` is detected). |

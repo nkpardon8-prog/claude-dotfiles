@@ -260,8 +260,11 @@ orchestrator-driven loop (master-review pattern).
   fix-loop reality.
 - README rewritten to document both commands + their flag tables side-by-side.
 - Removed vestigial `FIX` and `LOOP` from `write_env` whitelist.
-- Snapshot baseline now via `git tag` instead of stash (survives auto-push
-  cleanup cycles).
+- Phase G implementation plan's baseline is now tracked via `git tag
+  phase-g-baseline` (survives auto-push cleanup cycles). The orchestrator's
+  Phase 1 snapshot still uses `git stash create` for dirty trees and
+  `git rev-parse HEAD` for clean — that's a per-run snapshot, not a
+  multi-day plan baseline, so stash works fine there.
 
 ## 2026-05-06 — Phase F production hardening
 
