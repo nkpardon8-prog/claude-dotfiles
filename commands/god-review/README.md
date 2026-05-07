@@ -65,9 +65,9 @@ Each principle runs as a Claude agent + Codex validation sub-agent pair. Princip
 | Code | Meaning |
 |------|---------|
 | 0 | Clean — no findings above threshold, or all findings resolved. |
-| 1 | Findings reported — report-only mode completed with unresolved findings. |
-| 2 | Fix loop hit max rounds — bounded fix loop exhausted `--max-rounds` cap. |
-| 3 | Fix loop frozen — no net progress across consecutive rounds (churn ledger triggered). |
+| 1 | Argument-parse error — invalid flag, missing value, etc. |
+| 2 | Fix loop hit `--max-rounds` ceiling (only when explicitly passed). |
+| 3 | (reserved) — was "frozen units" in earlier versions; freeze now records to state.json without exit. |
 | 4 | Instability self-abort — oscillation detected across fix rounds; reverted to last clean snapshot. |
 | 5 | Wall-clock cap — `--max-wall-hours` limit hit (when non-zero). |
 | 6 | Corrupt `state.json` on `--resume` — checkpoint file is unreadable or schema-invalid. |
