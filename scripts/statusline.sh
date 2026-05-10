@@ -288,8 +288,6 @@ if now - s.get("last_tick", now) > 300: sys.exit(0)
 
 elapsed = now - s.get("prompt_started_at", now)
 mins, secs = divmod(elapsed, 60)
-# Sub-second spinner index so it advances on every render, not once/sec
-spinner = "⠋⠙⠹⠸⠼⠴⠦⠧"[int(now_f * 8) % 8]
 stalled = (now - s.get("last_tick", now)) > 30
 color = "\033[0;33m" if stalled else "\033[0;32m"  # yellow if stalled, green otherwise
 reset = "\033[0m"
@@ -316,7 +314,7 @@ cub, cul, cup = bar(cu)
 ov_str = f"task {ovb} {ovp}" if ovp else f"task {ovb} {ovl}"
 cu_label = s.get("outer_command") or cul or "cmd"
 cu_str = f"{cu_label} {cub} {cup}" if cup else f"{cu_label} {cub} {cul}"
-print(f"{color}{spinner} {mins}:{secs:02d}  {ov_str}   {cu_str}{reset}")
+print(f"{color}{mins}:{secs:02d}  {ov_str}   {cu_str}{reset}")
 PY
     )
   fi
