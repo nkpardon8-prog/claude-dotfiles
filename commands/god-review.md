@@ -1214,6 +1214,11 @@ else
   PRE_FIX_REFTYPE="commit"
 fi
 echo "Pre-fix snapshot: $PRE_FIX_REFTYPE $PRE_FIX_REF"
+# G8.2: persist across fences so the EDITOR_ABORT revert path can read them.
+# Without this, an empty PRE_FIX_REFTYPE falls into the `git checkout --` branch
+# and destroys uncommitted user WIP.
+write_env PRE_FIX_REF "$PRE_FIX_REF"
+write_env PRE_FIX_REFTYPE "$PRE_FIX_REFTYPE"
 ```
 
 **(ii) Spawn ONE Architect Agent tool call.** You (the orchestrator) issue
@@ -1565,16 +1570,37 @@ After all per-finding pipelines in 3e complete, spawn 4 verifier agents in
 parallel (subset of Phase 2's full suite — for speed). Use ONE message with
 4 Agent tool calls:
 
+**CRITICAL — every verifier MUST emit findings in this exact format** so the TSV parser at lines 1606-1635 can extract them. Append this block verbatim to every verifier prompt below:
+
+```
+OUTPUT FORMAT (MANDATORY):
+For each NEW issue, emit a markdown block starting with a level-3 heading:
+
+### [<n>] <one-line title>
+**Location**: <relative/file/path>:<line_start>-<line_end>
+**Category**: <SINGLE_WORD_CATEGORY>
+**Severity**: <catastrophic|high|medium|low>
+**Description**: <2-3 sentence description of the issue>
+
+The Location line is REQUIRED — without `**Location**:` (or `Location:` /
+`File:` / `Evidence:` prefix) followed by `path:lines`, your finding will
+be silently dropped by the orchestrator's TSV parser. Do NOT use prose
+paragraphs without these structured fields.
+
+If you find no NEW issues, output exactly the single line: `NO_NEW_FINDINGS`
+```
+
 - **Verifier 1**: `claude-opus-4-7`, `subagent_type: general-purpose`, prompt
   = "Re-review this diff and surrounding code. List any NEW issues. Do NOT
   re-flag findings already in `state.json.human_gate_emitted` or in
   `tmp/god-review/known-deferred-session.txt`. Diff:
   `$(git diff $PRE_FIX_BASE_REF..HEAD)`. Prior findings list: ..."
+  + the OUTPUT FORMAT block above appended verbatim.
 - **Verifier 2**: same shape but model `claude-opus-4-7` with different focus
-  prompt (correctness vs. architecture).
+  prompt (correctness vs. architecture). + OUTPUT FORMAT block appended.
 - **Verifier 3**: Codex via `bash $WORKDIR/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh`
-  (only if `$CODEX_AVAILABLE=true`).
-- **Verifier 4**: another Codex agent, different prompt focus.
+  (only if `$CODEX_AVAILABLE=true`). + OUTPUT FORMAT block appended.
+- **Verifier 4**: another Codex agent, different prompt focus. + OUTPUT FORMAT block appended.
 
 After the parallel batch returns, capture each verifier's result text.
 
