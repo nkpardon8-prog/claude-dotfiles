@@ -2,6 +2,7 @@
 description: "Master Review — autonomous review + fix pipeline. Reviewers: 3 Claude Opus + 3 OpenAI Codex CLI (GPT-5.4) + 2 Antigravity (Google AI) agents in parallel. Fixer: Claude via /implement. Verification loop: 2 Claude Opus + 2 Codex + 2 Antigravity agents until 3 consecutive clean passes. Works on code or features."
 argument-hint: "[file/dir/feature description, or blank for auto-detect]"
 model: opus
+expected_subagents: 8
 ---
 
 # Master Review — Autonomous Review & Fix Pipeline

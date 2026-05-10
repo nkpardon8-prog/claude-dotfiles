@@ -1,6 +1,7 @@
 ---
 description: Executes an approved plan by breaking work into parallelizable chunks and spawning implementation sub-agents. Automatically reviews the result for completeness. Use after a plan is approved.
 argument-hint: "[plan file path]"
+expected_subagents: 4
 ---
 
 # Implementation Agent

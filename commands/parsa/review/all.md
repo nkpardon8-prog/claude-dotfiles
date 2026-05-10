@@ -1,5 +1,6 @@
 ---
 description: Run comprehensive code review spawning parallel agents for each of the 11 core principles
+expected_subagents: 11
 ---
 
 # /review:all - Comprehensive Code Review

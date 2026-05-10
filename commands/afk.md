@@ -1,6 +1,7 @@
 ---
 description: Fire-and-forget long-running code review. /afk [hours] (default 3, 0=infinite). Single-agent Opus 4.7 medium effort. Walk away, come back to a useful report.
 argument-hint: "[hours] [--force|--takeover]"
+expected_subagents: 1
 ---
 
 # AFK — Unattended Code Review Session

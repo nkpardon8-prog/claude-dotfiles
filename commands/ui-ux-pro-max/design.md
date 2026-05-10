@@ -6,6 +6,7 @@ license: MIT
 metadata:
   author: claudekit
   version: "2.1.0"
+expected_subagents: 4
 ---
 
 # Design

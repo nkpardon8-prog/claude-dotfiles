@@ -1,12 +1,22 @@
 # Claude Code Status Line
 
-A 6-field status line that shows authoritative usage info pulled directly from Anthropic's API rate-limit response headers (same source `/usage` uses).
+A 6-field status line that shows authoritative usage info pulled directly from Anthropic's API rate-limit response headers (same source `/usage` uses), plus a second line that flips between progress bars (active) and a per-window label (idle).
 
 ## What it shows
 
+**Line 1** — usage info (always on):
 ```
 ctx 42%   2h 58m left   31% sess   53% wk   Opus 4.7 [hi]   my-repo
 ```
+
+**Line 2** — context-dependent:
+- **Active prompt**: dual progress bars
+  ```
+  ⠋ 2:14  task ▰▰▰▰▱▱▱▱ 50% 4/8   /plan ▰▰▰▰▰▰▱▱ 75% 3/4
+  ```
+  Spinner + elapsed time, overall-task bar (from TodoWrite), current-command bar (from Task spawns or beacons). Bars dim to yellow if no tool call for 30s; auto-hidden after 5 min idle (failsafe). Works automatically for every command — no per-command setup. See `~/.claude-dotfiles/CLAUDE.md` "Progress Beacon Protocol" for opt-in finer granularity.
+- **Idle**: existing per-session label (`Internal › repo › what's happening`).
+- **Empty**: nothing on line 2 if neither is present.
 
 | Field | Source | Notes |
 |---|---|---|

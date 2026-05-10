@@ -57,6 +57,40 @@ Idempotent; safe to run every time. The unconditional `chmod` fixes the mode eve
 
 Once this label is being written, **stop prepending `STATUS:` lines to in-conversation responses** — the statusline replaces that mechanism.
 
+The label is now the **idle fallback** for line 2. While a prompt is running, line 2 is replaced by the dual progress bars described in the next section.
+
+## Progress Beacon Protocol (line 2 progress bars)
+
+Line 2 of the statusline shows two compact progress bars during active prompts: an **overall task** bar (driven by TodoWrite progress) and a **current command** bar. This works automatically for **every** command — no setup required. Beacons are an optional opt-in for finer granularity.
+
+**You don't need to do anything for the bars to work.** Bar 1 fills as you complete TodoWrite items. Bar 2 advances each time the Task tool spawns a sub-agent.
+
+**Optional optimization** — give Bar 2 a real denominator by adding to a command's frontmatter:
+```yaml
+---
+name: ...
+description: ...
+expected_subagents: 5   # number of Task spawns this command typically issues
+---
+```
+Without it, Bar 2 stays indeterminate (still useful — shows it's working, just no %).
+
+**Optional fine-grained beacons** — for commands with discrete phases, write a beacon at each phase boundary:
+
+- **Bash-fenced commands**: call the helper:
+  ```bash
+  bash $HOME/.claude-dotfiles/scripts/progress/emit-beacon.sh 3 5 "reviewing"
+  ```
+  Helper auto-discovers the session_id; pass `SESSION_ID=...` env var to override (required for sub-agents).
+
+- **LLM-orchestrated commands** (e.g. /god-review, /master-review): use the Write tool to create the beacon file directly:
+  ```
+  Write ~/.claude/progress/<session_id>.current.json with content {"step":3,"total":5,"label":"reviewing"}
+  ```
+  Use the same session_id discovery as the Per-Session Status Label rule above.
+
+The beacon scratch file is consumed (deleted) on the next Task tool call. Beacons override the Task-spawn-count fallback. Both are optional.
+
 ## Browser MCP Cleanup
 **Pre-flight (before driving anything via `chrome-devtools` / `playwright` MCP):**
 Run `pgrep -f 'chrome-devtools-mcp|playwright-mcp' | wc -l`. If the count is greater than 1 (one current instance per server is normal), the prior session's instances are stale and will fight the active one for the Chrome remote-debugging socket. Symptom: tool calls succeed once or twice then `MCP error -32000: Connection closed` on every subsequent call. Fix: `pkill -f 'chrome-devtools-mcp'` (or `playwright-mcp`), have the user `/mcp` reconnect, then proceed.

@@ -1,6 +1,7 @@
 ---
 description: "Trade group estimation — estimates a specific set of trades from construction documents. Used by the multi-terminal worker architecture."
 argument-hint: "[trade list]"
+expected_subagents: 3
 ---
 
 # Trade Group Estimation

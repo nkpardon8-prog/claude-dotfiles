@@ -266,23 +266,68 @@ printf "%b  %b  %b  %b  %b  %b\n" \
   "$EFFORT_FIELD" \
   "$REPO_FIELD"
 
-# ── 7. Per-session label (optional line 2) ──────────────────────────────────
-# Reads ~/.claude/session-status/<session_id>.txt and emits it as a dimmed
-# second line. File missing/empty → no second line. Truncated to 100 code
-# points (Unicode-aware via python3) so multi-byte chevrons survive the cut.
+# ── 7. Line 2: progress bars (active) or session label (idle) ──────────────
+# Reads ~/.claude/progress/<sid>.json first; if absent or stale, falls back to
+# the existing ~/.claude/session-status/<sid>.txt label. Empty if neither.
 SESSION_ID=$(jq_get '.session_id')
-SESSION_LABEL=""
 SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -cd 'A-Za-z0-9_-' | head -c 128 || true)
+LINE2=""
 
 if [ -n "$SAFE_SID" ]; then
-  LABEL_FILE="$HOME/.claude/session-status/$SAFE_SID.txt"
-  if [ -f "$LABEL_FILE" ]; then
-    SESSION_LABEL=$(head -n 1 "$LABEL_FILE" 2>/dev/null \
-      | python3 -c "import sys; s=sys.stdin.readline().rstrip(); print(s[:99]+'…' if len(s) > 100 else s)" \
-      2>/dev/null || true)
+  PROGRESS_FILE="$HOME/.claude/progress/$SAFE_SID.json"
+  if [ -f "$PROGRESS_FILE" ]; then
+    LINE2=$(python3 - "$PROGRESS_FILE" <<'PY' 2>/dev/null
+import json, sys, time
+try:
+    with open(sys.argv[1]) as fh: s = json.load(fh)
+except Exception: sys.exit(0)
+now = int(time.time())
+# 5-min failsafe: hide bars if no tool call in 5 min (Stop hook may have misfired)
+if now - s.get("last_tick", now) > 300: sys.exit(0)
+
+elapsed = now - s.get("prompt_started_at", now)
+mins, secs = divmod(elapsed, 60)
+spinner = "⠋⠙⠹⠸⠼⠴⠦⠧"[now % 8]
+stalled = (now - s.get("last_tick", now)) > 30
+color = "\033[0;33m" if stalled else "\033[2m"
+reset = "\033[0m"
+WIDTH = 8
+
+def bar(spec):
+    if spec.get("indeterminate") or not spec.get("total"):
+        pos = now % WIDTH
+        cells = ["▱"] * WIDTH
+        for i in range(3): cells[(pos + i) % WIDTH] = "▰"
+        return "".join(cells), spec.get("label") or "working", None
+    # Accept either `done` (overall) or `step` (current)
+    done = int(spec.get("done", spec.get("step", 0)))
+    total = int(spec["total"])
+    if total <= 0: total = 1
+    filled = max(0, min(WIDTH, (done * WIDTH) // total))
+    return "▰"*filled + "▱"*(WIDTH-filled), spec.get("label") or "", f"{(100*done)//total}% {done}/{total}"
+
+ov = s.get("overall", {"indeterminate": True})
+cu = s.get("current", {"indeterminate": True})
+ovb, ovl, ovp = bar(ov)
+cub, cul, cup = bar(cu)
+ov_str = f"task {ovb} {ovp}" if ovp else f"task {ovb} {ovl}"
+cu_label = s.get("outer_command") or cul or "cmd"
+cu_str = f"{cu_label} {cub} {cup}" if cup else f"{cu_label} {cub} {cul}"
+print(f"{color}{spinner} {mins}:{secs:02d}  {ov_str}   {cu_str}{reset}")
+PY
+    )
+  fi
+
+  # Fallback to existing session label
+  if [ -z "$LINE2" ]; then
+    LABEL_FILE="$HOME/.claude/session-status/$SAFE_SID.txt"
+    if [ -f "$LABEL_FILE" ]; then
+      LABEL=$(head -n 1 "$LABEL_FILE" 2>/dev/null \
+        | python3 -c "import sys; s=sys.stdin.readline().rstrip(); print(s[:99]+'…' if len(s) > 100 else s)" \
+        2>/dev/null || true)
+      [ -n "$LABEL" ] && LINE2="${DIM}${LABEL}${RESET}"
+    fi
   fi
 fi
 
-if [ -n "$SESSION_LABEL" ]; then
-  printf "%b%s%b\n" "$DIM" "$SESSION_LABEL" "$RESET"
-fi
+[ -n "$LINE2" ] && printf "%b\n" "$LINE2"

@@ -1,6 +1,7 @@
 ---
 description: Deep Supabase audit — schema, RLS, security, prod-readiness, client coherence. Report-only. Refuses prod without --env=prod. Optionally emits DATABASE.md.
 argument-hint: "[--only=schema,rls,security,prod,client] [--env=prod]"
+expected_subagents: 4
 ---
 
 # /supabase-audit

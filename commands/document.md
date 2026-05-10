@@ -1,6 +1,7 @@
 ---
 description: Audit or create clear project documentation covering database, backend, frontend, APIs, and external integrations. Updates existing docs or bootstraps a full docs/ tree if none exist. Output is navigable for both humans and LLMs.
 argument-hint: "[optional: area to focus on, e.g. 'backend only']"
+expected_subagents: 5
 ---
 
 # Document

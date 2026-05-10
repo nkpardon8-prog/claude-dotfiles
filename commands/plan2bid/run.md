@@ -1,6 +1,7 @@
 ---
 description: "Full construction estimation pipeline — reads documents, extracts quantities, prices materials, estimates labor, applies markups, produces a complete structured estimate. The core engine of Plan2Bid."
 argument-hint: "[project description, or just upload your construction documents]"
+expected_subagents: 6
 ---
 
 # Estimation Pipeline — /plan2bid:run

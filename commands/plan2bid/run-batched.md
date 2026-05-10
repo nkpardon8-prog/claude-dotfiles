@@ -1,6 +1,7 @@
 ---
 description: "Variant B estimation pipeline — parent reads ALL documents and extracts detailed scope, sub-agents only do pricing math. Produces higher-fidelity estimates by keeping document analysis in a single context."
 argument-hint: "[project description or upload construction documents]"
+expected_subagents: 4
 ---
 
 # Estimation Pipeline — Variant B: Parent Reads, Agents Price
