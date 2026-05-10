@@ -281,21 +281,24 @@ import json, sys, time
 try:
     with open(sys.argv[1]) as fh: s = json.load(fh)
 except Exception: sys.exit(0)
-now = int(time.time())
+now_f = time.time()
+now = int(now_f)
 # 5-min failsafe: hide bars if no tool call in 5 min (Stop hook may have misfired)
 if now - s.get("last_tick", now) > 300: sys.exit(0)
 
 elapsed = now - s.get("prompt_started_at", now)
 mins, secs = divmod(elapsed, 60)
-spinner = "⠋⠙⠹⠸⠼⠴⠦⠧"[now % 8]
+# Sub-second spinner index so it advances on every render, not once/sec
+spinner = "⠋⠙⠹⠸⠼⠴⠦⠧"[int(now_f * 8) % 8]
 stalled = (now - s.get("last_tick", now)) > 30
-color = "\033[0;33m" if stalled else "\033[2m"
+color = "\033[0;33m" if stalled else "\033[0;32m"  # yellow if stalled, green otherwise
 reset = "\033[0m"
 WIDTH = 8
 
 def bar(spec):
     if spec.get("indeterminate") or not spec.get("total"):
-        pos = now % WIDTH
+        # Sub-second pos so the sliding window glides on every render
+        pos = int(now_f * 4) % WIDTH
         cells = ["▱"] * WIDTH
         for i in range(3): cells[(pos + i) % WIDTH] = "▰"
         return "".join(cells), spec.get("label") or "working", None
