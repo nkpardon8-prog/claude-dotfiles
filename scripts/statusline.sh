@@ -332,3 +332,4 @@ PY
 fi
 
 [ -n "$LINE2" ] && printf "%b\n" "$LINE2"
+exit 0
