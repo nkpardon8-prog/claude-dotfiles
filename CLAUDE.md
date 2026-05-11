@@ -494,6 +494,133 @@ Moreover, Furthermore, Additionally, Consequently, Subsequently, Accordingly, He
 
 ---
 
+## Glasses Mode
+
+Conditional output-formatting rule for sessions where the user is reading responses on the Even Realities G2 smart glasses HUD (~25 chars × 7 visible lines, monochrome green, no markdown rendering). Default Claude output is unreadable there.
+
+### Trigger phrases
+
+Match against the user's most recent message only, case-insensitive, after lowercasing, trimming whitespace, and stripping trailing `.!?,`. Trigger fires when the normalized message either equals a trigger exactly OR starts with `<trigger>, ` or `<trigger>. `. Anything else does NOT fire — substring matches alone are not enough.
+
+**Enter:** `glasses on`, `enter glasses mode`, `glasses please`
+
+**Exit:** `glasses off`, `exit glasses mode`
+
+If both an enter and exit phrase somehow co-occur, the LAST one wins.
+
+### On enter
+
+1. Acknowledge with the single line `on.` (two characters; does not collide with any trigger).
+2. Apply the rules below to all subsequent user-facing assistant text in this conversation.
+
+### On exit
+
+1. Acknowledge with the single line `off.`
+2. Revert to default output style for the rest of the conversation.
+
+### Persistence
+
+Per-conversation. Not persisted across sessions. New sessions start in default mode; the user re-triggers if needed (cheap — one phrase). A conversation already in glasses mode at deletion time stays in glasses mode until it ends.
+
+### Formatting rules (apply while glasses mode is active)
+
+**Hard limits:**
+- 25 characters per line maximum, including trailing punctuation. No leading whitespace on content lines.
+- 6 content lines + 1 prompt line per response. If the answer needs more, paginate.
+- Do NOT emit the `[Project: <name>]` prefix line while in glasses mode (the HUD has 7 lines; the prefix wastes one).
+
+**Banned:**
+- All Writing Style Guide banned openers and transitions still apply (see that section), plus:
+- Markdown syntax: `**`, `_`, `#`, backticks, triple backticks, `---`, `|` tables, `>` blockquotes
+- Emojis
+- ANSI escape codes — ever
+- Restating the question
+- Narration of tool calls ("Let me check..." — just check)
+- Sign-offs ("Hope this helps", "Let me know if...")
+
+**Style:**
+- Lead with the answer on line 1
+- One fact per line; short labels beat sentences
+- Numbers beat prose
+- Numbered lists (not bulleted), short labels only
+
+**Tool output handling (hard rule, not optional):**
+When running Bash in glasses mode, ALWAYS cap output:
+- Append `| head -n 6` to commands that may stream
+- Use `wc -l` / `grep -c` / similar summarizers for counts
+- Never run `cat <large-file>`, `find /`, raw `ls -la` of big dirs
+- Raw stdout bypasses formatting rules — the cap must happen before the pipe ends
+
+**Pagination protocol:**
+- Each page = exactly 6 content lines + 1 prompt line `(p/total) more?`
+- Compute `total` before showing page 1
+- Any reply that is NOT a continuation token abandons the buffer and answers the new question
+- Continuation tokens (any short affirmative): `more`, `next`, `y`, `yes`, `go`, `continue`, `mm-hmm`, `mhm`
+
+**Confirmations and errors:**
+- Success: single word — `Done` / `Saved` / `Stopped`
+- Failure: line 1 = `Failed`, line 2 = reason ≤25 chars, line 3 = `more?` if context exists
+
+**Code requests:**
+- Show ≤7 lines, no syntax-highlighting markers
+- Longer? Offer: `full file? exit glasses?`
+
+**Voice transcription tolerance:**
+User input arrives via Whisper. Expect missing/wrong punctuation, homophones, filler ("um", "uh"). Interpret charitably; do not quibble.
+
+**Status label:**
+While in glasses mode, the `Per-Session Status Label` writer (separate mechanism) should use ASCII-only (the `›` separator in the default format may not render on G2) and keep line 1 ≤25 chars.
+
+### Examples
+
+User: `how many files in downloads`
+Output:
+```
+142 files
+18 dirs
+2.3 GB
+```
+
+User: `lint errors`
+Output:
+```
+8 errors
+6 in src/api
+2 in src/web
+fix? (y/n)
+```
+
+User: `deploy`
+Output:
+```
+prod: live
+v2.1.4
+3min ago
+```
+
+User: `read last commit`
+Output:
+```
+feat: add glasses
+mode toggle
+Nick, 2min ago
+```
+
+### What glasses mode does NOT affect
+
+- Thinking depth or reasoning quality
+- Skill invocations (memory, /plan, /implement, FRAIM, all others)
+- Tool calls themselves (Bash, Read, Edit, Write — these run normally; only the *visible text* Claude writes is reformatted)
+- Memory operations (read and write as normal)
+- Safety / permission / confirmation gates
+- The `Per-Session Status Label` file-write itself (file write happens; only the string format is constrained — see "Status label" above)
+
+### Removing glasses mode entirely
+
+Delete this entire `## Glasses Mode` section from `~/.claude/CLAUDE.md`. No other state to clean up. A conversation already in glasses mode stays that way until it ends.
+
+---
+
 ## MoleCopilot — Molecular Docking Research Agent
 
 MoleCopilot is a computational drug discovery toolkit at ~/molecopilot/. It automates molecular docking workflows for Professor Kaleem Mohammed (University of Utah, Pharmacology & Biochemistry).
