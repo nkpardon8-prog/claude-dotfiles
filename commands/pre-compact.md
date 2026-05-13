@@ -36,7 +36,10 @@ Steps 3.A and 3.B run sequentially first. Steps 3.C through 3.F run in parallel 
 
 Choose the mining depth before gathering. The skill has no reliable way to count session tokens, so use `$ARGUMENTS` as the override channel; default to Deep.
 
-- If `$ARGUMENTS` contains `quick`, `deep`, or `chunked` → use that.
+**Pass selection** (token-bounded so task-focus prose like `"deep dive on auth"` or `"quickly check X"` doesn't accidentally trigger pass overrides):
+
+- If `$ARGUMENTS` contains a standalone token `quick`, `deep`, or `chunked` (whitespace-fenced or as an explicit flag like `pass=deep`, `--deep`), use that pass.
+- Match logic: `case " ${ARGUMENTS:-} " in *" quick "*|*" pass=quick "*|*" --quick "*) Quick ;; *" deep "*|*" pass=deep "*|*" --deep "*) Deep ;; *" chunked "*|*" pass=chunked "*|*" --chunked "*) Chunked ;; *) Deep ;; esac`
 - Otherwise → default to **Deep**. Better to over-mine than under-mine.
 
 Pass parameters (enforced in Step 6):
