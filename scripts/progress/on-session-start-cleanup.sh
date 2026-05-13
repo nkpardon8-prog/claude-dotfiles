@@ -7,5 +7,5 @@ find "$HOME/.claude/progress" -type f -mtime +7 -delete 2>/dev/null
 # Covers cases where /pre-compact armed auto-compact but Terminal was killed, or the user
 # walked away for an afternoon before the Stop hook fired. 12h is the realistic
 # "I'll be back later today" upper bound; shorter would race against long sessions.
-find "$HOME/.claude/progress" -maxdepth 1 \( -name 'auto-compact-*.json' -o -name 'auto-compact-*.json.claim.*' \) -mmin +720 -delete 2>/dev/null || true
+find "$HOME/.claude/progress" -maxdepth 1 \( -name 'auto-compact-*.json' -o -name 'auto-compact-*.json.claim.*' -o -name 'pre-compact-parent-*.json' \) -mmin +720 -delete 2>/dev/null || true
 exit 0
