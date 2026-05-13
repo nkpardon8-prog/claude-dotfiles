@@ -36,11 +36,19 @@ else
 fi
 
 # Phase 4 — best-effort npx install scrub (silent on miss).
-# Removes corrupt/locked chrome-devtools-mcp installs so npx re-fetches on
-# next launch. Uses -exec to avoid bash-3.2 pipe-into-while subshell pitfalls.
-find ~/.npm/_npx -maxdepth 3 -type d -name 'chrome-devtools-mcp' \
-  -exec rm -rf {} \; 2>/dev/null || true
-echo "npx install cache scrubbed."
+# Removes the ENTIRE hash dir that contains chrome-devtools-mcp, not just the
+# inner package dir, because deleting only the package leaves the
+# node_modules/.bin/chrome-devtools-mcp symlink dangling. macOS then reports
+# "Permission denied" when npx tries to invoke the broken symlink. Nuking the
+# whole hash dir forces npx to rebuild the bin links cleanly.
+SCRUBBED=0
+for d in ~/.npm/_npx/*/; do
+  if [ -e "$d/node_modules/chrome-devtools-mcp" ] || [ -L "$d/node_modules/.bin/chrome-devtools-mcp" ]; then
+    rm -rf "$d" 2>/dev/null || true
+    SCRUBBED=$((SCRUBBED + 1))
+  fi
+done
+echo "npx install cache scrubbed ($SCRUBBED hash dir(s) removed)."
 ```
 
 ## Step 2: Print the reconnect instruction verbatim
