@@ -136,12 +136,19 @@ About to write CLAUDE.local.md with:
 - Fix-laters: [N]
 - Auto-compact (planned): [will arm — Stop hook fires /compact after this run | skipped per 'no-auto-compact' arg]
   (Final state, including failures, is reported in Step 9.1 after Step 9.0 actually attempts arming.)
+- CLAUDE.md @import (Step 7): [will append `@CLAUDE.local.md` to repo-root CLAUDE.md | already present (skip) | no CLAUDE.md (skip)]
+- .gitignore update (Step 8): [will append `CLAUDE.local.md` to repo-root .gitignore | already present (skip) | not in a git repo (skip)]
 
 [If Seq > 1: also show a "Since-last-compact preview" — the 3-5 most material items
  (resolved questions, shifted priorities, fix-laters newly applicable) so the user
  can correct misreadings before write.]
 
-Anything else to capture? (open issues, things to fix later, context I might be missing) Or say 'write it' to proceed. To disable auto-compact for this run, say 'no auto compact' or re-run with `no-auto-compact` argument.
+Anything else to capture? (open issues, things to fix later, context I might be missing) Or say 'write it' to proceed. Opt-outs:
+- Auto-compact: pass `no-auto-compact` (or say "no auto compact").
+- CLAUDE.md @import: pass `no-import` (or say "no claude-md import").
+- .gitignore update: pass `no-gitignore` (or say "no gitignore").
+
+**Unattended mode:** if the user doesn't respond within ~3 minutes (or passes `auto-confirm` / `--auto-confirm`), proceed with the draft and record "no mid-run additions (proceeded under auto-confirm)" in `## Mid-Session User Feedback`. This is essential because the whole point of `/pre-compact` + auto-compact is "walk away" — indefinite blocking defeats the use case.
 ```
 
 Wait for response. Fold the user's additions into the appropriate sections. If they say "write it" or similar, proceed.
