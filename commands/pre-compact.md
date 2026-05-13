@@ -123,12 +123,14 @@ About to write CLAUDE.local.md with:
 - Open issues: [N]
 - Gaps: [N]
 - Fix-laters: [N]
+- Auto-compact (planned): [will arm — Stop hook fires /compact after this run | skipped per 'no-auto-compact' arg]
+  (Final state, including failures, is reported in Step 9.1 after Step 9.0 actually attempts arming.)
 
 [If Seq > 1: also show a "Since-last-compact preview" — the 3-5 most material items
  (resolved questions, shifted priorities, fix-laters newly applicable) so the user
  can correct misreadings before write.]
 
-Anything else to capture? (open issues, things to fix later, context I might be missing) Or say 'write it' to proceed.
+Anything else to capture? (open issues, things to fix later, context I might be missing) Or say 'write it' to proceed. To disable auto-compact for this run, say 'no auto compact' or re-run with `no-auto-compact` argument.
 ```
 
 Wait for response. Fold the user's additions into the appropriate sections. If they say "write it" or similar, proceed.
@@ -267,7 +269,35 @@ Only touch `.gitignore` if inside a git work tree (`git rev-parse --is-inside-wo
 
 If a root `.gitignore` exists and does not already list `CLAUDE.local.md`, append the line. Do not create a `.gitignore` if none exists. Do not modify parent-directory `.gitignore` files.
 
-## Step 9: Report
+## Step 9: Arm auto-compact, then report
+
+### Step 9.0: Arm auto-compact (sentinel for the Stop hook)
+
+A `Stop` hook (`~/.claude-dotfiles/scripts/hooks/auto-compact-after-pre-compact.sh`, registered in `~/.claude/settings.json`) fires `/compact` into the originating Terminal.app tab via AppleScript `do script` (PTY write, not keystroke synthesis — no focus race, no Accessibility requirement). The hook reads a per-session JSON sentinel this skill writes here.
+
+**Skip if `$ARGUMENTS` contains `no-auto-compact`, `--no-auto-compact`, or `no auto compact`.** A second run with the opt-out token also DISARMS any sentinel a previous run in the same session may have written.
+
+**Refuses to arm** on non-Darwin platforms, non-Terminal.app hosts (`TERM_PROGRAM != Apple_Terminal`), and inside tmux/screen — the AppleScript lookup would silently fail to find a matching Terminal.app tab.
+
+Run this bash block FIRST, before composing the Step 9.1 report — the report includes the resulting arming state:
+
+```bash
+ARM_SCRIPT="$HOME/.claude-dotfiles/scripts/hooks/arm-auto-compact.sh"
+if [ -x "$ARM_SCRIPT" ]; then
+  AUTOCOMPACT_STATE=$("$ARM_SCRIPT" "${ARGUMENTS:-}")
+else
+  AUTOCOMPACT_STATE="NOT armed — arming script not present at $ARM_SCRIPT (dotfiles not synced?)"
+fi
+echo "AUTOCOMPACT_STATE=${AUTOCOMPACT_STATE:-NOT armed — arming script returned empty}"
+```
+
+The arming logic, sentinel format, validation, and disarm path all live in `arm-auto-compact.sh` and the shared lib `scripts/hooks/lib/auto-compact-sentinel.sh`. The skill stays prose; the script is unit-testable via `scripts/hooks/test-auto-compact.sh`. Pass `--dry-run` to verify the pipeline (resolves TTY + session id + host checks, reports what WOULD be armed) without firing `/compact`.
+
+Read the `AUTOCOMPACT_STATE=...` output line from the bash result and use its value in the Step 9.1 report.
+
+**First-run note (only if `AUTOCOMPACT_STATE` starts with `armed`):** macOS may prompt for Automation permission for Terminal.app on first run. `arm-auto-compact.sh` proactively probes for the permission BEFORE arming (with a 2-second perl-alarm timeout so it can't hang the skill). If the probe times out or fails, the log records `warn automation-probe-failed-or-timed-out` and arming still proceeds — accept the prompt the next time you see it. If `/compact` never fires after walking away, re-run `/pre-compact` after accepting; the sentinel from the previous arm was consumed and cannot be retried. To verify or change later: System Settings → Privacy & Security → Automation → enable "Terminal" under the entry for your shell/Claude Code. Diagnostic log: `~/.claude/logs/auto-compact.log` (mode 600, bounded ring at ~64KB).
+
+### Step 9.1: Report
 
 Output a compact summary:
 - `/document` result (files touched, or "skipped: nothing to document")
@@ -275,12 +305,13 @@ Output a compact summary:
 - Mining pass used: [pass]. Phase 1: [N] lines (floor [F]). Phase 2: +[N] lines (ceiling [C]). Chain: seq [N], parent [timestamp or 'first in chain'].
 - `CLAUDE.md` import line: added / already present / skipped (no CLAUDE.md).
 - `.gitignore` update: added / already present / skipped (not a git repo).
+- **Auto-compact: {AUTOCOMPACT_STATE}**  ← interpolate the literal value from Step 9.0
 - Count of decisions, open issues, gaps, fix-laters captured.
 - Anything the user should double-check before continuing.
 
 ## Rules
 
-- Manual only. Do not register a PreCompact hook. Compaction runs under time pressure and the parallel explores plus user prompt are unsafe inside a hook.
+- Manual invocation only. Do not register a `PreCompact` hook — compaction runs under time pressure and the parallel explores plus user prompt are unsafe inside one. A `Stop` hook (`~/.claude-dotfiles/scripts/hooks/auto-compact-after-pre-compact.sh`) IS registered in `~/.claude/settings.json` to fire `/compact` automatically after this skill finishes; it reads the per-session JSON sentinel this skill writes in Step 9.0. The Stop hook uses AppleScript `do script` to deliver `/compact` directly into the originating tab's PTY — no keystroke synthesis, no focus race, no Accessibility requirement (only Terminal Automation permission, which macOS auto-prompts for on first use). Pass `no-auto-compact` (or `no auto compact`) as an argument to skip arming AND to disarm a previously-armed sentinel in this session. The hook is Mac/Terminal.app only — it silently no-ops on Linux/iTerm/Ghostty/tmux/screen.
 - Overwrite `CLAUDE.local.md` each run. Do not append. Stale handoff is worse than no handoff.
 - Never write secrets to `CLAUDE.local.md`.
 - If not in a git repo, skip git steps and note it in the report.

@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Stop hook — fires /compact into the originating Terminal.app tab when /pre-compact armed it.
+#
+# Mechanism:
+#   1. /pre-compact (via arm-auto-compact.sh) writes a per-session JSON sentinel containing
+#      the originating tab's TTY and metadata.
+#   2. On every model Stop, this hook claims its session's sentinel atomically (mv-to-lock),
+#      looks up the matching Terminal.app tab via AppleScript, verifies `claude` is the
+#      foreground process in that tab, then delivers `/compact` via `do script ... in <tab>`
+#      (writes to the tab's PTY input — no keystroke synthesis, no focus race, no Accessibility
+#      requirement, only Terminal Automation permission).
+#
+# Anti-loop:
+#   The sentinel is moved (atomic claim) to a `.claim.<pid>` file before any external command,
+#   then removed entirely via EXIT trap. The Stop event that /compact triggers therefore finds
+#   no sentinel and exits silently. The atomic mv also prevents two concurrent Stop events
+#   from double-firing on the same sentinel (only one mv succeeds).
+#
+# Security:
+#   - TARGET_TTY passed to osascript via argv (NOT heredoc string interpolation).
+#   - TTY validated against anchored regex `^/dev/ttys[0-9]+$`.
+#   - Sentinel: symlink-rejected, size-bounded (4KB), schema-validated.
+#   - Foreground-process check: `do script` only fires if the matched tab is running `claude`.
+#
+# Platform: macOS Terminal.app only. The arming step refuses to write a sentinel for
+# non-Darwin / non-Terminal.app / tmux / screen, so this hook is naturally inert there.
+#
+# Uninstall: run `~/.claude-dotfiles/scripts/hooks/uninstall-auto-compact.sh`.
+# Diagnostics: `~/.claude/logs/auto-compact.log` (bounded ring, last ~64KB).
+
+[ "$(uname -s)" = "Darwin" ] || exit 0
+[ -z "${HOME:-}" ] && exit 0
+set -u
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/auto-compact-sentinel.sh
+. "$ROOT/lib/auto-compact-sentinel.sh"
+
+INPUT=$(cat)
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
+if [ -z "$SESSION_ID" ]; then
+  SESSION_ID=$(printf '%s' "$INPUT" \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("session_id",""))' 2>/dev/null \
+    | tr -cd 'A-Za-z0-9_-' | head -c 128)
+fi
+if [ -z "$SESSION_ID" ]; then
+  # Forward-compat diagnostic: if Claude Code ever changes the Stop-hook JSON shape,
+  # log a one-time hint so the user/maintainer can see why the hook went silent.
+  # Strip ALL control bytes (not just \n) so terminal escapes in a hostile payload
+  # can't corrupt the log when viewed with `cat`.
+  ac_log "stop no-session-id input-head=$(printf '%s' "$INPUT" | head -c 200 | tr -d '[:cntrl:]')"
+  exit 0
+fi
+
+SENTINEL=$(ac_sentinel_path "$SESSION_ID")
+
+# Garbage-collect orphan claim files (>1h old) on EVERY Stop event — this is the
+# only routine cleanup path because most Stop events skip the sentinel-consume
+# path (`[ -f "$SENTINEL" ] || exit 0` below is the typical fast-path). Putting
+# GC here ensures it actually runs.
+find "$HOME/.claude/progress" -maxdepth 1 -type f -name 'auto-compact-*.json.claim.*' -mmin +60 -delete 2>/dev/null || true
+
+[ -f "$SENTINEL" ] || exit 0
+
+# Atomic claim: rename to a per-pid lock file. Only one concurrent invocation succeeds.
+# This is the primary anti-loop guarantee — `mv` is atomic on POSIX, so any later
+# Stop event (including the one /compact itself emits) finds no sentinel and exits.
+CLAIM="${SENTINEL}.claim.$$"
+OSA_STDERR_TMP=""
+if ! mv "$SENTINEL" "$CLAIM" 2>/dev/null; then
+  exit 0
+fi
+trap 'rm -f "$CLAIM" "${OSA_STDERR_TMP:-}"' EXIT
+
+TARGET_TTY=$(ac_read_sentinel_tty "$CLAIM") || exit 0
+
+# Foreground-process verification: confirm `claude` is in the foreground process group
+# on the target TTY (the `+` flag in `ps -o stat=`). If the user pivoted to vim/psql/ssh
+# in that tab post-arm, that process owns the foreground PG and `claude` doesn't have `+`,
+# so we refuse to type — `do script` would deliver `/compact` to the wrong process.
+#
+# NOTE: -E (ERE) is required. BSD grep treats `\|` in BRE as literal — every check
+# would fail and the hook would always abort. Round 3 caught this.
+TTY_SHORT="${TARGET_TTY#/dev/}"
+# Use `ucomm=` not `comm=`: ucomm is the executable basename (always single token,
+# no path/argv pollution); comm can be multi-word for wrapped processes (e.g.
+# `npm exec ...`), making `awk $NF` brittle. ucomm is also truncated to 16 chars
+# on Darwin, but the basename `claude` is short so truncation isn't an issue here.
+FG_HIT=$(ps -t "$TTY_SHORT" -o stat=,ucomm= 2>/dev/null | awk '$1 ~ /\+/ {print $2}' \
+         | grep -E '^(claude|-claude)$' | head -1)
+if [ -z "$FG_HIT" ]; then
+  ac_log "abort sid=$SESSION_ID tty=$TARGET_TTY reason=no-claude-in-foreground-pg"
+  exit 0
+fi
+
+# Deliver /compact via `do script ... in foundTab` (AppleScript writes to tab PTY input).
+# TARGET_TTY passes through argv — never string-interpolated into the AppleScript body.
+# Capture stdout (the on-run handler's return value: "fired"/"no-matching-tab"/etc.)
+# separately from stderr so log lines stay single-line and structured.
+OSA_STDERR_TMP=$(mktemp 2>/dev/null)
+# If mktemp fails (rare — full /tmp), keep $OSA_STDERR_TMP empty. We deliberately
+# do NOT use "/dev/null" as a sentinel because the EXIT trap would then attempt
+# `rm -f /dev/null` (harmless as non-root, destructive if ever run as root).
+# Empty $OSA_STDERR_TMP means: redirect stderr to /dev/null at the osascript call
+# (inline), and skip the stderr-capture branch.
+OSA_STDERR_TGT="${OSA_STDERR_TMP:-/dev/null}"
+OSA_RESULT=$(/usr/bin/osascript - "$TARGET_TTY" <<'EOF' 2>"$OSA_STDERR_TGT"
+on run argv
+  set targetTTY to item 1 of argv
+  tell application "Terminal"
+    if not running then return "not-running"
+    if not (exists window 1) then return "no-windows"
+    set foundTab to missing value
+    set foundWin to missing value
+    repeat with w in windows
+      repeat with t in tabs of w
+        try
+          if (tty of t) is targetTTY then
+            set foundTab to t
+            set foundWin to w
+            exit repeat
+          end if
+        end try
+      end repeat
+      if foundTab is not missing value then exit repeat
+    end repeat
+    if foundTab is missing value then return "no-matching-tab"
+    do script "/compact" in foundTab
+    return "fired"
+  end tell
+end run
+EOF
+)
+OSA_EXIT=$?
+# Collapse multi-line stderr to single token, strip control bytes, cap at 200 chars.
+# Only read the tmpfile if we actually created one (empty $OSA_STDERR_TMP means
+# stderr went to /dev/null and there is nothing to read; do NOT try to read /dev/null
+# as that would block forever waiting for EOF on a character device).
+if [ -n "$OSA_STDERR_TMP" ]; then
+  OSA_STDERR=$(tr -d '[:cntrl:]' < "$OSA_STDERR_TMP" 2>/dev/null | head -c 200)
+else
+  OSA_STDERR=""
+fi
+ac_log "stop sid=$SESSION_ID tty=$TARGET_TTY osa_exit=$OSA_EXIT result=${OSA_RESULT:-empty} stderr=${OSA_STDERR:-none}"
+
+exit 0

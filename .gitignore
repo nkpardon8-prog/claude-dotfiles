@@ -6,6 +6,11 @@ session-env/
 *.log
 .DS_Store
 
+# Scratch/working dirs — never committed. tmp/ holds god-review findings,
+# pre-compact briefs, ready-plans, etc. that often contain fixture strings
+# tripping the secret-scan and shouldn't be auto-pushed anyway.
+tmp/
+
 # Secrets — never commit
 .env
 .env.*

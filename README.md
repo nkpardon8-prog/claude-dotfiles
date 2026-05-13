@@ -78,7 +78,7 @@ Full reference: **[`docs/COMMANDS.md`](docs/COMMANDS.md)**.
 
 | Command | What it does |
 |---|---|
-| `/pre-compact` | Calibrated handoff before context compaction. Quick/Deep/Chunked mining passes, chain tracking across compactions (`Seq:` + `Parent:`), two-phase write with line floors, "What We Tried" + "Evidence & Data" sections. The single dialed-in tool for session continuity. |
+| `/pre-compact` | Calibrated handoff before context compaction. Quick/Deep/Chunked mining passes, chain tracking across compactions (`Seq:` + `Parent:`), two-phase write with line floors, "What We Tried" + "Evidence & Data" sections. The single dialed-in tool for session continuity. Auto-fires `/compact` after the handoff via a Stop hook (Mac/Terminal.app only — see `scripts/hooks/README.md`). |
 | `/learn` | Extracts behavioral patterns from this session, indexes them in `patterns/INDEX.md`, auto-pushes. |
 | `/document` | Audits or bootstraps the project's `docs/` tree. |
 | `/architect` | Interactive scaffolding for a new project's three-tier doc system. |

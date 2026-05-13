@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Arm auto-compact: write a per-session sentinel that the Stop hook will consume to
+# fire `/compact` into the originating Terminal.app tab. Invoked from /pre-compact's
+# Step 9.0; can also be invoked directly for testing.
+#
+# Usage:   arm-auto-compact.sh [ARGUMENTS_STRING]
+# Prints:  one line to stdout — the arming state to embed in the /pre-compact report.
+# Args:    if the ARGUMENTS_STRING contains `no-auto-compact`, `--no-auto-compact`,
+#          or the phrase `no auto compact`, disarm any prior sentinel and skip arming.
+
+[ "$(uname -s)" = "Darwin" ] || { echo "NOT armed — auto-compact requires macOS Terminal.app"; exit 0; }
+[ -z "${HOME:-}" ] && { echo "NOT armed — HOME unset"; exit 0; }
+set -u
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/auto-compact-sentinel.sh
+. "$ROOT/lib/auto-compact-sentinel.sh"
+
+ARGS=" ${1:-} "
+
+# --dry-run: resolve everything but don't write the sentinel. For verifying the
+# pipeline without firing /compact for real. Prints what WOULD be armed.
+case "$ARGS" in
+  *" --dry-run "*) DRY_RUN=1 ;;
+  *) DRY_RUN=0 ;;
+esac
+
+# Opt-out detection: accept hyphenated token, dash-prefixed flag, or space-separated phrase.
+case "$ARGS" in
+  *" no-auto-compact "*|*" --no-auto-compact "*|*" no auto compact "*)
+    SID=$(ac_resolve_session_id)
+    if [ -n "$SID" ]; then
+      rm -f "$(ac_sentinel_path "$SID")" 2>/dev/null
+      ac_log "disarmed sid=$SID"
+    fi
+    echo "skipped per request"
+    exit 0
+    ;;
+esac
+
+# Host / multiplexer guards FIRST (cheapest checks, most discriminating).
+if [ -n "${TMUX:-}" ] || [ -n "${STY:-}" ]; then
+  echo "NOT armed — running inside tmux/screen; auto-compact requires direct Terminal.app"
+  exit 0
+fi
+if [ -n "${TERM_PROGRAM:-}" ] && [ "${TERM_PROGRAM:-}" != "Apple_Terminal" ]; then
+  echo "NOT armed — host is '${TERM_PROGRAM}'; auto-compact requires Terminal.app"
+  exit 0
+fi
+
+# Stop-hook registration check. Uses jq for proper JSON parsing (grep would
+# false-positive on stale strings inside other fields, e.g. a `description`).
+# Catches: (a) fresh installs not wired yet, (b) post-uninstall state where the
+# Stop entry was removed but the user runs /pre-compact again.
+SETTINGS="$HOME/.claude/settings.json"
+if [ -f "$SETTINGS" ]; then
+  if ! jq -e '(.hooks.Stop // []) | map(.hooks[]?.command // "") | any(test("auto-compact-after-pre-compact\\.sh"))' "$SETTINGS" >/dev/null 2>&1; then
+    echo "NOT armed — Stop hook not registered in $SETTINGS (re-add the entry to enable auto-compact)"
+    exit 0
+  fi
+fi
+
+# First-run Automation permission probe. macOS TCC prompts on first use; if the
+# user has walked away, the prompt blocks indefinitely. Wrap in a perl-based
+# 2-second alarm (macOS doesn't ship coreutils `timeout(1)`). Non-fatal: if the
+# probe fails or times out we still arm — the user may pass on the actual fire.
+if ! perl -e 'alarm 2; exec @ARGV' /usr/bin/osascript -e 'tell application "Terminal" to get name' >/dev/null 2>&1; then
+  ac_log "warn automation-probe-failed-or-timed-out"
+fi
+
+# Walk up the process tree until we find an ancestor with a controlling TTY.
+# tty(1) returns "not a tty" inside Claude Code's Bash tool subprocess; the parent
+# `claude` CLI process inherits the TTY from Terminal. First-hop usually hits.
+ORIG_TTY=""
+CHECK_PID="$PPID"
+for _hop in 1 2 3 4 5; do
+  [ -z "$CHECK_PID" ] && break
+  if [ "$CHECK_PID" = "0" ] || [ "$CHECK_PID" = "1" ]; then break; fi
+  RAW_TTY=$(ps -o tty= -p "$CHECK_PID" 2>/dev/null | tr -d '[:space:]')
+  case "$RAW_TTY" in
+    ttys[0-9]*) ORIG_TTY="/dev/$RAW_TTY"; break ;;
+  esac
+  CHECK_PID=$(ps -o ppid= -p "$CHECK_PID" 2>/dev/null | tr -d '[:space:]')
+done
+
+# Anchored validation of the resolved TTY (defense-in-depth — sed-injected metacharacters
+# from a malicious PPID-process command line would be rejected here).
+if [ -n "$ORIG_TTY" ] && ! ac_validate_tty "$ORIG_TTY"; then
+  ORIG_TTY=""
+fi
+
+if [ -z "$ORIG_TTY" ]; then
+  echo "NOT armed — could not resolve controlling tty in ancestry; run /compact manually"
+  exit 0
+fi
+
+SID=$(ac_resolve_session_id)
+if [ -z "$SID" ]; then
+  echo "NOT armed — could not resolve session id; run /compact manually"
+  exit 0
+fi
+
+if [ "$DRY_RUN" = "1" ]; then
+  ac_log "dry-run sid=$SID tty=$ORIG_TTY"
+  echo "DRY-RUN — would arm (sid=$SID target=$ORIG_TTY); no sentinel written"
+  exit 0
+fi
+
+if ac_write_sentinel "$SID" "$ORIG_TTY"; then
+  ac_log "armed sid=$SID tty=$ORIG_TTY"
+  echo "armed (sentinel auto-compact-${SID}.json, target ${ORIG_TTY})"
+else
+  ac_log "arm-failed sid=$SID tty=$ORIG_TTY"
+  echo "NOT armed — sentinel write failed (disk full or permission?); run /compact manually"
+fi

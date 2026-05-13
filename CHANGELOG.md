@@ -2,6 +2,40 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-13 — Auto-compact after `/pre-compact`
+
+Added a Stop hook (`scripts/hooks/auto-compact-after-pre-compact.sh`) that fires
+`/compact` into the originating Terminal.app tab after `/pre-compact` finishes,
+so the user can run `/pre-compact`, walk away, and return to a compacted session.
+
+- **Arming** lives in `scripts/hooks/arm-auto-compact.sh`, called from `/pre-compact`
+  Step 9.0. Writes a per-session JSON sentinel at `~/.claude/progress/auto-compact-<sid>.json`
+  containing `schema_version`, `target_tty`, `originating_command`. Filesystem mtime
+  is the source of truth for arming-time (used by the >12h prune).
+- **Firing** uses AppleScript `do script "/compact" in foundTab` — writes to the tab's
+  PTY input, not a System Events keystroke. No focus race, no Accessibility requirement,
+  only Terminal Automation permission (auto-prompted on first use).
+- **Hardening:** anchored TTY regex; argv-passed osascript (no string interpolation);
+  symlink-rejected, size-bounded, schema-validated sentinels; atomic `mv` claim
+  prevents double-fire; foreground-process check (`ucomm`-based) refuses to type if
+  `claude` isn't in the foreground process group of the target TTY; jq-based settings
+  registration check guards against post-uninstall orphan sentinels; perl-alarm timeout
+  on the first-run Automation probe so /pre-compact never hangs.
+- **Platform guard:** refuses to arm on non-Darwin, non-Terminal.app, tmux, screen.
+- **Opt-out:** `no-auto-compact` / `--no-auto-compact` / `no auto compact` skips arming
+  and disarms any prior sentinel from the same session.
+- **Dry-run:** `--dry-run` resolves the full pipeline (TTY + session id + guards) and
+  reports what WOULD be armed, without writing a sentinel.
+- **Diagnostics:** `~/.claude/logs/auto-compact.log` (mode 600, bounded ring at ~64KB).
+- **Uninstall:** `scripts/hooks/uninstall-auto-compact.sh`.
+- **Tests:** `scripts/hooks/test-auto-compact.sh` covers AppleScript injection,
+  symlink, schema, double-fire, oversized payload, jq operator-precedence regression,
+  ERE-grep regression, opt-out matchers, tmux/non-Apple_Terminal refusals, concurrent
+  claim race, idempotent lib source guard, log file mode 600, multi-word `comm`
+  brittleness, and the skill-prose invocation contract.
+- Shared lib at `scripts/hooks/lib/auto-compact-sentinel.sh` — single source of truth for
+  sentinel paths, schema, validation.
+
 ## 2026-05-06 — Per-Session Statusline Label
 
 Added a dimmed second line to the statusline (`scripts/statusline.sh`) sourced
