@@ -269,17 +269,23 @@ Rules for the content:
 
 ## Step 7: Ensure auto-load on next session
 
+**Skip entirely if `$ARGUMENTS` contains `no-import` (or "no claude-md import" / "no claude md import").**
+
 To guarantee post-compact Claude sees the handoff:
 
-1. Check if `./CLAUDE.md` exists at repo root. If not, skip this step (the user has not opted into a project CLAUDE.md and creating one would be intrusive).
-2. If `CLAUDE.md` exists, check whether it already contains `@CLAUDE.local.md` or `@./CLAUDE.local.md`. If not, append at the bottom:
+1. Resolve the **repo root**, not cwd:
+   - `REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)`. If empty (not in a git work tree), skip Step 7 entirely.
+   - Refuse if we're inside a submodule: `[ -n "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" ]` → tell the user "Inside a submodule; skipping CLAUDE.md @import to avoid polluting the submodule. Manually add `@CLAUDE.local.md` in the superproject's CLAUDE.md if you want auto-load."
+2. Check if `$REPO_ROOT/CLAUDE.md` exists. If not, skip (the user has not opted into a project CLAUDE.md and creating one would be intrusive).
+3. If `CLAUDE.md` exists, check whether it already contains a **line-anchored** `@CLAUDE.local.md` import. Use: `grep -qE '^@(\./)?CLAUDE\.local\.md[[:space:]]*$' "$REPO_ROOT/CLAUDE.md"`. Substring matching (the old behavior) false-positives on `@CLAUDE.local.md.bak` mentions in code blocks and false-negatives on lines with trailing whitespace.
+4. If absent, append at the bottom:
    ```
    
    @CLAUDE.local.md
    ```
-3. Tell the user: "Appended `@CLAUDE.local.md` import to CLAUDE.md so post-compact Claude auto-loads the handoff. Remove the line if you don't want that behavior."
+5. Tell the user: "Appended `@CLAUDE.local.md` import to $REPO_ROOT/CLAUDE.md so post-compact Claude auto-loads the handoff. Remove the line if you don't want that behavior."
 
-If no `CLAUDE.md` exists, instead tell the user: "No CLAUDE.md at repo root. To auto-load the handoff next session, either create a CLAUDE.md with `@CLAUDE.local.md` in it, or manually `@CLAUDE.local.md` in your first post-compact message."
+If no `CLAUDE.md` exists, instead tell the user: "No CLAUDE.md at $REPO_ROOT. To auto-load the handoff next session, either create one with `@CLAUDE.local.md`, or manually `@CLAUDE.local.md` in your first post-compact message."
 
 ## Step 8: .gitignore handling
 
