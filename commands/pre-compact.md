@@ -95,7 +95,7 @@ Read `~/.claude/projects/<project>/memory/MEMORY.md` if it exists. Pull only ent
 If inside a git work tree (`git rev-parse --is-inside-work-tree`):
 - `git rev-parse --abbrev-ref HEAD` — current branch
 - `git log --oneline -n 20` — recent commits
-- `git log --grep='decision\|chose\|rejected' --oneline -n 20` — commit-message decisions
+- `git log -E --grep='decision|chose|rejected' --oneline -n 20` — commit-message decisions (use `-E` for ERE; `\|` BRE alternation is git-version-dependent)
 - `git status --short` — uncommitted changes
 - `git diff --stat HEAD` — scope of in-flight changes
 Skip all git steps if not a git repo.
