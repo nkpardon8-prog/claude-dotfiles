@@ -289,9 +289,16 @@ If no `CLAUDE.md` exists, instead tell the user: "No CLAUDE.md at $REPO_ROOT. To
 
 ## Step 8: .gitignore handling
 
-Only touch `.gitignore` if inside a git work tree (`git rev-parse --is-inside-work-tree` succeeds).
+**Skip entirely if `$ARGUMENTS` contains `no-gitignore` (or "no gitignore").**
 
-If a root `.gitignore` exists and does not already list `CLAUDE.local.md`, append the line. Do not create a `.gitignore` if none exists. Do not modify parent-directory `.gitignore` files.
+Only touch `.gitignore` if inside a git work tree (`git rev-parse --is-inside-work-tree` succeeds). Resolve the **repo root**, not cwd:
+
+- `REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)`. If empty, skip.
+- Refuse if we're inside a submodule: `[ -n "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" ]` → skip with "Inside a submodule; skipping .gitignore update to avoid polluting the submodule."
+
+If `$REPO_ROOT/.gitignore` exists and does NOT already list `CLAUDE.local.md` (use line-anchored check: `grep -qE '^CLAUDE\.local\.md[[:space:]]*$' "$REPO_ROOT/.gitignore"` — substring match would false-positive on `!CLAUDE.local.md` force-include rules), append the line. Do not create a `.gitignore` if none exists.
+
+**Force-include guard:** if `.gitignore` contains `!CLAUDE.local.md` anywhere, the user has explicitly opted into tracking the file. Skip the append and tell them: "Detected `!CLAUDE.local.md` force-include rule; leaving .gitignore alone. You're tracking the handoff file deliberately."
 
 ## Step 9: Arm auto-compact, then report
 
