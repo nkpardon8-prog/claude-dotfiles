@@ -70,7 +70,30 @@ Read `./CLAUDE.local.md` if it exists, BEFORE the eventual overwrite in Step 6.
   - `new_seq = prior_seq + 1`; `parent_label = the captured timestamp`.
 - If absent: `new_seq = 1`, `parent_label = "none — first in chain"`. In Step 6, the entire `## Since Last Compact` section (heading and body) MUST be removed from the output — no placeholder.
 
-**Memory-handoff rule:** the values extracted here (parent_seq, parent_label, parent's Build Plan / Next Action / Open Issues / Things To Fix Later / Gaps) MUST be held in working memory through Steps 4-5 and used in Step 6A. DO NOT re-read `CLAUDE.local.md` BEFORE the Phase 1 write completes in Step 6A — between this extraction and the Phase 1 write, the file is the parent's content; AFTER Phase 1 write, it is your new content. (Step 6B's "read the file you just wrote back" is the Phase 2 re-read of the new content — explicitly allowed.)
+**Memory-handoff rule + disk-persist:** the values extracted here (`parent_seq`, `parent_label`, parent's Build Plan / Next Action / Open Issues / Things To Fix Later / Gaps) are needed in Step 6A. Two storage channels — use both:
+
+1. **Working memory** (primary): hold the values through Steps 4-5 to Step 6A.
+2. **Disk persistence** (fallback against compression/forgetting under long-session load):
+
+   ```bash
+   # Write the extracted parent fields to a per-session JSON scratch file.
+   # Step 6A reads from this if working memory disagrees or is missing.
+   mkdir -p "$HOME/.claude/progress" && chmod 700 "$HOME/.claude/progress"
+   SID=$("$HOME/.claude-dotfiles/scripts/hooks/arm-auto-compact.sh" --dry-run 2>/dev/null \
+         | sed -n 's/.*sid=\([A-Za-z0-9_-]\{1,128\}\).*/\1/p' | head -1)
+   if [ -n "$SID" ]; then
+     ( umask 077 && jq -n --arg seq "$PARENT_SEQ" --arg label "$PARENT_LABEL" \
+         --arg bp "$PARENT_BUILD_PLAN" --arg na "$PARENT_NEXT_ACTION" \
+         --arg oi "$PARENT_OPEN_ISSUES" --arg tfl "$PARENT_FIX_LATER" \
+         --arg gaps "$PARENT_GAPS" \
+         '{seq:$seq, label:$label, build_plan:$bp, next_action:$na, open_issues:$oi, fix_later:$tfl, gaps:$gaps}' \
+         > "$HOME/.claude/progress/pre-compact-parent-${SID}.json" )
+   fi
+   ```
+
+   In Step 6A, if working memory is uncertain, re-read this file. The file is auto-cleaned on next /pre-compact run for the same session (overwrite) or at 720-minute prune in `scripts/progress/on-session-start-cleanup.sh` (already prunes `pre-compact-*` if needed — add a glob there).
+
+DO NOT re-read `CLAUDE.local.md` BEFORE the Phase 1 write completes in Step 6A — between this extraction and the Phase 1 write, the file is the parent's content; AFTER Phase 1 write, it is your new content. (Step 6B's "read the file you just wrote back" is the Phase 2 re-read of the new content — explicitly allowed.)
 
 Batch these independent calls in one message, then label each source in the output:
 
