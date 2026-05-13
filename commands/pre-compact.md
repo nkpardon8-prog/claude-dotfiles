@@ -265,7 +265,7 @@ Rules for the content:
 - Do not include credential values.
 - If a section has nothing, write "None at time of writing." Do not fabricate.
 - Scope memory reads to the current project. Do not pull in unrelated cross-project notes.
-- Cap at 300 lines for Quick, 400 lines for Deep, 500 lines for Chunked.
+- Soft ceiling guidance (not a hard cap): 300/400/500 lines for Quick/Deep/Chunked. If genuinely-needed content runs over, exceed the ceiling and note "(exceeded {pass} ceiling — content over-mining preserved)" in the report. Truncating real evidence is worse than going long.
 
 ## Step 7: Ensure auto-load on next session
 
