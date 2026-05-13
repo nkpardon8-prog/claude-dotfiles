@@ -157,6 +157,14 @@ Wait for response. Fold the user's additions into the appropriate sections. If t
 
 Two-phase write. Phase 1 hits the pass floor on the first Write call. Phase 2 reads back and Edits gaps toward the ceiling. Phase 1 is NOT a draft.
 
+**Crash-safety:** before Phase 1, snapshot the existing file (if any) to a backup so a mid-write crash doesn't destroy the parent's content:
+
+```bash
+[ -f ./CLAUDE.local.md ] && cp ./CLAUDE.local.md ./CLAUDE.local.md.prev 2>/dev/null
+```
+
+On successful Step 9.1 report, the `.prev` is left in place for one round (next /pre-compact run will overwrite it before its own write). Manually `rm -f CLAUDE.local.md.prev` if you don't want it. Should also be in `.gitignore` (handled in Step 8 — the existing `CLAUDE.local.md` ignore line plus the `.prev` suffix matches `CLAUDE.local.md*` glob patterns if used).
+
 ### Step 6A: Phase 1 — Full Write
 
 One `Write` call covering every section below. Floor depends on the mining pass chosen in Step 3.A:
