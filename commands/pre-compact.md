@@ -345,12 +345,18 @@ Run this bash block FIRST, before composing the Step 9.1 report — the report i
 
 ```bash
 ARM_SCRIPT="$HOME/.claude-dotfiles/scripts/hooks/arm-auto-compact.sh"
-if [ -x "$ARM_SCRIPT" ]; then
-  AUTOCOMPACT_STATE=$("$ARM_SCRIPT" "${ARGUMENTS:-}")
+if [ ! -f "$ARM_SCRIPT" ]; then
+  AUTOCOMPACT_STATE="NOT armed — arming script missing at $ARM_SCRIPT (dotfiles repo not present or not synced)"
+elif [ ! -x "$ARM_SCRIPT" ]; then
+  AUTOCOMPACT_STATE="NOT armed — arming script not executable ($ARM_SCRIPT) — run chmod +x"
 else
-  AUTOCOMPACT_STATE="NOT armed — arming script not present at $ARM_SCRIPT (dotfiles not synced?)"
+  AUTOCOMPACT_STATE=$("$ARM_SCRIPT" "${ARGUMENTS:-}" 2>&1)
+  ARM_EXIT=$?
+  if [ "$ARM_EXIT" -ne 0 ]; then
+    AUTOCOMPACT_STATE="NOT armed — arming script exited $ARM_EXIT: ${AUTOCOMPACT_STATE:-(no output)}"
+  fi
 fi
-echo "AUTOCOMPACT_STATE=${AUTOCOMPACT_STATE:-NOT armed — arming script returned empty}"
+echo "AUTOCOMPACT_STATE=${AUTOCOMPACT_STATE:-NOT armed — arming script produced no output (likely SIGKILL)}"
 ```
 
 The arming logic, sentinel format, validation, and disarm path all live in `arm-auto-compact.sh` and the shared lib `scripts/hooks/lib/auto-compact-sentinel.sh`. The skill stays prose; the script is unit-testable via `scripts/hooks/test-auto-compact.sh`. Pass `--dry-run` to verify the pipeline (resolves TTY + session id + host checks, reports what WOULD be armed) without firing `/compact`.
