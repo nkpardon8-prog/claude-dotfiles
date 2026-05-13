@@ -345,16 +345,16 @@ Run this bash block FIRST, before composing the Step 9.1 report — the report i
 
 ```bash
 ARM_SCRIPT="$HOME/.claude-dotfiles/scripts/hooks/arm-auto-compact.sh"
-if [ ! -f "$ARM_SCRIPT" ]; then
-  AUTOCOMPACT_STATE="NOT armed — arming script missing at $ARM_SCRIPT (dotfiles repo not present or not synced)"
-elif [ ! -x "$ARM_SCRIPT" ]; then
-  AUTOCOMPACT_STATE="NOT armed — arming script not executable ($ARM_SCRIPT) — run chmod +x"
-else
+if [ -f "$ARM_SCRIPT" ] && [ -x "$ARM_SCRIPT" ]; then
   AUTOCOMPACT_STATE=$("$ARM_SCRIPT" "${ARGUMENTS:-}" 2>&1)
   ARM_EXIT=$?
   if [ "$ARM_EXIT" -ne 0 ]; then
     AUTOCOMPACT_STATE="NOT armed — arming script exited $ARM_EXIT: ${AUTOCOMPACT_STATE:-(no output)}"
   fi
+elif [ -f "$ARM_SCRIPT" ]; then
+  AUTOCOMPACT_STATE="NOT armed — arming script not executable ($ARM_SCRIPT) — run chmod +x"
+else
+  AUTOCOMPACT_STATE="NOT armed — arming script missing at $ARM_SCRIPT (dotfiles repo not present or not synced)"
 fi
 echo "AUTOCOMPACT_STATE=${AUTOCOMPACT_STATE:-NOT armed — arming script produced no output (likely SIGKILL)}"
 ```
