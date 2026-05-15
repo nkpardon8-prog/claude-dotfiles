@@ -50,3 +50,6 @@ id_ecdsa.*
 # Mac mini CRD skill — built Go binaries (not committed)
 skills/macmini/server/dist/
 skills/macmini/client/dist/
+
+# Codex bridge — generated locally from commands/ and skills/
+codex/generated/
