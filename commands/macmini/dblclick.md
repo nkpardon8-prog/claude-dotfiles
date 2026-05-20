@@ -148,7 +148,10 @@ case "$GIST_ID" in
 esac
 ```
 
-## Step 10 — Validate clone command is unshifted-safe, then type it
+## Step 10 — Confirm mini Terminal is foreground, then type the clone command
+
+Screenshot first. If Terminal isn't foreground, `mcp.press_key("Meta+Tab")`
+(MRU cycle) or `mcp.press_key("Meta+h")` (hide top app to reveal Terminal).
 
 ```bash
 CLONE_CMD="rm -rf /tmp/macmini-dblclick; gh gist clone $GIST_ID /tmp/macmini-dblclick; bash /tmp/macmini-dblclick/run.sh"
