@@ -42,12 +42,25 @@ Mouse actions (`/macmini click`, `rclick`, `dblclick`, `drag`) execute `cliclick
 brew install cliclick
 ```
 
-After install, grant Accessibility permission so cliclick can synthesize input events:
+The Apple Silicon brew install path is `/opt/homebrew/bin/cliclick`. On Intel
+Macs it's `/usr/local/bin/cliclick`. All `/macmini` sub-commands probe both.
 
-- Open **System Settings → Privacy & Security → Accessibility**
-- Find **Terminal.app** (or whichever terminal app runs on the mini) and toggle it **ON**
+After install, **fire a no-op cliclick command so the Accessibility TCC prompt
+appears now** (better than catching it mid-click later when a real action is
+expected to land):
 
-Without the Accessibility grant, cliclick commands will exit with an error like `cliclick: You need to add Terminal to Accessibility in System Preferences`.
+```bash
+/opt/homebrew/bin/cliclick p:
+```
+
+macOS will surface a prompt: *"Terminal would like to control this computer
+using accessibility features."* Click **Open System Settings** →
+**Privacy & Security → Accessibility** → enable **Terminal.app** (or whichever
+shell host invokes cliclick). The grant is persistent — one click forever.
+
+Re-run the `cliclick p:` command after granting; it should now print the
+current cursor position (e.g. `683,412`) without any prompt. If it still
+errors, restart Terminal so the new TCC grant is picked up.
 
 ---
 
