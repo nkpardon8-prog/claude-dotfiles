@@ -13,8 +13,9 @@ You're a fresh agent (or a fresh human) walking into the macmini skill for the f
 | 5 | **`docs/AGENT-GUIDE.md`** | Operational notes: focus discipline, recovery patterns, TCC re-grant flow. | When you need to actually drive the canvas. |
 | 6 | **`commands/macmini.md`** (top-level dispatcher) | Routing rules: how plain-English requests map to sub-commands. | When the user says "do X on the mini" without naming a sub-command. |
 | 7 | **`commands/macmini/paste.md`** | The biggest sub-command. Default mode + `--secure` (credentials) + `--repaste`. | When you actually need to send text to the mini. |
-| 8 | **`commands/macmini/{connect,grab,disconnect,status,setup}.md`** | Smaller sub-commands. | As needed per the routing table in step 1. |
-| 9 | **`docs/TESTING.md`** | Smoke tests for hardware verification after any change. | When you've made changes and want to verify. |
+| 8 | **`commands/macmini/{click,rclick,dblclick,drag,script,measure}.md`** | Mouse + AppleScript sub-commands (cliclick on mini via gist transport). `measure` is the one-time calibration. | When you need to click, drag, right-click, double-click, modifier-click, or run AppleScript on the mini. |
+| 9 | **`commands/macmini/{connect,grab,disconnect,status,setup}.md`** | Lifecycle + auxiliary sub-commands. | As needed per the routing table in step 1. |
+| 10 | **`docs/TESTING.md`** | Smoke tests for hardware verification after any change. | When you've made changes and want to verify. |
 
 ## Core invariants — never violate these
 
