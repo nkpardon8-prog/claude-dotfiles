@@ -441,21 +441,24 @@ If Spotlight fails, fall back to clicking the dock or using App Switcher
 
 ### Click somewhere specific on the canvas
 
-`mcp.click_at({x, y})` is the pixel-precise click tool — available when the
-chrome-devtools MCP is launched with `--experimental-vision` (see
-`commands/macmini/setup.md` Step 1). Use it to click on anything visible on
-the mini's screen. Coords are dev-viewport CSS pixels (NOT screenshot pixels);
-the geometry math + occlusion check + CRD-toolbar caveat + cliclick fallback
-for drag/right-click/modifier-click are documented in
-`docs/AGENT-GUIDE.md` → "Clicking on the canvas". Read that recipe before
-using `click_at`.
+`/macmini click <sx> <sy>` is the pixel-precise click primitive. Pass screenshot pixels
+`(sx, sy)` as seen in `mcp.take_screenshot()` output — the sub-command converts to
+mini-physical pixel coordinates using cached calibration and sends the click via
+`cliclick` on the mini side through the gist transport channel. No viewport math
+or occlusion arithmetic is required from the agent; it all happens inside the sub-command.
 
-If the agent has only the legacy a11y-uid `mcp.click({uid})` available
-(no `--experimental-vision`), then click capability is limited to the canvas
-centerpoint and any element with a uid in `take_snapshot()`. Per
-HARDWARE-FINDINGS, the CRD canvas exposes only the `Desktop` textbox uid —
-so without `click_at`, off-center clicking falls back to keyboard-only
-navigation (Tab, arrow keys, Cmd+Space Spotlight).
+Before first use, run `/macmini measure` once to write the calibration file
+(`~/.config/claude/macmini-calibration.json`). The click sub-commands refuse with
+a clear error if calibration is missing or stale.
+
+For drag/right-click/double-click/modifier-click, use the matching sub-commands:
+`/macmini drag`, `/macmini rclick`, `/macmini dblclick`, or
+`/macmini click <sx> <sy> --mod <cmd|shift|opt|ctrl>`. AppleScript actions
+(app activation, menu picks, window management) go through `/macmini script`.
+
+The coordinate conversion math the sub-commands implement internally, the occlusion check
+logic, and the mandatory verify-after contexts are documented in
+`docs/AGENT-GUIDE.md` → "Clicking on the canvas (via cliclick on the mini)".
 
 ### Run shell commands
 
