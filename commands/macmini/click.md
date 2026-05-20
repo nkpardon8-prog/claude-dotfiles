@@ -129,7 +129,20 @@ If `isCanvas === false`:
 
 ## Step 8 — Build run.sh
 
+The run.sh template below encodes four real-world fixes. The numbered comments
+are load-bearing — do NOT drop them in a future "simplification."
+
+Determine the target app (the app that should be foreground when the click
+fires). For an explicit `--target <app>` arg, honor it. Otherwise, take a
+screenshot and visually infer the foreground app the user wants clicked
+(usually obvious — the user said "click the button on eBay" → target is
+Chrome). If the agent cannot identify a target, default to **not activating
+anything** and let cliclick fire against whatever is currently foreground —
+but warn the user this is risky.
+
 ```bash
+TARGET_APP="${TARGET_APP:-Google Chrome}"   # default; override per-call as needed
+
 CLICKBIN_PROBE='if [ -x /opt/homebrew/bin/cliclick ]; then CB=/opt/homebrew/bin/cliclick; elif [ -x /usr/local/bin/cliclick ]; then CB=/usr/local/bin/cliclick; else echo "cliclick not installed — run: brew install cliclick"; exit 4; fi'
 
 # Modifier-click uses atomic kd:MOD c:X,Y ku:MOD in a single shell invocation.
@@ -143,17 +156,49 @@ TMPDIR_LOCAL="$(mktemp -d -t macmini-click.XXXXXX)"
 trap 'rm -rf "$TMPDIR_LOCAL"' EXIT INT TERM
 RUN_FILE="$TMPDIR_LOCAL/run.sh"
 
-{
-  echo '#!/bin/bash'
-  echo 'set -euo pipefail'
-  echo "$CLICKBIN_PROBE"
-  echo "$CLICK_BODY"
-  echo 'echo OK'
-} > "$RUN_FILE"
+cat > "$RUN_FILE" <<RUNSH
+#!/bin/bash
+set -uo pipefail
+${CLICKBIN_PROBE}
+
+# (1) Activate the TARGET app FIRST so the click lands on its window content.
+# Without this, the cursor might be over the right pixel but the click goes
+# to whichever app is currently foreground (often Terminal, behind everything).
+osascript -e 'tell application "${TARGET_APP}" to activate' >/dev/null 2>&1
+
+# (2) Sleep 0.6s — NOT 0.4s. macOS WindowServer may eat the first click after
+# app activation as a "focus this window" event. 0.6s is the empirically-stable
+# wait (observed 2026-05-19 during /macmini click bring-up on eBay).
+sleep 0.6
+
+# (3) Diagnostic: pre-click cursor position (so the agent can confirm cliclick
+# is responding even if the click itself has no visible effect).
+PRE=\$("\$CB" p: 2>&1)
+echo "Pre: \$PRE"
+
+# (4) Fire the click action.
+${CLICK_BODY}
+RC=\$?
+echo "Exit: \$RC"
+
+# (5) Diagnostic: post-click cursor position.
+sleep 0.2
+POST=\$("\$CB" p: 2>&1)
+echo "Post: \$POST"
+
+# (6) Bring Terminal back to the front so the NEXT gist clone command can be
+# typed without a manual Cmd+Tab. If you don't want this (e.g. you're doing a
+# single click and then leaving Chrome in focus), drop this line.
+osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1
+
+echo OK
+RUNSH
 ```
 
-No heredoc / randomized terminator needed — cliclick payloads are integers and
-literal tokens (`cliclick`, `c:`, `,`, `kd:`, `ku:`). No payload-collision risk.
+No heredoc / randomized terminator needed for the cliclick coords — cliclick
+payloads are integers and literal tokens (`cliclick`, `c:`, `,`, `kd:`, `ku:`).
+No payload-collision risk. The heredoc above wraps the entire run.sh body for
+clean variable substitution of `TARGET_APP`, `MINI_X`, `MINI_Y`, `MOD`.
 
 ## Step 9 — Upload as a SECRET gist
 
