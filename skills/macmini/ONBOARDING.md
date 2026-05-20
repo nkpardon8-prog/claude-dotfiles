@@ -1,5 +1,20 @@
 # Cold-start onboarding — macmini skill
 
+> **TL;DR — if you remember three things:**
+> 1. **EYES** = `mcp.take_screenshot()` on the CRD page (the live mini desktop feed).
+> 2. **HANDS** = `/macmini click <sx> <sy>`, `/macmini rclick`, `/macmini dblclick`,
+>    `/macmini drag`, `/macmini script`. They run `cliclick` / `osascript` on the
+>    mini's own OS via gh gist — NOT synthetic CDP clicks in the CRD canvas.
+> 3. **DANCE** = mini Terminal must be foreground to receive the typed
+>    `gh gist clone …; bash run.sh` command. If Chrome covers Terminal, recover
+>    with `mcp.press_key("Meta+Tab")` or `mcp.press_key("Meta+h")`. The run.sh
+>    activates the target app → clicks → re-activates Terminal at the end so
+>    the next click cycle works.
+>
+> Read [`../../commands/macmini.md`](../../commands/macmini.md) → "READ THIS FIRST"
+> and "The Workflow Primer" sections. Those two sections answer 90% of the
+> "how do I actually do X on the mini" questions a fresh agent will have.
+
 You're a fresh agent (or a fresh human) walking into the macmini skill for the first time. Read these files in this order. Each one builds on the last.
 
 ## Read in this order
