@@ -64,3 +64,4 @@ If the call returns `"granted"`, surface "granted" in the results table. Any oth
 | CRD canvas missing               | Page didn't load the canvas yet — wait 10s, retry; if still missing, `/macmini connect` |
 | Sign-in EXPIRED                  | Sign in inside Chrome, then `/macmini connect`       |
 | gh not authenticated             | `gh auth login` on dev. Also verify on Mac mini (`/macmini paste` requires gh on both sides). |
+| Calibration missing/stale        | `/macmini measure` — re-runs the one-time calibration and overwrites the JSON file. |
