@@ -99,6 +99,12 @@ Don't. They're stripped from the a11y tree (see invariant #4). The user clicks t
 │       ├── disconnect.md             ← /macmini disconnect — close CRD tab
 │       ├── status.md                 ← /macmini status — health audit
 │       ├── setup.md                  ← /macmini setup — first-time configuration
+│       ├── click.md                  ← /macmini click <sx> <sy> [--mod ...] — cliclick on mini via gist
+│       ├── rclick.md                 ← /macmini rclick <sx> <sy> — right-click
+│       ├── dblclick.md               ← /macmini dblclick <sx> <sy> — double-click
+│       ├── drag.md                   ← /macmini drag <sx1> <sy1> <sx2> <sy2> — drag
+│       ├── script.md                 ← /macmini script "<applescript>" — AppleScript escape hatch
+│       ├── measure.md                ← /macmini measure — one-time calibration (writes ~/.config/claude/macmini-calibration.json)
 │       └── macmini.md                ← (legacy, redundant with commands/macmini.md — both work)
 └── skills/macmini/
     ├── SKILL.md                      ← agent-facing capability map + channel matrix (PRIMARY)
