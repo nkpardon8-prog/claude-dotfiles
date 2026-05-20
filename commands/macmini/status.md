@@ -53,6 +53,7 @@ If the call returns `"granted"`, surface "granted" in the results table. Any oth
 | CRD canvas (DOM check)      | OK/FAIL  | canvas element <present | missing>            |
 | Sign-in valid               | OK/FAIL  | <signed in | sign-in page detected>           |
 | gh authenticated (dev)      | OK/FAIL  | <user@gh | not logged in>                     |
+| Calibration fresh           | OK/WARN  | <age in days | MISSING>                       |
 ```
 
 ### 6. Remediation matrix
