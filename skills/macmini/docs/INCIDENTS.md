@@ -7,6 +7,56 @@ Entries are reverse-chronological (newest first). Each follows the format:
 
 ---
 
+## 2026-05-19 — `mcp.click_at(x,y)` deprecated — cliclick-via-paste promoted to primary (DESIGN PIVOT)
+
+**What broke.** After 2026-04-30 validation, the chrome-devtools-mcp
+`--experimental-vision` channel that ships `click_at(x, y)` went
+unreliable upstream — the MCP server itself wedged on certain
+sequences, requiring the `/devtools` kill + npx-hash-dir scrub
+(commits `ce75b7c` and `24e33b4`) to recover. Even after recovery,
+the agent could not assume `click_at` would survive a session. The
+synthetic-CDP-click design was always fragile (relied on CRD's
+canvas accepting non-isTrusted mouse events), and the user explicitly
+preferred clicks that execute on the mini, not as dev-side synthetic
+events on the canvas.
+
+**Root cause.** `--experimental-vision` is a beta flag in chrome-
+devtools-mcp; its stability is not contractually guaranteed and
+regressed without a rollback path on our side. The architectural
+issue is deeper: any click channel that originates as a synthetic
+event on the dev side, regardless of MCP, depends on CRD's canvas
+not enforcing `isTrusted`. CRD has tightened the canvas event
+acceptance over time; the same drift that broke programmatic
+clipboard sync (2026-04-27 incident in this log) was always going to
+catch up with click_at eventually.
+
+**Fix (this commit).** New /macmini sub-commands click, rclick,
+dblclick, drag, and script — all routed through the existing gist
+transport (paste.md mechanics) with cliclick or osascript as the
+run.sh body. One-time calibration via /macmini measure writes
+~/.config/claude/macmini-calibration.json. Click_at references
+removed from SKILL.md, README.md, AGENT-GUIDE.md, setup.md, and
+HARDWARE-FINDINGS-2026-04-27.md (the 2026-04-30 row in
+HARDWARE-FINDINGS is annotated as deprecated; this incident log
+entry preserves the historical context). The
+`scripts/enable-experimental-vision.sh` installer is deleted.
+
+**Why we kept the design.** Cliclick runs on the mini's OS — it is
+NOT a synthetic event in the CRD canvas, so it bypasses every isTrusted
+gate. The gist transport is already battle-tested as the back-channel.
+Round-trip cost is ~6s/click vs ~100ms for click_at, but the
+trade-off is reliability + "from within" architecture the user asked
+for. For latency-sensitive iterative work, the documented path is
+delegation to a Claude session running on the mini directly.
+
+**Pattern, not bug.** Going forward: any new control primitive
+should execute ON THE MINI, dispatched via the existing gist
+channel, with vision as the receipt. Synthetic dev-side events into
+the CRD canvas are an architectural dead end for anything past
+plain-keyboard typing.
+
+---
+
 ## 2026-04-30 — click_at(x,y) validated through CRD canvas (PREVENTIVE — NOT a failure)
 
 **What "broke" / preventive validation.** Before this date, off-center clicking on the CRD canvas was unavailable — `mcp.click({uid})` could only hit the canvas centerpoint because CRD strips its own a11y tree. Anything more granular needed keyboard navigation (Spotlight + Tab + arrow keys). Vision-feedback agents wanted pixel-precise clicking on whatever's visible, like a human pointing and clicking.
