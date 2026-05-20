@@ -1,5 +1,13 @@
 # macmini — drive a remote Mac mini through Chrome Remote Desktop
 
+> **YOUR HANDS = `/macmini click <sx> <sy>`** (and its siblings `rclick`,
+> `dblclick`, `drag`, `script`). They run `cliclick` / `osascript` on the
+> mini's own OS via the `gh gist` transport — NOT synthetic clicks in the
+> CRD canvas. Coordinates are SCREENSHOT pixels from `mcp.take_screenshot()`.
+> If you didn't already, read [`../../commands/macmini.md`](../../commands/macmini.md) →
+> "READ THIS FIRST" — it has the mental model + the 7-step workflow primer
+> that prevents 90% of confusion.
+
 > **First-time agent? Read [`ONBOARDING.md`](./ONBOARDING.md)** for the file
 > read-order, six core invariants, and common questions. This file (SKILL.md)
 > is the primary runtime reference — channel matrix below tells you which
