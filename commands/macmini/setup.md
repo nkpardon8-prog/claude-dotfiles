@@ -186,4 +186,4 @@ bash skills/macmini/cleanup-mini.sh
 
 ---
 
-You're done. Day-to-day usage is `/macmini connect`, `/macmini paste`, `/macmini grab`, `/macmini status`, `/macmini disconnect`. Run `/macmini` with no args for the index.
+You're done. Day-to-day usage is `/macmini connect`, `/macmini paste`, `/macmini grab`, `/macmini click`, `/macmini status`, `/macmini disconnect`. Run `/macmini` with no args for the full capability matrix.
