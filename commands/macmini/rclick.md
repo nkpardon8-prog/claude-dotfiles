@@ -112,22 +112,35 @@ If `isCanvas === false`:
 - If in the CRD UI overlay zone (top 60px or bottom 30px of canvas): wait 3s and retry once.
 - If still occluded, abort: "Click target occluded by CRD toolbar — wait for it to auto-hide, then retry."
 
-## Step 8 — Build run.sh
+## Step 8 — Build run.sh (with the proven activate-target / sleep-0.6 / refocus-Terminal pattern)
 
 ```bash
+TARGET_APP="${TARGET_APP:-Google Chrome}"   # default; override per-call
+
 CLICKBIN_PROBE='if [ -x /opt/homebrew/bin/cliclick ]; then CB=/opt/homebrew/bin/cliclick; elif [ -x /usr/local/bin/cliclick ]; then CB=/usr/local/bin/cliclick; else echo "cliclick not installed — run: brew install cliclick"; exit 4; fi'
 
 TMPDIR_LOCAL="$(mktemp -d -t macmini-rclick.XXXXXX)"
 trap 'rm -rf "$TMPDIR_LOCAL"' EXIT INT TERM
 RUN_FILE="$TMPDIR_LOCAL/run.sh"
 
-{
-  echo '#!/bin/bash'
-  echo 'set -euo pipefail'
-  echo "$CLICKBIN_PROBE"
-  echo '"$CB" rc:'"$MINI_X"','"$MINI_Y"
-  echo 'echo OK'
-} > "$RUN_FILE"
+cat > "$RUN_FILE" <<RUNSH
+#!/bin/bash
+set -uo pipefail
+${CLICKBIN_PROBE}
+# (1) Activate the target app so the right-click lands on its window.
+osascript -e 'tell application "${TARGET_APP}" to activate' >/dev/null 2>&1
+# (2) Sleep 0.6s — WindowServer can eat the first click after activate.
+sleep 0.6
+# (3-5) Diagnostics + the right-click itself.
+PRE=\$("\$CB" p: 2>&1); echo "Pre: \$PRE"
+"\$CB" rc:${MINI_X},${MINI_Y}
+RC=\$?; echo "Exit: \$RC"
+sleep 0.2
+POST=\$("\$CB" p: 2>&1); echo "Post: \$POST"
+# (6) Refocus Terminal for the next gist round-trip.
+osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1
+echo OK
+RUNSH
 ```
 
 ## Step 9 — Upload as a SECRET gist
