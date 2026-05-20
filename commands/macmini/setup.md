@@ -158,6 +158,19 @@ These are not required for the skill to work but make delegated work smoother. A
 
 ---
 
+## Migration from --experimental-vision
+
+If your `~/.claude.json` MCP config still includes `--experimental-vision` in the chrome-devtools args, remove it with this idempotent `jq` command (safe to run even if the flag is already absent — `-=` is jq's array-subtraction operator, removing a missing element is a no-op):
+
+```bash
+jq '(.mcpServers."chrome-devtools".args) -= ["--experimental-vision"]' \
+  ~/.claude.json > ~/.claude.json.tmp && mv ~/.claude.json.tmp ~/.claude.json
+```
+
+After running this, **restart Claude Code** so the MCP reloads without the flag. Mouse actions now route through `/macmini click` (cliclick on the mini via gist transport) rather than `mcp.click_at`.
+
+---
+
 ## Migration from the Tailscale-based version
 
 If you had the previous Tailscale + Go server version installed, clean up the Mac mini:
