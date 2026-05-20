@@ -377,10 +377,13 @@ setup change adds them, update this list:
   setup. Use the gist transport pattern above. (If Taildrop is later
   enabled, prefer it for binary transfer.)
 - **CRD-canvas synthetic clicks via `evaluate_script`** —
-  `isTrusted=false`, rejected by the canvas. ALWAYS use
-  `mcp.click({uid})` after `take_snapshot()`. This is architectural
+  `isTrusted=false`, rejected by the canvas. This is architectural
   (CDP `Input.dispatchMouseEvent` vs DOM `el.click()`), not a setup
-  limitation.
+  limitation. For pixel-precise clicks on the mini's screen, use
+  `/macmini click <sx> <sy>` (cliclick on the mini via gist transport
+  — runs on the mini's OS, no `isTrusted` issue). `mcp.click({uid})`
+  remains valid only for focus recovery on the canvas wrapper textbox
+  (the single uid CRD exposes).
 
 ## Scrolling
 
