@@ -8,6 +8,19 @@ These are **real-world test results** from running the auto-grant + CRD skill ag
 >
 > **[DEPRECATED 2026-05-19]** The `--experimental-vision` channel went unreliable upstream and `click_at` has been replaced by `cliclick-via-paste` as the primary mouse channel. See [`INCIDENTS.md`](./INCIDENTS.md) → "2026-05-19 — `mcp.click_at(x,y)` deprecated" for the full rationale. The validated click_at data below is preserved as historical record only.
 
+## cliclick-via-paste (primary mouse channel, 2026-05-19)
+
+**Status: primary.** Replaces `mcp.click_at(x, y)` as the canonical way to click, right-click, double-click, and drag on the Mac mini.
+
+- **How it works.** The agent calls `/macmini click <sx> <sy>` (or `rclick`/`dblclick`/`drag`). The sub-command converts screenshot pixels to mini-physical pixels using calibration from `~/.config/claude/macmini-calibration.json`, builds a one-line `cliclick c:X,Y` run.sh, uploads it as a secret gist, types the lowercase clone command on the mini's canvas, and the mini executes cliclick directly on its own OS.
+- **Round-trip latency.** ~6s per click (same as `/macmini paste` — they share the same gist transport). Much slower than the deprecated `click_at` (~50ms), but reliable across sessions and not subject to CRD isTrusted enforcement.
+- **Runs on mini OS — no isTrusted gate.** cliclick is invoked on the mini's local OS via `bash run.sh`, which runs in the mini's normal shell context. CRD's canvas event-trust model is entirely bypassed; this is the architectural advantage over any dev-side synthetic-event approach.
+- **Calibration required (one-time per mini).** Run `/macmini measure` to write `~/.config/claude/macmini-calibration.json`. The click sub-commands load this file on every call and refuse if missing or stale (>30 days or canvas dimensions changed). Re-run `/macmini measure` after toggling CRD streaming resolution or swapping the mini's display.
+- **Supported actions.** Left-click, right-click, double-click, drag, modifier+click (Cmd/Shift/Option/Control via `kd:<mod> c:X,Y ku:<mod>` — atomic single shell invocation). AppleScript via `/macmini script` shares the same gist channel.
+- **See.** `INCIDENTS.md` → "2026-05-19 — `mcp.click_at(x,y)` deprecated" for why this replaced click_at. `commands/macmini/click.md` (and `rclick.md`, `dblclick.md`, `drag.md`, `measure.md`) for the sub-command procedures.
+
+---
+
 ## TL;DR — what the agent can and cannot rely on
 
 | Capability | Reality |
