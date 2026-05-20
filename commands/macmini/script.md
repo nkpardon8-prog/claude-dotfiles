@@ -90,8 +90,14 @@ mcp.select_page({pageId: <crd_page_id>, bringToFront: true})
 ```
 
 Take a screenshot and confirm the Mac mini Terminal is the focused window
-with a shell prompt visible. If not, abort: "Mac mini Terminal not focused —
-bring it forward before /macmini script."
+with a shell prompt visible. If not, recover via (in order of reliability):
+1. `mcp.press_key("Meta+Tab")` — cycle to MRU app.
+2. `mcp.press_key("Meta+h")` — hide top app to reveal Terminal behind it.
+3. Ask the user to click Terminal in the Dock.
+
+Do NOT proceed until Terminal is foreground — the typed clone command goes
+to whatever IS foreground, and a missed Terminal sends an `rm -rf /tmp/...`
+keystroke into eBay's search box or wherever.
 
 ## Step 3 — Build run.sh with randomized heredoc terminator
 
