@@ -31,6 +31,7 @@ If no CRD tab exists, surface it as `CRD session tab = CLOSED` and skip the page
 | CRD canvas (DOM check)      | `mcp.evaluate_script({function: "() => !!document.querySelector('canvas')"})`     | true          |
 | Sign-in valid               | `mcp.evaluate_script({function: "() => !!document.querySelector('a[href*=\\"accounts.google.com/signin\\"]') \|\| /accounts\\.google\\.com/.test(location.href)"})` | no match      |
 | gh authenticated (dev)      | `gh auth status` exit code                                                        | exit 0        |
+| Calibration fresh           | Dev-side file read: `~/.config/claude/macmini-calibration.json` exists AND mtime ≤ 30 days. Use `stat -f %m` (macOS) or `stat -c %Y` (Linux) to get mtime; compare to `date +%s`. Do NOT probe cliclick over gist — that's a ~6s round-trip and wrong for a health check. | file present, age ≤ 2592000s |
 
 ### 4. Clipboard runtime probe (single-call try/catch, async IIFE)
 
