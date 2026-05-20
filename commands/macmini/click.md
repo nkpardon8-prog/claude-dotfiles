@@ -258,13 +258,26 @@ mcp.take_screenshot()
 
 Confirm:
 - `Cloning into '/tmp/macmini-click/'` line present, AND
-- `OK` line from run.sh, AND
+- `Pre: <x>,<y>`, `Exit: 0`, `Post: <x>,<y>` lines from run.sh, AND
+- `OK` line at the end, AND
 - A fresh shell prompt at the bottom.
+
+If the Terminal output scrolled off-viewport during `gh gist clone` (verbose
+output), press `Meta+H` to hide whatever's currently on top — Terminal's full
+output usually becomes visible behind it. The Pre/Post cursor positions are
+the diagnostic: if `Post == (MINI_X, MINI_Y)`, the cursor moved correctly
+even if the click had no visible effect (in which case the click coords were
+wrong, or the WindowServer ate the click — see "Verify-after" Step 12).
 
 Shift-strip detection (same as paste.md Step 6): if a continuation prompt
 (`> `, `bquote>`, `quote>`, etc.) appears instead of a normal `$`/`%` prompt,
 press Control+c twice to recover, then retry. `gh: command not found` means
 mini is missing gh. 404 means mini gh authed to the wrong account.
+
+`mcp.wait_for(["OK", "ERR", "Exit:"])` is unreliable for run.sh output —
+verbose clone output scrolls past the viewport before `wait_for` polls.
+Prefer a fixed sleep (`sleep 4` for fast clicks, `sleep 8` for slow networks)
+then screenshot.
 
 ## Step 12 — Verify-after click
 
