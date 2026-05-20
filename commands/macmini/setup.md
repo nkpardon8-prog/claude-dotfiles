@@ -64,6 +64,28 @@ errors, restart Terminal so the new TCC grant is picked up.
 
 ---
 
+## Step 1b2 — First-run AppleScript Automation TCC prompts
+
+The `/macmini script` sub-command (and the click sub-commands that activate
+target apps via `osascript`) trigger a second TCC prompt on FIRST CONTROL OF
+EACH TARGET APP. Example: the first AppleScript that says
+`tell application "Google Chrome" to activate` causes macOS to ask
+*"Terminal wants access to control Google Chrome."* The user must click
+**Allow**. This is per-app-pair — Terminal→Chrome is one grant,
+Terminal→Safari is another, Terminal→Finder is a third.
+
+**Strategy:** don't try to pre-grant them all. The prompt appears as a
+modal dialog on the mini's screen. When you (the agent) see a click that
+"silently failed" — cliclick exit 0 but the target app didn't react — the
+prompt may be hiding behind the foreground app. Press `mcp.press_key("Meta+h")`
+to reveal it, then have the user click **Allow**.
+
+To list / reset existing grants:
+- **System Settings → Privacy & Security → Automation** — shows every
+  source app and its allowed targets. Toggle off to revoke.
+
+---
+
 ## Step 1c — Calibrate click coordinates (once per mini)
 
 The click sub-commands convert screenshot pixels → mini-physical pixels using a cached calibration file. After your first `/macmini connect`, run:
