@@ -166,20 +166,22 @@ Health check: CRD canvas present, sign-in valid, clipboard permission granted, g
 /macmini status
 ```
 
-### `mcp.click_at(x, y)` — pixel-precise clicking on the canvas
+### Mouse clicks — `/macmini click` (and `rclick`, `dblclick`, `drag`)
 
-This is a **regular MCP tool, not a slash command**. The agent reaches for it elastically — same as `take_screenshot`, `type_text`, `press_key`. It clicks at viewport CSS pixel `(x, y)` on the focused page (which, after `/macmini connect`, is the CRD canvas — so coords map to a position on the mini's screen).
+These are **slash sub-commands** (not MCP tools). The agent passes screenshot pixels `(sx, sy)` read directly from a `mcp.take_screenshot()` image; the sub-command handles all geometry internally.
 
-**Setup (one-time):** `--experimental-vision` flag in the chrome-devtools-mcp args. See `commands/macmini/setup.md` Step 1, or run `~/.claude-dotfiles/scripts/enable-experimental-vision.sh` for an idempotent installer (uses `jq`; takes a `.bak` of `~/.claude.json` before swapping).
+**Setup (one-time per mini):** `brew install cliclick` on the mini, then System Settings → Privacy & Security → Accessibility → enable Terminal.app (or the process that invokes cliclick). Then run `/macmini measure` once — this writes `~/.config/claude/macmini-calibration.json` with the screenshot-pixel → mini-physical-pixel scale. The click sub-commands refuse with a clear error if calibration is missing or stale (>30 days or canvas dimensions changed).
 
-**Coord conversion the agent must do:** screenshot pixels are device-pixel resolution (DPR=2 on Retina), but `click_at` takes viewport CSS pixels. Conversion: `vx = sx / dpr`, `vy = sy / dpr`. Plus a check that `(vx, vy)` is inside the canvas rect AND that `document.elementFromPoint(vx, vy)` returns the canvas (catches CRD's auto-hiding toolbar overlay). Full recipe in `docs/AGENT-GUIDE.md` → "Clicking on the canvas."
+**What each sub-command does:**
+- `/macmini click <sx> <sy>` — left-click. Optional `--mod cmd|shift|opt|ctrl` for modifier-click.
+- `/macmini rclick <sx> <sy>` — right-click.
+- `/macmini dblclick <sx> <sy>` — double-click.
+- `/macmini drag <sx1> <sy1> <sx2> <sy2>` — drag (mousedown at start, move, mouseup at end — single atomic `cliclick dd/du` invocation).
+- `/macmini script "<applescript>"` — AppleScript for anything cliclick can't reach (app activation, menu picks, window management).
 
-**What it does and doesn't do:**
-- Single left-click at any pixel on the canvas: ✅ ~50ms, validated 2026-04-30 against live CRD.
-- Double-click: ✅ via `{x, y, dblClick: true}` — for small targets (<30 px) expect to need verify-after-click.
-- Drag, right-click, Cmd-click, Shift-click: ❌ NOT supported by `click_at`. Use `cliclick` on mini side via `/macmini paste` (one-time `brew install cliclick` + Accessibility TCC).
+**Round-trip cost:** ~6s per action (same gist transport as `/macmini paste`). For iterative GUI work with many clicks, delegate to a Claude session running on the mini directly (`claude --dangerously-skip-permissions` in mini Terminal) — mini Claude has cliclick available locally at ~50ms/click.
 
-**Validated 2026-04-30** end-to-end against live CRD: focused a Terminal window, ran a command, confirmed output. Plus a real-world dev → mini-Claude conversation. See `docs/HARDWARE-FINDINGS-2026-04-27.md` → "click_at(x, y) forwarding through CRD canvas (validated 2026-04-30)" for the per-test outcome table.
+See `docs/AGENT-GUIDE.md` → "Clicking on the canvas (via cliclick on the mini)" for the coordinate conversion math and mandatory verify-after contexts. See `docs/INCIDENTS.md` → "2026-05-19" for why the previous `mcp.click_at` channel was replaced.
 
 ---
 
