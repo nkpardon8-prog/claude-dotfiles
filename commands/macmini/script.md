@@ -125,7 +125,7 @@ esac
 
 {
   printf '%s\n' '#!/bin/bash'
-  printf '%s\n' 'set -euo pipefail'
+  printf '%s\n' 'set -uo pipefail'
   printf '%s\n' 'mkdir -p /tmp/macmini-script'
   printf '%s%s%s\n' "cat > /tmp/macmini-script/run.applescript <<'" "$TERMINATOR" "'"
   printf '%s' "$ARGUMENTS"
@@ -135,9 +135,22 @@ esac
   esac
   printf '%s\n' "$TERMINATOR"
   printf '%s\n' '/usr/bin/osascript /tmp/macmini-script/run.applescript'
+  printf '%s\n' 'OSARC=$?'
+  printf '%s\n' 'echo "osascript exit: $OSARC"'
+  # Refocus Terminal at the end so the NEXT gist round-trip can be typed
+  # without a manual Cmd+Tab. Drop this line if you specifically want the
+  # AppleScript target (e.g. Chrome) to remain foreground.
+  printf '%s\n' "osascript -e 'tell application \"Terminal\" to activate' >/dev/null 2>&1"
   printf '%s\n' 'echo OK'
 } > "$RUN_FILE"
 ```
+
+**First-run automation TCC prompt.** The FIRST time an AppleScript controls
+a new target app from a given source (Terminal/osascript), macOS shows
+*"Terminal wants access to control X"*. The user must click **Allow**.
+Persistent per-app-pair. If `osascript exit: 1` lands and the AppleScript
+body looked correct, the prompt is likely waiting under a foreground app
+— have the user Cmd+H to find it, then Allow.
 
 Gist filename will be `run.sh` (derived from the basename of `$RUN_FILE`).
 The clone command hard-codes `bash /tmp/macmini-script-gist/run.sh` — the
