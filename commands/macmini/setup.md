@@ -17,22 +17,52 @@ For the full capability map and channel matrix, read `~/.claude-dotfiles/skills/
 
 The skill is a thin wrapper around the chrome-devtools MCP. Confirm it's loaded in your Claude Code MCP configuration. If you don't have it yet, install per its docs (typically a Node-based MCP server entry).
 
-Example MCP config snippet:
+Example MCP config snippet (note: `--experimental-vision` is **not** included — that flag is deprecated and was removed in this skill version):
 
 ```json
 {
   "mcpServers": {
     "chrome-devtools": {
       "command": "npx",
-      "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect", "--experimental-vision"]
+      "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect"]
     }
   }
 }
 ```
 
-The `--experimental-vision` flag unlocks `mcp.click_at(x, y)` — pixel-precise clicking on anything visible in the CRD canvas. Without it, the agent can only click via a11y `uid`s, which is severely limited inside the CRD canvas because CRD strips its accessibility tree. For fresh-machine setup, run `~/.claude-dotfiles/scripts/enable-experimental-vision.sh` instead of hand-editing the JSON — the script idempotently adds the flag via `jq` and is safe to re-run.
-
 After editing the MCP config, **restart Claude Code (or your MCP host)** so the MCP loads.
+
+---
+
+## Step 1b — Install cliclick on the Mac mini
+
+Mouse actions (`/macmini click`, `rclick`, `dblclick`, `drag`) execute `cliclick` **on the mini** via the gist transport. Install it once on the mini:
+
+```bash
+brew install cliclick
+```
+
+After install, grant Accessibility permission so cliclick can synthesize input events:
+
+- Open **System Settings → Privacy & Security → Accessibility**
+- Find **Terminal.app** (or whichever terminal app runs on the mini) and toggle it **ON**
+
+Without the Accessibility grant, cliclick commands will exit with an error like `cliclick: You need to add Terminal to Accessibility in System Preferences`.
+
+---
+
+## Step 1c — Calibrate click coordinates (once per mini)
+
+The click sub-commands convert screenshot pixels → mini-physical pixels using a cached calibration file. After your first `/macmini connect`, run:
+
+```
+/macmini measure
+```
+
+This writes `~/.config/claude/macmini-calibration.json` on the dev side. Re-run it if:
+- The mini's display resolution changes
+- CRD streaming resolution is toggled ("Auto" → "1080p" → "720p")
+- More than 30 days have passed (the click sub-commands refuse if the file is older)
 
 ---
 
