@@ -155,7 +155,12 @@ case "$GIST_ID" in
 esac
 ```
 
-## Step 10 — Validate clone command is unshifted-safe, then type it
+## Step 10 — Confirm mini Terminal is foreground, then type the clone command
+
+The typed keystrokes go to whichever app is foreground on the mini. Screenshot
+to confirm Terminal is foreground BEFORE typing. If not:
+- `mcp.press_key("Meta+Tab")` to cycle to MRU (Terminal usually).
+- `mcp.press_key("Meta+h")` to hide whatever's covering Terminal.
 
 ```bash
 CLONE_CMD="rm -rf /tmp/macmini-rclick; gh gist clone $GIST_ID /tmp/macmini-rclick; bash /tmp/macmini-rclick/run.sh"
