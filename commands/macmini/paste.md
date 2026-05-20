@@ -3,6 +3,13 @@ description: Send arbitrary text (capitals, symbols, unicode, multi-line) to the
 argument-hint: "<text — multi-line OK, full Unicode, any printable characters>     [--secure | --repaste]"
 ---
 
+> **See also:** for mouse / drag / AppleScript actions, the same gist
+> transport powers `/macmini click`, `/macmini rclick`, `/macmini dblclick`,
+> `/macmini drag`, and `/macmini script` — they reuse the gist channel
+> with a different `run.sh` body. This file (`paste.md`) is the canonical
+> reference for credential pre-scan (Step 0) and unshifted-safety
+> validation (Step 5); the click sub-commands cite those steps.
+
 # /macmini paste
 
 Sends ARBITRARY text to the Mac mini's clipboard via `gh gist`. CRD strips Shift on outbound keystrokes (`HELLO_WORLD` → `hello-world`, `$@!#%^&*()` get remapped to wrong chars), and CRD's clipboard sync needs real user gestures (CDP-injected events are synthetic). gist transport bypasses both: byte-perfect text is uploaded to a SECRET gist, then the Mac mini clones it locally with a clone command consisting only of unshifted chars.
