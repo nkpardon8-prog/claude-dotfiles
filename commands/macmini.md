@@ -16,46 +16,98 @@ When the user invokes `/macmini` (with or without arguments) **or references the
 1. **Pre-flight.** `mcp.list_pages()` — find the CRD canvas page (URL starts with `https://remotedesktop.google.com/access/session/`). If found, `mcp.select_page({pageId, bringToFront: true})` and skip step 2.
 2. **Auto-connect if needed.** If no live canvas, run the `/macmini connect` flow (see `commands/macmini/connect.md`). The user types the PIN themselves when prompted; the agent waits for the canvas to mount.
 3. **Vision check.** `mcp.take_screenshot()` to confirm the Mac mini desktop is visible. If black, `mcp.press_key("Shift")` to wake.
-4. **Infer the action.** Use the routing table below.
+4. **Infer the action.** Use the capability matrix below.
 
-## Routing table
+## Capability matrix (the agent's single source of truth)
 
-| User intent | Channel |
+When the user references "the mini" or invokes /macmini, look at the request and find its row below. Use the listed channel. Don't improvise.
+
+### Vision (always free, always on)
+
+| Want to do | Tool |
 |---|---|
-| "connect" / "open the mini" | `/macmini connect` |
-| "disconnect" / "close session" | `/macmini disconnect` |
-| "status" / "is the mini up?" | `/macmini status` |
-| "send X" / "paste X" / "put X on mini's clipboard" — non-secret | `/macmini paste "<X>"` (gist transport) |
-| "set the API key on the mini" / "deploy with my OPENROUTER key" / anything involving a credential value | `/macmini paste --secure <ENV_VAR_NAME>` (the agent surfaces a `read -s` prompt on the mini, the user types the secret directly — the value never enters a gist or git history) |
-| "what's on mini's clipboard?" / "grab" | `/macmini grab` |
-| "what's on the screen?" / "show me" | `mcp.take_screenshot()` direct |
-| "type lowercase command" / "run ls/pwd" | `mcp.type_text("<cmd>", "Enter")` |
-| "press Enter / Cmd+V / Cmd+space" | `mcp.press_key("<key>")` |
-| "click <something visible>" / "click the X button" / "click on Y" | `mcp.click_at({x, y})` after geometry conversion (validated 2026-04-30 — see `skills/macmini/docs/AGENT-GUIDE.md` → "Clicking on the canvas" for the recipe). Requires `--experimental-vision` enabled (one-time setup). Convert screenshot pixels → CSS pixels via `devicePixelRatio`, verify on-canvas + `elementFromPoint` returns canvas (not popup/toolbar), then click. |
-| "drag X to Y" / "right-click" / "Cmd-click" | cliclick fallback on mini side (one-time `brew install cliclick` + Accessibility TCC). See AGENT-GUIDE.md for measure-once procedure (cliclick uses mini physical pixels, not CSS). |
-| "open <app>" / "switch to <app>" | Spotlight: `press_key("Meta+space")` → `type_text("<app lowercase>", "Enter")` |
-| Multi-step / sudo / multi-file work | Delegate to Mac mini Claude: `type_text("claude --dangerously-skip-permissions", "Enter")`, screenshot to confirm, then `/macmini paste` the prompt → Cmd+V → Enter |
-| Any text with capitals / `$@!#%` / unicode | **Always** `/macmini paste`, never `type_text` |
+| See the mini's screen | `mcp.take_screenshot()` |
+| Wait for something to render | screenshot + sleep + screenshot |
+
+### Keyboard (direct — lowercase + unshifted only)
+
+| Want to do | Channel |
+|---|---|
+| Type a lowercase shell command | `mcp.type_text("<cmd>", "Enter")` |
+| Press Enter / Tab / Esc / arrow / Page* / Home / End | `mcp.press_key("<key>")` |
+| Cmd-shortcut (Cmd+V, Cmd+W, Cmd+Q, Cmd+Space, Cmd+Tab) | `mcp.press_key("Meta+<x>")` |
+
+### Text (anything with capitals, symbols, unicode, multi-line)
+
+| Want to do | Channel |
+|---|---|
+| Put bytes on mini's clipboard + auto-paste+Enter | `/macmini paste "<text>"` |
+| Same, clipboard only (no Enter) | `/macmini paste "<text>"` + "don't submit" |
+| Inject a credential | `/macmini paste --secure <ENV_NAME>` |
+| Re-fire last paste into another app | `/macmini paste --repaste` |
+| Read mini's clipboard back to dev | `/macmini grab` |
+
+### Mouse (cliclick on the mini via gist transport)
+
+| Want to do | Channel |
+|---|---|
+| Left-click at screenshot pixel (sx, sy) | `/macmini click <sx> <sy>` |
+| Right-click | `/macmini rclick <sx> <sy>` |
+| Double-click | `/macmini dblclick <sx> <sy>` |
+| Drag from (sx1, sy1) to (sx2, sy2) | `/macmini drag <sx1> <sy1> <sx2> <sy2>` |
+| Cmd-click / Shift-click / Opt-click / Ctrl-click | `/macmini click <sx> <sy> --mod cmd\|shift\|opt\|ctrl` |
+| Move cursor without clicking | `/macmini script 'do shell script "/opt/homebrew/bin/cliclick m:X,Y"'` (rare; usually unnecessary) |
+
+Coordinates `(sx, sy)` are **screenshot pixels** — what `mcp.take_screenshot()` returns naturally. Conversion to mini-physical pixels happens inside each sub-command using cached calibration (`~/.config/claude/macmini-calibration.json`). Run `/macmini measure` once per mini to produce that file; all click sub-commands refuse with a clear error if it is missing or stale.
+
+### Anything cliclick can't do
+
+| Want to do | Channel |
+|---|---|
+| Activate an app by name | `/macmini script 'tell application "Safari" to activate'` |
+| Pick a menu item | `/macmini script 'tell app "System Events" to tell process "X" to click menu item ...'` |
+| Window management (move, resize, focus by title) | `/macmini script <applescript>` |
+| Anything else macOS-automation-shaped | `/macmini script <applescript>` |
+
+### Multi-step / shell-heavy
+
+| Want to do | Channel |
+|---|---|
+| 3+ shell commands needing sudo, files, or complex pipelines | Delegate: type `claude --dangerously-skip-permissions` in mini Terminal, then `/macmini paste` your prompt. Mini Claude runs cliclick + bash natively at ~50ms/action. |
+
+### Session lifecycle
+
+| Want to do | Channel |
+|---|---|
+| Open the CRD canvas | `/macmini connect` |
+| Close it | `/macmini disconnect` |
+| Health check | `/macmini status` |
+| First-time setup | `/macmini setup` |
+| Recalibrate click coords | `/macmini measure` |
 
 ## Hard rules
 
-- **CRD strips Shift on outbound keystrokes.** Capitals and shifted symbols arrive corrupted via `type_text`. Anything not pure-lowercase-unshifted must go through `/macmini paste`.
-- **NEVER put credentials in a default `/macmini paste`.** GitHub runs secret-scanning on every gist (including unlisted/secret) and forwards detections to issuer partners (OpenAI, Anthropic, OpenRouter, AWS, Google Cloud, Stripe, Twilio, Slack, ~50 others) within minutes. Auto-revocation typically lands in <5 minutes. Deleting the gist does not unwind it. **Real incident: two OpenRouter keys were burned in <10 minutes each by routing them through `/macmini paste` deploy scripts.** For credential injection use `/macmini paste --secure <ENV_VAR_NAME>` — that mode never puts the value in a gist, the user pastes the secret directly into the mini Terminal at a `read -s` prompt.
-- **If the user asks you to "deploy with the API key" or similar, route the credential separately.** Step 1: rewrite their deploy script to reference `$ENV_VAR_NAME` instead of the literal value, push the script via default `/macmini paste`. Step 2: run `/macmini paste --secure ENV_VAR_NAME` to inject the value. Step 3: the deploy script must `export ENV_VAR_NAME="$(cat ~/.config/claude/secrets/ENV_VAR_NAME)"` before using it. **Never `source`** the secrets file — it contains a raw value, not a shell assignment, so `source` would either error out or execute the value as a command.
-- **PIN entry is user-only.** The agent never types, stores, or reads the CRD PIN. When the PIN page appears, hand off to the user.
-- **Programmatic clipboard sync (dev → mini) is broken.** CDP-injected `Cmd+V` doesn't trigger CRD's onPaste handler — that's why `/macmini paste` uses gist transport, not `pbcopy`.
-- **Don't browse opportunistically.** The chrome-devtools MCP attaches to the user's full Chrome — every tab, every login. Only navigate / click outside the CRD tab when the user explicitly asks. Never click Buy / Send / Pay / Confirm / OAuth / 2FA / security-warning prompts without explicit user instruction.
+- **NEVER `/macmini paste` a credential value.** Use `--secure`. `paste.md` Step 0 hard-gates this. GitHub runs secret-scanning on every gist (including secret/unlisted) and forwards detections to issuer partners (OpenAI, Anthropic, OpenRouter, AWS, ~50 others); auto-revocation lands within minutes. Deleting the gist does NOT unwind it.
+- **ALWAYS screenshot before AND after any `/macmini click` / `rclick` / `dblclick` / `drag` / `script`** — vision is the receipt that the action landed.
+- **For destructive UI clicks** (Delete, Send, Pay, Confirm), the agent MUST screenshot after AND verify the expected state change. If the change didn't happen, retry once with adjusted coords; do not proceed blindly.
+- **~6s per click** is the gist round-trip cost. For iterative GUI work (form filling, wizard steps), delegate to mini Claude instead (`claude --dangerously-skip-permissions` in mini Terminal, then `/macmini paste` your prompt).
 
 ## Sub-commands (for explicit invocation)
 
 | Sub-command | Purpose |
-|-------------|---------|
+|---|---|
 | `/macmini connect` | Open or resume the CRD session. PIN is user-only. |
 | `/macmini paste "<text>"` | gist-based arbitrary-text channel — survives capitals, symbols, unicode, multi-line. |
 | `/macmini grab` | Pull text from Mac mini's clipboard back to dev (manual mode). |
 | `/macmini disconnect` | Close the CRD tab. |
-| `/macmini status` | Quick health audit (canvas, sign-in, clipboard permission, gh auth). |
-| `/macmini setup` | One-time setup walkthrough (MCP, gh on both sides, side-panel toggles). |
+| `/macmini status` | Quick health audit (canvas, sign-in, clipboard permission, gh auth, calibration freshness). |
+| `/macmini setup` | One-time setup walkthrough (MCP, gh on both sides, cliclick, Accessibility TCC, measure). |
+| `/macmini click <sx> <sy>` | Left-click at screenshot pixel. Optional `--mod cmd\|shift\|opt\|ctrl`. |
+| `/macmini rclick <sx> <sy>` | Right-click at screenshot pixel. |
+| `/macmini dblclick <sx> <sy>` | Double-click at screenshot pixel. |
+| `/macmini drag <sx1> <sy1> <sx2> <sy2>` | Click-drag between two screenshot pixels. |
+| `/macmini script "<applescript>"` | Run AppleScript on the mini via gist transport. |
+| `/macmini measure` | One-time calibration — writes `~/.config/claude/macmini-calibration.json`. |
 
 ## See also
 
