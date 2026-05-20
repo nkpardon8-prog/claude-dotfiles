@@ -146,9 +146,11 @@ Use this liberally to verify state before/after actions.
 
 ### Clicking on the canvas
 
-`mcp.click_at({x, y})` lets you click pixel-precisely on anything visible on the Mac mini's screen, treating the streamed CRD canvas as a normal click target. The full recipe — including the screenshot-pixel → viewport-CSS-pixel conversion math, the `document.elementFromPoint` occlusion check, the CRD top-toolbar / bottom-strip overlay caveat, and the `cliclick` fallback for drag / right-click / modifier-click — lives in `docs/AGENT-GUIDE.md` → "Clicking on the canvas".
+Use `/macmini click <sx> <sy>` to click pixel-precisely on anything visible on the Mac mini's screen. The agent identifies the target in a screenshot and passes screenshot pixels directly — the sub-command handles conversion to mini-physical pixels using cached calibration (`~/.config/claude/macmini-calibration.json`). No manual geometry math required.
 
-Coords passed to `mcp.click_at` are dev-viewport CSS pixels, NOT screenshot pixels. The agent must compute conversion factors (`devicePixelRatio`, browser zoom via `visualViewport.scale` or `outerWidth/innerWidth`) and verify on-canvas + non-occluded before clicking. Read the recipe before using `click_at` — short-circuiting the conversion or skipping the occlusion check produces wrong-coordinate clicks that hit Chrome notifications, password-manager dropdowns, or CRD's own UI overlay instead of the intended mini target.
+Variants: `/macmini rclick` (right-click), `/macmini dblclick` (double-click), `/macmini drag <sx1> <sy1> <sx2> <sy2>`, `/macmini click <sx> <sy> --mod cmd|shift|opt|ctrl` (modifier-click). All execute via `cliclick` on the mini's OS — not as synthetic CDP events on the CRD canvas. Round-trip is ~6s per action via gist transport.
+
+The full sub-command procedure including occlusion check, calibration load, staleness check, and verify-after contexts lives in `commands/macmini/click.md`. Run `/macmini measure` once per mini before using any click sub-commands. See `docs/AGENT-GUIDE.md` → "Clicking on the canvas (via cliclick on the mini)" for the coord conversion math the sub-commands implement internally.
 
 ## Vision is your primary feedback loop
 
