@@ -97,7 +97,7 @@ The user's CRD session already had `Synchronize clipboard` toggle = ON and `Send
 
 ---
 
-## click_at(x, y) forwarding through CRD canvas (validated 2026-04-30)
+## click_at(x, y) forwarding through CRD canvas (validated 2026-04-30) [DEPRECATED 2026-05-19 — see INCIDENTS.md]
 
 **Setup.** chrome-devtools-mcp launched with `--autoConnect --experimental-vision` (per `~/.claude.json` + `setup.md` Step 1). Live CRD session into `plan2bid-minim4` (1920×1080 mini display, 16:9). Dev viewport: 1200×863 CSS pixels at DPR=2 (Retina MacBook). Canvas occupies (0, 94)→(1200, 769) in viewport CSS pixels — 1200×675 CSS px streaming the mini's full 1920×1080.
 
