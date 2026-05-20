@@ -212,7 +212,29 @@ case "$GIST_ID" in
 esac
 ```
 
-## Step 10 — Validate clone command is unshifted-safe, then type it
+## Step 10 — Make sure mini Terminal is foreground, validate clone command, then type it
+
+**Critical:** the typed clone command goes to whichever app is foreground on
+the mini. If Terminal is hidden behind Chrome (the usual state after a prior
+click), the keystrokes will land in Chrome's URL bar / search box / random
+input — silently. ALWAYS screenshot first to confirm Terminal is foreground.
+
+```
+mcp.take_screenshot()
+```
+
+If Terminal is NOT foreground, surface it via one of these (in order of
+reliability):
+
+1. `mcp.press_key("Meta+Tab")` — cycles to the most-recently-used other app.
+   Works when Terminal was the MRU app (the previous run.sh activated
+   Terminal at the end via the Step 8 (6) line, so this is the common case).
+2. `mcp.press_key("Meta+h")` — hides the foreground app, revealing what's
+   behind. Useful when Cmd+Tab cycled to the wrong app.
+3. Manual: ask the user to click Terminal in the Dock.
+
+Re-screenshot after each attempt; do not proceed until Terminal is clearly
+foreground (cursor blinking in a shell prompt).
 
 ```bash
 CLONE_CMD="rm -rf /tmp/macmini-click; gh gist clone $GIST_ID /tmp/macmini-click; bash /tmp/macmini-click/run.sh"
