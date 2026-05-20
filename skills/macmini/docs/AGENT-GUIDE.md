@@ -47,85 +47,76 @@ This applies to all scrollable content: long Chrome pages, log viewers, code edi
 
 ---
 
-## Clicking on the canvas
+## Clicking on the canvas (via cliclick on the mini)
 
-`mcp.click_at({x, y})` is the agent's pixel-precise click tool. It requires `--experimental-vision` enabled in the chrome-devtools-mcp config (see `commands/macmini/setup.md` Step 1). Use it to click on anything visible on the Mac mini's screen — buttons, icons, links, custom-rendered UI.
+The primary click channel is `/macmini click <sx> <sy>` (and `rclick`, `dblclick`, `drag`). The agent passes screenshot pixels `(sx, sy)` from `mcp.take_screenshot()` — the sub-command handles all geometry internally using cached calibration. No viewport math or occlusion arithmetic is required from the agent.
 
-### The four-step recipe
+Before using any click sub-command for the first time on a given mini, run `/macmini measure`. This writes `~/.config/claude/macmini-calibration.json` with the screenshot-pixel → mini-physical-pixel scale. The click sub-commands refuse with a clear error if calibration is missing or stale (>30 days, or canvas dimensions changed since calibration).
 
-#### 1. Screenshot + identify
+### Clicking on the canvas (via cliclick on the mini)
+
+cliclick runs **on the mini's OS** — not as a synthetic CDP event on the dev-side CRD canvas. This is the architectural reason it bypasses CRD's `isTrusted` gate that blocked click_at's synthetic events.
+
+One-time mini-side setup (done once via `/macmini setup`):
+```
+brew install cliclick
+```
+Then System Settings → Privacy & Security → Accessibility → enable Terminal.app (or whichever process invokes cliclick).
+
+### Measure-once procedure (`/macmini measure`)
+
+Run `/macmini measure` to compute and cache the scale. The sub-command handles this automatically — the steps below document what it does, so agents understand the math when debugging or verifying:
+
+1. On mini Terminal (via `/macmini paste`): `system_profiler SPDisplaysDataType | grep Resolution` → read mini's physical resolution (e.g., `2560 x 1440`) from the screenshot.
+2. Fetch fresh canvas geometry on the CRD page: DPR, zoom, canvas `{x, y, width, height}`.
+3. Compute: `scale_x = mini_physical_width / canvas.width`, `scale_y = mini_physical_height / canvas.height`.
+4. Verify: fire `cliclick m:100,100` (cursor move), take screenshot, confirm cursor appears at approximately `(canvas.x + 100/scale_x) * (dpr*zoom)` screenshot pixels.
+5. Write `~/.config/claude/macmini-calibration.json` atomically.
+
+Re-run `/macmini measure` whenever: CRD streaming resolution changed ("Match local" / "1080p" / "720p" toggle), display swapped, or calibration is >30 days old. The click sub-commands auto-detect stale calibration by comparing cached canvas dimensions against freshly-fetched ones.
+
+### Coord conversion (what click sub-commands do internally)
 
 ```
-mcp.take_screenshot()
-```
-
-Look at the image, pick the target, estimate `(sx, sy)` in screenshot pixels.
-
-#### 2. Fetch geometry (cache for the click; refetch if anything changed)
-
-```
-mcp.evaluate_script({
-  function: "() => { const cs = [...document.querySelectorAll('canvas')].sort((a,b) => b.width*b.height - a.width*a.height); const c = cs[0]; if (!c) return {error: 'no canvas'}; const r = c.getBoundingClientRect(); const zoom = (window.visualViewport && window.visualViewport.scale) || (window.outerWidth / window.innerWidth) || 1; return { dpr: window.devicePixelRatio, zoom, scrollX: window.scrollX, scrollY: window.scrollY, canvas: { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom } }; }"
-})
-```
-
-If the result is `{error: 'no canvas'}`, REFUSE and re-screenshot — CRD page hasn't loaded or you're on the wrong tab. If multiple canvases exist (rare; happens with overlay/cursor canvases), the snippet picks the largest by area, which is the streaming canvas.
-
-`zoom` primary source is `visualViewport.scale` (the actual current zoom factor, including pinch-zoom on touch devices). Fallback to `outerWidth/innerWidth` for older browsers; final fallback `1` if both unavailable. At default browser state (zoom 100%, no devtools open, no scrollbars), `zoom === 1.0`.
-
-**Scroll-guard.** If `scrollX !== 0 || scrollY !== 0` in the geometry result, the CRD page is scrolled — the screenshot and click coord systems are desynced. REFUSE: "CRD page is scrolled — click coords would land at the wrong position. Scroll the CRD page to top-left first (Cmd+Home or click the canvas and press Home), then re-fetch geometry." This is rare in normal use (the CRD page is usually the bare canvas with no scrollable content).
-
-Refetch geometry whenever any of these happen since the last fetch: window resize, fullscreen toggle, side-panel toggle, browser zoom change (`Cmd+0`/`Cmd+`/`Cmd-`), tab switch, page reload, devtools panel open/close (changes `window.innerWidth`), or > 5 minutes elapsed.
-
-#### 3. Convert + verify on-canvas + verify non-occluded
-
-```
-# Step 3a: convert screenshot pixels to viewport CSS pixels
+# Starting from screenshot pixels (sx, sy):
 total_scale = dpr * zoom
-vx = round(sx / total_scale)
-vy = round(sy / total_scale)
+vx = sx / total_scale                   # viewport CSS pixels
+vy = sy / total_scale
+canvas_local_x = vx - canvas.x          # canvas-local CSS pixels
+canvas_local_y = vy - canvas.y
+mini_physical_x = round(canvas_local_x * scale_x)
+mini_physical_y = round(canvas_local_y * scale_y)
+```
 
-# Step 3b: verify inside canvas rect (note: < not <= for right/bottom — DOM rect right edge is exclusive)
-if not (canvas.x <= vx < canvas.x + canvas.width and
-        canvas.y <= vy < canvas.y + canvas.height):
-    REFUSE: "Click target (sx, sy) → viewport (vx, vy) falls outside CRD canvas region. Re-screenshot and retry."
+Agents don't need to run this math — it's inside the sub-commands. It's documented here so calibration failures and coord mismatches can be diagnosed.
 
-# Step 3c: verify the canvas is the topmost element at that point (no popup/toolbar/notification overlay)
-# IMPORTANT: chrome-devtools-mcp evaluate_script in this skill uses inline string interpolation, NOT a separate `args:` parameter (matches existing AGENT-GUIDE.md usage). Compose the function string with vx/vy substituted.
+### Occlusion check (what click sub-commands do internally)
+
+Before executing a click, the sub-commands verify the target is not occluded by a CRD toolbar overlay:
+
+```
 mcp.evaluate_script({
-  function: `() => { const cs = [...document.querySelectorAll('canvas')].sort((a,b) => b.width*b.height - a.width*a.height); const target = cs[0]; const el = document.elementFromPoint(${vx}, ${vy}); return { isCanvas: el === target, actualTag: el ? el.tagName : null, actualClass: el ? el.className : null }; }`
+  function: `() => { const cs=[...document.querySelectorAll('canvas')].sort((a,b)=>b.width*b.height-a.width*a.height); const target=cs[0]; const el=document.elementFromPoint(${vx}, ${vy}); return { isCanvas: el===target, actualTag: el?el.tagName:null }; }`
 })
-# Inspect the result:
-#   isCanvas === true → safe to click.
-#   isCanvas === false → canvas is occluded at (vx, vy). The actualTag/actualClass tell you what's on top (BUTTON, DIV with role="dialog", etc.). REFUSE the click.
 ```
 
-#### 3d. CRD's own UI overlay edge case
+If `isCanvas === false`: CRD's auto-hiding toolbar is overlapping the target. For top-60px / bottom-30px of canvas, the sub-command waits 3s and retries once (CRD toolbar auto-hides on inactivity). If still occluded, it aborts with a clear message.
 
-CRD shows a top toolbar (~60px tall) on mouse activity for ~3 seconds, and may show a bottom strip in some configurations. Both render INSIDE the canvas rect — `getBoundingClientRect` doesn't catch them, but step 3c's `elementFromPoint` check WILL catch them (when the toolbar is on top, `elementFromPoint` returns a CRD-toolbar `div` instead of the canvas, so the occlusion check refuses).
+### Syntax reference (for understanding sub-command output / debugging)
 
-For clicks within the top 60px or bottom 30px of the canvas (where CRD UI overlays appear), do NOT skip step 3c — let it refuse. The recovery flow:
+| Action | cliclick command |
+|---|---|
+| Left click | `cliclick c:x,y` |
+| Right click | `cliclick rc:x,y` |
+| Double click | `cliclick dc:x,y` |
+| Drag | `cliclick dd:x1,y1 du:x2,y2` |
+| Cmd-click | `cliclick kd:cmd c:x,y ku:cmd` |
+| Shift-click | `cliclick kd:shift c:x,y ku:shift` |
+| Move (no click) | `cliclick m:x,y` |
 
-1. **First**: take a fresh screenshot. If CRD's toolbar/strip is visible in the screenshot, the overlay is up.
-2. **Wait 3 seconds** without sending any input (CRD's UI auto-hides on inactivity). Re-screenshot to confirm it's gone.
-3. **Re-fetch geometry** (the canvas rect doesn't change but the occlusion state does), re-run step 3c. If `isCanvas === true` now, proceed to step 4.
-4. **If after 3 seconds the overlay is still up** (rare; happens during CRD reconnect attempts), fall back to the mini-side equivalent: open Spotlight (`mcp.press_key("Meta+space")`), navigate to the target via keyboard, or delegate the action to Mac mini Claude.
-
-Do NOT use a "benign click" to dismiss the overlay — that would loop (the click itself triggers CRD UI to reappear).
-
-#### 4. Click
-
-```
-mcp.click_at({ x: vx, y: vy })
-# Optional: { x, y, dblClick: true } for double-click.
-# Optional: { x, y, includeSnapshot: true } to get a post-click DOM snapshot back.
-```
-
-`click_at` rounds to nearest integer internally. Sub-pixel coords from non-integer DPR (1.25, 1.5, 2.5) are fine.
+All issued on the mini side via the gist transport. Unshifted-safe.
 
 ### Verify after the click
-
-Vision is good for buttons (16-30px error tolerance) but less reliable for icons (5px tolerance). Verifying after every click is recommended; the cases below are MANDATORY:
 
 **Mandatory verify-after contexts** — agent MUST take a screenshot after the click and confirm the expected state change. If the change didn't happen, retry with adjusted coords; do NOT proceed:
 
@@ -139,73 +130,12 @@ Vision is good for buttons (16-30px error tolerance) but less reliable for icons
 
 For non-mandatory cases (focus changes, app launches, scrolling), verify-after is recommended but not enforced.
 
-### Modifier + click is NOT supported via click_at
+### If calibration is missing for this mini
 
-Cmd-click, Shift-click, Option-click via separate `press_key("Meta")` + `click_at(...)` calls is RACY — modifier-down state is not held across MCP-call boundaries. Use cliclick instead (atomic single shell command — the modifier down/click/up sequence happens in a single shell invocation). See fallback section below.
-
-**If cliclick scale is unmeasured for this mini** (the measure-once procedure in the fallback section hasn't been run yet), the agent CANNOT compute correct cliclick coords. Options when blocked:
-- For Cmd-click on a link in a browser: Tab to the link via `press_key("Tab")` repeatedly until the link is focused, then `mcp.press_key("Meta+Return")` to open in a new tab — same effect as Cmd-click, no clicking needed.
-- For Cmd-click on a Finder file (multi-select): use `mcp.press_key("Meta+a")` to select all, or arrow-key navigation + `mcp.press_key("Space")` for Quick Look.
-- For Shift-click range select: arrow keys + `Shift+ArrowDown` extends selection without clicking.
-- If keyboard equivalents don't exist for the target action: ask the user to run the cliclick measure-once procedure for this mini before proceeding.
-
-### Fallback: cliclick on the mini side
-
-`click_at` is single-point left-click only. For drag, right-click, modifier+click, or any case where `click_at` empirically fails to propagate through CRD, fall back to `cliclick` on the mini side. cliclick is OS-level on the mini — guaranteed to work, but slower (one `/macmini paste` round-trip per call) and requires a one-time install + Accessibility TCC.
-
-#### One-time mini-side setup
-
-```
-brew install cliclick
-```
-
-Then System Settings → Privacy & Security → Accessibility → enable Terminal.app (or whichever process invokes cliclick).
-
-#### Coord system — cliclick uses mini PHYSICAL pixels
-
-cliclick coords are **mini-screen physical pixels** (not canvas pixels and not mini CSS pixels). The canvas-to-mini-screen scale is **NOT 1:1** in the general case — CRD's resolution setting (Auto / 1080p / 720p / Match local) and bandwidth target affect the streamed canvas resolution. Treat the scale as unknown until measured per-mini.
-
-**Measure-once procedure** (run once per mini, cache result in HARDWARE-FINDINGS):
-
-1. On mini Terminal: run `system_profiler SPDisplaysDataType | grep Resolution` to get the mini's physical resolution (e.g., `2560 x 1440`).
-2. From the agent: fetch `canvas.width` and `canvas.height` from the geometry recipe in step 2 above.
-3. Compute scale: `scale_x = mini_physical_width / canvas.width`, `scale_y = mini_physical_height / canvas.height`. (On a Retina mini with CRD at "Match local," these may differ from 1:1 because Retina logical-vs-physical pixels.)
-4. Verify by issuing `cliclick m:100,100` (move cursor to mini-physical 100,100) and observing where the cursor lands on the canvas — should be at approximately `(100/scale_x, 100/scale_y)` in canvas pixels.
-5. Cache the scale factor in `docs/HARDWARE-FINDINGS-2026-04-27.md` so the agent doesn't re-measure each session.
-
-If unmeasured, the agent should NOT assume 1:1 — either run the measure procedure or stick to keyboard navigation for that scenario.
-
-#### Coord conversion (after measurement)
-
-```
-# Starting from screenshot pixels (sx, sy):
-canvas_local_x = (sx / total_scale) - canvas.x
-canvas_local_y = (sy / total_scale) - canvas.y
-mini_physical_x = canvas_local_x * scale_x
-mini_physical_y = canvas_local_y * scale_y
-
-# Then issue:
-cliclick c:mini_physical_x,mini_physical_y
-```
-
-#### Syntax (all unshifted-safe; the agent types these via /macmini paste)
-
-| Action | Command |
-|---|---|
-| Left click | `cliclick c:x,y` |
-| Right click | `cliclick rc:x,y` |
-| Double click | `cliclick dc:x,y` |
-| Drag | `cliclick dd:x1,y1 du:x2,y2` |
-| Cmd-click | `cliclick kd:cmd c:x,y ku:cmd` |
-| Shift-click | `cliclick kd:shift c:x,y ku:shift` |
-| Move (no click) | `cliclick m:x,y` |
-
-#### When to fall back vs. retry click_at
-
-- click_at returned an MCP error → check `~/.claude.json` has `--experimental-vision`; restart Claude Code; retry once.
-- click_at succeeded but mini didn't react → CRD didn't forward the event (or wrong coords). Re-verify geometry, retry once. If still nothing, fall back to cliclick.
-- Need drag / right-click / modifier-click → cliclick directly, no click_at attempt.
-- App fails consistently with click_at but works with cliclick → log per-app failure in `docs/INCIDENTS.md` so future agents know.
+Run `/macmini measure` first. If blocked (cliclick not installed on mini), run `/macmini setup` which walks through `brew install cliclick` and Accessibility TCC. Until calibration exists, use keyboard navigation instead:
+- Cmd-click on a link: Tab to the link → `mcp.press_key("Meta+Return")` to open in new tab.
+- Multi-select in Finder: `mcp.press_key("Meta+a")` to select all, or arrow-key navigation.
+- Shift-click range select: `Shift+ArrowDown` extends selection.
 
 ---
 
