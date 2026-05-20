@@ -143,23 +143,32 @@ If `isCanvas === false`:
   Print: "WARNING: drag end point is occluded by a non-canvas element (tag: <actualTag>). This may be a valid drop target (toolbar/sidebar). Proceeding."
   Do NOT abort — continue to Step 10.
 
-## Step 10 — Build run.sh
+## Step 10 — Build run.sh (with activate-target / sleep-0.6 / refocus-Terminal pattern)
 
 ```bash
+TARGET_APP="${TARGET_APP:-Google Chrome}"
+
 CLICKBIN_PROBE='if [ -x /opt/homebrew/bin/cliclick ]; then CB=/opt/homebrew/bin/cliclick; elif [ -x /usr/local/bin/cliclick ]; then CB=/usr/local/bin/cliclick; else echo "cliclick not installed — run: brew install cliclick"; exit 4; fi'
 
 TMPDIR_LOCAL="$(mktemp -d -t macmini-drag.XXXXXX)"
 trap 'rm -rf "$TMPDIR_LOCAL"' EXIT INT TERM
 RUN_FILE="$TMPDIR_LOCAL/run.sh"
 
-{
-  echo '#!/bin/bash'
-  echo 'set -euo pipefail'
-  echo "$CLICKBIN_PROBE"
-  # dd = mouse-down, du = mouse-up. Single shell invocation — atomic drag.
-  echo '"$CB" dd:'"$MINI_X1"','"$MINI_Y1"' du:'"$MINI_X2"','"$MINI_Y2"
-  echo 'echo OK'
-} > "$RUN_FILE"
+cat > "$RUN_FILE" <<RUNSH
+#!/bin/bash
+set -uo pipefail
+${CLICKBIN_PROBE}
+osascript -e 'tell application "${TARGET_APP}" to activate' >/dev/null 2>&1
+sleep 0.6
+PRE=\$("\$CB" p: 2>&1); echo "Pre: \$PRE"
+# dd = mouse-down at start, du = mouse-up at end. Single shell invocation — atomic drag.
+"\$CB" dd:${MINI_X1},${MINI_Y1} du:${MINI_X2},${MINI_Y2}
+RC=\$?; echo "Exit: \$RC"
+sleep 0.2
+POST=\$("\$CB" p: 2>&1); echo "Post: \$POST"
+osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1
+echo OK
+RUNSH
 ```
 
 ## Step 11 — Upload as a SECRET gist
