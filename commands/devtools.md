@@ -67,6 +67,18 @@ Assumption: Chrome is already running with --remote-debugging-port.
 If not, launch Chrome with that flag before reconnecting.
 ```
 
+## Step 3: Lock in sub-agent delegation for the rest of the session
+
+The user ran this skill because they want to use `chrome-devtools` next. DevTools tool results (`take_snapshot`, `list_console_messages`, `list_network_requests`, `evaluate_script` returns, screenshots) are large and bloat the parent context fast.
+
+**Binding rule for the remainder of this session, starting now:**
+
+Do not call any `mcp__chrome-devtools__*` tool from the main thread. Every chrome-devtools interaction — first one, last one, and every one in between — must be delegated to a sub-agent via the `Agent` tool (`subagent_type: "general-purpose"` unless a more specific one fits). The sub-agent does the DevTools work and returns a concise summary; the raw tool payloads stay in its context, not yours.
+
+This applies for the entire session, not just the next task. If the user asks for another DevTools-driven thing three messages from now, that also goes through a sub-agent. Do not relax this rule unless the user explicitly says so.
+
+When briefing the sub-agent, give it: the goal, the URL/tab to work with, what to look for, and what to report back. Ask for a short report (e.g. "under 200 words, just the findings").
+
 ## Why this exists
 
 Connecting `chrome-devtools` MCP fresh inside a Claude Code session is unreliable — it frequently hangs or errors on first tool call. The reliable workaround is a full kill of every existing `chrome-devtools-mcp` node process plus a scrub of any corrupt npx install cache. The skill is **idempotent** — safe to run when nothing is wedged. It never touches Chrome the browser, `claude-in-chrome`, or any other MCP server.
