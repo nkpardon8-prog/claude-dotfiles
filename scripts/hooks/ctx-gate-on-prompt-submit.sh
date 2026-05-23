@@ -54,11 +54,12 @@ fi
 PCT=$(ctx_gate_read_pct "$SID") || { ctx_gate_log "submit sid=$SID action=skip reason=no-ctx-sidecar"; exit 0; }
 
 if [ "$PCT" -ge "$CTX_HARD_PCT" ]; then
-  # Hard zone: strong directive. Do NOT block prompt (would erase user's text).
-  MSG="🚨 HARD CONTEXT GATE: context at ${PCT}%. Your FIRST action this turn MUST be Skill(pre-compact). Do not engage with the user's prompt or invoke any other tool until /pre-compact has completed and written CLAUDE.local.md. After /pre-compact finishes, you may briefly acknowledge to the user and continue from where they left off. PreToolUse will deny non-handoff tools while context exceeds ${CTX_HARD_PCT}% and the auto-compact sentinel is unarmed."
-  ctx_gate_log "submit sid=$SID pct=$PCT action=hard-advisory"
+  # Wrap-up & hand-off zone (≥70%): strong directive. Do NOT block prompt (would erase user's text).
+  MSG="🚨 WRAP-UP & HAND-OFF ZONE: context at ${PCT}%. You are past the productive-work threshold. Your FIRST action this turn MUST be Skill(pre-compact). Do not engage with the user's prompt or invoke any other tool until /pre-compact has completed and written CLAUDE.local.md. After /pre-compact finishes, briefly acknowledge to the user — DO NOT start new work. PreToolUse will deny non-handoff tools at ≥${CTX_HARD_PCT}% until the auto-compact sentinel is armed."
+  ctx_gate_log "submit sid=$SID pct=$PCT action=hard-advisory-wrapup"
 elif [ "$PCT" -ge "$CTX_SOFT_PCT" ]; then
-  MSG="📋 Context at ${PCT}%. Wrap your current task at the next natural seam (post-review, post-commit, end-of-phase) and run Skill(pre-compact). You have headroom — don't compact mid-edit. Hard gate engages at ${CTX_HARD_PCT}%."
+  # Stop-new-risky-work zone (60-70%): gentle reminder.
+  MSG="📋 Context at ${PCT}% — stop-new-risky-work zone. Don't start large new tasks. Finish what's in flight and run Skill(pre-compact) at the next natural seam (post-review, post-commit, end-of-phase). Wrap-up zone engages at ${CTX_HARD_PCT}%; beyond that, non-handoff tools are denied."
   ctx_gate_log "submit sid=$SID pct=$PCT action=soft-advisory"
 else
   exit 0  # below soft zone, no output
