@@ -55,5 +55,77 @@ fi
 
 ctx_gate_log "primer sid=${SID:-unknown} source=compact cwd=$CWD handoff=${HANDOFF_PATH:-none}"
 
+# Emit additionalContext (belt — soft directive, model SHOULD comply)
 jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": $ctx } }'
+
+# ── PTY injection (suspenders — hard channel, model MUST respond) ─────────────
+# Per user 2026-05-23: additionalContext alone is soft (model can ignore). To make handoff
+# bulletproof, ALSO type a real user-prompt into the just-compacted Terminal.app tab via the
+# same AppleScript `do script` pattern that fires `/compact`. The agent then sees an actual
+# user message it MUST respond to — not a passive context hint.
+#
+# Platform gates (mirror arm-auto-compact.sh): Darwin only, Terminal.app only, no tmux/screen.
+[ "$(uname -s)" = "Darwin" ] || exit 0
+[ -n "${TMUX:-}" ] || [ -n "${STY:-}" ] && exit 0
+[ -n "${TERM_PROGRAM:-}" ] && [ "${TERM_PROGRAM:-}" != "Apple_Terminal" ] && exit 0
+
+# Skip injection if no handoff was written (nothing useful to navigate to).
+[ -z "$HANDOFF_PATH" ] && exit 0
+
+# Resolve the originating TTY by walking up the process tree (this hook runs in a bash
+# subprocess; the parent claude CLI process owns the controlling TTY).
+ORIG_TTY=""
+CHECK_PID="$PPID"
+for _hop in 1 2 3 4 5; do
+  [ -z "$CHECK_PID" ] && break
+  if [ "$CHECK_PID" = "0" ] || [ "$CHECK_PID" = "1" ]; then break; fi
+  RAW_TTY=$(ps -o tty= -p "$CHECK_PID" 2>/dev/null | tr -d '[:space:]')
+  case "$RAW_TTY" in
+    ttys[0-9]*) ORIG_TTY="/dev/$RAW_TTY"; break ;;
+  esac
+  CHECK_PID=$(ps -o ppid= -p "$CHECK_PID" 2>/dev/null | tr -d '[:space:]')
+done
+# Validate TTY format (defense-in-depth — same as ac_validate_tty)
+case "$ORIG_TTY" in
+  /dev/ttys[0-9]*) : ;;
+  *) ctx_gate_log "primer sid=${SID:-unknown} action=skip-inject reason=no-tty"; exit 0 ;;
+esac
+
+# Compose the navigation prompt. Keep it short — long prompts increase the window where
+# the user could collide with their own typing. The prompt is auto-submitted by `do script`
+# (it appends a newline). The agent receives this as a real user message.
+NAV_PROMPT="Resume session from ${HANDOFF_PATH}. Read it now, state the skill+phase you're picking up from \"## Active Skill State\" and \"## Next Action\", then continue exactly where the prior session left off."
+
+# Fire the navigation prompt via AppleScript `do script ... in foundTab`. Same defensive
+# shape as auto-compact-after-pre-compact.sh — TTY passes via argv (never interpolated into
+# AppleScript body). Verify the matching tab exists; refuse to fire if not.
+OSA_RESULT=$(/usr/bin/osascript - "$ORIG_TTY" "$NAV_PROMPT" <<'OSA_EOF' 2>/dev/null
+on run argv
+  set targetTTY to item 1 of argv
+  set navPrompt to item 2 of argv
+  tell application "Terminal"
+    if not running then return "not-running"
+    if not (exists window 1) then return "no-windows"
+    set foundTab to missing value
+    set foundWin to missing value
+    repeat with w in windows
+      repeat with t in tabs of w
+        try
+          if (tty of t) is targetTTY then
+            set foundTab to t
+            set foundWin to w
+            exit repeat
+          end if
+        end try
+      end repeat
+      if foundTab is not missing value then exit repeat
+    end repeat
+    if foundTab is missing value then return "no-matching-tab"
+    do script navPrompt in foundTab
+    return "fired"
+  end tell
+end run
+OSA_EOF
+)
+ctx_gate_log "primer sid=${SID:-unknown} action=inject-nav-prompt tty=$ORIG_TTY result=${OSA_RESULT:-empty}"
 exit 0
