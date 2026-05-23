@@ -18,14 +18,16 @@
 
 set -uo pipefail
 
+# Per codex-review round 1 Adversary: kill-switch must fire BEFORE sourcing config lib —
+# a broken lib could trip set -u and abort before the kill-switch ever runs, leaving the
+# user unable to disable the gate even with the documented escape hatch.
+[ "${CLAUDE_CTX_GATE_DISABLED:-0}" = "1" ] && exit 0
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/ctx-gate-config.sh
 . "$ROOT/lib/ctx-gate-config.sh"
 
 INPUT=$(cat)
-
-# Kill-switch check (per Round 4 reviewer A #1 / B #1): was missing from this hook in earlier draft.
-[ "${CLAUDE_CTX_GATE_DISABLED:-0}" = "1" ] && exit 0
 
 TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // empty' 2>/dev/null)
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
