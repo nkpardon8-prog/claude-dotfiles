@@ -71,12 +71,40 @@ to aggregate after all review lanes complete.
    patterns already in the repo rather than approximate them
 11. Produce your recommendations
 
+## Load-Bearing Assumption Tagging
+
+When a finding describes a design that **depends on runtime behavior** that hasn't been verified — i.e., "this design assumes X behaves Y way under condition Z" — append the tag `[SMOKE-CANDIDATE]` to that finding. The parent workflow uses this tag to surface pre-flight smoke-script candidates the `/script` skill can consume.
+
+Examples of `[SMOKE-CANDIDATE]` findings:
+- "Plan assumes `SET LOCAL app.X` is tx-scoped under PgBouncer transaction-mode pooling. Not verified against current Neon config. `[SMOKE-CANDIDATE]`"
+- "Plan assumes throwing inside `prisma.$transaction` callback rolls back ALL prior writes in that callback. Verify against current Prisma version. `[SMOKE-CANDIDATE]`"
+- "Plan assumes `vi.spyOn(prisma.X, 'method')` intercepts calls made via `tx.X.method` inside `$transaction`. Prisma TransactionClient is a Proxy; may or may not delegate to spied method. `[SMOKE-CANDIDATE]`"
+- "Plan assumes `DeadLetterError` thrown by handler short-circuits worker retry loop in 1 attempt (NOT MAX_ATTEMPTS). Verify against worker.ts retry policy. `[SMOKE-CANDIDATE]`"
+
+Do NOT tag findings that are:
+- Mechanical (file paths, line numbers, counts) — those are tsc/lint catchable.
+- Pure design preference (style, naming, ordering).
+- Already verified by a cited evidence anchor in the plan's `Verified Repo Truths`.
+
+If `≥3` `[SMOKE-CANDIDATE]` findings exist, append at the end of your output:
+
+```
+## Smoke-Script Candidates
+
+The following findings describe load-bearing runtime assumptions that text review cannot validate. Consider `/script <plan-path>` to generate pre-flight smoke scripts that prove these assumptions against real infrastructure BEFORE /implement:
+
+- [list each [SMOKE-CANDIDATE] finding by number]
+```
+
+This section is informational; do not weigh it as a separate severity tier.
+
 ## Output Format
 
 Return a numbered list of recommendations. Each item must include:
 - **What**: The specific issue or opportunity
 - **Where**: Which section of the plan it applies to
 - **Suggestion**: Your concrete recommendation
+- **[SMOKE-CANDIDATE]** tag (when applicable per above)
 
 Order findings by severity:
 1. Repo-accuracy blockers
