@@ -47,11 +47,15 @@ if [ -f "$SENTINEL_PATH" ]; then
   S_MTIME=$(stat -f %m "$SENTINEL_PATH" 2>/dev/null || stat -c %Y "$SENTINEL_PATH" 2>/dev/null || printf '')
   if [ -n "$S_MTIME" ]; then
     S_AGE=$(( $(date +%s) - S_MTIME ))
-    if [ "$S_AGE" -lt 1800 ]; then
+    # Clamp negative S_AGE (per codex-review Adversary): future-dated sentinel attack.
+    if [ "$S_AGE" -lt 0 ]; then
+      ctx_gate_log "pretool sid=$SID pct=$PCT tool=$TOOL action=stale-sentinel reason=future-dated-mtime mtime=$S_MTIME"
+    elif [ "$S_AGE" -lt 1800 ]; then
       ctx_gate_log "pretool sid=$SID pct=$PCT tool=$TOOL action=allow-sentinel-fresh age=${S_AGE}s"
       exit 0
+    else
+      ctx_gate_log "pretool sid=$SID pct=$PCT tool=$TOOL action=stale-sentinel age=${S_AGE}s reenforcing"
     fi
-    ctx_gate_log "pretool sid=$SID pct=$PCT tool=$TOOL action=stale-sentinel age=${S_AGE}s reenforcing"
   else
     # stat failed — treat as fresh (allow), better than false re-gate.
     ctx_gate_log "pretool sid=$SID pct=$PCT tool=$TOOL action=allow-sentinel-stat-failed-assume-fresh"
