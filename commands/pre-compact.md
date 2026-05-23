@@ -97,7 +97,81 @@ DO NOT re-read `CLAUDE.local.md` BEFORE the Phase 1 write completes in Step 6A �
 
 Batch these independent calls in one message, then label each source in the output:
 
-### Step 3.C: Current conversation
+### Step 3.C: Current conversation (Opus 4.7 sub-agent)
+
+Dispatch the transcript walk to an Opus 4.7 sub-agent so it does not consume main-agent context. This is what makes /pre-compact safe to run at high ctx % (≥85%) — main-context cost stays flat regardless of conversation length.
+
+**Resolve the transcript path first (single non-piped Bash call — the gate's compound-command pre-check would block a `ls | head -1` pattern):**
+
+```bash
+SID="${CLAUDE_SESSION_ID:-}"
+if [ -z "$SID" ]; then
+  SLUG=$(printf '%s' "$PWD" | sed 's|[^A-Za-z0-9]|-|g')
+  PROJ_DIR="$HOME/.claude/projects/$SLUG"
+  NEWEST=""; NEWEST_MT=0
+  for f in "$PROJ_DIR"/*.jsonl; do
+    [ -f "$f" ] || continue
+    MT=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+    if [ "$MT" -gt "$NEWEST_MT" ]; then NEWEST="$f"; NEWEST_MT="$MT"; fi
+  done
+  [ -n "$NEWEST" ] && SID=$(basename "$NEWEST" .jsonl)
+fi
+[ -n "$SID" ] || { echo "ERROR: could not resolve session id"; exit 1; }
+SLUG=$(printf '%s' "$PWD" | sed 's|[^A-Za-z0-9]|-|g')
+TRANSCRIPT_PATH="$HOME/.claude/projects/$SLUG/${SID}.jsonl"
+[ -f "$TRANSCRIPT_PATH" ] || { echo "ERROR: transcript not found"; exit 1; }
+```
+
+**Then spawn the sub-agent via the Agent tool with these EXACT parameters:**
+- `subagent_type`: `general-purpose`
+- `model`: `"opus"` (REQUIRED — Opus 4.7 max power, no silent downgrade)
+- `prompt`: interpolate the literal resolved `$TRANSCRIPT_PATH` (not the variable name) into:
+
+```
+Read the conversation transcript at <ABSOLUTE_PATH_HERE>. You MUST be running on
+Opus 4.7. If you are not, abort with the message "WRONG_MODEL" and do not produce output.
+
+DO NOT EDIT ANY FILES. Read-only. Your output is a structured handoff, nothing more.
+
+Extract the following and return as a single JSON object on the FINAL LINE of your
+response (so the parent can parse with `tail -1 | jq`):
+
+{
+  "active_task": "<one line: what the user is currently trying to do>",
+  "what_we_tried": [
+    {"hypothesis": "...", "change": "...", "result": "...", "kept_or_abandoned": "...", "reason": "..."}
+  ],
+  "decisions": [
+    {"decision": "...", "rejected_alternative": "...", "reasoning": "..."}
+  ],
+  "work_in_progress": [
+    {"file": "path:line", "what": "..."}
+  ],
+  "blockers": [
+    {"blocker": "...", "resolution": "resolved|workaround|open", "notes": "..."}
+  ],
+  "user_constraints": ["constraint stated this session, verbatim or paraphrased"],
+  "tool_mcp_state": ["Supabase project: ...", "Netlify site: ...", etc.],
+  "bookmarks": [
+    {"file_line": "path:NN-NN", "context": "what was being done there"}
+  ]
+}
+
+Be thorough — this is the most expensive thing for the next session to re-discover.
+```
+
+**After the sub-agent returns:**
+1. Capture its response.
+2. Parse the JSON object from the LAST line (`tail -1 | jq`).
+3. **Bounded fallback** (per Round 1 review):
+   - If parse fails OR "WRONG_MODEL" appeared:
+     - If main-context ctx% < 80%: run the LEGACY in-context transcript walk (have headroom).
+     - If main-context ctx% >= 80%: SKIP entirely. Write a stub in the output: "(Step 3C sub-agent mining failed; transcript-derived content omitted to avoid tipping into native auto-compact. Reconstruct from git log / file mtimes / memory only.)"
+   - Log the failure to `~/.claude/logs/ctx-gate.log`.
+   - DO NOT run the legacy walk at ctx ≥80% — that's the failure mode this redesign prevents.
+4. Stash the parsed JSON in working memory for Step 6 to consume.
+
+**Legacy fallback (in-context walk, only triggered per #3 above at <80% ctx):**
 
 Walk the visible transcript. Extract:
 - Active task (what the user is currently trying to do).
