@@ -90,14 +90,23 @@ elif [ "$TOOL" = "Bash" ]; then
     ALLOWED=1
   fi
 elif [ "$TOOL" = "Edit" ] || [ "$TOOL" = "Write" ]; then
-  FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null | head -c 500)
-  printf '%s' "$FP" | grep -qE "$CTX_GATE_WRITE_ALLOWLIST_REGEX" && ALLOWED=1
+  FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+  # Per codex-review round 1: reject paths containing `..` traversal segments — the
+  # write allowlist matches /docs/, /tmp/done-plans/ etc. as substrings, which would
+  # otherwise allow `/tmp/done-plans/../../../etc/passwd`.
+  if printf '%s' "$FP" | grep -qE '(^|/)\.\.($|/)'; then
+    ALLOWED=0
+  elif printf '%s' "$FP" | grep -qE "$CTX_GATE_WRITE_ALLOWLIST_REGEX"; then
+    ALLOWED=1
+  fi
 elif [ "$TOOL" = "MultiEdit" ]; then
-  # Per Round 4 reviewer B #5: MultiEdit's tool_input uses `file_path` at the top level (same as Edit)
-  # in current Claude Code — verify in Task 0.b alongside Skill/Task. The path lookup is the same;
-  # this branch exists only to be explicit if MultiEdit's schema diverges.
-  FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null | head -c 500)
-  printf '%s' "$FP" | grep -qE "$CTX_GATE_WRITE_ALLOWLIST_REGEX" && ALLOWED=1
+  # Per Round 4 reviewer B #5: MultiEdit's tool_input uses `file_path` at the top level (same as Edit).
+  FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+  if printf '%s' "$FP" | grep -qE '(^|/)\.\.($|/)'; then
+    ALLOWED=0
+  elif printf '%s' "$FP" | grep -qE "$CTX_GATE_WRITE_ALLOWLIST_REGEX"; then
+    ALLOWED=1
+  fi
 fi
 
 if [ "$ALLOWED" = "1" ]; then
