@@ -322,6 +322,13 @@ Overwrite `./CLAUDE.local.md` with this structure (use the parent fields held in
 ## Mental Model
 [2-3 lines: what this codebase is, what it does, who uses it. Ground post-compact Claude instantly.]
 
+## Active Skill State
+<!-- Populated by Step 3.G. If no skill detected, write: "No active skill detected — generic continuation. See ## Next Action below." Otherwise: -->
+- Detected skill: [/plan | /implement | /discussion | /master-review | /god-review | /god-report | /codex-review | none]
+- Phase indicator: [skill-specific, e.g. "mid review round 2", "implement Phase 3 of 5", "Phase 2 of god-review round 4 (consecutive_clean=1)"]
+- Critical artifacts to preserve: [paths to in-flight files, e.g. ./tmp/ready-plans/foo.md, tmp/god-review/state.json]
+- Resumption directive: [skill-specific Next Action template from Step 3.G — verbatim]
+
 ## Active Task
 [1-3 sentences. What the user is doing right now. Lead with $ARGUMENTS if provided.]
 
