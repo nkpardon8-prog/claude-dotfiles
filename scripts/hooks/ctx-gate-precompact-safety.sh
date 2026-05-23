@@ -41,7 +41,10 @@ SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd '
 # Per codex-review round 1 Gaps: also enforce staleness here, otherwise an ancient sentinel
 # from a previous /pre-compact run would falsely release the safety net for native compaction.
 SENTINEL_PATH="$HOME/.claude/progress/auto-compact-${SID}.json"
-if [ -f "$SENTINEL_PATH" ]; then
+# Symlink rejection (per codex-review R2 F15).
+if [ -L "$SENTINEL_PATH" ]; then
+  ctx_gate_log "precompact sid=$SID trigger=auto action=reject-symlink-sentinel"
+elif [ -f "$SENTINEL_PATH" ]; then
   S_MTIME=$(stat -f %m "$SENTINEL_PATH" 2>/dev/null || stat -c %Y "$SENTINEL_PATH" 2>/dev/null || printf '')
   if [ -n "$S_MTIME" ]; then
     S_AGE=$(( $(date +%s) - S_MTIME ))
