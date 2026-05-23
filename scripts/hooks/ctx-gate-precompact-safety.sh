@@ -36,11 +36,21 @@ SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd '
 [ "$TRIGGER" = "auto" ] || exit 0
 [ -z "$SID" ] && exit 0  # fail-open if no session id
 
-# If sentinel armed, pre-compact ran — let native compact proceed (it's what we WANT to happen;
-# the Stop hook will fire /compact via AppleScript shortly anyway).
-if ctx_gate_pre_compact_armed "$SID"; then
-  ctx_gate_log "precompact sid=$SID trigger=auto action=allow-sentinel-armed"
-  exit 0
+# If sentinel armed AND fresh (<30 min), pre-compact ran recently — let native compact
+# proceed (the Stop hook will fire /compact via AppleScript shortly anyway).
+# Per codex-review round 1 Gaps: also enforce staleness here, otherwise an ancient sentinel
+# from a previous /pre-compact run would falsely release the safety net for native compaction.
+SENTINEL_PATH="$HOME/.claude/progress/auto-compact-${SID}.json"
+if [ -f "$SENTINEL_PATH" ]; then
+  S_MTIME=$(stat -f %m "$SENTINEL_PATH" 2>/dev/null || stat -c %Y "$SENTINEL_PATH" 2>/dev/null || printf '')
+  if [ -n "$S_MTIME" ]; then
+    S_AGE=$(( $(date +%s) - S_MTIME ))
+    if [ "$S_AGE" -ge 0 ] && [ "$S_AGE" -lt 1800 ]; then
+      ctx_gate_log "precompact sid=$SID trigger=auto action=allow-sentinel-fresh age=${S_AGE}s"
+      exit 0
+    fi
+    ctx_gate_log "precompact sid=$SID trigger=auto action=stale-sentinel age=${S_AGE}s reenforcing"
+  fi
 fi
 
 # Sentinel absent + native trying to auto-compact.
