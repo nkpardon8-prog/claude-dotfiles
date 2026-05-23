@@ -31,7 +31,12 @@ if [ -f "$SENTINEL_PATH" ]; then
   S_MTIME=$(stat -f %m "$SENTINEL_PATH" 2>/dev/null || stat -c %Y "$SENTINEL_PATH" 2>/dev/null || printf '')
   if [ -n "$S_MTIME" ]; then
     S_AGE=$(( $(date +%s) - S_MTIME ))
-    if [ "$S_AGE" -lt 1800 ]; then
+    # Clamp negative S_AGE (per codex-review Adversary): a future-dated sentinel via
+    # `touch -t 209912312359` would yield negative S_AGE which is -lt 1800 → forever
+    # treated as fresh → permanent gate release. Re-engage gate on negative.
+    if [ "$S_AGE" -lt 0 ]; then
+      ctx_gate_log "submit sid=$SID action=stale-sentinel reason=future-dated-mtime mtime=$S_MTIME"
+    elif [ "$S_AGE" -lt 1800 ]; then
       ctx_gate_log "submit sid=$SID action=skip reason=sentinel-fresh age=${S_AGE}s"
       exit 0
     fi
