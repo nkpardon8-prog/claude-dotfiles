@@ -153,12 +153,39 @@ Task tool (call 2, sent in the same message as call 1):
 
 ## Step 5: Explain Next Steps
 
-Once the user confirms the plan is ready, tell them:
+Once the user confirms the plan is ready, assess scope + risk:
+
+**HIGH-RISK / LARGE-SURFACE criteria** (any of):
+- ≥10 files touched in Files Being Changed
+- ≥1 new primitive in a critical module (auth, audit, DB layer, queue, payment, secrets)
+- ≥3 load-bearing assumptions surfaced during plan-reviewer cycle (look for "this design depends on X behaving Y way" findings, including any tagged `[SMOKE-CANDIDATE]`)
+- Production-critical context (HIPAA, financial, safety-critical, real-user-impact)
+- User explicitly requested "production-grade" / "lives at stake" / "100% locked in"
+
+If HIGH-RISK, tell the user:
+
+```
+Plan finalized.
+
+RECOMMENDED next step (high-risk surface detected): /script ./tmp/ready-plans/[filename]
+  → Generates pre-flight smoke scripts that programmatically PROVE the load-bearing
+    assumptions of this plan against real infrastructure BEFORE implementation. Same
+    scripts re-run as regression catchers after each ship. Bridges the gap between
+    text-review (which caps at a ceiling) and concrete runtime validation.
+
+Then to implement: /implement ./tmp/ready-plans/[filename]
+```
+
+Otherwise (lower-risk):
 
 ```
 Plan finalized! To implement, run:
 
 /implement ./tmp/ready-plans/[filename]
+
+Optional: if any plan-reviewer finding flagged "this depends on runtime behavior X"
+(look for [SMOKE-CANDIDATE] tags), consider /script ./tmp/ready-plans/[filename] first
+to validate before implementation.
 ```
 
 ## Quality Checklist
