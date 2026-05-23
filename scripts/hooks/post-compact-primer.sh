@@ -18,6 +18,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 INPUT=$(cat)
 
+SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
 # Belt-and-suspenders: settings.json matcher should already filter to "compact" sources,
 # but guard at runtime too in case matcher is ignored (per Round 1 reviewer A #12 / B #10).
