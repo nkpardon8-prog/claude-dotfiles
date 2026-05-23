@@ -82,12 +82,16 @@ TARGET_TTY=$(ac_read_sentinel_tty "$CLAIM") || exit 0
 # NOTE: -E (ERE) is required. BSD grep treats `\|` in BRE as literal — every check
 # would fail and the hook would always abort. Round 3 caught this.
 TTY_SHORT="${TARGET_TTY#/dev/}"
-# Use `ucomm=` not `comm=`: ucomm is the executable basename (always single token,
-# no path/argv pollution); comm can be multi-word for wrapped processes (e.g.
-# `npm exec ...`), making `awk $NF` brittle. ucomm is also truncated to 16 chars
-# on Darwin, but the basename `claude` is short so truncation isn't an issue here.
-FG_HIT=$(ps -t "$TTY_SHORT" -o stat=,ucomm= 2>/dev/null | awk '$1 ~ /\+/ {print $2}' \
-         | grep -E '^(claude|-claude)$' | head -1)
+# Use `args=` not `ucomm=` (per empirical /script finding 2026-05-23): Claude Code's
+# ucomm is the version string (e.g., `2.1.149`), not `claude` — every arm since
+# 2026-05-14 aborted because of this. ucomm changes with every release; argv[0] is
+# stable as `claude`. Match on args= for the foreground process group leader. The
+# pattern `(^|[[:space:]/])claude([[:space:]]|$)` matches `claude`, `-claude`,
+# `/path/to/claude`, and `claude --any-flags`; rejects unrelated `node` / `caffeinate`
+# processes that happen to share the foreground pgid with the claude TUI.
+FG_HIT=$(ps -t "$TTY_SHORT" -o stat=,args= 2>/dev/null \
+         | awk '$1 ~ /\+/' \
+         | grep -E '(^|[[:space:]/])claude([[:space:]]|$)' | head -1)
 if [ -z "$FG_HIT" ]; then
   ac_log "abort sid=$SESSION_ID tty=$TARGET_TTY reason=no-claude-in-foreground-pg"
   exit 0
