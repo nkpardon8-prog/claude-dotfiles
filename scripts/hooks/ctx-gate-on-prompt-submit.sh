@@ -17,15 +17,19 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/auto-compact-sentinel.sh
 . "$ROOT/lib/auto-compact-sentinel.sh"
 
-INPUT=$(cat)
+INPUT=$(head -c 1048576)  # bound stdin to 1MB (per codex-review R2 F16: DoS guard)
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 [ -z "$SID" ] && exit 0  # fail-open
 
 # If /pre-compact already armed in this session (and sentinel is fresh, <30 min),
 # stop injecting hard-gate advisories — would be redundant noise (per Round 1 reviewer B #15).
 # The Stop hook is about to fire /compact and we're between arm and fire.
+# Per codex-review R2 F15: reject symlinks (same-UID attacker could swap sentinel to a
+# file with attacker-controlled mtime to forge "fresh" status).
 SENTINEL_PATH="$HOME/.claude/progress/auto-compact-${SID}.json"
-if [ -f "$SENTINEL_PATH" ]; then
+if [ -L "$SENTINEL_PATH" ]; then
+  ctx_gate_log "submit sid=$SID action=reject-symlink-sentinel"
+elif [ -f "$SENTINEL_PATH" ]; then
   # Per Round 3 reviewer A #9 / B #2: if stat fails (file deleted between -f check and stat,
   # or fs error), guard with empty-check so we don't compute astronomical S_AGE.
   S_MTIME=$(stat -f %m "$SENTINEL_PATH" 2>/dev/null || stat -c %Y "$SENTINEL_PATH" 2>/dev/null || printf '')
