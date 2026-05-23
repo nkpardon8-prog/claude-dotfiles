@@ -48,13 +48,13 @@ OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","p
 if [ -z "$OUT" ]; then pass "3a: submit ctx=50 → empty (below soft)"; else fail "3a: submit ctx=50 → expected empty, got: $OUT"; fi
 rm -rf "$TMPHOME"
 
-# 3b — UserPromptSubmit, ctx=73 (soft zone): expect additionalContext with "Context at 73%"
+# 3b — UserPromptSubmit, ctx=65 (soft zone — new threshold 60): expect additionalContext with "Context at 73%"
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '73\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '65\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 73%")' >/dev/null 2>&1; then
-  pass "3b: submit ctx=73 → soft advisory with 'Context at 73%'"
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 65%")' >/dev/null 2>&1; then
+  pass "3b: submit ctx=65 → soft advisory with 'Context at 73%'"
 else
   fail "3b: submit ctx=73 → expected soft advisory, got: $OUT"
 fi
@@ -148,17 +148,17 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3j — PreCompact, trigger=auto, ctx=93, sentinel PRESENT: expect empty (allow native compact)
+# 3j — PreCompact, trigger=auto, ctx=78, sentinel PRESENT: expect empty (allow native compact)
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '93\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '78\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 printf '{"schema_version":1,"target_tty":"/dev/ttys001","originating_command":"pre-compact"}\n' \
   > "$TMPHOME/.claude/progress/auto-compact-foo.json"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"foo","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
-if [ -z "$OUT" ]; then pass "3j: precompact trigger=auto ctx=93 sentinel-present → allow"; else fail "3j: precompact sentinel-present → expected allow (empty), got: $OUT"; fi
+if [ -z "$OUT" ]; then pass "3j: precompact trigger=auto ctx=78 sentinel-present → allow"; else fail "3j: precompact sentinel-present → expected allow (empty), got: $OUT"; fi
 rm -rf "$TMPHOME"
 
-# 3k — PreCompact, trigger=manual, ctx=96, no sentinel: expect empty (never block manual)
+# 3k — PreCompact, trigger=manual, ctx=88, no sentinel: expect empty (never block manual)
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '96\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
@@ -200,8 +200,8 @@ ARM_PATH="$TMPHOME/.claude/progress/auto-compact-fakesid.json"
 
 # Step 1: UserPromptSubmit at 91% → expect hard-gate additionalContext
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"fakesid","prompt":"do thing","cwd":"/tmp","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("HARD CONTEXT GATE")' >/dev/null 2>&1; then
-  pass "§2.5 step 1: submit hook injects hard advisory at 91%"
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1; then
+  pass "§2.5 step 1: submit hook injects hard advisory at 73%"
 else
   fail "§2.5 step 1: submit hook hard advisory" "submit hook didn't inject hard advisory, got: $OUT"
 fi
@@ -241,21 +241,21 @@ else
   fail "§2.5 step 6: submit hook silence post-sentinel" "submit hook should not advise after sentinel armed, got: $OUT"
 fi
 
-# Step 7: PreCompact trigger=auto, ctx=93 (BLOCK zone), no sentinel → should block
+# Step 7: PreCompact trigger=auto, ctx=78 (BLOCK zone), no sentinel → should block
 rm -f "$ARM_PATH"
-printf '93\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
+printf '78\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"fakesid","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
-  pass "§2.5 step 7: precompact safety blocks at ctx=93 without sentinel"
+  pass "§2.5 step 7: precompact safety blocks at ctx=78 without sentinel"
 else
-  fail "§2.5 step 7: precompact block at 93" "precompact safety should block at ctx=93, got: $OUT"
+  fail "§2.5 step 7: precompact block at 93" "precompact safety should block at ctx=78, got: $OUT"
 fi
 
-# Step 7b: PreCompact trigger=auto, ctx=96 (≥95% RELEASE zone) → should RELEASE (avoid deadlock)
-printf '96\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
+# Step 7b: PreCompact trigger=auto, ctx=88 (≥95% RELEASE zone) → should RELEASE (avoid deadlock)
+printf '88\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"fakesid","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if [ -z "$OUT" ]; then
-  pass "§2.5 step 7b: precompact safety releases at ctx=96 (avoids deadlock)"
+  pass "§2.5 step 7b: precompact safety releases at ctx=88 (avoids deadlock)"
 else
   fail "§2.5 step 7b: precompact release at 96" "precompact safety should RELEASE at ctx>=95 (empty output), got: $OUT"
 fi
