@@ -10,11 +10,14 @@ _CTX_GATE_CONFIG_LOADED=1
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
-readonly CTX_SOFT_PCT=70
-readonly CTX_HARD_PCT=90
+# Per user 2026-05-23: pre-compaction must happen EARLIER. 50-60% = "stop new risky work";
+# 70%+ = "wrap up and hand off" territory. Previous 70/90 was too late for serious work.
+readonly CTX_SOFT_PCT=60         # stop new risky work zone (gentle reminder)
+readonly CTX_HARD_PCT=70         # wrap-up & hand off zone (hard deny non-handoff tools)
 # PreCompact safety net only fires below this; at/above this it releases to avoid
-# deadlock (native compact runs as degraded fallback).
-readonly CTX_PRECOMPACT_SAFETY_PCT=95
+# deadlock (native compact runs as degraded fallback). Dropped from 95 to 85 to match
+# the earlier-compaction posture.
+readonly CTX_PRECOMPACT_SAFETY_PCT=85
 
 # ---------------------------------------------------------------------------
 # Log configuration
