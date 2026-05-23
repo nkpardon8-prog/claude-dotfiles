@@ -103,28 +103,32 @@ case "$ORIG_TTY" in
 esac
 
 # Compose the navigation prompt. Keep it short — long prompts increase the window where
-# the user could collide with their own typing. The prompt is auto-submitted by `do script`
-# (it appends a newline). The agent receives this as a real user message.
+# the user could collide with their own typing.
 NAV_PROMPT="Resume session from ${HANDOFF_PATH}. Read it now, state the skill+phase you're picking up from \"## Active Skill State\" and \"## Next Action\", then continue exactly where the prior session left off."
 
-# Fire the navigation prompt via AppleScript `do script ... in foundTab`. Same defensive
-# shape as auto-compact-after-pre-compact.sh — TTY passes via argv (never interpolated into
-# AppleScript body). Verify the matching tab exists; refuse to fire if not.
+# First-prod-test finding (2026-05-23): `do script` typed the text into the new (just-
+# compacted) session's input box but the trailing CR was consumed by the TUI's mount
+# sequence — text landed, submit didn't. User had to press Enter manually.
+#
+# Defensive fix: (1) sleep before firing so TUI fully mounts its input handler;
+# (2) after `do script`, fire an explicit hardware-level Return via System Events
+# key code 36 — that's a real key event, not a pasted CR, so the TUI treats it as submit
+# regardless of multi-line mode or startup race.
+sleep 2
+
 OSA_RESULT=$(/usr/bin/osascript - "$ORIG_TTY" "$NAV_PROMPT" <<'OSA_EOF' 2>/dev/null
 on run argv
   set targetTTY to item 1 of argv
   set navPrompt to item 2 of argv
+  set foundTab to missing value
   tell application "Terminal"
     if not running then return "not-running"
     if not (exists window 1) then return "no-windows"
-    set foundTab to missing value
-    set foundWin to missing value
     repeat with w in windows
       repeat with t in tabs of w
         try
           if (tty of t) is targetTTY then
             set foundTab to t
-            set foundWin to w
             exit repeat
           end if
         end try
@@ -133,8 +137,22 @@ on run argv
     end repeat
     if foundTab is missing value then return "no-matching-tab"
     do script navPrompt in foundTab
-    return "fired"
+    delay 0.8
+    activate
+    set frontmost to true
+    try
+      set selected of foundTab to true
+    end try
   end tell
+  delay 0.3
+  try
+    tell application "System Events"
+      key code 36
+    end tell
+    return "fired+submitted"
+  on error errMsg
+    return "fired-no-submit:" & errMsg
+  end try
 end run
 OSA_EOF
 )
