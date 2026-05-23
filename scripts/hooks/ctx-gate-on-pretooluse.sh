@@ -81,14 +81,20 @@ elif [ "$TOOL" = "Bash" ]; then
   # after byte 500 was hiding destructive tails from the compound pre-check, allowing
   # `<499 chars of allowlisted prefix> > /etc/foo` bypass.
   CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-  # Compound-command pre-check — hardened against:
-  #  - `cmd1|cmd2` and `cmd1;cmd2` with NO surrounding spaces (was bypassable)
-  #  - `cmd1;;cmd2` double-semicolon (was bypassable)
-  #  - `${IFS}` field-separator splitting trick
-  #  - `>` at end of input with nothing after (was bypassable when trailing)
-  #  - trailing `>` with anything but a digit/& after (catches `>file`, allows `2>&1`, `>&2`)
-  # Allowed `2>&1`, `>&N`, `N>&M` fd-redirects remain unblocked.
-  if printf '%s' "$CMD" | grep -qE '(&&|\|\||\||;|sudo |rm -[rRf]|chmod |chown |[^0-9&]>[^&]|^>|>$|>>|\$\(|\$\{IFS\}|`)'; then
+  # Compound-command pre-check — hardened against (round 1 + round 2 codex-review):
+  #  R1: `cmd1|cmd2`, `cmd1;cmd2`, `cmd1;;cmd2`, `${IFS}`, `^>`, `>$`, `[^0-9&]>[^&]`
+  #  R2: tab/newline/CR/vertical-tab/form-feed (bash command separators), `<<` heredoc
+  #  R2 fix to over-deny: `\$\(` was blocking arithmetic `$((x+1))`. Tightened to `\$\([^(]`
+  #     so it matches subshell `$(cmd)` but NOT arithmetic `$((expr))`.
+  # Test the entire command (raw bytes) against the deny class. `grep -qE` with the
+  # `-z` flag would do null-terminated matching; we want literal whitespace chars to
+  # match so we use a printf-based pipe and a regex that includes literal control bytes.
+  # Newline/tab handled by using POSIX character class `[[:cntrl:]]` for bash separator chars
+  # except space (which is allowed) — but we DON'T want ALL [[:cntrl:]], only those that bash
+  # treats as command separators / IFS. That's tab (\t), newline (\n), carriage return (\r),
+  # vertical tab (\v), form feed (\f).
+  if printf '%s' "$CMD" | grep -qE '(&&|\|\||\||;|sudo |rm -[rRf]|chmod |chown |[^0-9&]>[^&]|^>|>$|>>|<<|\$\([^(]|\$\{IFS\}|`)' \
+     || printf '%s' "$CMD" | LC_ALL=C grep -qE '['"$(printf '\t\n\r\v\f')"']'; then
     ALLOWED=0  # explicit reset; deny on chained / piped / destructive
   elif printf '%s' "$CMD" | grep -qE "$CTX_GATE_BASH_ALLOWLIST_REGEX"; then
     ALLOWED=1
