@@ -60,25 +60,27 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3c — UserPromptSubmit, ctx=91 (hard zone): expect "HARD CONTEXT GATE" + "Skill(pre-compact)"
+# 3c — UserPromptSubmit, ctx=75 (hard/wrap-up zone): expect WRAP-UP directive + Skill(pre-compact)
+# Threshold update 2026-05-23: hard zone is now 70+ (was 90+); wrap-up phrasing replaced "HARD CONTEXT GATE"
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '91\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '75\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("HARD CONTEXT GATE")' >/dev/null 2>&1 && \
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1 && \
    printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Skill(pre-compact)")' >/dev/null 2>&1; then
-  pass "3c: submit ctx=91 → hard directive with HARD CONTEXT GATE + Skill(pre-compact)"
+  pass "3c: submit ctx=75 → wrap-up directive with Skill(pre-compact)"
 else
-  fail "3c: submit ctx=91 → expected hard directive, got: $OUT"
+  fail "3c: submit ctx=75 → expected wrap-up directive, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
-# 3d — PreToolUse, ctx=85 (below hard): expect empty (no gating)
+# 3d — PreToolUse, ctx=55 (below soft 60): expect empty (no gating)
+# Threshold update: soft zone is now 60+ (was 70+)
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '85\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '55\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"foo","tool_name":"Bash","tool_input":{"command":"echo hi"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
-if [ -z "$OUT" ]; then pass "3d: pretooluse ctx=85 → empty (below hard)"; else fail "3d: pretooluse ctx=85 → expected empty, got: $OUT"; fi
+if [ -z "$OUT" ]; then pass "3d: pretooluse ctx=55 → empty (below soft)"; else fail "3d: pretooluse ctx=55 → expected empty, got: $OUT"; fi
 rm -rf "$TMPHOME"
 
 # 3e — PreToolUse, ctx=91, Bash(echo hi), no sentinel: expect deny
