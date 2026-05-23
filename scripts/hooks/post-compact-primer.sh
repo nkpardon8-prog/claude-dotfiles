@@ -53,7 +53,7 @@ else
   MSG="🔄 POST-COMPACT SESSION. No CLAUDE.local.md handoff found at \$CWD or repo root. The prior session's /pre-compact may not have run. Proceed with caution and ask the user what they were working on before assuming."
 fi
 
-ctx_gate_log "primer sid=unknown source=compact cwd=$CWD handoff=${HANDOFF_PATH:-none}"
+ctx_gate_log "primer sid=${SID:-unknown} source=compact cwd=$CWD handoff=${HANDOFF_PATH:-none}"
 
 jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": $ctx } }'
 exit 0
