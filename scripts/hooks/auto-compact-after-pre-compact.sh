@@ -89,9 +89,12 @@ TTY_SHORT="${TARGET_TTY#/dev/}"
 # pattern `(^|[[:space:]/])claude([[:space:]]|$)` matches `claude`, `-claude`,
 # `/path/to/claude`, and `claude --any-flags`; rejects unrelated `node` / `caffeinate`
 # processes that happen to share the foreground pgid with the claude TUI.
-FG_HIT=$(ps -t "$TTY_SHORT" -o stat=,args= 2>/dev/null \
+FG_HIT=$(ps -ww -t "$TTY_SHORT" -o stat=,args= 2>/dev/null \
          | awk '$1 ~ /\+/' \
          | grep -E '(^|[[:space:]/])claude([[:space:]]|$)' | head -1)
+# `-ww` forces ps to NOT truncate `args=` at terminal width — BSD ps default truncates at
+# ~80 cols, which loses the `claude` token in long argv (e.g., when the user launches via
+# a wrapper that injects env paths). Per codex-review Depth.
 if [ -z "$FG_HIT" ]; then
   ac_log "abort sid=$SESSION_ID tty=$TARGET_TTY reason=no-claude-in-foreground-pg"
   exit 0
