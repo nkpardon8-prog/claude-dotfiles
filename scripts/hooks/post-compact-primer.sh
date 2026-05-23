@@ -64,10 +64,21 @@ jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "SessionStart
 # same AppleScript `do script` pattern that fires `/compact`. The agent then sees an actual
 # user message it MUST respond to — not a passive context hint.
 #
+# Test-mode guard: when CLAUDE_CTX_GATE_SMOKE_ALLOW=true (set by test-ctx-gate.sh), skip
+# the destructive AppleScript fire. Test harness can still exercise the rest of the path
+# by checking the log line that says "test-mode skip-injection".
+if [ "${CLAUDE_CTX_GATE_SMOKE_ALLOW:-}" = "true" ]; then
+  ctx_gate_log "primer sid=${SID:-unknown} action=test-mode-skip-injection"
+  exit 0
+fi
+
 # Platform gates (mirror arm-auto-compact.sh): Darwin only, Terminal.app only, no tmux/screen.
+# Brace-group `||`/`&&` precedence trap fix (same as R1 pretooluse fix):
+# `[ X ] || [ Y ] && exit 0` parses as `[ X ] || ([ Y ] && exit 0)` — if X is non-empty,
+# the `&&` chain is never reached. Wrap the OR in braces.
 [ "$(uname -s)" = "Darwin" ] || exit 0
-[ -n "${TMUX:-}" ] || [ -n "${STY:-}" ] && exit 0
-[ -n "${TERM_PROGRAM:-}" ] && [ "${TERM_PROGRAM:-}" != "Apple_Terminal" ] && exit 0
+{ [ -n "${TMUX:-}" ] || [ -n "${STY:-}" ]; } && exit 0
+{ [ -n "${TERM_PROGRAM:-}" ] && [ "${TERM_PROGRAM:-}" != "Apple_Terminal" ]; } && exit 0
 
 # Skip injection if no handoff was written (nothing useful to navigate to).
 [ -z "$HANDOFF_PATH" ] && exit 0
