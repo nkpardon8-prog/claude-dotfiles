@@ -133,12 +133,14 @@ on run argv
     end repeat
     if foundTab is missing value then return "no-matching-tab"
     do script "/compact" in foundTab
-    -- Chain /post-compact-resume into the same tab's input queue. Claude Code TUI
-    -- accepts typed input while a command is running and processes it as the next turn
-    -- when the current turn ends. delay 0.3 gives /compact time to register as the
+    -- Chain /post-compact-resume into the same tab input queue. Claude Code TUI
+    -- accepts typed input while a command is running and processes it as the next
+    -- turn when the current turn ends. delay 0.3 lets /compact register as the
     -- active command before the second do_script types in, avoiding the race where
-    -- both lines could merge into one buffered blob. Wrapped in `try` so a failed
+    -- both lines could merge into one buffered blob. Wrapped in try so a failed
     -- second fire (e.g., slash command missing) still reports /compact as fired.
+    -- NOTE: no apostrophes in this comment block — bash 3.2 heredoc-inside-$()
+    -- has a known apostrophe-pairing quirk that breaks parsing even with <<EOF.
     delay 0.3
     try
       do script "/post-compact-resume" in foundTab
