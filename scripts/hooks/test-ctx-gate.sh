@@ -308,6 +308,74 @@ if [ -z "$OUT" ]; then pass "§2.5 step 11b: kill-switch silences pretooluse hoo
 OUT=$(CLAUDE_CTX_GATE_DISABLED=1 HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"fakesid","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if [ -z "$OUT" ]; then pass "§2.5 step 11c: kill-switch silences precompact-safety hook"; else fail "§2.5 step 11c: kill-switch precompact" "kill-switch should silence precompact-safety hook, got: $OUT"; fi
 
+# ---------------------------------------------------------------------------
+# Round 1 codex-review regression tests
+# ---------------------------------------------------------------------------
+
+# Make sure sentinel is absent for these tests (gate must be active)
+rm -f "$TMPHOME/.claude/progress/auto-compact-fakesid.json"
+printf '91\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
+
+# Step 12a: no-space pipe bypass — `cmd1|cmd2` (no spaces) must be denied
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"fakesid","tool_name":"Bash","tool_input":{"command":"ls|wc -l"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if echo "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "§codex-r1 12a: no-space pipe ls|wc denied"
+else
+  fail "§codex-r1 12a: no-space pipe ls|wc deny" "expected deny, got: $OUT"
+fi
+
+# Step 12b: no-space semicolon — `cmd1;cmd2` (no spaces) must be denied
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"fakesid","tool_name":"Bash","tool_input":{"command":"ls;rm -rf /tmp/junk"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if echo "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "§codex-r1 12b: no-space semicolon ls;rm denied"
+else
+  fail "§codex-r1 12b: no-space semicolon deny" "expected deny, got: $OUT"
+fi
+
+# Step 12c: double-semicolon bypass — `cmd1;;cmd2`
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"fakesid","tool_name":"Bash","tool_input":{"command":"ls;;rm -rf /tmp/junk"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if echo "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "§codex-r1 12c: double-semicolon ls;;rm denied"
+else
+  fail "§codex-r1 12c: double-semicolon deny" "expected deny, got: $OUT"
+fi
+
+# Step 12d: ${IFS} field-separator bypass
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"fakesid","tool_name":"Bash","tool_input":{"command":"ls${IFS}/etc"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if echo "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "§codex-r1 12d: \${IFS} field-separator denied"
+else
+  fail "§codex-r1 12d: \${IFS} deny" "expected deny, got: $OUT"
+fi
+
+# Step 12e: trailing `>` (truncation hole) — `cmd >file` must be denied even at end
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"fakesid","tool_name":"Bash","tool_input":{"command":"ls >/tmp/junk"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if echo "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "§codex-r1 12e: redirect ls >/tmp/junk denied"
+else
+  fail "§codex-r1 12e: redirect deny" "expected deny, got: $OUT"
+fi
+
+# Step 13: future-dated sentinel must NOT be treated as fresh
+SENTINEL="$TMPHOME/.claude/progress/auto-compact-fakesid.json"
+printf '%s' '{"schema_version":1,"target_tty":"/dev/ttys001","originating_command":"pre-compact"}' > "$SENTINEL"
+touch -t 209912312359 "$SENTINEL" 2>/dev/null || touch -d '2099-12-31 23:59' "$SENTINEL" 2>/dev/null
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"fakesid","tool_name":"Bash","tool_input":{"command":"echo hi"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if echo "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "§codex-r1 13: future-dated sentinel treated as stale (gate re-engages)"
+else
+  fail "§codex-r1 13: future-dated sentinel" "expected gate to re-engage, got: $OUT"
+fi
+rm -f "$SENTINEL"
+
+# Step 14: path traversal in Write/Edit allowlist must be denied
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"fakesid","tool_name":"Write","tool_input":{"file_path":"/tmp/done-plans/../../etc/passwd"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if echo "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "§codex-r1 14: path traversal in Write denied"
+else
+  fail "§codex-r1 14: path traversal" "expected deny, got: $OUT"
+fi
+
 # Clean up synthetic chain temp dir
 rm -rf "$TMPHOME"
 echo "End-to-end synthetic chain: done"
