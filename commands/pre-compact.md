@@ -201,6 +201,40 @@ Skip all git steps if not a git repo.
 
 Check for `docs/decisions/`, `docs/adr/`, or any `ADR-*.md` files. If present, list them.
 
+### Step 3.G: Skill state inference
+
+Detect which slash-command skill (if any) is currently active by inventorying `./tmp/` artifacts and recent transcript activity. This populates a new `## Active Skill State` section in CLAUDE.local.md so the next agent can re-enter the EXACT skill+phase, not just "the topic."
+
+**Inference priorities (highest priority wins; report all that match):**
+
+1. **`tmp/god-review/state.json` exists** (relative to `$PWD`, or `~/.claude-dotfiles/tmp/god-review/state.json`) → ACTIVE: /god-review or /god-report
+   - Read state.json: extract `round`, `consecutive_clean_rounds`, `human_gate_queue` length.
+   - Note: this signal is most reliable when running INSIDE the dotfiles repo cwd. In other repos, also check `~/.claude-dotfiles/tmp/god-review/state.json` as a secondary signal.
+   - Next-Action template:
+     "Resume /god-review at round N (consecutive_clean=K). Findings: tmp/god-review/findings/*.txt. Phase 3 fix orchestrator state in state.json. If consecutive_clean_rounds >= 3, audit is already complete — review HUMAN_GATE_QUEUE.md before closing."
+
+2. **`/tmp/master-review-*.txt` files exist (ABSOLUTE PATH `/tmp/`, NOT relative `./tmp/`)** with mtime < 2h → ACTIVE: /master-review mid-pipeline.
+   - Count via: `ls -t /tmp/master-review-{codex-[1-3],ag-[1-2]}.txt 2>/dev/null | wc -l`
+   - Next-Action: "Resume /master-review. Findings collected so far: /tmp/master-review-*.txt (N of expected 5 agents reported). Synthesize into ./tmp/ready-plans/master-review-fixes.md when all complete."
+
+3. **`/tmp/codex-review-*.txt` files exist** (ABSOLUTE PATH `/tmp/`) with mtime < 1h → ACTIVE: /codex-review.
+   - Next-Action: "Resume /codex-review. Codex agent outputs at /tmp/codex-review-{a,b,verify}.txt. 4 Claude lenses + Codex verify still pending if not done."
+
+4. **`./tmp/ready-plans/*.md` exists with mtime < 24h AND no done-plans/ entry with same date** → POSSIBLY ACTIVE: /plan or /implement
+   - Read the most recent ready-plan: check for `[NEEDS CLARIFICATION]` markers (still in /plan) or `[done]` vs `[pending]` checklist marks (in /implement).
+   - Next-Action: "Resume /plan at review round N" OR "Resume /implement at phase N of M for plan <path>".
+
+5. **`./tmp/briefs/*.md` exists with mtime < 24h AND no corresponding ready-plan yet** → POSSIBLY ACTIVE: /discussion just concluded
+   - Next-Action: "Brief at <path> awaits /plan. Next: invoke /plan with brief reference."
+
+6. **None of the above** → no active skill. Section gets: "No active skill detected — generic continuation."
+
+**Populate `## Active Skill State` in Step 6 with:**
+- Detected skill: <name>
+- Phase indicator: <as inferred>
+- Critical artifacts to preserve through compaction: <list of paths>
+- Resumption directive: <skill-specific Next Action template above>
+
 ## Step 4: Detect issues and gaps (parallel)
 
 Batch these calls. Cap each at 50 results.
