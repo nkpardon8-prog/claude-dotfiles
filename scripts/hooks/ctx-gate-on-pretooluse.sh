@@ -43,7 +43,11 @@ PCT=$(ctx_gate_read_pct "$SID") || exit 0
 # Per Round 3 reviewer A #9 / B #2: guard stat failures so a deleted file doesn't produce
 # astronomical S_AGE (which would be > 1800 and trigger false stale-reengage).
 SENTINEL_PATH="$HOME/.claude/progress/auto-compact-${SID}.json"
-if [ -f "$SENTINEL_PATH" ]; then
+# Symlink rejection (per codex-review R2 F15): same-UID attacker could symlink the sentinel
+# path to a file with attacker-controlled mtime to forge "fresh" gate-release status.
+if [ -L "$SENTINEL_PATH" ]; then
+  ctx_gate_log "pretool sid=$SID pct=$PCT tool=$TOOL action=reject-symlink-sentinel"
+elif [ -f "$SENTINEL_PATH" ]; then
   S_MTIME=$(stat -f %m "$SENTINEL_PATH" 2>/dev/null || stat -c %Y "$SENTINEL_PATH" 2>/dev/null || printf '')
   if [ -n "$S_MTIME" ]; then
     S_AGE=$(( $(date +%s) - S_MTIME ))
