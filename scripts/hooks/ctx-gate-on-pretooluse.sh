@@ -73,14 +73,18 @@ ALLOWED=0
 if printf '%s' "$TOOL" | grep -qE "$CTX_GATE_TOOL_ALLOWLIST_REGEX"; then
   ALLOWED=1
 elif [ "$TOOL" = "Bash" ]; then
-  CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null | head -c 500)
-  # Compound-command pre-check (per Round 1 reviewer B #7 + Round 2 reviewer B #12):
-  # never trust the allowlist on a command containing chaining operators, pipes, or destructive
-  # primitives. Even if a substring like `git status` matches, refuse if it's chained with rm /
-  # sudo / etc. Pipe `|` added per R2: `find / | wc -l` would otherwise pass.
-  # Note (per Round 3 reviewer A #3): `>[^&]` catches all redirect targets except `>&N` fd-redirects
-  # (those are usually safe — `2>/dev/null` etc.).
-  if printf '%s' "$CMD" | grep -qE '(&&|\|\||;[[:space:]]|[[:space:]]\|[[:space:]]|sudo |rm -[rRf]|chmod |chown |>[^&]|>>|\$\(|`)'; then
+  # Per codex-review round 1 (Depth/Adversary): drop the `head -c 500` truncation — payload
+  # after byte 500 was hiding destructive tails from the compound pre-check, allowing
+  # `<499 chars of allowlisted prefix> > /etc/foo` bypass.
+  CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+  # Compound-command pre-check — hardened against:
+  #  - `cmd1|cmd2` and `cmd1;cmd2` with NO surrounding spaces (was bypassable)
+  #  - `cmd1;;cmd2` double-semicolon (was bypassable)
+  #  - `${IFS}` field-separator splitting trick
+  #  - `>` at end of input with nothing after (was bypassable when trailing)
+  #  - trailing `>` with anything but a digit/& after (catches `>file`, allows `2>&1`, `>&2`)
+  # Allowed `2>&1`, `>&N`, `N>&M` fd-redirects remain unblocked.
+  if printf '%s' "$CMD" | grep -qE '(&&|\|\||\||;|sudo |rm -[rRf]|chmod |chown |[^0-9&]>[^&]|^>|>$|>>|\$\(|\$\{IFS\}|`)'; then
     ALLOWED=0  # explicit reset; deny on chained / piped / destructive
   elif printf '%s' "$CMD" | grep -qE "$CTX_GATE_BASH_ALLOWLIST_REGEX"; then
     ALLOWED=1
