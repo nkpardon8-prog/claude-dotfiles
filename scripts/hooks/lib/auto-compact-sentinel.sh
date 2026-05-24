@@ -175,7 +175,17 @@ ac_resolve_session_id() {
       fi
     fi
   fi
-  printf '%s' "$sid" | tr -cd 'A-Za-z0-9_-' | head -c 128
+  local final_sid
+  final_sid=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_-' | head -c 128)
+  # Phase 4 (Round 4): refuse empty SID — emit arm-failed log and return non-zero.
+  # An empty SID would result in a sentinel named auto-compact-.json (the "empty-SID
+  # collision" where the first session in any new cwd shares a sentinel with any other
+  # session that also resolves to an empty SID).
+  if [ -z "$final_sid" ]; then
+    ac_log "arm_failed reason=empty-sid cwd=$(pwd)"
+    return 1
+  fi
+  printf '%s' "$final_sid"
 }
 
 ac_validate_tty() {
