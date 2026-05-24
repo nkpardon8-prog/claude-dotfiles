@@ -6,8 +6,8 @@
 # line on stdout that the orchestrator routes against the decision matrix in
 # commands/post-compact-resume.md.
 #
-# Usage: bash post-compact-resume-step2.sh
-# (Or sourced from a Bash tool call so HANDOFF_PATH etc. are available in scope.)
+# Usage: bash "$HOME/.claude-dotfiles/scripts/hooks/post-compact-resume-step2.sh"
+# (D9: moved out of lib/ — lib/ files are sourceable; this script executes.)
 #
 # Source-guard: not re-sourceable; intended to be invoked as a script.
 
@@ -21,6 +21,11 @@ set -uo pipefail
 # H1: source marker lib so we delegate to handoff_marker_check / handoff_marker_nonce
 # instead of inlining grep/sed (eliminates drift if canonical marker strings change).
 . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-marker.sh" 2>/dev/null
+# R4 H10 (Phase 3 task 3.5): source canonical resolver.
+# handoff_resolve_path and _primer_check_linkcount are defined here (R2-PR-6 BLOCKER fix:
+# _primer_check_linkcount lives in handoff-resolve.sh, not primer-helpers, to prevent
+# step2.sh from calling an undefined function — silent fail-closed on every valid handoff).
+. "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-resolve.sh" 2>/dev/null
 
 # R3 D2: Per-session breadcrumb written by Stop hook (decoupled from .claim file
 # lifecycle which the Stop hook EXIT trap removes). Read the most-recent breadcrumb
