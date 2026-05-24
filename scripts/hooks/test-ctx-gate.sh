@@ -313,23 +313,47 @@ if [ -f "$VERBS_FILE" ]; then
   # --- G5 reverse direction: docs → code emit sites (H5 fix-sweep) ---
   # Every verb documented in LOG_VERBS.md must have at least one emit site in *.sh.
   # Prevents phantom verbs (documented but never emitted — invisible to log consumers).
-  # Allow-list: `handoff:$1` is a function-body literal in handoff_log(), not an emitted verb;
-  # it is documented only to satisfy the forward-direction check (see LOG_VERBS.md note).
+  #
+  # Design notes:
+  # - `handoff:$1` allow-listed (function-body literal in handoff_log(), not a real verb).
+  # - `handoff:X` verbs: the code emits handoff_log "X"; ac_log prepends "handoff:" at
+  #   runtime. So we strip the "handoff:" prefix and search for handoff_log "X".
+  # - Compound/pattern rows (e.g. "sentinel=true|false marker=...") are not verbs —
+  #   skip rows whose bare first-token contains `|` (alternation pattern) or where the
+  #   token looks like a key=value pattern documenting runtime output (contains `=` and no
+  #   leading log-verb-style chars). These are routing-decision summary rows, not emitted verbs.
   PHANTOM=()
   while IFS= read -r G5R_LINE; do
-    # Extract bare verb token from table rows: lines matching | `verb ...`
+    # Extract content between first pair of backticks in table rows.
     G5R_VERB=$(printf '%s' "$G5R_LINE" | sed -nE 's/^\|[[:space:]]*`([^`]+)`.*/\1/p')
     [ -z "$G5R_VERB" ] && continue
-    # Strip trailing context (e.g., " reason=mv" → keep full string for grep, but also
-    # extract bare first-token for targeted search).
+    # Bare first token (everything up to first space).
     G5R_BARE=$(printf '%s' "$G5R_VERB" | awk '{print $1}')
     [ -z "$G5R_BARE" ] && continue
-    # Allow-list: handoff:$1 is the function-body literal in handoff_log(); skip.
+    # Allow-list: handoff:$1 is a function-body parameter literal; skip.
     [ "$G5R_BARE" = 'handoff:$1' ] && continue
-    # Search for any emit of this verb in production .sh files (exclude LOG_VERBS.md and test files).
-    if ! grep -qrE "(ac_log|ctx_gate_log|handoff_log)[[:space:]]+\"[^\"]*${G5R_BARE}" \
-        "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null; then
-      PHANTOM+=("$G5R_BARE")
+    # Skip compound/pattern rows: bare token contains `|` (e.g. "sentinel=true|false")
+    # or looks like a structured log line fragment (contains `=` and no alpha-only prefix).
+    case "$G5R_BARE" in
+      *'|'*) continue ;;
+      action=*) continue ;;
+    esac
+    # Determine the grep pattern based on verb type:
+    # - handoff:X → handoff_log "X" (the handoff_log() function prepends "handoff:" at runtime)
+    # - all others → any of ac_log|ctx_gate_log|handoff_log "...VERB..."
+    if printf '%s' "$G5R_BARE" | grep -q '^handoff:'; then
+      # Strip the "handoff:" prefix; search for handoff_log "BARE_SUFFIX"
+      G5R_SUFFIX=$(printf '%s' "$G5R_BARE" | sed 's/^handoff://')
+      if ! grep -qrE "handoff_log[[:space:]]+\"[^\"]*${G5R_SUFFIX}" \
+          "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null; then
+        PHANTOM+=("$G5R_BARE")
+      fi
+    else
+      # Normal verb: search for any log function emitting it.
+      if ! grep -qrE "(ac_log|ctx_gate_log|handoff_log)[[:space:]]+\"[^\"]*${G5R_BARE}" \
+          "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null; then
+        PHANTOM+=("$G5R_BARE")
+      fi
     fi
   done < <(grep -E '^\|[[:space:]]*`' "$VERBS_FILE" 2>/dev/null)
   G5R_PHANTOM_UNIQ=$(printf '%s\n' "${PHANTOM[@]}" | sort -u | tr '\n' ' ')
