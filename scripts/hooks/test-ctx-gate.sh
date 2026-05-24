@@ -40,12 +40,26 @@ echo "== §3 Canned-input tests =="
 # invokes the hook via here-string redirect (NOT pipe — per Round 4 meta-pass, inline
 # HOME=val applies to the hook process, not the echo/printf before the pipe).
 
-# 3a — UserPromptSubmit, ctx=50 (below soft): expect empty output
+# 3a — UserPromptSubmit, ctx=49 (below new SOFT=50): expect empty output
+# Threshold 2026-05-23 second revision: SOFT=50 (was 60). ctx=49 is clearly below.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '49\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if [ -z "$OUT" ]; then pass "3a: submit ctx=49 → empty (below soft=50)"; else fail "3a: submit ctx=49 → expected empty, got: $OUT"; fi
+rm -rf "$TMPHOME"
+
+# 3a-bis — UserPromptSubmit, ctx=50 (AT new SOFT boundary): expect soft advisory
+# Documents the >= comparison semantics: ctx=50 fires the advisory (not ctx=49).
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '50\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if [ -z "$OUT" ]; then pass "3a: submit ctx=50 → empty (below soft)"; else fail "3a: submit ctx=50 → expected empty, got: $OUT"; fi
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 50%")' >/dev/null 2>&1; then
+  pass "3a-bis: submit ctx=50 → soft advisory fires at exact SOFT boundary (>= semantics)"
+else
+  fail "3a-bis: submit ctx=50 → expected soft advisory at boundary, got: $OUT"
+fi
 rm -rf "$TMPHOME"
 
 # 3b — UserPromptSubmit, ctx=65 (soft zone — new threshold 60): expect additionalContext with "Context at 73%"
