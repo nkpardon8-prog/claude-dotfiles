@@ -233,6 +233,91 @@ case "$DRY_OUT" in
   *) check "--dry-run output (got '$DRY_OUT')" 1 0 ;;
 esac
 
+echo "== C1: ac_write_sentinel fails on read-only progress dir =="
+# chmod 500 the progress dir so write is denied; expect non-zero return.
+TMPDIR_RO=$(mktemp -d)
+trap_cleanup() { chmod 700 "$TMPDIR_RO" 2>/dev/null; rm -rf "$TMPDIR_RO"; }
+trap trap_cleanup EXIT
+PROGRESS_RO="$TMPDIR_RO/.claude/progress"
+mkdir -p "$PROGRESS_RO"
+chmod 500 "$PROGRESS_RO"
+# Invoke ac_write_sentinel with HOME pointing to TMPDIR_RO so sentinel dir = $PROGRESS_RO
+WRITE_RC=0
+( HOME="$TMPDIR_RO" ac_write_sentinel "ROTEST_$$" "/dev/ttys999" "/tmp" "ro-nonce" ) 2>/dev/null || WRITE_RC=$?
+if [ "$WRITE_RC" -ne 0 ]; then
+  check "C1: ac_write_sentinel returns non-zero on read-only progress dir" 1 1
+else
+  check "C1: ac_write_sentinel returns non-zero on read-only progress dir (got 0, expected non-zero)" 1 0
+fi
+chmod 700 "$PROGRESS_RO" 2>/dev/null
+
+echo "== C4: ac_read_sentinel_cwd rejection vectors =="
+TMPDIR_C4=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_C4"' EXIT
+
+# C4-symlink: symlink sentinel → expect empty return
+ln -s /etc/passwd "$TMPDIR_C4/cwd-symlink.json"
+if [ -z "$(ac_read_sentinel_cwd "$TMPDIR_C4/cwd-symlink.json" 2>/dev/null)" ]; then
+  check "C4: ac_read_sentinel_cwd rejects symlink" 1 1
+else
+  check "C4: ac_read_sentinel_cwd rejects symlink (got non-empty)" 1 0
+fi
+
+# C4-oversized: 5KB file → expect empty return
+yes "x" | head -c 5000 > "$TMPDIR_C4/cwd-big.json"
+if [ -z "$(ac_read_sentinel_cwd "$TMPDIR_C4/cwd-big.json" 2>/dev/null)" ]; then
+  check "C4: ac_read_sentinel_cwd rejects oversized (5KB)" 1 1
+else
+  check "C4: ac_read_sentinel_cwd rejects oversized (got non-empty)" 1 0
+fi
+
+# C4-schema999: schema_version far above AC_SCHEMA_VERSION → expect empty
+printf '{"schema_version":999,"target_tty":"/dev/ttys007","originating_command":"pre-compact","cwd":"/tmp","marker_nonce":"x"}\n' > "$TMPDIR_C4/cwd-sv999.json"
+if [ -z "$(ac_read_sentinel_cwd "$TMPDIR_C4/cwd-sv999.json" 2>/dev/null)" ]; then
+  check "C4: ac_read_sentinel_cwd rejects schema_version=999 (bumped past v3)" 1 1
+else
+  check "C4: ac_read_sentinel_cwd rejects schema_version=999 (got non-empty)" 1 0
+fi
+
+# C4-badorigcmd: wrong originating_command → expect empty
+printf '{"schema_version":3,"target_tty":"/dev/ttys007","originating_command":"not-pre-compact","cwd":"/tmp","marker_nonce":"x"}\n' > "$TMPDIR_C4/cwd-badorig.json"
+if [ -z "$(ac_read_sentinel_cwd "$TMPDIR_C4/cwd-badorig.json" 2>/dev/null)" ]; then
+  check "C4: ac_read_sentinel_cwd rejects bad originating_command" 1 1
+else
+  check "C4: ac_read_sentinel_cwd rejects bad originating_command (got non-empty)" 1 0
+fi
+
+# C4-json-injection-cwd: cwd value containing literal " (JSON-injection attempt via cwd).
+# jq --arg properly escapes this; the reader should return the literal cwd string intact.
+INJECT_CWD='/tmp/evil"quote'
+INJECT_JSON=$(jq -c -n --arg cwd "$INJECT_CWD" \
+  '{schema_version:3,target_tty:"/dev/ttys007",originating_command:"pre-compact",cwd:$cwd,marker_nonce:"x"}')
+printf '%s\n' "$INJECT_JSON" > "$TMPDIR_C4/cwd-inject.json"
+CWD_OUT=$(ac_read_sentinel_cwd "$TMPDIR_C4/cwd-inject.json" 2>/dev/null)
+if [ "$CWD_OUT" = "$INJECT_CWD" ]; then
+  check "C4: ac_read_sentinel_cwd handles JSON-injection-via-cwd (returns literal value)" 1 1
+else
+  check "C4: ac_read_sentinel_cwd JSON-injection-via-cwd (got '$CWD_OUT', expected '$INJECT_CWD')" 1 0
+fi
+
+# C4-malformed: garbage JSON → expect empty return
+printf '{not-json-at-all\n' > "$TMPDIR_C4/cwd-malformed.json"
+if [ -z "$(ac_read_sentinel_cwd "$TMPDIR_C4/cwd-malformed.json" 2>/dev/null)" ]; then
+  check "C4: ac_read_sentinel_cwd rejects malformed JSON" 1 1
+else
+  check "C4: ac_read_sentinel_cwd rejects malformed JSON (got non-empty)" 1 0
+fi
+
+echo "== C9: ac_read_sentinel_cwd symlink rejection (mirror of _tty test) =="
+TMPDIR_C9=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_C9"' EXIT
+ln -s /etc/passwd "$TMPDIR_C9/symlink.json"
+if [ -z "$(ac_read_sentinel_cwd "$TMPDIR_C9/symlink.json" 2>/dev/null)" ]; then
+  check "C9: ac_read_sentinel_cwd rejects symlink (standalone)" 1 1
+else
+  check "C9: ac_read_sentinel_cwd rejects symlink (got non-empty)" 1 0
+fi
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
