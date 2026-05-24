@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# ctx-gate-on-prompt-submit.sh — UserPromptSubmit hook: soft + hard zone advisory.
+# ctx-gate-on-prompt-submit.sh — UserPromptSubmit hook: three-tier context nudge.
 #
-# Soft zone (70–90%): emits additionalContext advising the model to wrap at a natural seam.
-# Hard zone (≥90%):   emits additionalContext with strong directive to invoke Skill(pre-compact).
+# Threshold model (R2 redesign — N4 locked decision):
+#   <50%  → silent (no output)
+#   50-74% → SOFT nudge (consider /pre-compact at next natural seam)
+#   75-84% → IMPORTANT nudge (finish current task, then invoke /pre-compact)
+#   ≥85%   → FORCE nudge (FIRST action MUST be Skill(pre-compact) — context-critical)
 #
-# NEVER uses `decision: block` — that would erase the user's prompt. Only additionalContext.
-# Fail-open on any error (exits 0, no output) so a buggy gate never breaks the user's prompt.
+# NEVER uses `permissionDecision: deny` or `decision: block`.
+# Only additionalContext. Fail-open on any error so a buggy gate never breaks prompts.
+#
+# FORCE (≥85%) overrides sentinel-fresh skip — operator must see context-critical alerts.
+# SOFT and IMPORTANT respect sentinel-fresh skip (already ran /pre-compact; no noise).
 
 set -uo pipefail
 
-[ "${CLAUDE_CTX_GATE_DISABLED:-0}" = "1" ] && exit 0  # kill-switch per Round 3 A #12 / B #7
+[ "${CLAUDE_CTX_GATE_DISABLED:-0}" = "1" ] && exit 0  # kill-switch
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/ctx-gate-config.sh
@@ -17,27 +23,35 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/auto-compact-sentinel.sh
 . "$ROOT/lib/auto-compact-sentinel.sh"
 
-INPUT=$(head -c 1048576)  # bound stdin to 1MB (per codex-review R2 F16: DoS guard)
+INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 [ -z "$SID" ] && exit 0  # fail-open
 
-# If /pre-compact already armed in this session (and sentinel is fresh, <30 min),
-# stop injecting hard-gate advisories — would be redundant noise (per Round 1 reviewer B #15).
-# The Stop hook is about to fire /compact and we're between arm and fire.
+PCT=$(ctx_gate_read_pct "$SID") || { ctx_gate_log "submit sid=$SID action=skip reason=no-ctx-sidecar"; exit 0; }
+
+# FORCE check FIRST (≥85%) — overrides sentinel-fresh skip per R1-B23.
+# At this level the model MUST invoke /pre-compact before anything else.
+if [ "$PCT" -ge "$CTX_FORCE_PCT" ]; then
+  MSG="WRAP-UP & HAND-OFF ZONE: context at ${PCT}%. Native auto-compact fires at ~95% and will destroy this session WITHOUT writing CLAUDE.local.md. Your FIRST action this turn MUST be Skill(pre-compact). Do not engage with the user's prompt or invoke any other tool until /pre-compact has completed."
+  ctx_gate_log "submit sid=$SID pct=$PCT action=force-wrapup"
+  jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": $ctx } }'
+  exit 0
+fi
+
+# Sentinel-fresh skip for SOFT and IMPORTANT only (already ran /pre-compact; avoid noise).
 # Per codex-review R2 F15: reject symlinks (same-UID attacker could swap sentinel to a
 # file with attacker-controlled mtime to forge "fresh" status).
 SENTINEL_PATH="$HOME/.claude/progress/auto-compact-${SID}.json"
 if [ -L "$SENTINEL_PATH" ]; then
   ctx_gate_log "submit sid=$SID action=reject-symlink-sentinel"
 elif [ -f "$SENTINEL_PATH" ]; then
-  # Per Round 3 reviewer A #9 / B #2: if stat fails (file deleted between -f check and stat,
-  # or fs error), guard with empty-check so we don't compute astronomical S_AGE.
+  # If stat fails (file deleted between -f check and stat, or fs error),
+  # guard with empty-check so we don't compute astronomical S_AGE.
   S_MTIME=$(stat -f %m "$SENTINEL_PATH" 2>/dev/null || stat -c %Y "$SENTINEL_PATH" 2>/dev/null || printf '')
   if [ -n "$S_MTIME" ]; then
     S_AGE=$(( $(date +%s) - S_MTIME ))
-    # Clamp negative S_AGE (per codex-review Adversary): a future-dated sentinel via
-    # `touch -t 209912312359` would yield negative S_AGE which is -lt 1800 → forever
-    # treated as fresh → permanent gate release. Re-engage gate on negative.
+    # Clamp negative S_AGE: a future-dated sentinel would yield negative S_AGE
+    # which is -lt 1800 and would be forever treated as fresh. Re-engage on negative.
     if [ "$S_AGE" -lt 0 ]; then
       ctx_gate_log "submit sid=$SID action=stale-sentinel reason=future-dated-mtime mtime=$S_MTIME"
     elif [ "$S_AGE" -lt 1800 ]; then
@@ -51,16 +65,14 @@ elif [ -f "$SENTINEL_PATH" ]; then
   fi
 fi
 
-PCT=$(ctx_gate_read_pct "$SID") || { ctx_gate_log "submit sid=$SID action=skip reason=no-ctx-sidecar"; exit 0; }
-
-if [ "$PCT" -ge "$CTX_HARD_PCT" ]; then
-  # Wrap-up & hand-off zone (≥70%): strong directive. Do NOT block prompt (would erase user's text).
-  MSG="🚨 WRAP-UP & HAND-OFF ZONE: context at ${PCT}%. You are past the productive-work threshold. Your FIRST action this turn MUST be Skill(pre-compact). Do not engage with the user's prompt or invoke any other tool until /pre-compact has completed and written CLAUDE.local.md. After /pre-compact finishes, briefly acknowledge to the user — DO NOT start new work. PreToolUse will deny non-handoff tools at ≥${CTX_HARD_PCT}% until the auto-compact sentinel is armed."
-  ctx_gate_log "submit sid=$SID pct=$PCT action=hard-advisory-wrapup"
+# IMPORTANT (75-84%): finish current task then /pre-compact before starting anything new.
+if [ "$PCT" -ge "$CTX_IMPORTANT_PCT" ]; then
+  MSG="Context at ${PCT}% — IMPORTANT zone. Finish the current task, then invoke Skill(pre-compact) before starting anything new. The 85% FORCE threshold is approaching."
+  ctx_gate_log "submit sid=$SID pct=$PCT action=important-nudge"
+# SOFT (50-74%): gentle reminder at next natural seam.
 elif [ "$PCT" -ge "$CTX_SOFT_PCT" ]; then
-  # Stop-new-risky-work zone (60-70%): gentle reminder.
-  MSG="📋 Context at ${PCT}% — stop-new-risky-work zone. Don't start large new tasks. Finish what's in flight and run Skill(pre-compact) at the next natural seam (post-review, post-commit, end-of-phase). Wrap-up zone engages at ${CTX_HARD_PCT}%; beyond that, non-handoff tools are denied."
-  ctx_gate_log "submit sid=$SID pct=$PCT action=soft-advisory"
+  MSG="Context at ${PCT}% — soft-zone reminder. Consider running Skill(pre-compact) at the next natural seam (post-review, post-commit, end-of-phase). No action required mid-task."
+  ctx_gate_log "submit sid=$SID pct=$PCT action=soft-nudge"
 else
   exit 0  # below soft zone, no output
 fi
