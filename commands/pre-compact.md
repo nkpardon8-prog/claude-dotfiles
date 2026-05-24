@@ -164,10 +164,10 @@ Extract the following structured fields. Stash in working memory for Step 6:
   way. "DO NOT <action> because <consequence>." Distinct from rejected design choices.
 - **pending_externals**: waits, blocked-on-people, scheduled-for-later, "user will send
   X tomorrow", scheduled cron jobs.
-- **pending_externals_background** (R1 finding #4 + R2 #12 — corrected extraction directive):
+- **pending_externals_background** (corrected extraction directive):
   **Scan the transcript for Agent tool calls (sub-agent spawns), Bash tool calls
   with run_in_background=true, and Task tool calls where no subsequent matching
-  result/notification appears in the transcript.** R2 #12: the Bash tool DOES have a
+  result/notification appears in the transcript.** The Bash tool DOES have a
   run_in_background parameter; the Agent tool dispatches sub-agents. Both can leave
   in-flight work that the post-compact session cannot observe directly.
 
