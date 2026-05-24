@@ -27,6 +27,9 @@ SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
+# Canonicalize CWD for symlink-safe comparison with sentinel cwd field.
+CWD_CANON=$(ac_canonicalize_path "$CWD") || CWD_CANON="$CWD"
+
 # Walk up to the git repo root (SessionStart cwd may be a subdirectory of the repo).
 # Look at cwd first, fall back to repo root.
 HANDOFF_PATH=""
