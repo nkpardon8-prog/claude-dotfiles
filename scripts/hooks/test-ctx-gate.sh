@@ -62,15 +62,16 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3b — UserPromptSubmit, ctx=65 (soft zone — new threshold 60): expect additionalContext with "Context at 73%"
+# 3b — UserPromptSubmit, ctx=55 (soft zone — new SOFT=50, HARD=60): expect soft advisory with "Context at 55%"
+# Threshold 2026-05-23 second revision: SOFT=50 (was 60). ctx=55 is in the soft zone.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '65\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '55\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 65%")' >/dev/null 2>&1; then
-  pass "3b: submit ctx=65 → soft advisory with 'Context at 73%'"
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Context at 55%")' >/dev/null 2>&1; then
+  pass "3b: submit ctx=55 → soft advisory with 'Context at 55%'"
 else
-  fail "3b: submit ctx=73 → expected soft advisory, got: $OUT"
+  fail "3b: submit ctx=55 → expected soft advisory, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
