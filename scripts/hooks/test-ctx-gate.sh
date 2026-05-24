@@ -1834,6 +1834,203 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# §R6-RQ01 Adversarial test for STATE=sid-mismatch-hard-stop (HZ-16)
+# ---------------------------------------------------------------------------
+# IEC 62304 §5.5 compliance: the SID-mismatch hard-stop defense must have an adversarial
+# regression test. Sets up breadcrumb with sid8=SESS-A and handoff file with marker
+# sid=SESS-B (deliberate mismatch), asserts STATE=sid-mismatch-hard-stop.
+# Also adds negative test: matching SID → STATE=ok.
+echo ""
+echo "== §R6-RQ01 sid-mismatch adversarial test =="
+STEP2_SH="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+RQ01_TMPWD=$(mktemp -d)
+RQ01_TMPHOME=$(mktemp -d)
+mkdir -p "$RQ01_TMPHOME/.claude/progress" && chmod 700 "$RQ01_TMPHOME/.claude/progress"
+RQ01_SID_A="rq01-sessa-${$}"
+RQ01_SID8_A="${RQ01_SID_A:0:8}"
+RQ01_SID_B_MARKER="rq01sssb"  # different SID8 value embedded in marker
+RQ01_NONCE="aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"
+RQ01_CWD=$(cd -P "$RQ01_TMPWD" 2>/dev/null && pwd -P)
+RQ01_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+# Write breadcrumb (SID8=SESS-A, nonce=RQ01_NONCE)
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid "$RQ01_SID_A" \
+  --arg sid8 "$RQ01_SID8_A" \
+  --arg cwd "$RQ01_CWD" \
+  --arg nonce "$RQ01_NONCE" \
+  --arg host "$RQ01_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$RQ01_TMPHOME/.claude/progress/breadcrumb-${RQ01_SID_A}.json" 2>/dev/null
+chmod 600 "$RQ01_TMPHOME/.claude/progress/breadcrumb-${RQ01_SID_A}.json"
+# Write handoff file with marker sid=SESS-B (deliberate mismatch)
+printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$RQ01_SID_B_MARKER" "$RQ01_NONCE" > "$RQ01_TMPWD/CLAUDE.local.${RQ01_SID8_A}.md"
+RQ01_OUT=$(cd "$RQ01_TMPWD" && CLAUDE_SESSION_ID="$RQ01_SID_A" HOME="$RQ01_TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+RQ01_STATE=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+RQ01_SENT_SID8=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.sentinel_sid8 // empty' 2>/dev/null)
+RQ01_MARK_SID8=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.marker_sid8 // empty' 2>/dev/null)
+if [ "$RQ01_STATE" = "sid-mismatch-hard-stop" ]; then
+  pass "R6-RQ01: sid-mismatch-hard-stop fires on breadcrumb-vs-marker SID mismatch (ATTACKER scenario)"
+else
+  fail "R6-RQ01: sid-mismatch adversarial" "expected state=sid-mismatch-hard-stop; got='$RQ01_STATE' raw=${RQ01_OUT:0:200}"
+fi
+if [ "$RQ01_SENT_SID8" = "$RQ01_SID8_A" ]; then
+  pass "R6-RQ01: sentinel_sid8 in STATE matches breadcrumb SID8"
+else
+  fail "R6-RQ01: sentinel_sid8 field" "expected '$RQ01_SID8_A'; got '$RQ01_SENT_SID8'"
+fi
+if [ "$RQ01_MARK_SID8" = "$RQ01_SID_B_MARKER" ]; then
+  pass "R6-RQ01: marker_sid8 in STATE matches marker's embedded SID (SESS-B)"
+else
+  fail "R6-RQ01: marker_sid8 field" "expected '$RQ01_SID_B_MARKER'; got '$RQ01_MARK_SID8'"
+fi
+# Negative test: matching SID → STATE=ok
+printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$RQ01_SID8_A" "$RQ01_NONCE" > "$RQ01_TMPWD/CLAUDE.local.${RQ01_SID8_A}.md"
+RQ01_OK_OUT=$(cd "$RQ01_TMPWD" && CLAUDE_SESSION_ID="$RQ01_SID_A" HOME="$RQ01_TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+RQ01_OK_STATE=$(printf '%s' "$RQ01_OK_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$RQ01_OK_STATE" = "ok" ]; then
+  pass "R6-RQ01 (negative): matching SID → STATE=ok (no false positive)"
+else
+  fail "R6-RQ01 (negative): matching SID" "expected STATE=ok; got='$RQ01_OK_STATE' raw=${RQ01_OK_OUT:0:200}"
+fi
+rm -rf "$RQ01_TMPWD" "$RQ01_TMPHOME"
+
+# ---------------------------------------------------------------------------
+# §R6-RQ08 Adversarial test: body-line marker bypass via handoff_marker_check
+# ---------------------------------------------------------------------------
+# RQ-08 (HZ-02): verifies that handoff_marker_check rejects a file that has the marker
+# string only in a mid-line prose context (not at start-of-line). Before the fix,
+# grep -qF would match mid-line occurrences, falsely returning 0 (marker found).
+echo ""
+echo "== §R6-RQ08 handoff_marker_check strict anchor =="
+. "$(cd "$(dirname "$0")" && pwd)/lib/handoff-marker.sh" 2>/dev/null || true
+if command -v handoff_marker_check >/dev/null 2>&1; then
+  RQ08_TMP=$(mktemp)
+  # File with marker ONLY appearing mid-line (not at column 0)
+  printf 'See format: <!-- END-OF-HANDOFF schema=v1 sid=EVIL nonce=EVIL -->\n' > "$RQ08_TMP"
+  if handoff_marker_check "$RQ08_TMP"; then
+    fail "R6-RQ08: handoff_marker_check returned 0 for body-line-only marker (ANCHOR BUG)"
+  else
+    pass "R6-RQ08: handoff_marker_check correctly rejects body-line marker (strict anchor active)"
+  fi
+  # Positive test: canonical marker at column 0 should be found
+  printf '<!-- END-OF-HANDOFF schema=v1 sid=abc nonce=123 -->\n' > "$RQ08_TMP"
+  if handoff_marker_check "$RQ08_TMP"; then
+    pass "R6-RQ08 (positive): handoff_marker_check finds canonical column-0 marker"
+  else
+    fail "R6-RQ08 (positive): handoff_marker_check missed canonical marker at column 0"
+  fi
+  rm -f "$RQ08_TMP"
+else
+  fail "R6-RQ08: handoff_marker_check not defined (handoff-marker.sh failed to source)"
+fi
+
+# ---------------------------------------------------------------------------
+# §R6-RQ10/RQ11 Adversarial test: stop-hook-refused breadcrumb signing + consumption
+# ---------------------------------------------------------------------------
+# RQ-10 (HZ-04 extension): refused-bc must be HMAC-signed; unsigned ones are rejected
+# (when key file exists). RQ-11: refused-bc must be deleted after STATE=stop-hook-refused.
+echo ""
+echo "== §R6-RQ10/RQ11 stop-hook-refused breadcrumb signing + consumption =="
+if command -v session_key_generate >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+  STEP2_SH2="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+  RQ10_TMPWD=$(mktemp -d)
+  RQ10_TMPHOME=$(mktemp -d)
+  mkdir -p "$RQ10_TMPHOME/.claude/progress" && chmod 700 "$RQ10_TMPHOME/.claude/progress"
+  RQ10_SID="rq10-victim-${$}"
+  RQ10_SID8=$(printf '%s' "$RQ10_SID" | head -c 8)
+  RQ10_CWD=$(cd -P "$RQ10_TMPWD" 2>/dev/null && pwd -P)
+  RQ10_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+  # Generate key for victim session
+  OLD_HOME_RQ10="$HOME"
+  HOME="$RQ10_TMPHOME"
+  session_key_generate "$RQ10_SID8" 2>/dev/null
+  HOME="$OLD_HOME_RQ10"
+
+  # Test 1: unsigned refused-bc with key present → should reject (RQ-10 core)
+  jq -c -n \
+    --argjson sv 1 \
+    --arg sid "$RQ10_SID" \
+    --arg sid8 "$RQ10_SID8" \
+    --arg cmd "stop-hook-fail-closed" \
+    --arg host "$RQ10_HOST" \
+    --arg cwd "$RQ10_CWD" \
+    --arg real_sid "$RQ10_SID" --arg resolved_sid "rq10-other-$$" \
+    --arg rb "auto-compact-${RQ10_SID}.json" --arg ob "auto-compact-rq10-other.json" \
+    '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,cwd:$cwd,signature:"",real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$rb,resolved_basename:$ob}' \
+    > "$RQ10_TMPHOME/.claude/progress/breadcrumb-${RQ10_SID}.json" 2>/dev/null
+  chmod 600 "$RQ10_TMPHOME/.claude/progress/breadcrumb-${RQ10_SID}.json"
+  RQ10_OUT=$(cd "$RQ10_TMPWD" && CLAUDE_SESSION_ID="$RQ10_SID" HOME="$RQ10_TMPHOME" bash "$STEP2_SH2" 2>/dev/null)
+  RQ10_STATE=$(printf '%s' "$RQ10_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  # Should NOT be stop-hook-refused when unsigned + key present (RQ-10 defense)
+  if [ "$RQ10_STATE" != "stop-hook-refused" ]; then
+    pass "R6-RQ10: unsigned refused-bc rejected when key present (not stop-hook-refused)"
+  else
+    fail "R6-RQ10: unsigned refused-bc accepted despite key present (SIGNATURE BYPASS)"
+  fi
+
+  # Test 2: forged signature refused-bc → should reject
+  jq -c -n \
+    --argjson sv 1 \
+    --arg sid "$RQ10_SID" \
+    --arg sid8 "$RQ10_SID8" \
+    --arg cmd "stop-hook-fail-closed" \
+    --arg host "$RQ10_HOST" \
+    --arg cwd "$RQ10_CWD" \
+    --arg real_sid "$RQ10_SID" --arg resolved_sid "rq10-other-$$" \
+    --arg rb "auto-compact-${RQ10_SID}.json" --arg ob "auto-compact-rq10-other.json" \
+    '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,cwd:$cwd,signature:"forged0000000000000000000000000000000000000000000000000000000000",real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$rb,resolved_basename:$ob}' \
+    > "$RQ10_TMPHOME/.claude/progress/breadcrumb-${RQ10_SID}.json" 2>/dev/null
+  chmod 600 "$RQ10_TMPHOME/.claude/progress/breadcrumb-${RQ10_SID}.json"
+  RQ10_FORGED_OUT=$(cd "$RQ10_TMPWD" && CLAUDE_SESSION_ID="$RQ10_SID" HOME="$RQ10_TMPHOME" bash "$STEP2_SH2" 2>/dev/null)
+  RQ10_FORGED_STATE=$(printf '%s' "$RQ10_FORGED_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  if [ "$RQ10_FORGED_STATE" != "stop-hook-refused" ]; then
+    pass "R6-RQ10: forged-signature refused-bc rejected (not stop-hook-refused)"
+  else
+    fail "R6-RQ10: forged-signature refused-bc was accepted (SIGNATURE BYPASS)"
+  fi
+
+  # Test 3: legitimate signed refused-bc → should accept + breadcrumb should be deleted (RQ-11)
+  HOME="$RQ10_TMPHOME"
+  RQ10_VALID_SIG=$(session_key_sign "$RQ10_SID8" "$RQ10_SID" "$RQ10_SID" "$RQ10_SID" \
+    "$RQ10_CWD" "$RQ10_HOST" "stop-hook-fail-closed" 2>/dev/null)
+  HOME="$OLD_HOME_RQ10"
+  RQ10_BC_PATH="$RQ10_TMPHOME/.claude/progress/breadcrumb-${RQ10_SID}.json"
+  jq -c -n \
+    --argjson sv 1 \
+    --arg sid "$RQ10_SID" \
+    --arg sid8 "$RQ10_SID8" \
+    --arg cmd "stop-hook-fail-closed" \
+    --arg host "$RQ10_HOST" \
+    --arg cwd "$RQ10_CWD" \
+    --arg real_sid "$RQ10_SID" --arg resolved_sid "rq10-other-$$" \
+    --arg rb "auto-compact-${RQ10_SID}.json" --arg ob "auto-compact-rq10-other.json" \
+    --arg sig "${RQ10_VALID_SIG:-}" \
+    '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,cwd:$cwd,signature:$sig,real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$rb,resolved_basename:$ob}' \
+    > "$RQ10_BC_PATH" 2>/dev/null
+  chmod 600 "$RQ10_BC_PATH"
+  RQ10_VALID_OUT=$(cd "$RQ10_TMPWD" && CLAUDE_SESSION_ID="$RQ10_SID" HOME="$RQ10_TMPHOME" bash "$STEP2_SH2" 2>/dev/null)
+  RQ10_VALID_STATE=$(printf '%s' "$RQ10_VALID_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  if [ "$RQ10_VALID_STATE" = "stop-hook-refused" ]; then
+    pass "R6-RQ10: legitimate signed refused-bc accepted → STATE=stop-hook-refused"
+  else
+    fail "R6-RQ10: signed refused-bc was not accepted" "expected stop-hook-refused; got='$RQ10_VALID_STATE' raw=${RQ10_VALID_OUT:0:200}"
+  fi
+  # RQ-11: breadcrumb must be deleted after STATE=stop-hook-refused
+  if [ ! -f "$RQ10_BC_PATH" ]; then
+    pass "R6-RQ11: refused-bc deleted after STATE=stop-hook-refused (SENTINEL_SID guard satisfied)"
+  else
+    fail "R6-RQ11: refused-bc still exists after STATE=stop-hook-refused (breadcrumb NOT deleted)"
+  fi
+
+  rm -rf "$RQ10_TMPWD" "$RQ10_TMPHOME"
+else
+  pass "R6-RQ10/RQ11: openssl or session_key_generate not available — skipped (inconclusive)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
