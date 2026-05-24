@@ -9,30 +9,29 @@ _AC_LIB_LOADED=1
 # Single source of truth for paths, schema, sentinel layout.
 #
 # Public functions:
-#   ac_sentinel_path <sid>              → echoes ~/.claude/progress/auto-compact-<sid>.json
-#   ac_log_path                         → echoes ~/.claude/logs/auto-compact.log
-#   ac_log <message>                    → append timestamped line to log; bounded ring (keep last 64K)
-#   ac_resolve_session_id               → echoes the current Claude Code session id (or empty)
-#   ac_validate_tty <tty>               → returns 0 if matches /dev/ttys[0-9]+, else 1
-#   ac_write_sentinel <sid> <tty> <cwd> → writes JSON sentinel, mode 600, returns 0 on success
-#   ac_read_sentinel_tty <path>         → echoes target_tty from sentinel, after validating schema/size
-#   ac_read_sentinel_cwd <path>         → echoes cwd from sentinel, after validating schema/size/cwd-field
+#   ac_sentinel_path <sid>                    → echoes ~/.claude/progress/auto-compact-<sid>.json
+#   ac_log_path                               → echoes ~/.claude/logs/auto-compact.log
+#   ac_log <message>                          → append timestamped line to log; bounded ring (keep last 64K)
+#   handoff_log <message>                     → delegate to ac_log with handoff: prefix
+#   ac_resolve_session_id                     → echoes the current Claude Code session id (or empty)
+#   ac_validate_tty <tty>                     → returns 0 if matches /dev/ttys[0-9]+, else 1
+#   ac_canonicalize_path <path>               → echoes realpath via cd -P; returns 1 on failure
+#   _ac_validate_sentinel_path <path>         → shared preamble: symlink/size guard; returns 0 if OK
+#   ac_write_sentinel <sid> <tty> <cwd> <nonce> → writes JSON sentinel via jq+atomic mv, mode 600
+#   ac_read_sentinel_tty <path>               → echoes target_tty from sentinel (schema v1+)
+#   ac_read_sentinel_cwd <path>               → echoes cwd from sentinel (schema v2+; empty for v1)
+#   ac_read_sentinel_nonce <path>             → echoes marker_nonce from sentinel (schema v3+; empty for v1/v2)
 #
 # Schema (v1):
 #   {"schema_version":1,"target_tty":"/dev/ttys<N>","originating_command":"pre-compact"}
-#   Filesystem mtime is the single source of truth for "when armed" (used by the
-#   >12h prune in scripts/progress/on-session-start-cleanup.sh). `armed_at` was
-#   removed in round 4 as dead data.
 #
 # Schema (v2 — Task 1.1a per pre-compact-soundness-hardening plan):
-#   {"schema_version":2,"target_tty":"/dev/ttys<N>","originating_command":"pre-compact","cwd":"/path/to/workspace"}
-#   Added `cwd` field to enable workspace-scoped sentinel matching when the new session's
-#   SID differs from the sentinel's SID (resume/startup/clear sources). ac_read_sentinel_tty
-#   accepts any schema_version in [1, AC_SCHEMA_VERSION] for backwards-compat. v1 sentinels
-#   (no cwd field) are still readable for target_tty extraction; ac_read_sentinel_cwd returns
-#   empty for v1 sentinels (cwd field absent).
+#   {"schema_version":2,...,"cwd":"/path/to/workspace"}
+#
+# Schema (v3 — R2 plan: adds marker_nonce for /post-compact-resume validation):
+#   {"schema_version":3,...,"cwd":"/path/to/workspace","marker_nonce":"<uuid>"}
 
-readonly AC_SCHEMA_VERSION=2
+readonly AC_SCHEMA_VERSION=3
 readonly AC_MAX_SENTINEL_BYTES=4096
 
 ac_sentinel_path() {
@@ -66,6 +65,11 @@ ac_log() {
   return 0
 }
 
+# Delegate to ac_log with handoff: prefix — no new log file (same ring, same rotation).
+handoff_log() {
+  ac_log "handoff:$1"
+}
+
 ac_resolve_session_id() {
   local sid="${CLAUDE_SESSION_ID:-}"
   if [ -z "$sid" ]; then
@@ -86,70 +90,88 @@ ac_validate_tty() {
   [[ "$1" =~ ^/dev/ttys[0-9]+$ ]]
 }
 
+# Returns canonical path via `cd -P` + `pwd -P`. Returns 1 on failure.
+# Used at arm time AND at primer-compare to ensure string equality holds across
+# symlinks, trailing slashes, and ./-segments.
+ac_canonicalize_path() {
+  local p="$1"
+  [ -z "$p" ] && return 1
+  ( cd -P "$p" 2>/dev/null && pwd -P ) || return 1
+}
+
+# Shared preamble: validate sentinel path before reading.
+# Returns 0 if file is safe to read; non-zero (and logs) otherwise.
+# Checks: file exists, not a symlink, not oversized.
+_ac_validate_sentinel_path() {
+  local p="$1"
+  [ -f "$p" ] || return 1
+  if [ -L "$p" ]; then ac_log "skip-sentinel reason=symlink path=$p"; return 1; fi
+  local size
+  # Explicit if-elif for stat (R1-H2): no || chaining which short-circuits on macOS BSD stat.
+  if size=$(stat -f %z "$p" 2>/dev/null); then
+    :
+  elif size=$(stat -c %s "$p" 2>/dev/null); then
+    :
+  else
+    size=0
+  fi
+  size=$(printf '%s' "$size" | tr -d '[:space:]')
+  [ -z "$size" ] && size=0
+  if [ "$size" -gt "${AC_MAX_SENTINEL_BYTES:-4096}" ]; then
+    ac_log "skip-sentinel reason=oversized size=$size path=$p"
+    return 1
+  fi
+  return 0
+}
+
+# Writes a sentinel JSON file atomically (tmp+rename) with mode 600.
+# Args: <sid> <tty> <cwd> <nonce>
+# The nonce arg is the marker_nonce that /pre-compact will embed in CLAUDE.local.md's
+# END-OF-HANDOFF marker; /post-compact-resume validates nonce consistency.
+# JSON construction via jq -c -n — escapes all special characters in cwd correctly
+# (defense against path-injection if cwd contains quotes, backslashes, etc.).
 ac_write_sentinel() {
-  local sid="$1" tty="$2" cwd="${3:-}"
+  local sid="$1" tty="$2" cwd="${3:-}" nonce="${4:-}"
   local path
   path=$(ac_sentinel_path "$sid")
   ac_validate_tty "$tty" || return 1
   mkdir -p "$(dirname "$path")" 2>/dev/null
   chmod 700 "$(dirname "$path")" 2>/dev/null
-  # umask 077 ensures mode 600 — sentinel readable only by the user.
-  # NOTE: `armed_at` was removed in round 4 (round 3 BREADTH flagged it as dead data
-  # — never consumed by reader, GC, or test harness). Filesystem mtime is the
-  # single source of truth for "when was this armed", used by the >12h prune.
-  # cwd field added in schema v2 (Task 1.1a) for workspace-scoped sentinel matching.
-  ( umask 077 && printf '{"schema_version":%d,"target_tty":"%s","originating_command":"pre-compact","cwd":"%s"}\n' \
-      "$AC_SCHEMA_VERSION" "$tty" "$cwd" > "$path" ) 2>/dev/null
+  # Build JSON via jq -c -n — argjson for numeric schema_version, --arg for strings.
+  local json
+  json=$(jq -c -n \
+    --argjson sv "$AC_SCHEMA_VERSION" \
+    --arg tty "$tty" \
+    --arg cwd "$cwd" \
+    --arg nonce "$nonce" \
+    '{schema_version:$sv,target_tty:$tty,originating_command:"pre-compact",cwd:$cwd,marker_nonce:$nonce}') || return 1
+  # Atomic write via temp+rename (POSIX same-fs atomicity verified by smoke 03).
+  # Hook subprocess — not subject to orchestrator Bash tool restrictions.
+  local tmp="${path}.tmp.$$"
+  ( umask 077; printf '%s\n' "$json" > "$tmp" ) 2>/dev/null || return 1
+  mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
 }
 
 # Reads target_tty from a sentinel after validating: not a symlink, size bounded,
 # parseable JSON, schema_version in range [1, AC_SCHEMA_VERSION], originating_command
-# is "pre-compact", and target_tty matches the anchored regex.
-# Accepts ANY schema_version from 1 up to AC_SCHEMA_VERSION for backwards-compat
-# (Task 1.1a: v1 sentinels in-flight when schema bumped to 2 must still be readable).
+# is "pre-compact", and target_tty is a valid TTY.
+# Accepts ANY schema_version from 1 up to AC_SCHEMA_VERSION for backwards-compat.
 # Echoes the validated target_tty on success, nothing on failure (returns non-zero).
 ac_read_sentinel_tty() {
   local path="$1"
-  [ -f "$path" ] || return 1
-  # Symlink rejection (defense against same-UID redirection).
-  [ -L "$path" ] && { ac_log "symlink rejected path=$path"; return 1; }
-  local size
-  size=$(wc -c < "$path" 2>/dev/null | tr -d '[:space:]')
-  if [ -z "$size" ] || [ "$size" -gt "$AC_MAX_SENTINEL_BYTES" ]; then
-    ac_log "oversized sentinel size=$size path=$path"
-    return 1
-  fi
+  _ac_validate_sentinel_path "$path" || return 1
   local raw
-  # Read entire JSON, then validate shape, schema range, and target_tty in one jq pass.
-  # The `((...) | type) == "string"` parens are LOAD-BEARING — without them, jq's `|`
-  # has lower precedence than `and`, so `and X | type == "string"` parses as
-  # `and (X | type == "string")` which evaluates type on the whole boolean chain
-  # ("boolean" != "string", always false). Round 3 caught this.
-  # schema_version range check (Task 1.1a backwards-compat):
-  #   .schema_version >= 1 and .schema_version <= $v
-  # accepts v1 (legacy, no cwd) and v2+ (with cwd), rejects anything above current.
+  # jq filter: type-guard on schema_version (R1-B4), range check, originating_command,
+  # and string type-guard on target_tty. Parenthesization is LOAD-BEARING:
+  # `((.target_tty // "") | type) == "string"` — without parens, jq `|` has lower
+  # precedence than `and`, causing incorrect parse (round 3 regression).
   raw=$(jq -r --argjson v "$AC_SCHEMA_VERSION" '
     if type == "object"
+       and ((.schema_version | type) == "number")
        and (.schema_version >= 1 and .schema_version <= $v)
        and (.originating_command // "") == "pre-compact"
        and (((.target_tty // "") | type) == "string")
     then .target_tty else empty end' < "$path" 2>/dev/null)
-  if [ -z "$raw" ]; then
-    raw=$(python3 -c '
-import sys, json
-try:
-  d = json.load(sys.stdin)
-  assert isinstance(d, dict)
-  sv = d.get("schema_version")
-  assert isinstance(sv, int) and 1 <= sv <= '"$AC_SCHEMA_VERSION"'
-  assert d.get("originating_command") == "pre-compact"
-  t = d.get("target_tty")
-  assert isinstance(t, str)
-  print(t)
-except Exception:
-  pass
-' < "$path" 2>/dev/null)
-  fi
   if ! ac_validate_tty "$raw"; then
     ac_log "invalid target_tty='$raw' path=$path"
     return 1
@@ -157,34 +179,39 @@ except Exception:
   printf '%s' "$raw"
 }
 
-# Reads the cwd field from a sentinel after validating: not a symlink, size bounded,
-# parseable JSON, schema_version in range [1, AC_SCHEMA_VERSION], originating_command
-# is "pre-compact", and cwd field is non-empty.
+# Reads the cwd field from a sentinel after validating schema, size, type guards.
 # Returns empty string (non-zero exit) for v1 sentinels (no cwd field), symlinks,
 # oversized files, jq parse failures, schema_version out of range, or empty/missing cwd.
 # Echoes the validated cwd on success, nothing on failure (returns non-zero).
 ac_read_sentinel_cwd() {
   local sentinel="$1"
-  [ -f "$sentinel" ] || return 1
-  [ -L "$sentinel" ] && return 1
-  local size
-  size=$(stat -f %z "$sentinel" 2>/dev/null | tr -d '[:space:]' || stat -c %s "$sentinel" 2>/dev/null | tr -d '[:space:]' || echo 0)
-  [ -z "$size" ] && size=0
-  [ "$size" -gt "${AC_MAX_SENTINEL_BYTES:-4096}" ] && return 1
-  # LOAD-BEARING jq parenthesization (mirrors ac_read_sentinel_tty):
-  # The whole filter MUST be parenthesized to ensure the `// ""` fallback applies
-  # to the entire expression, not just the last clause.
-  local result
-  result=$(jq -r --argjson v "${AC_SCHEMA_VERSION:-2}" '
-    (
-      select(.schema_version >= 1 and .schema_version <= $v)
-      | select(.originating_command == "pre-compact")
-      | select(.cwd != null)
-      | select(.cwd != "")
-      | .cwd
-    ) // ""
-  ' "$sentinel" 2>/dev/null)
-  [ -z "$result" ] && return 1
-  printf '%s' "$result"
-  return 0
+  _ac_validate_sentinel_path "$sentinel" || { ac_log "skip-sentinel reason=validate-failed path=$sentinel"; return 1; }
+  local cwd
+  cwd=$(jq -r --argjson v "${AC_SCHEMA_VERSION:-3}" '
+    if ((.schema_version | type) == "number")
+       and .schema_version >= 1
+       and .schema_version <= $v
+       and .originating_command == "pre-compact"
+       and ((.cwd | type) == "string")
+       and (.cwd != "")
+    then .cwd
+    else empty
+    end' "$sentinel" 2>/dev/null) || { ac_log "skip-sentinel reason=jq-parse path=$sentinel"; return 1; }
+  if [ -z "$cwd" ]; then
+    ac_log "skip-sentinel reason=no-cwd-or-invalid-schema path=$sentinel"
+    return 1
+  fi
+  printf '%s' "$cwd"
+}
+
+# Reads the marker_nonce field from a sentinel (schema v3+).
+# Returns empty string (non-zero exit) for v1/v2 sentinels or missing field.
+# Used by /post-compact-resume for nonce consistency validation.
+ac_read_sentinel_nonce() {
+  local sentinel="$1"
+  _ac_validate_sentinel_path "$sentinel" || return 1
+  local nonce
+  nonce=$(jq -r '.marker_nonce // empty' "$sentinel" 2>/dev/null) || return 1
+  [ -z "$nonce" ] && return 1
+  printf '%s' "$nonce"
 }
