@@ -793,7 +793,10 @@ echo ""
 echo "== §C6 multi-sentinel-matching-cwd =="
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+# R4 D3 fix: provide SID-tagged handoffs for each sentinel SID.
+# Primer picks first glob match; both SIDs have their own SID-tagged files.
+printf '# handoff A\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.AAAA0001.md"
+printf '# handoff B\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.BBBB0002.md"
 # Two sentinels with identical cwd but different SIDs
 printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce1"}\n' "$TMPHOME" \
   > "$TMPHOME/.claude/progress/auto-compact-AAAA0001.json"
