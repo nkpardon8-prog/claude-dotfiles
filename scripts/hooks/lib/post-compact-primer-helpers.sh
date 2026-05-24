@@ -152,7 +152,9 @@ primer_find_sentinel_for_cwd() {
     local sent_cwd_canon
     sent_cwd_canon=$(ac_canonicalize_path "$sent_cwd") || sent_cwd_canon="$sent_cwd"
     # CWD (raw, pre-canonicalization) is available via the caller's global CWD variable.
-    if [ "$sent_cwd_canon" = "$cwd_canon" ] || [ "$sent_cwd" = "${CWD:-}" ]; then
+    # H4: guard against empty-string false-positive when both canonicalizations fail.
+    if [ -n "$cwd_canon" ] && [ -n "$sent_cwd_canon" ] \
+       && { [ "$sent_cwd_canon" = "$cwd_canon" ] || [ "$sent_cwd" = "${CWD:-}" ]; }; then
       SENTINEL_PRESENT="true"
       SENTINEL_PATH="$sentinel_candidate"
       local sentinel_sid_full
