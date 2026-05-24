@@ -390,6 +390,21 @@ Most expensive thing for the next session to re-discover. Do not summarize.]
 [Raw numbers, comparison tables, before→after measurements, data file paths.
 Rule: never write "improved" / "better" / "faster" without before→after numbers.]
 
+### Surprising Discoveries
+<!-- System-level facts uncovered this session. Permanent truths, not try-results.
+R3 #A12 anti-duplication: only include here if the fact is NOT already captured
+as a "→ result" line in ## What We Tried. Do not duplicate. -->
+- [discovery] — [where observed] — [implication]
+
+<!-- Omit section entirely if no reviewers ran this session. -->
+## Review/Fix Loop Ledger
+<!-- Per-iteration trail for sessions involving reviewers (codex/claude/impl/plan/
+master/god). Omit section if no reviewers ran. -->
+| Round | UTC | Reviewer(s) | Findings (crit/non-crit) | Fixes applied | Verification |
+|---|---|---|---|---|---|
+| R1 | YYYY-MM-DDTHH:MMZ | codex-review | 13/47 | 13 files, tests rerun | passed |
+| R2 | ... | ... | ... | ... | ... |
+
 ## Key Decisions (This Session)
 - [Decision] — [reasoning] — [source: conversation | memory | git] — [confidence: high | low]
 - ...
