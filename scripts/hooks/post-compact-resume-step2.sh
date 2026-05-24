@@ -298,6 +298,11 @@ fi
 # R4 D4: when SID known, nonce mismatch is a HARD STOP (not advisory).
 # The alias could be from another session; we refuse to proceed with possibly wrong content.
 if [ "$NONCE_OK" = "mismatch" ] && [ -n "$SID8" ]; then
+  # C6: emit handoff_log so operators can grep auto-compact.log for nonce_mismatch_hard_stop
+  # (was: STDOUT-only STATE JSON, invisible to log consumers).
+  handoff_log "nonce_mismatch_hard_stop sid8=${SID8} marker_first8=$(printf '%s' "${MARKER_NONCE:-}" | head -c 8) sentinel_first8=$(printf '%s' "${SENTINEL_NONCE:-}" | head -c 8)"
+  # H4: emit step2_terminal log so operators can reconstruct terminal state audit trail.
+  handoff_log "step2_terminal state=nonce-mismatch-hard-stop sid8=${SID8}"
   _json=$(jq -c -n \
     --arg sid8 "$SID8" \
     --arg marker_nonce "${MARKER_NONCE:-}" \
