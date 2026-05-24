@@ -362,6 +362,8 @@ if [ "$NONCE_OK" = "mismatch" ] && [ -n "$SID8" ]; then
   else
     printf 'STATE={"state":"nonce-mismatch-hard-stop","sid8":"%s"}\n' "$SID8"
   fi
+  # C5: nonce-mismatch is a definitive rejection — breadcrumb consumed (decision made).
+  _BREADCRUMB_CONSUMED="yes"
   exit 0
 fi
 
