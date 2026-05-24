@@ -353,7 +353,11 @@ if ln "$H9_TARGET" "$H9_HARDLINK" 2>/dev/null; then
     check "H9: primer accepted multi-hardlink handoff at $HANDOFF_PATH" 1 0
   fi
 else
-  check "H9: hardlink creation not supported on this fs — skipping (informational)" 1 1
+  # R3-fix-sweep H7: vacuous-pass → infra-fail. On macOS APFS/HFS+, hardlinks
+  # within the same directory ARE supported. A hardlink failure indicates a real
+  # infra problem (tmpfs mount, unusual permissions, etc.).
+  fail "H9: hardlink creation failed — expected macOS APFS to support intra-dir hardlinks (infra-fail)" "ln $H9_TARGET $H9_HARDLINK failed"
+  # exit 1 not used here: check() records the FAIL; the harness continues to accumulate.
 fi
 rm -rf "$TMPDIR_H9"
 
