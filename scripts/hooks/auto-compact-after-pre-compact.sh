@@ -82,10 +82,12 @@ RESOLVED_EXISTS=false
 
 if [ "$REAL_EXISTS" = "true" ] && [ "$RESOLVED_EXISTS" = "true" ] \
    && [ "$REAL_SENTINEL" != "$RESOLVED_SENTINEL" ]; then
-  # Both exist but point to DIFFERENT sentinels — log the discrepancy and
-  # prefer the ac_resolve path (matches the writer's derivation).
-  handoff_log "stop_hook_sid_mismatch real=$REAL_SID resolved=$RESOLVED_SID — preferring resolved"
-  SESSION_ID="$RESOLVED_SID"
+  # R3-fix-sweep H4 (Adversary): both sentinels exist but disagree — fail-closed.
+  # An attacker who plants a transcript file + crafts a TTY redirect could redirect
+  # compact delivery by triggering RESOLVED_SID to diverge from REAL_SID.
+  # Refuse to fire compact when sentinel ownership is ambiguous.
+  handoff_log "stop_hook_sid_mismatch real=$REAL_SID resolved=$RESOLVED_SID action=refuse"
+  exit 0
 elif [ "$REAL_EXISTS" = "false" ] && [ "$RESOLVED_EXISTS" = "true" ]; then
   # Only the resolved (arm-time) sentinel exists — use it.
   SESSION_ID="$RESOLVED_SID"
