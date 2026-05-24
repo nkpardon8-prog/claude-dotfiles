@@ -111,10 +111,21 @@ CWD_CANON=$(ac_canonicalize_path "$PWD") || CWD_CANON="$PWD"
 # If unset (legacy invocation), arm-auto-compact generates a fallback nonce.
 MARKER_NONCE="${2:-}"
 if [ -z "$MARKER_NONCE" ]; then
-  MARKER_NONCE=$(uuidgen 2>/dev/null | tr -d '\n' \
-                 || od -vAn -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' \
-                 || printf '%s-%s' "$RANDOM$RANDOM" "$(date +%s)")
+  MARKER_NONCE=$(uuidgen 2>/dev/null | tr -d '\n' | tr 'A-F' 'a-f')
+  if [ -z "$MARKER_NONCE" ]; then
+    MARKER_NONCE=$(od -vAn -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+  fi
+  if [ -z "$MARKER_NONCE" ]; then
+    MARKER_NONCE=$(openssl rand -hex 16 2>/dev/null)
+  fi
+  if [ -z "$MARKER_NONCE" ]; then
+    ac_log "FATAL nonce-generation-failed at arm-auto-compact"
+    echo "NOT armed — nonce generation failed (uuidgen/od/openssl all unavailable)"
+    exit 1
+  fi
 fi
+# Also normalize externally-passed nonces to lowercase for canonical comparison
+MARKER_NONCE=$(printf '%s' "$MARKER_NONCE" | tr 'A-F' 'a-f')
 
 if [ "$DRY_RUN" = "1" ]; then
   ac_log "dry-run sid=$SID tty=$ORIG_TTY cwd=$CWD_CANON nonce=${MARKER_NONCE:0:8}"
