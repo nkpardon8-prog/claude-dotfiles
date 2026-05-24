@@ -64,9 +64,24 @@ if [ -z "$(ac_read_sentinel_tty "$TMPDIR_T/symlink.json" 2>/dev/null)" ]; then c
 yes "x" | head -c 5000 > "$TMPDIR_T/big.json"
 if [ -z "$(ac_read_sentinel_tty "$TMPDIR_T/big.json" 2>/dev/null)" ]; then check "reject oversized" 1 1; else check "reject oversized" 1 0; fi
 
-# Wrong schema_version
-echo '{"schema_version":2,"target_tty":"/dev/ttys007","originating_command":"pre-compact"}' > "$TMPDIR_T/v2.json"
-if [ -z "$(ac_read_sentinel_tty "$TMPDIR_T/v2.json" 2>/dev/null)" ]; then check "reject schema v2" 1 1; else check "reject schema v2" 1 0; fi
+# Wrong schema_version (future-invalid: one above current AC_SCHEMA_VERSION=2)
+echo '{"schema_version":3,"target_tty":"/dev/ttys007","originating_command":"pre-compact"}' > "$TMPDIR_T/v3.json"
+if [ -z "$(ac_read_sentinel_tty "$TMPDIR_T/v3.json" 2>/dev/null)" ]; then check "reject schema v3 (future-invalid)" 1 1; else check "reject schema v3 (future-invalid)" 1 0; fi
+
+# Schema v2 with cwd field: ac_read_sentinel_tty returns target_tty; ac_read_sentinel_cwd returns cwd
+echo '{"schema_version":2,"target_tty":"/dev/ttys042","originating_command":"pre-compact","cwd":"/Users/test/myproject"}' > "$TMPDIR_T/v2withcwd.json"
+READ_TTY_V2=$(ac_read_sentinel_tty "$TMPDIR_T/v2withcwd.json" 2>/dev/null)
+if [ "$READ_TTY_V2" = "/dev/ttys042" ]; then check "v2 sentinel: ac_read_sentinel_tty returns target_tty" 1 1; else check "v2 sentinel: ac_read_sentinel_tty (got '$READ_TTY_V2')" 1 0; fi
+READ_CWD_V2=$(ac_read_sentinel_cwd "$TMPDIR_T/v2withcwd.json" 2>/dev/null)
+if [ "$READ_CWD_V2" = "/Users/test/myproject" ]; then check "v2 sentinel: ac_read_sentinel_cwd returns cwd" 1 1; else check "v2 sentinel: ac_read_sentinel_cwd (got '$READ_CWD_V2')" 1 0; fi
+
+# Backwards-compat: v1 sentinel (no cwd field); ac_read_sentinel_tty still returns target_tty,
+# ac_read_sentinel_cwd returns empty (v1 has no cwd).
+echo '{"schema_version":1,"target_tty":"/dev/ttys011","originating_command":"pre-compact"}' > "$TMPDIR_T/v1compat.json"
+READ_TTY_V1=$(ac_read_sentinel_tty "$TMPDIR_T/v1compat.json" 2>/dev/null)
+if [ "$READ_TTY_V1" = "/dev/ttys011" ]; then check "v1 sentinel backwards-compat: ac_read_sentinel_tty returns target_tty" 1 1; else check "v1 sentinel backwards-compat: ac_read_sentinel_tty (got '$READ_TTY_V1')" 1 0; fi
+READ_CWD_V1=$(ac_read_sentinel_cwd "$TMPDIR_T/v1compat.json" 2>/dev/null)
+if [ -z "$READ_CWD_V1" ]; then check "v1 sentinel backwards-compat: ac_read_sentinel_cwd returns empty (no cwd field)" 1 1; else check "v1 sentinel backwards-compat: ac_read_sentinel_cwd (got '$READ_CWD_V1')" 1 0; fi
 
 # Wrong originating_command
 echo '{"schema_version":1,"target_tty":"/dev/ttys007","originating_command":"hacker"}' > "$TMPDIR_T/badorig.json"
