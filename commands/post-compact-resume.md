@@ -43,15 +43,18 @@ Then stop.
 
 ### Pre-read verification (marker + legacy + stale)
 
-**Path-resolution consistency:** the HANDOFF_PATH resolution logic in this snippet
-MUST match the primer's resolution logic exactly. Both look at:
-1. `$(pwd)/CLAUDE.local.md` (current cwd) first
-2. `$(git rev-parse --show-toplevel 2>/dev/null)/CLAUDE.local.md` (repo root) fallback
-Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
+**Path-resolution consistency:** the HANDOFF_PATH resolver in this snippet uses the
+shared `handoff_resolve_path(cwd, sid8)` lib function (`lib/handoff-resolve.sh`), matching
+the primer's resolver exactly. Both ends share the same lib to eliminate drift (R4 H10).
 
-Path-resolution intentionally uses shell `$(pwd)` here; the primer uses SessionStart JSON `.cwd`.
-`ac_canonicalize_path` canonicalization ensures both forms compare equal in practice
-(e.g., `/tmp/foo` and `/private/tmp/foo` on macOS both resolve to `/private/tmp/foo`).
+- When SID is known (via breadcrumb): looks for `CLAUDE.local.<sid8>.md` in cwd then repo
+  root; refuses to fall back to the generic alias `CLAUDE.local.md` (R4-D3 fail-closed).
+  If the SID-tagged file is missing, step2.sh emits `STATE=sid-known-no-tagged-file` and
+  the primer emits `primer warn reason=sentinel-without-sid-file` — do NOT proceed.
+- When SID is unknown (no breadcrumb adopted): looks for `CLAUDE.local.md` (alias) in
+  cwd then repo root. Legacy / best-effort path only.
+
+Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
 
 The orchestrator running `/post-compact-resume` must invoke this Bash via the `Bash` tool.
 **The snippet DEFINES `HANDOFF_PATH` inside the Bash call** (variable does not
