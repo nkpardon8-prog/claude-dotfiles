@@ -216,6 +216,8 @@ fi
 [ -z "$HANDOFF_SIZE" ] && HANDOFF_SIZE=0
 if [ "$HANDOFF_SIZE" -gt "${HANDOFF_MAX_SIZE_BYTES:-5242880}" ]; then
   # R4 D10: JSON-encoded STATE line (handles paths with spaces).
+  # H4: emit step2_terminal log so operators can reconstruct terminal state audit trail.
+  handoff_log "step2_terminal state=oversize sid8=${SID8:-none} size=${HANDOFF_SIZE}"
   _json=$(jq -c -n \
     --argjson size "$HANDOFF_SIZE" \
     --argjson max "${HANDOFF_MAX_SIZE_BYTES:-5242880}" \
