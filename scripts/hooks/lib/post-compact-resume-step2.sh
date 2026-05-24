@@ -95,24 +95,44 @@ try_path() {
   return 0
 }
 
+# R4 D3 / R4-PR-M9: SID-aware path resolution — NEVER mix SID-tagged and alias paths.
+# When SID8 is known, ONLY try SID-tagged files. When unknown, ONLY try alias files.
 if [ -n "$SID8" ]; then
+  # SID-known path: only SID-tagged files.
   try_path "$(pwd)/CLAUDE.local.${SID8}.md" || true
-fi
-if [ -z "$HANDOFF_PATH" ]; then
-  try_path "$(pwd)/CLAUDE.local.md" || true
-fi
-if [ -z "$HANDOFF_PATH" ] && [ -n "$REPO_ROOT" ]; then
-  if [ -n "$SID8" ]; then
+  if [ -z "$HANDOFF_PATH" ] && [ -n "$REPO_ROOT" ]; then
     try_path "$REPO_ROOT/CLAUDE.local.${SID8}.md" || true
   fi
-  try_path "$REPO_ROOT/CLAUDE.local.md" || true
+else
+  # SID-unknown path: only alias files.
+  try_path "$(pwd)/CLAUDE.local.md" || true
+  if [ -z "$HANDOFF_PATH" ] && [ -n "$REPO_ROOT" ]; then
+    try_path "$REPO_ROOT/CLAUDE.local.md" || true
+  fi
 fi
 
 if [ -z "$HANDOFF_PATH" ]; then
+  if [ -n "$SID8" ]; then
+    # R4 D3: SID known but no SID-tagged file found — fail closed.
+    # Do NOT fall back to alias (that may belong to another parallel-track session).
+    _json=$(jq -c -n --arg sid8 "$SID8" \
+      '{"state":"sid-known-no-tagged-file","sid8":$sid8}' 2>/dev/null)
+    if [ -n "$_json" ]; then
+      printf 'STATE=%s\n' "$_json"
+    else
+      printf 'STATE={"state":"sid-known-no-tagged-file","sid8":"%s"}\n' "$SID8"
+    fi
+    exit 0
+  fi
   # Signaling convention: exit 0 here so the orchestrator reads STATE= from stdout
   # and routes accordingly. Non-zero exit would surface as a Bash tool error, not
   # as a routable state signal.
-  echo "STATE=no-handoff"
+  _json=$(jq -c -n '{"state":"no-handoff"}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"no-handoff"}\n'
+  fi
   exit 0
 fi
 
