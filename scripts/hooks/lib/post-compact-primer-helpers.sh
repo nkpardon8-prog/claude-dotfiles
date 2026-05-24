@@ -103,18 +103,59 @@ primer_check_freshness() {
 }
 
 # ---------------------------------------------------------------------------
-# primer_find_sentinel_for_cwd <cwd_canon>
+# primer_find_sentinel_for_cwd <cwd_canon> [session_id]
 #
 # Scans $HOME/.claude/progress/ for a sentinel matching the given canonical cwd.
 # Sets SENTINEL_PRESENT, SENTINEL_PATH, SENTINEL_SID8, SENTINEL_NONCE globally.
+#
+# Phase 2 (Round 4): optional 2nd argument session_id.
+# When session_id is provided (non-empty), require sentinel basename to match
+# auto-compact-${session_id}.json EXACTLY (not glob). This binds the primer to
+# the current session's sentinel and prevents Track A from adopting Track B's
+# sentinel when both have sentinels for the same cwd (live-reproduced, Round 3
+# Concurrency C1+C2). Falls back to cwd-match-only when session_id is empty.
 # ---------------------------------------------------------------------------
 primer_find_sentinel_for_cwd() {
   local cwd_canon="$1"
+  local session_id="${2:-}"
   SENTINEL_PRESENT="false"
   SENTINEL_PATH=""
   SENTINEL_SID8=""
   SENTINEL_NONCE=""
 
+  # Phase 2 (Round 4): session-id-strict binding.
+  # When session_id is known, try the exact sentinel path first.
+  if [ -n "$session_id" ]; then
+    local exact_candidate="$HOME/.claude/progress/auto-compact-${session_id}.json"
+    if [ -f "$exact_candidate" ]; then
+      local sent_cwd
+      sent_cwd=$(ac_read_sentinel_cwd "$exact_candidate" 2>/dev/null) || sent_cwd=""
+      if [ -n "$sent_cwd" ]; then
+        local sent_cwd_canon
+        sent_cwd_canon=$(ac_canonicalize_path "$sent_cwd") || sent_cwd_canon="$sent_cwd"
+        if [ -n "$cwd_canon" ] && [ -n "$sent_cwd_canon" ] \
+           && { [ "$sent_cwd_canon" = "$cwd_canon" ] || [ "$sent_cwd" = "${CWD:-}" ]; }; then
+          local sentinel_sid_full
+          sentinel_sid_full=$(basename "$exact_candidate" .json | sed 's/^auto-compact-//')
+          if printf '%s' "$sentinel_sid_full" | grep -qE '^[A-Za-z0-9_-]+$'; then
+            SENTINEL_PRESENT="true"
+            SENTINEL_PATH="$exact_candidate"
+            SENTINEL_SID8=$(ac_compute_sid8 "$sentinel_sid_full")
+            SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$exact_candidate" 2>/dev/null) || SENTINEL_NONCE=""
+            ctx_gate_log "primer_sentinel_bind session_id=${session_id} mode=strict path=$exact_candidate"
+            return 0
+          fi
+        fi
+      fi
+    fi
+    # Session-id known but exact sentinel not found or cwd mismatch — do NOT fall back to glob scan.
+    # This is the correct fail-closed behavior: avoid adopting another track's sentinel.
+    ctx_gate_log "primer_sentinel_bind session_id=${session_id} mode=strict-miss no-sentinel-found"
+    return 0
+  fi
+
+  # session_id empty — legacy cwd-match glob scan (fallback for old contexts / manual invocations).
+  ctx_gate_log "primer_sentinel_bind session_id=unknown mode=legacy-fallback"
   local sentinel_candidate
   for sentinel_candidate in "$HOME/.claude/progress/auto-compact-"*.json; do
     [ -f "$sentinel_candidate" ] || continue
