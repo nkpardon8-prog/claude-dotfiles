@@ -237,7 +237,8 @@ for _bc_entry in "${_bc_sorted[@]+"${_bc_sorted[@]}"}"; do
       SENTINEL_NONCE=""
       continue
     fi
-    handoff_log "step2_reader_bind own_sid=$(printf '%s' "$OWN_SID" | head -c 8) mode=strict path=$BREADCRUMB"
+    # R5 H1: use ac_compute_sid8 (TTY-aware) instead of head -c 8.
+    handoff_log "step2_reader_bind own_sid=$(ac_compute_sid8 "$OWN_SID" 2>/dev/null || printf '%s' "$OWN_SID" | head -c 8) mode=strict path=$BREADCRUMB"
   else
     handoff_log "step2_reader_bind own_sid=unknown mode=legacy-fallback path=$BREADCRUMB"
   fi
