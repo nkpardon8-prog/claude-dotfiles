@@ -61,7 +61,7 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `action=allow-sentinel-fresh` | ctx-gate-precompact-safety.sh | Sentinel fresh (<1800s); let native compact proceed |
 | `action=stale-sentinel` | ctx-gate-precompact-safety.sh | Sentinel exists but is stale; reenforcing block |
 | `action=reject-symlink-sentinel` | ctx-gate-precompact-safety.sh | Sentinel is a symlink |
-| `action=release-extreme-pct` | ctx-gate-precompact-safety.sh | PCT >= HANDOFF_PRECOMPACT_RELEASE_PCT; release native compact |
+| `action=release-extreme-pct` | ctx-gate-precompact-safety.sh | PCT >= HANDOFF_AUTOCOMPACT_BYPASS_PCT (90); release native compact |
 | `action=block` | ctx-gate-precompact-safety.sh | No sentinel; PCT below release threshold; block native compact |
 
 ### SessionStart (primer) events
