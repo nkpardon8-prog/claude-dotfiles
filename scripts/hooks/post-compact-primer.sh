@@ -158,7 +158,10 @@ primer_check_freshness "$HANDOFF_PATH" "${SID:-unknown}"
 primer_check_marker "$HANDOFF_PATH"
 
 # Compose marker-related warning based on (marker, legacy) combination.
-if [ "$MARKER_PRESENT" = "false" ] && [ "$LEGACY" = "true" ]; then
+# RQ-07 (R6 HZ-34/INV-3): handle MARKER_PRESENT="tampered" (multi-marker detected at primer layer).
+if [ "$MARKER_PRESENT" = "tampered" ]; then
+  MARKER_WARNING=$'WARNING HANDOFF FILE TAMPERED — multiple END-OF-HANDOFF markers detected. This indicates possible filesystem manipulation or a double-write bug. Do NOT run /post-compact-resume automatically; investigate the file first. step2.sh will emit STATE=multi-marker-detected and refuse ingestion.\n\n'
+elif [ "$MARKER_PRESENT" = "false" ] && [ "$LEGACY" = "true" ]; then
   MARKER_WARNING=$'INFO LEGACY HANDOFF FILE — predates the END-OF-HANDOFF marker convention (file mtime older than deployment cutoff). Proceeding but please verify content makes sense.\n\n'
 elif [ "$MARKER_PRESENT" = "false" ]; then
   MARKER_WARNING=$'WARNING HANDOFF FILE APPEARS TRUNCATED — missing END-OF-HANDOFF marker; file is recent enough that the marker should be present. The prior /pre-compact may have crashed mid-write. Verify with the user what was being worked on before assuming.\n\n'
