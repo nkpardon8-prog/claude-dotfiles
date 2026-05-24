@@ -106,8 +106,8 @@ echo '{not json' > "$TMPDIR_T/junk.json"
 if [ -z "$(ac_read_sentinel_tty "$TMPDIR_T/junk.json" 2>/dev/null)" ]; then check "reject malformed JSON" 1 1; else check "reject malformed JSON" 1 0; fi
 
 echo "== jq path isolated (without python3 fallback) =="
-# Round 3 discovered that the python3 fallback was masking a jq operator-precedence
-# bug. This test exercises the jq branch directly to prevent regression.
+# The python3 fallback was masking a jq operator-precedence bug.
+# This test exercises the jq branch directly to prevent regression.
 TMP_OK="$TMPDIR_T/valid.json"
 echo '{"schema_version":1,"target_tty":"/dev/ttys123","armed_at":"x","originating_command":"pre-compact"}' > "$TMP_OK"
 JQ_OUT=$(jq -r --argjson v 1 '
