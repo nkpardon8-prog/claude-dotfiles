@@ -626,6 +626,16 @@ fi
 
 ---
 
+## Security Notes (R5/R6)
+
+**HMAC breadcrumb signing (R5+):** The Stop hook signs every breadcrumb with a per-session HMAC-SHA256 key stored at `~/.claude/progress/.session-key-<sid8>`. The `/post-compact-resume` reader verifies this signature before trusting any breadcrumb. This prevents an attacker who knows the session ID from forging a breadcrumb pointing to adversarial handoff content.
+
+**HANDOFF_ACCEPT_UNSIGNED=1 (migration escape hatch):** If you upgraded from pre-R5 and see `STATE=signature-mismatch` or `STATE=hmac-unavailable`, set `HANDOFF_ACCEPT_UNSIGNED=1` to bypass HMAC verification for a single resume run. This is a one-time migration mechanism — unset the variable after migration is complete. Do NOT set it permanently in your shell profile.
+
+**Key file GC:** Session key files at `~/.claude/progress/.session-key-<sid8>` are automatically pruned after 24 hours by the Stop hook's GC block. This bounds accumulation to O(sessions per day). If you need to force-clean: `rm ~/.claude/progress/.session-key-*` — any session that needs to sign after this will regenerate its key automatically.
+
+---
+
 ## Rules
 
 - Manual invocation only for the SKILL itself (you typing `/pre-compact`). Two hooks support it:
