@@ -168,6 +168,23 @@ for _bc_entry in "${_bc_sorted[@]+"${_bc_sorted[@]}"}"; do
   SENTINEL_NONCE=$(jq -r '
     if ((.nonce | type) == "string") and (.nonce != "") then .nonce else empty end' \
     "$BREADCRUMB" 2>/dev/null) || SENTINEL_NONCE=""
+  # Phase 2 (Round 4): OWN_SID session-binding filter.
+  # Require breadcrumb.sid to match OWN_SID (the current Claude session's SID)
+  # if OWN_SID is known. This prevents Track A's reader from adopting Track B's
+  # breadcrumb even when both breadcrumbs match cwd + hostname (live-reproduced
+  # parallel-track contamination, Round 3 Concurrency C1+C2).
+  if [ -n "${OWN_SID:-}" ]; then
+    if [ "$SENTINEL_SID" != "$OWN_SID" ]; then
+      ctx_gate_log "step2 skip reason=sid-mismatch-binding own_sid=${OWN_SID} breadcrumb_sid=${SENTINEL_SID} path=$BREADCRUMB"
+      SENTINEL_SID=""
+      SID8=""
+      SENTINEL_NONCE=""
+      continue
+    fi
+    handoff_log "step2_reader_bind own_sid=$(printf '%s' "$OWN_SID" | head -c 8) mode=strict path=$BREADCRUMB"
+  else
+    handoff_log "step2_reader_bind own_sid=unknown mode=legacy-fallback path=$BREADCRUMB"
+  fi
   # R4 D5: track path for read-once consumption after successful adoption.
   ADOPTED_BREADCRUMB_PATH="$BREADCRUMB"
   break
