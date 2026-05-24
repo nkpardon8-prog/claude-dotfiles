@@ -85,7 +85,7 @@ Never parse STATE= with regex or string splits — the path field may contain sp
 
 Then route per the decision matrix below.
 
-**Decision matrix (route on `.state` JSON field — all 7 valid states):**
+**Decision matrix (route on `.state` JSON field — all 12 valid states):**
 
 - **STATE=`no-handoff`:** no handoff found. Output the paste-prompt from Step 1. Stop.
 
@@ -139,6 +139,52 @@ Then route per the decision matrix below.
   > This may indicate a misconfigured workspace or an unexpected file.
   > Do NOT load this file automatically. Ask the user before proceeding.
   Then stop. Do not guess; ask the user.
+
+- **STATE=`stop-hook-refused`:** the Stop hook detected conflicting sentinels and wrote a fail-closed breadcrumb. The handoff was NOT preserved.
+  Extract: `sid8`, `real_sid`, `resolved_sid` from STATE JSON.
+  Output to user:
+  > WARNING: The /pre-compact Stop hook encountered conflicting session ID resolution and refused
+  > to write the handoff breadcrumb. The handoff content may not have been saved.
+  > sid8=<value> (this session) real_sid=<real_sid> resolved_sid=<resolved_sid>
+  > Next steps: (1) Check if `CLAUDE.local.<sid8>.md` exists (if so, manually run /post-compact-resume again
+  >   after verifying the file looks correct). (2) If file is missing, run /pre-compact again to re-create the handoff.
+  > Ask the user how to proceed — do NOT attempt to guess the prior context.
+  Then stop.
+
+- **STATE=`sid-known-hardlinked`:** the SID-tagged handoff file has a hardlink count > 1. This is unexpected (normal files have count=1) and may indicate an attack where an adversary created a hardlink to a sensitive file to bypass the symlink-check gate.
+  Extract: `sid8`, `next_steps` from STATE JSON.
+  Output to user:
+  > WARNING: The handoff file `CLAUDE.local.<sid8>.md` has an unexpected hardlink count.
+  > This could indicate filesystem manipulation. next_steps=<value>
+  > Do NOT read this file. Ask the user to inspect and re-create if legitimate.
+  Then stop. Do not guess; ask the user.
+
+- **STATE=`handoff-mutated-mid-read`:** the handoff file's inode/size changed between the snapshot and the final read — the file was modified during ingestion (e.g., auto-sync swap).
+  Output to user:
+  > WARNING: The handoff file was modified while being read. This may produce garbled context.
+  > Possible cause: git sync or another tool rewrote the file during /post-compact-resume.
+  > Re-run /post-compact-resume to get a stable snapshot. If the problem persists, ask the user.
+  Then stop. Retry once automatically; if still mutating, escalate to user.
+
+- **STATE=`multi-marker-detected`:** the handoff file contains more than one END-OF-HANDOFF marker line. The write protocol guarantees exactly one; multiple markers indicate tampering or a double-write bug.
+  Extract: `sid8`, `count`, `path` from STATE JSON.
+  Output to user:
+  > WARNING: The handoff file `path` contains `count` END-OF-HANDOFF marker lines (expected 1).
+  > This indicates the file may have been tampered with or double-written.
+  > Do NOT load this file automatically.
+  > To fix: inspect the file, remove duplicate marker lines (keep the last one), then re-run /post-compact-resume.
+  > Ask the user before proceeding.
+  Then stop. Do not guess; ask the user.
+
+- **STATE=`own-sid-unresolvable`:** step2.sh could not determine this session's SID — both CLAUDE_SESSION_ID and CLAUDE_CODE_SESSION_ID were unset and the slug fallback found no transcript in the current directory. Cannot safely bind to any breadcrumb.
+  Extract: `reason` from STATE JSON.
+  Output to user:
+  > WARNING: Could not determine this session's unique ID. reason=<value>
+  > This typically means /post-compact-resume was invoked outside of a Claude Code session,
+  > or from a directory with no project transcripts.
+  > Next steps: (1) Run /post-compact-resume from the same directory where /pre-compact was run.
+  >   (2) If running manually, set CLAUDE_SESSION_ID to the session ID from the prior /pre-compact.
+  Then stop.
 
 - **STATE=`error` or parse failure (jq returns null / empty / non-zero):** treat as `no-handoff` — output the paste-prompt. Stop.
 
