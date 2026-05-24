@@ -137,29 +137,29 @@ OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"foo","tool
 if [ -z "$OUT" ]; then pass "3h: pretooluse ctx=91 Bash(echo hi) sentinel-present → allow"; else fail "3h: pretooluse sentinel-present → expected allow (empty), got: $OUT"; fi
 rm -rf "$TMPHOME"
 
-# 3i — PreCompact, trigger=auto, ctx=78 (BLOCK zone: 70-84%), no sentinel: expect decision=block
-# Threshold update 2026-05-23: BLOCK zone is between CTX_HARD_PCT (70) and CTX_PRECOMPACT_SAFETY_PCT (85)
+# 3i — PreCompact, trigger=auto, ctx=68 (BLOCK zone: new 60-74%), no sentinel: expect decision=block
+# Threshold 2026-05-23 second revision: BLOCK zone is between CTX_HARD_PCT (60) and CTX_PRECOMPACT_SAFETY_PCT (75)
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '68\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"foo","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+  pass "3i: precompact trigger=auto ctx=68 no sentinel → block"
+else
+  fail "3i: precompact trigger=auto ctx=68 → expected block, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3i-bis — PreCompact, trigger=auto, ctx=78 (≥75% new RELEASE zone), no sentinel: expect empty
+# Threshold 2026-05-23 second revision: PRECOMPACT_SAFETY release threshold is now 75 (was 85)
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '78\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"foo","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
-  pass "3i: precompact trigger=auto ctx=78 no sentinel → block"
-else
-  fail "3i: precompact trigger=auto ctx=78 → expected block, got: $OUT"
-fi
-rm -rf "$TMPHOME"
-
-# 3i-bis — PreCompact, trigger=auto, ctx=88 (≥85% RELEASE zone), no sentinel: expect empty
-# Threshold update: PRECOMPACT_SAFETY release threshold is now 85 (was 95)
-TMPHOME=$(mktemp -d)
-mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '88\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
-OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"foo","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if [ -z "$OUT" ]; then
-  pass "3i-bis: precompact trigger=auto ctx=88 → release (empty, avoids deadlock)"
+  pass "3i-bis: precompact trigger=auto ctx=78 → release (empty, avoids deadlock at >=75%)"
 else
-  fail "3i-bis: precompact trigger=auto ctx=88 → expected empty (release), got: $OUT"
+  fail "3i-bis: precompact trigger=auto ctx=78 → expected empty (release), got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
