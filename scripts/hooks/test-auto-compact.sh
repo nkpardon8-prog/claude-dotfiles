@@ -394,12 +394,30 @@ if ( umask 077 && jq -c -n \
      '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
      > "$BREADCRUMB_TMP" 2>/dev/null ) && mv "$BREADCRUMB_TMP" "$BREADCRUMB_PATH" 2>/dev/null; then
   BC_SID=$(jq -r '.sid' "$BREADCRUMB_PATH" 2>/dev/null)
+  BC_SID8=$(jq -r '.sid8' "$BREADCRUMB_PATH" 2>/dev/null)
   BC_SCHEMA=$(jq -r '.schema_version' "$BREADCRUMB_PATH" 2>/dev/null)
+  BC_OC=$(jq -r '.originating_command' "$BREADCRUMB_PATH" 2>/dev/null)
+  BC_HOST=$(jq -r '.hostname' "$BREADCRUMB_PATH" 2>/dev/null)
   BC_MODE=$(stat -f '%Lp' "$BREADCRUMB_PATH" 2>/dev/null || stat -c '%a' "$BREADCRUMB_PATH" 2>/dev/null)
   if [ "$BC_SID" = "$E2E_SID" ] && [ "$BC_SCHEMA" = "1" ]; then
-    check "G2/D7: production-schema breadcrumb written (sid=${BC_SID:0:8} schema=$BC_SCHEMA mode=$BC_MODE)" 1 1
+    check "G2/D7: breadcrumb sid + schema_version:1 correct (production schema)" 1 1
   else
-    check "G2/D7: breadcrumb content mismatch sid=$BC_SID schema=$BC_SCHEMA" 1 0
+    check "G2/D7: breadcrumb sid/schema mismatch sid=$BC_SID schema=$BC_SCHEMA" 1 0
+  fi
+  if [ "$BC_MODE" = "600" ]; then
+    check "G2/D7: breadcrumb mode 600 (umask 077 write)" 1 1
+  else
+    check "G2/D7: breadcrumb mode should be 600 (got $BC_MODE)" 1 0
+  fi
+  if [ "$BC_OC" = "pre-compact" ]; then
+    check "G2/D7: breadcrumb originating_command=pre-compact" 1 1
+  else
+    check "G2/D7: breadcrumb originating_command wrong (got $BC_OC)" 1 0
+  fi
+  if [ -n "$BC_HOST" ] && [ "$BC_SID8" = "$E2E_SID8" ]; then
+    check "G2/D7: breadcrumb hostname non-empty + sid8 correct" 1 1
+  else
+    check "G2/D7: breadcrumb hostname=$BC_HOST sid8=$BC_SID8 (expected non-empty + $E2E_SID8)" 1 0
   fi
   # Create real SID-tagged handoff file matching nonce so step2.sh resolves STATE=ok.
   printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
