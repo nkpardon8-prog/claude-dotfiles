@@ -303,8 +303,9 @@ if [ -f "$VERBS_FILE" ]; then
   if [ -z "$(printf '%s' "$G5_UNDOC_UNIQ" | tr -d '[:space:]')" ]; then
     pass "G5: all log-verb tokens documented in LOG_VERBS.md"
   else
-    # Informational: verbs evolve faster than docs; drift is not a blocking failure.
-    pass "G5: LOG_VERBS coverage check ran (drift candidates: $G5_UNDOC_UNIQ)"
+    # R4 H6: promoted from informational pass to hard FAIL — LOG_VERBS.md must stay in sync.
+    # If a log verb is emitted but undocumented, update LOG_VERBS.md before proceeding.
+    fail "G5: LOG_VERBS drift detected — undocumented verbs: $G5_UNDOC_UNIQ (update LOG_VERBS.md)"
   fi
 else
   fail "G5: LOG_VERBS.md missing at $VERBS_FILE"
