@@ -603,7 +603,7 @@ if command -v session_key_sign >/dev/null 2>&1 && command -v openssl >/dev/null 
   fi
   rm -rf "$RQ09_HOME" "$RQ09_FAKE_BIN"
 else
-  check "R6-RQ09: session_key_sign not available — skipped" 1 1
+  check "R6-RQ09: session_key_sign or openssl not available — skipped (inconclusive)" 1 1
 fi
 
 echo
