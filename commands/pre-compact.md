@@ -1,5 +1,5 @@
 ---
-description: Run before Claude Code compacts the conversation. Writes a focused handoff file so post-compact Claude picks up the thread without losing info. Refreshes project docs via /document, then dumps active task, build plan, key decisions, open issues, gaps, and fix-laters into CLAUDE.local.md. Natural triggers include "save state before compact", "dump context before you forget", "about to get compacted", "prepare for compaction".
+description: Run before Claude Code compacts the conversation. Writes a focused handoff file so post-compact Claude picks up the thread without losing info. Refreshes project docs via /document, then dumps active task, build plan, key decisions, open issues, gaps, and fix-laters into a SID-tagged CLAUDE.local.<sid8>.md file. Natural triggers include "save state before compact", "dump context before you forget", "about to get compacted", "prepare for compaction".
 argument-hint: "[optional: current task focus, e.g. 'migrating auth to Clerk']"
 ---
 
