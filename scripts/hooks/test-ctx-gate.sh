@@ -1240,7 +1240,7 @@ if [ -n "$PAST_MTIME" ]; then
   if [ "$GG_STATE_STALE" = "no-handoff" ]; then
     pass "G4-G: age=3601s breadcrumb rejected → state=no-handoff (age guard)"
   else
-    pass "G4-G: age=3601s breadcrumb skipped (state=$GG_STATE_STALE; stale breadcrumb not adopted)"
+    fail "G4-G: age guard didn't reject stale breadcrumb — got state=$GG_STATE_STALE (expected no-handoff)" "raw: ${OUT_G_STALE:0:200}"
   fi
   rm -rf "$TMPHOME_G_OLD" "$TMPWD_G_EMPTY"
 else
