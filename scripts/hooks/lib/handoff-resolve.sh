@@ -28,13 +28,19 @@ readonly _HANDOFF_RESOLVE_LOADED=1
 # ---------------------------------------------------------------------------
 _primer_check_linkcount() {
   local p="$1"
-  local linkcount
+  local linkcount stat_ok
+  stat_ok=false
   if linkcount=$(stat -f %l "$p" 2>/dev/null); then
-    :
+    stat_ok=true
   elif linkcount=$(stat -c %h "$p" 2>/dev/null); then
-    :
-  else
-    linkcount=1
+    stat_ok=true
+  fi
+  # H10 fix: fail-CLOSED on stat failure (was: fail-open with linkcount=1).
+  # If stat fails entirely, we cannot confirm the file is not a hardlink — refuse
+  # to proceed rather than silently trust a path we cannot verify.
+  if [ "$stat_ok" = "false" ]; then
+    ctx_gate_log "primer skip reason=stat-failed path=$p"
+    return 1
   fi
   linkcount=$(printf '%s' "$linkcount" | tr -d '[:space:]')
   [ -z "$linkcount" ] && linkcount=1
