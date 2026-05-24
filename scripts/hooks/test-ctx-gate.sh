@@ -494,13 +494,13 @@ else
   fail "§2.5 step 7: precompact block at 68" "precompact safety should block at ctx=68, got: $OUT"
 fi
 
-# Step 7b: PreCompact trigger=auto, ctx=78 (>=75% RELEASE zone) → should RELEASE (avoid deadlock)
-printf '78\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
+# Step 7b: PreCompact trigger=auto, ctx=91 (>=90% RELEASE zone after R3 D4 raise) → should RELEASE (avoid deadlock)
+printf '91\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"fakesid","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if [ -z "$OUT" ]; then
-  pass "§2.5 step 7b: precompact safety releases at ctx=78 (avoids deadlock at >=75%)"
+  pass "§2.5 step 7b: precompact safety releases at ctx=91 (avoids deadlock at >=90%)"
 else
-  fail "§2.5 step 7b: precompact release at 78" "precompact safety should RELEASE at ctx>=75 (empty output), got: $OUT"
+  fail "§2.5 step 7b: precompact release at 91" "precompact safety should RELEASE at ctx>=90 (empty output), got: $OUT"
 fi
 
 # Step 8: SessionStart compact with CLAUDE.local.md present in cwd → primer fires
