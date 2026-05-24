@@ -420,6 +420,12 @@ master/god). Omit section if no reviewers ran. -->
 ## User Constraints (This Session)
 - [Constraint stated by the user this session, verbatim or paraphrased]
 
+<!-- Omit section entirely if not applicable. -->
+## User Wishes & Asides
+<!-- Forward-looking desires expressed in passing. Distinct from User Constraints
+(hard rules) and Mid-Session Feedback (reactive). -->
+- "[verbatim or near-verbatim quote]" — [context if non-obvious]
+
 ## Tool / MCP State Confirmed
 - [Supabase project: <name>, confirmed this session]
 - [Netlify site: <name>, confirmed this session]
