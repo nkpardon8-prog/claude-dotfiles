@@ -186,7 +186,51 @@ Then route per the decision matrix below.
   >   (2) If running manually, set CLAUDE_SESSION_ID to the session ID from the prior /pre-compact.
   Then stop.
 
+- **STATE=`snapshot-failed`:** the TOCTOU-safe snapshot could not be created (`mktemp` or `cp` failed). The handoff file exists but could not be safely read.
+  Extract: `sid8`, `path`, `reason` from STATE JSON.
+  Output to user:
+  > WARNING: Could not create a safe snapshot of the handoff file at `path`. reason=`reason`
+  > This typically means /tmp is full or /tmp has incorrect permissions.
+  > Next steps: (1) Run `df /tmp` and `ls -la /tmp` to check available space and permissions.
+  >   (2) Clear temporary files (`rm -rf /tmp/handoff_snap.*`) and retry /post-compact-resume.
+  Then stop.
+
+- **STATE=`hmac-unavailable`:** the session HMAC key file exists for this session, but signature verification could not be performed (openssl unavailable or key file corrupted). This is suspicious — the signer intended to sign this session but the verifier cannot confirm authenticity.
+  Extract: `sid8`, `reason` from STATE JSON.
+  Output to user:
+  > WARNING: HMAC verification unavailable for session `sid8`. reason=`reason`
+  > The session key file at `~/.claude/progress/.session-key-<sid8>` exists but signature
+  > verification failed. This may indicate: (1) openssl is not installed or broken,
+  > (2) the key file is corrupted (wrong permissions, empty, or truncated).
+  > Recovery options:
+  >   (a) If openssl is missing: install it with `brew install openssl` and retry.
+  >   (b) If the key is corrupted: delete it with `rm ~/.claude/progress/.session-key-<sid8>` and retry.
+  >   (c) For pre-R5 sessions migrating to R6: set `HANDOFF_ACCEPT_UNSIGNED=1` once to bypass.
+  Then stop.
+
+- **STATE=`signature-mismatch`:** all candidate breadcrumbs failed HMAC signature verification (or the claim-file fallback was used after all signed breadcrumbs were rejected). The breadcrumb may have been tampered, or the session key was rotated.
+  Extract: `sid8`, `mismatch_count`, `reason` from STATE JSON.
+  Output to user:
+  > WARNING: Breadcrumb HMAC signature mismatch for session `sid8` (`mismatch_count` breadcrumbs rejected).
+  > The breadcrumb file may have been tampered or your session key was rotated.
+  > Recovery options:
+  >   (a) If migrating from pre-R5 (before HMAC signing): set `HANDOFF_ACCEPT_UNSIGNED=1` once and retry.
+  >     `HANDOFF_ACCEPT_UNSIGNED=1 bash /post-compact-resume-step2.sh` — then unset the variable.
+  >   (b) If not migrating: re-run `/pre-compact` in a fresh session to create a new signed breadcrumb.
+  >   (c) If you believe tampering occurred, check `~/.claude/logs/auto-compact.log` for forensic evidence.
+  Then stop.
+
 - **STATE=`error` or parse failure (jq returns null / empty / non-zero):** treat as `no-handoff` — output the paste-prompt. Stop.
+
+**Migration guide: HANDOFF_ACCEPT_UNSIGNED=1**
+
+This environment variable disables HMAC signature verification for all breadcrumbs in a single step2.sh run. It exists as a one-time migration escape hatch for sessions created before R5 (before HMAC signing was implemented). **Do NOT leave this variable set permanently.**
+
+Use only when:
+- You are resuming a pre-R5 session where no `.session-key-<sid8>` file exists.
+- You see `STATE=signature-mismatch` or `STATE=hmac-unavailable` after an upgrade from pre-R5.
+
+After migration: unset the variable (`unset HANDOFF_ACCEPT_UNSIGNED`) and run a fresh `/pre-compact` to create a properly signed breadcrumb for the new session.
 
 **MARKER/STALE sub-matrix (applies when STATE=ok):**
 
