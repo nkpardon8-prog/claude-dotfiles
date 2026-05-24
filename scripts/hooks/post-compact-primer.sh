@@ -60,8 +60,19 @@ fi
 # Canonicalize CWD for symlink-safe comparison with sentinel cwd field.
 CWD_CANON=$(ac_canonicalize_path "$CWD") || CWD_CANON="$CWD"
 
+# R3 D6: Sentinel-presence check runs FIRST so SENTINEL_SID8 is set before
+# primer_resolve_handoff_path uses it to prefer the SID-tagged handoff file.
+# SENTINEL LIFECYCLE:
+# - /pre-compact Step 9.0 writes: $HOME/.claude/progress/auto-compact-${SID}.json
+# - Stop hook atomically RENAMES it to ${SENTINEL_PATH}.claim.<pid> on consumption.
+# - For source=compact: sentinel typically ABSENT at primer time (Stop hook claimed it).
+# - For source=resume/startup/clear: unconsumed sentinel means /pre-compact ran but
+#   /compact never fired (laptop close, crash, etc.). Hard channel was lost.
+primer_find_sentinel_for_cwd "$CWD_CANON"
+
 # Walk up to the git repo root (SessionStart cwd may be a subdirectory of the repo).
-# Look at cwd first, fall back to repo root. (primer_resolve_handoff_path sets HANDOFF_PATH.)
+# R3 D6: primer_resolve_handoff_path now checks SENTINEL_SID8 (set above) to prefer
+# the SID-tagged file (CLAUDE.local.<sid8>.md) over the generic alias (CLAUDE.local.md).
 HANDOFF_PATH=""
 primer_resolve_handoff_path "$CWD"
 
@@ -115,17 +126,7 @@ else
   MARKER_WARNING=""
 fi
 
-# Sentinel-presence check (Decision E — resume-path coverage).
-# New session SID differs from sentinel SID for resume/startup/clear.
-# Use GLOB scan + cwd-disambiguation via primer_find_sentinel_for_cwd helper.
-#
-# SENTINEL LIFECYCLE:
-# - /pre-compact Step 9.0 writes: $HOME/.claude/progress/auto-compact-${SID}.json
-# - Stop hook atomically RENAMES it to ${SENTINEL_PATH}.claim.<pid> on consumption.
-# - For source=compact: sentinel typically ABSENT at primer time (Stop hook claimed it).
-# - For source=resume/startup/clear: unconsumed sentinel means /pre-compact ran but
-#   /compact never fired (laptop close, crash, etc.). Hard channel was lost.
-primer_find_sentinel_for_cwd "$CWD_CANON"
+# SENTINEL_PRESENT + SENTINEL_SID8 were already set by primer_find_sentinel_for_cwd above.
 
 # Compose nav directive based on (source, sentinel, marker, freshness, legacy) matrix.
 # See plan Architecture Overview "Source-routing decision matrix" for the full table.
