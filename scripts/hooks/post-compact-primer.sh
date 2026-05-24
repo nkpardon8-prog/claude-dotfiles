@@ -111,15 +111,16 @@ primer_find_sentinel_for_cwd "$CWD_CANON"
 # See plan Architecture Overview "Source-routing decision matrix" for the full table.
 case "$SOURCE" in
   compact)
-    # Stop hook claimed sentinel; sentinel typically absent.
-    # R2 #10 ANOMALY: if sentinel IS present, the Stop hook mv-claim failed silently.
+    # Stop hook claimed sentinel; sentinel typically absent for compact source.
+    # ANOMALY: if sentinel IS still present here, the Stop hook mv-claim failed silently.
+    # Only emitted for compact source — resume/startup/clear can legitimately have a
+    # sentinel (indicates /pre-compact ran but /compact never fired).
     if [ "$SENTINEL_PRESENT" = "true" ]; then
       ctx_gate_log "primer sid=${SID:-unknown} source=compact ANOMALY sentinel-still-present-after-compact path=$SENTINEL_PATH"
       ANOMALY_WARNING=$'WARNING ANOMALY: sentinel still present after /compact. Stop hook may have failed to claim it. Check ~/.claude/logs/auto-compact.log if this repeats.\n\n'
     else
       ANOMALY_WARNING=""
     fi
-    # R3 #B6 fix: use $'\n\n' between concatenated warnings for separate paragraphs.
     MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. /post-compact-resume should auto-fire from the Stop-hook queue. If it did not fire, run /post-compact-resume now."
     ;;
   resume|startup|clear)
