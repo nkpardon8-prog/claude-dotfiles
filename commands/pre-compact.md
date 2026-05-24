@@ -605,32 +605,42 @@ Proceed to Step 6D.
 ### Step 6D: Append END-OF-HANDOFF marker
 
 After Step 6C self-audit completes (PASS or 2-pass-incomplete-with-warning), append
-the marker as the literal last line of `./CLAUDE.local.md`. **Use the `Edit` tool, NOT
-Bash `printf >>` or `mv`** (R1 findings #2, #3 — allowlist-clean).
+the marker as the literal last line of HANDOFF_PRIMARY. **Use the `Edit` tool, NOT
+Bash `printf >>` or `mv`** — allowlist-clean.
 
-**Step 6D protocol (R2 #4, #8 + R3 #1 — Read-then-Edit MANDATORY + allowlist-clean idempotency):**
+**Step 6D protocol — Read-then-Edit MANDATORY + nonce generation:**
 
-1. **Idempotency check via Read tool, NOT Bash pipe.** R3 #1 critical fix: `tail | grep`
-   is a compound command (`|` pipe) — denied by ctx-gate compound-command deny-class at
-   the active 60% hard-gate, which is exactly when /pre-compact fires. Must use the
-   `Read` tool instead (in the allowlist):
-   - Call `Read` on `./CLAUDE.local.md`.
-   - In working memory: check if the last 512 bytes of the read content contain the
-     literal string `<!-- END-OF-HANDOFF -->`.
+1. **Generate marker nonce.** Run via Bash:
+   ```bash
+   NONCE=$(uuidgen 2>/dev/null | tr -d '\n' \
+           || od -vAn -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' \
+           || printf '%s-%s' "$RANDOM$RANDOM" "$(date +%s)")
+   echo "NONCE=$NONCE"
+   ```
+   Capture the NONCE value. This same nonce will be embedded in the marker AND passed
+   to arm-auto-compact.sh in Step 9.0 so /post-compact-resume can validate consistency.
+
+2. **Idempotency check via Read tool, NOT Bash pipe** (pipe denied by orchestrator
+   restrictions at high ctx — always use Read tool here):
+   - Determine line count of HANDOFF_PRIMARY (from the Write call in Step 6A).
+   - Call `Read` on HANDOFF_PRIMARY with `offset = max(1, line_count - 50)` to read
+     the last 50 lines (bounds Read against 2000-line truncation on huge files).
+   - In working memory: check if the read content contains
+     `<!-- END-OF-HANDOFF schema=v1` OR `<!-- END-OF-HANDOFF -->`.
    - If present: marker already there (likely a retry). SKIP the Edit; proceed to Step 7.
-   - If absent: proceed to step 2.
+   - If absent: proceed to step 3.
 
-2. **Use the same Read result to capture the exact current tail** (whitespace,
-   trailing newlines, multi-line bullets — exact bytes matter for the Edit match).
+3. **Single Edit call to append marker:**
+   - `file_path`: HANDOFF_PRIMARY (absolute path)
+   - `old_string`: the exact last line(s) from the Read result (exact bytes matter)
+   - `new_string`: same last line(s) + `\n\n<!-- END-OF-HANDOFF schema=v1 sid=${SID8} nonce=${NONCE} -->\n`
 
-3. **Single Edit call:**
-   - `file_path`: `./CLAUDE.local.md` (absolute path resolved at runtime)
-   - `old_string`: the literal last line(s) of the file (exact bytes from step 2)
-   - `new_string`: same last line(s) + `\n\n<!-- END-OF-HANDOFF -->`
+4. **Copy primary to alias.** After marker append:
+   - Read HANDOFF_PRIMARY.
+   - Write the full content to HANDOFF_ALIAS (CLAUDE.local.md).
+   This makes the alias a deterministic copy of the SID-tagged primary.
 
-**R2 #4: the Write-alternative path is REMOVED.** A full Write at this stage could
-silently lose Phase 2 gap-fill content if the orchestrator in-working-memory copy
-drifted from disk. The Read-then-Edit path is the sole safe mechanism.
+5. **NONCE is now known** — carry it to Step 9.0 where it is passed to arm-auto-compact.sh.
 
 The marker is the "complete file" signal. Absent marker = file in some intermediate
 state (Phase 1 only, mid-Phase-2 crash, mid-self-audit crash, mid-marker-append-crash)
@@ -638,6 +648,8 @@ state (Phase 1 only, mid-Phase-2 crash, mid-self-audit crash, mid-marker-append-
 
 **Crash-safety:** each Edit call is atomic per-call (Claude Code internally uses
 temp+rename). The idempotency check above prevents double-marker artifacts on retry.
+
+**Marker format is LOCKED** (attributes in fixed order): `<!-- END-OF-HANDOFF schema=v1 sid=<sid8> nonce=<uuid> -->`. Nonce extraction by consumers uses order-insensitive `sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p'`.
 
 ## Step 7: Ensure auto-load on next session
 
