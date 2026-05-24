@@ -10,14 +10,42 @@ _CTX_GATE_CONFIG_LOADED=1
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
-# Per user 2026-05-23: pre-compaction must happen EARLIER. 50-60% = "stop new risky work";
-# 70%+ = "wrap up and hand off" territory. Previous 70/90 was too late for serious work.
-readonly CTX_SOFT_PCT=60         # stop new risky work zone (gentle reminder)
-readonly CTX_HARD_PCT=70         # wrap-up & hand off zone (hard deny non-handoff tools)
+# Per user 2026-05-23 (first revision): 60/70/85 — "stop new risky work at 60%, wrap up at 70%".
+# Per user 2026-05-23 (second revision, medical-grade tightening): tightened further to 50/60/75.
+# Rationale: even 60/70 was too late for serious medical-grade production work; past 50% of
+# window should stop new risky work; 60% = hard wrap-up zone; 75% = extreme release valve.
+readonly CTX_SOFT_PCT=50         # stop new risky work zone (gentle reminder)
+readonly CTX_HARD_PCT=60         # wrap-up & hand off zone (hard deny non-handoff tools)
 # PreCompact safety net only fires below this; at/above this it releases to avoid
-# deadlock (native compact runs as degraded fallback). Dropped from 95 to 85 to match
-# the earlier-compaction posture.
-readonly CTX_PRECOMPACT_SAFETY_PCT=85
+# deadlock (native compact runs as degraded fallback). Dropped from 95 → 85 → 75 to match
+# the earlier-compaction posture (medical-grade tightening 2026-05-23 second revision).
+readonly CTX_PRECOMPACT_SAFETY_PCT=75
+
+# NEW for Decision F (pre-compact-soundness-hardening plan, R1 finding #6):
+# Sessions longer than this are treated as "stale" by the primer and /post-compact-resume.
+# Default 24h — 1h false-positives on legitimate overnight sessions, so default to 24h.
+# Configurable via env var override (must be set BEFORE sourcing this lib):
+#   CTX_STALE_HANDOFF_SECS_OVERRIDE=43200 (12h) in their shell
+readonly CTX_STALE_HANDOFF_SECS="${CTX_STALE_HANDOFF_SECS_OVERRIDE:-86400}"
+
+# NEW for legacy-file backwards-compat (R1 meta-pass blind spot, R2 #6 buffer):
+# CLAUDE.local.md files with mtime BEFORE this cutoff are treated as "legacy" — absent
+# END-OF-HANDOFF marker is acceptable (warn-but-allow rather than refuse). After the
+# cutoff, marker absence = file is truncated/corrupt and should be flagged.
+#
+# Set to 3 days BEFORE implementation date (R2 #6 buffer — prevents flagging
+# same-day legitimate files as TRUNCATED):
+# - Implementation deploys 2026-05-24 → cutoff = 2026-05-21 00:00:00 UTC = 1779235200
+# - Reason: a CLAUDE.local.md written on 2026-05-23 (day before deploy) by the prior
+#   /pre-compact version would have mtime > a same-day cutoff, falsely triggering
+#   TRUNCATED warnings. The 3-day buffer cleanly separates legacy from recent.
+#
+# Override-via-env (R2 #2/#3 — `readonly` cannot be overridden post-source; tests need
+# this pattern to set deterministic past/future cutoffs):
+# R3 #B4 — downgrade escape hatch: if user reverts pre-compact.md to a pre-marker
+# version, set CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE=9999999999 to suppress all
+# TRUNCATED warnings (makes all files appear "legacy"). See dotfiles README troubleshooting.
+readonly CTX_LEGACY_HANDOFF_CUTOFF_EPOCH="${CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE:-1779235200}"  # 2026-05-21 00:00 UTC
 
 # ---------------------------------------------------------------------------
 # Log configuration
