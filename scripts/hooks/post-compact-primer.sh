@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# post-compact-primer.sh — SessionStart hook (matcher: "compact"): post-compact primer.
+# post-compact-primer.sh — SessionStart hook (matcher: "compact|resume|startup|clear"):
+# Source-routing primer for all session-start sources.
 #
-# Fires once after native /compact runs. Emits additionalContext directing the post-compact
-# agent to read CLAUDE.local.md → ## Active Skill State + ## Next Action, state which
-# skill+phase it's resuming, then proceed.
+# Decision E: fires for compact (post-compact nav), resume/startup/clear (pending-handoff
+# detection or session-start nav). Removes the hard-gate to compact-only.
 #
-# Cannot block (SessionStart hooks are advisory-only). We trust Opus 4.7 to comply.
 # Fail-open on any error (exits 0, no output) so a buggy hook never breaks session start.
 
 set -uo pipefail
@@ -15,21 +14,19 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/ctx-gate-config.sh
 . "$ROOT/lib/ctx-gate-config.sh"
+# shellcheck source=lib/auto-compact-sentinel.sh
+. "$ROOT/lib/auto-compact-sentinel.sh"
 
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (per codex-review R2 F16: DoS guard)
 
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
-# Belt-and-suspenders: settings.json matcher should already filter to "compact" sources,
-# but guard at runtime too in case matcher is ignored (per Round 1 reviewer A #12 / B #10).
-[ "$SOURCE" = "compact" ] || exit 0
 
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
-# Walk up to the git repo root: per Round 1 reviewer A #12 / reviewer B #10, the SessionStart
-# cwd may be a subdirectory of the repo where CLAUDE.local.md was written. Look at cwd first,
-# fall back to repo root.
+# Walk up to the git repo root (SessionStart cwd may be a subdirectory of the repo).
+# Look at cwd first, fall back to repo root.
 HANDOFF_PATH=""
 if [ -f "$CWD/CLAUDE.local.md" ]; then
   HANDOFF_PATH="$CWD/CLAUDE.local.md"
@@ -40,29 +37,132 @@ else
   fi
 fi
 
-if [ -n "$HANDOFF_PATH" ]; then
-  MSG="🔄 POST-COMPACT SESSION. A /pre-compact handoff was written to ${HANDOFF_PATH}. Your VERY FIRST action this session — before any tool call, before responding to any prompt — is to:
-
-1. Read ${HANDOFF_PATH} in full.
-2. State explicitly which skill+phase you are resuming, from the '## Active Skill State' section (if populated) and '## Next Action' section.
-3. If the Active Skill State indicates an in-flight skill (e.g., '/plan mid-review round 2', '/implement mid-phase 3', '/master-review mid-round 4'), re-enter that skill at that phase.
-4. Then — and only then — proceed with new work.
-
-Do not assume you remember the prior session. The handoff file is the source of truth."
-else
-  MSG="🔄 POST-COMPACT SESSION. No CLAUDE.local.md handoff found at \$CWD or repo root. The prior session's /pre-compact may not have run. Proceed with caution and ask the user what they were working on before assuming."
+if [ -z "$HANDOFF_PATH" ]; then
+  ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} action=skip reason=no-handoff-file"
+  exit 0
 fi
 
-ctx_gate_log "primer sid=${SID:-unknown} source=compact cwd=$CWD handoff=${HANDOFF_PATH:-none}"
+# Read mtime ONCE (used by both freshness checks). R2 #4 fix: strip whitespace from
+# stat output (bash 3.2 arithmetic fails on whitespace from `stat` on some systems).
+HANDOFF_MTIME=$(stat -f %m "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || stat -c %Y "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || printf 0)
+[ -z "$HANDOFF_MTIME" ] && HANDOFF_MTIME=0
+NOW=$(date +%s)
+HANDOFF_AGE=$((NOW - HANDOFF_MTIME))
 
-# Emit additionalContext as soft-direction backup. The hard channel is the Stop hook
-# (auto-compact-after-pre-compact.sh), which chains `/post-compact-resume` into the input
-# queue right after `/compact` — Claude Code TUI buffers it during compaction and processes
-# it as the next turn once /compact completes. That path is bulletproof: tab-targeted PTY
-# writes via AppleScript do_script, no GUI focus dependency, no mount race.
+# R2 #4 fix: if stat failed (HANDOFF_MTIME=0), HANDOFF_AGE is a ~57-year false positive
+# (current epoch minus zero). Guard: treat stat-failure as "freshness unknown" rather
+# than "ancient." Skip stale check, log the failure, proceed with marker check only.
+STAT_OK="true"
+if [ "$HANDOFF_MTIME" -eq 0 ]; then
+  STAT_OK="false"
+  HANDOFF_AGE=0  # neutralize for downstream comparisons
+  ctx_gate_log "primer sid=${SID:-unknown} action=stat-failed-mtime-zero stale-check-skipped"
+fi
+
+# Legacy-file detection (R1 meta-pass blind spot — backwards-compat for existing
+# CLAUDE.local.md files written before the marker convention).
+# R2 #6 buffer: cutoff is 3 days before deploy, so same-day-old files are NOT legacy.
+LEGACY="false"
+if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$CTX_LEGACY_HANDOFF_CUTOFF_EPOCH" ]; then
+  LEGACY="true"
+fi
+
+# END-OF-HANDOFF marker check (Decision D).
+# R4 #B1 clarification: `tail | grep` pipe is CORRECT here. This is post-compact-primer.sh
+# running as a standalone shell script under the SessionStart hook (subprocess invocation),
+# NOT a Bash tool call by the orchestrator. The ctx-gate compound-command deny-class only
+# applies to orchestrator Bash-tool calls (gated via PreToolUse hook). Hook scripts running
+# their own bash are not gated. Do NOT "fix" this pipe — it works as-is.
+MARKER='<!-- END-OF-HANDOFF -->'
+MARKER_PRESENT="true"
+if ! tail -c 512 "$HANDOFF_PATH" 2>/dev/null | grep -qF "$MARKER"; then
+  MARKER_PRESENT="false"
+fi
+
+# Compose marker-related warning based on (marker, legacy) combination.
+if [ "$MARKER_PRESENT" = "false" ] && [ "$LEGACY" = "true" ]; then
+  MARKER_WARNING=$'INFO LEGACY HANDOFF FILE — predates the END-OF-HANDOFF marker convention (file mtime older than deployment cutoff). Proceeding but please verify content makes sense.\n\n'
+elif [ "$MARKER_PRESENT" = "false" ]; then
+  MARKER_WARNING=$'WARNING HANDOFF FILE APPEARS TRUNCATED — missing END-OF-HANDOFF marker; file is recent enough that the marker should be present. The prior /pre-compact may have crashed mid-write. Verify with the user what was being worked on before assuming.\n\n'
+else
+  MARKER_WARNING=""
+fi
+
+# Stale-handoff detection (Decision F + R1 #6 — uses lib constant, default 24h).
+# R2 #4 / #11 fix: always assign STALE_WARNING in both branches (prevents `set -u` abort).
+# R2 #4: skip stale check if STAT_OK=false (HANDOFF_MTIME unreliable).
+# R3 #B12: compute HANDOFF_AGE_HUMAN INSIDE the stale-branch (not at top scope).
+STALE_WARNING=""
+if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "${CTX_STALE_HANDOFF_SECS}" ]; then
+  HANDOFF_AGE_HUMAN=$((HANDOFF_AGE / 3600))
+  STALE_WARNING="WARNING HANDOFF PREDATES THIS SESSION by ~${HANDOFF_AGE_HUMAN}h — it may be from a prior conversation. Verify with the user before resuming."$'\n\n'
+fi
+
+# Sentinel-presence check (Decision E — resume-path coverage).
+# R2 CRITICAL fix: new session SID differs from sentinel SID for resume/startup/clear.
+# Use GLOB scan + cwd-disambiguation via ac_read_sentinel_cwd (added in Task 1.1a).
 #
-# The additionalContext below is just belt — if for any reason `/post-compact-resume`
-# didn't get queued (e.g., user ran /compact manually without arming the Stop chain),
-# this directive still tells the model where the handoff lives.
+# SENTINEL LIFECYCLE:
+# - /pre-compact Step 9.0 writes: $HOME/.claude/progress/auto-compact-${SID}.json
+# - Stop hook atomically RENAMES it to ${SENTINEL_PATH}.claim.<pid> on consumption.
+# - For source=compact: sentinel typically ABSENT at primer time (Stop hook claimed it).
+# - For source=resume/startup/clear: unconsumed sentinel means /pre-compact ran but
+#   /compact never fired (laptop close, crash, etc.). Hard channel was lost.
+
+SENTINEL_PRESENT="false"
+SENTINEL_PATH=""
+for sentinel_candidate in "$HOME/.claude/progress/auto-compact-"*.json; do
+  # Glob with no match expands to literal pattern; the -f test catches this.
+  [ -f "$sentinel_candidate" ] || continue
+  # Use schema-validating lib reader: symlink rejection, size cap, schema_version check.
+  # R3 #5 fix: legacy sentinels (schema_version=1, no cwd field) → skip via continue.
+  SENT_CWD=$(ac_read_sentinel_cwd "$sentinel_candidate" 2>/dev/null)
+  if [ -z "$SENT_CWD" ]; then
+    ctx_gate_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=no-cwd-field-or-invalid-schema"
+    continue
+  fi
+  if [ "$SENT_CWD" = "$CWD" ]; then
+    SENTINEL_PRESENT="true"
+    SENTINEL_PATH="$sentinel_candidate"
+    break
+  fi
+  # Different cwd — this sentinel is for another workspace; skip
+done
+
+# Compose nav directive based on (source, sentinel, marker, freshness, legacy) matrix.
+# See plan Architecture Overview "Source-routing decision matrix" for the full table.
+case "$SOURCE" in
+  compact)
+    # Stop hook claimed sentinel; sentinel typically absent.
+    # R2 #10 ANOMALY: if sentinel IS present, the Stop hook mv-claim failed silently.
+    if [ "$SENTINEL_PRESENT" = "true" ]; then
+      ctx_gate_log "primer sid=${SID:-unknown} source=compact ANOMALY sentinel-still-present-after-compact path=$SENTINEL_PATH"
+      ANOMALY_WARNING=$'WARNING ANOMALY: sentinel still present after /compact. Stop hook may have failed to claim it. Check ~/.claude/logs/auto-compact.log if this repeats.\n\n'
+    else
+      ANOMALY_WARNING=""
+    fi
+    # R3 #B6 fix: use $'\n\n' between concatenated warnings for separate paragraphs.
+    MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. /post-compact-resume should auto-fire from the Stop-hook queue. If it did not fire, run /post-compact-resume now."
+    ;;
+  resume|startup|clear)
+    if [ "$SENTINEL_PRESENT" = "true" ]; then
+      # Sentinel exists = /pre-compact ran but /compact did not fire (hard channel lost).
+      MSG="${MARKER_WARNING}${STALE_WARNING}RESUMED SESSION with PENDING HANDOFF. A /pre-compact ran but /compact did not fire (laptop close, crash, or terminal exit). Handoff at ${HANDOFF_PATH}. Your FIRST action: run /post-compact-resume to navigate the handoff."
+    else
+      # No sentinel; handoff file may be from any prior session.
+      MSG="${MARKER_WARNING}${STALE_WARNING}SESSION START with existing handoff at ${HANDOFF_PATH}. If this is the continuation of prior work, run /post-compact-resume. If it is unrelated, ignore."
+    fi
+    ;;
+  *)
+    # Unknown source — emit minimal nav. With E2 regex matcher, only compact|resume|startup|clear
+    # should ever reach here. Defensive fallback for any future Claude Code source types.
+    MSG="${MARKER_WARNING}${STALE_WARNING}Handoff at ${HANDOFF_PATH}. If resuming prior work, run /post-compact-resume."
+    ;;
+esac
+
+STALE_FLAG="no"
+if [ -n "$STALE_WARNING" ]; then STALE_FLAG="yes"; fi
+ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} sentinel=$SENTINEL_PRESENT marker=$MARKER_PRESENT legacy=$LEGACY age=${HANDOFF_AGE}s stale=$STALE_FLAG"
+
 jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": $ctx } }'
 exit 0
