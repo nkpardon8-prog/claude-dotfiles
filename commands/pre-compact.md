@@ -483,8 +483,13 @@ Bash `printf >>` or `mv`** — allowlist-clean.
 
 2. **Idempotency check via Read tool, NOT Bash pipe** (pipe denied by orchestrator
    restrictions at high ctx — always use Read tool here):
-   - Determine line count of HANDOFF_PRIMARY (from the Write call in Step 6A).
-   - Call `Read` on HANDOFF_PRIMARY with `offset = max(1, line_count - 50)` to read
+   - Determine `LINE_COUNT` of HANDOFF_PRIMARY via Bash:
+     ```bash
+     LINE_COUNT=$(wc -l < "$HANDOFF_PRIMARY" | tr -d '[:space:]')
+     OFFSET=$(( LINE_COUNT > 50 ? LINE_COUNT - 50 : 1 ))
+     echo "OFFSET=$OFFSET"
+     ```
+   - Call `Read` on HANDOFF_PRIMARY with `offset=$OFFSET` and `limit=50` to read
      the last 50 lines (bounds Read against 2000-line truncation on huge files).
    - In working memory: check if the read content contains
      `<!-- END-OF-HANDOFF schema=v1` OR `<!-- END-OF-HANDOFF -->`.
