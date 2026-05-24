@@ -9,21 +9,30 @@ _AC_LIB_LOADED=1
 # Single source of truth for paths, schema, sentinel layout.
 #
 # Public functions:
-#   ac_sentinel_path <sid>       → echoes ~/.claude/progress/auto-compact-<sid>.json
-#   ac_log_path                  → echoes ~/.claude/logs/auto-compact.log
-#   ac_log <message>             → append timestamped line to log; bounded ring (keep last 64K)
-#   ac_resolve_session_id        → echoes the current Claude Code session id (or empty)
-#   ac_validate_tty <tty>        → returns 0 if matches /dev/ttys[0-9]+, else 1
-#   ac_write_sentinel <sid> <tty>→ writes JSON sentinel, mode 600, returns 0 on success
-#   ac_read_sentinel_tty <path>  → echoes target_tty from sentinel, after validating schema/size
+#   ac_sentinel_path <sid>              → echoes ~/.claude/progress/auto-compact-<sid>.json
+#   ac_log_path                         → echoes ~/.claude/logs/auto-compact.log
+#   ac_log <message>                    → append timestamped line to log; bounded ring (keep last 64K)
+#   ac_resolve_session_id               → echoes the current Claude Code session id (or empty)
+#   ac_validate_tty <tty>               → returns 0 if matches /dev/ttys[0-9]+, else 1
+#   ac_write_sentinel <sid> <tty> <cwd> → writes JSON sentinel, mode 600, returns 0 on success
+#   ac_read_sentinel_tty <path>         → echoes target_tty from sentinel, after validating schema/size
+#   ac_read_sentinel_cwd <path>         → echoes cwd from sentinel, after validating schema/size/cwd-field
 #
 # Schema (v1):
 #   {"schema_version":1,"target_tty":"/dev/ttys<N>","originating_command":"pre-compact"}
 #   Filesystem mtime is the single source of truth for "when armed" (used by the
 #   >12h prune in scripts/progress/on-session-start-cleanup.sh). `armed_at` was
 #   removed in round 4 as dead data.
+#
+# Schema (v2 — Task 1.1a per pre-compact-soundness-hardening plan):
+#   {"schema_version":2,"target_tty":"/dev/ttys<N>","originating_command":"pre-compact","cwd":"/path/to/workspace"}
+#   Added `cwd` field to enable workspace-scoped sentinel matching when the new session's
+#   SID differs from the sentinel's SID (resume/startup/clear sources). ac_read_sentinel_tty
+#   accepts any schema_version in [1, AC_SCHEMA_VERSION] for backwards-compat. v1 sentinels
+#   (no cwd field) are still readable for target_tty extraction; ac_read_sentinel_cwd returns
+#   empty for v1 sentinels (cwd field absent).
 
-readonly AC_SCHEMA_VERSION=1
+readonly AC_SCHEMA_VERSION=2
 readonly AC_MAX_SENTINEL_BYTES=4096
 
 ac_sentinel_path() {
