@@ -1447,7 +1447,8 @@ chmod 600 "$TMPHOME_I/.claude/progress/breadcrumb-${GI_SID}.json"
 # SID-tagged handoff in spaced directory.
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GI_SID8" "$GI_NONCE" > "$SPACED_DIR/CLAUDE.local.${GI_SID8}.md"
-OUT_I=$(cd "$SPACED_DIR" 2>/dev/null && HOME="$TMPHOME_I" bash "$STEP2_SH" 2>/dev/null)
+# R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GI_SID.
+OUT_I=$(cd "$SPACED_DIR" 2>/dev/null && CLAUDE_SESSION_ID="$GI_SID" HOME="$TMPHOME_I" bash "$STEP2_SH" 2>/dev/null)
 GI_STATE=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 GI_PATH=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.path' 2>/dev/null)
 if [ "$GI_STATE" = "ok" ] && printf '%s' "$GI_PATH" | grep -q ' '; then
