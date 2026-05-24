@@ -65,12 +65,27 @@ _BREADCRUMB_CONSUMED=""
 trap '[ "$_BREADCRUMB_CONSUMED" = "yes" ] && [ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true' EXIT
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 
-# Phase 2 (Round 4): Compute OWN_SID at startup for session-binding filter.
-# ac_resolve_session_id is sourced from lib/auto-compact-sentinel.sh above.
-# When CLAUDE_SESSION_ID is set (typical Claude Code hook context), this returns
-# it directly. When unset (manual invocations, test fixtures), returns slug-fallback
-# (possibly empty). Empty OWN_SID → legacy-fallback mode (adopts newest matching breadcrumb).
+# R5 Critical #1 + #9: Compute OWN_SID at startup for session-binding filter.
+# ac_resolve_session_id (lib/auto-compact-sentinel.sh) reads CLAUDE_SESSION_ID first,
+# then falls back to CLAUDE_CODE_SESSION_ID (R5 Critical #1 one-line fix), then slug+TTY.
+# If all three resolution paths fail (both env vars unset AND no transcript in cwd),
+# emit STATE=own-sid-unresolvable and refuse to proceed — adopting any breadcrumb
+# without a known OWN_SID could surface the wrong session's handoff (legacy-fallback
+# swallowed this silently; R5 Critical #9 makes it explicit and actionable).
 OWN_SID=$(ac_resolve_session_id 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128) || OWN_SID=""
+if [ -z "$OWN_SID" ]; then
+  # Check whether either env var is set at all; if neither is set and slug also failed,
+  # this is genuinely unresolvable (not just a manual-invocation with no transcripts).
+  if [ -z "${CLAUDE_SESSION_ID:-}" ] && [ -z "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    handoff_log "step2_terminal state=own-sid-unresolvable reason=both-env-vars-unset-and-slug-failed"
+    printf 'STATE={"state":"own-sid-unresolvable","reason":"both CLAUDE_SESSION_ID and CLAUDE_CODE_SESSION_ID are unset and slug fallback found no transcript"}\n'
+    exit 0
+  fi
+  # One or both env vars set but produced empty after sanitization — treat as unresolvable.
+  handoff_log "step2_terminal state=own-sid-unresolvable reason=env-var-set-but-resolved-empty"
+  printf 'STATE={"state":"own-sid-unresolvable","reason":"session ID resolved to empty after sanitization"}\n'
+  exit 0
+fi
 
 # Phase 3 (Round 4): Stop-hook-refused signal detection.
 # When the Stop hook H4 fail-closes (both sentinels disagree), it writes a breadcrumb
