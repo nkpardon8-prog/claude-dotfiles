@@ -143,5 +143,5 @@ STALE_FLAG="no"
 if [ -n "$STALE_WARNING" ]; then STALE_FLAG="yes"; fi
 ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} sentinel=$SENTINEL_PRESENT marker=$MARKER_PRESENT legacy=$LEGACY age=${HANDOFF_AGE}s stale=$STALE_FLAG"
 
-jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": $ctx } }'
+jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "hookEventVersion": "SessionStart-v1", "additionalContext": $ctx } }'
 exit 0
