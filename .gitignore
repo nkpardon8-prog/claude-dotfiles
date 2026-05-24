@@ -17,7 +17,9 @@ tmp/
 !.env.example
 credentials.md
 credentials.local.md
-**/CLAUDE.local.md
+# R3 D5: glob covers CLAUDE.local.md (alias), CLAUDE.local.<sid8>.md (SID-tagged primary),
+# CLAUDE.local.md.prev (snapshot), and future .tmp variants. Trailing star is intentional.
+**/CLAUDE.local.md*
 
 # Common secret-bearing files (defense in depth)
 *.pem
