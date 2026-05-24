@@ -161,7 +161,7 @@ ac_read_sentinel_tty() {
   local path="$1"
   _ac_validate_sentinel_path "$path" || return 1
   local raw
-  # jq filter: type-guard on schema_version (R1-B4), range check, originating_command,
+  # jq filter: type-guard on schema_version, range check, originating_command,
   # and string type-guard on target_tty. Parenthesization is LOAD-BEARING:
   # `((.target_tty // "") | type) == "string"` — without parens, jq `|` has lower
   # precedence than `and`, causing incorrect parse (round 3 regression).
