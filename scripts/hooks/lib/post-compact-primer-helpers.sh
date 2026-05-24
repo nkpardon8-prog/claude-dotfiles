@@ -17,6 +17,33 @@ readonly _POST_COMPACT_PRIMER_HELPERS_LOADED=1
 #   lib/handoff-marker.sh   — handoff_marker_check
 
 # ---------------------------------------------------------------------------
+# _primer_check_linkcount <path>
+#
+# H9: Returns 0 if file linkcount == 1 (normal file); 1 if linkcount > 1 (hardlink).
+# Defends against hardlink-as-symlink-bypass attacks where an attacker creates a
+# hardlink to a sensitive file to make it appear as a legitimate handoff location.
+# BSD stat: -f %l; GNU stat: -c %h. Falls back to 1 (safe — assume no hardlink).
+# ---------------------------------------------------------------------------
+_primer_check_linkcount() {
+  local p="$1"
+  local linkcount
+  if linkcount=$(stat -f %l "$p" 2>/dev/null); then
+    :
+  elif linkcount=$(stat -c %h "$p" 2>/dev/null); then
+    :
+  else
+    linkcount=1
+  fi
+  linkcount=$(printf '%s' "$linkcount" | tr -d '[:space:]')
+  [ -z "$linkcount" ] && linkcount=1
+  if [ "$linkcount" -gt 1 ]; then
+    ctx_gate_log "primer skip reason=multi-hardlink path=$p linkcount=$linkcount"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # primer_resolve_handoff_path <cwd>
 #
 # Given the session cwd, resolves the handoff file path.
@@ -33,29 +60,41 @@ primer_resolve_handoff_path() {
   # SENTINEL_SID8 is set by primer_find_sentinel_for_cwd (must run BEFORE this function).
   if [ -n "${SENTINEL_SID8:-}" ]; then
     if [ -f "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
-      HANDOFF_PATH="$cwd/CLAUDE.local.${SENTINEL_SID8}.md"
-      return 0
+      # H9: reject multi-hardlink files before accepting as handoff.
+      if _primer_check_linkcount "$cwd/CLAUDE.local.${SENTINEL_SID8}.md"; then
+        HANDOFF_PATH="$cwd/CLAUDE.local.${SENTINEL_SID8}.md"
+        return 0
+      fi
     fi
     local repo_root
     repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root=""
     if [ -n "$repo_root" ] && [ -f "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
-      HANDOFF_PATH="$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"
-      return 0
+      # H9: reject multi-hardlink files.
+      if _primer_check_linkcount "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"; then
+        HANDOFF_PATH="$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"
+        return 0
+      fi
     fi
-    # PR-11: SID known but no SID-tagged file found — log explicit warning before falling through.
+    # PR-11: SID known but no SID-tagged file found (or all were rejected) — log warning.
     ctx_gate_log "primer warn reason=sentinel-without-sid-file sid=${SENTINEL_SID8}"
   fi
 
   # Fall back to generic alias.
   if [ -f "$cwd/CLAUDE.local.md" ] && [ ! -L "$cwd/CLAUDE.local.md" ]; then
-    HANDOFF_PATH="$cwd/CLAUDE.local.md"
-    return 0
+    # H9: reject multi-hardlink files.
+    if _primer_check_linkcount "$cwd/CLAUDE.local.md"; then
+      HANDOFF_PATH="$cwd/CLAUDE.local.md"
+      return 0
+    fi
   fi
   local repo_root2
   repo_root2=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root2=""
   if [ -n "$repo_root2" ] && [ -f "$repo_root2/CLAUDE.local.md" ] && [ ! -L "$repo_root2/CLAUDE.local.md" ]; then
-    HANDOFF_PATH="$repo_root2/CLAUDE.local.md"
-    return 0
+    # H9: reject multi-hardlink files.
+    if _primer_check_linkcount "$repo_root2/CLAUDE.local.md"; then
+      HANDOFF_PATH="$repo_root2/CLAUDE.local.md"
+      return 0
+    fi
   fi
   return 1
 }
