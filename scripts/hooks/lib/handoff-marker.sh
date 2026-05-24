@@ -93,7 +93,12 @@ handoff_marker_nonce() {
   # sed then extracts the nonce= attribute value.
   # This defeats body-injection attacks (body content containing nonce=... in prose
   # can no longer shadow the canonical marker's nonce value).
-  grep -F 'END-OF-HANDOFF schema=' "$file" 2>/dev/null \
+  # R5 Critical #2: strict anchor — only extract from lines where the marker starts at
+  # column 0 (^<!-- END-OF-HANDOFF schema=v1 ). This defeats body-line pseudo-marker
+  # bypass: if prose in the handoff body mentions the marker format inline (e.g.,
+  # "the format is <!-- END-OF-HANDOFF schema=v1 ..."), it will NOT start at column 0
+  # and therefore will not be matched by this strict pattern.
+  grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$file" 2>/dev/null \
     | head -1 \
     | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p'
 }
