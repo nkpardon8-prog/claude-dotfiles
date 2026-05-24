@@ -357,17 +357,14 @@ fi
 
 Then proceed to the SID-tagged write protocol:
 
-**SID-tagged write + alias copy (multi-track handoff — parallel agents write to separate files):**
+**SID-tagged write (R4: parallel-track-safe — each session writes ONLY its own SID-tagged file):**
 
 1. Resolve SID from Step 3.B disk-persist scratch file or dry-run output.
 2. Compute `SID8` = first 8 chars of SID: `SID8=$(printf '%s' "$SID" | head -c 8); [ -z "$SID8" ] && SID8="$SID"`
 3. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
-4. Set `HANDOFF_ALIAS=$REPO_ROOT/CLAUDE.local.md`
-5. Snapshot: if `HANDOFF_ALIAS` exists, Read its content then Write to `HANDOFF_ALIAS.prev` (conditional on SNAPSHOT_NEEDED check above). Skip if alias absent.
-6. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
-7. After Step 6D marker-append completes, Read `HANDOFF_PRIMARY` then Write its content to `HANDOFF_ALIAS` (deterministic alias copy).
+4. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
 
-Both HANDOFF_PRIMARY and HANDOFF_ALIAS are in the ctx-gate Write allowlist (glob `CLAUDE.local*.md`).
+(R4 D1: HANDOFF_ALIAS/`CLAUDE.local.md` write removed — no alias is created or updated. Post-compact session reads ONLY the SID-tagged file. HANDOFF_PRIMARY is in the ctx-gate Write allowlist via glob `CLAUDE.local*.md`.)
 
 **Read the template at `$HOME/.claude-dotfiles/commands/pre-compact-template.md` via the Read tool** and use the returned content as the CLAUDE.local.md skeleton. Do not generate the template from memory — Read the file. Replace all placeholder text with session-specific content. Remove sections whose body is empty or placeholder-only (as specified in Step 6C).
 
