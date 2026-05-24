@@ -679,7 +679,7 @@ temp+rename). The idempotency check above prevents double-marker artifacts on re
 
 To guarantee post-compact Claude sees the handoff:
 
-1. Resolve the **repo root**, not cwd:
+1. **REPO_ROOT** is already resolved at the top of Step 6A. Re-verify here for Step 7 scope only (in case Step 6A errored):
    - `REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)`. If empty (not in a git work tree), skip Step 7 entirely.
    - Refuse if we're inside a submodule: `[ -n "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" ]` → tell the user "Inside a submodule; skipping CLAUDE.md @import to avoid polluting the submodule. Manually add `@CLAUDE.local.md` in the superproject's CLAUDE.md if you want auto-load."
 2. Check if `$REPO_ROOT/CLAUDE.md` exists. If not, skip (the user has not opted into a project CLAUDE.md and creating one would be intrusive).
