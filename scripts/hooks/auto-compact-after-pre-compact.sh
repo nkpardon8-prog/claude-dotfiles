@@ -107,6 +107,10 @@ fi
 # TARGET_TTY passes through argv — never string-interpolated into the AppleScript body.
 # Capture stdout (the on-run handler's return value: "fired"/"no-matching-tab"/etc.)
 # separately from stderr so log lines stay single-line and structured.
+# Per-system PTY delay override: default 0.3s; set CTX_GATE_PTY_DELAY_SEC to tune.
+# Slow machines may need 0.5-1.0; fast machines may be fine with 0.1.
+PTY_DELAY="${CTX_GATE_PTY_DELAY_SEC:-0.3}"
+
 OSA_STDERR_TMP=$(mktemp 2>/dev/null)
 # If mktemp fails (rare — full /tmp), keep $OSA_STDERR_TMP empty. We deliberately
 # do NOT use "/dev/null" as a sentinel because the EXIT trap would then attempt
@@ -114,9 +118,10 @@ OSA_STDERR_TMP=$(mktemp 2>/dev/null)
 # Empty $OSA_STDERR_TMP means: redirect stderr to /dev/null at the osascript call
 # (inline), and skip the stderr-capture branch.
 OSA_STDERR_TGT="${OSA_STDERR_TMP:-/dev/null}"
-OSA_RESULT=$(/usr/bin/osascript - "$TARGET_TTY" <<'EOF' 2>"$OSA_STDERR_TGT"
+OSA_RESULT=$(/usr/bin/osascript - "$TARGET_TTY" "$PTY_DELAY" <<'EOF' 2>"$OSA_STDERR_TGT"
 on run argv
   set targetTTY to item 1 of argv
+  set ptyDelay to (item 2 of argv) as real
   tell application "Terminal"
     if not running then return "not-running"
     if not (exists window 1) then return "no-windows"
@@ -138,13 +143,13 @@ on run argv
     do script "/compact" in foundTab
     -- Chain /post-compact-resume into the same tab input queue. Claude Code TUI
     -- accepts typed input while a command is running and processes it as the next
-    -- turn when the current turn ends. delay 0.3 lets /compact register as the
+    -- turn when the current turn ends. ptyDelay lets /compact register as the
     -- active command before the second do_script types in, avoiding the race where
     -- both lines could merge into one buffered blob. Wrapped in try so a failed
     -- second fire (e.g., slash command missing) still reports /compact as fired.
     -- NOTE: no apostrophes in this comment block — bash 3.2 heredoc-inside-$()
     -- has a known apostrophe-pairing quirk that breaks parsing even with <<EOF.
-    delay 0.3
+    delay ptyDelay
     try
       do script "/post-compact-resume" in foundTab
       return "fired+queued-resume"
