@@ -63,7 +63,7 @@ These verbs are emitted by `auto-compact-after-pre-compact.sh` (Stop hook) durin
 | `breadcrumb_written` | auto-compact-after-pre-compact.sh | Breadcrumb JSON written to `~/.claude/progress/breadcrumb-<SID>.json` |
 | `breadcrumb_write_failed reason=mv` | auto-compact-after-pre-compact.sh | Atomic mv of breadcrumb tempfile failed |
 | `breadcrumb_write_failed reason=jq` | auto-compact-after-pre-compact.sh | jq failed to generate breadcrumb JSON |
-| `breadcrumb_write_failed reason=empty-nonce` | auto-compact-after-pre-compact.sh | Nonce was empty; breadcrumb not written (H8/PR-M2) |
+| `breadcrumb_write_failed reason=empty-sentinel-nonce` | auto-compact-after-pre-compact.sh | Nonce was empty; breadcrumb not written (H8/PR-M2) |
 | `breadcrumb_write_failed reason=hostname-fail` | auto-compact-after-pre-compact.sh | hostname -s returned empty; breadcrumb not written (H2) |
 | `gc_stale_orphan_breadcrumbs` | auto-compact-after-pre-compact.sh | Stale orphan breadcrumbs (>24h old) deleted on Stop event; count= appended (H12 fix) |
 
