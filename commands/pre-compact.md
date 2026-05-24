@@ -144,7 +144,7 @@ Extract the following structured fields. Stash in working memory for Step 6:
   Netlify site, etc.). One line per confirmed state.
 - **bookmarks** (array): file:line cursor positions where work was in flight + 1-line
   context.
-- **since_last_compact** (synthesis field, R1 finding #13): if Step 3.B detected a prior
+- **since_last_compact** (synthesis field): if Step 3.B detected a prior
   compaction (parent_seq >= 1), compare the parent's Build Plan / Next Action / Open
   Issues against what actually happened this session. Extract: what got resolved, what
   shifted, which open questions got answered, which fix-laters now apply. **3-8 bullets
