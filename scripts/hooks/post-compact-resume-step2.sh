@@ -320,6 +320,9 @@ for _bc_entry in "${_bc_sorted[@]+"${_bc_sorted[@]}"}"; do
       "$_bc_nonce" "$_bc_nonce" "$_bc_cwd" "$_bc_host" "$_bc_origcmd" 2>/dev/null || _bc_verify_rc=$?
     if [ "$_bc_verify_rc" -eq 1 ]; then
       # Signature mismatch — attacker-forged breadcrumb or corrupted key. Skip.
+      # RQ-03+04 (R6 HZ-29/HZ-30): track count so we can emit STATE=signature-mismatch
+      # instead of STATE=no-handoff when ALL breadcrumbs fail HMAC verification.
+      _SIG_MISMATCH_COUNT=$((_SIG_MISMATCH_COUNT + 1))
       handoff_log "step2 skip reason=signature-mismatch sid8=${SID8} path=$BREADCRUMB"
       ctx_gate_log "step2 skip reason=unsigned-breadcrumb-rejected sid8=${SID8} (use HANDOFF_ACCEPT_UNSIGNED=1 to migrate)"
       SENTINEL_SID=""
@@ -327,9 +330,27 @@ for _bc_entry in "${_bc_sorted[@]+"${_bc_sorted[@]}"}"; do
       SENTINEL_NONCE=""
       continue
     elif [ "$_bc_verify_rc" -eq 2 ]; then
-      # Key/openssl unavailable — signature check inconclusive; proceed (fail-open for
-      # environments without openssl or missing key file, logs the skip for traceability).
-      handoff_log "step2 warn reason=signature-check-inconclusive sid8=${SID8} path=$BREADCRUMB"
+      # RQ-02 (R6 HZ-23/INV-15): distinguish key-present-but-openssl-broken from key-absent.
+      # If key file EXISTS but verify returned rc=2, it means the signer intended to sign but
+      # the verifier cannot perform verification (openssl absent, key corrupted). Fail closed.
+      # If key file is absent, this is backward compat (pre-R5 session, no signing was possible).
+      _key_path_for_rc2=$(session_key_path "${_bc_sid8_for_key:-}" 2>/dev/null) || _key_path_for_rc2=""
+      if [ -n "$_key_path_for_rc2" ] && [ -f "$_key_path_for_rc2" ]; then
+        # Key exists but verify failed — suspicious; emit hmac-unavailable and stop.
+        handoff_log "step2_terminal state=hmac-unavailable sid8=${_bc_sid8_for_key:-} path=$BREADCRUMB"
+        _json=$(jq -c -n \
+          --arg sid8 "${_bc_sid8_for_key:-}" \
+          '{"state":"hmac-unavailable","sid8":$sid8,"reason":"key file present but HMAC verification failed — openssl unavailable or key file corrupted. Restore openssl or delete the stale key file at ~/.claude/progress/.session-key-<sid8> and re-run /pre-compact."}' 2>/dev/null)
+        if [ -n "$_json" ]; then
+          printf 'STATE=%s\n' "$_json"
+        else
+          printf 'STATE={"state":"hmac-unavailable","sid8":"%s"}\n' "${_bc_sid8_for_key:-}"
+        fi
+        exit 0
+      else
+        # Key absent — genuine backward compat for pre-R5 sessions; proceed with warn.
+        handoff_log "step2 warn reason=signature-check-inconclusive sid8=${SID8} path=$BREADCRUMB"
+      fi
     fi
     # rc=0: signature valid (or HANDOFF_ACCEPT_UNSIGNED=1 with empty sig).
   fi
