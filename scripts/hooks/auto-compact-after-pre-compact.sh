@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Stop hook — fires /compact into the originating Terminal.app tab when /pre-compact armed it.
 #
+# Execution context: this is a Claude Code Stop hook script.
+# It runs as a direct subprocess of Claude Code, NOT through the orchestrator Bash tool.
+#
 # Mechanism:
 #   1. /pre-compact (via arm-auto-compact.sh) writes a per-session JSON sentinel containing
 #      the originating tab's TTY and metadata.
