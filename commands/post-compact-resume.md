@@ -114,23 +114,25 @@ Then route per the decision matrix below.
 
 - **STATE=`error` or parse failure:** treat as `no-handoff` — output the paste-prompt. Stop.
 
-- **MARKER=present AND STALE=false:** read full file, navigate normally per Steps 3-4.
+**MARKER/STALE sub-matrix (applies when STATE=ok):**
 
-- **MARKER=present AND STALE=true:** output to user FIRST:
-  > This handoff is ${HANDOFF_AGE_HOURS} hours old. It may be from a prior conversation.
+- **marker=present AND stale=false:** read full file, navigate normally per Steps 3-4.
+
+- **marker=present AND stale=true:** output to user FIRST:
+  > This handoff is `age_hours` hours old. It may be from a prior conversation.
   > Verify with the user that resuming this thread is intended before continuing.
 
   Then proceed with the read. Do NOT wait for user confirmation (would hang
   `claude --resume --prompt '...'` unattended pipelines). The warning is advisory.
 
-- **MARKER=absent AND LEGACY=true:** output to user:
+- **marker=absent AND legacy=true:** output to user:
   > This handoff predates the END-OF-HANDOFF marker convention (legacy file from
   > before this skill deployment). Content should be intact but lacks the completeness
   > marker. Proceeding cautiously — verify content makes sense as you read.
 
   Then proceed with the read.
 
-- **MARKER=absent AND LEGACY=false (the dangerous case):** output to user:
+- **marker=absent AND legacy=false (the dangerous case):** output to user:
   > This handoff file appears truncated (missing END-OF-HANDOFF marker, but file
   > is recent enough that the marker should be present). Possible causes:
   > (1) /pre-compact crashed mid-write,
