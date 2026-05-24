@@ -1256,6 +1256,9 @@ else
   fail "G4-G: fresh breadcrumb acceptance" "expected state=ok got '$GG_STATE_FRESH' raw: ${OUT_G_FRESH:0:200}"
 fi
 # Boundary: test mtime=3599s (1 second before cutoff) → should be accepted.
+# IMPORTANT: the fresh-breadcrumb test above consumed the breadcrumb (step2.sh EXIT trap
+# deletes the adopted breadcrumb on exit). Re-create the breadcrumb here before applying
+# the 3599s mtime so the boundary test has an intact file to read.
 if [ -n "$PAST_MTIME" ]; then
   if command -v gdate >/dev/null 2>&1; then
     NEAR_MTIME=$(gdate -d '3599 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null)
@@ -1263,6 +1266,17 @@ if [ -n "$PAST_MTIME" ]; then
     NEAR_MTIME=$(date -v-3599S +%Y%m%d%H%M.%S 2>/dev/null)
   fi
   if [ -n "$NEAR_MTIME" ]; then
+    # Re-create the breadcrumb (consumed by the fresh-breadcrumb test's EXIT trap).
+    jq -c -n \
+      --argjson sv 1 \
+      --arg sid  "$GG_SID" \
+      --arg sid8 "$GG_SID8" \
+      --arg cwd  "$GG_CWD" \
+      --arg nonce "$GG_NONCE" \
+      --arg host  "$GG_HOST" \
+      '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+      > "$GG_BREADCRUMB" 2>/dev/null
+    chmod 600 "$GG_BREADCRUMB"
     touch -t "$NEAR_MTIME" "$GG_BREADCRUMB" 2>/dev/null
     OUT_G_NEAR=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" bash "$STEP2_SH" 2>/dev/null)
     GG_STATE_NEAR=$(printf '%s' "$OUT_G_NEAR" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
