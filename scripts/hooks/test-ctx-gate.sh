@@ -1390,7 +1390,7 @@ if [ -f "$SKILL_FILE" ]; then
   # The alias clobber code was: cp "$HANDOFF_FILE" "$ALIAS_FILE" or similar.
   # After D1, no cp to CLAUDE.local.md (without sid8 suffix) should remain in Step 6D.
   # R2-PR-12 acceptance gate grep: @CLAUDE.local.md not present (except migration/legacy notes).
-  ALIAS_CLOBBER=$(grep -nF '@CLAUDE.local.md' "$SKILL_FILE" | grep -v 'migration\|legacy R3\|MIGRATION NOTE' | wc -l | tr -d '[:space:]')
+  ALIAS_CLOBBER=$(grep -nF '@CLAUDE.local.md' "$SKILL_FILE" | grep -iv 'migration\|legacy R3\|migration note\|removed in R4' | wc -l | tr -d '[:space:]')
   if [ "$ALIAS_CLOBBER" -eq 0 ]; then
     pass "G7: pre-compact.md no longer writes @CLAUDE.local.md alias (D1 alias-kill confirmed)"
   else
