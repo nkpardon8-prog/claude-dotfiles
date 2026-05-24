@@ -10,45 +10,24 @@
 [ -n "${_POST_COMPACT_PRIMER_HELPERS_LOADED:-}" ] && return 0
 readonly _POST_COMPACT_PRIMER_HELPERS_LOADED=1
 
+# R4 H10 (Phase 3 task 3.5): source canonical handoff resolver.
+# _primer_check_linkcount is defined there (R2-PR-6 BLOCKER fix — removes cross-lib scope hazard).
+# primer_resolve_handoff_path below is now a thin wrapper around handoff_resolve_path.
+. "$(dirname "${BASH_SOURCE[0]}")/handoff-resolve.sh" 2>/dev/null || true
+
 # Dependencies sourced by the caller (post-compact-primer.sh) before sourcing this lib:
 #   lib/ctx-gate-config.sh  — ctx_gate_log
 #   lib/auto-compact-sentinel.sh — ac_log, ac_canonicalize_path, ac_read_sentinel_cwd
 #   lib/handoff-config.sh   — HANDOFF_STALE_SECS, HANDOFF_LEGACY_CUTOFF_EPOCH, HANDOFF_MAX_SIZE_BYTES
 #   lib/handoff-marker.sh   — handoff_marker_check
-
-# ---------------------------------------------------------------------------
-# _primer_check_linkcount <path>
-#
-# H9: Returns 0 if file linkcount == 1 (normal file); 1 if linkcount > 1 (hardlink).
-# Defends against hardlink-as-symlink-bypass attacks where an attacker creates a
-# hardlink to a sensitive file to make it appear as a legitimate handoff location.
-# BSD stat: -f %l; GNU stat: -c %h. Falls back to 1 (safe — assume no hardlink).
-# ---------------------------------------------------------------------------
-_primer_check_linkcount() {
-  local p="$1"
-  local linkcount
-  if linkcount=$(stat -f %l "$p" 2>/dev/null); then
-    :
-  elif linkcount=$(stat -c %h "$p" 2>/dev/null); then
-    :
-  else
-    linkcount=1
-  fi
-  linkcount=$(printf '%s' "$linkcount" | tr -d '[:space:]')
-  [ -z "$linkcount" ] && linkcount=1
-  if [ "$linkcount" -gt 1 ]; then
-    ctx_gate_log "primer skip reason=multi-hardlink path=$p linkcount=$linkcount"
-    return 1
-  fi
-  return 0
-}
+#   lib/handoff-resolve.sh  — handoff_resolve_path, _primer_check_linkcount (sourced above)
 
 # ---------------------------------------------------------------------------
 # primer_resolve_handoff_path <cwd>
 #
-# Given the session cwd, resolves the handoff file path.
-# R4 D3: SID-aware fail-closed — when SENTINEL_SID8 is known, ONLY try SID-tagged files.
-# If SID-tagged file missing AND SID known → return 2 (caller emits sid-known-no-tagged-file warning).
+# Thin wrapper around handoff_resolve_path (lib/handoff-resolve.sh).
+# PR-9: the canonical resolver lives in handoff-resolve.sh so step2.sh can call it
+# directly without depending on primer-helpers.
 # SENTINEL_SID8 is set by primer_find_sentinel_for_cwd — that function MUST run first.
 # Sets HANDOFF_PATH (global) on success (rc=0); leaves empty on failure.
 # Returns:
@@ -58,46 +37,8 @@ _primer_check_linkcount() {
 # ---------------------------------------------------------------------------
 primer_resolve_handoff_path() {
   local cwd="$1"
-  HANDOFF_PATH=""
-
-  if [ -n "${SENTINEL_SID8:-}" ]; then
-    # R4 D3: SID-known path — ONLY try SID-tagged files. NEVER fall back to alias.
-    # Task 1.6: the former alias-fallback block (lines ~82-99 of R3) is DELETED here.
-    if [ -f "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
-      if _primer_check_linkcount "$cwd/CLAUDE.local.${SENTINEL_SID8}.md"; then
-        HANDOFF_PATH="$cwd/CLAUDE.local.${SENTINEL_SID8}.md"
-        return 0
-      fi
-    fi
-    local repo_root
-    repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root=""
-    if [ -n "$repo_root" ] && [ -f "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
-      if _primer_check_linkcount "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"; then
-        HANDOFF_PATH="$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"
-        return 0
-      fi
-    fi
-    # SID known but no SID-tagged file found (or all were rejected) — log + fail closed.
-    ctx_gate_log "primer skip reason=sid-known-no-tagged-file sid=${SENTINEL_SID8}"
-    return 2  # R4 D3 fail-closed signal
-  fi
-
-  # SID UNKNOWN: legacy/best-effort alias path only.
-  if [ -f "$cwd/CLAUDE.local.md" ] && [ ! -L "$cwd/CLAUDE.local.md" ]; then
-    if _primer_check_linkcount "$cwd/CLAUDE.local.md"; then
-      HANDOFF_PATH="$cwd/CLAUDE.local.md"
-      return 0
-    fi
-  fi
-  local repo_root2
-  repo_root2=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root2=""
-  if [ -n "$repo_root2" ] && [ -f "$repo_root2/CLAUDE.local.md" ] && [ ! -L "$repo_root2/CLAUDE.local.md" ]; then
-    if _primer_check_linkcount "$repo_root2/CLAUDE.local.md"; then
-      HANDOFF_PATH="$repo_root2/CLAUDE.local.md"
-      return 0
-    fi
-  fi
-  return 1
+  handoff_resolve_path "$cwd" "${SENTINEL_SID8:-}"
+  return $?
 }
 
 # ---------------------------------------------------------------------------
