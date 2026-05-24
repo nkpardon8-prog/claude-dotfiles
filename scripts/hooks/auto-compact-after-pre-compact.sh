@@ -234,7 +234,9 @@ handoff_log "compact_chained sid=${SESSION_ID:0:8} tty=$TARGET_TTY result=${OSA_
 # is SID recovery for /post-compact-resume, NOT delivery confirmation. Block runs AFTER
 # AppleScript invocation but BEFORE exit 0, regardless of OSA_RESULT.
 BREADCRUMB_DIR="$HOME/.claude/progress"
-SID8=$(printf '%s' "$SESSION_ID" | head -c 8)
+# R3-fix-sweep C2: use TTY-aware ac_compute_sid8 (defined in lib/auto-compact-sentinel.sh,
+# sourced at top of script) so parallel sessions with __ttysN suffix get DISTINCT SID8 values.
+SID8=$(ac_compute_sid8 "$SESSION_ID")
 BREADCRUMB="$BREADCRUMB_DIR/breadcrumb-${SESSION_ID}.json"
 # Read sentinel fields from the claim before EXIT trap removes it.
 SENTINEL_NONCE=$(ac_read_sentinel_nonce "$CLAIM" 2>/dev/null || printf '')
