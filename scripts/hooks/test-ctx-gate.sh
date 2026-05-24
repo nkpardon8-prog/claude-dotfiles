@@ -424,6 +424,23 @@ else
 fi
 rm -rf "$TMPHOME"
 
+echo "== C8: primer kill-switch =="
+# CLAUDE_CTX_GATE_DISABLED=1 should make primer exit 0 silently with no output,
+# regardless of any other input. Defends against future refactors that move the
+# kill-switch below the lib source (which would introduce a load-time failure
+# even when disabled).
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+JSON='{"session_id":"killtest","source":"compact","cwd":"'"$TMPHOME/repo"'","hook_event_name":"SessionStart"}'
+OUT=$(CLAUDE_CTX_GATE_DISABLED=1 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+KILL_EXIT=$?
+if [ -z "$OUT" ] && [ "$KILL_EXIT" = "0" ]; then
+  pass "C8: primer kill-switch — empty stdout + exit 0 when CLAUDE_CTX_GATE_DISABLED=1"
+else
+  fail "C8: primer kill-switch" "got OUT='$OUT' exit=$KILL_EXIT"
+fi
+rm -rf "$TMPHOME"
+
 # ---------------------------------------------------------------------------
 # §2.5 Simplified end-to-end chain (PreToolUse steps removed)
 # ---------------------------------------------------------------------------
