@@ -205,8 +205,44 @@ if [ -n "$MARKER_NONCE" ] && [ -n "$SENTINEL_NONCE" ]; then
   if [ "$MARKER_NONCE" = "$SENTINEL_NONCE" ]; then NONCE_OK=match; else NONCE_OK=mismatch; fi
 fi
 
+# R4 D4: when SID known, nonce mismatch is a HARD STOP (not advisory).
+# The alias could be from another session; we refuse to proceed with possibly wrong content.
+if [ "$NONCE_OK" = "mismatch" ] && [ -n "$SID8" ]; then
+  _json=$(jq -c -n \
+    --arg sid8 "$SID8" \
+    --arg marker_nonce "${MARKER_NONCE:-}" \
+    --arg sentinel_nonce "${SENTINEL_NONCE:-}" \
+    '{"state":"nonce-mismatch-hard-stop","sid8":$sid8,
+      "marker_nonce_first8":($marker_nonce | .[0:8]),
+      "sentinel_nonce_first8":($sentinel_nonce | .[0:8])}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"nonce-mismatch-hard-stop","sid8":"%s"}\n' "$SID8"
+  fi
+  exit 0
+fi
+
 STALE_SECS="${HANDOFF_STALE_SECS:-86400}"
 if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "$STALE_SECS" ]; then STALE=true; else STALE=false; fi
 
 HANDOFF_AGE_HOURS=$((HANDOFF_AGE / 3600))
-echo "STATE=ok MARKER=$MARKER LEGACY=$LEGACY STALE=$STALE AGE_HOURS=$HANDOFF_AGE_HOURS NONCE_OK=$NONCE_OK SID8=${SID8:-none} PATH=$HANDOFF_PATH"
+[ -z "$HANDOFF_AGE_HOURS" ] && HANDOFF_AGE_HOURS=0
+
+# R4 D10: emit STATE as single-line JSON (handles workspace paths with spaces).
+_json=$(jq -c -n \
+  --arg state "ok" \
+  --arg marker "$MARKER" \
+  --argjson legacy "$LEGACY" \
+  --argjson stale "$STALE" \
+  --argjson age_hours "$HANDOFF_AGE_HOURS" \
+  --arg nonce_ok "$NONCE_OK" \
+  --arg sid8 "${SID8:-}" \
+  --arg path "$HANDOFF_PATH" \
+  '{"state":$state,"marker":$marker,"legacy":$legacy,"stale":$stale,
+    "age_hours":$age_hours,"nonce_ok":$nonce_ok,"sid8":$sid8,"path":$path}' 2>/dev/null)
+if [ -n "$_json" ]; then
+  printf 'STATE=%s\n' "$_json"
+else
+  printf 'STATE={"state":"error","reason":"jq-failed"}\n'
+fi
