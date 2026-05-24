@@ -30,10 +30,15 @@ readonly HANDOFF_MARKER_LEGACY='<!-- END-OF-HANDOFF -->'
 # ---------------------------------------------------------------------------
 # handoff_marker_check <file>
 #
-# Returns 0 if marker (new or legacy) found in the last 512 bytes of file; 1 otherwise.
+# Returns 0 if marker (new or legacy) found anywhere in the file; 1 otherwise.
 #
-# 512-byte tail: marker is ~55 bytes. 512 provides ample headroom for long last lines
-# + trailing whitespace, avoiding truncated-tail false negatives.
+# Scans the whole file (bounded by HANDOFF_MAX_SIZE_BYTES = 5MB at caller level)
+# rather than the last 512 bytes. The 512-byte tail window was replaced because
+# a marker placed earlier in the file (e.g., during partial writes, interrupted
+# runs, or test fixtures) was invisible to tail -c 512. Whole-file grep is safe
+# because: (a) HANDOFF_MAX_SIZE_BYTES = 5MB prevents DoS at the size-check gate
+# in step2.sh before handoff_marker_check is called, and (b) grep -qF short-
+# circuits on the first match — it does not scan past the marker line.
 #
 # Uses subprocess pipe — safe for hook scripts and orchestrator Bash tool calls
 # below the hard-gate threshold. For orchestrator Bash AT the hard gate, callers
@@ -42,13 +47,28 @@ readonly HANDOFF_MARKER_LEGACY='<!-- END-OF-HANDOFF -->'
 handoff_marker_check() {
   local file="$1"
   [ -f "$file" ] || return 1
-  local tail_buf
-  tail_buf=$(tail -c 512 "$file" 2>/dev/null) || return 1
-  if printf '%s' "$tail_buf" | grep -qF "$HANDOFF_MARKER_NEW" \
-     || printf '%s' "$tail_buf" | grep -qF "$HANDOFF_MARKER_LEGACY"; then
+  if grep -qF "$HANDOFF_MARKER_NEW" "$file" 2>/dev/null \
+     || grep -qF "$HANDOFF_MARKER_LEGACY" "$file" 2>/dev/null; then
     return 0
   fi
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# handoff_marker_count <file>
+#
+# Returns (via stdout) the number of END-OF-HANDOFF marker lines in the file.
+# Prints 0 on failure (file absent, unreadable).
+# A count > 1 indicates a tampered or double-written file; callers should log
+# a warning but may still proceed (write protocol guarantees exactly 1 in normal
+# operation — see header invariant).
+# ---------------------------------------------------------------------------
+handoff_marker_count() {
+  local file="$1"
+  [ -f "$file" ] || { printf '0'; return 1; }
+  local cnt
+  cnt=$(grep -cF 'END-OF-HANDOFF schema=' "$file" 2>/dev/null) || cnt=0
+  printf '%s' "$cnt"
 }
 
 # ---------------------------------------------------------------------------
