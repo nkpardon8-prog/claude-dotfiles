@@ -61,11 +61,12 @@ if [ "$HANDOFF_MTIME" -eq 0 ]; then
   ctx_gate_log "primer sid=${SID:-unknown} action=stat-failed-mtime-zero stale-check-skipped"
 fi
 
-# Legacy-file detection (R1 meta-pass blind spot — backwards-compat for existing
-# CLAUDE.local.md files written before the marker convention).
-# R2 #6 buffer: cutoff is 3 days before deploy, so same-day-old files are NOT legacy.
+# Legacy-file detection — backwards-compat for existing CLAUDE.local.md files
+# written before the END-OF-HANDOFF marker convention.
+# Cutoff epoch from lib/handoff-config.sh: 3+ days before first deploy, so
+# same-day-old files are NOT treated as legacy.
 LEGACY="false"
-if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$CTX_LEGACY_HANDOFF_CUTOFF_EPOCH" ]; then
+if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$HANDOFF_LEGACY_CUTOFF_EPOCH" ]; then
   LEGACY="true"
 fi
 
