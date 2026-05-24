@@ -285,7 +285,11 @@ fi
 if command -v handoff_marker_nonce >/dev/null 2>&1; then
   MARKER_NONCE=$(handoff_marker_nonce "$HANDOFF_PATH" 2>/dev/null)
 else
-  MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1)
+  # R3-fix-sweep C3+C4: anchor inline nonce extraction to marker line (same as lib fix).
+  MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null \
+    | grep -F 'END-OF-HANDOFF schema=' \
+    | tail -1 \
+    | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
 fi
 
 # C3 fix: extract marker sid= attribute and validate it against SID8 from breadcrumb.
