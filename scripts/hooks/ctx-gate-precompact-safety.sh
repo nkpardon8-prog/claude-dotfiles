@@ -4,7 +4,7 @@
 # Fires before native auto-compact would run.
 # If /pre-compact never ran (no sentinel) AND ctx is below the extreme-release threshold:
 #   BLOCK native auto-compact and inject reason directing /pre-compact.
-# If ctx ≥ CTX_PRECOMPACT_SAFETY_PCT (95%): RELEASE — let native compact run as a degraded
+# If ctx ≥ HANDOFF_PRECOMPACT_RELEASE_PCT (75%): RELEASE — let native compact run as a degraded
 #   fallback. Handoff is lost, but this is preferable to a bricked session that can make
 #   no forward progress.
 #
