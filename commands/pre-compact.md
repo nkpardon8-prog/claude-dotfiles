@@ -378,6 +378,14 @@ section entirely if single-thread. Each stream gets its own ### subheading. -->
 - {hypothesis} → {change} → {result with numbers} → {kept | abandoned because ...}
 Most expensive thing for the next session to re-discover. Do not summarize.]
 
+<!-- Omit section entirely if not applicable. -->
+## Live Hypotheses
+<!-- Half-formed "I suspect X but haven't proven" thinking. Omit section if none. -->
+- HYPOTHESIS: [statement]
+  - Evidence pointing here: [list]
+  - NOT YET TRIED: [next experiment]
+  - Confidence: N%
+
 ## Evidence & Data
 [Raw numbers, comparison tables, before→after measurements, data file paths.
 Rule: never write "improved" / "better" / "faster" without before→after numbers.]
