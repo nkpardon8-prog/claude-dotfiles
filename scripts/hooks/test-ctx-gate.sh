@@ -1265,7 +1265,7 @@ TMPHOME_I=$(mktemp -d)
 mkdir -p "$TMPHOME_I/.claude/progress" && chmod 700 "$TMPHOME_I/.claude/progress"
 GI_SID="g4i-spaces-$$"
 GI_SID8="${GI_SID:0:8}"
-GI_NONCE="gi-nonce-spaced-path-aabb-ccdd-eeff"
+GI_NONCE="aabbccdd-1234-5678-90ab-cdef11223344"
 GI_CWD=$(cd -P "$SPACED_DIR" 2>/dev/null && pwd -P)
 GI_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 # Breadcrumb with spaced path in cwd field.
