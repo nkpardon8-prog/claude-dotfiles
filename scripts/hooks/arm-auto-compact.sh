@@ -12,6 +12,17 @@
 # Prints:  one line to stdout — the arming state to embed in the /pre-compact report.
 # Args:    if the ARGUMENTS_STRING contains `no-auto-compact`, `--no-auto-compact`,
 #          or the phrase `no auto compact`, disarm any prior sentinel and skip arming.
+#
+# KNOWN LIMITATION (R4 D8 + Fix-sweep Commit 1):
+# When CLAUDE_SESSION_ID is unset (true in Bash subprocesses spawned from the Bash tool),
+# SID is derived from slug-of-cwd + most-recent .jsonl transcript via `ls -t | head -1`.
+# At N>=2 parallel sessions in the same cwd without distinct CLAUDE_SESSION_ID, the
+# fallback path now folds TTY basename into the SID via _ac_resolve_tty_basename_via_ppid
+# (slug-fallback SID format: ${transcript_sid}__${tty_basename}).
+# In normal Claude Code operation, CLAUDE_SESSION_ID IS exported and this fallback is
+# bypassed entirely. The fallback exists for development-time / manual-invocation cases.
+# Live observation 2026-05-24 confirmed pre-fix collision: Track A SID a90ac8f5 clobbered
+# Track B's c6f7c23c sentinel under shared cwd. Fix-sweep Commit 1 added TTY-keying.
 
 [ "$(uname -s)" = "Darwin" ] || { echo "NOT armed — auto-compact requires macOS Terminal.app"; exit 0; }
 [ -z "${HOME:-}" ] && { echo "NOT armed — HOME unset"; exit 0; }
