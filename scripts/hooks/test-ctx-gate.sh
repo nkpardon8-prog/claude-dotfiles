@@ -256,23 +256,25 @@ else
   fail "§2.5 step 6: submit hook silence post-sentinel" "submit hook should not advise after sentinel armed, got: $OUT"
 fi
 
-# Step 7: PreCompact trigger=auto, ctx=78 (BLOCK zone), no sentinel → should block
+# Step 7: PreCompact trigger=auto, ctx=68 (BLOCK zone: new 60-74%), no sentinel → should block
+# Threshold 2026-05-23 second revision: HARD=60, SAFETY=75
 rm -f "$ARM_PATH"
-printf '78\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
+printf '68\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"fakesid","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
-  pass "§2.5 step 7: precompact safety blocks at ctx=78 without sentinel"
+  pass "§2.5 step 7: precompact safety blocks at ctx=68 without sentinel"
 else
-  fail "§2.5 step 7: precompact block at 93" "precompact safety should block at ctx=78, got: $OUT"
+  fail "§2.5 step 7: precompact block at 68" "precompact safety should block at ctx=68, got: $OUT"
 fi
 
-# Step 7b: PreCompact trigger=auto, ctx=88 (≥95% RELEASE zone) → should RELEASE (avoid deadlock)
-printf '88\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
+# Step 7b: PreCompact trigger=auto, ctx=78 (≥75% new RELEASE zone) → should RELEASE (avoid deadlock)
+# Threshold 2026-05-23 second revision: PRECOMPACT_SAFETY=75
+printf '78\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"fakesid","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if [ -z "$OUT" ]; then
-  pass "§2.5 step 7b: precompact safety releases at ctx=88 (avoids deadlock)"
+  pass "§2.5 step 7b: precompact safety releases at ctx=78 (avoids deadlock at >=75%)"
 else
-  fail "§2.5 step 7b: precompact release at 96" "precompact safety should RELEASE at ctx>=95 (empty output), got: $OUT"
+  fail "§2.5 step 7b: precompact release at 78" "precompact safety should RELEASE at ctx>=75 (empty output), got: $OUT"
 fi
 
 # Step 8: SessionStart compact with CLAUDE.local.md present in cwd → primer fires
