@@ -50,3 +50,19 @@ handoff_marker_nonce() {
   [ -f "$file" ] || return 1
   tail -c 512 "$file" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1
 }
+
+# ---------------------------------------------------------------------------
+# handoff_marker_sid <file>
+#
+# C3 fix: extracts the sid=<sid8> attribute from the END-OF-HANDOFF marker line.
+# Prints the sid8 value on success; prints nothing on failure (file absent,
+# no marker, or no sid= attribute).
+# Attribute extraction is order-insensitive within the marker line.
+# The sid= attribute value uses the same safe charset as SID8: [A-Za-z0-9_-]+
+# (double-underscore separator is preserved since _ is in that set).
+# ---------------------------------------------------------------------------
+handoff_marker_sid() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  tail -c 512 "$file" 2>/dev/null | sed -nE 's/.*\bsid=([A-Za-z0-9_-]+).*/\1/p' | head -1
+}
