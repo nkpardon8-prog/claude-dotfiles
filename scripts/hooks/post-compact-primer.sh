@@ -57,7 +57,7 @@ if [ -L "$HANDOFF_PATH" ]; then
   exit 0
 fi
 
-# B5: size cap — reject handoffs larger than HANDOFF_MAX_SIZE_BYTES (default 5MB).
+# Size cap — reject handoffs larger than HANDOFF_MAX_SIZE_BYTES (default 5MB).
 # Defense against pathological file growth that could cause memory pressure or OOM.
 HANDOFF_SIZE=0
 if HANDOFF_SIZE=$(stat -f %z "$HANDOFF_PATH" 2>/dev/null); then
@@ -75,52 +75,16 @@ if [ "$HANDOFF_SIZE" -gt "${HANDOFF_MAX_SIZE_BYTES:-5242880}" ]; then
   exit 0
 fi
 
-# Read mtime ONCE (used by both freshness checks). B2 fix: explicit if-elif for stat
-# (no || chaining — macOS BSD stat short-circuits on success, piped tr gets input from
-# the SAME stat output; || chain produces wrong result if BSD stat succeeds but GNU stat
-# syntax is tried). B2 also strips trailing whitespace from stat output (bash 3.2
-# arithmetic fails on whitespace).
-if HANDOFF_MTIME=$(stat -f %m "$HANDOFF_PATH" 2>/dev/null); then
-  :
-elif HANDOFF_MTIME=$(stat -c %Y "$HANDOFF_PATH" 2>/dev/null); then
-  :
-else
-  HANDOFF_MTIME=0
-fi
-HANDOFF_MTIME=$(printf '%s' "$HANDOFF_MTIME" | tr -d '[:space:]')
-[ -z "$HANDOFF_MTIME" ] && HANDOFF_MTIME=0
-NOW=$(date +%s)
-HANDOFF_AGE=$((NOW - HANDOFF_MTIME))
-
-# R2 #4 fix: if stat failed (HANDOFF_MTIME=0), HANDOFF_AGE is a ~57-year false positive
-# (current epoch minus zero). Guard: treat stat-failure as "freshness unknown" rather
-# than "ancient." Skip stale check, log the failure, proceed with marker check only.
-STAT_OK="true"
-if [ "$HANDOFF_MTIME" -eq 0 ]; then
-  STAT_OK="false"
-  HANDOFF_AGE=0  # neutralize for downstream comparisons
-  ctx_gate_log "primer sid=${SID:-unknown} action=stat-failed-mtime-zero stale-check-skipped"
-fi
-
-# Legacy-file detection — backwards-compat for existing CLAUDE.local.md files
-# written before the END-OF-HANDOFF marker convention.
-# Cutoff epoch from lib/handoff-config.sh: 3+ days before first deploy, so
-# same-day-old files are NOT treated as legacy.
-LEGACY="false"
-if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$HANDOFF_LEGACY_CUTOFF_EPOCH" ]; then
-  LEGACY="true"
-fi
+# Check freshness, mtime, stale state, and legacy detection.
+# Sets HANDOFF_MTIME, HANDOFF_AGE, STAT_OK, LEGACY, STALE_WARNING globally.
+primer_check_freshness "$HANDOFF_PATH" "${SID:-unknown}"
 
 # END-OF-HANDOFF marker check (Decision D).
-# Match both new form (schema=v1 sid=... nonce=...) and legacy form (--).
+# Match both new form (schema=v1 sid=... nonce=...) and legacy form (-- ).
+# Uses handoff_marker_check from lib/handoff-marker.sh.
+# Sets MARKER_PRESENT ("true"/"false") globally.
 # Hook scripts run as subprocess — pipe is fine here (not subject to orchestrator restrictions).
-MARKER_NEW='<!-- END-OF-HANDOFF schema=v1'
-MARKER_LEGACY='<!-- END-OF-HANDOFF -->'
-MARKER_PRESENT="true"
-TAIL_BUF=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null)
-if ! { printf '%s' "$TAIL_BUF" | grep -qF "$MARKER_NEW" || printf '%s' "$TAIL_BUF" | grep -qF "$MARKER_LEGACY"; }; then
-  MARKER_PRESENT="false"
-fi
+primer_check_marker "$HANDOFF_PATH"
 
 # Compose marker-related warning based on (marker, legacy) combination.
 if [ "$MARKER_PRESENT" = "false" ] && [ "$LEGACY" = "true" ]; then
@@ -131,19 +95,9 @@ else
   MARKER_WARNING=""
 fi
 
-# Stale-handoff detection (Decision F + R1 #6 — uses lib constant, default 24h).
-# R2 #4 / #11 fix: always assign STALE_WARNING in both branches (prevents `set -u` abort).
-# R2 #4: skip stale check if STAT_OK=false (HANDOFF_MTIME unreliable).
-# R3 #B12: compute HANDOFF_AGE_HUMAN INSIDE the stale-branch (not at top scope).
-STALE_WARNING=""
-if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "${HANDOFF_STALE_SECS}" ]; then
-  HANDOFF_AGE_HUMAN=$((HANDOFF_AGE / 3600))
-  STALE_WARNING="WARNING STALE HANDOFF — predates this session by ~${HANDOFF_AGE_HUMAN}h; it may be from a prior conversation. Verify with the user before resuming."$'\n\n'
-fi
-
 # Sentinel-presence check (Decision E — resume-path coverage).
-# R2 CRITICAL fix: new session SID differs from sentinel SID for resume/startup/clear.
-# Use GLOB scan + cwd-disambiguation via ac_read_sentinel_cwd (added in Task 1.1a).
+# New session SID differs from sentinel SID for resume/startup/clear.
+# Use GLOB scan + cwd-disambiguation via primer_find_sentinel_for_cwd helper.
 #
 # SENTINEL LIFECYCLE:
 # - /pre-compact Step 9.0 writes: $HOME/.claude/progress/auto-compact-${SID}.json
@@ -151,39 +105,7 @@ fi
 # - For source=compact: sentinel typically ABSENT at primer time (Stop hook claimed it).
 # - For source=resume/startup/clear: unconsumed sentinel means /pre-compact ran but
 #   /compact never fired (laptop close, crash, etc.). Hard channel was lost.
-
-SENTINEL_PRESENT="false"
-SENTINEL_PATH=""
-SENTINEL_SID8=""
-SENTINEL_NONCE=""
-for sentinel_candidate in "$HOME/.claude/progress/auto-compact-"*.json; do
-  # Glob with no match expands to literal pattern; the -f test catches this.
-  [ -f "$sentinel_candidate" ] || continue
-  # Use schema-validating lib reader: symlink rejection, size cap, schema_version check.
-  # Legacy sentinels (schema_version=1, no cwd field) → skip via continue.
-  SENT_CWD=$(ac_read_sentinel_cwd "$sentinel_candidate" 2>/dev/null) || {
-    ac_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=no-cwd-field-or-invalid-schema"
-    continue
-  }
-  if [ -z "$SENT_CWD" ]; then
-    ac_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=empty-cwd"
-    continue
-  fi
-  # Canonicalize sentinel cwd; match if EITHER canonical OR raw equality (R1-H1 fallback).
-  SENT_CWD_CANON=$(ac_canonicalize_path "$SENT_CWD") || SENT_CWD_CANON="$SENT_CWD"
-  if [ "$SENT_CWD_CANON" = "$CWD_CANON" ] || [ "$SENT_CWD" = "$CWD" ]; then
-    SENTINEL_PRESENT="true"
-    SENTINEL_PATH="$sentinel_candidate"
-    SENTINEL_SID_FULL=$(basename "$sentinel_candidate" .json | sed 's/^auto-compact-//')
-    SENTINEL_SID8=$(printf '%s' "$SENTINEL_SID_FULL" | head -c 8)
-    [ -z "$SENTINEL_SID8" ] && SENTINEL_SID8="$SENTINEL_SID_FULL"
-    SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$sentinel_candidate" 2>/dev/null) || SENTINEL_NONCE=""
-    # B20: log sentinel detection in unified handoff audit trail.
-    handoff_log "handoff_detected sid=${SENTINEL_SID8:-unknown} file=$HANDOFF_PATH"
-    break
-  fi
-  # Different cwd — this sentinel is for another workspace; skip
-done
+primer_find_sentinel_for_cwd "$CWD_CANON"
 
 # Compose nav directive based on (source, sentinel, marker, freshness, legacy) matrix.
 # See plan Architecture Overview "Source-routing decision matrix" for the full table.
