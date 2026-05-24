@@ -111,10 +111,11 @@ handoff_marker_nonce() {
 handoff_marker_sid() {
   local file="$1"
   [ -f "$file" ] || return 1
-  # grep -F filters to ONLY marker lines; tail -1 picks last (canonical is end-of-file);
+  # grep -F filters to ONLY marker lines; head -1 picks the FIRST (canonical — see
+  # header invariant: writer appends canonical last; attacker-appended impostor is
+  # after it and therefore ignored by head -1).
   # sed extracts sid= attribute — no \b needed (already on a marker-only line).
-  tail -c 512 "$file" 2>/dev/null \
-    | grep -F 'END-OF-HANDOFF schema=' \
-    | tail -1 \
+  grep -F 'END-OF-HANDOFF schema=' "$file" 2>/dev/null \
+    | head -1 \
     | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p'
 }
