@@ -23,8 +23,8 @@ readonly HANDOFF_LEGACY_CUTOFF_EPOCH="${HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE:-17
 # Max handoff size — defense against pathological growth.
 readonly HANDOFF_MAX_SIZE_BYTES="${HANDOFF_MAX_SIZE_BYTES_OVERRIDE:-5242880}"  # 5MB
 
-# R3 D4: renamed from HANDOFF_PRECOMPACT_RELEASE_PCT (semantic clarity: this is the
-# bypass threshold for the safety net that blocks native auto-compact).
+# R3 D4: renamed for semantic clarity — "bypass" better describes the behavior
+# (this is the threshold at which the safety net releases/bypasses, not just "releases").
 # Raised from 75 → 90 to close the 75-95% unprotected gap: native auto-compact
 # fires at ~95%, FORCE nudge fires at 85%; 90% leaves 5% headroom for the safety
 # release before native compaction would lose the handoff.
