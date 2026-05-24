@@ -234,14 +234,13 @@ case "$DRY_OUT" in
 esac
 
 echo "== C1: ac_write_sentinel fails on read-only progress dir =="
-# chmod 500 the progress dir so write is denied; expect non-zero return.
+# Make the .claude parent dir mode 500 so mkdir -p of progress/ is denied.
+# ac_write_sentinel calls `mkdir -p $(dirname path)` and `chmod 700` on the progress dir,
+# but neither can create the progress subdir if .claude itself is not writable.
 TMPDIR_RO=$(mktemp -d)
-trap_cleanup() { chmod 700 "$TMPDIR_RO" 2>/dev/null; rm -rf "$TMPDIR_RO"; }
-trap trap_cleanup EXIT
-PROGRESS_RO="$TMPDIR_RO/.claude/progress"
-mkdir -p "$PROGRESS_RO"
-chmod 500 "$PROGRESS_RO"
-# Invoke ac_write_sentinel with HOME pointing to TMPDIR_RO so sentinel dir = $PROGRESS_RO
+CLAUDE_DIR="$TMPDIR_RO/.claude"
+mkdir -p "$CLAUDE_DIR"
+chmod 500 "$CLAUDE_DIR"
 WRITE_RC=0
 ( HOME="$TMPDIR_RO" ac_write_sentinel "ROTEST_$$" "/dev/ttys999" "/tmp" "ro-nonce" ) 2>/dev/null || WRITE_RC=$?
 if [ "$WRITE_RC" -ne 0 ]; then
@@ -249,7 +248,8 @@ if [ "$WRITE_RC" -ne 0 ]; then
 else
   check "C1: ac_write_sentinel returns non-zero on read-only progress dir (got 0, expected non-zero)" 1 0
 fi
-chmod 700 "$PROGRESS_RO" 2>/dev/null
+chmod 700 "$CLAUDE_DIR" 2>/dev/null
+rm -rf "$TMPDIR_RO"
 
 echo "== C4: ac_read_sentinel_cwd rejection vectors =="
 TMPDIR_C4=$(mktemp -d)
