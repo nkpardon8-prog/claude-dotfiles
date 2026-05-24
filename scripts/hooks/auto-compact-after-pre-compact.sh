@@ -55,6 +55,43 @@ if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
+# C2 fix: Stop hook must use the SAME SID derivation as the writer (arm-auto-compact.sh)
+# to find the sentinel the writer left.  The hook-JSON SESSION_ID is Claude Code's real
+# session_id; the writer derives via ac_resolve_session_id (which may produce a
+# TTY-keyed slug-fallback SID that differs from the real session_id when CLAUDE_SESSION_ID
+# was unset at arm time and the transcript had not yet flushed).
+#
+# Strategy: try BOTH the hook-JSON SID AND the ac_resolve_session_id result.
+# - If only one resolves to a sentinel file, use that one.
+# - If both resolve to DISTINCT sentinels, log the mismatch and prefer ac_resolve path
+#   (matches what the writer used).
+# - If neither resolves, fall through to the `[ -f "$SENTINEL" ] || exit 0` fast-path.
+REAL_SID="$SESSION_ID"
+RESOLVED_SID=$(ac_resolve_session_id 2>/dev/null)
+REAL_SENTINEL=$(ac_sentinel_path "$REAL_SID")
+RESOLVED_SENTINEL=""
+if [ -n "$RESOLVED_SID" ]; then
+  RESOLVED_SENTINEL=$(ac_sentinel_path "$RESOLVED_SID")
+fi
+
+# Determine which sentinel to use.
+REAL_EXISTS=false
+RESOLVED_EXISTS=false
+[ -f "$REAL_SENTINEL" ] && REAL_EXISTS=true
+[ -n "$RESOLVED_SENTINEL" ] && [ -f "$RESOLVED_SENTINEL" ] && RESOLVED_EXISTS=true
+
+if [ "$REAL_EXISTS" = "true" ] && [ "$RESOLVED_EXISTS" = "true" ] \
+   && [ "$REAL_SENTINEL" != "$RESOLVED_SENTINEL" ]; then
+  # Both exist but point to DIFFERENT sentinels — log the discrepancy and
+  # prefer the ac_resolve path (matches the writer's derivation).
+  handoff_log "stop_hook_sid_mismatch real=$REAL_SID resolved=$RESOLVED_SID — preferring resolved"
+  SESSION_ID="$RESOLVED_SID"
+elif [ "$REAL_EXISTS" = "false" ] && [ "$RESOLVED_EXISTS" = "true" ]; then
+  # Only the resolved (arm-time) sentinel exists — use it.
+  SESSION_ID="$RESOLVED_SID"
+fi
+# else: real-SID sentinel exists (or neither exists) — keep SESSION_ID as-is.
+
 SENTINEL=$(ac_sentinel_path "$SESSION_ID")
 
 # Garbage-collect orphan claim files (>1h old) on EVERY Stop event — this is the
