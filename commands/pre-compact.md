@@ -303,13 +303,35 @@ Wait for response. Fold the user's additions into the appropriate sections. If t
 
 Two-phase write. Phase 1 hits the pass floor on the first Write call. Phase 2 reads back and Edits gaps toward the ceiling. Phase 1 is NOT a draft.
 
-**Crash-safety:** before Phase 1, snapshot the existing file (if any) to a backup so a mid-write crash doesn't destroy the parent's content:
+**Crash-safety + .prev snapshot guard (R2 #8 + R2 #9 — Read+Write replaces Bash cp):**
+
+`cp` is not in the ctx-gate Bash allowlist — at the 60% hard-gate it would be denied. Use
+Read+Write (both allowlist-clean for CLAUDE.local.md paths) instead. Also guard against
+re-run overwriting a recent snapshot (e.g., if user Ctrl-C and re-ran within the hour):
 
 ```bash
-[ -f ./CLAUDE.local.md ] && cp ./CLAUDE.local.md ./CLAUDE.local.md.prev 2>/dev/null
+# Snapshot check — use stat to see if .prev is recent (no cp Bash call)
+SNAPSHOT_NEEDED="true"
+if [ -f ./CLAUDE.local.md.prev ]; then
+  PREV_MTIME=$(stat -f %m ./CLAUDE.local.md.prev 2>/dev/null | tr -d '[:space:]' \
+               || stat -c %Y ./CLAUDE.local.md.prev 2>/dev/null | tr -d '[:space:]' \
+               || echo 0)
+  [ -z "$PREV_MTIME" ] && PREV_MTIME=0
+  PREV_AGE=$(( $(date +%s) - PREV_MTIME ))
+  # R2 #8: negative PREV_AGE (future-dated mtime attack) → treat as stale, re-snapshot
+  if [ "$PREV_AGE" -ge 0 ] && [ "$PREV_AGE" -le 3600 ]; then
+    SNAPSHOT_NEEDED="false"
+  fi
+fi
 ```
 
-On successful Step 9.1 report, the `.prev` is left in place for one round (next /pre-compact run will overwrite it before its own write). Manually `rm -f CLAUDE.local.md.prev` if you don't want it. Should also be in `.gitignore` (handled in Step 8 — the existing `CLAUDE.local.md` ignore line plus the `.prev` suffix matches `CLAUDE.local.md*` glob patterns if used).
+If SNAPSHOT_NEEDED is "true": use the **Read tool** on `./CLAUDE.local.md` then the **Write
+tool** to write its content to `./CLAUDE.local.md.prev` (NOT a Bash cp call). Both paths
+are in the ctx-gate allowlist. This Read+Write is the canonical snapshot mechanism.
+
+On successful Step 9.1 report, the `.prev` is left in place for one round. Should also be
+in `.gitignore` (handled in Step 8 — the existing `CLAUDE.local.md` ignore line plus the
+`.prev` suffix matches `CLAUDE.local.md*` glob patterns if used).
 
 ### Step 6A: Phase 1 — Full Write
 
