@@ -343,6 +343,11 @@ Overwrite `./CLAUDE.local.md` with this structure (use the parent fields held in
 - Phase indicator: [skill-specific, e.g. "mid review round 2", "implement Phase 3 of 5", "Phase 2 of god-review round 4 (consecutive_clean=1)"]
 - Critical artifacts to preserve: [paths to in-flight files, e.g. ./tmp/ready-plans/foo.md, tmp/god-review/state.json]
 - Resumption directive: [skill-specific Next Action template from Step 3.G — verbatim]
+- Loop state (if applicable):
+  - Exit criterion: [e.g., "3 consecutive clean rounds" for /god-review]
+  - Current standing: [e.g., "1 of 3 clean; round 4 had 8 new findings"]
+  - Iteration / round number: [N]
+- Self-assessment (optional): confidence work is complete ~N%; unresolved doubt: [one specific concern]
 
 ## Active Task
 [1-3 sentences. What the user is doing right now. Lead with $ARGUMENTS if provided.]
