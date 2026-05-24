@@ -106,8 +106,8 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-if ac_write_sentinel "$SID" "$ORIG_TTY"; then
-  ac_log "armed sid=$SID tty=$ORIG_TTY"
+if ac_write_sentinel "$SID" "$ORIG_TTY" "$PWD"; then
+  ac_log "armed sid=$SID tty=$ORIG_TTY cwd=$PWD"
   echo "armed (sentinel auto-compact-${SID}.json, target ${ORIG_TTY})"
 else
   ac_log "arm-failed sid=$SID tty=$ORIG_TTY"
