@@ -29,7 +29,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/handoff-config.sh
 . "$ROOT/lib/handoff-config.sh"
 
-INPUT=$(head -c 1048576)  # bound stdin to 1MB (per codex-review R2 F16: DoS guard)
+INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
 TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // empty' 2>/dev/null)
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
