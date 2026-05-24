@@ -1210,22 +1210,27 @@ rm -rf "$TMPWD_F" "$TMPHOME_F"
 # §G4-F-advisory SID-unknown nonce mismatch stays advisory (PR-17) — Task 4.3-bis
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §G4-F-advisory SID-unknown nonce mismatch stays advisory (PR-17) =="
-# Setup: NO breadcrumb (SID unknown), alias handoff with a nonce in marker.
-# Assert STATE=ok (not mismatch-hard-stop) — D4 only blocks when SID known.
+echo "== §G4-F-advisory SID-known + no breadcrumb nonce → advisory (PR-17) =="
+# Setup: CLAUDE_SESSION_ID set (OWN_SID known); NO breadcrumb for this SID; alias handoff
+# with a nonce in marker. Assert STATE=ok (not mismatch-hard-stop) — D4 only blocks when
+# both OWN_SID AND a breadcrumb nonce are available (NONCE_OK=mismatch). With no breadcrumb,
+# SENTINEL_NONCE is empty → NONCE_OK=unknown → no hard-stop.
+# R5 Critical #9 update: OWN_SID must be non-empty (both env vars set would trigger own-sid-
+# unresolvable if unset and slug fails). Provide CLAUDE_SESSION_ID to satisfy OWN_SID guard.
 TMPWD_FA=$(mktemp -d)
 TMPHOME_FA=$(mktemp -d)
 mkdir -p "$TMPHOME_FA/.claude/progress" && chmod 700 "$TMPHOME_FA/.claude/progress"
 GFA_NONCE="fa1234ab-5678-9abc-def0-123456789abc"
-# Alias file (no SID-tagged; no breadcrumb → SID unknown).
+GFA_SID="fa-advisory-sid-$$"
+# Alias file (no SID-tagged; no breadcrumb for GFA_SID → SENTINEL_NONCE empty → NONCE_OK=unknown).
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=fa-advis nonce=%s -->\n' \
   "$GFA_NONCE" > "$TMPWD_FA/CLAUDE.local.md"
-OUT_FA=$(cd "$TMPWD_FA" && HOME="$TMPHOME_FA" bash "$STEP2_SH" 2>/dev/null)
+OUT_FA=$(cd "$TMPWD_FA" && CLAUDE_SESSION_ID="$GFA_SID" HOME="$TMPHOME_FA" bash "$STEP2_SH" 2>/dev/null)
 GFA_STATE=$(printf '%s' "$OUT_FA" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GFA_STATE" = "ok" ]; then
-  pass "G4-F-advisory: SID-unknown + nonce in marker → STATE=ok (D4 does NOT block without SID)"
+  pass "G4-F-advisory: SID-known + no breadcrumb nonce → STATE=ok (D4 does NOT hard-stop without breadcrumb nonce)"
 else
-  fail "G4-F-advisory: SID-unknown + nonce in marker" "expected state=ok got '$GFA_STATE' raw: ${OUT_FA:0:200}"
+  fail "G4-F-advisory: SID-known + no breadcrumb nonce" "expected state=ok got '$GFA_STATE' raw: ${OUT_FA:0:200}"
 fi
 rm -rf "$TMPWD_FA" "$TMPHOME_FA"
 
