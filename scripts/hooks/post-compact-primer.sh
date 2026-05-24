@@ -47,9 +47,19 @@ if [ -z "$HANDOFF_PATH" ]; then
   exit 0
 fi
 
-# Read mtime ONCE (used by both freshness checks). R2 #4 fix: strip whitespace from
-# stat output (bash 3.2 arithmetic fails on whitespace from `stat` on some systems).
-HANDOFF_MTIME=$(stat -f %m "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || stat -c %Y "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || printf 0)
+# Read mtime ONCE (used by both freshness checks). B2 fix: explicit if-elif for stat
+# (no || chaining — macOS BSD stat short-circuits on success, piped tr gets input from
+# the SAME stat output; || chain produces wrong result if BSD stat succeeds but GNU stat
+# syntax is tried). B2 also strips trailing whitespace from stat output (bash 3.2
+# arithmetic fails on whitespace).
+if HANDOFF_MTIME=$(stat -f %m "$HANDOFF_PATH" 2>/dev/null); then
+  :
+elif HANDOFF_MTIME=$(stat -c %Y "$HANDOFF_PATH" 2>/dev/null); then
+  :
+else
+  HANDOFF_MTIME=0
+fi
+HANDOFF_MTIME=$(printf '%s' "$HANDOFF_MTIME" | tr -d '[:space:]')
 [ -z "$HANDOFF_MTIME" ] && HANDOFF_MTIME=0
 NOW=$(date +%s)
 HANDOFF_AGE=$((NOW - HANDOFF_MTIME))
