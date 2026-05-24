@@ -152,6 +152,23 @@ ctx_gate_read_pct() {
 # Helper: ctx_gate_pre_compact_armed <sid>
 # ---------------------------------------------------------------------------
 # Returns 0 (true) if pre-compact sentinel exists for sid (meaning /pre-compact ran).
+#
+# R3 #B3 + R4 #A6 — DUAL-LOOKUP DESIGN NOTE:
+# This function uses SID-keyed lookup (intentional) — only used by the pretooluse hook
+# which fires in the SAME session that wrote the sentinel, so SID matches by definition.
+# The PRIMER hook uses glob+cwd-match (via ac_read_sentinel_cwd) because it fires in
+# DIFFERENT sessions (resume/startup/clear) where the new session SID != sentinel SID.
+# Do NOT "fix" this into a glob — the pretooluse use-case is correct as-is.
+#
+# R4 #A6 edge case: this function uses [ -f ... ] file-existence check only (no schema
+# validation). After AC_SCHEMA_VERSION bump to 2 (Task 1.1a), an old in-flight
+# schema_version=1 sentinel may still be detected as "armed" here while the primer's
+# ac_read_sentinel_cwd correctly skips it as legacy. This inconsistency is bounded:
+# (a) the same-session SID guarantee means the sentinel here is always from THIS session
+#     (which is post-schema-bump, so v2 with cwd), or
+# (b) it is a stale v1 sentinel from before the deploy that has not been pruned yet.
+#     In case (b), pretooluse releases the gate but primer skips — model can still invoke
+#     /pre-compact normally. Acceptable; documented for clarity.
 ctx_gate_pre_compact_armed() {
   local sid="$1"
   [ -f "$HOME/.claude/progress/auto-compact-${sid}.json" ]
