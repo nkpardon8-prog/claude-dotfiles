@@ -283,8 +283,7 @@ About to write CLAUDE.local.md with:
 - Fix-laters: [N]
 - Auto-compact (planned): [will arm — Stop hook fires /compact after this run | skipped per 'no-auto-compact' arg]
   (Final state, including failures, is reported in Step 9.1 after Step 9.0 actually attempts arming.)
-- CLAUDE.md @import (Step 7): [will append `@CLAUDE.local.md` to repo-root CLAUDE.md | already present (skip) | no CLAUDE.md (skip)]
-- .gitignore update (Step 8): [will append `CLAUDE.local.md` to repo-root .gitignore | already present (skip) | not in a git repo (skip)]
+- .gitignore update (Step 8): [will append `CLAUDE.local*.md` to repo-root .gitignore | already present (skip) | not in a git repo (skip)]
 
 [If Seq > 1: also show a "Since-last-compact preview" — the 3-5 most material items
  (resolved questions, shifted priorities, fix-laters newly applicable) so the user
