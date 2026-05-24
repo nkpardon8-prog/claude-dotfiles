@@ -129,43 +129,13 @@ if [ -z "$SENTINEL_SID" ]; then
   fi
 fi
 
-# Resolve HANDOFF_PATH: SID-tagged first, then generic alias, then repo root.
+# Resolve HANDOFF_PATH: SID-tagged first (when SID known), alias-only when SID unknown.
+# R4 H10 (Phase 3): delegated to lib/handoff-resolve.sh (handoff_resolve_path).
+# R4 D3 / R4-PR-M9: when SID8 known, ONLY SID-tagged files; NEVER mix with alias.
+# _primer_check_linkcount (H9 hardlink defense) is embedded in handoff-resolve.sh (R2-PR-6).
 HANDOFF_PATH=""
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-
-try_path() {
-  local p="$1"
-  [ -z "$p" ] && return 1
-  [ -f "$p" ] || return 1
-  [ -L "$p" ] && { echo "WARN: skipping symlink at $p" >&2; return 1; }
-  # H9: hardlink rejection — multi-link inode is a swap-attack signal.
-  local lc
-  lc=$(stat -f %l "$p" 2>/dev/null || stat -c %h "$p" 2>/dev/null || echo 1)
-  lc=$(printf '%s' "$lc" | tr -d '[:space:]')
-  [ -z "$lc" ] && lc=1
-  if [ "$lc" -gt 1 ]; then
-    echo "WARN: skipping hardlinked $p (linkcount=$lc)" >&2
-    return 1
-  fi
-  HANDOFF_PATH="$p"
-  return 0
-}
-
-# R4 D3 / R4-PR-M9: SID-aware path resolution — NEVER mix SID-tagged and alias paths.
-# When SID8 is known, ONLY try SID-tagged files. When unknown, ONLY try alias files.
-if [ -n "$SID8" ]; then
-  # SID-known path: only SID-tagged files.
-  try_path "$(pwd)/CLAUDE.local.${SID8}.md" || true
-  if [ -z "$HANDOFF_PATH" ] && [ -n "$REPO_ROOT" ]; then
-    try_path "$REPO_ROOT/CLAUDE.local.${SID8}.md" || true
-  fi
-else
-  # SID-unknown path: only alias files.
-  try_path "$(pwd)/CLAUDE.local.md" || true
-  if [ -z "$HANDOFF_PATH" ] && [ -n "$REPO_ROOT" ]; then
-    try_path "$REPO_ROOT/CLAUDE.local.md" || true
-  fi
-fi
+RESOLVE_RC=0
+handoff_resolve_path "$(pwd)" "${SID8:-}" || RESOLVE_RC=$?
 
 if [ -z "$HANDOFF_PATH" ]; then
   if [ -n "$SID8" ]; then
