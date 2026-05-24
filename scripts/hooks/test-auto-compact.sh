@@ -448,18 +448,31 @@ if [ "$SID_1" != "$SID_2" ] && [ "$SID_2" != "$SID_3" ] && [ "$SID_1" != "$SID_3
 else
   check "D8: SID collision SID_1=$SID_1 SID_2=$SID_2 SID_3=$SID_3" 1 0
 fi
-# Fallback path: no CLAUDE_SESSION_ID — relies on transcript file discovery.
-# Known limitation (R4 D8): at N>1 without distinct CLAUDE_SESSION_ID, ac_resolve_session_id
-# may return the same SID (slug-of-cwd fallback picks ls -t | head -1 regardless of caller).
-# This test documents that limitation; the function is expected to return *something* (or empty).
-# arm-auto-compact.sh docstring notes this collision mode; arming is refused if SID is empty.
+# Fallback path: no CLAUDE_SESSION_ID — relies on transcript file discovery + TTY-keying.
+# R4 D8 + Fix-sweep Commit 1: when transcripts exist, slug-fallback appends __ttysNNN suffix.
+# Spec: ac_resolve_session_id MUST return something non-empty when transcripts exist,
+# and the result MUST be deterministic across two consecutive calls from the same shell
+# (same TTY → same SID). arm-auto-compact.sh refuses to arm if SID is empty.
 D8_SAVED_SID="${CLAUDE_SESSION_ID:-}"
 unset CLAUDE_SESSION_ID
-SID_FALLBACK=$(ac_resolve_session_id)
-if [ -n "$SID_FALLBACK" ]; then
-  check "D8: fallback returns non-empty SID (transcript-derived; may collide at N>1 without CLAUDE_SESSION_ID — known limitation)" 1 1
+# Pre-create at least one transcript so the slug-fallback has something to pick.
+D8_SLUG=$(pwd | sed 's|[^A-Za-z0-9]|-|g')
+D8_PROJ_DIR="$HOME/.claude/projects/${D8_SLUG}"
+mkdir -p "$D8_PROJ_DIR" 2>/dev/null
+D8_TRANSCRIPT="$D8_PROJ_DIR/d8-fallback-test-$(date +%s)-$$.jsonl"
+printf '{"type":"test"}\n' > "$D8_TRANSCRIPT" 2>/dev/null
+SID_FALLBACK_1=$(ac_resolve_session_id)
+SID_FALLBACK_2=$(ac_resolve_session_id)
+rm -f "$D8_TRANSCRIPT" 2>/dev/null
+if [ -n "$SID_FALLBACK_1" ]; then
+  check "D8: slug-fallback returns non-empty SID when transcript exists (TTY-keying applied)" 1 1
 else
-  check "D8: fallback returns empty SID — arm refuses (acceptable degradation per R4-D8 known-limitation doc)" 1 1
+  check "D8: slug-fallback returned empty SID even with transcript present (FAIL — arm would refuse)" 1 0
+fi
+if [ "$SID_FALLBACK_1" = "$SID_FALLBACK_2" ]; then
+  check "D8: slug-fallback is deterministic across 2 calls (same TTY, same cwd → same SID)" 1 1
+else
+  check "D8: slug-fallback not deterministic — call1=$SID_FALLBACK_1 call2=$SID_FALLBACK_2 (FAIL)" 1 0
 fi
 # Restore
 if [ -n "$D8_SAVED_SID" ]; then
