@@ -167,6 +167,13 @@ if [ -n "$OWN_SID" ]; then
         else
           printf 'STATE={"state":"stop-hook-refused","sid8":"%s"}\n' "$_refused_sid8"
         fi
+        # RQ-11 (R6 HZ-04 extension): satisfy EXIT trap's SENTINEL_SID guard so the refused
+        # breadcrumb is deleted after this path exits. The trap fires on exit and removes
+        # ADOPTED_BREADCRUMB_PATH only when SENTINEL_SID is non-empty. Without this line,
+        # the refused-bc is preserved (because SENTINEL_SID was never set in this branch —
+        # the normal scan loop was never reached) — causing repeated STATE=stop-hook-refused
+        # on every subsequent /post-compact-resume call (R5 impl-rev #1 Critical finding).
+        SENTINEL_SID="$OWN_SID"
         exit 0
       else
         handoff_log "step2 skip reason=stop-hook-refused-stale-or-mismatch age=${_refused_age}s cwd_match=$([ "$_refused_cwd" = "$CURRENT_CWD_CANON" ] && echo yes || echo no) host_match=$([ "$_refused_host" = "$HOSTNAME_SHORT" ] && echo yes || echo no)"
