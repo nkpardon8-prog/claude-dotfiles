@@ -864,14 +864,18 @@ fi
 rm -rf "$TMPHOME"
 
 # ---------------------------------------------------------------------------
-# §C6 multi-sentinel-matching-cwd: 2 sentinels with same cwd — primer breaks on first match
+# §C6 multi-sentinel-matching-cwd: 2 sentinels with same cwd — session-id binding picks the right one
+#
+# Phase 2 (Round 4): primer_find_sentinel_for_cwd now binds to the exact sentinel for the
+# current session (session_id strict binding). When session_id=AAAA0001, it picks
+# auto-compact-AAAA0001.json (not the BBBB0002 one) even when both have matching cwd.
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §C6 multi-sentinel-matching-cwd =="
+echo "== §C6 multi-sentinel-matching-cwd — session-id-binding picks own sentinel =="
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
 # R4 D3 fix: provide SID-tagged handoffs for each sentinel SID.
-# Primer picks first glob match; both SIDs have their own SID-tagged files.
+# Both SIDs have their own SID-tagged files.
 printf '# handoff A\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.AAAA0001.md"
 printf '# handoff B\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.BBBB0002.md"
 # Two sentinels with identical cwd but different SIDs
@@ -879,12 +883,13 @@ printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"p
   > "$TMPHOME/.claude/progress/auto-compact-AAAA0001.json"
 printf '{"schema_version":3,"target_tty":"/dev/ttys002","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce2"}\n' "$TMPHOME" \
   > "$TMPHOME/.claude/progress/auto-compact-BBBB0002.json"
-JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+# Phase 2: session_id=AAAA0001 → binds to AAAA0001 sentinel (PENDING HANDOFF)
+JSON="{\"session_id\":\"AAAA0001\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
-# Verify primer detected a sentinel (PENDING HANDOFF) — it breaks on first glob match
+# Session binds to its own sentinel → PENDING HANDOFF
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
-  pass "C6: multi-sentinel-matching-cwd → primer breaks on first match (SENTINEL_PRESENT=true)"
+  pass "C6: multi-sentinel-matching-cwd → AAAA0001 session binds own sentinel (SENTINEL_PRESENT=true)"
 else
   fail "C6: multi-sentinel-matching-cwd" "expected PENDING HANDOFF, got: $OUT"
 fi
