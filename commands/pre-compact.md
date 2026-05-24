@@ -361,7 +361,12 @@ Then proceed to the SID-tagged write protocol:
 **SID-tagged write (R4: parallel-track-safe — each session writes ONLY its own SID-tagged file):**
 
 1. Resolve SID from Step 3.B disk-persist scratch file or dry-run output.
-2. Compute `SID8` = first 8 chars of SID: `SID8=$(printf '%s' "$SID" | head -c 8); [ -z "$SID8" ] && SID8="$SID"`
+2. Compute `SID8` using the TTY-aware helper (R3-fix-sweep C2):
+   ```bash
+   . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
+   SID8=$(ac_compute_sid8 "$SID")
+   ```
+   This preserves the `__ttysN` suffix when present so parallel sessions produce distinct handoff filenames.
 3. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
 4. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
 
