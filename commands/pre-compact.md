@@ -540,7 +540,7 @@ A `Stop` hook (`~/.claude-dotfiles/scripts/hooks/auto-compact-after-pre-compact.
 
 Run this bash block FIRST, before composing the Step 9.1 report — the report includes the resulting arming state.
 
-**Pass NONCE (from Step 6D) as the 2nd argument** so the sentinel records the same nonce embedded in the CLAUDE.local.md marker — /post-compact-resume validates consistency between them:
+**Pass NONCE (from Step 6D) as the 2nd argument** so the sentinel records the same nonce embedded in the SID-tagged handoff marker — /post-compact-resume validates consistency between them:
 
 ```bash
 ARM_SCRIPT="$HOME/.claude-dotfiles/scripts/hooks/arm-auto-compact.sh"
