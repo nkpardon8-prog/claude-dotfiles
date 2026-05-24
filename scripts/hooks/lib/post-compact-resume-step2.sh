@@ -29,6 +29,7 @@ set -uo pipefail
 SENTINEL_SID=""
 SENTINEL_NONCE=""
 SID8=""
+ADOPTED_BREADCRUMB_PATH=""
 CURRENT_CWD_CANON=$(cd -P "$(pwd)" 2>/dev/null && pwd -P || printf '%s' "$(pwd)")
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 
@@ -38,24 +39,68 @@ for BREADCRUMB in $(ls -t "$HOME/.claude/progress/breadcrumb-"*.json 2>/dev/null
   [ -L "$BREADCRUMB" ] && continue  # reject symlinks
   # Ownership + size guard
   [ -O "$BREADCRUMB" ] || continue
-  BREAD_SIZE=$(stat -f %z "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || stat -c %s "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || printf 0)
+  # H3/H9 (R4): replace || stat-cascade with explicit if-elif (macOS BSD stat short-circuits).
+  # H9 (R4): lower-bound guard added (BREAD_SIZE > 0) — empty file is invalid.
+  if BREAD_SIZE=$(stat -f %z "$BREADCRUMB" 2>/dev/null); then
+    :
+  elif BREAD_SIZE=$(stat -c %s "$BREADCRUMB" 2>/dev/null); then
+    :
+  else
+    BREAD_SIZE=0
+  fi
+  BREAD_SIZE=$(printf '%s' "$BREAD_SIZE" | tr -d '[:space:]')
   [ -z "$BREAD_SIZE" ] && BREAD_SIZE=0
+  # H9: both lower-bound (> 0) and upper-bound (< 1024) required.
+  [ "$BREAD_SIZE" -gt 0 ] || continue
   [ "$BREAD_SIZE" -lt 1024 ] || continue
   # Age guard (PR-2: 1h matches GC TTL)
-  BREAD_MTIME=$(stat -f %m "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || stat -c %Y "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || printf 0)
+  # H3 (R4): explicit if-elif for stat (no || chaining).
+  if BREAD_MTIME=$(stat -f %m "$BREADCRUMB" 2>/dev/null); then
+    :
+  elif BREAD_MTIME=$(stat -c %Y "$BREADCRUMB" 2>/dev/null); then
+    :
+  else
+    BREAD_MTIME=0
+  fi
+  BREAD_MTIME=$(printf '%s' "$BREAD_MTIME" | tr -d '[:space:]')
   [ -z "$BREAD_MTIME" ] && BREAD_MTIME=0
   BREAD_AGE=$(( $(date +%s) - BREAD_MTIME ))
   [ "$BREAD_AGE" -ge 0 ] && [ "$BREAD_AGE" -lt 3600 ] || continue
+  # H12 (R4): schema-validating breadcrumb reader — check schema_version + originating_command
+  # + type-guards on each field. PR-M4: handle missing schema_version as 0 (old breadcrumbs).
+  # H14 (R4): explicitly reject if BREAD_CWD or BREAD_HOST are empty after extraction.
+  BREAD_CWD=$(jq -r '
+    if ((.schema_version // 0) == 1)
+       and ((.originating_command // "") == "pre-compact")
+       and ((.cwd | type) == "string")
+       and (.cwd != "")
+    then .cwd else empty end' "$BREADCRUMB" 2>/dev/null) || continue
+  # H14: explicit reject on empty (guards against jq returning null / type mismatch).
+  if [ -z "$BREAD_CWD" ]; then continue; fi
   # Cwd match (PR-8 dual: canonical OR raw)
-  BREAD_CWD=$(jq -r '.cwd // empty' "$BREADCRUMB" 2>/dev/null) || continue
   if [ "$BREAD_CWD" != "$CURRENT_CWD_CANON" ] && [ "$BREAD_CWD" != "$(pwd)" ]; then continue; fi
   # Hostname match (PR-3 iCloud defense)
-  BREAD_HOST=$(jq -r '.hostname // empty' "$BREADCRUMB" 2>/dev/null) || continue
-  if [ -n "$BREAD_HOST" ] && [ "$BREAD_HOST" != "$HOSTNAME_SHORT" ]; then continue; fi
+  BREAD_HOST=$(jq -r '
+    if ((.schema_version // 0) == 1)
+       and ((.originating_command // "") == "pre-compact")
+       and ((.hostname | type) == "string")
+       and (.hostname != "")
+    then .hostname else empty end' "$BREADCRUMB" 2>/dev/null) || continue
+  # H14: explicit reject on empty hostname.
+  if [ -z "$BREAD_HOST" ]; then continue; fi
+  if [ "$BREAD_HOST" != "$HOSTNAME_SHORT" ]; then continue; fi
   # All checks pass — adopt this breadcrumb.
-  SENTINEL_SID=$(jq -r '.sid // empty' "$BREADCRUMB" 2>/dev/null)
-  SID8=$(jq -r '.sid8 // empty' "$BREADCRUMB" 2>/dev/null)
-  SENTINEL_NONCE=$(jq -r '.nonce // empty' "$BREADCRUMB" 2>/dev/null)
+  SENTINEL_SID=$(jq -r '
+    if ((.sid | type) == "string") and (.sid != "") then .sid else empty end' \
+    "$BREADCRUMB" 2>/dev/null) || SENTINEL_SID=""
+  SID8=$(jq -r '
+    if ((.sid8 | type) == "string") and (.sid8 != "") then .sid8 else empty end' \
+    "$BREADCRUMB" 2>/dev/null) || SID8=""
+  SENTINEL_NONCE=$(jq -r '
+    if ((.nonce | type) == "string") and (.nonce != "") then .nonce else empty end' \
+    "$BREADCRUMB" 2>/dev/null) || SENTINEL_NONCE=""
+  # R4 D5: track path for read-once consumption after successful adoption.
+  ADOPTED_BREADCRUMB_PATH="$BREADCRUMB"
   break
 done
 
@@ -64,11 +109,17 @@ done
 if [ -z "$SENTINEL_SID" ]; then
   CLAIM_FILE=$(ls -t "$HOME/.claude/progress/auto-compact-"*.json.claim.* 2>/dev/null | head -1)
   if [ -n "$CLAIM_FILE" ] && [ -f "$CLAIM_FILE" ]; then
-    SENTINEL_SID=$(basename "$CLAIM_FILE" | sed 's/^auto-compact-//; s/\.json\.claim\..*//')
-    if [ -n "$SENTINEL_SID" ]; then
-      SID8=$(printf '%s' "$SENTINEL_SID" | head -c 8)
-      [ -z "$SID8" ] && SID8="$SENTINEL_SID"
-      SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$CLAIM_FILE" 2>/dev/null) || SENTINEL_NONCE=""
+    # H11 (R4): validate sentinel basename against ^[A-Za-z0-9_-]+$ before extracting SID.
+    CLAIM_BASENAME=$(basename "$CLAIM_FILE")
+    CLAIM_SID_RAW=$(printf '%s' "$CLAIM_BASENAME" | sed 's/^auto-compact-//; s/\.json\.claim\..*//')
+    # Reject if SID contains any character outside safe set.
+    if printf '%s' "$CLAIM_SID_RAW" | grep -qE '^[A-Za-z0-9_-]+$'; then
+      SENTINEL_SID="$CLAIM_SID_RAW"
+      if [ -n "$SENTINEL_SID" ]; then
+        SID8=$(printf '%s' "$SENTINEL_SID" | head -c 8)
+        [ -z "$SID8" ] && SID8="$SENTINEL_SID"
+        SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$CLAIM_FILE" 2>/dev/null) || SENTINEL_NONCE=""
+      fi
     fi
   fi
 fi
