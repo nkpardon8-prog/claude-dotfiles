@@ -98,6 +98,9 @@ if [ -z "$HANDOFF_PATH" ] && [ -n "$REPO_ROOT" ]; then
 fi
 
 if [ -z "$HANDOFF_PATH" ]; then
+  # Signaling convention: exit 0 here so the orchestrator reads STATE= from stdout
+  # and routes accordingly. Non-zero exit would surface as a Bash tool error, not
+  # as a routable state signal.
   echo "STATE=no-handoff"
   exit 0
 fi
