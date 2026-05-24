@@ -86,56 +86,101 @@ echo "count: $CLAIM_COUNT (GC at >60min via Stop hook)"
 echo
 
 echo "=== Current cwd handoff state ==="
-HANDOFF_PATH=""
-if [ -f "./CLAUDE.local.md" ]; then
-  HANDOFF_PATH="$(pwd)/CLAUDE.local.md"
-else
-  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
-  if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/CLAUDE.local.md" ]; then
-    HANDOFF_PATH="$REPO_ROOT/CLAUDE.local.md"
+# R5 H2: rewrite handoff detection to use lib/handoff-marker.sh (strict anchor grep)
+# and lib/handoff-resolve.sh. Show SID-tagged files first (R4 D1/D3 primary path),
+# then alias (legacy-only fallback). Stop-hook-refused detection added.
+DIAG_DIR="$(cd "$(dirname "$0")" && pwd)"
+_DIAG_MARKER_LOADED=""
+. "$DIAG_DIR/lib/handoff-marker.sh" 2>/dev/null && _DIAG_MARKER_LOADED=yes
+
+# Detect stop-hook-refused breadcrumbs for current session.
+DIAG_SID="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+if [ -n "$DIAG_SID" ]; then
+  _DIAG_REFUSED="$HOME/.claude/progress/breadcrumb-${DIAG_SID}.json"
+  if [ -f "$_DIAG_REFUSED" ] && [ -O "$_DIAG_REFUSED" ]; then
+    _DIAG_REFUSED_CMD=$(jq -r '.originating_command // empty' "$_DIAG_REFUSED" 2>/dev/null)
+    if [ "$_DIAG_REFUSED_CMD" = "stop-hook-fail-closed" ]; then
+      echo "STOP-HOOK-REFUSED: breadcrumb-${DIAG_SID}.json has originating_command=stop-hook-fail-closed"
+      echo "  → The Stop hook refused to write a breadcrumb. Run /pre-compact again."
+    fi
   fi
 fi
-if [ -n "$HANDOFF_PATH" ]; then
-  echo "path: $HANDOFF_PATH"
-  if HMTIME=$(stat -f %Sm "$HANDOFF_PATH" 2>/dev/null); then
-    :
-  elif HMTIME=$(stat -c %y "$HANDOFF_PATH" 2>/dev/null); then
-    :
-  else
-    HMTIME="stat-failed"
-  fi
-  echo "mtime: $HMTIME"
-  if HSIZE=$(stat -f %z "$HANDOFF_PATH" 2>/dev/null); then
-    :
-  elif HSIZE=$(stat -c %s "$HANDOFF_PATH" 2>/dev/null); then
-    :
-  else
-    HSIZE="stat-failed"
-  fi
-  HLINES=$(wc -l < "$HANDOFF_PATH" 2>/dev/null | tr -d ' ')
-  echo "size: $HSIZE bytes / $HLINES lines"
-  TAIL=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null)
-  if printf '%s' "$TAIL" | grep -qF '<!-- END-OF-HANDOFF schema=v1'; then
-    echo "marker: PRESENT (new schema=v1 form)"
-    NONCE=$(printf '%s' "$TAIL" | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
-    echo "  nonce: ${NONCE:-EXTRACT_FAILED}"
-  elif printf '%s' "$TAIL" | grep -qF '<!-- END-OF-HANDOFF -->'; then
-    echo "marker: PRESENT (legacy form)"
-  else
-    echo "marker: ABSENT — handoff may be truncated"
-  fi
-  # SID-tagged files in same dir:
-  DIR=$(dirname "$HANDOFF_PATH")
-  SID_TAGGED_COUNT=0
-  for f in "$DIR"/CLAUDE.local.????????.md; do
-    [ -f "$f" ] && SID_TAGGED_COUNT=$((SID_TAGGED_COUNT + 1))
+
+# Show SID-tagged files (R4 D1 primary path). Glob includes __ttysN suffix variants.
+DIAG_CWD="$(pwd)"
+DIAG_REPO=$(git rev-parse --show-toplevel 2>/dev/null) || DIAG_REPO=""
+SID_TAGGED_COUNT=0
+for _scan_dir in "$DIAG_CWD" "$DIAG_REPO"; do
+  [ -n "$_scan_dir" ] || continue
+  for f in "$_scan_dir"/CLAUDE.local.*.md; do
+    # Match SID-tagged (not bare alias)
+    bn=$(basename "$f" 2>/dev/null)
+    printf '%s' "$bn" | grep -qE '^CLAUDE\.local\.[A-Za-z0-9_-]+\.md$' || continue
+    printf '%s' "$bn" | grep -qF 'CLAUDE.local.md' && continue  # skip bare alias
+    [ -f "$f" ] || continue
+    SID_TAGGED_COUNT=$((SID_TAGGED_COUNT + 1))
+    echo "SID-tagged: $f"
+    _FMTIME=""
+    if _FMTIME=$(stat -f %Sm "$f" 2>/dev/null); then :
+    elif _FMTIME=$(stat -c %y "$f" 2>/dev/null); then :; fi
+    _FSIZE=""
+    if _FSIZE=$(stat -f %z "$f" 2>/dev/null); then :
+    elif _FSIZE=$(stat -c %s "$f" 2>/dev/null); then :; fi
+    echo "  mtime: ${_FMTIME:-stat-failed} size: ${_FSIZE:-stat-failed}"
+    # Marker detection using strict anchor (whole-file grep, not tail -c 512).
+    if [ -n "$_DIAG_MARKER_LOADED" ] && command -v handoff_marker_check >/dev/null 2>&1; then
+      if handoff_marker_check "$f" 2>/dev/null; then
+        _NONCE=$(handoff_marker_nonce "$f" 2>/dev/null)
+        _SID_M=$(handoff_marker_sid "$f" 2>/dev/null)
+        _MCOUNT=$(handoff_marker_count "$f" 2>/dev/null)
+        echo "  marker: PRESENT nonce=${_NONCE:-EXTRACT_FAILED} marker_sid=${_SID_M:-?} count=${_MCOUNT:-?}"
+        [ "${_MCOUNT:-1}" -gt 1 ] 2>/dev/null && echo "  WARNING: multi-marker detected (count=$_MCOUNT) — possible tampering"
+      else
+        echo "  marker: ABSENT — handoff may be truncated"
+      fi
+    else
+      # Fallback: strict anchor grep without lib.
+      if grep -qE '^<!-- END-OF-HANDOFF schema=v1 ' "$f" 2>/dev/null; then
+        _NONCE=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$f" 2>/dev/null | head -1 | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
+        echo "  marker: PRESENT nonce=${_NONCE:-EXTRACT_FAILED}"
+      elif grep -qF '<!-- END-OF-HANDOFF -->' "$f" 2>/dev/null; then
+        echo "  marker: PRESENT (legacy form)"
+      else
+        echo "  marker: ABSENT — handoff may be truncated"
+      fi
+    fi
   done
-  echo "SID-tagged variants: $SID_TAGGED_COUNT"
-  if [ "$SID_TAGGED_COUNT" -gt 0 ]; then
-    ls -t "$DIR"/CLAUDE.local.????????.md 2>/dev/null | head -5 | sed 's/^/  /'
+done
+[ "$SID_TAGGED_COUNT" -eq 0 ] && echo "(no SID-tagged CLAUDE.local.<sid>.md found in cwd/repo)"
+
+# Alias (legacy-only fallback — R4 D1: only used when SID unknown).
+HANDOFF_PATH=""
+if [ -f "$DIAG_CWD/CLAUDE.local.md" ]; then
+  HANDOFF_PATH="$DIAG_CWD/CLAUDE.local.md"
+elif [ -n "$DIAG_REPO" ] && [ -f "$DIAG_REPO/CLAUDE.local.md" ]; then
+  HANDOFF_PATH="$DIAG_REPO/CLAUDE.local.md"
+fi
+if [ -n "$HANDOFF_PATH" ]; then
+  echo "Alias (legacy): $HANDOFF_PATH"
+  _HMTIME=""
+  if _HMTIME=$(stat -f %Sm "$HANDOFF_PATH" 2>/dev/null); then :
+  elif _HMTIME=$(stat -c %y "$HANDOFF_PATH" 2>/dev/null); then :; fi
+  _HSIZE=""
+  if _HSIZE=$(stat -f %z "$HANDOFF_PATH" 2>/dev/null); then :
+  elif _HSIZE=$(stat -c %s "$HANDOFF_PATH" 2>/dev/null); then :; fi
+  _HLINES=$(wc -l < "$HANDOFF_PATH" 2>/dev/null | tr -d ' ')
+  echo "  mtime: ${_HMTIME:-stat-failed} size: ${_HSIZE:-stat-failed} bytes / ${_HLINES:-?} lines"
+  # Use strict anchor for alias too.
+  if grep -qE '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null; then
+    _NONCE=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null | head -1 | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
+    echo "  marker: PRESENT nonce=${_NONCE:-EXTRACT_FAILED} (NOTE: alias is legacy-only per R4 D1)"
+  elif grep -qF '<!-- END-OF-HANDOFF -->' "$HANDOFF_PATH" 2>/dev/null; then
+    echo "  marker: PRESENT (legacy form)"
+  else
+    echo "  marker: ABSENT — handoff may be truncated"
   fi
 else
-  echo "(no CLAUDE.local.md in cwd or repo root)"
+  echo "(no CLAUDE.local.md alias in cwd or repo root)"
 fi
 echo
 
