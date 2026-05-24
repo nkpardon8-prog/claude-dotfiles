@@ -1269,7 +1269,7 @@ if [ -n "$PAST_MTIME" ]; then
     if [ "$GG_STATE_NEAR" = "ok" ]; then
       pass "G4-G: boundary breadcrumb (age=3599s, 1s before cutoff) accepted → state=ok"
     else
-      pass "G4-G: boundary breadcrumb (age=3599s) → state=$GG_STATE_NEAR (boundary behavior documented)"
+      fail "G4-G: boundary breadcrumb (age=3599s) not accepted — got state=$GG_STATE_NEAR (expected ok)" "raw: ${OUT_G_NEAR:0:200}"
     fi
   else
     pass "G4-G: boundary mtime computation not available — skipped (informational)"
