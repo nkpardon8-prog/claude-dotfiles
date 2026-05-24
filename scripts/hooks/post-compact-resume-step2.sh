@@ -423,8 +423,10 @@ MARKER_SID=""
 if command -v handoff_marker_sid >/dev/null 2>&1; then
   MARKER_SID=$(handoff_marker_sid "$_HANDOFF_READ" 2>/dev/null) || MARKER_SID=""
 else
-  # R3-fix-sweep C1+C3+C4 + Phase 1 Round 4: whole-file grep + head -1 (replaces tail -c 512 + tail -1).
-  MARKER_SID=$(grep -F 'END-OF-HANDOFF schema=' "$_HANDOFF_READ" 2>/dev/null \
+  # R5 Critical #2: strict anchor + R3-fix-sweep C1+C3+C4 + Phase 1 Round 4.
+  # Require marker at start-of-line (^<!-- END-OF-HANDOFF schema=v1 ) so prose
+  # mentioning the marker format in the handoff body cannot shadow the real marker's sid.
+  MARKER_SID=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$_HANDOFF_READ" 2>/dev/null \
     | head -1 \
     | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
 fi
