@@ -58,6 +58,7 @@ These verbs are emitted by `auto-compact-after-pre-compact.sh` (Stop hook) durin
 | `breadcrumb_write_failed reason=empty-sentinel-nonce` | auto-compact-after-pre-compact.sh | Nonce was empty; breadcrumb not written (H8/PR-M2) |
 | `breadcrumb_write_failed reason=hostname-fail` | auto-compact-after-pre-compact.sh | hostname -s returned empty; breadcrumb not written (H2) |
 | `gc_stale_orphan_breadcrumbs` | auto-compact-after-pre-compact.sh | Stale orphan breadcrumbs (>24h old) deleted on Stop event; count= appended (H12 fix) |
+| Session key GC (no dedicated verb) | auto-compact-after-pre-compact.sh | RQ-05 (R6 HZ-27): stale key files (>24h) deleted silently via `find -delete`; no log verb emitted (low-noise operation; key deletion is not a security event worth logging) |
 
 ## ctx-gate.log (ctx_gate_log — via `lib/ctx-gate-config.sh:ctx_gate_log`)
 
