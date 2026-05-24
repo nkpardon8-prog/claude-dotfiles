@@ -350,6 +350,23 @@ if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "$STALE_SECS" ]; then STALE=t
 HANDOFF_AGE_HOURS=$((HANDOFF_AGE / 3600))
 [ -z "$HANDOFF_AGE_HOURS" ] && HANDOFF_AGE_HOURS=0
 
+# H11 (Theme 5): re-validate HANDOFF_PATH basename against expected naming pattern before
+# announcing path to orchestrator (trust boundary re-check). Basename must match
+# CLAUDE.local.<sid8>.md (SID-tagged) or CLAUDE.local.md (legacy alias-only path).
+# Rejects traversal attempts, injected paths, and files with unexpected shapes.
+_handoff_bn=$(basename "$HANDOFF_PATH")
+if ! printf '%s' "$_handoff_bn" | grep -qE '^CLAUDE\.local\.([A-Za-z0-9_-]+\.)?md$'; then
+  handoff_log "step2_terminal state=invalid-handoff-name path=$HANDOFF_PATH"
+  _json=$(jq -c -n --arg path "$HANDOFF_PATH" \
+    '{"state":"invalid-handoff-name","path":$path}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"invalid-handoff-name"}\n'
+  fi
+  exit 0
+fi
+
 # R4 D10: emit STATE as single-line JSON (handles workspace paths with spaces).
 # H4: emit step2_terminal log BEFORE STATE emission so audit trail precedes the signal.
 handoff_log "step2_terminal state=ok sid8=${SID8:-none} marker=${MARKER} nonce_ok=${NONCE_OK}"
