@@ -270,7 +270,7 @@ Batch these calls. Cap each at 50 results.
 
 Show the user a short draft summary before writing:
 ```
-About to write CLAUDE.local.md with:
+About to write CLAUDE.local.&lt;sid8&gt;.md with:
 - Mining pass: [Quick | Deep | Chunked] ([reason: 'user requested' or 'default'])
 - Chain: seq [N], parent [timestamp or 'none — first in chain']
 - Active task: [one line]
