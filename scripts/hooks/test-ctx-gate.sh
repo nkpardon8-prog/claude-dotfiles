@@ -1372,10 +1372,11 @@ GI_STATE=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/
 GI_PATH=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.path' 2>/dev/null)
 if [ "$GI_STATE" = "ok" ] && printf '%s' "$GI_PATH" | grep -q ' '; then
   pass "G4-I: JSON STATE parses correctly for path with spaces (path='$GI_PATH')"
-elif [ "$GI_STATE" = "ok" ]; then
-  pass "G4-I: JSON STATE=ok for spaced-path workspace (path field: '$GI_PATH')"
 else
-  fail "G4-I: JSON STATE for spaced path" "expected state=ok got '$GI_STATE' raw: ${OUT_I:0:200}"
+  # Require BOTH state=ok AND .path containing a space (D10 full coverage).
+  # state=ok without a space in .path means the path wasn't preserved correctly.
+  # Any other state is a fail — the test setup ensures a valid breadcrumb + SID-tagged file.
+  fail "G4-I: JSON STATE for spaced path" "expected state=ok AND .path with space; got state='$GI_STATE' path='$GI_PATH' raw: ${OUT_I:0:200}"
 fi
 rm -rf "$TMPWD_I" "$TMPHOME_I"
 
