@@ -5,11 +5,14 @@
 # Decision E: fires for compact (post-compact nav), resume/startup/clear (pending-handoff
 # detection or session-start nav). Removes the hard-gate to compact-only.
 #
+# Execution context: this is a Claude Code SessionStart hook script.
+# It runs as a direct subprocess of Claude Code, NOT through the orchestrator Bash tool.
+#
 # Fail-open on any error (exits 0, no output) so a buggy hook never breaks session start.
 
 set -uo pipefail
 
-[ "${CLAUDE_CTX_GATE_DISABLED:-0}" = "1" ] && exit 0  # kill-switch per Round 3 A #12 / B #7
+[ "${CLAUDE_CTX_GATE_DISABLED:-0}" = "1" ] && exit 0  # kill-switch
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/ctx-gate-config.sh
@@ -18,8 +21,12 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$ROOT/lib/handoff-config.sh"
 # shellcheck source=lib/auto-compact-sentinel.sh
 . "$ROOT/lib/auto-compact-sentinel.sh"
+# shellcheck source=lib/handoff-marker.sh
+. "$ROOT/lib/handoff-marker.sh"
+# shellcheck source=lib/post-compact-primer-helpers.sh
+. "$ROOT/lib/post-compact-primer-helpers.sh"
 
-INPUT=$(head -c 1048576)  # bound stdin to 1MB (per codex-review R2 F16: DoS guard)
+INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
