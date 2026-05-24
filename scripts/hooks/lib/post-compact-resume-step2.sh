@@ -137,19 +137,20 @@ HANDOFF_PATH=""
 RESOLVE_RC=0
 handoff_resolve_path "$(pwd)" "${SID8:-}" || RESOLVE_RC=$?
 
-if [ -z "$HANDOFF_PATH" ]; then
-  if [ -n "$SID8" ]; then
-    # R4 D3: SID known but no SID-tagged file found — fail closed.
-    # Do NOT fall back to alias (that may belong to another parallel-track session).
-    _json=$(jq -c -n --arg sid8 "$SID8" \
-      '{"state":"sid-known-no-tagged-file","sid8":$sid8}' 2>/dev/null)
-    if [ -n "$_json" ]; then
-      printf 'STATE=%s\n' "$_json"
-    else
-      printf 'STATE={"state":"sid-known-no-tagged-file","sid8":"%s"}\n' "$SID8"
-    fi
-    exit 0
+if [ "$RESOLVE_RC" -eq 2 ]; then
+  # R4 D3: SID known but no SID-tagged file found — fail closed.
+  # Do NOT fall back to alias (that may belong to another parallel-track session).
+  _json=$(jq -c -n --arg sid8 "$SID8" \
+    '{"state":"sid-known-no-tagged-file","sid8":$sid8}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"sid-known-no-tagged-file","sid8":"%s"}\n' "$SID8"
   fi
+  exit 0
+fi
+
+if [ -z "$HANDOFF_PATH" ]; then
   # Signaling convention: exit 0 here so the orchestrator reads STATE= from stdout
   # and routes accordingly. Non-zero exit would surface as a Bash tool error, not
   # as a routable state signal.
