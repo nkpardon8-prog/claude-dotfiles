@@ -87,7 +87,7 @@ ac_validate_tty() {
 }
 
 ac_write_sentinel() {
-  local sid="$1" tty="$2"
+  local sid="$1" tty="$2" cwd="${3:-}"
   local path
   path=$(ac_sentinel_path "$sid")
   ac_validate_tty "$tty" || return 1
@@ -97,8 +97,9 @@ ac_write_sentinel() {
   # NOTE: `armed_at` was removed in round 4 (round 3 BREADTH flagged it as dead data
   # — never consumed by reader, GC, or test harness). Filesystem mtime is the
   # single source of truth for "when was this armed", used by the >12h prune.
-  ( umask 077 && printf '{"schema_version":%d,"target_tty":"%s","originating_command":"pre-compact"}\n' \
-      "$AC_SCHEMA_VERSION" "$tty" > "$path" ) 2>/dev/null
+  # cwd field added in schema v2 (Task 1.1a) for workspace-scoped sentinel matching.
+  ( umask 077 && printf '{"schema_version":%d,"target_tty":"%s","originating_command":"pre-compact","cwd":"%s"}\n' \
+      "$AC_SCHEMA_VERSION" "$tty" "$cwd" > "$path" ) 2>/dev/null
 }
 
 # Reads target_tty from a sentinel after validating: not a symlink, size bounded,
