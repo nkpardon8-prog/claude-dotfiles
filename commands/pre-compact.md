@@ -412,6 +412,11 @@ master/god). Omit section if no reviewers ran. -->
 ## Rejected Alternatives
 - [Alternative] — [why rejected]
 
+<!-- Omit section entirely if not applicable. -->
+## Footguns Discovered This Session
+<!-- Operational "do not repeat" — distinct from Rejected Alternatives (design). -->
+- DO NOT [action] — [consequence observed this session]
+
 ## User Constraints (This Session)
 - [Constraint stated by the user this session, verbatim or paraphrased]
 
