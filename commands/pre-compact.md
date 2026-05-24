@@ -519,7 +519,7 @@ Only touch `.gitignore` if inside a git work tree (`git rev-parse --is-inside-wo
 - `REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)`. If empty, skip.
 - Refuse if we're inside a submodule: `[ -n "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" ]` → skip with "Inside a submodule; skipping .gitignore update to avoid polluting the submodule."
 
-**Glob pattern (SID-tagged multi-track support):** use `CLAUDE.local*.md` glob (not the narrow `CLAUDE.local.md`), which covers both HANDOFF_PRIMARY (`CLAUDE.local.<sid8>.md`) and HANDOFF_ALIAS (`CLAUDE.local.md`).
+**Glob pattern (SID-tagged multi-track support):** use `CLAUDE.local*.md` glob (not the narrow `CLAUDE.local.md`), which covers SID-tagged handoffs like `CLAUDE.local.<sid8>.md` as well as any legacy `CLAUDE.local.md` files.
 
 Check in this order:
 1. If `.gitignore` already contains the glob `CLAUDE.local*.md` (line-anchored: `grep -qE '^CLAUDE\.local\*\.md' "$REPO_ROOT/.gitignore"`) — already covered, skip.
