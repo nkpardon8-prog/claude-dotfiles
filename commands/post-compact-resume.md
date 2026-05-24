@@ -43,10 +43,10 @@ Then stop.
 
 ### Pre-read verification (marker + legacy + stale)
 
-**Path-resolution consistency:** the HANDOFF_PATH resolution logic in this snippet
-MUST match the primer's resolution logic exactly. Both look at:
-1. `$(pwd)/CLAUDE.local.md` (current cwd) first
-2. `$(git rev-parse --show-toplevel 2>/dev/null)/CLAUDE.local.md` (repo root) fallback
+**Path-resolution consistency (R4 D3 + R5 H5 update):** the HANDOFF_PATH resolution logic in this snippet
+MUST match the primer's resolution logic exactly. Resolution priority:
+1. **SID-tagged file: `CLAUDE.local.<SID8>.md`** — this is the PRIMARY path when SID is known (from breadcrumb). R4 D3: when SID is known, ONLY the SID-tagged file is accepted; the generic alias is NOT read.
+2. **Generic alias: `CLAUDE.local.md`** — legacy-only fallback, used ONLY when SID is unknown (no breadcrumb, no claim file). R4 D1 removed alias writes; any alias that exists predates R4 or was written by external tooling.
 Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
 
 Path-resolution intentionally uses shell `$(pwd)` here; the primer uses SessionStart JSON `.cwd`.
