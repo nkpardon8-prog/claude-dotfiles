@@ -85,7 +85,7 @@ Never parse STATE= with regex or string splits — the path field may contain sp
 
 Then route per the decision matrix below.
 
-**Decision matrix (route on `.state` JSON field — all 12 valid states):**
+**Decision matrix (route on `.state` JSON field — all 15 valid states):**
 
 - **STATE=`no-handoff`:** no handoff found. Output the paste-prompt from Step 1. Stop.
 
