@@ -47,20 +47,23 @@ _primer_check_linkcount() {
 # primer_resolve_handoff_path <cwd>
 #
 # Given the session cwd, resolves the handoff file path.
-# R3 D6: prefers SID-tagged file (CLAUDE.local.<sid8>.md) when SENTINEL_SID8 is known.
+# R4 D3: SID-aware fail-closed — when SENTINEL_SID8 is known, ONLY try SID-tagged files.
+# If SID-tagged file missing AND SID known → return 2 (caller emits sid-known-no-tagged-file warning).
 # SENTINEL_SID8 is set by primer_find_sentinel_for_cwd — that function MUST run first.
-# Sets HANDOFF_PATH (global) on success; leaves it empty if not found.
-# Returns 0 on success, 1 if no handoff file found.
+# Sets HANDOFF_PATH (global) on success (rc=0); leaves empty on failure.
+# Returns:
+#   0 — handoff path resolved
+#   1 — no handoff file found (SID unknown, no alias either)
+#   2 — SID known but no SID-tagged file (R4 D3 fail-closed signal)
 # ---------------------------------------------------------------------------
 primer_resolve_handoff_path() {
   local cwd="$1"
   HANDOFF_PATH=""
 
-  # R3 D6: prefer SID-tagged file if sentinel SID is known.
-  # SENTINEL_SID8 is set by primer_find_sentinel_for_cwd (must run BEFORE this function).
   if [ -n "${SENTINEL_SID8:-}" ]; then
+    # R4 D3: SID-known path — ONLY try SID-tagged files. NEVER fall back to alias.
+    # Task 1.6: the former alias-fallback block (lines ~82-99 of R3) is DELETED here.
     if [ -f "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
-      # H9: reject multi-hardlink files before accepting as handoff.
       if _primer_check_linkcount "$cwd/CLAUDE.local.${SENTINEL_SID8}.md"; then
         HANDOFF_PATH="$cwd/CLAUDE.local.${SENTINEL_SID8}.md"
         return 0
@@ -69,19 +72,18 @@ primer_resolve_handoff_path() {
     local repo_root
     repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root=""
     if [ -n "$repo_root" ] && [ -f "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
-      # H9: reject multi-hardlink files.
       if _primer_check_linkcount "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"; then
         HANDOFF_PATH="$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"
         return 0
       fi
     fi
-    # PR-11: SID known but no SID-tagged file found (or all were rejected) — log warning.
-    ctx_gate_log "primer warn reason=sentinel-without-sid-file sid=${SENTINEL_SID8}"
+    # SID known but no SID-tagged file found (or all were rejected) — log + fail closed.
+    ctx_gate_log "primer skip reason=sid-known-no-tagged-file sid=${SENTINEL_SID8}"
+    return 2  # R4 D3 fail-closed signal
   fi
 
-  # Fall back to generic alias.
+  # SID UNKNOWN: legacy/best-effort alias path only.
   if [ -f "$cwd/CLAUDE.local.md" ] && [ ! -L "$cwd/CLAUDE.local.md" ]; then
-    # H9: reject multi-hardlink files.
     if _primer_check_linkcount "$cwd/CLAUDE.local.md"; then
       HANDOFF_PATH="$cwd/CLAUDE.local.md"
       return 0
@@ -90,7 +92,6 @@ primer_resolve_handoff_path() {
   local repo_root2
   repo_root2=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root2=""
   if [ -n "$repo_root2" ] && [ -f "$repo_root2/CLAUDE.local.md" ] && [ ! -L "$repo_root2/CLAUDE.local.md" ]; then
-    # H9: reject multi-hardlink files.
     if _primer_check_linkcount "$repo_root2/CLAUDE.local.md"; then
       HANDOFF_PATH="$repo_root2/CLAUDE.local.md"
       return 0
