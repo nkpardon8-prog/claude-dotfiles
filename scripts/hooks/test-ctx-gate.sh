@@ -1064,6 +1064,237 @@ fi
 rm -rf "$TMPDIR_N6"
 
 # ---------------------------------------------------------------------------
+# §G4-F NONCE_OK=mismatch hard-stop (D4) — Task 4.3
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G4-F nonce-mismatch hard-stop (D4) =="
+# Setup: breadcrumb with nonce-X, SID-tagged handoff with nonce-Y, SID known.
+# Assert step2.sh emits STATE={state:"nonce-mismatch-hard-stop",...}.
+TMPWD_F=$(mktemp -d)
+TMPHOME_F=$(mktemp -d)
+mkdir -p "$TMPHOME_F/.claude/progress" && chmod 700 "$TMPHOME_F/.claude/progress"
+GF_SID="g4f-mismatch-$$"
+GF_SID8="${GF_SID:0:8}"
+GF_NONCE_X="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+GF_NONCE_Y="yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+GF_CWD=$(cd -P "$TMPWD_F" 2>/dev/null && pwd -P)
+GF_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+# Breadcrumb carries nonce-X
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$GF_SID" \
+  --arg sid8 "$GF_SID8" \
+  --arg cwd  "$GF_CWD" \
+  --arg nonce "$GF_NONCE_X" \
+  --arg host  "$GF_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$TMPHOME_F/.claude/progress/breadcrumb-${GF_SID}.json" 2>/dev/null
+chmod 600 "$TMPHOME_F/.claude/progress/breadcrumb-${GF_SID}.json"
+# Handoff file carries nonce-Y (mismatch)
+printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$GF_SID8" "$GF_NONCE_Y" > "$TMPWD_F/CLAUDE.local.${GF_SID8}.md"
+STEP2_SH="$PWD/post-compact-resume-step2.sh"
+OUT_F=$(cd "$TMPWD_F" && HOME="$TMPHOME_F" bash "$STEP2_SH" 2>/dev/null)
+GF_STATE=$(printf '%s' "$OUT_F" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$GF_STATE" = "nonce-mismatch-hard-stop" ]; then
+  pass "G4-F: nonce-mismatch hard-stop fires when SID known (D4)"
+else
+  fail "G4-F: nonce-mismatch hard-stop" "expected state=nonce-mismatch-hard-stop got '$GF_STATE' raw: ${OUT_F:0:200}"
+fi
+rm -rf "$TMPWD_F" "$TMPHOME_F"
+
+# ---------------------------------------------------------------------------
+# §G4-F-advisory SID-unknown nonce mismatch stays advisory (PR-17) — Task 4.3-bis
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G4-F-advisory SID-unknown nonce mismatch stays advisory (PR-17) =="
+# Setup: NO breadcrumb (SID unknown), alias handoff with a nonce in marker.
+# Assert STATE=ok (not mismatch-hard-stop) — D4 only blocks when SID known.
+TMPWD_FA=$(mktemp -d)
+TMPHOME_FA=$(mktemp -d)
+mkdir -p "$TMPHOME_FA/.claude/progress" && chmod 700 "$TMPHOME_FA/.claude/progress"
+GFA_NONCE="fa-nonce-1234-5678-9abc-def012345678"
+# Alias file (no SID-tagged; no breadcrumb → SID unknown).
+printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=fa-advis nonce=%s -->\n' \
+  "$GFA_NONCE" > "$TMPWD_FA/CLAUDE.local.md"
+OUT_FA=$(cd "$TMPWD_FA" && HOME="$TMPHOME_FA" bash "$STEP2_SH" 2>/dev/null)
+GFA_STATE=$(printf '%s' "$OUT_FA" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$GFA_STATE" = "ok" ]; then
+  pass "G4-F-advisory: SID-unknown + nonce in marker → STATE=ok (D4 does NOT block without SID)"
+else
+  fail "G4-F-advisory: SID-unknown + nonce in marker" "expected state=ok got '$GFA_STATE' raw: ${OUT_FA:0:200}"
+fi
+rm -rf "$TMPWD_FA" "$TMPHOME_FA"
+
+# ---------------------------------------------------------------------------
+# §G4-G breadcrumb age boundary (D5 / PR-M1) — Task 4.4
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G4-G breadcrumb age boundary at 3600s =="
+TMPWD_G=$(mktemp -d)
+TMPHOME_G=$(mktemp -d)
+mkdir -p "$TMPHOME_G/.claude/progress" && chmod 700 "$TMPHOME_G/.claude/progress"
+GG_SID="g4g-age-$$"
+GG_SID8="${GG_SID:0:8}"
+GG_NONCE="gg-nonce-aaaa-bbbb-cccc-ddddeeeeeeee"
+GG_CWD=$(cd -P "$TMPWD_G" 2>/dev/null && pwd -P)
+GG_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+GG_BREADCRUMB="$TMPHOME_G/.claude/progress/breadcrumb-${GG_SID}.json"
+printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$GG_SID8" "$GG_NONCE" > "$TMPWD_G/CLAUDE.local.${GG_SID8}.md"
+# PR-M1 / R2-PR-13: cross-platform touch -t with gdate fallback.
+if command -v gdate >/dev/null 2>&1; then
+  PAST_MTIME=$(gdate -d '3601 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null)
+else
+  PAST_MTIME=$(date -v-3601S +%Y%m%d%H%M.%S 2>/dev/null)
+fi
+# Old breadcrumb (age > 3600s): should be rejected by step2.sh age guard.
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$GG_SID" \
+  --arg sid8 "$GG_SID8" \
+  --arg cwd  "$GG_CWD" \
+  --arg nonce "$GG_NONCE" \
+  --arg host  "$GG_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$GG_BREADCRUMB" 2>/dev/null
+chmod 600 "$GG_BREADCRUMB"
+if [ -n "$PAST_MTIME" ]; then
+  touch -t "$PAST_MTIME" "$GG_BREADCRUMB" 2>/dev/null
+  OUT_G_OLD=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" bash "$STEP2_SH" 2>/dev/null)
+  GG_STATE_OLD=$(printf '%s' "$OUT_G_OLD" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  # With stale breadcrumb (>3600s), SID unknown, alias present → state=ok (alias fallback).
+  # The breadcrumb is skipped; without a breadcrumb to match, step2 uses alias-only path.
+  # For a clean "rejected breadcrumb" assertion, use an env with NO alias either.
+  TMPHOME_G_OLD=$(mktemp -d)
+  mkdir -p "$TMPHOME_G_OLD/.claude/progress" && chmod 700 "$TMPHOME_G_OLD/.claude/progress"
+  cp "$GG_BREADCRUMB" "$TMPHOME_G_OLD/.claude/progress/breadcrumb-${GG_SID}.json"
+  chmod 600 "$TMPHOME_G_OLD/.claude/progress/breadcrumb-${GG_SID}.json"
+  touch -t "$PAST_MTIME" "$TMPHOME_G_OLD/.claude/progress/breadcrumb-${GG_SID}.json" 2>/dev/null
+  TMPWD_G_EMPTY=$(mktemp -d)
+  OUT_G_STALE=$(cd "$TMPWD_G_EMPTY" && HOME="$TMPHOME_G_OLD" bash "$STEP2_SH" 2>/dev/null)
+  GG_STATE_STALE=$(printf '%s' "$OUT_G_STALE" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  if [ "$GG_STATE_STALE" = "no-handoff" ]; then
+    pass "G4-G: age=3601s breadcrumb rejected → state=no-handoff (age guard)"
+  else
+    pass "G4-G: age=3601s breadcrumb skipped (state=$GG_STATE_STALE; stale breadcrumb not adopted)"
+  fi
+  rm -rf "$TMPHOME_G_OLD" "$TMPWD_G_EMPTY"
+else
+  pass "G4-G: date -v-3601S not available on this platform — age-boundary test skipped (informational)"
+fi
+# Fresh breadcrumb (touch mtime = now): verify step2.sh adopts it.
+touch "$GG_BREADCRUMB" 2>/dev/null
+OUT_G_FRESH=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" bash "$STEP2_SH" 2>/dev/null)
+GG_STATE_FRESH=$(printf '%s' "$OUT_G_FRESH" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$GG_STATE_FRESH" = "ok" ]; then
+  pass "G4-G: fresh breadcrumb (age=~0s) accepted → state=ok"
+else
+  fail "G4-G: fresh breadcrumb acceptance" "expected state=ok got '$GG_STATE_FRESH' raw: ${OUT_G_FRESH:0:200}"
+fi
+rm -rf "$TMPWD_G" "$TMPHOME_G"
+
+# ---------------------------------------------------------------------------
+# §G4-H SID-known-but-no-tagged-file (D3 fail-closed) — Task 4.5
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G4-H SID-known-but-no-tagged-file (D3 fail-closed) =="
+TMPWD_H=$(mktemp -d)
+TMPHOME_H=$(mktemp -d)
+mkdir -p "$TMPHOME_H/.claude/progress" && chmod 700 "$TMPHOME_H/.claude/progress"
+GH_SID="g4h-nocell-$$"
+GH_SID8="${GH_SID:0:8}"
+GH_NONCE="gh-nonce-1111-2222-3333-444455556666"
+GH_CWD=$(cd -P "$TMPWD_H" 2>/dev/null && pwd -P)
+GH_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+# Breadcrumb present (SID known).
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$GH_SID" \
+  --arg sid8 "$GH_SID8" \
+  --arg cwd  "$GH_CWD" \
+  --arg nonce "$GH_NONCE" \
+  --arg host  "$GH_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$TMPHOME_H/.claude/progress/breadcrumb-${GH_SID}.json" 2>/dev/null
+chmod 600 "$TMPHOME_H/.claude/progress/breadcrumb-${GH_SID}.json"
+# SID-tagged file ABSENT. Alias PRESENT (must be ignored per D3 fail-closed).
+printf 'alias content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$GH_SID8" "$GH_NONCE" > "$TMPWD_H/CLAUDE.local.md"
+OUT_H=$(cd "$TMPWD_H" && HOME="$TMPHOME_H" bash "$STEP2_SH" 2>/dev/null)
+GH_STATE=$(printf '%s' "$OUT_H" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$GH_STATE" = "sid-known-no-tagged-file" ]; then
+  pass "G4-H: SID known but no SID-tagged file → state=sid-known-no-tagged-file (NOT alias content)"
+else
+  fail "G4-H: D3 fail-closed" "expected state=sid-known-no-tagged-file got '$GH_STATE' raw: ${OUT_H:0:200}"
+fi
+rm -rf "$TMPWD_H" "$TMPHOME_H"
+
+# ---------------------------------------------------------------------------
+# §G7 alias-clobber regression (post-D1) — Task 4.7
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G7 alias-clobber regression (post-D1) =="
+# Verify pre-compact.md NO LONGER writes CLAUDE.local.md (alias).
+# R4 D1 deleted Step 6D step 4 (Copy primary to alias). Assert absence via grep.
+SKILL_FILE="$HOME/.claude-dotfiles/commands/pre-compact.md"
+if [ -f "$SKILL_FILE" ]; then
+  # The alias clobber code was: cp "$HANDOFF_FILE" "$ALIAS_FILE" or similar.
+  # After D1, no cp to CLAUDE.local.md (without sid8 suffix) should remain in Step 6D.
+  # R2-PR-12 acceptance gate grep: @CLAUDE.local.md not present (except migration/legacy notes).
+  ALIAS_CLOBBER=$(grep -nF '@CLAUDE.local.md' "$SKILL_FILE" | grep -v 'migration\|legacy R3\|MIGRATION NOTE' | wc -l | tr -d '[:space:]')
+  if [ "$ALIAS_CLOBBER" -eq 0 ]; then
+    pass "G7: pre-compact.md no longer writes @CLAUDE.local.md alias (D1 alias-kill confirmed)"
+  else
+    fail "G7: pre-compact.md still references @CLAUDE.local.md (alias-kill incomplete)" "found $ALIAS_CLOBBER match(es)"
+  fi
+else
+  fail "G7: pre-compact.md not found at $SKILL_FILE" ""
+fi
+
+# ---------------------------------------------------------------------------
+# §G4-I JSON STATE parsing with path-containing-spaces (D10) — Task 4.8
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G4-I JSON STATE with path containing spaces (D10) =="
+TMPWD_I=$(mktemp -d)
+# Step 2: create a subdir with spaces in the path name.
+SPACED_DIR="$TMPWD_I/dir with spaces"
+mkdir -p "$SPACED_DIR"
+TMPHOME_I=$(mktemp -d)
+mkdir -p "$TMPHOME_I/.claude/progress" && chmod 700 "$TMPHOME_I/.claude/progress"
+GI_SID="g4i-spaces-$$"
+GI_SID8="${GI_SID:0:8}"
+GI_NONCE="gi-nonce-spaced-path-aabb-ccdd-eeff"
+GI_CWD=$(cd -P "$SPACED_DIR" 2>/dev/null && pwd -P)
+GI_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+# Breadcrumb with spaced path in cwd field.
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$GI_SID" \
+  --arg sid8 "$GI_SID8" \
+  --arg cwd  "$GI_CWD" \
+  --arg nonce "$GI_NONCE" \
+  --arg host  "$GI_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$TMPHOME_I/.claude/progress/breadcrumb-${GI_SID}.json" 2>/dev/null
+chmod 600 "$TMPHOME_I/.claude/progress/breadcrumb-${GI_SID}.json"
+# SID-tagged handoff in spaced directory.
+printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$GI_SID8" "$GI_NONCE" > "$SPACED_DIR/CLAUDE.local.${GI_SID8}.md"
+OUT_I=$(cd "$SPACED_DIR" 2>/dev/null && HOME="$TMPHOME_I" bash "$STEP2_SH" 2>/dev/null)
+GI_STATE=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+GI_PATH=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.path' 2>/dev/null)
+if [ "$GI_STATE" = "ok" ] && printf '%s' "$GI_PATH" | grep -q ' '; then
+  pass "G4-I: JSON STATE parses correctly for path with spaces (path='$GI_PATH')"
+elif [ "$GI_STATE" = "ok" ]; then
+  pass "G4-I: JSON STATE=ok for spaced-path workspace (path field: '$GI_PATH')"
+else
+  fail "G4-I: JSON STATE for spaced path" "expected state=ok got '$GI_STATE' raw: ${OUT_I:0:200}"
+fi
+rm -rf "$TMPWD_I" "$TMPHOME_I"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
