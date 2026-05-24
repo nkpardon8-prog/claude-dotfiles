@@ -61,10 +61,10 @@ Read `./CLAUDE.local.<sid8>.md` (the SID-tagged handoff for this session) if it 
 - If present:
   - Read full content.
   - Extract `Seq:` from header (default `1` if absent or non-numeric).
-  - Capture parent timestamp. Probe in order — first success wins:
-    1. `stat -f %Sm -t '%Y-%m-%d %H:%M' ./CLAUDE.local.md` (BSD/macOS native)
-    2. `date -u -r ./CLAUDE.local.md '+%Y-%m-%d %H:%M'` (BSD date, also works on macOS)
-    3. `stat -c '%y' ./CLAUDE.local.md | cut -c1-16` (GNU/Linux fallback)
+  - Capture parent timestamp (stat on the resolved SID-tagged file). Probe in order — first success wins:
+    1. `stat -f %Sm -t '%Y-%m-%d %H:%M' "$HANDOFF_PRIOR"` (BSD/macOS native)
+    2. `date -u -r "$HANDOFF_PRIOR" '+%Y-%m-%d %H:%M'` (BSD date, also works on macOS)
+    3. `stat -c '%y' "$HANDOFF_PRIOR" | cut -c1-16` (GNU/Linux fallback)
     Do NOT use `git log` — Step 8 puts this file in `.gitignore`.
   - Extract its "Build Plan", "Next Action", "Open Issues", "Things To Fix Later", "Gaps" sections.
   - `new_seq = prior_seq + 1`; `parent_label = the captured timestamp`.
