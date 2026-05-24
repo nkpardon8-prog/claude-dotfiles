@@ -176,6 +176,8 @@ handoff_resolve_path "$(pwd)" "${SID8:-}" || RESOLVE_RC=$?
 if [ "$RESOLVE_RC" -eq 2 ]; then
   # R4 D3: SID known but no SID-tagged file found — fail closed.
   # Do NOT fall back to alias (that may belong to another parallel-track session).
+  # H4: emit step2_terminal log so operators can reconstruct terminal state audit trail.
+  handoff_log "step2_terminal state=sid-known-no-tagged-file sid8=${SID8}"
   _json=$(jq -c -n --arg sid8 "$SID8" \
     '{"state":"sid-known-no-tagged-file","sid8":$sid8}' 2>/dev/null)
   if [ -n "$_json" ]; then
