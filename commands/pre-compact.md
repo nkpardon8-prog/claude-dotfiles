@@ -613,9 +613,17 @@ Bash `printf >>` or `mv`** — allowlist-clean.
 
 1. **Generate marker nonce.** Run via Bash:
    ```bash
-   NONCE=$(uuidgen 2>/dev/null | tr -d '\n' \
-           || od -vAn -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' \
-           || printf '%s-%s' "$RANDOM$RANDOM" "$(date +%s)")
+   NONCE=$(uuidgen 2>/dev/null | tr -d '\n' | tr 'A-F' 'a-f')
+   if [ -z "$NONCE" ]; then
+     NONCE=$(od -vAn -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+   fi
+   if [ -z "$NONCE" ]; then
+     NONCE=$(openssl rand -hex 16 2>/dev/null)
+   fi
+   if [ -z "$NONCE" ]; then
+     echo "FATAL: nonce-generation-failed (uuidgen/od/openssl all unavailable)" >&2
+     exit 1
+   fi
    echo "NONCE=$NONCE"
    ```
    Capture the NONCE value. This same nonce will be embedded in the marker AND passed
