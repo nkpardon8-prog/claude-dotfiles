@@ -68,12 +68,11 @@ primer_resolve_handoff_path() {
 # ---------------------------------------------------------------------------
 primer_check_marker() {
   local file="$1"
-  MARKER_PRESENT="true"
-  local tail_buf
-  tail_buf=$(tail -c 512 "$file" 2>/dev/null)
-  local marker_new='<!-- END-OF-HANDOFF schema=v1'
-  local marker_legacy='<!-- END-OF-HANDOFF -->'
-  if ! { printf '%s' "$tail_buf" | grep -qF "$marker_new" || printf '%s' "$tail_buf" | grep -qF "$marker_legacy"; }; then
+  # H1: delegate to handoff_marker_check lib function (from lib/handoff-marker.sh, sourced by
+  # post-compact-primer.sh before this file). Eliminates duplicate grep logic.
+  if handoff_marker_check "$file"; then
+    MARKER_PRESENT="true"
+  else
     MARKER_PRESENT="false"
   fi
 }
