@@ -79,6 +79,10 @@ HANDOFF_PATH=""
 primer_resolve_handoff_path "$CWD"
 RESOLVE_RC=$?
 
+# R4 D6: log the actually-selected handoff path AFTER primer_resolve_handoff_path completes
+# (HANDOFF_PATH is now set; at primer_find_sentinel_for_cwd call time it was still empty).
+handoff_log "handoff_detected sid=${SENTINEL_SID8:-unknown} file=${HANDOFF_PATH:-unknown} sentinel_present=${SENTINEL_PRESENT:-false}"
+
 # R4 D3 + R2-PR-7: handle rc=2 before the generic no-handoff check.
 if [ "$RESOLVE_RC" -eq 2 ]; then
   ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-no-tagged-file sid8=${SENTINEL_SID8:-unknown}"
