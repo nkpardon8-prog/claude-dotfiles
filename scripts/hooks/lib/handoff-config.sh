@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # handoff-config.sh — constants for the handoff (CLAUDE.local.md) lifecycle.
-# Extracted from ctx-gate-config.sh per R2 plan §3.3. _OVERRIDE pattern for test/user override.
+# Extracted from ctx-gate-config.sh — these are handoff-file lifecycle concerns,
+# distinct from ctx-gate's PCT thresholds. _OVERRIDE pattern for test/user override.
 #
 # Idempotent source guard — second sourcing is a no-op.
 [ -n "${_HANDOFF_CONFIG_LOADED:-}" ] && return 0
