@@ -20,20 +20,41 @@ readonly _POST_COMPACT_PRIMER_HELPERS_LOADED=1
 # primer_resolve_handoff_path <cwd>
 #
 # Given the session cwd, resolves the handoff file path.
+# R3 D6: prefers SID-tagged file (CLAUDE.local.<sid8>.md) when SENTINEL_SID8 is known.
+# SENTINEL_SID8 is set by primer_find_sentinel_for_cwd — that function MUST run first.
 # Sets HANDOFF_PATH (global) on success; leaves it empty if not found.
 # Returns 0 on success, 1 if no handoff file found.
 # ---------------------------------------------------------------------------
 primer_resolve_handoff_path() {
   local cwd="$1"
   HANDOFF_PATH=""
-  if [ -f "$cwd/CLAUDE.local.md" ]; then
+
+  # R3 D6: prefer SID-tagged file if sentinel SID is known.
+  # SENTINEL_SID8 is set by primer_find_sentinel_for_cwd (must run BEFORE this function).
+  if [ -n "${SENTINEL_SID8:-}" ]; then
+    if [ -f "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$cwd/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
+      HANDOFF_PATH="$cwd/CLAUDE.local.${SENTINEL_SID8}.md"
+      return 0
+    fi
+    local repo_root
+    repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root=""
+    if [ -n "$repo_root" ] && [ -f "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ] && [ ! -L "$repo_root/CLAUDE.local.${SENTINEL_SID8}.md" ]; then
+      HANDOFF_PATH="$repo_root/CLAUDE.local.${SENTINEL_SID8}.md"
+      return 0
+    fi
+    # PR-11: SID known but no SID-tagged file found — log explicit warning before falling through.
+    ctx_gate_log "primer warn reason=sentinel-without-sid-file sid=${SENTINEL_SID8}"
+  fi
+
+  # Fall back to generic alias.
+  if [ -f "$cwd/CLAUDE.local.md" ] && [ ! -L "$cwd/CLAUDE.local.md" ]; then
     HANDOFF_PATH="$cwd/CLAUDE.local.md"
     return 0
   fi
-  local repo_root
-  repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || printf '')
-  if [ -n "$repo_root" ] && [ -f "$repo_root/CLAUDE.local.md" ]; then
-    HANDOFF_PATH="$repo_root/CLAUDE.local.md"
+  local repo_root2
+  repo_root2=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root2=""
+  if [ -n "$repo_root2" ] && [ -f "$repo_root2/CLAUDE.local.md" ] && [ ! -L "$repo_root2/CLAUDE.local.md" ]; then
+    HANDOFF_PATH="$repo_root2/CLAUDE.local.md"
     return 0
   fi
   return 1
