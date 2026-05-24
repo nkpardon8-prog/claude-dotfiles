@@ -62,17 +62,55 @@ persist across orchestrator turns or into a new Bash subprocess):
 . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-config.sh" 2>/dev/null
 . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
 
-# SID-tagged file takes priority (parallel-track safety — see Step 1).
-# Try to find the consumed-sentinel SID from claim files.
+# R3 D2: Per-session breadcrumb written by Stop hook (decoupled from .claim file
+# lifecycle which the Stop hook EXIT trap removes). Read the most-recent breadcrumb
+# matching this workspace's cwd. PR-1 SID-scoped path, PR-3 hostname check, PR-8
+# dual canonical+raw cwd compare, PR-12 filesystem mtime canonical (no JSON mtime).
 SENTINEL_SID=""
-CLAIM_FILE=$(ls -t "$HOME/.claude/progress/auto-compact-"*.json.claim.* 2>/dev/null | head -1)
-if [ -n "$CLAIM_FILE" ]; then
-  SENTINEL_SID=$(basename "$CLAIM_FILE" | sed 's/^auto-compact-//; s/\.json\.claim\..*//')
-fi
+SENTINEL_NONCE=""
 SID8=""
-if [ -n "$SENTINEL_SID" ]; then
-  SID8=$(printf '%s' "$SENTINEL_SID" | head -c 8)
-  [ -z "$SID8" ] && SID8="$SENTINEL_SID"
+CURRENT_CWD_CANON=$(cd -P "$(pwd)" 2>/dev/null && pwd -P || printf '%s' "$(pwd)")
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+
+# Glob over per-session breadcrumbs, newest first; pick the first that matches cwd + host.
+for BREADCRUMB in $(ls -t "$HOME/.claude/progress/breadcrumb-"*.json 2>/dev/null); do
+  [ -f "$BREADCRUMB" ] || continue
+  [ -L "$BREADCRUMB" ] && continue  # reject symlinks
+  # Ownership + size guard
+  [ -O "$BREADCRUMB" ] || continue
+  BREAD_SIZE=$(stat -f %z "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || stat -c %s "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || printf 0)
+  [ -z "$BREAD_SIZE" ] && BREAD_SIZE=0
+  [ "$BREAD_SIZE" -lt 1024 ] || continue
+  # Age guard (PR-2: 1h matches GC TTL)
+  BREAD_MTIME=$(stat -f %m "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || stat -c %Y "$BREADCRUMB" 2>/dev/null | tr -d '[:space:]' || printf 0)
+  [ -z "$BREAD_MTIME" ] && BREAD_MTIME=0
+  BREAD_AGE=$(( $(date +%s) - BREAD_MTIME ))
+  [ "$BREAD_AGE" -ge 0 ] && [ "$BREAD_AGE" -lt 3600 ] || continue
+  # Cwd match (PR-8 dual: canonical OR raw)
+  BREAD_CWD=$(jq -r '.cwd // empty' "$BREADCRUMB" 2>/dev/null) || continue
+  if [ "$BREAD_CWD" != "$CURRENT_CWD_CANON" ] && [ "$BREAD_CWD" != "$(pwd)" ]; then continue; fi
+  # Hostname match (PR-3 iCloud defense)
+  BREAD_HOST=$(jq -r '.hostname // empty' "$BREADCRUMB" 2>/dev/null) || continue
+  if [ -n "$BREAD_HOST" ] && [ "$BREAD_HOST" != "$HOSTNAME_SHORT" ]; then continue; fi
+  # All checks pass — adopt this breadcrumb.
+  SENTINEL_SID=$(jq -r '.sid // empty' "$BREADCRUMB" 2>/dev/null)
+  SID8=$(jq -r '.sid8 // empty' "$BREADCRUMB" 2>/dev/null)
+  SENTINEL_NONCE=$(jq -r '.nonce // empty' "$BREADCRUMB" 2>/dev/null)
+  break
+done
+
+# Fallback: best-effort .claim.<pid> lookup (will usually fail because Stop hook
+# EXIT trap removed it, but harmless to try in unusual lifecycles).
+if [ -z "$SENTINEL_SID" ]; then
+  CLAIM_FILE=$(ls -t "$HOME/.claude/progress/auto-compact-"*.json.claim.* 2>/dev/null | head -1)
+  if [ -n "$CLAIM_FILE" ] && [ -f "$CLAIM_FILE" ]; then
+    SENTINEL_SID=$(basename "$CLAIM_FILE" | sed 's/^auto-compact-//; s/\.json\.claim\..*//')
+    if [ -n "$SENTINEL_SID" ]; then
+      SID8=$(printf '%s' "$SENTINEL_SID" | head -c 8)
+      [ -z "$SID8" ] && SID8="$SENTINEL_SID"
+      SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$CLAIM_FILE" 2>/dev/null) || SENTINEL_NONCE=""
+    fi
+  fi
 fi
 
 # Resolve HANDOFF_PATH: SID-tagged first, then generic alias, then repo root.
