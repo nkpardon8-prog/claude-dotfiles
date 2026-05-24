@@ -428,7 +428,7 @@ Rule: never write "improved" / "better" / "faster" without before→after number
 
 ### Surprising Discoveries
 <!-- System-level facts uncovered this session. Permanent truths, not try-results.
-R3 #A12 anti-duplication: only include here if the fact is NOT already captured
+Anti-duplication: only include here if the fact is NOT already captured
 as a "→ result" line in ## What We Tried. Do not duplicate. -->
 - [discovery] — [where observed] — [implication]
 
