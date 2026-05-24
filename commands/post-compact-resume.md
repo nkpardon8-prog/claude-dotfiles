@@ -131,6 +131,15 @@ Then route per the decision matrix below.
   (Note: for `ok` STATE, `nonce_ok=mismatch` means SID was UNKNOWN when the mismatch was detected —
   this is advisory, not a hard stop, per R4 D4. Emit a warning but continue.)
 
+- **STATE=`invalid-handoff-name`:** the resolved handoff file's basename does not match the expected `CLAUDE.local[.<sid8>].md` pattern — possible path injection or unexpected filesystem state.
+  Extract: `path` from STATE JSON.
+  Output to user:
+  > WARNING: The handoff file path has an unexpected name (`path`).
+  > It does not match the expected `CLAUDE.local.<sid8>.md` pattern.
+  > This may indicate a misconfigured workspace or an unexpected file.
+  > Do NOT load this file automatically. Ask the user before proceeding.
+  Then stop. Do not guess; ask the user.
+
 - **STATE=`error` or parse failure (jq returns null / empty / non-zero):** treat as `no-handoff` — output the paste-prompt. Stop.
 
 **MARKER/STALE sub-matrix (applies when STATE=ok):**
