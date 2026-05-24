@@ -358,6 +358,17 @@ Overwrite `./CLAUDE.local.md` with this structure (use the parent fields held in
 ## Build Plan
 [Ordered steps for the current work. Mark each: [done] / [in progress] / [pending].]
 
+<!-- Omit section entirely if single-thread session (no parallel work streams). -->
+## Work Streams
+<!-- Populate if the session touched 2 or more distinct subsystems/threads. Omit
+section entirely if single-thread. Each stream gets its own ### subheading. -->
+### Stream 1: <name>
+- Status: in-progress | paused | blocked | done | implement chunk N of M shipped
+- Files touched: [path list]
+- Last known state: [1-2 lines]
+- Stream-specific next action: [specific command or file:line]
+- Blockers (if any): [link to Pending Externals if external]
+
 <!-- INCLUDE ONLY IF Seq > 1. When Seq = 1, REMOVE the comment, heading, and body entirely. Do not leave a placeholder. -->
 ## Since Last Compact
 [3-8 bullets: what got resolved, what shifted, which open questions got answered, which fix-laters now apply. Compare prior Build Plan / Next Action (held from Step 3.B) against what actually happened this session.]
