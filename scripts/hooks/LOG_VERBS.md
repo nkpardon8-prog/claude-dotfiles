@@ -93,3 +93,9 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `action=skip-legacy-sentinel` | post-compact-primer.sh | Sentinel has no cwd field (legacy schema v1) |
 | `ANOMALY sentinel-still-present-after-compact` | post-compact-primer.sh | source=compact but sentinel present; Stop hook mv-claim may have failed |
 | `sentinel=true\|false marker=true\|false legacy=true\|false age=Ns stale=yes\|no` | post-compact-primer.sh | Final routing decision summary |
+| `primer skip reason=multi-hardlink` | post-compact-primer-helpers.sh / handoff-resolve.sh | Handoff candidate rejected: hardlink count > 1 (swap-attack defense); path + linkcount logged |
+| `primer skip reason=invalid-sentinel-basename` | post-compact-primer-helpers.sh | Sentinel SID contains characters outside `[A-Za-z0-9_-]`; path-traversal defense |
+| `primer warn reason=sentinel-without-sid-file` | post-compact-primer.sh | Sentinel present but no SID-tagged file found; advisory warning |
+| `primer skip reason=sid-known-no-tagged-file` | post-compact-primer-helpers.sh / handoff-resolve.sh | SID known but no SID-tagged CLAUDE.local.<sid8>.md found; R4 D3 fail-closed |
+| `nonce_mismatch_hard_stop` | post-compact-resume-step2.sh | SID known + nonce mismatch detected; hard stop emitted (R4 D4) |
+| `handoff_detected` | post-compact-primer.sh | Sentinel matched CWD — see handoff: prefix table above |
