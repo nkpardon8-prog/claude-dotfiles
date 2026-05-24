@@ -38,6 +38,8 @@ set -u
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/auto-compact-sentinel.sh
 . "$ROOT/lib/auto-compact-sentinel.sh"
+# R5 Phase 3: source session-key.sh for HMAC breadcrumb signing.
+. "$ROOT/lib/session-key.sh" 2>/dev/null || true
 
 INPUT=$(cat)
 SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
