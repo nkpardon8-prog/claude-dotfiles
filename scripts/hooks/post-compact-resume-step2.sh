@@ -99,24 +99,51 @@ if [ -n "$OWN_SID" ]; then
       if ((.originating_command // "") == "stop-hook-fail-closed")
       then .originating_command else empty end' "$_refused_bc" 2>/dev/null) || _refused_cmd=""
     if [ "$_refused_cmd" = "stop-hook-fail-closed" ]; then
-      _refused_next=$(jq -r '.next_steps // empty' "$_refused_bc" 2>/dev/null) || _refused_next=""
-      _refused_real=$(jq -r '.real_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_real=""
-      _refused_resolved=$(jq -r '.resolved_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_resolved=""
-      # R5 H1: use ac_compute_sid8 (TTY-aware) instead of head -c 8 (strips __ttysN suffix).
-      _refused_sid8=$(ac_compute_sid8 "$OWN_SID" 2>/dev/null) || _refused_sid8=$(printf '%s' "$OWN_SID" | head -c 8)
-      handoff_log "step2_terminal state=stop-hook-refused sid8=${_refused_sid8}"
-      _json=$(jq -c -n \
-        --arg sid8 "$_refused_sid8" \
-        --arg real_sid "$_refused_real" \
-        --arg resolved_sid "$_refused_resolved" \
-        --arg next_steps "$_refused_next" \
-        '{"state":"stop-hook-refused","sid8":$sid8,"real_sid":$real_sid,"resolved_sid":$resolved_sid,"next_steps":$next_steps}' 2>/dev/null)
-      if [ -n "$_json" ]; then
-        printf 'STATE=%s\n' "$_json"
-      else
-        printf 'STATE={"state":"stop-hook-refused","sid8":"%s"}\n' "$_refused_sid8"
+      # R5 Critical #4: add age guard (same 3600s cutoff as normal breadcrumb scan) to prevent
+      # stale stop-hook-refused breadcrumbs from firing forever until the 24h GC window.
+      # Also validate cwd and hostname match to confirm this breadcrumb is for this workspace.
+      _refused_mtime=0
+      if _refused_mtime_raw=$(stat -f %m "$_refused_bc" 2>/dev/null | tr -d '[:space:]'); then
+        _refused_mtime="$_refused_mtime_raw"
+      elif _refused_mtime_raw=$(stat -c %Y "$_refused_bc" 2>/dev/null | tr -d '[:space:]'); then
+        _refused_mtime="$_refused_mtime_raw"
       fi
-      exit 0
+      _refused_now=$(date +%s 2>/dev/null | tr -d '[:space:]')
+      _refused_age=$(( _refused_now - _refused_mtime ))
+      _refused_cwd=$(jq -r '.cwd // empty' "$_refused_bc" 2>/dev/null) || _refused_cwd=""
+      _refused_host=$(jq -r '.hostname // empty' "$_refused_bc" 2>/dev/null) || _refused_host=""
+      # Skip if stale (>3600s) or cwd/host mismatch (guard against cross-workspace breadcrumbs).
+      _refused_valid=true
+      [ "$_refused_age" -gt 3600 ] 2>/dev/null && _refused_valid=false
+      [ -n "$_refused_cwd" ] && [ "$_refused_cwd" != "$CURRENT_CWD_CANON" ] && _refused_valid=false
+      [ -n "$_refused_host" ] && [ "$_refused_host" != "$HOSTNAME_SHORT" ] && _refused_valid=false
+      if [ "$_refused_valid" = "true" ]; then
+        _refused_next=$(jq -r '.next_steps // empty' "$_refused_bc" 2>/dev/null) || _refused_next=""
+        _refused_real=$(jq -r '.real_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_real=""
+        _refused_resolved=$(jq -r '.resolved_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_resolved=""
+        # R5 H1: use ac_compute_sid8 (TTY-aware) instead of head -c 8 (strips __ttysN suffix).
+        _refused_sid8=$(ac_compute_sid8 "$OWN_SID" 2>/dev/null) || _refused_sid8=$(printf '%s' "$OWN_SID" | head -c 8)
+        handoff_log "step2_terminal state=stop-hook-refused sid8=${_refused_sid8}"
+        # R5 Critical #4: mark breadcrumb as consumed so the EXIT trap deletes it.
+        # stop-hook-refused is a definitive state — once the user sees it and acts,
+        # the breadcrumb has served its purpose and should not fire again on next resume.
+        _BREADCRUMB_CONSUMED="yes"
+        ADOPTED_BREADCRUMB_PATH="$_refused_bc"
+        _json=$(jq -c -n \
+          --arg sid8 "$_refused_sid8" \
+          --arg real_sid "$_refused_real" \
+          --arg resolved_sid "$_refused_resolved" \
+          --arg next_steps "$_refused_next" \
+          '{"state":"stop-hook-refused","sid8":$sid8,"real_sid":$real_sid,"resolved_sid":$resolved_sid,"next_steps":$next_steps}' 2>/dev/null)
+        if [ -n "$_json" ]; then
+          printf 'STATE=%s\n' "$_json"
+        else
+          printf 'STATE={"state":"stop-hook-refused","sid8":"%s"}\n' "$_refused_sid8"
+        fi
+        exit 0
+      else
+        handoff_log "step2 skip reason=stop-hook-refused-stale-or-mismatch age=${_refused_age}s cwd_match=$([ "$_refused_cwd" = "$CURRENT_CWD_CANON" ] && echo yes || echo no) host_match=$([ "$_refused_host" = "$HOSTNAME_SHORT" ] && echo yes || echo no)"
+      fi
     fi
   fi
 fi
