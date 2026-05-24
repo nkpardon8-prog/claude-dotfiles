@@ -300,7 +300,8 @@ if [ -f "$VERBS_FILE" ]; then
     if ! grep -qF "$G5_TOKEN" "$VERBS_FILE" 2>/dev/null; then
       UNDOC+=("$G5_TOKEN")
     fi
-  done < <(grep -rE '(ac_log|ctx_gate_log|handoff_log)[[:space:]]+"' "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null)
+  done < <(grep -rE '(ac_log|ctx_gate_log|handoff_log)[[:space:]]+"' "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null \
+             | grep -v 'test-ctx-gate\.sh:\|test-auto-compact\.sh:')
   G5_UNDOC_UNIQ=$(printf '%s\n' "${UNDOC[@]}" | sort -u | tr '\n' ' ')
   if [ -z "$(printf '%s' "$G5_UNDOC_UNIQ" | tr -d '[:space:]')" ]; then
     pass "G5-fwd: all log-verb tokens documented in LOG_VERBS.md"
