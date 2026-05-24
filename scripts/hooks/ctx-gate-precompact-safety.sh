@@ -59,16 +59,14 @@ elif [ -f "$SENTINEL_PATH" ]; then
 fi
 
 # Sentinel absent + native trying to auto-compact.
-# Round 2 reviewer A #7 / B #6 correction: do NOT block unconditionally above CTX_PRECOMPACT_SAFETY_PCT
-# (95%). At extreme contexts, blocking native compact leaves a worst-of-both state where the
-# PreToolUse gate would also be enforcing the allowlist — model has no escape AND can't compact.
-# Decision matrix:
-#   - PCT below CTX_PRECOMPACT_SAFETY_PCT (e.g., 90-94%): BLOCK native compact, advise /pre-compact.
-#     The model still has plenty of context to run /pre-compact via the (still-active) PreToolUse
-#     allowlist (Skill, Read, Agent are permitted).
-#   - PCT ≥ CTX_PRECOMPACT_SAFETY_PCT (95%+): RELEASE — let native auto-compact happen as a
-#     degraded fallback. Yes, the handoff is lost (native's summary is what user said is "useless"),
-#     but this is preferable to a bricked session that can't make any forward progress.
+# Do NOT block unconditionally — at extreme contexts, blocking native compact leaves a
+# worst-of-both state. Decision matrix:
+#   - PCT below HANDOFF_PRECOMPACT_RELEASE_PCT (75%): BLOCK native compact, advise /pre-compact.
+#     The model still has plenty of context to run /pre-compact via the UserPromptSubmit
+#     FORCE nudge which fires at 85%.
+#   - PCT >= HANDOFF_PRECOMPACT_RELEASE_PCT (75%+): RELEASE — let native auto-compact happen
+#     as a degraded fallback. Yes, the handoff is lost, but this is preferable to a bricked
+#     session that cannot make any forward progress.
 PCT=$(ctx_gate_read_pct "$SID") || PCT="?"
 
 if [ "$PCT" != "?" ] && [ "$PCT" -ge "$HANDOFF_PRECOMPACT_RELEASE_PCT" ]; then
