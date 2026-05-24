@@ -205,6 +205,7 @@ esac
 
 STALE_FLAG="no"
 if [ -n "$STALE_WARNING" ]; then STALE_FLAG="yes"; fi
+# RQ-07 (R6): MARKER_PRESENT can be "true", "false", or "tampered" (new in R6 for multi-marker).
 ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} sentinel=$SENTINEL_PRESENT marker=$MARKER_PRESENT legacy=$LEGACY age=${HANDOFF_AGE}s stale=$STALE_FLAG"
 
 jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "SessionStart", "hookEventVersion": "SessionStart-v1", "additionalContext": $ctx } }'
