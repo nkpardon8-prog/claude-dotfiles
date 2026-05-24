@@ -48,6 +48,11 @@ SENTINEL_NONCE=""
 SID8=""
 ADOPTED_BREADCRUMB_PATH=""
 CURRENT_CWD_CANON=$(cd -P "$(pwd)" 2>/dev/null && pwd -P || printf '%s' "$(pwd)")
+
+# C4 fix: install EXIT trap so breadcrumb cleanup fires on ALL exit paths (fail-closed
+# states previously skipped the end-of-script cleanup block). The trap is a no-op when
+# ADOPTED_BREADCRUMB_PATH is empty (no breadcrumb was adopted) or SENTINEL_SID is empty.
+trap '[ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true' EXIT
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 
 # Glob over per-session breadcrumbs, newest first; pick the first that matches cwd + host.
@@ -332,9 +337,7 @@ else
   printf 'STATE={"state":"error","reason":"jq-failed"}\n'
 fi
 
-# R4 D5: read-once consumption — delete own breadcrumb after successful adoption.
-# Subsequent /post-compact-resume invocations re-derive STATE from SID-tagged file alone.
-# Only delete if we adopted a breadcrumb AND resolved a handoff (STATE=ok path).
-if [ -n "$SENTINEL_SID" ] && [ -n "${ADOPTED_BREADCRUMB_PATH:-}" ]; then
-  rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true
-fi
+# R4 D5 (C4 fix): breadcrumb cleanup is now handled by the EXIT trap installed at
+# the top of the script. The trap fires on every exit path — STATE=ok AND all
+# fail-closed paths — ensuring the read-once invariant holds regardless of which
+# branch exits. No explicit cleanup block is needed here.

@@ -105,6 +105,16 @@ find "$HOME/.claude/progress" -maxdepth 1 -type f \
   -name 'auto-compact-*.json.claim.*' \
   -mmin +60 -delete 2>/dev/null || true
 
+# H12 fix: GC stale orphan breadcrumbs (>24h old). These cannot belong to any live
+# session — the 1h age guard in step2.sh rejects anything >3600s, and the EXIT trap
+# (C4 fix) deletes breadcrumbs on consume. A >24h breadcrumb can only come from a
+# crashed session (kernel panic, OOM, hard-kill). Safe to delete unconditionally.
+# The count-and-log pattern keeps the log quiet under normal operation.
+GC_BREAD_COUNT=$(find "$HOME/.claude/progress" -maxdepth 1 -type f \
+  -name 'breadcrumb-*.json' \
+  -mmin +1440 -print -delete 2>/dev/null | wc -l | tr -d '[:space:]')
+[ -n "$GC_BREAD_COUNT" ] && [ "$GC_BREAD_COUNT" -gt 0 ] && handoff_log "gc_stale_orphan_breadcrumbs count=$GC_BREAD_COUNT"
+
 [ -f "$SENTINEL" ] || exit 0
 
 # Atomic claim: rename to a per-pid lock file. Only one concurrent invocation succeeds.
