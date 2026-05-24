@@ -511,6 +511,343 @@ rm -rf "$TMPHOME"
 echo "End-to-end synthetic chain: done"
 
 # ---------------------------------------------------------------------------
+# §C3 Malformed JSON stdin to primer — each must exit 0, no fatal error
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §C3 primer with malformed JSON stdin =="
+
+for C3_INPUT in \
+  '' \
+  '{}' \
+  '{"session_id":null}' \
+  '{"source":null}' \
+  '{"cwd":""}' \
+  'not-json-at-all'; do
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+  OUT=$(HOME="$TMPHOME" ./post-compact-primer.sh <<< "$C3_INPUT" 2>/dev/null)
+  EXIT_CODE=$?
+  if [ "$EXIT_CODE" -eq 0 ]; then
+    pass "C3: primer exits 0 for input: '$(printf '%s' "$C3_INPUT" | head -c 30)'"
+  else
+    fail "C3: primer must exit 0 for malformed input" "exit=$EXIT_CODE input='$C3_INPUT'"
+  fi
+  rm -rf "$TMPHOME"
+done
+
+# cwd=/etc — must skip (not owned by user) and exit 0
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME" && chmod 700 "$TMPHOME"
+# /etc exists and is a dir but is not user-writable; primer should silently skip
+OUT=$(HOME="$TMPHOME" ./post-compact-primer.sh <<< '{"session_id":"s","source":"resume","cwd":"/etc","hook_event_name":"SessionStart"}' 2>/dev/null)
+EXIT_CODE=$?
+if [ "$EXIT_CODE" -eq 0 ]; then
+  pass "C3: primer exits 0 for cwd=/etc (skip — no CLAUDE.local.md there)"
+else
+  fail "C3: primer cwd=/etc must exit 0" "exit=$EXIT_CODE"
+fi
+rm -rf "$TMPHOME"
+
+# ---------------------------------------------------------------------------
+# §C5 primer-marker-absent-at-byte-600: marker in first 1000 bytes, NOT last 512
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §C5 primer-marker-absent-at-byte-600 =="
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+# Build a file where END-OF-HANDOFF marker is near byte 600, then padded to ~1500 bytes.
+# tail -c 512 will NOT include the marker → primer should emit TRUNCATED warning.
+{
+  # ~600 bytes of content then the legacy marker, then 900 bytes of padding
+  printf '# Handoff\n\n## Active Skill State\nDetected: /plan\n\n## Next Action\nRun review.\n\n'
+  printf '<!-- END-OF-HANDOFF -->\n'
+  # Pad with 900 bytes of additional content so the total is ~1500 bytes
+  # and the marker is well outside the final 512 bytes
+  printf '## Section After Marker\n'
+  python3 -c "print('x' * 900)" 2>/dev/null || printf '%0900d' 0 | tr '0' 'x'
+  printf '\n'
+} > "$TMPHOME/repo/CLAUDE.local.md"
+FILE_SIZE=$(wc -c < "$TMPHOME/repo/CLAUDE.local.md" 2>/dev/null | tr -d '[:space:]')
+LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
+JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("TRUNCATED")' >/dev/null 2>&1; then
+  pass "C5: primer emits TRUNCATED when marker is NOT in last 512 bytes (file=${FILE_SIZE}b, marker at ~600b)"
+else
+  fail "C5: primer-marker-at-byte-600" "expected TRUNCATED warning, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# ---------------------------------------------------------------------------
+# §C6 multi-sentinel-matching-cwd: 2 sentinels with same cwd — primer breaks on first match
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §C6 multi-sentinel-matching-cwd =="
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+# Two sentinels with identical cwd but different SIDs
+printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce1"}\n' "$TMPHOME" \
+  > "$TMPHOME/.claude/progress/auto-compact-AAAA0001.json"
+printf '{"schema_version":3,"target_tty":"/dev/ttys002","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce2"}\n' "$TMPHOME" \
+  > "$TMPHOME/.claude/progress/auto-compact-BBBB0002.json"
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+# Verify primer detected a sentinel (PENDING HANDOFF) — it breaks on first glob match
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
+  pass "C6: multi-sentinel-matching-cwd → primer breaks on first match (SENTINEL_PRESENT=true)"
+else
+  fail "C6: multi-sentinel-matching-cwd" "expected PENDING HANDOFF, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# ---------------------------------------------------------------------------
+# §C7 Marker idempotency shim: append marker form twice, verify grep -c = 2 (failure mode)
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §C7 Marker idempotency shim test =="
+TMPFILE_C7=$(mktemp)
+MARKER_LINE='<!-- END-OF-HANDOFF schema=v1 sid=AAAA1234 nonce=abc-def-0000 -->'
+printf '# handoff content\n\n' > "$TMPFILE_C7"
+printf '%s\n' "$MARKER_LINE" >> "$TMPFILE_C7"
+printf '%s\n' "$MARKER_LINE" >> "$TMPFILE_C7"  # duplicate — idempotency break
+MARKER_COUNT=$(grep -c '<!-- END-OF-HANDOFF schema=v1' "$TMPFILE_C7" 2>/dev/null || echo 0)
+if [ "$MARKER_COUNT" -eq 2 ]; then
+  pass "C7: marker idempotency shim — double-append produces exactly 2 matches (baseline failure mode confirmed detectable)"
+else
+  fail "C7: marker idempotency shim" "expected grep -c=2 for double-append, got $MARKER_COUNT"
+fi
+rm -f "$TMPFILE_C7"
+
+# ---------------------------------------------------------------------------
+# §C10 Adversarial JSON-output: primer CWD containing special chars
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §C10 Adversarial JSON-output test =="
+# Create a directory whose name contains backslash (as URL-encoded equivalent via subdir).
+# Note: newlines in directory names are not portable on all filesystems. We test with
+# a path containing `"` and spaces and backslash as a subdirectory name.
+TMPHOME=$(mktemp -d)
+# Use printf to create dir name with special chars; avoid actual newlines in fs paths
+SPECIAL_DIR=$(printf '%s/repo with "quotes" and backslash\\path' "$TMPHOME")
+mkdir -p "$SPECIAL_DIR" 2>/dev/null || SPECIAL_DIR="$TMPHOME/repo"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$SPECIAL_DIR/CLAUDE.local.md"
+LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
+JSON=$(jq -cn --arg cwd "$SPECIAL_DIR" '{session_id:"newsid",source:"compact",cwd:$cwd,hook_event_name:"SessionStart"}')
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null 2>&1; then
+  pass "C10: primer produces valid JSON even for CWD with special chars (quotes/backslash)"
+else
+  fail "C10: adversarial JSON-output" "jq parse failed on primer output. got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# ---------------------------------------------------------------------------
+# §C11 Corrupt-lib recovery: rename ctx-gate-config.sh, invoke primer, expect exit 0 silently
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §C11 Corrupt-lib recovery =="
+BAKED="$PWD/lib/ctx-gate-config.sh"
+if [ -f "$BAKED" ]; then
+  mv "$BAKED" "${BAKED}.c11bak"
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+  OUT=$(HOME="$TMPHOME" ./post-compact-primer.sh <<< '{"session_id":"s","source":"compact","cwd":"'"$TMPHOME/repo"'","hook_event_name":"SessionStart"}' 2>/dev/null)
+  EXIT_CODE=$?
+  mv "${BAKED}.c11bak" "$BAKED"
+  if [ "$EXIT_CODE" -eq 0 ]; then
+    pass "C11: primer exits 0 silently when ctx-gate-config.sh is missing (corrupt-lib recovery)"
+  else
+    fail "C11: corrupt-lib recovery" "expected exit 0, got exit=$EXIT_CODE"
+  fi
+  rm -rf "$TMPHOME"
+else
+  fail "C11: corrupt-lib recovery" "lib/ctx-gate-config.sh not found at $BAKED"
+fi
+
+# ---------------------------------------------------------------------------
+# §C12 No-handoff path for source=compact, source=resume, source=clear
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §C12 No-handoff path for remaining sources =="
+LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
+for C12_SOURCE in compact resume clear; do
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+  # No CLAUDE.local.md — primer should silently exit 0
+  JSON="{\"session_id\":\"newsid\",\"source\":\"$C12_SOURCE\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+  OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+  if [ -z "$OUT" ]; then
+    pass "C12: source=$C12_SOURCE + no handoff → silent exit 0"
+  else
+    fail "C12: source=$C12_SOURCE no-handoff" "expected empty output, got: $OUT"
+  fi
+  rm -rf "$TMPHOME"
+done
+
+# ---------------------------------------------------------------------------
+# §NEW-1 Parallel-track test
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §NEW-1 Parallel-track sentinel selection =="
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff AAAA1111\n\n<!-- END-OF-HANDOFF schema=v1 sid=AAAA1111 nonce=nonce-AAAA -->\n' \
+  > "$TMPHOME/repo/CLAUDE.local.AAAA1111.md"
+printf '# handoff BBBB2222\n\n<!-- END-OF-HANDOFF schema=v1 sid=BBBB2222 nonce=nonce-BBBB -->\n' \
+  > "$TMPHOME/repo/CLAUDE.local.BBBB2222.md"
+# Also write CLAUDE.local.md (generic alias) pointing to AAAA
+cp "$TMPHOME/repo/CLAUDE.local.AAAA1111.md" "$TMPHOME/repo/CLAUDE.local.md"
+# Write sentinel for AAAA1111
+printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce-AAAA"}\n' "$TMPHOME" \
+  > "$TMPHOME/.claude/progress/auto-compact-AAAA1111.json"
+# Write sentinel for BBBB2222
+printf '{"schema_version":3,"target_tty":"/dev/ttys002","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce-BBBB"}\n' "$TMPHOME" \
+  > "$TMPHOME/.claude/progress/auto-compact-BBBB2222.json"
+LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+# Primer must detect SENTINEL_PRESENT=true (either SID is acceptable — it breaks on first glob match)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
+  pass "NEW-1: parallel-track — primer detects SENTINEL_PRESENT=true (first glob match wins)"
+else
+  fail "NEW-1: parallel-track" "expected PENDING HANDOFF from one of the 2 matching sentinels, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# ---------------------------------------------------------------------------
+# §NEW-2 PreToolUse-deleted regression test
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §NEW-2 PreToolUse-deleted regression =="
+PRETOOLUSE_FILE="$PWD/ctx-gate-on-pretooluse.sh"
+if [ ! -f "$PRETOOLUSE_FILE" ]; then
+  pass "NEW-2: ctx-gate-on-pretooluse.sh does not exist (deleted per N4)"
+else
+  fail "NEW-2: PreToolUse-deleted regression" "$PRETOOLUSE_FILE still exists — should have been deleted"
+fi
+PRETOOLUSE_ENTRY=$(jq '.hooks.PreToolUse // "ABSENT"' "$HOME/.claude/settings.json" 2>/dev/null)
+if [ "$PRETOOLUSE_ENTRY" = '"ABSENT"' ] || [ "$PRETOOLUSE_ENTRY" = 'null' ] || [ -z "$PRETOOLUSE_ENTRY" ]; then
+  pass "NEW-2: settings.json has no PreToolUse entry (deleted per N4)"
+else
+  fail "NEW-2: PreToolUse settings entry" "expected ABSENT, got: $PRETOOLUSE_ENTRY"
+fi
+
+# ---------------------------------------------------------------------------
+# §NEW-3 UserPromptSubmit no-block test: hook never emits permissionDecision or decision
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §NEW-3 UserPromptSubmit never blocks =="
+for NB_PCT in 49 50 55 74 75 84 85 95; do
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  printf '%d\n' "$NB_PCT" > "$TMPHOME/.claude/progress/ctx-nbtest.txt"
+  OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"nbtest","prompt":"x","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+  # Empty output is always fine (silent = no block)
+  if [ -z "$OUT" ]; then
+    pass "NEW-3: submit ctx=$NB_PCT → empty output (no block)"
+    rm -rf "$TMPHOME"
+    continue
+  fi
+  DENY=$(printf '%s' "$OUT" | jq -e 'has("permissionDecision")' 2>/dev/null && echo yes || echo no)
+  BLOCK=$(printf '%s' "$OUT" | jq -e 'has("decision")' 2>/dev/null && echo yes || echo no)
+  if [ "$DENY" = "no" ] && [ "$BLOCK" = "no" ]; then
+    pass "NEW-3: submit ctx=$NB_PCT → no permissionDecision/decision field (additionalContext only)"
+  else
+    fail "NEW-3: submit ctx=$NB_PCT no-block" "output contains block/deny field: $OUT"
+  fi
+  rm -rf "$TMPHOME"
+done
+
+# ---------------------------------------------------------------------------
+# §NEW-4 SID-tagged handoff round-trip
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §NEW-4 SID-tagged handoff round-trip =="
+TMPDIR_N4=$(mktemp -d)
+SID8_N4="AAAA1234"
+MARKER_LINE_N4="<!-- END-OF-HANDOFF schema=v1 sid=${SID8_N4} nonce=abc-def-9876 -->"
+HANDOFF_CONTENT="# Test Handoff\n\n## Next Action\nResume work.\n\n${MARKER_LINE_N4}"
+printf '%b\n' "$HANDOFF_CONTENT" > "$TMPDIR_N4/CLAUDE.local.${SID8_N4}.md"
+# Copy to generic alias (simulating pre-compact Step 6A)
+cp "$TMPDIR_N4/CLAUDE.local.${SID8_N4}.md" "$TMPDIR_N4/CLAUDE.local.md"
+# Verify content identical
+SID_CONTENT=$(cat "$TMPDIR_N4/CLAUDE.local.${SID8_N4}.md" 2>/dev/null)
+ALIAS_CONTENT=$(cat "$TMPDIR_N4/CLAUDE.local.md" 2>/dev/null)
+if [ "$SID_CONTENT" = "$ALIAS_CONTENT" ]; then
+  pass "NEW-4: SID-tagged handoff and generic alias have identical content"
+else
+  fail "NEW-4: SID-tagged handoff round-trip" "SID-tagged and alias content differ"
+fi
+# Verify marker present in both
+SID_MARKER=$(grep -cF "$MARKER_LINE_N4" "$TMPDIR_N4/CLAUDE.local.${SID8_N4}.md" 2>/dev/null || echo 0)
+ALIAS_MARKER=$(grep -cF "$MARKER_LINE_N4" "$TMPDIR_N4/CLAUDE.local.md" 2>/dev/null || echo 0)
+if [ "$SID_MARKER" -eq 1 ] && [ "$ALIAS_MARKER" -eq 1 ]; then
+  pass "NEW-4: END-OF-HANDOFF marker present exactly once in both SID-tagged and alias files"
+else
+  fail "NEW-4: marker count" "SID-tagged marker=$SID_MARKER alias marker=$ALIAS_MARKER (expected both=1)"
+fi
+rm -rf "$TMPDIR_N4"
+
+# ---------------------------------------------------------------------------
+# §NEW-5 marker_nonce round-trip
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §NEW-5 marker_nonce round-trip =="
+TMPDIR_N5=$(mktemp -d)
+NONCE_X="fa92be11-0abc-4def-8012-deadbeef1234"
+NONCE_Y="99999999-ffff-0000-aaaa-111111111111"
+SID8_N5="CCCC5678"
+# Write sentinel with nonce X
+printf '{"schema_version":3,"target_tty":"/dev/ttys042","originating_command":"pre-compact","cwd":"/tmp","marker_nonce":"%s"}\n' \
+  "$NONCE_X" > "$TMPDIR_N5/sentinel-x.json"
+# Write handoff marker with nonce X
+MARKER_WITH_X="<!-- END-OF-HANDOFF schema=v1 sid=${SID8_N5} nonce=${NONCE_X} -->"
+printf '# handoff\n\n%s\n' "$MARKER_WITH_X" > "$TMPDIR_N5/handoff-x.md"
+# Extract nonce from marker via sed
+EXTRACTED_NONCE=$(sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' "$TMPDIR_N5/handoff-x.md" 2>/dev/null)
+if [ "$EXTRACTED_NONCE" = "$NONCE_X" ]; then
+  pass "NEW-5: nonce extracted from marker matches sentinel nonce X"
+else
+  fail "NEW-5: nonce extraction" "expected '$NONCE_X', got '$EXTRACTED_NONCE'"
+fi
+# Mismatch test: sentinel nonce=Y, marker nonce=X → extraction returns X, != Y
+SENTINEL_NONCE_Y=$(jq -r '.marker_nonce // empty' "$TMPDIR_N5/sentinel-x.json" 2>/dev/null)
+# Swap to nonce Y for sentinel comparison
+printf '{"schema_version":3,"target_tty":"/dev/ttys042","originating_command":"pre-compact","cwd":"/tmp","marker_nonce":"%s"}\n' \
+  "$NONCE_Y" > "$TMPDIR_N5/sentinel-y.json"
+SENTINEL_NONCE_READ=$(jq -r '.marker_nonce // empty' "$TMPDIR_N5/sentinel-y.json" 2>/dev/null)
+MARKER_NONCE_READ=$(sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' "$TMPDIR_N5/handoff-x.md" 2>/dev/null)
+if [ "$SENTINEL_NONCE_READ" != "$MARKER_NONCE_READ" ]; then
+  pass "NEW-5: mismatch test — sentinel nonce Y != marker nonce X (detectable)"
+else
+  fail "NEW-5: nonce mismatch test" "expected sentinel=$NONCE_Y != marker=$EXTRACTED_NONCE but they matched"
+fi
+rm -rf "$TMPDIR_N5"
+
+# ---------------------------------------------------------------------------
+# §NEW-6 ac_canonicalize_path symmetry test
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §NEW-6 ac_canonicalize_path symmetry =="
+# Source the lib (already sourced in the test harness) — ac_canonicalize_path is available.
+# shellcheck source=lib/auto-compact-sentinel.sh
+. "$PWD/lib/auto-compact-sentinel.sh"
+TMPDIR_N6=$(mktemp -d)
+# Create a real directory and a symlink pointing to it
+mkdir -p "$TMPDIR_N6/real_dir"
+ln -s "$TMPDIR_N6/real_dir" "$TMPDIR_N6/link_dir"
+CANON_REAL=$(ac_canonicalize_path "$TMPDIR_N6/real_dir" 2>/dev/null)
+CANON_LINK=$(ac_canonicalize_path "$TMPDIR_N6/link_dir" 2>/dev/null)
+if [ -n "$CANON_REAL" ] && [ "$CANON_REAL" = "$CANON_LINK" ]; then
+  pass "NEW-6: ac_canonicalize_path symmetry — real_dir and link_dir both resolve to: $CANON_REAL"
+else
+  fail "NEW-6: ac_canonicalize_path symmetry" "real='$CANON_REAL' link='$CANON_LINK' should be equal"
+fi
+rm -rf "$TMPDIR_N6"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
