@@ -303,11 +303,11 @@ Wait for response. Fold the user's additions into the appropriate sections. If t
 
 Two-phase write. Phase 1 hits the pass floor on the first Write call. Phase 2 reads back and Edits gaps toward the ceiling. Phase 1 is NOT a draft.
 
-**Crash-safety + .prev snapshot guard (R2 #8 + R2 #9 — Read+Write replaces Bash cp):**
+**Crash-safety + .prev snapshot guard (Read+Write replaces Bash cp):**
 
-`cp` is not in the ctx-gate Bash allowlist — at the 60% hard-gate it would be denied. Use
-Read+Write (both allowlist-clean for CLAUDE.local.md paths) instead. Also guard against
-re-run overwriting a recent snapshot (e.g., if user Ctrl-C and re-ran within the hour):
+Use Read+Write (both allowlist-clean for CLAUDE.local.md paths) — not `cp` (not in the
+ctx-gate Bash allowlist). Also guard against re-run overwriting a recent snapshot
+(e.g., if user Ctrl-C and re-ran within the hour):
 
 ```bash
 # Snapshot check — use stat to see if .prev is recent (no cp Bash call)
@@ -318,7 +318,7 @@ if [ -f ./CLAUDE.local.md.prev ]; then
                || echo 0)
   [ -z "$PREV_MTIME" ] && PREV_MTIME=0
   PREV_AGE=$(( $(date +%s) - PREV_MTIME ))
-  # R2 #8: negative PREV_AGE (future-dated mtime attack) → treat as stale, re-snapshot
+  # Negative PREV_AGE (future-dated mtime attack) → treat as stale, re-snapshot
   if [ "$PREV_AGE" -ge 0 ] && [ "$PREV_AGE" -le 3600 ]; then
     SNAPSHOT_NEEDED="false"
   fi
