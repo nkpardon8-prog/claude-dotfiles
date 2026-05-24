@@ -715,12 +715,15 @@ A `Stop` hook (`~/.claude-dotfiles/scripts/hooks/auto-compact-after-pre-compact.
 
 **Refuses to arm** on non-Darwin platforms, non-Terminal.app hosts (`TERM_PROGRAM != Apple_Terminal`), and inside tmux/screen — the AppleScript lookup would silently fail to find a matching Terminal.app tab.
 
-Run this bash block FIRST, before composing the Step 9.1 report — the report includes the resulting arming state:
+Run this bash block FIRST, before composing the Step 9.1 report — the report includes the resulting arming state.
+
+**Pass NONCE (from Step 6D) as the 2nd argument** so the sentinel records the same nonce embedded in the CLAUDE.local.md marker — /post-compact-resume validates consistency between them:
 
 ```bash
 ARM_SCRIPT="$HOME/.claude-dotfiles/scripts/hooks/arm-auto-compact.sh"
+# NONCE was generated in Step 6D; pass as 2nd arg to sentinel for marker_nonce correlation.
 if [ -f "$ARM_SCRIPT" ] && [ -x "$ARM_SCRIPT" ]; then
-  AUTOCOMPACT_STATE=$("$ARM_SCRIPT" "${ARGUMENTS:-}" 2>&1)
+  AUTOCOMPACT_STATE=$("$ARM_SCRIPT" "${ARGUMENTS:-}" "${NONCE:-}" 2>&1)
   ARM_EXIT=$?
   if [ "$ARM_EXIT" -ne 0 ]; then
     AUTOCOMPACT_STATE="NOT armed — arming script exited $ARM_EXIT: ${AUTOCOMPACT_STATE:-(no output)}"
