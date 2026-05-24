@@ -148,8 +148,9 @@ primer_find_sentinel_for_cwd() {
         SENTINEL_PATH=""
         continue
       fi
-      SENTINEL_SID8=$(printf '%s' "$sentinel_sid_full" | head -c 8)
-      [ -z "$SENTINEL_SID8" ] && SENTINEL_SID8="$sentinel_sid_full"
+      # R3-fix-sweep C2: use TTY-aware ac_compute_sid8 so parallel sessions with
+      # __ttysN suffix produce DISTINCT SID8 values (auto-compact-sentinel.sh sourced above).
+      SENTINEL_SID8=$(ac_compute_sid8 "$sentinel_sid_full")
       SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$sentinel_candidate" 2>/dev/null) || SENTINEL_NONCE=""
       # R4 D6: handoff_detected log line MOVED to post-compact-primer.sh AFTER
       # primer_resolve_handoff_path completes (so HANDOFF_PATH is set at log time).
