@@ -339,20 +339,24 @@ if [ -f "$VERBS_FILE" ]; then
       *'|'*) continue ;;
       action=*) continue ;;
     esac
-    # Determine the grep pattern based on verb type:
-    # - handoff:X → handoff_log "X" (the handoff_log() function prepends "handoff:" at runtime)
-    # - all others → any of ac_log|ctx_gate_log|handoff_log "...VERB..."
+    # Determine the grep pattern based on verb type.
+    # handoff:X verbs: the handoff_log() shell function prepends "handoff:" at runtime,
+    # so the code emits: handoff_log "<suffix>" not handoff_log "handoff:<suffix>".
+    # Strip the prefix and search only for the suffix after the colon.
     if printf '%s' "$G5R_BARE" | grep -q '^handoff:'; then
-      # Strip the "handoff:" prefix; search for handoff_log "BARE_SUFFIX"
       G5R_SUFFIX=$(printf '%s' "$G5R_BARE" | sed 's/^handoff://')
-      if ! grep -qrE "handoff_log[[:space:]]+\"[^\"]*${G5R_SUFFIX}" \
-          "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null; then
+      # Exclude test files from the emit search (they may reference verbs in comments).
+      if ! grep -rE "handoff_log[[:space:]]+\"[^\"]*${G5R_SUFFIX}" \
+          "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null \
+          | grep -qv 'test-ctx-gate\.sh:\|test-auto-compact\.sh:'; then
         PHANTOM+=("$G5R_BARE")
       fi
     else
-      # Normal verb: search for any log function emitting it.
-      if ! grep -qrE "(ac_log|ctx_gate_log|handoff_log)[[:space:]]+\"[^\"]*${G5R_BARE}" \
-          "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null; then
+      # Normal verb: any log function emitting it.
+      # Exclude test files (they may reference verbs in comments or test scaffolding).
+      if ! grep -rE "(ac_log|ctx_gate_log|handoff_log)[[:space:]]+\"[^\"]*${G5R_BARE}" \
+          "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null \
+          | grep -qv 'test-ctx-gate\.sh:\|test-auto-compact\.sh:'; then
         PHANTOM+=("$G5R_BARE")
       fi
     fi
