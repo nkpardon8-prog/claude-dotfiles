@@ -406,8 +406,10 @@ fi
 if command -v handoff_marker_nonce >/dev/null 2>&1; then
   MARKER_NONCE=$(handoff_marker_nonce "$_HANDOFF_READ" 2>/dev/null)
 else
-  # R3-fix-sweep C3+C4 + Phase 1 Round 4: whole-file grep + head -1 (replaces tail -c 512 + tail -1).
-  MARKER_NONCE=$(grep -F 'END-OF-HANDOFF schema=' "$_HANDOFF_READ" 2>/dev/null \
+  # R5 Critical #2: strict anchor + R3-fix-sweep C3+C4 + Phase 1 Round 4.
+  # Require marker at start-of-line (^<!-- END-OF-HANDOFF schema=v1 ) so prose
+  # mentioning the marker format in the handoff body cannot shadow the real marker.
+  MARKER_NONCE=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$_HANDOFF_READ" 2>/dev/null \
     | head -1 \
     | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
 fi
