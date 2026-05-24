@@ -67,12 +67,6 @@ These verbs are emitted by `auto-compact-after-pre-compact.sh` (Stop hook) durin
 | `breadcrumb_write_failed reason=hostname-fail` | auto-compact-after-pre-compact.sh | hostname -s returned empty; breadcrumb not written (H2) |
 | `gc_stale_orphan_breadcrumbs` | auto-compact-after-pre-compact.sh | Stale orphan breadcrumbs (>24h old) deleted on Stop event; count= appended (H12 fix) |
 
-### Breadcrumb read events (within ctx-gate.log)
-
-| Verb | Script | Meaning |
-|---|---|---|
-| `breadcrumb_read_invalid_schema` | post-compact-resume-step2.sh / lib | Breadcrumb failed schema validation (schema_version/originating_command/type guards) |
-
 ## ctx-gate.log (ctx_gate_log — via `lib/ctx-gate-config.sh:ctx_gate_log`)
 
 Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-compact-primer.sh`.
