@@ -72,47 +72,54 @@ This script is maintained at the path above. It:
 6. Checks freshness vs HANDOFF_LEGACY_CUTOFF_EPOCH and HANDOFF_STALE_SECS
 7. Emits a single `STATE=<JSON>` line on stdout (R4 D10: JSON-encoded for paths with spaces)
 
-**Parse the STATE line:**
+**Parse the STATE line (R4 D10: STATE= value is JSON for path-with-spaces safety):**
 ```bash
-STATE_LINE=$(bash "$HOME/.claude-dotfiles/scripts/hooks/lib/post-compact-resume-step2.sh" 2>/dev/null)
+STATE_LINE=$(bash "$HOME/.claude-dotfiles/scripts/hooks/post-compact-resume-step2.sh" 2>/dev/null)
 STATE=$(printf '%s' "$STATE_LINE" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 ```
 
+JSON parsing convention: all field extractions use `printf '%s' "$STATE_LINE" | sed -n 's/^STATE=//p' | jq -r '.<field>'`.
+Never parse STATE= with regex or string splits — the path field may contain spaces.
+
 Then route per the decision matrix below.
 
-**Decision matrix (route on `.state` JSON field):**
+**Decision matrix (route on `.state` JSON field — all 5 valid states):**
 
 - **STATE=`no-handoff`:** no handoff found. Output the paste-prompt from Step 1. Stop.
 
 - **STATE=`sid-known-no-tagged-file`:** SID was known (from breadcrumb) but SID-tagged file is missing.
+  Extract: `sid8=$(printf '%s' "$STATE_LINE" | sed -n 's/^STATE=//p' | jq -r '.sid8')`
   Output to user:
   > WARNING: A /pre-compact ran for this session but the SID-tagged handoff file is missing.
   > Possible causes: file was deleted, cwd changed since /pre-compact, or another agent moved it.
-  > Extract `sid8` from STATE JSON (`jq -r '.sid8'`), then check if `CLAUDE.local.<sid8>.md` exists
-  > in the current directory or repo root. Ask the user before proceeding.
+  > Check if `CLAUDE.local.<sid8>.md` exists in the current directory or repo root.
+  > Ask the user before proceeding.
   > Do NOT load the generic alias `CLAUDE.local.md` — it may belong to a different parallel-track session.
   Then stop. Do not guess; ask the user.
 
 - **STATE=`nonce-mismatch-hard-stop`:** SID-known + marker nonce ≠ sentinel nonce — hard stop.
+  Extract: `marker_nonce_first8`, `sentinel_nonce_first8` from STATE JSON.
   Output to user:
   > WARNING: Handoff nonce mismatch. The SID-tagged file's marker nonce does not match the
   > sentinel nonce from this session. Possible causes: file was replaced or corrupted.
-  > Extract `marker_nonce_first8` and `sentinel_nonce_first8` from STATE JSON for the user.
+  > marker_nonce_first8=<value> sentinel_nonce_first8=<value>
   > Ask the user whether to proceed cautiously or to start fresh.
   Then stop. Do not auto-proceed (unlike the legacy advisory path — R4 D4 makes this hard).
 
 - **STATE=`oversize`:** output to user:
-  > Handoff file is too large (extract `size` and `max` from STATE JSON).
+  Extract: `size`, `max` from STATE JSON.
+  > Handoff file is too large (`size` bytes; limit `max` bytes).
   > Refusing to ingest. Ask the user what was being worked on before resuming.
   Then stop. Do not attempt to read the file.
 
 - **STATE=`ok`:** proceed per the MARKER/STALE/LEGACY matrix below.
   Parse fields from STATE JSON: `marker`, `stale`, `legacy`, `age_hours`, `nonce_ok`, `sid8`, `path`.
+  Use `path` field (not cwd) as the authoritative handoff file location — it may differ from cwd for repo-root resolution.
 
   (Note: for `ok` STATE, `nonce_ok=mismatch` means SID was UNKNOWN when the mismatch was detected —
   this is advisory, not a hard stop, per R4 D4. Emit a warning but continue.)
 
-- **STATE=`error` or parse failure:** treat as `no-handoff` — output the paste-prompt. Stop.
+- **STATE=`error` or parse failure (jq returns null / empty / non-zero):** treat as `no-handoff` — output the paste-prompt. Stop.
 
 **MARKER/STALE sub-matrix (applies when STATE=ok):**
 
