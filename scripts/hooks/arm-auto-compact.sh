@@ -119,10 +119,12 @@ fi
 
 if ac_write_sentinel "$SID" "$ORIG_TTY" "$CWD_CANON" "$MARKER_NONCE"; then
   ac_log "armed sid=$SID tty=$ORIG_TTY cwd=$CWD_CANON nonce=${MARKER_NONCE:0:8}..."
-  # B20: unified handoff audit trail — log sentinel arm event.
   handoff_log "sentinel_armed sid=${SID:0:8} tty=$ORIG_TTY cwd=$CWD_CANON"
   echo "armed (sentinel auto-compact-${SID}.json, target ${ORIG_TTY}, nonce_prefix=${MARKER_NONCE:0:8})"
 else
   ac_log "arm-failed sid=$SID tty=$ORIG_TTY"
+  # Intentional design: this script falls through to implicit exit 0 even on sentinel
+  # write failure. The user-visible "NOT armed —" message + ac_log entry are the
+  # diagnostic signal; non-zero exit would break /pre-compact's stdout capture at Step 9.0.
   echo "NOT armed — sentinel write failed (disk full or permission?); run /compact manually"
 fi
