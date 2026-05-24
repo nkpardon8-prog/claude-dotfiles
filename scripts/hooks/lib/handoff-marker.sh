@@ -82,13 +82,14 @@ handoff_marker_nonce() {
   [ -f "$file" ] || return 1
   # R3-fix-sweep C3+C4: anchor extraction to the actual marker line.
   # grep -F filters to ONLY lines containing the literal marker prefix;
-  # tail -1 picks the last such line (canonical marker is at end-of-file);
+  # head -1 picks the FIRST such line (canonical marker — see header invariant:
+  #   the writer appends the canonical marker last; an attacker who appends a
+  #   second marker line after the canonical one is neutralized by head -1).
   # sed then extracts the nonce= attribute value.
   # This defeats body-injection attacks (body content containing nonce=... in prose
   # can no longer shadow the canonical marker's nonce value).
-  tail -c 512 "$file" 2>/dev/null \
-    | grep -F 'END-OF-HANDOFF schema=' \
-    | tail -1 \
+  grep -F 'END-OF-HANDOFF schema=' "$file" 2>/dev/null \
+    | head -1 \
     | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p'
 }
 
