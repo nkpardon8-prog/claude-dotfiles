@@ -408,14 +408,27 @@ else
   fi
 fi
 
-# Phase 1 (Round 4): multi-marker warning. If the handoff file contains more than
-# one END-OF-HANDOFF marker line, log a warning. The write protocol guarantees
-# exactly one; multiple markers indicate tampering or a double-write bug.
-# We still proceed (defense-in-depth: head -1 already picks canonical marker).
+# R5 H13 (Phase 1): multi-marker fail-closed. If the handoff file contains more than
+# one END-OF-HANDOFF marker line (detected via strict ^<!-- anchor), treat as tampered
+# or double-written — emit STATE=multi-marker-detected and refuse to proceed.
+# The write protocol guarantees exactly one; multiple markers indicate an attack
+# (attacker prepended a second marker) or a double-write bug.
+# R5 tightens from warn-only (Phase 1 Round 4) to fail-closed (Phase 1 Round 5).
 if command -v handoff_marker_count >/dev/null 2>&1; then
   _mcount=$(handoff_marker_count "$_HANDOFF_READ")
   if [ -n "$_mcount" ] && [ "$_mcount" -gt 1 ] 2>/dev/null; then
-    handoff_log "handoff_multi_marker_warning file=$HANDOFF_PATH count=$_mcount"
+    handoff_log "step2_terminal state=multi-marker-detected file=$HANDOFF_PATH count=$_mcount sid8=${SID8:-}"
+    _json=$(jq -c -n \
+      --arg sid8 "${SID8:-}" \
+      --arg count "$_mcount" \
+      --arg path "$HANDOFF_PATH" \
+      '{"state":"multi-marker-detected","sid8":$sid8,"count":$count,"path":$path}' 2>/dev/null)
+    if [ -n "$_json" ]; then
+      printf 'STATE=%s\n' "$_json"
+    else
+      printf 'STATE={"state":"multi-marker-detected","count":"%s"}\n' "$_mcount"
+    fi
+    exit 0
   fi
 fi
 
