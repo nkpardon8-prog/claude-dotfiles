@@ -67,7 +67,12 @@ handoff_marker_count() {
   local file="$1"
   [ -f "$file" ] || { printf '0'; return 1; }
   local cnt
-  cnt=$(grep -cF 'END-OF-HANDOFF schema=' "$file" 2>/dev/null) || cnt=0
+  # R5 Critical #2 + H12: strict anchor — only count lines where the marker prefix
+  # appears at start-of-line. This prevents prose mentions like "format: <!-- END-OF-HANDOFF ..."
+  # from being counted as markers. The grep -E '^<!-- END-OF-HANDOFF schema=v1 ' pattern
+  # requires the HTML comment open at column 0 plus the expected prefix, eliminating
+  # body-line pseudo-marker bypass (Adversary ATTACK 2, live-reproduced Round 4).
+  cnt=$(grep -cE '^<!-- END-OF-HANDOFF schema=v1 ' "$file" 2>/dev/null) || cnt=0
   printf '%s' "$cnt"
 }
 
