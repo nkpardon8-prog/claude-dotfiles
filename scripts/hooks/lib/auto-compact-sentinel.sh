@@ -74,17 +74,63 @@ handoff_log() {
   ac_log "handoff:$1"
 }
 
+# ---------------------------------------------------------------------------
+# _ac_resolve_tty_basename_via_ppid
+#
+# C1 fix: resolves the controlling TTY basename (e.g. "ttys012") by walking
+# the PPID chain — the same algorithm arm-auto-compact.sh uses to derive the
+# target TTY.  Echoes the basename (without /dev/) on success; echoes nothing
+# on failure (no TTY found, or TTY form not recognized).
+#
+# Only used by ac_resolve_session_id when CLAUDE_SESSION_ID is unset (slug
+# fallback path).  When CLAUDE_SESSION_ID IS set the env var is returned
+# as-is — no TTY suffix needed (the env var is already session-authoritative).
+# ---------------------------------------------------------------------------
+_ac_resolve_tty_basename_via_ppid() {
+  local check_pid raw_tty
+  check_pid="${PPID:-}"
+  local _hop
+  for _hop in 1 2 3 4 5; do
+    [ -z "$check_pid" ] && break
+    if [ "$check_pid" = "0" ] || [ "$check_pid" = "1" ]; then break; fi
+    raw_tty=$(ps -o tty= -p "$check_pid" 2>/dev/null | tr -d '[:space:]')
+    case "$raw_tty" in
+      ttys[0-9]*) printf '%s' "$raw_tty"; return 0 ;;
+    esac
+    check_pid=$(ps -o ppid= -p "$check_pid" 2>/dev/null | tr -d '[:space:]')
+  done
+  # No TTY found in ancestry — return nothing (caller treats empty as "no TTY").
+  return 1
+}
+
 ac_resolve_session_id() {
   local sid="${CLAUDE_SESSION_ID:-}"
   if [ -z "$sid" ]; then
     # Slug derivation: Claude Code's project transcript dirs replace every
     # non-alphanumeric byte of the absolute path with `-`. The naive
     # `s|/|-|g; s|^|-|` produces a double leading dash and ignores spaces.
-    local slug dir
+    local slug dir transcript_sid tty_base
     slug=$(pwd | sed 's|[^A-Za-z0-9]|-|g')
     dir="$HOME/.claude/projects/${slug}"
     if [ -d "$dir" ]; then
-      sid=$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl)
+      transcript_sid=$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl 2>/dev/null)
+    else
+      transcript_sid=""
+    fi
+    # C1: fold TTY basename into slug-fallback SID to disambiguate N parallel
+    # sessions sharing the same cwd (each session's claude process has a
+    # distinct controlling TTY).  Format: <transcript_sid>__<tty_base>
+    # Double underscore chosen: sanitizable ([A-Za-z0-9_-] set keeps both
+    # underscores), visually distinct from single-underscore UUID delimiters.
+    # Only fold when (a) CLAUDE_SESSION_ID was unset (we are in fallback mode)
+    # AND (b) a transcript SID was found AND (c) the TTY resolves cleanly.
+    if [ -n "$transcript_sid" ]; then
+      tty_base=$(_ac_resolve_tty_basename_via_ppid 2>/dev/null) || tty_base=""
+      if [ -n "$tty_base" ]; then
+        sid="${transcript_sid}__${tty_base}"
+      else
+        sid="$transcript_sid"
+      fi
     fi
   fi
   printf '%s' "$sid" | tr -cd 'A-Za-z0-9_-' | head -c 128
