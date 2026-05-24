@@ -43,7 +43,7 @@ done
 
 echo "== ac_write_sentinel + ac_read_sentinel_tty =="
 TEST_SID="SMOKE_$$"
-ac_write_sentinel "$TEST_SID" "/dev/ttys999"
+ac_write_sentinel "$TEST_SID" "/dev/ttys999" "/tmp" "test-nonce-$$"
 SENTINEL_PATH=$(ac_sentinel_path "$TEST_SID")
 if [ -f "$SENTINEL_PATH" ]; then check "sentinel file created" 1 1; else check "sentinel file created" 1 0; fi
 MODE=$(stat -f '%Lp' "$SENTINEL_PATH" 2>/dev/null)
