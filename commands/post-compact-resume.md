@@ -85,9 +85,19 @@ Never parse STATE= with regex or string splits — the path field may contain sp
 
 Then route per the decision matrix below.
 
-**Decision matrix (route on `.state` JSON field — all 5 valid states):**
+**Decision matrix (route on `.state` JSON field — all 6 valid states):**
 
 - **STATE=`no-handoff`:** no handoff found. Output the paste-prompt from Step 1. Stop.
+
+- **STATE=`sid-mismatch-hard-stop`:** the marker's `sid=` attribute does not match the breadcrumb SID8 — the file belongs to a different parallel-track session.
+  Extract: `sentinel_sid8`, `marker_sid8` from STATE JSON.
+  Output to user:
+  > WARNING: SID mismatch. The handoff file's marker sid (`marker_sid8`) does not match
+  > this session's SID (`sentinel_sid8`). The file likely belongs to a different parallel session.
+  > Do NOT load this file — it may contain instructions from a different track.
+  > Check if `CLAUDE.local.<sentinel_sid8>.md` exists in the current directory or repo root.
+  > Ask the user before proceeding.
+  Then stop. Do not guess; ask the user.
 
 - **STATE=`sid-known-no-tagged-file`:** SID was known (from breadcrumb) but SID-tagged file is missing.
   Extract: `sid8=$(printf '%s' "$STATE_LINE" | sed -n 's/^STATE=//p' | jq -r '.sid8')`
