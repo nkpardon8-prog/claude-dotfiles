@@ -297,3 +297,10 @@ if [ -n "$_json" ]; then
 else
   printf 'STATE={"state":"error","reason":"jq-failed"}\n'
 fi
+
+# R4 D5: read-once consumption — delete own breadcrumb after successful adoption.
+# Subsequent /post-compact-resume invocations re-derive STATE from SID-tagged file alone.
+# Only delete if we adopted a breadcrumb AND resolved a handoff (STATE=ok path).
+if [ -n "$SENTINEL_SID" ] && [ -n "${ADOPTED_BREADCRUMB_PATH:-}" ]; then
+  rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true
+fi
