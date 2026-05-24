@@ -333,6 +333,8 @@ HANDOFF_AGE_HOURS=$((HANDOFF_AGE / 3600))
 [ -z "$HANDOFF_AGE_HOURS" ] && HANDOFF_AGE_HOURS=0
 
 # R4 D10: emit STATE as single-line JSON (handles workspace paths with spaces).
+# H4: emit step2_terminal log BEFORE STATE emission so audit trail precedes the signal.
+handoff_log "step2_terminal state=ok sid8=${SID8:-none} marker=${MARKER} nonce_ok=${NONCE_OK}"
 _json=$(jq -c -n \
   --arg state "ok" \
   --arg marker "$MARKER" \
