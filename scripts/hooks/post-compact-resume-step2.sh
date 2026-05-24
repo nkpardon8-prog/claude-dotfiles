@@ -113,6 +113,25 @@ for BREADCRUMB in $(ls -t "$HOME/.claude/progress/breadcrumb-"*.json 2>/dev/null
   SID8=$(jq -r '
     if ((.sid8 | type) == "string") and (.sid8 != "") then .sid8 else empty end' \
     "$BREADCRUMB" 2>/dev/null) || SID8=""
+  # C5 fix: regex-validate SID8 at primary breadcrumb-read path (was: only at claim-fallback).
+  # Reject any SID8 containing characters outside [A-Za-z0-9_-] to prevent path-traversal
+  # when SID8 is later interpolated into CLAUDE.local.<SID8>.md file paths.
+  # Double-underscore TTY separator (C1) uses _ which is in the safe set — no false rejects.
+  if [ -n "$SID8" ] && ! printf '%s' "$SID8" | grep -qE '^[A-Za-z0-9_-]+$'; then
+    ctx_gate_log "step2 skip reason=invalid-sid8 sid8=$SID8 path=$BREADCRUMB"
+    SENTINEL_SID=""
+    SID8=""
+    SENTINEL_NONCE=""
+    continue
+  fi
+  # Also validate full SENTINEL_SID for the same reason.
+  if [ -n "$SENTINEL_SID" ] && ! printf '%s' "$SENTINEL_SID" | grep -qE '^[A-Za-z0-9_-]+$'; then
+    ctx_gate_log "step2 skip reason=invalid-sentinel-sid sid=$SENTINEL_SID path=$BREADCRUMB"
+    SENTINEL_SID=""
+    SID8=""
+    SENTINEL_NONCE=""
+    continue
+  fi
   SENTINEL_NONCE=$(jq -r '
     if ((.nonce | type) == "string") and (.nonce != "") then .nonce else empty end' \
     "$BREADCRUMB" 2>/dev/null) || SENTINEL_NONCE=""
