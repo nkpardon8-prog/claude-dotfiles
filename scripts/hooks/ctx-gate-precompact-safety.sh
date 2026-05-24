@@ -7,11 +7,11 @@
 # Fires before native auto-compact would run.
 # If /pre-compact never ran (no sentinel) AND ctx is below the extreme-release threshold:
 #   BLOCK native auto-compact and inject reason directing /pre-compact.
-# If ctx ≥ HANDOFF_AUTOCOMPACT_BYPASS_PCT (75%): RELEASE — let native compact run as a degraded
+# If ctx ≥ HANDOFF_AUTOCOMPACT_BYPASS_PCT (90%): RELEASE — let native compact run as a degraded
 #   fallback. Handoff is lost, but this is preferable to a bricked session that can make
 #   no forward progress.
 #
-# Trade-off: blocking native auto-compact below HANDOFF_AUTOCOMPACT_BYPASS_PCT leaves
+# Trade-off: blocking native auto-compact below HANDOFF_AUTOCOMPACT_BYPASS_PCT (90%) leaves
 # the session at that level. But the alternative — letting native run with no handoff
 # — is exactly what the user said is unacceptable. Blocking gives the model one more
 # chance to invoke /pre-compact via the next-turn UserPromptSubmit FORCE nudge.
