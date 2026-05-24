@@ -49,10 +49,20 @@ SID8=""
 ADOPTED_BREADCRUMB_PATH=""
 CURRENT_CWD_CANON=$(cd -P "$(pwd)" 2>/dev/null && pwd -P || printf '%s' "$(pwd)")
 
-# C4 fix: install EXIT trap so breadcrumb cleanup fires on ALL exit paths (fail-closed
-# states previously skipped the end-of-script cleanup block). The trap is a no-op when
-# ADOPTED_BREADCRUMB_PATH is empty (no breadcrumb was adopted) or SENTINEL_SID is empty.
-trap '[ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true' EXIT
+# R3-fix-sweep C5: only delete breadcrumb when a terminal state semantically CONSUMES
+# the handoff decision.  Fail-closed states (sid-known-no-tagged-file, oversize,
+# invalid-handoff-name) preserve the breadcrumb so the user can remediate the problem
+# and retry /post-compact-resume without losing the SID → file association.
+#
+# _BREADCRUMB_CONSUMED is set to "yes" only at:
+#   STATE=ok                        — handoff successfully read; breadcrumb done its job
+#   STATE=nonce-mismatch-hard-stop  — definitively rejected; breadcrumb consumed
+#   STATE=sid-mismatch-hard-stop    — definitively rejected; breadcrumb consumed
+#
+# All other states (sid-known-no-tagged-file, oversize, invalid-handoff-name, no-handoff,
+# error) leave _BREADCRUMB_CONSUMED empty → trap is a no-op → breadcrumb preserved.
+_BREADCRUMB_CONSUMED=""
+trap '[ "$_BREADCRUMB_CONSUMED" = "yes" ] && [ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true' EXIT
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 
 # Glob over per-session breadcrumbs, newest first; pick the first that matches cwd + host.
