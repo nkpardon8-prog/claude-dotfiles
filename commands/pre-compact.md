@@ -489,7 +489,7 @@ Bash `printf >>` or `mv`** — allowlist-clean.
      the last 50 lines (bounds Read against 2000-line truncation on huge files).
    - In working memory: check if the read content contains
      `<!-- END-OF-HANDOFF schema=v1` OR `<!-- END-OF-HANDOFF -->`.
-   - If present: marker already there (likely a retry). SKIP the Edit; proceed to Step 8.
+   - If present: marker already there (likely a retry). SKIP the Edit; proceed to Step 7.
    - If absent: proceed to step 3.
 
 3. **Single Edit call to append marker:**
