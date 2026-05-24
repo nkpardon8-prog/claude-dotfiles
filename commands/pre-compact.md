@@ -449,6 +449,15 @@ background tasks (run_in_background agents, scheduled wakeups). Omit if none. --
 ## Open Issues
 - [Issue with file:line reference where possible]
 
+### Deliberately Skipped Tests
+- [test name/path] — [reason skipped this session — distinct from forgot]
+
+<!-- Omit section entirely if not applicable. -->
+## Deferred-for-Human Queue
+<!-- Items the orchestrator deliberately punted for human attention. Distinct from
+Open Issues (bugs) and Things To Fix Later (debt). HUMAN_GATE_QUEUE-style. -->
+- [item description] — [why deferred to human] — [link to relevant artifact]
+
 ## Gaps
 - [Missing tests, missing docs, unverified behavior, env vars not documented]
 
