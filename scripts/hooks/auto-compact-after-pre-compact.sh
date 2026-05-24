@@ -176,4 +176,37 @@ ac_log "stop sid=$SESSION_ID tty=$TARGET_TTY osa_exit=$OSA_EXIT result=${OSA_RES
 # B20: unified handoff audit trail — log compact chain event.
 handoff_log "compact_chained sid=${SESSION_ID:0:8} tty=$TARGET_TTY result=${OSA_RESULT:-unknown}"
 
+# R3 D2: Write per-session breadcrumb so /post-compact-resume can recover the SID + nonce
+# AFTER our EXIT trap removes the .claim file. Path is SID-scoped (PR-1) to avoid
+# parallel-session races. Hostname-tagged (PR-3) for iCloud cross-machine defense.
+# No mtime field in JSON (PR-12) — filesystem mtime is canonical.
+BREADCRUMB_DIR="$HOME/.claude/progress"
+SID8=$(printf '%s' "$SESSION_ID" | head -c 8)
+BREADCRUMB="$BREADCRUMB_DIR/breadcrumb-${SESSION_ID}.json"
+# Read sentinel fields from the claim before EXIT trap removes it.
+SENTINEL_NONCE=$(ac_read_sentinel_nonce "$CLAIM" 2>/dev/null || printf '')
+SENTINEL_CWD=$(ac_read_sentinel_cwd "$CLAIM" 2>/dev/null || printf '')
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+BREADCRUMB_TMP="${BREADCRUMB}.tmp.$$"
+mkdir -p "$BREADCRUMB_DIR" 2>/dev/null
+if jq -c -n \
+     --arg sid "$SESSION_ID" \
+     --arg sid8 "$SID8" \
+     --arg cwd "$SENTINEL_CWD" \
+     --arg nonce "$SENTINEL_NONCE" \
+     --arg host "$HOSTNAME_SHORT" \
+     '{sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+     > "$BREADCRUMB_TMP" 2>/dev/null; then
+  chmod 600 "$BREADCRUMB_TMP" 2>/dev/null
+  if mv "$BREADCRUMB_TMP" "$BREADCRUMB" 2>/dev/null; then
+    handoff_log "breadcrumb_written sid=${SID8} cwd=$SENTINEL_CWD host=$HOSTNAME_SHORT"
+  else
+    rm -f "$BREADCRUMB_TMP" 2>/dev/null
+    handoff_log "breadcrumb_write_failed sid=${SID8} reason=mv"
+  fi
+else
+  rm -f "$BREADCRUMB_TMP" 2>/dev/null
+  handoff_log "breadcrumb_write_failed sid=${SID8} reason=jq"
+fi
+
 exit 0
