@@ -41,16 +41,9 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 CWD_CANON=$(ac_canonicalize_path "$CWD") || CWD_CANON="$CWD"
 
 # Walk up to the git repo root (SessionStart cwd may be a subdirectory of the repo).
-# Look at cwd first, fall back to repo root.
+# Look at cwd first, fall back to repo root. (primer_resolve_handoff_path sets HANDOFF_PATH.)
 HANDOFF_PATH=""
-if [ -f "$CWD/CLAUDE.local.md" ]; then
-  HANDOFF_PATH="$CWD/CLAUDE.local.md"
-else
-  REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || printf '')
-  if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/CLAUDE.local.md" ]; then
-    HANDOFF_PATH="$REPO_ROOT/CLAUDE.local.md"
-  fi
-fi
+primer_resolve_handoff_path "$CWD"
 
 if [ -z "$HANDOFF_PATH" ]; then
   ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} action=skip reason=no-handoff-file"
