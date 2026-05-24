@@ -378,9 +378,51 @@ if [ -z "$SENTINEL_SID" ]; then
         # lib/auto-compact-sentinel.sh above) — preserves __ttysN discriminator.
         SID8=$(ac_compute_sid8 "$SENTINEL_SID")
         SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$CLAIM_FILE" 2>/dev/null) || SENTINEL_NONCE=""
+        # RQ-03 (R6 HZ-29/INV-15): if a session key exists for this SID8, the claim-file
+        # fallback is operating for a signed session. A claim-file has no signature field
+        # (it's a sentinel, not a breadcrumb), so we cannot cryptographically verify it.
+        # If the key file is present (signing was intended for this session) and we got
+        # here via claim-file (all signed breadcrumbs failed), this is suspicious — an
+        # attacker may have deleted breadcrumbs and left a claim-file for SID injection.
+        # Emit STATE=signature-mismatch to surface the anomaly.
+        if command -v session_key_path >/dev/null 2>&1; then
+          _claim_key_path=$(session_key_path "$SID8" 2>/dev/null) || _claim_key_path=""
+          if [ -n "$_claim_key_path" ] && [ -f "$_claim_key_path" ] && [ "$_SIG_MISMATCH_COUNT" -gt 0 ]; then
+            # Signed session + all breadcrumbs rejected + claim-file fallback = high suspicion
+            handoff_log "step2_terminal state=signature-mismatch sid8=${SID8} reason=claim-file-fallback-after-all-breadcrumbs-rejected"
+            _json=$(jq -c -n --arg sid8 "$SID8" \
+              '{"state":"signature-mismatch","sid8":$sid8,"reason":"all HMAC-signed breadcrumbs failed verification; claim-file fallback with key present is suspicious. If migrating from pre-R5, set HANDOFF_ACCEPT_UNSIGNED=1 once; otherwise re-run /pre-compact in a fresh session."}' 2>/dev/null)
+            if [ -n "$_json" ]; then
+              printf 'STATE=%s\n' "$_json"
+            else
+              printf 'STATE={"state":"signature-mismatch","sid8":"%s"}\n' "$SID8"
+            fi
+            exit 0
+          fi
+        fi
       fi
     fi
   fi
+fi
+
+# RQ-04 (R6 HZ-30/INV-15): if all breadcrumbs failed HMAC verification and no claim-file
+# fallback succeeded, emit STATE=signature-mismatch instead of STATE=no-handoff.
+# This surfaces the security signal to the operator rather than silently appearing as
+# "no handoff exists". The operator sees actionable prose to either migrate (HANDOFF_ACCEPT_UNSIGNED=1)
+# or investigate possible breadcrumb tampering.
+if [ -z "$SENTINEL_SID" ] && [ "$_SIG_MISMATCH_COUNT" -gt 0 ]; then
+  _own_sid8_for_mismatch=$(ac_compute_sid8 "$OWN_SID" 2>/dev/null) || _own_sid8_for_mismatch=$(printf '%s' "$OWN_SID" | head -c 8)
+  handoff_log "step2_terminal state=signature-mismatch sid8=${_own_sid8_for_mismatch} mismatch_count=${_SIG_MISMATCH_COUNT}"
+  _json=$(jq -c -n \
+    --arg sid8 "$_own_sid8_for_mismatch" \
+    --argjson count "$_SIG_MISMATCH_COUNT" \
+    '{"state":"signature-mismatch","sid8":$sid8,"mismatch_count":$count,"reason":"the breadcrumb HMAC signature does not match — file may have been tampered or session key was rotated. If migrating from pre-R5: set HANDOFF_ACCEPT_UNSIGNED=1 once; otherwise re-run /pre-compact in a fresh session."}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"signature-mismatch","sid8":"%s"}\n' "$_own_sid8_for_mismatch"
+  fi
+  exit 0
 fi
 
 # Resolve HANDOFF_PATH: SID-tagged first (when SID known), alias-only when SID unknown.
