@@ -209,6 +209,12 @@ The orchestrator reads the `STATE=...` output line and routes to the decision ma
 
 **Decision matrix (graceful fallback, no hard-stop):**
 
+- **STATE=oversize:** output to user:
+  > Handoff file is ${HANDOFF_SIZE} bytes, exceeding the ${HANDOFF_MAX_SIZE_BYTES:-5242880} byte cap.
+  > Refusing to ingest. Ask the user what was being worked on before resuming.
+
+  Then stop. Do not attempt to read the file.
+
 - **NONCE_OK=mismatch (advisory only):** emit a warning before reading: "Marker nonce does not match consumed sentinel nonce. The handoff may be from a different session or a copy from another workspace. Proceeding anyway — verify content context manually." Then continue per MARKER/STALE matrix below.
 
 - **MARKER=present AND STALE=false:** read full file, navigate normally per Steps 3-4.
