@@ -286,6 +286,8 @@ if [ -n "$MARKER_SID" ] && [ -n "$SID8" ] && [ "$MARKER_SID" != "$SID8" ]; then
     printf 'STATE={"state":"sid-mismatch-hard-stop","sentinel_sid8":"%s","marker_sid8":"%s"}\n' "$SID8" "$MARKER_SID"
   fi
   handoff_log "sid_mismatch_hard_stop sentinel_sid8=$SID8 marker_sid8=$MARKER_SID"
+  # H4: emit step2_terminal log so operators can reconstruct terminal state audit trail.
+  handoff_log "step2_terminal state=sid-mismatch-hard-stop sid8=${SID8}"
   exit 0
 fi
 
