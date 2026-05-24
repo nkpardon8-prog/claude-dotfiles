@@ -345,7 +345,7 @@ One `Write` call covering every section. Floor depends on the mining pass chosen
 
 If you can't reach the floor, you under-mined in Step 3 — go back to Step 3.C and extract more before writing.
 
-**Resolve REPO_ROOT first** (used throughout Steps 6-8 — must be defined before HANDOFF_PRIMARY/HANDOFF_ALIAS):
+**Resolve REPO_ROOT first** (used throughout Steps 6-8 — must be defined before HANDOFF_PRIMARY):
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
