@@ -61,7 +61,9 @@ SENTINEL=$(ac_sentinel_path "$SESSION_ID")
 # only routine cleanup path because most Stop events skip the sentinel-consume
 # path (`[ -f "$SENTINEL" ] || exit 0` below is the typical fast-path). Putting
 # GC here ensures it actually runs.
-find "$HOME/.claude/progress" -maxdepth 1 -type f -name 'auto-compact-*.json.claim.*' -mmin +60 -delete 2>/dev/null || true
+find "$HOME/.claude/progress" -maxdepth 1 -type f \
+  \( -name 'auto-compact-*.json.claim.*' -o -name 'breadcrumb-*.json' \) \
+  -mmin +60 -delete 2>/dev/null || true
 
 [ -f "$SENTINEL" ] || exit 0
 
