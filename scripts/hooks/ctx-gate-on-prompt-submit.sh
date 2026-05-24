@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # ctx-gate-on-prompt-submit.sh — UserPromptSubmit hook: three-tier context nudge.
 #
+# Execution context: this is a Claude Code UserPromptSubmit hook script.
+# It runs as a direct subprocess of Claude Code, NOT through the orchestrator Bash tool.
+#
 # Threshold model (R2 redesign — N4 locked decision):
 #   <50%  → silent (no output)
 #   50-74% → SOFT nudge (consider /pre-compact at next natural seam)
