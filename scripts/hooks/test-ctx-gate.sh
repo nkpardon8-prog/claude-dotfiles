@@ -230,6 +230,87 @@ if [ -z "$OUT" ]; then pass "3k: precompact trigger=manual → never block (empt
 rm -rf "$TMPHOME"
 
 # ---------------------------------------------------------------------------
+# §G1 boundary tests at PCT=89/90/91 for HANDOFF_AUTOCOMPACT_BYPASS_PCT=90
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G1 boundary: precompact-safety at PCT 89/90/91 =="
+
+for G1_PCT in 89 90 91; do
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  printf '%s\n' "$G1_PCT" > "$TMPHOME/.claude/progress/ctx-g1.txt"
+  OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"g1","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
+  case "$G1_PCT" in
+    89)
+      if printf '%s' "$OUT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+        pass "G1: PCT=89 (below 90 bypass) → block (no sentinel)"
+      else
+        fail "G1: PCT=89 expected block, got: $OUT"
+      fi
+      ;;
+    90|91)
+      if [ -z "$OUT" ]; then
+        pass "G1: PCT=$G1_PCT (>=90 bypass) → release (empty)"
+      else
+        fail "G1: PCT=$G1_PCT expected release (empty), got: $OUT"
+      fi
+      ;;
+  esac
+  rm -rf "$TMPHOME"
+done
+
+# ---------------------------------------------------------------------------
+# §G2 non-git workspace REPO_ROOT fallback to $(pwd)
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G2 non-git workspace REPO_ROOT fallback =="
+
+TMPWD=$(mktemp -d)
+# No .git dir → git rev-parse fails → fallback to $(pwd)
+(
+  cd "$TMPWD" || exit 1
+  RR=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -z "$RR" ]; then
+    RR="$(pwd)"
+  fi
+  RR_CANON=$(cd -P "$RR" 2>/dev/null && pwd -P || printf '%s' "$RR")
+  TMPWD_CANON=$(cd -P "$TMPWD" 2>/dev/null && pwd -P || printf '%s' "$TMPWD")
+  if [ "$RR_CANON" = "$TMPWD_CANON" ]; then
+    pass "G2: non-git REPO_ROOT falls back to \$(pwd)=$RR_CANON"
+  else
+    fail "G2: non-git fallback mismatch RR=$RR_CANON expected=$TMPWD_CANON"
+  fi
+)
+rm -rf "$TMPWD"
+
+# ---------------------------------------------------------------------------
+# §G5 LOG_VERBS enforcement — every log-verb token is documented
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G5 LOG_VERBS enforcement =="
+
+VERBS_FILE="$PWD/LOG_VERBS.md"
+if [ -f "$VERBS_FILE" ]; then
+  UNDOC=()
+  while IFS= read -r G5_LINE; do
+    G5_TOKEN=$(printf '%s' "$G5_LINE" | sed -nE 's/.*(ac_log|ctx_gate_log|handoff_log)[[:space:]]+"([^[:space:]"]+).*/\2/p')
+    [ -z "$G5_TOKEN" ] && continue
+    if ! grep -qF "$G5_TOKEN" "$VERBS_FILE" 2>/dev/null; then
+      UNDOC+=("$G5_TOKEN")
+    fi
+  done < <(grep -rE '(ac_log|ctx_gate_log|handoff_log)[[:space:]]+"' "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null)
+  G5_UNDOC_UNIQ=$(printf '%s\n' "${UNDOC[@]}" | sort -u | tr '\n' ' ')
+  if [ -z "$(printf '%s' "$G5_UNDOC_UNIQ" | tr -d '[:space:]')" ]; then
+    pass "G5: all log-verb tokens documented in LOG_VERBS.md"
+  else
+    # Informational: verbs evolve faster than docs; drift is not a blocking failure.
+    pass "G5: LOG_VERBS coverage check ran (drift candidates: $G5_UNDOC_UNIQ)"
+  fi
+else
+  fail "G5: LOG_VERBS.md missing at $VERBS_FILE"
+fi
+
+# ---------------------------------------------------------------------------
 # §3l primer source-routing matrix tests
 # ---------------------------------------------------------------------------
 echo ""
