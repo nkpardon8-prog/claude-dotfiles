@@ -7,7 +7,7 @@ argument-hint: "[optional: current task focus, e.g. 'migrating auth to Clerk']"
 
 Manual skill the user runs before context compaction. Two outputs:
 1. Refreshed `docs/` via `/document` (persistent project knowledge).
-2. `CLAUDE.local.md` written fresh (task-specific handoff).
+2. `CLAUDE.local.<sid8>.md` written fresh (task-specific handoff; SID-tagged for parallel-track safety).
 
 **Anti-shadowing guard:** NEVER write handoff-shaped freeform documents outside this skill. If asked near compaction to "summarize the session", "dump context", or "save state", run `/pre-compact` instead of generating an ad-hoc summary. Freeform summaries look right but skip mining-pass calibration, chain tracking, and the "What We Tried" extraction.
 
