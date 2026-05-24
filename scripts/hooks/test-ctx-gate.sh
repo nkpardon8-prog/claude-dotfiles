@@ -823,20 +823,26 @@ fi
 rm -rf "$TMPHOME"
 
 # ---------------------------------------------------------------------------
-# §C5 primer-marker-absent-at-byte-600: marker in first 1000 bytes, NOT last 512
+# §C5 primer-whole-file-scan: marker anywhere in file is detected (whole-file grep)
+#
+# Phase 1 (Round 4): handoff_marker_check was updated from tail -c 512 to
+# whole-file grep. This test validates that a marker placed BEFORE the last
+# 512 bytes of the file is now correctly found (previously it was missed,
+# causing a spurious TRUNCATED warning). The old tail-512 window is gone.
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §C5 primer-marker-absent-at-byte-600 =="
+echo "== §C5 primer-whole-file-scan: marker before last 512 bytes is detected =="
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
 # Build a file where END-OF-HANDOFF marker is near byte 600, then padded to ~1500 bytes.
-# tail -c 512 will NOT include the marker → primer should emit TRUNCATED warning.
+# Phase 1: whole-file grep now FINDS the marker even though it's not in the last 512 bytes.
+# The primer should detect the marker and emit a POST-COMPACT nav (not TRUNCATED warning).
 {
   # ~600 bytes of content then the legacy marker, then 900 bytes of padding
   printf '# Handoff\n\n## Active Skill State\nDetected: /plan\n\n## Next Action\nRun review.\n\n'
   printf '<!-- END-OF-HANDOFF -->\n'
   # Pad with 900 bytes of additional content so the total is ~1500 bytes
-  # and the marker is well outside the final 512 bytes
+  # and the marker is well outside the final 512 bytes (tests whole-file scan)
   printf '## Section After Marker\n'
   python3 -c "print('x' * 900)" 2>/dev/null || printf '%0900d' 0 | tr '0' 'x'
   printf '\n'
@@ -845,10 +851,11 @@ FILE_SIZE=$(wc -c < "$TMPHOME/repo/CLAUDE.local.md" 2>/dev/null | tr -d '[:space
 LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
 JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("TRUNCATED")' >/dev/null 2>&1; then
-  pass "C5: primer emits TRUNCATED when marker is NOT in last 512 bytes (file=${FILE_SIZE}b, marker at ~600b)"
+# Whole-file scan finds the marker → primer emits POST-COMPACT nav (not TRUNCATED).
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("POST-COMPACT")' >/dev/null 2>&1; then
+  pass "C5: whole-file-scan finds marker before last 512 bytes (file=${FILE_SIZE}b) — primer emits POST-COMPACT nav"
 else
-  fail "C5: primer-marker-at-byte-600" "expected TRUNCATED warning, got: $OUT"
+  fail "C5: primer-whole-file-scan" "expected POST-COMPACT (marker found by whole-file grep), got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
