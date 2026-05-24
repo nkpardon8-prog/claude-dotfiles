@@ -72,6 +72,38 @@ HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 # (possibly empty). Empty OWN_SID → legacy-fallback mode (adopts newest matching breadcrumb).
 OWN_SID=$(ac_resolve_session_id 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128) || OWN_SID=""
 
+# Phase 3 (Round 4): Stop-hook-refused signal detection.
+# When the Stop hook H4 fail-closes (both sentinels disagree), it writes a breadcrumb
+# with originating_command=stop-hook-fail-closed for this session's SID. Detect that file
+# BEFORE the normal breadcrumb scan so the user gets an actionable STATE immediately.
+# Only check when OWN_SID is known (otherwise we don't know which SID to look for).
+if [ -n "$OWN_SID" ]; then
+  _refused_bc="$HOME/.claude/progress/breadcrumb-${OWN_SID}.json"
+  if [ -f "$_refused_bc" ] && [ -O "$_refused_bc" ]; then
+    _refused_cmd=$(jq -r '
+      if ((.originating_command // "") == "stop-hook-fail-closed")
+      then .originating_command else empty end' "$_refused_bc" 2>/dev/null) || _refused_cmd=""
+    if [ "$_refused_cmd" = "stop-hook-fail-closed" ]; then
+      _refused_next=$(jq -r '.next_steps // empty' "$_refused_bc" 2>/dev/null) || _refused_next=""
+      _refused_real=$(jq -r '.real_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_real=""
+      _refused_resolved=$(jq -r '.resolved_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_resolved=""
+      handoff_log "step2_terminal state=stop-hook-refused sid8=$(printf '%s' "$OWN_SID" | head -c 8)"
+      _json=$(jq -c -n \
+        --arg sid8 "$(printf '%s' "$OWN_SID" | head -c 8)" \
+        --arg real_sid "$_refused_real" \
+        --arg resolved_sid "$_refused_resolved" \
+        --arg next_steps "$_refused_next" \
+        '{"state":"stop-hook-refused","sid8":$sid8,"real_sid":$real_sid,"resolved_sid":$resolved_sid,"next_steps":$next_steps}' 2>/dev/null)
+      if [ -n "$_json" ]; then
+        printf 'STATE=%s\n' "$_json"
+      else
+        printf 'STATE={"state":"stop-hook-refused","sid8":"%s"}\n' "$(printf '%s' "$OWN_SID" | head -c 8)"
+      fi
+      exit 0
+    fi
+  fi
+fi
+
 # Glob over per-session breadcrumbs, newest first; pick the first that matches cwd + host.
 # H3 (Theme 5): use nullglob + mtime-array iteration instead of $(ls -t ...) to handle
 # $HOME with spaces and avoid word-splitting / ls-parse pitfalls (bash 3.2 compatible).
