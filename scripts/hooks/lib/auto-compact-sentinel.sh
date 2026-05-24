@@ -126,12 +126,8 @@ ac_resolve_session_id() {
     # Only fold when (a) CLAUDE_SESSION_ID was unset (we are in fallback mode)
     # AND (b) a transcript SID was found AND (c) the TTY resolves cleanly.
     if [ -n "$transcript_sid" ]; then
-      tty_base=$(_ac_resolve_tty_basename_via_ppid 2>/dev/null) || tty_base=""
-      if [ -n "$tty_base" ]; then
-        sid="${transcript_sid}__${tty_base}"
-      else
-        sid="$transcript_sid"
-      fi
+      # REGRESSION-TEST-ONLY: TTY-keying temporarily removed
+      sid="$transcript_sid"
     fi
   fi
   printf '%s' "$sid" | tr -cd 'A-Za-z0-9_-' | head -c 128
