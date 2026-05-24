@@ -1075,8 +1075,8 @@ TMPHOME_F=$(mktemp -d)
 mkdir -p "$TMPHOME_F/.claude/progress" && chmod 700 "$TMPHOME_F/.claude/progress"
 GF_SID="g4f-mismatch-$$"
 GF_SID8="${GF_SID:0:8}"
-GF_NONCE_X="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-GF_NONCE_Y="yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+GF_NONCE_X="aaaaaaaa-1111-2222-3333-444444444444"
+GF_NONCE_Y="bbbbbbbb-5555-6666-7777-888888888888"
 GF_CWD=$(cd -P "$TMPWD_F" 2>/dev/null && pwd -P)
 GF_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 # Breadcrumb carries nonce-X
