@@ -163,5 +163,7 @@ else
   OSA_STDERR=""
 fi
 ac_log "stop sid=$SESSION_ID tty=$TARGET_TTY osa_exit=$OSA_EXIT result=${OSA_RESULT:-empty} stderr=${OSA_STDERR:-none}"
+# B20: unified handoff audit trail — log compact chain event.
+handoff_log "compact_chained sid=${SESSION_ID:0:8} tty=$TARGET_TTY result=${OSA_RESULT:-unknown}"
 
 exit 0
