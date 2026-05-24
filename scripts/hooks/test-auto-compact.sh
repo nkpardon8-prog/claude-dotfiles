@@ -569,6 +569,41 @@ else
 fi
 rm -f "$G6_SP"
 
+echo "== §R6-RQ09 session_key_sign openssl exit-status check =="
+# RQ-09 (R6 HZ-35): session_key_sign must return rc=1 and emit nothing when openssl fails.
+# Test uses PATH manipulation: prepend a directory with a fake 'openssl' that exits 1.
+# Before the fix, the pipe 'openssl | sed' masked openssl's rc=1 → sign returned rc=0 + empty output.
+if command -v session_key_sign >/dev/null 2>&1; then
+  RQ09_HOME=$(mktemp -d)
+  RQ09_FAKE_BIN=$(mktemp -d)
+  mkdir -p "$RQ09_HOME/.claude/progress" && chmod 700 "$RQ09_HOME/.claude/progress"
+  # Create fake openssl that exits 1 with no output
+  printf '#!/bin/sh\nexit 1\n' > "$RQ09_FAKE_BIN/openssl"
+  chmod +x "$RQ09_FAKE_BIN/openssl"
+  # Generate a real key (using real openssl via actual PATH before we replace it)
+  OLD_HOME_RQ09="$HOME"
+  HOME="$RQ09_HOME"
+  session_key_generate "rq09test" 2>/dev/null
+  # Now invoke sign with fake openssl prepended in PATH
+  RQ09_SIG=$(PATH="$RQ09_FAKE_BIN:$PATH" HOME="$RQ09_HOME" session_key_sign \
+    "rq09test" "sid-val" "nonce-val" "nonce-val" "/tmp" "testhost" "pre-compact" 2>/dev/null)
+  RQ09_RC=$?
+  HOME="$OLD_HOME_RQ09"
+  if [ "$RQ09_RC" -ne 0 ]; then
+    check "R6-RQ09: session_key_sign returns non-zero when openssl fails (rc=$RQ09_RC)" 1 1
+  else
+    check "R6-RQ09: session_key_sign returned rc=0 despite openssl failure (PIPE MASK BUG)" 1 0
+  fi
+  if [ -z "$RQ09_SIG" ]; then
+    check "R6-RQ09: session_key_sign emits empty stdout when openssl fails" 1 1
+  else
+    check "R6-RQ09: session_key_sign emitted non-empty output on openssl failure (got '$RQ09_SIG')" 1 0
+  fi
+  rm -rf "$RQ09_HOME" "$RQ09_FAKE_BIN"
+else
+  check "R6-RQ09: session_key_sign not available — skipped" 1 1
+fi
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
