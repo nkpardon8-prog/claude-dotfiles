@@ -47,6 +47,31 @@ if [ -z "$HANDOFF_PATH" ]; then
   exit 0
 fi
 
+# Symlink guard — reject symlinks to prevent path-traversal attacks.
+if [ -L "$HANDOFF_PATH" ]; then
+  ac_log "primer action=skip reason=handoff-is-symlink path=$HANDOFF_PATH"
+  ctx_gate_log "primer sid=${SID:-unknown} action=skip reason=handoff-is-symlink"
+  exit 0
+fi
+
+# B5: size cap — reject handoffs larger than HANDOFF_MAX_SIZE_BYTES (default 5MB).
+# Defense against pathological file growth that could cause memory pressure or OOM.
+HANDOFF_SIZE=0
+if HANDOFF_SIZE=$(stat -f %z "$HANDOFF_PATH" 2>/dev/null); then
+  :
+elif HANDOFF_SIZE=$(stat -c %s "$HANDOFF_PATH" 2>/dev/null); then
+  :
+else
+  HANDOFF_SIZE=0
+fi
+HANDOFF_SIZE=$(printf '%s' "$HANDOFF_SIZE" | tr -d '[:space:]')
+[ -z "$HANDOFF_SIZE" ] && HANDOFF_SIZE=0
+if [ "$HANDOFF_SIZE" -gt "${HANDOFF_MAX_SIZE_BYTES:-5242880}" ]; then
+  ac_log "primer action=skip reason=handoff-oversize size=$HANDOFF_SIZE limit=${HANDOFF_MAX_SIZE_BYTES:-5242880} path=$HANDOFF_PATH"
+  ctx_gate_log "primer sid=${SID:-unknown} action=skip reason=handoff-oversize size=$HANDOFF_SIZE"
+  exit 0
+fi
+
 # Read mtime ONCE (used by both freshness checks). B2 fix: explicit if-elif for stat
 # (no || chaining — macOS BSD stat short-circuits on success, piped tr gets input from
 # the SAME stat output; || chain produces wrong result if BSD stat succeeds but GNU stat
