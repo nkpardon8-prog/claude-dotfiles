@@ -13,19 +13,31 @@
 
 set -uo pipefail
 
-# Source libs for thresholds — use $HOME not ~ for reliable expansion.
+# Resolve script directory for relative lib sourcing (works regardless of cwd or HOME).
+# D9: script lives at hooks/post-compact-resume-step2.sh; libs live at hooks/lib/.
+_STEP2_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _STEP2_DIR=""
+
+# Source libs via script-relative path first; $HOME-absolute fallback for edge cases.
 # Fail-open if lib missing (use defaults).
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh" 2>/dev/null
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-config.sh" 2>/dev/null
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
-# H1: source marker lib so we delegate to handoff_marker_check / handoff_marker_nonce
-# instead of inlining grep/sed (eliminates drift if canonical marker strings change).
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-marker.sh" 2>/dev/null
-# R4 H10 (Phase 3 task 3.5): source canonical resolver.
-# handoff_resolve_path and _primer_check_linkcount are defined here (R2-PR-6 BLOCKER fix:
-# _primer_check_linkcount lives in handoff-resolve.sh, not primer-helpers, to prevent
-# step2.sh from calling an undefined function — silent fail-closed on every valid handoff).
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-resolve.sh" 2>/dev/null
+if [ -n "$_STEP2_DIR" ]; then
+  . "$_STEP2_DIR/lib/ctx-gate-config.sh" 2>/dev/null || . "$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh" 2>/dev/null
+  . "$_STEP2_DIR/lib/handoff-config.sh" 2>/dev/null || . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-config.sh" 2>/dev/null
+  . "$_STEP2_DIR/lib/auto-compact-sentinel.sh" 2>/dev/null || . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
+  # H1: source marker lib so we delegate to handoff_marker_check / handoff_marker_nonce
+  # instead of inlining grep/sed (eliminates drift if canonical marker strings change).
+  . "$_STEP2_DIR/lib/handoff-marker.sh" 2>/dev/null || . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-marker.sh" 2>/dev/null
+  # R4 H10 (Phase 3 task 3.5): source canonical resolver.
+  # handoff_resolve_path and _primer_check_linkcount are defined here (R2-PR-6 BLOCKER fix:
+  # _primer_check_linkcount lives in handoff-resolve.sh, not primer-helpers, to prevent
+  # step2.sh from calling an undefined function — silent fail-closed on every valid handoff).
+  . "$_STEP2_DIR/lib/handoff-resolve.sh" 2>/dev/null || . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-resolve.sh" 2>/dev/null
+else
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh" 2>/dev/null
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-config.sh" 2>/dev/null
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-marker.sh" 2>/dev/null
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-resolve.sh" 2>/dev/null
+fi
 
 # R3 D2: Per-session breadcrumb written by Stop hook (decoupled from .claim file
 # lifecycle which the Stop hook EXIT trap removes). Read the most-recent breadcrumb
