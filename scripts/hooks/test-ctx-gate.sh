@@ -1385,7 +1385,8 @@ chmod 600 "$TMPHOME_H/.claude/progress/breadcrumb-${GH_SID}.json"
 # SID-tagged file ABSENT. Alias PRESENT (must be ignored per D3 fail-closed).
 printf 'alias content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GH_SID8" "$GH_NONCE" > "$TMPWD_H/CLAUDE.local.md"
-OUT_H=$(cd "$TMPWD_H" && HOME="$TMPHOME_H" bash "$STEP2_SH" 2>/dev/null)
+# R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GH_SID.
+OUT_H=$(cd "$TMPWD_H" && CLAUDE_SESSION_ID="$GH_SID" HOME="$TMPHOME_H" bash "$STEP2_SH" 2>/dev/null)
 GH_STATE=$(printf '%s' "$OUT_H" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GH_STATE" = "sid-known-no-tagged-file" ]; then
   pass "G4-H: SID known but no SID-tagged file → state=sid-known-no-tagged-file (NOT alias content)"
