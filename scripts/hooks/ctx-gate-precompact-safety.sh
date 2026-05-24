@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # ctx-gate-precompact-safety.sh — PreCompact hook (matcher: "auto"): last-resort safety net.
 #
+# Execution context: this is a Claude Code PreCompact hook script.
+# It runs as a direct subprocess of Claude Code, NOT through the orchestrator Bash tool.
+#
 # Fires before native auto-compact would run.
 # If /pre-compact never ran (no sentinel) AND ctx is below the extreme-release threshold:
 #   BLOCK native auto-compact and inject reason directing /pre-compact.
