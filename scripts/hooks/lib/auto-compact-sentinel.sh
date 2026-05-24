@@ -13,7 +13,8 @@ _AC_LIB_LOADED=1
 #   ac_log_path                               → echoes ~/.claude/logs/auto-compact.log
 #   ac_log <message>                          → append timestamped line to log; bounded ring (keep last 64K)
 #   handoff_log <message>                     → delegate to ac_log with handoff: prefix
-#   ac_resolve_session_id                     → echoes the current Claude Code session id (or empty)
+#   ac_resolve_session_id                     → echoes the current Claude Code session id (or empty); folds TTY basename into slug-fallback SID when CLAUDE_SESSION_ID unset (C1)
+#   _ac_resolve_tty_basename_via_ppid         → echoes TTY basename (e.g. ttys012) via PPID-walk; empty on failure
 #   ac_validate_tty <tty>                     → returns 0 if matches /dev/ttys[0-9]+, else 1
 #   ac_canonicalize_path <path>               → echoes realpath via cd -P; returns 1 on failure
 #   _ac_validate_sentinel_path <path>         → shared preamble: symlink/size guard; returns 0 if OK
