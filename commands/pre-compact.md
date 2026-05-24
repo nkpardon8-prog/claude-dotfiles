@@ -522,9 +522,9 @@ SID-tagged primary). It was removed in R4 (D1 alias-kill + D2 @import-kill) beca
 alias was the root cause of parallel-track contamination: multiple concurrent sessions would
 clobber each other's alias on every /pre-compact arm. The SID-tagged file is now the ONLY
 persistence mechanism. Users who relied on the alias path should update to reference
-`CLAUDE.local.<sid8>.md` directly. Migration note: if your project CLAUDE.md contains
-`@CLAUDE.local.md`, remove that line — the primer now injects the handoff content at
-SessionStart via the SID-tagged file, which does not require an alias.
+`CLAUDE.local.<sid8>.md` directly. Migration note: if your project CLAUDE.md contains an `@import` directive pointing to
+`CLAUDE.local.md` (the legacy alias), remove that line — the primer now injects the
+handoff content at SessionStart via the SID-tagged file, which does not require an alias.
 
 ## Step 8: .gitignore handling
 
