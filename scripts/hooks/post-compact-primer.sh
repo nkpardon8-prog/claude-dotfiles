@@ -74,14 +74,13 @@ if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$HANDOFF_LEGACY_CUTOFF_EPO
 fi
 
 # END-OF-HANDOFF marker check (Decision D).
-# R4 #B1 clarification: `tail | grep` pipe is CORRECT here. This is post-compact-primer.sh
-# running as a standalone shell script under the SessionStart hook (subprocess invocation),
-# NOT a Bash tool call by the orchestrator. The ctx-gate compound-command deny-class only
-# applies to orchestrator Bash-tool calls (gated via PreToolUse hook). Hook scripts running
-# their own bash are not gated. Do NOT "fix" this pipe — it works as-is.
-MARKER='<!-- END-OF-HANDOFF -->'
+# Match both new form (schema=v1 sid=... nonce=...) and legacy form (--).
+# Hook scripts run as subprocess — pipe is fine here (not subject to orchestrator restrictions).
+MARKER_NEW='<!-- END-OF-HANDOFF schema=v1'
+MARKER_LEGACY='<!-- END-OF-HANDOFF -->'
 MARKER_PRESENT="true"
-if ! tail -c 512 "$HANDOFF_PATH" 2>/dev/null | grep -qF "$MARKER"; then
+TAIL_BUF=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null)
+if ! { printf '%s' "$TAIL_BUF" | grep -qF "$MARKER_NEW" || printf '%s' "$TAIL_BUF" | grep -qF "$MARKER_LEGACY"; }; then
   MARKER_PRESENT="false"
 fi
 
