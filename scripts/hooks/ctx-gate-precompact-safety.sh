@@ -8,10 +8,10 @@
 #   fallback. Handoff is lost, but this is preferable to a bricked session that can make
 #   no forward progress.
 #
-# Trade-off: blocking native auto-compact when context is at 90-94% leaves the session at
-# that level. But the alternative — letting native run with no handoff — is exactly what
-# the user said is unacceptable. Blocking gives the model one more chance to invoke
-# /pre-compact via the next-turn hard gate.
+# Trade-off: blocking native auto-compact below HANDOFF_PRECOMPACT_RELEASE_PCT leaves
+# the session at that level. But the alternative — letting native run with no handoff
+# — is exactly what the user said is unacceptable. Blocking gives the model one more
+# chance to invoke /pre-compact via the next-turn UserPromptSubmit FORCE nudge.
 #
 # Only fires when trigger is "auto" — manual /compact (user explicit) is NEVER blocked.
 # Fail-open on any error (exits 0, no block output) so a buggy gate never bricks the session.
