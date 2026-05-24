@@ -278,12 +278,14 @@ else
 fi
 
 # Step 8: SessionStart compact with CLAUDE.local.md present in cwd → primer fires
+# R3 #3: synthetic CLAUDE.local.md includes END-OF-HANDOFF marker so the updated
+# primer (Task 2.1) tests the happy path cleanly (no TRUNCATED warning).
 REPO_DIR="$TMPHOME/repo"
-mkdir -p "$REPO_DIR" && printf '# handoff\n' > "$REPO_DIR/CLAUDE.local.md"
+mkdir -p "$REPO_DIR" && printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$REPO_DIR/CLAUDE.local.md"
 JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$REPO_DIR\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("POST-COMPACT")' >/dev/null 2>&1; then
-  pass "§2.5 step 8: primer fires with CLAUDE.local.md present"
+  pass "§2.5 step 8: primer fires with CLAUDE.local.md present (with marker)"
 else
   fail "§2.5 step 8: primer fires" "primer didn't fire, got: $OUT"
 fi
