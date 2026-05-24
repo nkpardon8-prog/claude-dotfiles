@@ -175,8 +175,9 @@ if [ -z "$SENTINEL_SID" ]; then
     if printf '%s' "$CLAIM_SID_RAW" | grep -qE '^[A-Za-z0-9_-]+$'; then
       SENTINEL_SID="$CLAIM_SID_RAW"
       if [ -n "$SENTINEL_SID" ]; then
-        SID8=$(printf '%s' "$SENTINEL_SID" | head -c 8)
-        [ -z "$SID8" ] && SID8="$SENTINEL_SID"
+        # R3-fix-sweep C2: use TTY-aware ac_compute_sid8 (sourced from
+        # lib/auto-compact-sentinel.sh above) — preserves __ttysN discriminator.
+        SID8=$(ac_compute_sid8 "$SENTINEL_SID")
         SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$CLAIM_FILE" 2>/dev/null) || SENTINEL_NONCE=""
       fi
     fi
