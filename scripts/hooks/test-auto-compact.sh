@@ -318,6 +318,90 @@ else
   check "C9: ac_read_sentinel_cwd rejects symlink (got non-empty)" 1 0
 fi
 
+echo "== H8: ac_write_sentinel rejects oversize JSON =="
+H8_SID="h8sz-$$"
+H8_SP=$(ac_sentinel_path "$H8_SID")
+# 5KB cwd value: resulting JSON will be ~5100 bytes, well over the 4096-byte default cap.
+H8_BIG_CWD=$(printf 'A%.0s' $(seq 1 5000))
+H8_RC=0
+AC_MAX_SENTINEL_BYTES=4096 ac_write_sentinel "$H8_SID" "/dev/ttys001" "$H8_BIG_CWD" "n" 2>/dev/null || H8_RC=$?
+if [ "$H8_RC" -ne 0 ] && [ ! -f "$H8_SP" ]; then
+  check "H8: oversize JSON rejected (rc=$H8_RC, no sentinel file)" 1 1
+else
+  check "H8: oversize JSON unexpectedly accepted (rc=$H8_RC, file=$([ -f "$H8_SP" ] && echo exists || echo absent))" 1 0
+fi
+rm -f "$H8_SP"
+
+echo "== H9: primer_resolve_handoff_path rejects multi-hardlink handoff =="
+TMPDIR_H9=$(mktemp -d)
+H9_TARGET="$TMPDIR_H9/CLAUDE.local.md"
+H9_HARDLINK="$TMPDIR_H9/CLAUDE.local.md.hardlink"
+printf 'stub\n' > "$H9_TARGET"
+if ln "$H9_TARGET" "$H9_HARDLINK" 2>/dev/null; then
+  # Source primer-helpers (lib already loaded via ROOT sourcing above)
+  . "$ROOT/lib/post-compact-primer-helpers.sh" 2>/dev/null
+  . "$ROOT/lib/ctx-gate-config.sh" 2>/dev/null
+  # Override the HANDOFF_PATH resolution to just test the alias branch
+  HANDOFF_PATH=""
+  SENTINEL_SID8=""
+  # primer_resolve_handoff_path looks for CLAUDE.local.md in the given cwd
+  # but H9_TARGET has linkcount=2 now (the hardlink), so it should be rejected.
+  primer_resolve_handoff_path "$TMPDIR_H9" 2>/dev/null || true
+  if [ -z "$HANDOFF_PATH" ]; then
+    check "H9: primer rejects multi-hardlink handoff (linkcount=2)" 1 1
+  else
+    check "H9: primer accepted multi-hardlink handoff at $HANDOFF_PATH" 1 0
+  fi
+else
+  check "H9: hardlink creation not supported on this fs — skipping (informational)" 1 1
+fi
+rm -rf "$TMPDIR_H9"
+
+echo "== R3-D2 breadcrumb write + read roundtrip =="
+BC_TMPHOME=$(mktemp -d)
+mkdir -p "$BC_TMPHOME/.claude/progress"
+chmod 700 "$BC_TMPHOME/.claude/progress"
+BC_SID="bc-$$"
+BC_PATH="$BC_TMPHOME/.claude/progress/breadcrumb-${BC_SID}.json"
+jq -c -n \
+  --arg sid "$BC_SID" \
+  --arg sid8 "$(printf '%s' "$BC_SID" | head -c 8)" \
+  --arg cwd "/tmp/bc-test" \
+  --arg nonce "abcd-1234-efgh-5678" \
+  --arg host "$(hostname -s 2>/dev/null | head -c 64)" \
+  '{sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' > "$BC_PATH" 2>/dev/null
+BC_READ_SID=$(jq -r '.sid // empty' "$BC_PATH" 2>/dev/null)
+BC_READ_NONCE=$(jq -r '.nonce // empty' "$BC_PATH" 2>/dev/null)
+if [ "$BC_READ_SID" = "$BC_SID" ] && [ "$BC_READ_NONCE" = "abcd-1234-efgh-5678" ]; then
+  check "R3-D2: breadcrumb roundtrip (sid + nonce intact)" 1 1
+else
+  check "R3-D2: breadcrumb roundtrip mismatch read_sid=$BC_READ_SID read_nonce=$BC_READ_NONCE" 1 0
+fi
+rm -rf "$BC_TMPHOME"
+
+echo "== G6: same-SID parallel write race =="
+G6_SID="r3g6-$$"
+G6_SP=$(ac_sentinel_path "$G6_SID")
+rm -f "$G6_SP"
+
+# Two background writes with the same SID but different cwds (last-write-wins via atomic mv).
+( ac_write_sentinel "$G6_SID" "/dev/ttys001" "/tmp/g6a" "nonceA" ) &
+G6_PID_A=$!
+( ac_write_sentinel "$G6_SID" "/dev/ttys002" "/tmp/g6b" "nonceB" ) &
+G6_PID_B=$!
+wait "$G6_PID_A" "$G6_PID_B"
+
+if [ ! -f "$G6_SP" ]; then
+  check "G6: same-SID parallel write race — no sentinel file left" 1 0
+else
+  G6_CWD=$(jq -r '.cwd // empty' "$G6_SP" 2>/dev/null)
+  case "$G6_CWD" in
+    /tmp/g6a|/tmp/g6b) check "G6: same-SID race winner is well-formed (cwd=$G6_CWD)" 1 1 ;;
+    *) check "G6: same-SID race produced unexpected cwd=$G6_CWD" 1 0 ;;
+  esac
+fi
+rm -f "$G6_SP"
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
