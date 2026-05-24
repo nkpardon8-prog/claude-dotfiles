@@ -397,13 +397,15 @@ else
   # R4 D3 fix: place handoff at SID-tagged path (not alias) so D3 SID-known path resolves it.
   printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4E_SID8" "$G4E_NONCE" > "$TMPWD/CLAUDE.local.${G4E_SID8}.md"
   G4E_CWD=$(cd -P "$TMPWD" 2>/dev/null && pwd -P)
+  # R4 H1: breadcrumb now requires schema_version:1 + originating_command fields.
   jq -c -n \
+    --argjson sv 1 \
     --arg sid  "$G4E_SID"  \
     --arg sid8 "$G4E_SID8" \
     --arg cwd  "$G4E_CWD"  \
     --arg nonce "$G4E_NONCE" \
     --arg host  "$G4E_HOST"  \
-    '{sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+    '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
     > "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
   chmod 600 "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
