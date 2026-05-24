@@ -95,7 +95,7 @@ fi
 STALE_WARNING=""
 if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "${CTX_STALE_HANDOFF_SECS}" ]; then
   HANDOFF_AGE_HUMAN=$((HANDOFF_AGE / 3600))
-  STALE_WARNING="WARNING HANDOFF PREDATES THIS SESSION by ~${HANDOFF_AGE_HUMAN}h — it may be from a prior conversation. Verify with the user before resuming."$'\n\n'
+  STALE_WARNING="WARNING STALE HANDOFF — predates this session by ~${HANDOFF_AGE_HUMAN}h; it may be from a prior conversation. Verify with the user before resuming."$'\n\n'
 fi
 
 # Sentinel-presence check (Decision E — resume-path coverage).
