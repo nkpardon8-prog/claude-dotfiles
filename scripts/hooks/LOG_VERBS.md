@@ -115,6 +115,10 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `primer skip reason=invalid-sentinel-basename` | post-compact-primer-helpers.sh | Sentinel SID contains characters outside `[A-Za-z0-9_-]`; path-traversal defense |
 | `primer warn reason=sentinel-without-sid-file` | post-compact-primer.sh | Sentinel present but no SID-tagged file found; advisory warning |
 | `primer skip reason=sid-known-no-tagged-file` | post-compact-primer-helpers.sh / handoff-resolve.sh | SID known but no SID-tagged CLAUDE.local.<sid8>.md found; R4 D3 fail-closed |
+| `primer skip reason=stat-failed` | handoff-resolve.sh | stat() failed on handoff candidate — cannot verify linkcount; fail-closed (H10 fix-sweep) |
+| `step2 skip reason=invalid-sid8` | post-compact-resume-step2.sh | SID8 contains characters outside [A-Za-z0-9_-]; breadcrumb rejected (C5 fix-sweep) |
+| `step2 skip reason=invalid-sentinel-sid` | post-compact-resume-step2.sh | Full sentinel SID contains invalid characters; breadcrumb rejected (C5 fix-sweep) |
+| `stop_hook_sid_mismatch` | auto-compact-after-pre-compact.sh | Hook-JSON SID and ac_resolve_session_id SID both have sentinels but they differ; ac_resolve path preferred (C2 fix-sweep) |
 | `nonce_mismatch_hard_stop` | post-compact-resume-step2.sh | SID known + nonce mismatch detected; hard stop emitted (R4 D4) |
 | `sid_mismatch_hard_stop` | post-compact-resume-step2.sh | Marker sid= attribute differs from breadcrumb SID8; cross-track file rejected (C3 fix-sweep) |
 | `handoff_detected` | post-compact-primer.sh | Sentinel matched CWD — see handoff: prefix table above |
