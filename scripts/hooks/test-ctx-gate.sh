@@ -1113,7 +1113,7 @@ echo "== §G4-F-advisory SID-unknown nonce mismatch stays advisory (PR-17) =="
 TMPWD_FA=$(mktemp -d)
 TMPHOME_FA=$(mktemp -d)
 mkdir -p "$TMPHOME_FA/.claude/progress" && chmod 700 "$TMPHOME_FA/.claude/progress"
-GFA_NONCE="fa-nonce-1234-5678-9abc-def012345678"
+GFA_NONCE="fa1234ab-5678-9abc-def0-123456789abc"
 # Alias file (no SID-tagged; no breadcrumb → SID unknown).
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=fa-advis nonce=%s -->\n' \
   "$GFA_NONCE" > "$TMPWD_FA/CLAUDE.local.md"
