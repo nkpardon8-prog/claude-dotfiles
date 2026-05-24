@@ -317,7 +317,7 @@ fi
 echo ""
 echo "== §G4 post-compact-resume-step2.sh STATE-routing =="
 
-STEP2_SH="$PWD/lib/post-compact-resume-step2.sh"
+STEP2_SH="$PWD/post-compact-resume-step2.sh"
 if [ ! -x "$STEP2_SH" ]; then
   fail "G4: post-compact-resume-step2.sh missing or non-executable at $STEP2_SH"
 else
