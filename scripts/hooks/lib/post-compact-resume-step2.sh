@@ -144,23 +144,31 @@ if [ "$HANDOFF_MTIME" -eq 0 ]; then STAT_OK=false; HANDOFF_AGE=0; else STAT_OK=t
 CUTOFF="${HANDOFF_LEGACY_CUTOFF_EPOCH:-1779321600}"
 if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$CUTOFF" ]; then LEGACY=true; else LEGACY=false; fi
 
-# Dual-form marker check: match both new form (schema=v1) and legacy form (--).
-# Use mktemp only — no PID-predictable /tmp path (fail-closed if mktemp unavailable).
+# H1: delegate marker check to lib/handoff-marker.sh (canonical marker constants).
+# If lib failed to source (handoff_marker_check undefined), fall back to inline grep.
 MARKER=absent
-TAIL_TMP=$(mktemp -t handoff_tail.XXXXXX 2>/dev/null)
-if [ -n "$TAIL_TMP" ]; then
-  tail -c 512 "$HANDOFF_PATH" > "$TAIL_TMP" 2>/dev/null
-  if grep -qF '<!-- END-OF-HANDOFF schema=v1' "$TAIL_TMP" 2>/dev/null \
-     || grep -qF '<!-- END-OF-HANDOFF -->' "$TAIL_TMP" 2>/dev/null; then
-    MARKER=present
-  fi
-  rm -f "$TAIL_TMP"
+if command -v handoff_marker_check >/dev/null 2>&1; then
+  if handoff_marker_check "$HANDOFF_PATH"; then MARKER=present; fi
 else
-  MARKER=unknown  # mktemp unavailable — treat as unknown, not absent
+  TAIL_TMP=$(mktemp -t handoff_tail.XXXXXX 2>/dev/null)
+  if [ -n "$TAIL_TMP" ]; then
+    tail -c 512 "$HANDOFF_PATH" > "$TAIL_TMP" 2>/dev/null
+    if grep -qF '<!-- END-OF-HANDOFF schema=v1' "$TAIL_TMP" 2>/dev/null \
+       || grep -qF '<!-- END-OF-HANDOFF -->' "$TAIL_TMP" 2>/dev/null; then
+      MARKER=present
+    fi
+    rm -f "$TAIL_TMP"
+  else
+    MARKER=unknown  # mktemp unavailable — treat as unknown, not absent
+  fi
 fi
 
-# Nonce validation: extract nonce from marker and compare with consumed sentinel.
-MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1)
+# H1: delegate nonce extraction to lib/handoff-marker.sh. Fall back to inline sed if lib absent.
+if command -v handoff_marker_nonce >/dev/null 2>&1; then
+  MARKER_NONCE=$(handoff_marker_nonce "$HANDOFF_PATH" 2>/dev/null)
+else
+  MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1)
+fi
 # SENTINEL_NONCE already populated above by breadcrumb-first lookup (or claim-file fallback).
 NONCE_OK="unknown"
 if [ -n "$MARKER_NONCE" ] && [ -n "$SENTINEL_NONCE" ]; then
