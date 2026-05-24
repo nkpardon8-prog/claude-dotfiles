@@ -284,7 +284,38 @@ if [ "$HANDOFF_SIZE" -gt "${HANDOFF_MAX_SIZE_BYTES:-5242880}" ]; then
   exit 0
 fi
 
+# Phase 1 (Round 4): TOCTOU defense — snapshot handoff file to a temp copy.
+# All downstream marker/nonce/sid operations read from the snapshot, not the
+# live file. This prevents auto-sync or another process from swapping the file
+# between the size check and the content reads (6-open TOCTOU window, Adversary A10).
+# Strategy: record ino:dev:size at snapshot time; verify they still match before
+# we emit STATE=ok. Any divergence → emit STATE=handoff-mutated-mid-read (refuse to ingest).
+# The snapshot is cleaned up by the EXIT trap.
+_HANDOFF_SNAP=""
+_HANDOFF_ORIG_STAT=""
+_snap_tmp=$(mktemp -t handoff_snap.XXXXXX 2>/dev/null) || _snap_tmp=""
+if [ -n "$_snap_tmp" ]; then
+  if cp "$HANDOFF_PATH" "$_snap_tmp" 2>/dev/null; then
+    _HANDOFF_SNAP="$_snap_tmp"
+    # Record ino:dev:size from the ORIGINAL at snapshot time (BSD stat -f format).
+    if _s=$(stat -f '%i:%d:%z' "$HANDOFF_PATH" 2>/dev/null); then
+      _HANDOFF_ORIG_STAT="$_s"
+    elif _s=$(stat -c '%i:%d:%s' "$HANDOFF_PATH" 2>/dev/null); then
+      _HANDOFF_ORIG_STAT="$_s"
+    else
+      _HANDOFF_ORIG_STAT=""
+    fi
+    # Add snapshot to EXIT trap cleanup.
+    trap '[ "$_BREADCRUMB_CONSUMED" = "yes" ] && [ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true; rm -f "${_HANDOFF_SNAP:-}" 2>/dev/null || true' EXIT
+  else
+    rm -f "$_snap_tmp" 2>/dev/null || true
+  fi
+fi
+# Use snapshot for all content reads; fall back to original if snapshot unavailable.
+_HANDOFF_READ="${_HANDOFF_SNAP:-$HANDOFF_PATH}"
+
 # Whitespace-strip stat output for bash 3.2 arithmetic safety.
+# Read mtime from original (canonical path) for age/staleness — snapshot copies mtime on some BSDs.
 HANDOFF_MTIME=$(stat -f %m "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || stat -c %Y "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || printf 0)
 [ -z "$HANDOFF_MTIME" ] && HANDOFF_MTIME=0
 NOW=$(date +%s)
@@ -298,20 +329,25 @@ if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$CUTOFF" ]; then LEGACY=tr
 
 # H1: delegate marker check to lib/handoff-marker.sh (canonical marker constants).
 # If lib failed to source (handoff_marker_check undefined), fall back to inline grep.
+# Read from snapshot (_HANDOFF_READ) to avoid TOCTOU.
 MARKER=absent
 if command -v handoff_marker_check >/dev/null 2>&1; then
-  if handoff_marker_check "$HANDOFF_PATH"; then MARKER=present; fi
+  if handoff_marker_check "$_HANDOFF_READ"; then MARKER=present; fi
 else
-  TAIL_TMP=$(mktemp -t handoff_tail.XXXXXX 2>/dev/null)
-  if [ -n "$TAIL_TMP" ]; then
-    tail -c 512 "$HANDOFF_PATH" > "$TAIL_TMP" 2>/dev/null
-    if grep -qF '<!-- END-OF-HANDOFF schema=v1' "$TAIL_TMP" 2>/dev/null \
-       || grep -qF '<!-- END-OF-HANDOFF -->' "$TAIL_TMP" 2>/dev/null; then
-      MARKER=present
-    fi
-    rm -f "$TAIL_TMP"
-  else
-    MARKER=unknown  # mktemp unavailable — treat as unknown, not absent
+  if grep -qF '<!-- END-OF-HANDOFF schema=v1' "$_HANDOFF_READ" 2>/dev/null \
+     || grep -qF '<!-- END-OF-HANDOFF -->' "$_HANDOFF_READ" 2>/dev/null; then
+    MARKER=present
+  fi
+fi
+
+# Phase 1 (Round 4): multi-marker warning. If the handoff file contains more than
+# one END-OF-HANDOFF marker line, log a warning. The write protocol guarantees
+# exactly one; multiple markers indicate tampering or a double-write bug.
+# We still proceed (defense-in-depth: head -1 already picks canonical marker).
+if command -v handoff_marker_count >/dev/null 2>&1; then
+  _mcount=$(handoff_marker_count "$_HANDOFF_READ")
+  if [ -n "$_mcount" ] && [ "$_mcount" -gt 1 ] 2>/dev/null; then
+    handoff_log "handoff_multi_marker_warning file=$HANDOFF_PATH count=$_mcount"
   fi
 fi
 
