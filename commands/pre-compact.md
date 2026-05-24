@@ -695,9 +695,15 @@ Only touch `.gitignore` if inside a git work tree (`git rev-parse --is-inside-wo
 - `REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)`. If empty, skip.
 - Refuse if we're inside a submodule: `[ -n "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" ]` → skip with "Inside a submodule; skipping .gitignore update to avoid polluting the submodule."
 
-If `$REPO_ROOT/.gitignore` exists and does NOT already list `CLAUDE.local.md` (use line-anchored check: `grep -qE '^CLAUDE\.local\.md[[:space:]]*$' "$REPO_ROOT/.gitignore"` — substring match would false-positive on `!CLAUDE.local.md` force-include rules), append the line. Do not create a `.gitignore` if none exists.
+**Glob pattern (SID-tagged multi-track support):** use `CLAUDE.local*.md` glob (not the narrow `CLAUDE.local.md`), which covers both HANDOFF_PRIMARY (`CLAUDE.local.<sid8>.md`) and HANDOFF_ALIAS (`CLAUDE.local.md`).
 
-**Force-include guard:** if `.gitignore` contains `!CLAUDE.local.md` anywhere, the user has explicitly opted into tracking the file. Skip the append and tell them: "Detected `!CLAUDE.local.md` force-include rule; leaving .gitignore alone. You're tracking the handoff file deliberately."
+Check in this order:
+1. If `.gitignore` already contains the glob `CLAUDE.local*.md` (line-anchored: `grep -qE '^CLAUDE\.local\*\.md' "$REPO_ROOT/.gitignore"`) — already covered, skip.
+2. If `.gitignore` contains the narrow `CLAUDE.local.md` line (line-anchored: `grep -qE '^CLAUDE\.local\.md[[:space:]]*$' "$REPO_ROOT/.gitignore"`) — replace it in-place with the glob line via Edit tool.
+3. If neither present — append the glob line.
+4. If `.gitignore` does NOT exist — create it with the glob line AND emit a warning: "Created .gitignore with CLAUDE.local*.md entry."
+
+**Force-include guard:** if `.gitignore` contains `!CLAUDE.local.md` anywhere, the user has explicitly opted into tracking. Skip the append and tell them: "Detected `!CLAUDE.local.md` force-include rule; leaving .gitignore alone. You are tracking the handoff file deliberately."
 
 ## Step 9: Arm auto-compact, then report
 
