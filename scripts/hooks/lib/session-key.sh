@@ -17,6 +17,12 @@
 # Escape hatch: HANDOFF_ACCEPT_UNSIGNED=1 env var makes verify return 0 for unsigned
 # breadcrumbs (migration window; one-major-version deprecation). Default: deny unsigned.
 #
+# RQ-06 (R6 HZ-31): HANDOFF_ACCEPT_UNSIGNED=1 is documented here and in the skill files.
+# Use only for migrating sessions from pre-R5 (before HMAC signing was implemented).
+# Intended deprecation: remove support after one major version bump (R7+).
+# To use: set the env var for a single /post-compact-resume run, then unset it.
+# DO NOT set in shell profile or ~/.claude/settings.json permanently.
+#
 # Source-guard: second sourcing is a no-op.
 [ -n "${_SESSION_KEY_LOADED:-}" ] && return 0
 readonly _SESSION_KEY_LOADED=1
