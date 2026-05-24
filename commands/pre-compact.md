@@ -311,9 +311,12 @@ ctx-gate Bash allowlist). Also guard against re-run overwriting a recent snapsho
 ```bash
 # Snapshot check — use stat to see if .prev is recent (no cp Bash call)
 # HANDOFF_PRIMARY is set in Step 6A below; resolve it early for snapshot check.
+# R5 H4: removed the `:-CLAUDE.local.md` alias fallback from HANDOFF_PREV (dead post-R4 D1).
+# HANDOFF_PRIMARY is always set by Step 6A to the SID-tagged file path. If it is empty,
+# there is no previous handoff to snapshot, so SNAPSHOT_NEEDED stays "true".
 SNAPSHOT_NEEDED="true"
-HANDOFF_PREV="${HANDOFF_PRIMARY:-CLAUDE.local.md}.prev"
-if [ -f "$HANDOFF_PREV" ]; then
+HANDOFF_PREV="${HANDOFF_PRIMARY}.prev"
+if [ -n "$HANDOFF_PRIMARY" ] && [ -f "$HANDOFF_PREV" ]; then
   PREV_MTIME=$(stat -f %m "$HANDOFF_PREV" 2>/dev/null | tr -d '[:space:]' \
                || stat -c %Y "$HANDOFF_PREV" 2>/dev/null | tr -d '[:space:]' \
                || echo 0)
