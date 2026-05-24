@@ -53,6 +53,18 @@ primer_check_marker() {
   # post-compact-primer.sh before this file). Eliminates duplicate grep logic.
   if handoff_marker_check "$file"; then
     MARKER_PRESENT="true"
+    # RQ-07 (R6 HZ-34/INV-3): if marker is present, also check for multi-marker tampering.
+    # step2.sh enforces strict fail-closed on multi-marker via STATE=multi-marker-detected,
+    # but the primer layer previously silently accepted tampered files (only check was boolean).
+    # Now set MARKER_PRESENT="tampered" when count > 1 so the primer can emit a distinct
+    # warning rather than treating the file as a normal handoff.
+    if command -v handoff_marker_count >/dev/null 2>&1; then
+      _primer_marker_count=$(handoff_marker_count "$file" 2>/dev/null) || _primer_marker_count="0"
+      if [ -n "$_primer_marker_count" ] && [ "$_primer_marker_count" -gt 1 ] 2>/dev/null; then
+        MARKER_PRESENT="tampered"
+        ctx_gate_log "primer warn reason=multi-marker-detected file=$file count=${_primer_marker_count}"
+      fi
+    fi
   else
     MARKER_PRESENT="false"
   fi
