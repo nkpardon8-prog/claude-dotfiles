@@ -177,6 +177,15 @@ GC_BREAD_COUNT=$(find "$HOME/.claude/progress" -maxdepth 1 -type f \
   -mmin +1440 -print -delete 2>/dev/null | wc -l | tr -d '[:space:]')
 [ -n "$GC_BREAD_COUNT" ] && [ "$GC_BREAD_COUNT" -gt 0 ] && handoff_log "gc_stale_orphan_breadcrumbs count=$GC_BREAD_COUNT"
 
+# RQ-05 (R6 HZ-27/INV-12): GC stale session key files (>24h old).
+# Key files persist indefinitely without this; they accumulate one per session.
+# 24h TTL is safe because: (a) breadcrumb age guard rejects >3600s breadcrumbs,
+# so no live session's breadcrumb could be verified with a >1h-old key;
+# (b) 24h gives a generous safety margin to cover any clock-skew or delayed step2 run.
+find "$HOME/.claude/progress" -maxdepth 1 -type f \
+  -name '.session-key-*' \
+  -mmin +1440 -delete 2>/dev/null || true
+
 [ -f "$SENTINEL" ] || exit 0
 
 # Atomic claim: rename to a per-pid lock file. Only one concurrent invocation succeeds.
