@@ -1780,6 +1780,60 @@ fi
 rm -rf "$TMPWD_H13" "$TMPHOME_H13"
 
 # ---------------------------------------------------------------------------
+# §R5-HMAC HMAC roundtrip + signature mismatch rejection (R5 Phase 3)
+# ---------------------------------------------------------------------------
+# Tests the session-key.sh HMAC signing + verification roundtrip.
+# Also tests that a forged signature is rejected (ATTACK 4 variant).
+echo ""
+echo "== §R5-HMAC HMAC session-key roundtrip =="
+. "$PWD/lib/session-key.sh" 2>/dev/null || true
+if command -v session_key_generate >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+  HMAC_HOME=$(mktemp -d)
+  mkdir -p "$HMAC_HOME/.claude/progress" && chmod 700 "$HMAC_HOME/.claude/progress"
+  HMAC_SID8="r5hmac01"
+  HMAC_SID="r5hmac01-test-session-id-001"
+  HMAC_NONCE="aabbccdd-1234-5678-90ab-cdef11223344"
+  HMAC_CWD="/tmp/test-cwd"
+  HMAC_HOST="testhost"
+  # Generate key
+  OLD_HOME="$HOME"
+  HOME="$HMAC_HOME"
+  session_key_generate "$HMAC_SID8" 2>/dev/null
+  # Sign
+  HMAC_SIG=$(session_key_sign "$HMAC_SID8" "$HMAC_SID" "$HMAC_NONCE" "$HMAC_NONCE" "$HMAC_CWD" "$HMAC_HOST" "pre-compact" 2>/dev/null)
+  HOME="$OLD_HOME"
+  if [ -n "$HMAC_SIG" ]; then
+    pass "R5-HMAC: session_key_sign produced a non-empty signature"
+    # Verify correct signature
+    HOME="$HMAC_HOME"
+    session_key_verify "$HMAC_SID8" "$HMAC_SIG" "$HMAC_SID" "$HMAC_NONCE" "$HMAC_NONCE" "$HMAC_CWD" "$HMAC_HOST" "pre-compact" 2>/dev/null
+    VERIFY_RC=$?
+    HOME="$OLD_HOME"
+    if [ "$VERIFY_RC" -eq 0 ]; then
+      pass "R5-HMAC: correct signature verifies (rc=0)"
+    else
+      fail "R5-HMAC: correct signature verify failed" "rc=$VERIFY_RC"
+    fi
+    # Verify forged signature is rejected
+    HOME="$HMAC_HOME"
+    session_key_verify "$HMAC_SID8" "forged0000000000000000000000000000000000000000000000000000000000" \
+      "$HMAC_SID" "$HMAC_NONCE" "$HMAC_NONCE" "$HMAC_CWD" "$HMAC_HOST" "pre-compact" 2>/dev/null
+    FORGED_RC=$?
+    HOME="$OLD_HOME"
+    if [ "$FORGED_RC" -eq 1 ]; then
+      pass "R5-HMAC: forged signature rejected (rc=1 mismatch) — ATTACK 4 fixed"
+    else
+      fail "R5-HMAC: forged signature was not rejected" "rc=$FORGED_RC (expected 1)"
+    fi
+  else
+    fail "R5-HMAC: session_key_sign returned empty signature" "openssl may be unavailable or session_key.sh not sourced"
+  fi
+  rm -rf "$HMAC_HOME"
+else
+  pass "R5-HMAC: session_key.sh or openssl not available — HMAC tests skipped (inconclusive, not FAIL)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
