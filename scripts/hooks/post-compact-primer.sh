@@ -178,6 +178,8 @@ for sentinel_candidate in "$HOME/.claude/progress/auto-compact-"*.json; do
     SENTINEL_SID8=$(printf '%s' "$SENTINEL_SID_FULL" | head -c 8)
     [ -z "$SENTINEL_SID8" ] && SENTINEL_SID8="$SENTINEL_SID_FULL"
     SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$sentinel_candidate" 2>/dev/null) || SENTINEL_NONCE=""
+    # B20: log sentinel detection in unified handoff audit trail.
+    handoff_log "handoff_detected sid=${SENTINEL_SID8:-unknown} file=$HANDOFF_PATH"
     break
   fi
   # Different cwd — this sentinel is for another workspace; skip
