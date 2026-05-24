@@ -3,6 +3,11 @@
 # fire `/compact` into the originating Terminal.app tab. Invoked from /pre-compact's
 # Step 9.0; can also be invoked directly for testing.
 #
+# Execution context: this is a Claude Code hook script (invoked from /pre-compact via
+# the orchestrator Bash tool, or directly from terminal). When called from /pre-compact,
+# it runs as a subprocess of the Bash tool — NOT directly as a Claude Code hook process.
+# This means deny-class restrictions do NOT apply; all subprocess shell features are available.
+#
 # Usage:   arm-auto-compact.sh [ARGUMENTS_STRING]
 # Prints:  one line to stdout — the arming state to embed in the /pre-compact report.
 # Args:    if the ARGUMENTS_STRING contains `no-auto-compact`, `--no-auto-compact`,
