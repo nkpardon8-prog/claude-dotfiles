@@ -93,7 +93,9 @@ if [ "$PCT" -ge "$HANDOFF_AUTOCOMPACT_BYPASS_PCT" ]; then
   exit 0  # let native compact run; handoff lost but better than deadlock
 fi
 
-REASON="Native auto-compact blocked: /pre-compact was never invoked, so handoff would be lost. Context: ${PCT}%. Invoke Skill(pre-compact) NOW to write CLAUDE.local.md, arm the auto-compact sentinel, and let the Stop hook deliver a clean /compact instead. (At ${HANDOFF_AUTOCOMPACT_BYPASS_PCT}% this safety net releases so the session can recover via native compaction.)"
+# R5 H3: updated wording — removed reference to CLAUDE.local.md alias (dead post-R4 D1);
+# /pre-compact now writes a SID-tagged file (CLAUDE.local.<sid8>.md) as the ONLY handoff output.
+REASON="Native auto-compact blocked: /pre-compact was never invoked, so handoff would be lost. Context: ${PCT}%. Invoke Skill(pre-compact) NOW to write the SID-tagged handoff file, arm the auto-compact sentinel, and let the Stop hook deliver a clean /compact instead. (At ${HANDOFF_AUTOCOMPACT_BYPASS_PCT}% this safety net releases so the session can recover via native compaction.)"
 ctx_gate_log "precompact sid=$SID pct=$PCT trigger=auto action=block"
 
 jq -n --arg r "$REASON" '{ "decision": "block", "reason": $r }'
