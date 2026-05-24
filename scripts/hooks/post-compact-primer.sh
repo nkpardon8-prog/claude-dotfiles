@@ -73,7 +73,9 @@ CWD_CANON=$(ac_canonicalize_path "$CWD") || CWD_CANON="$CWD"
 # - For source=compact: sentinel typically ABSENT at primer time (Stop hook claimed it).
 # - For source=resume/startup/clear: unconsumed sentinel means /pre-compact ran but
 #   /compact never fired (laptop close, crash, etc.). Hard channel was lost.
-primer_find_sentinel_for_cwd "$CWD_CANON"
+# Phase 2 (Round 4): pass $SID so primer_find_sentinel_for_cwd can bind to the
+# exact sentinel for this session, preventing Track A from adopting Track B's sentinel.
+primer_find_sentinel_for_cwd "$CWD_CANON" "$SID"
 
 # Walk up to the git repo root (SessionStart cwd may be a subdirectory of the repo).
 # R4 D3: primer_resolve_handoff_path returns:
