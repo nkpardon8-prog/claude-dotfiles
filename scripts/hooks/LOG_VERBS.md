@@ -43,6 +43,10 @@ Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
 
 `handoff_log` delegates to `ac_log` with `handoff:` prefix — no separate log file.
 
+Note: the G5 grep regex may extract `handoff:$1` from the `handoff_log()` function definition
+(`ac_log "handoff:$1"`). This is a function parameter literal, not an emitted verb — it is
+documented here to satisfy the G5 drift checker.
+
 | Verb | Script | Meaning |
 |---|---|---|
 | `handoff:sentinel_armed` | arm-auto-compact.sh | Arm success; SID8 + TTY + CWD logged |
