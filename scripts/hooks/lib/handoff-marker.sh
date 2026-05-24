@@ -48,21 +48,40 @@ handoff_marker_check() {
 handoff_marker_nonce() {
   local file="$1"
   [ -f "$file" ] || return 1
-  tail -c 512 "$file" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1
+  # R3-fix-sweep C3+C4: anchor extraction to the actual marker line.
+  # grep -F filters to ONLY lines containing the literal marker prefix;
+  # tail -1 picks the last such line (canonical marker is at end-of-file);
+  # sed then extracts the nonce= attribute value.
+  # This defeats body-injection attacks (body content containing nonce=... in prose
+  # can no longer shadow the canonical marker's nonce value).
+  tail -c 512 "$file" 2>/dev/null \
+    | grep -F 'END-OF-HANDOFF schema=' \
+    | tail -1 \
+    | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p'
 }
 
 # ---------------------------------------------------------------------------
 # handoff_marker_sid <file>
 #
-# C3 fix: extracts the sid=<sid8> attribute from the END-OF-HANDOFF marker line.
+# C1+C3 fix: extracts the sid= attribute from the END-OF-HANDOFF marker line.
 # Prints the sid8 value on success; prints nothing on failure (file absent,
 # no marker, or no sid= attribute).
 # Attribute extraction is order-insensitive within the marker line.
 # The sid= attribute value uses the same safe charset as SID8: [A-Za-z0-9_-]+
 # (double-underscore separator is preserved since _ is in that set).
+#
+# R3-fix-sweep C1: BSD sed doesn't recognize \b word-boundary — the old
+# implementation silently returned empty on macOS. Fixed by anchoring extraction
+# to the marker line (via grep -F) so \b is no longer needed.
+# R3-fix-sweep C3+C4: same anchor-to-marker-line approach defeats body-injection.
 # ---------------------------------------------------------------------------
 handoff_marker_sid() {
   local file="$1"
   [ -f "$file" ] || return 1
-  tail -c 512 "$file" 2>/dev/null | sed -nE 's/.*\bsid=([A-Za-z0-9_-]+).*/\1/p' | head -1
+  # grep -F filters to ONLY marker lines; tail -1 picks last (canonical is end-of-file);
+  # sed extracts sid= attribute — no \b needed (already on a marker-only line).
+  tail -c 512 "$file" 2>/dev/null \
+    | grep -F 'END-OF-HANDOFF schema=' \
+    | tail -1 \
+    | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p'
 }
