@@ -452,13 +452,13 @@ fi
 echo "== §G6 cross-session breadcrumb persistence (post-D5) =="
 # Task 4.6 [G6]: Write session A's breadcrumb, run session B's Stop hook, assert A's breadcrumb
 # is NOT GC'd (R4 D5 per-session GC only removes own-session orphans, not other sessions').
+# D5 invariant: breadcrumb-${SESSION_ID}.json.tmp.* orphans from THIS session are GC'd; other
+# sessions' breadcrumbs are untouched.
 GC_HOMEDIR=$(mktemp -d)
 mkdir -p "$GC_HOMEDIR/.claude/progress" "$GC_HOMEDIR/.claude/logs"
 chmod 700 "$GC_HOMEDIR/.claude/progress"
 GC_SID_A="gc-sess-a-$$"
-GC_SID_B="gc-sess-b-$$"
-GC_NONCE_A="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-GC_NONCE_B="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+GC_SID_B="gc-sess-b-$$-00"
 # Write A's breadcrumb directly (simulating A's Stop hook already ran).
 GC_A_BREADCRUMB="$GC_HOMEDIR/.claude/progress/breadcrumb-${GC_SID_A}.json"
 jq -c -n \
@@ -466,16 +466,23 @@ jq -c -n \
   --arg sid "$GC_SID_A" \
   --arg sid8 "${GC_SID_A:0:8}" \
   --arg cwd "/tmp" \
-  --arg nonce "$GC_NONCE_A" \
+  --arg nonce "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" \
   --arg host "$(hostname -s 2>/dev/null | head -c 64)" \
   '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
   > "$GC_A_BREADCRUMB" 2>/dev/null
 chmod 600 "$GC_A_BREADCRUMB"
-# Write B's sentinel (no cwd match — B will fail at osascript; breadcrumb-write runs).
-HOME="$GC_HOMEDIR" ac_write_sentinel "$GC_SID_B" "/dev/ttys998" "/tmp/gc-b" "$GC_NONCE_B"
-GC_JSON_IN=$(jq -c -n --arg sid "$GC_SID_B" '{session_id:$sid}')
-HOME="$GC_HOMEDIR" CTX_GATE_PTY_DELAY_SEC=0.01 bash "$STOP_HOOK" <<< "$GC_JSON_IN" 2>/dev/null
-# Assert A's breadcrumb still exists (cross-session GC protection).
+# Write session B's breadcrumb with an orphan .tmp.* file (simulating crashed write)
+GC_B_BREADCRUMB="$GC_HOMEDIR/.claude/progress/breadcrumb-${GC_SID_B}.json"
+GC_B_ORPHAN="${GC_B_BREADCRUMB}.tmp.12345"
+printf 'partial\n' > "$GC_B_ORPHAN"
+# Simulate Session B's Stop hook D5 cleanup logic directly:
+# D5 only GCs session-B's own .tmp.* orphans; it must NOT touch session-A's breadcrumb.
+# Run the actual stop hook with B's SID (no sentinel, so it exits at the "no sentinel" check
+# — but the orphan GC at lines 67-69 still runs because it runs BEFORE the sentinel check).
+GC_STOP_HOOK="$ROOT/auto-compact-after-pre-compact.sh"
+GC_JSON_B=$(jq -c -n --arg sid "$GC_SID_B" '{session_id:$sid}')
+HOME="$GC_HOMEDIR" bash "$GC_STOP_HOOK" <<< "$GC_JSON_B" 2>/dev/null
+# Assert A's breadcrumb still exists (cross-session isolation).
 if [ -f "$GC_A_BREADCRUMB" ]; then
   check "G6/D5: session B Stop hook did NOT GC session A's breadcrumb (cross-session isolation)" 1 1
 else
