@@ -1289,10 +1289,16 @@ if [ -n "$PAST_MTIME" ]; then
       fail "G4-G: boundary breadcrumb (age=3599s) not accepted — got state=$GG_STATE_NEAR (expected ok)" "raw: ${OUT_G_NEAR:0:200}"
     fi
   else
-    pass "G4-G: boundary mtime computation not available — skipped (informational)"
+    # R3-fix-sweep H7: vacuous-pass → infra-fail. NEAR_MTIME empty means date -v-3599S
+    # failed — a real infra problem on macOS where BSD date supports -v.
+    fail "G4-G: date -v-3599S returned empty — expected macOS BSD date to support -v flag (infra-fail)" ""
+    exit 1
   fi
 else
-  pass "G4-G: date arithmetic not available — boundary test skipped (informational)"
+  # R3-fix-sweep H7: outer PAST_MTIME guard failure already caught above; this branch
+  # is now unreachable (we exit 1 in the PAST_MTIME-empty else branch above).
+  fail "G4-G: date arithmetic branch reached unexpectedly — PAST_MTIME guard should have exited (infra-fail)" ""
+  exit 1
 fi
 rm -rf "$TMPWD_G" "$TMPHOME_G"
 
