@@ -103,8 +103,10 @@ ac_write_sentinel() {
 }
 
 # Reads target_tty from a sentinel after validating: not a symlink, size bounded,
-# parseable JSON, schema_version matches, originating_command is "pre-compact",
-# and target_tty matches the anchored regex.
+# parseable JSON, schema_version in range [1, AC_SCHEMA_VERSION], originating_command
+# is "pre-compact", and target_tty matches the anchored regex.
+# Accepts ANY schema_version from 1 up to AC_SCHEMA_VERSION for backwards-compat
+# (Task 1.1a: v1 sentinels in-flight when schema bumped to 2 must still be readable).
 # Echoes the validated target_tty on success, nothing on failure (returns non-zero).
 ac_read_sentinel_tty() {
   local path="$1"
@@ -118,14 +120,17 @@ ac_read_sentinel_tty() {
     return 1
   fi
   local raw
-  # Read entire JSON, then validate shape, schema, and target_tty in one jq pass.
+  # Read entire JSON, then validate shape, schema range, and target_tty in one jq pass.
   # The `((...) | type) == "string"` parens are LOAD-BEARING — without them, jq's `|`
   # has lower precedence than `and`, so `and X | type == "string"` parses as
   # `and (X | type == "string")` which evaluates type on the whole boolean chain
   # ("boolean" != "string", always false). Round 3 caught this.
+  # schema_version range check (Task 1.1a backwards-compat):
+  #   .schema_version >= 1 and .schema_version <= $v
+  # accepts v1 (legacy, no cwd) and v2+ (with cwd), rejects anything above current.
   raw=$(jq -r --argjson v "$AC_SCHEMA_VERSION" '
     if type == "object"
-       and .schema_version == $v
+       and (.schema_version >= 1 and .schema_version <= $v)
        and (.originating_command // "") == "pre-compact"
        and (((.target_tty // "") | type) == "string")
     then .target_tty else empty end' < "$path" 2>/dev/null)
@@ -135,7 +140,8 @@ import sys, json
 try:
   d = json.load(sys.stdin)
   assert isinstance(d, dict)
-  assert d.get("schema_version") == '"$AC_SCHEMA_VERSION"'
+  sv = d.get("schema_version")
+  assert isinstance(sv, int) and 1 <= sv <= '"$AC_SCHEMA_VERSION"'
   assert d.get("originating_command") == "pre-compact"
   t = d.get("target_tty")
   assert isinstance(t, str)
@@ -149,4 +155,36 @@ except Exception:
     return 1
   fi
   printf '%s' "$raw"
+}
+
+# Reads the cwd field from a sentinel after validating: not a symlink, size bounded,
+# parseable JSON, schema_version in range [1, AC_SCHEMA_VERSION], originating_command
+# is "pre-compact", and cwd field is non-empty.
+# Returns empty string (non-zero exit) for v1 sentinels (no cwd field), symlinks,
+# oversized files, jq parse failures, schema_version out of range, or empty/missing cwd.
+# Echoes the validated cwd on success, nothing on failure (returns non-zero).
+ac_read_sentinel_cwd() {
+  local sentinel="$1"
+  [ -f "$sentinel" ] || return 1
+  [ -L "$sentinel" ] && return 1
+  local size
+  size=$(stat -f %z "$sentinel" 2>/dev/null | tr -d '[:space:]' || stat -c %s "$sentinel" 2>/dev/null | tr -d '[:space:]' || echo 0)
+  [ -z "$size" ] && size=0
+  [ "$size" -gt "${AC_MAX_SENTINEL_BYTES:-4096}" ] && return 1
+  # LOAD-BEARING jq parenthesization (mirrors ac_read_sentinel_tty):
+  # The whole filter MUST be parenthesized to ensure the `// ""` fallback applies
+  # to the entire expression, not just the last clause.
+  local result
+  result=$(jq -r --argjson v "${AC_SCHEMA_VERSION:-2}" '
+    (
+      select(.schema_version >= 1 and .schema_version <= $v)
+      | select(.originating_command == "pre-compact")
+      | select(.cwd != null)
+      | select(.cwd != "")
+      | .cwd
+    ) // ""
+  ' "$sentinel" 2>/dev/null)
+  [ -z "$result" ] && return 1
+  printf '%s' "$result"
+  return 0
 }
