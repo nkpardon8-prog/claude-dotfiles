@@ -1435,6 +1435,65 @@ fi
 rm -rf "$TMPWD_I" "$TMPHOME_I"
 
 # ---------------------------------------------------------------------------
+# §G4-J Two-track step2 breadcrumb binding (Phase 2 Round 4) — Critical #1 fix
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G4-J Two-track step2 breadcrumb binding =="
+# Setup: Track A breadcrumb + Track B breadcrumb in same cwd.
+# step2.sh is invoked with CLAUDE_SESSION_ID set to Track A's full SID.
+# Assertion: step2.sh adopts Track A's breadcrumb (not Track B's) → STATE=ok with Track A's sid8.
+TMPWD_J=$(mktemp -d)
+TMPHOME_J=$(mktemp -d)
+mkdir -p "$TMPHOME_J/.claude/progress" && chmod 700 "$TMPHOME_J/.claude/progress"
+GJ_SID_A="track-a-j-$$-aaaaaa"
+GJ_SID8_A="${GJ_SID_A:0:8}"
+GJ_SID_B="track-b-j-$$-bbbbbb"
+GJ_SID8_B="${GJ_SID_B:0:8}"
+GJ_NONCE_A="aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+GJ_NONCE_B="cccccccc-4444-5555-6666-dddddddddddd"
+GJ_CWD=$(cd -P "$TMPWD_J" 2>/dev/null && pwd -P)
+GJ_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+# Write Track A breadcrumb (with Track A's SID and nonce)
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$GJ_SID_A" \
+  --arg sid8 "$GJ_SID8_A" \
+  --arg cwd  "$GJ_CWD" \
+  --arg nonce "$GJ_NONCE_A" \
+  --arg host  "$GJ_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$TMPHOME_J/.claude/progress/breadcrumb-${GJ_SID_A}.json" 2>/dev/null
+chmod 600 "$TMPHOME_J/.claude/progress/breadcrumb-${GJ_SID_A}.json"
+# Write Track B breadcrumb (same cwd, different SID and nonce — the contamination source)
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$GJ_SID_B" \
+  --arg sid8 "$GJ_SID8_B" \
+  --arg cwd  "$GJ_CWD" \
+  --arg nonce "$GJ_NONCE_B" \
+  --arg host  "$GJ_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$TMPHOME_J/.claude/progress/breadcrumb-${GJ_SID_B}.json" 2>/dev/null
+chmod 600 "$TMPHOME_J/.claude/progress/breadcrumb-${GJ_SID_B}.json"
+# Write Track A's SID-tagged handoff (the file we expect step2 to load)
+printf 'Track A handoff content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$GJ_SID8_A" "$GJ_NONCE_A" > "$TMPWD_J/CLAUDE.local.${GJ_SID8_A}.md"
+# Write Track B's SID-tagged handoff (must NOT be loaded by Track A's reader)
+printf 'Track B handoff content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$GJ_SID8_B" "$GJ_NONCE_B" > "$TMPWD_J/CLAUDE.local.${GJ_SID8_B}.md"
+STEP2_SH="$PWD/post-compact-resume-step2.sh"
+# Invoke step2.sh with CLAUDE_SESSION_ID = Track A's full SID → must adopt Track A's breadcrumb
+OUT_J=$(cd "$TMPWD_J" && CLAUDE_SESSION_ID="$GJ_SID_A" HOME="$TMPHOME_J" bash "$STEP2_SH" 2>/dev/null)
+GJ_STATE=$(printf '%s' "$OUT_J" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+GJ_SID8_OUT=$(printf '%s' "$OUT_J" | sed -n 's/^STATE=//p' | jq -r '.sid8' 2>/dev/null)
+if [ "$GJ_STATE" = "ok" ] && [ "$GJ_SID8_OUT" = "$GJ_SID8_A" ]; then
+  pass "G4-J: two-track reader binding — Track A reader adopts Track A breadcrumb (not Track B's) state=$GJ_STATE sid8=$GJ_SID8_OUT"
+else
+  fail "G4-J: two-track reader binding" "expected state=ok sid8=$GJ_SID8_A; got state='$GJ_STATE' sid8='$GJ_SID8_OUT' raw: ${OUT_J:0:200}"
+fi
+rm -rf "$TMPWD_J" "$TMPHOME_J"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
