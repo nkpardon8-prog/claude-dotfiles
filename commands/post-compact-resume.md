@@ -147,6 +147,22 @@ if [ -z "$HANDOFF_PATH" ]; then
   exit 0
 fi
 
+# H11: size check before Read tool ingestion. Reject handoffs larger than HANDOFF_MAX_SIZE_BYTES.
+# Oversized files can cause Read tool truncation or unexpected context inflation.
+HANDOFF_SIZE=0
+if HANDOFF_SIZE=$(stat -f %z "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]'); then
+  :
+elif HANDOFF_SIZE=$(stat -c %s "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]'); then
+  :
+else
+  HANDOFF_SIZE=0
+fi
+[ -z "$HANDOFF_SIZE" ] && HANDOFF_SIZE=0
+if [ "$HANDOFF_SIZE" -gt "${HANDOFF_MAX_SIZE_BYTES:-5242880}" ]; then
+  echo "STATE=oversize size=$HANDOFF_SIZE max=${HANDOFF_MAX_SIZE_BYTES:-5242880} path=$HANDOFF_PATH"
+  exit 0
+fi
+
 # Whitespace-strip stat output for bash 3.2 arithmetic safety.
 HANDOFF_MTIME=$(stat -f %m "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || stat -c %Y "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || printf 0)
 [ -z "$HANDOFF_MTIME" ] && HANDOFF_MTIME=0
