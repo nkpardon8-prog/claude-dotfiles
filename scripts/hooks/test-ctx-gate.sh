@@ -750,9 +750,11 @@ for NB_PCT in 49 50 55 74 75 84 85 95; do
     rm -rf "$TMPHOME"
     continue
   fi
-  DENY=$(printf '%s' "$OUT" | jq -e 'has("permissionDecision")' 2>/dev/null && echo yes || echo no)
-  BLOCK=$(printf '%s' "$OUT" | jq -e 'has("decision")' 2>/dev/null && echo yes || echo no)
-  if [ "$DENY" = "no" ] && [ "$BLOCK" = "no" ]; then
+  # Non-empty output must be valid JSON with no permissionDecision or decision field.
+  # jq -e exits non-zero when result is false/null; we test presence via type != "null".
+  HAS_DENY=$(printf '%s' "$OUT" | jq -r 'if has("permissionDecision") then "yes" else "no" end' 2>/dev/null)
+  HAS_BLOCK=$(printf '%s' "$OUT" | jq -r 'if has("decision") then "yes" else "no" end' 2>/dev/null)
+  if [ "$HAS_DENY" = "no" ] && [ "$HAS_BLOCK" = "no" ]; then
     pass "NEW-3: submit ctx=$NB_PCT → no permissionDecision/decision field (additionalContext only)"
   else
     fail "NEW-3: submit ctx=$NB_PCT no-block" "output contains block/deny field: $OUT"
