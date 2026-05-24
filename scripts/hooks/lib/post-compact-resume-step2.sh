@@ -148,7 +148,17 @@ else
 fi
 [ -z "$HANDOFF_SIZE" ] && HANDOFF_SIZE=0
 if [ "$HANDOFF_SIZE" -gt "${HANDOFF_MAX_SIZE_BYTES:-5242880}" ]; then
-  echo "STATE=oversize size=$HANDOFF_SIZE max=${HANDOFF_MAX_SIZE_BYTES:-5242880} path=$HANDOFF_PATH"
+  # R4 D10: JSON-encoded STATE line (handles paths with spaces).
+  _json=$(jq -c -n \
+    --argjson size "$HANDOFF_SIZE" \
+    --argjson max "${HANDOFF_MAX_SIZE_BYTES:-5242880}" \
+    --arg path "$HANDOFF_PATH" \
+    '{"state":"oversize","size":$size,"max":$max,"path":$path}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"oversize","size":%s,"max":%s}\n' "$HANDOFF_SIZE" "${HANDOFF_MAX_SIZE_BYTES:-5242880}"
+  fi
   exit 0
 fi
 
