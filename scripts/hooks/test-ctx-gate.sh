@@ -1644,6 +1644,129 @@ fi
 rm -rf "$TMPWD_J" "$TMPHOME_J"
 
 # ---------------------------------------------------------------------------
+# §R5-H6 Production-equivalent path: CLAUDE_CODE_SESSION_ID set, CLAUDE_SESSION_ID unset
+# ---------------------------------------------------------------------------
+# R5 Critical #1 fix: ac_resolve_session_id now reads CLAUDE_CODE_SESSION_ID as fallback.
+# This test simulates the Bash-tool subprocess environment where CLAUDE_CODE_SESSION_ID
+# is set by Claude Code but CLAUDE_SESSION_ID is NOT (the production path that was broken).
+# Expected: STATE=ok (breadcrumb adopted via CLAUDE_CODE_SESSION_ID-based OWN_SID).
+echo ""
+echo "== §R5-H6 Production-equivalent path (CLAUDE_CODE_SESSION_ID, no CLAUDE_SESSION_ID) =="
+TMPWD_R5H6=$(mktemp -d)
+TMPHOME_R5H6=$(mktemp -d)
+mkdir -p "$TMPHOME_R5H6/.claude/progress" && chmod 700 "$TMPHOME_R5H6/.claude/progress"
+R5H6_SID="r5h6-prod-test-$$"
+R5H6_SID8="${R5H6_SID:0:8}"
+R5H6_NONCE="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+R5H6_CWD=$(cd -P "$TMPWD_R5H6" 2>/dev/null && pwd -P)
+R5H6_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+# Write breadcrumb using the bare CLAUDE_CODE_SESSION_ID (no __ttysN suffix in production env)
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$R5H6_SID" \
+  --arg sid8 "$R5H6_SID8" \
+  --arg cwd  "$R5H6_CWD" \
+  --arg nonce "$R5H6_NONCE" \
+  --arg host  "$R5H6_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$TMPHOME_R5H6/.claude/progress/breadcrumb-${R5H6_SID}.json" 2>/dev/null
+chmod 600 "$TMPHOME_R5H6/.claude/progress/breadcrumb-${R5H6_SID}.json"
+# SID-tagged handoff file
+printf 'production handoff\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$R5H6_SID8" "$R5H6_NONCE" > "$TMPWD_R5H6/CLAUDE.local.${R5H6_SID8}.md"
+# Invoke with CLAUDE_CODE_SESSION_ID set, CLAUDE_SESSION_ID explicitly unset
+OUT_R5H6=$(cd "$TMPWD_R5H6" && unset CLAUDE_SESSION_ID && \
+  CLAUDE_CODE_SESSION_ID="$R5H6_SID" HOME="$TMPHOME_R5H6" bash "$STEP2_SH" 2>/dev/null)
+R5H6_STATE=$(printf '%s' "$OUT_R5H6" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$R5H6_STATE" = "ok" ]; then
+  pass "R5-H6: production-equivalent path — CLAUDE_CODE_SESSION_ID fallback works → STATE=ok"
+else
+  fail "R5-H6: production-equivalent path" "expected state=ok; got state='$R5H6_STATE' raw: ${OUT_R5H6:0:200}"
+fi
+rm -rf "$TMPWD_R5H6" "$TMPHOME_R5H6"
+
+# ---------------------------------------------------------------------------
+# §R5-C9 own-sid-unresolvable STATE (R5 Critical #9)
+# ---------------------------------------------------------------------------
+# When both CLAUDE_SESSION_ID and CLAUDE_CODE_SESSION_ID are unset AND slug fallback
+# finds no transcripts (temp dir with no .claude/projects/), step2.sh must emit
+# STATE=own-sid-unresolvable and refuse to proceed.
+echo ""
+echo "== §R5-C9 own-sid-unresolvable when both env vars unset + no transcript =="
+TMPWD_C9=$(mktemp -d)
+TMPHOME_C9=$(mktemp -d)
+mkdir -p "$TMPHOME_C9/.claude/progress" && chmod 700 "$TMPHOME_C9/.claude/progress"
+# No breadcrumb, no handoff — env vars will be unset, tmpdir has no .claude/projects/
+# so slug fallback also finds nothing.
+OUT_C9=$(cd "$TMPWD_C9" && unset CLAUDE_SESSION_ID && unset CLAUDE_CODE_SESSION_ID && \
+  HOME="$TMPHOME_C9" bash "$STEP2_SH" 2>/dev/null)
+C9_STATE=$(printf '%s' "$OUT_C9" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$C9_STATE" = "own-sid-unresolvable" ]; then
+  pass "R5-C9: own-sid-unresolvable fires when both env vars unset + no transcript"
+else
+  fail "R5-C9: own-sid-unresolvable" "expected state=own-sid-unresolvable; got state='$C9_STATE' raw: ${OUT_C9:0:200}"
+fi
+rm -rf "$TMPWD_C9" "$TMPHOME_C9"
+
+# ---------------------------------------------------------------------------
+# §R5-C2 Body-line marker bypass — strict anchor must reject prose mentions
+# ---------------------------------------------------------------------------
+# Verifies that a handoff file containing a prose mention of the marker format
+# does NOT cause handoff_marker_sid/nonce to extract from the prose line.
+# Only lines beginning with ^<!-- END-OF-HANDOFF schema=v1 are canonical markers.
+echo ""
+echo "== §R5-C2 Body-line marker bypass (Adversary ATTACK 2 re-run) =="
+. "$PWD/lib/handoff-marker.sh" 2>/dev/null || true
+TMPFILE_C2=$(mktemp)
+# File has a prose mention inline (NOT at start of line) then a canonical marker at start of line.
+printf '## Documentation\nNote: marker has form <!-- END-OF-HANDOFF schema=v1 sid=attacker nonce=bad-nonce -->\n\n<!-- END-OF-HANDOFF schema=v1 sid=canonical1 nonce=aaaa1111-2222-3333-4444-555566667777 -->\n' > "$TMPFILE_C2"
+C2_SID=$(handoff_marker_sid "$TMPFILE_C2" 2>/dev/null)
+C2_NONCE=$(handoff_marker_nonce "$TMPFILE_C2" 2>/dev/null)
+if [ "$C2_SID" = "canonical1" ] && [ "$C2_NONCE" = "aaaa1111-2222-3333-4444-555566667777" ]; then
+  pass "R5-C2: body-line bypass defeated — canonical marker wins (sid=$C2_SID nonce=$C2_NONCE)"
+else
+  fail "R5-C2: body-line bypass" "expected sid=canonical1 nonce=aaaa1111-...; got sid='$C2_SID' nonce='$C2_NONCE'"
+fi
+rm -f "$TMPFILE_C2"
+
+# ---------------------------------------------------------------------------
+# §R5-H13 Multi-marker fail-closed (H13)
+# ---------------------------------------------------------------------------
+# Verifies that a handoff file with >1 canonical markers emits STATE=multi-marker-detected.
+echo ""
+echo "== §R5-H13 Multi-marker fail-closed =="
+TMPWD_H13=$(mktemp -d)
+TMPHOME_H13=$(mktemp -d)
+mkdir -p "$TMPHOME_H13/.claude/progress" && chmod 700 "$TMPHOME_H13/.claude/progress"
+H13_SID="r5h13-multi-$$"
+H13_SID8="${H13_SID:0:8}"
+H13_NONCE="11111111-aaaa-bbbb-cccc-dddddddddddd"
+H13_CWD=$(cd -P "$TMPWD_H13" 2>/dev/null && pwd -P)
+H13_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+# Write breadcrumb
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid  "$H13_SID" \
+  --arg sid8 "$H13_SID8" \
+  --arg cwd  "$H13_CWD" \
+  --arg nonce "$H13_NONCE" \
+  --arg host  "$H13_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$TMPHOME_H13/.claude/progress/breadcrumb-${H13_SID}.json" 2>/dev/null
+chmod 600 "$TMPHOME_H13/.claude/progress/breadcrumb-${H13_SID}.json"
+# Write handoff with TWO canonical markers (tampered file)
+printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$H13_SID8" "$H13_NONCE" "$H13_SID8" "$H13_NONCE" > "$TMPWD_H13/CLAUDE.local.${H13_SID8}.md"
+OUT_H13=$(cd "$TMPWD_H13" && CLAUDE_SESSION_ID="$H13_SID" HOME="$TMPHOME_H13" bash "$STEP2_SH" 2>/dev/null)
+H13_STATE=$(printf '%s' "$OUT_H13" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$H13_STATE" = "multi-marker-detected" ]; then
+  pass "R5-H13: multi-marker fail-closed fires on tampered handoff (2 markers)"
+else
+  fail "R5-H13: multi-marker fail-closed" "expected state=multi-marker-detected; got state='$H13_STATE' raw: ${OUT_H13:0:200}"
+fi
+rm -rf "$TMPWD_H13" "$TMPHOME_H13"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
