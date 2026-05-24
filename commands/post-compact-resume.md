@@ -176,16 +176,7 @@ fi
 
 # Nonce validation: extract nonce from marker and compare with consumed sentinel.
 MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1)
-SENTINEL_NONCE=""
-if [ -n "$SENTINEL_SID" ]; then
-  SENTINEL_PATH="$HOME/.claude/progress/auto-compact-${SENTINEL_SID}.json"
-  CLAIM_PATH="${SENTINEL_PATH}.claim.$$"
-  # Try reading from claim file (most-recent)
-  ACTUAL_CLAIM=$(ls -t "$HOME/.claude/progress/auto-compact-${SENTINEL_SID}.json.claim."* 2>/dev/null | head -1)
-  if [ -n "$ACTUAL_CLAIM" ] && [ -f "$ACTUAL_CLAIM" ]; then
-    SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$ACTUAL_CLAIM" 2>/dev/null) || SENTINEL_NONCE=""
-  fi
-fi
+# SENTINEL_NONCE already populated above by breadcrumb-first lookup (or claim-file fallback).
 NONCE_OK="unknown"
 if [ -n "$MARKER_NONCE" ] && [ -n "$SENTINEL_NONCE" ]; then
   if [ "$MARKER_NONCE" = "$SENTINEL_NONCE" ]; then NONCE_OK=match; else NONCE_OK=mismatch; fi
