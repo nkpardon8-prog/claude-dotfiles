@@ -335,7 +335,7 @@ in `.gitignore` (handled in Step 8 — the existing `CLAUDE.local.md` ignore lin
 
 ### Step 6A: Phase 1 — Full Write
 
-One `Write` call covering every section below. Floor depends on the mining pass chosen in Step 3.A:
+One `Write` call covering every section. Floor depends on the mining pass chosen in Step 3.A:
 
 | Pass | Floor (Phase 1) | Ceiling (Phase 2) | Pre-write protocol |
 |---|---:|---:|---|
@@ -345,7 +345,21 @@ One `Write` call covering every section below. Floor depends on the mining pass 
 
 If you can't reach the floor, you under-mined in Step 3 — go back to Step 3.C and extract more before writing.
 
-Overwrite `./CLAUDE.local.md` with this structure (use the parent fields held in working memory from Step 3.B):
+**SID-tagged write + alias copy (multi-track handoff — parallel agents write to separate files):**
+
+1. Resolve SID from Step 3.B disk-persist scratch file or dry-run output.
+2. Compute `SID8` = first 8 chars of SID: `SID8=$(printf '%s' "$SID" | head -c 8); [ -z "$SID8" ] && SID8="$SID"`
+3. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
+4. Set `HANDOFF_ALIAS=$REPO_ROOT/CLAUDE.local.md`
+5. Snapshot: if `HANDOFF_ALIAS` exists, Read its content then Write to `HANDOFF_ALIAS.prev` (conditional on SNAPSHOT_NEEDED check above). Skip if alias absent.
+6. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
+7. After Step 6D marker-append completes, Read `HANDOFF_PRIMARY` then Write its content to `HANDOFF_ALIAS` (deterministic alias copy).
+
+Both HANDOFF_PRIMARY and HANDOFF_ALIAS are in the ctx-gate Write allowlist (glob `CLAUDE.local*.md`).
+
+**Read the template at `$HOME/.claude-dotfiles/commands/pre-compact-template.md` via the Read tool** and use the returned content as the CLAUDE.local.md skeleton. Do not generate the template from memory — Read the file. Replace all placeholder text with session-specific content. Remove sections whose body is empty or placeholder-only (as specified in Step 6C).
+
+Overwrite HANDOFF_PRIMARY with this content (use the parent fields held in working memory from Step 3.B):
 
 ```markdown
 # Post-Compact Reference
