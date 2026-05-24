@@ -118,7 +118,6 @@ if [ -n "$OWN_SID" ]; then
       [ -n "$_refused_cwd" ] && [ "$_refused_cwd" != "$CURRENT_CWD_CANON" ] && _refused_valid=false
       [ -n "$_refused_host" ] && [ "$_refused_host" != "$HOSTNAME_SHORT" ] && _refused_valid=false
       if [ "$_refused_valid" = "true" ]; then
-        _refused_next=$(jq -r '.next_steps // empty' "$_refused_bc" 2>/dev/null) || _refused_next=""
         _refused_real=$(jq -r '.real_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_real=""
         _refused_resolved=$(jq -r '.resolved_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_resolved=""
         # R5 H1: use ac_compute_sid8 (TTY-aware) instead of head -c 8 (strips __ttysN suffix).
@@ -129,12 +128,13 @@ if [ -n "$OWN_SID" ]; then
         # the breadcrumb has served its purpose and should not fire again on next resume.
         _BREADCRUMB_CONSUMED="yes"
         ADOPTED_BREADCRUMB_PATH="$_refused_bc"
+        # R5 Critical #6: hard-code recovery prose — no attacker-controlled fields in STATE.
+        # (next_steps was dropped from breadcrumb-writer in R5 to eliminate prompt-injection vector.)
         _json=$(jq -c -n \
           --arg sid8 "$_refused_sid8" \
           --arg real_sid "$_refused_real" \
           --arg resolved_sid "$_refused_resolved" \
-          --arg next_steps "$_refused_next" \
-          '{"state":"stop-hook-refused","sid8":$sid8,"real_sid":$real_sid,"resolved_sid":$resolved_sid,"next_steps":$next_steps}' 2>/dev/null)
+          '{"state":"stop-hook-refused","sid8":$sid8,"real_sid":$real_sid,"resolved_sid":$resolved_sid,"next_steps":"Two sentinels exist for this session with distinct SIDs. Run /pre-compact again to arm a fresh sentinel, then retry /compact manually."}' 2>/dev/null)
         if [ -n "$_json" ]; then
           printf 'STATE=%s\n' "$_json"
         else
