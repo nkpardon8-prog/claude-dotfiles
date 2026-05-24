@@ -121,6 +121,30 @@ if [ -n "$OWN_SID" ]; then
       [ -n "$_refused_cwd" ] && [ "$_refused_cwd" != "$CURRENT_CWD_CANON" ] && _refused_valid=false
       [ -n "$_refused_host" ] && [ "$_refused_host" != "$HOSTNAME_SHORT" ] && _refused_valid=false
       if [ "$_refused_valid" = "true" ]; then
+        # RQ-10 (R6 HZ-04 extension): verify HMAC signature on refused breadcrumb before honoring it.
+        # An attacker who can write to ~/.claude/progress/ could forge a refused-bc with arbitrary
+        # real_sid/resolved_sid values, injecting into STATE=stop-hook-refused. With signature
+        # verification (same rc=0/1/2 logic as normal breadcrumb scan), forged refused-bcs are
+        # rejected.
+        _refused_bc_sig=$(jq -r '.signature // empty' "$_refused_bc" 2>/dev/null) || _refused_bc_sig=""
+        _refused_bc_cwd=$(jq -r '.cwd // empty' "$_refused_bc" 2>/dev/null) || _refused_bc_cwd=""
+        _refused_bc_sid8=$(ac_compute_sid8 "$OWN_SID" 2>/dev/null) || _refused_bc_sid8=$(printf '%s' "$OWN_SID" | head -c 8)
+        _refused_sig_rc=0
+        if command -v session_key_verify >/dev/null 2>&1; then
+          session_key_verify "$_refused_bc_sid8" "$_refused_bc_sig" "$OWN_SID" "$OWN_SID" "$OWN_SID" \
+            "${_refused_bc_cwd:-$CURRENT_CWD_CANON}" "${_refused_host:-}" "stop-hook-fail-closed" 2>/dev/null || _refused_sig_rc=$?
+          if [ "$_refused_sig_rc" -eq 1 ]; then
+            # Forged or tampered refused breadcrumb — reject it.
+            handoff_log "step2 skip reason=refused-bc-signature-mismatch sid8=${_refused_bc_sid8} path=$_refused_bc"
+            _refused_valid=false
+          elif [ "$_refused_sig_rc" -eq 2 ]; then
+            # Key absent or openssl unavailable — proceed with warn (backward compat; pre-R6 refused-bcs unsigned).
+            handoff_log "step2 warn reason=refused-bc-signature-inconclusive sid8=${_refused_bc_sid8} path=$_refused_bc"
+          fi
+          # rc=0: valid signature or HANDOFF_ACCEPT_UNSIGNED=1
+        fi
+      fi
+      if [ "$_refused_valid" = "true" ]; then
         _refused_real=$(jq -r '.real_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_real=""
         _refused_resolved=$(jq -r '.resolved_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_resolved=""
         # R5 H1: use ac_compute_sid8 (TTY-aware) instead of head -c 8 (strips __ttysN suffix).
