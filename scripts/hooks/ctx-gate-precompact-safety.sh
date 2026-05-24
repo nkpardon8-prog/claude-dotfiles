@@ -72,7 +72,16 @@ fi
 #     session that cannot make any forward progress.
 PCT=$(ctx_gate_read_pct "$SID") || PCT="?"
 
-if [ "$PCT" != "?" ] && [ "$PCT" -ge "$HANDOFF_AUTOCOMPACT_BYPASS_PCT" ]; then
+# H13 (R4 Phase 3): PCT=? (unknown) is now fail-OPEN. Previously PCT=? fell through to
+# the BLOCK branch, causing a deadlock at 95%+ when the ctx-sidecar file is unreadable.
+# A blocked session at 95%+ with an unreadable sidecar cannot recover — worse than losing
+# the handoff. If we cannot read PCT, release and let native compact proceed.
+if [ "$PCT" = "?" ]; then
+  ctx_gate_log "precompact sid=$SID pct=? trigger=auto action=release-pct-unknown reason=fail-open"
+  exit 0  # PCT unknown — fail-open; let native compact run rather than deadlock
+fi
+
+if [ "$PCT" -ge "$HANDOFF_AUTOCOMPACT_BYPASS_PCT" ]; then
   ctx_gate_log "precompact sid=$SID pct=$PCT trigger=auto action=release-extreme-pct"
   exit 0  # let native compact run; handoff lost but better than deadlock
 fi
