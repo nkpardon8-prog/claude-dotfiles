@@ -352,13 +352,13 @@ if command -v handoff_marker_count >/dev/null 2>&1; then
 fi
 
 # H1: delegate nonce extraction to lib/handoff-marker.sh. Fall back to inline sed if lib absent.
+# Read from snapshot (_HANDOFF_READ) for TOCTOU safety (Phase 1, Round 4).
 if command -v handoff_marker_nonce >/dev/null 2>&1; then
-  MARKER_NONCE=$(handoff_marker_nonce "$HANDOFF_PATH" 2>/dev/null)
+  MARKER_NONCE=$(handoff_marker_nonce "$_HANDOFF_READ" 2>/dev/null)
 else
-  # R3-fix-sweep C3+C4: anchor inline nonce extraction to marker line (same as lib fix).
-  MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null \
-    | grep -F 'END-OF-HANDOFF schema=' \
-    | tail -1 \
+  # R3-fix-sweep C3+C4 + Phase 1 Round 4: whole-file grep + head -1 (replaces tail -c 512 + tail -1).
+  MARKER_NONCE=$(grep -F 'END-OF-HANDOFF schema=' "$_HANDOFF_READ" 2>/dev/null \
+    | head -1 \
     | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
 fi
 
@@ -366,16 +366,14 @@ fi
 # If the marker's SID8 disagrees with the breadcrumb SID8, the file belongs to a
 # DIFFERENT session — hard stop immediately (before nonce comparison).
 # Uses handoff_marker_sid() from lib/handoff-marker.sh if available (sourced above).
+# Read from snapshot (_HANDOFF_READ) for TOCTOU safety.
 MARKER_SID=""
 if command -v handoff_marker_sid >/dev/null 2>&1; then
-  MARKER_SID=$(handoff_marker_sid "$HANDOFF_PATH" 2>/dev/null) || MARKER_SID=""
+  MARKER_SID=$(handoff_marker_sid "$_HANDOFF_READ" 2>/dev/null) || MARKER_SID=""
 else
-  # R3-fix-sweep C1+C3+C4: inline fallback — anchor to marker line (same fix as lib).
-  # grep -F filters to marker lines only; tail -1 picks the last canonical marker;
-  # sed extracts sid= — no \b needed (already on marker-only line).
-  MARKER_SID=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null \
-    | grep -F 'END-OF-HANDOFF schema=' \
-    | tail -1 \
+  # R3-fix-sweep C1+C3+C4 + Phase 1 Round 4: whole-file grep + head -1 (replaces tail -c 512 + tail -1).
+  MARKER_SID=$(grep -F 'END-OF-HANDOFF schema=' "$_HANDOFF_READ" 2>/dev/null \
+    | head -1 \
     | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
 fi
 if [ -n "$MARKER_SID" ] && [ -n "$SID8" ] && [ "$MARKER_SID" != "$SID8" ]; then
