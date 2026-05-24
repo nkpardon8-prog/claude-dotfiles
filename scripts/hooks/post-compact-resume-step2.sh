@@ -296,9 +296,13 @@ MARKER_SID=""
 if command -v handoff_marker_sid >/dev/null 2>&1; then
   MARKER_SID=$(handoff_marker_sid "$HANDOFF_PATH" 2>/dev/null) || MARKER_SID=""
 else
-  # Inline fallback if lib not loaded.
+  # R3-fix-sweep C1+C3+C4: inline fallback — anchor to marker line (same fix as lib).
+  # grep -F filters to marker lines only; tail -1 picks the last canonical marker;
+  # sed extracts sid= — no \b needed (already on marker-only line).
   MARKER_SID=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null \
-    | sed -nE 's/.*\bsid=([A-Za-z0-9_-]+).*/\1/p' | head -1)
+    | grep -F 'END-OF-HANDOFF schema=' \
+    | tail -1 \
+    | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
 fi
 if [ -n "$MARKER_SID" ] && [ -n "$SID8" ] && [ "$MARKER_SID" != "$SID8" ]; then
   _json=$(jq -c -n \
