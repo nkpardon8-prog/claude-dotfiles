@@ -1136,7 +1136,7 @@ TMPHOME_G=$(mktemp -d)
 mkdir -p "$TMPHOME_G/.claude/progress" && chmod 700 "$TMPHOME_G/.claude/progress"
 GG_SID="g4g-age-$$"
 GG_SID8="${GG_SID:0:8}"
-GG_NONCE="gg-nonce-aaaa-bbbb-cccc-ddddeeeeeeee"
+GG_NONCE="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 GG_CWD=$(cd -P "$TMPWD_G" 2>/dev/null && pwd -P)
 GG_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 GG_BREADCRUMB="$TMPHOME_G/.claude/progress/breadcrumb-${GG_SID}.json"
