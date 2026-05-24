@@ -32,6 +32,13 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/handoff-config.sh
 . "$ROOT/lib/handoff-config.sh"
 
+# H13 (Theme 5): explicit default for HANDOFF_AUTOCOMPACT_BYPASS_PCT.
+# If lib/handoff-config.sh fails to source, HANDOFF_AUTOCOMPACT_BYPASS_PCT is unset.
+# An unset variable in the [ "$PCT" -ge "$HANDOFF_AUTOCOMPACT_BYPASS_PCT" ] test would
+# silently evaluate to 0, causing the BLOCK branch to fire even at 99% context — deadlock.
+# Explicit default here ensures the release threshold is always defined.
+: "${HANDOFF_AUTOCOMPACT_BYPASS_PCT:=90}"
+
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
 TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // empty' 2>/dev/null)
