@@ -117,19 +117,30 @@ fi
 
 SENTINEL_PRESENT="false"
 SENTINEL_PATH=""
+SENTINEL_SID8=""
+SENTINEL_NONCE=""
 for sentinel_candidate in "$HOME/.claude/progress/auto-compact-"*.json; do
   # Glob with no match expands to literal pattern; the -f test catches this.
   [ -f "$sentinel_candidate" ] || continue
   # Use schema-validating lib reader: symlink rejection, size cap, schema_version check.
-  # R3 #5 fix: legacy sentinels (schema_version=1, no cwd field) → skip via continue.
-  SENT_CWD=$(ac_read_sentinel_cwd "$sentinel_candidate" 2>/dev/null)
-  if [ -z "$SENT_CWD" ]; then
+  # Legacy sentinels (schema_version=1, no cwd field) → skip via continue.
+  SENT_CWD=$(ac_read_sentinel_cwd "$sentinel_candidate" 2>/dev/null) || {
     ctx_gate_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=no-cwd-field-or-invalid-schema"
     continue
+  }
+  if [ -z "$SENT_CWD" ]; then
+    ctx_gate_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=empty-cwd"
+    continue
   fi
-  if [ "$SENT_CWD" = "$CWD" ]; then
+  # Canonicalize sentinel cwd; match if EITHER canonical OR raw equality (R1-H1 fallback).
+  SENT_CWD_CANON=$(ac_canonicalize_path "$SENT_CWD") || SENT_CWD_CANON="$SENT_CWD"
+  if [ "$SENT_CWD_CANON" = "$CWD_CANON" ] || [ "$SENT_CWD" = "$CWD" ]; then
     SENTINEL_PRESENT="true"
     SENTINEL_PATH="$sentinel_candidate"
+    SENTINEL_SID_FULL=$(basename "$sentinel_candidate" .json | sed 's/^auto-compact-//')
+    SENTINEL_SID8=$(printf '%s' "$SENTINEL_SID_FULL" | head -c 8)
+    [ -z "$SENTINEL_SID8" ] && SENTINEL_SID8="$SENTINEL_SID_FULL"
+    SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$sentinel_candidate" 2>/dev/null) || SENTINEL_NONCE=""
     break
   fi
   # Different cwd — this sentinel is for another workspace; skip
