@@ -219,7 +219,7 @@ Check for `docs/decisions/`, `docs/adr/`, or any `ADR-*.md` files. If present, l
 
 ### Step 3.G: Skill state inference
 
-Detect which slash-command skill (if any) is currently active by inventorying `./tmp/` artifacts and recent transcript activity. This populates a new `## Active Skill State` section in CLAUDE.local.md so the next agent can re-enter the EXACT skill+phase, not just "the topic."
+Detect which slash-command skill (if any) is currently active by inventorying `./tmp/` artifacts and recent transcript activity. This populates a new `## Active Skill State` section in the SID-tagged handoff so the next agent can re-enter the EXACT skill+phase, not just "the topic."
 
 **Inference priorities (highest priority wins; report all that match):**
 
