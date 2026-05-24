@@ -145,6 +145,12 @@ ac_write_sentinel() {
     --arg cwd "$cwd" \
     --arg nonce "$nonce" \
     '{schema_version:$sv,target_tty:$tty,originating_command:"pre-compact",cwd:$cwd,marker_nonce:$nonce}') || return 1
+  # H8: reject sentinel JSON that exceeds the size cap (defends against oversized cwd
+  # or nonce values inflating the sentinel beyond the expected ~300-byte range).
+  if [ "${#json}" -gt "${AC_MAX_SENTINEL_BYTES:-4096}" ]; then
+    ac_log "ac_write_sentinel skip reason=oversize size=${#json} limit=${AC_MAX_SENTINEL_BYTES:-4096}"
+    return 1
+  fi
   # Atomic write via temp+rename (POSIX same-fs atomicity verified by smoke 03).
   # Hook subprocess — not subject to orchestrator Bash tool restrictions.
   local tmp="${path}.tmp.$$"
