@@ -192,6 +192,8 @@ if [ -z "$HANDOFF_PATH" ]; then
   # Signaling convention: exit 0 here so the orchestrator reads STATE= from stdout
   # and routes accordingly. Non-zero exit would surface as a Bash tool error, not
   # as a routable state signal.
+  # H4: emit step2_terminal log so operators can reconstruct terminal state audit trail.
+  handoff_log "step2_terminal state=no-handoff sid8=${SID8:-none}"
   _json=$(jq -c -n '{"state":"no-handoff"}' 2>/dev/null)
   if [ -n "$_json" ]; then
     printf 'STATE=%s\n' "$_json"
