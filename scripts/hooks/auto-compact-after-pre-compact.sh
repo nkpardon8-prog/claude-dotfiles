@@ -226,7 +226,7 @@ else
 fi
 ac_log "stop sid=$SESSION_ID tty=$TARGET_TTY osa_exit=$OSA_EXIT result=${OSA_RESULT:-empty} stderr=${OSA_STDERR:-none}"
 # B20: unified handoff audit trail — log compact chain event.
-handoff_log "compact_chained sid=${SESSION_ID:0:8} tty=$TARGET_TTY result=${OSA_RESULT:-unknown}"
+handoff_log "compact_chained sid=$(ac_compute_sid8 "$SESSION_ID") tty=$TARGET_TTY result=${OSA_RESULT:-unknown}"
 
 # R4 PR-12: Write per-session breadcrumb so /post-compact-resume can recover the SID + nonce
 # AFTER our EXIT trap removes the .claim file. Path is SID-scoped (PR-1) to avoid
