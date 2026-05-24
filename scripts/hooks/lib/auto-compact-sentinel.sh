@@ -146,7 +146,7 @@ ac_compute_sid8() {
 }
 
 ac_resolve_session_id() {
-  local sid="${CLAUDE_SESSION_ID:-}"
+  local sid="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
   if [ -z "$sid" ]; then
     # Slug derivation: Claude Code's project transcript dirs replace every
     # non-alphanumeric byte of the absolute path with `-`. The naive
