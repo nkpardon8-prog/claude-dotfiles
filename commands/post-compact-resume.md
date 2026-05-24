@@ -165,7 +165,7 @@ The orchestrator reads the `STATE=...` output line and routes to the decision ma
   > This handoff is ${HANDOFF_AGE_HOURS} hours old. It may be from a prior conversation.
   > Verify with the user that resuming this thread is intended before continuing.
 
-  Then proceed with the read. R2 #6 fix: do NOT wait for user confirmation (would hang
+  Then proceed with the read. Do NOT wait for user confirmation (would hang
   `claude --resume --prompt '...'` unattended pipelines). The warning is advisory.
 
 - **MARKER=absent AND LEGACY=true:** output to user:
