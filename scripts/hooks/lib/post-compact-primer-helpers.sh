@@ -202,7 +202,8 @@ primer_find_sentinel_for_cwd() {
       SENTINEL_SID8=$(printf '%s' "$sentinel_sid_full" | head -c 8)
       [ -z "$SENTINEL_SID8" ] && SENTINEL_SID8="$sentinel_sid_full"
       SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$sentinel_candidate" 2>/dev/null) || SENTINEL_NONCE=""
-      handoff_log "handoff_detected sid=${SENTINEL_SID8:-unknown} file=${HANDOFF_PATH:-unknown}"
+      # R4 D6: handoff_detected log line MOVED to post-compact-primer.sh AFTER
+      # primer_resolve_handoff_path completes (so HANDOFF_PATH is set at log time).
       break
     fi
     # Different cwd — sentinel for another workspace; skip.
