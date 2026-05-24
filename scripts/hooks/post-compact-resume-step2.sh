@@ -382,7 +382,9 @@ MARKER=absent
 if command -v handoff_marker_check >/dev/null 2>&1; then
   if handoff_marker_check "$_HANDOFF_READ"; then MARKER=present; fi
 else
-  if grep -qF '<!-- END-OF-HANDOFF schema=v1' "$_HANDOFF_READ" 2>/dev/null \
+  # R5 Critical #2: strict anchor — require marker at start-of-line so prose mentions
+  # of the marker format in the handoff body don't trigger a false MARKER=present.
+  if grep -qE '^<!-- END-OF-HANDOFF schema=v1 ' "$_HANDOFF_READ" 2>/dev/null \
      || grep -qF '<!-- END-OF-HANDOFF -->' "$_HANDOFF_READ" 2>/dev/null; then
     MARKER=present
   fi
