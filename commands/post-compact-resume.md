@@ -63,28 +63,56 @@ persist across orchestrator turns or into a new Bash subprocess):
 bash "$HOME/.claude-dotfiles/scripts/hooks/lib/post-compact-resume-step2.sh"
 ```
 
-This script (~140 lines) is maintained at the path above. It:
+This script is maintained at the path above. It:
 1. Sources ctx-gate-config.sh, handoff-config.sh, auto-compact-sentinel.sh
-2. Reads the per-session breadcrumb (R3 D2) for SID + nonce recovery, with cwd + hostname validation
-3. Resolves HANDOFF_PATH (SID-tagged → alias → repo-root variants), symlink-rejected
-4. Enforces 5MB size cap (H11), hardlink rejection handled by try_path symlink guard
+2. Reads the per-session breadcrumb (R3 D2 / R4 D5) for SID + nonce recovery, with cwd + hostname validation
+3. Resolves HANDOFF_PATH (R4 D3: SID-tagged ONLY when SID known; alias-only when SID unknown), symlink-rejected
+4. Enforces 5MB size cap (H11), hardlink rejection handled by try_path
 5. Extracts MARKER_NONCE; compares with SENTINEL_NONCE → NONCE_OK
 6. Checks freshness vs HANDOFF_LEGACY_CUTOFF_EPOCH and HANDOFF_STALE_SECS
-7. Emits a single `STATE=...` line on stdout
+7. Emits a single `STATE=<JSON>` line on stdout (R4 D10: JSON-encoded for paths with spaces)
 
-The orchestrator reads the `STATE=...` line and routes per the decision matrix below.
+**Parse the STATE line:**
+```bash
+STATE_LINE=$(bash "$HOME/.claude-dotfiles/scripts/hooks/lib/post-compact-resume-step2.sh" 2>/dev/null)
+STATE=$(printf '%s' "$STATE_LINE" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+```
 
-The orchestrator reads the `STATE=...` output line and routes to the decision matrix below.
+Then route per the decision matrix below.
 
-**Decision matrix (graceful fallback, no hard-stop):**
+**Decision matrix (route on `.state` JSON field):**
 
-- **STATE=oversize:** output to user:
-  > Handoff file is ${HANDOFF_SIZE} bytes, exceeding the ${HANDOFF_MAX_SIZE_BYTES:-5242880} byte cap.
+- **STATE=`no-handoff`:** no handoff found. Output the paste-prompt from Step 1. Stop.
+
+- **STATE=`sid-known-no-tagged-file`:** SID was known (from breadcrumb) but SID-tagged file is missing.
+  Output to user:
+  > WARNING: A /pre-compact ran for this session but the SID-tagged handoff file is missing.
+  > Possible causes: file was deleted, cwd changed since /pre-compact, or another agent moved it.
+  > Extract `sid8` from STATE JSON (`jq -r '.sid8'`), then check if `CLAUDE.local.<sid8>.md` exists
+  > in the current directory or repo root. Ask the user before proceeding.
+  > Do NOT load the generic alias `CLAUDE.local.md` — it may belong to a different parallel-track session.
+  Then stop. Do not guess; ask the user.
+
+- **STATE=`nonce-mismatch-hard-stop`:** SID-known + marker nonce ≠ sentinel nonce — hard stop.
+  Output to user:
+  > WARNING: Handoff nonce mismatch. The SID-tagged file's marker nonce does not match the
+  > sentinel nonce from this session. Possible causes: file was replaced or corrupted.
+  > Extract `marker_nonce_first8` and `sentinel_nonce_first8` from STATE JSON for the user.
+  > Ask the user whether to proceed cautiously or to start fresh.
+  Then stop. Do not auto-proceed (unlike the legacy advisory path — R4 D4 makes this hard).
+
+- **STATE=`oversize`:** output to user:
+  > Handoff file is too large (extract `size` and `max` from STATE JSON).
   > Refusing to ingest. Ask the user what was being worked on before resuming.
-
   Then stop. Do not attempt to read the file.
 
-- **NONCE_OK=mismatch (advisory only):** emit a warning before reading: "Marker nonce does not match consumed sentinel nonce. The handoff may be from a different session or a copy from another workspace. Proceeding anyway — verify content context manually." Then continue per MARKER/STALE matrix below.
+- **STATE=`ok`:** proceed per the MARKER/STALE/LEGACY matrix below.
+  Parse fields from STATE JSON: `marker`, `stale`, `legacy`, `age_hours`, `nonce_ok`, `sid8`, `path`.
+
+  (Note: for `ok` STATE, `nonce_ok=mismatch` means SID was UNKNOWN when the mismatch was detected —
+  this is advisory, not a hard stop, per R4 D4. Emit a warning but continue.)
+
+- **STATE=`error` or parse failure:** treat as `no-handoff` — output the paste-prompt. Stop.
 
 - **MARKER=present AND STALE=false:** read full file, navigate normally per Steps 3-4.
 
