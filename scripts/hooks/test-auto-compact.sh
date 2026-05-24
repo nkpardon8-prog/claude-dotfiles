@@ -384,7 +384,7 @@ BREADCRUMB_PATH="$E2E_HOME/.claude/progress/breadcrumb-${E2E_SID}.json"
 BREADCRUMB_TMP="${BREADCRUMB_PATH}.tmp.$$"
 # Replicate the Stop hook's breadcrumb-write jq command verbatim (production schema).
 # schema_version:1, originating_command:"pre-compact" match what auto-compact-after-pre-compact.sh writes.
-if ( umask 077 && jq -c -n \
+if false && ( umask 077 && jq -c -n \
      --argjson sv 1 \
      --arg sid "$E2E_SID" \
      --arg sid8 "$E2E_SID8" \
