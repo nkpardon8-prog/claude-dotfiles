@@ -65,6 +65,13 @@ _BREADCRUMB_CONSUMED=""
 trap '[ "$_BREADCRUMB_CONSUMED" = "yes" ] && [ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true' EXIT
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 
+# Phase 2 (Round 4): Compute OWN_SID at startup for session-binding filter.
+# ac_resolve_session_id is sourced from lib/auto-compact-sentinel.sh above.
+# When CLAUDE_SESSION_ID is set (typical Claude Code hook context), this returns
+# it directly. When unset (manual invocations, test fixtures), returns slug-fallback
+# (possibly empty). Empty OWN_SID → legacy-fallback mode (adopts newest matching breadcrumb).
+OWN_SID=$(ac_resolve_session_id 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128) || OWN_SID=""
+
 # Glob over per-session breadcrumbs, newest first; pick the first that matches cwd + host.
 # H3 (Theme 5): use nullglob + mtime-array iteration instead of $(ls -t ...) to handle
 # $HOME with spaces and avoid word-splitting / ls-parse pitfalls (bash 3.2 compatible).
