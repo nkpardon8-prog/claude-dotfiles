@@ -71,10 +71,22 @@ CWD_CANON=$(ac_canonicalize_path "$CWD") || CWD_CANON="$CWD"
 primer_find_sentinel_for_cwd "$CWD_CANON"
 
 # Walk up to the git repo root (SessionStart cwd may be a subdirectory of the repo).
-# R3 D6: primer_resolve_handoff_path now checks SENTINEL_SID8 (set above) to prefer
-# the SID-tagged file (CLAUDE.local.<sid8>.md) over the generic alias (CLAUDE.local.md).
+# R4 D3: primer_resolve_handoff_path returns:
+#   0 — path resolved (HANDOFF_PATH set)
+#   1 — no handoff at all (SID unknown, no alias either)
+#   2 — SID known but SID-tagged file missing (fail-closed; NEVER fall back to alias)
 HANDOFF_PATH=""
 primer_resolve_handoff_path "$CWD"
+RESOLVE_RC=$?
+
+# R4 D3 + R2-PR-7: handle rc=2 before the generic no-handoff check.
+if [ "$RESOLVE_RC" -eq 2 ]; then
+  ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-no-tagged-file sid8=${SENTINEL_SID8:-unknown}"
+  jq -n \
+    --arg msg "WARNING: A /pre-compact ran for this session (sid=${SENTINEL_SID8:-unknown}) but the SID-tagged handoff file (CLAUDE.local.${SENTINEL_SID8:-unknown}.md) is missing. Possible causes: (1) file deleted, (2) cwd changed since /pre-compact, (3) another agent moved it. Ask the user before proceeding. Do NOT load the generic alias CLAUDE.local.md -- it may belong to a different parallel-track session." \
+    '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
+  exit 0
+fi
 
 if [ -z "$HANDOFF_PATH" ]; then
   ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} action=skip reason=no-handoff-file"
