@@ -573,7 +573,9 @@ echo "== §R6-RQ09 session_key_sign openssl exit-status check =="
 # RQ-09 (R6 HZ-35): session_key_sign must return rc=1 and emit nothing when openssl fails.
 # Test uses PATH manipulation: prepend a directory with a fake 'openssl' that exits 1.
 # Before the fix, the pipe 'openssl | sed' masked openssl's rc=1 → sign returned rc=0 + empty output.
-if command -v session_key_sign >/dev/null 2>&1; then
+# Source session-key.sh here (test-auto-compact.sh only sources sentinel lib at top).
+. "$ROOT/lib/session-key.sh" 2>/dev/null || true
+if command -v session_key_sign >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
   RQ09_HOME=$(mktemp -d)
   RQ09_FAKE_BIN=$(mktemp -d)
   mkdir -p "$RQ09_HOME/.claude/progress" && chmod 700 "$RQ09_HOME/.claude/progress"
