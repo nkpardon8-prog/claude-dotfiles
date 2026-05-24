@@ -65,6 +65,9 @@ _primer_check_linkcount() {
 #   - ONLY tries SID-tagged files: <cwd>/CLAUDE.local.<sid8>.md + repo-root variant.
 #   - If found (non-symlink, non-hardlink): sets HANDOFF_PATH, returns 0.
 #   - If not found: returns 2 (R4 D3 fail-closed signal).
+#   - If found but hardlinked: logs primer_skip reason=multi-hardlink + returns 3
+#     (Phase 4 Round 4: distinct rc so step2.sh can emit STATE=sid-known-hardlinked
+#     instead of silently falling to sid-known-no-tagged-file).
 #
 # When sid8 is empty (SID unknown):
 #   - Tries legacy alias files only: <cwd>/CLAUDE.local.md + repo-root variant.
@@ -78,17 +81,42 @@ handoff_resolve_path() {
   if [ -n "$sid8" ]; then
     # SID-known path: ONLY try SID-tagged files. NEVER fall back to alias.
     local p="$cwd/CLAUDE.local.${sid8}.md"
-    if [ -f "$p" ] && [ ! -L "$p" ] && _primer_check_linkcount "$p"; then
-      HANDOFF_PATH="$p"
-      return 0
+    if [ -f "$p" ] && [ ! -L "$p" ]; then
+      if _primer_check_linkcount "$p"; then
+        HANDOFF_PATH="$p"
+        return 0
+      else
+        # File exists and is not a symlink, but is a hardlink (linkcount > 1).
+        # Phase 4 Round 4: return rc=3 (distinct from rc=2 "no file") so step2.sh
+        # can surface STATE=sid-known-hardlinked with an actionable message.
+        local LCNT
+        if LCNT=$(stat -f %l "$p" 2>/dev/null); then :
+        elif LCNT=$(stat -c %h "$p" 2>/dev/null); then :
+        else LCNT=">1"
+        fi
+        LCNT=$(printf '%s' "$LCNT" | tr -d '[:space:]')
+        ctx_gate_log "primer skip reason=multi-hardlink linkcount=${LCNT} file=$p"
+        return 3
+      fi
     fi
     local repo_root
     repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root=""
     if [ -n "$repo_root" ]; then
       p="$repo_root/CLAUDE.local.${sid8}.md"
-      if [ -f "$p" ] && [ ! -L "$p" ] && _primer_check_linkcount "$p"; then
-        HANDOFF_PATH="$p"
-        return 0
+      if [ -f "$p" ] && [ ! -L "$p" ]; then
+        if _primer_check_linkcount "$p"; then
+          HANDOFF_PATH="$p"
+          return 0
+        else
+          local LCNT2
+          if LCNT2=$(stat -f %l "$p" 2>/dev/null); then :
+          elif LCNT2=$(stat -c %h "$p" 2>/dev/null); then :
+          else LCNT2=">1"
+          fi
+          LCNT2=$(printf '%s' "$LCNT2" | tr -d '[:space:]')
+          ctx_gate_log "primer skip reason=multi-hardlink linkcount=${LCNT2} file=$p"
+          return 3
+        fi
       fi
     fi
     # SID known but no SID-tagged file found (or all rejected) — R4 D3 fail-closed.
