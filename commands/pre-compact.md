@@ -292,7 +292,6 @@ About to write CLAUDE.local.md with:
 
 Anything else to capture? (open issues, things to fix later, context I might be missing) Or say 'write it' to proceed. Opt-outs:
 - Auto-compact: pass `no-auto-compact` (or say "no auto compact").
-- CLAUDE.md @import: pass `no-import` (or say "no claude-md import").
 - .gitignore update: pass `no-gitignore` (or say "no gitignore").
 
 **Unattended mode:** if the user doesn't respond within ~3 minutes (or passes `auto-confirm` / `--auto-confirm`), proceed with the draft and record "no mid-run additions (proceeded under auto-confirm)" in `## Mid-Session User Feedback`. This is essential because the whole point of `/pre-compact` + auto-compact is "walk away" — indefinite blocking defeats the use case.
