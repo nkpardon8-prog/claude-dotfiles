@@ -2050,6 +2050,153 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# §R6-RQ02 Adversarial test: STATE=hmac-unavailable (HZ-23)
+# ---------------------------------------------------------------------------
+# When key file EXISTS but verify returns rc=2 (openssl broken/unavailable),
+# step2.sh should emit STATE=hmac-unavailable rather than fail-open.
+# We simulate this by making the key file unreadable (mode 000) so session_key_load
+# fails → session_key_sign fails → verify returns rc=2. Key file exists → hmac-unavailable.
+echo ""
+echo "== §R6-RQ02 hmac-unavailable when key exists but verify fails =="
+if command -v session_key_generate >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+  STEP2_SH3="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+  RQ02_TMPWD=$(mktemp -d)
+  RQ02_TMPHOME=$(mktemp -d)
+  mkdir -p "$RQ02_TMPHOME/.claude/progress" && chmod 700 "$RQ02_TMPHOME/.claude/progress"
+  RQ02_SID="rq02-victim-${$}"
+  RQ02_SID8=$(printf '%s' "$RQ02_SID" | head -c 8)
+  RQ02_CWD=$(cd -P "$RQ02_TMPWD" 2>/dev/null && pwd -P)
+  RQ02_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+  RQ02_NONCE="cccc3333-dddd-eeee-ffff-000000000000"
+  # Generate key
+  OLD_HOME_RQ02="$HOME"
+  HOME="$RQ02_TMPHOME"
+  session_key_generate "$RQ02_SID8" 2>/dev/null
+  # Sign a breadcrumb with the real key
+  RQ02_SIG=$(session_key_sign "$RQ02_SID8" "$RQ02_SID" "$RQ02_NONCE" "$RQ02_NONCE" \
+    "$RQ02_CWD" "$RQ02_HOST" "pre-compact" 2>/dev/null)
+  HOME="$OLD_HOME_RQ02"
+  # Write breadcrumb with the valid signature
+  jq -c -n \
+    --argjson sv 1 \
+    --arg sid "$RQ02_SID" \
+    --arg sid8 "$RQ02_SID8" \
+    --arg cwd "$RQ02_CWD" \
+    --arg nonce "$RQ02_NONCE" \
+    --arg host "$RQ02_HOST" \
+    --arg sig "${RQ02_SIG:-}" \
+    '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host,signature:$sig}' \
+    > "$RQ02_TMPHOME/.claude/progress/breadcrumb-${RQ02_SID}.json" 2>/dev/null
+  chmod 600 "$RQ02_TMPHOME/.claude/progress/breadcrumb-${RQ02_SID}.json"
+  # Write a valid handoff file
+  printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+    "$RQ02_SID8" "$RQ02_NONCE" > "$RQ02_TMPWD/CLAUDE.local.${RQ02_SID8}.md"
+  # Now corrupt the key file so session_key_load fails (mode 000 → -O check fails)
+  RQ02_KEY_PATH="$RQ02_TMPHOME/.claude/progress/.session-key-${RQ02_SID8}"
+  chmod 000 "$RQ02_KEY_PATH" 2>/dev/null
+  RQ02_OUT=$(cd "$RQ02_TMPWD" && CLAUDE_SESSION_ID="$RQ02_SID" HOME="$RQ02_TMPHOME" bash "$STEP2_SH3" 2>/dev/null)
+  RQ02_STATE=$(printf '%s' "$RQ02_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  chmod 600 "$RQ02_KEY_PATH" 2>/dev/null  # restore before cleanup
+  if [ "$RQ02_STATE" = "hmac-unavailable" ]; then
+    pass "R6-RQ02: key present + verify-impossible → STATE=hmac-unavailable (fail-closed)"
+  else
+    fail "R6-RQ02: hmac-unavailable" "expected state=hmac-unavailable; got='$RQ02_STATE' raw=${RQ02_OUT:0:200}"
+  fi
+  rm -rf "$RQ02_TMPWD" "$RQ02_TMPHOME"
+else
+  pass "R6-RQ02: openssl or session_key_generate not available — skipped (inconclusive)"
+fi
+
+# ---------------------------------------------------------------------------
+# §R6-RQ03 Adversarial test: STATE=signature-mismatch on forged breadcrumb (HZ-29/HZ-30)
+# ---------------------------------------------------------------------------
+# When a breadcrumb has a forged signature and no valid breadcrumbs exist,
+# step2.sh should emit STATE=signature-mismatch (not STATE=no-handoff).
+echo ""
+echo "== §R6-RQ03 signature-mismatch STATE on forged breadcrumb =="
+if command -v session_key_generate >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+  STEP2_SH4="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+  RQ03_TMPWD=$(mktemp -d)
+  RQ03_TMPHOME=$(mktemp -d)
+  mkdir -p "$RQ03_TMPHOME/.claude/progress" && chmod 700 "$RQ03_TMPHOME/.claude/progress"
+  RQ03_SID="rq03-victim-${$}"
+  RQ03_SID8=$(printf '%s' "$RQ03_SID" | head -c 8)
+  RQ03_CWD=$(cd -P "$RQ03_TMPWD" 2>/dev/null && pwd -P)
+  RQ03_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+  RQ03_NONCE="dddd4444-eeee-ffff-0000-111111111111"
+  # Generate key so signature verification is possible (key present)
+  OLD_HOME_RQ03="$HOME"
+  HOME="$RQ03_TMPHOME"
+  session_key_generate "$RQ03_SID8" 2>/dev/null
+  HOME="$OLD_HOME_RQ03"
+  # Write breadcrumb with FORGED signature
+  jq -c -n \
+    --argjson sv 1 \
+    --arg sid "$RQ03_SID" \
+    --arg sid8 "$RQ03_SID8" \
+    --arg cwd "$RQ03_CWD" \
+    --arg nonce "$RQ03_NONCE" \
+    --arg host "$RQ03_HOST" \
+    '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host,signature:"forged0000000000000000000000000000000000000000000000000000000000"}' \
+    > "$RQ03_TMPHOME/.claude/progress/breadcrumb-${RQ03_SID}.json" 2>/dev/null
+  chmod 600 "$RQ03_TMPHOME/.claude/progress/breadcrumb-${RQ03_SID}.json"
+  # Write a valid handoff file (so the failure is ONLY at breadcrumb HMAC level)
+  printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+    "$RQ03_SID8" "$RQ03_NONCE" > "$RQ03_TMPWD/CLAUDE.local.${RQ03_SID8}.md"
+  RQ03_OUT=$(cd "$RQ03_TMPWD" && CLAUDE_SESSION_ID="$RQ03_SID" HOME="$RQ03_TMPHOME" bash "$STEP2_SH4" 2>/dev/null)
+  RQ03_STATE=$(printf '%s' "$RQ03_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  # Must NOT fall through to no-handoff — must surface signature-mismatch
+  if [ "$RQ03_STATE" = "signature-mismatch" ]; then
+    pass "R6-RQ03: forged breadcrumb signature → STATE=signature-mismatch (not no-handoff)"
+  else
+    fail "R6-RQ03: signature-mismatch STATE" "expected signature-mismatch; got='$RQ03_STATE' raw=${RQ03_OUT:0:200}"
+  fi
+  rm -rf "$RQ03_TMPWD" "$RQ03_TMPHOME"
+else
+  pass "R6-RQ03: openssl or session_key_generate not available — skipped (inconclusive)"
+fi
+
+# ---------------------------------------------------------------------------
+# §R6-RQ06 Adversarial test: HANDOFF_ACCEPT_UNSIGNED=1 startup warning (HZ-31)
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §R6-RQ06 HANDOFF_ACCEPT_UNSIGNED=1 startup warning =="
+# When HANDOFF_ACCEPT_UNSIGNED=1 is set, step2.sh must emit a warn log entry.
+# We can't easily read the log in a test, but we can check step2.sh still operates
+# (doesn't crash) and the env var is honored (unsigned breadcrumb accepted).
+RQ06_TMPWD=$(mktemp -d)
+RQ06_TMPHOME=$(mktemp -d)
+mkdir -p "$RQ06_TMPHOME/.claude/progress" && chmod 700 "$RQ06_TMPHOME/.claude/progress"
+RQ06_SID="rq06-unsigned-${$}"
+RQ06_SID8=$(printf '%s' "$RQ06_SID" | head -c 8)
+RQ06_CWD=$(cd -P "$RQ06_TMPWD" 2>/dev/null && pwd -P)
+RQ06_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+RQ06_NONCE="eeee5555-ffff-0000-1111-222222222222"
+# Write unsigned breadcrumb (no signature field)
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid "$RQ06_SID" \
+  --arg sid8 "$RQ06_SID8" \
+  --arg cwd "$RQ06_CWD" \
+  --arg nonce "$RQ06_NONCE" \
+  --arg host "$RQ06_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$RQ06_TMPHOME/.claude/progress/breadcrumb-${RQ06_SID}.json" 2>/dev/null
+chmod 600 "$RQ06_TMPHOME/.claude/progress/breadcrumb-${RQ06_SID}.json"
+printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$RQ06_SID8" "$RQ06_NONCE" > "$RQ06_TMPWD/CLAUDE.local.${RQ06_SID8}.md"
+# With HANDOFF_ACCEPT_UNSIGNED=1, unsigned breadcrumb should be accepted → STATE=ok
+STEP2_SH5="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+RQ06_OUT=$(cd "$RQ06_TMPWD" && CLAUDE_SESSION_ID="$RQ06_SID" HOME="$RQ06_TMPHOME" HANDOFF_ACCEPT_UNSIGNED=1 bash "$STEP2_SH5" 2>/dev/null)
+RQ06_STATE=$(printf '%s' "$RQ06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$RQ06_STATE" = "ok" ]; then
+  pass "R6-RQ06: HANDOFF_ACCEPT_UNSIGNED=1 accepted unsigned breadcrumb → STATE=ok"
+else
+  fail "R6-RQ06: HANDOFF_ACCEPT_UNSIGNED=1" "expected STATE=ok; got='$RQ06_STATE' raw=${RQ06_OUT:0:200}"
+fi
+rm -rf "$RQ06_TMPWD" "$RQ06_TMPHOME"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
