@@ -1886,16 +1886,35 @@ else
   fail "R6-RQ01: marker_sid8 field" "expected '$RQ01_SID_B_MARKER'; got '$RQ01_MARK_SID8'"
 fi
 # Negative test: matching SID → STATE=ok
+# Re-write breadcrumb (the first test consumed it via sid-mismatch-hard-stop) and write correct handoff.
+RQ01_OK_TMPWD=$(mktemp -d)
+RQ01_OK_TMPHOME=$(mktemp -d)
+mkdir -p "$RQ01_OK_TMPHOME/.claude/progress" && chmod 700 "$RQ01_OK_TMPHOME/.claude/progress"
+RQ01_OK_SID="rq01neg-sessa-${$}"
+RQ01_OK_SID8="${RQ01_OK_SID:0:8}"
+RQ01_OK_NONCE="bbbb2222-cccc-dddd-eeee-ffffffffffff"
+RQ01_OK_CWD=$(cd -P "$RQ01_OK_TMPWD" 2>/dev/null && pwd -P)
+RQ01_OK_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid "$RQ01_OK_SID" \
+  --arg sid8 "$RQ01_OK_SID8" \
+  --arg cwd "$RQ01_OK_CWD" \
+  --arg nonce "$RQ01_OK_NONCE" \
+  --arg host "$RQ01_OK_HOST" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$RQ01_OK_TMPHOME/.claude/progress/breadcrumb-${RQ01_OK_SID}.json" 2>/dev/null
+chmod 600 "$RQ01_OK_TMPHOME/.claude/progress/breadcrumb-${RQ01_OK_SID}.json"
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$RQ01_SID8_A" "$RQ01_NONCE" > "$RQ01_TMPWD/CLAUDE.local.${RQ01_SID8_A}.md"
-RQ01_OK_OUT=$(cd "$RQ01_TMPWD" && CLAUDE_SESSION_ID="$RQ01_SID_A" HOME="$RQ01_TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  "$RQ01_OK_SID8" "$RQ01_OK_NONCE" > "$RQ01_OK_TMPWD/CLAUDE.local.${RQ01_OK_SID8}.md"
+RQ01_OK_OUT=$(cd "$RQ01_OK_TMPWD" && CLAUDE_SESSION_ID="$RQ01_OK_SID" HOME="$RQ01_OK_TMPHOME" bash "$STEP2_SH" 2>/dev/null)
 RQ01_OK_STATE=$(printf '%s' "$RQ01_OK_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$RQ01_OK_STATE" = "ok" ]; then
   pass "R6-RQ01 (negative): matching SID → STATE=ok (no false positive)"
 else
   fail "R6-RQ01 (negative): matching SID" "expected STATE=ok; got='$RQ01_OK_STATE' raw=${RQ01_OK_OUT:0:200}"
 fi
-rm -rf "$RQ01_TMPWD" "$RQ01_TMPHOME"
+rm -rf "$RQ01_TMPWD" "$RQ01_TMPHOME" "$RQ01_OK_TMPWD" "$RQ01_OK_TMPHOME"
 
 # ---------------------------------------------------------------------------
 # §R6-RQ08 Adversarial test: body-line marker bypass via handoff_marker_check
