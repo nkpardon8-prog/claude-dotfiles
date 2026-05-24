@@ -1204,7 +1204,7 @@ TMPHOME_H=$(mktemp -d)
 mkdir -p "$TMPHOME_H/.claude/progress" && chmod 700 "$TMPHOME_H/.claude/progress"
 GH_SID="g4h-nocell-$$"
 GH_SID8="${GH_SID:0:8}"
-GH_NONCE="gh-nonce-1111-2222-3333-444455556666"
+GH_NONCE="abcd1111-2222-3333-4444-555566667777"
 GH_CWD=$(cd -P "$TMPWD_H" 2>/dev/null && pwd -P)
 GH_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 # Breadcrumb present (SID known).
