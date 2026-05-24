@@ -179,28 +179,65 @@ ac_log "stop sid=$SESSION_ID tty=$TARGET_TTY osa_exit=$OSA_EXIT result=${OSA_RES
 # B20: unified handoff audit trail — log compact chain event.
 handoff_log "compact_chained sid=${SESSION_ID:0:8} tty=$TARGET_TTY result=${OSA_RESULT:-unknown}"
 
-# R3 D2: Write per-session breadcrumb so /post-compact-resume can recover the SID + nonce
+# R4 PR-12: Write per-session breadcrumb so /post-compact-resume can recover the SID + nonce
 # AFTER our EXIT trap removes the .claim file. Path is SID-scoped (PR-1) to avoid
 # parallel-session races. Hostname-tagged (PR-3) for iCloud cross-machine defense.
 # No mtime field in JSON (PR-12) — filesystem mtime is canonical.
+# R4 PR-12: breadcrumb-write decoupled from OSA delivery success. The breadcrumb's purpose
+# is SID recovery for /post-compact-resume, NOT delivery confirmation. Block runs AFTER
+# AppleScript invocation but BEFORE exit 0, regardless of OSA_RESULT.
 BREADCRUMB_DIR="$HOME/.claude/progress"
 SID8=$(printf '%s' "$SESSION_ID" | head -c 8)
 BREADCRUMB="$BREADCRUMB_DIR/breadcrumb-${SESSION_ID}.json"
 # Read sentinel fields from the claim before EXIT trap removes it.
 SENTINEL_NONCE=$(ac_read_sentinel_nonce "$CLAIM" 2>/dev/null || printf '')
 SENTINEL_CWD=$(ac_read_sentinel_cwd "$CLAIM" 2>/dev/null || printf '')
-HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-BREADCRUMB_TMP="${BREADCRUMB}.tmp.$$"
+
+# R4 H8 / PR-M2: if SENTINEL_NONCE is empty, breadcrumb would be unvalidatable.
+# Log + skip — do NOT write a nonce-less breadcrumb (caller cannot validate nonce_ok).
+if [ -z "$SENTINEL_NONCE" ]; then
+  handoff_log "breadcrumb_write_failed sid=${SID8} reason=empty-sentinel-nonce"
+  exit 0
+fi
+
+# R4 H2: hostname fallback chain (explicit if-elif — no || cascade per bash 3.2 BSD portability).
+HOSTNAME_SHORT=""
+if HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64); then
+  :
+elif HOSTNAME_SHORT=$(uname -n 2>/dev/null | tr -d '[:space:]' | head -c 64); then
+  :
+elif HOSTNAME_SHORT=$(cat /etc/hostname 2>/dev/null | tr -d '[:space:]' | head -c 64); then
+  :
+else
+  HOSTNAME_SHORT=""
+fi
+if [ -z "$HOSTNAME_SHORT" ]; then
+  handoff_log "breadcrumb_write_failed sid=${SID8} reason=hostname-fail"
+  exit 0
+fi
+
+# R4 H4: ensure BREADCRUMB_DIR has restrictive permissions.
 mkdir -p "$BREADCRUMB_DIR" 2>/dev/null
-if jq -c -n \
+chmod 700 "$BREADCRUMB_DIR" 2>/dev/null
+
+# R2-PR-8 / PR-7: delete this session's prior breadcrumb (from a prior /pre-compact arm
+# within the same Claude Code session) BEFORE writing the new one. Without this, a session
+# that ran /pre-compact twice would leave the stale prior-arm breadcrumb visible until
+# /post-compact-resume consumes it. This is OWN-SESSION cleanup (NOT cross-session).
+rm -f "$BREADCRUMB" 2>/dev/null || true
+
+BREADCRUMB_TMP="${BREADCRUMB}.tmp.$$"
+# R4 H4: wrap breadcrumb write in umask 077 subshell for mode 600.
+# H1: breadcrumb JSON gains schema_version:1 and originating_command fields.
+if ( umask 077 && jq -c -n \
+     --argjson sv 1 \
      --arg sid "$SESSION_ID" \
      --arg sid8 "$SID8" \
      --arg cwd "$SENTINEL_CWD" \
      --arg nonce "$SENTINEL_NONCE" \
      --arg host "$HOSTNAME_SHORT" \
-     '{sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-     > "$BREADCRUMB_TMP" 2>/dev/null; then
-  chmod 600 "$BREADCRUMB_TMP" 2>/dev/null
+     '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+     > "$BREADCRUMB_TMP" 2>/dev/null ); then
   if mv "$BREADCRUMB_TMP" "$BREADCRUMB" 2>/dev/null; then
     handoff_log "breadcrumb_written sid=${SID8} cwd=$SENTINEL_CWD host=$HOSTNAME_SHORT"
   else
@@ -211,5 +248,12 @@ else
   rm -f "$BREADCRUMB_TMP" 2>/dev/null
   handoff_log "breadcrumb_write_failed sid=${SID8} reason=jq"
 fi
+
+# R4 D5: delete .tmp.<pid> orphans from crashed writes of THIS same session
+# (NOT cross-session). Identifies by glob breadcrumb-${SESSION_ID}.json.tmp.*.
+# The write above is already complete; only prior .tmp.* orphans are deleted.
+find "$BREADCRUMB_DIR" -maxdepth 1 -type f \
+  -name "breadcrumb-${SESSION_ID}.json.tmp.*" \
+  -delete 2>/dev/null || true
 
 exit 0
