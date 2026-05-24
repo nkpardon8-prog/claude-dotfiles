@@ -470,11 +470,18 @@ Open Issues (bugs) and Things To Fix Later (debt). HUMAN_GATE_QUEUE-style. -->
 - Recent commits: [last 5]
 - Uncommitted changes: [git status summary]
 
+## Mid-Session User Feedback
+**Workflow pattern this session:** [e.g., "/script → /implement → /codex-review until clean, repeated 3x"]
+- [Verbatim or near-verbatim quote from the user about what happened, what worked, what to change]
+- [Any mid-session corrections, redirects, or approvals from the user]
+
 ## Where To Read More
 - ./docs/README.md for the project docs index
 - ./docs/INDEX.json for the LLM manifest
 - [Specific doc file relevant to the active task]
 - ./CLAUDE.md for global project rules (if exists)
+- References consulted this session:
+  - [URL or path] — [what was checked there]
 ```
 
 ### Step 6B: Phase 2 — Gap Fill
