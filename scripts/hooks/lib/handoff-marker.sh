@@ -47,7 +47,15 @@ readonly HANDOFF_MARKER_LEGACY='<!-- END-OF-HANDOFF -->'
 handoff_marker_check() {
   local file="$1"
   [ -f "$file" ] || return 1
-  if grep -qF "$HANDOFF_MARKER_NEW" "$file" 2>/dev/null \
+  # RQ-08 (R6): strict start-of-line anchor for the new-form marker — same pattern
+  # as handoff_marker_count/nonce/sid — prevents body-line pseudo-marker bypass
+  # (A3 incorrectly marked HZ-02 as MITIGATED; this completes the fix).
+  # ASYMMETRY: legacy marker (<!-- END-OF-HANDOFF -->) keeps grep -qF because
+  # it has no attributes — there is no injection vector for a bare closing comment.
+  # The new marker (schema=v1 sid=... nonce=...) MUST use strict anchor because
+  # its attribute fields can carry attacker-controlled SID/nonce values if the
+  # marker string appears mid-line in prose.
+  if grep -qE '^<!-- END-OF-HANDOFF schema=v1 ' "$file" 2>/dev/null \
      || grep -qF "$HANDOFF_MARKER_LEGACY" "$file" 2>/dev/null; then
     return 0
   fi
