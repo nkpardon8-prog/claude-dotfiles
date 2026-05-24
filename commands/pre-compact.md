@@ -431,6 +431,15 @@ master/god). Omit section if no reviewers ran. -->
 - [Netlify site: <name>, confirmed this session]
 - [Any credential usage already approved]
 
+<!-- Omit section entirely if not applicable. -->
+## Pending Externals
+<!-- External dependencies, waits, blocked-on-people, scheduled-for-later,
+background tasks (run_in_background agents, scheduled wakeups). Omit if none. -->
+- Waiting on: [person/system] — [item] — [last contact date]
+- Scheduled: [event] at [time] — [verification command]
+- Background: [process or agent] — [purpose] — [status check command]
+- User will: [action] [when]
+
 ## In-Flight Bookmarks
 - [file:line] — [what was being done there]
 
