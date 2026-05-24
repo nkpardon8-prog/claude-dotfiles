@@ -25,6 +25,11 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$ROOT/lib/handoff-marker.sh"
 # shellcheck source=lib/post-compact-primer-helpers.sh
 . "$ROOT/lib/post-compact-primer-helpers.sh"
+# R4 H10 (Phase 3 task 3.6): explicit source of handoff-resolve.sh after primer-helpers.
+# primer-helpers already sources it (and primer_resolve_handoff_path is a thin wrapper),
+# but explicit sourcing here defends against load-order surprises if the lib changes.
+# shellcheck source=lib/handoff-resolve.sh
+. "$ROOT/lib/handoff-resolve.sh"
 
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
