@@ -394,7 +394,7 @@ run an inline self-audit. The orchestrator already has the transcript content in
 working memory (Step 3.C was inline), so this audit is materially stronger than a
 sub-agent reading a JSON digest would have been.
 
-Verify each item against the CURRENT contents of `./CLAUDE.local.md` (no `.tmp` —
+Verify each item against the CURRENT contents of HANDOFF_PRIMARY (no `.tmp` —
 allowlist-clean, no Bash intermediate file needed).
 
 **Section presence semantics:** for the purposes of these checks, a
