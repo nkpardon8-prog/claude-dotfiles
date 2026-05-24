@@ -501,10 +501,7 @@ Bash `printf >>` or `mv`** — allowlist-clean.
    - `old_string`: the exact last line(s) from the Read result (exact bytes matter)
    - `new_string`: same last line(s) + `\n\n<!-- END-OF-HANDOFF schema=v1 sid=${SID8} nonce=${NONCE} -->\n`
 
-4. **Copy primary to alias.** After marker append:
-   - Read HANDOFF_PRIMARY.
-   - Write the full content to HANDOFF_ALIAS (CLAUDE.local.md).
-   This makes the alias a deterministic copy of the SID-tagged primary.
+4. (R4 D1: alias copy removed — parallel-track-safe; SID-tagged primary only.)
 
 5. **NONCE is now known** — carry it to Step 9.0 where it is passed to arm-auto-compact.sh.
 
