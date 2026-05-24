@@ -90,6 +90,14 @@ if [ -z "$OWN_SID" ]; then
   exit 0
 fi
 
+# RQ-06 (R6 HZ-31/INV-17): warn when HANDOFF_ACCEPT_UNSIGNED=1 escape hatch is active.
+# This env var disables HMAC verification globally; it must not be left set in production.
+# The warning is emitted early (before any breadcrumb processing) so it appears in logs
+# regardless of whether the session ends up loading a handoff or not.
+if [ "${HANDOFF_ACCEPT_UNSIGNED:-0}" = "1" ]; then
+  handoff_log "step2 warn HANDOFF_ACCEPT_UNSIGNED=1 is set — HMAC signature verification disabled for this session. Use only for migrating pre-R5 sessions. Unset after migration."
+fi
+
 # Phase 3 (Round 4): Stop-hook-refused signal detection.
 # When the Stop hook H4 fail-closes (both sentinels disagree), it writes a breadcrumb
 # with originating_command=stop-hook-fail-closed for this session's SID. Detect that file
