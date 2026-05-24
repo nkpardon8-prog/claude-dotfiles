@@ -89,13 +89,13 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3d — PreToolUse, ctx=55 (below soft 60): expect empty (no gating)
-# Threshold update: soft zone is now 60+ (was 70+)
+# 3d — PreToolUse, ctx=45 (below new SOFT=50): expect empty (no gating)
+# Threshold 2026-05-23 second revision: SOFT=50 (was 60). ctx=45 is clearly below.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '55\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '45\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"foo","tool_name":"Bash","tool_input":{"command":"echo hi"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
-if [ -z "$OUT" ]; then pass "3d: pretooluse ctx=55 → empty (below soft)"; else fail "3d: pretooluse ctx=55 → expected empty, got: $OUT"; fi
+if [ -z "$OUT" ]; then pass "3d: pretooluse ctx=45 → empty (below soft=50)"; else fail "3d: pretooluse ctx=45 → expected empty, got: $OUT"; fi
 rm -rf "$TMPHOME"
 
 # 3e — PreToolUse, ctx=91, Bash(echo hi), no sentinel: expect deny
