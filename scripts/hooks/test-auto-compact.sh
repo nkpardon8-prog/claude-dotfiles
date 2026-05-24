@@ -188,7 +188,7 @@ UCOMM_LINES=$(ps -o stat=,ucomm= 2>/dev/null | tail -n +1 | awk 'NF != 2 {print 
 if [ -z "$UCOMM_LINES" ]; then check "ps -o ucomm= produces single-token lines" 1 1; else check "ucomm format unexpected: $UCOMM_LINES" 1 0; fi
 
 echo "== Skill-prose invocation contract =="
-# Round 4 GAPS: if pre-compact.md drops the arm-script invocation, no test catches it.
+# Gap-coverage: if pre-compact.md drops the arm-script invocation, no test catches it.
 # Lock the BEHAVIORAL contract (less brittle than exact variable-name matching):
 #   - pre-compact.md references arm-auto-compact.sh
 #   - it assigns the script's stdout to AUTOCOMPACT_STATE
