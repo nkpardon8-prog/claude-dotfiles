@@ -63,9 +63,15 @@ fi
 #
 # Strategy: try BOTH the hook-JSON SID AND the ac_resolve_session_id result.
 # - If only one resolves to a sentinel file, use that one.
-# - If both resolve to DISTINCT sentinels, log the mismatch and prefer ac_resolve path
-#   (matches what the writer used).
+# - If both resolve to DISTINCT sentinels, REFUSE to fire /compact (H4 Adversary fail-closed).
+#   An attacker who plants a transcript file + crafts a TTY redirect could redirect compact
+#   delivery by triggering RESOLVED_SID to diverge from REAL_SID. Refusing when ownership
+#   is ambiguous is the only safe option. A stop-hook-refused signal is written so the user
+#   can be informed at the next session start (see breadcrumb with originating_command=stop-hook-fail-closed).
 # - If neither resolves, fall through to the `[ -f "$SENTINEL" ] || exit 0` fast-path.
+# NOTE: "Case (b) both sentinels with disagreement → REFUSE to fire /compact" was changed
+# in R3-fix-sweep H4 from "prefer ac_resolve path" to "refuse". LOG_VERBS.md stop_hook_sid_mismatch
+# has been updated to reflect the actual behavior (action=refuse).
 REAL_SID="$SESSION_ID"
 RESOLVED_SID=$(ac_resolve_session_id 2>/dev/null)
 REAL_SENTINEL=$(ac_sentinel_path "$REAL_SID")
