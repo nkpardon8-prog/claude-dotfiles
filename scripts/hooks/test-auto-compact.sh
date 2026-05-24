@@ -502,30 +502,36 @@ jq -c -n \
   '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
   > "$GC_A_BREADCRUMB" 2>/dev/null
 chmod 600 "$GC_A_BREADCRUMB"
-# Write session B's breadcrumb with an orphan .tmp.* file (simulating crashed write)
+# Write session B's breadcrumb with an orphan .tmp.* file (simulating crashed write).
+# Pre-age the orphan to >60 min so time-based GC filters would fire on it if they apply.
 GC_B_BREADCRUMB="$GC_HOMEDIR/.claude/progress/breadcrumb-${GC_SID_B}.json"
 GC_B_ORPHAN="${GC_B_BREADCRUMB}.tmp.12345"
 printf 'partial\n' > "$GC_B_ORPHAN"
+# touch -t requires YYYYMMDDHHMM.SS format; use a timestamp well in the past (>1h).
+touch -t "202601010000.00" "$GC_B_ORPHAN" 2>/dev/null || true
+# Also pre-age a stale .claim.* file to exercise cross-session claim GC (>60 min).
+GC_B_CLAIM="$GC_HOMEDIR/.claude/progress/auto-compact-${GC_SID_B}.json.claim.99999"
+printf 'stale-claim\n' > "$GC_B_CLAIM"
+touch -t "202601010000.00" "$GC_B_CLAIM" 2>/dev/null || true
 # Simulate Session B's Stop hook D5 cleanup logic directly:
-# D5 only GCs session-B's own .tmp.* orphans; it must NOT touch session-A's breadcrumb.
-# Run the actual stop hook with B's SID (no sentinel, so it exits at the "no sentinel" check
-# — but the orphan GC at lines 67-69 still runs because it runs BEFORE the sentinel check).
+# D5 only GCs session-B's own .tmp.* orphans (after sentinel consume) and stale .claim.*
+# files (before sentinel check). It must NOT touch session-A's breadcrumb.
 GC_STOP_HOOK="$ROOT/auto-compact-after-pre-compact.sh"
 GC_JSON_B=$(jq -c -n --arg sid "$GC_SID_B" '{session_id:$sid}')
 HOME="$GC_HOMEDIR" bash "$GC_STOP_HOOK" <<< "$GC_JSON_B" 2>/dev/null
-# Assert A's breadcrumb still exists (cross-session isolation).
+# Assert 1: A's breadcrumb still exists (cross-session isolation — must not be GC'd by B).
 if [ -f "$GC_A_BREADCRUMB" ]; then
   check "G6/D5: session B Stop hook did NOT GC session A's breadcrumb (cross-session isolation)" 1 1
 else
   check "G6/D5: session B Stop hook GC'd session A's breadcrumb (cross-session isolation BROKEN)" 1 0
 fi
-# D5: also verify session B's own .tmp.* orphan was cleaned up by the Stop hook.
-# The stop hook's orphan GC at lines 67-69 fires before the sentinel check, so it runs even
-# for sessions with no sentinel. It GCs own-session .tmp.* files that are stale (>60 min old).
-# Our synthetic orphan is young (just created), so it may NOT be GC'd by the time-based filter.
-# The important invariant: B's orphan GC does not touch A's breadcrumb (already verified above).
-# For completeness, check that the GC code path was reached: stop hook exits 0 even with no sentinel.
-check "G6/D5: cross-session isolation test complete (A preserved, B GC ran)" 1 1
+# Assert 2: stale .claim.* file (>60 min old) was GC'd by the stop hook's pre-sentinel GC.
+# The .claim.* GC runs BEFORE the sentinel check so it fires even when B has no sentinel.
+if [ ! -f "$GC_B_CLAIM" ]; then
+  check "G6/D5: stale .claim.* orphan (>60 min old) was GC'd by Stop hook pre-sentinel GC" 1 1
+else
+  check "G6/D5: stale .claim.* orphan NOT GC'd by Stop hook (time-based GC did not fire)" 1 0
+fi
 rm -rf "$GC_HOMEDIR"
 
 echo "== G6: same-SID parallel write race =="
