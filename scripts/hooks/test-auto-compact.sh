@@ -181,7 +181,7 @@ LOG_MODE=$(stat -f '%Lp' "$(ac_log_path)" 2>/dev/null)
 if [ "$LOG_MODE" = "600" ]; then check "log file mode 600" 1 1; else check "log file mode (got $LOG_MODE)" 1 0; fi
 
 echo "== ps ucomm format (multi-word comm regression) =="
-# Round 4 found awk $NF on `ps -o comm=` is brittle for multi-word comms (e.g. `npm exec ...`).
+# awk $NF on `ps -o comm=` is brittle for multi-word comms (e.g. `npm exec ...`).
 # Switched to `ucomm=` which is always single-token (executable basename). Verify the
 # expected one-word format.
 UCOMM_LINES=$(ps -o stat=,ucomm= 2>/dev/null | tail -n +1 | awk 'NF != 2 {print "MULTIFIELD:" $0}')
