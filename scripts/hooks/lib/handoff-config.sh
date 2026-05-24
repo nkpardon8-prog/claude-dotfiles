@@ -23,7 +23,11 @@ readonly HANDOFF_LEGACY_CUTOFF_EPOCH="${HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE:-17
 # Max handoff size — defense against pathological growth.
 readonly HANDOFF_MAX_SIZE_BYTES="${HANDOFF_MAX_SIZE_BYTES_OVERRIDE:-5242880}"  # 5MB
 
-# Pre-compact release threshold for PreCompact safety net.
+# R3 D4: renamed from HANDOFF_PRECOMPACT_RELEASE_PCT (semantic clarity: this is the
+# bypass threshold for the safety net that blocks native auto-compact).
+# Raised from 75 → 90 to close the 75-95% unprotected gap: native auto-compact
+# fires at ~95%, FORCE nudge fires at 85%; 90% leaves 5% headroom for the safety
+# release before native compaction would lose the handoff.
 # Native auto-compact is BLOCKED below this PCT if no sentinel armed; ABOVE this PCT
 # it is RELEASED (escape valve to prevent deadlock at ~95% native trigger).
-readonly HANDOFF_PRECOMPACT_RELEASE_PCT="${HANDOFF_PRECOMPACT_RELEASE_PCT_OVERRIDE:-75}"
+readonly HANDOFF_AUTOCOMPACT_BYPASS_PCT="${HANDOFF_AUTOCOMPACT_BYPASS_PCT_OVERRIDE:-90}"
