@@ -221,7 +221,7 @@ case "$OUT" in
 esac
 
 echo "== Sentinel no longer contains armed_at (round-4 dead-data removal) =="
-ac_write_sentinel "${TEST_SID}_armed_at" "/dev/ttys999"
+ac_write_sentinel "${TEST_SID}_armed_at" "/dev/ttys999" "/tmp" ""
 SP=$(ac_sentinel_path "${TEST_SID}_armed_at")
 if ! grep -q 'armed_at' "$SP" 2>/dev/null; then check "sentinel JSON omits armed_at" 1 1; else check "sentinel still has armed_at" 1 0; fi
 rm -f "$SP"
