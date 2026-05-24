@@ -108,5 +108,5 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `stop_hook_sid_mismatch` | auto-compact-after-pre-compact.sh | Hook-JSON SID and ac_resolve_session_id SID both have sentinels but they differ; ac_resolve path preferred (C2 fix-sweep) |
 | `nonce_mismatch_hard_stop` | post-compact-resume-step2.sh | SID known + nonce mismatch detected; hard stop emitted (R4 D4); sid8 + first8 of each nonce logged |
 | `sid_mismatch_hard_stop` | post-compact-resume-step2.sh | Marker sid= attribute differs from breadcrumb SID8; cross-track file rejected (C3 fix-sweep) |
-| `step2_terminal` | post-compact-resume-step2.sh | step2.sh reached a terminal STATE; state= field names one of: ok, no-handoff, oversize, sid-known-no-tagged-file, sid-mismatch-hard-stop, nonce-mismatch-hard-stop (H4 fix-sweep) |
+| `step2_terminal` | post-compact-resume-step2.sh | step2.sh reached a terminal STATE; state= field names one of: ok, no-handoff, oversize, sid-known-no-tagged-file, sid-mismatch-hard-stop, nonce-mismatch-hard-stop, invalid-handoff-name (H4 fix-sweep; invalid-handoff-name added Theme 5) |
 | `handoff_detected` | post-compact-primer.sh | Sentinel matched CWD — see handoff: prefix table above |
