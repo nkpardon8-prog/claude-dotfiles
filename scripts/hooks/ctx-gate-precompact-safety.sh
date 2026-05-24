@@ -7,11 +7,11 @@
 # Fires before native auto-compact would run.
 # If /pre-compact never ran (no sentinel) AND ctx is below the extreme-release threshold:
 #   BLOCK native auto-compact and inject reason directing /pre-compact.
-# If ctx ≥ HANDOFF_PRECOMPACT_RELEASE_PCT (75%): RELEASE — let native compact run as a degraded
+# If ctx ≥ HANDOFF_AUTOCOMPACT_BYPASS_PCT (75%): RELEASE — let native compact run as a degraded
 #   fallback. Handoff is lost, but this is preferable to a bricked session that can make
 #   no forward progress.
 #
-# Trade-off: blocking native auto-compact below HANDOFF_PRECOMPACT_RELEASE_PCT leaves
+# Trade-off: blocking native auto-compact below HANDOFF_AUTOCOMPACT_BYPASS_PCT leaves
 # the session at that level. But the alternative — letting native run with no handoff
 # — is exactly what the user said is unacceptable. Blocking gives the model one more
 # chance to invoke /pre-compact via the next-turn UserPromptSubmit FORCE nudge.
@@ -64,20 +64,20 @@ fi
 # Sentinel absent + native trying to auto-compact.
 # Do NOT block unconditionally — at extreme contexts, blocking native compact leaves a
 # worst-of-both state. Decision matrix:
-#   - PCT below HANDOFF_PRECOMPACT_RELEASE_PCT (75%): BLOCK native compact, advise /pre-compact.
+#   - PCT below HANDOFF_AUTOCOMPACT_BYPASS_PCT (75%): BLOCK native compact, advise /pre-compact.
 #     The model still has plenty of context to run /pre-compact via the UserPromptSubmit
 #     FORCE nudge which fires at 85%.
-#   - PCT >= HANDOFF_PRECOMPACT_RELEASE_PCT (75%+): RELEASE — let native auto-compact happen
+#   - PCT >= HANDOFF_AUTOCOMPACT_BYPASS_PCT (75%+): RELEASE — let native auto-compact happen
 #     as a degraded fallback. Yes, the handoff is lost, but this is preferable to a bricked
 #     session that cannot make any forward progress.
 PCT=$(ctx_gate_read_pct "$SID") || PCT="?"
 
-if [ "$PCT" != "?" ] && [ "$PCT" -ge "$HANDOFF_PRECOMPACT_RELEASE_PCT" ]; then
+if [ "$PCT" != "?" ] && [ "$PCT" -ge "$HANDOFF_AUTOCOMPACT_BYPASS_PCT" ]; then
   ctx_gate_log "precompact sid=$SID pct=$PCT trigger=auto action=release-extreme-pct"
   exit 0  # let native compact run; handoff lost but better than deadlock
 fi
 
-REASON="Native auto-compact blocked: /pre-compact was never invoked, so handoff would be lost. Context: ${PCT}%. Invoke Skill(pre-compact) NOW to write CLAUDE.local.md, arm the auto-compact sentinel, and let the Stop hook deliver a clean /compact instead. (At ${HANDOFF_PRECOMPACT_RELEASE_PCT}% this safety net releases so the session can recover via native compaction.)"
+REASON="Native auto-compact blocked: /pre-compact was never invoked, so handoff would be lost. Context: ${PCT}%. Invoke Skill(pre-compact) NOW to write CLAUDE.local.md, arm the auto-compact sentinel, and let the Stop hook deliver a clean /compact instead. (At ${HANDOFF_AUTOCOMPACT_BYPASS_PCT}% this safety net releases so the session can recover via native compaction.)"
 ctx_gate_log "precompact sid=$SID pct=$PCT trigger=auto action=block"
 
 jq -n --arg r "$REASON" '{ "decision": "block", "reason": $r }'
