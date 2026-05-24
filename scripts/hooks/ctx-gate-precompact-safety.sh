@@ -26,6 +26,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/ctx-gate-config.sh
 . "$ROOT/lib/ctx-gate-config.sh"
+# shellcheck source=lib/handoff-config.sh
+. "$ROOT/lib/handoff-config.sh"
 
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (per codex-review R2 F16: DoS guard)
 
