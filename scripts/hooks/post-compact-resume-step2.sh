@@ -185,6 +185,9 @@ fi
 # Glob over per-session breadcrumbs, newest first; pick the first that matches cwd + host.
 # H3 (Theme 5): use nullglob + mtime-array iteration instead of $(ls -t ...) to handle
 # $HOME with spaces and avoid word-splitting / ls-parse pitfalls (bash 3.2 compatible).
+# RQ-03+04 (R6 HZ-29/HZ-30): track how many breadcrumbs fail HMAC verification so we
+# can emit STATE=signature-mismatch instead of STATE=no-handoff when ALL fail.
+_SIG_MISMATCH_COUNT=0
 shopt -s nullglob 2>/dev/null
 _bc_candidates=()
 for _bc_f in "$HOME/.claude/progress/breadcrumb-"*.json; do
