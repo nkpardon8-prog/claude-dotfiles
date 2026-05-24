@@ -24,6 +24,9 @@ INPUT=$(head -c 1048576)  # bound stdin to 1MB (per codex-review R2 F16: DoS gua
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
 
+# B20: unified handoff audit trail — log session start event.
+handoff_log "session_started sid=${SID:-unknown} source=${SOURCE:-unknown}"
+
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
