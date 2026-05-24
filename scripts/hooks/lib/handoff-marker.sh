@@ -5,6 +5,18 @@
 # Execution context: sourced by SessionStart hook scripts and orchestrator Bash
 # snippets. Hook paths run as subprocess; orchestrator paths run in Bash tool.
 #
+# Write-protocol invariant: the pre-compact writer appends the END-OF-HANDOFF
+# marker exactly ONCE at the very end of the file and nothing modifies the file
+# after that. Therefore, within any well-formed handoff file there is exactly
+# ONE marker line. head -1 is used instead of tail -1 throughout to defend
+# against an attacker who appends a second marker line AFTER the canonical one:
+# head -1 picks the FIRST (canonical) marker, ignoring any appended impostor.
+# An attacker who PREPENDS a second marker before the canonical one would win
+# head -1 — but the write protocol writes the canonical marker LAST and
+# nothing external to the pre-compact pipeline modifies the file between arm
+# time and ingestion. handoff_marker_count() logs a warning when count > 1 so
+# operators can detect tampered files; ingestion still proceeds (defense-in-depth).
+#
 # Source-guard: second sourcing is a no-op.
 [ -n "${_HANDOFF_MARKER_LOADED:-}" ] && return 0
 readonly _HANDOFF_MARKER_LOADED=1
