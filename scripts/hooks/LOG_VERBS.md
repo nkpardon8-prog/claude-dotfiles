@@ -11,12 +11,18 @@ Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
 |---|---|---|
 | `armed` | arm-auto-compact.sh | Sentinel written successfully; target TTY + nonce prefix logged |
 | `arm-failed` | arm-auto-compact.sh | Sentinel write failed (disk full or permission error) |
+| `FATAL` | arm-auto-compact.sh | Fatal error in arm script; nonce generation failed; reason appended |
 | `disarmed` | arm-auto-compact.sh | Sentinel deleted per user opt-out request |
 | `dry-run` | arm-auto-compact.sh | Dry-run mode; sentinel NOT written; would-arm details logged |
 | `warn` | arm-auto-compact.sh | Non-fatal warning (e.g., automation-probe-failed-or-timed-out) |
 | `stop` | auto-compact-after-pre-compact.sh | Stop hook fired; logs osa_exit + result |
 | `abort` | auto-compact-after-pre-compact.sh | Stop hook aborted; no claude in foreground process group |
+| `ac_write_sentinel` | lib/auto-compact-sentinel.sh | Sentinel write skipped in ac_write_sentinel; reason= appended (e.g., oversize) |
+| `invalid` | lib/auto-compact-sentinel.sh | Invalid TTY target detected during sentinel validation; raw value logged |
+| `test` | test-auto-compact.sh | Test harness log entry (not emitted by production scripts) |
 | `skip-sentinel` | lib/auto-compact-sentinel.sh | Sentinel skipped during read; reason= appended |
+| `skip-sentinel-nonce` | lib/auto-compact-sentinel.sh | Sentinel nonce field extraction failed; reason=jq-parse appended |
+| `skip-breadcrumb` | lib/auto-compact-sentinel.sh | Breadcrumb rejected during read; reason= appended |
 
 ### Reasons for skip-sentinel
 
@@ -25,6 +31,13 @@ Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
 - `reason=jq-parse` — jq parse failure; invalid JSON or filter error
 - `reason=no-cwd-or-invalid-schema` — cwd field absent or schema_version out of range
 - `reason=validate-failed` — _ac_validate_sentinel_path preamble check failed
+
+### Reasons for skip-breadcrumb
+
+- `reason=symlink` — breadcrumb path is a symlink (path-swap defense)
+- `reason=oversized` — breadcrumb file exceeds size limit
+- `reason=jq-parse` — jq parse failure; invalid JSON
+- `reason=wrong-originating-command` — originating_command field is not "pre-compact"
 
 ### handoff: prefix (within auto-compact.log via `handoff_log`)
 
