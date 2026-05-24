@@ -298,7 +298,7 @@ Anything else to capture? (open issues, things to fix later, context I might be 
 
 Wait for response. Fold the user's additions into the appropriate sections. If they say "write it" or similar, proceed.
 
-## Step 6: Write CLAUDE.local.md
+## Step 6: Write CLAUDE.local.&lt;sid8&gt;.md (HANDOFF_PRIMARY)
 
 Two-phase write. Phase 1 hits the pass floor on the first Write call. Phase 2 reads back and Edits gaps toward the ceiling. Phase 1 is NOT a draft.
 
