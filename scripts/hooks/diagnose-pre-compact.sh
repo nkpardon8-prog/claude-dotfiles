@@ -139,6 +139,44 @@ else
 fi
 echo
 
+echo "=== Breadcrumbs (~/.claude/progress/breadcrumb-*.json) ==="
+BREADCRUMB_COUNT=0
+BREADCRUMB_LATEST_MTIME="(none)"
+BREADCRUMB_LATEST_HOST="(none)"
+for b in "$HOME/.claude/progress/breadcrumb-"*.json; do
+  [ -f "$b" ] || continue
+  BREADCRUMB_COUNT=$((BREADCRUMB_COUNT + 1))
+  if BMTIME=$(stat -f %Sm "$b" 2>/dev/null); then
+    :
+  elif BMTIME=$(stat -c %y "$b" 2>/dev/null); then
+    :
+  else
+    BMTIME="stat-failed"
+  fi
+  BREADCRUMB_LATEST_MTIME="$BMTIME"
+  BREADCRUMB_LATEST_HOST=$(jq -r '.hostname // "no-hostname-field"' "$b" 2>/dev/null)
+done
+echo "count: $BREADCRUMB_COUNT"
+echo "latest mtime: $BREADCRUMB_LATEST_MTIME"
+echo "latest hostname: $BREADCRUMB_LATEST_HOST"
+# Verify step2.sh exists at new D9 path (post-compact-resume-step2.sh, no longer in lib/)
+STEP2_PATH="$ROOT/post-compact-resume-step2.sh"
+if [ -x "$STEP2_PATH" ]; then
+  echo "step2.sh: PRESENT + executable at $STEP2_PATH"
+elif [ -f "$STEP2_PATH" ]; then
+  echo "step2.sh: PRESENT but NOT executable at $STEP2_PATH (run: chmod +x $STEP2_PATH)"
+else
+  echo "step2.sh: MISSING at $STEP2_PATH"
+fi
+echo "--- Recent breadcrumb log entries (grep from auto-compact.log):"
+if [ -f "$HOME/.claude/logs/auto-compact.log" ]; then
+  grep -i 'breadcrumb' "$HOME/.claude/logs/auto-compact.log" 2>/dev/null | tail -10 | sed 's/^/  /' \
+    || echo "  (no breadcrumb log entries)"
+else
+  echo "  (auto-compact.log not found)"
+fi
+echo
+
 echo "=== Recent log entries (last 20) ==="
 for log in "$HOME/.claude/logs/auto-compact.log" "$HOME/.claude/logs/ctx-gate.log"; do
   if [ -f "$log" ]; then
