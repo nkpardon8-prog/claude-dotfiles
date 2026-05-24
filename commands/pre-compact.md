@@ -525,6 +525,106 @@ Rules for the content:
 - Scope memory reads to the current project. Do not pull in unrelated cross-project notes.
 - Soft ceiling guidance (not a hard cap): 300/400/500 lines for Quick/Deep/Chunked. If genuinely-needed content runs over, exceed the ceiling and note "(exceeded {pass} ceiling — content over-mining preserved)" in the report. Truncating real evidence is worse than going long.
 
+### Step 6C: Self-audit checklist (before Step 6D marker append)
+
+After Phase 2 (Step 6B) gap-fill completes and BEFORE the marker append in Step 6D,
+run an inline self-audit. The orchestrator already has the transcript content in
+working memory (Step 3.C was inline), so this audit is materially stronger than a
+sub-agent reading a JSON digest would have been.
+
+Verify each item against the CURRENT contents of `./CLAUDE.local.md` (no `.tmp` —
+R1 finding #1: no allowlist conflict).
+
+**Section presence semantics (R1 finding #15):** for the purposes of these checks, a
+section containing ONLY the HTML comment placeholder (`<!-- ... -->`) counts as
+ABSENT. A populated section must have at least one substantive bullet/row beyond the
+placeholder.
+
+**Core checklist (always applies):**
+1. `## What We Tried` has 3 or more items, each with hypothesis / change / result /
+   kept-or-abandoned. Items with fewer fields fail.
+2. `## Key Decisions (This Session)` has 3 or more items, each with rationale (not just
+   "we decided X" — must explain WHY).
+3. `## Next Action` names a specific file:line OR a specific command/action that
+   someone with zero prior session context could execute.
+4. `## User Constraints (This Session)` captures user-stated constraints verbatim or
+   near-verbatim where possible (no paraphrasing that loses precision).
+5. `## In-Flight Bookmarks` has 2 or more entries IF work was in progress at session end.
+   Empty allowed only if session ended at a clean seam (last commit, all tests
+   passing, no active edits).
+
+**Multi-stream check (if work_streams was populated in Step 3.C):**
+6. `## Work Streams` has 1 or more entries per stream identified (placeholder-only = absent).
+
+**Loop check (if loop_ledger was populated in Step 3.C):**
+7. `## Review/Fix Loop Ledger` has 1 or more entries per iteration identified
+   (placeholder-only = absent).
+
+**On any failure:**
+- Identify which check failed.
+- Run a targeted Edit on `./CLAUDE.local.md` to backfill from working memory
+  (the transcript content from Step 3.C is still in scope). Each Edit is atomic
+  per-call; backfilling is safe.
+- Re-run the failed checks.
+- After 2 backfill passes, if any check still fails → run one more Edit to add a
+  literal "self-audit incomplete after 2 passes: <list of failing checks>" line
+  into the `## Last Failure` section of the handoff. Then PROCEED to Step 6D
+  (marker append). Better degraded handoff than stuck session (per brief's
+  rejected pure-block design).
+- The Step 9.1 final report MUST surface the self-audit incomplete state if it
+  occurred (so the user sees it explicitly, not just buried in the file).
+
+**On all checks PASS (or after 2-pass incomplete-warning):**
+
+**R3 #B11 — empty-skeleton cleanup before proceeding:** Walk the entire file and DELETE
+any section heading whose body contains ONLY the HTML comment placeholder (i.e., no
+substantive content beneath it). Examples of sections that may need this cleanup if a
+session does not populate them: `## Work Streams`, `## Live Hypotheses`, `## Footguns
+Discovered This Session`, `## Pending Externals`, `## User Wishes & Asides`,
+`## Review/Fix Loop Ledger`, `## Deferred-for-Human Queue`. The intent: a clean handoff
+file with only sections that have real content, plus the always-required core sections
+(Mental Model, Active Skill State, Active Task, Next Action, Build Plan, What We Tried,
+Key Decisions, etc.).
+
+Proceed to Step 6D.
+
+### Step 6D: Append END-OF-HANDOFF marker
+
+After Step 6C self-audit completes (PASS or 2-pass-incomplete-with-warning), append
+the marker as the literal last line of `./CLAUDE.local.md`. **Use the `Edit` tool, NOT
+Bash `printf >>` or `mv`** (R1 findings #2, #3 — allowlist-clean).
+
+**Step 6D protocol (R2 #4, #8 + R3 #1 — Read-then-Edit MANDATORY + allowlist-clean idempotency):**
+
+1. **Idempotency check via Read tool, NOT Bash pipe.** R3 #1 critical fix: `tail | grep`
+   is a compound command (`|` pipe) — denied by ctx-gate compound-command deny-class at
+   the active 60% hard-gate, which is exactly when /pre-compact fires. Must use the
+   `Read` tool instead (in the allowlist):
+   - Call `Read` on `./CLAUDE.local.md`.
+   - In working memory: check if the last 512 bytes of the read content contain the
+     literal string `<!-- END-OF-HANDOFF -->`.
+   - If present: marker already there (likely a retry). SKIP the Edit; proceed to Step 7.
+   - If absent: proceed to step 2.
+
+2. **Use the same Read result to capture the exact current tail** (whitespace,
+   trailing newlines, multi-line bullets — exact bytes matter for the Edit match).
+
+3. **Single Edit call:**
+   - `file_path`: `./CLAUDE.local.md` (absolute path resolved at runtime)
+   - `old_string`: the literal last line(s) of the file (exact bytes from step 2)
+   - `new_string`: same last line(s) + `\n\n<!-- END-OF-HANDOFF -->`
+
+**R2 #4: the Write-alternative path is REMOVED.** A full Write at this stage could
+silently lose Phase 2 gap-fill content if the orchestrator in-working-memory copy
+drifted from disk. The Read-then-Edit path is the sole safe mechanism.
+
+The marker is the "complete file" signal. Absent marker = file in some intermediate
+state (Phase 1 only, mid-Phase-2 crash, mid-self-audit crash, mid-marker-append-crash)
+— consumers warn or refuse to navigate.
+
+**Crash-safety:** each Edit call is atomic per-call (Claude Code internally uses
+temp+rename). The idempotency check above prevents double-marker artifacts on retry.
+
 ## Step 7: Ensure auto-load on next session
 
 **Skip entirely if `$ARGUMENTS` contains `no-import` (or "no claude-md import" / "no claude md import").**
