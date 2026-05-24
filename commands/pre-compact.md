@@ -590,7 +590,7 @@ placeholder.
 
 **On all checks PASS (or after 2-pass incomplete-warning):**
 
-**R3 #B11 — empty-skeleton cleanup before proceeding:** Walk the entire file and DELETE
+**Empty-skeleton cleanup before proceeding:** Walk the entire file and DELETE
 any section heading whose body contains ONLY the HTML comment placeholder (i.e., no
 substantive content beneath it). Examples of sections that may need this cleanup if a
 session does not populate them: `## Work Streams`, `## Live Hypotheses`, `## Footguns
