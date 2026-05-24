@@ -155,7 +155,9 @@ echo "STATE=ok MARKER=$MARKER LEGACY=$LEGACY STALE=$STALE AGE_HOURS=$HANDOFF_AGE
 
 The orchestrator reads the `STATE=...` output line and routes to the decision matrix below.
 
-**Decision matrix (R1 findings #3, #14 — graceful fallback, no hard-stop):**
+**Decision matrix (graceful fallback, no hard-stop):**
+
+- **NONCE_OK=mismatch (advisory only):** emit a warning before reading: "Marker nonce does not match consumed sentinel nonce. The handoff may be from a different session or a copy from another workspace. Proceeding anyway — verify content context manually." Then continue per MARKER/STALE matrix below.
 
 - **MARKER=present AND STALE=false:** read full file, navigate normally per Steps 3-4.
 
