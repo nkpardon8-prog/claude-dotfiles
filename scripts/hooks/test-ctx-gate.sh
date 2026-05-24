@@ -181,17 +181,209 @@ OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"foo","
 if [ -z "$OUT" ]; then pass "3k: precompact trigger=manual → never block (empty)"; else fail "3k: precompact trigger=manual → expected empty, got: $OUT"; fi
 rm -rf "$TMPHOME"
 
-# 3l — SessionStart, source=compact, with CLAUDE.local.md in cwd: expect primer additionalContext
+# ---------------------------------------------------------------------------
+# §3l primer source-routing matrix tests (replaces old generic 3l)
+# ---------------------------------------------------------------------------
+# All tests use CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE set to a 2020 epoch so any
+# 2024+ mtime is NOT legacy, and any pre-2020 mtime IS legacy (deterministic).
+LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
+LEGACY_OVERRIDE_FUTURE=9999999999
+
+# 3l-compact-fresh-marker: source=compact + fresh marker + no sentinel → normal nav
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
-printf '# handoff\n## Active Skill State\nDetected: /plan\n' > "$TMPHOME/repo/CLAUDE.local.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
 JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
-OUT=$(HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("POST-COMPACT")' >/dev/null 2>&1 && \
-   printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Active Skill State")' >/dev/null 2>&1; then
-  pass "3l: primer source=compact with CLAUDE.local.md → POST-COMPACT + Active Skill State in context"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("POST-COMPACT")' >/dev/null 2>&1; then
+  pass "3l-compact-fresh-marker: source=compact + fresh marker → normal nav"
 else
-  fail "3l: primer → expected POST-COMPACT + Active Skill State, got: $OUT"
+  fail "3l-compact-fresh-marker" "expected POST-COMPACT nav, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-compact-fresh-no-marker: source=compact + fresh + no marker → TRUNCATED warning
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+printf '# handoff\n## Content without marker\n' > "$TMPHOME/repo/CLAUDE.local.md"
+JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("TRUNCATED")' >/dev/null 2>&1; then
+  pass "3l-compact-fresh-no-marker: source=compact + no marker → TRUNCATED warning"
+else
+  fail "3l-compact-fresh-no-marker" "expected TRUNCATED warning, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-compact-legacy: source=compact + mtime<cutoff + no marker → LEGACY warning
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+printf '# old handoff\n## No marker here\n' > "$TMPHOME/repo/CLAUDE.local.md"
+touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2019 = before LEGACY_OVERRIDE_PAST (2020)
+JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("LEGACY")' >/dev/null 2>&1; then
+  pass "3l-compact-legacy: source=compact + mtime<cutoff + no marker → LEGACY warning"
+else
+  fail "3l-compact-legacy" "expected LEGACY warning, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-compact-anomaly-sentinel-present: source=compact + sentinel with MATCHING cwd present → ANOMALY warning
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
+JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("ANOMALY")' >/dev/null 2>&1; then
+  pass "3l-compact-anomaly-sentinel-present: source=compact + matching sentinel → ANOMALY warning"
+else
+  fail "3l-compact-anomaly-sentinel-present" "expected ANOMALY warning, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-resume-sentinel-fresh: source=resume + sentinel cwd match + fresh marker → PENDING HANDOFF nav
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
+  pass "3l-resume-sentinel-fresh: source=resume + sentinel match + fresh marker → PENDING HANDOFF"
+else
+  fail "3l-resume-sentinel-fresh" "expected PENDING HANDOFF nav, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-resume-sentinel-stale: source=resume + sentinel + 2-day-old mtime → STALE + PENDING HANDOFF
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+touch -t 202601010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2026-01-01 = well over 24h old
+printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" CTX_STALE_HANDOFF_SECS_OVERRIDE=3600 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("STALE")' >/dev/null 2>&1 && \
+   printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
+  pass "3l-resume-sentinel-stale: source=resume + sentinel + old mtime → STALE + PENDING HANDOFF"
+else
+  fail "3l-resume-sentinel-stale" "expected STALE + PENDING HANDOFF, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-resume-no-sentinel-fresh: source=resume + no sentinel + fresh marker → SESSION START nav
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("SESSION START")' >/dev/null 2>&1; then
+  pass "3l-resume-no-sentinel-fresh: source=resume + no sentinel + fresh marker → SESSION START"
+else
+  fail "3l-resume-no-sentinel-fresh" "expected SESSION START nav, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-resume-no-sentinel-stale: source=resume + no sentinel + 30h-old mtime → STALE
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+touch -t 202601010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2026-01-01 = old
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" CTX_STALE_HANDOFF_SECS_OVERRIDE=3600 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("STALE")' >/dev/null 2>&1; then
+  pass "3l-resume-no-sentinel-stale: source=resume + no sentinel + old mtime → STALE"
+else
+  fail "3l-resume-no-sentinel-stale" "expected STALE warning, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-resume-legacy: source=resume + mtime<cutoff + no marker → LEGACY
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# old handoff\n## No marker\n' > "$TMPHOME/repo/CLAUDE.local.md"
+touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2019 = before 2020 cutoff
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("LEGACY")' >/dev/null 2>&1; then
+  pass "3l-resume-legacy: source=resume + mtime<cutoff + no marker → LEGACY"
+else
+  fail "3l-resume-legacy" "expected LEGACY warning, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-startup-no-handoff: source=startup + no CLAUDE.local.md → exit silently (no JSON output)
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+# No CLAUDE.local.md in cwd or repo root
+JSON="{\"session_id\":\"newsid\",\"source\":\"startup\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if [ -z "$OUT" ]; then
+  pass "3l-startup-no-handoff: source=startup + no handoff → exit silently"
+else
+  fail "3l-startup-no-handoff" "expected silent exit (empty), got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-clear-fresh-marker: source=clear + fresh marker → normal nav (verifies regex matcher captures 'clear')
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+JSON="{\"session_id\":\"newsid\",\"source\":\"clear\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null 2>&1; then
+  pass "3l-clear-fresh-marker: source=clear + fresh marker → nav directive emitted"
+else
+  fail "3l-clear-fresh-marker" "expected nav directive for source=clear, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# 3l-resume-sentinel-mismatched-cwd: source=resume + sentinel cwd=OTHER → SENTINEL_PRESENT=false,
+# SESSION START nav (R4 #1/#5 regression test — SID-mismatch fix verification)
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" "$TMPHOME/other-project" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
+printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+# Sentinel cwd points to /other-project, not /repo
+printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/other-project"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
+JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+# Should NOT contain PENDING HANDOFF (sentinel is for different workspace, so SENTINEL_PRESENT=false)
+# Should contain SESSION START (handoff file present but no matching sentinel)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("SESSION START")' >/dev/null 2>&1 && \
+   ! printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
+  pass "3l-resume-sentinel-mismatched-cwd: mismatched sentinel cwd skipped → SESSION START (not PENDING)"
+else
+  fail "3l-resume-sentinel-mismatched-cwd" "expected SESSION START without PENDING HANDOFF, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# primer-marker-absent: synthetic CLAUDE.local.md with substantive content but no marker,
+# mtime > cutoff → TRUNCATED warning (validates the marker-detection path downstream)
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
+printf '# handoff\n## Active Skill State\nDetected: /plan\n## Next Action\nRun tests.\n' > "$TMPHOME/repo/CLAUDE.local.md"
+# Fresh mtime (default) means it is after the 2020 cutoff, so no marker = TRUNCATED
+JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("TRUNCATED")' >/dev/null 2>&1; then
+  pass "primer-marker-absent: substantive content without marker → TRUNCATED warning"
+else
+  fail "primer-marker-absent" "expected TRUNCATED warning for marker-absent file, got: $OUT"
+fi
+rm -rf "$TMPHOME"
+
+# pretool-traversal: PreToolUse with Edit target evil/../CLAUDE.local.md → compound-check .. deny
+# Defense-in-depth: verify the compound-check deny-class blocks path traversal via ..
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '91\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT=$(HOME="$TMPHOME" ./ctx-gate-on-pretooluse.sh <<< '{"session_id":"foo","tool_name":"Edit","tool_input":{"file_path":"evil/../CLAUDE.local.md"},"hook_event_name":"PreToolUse"}' 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  pass "pretool-traversal: Edit with .. path traversal denied by compound-check deny-class"
+else
+  fail "pretool-traversal" "expected deny for .. path traversal, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
