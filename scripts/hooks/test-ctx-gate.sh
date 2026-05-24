@@ -343,7 +343,7 @@ mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
 printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
 touch -t 202601010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2026-01-01 = old
 JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
-OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" CTX_STALE_HANDOFF_SECS_OVERRIDE=3600 HANDOFF_STALE_SECS_OVERRIDE=3600 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+OUT=$(HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_STALE_SECS_OVERRIDE=3600 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("STALE")' >/dev/null 2>&1; then
   pass "3l-resume-no-sentinel-stale: source=resume + no sentinel + old mtime → STALE"
 else
