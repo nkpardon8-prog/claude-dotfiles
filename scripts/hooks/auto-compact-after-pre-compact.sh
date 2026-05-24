@@ -61,8 +61,11 @@ SENTINEL=$(ac_sentinel_path "$SESSION_ID")
 # only routine cleanup path because most Stop events skip the sentinel-consume
 # path (`[ -f "$SENTINEL" ] || exit 0` below is the typical fast-path). Putting
 # GC here ensures it actually runs.
+# R4 D5: GC only cross-session .claim files (they're orphaned by definition once their
+# Stop hook process exits). Breadcrumbs are now per-session lifecycle: owner deletes on
+# read OR own-session Stop deletes on next /pre-compact arm.
 find "$HOME/.claude/progress" -maxdepth 1 -type f \
-  \( -name 'auto-compact-*.json.claim.*' -o -name 'breadcrumb-*.json' \) \
+  -name 'auto-compact-*.json.claim.*' \
   -mmin +60 -delete 2>/dev/null || true
 
 [ -f "$SENTINEL" ] || exit 0
