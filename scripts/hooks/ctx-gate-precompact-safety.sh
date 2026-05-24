@@ -71,12 +71,12 @@ fi
 #     but this is preferable to a bricked session that can't make any forward progress.
 PCT=$(ctx_gate_read_pct "$SID") || PCT="?"
 
-if [ "$PCT" != "?" ] && [ "$PCT" -ge "$CTX_PRECOMPACT_SAFETY_PCT" ]; then
+if [ "$PCT" != "?" ] && [ "$PCT" -ge "$HANDOFF_PRECOMPACT_RELEASE_PCT" ]; then
   ctx_gate_log "precompact sid=$SID pct=$PCT trigger=auto action=release-extreme-pct"
   exit 0  # let native compact run; handoff lost but better than deadlock
 fi
 
-REASON="Native auto-compact blocked: /pre-compact was never invoked, so handoff would be lost. Context: ${PCT}%. Invoke Skill(pre-compact) NOW to write CLAUDE.local.md, arm the auto-compact sentinel, and let the Stop hook deliver a clean /compact instead. (At ${CTX_PRECOMPACT_SAFETY_PCT}% this safety net releases so the session can recover via native compaction.)"
+REASON="Native auto-compact blocked: /pre-compact was never invoked, so handoff would be lost. Context: ${PCT}%. Invoke Skill(pre-compact) NOW to write CLAUDE.local.md, arm the auto-compact sentinel, and let the Stop hook deliver a clean /compact instead. (At ${HANDOFF_PRECOMPACT_RELEASE_PCT}% this safety net releases so the session can recover via native compaction.)"
 ctx_gate_log "precompact sid=$SID pct=$PCT trigger=auto action=block"
 
 jq -n --arg r "$REASON" '{ "decision": "block", "reason": $r }'
