@@ -161,7 +161,7 @@ if [ "$HOOK_EXIT2" = "0" ]; then check "no-sentinel hook re-fire is no-op" 1 1; 
 
 echo "== Concurrent claim race =="
 # Two hook invocations on the same sentinel must result in exactly ONE consuming it.
-ac_write_sentinel "$TEST_SID" "/dev/ttys999"
+ac_write_sentinel "$TEST_SID" "/dev/ttys999" "/tmp" "race-nonce-$$"
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh" &
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh" &
 wait
