@@ -318,6 +318,22 @@ rm -f "$BREADCRUMB" 2>/dev/null || true
 BREADCRUMB_TMP="${BREADCRUMB}.tmp.$$"
 # R4 H4: wrap breadcrumb write in umask 077 subshell for mode 600.
 # H1: breadcrumb JSON gains schema_version:1 and originating_command fields.
+# R5 Phase 3: generate per-session HMAC key + sign canonical fields before writing breadcrumb.
+# This allows step2.sh to verify the breadcrumb was written by THIS session's Stop hook
+# (not an attacker who knows the SID and writes a forged breadcrumb + handoff).
+# If session_key_generate or session_key_sign fails (openssl absent, /tmp full, etc.),
+# we write an unsigned breadcrumb and log a warning. step2.sh rejects unsigned breadcrumbs
+# unless HANDOFF_ACCEPT_UNSIGNED=1 is set (migration window escape hatch).
+_BC_SIG=""
+if command -v session_key_generate >/dev/null 2>&1; then
+  if session_key_generate "$SID8" 2>/dev/null; then
+    # Sign: sid, nonce (=marker_nonce for this pre-compact breadcrumb), cwd, host, origcmd.
+    # marker_nonce and nonce are the same field at breadcrumb-write time (sentinel marker_nonce).
+    _BC_SIG=$(session_key_sign "$SID8" "$SESSION_ID" "$SENTINEL_NONCE" "$SENTINEL_NONCE" \
+      "$SENTINEL_CWD" "$HOSTNAME_SHORT" "pre-compact" 2>/dev/null) || _BC_SIG=""
+  fi
+fi
+[ -z "$_BC_SIG" ] && handoff_log "breadcrumb_unsigned sid=${SID8} reason=session-key-sign-failed"
 if ( umask 077 && jq -c -n \
      --argjson sv 1 \
      --arg sid "$SESSION_ID" \
@@ -325,10 +341,11 @@ if ( umask 077 && jq -c -n \
      --arg cwd "$SENTINEL_CWD" \
      --arg nonce "$SENTINEL_NONCE" \
      --arg host "$HOSTNAME_SHORT" \
-     '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+     --arg sig "${_BC_SIG:-}" \
+     '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host,signature:$sig}' \
      > "$BREADCRUMB_TMP" 2>/dev/null ); then
   if mv "$BREADCRUMB_TMP" "$BREADCRUMB" 2>/dev/null; then
-    handoff_log "breadcrumb_written sid=${SID8} cwd=$SENTINEL_CWD host=$HOSTNAME_SHORT"
+    handoff_log "breadcrumb_written sid=${SID8} cwd=$SENTINEL_CWD host=$HOSTNAME_SHORT signed=$([ -n "$_BC_SIG" ] && echo yes || echo no)"
   else
     rm -f "$BREADCRUMB_TMP" 2>/dev/null
     handoff_log "breadcrumb_write_failed sid=${SID8} reason=mv"
