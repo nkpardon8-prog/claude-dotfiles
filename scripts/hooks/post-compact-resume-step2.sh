@@ -258,6 +258,22 @@ HANDOFF_PATH=""
 RESOLVE_RC=0
 handoff_resolve_path "$(pwd)" "${SID8:-}" || RESOLVE_RC=$?
 
+if [ "$RESOLVE_RC" -eq 3 ]; then
+  # Phase 4 (Round 4): SID-tagged file exists but is a hardlink (linkcount > 1).
+  # This could be an attacker creating a hardlink to a sensitive file to bypass
+  # the symlink check. Emit a distinct STATE so the user gets an actionable message.
+  handoff_log "step2_terminal state=sid-known-hardlinked sid8=${SID8}"
+  _json=$(jq -c -n --arg sid8 "$SID8" \
+    '{"state":"sid-known-hardlinked","sid8":$sid8,
+      "next_steps":"The SID-tagged handoff file has a hardlink count > 1 (potential attack). To fix: cp CLAUDE.local.<sid8>.md CLAUDE.local.<sid8>.md.new && mv CLAUDE.local.<sid8>.md.new CLAUDE.local.<sid8>.md"}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"sid-known-hardlinked","sid8":"%s"}\n' "$SID8"
+  fi
+  exit 0
+fi
+
 if [ "$RESOLVE_RC" -eq 2 ]; then
   # R4 D3: SID known but no SID-tagged file found — fail closed.
   # Do NOT fall back to alias (that may belong to another parallel-track session).
