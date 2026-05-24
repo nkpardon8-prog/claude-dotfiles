@@ -227,7 +227,13 @@ if ! grep -q 'armed_at' "$SP" 2>/dev/null; then check "sentinel JSON omits armed
 rm -f "$SP"
 
 echo "== --dry-run path does not write a sentinel =="
-DRY_OUT=$("$ROOT/arm-auto-compact.sh" "--dry-run" 2>/dev/null)
+# R5 H7: inject CLAUDE_SESSION_ID so arm-auto-compact.sh's ac_resolve_session_id returns
+# a deterministic SID. Without this, when CLAUDE_SESSION_ID is unset in the test runner
+# environment and there are no project transcripts in the test cwd, ac_resolve_session_id
+# may return empty — which would cause the script to hit own-sid-unresolvable now that
+# we validate OWN_SID in step2.sh. The --dry-run path itself doesn't use OWN_SID but
+# we inject for test stability (consistent behavior regardless of test runner env).
+DRY_OUT=$(CLAUDE_SESSION_ID="test-dry-run-sid-$(date +%s)" "$ROOT/arm-auto-compact.sh" "--dry-run" 2>/dev/null)
 case "$DRY_OUT" in
   *"DRY-RUN"*) check "--dry-run reports intent" 1 1 ;;
   *) check "--dry-run output (got '$DRY_OUT')" 1 0 ;;
