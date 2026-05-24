@@ -47,6 +47,10 @@ MUST match the primer's resolution logic exactly. Both look at:
 2. `$(git rev-parse --show-toplevel 2>/dev/null)/CLAUDE.local.md` (repo root) fallback
 Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
 
+Path-resolution intentionally uses shell `$(pwd)` here; the primer uses SessionStart JSON `.cwd`.
+`ac_canonicalize_path` canonicalization ensures both forms compare equal in practice
+(e.g., `/tmp/foo` and `/private/tmp/foo` on macOS both resolve to `/private/tmp/foo`).
+
 The orchestrator running `/post-compact-resume` must invoke this Bash via the `Bash` tool.
 **The snippet DEFINES `HANDOFF_PATH` inside the Bash call** (variable does not
 persist across orchestrator turns or into a new Bash subprocess):
