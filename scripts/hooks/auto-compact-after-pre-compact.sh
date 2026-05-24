@@ -88,11 +88,38 @@ RESOLVED_EXISTS=false
 
 if [ "$REAL_EXISTS" = "true" ] && [ "$RESOLVED_EXISTS" = "true" ] \
    && [ "$REAL_SENTINEL" != "$RESOLVED_SENTINEL" ]; then
-  # R3-fix-sweep H4 (Adversary): both sentinels exist but disagree — fail-closed.
-  # An attacker who plants a transcript file + crafts a TTY redirect could redirect
-  # compact delivery by triggering RESOLVED_SID to diverge from REAL_SID.
+  # R3-fix-sweep H4 (Adversary) + R4 Round 4 Phase 3: both sentinels exist but disagree — fail-closed.
   # Refuse to fire compact when sentinel ownership is ambiguous.
-  handoff_log "stop_hook_sid_mismatch real=$REAL_SID resolved=$RESOLVED_SID action=refuse"
+  _REAL_BASENAME=$(basename "$REAL_SENTINEL")
+  _RESOLVED_BASENAME=$(basename "$RESOLVED_SENTINEL")
+  handoff_log "stop_hook_sid_mismatch real_sid=$REAL_SID resolved_sid=$RESOLVED_SID real_basename=$_REAL_BASENAME resolved_basename=$_RESOLVED_BASENAME action=refuse"
+  # Phase 3 (Round 4): write a stop-hook-refused breadcrumb so step2.sh can surface this
+  # to the user at the next session start (STATE=stop-hook-refused).
+  # Use the REAL_SID (hook-JSON SID) as the key — it's Claude Code's authoritative session ID.
+  _REFUSE_BREADCRUMB_DIR="$HOME/.claude/progress"
+  mkdir -p "$_REFUSE_BREADCRUMB_DIR" 2>/dev/null
+  chmod 700 "$_REFUSE_BREADCRUMB_DIR" 2>/dev/null
+  _REFUSE_BC="$_REFUSE_BREADCRUMB_DIR/breadcrumb-${REAL_SID}.json"
+  _REFUSE_BC_TMP="${_REFUSE_BC}.tmp.$$"
+  _REFUSE_HOST=""
+  if _REFUSE_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64); then :
+  elif _REFUSE_HOST=$(uname -n 2>/dev/null | tr -d '[:space:]' | head -c 64); then :
+  fi
+  if ( umask 077 && jq -c -n \
+       --argjson sv 1 \
+       --arg sid "$REAL_SID" \
+       --arg sid8 "$(ac_compute_sid8 "$REAL_SID")" \
+       --arg cmd "stop-hook-fail-closed" \
+       --arg real_sid "$REAL_SID" --arg resolved_sid "$RESOLVED_SID" \
+       --arg real_basename "$_REAL_BASENAME" --arg resolved_basename "$_RESOLVED_BASENAME" \
+       --arg host "${_REFUSE_HOST:-unknown}" \
+       --arg next_steps "Two sentinels exist for this session with distinct SIDs. Run /pre-compact again to arm a fresh sentinel, then retry /compact manually." \
+       '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$real_basename,resolved_basename:$resolved_basename,next_steps:$next_steps}' \
+       > "$_REFUSE_BC_TMP" 2>/dev/null ) && mv "$_REFUSE_BC_TMP" "$_REFUSE_BC" 2>/dev/null; then
+    handoff_log "stop_hook_refused_breadcrumb_written sid=$(ac_compute_sid8 "$REAL_SID") path=$_REFUSE_BC"
+  else
+    rm -f "$_REFUSE_BC_TMP" 2>/dev/null || true
+  fi
   exit 0
 elif [ "$REAL_EXISTS" = "false" ] && [ "$RESOLVED_EXISTS" = "true" ]; then
   # Only the resolved (arm-time) sentinel exists — use it.
