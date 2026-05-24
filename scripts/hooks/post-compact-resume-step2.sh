@@ -102,9 +102,11 @@ if [ -n "$OWN_SID" ]; then
       _refused_next=$(jq -r '.next_steps // empty' "$_refused_bc" 2>/dev/null) || _refused_next=""
       _refused_real=$(jq -r '.real_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_real=""
       _refused_resolved=$(jq -r '.resolved_sid // empty' "$_refused_bc" 2>/dev/null) || _refused_resolved=""
-      handoff_log "step2_terminal state=stop-hook-refused sid8=$(printf '%s' "$OWN_SID" | head -c 8)"
+      # R5 H1: use ac_compute_sid8 (TTY-aware) instead of head -c 8 (strips __ttysN suffix).
+      _refused_sid8=$(ac_compute_sid8 "$OWN_SID" 2>/dev/null) || _refused_sid8=$(printf '%s' "$OWN_SID" | head -c 8)
+      handoff_log "step2_terminal state=stop-hook-refused sid8=${_refused_sid8}"
       _json=$(jq -c -n \
-        --arg sid8 "$(printf '%s' "$OWN_SID" | head -c 8)" \
+        --arg sid8 "$_refused_sid8" \
         --arg real_sid "$_refused_real" \
         --arg resolved_sid "$_refused_resolved" \
         --arg next_steps "$_refused_next" \
@@ -112,7 +114,7 @@ if [ -n "$OWN_SID" ]; then
       if [ -n "$_json" ]; then
         printf 'STATE=%s\n' "$_json"
       else
-        printf 'STATE={"state":"stop-hook-refused","sid8":"%s"}\n' "$(printf '%s' "$OWN_SID" | head -c 8)"
+        printf 'STATE={"state":"stop-hook-refused","sid8":"%s"}\n' "$_refused_sid8"
       fi
       exit 0
     fi
