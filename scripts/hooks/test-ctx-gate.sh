@@ -75,17 +75,17 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3c — UserPromptSubmit, ctx=75 (hard/wrap-up zone): expect WRAP-UP directive + Skill(pre-compact)
-# Threshold update 2026-05-23: hard zone is now 70+ (was 90+); wrap-up phrasing replaced "HARD CONTEXT GATE"
+# 3c — UserPromptSubmit, ctx=65 (hard/wrap-up zone — new HARD=60): expect WRAP-UP directive + Skill(pre-compact)
+# Threshold 2026-05-23 second revision: HARD=60 (was 70). ctx=65 is in the hard zone.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '75\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '65\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1 && \
    printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("Skill(pre-compact)")' >/dev/null 2>&1; then
-  pass "3c: submit ctx=75 → wrap-up directive with Skill(pre-compact)"
+  pass "3c: submit ctx=65 → wrap-up directive with Skill(pre-compact)"
 else
-  fail "3c: submit ctx=75 → expected wrap-up directive, got: $OUT"
+  fail "3c: submit ctx=65 → expected wrap-up directive, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
