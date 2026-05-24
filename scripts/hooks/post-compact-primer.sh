@@ -37,6 +37,26 @@ handoff_log "session_started sid=${SID:-unknown} source=${SOURCE:-unknown}"
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
+# CWD validation (A6): defends against path-traversal via hostile/corrupted SessionStart JSON.
+# Reject non-absolute paths, ../ traversal, and non-directories. Owner-mismatch logs but
+# proceeds (could fail on docker/NFS/shared mounts where the user UID differs from cwd owner).
+if [ "${CWD#/}" = "$CWD" ]; then
+  ctx_gate_log "primer skip reason=cwd-not-absolute cwd=$CWD"
+  exit 0
+fi
+if printf '%s' "$CWD" | grep -qE '(^|/)\.\.($|/)'; then
+  ctx_gate_log "primer skip reason=cwd-traversal cwd=$CWD"
+  exit 0
+fi
+if [ ! -d "$CWD" ]; then
+  ctx_gate_log "primer skip reason=cwd-not-dir cwd=$CWD"
+  exit 0
+fi
+if [ ! -O "$CWD" ]; then
+  ctx_gate_log "primer warn reason=cwd-not-owned cwd=$CWD"
+  # log + proceed; do not hard-reject
+fi
+
 # Canonicalize CWD for symlink-safe comparison with sentinel cwd field.
 CWD_CANON=$(ac_canonicalize_path "$CWD") || CWD_CANON="$CWD"
 
