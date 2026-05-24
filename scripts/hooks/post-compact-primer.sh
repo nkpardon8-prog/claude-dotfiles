@@ -14,6 +14,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/ctx-gate-config.sh
 . "$ROOT/lib/ctx-gate-config.sh"
+# shellcheck source=lib/handoff-config.sh
+. "$ROOT/lib/handoff-config.sh"
 # shellcheck source=lib/auto-compact-sentinel.sh
 . "$ROOT/lib/auto-compact-sentinel.sh"
 
