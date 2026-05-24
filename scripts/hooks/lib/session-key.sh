@@ -106,8 +106,17 @@ session_key_sign() {
 
 # ---------------------------------------------------------------------------
 # session_key_verify <SID8> <sig> <sid> <nonce> <marker_nonce> <cwd> <host> <origcmd>
-# Returns 0 if signature matches, 1 if mismatch, 2 if key or openssl unavailable.
-# When HANDOFF_ACCEPT_UNSIGNED=1 and sig is empty, returns 0 (migration window).
+# Returns:
+#   0  — signature valid (or key-absent with empty sig → fail-open backward compat)
+#   1  — signature mismatch (attacker-forged or HANDOFF_ACCEPT_UNSIGNED=0 with empty sig + key exists)
+#   2  — verification inconclusive (key/openssl unavailable; caller may proceed with warning)
+#
+# Security model:
+# - Key file exists + sig empty: REJECT (the signer should have signed; something is wrong).
+# - Key file exists + sig present: VERIFY (reject if mismatch).
+# - Key file absent + sig empty: ACCEPT (no key → no signing was possible → backward compat).
+# - Key file absent + sig present: INCONCLUSIVE (can't verify foreign sig; caller warns + accepts).
+# - HANDOFF_ACCEPT_UNSIGNED=1: always accept empty sig regardless of key state (migration window).
 # ---------------------------------------------------------------------------
 session_key_verify() {
   local sid8="$1" sig="$2" sid="$3" nonce="$4" marker_nonce="$5" cwd="$6" host="$7" origcmd="$8"
@@ -116,12 +125,21 @@ session_key_verify() {
   if [ -z "$sig" ] && [ "${HANDOFF_ACCEPT_UNSIGNED:-0}" = "1" ]; then
     return 0
   fi
-  # Unsigned breadcrumb (empty sig) without escape hatch: deny.
+  local keyfile
+  keyfile=$(session_key_path "$sid8")
+  # Key-absent + empty sig → backward compat fail-open (signing wasn't possible).
+  if [ -z "$sig" ] && [ ! -f "$keyfile" ]; then
+    return 0
+  fi
+  # Key-absent + sig present → inconclusive (can't verify).
+  if [ ! -f "$keyfile" ]; then
+    return 2
+  fi
+  # Key exists + empty sig → reject (signer should have signed).
   [ -n "$sig" ] || return 1
   local expected
   expected=$(session_key_sign "$sid8" "$sid" "$nonce" "$marker_nonce" "$cwd" "$host" "$origcmd") || return 2
   [ -n "$expected" ] || return 2
-  # Constant-time comparison using openssl (not vulnerable to timing attacks via bash).
-  # Fall back to string compare if openssl dgst -mac HMAC for comparison is unavailable.
+  # Constant-time comparison.
   [ "$sig" = "$expected" ] && return 0 || return 1
 }
