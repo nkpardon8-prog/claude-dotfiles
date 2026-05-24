@@ -104,6 +104,47 @@ _ac_resolve_tty_basename_via_ppid() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# ac_compute_sid8 <sid>
+#
+# R3-fix-sweep C2: TTY-aware SID8 computation.  When SID contains a __ttysN
+# suffix (slug-fallback path in ac_resolve_session_id), `head -c 8` returns
+# only the first 8 bytes of the transcript UUID — the TTY discriminator is at
+# position ~36+ and is never reached.  Two parallel sessions in the same cwd
+# therefore get the same SID8, causing handoff filename clobber.
+#
+# This helper preserves the TTY suffix in SID8 so parallel-track sessions
+# produce DISTINCT handoff filenames.
+#
+# Format:
+#   With TTY suffix:    <first_8_of_transcript_uuid>_<tty_basename>
+#   Without TTY suffix: <first_8_of_sid>  (unchanged behaviour — env-var path)
+#
+# Output charset: [A-Za-z0-9_-]+  — safe for filename construction.
+# The underscore separator between UUID prefix and tty_basename is a single _
+# (not double __) to keep SID8 short and human-readable while still
+# distinguishing it from the UUID portion.
+# ---------------------------------------------------------------------------
+ac_compute_sid8() {
+  local sid="$1"
+  case "$sid" in
+    *__ttys[0-9]*)
+      local transcript_part tty_suffix prefix
+      transcript_part="${sid%%__*}"
+      tty_suffix="${sid##*__}"
+      prefix=$(printf '%s' "$transcript_part" | head -c 8)
+      [ -z "$prefix" ] && prefix="$transcript_part"
+      printf '%s_%s' "$prefix" "$tty_suffix"
+      ;;
+    *)
+      local prefix
+      prefix=$(printf '%s' "$sid" | head -c 8)
+      [ -z "$prefix" ] && prefix="$sid"
+      printf '%s' "$prefix"
+      ;;
+  esac
+}
+
 ac_resolve_session_id() {
   local sid="${CLAUDE_SESSION_ID:-}"
   if [ -z "$sid" ]; then
