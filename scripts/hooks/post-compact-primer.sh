@@ -96,7 +96,7 @@ fi
 # R2 #4: skip stale check if STAT_OK=false (HANDOFF_MTIME unreliable).
 # R3 #B12: compute HANDOFF_AGE_HUMAN INSIDE the stale-branch (not at top scope).
 STALE_WARNING=""
-if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "${CTX_STALE_HANDOFF_SECS}" ]; then
+if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "${HANDOFF_STALE_SECS}" ]; then
   HANDOFF_AGE_HUMAN=$((HANDOFF_AGE / 3600))
   STALE_WARNING="WARNING STALE HANDOFF — predates this session by ~${HANDOFF_AGE_HUMAN}h; it may be from a prior conversation. Verify with the user before resuming."$'\n\n'
 fi
