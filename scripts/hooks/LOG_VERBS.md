@@ -101,6 +101,7 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `primer skip reason=multi-hardlink` | post-compact-primer-helpers.sh / handoff-resolve.sh | Handoff candidate rejected: hardlink count > 1 (swap-attack defense); path + linkcount logged |
 | `primer skip reason=invalid-sentinel-basename` | post-compact-primer-helpers.sh | Sentinel SID contains characters outside `[A-Za-z0-9_-]`; path-traversal defense |
 | `primer warn reason=sentinel-without-sid-file` | post-compact-primer.sh | Sentinel present but no SID-tagged file found; advisory warning |
+| `primer warn reason=multi-marker-detected` | post-compact-primer-helpers.sh (primer_check_marker) | RQ-07 (R6 HZ-34): handoff file has more than one canonical END-OF-HANDOFF marker at column 0; MARKER_PRESENT set to "tampered"; primer emits distinct tamper warning |
 | `primer skip reason=sid-known-no-tagged-file` | post-compact-primer-helpers.sh / handoff-resolve.sh | SID known but no SID-tagged CLAUDE.local.<sid8>.md found; R4 D3 fail-closed |
 | `primer skip reason=stat-failed` | handoff-resolve.sh | stat() failed on handoff candidate — cannot verify linkcount; fail-closed (H10 fix-sweep) |
 | `step2 skip reason=invalid-sid8` | post-compact-resume-step2.sh | SID8 contains characters outside [A-Za-z0-9_-]; breadcrumb rejected (C5 fix-sweep) |
