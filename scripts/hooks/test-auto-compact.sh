@@ -433,8 +433,10 @@ if ( umask 077 && jq -c -n \
   printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
     "$E2E_SID8" "$E2E_NONCE" > "/tmp/e2e/CLAUDE.local.${E2E_SID8}.md"
   # Invoke step2.sh against the breadcrumb.
+  # R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to E2E_SID.
+  # Without this, both env vars are unset in the test runner → own-sid-unresolvable fires.
   STEP2="$ROOT/post-compact-resume-step2.sh"
-  STEP2_OUT=$(cd /tmp/e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" 2>/dev/null)
+  STEP2_OUT=$(cd /tmp/e2e 2>/dev/null && CLAUDE_SESSION_ID="$E2E_SID" HOME="$E2E_HOME" bash "$STEP2" 2>/dev/null)
   STEP2_STATE=$(printf '%s' "$STEP2_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
   # R2-PR-5 (Round 3 BLOCKER fix): ONLY accept STATE=ok.
   if [ "$STEP2_STATE" = "ok" ]; then
