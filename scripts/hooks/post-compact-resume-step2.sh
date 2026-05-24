@@ -31,12 +31,15 @@ if [ -n "$_STEP2_DIR" ]; then
   # _primer_check_linkcount lives in handoff-resolve.sh, not primer-helpers, to prevent
   # step2.sh from calling an undefined function — silent fail-closed on every valid handoff).
   . "$_STEP2_DIR/lib/handoff-resolve.sh" 2>/dev/null || . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-resolve.sh" 2>/dev/null
+  # R5 Phase 3: source session-key.sh for HMAC breadcrumb verification.
+  . "$_STEP2_DIR/lib/session-key.sh" 2>/dev/null || . "$HOME/.claude-dotfiles/scripts/hooks/lib/session-key.sh" 2>/dev/null
 else
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh" 2>/dev/null
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-config.sh" 2>/dev/null
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-marker.sh" 2>/dev/null
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-resolve.sh" 2>/dev/null
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/session-key.sh" 2>/dev/null
 fi
 
 # R3 D2: Per-session breadcrumb written by Stop hook (decoupled from .claim file
