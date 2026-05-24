@@ -547,9 +547,9 @@ working memory (Step 3.C was inline), so this audit is materially stronger than 
 sub-agent reading a JSON digest would have been.
 
 Verify each item against the CURRENT contents of `./CLAUDE.local.md` (no `.tmp` —
-R1 finding #1: no allowlist conflict).
+allowlist-clean, no Bash intermediate file needed).
 
-**Section presence semantics (R1 finding #15):** for the purposes of these checks, a
+**Section presence semantics:** for the purposes of these checks, a
 section containing ONLY the HTML comment placeholder (`<!-- ... -->`) counts as
 ABSENT. A populated section must have at least one substantive bullet/row beyond the
 placeholder.
