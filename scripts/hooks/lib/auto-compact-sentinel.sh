@@ -107,7 +107,7 @@ _ac_validate_sentinel_path() {
   [ -f "$p" ] || return 1
   if [ -L "$p" ]; then ac_log "skip-sentinel reason=symlink path=$p"; return 1; fi
   local size
-  # Explicit if-elif for stat (R1-H2): no || chaining which short-circuits on macOS BSD stat.
+  # Explicit if-elif for stat: no || chaining which short-circuits on macOS BSD stat.
   if size=$(stat -f %z "$p" 2>/dev/null); then
     :
   elif size=$(stat -c %s "$p" 2>/dev/null); then
