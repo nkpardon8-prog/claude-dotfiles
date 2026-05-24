@@ -311,6 +311,92 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# §G4 post-compact-resume-step2.sh STATE-routing tests
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §G4 post-compact-resume-step2.sh STATE-routing =="
+
+STEP2_SH="$PWD/lib/post-compact-resume-step2.sh"
+if [ ! -x "$STEP2_SH" ]; then
+  fail "G4: post-compact-resume-step2.sh missing or non-executable at $STEP2_SH"
+else
+  # G4-A: empty workspace → STATE=no-handoff
+  TMPWD=$(mktemp -d)
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  case "$OUT" in
+    *"STATE=no-handoff"*) pass "G4-A: empty workspace → STATE=no-handoff" ;;
+    *) fail "G4-A: empty workspace expected STATE=no-handoff" "got: $OUT" ;;
+  esac
+  rm -rf "$TMPWD" "$TMPHOME"
+
+  # G4-B: handoff present with marker → STATE=ok MARKER=present
+  TMPWD=$(mktemp -d)
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  G4B_NONCE="abcd1234-5678-90ab-cdef-1234567890ab"
+  G4B_SID8="abcd1234"
+  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4B_SID8" "$G4B_NONCE" > "$TMPWD/CLAUDE.local.md"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  case "$OUT" in
+    *"STATE=ok"*"MARKER=present"*) pass "G4-B: handoff with marker → STATE=ok MARKER=present" ;;
+    *) fail "G4-B: expected STATE=ok MARKER=present" "got: $OUT" ;;
+  esac
+  rm -rf "$TMPWD" "$TMPHOME"
+
+  # G4-C: handoff missing marker (recent file) → STATE=ok MARKER=absent LEGACY=false
+  TMPWD=$(mktemp -d)
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  printf 'content body without marker\n' > "$TMPWD/CLAUDE.local.md"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  case "$OUT" in
+    *"STATE=ok"*"MARKER=absent"*"LEGACY=false"*) pass "G4-C: recent missing marker → STATE=ok MARKER=absent LEGACY=false" ;;
+    *) fail "G4-C: expected STATE=ok MARKER=absent LEGACY=false" "got: $OUT" ;;
+  esac
+  rm -rf "$TMPWD" "$TMPHOME"
+
+  # G4-D: oversized handoff (6MB > 5MB cap) → STATE=oversize
+  TMPWD=$(mktemp -d)
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  dd if=/dev/zero of="$TMPWD/CLAUDE.local.md" bs=1024 count=6144 2>/dev/null
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  case "$OUT" in
+    *"STATE=oversize"*) pass "G4-D: 6MB handoff → STATE=oversize (H11 size cap)" ;;
+    *) fail "G4-D: expected STATE=oversize" "got: $(printf '%s' "$OUT" | head -c 200)" ;;
+  esac
+  rm -rf "$TMPWD" "$TMPHOME"
+
+  # G4-E: handoff + breadcrumb with matching nonce → STATE=ok NONCE_OK=match
+  TMPWD=$(mktemp -d)
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  G4E_NONCE="11112222-3333-4444-5555-666677778888"
+  G4E_SID="g4e-test-sid-1234"
+  G4E_SID8="g4e-test"
+  G4E_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4E_SID8" "$G4E_NONCE" > "$TMPWD/CLAUDE.local.md"
+  G4E_CWD=$(cd -P "$TMPWD" 2>/dev/null && pwd -P)
+  jq -c -n \
+    --arg sid  "$G4E_SID"  \
+    --arg sid8 "$G4E_SID8" \
+    --arg cwd  "$G4E_CWD"  \
+    --arg nonce "$G4E_NONCE" \
+    --arg host  "$G4E_HOST"  \
+    '{sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+    > "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
+  chmod 600 "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  case "$OUT" in
+    *"STATE=ok"*"NONCE_OK=match"*) pass "G4-E: breadcrumb-matched nonce → STATE=ok NONCE_OK=match (R3 D2)" ;;
+    *) fail "G4-E: expected STATE=ok NONCE_OK=match" "got: $OUT" ;;
+  esac
+  rm -rf "$TMPWD" "$TMPHOME"
+fi
+
+# ---------------------------------------------------------------------------
 # §3l primer source-routing matrix tests
 # ---------------------------------------------------------------------------
 echo ""
