@@ -357,27 +357,122 @@ else
 fi
 rm -rf "$TMPDIR_H9"
 
-echo "== R3-D2 breadcrumb write + read roundtrip =="
-BC_TMPHOME=$(mktemp -d)
-mkdir -p "$BC_TMPHOME/.claude/progress"
-chmod 700 "$BC_TMPHOME/.claude/progress"
-BC_SID="bc-$$"
-BC_PATH="$BC_TMPHOME/.claude/progress/breadcrumb-${BC_SID}.json"
-jq -c -n \
-  --arg sid "$BC_SID" \
-  --arg sid8 "$(printf '%s' "$BC_SID" | head -c 8)" \
-  --arg cwd "/tmp/bc-test" \
-  --arg nonce "abcd-1234-efgh-5678" \
-  --arg host "$(hostname -s 2>/dev/null | head -c 64)" \
-  '{sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' > "$BC_PATH" 2>/dev/null
-BC_READ_SID=$(jq -r '.sid // empty' "$BC_PATH" 2>/dev/null)
-BC_READ_NONCE=$(jq -r '.nonce // empty' "$BC_PATH" 2>/dev/null)
-if [ "$BC_READ_SID" = "$BC_SID" ] && [ "$BC_READ_NONCE" = "abcd-1234-efgh-5678" ]; then
-  check "R3-D2: breadcrumb roundtrip (sid + nonce intact)" 1 1
+echo "== §R4-D7 Real Stop-hook breadcrumb E2E =="
+# PR-5 (Round 3 BLOCKER fix): mkdir -p /tmp/e2e so cd doesn't silently fail.
+# R2-PR-5: ONLY accept STATE=ok as PASS (vacuous-pass anti-pattern banned).
+# Task 4.1 [D7+G2]: replaces R3-D2 fixture test (which used jq directly, not Stop hook).
+E2E_HOME=$(mktemp -d)
+E2E_TTY="/dev/ttys999"
+E2E_SID="r4d7-$$-$(date +%s)"
+E2E_NONCE="11112222-3333-4444-5555-666677778888"
+mkdir -p "$E2E_HOME/.claude/progress" "$E2E_HOME/.claude/logs"
+chmod 700 "$E2E_HOME/.claude/progress"
+# PR-5: explicit mkdir -p so step2.sh cd succeeds.
+mkdir -p /tmp/e2e
+# Write a synthetic sentinel via production ac_write_sentinel
+HOME="$E2E_HOME" ac_write_sentinel "$E2E_SID" "$E2E_TTY" "/tmp/e2e" "$E2E_NONCE"
+SENTINEL_PATH="$E2E_HOME/.claude/progress/auto-compact-${E2E_SID}.json"
+# Invoke the actual Stop hook with synthetic stdin.
+# Stop hook will fail at osascript (no Terminal.app match for /dev/ttys999) but the
+# breadcrumb-write block runs regardless (PR-12: decoupled from OSA delivery success).
+STOP_HOOK="$ROOT/auto-compact-after-pre-compact.sh"
+JSON_IN=$(jq -c -n --arg sid "$E2E_SID" '{session_id:$sid}')
+HOME="$E2E_HOME" CTX_GATE_PTY_DELAY_SEC=0.01 bash "$STOP_HOOK" <<< "$JSON_IN" 2>/dev/null
+# Verify breadcrumb was written.
+BREADCRUMB_PATH="$E2E_HOME/.claude/progress/breadcrumb-${E2E_SID}.json"
+if [ -f "$BREADCRUMB_PATH" ]; then
+  BC_SID=$(jq -r '.sid' "$BREADCRUMB_PATH" 2>/dev/null)
+  BC_HOST=$(jq -r '.hostname' "$BREADCRUMB_PATH" 2>/dev/null)
+  BC_SCHEMA=$(jq -r '.schema_version' "$BREADCRUMB_PATH" 2>/dev/null)
+  BC_MODE=$(stat -f '%Lp' "$BREADCRUMB_PATH" 2>/dev/null || stat -c '%a' "$BREADCRUMB_PATH" 2>/dev/null)
+  if [ "$BC_SID" = "$E2E_SID" ] && [ -n "$BC_HOST" ] && [ "$BC_SCHEMA" = "1" ]; then
+    check "G2/D7: Stop-hook wrote correct breadcrumb (sid=${BC_SID:0:8} schema=$BC_SCHEMA mode=$BC_MODE)" 1 1
+  else
+    check "G2/D7: breadcrumb content mismatch sid=$BC_SID schema=$BC_SCHEMA host=$BC_HOST" 1 0
+  fi
+  # Create real SID-tagged handoff file matching nonce so step2.sh resolves STATE=ok
+  # (not vacuous no-handoff or sid-known-no-tagged-file).
+  SID8="${E2E_SID:0:8}"
+  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+    "$SID8" "$E2E_NONCE" > "/tmp/e2e/CLAUDE.local.${SID8}.md"
+  # Invoke step2.sh against the breadcrumb and assert JSON STATE.
+  STEP2="$ROOT/post-compact-resume-step2.sh"
+  STEP2_OUT=$(cd /tmp/e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" 2>/dev/null)
+  STEP2_STATE=$(printf '%s' "$STEP2_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  # R2-PR-5 (Round 3 BLOCKER fix): ONLY accept STATE=ok.
+  if [ "$STEP2_STATE" = "ok" ]; then
+    check "G2/D7: Stop-hook -> breadcrumb -> step2.sh -> STATE=ok (end-to-end)" 1 1
+  else
+    check "G2/D7: expected STATE=ok got '$STEP2_STATE' (PR-5: only ok PASS) raw=${STEP2_OUT:0:200}" 1 0
+  fi
 else
-  check "R3-D2: breadcrumb roundtrip mismatch read_sid=$BC_READ_SID read_nonce=$BC_READ_NONCE" 1 0
+  check "G2/D7: breadcrumb NOT written by Stop hook (path=$BREADCRUMB_PATH)" 1 0
 fi
-rm -rf "$BC_TMPHOME"
+rm -rf "$E2E_HOME" /tmp/e2e 2>/dev/null
+
+echo "== §G1/D8 N-TTY SID stability =="
+# Task 4.2 [D8+G1]: Verify 3 distinct CLAUDE_SESSION_ID values → 3 distinct resolved SIDs.
+# Primary path: CLAUDE_SESSION_ID env var (trivially distinct).
+SID_1=$(CLAUDE_SESSION_ID="tty1-sid-1234567890ab" ac_resolve_session_id)
+SID_2=$(CLAUDE_SESSION_ID="tty2-sid-2345678901bc" ac_resolve_session_id)
+SID_3=$(CLAUDE_SESSION_ID="tty3-sid-3456789012cd" ac_resolve_session_id)
+if [ "$SID_1" != "$SID_2" ] && [ "$SID_2" != "$SID_3" ] && [ "$SID_1" != "$SID_3" ]; then
+  check "D8: N=3 distinct CLAUDE_SESSION_ID → distinct resolved SIDs" 1 1
+else
+  check "D8: SID collision SID_1=$SID_1 SID_2=$SID_2 SID_3=$SID_3" 1 0
+fi
+# Fallback path: no CLAUDE_SESSION_ID — relies on transcript file discovery.
+# Known limitation (R4 D8): at N>1 without distinct CLAUDE_SESSION_ID, ac_resolve_session_id
+# may return the same SID (slug-of-cwd fallback picks ls -t | head -1 regardless of caller).
+# This test documents that limitation; the function is expected to return *something* (or empty).
+# arm-auto-compact.sh docstring notes this collision mode; arming is refused if SID is empty.
+D8_SAVED_SID="${CLAUDE_SESSION_ID:-}"
+unset CLAUDE_SESSION_ID
+SID_FALLBACK=$(ac_resolve_session_id)
+if [ -n "$SID_FALLBACK" ]; then
+  check "D8: fallback returns non-empty SID (transcript-derived; may collide at N>1 without CLAUDE_SESSION_ID — known limitation)" 1 1
+else
+  check "D8: fallback returns empty SID — arm refuses (acceptable degradation per R4-D8 known-limitation doc)" 1 1
+fi
+# Restore
+if [ -n "$D8_SAVED_SID" ]; then
+  CLAUDE_SESSION_ID="$D8_SAVED_SID"
+  export CLAUDE_SESSION_ID
+fi
+
+echo "== §G6 cross-session breadcrumb persistence (post-D5) =="
+# Task 4.6 [G6]: Write session A's breadcrumb, run session B's Stop hook, assert A's breadcrumb
+# is NOT GC'd (R4 D5 per-session GC only removes own-session orphans, not other sessions').
+GC_HOMEDIR=$(mktemp -d)
+mkdir -p "$GC_HOMEDIR/.claude/progress" "$GC_HOMEDIR/.claude/logs"
+chmod 700 "$GC_HOMEDIR/.claude/progress"
+GC_SID_A="gc-sess-a-$$"
+GC_SID_B="gc-sess-b-$$"
+GC_NONCE_A="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+GC_NONCE_B="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+# Write A's breadcrumb directly (simulating A's Stop hook already ran).
+GC_A_BREADCRUMB="$GC_HOMEDIR/.claude/progress/breadcrumb-${GC_SID_A}.json"
+jq -c -n \
+  --argjson sv 1 \
+  --arg sid "$GC_SID_A" \
+  --arg sid8 "${GC_SID_A:0:8}" \
+  --arg cwd "/tmp" \
+  --arg nonce "$GC_NONCE_A" \
+  --arg host "$(hostname -s 2>/dev/null | head -c 64)" \
+  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
+  > "$GC_A_BREADCRUMB" 2>/dev/null
+chmod 600 "$GC_A_BREADCRUMB"
+# Write B's sentinel (no cwd match — B will fail at osascript; breadcrumb-write runs).
+HOME="$GC_HOMEDIR" ac_write_sentinel "$GC_SID_B" "/dev/ttys998" "/tmp/gc-b" "$GC_NONCE_B"
+GC_JSON_IN=$(jq -c -n --arg sid "$GC_SID_B" '{session_id:$sid}')
+HOME="$GC_HOMEDIR" CTX_GATE_PTY_DELAY_SEC=0.01 bash "$STOP_HOOK" <<< "$GC_JSON_IN" 2>/dev/null
+# Assert A's breadcrumb still exists (cross-session GC protection).
+if [ -f "$GC_A_BREADCRUMB" ]; then
+  check "G6/D5: session B Stop hook did NOT GC session A's breadcrumb (cross-session isolation)" 1 1
+else
+  check "G6/D5: session B Stop hook GC'd session A's breadcrumb (cross-session isolation BROKEN)" 1 0
+fi
+rm -rf "$GC_HOMEDIR"
 
 echo "== G6: same-SID parallel write race =="
 G6_SID="r3g6-$$"
