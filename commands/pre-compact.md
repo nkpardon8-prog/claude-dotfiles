@@ -702,6 +702,9 @@ Output a compact summary:
 - `.gitignore` update: added / already present / skipped (not a git repo).
 - **Auto-compact: {AUTOCOMPACT_STATE}**  ← interpolate the literal value from Step 9.0
 - Count of decisions, open issues, gaps, fix-laters captured.
+- **Self-audit (Step 6C):** PASS / 2-pass-incomplete (list failing checks) / not-applicable.
+  If incomplete, surface the specific failing checks so the user sees them explicitly.
+- **END-OF-HANDOFF marker (Step 6D):** present / skipped (already present — idempotent retry).
 - Anything the user should double-check before continuing.
 
 ## Rules
