@@ -333,6 +333,9 @@ if [ -f "$VERBS_FILE" ]; then
     [ -z "$G5R_BARE" ] && continue
     # Allow-list: handoff:$1 is a function-body parameter literal; skip.
     [ "$G5R_BARE" = 'handoff:$1' ] && continue
+    # Allow-list: "test" is emitted only by test-auto-compact.sh (a test harness, not
+    # production code). LOG_VERBS.md documents it explicitly with that caveat; exclude.
+    [ "$G5R_BARE" = 'test' ] && continue
     # Skip compound/pattern rows: bare token contains `|` (e.g. "sentinel=true|false")
     # or looks like a structured log line fragment (contains `=` and no alpha-only prefix).
     case "$G5R_BARE" in
