@@ -974,15 +974,16 @@ done
 # §NEW-1 Parallel-track test
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §NEW-1 Parallel-track sentinel selection =="
+echo "== §NEW-1 Parallel-track sentinel session-id binding =="
+# Phase 2 (Round 4): primer now accepts session_id as 2nd arg to primer_find_sentinel_for_cwd
+# and binds to the EXACT sentinel for that session. This test verifies session-id-binding:
+# Track AAAA1111's session should see AAAA1111's sentinel (not BBBB2222's), and vice versa.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
 printf '# handoff AAAA1111\n\n<!-- END-OF-HANDOFF schema=v1 sid=AAAA1111 nonce=nonce-AAAA -->\n' \
   > "$TMPHOME/repo/CLAUDE.local.AAAA1111.md"
 printf '# handoff BBBB2222\n\n<!-- END-OF-HANDOFF schema=v1 sid=BBBB2222 nonce=nonce-BBBB -->\n' \
   > "$TMPHOME/repo/CLAUDE.local.BBBB2222.md"
-# Also write CLAUDE.local.md (generic alias) pointing to AAAA
-cp "$TMPHOME/repo/CLAUDE.local.AAAA1111.md" "$TMPHOME/repo/CLAUDE.local.md"
 # Write sentinel for AAAA1111
 printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce-AAAA"}\n' "$TMPHOME" \
   > "$TMPHOME/.claude/progress/auto-compact-AAAA1111.json"
@@ -990,13 +991,36 @@ printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"p
 printf '{"schema_version":3,"target_tty":"/dev/ttys002","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce-BBBB"}\n' "$TMPHOME" \
   > "$TMPHOME/.claude/progress/auto-compact-BBBB2222.json"
 LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
-JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
-OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
-# Primer must detect SENTINEL_PRESENT=true (either SID is acceptable — it breaks on first glob match)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
-  pass "NEW-1: parallel-track — primer detects SENTINEL_PRESENT=true (first glob match wins)"
+# Invoke with session_id=AAAA1111 → should detect AAAA1111's sentinel (PENDING HANDOFF)
+JSON_AAAA="{\"session_id\":\"AAAA1111\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT_AAAA=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON_AAAA" 2>/dev/null)
+if printf '%s' "$OUT_AAAA" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
+  pass "NEW-1: session-id binding — AAAA1111 session detects its own sentinel (PENDING HANDOFF)"
 else
-  fail "NEW-1: parallel-track" "expected PENDING HANDOFF from one of the 2 matching sentinels, got: $OUT"
+  fail "NEW-1: session-id binding AAAA" "expected PENDING HANDOFF for AAAA1111 session, got: $OUT_AAAA"
+fi
+# Invoke with session_id=BBBB2222 → should detect BBBB2222's sentinel (PENDING HANDOFF)
+JSON_BBBB="{\"session_id\":\"BBBB2222\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT_BBBB=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON_BBBB" 2>/dev/null)
+if printf '%s' "$OUT_BBBB" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
+  pass "NEW-1: session-id binding — BBBB2222 session detects its own sentinel (PENDING HANDOFF)"
+else
+  fail "NEW-1: session-id binding BBBB" "expected PENDING HANDOFF for BBBB2222 session, got: $OUT_BBBB"
+fi
+# Invoke with unknown session_id=newsid → legacy-fallback, first glob match (either AAAA or BBBB)
+JSON_NEW="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+OUT_NEW=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON_NEW" 2>/dev/null)
+# newsid has no sentinel → strict miss; legacy-fallback also misses since newsid sentinel absent.
+# Expected: sid-known-no-tagged-file or no-handoff or SESSION START with existing handoff.
+# The primer emits SESSION START with existing handoff if a handoff file is found for this session.
+# With session_id=newsid, primer_find_sentinel_for_cwd looks for auto-compact-newsid.json → absent.
+# Since session_id is non-empty, strict mode fires → SENTINEL_PRESENT=false → no sentinel.
+# primer_resolve_handoff_path with SENTINEL_SID8="" → looks for CLAUDE.local.md alias-only.
+# There is no CLAUDE.local.md alias, so HANDOFF_PATH="" → primer exits silently.
+if [ -z "$OUT_NEW" ] || printf '%s' "$OUT_NEW" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF") | not' >/dev/null 2>&1; then
+  pass "NEW-1: session-id binding — newsid (no sentinel) → no PENDING HANDOFF (strict miss + no alias)"
+else
+  fail "NEW-1: session-id binding newsid" "expected no PENDING HANDOFF for newsid session, got: $OUT_NEW"
 fi
 rm -rf "$TMPHOME"
 
