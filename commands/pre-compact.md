@@ -93,7 +93,7 @@ Read `./CLAUDE.local.<sid8>.md` (the SID-tagged handoff for this session) if it 
 
    In Step 6A, if working memory is uncertain, re-read this file. The file is auto-cleaned on next /pre-compact run for the same session (overwrite) or at 720-minute prune in `scripts/progress/on-session-start-cleanup.sh` (already prunes `pre-compact-*` if needed — add a glob there).
 
-DO NOT re-read `CLAUDE.local.md` BEFORE the Phase 1 write completes in Step 6A — between this extraction and the Phase 1 write, the file is the parent's content; AFTER Phase 1 write, it is your new content. (Step 6B's "read the file you just wrote back" is the Phase 2 re-read of the new content — explicitly allowed.)
+DO NOT re-read the SID-tagged handoff BEFORE the Phase 1 write completes in Step 6A — between this extraction and the Phase 1 write, the file is the parent's content; AFTER Phase 1 write, it is your new content. (Step 6B's "read the file you just wrote back" is the Phase 2 re-read of the new content — explicitly allowed.)
 
 Batch these independent calls in one message, then label each source in the output:
 
