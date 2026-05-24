@@ -18,6 +18,9 @@ set -uo pipefail
 . "$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh" 2>/dev/null
 . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-config.sh" 2>/dev/null
 . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
+# H1: source marker lib so we delegate to handoff_marker_check / handoff_marker_nonce
+# instead of inlining grep/sed (eliminates drift if canonical marker strings change).
+. "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-marker.sh" 2>/dev/null
 
 # R3 D2: Per-session breadcrumb written by Stop hook (decoupled from .claim file
 # lifecycle which the Stop hook EXIT trap removes). Read the most-recent breadcrumb
