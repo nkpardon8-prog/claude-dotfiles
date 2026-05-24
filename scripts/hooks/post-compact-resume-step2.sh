@@ -448,6 +448,29 @@ if ! printf '%s' "$_handoff_bn" | grep -qE '^CLAUDE\.local\.([A-Za-z0-9_-]+\.)?m
   exit 0
 fi
 
+# Phase 1 (Round 4): TOCTOU re-verify — confirm original file unchanged since snapshot.
+# If ino:dev:size changed, the file was swapped mid-pipeline (e.g., auto-sync write).
+# Refuse to ingest in that case; the user can retry /post-compact-resume.
+if [ -n "$_HANDOFF_ORIG_STAT" ]; then
+  _current_stat=""
+  if _current_stat=$(stat -f '%i:%d:%z' "$HANDOFF_PATH" 2>/dev/null); then :
+  elif _current_stat=$(stat -c '%i:%d:%s' "$HANDOFF_PATH" 2>/dev/null); then :
+  fi
+  if [ -n "$_current_stat" ] && [ "$_current_stat" != "$_HANDOFF_ORIG_STAT" ]; then
+    handoff_log "handoff_mutated_mid_read path=$HANDOFF_PATH orig=$_HANDOFF_ORIG_STAT current=$_current_stat"
+    handoff_log "step2_terminal state=handoff-mutated-mid-read sid8=${SID8:-none}"
+    _json=$(jq -c -n \
+      --arg path "$HANDOFF_PATH" \
+      '{"state":"handoff-mutated-mid-read","path":$path}' 2>/dev/null)
+    if [ -n "$_json" ]; then
+      printf 'STATE=%s\n' "$_json"
+    else
+      printf 'STATE={"state":"handoff-mutated-mid-read"}\n'
+    fi
+    exit 0
+  fi
+fi
+
 # R4 D10: emit STATE as single-line JSON (handles workspace paths with spaces).
 # H4: emit step2_terminal log BEFORE STATE emission so audit trail precedes the signal.
 handoff_log "step2_terminal state=ok sid8=${SID8:-none} marker=${MARKER} nonce_ok=${NONCE_OK}"
