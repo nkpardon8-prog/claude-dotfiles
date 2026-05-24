@@ -1201,7 +1201,8 @@ chmod 600 "$TMPHOME_F/.claude/progress/breadcrumb-${GF_SID}.json"
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GF_SID8" "$GF_NONCE_Y" > "$TMPWD_F/CLAUDE.local.${GF_SID8}.md"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
-OUT_F=$(cd "$TMPWD_F" && HOME="$TMPHOME_F" bash "$STEP2_SH" 2>/dev/null)
+# R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GF_SID.
+OUT_F=$(cd "$TMPWD_F" && CLAUDE_SESSION_ID="$GF_SID" HOME="$TMPHOME_F" bash "$STEP2_SH" 2>/dev/null)
 GF_STATE=$(printf '%s' "$OUT_F" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GF_STATE" = "nonce-mismatch-hard-stop" ]; then
   pass "G4-F: nonce-mismatch hard-stop fires when SID known (D4)"
