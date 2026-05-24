@@ -41,7 +41,7 @@ Then stop.
 
 ### Pre-read verification (marker + legacy + stale)
 
-**R3 #A7 path-resolution consistency:** the HANDOFF_PATH resolution logic in this snippet
+**Path-resolution consistency:** the HANDOFF_PATH resolution logic in this snippet
 MUST match the primer's resolution logic exactly. Both look at:
 1. `$(pwd)/CLAUDE.local.md` (current cwd) first
 2. `$(git rev-parse --show-toplevel 2>/dev/null)/CLAUDE.local.md` (repo root) fallback
