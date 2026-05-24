@@ -56,7 +56,25 @@ trap '[ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm 
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 
 # Glob over per-session breadcrumbs, newest first; pick the first that matches cwd + host.
-for BREADCRUMB in $(ls -t "$HOME/.claude/progress/breadcrumb-"*.json 2>/dev/null); do
+# H3 (Theme 5): use nullglob + mtime-array iteration instead of $(ls -t ...) to handle
+# $HOME with spaces and avoid word-splitting / ls-parse pitfalls (bash 3.2 compatible).
+shopt -s nullglob 2>/dev/null
+_bc_candidates=()
+for _bc_f in "$HOME/.claude/progress/breadcrumb-"*.json; do
+  [ -f "$_bc_f" ] || continue
+  if _bc_mt=$(stat -f %m "$_bc_f" 2>/dev/null); then :
+  elif _bc_mt=$(stat -c %Y "$_bc_f" 2>/dev/null); then :
+  else continue
+  fi
+  _bc_mt=$(printf '%s' "$_bc_mt" | tr -d '[:space:]')
+  [ -n "$_bc_mt" ] || continue
+  _bc_candidates+=("$_bc_mt $_bc_f")
+done
+shopt -u nullglob 2>/dev/null
+IFS=$'\n' _bc_sorted=($(printf '%s\n' "${_bc_candidates[@]+"${_bc_candidates[@]}"}" | sort -rn))
+unset IFS
+for _bc_entry in "${_bc_sorted[@]+"${_bc_sorted[@]}"}"; do
+  BREADCRUMB="${_bc_entry#* }"
   [ -f "$BREADCRUMB" ] || continue
   [ -L "$BREADCRUMB" ] && continue  # reject symlinks
   # Ownership + size guard
