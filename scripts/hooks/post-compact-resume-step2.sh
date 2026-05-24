@@ -401,10 +401,39 @@ if [ -n "$_snap_tmp" ]; then
     # Add snapshot to EXIT trap cleanup.
     trap '[ "$_BREADCRUMB_CONSUMED" = "yes" ] && [ -n "${ADOPTED_BREADCRUMB_PATH:-}" ] && [ -n "${SENTINEL_SID:-}" ] && rm -f "$ADOPTED_BREADCRUMB_PATH" 2>/dev/null || true; rm -f "${_HANDOFF_SNAP:-}" 2>/dev/null || true' EXIT
   else
+    # R5 H8: snapshot (cp) failed — log the error and emit STATE=snapshot-failed.
+    # This can happen if /tmp is full, permissions are wrong, or the file disappeared.
+    # Emitting snapshot-failed rather than silently falling back ensures the operator
+    # knows the TOCTOU defense was not applied for this ingestion.
+    handoff_log "step2_terminal state=snapshot-failed path=$HANDOFF_PATH sid8=${SID8:-}"
+    _json=$(jq -c -n \
+      --arg sid8 "${SID8:-}" \
+      --arg path "$HANDOFF_PATH" \
+      '{"state":"snapshot-failed","sid8":$sid8,"path":$path,"reason":"mktemp/cp failed — cannot create TOCTOU-safe snapshot"}' 2>/dev/null)
+    if [ -n "$_json" ]; then
+      printf 'STATE=%s\n' "$_json"
+    else
+      printf 'STATE={"state":"snapshot-failed","path":"%s"}\n' "$HANDOFF_PATH"
+    fi
     rm -f "$_snap_tmp" 2>/dev/null || true
+    exit 0
   fi
+else
+  # R5 H8: mktemp itself failed — same as cp failure above.
+  handoff_log "step2_terminal state=snapshot-failed path=$HANDOFF_PATH sid8=${SID8:-} reason=mktemp-failed"
+  _json=$(jq -c -n \
+    --arg sid8 "${SID8:-}" \
+    --arg path "$HANDOFF_PATH" \
+    '{"state":"snapshot-failed","sid8":$sid8,"path":$path,"reason":"mktemp failed — cannot create TOCTOU-safe snapshot"}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"snapshot-failed","path":"%s"}\n' "$HANDOFF_PATH"
+  fi
+  exit 0
 fi
 # Use snapshot for all content reads; fall back to original if snapshot unavailable.
+# R5 H8: if we reach here, _HANDOFF_SNAP is always set (we exit above on failure).
 _HANDOFF_READ="${_HANDOFF_SNAP:-$HANDOFF_PATH}"
 
 # Whitespace-strip stat output for bash 3.2 arithmetic safety.
