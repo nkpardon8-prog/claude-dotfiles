@@ -48,55 +48,109 @@ MUST match the primer's resolution logic exactly. Both look at:
 Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
 
 The orchestrator running `/post-compact-resume` must invoke this Bash via the `Bash` tool.
-**The snippet DEFINES `HANDOFF_PATH` inside the Bash call** (R2 #7 — variable does not
+**The snippet DEFINES `HANDOFF_PATH` inside the Bash call** (variable does not
 persist across orchestrator turns or into a new Bash subprocess):
 
 ```bash
-# Define HANDOFF_PATH first (the Step 1 path-resolution rule, repeated for Bash scope):
-HANDOFF_PATH=""
-if [ -f ./CLAUDE.local.md ]; then
-  HANDOFF_PATH="$(pwd)/CLAUDE.local.md"
-else
-  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-  if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/CLAUDE.local.md" ]; then
-    HANDOFF_PATH="$REPO_ROOT/CLAUDE.local.md"
-  fi
+# Source libs for thresholds — use $HOME not ~ for reliable expansion.
+# Fail-open if lib missing (use defaults).
+. "$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh" 2>/dev/null
+. "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-config.sh" 2>/dev/null
+. "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
+
+# SID-tagged file takes priority (parallel-track safety — see Step 1).
+# Try to find the consumed-sentinel SID from claim files.
+SENTINEL_SID=""
+CLAIM_FILE=$(ls -t "$HOME/.claude/progress/auto-compact-"*.json.claim.* 2>/dev/null | head -1)
+if [ -n "$CLAIM_FILE" ]; then
+  SENTINEL_SID=$(basename "$CLAIM_FILE" | sed 's/^auto-compact-//; s/\.json\.claim\..*//')
 fi
+SID8=""
+if [ -n "$SENTINEL_SID" ]; then
+  SID8=$(printf '%s' "$SENTINEL_SID" | head -c 8)
+  [ -z "$SID8" ] && SID8="$SENTINEL_SID"
+fi
+
+# Resolve HANDOFF_PATH: SID-tagged first, then generic alias, then repo root.
+HANDOFF_PATH=""
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+
+try_path() {
+  local p="$1"
+  [ -z "$p" ] && return 1
+  [ -f "$p" ] || return 1
+  [ -L "$p" ] && { echo "WARN: skipping symlink at $p" >&2; return 1; }
+  HANDOFF_PATH="$p"
+  return 0
+}
+
+if [ -n "$SID8" ]; then
+  try_path "$(pwd)/CLAUDE.local.${SID8}.md" || true
+fi
+if [ -z "$HANDOFF_PATH" ]; then
+  try_path "$(pwd)/CLAUDE.local.md" || true
+fi
+if [ -z "$HANDOFF_PATH" ] && [ -n "$REPO_ROOT" ]; then
+  if [ -n "$SID8" ]; then
+    try_path "$REPO_ROOT/CLAUDE.local.${SID8}.md" || true
+  fi
+  try_path "$REPO_ROOT/CLAUDE.local.md" || true
+fi
+
 if [ -z "$HANDOFF_PATH" ]; then
   echo "STATE=no-handoff"
   exit 0
 fi
 
-# Source the lib for thresholds (R3 #B9 — use $HOME not ~ for reliable expansion in
-# Bash tool heredoc contexts). R3 #A11: hard-fail if source fails so the orchestrator
-# gets a recognizable signal rather than silently using fallback values.
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh" 2>/dev/null || { echo "STATE=lib-missing path=$HOME/.claude-dotfiles/scripts/hooks/lib/ctx-gate-config.sh"; exit 0; }
-
-# R2 #4 fix: whitespace-strip stat output for bash 3.2 arithmetic safety
+# Whitespace-strip stat output for bash 3.2 arithmetic safety.
 HANDOFF_MTIME=$(stat -f %m "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || stat -c %Y "$HANDOFF_PATH" 2>/dev/null | tr -d '[:space:]' || printf 0)
 [ -z "$HANDOFF_MTIME" ] && HANDOFF_MTIME=0
 NOW=$(date +%s)
 HANDOFF_AGE=$((NOW - HANDOFF_MTIME))
 
-# R2 #4 fix: STAT_OK guard against false-stale on stat failure
+# STAT_OK guard against false-stale on stat failure
 if [ "$HANDOFF_MTIME" -eq 0 ]; then STAT_OK=false; HANDOFF_AGE=0; else STAT_OK=true; fi
 
-if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "${CTX_LEGACY_HANDOFF_CUTOFF_EPOCH:-0}" ]; then LEGACY=true; else LEGACY=false; fi
+CUTOFF="${HANDOFF_LEGACY_CUTOFF_EPOCH:-1779321600}"
+if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_MTIME" -lt "$CUTOFF" ]; then LEGACY=true; else LEGACY=false; fi
 
-# R4 #A4 fix: original used `tail | grep` pipe which is denied by ctx-gate compound-command
-# deny-class when invoked by orchestrator at >=60% hard-gate. /post-compact-resume runs
-# post-compaction (after /compact resets ctx to a low %), so the pipe usually works in
-# practice — but defensive design avoids the pipe entirely using a two-step pattern.
-# Write tail to a temp file, then grep on the temp file (no pipe).
-TAIL_TMP=$(mktemp -t handoff_tail.XXXXXX 2>/dev/null) || TAIL_TMP="/tmp/handoff_tail.$$"
-tail -c 512 "$HANDOFF_PATH" > "$TAIL_TMP" 2>/dev/null
-if grep -qF '<!-- END-OF-HANDOFF -->' "$TAIL_TMP" 2>/dev/null; then MARKER=present; else MARKER=absent; fi
-rm -f "$TAIL_TMP"
+# Dual-form marker check: match both new form (schema=v1) and legacy form (--).
+# Use mktemp only — no PID-predictable /tmp path (fail-closed if mktemp unavailable).
+MARKER=absent
+TAIL_TMP=$(mktemp -t handoff_tail.XXXXXX 2>/dev/null)
+if [ -n "$TAIL_TMP" ]; then
+  tail -c 512 "$HANDOFF_PATH" > "$TAIL_TMP" 2>/dev/null
+  if grep -qF '<!-- END-OF-HANDOFF schema=v1' "$TAIL_TMP" 2>/dev/null \
+     || grep -qF '<!-- END-OF-HANDOFF -->' "$TAIL_TMP" 2>/dev/null; then
+    MARKER=present
+  fi
+  rm -f "$TAIL_TMP"
+else
+  MARKER=unknown  # mktemp unavailable — treat as unknown, not absent
+fi
 
-if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "${CTX_STALE_HANDOFF_SECS:-86400}" ]; then STALE=true; else STALE=false; fi
+# Nonce validation: extract nonce from marker and compare with consumed sentinel.
+MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1)
+SENTINEL_NONCE=""
+if [ -n "$SENTINEL_SID" ]; then
+  SENTINEL_PATH="$HOME/.claude/progress/auto-compact-${SENTINEL_SID}.json"
+  CLAIM_PATH="${SENTINEL_PATH}.claim.$$"
+  # Try reading from claim file (most-recent)
+  ACTUAL_CLAIM=$(ls -t "$HOME/.claude/progress/auto-compact-${SENTINEL_SID}.json.claim."* 2>/dev/null | head -1)
+  if [ -n "$ACTUAL_CLAIM" ] && [ -f "$ACTUAL_CLAIM" ]; then
+    SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$ACTUAL_CLAIM" 2>/dev/null) || SENTINEL_NONCE=""
+  fi
+fi
+NONCE_OK="unknown"
+if [ -n "$MARKER_NONCE" ] && [ -n "$SENTINEL_NONCE" ]; then
+  if [ "$MARKER_NONCE" = "$SENTINEL_NONCE" ]; then NONCE_OK=match; else NONCE_OK=mismatch; fi
+fi
+
+STALE_SECS="${HANDOFF_STALE_SECS:-86400}"
+if [ "$STAT_OK" = "true" ] && [ "$HANDOFF_AGE" -gt "$STALE_SECS" ]; then STALE=true; else STALE=false; fi
 
 HANDOFF_AGE_HOURS=$((HANDOFF_AGE / 3600))
-echo "STATE=ok MARKER=$MARKER LEGACY=$LEGACY STALE=$STALE AGE_HOURS=$HANDOFF_AGE_HOURS PATH=$HANDOFF_PATH"
+echo "STATE=ok MARKER=$MARKER LEGACY=$LEGACY STALE=$STALE AGE_HOURS=$HANDOFF_AGE_HOURS NONCE_OK=$NONCE_OK SID8=${SID8:-none} PATH=$HANDOFF_PATH"
 ```
 
 The orchestrator reads the `STATE=...` output line and routes to the decision matrix below.
