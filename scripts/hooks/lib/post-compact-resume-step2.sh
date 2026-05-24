@@ -82,6 +82,15 @@ try_path() {
   [ -z "$p" ] && return 1
   [ -f "$p" ] || return 1
   [ -L "$p" ] && { echo "WARN: skipping symlink at $p" >&2; return 1; }
+  # H9: hardlink rejection — multi-link inode is a swap-attack signal.
+  local lc
+  lc=$(stat -f %l "$p" 2>/dev/null || stat -c %h "$p" 2>/dev/null || echo 1)
+  lc=$(printf '%s' "$lc" | tr -d '[:space:]')
+  [ -z "$lc" ] && lc=1
+  if [ "$lc" -gt 1 ]; then
+    echo "WARN: skipping hardlinked $p (linkcount=$lc)" >&2
+    return 1
+  fi
   HANDOFF_PATH="$p"
   return 0
 }
