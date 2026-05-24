@@ -105,6 +105,10 @@ if [ "$REAL_EXISTS" = "true" ] && [ "$RESOLVED_EXISTS" = "true" ] \
   if _REFUSE_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64); then :
   elif _REFUSE_HOST=$(uname -n 2>/dev/null | tr -d '[:space:]' | head -c 64); then :
   fi
+  # R5 Critical #6: drop next_steps from breadcrumb-writer to eliminate prompt-injection vector.
+  # Attacker-controlled content (e.g., git commit messages, file names, env vars) could flow into
+  # the next_steps field and then be emitted to the orchestrator LLM via STATE=stop-hook-refused.
+  # step2.sh now hard-codes the recovery prose instead of relying on this field.
   if ( umask 077 && jq -c -n \
        --argjson sv 1 \
        --arg sid "$REAL_SID" \
@@ -113,8 +117,7 @@ if [ "$REAL_EXISTS" = "true" ] && [ "$RESOLVED_EXISTS" = "true" ] \
        --arg real_sid "$REAL_SID" --arg resolved_sid "$RESOLVED_SID" \
        --arg real_basename "$_REAL_BASENAME" --arg resolved_basename "$_RESOLVED_BASENAME" \
        --arg host "${_REFUSE_HOST:-unknown}" \
-       --arg next_steps "Two sentinels exist for this session with distinct SIDs. Run /pre-compact again to arm a fresh sentinel, then retry /compact manually." \
-       '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$real_basename,resolved_basename:$resolved_basename,next_steps:$next_steps}' \
+       '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$real_basename,resolved_basename:$resolved_basename}' \
        > "$_REFUSE_BC_TMP" 2>/dev/null ) && mv "$_REFUSE_BC_TMP" "$_REFUSE_BC" 2>/dev/null; then
     handoff_log "stop_hook_refused_breadcrumb_written sid=$(ac_compute_sid8 "$REAL_SID") path=$_REFUSE_BC"
   else
