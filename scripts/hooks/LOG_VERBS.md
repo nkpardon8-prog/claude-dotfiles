@@ -116,4 +116,5 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `primer warn reason=sentinel-without-sid-file` | post-compact-primer.sh | Sentinel present but no SID-tagged file found; advisory warning |
 | `primer skip reason=sid-known-no-tagged-file` | post-compact-primer-helpers.sh / handoff-resolve.sh | SID known but no SID-tagged CLAUDE.local.<sid8>.md found; R4 D3 fail-closed |
 | `nonce_mismatch_hard_stop` | post-compact-resume-step2.sh | SID known + nonce mismatch detected; hard stop emitted (R4 D4) |
+| `sid_mismatch_hard_stop` | post-compact-resume-step2.sh | Marker sid= attribute differs from breadcrumb SID8; cross-track file rejected (C3 fix-sweep) |
 | `handoff_detected` | post-compact-primer.sh | Sentinel matched CWD — see handoff: prefix table above |
