@@ -159,11 +159,11 @@ for sentinel_candidate in "$HOME/.claude/progress/auto-compact-"*.json; do
   # Use schema-validating lib reader: symlink rejection, size cap, schema_version check.
   # Legacy sentinels (schema_version=1, no cwd field) → skip via continue.
   SENT_CWD=$(ac_read_sentinel_cwd "$sentinel_candidate" 2>/dev/null) || {
-    ctx_gate_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=no-cwd-field-or-invalid-schema"
+    ac_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=no-cwd-field-or-invalid-schema"
     continue
   }
   if [ -z "$SENT_CWD" ]; then
-    ctx_gate_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=empty-cwd"
+    ac_log "primer action=skip-legacy-sentinel path=$sentinel_candidate reason=empty-cwd"
     continue
   fi
   # Canonicalize sentinel cwd; match if EITHER canonical OR raw equality (R1-H1 fallback).
