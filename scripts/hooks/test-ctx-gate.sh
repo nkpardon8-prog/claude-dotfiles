@@ -1244,7 +1244,10 @@ if [ -n "$PAST_MTIME" ]; then
   fi
   rm -rf "$TMPHOME_G_OLD" "$TMPWD_G_EMPTY"
 else
-  pass "G4-G: date -v-3601S not available on this platform — age-boundary test skipped (informational)"
+  # R3-fix-sweep H7: vacuous-pass → infra-fail. On macOS, `date -v-3601S` IS available
+  # (BSD date supports -v). An empty PAST_MTIME indicates a real infra problem.
+  fail "G4-G: date -v-3601S returned empty — expected macOS BSD date to support -v flag (infra-fail)" ""
+  exit 1
 fi
 # Fresh breadcrumb (touch mtime = now): verify step2.sh adopts it.
 touch "$GG_BREADCRUMB" 2>/dev/null
