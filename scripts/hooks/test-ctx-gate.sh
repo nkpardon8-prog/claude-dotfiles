@@ -315,7 +315,7 @@ printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md
 touch -t 202601010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2026-01-01 = well over 24h old
 printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
 JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
-OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" CTX_STALE_HANDOFF_SECS_OVERRIDE=3600 HANDOFF_STALE_SECS_OVERRIDE=3600 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
+OUT=$(HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_STALE_SECS_OVERRIDE=3600 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("STALE")' >/dev/null 2>&1 && \
    printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
   pass "3l-resume-sentinel-stale: source=resume + sentinel + old mtime → STALE + PENDING HANDOFF"
