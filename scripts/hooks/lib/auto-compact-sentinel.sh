@@ -21,6 +21,10 @@ _AC_LIB_LOADED=1
 #   ac_read_sentinel_tty <path>               → echoes target_tty from sentinel (schema v1+)
 #   ac_read_sentinel_cwd <path>               → echoes cwd from sentinel (schema v2+; empty for v1)
 #   ac_read_sentinel_nonce <path>             → echoes marker_nonce from sentinel (schema v3+; empty for v1/v2)
+#   ac_read_breadcrumb_sid <path>             → echoes sid from breadcrumb (schema_version 1 only)
+#   ac_read_breadcrumb_cwd <path>             → echoes cwd from breadcrumb (schema_version 1 only)
+#   ac_read_breadcrumb_nonce <path>           → echoes nonce from breadcrumb (schema_version 1 only)
+#   ac_read_breadcrumb_hostname <path>        → echoes hostname from breadcrumb (schema_version 1 only)
 #
 # Schema (v1):
 #   {"schema_version":1,"target_tty":"/dev/ttys<N>","originating_command":"pre-compact"}
