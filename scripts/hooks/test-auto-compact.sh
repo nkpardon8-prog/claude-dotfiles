@@ -148,7 +148,7 @@ case "$OUT" in
 esac
 
 echo "== Hook end-to-end (synthetic TTY) =="
-ac_write_sentinel "$TEST_SID" "/dev/ttys999"
+ac_write_sentinel "$TEST_SID" "/dev/ttys999" "/tmp" "hook-nonce-$$"
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh"
 HOOK_EXIT=$?
 if [ "$HOOK_EXIT" = "0" ]; then check "hook exit 0" 1 1; else check "hook exit 0 (got $HOOK_EXIT)" 1 0; fi
