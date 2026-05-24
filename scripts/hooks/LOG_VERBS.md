@@ -114,6 +114,7 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `step2 skip reason=invalid-sid8` | post-compact-resume-step2.sh | SID8 contains characters outside [A-Za-z0-9_-]; breadcrumb rejected (C5 fix-sweep) |
 | `step2 skip reason=invalid-sentinel-sid` | post-compact-resume-step2.sh | Full sentinel SID contains invalid characters; breadcrumb rejected (C5 fix-sweep) |
 | `stop_hook_sid_mismatch` | auto-compact-after-pre-compact.sh | Hook-JSON SID and ac_resolve_session_id SID both have sentinels but they differ; ac_resolve path preferred (C2 fix-sweep) |
-| `nonce_mismatch_hard_stop` | post-compact-resume-step2.sh | SID known + nonce mismatch detected; hard stop emitted (R4 D4) |
+| `nonce_mismatch_hard_stop` | post-compact-resume-step2.sh | SID known + nonce mismatch detected; hard stop emitted (R4 D4); sid8 + first8 of each nonce logged |
 | `sid_mismatch_hard_stop` | post-compact-resume-step2.sh | Marker sid= attribute differs from breadcrumb SID8; cross-track file rejected (C3 fix-sweep) |
+| `step2_terminal` | post-compact-resume-step2.sh | step2.sh reached a terminal STATE; state= field names one of: ok, no-handoff, oversize, sid-known-no-tagged-file, sid-mismatch-hard-stop, nonce-mismatch-hard-stop (H4 fix-sweep) |
 | `handoff_detected` | post-compact-primer.sh | Sentinel matched CWD — see handoff: prefix table above |
