@@ -424,7 +424,7 @@ placeholder.
 
 **On any failure:**
 - Identify which check failed.
-- Run a targeted Edit on `./CLAUDE.local.md` to backfill from working memory
+- Run a targeted Edit on HANDOFF_PRIMARY to backfill from working memory
   (the transcript content from Step 3.C is still in scope). Each Edit is atomic
   per-call; backfilling is safe.
 - Re-run the failed checks.
