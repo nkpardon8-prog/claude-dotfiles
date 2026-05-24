@@ -346,6 +346,19 @@ One `Write` call covering every section. Floor depends on the mining pass chosen
 
 If you can't reach the floor, you under-mined in Step 3 — go back to Step 3.C and extract more before writing.
 
+**Resolve REPO_ROOT first** (used throughout Steps 6-8 — must be defined before HANDOFF_PRIMARY/HANDOFF_ALIAS):
+
+```bash
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -z "$REPO_ROOT" ]; then
+  # Non-git workspace — fall back to current working directory
+  REPO_ROOT="$(pwd)"
+  echo "INFO: not in a git work tree; using REPO_ROOT=$(pwd)=$REPO_ROOT"
+fi
+```
+
+Then proceed to the SID-tagged write protocol:
+
 **SID-tagged write + alias copy (multi-track handoff — parallel agents write to separate files):**
 
 1. Resolve SID from Step 3.B disk-persist scratch file or dry-run output.
