@@ -185,8 +185,8 @@ rm -rf "$TMPHOME"
 echo ""
 echo "== §3 PreCompact safety-net tests =="
 
-# 3i — PreCompact, trigger=auto, ctx=68 (BLOCK zone: 0-74%), no sentinel: expect decision=block
-# Post-R2: BLOCK zone is below HANDOFF_PRECOMPACT_RELEASE_PCT (75%)
+# 3i — PreCompact, trigger=auto, ctx=68 (BLOCK zone: 0-89%), no sentinel: expect decision=block
+# Post-R3: BLOCK zone is below HANDOFF_AUTOCOMPACT_BYPASS_PCT (90%)
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '68\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
