@@ -272,6 +272,36 @@ for _bc_entry in "${_bc_sorted[@]+"${_bc_sorted[@]}"}"; do
   else
     handoff_log "step2_reader_bind own_sid=unknown mode=legacy-fallback path=$BREADCRUMB"
   fi
+  # R5 Phase 3: HMAC signature verification (Criticals #5, #7 — SID-knowledge poisoning).
+  # If session-key.sh is available and the breadcrumb has a signature field, verify it.
+  # An attacker who knows the SID can write a breadcrumb + handoff with matching nonce,
+  # but cannot forge the HMAC signature (requires the per-session key from ~/.claude/progress/).
+  # Unsigned breadcrumbs are rejected unless HANDOFF_ACCEPT_UNSIGNED=1 (migration window).
+  if command -v session_key_verify >/dev/null 2>&1; then
+    _bc_sig=$(jq -r '.signature // empty' "$BREADCRUMB" 2>/dev/null) || _bc_sig=""
+    _bc_cwd=$(jq -r '.cwd // empty' "$BREADCRUMB" 2>/dev/null) || _bc_cwd=""
+    _bc_host=$(jq -r '.hostname // empty' "$BREADCRUMB" 2>/dev/null) || _bc_host=""
+    _bc_nonce=$(jq -r '.nonce // empty' "$BREADCRUMB" 2>/dev/null) || _bc_nonce=""
+    _bc_origcmd=$(jq -r '.originating_command // empty' "$BREADCRUMB" 2>/dev/null) || _bc_origcmd=""
+    _bc_sid8_for_key="${SID8:-}"
+    _bc_verify_rc=0
+    session_key_verify "$_bc_sid8_for_key" "$_bc_sig" "$SENTINEL_SID" \
+      "$_bc_nonce" "$_bc_nonce" "$_bc_cwd" "$_bc_host" "$_bc_origcmd" 2>/dev/null || _bc_verify_rc=$?
+    if [ "$_bc_verify_rc" -eq 1 ]; then
+      # Signature mismatch — attacker-forged breadcrumb or corrupted key. Skip.
+      handoff_log "step2 skip reason=signature-mismatch sid8=${SID8} path=$BREADCRUMB"
+      ctx_gate_log "step2 skip reason=unsigned-breadcrumb-rejected sid8=${SID8} (use HANDOFF_ACCEPT_UNSIGNED=1 to migrate)"
+      SENTINEL_SID=""
+      SID8=""
+      SENTINEL_NONCE=""
+      continue
+    elif [ "$_bc_verify_rc" -eq 2 ]; then
+      # Key/openssl unavailable — signature check inconclusive; proceed (fail-open for
+      # environments without openssl or missing key file, logs the skip for traceability).
+      handoff_log "step2 warn reason=signature-check-inconclusive sid8=${SID8} path=$BREADCRUMB"
+    fi
+    # rc=0: signature valid (or HANDOFF_ACCEPT_UNSIGNED=1 with empty sig).
+  fi
   # R4 D5: track path for read-once consumption after successful adoption.
   ADOPTED_BREADCRUMB_PATH="$BREADCRUMB"
   break
