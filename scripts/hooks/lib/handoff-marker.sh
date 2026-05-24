@@ -125,7 +125,9 @@ handoff_marker_sid() {
   # header invariant: writer appends canonical last; attacker-appended impostor is
   # after it and therefore ignored by head -1).
   # sed extracts sid= attribute — no \b needed (already on a marker-only line).
-  grep -F 'END-OF-HANDOFF schema=' "$file" 2>/dev/null \
+  # R5 Critical #2: strict anchor — same as handoff_marker_nonce; only lines
+  # beginning with '^<!-- END-OF-HANDOFF schema=v1 ' are candidate marker lines.
+  grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$file" 2>/dev/null \
     | head -1 \
     | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p'
 }
