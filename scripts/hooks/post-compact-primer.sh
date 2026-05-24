@@ -103,6 +103,19 @@ if [ "$RESOLVE_RC" -eq 2 ]; then
   exit 0
 fi
 
+# R5 Critical #8: handle rc=3 (SID-tagged file exists but has hardlink count > 1).
+# _primer_check_linkcount in handoff-resolve.sh returns rc=3 when hardlink guard triggers.
+# Without this branch, rc=3 falls through to the generic no-handoff path (HANDOFF_PATH=""),
+# silently swallowing the security signal. Now emit an explicit actionable warning.
+if [ "$RESOLVE_RC" -eq 3 ]; then
+  ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-hardlinked sid8=${SENTINEL_SID8:-unknown}"
+  ctx_gate_log "primer warn reason=sid-known-hardlinked sid8=${SENTINEL_SID8:-unknown}"
+  jq -n \
+    --arg msg "WARNING: The SID-tagged handoff file (CLAUDE.local.${SENTINEL_SID8:-unknown}.md) has a hardlink count > 1 (potential filesystem manipulation). Refusing to load. To fix: copy the file to a new path (cp CLAUDE.local.${SENTINEL_SID8:-unknown}.md CLAUDE.local.${SENTINEL_SID8:-unknown}.md.new && mv CLAUDE.local.${SENTINEL_SID8:-unknown}.md.new CLAUDE.local.${SENTINEL_SID8:-unknown}.md) then re-run /post-compact-resume." \
+    '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
+  exit 0
+fi
+
 if [ -z "$HANDOFF_PATH" ]; then
   ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} action=skip reason=no-handoff-file"
   exit 0
