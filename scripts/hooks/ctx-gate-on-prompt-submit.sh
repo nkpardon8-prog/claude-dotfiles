@@ -32,7 +32,8 @@ SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd '
 
 PCT=$(ctx_gate_read_pct "$SID") || { ctx_gate_log "submit sid=$SID action=skip reason=no-ctx-sidecar"; exit 0; }
 
-# FORCE check FIRST (≥85%) — overrides sentinel-fresh skip per R1-B23.
+# FORCE check FIRST (≥85%) — overrides sentinel-fresh skip so the operator sees
+# context-critical alerts even after /pre-compact has armed.
 # At this level the model MUST invoke /pre-compact before anything else.
 if [ "$PCT" -ge "$CTX_FORCE_PCT" ]; then
   MSG="WRAP-UP & HAND-OFF ZONE: context at ${PCT}%. Native auto-compact fires at ~95% and will destroy this session WITHOUT writing CLAUDE.local.md. Your FIRST action this turn MUST be Skill(pre-compact). Do not engage with the user's prompt or invoke any other tool until /pre-compact has completed."
