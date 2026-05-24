@@ -190,8 +190,8 @@ The orchestrator reads the `STATE=...` output line and routes to the decision ma
   > Which would you like? **(Default: option (a) if no response within 2 minutes
   > or if running unattended — applies for `claude --resume --prompt '...'` use.)**
 
-  R2 #6 fix: if user does not respond or invocation is unattended, default to option (a).
-  No hard-stop case (R1 finding #14) — user can always pick (a), (b), or (c).
+  If user does not respond or invocation is unattended, default to option (a).
+  No hard-stop case — user can always pick (a), (b), or (c).
 
 Once a path is chosen (or defaulted), proceed to Step 3 reading the file accordingly.
 
