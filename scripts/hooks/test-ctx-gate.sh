@@ -320,18 +320,25 @@ STEP2_SH="$PWD/lib/post-compact-resume-step2.sh"
 if [ ! -x "$STEP2_SH" ]; then
   fail "G4: post-compact-resume-step2.sh missing or non-executable at $STEP2_SH"
 else
+  # Helper: parse .state field from JSON STATE line (R4 D10)
+  step2_state() { printf '%s' "$1" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null; }
+  step2_field() { printf '%s' "$1" | sed -n 's/^STATE=//p' | jq -r ".$2" 2>/dev/null; }
+
   # G4-A: empty workspace → STATE=no-handoff
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
-  case "$OUT" in
-    *"STATE=no-handoff"*) pass "G4-A: empty workspace → STATE=no-handoff" ;;
-    *) fail "G4-A: empty workspace expected STATE=no-handoff" "got: $OUT" ;;
-  esac
+  G4A_STATE=$(step2_state "$OUT")
+  if [ "$G4A_STATE" = "no-handoff" ]; then
+    pass "G4-A: empty workspace → STATE=no-handoff (JSON parsed)"
+  else
+    fail "G4-A: empty workspace expected state=no-handoff" "got state=$G4A_STATE raw: $OUT"
+  fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-B: handoff present with marker → STATE=ok MARKER=present
+  # G4-B: handoff present (alias, no breadcrumb) with marker → STATE=ok marker=present
+  # SID unknown (no breadcrumb) → alias path is used (R4 D3 SID-unknown branch).
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
@@ -339,22 +346,29 @@ else
   G4B_SID8="abcd1234"
   printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4B_SID8" "$G4B_NONCE" > "$TMPWD/CLAUDE.local.md"
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
-  case "$OUT" in
-    *"STATE=ok"*"MARKER=present"*) pass "G4-B: handoff with marker → STATE=ok MARKER=present" ;;
-    *) fail "G4-B: expected STATE=ok MARKER=present" "got: $OUT" ;;
-  esac
+  G4B_STATE=$(step2_state "$OUT")
+  G4B_MARKER=$(step2_field "$OUT" "marker")
+  if [ "$G4B_STATE" = "ok" ] && [ "$G4B_MARKER" = "present" ]; then
+    pass "G4-B: handoff with marker → state=ok marker=present (JSON parsed)"
+  else
+    fail "G4-B: expected state=ok marker=present" "got state=$G4B_STATE marker=$G4B_MARKER raw: $OUT"
+  fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-C: handoff missing marker (recent file) → STATE=ok MARKER=absent LEGACY=false
+  # G4-C: handoff (alias, no breadcrumb) missing marker (recent file) → STATE=ok marker=absent legacy=false
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   printf 'content body without marker\n' > "$TMPWD/CLAUDE.local.md"
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
-  case "$OUT" in
-    *"STATE=ok"*"MARKER=absent"*"LEGACY=false"*) pass "G4-C: recent missing marker → STATE=ok MARKER=absent LEGACY=false" ;;
-    *) fail "G4-C: expected STATE=ok MARKER=absent LEGACY=false" "got: $OUT" ;;
-  esac
+  G4C_STATE=$(step2_state "$OUT")
+  G4C_MARKER=$(step2_field "$OUT" "marker")
+  G4C_LEGACY=$(step2_field "$OUT" "legacy")
+  if [ "$G4C_STATE" = "ok" ] && [ "$G4C_MARKER" = "absent" ] && [ "$G4C_LEGACY" = "false" ]; then
+    pass "G4-C: recent missing marker → state=ok marker=absent legacy=false (JSON parsed)"
+  else
+    fail "G4-C: expected state=ok marker=absent legacy=false" "got state=$G4C_STATE marker=$G4C_MARKER legacy=$G4C_LEGACY raw: $OUT"
+  fi
   rm -rf "$TMPWD" "$TMPHOME"
 
   # G4-D: oversized handoff (6MB > 5MB cap) → STATE=oversize
@@ -363,13 +377,16 @@ else
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   dd if=/dev/zero of="$TMPWD/CLAUDE.local.md" bs=1024 count=6144 2>/dev/null
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
-  case "$OUT" in
-    *"STATE=oversize"*) pass "G4-D: 6MB handoff → STATE=oversize (H11 size cap)" ;;
-    *) fail "G4-D: expected STATE=oversize" "got: $(printf '%s' "$OUT" | head -c 200)" ;;
-  esac
+  G4D_STATE=$(step2_state "$OUT")
+  if [ "$G4D_STATE" = "oversize" ]; then
+    pass "G4-D: 6MB handoff → state=oversize (JSON parsed, H11 size cap)"
+  else
+    fail "G4-D: expected state=oversize" "got state=$G4D_STATE raw: $(printf '%s' "$OUT" | head -c 200)"
+  fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-E: handoff + breadcrumb with matching nonce → STATE=ok NONCE_OK=match
+  # G4-E: SID-tagged handoff + breadcrumb with matching nonce → STATE=ok nonce_ok=match
+  # R4 D3: with SID known (breadcrumb present), file MUST be SID-tagged (not alias).
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
@@ -377,7 +394,8 @@ else
   G4E_SID="g4e-test-sid-1234"
   G4E_SID8="g4e-test"
   G4E_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4E_SID8" "$G4E_NONCE" > "$TMPWD/CLAUDE.local.md"
+  # R4 D3 fix: place handoff at SID-tagged path (not alias) so D3 SID-known path resolves it.
+  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4E_SID8" "$G4E_NONCE" > "$TMPWD/CLAUDE.local.${G4E_SID8}.md"
   G4E_CWD=$(cd -P "$TMPWD" 2>/dev/null && pwd -P)
   jq -c -n \
     --arg sid  "$G4E_SID"  \
@@ -389,10 +407,13 @@ else
     > "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
   chmod 600 "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
-  case "$OUT" in
-    *"STATE=ok"*"NONCE_OK=match"*) pass "G4-E: breadcrumb-matched nonce → STATE=ok NONCE_OK=match (R3 D2)" ;;
-    *) fail "G4-E: expected STATE=ok NONCE_OK=match" "got: $OUT" ;;
-  esac
+  G4E_STATE=$(step2_state "$OUT")
+  G4E_NONCE_OK=$(step2_field "$OUT" "nonce_ok")
+  if [ "$G4E_STATE" = "ok" ] && [ "$G4E_NONCE_OK" = "match" ]; then
+    pass "G4-E: SID-tagged breadcrumb-matched nonce → state=ok nonce_ok=match (R4 D3 + JSON parsed)"
+  else
+    fail "G4-E: expected state=ok nonce_ok=match" "got state=$G4E_STATE nonce_ok=$G4E_NONCE_OK raw: $OUT"
+  fi
   rm -rf "$TMPWD" "$TMPHOME"
 fi
 
