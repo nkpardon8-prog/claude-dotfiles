@@ -198,16 +198,16 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3i-bis — PreCompact, trigger=auto, ctx=78 (>=75% RELEASE zone), no sentinel: expect empty
-# Post-R2: PRECOMPACT release threshold is HANDOFF_PRECOMPACT_RELEASE_PCT (75 from handoff-config.sh)
+# 3i-bis — PreCompact, trigger=auto, ctx=91 (>=90% RELEASE zone after R3 D4 raise), no sentinel: expect empty
+# Post-R3: PRECOMPACT release threshold is HANDOFF_AUTOCOMPACT_BYPASS_PCT (90 from handoff-config.sh after R3 D4 raise)
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-printf '78\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+printf '91\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"foo","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
 if [ -z "$OUT" ]; then
-  pass "3i-bis: precompact trigger=auto ctx=78 → release (empty, avoids deadlock at >=75%)"
+  pass "3i-bis: precompact trigger=auto ctx=91 → release (empty, avoids deadlock at >=90%)"
 else
-  fail "3i-bis: precompact trigger=auto ctx=78 → expected empty (release), got: $OUT"
+  fail "3i-bis: precompact trigger=auto ctx=91 → expected empty (release), got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
