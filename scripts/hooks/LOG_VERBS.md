@@ -35,7 +35,25 @@ Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
 | `handoff:sentinel_armed` | arm-auto-compact.sh | Arm success; SID8 + TTY + CWD logged |
 | `handoff:compact_chained` | auto-compact-after-pre-compact.sh | Stop hook delivered /compact + /post-compact-resume |
 | `handoff:session_started` | post-compact-primer.sh | Primer fired; SID + source logged |
-| `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD; SID8 + file logged |
+| `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD (R4 D6: logged AFTER resolver sets HANDOFF_PATH); SID8 + file + sentinel_present logged |
+
+### Breadcrumb write events (within auto-compact.log)
+
+These verbs are emitted by `auto-compact-after-pre-compact.sh` (Stop hook) during breadcrumb write.
+
+| Verb | Script | Meaning |
+|---|---|---|
+| `breadcrumb_written` | auto-compact-after-pre-compact.sh | Breadcrumb JSON written to `~/.claude/progress/breadcrumb-<SID>.json` |
+| `breadcrumb_write_failed reason=mv` | auto-compact-after-pre-compact.sh | Atomic mv of breadcrumb tempfile failed |
+| `breadcrumb_write_failed reason=jq` | auto-compact-after-pre-compact.sh | jq failed to generate breadcrumb JSON |
+| `breadcrumb_write_failed reason=empty-nonce` | auto-compact-after-pre-compact.sh | Nonce was empty; breadcrumb not written (H8/PR-M2) |
+| `breadcrumb_write_failed reason=hostname-fail` | auto-compact-after-pre-compact.sh | hostname -s returned empty; breadcrumb not written (H2) |
+
+### Breadcrumb read events (within ctx-gate.log)
+
+| Verb | Script | Meaning |
+|---|---|---|
+| `breadcrumb_read_invalid_schema` | post-compact-resume-step2.sh / lib | Breadcrumb failed schema validation (schema_version/originating_command/type guards) |
 
 ## ctx-gate.log (ctx_gate_log — via `lib/ctx-gate-config.sh:ctx_gate_log`)
 
