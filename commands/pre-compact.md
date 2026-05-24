@@ -367,7 +367,7 @@ Then proceed to the SID-tagged write protocol:
 
 (R4 D1: HANDOFF_ALIAS/`CLAUDE.local.md` write removed — no alias is created or updated. Post-compact session reads ONLY the SID-tagged file. HANDOFF_PRIMARY is in the ctx-gate Write allowlist via glob `CLAUDE.local*.md`.)
 
-**Read the template at `$HOME/.claude-dotfiles/commands/pre-compact-template.md` via the Read tool** and use the returned content as the CLAUDE.local.md skeleton. Do not generate the template from memory — Read the file. Replace all placeholder text with session-specific content. Remove sections whose body is empty or placeholder-only (as specified in Step 6C).
+**Read the template at `$HOME/.claude-dotfiles/commands/pre-compact-template.md` via the Read tool** and use the returned content as the handoff skeleton. Do not generate the template from memory — Read the file. Replace all placeholder text with session-specific content. Remove sections whose body is empty or placeholder-only (as specified in Step 6C).
 
 ### Step 6B: Phase 2 — Gap Fill
 
