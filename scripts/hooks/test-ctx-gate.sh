@@ -291,6 +291,8 @@ echo "== §G5 LOG_VERBS enforcement =="
 
 VERBS_FILE="$PWD/LOG_VERBS.md"
 if [ -f "$VERBS_FILE" ]; then
+  # --- G5 forward direction: code emit sites → docs ---
+  # Every verb emitted in *.sh must appear in LOG_VERBS.md.
   UNDOC=()
   while IFS= read -r G5_LINE; do
     G5_TOKEN=$(printf '%s' "$G5_LINE" | sed -nE 's/.*(ac_log|ctx_gate_log|handoff_log)[[:space:]]+"([^[:space:]"]+).*/\2/p')
@@ -301,11 +303,40 @@ if [ -f "$VERBS_FILE" ]; then
   done < <(grep -rE '(ac_log|ctx_gate_log|handoff_log)[[:space:]]+"' "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null)
   G5_UNDOC_UNIQ=$(printf '%s\n' "${UNDOC[@]}" | sort -u | tr '\n' ' ')
   if [ -z "$(printf '%s' "$G5_UNDOC_UNIQ" | tr -d '[:space:]')" ]; then
-    pass "G5: all log-verb tokens documented in LOG_VERBS.md"
+    pass "G5-fwd: all log-verb tokens documented in LOG_VERBS.md"
   else
     # R4 H6: promoted from informational pass to hard FAIL — LOG_VERBS.md must stay in sync.
     # If a log verb is emitted but undocumented, update LOG_VERBS.md before proceeding.
-    fail "G5: LOG_VERBS drift detected — undocumented verbs: $G5_UNDOC_UNIQ (update LOG_VERBS.md)"
+    fail "G5-fwd: LOG_VERBS drift detected — undocumented verbs: $G5_UNDOC_UNIQ (update LOG_VERBS.md)"
+  fi
+
+  # --- G5 reverse direction: docs → code emit sites (H5 fix-sweep) ---
+  # Every verb documented in LOG_VERBS.md must have at least one emit site in *.sh.
+  # Prevents phantom verbs (documented but never emitted — invisible to log consumers).
+  # Allow-list: `handoff:$1` is a function-body literal in handoff_log(), not an emitted verb;
+  # it is documented only to satisfy the forward-direction check (see LOG_VERBS.md note).
+  PHANTOM=()
+  while IFS= read -r G5R_LINE; do
+    # Extract bare verb token from table rows: lines matching | `verb ...`
+    G5R_VERB=$(printf '%s' "$G5R_LINE" | sed -nE 's/^\|[[:space:]]*`([^`]+)`.*/\1/p')
+    [ -z "$G5R_VERB" ] && continue
+    # Strip trailing context (e.g., " reason=mv" → keep full string for grep, but also
+    # extract bare first-token for targeted search).
+    G5R_BARE=$(printf '%s' "$G5R_VERB" | awk '{print $1}')
+    [ -z "$G5R_BARE" ] && continue
+    # Allow-list: handoff:$1 is the function-body literal in handoff_log(); skip.
+    [ "$G5R_BARE" = 'handoff:$1' ] && continue
+    # Search for any emit of this verb in production .sh files (exclude LOG_VERBS.md and test files).
+    if ! grep -qrE "(ac_log|ctx_gate_log|handoff_log)[[:space:]]+\"[^\"]*${G5R_BARE}" \
+        "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null; then
+      PHANTOM+=("$G5R_BARE")
+    fi
+  done < <(grep -E '^\|[[:space:]]*`' "$VERBS_FILE" 2>/dev/null)
+  G5R_PHANTOM_UNIQ=$(printf '%s\n' "${PHANTOM[@]}" | sort -u | tr '\n' ' ')
+  if [ -z "$(printf '%s' "$G5R_PHANTOM_UNIQ" | tr -d '[:space:]')" ]; then
+    pass "G5-rev: all documented log verbs have at least one emit site"
+  else
+    fail "G5-rev: phantom verbs documented but never emitted: $G5R_PHANTOM_UNIQ (remove from LOG_VERBS.md or add emit site)"
   fi
 else
   fail "G5: LOG_VERBS.md missing at $VERBS_FILE"
