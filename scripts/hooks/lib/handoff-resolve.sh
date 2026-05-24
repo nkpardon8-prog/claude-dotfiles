@@ -13,6 +13,11 @@
 [ -n "${_HANDOFF_RESOLVE_LOADED:-}" ] && return 0
 readonly _HANDOFF_RESOLVE_LOADED=1
 
+# Defensive stub: if ctx_gate_log wasn't sourced from lib/ctx-gate-config.sh, no-op it.
+# Lib callers source ctx-gate-config.sh before this lib; this guard prevents stderr
+# pollution if the source failed (e.g., lib relocated/unreadable).
+command -v ctx_gate_log >/dev/null 2>&1 || ctx_gate_log() { :; }
+
 # ---------------------------------------------------------------------------
 # _primer_check_linkcount <path>
 #
