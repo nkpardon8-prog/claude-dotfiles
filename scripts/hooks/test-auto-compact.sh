@@ -119,7 +119,7 @@ JQ_OUT=$(jq -r --argjson v 1 '
 if [ "$JQ_OUT" = "/dev/ttys123" ]; then check "jq filter returns valid target_tty (precedence fix)" 1 1; else check "jq filter (got '$JQ_OUT')" 1 0; fi
 
 echo "== Foreground-process check (BRE vs ERE) =="
-# Round 3 discovered that grep \| BRE alternation is treated as literal on BSD grep.
+# grep \| BRE alternation is treated as literal on BSD grep.
 # Verify the ERE form actually matches.
 GREP_ERE_OUT=$(printf 'claude\n' | grep -E '^(claude|-claude)$' 2>/dev/null)
 if [ "$GREP_ERE_OUT" = "claude" ]; then check "ERE grep matches 'claude'" 1 1; else check "ERE grep (got '$GREP_ERE_OUT')" 1 0; fi
