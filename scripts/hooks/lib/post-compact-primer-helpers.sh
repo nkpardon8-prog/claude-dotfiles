@@ -199,6 +199,14 @@ primer_find_sentinel_for_cwd() {
       SENTINEL_PATH="$sentinel_candidate"
       local sentinel_sid_full
       sentinel_sid_full=$(basename "$sentinel_candidate" .json | sed 's/^auto-compact-//')
+      # H11 (R4): validate sentinel SID against safe charset before using it.
+      # Rejects any SID containing characters outside [A-Za-z0-9_-] (path-traversal defense).
+      if ! printf '%s' "$sentinel_sid_full" | grep -qE '^[A-Za-z0-9_-]+$'; then
+        ctx_gate_log "primer skip reason=invalid-sentinel-basename path=$sentinel_candidate"
+        SENTINEL_PRESENT="false"
+        SENTINEL_PATH=""
+        continue
+      fi
       SENTINEL_SID8=$(printf '%s' "$sentinel_sid_full" | head -c 8)
       [ -z "$SENTINEL_SID8" ] && SENTINEL_SID8="$sentinel_sid_full"
       SENTINEL_NONCE=$(jq -r '.marker_nonce // empty' "$sentinel_candidate" 2>/dev/null) || SENTINEL_NONCE=""
