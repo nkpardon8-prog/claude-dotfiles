@@ -93,7 +93,8 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `action=stale-sentinel` | ctx-gate-precompact-safety.sh | Sentinel exists but is stale; reenforcing block |
 | `action=reject-symlink-sentinel` | ctx-gate-precompact-safety.sh | Sentinel is a symlink |
 | `action=release-extreme-pct` | ctx-gate-precompact-safety.sh | PCT >= HANDOFF_AUTOCOMPACT_BYPASS_PCT (90); release native compact |
-| `action=block` | ctx-gate-precompact-safety.sh | No sentinel; PCT below release threshold; block native compact |
+| `action=release-pct-unknown` | ctx-gate-precompact-safety.sh | PCT=? (sidecar unreadable); H13 fail-open — release rather than deadlock |
+| `action=block` | ctx-gate-precompact-safety.sh | No sentinel; PCT known and below release threshold; block native compact |
 
 ### SessionStart (primer) events
 
