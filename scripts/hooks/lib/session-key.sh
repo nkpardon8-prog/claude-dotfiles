@@ -101,7 +101,13 @@ session_key_sign() {
   # Compute HMAC-SHA256. openssl dgst -hmac uses the key as a raw string.
   # Convert hex key to binary first (openssl on macOS 3.x requires binary key via -mac HMAC -macopt).
   # Use the simpler -hmac <passphrase> form; key is the hex string treated as passphrase (portable).
-  printf '%s' "$msg" | openssl dgst -sha256 -hmac "$key" 2>/dev/null | sed 's/.*= //'
+  # RQ-09 (R6 HZ-35): capture openssl exit status explicitly (pipe to sed always returns sed's rc=0,
+  # masking openssl failures). If openssl fails or returns empty, return 1 so callers know signing
+  # was not possible — an empty signature treated as success is a security hazard.
+  local out
+  out=$(printf '%s' "$msg" | openssl dgst -sha256 -hmac "$key" 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out" | sed 's/.*= //'
 }
 
 # ---------------------------------------------------------------------------
