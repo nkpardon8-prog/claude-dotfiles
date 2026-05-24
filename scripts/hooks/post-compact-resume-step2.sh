@@ -257,6 +257,33 @@ if command -v handoff_marker_nonce >/dev/null 2>&1; then
 else
   MARKER_NONCE=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p' | head -1)
 fi
+
+# C3 fix: extract marker sid= attribute and validate it against SID8 from breadcrumb.
+# If the marker's SID8 disagrees with the breadcrumb SID8, the file belongs to a
+# DIFFERENT session — hard stop immediately (before nonce comparison).
+# Uses handoff_marker_sid() from lib/handoff-marker.sh if available (sourced above).
+MARKER_SID=""
+if command -v handoff_marker_sid >/dev/null 2>&1; then
+  MARKER_SID=$(handoff_marker_sid "$HANDOFF_PATH" 2>/dev/null) || MARKER_SID=""
+else
+  # Inline fallback if lib not loaded.
+  MARKER_SID=$(tail -c 512 "$HANDOFF_PATH" 2>/dev/null \
+    | sed -nE 's/.*\bsid=([A-Za-z0-9_-]+).*/\1/p' | head -1)
+fi
+if [ -n "$MARKER_SID" ] && [ -n "$SID8" ] && [ "$MARKER_SID" != "$SID8" ]; then
+  _json=$(jq -c -n \
+    --arg sid8 "$SID8" \
+    --arg marker_sid "$MARKER_SID" \
+    '{"state":"sid-mismatch-hard-stop","sentinel_sid8":$sid8,"marker_sid8":$marker_sid}' 2>/dev/null)
+  if [ -n "$_json" ]; then
+    printf 'STATE=%s\n' "$_json"
+  else
+    printf 'STATE={"state":"sid-mismatch-hard-stop","sentinel_sid8":"%s","marker_sid8":"%s"}\n' "$SID8" "$MARKER_SID"
+  fi
+  handoff_log "sid_mismatch_hard_stop sentinel_sid8=$SID8 marker_sid8=$MARKER_SID"
+  exit 0
+fi
+
 # SENTINEL_NONCE already populated above by breadcrumb-first lookup (or claim-file fallback).
 NONCE_OK="unknown"
 if [ -n "$MARKER_NONCE" ] && [ -n "$SENTINEL_NONCE" ]; then
