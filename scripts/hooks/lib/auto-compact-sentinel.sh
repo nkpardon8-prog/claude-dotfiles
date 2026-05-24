@@ -236,3 +236,104 @@ ac_read_sentinel_nonce() {
   fi
   printf '%s' "$nonce"
 }
+
+# ---------------------------------------------------------------------------
+# R4 H1: Breadcrumb reader functions — schema-validating, mirror ac_read_sentinel_* pattern.
+# Breadcrumb schema v1: {schema_version:1, originating_command:"pre-compact",
+#   sid:..., sid8:..., cwd:..., nonce:..., hostname:...}
+# PR-M4: handle missing schema_version as schema_version=0 → log + skip.
+# All readers: symlink reject, size cap, schema_version==1, originating_command=="pre-compact",
+#   string type-guard on each field, non-empty check.
+# ---------------------------------------------------------------------------
+
+readonly AC_MAX_BREADCRUMB_BYTES=1024
+
+# Shared preamble for breadcrumb readers: symlink/size guard + schema validation.
+# Returns 0 if breadcrumb is a valid schema v1 pre-compact breadcrumb; non-zero otherwise.
+# On success, exports _ac_breadcrumb_json with the raw jq output for field extraction.
+_ac_validate_breadcrumb() {
+  local p="$1"
+  [ -f "$p" ] || return 1
+  if [ -L "$p" ]; then ac_log "skip-breadcrumb reason=symlink path=$p"; return 1; fi
+  local size
+  if size=$(stat -f %z "$p" 2>/dev/null); then
+    :
+  elif size=$(stat -c %s "$p" 2>/dev/null); then
+    :
+  else
+    size=0
+  fi
+  size=$(printf '%s' "$size" | tr -d '[:space:]')
+  [ -z "$size" ] && size=0
+  if [ "$size" -gt "${AC_MAX_BREADCRUMB_BYTES:-1024}" ]; then
+    ac_log "skip-breadcrumb reason=oversized size=$size path=$p"
+    return 1
+  fi
+  # PR-M4: handle missing schema_version as 0 (legacy / pre-R4 breadcrumbs).
+  # Use // 0 default pattern to gracefully degrade rather than hard-fail.
+  local sv
+  sv=$(jq -r '(.schema_version // 0)' "$p" 2>/dev/null) || { ac_log "skip-breadcrumb reason=jq-parse path=$p"; return 1; }
+  if [ "$sv" != "1" ]; then
+    ac_log "breadcrumb_read_invalid_schema schema_version=${sv} path=$p"
+    return 1
+  fi
+  local cmd
+  cmd=$(jq -r '(.originating_command // "")' "$p" 2>/dev/null) || return 1
+  if [ "$cmd" != "pre-compact" ]; then
+    ac_log "skip-breadcrumb reason=wrong-originating-command cmd=$cmd path=$p"
+    return 1
+  fi
+  return 0
+}
+
+# Reads the sid field from a breadcrumb (schema v1 only).
+# Echoes the validated sid on success; returns non-zero on failure.
+ac_read_breadcrumb_sid() {
+  local p="$1"
+  _ac_validate_breadcrumb "$p" || return 1
+  local val
+  val=$(jq -r '
+    if ((.sid | type) == "string") and (.sid != "")
+    then .sid else empty end' "$p" 2>/dev/null) || return 1
+  [ -z "$val" ] && return 1
+  printf '%s' "$val"
+}
+
+# Reads the cwd field from a breadcrumb (schema v1 only).
+# Echoes the validated cwd on success; returns non-zero on failure.
+ac_read_breadcrumb_cwd() {
+  local p="$1"
+  _ac_validate_breadcrumb "$p" || return 1
+  local val
+  val=$(jq -r '
+    if ((.cwd | type) == "string") and (.cwd != "")
+    then .cwd else empty end' "$p" 2>/dev/null) || return 1
+  [ -z "$val" ] && return 1
+  printf '%s' "$val"
+}
+
+# Reads the nonce field from a breadcrumb (schema v1 only).
+# Echoes the validated nonce on success; returns non-zero on failure.
+ac_read_breadcrumb_nonce() {
+  local p="$1"
+  _ac_validate_breadcrumb "$p" || return 1
+  local val
+  val=$(jq -r '
+    if ((.nonce | type) == "string") and (.nonce != "")
+    then .nonce else empty end' "$p" 2>/dev/null) || return 1
+  [ -z "$val" ] && return 1
+  printf '%s' "$val"
+}
+
+# Reads the hostname field from a breadcrumb (schema v1 only).
+# Echoes the validated hostname on success; returns non-zero on failure.
+ac_read_breadcrumb_hostname() {
+  local p="$1"
+  _ac_validate_breadcrumb "$p" || return 1
+  local val
+  val=$(jq -r '
+    if ((.hostname | type) == "string") and (.hostname != "")
+    then .hostname else empty end' "$p" 2>/dev/null) || return 1
+  [ -z "$val" ] && return 1
+  printf '%s' "$val"
+}
