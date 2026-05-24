@@ -409,6 +409,8 @@ if [ -n "$_json" ]; then
 else
   printf 'STATE={"state":"error","reason":"jq-failed"}\n'
 fi
+# C5: STATE=ok is the terminal-success state — breadcrumb is consumed (handoff successfully read).
+_BREADCRUMB_CONSUMED="yes"
 
 # R4 D5 (C4 fix): breadcrumb cleanup is now handled by the EXIT trap installed at
 # the top of the script. The trap fires on every exit path — STATE=ok AND all
