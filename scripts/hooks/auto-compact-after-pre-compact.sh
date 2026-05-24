@@ -111,17 +111,39 @@ if [ "$REAL_EXISTS" = "true" ] && [ "$RESOLVED_EXISTS" = "true" ] \
   # Attacker-controlled content (e.g., git commit messages, file names, env vars) could flow into
   # the next_steps field and then be emitted to the orchestrator LLM via STATE=stop-hook-refused.
   # step2.sh now hard-codes the recovery prose instead of relying on this field.
+  #
+  # RQ-10 (R6 HZ-04 extension): add cwd field + HMAC signature to refused breadcrumb.
+  # Without cwd, step2.sh cannot verify the breadcrumb matches the current workspace (a stale
+  # refused-bc from another workspace would fire STATE=stop-hook-refused in the wrong session).
+  # Without signature, an attacker can write a refused-bc with arbitrary real_sid/resolved_sid
+  # values, causing STATE=stop-hook-refused to fire with attacker-controlled SID fields.
+  # The signature uses REAL_SID as both sid and marker_nonce fields (refused-bc has no
+  # separate nonce — the SID is the stable per-session anchor).
+  _REFUSE_CWD=$(pwd -P 2>/dev/null || pwd)
+  _REFUSE_SID8=$(ac_compute_sid8 "$REAL_SID")
+  _REFUSE_SIG=""
+  if command -v session_key_sign >/dev/null 2>&1; then
+    # Attempt key generation for this SID8; idempotent if already generated.
+    session_key_generate "$_REFUSE_SID8" 2>/dev/null || true
+    _REFUSE_SIG=$(session_key_sign "$_REFUSE_SID8" "$REAL_SID" "$REAL_SID" "$REAL_SID" \
+      "$_REFUSE_CWD" "${_REFUSE_HOST:-unknown}" "stop-hook-fail-closed" 2>/dev/null) || _REFUSE_SIG=""
+    if [ -z "$_REFUSE_SIG" ]; then
+      handoff_log "stop_hook_refused_breadcrumb_sign_failed sid=${_REFUSE_SID8} reason=session_key_sign-returned-empty"
+    fi
+  fi
   if ( umask 077 && jq -c -n \
        --argjson sv 1 \
        --arg sid "$REAL_SID" \
-       --arg sid8 "$(ac_compute_sid8 "$REAL_SID")" \
+       --arg sid8 "$_REFUSE_SID8" \
        --arg cmd "stop-hook-fail-closed" \
        --arg real_sid "$REAL_SID" --arg resolved_sid "$RESOLVED_SID" \
        --arg real_basename "$_REAL_BASENAME" --arg resolved_basename "$_RESOLVED_BASENAME" \
        --arg host "${_REFUSE_HOST:-unknown}" \
-       '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$real_basename,resolved_basename:$resolved_basename}' \
+       --arg cwd "$_REFUSE_CWD" \
+       --arg signature "${_REFUSE_SIG:-}" \
+       '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,cwd:$cwd,signature:$signature,real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$real_basename,resolved_basename:$resolved_basename}' \
        > "$_REFUSE_BC_TMP" 2>/dev/null ) && mv "$_REFUSE_BC_TMP" "$_REFUSE_BC" 2>/dev/null; then
-    handoff_log "stop_hook_refused_breadcrumb_written sid=$(ac_compute_sid8 "$REAL_SID") path=$_REFUSE_BC"
+    handoff_log "stop_hook_refused_breadcrumb_written sid=${_REFUSE_SID8} path=$_REFUSE_BC signed=$([ -n "$_REFUSE_SIG" ] && echo yes || echo no)"
   else
     rm -f "$_REFUSE_BC_TMP" 2>/dev/null || true
   fi
