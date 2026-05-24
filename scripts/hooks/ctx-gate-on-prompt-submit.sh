@@ -36,7 +36,9 @@ PCT=$(ctx_gate_read_pct "$SID") || { ctx_gate_log "submit sid=$SID action=skip r
 # context-critical alerts even after /pre-compact has armed.
 # At this level the model MUST invoke /pre-compact before anything else.
 if [ "$PCT" -ge "$CTX_FORCE_PCT" ]; then
-  MSG="WRAP-UP & HAND-OFF ZONE: context at ${PCT}%. Native auto-compact fires at ~95% and will destroy this session WITHOUT writing CLAUDE.local.md. Your FIRST action this turn MUST be Skill(pre-compact). Do not engage with the user's prompt or invoke any other tool until /pre-compact has completed."
+  # R5 H3: updated wording — removed reference to CLAUDE.local.md alias (dead post-R4 D1);
+  # /pre-compact now writes a SID-tagged file (CLAUDE.local.<sid8>.md) as the ONLY output.
+  MSG="WRAP-UP & HAND-OFF ZONE: context at ${PCT}%. Native auto-compact fires at ~95% and will destroy this session WITHOUT writing a handoff file. Your FIRST action this turn MUST be Skill(pre-compact). Do not engage with the user's prompt or invoke any other tool until /pre-compact has completed."
   ctx_gate_log "submit sid=$SID pct=$PCT action=force-wrapup"
   jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": $ctx } }'
   exit 0
