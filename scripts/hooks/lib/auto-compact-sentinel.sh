@@ -211,7 +211,18 @@ ac_read_sentinel_nonce() {
   local sentinel="$1"
   _ac_validate_sentinel_path "$sentinel" || return 1
   local nonce
-  nonce=$(jq -r '.marker_nonce // empty' "$sentinel" 2>/dev/null) || return 1
-  [ -z "$nonce" ] && return 1
+  nonce=$(jq -r --argjson v "${AC_SCHEMA_VERSION:-3}" '
+    if ((.schema_version | type) == "number")
+       and .schema_version >= 1
+       and .schema_version <= $v
+       and (.originating_command // "") == "pre-compact"
+       and (((.marker_nonce // "") | type) == "string")
+       and (.marker_nonce != "")
+    then .marker_nonce
+    else empty
+    end' "$sentinel" 2>/dev/null) || { ac_log "skip-sentinel-nonce reason=jq-parse path=$sentinel"; return 1; }
+  if [ -z "$nonce" ]; then
+    return 1
+  fi
   printf '%s' "$nonce"
 }
