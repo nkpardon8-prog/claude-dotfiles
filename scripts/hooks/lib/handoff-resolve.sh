@@ -3,6 +3,14 @@
 # Used by post-compact-primer.sh (via primer_resolve_handoff_path in primer-helpers) AND
 # post-compact-resume-step2.sh (directly).
 #
+# R9-R4 note (consumer-layer divergence is intentional): PATH RESOLUTION here is identical for
+# both consumers (that is the "must match the primer exactly" invariant). The R9 arg-vs-self
+# consumer check (and the snapshot-marker re-verify) live ONLY in step2.sh, NOT here and NOT in
+# the primer — by design: step2 LOADS handoff content (so it must prove the file belongs to THIS
+# session), whereas the primer only emits an advisory navigation pointer (no content load), so it
+# does not gate on self. rc=1 (SID-unknown alias path) is reachable only by the primer; step2
+# refuses an empty arg before ever calling this resolver, so rc=1 is dead from the reader side.
+#
 # Sets HANDOFF_PATH on success; returns:
 #   0 — resolved
 #   1 — no handoff (SID unknown, no alias either)
