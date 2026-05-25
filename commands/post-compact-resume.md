@@ -68,7 +68,7 @@ sourceable libs; `post-compact-resume-step2.sh` is an executable script). It:
 1. Sources lib/ctx-gate-config.sh, lib/handoff-config.sh, lib/auto-compact-sentinel.sh
 2. Sources lib/handoff-resolve.sh (canonical HANDOFF_PATH resolver; R4 H10)
 3. Reads the per-session breadcrumb (R3 D2 / R4 D5) for SID + nonce recovery, with cwd + hostname validation
-4. Resolves HANDOFF_PATH via `handoff_resolve_path` (R4 D3: SID-tagged ONLY when SID known; alias-only when SID unknown)
+4. Resolves HANDOFF_PATH via `handoff_resolve_path` (R4 D3 + R7-INC-04 Defense H12: SID-tagged first when SID known; alias accepted only if its marker matches the SID; alias-only when SID unknown)
 5. Enforces 5MB size cap (H11), hardlink rejection via `_primer_check_linkcount` in handoff-resolve.sh (R2-PR-6)
 6. Extracts MARKER_NONCE; compares with SENTINEL_NONCE → NONCE_OK
 7. Checks freshness vs HANDOFF_LEGACY_CUTOFF_EPOCH and HANDOFF_STALE_SECS
