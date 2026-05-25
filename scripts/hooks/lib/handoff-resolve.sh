@@ -6,13 +6,13 @@
 # Sets HANDOFF_PATH on success; returns:
 #   0 — resolved
 #   1 — no handoff (SID unknown, no alias either)
-#   2 — SID known but no SID-tagged file found (R4 D3 fail-closed signal)
-#   3 — SID-tagged file exists but is hardlinked (rc=3 distinct from rc=2)
+#   2 — SID known but no SID-tagged file found (fail-closed signal)
+#   3 — SID-tagged file exists but is hardlinked (distinct from rc=2)
 #
-# R7-INC: adds marker-sid content-check (F2/RQ-INC-02) and alias-with-marker-binding
-# probe (F4/RQ-INC-04 Defense H12).  Both checks use inline grep|sed unconditionally
-# (no `command -v handoff_marker_sid` dual-path). Canonical pattern mirrors
-# handoff-marker.sh:130.
+# R8: Second parameter renamed from sid8 to session_id (full UUID now, no truncation).
+# F4 alias probe deleted (V2-6) — alias-with-marker-binding was for the old alias path;
+# with full-UUID filenames + identity-via-arg, the alias probe is dead code (writer never
+# writes CLAUDE.local.md alias; legacy 8-char alias markers cannot match a full UUID).
 #
 # macOS bash 3.2.57 compatible.
 
@@ -20,22 +20,14 @@
 readonly _HANDOFF_RESOLVE_LOADED=1
 
 # Defensive stub: if ctx_gate_log wasn't sourced from lib/ctx-gate-config.sh, no-op it.
-# Lib callers source ctx-gate-config.sh before this lib; this guard prevents stderr
-# pollution if the source failed (e.g., lib relocated/unreadable).
 command -v ctx_gate_log >/dev/null 2>&1 || ctx_gate_log() { :; }
 
 # ---------------------------------------------------------------------------
 # _primer_check_linkcount <path>
 #
 # R2-PR-6 (Round 3 BLOCKER fix): DEFINED HERE (not in primer-helpers).
-# This eliminates the cross-lib dependency that previously caused step2.sh to call an
-# undefined function (silent fail-closed on every valid handoff read — production-breaking).
-# Phase 3 task 3.5 also DELETES this function from lib/post-compact-primer-helpers.sh.
-#
 # H9: Returns 0 if file linkcount == 1 (normal file); 1 if linkcount > 1 (hardlink).
-# Defends against hardlink-as-symlink-bypass attacks where an attacker creates a
-# hardlink to a sensitive file to make it appear as a legitimate handoff location.
-# BSD stat: -f %l; GNU stat: -c %h. Falls back to 1 (safe — assume no hardlink).
+# BSD stat: -f %l; GNU stat: -c %h. Falls back to fail-closed on stat failure.
 # ---------------------------------------------------------------------------
 _primer_check_linkcount() {
   local p="$1"
@@ -46,9 +38,7 @@ _primer_check_linkcount() {
   elif linkcount=$(stat -c %h "$p" 2>/dev/null); then
     stat_ok=true
   fi
-  # H10 fix: fail-CLOSED on stat failure (was: fail-open with linkcount=1).
-  # If stat fails entirely, we cannot confirm the file is not a hardlink — refuse
-  # to proceed rather than silently trust a path we cannot verify.
+  # H10 fix: fail-CLOSED on stat failure.
   if [ "$stat_ok" = "false" ]; then
     ctx_gate_log "primer skip reason=stat-failed path=$p"
     return 1
@@ -63,55 +53,53 @@ _primer_check_linkcount() {
 }
 
 # ---------------------------------------------------------------------------
-# handoff_resolve_path <cwd> [sid8]
+# handoff_resolve_path <cwd> [session_id]
 #
-# PR-9: canonical resolver. sid8 may be empty (SID-unknown / no-breadcrumb path).
+# V2-5 (R8): second parameter renamed from sid8 to session_id (full UUID).
+# PR-9: canonical resolver. session_id may be empty (SID-unknown path).
 #
-# When sid8 is provided (non-empty):
-#   - Tries SID-tagged files first: <cwd>/CLAUDE.local.<sid8>.md + repo-root variant.
-#     R7-INC-02 (F2): each SID-tagged candidate is content-verified — the file's
-#     END-OF-HANDOFF marker `sid=` attribute MUST match the requested sid8.
+# When session_id is provided (non-empty):
+#   - Tries SID-tagged files: <cwd>/CLAUDE.local.<session_id>.md + repo-root variant.
+#     F2 (R7-INC-02): each candidate is content-verified — the file's END-OF-HANDOFF
+#     marker `sid=` attribute MUST match the requested session_id.
 #     Allow-empty marker only for legacy files (mtime < HANDOFF_LEGACY_CUTOFF_EPOCH).
-#   - If no SID-tagged file passes content-check: R7-INC-04 (F4) alias probe —
-#     tries <cwd>/CLAUDE.local.md + repo-root alias, accepted ONLY when the alias
-#     has a marker with sid= matching sid8 (Defense H12: alias-with-marker-binding).
-#   - If no probe resolves: returns 2 (R4 D3 fail-closed signal).
-#   - If found but hardlinked: logs primer_skip reason=multi-hardlink + returns 3
-#     (Phase 4 Round 4: distinct rc so step2.sh can emit STATE=sid-known-hardlinked).
+#   - If no SID-tagged file passes content-check: returns 2 (fail-closed signal).
+#     V2-6: F4 alias probe (CLAUDE.local.md alias-with-marker-binding) deleted.
+#     Writer never writes the alias under R8; legacy 8-char alias markers cannot
+#     match a full UUID arg. No alias probe needed.
+#   - If found but hardlinked: logs + returns 3.
 #
-# When sid8 is empty (SID unknown):
+# When session_id is empty (SID unknown):
 #   - Tries legacy alias files only: <cwd>/CLAUDE.local.md + repo-root variant.
-#   - No content-check for the SID-unknown path (legacy; alias accepted as-is).
+#   - No content-check (legacy; alias accepted as-is).
 #   - If found: sets HANDOFF_PATH, returns 0.
 #   - If not found: returns 1.
 # ---------------------------------------------------------------------------
 handoff_resolve_path() {
-  local cwd="$1" sid8="${2:-}"
+  local cwd="$1" session_id="${2:-}"
   HANDOFF_PATH=""
 
-  if [ -n "$sid8" ]; then
+  if [ -n "$session_id" ]; then
     local _legacy_cutoff="${HANDOFF_LEGACY_CUTOFF_EPOCH:-1779321600}"
 
     # ---------- cwd SID-tagged probe ----------
-    local p="$cwd/CLAUDE.local.${sid8}.md"
+    local p="$cwd/CLAUDE.local.${session_id}.md"
     if [ -f "$p" ] && [ ! -L "$p" ]; then
       if _primer_check_linkcount "$p"; then
-        # R7-INC-02 (F2): marker-sid content-check. Inline grep|sed (NOT command -v guard).
-        # Canonical pattern mirrors handoff-marker.sh:130.
+        # F2: marker-sid content-check. Canonical pattern mirrors handoff-marker.sh:130.
         local _resolver_marker_sid
         _resolver_marker_sid=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$p" 2>/dev/null | head -1 \
           | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
         if [ -n "$_resolver_marker_sid" ]; then
-          if [ "$_resolver_marker_sid" = "$sid8" ]; then
+          if [ "$_resolver_marker_sid" = "$session_id" ]; then
             HANDOFF_PATH="$p"
             return 0
           else
-            ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch sid8=$sid8 marker_sid=$_resolver_marker_sid file=$p"
-            # Fall through to next probe.
+            ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch session_id=$session_id marker_sid=$_resolver_marker_sid file=$p"
+            # Fall through to repo-root probe.
           fi
         else
-          # No marker — apply mtime gate (R7-INC-02 v2 closes BLOCKER #2).
-          # Files with no marker but recent mtime are NOT accepted (bypass attack closed).
+          # No marker — apply mtime gate (legacy allow).
           local _fmtime
           if _fmtime=$(stat -f %m "$p" 2>/dev/null); then :
           elif _fmtime=$(stat -c %Y "$p" 2>/dev/null); then :
@@ -122,7 +110,7 @@ handoff_resolve_path() {
             HANDOFF_PATH="$p"
             return 0
           else
-            ctx_gate_log "primer skip reason=resolver-no-marker-non-legacy sid8=$sid8 file=$p mtime=$_fmtime cutoff=$_legacy_cutoff"
+            ctx_gate_log "primer skip reason=resolver-no-marker-non-legacy session_id=$session_id file=$p mtime=$_fmtime cutoff=$_legacy_cutoff"
             # Fall through.
           fi
         fi
@@ -142,18 +130,18 @@ handoff_resolve_path() {
     local repo_root
     repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root=""
     if [ -n "$repo_root" ]; then
-      p="$repo_root/CLAUDE.local.${sid8}.md"
+      p="$repo_root/CLAUDE.local.${session_id}.md"
       if [ -f "$p" ] && [ ! -L "$p" ]; then
         if _primer_check_linkcount "$p"; then
           local _resolver_marker_sid2
           _resolver_marker_sid2=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$p" 2>/dev/null | head -1 \
             | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
           if [ -n "$_resolver_marker_sid2" ]; then
-            if [ "$_resolver_marker_sid2" = "$sid8" ]; then
+            if [ "$_resolver_marker_sid2" = "$session_id" ]; then
               HANDOFF_PATH="$p"
               return 0
             else
-              ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch sid8=$sid8 marker_sid=$_resolver_marker_sid2 file=$p"
+              ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch session_id=$session_id marker_sid=$_resolver_marker_sid2 file=$p"
             fi
           else
             local _fmtime2
@@ -166,7 +154,7 @@ handoff_resolve_path() {
               HANDOFF_PATH="$p"
               return 0
             else
-              ctx_gate_log "primer skip reason=resolver-no-marker-non-legacy sid8=$sid8 file=$p mtime=$_fmtime2 cutoff=$_legacy_cutoff"
+              ctx_gate_log "primer skip reason=resolver-no-marker-non-legacy session_id=$session_id file=$p mtime=$_fmtime2 cutoff=$_legacy_cutoff"
             fi
           fi
         else
@@ -182,69 +170,10 @@ handoff_resolve_path() {
       fi
     fi
 
-    # ---------- R7-INC-04 (F4) cwd alias probe (Defense H12: alias-with-marker-binding) ----------
-    # The alias is accepted ONLY when its marker sid= matches the requested sid8.
-    # No marker → NOT accepted (no legacy allow for alias; legacy allow is SID-tagged only).
-    # R7-INC.1 (HIGH alias-future-mtime): reject alias if mtime is >300s in the future
-    # (clock-skew tolerance). A future mtime is a signal of tampering or clock skew.
-    local alias_p="$cwd/CLAUDE.local.md"
-    if [ -f "$alias_p" ] && [ ! -L "$alias_p" ] && _primer_check_linkcount "$alias_p"; then
-      # Future-mtime guard (300s skew tolerance)
-      local _amt _now
-      if _amt=$(stat -f %m "$alias_p" 2>/dev/null); then :
-      elif _amt=$(stat -c %Y "$alias_p" 2>/dev/null); then :
-      else _amt=0; fi
-      _amt=$(printf '%s' "$_amt" | tr -d '[:space:]'); [ -z "$_amt" ] && _amt=0
-      _now=$(date +%s)
-      if [ "$_amt" -gt $((_now + 300)) ]; then
-        ctx_gate_log "primer skip reason=alias-future-mtime sid8=$sid8 file=$alias_p mtime=$_amt"
-        # Fall through (do not accept alias with future mtime)
-      else
-        local _alias_marker_sid
-        _alias_marker_sid=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$alias_p" 2>/dev/null | head -1 \
-          | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
-        if [ -n "$_alias_marker_sid" ] && [ "$_alias_marker_sid" = "$sid8" ]; then
-          ctx_gate_log "primer accept reason=alias-with-marker-match sid8=$sid8 file=$alias_p"
-          HANDOFF_PATH="$alias_p"
-          return 0
-        elif [ -n "$_alias_marker_sid" ]; then
-          ctx_gate_log "primer skip reason=alias-marker-mismatch sid8=$sid8 alias_marker_sid=${_alias_marker_sid} file=$alias_p"
-        fi
-        # Alias with no marker: NOT accepted under Defense H12 (binding requires marker).
-      fi
-    fi
-
-    # ---------- R7-INC-04 (F4) repo-root alias probe ----------
-    if [ -n "$repo_root" ]; then
-      local alias_p2="$repo_root/CLAUDE.local.md"
-      if [ -f "$alias_p2" ] && [ ! -L "$alias_p2" ] && _primer_check_linkcount "$alias_p2"; then
-        # Future-mtime guard (300s skew tolerance)
-        local _amt2 _now2
-        if _amt2=$(stat -f %m "$alias_p2" 2>/dev/null); then :
-        elif _amt2=$(stat -c %Y "$alias_p2" 2>/dev/null); then :
-        else _amt2=0; fi
-        _amt2=$(printf '%s' "$_amt2" | tr -d '[:space:]'); [ -z "$_amt2" ] && _amt2=0
-        _now2=$(date +%s)
-        if [ "$_amt2" -gt $((_now2 + 300)) ]; then
-          ctx_gate_log "primer skip reason=alias-future-mtime sid8=$sid8 file=$alias_p2 mtime=$_amt2"
-          # Fall through (do not accept alias with future mtime)
-        else
-          local _alias_marker_sid2
-          _alias_marker_sid2=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$alias_p2" 2>/dev/null | head -1 \
-            | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
-          if [ -n "$_alias_marker_sid2" ] && [ "$_alias_marker_sid2" = "$sid8" ]; then
-            ctx_gate_log "primer accept reason=alias-with-marker-match sid8=$sid8 file=$alias_p2"
-            HANDOFF_PATH="$alias_p2"
-            return 0
-          elif [ -n "$_alias_marker_sid2" ]; then
-            ctx_gate_log "primer skip reason=alias-marker-mismatch sid8=$sid8 alias_marker_sid=${_alias_marker_sid2} file=$alias_p2"
-          fi
-        fi
-      fi
-    fi
-
-    # All probes failed — R4 D3 fail-closed.
-    ctx_gate_log "primer skip reason=sid-known-no-tagged-file sid=${sid8}"
+    # V2-6 (R8): F4 alias probe removed. With full-UUID filenames + identity-via-arg,
+    # the alias (CLAUDE.local.md) probe is dead code — writer never writes it under R8,
+    # and legacy 8-char alias markers cannot match a full UUID. Returning 2 (fail-closed).
+    ctx_gate_log "primer skip reason=sid-known-no-tagged-file session_id=${session_id}"
     return 2
   fi
 
