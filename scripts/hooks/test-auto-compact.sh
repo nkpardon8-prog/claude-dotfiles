@@ -729,22 +729,20 @@ if command -v jq >/dev/null 2>&1; then
       HANDOFF_ACCEPT_UNSIGNED=1 bash "$_STEP2" 2>/dev/null)
     _INC_STATE=$(printf '%s' "$_INC_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
     _INC_PATH=$(printf '%s' "$_INC_OUT" | sed -n 's/^STATE=//p' | jq -r '.path // empty' 2>/dev/null)
+    # R7-INC.1: assert STATE=ok specifically (vacuous-pass anti-pattern closed).
+    # HANDOFF_ACCEPT_UNSIGNED=1 is set; breadcrumb nonce=test-nonce-r7inc05 matches alias
+    # marker nonce=test-nonce-r7inc05; resolver exercises F2 (rejects wrong-marker SID-tagged)
+    # then F4 (accepts alias with matching marker). STATE=ok is required, not inconclusive.
     if [ "$_INC_STATE" = "ok" ] && printf '%s' "$_INC_PATH" | grep -q "CLAUDE.local.md"; then
-      check "R7-INC-05: live-incident E2E — Track A alias recovered (STATE=ok, path=alias)" 1 1
+      check "R7-INC-05: live-incident E2E — Track A alias recovered (STATE=ok, path=alias, F2+F4 working)" 1 1
     elif [ "$_INC_STATE" = "ok" ]; then
-      check "R7-INC-05: live-incident E2E — STATE=ok but path='$_INC_PATH' (expected alias)" 1 0
+      check "R7-INC-05: live-incident E2E — STATE=ok but path='$_INC_PATH' (expected alias path)" 1 0
     elif [ "$_INC_STATE" = "sid-mismatch-hard-stop" ]; then
-      check "R7-INC-05: live-incident still fires sid-mismatch-hard-stop (F2+F4 not working)" 1 0
+      check "R7-INC-05: live-incident still fires sid-mismatch-hard-stop (F2 resolver content-check not working — sidmismatch should be caught BEFORE step2 sees the file)" 1 0
     elif [ "$_INC_STATE" = "sid-known-no-tagged-file" ]; then
-      check "R7-INC-05: resolver returned sid-known-no-tagged-file (alias probe not working)" 1 0
+      check "R7-INC-05: resolver returned sid-known-no-tagged-file (F4 alias probe not working — alias with matching marker should be accepted)" 1 0
     else
-      # Some states are acceptable if HMAC/nonce requirements prevent completion in test env.
-      # nonce-mismatch is acceptable because the breadcrumb nonce differs from sentinel nonce.
-      if [ "$_INC_STATE" = "nonce-mismatch-hard-stop" ] || [ -z "$_INC_STATE" ]; then
-        check "R7-INC-05: HMAC/nonce prevented full resolution in isolated test env (inconclusive — resolver reached alias)" 1 1
-      else
-        check "R7-INC-05: unexpected STATE=$_INC_STATE (expected ok or nonce-mismatch)" 1 0
-      fi
+      check "R7-INC-05: unexpected STATE='$_INC_STATE' (required STATE=ok; see F2+F4 design)" 1 0
     fi
   else
     check "R7-INC-05: post-compact-resume-step2.sh not found at $ROOT — skipped" 1 1
