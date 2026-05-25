@@ -104,38 +104,23 @@ Never parse STATE= with regex or string splits — the path field may contain sp
 
 Then route per the decision matrix below.
 
-**Decision matrix (route on `.state` JSON field — all 15 valid states):**
+**Decision matrix (route on `.state` JSON field — R8 reduced STATE set):**
 
 - **STATE=`no-handoff`:** no handoff found. Output the paste-prompt from Step 1. Stop.
 
-- **STATE=`sid-mismatch-hard-stop`:** the marker's `sid=` attribute does not match the breadcrumb SID8 — the file belongs to a different parallel-track session.
-  Extract: `sentinel_sid8`, `marker_sid8` from STATE JSON.
+- **STATE=`no-session-arg`:** `/post-compact-resume` was invoked with no argument — delivery degraded.
   Output to user:
-  > WARNING: SID mismatch. The handoff file's marker sid (`marker_sid8`) does not match
-  > this session's SID (`sentinel_sid8`). The file likely belongs to a different parallel session.
-  > Do NOT load this file — it may contain instructions from a different track.
-  > Check if `CLAUDE.local.<sentinel_sid8>.md` exists in the current directory or repo root.
-  > Ask the user before proceeding.
+  > WARNING: No session_id was passed to /post-compact-resume. The auto-resume chain did not
+  > deliver the session_id argument. Do NOT guess.
+  > The SessionStart banner shows the exact command to run, including this session's id.
+  > Ask the user to paste it, or re-run /pre-compact.
   Then stop. Do not guess; ask the user.
 
-- **STATE=`sid-known-no-tagged-file`:** SID was known (from breadcrumb) but SID-tagged file is missing.
-  Extract: `sid8=$(printf '%s' "$STATE_LINE" | sed -n 's/^STATE=//p' | jq -r '.sid8')`
+- **STATE=`invalid-session-arg`:** the session_id argument contains characters outside `[A-Za-z0-9_-]`.
   Output to user:
-  > WARNING: A /pre-compact ran for this session but the SID-tagged handoff file is missing.
-  > Possible causes: file was deleted, cwd changed since /pre-compact, or another agent moved it.
-  > Check if `CLAUDE.local.<sid8>.md` exists in the current directory or repo root.
-  > Ask the user before proceeding.
-  > Do NOT load the generic alias `CLAUDE.local.md` — it may belong to a different parallel-track session.
-  Then stop. Do not guess; ask the user.
-
-- **STATE=`nonce-mismatch-hard-stop`:** SID-known + marker nonce ≠ sentinel nonce — hard stop.
-  Extract: `marker_nonce_first8`, `sentinel_nonce_first8` from STATE JSON.
-  Output to user:
-  > WARNING: Handoff nonce mismatch. The SID-tagged file's marker nonce does not match the
-  > sentinel nonce from this session. Possible causes: file was replaced or corrupted.
-  > marker_nonce_first8=<value> sentinel_nonce_first8=<value>
-  > Ask the user whether to proceed cautiously or to start fresh.
-  Then stop. Do not auto-proceed (unlike the legacy advisory path — R4 D4 makes this hard).
+  > WARNING: The session_id argument has invalid characters.
+  > This may indicate a delivery corruption. Ask the user to re-run /pre-compact.
+  Then stop.
 
 - **STATE=`oversize`:** output to user:
   Extract: `size`, `max` from STATE JSON.
@@ -144,36 +129,22 @@ Then route per the decision matrix below.
   Then stop. Do not attempt to read the file.
 
 - **STATE=`ok`:** proceed per the MARKER/STALE/LEGACY matrix below.
-  Parse fields from STATE JSON: `marker`, `stale`, `legacy`, `age_hours`, `nonce_ok`, `sid8`, `path`.
+  Parse fields from STATE JSON: `marker`, `stale`, `legacy`, `age_hours`, `sid`, `path`.
   Use `path` field (not cwd) as the authoritative handoff file location — it may differ from cwd for repo-root resolution.
 
-  (Note: for `ok` STATE, `nonce_ok=mismatch` means SID was UNKNOWN when the mismatch was detected —
-  this is advisory, not a hard stop, per R4 D4. Emit a warning but continue.)
-
-- **STATE=`invalid-handoff-name`:** the resolved handoff file's basename does not match the expected `CLAUDE.local[.<sid8>].md` pattern — possible path injection or unexpected filesystem state.
+- **STATE=`invalid-handoff-name`:** the resolved handoff file's basename does not match the expected `CLAUDE.local[.<session_id>].md` pattern — possible path injection or unexpected filesystem state.
   Extract: `path` from STATE JSON.
   Output to user:
   > WARNING: The handoff file path has an unexpected name (`path`).
-  > It does not match the expected `CLAUDE.local.<sid8>.md` pattern.
+  > It does not match the expected `CLAUDE.local.<session_id>.md` pattern.
   > This may indicate a misconfigured workspace or an unexpected file.
   > Do NOT load this file automatically. Ask the user before proceeding.
   Then stop. Do not guess; ask the user.
 
-- **STATE=`stop-hook-refused`:** the Stop hook detected conflicting sentinels and wrote a fail-closed breadcrumb. The handoff was NOT preserved.
-  Extract: `sid8`, `real_sid`, `resolved_sid` from STATE JSON.
+- **STATE=`sid-known-hardlinked`:** the SID-tagged handoff file has a hardlink count > 1.
+  Extract: `sid`, `next_steps` from STATE JSON.
   Output to user:
-  > WARNING: The /pre-compact Stop hook encountered conflicting session ID resolution and refused
-  > to write the handoff breadcrumb. The handoff content may not have been saved.
-  > sid8=<value> (this session) real_sid=<real_sid> resolved_sid=<resolved_sid>
-  > Next steps: (1) Check if `CLAUDE.local.<sid8>.md` exists (if so, manually run /post-compact-resume again
-  >   after verifying the file looks correct). (2) If file is missing, run /pre-compact again to re-create the handoff.
-  > Ask the user how to proceed — do NOT attempt to guess the prior context.
-  Then stop.
-
-- **STATE=`sid-known-hardlinked`:** the SID-tagged handoff file has a hardlink count > 1. This is unexpected (normal files have count=1) and may indicate an attack where an adversary created a hardlink to a sensitive file to bypass the symlink-check gate.
-  Extract: `sid8`, `next_steps` from STATE JSON.
-  Output to user:
-  > WARNING: The handoff file `CLAUDE.local.<sid8>.md` has an unexpected hardlink count.
+  > WARNING: The handoff file `CLAUDE.local.<sid>.md` has an unexpected hardlink count.
   > This could indicate filesystem manipulation. next_steps=<value>
   > Do NOT read this file. Ask the user to inspect and re-create if legitimate.
   Then stop. Do not guess; ask the user.
@@ -182,74 +153,31 @@ Then route per the decision matrix below.
   Output to user:
   > WARNING: The handoff file was modified while being read. This may produce garbled context.
   > Possible cause: git sync or another tool rewrote the file during /post-compact-resume.
-  > Re-run /post-compact-resume to get a stable snapshot. If the problem persists, ask the user.
+  > Re-run /post-compact-resume <session_id> to get a stable snapshot. If the problem persists, ask the user.
   Then stop. Retry once automatically; if still mutating, escalate to user.
 
-- **STATE=`multi-marker-detected`:** the handoff file contains more than one END-OF-HANDOFF marker line. The write protocol guarantees exactly one; multiple markers indicate tampering or a double-write bug.
-  Extract: `sid8`, `count`, `path` from STATE JSON.
+- **STATE=`multi-marker-detected`:** the handoff file contains more than one END-OF-HANDOFF marker line.
+  Extract: `sid`, `count`, `path` from STATE JSON.
   Output to user:
   > WARNING: The handoff file `path` contains `count` END-OF-HANDOFF marker lines (expected 1).
   > This indicates the file may have been tampered with or double-written.
   > Do NOT load this file automatically.
-  > To fix: inspect the file, remove duplicate marker lines (keep the last one), then re-run /post-compact-resume.
+  > To fix: inspect the file, remove duplicate marker lines (keep the last one), then re-run /post-compact-resume <session_id>.
   > Ask the user before proceeding.
   Then stop. Do not guess; ask the user.
 
-- **STATE=`own-sid-unresolvable`:** step2.sh could not determine this session's SID — both CLAUDE_SESSION_ID and CLAUDE_CODE_SESSION_ID were unset and the slug fallback found no transcript in the current directory. Cannot safely bind to any breadcrumb.
-  Extract: `reason` from STATE JSON.
-  Output to user:
-  > WARNING: Could not determine this session's unique ID. reason=<value>
-  > This typically means /post-compact-resume was invoked outside of a Claude Code session,
-  > or from a directory with no project transcripts.
-  > Next steps: (1) Run /post-compact-resume from the same directory where /pre-compact was run.
-  >   (2) If running manually, set CLAUDE_SESSION_ID to the session ID from the prior /pre-compact.
-  Then stop.
-
-- **STATE=`snapshot-failed`:** the TOCTOU-safe snapshot could not be created (`mktemp` or `cp` failed). The handoff file exists but could not be safely read.
-  Extract: `sid8`, `path`, `reason` from STATE JSON.
+- **STATE=`snapshot-failed`:** the TOCTOU-safe snapshot could not be created (`mktemp` or `cp` failed).
+  Extract: `sid`, `path`, `reason` from STATE JSON.
   Output to user:
   > WARNING: Could not create a safe snapshot of the handoff file at `path`. reason=`reason`
   > This typically means /tmp is full or /tmp has incorrect permissions.
   > Next steps: (1) Run `df /tmp` and `ls -la /tmp` to check available space and permissions.
-  >   (2) Clear temporary files (`rm -rf /tmp/handoff_snap.*`) and retry /post-compact-resume.
-  Then stop.
-
-- **STATE=`hmac-unavailable`:** the session HMAC key file exists for this session, but signature verification could not be performed (openssl unavailable or key file corrupted). This is suspicious — the signer intended to sign this session but the verifier cannot confirm authenticity.
-  Extract: `sid8`, `reason` from STATE JSON.
-  Output to user:
-  > WARNING: HMAC verification unavailable for session `sid8`. reason=`reason`
-  > The session key file at `~/.claude/progress/.session-key-<sid8>` exists but signature
-  > verification failed. This may indicate: (1) openssl is not installed or broken,
-  > (2) the key file is corrupted (wrong permissions, empty, or truncated).
-  > Recovery options:
-  >   (a) If openssl is missing: install it with `brew install openssl` and retry.
-  >   (b) If the key is corrupted: delete it with `rm ~/.claude/progress/.session-key-<sid8>` and retry.
-  >   (c) For pre-R5 sessions migrating to R6: set `HANDOFF_ACCEPT_UNSIGNED=1` once to bypass.
-  Then stop.
-
-- **STATE=`signature-mismatch`:** all candidate breadcrumbs failed HMAC signature verification (or the claim-file fallback was used after all signed breadcrumbs were rejected). The breadcrumb may have been tampered, or the session key was rotated.
-  Extract: `sid8`, `mismatch_count`, `reason` from STATE JSON.
-  Output to user:
-  > WARNING: Breadcrumb HMAC signature mismatch for session `sid8` (`mismatch_count` breadcrumbs rejected).
-  > The breadcrumb file may have been tampered or your session key was rotated.
-  > Recovery options:
-  >   (a) If migrating from pre-R5 (before HMAC signing): set `HANDOFF_ACCEPT_UNSIGNED=1` once and retry.
-  >     `HANDOFF_ACCEPT_UNSIGNED=1 bash /post-compact-resume-step2.sh` — then unset the variable.
-  >   (b) If not migrating: re-run `/pre-compact` in a fresh session to create a new signed breadcrumb.
-  >   (c) If you believe tampering occurred, check `~/.claude/logs/auto-compact.log` for forensic evidence.
+  >   (2) Clear temporary files (`rm -rf /tmp/handoff_snap.*`) and retry /post-compact-resume <session_id>.
   Then stop.
 
 - **STATE=`error` or parse failure (jq returns null / empty / non-zero):** treat as `no-handoff` — output the paste-prompt. Stop.
 
-**Migration guide: HANDOFF_ACCEPT_UNSIGNED=1**
-
-This environment variable disables HMAC signature verification for all breadcrumbs in a single step2.sh run. It exists as a one-time migration escape hatch for sessions created before R5 (before HMAC signing was implemented). **Do NOT leave this variable set permanently.**
-
-Use only when:
-- You are resuming a pre-R5 session where no `.session-key-<sid8>` file exists.
-- You see `STATE=signature-mismatch` or `STATE=hmac-unavailable` after an upgrade from pre-R5.
-
-After migration: unset the variable (`unset HANDOFF_ACCEPT_UNSIGNED`) and run a fresh `/pre-compact` to create a properly signed breadcrumb for the new session.
+**R8 migration note:** sessions that ran OLD /pre-compact (pre-R8) wrote 8-char `CLAUDE.local.<sid8>.md` and armed old sentinels. When those sessions compact+resume under NEW code (expects full-UUID + typed arg), the new reader gets the full-UUID arg, looks for `CLAUDE.local.<full-uuid>.md`, does not find the 8-char file → `STATE=no-handoff` (safe — refuse, ask user; NOT a mix-up). This is a one-time degradation for sessions mid-flight at ship time. Run /pre-compact again to create a properly named handoff.
 
 **MARKER/STALE sub-matrix (applies when STATE=ok):**
 
