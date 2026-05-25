@@ -1293,76 +1293,47 @@ rm -rf "$TMPWD_G_EMPTY"
 rm -rf "$TMPWD_G" "$TMPHOME_G"
 
 # ---------------------------------------------------------------------------
-# §G4-H Alias-with-marker-binding (R7-INC-04 / Defense H12) replaces old D3 fail-closed test.
-# R7-INC: alias IS accepted when its marker sid matches the SID8 (Defense H12).
-# Two sub-tests:
-#   G4-H-pos: alias with matching marker → STATE=ok (Defense H12 allows it)
-#   G4-H-neg: alias with NO matching marker (wrong sid) → STATE=sid-known-no-tagged-file
+# §G4-H SID-tagged file wins when SID matches (R8: alias probe deleted)
+# R8: F4 alias probe removed. SID-tagged file is the ONLY path when SID is known.
+# G4-H-pos: SID-tagged file with matching marker → STATE=ok
+# G4-H-neg: SID arg + no matching file anywhere → STATE=no-handoff
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §G4-H Alias-with-marker-binding Defense H12 (R7-INC) =="
+echo "== §G4-H SID-tagged file resolution (R8: no alias probe) =="
 
-# G4-H positive: alias with matching marker → STATE=ok under Defense H12
+# G4-H positive: SID-tagged file with matching marker → STATE=ok
 TMPWD_H=$(mktemp -d)
 TMPHOME_H=$(mktemp -d)
 mkdir -p "$TMPHOME_H/.claude/progress" && chmod 700 "$TMPHOME_H/.claude/progress"
 GH_SID="g4h-nocell-$$"
-GH_SID8="${GH_SID:0:8}"
 GH_NONCE="abcd1111-2222-3333-4444-555566667777"
-GH_CWD=$(cd -P "$TMPWD_H" 2>/dev/null && pwd -P)
-GH_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid  "$GH_SID" \
-  --arg sid8 "$GH_SID8" \
-  --arg cwd  "$GH_CWD" \
-  --arg nonce "$GH_NONCE" \
-  --arg host  "$GH_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$TMPHOME_H/.claude/progress/breadcrumb-${GH_SID}.json" 2>/dev/null
-chmod 600 "$TMPHOME_H/.claude/progress/breadcrumb-${GH_SID}.json"
-# SID-tagged file ABSENT. Alias PRESENT with matching marker (Defense H12 accepts it).
 printf 'alias content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$GH_SID8" "$GH_NONCE" > "$TMPWD_H/CLAUDE.local.md"
-OUT_H=$(cd "$TMPWD_H" && CLAUDE_SESSION_ID="$GH_SID" HOME="$TMPHOME_H" HANDOFF_ACCEPT_UNSIGNED=1 bash "$STEP2_SH" 2>/dev/null)
+  "$GH_SID" "$GH_NONCE" > "$TMPWD_H/CLAUDE.local.${GH_SID}.md"
+OUT_H=$(cd "$TMPWD_H" && HOME="$TMPHOME_H" bash "$STEP2_SH" "$GH_SID" 2>/dev/null)
 GH_STATE=$(printf '%s' "$OUT_H" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-# Defense H12: alias with matching marker is now accepted (STATE=ok or nonce-mismatch is acceptable;
-# the key test is that it does NOT return sid-known-no-tagged-file or sid-mismatch-hard-stop).
-if [ "$GH_STATE" = "ok" ] || [ "$GH_STATE" = "nonce-mismatch-hard-stop" ]; then
-  pass "G4-H-pos: alias with matching marker → Defense H12 accepted (state=$GH_STATE, not sid-known-no-tagged-file)"
+if [ "$GH_STATE" = "ok" ]; then
+  pass "G4-H: SID-tagged file with matching marker → STATE=ok (R8 identity-via-arg)"
 else
-  fail "G4-H: Defense H12" "expected state=ok or nonce-mismatch-hard-stop; got '$GH_STATE' raw: ${OUT_H:0:200}"
+  fail "G4-H: Defense H12" "expected state=ok; got '$GH_STATE' raw: ${OUT_H:0:200}"
 fi
 rm -rf "$TMPWD_H" "$TMPHOME_H"
 
-# G4-H negative: alias with NO matching marker → STATE=sid-known-no-tagged-file
+# G4-H negative: SID arg + no file at all (only alias present) → STATE=no-handoff
+# R8: alias is NOT accepted when SID is known; resolver returns no-handoff (fail-safe)
 TMPWD_HN=$(mktemp -d)
 TMPHOME_HN=$(mktemp -d)
 mkdir -p "$TMPHOME_HN/.claude/progress" && chmod 700 "$TMPHOME_HN/.claude/progress"
 GHN_SID="g4hn-nomatch-$$"
-GHN_SID8="${GHN_SID:0:8}"
 GHN_NONCE="abcd2222-3333-4444-5555-666677778888"
-GHN_CWD=$(cd -P "$TMPWD_HN" 2>/dev/null && pwd -P)
-GHN_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid  "$GHN_SID" \
-  --arg sid8 "$GHN_SID8" \
-  --arg cwd  "$GHN_CWD" \
-  --arg nonce "$GHN_NONCE" \
-  --arg host  "$GHN_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$TMPHOME_HN/.claude/progress/breadcrumb-${GHN_SID}.json" 2>/dev/null
-chmod 600 "$TMPHOME_HN/.claude/progress/breadcrumb-${GHN_SID}.json"
-# Alias with WRONG marker (foreign SID) — must be rejected
-printf 'alias content\n<!-- END-OF-HANDOFF schema=v1 sid=foreignsid nonce=%s -->\n' \
-  "$GHN_NONCE" > "$TMPWD_HN/CLAUDE.local.md"
-OUT_HN=$(cd "$TMPWD_HN" && CLAUDE_SESSION_ID="$GHN_SID" HOME="$TMPHOME_HN" bash "$STEP2_SH" 2>/dev/null)
+# Only alias present (no SID-tagged file) → resolver returns rc=2 → no-handoff
+printf 'alias content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$GHN_SID" "$GHN_NONCE" > "$TMPWD_HN/CLAUDE.local.md"
+OUT_HN=$(cd "$TMPWD_HN" && HOME="$TMPHOME_HN" bash "$STEP2_SH" "$GHN_SID" 2>/dev/null)
 GHN_STATE=$(printf '%s' "$OUT_HN" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$GHN_STATE" = "sid-known-no-tagged-file" ]; then
-  pass "G4-H-neg: alias with foreign marker → sid-known-no-tagged-file (Defense H12 binding enforced)"
+if [ "$GHN_STATE" = "no-handoff" ]; then
+  pass "G4-H-neg: alias only (no SID-tagged file) → no-handoff (R8: fail-safe, alias probe deleted)"
 else
-  fail "G4-H-neg: Defense H12 binding" "expected state=sid-known-no-tagged-file got '$GHN_STATE' raw: ${OUT_HN:0:200}"
+  fail "G4-H-neg: Defense H12 binding" "expected state=no-handoff (alias rejected) got '$GHN_STATE' raw: ${OUT_HN:0:200}"
 fi
 rm -rf "$TMPWD_HN" "$TMPHOME_HN"
 
