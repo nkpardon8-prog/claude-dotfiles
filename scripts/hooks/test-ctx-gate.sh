@@ -495,9 +495,10 @@ LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || 
 LEGACY_OVERRIDE_FUTURE=9999999999
 
 # 3l-compact-fresh-marker: source=compact + fresh marker + no sentinel → normal nav
+# R8: use SID-tagged file CLAUDE.local.newsid.md (primer uses PRIMER_SESSION_ID="newsid")
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=test-nonce -->\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
 JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("POST-COMPACT")' >/dev/null 2>&1; then
@@ -508,23 +509,29 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-compact-fresh-no-marker: source=compact + fresh + no marker → TRUNCATED warning
+# R8: use SID-tagged file (legacy allow for no-marker file by mtime gate requires mtime < cutoff;
+# recent no-marker file → resolver uses mtime gate: recent → skip → no handoff.
+# Since the file is recent AND has no marker, the mtime-gate skips it → rc=2 → silent exit.
+# To test TRUNCATED, use the legacy alias path (session_id="" → SID-unknown → alias).
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
 printf '# handoff\n## Content without marker\n' > "$TMPHOME/repo/CLAUDE.local.md"
-JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+# Use empty session_id so primer falls back to SID-unknown alias path (CLAUDE.local.md)
+JSON="{\"session_id\":\"\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("TRUNCATED")' >/dev/null 2>&1; then
-  pass "3l-compact-fresh-no-marker: source=compact + no marker → TRUNCATED warning"
+  pass "3l-compact-fresh-no-marker: source=compact + no marker (SID-unknown alias) → TRUNCATED warning"
 else
   fail "3l-compact-fresh-no-marker" "expected TRUNCATED warning, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
 # 3l-compact-legacy: source=compact + mtime<cutoff + no marker → LEGACY warning
+# R8: legacy no-marker SID-tagged file is accepted if mtime < HANDOFF_LEGACY_CUTOFF_EPOCH.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
-printf '# old handoff\n## No marker here\n' > "$TMPHOME/repo/CLAUDE.local.md"
-touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2019 = before LEGACY_OVERRIDE_PAST (2020)
+printf '# old handoff\n## No marker here\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
+touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.newsid.md"  # 2019 = before LEGACY_OVERRIDE_PAST (2020)
 JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("LEGACY")' >/dev/null 2>&1; then
