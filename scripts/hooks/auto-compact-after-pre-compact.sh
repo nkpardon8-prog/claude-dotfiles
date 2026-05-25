@@ -393,12 +393,11 @@ find "$BREADCRUMB_DIR" -maxdepth 1 -type f \
   -name "breadcrumb-${SESSION_ID}.json.tmp.*" \
   -delete 2>/dev/null || true
 
-# R7-INC-03 (F3): clean up PID-keyed pre-compact scratch file if PRECOMPACT_PID is set.
-# /pre-compact exports PRECOMPACT_PID=$$  before arming Step 9.0. If the env var is present,
-# remove the specific scratch file immediately. Otherwise the 720-min GC glob in
-# on-session-start-cleanup.sh handles eventual cleanup.
-if [ -n "${PRECOMPACT_PID:-}" ]; then
-  rm -f "$HOME/.claude/progress/pre-compact-scratch-${PRECOMPACT_PID}.json" 2>/dev/null || true
-fi
+# R7-INC.1 B3: PRECOMPACT_PID scratch cleanup removed (dead code).
+# The env var PRECOMPACT_PID cannot reliably cross process-tree boundaries (the Stop hook
+# runs in a different process context than the /pre-compact orchestrator). The scratch file
+# is now SID-keyed (pre-compact-parent-<SID>.json), not PID-keyed, and is cleaned up by:
+#   (a) Step 9.1 orchestrator rm -f (primary path — runs before sentinel arm)
+#   (b) 720-min GC glob pre-compact-parent-*.json in on-session-start-cleanup.sh (fallback)
 
 exit 0
