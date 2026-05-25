@@ -696,12 +696,13 @@ _INC_SID8="a90ac8f5"
 _INC_NONCE="test-nonce-r7inc05"
 mkdir -p "$_INC_HOME/.claude/progress" && chmod 700 "$_INC_HOME/.claude/progress"
 
-# Write the incident layout:
-# 1. CLAUDE.local.a90ac8f5.md — NO marker (simulates Track B's corrupted write at 01:34)
-printf 'Track B Seq 3 content — no END-OF-HANDOFF marker (corrupted write)\n' \
+# Write the ACTUAL incident layout (R7-INC.1: use WRONG marker, not no-marker).
+# The real incident: CLAUDE.local.a90ac8f5.md had marker sid=c6f7c23c (Track B's SID),
+# not the requesting session's sid=a90ac8f5. This exercises the resolver-marker-sid-mismatch
+# path (F2), which falls through to the alias probe (F4), recovering Track A's handoff.
+# 1. CLAUDE.local.a90ac8f5.md — WRONG marker (Track B's SID c6f7c23c — the real incident)
+printf 'Track B Seq 3 content\n<!-- END-OF-HANDOFF schema=v1 sid=c6f7c23c nonce=test-nonce-trackb -->\n' \
   > "$_INC_TMP/CLAUDE.local.a90ac8f5.md"
-# Set mtime to recent (not legacy) so the no-marker check fires
-# (default new file mtime is current, which is >= legacy cutoff)
 
 # 2. CLAUDE.local.md — marker sid=a90ac8f5 (Track A's real Seq 30)
 printf 'Track A Seq 30 — real handoff\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
