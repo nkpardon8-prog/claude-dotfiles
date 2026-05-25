@@ -598,9 +598,10 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-resume-no-sentinel-fresh: source=resume + no sentinel + fresh marker → SESSION START nav
+# R8: use SID-tagged file CLAUDE.local.newsid.md
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=test-nonce-resume -->\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
 JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("SESSION START")' >/dev/null 2>&1; then
@@ -611,10 +612,11 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-resume-no-sentinel-stale: source=resume + no sentinel + 30h-old mtime → STALE
+# R8: use SID-tagged file CLAUDE.local.newsid.md
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
-touch -t 202601010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2026-01-01 = old
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=test-nonce-stale -->\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
+touch -t 202601010000 "$TMPHOME/repo/CLAUDE.local.newsid.md"  # 2026-01-01 = old
 JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_STALE_SECS_OVERRIDE=3600 HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("STALE")' >/dev/null 2>&1; then
@@ -625,10 +627,11 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-resume-legacy: source=resume + mtime<cutoff + no marker → LEGACY
+# R8: use SID-tagged file with legacy mtime (accepted by mtime gate in resolver)
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# old handoff\n## No marker\n' > "$TMPHOME/repo/CLAUDE.local.md"
-touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2019 = before 2020 cutoff
+printf '# old handoff\n## No marker\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
+touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.newsid.md"  # 2019 = before 2020 cutoff
 JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("LEGACY")' >/dev/null 2>&1; then
