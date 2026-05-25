@@ -1465,41 +1465,22 @@ fi
 rm -rf "$TMPWD_M" "$TMPHOME_M"
 
 # ---------------------------------------------------------------------------
-# §G4-L Stop-hook-refused STATE (Phase 3 Round 4) — Critical #8
+# §G4-L Invalid-session-arg STATE (R8 replacement for stop-hook-refused)
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §G4-L stop-hook-refused STATE =="
-# Setup: write a stop-hook-refused breadcrumb for this session's SID.
-# Assert step2.sh emits STATE=stop-hook-refused immediately.
+echo "== §G4-L invalid-session-arg STATE (R8) =="
+# R8: stop-hook-refused deleted (no breadcrumbs, no dual-SID). Replaced by:
+# invalid-session-arg fires when the session_id arg contains bad characters.
 TMPWD_L=$(mktemp -d)
 TMPHOME_L=$(mktemp -d)
 mkdir -p "$TMPHOME_L/.claude/progress" && chmod 700 "$TMPHOME_L/.claude/progress"
-GL_SID="g4l-refused-$$"
-GL_SID8="${GL_SID:0:8}"
-GL_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-# Write stop-hook-refused breadcrumb (matches originating_command=stop-hook-fail-closed)
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid "$GL_SID" \
-  --arg sid8 "$GL_SID8" \
-  --arg cmd "stop-hook-fail-closed" \
-  --arg real_sid "${GL_SID}-real" \
-  --arg resolved_sid "${GL_SID}-resolved" \
-  --arg host "$GL_HOST" \
-  --arg next_steps "Two sentinels disagreed; run /pre-compact again." \
-  '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,real_sid:$real_sid,resolved_sid:$resolved_sid,next_steps:$next_steps}' \
-  > "$TMPHOME_L/.claude/progress/breadcrumb-${GL_SID}.json" 2>/dev/null
-chmod 600 "$TMPHOME_L/.claude/progress/breadcrumb-${GL_SID}.json"
-# Also write a normal handoff file (must NOT be reached — stop-hook-refused fires first)
-printf 'should not load\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=dummy-nonce -->\n' \
-  "$GL_SID8" > "$TMPWD_L/CLAUDE.local.${GL_SID8}.md"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
-OUT_L=$(cd "$TMPWD_L" && CLAUDE_SESSION_ID="$GL_SID" HOME="$TMPHOME_L" bash "$STEP2_SH" 2>/dev/null)
+OUT_L=$(cd "$TMPWD_L" && HOME="$TMPHOME_L" bash "$STEP2_SH" "bad/arg;rm -rf" 2>/dev/null)
 GL_STATE=$(printf '%s' "$OUT_L" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$GL_STATE" = "stop-hook-refused" ]; then
-  pass "G4-L: stop-hook-refused STATE fires when stop-hook-fail-closed breadcrumb present"
+if [ "$GL_STATE" = "invalid-session-arg" ]; then
+  pass "G4-L: invalid-session-arg STATE fires on bad-charset arg"
 else
-  fail "G4-L: stop-hook-refused STATE" "expected state=stop-hook-refused, got '$GL_STATE' raw: ${OUT_L:0:200}"
+  fail "G4-L: stop-hook-refused STATE" "expected state=invalid-session-arg, got '$GL_STATE' raw: ${OUT_L:0:200}"
 fi
 rm -rf "$TMPWD_L" "$TMPHOME_L"
 
