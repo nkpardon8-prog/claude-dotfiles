@@ -2153,11 +2153,12 @@ fi
 rm -rf "$_HR_TMP"
 
 # ---------------------------------------------------------------------------
-# §R7-INC-04 Alias-with-marker-binding (Defense H12 / RQ-INC-04) — HZ-40 / INV-25
-# Tests Defense H12: alias accepted only when marker sid matches SID8.
+# §R8-INC-04 Resolver F2 + alias-deleted behavior (R8: F4 alias probe removed)
+# R8: alias probe (CLAUDE.local.md) is deleted when SID is known.
+# Only SID-tagged files (CLAUDE.local.<session_id>.md) are accepted.
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §R7-INC-04 alias-with-marker-binding (Defense H12 / F4 / RQ-INC-04) =="
+echo "== §R8-INC-04 SID-tagged resolver behavior (R8: F4 alias probe deleted) =="
 _HR2_TMP=$(mktemp -d)
 _LEGACY_CUTOFF2=1779321600
 # Reload handoff-resolve.sh fresh
@@ -2165,20 +2166,21 @@ unset _HANDOFF_RESOLVE_LOADED 2>/dev/null || true
 . "$(cd "$(dirname "$0")" && pwd)/lib/handoff-resolve.sh" 2>/dev/null || true
 if command -v handoff_resolve_path >/dev/null 2>&1; then
 
-  # R7-INC-04a: SID-tagged absent, alias with matching marker → rc=0 HANDOFF_PATH=alias
+  # R7-INC-04a: SID-tagged absent, alias PRESENT → rc=2 (alias probe deleted in R8)
   mkdir -p "$_HR2_TMP/04a"
   printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n1 -->\n' \
     > "$_HR2_TMP/04a/CLAUDE.local.md"
   HANDOFF_PATH=""
   HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04a" "aaaa1111"
   _HR04A_RC=$?
-  if [ "$_HR04A_RC" -eq 0 ] && [ "$HANDOFF_PATH" = "$_HR2_TMP/04a/CLAUDE.local.md" ]; then
-    pass "R7-INC-04a: alias with matching marker accepted (Defense H12 positive)"
+  # R8: no alias probe → rc=2 (fail-safe, not mix-up)
+  if [ "$_HR04A_RC" -eq 2 ] && [ -z "$HANDOFF_PATH" ]; then
+    pass "R7-INC-04a: alias only (F4 deleted) → rc=2 no-handoff (R8 fail-safe)"
   else
-    fail "R7-INC-04a: Defense H12 positive" "expected rc=0 HANDOFF_PATH=alias; got rc=$_HR04A_RC HANDOFF_PATH='$HANDOFF_PATH'"
+    fail "R7-INC-04a: Defense H12 positive" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR04A_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
-  # R7-INC-04b: SID-tagged absent, alias with mismatching marker → rc=2 (security boundary)
+  # R7-INC-04b: SID-tagged absent, alias with mismatching marker → rc=2 (same — alias ignored)
   mkdir -p "$_HR2_TMP/04b"
   printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=bbbb2222 nonce=n2 -->\n' \
     > "$_HR2_TMP/04b/CLAUDE.local.md"
@@ -2186,12 +2188,12 @@ if command -v handoff_resolve_path >/dev/null 2>&1; then
   HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04b" "aaaa1111"
   _HR04B_RC=$?
   if [ "$_HR04B_RC" -eq 2 ] && [ -z "$HANDOFF_PATH" ]; then
-    pass "R7-INC-04b: alias with mismatching marker rejected (Defense H12 security boundary)"
+    pass "R7-INC-04b: alias with mismatching marker → rc=2 (still rejected; alias probe gone)"
   else
     fail "R7-INC-04b: Defense H12 negative" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR04B_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
-  # R7-INC-04c: both SID-tagged and alias have matching marker → rc=0 HANDOFF_PATH=SID-tagged (precedence)
+  # R7-INC-04c: SID-tagged with matching marker wins (no change — SID-tagged always preferred)
   mkdir -p "$_HR2_TMP/04c"
   printf 'sid-tagged content\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n3 -->\n' \
     > "$_HR2_TMP/04c/CLAUDE.local.aaaa1111.md"
@@ -2201,12 +2203,12 @@ if command -v handoff_resolve_path >/dev/null 2>&1; then
   HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04c" "aaaa1111"
   _HR04C_RC=$?
   if [ "$_HR04C_RC" -eq 0 ] && [ "$HANDOFF_PATH" = "$_HR2_TMP/04c/CLAUDE.local.aaaa1111.md" ]; then
-    pass "R7-INC-04c: SID-tagged wins over alias when both have matching markers (precedence)"
+    pass "R7-INC-04c: SID-tagged wins over alias when both present (precedence)"
   else
     fail "R7-INC-04c: SID-tagged precedence" "expected rc=0 HANDOFF_PATH=SID-tagged; got rc=$_HR04C_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
-  # R7-INC-04d: F2+F4 interaction — SID-tagged with mismatched marker falls through to good alias
+  # R7-INC-04d: F2+no-F4 — bad SID-tagged + alias → rc=2 (no alias fallback in R8)
   mkdir -p "$_HR2_TMP/04d"
   printf 'track-b content\n<!-- END-OF-HANDOFF schema=v1 sid=bbbb2222 nonce=n5 -->\n' \
     > "$_HR2_TMP/04d/CLAUDE.local.aaaa1111.md"
@@ -2215,54 +2217,38 @@ if command -v handoff_resolve_path >/dev/null 2>&1; then
   HANDOFF_PATH=""
   HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04d" "aaaa1111"
   _HR04D_RC=$?
-  if [ "$_HR04D_RC" -eq 0 ] && [ "$HANDOFF_PATH" = "$_HR2_TMP/04d/CLAUDE.local.md" ]; then
-    pass "R7-INC-04d: F2+F4 interaction — bad SID-tagged falls through to matching alias"
+  # R8: F4 alias probe deleted. Bad SID-tagged fails F2 → rc=2, NO alias fallback.
+  if [ "$_HR04D_RC" -eq 2 ] && [ -z "$HANDOFF_PATH" ]; then
+    pass "R7-INC-04d: bad SID-tagged + alias → rc=2 (R8: F4 deleted, no alias fallback)"
   else
-    fail "R7-INC-04d: F2+F4 interaction" "expected rc=0 HANDOFF_PATH=alias; got rc=$_HR04D_RC HANDOFF_PATH='$HANDOFF_PATH'"
+    fail "R7-INC-04d: F2+F4 interaction" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR04D_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
-  # R7-INC-04e: Defense H12 residual attack documentation (INFORMATIONAL — NOT a security pass)
-  # Track B writer forges Track A SID into alias content → resolver accepts it (BY DESIGN).
-  # Prevention is at the writer side (RQ-INC-01 + RQ-INC-03), not reader side.
-  # This test DOCUMENTS the limitation; the assertion is that the alias IS returned (accepted).
+  # R7-INC-04e: alias-only with matching SID → rc=2 (R8: alias never accepted when SID known)
   mkdir -p "$_HR2_TMP/04e"
-  printf 'track-b forged alias\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n7 -->\n' \
+  printf 'alias-only content\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n7 -->\n' \
     > "$_HR2_TMP/04e/CLAUDE.local.md"
   HANDOFF_PATH=""
   HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04e" "aaaa1111"
   _HR04E_RC=$?
-  # This IS by design — Defense H12 is best-effort at reader side; writer-side RQ-INC-01/03 prevent.
-  # See: Reviewer A BLOCKER #1 acknowledgment in plan §2 RQ-INC-04.
-  if [ "$_HR04E_RC" -eq 0 ] && [ -n "$HANDOFF_PATH" ]; then
-    pass "R7-INC-04e: Defense H12 residual attack documented (forged alias accepted — BY DESIGN; see HZ-40 residual risk note)"
+  # R8: alias never accepted when SID known. Residual attack surface (forged alias) is closed.
+  if [ "$_HR04E_RC" -eq 2 ] && [ -z "$HANDOFF_PATH" ]; then
+    pass "R7-INC-04e: alias-only → rc=2 (R8: F4 deleted, alias residual attack surface closed)"
   else
-    fail "R7-INC-04e: unexpected behavior in residual attack scenario" "expected rc=0 (alias accepted); got rc=$_HR04E_RC HANDOFF_PATH='$HANDOFF_PATH'"
+    fail "R7-INC-04e: unexpected behavior in residual attack scenario" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR04E_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
-  # R7-INC-04g: future-mtime alias rejected (R7-INC.1 HIGH alias-future-mtime guard)
+  # R7-INC-04g: SID-tagged file with matching marker → rc=0 (positive confirmation)
   mkdir -p "$_HR2_TMP/04g"
-  printf 'future-mtime alias content\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n8 -->\n' \
-    > "$_HR2_TMP/04g/CLAUDE.local.md"
-  # Set mtime to the future (current time + 600 seconds)
-  _FUTURE_TS=$(($(date +%s) + 600))
-  _FUTURE_TOUCH=$(date -r "$_FUTURE_TS" "+%Y%m%d%H%M.%S" 2>/dev/null || date -d "@$_FUTURE_TS" "+%Y%m%d%H%M.%S" 2>/dev/null || echo "")
-  if [ -n "$_FUTURE_TOUCH" ]; then
-    touch -t "$_FUTURE_TOUCH" "$_HR2_TMP/04g/CLAUDE.local.md" 2>/dev/null || true
-  fi
-  # Verify the mtime was actually set to the future (within reasonable tolerance)
-  _ALIAS_MTIME=$(stat -f %m "$_HR2_TMP/04g/CLAUDE.local.md" 2>/dev/null || stat -c %Y "$_HR2_TMP/04g/CLAUDE.local.md" 2>/dev/null || echo "0")
-  _NOW=$(date +%s)
-  if [ "$_ALIAS_MTIME" -gt $((_NOW + 290)) ] 2>/dev/null; then
-    HANDOFF_PATH=""
-    HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04g" "aaaa1111"
-    _HR04G_RC=$?
-    if [ "$_HR04G_RC" -eq 2 ] && [ -z "$HANDOFF_PATH" ]; then
-      pass "R7-INC-04g: future-mtime alias rejected (mtime-guard fires, Defense H12 not bypassed)"
-    else
-      fail "R7-INC-04g: future-mtime guard" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR04G_RC HANDOFF_PATH='$HANDOFF_PATH'"
-    fi
+  printf 'sid-tagged content\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n8 -->\n' \
+    > "$_HR2_TMP/04g/CLAUDE.local.aaaa1111.md"
+  HANDOFF_PATH=""
+  HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04g" "aaaa1111"
+  _HR04G_RC=$?
+  if [ "$_HR04G_RC" -eq 0 ] && [ "$HANDOFF_PATH" = "$_HR2_TMP/04g/CLAUDE.local.aaaa1111.md" ]; then
+    pass "R7-INC-04g: SID-tagged with matching marker → rc=0 HANDOFF_PATH=SID-tagged (positive confirm)"
   else
-    pass "R7-INC-04g: touch -t future not supported on this system (mtime not settable to future) — skip"
+    fail "R7-INC-04g: future-mtime guard" "expected rc=0 HANDOFF_PATH=SID-tagged; got rc=$_HR04G_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
 else
