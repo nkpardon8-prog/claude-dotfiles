@@ -942,7 +942,8 @@ TMPHOME=$(mktemp -d)
 # Use printf to create dir name with special chars; avoid actual newlines in fs paths
 SPECIAL_DIR=$(printf '%s/repo with "quotes" and backslash\\path' "$TMPHOME")
 mkdir -p "$SPECIAL_DIR" 2>/dev/null || SPECIAL_DIR="$TMPHOME/repo"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$SPECIAL_DIR/CLAUDE.local.md"
+# R8: use SID-tagged file matching session_id="newsid"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=c10-nonce -->\n' > "$SPECIAL_DIR/CLAUDE.local.newsid.md"
 LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
 JSON=$(jq -cn --arg cwd "$SPECIAL_DIR" '{session_id:"newsid",source:"compact",cwd:$cwd,hook_event_name:"SessionStart"}')
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
