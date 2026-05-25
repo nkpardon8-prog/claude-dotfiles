@@ -1554,25 +1554,22 @@ fi
 rm -rf "$TMPWD_R5H6" "$TMPHOME_R5H6"
 
 # ---------------------------------------------------------------------------
-# §R5-C9 own-sid-unresolvable STATE (R5 Critical #9)
+# §R5-C9 no-session-arg STATE (R8 replacement for own-sid-unresolvable)
 # ---------------------------------------------------------------------------
-# When both CLAUDE_SESSION_ID and CLAUDE_CODE_SESSION_ID are unset AND slug fallback
-# finds no transcripts (temp dir with no .claude/projects/), step2.sh must emit
-# STATE=own-sid-unresolvable and refuse to proceed.
+# R8: own-sid-unresolvable deleted (no OWN_SID needed; identity is the arg).
+# When step2.sh is invoked with no arg → STATE=no-session-arg (fail-safe).
 echo ""
-echo "== §R5-C9 own-sid-unresolvable when both env vars unset + no transcript =="
+echo "== §R5-C9 no-session-arg when arg is missing (R8) =="
 TMPWD_C9=$(mktemp -d)
 TMPHOME_C9=$(mktemp -d)
 mkdir -p "$TMPHOME_C9/.claude/progress" && chmod 700 "$TMPHOME_C9/.claude/progress"
-# No breadcrumb, no handoff — env vars will be unset, tmpdir has no .claude/projects/
-# so slug fallback also finds nothing.
-OUT_C9=$(cd "$TMPWD_C9" && unset CLAUDE_SESSION_ID && unset CLAUDE_CODE_SESSION_ID && \
-  HOME="$TMPHOME_C9" bash "$STEP2_SH" 2>/dev/null)
+# No arg → fail-safe refuse
+OUT_C9=$(cd "$TMPWD_C9" && HOME="$TMPHOME_C9" bash "$STEP2_SH" 2>/dev/null)
 C9_STATE=$(printf '%s' "$OUT_C9" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$C9_STATE" = "own-sid-unresolvable" ]; then
-  pass "R5-C9: own-sid-unresolvable fires when both env vars unset + no transcript"
+if [ "$C9_STATE" = "no-session-arg" ]; then
+  pass "R5-C9: no-session-arg fires when $1 is missing (R8 fail-safe)"
 else
-  fail "R5-C9: own-sid-unresolvable" "expected state=own-sid-unresolvable; got state='$C9_STATE' raw: ${OUT_C9:0:200}"
+  fail "R5-C9: own-sid-unresolvable" "expected state=no-session-arg; got state='$C9_STATE' raw: ${OUT_C9:0:200}"
 fi
 rm -rf "$TMPWD_C9" "$TMPHOME_C9"
 
