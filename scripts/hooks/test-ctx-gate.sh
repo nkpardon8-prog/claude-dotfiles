@@ -782,13 +782,14 @@ else
   fail "§2.5 step 7b: precompact release at 91" "precompact safety should RELEASE at ctx>=90 (empty output), got: $OUT"
 fi
 
-# Step 8: SessionStart compact with CLAUDE.local.md present in cwd → primer fires
+# Step 8: SessionStart compact with CLAUDE.local.newsid.md present in cwd → primer fires
+# R8: use SID-tagged file matching session_id="newsid"
 REPO_DIR="$TMPHOME/repo"
-mkdir -p "$REPO_DIR" && printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$REPO_DIR/CLAUDE.local.md"
+mkdir -p "$REPO_DIR" && printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=step8-nonce -->\n' > "$REPO_DIR/CLAUDE.local.newsid.md"
 JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$REPO_DIR\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("POST-COMPACT")' >/dev/null 2>&1; then
-  pass "§2.5 step 8: primer fires with CLAUDE.local.md present (with marker)"
+  pass "§2.5 step 8: primer fires with CLAUDE.local.newsid.md present (with marker)"
 else
   fail "§2.5 step 8: primer fires" "primer didn't fire, got: $OUT"
 fi
