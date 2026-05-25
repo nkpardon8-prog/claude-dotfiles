@@ -885,8 +885,9 @@ TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
 # R4 D3 fix: provide SID-tagged handoffs for each sentinel SID.
 # Both SIDs have their own SID-tagged files.
-printf '# handoff A\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.AAAA0001.md"
-printf '# handoff B\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.BBBB0002.md"
+# R7-INC-02: use v1 markers with matching sids so resolver content-check passes.
+printf '# handoff A\n\n<!-- END-OF-HANDOFF schema=v1 sid=AAAA0001 nonce=nonce1 -->\n' > "$TMPHOME/repo/CLAUDE.local.AAAA0001.md"
+printf '# handoff B\n\n<!-- END-OF-HANDOFF schema=v1 sid=BBBB0002 nonce=nonce2 -->\n' > "$TMPHOME/repo/CLAUDE.local.BBBB0002.md"
 # Two sentinels with identical cwd but different SIDs
 printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo","marker_nonce":"nonce1"}\n' "$TMPHOME" \
   > "$TMPHOME/.claude/progress/auto-compact-AAAA0001.json"
