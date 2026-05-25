@@ -43,10 +43,10 @@ Then stop.
 
 ### Pre-read verification (marker + legacy + stale)
 
-**Path-resolution consistency (R4 D3 + R5 H5 update):** the HANDOFF_PATH resolution logic in this snippet
-MUST match the primer's resolution logic exactly. Resolution priority:
-1. **SID-tagged file: `CLAUDE.local.<SID8>.md`** — this is the PRIMARY path when SID is known (from breadcrumb). R4 D3: when SID is known, ONLY the SID-tagged file is accepted; the generic alias is NOT read.
-2. **Generic alias: `CLAUDE.local.md`** — legacy-only fallback, used ONLY when SID is unknown (no breadcrumb, no claim file). R4 D1 removed alias writes; any alias that exists predates R4 or was written by external tooling.
+**Path-resolution consistency (R7-INC-04 / Defense H12 + R5 H5 update):** the HANDOFF_PATH resolution logic in this snippet MUST match the primer's resolution logic exactly. Resolution priority:
+1. **SID-tagged file: `CLAUDE.local.<SID8>.md`** — PRIMARY path when SID is known. F2 content-check (RQ-INC-02): resolver verifies the file's END-OF-HANDOFF marker `sid=` matches the requested SID8 before accepting.
+2. **Alias with marker-binding (Defense H12): `CLAUDE.local.md`** — if the SID-tagged file is absent or fails F2 content-check, the resolver probes the alias `CLAUDE.local.md` and accepts it ONLY when its marker sid matches the requested SID8. The alias is NOT accepted without a marker. Alias probe also rejected if the alias mtime is >300s in the future (clock-skew guard).
+3. **Generic alias legacy fallback: `CLAUDE.local.md`** — used ONLY when SID is unknown (no breadcrumb). No content-check in this path (SID unknown → no SID to compare against).
 Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
 
 Path-resolution intentionally uses shell `$(pwd)` here; the primer uses SessionStart JSON `.cwd`.
