@@ -752,6 +752,63 @@ else
 fi
 rm -rf "$_INC_TMP" "$_INC_HOME"
 
+# ---------------------------------------------------------------------------
+# §R7-INC-06 sid-mismatch dead-code defense-in-depth (R7-INC.1 HIGH)
+# The sid-mismatch check at post-compact-resume-step2.sh:658 is now unreachable via the
+# resolver (F2 catches mismatches first). This test bypasses the resolver by setting
+# HANDOFF_PATH directly to a mismatched-marker file and asserts step2.sh still emits
+# STATE=sid-mismatch-hard-stop. Proves the downstream defense remains live if resolver
+# ever regresses (defense-in-depth).
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §R7-INC-06 sid-mismatch dead-code defense-in-depth =="
+_INC06_TMP=$(mktemp -d)
+_INC06_HOME=$(mktemp -d)
+_INC06_SID="deadcode1-dead-code-dead-code-deadcode01"
+_INC06_SID8="deadcode1"
+_INC06_NONCE="test-nonce-r7inc06"
+mkdir -p "$_INC06_HOME/.claude/progress" && chmod 700 "$_INC06_HOME/.claude/progress"
+
+# Write a file with MISMATCHED marker (filename sid8=deadcode1, marker sid=wrongsid9)
+printf 'content with wrong marker\n<!-- END-OF-HANDOFF schema=v1 sid=wrongsid9 nonce=%s -->\n' \
+  "$_INC06_NONCE" > "$_INC06_TMP/CLAUDE.local.deadcode1.md"
+
+# Write a breadcrumb so step2.sh adopts the SID
+_INC06_HOST=$(hostname -s 2>/dev/null | head -c 64 || echo "testhost")
+if command -v jq >/dev/null 2>&1; then
+  jq -c -n \
+    --argjson sv 1 \
+    --arg sid "$_INC06_SID" \
+    --arg sid8 "$_INC06_SID8" \
+    --arg nonce "$_INC06_NONCE" \
+    --arg host "$_INC06_HOST" \
+    --arg cwd "$_INC06_TMP" \
+    --arg cmd "pre-compact" \
+    '{schema_version:$sv, originating_command:$cmd, sid:$sid, sid8:$sid8, nonce:$nonce, hostname:$host, cwd:$cwd}' \
+    > "$_INC06_HOME/.claude/progress/breadcrumb-${_INC06_SID}.json"
+  chmod 600 "$_INC06_HOME/.claude/progress/breadcrumb-${_INC06_SID}.json"
+
+  _STEP2="$ROOT/post-compact-resume-step2.sh"
+  if [ -f "$_STEP2" ]; then
+    # Set HANDOFF_PATH directly to bypass the resolver (simulates resolver regression)
+    _INC06_OUT=$(cd "$_INC06_TMP" && CLAUDE_SESSION_ID="$_INC06_SID" HOME="$_INC06_HOME" \
+      HANDOFF_ACCEPT_UNSIGNED=1 \
+      HANDOFF_PATH="$_INC06_TMP/CLAUDE.local.deadcode1.md" \
+      bash "$_STEP2" 2>/dev/null)
+    _INC06_STATE=$(printf '%s' "$_INC06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+    if [ "$_INC06_STATE" = "sid-mismatch-hard-stop" ]; then
+      check "R7-INC-06: step2.sh sid-mismatch defense-in-depth still live (catches resolver regression)" 1 1
+    else
+      check "R7-INC-06: step2.sh sid-mismatch defense dead (HANDOFF_PATH bypass not caught)" 1 0
+    fi
+  else
+    check "R7-INC-06: post-compact-resume-step2.sh not found — skipped" 1 1
+  fi
+else
+  check "R7-INC-06: jq not available — skipped" 1 1
+fi
+rm -rf "$_INC06_TMP" "$_INC06_HOME"
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
