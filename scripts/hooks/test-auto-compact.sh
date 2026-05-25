@@ -367,87 +367,58 @@ else
 fi
 rm -rf "$TMPDIR_H9"
 
-echo "== §R4-D7 Breadcrumb -> step2.sh E2E (production schema) =="
-# Task 4.1 [D7+G2]: Exercises the real breadcrumb -> step2.sh -> STATE=ok pipeline.
-# Replaces the R3-D2 fixture test which used jq directly without the Stop-hook schema.
-#
-# Design note: the Stop hook's breadcrumb-write block is tested here by REPLICATING its
-# exact jq invocation (same args, same umask 077, same schema_version:1 + originating_command
-# fields). The Stop hook itself exits before breadcrumb-write when the TTY is synthetic
-# (foreground-process check at line 106-108 precedes the breadcrumb block). Testing the
-# full Stop hook end-to-end requires a live Terminal.app session (out of scope for unit tests).
-# The R4-D7 intent — "exercises ACTUAL Stop-hook code path, not fixtures" — is satisfied by
-# replicating the production jq command verbatim rather than using the old arbitrary-field fixture.
-#
-# PR-5 (Round 3 BLOCKER fix): mkdir -p /tmp/e2e so step2.sh cd succeeds.
-# R2-PR-5: ONLY accept STATE=ok (vacuous-pass anti-pattern banned).
+echo "== §R8-D7 step2.sh arg-verbatim E2E (identity-via-arg, R8) =="
+# R8 replacement for R4-D7: step2.sh now takes session_id as $1 (verbatim from Stop hook arg).
+# No breadcrumb needed. Write a SID-tagged handoff file and invoke with the full SID.
+# Proves: (a) valid arg + matching file → STATE=ok; (b) empty arg → STATE=no-session-arg;
+# (c) bad-charset arg → STATE=invalid-session-arg; (d) two UUIDs resolve separate files.
 E2E_HOME=$(mktemp -d)
-E2E_SID="r4d7-$$-$(date +%s)"
+E2E_SID="r8d7-$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -c 36 | tr -cd 'a-f0-9-')-$(date +%s)"
 E2E_NONCE="11112222-3333-4444-5555-666677778888"
-E2E_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-E2E_SID8="${E2E_SID:0:8}"
 mkdir -p "$E2E_HOME/.claude/progress" "$E2E_HOME/.claude/logs"
 chmod 700 "$E2E_HOME/.claude/progress"
-# PR-5: explicit mkdir -p so step2.sh cd succeeds.
-mkdir -p /tmp/e2e
-BREADCRUMB_PATH="$E2E_HOME/.claude/progress/breadcrumb-${E2E_SID}.json"
-BREADCRUMB_TMP="${BREADCRUMB_PATH}.tmp.$$"
-# Replicate the Stop hook's breadcrumb-write jq command verbatim (production schema).
-# schema_version:1, originating_command:"pre-compact" match what auto-compact-after-pre-compact.sh writes.
-if ( umask 077 && jq -c -n \
-     --argjson sv 1 \
-     --arg sid "$E2E_SID" \
-     --arg sid8 "$E2E_SID8" \
-     --arg cwd "/tmp/e2e" \
-     --arg nonce "$E2E_NONCE" \
-     --arg host "$E2E_HOST" \
-     '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-     > "$BREADCRUMB_TMP" 2>/dev/null ) && mv "$BREADCRUMB_TMP" "$BREADCRUMB_PATH" 2>/dev/null; then
-  BC_SID=$(jq -r '.sid' "$BREADCRUMB_PATH" 2>/dev/null)
-  BC_SID8=$(jq -r '.sid8' "$BREADCRUMB_PATH" 2>/dev/null)
-  BC_SCHEMA=$(jq -r '.schema_version' "$BREADCRUMB_PATH" 2>/dev/null)
-  BC_OC=$(jq -r '.originating_command' "$BREADCRUMB_PATH" 2>/dev/null)
-  BC_HOST=$(jq -r '.hostname' "$BREADCRUMB_PATH" 2>/dev/null)
-  BC_MODE=$(stat -f '%Lp' "$BREADCRUMB_PATH" 2>/dev/null || stat -c '%a' "$BREADCRUMB_PATH" 2>/dev/null)
-  if [ "$BC_SID" = "$E2E_SID" ] && [ "$BC_SCHEMA" = "1" ]; then
-    check "G2/D7: breadcrumb sid + schema_version:1 correct (production schema)" 1 1
-  else
-    check "G2/D7: breadcrumb sid/schema mismatch sid=$BC_SID schema=$BC_SCHEMA" 1 0
-  fi
-  if [ "$BC_MODE" = "600" ]; then
-    check "G2/D7: breadcrumb mode 600 (umask 077 write)" 1 1
-  else
-    check "G2/D7: breadcrumb mode should be 600 (got $BC_MODE)" 1 0
-  fi
-  if [ "$BC_OC" = "pre-compact" ]; then
-    check "G2/D7: breadcrumb originating_command=pre-compact" 1 1
-  else
-    check "G2/D7: breadcrumb originating_command wrong (got $BC_OC)" 1 0
-  fi
-  if [ -n "$BC_HOST" ] && [ "$BC_SID8" = "$E2E_SID8" ]; then
-    check "G2/D7: breadcrumb hostname non-empty + sid8 correct" 1 1
-  else
-    check "G2/D7: breadcrumb hostname=$BC_HOST sid8=$BC_SID8 (expected non-empty + $E2E_SID8)" 1 0
-  fi
-  # Create real SID-tagged handoff file matching nonce so step2.sh resolves STATE=ok.
-  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-    "$E2E_SID8" "$E2E_NONCE" > "/tmp/e2e/CLAUDE.local.${E2E_SID8}.md"
-  # Invoke step2.sh against the breadcrumb.
-  # R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to E2E_SID.
-  # Without this, both env vars are unset in the test runner → own-sid-unresolvable fires.
-  STEP2="$ROOT/post-compact-resume-step2.sh"
-  STEP2_OUT=$(cd /tmp/e2e 2>/dev/null && CLAUDE_SESSION_ID="$E2E_SID" HOME="$E2E_HOME" bash "$STEP2" 2>/dev/null)
-  STEP2_STATE=$(printf '%s' "$STEP2_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-  # R2-PR-5 (Round 3 BLOCKER fix): ONLY accept STATE=ok.
-  if [ "$STEP2_STATE" = "ok" ]; then
-    check "G2/D7: breadcrumb -> step2.sh -> STATE=ok (end-to-end, production schema)" 1 1
-  else
-    check "G2/D7: expected STATE=ok got '$STEP2_STATE' (R2-PR-5: only ok PASS) raw=${STEP2_OUT:0:200}" 1 0
-  fi
+mkdir -p /tmp/r8e2e
+# Create SID-tagged handoff file (full UUID filename, marker sid= matches)
+printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$E2E_SID" "$E2E_NONCE" > "/tmp/r8e2e/CLAUDE.local.${E2E_SID}.md"
+STEP2="$ROOT/post-compact-resume-step2.sh"
+# (a) Valid arg + matching file → STATE=ok
+STEP2_OUT=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" "$E2E_SID" 2>/dev/null)
+STEP2_STATE=$(printf '%s' "$STEP2_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$STEP2_STATE" = "ok" ]; then
+  check "R8/D7: valid SID arg + matching file → STATE=ok (identity-via-arg E2E)" 1 1
 else
-  check "G2/D7: breadcrumb write failed (jq or mv error)" 1 0
+  check "R8/D7: expected STATE=ok got '$STEP2_STATE' raw=${STEP2_OUT:0:200}" 1 0
 fi
-rm -rf "$E2E_HOME" /tmp/e2e 2>/dev/null
+# (b) Empty arg → STATE=no-session-arg
+STEP2_NO_ARG=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" "" 2>/dev/null)
+STEP2_NO_ARG_STATE=$(printf '%s' "$STEP2_NO_ARG" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$STEP2_NO_ARG_STATE" = "no-session-arg" ]; then
+  check "R8/D7: empty arg → STATE=no-session-arg (fail-safe)" 1 1
+else
+  check "R8/D7: expected STATE=no-session-arg got '$STEP2_NO_ARG_STATE'" 1 0
+fi
+# (c) Bad-charset arg → STATE=invalid-session-arg
+STEP2_BAD=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" "bad/arg;rm -rf" 2>/dev/null)
+STEP2_BAD_STATE=$(printf '%s' "$STEP2_BAD" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$STEP2_BAD_STATE" = "invalid-session-arg" ]; then
+  check "R8/D7: bad-charset arg → STATE=invalid-session-arg" 1 1
+else
+  check "R8/D7: expected STATE=invalid-session-arg got '$STEP2_BAD_STATE'" 1 0
+fi
+# (d) Two different UUIDs resolve different files (parallel-track proof)
+E2E_SID_B="r8d7b-$(date +%s)-b"
+printf 'Track B content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=other-nonce -->\n' \
+  "$E2E_SID_B" > "/tmp/r8e2e/CLAUDE.local.${E2E_SID_B}.md"
+STEP2_B_OUT=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" "$E2E_SID_B" 2>/dev/null)
+STEP2_B_STATE=$(printf '%s' "$STEP2_B_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+STEP2_B_SID=$(printf '%s' "$STEP2_B_OUT" | sed -n 's/^STATE=//p' | jq -r '.sid // empty' 2>/dev/null)
+if [ "$STEP2_B_STATE" = "ok" ] && [ "$STEP2_B_SID" = "$E2E_SID_B" ]; then
+  check "R8/D7: two UUIDs resolve separate files (parallel-track proof)" 1 1
+else
+  check "R8/D7: parallel-track proof FAIL — B state=$STEP2_B_STATE sid=$STEP2_B_SID" 1 0
+fi
+rm -rf "$E2E_HOME" /tmp/r8e2e 2>/dev/null
 
 echo "== §G1/D8 N-TTY SID stability =="
 # Task 4.2 [D8+G1]: Verify 3 distinct CLAUDE_SESSION_ID values → 3 distinct resolved SIDs.
