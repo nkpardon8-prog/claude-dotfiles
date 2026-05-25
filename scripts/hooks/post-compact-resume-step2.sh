@@ -30,6 +30,14 @@ else
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-resolve.sh"  2>/dev/null
 fi
 
+# R9-R4 (Depth observability FRAGILITY): defensive stub for handoff_log. It is defined in
+# lib/auto-compact-sentinel.sh, sourced above with `2>/dev/null` — if that source ever fails,
+# an undefined `handoff_log` returns 127 (harmless under set -u, not an unbound-var abort) but
+# EVERY R9 audit line silently vanishes, defeating the observability guarantee. ctx-gate/handoff
+# libs already stub their own loggers; mirror that here so a refuse/pass decision is never
+# unlogged. No-op fallback only (best-effort audit trail; never affects the STATE decision).
+command -v handoff_log >/dev/null 2>&1 || handoff_log() { :; }
+
 # ---------------------------------------------------------------------------
 # V2-12: Arg validation — fail-safe on empty or invalid arg.
 # NEVER guess the session_id; NEVER read a breadcrumb; NEVER slug-fallback.
