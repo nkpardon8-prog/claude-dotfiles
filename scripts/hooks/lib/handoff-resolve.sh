@@ -141,7 +141,6 @@ handoff_resolve_path() {
             # accepted via mtime (same wrong-load hole as the cwd probe above). Fall through → rc=2.
             ctx_gate_log "primer skip reason=resolver-sid-tagged-no-marker session_id=$session_id file=$p"
           fi
-          fi
         else
           local LCNT2
           if LCNT2=$(stat -f %l "$p" 2>/dev/null); then :
