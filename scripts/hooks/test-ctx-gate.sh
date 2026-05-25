@@ -559,9 +559,10 @@ rm -rf "$TMPHOME"
 # 3l-resume-sentinel-fresh: source=resume + sentinel cwd match + fresh marker → PENDING HANDOFF nav
 # R4 D3 fix: handoff at SID-tagged path.
 # Phase 2 Round 4: session_id=oldsid matches auto-compact-oldsid.json.
+# R7-INC-02: use v1 marker with matching sid so resolver content-check passes.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.oldsid.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=oldsid nonce=test-resume-fresh -->\n' > "$TMPHOME/repo/CLAUDE.local.oldsid.md"
 printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
 JSON="{\"session_id\":\"oldsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
