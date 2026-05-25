@@ -655,9 +655,10 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-clear-fresh-marker: source=clear + fresh marker → nav directive (verifies regex matcher captures 'clear')
+# R8: use SID-tagged file CLAUDE.local.newsid.md
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=test-nonce-clear -->\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
 JSON="{\"session_id\":\"newsid\",\"source\":\"clear\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null 2>&1; then
@@ -668,16 +669,16 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-resume-sentinel-mismatched-cwd: source=resume + sentinel cwd=OTHER → SENTINEL_PRESENT=false, SESSION START nav
-# Regression test: SID-mismatch fix verification — mismatched cwd must be skipped
+# R8: use SID-tagged file CLAUDE.local.newsid.md; sentinel for different workspace is skipped.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/other-project" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=test-nonce-mismatch -->\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
 # Sentinel cwd points to /other-project, not /repo
 printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/other-project"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
 JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
-# Should NOT contain PENDING HANDOFF (sentinel for different workspace, SENTINEL_PRESENT=false)
-# Should contain SESSION START (handoff file present but no matching sentinel)
+# Should NOT contain PENDING HANDOFF (sentinel for different workspace)
+# Should contain SESSION START (SID-tagged handoff file found, no sentinel match)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("SESSION START")' >/dev/null 2>&1 && \
    ! printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("PENDING HANDOFF")' >/dev/null 2>&1; then
   pass "3l-resume-sentinel-mismatched-cwd: mismatched sentinel cwd skipped → SESSION START (not PENDING)"
@@ -686,15 +687,17 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# primer-marker-absent: synthetic CLAUDE.local.md with substantive content but no marker,
-# mtime > cutoff → TRUNCATED warning
+# primer-marker-absent: SID-tagged file with substantive content but no marker, mtime > cutoff → TRUNCATED warning
+# R8: use SID-tagged file CLAUDE.local.newsid.md (recent mtime so resolver accepts via legacy mtime gate...
+# but wait: recent + no marker → mtime gate rejects. Use empty session_id (SID-unknown) to test alias path.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
 printf '# handoff\n## Active Skill State\nDetected: /plan\n## Next Action\nRun tests.\n' > "$TMPHOME/repo/CLAUDE.local.md"
-JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+# Use empty session_id → SID-unknown path → alias CLAUDE.local.md accepted
+JSON="{\"session_id\":\"\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("TRUNCATED")' >/dev/null 2>&1; then
-  pass "primer-marker-absent: substantive content without marker → TRUNCATED warning"
+  pass "primer-marker-absent: substantive content without marker (SID-unknown alias) → TRUNCATED warning"
 else
   fail "primer-marker-absent" "expected TRUNCATED warning for marker-absent file, got: $OUT"
 fi
