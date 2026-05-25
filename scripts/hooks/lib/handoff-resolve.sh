@@ -127,8 +127,7 @@ handoff_resolve_path() {
       if [ -f "$p" ] && [ ! -L "$p" ]; then
         if _primer_check_linkcount "$p"; then
           local _resolver_marker_sid2
-          _resolver_marker_sid2=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$p" 2>/dev/null | head -1 \
-            | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
+          _resolver_marker_sid2=$(_resolver_extract_marker_sid "$p")
           if [ -n "$_resolver_marker_sid2" ]; then
             if [ "$_resolver_marker_sid2" = "$session_id" ]; then
               HANDOFF_PATH="$p"
