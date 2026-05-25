@@ -383,7 +383,7 @@ printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$E2E_SID" "$E2E_NONCE" > "/tmp/r8e2e/CLAUDE.local.${E2E_SID}.md"
 STEP2="$ROOT/post-compact-resume-step2.sh"
 # (a) Valid arg + matching file → STATE=ok
-STEP2_OUT=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" "$E2E_SID" 2>/dev/null)
+STEP2_OUT=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" CLAUDE_CODE_SESSION_ID="$E2E_SID" bash "$STEP2" "$E2E_SID" 2>/dev/null)
 STEP2_STATE=$(printf '%s' "$STEP2_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$STEP2_STATE" = "ok" ]; then
   check "R8/D7: valid SID arg + matching file → STATE=ok (identity-via-arg E2E)" 1 1
@@ -399,7 +399,7 @@ else
   check "R8/D7: expected STATE=no-session-arg got '$STEP2_NO_ARG_STATE'" 1 0
 fi
 # (c) Bad-charset arg → STATE=invalid-session-arg
-STEP2_BAD=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" "bad/arg;rm -rf" 2>/dev/null)
+STEP2_BAD=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" CLAUDE_CODE_SESSION_ID="bad/arg;rm -rf" bash "$STEP2" "bad/arg;rm -rf" 2>/dev/null)
 STEP2_BAD_STATE=$(printf '%s' "$STEP2_BAD" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$STEP2_BAD_STATE" = "invalid-session-arg" ]; then
   check "R8/D7: bad-charset arg → STATE=invalid-session-arg" 1 1
@@ -410,7 +410,7 @@ fi
 E2E_SID_B="r8d7b-$(date +%s)-b"
 printf 'Track B content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=other-nonce -->\n' \
   "$E2E_SID_B" > "/tmp/r8e2e/CLAUDE.local.${E2E_SID_B}.md"
-STEP2_B_OUT=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" bash "$STEP2" "$E2E_SID_B" 2>/dev/null)
+STEP2_B_OUT=$(cd /tmp/r8e2e 2>/dev/null && HOME="$E2E_HOME" CLAUDE_CODE_SESSION_ID="$E2E_SID_B" bash "$STEP2" "$E2E_SID_B" 2>/dev/null)
 STEP2_B_STATE=$(printf '%s' "$STEP2_B_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 STEP2_B_SID=$(printf '%s' "$STEP2_B_OUT" | sed -n 's/^STATE=//p' | jq -r '.sid // empty' 2>/dev/null)
 if [ "$STEP2_B_STATE" = "ok" ] && [ "$STEP2_B_SID" = "$E2E_SID_B" ]; then

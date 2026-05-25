@@ -394,7 +394,7 @@ else
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "g4a-test-sid-$$" 2>/dev/null)
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" CLAUDE_CODE_SESSION_ID="g4a-test-sid-$$" bash "$STEP2_SH" "g4a-test-sid-$$" 2>/dev/null)
   G4A_STATE=$(step2_state "$OUT")
   if [ "$G4A_STATE" = "no-handoff" ]; then
     pass "G4-A: empty workspace + valid SID arg → STATE=no-handoff (JSON parsed)"
@@ -423,7 +423,7 @@ else
   G4B_SID="g4b-test-sid-$$"
   G4B_NONCE="abcd1234-5678-90ab-cdef-1234567890ab"
   printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4B_SID" "$G4B_NONCE" > "$TMPWD/CLAUDE.local.${G4B_SID}.md"
-  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4B_SID" 2>/dev/null)
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" CLAUDE_CODE_SESSION_ID="$G4B_SID" bash "$STEP2_SH" "$G4B_SID" 2>/dev/null)
   G4B_STATE=$(step2_state "$OUT")
   G4B_MARKER=$(step2_field "$OUT" "marker")
   if [ "$G4B_STATE" = "ok" ] && [ "$G4B_MARKER" = "present" ]; then
@@ -443,7 +443,7 @@ else
   printf 'content body without marker\n' > "$TMPWD/CLAUDE.local.${G4C_SID}.md"
   # Touch with 2019 mtime so resolver legacy-allows it (mtime < default cutoff 2026-04-20)
   touch -t 201901010000 "$TMPWD/CLAUDE.local.${G4C_SID}.md" 2>/dev/null
-  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4C_SID" 2>/dev/null)
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" CLAUDE_CODE_SESSION_ID="$G4C_SID" bash "$STEP2_SH" "$G4C_SID" 2>/dev/null)
   G4C_STATE=$(step2_state "$OUT")
   G4C_MARKER=$(step2_field "$OUT" "marker")
   G4C_LEGACY=$(step2_field "$OUT" "legacy")
@@ -468,7 +468,7 @@ else
   # Pad to 6MB by appending zeros (cat /dev/zero + head, or python3)
   python3 -c "import sys; sys.stdout.buffer.write(b'x' * 6000000)" >> "$G4D_FILE" 2>/dev/null || \
     dd if=/dev/zero bs=1024 count=6144 2>/dev/null >> "$G4D_FILE"
-  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4D_SID" 2>/dev/null)
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" CLAUDE_CODE_SESSION_ID="$G4D_SID" bash "$STEP2_SH" "$G4D_SID" 2>/dev/null)
   G4D_STATE=$(step2_state "$OUT")
   if [ "$G4D_STATE" = "oversize" ]; then
     pass "G4-D: 6MB handoff → state=oversize (JSON parsed, H11 size cap)"
@@ -484,7 +484,7 @@ else
   G4E_NONCE="11112222-3333-4444-5555-666677778888"
   G4E_SID="g4e-test-sid-$$"
   printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4E_SID" "$G4E_NONCE" > "$TMPWD/CLAUDE.local.${G4E_SID}.md"
-  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4E_SID" 2>/dev/null)
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" CLAUDE_CODE_SESSION_ID="$G4E_SID" bash "$STEP2_SH" "$G4E_SID" 2>/dev/null)
   G4E_STATE=$(step2_state "$OUT")
   G4E_SID_OUT=$(step2_field "$OUT" "sid")
   if [ "$G4E_STATE" = "ok" ] && [ "$G4E_SID_OUT" = "$G4E_SID" ]; then
@@ -1211,7 +1211,7 @@ GF_NONCE="aaaaaaaa-1111-2222-3333-444444444444"
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GF_SID" "$GF_NONCE" > "$TMPWD_F/CLAUDE.local.${GF_SID}.md"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
-OUT_F=$(cd "$TMPWD_F" && HOME="$TMPHOME_F" bash "$STEP2_SH" "$GF_SID" 2>/dev/null)
+OUT_F=$(cd "$TMPWD_F" && HOME="$TMPHOME_F" CLAUDE_CODE_SESSION_ID="$GF_SID" bash "$STEP2_SH" "$GF_SID" 2>/dev/null)
 GF_STATE=$(printf '%s' "$OUT_F" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GF_STATE" = "ok" ]; then
   pass "G4-F: SID-tagged handoff with matching marker → STATE=ok (R8: no nonce check)"
@@ -1233,7 +1233,7 @@ GFA_NONCE="fa1234ab-5678-9abc-def0-123456789abc"
 GFA_SID="fa-advisory-sid-$$"
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GFA_SID" "$GFA_NONCE" > "$TMPWD_FA/CLAUDE.local.${GFA_SID}.md"
-OUT_FA=$(cd "$TMPWD_FA" && HOME="$TMPHOME_FA" bash "$STEP2_SH" "$GFA_SID" 2>/dev/null)
+OUT_FA=$(cd "$TMPWD_FA" && HOME="$TMPHOME_FA" CLAUDE_CODE_SESSION_ID="$GFA_SID" bash "$STEP2_SH" "$GFA_SID" 2>/dev/null)
 GFA_STATE=$(printf '%s' "$OUT_FA" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GFA_STATE" = "ok" ]; then
   pass "G4-F-advisory: SID arg + matching SID-tagged handoff → STATE=ok (R8: no nonce check needed)"
@@ -1257,7 +1257,7 @@ printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
 # Test: fresh handoff → STATE=ok stale=false; stale handoff → STATE=ok stale=true.
 # R8: invoke step2.sh with SID arg; no breadcrumb needed.
 # (a) Fresh handoff → STATE=ok stale=false
-OUT_G_FRESH=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
+OUT_G_FRESH=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" CLAUDE_CODE_SESSION_ID="$GG_SID" bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
 GG_STATE_FRESH=$(printf '%s' "$OUT_G_FRESH" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 GG_STALE_FRESH=$(printf '%s' "$OUT_G_FRESH" | sed -n 's/^STATE=//p' | jq -r '.stale' 2>/dev/null)
 if [ "$GG_STATE_FRESH" = "ok" ] && [ "$GG_STALE_FRESH" = "false" ]; then
@@ -1273,7 +1273,7 @@ else
 fi
 if [ -n "$PAST_MTIME" ]; then
   touch -t "$PAST_MTIME" "$TMPWD_G/CLAUDE.local.${GG_SID}.md" 2>/dev/null
-  OUT_G_STALE=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" HANDOFF_STALE_SECS=3600 bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
+  OUT_G_STALE=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" HANDOFF_STALE_SECS=3600 CLAUDE_CODE_SESSION_ID="$GG_SID" bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
   GG_STATE_STALE=$(printf '%s' "$OUT_G_STALE" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
   GG_STALE_FIELD=$(printf '%s' "$OUT_G_STALE" | sed -n 's/^STATE=//p' | jq -r '.stale' 2>/dev/null)
   if [ "$GG_STATE_STALE" = "ok" ] && [ "$GG_STALE_FIELD" = "true" ]; then
@@ -1287,7 +1287,7 @@ else
 fi
 # (c) Missing file → STATE=no-handoff
 TMPWD_G_EMPTY=$(mktemp -d)
-OUT_G_MISS=$(cd "$TMPWD_G_EMPTY" && HOME="$TMPHOME_G" bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
+OUT_G_MISS=$(cd "$TMPWD_G_EMPTY" && HOME="$TMPHOME_G" CLAUDE_CODE_SESSION_ID="$GG_SID" bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
 GG_STATE_MISS=$(printf '%s' "$OUT_G_MISS" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GG_STATE_MISS" = "no-handoff" ]; then
   pass "G4-G: boundary — no file for SID → state=no-handoff"
@@ -1314,7 +1314,7 @@ GH_SID="g4h-nocell-$$"
 GH_NONCE="abcd1111-2222-3333-4444-555566667777"
 printf 'alias content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GH_SID" "$GH_NONCE" > "$TMPWD_H/CLAUDE.local.${GH_SID}.md"
-OUT_H=$(cd "$TMPWD_H" && HOME="$TMPHOME_H" bash "$STEP2_SH" "$GH_SID" 2>/dev/null)
+OUT_H=$(cd "$TMPWD_H" && HOME="$TMPHOME_H" CLAUDE_CODE_SESSION_ID="$GH_SID" bash "$STEP2_SH" "$GH_SID" 2>/dev/null)
 GH_STATE=$(printf '%s' "$OUT_H" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GH_STATE" = "ok" ]; then
   pass "G4-H: SID-tagged file with matching marker → STATE=ok (R8 identity-via-arg)"
@@ -1333,7 +1333,7 @@ GHN_NONCE="abcd2222-3333-4444-5555-666677778888"
 # Only alias present (no SID-tagged file) → resolver returns rc=2 → no-handoff
 printf 'alias content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GHN_SID" "$GHN_NONCE" > "$TMPWD_HN/CLAUDE.local.md"
-OUT_HN=$(cd "$TMPWD_HN" && HOME="$TMPHOME_HN" bash "$STEP2_SH" "$GHN_SID" 2>/dev/null)
+OUT_HN=$(cd "$TMPWD_HN" && HOME="$TMPHOME_HN" CLAUDE_CODE_SESSION_ID="$GHN_SID" bash "$STEP2_SH" "$GHN_SID" 2>/dev/null)
 GHN_STATE=$(printf '%s' "$OUT_HN" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GHN_STATE" = "no-handoff" ]; then
   pass "G4-H-neg: alias only (no SID-tagged file) → no-handoff (R8: fail-safe, alias probe deleted)"
@@ -1381,7 +1381,7 @@ GI_NONCE="aabbccdd-1234-5678-90ab-cdef11223344"
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GI_SID" "$GI_NONCE" > "$SPACED_DIR/CLAUDE.local.${GI_SID}.md"
 # R8: pass SID as arg
-OUT_I=$(cd "$SPACED_DIR" 2>/dev/null && HOME="$TMPHOME_I" bash "$STEP2_SH" "$GI_SID" 2>/dev/null)
+OUT_I=$(cd "$SPACED_DIR" 2>/dev/null && HOME="$TMPHOME_I" CLAUDE_CODE_SESSION_ID="$GI_SID" bash "$STEP2_SH" "$GI_SID" 2>/dev/null)
 GI_STATE=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 GI_PATH=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.path' 2>/dev/null)
 if [ "$GI_STATE" = "ok" ] && printf '%s' "$GI_PATH" | grep -q ' '; then
@@ -1459,7 +1459,7 @@ GM_MARKER_SID="wrongsid"   # marker claims a different SID → resolver rejects 
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GM_MARKER_SID" "$GM_NONCE" > "$TMPWD_M/CLAUDE.local.${GM_SID}.md"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
-OUT_M=$(cd "$TMPWD_M" && HOME="$TMPHOME_M" bash "$STEP2_SH" "$GM_SID" 2>/dev/null)
+OUT_M=$(cd "$TMPWD_M" && HOME="$TMPHOME_M" CLAUDE_CODE_SESSION_ID="$GM_SID" bash "$STEP2_SH" "$GM_SID" 2>/dev/null)
 GM_STATE=$(printf '%s' "$OUT_M" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 # F2 rejects wrong-marker file → rc=2 → STATE=no-handoff (fail-safe, not mix-up)
 if [ "$GM_STATE" = "no-handoff" ]; then
@@ -1480,7 +1480,7 @@ TMPWD_L=$(mktemp -d)
 TMPHOME_L=$(mktemp -d)
 mkdir -p "$TMPHOME_L/.claude/progress" && chmod 700 "$TMPHOME_L/.claude/progress"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
-OUT_L=$(cd "$TMPWD_L" && HOME="$TMPHOME_L" bash "$STEP2_SH" "bad/arg;rm -rf" 2>/dev/null)
+OUT_L=$(cd "$TMPWD_L" && HOME="$TMPHOME_L" CLAUDE_CODE_SESSION_ID="bad/arg;rm -rf" bash "$STEP2_SH" "bad/arg;rm -rf" 2>/dev/null)
 GL_STATE=$(printf '%s' "$OUT_L" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$GL_STATE" = "invalid-session-arg" ]; then
   pass "G4-L: invalid-session-arg STATE fires on bad-charset arg"
@@ -1512,7 +1512,7 @@ printf 'Track B handoff content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -
   "$GJ_SID_B" "$GJ_NONCE_B" > "$TMPWD_J/CLAUDE.local.${GJ_SID_B}.md"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
 # Track A's reader: passes SID_A arg → reads CLAUDE.local.GJ_SID_A.md
-OUT_J=$(cd "$TMPWD_J" && HOME="$TMPHOME_J" bash "$STEP2_SH" "$GJ_SID_A" 2>/dev/null)
+OUT_J=$(cd "$TMPWD_J" && HOME="$TMPHOME_J" CLAUDE_CODE_SESSION_ID="$GJ_SID_A" bash "$STEP2_SH" "$GJ_SID_A" 2>/dev/null)
 GJ_STATE=$(printf '%s' "$OUT_J" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 GJ_SID_OUT=$(printf '%s' "$OUT_J" | sed -n 's/^STATE=//p' | jq -r '.sid' 2>/dev/null)
 GJ_PATH_OUT=$(printf '%s' "$OUT_J" | sed -n 's/^STATE=//p' | jq -r '.path' 2>/dev/null)
@@ -1522,7 +1522,7 @@ else
   fail "G4-J: two-track reader binding" "expected state=ok sid=$GJ_SID_A path=*${GJ_SID_A}*; got state='$GJ_STATE' sid='$GJ_SID_OUT' raw: ${OUT_J:0:200}"
 fi
 # Track B's reader: passes SID_B arg → reads CLAUDE.local.GJ_SID_B.md (not SID_A's)
-OUT_JB=$(cd "$TMPWD_J" && HOME="$TMPHOME_J" bash "$STEP2_SH" "$GJ_SID_B" 2>/dev/null)
+OUT_JB=$(cd "$TMPWD_J" && HOME="$TMPHOME_J" CLAUDE_CODE_SESSION_ID="$GJ_SID_B" bash "$STEP2_SH" "$GJ_SID_B" 2>/dev/null)
 GJB_STATE=$(printf '%s' "$OUT_JB" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 GJB_SID_OUT=$(printf '%s' "$OUT_JB" | sed -n 's/^STATE=//p' | jq -r '.sid' 2>/dev/null)
 if [ "$GJB_STATE" = "ok" ] && [ "$GJB_SID_OUT" = "$GJ_SID_B" ]; then
@@ -1548,7 +1548,7 @@ R5H6_NONCE="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 printf 'production handoff\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$R5H6_SID" "$R5H6_NONCE" > "$TMPWD_R5H6/CLAUDE.local.${R5H6_SID}.md"
 # Pass SID as $1 (identity-via-arg; no env var needed)
-OUT_R5H6=$(cd "$TMPWD_R5H6" && HOME="$TMPHOME_R5H6" bash "$STEP2_SH" "$R5H6_SID" 2>/dev/null)
+OUT_R5H6=$(cd "$TMPWD_R5H6" && HOME="$TMPHOME_R5H6" CLAUDE_CODE_SESSION_ID="$R5H6_SID" bash "$STEP2_SH" "$R5H6_SID" 2>/dev/null)
 R5H6_STATE=$(printf '%s' "$OUT_R5H6" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 R5H6_SID_OUT=$(printf '%s' "$OUT_R5H6" | sed -n 's/^STATE=//p' | jq -r '.sid' 2>/dev/null)
 if [ "$R5H6_STATE" = "ok" ] && [ "$R5H6_SID_OUT" = "$R5H6_SID" ]; then
@@ -1614,7 +1614,7 @@ H13_NONCE="11111111-aaaa-bbbb-cccc-dddddddddddd"
 # Write handoff with TWO canonical markers (tampered file) — matching SID for both
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$H13_SID" "$H13_NONCE" "$H13_SID" "$H13_NONCE" > "$TMPWD_H13/CLAUDE.local.${H13_SID}.md"
-OUT_H13=$(cd "$TMPWD_H13" && HOME="$TMPHOME_H13" bash "$STEP2_SH" "$H13_SID" 2>/dev/null)
+OUT_H13=$(cd "$TMPWD_H13" && HOME="$TMPHOME_H13" CLAUDE_CODE_SESSION_ID="$H13_SID" bash "$STEP2_SH" "$H13_SID" 2>/dev/null)
 H13_STATE=$(printf '%s' "$OUT_H13" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$H13_STATE" = "multi-marker-detected" ]; then
   pass "R5-H13: multi-marker fail-closed fires on tampered handoff (2 markers)"
@@ -1640,7 +1640,7 @@ RQ01_NONCE="aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$RQ01_SID_B_MARKER" "$RQ01_NONCE" > "$RQ01_TMPWD/CLAUDE.local.${RQ01_SID_A}.md"
 # R8: invoke with SID arg
-RQ01_OUT=$(cd "$RQ01_TMPWD" && HOME="$RQ01_TMPHOME" bash "$STEP2_SH" "$RQ01_SID_A" 2>/dev/null)
+RQ01_OUT=$(cd "$RQ01_TMPWD" && HOME="$RQ01_TMPHOME" CLAUDE_CODE_SESSION_ID="$RQ01_SID_A" bash "$STEP2_SH" "$RQ01_SID_A" 2>/dev/null)
 RQ01_STATE=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 # F2 rejects wrong-marker file → rc=2 → STATE=no-handoff
 if [ "$RQ01_STATE" = "no-handoff" ]; then
@@ -1658,7 +1658,7 @@ RQ01_OK_SID="rq01neg-sessa-$$"
 RQ01_OK_NONCE="bbbb2222-cccc-dddd-eeee-ffffffffffff"
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$RQ01_OK_SID" "$RQ01_OK_NONCE" > "$RQ01_OK_TMPWD/CLAUDE.local.${RQ01_OK_SID}.md"
-RQ01_OK_OUT=$(cd "$RQ01_OK_TMPWD" && HOME="$RQ01_OK_TMPHOME" bash "$STEP2_SH" "$RQ01_OK_SID" 2>/dev/null)
+RQ01_OK_OUT=$(cd "$RQ01_OK_TMPWD" && HOME="$RQ01_OK_TMPHOME" CLAUDE_CODE_SESSION_ID="$RQ01_OK_SID" bash "$STEP2_SH" "$RQ01_OK_SID" 2>/dev/null)
 RQ01_OK_STATE=$(printf '%s' "$RQ01_OK_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$RQ01_OK_STATE" = "ok" ]; then
   pass "R6-RQ01 (negative): matching SID → STATE=ok (no false positive)"
@@ -1712,7 +1712,7 @@ RQ06_NONCE="eeee5555-ffff-0000-1111-222222222222"
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$RQ06_SID" "$RQ06_NONCE" > "$RQ06_TMPWD/CLAUDE.local.${RQ06_SID}.md"
 STEP2_SH5="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
-RQ06_OUT=$(cd "$RQ06_TMPWD" && HOME="$RQ06_TMPHOME" bash "$STEP2_SH5" "$RQ06_SID" 2>/dev/null)
+RQ06_OUT=$(cd "$RQ06_TMPWD" && HOME="$RQ06_TMPHOME" CLAUDE_CODE_SESSION_ID="$RQ06_SID" bash "$STEP2_SH5" "$RQ06_SID" 2>/dev/null)
 RQ06_STATE=$(printf '%s' "$RQ06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$RQ06_STATE" = "ok" ]; then
   pass "R6-RQ06: SID arg + SID-tagged matching file → STATE=ok (R8 clean path)"
