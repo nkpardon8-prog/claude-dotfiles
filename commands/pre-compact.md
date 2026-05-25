@@ -383,15 +383,20 @@ Then proceed to the SID-tagged write protocol:
 
 1. **Read SID/SID8 from the Step 3.B scratch file** (CRITICAL — RQ-INC-03 / INV-26: single-source SID).
    Do NOT call ac_resolve_session_id again here. Do NOT substitute from working memory.
+   The orchestrator MUST substitute the captured SID literal from Step 3.B output as `CAPTURED_SID`
+   in the bash below (it is NOT the literal string `CAPTURED_SID` — replace with the actual value):
    ```bash
-   # CRITICAL (R7-INC-03): SID and SID8 MUST come from the scratch file written at Step 3.B.
-   # Single-source guarantee prevents writer-sid-divergence (HZ-38).
-   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-scratch-$$.json"
+   # CRITICAL (R7-INC-03, R7-INC.1 B1/B2 redesign): SID and SID8 MUST come from the scratch
+   # file written at Step 3.B. Do NOT use $$ here — each Bash call is a new subprocess with
+   # a different PID. The scratch path uses the CAPTURED SID literal from Step 3.B output.
+   # Orchestrator: replace CAPTURED_SID below with the actual SID value captured at Step 3.B.
+   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-parent-CAPTURED_SID.json"
    [ -f "$SCRATCH_PATH" ] || { echo "FATAL: Step 6A scratch missing at $SCRATCH_PATH" >&2; exit 1; }
    SID=$(jq -r '.sid' "$SCRATCH_PATH" 2>/dev/null)
    SID8=$(jq -r '.sid8' "$SCRATCH_PATH" 2>/dev/null)
    [ -n "$SID" ] && [ -n "$SID8" ] || { echo "FATAL: Step 6A scratch read empty" >&2; exit 1; }
-   echo "SID=$SID SID8=$SID8 (from scratch)"
+   REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+   echo "SID=$SID SID8=$SID8 REPO_ROOT=$REPO_ROOT (from scratch)"
    ```
 2. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
 3. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
