@@ -97,13 +97,10 @@ handoff_log "handoff_detected sid=${SENTINEL_SID8:-unknown} file=${HANDOFF_PATH:
 
 # R4 D3 + R2-PR-7: handle rc=2 before the generic no-handoff check.
 if [ "$RESOLVE_RC" -eq 2 ]; then
-  ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-no-tagged-file sid8=${SENTINEL_SID8:-unknown}"
-  # C7: emit advisory warn verb so operators can grep logs for this signal.
-  # Two distinct events: "skip" (handoff-resolve.sh refuses to load anything) vs
-  # "warn" (primer: we have a sentinel but no SID-tagged file — operator should investigate).
-  ctx_gate_log "primer warn reason=sentinel-without-sid-file sid8=${SENTINEL_SID8:-unknown}"
+  ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-no-tagged-file sid=${SID:-unknown}"
+  ctx_gate_log "primer warn reason=sentinel-without-sid-file sid=${SID:-unknown}"
   jq -n \
-    --arg msg "WARNING: A /pre-compact ran for this session (sid=${SENTINEL_SID8:-unknown}) but the SID-tagged handoff file (CLAUDE.local.${SENTINEL_SID8:-unknown}.md) is missing. Possible causes: (1) file deleted, (2) cwd changed since /pre-compact, (3) another agent moved it. Ask the user before proceeding. Do NOT load the generic alias CLAUDE.local.md -- it may belong to a different parallel-track session." \
+    --arg msg "WARNING: A /pre-compact ran for this session (sid=${SID:-unknown}) but the SID-tagged handoff file (CLAUDE.local.${SID:-unknown}.md) is missing. Possible causes: (1) file deleted, (2) cwd changed since /pre-compact, (3) another agent moved it. Ask the user before proceeding. If auto-resume did not fire, run: /post-compact-resume ${SID:-<session_id>}" \
     '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
   exit 0
 fi
