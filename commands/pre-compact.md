@@ -73,24 +73,32 @@ Read `./CLAUDE.local.<sid8>.md` (the SID-tagged handoff for this session) if it 
 **Memory-handoff rule + disk-persist:** the values extracted here (`parent_seq`, `parent_label`, parent's Build Plan / Next Action / Open Issues / Things To Fix Later / Gaps) are needed in Step 6A. Two storage channels — use both:
 
 1. **Working memory** (primary): hold the values through Steps 4-5 to Step 6A.
-2. **Disk persistence** (INV-26 / RQ-INC-03 F3 — single-source SID via PID-keyed scratch):
+2. **Disk persistence** (INV-26 / R8 V2-1 — single-source SID, writer side):
 
    ```bash
-   # R7-INC-03 (F3 redesigned — R7-INC.1 B1/B2 fix): resolve SID ONCE here at Step 3.B.
-   # CRITICAL: each Bash tool call is a NEW subshell with a different $$. The PID-keyed
-   # scratch used in R7-INC is unreadable at Step 6A/6D (different $$). Fix: use SID-keyed
-   # scratch (pre-compact-parent-<SID>.json). The orchestrator captures SID/SID8 from the
-   # echo output of THIS block and uses those same captured literals everywhere downstream.
-   # INV-26: derive SID8 ONCE here; capture from output; use the SAME value for the filename
-   # (Step 6A) AND the marker (Step 6D). Do NOT re-derive via ac_resolve_session_id downstream
-   # (slug-fallback could diverge). F1 writer-verify is the guarantee that filename==marker.
+   # R8 V2-1 (writer-side single-source SID): the file MUST be named with the same
+   # session_id that the Stop hook will thread into the /post-compact-resume arg.
+   # Resolution order (priority):
+   #   (a) CLAUDE_SESSION_ID — set by Claude Code TUI in the orchestrator env; most reliable.
+   #   (b) CLAUDE_CODE_SESSION_ID — older env var name; same value.
+   #   (c) ac_resolve_session_id — slug+TTY fallback; last resort only.
+   # If (a)+(b) both empty AND (c) fails → WARN and continue (manual arg required at resume).
+   # CRITICAL: capture SID ONCE here; use the SAME captured value everywhere downstream.
+   # Do NOT re-derive in a later step (slug-fallback could diverge). The SID IS the filename.
    . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh"
-   SID_RESOLVED=$(ac_resolve_session_id) || SID_RESOLVED=""
-   SID8_RESOLVED=$(ac_compute_sid8 "$SID_RESOLVED") || SID8_RESOLVED=""
-   [ -n "$SID_RESOLVED" ] && [ -n "$SID8_RESOLVED" ] || {
-     echo "FATAL: Step 3.B could not resolve SID/SID8 — /pre-compact aborts" >&2
-     exit 1
-   }
+   SID_RESOLVED="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+   if [ -z "$SID_RESOLVED" ]; then
+     SID_RESOLVED=$(ac_resolve_session_id 2>/dev/null) || SID_RESOLVED=""
+   fi
+   SID_RESOLVED=$(printf '%s' "$SID_RESOLVED" | tr -cd 'A-Za-z0-9_-' | head -c 128)
+   if [ -z "$SID_RESOLVED" ]; then
+     echo "WARNING: Step 3.B could not resolve session_id from CLAUDE_SESSION_ID, CLAUDE_CODE_SESSION_ID, or slug-fallback." >&2
+     echo "WARNING: The handoff file will be written but auto-resume may not bind. Run /post-compact-resume <session_id> manually." >&2
+     SID_RESOLVED="unknown-$(date +%s)-$$"
+   fi
+   # R8: filename uses full SID (no truncation to SID8). The Stop hook threads this exact
+   # value as the /post-compact-resume arg. Writer + reader use the same platform UUID.
+   SID8_RESOLVED="$SID_RESOLVED"
    mkdir -p "$HOME/.claude/progress" && chmod 700 "$HOME/.claude/progress"
    # SID-keyed scratch (NOT $$-keyed): readable by any subsequent bash block.
    # B-Adversary-7: clear stale/pre-planted file before umask write.
