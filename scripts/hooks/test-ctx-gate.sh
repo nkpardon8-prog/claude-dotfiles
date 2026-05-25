@@ -1364,41 +1364,24 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "== §G4-I JSON STATE with path containing spaces (D10) =="
+# R8: pass SID arg directly; no breadcrumb needed.
 TMPWD_I=$(mktemp -d)
-# Step 2: create a subdir with spaces in the path name.
 SPACED_DIR="$TMPWD_I/dir with spaces"
 mkdir -p "$SPACED_DIR"
 TMPHOME_I=$(mktemp -d)
 mkdir -p "$TMPHOME_I/.claude/progress" && chmod 700 "$TMPHOME_I/.claude/progress"
 GI_SID="g4i-spaces-$$"
-GI_SID8="${GI_SID:0:8}"
 GI_NONCE="aabbccdd-1234-5678-90ab-cdef11223344"
-GI_CWD=$(cd -P "$SPACED_DIR" 2>/dev/null && pwd -P)
-GI_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-# Breadcrumb with spaced path in cwd field.
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid  "$GI_SID" \
-  --arg sid8 "$GI_SID8" \
-  --arg cwd  "$GI_CWD" \
-  --arg nonce "$GI_NONCE" \
-  --arg host  "$GI_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$TMPHOME_I/.claude/progress/breadcrumb-${GI_SID}.json" 2>/dev/null
-chmod 600 "$TMPHOME_I/.claude/progress/breadcrumb-${GI_SID}.json"
 # SID-tagged handoff in spaced directory.
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$GI_SID8" "$GI_NONCE" > "$SPACED_DIR/CLAUDE.local.${GI_SID8}.md"
-# R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GI_SID.
-OUT_I=$(cd "$SPACED_DIR" 2>/dev/null && CLAUDE_SESSION_ID="$GI_SID" HOME="$TMPHOME_I" bash "$STEP2_SH" 2>/dev/null)
+  "$GI_SID" "$GI_NONCE" > "$SPACED_DIR/CLAUDE.local.${GI_SID}.md"
+# R8: pass SID as arg
+OUT_I=$(cd "$SPACED_DIR" 2>/dev/null && HOME="$TMPHOME_I" bash "$STEP2_SH" "$GI_SID" 2>/dev/null)
 GI_STATE=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 GI_PATH=$(printf '%s' "$OUT_I" | sed -n 's/^STATE=//p' | jq -r '.path' 2>/dev/null)
 if [ "$GI_STATE" = "ok" ] && printf '%s' "$GI_PATH" | grep -q ' '; then
   pass "G4-I: JSON STATE parses correctly for path with spaces (path='$GI_PATH')"
 else
-  # Require BOTH state=ok AND .path containing a space (D10 full coverage).
-  # state=ok without a space in .path means the path wasn't preserved correctly.
-  # Any other state is a fail — the test setup ensures a valid breadcrumb + SID-tagged file.
   fail "G4-I: JSON STATE for spaced path" "expected state=ok AND .path with space; got state='$GI_STATE' path='$GI_PATH' raw: ${OUT_I:0:200}"
 fi
 rm -rf "$TMPWD_I" "$TMPHOME_I"
