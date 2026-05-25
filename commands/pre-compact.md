@@ -76,11 +76,14 @@ Read `./CLAUDE.local.<sid8>.md` (the SID-tagged handoff for this session) if it 
 2. **Disk persistence** (INV-26 / RQ-INC-03 F3 — single-source SID via PID-keyed scratch):
 
    ```bash
-   # R7-INC-03 (F3): resolve SID ONCE here at Step 3.B using lib/auto-compact-sentinel.sh.
-   # Persist SID + SID8 + parent fields to a PID-keyed scratch file so ALL subsequent
-   # steps (6A, 6D, 9.0) read the SAME SID/SID8 values — prevents writer-sid-divergence
-   # (HZ-38) caused by re-deriving SID in different subprocess contexts.
-   # Scratch path is keyed by $$ (orchestrator PID), NOT by SID (chicken-and-egg safe).
+   # R7-INC-03 (F3 redesigned — R7-INC.1 B1/B2 fix): resolve SID ONCE here at Step 3.B.
+   # CRITICAL: each Bash tool call is a NEW subshell with a different $$. The PID-keyed
+   # scratch used in R7-INC is unreadable at Step 6A/6D (different $$). Fix: use SID-keyed
+   # scratch (pre-compact-parent-<SID>.json). The orchestrator captures SID/SID8 from the
+   # echo output of THIS block and uses those same captured literals everywhere downstream.
+   # INV-26: derive SID8 ONCE here; capture from output; use the SAME value for the filename
+   # (Step 6A) AND the marker (Step 6D). Do NOT re-derive via ac_resolve_session_id downstream
+   # (slug-fallback could diverge). F1 writer-verify is the guarantee that filename==marker.
    . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh"
    SID_RESOLVED=$(ac_resolve_session_id) || SID_RESOLVED=""
    SID8_RESOLVED=$(ac_compute_sid8 "$SID_RESOLVED") || SID8_RESOLVED=""
@@ -89,7 +92,10 @@ Read `./CLAUDE.local.<sid8>.md` (the SID-tagged handoff for this session) if it 
      exit 1
    }
    mkdir -p "$HOME/.claude/progress" && chmod 700 "$HOME/.claude/progress"
-   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-scratch-$$.json"
+   # SID-keyed scratch (NOT $$-keyed): readable by any subsequent bash block.
+   # B-Adversary-7: clear stale/pre-planted file before umask write.
+   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-parent-${SID_RESOLVED}.json"
+   rm -f "$SCRATCH_PATH" 2>/dev/null || true
    ( umask 077 && jq -n \
        --arg seq "$PARENT_SEQ" --arg label "$PARENT_LABEL" \
        --arg sid "$SID_RESOLVED" --arg sid8 "$SID8_RESOLVED" \
@@ -103,7 +109,7 @@ Read `./CLAUDE.local.<sid8>.md` (the SID-tagged handoff for this session) if it 
    echo "SID8=$SID8_RESOLVED"
    ```
 
-   Capture `SCRATCH_PATH`, `SID`, and `SID8` from this Bash output. Steps 6A and 6D MUST read from this scratch file — do NOT re-derive SID via ac_resolve_session_id in a later step (single-source guarantee per INV-26). The file is auto-cleaned in 3 places: (a) Step 9.1 final-report block removes it after reporting, (b) Stop-hook cleanup if PID is passed, (c) 720-minute GC glob `pre-compact-scratch-*.json` in `scripts/progress/on-session-start-cleanup.sh`.
+   **Capture `SCRATCH_PATH`, `SID`, and `SID8` from this Bash output.** The orchestrator MUST use the SAME captured SID/SID8 literals everywhere downstream (Step 6A filename, Step 6D marker, Step 9.1 cleanup). Steps 6A and 6D read from the scratch file using the CAPTURED SID to form the path — they do NOT use `$$` (which is a different PID each call). Do NOT re-derive SID via ac_resolve_session_id in a later step (single-source guarantee per INV-26). The file is auto-cleaned in 3 places: (a) Step 9.1 final-report block (orchestrator `rm -f` using captured SID), (b) 720-minute GC glob `pre-compact-parent-*.json` in `scripts/progress/on-session-start-cleanup.sh`.
 
 DO NOT re-read the SID-tagged handoff BEFORE the Phase 1 write completes in Step 6A — between this extraction and the Phase 1 write, the file is the parent's content; AFTER Phase 1 write, it is your new content. (Step 6B's "read the file you just wrote back" is the Phase 2 re-read of the new content — explicitly allowed.)
 
