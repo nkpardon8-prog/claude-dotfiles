@@ -53,6 +53,24 @@ _primer_check_linkcount() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolver_extract_marker_sid <path>
+#
+# R9-R4 (Breadth DUPLICATION + Adversary greedy-sid): single canonical extractor for the
+# END-OF-HANDOFF marker `sid=` value. Used by BOTH the cwd and repo-root probes (was two
+# byte-identical inline copies — divergence-prone for a security-critical check) AND by the
+# reader's TOCTOU snapshot re-verify.
+#
+# Takes the FIRST marker line, then the FIRST `sid=` token on it. The old inline form
+# `sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p'` used a greedy `.*` that matched the LAST
+# `sid=` on the line, so a crafted `sid=A sid=B` resolved to B (last-wins identity ambiguity).
+# `grep -oE 'sid=...' | head -1` is first-occurrence and BSD/macOS-bash-3.2 safe.
+# ---------------------------------------------------------------------------
+_resolver_extract_marker_sid() {
+  grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$1" 2>/dev/null | head -1 \
+    | grep -oE 'sid=[A-Za-z0-9_-]+' | head -1 | sed 's/^sid=//'
+}
+
+# ---------------------------------------------------------------------------
 # handoff_resolve_path <cwd> [session_id]
 #
 # V2-5 (R8): second parameter renamed from sid8 to session_id (full UUID).
