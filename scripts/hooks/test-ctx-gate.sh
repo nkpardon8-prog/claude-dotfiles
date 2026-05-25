@@ -1722,6 +1722,63 @@ fi
 rm -rf "$RQ06_TMPWD" "$RQ06_TMPHOME"
 
 # ---------------------------------------------------------------------------
+# §R9-AVS arg-vs-self check (HIGH-1) — the wrong-load structural close.
+# ---------------------------------------------------------------------------
+# step2.sh refuses (STATE=arg-not-my-session) when the session_id ARG does not match
+# THIS session's own id (CLAUDE_CODE_SESSION_ID). This closes the residual wrong-load
+# path where /post-compact-resume <A-uuid> is mis-delivered/mis-pasted into session B
+# whose shared repo-root holds A's handoff (marker would match the arg, but the consumer
+# is the wrong session). Three cases: match→ok, mismatch→refuse, self-unset→skip(degrade).
+echo ""
+echo "== §R9-AVS arg-vs-self wrong-load guard (HIGH-1) =="
+AVS_STEP2="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+AVS_TMPWD=$(mktemp -d)
+AVS_TMPHOME=$(mktemp -d)
+mkdir -p "$AVS_TMPHOME/.claude/progress" && chmod 700 "$AVS_TMPHOME/.claude/progress"
+AVS_SID="avs-sess-a-$$"
+AVS_OTHER_SID="avs-sess-b-$$"
+AVS_NONCE="9999aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
+  "$AVS_SID" "$AVS_NONCE" > "$AVS_TMPWD/CLAUDE.local.${AVS_SID}.md"
+
+# Case 1: self == arg → STATE=ok (legitimate same-session resume, the production path).
+AVS_MATCH_OUT=$(cd "$AVS_TMPWD" && HOME="$AVS_TMPHOME" CLAUDE_CODE_SESSION_ID="$AVS_SID" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
+AVS_MATCH_STATE=$(printf '%s' "$AVS_MATCH_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$AVS_MATCH_STATE" = "ok" ]; then
+  pass "R9-AVS-1: self==arg → STATE=ok (legit resume passes the guard transparently)"
+else
+  fail "R9-AVS-1: self==arg" "expected STATE=ok; got='$AVS_MATCH_STATE' raw=${AVS_MATCH_OUT:0:200}"
+fi
+
+# Case 2: self != arg, but arg's handoff IS present in cwd → MUST refuse (the wrong-load case).
+# This is the exact mis-paste/mis-delivery scenario: session B (self=OTHER) receives A's uuid;
+# A's file is right here; marker would match the arg — only the arg-vs-self check stops the load.
+AVS_MIS_OUT=$(cd "$AVS_TMPWD" && HOME="$AVS_TMPHOME" CLAUDE_CODE_SESSION_ID="$AVS_OTHER_SID" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
+AVS_MIS_STATE=$(printf '%s' "$AVS_MIS_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$AVS_MIS_STATE" = "arg-not-my-session" ]; then
+  pass "R9-AVS-2: self!=arg with arg's handoff present → STATE=arg-not-my-session (WRONG-LOAD BLOCKED)"
+else
+  fail "R9-AVS-2: wrong-load guard" "expected arg-not-my-session; got='$AVS_MIS_STATE' raw=${AVS_MIS_OUT:0:200}"
+fi
+# Defense-in-depth assertion: the refusal must NOT leak A's handoff path.
+if printf '%s' "$AVS_MIS_OUT" | grep -q "CLAUDE.local.${AVS_SID}.md"; then
+  fail "R9-AVS-2b: arg-not-my-session leaked the other session's handoff path"
+else
+  pass "R9-AVS-2b: arg-not-my-session does NOT leak the other session's handoff path"
+fi
+
+# Case 3: self UNAVAILABLE (CLAUDE_CODE_SESSION_ID + CLAUDE_SESSION_ID both unset) → check
+# SKIPS (additive defense, no regression on older Claude Code) → resolves to STATE=ok.
+AVS_UNSET_OUT=$(cd "$AVS_TMPWD" && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID HOME="$AVS_TMPHOME" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
+AVS_UNSET_STATE=$(printf '%s' "$AVS_UNSET_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$AVS_UNSET_STATE" = "ok" ]; then
+  pass "R9-AVS-3: self unavailable → check skipped, STATE=ok (graceful degrade, additive defense)"
+else
+  fail "R9-AVS-3: self-unset degrade" "expected STATE=ok; got='$AVS_UNSET_STATE' raw=${AVS_UNSET_OUT:0:200}"
+fi
+rm -rf "$AVS_TMPWD" "$AVS_TMPHOME"
+
+# ---------------------------------------------------------------------------
 # §R6-RQ05 Adversarial test: session key file GC (HZ-27)
 # ---------------------------------------------------------------------------
 echo ""
