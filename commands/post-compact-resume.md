@@ -1,9 +1,12 @@
 # Post-Compact Resume
 
 Activated automatically after `/compact` by the Stop-hook chain: the same hook that
-auto-fires `/compact` also types `/post-compact-resume` into the input queue immediately
-after. Claude Code TUI buffers it while `/compact` runs and processes it as the next turn
-once compaction completes. Can also be invoked manually after any `/compact`.
+auto-fires `/compact` also types `/post-compact-resume <session_id>` into the input queue
+immediately after. Claude Code TUI buffers it while `/compact` runs and processes it as the
+next turn once compaction completes. Can also be invoked manually after any `/compact`.
+
+R8: The `<session_id>` argument is the platform's authoritative UUID, threaded verbatim from
+the Stop hook payload through the typed command. The reader uses it verbatim — no rederivation.
 
 The whole point is bulletproof handoff with no GUI/focus dependency and no race against
 session mount — purely tab-targeted PTY writes from AppleScript do_script, both delivered
@@ -11,14 +14,28 @@ in the pre-compaction window so Claude Code TUI's native queue does the rest.
 
 ## Step 1: Locate the handoff
 
-**SID-tagged file takes priority** — R4: parallel agents write separate SID-tagged files per session. The breadcrumb provides the SID; the SID-tagged file is the ONLY valid handoff when SID is known.
+**Identity comes from the command argument** — R8: the Stop hook threads the payload
+`session_id` verbatim as `/post-compact-resume <session_id>`. No breadcrumb, no slug-fallback.
 
-Resolution (handled by Step 2 script — do not duplicate here):
-1. Breadcrumb-derived SID is PRIMARY: `$HOME/.claude/progress/breadcrumb-<SID>.json` contains the SID + nonce + cwd from the prior /pre-compact Stop hook.
-2. Claim-file fallback (best-effort): `auto-compact-<SID>.json.claim.<pid>` — usually absent (Stop hook EXIT trap removes it), but harmless to try.
-3. SID-tagged file: `CLAUDE.local.<SID8>.md` in cwd or REPO_ROOT.
-4. **Alias read ONLY when marker sid matches requested SID8 (R7-INC-04 / Defense H12).** If SID is known: the script first tries the SID-tagged file; if missing or marker-mismatched (R7-INC-02 content-check), then probes the alias `CLAUDE.local.md` and accepts it ONLY when its marker sid equals the requested SID8 (binding, NOT structural alias trust). If neither matches, the script emits `STATE=sid-known-no-tagged-file`. Marker binding ensures cross-track contamination is prevented even when the alias is in use — see decision matrix.
-5. SID-unknown fallback: `CLAUDE.local.md` in cwd or REPO_ROOT (legacy / no breadcrumb case).
+```
+ARG_SID="$ARGUMENTS"   # the session_id typed by the Stop hook
+if [ -z "$ARG_SID" ]; then
+  # DELIVERY DEGRADED — fail safe, never guess.
+  → emit: "No session id was passed to /post-compact-resume. The auto-resume chain
+     did not deliver it. Do NOT guess. The SessionStart banner shows the exact command
+     to run, including this session's id. Ask the user to paste it, or re-run /pre-compact."
+  → STATE=no-session-arg ; stop.
+fi
+bash post-compact-resume-step2.sh "$ARG_SID"
+```
+
+Resolution (handled by Step 2 script):
+1. `$ARGUMENTS` is the full session_id (UUID) from the Stop hook.
+2. step2.sh locates `CLAUDE.local.<session_id>.md` in cwd or REPO_ROOT.
+3. F2 marker-content-check: file's END-OF-HANDOFF marker `sid=` must match the session_id arg.
+4. SID-unknown fallback: if invoked manually with no arg → `STATE=no-session-arg` (refuse).
+5. Legacy alias fallback: `CLAUDE.local.md` used ONLY when session_id arg is empty (SID-unknown).
+   With R8 the no-arg case is always refused; the alias path is retained for explicit manual use.
 
 If no valid path found and STATE=no-handoff, output the paste-prompt:
 
