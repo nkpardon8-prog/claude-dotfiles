@@ -100,7 +100,6 @@ fi
 # R9-R2 observability (HIGH-2): record that the consumer-layer self-check ran AND passed,
 # so an operator reading the log can distinguish a double-checked STATE=ok from a degraded one.
 handoff_log "step2 r9_self_check ok self=$SELF_SID"
-fi
 
 CWD=$(cd -P "$(pwd)" 2>/dev/null && pwd -P || pwd)
 
