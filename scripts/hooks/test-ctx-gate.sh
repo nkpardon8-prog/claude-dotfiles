@@ -15,7 +15,14 @@ set -uo pipefail
 
 # cd to the hook directory first so all relative ./hook.sh invocations work
 # regardless of where the user runs this script from.
-cd "$(dirname "$0")"
+# R9-R2 (CWD-fragility fix): capture the script's absolute dir ONCE. $0 may be a relative
+# path (e.g. `scripts/hooks/test-ctx-gate.sh`), so re-running `cd "$(dirname "$0")"` in a later
+# subshell — after this top-level cd already changed cwd — would resolve `scripts/hooks`
+# relative to the new cwd and FAIL. Every later reference uses the absolute "$_SELFDIR" instead,
+# so the suite reports identically regardless of the operator's cwd (was PASS from scripts/hooks,
+# FAIL from repo root — a medical-grade gate must not be cwd-dependent).
+_SELFDIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$_SELFDIR" || exit 1
 
 PASS=0
 FAIL=0
@@ -1629,7 +1636,7 @@ rm -rf "$TMPWD_H13" "$TMPHOME_H13"
 # sid-known-no-tagged-file and sid-mismatch-hard-stop are removed.
 echo ""
 echo "== §R6-RQ01 resolver content-check adversarial test (R8) =="
-STEP2_SH="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+STEP2_SH="$_SELFDIR/post-compact-resume-step2.sh"
 RQ01_TMPWD=$(mktemp -d)
 RQ01_TMPHOME=$(mktemp -d)
 mkdir -p "$RQ01_TMPHOME/.claude/progress" && chmod 700 "$RQ01_TMPHOME/.claude/progress"
@@ -1675,7 +1682,7 @@ rm -rf "$RQ01_TMPWD" "$RQ01_TMPHOME" "$RQ01_OK_TMPWD" "$RQ01_OK_TMPHOME"
 # grep -qF would match mid-line occurrences, falsely returning 0 (marker found).
 echo ""
 echo "== §R6-RQ08 handoff_marker_check strict anchor =="
-. "$(cd "$(dirname "$0")" && pwd)/lib/handoff-marker.sh" 2>/dev/null || true
+. "$_SELFDIR/lib/handoff-marker.sh" 2>/dev/null || true
 if command -v handoff_marker_check >/dev/null 2>&1; then
   RQ08_TMP=$(mktemp)
   # File with marker ONLY appearing mid-line (not at column 0)
@@ -1711,7 +1718,7 @@ RQ06_SID="rq06-clean-$$"
 RQ06_NONCE="eeee5555-ffff-0000-1111-222222222222"
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$RQ06_SID" "$RQ06_NONCE" > "$RQ06_TMPWD/CLAUDE.local.${RQ06_SID}.md"
-STEP2_SH5="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+STEP2_SH5="$_SELFDIR/post-compact-resume-step2.sh"
 RQ06_OUT=$(cd "$RQ06_TMPWD" && HOME="$RQ06_TMPHOME" CLAUDE_CODE_SESSION_ID="$RQ06_SID" bash "$STEP2_SH5" "$RQ06_SID" 2>/dev/null)
 RQ06_STATE=$(printf '%s' "$RQ06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$RQ06_STATE" = "ok" ]; then
@@ -1731,7 +1738,7 @@ rm -rf "$RQ06_TMPWD" "$RQ06_TMPHOME"
 # is the wrong session). Three cases: match→ok, mismatch→refuse, self-unset→skip(degrade).
 echo ""
 echo "== §R9-AVS arg-vs-self wrong-load guard (HIGH-1) =="
-AVS_STEP2="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
+AVS_STEP2="$_SELFDIR/post-compact-resume-step2.sh"
 AVS_TMPWD=$(mktemp -d)
 AVS_TMPHOME=$(mktemp -d)
 mkdir -p "$AVS_TMPHOME/.claude/progress" && chmod 700 "$AVS_TMPHOME/.claude/progress"
@@ -1822,8 +1829,8 @@ rm -rf "$RQ05_HOME"
 # ---------------------------------------------------------------------------
 echo ""
 echo "== §R6-RQ07 primer multi-marker → tampered warning =="
-. "$(cd "$(dirname "$0")" && pwd)/lib/handoff-marker.sh" 2>/dev/null || true
-. "$(cd "$(dirname "$0")" && pwd)/lib/post-compact-primer-helpers.sh" 2>/dev/null || true
+. "$_SELFDIR/lib/handoff-marker.sh" 2>/dev/null || true
+. "$_SELFDIR/lib/post-compact-primer-helpers.sh" 2>/dev/null || true
 if command -v primer_check_marker >/dev/null 2>&1 && command -v handoff_marker_count >/dev/null 2>&1; then
   RQ07_TMP=$(mktemp)
   # File with TWO canonical markers at start-of-line (tampered)
@@ -1855,7 +1862,7 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "== §R7-INC-01 writer self-verification (lib/writer-verify.sh) =="
-_WVSH="$(cd "$(dirname "$0")" && pwd)/lib/writer-verify.sh"
+_WVSH="$_SELFDIR/lib/writer-verify.sh"
 if [ -f "$_WVSH" ]; then
   . "$_WVSH"
   _WV_TMP=$(mktemp -d)
@@ -1906,7 +1913,7 @@ _LEGACY_CUTOFF=1779321600  # 2026-05-23 approx
 # Source handoff-resolve.sh fresh (may already be loaded; _HANDOFF_RESOLVE_LOADED guard is idempotent)
 # Re-source to guarantee we get the R7-INC version.
 unset _HANDOFF_RESOLVE_LOADED 2>/dev/null || true
-. "$(cd "$(dirname "$0")" && pwd)/lib/handoff-resolve.sh" 2>/dev/null || true
+. "$_SELFDIR/lib/handoff-resolve.sh" 2>/dev/null || true
 if command -v handoff_resolve_path >/dev/null 2>&1; then
 
   # R7-INC-02a: SID-tagged file with mismatched marker → rc=2
@@ -1973,7 +1980,7 @@ _HR2_TMP=$(mktemp -d)
 _LEGACY_CUTOFF2=1779321600
 # Reload handoff-resolve.sh fresh
 unset _HANDOFF_RESOLVE_LOADED 2>/dev/null || true
-. "$(cd "$(dirname "$0")" && pwd)/lib/handoff-resolve.sh" 2>/dev/null || true
+. "$_SELFDIR/lib/handoff-resolve.sh" 2>/dev/null || true
 if command -v handoff_resolve_path >/dev/null 2>&1; then
 
   # R7-INC-04a: SID-tagged absent, alias PRESENT → rc=2 (alias probe deleted in R8)
