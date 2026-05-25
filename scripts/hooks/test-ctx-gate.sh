@@ -1242,107 +1242,47 @@ GG_SID="g4g-age-$$"
 GG_NONCE="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GG_SID" "$GG_NONCE" > "$TMPWD_G/CLAUDE.local.${GG_SID}.md"
-# PR-M1 / R2-PR-13: cross-platform touch -t with gdate fallback.
-if command -v gdate >/dev/null 2>&1; then
-  PAST_MTIME=$(gdate -d '3601 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null)
-else
-  PAST_MTIME=$(date -v-3601S +%Y%m%d%H%M.%S 2>/dev/null)
-fi
-# Old breadcrumb (age > 3600s): should be rejected by step2.sh age guard.
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid  "$GG_SID" \
-  --arg sid8 "$GG_SID8" \
-  --arg cwd  "$GG_CWD" \
-  --arg nonce "$GG_NONCE" \
-  --arg host  "$GG_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$GG_BREADCRUMB" 2>/dev/null
-chmod 600 "$GG_BREADCRUMB"
-if [ -n "$PAST_MTIME" ]; then
-  touch -t "$PAST_MTIME" "$GG_BREADCRUMB" 2>/dev/null
-  # R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GG_SID.
-  # With stale breadcrumb and CLAUDE_SESSION_ID=GG_SID: OWN_SID known, breadcrumb rejected (age),
-  # alias present → alias path (sid-known + no breadcrumb = SID8 empty → alias used).
-  OUT_G_OLD=$(cd "$TMPWD_G" && CLAUDE_SESSION_ID="$GG_SID" HOME="$TMPHOME_G" bash "$STEP2_SH" 2>/dev/null)
-  GG_STATE_OLD=$(printf '%s' "$OUT_G_OLD" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-  # With stale breadcrumb (>3600s), SID known (CLAUDE_SESSION_ID set) but breadcrumb rejected,
-  # and handoff file present at TMPWD_G: step2 falls through breadcrumb → no SID8 → alias path.
-  # For a clean "rejected breadcrumb" assertion, use an env with NO alias either.
-  TMPHOME_G_OLD=$(mktemp -d)
-  mkdir -p "$TMPHOME_G_OLD/.claude/progress" && chmod 700 "$TMPHOME_G_OLD/.claude/progress"
-  cp "$GG_BREADCRUMB" "$TMPHOME_G_OLD/.claude/progress/breadcrumb-${GG_SID}.json"
-  chmod 600 "$TMPHOME_G_OLD/.claude/progress/breadcrumb-${GG_SID}.json"
-  touch -t "$PAST_MTIME" "$TMPHOME_G_OLD/.claude/progress/breadcrumb-${GG_SID}.json" 2>/dev/null
-  TMPWD_G_EMPTY=$(mktemp -d)
-  # R5 Critical #9: provide CLAUDE_SESSION_ID; no alias in empty dir → no-handoff.
-  OUT_G_STALE=$(cd "$TMPWD_G_EMPTY" && CLAUDE_SESSION_ID="$GG_SID" HOME="$TMPHOME_G_OLD" bash "$STEP2_SH" 2>/dev/null)
-  GG_STATE_STALE=$(printf '%s' "$OUT_G_STALE" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-  if [ "$GG_STATE_STALE" = "no-handoff" ]; then
-    pass "G4-G: age=3601s breadcrumb rejected → state=no-handoff (age guard)"
-  else
-    fail "G4-G: age guard didn't reject stale breadcrumb — got state=$GG_STATE_STALE (expected no-handoff)" "raw: ${OUT_G_STALE:0:200}"
-  fi
-  rm -rf "$TMPHOME_G_OLD" "$TMPWD_G_EMPTY"
-else
-  # R3-fix-sweep H7: vacuous-pass → infra-fail. On macOS, `date -v-3601S` IS available
-  # (BSD date supports -v). An empty PAST_MTIME indicates a real infra problem.
-  fail "G4-G: date -v-3601S returned empty — expected macOS BSD date to support -v flag (infra-fail)" ""
-  exit 1
-fi
-# Fresh breadcrumb (touch mtime = now): verify step2.sh adopts it.
-touch "$GG_BREADCRUMB" 2>/dev/null
-# R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GG_SID.
-OUT_G_FRESH=$(cd "$TMPWD_G" && CLAUDE_SESSION_ID="$GG_SID" HOME="$TMPHOME_G" bash "$STEP2_SH" 2>/dev/null)
+# Test: fresh handoff → STATE=ok stale=false; stale handoff → STATE=ok stale=true.
+# R8: invoke step2.sh with SID arg; no breadcrumb needed.
+# (a) Fresh handoff → STATE=ok stale=false
+OUT_G_FRESH=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
 GG_STATE_FRESH=$(printf '%s' "$OUT_G_FRESH" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$GG_STATE_FRESH" = "ok" ]; then
-  pass "G4-G: fresh breadcrumb (age=~0s) accepted → state=ok"
+GG_STALE_FRESH=$(printf '%s' "$OUT_G_FRESH" | sed -n 's/^STATE=//p' | jq -r '.stale' 2>/dev/null)
+if [ "$GG_STATE_FRESH" = "ok" ] && [ "$GG_STALE_FRESH" = "false" ]; then
+  pass "G4-G: fresh handoff (now mtime) accepted → state=ok stale=false"
 else
-  fail "G4-G: fresh breadcrumb acceptance" "expected state=ok got '$GG_STATE_FRESH' raw: ${OUT_G_FRESH:0:200}"
+  fail "G4-G: fresh breadcrumb acceptance" "expected state=ok stale=false got '$GG_STATE_FRESH' stale=$GG_STALE_FRESH raw: ${OUT_G_FRESH:0:200}"
 fi
-# Boundary: test mtime=3599s (1 second before cutoff) → should be accepted.
-# IMPORTANT: the fresh-breadcrumb test above consumed the breadcrumb (step2.sh EXIT trap
-# deletes the adopted breadcrumb on exit). Re-create the breadcrumb here before applying
-# the 3599s mtime so the boundary test has an intact file to read.
+# (b) Stale handoff (touch to old mtime)
+if command -v gdate >/dev/null 2>&1; then
+  PAST_MTIME=$(gdate -d '30 hours ago' +%Y%m%d%H%M.%S 2>/dev/null)
+else
+  PAST_MTIME=$(date -v-30H +%Y%m%d%H%M.%S 2>/dev/null)
+fi
 if [ -n "$PAST_MTIME" ]; then
-  if command -v gdate >/dev/null 2>&1; then
-    NEAR_MTIME=$(gdate -d '3599 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null)
+  touch -t "$PAST_MTIME" "$TMPWD_G/CLAUDE.local.${GG_SID}.md" 2>/dev/null
+  OUT_G_STALE=$(cd "$TMPWD_G" && HOME="$TMPHOME_G" HANDOFF_STALE_SECS=3600 bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
+  GG_STATE_STALE=$(printf '%s' "$OUT_G_STALE" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  GG_STALE_FIELD=$(printf '%s' "$OUT_G_STALE" | sed -n 's/^STATE=//p' | jq -r '.stale' 2>/dev/null)
+  if [ "$GG_STATE_STALE" = "ok" ] && [ "$GG_STALE_FIELD" = "true" ]; then
+    pass "G4-G: stale handoff (30h old) → state=ok stale=true"
   else
-    NEAR_MTIME=$(date -v-3599S +%Y%m%d%H%M.%S 2>/dev/null)
-  fi
-  if [ -n "$NEAR_MTIME" ]; then
-    # Re-create the breadcrumb (consumed by the fresh-breadcrumb test's EXIT trap).
-    jq -c -n \
-      --argjson sv 1 \
-      --arg sid  "$GG_SID" \
-      --arg sid8 "$GG_SID8" \
-      --arg cwd  "$GG_CWD" \
-      --arg nonce "$GG_NONCE" \
-      --arg host  "$GG_HOST" \
-      '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-      > "$GG_BREADCRUMB" 2>/dev/null
-    chmod 600 "$GG_BREADCRUMB"
-    touch -t "$NEAR_MTIME" "$GG_BREADCRUMB" 2>/dev/null
-    # R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GG_SID.
-    OUT_G_NEAR=$(cd "$TMPWD_G" && CLAUDE_SESSION_ID="$GG_SID" HOME="$TMPHOME_G" bash "$STEP2_SH" 2>/dev/null)
-    GG_STATE_NEAR=$(printf '%s' "$OUT_G_NEAR" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-    if [ "$GG_STATE_NEAR" = "ok" ]; then
-      pass "G4-G: boundary breadcrumb (age=3599s, 1s before cutoff) accepted → state=ok"
-    else
-      fail "G4-G: boundary breadcrumb (age=3599s) not accepted — got state=$GG_STATE_NEAR (expected ok)" "raw: ${OUT_G_NEAR:0:200}"
-    fi
-  else
-    # R3-fix-sweep H7: vacuous-pass → infra-fail. NEAR_MTIME empty means date -v-3599S
-    # failed — a real infra problem on macOS where BSD date supports -v.
-    fail "G4-G: date -v-3599S returned empty — expected macOS BSD date to support -v flag (infra-fail)" ""
-    exit 1
+    fail "G4-G: age guard didn't reject stale breadcrumb — got state=$GG_STATE_STALE stale=$GG_STALE_FIELD (expected ok stale=true)" "raw: ${OUT_G_STALE:0:200}"
   fi
 else
-  # R3-fix-sweep H7: outer PAST_MTIME guard failure already caught above; this branch
-  # is now unreachable (we exit 1 in the PAST_MTIME-empty else branch above).
-  fail "G4-G: date arithmetic branch reached unexpectedly — PAST_MTIME guard should have exited (infra-fail)" ""
+  fail "G4-G: date -v-30H returned empty — expected macOS BSD date to support -v flag (infra-fail)" ""
   exit 1
 fi
+# (c) Missing file → STATE=no-handoff
+TMPWD_G_EMPTY=$(mktemp -d)
+OUT_G_MISS=$(cd "$TMPWD_G_EMPTY" && HOME="$TMPHOME_G" bash "$STEP2_SH" "$GG_SID" 2>/dev/null)
+GG_STATE_MISS=$(printf '%s' "$OUT_G_MISS" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$GG_STATE_MISS" = "no-handoff" ]; then
+  pass "G4-G: boundary — no file for SID → state=no-handoff"
+else
+  fail "G4-G: boundary breadcrumb (age=3599s) not accepted — got state=$GG_STATE_MISS (expected ok)" "raw: ${OUT_G_MISS:0:200}"
+fi
+rm -rf "$TMPWD_G_EMPTY"
 rm -rf "$TMPWD_G" "$TMPHOME_G"
 
 # ---------------------------------------------------------------------------
