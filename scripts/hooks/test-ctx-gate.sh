@@ -1778,14 +1778,25 @@ else
   pass "R9-AVS-2b: arg-not-my-session does NOT leak the other session's handoff path"
 fi
 
-# Case 3: self UNAVAILABLE (CLAUDE_CODE_SESSION_ID + CLAUDE_SESSION_ID both unset) → check
-# SKIPS (additive defense, no regression on older Claude Code) → resolves to STATE=ok.
+# Case 3 (R9-R2 FAIL-CLOSED): self UNAVAILABLE (both env vars unset) → STATE=self-unverifiable
+# (REFUSE), NOT ok. R9-Round2 proved that degrading to content-only here is a wrong-load path
+# (a marked CLAUDE.local.<arg>.md belonging to another session, in a shared repo-root, would
+# load because F2 file-vs-arg passes and the consumer layer is gone). We therefore refuse when
+# we cannot verify the consumer's identity. On supported Claude Code CLAUDE_CODE_SESSION_ID is
+# always set, so this never fires on the real auto-resume path — the cost lands only on
+# degraded/older clients, where refuse-and-ask is the correct medical-grade trade.
 AVS_UNSET_OUT=$(cd "$AVS_TMPWD" && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID HOME="$AVS_TMPHOME" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
 AVS_UNSET_STATE=$(printf '%s' "$AVS_UNSET_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$AVS_UNSET_STATE" = "ok" ]; then
-  pass "R9-AVS-3: self unavailable → check skipped, STATE=ok (graceful degrade, additive defense)"
+if [ "$AVS_UNSET_STATE" = "self-unverifiable" ]; then
+  pass "R9-AVS-3: self unavailable → STATE=self-unverifiable (fail-closed; never degrade to content-only)"
 else
-  fail "R9-AVS-3: self-unset degrade" "expected STATE=ok; got='$AVS_UNSET_STATE' raw=${AVS_UNSET_OUT:0:200}"
+  fail "R9-AVS-3: self-unverifiable fail-closed" "expected STATE=self-unverifiable; got='$AVS_UNSET_STATE' raw=${AVS_UNSET_OUT:0:200}"
+fi
+# Case 3b: self-unverifiable must NOT leak the handoff path either.
+if printf '%s' "$AVS_UNSET_OUT" | grep -q "CLAUDE.local.${AVS_SID}.md"; then
+  fail "R9-AVS-3b: self-unverifiable leaked the handoff path"
+else
+  pass "R9-AVS-3b: self-unverifiable refusal does NOT leak the handoff path"
 fi
 
 # Case 4 (ordering lock): self != arg AND arg's handoff is ABSENT from cwd → MUST still be
