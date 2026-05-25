@@ -85,13 +85,20 @@ fi
 #     falls only on degraded/older clients, where a recoverable refuse is the correct medical-grade
 #     trade ("never wrong-load; at worst refuse and ask").
 # ---------------------------------------------------------------------------
+# R9-R4 (Depth/Breadth/Adversary FRAGILITY — reject, don't sanitize): SELF_SID is validated
+# with the SAME rejecting discipline as ARG_SID (charset `^[A-Za-z0-9_-]+$`, no transform),
+# NOT scrubbed with `tr -cd`. The old `tr -cd` form silently deleted interior bad chars and
+# spliced survivors — e.g. `ab/c-d.ef` collapsed to `abc-def`, which could in principle forge
+# SELF_SID==ARG_SID for two genuinely-different ids. We now treat a self id that is empty OR
+# fails the charset as UNVERIFIABLE (refuse), so the consumer identity is either provably valid
+# or we fail closed — never silently normalized into a colliding value. No truncation either
+# (ARG_SID is uncapped; capping SELF asymmetrically could false-refuse a >128-char legit id).
 SELF_SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
-SELF_SID=$(printf '%s' "$SELF_SID" | tr -cd 'A-Za-z0-9_-' | head -c 128)
-if [ -z "$SELF_SID" ]; then
-  handoff_log "step2_terminal state=self-unverifiable arg=$ARG_SID reason=no-self-session-id"
+if [ -z "$SELF_SID" ] || ! printf '%s' "$SELF_SID" | grep -qE '^[A-Za-z0-9_-]+$'; then
+  handoff_log "step2_terminal state=self-unverifiable arg=$ARG_SID reason=no-or-invalid-self-session-id"
   _json=$(jq -c -n --arg arg "$ARG_SID" \
     '{"state":"self-unverifiable","arg_sid":$arg,
-      "reason":"cannot read this session own id (CLAUDE_CODE_SESSION_ID unset) — cannot prove the handoff belongs to THIS session. Refusing to auto-load to avoid cross-session contamination. To resume manually, set CLAUDE_CODE_SESSION_ID to this session id (shown in the SessionStart banner) and re-run, or run /pre-compact again."}' 2>/dev/null)
+      "reason":"cannot read a valid id for THIS session (CLAUDE_CODE_SESSION_ID unset or malformed) — cannot prove the handoff belongs to THIS session. Refusing to auto-load to avoid cross-session contamination. To resume manually, set CLAUDE_CODE_SESSION_ID to this session id (shown in the SessionStart banner) and re-run, or run /pre-compact again."}' 2>/dev/null)
   if [ -n "$_json" ]; then printf 'STATE=%s\n' "$_json"
   else printf 'STATE={"state":"self-unverifiable"}\n'; fi
   exit 0
