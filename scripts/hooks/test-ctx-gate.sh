@@ -1776,7 +1776,19 @@ if [ "$AVS_UNSET_STATE" = "ok" ]; then
 else
   fail "R9-AVS-3: self-unset degrade" "expected STATE=ok; got='$AVS_UNSET_STATE' raw=${AVS_UNSET_OUT:0:200}"
 fi
-rm -rf "$AVS_TMPWD" "$AVS_TMPHOME"
+
+# Case 4 (ordering lock): self != arg AND arg's handoff is ABSENT from cwd → MUST still be
+# arg-not-my-session (refuse), NOT no-handoff. Proves the self-check precedes path resolution
+# unconditionally; guards the ordering against future refactors that might resolve-then-check.
+AVS_EMPTY_WD=$(mktemp -d)
+AVS_ORD_OUT=$(cd "$AVS_EMPTY_WD" && HOME="$AVS_TMPHOME" CLAUDE_CODE_SESSION_ID="$AVS_OTHER_SID" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
+AVS_ORD_STATE=$(printf '%s' "$AVS_ORD_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$AVS_ORD_STATE" = "arg-not-my-session" ]; then
+  pass "R9-AVS-4: self!=arg with NO file present → still arg-not-my-session (self-check precedes resolution)"
+else
+  fail "R9-AVS-4: ordering lock" "expected arg-not-my-session; got='$AVS_ORD_STATE' raw=${AVS_ORD_OUT:0:200}"
+fi
+rm -rf "$AVS_TMPWD" "$AVS_TMPHOME" "$AVS_EMPTY_WD"
 
 # ---------------------------------------------------------------------------
 # §R6-RQ05 Adversarial test: session key file GC (HZ-27)
