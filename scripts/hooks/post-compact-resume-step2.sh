@@ -249,6 +249,29 @@ if command -v handoff_marker_count >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# R9-R4 (Adversary CRITICAL — close the resolver→cp TOCTOU): re-verify the marker `sid=` on
+# the SNAPSHOT (the exact bytes that will be read), not just the live file the resolver checked.
+# The resolver verifies `marker sid == ARG_SID` on the LIVE file, then we cp a snapshot; an
+# attacker or a racing /pre-compact rewrite could swap the file's body (keeping a marker line so
+# the presence check passes) in that window. The inode/size re-stat below can miss it (its
+# baseline is captured AFTER the cp). So we re-extract the snapshot's marker sid here and confirm
+# it still equals ARG_SID; any divergence (changed sid, or marker dropped) ⇒ the content we hold
+# is not the identity-verified handoff ⇒ treat as mutated-mid-read (fail-closed; orchestrator
+# retries once then escalates). Uses the shared first-occurrence extractor.
+if [ "$MARKER" = "present" ] && command -v _resolver_extract_marker_sid >/dev/null 2>&1; then
+  _snap_marker_sid=$(_resolver_extract_marker_sid "$_HANDOFF_READ")
+  if [ "$_snap_marker_sid" != "$ARG_SID" ]; then
+    handoff_log "handoff_mutated_mid_read path=$HANDOFF_PATH reason=snapshot-marker-sid-mismatch arg=$ARG_SID snap_sid=${_snap_marker_sid:-none}"
+    handoff_log "step2_terminal state=handoff-mutated-mid-read sid=$ARG_SID reason=snapshot-marker-sid-mismatch"
+    _json=$(jq -c -n --arg path "$HANDOFF_PATH" \
+      '{"state":"handoff-mutated-mid-read","path":$path,"reason":"the handoff snapshot marker sid does not match the requested session_id — the file was swapped between identity-verification and read. Re-run /post-compact-resume <session_id>."}' 2>/dev/null)
+    if [ -n "$_json" ]; then printf 'STATE=%s\n' "$_json"
+    else printf 'STATE={"state":"handoff-mutated-mid-read"}\n'; fi
+    exit 0
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # V2-14: Name-validation regex already matches full-UUID filenames.
 # '^CLAUDE\.local\.([A-Za-z0-9_-]+\.)?md$' matches CLAUDE.local.<uuid>.md — no change needed.
 # ---------------------------------------------------------------------------
