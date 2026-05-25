@@ -755,27 +755,30 @@ rm -rf "$_INC_TMP" "$_INC_HOME"
 # ---------------------------------------------------------------------------
 # §R7-INC-06 sid-mismatch dead-code defense-in-depth (R7-INC.1 HIGH)
 # The sid-mismatch check at post-compact-resume-step2.sh:658 is now unreachable via the
-# resolver (F2 catches mismatches first). This test bypasses the resolver by setting
-# HANDOFF_PATH directly to a mismatched-marker file and asserts step2.sh still emits
-# STATE=sid-mismatch-hard-stop. Proves the downstream defense remains live if resolver
-# ever regresses (defense-in-depth).
+# resolver (F2 catches mismatches first). This test temporarily patches handoff-resolve.sh
+# to remove the F2 marker check, simulating a resolver regression, then runs step2.sh and
+# asserts it still emits STATE=sid-mismatch-hard-stop via its own secondary check.
+# Proves the downstream defense remains live if F2 ever regresses (defense-in-depth).
 # ---------------------------------------------------------------------------
 echo ""
 echo "== §R7-INC-06 sid-mismatch dead-code defense-in-depth =="
 _INC06_TMP=$(mktemp -d)
 _INC06_HOME=$(mktemp -d)
-_INC06_SID="deadcode1-dead-code-dead-code-deadcode01"
-_INC06_SID8="deadcode1"
+_INC06_SID="dc1bdc1b-dc1b-dc1b-dc1b-dc1bdc1bdc1b"
+_INC06_SID8="dc1bdc1b"
 _INC06_NONCE="test-nonce-r7inc06"
 mkdir -p "$_INC06_HOME/.claude/progress" && chmod 700 "$_INC06_HOME/.claude/progress"
 
-# Write a file with MISMATCHED marker (filename sid8=deadcode1, marker sid=wrongsid9)
+# Write a file with MISMATCHED marker (filename sid8=dc1bdc1b, marker sid=wrongsid9)
 printf 'content with wrong marker\n<!-- END-OF-HANDOFF schema=v1 sid=wrongsid9 nonce=%s -->\n' \
-  "$_INC06_NONCE" > "$_INC06_TMP/CLAUDE.local.deadcode1.md"
+  "$_INC06_NONCE" > "$_INC06_TMP/CLAUDE.local.dc1bdc1b.md"
 
-# Write a breadcrumb so step2.sh adopts the SID
-_INC06_HOST=$(hostname -s 2>/dev/null | head -c 64 || echo "testhost")
-if command -v jq >/dev/null 2>&1; then
+_RESOLVE_SH="$ROOT/lib/handoff-resolve.sh"
+_STEP2="$ROOT/post-compact-resume-step2.sh"
+
+if command -v jq >/dev/null 2>&1 && [ -f "$_RESOLVE_SH" ] && [ -f "$_STEP2" ]; then
+  # Write a breadcrumb so step2.sh adopts the SID
+  _INC06_HOST=$(hostname -s 2>/dev/null | head -c 64 || echo "testhost")
   jq -c -n \
     --argjson sv 1 \
     --arg sid "$_INC06_SID" \
@@ -788,24 +791,72 @@ if command -v jq >/dev/null 2>&1; then
     > "$_INC06_HOME/.claude/progress/breadcrumb-${_INC06_SID}.json"
   chmod 600 "$_INC06_HOME/.claude/progress/breadcrumb-${_INC06_SID}.json"
 
-  _STEP2="$ROOT/post-compact-resume-step2.sh"
-  if [ -f "$_STEP2" ]; then
-    # Set HANDOFF_PATH directly to bypass the resolver (simulates resolver regression)
-    _INC06_OUT=$(cd "$_INC06_TMP" && CLAUDE_SESSION_ID="$_INC06_SID" HOME="$_INC06_HOME" \
-      HANDOFF_ACCEPT_UNSIGNED=1 \
-      HANDOFF_PATH="$_INC06_TMP/CLAUDE.local.deadcode1.md" \
-      bash "$_STEP2" 2>/dev/null)
-    _INC06_STATE=$(printf '%s' "$_INC06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-    if [ "$_INC06_STATE" = "sid-mismatch-hard-stop" ]; then
-      check "R7-INC-06: step2.sh sid-mismatch defense-in-depth still live (catches resolver regression)" 1 1
-    else
-      check "R7-INC-06: step2.sh sid-mismatch defense dead (HANDOFF_PATH bypass not caught)" 1 0
+  # Temporarily patch handoff-resolve.sh to remove the F2 marker check (simulate regression).
+  # Back up and restore via trap.
+  _INC06_BACKUP=$(mktemp)
+  cp "$_RESOLVE_SH" "$_INC06_BACKUP"
+  # Patch: remove the marker-sid content-check block so the resolver accepts the file
+  # (replace the if/else marker block with unconditional HANDOFF_PATH assignment).
+  # We do this by creating a patched copy in a temp dir and symlinking lib/.
+  _INC06_PATCHDIR=$(mktemp -d)
+  mkdir -p "$_INC06_PATCHDIR/lib"
+  # Write patched resolver that skips F2 check (accepts any non-hardlinked SID-tagged file)
+  # macOS bash 3.2 compatible; uses only sh-portable constructs.
+  cat > "$_INC06_PATCHDIR/lib/handoff-resolve.sh" << 'PATCHED_EOF'
+#!/usr/bin/env bash
+# PATCHED (R7-INC-06 regression simulation): F2 marker check removed.
+[ -n "${_HANDOFF_RESOLVE_LOADED:-}" ] && return 0
+readonly _HANDOFF_RESOLVE_LOADED=1
+command -v ctx_gate_log >/dev/null 2>&1 || ctx_gate_log() { :; }
+_primer_check_linkcount() {
+  local p="$1"; local linkcount stat_ok; stat_ok=false
+  if linkcount=$(stat -f %l "$p" 2>/dev/null); then stat_ok=true
+  elif linkcount=$(stat -c %h "$p" 2>/dev/null); then stat_ok=true; fi
+  [ "$stat_ok" = "false" ] && { ctx_gate_log "primer skip reason=stat-failed path=$p"; return 1; }
+  linkcount=$(printf '%s' "$linkcount" | tr -d '[:space:]'); [ -z "$linkcount" ] && linkcount=1
+  [ "$linkcount" -gt 1 ] && { ctx_gate_log "primer skip reason=multi-hardlink path=$p linkcount=$linkcount"; return 1; }
+  return 0
+}
+handoff_resolve_path() {
+  local cwd="$1" sid8="${2:-}"; HANDOFF_PATH=""
+  if [ -n "$sid8" ]; then
+    local p="$cwd/CLAUDE.local.${sid8}.md"
+    # PATCHED: F2 marker check REMOVED — accept any non-hardlinked file (regression sim)
+    if [ -f "$p" ] && [ ! -L "$p" ] && _primer_check_linkcount "$p"; then
+      HANDOFF_PATH="$p"; return 0
     fi
+    return 2
+  fi
+  local p2="$cwd/CLAUDE.local.md"
+  if [ -f "$p2" ] && [ ! -L "$p2" ] && _primer_check_linkcount "$p2"; then
+    HANDOFF_PATH="$p2"; return 0
+  fi
+  return 1
+}
+PATCHED_EOF
+
+  # Run step2.sh with the patched lib dir as _STEP2_DIR so it sources the patched resolver
+  # step2.sh uses: . "$_STEP2_DIR/lib/handoff-resolve.sh"
+  # Achieve by setting PATH and using an override via _STEP2_DIR pre-set... Actually step2
+  # derives _STEP2_DIR from its own script location. We need to copy step2 to the patch dir.
+  cp "$_STEP2" "$_INC06_PATCHDIR/post-compact-resume-step2.sh"
+  # Also copy all other libs step2 needs
+  cp -R "$ROOT/lib" "$_INC06_PATCHDIR/lib_real" 2>/dev/null || true
+  # Overwrite lib/handoff-resolve.sh with patched version (already done above)
+
+  _INC06_OUT=$(cd "$_INC06_TMP" && CLAUDE_SESSION_ID="$_INC06_SID" HOME="$_INC06_HOME" \
+    HANDOFF_ACCEPT_UNSIGNED=1 bash "$_INC06_PATCHDIR/post-compact-resume-step2.sh" 2>/dev/null)
+  _INC06_STATE=$(printf '%s' "$_INC06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+
+  rm -rf "$_INC06_PATCHDIR" "$_INC06_BACKUP"
+
+  if [ "$_INC06_STATE" = "sid-mismatch-hard-stop" ]; then
+    check "R7-INC-06: step2.sh sid-mismatch defense-in-depth still live (catches resolver regression)" 1 1
   else
-    check "R7-INC-06: post-compact-resume-step2.sh not found — skipped" 1 1
+    check "R7-INC-06: step2.sh sid-mismatch defense dead — STATE='$_INC06_STATE' (expected sid-mismatch-hard-stop)" 1 0
   fi
 else
-  check "R7-INC-06: jq not available — skipped" 1 1
+  check "R7-INC-06: prerequisites missing (jq/handoff-resolve.sh/step2.sh) — skipped" 1 1
 fi
 rm -rf "$_INC06_TMP" "$_INC06_HOME"
 
