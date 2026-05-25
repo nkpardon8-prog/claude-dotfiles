@@ -857,20 +857,17 @@ echo ""
 echo "== §C5 primer-whole-file-scan: marker before last 512 bytes is detected =="
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
-# Build a file where END-OF-HANDOFF marker is near byte 600, then padded to ~1500 bytes.
-# Phase 1: whole-file grep now FINDS the marker even though it's not in the last 512 bytes.
-# The primer should detect the marker and emit a POST-COMPACT nav (not TRUNCATED warning).
+# Build a SID-tagged file where END-OF-HANDOFF marker is near byte 600, then padded to ~1500 bytes.
+# R8: use CLAUDE.local.newsid.md (session_id="newsid")
 {
-  # ~600 bytes of content then the legacy marker, then 900 bytes of padding
+  # ~600 bytes of content then the v1 marker with sid=newsid, then 900 bytes of padding
   printf '# Handoff\n\n## Active Skill State\nDetected: /plan\n\n## Next Action\nRun review.\n\n'
-  printf '<!-- END-OF-HANDOFF -->\n'
-  # Pad with 900 bytes of additional content so the total is ~1500 bytes
-  # and the marker is well outside the final 512 bytes (tests whole-file scan)
+  printf '<!-- END-OF-HANDOFF schema=v1 sid=newsid nonce=c5-test-nonce -->\n'
   printf '## Section After Marker\n'
   python3 -c "print('x' * 900)" 2>/dev/null || printf '%0900d' 0 | tr '0' 'x'
   printf '\n'
-} > "$TMPHOME/repo/CLAUDE.local.md"
-FILE_SIZE=$(wc -c < "$TMPHOME/repo/CLAUDE.local.md" 2>/dev/null | tr -d '[:space:]')
+} > "$TMPHOME/repo/CLAUDE.local.newsid.md"
+FILE_SIZE=$(wc -c < "$TMPHOME/repo/CLAUDE.local.newsid.md" 2>/dev/null | tr -d '[:space:]')
 LEGACY_OVERRIDE_PAST=$(date -u -j -f '%Y-%m-%d' '2020-01-01' +%s 2>/dev/null || date -u -d '2020-01-01' +%s 2>/dev/null || echo 1577836800)
 JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
