@@ -74,26 +74,28 @@ The orchestrator running `/post-compact-resume` must invoke this Bash via the `B
 **The snippet DEFINES `HANDOFF_PATH` inside the Bash call** (variable does not
 persist across orchestrator turns or into a new Bash subprocess):
 
-**Invoke the extracted Step 2 script via the Bash tool:**
+**Invoke the extracted Step 2 script via the Bash tool (pass `$ARGUMENTS` as the session_id):**
 
 ```bash
-bash "$HOME/.claude-dotfiles/scripts/hooks/post-compact-resume-step2.sh"
+# R8: $ARGUMENTS is the session_id threaded by the Stop hook.
+# Pass it verbatim — step2.sh refuses on empty arg (fail-safe).
+ARG_SID="$ARGUMENTS"
+bash "$HOME/.claude-dotfiles/scripts/hooks/post-compact-resume-step2.sh" "$ARG_SID"
 ```
 
-This script is maintained at the path above (R4 D9: moved out of `lib/` — `lib/` files are
-sourceable libs; `post-compact-resume-step2.sh` is an executable script). It:
+This script is maintained at the path above (R4 D9: moved out of `lib/`). It:
 1. Sources lib/ctx-gate-config.sh, lib/handoff-config.sh, lib/auto-compact-sentinel.sh
-2. Sources lib/handoff-resolve.sh (canonical HANDOFF_PATH resolver; R4 H10)
-3. Reads the per-session breadcrumb (R3 D2 / R4 D5) for SID + nonce recovery, with cwd + hostname validation
-4. Resolves HANDOFF_PATH via `handoff_resolve_path` (R4 D3 + R7-INC-04 Defense H12: SID-tagged first when SID known; alias accepted only if its marker matches the SID; alias-only when SID unknown)
-5. Enforces 5MB size cap (H11), hardlink rejection via `_primer_check_linkcount` in handoff-resolve.sh (R2-PR-6)
-6. Extracts MARKER_NONCE; compares with SENTINEL_NONCE → NONCE_OK
-7. Checks freshness vs HANDOFF_LEGACY_CUTOFF_EPOCH and HANDOFF_STALE_SECS
-8. Emits a single `STATE=<JSON>` line on stdout (R4 D10: JSON-encoded for paths with spaces)
+2. Sources lib/handoff-resolve.sh (canonical HANDOFF_PATH resolver)
+3. **R8**: Validates `$1` (session_id arg) — empty arg → STATE=no-session-arg (fail-safe, never guess)
+4. Resolves HANDOFF_PATH via `handoff_resolve_path "$CWD" "$ARG_SID"` (probes cwd + repo-root; F2 marker-content-check)
+5. Enforces 5MB size cap, hardlink rejection via `_primer_check_linkcount` in handoff-resolve.sh
+6. Checks freshness vs HANDOFF_LEGACY_CUTOFF_EPOCH and HANDOFF_STALE_SECS
+7. Emits a single `STATE=<JSON>` line on stdout (JSON-encoded for paths with spaces)
 
-**Parse the STATE line (R4 D10: STATE= value is JSON for path-with-spaces safety):**
+**Parse the STATE line (STATE= value is JSON for path-with-spaces safety):**
 ```bash
-STATE_LINE=$(bash "$HOME/.claude-dotfiles/scripts/hooks/post-compact-resume-step2.sh" 2>/dev/null)
+ARG_SID="$ARGUMENTS"
+STATE_LINE=$(bash "$HOME/.claude-dotfiles/scripts/hooks/post-compact-resume-step2.sh" "$ARG_SID" 2>/dev/null)
 STATE=$(printf '%s' "$STATE_LINE" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 ```
 
