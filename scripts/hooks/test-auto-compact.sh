@@ -691,99 +691,41 @@ fi
 rm -rf "$_INC_TMP" "$_INC_HOME"
 
 # ---------------------------------------------------------------------------
-# §R7-INC-06 sid-mismatch dead-code defense-in-depth (R7-INC.1 HIGH)
-# The sid-mismatch check at post-compact-resume-step2.sh:658 is now unreachable via the
-# resolver (F2 catches mismatches first). This test temporarily patches handoff-resolve.sh
-# to remove the F2 marker check, simulating a resolver regression, then runs step2.sh and
-# asserts it still emits STATE=sid-mismatch-hard-stop via its own secondary check.
-# Proves the downstream defense remains live if F2 ever regresses (defense-in-depth).
+# §R8-INC-06 F2 marker-content-check is the primary defense (R8 design)
+# R8: sid-mismatch-hard-stop STATE deleted (no secondary step2.sh check needed).
+# F2 lives in the resolver (handoff-resolve.sh) and catches marker mismatches
+# before step2.sh sees the file. This test proves F2 is active in the resolver:
+# invoke step2.sh with a SID arg pointing to a file with a WRONG marker sid —
+# F2 rejects → resolver returns rc=2 → STATE=no-handoff (fail-safe).
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §R7-INC-06 sid-mismatch dead-code defense-in-depth =="
+echo "== §R8-INC-06 F2 marker-content-check is the live defense (R8) =="
 _INC06_TMP=$(mktemp -d)
 _INC06_HOME=$(mktemp -d)
 _INC06_SID="dc1bdc1b-dc1b-dc1b-dc1b-dc1bdc1bdc1b"
-_INC06_SID8="dc1bdc1b"
-_INC06_NONCE="test-nonce-r7inc06"
+_INC06_NONCE="test-nonce-r8inc06"
 mkdir -p "$_INC06_HOME/.claude/progress" && chmod 700 "$_INC06_HOME/.claude/progress"
 
-# Write a file with MISMATCHED marker (filename sid8=dc1bdc1b, marker sid=wrongsid9)
+# Write a SID-tagged file with MISMATCHED marker (filename=dc1bdc1b-..., marker sid=wrongsid)
 printf 'content with wrong marker\n<!-- END-OF-HANDOFF schema=v1 sid=wrongsid9 nonce=%s -->\n' \
-  "$_INC06_NONCE" > "$_INC06_TMP/CLAUDE.local.dc1bdc1b.md"
+  "$_INC06_NONCE" > "$_INC06_TMP/CLAUDE.local.${_INC06_SID}.md"
 
 _RESOLVE_SH="$ROOT/lib/handoff-resolve.sh"
 _STEP2="$ROOT/post-compact-resume-step2.sh"
 
 if command -v jq >/dev/null 2>&1 && [ -f "$_RESOLVE_SH" ] && [ -f "$_STEP2" ]; then
-  # Write a breadcrumb so step2.sh adopts the SID
-  _INC06_HOST=$(hostname -s 2>/dev/null | head -c 64 || echo "testhost")
-  jq -c -n \
-    --argjson sv 1 \
-    --arg sid "$_INC06_SID" \
-    --arg sid8 "$_INC06_SID8" \
-    --arg nonce "$_INC06_NONCE" \
-    --arg host "$_INC06_HOST" \
-    --arg cwd "$_INC06_TMP" \
-    --arg cmd "pre-compact" \
-    '{schema_version:$sv, originating_command:$cmd, sid:$sid, sid8:$sid8, nonce:$nonce, hostname:$host, cwd:$cwd}' \
-    > "$_INC06_HOME/.claude/progress/breadcrumb-${_INC06_SID}.json"
-  chmod 600 "$_INC06_HOME/.claude/progress/breadcrumb-${_INC06_SID}.json"
-
-  # Temporarily patch handoff-resolve.sh to remove the F2 marker check (simulate regression).
-  # Approach: copy all libs to a temp dir, overwrite handoff-resolve.sh with patched version,
-  # copy step2.sh to the same temp dir so it sources from the patched lib/.
-  _INC06_PATCHDIR=$(mktemp -d)
-  # Copy all libs first (including ctx-gate-config, handoff-marker, etc.)
-  cp -R "$ROOT/lib" "$_INC06_PATCHDIR/lib"
-  # Copy step2.sh to temp dir so _STEP2_DIR points to our patched lib/
-  cp "$_STEP2" "$_INC06_PATCHDIR/post-compact-resume-step2.sh"
-  # Overwrite lib/handoff-resolve.sh with patched version (no F2 check — regression sim)
-  cat > "$_INC06_PATCHDIR/lib/handoff-resolve.sh" << 'PATCHED_EOF'
-#!/usr/bin/env bash
-# PATCHED (R7-INC-06 regression simulation): F2 marker check removed.
-[ -n "${_HANDOFF_RESOLVE_LOADED:-}" ] && return 0
-readonly _HANDOFF_RESOLVE_LOADED=1
-command -v ctx_gate_log >/dev/null 2>&1 || ctx_gate_log() { :; }
-_primer_check_linkcount() {
-  local p="$1"; local linkcount stat_ok; stat_ok=false
-  if linkcount=$(stat -f %l "$p" 2>/dev/null); then stat_ok=true
-  elif linkcount=$(stat -c %h "$p" 2>/dev/null); then stat_ok=true; fi
-  [ "$stat_ok" = "false" ] && { ctx_gate_log "primer skip reason=stat-failed path=$p"; return 1; }
-  linkcount=$(printf '%s' "$linkcount" | tr -d '[:space:]'); [ -z "$linkcount" ] && linkcount=1
-  [ "$linkcount" -gt 1 ] && { ctx_gate_log "primer skip reason=multi-hardlink path=$p linkcount=$linkcount"; return 1; }
-  return 0
-}
-handoff_resolve_path() {
-  local cwd="$1" sid8="${2:-}"; HANDOFF_PATH=""
-  if [ -n "$sid8" ]; then
-    local p="$cwd/CLAUDE.local.${sid8}.md"
-    # PATCHED: F2 marker check REMOVED — accept any non-hardlinked file (regression sim)
-    if [ -f "$p" ] && [ ! -L "$p" ] && _primer_check_linkcount "$p"; then
-      HANDOFF_PATH="$p"; return 0
-    fi
-    return 2
-  fi
-  local p2="$cwd/CLAUDE.local.md"
-  if [ -f "$p2" ] && [ ! -L "$p2" ] && _primer_check_linkcount "$p2"; then
-    HANDOFF_PATH="$p2"; return 0
-  fi
-  return 1
-}
-PATCHED_EOF
-
-  _INC06_OUT=$(cd "$_INC06_TMP" && CLAUDE_SESSION_ID="$_INC06_SID" HOME="$_INC06_HOME" \
-    HANDOFF_ACCEPT_UNSIGNED=1 bash "$_INC06_PATCHDIR/post-compact-resume-step2.sh" 2>/dev/null)
+  # R8: invoke with full SID arg — F2 rejects wrong marker → rc=2 → STATE=no-handoff
+  _INC06_OUT=$(cd "$_INC06_TMP" && HOME="$_INC06_HOME" \
+    bash "$_STEP2" "$_INC06_SID" 2>/dev/null)
   _INC06_STATE=$(printf '%s' "$_INC06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 
-  rm -rf "$_INC06_PATCHDIR"
-
-  if [ "$_INC06_STATE" = "sid-mismatch-hard-stop" ]; then
-    check "R7-INC-06: step2.sh sid-mismatch defense-in-depth still live (catches resolver regression)" 1 1
+  if [ "$_INC06_STATE" = "no-handoff" ]; then
+    check "R8-INC-06: F2 rejects wrong-marker file → STATE=no-handoff (fail-safe, not mix-up)" 1 1
   else
-    check "R7-INC-06: step2.sh sid-mismatch defense dead — STATE='$_INC06_STATE' (expected sid-mismatch-hard-stop)" 1 0
+    check "R8-INC-06: expected STATE=no-handoff got '$_INC06_STATE' (F2 marker check may be broken)" 1 0
   fi
 else
-  check "R7-INC-06: prerequisites missing (jq/handoff-resolve.sh/step2.sh) — skipped" 1 1
+  check "R8-INC-06: prerequisites missing (jq/handoff-resolve.sh/step2.sh) — skipped" 1 1
 fi
 rm -rf "$_INC06_TMP" "$_INC06_HOME"
 
