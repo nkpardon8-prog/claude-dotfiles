@@ -546,17 +546,20 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-compact-legacy: source=compact + mtime<cutoff + no marker → LEGACY warning
-# R8: legacy no-marker SID-tagged file is accepted if mtime < HANDOFF_LEGACY_CUTOFF_EPOCH.
+# R9-R2: legacy no-marker acceptance now applies ONLY to the SID-unknown ALIAS path
+# (CLAUDE.local.md, session_id=""), NOT to the SID-tagged path (markerless SID-tagged is
+# refused — see G4-C / R7-INC-02c). Use the alias path here to keep the LEGACY-warning branch
+# covered on the path where legacy tolerance legitimately survives.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" && chmod 700 "$TMPHOME"
-printf '# old handoff\n## No marker here\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
-touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.newsid.md"  # 2019 = before LEGACY_OVERRIDE_PAST (2020)
-JSON="{\"session_id\":\"newsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+printf '# old handoff\n## No marker here\n' > "$TMPHOME/repo/CLAUDE.local.md"
+touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2019 = before LEGACY_OVERRIDE_PAST (2020)
+JSON="{\"session_id\":\"\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("LEGACY")' >/dev/null 2>&1; then
-  pass "3l-compact-legacy: source=compact + mtime<cutoff + no marker → LEGACY warning"
+  pass "3l-compact-legacy: source=compact + SID-unknown alias + mtime<cutoff + no marker → LEGACY warning"
 else
-  fail "3l-compact-legacy" "expected LEGACY warning, got: $OUT"
+  fail "3l-compact-legacy" "expected LEGACY warning (alias path), got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
