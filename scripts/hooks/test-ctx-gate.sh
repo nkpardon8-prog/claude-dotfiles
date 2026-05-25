@@ -1957,40 +1957,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# §R6-RQ06 Adversarial test: HANDOFF_ACCEPT_UNSIGNED=1 startup warning (HZ-31)
+# §R6-RQ06 SID-arg + SID-tagged file → STATE=ok (R8 clean path)
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §R6-RQ06 HANDOFF_ACCEPT_UNSIGNED=1 startup warning =="
-# When HANDOFF_ACCEPT_UNSIGNED=1 is set, step2.sh must emit a warn log entry.
-# We can't easily read the log in a test, but we can check step2.sh still operates
-# (doesn't crash) and the env var is honored (unsigned breadcrumb accepted).
+echo "== §R6-RQ06 SID-arg + SID-tagged file → STATE=ok (R8) =="
+# R8: HANDOFF_ACCEPT_UNSIGNED removed (no breadcrumbs). This test verifies the
+# clean path: SID arg + SID-tagged file with matching marker → STATE=ok.
 RQ06_TMPWD=$(mktemp -d)
 RQ06_TMPHOME=$(mktemp -d)
 mkdir -p "$RQ06_TMPHOME/.claude/progress" && chmod 700 "$RQ06_TMPHOME/.claude/progress"
-RQ06_SID="rq06-unsigned-${$}"
-RQ06_SID8=$(printf '%s' "$RQ06_SID" | head -c 8)
-RQ06_CWD=$(cd -P "$RQ06_TMPWD" 2>/dev/null && pwd -P)
-RQ06_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
+RQ06_SID="rq06-clean-$$"
 RQ06_NONCE="eeee5555-ffff-0000-1111-222222222222"
-# Write unsigned breadcrumb (no signature field)
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid "$RQ06_SID" \
-  --arg sid8 "$RQ06_SID8" \
-  --arg cwd "$RQ06_CWD" \
-  --arg nonce "$RQ06_NONCE" \
-  --arg host "$RQ06_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$RQ06_TMPHOME/.claude/progress/breadcrumb-${RQ06_SID}.json" 2>/dev/null
-chmod 600 "$RQ06_TMPHOME/.claude/progress/breadcrumb-${RQ06_SID}.json"
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$RQ06_SID8" "$RQ06_NONCE" > "$RQ06_TMPWD/CLAUDE.local.${RQ06_SID8}.md"
-# With HANDOFF_ACCEPT_UNSIGNED=1, unsigned breadcrumb should be accepted → STATE=ok
+  "$RQ06_SID" "$RQ06_NONCE" > "$RQ06_TMPWD/CLAUDE.local.${RQ06_SID}.md"
 STEP2_SH5="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
-RQ06_OUT=$(cd "$RQ06_TMPWD" && CLAUDE_SESSION_ID="$RQ06_SID" HOME="$RQ06_TMPHOME" HANDOFF_ACCEPT_UNSIGNED=1 bash "$STEP2_SH5" 2>/dev/null)
+RQ06_OUT=$(cd "$RQ06_TMPWD" && HOME="$RQ06_TMPHOME" bash "$STEP2_SH5" "$RQ06_SID" 2>/dev/null)
 RQ06_STATE=$(printf '%s' "$RQ06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$RQ06_STATE" = "ok" ]; then
-  pass "R6-RQ06: HANDOFF_ACCEPT_UNSIGNED=1 accepted unsigned breadcrumb → STATE=ok"
+  pass "R6-RQ06: SID arg + SID-tagged matching file → STATE=ok (R8 clean path)"
 else
   fail "R6-RQ06: HANDOFF_ACCEPT_UNSIGNED=1" "expected STATE=ok; got='$RQ06_STATE' raw=${RQ06_OUT:0:200}"
 fi
