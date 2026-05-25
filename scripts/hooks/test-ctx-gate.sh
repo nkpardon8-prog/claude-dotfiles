@@ -1947,22 +1947,25 @@ if command -v handoff_resolve_path >/dev/null 2>&1; then
     fail "R7-INC-02b: resolver allow-empty bypass" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR02B_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
-  # R7-INC-02c: SID-tagged file with no marker + legacy mtime → rc=0 (legacy allow)
+  # R7-INC-02c (R9-R2 fail-closed): SID-tagged file with no marker + LEGACY mtime → rc=2 (REJECT).
+  # Previously legacy-mtime allowed a markerless SID-tagged file (rc=0). R9-Round2 closed that
+  # wrong-load hole: legacy-mtime tolerance is now ALIAS-path only; a markerless SID-tagged file
+  # is refused regardless of mtime. This now matches R7-INC-02b (recent markerless → rc=2) — i.e.
+  # markerless SID-tagged is uniformly fail-closed.
   mkdir -p "$_HR_TMP/02c"
   printf 'content without marker (legacy pre-marker file)\n' > "$_HR_TMP/02c/CLAUDE.local.aaaa1111.md"
-  # Set mtime to 2026-05-01 00:00 (< 1779321600 epoch)
+  # Set mtime to 2026-05-01 00:00 (< cutoff) — under OLD code this legacy-allowed; now still rejected.
   touch -t "202605010000.00" "$_HR_TMP/02c/CLAUDE.local.aaaa1111.md" 2>/dev/null || \
     touch -d "2026-05-01 00:00:00" "$_HR_TMP/02c/CLAUDE.local.aaaa1111.md" 2>/dev/null || true
-  # Only run the test if touch succeeded (mtime < cutoff)
   _FMTIME_02C=$(stat -f %m "$_HR_TMP/02c/CLAUDE.local.aaaa1111.md" 2>/dev/null || stat -c %Y "$_HR_TMP/02c/CLAUDE.local.aaaa1111.md" 2>/dev/null || echo "9999999999")
   if [ "$_FMTIME_02C" -lt "$_LEGACY_CUTOFF" ]; then
     HANDOFF_PATH=""
     HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF handoff_resolve_path "$_HR_TMP/02c" "aaaa1111"
     _HR02C_RC=$?
-    if [ "$_HR02C_RC" -eq 0 ] && [ "$HANDOFF_PATH" = "$_HR_TMP/02c/CLAUDE.local.aaaa1111.md" ]; then
-      pass "R7-INC-02c: resolver accepts legacy SID-tagged file (no marker, mtime < cutoff)"
+    if [ "$_HR02C_RC" -eq 2 ] && [ -z "$HANDOFF_PATH" ]; then
+      pass "R7-INC-02c: markerless SID-tagged file with legacy mtime → rc=2 REJECT (R9-R2 fail-closed, was accept)"
     else
-      fail "R7-INC-02c: resolver legacy allow" "expected rc=0 HANDOFF_PATH=file; got rc=$_HR02C_RC HANDOFF_PATH='$HANDOFF_PATH'"
+      fail "R7-INC-02c: resolver legacy fail-closed" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR02C_RC HANDOFF_PATH='$HANDOFF_PATH'"
     fi
   else
     pass "R7-INC-02c: touch -t not supported on this system (mtime not settable to past) — skip"
