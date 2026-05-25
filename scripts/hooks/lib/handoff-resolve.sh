@@ -185,34 +185,60 @@ handoff_resolve_path() {
     # ---------- R7-INC-04 (F4) cwd alias probe (Defense H12: alias-with-marker-binding) ----------
     # The alias is accepted ONLY when its marker sid= matches the requested sid8.
     # No marker → NOT accepted (no legacy allow for alias; legacy allow is SID-tagged only).
+    # R7-INC.1 (HIGH alias-future-mtime): reject alias if mtime is >300s in the future
+    # (clock-skew tolerance). A future mtime is a signal of tampering or clock skew.
     local alias_p="$cwd/CLAUDE.local.md"
     if [ -f "$alias_p" ] && [ ! -L "$alias_p" ] && _primer_check_linkcount "$alias_p"; then
-      local _alias_marker_sid
-      _alias_marker_sid=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$alias_p" 2>/dev/null | head -1 \
-        | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
-      if [ -n "$_alias_marker_sid" ] && [ "$_alias_marker_sid" = "$sid8" ]; then
-        ctx_gate_log "primer accept reason=alias-with-marker-match sid8=$sid8 file=$alias_p"
-        HANDOFF_PATH="$alias_p"
-        return 0
-      elif [ -n "$_alias_marker_sid" ]; then
-        ctx_gate_log "primer skip reason=alias-marker-mismatch sid8=$sid8 alias_marker_sid=${_alias_marker_sid} file=$alias_p"
+      # Future-mtime guard (300s skew tolerance)
+      local _amt _now
+      if _amt=$(stat -f %m "$alias_p" 2>/dev/null); then :
+      elif _amt=$(stat -c %Y "$alias_p" 2>/dev/null); then :
+      else _amt=0; fi
+      _amt=$(printf '%s' "$_amt" | tr -d '[:space:]'); [ -z "$_amt" ] && _amt=0
+      _now=$(date +%s)
+      if [ "$_amt" -gt $((_now + 300)) ]; then
+        ctx_gate_log "primer skip reason=alias-future-mtime sid8=$sid8 file=$alias_p mtime=$_amt"
+        # Fall through (do not accept alias with future mtime)
+      else
+        local _alias_marker_sid
+        _alias_marker_sid=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$alias_p" 2>/dev/null | head -1 \
+          | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
+        if [ -n "$_alias_marker_sid" ] && [ "$_alias_marker_sid" = "$sid8" ]; then
+          ctx_gate_log "primer accept reason=alias-with-marker-match sid8=$sid8 file=$alias_p"
+          HANDOFF_PATH="$alias_p"
+          return 0
+        elif [ -n "$_alias_marker_sid" ]; then
+          ctx_gate_log "primer skip reason=alias-marker-mismatch sid8=$sid8 alias_marker_sid=${_alias_marker_sid} file=$alias_p"
+        fi
+        # Alias with no marker: NOT accepted under Defense H12 (binding requires marker).
       fi
-      # Alias with no marker: NOT accepted under Defense H12 (binding requires marker).
     fi
 
     # ---------- R7-INC-04 (F4) repo-root alias probe ----------
     if [ -n "$repo_root" ]; then
       local alias_p2="$repo_root/CLAUDE.local.md"
       if [ -f "$alias_p2" ] && [ ! -L "$alias_p2" ] && _primer_check_linkcount "$alias_p2"; then
-        local _alias_marker_sid2
-        _alias_marker_sid2=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$alias_p2" 2>/dev/null | head -1 \
-          | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
-        if [ -n "$_alias_marker_sid2" ] && [ "$_alias_marker_sid2" = "$sid8" ]; then
-          ctx_gate_log "primer accept reason=alias-with-marker-match sid8=$sid8 file=$alias_p2"
-          HANDOFF_PATH="$alias_p2"
-          return 0
-        elif [ -n "$_alias_marker_sid2" ]; then
-          ctx_gate_log "primer skip reason=alias-marker-mismatch sid8=$sid8 alias_marker_sid=${_alias_marker_sid2} file=$alias_p2"
+        # Future-mtime guard (300s skew tolerance)
+        local _amt2 _now2
+        if _amt2=$(stat -f %m "$alias_p2" 2>/dev/null); then :
+        elif _amt2=$(stat -c %Y "$alias_p2" 2>/dev/null); then :
+        else _amt2=0; fi
+        _amt2=$(printf '%s' "$_amt2" | tr -d '[:space:]'); [ -z "$_amt2" ] && _amt2=0
+        _now2=$(date +%s)
+        if [ "$_amt2" -gt $((_now2 + 300)) ]; then
+          ctx_gate_log "primer skip reason=alias-future-mtime sid8=$sid8 file=$alias_p2 mtime=$_amt2"
+          # Fall through (do not accept alias with future mtime)
+        else
+          local _alias_marker_sid2
+          _alias_marker_sid2=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$alias_p2" 2>/dev/null | head -1 \
+            | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
+          if [ -n "$_alias_marker_sid2" ] && [ "$_alias_marker_sid2" = "$sid8" ]; then
+            ctx_gate_log "primer accept reason=alias-with-marker-match sid8=$sid8 file=$alias_p2"
+            HANDOFF_PATH="$alias_p2"
+            return 0
+          elif [ -n "$_alias_marker_sid2" ]; then
+            ctx_gate_log "primer skip reason=alias-marker-mismatch sid8=$sid8 alias_marker_sid=${_alias_marker_sid2} file=$alias_p2"
+          fi
         fi
       fi
     fi
