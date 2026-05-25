@@ -1556,19 +1556,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# §G4-M sid-mismatch-hard-stop with breadcrumb deletion assertion (Phase 4 Round 4) — Critical #5
+# §G4-M Resolver content-check rejects SID-tagged with wrong marker (R7-INC-02 F2) — updated for Defense H12
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §G4-M sid-mismatch-hard-stop + breadcrumb deletion =="
-# Setup: breadcrumb with SID_X, SID-tagged handoff file has marker with sid=DIFFERENT.
-# Assert STATE=sid-mismatch-hard-stop AND breadcrumb is deleted (consumed).
+echo "== §G4-M Resolver content-check: SID-tagged with wrong marker → sid-known-no-tagged-file =="
+# R7-INC-02: resolver now rejects a SID-tagged file whose marker sid ≠ requested sid8.
+# Previously (pre-R7-INC) this produced sid-mismatch-hard-stop via step2.sh secondary check.
+# Now the resolver (F2) catches it first → sid-known-no-tagged-file.
+# This is the correct INV-25 behavior: the resolver content-check is the primary defense.
 TMPWD_M=$(mktemp -d)
 TMPHOME_M=$(mktemp -d)
 mkdir -p "$TMPHOME_M/.claude/progress" && chmod 700 "$TMPHOME_M/.claude/progress"
 GM_SID="g4m-mismatch-$$"
 GM_SID8="${GM_SID:0:8}"
 GM_NONCE="11111111-aaaa-bbbb-cccc-dddddddddddd"
-GM_MARKER_SID="wrongsid"   # marker claims a different SID8 → mismatch
+GM_MARKER_SID="wrongsid"   # marker claims a different SID8 → resolver rejects at content-check
 GM_CWD=$(cd -P "$TMPWD_M" 2>/dev/null && pwd -P)
 GM_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
 GM_BREADCRUMB="$TMPHOME_M/.claude/progress/breadcrumb-${GM_SID}.json"
@@ -1582,22 +1584,21 @@ jq -c -n \
   '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
   > "$GM_BREADCRUMB" 2>/dev/null
 chmod 600 "$GM_BREADCRUMB"
-# Write handoff file with WRONG SID in marker (triggers sid-mismatch-hard-stop)
+# Write SID-tagged file with WRONG SID in marker → resolver content-check (INV-25) rejects it
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$GM_MARKER_SID" "$GM_NONCE" > "$TMPWD_M/CLAUDE.local.${GM_SID8}.md"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
 OUT_M=$(cd "$TMPWD_M" && CLAUDE_SESSION_ID="$GM_SID" HOME="$TMPHOME_M" bash "$STEP2_SH" 2>/dev/null)
 GM_STATE=$(printf '%s' "$OUT_M" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$GM_STATE" = "sid-mismatch-hard-stop" ]; then
-  pass "G4-M: sid-mismatch-hard-stop fires when marker SID differs from breadcrumb SID8"
-  # Assert breadcrumb was consumed (deleted by EXIT trap — C5: sid-mismatch is definitive)
-  if [ ! -f "$GM_BREADCRUMB" ]; then
-    pass "G4-M: breadcrumb deleted after sid-mismatch-hard-stop (consumed per C5)"
-  else
-    fail "G4-M: breadcrumb not deleted after sid-mismatch-hard-stop" "breadcrumb should be consumed"
-  fi
+# R7-INC-02: resolver content-check fires BEFORE step2.sh sid-mismatch check.
+# SID-tagged file with wrong marker → rc=2 → sid-known-no-tagged-file (correct per INV-25).
+if [ "$GM_STATE" = "sid-known-no-tagged-file" ]; then
+  pass "G4-M: resolver content-check rejects SID-tagged with wrong marker → sid-known-no-tagged-file (INV-25)"
+elif [ "$GM_STATE" = "sid-mismatch-hard-stop" ]; then
+  # step2.sh secondary check fired (resolver passed the file — unexpected with R7-INC-02)
+  fail "G4-M: resolver content-check should have caught wrong marker before step2.sh (R7-INC-02 F2 regression)" "expected sid-known-no-tagged-file; got sid-mismatch-hard-stop"
 else
-  fail "G4-M: sid-mismatch-hard-stop" "expected state=sid-mismatch-hard-stop got '$GM_STATE' raw: ${OUT_M:0:200}"
+  fail "G4-M: resolver content-check" "expected state=sid-known-no-tagged-file got '$GM_STATE' raw: ${OUT_M:0:200}"
 fi
 rm -rf "$TMPWD_M" "$TMPHOME_M"
 
