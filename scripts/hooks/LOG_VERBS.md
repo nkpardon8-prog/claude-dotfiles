@@ -113,3 +113,4 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `arm_failed reason=empty-sid` | lib/auto-compact-sentinel.sh (ac_resolve_session_id) | Session ID resolved to empty string — sentinel write refused. Prevents auto-compact-.json collision where all empty-SID sessions share one sentinel |
 | `no-session-arg` | post-compact-resume-step2.sh | R8: /post-compact-resume invoked with no session_id arg — delivery degraded; fail-safe refuse (never guess) |
 | `invalid-session-arg` | post-compact-resume-step2.sh | R8: session_id arg contains characters outside [A-Za-z0-9_-] — refuse |
+| `arg-not-my-session` | post-compact-resume-step2.sh | R9 HIGH-1 (wrong-load guard): session_id arg != this session's own id (CLAUDE_CODE_SESSION_ID) — command mis-delivered/mis-pasted; refuse to load another session's handoff. self= and arg= logged. Skipped when self id unavailable (additive defense) |
