@@ -98,11 +98,19 @@ handoff_log "handoff_detected sid=${SID:-unknown} file=${HANDOFF_PATH:-unknown} 
 
 # R4 D3 + R2-PR-7: handle rc=2 before the generic no-handoff check.
 if [ "$RESOLVE_RC" -eq 2 ]; then
-  ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-no-tagged-file sid=${SID:-unknown}"
-  ctx_gate_log "primer warn reason=sentinel-without-sid-file sid=${SID:-unknown}"
-  jq -n \
-    --arg msg "WARNING: A /pre-compact ran for this session (sid=${SID:-unknown}) but the SID-tagged handoff file (CLAUDE.local.${SID:-unknown}.md) is missing. Possible causes: (1) file deleted, (2) cwd changed since /pre-compact, (3) another agent moved it. Ask the user before proceeding. If auto-resume did not fire, run: /post-compact-resume ${SID:-<session_id>}" \
-    '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
+  # R8: only emit the SID-tagged-file-missing warning if a sentinel was FOUND for this session
+  # (i.e., we KNOW /pre-compact ran here). Without a sentinel, this is an ordinary session start
+  # with no handoff — treat as rc=1 (silent exit). Emitting a warning when no sentinel exists
+  # would be spurious noise on every session start that has no handoff.
+  if [ "${SENTINEL_PRESENT:-false}" = "true" ]; then
+    ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-no-tagged-file sid=${SID:-unknown}"
+    ctx_gate_log "primer warn reason=sentinel-without-sid-file sid=${SID:-unknown}"
+    jq -n \
+      --arg msg "WARNING: A /pre-compact ran for this session (sid=${SID:-unknown}) but the SID-tagged handoff file (CLAUDE.local.${SID:-unknown}.md) is missing. Possible causes: (1) file deleted, (2) cwd changed since /pre-compact, (3) another agent moved it. Ask the user before proceeding. If auto-resume did not fire, run: /post-compact-resume ${SID:-<session_id>}" \
+      '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
+  else
+    ctx_gate_log "primer sid=${SID:-unknown} action=skip reason=no-handoff-file-for-sid"
+  fi
   exit 0
 fi
 
