@@ -7,6 +7,12 @@
 #   0 — resolved
 #   1 — no handoff (SID unknown, no alias either)
 #   2 — SID known but no SID-tagged file found (R4 D3 fail-closed signal)
+#   3 — SID-tagged file exists but is hardlinked (rc=3 distinct from rc=2)
+#
+# R7-INC: adds marker-sid content-check (F2/RQ-INC-02) and alias-with-marker-binding
+# probe (F4/RQ-INC-04 Defense H12).  Both checks use inline grep|sed unconditionally
+# (no `command -v handoff_marker_sid` dual-path). Canonical pattern mirrors
+# handoff-marker.sh:130.
 #
 # macOS bash 3.2.57 compatible.
 
