@@ -93,7 +93,8 @@ RESOLVE_RC=$?
 
 # R4 D6: log the actually-selected handoff path AFTER primer_resolve_handoff_path completes
 # (HANDOFF_PATH is now set; at primer_find_sentinel_for_cwd call time it was still empty).
-handoff_log "handoff_detected sid=${SENTINEL_SID8:-unknown} file=${HANDOFF_PATH:-unknown} sentinel_present=${SENTINEL_PRESENT:-false}"
+# V2-15 (R8): log full session_id instead of truncated SENTINEL_SID8.
+handoff_log "handoff_detected sid=${SID:-unknown} file=${HANDOFF_PATH:-unknown} sentinel_present=${SENTINEL_PRESENT:-false}"
 
 # R4 D3 + R2-PR-7: handle rc=2 before the generic no-handoff check.
 if [ "$RESOLVE_RC" -eq 2 ]; then
