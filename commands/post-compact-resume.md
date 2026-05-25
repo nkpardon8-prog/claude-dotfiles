@@ -122,6 +122,21 @@ Then route per the decision matrix below.
   > This may indicate a delivery corruption. Ask the user to re-run /pre-compact.
   Then stop.
 
+- **STATE=`arg-not-my-session` (R9 — wrong-load structural guard):** the session_id argument does
+  NOT match this session's own id (`CLAUDE_CODE_SESSION_ID`). The marker-content-check only proves
+  *file matches arg*; this check proves *arg matches the session reading it*. A mismatch means the
+  `/post-compact-resume` command was mis-delivered (tab-targeting misfire) or mis-pasted (e.g. session
+  A's banner command pasted into session B's tab). Without this guard, B sharing a repo-root with A
+  would silently load A's handoff — the exact cross-session contamination this subsystem prevents.
+  Extract: `self_sid`, `arg_sid` from STATE JSON.
+  Output to user:
+  > WARNING: The session_id passed to /post-compact-resume (`arg_sid`) does not match this session
+  > (`self_sid`). This command may have been delivered or pasted into the wrong terminal. Refusing to
+  > load another session's handoff to avoid context contamination.
+  > To resume THIS session, run `/post-compact-resume <id>` with this session's own id — the
+  > SessionStart banner shows the exact command.
+  Then stop. Do NOT load the file. (Fail-safe: refuse, never wrong-load.)
+
 - **STATE=`oversize`:** output to user:
   Extract: `size`, `max` from STATE JSON.
   > Handoff file is too large (`size` bytes; limit `max` bytes).
