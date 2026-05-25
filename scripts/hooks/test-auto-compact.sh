@@ -644,7 +644,7 @@ printf 'Track A Seq 30 — real handoff\n<!-- END-OF-HANDOFF schema=v1 sid=a90ac
 _STEP2="$ROOT/post-compact-resume-step2.sh"
 if command -v jq >/dev/null 2>&1 && [ -f "$_STEP2" ]; then
   # R8: invoke with full SID arg (not via breadcrumb)
-  _INC_OUT=$(cd "$_INC_TMP" && HOME="$_INC_HOME" bash "$_STEP2" "$_INC_SID" 2>/dev/null)
+  _INC_OUT=$(cd "$_INC_TMP" && HOME="$_INC_HOME" CLAUDE_CODE_SESSION_ID="$_INC_SID" bash "$_STEP2" "$_INC_SID" 2>/dev/null)
   _INC_STATE=$(printf '%s' "$_INC_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
   # F2 rejects wrong-marker file → rc=2 → STATE=no-handoff (safe, not mix-up).
   # F4 alias probe is deleted — CLAUDE.local.md is NOT accepted as fallback.
