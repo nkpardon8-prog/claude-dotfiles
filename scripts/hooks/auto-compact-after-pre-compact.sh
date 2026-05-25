@@ -70,28 +70,19 @@ SENTINEL=$(ac_sentinel_path "$REAL_SID")
 # only routine cleanup path because most Stop events skip the sentinel-consume
 # path (`[ -f "$SENTINEL" ] || exit 0` below is the typical fast-path). Putting
 # GC here ensures it actually runs.
-# R4 D5: GC only cross-session .claim files (they're orphaned by definition once their
-# Stop hook process exits). Breadcrumbs are now per-session lifecycle: owner deletes on
-# read OR own-session Stop deletes on next /pre-compact arm.
 find "$HOME/.claude/progress" -maxdepth 1 -type f \
   -name 'auto-compact-*.json.claim.*' \
   -mmin +60 -delete 2>/dev/null || true
 
-# H12 fix: GC stale orphan breadcrumbs (>24h old). These cannot belong to any live
-# session — the 1h age guard in step2.sh rejects anything >3600s, and the EXIT trap
-# (C4 fix) deletes breadcrumbs on consume. A >24h breadcrumb can only come from a
-# crashed session (kernel panic, OOM, hard-kill). Safe to delete unconditionally.
+# V2-11 (R8): GC stale orphan breadcrumbs (>24h old) — sweeps migration residue from
+# pre-R8 sessions that wrote breadcrumbs. Also sweep stale .session-key-* files from
+# pre-R8 sessions. Both are safe to delete after 24h; no live session uses them under R8.
 # The count-and-log pattern keeps the log quiet under normal operation.
 GC_BREAD_COUNT=$(find "$HOME/.claude/progress" -maxdepth 1 -type f \
   -name 'breadcrumb-*.json' \
   -mmin +1440 -print -delete 2>/dev/null | wc -l | tr -d '[:space:]')
 [ -n "$GC_BREAD_COUNT" ] && [ "$GC_BREAD_COUNT" -gt 0 ] && handoff_log "gc_stale_orphan_breadcrumbs count=$GC_BREAD_COUNT"
 
-# RQ-05 (R6 HZ-27/INV-12): GC stale session key files (>24h old).
-# Key files persist indefinitely without this; they accumulate one per session.
-# 24h TTL is safe because: (a) breadcrumb age guard rejects >3600s breadcrumbs,
-# so no live session's breadcrumb could be verified with a >1h-old key;
-# (b) 24h gives a generous safety margin to cover any clock-skew or delayed step2 run.
 find "$HOME/.claude/progress" -maxdepth 1 -type f \
   -name '.session-key-*' \
   -mmin +1440 -delete 2>/dev/null || true
