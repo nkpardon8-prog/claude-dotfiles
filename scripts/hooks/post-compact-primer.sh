@@ -187,21 +187,22 @@ case "$SOURCE" in
     else
       ANOMALY_WARNING=""
     fi
-    MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. /post-compact-resume should auto-fire from the Stop-hook queue. If it did not fire, run /post-compact-resume now."
+    # R8: advisory prints the exact /post-compact-resume command including session_id.
+    MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. /post-compact-resume should auto-fire from the Stop-hook queue. If it did not fire, run: /post-compact-resume ${SID:-<session_id>}"
     ;;
   resume|startup|clear)
     if [ "$SENTINEL_PRESENT" = "true" ]; then
       # Sentinel exists = /pre-compact ran but /compact did not fire (hard channel lost).
-      MSG="${MARKER_WARNING}${STALE_WARNING}RESUMED SESSION with PENDING HANDOFF. A /pre-compact ran but /compact did not fire (laptop close, crash, or terminal exit). Handoff at ${HANDOFF_PATH}. Your FIRST action: run /post-compact-resume to navigate the handoff."
+      MSG="${MARKER_WARNING}${STALE_WARNING}RESUMED SESSION with PENDING HANDOFF. A /pre-compact ran but /compact did not fire (laptop close, crash, or terminal exit). Handoff at ${HANDOFF_PATH}. Your FIRST action: run /post-compact-resume ${SID:-<session_id>}"
     else
       # No sentinel; handoff file may be from any prior session.
-      MSG="${MARKER_WARNING}${STALE_WARNING}SESSION START with existing handoff at ${HANDOFF_PATH}. If this is the continuation of prior work, run /post-compact-resume. If it is unrelated, ignore."
+      MSG="${MARKER_WARNING}${STALE_WARNING}SESSION START with existing handoff at ${HANDOFF_PATH}. If this is the continuation of prior work, run /post-compact-resume ${SID:-<session_id>}. If it is unrelated, ignore."
     fi
     ;;
   *)
     # Unknown source — emit minimal nav. With E2 regex matcher, only compact|resume|startup|clear
     # should ever reach here. Defensive fallback for any future Claude Code source types.
-    MSG="${MARKER_WARNING}${STALE_WARNING}Handoff at ${HANDOFF_PATH}. If resuming prior work, run /post-compact-resume."
+    MSG="${MARKER_WARNING}${STALE_WARNING}Handoff at ${HANDOFF_PATH}. If resuming prior work, run /post-compact-resume ${SID:-<session_id>}."
     ;;
 esac
 
