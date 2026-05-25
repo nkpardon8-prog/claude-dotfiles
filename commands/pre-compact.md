@@ -722,12 +722,14 @@ typed command (proven by `scripts/r8-argument-delivery-smoke`).
 **Wrong-load defense, two layers (R8 + R9):**
 1. **Content layer (R8 F2):** the resolver accepts `CLAUDE.local.<sid>.md` only when the file's
    `END-OF-HANDOFF` marker `sid=` equals the requested session_id (file-vs-arg).
-2. **Consumer layer (R9 HIGH-1):** the reader (`post-compact-resume-step2.sh`) additionally refuses
-   with `STATE=arg-not-my-session` when the argument does not match THIS session's own id
-   (`CLAUDE_CODE_SESSION_ID`, stable across `/compact`) — arg-vs-self. This closes the residual
-   wrong-load path where a mis-delivered or mis-pasted command names a *different* session whose
-   handoff happens to live in a shared repo-root. The check is skipped (degrades to the content
-   layer) only when `CLAUDE_CODE_SESSION_ID` is unavailable, so it is purely additive.
+2. **Consumer layer (R9 HIGH-1; R9-Round2 fail-closed):** the reader (`post-compact-resume-step2.sh`)
+   additionally refuses with `STATE=arg-not-my-session` when the argument does not match THIS session's
+   own id (`CLAUDE_CODE_SESSION_ID`) — arg-vs-self. This closes the residual wrong-load path where a
+   mis-delivered or mis-pasted command names a *different* session whose handoff happens to live in a
+   shared repo-root. **When `CLAUDE_CODE_SESSION_ID` is unavailable the check FAILS CLOSED with
+   `STATE=self-unverifiable` (refuse) — NOT skipped** (R9-Round2: degrading to content-only is itself a
+   wrong-load path). On supported Claude Code the env var is always set, so the legit auto-resume never
+   hits this; only degraded/older clients refuse — the correct medical-grade trade (never wrong-load).
 
 **Writer single-source SID:** `/pre-compact` Step 3.B resolves the session id ONCE, preferring
 `CLAUDE_SESSION_ID` then `CLAUDE_CODE_SESSION_ID` (the empirically reliable var — `CLAUDE_SESSION_ID`
