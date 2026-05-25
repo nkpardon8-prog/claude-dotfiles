@@ -705,13 +705,39 @@ fi
 
 ---
 
-## Security Notes (R5/R6)
+## Security Notes (R8/R9)
 
-**HMAC breadcrumb signing (R5+):** The Stop hook signs every breadcrumb with a per-session HMAC-SHA256 key stored at `~/.claude/progress/.session-key-<sid8>`. The `/post-compact-resume` reader verifies this signature before trusting any breadcrumb. This prevents an attacker who knows the session ID from forging a breadcrumb pointing to adversarial handoff content.
+> **Superseded:** R5/R6 described an HMAC-breadcrumb-signing model. R8 DELETED that entire layer
+> (`lib/session-key.sh`, breadcrumbs, slug-fallback, nonce). There is no signing, no key file, and
+> no `HANDOFF_ACCEPT_UNSIGNED` escape hatch anymore. The notes below describe the current model.
 
-**HANDOFF_ACCEPT_UNSIGNED=1 (migration escape hatch):** If you upgraded from pre-R5 and see `STATE=signature-mismatch` or `STATE=hmac-unavailable`, set `HANDOFF_ACCEPT_UNSIGNED=1` to bypass HMAC verification for a single resume run. This is a one-time migration mechanism — unset the variable after migration is complete. Do NOT set it permanently in your shell profile.
+**Identity-via-command-argument (R8):** The Stop hook threads the platform `session_id` verbatim
+into the typed command `/post-compact-resume <session_id>` (AppleScript `do script` into the
+originating tab's PTY). The reader uses the argument verbatim — it never re-derives identity. The
+session id is sanitized to `[A-Za-z0-9_-]` at the Stop-hook payload boundary and re-validated by the
+reader, so a hostile payload cannot inject AppleScript or shell metacharacters. Raw concat (not
+`quoted form of`) is correct and required — `quoted form of` injects literal quotes that corrupt the
+typed command (proven by `scripts/r8-argument-delivery-smoke`).
 
-**Key file GC:** Session key files at `~/.claude/progress/.session-key-<sid8>` are automatically pruned after 24 hours by the Stop hook's GC block. This bounds accumulation to O(sessions per day). If you need to force-clean: `rm ~/.claude/progress/.session-key-*` — any session that needs to sign after this will regenerate its key automatically.
+**Wrong-load defense, two layers (R8 + R9):**
+1. **Content layer (R8 F2):** the resolver accepts `CLAUDE.local.<sid>.md` only when the file's
+   `END-OF-HANDOFF` marker `sid=` equals the requested session_id (file-vs-arg).
+2. **Consumer layer (R9 HIGH-1):** the reader (`post-compact-resume-step2.sh`) additionally refuses
+   with `STATE=arg-not-my-session` when the argument does not match THIS session's own id
+   (`CLAUDE_CODE_SESSION_ID`, stable across `/compact`) — arg-vs-self. This closes the residual
+   wrong-load path where a mis-delivered or mis-pasted command names a *different* session whose
+   handoff happens to live in a shared repo-root. The check is skipped (degrades to the content
+   layer) only when `CLAUDE_CODE_SESSION_ID` is unavailable, so it is purely additive.
+
+**Writer single-source SID:** `/pre-compact` Step 3.B resolves the session id ONCE, preferring
+`CLAUDE_SESSION_ID` then `CLAUDE_CODE_SESSION_ID` (the empirically reliable var — `CLAUDE_SESSION_ID`
+is generally unset in the Bash-tool subprocess), `ac_resolve_session_id` only as last resort. The
+resolved id is the handoff filename AND must equal the id the Stop hook threads, so writer and reader
+agree. F1 writer-verify confirms the written marker sid == the filename.
+
+**Untrusted-data framing (unchanged):** the handoff file is untrusted data. The reader records its
+content; it does NOT auto-execute directives found inside it. This is the sole prompt-injection
+defense and must never be dropped from `/post-compact-resume`.
 
 ---
 
