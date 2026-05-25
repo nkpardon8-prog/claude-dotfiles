@@ -651,75 +651,42 @@ fi
 rm -rf "$_SCRATCH_DIR"
 
 # ---------------------------------------------------------------------------
-# §R7-INC-05 Live-incident reproduction (E2E resolver) — dentalai layout
-# Reproduces the 2026-05-24 sid-mismatch-hard-stop incident.
-# Layout: CLAUDE.local.a90ac8f5.md (no marker/old), CLAUDE.local.md (marker sid=a90ac8f5).
-# With R7-INC F2+F4: step2.sh should return STATE=ok with path=alias.
-# Uses HANDOFF_ACCEPT_UNSIGNED=1 to bypass HMAC (HMAC separately tested; this test is
-# F2+F4 resolver behavior). HOME is redirected to avoid touching real breadcrumbs.
+# §R8-INC-05 F2 marker-content-check with wrong-marker SID-tagged file
+# R8: F4 alias probe is removed (V2-6). When the SID-tagged file has a wrong marker
+# (resolver-marker-sid-mismatch), the resolver returns rc=2 (no-handoff/fail-closed).
+# No alias fallback. This tests that F2 correctly rejects a wrong-marker file and that
+# the R8 design (fail-safe no-handoff, not mix-up) holds.
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §R7-INC-05 live-incident E2E reproduction (dentalai layout, F2+F4) =="
+echo "== §R8-INC-05 F2 marker-mismatch + no alias fallback (R8) =="
 _INC_TMP=$(mktemp -d)
 _INC_HOME=$(mktemp -d)
 _INC_SID="a90ac8f5-793b-4444-8888-123456789abc"
-_INC_SID8="a90ac8f5"
-_INC_NONCE="test-nonce-r7inc05"
+_INC_NONCE="test-nonce-r8inc05"
 mkdir -p "$_INC_HOME/.claude/progress" && chmod 700 "$_INC_HOME/.claude/progress"
 
-# Write the ACTUAL incident layout (R7-INC.1: use WRONG marker, not no-marker).
-# The real incident: CLAUDE.local.a90ac8f5.md had marker sid=c6f7c23c (Track B's SID),
-# not the requesting session's sid=a90ac8f5. This exercises the resolver-marker-sid-mismatch
-# path (F2), which falls through to the alias probe (F4), recovering Track A's handoff.
-# 1. CLAUDE.local.a90ac8f5.md — WRONG marker (Track B's SID c6f7c23c — the real incident)
+# Write a SID-tagged file with WRONG marker sid (Track B's SID)
 printf 'Track B Seq 3 content\n<!-- END-OF-HANDOFF schema=v1 sid=c6f7c23c nonce=test-nonce-trackb -->\n' \
-  > "$_INC_TMP/CLAUDE.local.a90ac8f5.md"
+  > "$_INC_TMP/CLAUDE.local.${_INC_SID}.md"
 
-# 2. CLAUDE.local.md — marker sid=a90ac8f5 (Track A's real Seq 30)
-printf 'Track A Seq 30 — real handoff\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$_INC_SID8" "$_INC_NONCE" > "$_INC_TMP/CLAUDE.local.md"
+# Write CLAUDE.local.md alias (present but should NOT be used under R8 — F4 deleted)
+printf 'Track A Seq 30 — real handoff\n<!-- END-OF-HANDOFF schema=v1 sid=a90ac8f5 nonce=%s -->\n' \
+  "$_INC_NONCE" > "$_INC_TMP/CLAUDE.local.md"
 
-# Write a breadcrumb so step2.sh adopts the SID
-_INC_HOST=$(hostname -s 2>/dev/null | head -c 64 || echo "testhost")
-if command -v jq >/dev/null 2>&1; then
-  jq -c -n \
-    --argjson sv 1 \
-    --arg sid "$_INC_SID" \
-    --arg sid8 "$_INC_SID8" \
-    --arg nonce "$_INC_NONCE" \
-    --arg host "$_INC_HOST" \
-    --arg cwd "$_INC_TMP" \
-    --arg cmd "pre-compact" \
-    '{schema_version:$sv, originating_command:$cmd, sid:$sid, sid8:$sid8, nonce:$nonce, hostname:$host, cwd:$cwd}' \
-    > "$_INC_HOME/.claude/progress/breadcrumb-${_INC_SID}.json"
-  chmod 600 "$_INC_HOME/.claude/progress/breadcrumb-${_INC_SID}.json"
-
-  _STEP2="$ROOT/post-compact-resume-step2.sh"
-  if [ -f "$_STEP2" ]; then
-    _INC_OUT=$(cd "$_INC_TMP" && CLAUDE_SESSION_ID="$_INC_SID" HOME="$_INC_HOME" \
-      HANDOFF_ACCEPT_UNSIGNED=1 bash "$_STEP2" 2>/dev/null)
-    _INC_STATE=$(printf '%s' "$_INC_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-    _INC_PATH=$(printf '%s' "$_INC_OUT" | sed -n 's/^STATE=//p' | jq -r '.path // empty' 2>/dev/null)
-    # R7-INC.1: assert STATE=ok specifically (vacuous-pass anti-pattern closed).
-    # HANDOFF_ACCEPT_UNSIGNED=1 is set; breadcrumb nonce=test-nonce-r7inc05 matches alias
-    # marker nonce=test-nonce-r7inc05; resolver exercises F2 (rejects wrong-marker SID-tagged)
-    # then F4 (accepts alias with matching marker). STATE=ok is required, not inconclusive.
-    if [ "$_INC_STATE" = "ok" ] && printf '%s' "$_INC_PATH" | grep -q "CLAUDE.local.md"; then
-      check "R7-INC-05: live-incident E2E — Track A alias recovered (STATE=ok, path=alias, F2+F4 working)" 1 1
-    elif [ "$_INC_STATE" = "ok" ]; then
-      check "R7-INC-05: live-incident E2E — STATE=ok but path='$_INC_PATH' (expected alias path)" 1 0
-    elif [ "$_INC_STATE" = "sid-mismatch-hard-stop" ]; then
-      check "R7-INC-05: live-incident still fires sid-mismatch-hard-stop (F2 resolver content-check not working — sidmismatch should be caught BEFORE step2 sees the file)" 1 0
-    elif [ "$_INC_STATE" = "sid-known-no-tagged-file" ]; then
-      check "R7-INC-05: resolver returned sid-known-no-tagged-file (F4 alias probe not working — alias with matching marker should be accepted)" 1 0
-    else
-      check "R7-INC-05: unexpected STATE='$_INC_STATE' (required STATE=ok; see F2+F4 design)" 1 0
-    fi
+_STEP2="$ROOT/post-compact-resume-step2.sh"
+if command -v jq >/dev/null 2>&1 && [ -f "$_STEP2" ]; then
+  # R8: invoke with full SID arg (not via breadcrumb)
+  _INC_OUT=$(cd "$_INC_TMP" && HOME="$_INC_HOME" bash "$_STEP2" "$_INC_SID" 2>/dev/null)
+  _INC_STATE=$(printf '%s' "$_INC_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+  # F2 rejects wrong-marker file → rc=2 → STATE=no-handoff (safe, not mix-up).
+  # F4 alias probe is deleted — CLAUDE.local.md is NOT accepted as fallback.
+  if [ "$_INC_STATE" = "no-handoff" ]; then
+    check "R8-INC-05: wrong-marker SID-tagged → F2 rejects → STATE=no-handoff (fail-safe, no alias fallback)" 1 1
   else
-    check "R7-INC-05: post-compact-resume-step2.sh not found at $ROOT — skipped" 1 1
+    check "R8-INC-05: expected STATE=no-handoff got '$_INC_STATE' (F2 mismatch + no alias fallback)" 1 0
   fi
 else
-  check "R7-INC-05: jq not available — skipped (inconclusive)" 1 1
+  check "R8-INC-05: jq or step2.sh not available — skipped" 1 1
 fi
 rm -rf "$_INC_TMP" "$_INC_HOME"
 
