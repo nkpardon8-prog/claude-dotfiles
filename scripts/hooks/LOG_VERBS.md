@@ -108,6 +108,7 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `primer skip reason=resolver-no-marker-non-legacy sid8=<sid8> file=<path> mtime=<ts> cutoff=<ts>` | handoff-resolve.sh | R7-INC-02 (F2): SID-tagged file has no END-OF-HANDOFF marker and its mtime is not legacy (>= HANDOFF_LEGACY_CUTOFF_EPOCH); allow-empty bypass attack closed |
 | `primer accept reason=alias-with-marker-match sid8=<sid8> file=<path>` | handoff-resolve.sh | R7-INC-04 (F4): alias CLAUDE.local.md accepted under Defense H12 — alias marker sid= matches requested sid8 |
 | `primer skip reason=alias-marker-mismatch sid8=<sid8> alias_marker_sid=<observed> file=<path>` | handoff-resolve.sh | R7-INC-04 (F4): alias rejected — its marker sid= does not match requested sid8; cross-track contamination prevented |
+| `primer skip reason=alias-future-mtime sid8=<sid8> file=<path> mtime=<ts>` | handoff-resolve.sh | R7-INC.1 (alias-future-mtime guard): alias rejected — its mtime is >300s in the future (clock-skew threshold exceeded; tampering or clock drift signal) |
 | `primer skip reason=stat-failed` | handoff-resolve.sh | stat() failed on handoff candidate — cannot verify linkcount; fail-closed (H10 fix-sweep) |
 | `step2 skip reason=invalid-sid8` | post-compact-resume-step2.sh | SID8 contains characters outside [A-Za-z0-9_-]; breadcrumb rejected (C5 fix-sweep) |
 | `step2 skip reason=invalid-sentinel-sid` | post-compact-resume-step2.sh | Full sentinel SID contains invalid characters; breadcrumb rejected (C5 fix-sweep) |
