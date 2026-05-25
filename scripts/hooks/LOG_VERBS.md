@@ -46,19 +46,15 @@ documented here to satisfy the G5 drift checker.
 | `handoff:session_started` | post-compact-primer.sh | Primer fired; SID + source logged |
 | `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD (R4 D6: logged AFTER resolver sets HANDOFF_PATH); SID8 + file + sentinel_present logged |
 
-### Breadcrumb write events (within auto-compact.log)
+### Migration residue GC events (within auto-compact.log)
 
-These verbs are emitted by `auto-compact-after-pre-compact.sh` (Stop hook) during breadcrumb write.
+These verbs are emitted by `auto-compact-after-pre-compact.sh` (Stop hook) during GC.
+R8: breadcrumb-write block removed (identity-via-arg — no breadcrumbs written under R8).
+The GC below sweeps pre-R8 breadcrumbs and session-key files from in-flight sessions.
 
 | Verb | Script | Meaning |
 |---|---|---|
-| `breadcrumb_written` | auto-compact-after-pre-compact.sh | Breadcrumb JSON written to `~/.claude/progress/breadcrumb-<SID>.json` |
-| `breadcrumb_write_failed reason=mv` | auto-compact-after-pre-compact.sh | Atomic mv of breadcrumb tempfile failed |
-| `breadcrumb_write_failed reason=jq` | auto-compact-after-pre-compact.sh | jq failed to generate breadcrumb JSON |
-| `breadcrumb_write_failed reason=empty-sentinel-nonce` | auto-compact-after-pre-compact.sh | Nonce was empty; breadcrumb not written (H8/PR-M2) |
-| `breadcrumb_write_failed reason=hostname-fail` | auto-compact-after-pre-compact.sh | hostname -s returned empty; breadcrumb not written (H2) |
-| `gc_stale_orphan_breadcrumbs` | auto-compact-after-pre-compact.sh | Stale orphan breadcrumbs (>24h old) deleted on Stop event; count= appended (H12 fix) |
-| Session key GC (no dedicated verb) | auto-compact-after-pre-compact.sh | RQ-05 (R6 HZ-27): stale key files (>24h) deleted silently via `find -delete`; no log verb emitted (low-noise operation; key deletion is not a security event worth logging) |
+| `gc_stale_orphan_breadcrumbs` | auto-compact-after-pre-compact.sh | Stale orphan breadcrumbs (>24h old) deleted on Stop event; count= appended (V2-11 migration sweep) |
 
 ## ctx-gate.log (ctx_gate_log — via `lib/ctx-gate-config.sh:ctx_gate_log`)
 
