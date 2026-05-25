@@ -378,7 +378,9 @@ fi
 # §G4 post-compact-resume-step2.sh STATE-routing tests
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §G4 post-compact-resume-step2.sh STATE-routing =="
+echo "== §G4 post-compact-resume-step2.sh STATE-routing (R8: identity-via-arg) =="
+# R8: step2.sh takes $1=session_id (verbatim from Stop hook arg). No breadcrumb reading.
+# All G4 tests pass the SID as $1; file is SID-tagged CLAUDE.local.<sid>.md.
 
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
 if [ ! -x "$STEP2_SH" ]; then
@@ -388,46 +390,56 @@ else
   step2_state() { printf '%s' "$1" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null; }
   step2_field() { printf '%s' "$1" | sed -n 's/^STATE=//p' | jq -r ".$2" 2>/dev/null; }
 
-  # G4-A: empty workspace → STATE=no-handoff
-  # R5 Critical #9: must provide CLAUDE_SESSION_ID so OWN_SID is non-empty (no transcripts
-  # in tmpdir → slug fallback fails → both env vars unset → own-sid-unresolvable without SID).
+  # G4-A: empty workspace, valid SID arg, no handoff file → STATE=no-handoff
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-  OUT=$(cd "$TMPWD" && CLAUDE_SESSION_ID="g4a-test-sid-$$" HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "g4a-test-sid-$$" 2>/dev/null)
   G4A_STATE=$(step2_state "$OUT")
   if [ "$G4A_STATE" = "no-handoff" ]; then
-    pass "G4-A: empty workspace → STATE=no-handoff (JSON parsed)"
+    pass "G4-A: empty workspace + valid SID arg → STATE=no-handoff (JSON parsed)"
   else
     fail "G4-A: empty workspace expected state=no-handoff" "got state=$G4A_STATE raw: $OUT"
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-B: handoff present (alias, no breadcrumb) with marker → STATE=ok marker=present
-  # SID-known (CLAUDE_SESSION_ID set) but no breadcrumb → alias path is used since SID8
-  # stays empty (no breadcrumb → SENTINEL_SID="" → handoff_resolve_path gets empty SID8 → alias).
+  # G4-A2: empty arg → STATE=no-session-arg (R8 fail-safe)
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "" 2>/dev/null)
+  G4A2_STATE=$(step2_state "$OUT")
+  if [ "$G4A2_STATE" = "no-session-arg" ]; then
+    pass "G4-A2: empty arg → STATE=no-session-arg (R8 fail-safe, never guess)"
+  else
+    fail "G4-A2: empty arg expected state=no-session-arg" "got state=$G4A2_STATE raw: $OUT"
+  fi
+  rm -rf "$TMPWD" "$TMPHOME"
+
+  # G4-B: SID-tagged handoff with matching marker → STATE=ok marker=present
+  TMPWD=$(mktemp -d)
+  TMPHOME=$(mktemp -d)
+  mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+  G4B_SID="g4b-test-sid-$$"
   G4B_NONCE="abcd1234-5678-90ab-cdef-1234567890ab"
-  G4B_SID8="abcd1234"
-  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4B_SID8" "$G4B_NONCE" > "$TMPWD/CLAUDE.local.md"
-  OUT=$(cd "$TMPWD" && CLAUDE_SESSION_ID="g4b-test-sid-$$" HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4B_SID" "$G4B_NONCE" > "$TMPWD/CLAUDE.local.${G4B_SID}.md"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4B_SID" 2>/dev/null)
   G4B_STATE=$(step2_state "$OUT")
   G4B_MARKER=$(step2_field "$OUT" "marker")
   if [ "$G4B_STATE" = "ok" ] && [ "$G4B_MARKER" = "present" ]; then
-    pass "G4-B: handoff with marker → state=ok marker=present (JSON parsed)"
+    pass "G4-B: SID-tagged handoff with marker → state=ok marker=present (JSON parsed)"
   else
     fail "G4-B: expected state=ok marker=present" "got state=$G4B_STATE marker=$G4B_MARKER raw: $OUT"
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-C: handoff (alias, no breadcrumb) missing marker (recent file) → STATE=ok marker=absent legacy=false
+  # G4-C: SID-tagged handoff missing marker (recent file) → STATE=ok marker=absent legacy=false
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-  printf 'content body without marker\n' > "$TMPWD/CLAUDE.local.md"
-  OUT=$(cd "$TMPWD" && CLAUDE_SESSION_ID="g4c-test-sid-$$" HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  G4C_SID="g4c-test-sid-$$"
+  printf 'content body without marker\n' > "$TMPWD/CLAUDE.local.${G4C_SID}.md"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4C_SID" 2>/dev/null)
   G4C_STATE=$(step2_state "$OUT")
   G4C_MARKER=$(step2_field "$OUT" "marker")
   G4C_LEGACY=$(step2_field "$OUT" "legacy")
@@ -438,12 +450,13 @@ else
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-D: oversized handoff (6MB > 5MB cap) → STATE=oversize
+  # G4-D: oversized SID-tagged handoff (6MB > 5MB cap) → STATE=oversize
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
-  dd if=/dev/zero of="$TMPWD/CLAUDE.local.md" bs=1024 count=6144 2>/dev/null
-  OUT=$(cd "$TMPWD" && CLAUDE_SESSION_ID="g4d-test-sid-$$" HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  G4D_SID="g4d-test-sid-$$"
+  dd if=/dev/zero of="$TMPWD/CLAUDE.local.${G4D_SID}.md" bs=1024 count=6144 2>/dev/null
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4D_SID" 2>/dev/null)
   G4D_STATE=$(step2_state "$OUT")
   if [ "$G4D_STATE" = "oversize" ]; then
     pass "G4-D: 6MB handoff → state=oversize (JSON parsed, H11 size cap)"
@@ -452,37 +465,20 @@ else
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-E: SID-tagged handoff + breadcrumb with matching nonce → STATE=ok nonce_ok=match
-  # R4 D3: with SID known (breadcrumb present), file MUST be SID-tagged (not alias).
+  # G4-E: SID-tagged handoff with matching marker → STATE=ok (R8: no nonce_ok field)
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   G4E_NONCE="11112222-3333-4444-5555-666677778888"
-  G4E_SID="g4e-test-sid-1234"
-  G4E_SID8="g4e-test"
-  G4E_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-  # R4 D3 fix: place handoff at SID-tagged path (not alias) so D3 SID-known path resolves it.
-  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4E_SID8" "$G4E_NONCE" > "$TMPWD/CLAUDE.local.${G4E_SID8}.md"
-  G4E_CWD=$(cd -P "$TMPWD" 2>/dev/null && pwd -P)
-  # R4 H1: breadcrumb now requires schema_version:1 + originating_command fields.
-  jq -c -n \
-    --argjson sv 1 \
-    --arg sid  "$G4E_SID"  \
-    --arg sid8 "$G4E_SID8" \
-    --arg cwd  "$G4E_CWD"  \
-    --arg nonce "$G4E_NONCE" \
-    --arg host  "$G4E_HOST"  \
-    '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-    > "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
-  chmod 600 "$TMPHOME/.claude/progress/breadcrumb-${G4E_SID}.json"
-  # R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to this session's SID.
-  OUT=$(cd "$TMPWD" && CLAUDE_SESSION_ID="$G4E_SID" HOME="$TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  G4E_SID="g4e-test-sid-$$"
+  printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' "$G4E_SID" "$G4E_NONCE" > "$TMPWD/CLAUDE.local.${G4E_SID}.md"
+  OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4E_SID" 2>/dev/null)
   G4E_STATE=$(step2_state "$OUT")
-  G4E_NONCE_OK=$(step2_field "$OUT" "nonce_ok")
-  if [ "$G4E_STATE" = "ok" ] && [ "$G4E_NONCE_OK" = "match" ]; then
-    pass "G4-E: SID-tagged breadcrumb-matched nonce → state=ok nonce_ok=match (R4 D3 + JSON parsed)"
+  G4E_SID_OUT=$(step2_field "$OUT" "sid")
+  if [ "$G4E_STATE" = "ok" ] && [ "$G4E_SID_OUT" = "$G4E_SID" ]; then
+    pass "G4-E: SID-tagged handoff → state=ok sid=matched (R8 identity-via-arg)"
   else
-    fail "G4-E: expected state=ok nonce_ok=match" "got state=$G4E_STATE nonce_ok=$G4E_NONCE_OK raw: $OUT"
+    fail "G4-E: expected state=ok sid=$G4E_SID" "got state=$G4E_STATE sid=$G4E_SID_OUT raw: $OUT"
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 fi
