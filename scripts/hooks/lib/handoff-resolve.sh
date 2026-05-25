@@ -80,16 +80,16 @@ handoff_resolve_path() {
   HANDOFF_PATH=""
 
   if [ -n "$session_id" ]; then
-    local _legacy_cutoff="${HANDOFF_LEGACY_CUTOFF_EPOCH:-1779321600}"
 
     # ---------- cwd SID-tagged probe ----------
     local p="$cwd/CLAUDE.local.${session_id}.md"
     if [ -f "$p" ] && [ ! -L "$p" ]; then
       if _primer_check_linkcount "$p"; then
-        # F2: marker-sid content-check. Canonical pattern mirrors handoff-marker.sh:130.
+        # F2: marker-sid content-check via the shared FIRST-occurrence-anchored extractor
+        # (R9-R4: was an inline greedy `.*sid=` that took the LAST sid= token on a line —
+        # `sid=A sid=B` resolved to B; `_resolver_extract_marker_sid` takes the FIRST).
         local _resolver_marker_sid
-        _resolver_marker_sid=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$p" 2>/dev/null | head -1 \
-          | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
+        _resolver_marker_sid=$(_resolver_extract_marker_sid "$p")
         if [ -n "$_resolver_marker_sid" ]; then
           if [ "$_resolver_marker_sid" = "$session_id" ]; then
             HANDOFF_PATH="$p"
