@@ -1231,21 +1231,17 @@ fi
 rm -rf "$TMPWD_FA" "$TMPHOME_FA"
 
 # ---------------------------------------------------------------------------
-# §G4-G breadcrumb age boundary (D5 / PR-M1) — Task 4.4
+# §G4-G Handoff staleness detection in STATE=ok (R8: no breadcrumb age, test file age)
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §G4-G breadcrumb age boundary at 3600s =="
+echo "== §G4-G Handoff staleness in STATE=ok (stale handoff file detected) =="
 TMPWD_G=$(mktemp -d)
 TMPHOME_G=$(mktemp -d)
 mkdir -p "$TMPHOME_G/.claude/progress" && chmod 700 "$TMPHOME_G/.claude/progress"
 GG_SID="g4g-age-$$"
-GG_SID8="${GG_SID:0:8}"
 GG_NONCE="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-GG_CWD=$(cd -P "$TMPWD_G" 2>/dev/null && pwd -P)
-GG_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-GG_BREADCRUMB="$TMPHOME_G/.claude/progress/breadcrumb-${GG_SID}.json"
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$GG_SID8" "$GG_NONCE" > "$TMPWD_G/CLAUDE.local.${GG_SID8}.md"
+  "$GG_SID" "$GG_NONCE" > "$TMPWD_G/CLAUDE.local.${GG_SID}.md"
 # PR-M1 / R2-PR-13: cross-platform touch -t with gdate fallback.
 if command -v gdate >/dev/null 2>&1; then
   PAST_MTIME=$(gdate -d '3601 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null)
