@@ -142,10 +142,15 @@ OSA_STDERR_TMP=$(mktemp 2>/dev/null)
 # Empty $OSA_STDERR_TMP means: redirect stderr to /dev/null at the osascript call
 # (inline), and skip the stderr-capture branch.
 OSA_STDERR_TGT="${OSA_STDERR_TMP:-/dev/null}"
-OSA_RESULT=$(/usr/bin/osascript - "$TARGET_TTY" "$PTY_DELAY" <<'EOF' 2>"$OSA_STDERR_TGT"
+# R8 V2-2+V2-3: pass REAL_SID as argv[3] (NOT SESSION_ID which may have been
+# reassigned). Raw concat in AppleScript ("& (item 3 of argv)") — NOT quoted form of,
+# which injects literal single-quotes that corrupt the typed command (smoke A2 proved).
+# UUIDs contain only [A-Za-z0-9-] — no shell-special chars; raw concat is safe.
+OSA_RESULT=$(/usr/bin/osascript - "$TARGET_TTY" "$PTY_DELAY" "$REAL_SID" <<'EOF' 2>"$OSA_STDERR_TGT"
 on run argv
   set targetTTY to item 1 of argv
   set ptyDelay to (item 2 of argv) as real
+  set sessionId to item 3 of argv
   tell application "Terminal"
     if not running then return "not-running"
     if not (exists window 1) then return "no-windows"
@@ -165,17 +170,14 @@ on run argv
     end repeat
     if foundTab is missing value then return "no-matching-tab"
     do script "/compact" in foundTab
-    -- Chain /post-compact-resume into the same tab input queue. Claude Code TUI
-    -- accepts typed input while a command is running and processes it as the next
-    -- turn when the current turn ends. ptyDelay lets /compact register as the
-    -- active command before the second do_script types in, avoiding the race where
-    -- both lines could merge into one buffered blob. Wrapped in try so a failed
-    -- second fire (e.g., slash command missing) still reports /compact as fired.
+    -- R8: Chain /post-compact-resume <session_id> so identity is threaded verbatim.
+    -- Raw concat (& sessionId) — NOT quoted form of, which injects literal quotes.
+    -- UUID chars are [A-Za-z0-9-] — no shell-special chars; safe for raw concat.
     -- NOTE: no apostrophes in this comment block — bash 3.2 heredoc-inside-$()
     -- has a known apostrophe-pairing quirk that breaks parsing even with <<EOF.
     delay ptyDelay
     try
-      do script "/post-compact-resume" in foundTab
+      do script "/post-compact-resume " & sessionId in foundTab
       return "fired+queued-resume"
     on error errMsg
       return "fired+queue-failed:" & errMsg
