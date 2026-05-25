@@ -99,20 +99,13 @@ handoff_resolve_path() {
             # Fall through to repo-root probe.
           fi
         else
-          # No marker — apply mtime gate (legacy allow).
-          local _fmtime
-          if _fmtime=$(stat -f %m "$p" 2>/dev/null); then :
-          elif _fmtime=$(stat -c %Y "$p" 2>/dev/null); then :
-          else _fmtime=9999999999; fi
-          _fmtime=$(printf '%s' "$_fmtime" | tr -d '[:space:]')
-          [ -z "$_fmtime" ] && _fmtime=9999999999
-          if [ "$_fmtime" -lt "$_legacy_cutoff" ]; then
-            HANDOFF_PATH="$p"
-            return 0
-          else
-            ctx_gate_log "primer skip reason=resolver-no-marker-non-legacy session_id=$session_id file=$p mtime=$_fmtime cutoff=$_legacy_cutoff"
-            # Fall through.
-          fi
+          # R9-R2 HIGH-1 (fail-closed): on the SID-tagged path a file with NO marker cannot be
+          # identity-verified, so it is NEVER accepted via mtime. The old legacy-mtime allow here
+          # was a wrong-load hole — a markerless CLAUDE.local.<arg>.md in a shared repo-root would
+          # load when the consumer-layer self-check is unavailable. Legacy-mtime tolerance applies
+          # ONLY to the SID-unknown alias path below, never to a SID-tagged probe. Fall through → rc=2.
+          ctx_gate_log "primer skip reason=resolver-sid-tagged-no-marker session_id=$session_id file=$p"
+          # Fall through (do not accept).
         fi
       else
         local LCNT
