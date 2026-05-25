@@ -1810,6 +1810,45 @@ if [ "$AVS_ORD_STATE" = "arg-not-my-session" ]; then
 else
   fail "R9-AVS-4: ordering lock" "expected arg-not-my-session; got='$AVS_ORD_STATE' raw=${AVS_ORD_OUT:0:200}"
 fi
+
+# Case 5 (R9-R4 / GAPS — fallback-leg coverage): self resolves via the CLAUDE_SESSION_ID
+# fallback when CLAUDE_CODE_SESSION_ID is unset. self==arg → STATE=ok. Guards against a typo
+# in the `${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}` fallback var silently breaking
+# every degraded-client resume while the rest of the suite (which sets the primary var) stays green.
+AVS5_OUT=$(cd "$AVS_TMPWD" && env -u CLAUDE_CODE_SESSION_ID HOME="$AVS_TMPHOME" CLAUDE_SESSION_ID="$AVS_SID" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
+AVS5_STATE=$(printf '%s' "$AVS5_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$AVS5_STATE" = "ok" ]; then
+  pass "R9-AVS-5: self via CLAUDE_SESSION_ID fallback (CLAUDE_CODE_SESSION_ID unset) == arg → STATE=ok"
+else
+  fail "R9-AVS-5: fallback leg" "expected STATE=ok; got='$AVS5_STATE' raw=${AVS5_OUT:0:200}"
+fi
+
+# Case 6 (R9-R4 — reject-don't-sanitize): a self id with chars outside [A-Za-z0-9_-] is REJECTED
+# as self-unverifiable, NOT scrubbed. Under the old `tr -cd` form "avs/sess-a..." would collapse
+# to "avssess-a..." and then mismatch→arg-not-my-session; under reject-consistency it is
+# self-unverifiable (we never silently normalize a self id into a possibly-colliding value).
+AVS6_OUT=$(cd "$AVS_TMPWD" && HOME="$AVS_TMPHOME" CLAUDE_CODE_SESSION_ID="bad/self;rm" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
+AVS6_STATE=$(printf '%s' "$AVS6_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
+if [ "$AVS6_STATE" = "self-unverifiable" ]; then
+  pass "R9-AVS-6: malformed self id (bad charset) → self-unverifiable (reject, not scrub)"
+else
+  fail "R9-AVS-6: self reject-consistency" "expected self-unverifiable; got='$AVS6_STATE' raw=${AVS6_OUT:0:200}"
+fi
+
+# Case 7 (R9-R4 / GAPS — jq-absent fallback for the new R9 STATEs is well-formed): with jq forced
+# to fail, the self-unverifiable branch must still emit a parseable STATE= literal. Prepend a fake
+# `jq` that exits non-zero so `_json=$(jq ...)` is empty and the printf fallback fires.
+AVS7_BIN=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' > "$AVS7_BIN/jq"; chmod +x "$AVS7_BIN/jq"
+AVS7_OUT=$(cd "$AVS_TMPWD" && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID PATH="$AVS7_BIN:$PATH" HOME="$AVS_TMPHOME" bash "$AVS_STEP2" "$AVS_SID" 2>/dev/null)
+# Parse WITHOUT jq (jq is sabotaged) — use a plain grep for the state token.
+if printf '%s' "$AVS7_OUT" | grep -q '"state":"self-unverifiable"'; then
+  pass "R9-AVS-7: jq-absent → self-unverifiable fallback STATE literal is well-formed"
+else
+  fail "R9-AVS-7: jq-absent fallback" "expected literal self-unverifiable STATE; got raw=${AVS7_OUT:0:200}"
+fi
+rm -rf "$AVS7_BIN"
+
 rm -rf "$AVS_TMPWD" "$AVS_TMPHOME" "$AVS_EMPTY_WD"
 
 # ---------------------------------------------------------------------------
