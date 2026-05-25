@@ -517,14 +517,43 @@ Bash `printf >>` or `mv`** — allowlist-clean.
    - If present: marker already there (likely a retry). SKIP the Edit; proceed to Step 8.
    - If absent: proceed to step 3.
 
-3. **Single Edit call to append marker:**
+3. **Confirm SID8 from scratch** (CRITICAL — RQ-INC-03 / INV-26: prevent working-memory substitution).
+   ```bash
+   # CRITICAL (R7-INC-03): marker SID8 MUST come from scratch file.
+   # The orchestrator MUST NOT substitute SID8 from working memory here.
+   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-scratch-$$.json"
+   SID8=$(jq -r '.sid8' "$SCRATCH_PATH" 2>/dev/null)
+   [ -n "$SID8" ] || { echo "FATAL: Step 6D scratch read failed" >&2; exit 1; }
+   echo "SID8=$SID8 (confirmed from scratch for marker)"
+   ```
+
+4. **Single Edit call to append marker:**
    - `file_path`: HANDOFF_PRIMARY (absolute path)
    - `old_string`: the exact last line(s) from the Read result (exact bytes matter)
    - `new_string`: same last line(s) + `\n\n<!-- END-OF-HANDOFF schema=v1 sid=${SID8} nonce=${NONCE} -->\n`
 
-4. (R4 D1: alias copy removed — parallel-track-safe; SID-tagged primary only.)
+5. (R4 D1: alias copy removed — parallel-track-safe; SID-tagged primary only.)
 
-5. **NONCE is now known** — carry it to Step 9.0 where it is passed to arm-auto-compact.sh.
+6. **Writer self-verification (R7-INC-01 / F1 — HZ-38 catch-net):** after the Edit succeeds, verify marker sid matches filename SID8.
+
+   Run via Bash:
+   ```bash
+   . "$HOME/.claude-dotfiles/scripts/hooks/lib/writer-verify.sh"
+   if ! writer_verify_marker_sid "$HANDOFF_PRIMARY" "$SID8"; then
+     echo "FATAL: writer-sid-divergence — aborting /pre-compact before sentinel arm"
+     exit 1
+   fi
+   echo "writer-verify: OK sid=$SID8"
+   ```
+
+   If FATAL fires:
+   - SKIP Step 8 (.gitignore), Step 9.0 (sentinel arm).
+   - DO emit Step 9.1 final report with line: `Auto-compact: NOT ARMED (writer-sid-divergence aborted at Step 6D self-check)`.
+   - Manual recovery: inspect the file, correct the marker manually OR delete the handoff file and re-run /pre-compact in a clean orchestrator turn.
+
+   **Why this check exists (HZ-38):** the orchestrator constructs the marker `new_string` from working-memory SID8 while HANDOFF_PRIMARY was derived from the scratch file's SID8 captured at Step 3.B. If those sources diverged, the file ends up with mismatched filename/marker — invisible to readers. The self-check forces post-write validation (INV-24).
+
+7. **NONCE is now known** — carry it to Step 9.0 where it is passed to arm-auto-compact.sh.
 
 The marker is the "complete file" signal. Absent marker = file in some intermediate
 state (Phase 1 only, mid-Phase-2 crash, mid-self-audit crash, mid-marker-append-crash)
