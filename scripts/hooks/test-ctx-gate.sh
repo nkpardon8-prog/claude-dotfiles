@@ -1598,31 +1598,18 @@ rm -f "$TMPFILE_C2"
 # §R5-H13 Multi-marker fail-closed (H13)
 # ---------------------------------------------------------------------------
 # Verifies that a handoff file with >1 canonical markers emits STATE=multi-marker-detected.
+# R8: use SID arg directly (no breadcrumb needed).
 echo ""
 echo "== §R5-H13 Multi-marker fail-closed =="
 TMPWD_H13=$(mktemp -d)
 TMPHOME_H13=$(mktemp -d)
 mkdir -p "$TMPHOME_H13/.claude/progress" && chmod 700 "$TMPHOME_H13/.claude/progress"
 H13_SID="r5h13-multi-$$"
-H13_SID8="${H13_SID:0:8}"
 H13_NONCE="11111111-aaaa-bbbb-cccc-dddddddddddd"
-H13_CWD=$(cd -P "$TMPWD_H13" 2>/dev/null && pwd -P)
-H13_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-# Write breadcrumb
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid  "$H13_SID" \
-  --arg sid8 "$H13_SID8" \
-  --arg cwd  "$H13_CWD" \
-  --arg nonce "$H13_NONCE" \
-  --arg host  "$H13_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$TMPHOME_H13/.claude/progress/breadcrumb-${H13_SID}.json" 2>/dev/null
-chmod 600 "$TMPHOME_H13/.claude/progress/breadcrumb-${H13_SID}.json"
-# Write handoff with TWO canonical markers (tampered file)
+# Write handoff with TWO canonical markers (tampered file) — matching SID for both
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$H13_SID8" "$H13_NONCE" "$H13_SID8" "$H13_NONCE" > "$TMPWD_H13/CLAUDE.local.${H13_SID8}.md"
-OUT_H13=$(cd "$TMPWD_H13" && CLAUDE_SESSION_ID="$H13_SID" HOME="$TMPHOME_H13" bash "$STEP2_SH" 2>/dev/null)
+  "$H13_SID" "$H13_NONCE" "$H13_SID" "$H13_NONCE" > "$TMPWD_H13/CLAUDE.local.${H13_SID}.md"
+OUT_H13=$(cd "$TMPWD_H13" && HOME="$TMPHOME_H13" bash "$STEP2_SH" "$H13_SID" 2>/dev/null)
 H13_STATE=$(printf '%s' "$OUT_H13" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$H13_STATE" = "multi-marker-detected" ]; then
   pass "R5-H13: multi-marker fail-closed fires on tampered handoff (2 markers)"
