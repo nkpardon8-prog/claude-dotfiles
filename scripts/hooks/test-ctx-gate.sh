@@ -1673,77 +1673,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# §R6-RQ01 Adversarial test for resolver content-check rejection (HZ-16/HZ-39 combined)
-# Updated for R7-INC-02 (F2): resolver content-check is now the PRIMARY defense.
-# Previously (pre-R7-INC), SID-tagged file with wrong marker would reach step2.sh's
-# secondary check and emit STATE=sid-mismatch-hard-stop.
-# Now (post-R7-INC), the resolver itself rejects the file (INV-25 content-binding) →
-# STATE=sid-known-no-tagged-file. The resolver content-check is the correct first line of defense.
-# Also adds negative test: matching SID → STATE=ok.
+# §R6-RQ01 Adversarial test for resolver F2 content-check rejection (R8)
+# R8: wrong-marker SID-tagged file → resolver returns rc=2 → STATE=no-handoff (fail-safe).
+# sid-known-no-tagged-file and sid-mismatch-hard-stop are removed.
 echo ""
-echo "== §R6-RQ01 resolver content-check adversarial test (R7-INC-02 F2) =="
+echo "== §R6-RQ01 resolver content-check adversarial test (R8) =="
 STEP2_SH="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
 RQ01_TMPWD=$(mktemp -d)
 RQ01_TMPHOME=$(mktemp -d)
 mkdir -p "$RQ01_TMPHOME/.claude/progress" && chmod 700 "$RQ01_TMPHOME/.claude/progress"
-RQ01_SID_A="rq01-sessa-${$}"
-RQ01_SID8_A="${RQ01_SID_A:0:8}"
-RQ01_SID_B_MARKER="rq01sssb"  # different SID8 value embedded in marker
+RQ01_SID_A="rq01-sessa-$$"
+RQ01_SID_B_MARKER="rq01sssb"  # wrong marker SID → resolver rejects
 RQ01_NONCE="aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"
-RQ01_CWD=$(cd -P "$RQ01_TMPWD" 2>/dev/null && pwd -P)
-RQ01_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-# Write breadcrumb (SID8=SESS-A, nonce=RQ01_NONCE)
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid "$RQ01_SID_A" \
-  --arg sid8 "$RQ01_SID8_A" \
-  --arg cwd "$RQ01_CWD" \
-  --arg nonce "$RQ01_NONCE" \
-  --arg host "$RQ01_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$RQ01_TMPHOME/.claude/progress/breadcrumb-${RQ01_SID_A}.json" 2>/dev/null
-chmod 600 "$RQ01_TMPHOME/.claude/progress/breadcrumb-${RQ01_SID_A}.json"
-# Write SID-tagged file with marker sid=SESS-B (deliberate mismatch → resolver rejects via INV-25)
+# Write SID-tagged file with wrong marker
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$RQ01_SID_B_MARKER" "$RQ01_NONCE" > "$RQ01_TMPWD/CLAUDE.local.${RQ01_SID8_A}.md"
-RQ01_OUT=$(cd "$RQ01_TMPWD" && CLAUDE_SESSION_ID="$RQ01_SID_A" HOME="$RQ01_TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  "$RQ01_SID_B_MARKER" "$RQ01_NONCE" > "$RQ01_TMPWD/CLAUDE.local.${RQ01_SID_A}.md"
+# R8: invoke with SID arg
+RQ01_OUT=$(cd "$RQ01_TMPWD" && HOME="$RQ01_TMPHOME" bash "$STEP2_SH" "$RQ01_SID_A" 2>/dev/null)
 RQ01_STATE=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-# R7-INC-02: resolver content-check fires FIRST → sid-known-no-tagged-file (not sid-mismatch-hard-stop)
-# This is the correct INV-25 behavior: the resolver is the primary barrier.
-if [ "$RQ01_STATE" = "sid-known-no-tagged-file" ]; then
-  pass "R6-RQ01: resolver content-check rejects mismatched marker → sid-known-no-tagged-file (INV-25 primary defense)"
-elif [ "$RQ01_STATE" = "sid-mismatch-hard-stop" ]; then
-  # Resolver let it through (R7-INC-02 regression) and step2.sh's secondary caught it.
-  fail "R6-RQ01: sid-mismatch adversarial" "resolver should have caught wrong marker (R7-INC-02 F2); sid-mismatch-hard-stop means resolver content-check not working"
+# F2 rejects wrong-marker file → rc=2 → STATE=no-handoff
+if [ "$RQ01_STATE" = "no-handoff" ]; then
+  pass "R6-RQ01: resolver F2 rejects wrong-marker file → STATE=no-handoff (R8 fail-safe)"
 else
-  fail "R6-RQ01: resolver content-check adversarial" "expected state=sid-known-no-tagged-file; got='$RQ01_STATE' raw=${RQ01_OUT:0:200}"
+  fail "R6-RQ01: resolver content-check adversarial" "expected state=no-handoff; got='$RQ01_STATE' raw=${RQ01_OUT:0:200}"
 fi
-# sid_field1 and sid_field2 tests removed — STATE=sid-known-no-tagged-file does not carry sentinel_sid8/marker_sid8 fields.
-pass "R6-RQ01: sentinel_sid8 field check skipped (sid-known-no-tagged-file state has no sentinel_sid8 field — correct per R7-INC-02)"
-pass "R6-RQ01: marker_sid8 field check skipped (sid-known-no-tagged-file state has no marker_sid8 field — correct per R7-INC-02)"
+pass "R6-RQ01: sentinel_sid8 field check skipped (no-handoff state has no sentinel field — correct)"
+pass "R6-RQ01: marker_sid8 field check skipped (no-handoff state has no marker_sid8 field — correct)"
 # Negative test: matching SID → STATE=ok
-# Re-write breadcrumb (the first test consumed it via sid-mismatch-hard-stop) and write correct handoff.
 RQ01_OK_TMPWD=$(mktemp -d)
 RQ01_OK_TMPHOME=$(mktemp -d)
 mkdir -p "$RQ01_OK_TMPHOME/.claude/progress" && chmod 700 "$RQ01_OK_TMPHOME/.claude/progress"
-RQ01_OK_SID="rq01neg-sessa-${$}"
-RQ01_OK_SID8="${RQ01_OK_SID:0:8}"
+RQ01_OK_SID="rq01neg-sessa-$$"
 RQ01_OK_NONCE="bbbb2222-cccc-dddd-eeee-ffffffffffff"
-RQ01_OK_CWD=$(cd -P "$RQ01_OK_TMPWD" 2>/dev/null && pwd -P)
-RQ01_OK_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid "$RQ01_OK_SID" \
-  --arg sid8 "$RQ01_OK_SID8" \
-  --arg cwd "$RQ01_OK_CWD" \
-  --arg nonce "$RQ01_OK_NONCE" \
-  --arg host "$RQ01_OK_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$RQ01_OK_TMPHOME/.claude/progress/breadcrumb-${RQ01_OK_SID}.json" 2>/dev/null
-chmod 600 "$RQ01_OK_TMPHOME/.claude/progress/breadcrumb-${RQ01_OK_SID}.json"
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$RQ01_OK_SID8" "$RQ01_OK_NONCE" > "$RQ01_OK_TMPWD/CLAUDE.local.${RQ01_OK_SID8}.md"
-RQ01_OK_OUT=$(cd "$RQ01_OK_TMPWD" && CLAUDE_SESSION_ID="$RQ01_OK_SID" HOME="$RQ01_OK_TMPHOME" bash "$STEP2_SH" 2>/dev/null)
+  "$RQ01_OK_SID" "$RQ01_OK_NONCE" > "$RQ01_OK_TMPWD/CLAUDE.local.${RQ01_OK_SID}.md"
+RQ01_OK_OUT=$(cd "$RQ01_OK_TMPWD" && HOME="$RQ01_OK_TMPHOME" bash "$STEP2_SH" "$RQ01_OK_SID" 2>/dev/null)
 RQ01_OK_STATE=$(printf '%s' "$RQ01_OK_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$RQ01_OK_STATE" = "ok" ]; then
   pass "R6-RQ01 (negative): matching SID → STATE=ok (no false positive)"
