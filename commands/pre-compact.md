@@ -375,17 +375,22 @@ Then proceed to the SID-tagged write protocol:
 
 **SID-tagged write (R4: parallel-track-safe — each session writes ONLY its own SID-tagged file):**
 
-1. Resolve SID from Step 3.B disk-persist scratch file or dry-run output.
-2. Compute `SID8` using the TTY-aware helper (R3-fix-sweep C2):
+1. **Read SID/SID8 from the Step 3.B scratch file** (CRITICAL — RQ-INC-03 / INV-26: single-source SID).
+   Do NOT call ac_resolve_session_id again here. Do NOT substitute from working memory.
    ```bash
-   . "$HOME/.claude-dotfiles/scripts/hooks/lib/auto-compact-sentinel.sh" 2>/dev/null
-   SID8=$(ac_compute_sid8 "$SID")
+   # CRITICAL (R7-INC-03): SID and SID8 MUST come from the scratch file written at Step 3.B.
+   # Single-source guarantee prevents writer-sid-divergence (HZ-38).
+   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-scratch-$$.json"
+   [ -f "$SCRATCH_PATH" ] || { echo "FATAL: Step 6A scratch missing at $SCRATCH_PATH" >&2; exit 1; }
+   SID=$(jq -r '.sid' "$SCRATCH_PATH" 2>/dev/null)
+   SID8=$(jq -r '.sid8' "$SCRATCH_PATH" 2>/dev/null)
+   [ -n "$SID" ] && [ -n "$SID8" ] || { echo "FATAL: Step 6A scratch read empty" >&2; exit 1; }
+   echo "SID=$SID SID8=$SID8 (from scratch)"
    ```
-   This preserves the `__ttysN` suffix when present so parallel sessions produce distinct handoff filenames.
-3. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
-4. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
+2. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
+3. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
 
-(R4 D1: HANDOFF_ALIAS/`CLAUDE.local.md` write removed — no alias is created or updated. Post-compact session reads ONLY the SID-tagged file. HANDOFF_PRIMARY is in the ctx-gate Write allowlist via glob `CLAUDE.local*.md`.)
+(R4 D1: HANDOFF_ALIAS/`CLAUDE.local.md` write removed — no alias is created or updated. Post-compact session reads ONLY the SID-tagged file, unless Defense H12 alias-with-marker-binding applies (R7-INC-04). HANDOFF_PRIMARY is in the ctx-gate Write allowlist via glob `CLAUDE.local*.md`.)
 
 **Read the template at `$HOME/.claude-dotfiles/commands/pre-compact-template.md` via the Read tool** and use the returned content as the handoff skeleton. Do not generate the template from memory — Read the file. Replace all placeholder text with session-specific content. Remove sections whose body is empty or placeholder-only (as specified in Step 6C).
 
