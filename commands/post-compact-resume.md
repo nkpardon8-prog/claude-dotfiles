@@ -60,10 +60,18 @@ Then stop.
 
 ### Pre-read verification (marker + legacy + stale)
 
-**Path-resolution consistency (R7-INC-04 / Defense H12 + R5 H5 update):** the HANDOFF_PATH resolution logic in this snippet MUST match the primer's resolution logic exactly. Resolution priority:
-1. **SID-tagged file: `CLAUDE.local.<SID8>.md`** — PRIMARY path when SID is known. F2 content-check (RQ-INC-02): resolver verifies the file's END-OF-HANDOFF marker `sid=` matches the requested SID8 before accepting.
-2. **Alias with marker-binding (Defense H12): `CLAUDE.local.md`** — if the SID-tagged file is absent or fails F2 content-check, the resolver probes the alias `CLAUDE.local.md` and accepts it ONLY when its marker sid matches the requested SID8. The alias is NOT accepted without a marker. Alias probe also rejected if the alias mtime is >300s in the future (clock-skew guard).
-3. **Generic alias legacy fallback: `CLAUDE.local.md`** — used ONLY when SID is unknown (no breadcrumb). No content-check in this path (SID unknown → no SID to compare against).
+**Path-resolution consistency (R8/R9 — supersedes the R7-INC/Defense-H12 alias model):** the HANDOFF_PATH
+resolution logic MUST match the primer's resolution logic exactly. Under R8/R9 the priority is:
+1. **SID-tagged file: `CLAUDE.local.<session_id>.md`** — the ONLY accepted path when a session_id is known
+   (the normal case: `$ARGUMENTS` is non-empty). F2 content-check: the resolver verifies the file's
+   `END-OF-HANDOFF` marker `sid=` equals the requested session_id before accepting, in cwd then repo-root.
+   A markerless SID-tagged file is REFUSED (R9-Round2 — no legacy-mtime acceptance on the SID-tagged path).
+   If no SID-tagged file passes F2 → `rc=2` → `STATE=no-handoff`. **There is NO alias fallback for a known
+   session_id** — the F4 "alias with marker-binding (Defense H12)" probe was DELETED in R8 (V2-6). Do NOT
+   re-introduce it; for a known SID only the marker-verified SID-tagged file is ever loaded.
+2. **Generic alias `CLAUDE.local.md`** — used ONLY when session_id is UNKNOWN (empty arg → but note `step2.sh`
+   refuses an empty arg before resolving, so this alias path is reachable only by the primer / explicit manual
+   no-arg use, where it emits a navigational pointer, not a content load). No content-check (no SID to compare).
 Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
 
 Path-resolution intentionally uses shell `$(pwd)` here; the primer uses SessionStart JSON `.cwd`.
