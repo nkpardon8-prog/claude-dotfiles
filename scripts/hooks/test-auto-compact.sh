@@ -792,16 +792,14 @@ if command -v jq >/dev/null 2>&1 && [ -f "$_RESOLVE_SH" ] && [ -f "$_STEP2" ]; t
   chmod 600 "$_INC06_HOME/.claude/progress/breadcrumb-${_INC06_SID}.json"
 
   # Temporarily patch handoff-resolve.sh to remove the F2 marker check (simulate regression).
-  # Back up and restore via trap.
-  _INC06_BACKUP=$(mktemp)
-  cp "$_RESOLVE_SH" "$_INC06_BACKUP"
-  # Patch: remove the marker-sid content-check block so the resolver accepts the file
-  # (replace the if/else marker block with unconditional HANDOFF_PATH assignment).
-  # We do this by creating a patched copy in a temp dir and symlinking lib/.
+  # Approach: copy all libs to a temp dir, overwrite handoff-resolve.sh with patched version,
+  # copy step2.sh to the same temp dir so it sources from the patched lib/.
   _INC06_PATCHDIR=$(mktemp -d)
-  mkdir -p "$_INC06_PATCHDIR/lib"
-  # Write patched resolver that skips F2 check (accepts any non-hardlinked SID-tagged file)
-  # macOS bash 3.2 compatible; uses only sh-portable constructs.
+  # Copy all libs first (including ctx-gate-config, handoff-marker, etc.)
+  cp -R "$ROOT/lib" "$_INC06_PATCHDIR/lib"
+  # Copy step2.sh to temp dir so _STEP2_DIR points to our patched lib/
+  cp "$_STEP2" "$_INC06_PATCHDIR/post-compact-resume-step2.sh"
+  # Overwrite lib/handoff-resolve.sh with patched version (no F2 check — regression sim)
   cat > "$_INC06_PATCHDIR/lib/handoff-resolve.sh" << 'PATCHED_EOF'
 #!/usr/bin/env bash
 # PATCHED (R7-INC-06 regression simulation): F2 marker check removed.
@@ -835,20 +833,11 @@ handoff_resolve_path() {
 }
 PATCHED_EOF
 
-  # Run step2.sh with the patched lib dir as _STEP2_DIR so it sources the patched resolver
-  # step2.sh uses: . "$_STEP2_DIR/lib/handoff-resolve.sh"
-  # Achieve by setting PATH and using an override via _STEP2_DIR pre-set... Actually step2
-  # derives _STEP2_DIR from its own script location. We need to copy step2 to the patch dir.
-  cp "$_STEP2" "$_INC06_PATCHDIR/post-compact-resume-step2.sh"
-  # Also copy all other libs step2 needs
-  cp -R "$ROOT/lib" "$_INC06_PATCHDIR/lib_real" 2>/dev/null || true
-  # Overwrite lib/handoff-resolve.sh with patched version (already done above)
-
   _INC06_OUT=$(cd "$_INC06_TMP" && CLAUDE_SESSION_ID="$_INC06_SID" HOME="$_INC06_HOME" \
     HANDOFF_ACCEPT_UNSIGNED=1 bash "$_INC06_PATCHDIR/post-compact-resume-step2.sh" 2>/dev/null)
   _INC06_STATE=$(printf '%s' "$_INC06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 
-  rm -rf "$_INC06_PATCHDIR" "$_INC06_BACKUP"
+  rm -rf "$_INC06_PATCHDIR"
 
   if [ "$_INC06_STATE" = "sid-mismatch-hard-stop" ]; then
     check "R7-INC-06: step2.sh sid-mismatch defense-in-depth still live (catches resolver regression)" 1 1
