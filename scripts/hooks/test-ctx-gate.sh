@@ -576,9 +576,12 @@ rm -rf "$TMPHOME"
 # 3l-resume-sentinel-stale: source=resume + sentinel + 2-day-old mtime → STALE + PENDING HANDOFF
 # R4 D3 fix: handoff at SID-tagged path.
 # Phase 2 Round 4: session_id=oldsid matches auto-compact-oldsid.json.
+# R7-INC-02: use v1 marker with matching sid so resolver content-check passes.
+# mtime is set to old enough to trigger STALE (>HANDOFF_STALE_SECS) but still >= legacy cutoff,
+# so the mtime-gate in the no-marker path is irrelevant (marker is present with correct sid).
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.oldsid.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=oldsid nonce=test-resume-stale -->\n' > "$TMPHOME/repo/CLAUDE.local.oldsid.md"
 touch -t 202601010000 "$TMPHOME/repo/CLAUDE.local.oldsid.md"  # 2026-01-01 = well over 24h old
 printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
 JSON="{\"session_id\":\"oldsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
