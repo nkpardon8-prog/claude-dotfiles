@@ -649,6 +649,15 @@ Read the `AUTOCOMPACT_STATE=...` output line from the bash result and use its va
 
 ### Step 9.1: Report
 
+**Scratch cleanup (B4 — before rendering the report):** run via Bash:
+```bash
+# R7-INC.1 B4: Step 9.1 orchestrator cleanup of SID-keyed scratch file.
+# Orchestrator: replace CAPTURED_SID below with the actual SID value from Step 3.B output.
+rm -f "$HOME/.claude/progress/pre-compact-parent-CAPTURED_SID.json" 2>/dev/null || true
+echo "scratch-cleanup: done (or file already absent)"
+```
+Cleanup is layer (a) of 2: (a) orchestrator `rm -f` here using captured SID, (b) 720-min GC glob `pre-compact-parent-*.json` in `scripts/progress/on-session-start-cleanup.sh`.
+
 Output a compact summary:
 - `/document` result (files touched, or "skipped: nothing to document")
 - `CLAUDE.local.<sid8>.md` written (SID-tagged). Line count via `wc -l "$HANDOFF_PRIMARY"`.
