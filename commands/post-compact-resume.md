@@ -17,7 +17,7 @@ Resolution (handled by Step 2 script — do not duplicate here):
 1. Breadcrumb-derived SID is PRIMARY: `$HOME/.claude/progress/breadcrumb-<SID>.json` contains the SID + nonce + cwd from the prior /pre-compact Stop hook.
 2. Claim-file fallback (best-effort): `auto-compact-<SID>.json.claim.<pid>` — usually absent (Stop hook EXIT trap removes it), but harmless to try.
 3. SID-tagged file: `CLAUDE.local.<SID8>.md` in cwd or REPO_ROOT.
-4. **Alias NEVER read when SID known (R4 D3).** If SID is known but the SID-tagged file is missing, the script emits `STATE=sid-known-no-tagged-file` — see decision matrix.
+4. **Alias read ONLY when marker sid matches requested SID8 (R7-INC-04 / Defense H12).** If SID is known: the script first tries the SID-tagged file; if missing or marker-mismatched (R7-INC-02 content-check), then probes the alias `CLAUDE.local.md` and accepts it ONLY when its marker sid equals the requested SID8 (binding, NOT structural alias trust). If neither matches, the script emits `STATE=sid-known-no-tagged-file`. Marker binding ensures cross-track contamination is prevented even when the alias is in use — see decision matrix.
 5. SID-unknown fallback: `CLAUDE.local.md` in cwd or REPO_ROOT (legacy / no breadcrumb case).
 
 If no valid path found and STATE=no-handoff, output the paste-prompt:
