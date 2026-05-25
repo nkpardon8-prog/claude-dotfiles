@@ -440,24 +440,24 @@ else
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-C: SID-tagged handoff with legacy mtime (no marker, old file) → STATE=ok marker=absent legacy=true
-  # R8: recent-no-marker files are rejected by resolver mtime gate (rc=2). To get state=ok marker=absent,
-  # use legacy mtime (< HANDOFF_LEGACY_CUTOFF_EPOCH) so resolver accepts it.
+  # G4-C (R9-R2 fail-closed): SID-tagged handoff with NO marker, even with a legacy (2019) mtime,
+  # is NOW REFUSED → STATE=no-handoff. The old behavior (accept-as-legacy on the SID-tagged path)
+  # was a wrong-load hole: a markerless CLAUDE.local.<arg>.md in a shared repo-root would load when
+  # the consumer-layer self-check is unavailable. Legacy-mtime tolerance now applies ONLY to the
+  # SID-unknown alias path (see 3l-compact-legacy below), never to a SID-tagged probe.
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   G4C_SID="g4c-test-sid-$$"
   printf 'content body without marker\n' > "$TMPWD/CLAUDE.local.${G4C_SID}.md"
-  # Touch with 2019 mtime so resolver legacy-allows it (mtime < default cutoff 2026-04-20)
+  # 2019 mtime — under the OLD code this would legacy-allow; under R9-R2 it is still refused.
   touch -t 201901010000 "$TMPWD/CLAUDE.local.${G4C_SID}.md" 2>/dev/null
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" CLAUDE_CODE_SESSION_ID="$G4C_SID" bash "$STEP2_SH" "$G4C_SID" 2>/dev/null)
   G4C_STATE=$(step2_state "$OUT")
-  G4C_MARKER=$(step2_field "$OUT" "marker")
-  G4C_LEGACY=$(step2_field "$OUT" "legacy")
-  if [ "$G4C_STATE" = "ok" ] && [ "$G4C_MARKER" = "absent" ] && [ "$G4C_LEGACY" = "true" ]; then
-    pass "G4-C: legacy no-marker file (2019 mtime) → state=ok marker=absent legacy=true (JSON parsed)"
+  if [ "$G4C_STATE" = "no-handoff" ]; then
+    pass "G4-C: markerless SID-tagged file (even legacy mtime) → no-handoff (R9-R2 fail-closed, was accept-legacy)"
   else
-    fail "G4-C: expected state=ok marker=absent legacy=true" "got state=$G4C_STATE marker=$G4C_MARKER legacy=$G4C_LEGACY raw: $OUT"
+    fail "G4-C: expected no-handoff (R9-R2 markerless SID-tagged refusal)" "got state=$G4C_STATE raw: $OUT"
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
