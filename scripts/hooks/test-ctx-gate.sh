@@ -1878,14 +1878,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# §R6-RQ01 Adversarial test for STATE=sid-mismatch-hard-stop (HZ-16)
-# ---------------------------------------------------------------------------
-# IEC 62304 §5.5 compliance: the SID-mismatch hard-stop defense must have an adversarial
-# regression test. Sets up breadcrumb with sid8=SESS-A and handoff file with marker
-# sid=SESS-B (deliberate mismatch), asserts STATE=sid-mismatch-hard-stop.
+# §R6-RQ01 Adversarial test for resolver content-check rejection (HZ-16/HZ-39 combined)
+# Updated for R7-INC-02 (F2): resolver content-check is now the PRIMARY defense.
+# Previously (pre-R7-INC), SID-tagged file with wrong marker would reach step2.sh's
+# secondary check and emit STATE=sid-mismatch-hard-stop.
+# Now (post-R7-INC), the resolver itself rejects the file (INV-25 content-binding) →
+# STATE=sid-known-no-tagged-file. The resolver content-check is the correct first line of defense.
 # Also adds negative test: matching SID → STATE=ok.
 echo ""
-echo "== §R6-RQ01 sid-mismatch adversarial test =="
+echo "== §R6-RQ01 resolver content-check adversarial test (R7-INC-02 F2) =="
 STEP2_SH="$(cd "$(dirname "$0")" && pwd)/post-compact-resume-step2.sh"
 RQ01_TMPWD=$(mktemp -d)
 RQ01_TMPHOME=$(mktemp -d)
@@ -1907,28 +1908,24 @@ jq -c -n \
   '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
   > "$RQ01_TMPHOME/.claude/progress/breadcrumb-${RQ01_SID_A}.json" 2>/dev/null
 chmod 600 "$RQ01_TMPHOME/.claude/progress/breadcrumb-${RQ01_SID_A}.json"
-# Write handoff file with marker sid=SESS-B (deliberate mismatch)
+# Write SID-tagged file with marker sid=SESS-B (deliberate mismatch → resolver rejects via INV-25)
 printf 'content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
   "$RQ01_SID_B_MARKER" "$RQ01_NONCE" > "$RQ01_TMPWD/CLAUDE.local.${RQ01_SID8_A}.md"
 RQ01_OUT=$(cd "$RQ01_TMPWD" && CLAUDE_SESSION_ID="$RQ01_SID_A" HOME="$RQ01_TMPHOME" bash "$STEP2_SH" 2>/dev/null)
 RQ01_STATE=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-RQ01_SENT_SID8=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.sentinel_sid8 // empty' 2>/dev/null)
-RQ01_MARK_SID8=$(printf '%s' "$RQ01_OUT" | sed -n 's/^STATE=//p' | jq -r '.marker_sid8 // empty' 2>/dev/null)
-if [ "$RQ01_STATE" = "sid-mismatch-hard-stop" ]; then
-  pass "R6-RQ01: sid-mismatch-hard-stop fires on breadcrumb-vs-marker SID mismatch (ATTACKER scenario)"
+# R7-INC-02: resolver content-check fires FIRST → sid-known-no-tagged-file (not sid-mismatch-hard-stop)
+# This is the correct INV-25 behavior: the resolver is the primary barrier.
+if [ "$RQ01_STATE" = "sid-known-no-tagged-file" ]; then
+  pass "R6-RQ01: resolver content-check rejects mismatched marker → sid-known-no-tagged-file (INV-25 primary defense)"
+elif [ "$RQ01_STATE" = "sid-mismatch-hard-stop" ]; then
+  # Resolver let it through (R7-INC-02 regression) and step2.sh's secondary caught it.
+  fail "R6-RQ01: sid-mismatch adversarial" "resolver should have caught wrong marker (R7-INC-02 F2); sid-mismatch-hard-stop means resolver content-check not working"
 else
-  fail "R6-RQ01: sid-mismatch adversarial" "expected state=sid-mismatch-hard-stop; got='$RQ01_STATE' raw=${RQ01_OUT:0:200}"
+  fail "R6-RQ01: resolver content-check adversarial" "expected state=sid-known-no-tagged-file; got='$RQ01_STATE' raw=${RQ01_OUT:0:200}"
 fi
-if [ "$RQ01_SENT_SID8" = "$RQ01_SID8_A" ]; then
-  pass "R6-RQ01: sentinel_sid8 in STATE matches breadcrumb SID8"
-else
-  fail "R6-RQ01: sentinel_sid8 field" "expected '$RQ01_SID8_A'; got '$RQ01_SENT_SID8'"
-fi
-if [ "$RQ01_MARK_SID8" = "$RQ01_SID_B_MARKER" ]; then
-  pass "R6-RQ01: marker_sid8 in STATE matches marker's embedded SID (SESS-B)"
-else
-  fail "R6-RQ01: marker_sid8 field" "expected '$RQ01_SID_B_MARKER'; got '$RQ01_MARK_SID8'"
-fi
+# sid_field1 and sid_field2 tests removed — STATE=sid-known-no-tagged-file does not carry sentinel_sid8/marker_sid8 fields.
+pass "R6-RQ01: sentinel_sid8 field check skipped (sid-known-no-tagged-file state has no sentinel_sid8 field — correct per R7-INC-02)"
+pass "R6-RQ01: marker_sid8 field check skipped (sid-known-no-tagged-file state has no marker_sid8 field — correct per R7-INC-02)"
 # Negative test: matching SID → STATE=ok
 # Re-write breadcrumb (the first test consumed it via sid-mismatch-hard-stop) and write correct handoff.
 RQ01_OK_TMPWD=$(mktemp -d)
