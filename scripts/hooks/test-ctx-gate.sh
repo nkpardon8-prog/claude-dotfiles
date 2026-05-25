@@ -2496,6 +2496,32 @@ if command -v handoff_resolve_path >/dev/null 2>&1; then
     fail "R7-INC-04e: unexpected behavior in residual attack scenario" "expected rc=0 (alias accepted); got rc=$_HR04E_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
+  # R7-INC-04g: future-mtime alias rejected (R7-INC.1 HIGH alias-future-mtime guard)
+  mkdir -p "$_HR2_TMP/04g"
+  printf 'future-mtime alias content\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n8 -->\n' \
+    > "$_HR2_TMP/04g/CLAUDE.local.md"
+  # Set mtime to the future (current time + 600 seconds)
+  _FUTURE_TS=$(($(date +%s) + 600))
+  _FUTURE_TOUCH=$(date -r "$_FUTURE_TS" "+%Y%m%d%H%M.%S" 2>/dev/null || date -d "@$_FUTURE_TS" "+%Y%m%d%H%M.%S" 2>/dev/null || echo "")
+  if [ -n "$_FUTURE_TOUCH" ]; then
+    touch -t "$_FUTURE_TOUCH" "$_HR2_TMP/04g/CLAUDE.local.md" 2>/dev/null || true
+  fi
+  # Verify the mtime was actually set to the future (within reasonable tolerance)
+  _ALIAS_MTIME=$(stat -f %m "$_HR2_TMP/04g/CLAUDE.local.md" 2>/dev/null || stat -c %Y "$_HR2_TMP/04g/CLAUDE.local.md" 2>/dev/null || echo "0")
+  _NOW=$(date +%s)
+  if [ "$_ALIAS_MTIME" -gt $((_NOW + 290)) ] 2>/dev/null; then
+    HANDOFF_PATH=""
+    HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04g" "aaaa1111"
+    _HR04G_RC=$?
+    if [ "$_HR04G_RC" -eq 2 ] && [ -z "$HANDOFF_PATH" ]; then
+      pass "R7-INC-04g: future-mtime alias rejected (mtime-guard fires, Defense H12 not bypassed)"
+    else
+      fail "R7-INC-04g: future-mtime guard" "expected rc=2 HANDOFF_PATH=''; got rc=$_HR04G_RC HANDOFF_PATH='$HANDOFF_PATH'"
+    fi
+  else
+    pass "R7-INC-04g: touch -t future not supported on this system (mtime not settable to future) — skip"
+  fi
+
 else
   fail "R7-INC-04: handoff_resolve_path not available"
 fi
