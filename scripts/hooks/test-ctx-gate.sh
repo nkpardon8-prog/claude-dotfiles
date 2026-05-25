@@ -455,14 +455,19 @@ else
   rm -rf "$TMPWD" "$TMPHOME"
 
   # G4-D: oversized SID-tagged handoff (6MB > 5MB cap) → STATE=oversize
-  # For oversize, size check happens BEFORE marker/content check, so marker doesn't matter.
+  # The resolver checks file size AFTER finding the file but step2 does size cap first.
+  # Actually: resolver finds the file (F2 marker check), then step2 does size cap.
+  # So we need: valid marker + file > 5MB. Write marker first, then pad.
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   G4D_SID="g4d-test-sid-$$"
-  # Write a 6MB file with a valid marker to ensure size check fires before marker-content check
-  printf '<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=test-nonce -->\n' "$G4D_SID" | dd bs=1 count=1 of="$TMPWD/CLAUDE.local.${G4D_SID}.md" 2>/dev/null
-  dd if=/dev/zero of="$TMPWD/CLAUDE.local.${G4D_SID}.md" bs=1024 count=6144 2>/dev/null
+  G4D_FILE="$TMPWD/CLAUDE.local.${G4D_SID}.md"
+  # Write valid marker with matching SID so resolver F2 passes, then pad to >5MB
+  printf '# handoff content\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=test-nonce -->\n' "$G4D_SID" > "$G4D_FILE"
+  # Pad to 6MB by appending zeros (cat /dev/zero + head, or python3)
+  python3 -c "import sys; sys.stdout.buffer.write(b'x' * 6000000)" >> "$G4D_FILE" 2>/dev/null || \
+    dd if=/dev/zero bs=1024 count=6144 2>/dev/null >> "$G4D_FILE"
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4D_SID" 2>/dev/null)
   G4D_STATE=$(step2_state "$OUT")
   if [ "$G4D_STATE" = "oversize" ]; then
