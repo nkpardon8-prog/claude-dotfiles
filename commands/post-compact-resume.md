@@ -137,6 +137,18 @@ Then route per the decision matrix below.
   > SessionStart banner shows the exact command.
   Then stop. Do NOT load the file. (Fail-safe: refuse, never wrong-load.)
 
+- **STATE=`self-unverifiable` (R9-R2 — wrong-load fail-closed):** the reader could not read THIS session's
+  own id (`CLAUDE_CODE_SESSION_ID` unset), so the arg-vs-self guard cannot run. Rather than degrade to the
+  content layer alone — which cannot distinguish the consumer in a shared repo-root — the reader REFUSES.
+  On supported Claude Code this never fires (the env var is always set); it protects degraded/older clients.
+  Extract: `arg_sid` from STATE JSON.
+  Output to user:
+  > WARNING: This session's own id is unavailable (CLAUDE_CODE_SESSION_ID unset), so I cannot prove the
+  > handoff for `arg_sid` belongs to THIS session. Refusing to auto-load to avoid cross-session contamination.
+  > To resume manually, set CLAUDE_CODE_SESSION_ID to this session's id (shown in the SessionStart banner)
+  > and re-run `/post-compact-resume <id>`, or run /pre-compact again.
+  Then stop. Do NOT load the file. (Fail-safe: refuse, never wrong-load.)
+
 - **STATE=`oversize`:** output to user:
   Extract: `size`, `max` from STATE JSON.
   > Handoff file is too large (`size` bytes; limit `max` bytes).
