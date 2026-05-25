@@ -38,8 +38,6 @@ set -u
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/auto-compact-sentinel.sh
 . "$ROOT/lib/auto-compact-sentinel.sh"
-# R5 Phase 3: source session-key.sh for HMAC breadcrumb signing.
-. "$ROOT/lib/session-key.sh" 2>/dev/null || true
 
 INPUT=$(cat)
 SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
@@ -57,104 +55,16 @@ if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
-# C2 fix: Stop hook must use the SAME SID derivation as the writer (arm-auto-compact.sh)
-# to find the sentinel the writer left.  The hook-JSON SESSION_ID is Claude Code's real
-# session_id; the writer derives via ac_resolve_session_id (which may produce a
-# TTY-keyed slug-fallback SID that differs from the real session_id when CLAUDE_SESSION_ID
-# was unset at arm time and the transcript had not yet flushed).
-#
-# Strategy: try BOTH the hook-JSON SID AND the ac_resolve_session_id result.
-# - If only one resolves to a sentinel file, use that one.
-# - If both resolve to DISTINCT sentinels, REFUSE to fire /compact (H4 Adversary fail-closed).
-#   An attacker who plants a transcript file + crafts a TTY redirect could redirect compact
-#   delivery by triggering RESOLVED_SID to diverge from REAL_SID. Refusing when ownership
-#   is ambiguous is the only safe option. A stop-hook-refused signal is written so the user
-#   can be informed at the next session start (see breadcrumb with originating_command=stop-hook-fail-closed).
-# - If neither resolves, fall through to the `[ -f "$SENTINEL" ] || exit 0` fast-path.
-# NOTE: "Case (b) both sentinels with disagreement → REFUSE to fire /compact" was changed
-# in R3-fix-sweep H4 from "prefer ac_resolve path" to "refuse". LOG_VERBS.md stop_hook_sid_mismatch
-# has been updated to reflect the actual behavior (action=refuse).
+# R8: Identity-via-arg. The hook-JSON SESSION_ID (payload) is the platform's authoritative
+# session_id. Thread it verbatim as the /post-compact-resume command arg.
+# REAL_SID = the payload value captured here, never mutated downstream.
+# The dual-SID strategy and stop-hook-refused breadcrumb block (pre-R8) are deleted:
+# - dual-SID (both REAL and RESOLVED sentinels) is gone — we use REAL_SID sentinel only.
+# - stop-hook-refused is gone — no dual-sentinel conflict possible anymore.
+# Sentinel is the /compact TRIGGER only; handoff identity comes from the command arg.
 REAL_SID="$SESSION_ID"
-RESOLVED_SID=$(ac_resolve_session_id 2>/dev/null)
-REAL_SENTINEL=$(ac_sentinel_path "$REAL_SID")
-RESOLVED_SENTINEL=""
-if [ -n "$RESOLVED_SID" ]; then
-  RESOLVED_SENTINEL=$(ac_sentinel_path "$RESOLVED_SID")
-fi
 
-# Determine which sentinel to use.
-REAL_EXISTS=false
-RESOLVED_EXISTS=false
-[ -f "$REAL_SENTINEL" ] && REAL_EXISTS=true
-[ -n "$RESOLVED_SENTINEL" ] && [ -f "$RESOLVED_SENTINEL" ] && RESOLVED_EXISTS=true
-
-if [ "$REAL_EXISTS" = "true" ] && [ "$RESOLVED_EXISTS" = "true" ] \
-   && [ "$REAL_SENTINEL" != "$RESOLVED_SENTINEL" ]; then
-  # R3-fix-sweep H4 (Adversary) + R4 Round 4 Phase 3: both sentinels exist but disagree — fail-closed.
-  # Refuse to fire compact when sentinel ownership is ambiguous.
-  _REAL_BASENAME=$(basename "$REAL_SENTINEL")
-  _RESOLVED_BASENAME=$(basename "$RESOLVED_SENTINEL")
-  handoff_log "stop_hook_sid_mismatch real_sid=$REAL_SID resolved_sid=$RESOLVED_SID real_basename=$_REAL_BASENAME resolved_basename=$_RESOLVED_BASENAME action=refuse"
-  # Phase 3 (Round 4): write a stop-hook-refused breadcrumb so step2.sh can surface this
-  # to the user at the next session start (STATE=stop-hook-refused).
-  # Use the REAL_SID (hook-JSON SID) as the key — it's Claude Code's authoritative session ID.
-  _REFUSE_BREADCRUMB_DIR="$HOME/.claude/progress"
-  mkdir -p "$_REFUSE_BREADCRUMB_DIR" 2>/dev/null
-  chmod 700 "$_REFUSE_BREADCRUMB_DIR" 2>/dev/null
-  _REFUSE_BC="$_REFUSE_BREADCRUMB_DIR/breadcrumb-${REAL_SID}.json"
-  _REFUSE_BC_TMP="${_REFUSE_BC}.tmp.$$"
-  _REFUSE_HOST=""
-  if _REFUSE_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64); then :
-  elif _REFUSE_HOST=$(uname -n 2>/dev/null | tr -d '[:space:]' | head -c 64); then :
-  fi
-  # R5 Critical #6: drop next_steps from breadcrumb-writer to eliminate prompt-injection vector.
-  # Attacker-controlled content (e.g., git commit messages, file names, env vars) could flow into
-  # the next_steps field and then be emitted to the orchestrator LLM via STATE=stop-hook-refused.
-  # step2.sh now hard-codes the recovery prose instead of relying on this field.
-  #
-  # RQ-10 (R6 HZ-04 extension): add cwd field + HMAC signature to refused breadcrumb.
-  # Without cwd, step2.sh cannot verify the breadcrumb matches the current workspace (a stale
-  # refused-bc from another workspace would fire STATE=stop-hook-refused in the wrong session).
-  # Without signature, an attacker can write a refused-bc with arbitrary real_sid/resolved_sid
-  # values, causing STATE=stop-hook-refused to fire with attacker-controlled SID fields.
-  # The signature uses REAL_SID as both sid and marker_nonce fields (refused-bc has no
-  # separate nonce — the SID is the stable per-session anchor).
-  _REFUSE_CWD=$(pwd -P 2>/dev/null || pwd)
-  _REFUSE_SID8=$(ac_compute_sid8 "$REAL_SID")
-  _REFUSE_SIG=""
-  if command -v session_key_sign >/dev/null 2>&1; then
-    # Attempt key generation for this SID8; idempotent if already generated.
-    session_key_generate "$_REFUSE_SID8" 2>/dev/null || true
-    _REFUSE_SIG=$(session_key_sign "$_REFUSE_SID8" "$REAL_SID" "$REAL_SID" "$REAL_SID" \
-      "$_REFUSE_CWD" "${_REFUSE_HOST:-unknown}" "stop-hook-fail-closed" 2>/dev/null) || _REFUSE_SIG=""
-    if [ -z "$_REFUSE_SIG" ]; then
-      handoff_log "stop_hook_refused_breadcrumb_sign_failed sid=${_REFUSE_SID8} reason=session_key_sign-returned-empty"
-    fi
-  fi
-  if ( umask 077 && jq -c -n \
-       --argjson sv 1 \
-       --arg sid "$REAL_SID" \
-       --arg sid8 "$_REFUSE_SID8" \
-       --arg cmd "stop-hook-fail-closed" \
-       --arg real_sid "$REAL_SID" --arg resolved_sid "$RESOLVED_SID" \
-       --arg real_basename "$_REAL_BASENAME" --arg resolved_basename "$_RESOLVED_BASENAME" \
-       --arg host "${_REFUSE_HOST:-unknown}" \
-       --arg cwd "$_REFUSE_CWD" \
-       --arg signature "${_REFUSE_SIG:-}" \
-       '{schema_version:$sv,originating_command:$cmd,sid:$sid,sid8:$sid8,hostname:$host,cwd:$cwd,signature:$signature,real_sid:$real_sid,resolved_sid:$resolved_sid,real_basename:$real_basename,resolved_basename:$resolved_basename}' \
-       > "$_REFUSE_BC_TMP" 2>/dev/null ) && mv "$_REFUSE_BC_TMP" "$_REFUSE_BC" 2>/dev/null; then
-    handoff_log "stop_hook_refused_breadcrumb_written sid=${_REFUSE_SID8} path=$_REFUSE_BC signed=$([ -n "$_REFUSE_SIG" ] && echo yes || echo no)"
-  else
-    rm -f "$_REFUSE_BC_TMP" 2>/dev/null || true
-  fi
-  exit 0
-elif [ "$REAL_EXISTS" = "false" ] && [ "$RESOLVED_EXISTS" = "true" ]; then
-  # Only the resolved (arm-time) sentinel exists — use it.
-  SESSION_ID="$RESOLVED_SID"
-fi
-# else: real-SID sentinel exists (or neither exists) — keep SESSION_ID as-is.
-
-SENTINEL=$(ac_sentinel_path "$SESSION_ID")
+SENTINEL=$(ac_sentinel_path "$REAL_SID")
 
 # Garbage-collect orphan claim files (>1h old) on EVERY Stop event — this is the
 # only routine cleanup path because most Stop events skip the sentinel-consume
