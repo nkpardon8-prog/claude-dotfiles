@@ -137,18 +137,10 @@ handoff_resolve_path() {
               ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch session_id=$session_id marker_sid=$_resolver_marker_sid2 file=$p"
             fi
           else
-            local _fmtime2
-            if _fmtime2=$(stat -f %m "$p" 2>/dev/null); then :
-            elif _fmtime2=$(stat -c %Y "$p" 2>/dev/null); then :
-            else _fmtime2=9999999999; fi
-            _fmtime2=$(printf '%s' "$_fmtime2" | tr -d '[:space:]')
-            [ -z "$_fmtime2" ] && _fmtime2=9999999999
-            if [ "$_fmtime2" -lt "$_legacy_cutoff" ]; then
-              HANDOFF_PATH="$p"
-              return 0
-            else
-              ctx_gate_log "primer skip reason=resolver-no-marker-non-legacy session_id=$session_id file=$p mtime=$_fmtime2 cutoff=$_legacy_cutoff"
-            fi
+            # R9-R2 HIGH-1 (fail-closed): SID-tagged repo-root probe — markerless file is never
+            # accepted via mtime (same wrong-load hole as the cwd probe above). Fall through → rc=2.
+            ctx_gate_log "primer skip reason=resolver-sid-tagged-no-marker session_id=$session_id file=$p"
+          fi
           fi
         else
           local LCNT2
