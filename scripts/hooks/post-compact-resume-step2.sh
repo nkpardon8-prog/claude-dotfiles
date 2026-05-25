@@ -46,6 +46,44 @@ if ! printf '%s' "$ARG_SID" | grep -qE '^[A-Za-z0-9_-]+$'; then
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# R9 HIGH-1: arg-vs-self check — the wrong-load structural close.
+#
+# The downstream marker-content-check (handoff-resolve.sh F2) validates that the
+# resolved file's marker sid == ARG_SID — i.e. file-vs-arg. It can NEVER detect
+# that the *consumer* (this session) is not the session ARG_SID names, because
+# the file and the arg agree. So if `/post-compact-resume <A-uuid>` is mis-delivered
+# (tab-targeting misfire) or mis-pasted (a user pasting session A's banner command
+# into session B's tab) into a DIFFERENT live session B that shares a repo-root where
+# A's handoff `CLAUDE.local.<A-uuid>.md` physically lives, B would otherwise load A's
+# handoff — the exact cross-session wrong-load this subsystem exists to prevent.
+#
+# Defense: compare ARG_SID against THIS resuming session's own id.
+#   SELF_SID source: CLAUDE_CODE_SESSION_ID — empirically exposed to the Bash tool
+#   subprocess and STABLE across /compact (the legitimate auto-resume runs in the
+#   SAME session that armed the chain, so SELF_SID == ARG_SID and this passes).
+#   Falls back to CLAUDE_SESSION_ID (unset on current Claude Code, kept for fwd-compat).
+#
+# Fail-safe semantics:
+#   - SELF_SID known AND != ARG_SID  -> STATE=arg-not-my-session (REFUSE; never wrong-load).
+#   - SELF_SID unavailable (older Claude Code, no env var) -> SKIP the check and fall
+#     back to the delivery+marker guarantee. Additive defense — never a regression.
+# A false-positive here (legitimate resume refused, e.g. if the platform ever lets the
+# Stop-hook payload session_id diverge from CLAUDE_CODE_SESSION_ID) degrades to a
+# recoverable refuse, NOT a wrong-load — the correct trade for medical-grade.
+# ---------------------------------------------------------------------------
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+SELF_SID=$(printf '%s' "$SELF_SID" | tr -cd 'A-Za-z0-9_-' | head -c 128)
+if [ -n "$SELF_SID" ] && [ "$SELF_SID" != "$ARG_SID" ]; then
+  handoff_log "step2_terminal state=arg-not-my-session self=$SELF_SID arg=$ARG_SID"
+  _json=$(jq -c -n --arg self "$SELF_SID" --arg arg "$ARG_SID" \
+    '{"state":"arg-not-my-session","self_sid":$self,"arg_sid":$arg,
+      "reason":"the session_id passed to /post-compact-resume does not match this session (possible mis-delivery or mis-paste). Refusing to load another session handoff."}' 2>/dev/null)
+  if [ -n "$_json" ]; then printf 'STATE=%s\n' "$_json"
+  else printf 'STATE={"state":"arg-not-my-session"}\n'; fi
+  exit 0
+fi
+
 CWD=$(cd -P "$(pwd)" 2>/dev/null && pwd -P || pwd)
 
 # ---------------------------------------------------------------------------
