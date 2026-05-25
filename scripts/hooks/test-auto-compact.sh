@@ -683,7 +683,7 @@ _STEP2="$ROOT/post-compact-resume-step2.sh"
 
 if command -v jq >/dev/null 2>&1 && [ -f "$_RESOLVE_SH" ] && [ -f "$_STEP2" ]; then
   # R8: invoke with full SID arg — F2 rejects wrong marker → rc=2 → STATE=no-handoff
-  _INC06_OUT=$(cd "$_INC06_TMP" && HOME="$_INC06_HOME" \
+  _INC06_OUT=$(cd "$_INC06_TMP" && HOME="$_INC06_HOME" CLAUDE_CODE_SESSION_ID="$_INC06_SID" \
     bash "$_STEP2" "$_INC06_SID" 2>/dev/null)
   _INC06_STATE=$(printf '%s' "$_INC06_OUT" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 
