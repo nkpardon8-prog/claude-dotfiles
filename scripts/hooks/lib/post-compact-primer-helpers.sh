@@ -28,16 +28,21 @@ readonly _POST_COMPACT_PRIMER_HELPERS_LOADED=1
 # Thin wrapper around handoff_resolve_path (lib/handoff-resolve.sh).
 # PR-9: the canonical resolver lives in handoff-resolve.sh so step2.sh can call it
 # directly without depending on primer-helpers.
-# SENTINEL_SID8 is set by primer_find_sentinel_for_cwd — that function MUST run first.
+# R8 V2-5: pass PRIMER_SESSION_ID (full UUID from payload) directly to the resolver.
+# PRIMER_SESSION_ID is set by post-compact-primer.sh from the hook JSON $SID before
+# calling this function. Falls back to SENTINEL_SID8 for backward compat.
 # Sets HANDOFF_PATH (global) on success (rc=0); leaves empty on failure.
 # Returns:
 #   0 — handoff path resolved
 #   1 — no handoff file found (SID unknown, no alias either)
-#   2 — SID known but no SID-tagged file (R4 D3 fail-closed signal)
+#   2 — SID known but no SID-tagged file (fail-closed signal)
 # ---------------------------------------------------------------------------
 primer_resolve_handoff_path() {
   local cwd="$1"
-  handoff_resolve_path "$cwd" "${SENTINEL_SID8:-}"
+  # R8: prefer full session_id (PRIMER_SESSION_ID) over truncated SID8 (SENTINEL_SID8).
+  # PRIMER_SESSION_ID is set by post-compact-primer.sh from the payload SID.
+  local _resolve_sid="${PRIMER_SESSION_ID:-${SENTINEL_SID8:-}}"
+  handoff_resolve_path "$cwd" "$_resolve_sid"
   return $?
 }
 
