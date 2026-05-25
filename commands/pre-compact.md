@@ -586,7 +586,7 @@ state (Phase 1 only, mid-Phase-2 crash, mid-self-audit crash, mid-marker-append-
 **Crash-safety:** each Edit call is atomic per-call (Claude Code internally uses
 temp+rename). The idempotency check above prevents double-marker artifacts on retry.
 
-**Marker format is LOCKED** (attributes in fixed order): `<!-- END-OF-HANDOFF schema=v1 sid=<sid8> nonce=<uuid> -->`. Nonce extraction by consumers uses order-insensitive `sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p'`.
+**Marker format is LOCKED** (attributes in fixed order): `<!-- END-OF-HANDOFF schema=v1 sid=<full-session-id> nonce=<uuid> -->`. Nonce extraction by consumers uses order-insensitive `sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p'`. R8: sid= is the full session_id UUID (not the truncated 8-char SID8).
 
 ## Step 7: (intentionally removed in R4 — see Step 6D notes)
 
