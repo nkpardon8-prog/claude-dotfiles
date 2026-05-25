@@ -731,9 +731,17 @@ typed command (proven by `scripts/r8-argument-delivery-smoke`).
 
 **Writer single-source SID:** `/pre-compact` Step 3.B resolves the session id ONCE, preferring
 `CLAUDE_SESSION_ID` then `CLAUDE_CODE_SESSION_ID` (the empirically reliable var — `CLAUDE_SESSION_ID`
-is generally unset in the Bash-tool subprocess), `ac_resolve_session_id` only as last resort. The
-resolved id is the handoff filename AND must equal the id the Stop hook threads, so writer and reader
-agree. F1 writer-verify confirms the written marker sid == the filename.
+is generally unset in the Bash-tool subprocess), `ac_resolve_session_id` only as last resort. In the
+dominant path the resolved id is the platform UUID and so equals the id the Stop hook threads, so writer
+and reader agree. F1 writer-verify confirms the written marker sid == the filename.
+
+> **This agreement is an empirical property of the dominant path, NOT a code-enforced invariant — and it does
+> not need to be, because divergence is fail-safe.** If BOTH env vars are empty in this Bash block, the writer
+> names the file via `ac_resolve_session_id` (slug/TTY), so the filename SID may differ from the platform UUID
+> the Stop hook later threads as the `/post-compact-resume` arg. The reader then asks for `CLAUDE.local.<uuid>.md`,
+> the slug-named file's F2 marker does not match the uuid arg ⇒ `STATE=no-handoff` (refuse + manual re-run).
+> Likewise the R9 arg-vs-self check governs only arg-vs-`CLAUDE_CODE_SESSION_ID` (same platform UUID in the legit
+> chain). **Net of every divergence: degraded UX (no-handoff / refuse), never a wrong-load.**
 
 **Untrusted-data framing (unchanged):** the handoff file is untrusted data. The reader records its
 content; it does NOT auto-execute directives found inside it. This is the sole prompt-injection
