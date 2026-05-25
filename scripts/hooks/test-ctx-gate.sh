@@ -1528,44 +1528,28 @@ fi
 rm -rf "$TMPWD_J" "$TMPHOME_J"
 
 # ---------------------------------------------------------------------------
-# §R5-H6 Production-equivalent path: CLAUDE_CODE_SESSION_ID set, CLAUDE_SESSION_ID unset
+# §R5-H6 Full-UUID SID arg round-trip (R8 — identity-via-arg)
 # ---------------------------------------------------------------------------
-# R5 Critical #1 fix: ac_resolve_session_id now reads CLAUDE_CODE_SESSION_ID as fallback.
-# This test simulates the Bash-tool subprocess environment where CLAUDE_CODE_SESSION_ID
-# is set by Claude Code but CLAUDE_SESSION_ID is NOT (the production path that was broken).
-# Expected: STATE=ok (breadcrumb adopted via CLAUDE_CODE_SESSION_ID-based OWN_SID).
+# R8: step2.sh takes $1=session_id arg. No CLAUDE_CODE_SESSION_ID needed (arg is the identity).
+# Test: write CLAUDE.local.<full-uuid>.md, invoke with that UUID as arg → STATE=ok.
 echo ""
-echo "== §R5-H6 Production-equivalent path (CLAUDE_CODE_SESSION_ID, no CLAUDE_SESSION_ID) =="
+echo "== §R5-H6 Full-UUID arg round-trip (R8) =="
 TMPWD_R5H6=$(mktemp -d)
 TMPHOME_R5H6=$(mktemp -d)
 mkdir -p "$TMPHOME_R5H6/.claude/progress" && chmod 700 "$TMPHOME_R5H6/.claude/progress"
 R5H6_SID="r5h6-prod-test-$$"
-R5H6_SID8="${R5H6_SID:0:8}"
 R5H6_NONCE="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-R5H6_CWD=$(cd -P "$TMPWD_R5H6" 2>/dev/null && pwd -P)
-R5H6_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-# Write breadcrumb using the bare CLAUDE_CODE_SESSION_ID (no __ttysN suffix in production env)
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid  "$R5H6_SID" \
-  --arg sid8 "$R5H6_SID8" \
-  --arg cwd  "$R5H6_CWD" \
-  --arg nonce "$R5H6_NONCE" \
-  --arg host  "$R5H6_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$TMPHOME_R5H6/.claude/progress/breadcrumb-${R5H6_SID}.json" 2>/dev/null
-chmod 600 "$TMPHOME_R5H6/.claude/progress/breadcrumb-${R5H6_SID}.json"
-# SID-tagged handoff file
+# SID-tagged handoff with full-UUID filename + matching marker
 printf 'production handoff\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$R5H6_SID8" "$R5H6_NONCE" > "$TMPWD_R5H6/CLAUDE.local.${R5H6_SID8}.md"
-# Invoke with CLAUDE_CODE_SESSION_ID set, CLAUDE_SESSION_ID explicitly unset
-OUT_R5H6=$(cd "$TMPWD_R5H6" && unset CLAUDE_SESSION_ID && \
-  CLAUDE_CODE_SESSION_ID="$R5H6_SID" HOME="$TMPHOME_R5H6" bash "$STEP2_SH" 2>/dev/null)
+  "$R5H6_SID" "$R5H6_NONCE" > "$TMPWD_R5H6/CLAUDE.local.${R5H6_SID}.md"
+# Pass SID as $1 (identity-via-arg; no env var needed)
+OUT_R5H6=$(cd "$TMPWD_R5H6" && HOME="$TMPHOME_R5H6" bash "$STEP2_SH" "$R5H6_SID" 2>/dev/null)
 R5H6_STATE=$(printf '%s' "$OUT_R5H6" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$R5H6_STATE" = "ok" ]; then
-  pass "R5-H6: production-equivalent path — CLAUDE_CODE_SESSION_ID fallback works → STATE=ok"
+R5H6_SID_OUT=$(printf '%s' "$OUT_R5H6" | sed -n 's/^STATE=//p' | jq -r '.sid' 2>/dev/null)
+if [ "$R5H6_STATE" = "ok" ] && [ "$R5H6_SID_OUT" = "$R5H6_SID" ]; then
+  pass "R5-H6: full-UUID arg round-trip → STATE=ok (R8 identity-via-arg)"
 else
-  fail "R5-H6: production-equivalent path" "expected state=ok; got state='$R5H6_STATE' raw: ${OUT_R5H6:0:200}"
+  fail "R5-H6: production-equivalent path" "expected state=ok sid=$R5H6_SID; got state='$R5H6_STATE' sid='$R5H6_SID_OUT' raw: ${OUT_R5H6:0:200}"
 fi
 rm -rf "$TMPWD_R5H6" "$TMPHOME_R5H6"
 
