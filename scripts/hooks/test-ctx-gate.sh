@@ -1813,31 +1813,41 @@ fi
 rm -rf "$AVS_TMPWD" "$AVS_TMPHOME" "$AVS_EMPTY_WD"
 
 # ---------------------------------------------------------------------------
-# §R6-RQ05 Adversarial test: session key file GC (HZ-27)
+# §R6-RQ05 Adversarial test: session-key migration-residue GC (>24h old)
 # ---------------------------------------------------------------------------
+# R9-R2 (de-vacuum, MEDIUM-2): the OLD RQ05 inlined `find -delete` and asserted the file was
+# gone — it tested `find`, not the product. Rewritten to invoke the ACTUAL Stop hook so the
+# assertion exercises the hook's real GC block (auto-compact-after-pre-compact.sh sweeps stale
+# `.session-key-*` migration residue from pre-R8 sessions). We feed a payload session_id with NO
+# armed sentinel, so the hook runs its GC sweeps and then exits at the `[ -f "$SENTINEL" ]` guard
+# — no osascript, no side effects. Darwin-gated because the hook is macOS-Terminal-only by design
+# (`uname -s != Darwin` → the hook exits 0 immediately); on non-Darwin we record an honest skip.
 echo ""
-echo "== §R6-RQ05 session key file GC (>24h old) =="
-RQ05_HOME=$(mktemp -d)
-mkdir -p "$RQ05_HOME/.claude/progress" && chmod 700 "$RQ05_HOME/.claude/progress"
-# Create a fake session key file with mtime set to 25h ago
-RQ05_KEY="$RQ05_HOME/.claude/progress/.session-key-rq05test"
-printf 'fakekeydata\n' > "$RQ05_KEY"
-touch -t "$(date -v -25H '+%Y%m%d%H%M.%S' 2>/dev/null || date --date='25 hours ago' '+%Y%m%d%H%M.%S' 2>/dev/null || echo '202601010000.00')" "$RQ05_KEY" 2>/dev/null || true
-# Run the Stop hook GC block (simulate via direct find command used in the hook)
-find "$RQ05_HOME/.claude/progress" -maxdepth 1 -type f -name '.session-key-*' -mmin +1440 -delete 2>/dev/null || true
-if [ ! -f "$RQ05_KEY" ]; then
-  pass "R6-RQ05: session key file older than 24h was GC'd by Stop hook GC block"
-else
-  # touch -t may not work on all systems; check mtime directly
-  KEY_MTIME=$(stat -f %m "$RQ05_KEY" 2>/dev/null || stat -c %Y "$RQ05_KEY" 2>/dev/null || echo "0")
-  KEY_AGE=$(( $(date +%s) - KEY_MTIME ))
-  if [ "$KEY_AGE" -lt 86400 ]; then
-    pass "R6-RQ05: key file not old enough for GC (touch -t may not be supported) — skip"
+echo "== §R6-RQ05 session-key migration-residue GC via REAL Stop hook (>24h old) =="
+RQ05_HOOK="$_SELFDIR/auto-compact-after-pre-compact.sh"
+if [ "$(uname -s)" = "Darwin" ] && [ -f "$RQ05_HOOK" ]; then
+  RQ05_HOME=$(mktemp -d)
+  mkdir -p "$RQ05_HOME/.claude/progress" && chmod 700 "$RQ05_HOME/.claude/progress"
+  RQ05_KEY="$RQ05_HOME/.claude/progress/.session-key-rq05test"
+  printf 'fakekeydata\n' > "$RQ05_KEY"
+  touch -t "$(date -v -25H '+%Y%m%d%H%M.%S' 2>/dev/null || echo '202601010000.00')" "$RQ05_KEY" 2>/dev/null || true
+  RQ05_MTIME=$(stat -f %m "$RQ05_KEY" 2>/dev/null || stat -c %Y "$RQ05_KEY" 2>/dev/null || echo "0")
+  RQ05_AGE=$(( $(date +%s) - RQ05_MTIME ))
+  if [ "$RQ05_AGE" -ge 86400 ]; then
+    # Invoke the REAL hook with a session_id that has no sentinel → runs GC sweeps, then exits.
+    printf '{"session_id":"rq05-no-sentinel"}' | HOME="$RQ05_HOME" bash "$RQ05_HOOK" >/dev/null 2>&1 || true
+    if [ ! -f "$RQ05_KEY" ]; then
+      pass "R6-RQ05: REAL Stop hook GC'd a >24h `.session-key-*` migration-residue file"
+    else
+      fail "R6-RQ05: Stop hook did NOT GC the >24h .session-key-* file" "file still present: $RQ05_KEY"
+    fi
   else
-    fail "R6-RQ05: session key file >24h old was NOT GC'd by Stop hook GC block"
+    pass "R6-RQ05: touch -t could not backdate mtime >24h on this system — skip (inconclusive)"
   fi
+  rm -rf "$RQ05_HOME"
+else
+  pass "R6-RQ05: non-Darwin (Stop hook is macOS-Terminal-only by design) — skip"
 fi
-rm -rf "$RQ05_HOME"
 
 # ---------------------------------------------------------------------------
 # §R6-RQ07 Adversarial test: primer multi-marker → MARKER_PRESENT=tampered (HZ-34)
