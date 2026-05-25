@@ -153,7 +153,8 @@ for _scan_dir in "$DIAG_CWD" "$DIAG_REPO"; do
 done
 [ "$SID_TAGGED_COUNT" -eq 0 ] && echo "(no SID-tagged CLAUDE.local.<sid>.md found in cwd/repo)"
 
-# Alias (legacy-only fallback — R4 D1: only used when SID unknown).
+# Alias — R7-INC-04 (Defense H12): alias is no longer legacy-only when it has a valid marker.
+# Distinguish: marker-bound (first-class under Defense H12) vs legacy (no marker).
 HANDOFF_PATH=""
 if [ -f "$DIAG_CWD/CLAUDE.local.md" ]; then
   HANDOFF_PATH="$DIAG_CWD/CLAUDE.local.md"
@@ -161,7 +162,6 @@ elif [ -n "$DIAG_REPO" ] && [ -f "$DIAG_REPO/CLAUDE.local.md" ]; then
   HANDOFF_PATH="$DIAG_REPO/CLAUDE.local.md"
 fi
 if [ -n "$HANDOFF_PATH" ]; then
-  echo "Alias (legacy): $HANDOFF_PATH"
   _HMTIME=""
   if _HMTIME=$(stat -f %Sm "$HANDOFF_PATH" 2>/dev/null); then :
   elif _HMTIME=$(stat -c %y "$HANDOFF_PATH" 2>/dev/null); then :; fi
@@ -169,15 +169,21 @@ if [ -n "$HANDOFF_PATH" ]; then
   if _HSIZE=$(stat -f %z "$HANDOFF_PATH" 2>/dev/null); then :
   elif _HSIZE=$(stat -c %s "$HANDOFF_PATH" 2>/dev/null); then :; fi
   _HLINES=$(wc -l < "$HANDOFF_PATH" 2>/dev/null | tr -d ' ')
-  echo "  mtime: ${_HMTIME:-stat-failed} size: ${_HSIZE:-stat-failed} bytes / ${_HLINES:-?} lines"
   # Use strict anchor for alias too.
   if grep -qE '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null; then
     _NONCE=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null | head -1 | sed -nE 's/.*nonce=([a-f0-9-]+).*/\1/p')
-    echo "  marker: PRESENT nonce=${_NONCE:-EXTRACT_FAILED} (NOTE: alias is legacy-only per R4 D1)"
+    _MSID=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$HANDOFF_PATH" 2>/dev/null | head -1 | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
+    echo "Alias (marker-bound, Defense H12): $HANDOFF_PATH"
+    echo "  mtime: ${_HMTIME:-stat-failed} size: ${_HSIZE:-stat-failed} bytes / ${_HLINES:-?} lines"
+    echo "  marker: PRESENT sid=${_MSID:-EXTRACT_FAILED} nonce=${_NONCE:-EXTRACT_FAILED} (alias-with-marker-binding; readable by resolver when sid matches session SID8)"
   elif grep -qF '<!-- END-OF-HANDOFF -->' "$HANDOFF_PATH" 2>/dev/null; then
-    echo "  marker: PRESENT (legacy form)"
+    echo "Alias (legacy, no sid marker): $HANDOFF_PATH"
+    echo "  mtime: ${_HMTIME:-stat-failed} size: ${_HSIZE:-stat-failed} bytes / ${_HLINES:-?} lines"
+    echo "  marker: PRESENT (legacy form — no sid= attribute; not accepted by resolver when SID is known)"
   else
-    echo "  marker: ABSENT — handoff may be truncated"
+    echo "Alias (legacy, no marker): $HANDOFF_PATH"
+    echo "  mtime: ${_HMTIME:-stat-failed} size: ${_HSIZE:-stat-failed} bytes / ${_HLINES:-?} lines"
+    echo "  marker: ABSENT — handoff may be truncated; not accepted by resolver when SID is known"
   fi
 else
   echo "(no CLAUDE.local.md alias in cwd or repo root)"
