@@ -1572,7 +1572,7 @@ mkdir -p "$TMPHOME_C9/.claude/progress" && chmod 700 "$TMPHOME_C9/.claude/progre
 OUT_C9=$(cd "$TMPWD_C9" && HOME="$TMPHOME_C9" bash "$STEP2_SH" 2>/dev/null)
 C9_STATE=$(printf '%s' "$OUT_C9" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
 if [ "$C9_STATE" = "no-session-arg" ]; then
-  pass "R5-C9: no-session-arg fires when $1 is missing (R8 fail-safe)"
+  pass "R5-C9: no-session-arg fires when arg is missing (R8 fail-safe)"
 else
   fail "R5-C9: own-sid-unresolvable" "expected state=no-session-arg; got state='$C9_STATE' raw: ${OUT_C9:0:200}"
 fi
