@@ -542,9 +542,10 @@ rm -rf "$TMPHOME"
 # R4 D3 fix: handoff must be at SID-tagged path (sentinel SID=oldsid → SID8=oldsid).
 # Phase 2 Round 4: session_id must match sentinel name for strict binding to work.
 # Use session_id=oldsid to match auto-compact-oldsid.json.
+# R7-INC-02: use v1 marker with matching sid so the resolver content-check passes.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# handoff\n\n<!-- END-OF-HANDOFF -->\n' > "$TMPHOME/repo/CLAUDE.local.oldsid.md"
+printf '# handoff\n\n<!-- END-OF-HANDOFF schema=v1 sid=oldsid nonce=test-anomaly-nonce -->\n' > "$TMPHOME/repo/CLAUDE.local.oldsid.md"
 printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"%s/repo"}\n' "$TMPHOME" > "$TMPHOME/.claude/progress/auto-compact-oldsid.json"
 JSON="{\"session_id\":\"oldsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
