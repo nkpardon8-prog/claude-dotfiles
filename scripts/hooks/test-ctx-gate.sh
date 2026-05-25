@@ -649,12 +649,13 @@ fi
 rm -rf "$TMPHOME"
 
 # 3l-resume-legacy: source=resume + mtime<cutoff + no marker → LEGACY
-# R8: use SID-tagged file with legacy mtime (accepted by mtime gate in resolver)
+# R9-R2: legacy no-marker acceptance is now ALIAS-path only (SID-unknown). A markerless
+# SID-tagged file is refused (G4-C/R7-INC-02c). Exercise the LEGACY branch via the alias path.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/repo" "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME"
-printf '# old handoff\n## No marker\n' > "$TMPHOME/repo/CLAUDE.local.newsid.md"
-touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.newsid.md"  # 2019 = before 2020 cutoff
-JSON="{\"session_id\":\"newsid\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
+printf '# old handoff\n## No marker\n' > "$TMPHOME/repo/CLAUDE.local.md"
+touch -t 201901010000 "$TMPHOME/repo/CLAUDE.local.md"  # 2019 = before 2020 cutoff
+JSON="{\"session_id\":\"\",\"source\":\"resume\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("LEGACY")' >/dev/null 2>&1; then
   pass "3l-resume-legacy: source=resume + mtime<cutoff + no marker → LEGACY"
