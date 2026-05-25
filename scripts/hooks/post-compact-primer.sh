@@ -36,6 +36,11 @@ INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | head -c 128)
 SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
 
+# R8: expose the full session_id (SID) as PRIMER_SESSION_ID for primer_resolve_handoff_path.
+# The resolver now uses the full UUID, not the truncated SENTINEL_SID8.
+PRIMER_SESSION_ID="${SID:-}"
+export PRIMER_SESSION_ID
+
 # B20: unified handoff audit trail — log session start event.
 handoff_log "session_started sid=${SID:-unknown} source=${SOURCE:-unknown}"
 
