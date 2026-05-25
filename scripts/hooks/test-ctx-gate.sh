@@ -1188,40 +1188,23 @@ rm -rf "$TMPDIR_N6"
 # §G4-F NONCE_OK=mismatch hard-stop (D4) — Task 4.3
 # ---------------------------------------------------------------------------
 echo ""
-echo "== §G4-F nonce-mismatch hard-stop (D4) =="
-# Setup: breadcrumb with nonce-X, SID-tagged handoff with nonce-Y, SID known.
-# Assert step2.sh emits STATE={state:"nonce-mismatch-hard-stop",...}.
+echo "== §G4-F SID-tagged handoff resolves ok with matching marker (R8) =="
+# R8: nonce-mismatch-hard-stop removed (breadcrumb/nonce machinery deleted).
+# Test: SID-tagged handoff with matching marker → STATE=ok (no nonce check).
 TMPWD_F=$(mktemp -d)
 TMPHOME_F=$(mktemp -d)
 mkdir -p "$TMPHOME_F/.claude/progress" && chmod 700 "$TMPHOME_F/.claude/progress"
-GF_SID="g4f-mismatch-$$"
-GF_SID8="${GF_SID:0:8}"
-GF_NONCE_X="aaaaaaaa-1111-2222-3333-444444444444"
-GF_NONCE_Y="bbbbbbbb-5555-6666-7777-888888888888"
-GF_CWD=$(cd -P "$TMPWD_F" 2>/dev/null && pwd -P)
-GF_HOST=$(hostname -s 2>/dev/null | tr -d '[:space:]' | head -c 64)
-# Breadcrumb carries nonce-X
-jq -c -n \
-  --argjson sv 1 \
-  --arg sid  "$GF_SID" \
-  --arg sid8 "$GF_SID8" \
-  --arg cwd  "$GF_CWD" \
-  --arg nonce "$GF_NONCE_X" \
-  --arg host  "$GF_HOST" \
-  '{schema_version:$sv,originating_command:"pre-compact",sid:$sid,sid8:$sid8,cwd:$cwd,nonce:$nonce,hostname:$host}' \
-  > "$TMPHOME_F/.claude/progress/breadcrumb-${GF_SID}.json" 2>/dev/null
-chmod 600 "$TMPHOME_F/.claude/progress/breadcrumb-${GF_SID}.json"
-# Handoff file carries nonce-Y (mismatch)
+GF_SID="g4f-sid-$$"
+GF_NONCE="aaaaaaaa-1111-2222-3333-444444444444"
 printf 'content body\n<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=%s -->\n' \
-  "$GF_SID8" "$GF_NONCE_Y" > "$TMPWD_F/CLAUDE.local.${GF_SID8}.md"
+  "$GF_SID" "$GF_NONCE" > "$TMPWD_F/CLAUDE.local.${GF_SID}.md"
 STEP2_SH="$PWD/post-compact-resume-step2.sh"
-# R5 Critical #9: provide CLAUDE_SESSION_ID so OWN_SID resolves to GF_SID.
-OUT_F=$(cd "$TMPWD_F" && CLAUDE_SESSION_ID="$GF_SID" HOME="$TMPHOME_F" bash "$STEP2_SH" 2>/dev/null)
+OUT_F=$(cd "$TMPWD_F" && HOME="$TMPHOME_F" bash "$STEP2_SH" "$GF_SID" 2>/dev/null)
 GF_STATE=$(printf '%s' "$OUT_F" | sed -n 's/^STATE=//p' | jq -r '.state' 2>/dev/null)
-if [ "$GF_STATE" = "nonce-mismatch-hard-stop" ]; then
-  pass "G4-F: nonce-mismatch hard-stop fires when SID known (D4)"
+if [ "$GF_STATE" = "ok" ]; then
+  pass "G4-F: SID-tagged handoff with matching marker → STATE=ok (R8: no nonce check)"
 else
-  fail "G4-F: nonce-mismatch hard-stop" "expected state=nonce-mismatch-hard-stop got '$GF_STATE' raw: ${OUT_F:0:200}"
+  fail "G4-F: expected state=ok" "got '$GF_STATE' raw: ${OUT_F:0:200}"
 fi
 rm -rf "$TMPWD_F" "$TMPHOME_F"
 
