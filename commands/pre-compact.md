@@ -529,13 +529,18 @@ Bash `printf >>` or `mv`** — allowlist-clean.
    - If absent: proceed to step 3.
 
 3. **Confirm SID8 from scratch** (CRITICAL — RQ-INC-03 / INV-26: prevent working-memory substitution).
+   The orchestrator MUST substitute the captured SID literal from Step 3.B output as `CAPTURED_SID`
+   in the bash below (replace the literal `CAPTURED_SID` with the actual value):
    ```bash
-   # CRITICAL (R7-INC-03): marker SID8 MUST come from scratch file.
-   # The orchestrator MUST NOT substitute SID8 from working memory here.
-   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-scratch-$$.json"
+   # CRITICAL (R7-INC-03, R7-INC.1 B1/B2): marker SID8 MUST come from scratch file.
+   # Do NOT use $$: each Bash call is a different subprocess. Use the CAPTURED SID literal.
+   # Orchestrator: replace CAPTURED_SID below with the actual SID value from Step 3.B output.
+   REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+   SCRATCH_PATH="$HOME/.claude/progress/pre-compact-parent-CAPTURED_SID.json"
    SID8=$(jq -r '.sid8' "$SCRATCH_PATH" 2>/dev/null)
    [ -n "$SID8" ] || { echo "FATAL: Step 6D scratch read failed" >&2; exit 1; }
-   echo "SID8=$SID8 (confirmed from scratch for marker)"
+   HANDOFF_PRIMARY="$REPO_ROOT/CLAUDE.local.${SID8}.md"
+   echo "SID8=$SID8 HANDOFF_PRIMARY=$HANDOFF_PRIMARY (confirmed from scratch for marker)"
    ```
 
 4. **Single Edit call to append marker:**
