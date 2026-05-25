@@ -433,28 +433,35 @@ else
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
-  # G4-C: SID-tagged handoff missing marker (recent file) → STATE=ok marker=absent legacy=false
+  # G4-C: SID-tagged handoff with legacy mtime (no marker, old file) → STATE=ok marker=absent legacy=true
+  # R8: recent-no-marker files are rejected by resolver mtime gate (rc=2). To get state=ok marker=absent,
+  # use legacy mtime (< HANDOFF_LEGACY_CUTOFF_EPOCH) so resolver accepts it.
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   G4C_SID="g4c-test-sid-$$"
   printf 'content body without marker\n' > "$TMPWD/CLAUDE.local.${G4C_SID}.md"
+  # Touch with 2019 mtime so resolver legacy-allows it (mtime < default cutoff 2026-04-20)
+  touch -t 201901010000 "$TMPWD/CLAUDE.local.${G4C_SID}.md" 2>/dev/null
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4C_SID" 2>/dev/null)
   G4C_STATE=$(step2_state "$OUT")
   G4C_MARKER=$(step2_field "$OUT" "marker")
   G4C_LEGACY=$(step2_field "$OUT" "legacy")
-  if [ "$G4C_STATE" = "ok" ] && [ "$G4C_MARKER" = "absent" ] && [ "$G4C_LEGACY" = "false" ]; then
-    pass "G4-C: recent missing marker → state=ok marker=absent legacy=false (JSON parsed)"
+  if [ "$G4C_STATE" = "ok" ] && [ "$G4C_MARKER" = "absent" ] && [ "$G4C_LEGACY" = "true" ]; then
+    pass "G4-C: legacy no-marker file (2019 mtime) → state=ok marker=absent legacy=true (JSON parsed)"
   else
-    fail "G4-C: expected state=ok marker=absent legacy=false" "got state=$G4C_STATE marker=$G4C_MARKER legacy=$G4C_LEGACY raw: $OUT"
+    fail "G4-C: expected state=ok marker=absent legacy=true" "got state=$G4C_STATE marker=$G4C_MARKER legacy=$G4C_LEGACY raw: $OUT"
   fi
   rm -rf "$TMPWD" "$TMPHOME"
 
   # G4-D: oversized SID-tagged handoff (6MB > 5MB cap) → STATE=oversize
+  # For oversize, size check happens BEFORE marker/content check, so marker doesn't matter.
   TMPWD=$(mktemp -d)
   TMPHOME=$(mktemp -d)
   mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
   G4D_SID="g4d-test-sid-$$"
+  # Write a 6MB file with a valid marker to ensure size check fires before marker-content check
+  printf '<!-- END-OF-HANDOFF schema=v1 sid=%s nonce=test-nonce -->\n' "$G4D_SID" | dd bs=1 count=1 of="$TMPWD/CLAUDE.local.${G4D_SID}.md" 2>/dev/null
   dd if=/dev/zero of="$TMPWD/CLAUDE.local.${G4D_SID}.md" bs=1024 count=6144 2>/dev/null
   OUT=$(cd "$TMPWD" && HOME="$TMPHOME" bash "$STEP2_SH" "$G4D_SID" 2>/dev/null)
   G4D_STATE=$(step2_state "$OUT")
