@@ -64,17 +64,31 @@ fi
 #   SAME session that armed the chain, so SELF_SID == ARG_SID and this passes).
 #   Falls back to CLAUDE_SESSION_ID (unset on current Claude Code, kept for fwd-compat).
 #
-# Fail-safe semantics:
-#   - SELF_SID known AND != ARG_SID  -> STATE=arg-not-my-session (REFUSE; never wrong-load).
-#   - SELF_SID unavailable (older Claude Code, no env var) -> SKIP the check and fall
-#     back to the delivery+marker guarantee. Additive defense — never a regression.
-# A false-positive here (legitimate resume refused, e.g. if the platform ever lets the
-# Stop-hook payload session_id diverge from CLAUDE_CODE_SESSION_ID) degrades to a
-# recoverable refuse, NOT a wrong-load — the correct trade for medical-grade.
+# Fail-safe semantics (R9-R2 — FAIL-CLOSED, not skip):
+#   - SELF_SID known AND == ARG_SID  -> proceed (the legitimate same-session resume).
+#   - SELF_SID known AND != ARG_SID  -> STATE=arg-not-my-session (REFUSE; mis-delivery/mis-paste).
+#   - SELF_SID UNAVAILABLE           -> STATE=self-unverifiable (REFUSE). Rationale: with no
+#     self id the consumer layer is gone and the content layer (F2 file-vs-arg) CANNOT distinguish
+#     the consumer in a shared repo-root, so a marked CLAUDE.local.<arg>.md belonging to another
+#     session would load. R9-Round2 adversary review proved this cell is a real wrong-load. We
+#     therefore fail-closed rather than degrade to content-only. On supported Claude Code
+#     CLAUDE_CODE_SESSION_ID is ALWAYS exposed to the Bash-tool subprocess (verified) and stable
+#     across /compact, so the legitimate auto-resume (self==arg) NEVER hits this branch — the cost
+#     falls only on degraded/older clients, where a recoverable refuse is the correct medical-grade
+#     trade ("never wrong-load; at worst refuse and ask").
 # ---------------------------------------------------------------------------
 SELF_SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
 SELF_SID=$(printf '%s' "$SELF_SID" | tr -cd 'A-Za-z0-9_-' | head -c 128)
-if [ -n "$SELF_SID" ] && [ "$SELF_SID" != "$ARG_SID" ]; then
+if [ -z "$SELF_SID" ]; then
+  handoff_log "step2_terminal state=self-unverifiable arg=$ARG_SID reason=no-self-session-id"
+  _json=$(jq -c -n --arg arg "$ARG_SID" \
+    '{"state":"self-unverifiable","arg_sid":$arg,
+      "reason":"cannot read this session own id (CLAUDE_CODE_SESSION_ID unset) — cannot prove the handoff belongs to THIS session. Refusing to auto-load to avoid cross-session contamination. To resume manually, set CLAUDE_CODE_SESSION_ID to this session id (shown in the SessionStart banner) and re-run, or run /pre-compact again."}' 2>/dev/null)
+  if [ -n "$_json" ]; then printf 'STATE=%s\n' "$_json"
+  else printf 'STATE={"state":"self-unverifiable"}\n'; fi
+  exit 0
+fi
+if [ "$SELF_SID" != "$ARG_SID" ]; then
   handoff_log "step2_terminal state=arg-not-my-session self=$SELF_SID arg=$ARG_SID"
   _json=$(jq -c -n --arg self "$SELF_SID" --arg arg "$ARG_SID" \
     '{"state":"arg-not-my-session","self_sid":$self,"arg_sid":$arg,
@@ -82,6 +96,10 @@ if [ -n "$SELF_SID" ] && [ "$SELF_SID" != "$ARG_SID" ]; then
   if [ -n "$_json" ]; then printf 'STATE=%s\n' "$_json"
   else printf 'STATE={"state":"arg-not-my-session"}\n'; fi
   exit 0
+fi
+# R9-R2 observability (HIGH-2): record that the consumer-layer self-check ran AND passed,
+# so an operator reading the log can distinguish a double-checked STATE=ok from a degraded one.
+handoff_log "step2 r9_self_check ok self=$SELF_SID"
 fi
 
 CWD=$(cd -P "$(pwd)" 2>/dev/null && pwd -P || pwd)
