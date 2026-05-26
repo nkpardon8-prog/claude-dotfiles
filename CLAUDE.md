@@ -7,6 +7,61 @@
 
 ---
 
+# The Standard
+
+Build to match or exceed the bar a senior engineer holds — on every change, in every repo.
+
+Optimize for one thing: the quality of the software — not tokens, not time, not turnaround.
+Compute and time are not constraints; never let "this is expensive" or "this is slow" shape a
+decision, and never trade rigor for speed. Use every resource the work justifies — investigate
+exhaustively, verify what you'd otherwise assume, do the thorough thing because you can.
+
+- Fix causes, not symptoms. If a fix feels oddly specific, or you can't explain *why* it works,
+  you're patching a symptom — keep digging until you can.
+- Verify against reality, not assumptions. Run it, read the output, check live state before you
+  call it done. A green check beats a confident "Done!".
+- Leave no loose ends. No "// TODO: figure out why", no shims, no `_DEPRECATED` — replace
+  completely and delete the old path.
+- When stuck, the problem is usually upstream: step back to the spec (`/discussion`), don't keep
+  hacking. Repeated implementation failure means the understanding was wrong, not the code.
+
+## How we build — judgment, not a checklist
+A codebase rarely fully satisfies these; when you touch an area, move it toward them and never
+add a new violation.
+- One way to do everything — reuse the established pattern; don't add a parallel one.
+- Keep files small enough to reason about (~500 lines is a smell — split by responsibility).
+- Fixed layers, one-way dependencies (e.g. routes → services → integrations → data).
+- Path aliases over deep relative imports (`@/...`, never `../../../`). Shared types live in a shared package.
+- Thin entry points — routes/pages compose; logic lives in services/hooks.
+- One change = one thing. Clarity before code — resolve open questions before you implement.
+- Map before you touch — read the tree, trace the call path end to end, then edit.
+- If it can be a check (lint/test/hook), prefer that over a prose rule.
+
+## Working style
+- You are not limited to reading code. When you need eyes on something — to verify behavior
+  instead of assuming it — use the real browser via `/devtools` (chrome-devtools MCP on the user's
+  actual Chrome profile + tabs). That reaches anything the browser reaches: the running app, cloud
+  consoles, logs, dashboards, email. Prefer seeing over guessing.
+- Input often arrives as unstructured voice — rambling, tangents, thinking out loud. The tangents
+  are signal: extract intent, don't expect a clean spec, ask when the core ask is ambiguous.
+- Watch your own context budget. The statusline brokers live context-used % to
+  `~/.claude/progress/ctx-<sid>.txt` (0–100; `<sid>` = this session's id, the basename of its
+  transcript `.jsonl`). Past ~75%, checkpoint with `/pre-compact` before auto-compaction wipes context.
+- Spec → read → verify. Pull the relevant doc before guessing at unfamiliar behavior. `/script`
+  before high-stakes, hard-to-reverse work (migrations, external writes, deploys).
+
+## Working in parallel (agents + humans share repos)
+Multiple agents and people may work the same repo. Don't clobber or overlap.
+- One worktree + one task branch per task: `git worktree add ../<task> -b <area>/<desc> <base>`.
+  Never run two tasks in one checkout.
+- Reconcile before starting: `git fetch`, then `git worktree list` + open PRs are the live truth.
+- Claim shared surfaces (schema, migration order, shared libs) in the project's coordination doc
+  if it has one; release on merge; prune claims whose branch/PR is gone.
+- Never force-push a shared integration branch (`main`/`dev`). Rebase onto its latest before
+  merging back; open a PR for non-trivial work. Group commits by logical unit; never `git add -A`.
+
+---
+
 # Global Rules
 
 ## Documentation Discipline
