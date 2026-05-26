@@ -112,7 +112,7 @@ Return a numbered list of recommendations. Each item must include:
 - **What**: The specific issue or opportunity
 - **Where**: Which section of the plan it applies to
 - **Suggestion**: Your concrete recommendation
-- **[SMOKE-CANDIDATE]** tag (when applicable per above)
+- **[ASSUMPTION-TEST]** tag (when applicable per above)
 
 Order findings by severity:
 1. Repo-accuracy blockers
