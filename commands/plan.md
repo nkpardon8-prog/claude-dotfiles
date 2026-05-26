@@ -154,25 +154,40 @@ Task tool (call 2, sent in the same message as call 1):
 
 ## Step 5: Explain Next Steps
 
-Once the user confirms the plan is ready, assess scope + risk:
+Once the user confirms the plan is ready:
+
+### 5a. Assumption-test assessment (ALWAYS emit — this is mandatory, not optional)
+
+Read the FINAL review pass's merged `## Assumption-Test Candidates` list (unioned across reviewers in Step 4). **Count the bulleted finding entries** — a section containing the `_None surfaced_` sentinel counts as **0**, NOT 1. Emit exactly ONE visible assessment line in one of three states:
+
+- **bullets ≥ 1:**
+  `Assumption-test assessment: N load-bearing assumption(s) surfaced → run /script ./tmp/ready-plans/[filename]`
+- **bullets = 0:**
+  `Assumption-test assessment: 0 load-bearing runtime assumptions surfaced — skipping assumption tests ([one-line reason, e.g. pure-prose/config/low-stakes change]).`
+- **candidates section absent** (degraded path — a reviewer Task failed or returned empty, so the section was never produced):
+  `Assumption-test assessment: unavailable — reviewer output incomplete; re-run the review before relying on this.`
+
+This line makes the de-risking decision a visible, reviewable artifact on every plan. It does NOT auto-generate scripts.
+
+### 5b. Scope + risk
 
 **HIGH-RISK / LARGE-SURFACE criteria** (any of):
 - ≥10 files touched in Files Being Changed
 - ≥1 new primitive in a critical module (auth, audit, DB layer, queue, payment, secrets)
-- ≥3 load-bearing assumptions surfaced during plan-reviewer cycle (look for "this design depends on X behaving Y way" findings, including any tagged `[SMOKE-CANDIDATE]`)
+- ≥3 load-bearing assumptions surfaced during plan-reviewer cycle (look for "this design depends on X behaving Y way" findings, including any tagged `[ASSUMPTION-TEST]`)
 - Production-critical context (HIPAA, financial, safety-critical, real-user-impact)
 - User explicitly requested "production-grade" / "lives at stake" / "100% locked in"
 
-If HIGH-RISK, tell the user:
+The assessment line in 5a already states whether to run `/script`. The messages below add the surrounding next-step framing WITHOUT repeating the bare `/script` instruction.
+
+If HIGH-RISK (and assessment surfaced ≥1 assumption), tell the user:
 
 ```
-Plan finalized.
-
-RECOMMENDED next step (high-risk surface detected): /script ./tmp/ready-plans/[filename]
-  → Generates pre-flight smoke scripts that programmatically PROVE the load-bearing
-    assumptions of this plan against real infrastructure BEFORE implementation. Same
-    scripts re-run as regression catchers after each ship. Bridges the gap between
-    text-review (which caps at a ceiling) and concrete runtime validation.
+Plan finalized. High-risk surface detected — the assumption-test assessment above is
+strongly recommended, not optional: /script proves these load-bearing assumptions against
+real infrastructure BEFORE implementation, and the same tests re-run as regression catchers
+after each ship — bridging the gap between text-review (which caps at a ceiling) and concrete
+runtime validation.
 
 Then to implement: /implement ./tmp/ready-plans/[filename]
 ```
@@ -183,10 +198,6 @@ Otherwise (lower-risk):
 Plan finalized! To implement, run:
 
 /implement ./tmp/ready-plans/[filename]
-
-Optional: if any plan-reviewer finding flagged "this depends on runtime behavior X"
-(look for [SMOKE-CANDIDATE] tags), consider /script ./tmp/ready-plans/[filename] first
-to validate before implementation.
 ```
 
 ## Quality Checklist
