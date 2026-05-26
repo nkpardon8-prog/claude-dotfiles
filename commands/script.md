@@ -259,6 +259,7 @@ For VERY LARGE plans (>1000 lines + multi-domain) where assumption extraction it
 Before reporting done, verify:
 - [ ] N scripts written, where 2 ≤ N ≤ 8.
 - [ ] Each script has the 8 safety-pattern items (env gate, UUID, idempotent, self-clean, exit codes, crisp output, named assertions, no new deps).
+- [ ] Each script typechecks/parses clean via a standalone check (e.g. `tsc --noEmit <file>` / `node --check`) — smoke dirs are often outside the project's build `include`, so the normal build won't catch errors in them.
 - [ ] Catalog table presented to user with all 5 fields per script.
 - [ ] `run-all.sh` + `README.md` written.
 - [ ] Suggested pre-implementation + post-slice gate placement told to user.
