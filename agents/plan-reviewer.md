@@ -76,17 +76,17 @@ to aggregate after all review lanes complete.
 When a finding describes a design that **depends on runtime behavior** that hasn't been verified — i.e., "this design assumes X behaves Y way under condition Z" — append the tag `[ASSUMPTION-TEST]` to that finding. The parent workflow uses this tag to surface pre-flight assumption-test candidates the `/script` skill can consume. The `## Assumption-Test Candidates` section below is **always** emitted (even when empty), so the parent workflow can render an explicit "no assumption tests needed" decision rather than a silent omission. When multiple reviewers run in parallel, the parent workflow **unions** their candidate sections (dedup by finding).
 
 Examples of `[ASSUMPTION-TEST]` findings:
-- "Plan assumes `SET LOCAL app.X` is tx-scoped under PgBouncer transaction-mode pooling. Not verified against current Neon config. `[SMOKE-CANDIDATE]`"
-- "Plan assumes throwing inside `prisma.$transaction` callback rolls back ALL prior writes in that callback. Verify against current Prisma version. `[SMOKE-CANDIDATE]`"
-- "Plan assumes `vi.spyOn(prisma.X, 'method')` intercepts calls made via `tx.X.method` inside `$transaction`. Prisma TransactionClient is a Proxy; may or may not delegate to spied method. `[SMOKE-CANDIDATE]`"
-- "Plan assumes `DeadLetterError` thrown by handler short-circuits worker retry loop in 1 attempt (NOT MAX_ATTEMPTS). Verify against worker.ts retry policy. `[SMOKE-CANDIDATE]`"
+- "Plan assumes `SET LOCAL app.X` is tx-scoped under PgBouncer transaction-mode pooling. Not verified against current Neon config. `[ASSUMPTION-TEST]`"
+- "Plan assumes throwing inside `prisma.$transaction` callback rolls back ALL prior writes in that callback. Verify against current Prisma version. `[ASSUMPTION-TEST]`"
+- "Plan assumes `vi.spyOn(prisma.X, 'method')` intercepts calls made via `tx.X.method` inside `$transaction`. Prisma TransactionClient is a Proxy; may or may not delegate to spied method. `[ASSUMPTION-TEST]`"
+- "Plan assumes `DeadLetterError` thrown by handler short-circuits worker retry loop in 1 attempt (NOT MAX_ATTEMPTS). Verify against worker.ts retry policy. `[ASSUMPTION-TEST]`"
 
 Do NOT tag findings that are:
 - Mechanical (file paths, line numbers, counts) — those are tsc/lint catchable.
 - Pure design preference (style, naming, ordering).
 - Already verified by a cited evidence anchor in the plan's `Verified Repo Truths`.
 
-If `≥3` `[SMOKE-CANDIDATE]` findings exist, append at the end of your output:
+If `≥3` `[ASSUMPTION-TEST]` findings exist, append at the end of your output:
 
 ```
 ## Smoke-Script Candidates
