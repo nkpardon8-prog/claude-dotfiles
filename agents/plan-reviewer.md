@@ -96,7 +96,7 @@ The following findings describe load-bearing runtime assumptions that text revie
 - [list each [ASSUMPTION-TEST] finding by number]
 ```
 
-When NO findings were tagged, still emit the heading with this single line instead of a bullet list:
+When NO findings were tagged, still emit the heading with this single line instead of a bullet list. **`_None surfaced_` is a parsed sentinel** — `/plan` Step 5 counts it as zero candidates, so keep this exact phrasing:
 
 ```
 ## Assumption-Test Candidates
