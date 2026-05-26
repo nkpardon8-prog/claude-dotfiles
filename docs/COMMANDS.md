@@ -38,7 +38,7 @@ Templates and base files (not invoked directly): `commands/plan_base.md`.
 | `/discussion` | Conversation-only mode. Researches the codebase, talks through tradeoffs, saves a brief to `./tmp/briefs/` for `/plan` to consume. No code changes. |
 | `/implement <plan path>` | Executes an approved plan from `./tmp/ready-plans/`. Breaks work into chunks, spawns implementer sub-agents in parallel, runs implementation-reviewer at the end, moves the plan to `./tmp/done-plans/`. |
 
-Typical flow: `/discussion` → `/plan` → `/implement <path>`.
+Typical flow: `/discussion` → `/plan` → `/script <path>` (high-risk only) → `/implement <path>`.
 
 ---
 
