@@ -174,13 +174,13 @@ This line makes the de-risking decision a visible, reviewable artifact on every 
 **HIGH-RISK / LARGE-SURFACE criteria** (any of):
 - ≥10 files touched in Files Being Changed
 - ≥1 new primitive in a critical module (auth, audit, DB layer, queue, payment, secrets)
-- ≥3 load-bearing assumptions surfaced during plan-reviewer cycle (look for "this design depends on X behaving Y way" findings, including any tagged `[ASSUMPTION-TEST]`)
+- ≥3 assumption-test candidates from the 5a count (reuse that count — don't re-scan)
 - Production-critical context (HIPAA, financial, safety-critical, real-user-impact)
 - User explicitly requested "production-grade" / "lives at stake" / "100% locked in"
 
-The assessment line in 5a already states whether to run `/script`. The messages below add the surrounding next-step framing WITHOUT repeating the bare `/script` instruction.
+The assessment line in 5a already states whether to run `/script`. The messages below add the surrounding next-step framing WITHOUT repeating the bare `/script` instruction. Note HIGH-RISK is determined by the criteria above and is **independent** of the 5a count — a plan can be HIGH-RISK with 0 surfaced assumptions (e.g. ≥10 files or HIPAA context).
 
-If HIGH-RISK (and assessment surfaced ≥1 assumption), tell the user:
+If HIGH-RISK **and** 5a surfaced ≥1 assumption, tell the user:
 
 ```
 Plan finalized. High-risk surface detected — the assumption-test assessment above is
@@ -192,7 +192,17 @@ runtime validation.
 Then to implement: /implement ./tmp/ready-plans/[filename]
 ```
 
-Otherwise (lower-risk):
+If HIGH-RISK **but** 5a surfaced 0 assumptions (or assessment unavailable), do NOT use the cheerful low-risk message — acknowledge the risk explicitly:
+
+```
+Plan finalized. High-risk surface detected, but the reviewer cycle surfaced no
+load-bearing runtime assumptions to prove — so there's nothing for /script to test here.
+Proceed with care given the risk surface.
+
+To implement: /implement ./tmp/ready-plans/[filename]
+```
+
+Otherwise (NOT high-risk):
 
 ```
 Plan finalized! To implement, run:
