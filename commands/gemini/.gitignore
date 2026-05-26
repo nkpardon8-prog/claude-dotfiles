@@ -1,0 +1,7 @@
+# Never commit OAuth tokens / credentials if an isolated GEMINI_CLI_HOME is ever
+# pointed inside this dir. Belt-and-suspenders — the default setup does not relocate
+# config here, but this guarantees a token can't be committed by accident.
+gemini-home/
+oauth_creds.json
+*.creds.json
+access_tokens.json
