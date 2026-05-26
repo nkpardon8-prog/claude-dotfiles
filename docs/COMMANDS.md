@@ -279,6 +279,7 @@ Things that look like commands but aren't directly callable:
 | File | What it is |
 |---|---|
 | `commands/plan_base.md` | Base template for new plans. Copied by `/plan`. |
+| `docs/script-reference.md` | Risk-lens catalog, A3 worked example, and anti-patterns for `/script`. Consulted by the skill while classifying assumptions. |
 | `agents/*.md` | Sub-agent definitions (codebase-explorer, implementer, plan-reviewer, implementation-reviewer, researcher). Spawned by skills via `subagent_type:`. |
 | `rules/backend-patterns.md` | Global rule. Auto-loaded every session. |
 | `patterns/*.md` | Behavioral patterns from `/learn`. Indexed in `patterns/INDEX.md`. |
