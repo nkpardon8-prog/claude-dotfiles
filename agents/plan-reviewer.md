@@ -86,14 +86,22 @@ Do NOT tag findings that are:
 - Pure design preference (style, naming, ordering).
 - Already verified by a cited evidence anchor in the plan's `Verified Repo Truths`.
 
-If `≥3` `[ASSUMPTION-TEST]` findings exist, append at the end of your output:
+**Always** append this section at the end of your output (even when no candidates exist):
 
 ```
-## Smoke-Script Candidates
+## Assumption-Test Candidates
 
-The following findings describe load-bearing runtime assumptions that text review cannot validate. Consider `/script <plan-path>` to generate pre-flight smoke scripts that prove these assumptions against real infrastructure BEFORE /implement:
+The following findings describe load-bearing runtime assumptions that text review cannot validate. Run `/script <plan-path>` to generate pre-flight assumption tests that prove these against real infrastructure BEFORE /implement:
 
-- [list each [SMOKE-CANDIDATE] finding by number]
+- [list each [ASSUMPTION-TEST] finding by number]
+```
+
+When NO findings were tagged, still emit the heading with this single line instead of a bullet list:
+
+```
+## Assumption-Test Candidates
+
+_None surfaced — no unverified load-bearing runtime assumptions in this plan._
 ```
 
 This section is informational; do not weigh it as a separate severity tier.
