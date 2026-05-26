@@ -79,7 +79,7 @@ A passing test proves "this stated proposition held once." If the proposition is
 1. Spawn ONE `plan-reviewer` sub-agent (via `Task`) with a **self-contained override prompt** — do NOT rely on the agent's default plan-file frame. Paste the catalog table inline and ask:
    > "Below is a catalog of proposed assumption tests for an upcoming implementation. For EACH row, answer: would a passing test actually de-risk the plan, or is the assumption mis-stated, tautological, or already verifiable by reading code? Return the revised rows (drop/merge/sharpen as needed) with a one-line reason per change. Output only the revised catalog table + a short notes list."
 2. **While the review is in flight, scaffold in parallel:** create `scripts/<feature>-assumptions/`, the `run-all.sh` skeleton (Step 5), and the `README.md` skeleton.
-3. When the review returns, revise the catalog per its feedback, then proceed to write the actual tests (Step 4).
+3. When the review returns, revise the catalog per its feedback, then proceed to write the actual tests (Step 4). **After the catalog is final, backfill the scaffolded skeletons** — replace `run-all.sh`'s placeholder `TESTS=()` array and the README's test list with the real, revised filenames (the skeleton's `01-foo.mjs`/`02-bar.mjs` placeholders must not survive).
 
 ## Step 4 — Write the tests (THE SAFETY PATTERN)
 
