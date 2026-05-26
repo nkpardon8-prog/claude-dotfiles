@@ -31,7 +31,8 @@ Templates and base files (not invoked directly): `commands/plan_base.md`.
 
 | Command | What it does |
 |---|---|
-| `/plan` | Build a thorough implementation plan with codebase + web research. Auto-runs the plan-reviewer and iterates with you before saving to `./tmp/ready-plans/`. |
+| `/plan` | Build a thorough implementation plan with codebase + web research. Auto-runs the plan-reviewer and iterates with you. Step 5 ALWAYS emits a visible assumption-test assessment (recommend `/script`, or an explicit skip) before saving to `./tmp/ready-plans/`. |
+| `/script` | Generate pre-flight **assumption tests** that PROVE a plan's load-bearing runtime assumptions against real infrastructure before implementation, and re-run as regression catchers after. Always runs an adversarial catalog review; never auto-invoked. For high-risk / HIPAA / financial / safety-critical work. Full risk-lens catalog + worked example in [`docs/script-reference.md`](script-reference.md). |
 | `/share-fix` | After a non-trivial fix lands (especially upstream-library workarounds), find related GitHub issues, draft human-sounding outreach comments, and optionally file upstream issues. Always asks for explicit approval before posting publicly. |
 | `/simple-plan` | Lightweight gut-check before doing something the user just asked for. Investigates, proposes, implements after approval. |
 | `/discussion` | Conversation-only mode. Researches the codebase, talks through tradeoffs, saves a brief to `./tmp/briefs/` for `/plan` to consume. No code changes. |
