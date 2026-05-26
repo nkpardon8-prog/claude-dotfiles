@@ -89,6 +89,7 @@ Task tool (call 2, sent in the same message as call 1):
    - If both reviewers raised the same issue → list it once, mark as `(both reviewers)` for higher confidence
    - If only one raised it → keep it, mark as `(reviewer 1)` or `(reviewer 2)`
    - Dedupe near-duplicates by topic, not by exact wording
+   - **Union the `## Assumption-Test Candidates` sections** from both reviewers (dedup by finding). Retain this merged candidate list — Step 5 reads it from the FINAL review pass.
 
 2. **Anonymized peer-review meta-pass.**
 
