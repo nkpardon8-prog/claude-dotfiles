@@ -164,7 +164,7 @@ Read the FINAL review pass's merged `## Assumption-Test Candidates` list (unione
   `Assumption-test assessment: N load-bearing assumption(s) surfaced → run /script ./tmp/ready-plans/[filename]`
 - **bullets = 0:**
   `Assumption-test assessment: 0 load-bearing runtime assumptions surfaced — skipping assumption tests ([one-line reason, e.g. pure-prose/config/low-stakes change]).`
-- **candidates section absent** (degraded path — a reviewer Task failed or returned empty, so the section was never produced):
+- **candidates section absent** — key this on the MERGED result after Step 4: if no `## Assumption-Test Candidates` section is present at all (degraded path — every reviewer that should have emitted one failed or returned empty). A single failed reviewer does NOT trigger this as long as the surviving reviewer emitted its section.
   `Assumption-test assessment: unavailable — reviewer output incomplete; re-run the review before relying on this.`
 
 This line makes the de-risking decision a visible, reviewable artifact on every plan. It does NOT auto-generate scripts.
