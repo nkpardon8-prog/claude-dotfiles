@@ -73,9 +73,9 @@ to aggregate after all review lanes complete.
 
 ## Load-Bearing Assumption Tagging
 
-When a finding describes a design that **depends on runtime behavior** that hasn't been verified — i.e., "this design assumes X behaves Y way under condition Z" — append the tag `[SMOKE-CANDIDATE]` to that finding. The parent workflow uses this tag to surface pre-flight smoke-script candidates the `/script` skill can consume.
+When a finding describes a design that **depends on runtime behavior** that hasn't been verified — i.e., "this design assumes X behaves Y way under condition Z" — append the tag `[ASSUMPTION-TEST]` to that finding. The parent workflow uses this tag to surface pre-flight assumption-test candidates the `/script` skill can consume. The `## Assumption-Test Candidates` section below is **always** emitted (even when empty), so the parent workflow can render an explicit "no assumption tests needed" decision rather than a silent omission. When multiple reviewers run in parallel, the parent workflow **unions** their candidate sections (dedup by finding).
 
-Examples of `[SMOKE-CANDIDATE]` findings:
+Examples of `[ASSUMPTION-TEST]` findings:
 - "Plan assumes `SET LOCAL app.X` is tx-scoped under PgBouncer transaction-mode pooling. Not verified against current Neon config. `[SMOKE-CANDIDATE]`"
 - "Plan assumes throwing inside `prisma.$transaction` callback rolls back ALL prior writes in that callback. Verify against current Prisma version. `[SMOKE-CANDIDATE]`"
 - "Plan assumes `vi.spyOn(prisma.X, 'method')` intercepts calls made via `tx.X.method` inside `$transaction`. Prisma TransactionClient is a Proxy; may or may not delegate to spied method. `[SMOKE-CANDIDATE]`"
