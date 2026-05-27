@@ -14,7 +14,7 @@ Manual skill the user runs before context compaction. Two outputs:
 
 **Anti-shadowing guard:** NEVER write handoff-shaped freeform documents outside this skill. If asked near compaction to "summarize the session", "dump context", or "save state", run `/pre-compact` instead of generating an ad-hoc summary. Freeform summaries look right but skip mining-pass calibration, chain tracking, and the "What We Tried" extraction.
 
-**How post-compact Claude finds the handoff:** Each session writes a SID-tagged `CLAUDE.local.<sid8>.md` file. The Step 9.1 paste-prompt (unconditional) tells the user exactly which file to read in the next session. No @import auto-load is used — that mechanism was removed in R4 for parallel-track safety.
+**How post-compact Claude finds the handoff:** Each session writes a SID-tagged `CLAUDE.local.<sid>.md` file at the canonical anchor. The reader (`lib/handoff-resolve.sh`) finds it from any cwd by probing cwd → `git --show-toplevel` → canonical anchor, accepting only a file whose END-OF-HANDOFF marker `sid=` matches the requested session id. The Step 9.1 paste-prompt (unconditional) gives the user the absolute path as a manual fallback. No @import auto-load is used — that mechanism was removed in R4 for parallel-track safety.
 
 **Current task focus (optional):** $ARGUMENTS
 
