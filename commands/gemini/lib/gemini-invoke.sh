@@ -54,6 +54,23 @@ if ! command -v "$GEMINI_BIN" >/dev/null 2>&1; then
   exit 0
 fi
 
+# --- Config isolation: relocate the CLI's config home to a private dir so the wrapper
+#     never auto-loads a global/foreign GEMINI.md (which injects unrelated "memory"
+#     preferences into every review/draft). We symlink ONLY the auth material from the
+#     real ~/.gemini and deliberately omit GEMINI.md. Auth (OAuth or GEMINI_API_KEY) is
+#     fully preserved; the real ~/.gemini is left untouched for other Gemini/Antigravity
+#     use. GEMINI_CLI_HOME is the PARENT of the .gemini config dir. Idempotent, self-healing
+#     (symlinks re-pointed each call so re-auth / token refresh stays in sync). ---
+ISO_HOME="${GEMINI_SUBAGENT_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-gemini-subagent}"
+REAL_GEMINI="$HOME/.gemini"
+if mkdir -p "$ISO_HOME/.gemini" 2>/dev/null; then
+  for f in oauth_creds.json google_accounts.json settings.json; do
+    [ -e "$REAL_GEMINI/$f" ] && ln -sf "$REAL_GEMINI/$f" "$ISO_HOME/.gemini/$f"
+  done
+  rm -f "$ISO_HOME/.gemini/GEMINI.md" 2>/dev/null || true   # guarantee no context-file leak
+  export GEMINI_CLI_HOME="$ISO_HOME"
+fi
+
 # --- Build the gemini argv. Always non-empty, so "${gemini_args[@]}" is set -u safe. ---
 gemini_args=(--approval-mode plan --skip-trust -o text)
 if [ -n "${GEMINI_MODEL:-}" ]; then
