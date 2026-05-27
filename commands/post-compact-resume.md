@@ -31,7 +31,7 @@ bash post-compact-resume-step2.sh "$ARG_SID"
 
 Resolution (handled by Step 2 script):
 1. `$ARGUMENTS` is the full session_id (UUID) from the Stop hook.
-2. step2.sh locates `CLAUDE.local.<session_id>.md` in cwd or REPO_ROOT.
+2. step2.sh locates `CLAUDE.local.<session_id>.md` by probing cwd → `git --show-toplevel` → the canonical anchor (`dirname(git-common-dir)`, where `/pre-compact` always writes it), first marker-matching candidate wins. cwd-invariant — no need to resume from the same directory.
 3. F2 marker-content-check: file's END-OF-HANDOFF marker `sid=` must match the session_id arg.
 4. SID-unknown fallback: if invoked manually with no arg → `STATE=no-session-arg` (refuse).
 5. Legacy alias fallback: `CLAUDE.local.md` used ONLY when session_id arg is empty (SID-unknown).
