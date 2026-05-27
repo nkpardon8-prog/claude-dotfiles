@@ -27,7 +27,8 @@ Parent plans:
 
 | Original citation | Rationale preserved |
 |---|---|
-| R3 #A7 (path-resolution consistency) | HANDOFF_PATH resolution in /post-compact-resume MUST match the primer: cwd first, then repo root. Running from the same cwd as /pre-compact ensures path-equality |
+| R3 #A7 (path-resolution consistency) | HANDOFF_PATH resolution in /post-compact-resume MUST match the primer. **Superseded by the canonical-anchor model:** both probe cwd → show-toplevel → canonical anchor (`dirname(git-common-dir)`), marker-bound. Because the writer always lands the handoff at the canonical anchor (identical from every worktree), resume is now cwd-invariant — running from the same cwd as /pre-compact is no longer required |
+| Canonical-anchor hardening (2026-05-27) | Parent detection binds strictly on `marker.sid == MY_SID` (mtime fallback DELETED — it was a foreign-chain wrong-load vector). Writer + reader share one location authority (`lib/handoff-locate.sh`); `CANONICAL_ROOT` is resolved once in Step 3.B and persisted in the SID scratch so 6A/6D/8 never re-derive (no cross-subprocess drift). `.gitignore` update is `mkdir`-lock-guarded under the shared git-common-dir + idempotent converge for concurrent runs |
 | R2 #6 (no-wait on stale) | Do NOT wait for user confirmation on stale handoff — would hang `claude --resume --prompt '...'` unattended pipelines. Warning is advisory only |
 | R2 #6 (no-wait on absent-marker) | Same reason as above: default to option (a) if unattended. No hard-stop case (hard-stop leaves user with no recovery path) |
 | R4 #B7 (trust framing must not be dropped) | Sole prompt-injection defense in /post-compact-resume — dropped trust-framing would mean the skill unconditionally executes instructions found in the handoff file |
