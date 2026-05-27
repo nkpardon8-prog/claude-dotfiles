@@ -69,6 +69,46 @@ else
 fi
 ```
 
+## Step 1.5: Wake every tab (CRITICAL — prevents the hang on first tool call)
+
+Chrome freezes/discards background tabs. A frozen tab's CDP target stops answering, and the MCP's page-enumeration `Promise.all` hangs on it forever (failure mode #4 above). Activating each page target wakes discarded tabs so they all respond. Idempotent; cheap; run it every time. (Side effect: the foreground tab ends on whichever was activated last — harmless.)
+
+```bash
+DEBUG_PORT=9222
+echo "Waking all tabs so none hang the MCP connection..."
+IDS=$(curl -s --max-time 5 "http://127.0.0.1:$DEBUG_PORT/json/list" 2>/dev/null \
+  | python3 -c "import sys,json;print('\n'.join(t['id'] for t in json.load(sys.stdin) if t.get('type')=='page'))" 2>/dev/null)
+N=0
+for id in $IDS; do
+  curl -s --max-time 4 "http://127.0.0.1:$DEBUG_PORT/json/activate/$id" >/dev/null 2>&1 && N=$((N+1))
+done
+echo "Activated $N tab(s); waiting 6s for any discarded tabs to reload..."
+sleep 6
+echo "Tabs woken — all CDP targets should now answer."
+```
+
+Optional responsiveness check (confirms no tab will hang the connection — needs the `ws` module that ships inside the chrome-devtools-mcp install):
+
+```bash
+WS=$(find ~/.npm/_npx -type d -name ws -path '*node_modules/ws' 2>/dev/null | head -1)
+if [ -n "$WS" ]; then
+cat > /tmp/cdt-probe.mjs <<EOF
+import WebSocket from 'file://$WS/index.js';
+import http from 'node:http';
+const getJSON=p=>new Promise((res,rej)=>{http.get('http://127.0.0.1:9222'+p,r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>res(JSON.parse(d)))}).on('error',rej)});
+const probe=t=>new Promise(r=>{const ws=new WebSocket(t.webSocketDebuggerUrl,{perMessageDeflate:false});const tm=setTimeout(()=>{try{ws.terminate()}catch{};r({ok:false,t})},4000);ws.on('open',()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression:'1+1',returnByValue:true}})));ws.on('message',m=>{if(JSON.parse(m).id===1){clearTimeout(tm);try{ws.close()}catch{};r({ok:true,t})}});ws.on('error',()=>{clearTimeout(tm);r({ok:false,t})})});
+const list=(await getJSON('/json/list')).filter(x=>x.type==='page');
+const res=await Promise.all(list.map(probe));
+const bad=res.filter(x=>!x.ok);
+bad.forEach(x=>console.log('STILL UNRESPONSIVE:',(x.t.title||'').slice(0,55),'| id='+x.t.id));
+console.log('pages:',list.length,'| unresponsive:',bad.length,bad.length?'(close these via /json/close/<id> if reconnect still hangs)':'✅ all good');
+EOF
+node /tmp/cdt-probe.mjs 2>/dev/null; rm -f /tmp/cdt-probe.mjs
+fi
+```
+
+If a tab is **still** unresponsive after waking (rare — a genuinely crashed tab), close just that one: `curl -s "http://127.0.0.1:9222/json/close/<id>"`. Don't close the user's working tabs wholesale.
+
 ## Step 2: Kill stale MCP processes + scrub corrupt installs
 
 The MCP server must respawn fresh so it reads the current config and connects to 9222.
