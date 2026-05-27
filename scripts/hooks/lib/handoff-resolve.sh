@@ -67,22 +67,38 @@ _primer_check_linkcount() {
   return 0
 }
 
+# _resolver_extract_marker_sid <path> — MOVED to lib/handoff-locate.sh (sourced above) so the
+# reader, writer-verify, and the writer's Step 3.B all share ONE first-occurrence-anchored
+# extractor. Do not re-define it here.
+
 # ---------------------------------------------------------------------------
-# _resolver_extract_marker_sid <path>
+# _handoff_try_candidate <path> <session_id>
 #
-# R9-R4 (Breadth DUPLICATION + Adversary greedy-sid): single canonical extractor for the
-# END-OF-HANDOFF marker `sid=` value. Used by BOTH the cwd and repo-root probes (was two
-# byte-identical inline copies — divergence-prone for a security-critical check) AND by the
-# reader's TOCTOU snapshot re-verify.
+# Per-candidate SID-tagged check shared by all deterministic probes. Returns:
+#   0 — accept (sets HANDOFF_PATH)
+#   2 — skip (absent, symlink, no marker, or marker sid mismatch)
+#   3 — the MARKER-MATCHING candidate is hardlinked (distinct recovery signal)
 #
-# Takes the FIRST marker line, then the FIRST `sid=` token on it. The old inline form
-# `sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p'` used a greedy `.*` that matched the LAST
-# `sid=` on the line, so a crafted `sid=A sid=B` resolved to B (last-wins identity ambiguity).
-# `grep -oE 'sid=...' | head -1` is first-occurrence and BSD/macOS-bash-3.2 safe.
+# Order matters: marker identity is checked BEFORE the hardlink guard, so a hardlinked file
+# whose marker does NOT match this session is just a non-match (skip), never an rc=3 dead-end.
 # ---------------------------------------------------------------------------
-_resolver_extract_marker_sid() {
-  grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$1" 2>/dev/null | head -1 \
-    | grep -oE 'sid=[A-Za-z0-9_-]+' | head -1 | sed 's/^sid=//'
+_handoff_try_candidate() {
+  local p="$1" sid="$2" m
+  [ -f "$p" ] && [ ! -L "$p" ] || return 2
+  m=$(_resolver_extract_marker_sid "$p")
+  if [ -z "$m" ]; then
+    # R9-R2 HIGH-1 (fail-closed): a SID-tagged file with no marker can't be identity-verified.
+    ctx_gate_log "primer skip reason=resolver-sid-tagged-no-marker session_id=$sid file=$p"
+    return 2
+  fi
+  if [ "$m" != "$sid" ]; then
+    ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch session_id=$sid marker_sid=$m file=$p"
+    return 2
+  fi
+  # Marker MATCHES — now the hardlink guard decides accept vs rc=3.
+  _primer_check_linkcount "$p" || return 3
+  HANDOFF_PATH="$p"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
