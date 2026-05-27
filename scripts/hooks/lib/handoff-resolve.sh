@@ -30,6 +30,13 @@ readonly _HANDOFF_RESOLVE_LOADED=1
 # Defensive stub: if ctx_gate_log wasn't sourced from lib/ctx-gate-config.sh, no-op it.
 command -v ctx_gate_log >/dev/null 2>&1 || ctx_gate_log() { :; }
 
+# Shared location + marker-SID authority (handoff_canonical_root, _resolver_extract_marker_sid).
+# Sourced by path relative to THIS file so it resolves wherever the lib dir is installed.
+# Load-guarded inside handoff-locate.sh, so a double-source from another caller is a no-op.
+_HANDOFF_RESOLVE_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+# shellcheck source=./handoff-locate.sh
+. "$_HANDOFF_RESOLVE_LIBDIR/handoff-locate.sh"
+
 # ---------------------------------------------------------------------------
 # _primer_check_linkcount <path>
 #
