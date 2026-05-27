@@ -112,8 +112,10 @@ Auto-compact is the only `Stop` hook that crosses the Claude/Terminal boundary; 
    ├─▶ Loads project memory:
    │     ~/.claude/projects/<project>/memory/MEMORY.md
    │
-   └─▶ Reads CLAUDE.local.md  (if @CLAUDE.local.md import in CLAUDE.md)
-       ← post-compact handoff, written by /pre-compact
+   └─▶ Resolves the SID-tagged handoff CLAUDE.local.<session_id>.md
+       ← written by /pre-compact at the repo's canonical anchor; the primer
+         probes cwd → show-toplevel → canonical anchor and accepts only a
+         file whose END-OF-HANDOFF marker sid= matches this session (no @import)
 ```
 
 ---
