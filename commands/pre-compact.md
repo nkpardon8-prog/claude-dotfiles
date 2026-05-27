@@ -117,6 +117,29 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
    # R8: filename uses full SID (no truncation to SID8). The Stop hook threads this exact
    # value as the /post-compact-resume arg. Writer + reader use the same platform UUID.
    SID8_RESOLVED="$SID_RESOLVED"
+
+   # Canonical anchor (single source for ALL downstream location sites — Steps 6A/6D/8/snapshot/9.1
+   # read it back from the scratch JSON, never re-derive). Identical from every git worktree, so the
+   # handoff always lands in one place regardless of cwd.
+   . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-locate.sh"
+   CANONICAL_ROOT="$(handoff_canonical_root)"
+
+   # Parent detection — SID-equality only, at the canonical anchor. No mtime, no worktree scan.
+   PARENT_FILE="$CANONICAL_ROOT/CLAUDE.local.${SID_RESOLVED}.md"
+   PARENT_SEQ="1"; PARENT_LABEL="none — first in chain"; HANDOFF_PRIOR=""
+   if [ -f "$PARENT_FILE" ] && [ ! -L "$PARENT_FILE" ]; then
+     _pm="$(_resolver_extract_marker_sid "$PARENT_FILE")"
+     if [ -n "$_pm" ] && [ "$_pm" = "$SID_RESOLVED" ]; then
+       HANDOFF_PRIOR="$PARENT_FILE"   # marker-bound parent of THIS chain
+     else
+       echo "INFO: ignoring $PARENT_FILE — marker sid='${_pm:-none}' != my sid (foreign chain or no marker)"
+     fi
+   fi
+   echo "CANONICAL_ROOT=$CANONICAL_ROOT"
+   echo "HANDOFF_PRIOR=${HANDOFF_PRIOR:-none}"
+   # (The orchestrator now Reads HANDOFF_PRIOR for Seq/sections per the prose above, then sets
+   #  PARENT_SEQ/PARENT_LABEL + the parent section vars before the jq write below.)
+
    mkdir -p "$HOME/.claude/progress" && chmod 700 "$HOME/.claude/progress"
    # SID-keyed scratch (NOT $$-keyed): readable by any subsequent bash block.
    # B-Adversary-7: clear stale/pre-planted file before umask write.
@@ -125,10 +148,11 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
    ( umask 077 && jq -n \
        --arg seq "$PARENT_SEQ" --arg label "$PARENT_LABEL" \
        --arg sid "$SID_RESOLVED" --arg sid8 "$SID8_RESOLVED" \
+       --arg cr "$CANONICAL_ROOT" \
        --arg bp "$PARENT_BUILD_PLAN" --arg na "$PARENT_NEXT_ACTION" \
        --arg oi "$PARENT_OPEN_ISSUES" --arg tfl "$PARENT_FIX_LATER" \
        --arg gaps "$PARENT_GAPS" \
-       '{seq:$seq, label:$label, sid:$sid, sid8:$sid8, build_plan:$bp, next_action:$na, open_issues:$oi, fix_later:$tfl, gaps:$gaps}' \
+       '{seq:$seq, label:$label, sid:$sid, sid8:$sid8, canonical_root:$cr, build_plan:$bp, next_action:$na, open_issues:$oi, fix_later:$tfl, gaps:$gaps}' \
        > "$SCRATCH_PATH" )
    echo "SCRATCH_PATH=$SCRATCH_PATH"
    echo "SID=$SID_RESOLVED"
