@@ -76,7 +76,8 @@ resolution logic MUST match the primer's resolution logic exactly. Under R8/R9 t
 2. **Generic alias `CLAUDE.local.md`** — used ONLY when session_id is UNKNOWN (empty arg → but note `step2.sh`
    refuses an empty arg before resolving, so this alias path is reachable only by the primer / explicit manual
    no-arg use, where it emits a navigational pointer, not a content load). No content-check (no SID to compare).
-Always run /post-compact-resume from the same cwd where /pre-compact was invoked.
+The handoff is anchored to the repo's canonical root (cwd-invariant), so resuming from a different
+worktree or subdir still resolves it — you need not run from the same cwd where /pre-compact ran.
 
 Path-resolution intentionally uses shell `$(pwd)` here; the primer uses SessionStart JSON `.cwd`.
 `ac_canonicalize_path` canonicalization ensures both forms compare equal in practice
