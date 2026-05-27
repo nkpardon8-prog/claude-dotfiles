@@ -378,12 +378,17 @@ ctx-gate Bash allowlist). Also guard against re-run overwriting a recent snapsho
 (e.g., if user Ctrl-C and re-ran within the hour):
 
 ```bash
-# Snapshot check — use stat to see if .prev is recent (no cp Bash call)
-# HANDOFF_PRIMARY is set in Step 6A below; resolve it early for snapshot check.
+# Snapshot check — use stat to see if .prev is recent (no cp Bash call).
+# Resolve HANDOFF_PRIMARY here from the Step 3.B scratch (canonical_root + sid8) so this block is
+# self-contained — it runs in its own Bash subprocess BEFORE Step 6A sets any variable.
 # R5 H4: removed the `:-CLAUDE.local.md` alias fallback from HANDOFF_PREV (dead post-R4 D1).
-# HANDOFF_PRIMARY is always set by Step 6A to the SID-tagged file path. If it is empty,
-# there is no previous handoff to snapshot, so SNAPSHOT_NEEDED stays "true".
+# Orchestrator: replace CAPTURED_SID below with the actual SID value from Step 3.B output.
+SCRATCH_PATH="$HOME/.claude/progress/pre-compact-parent-CAPTURED_SID.json"
+_CR=$(jq -r '.canonical_root' "$SCRATCH_PATH" 2>/dev/null)
+_S8=$(jq -r '.sid8' "$SCRATCH_PATH" 2>/dev/null)
 SNAPSHOT_NEEDED="true"
+HANDOFF_PRIMARY=""
+[ -n "$_CR" ] && [ "$_CR" != "null" ] && [ -n "$_S8" ] && [ "$_S8" != "null" ] && HANDOFF_PRIMARY="$_CR/CLAUDE.local.${_S8}.md"
 HANDOFF_PREV="${HANDOFF_PRIMARY}.prev"
 if [ -n "$HANDOFF_PRIMARY" ] && [ -f "$HANDOFF_PREV" ]; then
   PREV_MTIME=$(stat -f %m "$HANDOFF_PREV" 2>/dev/null | tr -d '[:space:]' \
