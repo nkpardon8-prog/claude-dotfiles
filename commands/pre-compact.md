@@ -656,18 +656,44 @@ handoff content at SessionStart via the SID-tagged file, which does not require 
 
 **Skip entirely if `$ARGUMENTS` contains `no-gitignore` (or "no gitignore").**
 
-Only touch `.gitignore` if inside a git work tree (`git rev-parse --is-inside-work-tree` succeeds). Resolve the **repo root**, not cwd:
+Only touch `.gitignore` if inside a git work tree (`git rev-parse --is-inside-work-tree` succeeds). The `.gitignore` lives at the **canonical anchor** (same root the handoff is written to), read from the scratch — NOT a fresh `show-toplevel`:
 
-- `REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)`. If empty, skip.
-- Refuse if we're inside a submodule: `[ -n "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" ]` → skip with "Inside a submodule; skipping .gitignore update to avoid polluting the submodule."
+- `REPO_ROOT=$(jq -r '.canonical_root' "$SCRATCH_PATH")` (replace the scratch path's `CAPTURED_SID`). If empty/`null` or not a git work tree, skip.
+- Refuse if the canonical anchor is inside a submodule: `[ -n "$(git -C "$REPO_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null)" ]` → skip with "Inside a submodule; skipping .gitignore update to avoid polluting the submodule." (Run the check with `-C "$REPO_ROOT"` so it reflects the anchor, not cwd.)
 
-**Glob pattern (SID-tagged multi-track support):** use `CLAUDE.local*.md` glob (not the narrow `CLAUDE.local.md`), which covers SID-tagged handoffs like `CLAUDE.local.<sid8>.md` as well as any legacy `CLAUDE.local.md` files.
+**Glob pattern (SID-tagged multi-track support):** use `CLAUDE.local*.md` glob (not the narrow `CLAUDE.local.md`), which covers SID-tagged handoffs like `CLAUDE.local.<sid8>.md` as well as any legacy `CLAUDE.local.md` files. One glob line covers every concurrent session's handoff + `.prev`, so concurrent runs CONVERGE on the same single line.
 
-Check in this order:
-1. If `.gitignore` already contains the glob `CLAUDE.local*.md` (line-anchored: `grep -qE '^CLAUDE\.local\*\.md' "$REPO_ROOT/.gitignore"`) — already covered, skip.
-2. If `.gitignore` contains the narrow `CLAUDE.local.md` line (line-anchored: `grep -qE '^CLAUDE\.local\.md[[:space:]]*$' "$REPO_ROOT/.gitignore"`) — replace it in-place with the glob line via Edit tool.
-3. If neither present — append the glob line.
-4. If `.gitignore` does NOT exist — create it with the glob line AND emit a warning: "Created .gitignore with CLAUDE.local*.md entry."
+**Concurrency-safe update (many sessions may run `/pre-compact` at once).** Acquire an atomic
+`mkdir` lock under the SHARED git common dir (one mutex per repo, robust across worktrees, never
+inside the working tree), do the read-modify-write inside it, release on exit. `flock` is NOT used —
+it is absent on stock macOS, the primary platform. **The idempotent re-grep INSIDE the lock is the
+load-bearing correctness guarantee; the lock only reduces contention** — even if the stale-steal
+ever let two writers in, the converge keeps the result a single line.
+
+```bash
+# Run AFTER the no-gitignore + submodule guards above.
+GI="$REPO_ROOT/.gitignore"
+LOCKBASE="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+[ -n "$LOCKBASE" ] || LOCKBASE="$REPO_ROOT"   # non-standard layout fallback
+LOCK="$LOCKBASE/.claude-precompact-gitignore.lock"
+_acquired=""; _tries=0
+while [ "$_tries" -lt 50 ]; do
+  if mkdir "$LOCK" 2>/dev/null; then _acquired=1; trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT; break; fi
+  # Age-based steal: a holder crashed without releasing (lock older than 60s).
+  _age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK" 2>/dev/null || date +%s) ))
+  [ "$_age" -ge 0 ] && [ "$_age" -gt 60 ] && rmdir "$LOCK" 2>/dev/null || true
+  _tries=$((_tries+1)); sleep 0.1
+done
+echo "gitignore-lock: ${_acquired:+acquired}${_acquired:-proceeding-unlocked-after-retries}"
+```
+
+Then, **inside the lock**, re-check and converge (this re-grep is what guarantees a single line even under a race):
+1. If `.gitignore` already contains the glob `CLAUDE.local*.md` (line-anchored: `grep -qE '^CLAUDE\.local\*\.md' "$GI"`) — already covered, skip.
+2. Else if `.gitignore` contains the narrow `CLAUDE.local.md` line (line-anchored: `grep -qE '^CLAUDE\.local\.md[[:space:]]*$' "$GI"`) — replace it in-place with the glob line via the Edit tool.
+3. Else if `.gitignore` exists — append the glob line.
+4. Else (`.gitignore` does NOT exist) — create it with the glob line AND emit a warning: "Created .gitignore with CLAUDE.local*.md entry."
+
+Then release the lock: `rmdir "$LOCK" 2>/dev/null || true` (the `trap` is a backstop).
 
 **Force-include guard:** if `.gitignore` contains `!CLAUDE.local.md` anywhere, the user has explicitly opted into tracking. Skip the append and tell them: "Detected `!CLAUDE.local.md` force-include rule; leaving .gitignore alone. You are tracking the handoff file deliberately."
 
