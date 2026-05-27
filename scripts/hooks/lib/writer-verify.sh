@@ -32,10 +32,9 @@ writer_verify_marker_sid() {
     printf 'writer-verify-error: empty expected_sid8\n' >&2
     return 1
   fi
+  # Shared extractor (first-occurrence anchored) — same authority the reader binds identity on.
   local observed_sid
-  observed_sid=$(grep -E '^<!-- END-OF-HANDOFF schema=v1 ' "$handoff_path" 2>/dev/null \
-    | head -1 \
-    | sed -nE 's/.*sid=([A-Za-z0-9_-]+).*/\1/p')
+  observed_sid=$(_resolver_extract_marker_sid "$handoff_path")
   if [ -z "$observed_sid" ]; then
     printf 'writer-sid-divergence: no marker found in %s (expected sid=%s)\n' \
       "$handoff_path" "$expected_sid8" >&2
