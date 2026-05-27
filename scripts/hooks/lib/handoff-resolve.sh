@@ -108,20 +108,21 @@ _handoff_try_candidate() {
 # PR-9: canonical resolver. session_id may be empty (SID-unknown path).
 #
 # When session_id is provided (non-empty):
-#   - Tries SID-tagged files: <cwd>/CLAUDE.local.<session_id>.md + repo-root variant.
-#     F2 (R7-INC-02): each candidate is content-verified — the file's END-OF-HANDOFF
-#     marker `sid=` attribute MUST match the requested session_id.
-#     Allow-empty marker only for legacy files (mtime < HANDOFF_LEGACY_CUTOFF_EPOCH).
-#   - If no SID-tagged file passes content-check: returns 2 (fail-closed signal).
-#     V2-6: F4 alias probe (CLAUDE.local.md alias-with-marker-binding) deleted.
-#     Writer never writes the alias under R8; legacy 8-char alias markers cannot
-#     match a full UUID arg. No alias probe needed.
-#   - If found but hardlinked: logs + returns 3.
+#   - Probes THREE deterministic locations for CLAUDE.local.<session_id>.md, in order, deduped
+#     by physical path: (1) cwd, (2) git --show-toplevel (worktree root), (3) handoff_canonical_root
+#     (the repo's main working root — where the writer ALWAYS lands the handoff). NO worktree
+#     enumeration: the canonical anchor is identical from every worktree, so a marker-matching
+#     handoff can only ever live at one of these three.
+#   - F2 (R7-INC-02): each candidate is content-verified — the file's END-OF-HANDOFF marker `sid=`
+#     MUST match the requested session_id. Markerless SID-tagged files are NEVER accepted (fail-closed).
+#   - First marker-matching candidate wins (rc 0). If the marker-MATCHING candidate is hardlinked,
+#     returns 3 (recovery signal). If none match: returns 2 (fail-closed signal).
 #
 # When session_id is empty (SID unknown):
-#   - Tries legacy alias files only: <cwd>/CLAUDE.local.md + repo-root variant.
-#   - No content-check (legacy; alias accepted as-is).
-#   - If found: sets HANDOFF_PATH, returns 0.
+#   - Legacy alias path ONLY, UNCHANGED and NOT broadened: <cwd>/CLAUDE.local.md + show-toplevel
+#     variant. Alias files have NO marker check, so broadening this path to the canonical anchor /
+#     other worktrees would re-create a wrong-load. Deliberately left at cwd + show-toplevel.
+#   - No content-check (legacy; alias accepted as-is). If found: sets HANDOFF_PATH, returns 0.
 #   - If not found: returns 1.
 # ---------------------------------------------------------------------------
 handoff_resolve_path() {
