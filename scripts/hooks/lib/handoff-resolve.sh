@@ -131,81 +131,32 @@ handoff_resolve_path() {
 
   if [ -n "$session_id" ]; then
 
-    # ---------- cwd SID-tagged probe ----------
-    local p="$cwd/CLAUDE.local.${session_id}.md"
-    if [ -f "$p" ] && [ ! -L "$p" ]; then
-      if _primer_check_linkcount "$p"; then
-        # F2: marker-sid content-check via the shared FIRST-occurrence-anchored extractor
-        # (R9-R4: was an inline greedy `.*sid=` that took the LAST sid= token on a line —
-        # `sid=A sid=B` resolved to B; `_resolver_extract_marker_sid` takes the FIRST).
-        local _resolver_marker_sid
-        _resolver_marker_sid=$(_resolver_extract_marker_sid "$p")
-        if [ -n "$_resolver_marker_sid" ]; then
-          if [ "$_resolver_marker_sid" = "$session_id" ]; then
-            HANDOFF_PATH="$p"
-            return 0
-          else
-            ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch session_id=$session_id marker_sid=$_resolver_marker_sid file=$p"
-            # Fall through to repo-root probe.
-          fi
-        else
-          # R9-R2 HIGH-1 (fail-closed): on the SID-tagged path a file with NO marker cannot be
-          # identity-verified, so it is NEVER accepted via mtime. The old legacy-mtime allow here
-          # was a wrong-load hole — a markerless CLAUDE.local.<arg>.md in a shared repo-root would
-          # load when the consumer-layer self-check is unavailable. Legacy-mtime tolerance applies
-          # ONLY to the SID-unknown alias path below, never to a SID-tagged probe. Fall through → rc=2.
-          ctx_gate_log "primer skip reason=resolver-sid-tagged-no-marker session_id=$session_id file=$p"
-          # Fall through (do not accept).
-        fi
-      else
-        local LCNT
-        if LCNT=$(stat -f %l "$p" 2>/dev/null); then :
-        elif LCNT=$(stat -c %h "$p" 2>/dev/null); then :
-        else LCNT=">1"
-        fi
-        LCNT=$(printf '%s' "$LCNT" | tr -d '[:space:]')
-        ctx_gate_log "primer skip reason=multi-hardlink linkcount=${LCNT} file=$p"
-        return 3
-      fi
-    fi
+    # ---------- 3 deterministic SID-tagged probes: cwd, show-toplevel, canonical anchor ----------
+    # Build the candidate DIR list in priority order, dedup by PHYSICAL path (cd && pwd -P) so
+    # the common case (canonical anchor == show-toplevel in the main checkout, and macOS
+    # /var -> /private/var aliasing) does not probe the same file twice.
+    local _top _canon _seen _dir _real _rc
+    _top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || _top=""
+    _canon=$(handoff_canonical_root "$cwd")
+    _seen=""
+    for _dir in "$cwd" "$_top" "$_canon"; do
+      [ -n "$_dir" ] || continue
+      _real=$(cd "$_dir" 2>/dev/null && pwd -P) || _real="$_dir"
+      case "
+$_seen" in *"
+$_real"*) continue ;; esac
+      _seen="$_seen
+$_real"
+      _handoff_try_candidate "$_real/CLAUDE.local.${session_id}.md" "$session_id"
+      _rc=$?
+      [ "$_rc" -eq 0 ] && return 0   # HANDOFF_PATH set by the helper
+      [ "$_rc" -eq 3 ] && return 3   # marker-matching candidate is hardlinked → recovery signal
+      # _rc == 2 → not this candidate; keep probing.
+    done
 
-    # ---------- repo-root SID-tagged probe ----------
-    local repo_root
-    repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || repo_root=""
-    if [ -n "$repo_root" ]; then
-      p="$repo_root/CLAUDE.local.${session_id}.md"
-      if [ -f "$p" ] && [ ! -L "$p" ]; then
-        if _primer_check_linkcount "$p"; then
-          local _resolver_marker_sid2
-          _resolver_marker_sid2=$(_resolver_extract_marker_sid "$p")
-          if [ -n "$_resolver_marker_sid2" ]; then
-            if [ "$_resolver_marker_sid2" = "$session_id" ]; then
-              HANDOFF_PATH="$p"
-              return 0
-            else
-              ctx_gate_log "primer skip reason=resolver-marker-sid-mismatch session_id=$session_id marker_sid=$_resolver_marker_sid2 file=$p"
-            fi
-          else
-            # R9-R2 HIGH-1 (fail-closed): SID-tagged repo-root probe — markerless file is never
-            # accepted via mtime (same wrong-load hole as the cwd probe above). Fall through → rc=2.
-            ctx_gate_log "primer skip reason=resolver-sid-tagged-no-marker session_id=$session_id file=$p"
-          fi
-        else
-          local LCNT2
-          if LCNT2=$(stat -f %l "$p" 2>/dev/null); then :
-          elif LCNT2=$(stat -c %h "$p" 2>/dev/null); then :
-          else LCNT2=">1"
-          fi
-          LCNT2=$(printf '%s' "$LCNT2" | tr -d '[:space:]')
-          ctx_gate_log "primer skip reason=multi-hardlink linkcount=${LCNT2} file=$p"
-          return 3
-        fi
-      fi
-    fi
-
-    # V2-6 (R8): F4 alias probe removed. With full-UUID filenames + identity-via-arg,
-    # the alias (CLAUDE.local.md) probe is dead code — writer never writes it under R8,
-    # and legacy 8-char alias markers cannot match a full UUID. Returning 2 (fail-closed).
+    # No marker-matching SID-tagged file in any deterministic location → fail-closed.
+    # (No worktree enumeration and NO alias fallback on the SID-known path — both would be
+    # wrong-load vectors. The canonical anchor already covers every worktree of this repo.)
     ctx_gate_log "primer skip reason=sid-known-no-tagged-file session_id=${session_id}"
     return 2
   fi
