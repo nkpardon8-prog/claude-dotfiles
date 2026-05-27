@@ -57,6 +57,11 @@ bash ~/.claude-dotfiles/commands/gemini/lib/gemini-invoke.sh /tmp/out.txt "Expla
 - **Capped & bounded** — stdin context capped at `GEMINI_CONTEXT_MAX` bytes (default 100k);
   each call bounded by `GEMINI_TIMEOUT` seconds (default 120; perl-based, no `timeout`
   binary needed).
+- **Isolated config** — the wrapper runs with a private `GEMINI_CLI_HOME`
+  (`~/.cache/claude-gemini-subagent`) that symlinks your real auth from `~/.gemini` but
+  **omits `GEMINI.md`**. So global "memory" preferences in `~/.gemini/GEMINI.md` don't leak
+  into every review/draft, and your real `~/.gemini` is left untouched for other Gemini /
+  Antigravity use. Auth (OAuth or `GEMINI_API_KEY`) works unchanged.
 
 ## Env knobs
 
