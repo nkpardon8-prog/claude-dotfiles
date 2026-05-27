@@ -71,6 +71,7 @@ bash ~/.claude-dotfiles/commands/gemini/lib/gemini-invoke.sh /tmp/out.txt "Expla
 | `GEMINI_MODEL` | *(unset)* | model id; unset → CLI's account default (avoids hardcoding a drifting id) |
 | `GEMINI_CONTEXT_MAX` | `100000` | max bytes of piped stdin context |
 | `GEMINI_TIMEOUT` | `120` | per-call seconds; `0` disables |
+| `GEMINI_SUBAGENT_HOME` | `~/.cache/claude-gemini-subagent` | isolated config home (symlinks auth, omits `GEMINI.md`) |
 | `GEMINI_API_KEY` | *(unset)* | if set, the CLI uses it instead of OAuth (post-cliff path) |
 
 ## Validate it works
