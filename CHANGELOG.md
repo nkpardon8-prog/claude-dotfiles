@@ -2,6 +2,34 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-27 — `/pre-compact` canonical-anchor, concurrency-safe, cwd-invariant handoff resolution
+
+Fixed a real **wrong-load**: `/pre-compact` could adopt a *foreign chain's* handoff as its parent
+when the SID-tagged file lived in a different worktree than cwd and an mtime fallback then grabbed the
+newest `CLAUDE.local.*.md`. Hardened the whole writer/reader location + identity model so any agent,
+in any worktree/cwd, can run `/pre-compact` concurrently and repeatedly — "it just works."
+
+- **Canonical anchor** (`lib/handoff-locate.sh`, new): the handoff always lives at
+  `dirname(git-common-dir)` — the repo's main working root, identical from every worktree — resolved
+  with a common-dir identity round-trip cross-check (→ `show-toplevel` → `pwd` fallback). `CANONICAL_ROOT`
+  is resolved once in Step 3.B and persisted in the SID scratch; Steps 6A/6D/8, the `.prev` snapshot,
+  and the paste/migration prose READ it back (no per-subprocess re-derivation → no drift).
+- **Parent = marker-sid only:** Step 3.B accepts a parent ONLY when the canonical-anchor
+  `CLAUDE.local.<MY_SID>.md` carries an END-OF-HANDOFF marker whose `sid=` equals this session.
+  **The mtime fallback is deleted** — mtime never selects a parent. No match → seq 1.
+- **Reader (`lib/handoff-resolve.sh`):** probes cwd → show-toplevel → canonical anchor (deduped by
+  physical path), marker-bound and fail-closed per candidate; rc=3 (hardlink) only when the
+  *marker-matching* candidate is hardlinked. No worktree enumeration (the anchor subsumes it). The
+  SID-unknown legacy alias path is deliberately NOT broadened.
+- **Single marker-SID extractor** (`_resolver_extract_marker_sid`) moved to `handoff-locate.sh` and
+  shared by the reader, `writer-verify.sh`, and the writer's Step 3.B (no duplicate, first-occurrence
+  anchored).
+- **Concurrent `.gitignore`:** atomic `mkdir` lock under the shared git-common-dir + idempotent
+  re-grep converge (the converge is the correctness guarantee; `flock` avoided — absent on macOS).
+- Resolution failures degrade to refuse / `no-handoff`, never wrong-load. All three test harnesses
+  green (ctx-gate 130, integrity 4, auto-compact 71); canonical-root agreement proven across a linked
+  worktree end-to-end.
+
 ## 2026-05-26 — Assumption tests (`/script` overhaul) + always-on `/plan` assessment
 
 Reworked `/script` and wired it into `/plan` as an always-considered (but never forced) step.
