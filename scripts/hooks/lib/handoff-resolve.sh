@@ -34,6 +34,11 @@ command -v ctx_gate_log >/dev/null 2>&1 || ctx_gate_log() { :; }
 # Sourced by path relative to THIS file so it resolves wherever the lib dir is installed.
 # Load-guarded inside handoff-locate.sh, so a double-source from another caller is a no-op.
 _HANDOFF_RESOLVE_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+# Fallback to the canonical install path if BASH_SOURCE was unavailable (e.g. sourced under a
+# non-bash shell) or did not resolve to the lib dir.
+if [ ! -f "$_HANDOFF_RESOLVE_LIBDIR/handoff-locate.sh" ]; then
+  _HANDOFF_RESOLVE_LIBDIR="$HOME/.claude-dotfiles/scripts/hooks/lib"
+fi
 # shellcheck source=./handoff-locate.sh
 . "$_HANDOFF_RESOLVE_LIBDIR/handoff-locate.sh"
 
