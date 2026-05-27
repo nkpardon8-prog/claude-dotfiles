@@ -140,19 +140,22 @@ handoff_resolve_path() {
     # Build the candidate DIR list in priority order, dedup by PHYSICAL path (cd && pwd -P) so
     # the common case (canonical anchor == show-toplevel in the main checkout, and macOS
     # /var -> /private/var aliasing) does not probe the same file twice.
-    local _top _canon _seen _dir _real _rc
+    local _top _canon _seen _dir _key _rc
     _top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || _top=""
     _canon=$(handoff_canonical_root "$cwd")
     _seen=""
     for _dir in "$cwd" "$_top" "$_canon"; do
       [ -n "$_dir" ] || continue
-      _real=$(cd "$_dir" 2>/dev/null && pwd -P) || _real="$_dir"
+      # Dedup KEY is the physically-resolved dir (so /var vs /private/var, symlinked worktree
+      # roots, and canonical==show-toplevel collapse to one probe). The probe itself uses the
+      # ORIGINAL $_dir so HANDOFF_PATH keeps the caller's path shape (consumer contract).
+      _key=$(cd "$_dir" 2>/dev/null && pwd -P) || _key="$_dir"
       case "
 $_seen" in *"
-$_real"*) continue ;; esac
+$_key"*) continue ;; esac
       _seen="$_seen
-$_real"
-      _handoff_try_candidate "$_real/CLAUDE.local.${session_id}.md" "$session_id"
+$_key"
+      _handoff_try_candidate "$_dir/CLAUDE.local.${session_id}.md" "$session_id"
       _rc=$?
       [ "$_rc" -eq 0 ] && return 0   # HANDOFF_PATH set by the helper
       [ "$_rc" -eq 3 ] && return 3   # marker-matching candidate is hardlinked → recovery signal
