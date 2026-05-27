@@ -417,15 +417,16 @@ One `Write` call covering every section. Floor depends on the mining pass chosen
 
 If you can't reach the floor, you under-mined in Step 3 — go back to Step 3.C and extract more before writing.
 
-**Resolve REPO_ROOT first** (used throughout Steps 6-8 — must be defined before HANDOFF_PRIMARY):
+**Resolve the handoff root from the Step 3.B scratch** (used throughout Steps 6-8 — must be defined
+before HANDOFF_PRIMARY). Do NOT re-derive it via `git rev-parse` here: the canonical anchor was
+resolved ONCE in Step 3.B and persisted, and re-deriving in this separate Bash subprocess could
+diverge from Step 6D if cwd differs. Read it back (replace `CAPTURED_SID` with the captured Step 3.B SID):
 
 ```bash
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$REPO_ROOT" ]; then
-  # Non-git workspace — fall back to current working directory
-  REPO_ROOT="$(pwd)"
-  echo "INFO: not in a git work tree; using REPO_ROOT=$(pwd)=$REPO_ROOT"
-fi
+SCRATCH_PATH="$HOME/.claude/progress/pre-compact-parent-CAPTURED_SID.json"
+REPO_ROOT=$(jq -r '.canonical_root' "$SCRATCH_PATH" 2>/dev/null)
+[ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" != "null" ] || { echo "FATAL: Step 6A could not read canonical_root from $SCRATCH_PATH" >&2; exit 1; }
+echo "REPO_ROOT=$REPO_ROOT (canonical anchor, from scratch)"
 ```
 
 Then proceed to the SID-tagged write protocol:
