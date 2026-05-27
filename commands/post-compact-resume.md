@@ -68,7 +68,7 @@ Then stop.
 resolution logic MUST match the primer's resolution logic exactly. Under R8/R9 the priority is:
 1. **SID-tagged file: `CLAUDE.local.<session_id>.md`** — the ONLY accepted path when a session_id is known
    (the normal case: `$ARGUMENTS` is non-empty). F2 content-check: the resolver verifies the file's
-   `END-OF-HANDOFF` marker `sid=` equals the requested session_id before accepting, in cwd then repo-root.
+   `END-OF-HANDOFF` marker `sid=` equals the requested session_id before accepting, probing cwd → show-toplevel → canonical anchor.
    A markerless SID-tagged file is REFUSED (R9-Round2 — no legacy-mtime acceptance on the SID-tagged path).
    If no SID-tagged file passes F2 → `rc=2` → `STATE=no-handoff`. **There is NO alias fallback for a known
    session_id** — the F4 "alias with marker-binding (Defense H12)" probe was DELETED in R8 (V2-6). Do NOT
