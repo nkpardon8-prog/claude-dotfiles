@@ -46,10 +46,18 @@ Gated by `GEMINI_ATEST_ALLOW_DEV=true`. Test 02 runs `--yolo` ONLY inside a fres
 `mktemp` dir with a narrow create-a-file prompt, cleaned in a trap. All tests are
 idempotent, self-cleaning (`mktemp` + trap), and use per-run UUIDs.
 
+## Config isolation (now default)
+
+The wrapper relocates `GEMINI_CLI_HOME` to `~/.cache/claude-gemini-subagent`, symlinking
+your real auth from `~/.gemini` but omitting `GEMINI.md`. This was added after testing
+showed the global `~/.gemini/GEMINI.md` "memory" preferences leaking into every reply.
+Verified: auth survives the relocation (symlinked creds), and the leak is gone. This is an
+**output-hygiene** measure, not a safety one — `--approval-mode plan` (test 02) already
+makes tool execution structurally impossible, so a foreign `GEMINI.md` could at most bias
+review *text*, never execute.
+
 ## Deferred (intentionally not tested)
 
-- **Config-dir isolation / foreign `GEMINI.md` canary.** Originally proposed, deferred
-  because `--approval-mode plan` makes tool execution structurally impossible — a foreign
-  `GEMINI.md` can at most bias review *text*, never execute. The global `~/.gemini/GEMINI.md`
-  was also sanitized. Relocating the config dir (`GEMINI_CLI_HOME`) risks breaking OAuth
-  for no safety gain, so it's not the default. Test 02 covers the actual hazard (execution).
+- **Project-tree `GEMINI.md` canary.** A `GEMINI.md` inside a repo being reviewed can still
+  be discovered via the cwd walk. Not tested because, again, plan mode prevents execution;
+  worst case is mild text bias on a review of that specific repo.
