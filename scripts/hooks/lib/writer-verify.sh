@@ -19,6 +19,9 @@ readonly _WRITER_VERIFY_LOADED=1
 # Shared first-occurrence-anchored marker-SID extractor (_resolver_extract_marker_sid).
 # Sourced by path relative to THIS file; load-guarded inside handoff-locate.sh.
 _WRITER_VERIFY_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+if [ ! -f "$_WRITER_VERIFY_LIBDIR/handoff-locate.sh" ]; then
+  _WRITER_VERIFY_LIBDIR="$HOME/.claude-dotfiles/scripts/hooks/lib"
+fi
 # shellcheck source=./handoff-locate.sh
 . "$_WRITER_VERIFY_LIBDIR/handoff-locate.sh"
 
