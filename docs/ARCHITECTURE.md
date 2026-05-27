@@ -163,20 +163,27 @@ Full rules: `CLAUDE.md` → "Credential and MCP Handling".
 
 ## Session continuity (`/pre-compact` chain)
 
-When Claude Code's context fills up and triggers compaction, you lose the live conversation. `/pre-compact` writes a structured handoff into `CLAUDE.local.md` so the next session picks up cleanly.
+When Claude Code's context fills up and triggers compaction, you lose the live conversation. `/pre-compact` writes a structured handoff into a SID-tagged `CLAUDE.local.<session_id>.md` so the next session picks up cleanly.
 
 ```
 Session 1 ─────┐
-   work, work, │
-   work, /pre- │   writes CLAUDE.local.md (Seq: 1)
-   compact ────┤   ← @CLAUDE.local.md import in CLAUDE.md
-                │     auto-loads on next session
-Session 2 ─────┤   reads Seq:1, runs again
-   /pre-       │   writes CLAUDE.local.md (Seq: 2, Parent: <ts of Seq:1>)
-   compact ────┤   ← "Since Last Compact" section diffs prior plan vs reality
-                │
+   work, work, │   writes CLAUDE.local.<sid>.md (Seq: 1)
+   work, /pre- │   ← at the CANONICAL ANCHOR (dirname(git-common-dir)) —
+   compact ────┤     identical from every worktree, so cwd-flip never relocates it
+                │   resume: primer/step2 probe cwd → show-toplevel → canonical anchor,
+                │     accept only if the file's marker sid= matches this session
+   /pre-       │   writes CLAUDE.local.<sid>.md (Seq: 2, Parent: <ts of Seq:1>)
+   compact ────┤   ← parent = the same-sid file at the anchor (marker-bound, never by mtime)
+                │     "Since Last Compact" section diffs prior plan vs reality
 Session 3 ─────┘   ...
 ```
+
+**Parallel-track / concurrency safety:** the handoff filename carries the full session id and lives at
+one deterministic per-repo location, so any number of agents — across worktrees, from any cwd — can run
+`/pre-compact` concurrently and repeatedly without colliding. Parent selection is bound strictly by
+`marker.sid == this session` (never mtime), so a foreign chain's handoff can never be adopted. Every
+resolution failure degrades to "refuse / no-handoff," never a wrong-load. The `.gitignore` update is
+guarded by an atomic `mkdir` lock under the shared git common dir plus an idempotent converge.
 
 Each `/pre-compact` run mines the conversation at a calibrated depth (Quick / Deep / Chunked) based on size, captures every approach tried (with results and reasons), and validates the output hit a per-pass line floor before it claims done. See `commands/pre-compact.md` for the full skill spec.
 
