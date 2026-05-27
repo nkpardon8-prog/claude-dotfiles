@@ -446,9 +446,10 @@ Then proceed to the SID-tagged write protocol:
    [ -f "$SCRATCH_PATH" ] || { echo "FATAL: Step 6A scratch missing at $SCRATCH_PATH" >&2; exit 1; }
    SID=$(jq -r '.sid' "$SCRATCH_PATH" 2>/dev/null)
    SID8=$(jq -r '.sid8' "$SCRATCH_PATH" 2>/dev/null)
+   REPO_ROOT=$(jq -r '.canonical_root' "$SCRATCH_PATH" 2>/dev/null)
    [ -n "$SID" ] && [ -n "$SID8" ] || { echo "FATAL: Step 6A scratch read empty" >&2; exit 1; }
-   REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-   echo "SID=$SID SID8=$SID8 REPO_ROOT=$REPO_ROOT (from scratch)"
+   [ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" != "null" ] || { echo "FATAL: Step 6A canonical_root empty" >&2; exit 1; }
+   echo "SID=$SID SID8=$SID8 REPO_ROOT=$REPO_ROOT (canonical anchor, from scratch)"
    ```
 2. Set `HANDOFF_PRIMARY=$REPO_ROOT/CLAUDE.local.${SID8}.md`
 3. Write the new handoff content to `HANDOFF_PRIMARY` via the Write tool.
