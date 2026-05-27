@@ -16,6 +16,12 @@
 [ -n "${_WRITER_VERIFY_LOADED:-}" ] && return 0
 readonly _WRITER_VERIFY_LOADED=1
 
+# Shared first-occurrence-anchored marker-SID extractor (_resolver_extract_marker_sid).
+# Sourced by path relative to THIS file; load-guarded inside handoff-locate.sh.
+_WRITER_VERIFY_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+# shellcheck source=./handoff-locate.sh
+. "$_WRITER_VERIFY_LIBDIR/handoff-locate.sh"
+
 writer_verify_marker_sid() {
   local handoff_path="$1" expected_sid8="$2"
   if [ ! -f "$handoff_path" ]; then
