@@ -88,6 +88,18 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
     3. `stat -c '%y' "$HANDOFF_PRIOR" | cut -c1-16` (GNU/Linux fallback)
     Do NOT use `git log` — Step 8 puts this file in `.gitignore`.
   - Extract its "Build Plan", "Next Action", "Open Issues", "Things To Fix Later", "Gaps" sections.
+  - **Cross-link propagation extraction (overnight-autonomy)**: ALSO extract these three sections
+    from the parent for additive carry-forward in Step 6A composition:
+    - `## Key Decisions (This Session)` — soft-cap 40 cross-link, drop oldest `confidence: low` first
+    - `## Footguns Discovered This Session` — soft-cap 30 cross-link, drop oldest first
+    - `## What We Tried` — bounded 20 cross-link with asymmetric retention (preserve all
+      `abandoned because <reason>` and footgun-tagged entries; drop oldest `kept` first)
+    Each section is delimited by the literal HTML comment marker `<!-- propagation-boundary v1 -->`
+    in the template — entries ABOVE the marker are previously-propagated parent entries; entries
+    BELOW are this-session-new (those are what link-N+1 will see as "parent's new contributions").
+    Step 6A merges the parent's full section (everything between the section heading and the next
+    `## ` heading) with this session's new entries; dedup by normalized line (trim + collapse
+    whitespace + lowercase first char); cap per the rules above.
   - `new_seq = prior_seq + 1`; `parent_label = the captured timestamp`.
 - If no marker-matching `PARENT_FILE`: `new_seq = 1`, `parent_label = "none — first in chain"`. In Step 6, the entire `## Since Last Compact` section (heading and body) MUST be removed from the output — no placeholder.
 
