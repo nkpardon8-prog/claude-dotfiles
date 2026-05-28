@@ -456,6 +456,44 @@ Batch these calls. Cap each at 50 results.
 - Skipped tests: `rg -n '\.skip\(|xit\(|xdescribe\(' --include='*.{test,spec}.*'` (with fallback).
 - Last failing command or test output from the current session if any is visible in the transcript.
 
+### Step 4.G: Halt-Advisory detector (transcript scan, orchestrator-executed — NOT a bash call)
+
+The chain's overnight-autonomy story uses a **narrow, signal-only** detector that the orchestrator
+runs over the visible transcript. It NEVER refuses or blocks anything; it merely sets two
+environment variables (`HALT_TRIPPED` and `HALT_REASON`) that the Step 3.B chain block reads, which
+in turn writes `status=halted` into the manifest and the Step 6A composition prepends a
+`## Halt Advisory` section to the handoff. **The framing is "advisory," not "needs human"** — the
+agent reads the block, has full agency, and the halt auto-clears on the next user-input turn.
+
+**Scope (locked):**
+- **Window**: scan only transcript turns dated > the manifest's current `last_heartbeat_at`. Earlier
+  turns are prior-link work (possibly post-compaction summaries) — never trip on those.
+- **Exclusions**: ignore (a) text inside `<result>` blocks from `Agent`/`Task` sub-agent tool calls;
+  (b) any `Bash` tool result whose command sources `/Users/.../scripts/hooks/lib/handoff-*` (this
+  skill's own bash subprocess output).
+- **Trip conditions** (any one trips with `HALT_TRIPPED=1`):
+  - **Bash-loop**: same Bash command + same first-80-chars-of-stderr appearing 5+ times AND BOTH no
+    commit AND no file edit (any file) AND no test status transition between the 1st and 5th
+    occurrence. **Any file edit between failures means the agent is debugging — NOT stuck.** Reason
+    = `"bash-loop:<short-cmd>"`.
+  - **Permission-denied loop**: user denied the SAME tool call 2+ times in the window. Reason =
+    `"user-denied-tool:<tool>"`.
+  - **Self-blocked**: agent emitted "I cannot proceed" / "blocked on" / "stuck" AND the next 3
+    transcript turns show no Bash success, no file edit, and no commit. Reason = `"self-blocked"`.
+  - **API errors**: 3+ consecutive same-class errors (rate-limit | auth | network | quota) within
+    the window AND no successful API call of that class in between. Reason = `"api-errors:<class>"`.
+- **Never trip on**: same Next Action across links (slow ≠ stuck), low file count, repeated test
+  invocations with passing OR failing transitions (debugging iteration), slow mining cycles.
+- **Output**: set `HALT_TRIPPED=1` and `HALT_REASON="<reason>"` if any condition trips;
+  `HALT_TRIPPED=0` otherwise. Step 3.B's chain block reads these. Step 6A uses `HALT_REASON` in the
+  Halt Advisory body.
+
+**Auto-clear (locked):** the orchestrator also sets `USER_INPUT_AFTER_HALT` for Step 3.B by walking
+the visible transcript and looking for a turn with `role == "user"` whose timestamp is strictly
+greater than the manifest's `last_heartbeat_at` (the halt's recorded moment) AND whose body is NOT
+the bare `/pre-compact <args>` slash-command line that triggered THIS run. Agent self-talk never
+clears halt; the invocation itself never clears halt. If found → `USER_INPUT_AFTER_HALT=1`; else 0.
+
 ## Step 5: Summarize and confirm
 
 Show the user a short draft summary before writing:
