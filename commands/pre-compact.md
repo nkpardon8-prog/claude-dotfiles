@@ -1074,6 +1074,14 @@ defense and must never be dropped from `/post-compact-resume`.
 - Manual invocation only for the SKILL itself (you typing `/pre-compact`). Two hooks support it:
   - **Stop hook** (`~/.claude-dotfiles/scripts/hooks/auto-compact-after-pre-compact.sh`, registered in `~/.claude/settings.json`) fires `/compact` automatically after this skill finishes by reading the per-session JSON sentinel this skill writes in Step 9.0. Uses AppleScript `do script` to deliver `/compact` directly into the originating tab's PTY — no keystroke synthesis, no focus race, no Accessibility requirement (only Terminal Automation permission, which macOS auto-prompts for on first use). Pass `no-auto-compact` (or `no auto compact`) as an argument to skip arming AND to disarm a previously-armed sentinel in this session. Mac/Terminal.app only — silently no-ops on Linux/iTerm/Ghostty/tmux/screen.
   - **PreCompact safety-net hook** (`~/.claude-dotfiles/scripts/hooks/ctx-gate-precompact-safety.sh`, matcher `auto`, registered in `~/.claude/settings.json`) BLOCKS native auto-compact when no `/pre-compact` sentinel is armed, forcing the model to invoke `/pre-compact` first. The user constraint is non-negotiable: native auto-compact must NEVER run without `/pre-compact` writing the SID-tagged handoff first. This hook does NOT invoke `/pre-compact`'s mining logic — it only writes a `decision: block` JSON to stop the native compaction. Manual `/compact` (trigger != "auto") is NEVER blocked. At ≥90% ctx with no sentinel, the safety net RELEASES (avoids deadlock) and lets native run as last-resort degraded fallback.
+- **Ctx-gate nudge interpretation (2026-05-28 tuning).** The UserPromptSubmit hook
+  (`scripts/hooks/ctx-gate-on-prompt-submit.sh`) prepends one of three messages depending on
+  ctx %: SOFT (50–64%), IMPORTANT (65–74%), or FORCE (≥75%). Rate-limited per 5% bucket so SOFT
+  fires at 50/55/60, IMPORTANT at 65/70, and FORCE every turn. **Interpretation rule for the
+  agent:** SOFT nudges are FYI only — do NOT interrupt active work, do NOT mention ctx % to the
+  user, do NOT start `/pre-compact` in response. Act on IMPORTANT (next natural seam) or FORCE
+  (immediately, before anything else) only. The SOFT zone exists so the agent KNOWS the chain is
+  filling, not so it changes behavior. Pre-tuning rollback tag: `ctx-thresholds-pre-tuning-2026-05-28`.
 - Overwrite `CLAUDE.local.<sid8>.md` each run. Do not append. Stale handoff is worse than no handoff.
 - Never write secrets to the handoff file.
 - If not in a git repo, skip git steps and note it in the report.
