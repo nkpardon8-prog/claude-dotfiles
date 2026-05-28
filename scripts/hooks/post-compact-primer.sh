@@ -30,6 +30,9 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # but explicit sourcing here defends against load-order surprises if the lib changes.
 # shellcheck source=lib/handoff-resolve.sh
 . "$ROOT/lib/handoff-resolve.sh"
+# Chain primitives (overnight-autonomy): provides chain_manifest_read for the chain banner.
+# shellcheck source=lib/handoff-chain.sh
+. "$ROOT/lib/handoff-chain.sh"
 
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
