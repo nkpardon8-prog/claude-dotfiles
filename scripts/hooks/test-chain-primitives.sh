@@ -75,13 +75,21 @@ fi
 cleanup_sid "$SID"
 
 # ---------------- 4: ledger uses real tab delimiter (not literal "\t") ----------------
+# NOTE: `od -c` DISPLAYS real tab bytes (0x09) as `\t`, so we can't grep `od` output for that.
+# Instead: look for the two-byte literal sequence backslash+t (0x5C 0x74) directly in the raw
+# file. A real tab won't match; a buggy `printf '\t'` in a non-ANSI-C-quoting context would.
 SID="${UNIQ}-realtab"
 cleanup_sid "$SID"
 chain_ledger_append "$SID" "$NOW" "seq=1" "ctx_pct=78" "elapsed=0h 0m" "status=active" \
   "next=tab test" "files=1" "commits=0" "north_star_first_120=tab test goal"
-if od -c "$HOME/.claude/chains/${SID}.log" 2>/dev/null | head -2 | grep -q '\\t'; then
-  fail "real-tab delimiter" "literal backslash-t found in ledger"
-else pass "real-tab delimiter (no literal backslash-t)"; fi
+if LC_ALL=C grep -q $'\\\\t' "$HOME/.claude/chains/${SID}.log" 2>/dev/null; then
+  fail "real-tab delimiter" "literal backslash-t sequence found in ledger raw bytes"
+else
+  # Additional positive proof: awk -F'\t' must split to 9 fields. (Literal "\t" would yield 1.)
+  NF_REAL=$(awk -F'\t' 'NR==1{print NF}' "$HOME/.claude/chains/${SID}.log")
+  if [ "$NF_REAL" = "9" ]; then pass "real-tab delimiter (no literal bs-t bytes; NF=9 via awk -F'\\t')"
+  else fail "real-tab delimiter" "no literal bs-t but NF=$NF_REAL (expected 9)"; fi
+fi
 cleanup_sid "$SID"
 
 # ---------------- 5: ledger has 9 fields ----------------
