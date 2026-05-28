@@ -185,6 +185,24 @@ one deterministic per-repo location, so any number of agents — across worktree
 resolution failure degrades to "refuse / no-handoff," never a wrong-load. The `.gitignore` update is
 guarded by an atomic `mkdir` lock under the shared git common dir plus an idempotent converge.
 
+**Overnight autonomy — chain primitives:** each `/pre-compact` ALSO updates per-session chain state
+at `~/.claude/chains/<session_id>.{json,log}`. The manifest (slim 9-field JSON, atomic `tmp+rename`)
+holds the chain's `started_at`, `current_seq`, `north_star` (the immutable original goal cached
+verbatim at chain birth), `last_heartbeat_at`, and `status`. The ledger is append-only TSV — one
+line per `/pre-compact` invocation, never overwritten — and survives every compaction so a chain
+can read its full forward-progress trail at any link. Every handoff opens with a `## Chain Status`
+banner injected by Step 6A from the manifest + last 5 ledger entries (chain id, elapsed time, link
+N, north star, current active task, recent progress). The SessionStart primer also prepends a
+one-line chain banner to its `additionalContext` advisory. A **narrow** halt-advisory detector
+runs over each link's transcript (5+ identical Bash failures with no progress, 2+ permission
+denials, self-blocked patterns, repeated API errors) — when it trips, the next handoff opens with
+a `## Halt Advisory` block; this is purely informational, the agent has full agency, and the halt
+auto-clears on the next user-input turn. **Chain primitives never gate or refuse anything.** A
+manifest write failure logs a warning and the skill continues; the SID-tagged handoff is the
+load-bearing artifact, chain state is recovery aid. Corrupted manifests auto-rebuild from the
+ledger (which carries `north_star_first_120` for goal recovery). See `commands/pre-compact.md` and
+`scripts/hooks/lib/handoff-chain.sh` for the full design.
+
 Each `/pre-compact` run mines the conversation at a calibrated depth (Quick / Deep / Chunked) based on size, captures every approach tried (with results and reasons), and validates the output hit a per-pass line floor before it claims done. See `commands/pre-compact.md` for the full skill spec.
 
 ---
