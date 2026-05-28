@@ -190,6 +190,102 @@ fi
 rm -rf "$TMPHOME"
 
 # ---------------------------------------------------------------------------
+# §3c-9..3c-13 — Bucket rate-limit regression tests (2026-05-28 tuning)
+# ---------------------------------------------------------------------------
+# The hook rate-limits SOFT and IMPORTANT nudges by 5% bucket transitions to avoid the noise of
+# firing on every UserPromptSubmit while the agent is steadily in one zone. FORCE bypasses the
+# rate-limit (it's an action-required interrupt; persistent reminder is correct).
+# Marker file: $HOME/.claude/progress/.ctx-zone-bucket-<sid>.
+
+# 3c-9 (bucket-skip-same, SOFT): two invocations same-bucket → first fires SOFT, second silent.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+printf '53\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1 \
+   && [ -z "$OUT2" ]; then
+  pass "3c-9: bucket-skip-same (SOFT) — first fires, same-bucket second silent"
+else
+  fail "3c-9: bucket-skip-same (SOFT)" "OUT1='$OUT1' OUT2='$OUT2'"
+fi
+rm -rf "$TMPHOME"
+
+# 3c-10 (bucket-fire-on-transition, SOFT): ctx=51 (bucket 10) then ctx=55 (bucket 11) both fire SOFT.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+printf '55\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1 \
+   && printf '%s' "$OUT2" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1; then
+  pass "3c-10: bucket-fire-on-transition (SOFT) — both 51 and 55 emit SOFT (full message, not just non-empty)"
+else
+  fail "3c-10: bucket-fire-on-transition (SOFT)" "OUT1='$OUT1' OUT2='$OUT2'"
+fi
+rm -rf "$TMPHOME"
+
+# 3c-11 (bucket-fire-on-transition, IMPORTANT): ctx=66 (bucket 13) then ctx=71 (bucket 14) both IMPORTANT.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '66\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+printf '71\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1 \
+   && printf '%s' "$OUT2" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1; then
+  pass "3c-11: bucket-fire-on-transition (IMPORTANT) — both 66 (bucket 13) and 71 (bucket 14) emit IMPORTANT"
+else
+  fail "3c-11: bucket-fire-on-transition (IMPORTANT)" "OUT1='$OUT1' OUT2='$OUT2'"
+fi
+rm -rf "$TMPHOME"
+
+# 3c-12 (FORCE-bypass-bucket): three invocations at same bucket (80, 80, 82 — all bucket 16) all
+# fire FORCE; marker file does NOT exist after (proves FORCE took early-exit, never touched marker).
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+printf '80\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+printf '82\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT3=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+F1=$(printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1 && echo 1 || echo 0)
+F2=$(printf '%s' "$OUT2" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1 && echo 1 || echo 0)
+F3=$(printf '%s' "$OUT3" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1 && echo 1 || echo 0)
+MARKER_EXISTS=$([ -e "$TMPHOME/.claude/progress/.ctx-zone-bucket-foo" ] && echo 1 || echo 0)
+if [ "$F1" = "1" ] && [ "$F2" = "1" ] && [ "$F3" = "1" ] && [ "$MARKER_EXISTS" = "0" ]; then
+  pass "3c-12: FORCE-bypass-bucket — 3 same-bucket invocations all FORCE; marker untouched"
+else
+  fail "3c-12: FORCE-bypass-bucket" "F1=$F1 F2=$F2 F3=$F3 marker_exists=$MARKER_EXISTS"
+fi
+rm -rf "$TMPHOME"
+
+# 3c-13 (bucket-reset-after-silent-exit): ctx=70 → IMPORTANT (writes bucket=14); ctx=35 → silent
+# (silent-zone exit at line 82-84 BEFORE bucket-write at line 91+ — marker stays at 14); ctx=51 →
+# SOFT (BUCKET=10 != LAST=14 → fires). The intermediate marker assertion is the load-bearing part.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
+BUCKET_FILE="$TMPHOME/.claude/progress/.ctx-zone-bucket-foo"
+printf '70\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+MARKER_AFTER1=$(tr -cd '0-9' < "$BUCKET_FILE" 2>/dev/null | head -c 4)
+printf '35\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+MARKER_AFTER2=$(tr -cd '0-9' < "$BUCKET_FILE" 2>/dev/null | head -c 4)
+printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+OUT3=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+F1=$(printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1 && echo 1 || echo 0)
+F3=$(printf '%s' "$OUT3" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1 && echo 1 || echo 0)
+if [ "$F1" = "1" ] && [ "$MARKER_AFTER1" = "14" ] && [ -z "$OUT2" ] && [ "$MARKER_AFTER2" = "14" ] && [ "$F3" = "1" ]; then
+  pass "3c-13: bucket-reset-after-silent-exit — silent exit leaves marker stale; lower bucket re-fires"
+else
+  fail "3c-13: bucket-reset" "F1=$F1 marker1=$MARKER_AFTER1 OUT2='$OUT2' marker2=$MARKER_AFTER2 F3=$F3"
+fi
+rm -rf "$TMPHOME"
+
+# ---------------------------------------------------------------------------
 # §3i/3i-bis/3j/3k — PreCompact safety-net tests
 # ---------------------------------------------------------------------------
 echo ""
