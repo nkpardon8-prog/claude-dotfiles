@@ -47,6 +47,68 @@ export PRIMER_SESSION_ID
 # B20: unified handoff audit trail — log session start event.
 handoff_log "session_started sid=${SID:-unknown} source=${SOURCE:-unknown}"
 
+# Chain banner (overnight-autonomy): prepend the chain's situation to every additionalContext
+# emission so the agent reads "Chain X | Link N | Elapsed Hh Mm | Goal: … | Status: …" first.
+# Manifest absence = empty banner, fall through silently (every fresh session starts here).
+# Robustness rules: bash-side date fallback if jq lacks fromdateiso8601 (< 1.5); clamp negative
+# elapsed at 0 (clock skew); sanitize HEARTBEAT_AGE to integer; heartbeat staleness threshold
+# raised to 90 min (a productive overnight cycle is normally well under that).
+CHAIN_BANNER=""
+BANNER_PREFIX=""
+if [ -n "${SID:-}" ] && MANIFEST_JSON=$(chain_manifest_read "$SID" 2>/dev/null); then
+  if printf '%s' '{}' | jq -e 'now | type == "number"' >/dev/null 2>&1; then
+    HAVE_JQ_DATE=1
+  else
+    HAVE_JQ_DATE=0
+  fi
+  CID=$(printf '%s' "$MANIFEST_JSON"      | jq -r '.chain_id // empty')
+  SEQ_=$(printf '%s' "$MANIFEST_JSON"     | jq -r '.current_seq // 1')
+  STATUS_=$(printf '%s' "$MANIFEST_JSON"  | jq -r '.status // "active"')
+  GOAL_=$(printf '%s' "$MANIFEST_JSON"    | jq -r '(.north_star // "") | .[0:80]')
+  STARTED=$(printf '%s' "$MANIFEST_JSON"  | jq -r '.started_at // empty')
+  HBT=$(printf '%s' "$MANIFEST_JSON"      | jq -r '.last_heartbeat_at // empty')
+  RECOVERED=$(printf '%s' "$MANIFEST_JSON" | jq -r '.recovered_from_ledger // false')
+
+  # Compute elapsed via bash date arithmetic (more portable than relying on jq's fromdateiso8601).
+  EPOCH_START=0
+  if [ -n "$STARTED" ]; then
+    EPOCH_START=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$STARTED" +%s 2>/dev/null \
+                || date -u -d "$STARTED" +%s 2>/dev/null || echo 0)
+  fi
+  S=$(( $(date +%s) - EPOCH_START ))
+  [ "$S" -lt 0 ] && S=0
+  if [ "$S" -ge 86400 ]; then
+    ELAPSED="$((S/86400))d $(((S%86400)/3600))h $(((S%3600)/60))m"
+  else
+    ELAPSED="$((S/3600))h $(((S%3600)/60))m"
+  fi
+  CID8=$(printf '%s' "$CID" | cut -c1-8)
+  CHAIN_BANNER="Chain ${CID8} | Link ${SEQ_} | Elapsed ${ELAPSED} | Goal: ${GOAL_} | Status: ${STATUS_}"
+  if [ "$RECOVERED" = "true" ]; then
+    CHAIN_BANNER="${CHAIN_BANNER} (manifest was recovered from ledger — re-state goal if it is wrong)"
+  fi
+
+  # Heartbeat staleness — 90 min threshold (down from the brief's original 30 to reduce
+  # false advisories on productive overnight runs).
+  HEARTBEAT_AGE=0
+  if [ -n "$HBT" ]; then
+    EPOCH_HBT=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$HBT" +%s 2>/dev/null \
+              || date -u -d "$HBT" +%s 2>/dev/null || echo 0)
+    HEARTBEAT_AGE=$(( $(date +%s) - EPOCH_HBT ))
+  fi
+  # Sanitize to plain integer.
+  HEARTBEAT_AGE=$(printf '%d' "${HEARTBEAT_AGE:-0}" 2>/dev/null); HEARTBEAT_AGE=${HEARTBEAT_AGE:-0}
+  [ "$HEARTBEAT_AGE" -lt 0 ] && HEARTBEAT_AGE=0
+  if [ "$HEARTBEAT_AGE" -gt 5400 ]; then  # 90 min
+    CHAIN_BANNER="${CHAIN_BANNER}
+NOTE: $((HEARTBEAT_AGE/60))-minute gap since last /pre-compact — verify a resume wasn't missed."
+  fi
+  BANNER_PREFIX="${CHAIN_BANNER}
+
+"
+  unset HAVE_JQ_DATE CID SEQ_ STATUS_ GOAL_ STARTED HBT EPOCH_START EPOCH_HBT S RECOVERED CID8
+fi
+
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
