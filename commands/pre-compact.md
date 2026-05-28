@@ -983,7 +983,8 @@ Output a compact summary:
 - `/document` result (files touched, or "skipped: nothing to document")
 - `CLAUDE.local.<sid8>.md` written (SID-tagged). Line count via `wc -l "$HANDOFF_PRIMARY"`.
 - **Size warn:** if handoff > 1500 lines, emit: "WARNING: handoff is N lines — consider trimming stale sections before next /pre-compact."
-- Mining pass used: [pass]. Phase 1: [N] lines (floor [F]). Phase 2: +[N] lines (ceiling [C]). Chain: seq [N], parent [timestamp or 'first in chain'].
+- Mining pass used: [pass]. Phase 1: [N] lines (floor [F]). Phase 2: +[N] lines (ceiling [C]).
+- Chain: <sid8> link [N] | elapsed [Hh Mm or 1d 2h 3m] | status [active | halted (reason)] | north_star source: [arguments | brief | agent-supplied | recovered | unset]. (Parent: [timestamp or 'first in chain'])
 - `.gitignore` update: added / already present / skipped (not a git repo).
 - **Auto-compact: {AUTOCOMPACT_STATE}**  ← interpolate the literal value from Step 9.0
 - Count of decisions, open issues, gaps, fix-laters captured.
