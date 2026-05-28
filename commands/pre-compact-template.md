@@ -114,8 +114,14 @@ master/god). Omit section if no reviewers ran. -->
 | R2 | ... | ... | ... | ... | ... |
 
 ## Key Decisions (This Session)
-- [Decision] — [reasoning] — [source: conversation | memory | git] — [confidence: high | low]
-- ...
+<!--
+Cross-link propagation: parent-propagated decisions appear ABOVE the
+`<!-- propagation-boundary v1 -->` marker; THIS session's new decisions appended BELOW it.
+Soft cap at 40 (drop oldest `confidence: low` first when over). Section heading retains
+"This Session" wording for back-compat but body is cross-link cumulative.
+Each entry: [Decision] — [reasoning] — [source: conversation | memory | git] — [confidence: high | low]
+-->
+<!-- propagation-boundary v1 -->
 
 ## Rejected Alternatives
 - [Alternative] — [why rejected]
