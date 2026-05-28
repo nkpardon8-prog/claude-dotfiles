@@ -4,17 +4,24 @@
 # Execution context: this is a Claude Code UserPromptSubmit hook script.
 # It runs as a direct subprocess of Claude Code, NOT through the orchestrator Bash tool.
 #
-# Threshold model (R2 redesign — N4 locked decision):
-#   <50%  → silent (no output)
-#   50-74% → SOFT nudge (consider /pre-compact at next natural seam)
-#   75-84% → IMPORTANT nudge (finish current task, then invoke /pre-compact)
-#   ≥85%   → FORCE nudge (FIRST action MUST be Skill(pre-compact) — context-critical)
+# Threshold model (2026-05-28 tuning — code-quality-first):
+#   <50%   → silent (no output)
+#   50-64% → SOFT nudge (FYI; do not interrupt active work — see Rules in pre-compact.md)
+#   65-74% → IMPORTANT nudge (finish current task, then invoke /pre-compact)
+#   ≥75%   → FORCE nudge (FIRST action MUST be Skill(pre-compact) — context-critical)
+#
+# **Zone-bucket rate-limit (2026-05-28):** SOFT and IMPORTANT fire only when the 5% bucket
+# changes (50/55/60/65/70 etc.), not on every user prompt. FORCE always fires every turn
+# (action-required; persistent reminder is correct). Marker file at
+# `~/.claude/progress/.ctx-zone-bucket-<sid>` records the last bucket the hook fired in;
+# per-session, GC'd by the existing 720-min cleanup glob on `~/.claude/progress/`.
 #
 # NEVER uses `permissionDecision: deny` or `decision: block`.
 # Only additionalContext. Fail-open on any error so a buggy gate never breaks prompts.
 #
-# FORCE (≥85%) overrides sentinel-fresh skip — operator must see context-critical alerts.
-# SOFT and IMPORTANT respect sentinel-fresh skip (already ran /pre-compact; no noise).
+# FORCE overrides sentinel-fresh skip AND the bucket rate-limit — operator must see
+# context-critical alerts on every turn. SOFT and IMPORTANT respect sentinel-fresh skip
+# (already ran /pre-compact; no noise) AND the bucket rate-limit.
 
 set -uo pipefail
 
