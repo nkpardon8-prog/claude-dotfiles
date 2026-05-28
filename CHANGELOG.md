@@ -2,6 +2,62 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-27 — `/pre-compact` overnight-autonomy primitives (chain manifest, ledger, banner, halt-advisory)
+
+Layered on top of the same-day canonical-anchor work to give an agent the continuity primitives it
+needs to run **overnight** (8+ hours, 5–15 compactions) on a heavy dev workload without losing the
+thread. **All primitives are observational** — they surface information, they never gate or refuse
+anything the agent/user wants to do. No new sub-commands.
+
+- **New `lib/handoff-chain.sh`** with 4 primitives: `chain_manifest_path`, `chain_manifest_read`
+  (validates with `jq -e .`; auto-rebuilds from the ledger on corruption with
+  `recovered_from_ledger:true`), `chain_manifest_write` (atomic `tmp+rename`), and
+  `chain_ledger_append` (pure `>>`, 9 locked TSV fields, real-tab delimiter via ANSI-C `$'\t'`).
+  SID sanitized defensively inside the lib; bash 3.2.57 compatible; no `ctx_gate_log` dependency.
+- **Chain state at `~/.claude/chains/<session_id>.{json,log}`** (mode 700). Manifest is slim (9
+  fields: chain_id, started_at, north_star, north_star_source, current_seq, last_handoff_path,
+  last_heartbeat_at, status, host) — no history arrays (YAGNI). Ledger is append-only TSV, never
+  overwritten, includes `north_star_first_120` so the goal survives manifest corruption.
+- **`/pre-compact` Step 3.B** resolves the chain manifest (or creates it on first run) inside a
+  tolerant subshell (`set +e`) so chain failures never abort the skill. North-star resolution is
+  3-tier: `$ARGUMENTS` (minus pass flags) → most-recent fresh brief at
+  `$CANONICAL_ROOT/tmp/briefs/` with `## Direction` (falls through on multi-brief near-tie within
+  6h to avoid guessing) → agent-supplied from the in-flight `## Active Task` extraction. Verbatim
+  string cached at chain birth (no `<pending…>` placeholder ever).
+- **`/pre-compact` Step 4.G** runs a narrow halt-advisory detector over the visible transcript
+  (window-scoped to turns dated > `last_heartbeat_at`, excluding sub-agent tool outputs and the
+  skill's own bash). Trips only on: same-cmd+same-error 5× with no commit AND no file edit; 2+
+  permission denials on the same tool; self-emitted "I cannot proceed" + 3 unresolved turns; or
+  3+ consecutive same-class API errors. **Never trips on iterative debugging** (any file edit
+  between failures = healthy work). Output is two env vars the Step 3.B block reads; the next
+  handoff opens with a `## Halt Advisory` block (informational, agent has full agency).
+- **Halt auto-clear, locked semantics**: clears iff the visible transcript has a turn with
+  `role:user` AND timestamp > halt timestamp AND body is NOT the bare `/pre-compact` invocation.
+  Agent self-talk never clears halt.
+- **`/pre-compact` Step 6A** prepends `## Chain Status` to every handoff (chain id 8-char prefix,
+  started_at, elapsed, link N, north star verbatim, current active task, last 5 ledger entries —
+  so drift between original goal and current direction is always visible). When halt is set,
+  `## Halt Advisory` goes above it. Decisions + Footguns propagate cross-link additively (caps 40
+  / 30, drop oldest low-confidence/oldest first); What We Tried bounded at 20 with asymmetric
+  retention (preserve all `abandoned because <reason>` and footgun entries; drop oldest `kept`).
+  Propagation marker `<!-- propagation-boundary v1 -->` in the template delimits parent-carried
+  from this-session entries.
+- **SessionStart primer** sources the chain lib and prepends a one-line banner
+  (`Chain <id8> | Link <N> | Elapsed <Hh Mm> | Goal: <80c> | Status: <s>`) to ALL three
+  `additionalContext` emissions (the rc=2 missing-file warning, rc=3 hardlink warning, and main
+  case). Heartbeat staleness >90min appends a "verify a resume wasn't missed" advisory. Bash-side
+  `date` arithmetic (BSD-first, GNU fallback) so the elapsed math doesn't depend on jq's
+  `fromdateiso8601`; negative elapsed clamped at 0; `HEARTBEAT_AGE` sanitized to int.
+- **What was deliberately NOT built**: no `/pre-compact unhalt` or `/pre-compact set-goal`
+  sub-commands (overconstraint per user); no code-enforced north_star immutability (soft, doc-only);
+  no sub-agent context detection (the `[ -t 0 ]` heuristic is non-functional in the Bash-tool
+  subprocess, and sub-agents share session_id so an extra manifest update would be a benign noop
+  anyway); no cross-platform resume (Mac/Terminal.app workflow unchanged); no predictive 75%-ctx
+  auto-fire (the existing PreCompact safety-net is the trigger).
+- All three existing test harnesses still pass with 0 FAIL (test-ctx-gate 130, integrity 4,
+  auto-compact 71); chain primitives smoke (round-trip, ledger append, corrupt-recover, tab
+  delimiter, sanitization) all green.
+
 ## 2026-05-27 — `/pre-compact` canonical-anchor, concurrency-safe, cwd-invariant handoff resolution
 
 Fixed a real **wrong-load**: `/pre-compact` could adopt a *foreign chain's* handoff as its parent
