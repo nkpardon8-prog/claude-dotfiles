@@ -80,3 +80,45 @@ bash ~/.claude-dotfiles/commands/gemini/lib/gemini-invoke.sh /tmp/out.txt "Expla
 GEMINI_ATEST_ALLOW_DEV=true bash ~/.claude-dotfiles/commands/gemini/assumptions/run-all.sh
 ```
 All PASS = the live contract holds. See `assumptions/README.md`.
+
+## Troubleshooting
+
+When `/gemini` (or a skill calling the wrapper) reports a marker instead of a model reply,
+this is the map. The wrapper always exits 0; the diagnosis is in the outfile's first line.
+
+| Marker in outfile | Most likely cause | Fix |
+|---|---|---|
+| `[unavailable] gemini binary not found …` | The CLI isn't installed (e.g. fresh machine, npm reset) | `npm i -g @google/gemini-cli` |
+| `[empty] gemini returned no output. Check auth …` | OAuth token expired / revoked / quota hit, or wrong model id | (a) re-auth: `gemini` interactively, sign in again — see "Re-authenticate" below. (b) if mid-day quota: wait or set `GEMINI_API_KEY`. (c) if you set `GEMINI_MODEL` to a drifted id: `unset GEMINI_MODEL` |
+| `[timeout] gemini exceeded …s` | Slow network, model warm-up, or pathological prompt | Raise the timeout for the call: `GEMINI_TIMEOUT=240 /gemini …` (default 120) |
+| Model reply, but with stray global-preference noise (e.g. trailing "mobile versions" sentence) | The isolated config home is missing/stale — wrapper rebuilds on next call | `rm -rf ~/.cache/claude-gemini-subagent` and re-run; wrapper recreates with fresh symlinks |
+| Suite halts at `INFRA: not authenticated` | No cached OAuth creds AND no `GEMINI_API_KEY` | Run `gemini` interactively and sign in (one-time) |
+
+### Re-authenticate (when OAuth expires or you switch Google accounts)
+
+```bash
+rm ~/.gemini/oauth_creds.json        # wipe stale token
+gemini                                # interactive: sign in again with the AI Pro account
+# the isolated home's symlink still points at the new creds — no action needed
+```
+
+### Upgrade the Gemini CLI
+
+```bash
+npm update -g @google/gemini-cli
+GEMINI_ATEST_ALLOW_DEV=true bash ~/.claude-dotfiles/commands/gemini/assumptions/run-all.sh
+```
+Re-running the suite after an upgrade catches behavior drift (flag renames, default policy
+changes) before it bites a real review.
+
+### Health check at a glance
+
+```bash
+ls ~/.gemini/oauth_creds.json                                # cached token present?
+gemini --version                                             # CLI installed?
+bash ~/.claude-dotfiles/commands/gemini/lib/gemini-invoke.sh /tmp/g.txt "say ok" "$PWD" && cat /tmp/g.txt
+```
+
+## Changelog
+
+See `CHANGELOG.md` for the dated history of changes to the wrapper and tests.
