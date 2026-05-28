@@ -56,11 +56,8 @@ handoff_log "session_started sid=${SID:-unknown} source=${SOURCE:-unknown}"
 CHAIN_BANNER=""
 BANNER_PREFIX=""
 if [ -n "${SID:-}" ] && MANIFEST_JSON=$(chain_manifest_read "$SID" 2>/dev/null); then
-  if printf '%s' '{}' | jq -e 'now | type == "number"' >/dev/null 2>&1; then
-    HAVE_JQ_DATE=1
-  else
-    HAVE_JQ_DATE=0
-  fi
+  # Elapsed math is done via bash `date` (BSD-then-GNU fallback) below — universally portable —
+  # so no jq date-function probe is needed. The earlier draft had a `HAVE_JQ_DATE` check; dropped.
   CID=$(printf '%s' "$MANIFEST_JSON"      | jq -r '.chain_id // empty')
   SEQ_=$(printf '%s' "$MANIFEST_JSON"     | jq -r '.current_seq // 1')
   STATUS_=$(printf '%s' "$MANIFEST_JSON"  | jq -r '.status // "active"')
