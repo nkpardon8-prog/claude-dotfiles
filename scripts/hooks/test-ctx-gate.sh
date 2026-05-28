@@ -83,9 +83,9 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3c — UserPromptSubmit, ctx=65 (still SOFT zone 50-74%, NOT IMPORTANT): expect soft advisory
-# R1-H3: with new 50/75/85 model, ctx=65 hits SOFT zone (50-74%), NOT IMPORTANT (75-84%).
-# Old test expected WRAP-UP; new test expects soft-zone message.
+# 3c — UserPromptSubmit, ctx=65 (AT IMPORTANT boundary under 2026-05-28 tuning): expect IMPORTANT nudge
+# Threshold model: 50 SOFT / 65 IMPORTANT / 75 FORCE. ctx=65 is the FIRST value in the IMPORTANT
+# zone. Older R1-H3 commentary that said "65 = SOFT" was for the 50/75/85 model and is obsolete.
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '65\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
