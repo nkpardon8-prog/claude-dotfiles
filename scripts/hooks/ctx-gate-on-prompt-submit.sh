@@ -78,16 +78,38 @@ elif [ -f "$SENTINEL_PATH" ]; then
   fi
 fi
 
-# IMPORTANT (75-84%): finish current task then /pre-compact before starting anything new.
+# Below SOFT zone → silent (the most common case; emit nothing).
+if [ "$PCT" -lt "$CTX_SOFT_PCT" ]; then
+  exit 0
+fi
+
+# Zone-bucket rate-limit (SOFT + IMPORTANT only; FORCE already returned above).
+# Fire only when the 5% bucket changes. This collapses ~30 SOFT pings during a long
+# 50-64% stretch into ~3 (50/55/60), and keeps IMPORTANT to ~2 (65/70). Bucket = PCT/5;
+# marker stores the last bucket fired. If current != last → fire + update. This handles
+# both forward progress (climbing ctx) and resets (post-compact drops bucket below last).
+BUCKET=$((PCT / 5))
+BUCKET_FILE="$HOME/.claude/progress/.ctx-zone-bucket-${SID}"
+LAST_BUCKET=""
+if [ -f "$BUCKET_FILE" ]; then
+  LAST_BUCKET=$(tr -cd '0-9' < "$BUCKET_FILE" 2>/dev/null | head -c 4)
+fi
+if [ "$BUCKET" = "$LAST_BUCKET" ]; then
+  ctx_gate_log "submit sid=$SID pct=$PCT bucket=$BUCKET action=skip reason=same-bucket-as-last"
+  exit 0
+fi
+# Bucket changed (forward or reset) — record the new one and fall through to fire.
+mkdir -p "$HOME/.claude/progress" 2>/dev/null && chmod 700 "$HOME/.claude/progress" 2>/dev/null || true
+printf '%s\n' "$BUCKET" > "$BUCKET_FILE" 2>/dev/null || true
+
+# IMPORTANT zone: finish current task then /pre-compact before starting anything new.
 if [ "$PCT" -ge "$CTX_IMPORTANT_PCT" ]; then
-  MSG="Context at ${PCT}% — IMPORTANT zone. Finish the current task, then invoke Skill(pre-compact) before starting anything new. The 85% FORCE threshold is approaching."
-  ctx_gate_log "submit sid=$SID pct=$PCT action=important-nudge"
-# SOFT (50-74%): gentle reminder at next natural seam.
-elif [ "$PCT" -ge "$CTX_SOFT_PCT" ]; then
-  MSG="Context at ${PCT}% — soft-zone reminder. Consider running Skill(pre-compact) at the next natural seam (post-review, post-commit, end-of-phase). No action required mid-task."
-  ctx_gate_log "submit sid=$SID pct=$PCT action=soft-nudge"
+  MSG="Context at ${PCT}% — IMPORTANT zone. Finish the current task, then invoke Skill(pre-compact) before starting anything new. The ${CTX_FORCE_PCT}% FORCE threshold is approaching."
+  ctx_gate_log "submit sid=$SID pct=$PCT bucket=$BUCKET action=important-nudge"
+# SOFT zone: FYI reminder; the agent should NOT interrupt active work for this.
 else
-  exit 0  # below soft zone, no output
+  MSG="Context at ${PCT}% — soft-zone reminder (FYI). Consider running Skill(pre-compact) at the next natural seam (post-review, post-commit, end-of-phase). Do NOT interrupt active work for this message; do not surface ctx % to the user; do not start /pre-compact in response. Act only on IMPORTANT or FORCE."
+  ctx_gate_log "submit sid=$SID pct=$PCT bucket=$BUCKET action=soft-nudge"
 fi
 
 jq -n --arg ctx "$MSG" '{ "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": $ctx } }'
