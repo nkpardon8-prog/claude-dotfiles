@@ -771,13 +771,14 @@ fi
 # Step 4: Simulate /pre-compact arming the sentinel (schema v3 with nonce)
 printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"pre-compact","cwd":"/tmp","marker_nonce":"test-nonce-1"}\n' > "$ARM_PATH"
 
-# Step 6: UserPromptSubmit at 65% after sentinel armed → SOFT suppressed by sentinel-fresh skip
+# Step 6: UserPromptSubmit at 65% after sentinel armed → IMPORTANT suppressed by sentinel-fresh skip
+# (Under 2026-05-28 tuning ctx=65 is IMPORTANT; sentinel-fresh suppresses both SOFT and IMPORTANT.)
 printf '65\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"fakesid","prompt":"do thing","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 if [ -z "$OUT" ]; then
-  pass "§2.5 step 6: submit hook silent for SOFT after sentinel armed (sentinel-fresh skip)"
+  pass "§2.5 step 6: submit hook silent for IMPORTANT after sentinel armed (sentinel-fresh skip)"
 else
-  fail "§2.5 step 6: submit hook silence post-sentinel (SOFT)" "submit hook should not advise SOFT after sentinel armed, got: $OUT"
+  fail "§2.5 step 6: submit hook silence post-sentinel (IMPORTANT)" "submit hook should not advise IMPORTANT after sentinel armed, got: $OUT"
 fi
 
 # Step 6b: UserPromptSubmit at 91% after sentinel armed → FORCE still fires
