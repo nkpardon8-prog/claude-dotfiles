@@ -26,8 +26,9 @@ readonly HANDOFF_MAX_SIZE_BYTES="${HANDOFF_MAX_SIZE_BYTES_OVERRIDE:-5242880}"  #
 # R3 D4: renamed for semantic clarity — "bypass" better describes the behavior
 # (this is the threshold at which the safety net releases/bypasses, not just "releases").
 # Raised from 75 → 90 to close the 75-95% unprotected gap: native auto-compact
-# fires at ~95%, FORCE nudge fires at 85%; 90% leaves 5% headroom for the safety
-# release before native compaction would lose the handoff.
+# fires at ~95%, FORCE nudge fires at 75% (2026-05-28 tuning — lowered from 85% for
+# code-quality-first); 90% leaves 15% headroom for the safety release before native
+# compaction would lose the handoff.
 # Native auto-compact is BLOCKED below this PCT if no sentinel armed; ABOVE this PCT
 # it is RELEASED (escape valve to prevent deadlock at ~95% native trigger).
 readonly HANDOFF_AUTOCOMPACT_BYPASS_PCT="${HANDOFF_AUTOCOMPACT_BYPASS_PCT_OVERRIDE:-90}"
