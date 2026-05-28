@@ -2,6 +2,51 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-28 — ctx-gate threshold tuning (50 SOFT / 65 IMPORTANT / 75 FORCE) + 5% bucket rate-limit
+
+LLM accuracy degrades meaningfully past ~70% ctx, but the original 75/85 thresholds put the most
+critical wrap-up work in the worst-quality zone of every chain. The chain primitives shipped on
+2026-05-27 (`lib/handoff-chain.sh` + per-session ledger + cross-link Decisions/Footguns/What-We-Tried
+propagation) made compactions near-lossless, so the cost/quality trade-off shifted in favor of
+compacting earlier. This tunes the thresholds and also fixes the cadence problem (one nudge per
+user turn was noisy — 30+ identical SOFT pings in a long 50-64% stretch).
+
+- **Threshold tune (50/65/75):** defaults in `scripts/hooks/lib/ctx-gate-config.sh` updated. SOFT
+  unchanged at 50%; IMPORTANT 75→65; FORCE 85→75. Override env vars (`CTX_*_PCT_OVERRIDE`) still
+  work for tests + manual experimentation.
+- **Zone-bucket rate-limit (5%):** `scripts/hooks/ctx-gate-on-prompt-submit.sh` fires SOFT and
+  IMPORTANT only when the 5% bucket changes (50/55/60 for SOFT; 65/70 for IMPORTANT). FORCE
+  always fires every turn (action-required — persistent reminder is correct). Per-session marker
+  at `~/.claude/progress/.ctx-zone-bucket-<sid>`, GC'd by the existing 720-min cleanup glob.
+  Handles both forward progress (climbing ctx) and post-compaction reset (silent-zone visit leaves
+  marker stale, then lower bucket re-fires).
+- **SOFT wording extended:** added self-restraint clauses ("Do NOT interrupt active work; do not
+  surface ctx % to the user; do not start /pre-compact in response. Act only on IMPORTANT or
+  FORCE.") — codifies the interpretation rule into the message body itself.
+- **Interpretation rule:** new paragraph in `commands/pre-compact.md` Rules section locks the
+  SOFT-as-FYI semantic across every agent invoking `/pre-compact`. SOFT is observational only;
+  IMPORTANT is "at the next natural seam"; FORCE is "immediately, before anything else."
+- **Stale-reference sweep:** updated 3 doc rows in `scripts/hooks/LOG_VERBS.md` (PCT-range cells),
+  and stale "85%" comments at `ctx-gate-precompact-safety.sh:76`, `lib/handoff-config.sh:29`, and
+  the parenthetical comment at `ctx-gate-on-prompt-submit.sh:42`. The `test-ctx-gate.sh` file-header
+  comment and the `§2.5 step 6` / `step 1` / `step 7` inline comments were updated to match the new
+  threshold model.
+- **Measurement next-step:** the chain ledger's `ctx_pct=<%>` field records ctx at every
+  `/pre-compact` firing — read `~/.claude/chains/<sid>.log` over the next few sessions to see
+  actual firing distribution and decide whether to tighten further (FORCE 75 → 70) or relax.
+- **Rollback:** `git reset --hard ctx-thresholds-pre-tuning-2026-05-28` (tag at SHA `a965592`,
+  set BEFORE any threshold edits).
+- **Test coverage:** `test-ctx-gate.sh` boundary tests `3c-2/3/4` updated (ctx=74→IMPORTANT,
+  ctx=75/84→FORCE); existing `3c-8` and `§2.5 step 6` labels corrected ("SOFT suppressed" → "IMPORTANT
+  suppressed" since ctx=65 is now IMPORTANT). 5 new bucket-rate-limit regression tests added:
+  `3c-9` (bucket-skip-same SOFT), `3c-10` (bucket-fire-on-transition SOFT, asserts full message
+  body), `3c-11` (bucket-fire-on-transition IMPORTANT), `3c-12` (FORCE-bypass strengthened: three
+  same-bucket invocations all FORCE + marker file MUST NOT exist), `3c-13` (bucket-reset-after-silent-exit:
+  asserts marker stays at 14 across a ctx=35 silent visit, then lower bucket=10 re-fires).
+- **All harnesses green:** `test-ctx-gate.sh PASS: 135 FAIL: 0` (was 130, +5 new tests),
+  `verify-test-integrity.sh PASS: 4 FAIL: 0`, `test-auto-compact.sh PASS: 71 FAIL: 0`,
+  `test-chain-primitives.sh PASS: 10 FAIL: 0`. Total **220/0** across all four harnesses.
+
 ## 2026-05-27 — `/pre-compact` overnight-autonomy primitives (chain manifest, ledger, banner, halt-advisory)
 
 Layered on top of the same-day canonical-anchor work to give an agent the continuity primitives it
