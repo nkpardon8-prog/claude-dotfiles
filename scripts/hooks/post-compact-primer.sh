@@ -171,7 +171,7 @@ if [ "$RESOLVE_RC" -eq 2 ]; then
     ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-no-tagged-file sid=${SID:-unknown}"
     ctx_gate_log "primer warn reason=sentinel-without-sid-file sid=${SID:-unknown}"
     jq -n \
-      --arg msg "WARNING: A /pre-compact ran for this session (sid=${SID:-unknown}) but the SID-tagged handoff file (CLAUDE.local.${SID:-unknown}.md) is missing. Possible causes: (1) file deleted, (2) cwd changed since /pre-compact, (3) another agent moved it. Ask the user before proceeding. If auto-resume did not fire, run: /post-compact-resume ${SID:-<session_id>}" \
+      --arg msg "${BANNER_PREFIX}WARNING: A /pre-compact ran for this session (sid=${SID:-unknown}) but the SID-tagged handoff file (CLAUDE.local.${SID:-unknown}.md) is missing. Possible causes: (1) file deleted, (2) cwd changed since /pre-compact, (3) another agent moved it. Ask the user before proceeding. If auto-resume did not fire, run: /post-compact-resume ${SID:-<session_id>}" \
       '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
   else
     ctx_gate_log "primer sid=${SID:-unknown} action=skip reason=no-handoff-file-for-sid"
