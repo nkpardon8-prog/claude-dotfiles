@@ -3,7 +3,8 @@
 #
 # Baseline (R2 redesign): ~31 tests after PreToolUse deletion + 7 new nudge-threshold tests.
 # PreToolUse hook deleted (N4 locked decision) — all pretooluse.sh tests removed.
-# New UserPromptSubmit nudge thresholds: 50 SOFT / 75 IMPORTANT / 85 FORCE.
+# UserPromptSubmit nudge thresholds (2026-05-28 tuning): 50 SOFT / 65 IMPORTANT / 75 FORCE.
+# SOFT and IMPORTANT are rate-limited to 5% bucket transitions; FORCE fires every turn.
 #
 # Usage:
 #   bash test-ctx-gate.sh                   # run all tests
