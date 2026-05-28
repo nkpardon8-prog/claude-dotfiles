@@ -89,14 +89,14 @@ TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '65\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1; then
-  pass "3c: submit ctx=65 → soft-zone reminder (50-74% = SOFT, not IMPORTANT)"
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1; then
+  pass "3c: submit ctx=65 → IMPORTANT nudge (2026-05-28 tuning: 65-74% = IMPORTANT)"
 else
-  fail "3c: submit ctx=65 → expected soft-zone reminder, got: $OUT"
+  fail "3c: submit ctx=65 → expected IMPORTANT zone, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
-# 3c-2 — UserPromptSubmit, ctx=74 (highest SOFT value): expect soft advisory (not IMPORTANT)
+# 3c-2 — UserPromptSubmit, ctx=74 (highest IMPORTANT value): expect IMPORTANT nudge
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '74\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
