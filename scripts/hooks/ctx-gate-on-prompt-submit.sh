@@ -39,7 +39,7 @@ SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -cd '
 
 PCT=$(ctx_gate_read_pct "$SID") || { ctx_gate_log "submit sid=$SID action=skip reason=no-ctx-sidecar"; exit 0; }
 
-# FORCE check FIRST (≥85%) — overrides sentinel-fresh skip so the operator sees
+# FORCE check FIRST (≥75% per 2026-05-28 tuning, was 85%) — overrides sentinel-fresh skip so the operator sees
 # context-critical alerts even after /pre-compact has armed.
 # At this level the model MUST invoke /pre-compact before anything else.
 if [ "$PCT" -ge "$CTX_FORCE_PCT" ]; then
