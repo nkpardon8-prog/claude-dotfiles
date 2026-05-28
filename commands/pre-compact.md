@@ -161,6 +161,124 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
    echo "SID=$SID_RESOLVED"
    echo "SID8=$SID8_RESOLVED"
    echo "CANONICAL_ROOT=$CANONICAL_ROOT"
+
+   # ---------------- Chain primitives (overnight-autonomy) ----------------
+   # Read / init the chain manifest and append one ledger line at Step 6A (this block only does
+   # the read-or-init + halt-state inspection; the ledger append happens at Step 6A when ctx_pct,
+   # elapsed, files-touched, and next-action are all known).
+   #
+   # SIGNAL-not-state-lock invariant: chain operations MUST NEVER abort /pre-compact. Wrapped in a
+   # subshell with `set +e`; any failure logs a WARN to stderr and continues.
+   #
+   # The orchestrator MUST set TWO env vars before running this block:
+   #   USER_INPUT_AFTER_HALT=0|1 — set to 1 ONLY if the visible transcript contains a turn with
+   #     role:"user" whose timestamp > the manifest's current `last_heartbeat_at` AND whose body
+   #     is NOT the bare `/pre-compact <args>` slash-command line that triggered THIS run. Agent
+   #     self-talk never clears halt; the invocation itself never clears halt.
+   #   HALT_TRIPPED=0|1 (+ HALT_REASON="<reason>") — set by the Step 4.G halt-advisory detector
+   #     (defined later); 1 means status becomes "halted" for this run.
+   #   AGENT_SUPPLIED_NORTH_STAR="<one-line>" — only used on the FIRST link of a chain when
+   #     tiers 1 (ARGUMENTS) and 2 (fresh brief at $CANONICAL_ROOT/tmp/briefs/) both miss.
+   #     Orchestrator derives this from the in-flight ## Active Task extraction (Step 3.C).
+   . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-chain.sh"
+   ( set +e
+     SID="$SID_RESOLVED"
+     if MANIFEST=$(chain_manifest_read "$SID"); then
+       CHAIN_STATUS=$(printf '%s' "$MANIFEST" | jq -r '.status')
+       if [ "$CHAIN_STATUS" = "halted" ] && [ "${USER_INPUT_AFTER_HALT:-0}" = "1" ]; then
+         CHAIN_STATUS="active"
+       fi
+       if [ "${HALT_TRIPPED:-0}" = "1" ]; then
+         CHAIN_STATUS="halted"
+       fi
+       NEW_SEQ=$(( $(printf '%s' "$MANIFEST" | jq -r '.current_seq') + 1 ))
+       IS_FIRST_RUN=0
+       NORTH_STAR=$(printf '%s' "$MANIFEST" | jq -r '.north_star')
+       NS_SOURCE=$(printf '%s' "$MANIFEST" | jq -r '.north_star_source')
+     else
+       IS_FIRST_RUN=1
+       NEW_SEQ=1
+       CHAIN_STATUS="active"
+       [ "${HALT_TRIPPED:-0}" = "1" ] && CHAIN_STATUS="halted"
+
+       # Tier 1: $ARGUMENTS minus pass-flag tokens (incl. --auto-confirm).
+       STRIPPED=$(printf '%s' "${ARGUMENTS:-}" | tr ' ' '\n' \
+         | grep -vE '^(quick|deep|chunked|no-auto-compact|no-gitignore|auto-confirm|pass=quick|pass=deep|pass=chunked|--quick|--deep|--chunked|--auto-confirm)$' \
+         | tr '\n' ' ' | sed 's/  */ /g;s/^[[:space:]]*//;s/[[:space:]]*$//')
+       NORTH_STAR=""; NS_SOURCE=""
+       if [ -n "$STRIPPED" ]; then
+         NORTH_STAR=$(printf '%s' "$STRIPPED" | cut -c 1-500)
+         NS_SOURCE="arguments"
+       else
+         # Tier 2: fresh brief at canonical anchor's tmp/briefs/. If 2+ briefs are within 6h AND
+         # newest is < 1h newer than runner-up → ambiguous → fall through (don't guess).
+         BRIEF_DIR="$CANONICAL_ROOT/tmp/briefs"
+         if [ -d "$BRIEF_DIR" ]; then
+           BRIEF_LIST=$(find "$BRIEF_DIR" -maxdepth 1 -name '*.md' -type f 2>/dev/null \
+             | while read -r _f; do
+                 _m=$(stat -f %m "$_f" 2>/dev/null || stat -c %Y "$_f" 2>/dev/null || echo 0)
+                 printf '%s\t%s\n' "$_m" "$_f"
+               done | sort -nr)
+           NEWEST_LINE=$(printf '%s\n' "$BRIEF_LIST" | sed -n '1p')
+           SECOND_LINE=$(printf '%s\n' "$BRIEF_LIST" | sed -n '2p')
+           NEWEST_BRIEF=$(printf '%s' "$NEWEST_LINE" | cut -f2-)
+           if [ -n "$NEWEST_BRIEF" ]; then
+             BRIEF_AGE=$(( $(date +%s) - $(printf '%s' "$NEWEST_LINE" | cut -f1) ))
+             AMBIGUOUS=0
+             if [ -n "$SECOND_LINE" ]; then
+               SECOND_AGE=$(( $(date +%s) - $(printf '%s' "$SECOND_LINE" | cut -f1) ))
+               if [ "$SECOND_AGE" -lt 21600 ] && [ "$((SECOND_AGE - BRIEF_AGE))" -lt 3600 ]; then
+                 AMBIGUOUS=1
+               fi
+             fi
+             if [ "$BRIEF_AGE" -ge 0 ] && [ "$BRIEF_AGE" -lt 21600 ] && [ "$AMBIGUOUS" = "0" ]; then
+               NORTH_STAR=$(awk '/^## Direction/{f=1;next} f && /^## /{exit} f' "$NEWEST_BRIEF" \
+                 | tr '\n' ' ' | sed 's/  */ /g;s/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c 1-500)
+               [ -n "$NORTH_STAR" ] && NS_SOURCE="brief"
+             fi
+           fi
+         fi
+         # Tier 3: agent-supplied from in-flight ## Active Task (orchestrator-passed env).
+         if [ -z "$NORTH_STAR" ] && [ -n "${AGENT_SUPPLIED_NORTH_STAR:-}" ]; then
+           NORTH_STAR=$(printf '%s' "$AGENT_SUPPLIED_NORTH_STAR" | cut -c 1-500)
+           NS_SOURCE="agent-supplied"
+         fi
+         # Last-resort: empty string (honest "(north_star: not yet set)" in the banner).
+         [ -z "$NORTH_STAR" ] && NS_SOURCE="unset"
+       fi
+     fi
+
+     # Heartbeat + handoff path use CANONICAL_ROOT + full SID (matches Step 6A's write target).
+     NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+     CHAIN_HANDOFF_PATH="$CANONICAL_ROOT/CLAUDE.local.${SID_RESOLVED}.md"
+
+     if [ "$IS_FIRST_RUN" = "1" ]; then
+       jq -nc \
+         --arg sid "$SID" --arg st "$NOW_ISO" \
+         --arg ns "$NORTH_STAR" --arg src "$NS_SOURCE" \
+         --argjson seq "$NEW_SEQ" \
+         --arg hp "$CHAIN_HANDOFF_PATH" --arg hb "$NOW_ISO" \
+         --arg status "$CHAIN_STATUS" --arg host "$(hostname -s 2>/dev/null || echo unknown)" \
+         '{chain_id:$sid, started_at:$st,
+           north_star:$ns, north_star_source:$src,
+           current_seq:$seq,
+           last_handoff_path:$hp, last_heartbeat_at:$hb,
+           status:$status, host:$host}' \
+         | chain_manifest_write "$SID" || echo "WARN: chain manifest first-write failed; continuing" >&2
+     else
+       printf '%s' "$MANIFEST" | jq -c \
+         --argjson seq "$NEW_SEQ" --arg hp "$CHAIN_HANDOFF_PATH" --arg hb "$NOW_ISO" --arg status "$CHAIN_STATUS" \
+         '.current_seq = $seq
+          | .last_handoff_path = $hp | .last_heartbeat_at = $hb | .status = $status' \
+         | chain_manifest_write "$SID" || echo "WARN: chain manifest merge-write failed; continuing" >&2
+     fi
+
+     echo "CHAIN_SEQ=$NEW_SEQ"
+     echo "CHAIN_STATUS=$CHAIN_STATUS"
+     echo "CHAIN_NORTH_STAR=$NORTH_STAR"
+     echo "CHAIN_FIRST_RUN=$IS_FIRST_RUN"
+   )
+   # End chain primitives — /pre-compact always proceeds regardless of chain-write outcome.
    ```
 
    **Capture `SCRATCH_PATH`, `SID`, `SID8`, and `CANONICAL_ROOT` from this Bash output.** The orchestrator MUST use the SAME captured SID/SID8 literals everywhere downstream (Step 6A filename, Step 6D marker, Step 9.1 cleanup). `CANONICAL_ROOT` is now the **single source for every handoff location** — Steps 6A/6D/8, the `.prev` snapshot, and Step 9.1 paste/migration read it back from the scratch JSON (`jq -r '.canonical_root'`), they do NOT re-derive it via `git rev-parse` (re-deriving in a separate Bash subprocess could diverge if cwd differs — the same class of bug as `$$`-keying). Steps 6A and 6D read from the scratch file using the CAPTURED SID to form the path — they do NOT use `$$` (which is a different PID each call). Do NOT re-derive SID via ac_resolve_session_id in a later step (single-source guarantee per INV-26). The file is auto-cleaned in 3 places: (a) Step 9.1 final-report block (orchestrator `rm -f` using captured SID), (b) 720-minute GC glob `pre-compact-parent-*.json` in `scripts/progress/on-session-start-cleanup.sh`.
