@@ -760,7 +760,7 @@ mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '91\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 ARM_PATH="$TMPHOME/.claude/progress/auto-compact-fakesid.json"
 
-# Step 1: UserPromptSubmit at 91% → expect FORCE advisory (>=85)
+# Step 1: UserPromptSubmit at 91% → expect FORCE advisory (>=75 per 2026-05-28 tuning)
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"fakesid","prompt":"do thing","cwd":"/tmp","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1; then
   pass "§2.5 step 1: submit hook injects FORCE advisory at 91%"
