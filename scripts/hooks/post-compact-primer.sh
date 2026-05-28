@@ -103,7 +103,7 @@ NOTE: $((HEARTBEAT_AGE/60))-minute gap since last /pre-compact — verify a resu
   BANNER_PREFIX="${CHAIN_BANNER}
 
 "
-  unset HAVE_JQ_DATE CID SEQ_ STATUS_ GOAL_ STARTED HBT EPOCH_START EPOCH_HBT S RECOVERED CID8
+  unset CID SEQ_ STATUS_ GOAL_ STARTED HBT EPOCH_START EPOCH_HBT S RECOVERED CID8
 fi
 
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
