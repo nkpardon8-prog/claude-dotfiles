@@ -4,7 +4,36 @@
 > Full project docs live in ./docs/ (start at ./docs/README.md, machine index at ./docs/INDEX.json).
 > This file is the task-specific handoff. Read it first.
 
-**Seq:** {N}    **Parent:** {prior file timestamp or 'none — first in chain'}
+<!--
+HALT-ADVISORY block — included ONLY when the Step 4 detector tripped this run.
+Tone: informational signal, NOT a refusal. The agent has full agency to continue if it
+has a reasonable next step; the block is a heads-up. The brief explicitly rejected
+"NEEDS HUMAN" framing — use "Halt Advisory."
+-->
+<!-- INCLUDE ONLY IF HALT_TRIPPED -->
+## Halt Advisory
+- Detector tripped at {halt timestamp}; reason: {halt reason}.
+- This is informational; the agent has full agency. Most common clear: continue work — the
+  next user reply (any input that isn't the bare `/pre-compact` invocation) will auto-clear
+  the halt on the next `/pre-compact` run.
+- If you are this agent and you read this on resume: surface to the user with the reason
+  and a one-line summary of what was happening, then await direction. Do not silently retry
+  the failing operation.
+
+## Chain Status
+- **Chain:** {chain_id first 8 chars} (full id in `~/.claude/chains/{full sid}.json`)
+- **Started:** {started_at local time} · **Elapsed:** {Hh Mm or Nd Hh Mm}
+- **Link:** {current_seq}
+- **Status:** {active | halted (since {ts}, reason: {reason})}
+- **North star:** {north_star verbatim}  (source: {arguments | brief | agent-supplied | recovered})
+- **Current active task:** {first line of `## Active Task` this session — drift visible if it diverges from the north star}
+
+**Recent chain progress** (last 5 ledger entries from `~/.claude/chains/{sid}.log`, oldest → newest):
+- {ts} seq={N} next={truncated 120 chars} files={N} commits={N} status={S}
+- {ts} seq={N} next={truncated 120 chars} files={N} commits={N} status={S}
+- {ts} seq={N} next={truncated 120 chars} files={N} commits={N} status={S}
+- {ts} seq={N} next={truncated 120 chars} files={N} commits={N} status={S}
+- {ts} seq={N} next={truncated 120 chars} files={N} commits={N} status={S}
 
 ## Mental Model
 [2-3 lines: what this codebase is, what it does, who uses it. Ground post-compact Claude instantly.]
