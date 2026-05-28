@@ -121,15 +121,15 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3c-4 — UserPromptSubmit, ctx=84 (highest IMPORTANT value): expect IMPORTANT nudge
+# 3c-4 — UserPromptSubmit, ctx=84 (well into FORCE zone under 2026-05-28 tuning): expect FORCE nudge
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '84\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1; then
-  pass "3c-4: submit ctx=84 → IMPORTANT nudge (boundary: 84 < 85 FORCE)"
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("WRAP-UP")' >/dev/null 2>&1; then
+  pass "3c-4: submit ctx=84 → FORCE nudge (well into FORCE zone)"
 else
-  fail "3c-4: submit ctx=84 → expected IMPORTANT nudge, got: $OUT"
+  fail "3c-4: submit ctx=84 → expected FORCE nudge (WRAP-UP), got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
