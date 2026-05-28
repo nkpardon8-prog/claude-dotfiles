@@ -790,7 +790,7 @@ else
   fail "§2.5 step 6b: FORCE overrides sentinel-fresh skip" "FORCE should fire even with sentinel armed, got: $OUT"
 fi
 
-# Step 7: PreCompact trigger=auto, ctx=68 (BLOCK zone: 0-74%), no sentinel → should block
+# Step 7: PreCompact trigger=auto, ctx=68 (BLOCK zone: PCT < RELEASE=90%), no sentinel → should block
 rm -f "$ARM_PATH"
 printf '68\n' > "$TMPHOME/.claude/progress/ctx-fakesid.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-precompact-safety.sh <<< '{"session_id":"fakesid","trigger":"auto","hook_event_name":"PreCompact"}' 2>/dev/null)
