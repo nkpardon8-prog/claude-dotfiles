@@ -187,7 +187,7 @@ if [ "$RESOLVE_RC" -eq 3 ]; then
   ctx_gate_log "primer sid=${SID:-unknown} action=refuse reason=sid-known-hardlinked sid=${SID:-unknown}"
   ctx_gate_log "primer warn reason=sid-known-hardlinked sid=${SID:-unknown}"
   jq -n \
-    --arg msg "WARNING: The SID-tagged handoff file (CLAUDE.local.${SID:-unknown}.md) has a hardlink count > 1 (potential filesystem manipulation). Refusing to load. To fix: copy the file to a new path (cp CLAUDE.local.${SID:-unknown}.md CLAUDE.local.${SID:-unknown}.md.new && mv CLAUDE.local.${SID:-unknown}.md.new CLAUDE.local.${SID:-unknown}.md) then re-run: /post-compact-resume ${SID:-<session_id>}" \
+    --arg msg "${BANNER_PREFIX}WARNING: The SID-tagged handoff file (CLAUDE.local.${SID:-unknown}.md) has a hardlink count > 1 (potential filesystem manipulation). Refusing to load. To fix: copy the file to a new path (cp CLAUDE.local.${SID:-unknown}.md CLAUDE.local.${SID:-unknown}.md.new && mv CLAUDE.local.${SID:-unknown}.md.new CLAUDE.local.${SID:-unknown}.md) then re-run: /post-compact-resume ${SID:-<session_id>}" \
     '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
   exit 0
 fi
