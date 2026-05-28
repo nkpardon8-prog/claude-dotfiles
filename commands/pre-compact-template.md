@@ -75,9 +75,16 @@ section entirely if single-thread. Each stream gets its own ### subheading. -->
 [3-8 bullets: what got resolved, what shifted, which open questions got answered, which fix-laters now apply. Compare prior Build Plan / Next Action (held from Step 3.B) against what actually happened this session.]
 
 ## What We Tried
-[Chronological list of every distinct approach taken this session. Each entry:
-- {hypothesis} → {change} → {result with numbers} → {kept | abandoned because ...}
-Most expensive thing for the next session to re-discover. Do not summarize.]
+<!--
+Cross-link propagation: parent-propagated entries (carried forward from prior links) appear
+ABOVE the `<!-- propagation-boundary v1 -->` marker; THIS session's new entries are appended
+BELOW it. Bounded at 20 total with asymmetric retention — when over: drop oldest `kept` first,
+preserve all `abandoned because <reason>` and footgun-tagged entries regardless of age. If
+every entry is abandoned/footgun and the cap is breached, retain ALL (soft target, surface a
+warning in the Step 9.1 report).
+Chronological list of every distinct approach: hypothesis → change → result with numbers → kept | abandoned because …
+-->
+<!-- propagation-boundary v1 -->
 
 <!-- Omit section entirely if not applicable. -->
 ## Live Hypotheses
