@@ -62,6 +62,15 @@ Then stop.
 
 ## Step 2: Read the handoff in full
 
+**Chain context primer:** the SessionStart primer (`post-compact-primer.sh`) now prepends a one-line
+`Chain <id8> | Link <N> | Elapsed <Hh Mm> | Goal: <…> | Status: <s>` banner to its `additionalContext`
+output when a chain manifest exists at `~/.claude/chains/<session_id>.json`. The handoff itself opens
+with a `## Chain Status` section (and a conditional `## Halt Advisory` block above it when the
+narrow halt-advisory detector tripped). The chain primitives are observational only — `Status: halted`
+is a SIGNAL, not a refusal; the agent has full agency to continue if it has a reasonable next step,
+and the halt auto-clears on the next user-input turn (any non-bare-slash-command reply). See
+`commands/pre-compact.md` and `scripts/hooks/lib/handoff-chain.sh` for the full design.
+
 ### Pre-read verification (marker + legacy + stale)
 
 **Path-resolution consistency (R8/R9 — supersedes the R7-INC/Defense-H12 alias model):** the HANDOFF_PATH
