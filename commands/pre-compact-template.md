@@ -128,8 +128,13 @@ Each entry: [Decision] — [reasoning] — [source: conversation | memory | git]
 
 <!-- Omit section entirely if not applicable. -->
 ## Footguns Discovered This Session
-<!-- Operational "do not repeat" — distinct from Rejected Alternatives (design). -->
-- DO NOT [action] — [consequence observed this session]
+<!--
+Operational "do not repeat" — distinct from Rejected Alternatives (design).
+Cross-link propagation: parent footguns appear ABOVE the `<!-- propagation-boundary v1 -->`
+marker; THIS session's new ones appended BELOW. Soft cap at 30 (drop oldest first when over).
+Section retains "This Session" heading for back-compat but body is cross-link cumulative.
+-->
+<!-- propagation-boundary v1 -->
 
 ## User Constraints (This Session)
 - [Constraint stated by the user this session, verbatim or paraphrased]
