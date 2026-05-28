@@ -12,13 +12,18 @@
 _CTX_GATE_CONFIG_LOADED=1
 
 # ---------------------------------------------------------------------------
-# Thresholds (R2 redesign: 50 SOFT / 75 IMPORTANT / 85 FORCE; no HARD block)
+# Thresholds (2026-05-28 tuning: 50 SOFT / 65 IMPORTANT / 75 FORCE — code-quality-first)
 # ---------------------------------------------------------------------------
+# Rationale: LLM accuracy degrades meaningfully past ~70% ctx; original 75/85 thresholds
+# let the most critical wrap-up work happen in the worst-quality zone. With the chain
+# primitives (lib/handoff-chain.sh) making compactions near-lossless, the cost of compacting
+# earlier is small and the quality gain is real. Pre-tuning git tag: ctx-thresholds-pre-tuning-2026-05-28.
+#
 # _OVERRIDE env-var pattern allows tests and users to set deterministic thresholds
 # before sourcing this lib (readonly cannot be re-declared post-source).
-readonly CTX_SOFT_PCT="${CTX_SOFT_PCT_OVERRIDE:-50}"           # suggest /pre-compact at next seam
-readonly CTX_IMPORTANT_PCT="${CTX_IMPORTANT_PCT_OVERRIDE:-75}" # finish current task then /pre-compact
-readonly CTX_FORCE_PCT="${CTX_FORCE_PCT_OVERRIDE:-85}"         # FIRST action MUST be /pre-compact
+readonly CTX_SOFT_PCT="${CTX_SOFT_PCT_OVERRIDE:-50}"           # FYI nudge at next natural seam
+readonly CTX_IMPORTANT_PCT="${CTX_IMPORTANT_PCT_OVERRIDE:-65}" # finish current task then /pre-compact
+readonly CTX_FORCE_PCT="${CTX_FORCE_PCT_OVERRIDE:-75}"         # FIRST action MUST be /pre-compact
 
 # ---------------------------------------------------------------------------
 # Log configuration
