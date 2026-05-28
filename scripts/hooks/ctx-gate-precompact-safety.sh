@@ -73,7 +73,7 @@ fi
 # worst-of-both state. Decision matrix:
 #   - PCT below HANDOFF_AUTOCOMPACT_BYPASS_PCT (90%): BLOCK native compact, advise /pre-compact.
 #     The model still has plenty of context to run /pre-compact via the UserPromptSubmit
-#     FORCE nudge which fires at 85%.
+#     FORCE nudge which fires at 75% (2026-05-28 tuning — lowered from 85% for code-quality-first).
 #   - PCT >= HANDOFF_AUTOCOMPACT_BYPASS_PCT (90%+): RELEASE — let native auto-compact happen
 #     as a degraded fallback. Yes, the handoff is lost, but this is preferable to a bricked
 #     session that cannot make any forward progress.
