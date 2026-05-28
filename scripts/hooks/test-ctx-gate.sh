@@ -102,10 +102,10 @@ TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '74\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1; then
-  pass "3c-2: submit ctx=74 → soft-zone (boundary: 74 < 75 IMPORTANT)"
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1; then
+  pass "3c-2: submit ctx=74 → IMPORTANT (highest IMPORTANT, boundary: 74 < 75 FORCE)"
 else
-  fail "3c-2: submit ctx=74 → expected soft-zone, got: $OUT"
+  fail "3c-2: submit ctx=74 → expected IMPORTANT zone, got: $OUT"
 fi
 rm -rf "$TMPHOME"
 
