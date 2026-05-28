@@ -634,6 +634,58 @@ Then proceed to the SID-tagged write protocol:
 
 **Read the template at `$HOME/.claude-dotfiles/commands/pre-compact-template.md` via the Read tool** and use the returned content as the handoff skeleton. Do not generate the template from memory — Read the file. Replace all placeholder text with session-specific content. Remove sections whose body is empty or placeholder-only (as specified in Step 6C).
 
+**Chain primitives composition (overnight-autonomy):**
+
+1. **`## Chain Status`** (always populated; replaces the legacy `**Seq:** … **Parent:** …` line):
+   Read `~/.claude/chains/<sid>.json` via the `chain_manifest_read` helper (already populated by
+   Step 3.B's chain block). Populate the template's Chain Status block from the manifest fields:
+   `Chain` = first 8 chars of `chain_id`; `Started` = `started_at` local-time; `Elapsed` computed
+   from `now - started_at` (`Hh Mm` or `Nd Hh Mm` if ≥ 24h); `Link` = `current_seq`;
+   `Status` = `status` (annotate with reason if `halted`); `North star` = `north_star` verbatim
+   plus `(source: <north_star_source>)`; `Current active task` = first line of THIS session's
+   `## Active Task` section being composed in this same Step 6A run (drift visible if it
+   diverges from the north star). Append the last 5 ledger entries (one line each) from
+   `~/.claude/chains/<sid>.log` via `tail -n 5`. The ENTIRE Chain Status block is the first
+   body section — above `## Mental Model`.
+
+2. **`## Halt Advisory`** (template comment-marker `<!-- INCLUDE ONLY IF HALT_TRIPPED -->`):
+   Include this block ONLY if `HALT_TRIPPED=1`. Body wording uses HALT_REASON; the framing is
+   informational ("the agent has full agency"). The block goes ABOVE `## Chain Status`.
+
+3. **Cross-link propagation merge** for `## Key Decisions (This Session)`, `## Footguns
+   Discovered This Session`, and `## What We Tried`: in each section, write the parent-propagated
+   entries (extracted in Step 3.B) as a list ABOVE the `<!-- propagation-boundary v1 -->` marker,
+   then this session's NEW entries as a list BELOW it. Apply the cap rules from Step 3.B:
+   - Decisions: 40 (drop oldest `confidence: low` first)
+   - Footguns: 30 (drop oldest first)
+   - What We Tried: 20 (preserve all `abandoned because <reason>` and footgun-tagged; drop
+     oldest `kept` first; if cap can't be met without dropping abandoned/footgun → retain all and
+     note in the Step 9.1 report)
+   Dedup by normalized line. Section headings keep "(This Session)" wording for back-compat
+   even though the body is now cross-link cumulative.
+
+4. **Ledger append at end of Step 6A** (after the Phase 1 Write completes, before Step 6B):
+   compose a single TSV line and append via `chain_ledger_append`. Field positions (locked):
+   ```bash
+   . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-chain.sh"
+   NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   # Elapsed since chain start (read from manifest).
+   _CR=$(jq -r '.canonical_root' "$SCRATCH_PATH")
+   ELAPSED="${CHAIN_ELAPSED:-?}"        # orchestrator computes from manifest started_at vs NOW
+   STATUS_LINE="${CHAIN_STATUS:-active}"
+   NEXT_120=$(printf '%s' "${HANDOFF_NEXT_ACTION:-}" | tr '\t\n' '  ' | cut -c 1-120)
+   NS_120=$(printf '%s' "${CHAIN_NORTH_STAR:-}" | tr '\t\n' '  ' | cut -c 1-120)
+   FILES_N="${CHAIN_FILES_N:-0}"        # orchestrator: count of files touched this session
+   COMMITS_N="${CHAIN_COMMITS_N:-0}"    # orchestrator: git rev-list --count <last>..HEAD
+   CTX_PCT="${CTX_AFTER:-?}"            # captured at marker append (Step 6D)
+   chain_ledger_append "$SID_RESOLVED" "$NOW_ISO" \
+     "seq=${CHAIN_SEQ}" "ctx_pct=${CTX_PCT}" "elapsed=${ELAPSED}" "status=${STATUS_LINE}" \
+     "next=${NEXT_120}" "files=${FILES_N}" "commits=${COMMITS_N}" \
+     "north_star_first_120=${NS_120}" \
+     || echo "WARN: chain ledger append failed; continuing" >&2
+   ```
+   Ledger append MUST NEVER abort `/pre-compact` — log and continue.
+
 ### Step 6B: Phase 2 — Gap Fill
 
 Read the file you just wrote back. Scan the conversation for:
