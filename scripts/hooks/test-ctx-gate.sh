@@ -173,7 +173,9 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3c-8 — UserPromptSubmit, ctx=65, sentinel ARMED and fresh: SOFT is SUPPRESSED by sentinel-fresh skip
+# 3c-8 — UserPromptSubmit, ctx=65, sentinel ARMED and fresh: IMPORTANT is SUPPRESSED by sentinel-fresh skip
+# Under 2026-05-28 tuning ctx=65 is IMPORTANT (not SOFT); sentinel-fresh suppresses both SOFT and
+# IMPORTANT alike (FORCE is the only nudge that overrides sentinel-fresh skip).
 TMPHOME=$(mktemp -d)
 mkdir -p "$TMPHOME/.claude/progress" && chmod 700 "$TMPHOME/.claude/progress"
 printf '65\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
@@ -181,7 +183,7 @@ printf '{"schema_version":3,"target_tty":"/dev/ttys001","originating_command":"p
   > "$TMPHOME/.claude/progress/auto-compact-foo.json"
 OUT=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 if [ -z "$OUT" ]; then
-  pass "3c-8: submit ctx=65 sentinel-fresh → SOFT suppressed by sentinel-fresh skip"
+  pass "3c-8: submit ctx=65 sentinel-fresh → IMPORTANT suppressed by sentinel-fresh skip"
 else
   fail "3c-8: submit ctx=65 sentinel-fresh → expected empty (skip), got: $OUT"
 fi
