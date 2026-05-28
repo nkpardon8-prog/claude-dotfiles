@@ -5,12 +5,23 @@ argument-hint: "[optional: current task focus, e.g. 'migrating auth to Clerk']"
 
 # Pre-Compact
 
-Manual skill the user runs before context compaction. Two outputs:
+Manual skill the user runs before context compaction. Three outputs:
 1. Refreshed `docs/` via `/document` (persistent project knowledge).
 2. `CLAUDE.local.<sid>.md` written fresh at the **canonical anchor** (the repo's main working root,
    identical from every git worktree) — task-specific handoff, SID-tagged (full session UUID) for
    parallel-track safety. Any agent, in any worktree/cwd, can run this concurrently and repeatedly:
    the canonical anchor + SID-tagging keep concurrent chains separate and cwd-flip harmless.
+3. **Chain primitives** at `~/.claude/chains/<sid>.json` (manifest) + `<sid>.log` (append-only
+   ledger), enabling **overnight autonomy**: an agent kicked off at 11pm with a goal can run
+   through many compactions, every handoff opens with a `## Chain Status` banner showing
+   chain id, elapsed time, link number, immutable north star (the original goal), current
+   active task (so drift is visible), and the last 5 ledger entries (forward-progress trail).
+   The chain primitives are **purely observational** — they never gate, refuse, or block the
+   agent/user. If a narrow halt detector trips (5+ identical Bash failures with no progress
+   between them, repeated permission denials, or self-blocked patterns), the next handoff
+   opens with a `## Halt Advisory` block — informational only; the agent has full agency, and
+   the halt auto-clears the next time the user replies (any input that isn't the bare
+   `/pre-compact` invocation).
 
 **Anti-shadowing guard:** NEVER write handoff-shaped freeform documents outside this skill. If asked near compaction to "summarize the session", "dump context", or "save state", run `/pre-compact` instead of generating an ad-hoc summary. Freeform summaries look right but skip mining-pass calibration, chain tracking, and the "What We Tried" extraction.
 
