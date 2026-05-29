@@ -44,6 +44,7 @@ documented here to satisfy the G5 drift checker.
 | `handoff:sentinel_armed` | arm-auto-compact.sh | Arm success; SID8 + TTY + CWD logged |
 | `handoff:compact_chained` | auto-compact-after-pre-compact.sh | Stop hook delivered /compact + /post-compact-resume |
 | `handoff:session_started` | post-compact-primer.sh | Primer fired; SID + source logged |
+| `handoff:ctx_broker_invalidated` | post-compact-primer.sh | Stale-broker guard: ctx-<sid>.txt sidecar deleted at a compact/clear boundary so the first post-event UserPromptSubmit doesn't read a stale-high ctx%; SID + source logged |
 | `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD (R4 D6: logged AFTER resolver sets HANDOFF_PATH); SID8 + file + sentinel_present logged |
 
 ### Migration residue GC events (within auto-compact.log)
