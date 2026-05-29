@@ -46,7 +46,11 @@ add a new violation.
   are signal: extract intent, don't expect a clean spec, ask when the core ask is ambiguous.
 - Watch your own context budget. The statusline brokers live context-used % to
   `~/.claude/progress/ctx-<sid>.txt` (0–100; `<sid>` = this session's id, the basename of its
-  transcript `.jsonl`). Past ~75%, checkpoint with `/pre-compact` before auto-compaction wipes context.
+  transcript `.jsonl`). Checkpoint with `/pre-compact` at natural seams as context climbs (and
+  by ~75% at the latest) before auto-compaction wipes context. Note: the sidecar is intentionally
+  invalidated at a compact/clear boundary, and a missing value means "context unknown," NOT high —
+  right after a compaction your real context is genuinely low, so distrust any high reading on the
+  first post-compact turn.
 - Spec → read → verify. Pull the relevant doc before guessing at unfamiliar behavior. `/script`
   before high-stakes, hard-to-reverse work (migrations, external writes, deploys).
 
