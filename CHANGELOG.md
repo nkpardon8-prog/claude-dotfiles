@@ -2,6 +2,54 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-28 — ctx-gate follow-ups: seam-opportunistic SOFT + stale-broker-after-compact fix + statusline SoT sync
+
+Two field-reported failures from the threshold tuning earlier today, plus a latent landmine found
+while debugging the second. All three are coupled: the SOFT fix makes the agent checkpoint more
+readily on seam signals, which *amplifies* the harm of a stale-high context reading — so the
+broker fix had to ship in the same commit, not after.
+
+- **Part A — seam-opportunistic SOFT (regression fix).** The morning's tuning added an absolute
+  "Act only on IMPORTANT or FORCE" clause to the SOFT message (`ctx-gate-on-prompt-submit.sh:111`)
+  and the interpretation rule (`commands/pre-compact.md` Rules). It contradicted the same message's
+  own seam guidance and, being absolute, won — so an agent at a perfect seam in the SOFT band
+  (clean tree, merged PR, about to start heavy work) did NOT checkpoint and pushed into heavy work,
+  guaranteeing a forced checkpoint mid-task past FORCE. Root cause: we over-corrected the *repetition*
+  complaint (correctly fixed by the 5% rate-limit) with a clause that also killed legitimate
+  seam-checkpointing. New SOFT message + interpretation rule are **seam-opportunistic**: don't
+  interrupt mid-task, don't surface ctx% as chatter, but checkpoint NOW if at a natural seam —
+  including *about to start a large context-heavy task* (the strongest seam: starting heavy work in
+  SOFT guarantees crossing FORCE mid-run). Thresholds, rate-limit, FORCE/IMPORTANT messages unchanged.
+- **Part B — stale context% after compaction (URGENT, wasted real work).** The ctx broker sidecar
+  `~/.claude/progress/ctx-<sid>.txt` is written by the statusline from the harness context-used %,
+  and the writer preserves last-known-good on transient empty reads. `/compact` preserves the
+  session_id, so post-compaction the same-named sidecar holds the PRE-compaction value until the
+  statusline's next render — and the first post-compact `UserPromptSubmit` reads it DETERMINISTICALLY,
+  firing a false IMPORTANT/FORCE nudge. Field agent at ~14% real context saw "69% — IMPORTANT",
+  trusted it, and prematurely ran `/pre-compact` again with most of the budget free. **Fix:**
+  `post-compact-primer.sh` (the SessionStart hook) now deletes the sidecar on `source=compact|clear`
+  (the two boundaries where context drops sharply while the sidecar persists), so the reader fails
+  open (silent) until a fresh value is written. Deletion — not an mtime-staleness skip — because the
+  staleness is **semantic, not temporal**: a fast compact yields a young-but-stale sidecar an mtime
+  check would miss; deletion is age-independent. `resume`/`startup` are NOT invalidated (their sidecar
+  reflects real current context, or the SID is new). New log verb `handoff:ctx_broker_invalidated`
+  registered in `LOG_VERBS.md`. Agent-facing prior added to `templates/CLAUDE.md`: a missing sidecar
+  means "context unknown," not high — distrust any high reading on the first post-compact turn.
+- **Part C — statusline source-of-truth sync (latent landmine).** Found while debugging Part B: the
+  deployed `~/.claude/statusline.sh` contains the ctx-gate broker-write block (added 2026-05-23) but
+  the dotfiles source-of-truth `scripts/statusline.sh` was never back-ported (0 `CTX_BROKER` refs vs
+  the deployed 8). The repo's source-of-truth was missing the writer the entire ctx-gate system
+  depends on — a future manual re-deploy from dotfiles would have silently killed ctx-gate. Block
+  back-ported verbatim; `grep -c CTX_BROKER scripts/statusline.sh` now returns 8. Deployed file left
+  untouched (it's the working artifact). NOTE: the two statusline files are hand-maintained with no
+  automated sync, so this divergence can recur — a deploy/diff-check step is a worthwhile follow-up.
+- **Test coverage:** `test-ctx-gate.sh` 135 → 137. New `3d-1` (source=compact deletes stale sidecar →
+  subsequent submit silent) and `3d-2` (source=resume PRESERVES sidecar). Test `3c-10` strengthened
+  with a regression lock: the SOFT message must contain "act at the next seam" and must NOT contain
+  "Act only on" (catches a future revert of Part A). All four harnesses green: **137 / 4 / 71 / 10 = 222/0.**
+- **Rollback:** covered by the existing `ctx-thresholds-pre-tuning-2026-05-28` tag (reverts the whole
+  2026-05-28 ctx-gate line); `git revert <sha>` for a surgical undo of just this combined ship.
+
 ## 2026-05-28 — ctx-gate threshold tuning (50 SOFT / 65 IMPORTANT / 75 FORCE) + 5% bucket rate-limit
 
 LLM accuracy degrades meaningfully past ~70% ctx, but the original 75/85 thresholds put the most
