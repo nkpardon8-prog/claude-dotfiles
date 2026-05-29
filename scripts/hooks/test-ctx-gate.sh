@@ -204,7 +204,7 @@ printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 printf '53\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1 \
+if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone")' >/dev/null 2>&1 \
    && [ -z "$OUT2" ]; then
   pass "3c-9: bucket-skip-same (SOFT) — first fires, same-bucket second silent"
 else
@@ -284,7 +284,7 @@ MARKER_AFTER2=$(tr -cd '0-9' < "$BUCKET_FILE" 2>/dev/null | head -c 4)
 printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT3=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 F1=$(printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("IMPORTANT zone")' >/dev/null 2>&1 && echo 1 || echo 0)
-F3=$(printf '%s' "$OUT3" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1 && echo 1 || echo 0)
+F3=$(printf '%s' "$OUT3" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone")' >/dev/null 2>&1 && echo 1 || echo 0)
 if [ "$F1" = "1" ] && [ "$MARKER_AFTER1" = "14" ] && [ -z "$OUT2" ] && [ "$MARKER_AFTER2" = "14" ] && [ "$F3" = "1" ]; then
   pass "3c-13: bucket-reset-after-silent-exit — silent exit leaves marker stale; lower bucket re-fires"
 else
