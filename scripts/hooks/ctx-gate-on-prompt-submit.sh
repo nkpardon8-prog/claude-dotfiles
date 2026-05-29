@@ -6,7 +6,7 @@
 #
 # Threshold model (2026-05-28 tuning — code-quality-first):
 #   <50%   → silent (no output)
-#   50-64% → SOFT nudge (FYI; do not interrupt active work — see Rules in pre-compact.md)
+#   50-64% → SOFT nudge (seam-opportunistic; checkpoint at a natural seam, don't interrupt mid-task)
 #   65-74% → IMPORTANT nudge (finish current task, then invoke /pre-compact)
 #   ≥75%   → FORCE nudge (FIRST action MUST be Skill(pre-compact) — context-critical)
 #
