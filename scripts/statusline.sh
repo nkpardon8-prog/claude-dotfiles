@@ -332,4 +332,34 @@ PY
 fi
 
 [ -n "$LINE2" ] && printf "%b\n" "$LINE2"
+
+# ── 8. ctx-gate broker write (per plan 2026-05-23) ─────────────────────────────
+# Writes the harness-supplied context % to ~/.claude/progress/ctx-<sid>.txt so
+# the ctx-gate hooks can read it without walking the transcript themselves.
+# Side-effect only; never emits to stdout (would corrupt statusline). All errors
+# silenced — broker failure must not abort statusline rendering.
+if [ -n "$SAFE_SID" ]; then
+  CTX_BROKER_DIR="$HOME/.claude/progress"
+  CTX_BROKER_FILE="$CTX_BROKER_DIR/ctx-${SAFE_SID}.txt"
+  if [ ! -d "$CTX_BROKER_DIR" ]; then
+    mkdir -p "$CTX_BROKER_DIR" 2>/dev/null || true
+    chmod 700 "$CTX_BROKER_DIR" 2>/dev/null || true
+  fi
+  # Validate CTX_PCT is purely numeric 0-100 before writing (per codex-review Depth):
+  # `printf '%.0f'` can crash on non-numeric input, leaving CTX_PCT empty; previous behavior
+  # was to delete the sidecar on empty, which silently disabled all gate hooks until next render.
+  # New behavior: only write when CTX_PCT is a valid integer 0-100; otherwise PRESERVE
+  # the existing sidecar (last-known-good) so transient render glitches don't disable the gate.
+  case "$CTX_PCT" in
+    ''|*[!0-9]*) : ;;  # empty or non-numeric — keep last-known-good
+    *)
+      if [ "$CTX_PCT" -ge 0 ] 2>/dev/null && [ "$CTX_PCT" -le 100 ] 2>/dev/null; then
+        CTX_BROKER_TMP="${CTX_BROKER_FILE}.tmp.$$"
+        ( umask 077 && printf '%s\n' "$CTX_PCT" > "$CTX_BROKER_TMP" ) 2>/dev/null || true
+        { [ -f "$CTX_BROKER_TMP" ] && mv "$CTX_BROKER_TMP" "$CTX_BROKER_FILE" 2>/dev/null; } || true
+      fi
+      ;;
+  esac
+fi
+
 exit 0
