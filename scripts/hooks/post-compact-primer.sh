@@ -47,6 +47,27 @@ export PRIMER_SESSION_ID
 # B20: unified handoff audit trail — log session start event.
 handoff_log "session_started sid=${SID:-unknown} source=${SOURCE:-unknown}"
 
+# Stale-broker guard (2026-05-28): the ctx broker sidecar ~/.claude/progress/ctx-<sid>.txt is
+# written by the statusline from the harness context-used %, and the writer PRESERVES last-known-good
+# when the harness value is briefly empty (so transient render glitches don't dark the gate). /compact
+# preserves the session_id, so post-compaction the same-named sidecar still holds the PRE-compaction
+# value until the statusline's next render. The first post-compact UserPromptSubmit reads that stale-high
+# value DETERMINISTICALLY and fires a false IMPORTANT/FORCE nudge → premature /pre-compact with most of
+# the budget free. Invalidate the sidecar here so the reader fails open (silent) until a fresh value is
+# written. Only compact|clear — the two sources where context drops sharply while the sidecar persists;
+# resume/startup keep their sidecar (it reflects real current context, or the SID is new so no stale file).
+# Placed BEFORE the chain-banner and CWD-validation early-exits (lines 50+/115+) so invalidation is
+# unconditional. Staleness here is SEMANTIC not temporal — a fast compact yields a young-but-stale
+# sidecar an mtime check would miss — so deletion (age-independent) is the correct mechanism, not mtime.
+if [ -n "${SID:-}" ]; then
+  case "${SOURCE:-}" in
+    compact|clear)
+      rm -f "$HOME/.claude/progress/ctx-${SID}.txt" 2>/dev/null || true
+      handoff_log "ctx_broker_invalidated sid=${SID} source=${SOURCE}"
+      ;;
+  esac
+fi
+
 # Chain banner (overnight-autonomy): prepend the chain's situation to every additionalContext
 # emission so the agent reads "Chain X | Link N | Elapsed Hh Mm | Goal: … | Status: …" first.
 # Manifest absence = empty banner, fall through silently (every fresh session starts here).
