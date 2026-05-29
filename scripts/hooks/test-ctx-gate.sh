@@ -293,6 +293,47 @@ fi
 rm -rf "$TMPHOME"
 
 # ---------------------------------------------------------------------------
+# §3d — stale-broker invalidation at compact boundary (post-compact-primer.sh)
+# Bug (2026-05-28): /compact preserves session_id, so the ctx-<sid>.txt sidecar holds the
+# PRE-compaction % until the statusline re-renders. The first post-compact UserPromptSubmit reads
+# that stale-high value → false IMPORTANT/FORCE nudge → premature /pre-compact. The primer now
+# deletes the sidecar on source=compact|clear so the reader fails open (silent) until a fresh write.
+# ---------------------------------------------------------------------------
+echo ""
+echo "== §3d stale-broker invalidation tests =="
+
+# 3d-1 (compact → sidecar invalidated → submit silent): stale ctx-foo.txt=69; primer source=compact
+# must delete it; a subsequent submit-hook invocation must then emit nothing (fail-open silent).
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" "$TMPHOME/.claude/logs" "$TMPHOME/repo"
+chmod 700 "$TMPHOME/.claude/progress"
+printf '69\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+HOME="$TMPHOME" ./post-compact-primer.sh <<< '{"session_id":"foo","source":"compact","cwd":"'"$TMPHOME"'/repo","hook_event_name":"SessionStart"}' >/dev/null 2>&1
+SIDECAR_GONE=$([ ! -e "$TMPHOME/.claude/progress/ctx-foo.txt" ] && echo 1 || echo 0)
+OUTSUB=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
+if [ "$SIDECAR_GONE" = "1" ] && [ -z "$OUTSUB" ]; then
+  pass "3d-1: source=compact deletes stale sidecar; subsequent submit is silent (fail-open)"
+else
+  fail "3d-1: compact-invalidates-sidecar" "sidecar_gone=$SIDECAR_GONE OUTSUB='$OUTSUB'"
+fi
+rm -rf "$TMPHOME"
+
+# 3d-2 (resume → sidecar PRESERVED): a resumed session's sidecar reflects real current context and
+# must NOT be deleted. Same setup with source=resume; the value 69 must survive.
+TMPHOME=$(mktemp -d)
+mkdir -p "$TMPHOME/.claude/progress" "$TMPHOME/.claude/logs" "$TMPHOME/repo"
+chmod 700 "$TMPHOME/.claude/progress"
+printf '69\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
+HOME="$TMPHOME" ./post-compact-primer.sh <<< '{"session_id":"foo","source":"resume","cwd":"'"$TMPHOME"'/repo","hook_event_name":"SessionStart"}' >/dev/null 2>&1
+SIDECAR_VAL=$(tr -cd '0-9' < "$TMPHOME/.claude/progress/ctx-foo.txt" 2>/dev/null | head -c 4)
+if [ "$SIDECAR_VAL" = "69" ]; then
+  pass "3d-2: source=resume PRESERVES sidecar (only compact|clear invalidate)"
+else
+  fail "3d-2: resume-preserves-sidecar" "SIDECAR_VAL='$SIDECAR_VAL' (expected 69)"
+fi
+rm -rf "$TMPHOME"
+
+# ---------------------------------------------------------------------------
 # §3i/3i-bis/3j/3k — PreCompact safety-net tests
 # ---------------------------------------------------------------------------
 echo ""
