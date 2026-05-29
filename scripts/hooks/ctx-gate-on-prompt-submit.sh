@@ -108,7 +108,7 @@ if [ "$PCT" -ge "$CTX_IMPORTANT_PCT" ]; then
   ctx_gate_log "submit sid=$SID pct=$PCT bucket=$BUCKET action=important-nudge"
 # SOFT zone: FYI reminder; the agent should NOT interrupt active work for this.
 else
-  MSG="Context at ${PCT}% — soft-zone reminder (FYI). Consider running Skill(pre-compact) at the next natural seam (post-review, post-commit, end-of-phase). Do NOT interrupt active work for this message; do not surface ctx % to the user; do not start /pre-compact in response. Act only on IMPORTANT or FORCE."
+  MSG="Context at ${PCT}% — soft-zone (FYI; don't surface ctx% to the user, don't interrupt mid-task). If you're at a natural seam — just committed/merged, finished a phase, or about to start a large context-heavy task — checkpoint NOW with Skill(pre-compact): a clean tree saves losslessly, and starting heavy work here forces a checkpoint mid-task past ${CTX_FORCE_PCT}%. Otherwise carry on and act at the next seam."
   ctx_gate_log "submit sid=$SID pct=$PCT bucket=$BUCKET action=soft-nudge"
 fi
 
