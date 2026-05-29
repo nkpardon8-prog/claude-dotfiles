@@ -219,9 +219,16 @@ printf '51\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT1=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
 printf '55\n' > "$TMPHOME/.claude/progress/ctx-foo.txt"
 OUT2=$(HOME="$TMPHOME" ./ctx-gate-on-prompt-submit.sh <<< '{"session_id":"foo","prompt":"hi","hook_event_name":"UserPromptSubmit"}' 2>/dev/null)
-if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1 \
-   && printf '%s' "$OUT2" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone reminder")' >/dev/null 2>&1; then
-  pass "3c-10: bucket-fire-on-transition (SOFT) — both 51 and 55 emit SOFT (full message, not just non-empty)"
+# Seam-opportunistic SOFT regression lock (2026-05-28): OUT1 must (a) be a SOFT message,
+# (b) contain the new seam-checkpointing guidance ("act at the next seam"), and (c) NOT contain
+# the removed over-constraint "Act only on" (IMPORTANT/FORCE). (c) is the load-bearing assertion —
+# it fails if a future change re-introduces "Act only on IMPORTANT or FORCE", which silently killed
+# seam-checkpointing in the field.
+if printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone")' >/dev/null 2>&1 \
+   && printf '%s' "$OUT2" | jq -e '.hookSpecificOutput.additionalContext | contains("soft-zone")' >/dev/null 2>&1 \
+   && printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("act at the next seam")' >/dev/null 2>&1 \
+   && ! printf '%s' "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | contains("Act only on")' >/dev/null 2>&1; then
+  pass "3c-10: bucket-fire-on-transition (SOFT) — both fire; seam guidance present; 'Act only on' over-constraint absent"
 else
   fail "3c-10: bucket-fire-on-transition (SOFT)" "OUT1='$OUT1' OUT2='$OUT2'"
 fi
