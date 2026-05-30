@@ -72,7 +72,11 @@ supabase_branch_ladder():
 
 These have NO vanilla-Postgres equivalent. Portable SQL checks (Q1.1–Q4.2) are dispatched from `core.md` via `mcp__supabase__execute_sql`; do not re-list them here.
 
+**`--only` gating applies to every platform module below** (see `database-audit.md` Platform-modules mapping). Each section is annotated with its governing `--only` token. If `--only` is set and does NOT include that token, the section is SKIPPED and issues NO `execute_sql` / advisor / control-plane call for it. When `--only` is unset, all run.
+
 ### Module 2 (RLS) — Supabase severity escalation + anon classification
+
+`--only` token: **`rls`**.
 
 - **RLS-off severity = CRITICAL.** Q2.1 (RLS off on public tables) is the portable query in `core.md`; its portable floor is the exposed-API context. In the Supabase context the `public` schema is reachable through the auto-generated PostgREST API as the `anon` role, so RLS-off escalates to **CRITICAL** here (this is the Supabase context the `core.md` note refers to).
 - **anon/RLS classification heuristics (Q2.3 results).** Apply to the rows returned by the portable Q2.3 policy scan — these heuristics depend on the Supabase `anon` role:
