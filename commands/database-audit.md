@@ -109,7 +109,7 @@ Invoke the **generalized provider-dispatched prod guard** from `guards.md`, disp
 - **neon** → `neon_current_is_nondefault_branch_positively()` (`providers/neon.md`, via metadata-only `describe_project`). NOTPROD only on positive non-default identification; MCP absent / indeterminate / any error ⇒ PROD (safe default).
 - **postgres** → always PROD (no control plane).
 
-**If PROD and `--env=prod` was NOT passed:** print the `guards.md` stop/resume prompt (with the fired signal), run ONLY the zero-data-touch modules (filesystem / grep / secret-scan / migration-on-disk — these touch no DB), then **STOP before opening ANY core SQL session / `execute_sql` / `run_sql`.** Do not proceed to Phases 1–5 SQL. Honor the documented resume paths (`--env=prod` re-invoke, or the exact phrase `proceed on prod`).
+**If PROD and `--env=prod` was NOT passed:** print the `guards.md` stop/resume prompt (with the fired signal), run ONLY the zero-data-touch modules via `guards.md` `run_filesystem_only_modules` — i.e. `core.md` "Module FS" (FS.1 repo secret scan, FS.2 tracked-files scan, FS.3 `.env`-tracked check, FS.4 seed-data check), plus migration-on-disk drift and the Step 0a.5 `.gitignore tmp/` check (these touch no DB) — then **STOP before opening ANY core SQL session / `execute_sql` / `run_sql`.** Do not proceed to Phases 1–5 SQL. Honor the documented resume paths (`--env=prod` re-invoke, or the exact phrase `proceed on prod`).
 
 Once the guard discharges (NOTPROD, or `--env=prod`/`proceed on prod` confirmed), echo the resolved-state line — it MUST explicitly carry the resolved provider, the fired prod-signal, and `guards loaded`:
 
