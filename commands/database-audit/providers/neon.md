@@ -114,6 +114,8 @@ Neon supported major versions: `['14', '15', '16', '17']`. List last updated: `2
 
 ### Neon-only SQL-checkable (via `run_sql` / psql — vetted SELECTs, gated behind the prod guard)
 
+`--only` tokens (per check): **Neon Auth + Neon RLS (`pg_session_jwt`) → `security`**; **Neon Data API enabled-probe → `rls`** (so `--only=rls` still issues the Data-API probe feeding the Q2.1→CRITICAL escalation). If the governing token is absent from `--only`, that check issues no SELECT.
+
 - **Neon Auth.** If a `neon_auth` schema exists (Neon Auth syncs user records there), inventory it → INFO. Tables under `neon_auth` holding PII feed the portable Q3.1 PII inventory.
 - **Neon RLS.** Neon's RLS stack uses the `pg_session_jwt` extension plus `auth.user_id()` / `auth.session()` helpers and the `authenticated` / `anonymous` roles. If `pg_session_jwt` is installed (vetted SELECT against `pg_extension`), apply Neon-flavored RLS classification to the portable Q2.3 policy rows:
   - policy granted to `anonymous` for `INSERT`/`UPDATE`/`DELETE` → HIGH
