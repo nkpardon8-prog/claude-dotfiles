@@ -111,13 +111,13 @@ Invoke the **generalized provider-dispatched prod guard** from `guards.md`, disp
 
 **If PROD and `--env=prod` was NOT passed:** print the `guards.md` stop/resume prompt (with the fired signal), run ONLY the zero-data-touch modules (filesystem / grep / secret-scan / migration-on-disk — these touch no DB), then **STOP before opening ANY core SQL session / `execute_sql` / `run_sql`.** Do not proceed to Phases 1–5 SQL. Honor the documented resume paths (`--env=prod` re-invoke, or the exact phrase `proceed on prod`).
 
-Once the guard discharges (NOTPROD, or `--env=prod`/`proceed on prod` confirmed), echo:
+Once the guard discharges (NOTPROD, or `--env=prod`/`proceed on prod` confirmed), echo the resolved-state line — it MUST explicitly carry the resolved provider, the fired prod-signal, and `guards loaded`:
 
 ```
-preflight loaded + guard resolved (provider=<provider>, prod-signal=<which signal fired>) — beginning SQL phases
+preflight loaded + guard resolved (provider=<provider>, prod-signal=<which signal fired>, guards loaded) — beginning SQL phases
 ```
 
-This line MUST print before the first data-plane query.
+**Checkable precondition (assertion, not just prose):** Before dispatching ANY core or platform SQL (`psql` core session / `execute_sql` / `run_sql` / any control-plane probe), confirm this exact resolved-state line was emitted with all three fields populated. If it was not emitted, **halt** — do not issue any data-plane query.
 
 ---
 
