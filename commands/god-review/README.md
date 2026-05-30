@@ -122,7 +122,7 @@ With stack-gating the typical round is ~36-40 agents:
 
 **24h cap = 48–96 rounds = potentially 2,200–4,400 agent invocations.**
 
-With `--ruthless`: up to 55 agents per round instead of 54. Adjust cost projections accordingly — a 24h `--ruthless` run may invoke ~100–200 additional agents over the session vs. a non-ruthless run.
+With `--ruthless`: up to 57 agents per round instead of 56. Adjust cost projections accordingly — a 24h `--ruthless` run may invoke ~100–200 additional agents over the session vs. a non-ruthless run.
 
 To halve round time: set `CODEX_HOME_1` and `CODEX_HOME_2` environment variables to two separate `~/.codex` profile directories. The `lib/codex-invoke.sh` script alternates between them, eliminating most serialization overhead.
 
