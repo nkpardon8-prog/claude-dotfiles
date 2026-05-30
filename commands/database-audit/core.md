@@ -143,7 +143,7 @@ FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
 WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity = false;
 ```
 
-Severity: CRITICAL.
+Severity floor: CRITICAL (exposed-API context); provider adapter sets final severity — see the section note above (Supabase/Neon-Data-API → CRITICAL; vanilla Postgres with no anon role / public API → HIGH).
 
 ### Q2.2 — RLS on but no policies
 
