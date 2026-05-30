@@ -208,7 +208,7 @@ Skip this phase if `--only` is set and does not include `security`.
 
 On any MCP/SQL error: emit `[INFO] Module 3 — {tool} unavailable: {error}` and continue.
 
-> Provider-specific security steps (Supabase security advisors, repo grep / tracked-file secret scans, risky-extension and pg_cron inventory, .gitignore secret-file check) live in `providers/*.md`. Only the portable SQL checks are below.
+> Provider-specific security steps (Supabase security advisors, risky-extension and pg_cron inventory) live in `providers/*.md`. The provider-agnostic FILESYSTEM security checks (repo secret scan, tracked-files secret scan, .env-tracked check) are NOT here — they are zero-data-touch and live in the **Filesystem security** module at the bottom of this file (so they also run in the prod-stop path). Only the portable SQL checks are below.
 
 ### Q3.1 — PII inventory (PII-sensitive columns with anon SELECT access)
 
