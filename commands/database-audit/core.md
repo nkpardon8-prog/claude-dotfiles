@@ -267,3 +267,65 @@ SELECT
 ```
 
 Severity: always MEDIUM. Body includes: `"active N of max M (N/M%)"`. Severity never changes based on the ratio — ratio goes in the body only.
+
+---
+
+## Module FS — Filesystem security (zero-data-touch; runs in prod-stop path too)
+
+These checks are **provider-agnostic**, touch **no database** (only the local filesystem + read-only git), and are exactly the "filesystem / grep / secret-scan / migration-on-disk" modules the prod guard's `run_filesystem_only_modules` promises in `guards.md`. They run in BOTH paths:
+
+- **Normal path:** gated by `--only` as noted per check below (secret/.env checks under `security`, seed-data under `security`, env-drift under `prod`). When `--only` is unset, all run.
+- **Prod-stop path:** when the prod guard fires PROD without `--env=prod`, `guards.md` `run_filesystem_only_modules` invokes FS.1, FS.2, FS.3, FS.4 (and migration-on-disk drift + the `.gitignore tmp/` check) BEFORE the STOP — these are the only checks allowed to run against an unconfirmed prod, because they issue zero data-plane SQL.
+
+**Read-only constraint:** the only `git` subcommands permitted here are `git ls-files`, `git grep`, and `git check-ignore`. No mutating git. No filesystem writes outside `./tmp/db-audit/`.
+
+**Portability constraint (macOS/Darwin):** there is NO GNU `xargs -r` on Darwin. Never rely on `xargs -r`. To no-op cleanly when there are no files / no matches, guard explicitly:
+
+```bash
+files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l PATTERN
+```
+
+or use `git grep -l PATTERN` (which exits non-zero with no output on no match — a clean no-op).
+
+**Redaction:** any matched secret VALUE reported by these checks is redacted per `redaction.md` (rules 1 and 4) — never echo a raw secret value or connection string. Report file names, key names, and `[REDACTED: …]` placeholders only.
+
+### FS.1 — Repo secret scan (`--only=security`)
+
+Grep the working tree for leaked secrets. **Exclude** these paths/globs:
+`node_modules/`, `.git/`, `.next/`, `.nuxt/`, `dist/`, `build/`, `out/`, `.vercel/`, `.netlify/`, `storybook-static/`, `.turbo/`, `coverage/`, `supabase/.branches/`, `tmp/`, `*.lock`.
+
+Patterns (provider-agnostic — Supabase keys AND generic connection-string / service-role leakage):
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `service_role`
+- `DATABASE_URL` and connection-string shapes (`postgres://`, `postgresql://`) — generic, so this is not Supabase-only
+- `(=|:|"|')eyJ[A-Za-z0-9_-]{20,}` (JWT in assignment/string context — tightened to avoid base64 false positives)
+
+Classification:
+- Match in a **client-reachable** path (`src/`, `app/`, `components/`, `pages/`, `public/`, `.env.local`) → **CRITICAL** (value redacted per `redaction.md`).
+- Match in `server/`, `api/`, `edge/`, `scripts/` → **INFO** (expected server-side usage).
+
+### FS.2 — Tracked-files secret scan (`--only=security`)
+
+Scan **git-tracked** files for the same secret patterns (`SUPABASE_SERVICE_ROLE_KEY`, generic `service_role` / `DATABASE_URL` / connection-string shapes). Any match → **HIGH**. Report the **filename only**; the value is redacted per `redaction.md`.
+
+Use the portable no-files guard (Darwin has no GNU `xargs -r`):
+
+```bash
+files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|DATABASE_URL'
+```
+
+or equivalently `git grep -l 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|DATABASE_URL'`. Read-only git only (`git ls-files` / `git grep`); no mutation.
+
+### FS.3 — .env-tracked check (`--only=security`)
+
+`.env`, `.env.local`, `.env.production` must be gitignored. If any of these files EXISTS in the working tree AND is tracked by git → **CRITICAL** (secrets are committed). Use read-only `git ls-files <name>` (a tracked file prints; untracked prints nothing) or `git check-ignore <name>`; emit one finding per tracked env file. Report the filename only — never the contents.
+
+### FS.4 — Seed-data check (`--only=security`)
+
+Read `./supabase/seed.sql` (and the generic `./seed.sql`, `./db/seed.sql`). If none exist → skip silently (no finding). If present, scan for `test@test.com`, `password='admin'`, `admin:admin`, `123456`. Any match → **MEDIUM** (weak/placeholder credentials in seed data). Redact matched password literals per `redaction.md` rule 1. Not Supabase-specific — the generic seed paths make it portable.
+
+### FS.5 — Env-drift check (`--only=prod`)
+
+Grep the repo for environment-variable reads: `process.env.X`, `Deno.env.get('X')`, `import.meta.env.X`. Collect the referenced key NAMES. Compare them to the keys defined in `.env.production`. Any key referenced in code but MISSING from `.env.production` → **HIGH**. Emit key **NAMES only**, never values (`redaction.md` rule 4).
+
+If `.env.production` does not exist → emit `[INFO] No .env.production file present; env-drift check skipped.` Do not error.
