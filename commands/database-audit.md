@@ -219,7 +219,7 @@ Skip if `--only` is set and does not include `client`.
 2. Apply the redaction pass (`redaction.md` rules 1–4) BEFORE writing anything to disk.
 3. **Deduplicate** findings by `(severity, title, object_name)` BEFORE the sort — identical migration-drift findings emitted by both core Module 1 (`core.md` Migration drift) and the Supabase platform migration-drift module collapse to a single finding.
 4. Sort: **severity DESC → module → object_name ASC** (deterministic).
-4. Render markdown. The title is **provider-templated**:
+5. Render markdown. The title is **provider-templated**:
 
 ```
 # Database Audit — <provider> — <host>
