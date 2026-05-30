@@ -17,11 +17,11 @@ expected_subagents: 4
    ```
 
 2. `Read ~/.claude-dotfiles/commands/database-audit.md` and execute it as the orchestrator, with:
-   - `--provider=supabase` **forced** (always present, regardless of `$ARGUMENTS`).
-   - Any `--only=<csv>` and `--env=prod` flags the user supplied in `$ARGUMENTS` passed through verbatim.
-   - If the user passed `--provider=<anything>` in `$ARGUMENTS`, ignore it and force `--provider=supabase` (this alias is Supabase-only by definition).
+   - First, **STRIP any user-supplied `--provider=...` token from `$ARGUMENTS`** (drop the whole `--provider=<val>` token, whatever its value) so the orchestrator never receives a duplicate `--provider` flag.
+   - Then append `--provider=supabase` **forced** (always present, regardless of what `$ARGUMENTS` contained — this alias is Supabase-only by definition).
+   - Any `--only=<csv>` and `--env=prod` flags the user supplied in `$ARGUMENTS` are passed through verbatim.
 
-   Effective invocation: `/database-audit --provider=supabase [pass-through --only / --env from $ARGUMENTS]`.
+   Effective invocation: `/database-audit <stripped $ARGUMENTS minus any --provider> --provider=supabase`.
 
 ## Output
 
