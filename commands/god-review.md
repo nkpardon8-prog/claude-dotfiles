@@ -648,6 +648,7 @@ For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
 ~/.claude-dotfiles/commands/god-review/principles/info-loss-detector.md
 ~/.claude-dotfiles/commands/god-review/principles/contradiction-detector.md
 ~/.claude-dotfiles/commands/god-review/principles/gap-detector.md
+~/.claude-dotfiles/commands/god-review/principles/database-audit.md
 ```
 
 **Layer B — Codex principle agents** (1 per active principle, only if $CODEX_AVAILABLE=true):
