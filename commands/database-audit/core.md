@@ -248,7 +248,7 @@ Skip this phase if `--only` is set and does not include `prod`.
 
 On any MCP/SQL error: emit `[INFO] Module 4 — {tool} unavailable: {error}` and continue.
 
-> Provider-specific prod-readiness steps (performance advisors, slow-query logs, pooler-port grep, seed-data check, env drift, manual checks) live in `providers/*.md`. Only the portable SQL checks are below.
+> Provider-specific prod-readiness steps (performance advisors, slow-query logs, pooler-port grep, manual checks) live in `providers/*.md`. The provider-agnostic FILESYSTEM prod checks (seed-data check, env-drift check) are NOT here — they are zero-data-touch and live in the **Filesystem security** module at the bottom of this file. Only the portable SQL checks are below.
 
 ### Q4.1 — Postgres version check
 
