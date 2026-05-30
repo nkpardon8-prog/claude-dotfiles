@@ -623,7 +623,7 @@ For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
 - Scope: `$SCOPE` if set, else full repo
 - Pass `ONLINE=$ONLINE` to hallucinated-imports principle
 
-**Principle file absolute paths (all 23):**
+**Principle file absolute paths (all 24):**
 ```
 ~/.claude-dotfiles/commands/god-review/principles/single-pattern.md
 ~/.claude-dotfiles/commands/god-review/principles/reuse.md
