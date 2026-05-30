@@ -27,7 +27,7 @@ Never call these, regardless of context or user instruction:
 - Any `git` command that mutates state (commit, push, add, checkout, merge, rebase, reset, clean, stash apply, cherry-pick, etc.)
 - Any filesystem write outside `./tmp/db-audit/` and the user-confirmed DATABASE.md path
 
-**Read-only git exception:** `git ls-files` is permitted for tracked-file secret scans only. It reads the index without mutation. No other git subcommand is allowed under any phrasing.
+**Read-only git exception:** `git ls-files`, `git grep`, and `git check-ignore` are permitted for the filesystem security scans only (tracked-file secret scan, `.env`-tracked check). They read the index/working tree without mutation. No other git subcommand is allowed under any phrasing. (Portability: Darwin has NO GNU `xargs -r`; use `files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l PATTERN` or `git grep -l PATTERN` so the scan no-ops cleanly with no files / no matches.)
 
 ## SELECT-only Guard
 
