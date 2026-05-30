@@ -225,6 +225,7 @@ echo "  HAS_AUTHED_HANDLER=$HAS_AUTHED_HANDLER"
 echo "  HAS_UI_PROJECT=$HAS_UI_PROJECT"
 echo "  HAS_BACKEND_PROJECT=$HAS_BACKEND_PROJECT"
 echo "  HAS_BENCH_SCRIPT=$HAS_BENCH_SCRIPT"
+echo "  HAS_DATABASE=$HAS_DATABASE"
 
 # --- Architecture map ---
 echo "--- Architecture (maxdepth 2) ---"
