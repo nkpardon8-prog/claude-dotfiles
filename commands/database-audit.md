@@ -153,7 +153,7 @@ A platform module whose governing token is NOT present in `--only` is **SKIPPED 
 
 Then run the detected provider's platform modules (each gated by its token above):
 
-- **supabase** → security/performance advisors (`get_advisors`), anon/RLS classification + RLS-off→CRITICAL escalation, risky extensions (`list_extensions`), pg_cron inventory, slow-query log (`get_logs`), pooler-port grep, seed-data check, env drift, migration drift (`list_migrations`), manual checks (SMTP/MFA/PITR/webhooks), storage buckets, edge functions, realtime publications.
+- **supabase** → security/performance advisors (`get_advisors`), anon/RLS classification + RLS-off→CRITICAL escalation, risky extensions (`list_extensions`), pg_cron inventory, slow-query log (`get_logs`), pooler-port grep, migration drift (`list_migrations`), manual checks (SMTP/MFA/PITR/webhooks), storage buckets, edge functions, realtime publications. (Seed-data and env-drift checks are NOT Supabase-platform checks — they are provider-agnostic filesystem checks in `core.md` Module FS, FS.4 / FS.5.)
 - **neon** → control-plane checks (scale-to-zero, autoscaling, compute-vs-max_connections, pooling, IP allowlist, protected branches + "prod branch not protected", branch sprawl, restore window), slow queries (`list_slow_queries`), Neon Auth / `pg_session_jwt` RLS classification, Data-API RLS-or-bust escalation. **SKIP-with-INFO each control-plane check if Neon MCP is absent — the psql core still runs; do NOT abort.**
 - **postgres** → NONE. Emit INFO-N/A for advisors / storage / edge / realtime / autoscaling per `providers/postgres.md`.
 
