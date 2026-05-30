@@ -104,6 +104,8 @@ All control-plane checks below are **API/MCP-only** (no SQL). If Neon MCP is abs
 
 ### Slow queries (control-plane)
 
+`--only` token: **`prod`**.
+
 Call `list_slow_queries` (Neon's equivalent of the Supabase slow-query log). Each entry exceeding the threshold → MEDIUM. Redact query text if it contains a secret-shaped string (redaction rule 1). SKIP-with-INFO if MCP absent.
 
 ### Supported Postgres version (supplied to portable Q4.1)
