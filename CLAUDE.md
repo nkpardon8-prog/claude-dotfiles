@@ -15,6 +15,9 @@ After any code change, check and update all relevant .md documentation files. Us
 ## Test Before Done
 Before completing a task or pushing code, run both unit/line-level tests and end-to-end tests. Compare output against the project's main documentation to verify changes align with the project's goals and move us closer to them. Skip testing only when explicitly told to.
 
+## AskUserQuestion — always state context %
+When asking the user a question via the AskUserQuestion popup tool, ALWAYS include the current context-usage percentage inside the question text itself (e.g. end with "(context: 58%)"). The user CANNOT see the statusline context % while the modal popup is open, so it must be in the question or they cannot judge whether to checkpoint. Read the live value from `~/.claude/progress/ctx-<session_id>.txt` right before asking (`<session_id>` = the basename of this session's transcript `.jsonl`). Applies to every agent and subagent that calls AskUserQuestion.
+
 ## Push Rules — Two Distinct Policies
 **Claude dotfiles repo** (`~/.claude-dotfiles/`): Auto-push freely. Any changes to commands, rules, patterns, or this CLAUDE.md should be committed and pushed automatically without asking. This keeps the config synced across devices.
 
