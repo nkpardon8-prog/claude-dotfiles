@@ -484,6 +484,7 @@ STACK_GATED_PRINCIPLES = {
   "self-contained":        HAS_UI_PROJECT,
   "tanstack-query":        HAS_TANSTACK_QUERY,
   "perf-benchmark":        HAS_BENCH_SCRIPT,
+  "database-audit":        HAS_DATABASE,
 }
 
 ACTIVE_PRINCIPLES = ALWAYS_ON_PRINCIPLES + [p for p,sig in STACK_GATED_PRINCIPLES if sig != ""]
