@@ -854,7 +854,7 @@ cat > tmp/god-review/report.md.tmp << 'REPORTEOF'
 **Scope**: <SCOPE or "full repo">
 **Rounds run**: <N>
 **Stack**: <which HAS_* signals fired>
-**Active principles**: <count> of 23
+**Active principles**: <count> of 24
 
 ---
 
