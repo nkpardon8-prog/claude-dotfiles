@@ -139,6 +139,7 @@ All 24 principles classified into tiers. **Tier 1 = always promote on hit** (sin
 | info-loss-detector | 1 | always-on | yes |
 | contradiction-detector | 1 | always-on | yes |
 | gap-detector | 1 | always-on | yes |
+| database-audit | 2 | HAS_DATABASE | no |
 
 The `--ruthless` flag activates `claude-ruthless-redteam` as a 4th broad reviewer in Layer A alongside the standard 3 Claude broad reviewers. This reviewer uses a skeptic-first prompt (see `broad-reviewers/claude-ruthless-redteam.md`) and its findings require Codex confirmation for cross-model promotion per Locked Decision #8.
 
