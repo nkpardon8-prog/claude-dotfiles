@@ -141,7 +141,16 @@ Run, honoring `--only`:
 
 ### Platform modules (provider-specific — `providers/<provider>.md`)
 
-Then run the detected provider's platform modules:
+**`--only` GATES platform modules exactly like core modules.** Each platform check has a governing `--only` token; when `--only` is set and does NOT include a check's token, that check is **SKIPPED and issues NO SQL / no `execute_sql` / no `run_sql` / no control-plane probe for it** (so e.g. `--only=rls` never fires Supabase `storage.buckets`, the `pg_cron` probe, `pg_publication_tables`, or `get_advisors`). When `--only` is unset, all platform checks run (current behavior). The governing-token mapping (platform modules in `providers/supabase.md` and `providers/neon.md` are each annotated with their token):
+
+- **`security`** → Supabase `get_advisors({type:"security"})`, risky extensions, pg_cron probe + inventory, the portable dynamic-SQL/secret scans' Supabase platform steps, Supabase Q3.x advisor-severity mapping; Neon Data-API-enabled probe + `neon_auth` / `pg_session_jwt` RLS checks.
+- **`prod`** → Supabase `get_advisors({type:"performance"})`, version (supported-major list), connection saturation, slow-query log (`get_logs`), pooler-port grep, manual checks (SMTP/MFA/PITR/webhooks); Neon scale-to-zero, autoscaling, compute-vs-max_connections, pooling, IP allowlist, protected/sprawl/restore-window.
+- **`rls`** → RLS-off severity escalation, anon / Data-API classification — so `--only=rls` STILL runs the Data-API-enabled control-plane probe that feeds `neon.md`'s Q2.1→CRITICAL escalation (this fixes the prior coupling where the escalation input was gated out).
+- **`client`** → storage buckets, edge functions, realtime publications, Module 5 client coherence, `generate_typescript_types` diff.
+
+A platform module whose governing token is NOT present in `--only` is **SKIPPED — no SQL is issued for it.**
+
+Then run the detected provider's platform modules (each gated by its token above):
 
 - **supabase** → security/performance advisors (`get_advisors`), anon/RLS classification + RLS-off→CRITICAL escalation, risky extensions (`list_extensions`), pg_cron inventory, slow-query log (`get_logs`), pooler-port grep, seed-data check, env drift, migration drift (`list_migrations`), manual checks (SMTP/MFA/PITR/webhooks), storage buckets, edge functions, realtime publications.
 - **neon** → control-plane checks (scale-to-zero, autoscaling, compute-vs-max_connections, pooling, IP allowlist, protected branches + "prod branch not protected", branch sprawl, restore window), slow queries (`list_slow_queries`), Neon Auth / `pg_session_jwt` RLS classification, Data-API RLS-or-bust escalation. **SKIP-with-INFO each control-plane check if Neon MCP is absent — the psql core still runs; do NOT abort.**
