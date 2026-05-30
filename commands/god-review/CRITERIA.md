@@ -112,7 +112,7 @@ Used in the Meta-Review section of the final report and in Phase 1 baseline gate
 
 ## Principle Index
 
-All 23 principles classified into tiers. **Tier 1 = always promote on hit** (single-level confidence promotion before section assignment). Tier 2 = standard severity, no promotion. Stack-gating applies regardless of tier — a stack-gated principle self-skips in Phase 1 if its signal is empty.
+All 24 principles classified into tiers. **Tier 1 = always promote on hit** (single-level confidence promotion before section assignment). Tier 2 = standard severity, no promotion. Stack-gating applies regardless of tier — a stack-gated principle self-skips in Phase 1 if its signal is empty.
 
 | Principle | Tier | Stack gate | Promotion |
 |---|---|---|---|
