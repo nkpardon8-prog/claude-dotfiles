@@ -1,0 +1,269 @@
+# database-audit — Portable Core Query Library
+
+This file is a **fixed library** of provider-agnostic `pg_catalog` / `information_schema` / `pg_stats` queries. It is `Read` by the `/database-audit` orchestrator. **Its queries are dispatched only AFTER the prod guard resolves (Phase 0b in `guards.md`).** No query in this file may run before the guard discharges — and per SELECT-only guard rule 1 (`guards.md`), these queries are a FIXED library: they must be issued verbatim, never dynamically constructed from variables.
+
+Every query below runs identically on any Postgres (Supabase, Neon, vanilla). It is dispatched either via the universal `psql "$DATABASE_URL"` path wrapped in `BEGIN READ ONLY; … ROLLBACK;` (see `guards.md` rule 6) or via a provider MCP read-only SQL tool. Each query keeps its severity assignment exactly as below.
+
+Supabase-specific checks (`get_advisors`, anon/RLS classification, storage, edge functions, realtime, auth manual checks) are NOT here — they live in `providers/supabase.md`.
+
+---
+
+## Module 1 — Schema
+
+Skip this phase if `--only` is set and does not include `schema`.
+
+On any MCP/SQL error: emit `[INFO] Module 1 — {tool} unavailable: {error}` and continue.
+
+### Q1.1 — Tables without primary key
+
+```sql
+SELECT n.nspname AS schema, c.relname AS table
+FROM pg_class c
+JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE c.relkind = 'r'
+  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary
+  );
+```
+
+Severity: CRITICAL.
+
+### Q1.2 — FKs without backing index (1-based slice, composite FKs are INFO candidates)
+
+```sql
+SELECT c.conrelid::regclass AS table, c.conname AS fk
+FROM pg_constraint c
+WHERE c.contype = 'f'
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_index i
+    WHERE i.indrelid = c.conrelid
+      AND (i.indkey::int2[])[1:array_length(c.conkey,1)] = c.conkey
+  );
+```
+
+Single-column FK misses → HIGH. Multi-column FK misses → INFO (order-sensitive; treat as candidate, flag for manual review).
+
+### Q1.3 — Unused indexes (gated on stats age)
+
+```sql
+SELECT s.schemaname, s.relname AS table, s.indexrelname AS idx, s.idx_scan
+FROM pg_stat_user_indexes s
+JOIN pg_stat_bgwriter b ON TRUE
+WHERE s.idx_scan = 0
+  AND b.stats_reset IS NOT NULL
+  AND now() - b.stats_reset > interval '7 days';
+```
+
+If `stats_reset` is NULL or within 7 days → emit single INFO: "unused-index analysis skipped — stats reset within last 7 days." Severity of findings: LOW.
+
+### Q1.4 — Duplicate indexes
+
+```sql
+SELECT indrelid::regclass AS table,
+       array_agg(indexrelid::regclass) AS duplicates
+FROM pg_index
+GROUP BY indrelid, indkey
+HAVING count(*) > 1;
+```
+
+Severity: MEDIUM.
+
+### Q1.5 — Columns with 100% NULL
+
+```sql
+SELECT schemaname, tablename, attname, null_frac
+FROM pg_stats
+WHERE schemaname = 'public' AND null_frac = 1.0;
+```
+
+Severity: MEDIUM.
+
+### Q1.6 — Columns with one distinct value
+
+```sql
+SELECT schemaname, tablename, attname, n_distinct
+FROM pg_stats
+WHERE schemaname = 'public' AND n_distinct = 1;
+```
+
+Severity: LOW.
+
+### Q1.7 — Tables missing created_at/updated_at
+
+```sql
+SELECT t.table_name
+FROM information_schema.tables t
+WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+  AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = t.table_schema
+      AND c.table_name = t.table_name
+      AND c.column_name IN ('created_at','updated_at')
+  );
+```
+
+Severity: LOW.
+
+### Q1.8 — Naming-case inconsistency
+
+```sql
+SELECT table_name,
+       bool_or(column_name ~ '[A-Z]') AS has_camel,
+       bool_or(column_name ~ '_')     AS has_snake
+FROM information_schema.columns
+WHERE table_schema = 'public'
+GROUP BY table_name
+HAVING bool_or(column_name ~ '[A-Z]') AND bool_or(column_name ~ '_');
+```
+
+Severity: LOW.
+
+### Migration drift
+
+Compare migration filenames recorded in the DB against `./<migrations-dir>/*.sql` on disk (the provider adapter supplies how the applied-migrations list is obtained — Supabase via `list_migrations`, others via the migrations bookkeeping table / on-disk only). Files present locally but not in DB → HIGH. Files in DB but not locally → MEDIUM.
+
+Orphaned-row detection emitted as INFO manual-check item ("Cost too high to run per-FK queries automatically — verify referential integrity manually").
+
+---
+
+## Module 2 — RLS
+
+Skip this phase if `--only` is set and does not include `rls`.
+
+On any MCP/SQL error: emit `[INFO] Module 2 — {tool} unavailable: {error}` and continue.
+
+Note: RLS-off severity is CONTEXT-DEPENDENT. The auto-CRITICAL classification below assumes anon/Data-API exposure (Supabase/PostgREST). On a vanilla Postgres with no anon role or public API surface, the provider adapter MAY downgrade per its context; the portable severity floor stated per query is the exposed-API context.
+
+### Q2.1 — RLS off on public tables
+
+```sql
+SELECT c.relname AS table
+FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity = false;
+```
+
+Severity: CRITICAL.
+
+### Q2.2 — RLS on but no policies
+
+```sql
+SELECT c.relname AS table
+FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE n.nspname = 'public' AND c.relrowsecurity = true
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_policies p
+    WHERE p.schemaname = n.nspname AND p.tablename = c.relname
+  );
+```
+
+Severity: HIGH (RLS on with zero policies means all rows are locked out silently).
+
+### Q2.3 — All policies (heuristic scan)
+
+```sql
+SELECT schemaname, tablename, policyname, cmd, roles, qual, with_check
+FROM pg_policies WHERE schemaname = 'public';
+```
+
+Apply heuristics to results:
+- `qual = 'true'` → CRITICAL (blanket permissive)
+- `qual` contains `auth.uid()` without `(select auth.uid())` → MEDIUM (per-row re-eval perf bug)
+- `'anon'` in roles AND `cmd IN ('INSERT','UPDATE','DELETE')` → HIGH
+
+Policy expressions included in findings with redaction rule 2 prefix applied (see `redaction.md`).
+
+### Q2.4 — SECURITY DEFINER functions with mutable search_path
+
+```sql
+SELECT n.nspname AS schema, p.proname AS function
+FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
+WHERE p.prosecdef = true
+  AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND (
+    p.proconfig IS NULL
+    OR NOT EXISTS (
+      SELECT 1 FROM unnest(p.proconfig) cfg WHERE cfg LIKE 'search_path=%'
+    )
+  );
+```
+
+Severity: HIGH.
+
+### Q2.5 — Materialized views bypassing RLS
+
+```sql
+SELECT schemaname, matviewname
+FROM pg_matviews
+WHERE schemaname = 'public';
+```
+
+Each matview becomes a MEDIUM finding unless it joins no RLS-protected tables. Note: matviews run as owner and ignore RLS on underlying tables.
+
+---
+
+## Module 3 — Security (portable subset)
+
+Skip this phase if `--only` is set and does not include `security`.
+
+On any MCP/SQL error: emit `[INFO] Module 3 — {tool} unavailable: {error}` and continue.
+
+> Provider-specific security steps (Supabase security advisors, repo grep / tracked-file secret scans, risky-extension and pg_cron inventory, .gitignore secret-file check) live in `providers/*.md`. Only the portable SQL checks are below.
+
+### Q3.1 — PII inventory (PII-sensitive columns with anon SELECT access)
+
+```sql
+SELECT c.table_name, c.column_name
+FROM information_schema.columns c
+WHERE c.table_schema = 'public'
+  AND c.column_name ~* 'email|phone|ssn|dob|address|ip_addr|token|password|secret'
+  AND EXISTS (
+    SELECT 1 FROM information_schema.role_table_grants g
+    WHERE g.table_schema = c.table_schema
+      AND g.table_name = c.table_name
+      AND g.grantee = 'anon'
+      AND g.privilege_type = 'SELECT'
+  );
+```
+
+Severity: HIGH. Report column names only — never SELECT actual values (see `redaction.md` rule 3).
+
+### Q3.3 — Functions with dynamic SQL (prosrc, not pg_get_functiondef)
+
+```sql
+SELECT n.nspname, p.proname, p.prosrc
+FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
+WHERE n.nspname = 'public'
+  AND p.prosrc ILIKE '%EXECUTE format%'
+LIMIT 50;
+```
+
+Any row → HIGH finding (SQL-injection surface). `prosrc` contents redacted if they contain secret-shaped strings (see `redaction.md` rule 1).
+
+---
+
+## Module 4 — Production Readiness (portable subset)
+
+Skip this phase if `--only` is set and does not include `prod`.
+
+On any MCP/SQL error: emit `[INFO] Module 4 — {tool} unavailable: {error}` and continue.
+
+> Provider-specific prod-readiness steps (performance advisors, slow-query logs, pooler-port grep, seed-data check, env drift, manual checks) live in `providers/*.md`. Only the portable SQL checks are below.
+
+### Q4.1 — Postgres version check
+
+```sql
+SELECT current_setting('server_version') AS version;
+```
+
+The provider adapter supplies the supported-major-version list and any EOL-staleness note. Extract the major version from the result; if not in the provider's supported list → HIGH.
+
+### Q4.2 — Connection saturation (severity always MEDIUM)
+
+```sql
+SELECT
+  (SELECT count(*) FROM pg_stat_activity WHERE state = 'active') AS active,
+  current_setting('max_connections')::int AS max_conn;
+```
+
+Severity: always MEDIUM. Body includes: `"active N of max M (N/M%)"`. Severity never changes based on the ratio — ratio goes in the body only.
