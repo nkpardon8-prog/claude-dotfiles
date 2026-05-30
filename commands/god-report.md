@@ -1,5 +1,5 @@
 ---
-description: "Single-pass multi-model codebase review report. 3 Claude broad + 3 Codex broad + 23 principle agents (Claude+Codex per principle) in parallel. NO fixes applied — pure report. Use /god-review for autonomous fix-loop. Optional --rounds N for de-noising."
+description: "Single-pass multi-model codebase review report. 3 Claude broad + 3 Codex broad + 24 principle agents (Claude+Codex per principle) in parallel. NO fixes applied — pure report. Use /god-review for autonomous fix-loop. Optional --rounds N for de-noising."
 argument-hint: "[scope] [--rounds N] [--ruthless] [--principle <name>] [--online] [--codex-validation-every N]"
 allowed-tools: Bash, Read, Grep, Glob, Task, Agent, TodoWrite
 expected_subagents: 29
