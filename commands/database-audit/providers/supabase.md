@@ -112,6 +112,8 @@ Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) �
 
 ### Module 4 (Production Readiness) — Supabase platform steps
 
+`--only` token: **`prod`** (performance advisors, version, slow-query log, pooler-port grep, manual checks all gated by `prod`).
+
 **Step A — Performance advisors.** Call `mcp__supabase__get_advisors({type: "performance"})`. Include every finding verbatim.
 
 **Supported Postgres major versions** (supplied to portable Q4.1): `['15', '16', '17']`. List last updated: `2026-01`. Major version not in this list → HIGH. EOL staleness: if today's date is more than 18 months after `2026-01` → emit INFO: "Supabase Postgres version data may be stale; verify at supabase.com/docs."
