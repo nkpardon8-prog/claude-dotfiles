@@ -214,6 +214,10 @@ if [ -z "$HAS_BENCH_SCRIPT" ]; then
   HAS_BENCH_SCRIPT=$(/bin/bash -c 'find "$1" -maxdepth 5 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" \) -prune -o -type f -name "*_test.go" -print' _ "$WORKDIR" 2>/dev/null | xargs grep -l "^func Benchmark" 2>/dev/null | head -1)
 fi
 
+# Database detection for the (static, repo-only) database-audit principle
+HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 4 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
+[ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 3 -name package.json -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l "@supabase/supabase-js\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
+
 echo "Stack signals:"
 echo "  HAS_TANSTACK_QUERY=$HAS_TANSTACK_QUERY"
 echo "  HAS_APP_ROUTER=$HAS_APP_ROUTER"
