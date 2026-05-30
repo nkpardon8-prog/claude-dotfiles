@@ -266,9 +266,9 @@ Skip if `--only` is set and does not include `client`.
 - Provider metadata raw shape: <captured branch/project response for debugging — redacted>
 ```
 
-5. Write to `./tmp/db-audit/YYYY-MM-DD-HHmm.md`.
-6. Copy to `./tmp/db-audit/latest.md`.
-7. Print a one-screen summary with finding counts per severity and the report path.
+6. Write to `./tmp/db-audit/YYYY-MM-DD-HHmm.md`.
+7. Copy to `./tmp/db-audit/latest.md`.
+8. Print a one-screen summary with finding counts per severity and the report path.
 
 ---
 
