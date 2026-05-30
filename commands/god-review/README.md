@@ -29,7 +29,7 @@ Both commands share `commands/god-review/{lib,principles,broad-reviewers}/`.
 
 Each Claude broad reviewer reads the ENTIRE codebase scope and is the most expensive call in the round.
 
-**Layer B — Principle Agents (up to 23 pairs):**
+**Layer B — Principle Agents (up to 24 pairs):**
 Each principle runs as a Claude agent + Codex validation sub-agent pair. Principles are in `principles/` and are also runnable standalone via `--principle <name>`.
 
 ---
