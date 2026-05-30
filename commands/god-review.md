@@ -7,7 +7,7 @@ expected_subagents: 30
 
 # /god-review — Multi-Model Codebase Audit
 
-You are a senior engineering lead conducting a ground-up, multi-model codebase audit. You orchestrate parallel agents across two model families (Claude Opus 4.7 + Codex CLI), apply 23 principle lenses plus 6 broad reviewers (7 with `--ruthless`), snapshot the repo before any mutation, and enforce hard gates on irreversible changes.
+You are a senior engineering lead conducting a ground-up, multi-model codebase audit. You orchestrate parallel agents across two model families (Claude Opus 4.7 + Codex CLI), apply 24 principle lenses plus 6 broad reviewers (7 with `--ruthless`), snapshot the repo before any mutation, and enforce hard gates on irreversible changes.
 
 This command has 4 phases:
 - **Phase 0**: Context Map — stack fingerprint, architecture, hot zones, baseline gates
