@@ -87,3 +87,52 @@ the LOCAL (off-iCloud) `~/Developer/CODEBASES/...` copy.
   swap "used" is most of total and instances are many, that's the amplifier.
 - Audit SessionStart hooks: `async` UNSET on any network/git command = blocks the launch screen.
   Make them `async:true`. Check `~/.claude/settings.json` -> `.hooks.SessionStart[].hooks[]`.
+
+---
+
+# 2026-05-29 (PM) — THE ACTUAL ROOT CAUSE: MCP `npx …@latest` network spawn on every launch
+
+## The tell that cracked it
+**Codex CLI opens instantly; Claude Code hangs.** Both are Node CLIs, so the machine / Node / RAM
+are NOT the difference. The difference: Claude Code spawns its configured **MCP servers** at launch;
+Codex spawns none. So the hang lives in MCP startup.
+
+## Root cause (confirmed)
+`~/.claude.json` configured both MCP servers as `npx -y <pkg>@latest …`:
+- `chrome-devtools` → `npx -y chrome-devtools-mcp@latest …`
+- `supabase` → `npx -y @supabase/mcp-server-supabase@latest …`
+
+`@latest` forces `npx` to hit the npm registry **on every launch** to re-resolve "latest". On a
+slow/flaky/offline network that stalls for many seconds (~8.7s measured for chrome-devtools even when
+it eventually worked) and the TUI does not render until the MCP handshake proceeds. Intermittent
+network = intermittent "type claude, press enter, nothing happens." NOT $HOME-git (still fixed), NOT
+iCloud (still fixed), NOT RAM (amplifier only).
+
+## THE FIX (applied 2026-05-29 — the permanent "never again")
+Eliminated `npx` AND `@latest` from the launch path entirely:
+1. **Global-installed both MCP servers, pinned:** `npm i -g chrome-devtools-mcp@1.1.1
+   @supabase/mcp-server-supabase@0.8.1` (Homebrew node prefix `/opt/homebrew`).
+2. **Rewrote every MCP server in `~/.claude.json`** (global + per-project) from `command:"npx",
+   args:["-y","<pkg>@latest",…]` to **absolute node + absolute entry script:**
+   - chrome-devtools → `/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js …`
+   - supabase → `/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/@supabase/mcp-server-supabase/dist/transports/stdio.js …`
+   Result: **zero npx, zero @latest, zero network** at launch — node execs a local file. Can't hang.
+   Verified `npx-in-file=0`, `@latest-in-mcp=0`, both entry files exist + run `--version` rc=0.
+3. **`brew pin node`** so a future `brew upgrade` can never churn the node those MCP paths point at.
+4. Backup of the pre-fix config: `~/.claude.json.bak-mcpfix-<ts>`.
+
+## Node-environment audit (done 2026-05-29, recorded so it isn't re-investigated)
+There is **NO version-manager mess** (the natural next suspect — ruled out):
+- `.zshrc` loads **no nvm / fnm / asdf / volta** (just anaconda + `~/.local/bin` on PATH).
+- Node is **single + identical everywhere**: `v25.6.0` (Homebrew, now pinned) in interactive +
+  non-interactive shells, hooks, MCP, and every cwd. No per-dir switching, no `.nvmrc`/`.node-version`.
+- A dormant `/usr/local/bin/node` (v24) sits at lower PATH priority; nothing uses it. Left alone.
+- `claude` is a **standalone Mach-O arm64 binary** (`~/.local/bin/claude` → `~/.local/share/claude/versions/<v>`)
+  — node version cannot affect whether it launches. So we did NOT install fnm / downgrade node
+  (user constraint: do not disturb other parts of the machine). There was nothing to consolidate.
+
+## Diagnostic playbook (fast path next time)
+1. Does **Codex** (or any non-MCP Node CLI) open instantly while Claude hangs? → it's MCP, not the machine.
+2. `grep -c '"npx"' ~/.claude.json` + grep `@latest` → any hit = a per-launch network resolve = the bug.
+3. Fix = global-install the MCP pkg pinned + point config at `node <abs-entry>` (no npx, no @latest); `brew pin node`.
+4. Confirm: every `mcpServers[].command` is an absolute `node`, never `npx`.
