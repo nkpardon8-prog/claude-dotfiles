@@ -87,7 +87,11 @@ So the guard yields **NOTPROD only on positive non-default identification**; eve
 
 All control-plane checks below are **API/MCP-only** (no SQL). If Neon MCP is absent → each SKIPs-with-INFO; the psql core still runs.
 
+**`--only` gating applies to every platform check below** (see `database-audit.md` Platform-modules mapping). Each section is annotated with its governing `--only` token. If `--only` is set and does NOT include that token, the section is SKIPPED and issues NO control-plane probe / `run_sql` for it. When `--only` is unset, all run. Note the Data-API-enabled probe is gated by **`rls`** (not `prod`) precisely so `--only=rls` still gathers the input that feeds the Q2.1→CRITICAL escalation.
+
 ### Control-plane (from `describe_project` / `describe_branch` / `list_branch_computes` / `get_connection_string`)
+
+`--only` token: **`prod`** (scale-to-zero, autoscaling, compute-vs-max_connections, pooling, IP allowlist, protected branches, branch sprawl, restore window).
 
 - **Scale-to-zero.** `suspend_timeout_seconds` per compute. Note the configured value; very low values on a prod branch can cause cold-start latency → INFO inventory (Severity-if-absent: N/A — informational).
 - **Autoscaling.** `autoscaling_limit_min_cu` / `autoscaling_limit_max_cu`. If min == max (no autoscaling headroom) on a prod branch → MEDIUM. Report the min/max CU range in the body.
