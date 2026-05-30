@@ -135,13 +135,19 @@ Items: Custom SMTP configured; MFA + leaked-password protection enabled; PITR en
 
 ### Storage buckets
 
+`--only` token: **`client`**.
+
 `storage.buckets` (via `mcp__supabase__execute_sql` if anon-accessible, else emit an INFO manual-check) → bucket existence + public flag + has_policies. Public buckets without policies → HIGH. Feeds the DATABASE.md Storage Buckets section.
 
 ### Edge functions
 
+`--only` token: **`client`**.
+
 Call `mcp__supabase__list_edge_functions` → inventory (name | slug | deployed version). Feeds the DATABASE.md Edge Functions section and the Module-5 N/A note for non-Supabase providers.
 
 ### Realtime publications
+
+`--only` token: **`client`**.
 
 Realtime publication membership (which tables are in the `supabase_realtime` publication, via a vetted SELECT against `pg_publication_tables`) feeds the Module-5 channel cross-reference (below). Not in publication → MEDIUM for any `.channel(...).on('postgres_changes', { table: 'X' })` site.
 
