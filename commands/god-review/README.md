@@ -270,7 +270,7 @@ Categories covered:
 ├── Phase 1: state.json snapshot, perf baseline, pre-scan triggers
 ├── Phase 2: parallel spawn (single message)
 │   ├── Layer A: broad-reviewers/ (3 Claude + 3 Codex)
-│   └── Layer B: principles/ (up to 23 × Claude+Codex pairs)
+│   └── Layer B: principles/ (up to 24 × Claude+Codex pairs)
 ├── Phase 3 (always-on for /god-review): lib/editor-agent.md per fix
 │   └── snapshot → fix → re-verify → keep/revert → churn-ledger check
 └── Outputs: tmp/god-review/{context-package,report,state,round-N-findings}.md
