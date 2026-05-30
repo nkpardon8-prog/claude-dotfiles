@@ -116,7 +116,7 @@ With stack-gating the typical round is ~36-40 agents:
 - 3 Claude broad reviewers (each reviews the ENTIRE codebase scope — most expensive calls)
 - 1 ruthless redteam reviewer (only when `--ruthless` is set)
 - 3 Codex broad reviewers
-- Up to 23 principle pairs (Claude + Codex sub-agent each)
+- Up to 24 principle pairs (Claude + Codex sub-agent each)
 
 **Round time: 15–30 minutes** with single-account Codex serialization.
 
