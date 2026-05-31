@@ -643,10 +643,13 @@ phase line must not drive the `2 − D` math).
   | a `VOID … round=K` is the latest line for round K | re-run round K FRESH (never count it). |
   | last round line is a non-review/non-fix phase (`phase=research` \| `phase=plan` \| `phase=implement`) | CONTINUE that phase's work for the current part to completion, THEN proceed to the review barrier (Section 5). Resume the phase you were in; do not skip ahead and do not consult `last_review` (no review round was banked yet). |
 
-  This table is **TOTAL and mutually-exclusive over all schema phases** (`research`/`plan`/`implement`/
-  `review`/`fix`) and over completed-part state (`PART-DONE`/`PART-RETIRED`): completed-part progress
-  takes precedence over any stale round line, and the non-review/non-fix catch-all covers the remaining
-  phases — every recoverable state maps to exactly one row.
+  This table is **TOTAL and mutually-exclusive** over completed-part state (`PART-DONE`/`PART-RETIRED`),
+  the fresh-part `PART-START`-with-no-round entry state, and all schema phases (`research`/`plan`/
+  `implement`/`review`/`fix`): completed-part progress takes highest precedence over any stale round
+  line; the `PART-START`-no-round row covers a part that has been started but has no banked round yet
+  (begin at `research`); the round-line rows cover `fix` and the two `review` substates and `VOID`; and
+  the non-review/non-fix catch-all covers the remaining `research`/`plan`/`implement` phases once a round
+  line for the part exists — every recoverable state maps to exactly one row.
 
   **Never re-run an idtag round you already banked** (a banked `findings=0` review or a completed fix
   is a no-op that wastes a compaction). `findings=<COUNT>` on the round line is the cross-check that
