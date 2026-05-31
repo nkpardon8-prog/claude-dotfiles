@@ -161,6 +161,22 @@ if [ "$TTY2" != "$TARGET_TTY" ] || [ "$START2" != "$PID_START" ] \
   exit 0
 fi
 
+# TEST NO-FIRE SEAM (2026-05-31): the fire-time delivery now resolves the CALLER's OWN live claude
+# tty (own-ancestry). That is correct for the real Stop hook, but it makes the hook DANGEROUS to run
+# from a test harness on a live machine — verification passes (claude is the foreground leader on its
+# own tty) and the AppleScript would type /compact into the real session. So when
+# AUTO_COMPACT_TEST_NO_FIRE is set, skip the osascript entirely and report a synthetic success (so the
+# claim/consume/restore logic is still exercised, but NO keystrokes reach any tab). The smoke harness
+# sets this. Security: this can only SUPPRESS a fire (a self-DoS at worst — an attacker could just
+# delete the sentinel); it can never cause a wrong-target fire. Real Stop hooks never set it.
+if [ -n "${AUTO_COMPACT_TEST_NO_FIRE:-}" ]; then
+  OSA_RESULT="fired+test-no-fire"
+  OSA_EXIT=0
+  ac_log "test-no-fire sid=$REAL_SID tty=$TARGET_TTY (AUTO_COMPACT_TEST_NO_FIRE set — osascript skipped, no keystrokes sent)"
+  handoff_log "compact_chained sid=$REAL_SID tty=$TARGET_TTY result=$OSA_RESULT"
+  exit 0
+fi
+
 # Deliver /compact via `do script ... in foundTab` (AppleScript writes to tab PTY input).
 # TARGET_TTY passes through argv — never string-interpolated into the AppleScript body.
 # Capture stdout (the on-run handler's return value: "fired"/"no-matching-tab"/etc.)
