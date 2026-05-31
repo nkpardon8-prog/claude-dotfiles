@@ -176,29 +176,30 @@ if [ "$NONCE1" = "$NONCE2" ] && [ "$PLAN_AFTER" = "original plan" ]; then
 else fail "create idempotency" "nonce '$NONCE1'->'$NONCE2' plan='$PLAN_AFTER'"; fi
 
 # ===========================================================================================
-# 11: LOG byte-cap from multibyte input — an entry of 4-byte codepoints is capped <512 bytes
-# and stays valid UTF-8. (assumption test 01 idiom)
+# 11: LOG multibyte entry that FITS the <480B per-line budget is appended to the log as a single
+# valid-UTF-8 line. (An OVERSIZE entry is no longer truncated-into-the-log — it is rerouted to
+# DURABLE NOTES in full; that reroute is covered by the dedicated C2 test below.)
 # ===========================================================================================
 SID="${UNIQ}-mblog"
 R=$(fresh_root mblog)
 mission_create "$SID" "$R" "mb plan" >/dev/null 2>&1
 LOGF="$R/MISSION.${SID}.log"
-# Build a big multibyte payload: repeat a 4-byte emoji (U+1F600) ~600 times (~2400 bytes).
-MB=$(awk 'BEGIN{s="";for(i=0;i<600;i++)s=s"\360\237\230\200";printf "%s", s}')
+# A multibyte payload that FITS: 80 * 4-byte emoji (~320 bytes) + a short tag, well under 480.
+MB=$(awk 'BEGIN{s="";for(i=0;i<80;i++)s=s"\360\237\230\200";printf "%s", s}')
 mission_log_append "$SID" "$R" "$MB" "mb-tag" >/dev/null 2>&1
 if [ -f "$LOGF" ]; then
   LASTLINE_BYTES=$(tail -n 1 "$LOGF" | LC_ALL=C wc -c | tr -d ' ')
-  if [ -n "$LASTLINE_BYTES" ] && [ "$LASTLINE_BYTES" -lt 512 ]; then
-    pass "LOG multibyte entry capped <512 bytes ($LASTLINE_BYTES)"
-  else fail "log byte-cap" "last line $LASTLINE_BYTES bytes (>=512)"; fi
+  if [ -n "$LASTLINE_BYTES" ] && [ "$LASTLINE_BYTES" -lt 480 ]; then
+    pass "LOG multibyte entry within budget appended (<480 bytes: $LASTLINE_BYTES)"
+  else fail "log byte-budget" "last line $LASTLINE_BYTES bytes (>=480)"; fi
   # valid UTF-8: round-trip through iconv UTF-8->UTF-8 with -c removing invalid; if nothing was
   # removed (byte counts equal), the stored line was already valid UTF-8.
   RAW=$(tail -n 1 "$LOGF")
   RB=$(printf '%s' "$RAW" | LC_ALL=C wc -c | tr -d ' ')
   CB=$(printf '%s' "$RAW" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null | LC_ALL=C wc -c | tr -d ' ')
-  if [ "$RB" = "$CB" ]; then pass "LOG capped multibyte line is valid UTF-8 (no split codepoint)"
+  if [ "$RB" = "$CB" ]; then pass "LOG multibyte line is valid UTF-8 (no split codepoint)"
   else fail "log utf8 valid" "raw=$RB bytes, iconv-clean=$CB bytes (codepoint was split)"; fi
-else fail "log byte-cap" "no log file written"; fi
+else fail "log byte-budget" "no log file written"; fi
 
 # ===========================================================================================
 # 12: anchored idempotency — a log entry whose BODY quotes an existing id does NOT suppress a
