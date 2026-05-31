@@ -44,6 +44,25 @@ Files: `lib/auto-compact-sentinel.sh` (5 new helpers, no schema bump), `auto-com
 `commands/post-compact-resume.md` (idempotency marker), `test-auto-compact.sh` (units),
 `scripts/hooks/session-correlation-assumptions/` (new).
 
+Review-round fixes (impl-reviewer + cross-model Codex, looped to a clean "ship"):
+- **Restore-on-fire-failure (codex CRITICAL):** after the sentinel is claimed, a non-`fired*` osascript
+  result (no-matching-tab / not-running / error) now restores the sentinel (`mv` claim back) so the
+  next Stop retries — previously it was consumed without compacting. `fired+queue-failed` does NOT
+  restore (/compact did fire).
+- **Test no-fire seam (safety):** the fire path resolves the caller's OWN live claude tty, which made
+  the test harness fire `/compact` into the live session. New `AUTO_COMPACT_TEST_NO_FIRE` env (set by
+  `test-auto-compact.sh`) runs the full resolve→verify→claim path but skips the osascript — no
+  keystrokes. Can only suppress a fire, never cause a wrong-target one.
+- **Identity hardening:** `PID_START` must be non-empty (fail-closed); the pre-fire recheck re-runs the
+  argv-is-claude predicate alongside tty + start-time + foreground-leader.
+- **Idempotency timing:** the one-shot resume marker is written FIRST (before `## Next Action`), and the
+  `STATE=ok` matrix entry + Step 4 were reconciled to say so consistently.
+- **ctx-gate G5-rev false-positive (unmasked latent test bug):** `[mission]` is the structured
+  LOG-line *prefix* written as data via the `log` verb (not a logger/CLI verb), so it has no emit
+  site by design; G5-rev now skips it like the other non-verb rows. (Its bare token is a regex
+  char-class and BSD `grep -qv` mis-reports exit status on it — the generic probe was unreliable.)
+- Gates after fixes: `test-auto-compact.sh` 83/0, ctx-gate 137/0, mission-bridge 60/0, /script 6/6.
+
 ## 2026-05-31 — /mission: autonomous long-build conductor (playbook over the bridge)
 
 A new `/mission` conductor that drives a multi-part build to completion across compactions with minimal
