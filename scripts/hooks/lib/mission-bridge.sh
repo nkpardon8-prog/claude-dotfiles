@@ -536,6 +536,15 @@ _mission_log_rotate() {
   mkdir -p "$_lr_dir" 2>/dev/null || {
     echo "mission: log-rotate: cannot create $_lr_dir" >&2
     [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1; }
+  # M8: heal a torn final record BEFORE counting/splitting. If the live log's last byte is not a
+  # newline, the head/tail split can mis-split the partial trailing record. Append one newline
+  # first (same idiom as mission_log_append's torn-line heal ~784-789). Under the lock, so safe.
+  if [ -s "$_lr_log" ]; then
+    _lr_lastbyte=$(tail -c 1 "$_lr_log" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+    if [ -n "$_lr_lastbyte" ] && [ "$_lr_lastbyte" != "0a" ]; then
+      printf '\n' >> "$_lr_log" 2>/dev/null || true
+    fi
+  fi
   _lr_lines=$(wc -l < "$_lr_log" 2>/dev/null | tr -d ' ')
   if [ -z "$_lr_lines" ] || [ "$_lr_lines" -le 1 ]; then
     [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 0
@@ -546,20 +555,41 @@ _mission_log_rotate() {
   fi
   _lr_ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)
   [ -n "$_lr_ts" ] || _lr_ts="unknown"
-  _lr_arc="${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.gz"
+  # I8: second-resolution timestamps collide if two rotations land in the same second (overwriting
+  # an archive → loss). Reserve a UNIQUE path via mktemp (timestamp prefix + random suffix), then
+  # rename to add the `.gz`/`.txt` extension so the resume glob `MISSION.<sid>.log.*` still matches.
   # archive oldest half (zero-loss), then keep newest half. C3: wrap the head|gzip pipe in a
   # pipefail subshell so a `head` failure is NOT masked by gzip's exit 0 (which would trim the log
   # → loss).
   if command -v gzip >/dev/null 2>&1; then
-    if ! ( set -o pipefail; head -n "$_lr_half" "$_lr_log" | gzip -c > "$_lr_arc" ) 2>/dev/null; then
+    _lr_arctmp=$(mktemp "${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.XXXXXX") || {
+      echo "mission: log-rotate: archive mktemp failed (refusing to rotate, no loss)" >&2
+      [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1; }
+    _lr_arc="${_lr_arctmp}.gz"
+    if ! ( set -o pipefail; head -n "$_lr_half" "$_lr_log" | gzip -c > "$_lr_arctmp" ) 2>/dev/null; then
+      rm -f "$_lr_arctmp"
       echo "mission: log-rotate: archive write failed (refusing to rotate, no loss)" >&2
+      [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
+    fi
+    if ! mv -f "$_lr_arctmp" "$_lr_arc"; then
+      rm -f "$_lr_arctmp"
+      echo "mission: log-rotate: archive rename failed (refusing to rotate, no loss)" >&2
       [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
     fi
   else
     # no gzip: plain-text archive (still zero-loss). No pipe here, but keep the failure check.
-    _lr_arc="${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.txt"
-    if ! ( set -o pipefail; head -n "$_lr_half" "$_lr_log" > "$_lr_arc" ) 2>/dev/null; then
+    _lr_arctmp=$(mktemp "${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.XXXXXX") || {
+      echo "mission: log-rotate: archive mktemp failed (refusing to rotate, no loss)" >&2
+      [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1; }
+    _lr_arc="${_lr_arctmp}.txt"
+    if ! ( set -o pipefail; head -n "$_lr_half" "$_lr_log" > "$_lr_arctmp" ) 2>/dev/null; then
+      rm -f "$_lr_arctmp"
       echo "mission: log-rotate: archive write failed (refusing to rotate, no loss)" >&2
+      [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
+    fi
+    if ! mv -f "$_lr_arctmp" "$_lr_arc"; then
+      rm -f "$_lr_arctmp"
+      echo "mission: log-rotate: archive rename failed (refusing to rotate, no loss)" >&2
       [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
     fi
   fi
