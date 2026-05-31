@@ -2,6 +2,33 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-31 — REVERT: native /compact focus instruction (auto-resume freeze)
+
+Same-day revert of the Task-8b "complementary channels" change from the mission-bridge ship below.
+**Incident:** dentall session `fca8c4ab`, the first compaction after the change auto-synced (7:07 PM PDT
+/ 02:07Z). The Stop hook fired `/compact <focus instruction>` and typed the queued
+`/post-compact-resume` (`fired+queued-resume`, osa_exit=0); compaction finished at 7:09 PM — but the
+queued resume **never auto-submitted**, leaving the session frozen on unsubmitted draft text for **27
+minutes** until the user re-ran it by hand (7:36 PM, `step2_terminal state=ok`).
+
+**Root cause:** the resume is typed *during* compaction with only a 0.3s `PTY_DELAY` and relies on the
+TUI buffering it as next-turn input. Adding a long trailing argument to `/compact` shifts the timing
+enough that the resume's Enter intermittently fails to register as a submit. It's a *race the longer
+command widens*, not a guaranteed break (session `49d80a3a` fired the same instruction once and resumed
+fine) — which is exactly why it slipped past review: **no test asserts the `/compact` do-script text**,
+and the Task-14 live pre-flight ("prove the build accepts `/compact <arg>` with the queued resume") was
+never run. This freeze WAS that pre-flight, failing.
+
+- **Revert:** `auto-compact-after-pre-compact.sh` fires bare `do script "/compact"` again. Bare /compact
+  has resumed cleanly across every logged run. The auto-resume queue is the load-bearing
+  overnight-autonomy mechanism and outranks the (nice-to-have) complementary-channels instruction.
+- **Guard:** an inline comment forbids re-adding a `/compact` argument without first proving, repeatedly
+  in the live build, that the queued resume still auto-submits after it.
+- **Not changed:** `PTY_DELAY` stays 0.3s (bare /compact has never frozen; no evidence a bump is needed).
+  Tunable via `CTX_GATE_PTY_DELAY_SEC` if a future race appears.
+- **Test coverage:** `test-auto-compact.sh` 71/0 (the harness uses a synthetic TTY and does not assert
+  the command text — flagged as a coverage gap; the behavior is PTY-timing-dependent and not unit-testable).
+
 ## 2026-05-30 — mission-bridge: zero-information-loss durable cross-compaction "mission" spine
 
 The chain primitives (2026-05-27) made compactions near-lossless for the *handoff narrative*, but an
