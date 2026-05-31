@@ -297,9 +297,14 @@ token **only from the `^Engine:` line** and VOID unless it is exactly `4/4`:
   (this also rejects malformed/impossible tokens like `10/4` or `40/4` that an `N<4`-only test would
   let pass), set-e-safe (trailing `|| true` so a no-match grep can't abort under `set -e -o pipefail`):
   ```bash
-  passes=$(printf '%s\n' "$report" | grep -E '^Engine:' \
-             | grep -oE 'Codex-passes: [0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
-  # The token MUST come from the ^Engine: line, not the report body (anti-spoof).
+  passes=$(printf '%s\n' "$report" \
+             | grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' \
+             | tail -1 | grep -oE 'Codex-passes: [0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
+  # Anti-spoof: anchor on the FULL canonical header shape (^Engine: ... Codex-passes: N/4 ... Verified:)
+  # and take the LAST match. A free-form target/summary line before the real header (even a
+  # newline-injected fake "Engine: ... Codex-passes: 4/4") can't win: it would have to replicate the
+  # whole canonical header INCLUDING the trailing "Verified:" AND appear after the real one. Never
+  # read the token from the report body.
   # FULL panel iff EXACTLY "Codex-passes: 4/4" — absent, malformed (e.g. 10/4), or any N!=4 => VOID:
   [ "$passes" = "Codex-passes: 4/4" ] || echo VOID
   ```
