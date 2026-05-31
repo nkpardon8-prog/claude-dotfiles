@@ -522,7 +522,7 @@ Invoke `/pre-compact` at natural seams or whenever context warrants — freely. 
 with `skill: pre-compact`. Continue once it returns.
 
 **Resume-read idiom (the SINGLE canonical way to recover state from the LOG — used by §2 status, §5,
-§9, §12, §13).** Do **NOT** `tail -n 40` the live log: with >40 trailing lines, or after a rotation,
+§9).** Do **NOT** `tail -n 40` the live log: with >40 trailing lines, or after a rotation,
 `tail` MISSES the last round/lifecycle line. Do **NOT** read only the newest archive either:
 `_mission_log_rotate` archives the OLDEST half on EACH fire, so after ≥2 rotations a durable line
 (MISSION-CLEARED, PART-DONE, test-trust, a FAIL tally line) can sit in an OLDER archive — reading just
