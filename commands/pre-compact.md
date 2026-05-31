@@ -286,13 +286,15 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
            north_star:$ns, north_star_source:$src,
            current_seq:$seq,
            last_handoff_path:$hp, last_heartbeat_at:$hb,
-           status:$status, host:$host}' \
+           status:$status, host:$host, mission_path:""}' \
          | chain_manifest_write "$SID" || echo "WARN: chain manifest first-write failed; continuing" >&2
      else
        printf '%s' "$MANIFEST" | jq -c \
          --argjson seq "$NEW_SEQ" --arg hp "$CHAIN_HANDOFF_PATH" --arg hb "$NOW_ISO" --arg status "$CHAIN_STATUS" \
+         --arg mp "$CANONICAL_ROOT/MISSION.${SID_RESOLVED}.md" \
          '.current_seq = $seq
-          | .last_handoff_path = $hp | .last_heartbeat_at = $hb | .status = $status' \
+          | .last_handoff_path = $hp | .last_heartbeat_at = $hb | .status = $status
+          | .mission_path = (.mission_path // $mp)' \
          | chain_manifest_write "$SID" || echo "WARN: chain manifest merge-write failed; continuing" >&2
      fi
 
