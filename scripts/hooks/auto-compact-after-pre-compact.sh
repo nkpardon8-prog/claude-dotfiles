@@ -229,6 +229,26 @@ ac_log "stop sid=$REAL_SID tty=$TARGET_TTY osa_exit=$OSA_EXIT result=${OSA_RESUL
 # B20: unified handoff audit trail — log compact chain event. V2-15: log full session_id.
 handoff_log "compact_chained sid=$REAL_SID tty=$TARGET_TTY result=${OSA_RESULT:-unknown}"
 
+# RESTORE-ON-FIRE-FAILURE (2026-05-31, codex-review C2): the sentinel was already CLAIMED above.
+# If /compact did NOT actually fire — osascript said not-running / no-windows / no-matching-tab, or
+# errored / returned empty (e.g. a bad CTX_GATE_PTY_DELAY_SEC, or the target tab closed in the final
+# window) — then letting the EXIT trap delete the claim would CONSUME the sentinel without compacting,
+# silently breaking the next-Stop retry AND the pending-handoff primer recovery. So restore it.
+# A result that STARTS WITH "fired" means the first `do script "/compact"` succeeded (even
+# "fired+queue-failed" — /compact ran; the typed resume is just a backstop and the self-driven primer
+# covers it), so we do NOT restore in that case.
+case "${OSA_RESULT:-}" in
+  fired*) : ;;   # /compact fired — sentinel correctly consumed
+  *)
+    if mv -f "$CLAIM" "$SENTINEL" 2>/dev/null; then
+      trap 'rm -f "${OSA_STDERR_TMP:-}"' EXIT
+      ac_log "restore sid=$REAL_SID tty=$TARGET_TTY reason=compact-not-fired result=${OSA_RESULT:-empty} (sentinel restored → next-Stop retry)"
+    else
+      ac_log "restore-FAILED sid=$REAL_SID tty=$TARGET_TTY result=${OSA_RESULT:-empty} (claim could not be moved back; pending-handoff primer is the remaining recovery)"
+    fi
+    ;;
+esac
+
 # R8 V2-4: breadcrumb-write block DELETED. Identity now comes from the command arg
 # (/post-compact-resume <session_id>), so the breadcrumb (which existed solely for
 # SID recovery in the reader) is no longer needed. No breadcrumbs written.
