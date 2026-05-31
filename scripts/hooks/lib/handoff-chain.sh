@@ -113,8 +113,10 @@ chain_manifest_read() {
     # available (e.g. someone sources this lib in isolation), we emit an empty path; consumers can
     # rederive themselves.
     inferred_handoff=""
+    inferred_mission=""
     if command -v handoff_canonical_root >/dev/null 2>&1; then
       inferred_handoff="$(handoff_canonical_root)/CLAUDE.local.${sid}.md"
+      inferred_mission="$(handoff_canonical_root)/MISSION.${sid}.md"
     fi
     jq -nc \
       --arg sid "$sid" --arg st "${first_ts:-1970-01-01T00:00:00Z}" \
@@ -122,11 +124,12 @@ chain_manifest_read() {
       --argjson seq "${last_seq:-1}" \
       --arg ns "${last_ns:-<unrecoverable — manifest corrupt and ledger lacks north_star_first_120>}" \
       --arg lhp "$inferred_handoff" --arg hb "${last_ts:-${first_ts:-1970-01-01T00:00:00Z}}" \
+      --arg mp "$inferred_mission" \
       '{chain_id:$sid, started_at:$st,
         north_star:$ns, north_star_source:"recovered",
         current_seq:$seq, last_handoff_path:$lhp,
         last_heartbeat_at:$hb, status:$ls,
-        host:"recovered", recovered_from_ledger:true}'
+        host:"recovered", mission_path:$mp, recovered_from_ledger:true}'
     return 0
   fi
 
