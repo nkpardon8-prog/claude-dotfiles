@@ -421,7 +421,7 @@ Read `$RUN_DIR/codex-verify.txt` and apply:
 ### 6e. Cleanup verification temp file
 
 ```bash
-rm -f $RUN_DIR/codex-verify.txt
+rm -f "$RUN_DIR/codex-verify.txt" "$RUN_DIR/codex-verify-prompt.txt"
 ```
 
 ---
