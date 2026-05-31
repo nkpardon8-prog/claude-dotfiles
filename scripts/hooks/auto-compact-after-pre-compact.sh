@@ -169,8 +169,17 @@ on run argv
       if foundTab is not missing value then exit repeat
     end repeat
     if foundTab is missing value then return "no-matching-tab"
-    -- If this Claude Code build does not accept an argument to /compact, revert this single line to the bare do script "/compact" in foundTab. Pre-flight is in plan Task 14.
-    do script "/compact Preserve the recent conversation thread and any in-flight tool or task state; durable task state, plan, and decisions are already saved in the handoff and mission files, so do not re-summarize those." in foundTab
+    -- REVERTED 2026-05-31 to bare /compact. A field incident (dentall session fca8c4ab,
+    -- 02:07Z) showed that firing /compact WITH a trailing instruction argument shifts the
+    -- timing such that the queued /post-compact-resume (typed during compaction, line ~181)
+    -- intermittently fails to submit after compaction completes — leaving the session FROZEN
+    -- on unsubmitted draft text (27-min idle until the user re-ran it by hand). The
+    -- auto-resume queue is the load-bearing overnight-autonomy mechanism and must never be
+    -- put at risk for the (nice-to-have) "complementary channels" focus instruction. Bare
+    -- /compact has resumed cleanly across every logged run. DO NOT re-add a /compact argument
+    -- without first proving — in the live build, repeatedly — that the queued resume still
+    -- auto-submits after it. See CHANGELOG 2026-05-31.
+    do script "/compact" in foundTab
     -- R8: Chain /post-compact-resume <session_id> so identity is threaded verbatim.
     -- Raw concat (& sessionId) — NOT quoted form of, which injects literal quotes.
     -- UUID chars are [A-Za-z0-9-] — no shell-special chars; safe for raw concat.
