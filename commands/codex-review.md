@@ -257,8 +257,10 @@ Claude's job here is to COMPLEMENT Codex's recall with precision. Codex now owns
 
 ```
 Stance: Lean fully into your assigned lens. Don't dilute it by covering
-angles the other 3 lenses are responsible for. State your lens's concerns
-directly without hedging — the meta-review pass will calibrate.
+angles the other 2 lenses are responsible for. State your lens's concerns
+directly without hedging — the meta-review pass will calibrate. Report only
+what you can substantiate, but a speculative-but-real finding tagged
+[investigate] is fine — don't over-suppress.
 
 For EVERY finding, include:
 - Confidence tag: [definite], [likely], or [investigate]
