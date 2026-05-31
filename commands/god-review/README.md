@@ -273,7 +273,7 @@ Categories covered:
 ├── Phase 0: context-package.md (stack fingerprint, architecture map)
 ├── Phase 1: state.json snapshot, perf baseline, pre-scan triggers
 ├── Phase 2: parallel spawn (single message)
-│   ├── Layer A: broad-reviewers/ (3 Claude + 3 Codex)
+│   ├── Layer A: broad-reviewers/ (3 Claude + 6 Codex)
 │   └── Layer B: principles/ (up to 24 × Claude+Codex pairs)
 ├── Phase 3 (always-on for /god-review): lib/editor-agent.md per fix
 │   └── snapshot → fix → re-verify → keep/revert → churn-ledger check
