@@ -139,7 +139,7 @@ Embed that CONTEXT into each lens prompt below, then append the lens aim. The fo
 Report only what you can substantiate — but a speculative-but-real finding tagged [investigate] is welcome; don't over-suppress. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR, then a category tag (one of BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, FRAGILITY), then file:line where applicable.
 ```
 
-**For MODE="branch" or MODE="uncommitted"**, use `codex ... review` (the lens aim cannot be embedded in the diff-based `review` subcommand prompt, so the lens is conveyed via the `-c experimental_instructions_file` is not used here — instead run the four passes and attribute the lens at merge time; each pass is still an independent Codex invocation). Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution):
+**For MODE="branch" or MODE="uncommitted"**, use `codex ... review` (the diff-based `review` subcommand takes no per-pass prompt, so the four passes run on the same diff and the lens is attributed at merge time; each pass is still an independent Codex invocation). Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution):
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
