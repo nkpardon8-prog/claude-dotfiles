@@ -71,7 +71,8 @@ now_sum="$(shasum "$SEED" | cut -d' ' -f1)"
 [ "$_rc" = "7" ] && [ "$now_sum" = "$seed_sum" ]
 atest_assert "A4" "$?" "guarded append did not surface failure (rc=$_rc, want 7) or mutated the original (sum $seed_sum -> $now_sum) — fail-LOUD contract violated."
 
-# restore perms so cleanup can remove the dir
+# restore perms so cleanup can remove the dir + file
+chmod 644 "$SEED" 2>/dev/null || true
 chmod 755 "$RO" 2>/dev/null || true
 
 atest_report
