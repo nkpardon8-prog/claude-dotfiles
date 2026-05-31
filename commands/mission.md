@@ -114,15 +114,18 @@ This first step is **collaborative, not autonomous.** Shape the multi-part roadm
 part-plan. Each part later runs its own full `/plan` reviewer loop in Section 5.
 
 Then seed the immutable PLAN once. **PLAN line-1 is the sole machine token; lines 2+ are prose.**
+The PLAN payload contains the (untrusted) roadmap text, so pass it **SINGLE-quoted** — never
+double-quoted — so a `$(...)`/backtick in the captured roadmap cannot execute (§7 injection rule):
 ```bash
-bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> "MISSION MODE: build
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> 'MISSION MODE: build
 <the multi-part roadmap: parts, sequence, intended outcome>
 
 Standing directive: route substantial work through research → /plan(+reviewers) → /implement →
-/codex-review, looping to 2 honest dry rounds (independent reviewers judge 'dry'); soft targets
+/codex-review, looping to 2 honest dry rounds (independent reviewers judge '"'"'dry'"'"'); soft targets
 plan 4-6 / codex 3-6, hard cap 6; /pre-compact freely interleaved; active until a
-[mission] MISSION-CLEARED line appears in the LOG."
+[mission] MISSION-CLEARED line appears in the LOG.'
 ```
+(If the roadmap itself contains a single quote, prefer a heredoc/file/stdin instead of escaping.)
 `create` is **no-clobber** — it will not overwrite an existing mission. Parse the returned status line
 (Section 7). Two outcomes need handling, NOT a silent no-op:
 - **`ok` and no prior file** → the PLAN was seeded. Confirm it with the user, then begin Level-2.
