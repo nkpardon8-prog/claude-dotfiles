@@ -174,6 +174,7 @@ if [ "${CWD#/}" = "$CWD" ]; then
 fi
 if printf '%s' "$CWD" | grep -qE '(^|/)\.\.($|/)'; then
   ctx_gate_log "primer skip reason=cwd-traversal cwd=$CWD"
+  [ -n "${MISSION_PREFIX:-}" ] && jq -n --arg c "$MISSION_PREFIX" '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$c}}'
   exit 0
 fi
 if [ ! -d "$CWD" ]; then
