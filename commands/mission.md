@@ -411,20 +411,33 @@ with `skill: pre-compact`. Continue once it returns.
 
 **Resume-read idiom (the SINGLE canonical way to recover state from the LOG — used by §2 status, §5,
 §9, §12, §13).** Do **NOT** `tail -n 40` the live log: with >40 trailing lines, or after a rotation,
-`tail` MISSES the last round/lifecycle line. Instead `grep '[mission] '` the FULL live log AND the
-NEWEST rotated archive under `.mission-backups/` (the lib rotates the oldest half into
-`MISSION.<sid>.log.<utc>.gz`, or `.txt` if gzip was absent), so a line that rotated out of the live log
-is still recovered:
+`tail` MISSES the last round/lifecycle line. Do **NOT** read only the newest archive either:
+`_mission_log_rotate` archives the OLDEST half on EACH fire, so after ≥2 rotations a durable line
+(MISSION-CLEARED, PART-DONE, test-trust, a FAIL tally line) can sit in an OLDER archive — reading just
+`ls -t … | head -1` would MISS it → false reactivation / repeated work / 5-FAIL under-count. Instead
+`grep '[mission] '` over **ALL archives concatenated oldest→newest THEN the live log**, so no rotated
+line is ever outside the read window:
 ```bash
 log="$root/MISSION.$sid.log"
-arc=$(ls -t "$root"/.mission-backups/MISSION."$sid".log.*.gz "$root"/.mission-backups/MISSION."$sid".log.*.txt 2>/dev/null | head -1)
-{ [ -n "$arc" ] && { case "$arc" in *.gz) gzip -dc "$arc" 2>/dev/null;; *) cat "$arc" 2>/dev/null;; esac; }
+{ for a in $(ls -tr "$root"/.mission-backups/MISSION."$sid".log.* 2>/dev/null); do
+    case "$a" in *.gz) gzip -dc "$a" 2>/dev/null;; *) cat "$a" 2>/dev/null;; esac
+  done
   cat "$log" 2>/dev/null; } | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null
+# state gate (active-iff) — keys ONLY on CLEARED/REBASELINED (see active-iff rule below):
+mission_state=$(grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' /tmp/mission-resume.$$ | tail -1)
+# convergence — keys ONLY on the last phase=review round (the dry-bearing phase):
+last_review=$(grep -E '\[mission\] part=[0-9]+ .*phase=review ' /tmp/mission-resume.$$ | tail -1)
+# resume POSITIONING — last activity of ANY phase + last part-lifecycle (NOT the state gate):
 last_round=$(grep -E '\[mission\] part=' /tmp/mission-resume.$$ | tail -1)
-last_life=$(grep -E '\[mission\] (PART-START|PART-DONE|MISSION-CLEARED|MISSION-REBASELINED|VOID|test-trust)' /tmp/mission-resume.$$ | tail -1)
+last_progress=$(grep -E '\[mission\] (PART-START|PART-DONE|test-trust|VOID)' /tmp/mission-resume.$$ | tail -1)
 ```
-(The archive is concatenated BEFORE the live log so chronological order is preserved and `tail -1`
-picks the genuinely-latest line.)
+(`ls -tr` lists archives OLDEST first; concatenating them before the live log preserves chronological
+order so the final `tail -1` of any filtered grep picks the genuinely-latest line. The
+`MISSION.<sid>.log.*` glob covers both `.gz` and the `.txt` fallback when gzip was absent.)
+The three greps are deliberately distinct: `mission_state` is the **active-iff state gate** (keys ONLY
+on CLEARED/REBASELINED), `last_review` drives **convergence** (the `2 − dry` math), and
+`last_round`/`last_progress` are for **resume positioning** only. Never let a transient progress line
+gate active-iff.
 
 **After `/pre-compact` returns** (or after any compaction), re-derive your position from that
 recovered record and continue the **EXACT** `(part, phase, round, dry)` from `last_round` (Section 7
