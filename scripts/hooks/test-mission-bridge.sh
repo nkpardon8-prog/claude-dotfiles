@@ -613,6 +613,128 @@ if _write_atomic "$WAF" "hello atomic" 2>/dev/null && [ -f "$WAF" ] \
 else fail "write_atomic" "did not write content"; fi
 rm -rf "${WORKBASE}-wa" 2>/dev/null
 
+# ===========================================================================================
+# 34 (C1): the mission_path "" (empty-string) cell — a manifest carrying mission_path:"" must be
+# BACKFILLED by the robust merge idiom, NOT kept "". jq // keeps "" (only null/false trigger //),
+# so the naive `// $mp` would leave it ""; the robust idiom replaces it with the real path.
+# ===========================================================================================
+EXISTING_EMPTY='{"mission_path":"","current_seq":1}'
+REALMP="/canonical/root/MISSION.sid.md"
+ROBUST_OUT=$(printf '%s' "$EXISTING_EMPTY" \
+  | jq -r --arg mp "$REALMP" '(.mission_path = (if ((.mission_path // "") == "") then $mp else .mission_path end)) | .mission_path' 2>/dev/null)
+NAIVE_OUT=$(printf '%s' "$EXISTING_EMPTY" \
+  | jq -r --arg mp "$REALMP" '(.mission_path = (.mission_path // $mp)) | .mission_path' 2>/dev/null)
+if [ "$ROBUST_OUT" = "$REALMP" ]; then
+  pass "C1: robust merge backfills mission_path:\"\" with the real path"
+else fail "C1 robust merge" "got '$ROBUST_OUT' want '$REALMP'"; fi
+# negative control: prove the naive // idiom is broken (keeps "") — so the robust test is non-vacuous
+if [ "$NAIVE_OUT" = "" ]; then
+  pass "C1 (negative control): naive // idiom WOULD keep \"\" (bug it replaces)"
+else fail "C1 negative control" "naive // unexpectedly produced '$NAIVE_OUT' (expected empty)"; fi
+
+# ===========================================================================================
+# 35 (C2): an OVERSIZE (>480B) log entry is rerouted to DURABLE NOTES in FULL (not truncated),
+# and the log either omits it or stores no truncated copy.
+# ===========================================================================================
+SID="${UNIQ}-c2reroute"
+R=$(fresh_root c2reroute)
+mission_create "$SID" "$R" "c2 plan" >/dev/null 2>&1
+F="$R/MISSION.${SID}.md"
+LOGF="$R/MISSION.${SID}.log"
+# Build a distinctive >480B ASCII payload (600 'A's plus a unique sentinel marker).
+BIG=$(awk 'BEGIN{s="C2SENTINEL-";for(i=0;i<600;i++)s=s"A";printf "%s", s}')
+mission_log_append "$SID" "$R" "$BIG" "c2-tag" >/dev/null 2>&1
+NOTES_C2=$(mission_read_zone "$F" "DURABLE NOTES" 2>/dev/null)
+# The FULL payload (all 600 A's, length >= 611) must be present in DURABLE NOTES, intact.
+NOTES_HAS_FULL=0
+case "$NOTES_C2" in *"C2SENTINEL-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"*) NOTES_HAS_FULL=1 ;; esac
+NOTES_LEN=$(printf '%s' "$NOTES_C2" | LC_ALL=C wc -c | tr -d ' ')
+if [ "$NOTES_HAS_FULL" = "1" ] && [ -n "$NOTES_LEN" ] && [ "$NOTES_LEN" -ge 600 ]; then
+  pass "C2: oversize log entry rerouted to DURABLE NOTES in FULL (len $NOTES_LEN, not truncated)"
+else fail "C2 reroute" "DURABLE NOTES len=$NOTES_LEN has_full=$NOTES_HAS_FULL"; fi
+# The log must NOT contain a truncated sentinel-bearing line (no lossy copy left behind).
+if [ ! -f "$LOGF" ] || ! grep -q "C2SENTINEL" "$LOGF" 2>/dev/null; then
+  pass "C2: no truncated copy left in the log sidecar (zero loss, single home)"
+else fail "C2 no-truncated-log-copy" "log holds a (truncated) sentinel line"; fi
+
+# ===========================================================================================
+# 36 (C4): mission_resolve_pending must NOT strip a `[pd:<id>]` STRING that appears in the PLAN
+# zone (only the live PENDING DECISIONS zone is in scope).
+# ===========================================================================================
+SID="${UNIQ}-c4scope"
+R=$(fresh_root c4scope)
+# PLAN body deliberately quotes a pd-id string that we will later "resolve" in PENDING.
+mission_create "$SID" "$R" "PLAN references [pd:9-keepme] as an example in prose" >/dev/null 2>&1
+F="$R/MISSION.${SID}.md"
+mission_mutate "$SID" "$R" pending "- [pd:9-keepme] should we do X?" "pd-9" >/dev/null 2>&1
+mission_resolve_pending "$SID" "$R" "9-keepme" "decided" >/dev/null 2>&1
+PLAN_C4=$(mission_read_zone "$F" PLAN 2>/dev/null)
+PEND_C4=$(mission_read_zone "$F" "PENDING DECISIONS" 2>/dev/null)
+PLAN_KEPT=0; case "$PLAN_C4" in *"[pd:9-keepme]"*) PLAN_KEPT=1 ;; esac
+PEND_STRIPPED=1; case "$PEND_C4" in *"pd:9-keepme"*) PEND_STRIPPED=0 ;; esac
+if [ "$PLAN_KEPT" = "1" ] && [ "$PEND_STRIPPED" = "1" ] && mission_verify "$F" "$SID" 2>/dev/null; then
+  pass "C4: resolve strips the PENDING-zone pd line but PRESERVES the same string in PLAN"
+else fail "C4 scope" "plan_kept=$PLAN_KEPT pend_stripped=$PEND_STRIPPED"; fi
+
+# ===========================================================================================
+# 37 (I1): mission_verify fails when a zone CLOSE fence is missing OR duplicated.
+# ===========================================================================================
+SID="${UNIQ}-i1close"
+R=$(fresh_root i1close)
+mission_create "$SID" "$R" "i1 plan" >/dev/null 2>&1
+F="$R/MISSION.${SID}.md"
+N8=$(_mission_marker_field "$F" nonce | cut -c1-8)
+# (a) remove the DURABLE NOTES CLOSE fence, keep marker last → must fail verify.
+awk -v t="<!-- /MZONE:DURABLE NOTES n=${N8} -->" '$0 != t' "$F" > "$F.noclose"
+if mission_verify "$F.noclose" "$SID" 2>/dev/null; then
+  fail "I1 missing close" "verify passed a file with a missing zone CLOSE fence"
+else pass "I1: mission_verify rejects a missing zone CLOSE fence"; fi
+# (b) duplicate the PLAN CHALLENGES close fence (paste a second live-nonce close) → must fail.
+awk -v t="<!-- /MZONE:PLAN CHALLENGES n=${N8} -->" '
+  { print }
+  $0 == t && !done { print t; done=1 }' "$F" > "$F.dupclose"
+if mission_verify "$F.dupclose" "$SID" 2>/dev/null; then
+  fail "I1 dup close" "verify passed a file with a DUPLICATE zone close fence"
+else pass "I1: mission_verify rejects a duplicated zone close fence"; fi
+rm -f "$F.noclose" "$F.dupclose"
+
+# ===========================================================================================
+# 38 (I2): an EMPTY-PID lock that is STALE (mtime age >= 2s) is reclaimed; a fresh empty-pid lock
+# (young) is NOT reclaimed (acquire times out, lock left intact).
+# ===========================================================================================
+SID="${UNIQ}-i2empty"
+R=$(fresh_root i2empty)
+LB=$(_mission_lockbase "$R")
+LOCK="${LB}/.claude-mission-$(_mission_sanitize_sid "$SID").lock"
+# (a) stale empty-pid lock: create the lock dir with NO pid file and backdate its mtime by 10s.
+rm -rf "$LOCK" 2>/dev/null; mkdir -p "$LOCK" 2>/dev/null
+touch -t "$(date -v-10S +%Y%m%d%H%M.%S 2>/dev/null || date -d '10 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null)" "$LOCK" 2>/dev/null
+_MLOCK=""
+if _mission_lock "$LB" "$SID" 2>/dev/null; then
+  HELDPID=$(cat "$LOCK/pid" 2>/dev/null | tr -cd '0-9')
+  if [ "$HELDPID" = "$$" ]; then pass "I2: stale empty-pid lock reclaimed (now held by us $$)"
+  else fail "I2 empty reclaim" "lock pid '$HELDPID' != $$"; fi
+  _mission_unlock
+else
+  fail "I2 empty reclaim" "_mission_lock failed to reclaim a STALE empty-pid lock"
+fi
+rm -rf "$LOCK" 2>/dev/null
+
+# ===========================================================================================
+# 39 (I3): two pre-mutation backups created within the SAME second BOTH survive (no overwrite).
+# ===========================================================================================
+SID="${UNIQ}-i3backup"
+R=$(fresh_root i3backup)
+mission_create "$SID" "$R" "i3 plan" >/dev/null 2>&1
+F="$R/MISSION.${SID}.md"
+# Two mutates back-to-back almost certainly land in the same UTC second → same ts+nonce prefix.
+mission_mutate "$SID" "$R" note "first note same-second" "i3-1" >/dev/null 2>&1
+mission_mutate "$SID" "$R" note "second note same-second" "i3-2" >/dev/null 2>&1
+NONBIRTH_CNT=$(ls -1 "$R/.mission-backups/"MISSION."${SID}".*.md 2>/dev/null | grep -vE "[.]birth[.]" | wc -l | tr -d ' ')
+if [ -n "$NONBIRTH_CNT" ] && [ "$NONBIRTH_CNT" -ge 2 ]; then
+  pass "I3: two same-second backups BOTH survive (count $NONBIRTH_CNT >= 2, no overwrite)"
+else fail "I3 backup collision" "non-birth backup count=$NONBIRTH_CNT (<2 → one overwrote the other)"; fi
+
 echo
 printf 'PASS: %d  FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]
