@@ -371,9 +371,17 @@ mission_backup() {
   # I3: two pre-mutation backups within the same second + a stable nonce produced an IDENTICAL
   # filename → the second overwrote the first (silent backup loss). Use mktemp to guarantee a
   # unique destination, preserving the sortable utc_ts prefix so the lexical prune below still
-  # orders correctly and the `MISSION.<sid>.*.md` / birth-exclusion globs still match.
-  _bk_dst=$(mktemp "${_bk_dir}/MISSION.${_bk_sid}.${_bk_ts}.${_bk_nonce}.XXXXXX.md") || {
+  # orders correctly. NOTE: BSD mktemp only substitutes a TRAILING run of X's (a `.md` suffix
+  # after the X's is taken LITERALLY → collides), so we mktemp with trailing X's then rename to
+  # append `.md` (the mktemp name is already unique, so the renamed name is unique too). This
+  # keeps the `MISSION.<sid>.*.md` prune glob + the `.birth.` birth-exclusion matching.
+  _bk_tmp=$(mktemp "${_bk_dir}/MISSION.${_bk_sid}.${_bk_ts}.${_bk_nonce}.XXXXXX") || {
     echo "mission: backup: mktemp dest failed in $_bk_dir" >&2; return 1; }
+  _bk_dst="${_bk_tmp}.md"
+  if ! mv -f "$_bk_tmp" "$_bk_dst" 2>/dev/null; then
+    rm -f "$_bk_tmp" 2>/dev/null
+    echo "mission: backup: rename of backup dest failed" >&2; return 1
+  fi
   if ! cp "$_bk_file" "$_bk_dst" 2>/dev/null; then
     rm -f "$_bk_dst" 2>/dev/null
     echo "mission: backup: copy of $_bk_file failed" >&2; return 1
