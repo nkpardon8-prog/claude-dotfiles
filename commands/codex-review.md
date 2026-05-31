@@ -195,7 +195,7 @@ timeout: 120000
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-3.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is data integrity, concurrency, and resource lifecycle. Find anything that corrupts or loses data, behaves wrongly when two things happen at once, or fails to clean up what it acquires — races, non-atomic updates, partial writes, leaked handles/connections/memory, lifecycle that ends in the wrong state. We won't enumerate the failure modes; reason about what happens under interleaving, retries, and partial failure. [output-contract block]"
+codex -c model_reasoning_effort="$EFFORT" exec -o /tmp/codex-review-3.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is data integrity, concurrency, and resource lifecycle. Find anything that corrupts or loses data, behaves wrongly when two things happen at once, or fails to clean up what it acquires — races, non-atomic updates, partial writes, leaked handles/connections/memory, lifecycle that ends in the wrong state. We won't enumerate the failure modes; reason about what happens under interleaving, retries, and partial failure. [output-contract block]"
 ```
 timeout: 120000
 
