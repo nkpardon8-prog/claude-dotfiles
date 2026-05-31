@@ -169,6 +169,7 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 # proceeds (could fail on docker/NFS/shared mounts where the user UID differs from cwd owner).
 if [ "${CWD#/}" = "$CWD" ]; then
   ctx_gate_log "primer skip reason=cwd-not-absolute cwd=$CWD"
+  [ -n "${MISSION_PREFIX:-}" ] && jq -n --arg c "$MISSION_PREFIX" '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$c}}'
   exit 0
 fi
 if printf '%s' "$CWD" | grep -qE '(^|/)\.\.($|/)'; then
