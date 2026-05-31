@@ -114,12 +114,12 @@ to over-trust of automated patching.
 
 ## `/god-review` Cost Profile
 
-The autonomous loop runs Phase 2 with up to **56 agents per round** (57 with `--ruthless`):
-3 broad-Claude + 3 broad-Codex + 24 principle pairs (48 agents) + 2 batched validation = 56.
-With stack-gating the typical round is ~36-40 agents:
+The autonomous loop runs Phase 2 with up to **59 agents per round** (60 with `--ruthless`):
+3 broad-Claude + 6 broad-Codex + 24 principle pairs (48 agents) + 2 batched validation = 59.
+With stack-gating the typical round is ~39-43 agents:
 - 3 Claude broad reviewers (each reviews the ENTIRE codebase scope — most expensive calls)
 - 1 ruthless redteam reviewer (only when `--ruthless` is set)
-- 3 Codex broad reviewers
+- 6 Codex broad reviewers (3 checklist-style + 3 open-posture)
 - Up to 24 principle pairs (Claude + Codex sub-agent each)
 
 **Round time: 15–30 minutes** with single-account Codex serialization.
