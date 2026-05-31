@@ -106,8 +106,14 @@ if [ -z "$TARGET_PID" ]; then
   exit 0
 fi
 # Identity tuple {pid, start-time, argv-is-claude} — captured once, re-checked just before firing
-# (defeats macOS pid-reuse and a mid-window process swap).
+# (defeats macOS pid-reuse and a mid-window process swap). The start-time MUST be non-empty: an
+# empty lstart means the pid vanished between resolve and stat (a race), so fail closed rather than
+# carry an empty identity that any reused pid with an also-empty lstart could later "match".
 PID_START=$(ac_pid_starttime "$TARGET_PID")
+if [ -z "$PID_START" ]; then
+  ac_log "abort sid=$REAL_SID reason=starttime-empty pid=$TARGET_PID"
+  exit 0
+fi
 if ! ac_pid_argv_is_claude "$TARGET_PID"; then
   ac_log "abort sid=$REAL_SID reason=argv-mismatch pid=$TARGET_PID"
   exit 0
