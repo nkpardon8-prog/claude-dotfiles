@@ -613,13 +613,19 @@ phase line must not drive the `2 − D` math).
   for round K, re-run round K fresh (it banked nothing).
 - **Round-ambiguity decision table (the SINGLE reconciliation of §5↔§8 — apply in order):**
 
-  | Last round line for the current part | Resume action |
+  | Last round/progress line for the current part | Resume action |
   |---|---|
+  | **current part's latest progress line is `PART-DONE` or `PART-RETIRED`** (HIGHEST PRIORITY — both are in `last_progress`) | the part is **COMPLETE** → advance to the next part (first re-attempt retirement if `PART-DONE` present but `PART-RETIRED` absent, per the PART-DONE rule below; then await/emit the next `PART-START`). Do **NOT** consult `last_round`/`last_review` for a completed part — a stale prior `phase=review dry=2` line must NOT re-enter already-converged review. |
   | `phase=fix` (a fix was in flight) | FINISH the in-flight fix to completion against the working tree, THEN re-run the barrier as the NEXT round K+1. Do not assume the fix finished. |
   | `phase=review` with `findings>0` (ACTIONABLE — `dry` was NOT advanced) | resume into the **FIX of the SAME round K** → log `phase=fix` round=K, apply fixes; do NOT start a fresh review round K+1. (`findings>0` ⇒ this round demands a fix before any new review.) |
   | `phase=review` with `findings=0` (dry-advancing, `dry` already incremented on the line) | start the NEXT FRESH review round K+1 per the `2 − dry` rule. |
   | a `VOID … round=K` is the latest line for round K | re-run round K FRESH (never count it). |
-  | last is `PART-DONE` | do not re-resume; advance per the PART-DONE rule below. |
+  | last round line is a non-review/non-fix phase (`phase=research` \| `phase=plan` \| `phase=implement`) | CONTINUE that phase's work for the current part to completion, THEN proceed to the review barrier (Section 5). Resume the phase you were in; do not skip ahead and do not consult `last_review` (no review round was banked yet). |
+
+  This table is **TOTAL and mutually-exclusive over all schema phases** (`research`/`plan`/`implement`/
+  `review`/`fix`) and over completed-part state (`PART-DONE`/`PART-RETIRED`): completed-part progress
+  takes precedence over any stale round line, and the non-review/non-fix catch-all covers the remaining
+  phases — every recoverable state maps to exactly one row.
 
   **Never re-run an idtag round you already banked** (a banked `findings=0` review or a completed fix
   is a no-op that wastes a compaction). `findings=<COUNT>` on the round line is the cross-check that
