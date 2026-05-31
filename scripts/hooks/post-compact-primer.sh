@@ -33,6 +33,11 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # Chain primitives (overnight-autonomy): provides chain_manifest_read for the chain banner.
 # shellcheck source=lib/handoff-chain.sh
 . "$ROOT/lib/handoff-chain.sh"
+# Mission-bridge primitives (PIVOT A): provides _file_size, handoff_canonical_root, mission helpers.
+# Only used here to surface the PRECOMPUTED MISSION.<sid>.banner (near-zero work — never reads the
+# 5MB main file). Sourced last so its source-guards/helpers override cleanly if order changes.
+# shellcheck source=lib/mission-bridge.sh
+. "$ROOT/lib/mission-bridge.sh"
 
 INPUT=$(head -c 1048576)  # bound stdin to 1MB (DoS guard)
 
