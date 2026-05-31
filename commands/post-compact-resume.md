@@ -363,3 +363,22 @@ mid-round 4`), re-enter that skill at that phase.
 If the directive says "wait for user questions" (handoff-style pattern where the prior
 session was deliberately paused for the user to ask follow-ups), do exactly that —
 don't pre-empt with work.
+
+### Write the one-shot resume marker (idempotency — do this ONCE, here)
+
+As soon as you have committed to this resume (you've read the handoff and are acting on its
+`## Next Action`), write the `resume_marker` path captured from the STATE=`ok` JSON, IF it is
+non-empty. This makes the second resume channel (self-invoke vs. typed backstop) a clean
+`STATE=already-resumed` no-op instead of a duplicate resumption. Atomic write, mode 600:
+
+```bash
+# RESUME_MARKER = the resume_marker field from the STATE=ok JSON (skip if empty).
+if [ -n "$RESUME_MARKER" ]; then
+  _tmp=$(mktemp "${RESUME_MARKER}.XXXXXX") && printf 'resumed ts=%s\n' "$(date +%s)" > "$_tmp" \
+    && chmod 600 "$_tmp" 2>/dev/null && mv -f "$_tmp" "$RESUME_MARKER" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
+fi
+```
+
+Write it exactly once, in the FIRST resume turn — not on an `already-resumed` no-op. If
+`resume_marker` was empty (no handoff nonce available), skip silently: a double-resume then just
+re-reads inert handoff data, which is harmless.
