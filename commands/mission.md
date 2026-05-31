@@ -155,14 +155,20 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
 - **(b) A mission exists AND PLAN line-1 IS a `MISSION MODE:` token** → you are already in mission
   mode; just continue.
 - **(c) A mission exists BUT PLAN line-1 is NOT a `MISSION MODE:` token** (a non-mission
-  `/pre-compact` seeded the PLAN) → do **NOT** silently no-op (`create` is no-clobber and would
-  quietly do nothing). Surface this to the user and **rebaseline** the PLAN to the mission directive
-  — `rebaseline` is the ONLY path that legitimately rewrites PLAN:
+  `/pre-compact` seeded the PLAN, OR a previously-`cleared` mission whose lifecycle is closed) → do
+  **NOT** silently no-op (`create` is no-clobber and would quietly keep the stale PLAN). Surface this
+  to the user and **rebaseline** the PLAN to the mission directive — `rebaseline` is the ONLY path
+  that legitimately rewrites PLAN, and it **reactivates** the mission: rebaseline now appends a
+  `[mission] MISSION-REBASELINED status=active` lifecycle line, and the active-iff rule (Section 8)
+  treats the LATEST lifecycle line being `MISSION-REBASELINED` as active — so a prior
+  `MISSION-CLEARED` no longer suppresses. Do **not** hand-write a separate reactivation line; rely on
+  rebaseline to do it:
   ```bash
   bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> "MISSION MODE: adopt
   <captured objective + standing directive>"
   ```
-  If the user is away, log a **loud CHALLENGE** explaining the rebaseline and proceed.
+  Parse the returned status line (Section 7). If the user is away, log a **loud CHALLENGE** explaining
+  the rebaseline and proceed.
 
 **Judgment threshold (don't over-constrain):** route each *unit of work worth planning* through the
 per-part sequence — a real feature/change gets the full panel; a typo or one-liner does NOT. Use
