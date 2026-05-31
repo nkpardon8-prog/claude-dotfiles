@@ -168,8 +168,10 @@ Because Codex (`exec` with `-s read-only -C "$WORKDIR"`) and `RUN_DIR` live unde
 Embed that CONTEXT into each lens prompt below, then append the lens aim. The four shared output-contract rules (append to EVERY lens prompt):
 
 ```
-Report only what you can substantiate — but a speculative-but-real finding tagged [investigate] is welcome; don't over-suppress. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR, then a category tag (one of BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, FRAGILITY), then file:line where applicable.
+Report only what you can substantiate — but a speculative-but-real finding tagged [investigate] is welcome; don't over-suppress. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR, then a category tag (one of BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, FRAGILITY), then file:line where applicable. End your output with a single final line `Verdict: ship` (nothing blocking found) or `Verdict: needs-fixes` — ALWAYS emit exactly one such verdict line, even when you found nothing.
 ```
+
+The mandatory trailing `Verdict: ship|needs-fixes` line is a contract, not decoration: the Step 3c usability gate keys on it (a real pass — clean or not — always emits a verdict line; a CLI error/usage/stack-trace does not), so it is what lets a genuinely-clean pass be counted as usable regardless of finding wording. Do not drop it.
 
 **For MODE="branch" or MODE="uncommitted"**, use `codex ... review` (the diff-based `review` subcommand takes no per-pass prompt, so the four passes run on the same diff and the lens is attributed at merge time; each pass is still an independent Codex invocation). Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution):
 
