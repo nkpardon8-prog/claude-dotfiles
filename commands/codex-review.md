@@ -181,7 +181,7 @@ timeout: 600000
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
-cd $WORKDIR && codex -c model_reasoning_effort="$EFFORT" review [--base $BASE_BRANCH | --uncommitted] > $RUN_DIR/codex-review-2.txt 2>&1
+cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE_BRANCH" | --uncommitted] > "$RUN_DIR/codex-review-2.txt" 2>&1
 ```
 timeout: 600000
 
