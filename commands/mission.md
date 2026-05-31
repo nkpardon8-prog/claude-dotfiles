@@ -404,10 +404,11 @@ line, not at column 0.
   - `[mission] PART-DONE part=<N> (converged)` idtag `m<N>-part-done`.
   - `[mission] test-trust part=<N>=<ok|added|n/a>` idtag `m<N>-test-trust` (before the first implement
     round; durable resume marker — Section 5).
-  - `[mission] MISSION-CLEARED status=<achieved|could-not|cleared> reason=<slug>` idtag
-    `mission-cleared-<slug>`.
+  - `[mission] MISSION-CLEARED status=<achieved|could-not|cleared> reason=<slug>` — pass an **EMPTY
+    idtag** (lifecycle lines ALWAYS append; a `mission-cleared-<slug>` idtag would dedup-suppress a
+    re-clear after a rebaseline and leave the mission spuriously active — §2/§11).
   - `[mission] MISSION-REBASELINED status=active (…)` — written by the `rebaseline` verb itself (the
-    lib appends it); a REACTIVATING lifecycle token (Section 8 active-iff).
+    lib appends it, also always-append, no dedup); a REACTIVATING lifecycle token (Section 8 active-iff).
 
 Example round line:
 ```bash
