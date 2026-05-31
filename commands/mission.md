@@ -409,14 +409,48 @@ rewrites PLAN.
 Invoke `/pre-compact` at natural seams or whenever context warrants — freely. Invoke the Skill tool
 with `skill: pre-compact`. Continue once it returns.
 
-**After it returns** (or after any compaction), re-derive your position from the durable record:
-read the LOG tail (Section 2's `tail -n 40`) and continue the **EXACT** `(part, phase, round, dry)`
-you find there. Read the last `[mission] part=…` round line; you need `2 − dry` more dry rounds.
-**Never restart converged work** and never re-run review rounds you already banked.
+**Resume-read idiom (the SINGLE canonical way to recover state from the LOG — used by §2 status, §5,
+§9, §12, §13).** Do **NOT** `tail -n 40` the live log: with >40 trailing lines, or after a rotation,
+`tail` MISSES the last round/lifecycle line. Instead `grep '[mission] '` the FULL live log AND the
+NEWEST rotated archive under `.mission-backups/` (the lib rotates the oldest half into
+`MISSION.<sid>.log.<utc>.gz`, or `.txt` if gzip was absent), so a line that rotated out of the live log
+is still recovered:
+```bash
+log="$root/MISSION.$sid.log"
+arc=$(ls -t "$root"/.mission-backups/MISSION."$sid".log.*.gz "$root"/.mission-backups/MISSION."$sid".log.*.txt 2>/dev/null | head -1)
+{ [ -n "$arc" ] && { case "$arc" in *.gz) gzip -dc "$arc" 2>/dev/null;; *) cat "$arc" 2>/dev/null;; esac; }
+  cat "$log" 2>/dev/null; } | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null
+last_round=$(grep -E '\[mission\] part=' /tmp/mission-resume.$$ | tail -1)
+last_life=$(grep -E '\[mission\] (PART-START|PART-DONE|MISSION-CLEARED|MISSION-REBASELINED|VOID|test-trust)' /tmp/mission-resume.$$ | tail -1)
+```
+(The archive is concatenated BEFORE the live log so chronological order is preserved and `tail -1`
+picks the genuinely-latest line.)
+
+**After `/pre-compact` returns** (or after any compaction), re-derive your position from that
+recovered record and continue the **EXACT** `(part, phase, round, dry)` from `last_round` (Section 7
+round-line schema):
+- Read the last `[mission] part=…` round line; you need `2 − dry` more dry rounds. Honor the
+  `phase=review` vs `phase=fix` substate per Section 5's resume-substate rules.
+- **Round-ambiguity rule:** when the last round K logged `dry<2`, on resume START THE NEXT FRESH round
+  (round K+1) — **never re-run the same idtag round** K (it is already banked; re-running it is a
+  no-op that wastes a compaction). The only exception is a `phase=fix` line (finish the in-flight fix
+  first) or a `VOID` for round K (re-run round K fresh).
+- **PART-DONE / next-part:** if the last `[mission]` line FOR THE CURRENT PART is `PART-DONE`, the part
+  converged — do NOT re-resume it. Advance to the next part: find the latest `PART-START part=<M>`
+  (if present, resume part M); if no later `PART-START` exists yet, log `PART-START part=<N+1>`
+  (Section 5/7) and begin its Phase 1. **Never restart converged work** and never re-run review rounds
+  you already banked.
+- A `VOID part=<N> … round=<K>` line means round K did not count → re-run round K fresh (Section 6/7).
+- `test-trust part=<N>` recovered = honored; absent = unresolved → re-assess before implementing (#13).
 
 **Mode is ACTIVE iff** PLAN line-1 is a `MISSION MODE:` token **AND** the most-recent lifecycle line
-in the LOG is NOT `MISSION-CLEARED`. (Keying on the *latest* lifecycle line means a sid re-seeded via
-`rebaseline` after a clear is active again, and a stale earlier CLEARED no longer suppresses.)
+in the LOG (`last_life` above) is NOT `MISSION-CLEARED`. Key on the LATEST lifecycle line:
+- latest is `MISSION-CLEARED` → INACTIVE (the mission is over; resume normally, not in mission mode).
+- latest is `MISSION-REBASELINED status=active` → **ACTIVE** (a sid re-seeded via `rebaseline` after a
+  prior clear is reactivated; the rebaseline line is the latest lifecycle token and overrides the
+  stale earlier CLEARED).
+- latest is any other lifecycle token (`PART-START` / `PART-DONE` / `test-trust`) with a `MISSION MODE:`
+  PLAN line-1 → ACTIVE.
 
 ---
 
