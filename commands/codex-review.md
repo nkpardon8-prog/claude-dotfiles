@@ -278,12 +278,11 @@ If you find nothing new beyond what Codex already found, return: "No additional 
 Quality over quantity. Every finding should be worth acting on.
 ```
 
-### The 4 agents to spawn:
+### The 3 agents to spawn:
 
-1. **description**: "Codex Review — Depth Agent"
-2. **description**: "Codex Review — Breadth Agent"
-3. **description**: "Codex Review — Adversary Agent"
-4. **description**: "Codex Review — Gaps Agent"
+1. **description**: "Codex Review — Architecture Agent"
+2. **description**: "Codex Review — Integration Agent"
+3. **description**: "Codex Review — Adversarial+FP-filter Agent"
 
 Each agent does up to 3 passes internally (Pass 1: initial findings, Pass 2: deeper with Pass 1 context, Pass 3: final sweep for subtle issues). Stop early if a pass produces zero new findings.
 
