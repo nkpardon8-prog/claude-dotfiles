@@ -383,8 +383,13 @@ The prompt should instruct Codex to:
 
 ### 6b. Run verification
 
+Assemble the verification prompt text (`$VERIFY_PROMPT`) and feed it to Codex via stdin, never as an inline double-quoted argument — the consolidated findings list can contain arbitrary code excerpts and shell metacharacters that must not be shell-evaluated:
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-verify.txt --ephemeral -s read-only -C $WORKDIR "You are a code review verifier. Here are findings from a multi-agent review of this codebase:
+printf '%s' "$VERIFY_PROMPT" > "$RUN_DIR/codex-verify-prompt.txt" && codex -c model_reasoning_effort="$EFFORT" exec -o "$RUN_DIR/codex-verify.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-verify-prompt.txt"
+```
+where `$VERIFY_PROMPT` is the literal text:
+```
+You are a code review verifier. Here are findings from a multi-agent review of this codebase:
 
 [PASTE CONSOLIDATED FINDINGS LIST]
 
@@ -394,7 +399,7 @@ For each finding:
 
 Then do one final sweep: with all these findings as context, is there anything obvious that was missed entirely? List any new findings with CRITICAL/IMPORTANT/MINOR and a category tag.
 
-Be ruthless about false positives. Only CONFIRM findings you can verify in the code."
+Be ruthless about false positives. Only CONFIRM findings you can verify in the code.
 ```
 timeout: 120000
 
