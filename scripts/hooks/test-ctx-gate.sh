@@ -495,6 +495,7 @@ if [ -f "$VERBS_FILE" ]; then
     case "$G5R_BARE" in
       *'|'*) continue ;;
       action=*) continue ;;
+      mission-write:*) continue ;;  # mission-write.sh status-LINE output rows, not verbs
     esac
     # Determine the grep pattern based on verb type.
     # handoff:X verbs: the handoff_log() shell function prepends "handoff:" at runtime,
