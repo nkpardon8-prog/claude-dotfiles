@@ -230,6 +230,10 @@ if [ "$RESOLVE_RC" -eq 2 ]; then
       '{"hookSpecificOutput":{"hookEventName":"SessionStart","hookEventVersion":"SessionStart-v1","additionalContext":$msg}}'
   else
     ctx_gate_log "primer sid=${SID:-unknown} action=skip reason=no-handoff-file-for-sid"
+    # This sub-branch (no sentinel) emits no warning JSON — but it must still surface the mission
+    # banner if one exists (#1: no silent exit drops MISSION_PREFIX). The if-branch above already
+    # carries it via ${BANNER_PREFIX}.
+    [ -n "${MISSION_PREFIX:-}" ] && jq -n --arg c "$MISSION_PREFIX" '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$c}}'
   fi
   exit 0
 fi
