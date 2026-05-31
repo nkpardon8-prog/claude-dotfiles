@@ -137,9 +137,10 @@ e.g. write the payload to a temp file and pass it, so no quoting of untrusted te
   and it now appends a `[mission] MISSION-REBASELINED status=active` lifecycle line that REACTIVATES
   a previously-cleared mission per the active-iff rule in Section 8):
   ```bash
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> "MISSION MODE: build
-  <the multi-part roadmap + the same standing-directive text as above>"
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> 'MISSION MODE: build
+  <the multi-part roadmap + the same standing-directive text as above>'
   ```
+  (SINGLE-quoted — the roadmap is untrusted; never double-quote captured content, §7 injection rule.)
   Parse that status line too (Section 7). If the user is away, log a loud `challenge` explaining the
   rebaseline and proceed.
 
