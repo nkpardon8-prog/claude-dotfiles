@@ -532,16 +532,27 @@ line is ever outside the read window:
 ```bash
 live_log="$root/MISSION.$sid.log"
 # Concatenate ALL archives in FILENAME-timestamp (chronological) order, THEN the live log.
-# SPACE-SAFE: the canonical root can contain spaces (e.g. ".../untitled folder/skills"), so NEVER
-# word-split an unquoted $(ls …); pipe one path per line into `read -r`. Match ONLY the FINAL
-# extensions (.gz / .txt) so an in-flight rotation temp (e.g. a partial .tmp) is never read. The
-# timestamp embedded in each archive name sorts LEXICALLY = CHRONOLOGICALLY (more reliable than mtime,
-# which a touch/restore can perturb), so `sort` gives true oldest→newest order:
-{ ls -1 "$root"/.mission-backups/MISSION."$sid".log.*.gz \
-       "$root"/.mission-backups/MISSION."$sid".log.*.txt 2>/dev/null | sort | while IFS= read -r a; do
+# SET-e SAFE on ZERO archives: a fresh mission has NO archives, so an unmatched glob would expand
+# to the literal pattern and an `ls <literal>` would exit nonzero — under `set -e -o pipefail` that
+# would ABORT the whole pipeline BEFORE `cat "$live_log"`, losing all live state. So iterate the
+# globs with a `for` + `[ -e ] || continue` guard: an unmatched glob yields its literal pattern,
+# `[ -e ]` is false for the literal, we `continue` — NO failing command ever runs on no-match, and
+# the live log is ALWAYS read below regardless of archive count.
+# SPACE-SAFE: the canonical root can contain spaces (e.g. ".../untitled folder/skills"), so every
+# path stays quoted ("$a") and is piped one-per-line into `read -r` — never word-split. Match ONLY
+# the FINAL extensions (.gz / .txt) so an in-flight rotation temp (e.g. a partial .tmp) is never read.
+# The timestamp embedded in each archive name sorts LEXICALLY = CHRONOLOGICALLY (more reliable than
+# mtime, which a touch/restore can perturb), so `sort` gives true oldest→newest order:
+{
+  for a in "$root"/.mission-backups/MISSION."$sid".log.*.gz \
+           "$root"/.mission-backups/MISSION."$sid".log.*.txt; do
+    [ -e "$a" ] || continue          # unmatched glob -> literal -> [ -e ] false -> skip (no failing cmd)
+    printf '%s\n' "$a"
+  done | sort | while IFS= read -r a; do
     case "$a" in *.gz) gzip -dc "$a" 2>/dev/null;; *) cat "$a" 2>/dev/null;; esac
   done
-  cat "$live_log" 2>/dev/null; } | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null
+  cat "$live_log" 2>/dev/null          # ALWAYS read, even with zero archives
+} | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null
 
 # Derive the CURRENT part N first — convergence reads MUST be scoped to it (a prior part's final
 # dry=2 review line would otherwise bleed into part N+1's convergence math):
