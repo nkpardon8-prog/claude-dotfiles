@@ -67,7 +67,7 @@ Paste this into a fresh Claude Code session on a machine where Claude Code is al
 > 4. Test by piping a sample blob into the script and showing me the output: `bash ~/.claude/statusline.sh < <(echo '{"model":{"display_name":"Opus 4.7"},"workspace":{"current_dir":"'"$PWD"'"}}')`.
 > 5. Tell me to reload Claude Code (Ctrl+R or restart) to see it live.
 >
-> The status line shows: context %, 5h-window time left, 5h usage left, weekly usage left, model + effort, repo name. Rate-limit data comes from Anthropic API response headers via a 1-token Haiku call refreshed every 5 minutes in the background.
+> The status line shows: context %, 5h-window time left, 5h usage left, weekly usage left, model + effort, weekly-reset time (`wk→6th 4pm`), repo name. Rate-limit data comes from Anthropic API response headers via a 1-token Haiku call refreshed every 5 minutes in the background.
 
 ## Files
 
