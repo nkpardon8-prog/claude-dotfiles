@@ -265,12 +265,18 @@ a void round.
 
 Merge ALL findings at **ONE synthesis barrier**. Write the round checkpoint in TWO parts so it
 survives the log machinery (the lib reroutes any LOG line whose `idtag\tentry` is ≥480 bytes to
-DURABLE NOTES, where the resume grep won't find it):
-1. **Persist the round checkpoint line FIRST, with `phase=review` and a short findings COUNT**
-   (Section 7 round-line schema) — TERSE, never verbose findings text — so a mid-synthesis compaction
-   resumes from a recorded, in-LOG round.
-2. Put the verbose per-reviewer findings in a SEPARATE `note` (DURABLE NOTES), referenced by the
+DURABLE NOTES, where the resume grep won't find it). **ORDER MATTERS — write the verbose `note`
+FIRST, then the terse round line:**
+1. **Persist the verbose per-reviewer findings `note` FIRST** (DURABLE NOTES), referenced by the
    round's `part/phase/round`.
+2. **THEN persist the terse round checkpoint line**, with `phase=review` and a short findings COUNT
+   (Section 7 round-line schema) — TERSE, never verbose findings text.
+
+This order is deliberate: the round line is the thing resume KEYS on (§8). If a compaction lands
+BETWEEN the two writes, the verbose note exists but the round line is simply ABSENT, so resume sees no
+banked review round and **re-runs the round cleanly** — far better than the reverse order, which would
+strand a banked `phase=review` round whose findings note was never written (no recoverable findings to
+fix). Never write the terse round line before its findings note.
 
 The `phase=review` checkpoint means "findings logged, fixes NOT yet applied"; when you begin applying
 fixes, advance the SAME round to `phase=fix` (Section 7) so a compaction in the fix window resumes
