@@ -38,10 +38,10 @@ case "$out_ok" in *"mission-write: note ok"*) _okline=0 ;; *) _okline=1 ;; esac
 atest_assert "A4" "$?" "a successful write did not report a clean 'ok' status (line='$out_ok', parsed-rc='$rc_ok', exit=$ec_ok) — the parse would either miss success or hallucinate a failure code."
 
 # --- A1: CORRUPT mission file → status line carries rc=2, parse extracts 2 ----------------
-# Corrupt by rewriting the marker's plan_hash so mission_verify mismatches.
-tmpf=$(mktemp "${MF}.corrupt.XXXXXX") || atest_infra "mktemp failed"
-LC_ALL=C sed 's/plan_hash=[0-9a-fA-F]*/plan_hash=deadbeefdeadbeef/' "$MF" > "$tmpf" && mv -f "$tmpf" "$MF" \
-  || atest_infra "could not corrupt the mission file"
+# Corrupt so the LAST non-empty line is no longer the canonical marker (mission_verify:272-276
+# requires the marker to be the last non-empty line). plan_hash drift is only a soft note, not a
+# verify failure (lib:724), so we break a hard structural check instead.
+printf '\nCORRUPTION-NOT-A-MARKER\n' >> "$MF" || atest_infra "could not corrupt the mission file"
 mission_verify "$MF" "$SID" 2>/dev/null && atest_infra "setup: corruption did not break mission_verify"
 
 out_corrupt=$(bash "$MW" note "$SID" "$ROOT" "into a corrupt file" "n-corrupt" 2>/dev/null); ec_corrupt=$?
