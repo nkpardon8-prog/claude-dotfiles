@@ -424,7 +424,10 @@ line, not at column 0.
   - entry: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K> dry=<D> findings=<COUNT>`
   - `findings=<COUNT>` is a SHORT integer count ONLY (e.g. `findings=2`) — NEVER verbose finding text.
     Verbose per-reviewer findings go in a SEPARATE `note` (DURABLE NOTES), referenced by `part/phase/
-    round` (Section 5 synthesis barrier).
+    round` (Section 5 synthesis barrier). **It has a READ use, not just an audit use:** on a
+    `phase=review` resume it disambiguates the substate (§5/§8 decision table) — `findings=0` ⇒
+    dry-advancing round (start the next fresh review round); `findings>0` ⇒ ACTIONABLE (resume into the
+    `phase=fix` of the SAME round before any new review). Every written shape has this matching read.
   - `phase=review` = "findings logged, fixes NOT yet applied"; advance the SAME round to `phase=fix`
     when you begin applying fixes (CRITICAL #2 substate; resume rules in Section 5).
   - idtag: `m<N>-<phase>-r<K>-d<D>` — the **`d<D>` is REQUIRED** (encodes the dry-count so an advanced
