@@ -441,6 +441,9 @@ line, not at column 0.
   - `[mission] PART-START part=<N> name=<slug>` idtag `m<N>-part-start` (logged when advancing to a
     new part; resume uses it to skip a converged part — Section 8/9).
   - `[mission] PART-DONE part=<N> (converged)` idtag `m<N>-part-done`.
+  - `[mission] PART-RETIRED part=<N>` idtag `m<N>-part-retired` (the per-part plan was moved
+    ready-plans→done-plans; resume reads it to tell "converged + retired" from "converged, retirement
+    pending" — Section 5 retirement block; idempotent re-attempt if PART-DONE present but this absent).
   - `[mission] test-trust part=<N>=<ok|added|n/a>` idtag `m<N>-test-trust` (before the first implement
     round; durable resume marker — Section 5).
   - `[mission] MISSION-CLEARED status=<achieved|could-not|cleared> reason=<slug>` — pass an **EMPTY
