@@ -238,8 +238,13 @@ After all four return, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/code
 **Usability gate (apply to EVERY pass before classifying):** A pass is "usable" only if its output file contains a REAL, on-topic review — not merely non-empty bytes. A Codex CLI error page, usage text, sandbox-denied message, or stack trace also writes non-empty text, so non-emptiness alone does NOT qualify. The exact heuristic (bash 3.2.57 safe — use `grep -E -c` / `grep -E -q`):
 
 ```bash
-# REVIEW_RE matches a real finding line or a recognizable clean/verdict line.
-REVIEW_RE='^[[:space:]]*(CRITICAL|IMPORTANT|MINOR|No (additional )?findings|Clean review)'
+# REVIEW_RE matches a real review's fingerprint: a finding line, the mandatory one-line
+# verdict every pass is instructed to emit (ship/needs-fixes), or a clean/no-issues verdict in
+# ANY common wording. A real pass ALWAYS ends with a verdict line, so this catches clean passes
+# regardless of phrasing; a CLI error / usage / sandbox-denied / stack-trace matches none of it.
+# (Do NOT require an exact clean sentinel — a clean pass worded "no issues found" must still count,
+#  or CODEX_PASSES drops below 4/4 and /mission VOIDs forever. Case-insensitive on the verdict/clean parts.)
+REVIEW_RE='^[[:space:]]*(CRITICAL|IMPORTANT|MINOR)|[Vv]erdict:[[:space:]]*(ship|needs-fixes)|[Nn]o (additional |significant )?(findings|issues|concerns|problems)|[Cc]lean review|[Nn]othing (significant|notable|to flag)'
 # usable = file contains >=1 line matching REVIEW_RE
 if [ -s "$RUN_DIR/codex-review-$N.txt" ] && grep -E -q "$REVIEW_RE" "$RUN_DIR/codex-review-$N.txt"; then
   USABLE=1   # real review present (success OR partial-with-findings)
