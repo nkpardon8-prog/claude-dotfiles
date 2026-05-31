@@ -553,9 +553,10 @@ re-enter), and never change the active/inactive decision.
 
 ## 11. Lifecycle — clear + status
 
-- **`/mission clear [reason]`** logs `[mission] MISSION-CLEARED status=cleared reason=<slug>` (idtag
-  `mission-cleared-<slug>`, so a re-issued clear doesn't append a duplicate lifecycle line) and ends
-  the mission early (mirrors `/goal clear`). `achieved` / `could-not` are set only by the **explicit
+- **`/mission clear [reason]`** logs `[mission] MISSION-CLEARED status=cleared reason=<slug>` with an
+  **EMPTY idtag** (lifecycle lines always append — a dedup-prone idtag would suppress a re-clear that
+  follows a `rebaseline` and leave the mission spuriously active; §2) and ends the mission early
+  (mirrors `/goal clear`). `achieved` / `could-not` are set only by the **explicit
   lifecycle close** at a mission's natural end — write the appropriate `status=` on the MISSION-CLEARED
   line — never by the bare `clear` verb. Parse the returned status line (Section 7).
 - **`/mission status`** (and blank) reads the LOG **directly** via the Section 8 resume-read idiom
