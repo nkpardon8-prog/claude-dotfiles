@@ -27,7 +27,7 @@ LOG="$ATEST_DIR/MISSION.test.log"
 MB4="$(printf '\xf0\x9f\x98\x80')"
 big=""; i=0
 while [ "$i" -lt 130 ]; do big="${big}${MB4}"; i=$((i+1)); done   # 130*4 = 520 bytes
-capped="$(printf '%s' "$big" | head -c 470 | iconv -c -f UTF-8 -t UTF-8)"
+capped="$(printf '%s' "$big" | head -c 470 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)"
 # byte length AS THE PLAN MEASURES IT (printf '%s\n' | wc -c, includes newline)
 blen="$(printf '%s\n' "$capped" | atest_bytes)"
 # A1 — measured byte length is < 480 (the plan's oversize threshold) AND < 512 (PIPE_BUF)
