@@ -281,13 +281,14 @@ fi
 REPO_FIELD="${BOLD}${REPO_NAME}${RESET}"
 
 # ── Assemble status line ──────────────────────────────────────────────────────
-# Format: ctx 42%  3h12m left  72% sess  85% wk  Claude Sonnet 4.5 [hi]  my-repo
-printf "%b  %b  %b  %b  %b  %b\n" \
+# Format: ctx 42%  3h12m left  72% sess  85% wk  Opus 4.8 [hi]  wk→6th 4pm  my-repo
+printf "%b  %b  %b  %b  %b  %b  %b\n" \
   "$CTX_FIELD" \
   "$SESSION_FIELD" \
   "$SESSION_USAGE_FIELD" \
   "$WEEK_FIELD" \
   "$EFFORT_FIELD" \
+  "$WEEKRESET_FIELD" \
   "$REPO_FIELD"
 
 # ── 7. Line 2: progress bars (active) or session label (idle) ──────────────
