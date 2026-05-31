@@ -555,9 +555,19 @@ _mission_log_rotate() {
   fi
   _lr_ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)
   [ -n "$_lr_ts" ] || _lr_ts="unknown"
+  # R3-5: second-resolution timestamps tie for same-second rotations; the resume read sorts archives
+  # lexically by filename, so two rotations in the same second would then sort by the RANDOM mktemp
+  # suffix — NOT creation order — and could replay chunks out of order. Insert a zero-padded,
+  # monotonic-per-second sequence BETWEEN the timestamp and the mktemp suffix so a later same-second
+  # rotation sorts after the earlier one. Safe to compute here: rotation runs UNDER the lock, so the
+  # count of existing archives for this sid is stable for this rotation. (mktemp's XXXXXX stays, so
+  # even an identical seq+second can never collide.)
+  _lr_seq=$(ls -1 "${_lr_dir}/MISSION.${_lr_sid}.log."* 2>/dev/null | wc -l | tr -d ' ')
+  [ -n "$_lr_seq" ] || _lr_seq=0
+  _lr_seq=$(printf '%04d' "$_lr_seq")
   # I8: second-resolution timestamps collide if two rotations land in the same second (overwriting
-  # an archive → loss). Reserve a UNIQUE path via mktemp (timestamp prefix + random suffix), then
-  # rename to add the `.gz`/`.txt` extension so the resume glob `MISSION.<sid>.log.*` still matches.
+  # an archive → loss). Reserve a UNIQUE path via mktemp (timestamp + seq prefix + random suffix),
+  # then rename to add the `.gz`/`.txt` extension so the resume glob `MISSION.<sid>.log.*` matches.
   # archive oldest half (zero-loss), then keep newest half. C3: wrap the head|gzip pipe in a
   # pipefail subshell so a `head` failure is NOT masked by gzip's exit 0 (which would trim the log
   # → loss).
