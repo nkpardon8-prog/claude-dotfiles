@@ -273,19 +273,26 @@ Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees 
 - Invoke the Skill tool with `skill: codex-review --effort high`. Continue once it returns. (The
   `--effort high` arg runs its Codex passes at high → the full 4 Codex + 3 Claude cross-model panel + verify.)
 
-**Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID the round (do NOT count it as dry).** `/codex-review`
-emits **`Codex unavailable`** only when ALL four Codex passes fail (total fallback to Claude-only); a
-PARTIAL failure (1-3 of the 4 passes) instead emits a per-pass marker like **`(Codex-2: unavailable)`**.
-EITHER means a cross-model lens did not actually run. After `/codex-review` returns, INSPECT the report
-text (case-insensitive) and VOID the round if it matches **either** substring:
-- the total-failure marker `Codex unavailable`, OR
-- the per-pass marker `(Codex-` … `unavailable)` (i.e. grep for the literal `(Codex-` followed by
-  `unavailable)` on the same marker — any one of the 4 passes being unavailable is enough).
+**Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID the round (do NOT count it as dry).** The RELIABLE
+machine signal is the **`Codex-passes: N/4`** token `/codex-review` emits in its Step 7f report header:
+**any `N < 4` means a Codex lens did not actually run** (and `(codex-K unavailable)` names which). After
+`/codex-review` returns, INSPECT the report text and VOID the round if ANY of these match
+(case-insensitive):
+- the structured count **`Codex-passes: N/4` with `N < 4`** — the authoritative, machine-stable signal.
+  Extract `N` and compare:
+  ```bash
+  n=$(grep -ioE 'Codex-passes:[[:space:]]*[0-9]+/4' /tmp/codex-review-report.$$ | grep -oE '[0-9]+' | head -1)
+  # VOID the round if N is present and < 4 (any Codex lens missing), OR N is absent (report malformed):
+  { [ -z "$n" ] || [ "$n" -lt 4 ]; } && echo VOID
+  ```
+- the legacy total-failure marker `Codex unavailable` (all 4 failed), OR
+- the legacy per-pass marker `(Codex-` … `unavailable)` / `(codex-K unavailable)` (any one of the 4
+  passes unavailable) — kept as belt-and-suspenders alongside the `Codex-passes` count.
 
 A round counts toward the 2-dry convergence ONLY if EVERY independent reviewer's verdict is present —
-ALL 4 Codex passes plus the Claude reviewers (see Section 6 VOID-on-dead-reviewer). If either marker is
-present, this round is **VOID**: log the durable VOID marker (Section 7), re-run the panel; do NOT bank
-a void round.
+ALL 4 Codex passes (`Codex-passes: 4/4`) plus the Claude reviewers (see Section 6 VOID-on-dead-reviewer).
+If any of the above matches, this round is **VOID**: log the durable VOID marker (Section 7), re-run the
+panel; do NOT bank a void round.
 
 Merge ALL findings at **ONE synthesis barrier**. Write the round checkpoint in TWO parts so it
 survives the log machinery (the lib reroutes any LOG line whose FULL on-disk form — `idtag + TAB +
