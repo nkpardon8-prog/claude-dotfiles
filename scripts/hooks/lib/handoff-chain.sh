@@ -100,7 +100,7 @@ chain_manifest_read() {
 
   # Corrupt or missing manifest. Try to rebuild from the ledger if it exists.
   if [ -f "$l" ]; then
-    local first_ts last_line last_ts last_seq last_status last_ns inferred_handoff
+    local first_ts last_line last_ts last_seq last_status last_ns inferred_handoff inferred_mission
     first_ts=$(awk -F'\t' 'NR==1{print $1; exit}' "$l")
     last_line=$(tail -n 1 "$l" 2>/dev/null)
     # Locked field positions: 1=ts  2=seq=  3=ctx_pct=  4=elapsed=  5=status=  6=next=  7=files=  8=commits=  9=north_star_first_120=
