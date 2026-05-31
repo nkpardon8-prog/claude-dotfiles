@@ -388,11 +388,12 @@ Parse the status line (Section 7), then begin the next part's Phase 1.
   not count); an actionable VOID-rerun resets it.
 - **VOID-on-dead-reviewer (the single biggest false-converge risk).** A round counts toward the
   2-dry tally **ONLY if EVERY independent reviewer produced a parseable, on-topic, evidence-citing
-  verdict** — that means ALL **4 Codex passes + 3 Claude reviewers** of the panel actually ran (see
-  "Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID" in Section 5). A reviewer that errors, returns empty,
-  times out (e.g. a Codex CLI hang), is reported **`Codex unavailable`** (all 4 failed), OR is reported
-  per-pass **`(Codex-N: unavailable)`** (even 1 of the 4 failed) makes the round **VOID** → re-run the
-  panel; do **NOT** bank a void round as dry. A VOID must be made DURABLE so a compaction mid-void
+  verdict** — that means ALL **4 Codex passes + 3 Claude reviewers** of the panel actually ran, i.e. the
+  report shows **`Codex-passes: 4/4`** (see "Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID" in Section 5).
+  A reviewer that errors, returns empty, times out (e.g. a Codex CLI hang), or any report showing
+  **`Codex-passes: N/4` with N<4** (equivalently the legacy markers **`Codex unavailable`** = all 4
+  failed, or per-pass **`(Codex-N: unavailable)`** = even 1 of the 4 failed) makes the round **VOID** →
+  re-run the panel; do **NOT** bank a void round as dry. A VOID must be made DURABLE so a compaction mid-void
   doesn't resume from the last banked dry state — log the VOID marker (Section 7 lifecycle/VOID line)
   before re-running; on resume, a VOID for round K means re-run round K fresh, NOT count it.
 - **Honest early-exit** is allowed: if a super-honest look says the part is genuinely light, 2 dry
