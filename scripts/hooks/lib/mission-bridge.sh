@@ -418,9 +418,18 @@ _mission_rewrite() {
   fi
 
   # Stream the file, dropping the canonical marker line, inserting before close fences.
-  # We process all lines except the canonical last-line marker.
-  awk -v ct="$_rw_close_target" -v cc="$_rw_close_chal" \
-      -v payload="$_rw_payload" -v aux="$_rw_aux" '
+  # We process all lines except the canonical last-line marker. payload/aux are passed via the
+  # ENVIRONMENT (read through awk ENVIRON[]) because BSD awk rejects literal newlines in a
+  # -v assignment ("newline in string") and the payload may be multi-line.
+  _MR_CT="$_rw_close_target" _MR_CC="$_rw_close_chal" \
+  _MR_PAYLOAD="$_rw_payload" _MR_AUX="$_rw_aux" \
+  awk '
+    BEGIN {
+      ct      = ENVIRON["_MR_CT"]
+      cc      = ENVIRON["_MR_CC"]
+      payload = ENVIRON["_MR_PAYLOAD"]
+      aux     = ENVIRON["_MR_AUX"]
+    }
     # collect all lines first so we can identify the LAST marker line to drop
     { lines[NR] = $0 }
     END {
