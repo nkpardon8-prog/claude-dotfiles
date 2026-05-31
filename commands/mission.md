@@ -616,5 +616,6 @@ re-enter), and never change the active/inactive decision.
   lifecycle close** at a mission's natural end — write the appropriate `status=` on the MISSION-CLEARED
   line — never by the bare `clear` verb. Parse the returned status line (Section 7).
 - **`/mission status`** (and blank) reads the LOG **directly** via the Section 8 resume-read idiom
-  (grep over the full live log + newest archive), derives mode/part/phase/round/dry + pending, and
-  prints — no mutation. Mode/`status=` come from the LATEST lifecycle line (Section 8 active-iff).
+  (grep over the full live log + ALL rotated archives oldest→newest), derives mode/part/phase/round/dry
+  + pending, and prints — no mutation. Mode/`status=` come from the `mission_state` grep (the LATEST
+  `MISSION-(CLEARED|REBASELINED)` line — Section 8 active-iff), NOT from a transient progress line.
