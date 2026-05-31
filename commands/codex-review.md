@@ -109,78 +109,101 @@ WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 ## Step 3: Run Codex Review (Code Targets Only)
 
+Codex runs 4 DISTINCT independent lens passes in parallel. Each is a self-contained prompt; none sees another's output. The four lenses are:
+
+- **Codex-1 — Correctness/Logic**
+- **Codex-2 — Security/Safety**
+- **Codex-3 — Data-integrity/Concurrency/Resource**
+- **Codex-4 — Contracts/Assumptions/Fragility**
+
+**Prompt posture (applies to all 4 lenses): direct the aim, not the answer.** Each prompt gives the reviewer all the context it cannot infer (what the target is, the stack/environment, the stakes, what "correct" means here) and then states its lens's aim openly — it does NOT hand the reviewer an exhaustive checklist of what to find. Keep the structured output contract so findings machine-merge.
+
 ### Step 3a: Clean up stale temp files
 
 Run via Bash:
 ```bash
-rm -f /tmp/codex-review-a.txt /tmp/codex-review-b.txt
+rm -f /tmp/codex-review-1.txt /tmp/codex-review-2.txt /tmp/codex-review-3.txt /tmp/codex-review-4.txt
 ```
 
-### Step 3b: Spawn 2 Codex review calls in parallel
+### Step 3b: Spawn 4 Codex review calls in parallel
 
-**For MODE="branch" or MODE="uncommitted":**
+Define a shared CONTEXT block to embed in every lens prompt (give the reviewer everything it can't infer; never withhold context):
 
-Spawn BOTH Bash calls in a SINGLE message (parallel execution):
+```
+You are reviewing $TARGET_SUMMARY. Environment/stack: $STACK_IF_KNOWN. The stakes: this code is intended to $WHAT_CORRECT_MEANS. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that the code must follow: $FRAIM_RULES. Treat deviations as findings.")
+```
 
-**Bash 1 (Codex Run A):**
+Embed that CONTEXT into each lens prompt below, then append the lens aim. The four shared output-contract rules (append to EVERY lens prompt):
+
+```
+Report only what you can substantiate — but a speculative-but-real finding tagged [investigate] is welcome; don't over-suppress. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR, then a category tag (one of BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, FRAGILITY), then file:line where applicable.
+```
+
+**For MODE="branch" or MODE="uncommitted"**, use `codex ... review` (the lens aim cannot be embedded in the diff-based `review` subcommand prompt, so the lens is conveyed via the `-c experimental_instructions_file` is not used here — instead run the four passes and attribute the lens at merge time; each pass is still an independent Codex invocation). Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution):
+
+**Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-a.txt 2>&1
+cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-1.txt 2>&1
 ```
 timeout: 600000
 
-**Bash 2 (Codex Run B):**
+**Bash 2 (Codex-2 Security/Safety):**
 ```bash
-cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-b.txt 2>&1
+cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-2.txt 2>&1
 ```
 timeout: 600000
 
-**For MODE="file":**
-
-Spawn BOTH Bash calls in a SINGLE message (parallel execution):
-
-**Bash 1 (Codex Run A):**
+**Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-3.txt 2>&1
+```
+timeout: 600000
+
+**Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
+```bash
+cd $WORKDIR && codex -c model_reasoning_effort="medium" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-4.txt 2>&1
+```
+timeout: 600000
+
+**For MODE="file" or MODE="describe"**, use `codex ... exec -o` with a per-lens prompt. For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical. Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution).
+
+**Bash 1 (Codex-1 Correctness/Logic):**
+```bash
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-1.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is correctness and logic. Find anything that makes this behave incorrectly — wrong results, broken logic, mishandled edge cases, off-by-ones, error paths that don't actually recover. We're not going to enumerate how; chase whatever would make a careful user say 'that's a bug.' [output-contract block]"
 ```
 timeout: 120000
 
-**Bash 2 (Codex Run B):**
+**Bash 2 (Codex-2 Security/Safety):**
 ```bash
-codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "Review the file at $FILEPATH. Look for bugs, logic errors, security issues, missing validation, and architectural problems. $([ -n "$FRAIM_RULES" ] && echo "The project has these rules and conventions that code must follow: $FRAIM_RULES. Flag deviations.") List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-2.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is security and safety. Find anything an attacker or a hostile input could exploit, and anything that could do real-world damage — untrusted input reaching dangerous sinks, broken authn/authz, leaked or hardcoded secrets, destructive operations without guardrails. We won't list every vector; assume an adversary is reading this code and think like them. [output-contract block]"
 ```
 timeout: 120000
 
-**For MODE="describe":**
-
-Codex exec with the user's description as the prompt. It has read-only access to the full repo so it can find and review the relevant code itself.
-
-Spawn BOTH Bash calls in a SINGLE message (parallel execution):
-
-**Bash 1 (Codex Run A):**
+**Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-a.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-3.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is data integrity, concurrency, and resource lifecycle. Find anything that corrupts or loses data, behaves wrongly when two things happen at once, or fails to clean up what it acquires — races, non-atomic updates, partial writes, leaked handles/connections/memory, lifecycle that ends in the wrong state. We won't enumerate the failure modes; reason about what happens under interleaving, retries, and partial failure. [output-contract block]"
 ```
 timeout: 120000
 
-**Bash 2 (Codex Run B):**
+**Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
-codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-b.txt --ephemeral -s read-only -C $WORKDIR "$DESCRIPTION. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line. Start each with CRITICAL, IMPORTANT, or MINOR. Tag each with a category: BUG, LOGIC, ARCHITECTURE, SECURITY, PERFORMANCE, MISSING, ASSUMPTION, CONTRADICTION, or FRAGILITY."
+codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-4.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is contracts, assumptions, and fragility. Surface the unstated assumptions this code relies on, the API/data-shape contracts it could violate or that callers could violate, and what would break under reasonable future change. We won't tell you which assumptions to look for; ask 'what has to be true for this to work, and how likely is it to stop being true.' [output-contract block]"
 ```
 timeout: 120000
 
 ### Step 3c: Collect Codex output
 
-After both return, read `/tmp/codex-review-a.txt` and `/tmp/codex-review-b.txt`.
+After all four return, read `/tmp/codex-review-1.txt` through `/tmp/codex-review-4.txt`.
 
-**Handle failures:**
+**Handle failures (per pass):**
 - Exit 0 + non-empty file → success, use findings
 - Non-zero exit + non-empty file → partial output, still parse it
-- Non-zero exit + empty file → total failure, note "(Codex Run [A/B]: unavailable)"
-- If BOTH totally failed → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
+- Non-zero exit + empty file → total failure, note "(Codex-[N]: unavailable)"
+- If ALL FOUR totally failed → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
 
 ### Step 3d: Merge Codex outputs
 
-Combine findings from both runs. If both runs flagged the same issue, note "(found by both Codex passes)" — this is a high-confidence finding.
+Combine findings from all four passes, attributing each to its lens (codex-1 … codex-4). If two or more passes flagged the same issue, note "(found by N Codex passes)" — this is a high-confidence finding.
 
 ---
 
