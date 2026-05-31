@@ -284,20 +284,24 @@ Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees 
   `--effort high` arg runs its Codex passes at high → the full 4 Codex + 3 Claude cross-model panel + verify.)
 
 **Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID the round (do NOT count it as dry).** The RELIABLE
-machine signal is the **`Codex-passes: N/4`** token `/codex-review` emits in its Step 7f report header:
-**any `N < 4` means a Codex lens did not actually run** (and `(codex-K unavailable)` names which). After
-`/codex-review` returns, INSPECT the report text and VOID the round if ANY of these match
-(case-insensitive):
-- the structured count **`Codex-passes: 4/4`** — the authoritative, machine-stable signal. A FULL panel
-  is **EXACTLY `4/4`**; anything else VOIDs. Match the literal `4/4` token, set-e-safe (capture with a
-  trailing `|| true` so a no-match grep can't abort under `set -e -o pipefail`, then test the captured
-  value — VOID unless it is EXACTLY `4/4`, which also rejects malformed/impossible tokens like `10/4`
-  or `40/4` that an `N<4`-only test would let pass):
+machine signal is the **`Codex-passes: N/4`** token `/codex-review` emits on its Step 7f report
+**`Engine:` header line**: **any `N < 4` means a Codex lens did not actually run** (and
+`(codex-K unavailable)` names which). The VOID condition for this signal is: the `^Engine:` line's
+`Codex-passes` token is **ABSENT, malformed, or NOT exactly `4/4`** (i.e. some lens missing). A FULL
+panel is **EXACTLY `4/4` = NOT void**; anything else voids. After `/codex-review` returns, parse the
+token **only from the `^Engine:` line** and VOID unless it is exactly `4/4`:
+- **Read `Codex-passes` ONLY from the `^Engine:` header line — NEVER anywhere in the report body.**
+  codex-review.md emits a free-form target/summary line BEFORE the `Engine:` header, so an untrusted
+  target title/summary containing the literal `Codex-passes: 4/4` could SPOOF the gate if you grepped
+  the whole report. Anchor the parse to `^Engine:`, then VOID unless that line carries EXACTLY `4/4`
+  (this also rejects malformed/impossible tokens like `10/4` or `40/4` that an `N<4`-only test would
+  let pass), set-e-safe (trailing `|| true` so a no-match grep can't abort under `set -e -o pipefail`):
   ```bash
-  passes=$(grep -ioE 'Codex-passes:[[:space:]]*[0-9]+/4' /tmp/codex-review-report.$$ \
-             | grep -oE '[0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
-  # FULL panel iff EXACTLY 4/4 — absent, malformed (e.g. 10/4), or any N!=4 => VOID:
-  [ "$passes" = "4/4" ] || echo VOID
+  passes=$(printf '%s\n' "$report" | grep -E '^Engine:' \
+             | grep -oE 'Codex-passes: [0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
+  # The token MUST come from the ^Engine: line, not the report body (anti-spoof).
+  # FULL panel iff EXACTLY "Codex-passes: 4/4" — absent, malformed (e.g. 10/4), or any N!=4 => VOID:
+  [ "$passes" = "Codex-passes: 4/4" ] || echo VOID
   ```
 - the legacy total-failure marker `Codex unavailable` (all 4 failed), OR
 - the legacy per-pass marker `(Codex-` … `unavailable)` / `(codex-K unavailable)` (any one of the 4
