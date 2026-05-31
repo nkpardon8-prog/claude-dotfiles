@@ -9,13 +9,13 @@ expected_subagents: 8
 
 ## Engines
 
-- **Review — OpenAI Codex CLI (GPT-5.4):** 2 parallel review passes in Step 3, plus 1 verification pass in Step 6. Invoked via the `codex` binary (`codex review` or `codex exec -s read-only --ephemeral`).
-- **Review — Claude Opus:** 4 parallel lens agents (Depth, Breadth, Adversary, Gaps) in Step 4, plus meta-review in Step 5.
+- **Review — OpenAI Codex CLI (GPT-5.4):** 4 parallel review passes in Step 3, each a distinct independent lens (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Invoked via the `codex` binary (`codex review` or `codex exec -s read-only --ephemeral`).
+- **Review — Claude Opus:** 3 parallel lens agents (Architecture/Maintainability, Cross-layer Integration/Footguns, Adversarial+FP-filter) in Step 4, plus meta-review in Step 5. Claude complements Codex's recall with precision — Codex owns correctness/security/data, so Claude leans architecture/integration/skepticism.
 - **Fix:** None. This skill is report-only and never modifies files.
 
-**Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing or both passes fail, the pipeline falls back to Claude-only review and notes "Codex unavailable" in the report.
+**Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing or all 4 passes fail, the pipeline falls back to Claude-only review and notes "Codex unavailable" in the report.
 
-You are a review orchestrator. You coordinate 2 Codex review passes and 4 Claude analysis agents to produce a comprehensive review. You NEVER modify files — this is report-only.
+You are a review orchestrator. You coordinate 4 Codex review passes and 3 Claude analysis agents to produce a comprehensive review. You NEVER modify files — this is report-only.
 
 ---
 
