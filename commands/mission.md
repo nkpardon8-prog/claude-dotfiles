@@ -80,17 +80,23 @@ backstop. Use the resolved `mfile` for all reads; use `<sid>`/`<root>` for all w
 Parse `$ARGUMENTS`:
 
 - **blank or `status`** → **STATUS** (read-only, NO mutation). Resolve the mission via the manifest
-  `mission_path` pointer (Section 1). Read the **LOG sidecar DIRECTLY** — `tail -n 40` the
-  `MISSION.<sid>.log` next to `mfile`, **not** the 5-line `render-banner` (the banner is too coarse
-  to recover round/dry state). From the LOG tail and PLAN line-1, derive and print: mode
-  (build/adopt/none), current part, phase, round, dry-count, the active PLAN directive, and any
-  non-empty PENDING DECISIONS. Then stop. Do not mutate anything.
-- **`clear [reason]`** → **CLEAR**. Log the lifecycle close and stop treating work as a mission:
+  `mission_path` pointer (Section 1). Read the **LOG sidecar DIRECTLY** (the resume-read idiom in
+  Section 8 — `grep '[mission] '` over the FULL live log PLUS the newest rotated archive, **not** a
+  fixed `tail`, and **not** the banner: status reads the LOG directly). From the recovered last round
+  line + last lifecycle line and PLAN line-1, derive and print: mode (build/adopt/none), current part,
+  phase, round, dry-count, the active PLAN directive, and any non-empty PENDING DECISIONS. Then stop.
+  Do not mutate anything.
+- **`clear [reason]`** → **CLEAR**. Log the lifecycle close and stop treating work as a mission. Record
+  the reason as a slug and give the line an idtag so a re-issued `clear` does not append a duplicate
+  lifecycle line (the lib dedups on the leading idtag):
   ```bash
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] MISSION-CLEARED status=cleared"
+  reason_slug=$(printf '%s' "<reason-or-manual>" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-' | head -c 32)
+  [ -z "$reason_slug" ] && reason_slug=manual
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] MISSION-CLEARED status=cleared reason=${reason_slug}" "mission-cleared-${reason_slug}"
   ```
   A bare `clear` sets `status=cleared`. `achieved` / `could-not` are set ONLY by the explicit
-  lifecycle close at the natural end of a mission (Section 11) — not by this verb. Confirm to the user.
+  lifecycle close at the natural end of a mission (Section 11) — not by this verb. Parse the returned
+  status line (Section 7); confirm to the user.
 - **free-text roadmap/goal** → **EXPLICIT BUILD MODE** (Section 3 → Section 5).
 - **ambient trigger in a plain user message** — e.g. "follow the /mission methodology with your
   plan", "apply the /mission template to what we're doing", recognized by **INTENT, not exact
