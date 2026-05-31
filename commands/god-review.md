@@ -583,7 +583,17 @@ reviewer get the source tag `claude-broad:ruthless` for downstream promotion
 logic. Per Locked Decision #8, ruthless findings require Codex confirmation
 for cross-model promotion.
 
-**Layer A — 3 Codex broad reviewers** (only if $CODEX_AVAILABLE=true):
+**Layer A — 6 Codex broad reviewers** (only if $CODEX_AVAILABLE=true):
+
+The first 3 (cross-layer, prod-scalability, security-safeguards) use the
+original checklist-style prompts. The latter 3 (deep-correctness,
+ruthless-redteam, data-integrity) use the open "direct the aim, not the answer"
+posture — each is handed its lens's AIM and the context for what "correct"
+means, rather than an exhaustive find-this checklist. All 6 lenses are
+mutually distinct (cross-layer integrity / prod-readiness+scalability /
+security+safeguards / logic correctness / adversarial robustness /
+data-integrity+concurrency+resource-lifecycle). The 3 open-posture files could
+be migrated to the new opener style for the original 3 later — not done here.
 
 Invoke via Bash:
 ```bash
@@ -604,13 +614,31 @@ bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-security-safeguards.md)" \
   "$WORKDIR"
 
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-broad-deep-correctness.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-deep-correctness.md)" \
+  "$WORKDIR"
+
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-broad-ruthless-redteam.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-ruthless-redteam.md)" \
+  "$WORKDIR"
+
+bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
+  /tmp/codex-broad-data-integrity.txt \
+  "$(cat ~/.claude-dotfiles/commands/god-review/broad-reviewers/codex-data-integrity.md)" \
+  "$WORKDIR"
+
 # Phase G: copy Codex outputs into findings/ for Phase 2d consolidation.
 # (cat-glob at line ~660 reads findings/codex-*.txt + findings/claude-*.txt;
 # without this step the Codex side is silently inert.)
 mkdir -p "$WORKDIR/tmp/god-review/findings"
-[ -f /tmp/codex-broad-cross-layer.txt ]        && cp /tmp/codex-broad-cross-layer.txt        "$WORKDIR/tmp/god-review/findings/codex-broad-cross-layer.txt"
-[ -f /tmp/codex-broad-prod-scalability.txt ]   && cp /tmp/codex-broad-prod-scalability.txt   "$WORKDIR/tmp/god-review/findings/codex-broad-prod-scalability.txt"
+[ -f /tmp/codex-broad-cross-layer.txt ]         && cp /tmp/codex-broad-cross-layer.txt         "$WORKDIR/tmp/god-review/findings/codex-broad-cross-layer.txt"
+[ -f /tmp/codex-broad-prod-scalability.txt ]    && cp /tmp/codex-broad-prod-scalability.txt    "$WORKDIR/tmp/god-review/findings/codex-broad-prod-scalability.txt"
 [ -f /tmp/codex-broad-security-safeguards.txt ] && cp /tmp/codex-broad-security-safeguards.txt "$WORKDIR/tmp/god-review/findings/codex-broad-security-safeguards.txt"
+[ -f /tmp/codex-broad-deep-correctness.txt ]    && cp /tmp/codex-broad-deep-correctness.txt    "$WORKDIR/tmp/god-review/findings/codex-broad-deep-correctness.txt"
+[ -f /tmp/codex-broad-ruthless-redteam.txt ]    && cp /tmp/codex-broad-ruthless-redteam.txt    "$WORKDIR/tmp/god-review/findings/codex-broad-ruthless-redteam.txt"
+[ -f /tmp/codex-broad-data-integrity.txt ]      && cp /tmp/codex-broad-data-integrity.txt      "$WORKDIR/tmp/god-review/findings/codex-broad-data-integrity.txt"
 ```
 
 **Layer B — Claude principle agents** (1 per active principle):
