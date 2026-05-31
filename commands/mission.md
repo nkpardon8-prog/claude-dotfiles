@@ -29,8 +29,8 @@ gating invariant. Do not treat it as a machine you must feed.
 compactions and deserve quality-first rigor: a real subsystem, a multi-phase migration, a
 feature that decomposes into several independently-shippable parts.
 
-It is **opt-in and heavy.** Per part it spends roughly 4-6 plan-review rounds + a 3+3 cross-model
-code-review panel over 3-6 rounds — multiply that across many parts. That is the right spend for
+It is **opt-in and heavy.** Per part it spends roughly 4-6 plan-review rounds + a 4 Codex + 3 Claude
+cross-model code-review panel over 3-6 rounds — multiply that across many parts. That is the right spend for
 big work and pure overkill for small work.
 
 **Do NOT use it for** a typo, a one-liner, a single bug fix, or any change a normal
