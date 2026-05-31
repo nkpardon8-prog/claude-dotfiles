@@ -319,7 +319,7 @@ record rather than asserted by you.
 Loop, per round K: if findings are actionable, log the **`phase=fix`** checkpoint for the SAME round
 (it marks "now applying fixes"), fix via `skill: implement --no-review <plan-path>` → re-run the
 barrier (fresh, independent) as the **NEXT** round K+1 → log that round's `phase=review` checkpoint.
-**Never re-run an idtag round you already banked** (Section 8 / Section 12). See Section 6 for the
+**Never re-run an idtag round you already banked** (Section 8 round-ambiguity decision table). See Section 6 for the
 convergence rules. On a PLAN divergence → `challenge` (loud). On an open human-decision → `pending`
 (batched).
 
