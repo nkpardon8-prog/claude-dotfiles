@@ -235,13 +235,26 @@ timeout: 120000
 
 After all four return, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/codex-review-4.txt`.
 
-**Handle failures (per pass):**
-- Exit 0 + non-empty file → success, use findings
-- Non-zero exit + non-empty file → partial output, still parse it (counts as usable)
-- Non-zero exit + empty file → total failure, note "(Codex-[N]: unavailable)"
-- If ALL FOUR totally failed → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
+**Usability gate (apply to EVERY pass before classifying):** A pass is "usable" only if its output file contains a REAL, on-topic review — not merely non-empty bytes. A Codex CLI error page, usage text, sandbox-denied message, or stack trace also writes non-empty text, so non-emptiness alone does NOT qualify. The exact heuristic (bash 3.2.57 safe — use `grep -E -c` / `grep -E -q`):
 
-**Maintain a usable-pass count as you classify each pass.** Let `CODEX_PASSES` = the number of passes that produced usable output (success OR partial; range 0-4), and track the lens numbers of any passes that were total failures (e.g. `codex-2`). This count is rendered verbatim into the Step 7f report header as a stable machine-readable contract — see Step 7f.
+```bash
+# REVIEW_RE matches a real finding line or a recognizable clean/verdict line.
+REVIEW_RE='^[[:space:]]*(CRITICAL|IMPORTANT|MINOR|No (additional )?findings|Clean review)'
+# usable = file contains >=1 line matching REVIEW_RE
+if [ -s "$RUN_DIR/codex-review-$N.txt" ] && grep -E -q "$REVIEW_RE" "$RUN_DIR/codex-review-$N.txt"; then
+  USABLE=1   # real review present (success OR partial-with-findings)
+else
+  USABLE=0   # empty, or non-empty but only error/usage/sandbox-denied/stack-trace
+fi
+```
+
+**Handle failures (per pass):**
+- Exit 0 + file passes the usability gate (≥1 line matching `REVIEW_RE`) → success, use findings (usable)
+- Non-zero exit + file passes the usability gate → partial output, still parse it (usable)
+- Otherwise (empty file, OR non-empty but NO line matches `REVIEW_RE` — i.e. only a CLI error / usage / sandbox-denied / stack-trace with no finding lines) → FAILED pass, NOT usable, note "(Codex-[N]: unavailable)". This holds regardless of exit code: a zero-exit error page is still a failed pass.
+- If ALL FOUR are not usable → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
+
+**Maintain a usable-pass count as you classify each pass.** Let `CODEX_PASSES` = the number of passes that pass the usability gate above (range 0-4), and track the lens numbers of any passes that were NOT usable (e.g. `codex-2`). Only a pass that produced a real, on-topic review counts toward `CODEX_PASSES`; an error-only / findings-empty output lowers the count (so a spoofed `4/4` cannot pass through to `/mission`, whose VOID-on-dead-reviewer guard relies on this count). This count is rendered verbatim into the Step 7f report header as a stable machine-readable contract — see Step 7f.
 
 ### Step 3d: Merge Codex outputs
 
