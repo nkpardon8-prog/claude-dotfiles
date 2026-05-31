@@ -262,10 +262,9 @@ else
 fi
 ```
 
-**Handle failures (per pass):**
-- Exit 0 + file passes the usability gate (≥1 line matching `REVIEW_RE`) → success, use findings (usable)
-- Non-zero exit + file passes the usability gate → partial output, still parse it (usable)
-- Otherwise (empty file, OR non-empty but NO line matches `REVIEW_RE` — i.e. only a CLI error / usage / sandbox-denied / stack-trace with no finding lines) → FAILED pass, NOT usable, note "(Codex-[N]: unavailable)". This holds regardless of exit code: a zero-exit error page is still a failed pass.
+**Handle failures (per pass)** — per the mode-aware `USABLE` rule above:
+- **review mode** (`branch`/`uncommitted`): exit 0 + non-empty file → usable; non-zero exit OR empty → FAILED, note "(Codex-[N]: unavailable)".
+- **exec mode** (`file`/`describe`): file passes the `REVIEW_RE` gate (≥1 finding line, the mandatory `Verdict:` line, or clean wording) → usable (success on exit 0, partial on non-zero exit); empty OR non-empty but only a CLI error / usage / sandbox-denied / stack-trace (no finding/verdict line) → FAILED, note "(Codex-[N]: unavailable)" regardless of exit code (a zero-exit error page is still a failed pass).
 - If ALL FOUR are not usable → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
 
 **Maintain a usable-pass count as you classify each pass.** Let `CODEX_PASSES` = the number of passes that pass the usability gate above (range 0-4), and track the lens numbers of any passes that were NOT usable (e.g. `codex-2`). Only a pass that produced a real, on-topic review counts toward `CODEX_PASSES`; an error-only / findings-empty output lowers the count (so a spoofed `4/4` cannot pass through to `/mission`, whose VOID-on-dead-reviewer guard relies on this count). This count is rendered verbatim into the Step 7f report header as a stable machine-readable contract — see Step 7f.
