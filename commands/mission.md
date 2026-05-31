@@ -222,9 +222,13 @@ and proceed. Merge/dedupe reviewer findings (overlap = confidence, divergence = 
 each plan round (Section 7 round-line schema).
 
 ### Phase 3 — IMPLEMENT  ∥  Phase 4 — REVIEW BARRIER (the parallelism win)
-Invoke the Skill tool with `skill: implement --no-review`. Continue once it returns. The `--no-review`
-flag suppresses `/implement`'s built-in tail implementation-reviewer so **`/mission` owns the review
-barrier** (no double impl-reviewer; the barrier runs concurrently). **Claude owns integration**;
+Invoke the Skill tool with `skill: implement --no-review <explicit-per-part-plan-path>` — **always
+pass the EXPLICIT plan path for THIS part** (the plan `/plan` just produced in Phase 2), never a bare
+`implement --no-review` that could grab a stale or wrong plan from the ready-plans dir. Continue once
+it returns. Because `--no-review` makes `/mission` own the plan lifecycle (see PART-DONE below for
+retiring the plan), the plan path must be unambiguous. The `--no-review` flag suppresses
+`/implement`'s built-in tail implementation-reviewer so **`/mission` owns the review barrier** (no
+double impl-reviewer; the barrier runs concurrently). **Claude owns integration**;
 Codex assists per-chunk. Full hand-over to Codex is allowed ONLY for isolated, mechanical, well-
 specified chunks — and ONLY in a worktree that does NOT contain the bridge artifacts (they live at
 the canonical root, never inside a per-part worktree), with Codex run `-s read-only`.
