@@ -180,8 +180,18 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
   and verified, it returns `ok` as a no-op and the EXISTING (possibly non-mission/stale) PLAN persists —
   the seed did NOT take.** So if `create` says `ok` but PLAN line-1 is NOT this adopt directive (re-read
   it via the §8 idiom), you were actually in case (c), not (a) — fall through to (c) and rebaseline.
-- **(b) A mission exists AND PLAN line-1 IS a `MISSION MODE:` token** → you are already in mission
-  mode; just continue.
+- **(b) A mission exists AND PLAN line-1 IS a `MISSION MODE:` token** → a mission-mode PLAN is present,
+  but a PLAN token alone does NOT mean the mission is ACTIVE: a previously `MISSION-CLEARED` mission can
+  still carry its old mission-mode PLAN on disk, and per the §8 active-iff rule it stays INACTIVE until
+  reactivated. So **check the active-iff `mission_state` first** (the latest
+  `[mission] MISSION-(CLEARED|REBASELINED)` line via the §8 resume-read idiom — mirror the §3/§4(c)
+  logic): if the latest lifecycle line is `MISSION-CLEARED` (or there is NO lifecycle line but the
+  mission was cleared/closed), the mission is INACTIVE → **REBASELINE to reactivate** (rebaseline
+  appends a `[mission] MISSION-REBASELINED status=active` line, which the active-iff rule treats as
+  active and which overrides the stale `MISSION-CLEARED`), exactly as in case (c). Only when
+  `mission_state` shows the mission is genuinely ACTIVE (latest is `MISSION-REBASELINED status=active`,
+  or `mission_state` is EMPTY with a live mission-mode PLAN) do you "continue as-is" — you are already
+  in mission mode; just continue.
 - **(c) A mission exists BUT PLAN line-1 is NOT a `MISSION MODE:` token** (a non-mission
   `/pre-compact` seeded the PLAN, OR a previously-`cleared` mission whose lifecycle is closed) → do
   **NOT** silently no-op (`create` is no-clobber and would quietly keep the stale PLAN). Surface this
