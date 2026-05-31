@@ -81,9 +81,10 @@ Parse `$ARGUMENTS`:
 
 - **blank or `status`** → **STATUS** (read-only, NO mutation). Resolve the mission via the manifest
   `mission_path` pointer (Section 1). Read the **LOG sidecar DIRECTLY** (the resume-read idiom in
-  Section 8 — `grep '[mission] '` over the FULL live log PLUS the newest rotated archive, **not** a
-  fixed `tail`, and **not** the banner: status reads the LOG directly). From the recovered last round
-  line + last lifecycle line and PLAN line-1, derive and print: mode (build/adopt/none), current part,
+  Section 8 — `grep '[mission] '` over the FULL live log PLUS **ALL** rotated archives (oldest→newest),
+  **not** a fixed `tail`, **not** only the newest archive, and **not** the banner: status reads the LOG
+  directly). From the recovered `mission_state` (active-iff), `last_review` (round/dry) and PLAN
+  line-1, derive and print: mode (build/adopt/none), current part,
   phase, round, dry-count, the active PLAN directive, and any non-empty PENDING DECISIONS. Then stop.
   Do not mutate anything.
 - **`clear [reason]`** → **CLEAR**. Log the lifecycle close and stop treating work as a mission. Record
