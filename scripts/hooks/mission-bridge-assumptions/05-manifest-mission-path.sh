@@ -67,4 +67,18 @@ d2="$(derive "/Users/x/anchor" "sid")"
 [ "$d1" = "$REAL" ] && [ "$d1" = "$d2" ]
 atest_assert "A6" "$?" "recovery re-derive non-deterministic or wrong (d1='$d1' d2='$d2' want '$REAL') — a rebuilt manifest would point at the wrong/absent file."
 
+# --- A7: existing "" (EMPTY STRING), incoming SET -> robust merge RECORDS the real path --------
+# THE CELL THE ORIGINAL TEST MISSED (C1 root cause). The first-write manifest used to seed
+# mission_path:"" and jq // keeps "" (only null/false trigger //), so the NAIVE merge NEVER
+# recorded the real path → false-CRITICAL primer. The robust idiom (null OR "") must backfill it.
+out="$(robust_merge "{\"mission_path\":\"\",\"current_seq\":2}" "$REAL")"
+[ "$out" = "$REAL" ]
+atest_assert "A7" "$?" "robust merge did NOT backfill an empty-string mission_path (got '$out', want '$REAL') — the C1 empty-cell bug is unfixed; the spine pointer would stay \"\"."
+
+# --- A7b (NEGATIVE CONTROL): the NAIVE // merge WOULD keep "" for the same cell -----------------
+# Proves A7 is non-vacuous: it distinguishes the robust idiom from the broken // idiom.
+naive_empty="$(merge "{\"mission_path\":\"\",\"current_seq\":2}" "$REAL")"
+[ "$naive_empty" = "" ]
+atest_assert "A7b" "$?" "naive // merge did NOT keep \"\" (got '$naive_empty') — A7 is vacuous (cannot distinguish robust-merge from broken //)."
+
 atest_report
