@@ -121,11 +121,12 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <s
 <the multi-part roadmap: parts, sequence, intended outcome>
 
 Standing directive: route substantial work through research → /plan(+reviewers) → /implement →
-/codex-review, looping to 2 honest dry rounds (independent reviewers judge '"'"'dry'"'"'); soft targets
+/codex-review, looping to 2 honest dry rounds (independent reviewers judge dryness); soft targets
 plan 4-6 / codex 3-6, hard cap 6; /pre-compact freely interleaved; active until a
 [mission] MISSION-CLEARED line appears in the LOG.'
 ```
-(If the roadmap itself contains a single quote, prefer a heredoc/file/stdin instead of escaping.)
+(If the captured roadmap itself contains a single quote, prefer a heredoc/file/stdin over escaping —
+e.g. write the payload to a temp file and pass it, so no quoting of untrusted text is needed at all.)
 `create` is **no-clobber** — it will not overwrite an existing mission. Parse the returned status line
 (Section 7). Two outcomes need handling, NOT a silent no-op:
 - **`ok` and no prior file** → the PLAN was seeded. Confirm it with the user, then begin Level-2.
