@@ -197,30 +197,36 @@ cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE
 ```
 timeout: 600000
 
-**For MODE="file" or MODE="describe"**, use `codex ... exec -o` with a per-lens prompt. For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical. Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution).
+**For MODE="file" or MODE="describe"**, use `codex ... exec -o` with a per-lens prompt. For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical.
+
+**Pass each per-lens prompt to Codex via stdin, never as an inline double-quoted argument.** The prompt embeds the CONTEXT block (which references — but does not inline — untrusted FRAIM content) and may contain `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters. Inlining it into a `codex exec "..."` argument would let those characters be shell-evaluated. Instead, write each fully-assembled prompt to a file under `"$RUN_DIR"` with `printf '%s'` (literal, never re-interpreted), then feed it to `codex exec` as `- < promptfile` so the prompt is read verbatim from stdin and never touches the shell's word/expansion machinery. Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution). In each call below, `$PROMPT_N` is the literal prompt text you assembled (lead line + CONTEXT block + lens aim + output-contract block) — write it with `printf` exactly as authored.
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-review-1.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is correctness and logic. Find anything that makes this behave incorrectly — wrong results, broken logic, mishandled edge cases, off-by-ones, error paths that don't actually recover. We're not going to enumerate how; chase whatever would make a careful user say 'that's a bug.' [output-contract block]"
+printf '%s' "$PROMPT_1" > "$RUN_DIR/codex-prompt-1.txt" && codex -c model_reasoning_effort="$EFFORT" exec -o "$RUN_DIR/codex-review-1.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-1.txt"
 ```
+where `$PROMPT_1` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is correctness and logic. Find anything that makes this behave incorrectly — wrong results, broken logic, mishandled edge cases, off-by-ones, error paths that don't actually recover. We're not going to enumerate how; chase whatever would make a careful user say 'that's a bug.' [output-contract block]`
 timeout: 120000
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-review-2.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is security and safety. Find anything an attacker or a hostile input could exploit, and anything that could do real-world damage — untrusted input reaching dangerous sinks, broken authn/authz, leaked or hardcoded secrets, destructive operations without guardrails. We won't list every vector; assume an adversary is reading this code and think like them. [output-contract block]"
+printf '%s' "$PROMPT_2" > "$RUN_DIR/codex-prompt-2.txt" && codex -c model_reasoning_effort="$EFFORT" exec -o "$RUN_DIR/codex-review-2.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-2.txt"
 ```
+where `$PROMPT_2` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is security and safety. Find anything an attacker or a hostile input could exploit, and anything that could do real-world damage — untrusted input reaching dangerous sinks, broken authn/authz, leaked or hardcoded secrets, destructive operations without guardrails. We won't list every vector; assume an adversary is reading this code and think like them. [output-contract block]`
 timeout: 120000
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-review-3.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is data integrity, concurrency, and resource lifecycle. Find anything that corrupts or loses data, behaves wrongly when two things happen at once, or fails to clean up what it acquires — races, non-atomic updates, partial writes, leaked handles/connections/memory, lifecycle that ends in the wrong state. We won't enumerate the failure modes; reason about what happens under interleaving, retries, and partial failure. [output-contract block]"
+printf '%s' "$PROMPT_3" > "$RUN_DIR/codex-prompt-3.txt" && codex -c model_reasoning_effort="$EFFORT" exec -o "$RUN_DIR/codex-review-3.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-3.txt"
 ```
+where `$PROMPT_3` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is data integrity, concurrency, and resource lifecycle. Find anything that corrupts or loses data, behaves wrongly when two things happen at once, or fails to clean up what it acquires — races, non-atomic updates, partial writes, leaked handles/connections/memory, lifecycle that ends in the wrong state. We won't enumerate the failure modes; reason about what happens under interleaving, retries, and partial failure. [output-contract block]`
 timeout: 120000
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-review-4.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is contracts, assumptions, and fragility. Surface the unstated assumptions this code relies on, the API/data-shape contracts it could violate or that callers could violate, and what would break under reasonable future change. We won't tell you which assumptions to look for; ask 'what has to be true for this to work, and how likely is it to stop being true.' [output-contract block]"
+printf '%s' "$PROMPT_4" > "$RUN_DIR/codex-prompt-4.txt" && codex -c model_reasoning_effort="$EFFORT" exec -o "$RUN_DIR/codex-review-4.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-prompt-4.txt"
 ```
+where `$PROMPT_4` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is contracts, assumptions, and fragility. Surface the unstated assumptions this code relies on, the API/data-shape contracts it could violate or that callers could violate, and what would break under reasonable future change. We won't tell you which assumptions to look for; ask 'what has to be true for this to work, and how likely is it to stop being true.' [output-contract block]`
 timeout: 120000
 
 ### Step 3c: Collect Codex output
