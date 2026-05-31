@@ -128,17 +128,28 @@ plan 4-6 / codex 3-6, hard cap 6; /pre-compact freely interleaved; active until 
 ```
 (If the captured roadmap itself contains a single quote, prefer a heredoc/file/stdin over escaping —
 e.g. write the payload to a temp file and pass it, so no quoting of untrusted text is needed at all.)
-`create` is **no-clobber** — it will not overwrite an existing mission. Parse the returned status line
-(Section 7). Two outcomes need handling, NOT a silent no-op:
-- **`ok` (the ONLY success token) and no prior file** → the PLAN was seeded. Confirm it with the user,
-  then begin Level-2.
-- **`FAILED rc=1 (REFUSED: …)` — a `MISSION.<sid>.md` already exists** (a non-mission `/pre-compact`, or
-  a previously-`cleared` mission, seeded the PLAN) → `create` is no-clobber and REFUSED rather than
-  overwrite; it would quietly keep that **stale** PLAN if you ignored the refusal.
-  Do **NOT** silent-no-op. Handle it exactly like §4(c): **surface it to the user and `rebaseline`**
-  the PLAN to this build's directive (rebaseline is the ONLY path that legitimately rewrites PLAN,
-  and it now appends a `[mission] MISSION-REBASELINED status=active` lifecycle line that REACTIVATES
-  a previously-cleared mission per the active-iff rule in Section 8):
+`create` is **no-clobber** — it will not overwrite an existing mission, and (load-bearing) it is
+**idempotent**: when a `MISSION.<sid>.md` already EXISTS and VERIFIES, the lib returns `ok` and leaves
+the file untouched (other callers depend on that). So an existing **stale** PLAN does **NOT** surface as
+a REFUSED — it surfaces as `ok`. The ONLY `create` failure that arrives as `FAILED rc=1 (REFUSED: …)` is
+the root-guard (`REFUSED: root empty or contains '..'`); the only other `rc=1` is exists-but-fails-verify
+(a corrupt file — handle via the §10 STOP-LOUD path). Parse the returned status line (Section 7) and
+handle by outcome — **never silent-no-op on `ok`**:
+- **`FAILED rc=1 (REFUSED: root …)`** (root-guard) → a true failure; surface it, fix the root, retry.
+- **`ok` and NO prior file existed** → the PLAN was freshly seeded. Confirm it with the user, then begin
+  Level-2.
+- **`ok` but a `MISSION.<sid>.md` ALREADY EXISTED** (a non-mission `/pre-compact`, or a previously-
+  `cleared`/superseded mission, seeded the PLAN) → `create` was a no-op and the **possibly-stale** PLAN
+  persists. Do **NOT** assume the seed took. **Decide whether to rebaseline** by inspecting two things
+  via the Section 8 resume-read idiom: (1) the active-iff `mission_state` (the latest
+  `[mission] MISSION-(CLEARED|REBASELINED)` line) and (2) the existing PLAN zone (line-1 + roadmap)
+  vs. what THIS build intends. **Rebaseline if EITHER** the mission is `MISSION-CLEARED` (latest
+  lifecycle line) **OR** the existing PLAN differs from this build's intended roadmap/directive. If the
+  existing PLAN already matches this build's roadmap AND the mission is active, the no-op is correct —
+  just confirm and continue. When you do rebaseline, handle it exactly like §4(c): **surface it to the
+  user and `rebaseline`** the PLAN to this build's directive (rebaseline is the ONLY path that
+  legitimately rewrites PLAN, and it appends a `[mission] MISSION-REBASELINED status=active` lifecycle
+  line that REACTIVATES a previously-cleared mission per the active-iff rule in Section 8):
   ```bash
   bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> 'MISSION MODE: build
   <the multi-part roadmap + the same standing-directive text as above>'
