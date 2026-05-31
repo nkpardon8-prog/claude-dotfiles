@@ -343,8 +343,9 @@ convergence rules. On a PLAN divergence → `challenge` (loud). On an open human
 
 **Resume substates within a round (Section 7 schema; these are the WITHIN-ROUND rows of the §8
 round-ambiguity decision table — they MUST match §8 verbatim, one decision, two cross-references. §8 is
-the canonical TOTAL table and additionally covers completed-part state (`PART-DONE`/`PART-RETIRED`) and
-the non-review/non-fix phases (`research`/`plan`/`implement`); consult §8 for those):**
+the canonical TOTAL table and additionally covers completed-part state (`PART-DONE`/`PART-RETIRED`), the
+fresh-part `PART-START`-with-no-round entry state (begin at `research`), and the non-review/non-fix
+phases (`research`/`plan`/`implement`); consult §8 for those):**
 - last round line is **`phase=review findings>0`** (ACTIONABLE — findings logged, `dry` NOT advanced)
   → resume into the FIX of the SAME round K: log `phase=fix` round=K and apply the fixes. Do **NOT**
   start a fresh review round K+1 (that would skip the fix).
