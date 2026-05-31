@@ -426,25 +426,25 @@ Output this directly to the conversation (not to a file):
 
 ```markdown
 # Codex Review: [target summary]
-Engine: 2x Codex (GPT-5.4) + 4x Claude + Codex Verification | Verified: [Y/N]
+Engine: 4x Codex (GPT-5.4) + 3x Claude + Codex Verification | Verified: [Y/N]
 
 ## Critical [must fix]
-- [ ] [definite] Finding — file:line — explanation (codex-a + codex-b + claude/depth)
+- [ ] [definite] Finding — file:line — explanation (codex-1 + codex-3 + claude/architecture)
 
 ## Gaps [missing entirely]
-- [ ] What should exist but doesn't — explanation (claude/gaps)
+- [ ] What should exist but doesn't — explanation (claude/integration)
 
 ## Important [should fix]
-- [ ] [likely] Finding — file:line — explanation (codex-a + claude/adversary)
+- [ ] [likely] Finding — file:line — explanation (codex-2 + claude/adversarial)
 
 ## Assumptions [verify these]
 - [ ] Hidden assumption — what breaks if it's wrong (claude/meta)
 
 ## Contradictions
-- [ ] X says A, but Y says B — which is correct? (codex-a vs claude/breadth)
+- [ ] X says A, but Y says B — which is correct? (codex-1 vs claude/architecture)
 
 ## Minor
-- [ ] [investigate] Observation worth looking into (codex-b)
+- [ ] [investigate] Observation worth looking into (codex-4)
 
 ## Meta-Review Notes
 - [Contradictions between sources, calibration adjustments, observations about the review quality itself]
