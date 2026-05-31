@@ -174,9 +174,10 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
   `MISSION-CLEARED` no longer suppresses. Do **not** hand-write a separate reactivation line; rely on
   rebaseline to do it:
   ```bash
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> "MISSION MODE: adopt
-  <captured objective + standing directive>"
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> 'MISSION MODE: adopt
+  <captured objective + standing directive>'
   ```
+  (SINGLE-quoted — the captured objective is untrusted; never double-quote it, §7 injection rule.)
   Parse the returned status line (Section 7). If the user is away, log a **loud CHALLENGE** explaining
   the rebaseline and proceed.
 
