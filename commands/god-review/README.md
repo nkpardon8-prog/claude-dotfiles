@@ -23,9 +23,13 @@ Both commands share `commands/god-review/{lib,principles,broad-reviewers}/`.
 
 ### Phase-2 Two-Layer Model
 
-**Layer A — Broad Reviewers (6 total; 7 with `--ruthless`):**
+**Layer A — Broad Reviewers (9 total; 10 with `--ruthless`):**
 - 3 Claude broad reviewers: `claude-deep-correctness`, `claude-architecture-prod`, `claude-security-resilience`
-- 3 Codex broad reviewers: `codex-cross-layer`, `codex-prod-scalability`, `codex-security-safeguards`
+- 6 Codex broad reviewers:
+  - Checklist-style (original): `codex-cross-layer`, `codex-prod-scalability`, `codex-security-safeguards`
+  - Open-posture ("direct the aim, not the answer"): `codex-deep-correctness` (logic correctness — wrong results, edge cases, broken error paths, off-by-ones, bad state transitions), `codex-ruthless-redteam` (adversarial — malicious/malformed input, abuse, hostile load, dependency misbehavior), `codex-data-integrity` (data integrity/concurrency/resource lifecycle — races, atomicity, data loss/corruption windows, leaks, ordering bugs)
+
+The 6 Codex lenses are mutually distinct. The 3 open-posture reviewers state their lens's AIM and the context for what "correct" means instead of an exhaustive find-this checklist; the original 3 could be migrated to the same opener style later.
 
 Each Claude broad reviewer reads the ENTIRE codebase scope and is the most expensive call in the round.
 
