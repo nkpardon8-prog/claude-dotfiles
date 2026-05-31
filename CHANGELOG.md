@@ -19,8 +19,10 @@ attempt-scoped (the 5-strike loop-breaker) · 11 mission-write.sh exit-0 + rc=2/
 propagates the log-append rc instead of swallowing it (so a cleared mission can actually reactivate);
 `_mission_log_rotate` skips (doesn't rotate) when the lock is busy, heals a torn last line before the
 line-count split, and names archives `…<utc>.<seqNNNN>.XXXXXX` for collision-proof same-second
-chronological ordering. `scripts/hooks/mission-write.sh`: REFUSED now emits the parseable
-`FAILED rc=1 (REFUSED: …)` shape.
+chronological ordering; `mission_create` returns `rc=2` (the uniform corrupt-bridge code, matching
+`mission_mutate`/`mission_rebaseline`) when an existing file fails verify, so a corrupt bridge found
+at mission start routes to STOP-LOUD instead of being misread as a generic failure.
+`scripts/hooks/mission-write.sh`: REFUSED now emits the parseable `FAILED rc=1 (REFUSED: …)` shape.
 
 **`commands/mission.md`** (the conductor playbook): fix-pending `phase=<review|fix>` round substate;
 attempt-scoped FAIL idtag + enumerated FAIL events; parse the `mission-write.sh` status line (rc=2→STOP-LOUD,
