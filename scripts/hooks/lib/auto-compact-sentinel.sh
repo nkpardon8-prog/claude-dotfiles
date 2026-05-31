@@ -192,6 +192,84 @@ ac_validate_tty() {
   [[ "$1" =~ ^/dev/ttys[0-9]+$ ]]
 }
 
+# ---------------------------------------------------------------------------
+# Session-correlation helpers (bulletproof pre-compact↔compact↔resume delivery).
+#
+# The delivery seam (which Terminal tab the Stop hook types /compact + /post-compact-resume
+# into) must bind to the TARGET SESSION'S OWN `claude` process — never to a bare `tty`, which
+# is unstable across tab churn and shared across concurrent sessions. With N concurrent sessions
+# the old tty-bound match misfired into a SIBLING session's tab (incident 2026-05-31 04:42Z:
+# 49d80a3a's resume consumed by 24a704c2; R9 refused → safe, but no auto-resume).
+#
+# Proven contracts (scripts/hooks/session-correlation-assumptions/, 6/6 PASS 2026-05-31):
+#   - An anchored-ERE ancestry walk resolves the session's REAL TUI `claude` (NOT a node wrapper,
+#     a `.claude-dotfiles` path, or the `ucomm` version string). The walk climbs ONLY the caller's
+#     own ancestry, so a Stop hook (a direct claude child) resolves ITS OWN session and can never
+#     reach a sibling. (A1)
+#   - `ps -o lstart=` + normalization is a byte-stable per-process birth time → defeats macOS pid
+#     reuse when paired with the pid. (A5)
+#   - foreground-PG-leader (`+`) check, PID-PINNED, rejects dead/non-claude/sibling/wrong-tty. (A3)
+#   - `ps -o tty=` derives the controlling tty even mid-tool-call; a no-tty proc → fail-closed. (A4)
+#
+# ERE rationale: matches `claude`, `/path/to/claude`, `claude --flags`; rejects `.claude-dotfiles`,
+# `node …/claude-cli.js`, `claudette`. MUST use `ps -o args=` (argv[0]) — NEVER `ucomm`, which is
+# the version string (e.g. "2.1.156"); the 2026-05-14 regression aborted every arm for ~10 days
+# because it matched on ucomm.
+# ---------------------------------------------------------------------------
+_AC_CLAUDE_ERE='(^|[[:space:]/])claude([[:space:]]|$)'
+
+# ac_resolve_own_claude_pid → echoes the caller's own session `claude` pid; rc 1 on miss.
+# Walks the PPID chain up to 8 hops (margin: a Stop hook is a direct child = hop 1, but a tool/
+# wrapper-invoked context can be deeper — fingerprint recorded hop 3 via run-all+perl). Matches on
+# `ps -o args=` with the anchored claude ERE; never ucomm.
+ac_resolve_own_claude_pid() {
+  local p="${PPID:-}" hop args
+  for hop in 1 2 3 4 5 6 7 8; do
+    [ -z "$p" ] && break
+    if [ "$p" = "0" ] || [ "$p" = "1" ]; then break; fi
+    args=$(ps -ww -o args= -p "$p" 2>/dev/null)
+    if printf '%s' "$args" | grep -Eq "$_AC_CLAUDE_ERE"; then
+      printf '%s' "$p"; return 0
+    fi
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d '[:space:]')
+  done
+  return 1
+}
+
+# ac_pid_starttime <pid> → echoes a normalized, byte-stable process birth time (or empty).
+# `ps -o lstart=` emits trailing spaces and double-spaces single-digit days ("May  5"); `tr -s ' '`
+# + trim collapse that to a deterministic comparison key so the fire-path equality check cannot
+# false-mismatch on whitespace/locale jitter (which would silently abort EVERY fire).
+ac_pid_starttime() {
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ *$//'
+}
+
+# ac_pid_argv_is_claude <pid> → rc 0 iff the pid's argv matches the anchored claude ERE.
+ac_pid_argv_is_claude() {
+  ps -ww -o args= -p "$1" 2>/dev/null | grep -Eq "$_AC_CLAUDE_ERE"
+}
+
+# ac_pid_tty <pid> → echoes the pid's controlling tty as /dev/ttysN; rc 1 (empty) for a process
+# with no controlling terminal (ps reports "" or "??") — fail-closed so a severed/disowned proc
+# can never yield a stale ttysN to type into.
+ac_pid_tty() {
+  local t
+  t=$(ps -o tty= -p "$1" 2>/dev/null | tr -d '[:space:]')
+  case "$t" in
+    ttys[0-9]*) printf '/dev/%s' "$t"; return 0 ;;
+  esac
+  return 1
+}
+
+# ac_pid_is_foreground_leader_on_tty <pid> <ttysN> → rc 0 iff <pid> is the foreground-PG leader
+# (`+` in stat) on <ttysN> AND its argv is claude. PID-PINNED: a sibling session's legitimate
+# claude on the same tty is REJECTED (the exact incident the old "any foreground claude" check
+# allowed). <ttysN> is the basename form (no /dev/), matching `ps -t`.
+ac_pid_is_foreground_leader_on_tty() {
+  ps -ww -t "$2" -o stat=,pid=,args= 2>/dev/null \
+    | awk -v want="$1" '$1 ~ /\+/ && $2==want && $0 ~ /(^| |\/)claude( |$)/ {f=1} END{exit f?0:1}'
+}
+
 # Returns canonical path via `cd -P` + `pwd -P`. Returns 1 on failure.
 # Used at arm time AND at primer-compare to ensure string equality holds across
 # symlinks, trailing slashes, and ./-segments.
