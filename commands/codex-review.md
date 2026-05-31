@@ -205,7 +205,7 @@ timeout: 120000
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o /tmp/codex-review-4.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is contracts, assumptions, and fragility. Surface the unstated assumptions this code relies on, the API/data-shape contracts it could violate or that callers could violate, and what would break under reasonable future change. We won't tell you which assumptions to look for; ask 'what has to be true for this to work, and how likely is it to stop being true.' [output-contract block]"
+codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-review-4.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is contracts, assumptions, and fragility. Surface the unstated assumptions this code relies on, the API/data-shape contracts it could violate or that callers could violate, and what would break under reasonable future change. We won't tell you which assumptions to look for; ask 'what has to be true for this to work, and how likely is it to stop being true.' [output-contract block]"
 ```
 timeout: 120000
 
