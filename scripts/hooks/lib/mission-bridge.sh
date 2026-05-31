@@ -781,20 +781,30 @@ mission_resolve_pending() {
   _rp_sid_marker=$(_mission_marker_field "$_rp_f" sid)
   _rp_nonce=$(_mission_marker_field "$_rp_f" nonce)
   _rp_hash=$(_mission_marker_field "$_rp_f" plan_hash)
+  _rp_n8=$(printf '%s' "$_rp_nonce" | cut -c1-8)
 
   _rp_tmp=$(mktemp "${_rp_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: resolve: mktemp failed" >&2; return 5; }
   # strip the matching `- [pd:<id>]` line; drop the old marker; re-emit it byte-exact.
   # Strip the matching `[pd:<id>]` line AND its paired `<!-- mid:... -->` idempotency marker
   # (emitted on the immediately-following line by _mission_rewrite), leaving no orphan marker.
-  ( umask 077 && awk -v pid="[pd:${_rp_id}]" '
+  # C4: the strip is SCOPED to the live-nonce PENDING DECISIONS zone — a `[pd:<id>]` string that
+  # appears anywhere else (e.g. quoted in the PLAN zone) is NEVER stripped. We track in-zone state
+  # via the live-nonce open/close fences (nonce8 passed through ENVIRON, like mission_rebaseline).
+  ( umask 077 && _RP_PID="[pd:${_rp_id}]" _RP_N8="$_rp_n8" awk '
+      BEGIN { pid = ENVIRON["_RP_PID"]; n8 = ENVIRON["_RP_N8"] }
       { lines[NR] = $0 }
       END {
+        openf  = "<!-- MZONE:PENDING DECISIONS n=" n8 " -->"
+        closef = "<!-- /MZONE:PENDING DECISIONS n=" n8 " -->"
         marker_idx = 0
         for (i = 1; i <= NR; i++) if (lines[i] ~ /^<!-- MISSION schema=v1 /) marker_idx = i
+        inzone = 0
         skip_next_mid = 0
         for (i = 1; i <= NR; i++) {
           if (i == marker_idx) continue
-          if (index(lines[i], pid) > 0) { skip_next_mid = 1; continue }   # strip the resolved pending line
+          if (lines[i] == openf)  { inzone = 1; printf "%s\n", lines[i]; continue }
+          if (lines[i] == closef) { inzone = 0; printf "%s\n", lines[i]; continue }
+          if (inzone == 1 && index(lines[i], pid) > 0) { skip_next_mid = 1; continue }  # strip resolved pending line (in-zone only)
           if (skip_next_mid == 1) {
             skip_next_mid = 0
             if (lines[i] ~ /^<!-- mid:/) continue                        # strip its paired mid marker
