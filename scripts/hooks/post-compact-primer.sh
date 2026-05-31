@@ -249,6 +249,7 @@ fi
 
 if [ -z "$HANDOFF_PATH" ]; then
   ctx_gate_log "primer sid=${SID:-unknown} source=${SOURCE:-unknown} action=skip reason=no-handoff-file"
+  [ -n "${MISSION_PREFIX:-}" ] && jq -n --arg c "$MISSION_PREFIX" '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$c}}'
   exit 0
 fi
 
