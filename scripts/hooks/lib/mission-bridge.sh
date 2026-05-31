@@ -368,8 +368,14 @@ mission_backup() {
   [ -n "$_bk_ts" ] || { echo "mission: backup: date -u failed" >&2; return 1; }
   _bk_nonce=$(_mission_marker_field "$_bk_file" nonce | cut -c1-8)
   [ -n "$_bk_nonce" ] || _bk_nonce="nonill8"
-  _bk_dst="${_bk_dir}/MISSION.${_bk_sid}.${_bk_ts}.${_bk_nonce}.md"
+  # I3: two pre-mutation backups within the same second + a stable nonce produced an IDENTICAL
+  # filename → the second overwrote the first (silent backup loss). Use mktemp to guarantee a
+  # unique destination, preserving the sortable utc_ts prefix so the lexical prune below still
+  # orders correctly and the `MISSION.<sid>.*.md` / birth-exclusion globs still match.
+  _bk_dst=$(mktemp "${_bk_dir}/MISSION.${_bk_sid}.${_bk_ts}.${_bk_nonce}.XXXXXX.md") || {
+    echo "mission: backup: mktemp dest failed in $_bk_dir" >&2; return 1; }
   if ! cp "$_bk_file" "$_bk_dst" 2>/dev/null; then
+    rm -f "$_bk_dst" 2>/dev/null
     echo "mission: backup: copy of $_bk_file failed" >&2; return 1
   fi
   # prune: list pre-mutation backups for this sid, EXCLUDING any with the literal `birth` token,
