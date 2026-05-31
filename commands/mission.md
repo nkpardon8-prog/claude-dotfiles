@@ -130,9 +130,11 @@ plan 4-6 / codex 3-6, hard cap 6; /pre-compact freely interleaved; active until 
 e.g. write the payload to a temp file and pass it, so no quoting of untrusted text is needed at all.)
 `create` is **no-clobber** — it will not overwrite an existing mission. Parse the returned status line
 (Section 7). Two outcomes need handling, NOT a silent no-op:
-- **`ok` and no prior file** → the PLAN was seeded. Confirm it with the user, then begin Level-2.
-- **A `MISSION.<sid>.md` already exists** (a non-mission `/pre-compact`, or a previously-`cleared`
-  mission, seeded the PLAN) → `create` is no-clobber and would quietly keep that **stale** PLAN.
+- **`ok` (the ONLY success token) and no prior file** → the PLAN was seeded. Confirm it with the user,
+  then begin Level-2.
+- **`FAILED rc=1 (REFUSED: …)` — a `MISSION.<sid>.md` already exists** (a non-mission `/pre-compact`, or
+  a previously-`cleared` mission, seeded the PLAN) → `create` is no-clobber and REFUSED rather than
+  overwrite; it would quietly keep that **stale** PLAN if you ignored the refusal.
   Do **NOT** silent-no-op. Handle it exactly like §4(c): **surface it to the user and `rebaseline`**
   the PLAN to this build's directive (rebaseline is the ONLY path that legitimately rewrites PLAN,
   and it now appends a `[mission] MISSION-REBASELINED status=active` lifecycle line that REACTIVATES
