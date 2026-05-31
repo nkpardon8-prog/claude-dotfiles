@@ -530,26 +530,46 @@ with `skill: pre-compact`. Continue once it returns.
 `grep '[mission] '` over **ALL archives concatenated oldest→newest THEN the live log**, so no rotated
 line is ever outside the read window:
 ```bash
-log="$root/MISSION.$sid.log"
-{ for a in $(ls -tr "$root"/.mission-backups/MISSION."$sid".log.* 2>/dev/null); do
+live_log="$root/MISSION.$sid.log"
+# Concatenate ALL archives in FILENAME-timestamp (chronological) order, THEN the live log.
+# SPACE-SAFE: the canonical root can contain spaces (e.g. ".../untitled folder/skills"), so NEVER
+# word-split an unquoted $(ls …); pipe one path per line into `read -r`. Match ONLY the FINAL
+# extensions (.gz / .txt) so an in-flight rotation temp (e.g. a partial .tmp) is never read. The
+# timestamp embedded in each archive name sorts LEXICALLY = CHRONOLOGICALLY (more reliable than mtime,
+# which a touch/restore can perturb), so `sort` gives true oldest→newest order:
+{ ls -1 "$root"/.mission-backups/MISSION."$sid".log.*.gz \
+       "$root"/.mission-backups/MISSION."$sid".log.*.txt 2>/dev/null | sort | while IFS= read -r a; do
     case "$a" in *.gz) gzip -dc "$a" 2>/dev/null;; *) cat "$a" 2>/dev/null;; esac
   done
-  cat "$log" 2>/dev/null; } | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null
-# state gate (active-iff) — keys ONLY on CLEARED/REBASELINED (see active-iff rule below):
+  cat "$live_log" 2>/dev/null; } | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null
+
+# Derive the CURRENT part N first — convergence reads MUST be scoped to it (a prior part's final
+# dry=2 review line would otherwise bleed into part N+1's convergence math):
+cur_part=$(grep -E '\[mission\] (PART-START|PART-DONE) part=[0-9]+' /tmp/mission-resume.$$ \
+            | tail -1 | sed -n 's/.*part=\([0-9][0-9]*\).*/\1/p')
+[ -z "$cur_part" ] && cur_part=1   # no part-lifecycle yet ⇒ part 1
+
+# state gate (active-iff) — GLOBAL, keys ONLY on CLEARED/REBASELINED (see active-iff rule below):
 mission_state=$(grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' /tmp/mission-resume.$$ | tail -1)
-# convergence — keys ONLY on the last phase=review round (the dry-bearing phase):
-last_review=$(grep -E '\[mission\] part=[0-9]+ .*phase=review ' /tmp/mission-resume.$$ | tail -1)
-# resume POSITIONING — last activity of ANY phase + last part-lifecycle (NOT the state gate):
-last_round=$(grep -E '\[mission\] part=' /tmp/mission-resume.$$ | tail -1)
-last_progress=$(grep -E '\[mission\] (PART-START|PART-DONE|test-trust|VOID)' /tmp/mission-resume.$$ | tail -1)
+# convergence — PART-SCOPED to N, keys on the last phase=review round OR a VOID for this part (the
+# decision table keys on "latest line for round K is VOID", so VOID MUST be in this read):
+last_review=$(grep -E "\[mission\] (part=${cur_part} .*phase=review |VOID part=${cur_part} )" \
+                /tmp/mission-resume.$$ | tail -1)
+# round positioning — PART-SCOPED to N: last round-activity of ANY phase OR a VOID for this part:
+last_round=$(grep -E "\[mission\] (part=${cur_part} |VOID part=${cur_part} )" \
+                /tmp/mission-resume.$$ | tail -1)
+# progress/lifecycle positioning — GLOBAL (must include PART-RETIRED so "PART-DONE present but
+# PART-RETIRED absent ⇒ re-attempt retirement" is decidable; and VOID for the decision table):
+last_progress=$(grep -E '\[mission\] (PART-START|PART-DONE|PART-RETIRED|test-trust|VOID)' \
+                /tmp/mission-resume.$$ | tail -1)
 ```
-(`ls -tr` lists archives OLDEST first; concatenating them before the live log preserves chronological
-order so the final `tail -1` of any filtered grep picks the genuinely-latest line. The
-`MISSION.<sid>.log.*` glob covers both `.gz` and the `.txt` fallback when gzip was absent.)
-The three greps are deliberately distinct: `mission_state` is the **active-iff state gate** (keys ONLY
-on CLEARED/REBASELINED), `last_review` drives **convergence** (the `2 − dry` math), and
-`last_round`/`last_progress` are for **resume positioning** only. Never let a transient progress line
-gate active-iff.
+(Concatenating archives oldest→newest before the live log preserves chronological order so the final
+`tail -1` of any filtered grep picks the genuinely-latest line. The two `.gz`/`.txt` globs cover both
+the gzip archive and the no-gzip fallback while excluding any in-flight rotation temp.)
+The four greps are deliberately distinct: `mission_state` is the **GLOBAL active-iff state gate** (keys
+ONLY on CLEARED/REBASELINED); `last_review` drives **convergence** for the CURRENT part (the `2 − dry`
+math, part-scoped, VOID-aware); `last_round` (part-scoped, VOID-aware) and `last_progress` (global
+lifecycle) are for **resume positioning** only. Never let a transient progress line gate active-iff.
 
 **After `/pre-compact` returns** (or after any compaction), re-derive your position from that
 recovered record and continue the **EXACT** `(part, phase, round, dry)`. Read `last_round` for
