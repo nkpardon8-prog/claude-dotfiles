@@ -591,11 +591,15 @@ if mission_verify "$F" "TOTALLY-DIFFERENT-SID" 2>/dev/null; then
 else pass "mission_verify rejects a marker/sid mismatch"; fi
 
 # ===========================================================================================
-# 32: _mission_nonce returns a non-empty lowercase hex nonce.
+# 32: _mission_nonce returns a non-empty lowercase nonce (uuidgen → hex+hyphens, lowercased;
+# the lib uses cut -c1-8 for the fence nonce8, so hyphens within the full UUID are fine).
+# Assert: non-empty, lowercase, only [0-9a-f-], and the 8-char fence slice is clean hex.
 # ===========================================================================================
 NCE=$(_mission_nonce 2>/dev/null)
-if [ -n "$NCE" ] && printf '%s' "$NCE" | grep -qE '^[0-9a-f]+$'; then
-  pass "_mission_nonce returns a lowercase-hex nonce"
+NCE8=$(printf '%s' "$NCE" | cut -c1-8)
+if [ -n "$NCE" ] && printf '%s' "$NCE" | grep -qE '^[0-9a-f-]+$' \
+   && printf '%s' "$NCE8" | grep -qE '^[0-9a-f]{8}$'; then
+  pass "_mission_nonce returns a lowercase nonce with a clean 8-hex fence slice ($NCE8)"
 else fail "nonce" "got '$NCE'"; fi
 
 # ===========================================================================================
