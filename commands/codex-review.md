@@ -454,4 +454,4 @@ Engine: 4x Codex (GPT-5.4) + 3x Claude + Codex Verification | Verified: [Y/N]
 - Omit any section that has zero findings
 - Within each section, sort by specificity (findings with file:line references first, then cross-model findings, then single-source findings)
 - Verified findings should be marked with "(verified)" suffix
-- If the review found nothing significant: "Clean review — no significant findings across 2 Codex passes, 4 Claude agents, and Codex verification."
+- If the review found nothing significant: "Clean review — no significant findings across 4 Codex passes, 3 Claude agents, and Codex verification."
