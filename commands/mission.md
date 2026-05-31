@@ -574,10 +574,12 @@ lifecycle) are for **resume positioning** only. Never let a transient progress l
 **After `/pre-compact` returns** (or after any compaction), re-derive your position from that
 recovered record and continue the **EXACT** `(part, phase, round, dry)`. Read `last_round` for
 *positioning* (which part/phase you were in), but compute convergence (`2 − dry`) **ONLY** from
-`last_review` (the dedicated `phase=review` grep) — never from a `phase=fix`/`plan`/`implement`/
-`research` line, whose `dry=` is not the convergence count (a non-review phase line must not drive
-the `2 − D` math).
-- Read `last_review` (the last `phase=review` round line); you need `2 − dry` more dry rounds.
+`last_review` (the dedicated part-scoped `phase=review`-or-`VOID` grep) — never from a
+`phase=fix`/`plan`/`implement`/`research` line, whose `dry=` is not the convergence count (a non-review
+phase line must not drive the `2 − D` math).
+- Read `last_review` (the latest part-scoped `phase=review` round line OR a `VOID` for the current
+  part): if it is a `phase=review findings=0` line you need `2 − dry` more dry rounds; if it is a `VOID`
+  for round K, re-run round K fresh (it banked nothing).
 - **Round-ambiguity decision table (the SINGLE reconciliation of §5↔§8 — apply in order):**
 
   | Last round line for the current part | Resume action |
