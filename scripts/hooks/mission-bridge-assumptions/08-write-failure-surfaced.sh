@@ -26,11 +26,15 @@ atest_init "08-write-failure-surfaced"
 # (no hdiutil/ENOSPC needed). Created under our scratch dir; cleaned by trap.
 RO="$ATEST_DIR/readonly"
 mkdir -p "$RO"
-# pre-seed a file we expect to remain UNCHANGED after failed writes
+# pre-seed a file we expect to remain UNCHANGED after failed writes.
+# Two distinct denial mechanisms, because they gate different operations:
+#   - read-only FILE (chmod 444) denies appending to existing content (A1/A4)
+#   - read-only DIR  (chmod 555) denies creating new entries: lock/mktemp (A2/A3)
 SEED="$RO/MISSION.test.log"
 printf 'rec:000\tpre-existing entry\n' > "$SEED"
 seed_sum="$(shasum "$SEED" | cut -d' ' -f1)"
-chmod 555 "$RO" || atest_infra "cannot chmod scratch dir read-only"
+chmod 444 "$SEED" || atest_infra "cannot chmod seed file read-only"
+chmod 555 "$RO"   || atest_infra "cannot chmod scratch dir read-only"
 
 # Guard: if running as root, read-only dirs are bypassable -> can't force failure.
 if [ "$(id -u 2>/dev/null)" = "0" ]; then
