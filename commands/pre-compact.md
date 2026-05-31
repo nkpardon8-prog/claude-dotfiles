@@ -294,7 +294,7 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
          --arg mp "$CANONICAL_ROOT/MISSION.${SID_RESOLVED}.md" \
          '.current_seq = $seq
           | .last_handoff_path = $hp | .last_heartbeat_at = $hb | .status = $status
-          | .mission_path = (.mission_path // $mp)' \
+          | .mission_path = (if ((.mission_path // "") == "") then $mp else .mission_path end)' \
          | chain_manifest_write "$SID" || echo "WARN: chain manifest merge-write failed; continuing" >&2
      fi
 
