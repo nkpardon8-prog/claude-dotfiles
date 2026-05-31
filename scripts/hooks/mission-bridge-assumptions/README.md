@@ -106,5 +106,6 @@ a mismatch means the environment drifted → **re-validate**, never auto-fail.
 
 ## Gates
 
-- **Pre-implementation** (before `/implement`): all 8 must PASS.
-- **Post-implementation** (after each ship): re-run; any FAIL = regression.
+- **Pre-implementation** (before `/implement`): 01-08 + 10-13 PASS; **09 is RED** (the fix proof) until
+  the rebaseline-lifecycle change lands — `run-all` halts at 09 by design until then.
+- **Post-implementation** (after each ship): re-run; all 13 must PASS; any FAIL = regression.
