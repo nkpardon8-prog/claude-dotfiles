@@ -169,7 +169,8 @@ on run argv
       if foundTab is not missing value then exit repeat
     end repeat
     if foundTab is missing value then return "no-matching-tab"
-    do script "/compact" in foundTab
+    -- If this Claude Code build does not accept an argument to /compact, revert this single line to the bare do script "/compact" in foundTab. Pre-flight is in plan Task 14.
+    do script "/compact Preserve the recent conversation thread and any in-flight tool or task state; durable task state, plan, and decisions are already saved in the handoff and mission files, so do not re-summarize those." in foundTab
     -- R8: Chain /post-compact-resume <session_id> so identity is threaded verbatim.
     -- Raw concat (& sessionId) — NOT quoted form of, which injects literal quotes.
     -- UUID chars are [A-Za-z0-9-] — no shell-special chars; safe for raw concat.
