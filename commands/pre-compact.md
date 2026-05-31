@@ -298,6 +298,19 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
          | chain_manifest_write "$SID" || echo "WARN: chain manifest merge-write failed; continuing" >&2
      fi
 
+     # --- Mission spine: create + seed at link>=2 (multi-session work only) -------------------
+     # Only multi-session chains (IS_FIRST_RUN=0) get a durable MISSION file; a first run has no
+     # cross-compaction spine to seed yet (mission_create no-clobbers on later links, so this is
+     # safe to call every multi-link run). MISSION_SEED is populated by the orchestrator from the
+     # RICH source (see prose just below this block): the full brief body when NS_SOURCE=brief, the
+     # /mission argument, or the accumulated plan — the 500-char NORTH_STAR is last-resort ONLY.
+     if [ "$IS_FIRST_RUN" = "0" ]; then
+       bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create "$SID_RESOLVED" "$CANONICAL_ROOT" "${MISSION_SEED:-$NORTH_STAR}" \
+         || echo "WARN: mission create failed; continuing" >&2
+     fi
+     # Mission_create sets manifest mission_path via its OWN fresh read-modify-write, sequenced
+     # AFTER this Step 3.B manifest write — so there is no racing second write to the manifest here.
+
      echo "CHAIN_SEQ=$NEW_SEQ"
      echo "CHAIN_STATUS=$CHAIN_STATUS"
      echo "CHAIN_NORTH_STAR=$NORTH_STAR"
