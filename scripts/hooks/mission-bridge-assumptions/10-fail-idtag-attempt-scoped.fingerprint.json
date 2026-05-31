@@ -1,0 +1,1 @@
+{"assumption":"anchored idempotency keys on leading ^<tag>TAB, so a reason-only FAIL idtag collapses 5 retries to 1; attempt-scoped idtag yields 5 distinct lines (5-strike guard can fire)","bash":"3.2.57","os":"Darwin 25.5.0"}

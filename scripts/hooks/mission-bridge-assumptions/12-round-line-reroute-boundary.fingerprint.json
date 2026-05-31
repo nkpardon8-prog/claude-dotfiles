@@ -1,0 +1,1 @@
+{"assumption":"mission_log_append reroutes a >=480B (tag+TAB+entry+NL) line to DURABLE NOTES; a terse round line stays in the LOG","reroute_threshold_bytes":480,"bash":"3.2.57","os":"Darwin 25.5.0"}

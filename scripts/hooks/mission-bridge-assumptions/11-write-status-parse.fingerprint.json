@@ -1,0 +1,1 @@
+{"assumption":"mission-write.sh always exit 0; lib rc=2(corrupt)/rc=3(lock-busy) surface only on the stdout mission-write: <verb> FAILED rc=N status line","bash":"3.2.57","os":"Darwin 25.5.0"}

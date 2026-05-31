@@ -28,6 +28,21 @@ torn, fused, or silently dropped.
 | 07 | `07-append-after-torn-line.sh` | a newline-guarded append heals a torn (no-trailing-newline) final line so records never fuse; last-line marker scan survives a torn body line | a SIGKILL/ENOSPC partial write fuses two records into one (silent corruption) |
 | 08 | `08-write-failure-surfaced.sh` | a failed append/lock/mktemp returns **non-zero** (so it can be surfaced); the original file is untouched | a swallowed write failure loses an entry the agent thinks it recorded — the fail-LOUD invariant |
 
+### Fix-plan proofs (09-13) — the `/mission` codex-review hardening (`tmp/ready-plans/2026-05-30-mission-fixes.md`)
+
+These call the **real** `mission_*` functions / `mission-write.sh` (the lib now exists) against a
+hermetic scratch mission. **09 is RED until the rebaseline-lifecycle fix lands** — it is the
+pre-implementation proof of CRITICAL #1; `run-all` halts there until `/implement` makes it GREEN.
+10-13 are GREEN-now lock-ins of contracts the fix depends on.
+
+| # | File | Contract proven | Failure it guards |
+|---|------|-----------------|-------------------|
+| 09 | `09-rebaseline-reactivates-latest.sh` | after a `MISSION-CLEARED` line, `mission_rebaseline` must append a NEWER `[mission]` lifecycle line so the active-iff rule (latest `[mission]` line ≠ `MISSION-CLEARED`) reads active **(RED until fix — lib:921 logs no `[mission]` token)** | a cleared mission can never reactivate (adopt (c) / explicit-build stuck dead) |
+| 10 | `10-fail-idtag-attempt-scoped.sh` | the FAIL idtag must be **attempt-scoped** (5 same-reason FAILs → 5 anchored lines); a reason-only idtag collapses to 1 under `^<tag>\t` dedup (lib:775) — the negative control | the 5-strike loop-breaker is dead → runaway never halts |
+| 11 | `11-write-status-parse.sh` | `mission-write.sh` always `exit 0`; lib `rc=2`(corrupt)/`rc=3`(lock-busy) surface **only** on the stdout `mission-write: <verb> FAILED rc=N` line, machine-parseable | a silent bridge-write failure → STOP-LOUD never wired |
+| 12 | `12-round-line-reroute-boundary.sh` | a terse round line stays in the LOG; an oversize (≥480B) round line **reroutes to DURABLE NOTES** (lib:768) and leaves the LOG — the negative control | verbose findings inline in the round line vanish from the LOG → ambiguous resume |
+| 13 | `13-resume-window-survives-rotation.sh` | after `_mission_log_rotate` archives the oldest half, `tail -n 40` of the live log MISSES the archived lifecycle line (RED arm), but grep over (live + newest `.gz`) RECOVERS it (GREEN) | resume reads wrong/no lifecycle state after rotation |
+
 Every test embeds an explicit **negative control** (an `A?b`/`A4`/`A5` assertion, or a
 forced-failure mechanism) proving the detector can go RED — a green is only meaningful
 because the test demonstrably fails when the assumption is violated. Verified at
