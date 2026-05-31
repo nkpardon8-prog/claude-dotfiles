@@ -232,28 +232,24 @@ Claude's job here is to COMPLEMENT Codex's recall with precision. Codex now owns
 ### Agent lens adaptation:
 
 **If reviewing CODE:**
-- **Depth**: "You have Codex's review and the actual code. Go deeper on correctness: find bugs, logic errors, edge cases, off-by-ones, and broken error paths that Codex missed. Challenge Codex's findings — are any wrong or overstated?"
-- **Breadth**: "You have Codex's review and the actual code. Analyze architecture: coupling, abstraction quality, duplication, system fit, naming, readability, project conventions. What did Codex miss from an architectural perspective?"
-- **Adversary**: "You have Codex's review and the actual code. Try to break this: find security holes, injection vectors, race conditions, what fails under load or bad input. What's the worst-case scenario Codex didn't consider?"
-- **Gaps**: "You have Codex's review and the actual code. Find what's missing entirely: validation that should exist, error handling that's absent, edge cases with no coverage, silent failures. What should exist but doesn't?"
+- **Architecture/Maintainability**: "You have Codex's review and the actual code. Your lens is architecture and maintainability — Codex already covered correctness, security, and data integrity, so don't re-litigate those. Aim at how this is built and how it will age: coupling, abstraction quality, duplication, naming, readability, conformance to the project's conventions, and whether it fits the surrounding system. We won't enumerate what to find — surface whatever a senior engineer would want changed before this becomes load-bearing."
+- **Cross-layer Integration/Footguns**: "You have Codex's review and the actual code. Your lens is cross-layer integration and footguns. Aim at the seams: where this touches other layers/services/modules, what's missing entirely, what fails silently, and the cross-boundary bugs that only show up when components meet. We won't list the integration points — trace the data and control flow across boundaries and find where the contract between two pieces is wrong, unenforced, or absent."
+- **Adversarial + FP-filter**: "You have Codex's review and the actual code. You have two jobs. First, try to break it — find the way this behaves badly under hostile or unexpected conditions that everyone else assumed away. Second, and explicitly: challenge the Codex findings. For each Codex finding, judge whether it's real, overstated, or a false positive, and say so — your precision filtering is what makes the Codex recall trustworthy. We won't tell you which Codex findings are suspect; pressure-test all of them."
 
 **If reviewing a PLAN:**
-- **Depth**: feasibility of each step, are instructions precise enough for an AI to implement in one pass
-- **Breadth**: does the plan account for all affected files and integration points, are dependencies ordered correctly
-- **Adversary**: what could go wrong during implementation, failure modes, what if assumptions are wrong, rollback difficulty
-- **Gaps**: missing steps, unaddressed requirements, implicit assumptions, things the plan forgot to mention
+- **Architecture/Maintainability**: is the plan's structure sound — does it sequence dependencies correctly, account for all affected files/integration points, and avoid baking in coupling or rework
+- **Cross-layer Integration/Footguns**: what could go wrong at the seams during implementation — integration points the plan glosses over, missing steps, silent-failure modes, rollback difficulty
+- **Adversarial + FP-filter**: attack the plan's assumptions — what if they're wrong, what's the failure mode; and challenge any Codex findings about the plan as overstated or false
 
 **If reviewing an IDEA or APPROACH:**
-- **Depth**: logical soundness, does the reasoning hold under scrutiny, are conclusions supported
-- **Breadth**: alternatives not considered, how it fits the bigger picture, second-order effects
-- **Adversary**: strongest counterarguments, where this breaks down, hidden costs, what the user isn't seeing
-- **Gaps**: what hasn't been thought through, missing considerations, unstated dependencies
+- **Architecture/Maintainability**: structural soundness — how it fits the bigger picture, second-order effects, whether the shape of the approach will hold up
+- **Cross-layer Integration/Footguns**: alternatives not considered, unstated dependencies, where this collides with adjacent systems or concerns
+- **Adversarial + FP-filter**: strongest counterarguments, where this breaks down, hidden costs the user isn't seeing; and challenge Codex findings as overstated or false
 
 **If DEBUGGING:**
-- **Depth**: trace the exact failure path, verify each assumption in the chain, what's actually happening vs expected
-- **Breadth**: what else could cause this, related subsystems, recent changes that could be responsible
-- **Adversary**: reproduce worst-case, what makes this intermittent, what if the obvious cause is a red herring
-- **Gaps**: what hasn't been checked yet, missing logs or observability, assumptions about environment
+- **Architecture/Maintainability**: what structural weakness made this bug possible, related subsystems, recent changes that could be responsible
+- **Cross-layer Integration/Footguns**: what else could cause this across boundaries, missing logs/observability, what hasn't been checked yet
+- **Adversarial + FP-filter**: reproduce worst-case, what makes it intermittent, what if the obvious cause is a red herring; and challenge Codex's diagnosis as overstated or false
 
 **Mixed or unclear type:** Default to the CODE lenses.
 
