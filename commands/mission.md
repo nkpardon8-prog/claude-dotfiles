@@ -176,6 +176,10 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
   ```
   (SINGLE-quoted — the captured objective is untrusted; never double-quote it, §7 injection rule. If it
   may contain a single quote, write it to a temp file / heredoc and pass that instead.)
+  Parse the status line (Section 7). **`create` is idempotent: if a `MISSION.<sid>.md` already existed
+  and verified, it returns `ok` as a no-op and the EXISTING (possibly non-mission/stale) PLAN persists —
+  the seed did NOT take.** So if `create` says `ok` but PLAN line-1 is NOT this adopt directive (re-read
+  it via the §8 idiom), you were actually in case (c), not (a) — fall through to (c) and rebaseline.
 - **(b) A mission exists AND PLAN line-1 IS a `MISSION MODE:` token** → you are already in mission
   mode; just continue.
 - **(c) A mission exists BUT PLAN line-1 is NOT a `MISSION MODE:` token** (a non-mission
