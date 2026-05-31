@@ -918,7 +918,7 @@ mission_rebaseline() {
     rm -f "$_rb_tmp"; _mission_unlock; echo "mission: rebaseline: self-check FAILED — original intact" >&2; return 6
   fi
   _mission_unlock
-  mission_log_append "$_rb_sid" "$_rb_root" "PLAN rebaselined (hash re-stamped)" "rebaseline-${_rb_newhash}"
+  mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active (PLAN rebaselined, hash re-stamped)" "rebaseline-${_rb_newhash}"
   return 0
 }
 
