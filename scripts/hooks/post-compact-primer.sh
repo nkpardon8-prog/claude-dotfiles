@@ -152,10 +152,17 @@ elif [ -n "$MP" ] && [ -f "$MP" ]; then
   # Main mission file exists but the banner is gone → loud (#11). Never reads the main file.
   MISSION_PREFIX="CRITICAL: mission $MP exists but its banner is missing — run /pre-compact; do NOT proceed as if no mission.
 "
-elif printf '%s' "${MANIFEST_JSON:-}" | jq -e '.mission_path // empty' >/dev/null 2>&1; then
-  # Manifest recorded a mission_path but the file is gone → loud (#11).
-  MISSION_PREFIX="CRITICAL: mission expected (recorded in chain manifest) but FILE MISSING — inspect .mission-backups/; re-create via /mission.
+else
+  # Manifest may record a mission_path → if so, but the file is gone, that's loud (#11).
+  # C1(d): treat an EMPTY-STRING mission_path as ABSENT (no pointer). The old `jq -e
+  # '.mission_path // empty'` exited 0 (truthy) for mission_path="" → a FALSE CRITICAL on every
+  # first-run/no-mission manifest (which carried mission_path:""). Extract the field and only
+  # shout when it is NON-empty.
+  MP_FIELD=$(printf '%s' "${MANIFEST_JSON:-}" | jq -r '.mission_path // ""' 2>/dev/null)
+  if [ -n "$MP_FIELD" ]; then
+    MISSION_PREFIX="CRITICAL: mission expected (recorded in chain manifest) but FILE MISSING — inspect .mission-backups/; re-create via /mission.
 "
+  fi
 fi
 # Fold into BANNER_PREFIX so all existing ${BANNER_PREFIX} jq emitters (rc=2/rc=3/normal tail) pick it
 # up automatically (#13). MISSION_PREFIX leads so the standing directive is read first.
