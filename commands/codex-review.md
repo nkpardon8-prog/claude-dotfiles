@@ -247,9 +247,16 @@ After all four return, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/code
 # (Do NOT require an exact clean sentinel — a clean pass worded "no issues found" must still count,
 #  or CODEX_PASSES drops below 4/4 and /mission VOIDs forever. Case-insensitive on the verdict/clean parts.)
 REVIEW_RE='^[[:space:]]*(CRITICAL|IMPORTANT|MINOR)|[Vv]erdict:[[:space:]]*(ship|needs-fixes)|[Nn]o (additional |significant )?(findings|issues|concerns|problems)|[Cc]lean review|[Nn]othing (significant|notable|to flag)'
-# usable = file contains >=1 line matching REVIEW_RE
-if [ -s "$RUN_DIR/codex-review-$N.txt" ] && grep -E -q "$REVIEW_RE" "$RUN_DIR/codex-review-$N.txt"; then
-  USABLE=1   # real review present (success OR partial-with-findings)
+# Mode-aware usability (the two engines produce differently-shaped output):
+#  - exec mode (MODE=file|describe): WE control the per-lens prompt, which mandates the trailing
+#    `Verdict: ship|needs-fixes` line, so REVIEW_RE (finding line OR verdict OR clean wording) is the gate.
+#  - review mode (MODE=branch|uncommitted): `codex review` takes NO per-pass prompt, so we CANNOT
+#    require a verdict line; a usable pass is simply one that RAN — exit 0 with non-empty output.
+#    (A failed `codex review` exits non-zero or empty.) Do NOT apply REVIEW_RE to review-mode passes.
+if [ "$MODE" = "branch" ] || [ "$MODE" = "uncommitted" ]; then
+  if [ "$EXIT_N" = "0" ] && [ -s "$RUN_DIR/codex-review-$N.txt" ]; then USABLE=1; else USABLE=0; fi
+elif [ -s "$RUN_DIR/codex-review-$N.txt" ] && grep -E -q "$REVIEW_RE" "$RUN_DIR/codex-review-$N.txt"; then
+  USABLE=1   # exec-mode real review present (success OR partial-with-findings/verdict)
 else
   USABLE=0   # empty, or non-empty but only error/usage/sandbox-denied/stack-trace
 fi
