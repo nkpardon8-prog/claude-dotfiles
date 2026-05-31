@@ -290,9 +290,20 @@ mission_verify() {
   _mv_nonce=$(_mission_marker_field "$_mv_file" nonce)
   [ -n "$_mv_nonce" ] || { echo "mission: verify: no marker nonce" >&2; return 1; }
   _mv_n8=$(printf '%s' "$_mv_nonce" | cut -c1-8)
+  # Each zone must have EXACTLY ONE live-nonce OPEN fence AND EXACTLY ONE live-nonce CLOSE fence.
+  # A missing close → truncation/corruption; a duplicate (pasted/spoofed) fence → corruption.
+  # Requiring close-count == 1 also hardens against a zone-truncation spoof where a body line
+  # duplicates a live close fence (the count would then be 2 → loud corruption). (I1)
   for _mv_z in "PLAN" "DURABLE NOTES" "PLAN CHALLENGES" "PENDING DECISIONS"; do
-    if ! grep -qE "^<!-- MZONE:${_mv_z} n=${_mv_n8} -->\$" "$_mv_file" 2>/dev/null; then
-      echo "mission: verify: zone fence missing: $_mv_z" >&2; return 1
+    _mv_oc=$(grep -cE "^<!-- MZONE:${_mv_z} n=${_mv_n8} -->\$" "$_mv_file" 2>/dev/null)
+    [ -n "$_mv_oc" ] || { echo "mission: verify: grep -c (open) failed: $_mv_z" >&2; return 1; }
+    if [ "$_mv_oc" -ne 1 ]; then
+      echo "mission: verify: zone '$_mv_z' has $_mv_oc open fences (want 1)" >&2; return 1
+    fi
+    _mv_cc=$(grep -cE "^<!-- /MZONE:${_mv_z} n=${_mv_n8} -->\$" "$_mv_file" 2>/dev/null)
+    [ -n "$_mv_cc" ] || { echo "mission: verify: grep -c (close) failed: $_mv_z" >&2; return 1; }
+    if [ "$_mv_cc" -ne 1 ]; then
+      echo "mission: verify: zone '$_mv_z' has $_mv_cc close fences (want 1)" >&2; return 1
     fi
   done
   return 0
