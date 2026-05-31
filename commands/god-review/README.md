@@ -292,6 +292,20 @@ Key supporting files:
 
 ## Status and Changelog
 
+### 2026-05-31 — 3 new open-posture Codex broad reviewers
+
+- Broad-reviewer roster: 4 Claude + 3 Codex → **4 Claude + 6 Codex**.
+- New Codex broad reviewers (open "direct the aim, not the answer" posture):
+  `codex-deep-correctness` (logic), `codex-ruthless-redteam` (adversarial),
+  `codex-data-integrity` (data integrity / concurrency / resource lifecycle) —
+  distinct from each other and from the original 3 (cross-layer /
+  prod-scalability / security-safeguards).
+- Registered in `god-review.md` Phase 2c (hardcoded roster — 3 new
+  `codex-invoke.sh` calls + 3 `cp`-to-`findings/` lines). Counts updated:
+  `expected_subagents` 32→35 (god-review), 31→34 (god-report); per-round cost
+  56→59 / 57→60. Original 3 Codex reviewers left in checklist style (migration
+  to open posture deferred).
+
 ### 2026-05-06 — Phase E fix pass (8 fixes)
 
 - Fixed Phase 3 while-loop split across 10 separate bash fences (catastrophic) — loop body now one fence
