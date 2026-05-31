@@ -187,7 +187,7 @@ timeout: 600000
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-cd $WORKDIR && codex -c model_reasoning_effort="$EFFORT" review [--base $BASE_BRANCH | --uncommitted] > $RUN_DIR/codex-review-3.txt 2>&1
+cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE_BRANCH" | --uncommitted] > "$RUN_DIR/codex-review-3.txt" 2>&1
 ```
 timeout: 600000
 
