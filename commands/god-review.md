@@ -2,7 +2,7 @@
 description: "Autonomous multi-model codebase audit + fix loop. 4 Claude broad + 6 Codex broad + 24 principle agents (Claude+Codex per principle) in parallel. Always-on indefinite fix loop — runs until 3 consecutive rounds yield zero new non-deferred findings. Hard gates on schema/auth/deps/secrets/CI/tests are batched for human review at end. Use /god-report for single-pass review-only."
 argument-hint: "[scope] [--max-rounds N] [--max-wall-hours N] [--resume] [--force-resume] [--principle <name>] [--rescope-on-fix {full|changed}] [--online] [--codex-validation-every N] [--ruthless]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
-expected_subagents: 32
+expected_subagents: 35
 ---
 
 # /god-review — Multi-Model Codebase Audit
