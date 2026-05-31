@@ -290,7 +290,7 @@ Each agent does up to 3 passes internally (Pass 1: initial findings, Pass 2: dee
 
 ## Step 5: Meta-Review Layer
 
-After ALL 4 Claude agents return, Claude (you, the orchestrator) performs three checks:
+After ALL 3 Claude agents return, Claude (you, the orchestrator) performs three checks:
 
 ### 5a. Parse and Map Codex Findings
 
