@@ -474,37 +474,70 @@ _mission_log_rotate() {
   [ -f "$_lr_log" ] || return 0
   _lr_size=$(_file_size "$_lr_log")
   [ "$_lr_size" -ge "$MISSION_LOG_MAX_BYTES" ] || return 0
+
+  # I4: serialize rotation against concurrent rotators so two processes don't both archive+trim
+  # and lose lines. Callers of _mission_log_rotate (mission_log_append) do NOT hold the lock, so
+  # acquiring it here is safe. RESIDUAL (documented, not over-engineered): a fully lock-free append
+  # racing this LOCKED rotation could still lose at most one line, because the append path is not
+  # itself lock-guarded. This is acceptable under the current single-writer-per-sid workflow (one
+  # /pre-compact writes a given sid at a time). A FUTURE parallel-writer /mission would need the
+  # rename-aside approach (rename the log out from under writers, then archive the renamed copy).
+  _lr_lb=$(_mission_lockbase "$_lr_root")
+  _lr_had_lock=0
+  if _mission_lock "$_lr_lb" "$_lr_sid" 2>/dev/null; then
+    _lr_had_lock=1
+    # Re-check the threshold UNDER the lock — another rotator may have just rotated.
+    _lr_size=$(_file_size "$_lr_log")
+    if [ "$_lr_size" -lt "$MISSION_LOG_MAX_BYTES" ]; then
+      _mission_unlock; return 0
+    fi
+  fi
+
   _lr_dir="${_lr_root}/.mission-backups"
-  mkdir -p "$_lr_dir" 2>/dev/null || { echo "mission: log-rotate: cannot create $_lr_dir" >&2; return 1; }
+  mkdir -p "$_lr_dir" 2>/dev/null || {
+    echo "mission: log-rotate: cannot create $_lr_dir" >&2
+    [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1; }
   _lr_lines=$(wc -l < "$_lr_log" 2>/dev/null | tr -d ' ')
-  [ -n "$_lr_lines" ] && [ "$_lr_lines" -gt 1 ] || return 0
+  if [ -z "$_lr_lines" ] || [ "$_lr_lines" -le 1 ]; then
+    [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 0
+  fi
   _lr_half=$((_lr_lines / 2))
-  [ "$_lr_half" -ge 1 ] || return 0
+  if [ "$_lr_half" -lt 1 ]; then
+    [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 0
+  fi
   _lr_ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)
   [ -n "$_lr_ts" ] || _lr_ts="unknown"
   _lr_arc="${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.gz"
-  # archive oldest half (zero-loss), then keep newest half
+  # archive oldest half (zero-loss), then keep newest half. C3: wrap the head|gzip pipe in a
+  # pipefail subshell so a `head` failure is NOT masked by gzip's exit 0 (which would trim the log
+  # → loss).
   if command -v gzip >/dev/null 2>&1; then
-    if ! head -n "$_lr_half" "$_lr_log" | gzip -c > "$_lr_arc" 2>/dev/null; then
-      echo "mission: log-rotate: archive write failed (refusing to rotate, no loss)" >&2; return 1
+    if ! ( set -o pipefail; head -n "$_lr_half" "$_lr_log" | gzip -c > "$_lr_arc" ) 2>/dev/null; then
+      echo "mission: log-rotate: archive write failed (refusing to rotate, no loss)" >&2
+      [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
     fi
   else
-    # no gzip: plain-text archive (still zero-loss)
+    # no gzip: plain-text archive (still zero-loss). No pipe here, but keep the failure check.
     _lr_arc="${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.txt"
-    if ! head -n "$_lr_half" "$_lr_log" > "$_lr_arc" 2>/dev/null; then
-      echo "mission: log-rotate: archive write failed (refusing to rotate, no loss)" >&2; return 1
+    if ! ( set -o pipefail; head -n "$_lr_half" "$_lr_log" > "$_lr_arc" ) 2>/dev/null; then
+      echo "mission: log-rotate: archive write failed (refusing to rotate, no loss)" >&2
+      [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
     fi
   fi
   # rewrite the log keeping the newest (lines - half) lines, atomically in target dir
   _lr_keep=$((_lr_lines - _lr_half))
   _lr_tmp=$(mktemp "${_lr_log}.tmp.XXXXXX") || {
-    echo "mission: log-rotate: mktemp failed" >&2; return 1; }
+    echo "mission: log-rotate: mktemp failed" >&2
+    [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1; }
   if ! tail -n "$_lr_keep" "$_lr_log" > "$_lr_tmp"; then
-    rm -f "$_lr_tmp"; echo "mission: log-rotate: tail rewrite failed" >&2; return 1
+    rm -f "$_lr_tmp"; echo "mission: log-rotate: tail rewrite failed" >&2
+    [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
   fi
   if ! mv -f "$_lr_tmp" "$_lr_log"; then
-    rm -f "$_lr_tmp"; echo "mission: log-rotate: rename failed" >&2; return 1
+    rm -f "$_lr_tmp"; echo "mission: log-rotate: rename failed" >&2
+    [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1
   fi
+  [ "$_lr_had_lock" = "1" ] && _mission_unlock
   return 0
 }
 
