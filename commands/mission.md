@@ -451,7 +451,7 @@ rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
 - any other non-zero rc (4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
   feeds the 5-FAIL loop-breaker (§10).
 
-**LOG schema — the SINGLE canonical definition; every resume rule (§5/§8/§9/§12/§13) reads lines
+**LOG schema — the SINGLE canonical definition; every resume rule (§5/§8/§9) reads lines
 back in EXACTLY these shapes.** These are `log`-verb entries with a structured `[mission]` payload —
 not new verbs; the real on-disk line is `<idtag>\t<entry>`; resume matches `[mission]` ANYWHERE on the
 line, not at column 0.
