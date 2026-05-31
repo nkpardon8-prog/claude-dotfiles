@@ -276,6 +276,7 @@ HANDOFF_SIZE=$(printf '%s' "$HANDOFF_SIZE" | tr -d '[:space:]')
 if [ "$HANDOFF_SIZE" -gt "${HANDOFF_MAX_SIZE_BYTES:-5242880}" ]; then
   ac_log "primer action=skip reason=handoff-oversize size=$HANDOFF_SIZE limit=${HANDOFF_MAX_SIZE_BYTES:-5242880} path=$HANDOFF_PATH"
   ctx_gate_log "primer sid=${SID:-unknown} action=skip reason=handoff-oversize size=$HANDOFF_SIZE"
+  [ -n "${MISSION_PREFIX:-}" ] && jq -n --arg c "$MISSION_PREFIX" '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$c}}'
   exit 0
 fi
 
