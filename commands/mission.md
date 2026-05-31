@@ -534,7 +534,7 @@ the `2 − D` math).
   | Last round line for the current part | Resume action |
   |---|---|
   | `phase=fix` (a fix was in flight) | FINISH the in-flight fix to completion against the working tree, THEN re-run the barrier as the NEXT round K+1. Do not assume the fix finished. |
-  | `phase=review` with `findings>0` (ACTIONABLE — `dry` was NOT advanced) | resume into the **FIX of the SAME round K** → log `phase=fix` round=K, apply fixes; do NOT start a fresh review round K+1. (`findings>0` ⇒ this round demands a fix before any new review — see M2/I3.) |
+  | `phase=review` with `findings>0` (ACTIONABLE — `dry` was NOT advanced) | resume into the **FIX of the SAME round K** → log `phase=fix` round=K, apply fixes; do NOT start a fresh review round K+1. (`findings>0` ⇒ this round demands a fix before any new review.) |
   | `phase=review` with `findings=0` (dry-advancing, `dry` already incremented on the line) | start the NEXT FRESH review round K+1 per the `2 − dry` rule. |
   | a `VOID … round=K` is the latest line for round K | re-run round K FRESH (never count it). |
   | last is `PART-DONE` | do not re-resume; advance per the PART-DONE rule below. |
