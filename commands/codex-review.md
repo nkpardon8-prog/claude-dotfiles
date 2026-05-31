@@ -380,7 +380,7 @@ timeout: 120000
 
 ### 6c. Process verification results
 
-Read `/tmp/codex-verify.txt` and apply:
+Read `$RUN_DIR/codex-verify.txt` and apply:
 
 - **FALSE_POSITIVE findings** → remove from the report entirely. Note count in Meta-Review Notes: "Verification removed X false positives."
 - **CONFIRMED findings** → boost confidence by one level (investigate→likely, likely→definite). Tag with "(verified)".
