@@ -488,10 +488,17 @@ in the LOG (`last_life` above) is NOT `MISSION-CLEARED`. Key on the LATEST lifec
 
 ## 10. Guardrails — stop LOUD
 
-- **5 identical FAIL lines in the LOG** (counted from the durable record, reconstructable across
-  compactions — the guard can't live in volatile context) → **STOP LOUD.** Do not burn hours wrong.
-- **A corrupt or unreadable bridge** (e.g. `mission_verify` fails) → **STOP LOUD**, surface it to the
-  user, point them at the `.mission-backups/` under the canonical root; do not silently proceed.
+- **5 FAILs for the SAME part+phase in the LOG** → **STOP LOUD.** Count from the durable record
+  (the guard can't live in volatile context): the resume-read idiom (Section 8) recovers FAIL lines,
+  and because each FAIL is attempt-scoped (`m<N>-fail-<reason>-<attempt>`, Section 7) the lib does NOT
+  dedup them, so 5 distinct lines for the same `part=<N> phase=<P>` actually accumulate and the guard
+  can fire. Tally `[mission] FAIL part=<N> phase=<P> …` lines per part+phase; at 5, STOP LOUD — do not
+  burn hours wrong.
+- **A corrupt or unreadable bridge** → **STOP LOUD**, surface it to the user, point them at the
+  `.mission-backups/` under the canonical root; do not silently proceed. This guard is WIRED to the
+  status-line parse (Section 7): any `mission-write.sh` call returning `FAILED rc=2` (corrupt — the
+  lib's `mission_verify` failed under the lock) triggers this STOP-LOUD immediately. (Also triggers
+  if a direct `mission_verify` you run fails.)
 
 ---
 
