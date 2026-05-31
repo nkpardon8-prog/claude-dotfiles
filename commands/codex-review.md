@@ -1,8 +1,8 @@
 ---
-description: "Universal review engine. OpenAI Codex CLI (GPT-5.4) runs 2 specialized review passes plus 1 verification pass. Claude Opus runs 4 lens agents (Depth, Breadth, Adversary, Gaps) plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
+description: "Universal review engine. OpenAI Codex CLI (GPT-5.4) runs 4 specialized review passes (Correctness, Security, Data-integrity, Contracts) plus 1 verification pass. Claude Opus runs 3 lens agents (Architecture, Integration, Adversarial+FP-filter) plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
 argument-hint: "[file/dir/plan path, question, or blank for auto-detect]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
-expected_subagents: 7
+expected_subagents: 8
 ---
 
 # Codex Review — Universal Review Engine
