@@ -375,7 +375,7 @@ Read `/tmp/codex-verify.txt` and apply:
 - If the verification call fails or times out: skip it, proceed with unverified findings. Note in Meta-Review: "Verification pass unavailable."
 - Do NOT block the report on a failed verification.
 
-### 7e. Cleanup verification temp file
+### 6e. Cleanup verification temp file
 
 ```bash
 rm -f /tmp/codex-verify.txt
