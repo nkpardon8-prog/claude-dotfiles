@@ -173,6 +173,8 @@ Report only what you can substantiate — but a speculative-but-real finding tag
 
 **For MODE="branch" or MODE="uncommitted"**, use `codex ... review` (the diff-based `review` subcommand takes no per-pass prompt, so the four passes run on the same diff and the lens is attributed at merge time; each pass is still an independent Codex invocation). Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution):
 
+> Note: these `codex review` calls intentionally carry no `-s read-only --ephemeral` (unlike the `codex exec` calls in the MODE="file"/"describe" path). The `review` SUBCOMMAND reviews a diff and is inherently read-only — it has no `-s` sandbox flag at all (that flag is specific to `codex exec`). So the "every Codex invocation is read-only" invariant holds here by the subcommand's nature, not by an explicit flag. This is not a missing-sandbox gap.
+
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
 cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE_BRANCH" | --uncommitted] > "$RUN_DIR/codex-review-1.txt" 2>&1
