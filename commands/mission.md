@@ -465,9 +465,22 @@ in the LOG (`last_life` above) is NOT `MISSION-CLEARED`. Key on the LATEST lifec
   `AskUserQuestion` round (draining PENDING DECISIONS) when the run is **explicitly interactive** /
   there is a recent user turn. Never block an unattended run on a modal. (When you do ask, include the
   current context-usage % in the question text, per global rules.)
+- **Unattended blocking surfaces extend to `/implement`'s gates.** The away-default above applies to
+  ANY surface that would block an unattended run — including `/implement`'s **dangerous-command
+  Manual-Steps gate**. When away: do NOT block on that modal; log a `pending` PENDING-DECISION (the
+  decision text + context-usage %) and proceed-or-stop per the away policy, exactly like a batched
+  question. The decision stays in the queue for the next interactive turn.
+- **Credential / external-side-effect / destructive guard (autonomous mode).** Full-agency,
+  credential, external-side-effect, or destructive skills — e.g. `/load-creds`, anything that exfils
+  secrets, mutates production, or performs irreversible external actions — require a **human PENDING
+  decision in autonomous mode. Do NOT auto-run them.** Log a `pending` describing what wants to run and
+  why, and proceed on the non-destructive branch (or stop if blocked). These are the one class where
+  "proceed loudly when away" does NOT apply — the human must ratify before such a skill runs.
 - **Full agency (spine not cage).** The four-skill sequence is the backbone, not a fence. You are free
   to invoke ANY dotfiles skill whenever it helps — `/script` to prove load-bearing assumptions before
-  building (encouraged), `/investigate`, `/document`, `/gemini`, `/load-creds`, etc.
+  building (encouraged), `/investigate`, `/document`, `/gemini`, etc. (Credential/destructive skills
+  like `/load-creds` are gated by the guard above — they need a human PENDING decision in autonomous
+  mode.)
 - **Test-trustworthiness** is both a plan-time precondition and a deliverable (see Section 5, Phase 2):
   no deleting or weakening tests to pass; meaningful coverage before "converged" means anything.
 
