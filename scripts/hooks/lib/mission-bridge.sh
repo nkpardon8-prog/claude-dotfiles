@@ -329,6 +329,15 @@ _mission_lock() {
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
       echo "mission: reclaiming orphaned lock from dead pid $holder" >&2
       rm -rf "$lock" 2>/dev/null
+    elif [ -z "$holder" ]; then
+      # I2: a crash between mkdir and the pid write leaves an empty/missing pid file. Reclaim it
+      # ONLY if the lock dir is STALE (mtime age >= 2s) — never steal a lock mid-creation by a
+      # live process that simply hasn't written its pid yet.
+      _lk_age=$(( $(date +%s 2>/dev/null || echo 0) - $(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+      if [ "$_lk_age" -ge 2 ]; then
+        echo "mission: reclaiming empty-pid lock (stale ${_lk_age}s)" >&2
+        rm -rf "$lock" 2>/dev/null
+      fi
     fi
     tries=$((tries + 1))
     sleep 0.1
