@@ -3,8 +3,14 @@
 # Runs every NN-*.sh sequentially, halts on first FAIL, maps a hang to
 # INFRASTRUCTURE FAIL (exit 3), exits with the first failure's code.
 #
-# Pre-implementation gate:   bash run-all.sh   (all 8 must PASS before /implement)
+# Pre-implementation gate:   bash run-all.sh   (must PASS before /implement)
 # Post-implementation gate:  re-run after each ship; any FAIL = regression.
+#
+# 01-08 lock in the already-shipped mission-bridge contracts (all GREEN).
+# 09-13 are the /mission codex-review FIX-PLAN proofs (tmp/ready-plans/2026-05-30-mission-fixes.md):
+#   09 runs RED until the rebaseline-lifecycle fix lands — it IS the pre-implementation proof that
+#      mission_rebaseline cannot reactivate a cleared mission today; run-all halts there until
+#      /implement makes it GREEN. 10-13 are GREEN-now contract lock-ins.
 set -uo pipefail
 
 GATE="MISSION_BRIDGE_SMOKE_ALLOW_TMP"
