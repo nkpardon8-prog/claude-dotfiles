@@ -193,7 +193,7 @@ timeout: 120000
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o /tmp/codex-review-2.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is security and safety. Find anything an attacker or a hostile input could exploit, and anything that could do real-world damage — untrusted input reaching dangerous sinks, broken authn/authz, leaked or hardcoded secrets, destructive operations without guardrails. We won't list every vector; assume an adversary is reading this code and think like them. [output-contract block]"
+codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-review-2.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is security and safety. Find anything an attacker or a hostile input could exploit, and anything that could do real-world damage — untrusted input reaching dangerous sinks, broken authn/authz, leaked or hardcoded secrets, destructive operations without guardrails. We won't list every vector; assume an adversary is reading this code and think like them. [output-contract block]"
 ```
 timeout: 120000
 
