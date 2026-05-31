@@ -29,6 +29,11 @@ TESTS=(
   "06-primer-emit.sh"
   "07-append-after-torn-line.sh"
   "08-write-failure-surfaced.sh"
+  "09-rebaseline-reactivates-latest.sh"
+  "10-fail-idtag-attempt-scoped.sh"
+  "11-write-status-parse.sh"
+  "12-round-line-reroute-boundary.sh"
+  "13-resume-window-survives-rotation.sh"
 )
 
 # macOS has no GNU `timeout`; use perl as a portable per-test watchdog (60s).
