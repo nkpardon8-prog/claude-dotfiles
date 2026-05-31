@@ -180,7 +180,7 @@ Then route per the decision matrix below.
 - **STATE=`ok`:** proceed per the MARKER/STALE/LEGACY matrix below.
   Parse fields from STATE JSON: `marker`, `stale`, `legacy`, `age_hours`, `sid`, `path`, `resume_marker`.
   Use `path` field (not cwd) as the authoritative handoff file location — it may differ from cwd for repo-root resolution.
-  Retain `resume_marker` (a one-shot idempotency path, possibly empty) — you will WRITE it at the very end of Step 4 once you have actually resumed (see Step 4).
+  Retain `resume_marker` (a one-shot idempotency path, possibly empty) — you will WRITE it at the START of Step 4, BEFORE executing `## Next Action` (writing it first is what closes the double-resume race; see Step 4).
 
 - **STATE=`already-resumed`:** this compaction was ALREADY resumed by the other resume channel
   (the SessionStart self-invoke directive AND the typed cross-tab backstop can both fire after one
