@@ -11,9 +11,11 @@
 # manifest write logs a warning and returns non-zero; callers MUST treat that as advisory and
 # continue. The handoff file is the load-bearing artifact; manifest/ledger are recovery aids.
 #
-# Schema (slim, post-3-reviewer reconciliation): the manifest is exactly these 9 fields:
+# Schema (slim, post-3-reviewer reconciliation): the manifest is these 10 fields:
 #   chain_id, started_at, north_star, north_star_source, current_seq,
-#   last_handoff_path, last_heartbeat_at, status, host
+#   last_handoff_path, last_heartbeat_at, status, host, mission_path
+# mission_path (additive) = absolute path to the mission file MISSION.<sid>.md at the
+#   canonical root; empty string when handoff_canonical_root is unavailable.
 # Corrupt-recovery paths add: recovered_from_ledger (true).
 # Dropped (YAGNI): north_star_history, status_history, total_links.
 #
