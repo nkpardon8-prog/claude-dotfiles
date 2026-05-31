@@ -53,6 +53,10 @@ Use `Task tool` with `subagent_type: "implementer"` for each chunk.
 
 ## Step 5: Automatic Implementation Review
 
+> **`--no-review` guard (opt-in skip).** If `NO_REVIEW = true` (the `--no-review` flag was passed), **SKIP this Step 5 AND Step 6 entirely** and jump straight to Step 7. The caller (e.g. `/mission`) owns the review barrier and the plan lifecycle in that case, so `/implement` returns right after the implementation chunks complete — it does NOT spawn the implementation-reviewer and does NOT move the plan.
+>
+> If `NO_REVIEW = false` (the default — no flag), run Step 5 and Step 6 below exactly as written.
+
 After all implementation agents complete, **automatically spawn an implementation-reviewer**:
 
 ```
