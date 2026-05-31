@@ -599,7 +599,7 @@ the `2 − D` math).
   (Section 5/7) and begin its Phase 1. **Never restart converged work** and never re-run review rounds
   you already banked.
 - A `VOID part=<N> … round=<K>` line means round K did not count → re-run round K fresh (Section 6/7).
-- `test-trust part=<N>` recovered = honored; absent = unresolved → re-assess before implementing (#13).
+- `test-trust part=<N>` recovered = honored; absent = unresolved → re-assess before implementing (§5/§9).
 
 **Mode is ACTIVE iff** PLAN line-1 is a `MISSION MODE:` token **AND** the active-iff state gate says so.
 The state gate keys **ONLY** on `mission_state` (the dedicated `MISSION-(CLEARED|REBASELINED)` grep
