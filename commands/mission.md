@@ -267,13 +267,19 @@ barrier (fresh, independent) as the **NEXT** round K+1 → log that round's `pha
 convergence rules. On a PLAN divergence → `challenge` (loud). On an open human-decision → `pending`
 (batched).
 
-**Resume substates within a round (Section 7 schema):**
-- last round line is **`phase=review`** (findings logged, not yet fixed) → if `dry<2` and findings
-  were actionable, START applying fixes (log `phase=fix`, then fix); if the findings were `0` /
-  dry-advancing, start the next fresh review round per the `2 − dry` rule.
+**Resume substates within a round (Section 7 schema; this MUST match the §8 round-ambiguity decision
+table verbatim — one decision, two cross-references):**
+- last round line is **`phase=review findings>0`** (ACTIONABLE — findings logged, `dry` NOT advanced)
+  → resume into the FIX of the SAME round K: log `phase=fix` round=K and apply the fixes. Do **NOT**
+  start a fresh review round K+1 (that would skip the fix).
+- last round line is **`phase=review findings=0`** (dry-advancing — `dry` already incremented) → start
+  the NEXT FRESH review round K+1 per the `2 − dry` rule.
 - last round line is **`phase=fix`** (a fix was in flight at the compaction) → VERIFY/continue the
-  partial fix to completion, THEN re-run the barrier as the next round. Do not assume the fix
+  partial fix to completion, THEN re-run the barrier as the next round K+1. Do not assume the fix
   finished; reconcile against the working tree.
+
+Only a `phase=review findings=0` (dry-advancing) round OR a completed `phase=fix` starts round K+1; an
+actionable `phase=review findings>0` round always resumes into its own fix first.
 
 When converged (Section 6: 2 consecutive non-void dry rounds):
 ```bash
