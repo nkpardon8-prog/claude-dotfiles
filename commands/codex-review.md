@@ -471,7 +471,7 @@ Output this directly to the conversation (not to a file):
 
 ```markdown
 # Codex Review: [target summary]
-Engine: 4x Codex (GPT-5.4) + 3x Claude + Codex Verification | Verified: [Y/N]
+Engine: 4x Codex (GPT-5.4) + 3x Claude + Codex Verification | Codex-passes: N/4 | Verified: [Y/N]
 
 ## Critical [must fix]
 - [ ] [definite] Finding — file:line — explanation (codex-1 + codex-3 + claude/architecture)
