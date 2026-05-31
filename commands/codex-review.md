@@ -211,7 +211,7 @@ timeout: 120000
 
 ### Step 3c: Collect Codex output
 
-After all four return, read `/tmp/codex-review-1.txt` through `/tmp/codex-review-4.txt`.
+After all four return, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/codex-review-4.txt`.
 
 **Handle failures (per pass):**
 - Exit 0 + non-empty file → success, use findings
