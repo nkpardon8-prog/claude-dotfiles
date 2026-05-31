@@ -235,9 +235,11 @@ After all four return, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/code
 
 **Handle failures (per pass):**
 - Exit 0 + non-empty file → success, use findings
-- Non-zero exit + non-empty file → partial output, still parse it
+- Non-zero exit + non-empty file → partial output, still parse it (counts as usable)
 - Non-zero exit + empty file → total failure, note "(Codex-[N]: unavailable)"
 - If ALL FOUR totally failed → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
+
+**Maintain a usable-pass count as you classify each pass.** Let `CODEX_PASSES` = the number of passes that produced usable output (success OR partial; range 0-4), and track the lens numbers of any passes that were total failures (e.g. `codex-2`). This count is rendered verbatim into the Step 7f report header as a stable machine-readable contract — see Step 7f.
 
 ### Step 3d: Merge Codex outputs
 
