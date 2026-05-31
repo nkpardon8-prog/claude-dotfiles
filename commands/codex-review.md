@@ -417,7 +417,7 @@ MISSING, ASSUMPTION, and CONTRADICTION are cross-cutting — they go to their de
 ### 7e. Cleanup
 
 ```bash
-rm -f /tmp/codex-review-a.txt /tmp/codex-review-b.txt /tmp/codex-verify.txt
+rm -f /tmp/codex-review-1.txt /tmp/codex-review-2.txt /tmp/codex-review-3.txt /tmp/codex-review-4.txt /tmp/codex-verify.txt
 ```
 
 ### 7f. Output the Final Report
