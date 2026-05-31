@@ -594,7 +594,10 @@ the `2 − D` math).
   `findings>0` ⇒ actionable (must reach `phase=fix` first) — so it is a live resume input, not dead
   weight.
 - **PART-DONE / next-part:** if the last `[mission]` line FOR THE CURRENT PART is `PART-DONE`, the part
-  converged — do NOT re-resume it. Advance to the next part: find the latest `PART-START part=<M>`
+  converged — do NOT re-resume it. **First check retirement:** if a `PART-DONE part=<N>` is present in
+  the recovered set but no `PART-RETIRED part=<N>` is (both are in the `last_progress` token set, so
+  scan the filtered `/tmp/mission-resume.$$` for each), re-attempt the idempotent plan retirement
+  (Section 5) BEFORE advancing. Then advance to the next part: find the latest `PART-START part=<M>`
   (if present, resume part M); if no later `PART-START` exists yet, log `PART-START part=<N+1>`
   (Section 5/7) and begin its Phase 1. **Never restart converged work** and never re-run review rounds
   you already banked.
