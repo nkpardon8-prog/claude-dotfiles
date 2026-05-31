@@ -305,7 +305,35 @@ if [ -n "$_HANDOFF_ORIG_STAT" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# One-shot resume-idempotency marker (2026-05-31). Self-driven resume (primer directive) AND the
+# typed cross-tab backstop can BOTH invoke /post-compact-resume after one compaction. step2 only
+# READS/REPORTS the marker here — it must NOT write it, because the skill invokes step2 TWICE per
+# resume (show + parse), and a step2-side write would make the 2nd call falsely report
+# already-resumed and abort a legitimate first resume. The SKILL writes the marker AFTER it actually
+# resumes (Step 4). The marker is keyed on (sid, handoff-nonce) so it scopes to THIS compaction —
+# the next compaction's handoff has a new nonce and resumes normally.
+# ---------------------------------------------------------------------------
+_RESUME_MARKER=""
+if command -v handoff_marker_nonce >/dev/null 2>&1; then
+  _resume_nonce=$(handoff_marker_nonce "$_HANDOFF_READ" 2>/dev/null)
+  if [ -n "$_resume_nonce" ]; then
+    _RESUME_MARKER="$HOME/.claude/progress/resumed-${ARG_SID}-${_resume_nonce}"
+    if [ -f "$_RESUME_MARKER" ]; then
+      handoff_log "step2_terminal state=already-resumed sid=$ARG_SID nonce=${_resume_nonce}"
+      _json=$(jq -c -n --arg sid "$ARG_SID" --arg path "$HANDOFF_PATH" --arg marker "$_RESUME_MARKER" \
+        '{"state":"already-resumed","sid":$sid,"path":$path,"marker":$marker,"reason":"this compaction was already resumed (one-shot marker present) — the other resume channel (self-invoke or typed backstop) handled it. No action needed."}' 2>/dev/null)
+      if [ -n "$_json" ]; then printf 'STATE=%s\n' "$_json"
+      else printf 'STATE={"state":"already-resumed"}\n'; fi
+      exit 0
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Emit STATE=ok (V2-9: drop nonce_ok field; keep marker/legacy/stale/path/sid)
+# resume_marker: the one-shot path the SKILL must write (atomic) AFTER resuming, to make a
+# double-fire idempotent. Empty when no handoff-nonce is available (then double-resume is benign —
+# re-reading inert handoff data — so the mechanism is simply skipped).
 # ---------------------------------------------------------------------------
 handoff_log "step2_terminal state=ok sid=$ARG_SID marker=${MARKER}"
 _json=$(jq -c -n \
@@ -316,8 +344,9 @@ _json=$(jq -c -n \
   --argjson age_hours "$HANDOFF_AGE_HOURS" \
   --arg sid "$ARG_SID" \
   --arg path "$HANDOFF_PATH" \
+  --arg resume_marker "$_RESUME_MARKER" \
   '{"state":$state,"marker":$marker,"legacy":$legacy,"stale":$stale,
-    "age_hours":$age_hours,"sid":$sid,"path":$path}' 2>/dev/null)
+    "age_hours":$age_hours,"sid":$sid,"path":$path,"resume_marker":$resume_marker}' 2>/dev/null)
 if [ -n "$_json" ]; then
   printf 'STATE=%s\n' "$_json"
 else
