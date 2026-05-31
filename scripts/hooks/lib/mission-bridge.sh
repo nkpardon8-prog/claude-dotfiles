@@ -572,7 +572,7 @@ _mission_log_rotate() {
   # pipefail subshell so a `head` failure is NOT masked by gzip's exit 0 (which would trim the log
   # → loss).
   if command -v gzip >/dev/null 2>&1; then
-    _lr_arctmp=$(mktemp "${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.XXXXXX") || {
+    _lr_arctmp=$(mktemp "${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.${_lr_seq}.XXXXXX") || {
       echo "mission: log-rotate: archive mktemp failed (refusing to rotate, no loss)" >&2
       [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1; }
     _lr_arc="${_lr_arctmp}.gz"
