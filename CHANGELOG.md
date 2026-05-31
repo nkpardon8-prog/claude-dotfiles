@@ -2,6 +2,44 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-31 — /mission hardening: drive to a clean cross-model codex-review (8 review rounds)
+
+Closed the confirmed findings from the multi-Codex review of `/mission`, driven through the user's
+own methodology: `/script` (5 new assumption tests) → `/implement` → 8 rounds of `/codex-review`
+(4 Codex + Claude lenses) with 7 fix rounds, looping to convergence. All CRITICALs resolved by round 2;
+rounds 5-8 were the asymptotic self-referential tail on one secondary guard, closed with root-cause fixes.
+
+**New assumption tests** (`scripts/hooks/mission-bridge-assumptions/` 09-13, all green; suite now 13/13):
+09 rebaseline reactivates a cleared mission (RED→GREEN proof of CRITICAL #1) · 10 FAIL idtag must be
+attempt-scoped (the 5-strike loop-breaker) · 11 mission-write.sh exit-0 + rc=2/rc=3 stdout status parse ·
+12 the 480B round-line reroute boundary · 13 resume read survives log rotation.
+
+**`scripts/hooks/lib/mission-bridge.sh`:** `mission_rebaseline` now appends a
+`[mission] MISSION-REBASELINED status=active` lifecycle line (empty idtag → never dedup-suppressed) and
+propagates the log-append rc instead of swallowing it (so a cleared mission can actually reactivate);
+`_mission_log_rotate` skips (doesn't rotate) when the lock is busy, heals a torn last line before the
+line-count split, and names archives `…<utc>.<seqNNNN>.XXXXXX` for collision-proof same-second
+chronological ordering. `scripts/hooks/mission-write.sh`: REFUSED now emits the parseable
+`FAILED rc=1 (REFUSED: …)` shape.
+
+**`commands/mission.md`** (the conductor playbook): fix-pending `phase=<review|fix>` round substate;
+attempt-scoped FAIL idtag + enumerated FAIL events; parse the `mission-write.sh` status line (rc=2→STOP-LOUD,
+rc=3→retry); resume reads grep over (all rotated archives oldest→newest + live log), set-e/pipefail-safe
+and space-safe, replacing `tail -n 40`; terse <480B round line (verbose findings → separate note);
+active-iff keys only on the latest `MISSION-(CLEARED|REBASELINED)`; a total + mutually-exclusive resume
+decision table (completed-part / PART-START-no-round / research·plan·implement / review / fix / VOID);
+Codex-unavailable VOIDs the round via a `Codex-passes: 4/4` header token anchored to the canonical
+`^Engine:` line; untrusted mission content passed single-quoted / via stdin; PART-START/PART-DONE/
+PART-RETIRED advance; away-default + credential/destructive PENDING guard.
+
+**`commands/codex-review.md`:** FRAIM rules reframed as untrusted/inert (no authority to suppress
+findings); per-run `mktemp -d` temp dir (no fixed-path clobber); a mandatory machine-readable
+`Codex-passes: N/4` header token (mode-aware usable-pass classification — diff-mode = ran-clean,
+exec-mode = mandatory `Verdict:` line); both target-summary emission sites forced single-line (no
+fake-`Engine:`-header injection).
+
+Gates green throughout: mission-bridge-assumptions 13/13, test-mission-bridge 60/0.
+
 ## 2026-05-31 — Bulletproof session correlation: PID-bound /compact delivery + self-driven resume
 
 Fixes a multi-session misfire in the auto-compact pipeline. **Incident (04:42Z):** session `49d80a3a`
