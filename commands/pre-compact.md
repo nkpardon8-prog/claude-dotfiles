@@ -725,8 +725,32 @@ Then proceed to the SID-tagged write protocol:
      "next=${NEXT_120}" "files=${FILES_N}" "commits=${COMMITS_N}" \
      "north_star_first_120=${NS_120}" \
      || echo "WARN: chain ledger append failed; continuing" >&2
+
+   # --- Mission spine: log this compaction's progress + refresh the precomputed banner ---------
+   # This block runs as its own Bash subprocess, so $SID_RESOLVED from Step 3.B is OUT OF SCOPE
+   # here (#42) — re-read sid + canonical_root from the scratch JSON instead. CHAIN_SEQ and
+   # NEXT_120 are already in scope (set just above in this same block).
+   _SID=$(jq -r '.sid' "$SCRATCH_PATH" 2>/dev/null)
+   # _CR (canonical_root) is already derived above as part of this block.
+   # GATE: only log+render if a mission already exists (link>=2 work). A mission exists when the
+   # main file is present OR the manifest recorded its mission_path. This avoids spawning a mission
+   # on a first run (mission_log_append's mission_ensure would otherwise create one).
+   _MP=$(jq -r '.mission_path // empty' "$HOME/.claude/chains/${_SID}.json" 2>/dev/null)
+   if [ -n "$_SID" ] && [ -n "$_CR" ] && { [ -f "$_CR/MISSION.${_SID}.md" ] || [ -n "$_MP" ]; }; then
+     bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$_SID" "$_CR" "[c#${CHAIN_SEQ}] ${NEXT_120}" "seq-${CHAIN_SEQ}" \
+       || echo "WARN: mission log append failed; continuing" >&2
+     bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh render-banner "$_SID" "$_CR" \
+       || echo "WARN: mission render-banner failed; continuing" >&2
+   fi
    ```
-   Ledger append MUST NEVER abort `/pre-compact` — log and continue.
+   Ledger append MUST NEVER abort `/pre-compact` — log and continue. **Mission log + banner refresh
+   are likewise fail-SOFT** (each guarded with `|| echo "WARN…"`); they only run when a mission
+   already exists (the gate above), so a first run never spawns one. The per-compaction `log` line
+   is intentionally coarse (`[c#N] <next-action>`) and distinct from the telemetry ledger row above.
+   `render-banner` runs AFTER the `log` append so the refreshed banner includes this run's line.
+   **Surface repeated mission log / lock / backup failures in the Step 9.1 report** — a single WARN
+   is transient (lock busy, data safe), but repeated failures across runs indicate a stuck lock or
+   corrupt mission file the user must inspect.
 
 ### Step 6B: Phase 2 — Gap Fill
 
