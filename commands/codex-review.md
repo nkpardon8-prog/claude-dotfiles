@@ -496,6 +496,7 @@ Engine: 4x Codex (GPT-5.4) + 3x Claude + Codex Verification | Codex-passes: N/4 
 ```
 
 **Rules:**
+- **`Codex-passes: N/4` is a mandatory, always-present token in the `Engine:` header line** — it is a stable machine-readable contract that other skills (e.g. `/mission`, which greps the report to decide whether to VOID a review round when not every independent reviewer reported) parse. `N` = the `CODEX_PASSES` count from Step 3c (usable passes, 0-4). Always render it, including the all-good case → `Codex-passes: 4/4`. When `N < 4`, append the missing lens(es) in parentheses, e.g. `Codex-passes: 3/4 (codex-2 unavailable)` or `Codex-passes: 2/4 (codex-1, codex-4 unavailable)`. When all four failed, the token reads `Codex-passes: 0/4` AND the existing `Codex unavailable, using Claude agents only` note (Step 3c) is still emitted — keep both.
 - Omit any section that has zero findings
 - Within each section, sort by specificity (findings with file:line references first, then cross-model findings, then single-source findings)
 - Verified findings should be marked with "(verified)" suffix
