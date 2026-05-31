@@ -1,22 +1,21 @@
 # Claude Code Status Line
 
-A 6-field status line that shows authoritative usage info pulled directly from Anthropic's API rate-limit response headers (same source `/usage` uses), plus a second line that flips between progress bars (active) and a per-window label (idle).
+A 7-field status line that shows authoritative usage info pulled directly from Anthropic's API rate-limit response headers (same source `/usage` uses), plus a second line that shows a single progress bar (active) or a per-window label (idle) — and is **always present**.
 
 ## What it shows
 
 **Line 1** — usage info (always on):
 ```
-ctx 42%   2h 58m left   31% sess   53% wk   Opus 4.7 [hi]   my-repo
+ctx 42%   2h 58m left   31% sess   53% wk   Opus 4.8 [hi]   wk→6th 4pm   my-repo
 ```
 
-**Line 2** — context-dependent:
-- **Active prompt**: dual progress bars
+**Line 2** — context-dependent, but **never blank**:
+- **Active prompt**: one progress bar + elapsed timer
   ```
-  ⠋ 2:14  task ▰▰▰▰▱▱▱▱ 50% 4/8   /plan ▰▰▰▰▰▰▱▱ 75% 3/4
+  31:46  ▰▰▰▱▱▱▱▱  chunk 1b: email transport + routes
   ```
-  Spinner + elapsed time, overall-task bar (from TodoWrite), current-command bar (from Task spawns or beacons). Bars dim to yellow if no tool call for 30s; auto-hidden after 5 min idle (failsafe). Works automatically for every command — no per-command setup. See `~/.claude-dotfiles/CLAUDE.md` "Progress Beacon Protocol" for opt-in finer granularity.
-- **Idle**: existing per-session label (`Internal › repo › what's happening`).
-- **Empty**: nothing on line 2 if neither is present.
+  Elapsed time + a single bar whose source is chosen by specificity: a determinate **beacon** (real inner-step progress, e.g. `/god-review`) → determinate **to-dos** (from TodoWrite, `done/total`) → indeterminate beacon → an honest animated spinner (one-shot work with no sub-structure). The label is the current to-do's `activeForm` (or the beacon label). The bar dims to yellow if no tool call for 30s, and demotes to the idle line if a prompt somehow runs >30 min without a tick (misfired Stop hook).
+- **Idle** (between prompts / at session open): the per-session label (`Internal › repo › what's happening`), else the literal `idle`.
 
 | Field | Source | Notes |
 |---|---|---|
@@ -24,7 +23,8 @@ ctx 42%   2h 58m left   31% sess   53% wk   Opus 4.7 [hi]   my-repo
 | `Xh Ym left` | `anthropic-ratelimit-unified-5h-reset` header | Cyan; red <30 min; green if `rate_limited` status |
 | `N% sess` | `1 - anthropic-ratelimit-unified-5h-utilization` | Green / yellow >75% / red >90% |
 | `N% wk` | `1 - anthropic-ratelimit-unified-7d-utilization` | Same thresholds |
-| `Model [effort]` | `model.display_name` + `effort.level` from statusLine JSON | — |
+| `Model [effort]` | `model.display_name` + `effort.level` from statusLine JSON | Any `(… context)` parenthetical is stripped — the 1M window is assumed |
+| `wk→<day> <time>` | `anthropic-ratelimit-unified-7d-reset` epoch via `date -r` | When the weekly limit resets, e.g. `wk→6th 4pm`. Dim `wk→—` if no cache |
 | `repo` | `git rev-parse --show-toplevel` basename, or cwd basename | Bold |
 
 The rate-limit cache (`~/.claude/ratelimit.json`) is refreshed in the background every 5 minutes by a tiny 1-token Haiku request. Cost: negligible.
