@@ -504,10 +504,11 @@ in the LOG (`last_life` above) is NOT `MISSION-CLEARED`. Key on the LATEST lifec
 
 ## 11. Lifecycle — clear + status
 
-- **`/mission clear [reason]`** logs `[mission] MISSION-CLEARED status=cleared` and ends the mission
-  early (mirrors `/goal clear`). `achieved` / `could-not` are set only by the **explicit lifecycle
-  close** at a mission's natural end — write the appropriate `status=` on the MISSION-CLEARED line —
-  never by the bare `clear` verb.
-- **`/mission status`** (and blank) reads the LOG **directly** (Section 2), derives mode/part/phase/
-  round/dry + pending, and prints — no mutation. The banner's status reads the `status=` off the
-  terminal lifecycle line.
+- **`/mission clear [reason]`** logs `[mission] MISSION-CLEARED status=cleared reason=<slug>` (idtag
+  `mission-cleared-<slug>`, so a re-issued clear doesn't append a duplicate lifecycle line) and ends
+  the mission early (mirrors `/goal clear`). `achieved` / `could-not` are set only by the **explicit
+  lifecycle close** at a mission's natural end — write the appropriate `status=` on the MISSION-CLEARED
+  line — never by the bare `clear` verb. Parse the returned status line (Section 7).
+- **`/mission status`** (and blank) reads the LOG **directly** via the Section 8 resume-read idiom
+  (grep over the full live log + newest archive), derives mode/part/phase/round/dry + pending, and
+  prints — no mutation. Mode/`status=` come from the LATEST lifecycle line (Section 8 active-iff).
