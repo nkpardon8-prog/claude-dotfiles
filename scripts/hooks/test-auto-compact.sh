@@ -147,7 +147,11 @@ case "$OUT" in
   *) check "tmux refusal (got '$OUT')" 1 0 ;;
 esac
 
-echo "== Hook end-to-end (synthetic TTY) =="
+# SAFETY: the fire-time delivery now resolves the CALLER's OWN live claude tty (own-ancestry), so on a
+# live machine the hook would otherwise type /compact into THIS real session. AUTO_COMPACT_TEST_NO_FIRE
+# makes the hook exercise the full resolve→verify→claim path but skip the osascript (no keystrokes).
+export AUTO_COMPACT_TEST_NO_FIRE=1
+echo "== Hook end-to-end (no-fire seam) =="
 ac_write_sentinel "$TEST_SID" "/dev/ttys999" "/tmp" "hook-nonce-$$"
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh"
 HOOK_EXIT=$?
