@@ -81,6 +81,7 @@ fi
 # raised to 90 min (a productive overnight cycle is normally well under that).
 CHAIN_BANNER=""
 BANNER_PREFIX=""
+MISSION_PREFIX=""  # PIVOT A: precomputed-mission banner; folded into BANNER_PREFIX + emitted on bare exits.
 if [ -n "${SID:-}" ] && MANIFEST_JSON=$(chain_manifest_read "$SID" 2>/dev/null); then
   # Elapsed math is done via bash `date` (BSD-then-GNU fallback) below — universally portable —
   # so no jq date-function probe is needed. The earlier draft had a `HAVE_JQ_DATE` check; dropped.
