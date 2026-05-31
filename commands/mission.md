@@ -87,12 +87,15 @@ Parse `$ARGUMENTS`:
   phase, round, dry-count, the active PLAN directive, and any non-empty PENDING DECISIONS. Then stop.
   Do not mutate anything.
 - **`clear [reason]`** → **CLEAR**. Log the lifecycle close and stop treating work as a mission. Record
-  the reason as a slug and give the line an idtag so a re-issued `clear` does not append a duplicate
-  lifecycle line (the lib dedups on the leading idtag):
+  the reason as a slug in the ENTRY TEXT, but pass an **EMPTY idtag** so the lifecycle line ALWAYS
+  appends — the lib dedups on the leading idtag, so a non-empty `mission-cleared-<slug>` idtag would
+  SUPPRESS a re-clear that follows a `rebaseline` (the prior CLEARED line would still be on disk and the
+  fresh clear would no-op, leaving the mission spuriously ACTIVE). Lifecycle lines must never be
+  dedup-suppressed (matches the lib's rebaseline, which also always-appends):
   ```bash
   reason_slug=$(printf '%s' "<reason-or-manual>" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-' | head -c 32)
   [ -z "$reason_slug" ] && reason_slug=manual
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] MISSION-CLEARED status=cleared reason=${reason_slug}" "mission-cleared-${reason_slug}"
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] MISSION-CLEARED status=cleared reason=${reason_slug}" ""
   ```
   A bare `clear` sets `status=cleared`. `achieved` / `could-not` are set ONLY by the explicit
   lifecycle close at the natural end of a mission (Section 11) — not by this verb. Parse the returned
