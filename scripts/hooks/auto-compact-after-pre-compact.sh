@@ -140,12 +140,21 @@ if ! mv "$SENTINEL" "$CLAIM" 2>/dev/null; then
 fi
 trap 'rm -f "$CLAIM" "${OSA_STDERR_TMP:-}"' EXIT
 
-# TOCTOU narrowing: re-resolve identity + tty immediately before firing. If the tty churned or the
-# process changed (sleep/wake, tab close/reopen, pid swap) in the gap, abort AND restore the
-# sentinel so the pending-handoff primer + next-Stop retry still recover this session.
+# TOCTOU narrowing: re-resolve the FULL identity tuple {tty, start-time, argv, foreground-leader}
+# immediately before firing. If anything changed (sleep/wake, tab close/reopen, pid swap/reuse) in
+# the gap, abort AND restore the sentinel so the pending-handoff primer + next-Stop retry still
+# recover this session. Re-running argv-is-claude here (not just at capture) closes the pid-reuse
+# window where the original claude exited and the pid was recycled by a non-claude process.
+# NOTE on the residual bash→osascript→do-script window: TARGET_TTY is OUR OWN live claude's
+# controlling tty; a live process holds its controlling tty for the window's entire (sub-second)
+# duration, so it cannot be reassigned to a sibling session while our claude is alive and mid-hook.
+# The only realizable failure is the tab going away entirely → osascript returns no-matching-tab →
+# the restore-on-fire-failure block below puts the sentinel back. So the wrong-session delivery this
+# fix targets cannot occur here.
 TTY2=$(ac_pid_tty "$TARGET_PID")
 START2=$(ac_pid_starttime "$TARGET_PID")
 if [ "$TTY2" != "$TARGET_TTY" ] || [ "$START2" != "$PID_START" ] \
+   || ! ac_pid_argv_is_claude "$TARGET_PID" \
    || ! ac_pid_is_foreground_leader_on_tty "$TARGET_PID" "$TTY_SHORT"; then
   ac_log "abort sid=$REAL_SID reason=identity-churned-pre-fire pid=$TARGET_PID tty=$TARGET_TTY tty2=${TTY2:-none}"
   mv -f "$CLAIM" "$SENTINEL" 2>/dev/null && trap 'rm -f "${OSA_STDERR_TMP:-}"' EXIT
