@@ -83,7 +83,21 @@ Create `./tmp/done-plans/` if it doesn't exist. Only move the plan when all task
 
 ## Step 7: Present Results
 
-Present the implementation-reviewer's findings to the user:
+**If `NO_REVIEW = true`:** present a brief result and return — do NOT present reviewer findings (none were produced) and do NOT report a plan move:
+
+```
+Implementation chunks complete.
+
+Review skipped (--no-review); caller owns review + plan-move.
+
+Chunks implemented: X
+Manual steps remaining:
+- [ ] [Dangerous commands from Step 2]
+```
+
+Then stop. Everything below applies only to the default (`NO_REVIEW = false`) path.
+
+**If `NO_REVIEW = false` (default):** present the implementation-reviewer's findings to the user:
 
 ```
 Implementation complete.
