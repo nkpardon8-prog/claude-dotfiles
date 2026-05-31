@@ -222,10 +222,16 @@ spots. Never chain reviewers "to save work."
 ### Phase 1 — RESEARCH (parallel, independent, barrier-then-merge)
 Spawn in parallel, blind to each other:
 - a **Claude explorer subagent** (primary: architecture / scope / risk) — spawned normally (medium);
-- a **Codex read-only fact pass** proving deps / build & test commands / runtime:
+- a **Codex read-only fact pass** proving deps / build & test commands / runtime. The scope-prove
+  prompt carries mission-DERIVED scope (untrusted), so it must **NEVER** be inlined into a double-quoted
+  command arg — a `$(...)`/backtick in the derived scope would EXECUTE in your shell before
+  `codex -s read-only` ever starts (§7 injection rule). Write the prompt to a file and feed it via
+  **stdin**, so no untrusted text is ever shell-evaluated:
   ```bash
-  codex -c model_reasoning_effort="high" exec -s read-only --ephemeral -C <root> "<scope-prove prompt>"
+  # write the scope-prove prompt to a temp file (no shell expansion of its contents), then pipe via stdin:
+  codex -c model_reasoning_effort="high" exec -s read-only --ephemeral -C <root> - < /tmp/mission-scope-prompt.$$
   ```
+  (If you must pass it as an arg instead, SINGLE-quote it; never double-quote derived/untrusted content.)
 Reconcile after both return. An **unresolved factual contradiction** → `pending` (batched) + a `note`
 recording the forced assumption, then proceed on the **more-evidenced branch, LOUDLY**. Otherwise
 `note` the reconciled scope. Log the research round (Section 7).
