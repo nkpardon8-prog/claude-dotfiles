@@ -19,8 +19,14 @@ command -v jq >/dev/null 2>&1 || atest_infra "jq not found (required for manifes
 
 REAL="/Users/x/anchor/MISSION.sid.md"
 
-merge() { # $1 existing-json  $2 incoming-mp  -> merged .mission_path
+merge() { # $1 existing-json  $2 incoming-mp  -> merged .mission_path (NAIVE // idiom — see A7)
   printf '%s' "$1" | jq -r --arg mp "$2" '(.mission_path = (.mission_path // $mp)) | .mission_path'
+}
+
+# robust_merge — the CORRECTED idiom that treats both null AND "" as absent (jq // keeps "",
+# only null/false trigger //). This is the live idiom in pre-compact.md Step 3.B MERGE.
+robust_merge() { # $1 existing-json  $2 incoming-mp  -> merged .mission_path
+  printf '%s' "$1" | jq -r --arg mp "$2" '(.mission_path = (if ((.mission_path // "") == "") then $mp else .mission_path end)) | .mission_path'
 }
 
 # --- A1: existing SET, incoming SET -> existing preserved --------------------
