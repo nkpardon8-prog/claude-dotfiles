@@ -46,11 +46,15 @@ Every `mission-write.sh` call needs `<sid>` and `<root>`, and a fresh `/mission`
 up front, and reuse them for the whole session. Mirror exactly what `post-compact-resume.md` does
 (its "Resolve the durable mission file" subsection, ~line 276).
 
-**`sid`** = the platform session UUID = the basename (minus `.jsonl`) of the most-recently-modified
-transcript under `~/.claude/projects/<sanitized-cwd>/`:
+**`sid`** = the platform session UUID. **PREFER the platform-supplied session id** the way
+`/pre-compact` does — `$CLAUDE_SESSION_ID` then `$CLAUDE_CODE_SESSION_ID` — and only fall back to the
+mtime-newest-transcript GUESS as a last resort (an mtime guess can pick the wrong transcript when two
+sessions interleave, which would make a long mission "disappear"; refuse to guess when the platform
+told you the truth):
 ```bash
-sid=$(ls -t ~/.claude/projects/$(pwd | sed 's|/|-|g; s|^|-|')/*.jsonl 2>/dev/null \
-      | head -1 | xargs -I {} basename {} .jsonl)
+sid="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+[ -z "$sid" ] && sid=$(ls -t ~/.claude/projects/$(pwd | sed 's|/|-|g; s|^|-|')/*.jsonl 2>/dev/null \
+      | head -1 | xargs -I {} basename {} .jsonl)   # last-resort mtime guess only
 ```
 
 **`root`** = `handoff_canonical_root` (worktree-invariant canonical anchor):
