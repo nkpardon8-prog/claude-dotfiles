@@ -398,18 +398,26 @@ framing — the examples in §3/§4 use single-quoted heredoc-style args for exa
 **PARSE THE STATUS LINE after EVERY `mission-write.sh` call (load-bearing — the script ALWAYS
 `exit 0`).** Failure surfaces ONLY on the script's single stdout status line, never as a non-zero
 exit. The line is `mission-write: <verb> ok` on success, or
-`mission-write: <verb> FAILED rc=N (<reason>)` on failure. Parse the rc and act:
+`mission-write: <verb> FAILED rc=N (<reason>)` on failure — and a REFUSED write is reported as
+`mission-write: <verb> FAILED rc=1 (REFUSED: <reason>)`. **Treat ANY `FAILED rc=N` (INCLUDING rc=1) as
+NON-success** — `ok` is the ONLY success token; never read a `FAILED` line (of any rc) as success.
+Parse the rc and act:
 ```bash
 rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
 ```
-- empty `rc` (line said `ok`) → proceed.
+- empty `rc` (the line said `ok` — the ONLY success case) → proceed.
+- `rc=1` (**REFUSED** — e.g. `create` no-clobber declined to overwrite an existing mission, or another
+  guard refused the write) → do NOT treat as success and do NOT silently retry. Read the `(REFUSED:
+  <reason>)` text and handle deliberately: for a `create` no-clobber refusal, follow the §3/§4(c)
+  surface-and-`rebaseline` path; otherwise surface the refusal. A refusal that blocks the round feeds
+  the 5-FAIL loop-breaker (§10) like any other FAIL.
 - `rc=2` (**corrupt/unreadable bridge**) → trigger the **§10 STOP-LOUD guardrail** immediately
   (surface to the user, point at `.mission-backups/`); do NOT silently proceed. (This is the wire
   that connects the corrupt-bridge signal to STOP-LOUD.)
 - `rc=3` (**lock busy**) → retry the SAME call a few times (e.g. up to 5, brief pause between); if
   still `rc=3`, log a `FAIL …reason=lock-busy` line (it routes through a DIFFERENT lock attempt) or
   proceed and note it, per the away policy (§9).
-- any other non-zero rc (1/4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
+- any other non-zero rc (4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
   feeds the 5-FAIL loop-breaker (§10).
 
 **LOG schema — the SINGLE canonical definition; every resume rule (§5/§8/§9/§12/§13) reads lines
