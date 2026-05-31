@@ -117,8 +117,8 @@ WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 **Engine selection:**
 - MODE="branch" → **Codex review engine** (`codex review --base $BASE_BRANCH`)
 - MODE="uncommitted" → **Codex review engine** (`codex review --uncommitted`)
-- MODE="file" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C $WORKDIR`)
-- MODE="describe" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C $WORKDIR "[description]"`)
+- MODE="file" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C "$WORKDIR"`)
+- MODE="describe" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C "$WORKDIR"`, prompt via stdin per Step 3b)
 - Clearly non-code (plan, idea, conceptual) → **Claude-only engine** (skip to Step 4)
 
 ---
