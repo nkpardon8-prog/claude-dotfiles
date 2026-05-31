@@ -386,13 +386,13 @@ rm -f /tmp/codex-verify.txt
 ## Step 7: Consolidate and Output
 
 ### 7a. Collect
-Gather all findings: Codex Run A, Codex Run B, Claude Depth, Claude Breadth, Claude Adversary, Claude Gaps, Claude Meta-Review, and Codex Verification (if available).
+Gather all findings: Codex-1 (Correctness), Codex-2 (Security), Codex-3 (Data-integrity), Codex-4 (Contracts), Claude Architecture, Claude Integration, Claude Adversarial+FP-filter, Claude Meta-Review, and Codex Verification (if available).
 
 ### 7b. Deduplicate
 Same root cause across sources → merge into one finding. Note which sources found it:
-- "(codex-a + codex-b)" — both Codex passes found it (high confidence)
-- "(codex-a + claude/depth)" — cross-model agreement (very high confidence)
-- "(claude/depth + claude/adversary)" — multi-lens agreement
+- "(codex-1 + codex-3)" — multiple Codex passes found it (high confidence)
+- "(codex-1 + claude/architecture)" — cross-model agreement (very high confidence)
+- "(claude/integration + claude/adversarial)" — multi-lens agreement
 - "(claude/meta)" — found only by meta-review
 
 ### 7c. Promote Confidence
