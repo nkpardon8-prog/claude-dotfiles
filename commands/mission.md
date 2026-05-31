@@ -215,7 +215,11 @@ while test-trust is unresolved:
 ```bash
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] test-trust part=<N>=<ok|added|n/a>" "m<N>-test-trust"
 ```
-Merge/dedupe reviewer findings (overlap = confidence, divergence = signal); iterate; log each plan round.
+Parse the returned status line (Section 7). This is a **durable resume marker**: on resume, find it
+via the grep-over-FULL-log idiom (Section 8 — it must survive log rotation). **Absence = unresolved**
+→ re-assess test-trust before any implement round; **presence = honored** → trust the recorded verdict
+and proceed. Merge/dedupe reviewer findings (overlap = confidence, divergence = signal); iterate; log
+each plan round (Section 7 round-line schema).
 
 ### Phase 3 — IMPLEMENT  ∥  Phase 4 — REVIEW BARRIER (the parallelism win)
 Invoke the Skill tool with `skill: implement --no-review`. Continue once it returns. The `--no-review`
