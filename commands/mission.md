@@ -576,7 +576,10 @@ last_progress=$(grep -E '\[mission\] (PART-START|PART-DONE|PART-RETIRED|test-tru
 ```
 (Concatenating archives oldest→newest before the live log preserves chronological order so the final
 `tail -1` of any filtered grep picks the genuinely-latest line. The two `.gz`/`.txt` globs cover both
-the gzip archive and the no-gzip fallback while excluding any in-flight rotation temp.)
+the gzip archive and the no-gzip fallback while excluding any in-flight rotation temp. The
+`for … [ -e ] || continue` guard makes this set-e-safe with ZERO archives — an unmatched glob is
+skipped without a failing command — so the live log is ALWAYS read even on a fresh mission with no
+archives. This is the ONE canonical definition; §2/§5/§9 reference it, never re-spell it.)
 The four greps are deliberately distinct: `mission_state` is the **GLOBAL active-iff state gate** (keys
 ONLY on CLEARED/REBASELINED); `last_review` drives **convergence** for the CURRENT part (the `2 − dry`
 math, part-scoped, VOID-aware); `last_round` (part-scoped, VOID-aware) and `last_progress` (global
