@@ -345,10 +345,15 @@ Parse the status line (Section 7), then begin the next part's Phase 1.
 - **Hard cap 6** either way.
 - **Stop at 2 consecutive DRY rounds.** "Dry" = the **independent reviewers** returned **zero new
   actionable findings**, logged verbatim — NOT you grading your own work.
-- **An ACTIONABLE round resets `dry → 0`.** Any round whose independent reviewers produced ≥1 new
-  actionable finding breaks the consecutive-dry streak: the NEXT round's `dry=` starts again at `0`.
-  Only two back-to-back zero-actionable rounds reach `dry=2`. State the post-round `dry` on the round
-  line accordingly (Section 7).
+- **An ACTIONABLE round RESETS `dry → 0`** (not merely "does not count"). Any round whose independent
+  reviewers produced ≥1 new actionable finding breaks the consecutive-dry streak: the post-round `dry=`
+  on that round line is `0`, and the NEXT round's `dry=` starts again at `0`. Only two back-to-back
+  zero-actionable rounds reach `dry=2`. State the post-round `dry` on the round line accordingly
+  (Section 7). **This also covers the post-VOID case:** if a re-run of a VOIDed round turns out
+  ACTIONABLE (the reviewer that finally ran found ≥1 finding), `dry` RESETS to `0` too — so a `dry=2`
+  streak can NEVER span a code change, whether that change came from a normal actionable round or from
+  an actionable round that previously VOIDed. A VOID by itself does not advance `dry` (the round did
+  not count); an actionable VOID-rerun resets it.
 - **VOID-on-dead-reviewer (the single biggest false-converge risk).** A round counts toward the
   2-dry tally **ONLY if EVERY independent reviewer produced a parseable, on-topic, evidence-citing
   verdict** — that means ALL **4 Codex passes + 3 Claude reviewers** of the panel actually ran (see
