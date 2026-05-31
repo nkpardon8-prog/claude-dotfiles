@@ -440,14 +440,27 @@ on CLEARED/REBASELINED), `last_review` drives **convergence** (the `2 − dry` m
 gate active-iff.
 
 **After `/pre-compact` returns** (or after any compaction), re-derive your position from that
-recovered record and continue the **EXACT** `(part, phase, round, dry)` from `last_round` (Section 7
-round-line schema):
-- Read the last `[mission] part=…` round line; you need `2 − dry` more dry rounds. Honor the
-  `phase=review` vs `phase=fix` substate per Section 5's resume-substate rules.
-- **Round-ambiguity rule:** when the last round K logged `dry<2`, on resume START THE NEXT FRESH round
-  (round K+1) — **never re-run the same idtag round** K (it is already banked; re-running it is a
-  no-op that wastes a compaction). The only exception is a `phase=fix` line (finish the in-flight fix
-  first) or a `VOID` for round K (re-run round K fresh).
+recovered record and continue the **EXACT** `(part, phase, round, dry)`. Read `last_round` for
+*positioning* (which part/phase you were in), but compute convergence (`2 − dry`) **ONLY** from
+`last_review` (the dedicated `phase=review` grep) — never from a `phase=fix`/`plan`/`implement`/
+`research` line, whose `dry=` is not the convergence count (I6: a non-review phase line must not drive
+the `2 − D` math).
+- Read `last_review` (the last `phase=review` round line); you need `2 − dry` more dry rounds.
+- **Round-ambiguity decision table (the SINGLE reconciliation of §5↔§8 — apply in order):**
+
+  | Last round line for the current part | Resume action |
+  |---|---|
+  | `phase=fix` (a fix was in flight) | FINISH the in-flight fix to completion against the working tree, THEN re-run the barrier as the NEXT round K+1. Do not assume the fix finished. |
+  | `phase=review` with `findings>0` (ACTIONABLE — `dry` was NOT advanced) | resume into the **FIX of the SAME round K** → log `phase=fix` round=K, apply fixes; do NOT start a fresh review round K+1. (`findings>0` ⇒ this round demands a fix before any new review — see M2/I3.) |
+  | `phase=review` with `findings=0` (dry-advancing, `dry` already incremented on the line) | start the NEXT FRESH review round K+1 per the `2 − dry` rule. |
+  | a `VOID … round=K` is the latest line for round K | re-run round K FRESH (never count it). |
+  | last is `PART-DONE` | do not re-resume; advance per the PART-DONE rule below. |
+
+  **Never re-run an idtag round you already banked** (a banked `findings=0` review or a completed fix
+  is a no-op that wastes a compaction). `findings=<COUNT>` on the round line is the cross-check that
+  disambiguates the two `phase=review` rows above: `findings=0` ⇒ dry-advancing (next fresh round);
+  `findings>0` ⇒ actionable (must reach `phase=fix` first) — so it is a live resume input, not dead
+  weight.
 - **PART-DONE / next-part:** if the last `[mission]` line FOR THE CURRENT PART is `PART-DONE`, the part
   converged — do NOT re-resume it. Advance to the next part: find the latest `PART-START part=<M>`
   (if present, resume part M); if no later `PART-START` exists yet, log `PART-START part=<N+1>`
