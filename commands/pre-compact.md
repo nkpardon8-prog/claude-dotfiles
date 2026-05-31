@@ -982,9 +982,26 @@ Then, **inside the lock**, re-check and converge (this re-grep is what guarantee
 3. Else if `.gitignore` exists — append the glob line.
 4. Else (`.gitignore` does NOT exist) — create it with the glob line AND emit a warning: "Created .gitignore with CLAUDE.local*.md entry."
 
+**Mission-file patterns (own converge branch each — the `CLAUDE.local*.md` glob does NOT cover
+`MISSION.*`).** Still **inside the same lock**, for EACH of the four patterns below, do the same
+idempotent converge as above: if `.gitignore` already contains the line-anchored pattern, skip;
+otherwise append it (creating `.gitignore` if it does not yet exist, mirroring branch 3/4). Process
+all four; each is independent so a race that adds one still converges the rest to a single line:
+- `MISSION.*.md` — re-grep `grep -qE '^MISSION\.\*\.md[[:space:]]*$' "$GI"`; append if absent.
+- `MISSION.*.log` — re-grep `grep -qE '^MISSION\.\*\.log[[:space:]]*$' "$GI"`; append if absent.
+- `MISSION.*.banner` — re-grep `grep -qE '^MISSION\.\*\.banner[[:space:]]*$' "$GI"`; append if absent.
+- `.mission-backups/` — re-grep `grep -qE '^\.mission-backups/[[:space:]]*$' "$GI"`; append if absent.
+
 Then release the lock: `rmdir "$LOCK" 2>/dev/null || true` (the `trap` is a backstop).
 
 **Force-include guard:** if `.gitignore` contains `!CLAUDE.local.md` anywhere, the user has explicitly opted into tracking. Skip the append and tell them: "Detected `!CLAUDE.local.md` force-include rule; leaving .gitignore alone. You are tracking the handoff file deliberately."
+
+**Mission force-include guard:** likewise, for each mission pattern, if `.gitignore` contains its
+force-include form (`!MISSION.*.md`, `!MISSION.*.log`, `!MISSION.*.banner`, `!.mission-backups/`),
+the user has opted into tracking that artifact — skip THAT pattern's append and leave it alone.
+
+**`no-gitignore` arg:** the whole Step 8 (including these four mission patterns) is skipped when
+`$ARGUMENTS` contains `no-gitignore` (per the Step 8 header), so no separate skip is needed here.
 
 ## Step 9: Arm auto-compact, then report
 
