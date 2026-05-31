@@ -238,9 +238,26 @@ Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees 
 - Invoke the Skill tool with `skill: codex-review --effort high`. Continue once it returns. (The
   `--effort high` arg runs its Codex passes at high → the full 3+3 cross-model panel + verify.)
 
-Merge ALL findings at **ONE synthesis barrier**. **Persist them to the LOG (`findings=`) BEFORE
-acting** — so a mid-synthesis compaction resumes from the findings, and the dry-count stays auditable
-from the verbatim record rather than asserted by you.
+**Codex-unavailable ⇒ VOID the round (do NOT count it as dry).** `/codex-review` falls back to
+Claude-only on a total Codex failure and notes **"Codex unavailable"** in its report. After it
+returns, INSPECT the codex-review report text for "Codex unavailable" (case-insensitive). If present,
+the cross-model panel did not actually run → this round is **VOID**: a round counts toward the 2-dry
+convergence ONLY if EVERY independent reviewer's verdict is present (see Section 6 VOID-on-dead-
+reviewer). Log the durable VOID marker (Section 7), re-run the panel; do NOT bank a void round.
+
+Merge ALL findings at **ONE synthesis barrier**. Write the round checkpoint in TWO parts so it
+survives the log machinery (the lib reroutes any LOG line whose `idtag\tentry` is ≥480 bytes to
+DURABLE NOTES, where the resume grep won't find it):
+1. **Persist the round checkpoint line FIRST, with `phase=review` and a short findings COUNT**
+   (Section 7 round-line schema) — TERSE, never verbose findings text — so a mid-synthesis compaction
+   resumes from a recorded, in-LOG round.
+2. Put the verbose per-reviewer findings in a SEPARATE `note` (DURABLE NOTES), referenced by the
+   round's `part/phase/round`.
+
+The `phase=review` checkpoint means "findings logged, fixes NOT yet applied"; when you begin applying
+fixes, advance the SAME round to `phase=fix` (Section 7) so a compaction in the fix window resumes
+unambiguously (Section 5 resume rules / Section 8). The dry-count stays auditable from the verbatim
+record rather than asserted by you.
 
 ### CONVERGENCE (implement ↔ review fix-cycle)
 Loop: fix via `skill: implement --no-review` → re-run the barrier (fresh, independent) → log the
