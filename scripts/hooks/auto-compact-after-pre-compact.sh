@@ -88,42 +88,61 @@ find "$HOME/.claude/progress" -maxdepth 1 -type f \
   -mmin +1440 -delete 2>/dev/null || true
 
 [ -f "$SENTINEL" ] || exit 0
-
-# Atomic claim: rename to a per-pid lock file. Only one concurrent invocation succeeds.
-# This is the primary anti-loop guarantee — `mv` is atomic on POSIX, so any later
-# Stop event (including the one /compact itself emits) finds no sentinel and exits.
-CLAIM="${SENTINEL}.claim.$$"
 OSA_STDERR_TMP=""
+
+# ---------------------------------------------------------------------------
+# SESSION-CORRELATION DELIVERY (bulletproof, 2026-05-31). Bind the destination tab to THIS
+# session's OWN `claude` process — NOT the arm-time sentinel tty (unstable across tab churn,
+# shared across concurrent sessions → the 04:42Z misfire where 49d80a3a's resume hit sibling
+# 24a704c2). This Stop hook is a direct subprocess of its own session's claude, so the
+# own-ancestry walk resolves THIS session and can never reach a sibling. Contracts proven by
+# scripts/hooks/session-correlation-assumptions/ (6/6 PASS). VERIFY-THEN-CLAIM: do all checks
+# BEFORE the atomic claim so an abort leaves the sentinel intact (next-Stop retry +
+# pending-handoff primer still recover). Every failure aborts WITHOUT typing — never misfire.
+# ---------------------------------------------------------------------------
+TARGET_PID=$(ac_resolve_own_claude_pid)
+if [ -z "$TARGET_PID" ]; then
+  ac_log "abort sid=$REAL_SID reason=own-claude-unresolved"
+  exit 0
+fi
+# Identity tuple {pid, start-time, argv-is-claude} — captured once, re-checked just before firing
+# (defeats macOS pid-reuse and a mid-window process swap).
+PID_START=$(ac_pid_starttime "$TARGET_PID")
+if ! ac_pid_argv_is_claude "$TARGET_PID"; then
+  ac_log "abort sid=$REAL_SID reason=argv-mismatch pid=$TARGET_PID"
+  exit 0
+fi
+TARGET_TTY=$(ac_pid_tty "$TARGET_PID")
+if [ -z "$TARGET_TTY" ] || ! ac_validate_tty "$TARGET_TTY"; then
+  ac_log "abort sid=$REAL_SID reason=tty-unresolved pid=$TARGET_PID tty=${TARGET_TTY:-none}"
+  exit 0
+fi
+TTY_SHORT="${TARGET_TTY#/dev/}"
+# Pid-PINNED foreground-leader check (subsumes the old "any foreground claude" check, which was
+# exactly the bug — it accepted a SIBLING session's claude on this tty). Rejects dead / non-claude
+# / pivoted-to-vim / sibling-pid. `ps -o args=` (never ucomm — the 2026-05-14 version-string trap).
+if ! ac_pid_is_foreground_leader_on_tty "$TARGET_PID" "$TTY_SHORT"; then
+  ac_log "abort sid=$REAL_SID reason=not-foreground-leader pid=$TARGET_PID tty=$TARGET_TTY"
+  exit 0
+fi
+
+# All verification passed → NOW claim (atomic anti-loop guarantee, as late as possible so a
+# pre-claim abort never destroys the sentinel). Only one concurrent Stop wins the mv.
+CLAIM="${SENTINEL}.claim.$$"
 if ! mv "$SENTINEL" "$CLAIM" 2>/dev/null; then
   exit 0
 fi
 trap 'rm -f "$CLAIM" "${OSA_STDERR_TMP:-}"' EXIT
 
-TARGET_TTY=$(ac_read_sentinel_tty "$CLAIM") || exit 0
-
-# Foreground-process verification: confirm `claude` is in the foreground process group
-# on the target TTY (the `+` flag in `ps -o stat=`). If the user pivoted to vim/psql/ssh
-# in that tab post-arm, that process owns the foreground PG and `claude` doesn't have `+`,
-# so we refuse to type — `do script` would deliver `/compact` to the wrong process.
-#
-# NOTE: -E (ERE) is required. BSD grep treats `\|` in BRE as literal — every check
-# would fail and the hook would always abort. Round 3 caught this.
-TTY_SHORT="${TARGET_TTY#/dev/}"
-# Use `args=` not `ucomm=` (per empirical /script finding 2026-05-23): Claude Code's
-# ucomm is the version string (e.g., `2.1.149`), not `claude` — every arm since
-# 2026-05-14 aborted because of this. ucomm changes with every release; argv[0] is
-# stable as `claude`. Match on args= for the foreground process group leader. The
-# pattern `(^|[[:space:]/])claude([[:space:]]|$)` matches `claude`, `-claude`,
-# `/path/to/claude`, and `claude --any-flags`; rejects unrelated `node` / `caffeinate`
-# processes that happen to share the foreground pgid with the claude TUI.
-FG_HIT=$(ps -ww -t "$TTY_SHORT" -o stat=,args= 2>/dev/null \
-         | awk '$1 ~ /\+/' \
-         | grep -E '(^|[[:space:]/])claude([[:space:]]|$)' | head -1)
-# `-ww` forces ps to NOT truncate `args=` at terminal width — BSD ps default truncates at
-# ~80 cols, which loses the `claude` token in long argv (e.g., when the user launches via
-# a wrapper that injects env paths). Per codex-review Depth.
-if [ -z "$FG_HIT" ]; then
-  ac_log "abort sid=$SESSION_ID tty=$TARGET_TTY reason=no-claude-in-foreground-pg"
+# TOCTOU narrowing: re-resolve identity + tty immediately before firing. If the tty churned or the
+# process changed (sleep/wake, tab close/reopen, pid swap) in the gap, abort AND restore the
+# sentinel so the pending-handoff primer + next-Stop retry still recover this session.
+TTY2=$(ac_pid_tty "$TARGET_PID")
+START2=$(ac_pid_starttime "$TARGET_PID")
+if [ "$TTY2" != "$TARGET_TTY" ] || [ "$START2" != "$PID_START" ] \
+   || ! ac_pid_is_foreground_leader_on_tty "$TARGET_PID" "$TTY_SHORT"; then
+  ac_log "abort sid=$REAL_SID reason=identity-churned-pre-fire pid=$TARGET_PID tty=$TARGET_TTY tty2=${TTY2:-none}"
+  mv -f "$CLAIM" "$SENTINEL" 2>/dev/null && trap 'rm -f "${OSA_STDERR_TMP:-}"' EXIT
   exit 0
 fi
 
