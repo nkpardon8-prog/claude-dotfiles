@@ -247,7 +247,7 @@ the canonical root, never inside a per-part worktree), with Codex run `-s read-o
 Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees the other's output:
 - the **implementation-reviewer subagent** (plan-completeness / quality) — Claude, spawned normally (medium);
 - Invoke the Skill tool with `skill: codex-review --effort high`. Continue once it returns. (The
-  `--effort high` arg runs its Codex passes at high → the full 3+3 cross-model panel + verify.)
+  `--effort high` arg runs its Codex passes at high → the full 4 Codex + 3 Claude cross-model panel + verify.)
 
 **Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID the round (do NOT count it as dry).** `/codex-review`
 emits **`Codex unavailable`** only when ALL four Codex passes fail (total fallback to Claude-only); a
