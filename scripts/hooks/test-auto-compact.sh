@@ -697,6 +697,30 @@ else
 fi
 rm -rf "$_INC06_TMP" "$_INC06_HOME"
 
+echo "== Session-correlation helpers (deterministic units; live behavior is in session-correlation-assumptions/) =="
+# ac_pid_tty: launchd (pid 1) has no controlling tty -> fail-closed (rc1), never a bogus ttysN.
+if ac_pid_tty 1 >/dev/null 2>&1; then check "ac_pid_tty(pid 1 launchd) fails-closed (no controlling tty)" 1 0
+else check "ac_pid_tty(pid 1 launchd) fails-closed (no controlling tty)" 1 1; fi
+# ac_pid_tty on a dead pid -> rc1.
+_DEADPID=99999; while kill -0 "$_DEADPID" 2>/dev/null; do _DEADPID=$((_DEADPID+1)); done
+if ac_pid_tty "$_DEADPID" >/dev/null 2>&1; then check "ac_pid_tty(dead pid) fails-closed" 1 0
+else check "ac_pid_tty(dead pid) fails-closed" 1 1; fi
+# ac_pid_starttime: deterministic + byte-stable across reads of the SAME live pid (pid 1), no double-space.
+_ST1=$(ac_pid_starttime 1); _ST2=$(ac_pid_starttime 1)
+if [ -n "$_ST1" ] && [ "$_ST1" = "$_ST2" ]; then check "ac_pid_starttime(pid 1) non-empty + byte-stable" 1 1
+else check "ac_pid_starttime(pid 1) non-empty + byte-stable (got '$_ST1' / '$_ST2')" 1 0; fi
+case "$_ST1" in *"  "*) check "ac_pid_starttime normalizer collapses double-space" 1 0 ;; *) check "ac_pid_starttime normalizer collapses double-space" 1 1 ;; esac
+# ac_pid_argv_is_claude: a dead pid is not claude -> rc1.
+if ac_pid_argv_is_claude "$_DEADPID" 2>/dev/null; then check "ac_pid_argv_is_claude(dead pid) is false" 1 0
+else check "ac_pid_argv_is_claude(dead pid) is false" 1 1; fi
+# ac_pid_is_foreground_leader_on_tty: a dead pid is never a foreground leader -> rc1.
+if ac_pid_is_foreground_leader_on_tty "$_DEADPID" "ttys999" 2>/dev/null; then check "fg_leader(dead pid) is false" 1 0
+else check "fg_leader(dead pid) is false" 1 1; fi
+# anchored claude ERE rejects the glob-false-positive that a bare *claude* would match.
+if printf '%s' "/Users/x/.claude-dotfiles/y" | grep -Eq '(^|[[:space:]/])claude([[:space:]]|$)'; then
+  check "anchored claude ERE rejects '.claude-dotfiles' path" 1 0
+else check "anchored claude ERE rejects '.claude-dotfiles' path" 1 1; fi
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
