@@ -332,30 +332,75 @@ Verbs: `create | log | note | challenge | pending | resolve | rebaseline | rende
 implement hand-over — runs `-s read-only`. A second writer on the critical bridge reintroduces the
 exact corruption risk the bridge engineered out.
 
-**LOG schema** (these are `log`-verb entries with a structured `[mission]` payload — not new verbs;
-the real on-disk line is `<idtag>\t<entry>`; resume matches `[mission]` ANYWHERE on the line, not at
-column 0):
-
-- **Round line** (one per part/phase/round/dry-state):
-  - entry: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review> round=<K> dry=<D> findings=<count-or-slugs>`
-  - idtag: `m<N>-<phase>-r<K>-d<D>` — the **`d<D>` is REQUIRED**: it encodes the dry-count so an
-    advanced dry-state is a NEW line, not an idempotent no-op (without it the dry-count silently never
-    updates). `dry=<D>` is the **running consecutive-dry count (0, 1, 2)** after that round; a resume
-    agent reads the last review-round line and needs `2 − D` more dry rounds.
-- **FAIL line** (durable failure tally, reconstructable across compactions):
-  `[mission] FAIL part=<N> phase=<P> reason=<slug>` idtag `m<N>-fail-<reason-hash>`.
-- **Lifecycle lines:** `[mission] PART-DONE part=<N> (converged)`;
-  `[mission] test-trust part=<N>=<ok|added|n/a>` (before the first implement round);
-  `[mission] MISSION-CLEARED status=<achieved|could-not|cleared>`.
-
-Example:
+**PARSE THE STATUS LINE after EVERY `mission-write.sh` call (load-bearing — the script ALWAYS
+`exit 0`).** Failure surfaces ONLY on the script's single stdout status line, never as a non-zero
+exit. The line is `mission-write: <verb> ok` on success, or
+`mission-write: <verb> FAILED rc=N (<reason>)` on failure. Parse the rc and act:
 ```bash
-bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] part=2 name=auth phase=review round=3 dry=1 findings=2:race,nullcheck" "m2-review-r3-d1"
+rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
+```
+- empty `rc` (line said `ok`) → proceed.
+- `rc=2` (**corrupt/unreadable bridge**) → trigger the **§10 STOP-LOUD guardrail** immediately
+  (surface to the user, point at `.mission-backups/`); do NOT silently proceed. (This is the wire
+  that connects the corrupt-bridge signal to STOP-LOUD.)
+- `rc=3` (**lock busy**) → retry the SAME call a few times (e.g. up to 5, brief pause between); if
+  still `rc=3`, log a `FAIL …reason=lock-busy` line (it routes through a DIFFERENT lock attempt) or
+  proceed and note it, per the away policy (§9).
+- any other non-zero rc (1/4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
+  feeds the 5-FAIL loop-breaker (§10).
+
+**LOG schema — the SINGLE canonical definition; every resume rule (§5/§8/§9/§12/§13) reads lines
+back in EXACTLY these shapes.** These are `log`-verb entries with a structured `[mission]` payload —
+not new verbs; the real on-disk line is `<idtag>\t<entry>`; resume matches `[mission]` ANYWHERE on the
+line, not at column 0.
+
+- **Round line** (one per part/phase/round, advanced by substate — keep it TERSE, <480B, or the lib
+  reroutes it to DURABLE NOTES where resume can't grep it):
+  - entry: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K> dry=<D> findings=<COUNT>`
+  - `findings=<COUNT>` is a SHORT integer count ONLY (e.g. `findings=2`) — NEVER verbose finding text.
+    Verbose per-reviewer findings go in a SEPARATE `note` (DURABLE NOTES), referenced by `part/phase/
+    round` (Section 5 synthesis barrier).
+  - `phase=review` = "findings logged, fixes NOT yet applied"; advance the SAME round to `phase=fix`
+    when you begin applying fixes (CRITICAL #2 substate; resume rules in Section 5).
+  - idtag: `m<N>-<phase>-r<K>-d<D>` — the **`d<D>` is REQUIRED** (encodes the dry-count so an advanced
+    dry-state is a NEW line, not an idempotent no-op); `phase` is part of the idtag so the `review`
+    and `fix` substates of the SAME round are DISTINCT lines. `dry=<D>` is the **running consecutive-
+    dry count (0, 1, 2)** after that round; a resume agent reads the last review-round line and needs
+    `2 − D` more dry rounds.
+- **FAIL line** (durable failure tally, reconstructable across compactions — feeds the §10 5-FAIL
+  loop-breaker):
+  - entry: `[mission] FAIL part=<N> phase=<P> reason=<slug> attempt=<A>`
+  - idtag: `m<N>-fail-<reason>-<attempt>` — the **`<attempt>` is REQUIRED**: the lib dedups log lines
+    on the LEADING idtag, so a reason-only idtag would collapse 5 same-reason FAILs into ONE line and
+    the 5-strike guard could NEVER fire. An attempt-scoped idtag makes each FAIL a DISTINCT line.
+    Increment `<attempt>` per emission within the same part+phase+reason.
+  - **Events that MUST emit a FAIL line:** a failed bridge write (a `FAILED rc=N` status line per the
+    parse rule above, other than a transient lock-busy that succeeds on retry); a VOID reviewer
+    (reviewer errored/empty/timeout, or "Codex unavailable"); a Codex hang/timeout; lock-busy still
+    failing after retries (`reason=lock-busy`); a repeated tool failure that blocks the round.
+- **VOID line** (durable, so a compaction mid-void does not resume from the last banked dry state):
+  - entry: `[mission] VOID part=<N> phase=review round=<K> reason=<reviewer-dead|codex-unavailable|...>`
+  - idtag: `m<N>-void-r<K>` — on resume, a VOID for round K means re-run round K FRESH, never count it.
+- **Lifecycle lines:**
+  - `[mission] PART-START part=<N> name=<slug>` idtag `m<N>-part-start` (logged when advancing to a
+    new part; resume uses it to skip a converged part — Section 8/9).
+  - `[mission] PART-DONE part=<N> (converged)` idtag `m<N>-part-done`.
+  - `[mission] test-trust part=<N>=<ok|added|n/a>` idtag `m<N>-test-trust` (before the first implement
+    round; durable resume marker — Section 5).
+  - `[mission] MISSION-CLEARED status=<achieved|could-not|cleared> reason=<slug>` idtag
+    `mission-cleared-<slug>`.
+  - `[mission] MISSION-REBASELINED status=active (…)` — written by the `rebaseline` verb itself (the
+    lib appends it); a REACTIVATING lifecycle token (Section 8 active-iff).
+
+Example round line:
+```bash
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] part=2 name=auth phase=review round=3 dry=1 findings=2" "m2-review-r3-d1"
 ```
 
-Other zones: `note` = forced research assumptions (DURABLE NOTES); `challenge` = PLAN divergence
-(loud; never silently edit PLAN); `pending` = the batched human-decision queue
-(`- [pd:<seq>-<slug>] <q>`); `resolve` drains a pending; `rebaseline` is the ONLY path that rewrites PLAN.
+Other zones: `note` = forced research assumptions + verbose round findings (DURABLE NOTES);
+`challenge` = PLAN divergence (loud; never silently edit PLAN); `pending` = the batched human-decision
+queue (`- [pd:<seq>-<slug>] <q>`); `resolve` drains a pending; `rebaseline` is the ONLY path that
+rewrites PLAN.
 
 ---
 
