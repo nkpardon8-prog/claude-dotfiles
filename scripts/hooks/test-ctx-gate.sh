@@ -496,6 +496,15 @@ if [ -f "$VERBS_FILE" ]; then
       *'|'*) continue ;;
       action=*) continue ;;
       mission-write:*) continue ;;  # mission-write.sh status-LINE output rows, not verbs
+      # `[mission]` rows document the structured LOG-LINE PREFIX written as DATA via the `log`
+      # verb (mission-write.sh log "[mission] …"), NOT a logger verb or a CLI case-arm — so it has
+      # no ac_log/ctx_gate_log/handoff_log emit site and no `[mission])` dispatch arm, by design
+      # (see LOG_VERBS.md "### `[mission]` structured LOG-line conventions (written via the `log`
+      # verb)"). It is documented under the `log` verb, which IS emitted. Treat like the other
+      # non-verb rows above. (Also: a bare `[mission]` token is a regex char-class under `grep -E`,
+      # and BSD `grep -qv` mis-reports exit status on it — so the generic emit-site probe below is
+      # unreliable for this token regardless; the correct classification is "not a verb → skip".)
+      \[mission\]*) continue ;;
     esac
     # Determine the grep pattern based on verb type.
     # handoff:X verbs: the handoff_log() shell function prepends "handoff:" at runtime,
