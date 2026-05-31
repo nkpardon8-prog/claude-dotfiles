@@ -514,11 +514,11 @@ write_env
 **CRITICAL: All agents are launched in ONE or more assistant messages with mixed Agent + Bash tool calls. Up to ~20 tool calls per message. 3-4 round-trips worst case.**
 
 The canonical schedule for full 24-principle × 2-family pipeline (covers all 24: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector, database-audit):
-- **Message 1**: 10 Agent calls (3 broad-Claude + 7 principle-Claude) + 10 Bash calls (3 broad-Codex + 7 principle-Codex) = 20 in parallel
+- **Message 1**: 10 Agent calls (3 broad-Claude + 7 principle-Claude) + 13 Bash calls (6 broad-Codex + 7 principle-Codex) = 23 in parallel. (The 6 broad-Codex calls are cheap serialized `codex-invoke.sh` shell calls, so Message 1 runs slightly over the ~20 soft cap; if you prefer to stay at/under 20, move the 3 open-posture broad-Codex calls — deep-correctness, ruthless-redteam, data-integrity — into Message 2's Bash batch instead.)
 - **Message 2**: 10 Agent calls (next 10 principle-Claude) + 10 Bash calls (next 10 principle-Codex) = 20 in parallel
 - **Message 3**: remaining 7 principle-Claude + remaining 7 principle-Codex = 14 in parallel (covers principles 18-24 across both families — Message 1 covered 1-7, Message 2 covered 8-17)
 - **Message 4**: 2 batched validation calls (1 Claude validates Codex findings, 1 Codex validates Claude findings)
-- **With `--ruthless`:** add the 4th broad-Claude reviewer (claude-broad-ruthless) to Message 1 = 21 in parallel.
+- **With `--ruthless`:** add the 4th broad-Claude reviewer (claude-broad-ruthless) to Message 1 = 24 in parallel.
 
 With Codex unavailable, drop all Codex Bash calls — Claude-only pipeline needs 2-3 round-trips.
 
