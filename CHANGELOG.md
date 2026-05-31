@@ -58,9 +58,10 @@ interrupt the autonomous `/pre-compact` workflow (no permission prompts, no hang
   a missing hash tool, a pointer-set-but-file-missing condition, and a banner verify failure all surface
   LOUDLY (stderr + a CRITICAL banner the primer emits). The CLI still `exit 0`s so the caller is never
   aborted — loudness is in the *content*, not the exit code.
-- **Native `/compact` focus instruction (complementary channel).** Native `/compact` now carries a focus
-  instruction so the model-side summary and the disk-side mission spine reinforce each other rather than
-  compete — two complementary continuity channels, one in-context and one durable on disk.
+- **Native `/compact` focus instruction (complementary channel) — SHIPPED THEN REVERTED 2026-05-31.**
+  Briefly fired `/compact <instruction>` so the model-side summary and disk-side mission spine wouldn't
+  duplicate. Reverted same day after a field freeze (see the 2026-05-31 entry above): the trailing
+  argument intermittently broke the queued `/post-compact-resume`. Native `/compact` is bare again.
 - **Test coverage.** New `test-mission-bridge.sh` (>= 30 tests: marker read from the LAST line; a PLAN
   containing `<!-- MISSION… -->` / `<!-- /MZONE:PLAN -->` / `## ` round-trips nonce-fence-safe; body
   pseudo-marker → loud corruption; multibyte LOG byte-cap `< 512`; anchored idempotency where a
