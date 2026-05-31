@@ -133,6 +133,34 @@ NOTE: $((HEARTBEAT_AGE/60))-minute gap since last /pre-compact — verify a resu
   unset CID SEQ_ STATUS_ GOAL_ STARTED HBT EPOCH_START EPOCH_HBT S RECOVERED CID8
 fi
 
+# PIVOT A — surface the PRECOMPUTED mission banner (#1/#11/#33). Near-zero work: we ONLY `cat` the
+# small, pre-bounded MISSION.<sid>.banner (size-guarded ≤64KB) — NEVER the 5MB main file. Reuses the
+# MANIFEST_JSON already read above (no 2nd manifest read — #33). Computed HERE, before all the bare
+# `exit 0` paths below, so MISSION_PREFIX is in scope at every exit. The chain-manifest if-block may
+# have been skipped entirely (no manifest) — MISSION_PREFIX was initialized to "" above, so the
+# recovery probe still runs. CWD_CANON is not set yet (assigned later); the probe falls back to
+# handoff_canonical_root with no arg (defaults to $PWD), which is the right canonical root anyway.
+MP=$(printf '%s' "${MANIFEST_JSON:-}" | jq -r '.mission_path // empty' 2>/dev/null)
+if [ -z "$MP" ] && [ -n "${SID:-}" ]; then
+  MP="$(handoff_canonical_root "${CWD_CANON:-}" 2>/dev/null)/MISSION.${SID}.md"
+fi
+if [ -n "$MP" ] && [ -f "${MP%.md}.banner" ] && [ "$(_file_size "${MP%.md}.banner" 2>/dev/null)" -le 65536 ] 2>/dev/null; then
+  # Banner content + a trailing newline. Injection-safety framing is ALREADY baked in by the writer.
+  MISSION_PREFIX="$(cat "${MP%.md}.banner" 2>/dev/null)
+"
+elif [ -n "$MP" ] && [ -f "$MP" ]; then
+  # Main mission file exists but the banner is gone → loud (#11). Never reads the main file.
+  MISSION_PREFIX="CRITICAL: mission $MP exists but its banner is missing — run /pre-compact; do NOT proceed as if no mission.
+"
+elif printf '%s' "${MANIFEST_JSON:-}" | jq -e '.mission_path // empty' >/dev/null 2>&1; then
+  # Manifest recorded a mission_path but the file is gone → loud (#11).
+  MISSION_PREFIX="CRITICAL: mission expected (recorded in chain manifest) but FILE MISSING — inspect .mission-backups/; re-create via /mission.
+"
+fi
+# Fold into BANNER_PREFIX so all existing ${BANNER_PREFIX} jq emitters (rc=2/rc=3/normal tail) pick it
+# up automatically (#13). MISSION_PREFIX leads so the standing directive is read first.
+BANNER_PREFIX="${MISSION_PREFIX}${BANNER_PREFIX}"
+
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
