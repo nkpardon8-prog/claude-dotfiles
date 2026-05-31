@@ -456,14 +456,20 @@ round-line schema):
 - A `VOID part=<N> … round=<K>` line means round K did not count → re-run round K fresh (Section 6/7).
 - `test-trust part=<N>` recovered = honored; absent = unresolved → re-assess before implementing (#13).
 
-**Mode is ACTIVE iff** PLAN line-1 is a `MISSION MODE:` token **AND** the most-recent lifecycle line
-in the LOG (`last_life` above) is NOT `MISSION-CLEARED`. Key on the LATEST lifecycle line:
-- latest is `MISSION-CLEARED` → INACTIVE (the mission is over; resume normally, not in mission mode).
-- latest is `MISSION-REBASELINED status=active` → **ACTIVE** (a sid re-seeded via `rebaseline` after a
-  prior clear is reactivated; the rebaseline line is the latest lifecycle token and overrides the
-  stale earlier CLEARED).
-- latest is any other lifecycle token (`PART-START` / `PART-DONE` / `test-trust`) with a `MISSION MODE:`
-  PLAN line-1 → ACTIVE.
+**Mode is ACTIVE iff** PLAN line-1 is a `MISSION MODE:` token **AND** the active-iff state gate says so.
+The state gate keys **ONLY** on `mission_state` (the dedicated `MISSION-(CLEARED|REBASELINED)` grep
+above) — NEVER on a transient progress line (PART-START/PART-DONE/test-trust/VOID can NOT gate
+active-iff; lumping them in would let a transient line resurrect a cleared mission or leave an
+undefined case):
+- `mission_state` latest is `MISSION-CLEARED` → **INACTIVE** (the mission is over; resume normally, not
+  in mission mode).
+- `mission_state` latest is `MISSION-REBASELINED status=active` → **ACTIVE** (a sid re-seeded via
+  `rebaseline` after a prior clear is reactivated; the rebaseline line is the latest CLEARED/REBASELINED
+  token and overrides the stale earlier CLEARED).
+- `mission_state` is EMPTY (no CLEARED/REBASELINED ever) but PLAN line-1 IS a `MISSION MODE:` token and
+  a live PLAN exists → **ACTIVE** (a normal in-flight mission that has never been cleared).
+Progress lines (`last_progress`) are read SEPARATELY, for resume positioning only (which part/phase to
+re-enter), and never change the active/inactive decision.
 
 ---
 
