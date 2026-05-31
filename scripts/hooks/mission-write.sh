@@ -63,7 +63,9 @@ case "$verb" in
   create|log|note|challenge|pending|resolve|rebaseline|render-banner)
     case "$root" in
       ""|*..*)
-        echo "mission-write: ${verb} REFUSED (root empty or contains '..': '${root}')"
+        # I2: emit the parseable failure shape (FAILED rc=N), not a bare REFUSED line — the
+        # playbook parser reads an empty rc as success and would silently drop the write.
+        echo "mission-write: ${verb} FAILED rc=1 (REFUSED: root empty or contains '..': '${root}')"
         exit 0
         ;;
     esac
