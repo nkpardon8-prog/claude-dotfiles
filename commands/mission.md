@@ -451,11 +451,14 @@ Parse the rc and act:
 rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
 ```
 - empty `rc` (the line said `ok` — the ONLY success case) → proceed.
-- `rc=1` (**REFUSED** — e.g. `create` no-clobber declined to overwrite an existing mission, or another
-  guard refused the write) → do NOT treat as success and do NOT silently retry. Read the `(REFUSED:
-  <reason>)` text and handle deliberately: for a `create` no-clobber refusal, follow the §3/§4(c)
-  surface-and-`rebaseline` path; otherwise surface the refusal. A refusal that blocks the round feeds
-  the 5-FAIL loop-breaker (§10) like any other FAIL.
+- `rc=1` (**REFUSED** — a guard refused the write) → do NOT treat as success and do NOT silently retry.
+  Read the `(REFUSED: <reason>)` text and handle deliberately. **Note `create` is NOT a no-clobber
+  REFUSED path:** by design `create` on an existing VERIFIED mission file returns `ok` (a no-op — it
+  does NOT overwrite and does NOT refuse); the possibly-stale-PLAN handling for that `ok` case is the
+  §3/§4 "on create-ok-with-existing-file, check `mission_state` and `rebaseline`" path, not an rc=1.
+  The ONLY `create … FAILED rc=1 (REFUSED:)` is the **root-guard** (`REFUSED: root empty or contains
+  '..'`) — fix the root and retry. For any other verb's REFUSED, surface it. A refusal that blocks the
+  round feeds the 5-FAIL loop-breaker (§10) like any other FAIL.
 - `rc=2` (**corrupt/unreadable bridge**) → trigger the **§10 STOP-LOUD guardrail** immediately
   (surface to the user, point at `.mission-backups/`); do NOT silently proceed. (This is the wire
   that connects the corrupt-bridge signal to STOP-LOUD.)
