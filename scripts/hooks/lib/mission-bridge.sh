@@ -791,18 +791,21 @@ mission_rebaseline() {
   _rb_newhash=$(printf '%s' "$_rb_plan" | _mission_hash_stream) || { _mission_unlock; return 1; }
 
   _rb_tmp=$(mktemp "${_rb_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: rebaseline: mktemp failed" >&2; return 5; }
-  ( umask 077 && awk -v n8="$_rb_n8" -v plan="$_rb_plan" '
+  # `plan` (multi-line) and n8 pass via ENVIRON to dodge BSD awk -v newline limits; the close
+  # fence var is named `closef` because `close` is a reserved awk function name.
+  ( umask 077 && _RB_N8="$_rb_n8" _RB_PLAN="$_rb_plan" awk '
+      BEGIN { n8 = ENVIRON["_RB_N8"]; plan = ENVIRON["_RB_PLAN"] }
       { lines[NR] = $0 }
       END {
-        open  = "<!-- MZONE:PLAN n=" n8 " -->"
-        close = "<!-- /MZONE:PLAN n=" n8 " -->"
+        openf  = "<!-- MZONE:PLAN n=" n8 " -->"
+        closef = "<!-- /MZONE:PLAN n=" n8 " -->"
         marker_idx = 0
         for (i = 1; i <= NR; i++) if (lines[i] ~ /^<!-- MISSION schema=v1 /) marker_idx = i
         inplan = 0
         for (i = 1; i <= NR; i++) {
           if (i == marker_idx) continue
-          if (lines[i] == open)  { printf "%s\n", lines[i]; printf "%s\n", plan; inplan = 1; continue }
-          if (lines[i] == close) { printf "%s\n", lines[i]; inplan = 0; continue }
+          if (lines[i] == openf)  { printf "%s\n", lines[i]; printf "%s\n", plan; inplan = 1; continue }
+          if (lines[i] == closef) { printf "%s\n", lines[i]; inplan = 0; continue }
           if (inplan == 1) continue   # drop old PLAN body
           printf "%s\n", lines[i]
         }
