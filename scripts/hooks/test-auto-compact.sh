@@ -724,6 +724,26 @@ else check "fg_leader(dead pid) is false" 1 1; fi
 if printf '%s' "/Users/x/.claude-dotfiles/y" | grep -Eq '(^|[[:space:]/])claude([[:space:]]|$)'; then
   check "anchored claude ERE rejects '.claude-dotfiles' path" 1 0
 else check "anchored claude ERE rejects '.claude-dotfiles' path" 1 1; fi
+# numeric-pid validation: a non-numeric pid must not resolve a tty/starttime/argv (fail-closed).
+if ac_pid_tty "not-a-pid" >/dev/null 2>&1; then check "ac_pid_tty(non-numeric) fails-closed" 1 0; else check "ac_pid_tty(non-numeric) fails-closed" 1 1; fi
+_ST_BAD=$(ac_pid_starttime "not-a-pid" 2>/dev/null); [ -z "$_ST_BAD" ] && check "ac_pid_starttime(non-numeric) empty" 1 1 || check "ac_pid_starttime(non-numeric) empty (got '$_ST_BAD')" 1 0
+if ac_pid_argv_is_claude "not-a-pid" 2>/dev/null; then check "ac_pid_argv_is_claude(non-numeric) false" 1 0; else check "ac_pid_argv_is_claude(non-numeric) false" 1 1; fi
+# claim-after-verify ORDERING invariant (structural): in the fire hook, the sentinel `mv` claim must
+# appear AFTER all the verification abort gates — so a pre-claim abort can never destroy the sentinel.
+_HOOK="$ROOT/auto-compact-after-pre-compact.sh"
+_CLAIM_LN=$(grep -n 'mv "\$SENTINEL" "\$CLAIM"' "$_HOOK" 2>/dev/null | head -1 | cut -d: -f1)
+_LASTVERIFY_LN=$(grep -n 'reason=not-foreground-leader' "$_HOOK" 2>/dev/null | head -1 | cut -d: -f1)
+if [ -n "$_CLAIM_LN" ] && [ -n "$_LASTVERIFY_LN" ] && [ "$_CLAIM_LN" -gt "$_LASTVERIFY_LN" ]; then
+  check "claim-after-verify ordering (mv claim at $_CLAIM_LN > last verify at $_LASTVERIFY_LN)" 1 1
+else
+  check "claim-after-verify ordering (claim=$_CLAIM_LN verify=$_LASTVERIFY_LN — claim must come AFTER verify)" 1 0
+fi
+# abort restores the sentinel: the pre-fire churn abort AND the fire-failure path both mv CLAIM back.
+if grep -q 'mv -f "\$CLAIM" "\$SENTINEL"' "$_HOOK" 2>/dev/null; then
+  check "abort/fire-failure restores sentinel (mv CLAIM back to SENTINEL present)" 1 1
+else
+  check "abort restores sentinel (mv CLAIM back missing — sentinel would be lost on abort)" 1 0
+fi
 
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
