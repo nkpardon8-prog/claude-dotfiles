@@ -1146,3 +1146,15 @@ defense and must never be dropped from `/post-compact-resume`.
 - Never write secrets to the handoff file.
 - If not in a git repo, skip git steps and note it in the report.
 - If the project has no code at all, tell the user "nothing to hand off" and stop.
+- **Agents NEVER hand-edit the `## PLAN` zone of the mission file.** The PLAN is the user's
+  write-once standing directive. Route findings → `mission-write.sh note` or `mission-write.sh
+  challenge`; route decisions that need the user → `mission-write.sh pending`. The skill/CLI are the
+  only mutators of `MISSION.<sid>.*`.
+- **Hand-editing the handoff/mission file is NOT running `/pre-compact`** — only the skill mines
+  context, appends the ledger, arms auto-compact, and refreshes the banner. If you've been editing by
+  hand, you still MUST run the skill.
+- **Running `/pre-compact` means running it to completion, INCLUDING Step 9.0** (arm auto-compact,
+  which fires `/compact` and queues `/post-compact-resume <sid>`). Do NOT skip Step 9.0 on your own
+  judgment ("clean seam, won't need it") — arming is the skill's job, not yours. The ONLY way to skip
+  it is the explicit `no-auto-compact` argument. If you find yourself reasoning that a default step is
+  unnecessary, that reasoning is the bug.
