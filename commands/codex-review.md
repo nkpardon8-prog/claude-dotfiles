@@ -502,4 +502,9 @@ Engine: 4x Codex (GPT-5.4) + 3x Claude + Codex Verification | Codex-passes: N/4 
 - Omit any section that has zero findings
 - Within each section, sort by specificity (findings with file:line references first, then cross-model findings, then single-source findings)
 - Verified findings should be marked with "(verified)" suffix
-- If the review found nothing significant: "Clean review — no significant findings across 4 Codex passes, 3 Claude agents, and Codex verification."
+- The `Engine: ... | Codex-passes: N/4 | Verified: [Y/N]` header line is emitted on EVERY report — including the clean-review case. Never drop it. Downstream skills (e.g. `/mission`) grep that header for `Codex-passes: 4/4` to decide whether a round is valid; a report missing the header (or with `N != 4`) makes `/mission` VOID the round, so a genuinely-clean round with no header would be VOIDed and the mission could never converge.
+- If the review found nothing significant: still emit the full header line first, then the clean sentence below it:
+  ```
+  Engine: <as above> | Codex-passes: N/4 | Verified: [Y/N]
+  Clean review — no significant findings across 4 Codex passes, 3 Claude agents, and Codex verification.
+  ```
