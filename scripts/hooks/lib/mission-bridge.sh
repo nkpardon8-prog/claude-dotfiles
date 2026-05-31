@@ -641,10 +641,13 @@ mission_create() {
   if [ -f "$_mc_f" ] && mission_verify "$_mc_f" "$_mc_sid" 2>/dev/null; then
     return 0
   fi
-  # exists but does NOT verify → refuse to clobber a possibly-recoverable file; fail-LOUD.
+  # exists but does NOT verify → a CORRUPT bridge. Return 2 (the uniform corrupt-bridge rc, same as
+  # mission_mutate:706 / mission_rebaseline:879) so mission-write.sh surfaces `FAILED rc=2` and the
+  # /mission conductor routes it to the STOP-LOUD guardrail — NOT rc=1 (which the parser treats as a
+  # generic/refused failure → "log+proceed", silently continuing on a corrupt bridge). Fail-LOUD.
   if [ -f "$_mc_f" ]; then
-    echo "mission: create: $_mc_f exists but fails verify — refusing to clobber (inspect .mission-backups/)" >&2
-    return 1
+    echo "mission: create: $_mc_f exists but fails verify — CORRUPT, refusing to clobber (inspect .mission-backups/)" >&2
+    return 2
   fi
 
   [ -d "$_mc_root" ] || mkdir -p "$_mc_root" 2>/dev/null || {
