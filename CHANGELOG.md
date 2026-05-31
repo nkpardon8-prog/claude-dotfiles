@@ -2,6 +2,83 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-30 — mission-bridge: zero-information-loss durable cross-compaction "mission" spine
+
+The chain primitives (2026-05-27) made compactions near-lossless for the *handoff narrative*, but an
+overnight agent still had no durable, append-only place to carry the **standing PLAN, durable notes,
+plan-challenges, and pending decisions** verbatim across 5–15 compactions — those lived only in the
+volatile handoff prose and degraded with each squash. mission-bridge adds a durable on-disk spine at
+the canonical anchor (`dirname(git-common-dir)`, co-located with `CLAUDE.local`): a human-editable
+`MISSION.<sid>.md` (fenced PLAN / DURABLE NOTES / PLAN CHALLENGES / PENDING DECISIONS zones), an
+append-only `MISSION.<sid>.log` sidecar, and a precomputed `MISSION.<sid>.banner`. It **auto-activates
+at chain link >= 2** (the point at which a session has survived its first compaction and continuity
+actually matters), is mutated by exactly one allowlisted CLI, and is surfaced to the next session by
+the SessionStart primer. #1 priority is ZERO INFORMATION LOSS + fail-LOUD; the feature must NEVER
+interrupt the autonomous `/pre-compact` workflow (no permission prompts, no hangs, never abort).
+
+- **The spine.** `lib/mission-bridge.sh` owns the format; `mission-write.sh` is the sole allowlisted
+  mutator (byte-locked invocation prefix matched by a `Bash(bash …/mission-write.sh:*)` allow rule, so
+  it runs prompt-free under `defaultMode:auto`). Main file carries nonce-qualified zone fences
+  (`<!-- MZONE:PLAN n=<nonce8> -->`) and a LOCKED last-line marker
+  (`<!-- MISSION schema=v1 sid=<sid> nonce=<uuid> plan_hash=<hex16> -->`) parsed from the LAST match.
+  Per-mutation backups land in `.mission-backups/` (pruned to newest 25 + an immutable
+  `MISSION.<sid>.birth.md` the prune never deletes).
+- **PIVOT A — precompute the banner at WRITE time; the primer does near-zero work.** The original
+  design had the SessionStart primer verify+read+cap the mission file, but that hook has a hard **5s
+  timeout** and a SIGKILL there emits NOTHING = fail-SILENT (the worst outcome for an info bridge), and
+  folding the banner into `BANNER_PREFIX` never reached the no-handoff / rc=1 / cwd-exit paths that emit
+  no JSON at all. **Now:** `/pre-compact` (write side, no timeout) renders a tiny bounded
+  `MISSION.<sid>.banner` (PLAN slice <= 4000 bytes, line-snapped, + last-5 log lines, pre-capped and
+  pre-verified); on a verify failure it writes a LOUD banner, never a silent one. The primer ONLY `cat`s
+  that small file and emits it via an explicit `jq -n` on **every** exit path (including the bare
+  `exit 0`s — the rc=2 no-sentinel sub-branch, the symlink exit, and the oversize exit). Near-zero primer
+  work removes the timeout risk; explicit emit removes the silent-path risk.
+- **PIVOT B — LOG sidecar: byte-capped, anchored-idempotent, torn-line-healed, lifecycle-coupled,
+  rotating.** The append-only `O_APPEND` log is the hot path and is the zero-loss guarantee (`>>` can
+  never lose prior entries the way a read-modify-rewrite of the main file could). But it is hardened:
+  each entry is **byte-capped** (not char-capped) to `< 480` bytes (well under PIPE_BUF, with `iconv -c`
+  UTF-8 repair) so a concurrent compaction can never tear a record; an oversize entry is rerouted to the
+  locked main file rather than risk a torn `> PIPE_BUF` append; idempotency is keyed on a **leading
+  anchored** `^<tag>\t` field (not a free `grep -qF`, which a body-quoted id could falsely suppress); the
+  log wrapper ensures the main file + manifest pointer exist FIRST (no orphan log); a non-newline last
+  byte is healed before append (records never fuse); and the log **rotates** at 256KB into
+  `.mission-backups/…log.<utc>.gz` (zero-loss archive, never truncation).
+- **Hash is detection-only, not tamper-proof.** `plan_hash` exists to DETECT drift/corruption, not to
+  resist a motivated editor. The stream hasher prefers `shasum -a 256`, falls back to `sha256sum`, and
+  **fails LOUD if neither exists** (refuses to hash rather than emit something unverifiable); a selftest
+  rejects a machine-dependent mismatch. It deliberately **never falls back to `cksum`** (CRC is not a
+  cryptographic digest and would give false confidence).
+- **"Hand-editing the handoff/mission file is NOT running the skill."** The mission file is
+  human-editable, but only the `/pre-compact` skill mines context, appends the ledger, renders the
+  banner, and arms auto-compact. The ctx-gate SOFT/IMPORTANT/FORCE nudges now state this explicitly so an
+  agent never substitutes a manual edit for the skill run.
+- **fail-LOUD is the deliberate exception to ctx-gate's fail-open posture.** Everywhere else in the hook
+  system, an unreadable sidecar fails OPEN (stay silent rather than deadlock the agent). For mission-bridge
+  the inverse is correct: silent information loss is catastrophic for a continuity bridge, so corruption,
+  a missing hash tool, a pointer-set-but-file-missing condition, and a banner verify failure all surface
+  LOUDLY (stderr + a CRITICAL banner the primer emits). The CLI still `exit 0`s so the caller is never
+  aborted — loudness is in the *content*, not the exit code.
+- **Native `/compact` focus instruction (complementary channel).** Native `/compact` now carries a focus
+  instruction so the model-side summary and the disk-side mission spine reinforce each other rather than
+  compete — two complementary continuity channels, one in-context and one durable on disk.
+- **Test coverage.** New `test-mission-bridge.sh` (>= 30 tests: marker read from the LAST line; a PLAN
+  containing `<!-- MISSION… -->` / `<!-- /MZONE:PLAN -->` / `## ` round-trips nonce-fence-safe; body
+  pseudo-marker → loud corruption; multibyte LOG byte-cap `< 512`; anchored idempotency where a
+  body-quoted id does NOT suppress a real entry; rotation archives rather than deletes; orphan-lock
+  reclaim after a simulated dead pid; merge preserves `mission_path` across a seq bump; recovery
+  re-derives it; banner emitted on the no-handoff primer path; pointer-set-file-missing → loud; birth
+  backup exists and survives prune). Plus the 8-test `scripts/hooks/mission-bridge-assumptions/` suite
+  (`01`–`08`) proving the OS/shell **zero-loss contract** at the substrate level: sub-PIPE_BUF concurrent
+  `>>` appends never interleave/tear, marker+zone parse survives adversarial content, lock reclaim after a
+  dead holder, mutate atomicity, manifest mission_path write rules, primer emit on every path, append
+  after a torn last line, and write-failure surfacing.
+- **Rollback.** The feature is purely additive. It only activates at chain link >= 2, so it is inert for
+  any single-session (never-compacted) run. To disable entirely: remove `lib/mission-bridge.sh` +
+  `mission-write.sh` + the `mission-bridge-assumptions/` suite, and revert the additive
+  `.gitignore`-converge and primer-emit hooks (the `MISSION.*` gitignore lines and the guarded
+  `MISSION_PREFIX` emit blocks in `post-compact-primer.sh`). No existing behavior changes when the spine
+  is absent.
+
 ## 2026-05-28 — ctx-gate follow-ups: seam-opportunistic SOFT + stale-broker-after-compact fix + statusline SoT sync
 
 Two field-reported failures from the threshold tuning earlier today, plus a latent landmine found
