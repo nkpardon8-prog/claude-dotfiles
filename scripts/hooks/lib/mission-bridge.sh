@@ -849,8 +849,14 @@ mission_render_banner() {
     return 0
   fi
 
-  plan=$(mission_read_zone "$f" PLAN | head -c "$MISSION_PLAN_BANNER_MAX" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)
-  plan=$(_snap_last_line "$plan")
+  # Read the full PLAN zone, then byte-cap. Only snap the trailing partial line if the cap
+  # ACTUALLY truncated (full byte length > cap); an untruncated PLAN keeps its final line.
+  _ba_planfull=$(mission_read_zone "$f" PLAN)
+  _ba_planbytes=$(printf '%s' "$_ba_planfull" | LC_ALL=C wc -c | tr -d ' ')
+  plan=$(printf '%s' "$_ba_planfull" | head -c "$MISSION_PLAN_BANNER_MAX" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)
+  if [ -n "$_ba_planbytes" ] && [ "$_ba_planbytes" -gt "$MISSION_PLAN_BANNER_MAX" ]; then
+    plan=$(_snap_last_line "$plan")   # truncated mid-line → drop the partial tail line
+  fi
   logtail=$(tail -n "$MISSION_LOG_BANNER_N" "${_ba_root}/MISSION.${_ba_sid}.log" 2>/dev/null)
   pend=$(mission_read_zone "$f" "PENDING DECISIONS")
 
