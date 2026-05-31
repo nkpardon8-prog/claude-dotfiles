@@ -257,6 +257,7 @@ fi
 if [ -L "$HANDOFF_PATH" ]; then
   ac_log "primer action=skip reason=handoff-is-symlink path=$HANDOFF_PATH"
   ctx_gate_log "primer sid=${SID:-unknown} action=skip reason=handoff-is-symlink"
+  [ -n "${MISSION_PREFIX:-}" ] && jq -n --arg c "$MISSION_PREFIX" '{hookSpecificOutput:{hookEventName:"SessionStart",hookEventVersion:"SessionStart-v1",additionalContext:$c}}'
   exit 0
 fi
 
