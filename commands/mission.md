@@ -526,7 +526,7 @@ gate active-iff.
 recovered record and continue the **EXACT** `(part, phase, round, dry)`. Read `last_round` for
 *positioning* (which part/phase you were in), but compute convergence (`2 − dry`) **ONLY** from
 `last_review` (the dedicated `phase=review` grep) — never from a `phase=fix`/`plan`/`implement`/
-`research` line, whose `dry=` is not the convergence count (I6: a non-review phase line must not drive
+`research` line, whose `dry=` is not the convergence count (a non-review phase line must not drive
 the `2 − D` math).
 - Read `last_review` (the last `phase=review` round line); you need `2 − dry` more dry rounds.
 - **Round-ambiguity decision table (the SINGLE reconciliation of §5↔§8 — apply in order):**
