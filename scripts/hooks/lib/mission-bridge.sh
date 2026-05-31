@@ -588,7 +588,7 @@ _mission_log_rotate() {
     fi
   else
     # no gzip: plain-text archive (still zero-loss). No pipe here, but keep the failure check.
-    _lr_arctmp=$(mktemp "${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.XXXXXX") || {
+    _lr_arctmp=$(mktemp "${_lr_dir}/MISSION.${_lr_sid}.log.${_lr_ts}.${_lr_seq}.XXXXXX") || {
       echo "mission: log-rotate: archive mktemp failed (refusing to rotate, no loss)" >&2
       [ "$_lr_had_lock" = "1" ] && _mission_unlock; return 1; }
     _lr_arc="${_lr_arctmp}.txt"
