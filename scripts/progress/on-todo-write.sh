@@ -19,6 +19,7 @@ src, tmp, done, total, now, active = sys.argv[1:7]
 try:
     with open(src) as fh: s = json.load(fh)
 except Exception: sys.exit(0)
+s["active"] = True   # a TodoWrite means work is in progress — keep/promote to active
 s["overall"] = {"done": int(done), "total": int(total), "label": active, "indeterminate": False}
 s["last_tick"] = int(now)
 with open(tmp, "w") as fh: json.dump(s, fh)
