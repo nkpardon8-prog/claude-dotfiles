@@ -918,8 +918,19 @@ mission_rebaseline() {
     rm -f "$_rb_tmp"; _mission_unlock; echo "mission: rebaseline: self-check FAILED — original intact" >&2; return 6
   fi
   _mission_unlock
-  mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active (PLAN rebaselined, hash re-stamped)" "rebaseline-${_rb_newhash}"
-  return 0
+  # C1+I5: the lifecycle line MUST always persist (active-iff depends on it). Use an EMPTY idtag
+  # so the append bypasses the anchored idtag dedup (lib:774-777 `[ -n "$tag" ] && grep ...`) —
+  # re-rebaselining to the SAME plan text after a re-clear must still emit a fresh line. AND we
+  # must NOT swallow the append rc: the PLAN rewrite already committed, but if the lifecycle line
+  # fails to persist the mission would stay inactive while mission-write reports `ok`. Capture the
+  # rc, retry ONCE, and return the nonzero rc so mission-write surfaces FAILED rc=N.
+  mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active (PLAN rebaselined, hash re-stamped)" ""
+  _rb_logrc=$?
+  if [ "$_rb_logrc" -ne 0 ]; then
+    mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active (PLAN rebaselined, hash re-stamped)" ""
+    _rb_logrc=$?
+  fi
+  return "$_rb_logrc"
 }
 
 # ===========================================================================================
