@@ -1,0 +1,1 @@
+{"assumption":"mkdir-lock + kill -0 liveness reclaim; live holder never stolen","kill0":"posix","os":"Darwin 25.5.0","bash":"3.2.57"}

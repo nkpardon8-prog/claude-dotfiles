@@ -1,0 +1,1 @@
+{"assumption":"jq -n emit is injection-safe; bounded banner << 5s budget","jq":"jq-1.7.1","os":"Darwin 25.5.0"}

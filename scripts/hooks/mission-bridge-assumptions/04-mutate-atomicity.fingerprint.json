@@ -1,0 +1,1 @@
+{"assumption":"in-target-dir mktemp is same-device; mv -f is atomic rename","stat_flavor":"BSD(-f %d)","os":"Darwin 25.5.0"}

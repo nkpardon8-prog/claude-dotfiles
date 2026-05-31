@@ -1,0 +1,1 @@
+{"assumption":"failed write returns non-zero (fail-LOUD); read-only file/dir denies","non_root":true,"os":"Darwin 25.5.0"}

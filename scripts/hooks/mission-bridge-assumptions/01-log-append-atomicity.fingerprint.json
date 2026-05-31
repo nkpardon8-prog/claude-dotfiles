@@ -1,0 +1,1 @@
+{"assumption":"O_APPEND <PIPE_BUF writes are atomic; head -c+iconv -c bounds bytes","pipe_buf":512,"iconv":"yes","os":"Darwin 25.5.0","bash":"3.2.57"}
