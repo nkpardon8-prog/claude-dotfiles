@@ -71,6 +71,8 @@ Task tool:
 
 ## Step 6: Move Plan to Done
 
+> Skipped when `NO_REVIEW = true` (see the Step 5 guard) — the caller owns the plan-move. Runs as normal in the default path.
+
 Once all tasks pass review and the implementation is complete, move the plan file from `./tmp/ready-plans/` to `./tmp/done-plans/`:
 
 ```bash
