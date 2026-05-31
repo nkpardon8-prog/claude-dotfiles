@@ -2,6 +2,38 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-30 — Statusline: line-1 weekly-reset field + line-2 single always-present bar
+
+Two changes, both copies of `statusline.sh` (deployed `~/.claude/` + dotfiles SoT) kept byte-identical.
+
+**Line 1.** Strip the `(1M context)` parenthetical from the model display (the 1M window is assumed) and
+add a `wk→<day> <time>` weekly-reset field in the slot it vacated — e.g. `wk→6th 4pm`, derived from the
+`anthropic-ratelimit-unified-7d-reset` epoch (`seven_d_reset`) via `date -r` + a pure-bash ordinal suffix.
+The `% wk` percentage stays. printf widened from 6 to 7 fields.
+
+**Line 2 — collapse the flaky two-bar renderer into one always-present bar.** Root causes of the old
+"random" behavior: (a) a 5-min `last_tick` `sys.exit` failsafe blanked the bars mid-task → flipped to the
+old session label; (b) `on-stop.sh` deleted the state file 5s after each prompt → no bar between prompts;
+(c) `on-prompt-submit.sh` set the bar label by regex-scraping the first `/…` token from the prompt, which
+captured typed **file paths** (e.g. `/migrations/…`) — the "inaccurate" label. Fixes:
+- Single bar, source by specificity: determinate beacon → determinate to-dos → indeterminate beacon →
+  honest spinner. A bare beacon (emit-beacon defaults total=0) no longer shadows a real to-do bar.
+- **Never blank**: renderer prints the session label or `idle` when not active; a hard bash fallback prints
+  `idle` even on a python crash / absent file. Line 2 is present in every session/repo from open.
+- 5-min failsafe removed → replaced by a 30-min demote-to-idle guard (catches a misfired Stop hook without
+  the mid-task vanish or a runaway timer).
+- `on-stop.sh` now marks the file `active:false` (atomic `os.replace`) instead of deleting it → no flicker.
+- State schema v2 (`active` flag); renderer treats missing `active` (v1 files) as active when
+  `prompt_started_at` is fresh, so live sessions don't blink across the upgrade.
+- `on-prompt-submit.sh`: dropped the slash-scrape + `outer_command`/`current`/`task_spawns`.
+- `on-task-spawn.sh`: stripped to beacon-claim + `last_tick`; removed the spawn-count bar and the
+  `expected_subagents` frontmatter glob (that field is now inert — not swept from command frontmatter).
+- `on-todo-write.sh`: sets `active:true` defensively. `on-session-start-cleanup.sh` unchanged (no seed —
+  the renderer's own `idle` fallback guarantees presence).
+- Reviewed by 2 parallel plan-reviewers + meta-pass; 7 render gates pass (line-1 strip+`wk→6th 4pm`,
+  active todos, beacon, indeterminate-beacon-doesn't-shadow, idle→label, never-blank→`idle`, stale→idle).
+- Docs: `STATUSLINE.md`, `PROGRESS-BARS.md` (rewritten), `ARCHITECTURE.md` hook table updated.
+
 ## 2026-05-31 — REVERT: native /compact focus instruction (auto-resume freeze)
 
 Same-day revert of the Task-8b "complementary channels" change from the mission-bridge ship below.
