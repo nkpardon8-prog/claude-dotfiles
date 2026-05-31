@@ -55,6 +55,21 @@ fi
 
 verb="${1:-}"; sid="${2:-}"; root="${3:-}"
 
+# I6: light root-escape guard (defense-in-depth; root is trusted-caller-supplied). Refuse an
+# empty root or one containing `..` traversal. NEVER abort the caller — print a status line and
+# exit 0. The normal absolute-path case (no `..`) is unaffected. Only enforced for verbs that
+# actually take a <root> arg (i.e. not the help/usage paths, which have no root).
+case "$verb" in
+  create|log|note|challenge|pending|resolve|rebaseline|render-banner)
+    case "$root" in
+      ""|*..*)
+        echo "mission-write: ${verb} REFUSED (root empty or contains '..': '${root}')"
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+
 # Short helper: emit the single status line for a captured rc, then the caller exits 0.
 _mw_status() {
   _s_verb="$1"; _s_rc="$2"; _s_reason="$3"
