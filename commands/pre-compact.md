@@ -286,7 +286,7 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
            north_star:$ns, north_star_source:$src,
            current_seq:$seq,
            last_handoff_path:$hp, last_heartbeat_at:$hb,
-           status:$status, host:$host, mission_path:""}' \
+           status:$status, host:$host}' \
          | chain_manifest_write "$SID" || echo "WARN: chain manifest first-write failed; continuing" >&2
      else
        printf '%s' "$MANIFEST" | jq -c \
