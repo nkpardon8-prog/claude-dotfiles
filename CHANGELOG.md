@@ -2,6 +2,48 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-31 — Bulletproof session correlation: PID-bound /compact delivery + self-driven resume
+
+Fixes a multi-session misfire in the auto-compact pipeline. **Incident (04:42Z):** session `49d80a3a`
+armed auto-compact, but the queued `/post-compact-resume 49d80a3a` was typed into a **sibling** session's
+tab (`24a704c2`); the R9 `arg-not-my-session` guard refused the wrong-load (safe — no contamination), but
+the correct session never auto-resumed. **Root cause:** delivery was bound to `tty` (captured at arm-time,
+matched at fire-time only by `tty ==` + a generic "*some* claude is foreground here" check). With many
+concurrent sessions + tab churn, `tty` is neither stable nor unique-to-a-session, so the typed commands
+landed in the wrong tab. Session *identity* was always solid (Stop hook uses the payload `.session_id`);
+the unguarded seam was the *delivery destination*.
+
+The fix extends the session-id principle to that seam, additively (R9, marker-verify, automation probe
+all preserved; **bare `/compact` invariant preserved** — distinct from the separate freeze-fix revert):
+
+- **Compact half — PID-bound, own-ancestry delivery.** The Stop hook runs as a direct subprocess of its
+  own session's `claude`, so at fire-time it resolves **its own** `claude` PID via an anchored-ERE
+  ancestry walk (`ac_resolve_own_claude_pid`, 8-hop, `ps -o args=` — never `ucomm`, the version-string
+  trap), derives the tty **live** from that PID, and verifies an identity tuple `{pid + start-time + argv}`
+  plus a **PID-pinned** foreground-leader check before typing. The walk climbs only its own ancestry, so it
+  can never reach a sibling. The old "any foreground claude on the tty" check (which accepted a sibling's
+  claude — the bug) is replaced by the pinned check.
+- **Verify-then-claim + TOCTOU re-resolve.** The sentinel is claimed (atomic `mv`) only **after** all
+  verification passes — so a pre-fire abort leaves the sentinel intact for the next-Stop retry and the
+  pending-handoff primer. The tty/identity is re-resolved immediately before the AppleScript `do script`;
+  if it churned (sleep/wake, tab close), the hook restores the sentinel and aborts. Every failure aborts
+  **without typing** — never misfire. macOS pid-reuse is defeated by the start-time component.
+- **Resume half — self-driven (authoritative) + idempotent.** The SessionStart primer (`source=compact`)
+  now makes self-resume the imperative FIRST action: the resumed session — which authoritatively knows it
+  is itself — runs `/post-compact-resume <own-sid>` directly, independent of cross-tab delivery. The typed
+  cross-tab command is now a redundant backstop. A one-shot `(sid, handoff-nonce)` marker (checked in
+  `post-compact-resume-step2.sh` → `STATE=already-resumed`; written by the skill after a real resume) makes
+  the self-invoke + backstop double-fire a clean no-op.
+- **Proof.** `/script` suite `scripts/hooks/session-correlation-assumptions/` (6/6 PASS) proves the
+  load-bearing contracts against the live machine — including the **incident-shape negative** (a sibling
+  session's claude PID is rejected on this tty) and AppleScript↔`ps` tty **format parity**. Re-run as the
+  regression gate. `test-auto-compact.sh` 78/0, ctx-gate 137/0, mission-bridge 60/0 — no regressions.
+
+Files: `lib/auto-compact-sentinel.sh` (5 new helpers, no schema bump), `auto-compact-after-pre-compact.sh`
+(fire-time delivery), `post-compact-primer.sh` (self-resume directive), `post-compact-resume-step2.sh` +
+`commands/post-compact-resume.md` (idempotency marker), `test-auto-compact.sh` (units),
+`scripts/hooks/session-correlation-assumptions/` (new).
+
 ## 2026-05-31 — /mission: autonomous long-build conductor (playbook over the bridge)
 
 A new `/mission` conductor that drives a multi-part build to completion across compactions with minimal
