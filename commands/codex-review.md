@@ -207,11 +207,13 @@ Combine findings from all four passes, attributing each to its lens (codex-1 …
 
 ---
 
-## Step 4: Spawn 4 Claude Analysis Agents in Parallel
+## Step 4: Spawn 3 Claude Analysis Agents in Parallel
 
-**CRITICAL: Spawn ALL 4 agents in a SINGLE message so they run in parallel.**
+**CRITICAL: Spawn ALL 3 agents in a SINGLE message so they run in parallel.**
 
-Use the `Agent` tool 4 times in one response. Each agent gets a fully self-contained prompt.
+Use the `Agent` tool 3 times in one response. Each agent gets a fully self-contained prompt.
+
+Claude's job here is to COMPLEMENT Codex's recall with precision. Codex now owns correctness, security, and data-integrity, so the Claude lenses lean toward architecture, integration, and skeptical pressure (including filtering Codex's false positives). Apply the same "direct the aim, not the answer" posture: give each agent all the context it needs and state its lens's aim openly, rather than handing it an exhaustive find-this checklist.
 
 ### What to include in each agent prompt:
 
