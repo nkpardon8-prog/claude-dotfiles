@@ -76,7 +76,7 @@ Project repos are **not** auto-pushed. Only this dotfiles repo. The rule lives i
 
 | Hook | Script | Purpose |
 |---|---|---|
-| `Stop` (first entry) | `scripts/progress/on-stop.sh` | Progress-bar state cleanup for finished turns. |
+| `Stop` (first entry) | `scripts/progress/on-stop.sh` | Marks the progress state idle when a turn finishes (line 2 falls to the idle label; file is kept, not deleted). |
 | `Stop` (second entry) | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app only. Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
 | `UserPromptSubmit` | `scripts/progress/on-prompt-submit.sh` | Progress-bar state init. |
 | `PostToolUse` (TodoWrite, Task) | `scripts/progress/on-{todo-write,task-spawn}.sh` | Progress-bar advances. |
