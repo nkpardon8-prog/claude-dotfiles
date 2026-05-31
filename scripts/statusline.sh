@@ -213,6 +213,8 @@ fi
 
 # ── 5. Effort / model display ─────────────────────────────────────────────────
 MODEL_DISPLAY=$(jq_get '.model.display_name')
+# Drop any "(… context)" parenthetical — the 1M window is assumed (per 2026-05-30 plan).
+MODEL_DISPLAY=$(printf '%s' "$MODEL_DISPLAY" | sed -E 's/[[:space:]]*\([^)]*[Cc]ontext[^)]*\)//')
 EFFORT_LEVEL=$(jq_get '.effort.level')
 
 if [ -n "$MODEL_DISPLAY" ] && [ "$MODEL_DISPLAY" != "null" ]; then
