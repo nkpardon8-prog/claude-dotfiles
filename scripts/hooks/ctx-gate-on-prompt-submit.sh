@@ -104,7 +104,7 @@ printf '%s\n' "$BUCKET" > "$BUCKET_FILE" 2>/dev/null || true
 
 # IMPORTANT zone: finish current task then /pre-compact before starting anything new.
 if [ "$PCT" -ge "$CTX_IMPORTANT_PCT" ]; then
-  MSG="Context at ${PCT}% — IMPORTANT zone. Finish the current task, then invoke Skill(pre-compact) before starting anything new. The ${CTX_FORCE_PCT}% FORCE threshold is approaching."
+  MSG="Context at ${PCT}% — IMPORTANT zone. Finish the current task, then invoke Skill(pre-compact) before starting anything new. The ${CTX_FORCE_PCT}% FORCE threshold is approaching. (Run /pre-compact the SKILL — hand-editing the handoff/mission file does NOT count; only the skill mines context, appends the ledger, arms auto-compact, and refreshes the mission banner.)"
   ctx_gate_log "submit sid=$SID pct=$PCT bucket=$BUCKET action=important-nudge"
 # SOFT zone: FYI reminder; the agent should NOT interrupt active work for this.
 else
