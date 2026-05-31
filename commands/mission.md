@@ -260,13 +260,36 @@ unambiguously (Section 5 resume rules / Section 8). The dry-count stays auditabl
 record rather than asserted by you.
 
 ### CONVERGENCE (implement ↔ review fix-cycle)
-Loop: fix via `skill: implement --no-review` → re-run the barrier (fresh, independent) → log the
-round. See Section 6 for the convergence rules. On a PLAN divergence → `challenge` (loud). On an open
-human-decision → `pending` (batched). When converged:
+Loop, per round K: if findings are actionable, log the **`phase=fix`** checkpoint for the SAME round
+(it marks "now applying fixes"), fix via `skill: implement --no-review <plan-path>` → re-run the
+barrier (fresh, independent) as the **NEXT** round K+1 → log that round's `phase=review` checkpoint.
+**Never re-run an idtag round you already banked** (Section 8 / Section 12). See Section 6 for the
+convergence rules. On a PLAN divergence → `challenge` (loud). On an open human-decision → `pending`
+(batched).
+
+**Resume substates within a round (Section 7 schema):**
+- last round line is **`phase=review`** (findings logged, not yet fixed) → if `dry<2` and findings
+  were actionable, START applying fixes (log `phase=fix`, then fix); if the findings were `0` /
+  dry-advancing, start the next fresh review round per the `2 − dry` rule.
+- last round line is **`phase=fix`** (a fix was in flight at the compaction) → VERIFY/continue the
+  partial fix to completion, THEN re-run the barrier as the next round. Do not assume the fix
+  finished; reconcile against the working tree.
+
+When converged (Section 6: 2 consecutive non-void dry rounds):
 ```bash
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-DONE part=<N> (converged)" "m<N>-part-done"
 ```
-Advance to the next part.
+Parse the status line (Section 7). Then **retire the part plan**: because `--no-review` made `/mission`
+own the plan lifecycle, MOVE the per-part plan from ready-plans to done-plans after `PART-DONE` (use
+the project's done-plans convention — e.g. `mv <ready-plans>/<part-plan>.md <done-plans>/`). A plan
+left in ready-plans is a stale plan a later part could wrongly grab.
+
+**Advance to the next part** — log a `PART-START` lifecycle line for the new part so resume can tell a
+converged part from one still in progress (Section 8 / Section 9):
+```bash
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-START part=<N+1> name=<slug>" "m<N+1>-part-start"
+```
+Parse the status line (Section 7), then begin the next part's Phase 1.
 
 ---
 
