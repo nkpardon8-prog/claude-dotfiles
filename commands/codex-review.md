@@ -161,7 +161,7 @@ Report only what you can substantiate — but a speculative-but-real finding tag
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-cd $WORKDIR && codex -c model_reasoning_effort="$EFFORT" review [--base $BASE_BRANCH | --uncommitted] > /tmp/codex-review-1.txt 2>&1
+cd $WORKDIR && codex -c model_reasoning_effort="$EFFORT" review [--base $BASE_BRANCH | --uncommitted] > $RUN_DIR/codex-review-1.txt 2>&1
 ```
 timeout: 600000
 
