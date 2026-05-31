@@ -183,7 +183,7 @@ timeout: 600000
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-codex -c model_reasoning_effort="medium" exec -o /tmp/codex-review-1.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is correctness and logic. Find anything that makes this behave incorrectly — wrong results, broken logic, mishandled edge cases, off-by-ones, error paths that don't actually recover. We're not going to enumerate how; chase whatever would make a careful user say 'that's a bug.' [output-contract block]"
+codex -c model_reasoning_effort="$EFFORT" exec -o /tmp/codex-review-1.txt --ephemeral -s read-only -C $WORKDIR "[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is correctness and logic. Find anything that makes this behave incorrectly — wrong results, broken logic, mishandled edge cases, off-by-ones, error paths that don't actually recover. We're not going to enumerate how; chase whatever would make a careful user say 'that's a bug.' [output-contract block]"
 ```
 timeout: 120000
 
