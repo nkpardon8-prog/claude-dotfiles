@@ -1,5 +1,57 @@
 # god-review changelog
 
+## 2026-05-31 — 3 new open-posture Codex broad reviewers
+
+Broad-reviewer roster grows from 4 Claude + 3 Codex to **4 Claude + 6 Codex**
+(the 4th Claude is the `--ruthless`-only redteam reviewer). The 3 new Codex
+reviewers use the "direct the aim, not the answer" prompt posture: each is
+handed its lens's AIM plus the context for what "correct" means, instead of an
+exhaustive find-this checklist.
+
+**New files** (`broad-reviewers/`):
+- `codex-deep-correctness.md` — logic correctness: wrong results, edge cases,
+  broken error paths, off-by-ones, bad state transitions, unreachable/inverted
+  branches.
+- `codex-ruthless-redteam.md` — adversarial robustness: malicious/malformed
+  input, abuse of features, hostile load/starvation, limit bypass, lying
+  dependencies, degenerate/pathological cases.
+- `codex-data-integrity.md` — data integrity + concurrency + resource
+  lifecycle: races, TOCTOU, non-atomic multi-step writes, missing transactions,
+  lost updates, double-processing, resource leaks, use-after-close, lifecycle
+  ordering.
+
+All 6 Codex lenses are mutually distinct and distinct from the original 3
+(cross-layer / prod-scalability / security-safeguards). Each new reviewer keeps
+the existing structured output contract (severity + category + file:line +
+evidence + explanation) and a skeptic clause without over-suppressing
+("ground every finding in the actual code; if you find nothing after three
+honest passes, say so").
+
+**Registration** (the orchestrator HARDCODES the Codex broad roster — it does
+NOT glob the directory):
+- `god-review.md` Phase 2c: added 3 new `bash lib/codex-invoke.sh` invocations
+  (`/tmp/codex-broad-{deep-correctness,ruthless-redteam,data-integrity}.txt`)
+  and 3 matching `cp … findings/codex-broad-*.txt` lines so Phase 2d
+  consolidation reads them. Without the `cp` lines a Codex reviewer is silently
+  inert (same pattern as the Phase G2 C7 fix).
+- `god-review.md`: `expected_subagents` 32 → 35; frontmatter description
+  "3 Codex broad" → "6 Codex broad"; Phase-2 intro "6 broad reviewers (7 with
+  --ruthless)" → "9 broad reviewers (3 Claude + 6 Codex; 10 with --ruthless)";
+  Message-1 spawn schedule updated (10 Agent + 13 Bash = 23; note added that the
+  3 open-posture Codex calls can be moved to Message 2 to stay under the ~20
+  soft cap; `--ruthless` Message 1 = 24).
+- `god-report.md`: `expected_subagents` 31 → 34; frontmatter description
+  "3 Codex broad" → "6 Codex broad". (god-report delegates Phase 2 to
+  god-review.md, so no separate spawn block to edit.)
+
+**Docs:** README Layer-A roster, cost profile (56→59 / 57→60 per round; typical
+~39-43), and architecture diagram (`3 Claude + 6 Codex`) updated.
+
+**Note for later (not done now):** the original 3 Codex reviewers
+(cross-layer, prod-scalability, security-safeguards) still use the rigid
+checklist style. They could be migrated to the open-posture opener for
+consistency in a future pass; left untouched here per scope.
+
 ## 2026-05-06 — Phase G5+G6: convergence on production-readiness
 
 Phase E v6 found 5 cat / 20 high; G5 closed those. Phase E v7 found 3 cat /
