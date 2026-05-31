@@ -278,12 +278,16 @@ machine signal is the **`Codex-passes: N/4`** token `/codex-review` emits in its
 **any `N < 4` means a Codex lens did not actually run** (and `(codex-K unavailable)` names which). After
 `/codex-review` returns, INSPECT the report text and VOID the round if ANY of these match
 (case-insensitive):
-- the structured count **`Codex-passes: N/4` with `N < 4`** — the authoritative, machine-stable signal.
-  Extract `N` and compare:
+- the structured count **`Codex-passes: 4/4`** — the authoritative, machine-stable signal. A FULL panel
+  is **EXACTLY `4/4`**; anything else VOIDs. Match the literal `4/4` token, set-e-safe (capture with a
+  trailing `|| true` so a no-match grep can't abort under `set -e -o pipefail`, then test the captured
+  value — VOID unless it is EXACTLY `4/4`, which also rejects malformed/impossible tokens like `10/4`
+  or `40/4` that an `N<4`-only test would let pass):
   ```bash
-  n=$(grep -ioE 'Codex-passes:[[:space:]]*[0-9]+/4' /tmp/codex-review-report.$$ | grep -oE '[0-9]+' | head -1)
-  # VOID the round if N is present and < 4 (any Codex lens missing), OR N is absent (report malformed):
-  { [ -z "$n" ] || [ "$n" -lt 4 ]; } && echo VOID
+  passes=$(grep -ioE 'Codex-passes:[[:space:]]*[0-9]+/4' /tmp/codex-review-report.$$ \
+             | grep -oE '[0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
+  # FULL panel iff EXACTLY 4/4 — absent, malformed (e.g. 10/4), or any N!=4 => VOID:
+  [ "$passes" = "4/4" ] || echo VOID
   ```
 - the legacy total-failure marker `Codex unavailable` (all 4 failed), OR
 - the legacy per-pass marker `(Codex-` … `unavailable)` / `(codex-K unavailable)` (any one of the 4
