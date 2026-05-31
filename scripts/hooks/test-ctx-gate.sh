@@ -510,11 +510,16 @@ if [ -f "$VERBS_FILE" ]; then
         PHANTOM+=("$G5R_BARE")
       fi
     else
-      # Normal verb: any log function emitting it.
+      # Normal verb: any of the three logger functions emitting it, OR a
+      # mission-write.sh CLI dispatch arm. The mission-bridge log
+      # (MISSION.<sid>.log) is written by mission-write.sh dispatching <verb>) →
+      # mission_* → printf >> the mission log; it does NOT use ac_log/ctx_gate_log/
+      # handoff_log, so its verbs' emit site is the `<verb>)` case arm.
       # Exclude test files (they may reference verbs in comments or test scaffolding).
-      if ! grep -rE "(ac_log|ctx_gate_log|handoff_log)[[:space:]]+\"[^\"]*${G5R_BARE}" \
-          "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null \
-          | grep -qv 'test-ctx-gate\.sh:\|test-auto-compact\.sh:'; then
+      if ! { grep -rE "(ac_log|ctx_gate_log|handoff_log)[[:space:]]+\"[^\"]*${G5R_BARE}" \
+              "$PWD"/*.sh "$PWD"/lib/*.sh 2>/dev/null \
+              | grep -qv 'test-ctx-gate\.sh:\|test-auto-compact\.sh:'; } \
+         && ! grep -qE "^[[:space:]]*${G5R_BARE}\)" "$PWD/mission-write.sh" 2>/dev/null; then
         PHANTOM+=("$G5R_BARE")
       fi
     fi
