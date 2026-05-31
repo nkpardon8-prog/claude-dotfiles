@@ -415,8 +415,11 @@ back in EXACTLY these shapes.** These are `log`-verb entries with a structured `
 not new verbs; the real on-disk line is `<idtag>\t<entry>`; resume matches `[mission]` ANYWHERE on the
 line, not at column 0.
 
-- **Round line** (one per part/phase/round, advanced by substate — keep it TERSE, <480B, or the lib
-  reroutes it to DURABLE NOTES where resume can't grep it):
+- **Round line** (one per part/phase/round, advanced by substate — keep it TERSE so the lib does NOT
+  reroute it to DURABLE NOTES, where resume can't grep it). **The 480B reroute budget is measured by
+  the lib over the FULL on-disk line — `idtag + TAB + entry + newline` — NOT the visible entry text
+  alone.** So budget conservatively: use a SHORT idtag and put only the integer `findings=<COUNT>` on
+  the line (never finding text); the verbose findings live in a separate `note` (§5 synthesis barrier).
   - entry: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K> dry=<D> findings=<COUNT>`
   - `findings=<COUNT>` is a SHORT integer count ONLY (e.g. `findings=2`) — NEVER verbose finding text.
     Verbose per-reviewer findings go in a SEPARATE `note` (DURABLE NOTES), referenced by `part/phase/
