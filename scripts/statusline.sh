@@ -211,6 +211,28 @@ else
   WEEK_FIELD="${DIM}— wk${RESET}"
 fi
 
+# ── 4b. Weekly reset time (fills the slot the model's "(1M context)" used to hold) ──
+# Format: "wk→6th 4pm" from RL_SEVEN_D_RESET (epoch). Uses `date -r` like the debug
+# line above; pure-bash ordinal suffix — no extra python fork on the render path.
+WEEKRESET_FIELD="${DIM}wk→—${RESET}"
+if [ -n "$RL_SEVEN_D_RESET" ] && [ "$RL_SEVEN_D_RESET" != "0" ]; then
+  _wd=$(date -r "$RL_SEVEN_D_RESET" "+%-d" 2>/dev/null)
+  _wh=$(date -r "$RL_SEVEN_D_RESET" "+%-I" 2>/dev/null)
+  _wm=$(date -r "$RL_SEVEN_D_RESET" "+%M" 2>/dev/null)
+  _wp=$(date -r "$RL_SEVEN_D_RESET" "+%p" 2>/dev/null | tr 'A-Z' 'a-z')
+  if [ -n "$_wd" ] && [ -n "$_wh" ]; then
+    case "$_wd" in
+      11|12|13) _sfx="th" ;;
+      *1)       _sfx="st" ;;
+      *2)       _sfx="nd" ;;
+      *3)       _sfx="rd" ;;
+      *)        _sfx="th" ;;
+    esac
+    if [ "$_wm" = "00" ]; then _wt="${_wh}${_wp}"; else _wt="${_wh}:${_wm}${_wp}"; fi
+    WEEKRESET_FIELD="${CYAN}wk→${_wd}${_sfx} ${_wt}${RESET}"
+  fi
+fi
+
 # ── 5. Effort / model display ─────────────────────────────────────────────────
 MODEL_DISPLAY=$(jq_get '.model.display_name')
 # Drop any "(… context)" parenthetical — the 1M window is assumed (per 2026-05-30 plan).
