@@ -155,11 +155,13 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
 
 - **(a) No mission exists** → seed one, capturing the current objective from the in-flight context:
   ```bash
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> "MISSION MODE: adopt
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> 'MISSION MODE: adopt
   <captured current objective + state>
 
-  Standing directive: <same directive text as Section 3>"
+  Standing directive: <same directive text as Section 3>'
   ```
+  (SINGLE-quoted — the captured objective is untrusted; never double-quote it, §7 injection rule. If it
+  may contain a single quote, write it to a temp file / heredoc and pass that instead.)
 - **(b) A mission exists AND PLAN line-1 IS a `MISSION MODE:` token** → you are already in mission
   mode; just continue.
 - **(c) A mission exists BUT PLAN line-1 is NOT a `MISSION MODE:` token** (a non-mission
