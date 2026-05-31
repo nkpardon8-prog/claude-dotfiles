@@ -356,20 +356,13 @@ they need confirmation you've loaded context and know what to do next.
 
 ## Step 4: Begin continuing exactly where the prior session left off
 
-Follow the resumption directive. If `## Active Skill State` indicates an in-flight
-skill (e.g., `/plan mid-review round 2`, `/implement mid-phase 3`, `/master-review
-mid-round 4`), re-enter that skill at that phase.
+### FIRST — write the one-shot resume marker (idempotency), BEFORE executing `## Next Action`
 
-If the directive says "wait for user questions" (handoff-style pattern where the prior
-session was deliberately paused for the user to ask follow-ups), do exactly that —
-don't pre-empt with work.
-
-### Write the one-shot resume marker (idempotency — do this ONCE, here)
-
-As soon as you have committed to this resume (you've read the handoff and are acting on its
-`## Next Action`), write the `resume_marker` path captured from the STATE=`ok` JSON, IF it is
-non-empty. This makes the second resume channel (self-invoke vs. typed backstop) a clean
-`STATE=already-resumed` no-op instead of a duplicate resumption. Atomic write, mode 600:
+The instant you have a `STATE=ok` handoff in hand and are committing to resume — and **before** you
+act on `## Next Action` — write the `resume_marker` path captured from the STATE=`ok` JSON, IF it is
+non-empty. Writing it *first* (not after acting) is what closes the race: it guarantees the other
+resume channel (self-invoke vs. typed backstop) sees the marker and returns a clean
+`STATE=already-resumed` no-op instead of re-executing `## Next Action` a second time. Atomic, mode 600:
 
 ```bash
 # RESUME_MARKER = the resume_marker field from the STATE=ok JSON (skip if empty).
@@ -379,6 +372,16 @@ if [ -n "$RESUME_MARKER" ]; then
 fi
 ```
 
-Write it exactly once, in the FIRST resume turn — not on an `already-resumed` no-op. If
+Write it exactly once, in the FIRST resume turn — never on an `already-resumed` no-op. If
 `resume_marker` was empty (no handoff nonce available), skip silently: a double-resume then just
 re-reads inert handoff data, which is harmless.
+
+### THEN — follow the resumption directive
+
+Follow the resumption directive. If `## Active Skill State` indicates an in-flight
+skill (e.g., `/plan mid-review round 2`, `/implement mid-phase 3`, `/master-review
+mid-round 4`), re-enter that skill at that phase.
+
+If the directive says "wait for user questions" (handoff-style pattern where the prior
+session was deliberately paused for the user to ask follow-ups), do exactly that —
+don't pre-empt with work.
