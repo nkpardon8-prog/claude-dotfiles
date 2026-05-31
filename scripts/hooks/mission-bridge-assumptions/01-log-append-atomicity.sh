@@ -83,9 +83,10 @@ wbig() { _k=0; while [ "$_k" -lt 100 ]; do printf '%s%04d-%s\n' "$1" "$_k" "$BIG
 wbig "C" & q1=$!
 wbig "D" & q2=$!
 wait "$q1" 2>/dev/null; wait "$q2" 2>/dev/null
-# Each well-formed line is exactly one record: starts with C|D, then 4 digits, '-', 5000 X's.
+# Each well-formed line is one record: starts with C|D, 4 digits, '-', then X's.
+# (Avoid a huge {5000} interval — BSD grep's RE_DUP_MAX is 255 and would error.)
 big_total="$(wc -l < "$LOG" | tr -d ' ')"
-big_bad="$(grep -cvE '^[CD][0-9]{4}-X{5000}$' "$LOG" 2>/dev/null | tr -d ' ')"
+big_bad="$(grep -cvE '^[CD][0-9][0-9][0-9][0-9]-X' "$LOG" 2>/dev/null | tr -d ' ')"
 # Negative-control assertion: the test's tearing-detector (grep -vE) is the SAME
 # mechanism A3 uses; here we only require it RUNS and produces a count (proving the
 # detector is exercisable). The contract proven is conditional: see comment above.
