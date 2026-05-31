@@ -85,10 +85,16 @@ _utf8_safe_cap() {
 }
 
 # _snap_last_line <text> -> stdout the text with a trailing PARTIAL (newline-less) final line
-# dropped, so a byte-capped slice never ends mid-line. If the text has no embedded newline it is
-# returned unchanged (a single capped line is acceptable for the banner).
+# dropped, so a byte-capped slice never ends mid-line. Only drops the final line when the input
+# does NOT already end in a newline (i.e. it was truncated mid-line by head -c). If the input ends
+# in a newline the final line is complete and is kept. A single capped line is returned unchanged.
 _snap_last_line() {
-  printf '%s' "${1:-}" | awk '
+  _sl_text="${1:-}"
+  case "$_sl_text" in
+    *"
+") printf '%s' "$_sl_text"; return 0 ;;      # already ends in newline → nothing to snap
+  esac
+  printf '%s' "$_sl_text" | awk '
     { lines[NR] = $0 }
     END {
       if (NR <= 1) { printf "%s", lines[1]; exit }
