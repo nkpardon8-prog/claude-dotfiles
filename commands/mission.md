@@ -120,8 +120,23 @@ Standing directive: route substantial work through research → /plan(+reviewers
 plan 4-6 / codex 3-6, hard cap 6; /pre-compact freely interleaved; active until a
 [mission] MISSION-CLEARED line appears in the LOG."
 ```
-`create` is **no-clobber** — it will not overwrite an existing mission. Confirm the seeded PLAN with
-the user, then begin Level-2 at part 1 (Section 5).
+`create` is **no-clobber** — it will not overwrite an existing mission. Parse the returned status line
+(Section 7). Two outcomes need handling, NOT a silent no-op:
+- **`ok` and no prior file** → the PLAN was seeded. Confirm it with the user, then begin Level-2.
+- **A `MISSION.<sid>.md` already exists** (a non-mission `/pre-compact`, or a previously-`cleared`
+  mission, seeded the PLAN) → `create` is no-clobber and would quietly keep that **stale** PLAN.
+  Do **NOT** silent-no-op. Handle it exactly like §4(c): **surface it to the user and `rebaseline`**
+  the PLAN to this build's directive (rebaseline is the ONLY path that legitimately rewrites PLAN,
+  and it now appends a `[mission] MISSION-REBASELINED status=active` lifecycle line that REACTIVATES
+  a previously-cleared mission per the active-iff rule in Section 8):
+  ```bash
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> "MISSION MODE: build
+  <the multi-part roadmap + the same standing-directive text as above>"
+  ```
+  Parse that status line too (Section 7). If the user is away, log a loud `challenge` explaining the
+  rebaseline and proceed.
+
+Confirm the seeded/rebaselined PLAN with the user, then begin Level-2 at part 1 (Section 5).
 
 ---
 
