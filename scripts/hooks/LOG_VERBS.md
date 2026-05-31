@@ -16,7 +16,10 @@ Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
 | `dry-run` | arm-auto-compact.sh | Dry-run mode; sentinel NOT written; would-arm details logged |
 | `warn` | arm-auto-compact.sh | Non-fatal warning (e.g., automation-probe-failed-or-timed-out) |
 | `stop` | auto-compact-after-pre-compact.sh | Stop hook fired; logs osa_exit + result |
-| `abort` | auto-compact-after-pre-compact.sh | Stop hook aborted; no claude in foreground process group |
+| `abort` | auto-compact-after-pre-compact.sh | Stop hook aborted before firing; `reason=` appended (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire) — own-ancestry session-correlation verification failed; sentinel left intact for next-Stop retry |
+| `restore` | auto-compact-after-pre-compact.sh | Sentinel restored after a post-claim abort or a non-fire osascript result (no-matching-tab etc.) so the next Stop retries; `reason=` + `result=` appended |
+| `restore-FAILED` | auto-compact-after-pre-compact.sh | The post-claim sentinel restore `mv` itself failed (rare); the pending-handoff primer is the remaining recovery |
+| `test-no-fire` | auto-compact-after-pre-compact.sh | AUTO_COMPACT_TEST_NO_FIRE was set; full resolve→verify→claim path ran but the osascript fire was skipped (no keystrokes) — test seam, never set by real Stop hooks |
 | `ac_write_sentinel` | lib/auto-compact-sentinel.sh | Sentinel write skipped in ac_write_sentinel; reason= appended (e.g., oversize) |
 | `invalid` | lib/auto-compact-sentinel.sh | Invalid TTY target detected during sentinel validation; raw value logged |
 | `test` | test-auto-compact.sh | Test harness log entry (not emitted by production scripts) |
