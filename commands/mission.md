@@ -300,10 +300,18 @@ Parse the status line (Section 7), then begin the next part's Phase 1.
 - **Hard cap 6** either way.
 - **Stop at 2 consecutive DRY rounds.** "Dry" = the **independent reviewers** returned **zero new
   actionable findings**, logged verbatim — NOT you grading your own work.
+- **An ACTIONABLE round resets `dry → 0`.** Any round whose independent reviewers produced ≥1 new
+  actionable finding breaks the consecutive-dry streak: the NEXT round's `dry=` starts again at `0`.
+  Only two back-to-back zero-actionable rounds reach `dry=2`. State the post-round `dry` on the round
+  line accordingly (Section 7).
 - **VOID-on-dead-reviewer (the single biggest false-converge risk).** A round counts toward the
   2-dry tally **ONLY if EVERY independent reviewer produced a parseable, on-topic, evidence-citing
-  verdict.** A reviewer that errors, returns empty, or times out (e.g. a Codex CLI hang) makes the
-  round **VOID** → re-run that reviewer; do **NOT** bank a void round as dry.
+  verdict** (this INCLUDES the cross-model panel actually running — see "Codex-unavailable ⇒ VOID" in
+  Section 5). A reviewer that errors, returns empty, times out (e.g. a Codex CLI hang), or is reported
+  "Codex unavailable" makes the round **VOID** → re-run that reviewer; do **NOT** bank a void round as
+  dry. A VOID must be made DURABLE so a compaction mid-void doesn't resume from the last banked dry
+  state — log the VOID marker (Section 7 lifecycle/VOID line) before re-running; on resume, a VOID for
+  round K means re-run round K fresh, NOT count it.
 - **Honest early-exit** is allowed: if a super-honest look says the part is genuinely light, 2 dry
   rounds may close it early. Quality is the bar; saving time when truly converged is fine.
 - **Findings logged BEFORE acting** — always persist the reconciled per-reviewer findings (or an
