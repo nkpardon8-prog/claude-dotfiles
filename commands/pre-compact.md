@@ -1047,6 +1047,13 @@ Output a compact summary:
   If incomplete, surface the specific failing checks so the user sees them explicitly.
 - **Empty sections deleted (Step 6C):** [list of section headings deleted, or "none"]
 - **END-OF-HANDOFF marker (Step 6D):** present / skipped (already present — idempotent retry).
+- **Mission PENDING DECISIONS:** if a mission exists, surface any NON-EMPTY pending-decision lines
+  (the `- [pd:<seq>-<short>] <question>` entries from the mission's `PENDING DECISIONS` zone) so the
+  user sees open questions before continuing. List them; "none" if the zone is empty or no mission.
+- **Mission CRITICAL:** surface any mission-level CRITICAL condition — a verify failure / corrupt
+  mission file, or repeated mission log/lock/backup WARNs observed in Steps 3.B/6A this run (or a
+  banner that reported `CRITICAL: … UNREADABLE/CORRUPT`). If present, tell the user to inspect
+  `.mission-backups/`. "none" if clean.
 - **Diagnostics:**
   - Ctx pct before /pre-compact: <pct>% (from sidecar file at start of this run)
   - Ctx pct after marker append: <pct>% (from sidecar after Step 6D)
