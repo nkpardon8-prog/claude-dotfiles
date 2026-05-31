@@ -10,7 +10,12 @@ expected_subagents: 4
 
 ## Step 1: Load and Review Plan
 
-- If a path is provided: Read from $ARGUMENTS
+**Parse arguments first.** Check `$ARGUMENTS` for a `--no-review` token (opt-in, additive):
+- If `--no-review` is present: set `NO_REVIEW = true`, then strip the `--no-review` token from `$ARGUMENTS` before resolving the plan path.
+- If `--no-review` is absent (the default): set `NO_REVIEW = false`. **Behavior is completely unchanged** — every step below runs exactly as it always has.
+
+The remaining (flag-stripped) `$ARGUMENTS` is the plan path:
+- If a path is provided: Read from it
 - If no path: Find the most recent plan in `./tmp/ready-plans/`
 
 Review the plan to understand: implementation phases, task checklist, technical requirements, dependencies between tasks, and success criteria.
