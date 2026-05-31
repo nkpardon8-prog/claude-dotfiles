@@ -330,8 +330,12 @@ case "$SOURCE" in
     else
       ANOMALY_WARNING=""
     fi
-    # R8: advisory prints the exact /post-compact-resume command including session_id.
-    MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. /post-compact-resume should auto-fire from the Stop-hook queue. If it did not fire, run: /post-compact-resume ${SID:-<session_id>}"
+    # SELF-DRIVEN RESUME (2026-05-31): the typed cross-tab /post-compact-resume can misfire into a
+    # SIBLING session's tab under concurrency (04:42Z incident). This primer runs AUTHORITATIVELY in
+    # the resumed session (correct sid, source=compact), so make self-resume the imperative FIRST
+    # action — it does not depend on cross-tab delivery. The typed command is now a redundant
+    # backstop; a one-shot (sid,nonce) marker in /post-compact-resume makes a double-fire idempotent.
+    MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. Your FIRST action: run /post-compact-resume ${SID:-<session_id>} — do not wait for the Stop-hook auto-fire (it may have been delivered to another tab; running it yourself is authoritative and idempotent)."
     ;;
   resume|startup|clear)
     if [ "$SENTINEL_PRESENT" = "true" ]; then
