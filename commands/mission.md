@@ -238,12 +238,19 @@ Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees 
 - Invoke the Skill tool with `skill: codex-review --effort high`. Continue once it returns. (The
   `--effort high` arg runs its Codex passes at high → the full 3+3 cross-model panel + verify.)
 
-**Codex-unavailable ⇒ VOID the round (do NOT count it as dry).** `/codex-review` falls back to
-Claude-only on a total Codex failure and notes **"Codex unavailable"** in its report. After it
-returns, INSPECT the codex-review report text for "Codex unavailable" (case-insensitive). If present,
-the cross-model panel did not actually run → this round is **VOID**: a round counts toward the 2-dry
-convergence ONLY if EVERY independent reviewer's verdict is present (see Section 6 VOID-on-dead-
-reviewer). Log the durable VOID marker (Section 7), re-run the panel; do NOT bank a void round.
+**Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID the round (do NOT count it as dry).** `/codex-review`
+emits **`Codex unavailable`** only when ALL four Codex passes fail (total fallback to Claude-only); a
+PARTIAL failure (1-3 of the 4 passes) instead emits a per-pass marker like **`(Codex-2: unavailable)`**.
+EITHER means a cross-model lens did not actually run. After `/codex-review` returns, INSPECT the report
+text (case-insensitive) and VOID the round if it matches **either** substring:
+- the total-failure marker `Codex unavailable`, OR
+- the per-pass marker `(Codex-` … `unavailable)` (i.e. grep for the literal `(Codex-` followed by
+  `unavailable)` on the same marker — any one of the 4 passes being unavailable is enough).
+
+A round counts toward the 2-dry convergence ONLY if EVERY independent reviewer's verdict is present —
+ALL 4 Codex passes plus the Claude reviewers (see Section 6 VOID-on-dead-reviewer). If either marker is
+present, this round is **VOID**: log the durable VOID marker (Section 7), re-run the panel; do NOT bank
+a void round.
 
 Merge ALL findings at **ONE synthesis barrier**. Write the round checkpoint in TWO parts so it
 survives the log machinery (the lib reroutes any LOG line whose `idtag\tentry` is ≥480 bytes to
