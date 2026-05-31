@@ -571,28 +571,42 @@ live_log="$root/MISSION.$sid.log"
     case "$a" in *.gz) gzip -dc "$a" 2>/dev/null;; *) cat "$a" 2>/dev/null;; esac
   done
   cat "$live_log" 2>/dev/null          # ALWAYS read, even with zero archives
-} | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null
+} | grep -F '[mission] ' > /tmp/mission-resume.$$ 2>/dev/null || true
+# `|| true` above: a fresh/empty log with ZERO `[mission]` lines makes this filter `grep` exit 1.
+# Under `set -e -o pipefail` that would ABORT before any state logic runs — but "no `[mission]`
+# lines yet" is a VALID ACTIVE state (e.g. empty mission_state + a live MISSION-MODE PLAN ⇒ ACTIVE
+# per the §8 active-iff rule), NOT an error. So this no-match — and every derivation no-match below —
+# is a normal empty value, never a failure. The capture file may be empty; that is fine.
 
 # Derive the CURRENT part N first — convergence reads MUST be scoped to it (a prior part's final
-# dry=2 review line would otherwise bleed into part N+1's convergence math):
+# dry=2 review line would otherwise bleed into part N+1's convergence math). Every derivation grep
+# below appends `|| true` for the SAME reason: an expected no-match (zero matching lines) is a VALID
+# empty result, not an abort condition under `set -e -o pipefail`:
 cur_part=$(grep -E '\[mission\] (PART-START|PART-DONE) part=[0-9]+' /tmp/mission-resume.$$ \
-            | tail -1 | sed -n 's/.*part=\([0-9][0-9]*\).*/\1/p')
-[ -z "$cur_part" ] && cur_part=1   # no part-lifecycle yet ⇒ part 1
+            | tail -1 | sed -n 's/.*part=\([0-9][0-9]*\).*/\1/p' || true)
+[ -z "$cur_part" ] && cur_part=1   # no part-lifecycle yet ⇒ part 1 (empty = valid, not an error)
 
-# state gate (active-iff) — GLOBAL, keys ONLY on CLEARED/REBASELINED (see active-iff rule below):
-mission_state=$(grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' /tmp/mission-resume.$$ | tail -1)
+# state gate (active-iff) — GLOBAL, keys ONLY on CLEARED/REBASELINED (see active-iff rule below).
+# EMPTY mission_state is a VALID state (never cleared/rebaselined) ⇒ ACTIVE with a live PLAN (§8):
+mission_state=$(grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' /tmp/mission-resume.$$ | tail -1 || true)
 # convergence — PART-SCOPED to N, keys on the last phase=review round OR a VOID for this part (the
-# decision table keys on "latest line for round K is VOID", so VOID MUST be in this read):
+# decision table keys on "latest line for round K is VOID", so VOID MUST be in this read). Empty =
+# no review round banked yet for part N (a valid early state), not a failure:
 last_review=$(grep -E "\[mission\] (part=${cur_part} .*phase=review |VOID part=${cur_part} )" \
-                /tmp/mission-resume.$$ | tail -1)
+                /tmp/mission-resume.$$ | tail -1 || true)
 # round positioning — PART-SCOPED to N: last round-activity of ANY phase OR a VOID for this part:
 last_round=$(grep -E "\[mission\] (part=${cur_part} |VOID part=${cur_part} )" \
-                /tmp/mission-resume.$$ | tail -1)
+                /tmp/mission-resume.$$ | tail -1 || true)
 # progress/lifecycle positioning — GLOBAL (must include PART-RETIRED so "PART-DONE present but
 # PART-RETIRED absent ⇒ re-attempt retirement" is decidable; and VOID for the decision table):
 last_progress=$(grep -E '\[mission\] (PART-START|PART-DONE|PART-RETIRED|test-trust|VOID)' \
-                /tmp/mission-resume.$$ | tail -1)
+                /tmp/mission-resume.$$ | tail -1 || true)
 ```
+**Every grep above whose no-match is an expected/valid outcome appends `|| true`** so that under
+`set -e -o pipefail` an empty capture is a NORMAL value (e.g. empty `mission_state` + a live
+`MISSION MODE:` PLAN ⇒ ACTIVE; empty `cur_part` ⇒ part 1; empty `last_review` ⇒ no review round
+banked yet), never a shell abort. The `|| true` makes the pipeline succeed; the EMPTY string is then
+interpreted by the active-iff rule and the decision table as the corresponding valid early state.
 (Concatenating archives oldest→newest before the live log preserves chronological order so the final
 `tail -1` of any filtered grep picks the genuinely-latest line. The two `.gz`/`.txt` globs cover both
 the gzip archive and the no-gzip fallback while excluding any in-flight rotation temp. The
