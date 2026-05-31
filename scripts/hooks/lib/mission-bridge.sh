@@ -745,14 +745,21 @@ mission_resolve_pending() {
 
   _rp_tmp=$(mktemp "${_rp_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: resolve: mktemp failed" >&2; return 5; }
   # strip the matching `- [pd:<id>]` line; drop the old marker; re-emit it byte-exact.
+  # Strip the matching `[pd:<id>]` line AND its paired `<!-- mid:... -->` idempotency marker
+  # (emitted on the immediately-following line by _mission_rewrite), leaving no orphan marker.
   ( umask 077 && awk -v pid="[pd:${_rp_id}]" '
       { lines[NR] = $0 }
       END {
         marker_idx = 0
         for (i = 1; i <= NR; i++) if (lines[i] ~ /^<!-- MISSION schema=v1 /) marker_idx = i
+        skip_next_mid = 0
         for (i = 1; i <= NR; i++) {
           if (i == marker_idx) continue
-          if (index(lines[i], pid) > 0) continue   # strip the resolved pending line
+          if (index(lines[i], pid) > 0) { skip_next_mid = 1; continue }   # strip the resolved pending line
+          if (skip_next_mid == 1) {
+            skip_next_mid = 0
+            if (lines[i] ~ /^<!-- mid:/) continue                        # strip its paired mid marker
+          }
           printf "%s\n", lines[i]
         }
       }
