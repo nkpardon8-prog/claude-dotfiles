@@ -311,8 +311,23 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid>
 ```
 Parse the status line (Section 7). Then **retire the part plan**: because `--no-review` made `/mission`
 own the plan lifecycle, MOVE the per-part plan from ready-plans to done-plans after `PART-DONE` (use
-the project's done-plans convention — e.g. `mv <ready-plans>/<part-plan>.md <done-plans>/`). A plan
-left in ready-plans is a stale plan a later part could wrongly grab.
+the project's done-plans convention). A plan left in ready-plans is a stale plan a later part could
+wrongly grab. **Check the `mv` result — do NOT proceed silently on failure** — and make it idempotent
+(a resume that lands after PART-DONE but before the `mv` must be able to tell whether retirement
+happened):
+```bash
+if [ -f "<done-plans>/<part-plan>.md" ]; then :   # already retired (idempotent — resume after PART-DONE)
+elif mv "<ready-plans>/<part-plan>.md" "<done-plans>/"; then
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-RETIRED part=<N>" "m<N>-part-retired"
+else
+  # mv FAILED — surface it loudly, do NOT silently continue; log a FAIL (Section 7) and STOP/CHALLENGE
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] FAIL part=<N> phase=retire reason=plan-mv-failed attempt=<A>" "m<N>-fail-plan-mv-failed-<A>"
+fi
+```
+Parse each status line (Section 7). The `PART-RETIRED part=<N>` marker (idtag `m<N>-part-retired`) lets
+a resume distinguish "converged AND plan retired" from "converged, retirement still pending"; on resume,
+if `PART-DONE` is present but `PART-RETIRED` is absent, re-attempt the idempotent retirement before
+advancing.
 
 **Advance to the next part** — log a `PART-START` lifecycle line for the new part so resume can tell a
 converged part from one still in progress (Section 8 / Section 9):
