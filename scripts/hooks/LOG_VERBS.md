@@ -146,3 +146,19 @@ rename a verb or move the script without re-issuing the allow rule and updating 
 | `mission-write: <verb> ok` | mission-write.sh | Lib call returned rc=0 |
 | `mission-write: <verb> FAILED rc=N (<reason>)` | mission-write.sh | Lib call returned rc=N; reason `see stderr` (lib stays fail-LOUD on stderr) or `lib mission-bridge.sh not found/sourced` (rc=127) |
 | `mission-write: usage: …` | mission-write.sh | Unknown verb or missing required args; no mutation attempted |
+
+### `[mission]` structured LOG-line conventions (written via the `log` verb)
+
+These are NOT new CLI verbs. The `/mission` conductor reuses the existing `log` verb (above) and passes
+structured `[mission] …`-prefixed payloads as the narrative line. The bridge stores them verbatim in
+`MISSION.<sid>.log` (subject to the same `<480`B cap + leading-anchored idtag idempotency). A resume agent
+greps these lines to reconstruct loop state across compactions. Field order is part of the grep contract —
+do not reorder.
+
+| Line shape | idtag | Meaning |
+|---|---|---|
+| `[mission] part=<N> name=<slug> phase=<research\|plan\|implement\|review> round=<K> dry=<D> findings=<count-or-slugs>` | `m<N>-<phase>-r<K>-d<D>` | **Round line.** One per phase/round attempt for part `<N>`. `dry=<D>` is the running consecutive-dry count (`0`,`1`,`2`); a non-dry round resets it to `0`. The **`d<D>` in the idtag is REQUIRED**: `mission_log_append` is anchored-idempotent on the leading `^<idtag>\t`, so encoding the dry-count makes each advanced dry-state a brand-NEW line rather than an idempotent no-op — the resume agent can see the dry streak progress (e.g. `…-r5-d0`, `…-r6-d1`, `…-r7-d2`) instead of one collapsed entry |
+| `[mission] FAIL part=<N> phase=<P> reason=<slug>` | `m<N>-fail-<reason-hash>` | **Failure tally.** One durable line per distinct failure reason (idtag hashed from `<reason>`, so identical failures collapse to one anchored line that survives compactions). The resume agent counts how many times an identical failure has recurred; `5` identical → stop loud rather than loop forever |
+| `[mission] test-trust part=<N>=<ok\|added\|n/a>` | (round/lifecycle idtag) | **Lifecycle — test trust.** Emitted once before the FIRST implement round of part `<N>`: `ok` = pre-existing tests trusted, `added` = tests written first, `n/a` = no test surface |
+| `[mission] PART-DONE part=<N> (converged)` | (lifecycle idtag) | **Lifecycle — part converged.** Part `<N>` reached 2-dry convergence and is closed |
+| `[mission] MISSION-CLEARED status=<achieved\|could-not\|cleared>` | (lifecycle idtag) | **Lifecycle — mission end.** Terminal line: `achieved` = goal met, `could-not` = stopped loud (e.g. FAIL guard tripped), `cleared` = run wrapped up |
