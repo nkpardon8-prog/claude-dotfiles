@@ -291,69 +291,87 @@ printf "%b  %b  %b  %b  %b  %b  %b\n" \
   "$WEEKRESET_FIELD" \
   "$REPO_FIELD"
 
-# ── 7. Line 2: progress bars (active) or session label (idle) ──────────────
-# Reads ~/.claude/progress/<sid>.json first; if absent or stale, falls back to
-# the existing ~/.claude/session-status/<sid>.txt label. Empty if neither.
+# ── 7. Line 2: single progress bar (active) or idle label — ALWAYS present ──
+# One bar, source chosen by specificity: determinate beacon → determinate todos →
+# indeterminate beacon → spinner. Active state drives an elapsed timer; idle state
+# shows the ~/.claude/session-status/<sid>.txt label (else "idle"). The renderer
+# NEVER blanks — a hard bash fallback below guarantees a line in every session.
 SESSION_ID=$(jq_get '.session_id')
 SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -cd 'A-Za-z0-9_-' | head -c 128 || true)
 LINE2=""
 
 if [ -n "$SAFE_SID" ]; then
   PROGRESS_FILE="$HOME/.claude/progress/$SAFE_SID.json"
-  if [ -f "$PROGRESS_FILE" ]; then
-    LINE2=$(python3 - "$PROGRESS_FILE" <<'PY' 2>/dev/null
+  LABEL_FILE="$HOME/.claude/session-status/$SAFE_SID.txt"
+  LINE2=$(python3 - "$PROGRESS_FILE" "$LABEL_FILE" <<'PY' 2>/dev/null
 import json, sys, time
-try:
-    with open(sys.argv[1]) as fh: s = json.load(fh)
-except Exception: sys.exit(0)
-now_f = time.time()
-now = int(now_f)
-# 5-min failsafe: hide bars if no tool call in 5 min (Stop hook may have misfired)
-if now - s.get("last_tick", now) > 300: sys.exit(0)
-
-elapsed = now - s.get("prompt_started_at", now)
-mins, secs = divmod(elapsed, 60)
-stalled = (now - s.get("last_tick", now)) > 30
-color = "\033[0;33m" if stalled else "\033[0;32m"  # yellow if stalled, green otherwise
-reset = "\033[0m"
+prog, labelf = sys.argv[1], sys.argv[2]
+RESET="\033[0m"; DIM="\033[2m"; GREEN="\033[0;32m"; YELLOW="\033[0;33m"
 WIDTH = 8
 
-def bar(spec):
-    if spec.get("indeterminate") or not spec.get("total"):
-        # Sub-second pos so the sliding window glides on every render
-        pos = int(now_f * 4) % WIDTH
-        cells = ["▱"] * WIDTH
-        for i in range(3): cells[(pos + i) % WIDTH] = "▰"
-        return "".join(cells), spec.get("label") or "working", None
-    # Accept either `done` (overall) or `step` (current)
-    done = int(spec.get("done", spec.get("step", 0)))
-    total = int(spec["total"])
+def idle_line():
+    # Show the human session label if present, else a literal "idle". Always non-empty.
+    try:
+        with open(labelf) as fh: s = fh.readline().rstrip()
+    except Exception:
+        s = ""
+    if s:
+        if len(s) > 100: s = s[:99] + "…"
+        return f"{DIM}{s}{RESET}"
+    return f"{DIM}idle{RESET}"
+
+try:
+    with open(prog) as fh: s = json.load(fh)
+except Exception:
+    print(idle_line()); sys.exit(0)
+
+now_f = time.time(); now = int(now_f)
+last_tick = int(s.get("last_tick", 0))
+
+# Defensive v1→v2 read: pre-upgrade files have no "active" key.
+active = s.get("active")
+if active is None:
+    active = bool(s.get("prompt_started_at")) and (now - last_tick <= 1800)
+
+# Staleness guard: demote to idle (never blank) if a Stop hook misfired and left
+# an "active" file climbing for >30 min — well above any legitimate long tool call.
+if not active or (now - last_tick) > 1800:
+    print(idle_line()); sys.exit(0)
+
+elapsed = max(0, now - int(s.get("prompt_started_at", now)))
+mins, secs = divmod(elapsed, 60)
+color = YELLOW if (now - last_tick) > 30 else GREEN
+
+def spinner():
+    pos = int(now_f * 4) % WIDTH
+    cells = ["▱"] * WIDTH
+    for i in range(3): cells[(pos + i) % WIDTH] = "▰"
+    return "".join(cells)
+
+def filled_bar(done, total):
     if total <= 0: total = 1
-    filled = max(0, min(WIDTH, (done * WIDTH) // total))
-    return "▰"*filled + "▱"*(WIDTH-filled), spec.get("label") or "", f"{(100*done)//total}% {done}/{total}"
+    n = max(0, min(WIDTH, (done * WIDTH) // total))
+    return "▰"*n + "▱"*(WIDTH-n)
 
-ov = s.get("overall", {"indeterminate": True})
-cu = s.get("current", {"indeterminate": True})
-ovb, ovl, ovp = bar(ov)
-cub, cul, cup = bar(cu)
-ov_str = f"task {ovb} {ovp}" if ovp else f"task {ovb} {ovl}"
-cu_label = s.get("outer_command") or cul or "cmd"
-cu_str = f"{cu_label} {cub} {cup}" if cup else f"{cu_label} {cub} {cul}"
-print(f"{color}{mins}:{secs:02d}  {ov_str}   {cu_str}{reset}")
+cur = s.get("current") or {}
+ov  = s.get("overall") or {}
+cur_total = cur.get("total")
+ov_total  = ov.get("total")
+
+if cur.get("source") == "beacon" and cur_total:        # real inner-step progress (e.g. /god-review)
+    bar = filled_bar(int(cur.get("step", 0)), int(cur_total)); lab = cur.get("label") or "working"
+elif ov_total:                                          # real to-do progress
+    bar = filled_bar(int(ov.get("done", 0)), int(ov_total)); lab = ov.get("label") or "working"
+elif cur.get("source") == "beacon":                     # beacon without a total → spinner + its label
+    bar = spinner(); lab = cur.get("label") or "working"
+else:                                                   # one-shot / no structure → honest spinner
+    bar = spinner(); lab = ov.get("label") or "working"
+
+print(f"{color}{mins}:{secs:02d}  {bar}  {lab}{RESET}")
 PY
-    )
-  fi
-
-  # Fallback to existing session label
-  if [ -z "$LINE2" ]; then
-    LABEL_FILE="$HOME/.claude/session-status/$SAFE_SID.txt"
-    if [ -f "$LABEL_FILE" ]; then
-      LABEL=$(head -n 1 "$LABEL_FILE" 2>/dev/null \
-        | python3 -c "import sys; s=sys.stdin.readline().rstrip(); print(s[:99]+'…' if len(s) > 100 else s)" \
-        2>/dev/null || true)
-      [ -n "$LABEL" ] && LINE2="${DIM}${LABEL}${RESET}"
-    fi
-  fi
+  )
+  # Hard never-blank fallback: any python crash / empty output still shows a line.
+  [ -z "$LINE2" ] && LINE2="${DIM}idle${RESET}"
 fi
 
 [ -n "$LINE2" ] && printf "%b\n" "$LINE2"
