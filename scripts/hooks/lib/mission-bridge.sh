@@ -518,13 +518,18 @@ _mission_log_rotate() {
   # rename-aside approach (rename the log out from under writers, then archive the renamed copy).
   _lr_lb=$(_mission_lockbase "$_lr_root")
   _lr_had_lock=0
-  if _mission_lock "$_lr_lb" "$_lr_sid" 2>/dev/null; then
-    _lr_had_lock=1
-    # Re-check the threshold UNDER the lock — another rotator may have just rotated.
-    _lr_size=$(_file_size "$_lr_log")
-    if [ "$_lr_size" -lt "$MISSION_LOG_MAX_BYTES" ]; then
-      _mission_unlock; return 0
-    fi
+  # C3: rotation MUST hold the lock — two concurrent UNLOCKED rotators would both archive+trim
+  # and lose/duplicate ranges. If the lock is busy, do NOT rotate this pass: rotation is
+  # best-effort/deferrable, so skip (return 0) and let the next append retry once the lock frees.
+  # The append that triggered this still succeeds (caller only fails on a nonzero rotate rc).
+  if ! _mission_lock "$_lr_lb" "$_lr_sid" 2>/dev/null; then
+    return 0
+  fi
+  _lr_had_lock=1
+  # Re-check the threshold UNDER the lock — another rotator may have just rotated.
+  _lr_size=$(_file_size "$_lr_log")
+  if [ "$_lr_size" -lt "$MISSION_LOG_MAX_BYTES" ]; then
+    _mission_unlock; return 0
   fi
 
   _lr_dir="${_lr_root}/.mission-backups"
