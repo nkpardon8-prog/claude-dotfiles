@@ -116,3 +116,33 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `invalid-session-arg` | post-compact-resume-step2.sh | R8: session_id arg contains characters outside [A-Za-z0-9_-] — refuse |
 | `arg-not-my-session` | post-compact-resume-step2.sh | R9 HIGH-1 (wrong-load guard): session_id arg != this session's own id (CLAUDE_CODE_SESSION_ID) — command mis-delivered/mis-pasted; refuse to load another session's handoff. self= and arg= logged |
 | `self-unverifiable` | post-compact-resume-step2.sh | R9-Round2 (fail-closed): this session's own id is unreadable (CLAUDE_CODE_SESSION_ID + CLAUDE_SESSION_ID both empty) so arg-vs-self cannot run — REFUSE rather than degrade to content-only (degrading is a wrong-load path in a shared repo-root). arg= logged. Never fires on supported Claude Code (env var always set) |
+
+## MISSION.<sid>.log (mission-write.sh)
+
+The mission-bridge spine has its OWN log file `<canonical_root>/MISSION.<sid>.log` (NOT a shared hook
+log). It is an append-only narrative sidecar to `MISSION.<sid>.md`, written ONLY by the allowlisted CLI
+`mission-write.sh` (which dispatches to `lib/mission-bridge.sh`). These are the CLI **verbs** (argv[1]),
+not free-text log actions. mission-bridge is **fail-LOUD** (the deliberate exception to ctx-gate's
+fail-open posture): a failure surfaces on the single `mission-write: <verb> FAILED rc=N (...)` status line
++ the lib's stderr, but the CLI always `exit 0` so the autonomous `/pre-compact` caller is never aborted.
+The byte-locked invocation prefix is matched by a `Bash(bash …/mission-write.sh:*)` allow rule — do NOT
+rename a verb or move the script without re-issuing the allow rule and updating every caller.
+
+| Verb | Script | Meaning |
+|---|---|---|
+| `create` | mission-write.sh (`mission_create`) | Create the canonical `MISSION.<sid>.md` (nonce-fenced PLAN/DURABLE NOTES/PLAN CHALLENGES/PENDING DECISIONS zones + LOCKED last-line marker), write the immutable `.mission-backups/MISSION.<sid>.birth.md`, and set `mission_path` in the chain manifest. Idempotent no-clobber: exists+verifies → no-op; exists+fails-verify → refuse + fail-LOUD |
+| `log` | mission-write.sh (`mission_log_append`) | Append one byte-capped (`<480`B, `iconv -c` repaired) narrative line to `MISSION.<sid>.log`. Ensures the main file + manifest pointer exist first (no orphan), heals a torn last line, rotates at 256KB into `.mission-backups/…log.<utc>.gz`. Idempotent on a LEADING anchored `^<idtag>\t`; an oversize entry is rerouted to the locked main file as a `note` |
+| `note` | mission-write.sh (`mission_mutate` → DURABLE NOTES) | Append a durable note line into the DURABLE NOTES zone of the main file (locked → verify → backup → plan-drift check → tmp-rewrite → self-verify → atomic rename). Idempotent on `<!-- mid:<idtag> -->` |
+| `challenge` | mission-write.sh (`mission_mutate` → PLAN CHALLENGES) | Append a plan-challenge line into the PLAN CHALLENGES zone (same locked-rewrite path as `note`). Where an untrusted/override-style PLAN line is recorded for human review rather than executed |
+| `pending` | mission-write.sh (`mission_mutate` → PENDING DECISIONS) | Append a `- [pd:<id>] …` open-decision line into the PENDING DECISIONS zone (same locked-rewrite path). Surfaced in the banner for a batched answer next session |
+| `resolve` | mission-write.sh (`mission_resolve_pending`) | Strip the matching `- [pd:<id>] …` line (and its paired `<!-- mid:… -->`) from PENDING DECISIONS via locked rewrite, then append a `resolved pd:<id> — <resolution>` narrative to the LOG |
+| `rebaseline` | mission-write.sh (`mission_rebaseline`) | The ONLY path that rewrites the PLAN zone: replace PLAN with a new plan, re-stamp `plan_hash` to match (locked, backed-up, self-verified), then log `PLAN rebaselined (hash re-stamped)` |
+| `render-banner` | mission-write.sh (`mission_render_banner`) | PIVOT A write-side precompute: render the bounded `MISSION.<sid>.banner` (PLAN slice `<=4000`B line-snapped + last-5 log lines + injection-safety framing) atomically. On a verify failure writes a LOUD `CRITICAL: … UNREADABLE/CORRUPT` banner (never silent) and returns 0 so the primer surfaces the alarm |
+
+### mission-write.sh status line (stdout, exactly one per invocation)
+
+| Output | Script | Meaning |
+|---|---|---|
+| `mission-write: <verb> ok` | mission-write.sh | Lib call returned rc=0 |
+| `mission-write: <verb> FAILED rc=N (<reason>)` | mission-write.sh | Lib call returned rc=N; reason `see stderr` (lib stays fail-LOUD on stderr) or `lib mission-bridge.sh not found/sourced` (rc=127) |
+| `mission-write: usage: …` | mission-write.sh | Unknown verb or missing required args; no mutation attempted |
