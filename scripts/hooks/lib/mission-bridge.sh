@@ -580,8 +580,11 @@ mission_create() {
     if [ -n "$_mc_manifest" ]; then
       _mc_existing=$(printf '%s' "$_mc_manifest" | jq -r '.mission_path // empty' 2>/dev/null)
       if [ -z "$_mc_existing" ]; then
+        # We KNOW existing is null/empty here (guarded above), so set it directly and robustly.
+        # Do NOT use `// $mp` — jq // keeps an empty string "" (only null/false trigger //),
+        # so a manifest carrying mission_path:"" would never be backfilled (C1 root cause).
         printf '%s' "$_mc_manifest" \
-          | jq --arg mp "$_mc_f" '.mission_path = (.mission_path // $mp)' 2>/dev/null \
+          | jq --arg mp "$_mc_f" '.mission_path = $mp' 2>/dev/null \
           | chain_manifest_write "$_mc_sid" 2>/dev/null \
           || echo "mission: create: WARN manifest mission_path update failed (file intact)" >&2
       fi
