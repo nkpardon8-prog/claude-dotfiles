@@ -264,8 +264,9 @@ present, this round is **VOID**: log the durable VOID marker (Section 7), re-run
 a void round.
 
 Merge ALL findings at **ONE synthesis barrier**. Write the round checkpoint in TWO parts so it
-survives the log machinery (the lib reroutes any LOG line whose `idtag\tentry` is ≥480 bytes to
-DURABLE NOTES, where the resume grep won't find it). **ORDER MATTERS — write the verbose `note`
+survives the log machinery (the lib reroutes any LOG line whose FULL on-disk form — `idtag + TAB +
+entry + newline`, NOT the visible entry alone — is ≥480 bytes to DURABLE NOTES, where the resume grep
+won't find it; so budget the round line with a SHORT idtag + COUNT only, §7). **ORDER MATTERS — write the verbose `note`
 FIRST, then the terse round line:**
 1. **Persist the verbose per-reviewer findings `note` FIRST** (DURABLE NOTES), referenced by the
    round's `part/phase/round`.
