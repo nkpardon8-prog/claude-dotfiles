@@ -692,14 +692,17 @@ mission_log_append() {
 
   esc=$(printf '%s' "$_la_entry" | tr '\t\n' '__')          # squash to ledger convention (#32)
   tag=$(printf '%s' "$_la_idtag" | tr -cd 'A-Za-z0-9_.:-')
-  line=$(printf '%s\t%s' "$tag" "$esc")
-  line=$(printf '%s' "$line" | head -c 470 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)   # BYTE cap + utf8 repair
-  blen=$(printf '%s\n' "$line" | LC_ALL=C wc -c | tr -d ' ')
+  # Measure the FULL (untruncated) line first. If it would exceed the per-line budget, reroute
+  # the WHOLE entry to the locked main file (DURABLE NOTES) — never truncate, never a torn
+  # >PIPE_BUF append (C2: the old code capped to 470B THEN checked >=480, so the reroute was
+  # dead and content >470B was silently LOST).
+  full_line=$(printf '%s\t%s' "$tag" "$esc")
+  blen=$(printf '%s\n' "$full_line" | LC_ALL=C wc -c | tr -d ' ')
   if [ -n "$blen" ] && [ "$blen" -ge 480 ]; then
-    # oversize → locked main-file path (never a torn >PIPE_BUF append)
-    mission_mutate "$sid" "$root" note "$_la_entry" "$tag"
-    return $?
+    mission_mutate "$sid" "$root" note "$_la_entry" "$tag"; return $?
   fi
+  # Fits the budget (<480B) and is already valid (no byte-cut), so no truncation/iconv needed.
+  line="$full_line"
 
   # idempotent, ANCHORED on a LEADING tag + literal TAB (NOT grep -qF — #32)
   if [ -n "$tag" ] && grep -qE "^$(_re_escape "$tag")"$'\t' "$f" 2>/dev/null; then
