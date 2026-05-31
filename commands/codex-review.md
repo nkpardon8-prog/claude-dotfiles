@@ -364,7 +364,7 @@ The prompt should instruct Codex to:
 ### 6b. Run verification
 
 ```bash
-codex -c model_reasoning_effort="$EFFORT" exec -o /tmp/codex-verify.txt --ephemeral -s read-only -C $WORKDIR "You are a code review verifier. Here are findings from a multi-agent review of this codebase:
+codex -c model_reasoning_effort="$EFFORT" exec -o $RUN_DIR/codex-verify.txt --ephemeral -s read-only -C $WORKDIR "You are a code review verifier. Here are findings from a multi-agent review of this codebase:
 
 [PASTE CONSOLIDATED FINDINGS LIST]
 
