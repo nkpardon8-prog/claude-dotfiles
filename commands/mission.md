@@ -299,12 +299,13 @@ token **only from the `^Engine:` line** and VOID unless it is exactly `4/4`:
   ```bash
   passes=$(printf '%s\n' "$report" \
              | grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' \
-             | tail -1 | grep -oE 'Codex-passes: [0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
+             | head -1 | grep -oE 'Codex-passes: [0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
   # Anti-spoof: anchor on the FULL canonical header shape (^Engine: ... Codex-passes: N/4 ... Verified:)
-  # and take the LAST match. A free-form target/summary line before the real header (even a
-  # newline-injected fake "Engine: ... Codex-passes: 4/4") can't win: it would have to replicate the
-  # whole canonical header INCLUDING the trailing "Verified:" AND appear after the real one. Never
-  # read the token from the report body.
+  # and take the FIRST such line — the real header is emitted once near the top of the Step 7f report,
+  # so reviewed CONTENT that later quotes a fake "Engine: ... Codex-passes: 4/4 ... Verified:" line
+  # cannot override it (head, not tail). A free-form target/summary BEFORE the header can't win either:
+  # it would have to replicate the entire canonical shape INCLUDING the trailing "Verified:". Never
+  # read the token from a non-^Engine: body line.
   # FULL panel iff EXACTLY "Codex-passes: 4/4" — absent, malformed (e.g. 10/4), or any N!=4 => VOID:
   [ "$passes" = "Codex-passes: 4/4" ] || echo VOID
   ```
