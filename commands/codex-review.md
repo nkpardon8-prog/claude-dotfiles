@@ -134,12 +134,14 @@ Codex runs 4 DISTINCT independent lens passes in parallel. Each is a self-contai
 
 **Prompt posture (applies to all 4 lenses): direct the aim, not the answer.** Each prompt gives the reviewer all the context it cannot infer (what the target is, the stack/environment, the stakes, what "correct" means here) and then states its lens's aim openly — it does NOT hand the reviewer an exhaustive checklist of what to find. Keep the structured output contract so findings machine-merge.
 
-### Step 3a: Clean up stale temp files
+### Step 3a: Create a per-run temp directory
 
-Run via Bash:
+Each invocation gets its own isolated temp directory so concurrent runs (parallel missions / multiple sessions) never clobber each other's output. Run via Bash:
 ```bash
-rm -f /tmp/codex-review-1.txt /tmp/codex-review-2.txt /tmp/codex-review-3.txt /tmp/codex-review-4.txt
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-review.XXXXXX")
 ```
+
+`$RUN_DIR` persists for the rest of this skill — Steps 3b, 3c, 6, and the final cleanup in 7e all reference it. Hold onto the exact path returned here and substitute it into every later `$RUN_DIR` reference. (No stale-file cleanup is needed since the directory is fresh per run.)
 
 ### Step 3b: Spawn 4 Codex review calls in parallel
 
