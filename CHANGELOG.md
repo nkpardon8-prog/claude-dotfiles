@@ -2,6 +2,40 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-31 — /mission: autonomous long-build conductor (playbook over the bridge)
+
+A new `/mission` conductor that drives a multi-part build to completion across compactions with minimal
+human babysitting. It is a **playbook, not an engine**: one new `commands/mission.md` plus a few opt-in
+flags — no new state machine, no new daemon. It rides the already-shipped mission-bridge spine
+(`mission-write.sh` + `MISSION.<sid>.{md,log,banner}`) and the existing `/pre-compact` → auto-resume path.
+
+- **Playbook, not engine.** Behavior lives in the command prompt; the only code touched is additive flags
+  on existing commands. No bespoke orchestration runtime.
+- **Two modes.** *Explicit build* (you point `/mission` at a goal/plan) and *ambient adopt* (`/mission`
+  latches onto an in-flight build already in progress).
+- **Adopt-stickiness via the PLAN, not new state.** Adoption is recorded as an immutable
+  `MISSION MODE:` directive inside the PLAN zone. Post-compact-resume already treats the PLAN as binding,
+  so the adopted-mission contract survives a compaction with **zero new state code**.
+- **Loop-state resume via the bridge LOG.** The conductor reconstructs the exact part/phase/round from the
+  `[mission]` LOG lines, leaning on the **idtag-with-`d<D>` anchored idempotency** so a resumed agent lands
+  on the precise part/phase/round/dry-count rather than re-running or skipping work.
+- **Parallel-but-INDEPENDENT reviewers (barrier-then-merge).** Reviewers run in parallel but judge
+  independently; results are merged at a barrier. The impl-reviewer runs ∥ `codex-review`, enabled by the
+  new additive **`/implement --no-review`** flag (so the conductor owns review fan-out; default unchanged).
+- **Codex-at-high.** New additive **`/codex-review --effort high`** arg for the convergence passes; the
+  default effort is unchanged.
+- **2-dry convergence judged by INDEPENDENT reviewers, with VOID-on-dead-reviewer.** Two consecutive dry
+  rounds close a part — but a hung or empty Codex pass is VOIDed, never banked as a dry round.
+- **Durable FAIL guard.** 5 identical `[mission] FAIL …` lines (durable across compactions) → stop loud
+  instead of looping.
+- **Codex NEVER writes the bridge.** All Codex `-s` invocations are read-only; only the conductor writes
+  via `mission-write.sh`.
+- **Batched-questions DEFAULT-AWAY in autonomous mode.** The conductor never hangs on a modal; open
+  decisions are parked as PENDING DECISIONS for a batched answer next session.
+- **Opt-in / heavy** by design.
+- Plan-reviewed by 2 independent Claude plan-reviewers (+ a Codex plan-reviewer); ~25 findings folded
+  into v2.
+
 ## 2026-05-30 — Statusline: line-1 weekly-reset field + line-2 single always-present bar
 
 Two changes, both copies of `statusline.sh` (deployed `~/.claude/` + dotfiles SoT) kept byte-identical.
