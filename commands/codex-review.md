@@ -19,6 +19,20 @@ You are a review orchestrator. You coordinate 4 Codex review passes and 3 Claude
 
 ---
 
+## Step 0: Parse the `--effort` flag (optional, opt-in)
+
+Before doing anything else, scan `$ARGUMENTS` for an optional `--effort <value>` flag and strip it out so the remainder is treated as the review target:
+
+- Set `EFFORT="medium"` by default.
+- If `$ARGUMENTS` contains `--effort high`, set `EFFORT="high"`.
+- If `$ARGUMENTS` contains `--effort medium`, set `EFFORT="medium"` (explicit, same as default).
+- Any other / missing / malformed value → leave `EFFORT="medium"` (invalid falls back to the default).
+- Remove the `--effort <value>` token pair from `$ARGUMENTS` before Step 1 classifies the target, so the flag never leaks into the file path / description / question.
+
+`EFFORT` defaults to `medium` and is set to `high` ONLY when `--effort high` is explicitly passed. This is additive and opt-in — every existing caller that passes no flag runs at `medium`, exactly as before. `EFFORT` is substituted into every Codex `model_reasoning_effort` setting in Step 3b (all 4 passes, all modes) and Step 6 (verification). This is what lets `/mission` raise the Codex passes to high via `skill: codex-review --effort high`.
+
+---
+
 ## Step 1: Identify Review Target
 
 Determine what to review based on context:
