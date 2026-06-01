@@ -196,11 +196,11 @@ case "$verb" in
     ;;
 
   ""|help|-h|--help)
-    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|resolve|rebaseline|render-banner> <sid> <root> [args...]"
+    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close> <sid> <root> [args...]"
     ;;
 
   *)
-    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|resolve|rebaseline|render-banner)"
+    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close)"
     ;;
 esac
 
