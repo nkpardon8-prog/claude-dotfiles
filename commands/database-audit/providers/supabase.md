@@ -48,7 +48,7 @@ Call `mcp__supabase__get_project_url`. If it succeeds, parse project ref from th
 | TS types (Module 5 diff) | `mcp__supabase__generate_typescript_types` |
 | Edge function inventory | `mcp__supabase__list_edge_functions` |
 
-All mutating Supabase tools (`apply_migration`, `deploy_edge_function`, `create_branch`, `merge_branch`, `reset_branch`, `rebase_branch`, `delete_branch`) are in the `guards.md` Forbidden Tools list. Never call them.
+All mutating Supabase tools (`apply_migration`, `deploy_edge_function`, `create_branch`, `merge_branch`, `reset_branch`, `rebase_branch`, `delete_branch`) are in the `guards.md` Forbidden Tools list. Never call them. The `guards.md` Forbidden Tools list is authoritative and now also bans `pause_project`, `restore_project`, and `update_storage_config` — defer to `guards.md` as the canonical denylist rather than re-enumerating it here.
 
 ---
 
