@@ -153,7 +153,7 @@ Note: RLS-off severity is CONTEXT-DEPENDENT (not a floor). It is CRITICAL when t
 ```sql
 SELECT c.relname AS table
 FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
-WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity = false;
+WHERE n.nspname = 'public' AND c.relkind IN ('r','p') AND c.relrowsecurity = false;
 ```
 
 Severity: CONTEXT-DEPENDENT (not a floor) — CRITICAL when the table is reachable via an exposed data API (Supabase `anon` / Neon Data API), HIGH otherwise (vanilla Postgres). The provider adapter sets the final value; this query reports the condition. See the section note above.
