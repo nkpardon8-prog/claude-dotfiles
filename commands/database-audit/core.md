@@ -43,7 +43,7 @@ WHERE c.contype = 'f'
   );
 ```
 
-Single-column FK misses → HIGH. Multi-column FK misses → INFO (order-sensitive; treat as candidate, flag for manual review).
+Use the returned `fk_col_count` to split deterministically: `fk_col_count = 1` (single-column FK miss) → HIGH. `fk_col_count > 1` (multi-column FK miss) → INFO (order-sensitive; treat as candidate, flag for manual review).
 
 ### Q1.3 — Unused indexes (gated on stats age)
 
