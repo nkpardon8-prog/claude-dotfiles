@@ -1,6 +1,6 @@
 ---
 description: Deep multi-provider database audit (Supabase, Neon, vanilla Postgres) — schema, RLS, security, prod-readiness, client coherence. Read-only. Refuses prod without --env=prod. Optionally emits DATABASE.md.
-argument-hint: "[--provider=supabase|neon|postgres] [--only=schema,rls,security,prod,client] [--env=prod]"
+argument-hint: "[--provider=supabase|neon|postgres] [--only=schema,rls,security,prod,client,health,config,privileges,integrity,compliance,pii,migrations,backup,exfil] [--env=prod]"
 expected_subagents: 4
 ---
 
