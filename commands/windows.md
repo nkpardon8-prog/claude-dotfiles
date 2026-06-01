@@ -219,7 +219,7 @@ Match the request to its row; use the listed channel; don't improvise.
 |---|---|
 | Left-click a host pixel | rect helper → `mcp.click_at({x,y})` |
 | Double-click | `mcp.click_at({x,y, dblClick:true})` |
-| Right-click | `mcp.press_key("Shift+F10")` — **there is NO right-click param on click_at** (schema is `{x,y,dblClick,includeSnapshot}`) |
+| Right-click | `mcp.press_key("Shift+F10")` — opens the context menu at the **current keyboard focus / selection**, NOT at a pixel (there is NO right-click param on click_at; schema is `{x,y,dblClick,includeSnapshot}`). To target a specific element, `click_at` it FIRST to focus it — that positioning click is a **real** click (screenshot-verify it, obey the modal/PHI rules) — then `Shift+F10`. |
 | Scroll | focus the pane → `press_key("PageDown")`/`"ArrowDown"`, or click the scrollbar arrow buttons. Thumb-drag is experimental (smoke-test `drag` first). No mouse-wheel tool exists. |
 | Drag | `mcp.drag(...)` in the same canvas-rect CSS-px space — **UNVERIFIED**, smoke-test first session |
 
