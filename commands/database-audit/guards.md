@@ -110,18 +110,19 @@ prod_guard() {  # $1=provider
 }
 ```
 
-`run_filesystem_only_modules` invokes EXACTLY these zero-data-touch checks (no data-plane SQL, no `psql` core session, no `execute_sql` / `run_sql`). Each is defined verbatim in `core.md` "Module FS — Filesystem security" (or the orchestrator preflight as noted):
+**Filesystem-only module set (THE canonical rule — stated once here; referenced from both the no-connection case (a) and the prod-stop case (b)).** `run_filesystem_only_modules` runs ALL zero-data-touch filesystem modules (no data-plane SQL, no `psql` core session, no `execute_sql` / `run_sql`), **honoring `--only`** via each module's governing token. The SAME set runs in BOTH the Step 0a.6 no-connection path and the Phase 0b prod-stop path — there is no module that runs in one but not the other. Each is defined verbatim in `core.md` "Module FS — Filesystem security" (or the orchestrator preflight as noted):
 
-1. **Repo secret scan** — `core.md` FS.1 (grep working tree for `SUPABASE_SERVICE_ROLE_KEY` / `service_role` / `DATABASE_URL` / JWT-shape; CRITICAL in client-reachable paths, INFO server-side).
-2. **Tracked-files secret scan** — `core.md` FS.2 (read-only `git ls-files` / `git grep`; HIGH, filename only).
-3. **.env-tracked check** — `core.md` FS.3 (`.env` / `.env.local` / `.env.production` tracked by git → CRITICAL).
-4. **Seed-data check** — `core.md` FS.4 (`./supabase/seed.sql`, `./seed.sql`, `./db/seed.sql` weak-credential scan → MEDIUM; skip silently if absent).
-5. **Migration-on-disk drift** — the on-disk half of `core.md` Module 1 "Migration drift": compare `./<migrations-dir>/*.sql` filenames on disk against the applied-migrations list ONLY if that list is obtainable from metadata that touches no user data; otherwise report on-disk filenames as INFO inventory. Issues no data-plane SQL.
-6. **`.gitignore tmp/` check** — the orchestrator preflight Step 0a.5 check (INFO if `tmp/` is not gitignored).
+1. **Repo secret scan** — `core.md` FS.1 (grep working tree for `SUPABASE_SERVICE_ROLE_KEY` / `service_role` / `DATABASE_URL` / JWT-shape; CRITICAL in client-reachable paths, INFO server-side). Token: `security`.
+2. **Tracked-files secret scan** — `core.md` FS.2 (read-only `git ls-files` / `git grep`; HIGH, filename only). Token: `security`.
+3. **.env-tracked check** — `core.md` FS.3 (`.env` / `.env.local` / `.env.production` tracked by git → CRITICAL). Token: `security`.
+4. **Seed-data check** — `core.md` FS.4 (`./supabase/seed.sql`, `./seed.sql`, `./db/seed.sql` weak-credential scan → MEDIUM; skip silently if absent). Token: `security`.
+5. **Env-drift check** — `core.md` FS.5 (grep source for `process.env.X` / `Deno.env.get('X')` / `import.meta.env.X` key NAMES, compare to `.env.production` key NAMES; missing-key → HIGH; emits key NAMES only). This is **zero-data-touch** — it reads `.env.production` key names and greps source, touching no DB — so it belongs in the filesystem-only set. Token: `prod` (prod-gated).
+6. **Migration-on-disk drift** — the on-disk half of `core.md` Module 1 "Migration drift": compare `./<migrations-dir>/*.sql` filenames on disk against the applied-migrations list ONLY if that list is obtainable from metadata that touches no user data; otherwise report on-disk filenames as INFO inventory. Issues no data-plane SQL. Token: `schema` OR `prod` (either enables it).
+7. **`.gitignore tmp/` check** — the orchestrator preflight Step 0a.5 check (INFO if `tmp/` is not gitignored). Always-on / ungated (runs regardless of `--only`).
 
-The env-drift check (`core.md` FS.5) is gated under `--only=prod` in the NORMAL path and is NOT part of the prod-stop set. All six modules above are read-only and emit findings into the report even though the core SQL phases are skipped.
+All seven modules are read-only and emit findings into the report even though the core SQL phases are skipped. When `--only` is set, run ONLY the modules whose governing token is present (FS.1–FS.4 `security`; FS.5 `prod`; migration-on-disk drift `schema`/`prod`; `.gitignore tmp/` always-on). When `--only` is unset, run all. If `--only` excludes every available filesystem module, emit `[INFO] no filesystem modules selected under --only` and still write the (ungated-`.gitignore`-check-only) report.
 
-**When PROD and `--env=prod` was NOT passed:** run only the zero-data-touch modules enumerated above (filesystem secret/`.env`/seed scans, migration-on-disk drift, `.gitignore tmp/` check), then STOP before opening ANY `psql` core session / `execute_sql` / `run_sql`. The mechanical `BEGIN READ ONLY` wrapper (rule 6) does NOT lift this stop — it blocks writes, not prod reads.
+**When PROD and `--env=prod` was NOT passed:** run `run_filesystem_only_modules` (the canonical set above, honoring `--only` — including FS.5 env-drift when the `prod` token is present), then STOP before opening ANY `psql` core session / `execute_sql` / `run_sql`. The mechanical `BEGIN READ ONLY` wrapper (rule 6) does NOT lift this stop — it blocks writes, not prod reads.
 
 ### supabase — branch-shape ladder
 
