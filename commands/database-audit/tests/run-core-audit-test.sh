@@ -62,9 +62,16 @@ fi
 
 # ---------------------------------------------------------------------------
 # PRE-RUN reap of leaked containers (covers SIGKILL/OOM where the trap never
-# fired on a prior run). Matches the whole `dbaudit-test-` prefix.
+# fired on a prior run). Matches the `dbaudit-test-` prefix but ONLY removes
+# containers that are NOT running — so a concurrently-executing test's live
+# container (status=running) is left untouched. We reap exited/dead/created.
 # ---------------------------------------------------------------------------
-ids=$(docker ps -aq --filter name=dbaudit-test-); [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true
+ids=$(docker ps -aq \
+  --filter name=dbaudit-test- \
+  --filter status=exited \
+  --filter status=dead \
+  --filter status=created)
+[ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # Teardown trap — PRESERVES the real exit code. Removes only THIS run's
