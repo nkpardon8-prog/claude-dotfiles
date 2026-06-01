@@ -14,13 +14,14 @@
 --
 --   D1  table with NO primary key            -> Q1.1  -> CRITICAL
 --   D2  FK column with NO backing index       -> Q1.2  -> HIGH (single-column FK)
---   D3  table with RLS NOT enabled            -> Q2.1  -> (portable floor CRITICAL,
---         but see note) In VANILLA context with no anon role / no Data-API
---         exposure this is NOT auto-CRITICAL — the provider adapter MAY
---         downgrade. The runner asserts only that the OBJECT is *detected* by
---         Q2.1 (it appears in the result set), NOT that it is emitted CRITICAL,
---         because vanilla-context severity is provider-discretionary. Do not
---         assert a Supabase CRITICAL here or it false-fails.
+--   D3  table with RLS NOT enabled            -> Q2.1  -> context-dependent
+--         severity (CRITICAL when exposed via anon/Data-API, HIGH on vanilla);
+--         this hermetic test only asserts DETECTION, not severity. Severity is
+--         provider-resolved (not a portable floor): the provider adapter sets it
+--         from exposure context. The runner asserts only that the OBJECT is
+--         *detected* by Q2.1 (it appears in the result set), NOT that it is
+--         emitted at any particular severity. Do not assert a Supabase CRITICAL
+--         here or it false-fails.
 --   D4  RLS enabled + blanket USING(true)     -> Q2.3  -> CRITICAL (qual = 'true'
 --         is the unconditional heuristic regardless of provider exposure)
 --   D5  SECURITY DEFINER fn, no/mutable
