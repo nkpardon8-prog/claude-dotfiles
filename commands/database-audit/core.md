@@ -182,11 +182,11 @@ SELECT schemaname, tablename, policyname, cmd, roles, qual, with_check
 FROM pg_policies WHERE schemaname = 'public';
 ```
 
-Apply heuristics to results:
+Apply the PORTABLE (provider-agnostic) blanket-permissive heuristics to results:
 - `qual = 'true'` → CRITICAL (blanket permissive — USING clause matches every row)
 - `with_check = 'true'` AND `cmd IN ('INSERT','UPDATE','ALL')` → CRITICAL (blanket permissive — unconditional WITH CHECK lets any row be written; catches INSERT/UPDATE policies whose permissiveness lives in `with_check`, not `qual`)
-- `qual` contains `auth.uid()` without `(select auth.uid())` → MEDIUM (per-row re-eval perf bug)
-- `'anon'` in roles AND `cmd IN ('INSERT','UPDATE','DELETE')` → HIGH
+
+These two heuristics are provider-agnostic (they reference no provider-specific role or helper) and stay here. Provider adapters may apply ADDITIONAL provider-specific policy heuristics (e.g. `anon`-role write exposure, `auth.uid()` re-eval) to this same Q2.3 result set — those live in the provider file (`providers/supabase.md` for the Supabase `anon`/`auth.uid()` heuristics, `providers/neon.md` for the `anonymous`/`auth.user_id()` analog), applied on top of the core Q2.3 result. Do NOT duplicate them here, so a single policy row never gets two severity mechanisms from this file.
 
 Policy expressions included in findings with redaction rule 2 prefix applied (see `redaction.md`).
 
