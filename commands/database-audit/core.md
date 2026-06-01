@@ -134,7 +134,7 @@ Skip this phase if `--only` is set and does not include `rls`.
 
 On any MCP/SQL error: emit `[INFO] Module 2 — {tool} unavailable: {error}` and continue.
 
-Note: RLS-off severity is CONTEXT-DEPENDENT. The auto-CRITICAL classification below assumes anon/Data-API exposure (Supabase/PostgREST). On a vanilla Postgres with no anon role or public API surface, the provider adapter MAY downgrade per its context; the portable severity floor stated per query is the exposed-API context.
+Note: RLS-off severity is CONTEXT-DEPENDENT (not a floor). It is CRITICAL when the table is reachable via an exposed data API (Supabase `anon` / Neon Data API), HIGH otherwise (vanilla Postgres with no anon role or public API surface). The provider adapter sets the final value; the portable query only reports the condition.
 
 ### Q2.1 — RLS off on public tables
 
