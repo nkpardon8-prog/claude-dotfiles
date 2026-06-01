@@ -162,7 +162,7 @@ def send_text(s):
 | Capability | Status | Notes |
 |---|---|---|
 | `take_screenshot` eyes | ✅ verified | crisp |
-| `click_at` reaches host | ✅ verified | toggled a checkbox, focused a field — re-check first session (macmini conflict) |
+| `click_at` reaches host | ✅ verified | toggled a checkbox, focused a field — re-check first session (also re-verified on the Mac twin 2026-06-01) |
 | Canvas-rect coord mapping | ✅ verified | `getBoundingClientRect`, both-CSS-px, no ÷DPR |
 | `type_text` lowercase/unshifted | ✅ verified | `30`→`309` |
 | `press_key("Shift+<base>")` for capitals/symbols | ⚠️ partial | only `Hi%` (3 chars) live-verified — smoke-test the FULL map |
