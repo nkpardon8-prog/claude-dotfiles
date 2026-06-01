@@ -173,8 +173,8 @@ Honor `--only` throughout (skip a module if `--only` is set and does not include
 
 Dispatch the `core.md` fixed-library queries, gated behind the discharged guard, via:
 
-- **psql path** (neon / postgres): wrap in `BEGIN READ ONLY; … ROLLBACK;` (`guards.md` rule 6), run with `psql "$DATABASE_URL" -v ON_ERROR_STOP=1`.
-- **MCP path** (supabase via `mcp__supabase__execute_sql`; neon via `run_sql` when used): SELECT-only per the guard.
+- **psql path (PREFERRED whenever a direct connection exists)** (neon / postgres, and neon when `get_connection_string` resolved a direct host): wrap in `BEGIN READ ONLY; … ROLLBACK;` (`guards.md` rule 6) so read-only is DB-ENFORCED, run with `psql "$DATABASE_URL" -v ON_ERROR_STOP=1` (or libpq `PG*` env / `~/.pgpass` on a shared host — see `guards.md` rule 6 credential-exposure note).
+- **MCP path (FALLBACK — only when no direct connection exists)** (supabase via `mcp__supabase__execute_sql`; neon via `run_sql` when no `$DATABASE_URL`/connstring): SELECT-only per the guard. Read-only here is NOT DB-enforced — it relies on the fixed-library + textual guard (rules 1–4), so the fixed-library discipline is load-bearing on this path (`guards.md` rule 6).
 
 Run, honoring `--only`:
 
