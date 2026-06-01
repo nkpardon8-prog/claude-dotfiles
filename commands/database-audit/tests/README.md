@@ -72,6 +72,66 @@ is reaped by the pre-run cleanup on the next run.
 old, so Q1.3 self-skips with an INFO. It cannot fire hermetically and is
 deliberately neither planted nor asserted (see the seed file's comment block).
 
+### Modules 6–15 coverage
+
+The Module 6–15 expansion is exercised in two classes. The whole core-query run
+is ONE `psql -v ON_ERROR_STOP=1` invocation inside ONE
+`BEGIN READ ONLY; … ROLLBACK;` transaction, so a single missing-relation/function
+error aborts the entire transaction and fails every assertion. Only the
+**image-major-correct** branch of any version-branched query is embedded (the
+pinned image is `postgres:16` → `pg_stat_bgwriter`, NOT `pg_stat_checkpointer`;
+collation uses `pg_database_collation_actual_version(<oid>)`). The PG17
+`pg_stat_checkpointer` branch is **Tier-2** (see below).
+
+**Seedable → a defect is planted and the finding is asserted:**
+
+| Defect | Planted in seed | Query | Vanilla severity |
+|--------|-----------------|-------|------------------|
+| D8 — public table, RLS on + FORCE off | `public.dbaudit_force_rls_off` | Q2.6 | MEDIUM (owner bypass) |
+| D9 — FK with no ON DELETE action | `public.dbaudit_fk_child` | Q9.1 | MEDIUM |
+| D10 — `timestamp` (no tz) column | `public.dbaudit_ts_notz` | Q9.4 | MEDIUM |
+| D11 — `money`-typed column | `public.dbaudit_money_col` | Q9.5 | MEDIUM |
+| D12 — secret-shaped column (`api_key`) | `public.dbaudit_secrets` | Q15.3 (NAME-ONLY) | HIGH |
+| D13 — extension in `public` schema (`pgcrypto`) | top-level `CREATE EXTENSION … SCHEMA public` | Q15.4 | MEDIUM |
+| D15 — event trigger | `dbaudit_evt_trigger` (created LAST, no-op fn) | Q15.5 | INFO/MEDIUM |
+
+> **D12 is asserted via Q15.3 ONLY**, never Q3.1: Q3.1 requires a
+> `GRANT SELECT … TO anon` that D12 does not plant, whereas Q15.3 is
+> grant-independent. **D13** relies on `pgcrypto` shipping in the digest-pinned
+> `postgres:16` contrib image (confirmed present); if it were absent the
+> `ON_ERROR_STOP=1` seed would abort. **D15**'s event trigger is created AFTER
+> the seed's trailing `ANALYZE` with a no-op `RETURNS event_trigger` function so
+> it never fires on earlier seed DDL (which would break the seed load).
+
+**Shape-only → NOT seedable in a fresh container; only proves the query runs
+read-only, exits 0, and returns its header columns (no finding asserted):**
+
+| Check | Query | Why shape-only |
+|-------|-------|----------------|
+| XID wraparound | Q6.4 | can't fabricate a near-2^31 `datfrozenxid` cheaply |
+| Sequence / int4-PK exhaustion | Q6.6 | can't fabricate a near-max sequence cheaply |
+| Inactive/lagging replication slots | Q6.7 | no slots in a standalone fresh container |
+| Invalid index (D14) | Q6.15 | can't seed `indisvalid=false` without a failed `CONCURRENTLY` |
+| Checkpoint tuning | Q6.18 (`pg_stat_bgwriter`, PG16 branch) | counters reflect container lifetime only |
+| Collation version drift | Q6.19 (`pg_database_collation_actual_version(oid)`) | no libc/ICU drift in a fresh image |
+| WAL archiver health | Q14.1 (`pg_stat_archiver`) | archiving is off; nothing to fail |
+
+For shape-only checks the proof is: `CORE_RC == 0` (no query in the shared
+transaction raised an error) + `TXN_RO = on` still holds. Queries over
+always-non-empty single-row catalogs (Q6.4/Q6.18/Q6.19/Q14.1) additionally
+assert their marker is present; zero-row-legal queries (Q6.6/Q6.7/Q6.15) rely on
+the `CORE_RC == 0` + `TXN_RO` guard, since an empty result is valid.
+
+**`[PROVIDER]` manual-verify (NOT in Tier 1 at all):** these never run SQL and
+cannot be hermetically asserted — Q6.20 (free disk / WAL volume / pool
+saturation), Q10.2 (log retention/immutability), Q11.4 (at-rest encryption),
+Q14.3 (PITR / last-backup / retention), Q14.4 (restore drill). They are
+manual-verify INFO with a `Severity-if-absent:` line and belong to Tier 2.
+`[RO+priv]` / `[EXT]` checks (Q6.3/6.8/6.9/6.10/6.13/6.14, Q7.2, Q11.2) degrade
+to INFO under the unprivileged container role and are likewise validated in
+Tier 2 against a real provider. Module 13 (migration-safety lint) is `[FS]`
+filesystem-static and is not part of this DB-container test.
+
 ---
 
 ## Tier 2 — Manual live dev-branch procedure
