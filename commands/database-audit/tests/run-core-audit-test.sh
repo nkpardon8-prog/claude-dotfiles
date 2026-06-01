@@ -48,6 +48,12 @@ PG_DB="postgres"
 
 EXIT_SKIP=77
 
+# Temp files created later via mktemp (Phase: core-query run). Initialized empty
+# HERE so the EXIT trap can reference them safely even if a SIGINT/SIGTERM arrives
+# BEFORE mktemp runs (rm -f on an empty string is a harmless no-op).
+CORE_SQL=""
+CORE_OUT_FILE=""
+
 # ---------------------------------------------------------------------------
 # Docker availability gate (runs FIRST, before any docker invocation). A missing
 # docker binary or a stopped daemon is a distinct skip reason from "online but
