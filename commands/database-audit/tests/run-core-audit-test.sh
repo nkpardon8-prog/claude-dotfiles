@@ -196,7 +196,7 @@ WHERE schemaname = 'public' AND null_frac = 1.0;
 -- Q2.1 — RLS off on public tables (detection only in vanilla context)
 SELECT 'Q2.1|' || c.relname
 FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
-WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity = false;
+WHERE n.nspname = 'public' AND c.relkind IN ('r','p') AND c.relrowsecurity = false;
 
 -- Q2.3 — All policies (heuristic scan; qual='true' => blanket CRITICAL)
 SELECT 'Q2.3|' || schemaname || '|' || tablename || '|' || policyname || '|qual=' || COALESCE(qual,'')
