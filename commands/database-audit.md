@@ -24,7 +24,7 @@ These hold regardless of provider or flags — they are restated here and enforc
 3. **SELECT-only guard** (`guards.md`, rules 1–6): fixed library only, first-keyword whitelist, full-body DML blacklist, SECURITY DEFINER caveat, and `BEGIN READ ONLY; … ROLLBACK;` mechanical wrapper on the psql path.
 4. **Two separate invariants, never conflated:** (a) `BEGIN READ ONLY` blocks WRITES (DB-enforced, always on); (b) the prod guard blocks data-plane READS against prod until `--env=prod` (orchestration-enforced). A read-only transaction still reads prod PII — the guard is what stops that.
 5. **Redaction** (`redaction.md`): redact secret values, mark policy expressions, never SELECT PII values (column NAMES only), emit env key NAMES only. Never echo `$DATABASE_URL` or any secret value.
-6. **Graceful per-module degradation:** on any tool/SQL error in Phases 1–5, emit `[INFO] Module N — {tool} unavailable: {error}` and continue. Only preflight aborts.
+6. **Graceful per-module degradation:** on any tool/SQL error in Phases 1–5, emit `[INFO] Module N — {tool} unavailable: {error}` (with `{error}` passed through the `redaction.md` rules first — it can carry connection strings/secrets) and continue. A total absence of connection source (Step 0a.6 case (a)) is NOT an abort either: run filesystem-only modules and write a partial report. Only a TRUE preflight failure (not a DB repo at all) aborts.
 
 ---
 
