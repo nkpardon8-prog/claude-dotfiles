@@ -46,16 +46,18 @@ Every `mission-write.sh` call needs `<sid>` and `<root>`, and a fresh `/mission`
 up front, and reuse them for the whole session. Mirror exactly what `post-compact-resume.md` does
 (its "Resolve the durable mission file" subsection, ~line 276).
 
-**`sid`** = the platform session UUID. **PREFER the platform-supplied session id** the way
-`/pre-compact` does — `$CLAUDE_SESSION_ID` then `$CLAUDE_CODE_SESSION_ID` — and only fall back to the
-mtime-newest-transcript GUESS as a last resort (an mtime guess can pick the wrong transcript when two
-sessions interleave, which would make a long mission "disappear"; refuse to guess when the platform
-told you the truth):
+**`sid`** = the platform session UUID, taken STRICTLY from the platform the way `/pre-compact` does —
+`$CLAUDE_SESSION_ID` then `$CLAUDE_CODE_SESSION_ID`. **Never guess by transcript mtime** — an mtime
+guess is exactly how two interleaved instances bind the SAME sid and collide. If BOTH are empty, **STOP**
+and tell the user the platform session id is unavailable, so the mission cannot be safely bound (ask
+them to retry / report); do NOT proceed:
 ```bash
 sid="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
-[ -z "$sid" ] && sid=$(ls -t ~/.claude/projects/$(pwd | sed 's|/|-|g; s|^|-|')/*.jsonl 2>/dev/null \
-      | head -1 | xargs -I {} basename {} .jsonl)   # last-resort mtime guess only
+[ -z "$sid" ] && { echo "FATAL: no platform session id (\$CLAUDE_SESSION_ID/\$CLAUDE_CODE_SESSION_ID) — refusing to guess; STOP" >&2; }
 ```
+(Verified 2026-05-31: a slash-command shell has `$CLAUDE_CODE_SESSION_ID` populated even when
+`$CLAUDE_SESSION_ID` is empty, so this fallback always yields a sid in practice — fail-loud never fires
+spuriously.)
 
 **`root`** = `handoff_canonical_root` (worktree-invariant canonical anchor):
 ```bash
