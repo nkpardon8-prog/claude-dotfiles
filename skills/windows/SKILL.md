@@ -3,7 +3,8 @@
 > **YOUR HANDS = direct CDP input** — `mcp.click_at({x,y})`, `mcp.type_text`,
 > `mcp.press_key`. They reach the Windows host natively through the CRD canvas.
 > NO gist, NO cliclick, NO on-host agent, NO calibration file, NO Terminal
-> dance. (That's the simplification over `/macmini`.) **YOUR EYES =
+> dance. (`/macmini` historically used gist/cliclick; it's now a direct-CDP
+> twin of this skill.) **YOUR EYES =
 > `mcp.take_screenshot()`.** If you didn't already, read
 > [`../../commands/windows.md`](../../commands/windows.md) → "READ THIS FIRST" —
 > it has the mental model plus the three embedded helpers (canvas-rect map,
