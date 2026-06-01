@@ -356,6 +356,30 @@ JOIN pg_class tc ON tc.oid = i.indrelid
 JOIN pg_namespace n ON ic.relnamespace = n.oid
 WHERE i.indisvalid = false OR i.indisready = false;
 
+-- Q6.16 — statistics staleness. verbatim from core.md Module 6 (Q6.16).
+-- SHAPE-ONLY. Re-synced for the corrected `JOIN pg_class c ON c.oid = s.relid`
+-- (joins pg_stat_user_tables.relid → pg_class.oid). A fresh+ANALYZEd container
+-- may have n_mod_since_analyze=0 for all tables (0 rows), so shape-only.
+SELECT 'Q6.16|' || s.schemaname || '|' || s.relname || '|' || s.n_mod_since_analyze::text || '|' || c.reltuples::text || '|' || current_setting('default_statistics_target')
+FROM pg_stat_user_tables s
+JOIN pg_class c ON c.oid = s.relid
+WHERE s.n_mod_since_analyze > 0
+ORDER BY s.n_mod_since_analyze DESC NULLS LAST
+LIMIT 50;
+
+-- Q6.17 — size outliers / giant unpartitioned tables. verbatim from core.md
+-- Module 6 (Q6.17). SHAPE-ONLY. Re-synced for the corrected
+-- `relkind IN ('r','p')` (partitioned parents visible, partition children
+-- excluded via NOT relispartition). The seed creates tables, so >=1 row likely,
+-- but we assert shape only (no finding).
+SELECT 'Q6.17|' || n.nspname || '|' || c.relname || '|' || c.relkind || '|' || pg_total_relation_size(c.oid)::text || '|' || (c.oid IN (SELECT partrelid FROM pg_partitioned_table))::text || '|' || (c.relkind = 'r' AND NOT c.relispartition AND c.oid NOT IN (SELECT partrelid FROM pg_partitioned_table))::text
+FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE c.relkind IN ('r','p')
+  AND NOT c.relispartition
+  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+ORDER BY pg_total_relation_size(c.oid) DESC
+LIMIT 50;
+
 -- Q6.18 — checkpoint tuning. verbatim from core.md Module 6 (Q6.18, PG<17 pg_stat_bgwriter branch).
 -- IMAGE IS PG16 — pg_stat_checkpointer does NOT exist here; using it would abort
 -- the whole transaction. The PG17 pg_stat_checkpointer branch is Tier-2.
