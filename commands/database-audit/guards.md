@@ -92,6 +92,8 @@ Finding TITLES and SEVERITIES must contain no ephemeral values (rule 8). Finding
 
 Runs in **Phase 0b**, BEFORE any data-plane SQL. Replaces the single-provider branch ladder with a provider-dispatched function.
 
+**Precondition bar:** the prod guard itself REQUIRES metadata-only control-plane calls (`get_project_url`, `list_branches`, `describe_project`, `get_connection_string`) to resolve — these are EXPLICITLY PERMITTED in Phase 0a because they touch no user data. The invariant is **no DATA-PLANE SQL** (`psql` core session / `execute_sql` / `run_sql`) before the resolved-state line is emitted — NOT "no control-plane probe." A guard that forbade its own metadata calls could never discharge.
+
 ```bash
 prod_guard() {  # $1=provider
   case "$1" in
