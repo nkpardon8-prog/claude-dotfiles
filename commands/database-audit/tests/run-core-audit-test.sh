@@ -167,7 +167,7 @@ SELECT 'TXN_RO=' || current_setting('transaction_read_only');
 SELECT 'Q1.1|' || n.nspname || '|' || c.relname
 FROM pg_class c
 JOIN pg_namespace n ON c.relnamespace = n.oid
-WHERE c.relkind = 'r'
+WHERE c.relkind IN ('r','p')
   AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
   AND NOT EXISTS (
     SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary
