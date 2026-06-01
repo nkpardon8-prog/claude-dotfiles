@@ -53,7 +53,7 @@ and tell the user the platform session id is unavailable, so the mission cannot 
 them to retry / report); do NOT proceed:
 ```bash
 sid="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
-[ -z "$sid" ] && { echo "FATAL: no platform session id (\$CLAUDE_SESSION_ID/\$CLAUDE_CODE_SESSION_ID) — refusing to guess; STOP" >&2; }
+[ -z "$sid" ] && { echo "FATAL: no platform session id (\$CLAUDE_SESSION_ID/\$CLAUDE_CODE_SESSION_ID) — refusing to guess; STOP" >&2; exit 1; }
 ```
 (Verified 2026-05-31: a slash-command shell has `$CLAUDE_CODE_SESSION_ID` populated even when
 `$CLAUDE_SESSION_ID` is empty, so this fallback always yields a sid in practice — fail-loud never fires
