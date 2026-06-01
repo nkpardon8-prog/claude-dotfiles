@@ -139,6 +139,13 @@ Severity: LOW.
 
 Compare migration filenames recorded in the DB against `./<migrations-dir>/*.sql` on disk (the provider adapter supplies how the applied-migrations list is obtained — Supabase via `list_migrations`, others via the migrations bookkeeping table / on-disk only). Files present locally but not in DB → HIGH. Files in DB but not locally → MEDIUM.
 
+**Canonical migration-drift finding identity (MANDATORY).** Migration drift can be emitted by more than one module — this core Module 1 AND a provider platform path (e.g. the Supabase `list_migrations` step). To let Phase 6 dedup (which keys on `(severity, title, object_name)`) collapse the duplicates, ANY module emitting a migration-drift finding (core Module 1 OR a provider platform path) MUST use this EXACT title and `object_name`:
+- direction local-not-in-DB → title exactly `Migration drift: local-not-in-DB`, severity HIGH
+- direction in-DB-not-local → title exactly `Migration drift: in-DB-not-local`, severity MEDIUM
+- `object_name` = the bare migration filename (no path, no directory prefix) — one finding per drifted filename
+
+Do NOT phrase the title any other way. Identical title + `object_name` across emitters is what makes dedup collapse them into one finding.
+
 Orphaned-row detection emitted as INFO manual-check item ("Cost too high to run per-FK queries automatically — verify referential integrity manually").
 
 ---
