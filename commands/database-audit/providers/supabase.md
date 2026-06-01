@@ -132,7 +132,7 @@ Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) �
 
 **Step E — Pooler-port grep.** Search serverless/edge paths (`api/`, `netlify/`, `functions/`, `app/api/`, `pages/api/`, `edge-functions/`) for `:5432`. Match → **HIGH**: "Use Supavisor transaction pooler on port 6543 for serverless/edge connections." (Portable file-scan via grep; no GNU `xargs -r` — if scoping by tracked files, use `files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l ':5432'` or `git grep -l ':5432'`.)
 
-**Step I — Manual checks (SMTP, MFA, PITR, webhooks).** These cannot be verified via read-only SQL. Emit each as:
+**Step I — Manual checks (SMTP, MFA, webhooks).** These cannot be verified via read-only SQL. Emit each as:
 
 ```
 [INFO] {title}
@@ -141,7 +141,20 @@ Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) �
 - Verify manually: {steps in Supabase dashboard}
 ```
 
-Items: Custom SMTP configured; MFA + leaked-password protection enabled; PITR enabled (if on paid plan); DB webhook + auth hook secrets set; email confirmation required before login.
+Items: Custom SMTP configured; MFA + leaked-password protection enabled; DB webhook + auth hook secrets set; email confirmation required before login.
+
+(PITR was pulled out of this bundle into its own manual-verify INFO under the `backup` + `prod` tokens — see "Step I-PITR" below — so `--only=backup` surfaces recovery posture on Supabase. Module 14.3 in `core.md` is vanilla+Neon-only and DEFERS to that Supabase-owned PITR line; on a Supabase run core 14.3 emits nothing and cross-refs "PITR → see Supabase Step I-PITR".)
+
+**Step I-PITR — PITR / point-in-time recovery (manual-verify).**
+
+`--only` tokens: **`backup`** AND **`prod`** (this item runs whenever EITHER token is selected — `--only=backup` must surface PITR on Supabase, and a full prod-readiness pass `--only=prod` still includes it). PITR cannot be verified via read-only SQL. This is the **canonical Supabase PITR owner**; `core.md` Module 14.3 defers to it. Emit as a standalone manual-verify INFO with its own title/object_name (so it is NOT collapsed into the Step-I HIGH bundle by Phase-6 dedup) and never pass/fail:
+
+```
+[INFO] PITR (point-in-time recovery) enabled
+- What: Supabase PITR add-on (paid plan) provides continuous WAL-based recovery to any moment in the retention window. Without it, recovery is limited to daily logical backups.
+- Severity-if-absent: CRITICAL
+- Verify manually: Supabase dashboard → Project Settings → Database → Point-in-Time Recovery (confirm enabled + retention window on a paid plan).
+```
 
 ### Storage buckets
 
