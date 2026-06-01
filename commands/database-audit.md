@@ -103,9 +103,11 @@ Resolve per the detected provider's `(a) Connection` section — metadata-only c
 
 **NEVER echo the resolved connection string** (redaction rule 4). It is used only as the `psql`/`run_sql` target.
 
-### Step 0a.5 — Report directory + .gitignore check
+### Step 0a.5 — Report directory + .gitignore check (runs BEFORE any report-writing path)
 
-- Create `./tmp/db-audit/` if absent. If `./tmp/` is not writable, fall back to `$(pwd)/db-audit-YYYY-MM-DD-HHmm.md` (this fallback path is the sanctioned write-location exception in `guards.md` Forbidden Tools). Never write to `$HOME`.
+**Ordering invariant:** this step MUST complete BEFORE any code path that writes a report — including the Step 0a.6 case-(a) filesystem-only partial report, the Phase 0b prod-stop partial report, and the Phase 6 full report. It runs here in Phase 0a preflight, before the detection branches fan out into those write paths, so the report directory always exists first. Any path that writes a report must treat "report directory exists (or its sanctioned fallback is selected)" as a precondition — re-ensure it (idempotent `mkdir -p`) if entering a write path directly.
+
+- Create `./tmp/db-audit/` if absent (idempotent `mkdir -p`). If `./tmp/` is not writable, fall back to `$(pwd)/db-audit-YYYY-MM-DD-HHmm.md` (this fallback path is the sanctioned write-location exception in `guards.md` Forbidden Tools). Never write to `$HOME`.
 - Read `.gitignore`. If `tmp/` is not covered → emit INFO finding: ".gitignore does not cover tmp/ — audit reports may be committed accidentally." (zero-data-touch — recorded for Meta + Info section.)
 
 ### Step 0a.6 — No-connection-source path (graceful degradation case (a))
