@@ -89,7 +89,7 @@ ids=$(docker ps -aq \
 # Teardown trap — PRESERVES the real exit code. Removes only THIS run's
 # container. Fires on normal exit, error, and signals.
 # ---------------------------------------------------------------------------
-trap 'rc=$?; docker rm -f "$CONTAINER" >/dev/null 2>&1; rm -f "$CORE_SQL" "$CORE_OUT_FILE"; exit $rc' EXIT
+trap 'rc=$?; docker rm -f "$CONTAINER" >/dev/null 2>&1; rm -f "$CORE_SQL" "$CORE_OUT_FILE"; [ -n "$MIG_DIR" ] && rm -rf "$MIG_DIR"; exit $rc' EXIT
 
 # ---------------------------------------------------------------------------
 # Offline honesty: if the image is not cached AND we cannot pull it, skip with a
