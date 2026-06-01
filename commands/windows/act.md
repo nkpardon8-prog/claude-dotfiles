@@ -70,6 +70,11 @@ dialog is visible, the click hit a modal-blocked region — act on the modal or
 press Esc; do NOT silently re-click the same coords.* (Win32 modals block clicks
 on the parent window — verified with OpenDental's eServices EConnector modal.)
 
+**Verify-the-change rule:** for any authorized state-changing click (Send /
+Confirm / Save / Delete / submit), the AFTER screenshot must show the *specific*
+expected change — and no unintended one. "The screen changed" is NOT proof the
+right thing happened.
+
 ### `double <target>`
 
 Same mapping, then `mcp.click_at({ x: clickX, y: clickY, dblClick: true })`.
