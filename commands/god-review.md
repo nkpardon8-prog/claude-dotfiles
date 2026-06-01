@@ -214,9 +214,15 @@ if [ -z "$HAS_BENCH_SCRIPT" ]; then
   HAS_BENCH_SCRIPT=$(/bin/bash -c 'find "$1" -maxdepth 5 \( -path "*/node_modules" -o -path "*/.git" -o -path "*/vendor" \) -prune -o -type f -name "*_test.go" -print' _ "$WORKDIR" 2>/dev/null | xargs grep -l "^func Benchmark" 2>/dev/null | head -1)
 fi
 
-# Database detection for the (static, repo-only) database-audit principle
-HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
-[ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 3 -name package.json -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l "@supabase/supabase-js\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
+# Database detection for the (static, repo-only) database-audit principle.
+# Matches the signal set /database-audit itself uses (Step 0a.2): on-disk SQL/
+# migrations/schema, package.json deps, AND supabase/config.toml + SUPABASE_URL/
+# non-empty DATABASE_URL in any .env* — so a Supabase/Neon repo with only
+# config/env (no committed *.sql) still activates the lens.
+HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" -o -name "config.toml" -path "*/supabase/config.toml" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
+[ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -path "*/supabase/config.toml" -print' _ "$WORKDIR" 2>/dev/null | head -1)
+[ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name package.json -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l "@supabase/supabase-js\|@supabase/ssr\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
+[ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name ".env*" -type f -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -lE "SUPABASE_URL|^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=[[:space:]]*[^[:space:]'\''\"]" 2>/dev/null | head -1)
 
 echo "Stack signals:"
 echo "  HAS_TANSTACK_QUERY=$HAS_TANSTACK_QUERY"
