@@ -757,6 +757,8 @@ Severity: HIGH (CRITICAL near the threshold).
 
 ### Q6.8 — Replication lag / standby posture [RO+priv] / [PROVIDER] (`health`) — folds light-touch HA
 
+§C gate: `pg_stat_replication` is cross-session and visible only to privileged roles, so a restricted role sees zero rows and would false-clean "no standby." If Preamble P2 shows `has_monitor = false AND has_read_all_stats = false`, emit `[INFO] 6.8 — partial visibility; cross-session data restricted under current role (no pg_monitor/pg_read_all_stats)` UNCONDITIONALLY (never a clean "no standby") and skip the query. Otherwise:
+
 ```sql
 SELECT application_name, state, sync_state,
        write_lag, flush_lag, replay_lag
