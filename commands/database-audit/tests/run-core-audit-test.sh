@@ -328,6 +328,41 @@ if printf '%s' "$REDACTED_LINE" | grep -qF -- "$FAKE_SECRET"; then
 fi
 
 # ---------------------------------------------------------------------------
+# REDACTION fixture #2 — connection-string redaction (redaction.md rule 5),
+# hermetic, no real creds. A fake postgres:// URI with an embedded password and
+# host. The inline redactor below mirrors rule 5's connection-string pattern:
+#     (postgres(ql)?|mysql|mongodb(\+srv)?)://...  ->  [REDACTED:<first-8-of-sha256>]
+# Asserts the output (a) carries the contract [REDACTED:<8 hex>] marker and
+# (b) leaks NEITHER the raw password NOR the raw host.
+# ---------------------------------------------------------------------------
+echo "[INFO] running connection-string redaction fixture (rule 5)..."
+FAKE_DB_PASSWORD="fakepw123456"
+FAKE_DB_HOST="db.example.com"
+FAKE_CONNSTR="postgres://audituser:${FAKE_DB_PASSWORD}@${FAKE_DB_HOST}:5432/appdb"
+CONN_RAW_LINE="DATABASE_URL=${FAKE_CONNSTR}"
+
+CONN_REDACTED_LINE="$CONN_RAW_LINE"
+# Extract the connection-string token (rule 5: scheme://...up to the next space).
+CONN_TOKEN="$(printf '%s\n' "$CONN_RAW_LINE" | grep -oE '(postgres|postgresql|mysql|mongodb\+srv|mongodb)://[^[:space:]]+' | head -1)"
+if [ -n "$CONN_TOKEN" ]; then
+  CONN_HASH8="$(sha256_first8 "$CONN_TOKEN")"
+  # Replace the literal connection string with the redaction marker (literal, not regex).
+  CONN_REDACTED_LINE="${CONN_RAW_LINE//$CONN_TOKEN/[REDACTED:$CONN_HASH8]}"
+fi
+
+echo "[INFO] redacted conn line: $CONN_REDACTED_LINE"
+
+if ! printf '%s' "$CONN_REDACTED_LINE" | grep -Eq '\[REDACTED:[0-9a-f]{8}\]'; then
+  MISSES+=("REDACTION(rule5): output does not contain a contract-format [REDACTED:<8 lowercase hex>] marker")
+fi
+if printf '%s' "$CONN_REDACTED_LINE" | grep -qF -- "$FAKE_DB_PASSWORD"; then
+  MISSES+=("REDACTION(rule5): raw connection-string password leaked through redaction")
+fi
+if printf '%s' "$CONN_REDACTED_LINE" | grep -qF -- "$FAKE_DB_HOST"; then
+  MISSES+=("REDACTION(rule5): raw connection-string host leaked through redaction")
+fi
+
+# ---------------------------------------------------------------------------
 # Report all misses, then exit once.
 # ---------------------------------------------------------------------------
 echo
