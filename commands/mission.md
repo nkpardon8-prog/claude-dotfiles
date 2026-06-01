@@ -65,15 +65,20 @@ spuriously.)
 root=$(handoff_canonical_root)
 ```
 
-**Mission file** — resolve by PREFERRING the chain manifest `mission_path` pointer, then falling
-back to the canonical-root glob. **NEVER recompute a fresh sid to build the path** — if sid
-computation diverges across the compaction chain, a recompute would make a long mission "disappear":
+**Mission file** — resolve STRICTLY by your own sid via the lib (manifest pointer → deterministic
+`MISSION.<sid>.md` → none). This REPLACES the old mtime glob, which picked the most-recently-touched
+MISSION file in the worktree-invariant shared root and so silently adopted ANOTHER instance's mission
+(the 2026-05-31 near-clobber). A stranger's `MISSION.<other-sid>.md` is now structurally unreachable:
 ```bash
-mfile=$(jq -r '.mission_path // empty' ~/.claude/chains/"$sid".json 2>/dev/null)
-[ -z "$mfile" ] && mfile=$(ls -t "$root"/MISSION.*.md 2>/dev/null | head -1)
+mfile=$(mission_resolve_path "$sid" "$root") \
+  || { echo "FATAL: mission_resolve_path errored (bad sid/root) — STOP" >&2; }
 ```
-The `mission_path` pointer is the authoritative anchor written by `mission_create`; the glob is the
-backstop. Use the resolved `mfile` for all reads; use `<sid>`/`<root>` for all writes.
+`mission_resolve_path` returns the manifest-pointer target if set and present, else the deterministic
+`MISSION.<sid>.md` if it exists, else **empty**. Empty means THIS session has no mission yet (proceed to
+create in §3/§4, or report none in `status`) — it does **NOT** mean "adopt whatever's newest". A
+non-zero rc is a hard error (invalid sid/root): STOP; never treat it as "no mission". The pointer is the
+authoritative anchor written by `mission_create`; the deterministic path is the sid-keyed backstop;
+there is no mtime backstop. Use `mfile` for all reads; use `<sid>`/`<root>` for all writes.
 
 ---
 
