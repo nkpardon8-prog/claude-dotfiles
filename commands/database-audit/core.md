@@ -339,8 +339,10 @@ Patterns (provider-agnostic — Supabase keys AND generic connection-string / se
 - `DATABASE_URL` and connection-string shapes (`postgres://`, `postgresql://`) — generic, so this is not Supabase-only
 - `(=|:|"|')eyJ[A-Za-z0-9_-]{20,}` (JWT in assignment/string context — tightened to avoid base64 false positives)
 
+**Never print the raw matched line.** A default `grep` prints the entire matching line, which can contain a raw `DATABASE_URL`, JWT, or service-role key. Pipe every FS.1 match through the redaction pass (`redaction.md` rules 1–5) BEFORE anything is written or printed, and report only FILENAME + line number + a `[REDACTED:<first-8-of-sha256>]` placeholder. Report match LOCATIONS, not match CONTENTS. Use `grep -n` for line numbers and discard the matched text after redaction.
+
 Classification:
-- Match in a **client-reachable** path (`src/`, `app/`, `components/`, `pages/`, `public/`, `.env.local`) → **CRITICAL** (value redacted per `redaction.md`).
+- Match in a **client-reachable** path (`src/`, `app/`, `components/`, `pages/`, `public/`, `.env.local`) → **CRITICAL** (location-only; value redacted per `redaction.md`).
 - Match in `server/`, `api/`, `edge/`, `scripts/` → **INFO** (expected server-side usage).
 
 ### FS.2 — Tracked-files secret scan (`--only=security`)
