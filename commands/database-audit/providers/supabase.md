@@ -70,6 +70,8 @@ supabase_branch_ladder():
   Return PROD (signals A/B/D) or NOTPROD (signal C), plus which signal fired.
 ```
 
+**Indeterminate-probe safe default (matches Neon).** If `list_branches` errors, is empty, or returns an unrecognized/indeterminate shape → resolve **PROD** (the safe default) and apply the prod-stop, exactly like signal D. NEVER resolve NOT-PROD on an indeterminate branch probe. (An empty list is already signal A → PROD; an errored or unrecognized response folds into signal D → PROD.)
+
 `list_branches` is a metadata-only call — it touches no user data, so it is permitted in Phase 0a, before the guard discharges. The stop/resume prompt itself (including the Supabase-flavored "Create a dev branch first: `supabase branches create <name>`" option text and the `proceed on prod` resume phrase) lives in `guards.md`. This function only produces the signal + the fired-signal letter.
 
 ---
