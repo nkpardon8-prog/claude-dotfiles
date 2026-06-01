@@ -152,6 +152,13 @@ Configured at the **global** Claude Code level, not per-repo:
 - **Always present, never blank.** A bash-level fallback guarantees a line even on a crash or with no state file. This is the core requirement: line 2 loads every time, everywhere.
 - **No mid-task vanish.** The old 5-minute `sys.exit` failsafe (which caused the bar to flip to the idle label mid-task) is gone, replaced by a 30-minute demote-to-idle guard that only catches a genuinely misfired Stop hook.
 - **Idle, not deleted.** `on-stop.sh` marks the file idle instead of deleting it, so there's no flicker between prompts.
-- **Accuracy comes from the to-do list, not inference.** A hook can't know the task; the to-do list Claude already keeps is the honest, zero-cost source. (The old slash-command scrape mis-captured typed file paths — removed.)
+- **Label = live tool activity, decoupled from the bar.** In practice agents rarely keep a to-do list, so a
+  todo-only label sat at `working` forever. The label is now driven by the live tool stream
+  (`on-tool-activity.sh`) so it always shows the current action; the bar still fills from todos/beacons. The
+  old slash-command scrape (which mis-captured typed file paths) was already removed.
+- **Activity via a separate sidecar, not a shared-JSON write.** `on-tool-activity.sh` fires on most tools
+  (async) and would race the other async hooks if it touched the main progress JSON. Writing a separate
+  `<sid>.activity.json` (read independently by the renderer) eliminates the cross-hook read-modify-write
+  clobber entirely — the same pattern the beacon `<sid>.current.json` already uses.
 - **Atomic writes everywhere.** `os.replace`/tmp+`mv` so the renderer never reads a truncated file.
 - **No `set -e`/`pipefail` in hooks; all `exit 0`.** Failures degrade silently.
