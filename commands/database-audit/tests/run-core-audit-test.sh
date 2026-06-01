@@ -277,8 +277,8 @@ fi
 
 echo "[INFO] redacted line: $REDACTED_LINE"
 
-if ! printf '%s' "$REDACTED_LINE" | grep -q '\[REDACTED:'; then
-  MISSES+=("REDACTION: output does not contain [REDACTED: marker")
+if ! printf '%s' "$REDACTED_LINE" | grep -Eq '\[REDACTED:[0-9a-f]{8}\]'; then
+  MISSES+=("REDACTION: output does not contain a contract-format [REDACTED:<8 lowercase hex>] marker")
 fi
 if printf '%s' "$REDACTED_LINE" | grep -qF -- "$FAKE_SECRET"; then
   MISSES+=("REDACTION: raw fake secret value leaked through redaction")
