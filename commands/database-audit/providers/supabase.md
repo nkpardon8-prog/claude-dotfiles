@@ -43,7 +43,9 @@ Call `mcp__supabase__get_project_url`. If it succeeds, parse project ref from th
 | Extension inventory | `mcp__supabase__list_extensions` |
 | Security / performance advisors | `mcp__supabase__get_advisors` |
 | Postgres logs (slow queries) | `mcp__supabase__get_logs` |
-| Applied migrations (drift) | `mcp__supabase__list_migrations` |
+| Applied migrations (drift) | `mcp__supabase__list_migrations` |[^migdrift]
+
+[^migdrift]: When this path emits migration-drift findings from the `list_migrations` result, it MUST use the canonical finding identity defined in `core.md` Module 1 → "Migration drift" (exact titles `Migration drift: local-not-in-DB` / `Migration drift: in-DB-not-local` and `object_name` = bare migration filename) so Phase 6 dedup collapses it with the core Module 1 emission.
 | SELECT-only SQL dispatch | `mcp__supabase__execute_sql` |
 | TS types (Module 5 diff) | `mcp__supabase__generate_typescript_types` |
 | Edge function inventory | `mcp__supabase__list_edge_functions` |
