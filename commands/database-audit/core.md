@@ -302,7 +302,7 @@ Severity: MEDIUM (CRITICAL if the application connects as the table owner).
 
 ## Module 3 — Security (portable subset)
 
-Skip this phase if `--only` is set and does not include `security`.
+Skip this phase if `--only` is set and does not include `security`. **Exception: Q3.1 (PII inventory) is governed by the `pii` token, not `security` (see its note below) — it is dispatched with Module 12, so the `security` gate here covers only Q3.3 and the provider security steps.**
 
 On any MCP/SQL error: emit `[INFO] Module 3 — {tool} unavailable: {error}` and continue.
 
