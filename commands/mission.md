@@ -112,8 +112,8 @@ Parse `$ARGUMENTS`:
   lifecycle close at the natural end of a mission (Section 11) — not by this verb. Parse the returned
   status line (Section 7); confirm to the user.
 - **`resume`** → **RESUME PICKER** (Section 2b). List this repo's missions and let the user explicitly
-  pick one to continue in THIS session (e.g. after closing the instance that started it). NEVER
-  auto-inferred — the ONLY sanctioned way a session attaches to a mission it did not create.
+  pick one to **clone into THIS session** and continue (e.g. after closing the instance that started it).
+  NEVER auto-inferred — the ONLY sanctioned way a session continues a mission it did not create.
 - **free-text roadmap/goal** → **EXPLICIT BUILD MODE** (Section 3 → Section 5).
 - **ambient trigger in a plain user message** — e.g. "follow the /mission methodology with your
   plan", "apply the /mission template to what we're doing", recognized by **INTENT, not exact
