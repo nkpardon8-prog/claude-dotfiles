@@ -347,15 +347,18 @@ Classification:
 
 ### FS.2 — Tracked-files secret scan (`--only=security`)
 
-Scan **git-tracked** files for the same secret patterns (`SUPABASE_SERVICE_ROLE_KEY`, generic `service_role` / `DATABASE_URL` / connection-string shapes). Any match → **HIGH**. **Never print the raw matched line** — pipe every FS.2 match through the redaction pass (`redaction.md` rules 1–5) BEFORE anything is written or printed, and report the **filename + line number only**, with the value as a `[REDACTED:<first-8-of-sha256>]` placeholder. Report match LOCATIONS, not match CONTENTS. Prefer `grep -l` (filenames only) over a bare `grep` that emits whole lines.
+Scan **git-tracked** files for the SAME secret pattern set as FS.1 (don't let the tracked-file scan miss what the repo scan catches): `SUPABASE_SERVICE_ROLE_KEY`, `service_role`, generic `DATABASE_URL` and connection-string shapes (`postgres://`, `postgresql://`), and the JWT-in-assignment shape (`(=|:|"|')eyJ[A-Za-z0-9_-]{20,}`). Any match → **HIGH**. **Never print the raw matched line** — a `grep -n` prints the whole matching line (which contains the raw secret); pipe every FS.2 match through the redaction pass (`redaction.md` rules 1–5) BEFORE anything is written or printed, and report the **filename + line number** (`file:line`) only, with the value as a `[REDACTED:<first-8-of-sha256>]` placeholder. Report match LOCATIONS, not match CONTENTS. Use `grep -n` / `git grep -n` for line numbers — NOT `grep -l` (filenames only).
 
-Use the portable no-files guard (Darwin has no GNU `xargs -r`):
+Use NUL-delimited plumbing so filenames with spaces survive (Darwin has no GNU `xargs -r`):
 
 ```bash
-files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|DATABASE_URL'
+git grep -n 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|postgres://\|postgresql://\|DATABASE_URL\|\(=\|:\|"\|'\''\)eyJ[A-Za-z0-9_-]\{20,\}'
+# preferred: file:line output, native NUL-safe over tracked files, clean no-op on no match.
+# Equivalent NUL-delimited form:
+git ls-files -z | xargs -0 grep -n 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|postgres://\|postgresql://\|DATABASE_URL\|\(=\|:\|"\|'\''\)eyJ[A-Za-z0-9_-]\{20,\}'
 ```
 
-or equivalently `git grep -l 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|DATABASE_URL'`. Read-only git only (`git ls-files` / `git grep`); no mutation.
+Read-only git only (`git ls-files` / `git grep`); no mutation. Pipe the `file:line` output through the redaction step before printing — never emit the raw matched line.
 
 ### FS.3 — .env-tracked check (`--only=security`)
 
