@@ -121,15 +121,18 @@ Parse `$ARGUMENTS`:
 
 ---
 
-## 2b. `/mission resume` — explicit cross-session attach (the ONLY sanctioned adoption)
+## 2b. `/mission resume` — explicit clone-into-this-session (the ONLY sanctioned continuation)
 
-A mission is owned by the sid that created it. Resume is the deliberate exception: a NEW session (new
-sid) continues an EXISTING mission — e.g. you closed the instance that started it and reopened. This is
-the ONLY path that crosses sids, and it is ALWAYS an explicit pick, never a guess.
+A mission is owned by the sid that created it. Resume is the deliberate exception: you pick an EXISTING
+mission and **clone it into THIS session's own sid** — e.g. you closed the instance that started it and
+reopened. The clone is owned by your `<sid>` like any normal mission, so EVERYTHING downstream
+(`clear`, `status`, writes, `/pre-compact`, `/post-compact-resume`) uses your `<sid>` with **no special
+"working sid" to track**. The pick is ALWAYS explicit, never a guess. The source is left intact.
 
 1. **Resolve `sid`/`root`** per §1. **First check if THIS session already owns a mission**
-   (`mission_resolve_path "$sid" "$root"` non-empty): if so, show its PLAN line-1 and ask whether to
-   stay or pick another — do NOT silently rebind a session that already has a mission.
+   (`mission_resolve_path "$sid" "$root"` non-empty): if so, show its PLAN line-1 and STOP — you cannot
+   clone a second mission over your own (mission_fork refuses an existing dest). `/mission clear` first
+   if you really mean to replace it.
 2. **Enumerate** this repo's missions (read-only; space-safe; sid-matched, no mtime adoption):
    ```bash
    mission_list "$root"   # TAB rows: <sid>\t<mtime_epoch>\t<active|cleared|unknown|corrupt>\t<roadmap>
@@ -137,31 +140,28 @@ the ONLY path that crosses sids, and it is ALWAYS an explicit pick, never a gues
    If it prints nothing, tell the user there are no missions in this repo and stop.
 3. **Present a numbered list**, newest first (as emitted): `N) [<state> <relative-time>] <roadmap>
    (sid <first8>)`. Render `unknown` as `active` (a freshly-created mission with no lifecycle line yet).
-   Skip or clearly flag `corrupt` rows (unreadable marker — unattachable). Let the user pick a number,
-   or cancel.
-4. **Live-collision warning.** If the picked mission's state is `active`/`unknown` AND its mtime is
-   recent (heuristic: within ~15 min), **WARN explicitly**: this mission looks active in another
-   instance right now, and resuming here means TWO sessions writing the same mission file — interleaved
-   (the `_mission_lock` prevents corruption, NOT interleaving). Require an explicit second confirmation
-   before attaching.
-5. **Attach** (on confirm). `mission_attach` verifies the target, rewrites THIS session's chain-manifest
-   pointer to the picked file (so `/post-compact-resume`, which PREFERS the pointer, reattaches here
-   after future compactions), and echoes the picked mission's OWN sid:
+   Skip or clearly flag `corrupt` rows (unreadable/mismatched marker — not cloneable). Let the user pick
+   a number, or cancel.
+4. **Live-fork warning.** If the picked mission's state is `active`/`unknown` AND its mtime is recent
+   (heuristic: within ~15 min), **WARN explicitly**: this mission looks active in another instance right
+   now; cloning it here produces a DIVERGENT COPY (both will evolve independently from this point —
+   there is no merge). Only proceed if you intend a fork. Require an explicit second confirmation. (If
+   the source instance is closed/dead, this is exactly the intended clean continuation — no divergence.)
+5. **Clone** (on confirm). `mission_fork` copies the picked mission into your own `MISSION.<sid>.md`
+   (retargeting only the marker sid; the source stays intact) and verifies the clone:
    ```bash
-   msid=$(mission_attach "$sid" "$root" "$(mission_path "<picked_sid>" "$root")") \
-     || { echo "resume: attach failed — NOT switching; STOP" >&2; }
+   newfile=$(mission_fork "$sid" "$root" "$(mission_path "<picked_sid>" "$root")") \
+     || { echo "resume: clone failed — STOP (do not start a half-made mission)" >&2; exit 1; }
    ```
-   **`mission_attach` failure is a HARD STOP** — do not begin writing an unwired mission. On success,
-   **`msid` is the working sid for ALL subsequent `mission-write.sh` writes in this session** — pass
-   `<msid>` (NOT your platform sid) as the `<sid>` arg from here on (proven routed + split-brain-free by
-   `scripts/tests/mission-collision-assumptions/07`). This is a deliberate sid-swap: the user opted into
-   continuing that exact mission file; step 4 is the guard.
-6. **Resume the work.** Read the resumed mission IN FULL (`mission_read_zone` for each zone + the LOG via
-   the §8 resume-read idiom) and continue Level-2 at the LOG's last `(part, phase, round, dry)`.
+   **`mission_fork` failure is a HARD STOP.** On success the mission is now a normal mission owned by
+   your `<sid>` (rc 3 means you already have a mission — clear it first). No sid-swap, no manifest
+   rewrite, nothing else to thread.
+6. **Resume the work.** Read the cloned mission IN FULL (`mission_read_zone` for each zone + the LOG via
+   the §8 resume-read idiom) and continue Level-2 at the LOG's last `(part, phase, round, dry)`, writing
+   with your own `<sid>`/`<root>` exactly as in §3-§5.
 
 **Scope:** `mission_list` covers the CURRENT canonical root (this repo) only. To resume a mission from
-another project, run `/mission resume` from that project's directory. Resume is **session-sticky** —
-once attached, this session stays on `<msid>` until `/mission clear`; there is no detach verb.
+another project, run `/mission resume` from that project's directory.
 
 ---
 
