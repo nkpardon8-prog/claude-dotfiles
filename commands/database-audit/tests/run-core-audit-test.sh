@@ -214,6 +214,13 @@ echo "-----------------------------"
 # ---------------------------------------------------------------------------
 MISSES=()
 
+# Guard: the core-query psql run must have exited 0. With ON_ERROR_STOP=1 a SQL
+# error returns nonzero; without this check a nonzero failure could be masked if
+# the grepped markers happened to appear in partial output.
+if [ "$CORE_RC" -ne 0 ]; then
+  MISSES+=("[FAIL] core-query psql run errored (exit $CORE_RC)")
+fi
+
 assert_contains() {  # $1=pattern  $2=human description
   if ! printf '%s\n' "$CORE_OUT" | grep -Eq -- "$1"; then
     MISSES+=("$2  [pattern: $1]")
