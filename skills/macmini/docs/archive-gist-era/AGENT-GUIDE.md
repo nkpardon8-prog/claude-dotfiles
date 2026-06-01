@@ -1,3 +1,8 @@
+> **SUPERSEDED by direct-CDP 2026-06-01.** This document describes the OLD
+> gist/cliclick-era `/macmini`, which no longer exists. Preserved for history
+> and diagnosis only. Still-true macOS-substrate facts were harvested into
+> `../FINDINGS-2026-06-01.md`. Do NOT treat anything here as the current model.
+
 # Agent guide — driving a Mac mini via CRD canvas + DevTools MCP
 
 ## TL;DR

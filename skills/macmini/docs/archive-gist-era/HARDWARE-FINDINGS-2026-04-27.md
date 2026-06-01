@@ -1,3 +1,8 @@
+> **SUPERSEDED by direct-CDP 2026-06-01.** This document describes the OLD
+> gist/cliclick-era `/macmini`, which no longer exists. Preserved for history
+> and diagnosis only. Still-true macOS-substrate facts were harvested into
+> `../FINDINGS-2026-06-01.md`. Do NOT treat anything here as the current model.
+
 # Phase E Hardware Findings — 2026-04-27 (updated 2026-04-30 with click_at validation)
 
 These are **real-world test results** from running the auto-grant + CRD skill against a live Chrome Remote Desktop session on the user's actual Mac mini. Read this before assuming any documentation written before 2026-04-27 reflects reality.

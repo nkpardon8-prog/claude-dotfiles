@@ -1,3 +1,8 @@
+> **SUPERSEDED by direct-CDP 2026-06-01.** This document describes the OLD
+> gist/cliclick-era `/macmini`, which no longer exists. Preserved for history
+> and diagnosis only. Still-true macOS-substrate facts were harvested into
+> `../FINDINGS-2026-06-01.md`. Do NOT treat anything here as the current model.
+
 # Incident log — design decisions driven by real-world failures
 
 This file is the institutional memory for the macmini skill. Every entry below is something that broke in production and shaped the current design. Read this BEFORE proposing a "simplification" — most of the seemingly-redundant defenses in this skill exist because of a specific incident.

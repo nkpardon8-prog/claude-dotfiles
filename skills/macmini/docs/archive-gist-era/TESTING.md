@@ -1,3 +1,8 @@
+> **SUPERSEDED by direct-CDP 2026-06-01.** This document describes the OLD
+> gist/cliclick-era `/macmini`, which no longer exists. Preserved for history
+> and diagnosis only. Still-true macOS-substrate facts were harvested into
+> `../FINDINGS-2026-06-01.md`. Do NOT treat anything here as the current model.
+
 # macmini smoke tests
 
 Run these end-to-end on a fresh setup, and after any change to `paste.md` / `connect.md` / `grab.md` / `setup.md`. Each test has a precondition, an action, an explicit verification step, and a recovery hint on failure.
