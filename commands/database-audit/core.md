@@ -912,6 +912,8 @@ SELECT type, database, user_name, address, auth_method
 FROM pg_hba_file_rules;
 ```
 
+**Dispatch note (K4):** Q7.2 is dispatched in its OWN sub-unit (its own `BEGIN READ ONLY … ROLLBACK` / single MCP call) so a permission-denied on `pg_hba_file_rules` degrades to a LOCAL `[INFO]` and does NOT blank the rest of Module 7.
+
 `pg_hba_file_rules` requires superuser/privileged access; on managed providers it errors for the non-superuser audit role. Per-module dispatch (guards.md rule 6) catches the permission error → emit `[INFO] 7.2 — host-based auth rules not assessable on this provider (needs pg_monitor/superuser)`. When readable: flag `auth_method` of `trust` (HIGH — no auth) or `password` (MEDIUM — cleartext-equivalent; prefer `scram-sha-256`); confirm `hostssl` is used for remote connections. Data-dir perms (0700) / unix-socket perms = `[PROVIDER]` manual-verify.
 
 Severity: HIGH (`trust`) / MEDIUM (weak method) / INFO (degraded).
