@@ -17,9 +17,16 @@ ctx 42%  3h 11m left  87% sess  37% wk  Opus 4.8  wk→6th 4pm  my-repo   ← li
 
 **Bar source — chosen by specificity (most specific real signal wins):**
 1. **Determinate beacon** — a command that publishes real inner-step progress (e.g. `/god-review` via `emit-beacon.sh`) → `step/total`.
-2. **Determinate to-dos** — from TodoWrite (`done/total`). This is the common case and the primary accuracy source.
-3. **Indeterminate beacon** — a beacon with no total → animated spinner + the beacon's label.
-4. **Spinner** — no to-do list and no beacon (a one-shot action with no sub-structure) → honest animated `▰▱` window, *not* a fake percentage.
+2. **Determinate to-dos** — from TodoWrite (`done/total`).
+3. **Spinner** — no determinate beacon or to-do list → honest animated `▰▱` window, *not* a fake percentage.
+
+**Label source — DECOUPLED from the bar; shows what it's doing *right now* (most current wins):**
+1. **Beacon label** — the explicit command phase, when a beacon is active.
+2. **Live tool activity** — the last tool action (`Edit migration.sql`, `Bash: run tests`, `Read foo.ts`,
+   `Grep "sendEmail"`, `Task: codebase-explorer`), written by `on-tool-activity.sh` to a per-session sidecar.
+   This is the always-populated signal that makes line 2 useful even when no to-do list exists.
+3. **To-do `activeForm`** — the current step, when a determinate to-do list exists but no fresher activity.
+4. **`working`** — nothing else available.
 
 **States:**
 - **Active**: timer + bar (green).
