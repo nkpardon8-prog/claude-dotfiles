@@ -213,6 +213,8 @@ Run, honoring `--only`:
 - **`prod`** → Supabase `get_advisors({type:"performance"})`, version (supported-major list), connection saturation, slow-query log (`get_logs`), pooler-port grep, manual checks (SMTP/MFA/PITR/webhooks); Neon scale-to-zero, autoscaling, compute-vs-max_connections, pooling, IP allowlist, protected/sprawl/restore-window.
 - **`rls`** → RLS-off severity escalation, anon / Data-API classification — so `--only=rls` STILL runs the Data-API-enabled control-plane probe that feeds `neon.md`'s Q2.1→CRITICAL escalation (this fixes the prior coupling where the escalation input was gated out).
 - **`client`** → storage buckets, edge functions, realtime publications, Module 5 client coherence, `generate_typescript_types` diff.
+- **`backup`** → the provider-owned backup/recovery facet: Supabase PITR / last-backup / retention checks (the Step-I PITR line) and Neon restore-window / PITR control-plane checks. Without this token in the mapping, `--only=backup` would dispatch no platform check.
+- **`compliance`** → the provider-owned compliance/encryption facet: Supabase at-rest-encryption / log-retention manual-verify checks and Neon at-rest / retention control-plane checks. Without this token in the mapping, `--only=compliance` would dispatch no platform check.
 
 A platform module whose governing token is NOT present in `--only` is **SKIPPED — no SQL is issued for it.**
 
