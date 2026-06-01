@@ -147,6 +147,8 @@ Task tool (call 3, sent in the SAME message as calls 1 & 2):
 
    **Meta-pass:** When the meta-pass from step 2 produced output, paste it here as the first thing the user sees in this presentation, formatted as a single paragraph or short bullet list. Skip this prefix if step 2 was skipped.
 
+   **Criticer:** When the `criticer` call (item 1, call 3) returned content, render it here as `**Criticer:** [the findings]` — immediately after the `**Meta-pass:**` line if present, otherwise as the first advisory block; in both cases BEFORE sub-item a) Plan Summary. **Strip the leading `## Criticer Notes` header** for this inline render (bold prose, NOT a level-2 H2 — same H2-collision constraint as the meta-pass). Then **persist** the block into the plan file: locate a line matching `^## Criticer Notes$`; if present, replace from that line up to (but not including) the next `^## ` line or EOF; if absent, append the full `## Criticer Notes` block at end of file (idempotent — re-running the loop replaces, never duplicates). If `criticer` failed or returned empty, skip this prefix and the persist silently (same as the meta-pass skip-on-failure rule). The criticer block is advisory: never treat it as a gate, and never auto-apply its findings.
+
    **a) Plan Summary** — Summarize the key points of the plan in 3-5 bullet points so the user can quickly recall what the plan covers without re-reading it.
 
    **b) Reviewer Feedback with Context** — For each recommendation the reviewer raises, explain:
