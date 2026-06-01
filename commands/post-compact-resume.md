@@ -279,14 +279,18 @@ Once a path is chosen (or defaulted), proceed to Step 3 reading the file accordi
 Once the handoff has been loaded, resolve the durable **mission file** — the long-lived
 plan-of-record that outlives any single handoff:
 
-- The mission file lives at `<canonical_root>/MISSION.<session_id>.md` — the SAME directory as the
-  handoff `path` (co-located with `CLAUDE.local`). Also check the chain manifest's `mission_path`
-  field at `~/.claude/chains/<sid>.json` (`jq -r '.mission_path // empty'`) if present; prefer it
-  when set, since it is the authoritative pointer written by `mission_create`.
-- If no mission file resolves, skip this subsection silently and proceed to Step 3 with the handoff alone.
-- If it exists, run `mission_verify` first (source the lib, then verify):
+- Resolve the mission file STRICTLY by sid via the lib resolver — NEVER read the raw manifest
+  `mission_path` directly (that bypasses the own-sid / in-root validation and could load a
+  stale/cross-sid/off-root pointer). `mission_resolve_path` returns the own-sid in-root mission (manifest
+  pointer if it is this sid's canonical file, else the deterministic `<root>/MISSION.<sid>.md`, else
+  empty):
   ```bash
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"
+  mission_file=$(mission_resolve_path "$ARG_SID" "$(handoff_canonical_root)")
+  ```
+- If `mission_file` is empty, skip this subsection silently and proceed to Step 3 with the handoff alone.
+- If it exists, run `mission_verify` (already sourced above):
+  ```bash
   mission_verify "$mission_file" "$ARG_SID"   # 0 = sound; non-zero = corrupt
   ```
   - **If verify FAILS → this is LOUD.** Tell the user the mission file is corrupt or tampered
