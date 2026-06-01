@@ -1,1 +1,1 @@
-{"resolver":"mission_resolve_path","pointer_precedence":"manifest_over_deterministic"}
+{"resolver":"mission_resolve_path","pointer_precedence":"in_root_canonical_only"}
