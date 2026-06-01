@@ -108,7 +108,7 @@ These have NO vanilla-Postgres equivalent. Portable SQL checks (Q1.1–Q4.2) are
 
 **Step E — Risky extensions.** Call `mcp__supabase__list_extensions`. Flag: `http`, `pg_net`, `plpython3u`, `plpythonu`, any `*_fdw`. Severity: **HIGH**. Add an INFO note on the justification requirement.
 
-**Step F — pg_cron inventory (conditional).** Execute only if `SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'` returns a row (this gating probe is a vetted SELECT). If absent → skip (INFO: "pg_cron not installed"). Otherwise:
+**Step F — pg_cron inventory (conditional).** Execute only if `pg_cron` is present in the `core.md` Preamble P3 extension inventory (P3 is the single extension-inventory source — do NOT re-query `pg_extension` here). If `pg_cron` is absent from the P3 result → skip (INFO: "pg_cron not installed"). Otherwise:
 
 ```sql
 -- Q3.2 — cron jobs (NON-SECRET columns only)
