@@ -83,6 +83,17 @@ backstop. **Your mission is always owned by your own `<sid>`** (see §2b — eve
 the picked mission into *your* `<sid>`), so use `mfile` for all reads and `<sid>`/`<root>` for all
 writes throughout — there is no separate "working sid" to track.
 
+**Run-timing — entry resume.** Once your mission exists (created in §3/§4 or resolved above) AND you are
+about to do mission WORK (i.e. build/adopt execution, NOT the read-only `status`/`clear`/`stats` verbs),
+stamp the timing entry exactly once at the start of this turn:
+```bash
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh timing-resume <sid> <root>
+```
+This re-opens a working stretch ONLY if the mission was parked on you (last anchor a CONTACT); a
+mid-stretch compaction resume is a no-op, so the stretch survives any number of compactions. Advisory —
+ignore its status line. `mission_create` already stamped `MISSION-START` + the first `WORK-START` at
+birth, so a brand-new mission needs nothing more here.
+
 ---
 
 ## 2. Invocation dispatch
