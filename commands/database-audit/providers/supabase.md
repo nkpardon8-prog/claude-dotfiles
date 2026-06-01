@@ -111,12 +111,12 @@ These have NO vanilla-Postgres equivalent. Portable SQL checks (Q1.1–Q4.2) are
 **Step F — pg_cron inventory (conditional).** Execute only if `SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'` returns a row (this gating probe is a vetted SELECT). If absent → skip (INFO: "pg_cron not installed"). Otherwise:
 
 ```sql
--- Q3.2 — cron jobs
-SELECT jobname, schedule, command, nodename, username
+-- Q3.2 — cron jobs (NON-SECRET columns only)
+SELECT jobid, jobname, schedule, active
 FROM cron.job;
 ```
 
-Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) → MEDIUM. **Redaction:** cron `command` bodies can embed tokens, webhook URLs, connection strings, and literal PII. Pass every `command` through the redaction pass (`redaction.md` rules 1–5) AND truncate/summarize before reporting — report a redacted/elided form, never the raw command body.
+Each job is an INFO finding. **NEVER select `cron.job.command`** — command bodies can embed tokens, webhook URLs, connection strings, and literal PII, so they are excluded from the SELECT entirely (aligns with `core.md` Module 12.3, which never selects `cron.job.command` for this reason). Reporting the job's existence + schedule (`jobid`, `jobname`, `schedule`, `active`) is the signal; the command body is not worth the secret-exposure risk.
 
 (`Q3.1` PII inventory and `Q3.3` dynamic-SQL scan are portable — they live in `core.md`.)
 
