@@ -1267,7 +1267,7 @@ SELECT jobid, schedule, jobname
 FROM cron.job;
 ```
 
-(If the `pg_cron` schema/table is absent the per-module dispatch logs `[INFO] 12.3 — pg_cron not present` and continues.) The presence of `deleted_at`/`expires_at`, date-partitioning, or a retention cron job suggests a retention mechanism; their ABSENCE on PII-bearing tables is a gap. RTBF (right-to-be-forgotten) structural posture — soft-vs-hard delete, FK cascade for erasure — plus classification certainty is process-level → manual-verify INFO ("verify retention/erasure enforcement out-of-band").
+**Dispatch note (K4):** this `cron.job` read is dispatched in its OWN sub-unit (its own `BEGIN READ ONLY … ROLLBACK` / single MCP call) so an absent-relation error (`cron.job` does not exist when `pg_cron` is not installed) degrades to a LOCAL `[INFO]` and does NOT blank the rest of Module 12. (If the `pg_cron` schema/table is absent the per-module dispatch logs `[INFO] 12.3 — pg_cron not present` and continues.) The presence of `deleted_at`/`expires_at`, date-partitioning, or a retention cron job suggests a retention mechanism; their ABSENCE on PII-bearing tables is a gap. RTBF (right-to-be-forgotten) structural posture — soft-vs-hard delete, FK cascade for erasure — plus classification certainty is process-level → manual-verify INFO ("verify retention/erasure enforcement out-of-band").
 
 Severity: INFO (manual-verify; gap if no retention mechanism on PII tables).
 
