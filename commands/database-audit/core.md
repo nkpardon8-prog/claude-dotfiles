@@ -1337,3 +1337,96 @@ For core/vanilla and Neon: verify PITR / last-backup / retention window in the p
 Manual-verify INFO — an audit confirms backups EXIST and are not failing (Q14.1), NOT that they actually restore. Verify "when was the last test restore?" out-of-band. Emit one INFO line.
 
 `Severity-if-absent: HIGH.`
+
+---
+
+## Module 15 — Exfiltration & Supply-Chain (`exfil`)
+
+Skip this phase if `--only` is set and does not include `exfil`.
+
+On any MCP/SQL error: emit `[INFO] Module 15 — {tool} unavailable: {error}` and continue.
+
+Mostly [RO]. Reads extension presence from Preamble P3. **Existence-only / name-only** throughout — NEVER select credential-bearing columns (redaction rule 6).
+
+### Q15.1 — FDW / dblink egress [RO] (`exfil`)
+
+From Preamble P3, note whether `postgres_fdw` / `dblink` are installed. Then enumerate foreign servers + their egress TARGET. `pg_foreign_server.srvoptions` MAY be selected, but redaction rule 6 requires dropping every option array element matching `^(password|passfile)=` while KEEPING host/dbname/port:
+
+```sql
+SELECT s.srvname AS server_name,
+       w.fdwname AS fdw_type,
+       ARRAY(
+         SELECT opt FROM unnest(s.srvoptions) AS opt
+         WHERE opt !~ '^(password|passfile)='
+       ) AS egress_options,
+       (SELECT count(*) FROM pg_user_mappings um WHERE um.srvid = s.oid) AS mapping_count
+FROM pg_foreign_server s
+JOIN pg_foreign_data_wrapper w ON w.oid = s.srvfdw;
+```
+
+A foreign server points at an external host (the `host`/`dbname` in `egress_options`) — an SSRF / exfiltration egress path. **NEVER select `pg_user_mappings.umoptions`** (it stores `password=…` keyword-form creds that redaction rule 5's `postgres://` matcher does not catch) — report only the mapping COUNT per server.
+
+Severity: HIGH (FDW egress present).
+
+### Q15.2 — Logical replication exposure [RO] (`exfil`) — EXISTENCE-ONLY
+
+Publications (name + all-tables flag only):
+
+```sql
+SELECT pubname, puballtables, pubinsert, pubupdate, pubdelete
+FROM pg_publication;
+```
+
+Subscriptions (name + enabled state ONLY — **NEVER select `pg_subscription.subconninfo`**, which holds keyword-form conninfo with a password that redaction rule 5 misses):
+
+```sql
+SELECT subname, subenabled
+FROM pg_subscription;
+```
+
+A publication (especially `puballtables = true`) or an active subscription is a data-egress / ingress channel. Report existence + names + flags only, never the conninfo.
+
+Severity: HIGH (`puballtables`) / MEDIUM (scoped publication / subscription present).
+
+### Q15.3 — Plaintext secrets stored in tables [RO] (`exfil`) — NAME-ONLY
+
+```sql
+SELECT table_schema, table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name ~* '(^|_)(token|secret|api_?key|password|private_key|access_key)($|_)';
+```
+
+Columns whose NAMES suggest stored credentials/secrets in application tables. **No value inspection** (§D — deferred sampling). This is the inverse of FS.1/Q3.1: it finds secret-shaped columns regardless of any anon grant. Verify whether the values are encrypted at the application layer.
+
+Severity: HIGH.
+
+### Q15.4 — Extension placement & currency [RO] (`exfil`)
+
+From Preamble P3 (`ext_schema`), flag any extension installed in the `public` schema — a search_path-hijack surface; extensions should live in a dedicated schema. **MEDIUM.**
+
+Version currency (INFO only — managed providers pin curated versions, so "newer exists upstream" ≠ "should upgrade"; must NOT look actionable):
+
+```sql
+SELECT e.extname, e.extversion AS installed_version,
+       max(av.version) AS latest_available
+FROM pg_extension e
+JOIN pg_available_extension_versions av ON av.name = e.extname
+GROUP BY e.extname, e.extversion
+HAVING e.extversion <> max(av.version);
+```
+
+Severity: MEDIUM (extension in `public`) / INFO (newer version available upstream).
+
+### Q15.5 — Event triggers [RO] (`exfil`)
+
+```sql
+SELECT evtname, evtevent, evtenabled,
+       evtowner::regrole AS owner,
+       evtfoid::regproc AS function_name
+FROM pg_event_trigger;
+```
+
+An enabled event trigger fires on DDL DB-wide and runs its function as a privileged context — a quiet persistence / backdoor surface (e.g. re-granting privileges or capturing schema changes). List owner + backing function for review.
+
+Severity: INFO (MEDIUM for an enabled event trigger owned by a non-admin / unexpected role).
