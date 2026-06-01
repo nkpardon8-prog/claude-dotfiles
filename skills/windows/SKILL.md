@@ -168,7 +168,7 @@ def send_text(s):
 | `press_key("Shift+<base>")` for capitals/symbols | ⚠️ partial | only `Hi%` (3 chars) live-verified — smoke-test the FULL map |
 | `press_key` single keys / Ctrl combos | ✅ verified | Enter/Esc/Backspace/Control+v |
 | System keys (Win/Alt+Tab) | ✅ verified swallowed | use clicks instead |
-| CRD uid-by-label (LAYER-1) | ✅ verified this session | closed a dialog + panel by uid — but macmini saw `ignored`; probe + fall back |
+| CRD uid-by-label (LAYER-1) | ✅ verified this session | closed a dialog + panel by uid — but the Mac twin sees `ignored` (only `Desktop`); probe + fall back |
 | `drag` / scrollbar-thumb | ❌ unverified | smoke-test first session |
 | Clipboard bridge (pbcopy→Ctrl+V) | ❌ does not bridge under CDP | needs OS-foreground focus; v2 |
 
