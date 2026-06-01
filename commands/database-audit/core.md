@@ -52,10 +52,10 @@ Use the returned `fk_col_count` to split deterministically: `fk_col_count = 1` (
 ```sql
 SELECT s.schemaname, s.relname AS table, s.indexrelname AS idx, s.idx_scan
 FROM pg_stat_user_indexes s
-JOIN pg_stat_bgwriter b ON TRUE
+JOIN pg_stat_database d ON d.datname = current_database()
 WHERE s.idx_scan = 0
-  AND b.stats_reset IS NOT NULL
-  AND now() - b.stats_reset > interval '7 days';
+  AND d.stats_reset IS NOT NULL
+  AND now() - d.stats_reset > interval '7 days';
 ```
 
 Because this query filters on `stats_reset > 7 days`, an empty result is ambiguous: it could mean "no unused indexes" OR "stats too young to judge." To disambiguate, FIRST run the companion stats-age probe below (also a vetted fixed-library query), then run the unused-index query above:
