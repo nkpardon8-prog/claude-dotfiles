@@ -217,6 +217,112 @@ mission_path() {
 }
 
 # ===========================================================================================
+# Sid-keyed resolution (added 2026-05-31) — the collision-proof anchor that REPLACES the
+# `ls -t "$root"/MISSION.*.md | head -1` mtime glob formerly in commands/mission.md §1.
+# A session resolves ONLY its own sid's mission; a stranger's MISSION.<other-sid>.md is
+# structurally unreachable. Proven by scripts/tests/mission-collision-assumptions/.
+# ===========================================================================================
+
+# mission_resolve_path <sid> <root> -> stdout the resolved mission file for THIS sid, or empty.
+# Order: manifest pointer (non-empty AND exists) -> deterministic MISSION.<sid>.md (exists) -> empty.
+# NEVER globs / NEVER mtime-picks. rc 0 + empty stdout = "no mission for this sid" (caller creates
+# fresh or reports none). rc 1 = HARD error (invalid sid/root) — caller MUST STOP, never treat as
+# "no mission". A missing/failed `jq` degrades to deterministic-path-only (still collision-safe).
+mission_resolve_path() {
+  _rsv_sid=$(_mission_sanitize_sid "$1"); _rsv_root="$2"
+  [ -n "$_rsv_sid" ]  || { echo "mission_resolve_path: invalid sid" >&2; return 1; }
+  [ -n "$_rsv_root" ] || { echo "mission_resolve_path: missing root" >&2; return 1; }
+  # 1) manifest pointer. `// empty` yields "" for a null/absent key; an on-disk empty-string
+  #    mission_path ALSO yields "" -> [ -n ] rejects both (kills the original `// empty` fall-through).
+  _rsv_mp=$(jq -r '.mission_path // empty' "$HOME/.claude/chains/${_rsv_sid}.json" 2>/dev/null)
+  if [ -n "$_rsv_mp" ] && [ -f "$_rsv_mp" ]; then printf '%s\n' "$_rsv_mp"; return 0; fi
+  # 2) deterministic sid-keyed path
+  _rsv_det=$(mission_path "$_rsv_sid" "$_rsv_root") || return 1
+  if [ -f "$_rsv_det" ]; then printf '%s\n' "$_rsv_det"; return 0; fi
+  # 3) no mission for this sid
+  return 0
+}
+
+# mission_state <sid> <root> -> stdout: active | cleared | unknown
+# Reuses the §8 archive-inclusive active-iff read (ALL rotated archives oldest->newest + live log),
+# so a CLEARED/REBASELINED line rotated out of the live log is NOT missed. `unknown` = no lifecycle
+# line yet (a freshly-created, still-active mission).
+mission_state() {
+  _mst_sid=$(_mission_sanitize_sid "$1"); _mst_root="$2"
+  { [ -n "$_mst_sid" ] && [ -n "$_mst_root" ]; } || { printf 'unknown\n'; return 0; }
+  _mst_live="${_mst_root}/MISSION.${_mst_sid}.log"
+  _mst_last=$(
+    {
+      for _mst_a in "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.gz \
+                    "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.txt; do
+        [ -e "$_mst_a" ] || continue
+        printf '%s\n' "$_mst_a"
+      done | sort | while IFS= read -r _mst_a; do
+        case "$_mst_a" in *.gz) gzip -dc "$_mst_a" 2>/dev/null;; *) cat "$_mst_a" 2>/dev/null;; esac
+      done
+      cat "$_mst_live" 2>/dev/null
+    } | grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' | tail -1
+  )
+  case "$_mst_last" in
+    *MISSION-REBASELINED*) printf 'active\n' ;;
+    *MISSION-CLEARED*)     printf 'cleared\n' ;;
+    *)                     printf 'unknown\n' ;;
+  esac
+}
+
+# mission_list <root> -> one TAB record per MISSION.<sid>.md in <root>, NEWEST first:
+#   <sid>\t<mtime_epoch>\t<active|cleared|unknown|corrupt>\t<roadmap_line>
+# Read-only; powers the `/mission resume` picker. Space-safe (quoted glob, NO `ls -t`/word-split).
+mission_list() {
+  _mls_root="$1"; [ -n "$_mls_root" ] || { echo "mission_list: missing root" >&2; return 1; }
+  for _mls_f in "$_mls_root"/MISSION.*.md; do
+    [ -e "$_mls_f" ] || continue
+    _mls_mt=$(stat -f %m "$_mls_f" 2>/dev/null || stat -c %Y "$_mls_f" 2>/dev/null || echo 0)
+    _mls_sid=$(_mission_marker_field "$_mls_f" sid 2>/dev/null || true)
+    if [ -z "$_mls_sid" ]; then
+      printf '0\t%s\tcorrupt\t%s\n' "$_mls_mt" "$(basename "$_mls_f")"
+      continue
+    fi
+    _mls_state=$(mission_state "$_mls_sid" "$_mls_root")
+    # roadmap label = first non-empty PLAN line that is NOT the `MISSION MODE:` token (line 2+),
+    # so concurrent missions are distinguishable in the picker.
+    _mls_p=$(mission_read_zone "$_mls_f" PLAN 2>/dev/null \
+              | grep -vE '^[[:space:]]*$' | grep -vE '^MISSION MODE:' | head -1 | cut -c1-120)
+    printf '%s\t%s\t%s\t%s\n' "$_mls_sid" "$_mls_mt" "$_mls_state" "$_mls_p"
+  done | sort -t"$(printf '\t')" -k2,2nr
+}
+
+# mission_attach <platform_sid> <root> <target_file> -> rewrite THIS session's chain-manifest
+# mission_path to <target_file> (so /post-compact-resume, which PREFERS the pointer, reattaches),
+# then echo the target's OWN sid — the working sid the caller MUST use for every subsequent
+# mission-write.sh write. Verifies the target first. rc!=0 => caller STOPS (do NOT write).
+mission_attach() {
+  _att_psid=$(_mission_sanitize_sid "$1"); _att_root="$2"; _att_target="$3"
+  [ -n "$_att_psid" ] || { echo "mission_attach: invalid platform sid" >&2; return 1; }
+  [ -f "$_att_target" ] || { echo "mission_attach: target missing: $_att_target" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "mission_attach: jq required" >&2; return 1; }
+  # lazy-source handoff-chain.sh (mission-bridge.sh sources handoff-locate.sh but not this).
+  if ! command -v chain_manifest_write >/dev/null 2>&1; then
+    if [ -n "${BASH_SOURCE:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/handoff-chain.sh" ]; then
+      . "$(dirname "${BASH_SOURCE[0]}")/handoff-chain.sh"
+    elif [ -f "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-chain.sh" ]; then
+      . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-chain.sh"
+    fi
+  fi
+  command -v chain_manifest_write >/dev/null 2>&1 \
+    || { echo "mission_attach: chain helpers unavailable (cannot wire reattach)" >&2; return 1; }
+  _att_msid=$(_mission_marker_field "$_att_target" sid)
+  [ -n "$_att_msid" ] || { echo "mission_attach: target has no sid marker" >&2; return 1; }
+  mission_verify "$_att_target" "$_att_msid" || { echo "mission_attach: target failed verify" >&2; return 2; }
+  _att_cur=$(chain_manifest_read "$_att_psid" 2>/dev/null); [ -n "$_att_cur" ] || _att_cur='{}'
+  printf '%s' "$_att_cur" \
+    | jq --arg mp "$_att_target" '.mission_path = $mp' 2>/dev/null \
+    | chain_manifest_write "$_att_psid" \
+    || { echo "mission_attach: manifest update failed" >&2; return 1; }
+  printf '%s\n' "$_att_msid"
+}
+
+# ===========================================================================================
 # Marker + zone parse
 # ===========================================================================================
 
