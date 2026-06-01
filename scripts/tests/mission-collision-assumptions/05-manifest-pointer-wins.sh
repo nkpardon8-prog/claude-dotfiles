@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 05 — Resolver prefers a non-empty manifest pointer over the deterministic path, BUT only an IN-ROOT
-# CANONICAL one: pointer target must equal mission_path(<its own marker sid>, <root>). This covers the
-# sid-divergence reattach case (manifest for sid Q points at the in-root MISSION.<P>.md). An out-of-root
-# or basename!=marker pointer must be REJECTED (fall through), so cross-root/crafted adoption is dead.
+# 05 — Manifest pointer is honored ONLY when it is the requester's OWN in-root canonical file
+# (own-sid only). Under clone-on-resume a session's mission is always owned by its own sid, so a
+# CROSS-SID pointer (Q's manifest -> MISSION.<P>.md) and an OUT-OF-ROOT pointer must both be REJECTED
+# and fall through — closing the last stranger-file adoption vector.
 #
-# NEGATIVE CONTROL (controllable precondition): A2 points the manifest at an OUT-OF-ROOT file with a
-# valid marker; the resolver must reject it and return empty (Q has no in-root file). If the resolver
-# honored any existing pointer, A2 would FAIL.
+# NEGATIVE CONTROL (controllable precondition): A2/A3 point Q's manifest at a cross-sid resp. an
+# out-of-root file; the resolver must reject both and return empty (Q has no own in-root file). If the
+# resolver honored a non-own-sid pointer, those assertions would FAIL.
 set -uo pipefail
 
 GATE="${MISSION_SMOKE_ALLOW_DEV:-}"
