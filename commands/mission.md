@@ -843,6 +843,16 @@ re-enter), and never change the active/inactive decision.
   (mirrors `/goal clear`). `achieved` / `could-not` are set only by the **explicit
   lifecycle close** at a mission's natural end — write the appropriate `status=` on the MISSION-CLEARED
   line — never by the bare `clear` verb. Parse the returned status line (Section 7).
+- **Run-timing — lifecycle close (the ONE ledger write).** Immediately BEFORE writing the
+  `MISSION-CLEARED status=<achieved|could-not|cleared>` line (whether from `clear` or the natural-end
+  close), flush the final timing + lifetime-ledger record and surface the final elapsed line to the user:
+  ```bash
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh timing-close <sid> <root> <achieved|could-not|cleared>
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"; set -- $(mission_timing_compute <sid> <root>)
+  printf '⏱ final — active %s · wall %s · idle %s (run /mission stats for lifetime totals)\n' "$(_mission_fmt_dur "$2")" "$(_mission_fmt_dur "$3")" "$(_mission_fmt_dur "$4")"
+  ```
+  This appends one rich record to `~/.claude/mission-metrics.jsonl` (the machine-wide lifetime ledger
+  that `/mission stats` reads). Advisory — never blocks the close.
 - **`/mission status`** (and blank) reads the LOG **directly** via the Section 8 resume-read idiom
   (grep over the full live log + ALL rotated archives oldest→newest), derives mode/part/phase/round/dry
   + pending, and prints — no mutation. Mode/`status=` come from the `mission_state` grep (the LATEST
