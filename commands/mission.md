@@ -111,6 +111,14 @@ Parse `$ARGUMENTS`:
   A bare `clear` sets `status=cleared`. `achieved` / `could-not` are set ONLY by the explicit
   lifecycle close at the natural end of a mission (Section 11) — not by this verb. Parse the returned
   status line (Section 7); confirm to the user.
+- **`stats`** → **STATS** (read-only, NO mutation). Print machine-wide lifetime run-timing metrics
+  across ALL missions ever run on this machine. Source the lib in a fresh block (each Bash call is a
+  fresh shell) and call the read-only renderer — it reads `~/.claude/mission-metrics.jsonl` (not any
+  per-mission file), so it needs no sid/root:
+  ```bash
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"; mission_stats_render
+  ```
+  Then stop. (The ledger is appended once per mission close by the timing lifecycle below.)
 - **`resume`** → **RESUME PICKER** (Section 2b). List this repo's missions and let the user explicitly
   pick one to **clone into THIS session** and continue (e.g. after closing the instance that started it).
   NEVER auto-inferred — the ONLY sanctioned way a session continues a mission it did not create.
