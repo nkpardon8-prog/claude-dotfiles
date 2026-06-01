@@ -344,8 +344,20 @@ mission_fork() {
   sed "s|^\\(<!-- MISSION schema=v1 sid=\\)${_fk_ssid}\\( \\)|\\1${_fk_dsid}\\2|" "$_fk_src" > "$_fk_tmp" \
     || { rm -f "$_fk_tmp"; echo "mission_fork: clone write failed" >&2; return 1; }
   mv -f "$_fk_tmp" "$_fk_dest" || { rm -f "$_fk_tmp"; echo "mission_fork: rename failed" >&2; return 1; }
-  # carry the log sidecar forward (observational; safe). Best-effort.
-  [ -f "${_fk_src%.md}.log" ] && cp -f "${_fk_src%.md}.log" "${_fk_dest%.md}.log" 2>/dev/null
+  # carry the FULL log history forward — rotated archives (oldest->newest) + live log — flattened into
+  # the clone's single live log, so lifecycle / convergence / FAIL / test-trust state survives the clone
+  # (copying only the live log would lose archived lifecycle lines and could mis-resume). Best-effort.
+  _fk_srcdir=$(dirname "$_fk_src")
+  {
+    for _fk_a in "$_fk_srcdir"/.mission-backups/MISSION."$_fk_ssid".log.*.gz \
+                 "$_fk_srcdir"/.mission-backups/MISSION."$_fk_ssid".log.*.txt; do
+      [ -e "$_fk_a" ] || continue
+      printf '%s\n' "$_fk_a"
+    done | sort | while IFS= read -r _fk_a; do
+      if [ "${_fk_a##*.}" = gz ]; then gzip -dc "$_fk_a" 2>/dev/null; else cat "$_fk_a" 2>/dev/null; fi
+    done
+    [ -f "${_fk_src%.md}.log" ] && cat "${_fk_src%.md}.log" 2>/dev/null
+  } > "${_fk_dest%.md}.log" 2>/dev/null || true
   # the clone MUST verify sound under the NEW sid, else back it out.
   if ! mission_verify "$_fk_dest" "$_fk_dsid"; then
     rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
