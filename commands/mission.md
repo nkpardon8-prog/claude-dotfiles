@@ -342,6 +342,15 @@ while test-trust is unresolved:
 ```bash
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] test-trust part=<N>=<ok|added|n/a>" "m<N>-test-trust"
 ```
+**Criticer surfacing.** `/plan` runs the generative `criticer` lane and writes a `## Criticer Notes`
+section into the part-plan. After `/plan` returns, if that section has findings, surface a ONE-LINE
+headline into the mission LOG so it lands in the banner's recent-log tail (the full notes stay in the
+plan file). Keep the headline ≤200 chars; one emit per part+round (the fixed idtag suppresses a retry):
+```bash
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] criticer part=<N> findings=<K> <one-line headline>" "m<N>-criticer-r<round>"
+```
+Advisory only — criticer never gates; you decide whether any note changes the plan.
+
 Parse the returned status line (Section 7). This is a **durable resume marker**: on resume, find it
 via the grep-over-FULL-log idiom (Section 8 — it must survive log rotation). **Absence = unresolved**
 → re-assess test-trust before any implement round; **presence = honored** → trust the recorded verdict
