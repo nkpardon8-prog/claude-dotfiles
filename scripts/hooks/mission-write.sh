@@ -22,6 +22,7 @@
 # ── USAGE ─────────────────────────────────────────────────────────────────────────────────
 #   mission-write.sh <verb> <sid> <root> [args...]
 #   verb ∈ create | log | note | challenge | pending | resolve | rebaseline | render-banner
+#          | timing-resume | timing-contact | timing-close
 #     create        <sid> <root> [plan_source]
 #     log           <sid> <root> <entry> [idtag]
 #     note          <sid> <root> <entry> [idtag]
@@ -30,6 +31,9 @@
 #     resolve       <sid> <root> <pd_id> [resolution]
 #     rebaseline    <sid> <root> <new_plan>
 #     render-banner <sid> <root>
+#     timing-resume <sid> <root>                 (advisory run-timing: re-stamp WORK-START on re-engagement)
+#     timing-contact <sid> <root> <reason>       (advisory: write a CONTACT timing anchor)
+#     timing-close  <sid> <root> <status>        (advisory: final compute + the one ledger write)
 #
 # Exactly ONE status line is printed to stdout:
 #   mission-write: <verb> ok
