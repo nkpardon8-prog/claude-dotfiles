@@ -986,3 +986,134 @@ Already shipped as **Q2.4** (SECURITY DEFINER functions with mutable `search_pat
 ### Q8.5 — FORCE RLS [RO] (`privileges`) — CROSS-REF
 
 Already covered by the new **Q2.6** (FORCE RLS gap, Module 2). Do NOT re-run any SQL here. Emit a pointer only: `[INFO] 8.5 — FORCE RLS / owner bypass → see Q2.6 (Module 2)`. Note Q2.6 is `public`-scoped, so this cross-ref does not claim coverage of non-public RLS tables.
+
+---
+
+## Module 9 — Schema Integrity (`integrity`)
+
+Skip this phase if `--only` is set and does not include `integrity`.
+
+On any MCP/SQL error: emit `[INFO] Module 9 — {tool} unavailable: {error}` and continue.
+
+All [RO]. **`public`-scoped** (matches Q1.5/Q1.6/Q3.1). Extends Module 1 — cross-ref Q1.x, do not duplicate. Every name-heuristic regex below is pinned VERBATIM. The int4-PK overflow check is covered by Q6.6 (cross-ref).
+
+### Q9.1 — FKs without ON DELETE / ON UPDATE action [RO] (`integrity`)
+
+```sql
+SELECT con.conrelid::regclass AS table_name, con.conname AS fk_name,
+       con.confdeltype, con.confupdtype
+FROM pg_constraint con
+JOIN pg_namespace n ON con.connamespace = n.oid
+WHERE con.contype = 'f'
+  AND n.nspname = 'public'
+  AND (con.confdeltype = 'a' OR con.confupdtype = 'a');
+```
+
+`confdeltype = 'a'` / `confupdtype = 'a'` is the default `NO ACTION` — a delete/update of a parent row referenced by children errors at runtime instead of cascading or nulling, often surfacing as a production incident. Verify the intended referential behavior was chosen deliberately.
+
+Severity: MEDIUM.
+
+### Q9.2 — Unvalidated constraints [RO] (`integrity`)
+
+```sql
+SELECT con.conrelid::regclass AS table_name, con.conname AS constraint_name,
+       con.contype
+FROM pg_constraint con
+JOIN pg_namespace n ON con.connamespace = n.oid
+WHERE n.nspname = 'public'
+  AND con.convalidated = false;
+```
+
+A constraint added with `NOT VALID` and never `VALIDATE`d does NOT enforce on existing rows — pre-existing violations slip through, and the planner cannot rely on it.
+
+Severity: MEDIUM.
+
+### Q9.3 — Missing NOT NULL on identity-ish columns [RO] (`integrity`)
+
+```sql
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name ~ '^(id|created_at|updated_at)$'
+  AND is_nullable = 'YES';
+```
+
+Columns named `id` / `created_at` / `updated_at` are almost always meant to be mandatory; a nullable one allows orphan/incomplete rows and undermines audit trails.
+
+Severity: LOW (MEDIUM for a nullable `id`).
+
+### Q9.4 — `timestamp` without time zone [RO] (`integrity`)
+
+```sql
+SELECT table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND data_type = 'timestamp without time zone';
+```
+
+`timestamp` (no tz) stores wall-clock with no offset — ambiguous across DST/regions and a frequent source of off-by-hours bugs. Prefer `timestamptz`.
+
+Severity: MEDIUM.
+
+### Q9.5 — Fixed-width and discouraged types [RO] (`integrity`)
+
+`char(n)` / `bpchar` (blank-padded fixed width, almost always misuse):
+
+```sql
+SELECT table_name, column_name, character_maximum_length
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND data_type = 'character';
+```
+
+`numeric` WITHOUT precision ONLY for monetary-looking columns (an unconstrained `numeric` for money loses scale guarantees):
+
+```sql
+SELECT table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND data_type = 'numeric'
+  AND numeric_precision IS NULL
+  AND column_name ~* 'price|amount|cost|total|balance';
+```
+
+The `money` type (genuinely discouraged — locale-dependent, fixed scale):
+
+```sql
+SELECT table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND data_type = 'money';
+```
+
+`char(n)` pads with spaces and rarely behaves as intended; an unconstrained monetary `numeric` permits any scale (rounding drift); `money` is locale-dependent and not recommended. (Note: `text` is the PG-recommended string type — "unbounded text used as bounded" is intentionally NOT flagged.)
+
+Severity: MEDIUM for each.
+
+### Q9.6 — Missing UNIQUE on natural keys [RO] (`integrity`)
+
+```sql
+SELECT c.table_name, c.column_name
+FROM information_schema.columns c
+WHERE c.table_schema = 'public'
+  AND c.column_name ~* 'email|slug|username'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM pg_index i
+    JOIN pg_class ic ON ic.oid = i.indrelid
+    JOIN pg_namespace n ON ic.relnamespace = n.oid
+    JOIN pg_attribute a ON (a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey))
+    WHERE i.indisunique
+      AND n.nspname = c.table_schema
+      AND ic.relname = c.table_name
+      AND a.attname = c.column_name
+  );
+```
+
+Columns named `email` / `slug` / `username` are natural keys that should be UNIQUE; without a unique index duplicates accumulate and lookups are ambiguous.
+
+Severity: LOW.
+
+### Q9.7 — int4 PK overflow risk [RO] (`integrity`) — CROSS-REF
+
+int4-backed PK / serial-vs-identity overflow is covered by **Q6.6**. Emit a pointer: `[INFO] 9.7 — int4 PK overflow risk → see Q6.6 (Module 6)`.
