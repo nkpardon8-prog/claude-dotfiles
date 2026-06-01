@@ -138,7 +138,7 @@ Once the guard discharges (NOTPROD, or `--env=prod`/`proceed on prod` confirmed)
 preflight loaded + guard resolved (provider=<provider>, prod-signal=<which signal fired>, guards loaded) — beginning SQL phases
 ```
 
-**Checkable precondition (assertion, not just prose):** Before dispatching ANY core or platform SQL (`psql` core session / `execute_sql` / `run_sql` / any control-plane probe), confirm this exact resolved-state line was emitted with all three fields populated. If it was not emitted, **halt** — do not issue any data-plane query.
+**Checkable precondition (assertion, not just prose):** Before dispatching any **DATA-PLANE SQL** (`psql` core session / `execute_sql` / `run_sql`), confirm this exact resolved-state line was emitted with all three fields populated. If it was not emitted, **halt** — do not issue any data-plane query. Metadata-only control-plane calls (`get_project_url`, `list_branches`, `describe_project`, `get_connection_string`) are EXPLICITLY PERMITTED in Phase 0a precisely to resolve the guard — they touch no user data, so they run BEFORE the resolved-state line. The bar is: **no data-plane SQL before the resolved-state line** (not "no control-plane probe" — the guard could not resolve without those metadata calls).
 
 ---
 
