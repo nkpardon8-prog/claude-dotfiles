@@ -39,6 +39,10 @@ Document which mechanism is in effect in the report Meta section. (Read-only mod
 
 **There is NO `list_branches` tool** — branch discovery is via `describe_project` (which returns the branch list with flags). **There is NO `list_extensions` tool** — extension inventory is via a vetted portable SELECT against `pg_extension` (run through `run_sql` / psql). Mutating control-plane tools (create/merge/reset/rebase/delete branch, apply migration) are Forbidden (`guards.md`).
 
+**FORBIDDEN Neon MCP tools (read-only audit — NEVER call any of these):** `run_sql_transaction`, `prepare_database_migration`, `complete_database_migration`, `provision_neon_auth`, `provision_neon_data_api`, `create_branch`, `delete_branch`, `reset_from_parent`. These mutate the database or control plane and have no place in a read-only audit. This list is in addition to the `guards.md` Forbidden Tools denylist.
+
+**Namespaced tool identifiers.** Neon MCP tool identifiers may be namespaced depending on the connected server (e.g. `mcp__neon__run_sql` rather than bare `run_sql`). Use whatever identifier the connected Neon MCP exposes for the read-only tools (`run_sql`, `describe_project`, `describe_branch`, `get_connection_string`, `list_slow_queries`), and apply the same SELECT-only + forbidden-tool discipline regardless of namespacing.
+
 ### Connection SOURCE precedence (for the psql core)
 
 Resolve in this exact order (Phase 0a — metadata only, do NOT open a core SQL session yet):
