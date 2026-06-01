@@ -461,3 +461,392 @@ Read `./supabase/seed.sql` (and the generic `./seed.sql`, `./db/seed.sql`). If n
 Grep the repo for environment-variable reads: `process.env.X`, `Deno.env.get('X')`, `import.meta.env.X`. Collect the referenced key NAMES. Compare them to the keys defined in `.env.production`. Any key referenced in code but MISSING from `.env.production` → **HIGH**. Emit key **NAMES only**, never values (`redaction.md` rule 4).
 
 If `.env.production` does not exist → emit `[INFO] No .env.production file present; env-drift check skipped.` Do not error.
+
+---
+
+## Module 6 — Operational Health (`health`)
+
+Skip this phase if `--only` is set and does not include `health`.
+
+On any MCP/SQL error: emit `[INFO] Module 6 — {tool} unavailable: {error}` and continue.
+
+This module runs the §B version probe (Preamble P1), the §C capability probe (Preamble P2), and the P3 extension inventory FIRST (once), then references those results below. **Staging:** the high-yield pure-`[RO]` outage-causers are authored first (6.4, 6.6, 6.7, 6.2, 6.19), then the always-assessable `[RO]` checks (6.1, 6.11, 6.12, 6.15, 6.16, 6.17, 6.18), then the `[RO+priv]` / `[EXT]` second wave (6.3, 6.5, 6.8, 6.9, 6.10, 6.13, 6.14) which mostly INFO-skip on managed providers.
+
+### Q6.4 — XID wraparound horizon [RO] (`health`)
+
+```sql
+SELECT datname, age(datfrozenxid) AS xid_age,
+       current_setting('autovacuum_freeze_max_age')::int AS freeze_max
+FROM pg_database
+ORDER BY xid_age DESC
+LIMIT 50;
+```
+
+Per-table attribution (bounded scan + total count):
+
+```sql
+SELECT n.nspname, c.relname, age(c.relfrozenxid) AS xid_age,
+       (SELECT count(*) FROM pg_class WHERE relkind IN ('r','m','t')) AS total_relations
+FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE c.relkind IN ('r','m','t')
+ORDER BY xid_age DESC
+LIMIT 50;
+```
+
+`xid_age` is how many transactions old the oldest unfrozen row is. As it approaches `autovacuum_freeze_max_age` (default 200M) autovacuum should freeze; if it keeps climbing toward 2^31 (~2.1B) the database will force a shutdown to prevent wraparound corruption. Flag `xid_age` > 80% of `autovacuum_freeze_max_age`. CRITICAL when > 90% of the freeze-max or approaching 2^31.
+
+Severity: HIGH (CRITICAL near the wraparound threshold).
+
+### Q6.6 — Sequence / int4-PK exhaustion [RO] (`health`)
+
+Two parts. First, raw sequence consumption from `pg_sequences`:
+
+```sql
+SELECT schemaname, sequencename, last_value, max_value
+FROM pg_sequences
+ORDER BY (last_value::numeric / NULLIF(max_value,0)) DESC NULLS LAST
+LIMIT 50;
+```
+
+Second, the int4-backed-PK linkage — the one genuinely tricky join, given **VERBATIM** (prose invites a wrong `pg_depend` direction). The sequence is the dependent object (`objid`); the table+column it feeds is the referenced object (`refobjid` + `refobjsubid`); both `classid` and `refclassid` are `pg_class`; `deptype` `'a'` = serial `OWNED BY`, `'i'` = `GENERATED … AS IDENTITY`:
+
+```sql
+SELECT s.relname AS sequence_name,
+       t.relname AS table_name,
+       a.attname AS column_name,
+       seq.last_value
+FROM pg_depend d
+JOIN pg_class s ON s.oid = d.objid
+JOIN pg_class t ON t.oid = d.refobjid
+JOIN pg_attribute a ON (a.attrelid = d.refobjid AND a.attnum = d.refobjsubid)
+JOIN pg_sequences seq ON (seq.schemaname = (SELECT nspname FROM pg_namespace WHERE oid = s.relnamespace)
+                          AND seq.sequencename = s.relname)
+WHERE d.classid = 'pg_class'::regclass
+  AND d.refclassid = 'pg_class'::regclass
+  AND d.deptype IN ('a','i')
+  AND a.atttypid = 'int4'::regtype
+ORDER BY seq.last_value DESC NULLS LAST
+LIMIT 50;
+```
+
+An `int4` PK overflows at 2^31 (~2.147B). When a sequence backing an `int4` column has `last_value` approaching that, inserts will start failing. A bare app-assigned `int4` PK with no backing sequence cannot be measured here → report "int4 PK present (no sequence to measure)". **Degradation (false-clean class):** `pg_sequences.last_value` returns NULL when the audit role lacks SELECT on the sequence (common on managed providers). A NULL `last_value` MUST emit `[INFO] 6.6 — sequence value not readable under current role`, **NEVER a clean pass.**
+
+Severity: HIGH (approaching ~2.1B).
+
+### Q6.7 — Inactive / lagging replication slots [RO] (`health`)
+
+```sql
+SELECT slot_name, slot_type, active, wal_status,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS retained_bytes
+FROM pg_replication_slots
+ORDER BY retained_bytes DESC NULLS LAST;
+```
+
+An inactive replication slot (`active = false`) keeps pinning WAL (`restart_lsn` never advances), so `retained_bytes` grows without bound until the WAL volume fills — a disk-full outage. `wal_status = 'lost'` means WAL the slot needs was already removed (the consumer is broken). Inactive slot retaining large WAL = imminent outage.
+
+Severity: HIGH (CRITICAL when `wal_status` is `'lost'`/`'unreserved'` or retained bytes are large).
+
+### Q6.2 — Autovacuum / analyze recency [RO] (`health`)
+
+```sql
+SELECT schemaname, relname, last_autovacuum, last_autoanalyze,
+       autovacuum_count, analyze_count, n_dead_tup
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC NULLS LAST
+LIMIT 50;
+```
+
+Tables that have NEVER been autovacuumed/autoanalyzed (`last_autovacuum IS NULL` and `autovacuum_count = 0`) or whose last run is very stale, especially with high `n_dead_tup`, indicate vacuum is not keeping up — bloat, stale stats, and XID-age growth follow.
+
+Severity: HIGH if a high-traffic table was never vacuumed; MEDIUM for staleness.
+
+### Q6.19 — Collation version mismatch [RO] (`health`) — version-branched (§B), PG≥15
+
+If `server_major < 15` → emit `[INFO] 6.19 — collation version check requires PG15+; skipped` and do nothing else. On PG ≥ 15 the actual-version functions exist and take an OID argument (no empty-paren call).
+
+DB-level drift:
+
+```sql
+SELECT datname, datcollversion,
+       pg_database_collation_actual_version(oid) AS actual_version
+FROM pg_database
+WHERE datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid);
+```
+
+Collation-object-level drift:
+
+```sql
+SELECT n.nspname, cl.collname, cl.collversion,
+       pg_collation_actual_version(cl.oid) AS actual_version
+FROM pg_collation cl JOIN pg_namespace n ON cl.collnamespace = n.oid
+WHERE cl.collversion IS DISTINCT FROM pg_collation_actual_version(cl.oid);
+```
+
+Per-INDEX attribution (which btree indexes are at risk via `pg_index.indcollation`):
+
+```sql
+SELECT n.nspname, ic.relname AS index_name, tc.relname AS table_name,
+       cl.collname, cl.collversion,
+       pg_collation_actual_version(cl.oid) AS actual_version
+FROM pg_index i
+JOIN pg_class ic ON ic.oid = i.indexrelid
+JOIN pg_class tc ON tc.oid = i.indrelid
+JOIN pg_namespace n ON ic.relnamespace = n.oid
+JOIN unnest(i.indcollation) WITH ORDINALITY AS col(colloid, ord) ON true
+JOIN pg_collation cl ON cl.oid = col.colloid
+WHERE col.colloid <> 0
+  AND cl.collversion IS DISTINCT FROM pg_collation_actual_version(cl.oid);
+```
+
+A collation version drift after a libc/ICU upgrade means btree indexes built under the old collation may now be silently corrupt (wrong sort order → missed rows, unique-constraint violations). The per-index list says exactly which indexes need REINDEX.
+
+Severity: HIGH.
+
+### Q6.1 — Dead-tuple ratio / bloat estimate [RO] (`health`)
+
+```sql
+SELECT schemaname, relname, n_live_tup, n_dead_tup, n_mod_since_analyze,
+       round(n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0), 3) AS dead_ratio
+FROM pg_stat_user_tables
+WHERE n_dead_tup > 0
+ORDER BY dead_ratio DESC NULLS LAST
+LIMIT 50;
+```
+
+A high `dead_ratio` (rule of thumb > 20% on a sizeable table) signals bloat: wasted storage and slower scans. This is a statistics-based estimate; exact bloat needs `pgstattuple` ([EXT], not run here).
+
+Severity: MEDIUM.
+
+### Q6.11 — Deadlocks [RO] (`health`)
+
+```sql
+SELECT datname, deadlocks, xact_rollback, xact_commit
+FROM pg_stat_database
+WHERE datname = current_database();
+```
+
+A nonzero and growing `deadlocks` counter indicates application lock-ordering problems. Point-in-time only (no historical rate available in a stateless audit).
+
+Severity: INFO if low/zero; MEDIUM if notably nonzero.
+
+### Q6.12 — Cache & index hit ratio [RO] (`health`)
+
+```sql
+SELECT datname,
+       round(blks_hit::numeric / NULLIF(blks_hit + blks_read, 0), 4) AS cache_hit_ratio
+FROM pg_stat_database
+WHERE datname = current_database();
+```
+
+OLTP workloads target > 99% buffer cache hit ratio. A low ratio means working set does not fit in `shared_buffers` (or the instance is undersized) → heavy disk I/O.
+
+Severity: MEDIUM if below ~99%.
+
+### Q6.15 — Invalid indexes [RO] (`health`)
+
+```sql
+SELECT n.nspname, ic.relname AS index_name, tc.relname AS table_name,
+       i.indisvalid, i.indisready
+FROM pg_index i
+JOIN pg_class ic ON ic.oid = i.indexrelid
+JOIN pg_class tc ON tc.oid = i.indrelid
+JOIN pg_namespace n ON ic.relnamespace = n.oid
+WHERE i.indisvalid = false OR i.indisready = false;
+```
+
+An index with `indisvalid = false` is a leftover from a failed `CONCURRENTLY` build — it consumes space, is maintained on writes, but is NOT used by the planner. (Unused / duplicate indexes are covered by Module 1 Q1.3/Q1.4 — cross-ref, not duplicated here.)
+
+Severity: MEDIUM.
+
+### Q6.16 — Statistics staleness [RO] (`health`)
+
+```sql
+SELECT s.schemaname, s.relname, s.n_mod_since_analyze, c.reltuples,
+       current_setting('default_statistics_target') AS stats_target
+FROM pg_stat_user_tables s
+JOIN pg_class c ON c.relname = s.relname
+WHERE s.n_mod_since_analyze > 0
+ORDER BY s.n_mod_since_analyze DESC NULLS LAST
+LIMIT 50;
+```
+
+A high `n_mod_since_analyze` relative to `reltuples` means the planner is working from stale row estimates → bad plans. Cross-ref Q6.2 (autovacuum recency drives ANALYZE).
+
+Severity: MEDIUM.
+
+### Q6.17 — Size outliers / giant unpartitioned tables [RO] (`health`)
+
+```sql
+SELECT n.nspname, c.relname,
+       pg_total_relation_size(c.oid) AS total_bytes,
+       (c.oid IN (SELECT partrelid FROM pg_partitioned_table)) AS is_partitioned_parent,
+       (SELECT count(*) FROM pg_class WHERE relkind IN ('r','p')) AS total_relations
+FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE c.relkind = 'r'
+  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+ORDER BY total_bytes DESC
+LIMIT 50;
+```
+
+The largest tables, flagging any very large table that is NOT a partition parent (a giant monolithic table is a vacuum/maintenance/lock-window liability that partitioning would relieve).
+
+Severity: INFO (MEDIUM for a very large unpartitioned hot table).
+
+### Q6.18 — Checkpoint tuning [RO] (`health`) — version-branched (§B)
+
+Checkpoint COUNTS only — do NOT also read buffer columns (their semantics moved at PG17). Branch on `server_major`:
+
+PG ≥ 17 → `pg_stat_checkpointer`:
+
+```sql
+SELECT num_timed, num_requested
+FROM pg_stat_checkpointer;
+```
+
+PG < 17 → `pg_stat_bgwriter`:
+
+```sql
+SELECT checkpoints_timed, checkpoints_req
+FROM pg_stat_bgwriter;
+```
+
+A high ratio of requested (forced) checkpoints to timed checkpoints means `max_wal_size` is too small — checkpoints are triggered by WAL volume rather than `checkpoint_timeout`, causing I/O spikes. Flag when requested ≳ timed.
+
+Severity: MEDIUM.
+
+### Q6.3 — VACUUM blocked by xmin horizon [RO+priv] (`health`)
+
+§C gate: if Preamble P2 shows `has_monitor = false AND has_read_all_stats = false`, emit `[INFO] 6.3 — partial visibility; cross-session data restricted under current role (no pg_monitor/pg_read_all_stats)` UNCONDITIONALLY (never a clean pass) and skip the query. Otherwise:
+
+```sql
+SELECT
+  (SELECT min(backend_xmin) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL) AS oldest_activity_xmin,
+  (SELECT min(catalog_xmin) FROM pg_replication_slots WHERE catalog_xmin IS NOT NULL) AS oldest_slot_catalog_xmin,
+  (SELECT count(*) FROM pg_prepared_xacts) AS prepared_xact_count;
+```
+
+An old `backend_xmin` (a long-lived transaction), an old slot `catalog_xmin`, or a stranded prepared transaction holds back the global xmin horizon, so VACUUM cannot remove dead tuples anywhere — bloat accumulates DB-wide even though autovacuum is running.
+
+Severity: MEDIUM (HIGH if a very old horizon blocks all cleanup).
+
+### Q6.5 — Multixact wraparound horizon [RO] (`health`)
+
+```sql
+SELECT datname, mxid_age(datminmxid) AS mxid_age,
+       current_setting('autovacuum_multixact_freeze_max_age')::int AS mxid_freeze_max
+FROM pg_database
+ORDER BY mxid_age DESC
+LIMIT 50;
+```
+
+The multixact analog of XID wraparound (Q6.4): heavy use of row-level share locks / FKs consumes multixact IDs, which also wrap at 2^31. `mxid_age` approaching `autovacuum_multixact_freeze_max_age` (and ultimately 2^31) risks the same forced shutdown.
+
+Severity: HIGH (CRITICAL near the threshold).
+
+### Q6.8 — Replication lag / standby posture [RO+priv] / [PROVIDER] (`health`) — folds light-touch HA
+
+```sql
+SELECT application_name, state, sync_state,
+       write_lag, flush_lag, replay_lag
+FROM pg_stat_replication;
+```
+
+Plus sync posture:
+
+```sql
+SELECT current_setting('synchronous_standby_names') AS sync_standby_names;
+```
+
+Reports connected standbys (HA: standby-exists Y/N), their lag, and whether replication is synchronous (`sync_state`, `synchronous_standby_names`). Zero rows = no streaming standby attached (single point of failure for self-managed). On managed providers replication is provider-internal: if `pg_stat_replication` is empty AND this is a managed provider, emit `[PROVIDER]` manual-verify INFO `Severity-if-absent: HIGH` ("HA / replica posture → verify in provider console") rather than asserting "no standby."
+
+Severity: MEDIUM (lag) / INFO+PROVIDER (HA posture on managed).
+
+### Q6.9 — Idle-in-transaction + long-running-active [RO+priv] (`health`)
+
+§C gate: if `has_monitor = false AND has_read_all_stats = false`, emit `[INFO] 6.9 — partial visibility; cross-session data restricted under current role (no pg_monitor/pg_read_all_stats)` UNCONDITIONALLY (never a clean pass) and skip. Otherwise:
+
+```sql
+SELECT
+  (SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction') AS idle_in_txn_count,
+  (SELECT max(now() - xact_start) FROM pg_stat_activity WHERE state = 'idle in transaction') AS max_idle_in_txn_age,
+  (SELECT max(now() - query_start) FROM pg_stat_activity WHERE state = 'active') AS max_active_query_age;
+```
+
+`idle in transaction` sessions hold locks and pin the xmin horizon while doing nothing — a classic bloat/lock source. A multi-hour ACTIVE query is a distinct signal (it also holds locks and pins xmin). Both warrant investigation.
+
+Severity: MEDIUM.
+
+### Q6.10 — Blocked queries / lock contention [RO+priv] (`health`)
+
+§C gate: if `has_monitor = false AND has_read_all_stats = false`, emit `[INFO] 6.10 — partial visibility; cross-session data restricted under current role (no pg_monitor/pg_read_all_stats)` UNCONDITIONALLY (never a clean pass) and skip. Otherwise (note: the catalog identifier `pg_locks` contains the substring `lock` but is preceded by `_`, so it does NOT trip the guards.md rule-4 `\bLOCK\b` word-boundary blacklist — substring-only, intentional; likewise `pg_blocking_pids()`):
+
+```sql
+SELECT count(*) AS waiting_count,
+       count(DISTINCT unnest_pids) AS distinct_blockers
+FROM pg_locks l
+LEFT JOIN LATERAL unnest(pg_blocking_pids(l.pid)) AS unnest_pids ON true
+WHERE NOT l.granted;
+```
+
+Ungranted lock requests with a non-empty blocker set indicate live contention — sessions waiting on locks held by others. Point-in-time snapshot.
+
+Severity: MEDIUM.
+
+### Q6.13 — Top queries / temp-spill [EXT] + [RO+priv] (`health`) — version-branched (§B)
+
+[EXT] probe FIRST against Preamble P3: if `pg_stat_statements` is NOT in the extension inventory → emit `[INFO] 6.13 — extension pg_stat_statements not installed; skipped` and stop. Then the §C gate: if `has_monitor = false AND has_read_all_stats = false` → emit `[INFO] 6.13 — partial visibility; cross-session data restricted under current role (no pg_monitor/pg_read_all_stats)` UNCONDITIONALLY (never a clean pass) and stop (the view shows only the current role's rows otherwise). If both clear, branch DECISIVELY on `server_major`:
+
+PG ≥ 13:
+
+```sql
+SELECT queryid, calls, total_exec_time, mean_exec_time, rows
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 50;
+```
+
+PG < 13:
+
+```sql
+SELECT queryid, calls, total_time, mean_time, rows
+FROM pg_stat_statements
+ORDER BY total_time DESC
+LIMIT 50;
+```
+
+Companion seq-scan signal [RO] (always assessable):
+
+```sql
+SELECT schemaname, relname, seq_scan, idx_scan
+FROM pg_stat_user_tables
+WHERE seq_scan > 0
+ORDER BY seq_scan DESC NULLS LAST
+LIMIT 50;
+```
+
+The top time-consuming queries (and tables driven by sequential scans) are the optimization targets. `queryid` is a normalized fingerprint, not literal SQL, so no value redaction is needed; if any query text is surfaced, apply redaction rule 1.
+
+Severity: MEDIUM (INFO inventory of hot queries).
+
+### Q6.14 — Missing-index advisor [EXT] (`health`)
+
+[EXT] probe FIRST against Preamble P3: if `pg_stat_statements` is absent → `[INFO] 6.14 — extension pg_stat_statements not installed; skipped`. This is an INFO-only advisory derived from correlating `pg_stat_statements` hot queries (Q6.13) with `pg_stats` selectivity:
+
+```sql
+SELECT schemaname, tablename, attname, null_frac, n_distinct
+FROM pg_stats
+WHERE schemaname = 'public'
+  AND n_distinct > 100
+ORDER BY n_distinct DESC
+LIMIT 50;
+```
+
+High-cardinality columns (large `n_distinct`, low `null_frac`) that appear in frequent WHERE/JOIN predicates of the hot queries are candidates for a new index. Advisory only — verify against actual query plans before acting.
+
+Severity: INFO.
+
+### Q6.20 — Free disk / WAL volume / pool saturation [PROVIDER] (`health`)
+
+Manual-verify INFO — not assessable from inside Postgres on managed providers. Check the provider's metrics (CloudWatch `FreeStorageSpace` / `TransactionLogsDiskUsage`; PgBouncer / Supavisor `SHOW POOLS` for connection-pool saturation). Emit one INFO line.
+
+`Severity-if-absent: HIGH.`
