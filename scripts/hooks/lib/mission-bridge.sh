@@ -308,7 +308,7 @@ mission_list() {
       printf '%s\t%s\tcorrupt\t%s\n' "$_mls_fn" "$_mls_mt" "$(basename "$_mls_f")"
       continue
     fi
-    _mls_state=$(mission_state "$_mls_fn" "$_mls_root")
+    _mls_state=$(mission_lifecycle_state "$_mls_fn" "$_mls_root")
     # roadmap label = first non-empty PLAN line that is NOT the `MISSION MODE:` token (line 2+),
     # so concurrent missions are distinguishable in the picker.
     _mls_p=$(mission_read_zone "$_mls_f" PLAN 2>/dev/null \
