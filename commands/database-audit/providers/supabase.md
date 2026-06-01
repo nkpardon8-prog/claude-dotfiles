@@ -87,10 +87,10 @@ These have NO vanilla-Postgres equivalent. Portable SQL checks (Q1.1–Q4.2) are
 `--only` token: **`rls`**.
 
 - **RLS-off severity = CRITICAL (exposed-API case).** Q2.1 severity is CONTEXT-DEPENDENT (not a floor): CRITICAL when the table is reachable via an exposed data API (Supabase `anon` / Neon Data API), HIGH otherwise. Q2.1 (RLS off on public tables) is the portable query in `core.md`; it reports the condition only. In the Supabase context the `public` schema is reachable through the auto-generated PostgREST API as the `anon` role, so RLS-off resolves to **CRITICAL** here (this is the exposed-API case the `core.md` note refers to).
-- **anon/RLS classification heuristics (Q2.3 results).** Apply to the rows returned by the portable Q2.3 policy scan — these heuristics depend on the Supabase `anon` role:
-  - `'anon'` in `roles` AND `cmd IN ('INSERT','UPDATE','DELETE')` → **HIGH** (anon write access)
+- **anon/RLS classification heuristics (Q2.3 results) — Supabase-specific, applied ON TOP of the core result.** These two heuristics are NOT in `core.md` (they reference Supabase concepts — the `anon` role and the `auth.uid()` helper). Apply them to the rows returned by the portable Q2.3 policy scan, in addition to the portable blanket-permissive heuristics that `core.md` already applied to the same rows:
+  - `'anon'` in `roles` AND `cmd IN ('INSERT','UPDATE','DELETE')` → **HIGH** (anon write access; `anon` is the Supabase PostgREST role)
   - `qual` contains `auth.uid()` without `(select auth.uid())` → **MEDIUM** (per-row re-eval perf bug; `auth.uid()` is Supabase-specific)
-  - (The generic `qual = 'true'` blanket-permissive → CRITICAL classification already lives with Q2.3 in `core.md`.)
+  - (The provider-agnostic `qual = 'true'` and unconditional `with_check = 'true'` blanket-permissive → CRITICAL classifications stay with Q2.3 in `core.md` and are NOT repeated here, so a single policy row never gets two severity mechanisms from one file.)
 
 ### Module 3 (Security) — Supabase platform steps
 
