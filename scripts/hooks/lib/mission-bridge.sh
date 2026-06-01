@@ -78,6 +78,12 @@ _file_size() {
   stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0
 }
 
+# _file_mtime <path> -> stdout mtime epoch seconds (0 if absent/unreadable). BSD stat then GNU stat
+# (same order as _file_size — BSD `-f %m` errors out on GNU and falls through, never contaminates).
+_file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+}
+
 # _utf8_safe_cap <maxbytes>  (reads stdin) -> stdout input capped to <maxbytes> with iconv -c
 # repairing any codepoint split by the byte cut. Proven by assumption test 01 (A1/A2).
 _utf8_safe_cap() {
