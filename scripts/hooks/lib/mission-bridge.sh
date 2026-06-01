@@ -357,6 +357,7 @@ mission_fork() {
   # the clone's single live log, so lifecycle / convergence / FAIL / test-trust state survives the clone
   # (copying only the live log would lose archived lifecycle lines and could mis-resume). Best-effort.
   _fk_srcdir=$(dirname "$_fk_src")
+  rm -f "${_fk_dest%.md}.log" 2>/dev/null   # defeat a symlink/orphan planted at the dest log path
   {
     for _fk_a in "$_fk_srcdir"/.mission-backups/MISSION."$_fk_ssid".log.*.gz \
                  "$_fk_srcdir"/.mission-backups/MISSION."$_fk_ssid".log.*.txt; do
@@ -366,7 +367,8 @@ mission_fork() {
       if [ "${_fk_a##*.}" = gz ]; then gzip -dc "$_fk_a" 2>/dev/null; else cat "$_fk_a" 2>/dev/null; fi
     done
     [ -f "${_fk_src%.md}.log" ] && cat "${_fk_src%.md}.log" 2>/dev/null
-  } > "${_fk_dest%.md}.log" 2>/dev/null || true
+  } > "${_fk_dest%.md}.log" 2>/dev/null \
+    || echo "mission_fork: WARN log-history carry-forward incomplete (clone .md is intact): ${_fk_dest%.md}.log" >&2
   # the clone MUST verify sound under the NEW sid, else back it out.
   if ! mission_verify "$_fk_dest" "$_fk_dsid"; then
     rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
