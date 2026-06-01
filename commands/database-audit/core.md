@@ -932,31 +932,35 @@ FROM information_schema.role_table_grants
 WHERE grantee = 'PUBLIC';
 ```
 
-Schema and function ACLs mentioning PUBLIC:
+Schema ACLs mentioning PUBLIC — use `aclexplode` filtered to `grantee = 0` (the OID-0 PUBLIC pseudo-role), which works no matter WHERE the PUBLIC entry sits in the ACL array. A NULL `nspacl` means DEFAULT privileges, so coalesce to `acldefault('n', n.nspowner)` so default PUBLIC grants are not missed:
 
 ```sql
-SELECT n.nspname AS schema_name, n.nspacl::text AS schema_acl
+SELECT n.nspname AS schema_name, acl.privilege_type
 FROM pg_namespace n
-WHERE n.nspacl::text LIKE '%=%'
-  AND array_to_string(n.nspacl, ',') LIKE '%=U%';
+CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) AS acl
+WHERE acl.grantee = 0
+  AND acl.privilege_type IN ('USAGE','CREATE');
 ```
 
+Function PUBLIC EXECUTE grants — `proacl IS NULL` means DEFAULT privileges, which INCLUDE `PUBLIC EXECUTE`, so `IS NULL` must NOT be treated as "no grant." Use `has_function_privilege('public', p.oid, 'EXECUTE')`, which resolves the effective privilege whether the ACL is explicit or defaulted:
+
 ```sql
-SELECT p.proname, n.nspname, p.proacl::text AS proc_acl
+SELECT n.nspname, p.proname
 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
-WHERE p.proacl IS NOT NULL
-  AND array_to_string(p.proacl, ',') LIKE '=%';
+WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+  AND has_function_privilege('public', p.oid, 'EXECUTE');
 ```
 
-Default privileges granted to PUBLIC:
+Default privileges granted to PUBLIC (future objects) — filter the exploded ACL to `grantee = 0`:
 
 ```sql
-SELECT defaclnamespace::regnamespace AS schema_name, defaclobjtype, defaclacl::text
-FROM pg_default_acl
-WHERE array_to_string(defaclacl, ',') LIKE '=%';
+SELECT d.defaclnamespace::regnamespace AS schema_name, d.defaclobjtype, acl.privilege_type
+FROM pg_default_acl d
+CROSS JOIN LATERAL aclexplode(d.defaclacl) AS acl
+WHERE acl.grantee = 0;
 ```
 
-A grant whose grantee is empty (the `=privs` ACL form) or `PUBLIC` means EVERY role — including `anon` on managed providers — gets that privilege. PUBLIC SELECT on a sensitive table, PUBLIC USAGE/CREATE on a schema, or PUBLIC EXECUTE on a function is a common over-exposure.
+A grant whose grantee is PUBLIC (grantee OID `0`, including the DEFAULT-privilege case where the ACL column is NULL) means EVERY role — including `anon` on managed providers — gets that privilege. PUBLIC SELECT on a sensitive table, PUBLIC USAGE/CREATE on a schema, or PUBLIC EXECUTE on a function is a common over-exposure.
 
 Severity: HIGH (PUBLIC data/exec grant) / MEDIUM (PUBLIC schema USAGE).
 
