@@ -2,7 +2,7 @@
 
 This file is `Read` by the `/database-audit` orchestrator **only when the detected/forced provider is `postgres`** (the fallback when no Supabase or Neon signal matched). It declares (a) the connection method, (b) the prod-guard contribution, and (c) that there are NO platform modules — vanilla Postgres is the portable `core.md` floor and nothing more.
 
-**Single source of truth:** every portable query (Q1.1–Q4.2) lives in `core.md`. This file does NOT repeat any query. Vanilla Postgres runs `core.md` and only `core.md`.
+**Single source of truth:** every portable query (Q1.1–Q15.5, Modules 1–15) lives in `core.md`. This file does NOT repeat any query. Vanilla Postgres runs the full portable `core.md` library and only `core.md`.
 
 ---
 
