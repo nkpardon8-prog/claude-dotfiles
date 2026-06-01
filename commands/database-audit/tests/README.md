@@ -49,8 +49,9 @@ host `psql` is not needed.
    rule 1 (`../../redaction.md`) and asserts the output contains `[REDACTED:`
    and does **not** contain the raw fake value.
 
-The container is always torn down by an `EXIT` trap that preserves the real exit
-code, even on assertion failure.
+The container is torn down by the `EXIT` trap (which preserves the real exit
+code) on normal exit, assertion failure, and most signals; a `SIGKILL`/OOM leak
+is reaped by the pre-run cleanup on the next run.
 
 ### Planted defects → catching query → expected vanilla-context severity
 
