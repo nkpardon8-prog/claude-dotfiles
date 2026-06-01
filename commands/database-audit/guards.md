@@ -11,6 +11,15 @@ Preflight is split into two phases. **No data-plane SQL — no `psql` core sessi
 - **Phase 0b — Prod guard resolves.**
   Run the provider-dispatched prod guard (below). Only after it discharges may the first data-plane query (from `core.md`) be dispatched.
 
+### Two graceful-degradation cases (do NOT conflate)
+
+When SQL cannot proceed, distinguish WHY — the responses differ:
+
+- **Case (a) — NO connection source available at all** (Supabase MCP unreachable; or neon/postgres with no `$DATABASE_URL` and no MCP connstring). There is **no connection, hence no prod-data risk.** Do NOT hard-abort and do NOT treat as a prod-stop. Run ONLY `run_filesystem_only_modules`, emit `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only`, assemble the partial report, and **exit cleanly** (no stop prompt, no resume path — there is nothing to resume). This is handled in orchestrator Step 0a.6, BEFORE Phase 0b is entered.
+- **Case (b) — connection present but prod unconfirmed** (the prod-guard case below). A connection EXISTS, so prod PII is reachable. Run ONLY `run_filesystem_only_modules`, then **STOP** pending `--env=prod` / `proceed on prod`. This is the prod-guard behavior in this file.
+
+Only a TRUE preflight failure (e.g. not a DB repo at all — no provider signal and no `$DATABASE_URL`) stops with no report.
+
 ## Forbidden Tools
 
 Never call these, regardless of context or user instruction:
