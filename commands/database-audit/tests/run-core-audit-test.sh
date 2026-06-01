@@ -29,12 +29,10 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-# TODO: pin the image BY DIGEST once a registry-resolved digest is available,
-# e.g. IMAGE="postgres@sha256:<64-hex>". A digest pin makes the test fully
-# reproducible and tamper-evident. The digest could not be resolved at authoring
-# time (sandboxed/offline), so we fall back to the floating :16 tag. Replace the
-# line below with the digest form before relying on this in CI.
-IMAGE="postgres:16"
+# Pinned BY DIGEST for reproducible, tamper-evident runs (resolved 2026-05-31 from
+# docker.io postgres:16). To refresh: `docker pull postgres:16 && docker image inspect
+# postgres:16 --format '{{index .RepoDigests 0}}'` and replace the digest below.
+IMAGE="postgres@sha256:4b7183ac05f8ef417db21fd72d71047a4238340c261d3cc3ddb6d579ab5071ae"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SEED_FILE="${SCRIPT_DIR}/seed-bad-schema.sql"
