@@ -56,6 +56,9 @@ EXIT_SKIP=77
 # BEFORE mktemp runs (rm -f on an empty string is a harmless no-op).
 CORE_SQL=""
 CORE_OUT_FILE=""
+# Temp dir for the Module 13 [FS] migration-lint fixture (filesystem-only, no DB).
+# Initialized empty so the EXIT trap can rm -rf it safely even on an early signal.
+MIG_DIR=""
 
 # ---------------------------------------------------------------------------
 # Docker availability gate (runs FIRST, before any docker invocation). A missing
