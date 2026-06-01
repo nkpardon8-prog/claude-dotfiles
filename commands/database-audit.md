@@ -172,6 +172,8 @@ preflight loaded + guard resolved (provider=<provider>, prod-signal=<which signa
 
 Honor `--only` throughout (skip a module if `--only` is set and does not include its name). Apply graceful per-module degradation: on any tool/SQL error emit `[INFO] Module N — {tool} unavailable: {error}` and continue — only preflight aborts.
 
+**Preamble dispatch (REQUIRED, runs ONCE before the per-module queries).** Before the per-module queries, run the `core.md` Preamble queries P1 (`server_major`), P2 (capability probe), P3 (`pg_extension` inventory) ONCE, behind the discharged prod guard. These run whenever ANY data-plane module is selected — they are NOT gated on the health/config tokens — because compliance/pii/exfil consume P3 (and compliance consumes Q7.1). Skip the preamble only when no data-plane module will run (e.g. a filesystem-only `--only` set).
+
 **Pre-redaction of `{error}` (mandatory):** the raw `{error}` text from a failed tool/SQL call can contain connection details (a `postgres://…` URI, a host, or a secret-shaped token). Before this `[INFO] Module N — {tool} unavailable: {error}` finding is written or printed, pass `{error}` through the `redaction.md` rules (especially rule 5 connection-string redaction and rule 1 secret-value redaction). The same applies to the Step 0a.6 / case-(a) `[INFO] No DB connection/MCP available …` finding when it carries an MCP error string. Never let an unredacted error string reach the report or stdout.
 
 ### Core (portable, all providers — `core.md`)
