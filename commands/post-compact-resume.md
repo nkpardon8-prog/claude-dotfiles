@@ -286,7 +286,8 @@ plan-of-record that outlives any single handoff:
   empty):
   ```bash
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"
-  mission_file=$(mission_resolve_path "$ARG_SID" "$(handoff_canonical_root)")
+  mission_file=$(mission_resolve_path "$ARG_SID" "$(handoff_canonical_root)") \
+    || { echo "post-compact-resume: mission_resolve_path errored (bad sid/root) — surface, treat as no mission" >&2; mission_file=""; }
   ```
 - If `mission_file` is empty, skip this subsection silently and proceed to Step 3 with the handoff alone.
 - If it exists, run `mission_verify` (already sourced above):
