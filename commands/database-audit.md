@@ -240,7 +240,7 @@ Skip if `--only` is set and does not include `client`.
 ## Phase 6 — Report assembly
 
 1. Collect all findings from Modules 1–5 into a list.
-2. Apply the redaction pass (`redaction.md` rules 1–4) BEFORE writing anything to disk.
+2. Apply the redaction pass (`redaction.md` rules 1–5) BEFORE writing anything to disk.
 3. **Deduplicate** findings by `(severity, title, object_name)` BEFORE the sort — identical migration-drift findings emitted by both core Module 1 (`core.md` Migration drift) and the Supabase platform migration-drift module collapse to a single finding.
 4. Sort: **severity DESC → module → object_name ASC** (deterministic).
 5. Render markdown. The title is **provider-templated**:
