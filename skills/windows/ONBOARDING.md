@@ -82,14 +82,16 @@ for the user to `/mcp` reconnect. Don't auto-retry (invariant #8).
 One is the Mac mini (`/macmini` — don't touch). Match title `OpenDentalDev1` +
 confirm a Windows taskbar. If still ambiguous, STOP and ask (invariant #1).
 
-## How this differs from /macmini
+## How this relates to /macmini (now a twin)
 
-If you know `/macmini`, **negate its mechanics**: no `gh gist`, no `cliclick`, no
-on-host run.sh agent, no `/macmini measure` calibration, no Terminal-foreground
-dance. Clicks are direct CDP `click_at` into the canvas; arbitrary text is the
-per-char shift-map. The full table is in `windows.md` → "How this differs from
-/macmini", and the two conflicts to re-check are in
-`docs/FINDINGS-2026-05-31.md`.
+`/macmini` *historically* used `gh gist` + `cliclick` + `/macmini measure`
+calibration; it was rewritten 2026-06-01 to the **same direct-CDP model** as
+`/windows` (clicks are `click_at` into the canvas; arbitrary text is the
+per-char shift-map). So they're **twins** now — the real deltas are device name,
+macOS menu bar/Dock vs Windows taskbar, Cmd-keys-forward (Mac) vs swallowed
+(Windows), and CRD a11y mode (Mac exposes only `Desktop`). The full table is in
+`windows.md` → "How this differs from /macmini", and the runtime delta to
+re-check (a11y mode) is in `docs/FINDINGS-2026-05-31.md`.
 
 ## Repo conventions
 
