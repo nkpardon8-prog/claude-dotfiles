@@ -80,6 +80,7 @@ Project repos are **not** auto-pushed. Only this dotfiles repo. The rule lives i
 | `Stop` (second entry) | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app only. Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
 | `UserPromptSubmit` | `scripts/progress/on-prompt-submit.sh` | Progress-bar state init. |
 | `PostToolUse` (TodoWrite, Task) | `scripts/progress/on-{todo-write,task-spawn}.sh` | Progress-bar advances. |
+| `PostToolUse` (most tools) | `scripts/progress/on-tool-activity.sh` | Writes the live line-2 label (`Edit X`, `Bash: …`, `Task: …`) to a separate `<sid>.activity.json` sidecar; excludes TodoWrite. |
 | `SessionStart` (second entry) | `scripts/progress/on-session-start-cleanup.sh` | Prunes stale progress state + stale auto-compact sentinels (>12h). |
 
 Auto-compact is the only `Stop` hook that crosses the Claude/Terminal boundary; everything else is read-only state-file plumbing.
