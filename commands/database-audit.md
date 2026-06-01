@@ -187,7 +187,7 @@ Run, honoring `--only`:
 
 - **Module 1 — Schema** (`schema`): Q1.1–Q1.8 + migration drift (applied-migrations list supplied by the provider adapter).
 - **Module 2 — RLS** (`rls`): Q2.1–Q2.6. RLS-off severity is CONTEXT-DEPENDENT — the provider adapter sets the final severity (Supabase/Neon-Data-API → CRITICAL; vanilla → HIGH).
-- **Module 3 — Security, portable subset** (`security`): Q3.1 (PII inventory), Q3.3 (dynamic SQL).
+- **Module 3 — Security, portable subset** (`security`): Q3.3 (dynamic SQL). (PII inventory / Q3.1 logic is NOT here — it belongs solely to the `pii` token / Module 12; do not run it under `security`.)
 - **Module 4 — Production Readiness, portable subset** (`prod`): Q4.1 (version, against the provider's supported-major list), Q4.2 (connection saturation).
 - **Module FS — Filesystem security** (zero-data-touch, provider-agnostic): FS.1 repo secret scan, FS.2 tracked-files secret scan, FS.3 `.env`-tracked check, FS.4 seed-data check (all gated `security`); FS.5 env-drift check (gated `prod`). All of these (FS.1–FS.5) also run in BOTH the no-connection case (a) and the prod-stop path via `run_filesystem_only_modules` — the canonical filesystem-only set defined once in `guards.md` (see Phase 0b / Step 0a.6). FS.5 is included there because it is zero-data-touch.
 
