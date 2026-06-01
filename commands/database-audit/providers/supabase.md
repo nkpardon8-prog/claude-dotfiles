@@ -145,7 +145,7 @@ Items: Custom SMTP configured; MFA + leaked-password protection enabled; DB webh
 
 (PITR was pulled out of this bundle into its own manual-verify INFO under the `backup` + `prod` tokens — see "Step I-PITR" below — so `--only=backup` surfaces recovery posture on Supabase. Module 14.3 in `core.md` is vanilla+Neon-only and DEFERS to that Supabase-owned PITR line; on a Supabase run core 14.3 emits nothing and cross-refs "PITR → see Supabase Step I-PITR".)
 
-**Step I-PITR — PITR / point-in-time recovery (manual-verify).**
+**Step I-PITR — PITR / point-in-time recovery (manual-verify).** (Canonical name: **`Step I-PITR`**. This is the single, stable identity for the Supabase standalone PITR item; `core.md` Module 14.3's cross-ref `PITR → see Supabase Step I` and the orchestrator both resolve to THIS section.)
 
 `--only` tokens: **`backup`** AND **`prod`** (this item runs whenever EITHER token is selected — `--only=backup` must surface PITR on Supabase, and a full prod-readiness pass `--only=prod` still includes it). PITR cannot be verified via read-only SQL. This is the **canonical Supabase PITR owner**; `core.md` Module 14.3 defers to it. Emit as a standalone manual-verify INFO with its own title/object_name (so it is NOT collapsed into the Step-I HIGH bundle by Phase-6 dedup) and never pass/fail:
 
