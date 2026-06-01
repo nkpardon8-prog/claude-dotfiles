@@ -318,15 +318,15 @@ These checks are **provider-agnostic**, touch **no database** (only the local fi
 
 **Read-only constraint:** the only `git` subcommands permitted here are `git ls-files`, `git grep`, and `git check-ignore`. No mutating git. No filesystem writes outside `./tmp/db-audit/`.
 
-**Portability constraint (macOS/Darwin):** there is NO GNU `xargs -r` on Darwin. Never rely on `xargs -r`. To no-op cleanly when there are no files / no matches, guard explicitly:
+**Portability constraint (macOS/Darwin):** there is NO GNU `xargs -r` on Darwin. Never rely on `xargs -r`. FS.1 and FS.2 must report `file:line` (use `grep -n` / `git grep -n` — NOT `grep -l`, which gives filenames only). For the tracked-files scan, use NUL-delimited plumbing so filenames with spaces survive — `git grep -n PATTERN` (preferred — handles this natively and no-ops cleanly with no match), OR `git ls-files -z | xargs -0 grep -n PATTERN`. Never use a newline-`xargs` form for the tracked scan:
 
 ```bash
-files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l PATTERN
+git grep -n PATTERN   # preferred: file:line output, clean no-op on no match
+# or, NUL-delimited (survives spaces in filenames):
+git ls-files -z | xargs -0 grep -n PATTERN
 ```
 
-or use `git grep -l PATTERN` (which exits non-zero with no output on no match — a clean no-op).
-
-**Redaction:** any matched secret VALUE reported by these checks is redacted per `redaction.md` (rule 1 for secret/JWT values, rule 4 for env-key names, rule 5 for `postgres://`/`postgresql://` connection strings) — never echo a raw secret value or connection string. Report file names, key names, and `[REDACTED:…]` placeholders only.
+**Redaction (mechanical, redact-before-print):** any matched secret VALUE reported by these checks is redacted per `redaction.md` (rule 1 for secret/JWT values, rule 4 for env-key names, rule 5 for `postgres://`/`postgresql://` connection strings) — never echo a raw secret value or connection string. A raw `grep -n` prints the WHOLE matching line, which contains the raw secret; pipe every match through the redaction step (`redaction.md` rules 1–5) BEFORE anything is written or printed, so output is `file:line` + `[REDACTED:<8hex>]` and NEVER the raw matched content. Report file names, line numbers, key names, and `[REDACTED:…]` placeholders only.
 
 ### FS.1 — Repo secret scan (`--only=security`)
 
