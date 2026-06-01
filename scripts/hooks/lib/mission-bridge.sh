@@ -296,18 +296,23 @@ mission_list() {
   _mls_root="$1"; [ -n "$_mls_root" ] || { echo "mission_list: missing root" >&2; return 1; }
   for _mls_f in "$_mls_root"/MISSION.*.md; do
     [ -e "$_mls_f" ] || continue
-    _mls_mt=$(stat -f %m "$_mls_f" 2>/dev/null || stat -c %Y "$_mls_f" 2>/dev/null || echo 0)
-    _mls_sid=$(_mission_marker_field "$_mls_f" sid 2>/dev/null || true)
-    if [ -z "$_mls_sid" ]; then
-      printf '0\t%s\tcorrupt\t%s\n' "$_mls_mt" "$(basename "$_mls_f")"
+    # FILENAME sid is AUTHORITATIVE (writes + locks key on it); the marker is cross-checked.
+    _mls_fn=$(basename "$_mls_f" .md); _mls_fn=${_mls_fn#MISSION.}
+    _mls_mk=$(_mission_marker_field "$_mls_f" sid 2>/dev/null || true)
+    # live-collision freshness must reflect log-only activity too -> mtime = max(.md, .log).
+    _mls_mtmd=$(_file_mtime "$_mls_f"); _mls_mtlog=$(_file_mtime "${_mls_f%.md}.log")
+    if [ "$_mls_mtlog" -gt "$_mls_mtmd" ] 2>/dev/null; then _mls_mt="$_mls_mtlog"; else _mls_mt="$_mls_mtmd"; fi
+    # marker absent OR != filename sid => not a trustworthy/attachable mission: label corrupt.
+    if [ -z "$_mls_mk" ] || [ "$_mls_mk" != "$_mls_fn" ]; then
+      printf '%s\t%s\tcorrupt\t%s\n' "$_mls_fn" "$_mls_mt" "$(basename "$_mls_f")"
       continue
     fi
-    _mls_state=$(mission_state "$_mls_sid" "$_mls_root")
+    _mls_state=$(mission_state "$_mls_fn" "$_mls_root")
     # roadmap label = first non-empty PLAN line that is NOT the `MISSION MODE:` token (line 2+),
     # so concurrent missions are distinguishable in the picker.
     _mls_p=$(mission_read_zone "$_mls_f" PLAN 2>/dev/null \
               | grep -vE '^[[:space:]]*$' | grep -vE '^MISSION MODE:' | head -1 | cut -c1-120)
-    printf '%s\t%s\t%s\t%s\n' "$_mls_sid" "$_mls_mt" "$_mls_state" "$_mls_p"
+    printf '%s\t%s\t%s\t%s\n' "$_mls_fn" "$_mls_mt" "$_mls_state" "$_mls_p"
   done | sort -t"$(printf '\t')" -k2,2nr
 }
 
