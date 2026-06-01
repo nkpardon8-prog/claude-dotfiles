@@ -202,6 +202,7 @@ WHERE c.table_schema = 'public'
 ROLLBACK;
 SQL
 )"
+CORE_RC=$?
 
 echo "----- core query output -----"
 printf '%s\n' "$CORE_OUT"
