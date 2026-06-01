@@ -67,7 +67,10 @@ Report each line; don't act, just diagnose:
    the rect/snapshot steps below read the **Mac** tab — never whatever is
    foreground (which could be the Windows session). If 2+ CRD tabs and none
    match → ambiguous: report it and **STOP — do NOT run steps 3–5** (a
-   `take_snapshot` would read the wrong, possibly Windows, tab).
+   `take_snapshot` would read the wrong, possibly Windows, tab). If exactly ONE
+   CRD tab and it doesn't match the title, screenshot-confirm a **macOS menu bar**
+   first (read-only diagnosis only — `status` never sends input); if it shows a
+   Windows taskbar, report "only the Windows session is open" and STOP.
 3. **Canvas rect ok?** (on the Mac tab from step 2) Run the act.md rect helper;
    does it return a non-error rect (remote canvas live)? If `error` → no live
    feed (reconnect/sign-in overlay likely).
