@@ -168,7 +168,8 @@ FROM pg_policies WHERE schemaname = 'public';
 ```
 
 Apply heuristics to results:
-- `qual = 'true'` → CRITICAL (blanket permissive)
+- `qual = 'true'` → CRITICAL (blanket permissive — USING clause matches every row)
+- `with_check = 'true'` AND `cmd IN ('INSERT','UPDATE','ALL')` → CRITICAL (blanket permissive — unconditional WITH CHECK lets any row be written; catches INSERT/UPDATE policies whose permissiveness lives in `with_check`, not `qual`)
 - `qual` contains `auth.uid()` without `(select auth.uid())` → MEDIUM (per-row re-eval perf bug)
 - `'anon'` in roles AND `cmd IN ('INSERT','UPDATE','DELETE')` → HIGH
 
