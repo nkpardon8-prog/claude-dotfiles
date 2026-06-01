@@ -140,9 +140,14 @@ fi
 # have been skipped entirely (no manifest) — MISSION_PREFIX was initialized to "" above, so the
 # recovery probe still runs. CWD_CANON is not set yet (assigned later); the probe falls back to
 # handoff_canonical_root with no arg (defaults to $PWD), which is the right canonical root anyway.
-MP=$(printf '%s' "${MANIFEST_JSON:-}" | jq -r '.mission_path // empty' 2>/dev/null)
-if [ -z "$MP" ] && [ -n "${SID:-}" ]; then
+# Own-sid only (collision fix): the banner is ALWAYS this session's OWN deterministic mission file. Do
+# NOT trust a raw manifest mission_path — a stale/cross-sid/off-root pointer would surface another
+# mission's banner into this session. mission_create only ever records this sid's own canonical path,
+# so the deterministic path is authoritative here.
+if [ -n "${SID:-}" ]; then
   MP="$(handoff_canonical_root "${CWD_CANON:-}" 2>/dev/null)/MISSION.${SID}.md"
+else
+  MP=""
 fi
 if [ -n "$MP" ] && [ -f "${MP%.md}.banner" ] && [ "$(_file_size "${MP%.md}.banner" 2>/dev/null)" -le 65536 ] 2>/dev/null; then
   # Banner content + a trailing newline. Injection-safety framing is ALREADY baked in by the writer.
