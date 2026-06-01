@@ -94,6 +94,11 @@ Resolve per the detected provider's `(a) Connection` section — metadata-only c
 
 **NEVER echo the resolved connection string** (redaction rule 4). It is used only as the `psql`/`run_sql` target.
 
+### Step 0a.5 — Report directory + .gitignore check
+
+- Create `./tmp/db-audit/` if absent. If `./tmp/` is not writable, fall back to `$(pwd)/db-audit-YYYY-MM-DD-HHmm.md` (this fallback path is the sanctioned write-location exception in `guards.md` Forbidden Tools). Never write to `$HOME`.
+- Read `.gitignore`. If `tmp/` is not covered → emit INFO finding: ".gitignore does not cover tmp/ — audit reports may be committed accidentally." (zero-data-touch — recorded for Meta + Info section.)
+
 ### Step 0a.6 — No-connection-source path (graceful degradation case (a))
 
 This path fires whenever Step 0a.4 found **no usable connection source at all** for the detected provider:
@@ -112,11 +117,6 @@ Because there is **no connection, there is no prod-data risk** — so this is NO
 This is distinct from the Phase 0b prod-stop (case (b)): there a connection EXISTS but prod is unconfirmed, so filesystem-only modules run and we STOP pending `--env=prod`. Here there is no connection, so we run filesystem-only modules and EXIT with a complete partial report (no stop, no resume prompt).
 
 Only TRUE preflight failures (e.g. the working directory is not a DB repo at all — no provider signal AND no `$DATABASE_URL`) stop with no report.
-
-### Step 0a.5 — Report directory + .gitignore check
-
-- Create `./tmp/db-audit/` if absent. If `./tmp/` is not writable, fall back to `$(pwd)/db-audit-YYYY-MM-DD-HHmm.md`. Never write to `$HOME`.
-- Read `.gitignore`. If `tmp/` is not covered → emit INFO finding: ".gitignore does not cover tmp/ — audit reports may be committed accidentally." (zero-data-touch — recorded for Meta + Info section.)
 
 ---
 
