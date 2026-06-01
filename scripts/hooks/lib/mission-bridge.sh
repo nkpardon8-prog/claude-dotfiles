@@ -267,24 +267,21 @@ mission_state() {
   _mst_sid=$(_mission_sanitize_sid "$1"); _mst_root="$2"
   { [ -n "$_mst_sid" ] && [ -n "$_mst_root" ]; } || { printf 'unknown\n'; return 0; }
   _mst_live="${_mst_root}/MISSION.${_mst_sid}.log"
-  # NB: build into a temp file rather than $( … ) — bash 3.2 misparses a `)` case-pattern inside
-  # command substitution (same reason §8 redirects to /tmp). Concatenate archives oldest->newest + live.
-  _mst_tmp=$(mktemp 2>/dev/null) || { printf 'unknown\n'; return 0; }
-  {
-    for _mst_a in "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.gz \
-                  "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.txt; do
-      [ -e "$_mst_a" ] || continue
-      printf '%s\n' "$_mst_a"
-    done | sort | while IFS= read -r _mst_a; do
-      case "$_mst_a" in
-        *.gz) gzip -dc "$_mst_a" 2>/dev/null ;;
-        *)    cat "$_mst_a" 2>/dev/null ;;
-      esac
-    done
-    cat "$_mst_live" 2>/dev/null
-  } > "$_mst_tmp" 2>/dev/null
-  _mst_last=$(grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' "$_mst_tmp" | tail -1)
-  rm -f "$_mst_tmp"
+  # Concatenate archives oldest->newest + live, keep the LAST lifecycle line. Uses `if`/`${a##*.}`
+  # rather than `case` so the whole thing is safe inside $( … ) — bash 3.2 misparses a `)` case-pattern
+  # inside command substitution. No temp file (so nothing to leak on interruption).
+  _mst_last=$(
+    {
+      for _mst_a in "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.gz \
+                    "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.txt; do
+        [ -e "$_mst_a" ] || continue
+        printf '%s\n' "$_mst_a"
+      done | sort | while IFS= read -r _mst_a; do
+        if [ "${_mst_a##*.}" = gz ]; then gzip -dc "$_mst_a" 2>/dev/null; else cat "$_mst_a" 2>/dev/null; fi
+      done
+      cat "$_mst_live" 2>/dev/null
+    } | grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' | tail -1
+  )
   case "$_mst_last" in
     *MISSION-REBASELINED*) printf 'active\n' ;;
     *MISSION-CLEARED*)     printf 'cleared\n' ;;
