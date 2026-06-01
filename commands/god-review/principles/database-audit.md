@@ -29,10 +29,15 @@ Severity for each finding type defers entirely to `CRITERIA.md` — do not inven
 In Phase 1, recompute `HAS_DATABASE`:
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-# IDENTICAL signal set to god-review.md Phase 0 (orchestrator gate must agree with
-# this self-gate) and to /database-audit Step 0a.2: on-disk SQL/migrations/schema,
-# supabase/config.toml, package.json deps, and SUPABASE_URL / non-empty DATABASE_URL
-# in any .env*.
+# This static lens uses a deliberately BROADER superset of DB signals than
+# /database-audit's provider detection — it activates whenever ANY database
+# technology is present in the repo (on-disk SQL/migrations/schema,
+# supabase/config.toml, package.json deps incl. pg/drizzle-orm/prisma, and
+# SUPABASE_URL / non-empty DATABASE_URL in any .env*). It must agree with
+# god-review.md Phase 0's orchestrator gate. Because this lens is read-only
+# (no DB connection, no SQL), over-activation is harmless — a broader signal
+# set is the correct posture for a static repo lens, unlike the live command's
+# narrower Supabase/Neon provider detection.
 HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" -o -path "*/supabase/config.toml" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
 if [ -z "$HAS_DATABASE" ]; then
   # Direct pipe: -print0 goes STRAIGHT into xargs -0 (never captured into a shell
