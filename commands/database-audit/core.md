@@ -90,7 +90,7 @@ WHERE schemaname = 'public' AND n_distinct = 1;
 
 Severity: LOW.
 
-### Q1.7 — Tables missing created_at/updated_at
+### Q1.7 — Tables missing BOTH created_at and updated_at
 
 ```sql
 SELECT t.table_name
