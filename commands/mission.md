@@ -86,8 +86,8 @@ there is no mtime backstop. Use `mfile` for all reads; use `<sid>`/`<root>` for 
 
 Parse `$ARGUMENTS`:
 
-- **blank or `status`** → **STATUS** (read-only, NO mutation). Resolve the mission via the manifest
-  `mission_path` pointer (Section 1). Read the **LOG sidecar DIRECTLY** (the resume-read idiom in
+- **blank or `status`** → **STATUS** (read-only, NO mutation). Resolve the mission via
+  `mission_resolve_path` (Section 1). Read the **LOG sidecar DIRECTLY** (the resume-read idiom in
   Section 8 — `grep '[mission] '` over the FULL live log PLUS **ALL** rotated archives (oldest→newest),
   **not** a fixed `tail`, **not** only the newest archive, and **not** the banner: status reads the LOG
   directly). From the recovered `mission_state` (active-iff), `last_review` (round/dry) and PLAN
