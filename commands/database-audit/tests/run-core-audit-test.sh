@@ -64,10 +64,19 @@ trap 'rc=$?; docker rm -f "$CONTAINER" >/dev/null 2>&1; exit $rc' EXIT
 # Offline honesty: if the image is not cached AND we cannot pull it, skip with a
 # distinct code rather than reporting a false failure.
 # ---------------------------------------------------------------------------
+# A missing docker binary or a stopped daemon is a distinct skip reason from
+# "online but the image isn't cached and can't be pulled" — report each
+# accurately (both still exit 77, not a failure).
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  echo "[SKIP] docker unavailable (daemon down or not installed)."
+  echo "[SKIP] This is NOT a test failure — start the Docker daemon (or install docker) and re-run."
+  exit "$EXIT_SKIP"
+fi
+
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[INFO] image '$IMAGE' not cached locally — attempting pull..."
   if ! docker pull "$IMAGE" >/dev/null 2>&1; then
-    echo "[SKIP] image '$IMAGE' is not cached and could not be pulled (offline?)."
+    echo "[SKIP] image not cached and offline (image '$IMAGE' could not be pulled)."
     echo "[SKIP] This is NOT a test failure — run once while online to cache the image."
     exit "$EXIT_SKIP"
   fi
