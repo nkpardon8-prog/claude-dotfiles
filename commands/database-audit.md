@@ -120,10 +120,20 @@ This path fires whenever Step 0a.4 found **no usable connection source at all** 
 
 Because there is **no connection, there is no prod-data risk** — so this is NOT a prod-stop, and it is NOT a hard abort. Instead:
 
+0. **Ensure the report directory first.** Re-ensure Step 0a.5 ran (idempotent `mkdir -p ./tmp/db-audit/`, or the sanctioned `$(pwd)/db-audit-…md` fallback if `./tmp/` is unwritable). The partial report MUST NOT write to a non-existent dir — this path can be entered directly from detection, so do not assume Step 0a.5 already created it; re-ensure here.
 1. Emit the finding `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only`. If a tool error string is being surfaced, pass it through the `redaction.md` rules first (scrub connection strings / secret-shaped tokens) before writing or printing it.
 2. Do NOT enter Phase 0b (the prod guard needs no resolution — there is nothing to read).
-3. Run ONLY the zero-data-touch filesystem modules via `guards.md` `run_filesystem_only_modules` — `core.md` Module FS (FS.1 repo secret scan, FS.2 tracked-files scan, FS.3 `.env`-tracked check, FS.4 seed-data check), migration-on-disk drift, and the Step 0a.5 `.gitignore tmp/` check. These touch no DB.
-4. Proceed to Phase 6 report assembly and **write the partial report**, then exit cleanly. Record `Connection source: none` and `Modules skipped: <all SQL + platform modules>` in Meta.
+3. Run the zero-data-touch filesystem modules via `guards.md` `run_filesystem_only_modules` — **honoring `--only`** (see the `--only` rule below). The full set is `core.md` Module FS (FS.1 repo secret scan, FS.2 tracked-files scan, FS.3 `.env`-tracked check, FS.4 seed-data check — all `security`-gated; FS.5 env-drift — `prod`-gated), migration-on-disk drift (`schema`/`prod`-gated), and the Step 0a.5 `.gitignore tmp/` check (always-on/ungated). These touch no DB.
+4. Proceed to Phase 6 report assembly and **write the partial report**, then exit cleanly. Record `Connection source: none` and `Modules skipped: <all SQL + platform modules; plus any FS modules excluded by --only>` in Meta.
+
+**`--only` in this filesystem-only path (REQUIRED — do not run all unconditionally):** When `--only` is set, run ONLY the filesystem modules whose governing `--only` token is present:
+
+- FS.1–FS.4 are gated on `security`.
+- FS.5 (env-drift) is gated on `prod`.
+- migration-on-disk drift is gated on `schema` OR `prod` (either token enables it).
+- the `.gitignore tmp/` check is always-on / ungated (it runs regardless of `--only`).
+
+If `--only` is set and excludes **every** available filesystem module (e.g. `--only=client` or `--only=rls`), emit `[INFO] no filesystem modules selected under --only` and still write the (near-empty, ungated-`.gitignore`-check-only) report. When `--only` is unset, run all filesystem modules (current behavior).
 
 This is distinct from the Phase 0b prod-stop (case (b)): there a connection EXISTS but prod is unconfirmed, so filesystem-only modules run and we STOP pending `--env=prod`. Here there is no connection, so we run filesystem-only modules and EXIT with a complete partial report (no stop, no resume prompt).
 
