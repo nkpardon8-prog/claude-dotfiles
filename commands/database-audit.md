@@ -107,7 +107,11 @@ Resolve per the detected provider's `(a) Connection` section — metadata-only c
 
 **Ordering invariant:** this step MUST complete BEFORE any code path that writes a report — including the Step 0a.6 case-(a) filesystem-only partial report, the Phase 0b prod-stop partial report, and the Phase 6 full report. It runs here in Phase 0a preflight, before the detection branches fan out into those write paths, so the report directory always exists first. Any path that writes a report must treat "report directory exists (or its sanctioned fallback is selected)" as a precondition — re-ensure it (idempotent `mkdir -p`) if entering a write path directly.
 
-- Create `./tmp/db-audit/` if absent (idempotent `mkdir -p`). If `./tmp/` is not writable, fall back to `$(pwd)/db-audit-YYYY-MM-DD-HHmm.md` (this fallback path is the sanctioned write-location exception in `guards.md` Forbidden Tools). Never write to `$HOME`.
+- Create `./tmp/db-audit/` if absent (idempotent `mkdir -p`). If `./tmp/` is not writable, fall back to the per-run file `$(pwd)/db-audit-YYYY-MM-DD-HHmm.md` (this fallback path is the sanctioned write-location exception in `guards.md` Forbidden Tools). Never write to `$HOME`.
+- **Store the resolved write location in named variables that every report-writing path (Step 0a.6, Phase 0b prod-stop, Phase 6) MUST reference — do NOT hardcode `./tmp/db-audit/` downstream:**
+  - **Normal case (`./tmp/` writable):** set `REPORT_DIR=./tmp/db-audit`. The timestamped report is `$REPORT_DIR/<ts>.md` (where `<ts>` is `YYYY-MM-DD-HHmm`) and the rolling copy is `$REPORT_DIR/latest.md`.
+  - **Fallback case (`./tmp/` NOT writable):** there is no directory to host a `latest.md`; set `REPORT_FILE=$(pwd)/db-audit-<ts>.md` and `REPORT_DIR=$(pwd)`. The `latest.md` copy is SKIPPED in this case (a single per-run file in `$(pwd)` is the sanctioned exception; do not create additional files there). Record this in Meta as the resolved report path.
+  - In the normal case also set `REPORT_FILE=$REPORT_DIR/<ts>.md` for a uniform reference. Phase 6 always writes `REPORT_FILE`, and writes `$REPORT_DIR/latest.md` ONLY when `./tmp/` was writable.
 - Read `.gitignore`. If `tmp/` is not covered → emit INFO finding: ".gitignore does not cover tmp/ — audit reports may be committed accidentally." (zero-data-touch — recorded for Meta + Info section.)
 
 ### Step 0a.6 — No-connection-source path (graceful degradation case (a))
