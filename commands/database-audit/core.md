@@ -683,18 +683,21 @@ Severity: MEDIUM.
 ### Q6.17 — Size outliers / giant unpartitioned tables [RO] (`health`)
 
 ```sql
-SELECT n.nspname, c.relname,
+SELECT n.nspname, c.relname, c.relkind,
        pg_total_relation_size(c.oid) AS total_bytes,
        (c.oid IN (SELECT partrelid FROM pg_partitioned_table)) AS is_partitioned_parent,
+       (c.relkind = 'r' AND NOT c.relispartition
+        AND c.oid NOT IN (SELECT partrelid FROM pg_partitioned_table)) AS is_giant_unpartitioned,
        (SELECT count(*) FROM pg_class WHERE relkind IN ('r','p')) AS total_relations
 FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
-WHERE c.relkind = 'r'
+WHERE c.relkind IN ('r','p')
+  AND NOT c.relispartition
   AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
 ORDER BY total_bytes DESC
 LIMIT 50;
 ```
 
-The largest tables, flagging any very large table that is NOT a partition parent (a giant monolithic table is a vacuum/maintenance/lock-window liability that partitioning would relieve).
+The largest tables. `relkind IN ('r','p')` includes partitioned parents (`'p'`) so they are visible (and correctly labeled `is_partitioned_parent = true`, never flagged as monolithic); `NOT c.relispartition` excludes partition CHILDREN so a partitioned table's children are not mislabeled "giant unpartitioned." Only a row where `is_giant_unpartitioned = true` (a plain `relkind='r'` table that is neither a partition of anything nor a partitioned parent) is flagged as a monolithic table — a vacuum/maintenance/lock-window liability that partitioning would relieve.
 
 Severity: INFO (MEDIUM for a very large unpartitioned hot table).
 
