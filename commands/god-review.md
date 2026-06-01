@@ -219,8 +219,7 @@ fi
 # migrations/schema, package.json deps, AND supabase/config.toml + SUPABASE_URL/
 # non-empty DATABASE_URL in any .env* — so a Supabase/Neon repo with only
 # config/env (no committed *.sql) still activates the lens.
-HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" -o -name "config.toml" -path "*/supabase/config.toml" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
-[ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -path "*/supabase/config.toml" -print' _ "$WORKDIR" 2>/dev/null | head -1)
+HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" -o -path "*/supabase/config.toml" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
 [ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name package.json -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l "@supabase/supabase-js\|@supabase/ssr\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
 [ -z "$HAS_DATABASE" ] && HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name ".env*" -type f -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -lE "SUPABASE_URL|^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=[[:space:]]*[^[:space:]'\''\"]" 2>/dev/null | head -1)
 
