@@ -265,6 +265,10 @@ Match the request to its row; use the listed channel; don't improvise.
   Buy / Send / Pay / Confirm / Delete, change settings, approve OAuth/2FA,
   dismiss security warnings, or browse / read other Chrome tabs / email / DMs —
   without explicit user instruction.
+- **Verify the EXPECTED state change after any authorized state-changing click**
+  (Send / Confirm / Save / Delete, form submits). The "after" screenshot must
+  show the *specific* intended change — and no unintended one. "The screen
+  changed" is NOT proof the right thing happened.
 - **Never type into or approve Windows UAC / sign-in / credential prompts**, and
   never type a CRD PIN — surface to the user.
 - **Connection self-heal is user-gated.** If a chrome-devtools call hangs/errors
