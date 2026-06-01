@@ -28,7 +28,7 @@ exhaustively, verify what you'd otherwise assume, do the thorough thing because 
 ## How we build — judgment, not a checklist
 A codebase rarely fully satisfies these; when you touch an area, move it toward them and never
 add a new violation.
-- One way to do everything — reuse the established pattern; don't add a parallel one.
+- One way to do everything — reuse the established pattern; don't add a parallel one. The canonical way is a default, not a cage: deviate only when it's genuinely better, and leave a one-line why (an ADR/comment) so the next agent sees reasoning, not a rogue second pattern. Pave only shared, recurring surfaces (rule of three).
 - Keep files small enough to reason about (~500 lines is a smell — split by responsibility).
 - Fixed layers, one-way dependencies (e.g. routes → services → integrations → data).
 - Path aliases over deep relative imports (`@/...`, never `../../../`). Shared types live in a shared package.
