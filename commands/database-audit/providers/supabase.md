@@ -126,7 +126,7 @@ Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) �
 
 **Supported Postgres major versions** (supplied to portable Q4.1): `['15', '16', '17']`. List last updated: `2026-01`. Major version not in this list → HIGH. EOL staleness: if today's date is more than 18 months after `2026-01` → emit INFO: "Supabase Postgres version data may be stale; verify at supabase.com/docs."
 
-**Step D — Slow-query log scan.** Call `mcp__supabase__get_logs({type: "postgres"})`. Scan entries for `duration:` values greater than 1000ms. Each slow-query entry → MEDIUM finding. Redact query text if it contains a secret-shaped string (redaction rule 1).
+**Step D — Slow-query log scan.** Call `mcp__supabase__get_logs({type: "postgres"})`. Scan entries for `duration:` values greater than 1000ms. Each slow-query entry → MEDIUM finding. **Redaction:** logged query text can embed tokens, connection strings, and literal PII. Prefer reporting the query SHAPE/fingerprint over raw text; if raw text is included it MUST first be passed through the redaction pass (`redaction.md` rules 1–5) and truncated/summarized — never report a raw slow-query body.
 
 **Step E — Pooler-port grep.** Search serverless/edge paths (`api/`, `netlify/`, `functions/`, `app/api/`, `pages/api/`, `edge-functions/`) for `:5432`. Match → **HIGH**: "Use Supavisor transaction pooler on port 6543 for serverless/edge connections." (Portable file-scan via grep; no GNU `xargs -r` — if scoping by tracked files, use `files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l ':5432'` or `git grep -l ':5432'`.)
 
