@@ -33,8 +33,10 @@ host `psql` is not needed.
 
 ### What it does
 
-1. Reaps any leaked `dbaudit-test-*` containers (covers a prior SIGKILL/OOM
-   where the teardown trap never fired), then starts a uniquely-named container.
+1. Reaps any leaked **non-running** `dbaudit-test-*` containers — exited/dead/
+   created only (covers a prior SIGKILL/OOM where the teardown trap never fired);
+   a concurrently-running test's live container is left untouched — then starts a
+   uniquely-named container.
 2. Waits for readiness via a `pg_isready` loop, then loads
    `seed-bad-schema.sql`, which plants known defects in a namespaced
    `dbaudit_test` schema (plus a few `dbaudit_`-prefixed objects in `public`
