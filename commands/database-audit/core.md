@@ -214,10 +214,14 @@ On any MCP/SQL error: emit `[INFO] Module 3 — {tool} unavailable: {error}` and
 
 ### Q3.1 — PII inventory (PII-sensitive columns with anon SELECT access)
 
+The schema-list and exposed-role are PARAMETERS the provider adapter supplies. Defaults (Supabase / vanilla): `schema IN ('public')` and `grantee = 'anon'`. The **Neon adapter** passes `schema IN ('public','neon_auth')` and `grantee = 'anonymous'`. The query is still a vetted fixed-library constant — the adapter selects from the documented parameter sets below, it does not construct arbitrary SQL.
+
+Default (Supabase / vanilla) form:
+
 ```sql
-SELECT c.table_name, c.column_name
+SELECT c.table_schema, c.table_name, c.column_name
 FROM information_schema.columns c
-WHERE c.table_schema = 'public'
+WHERE c.table_schema IN ('public')
   AND c.column_name ~* 'email|phone|ssn|dob|address|ip_addr|token|password|secret'
   AND EXISTS (
     SELECT 1 FROM information_schema.role_table_grants g
@@ -228,7 +232,23 @@ WHERE c.table_schema = 'public'
   );
 ```
 
-Severity: HIGH. Report column names only — never SELECT actual values (see `redaction.md` rule 3).
+Neon adapter form (schema-list and role swapped per the parameters above):
+
+```sql
+SELECT c.table_schema, c.table_name, c.column_name
+FROM information_schema.columns c
+WHERE c.table_schema IN ('public','neon_auth')
+  AND c.column_name ~* 'email|phone|ssn|dob|address|ip_addr|token|password|secret'
+  AND EXISTS (
+    SELECT 1 FROM information_schema.role_table_grants g
+    WHERE g.table_schema = c.table_schema
+      AND g.table_name = c.table_name
+      AND g.grantee = 'anonymous'
+      AND g.privilege_type = 'SELECT'
+  );
+```
+
+Severity: HIGH. Report column NAMES only — never SELECT actual PII values (see `redaction.md` rule 3).
 
 ### Q3.3 — Functions with dynamic SQL (prosrc, not pg_get_functiondef)
 
