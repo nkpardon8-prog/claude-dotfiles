@@ -45,7 +45,7 @@ Resolve in this exact order (Phase 0a — metadata only, do NOT open a core SQL 
 
 1. Explicit `$DATABASE_URL` (non-empty) → use it.
 2. Else `get_connection_string` via Neon MCP — request the **read-only, DIRECT (non-pooler) host**. (The `-pooler` host is PgBouncer transaction mode; `BEGIN READ ONLY` heredoc semantics are most reliable on the direct host.)
-3. Else **SKIP the core** with `[INFO] No connection source — set $DATABASE_URL or configure Neon MCP. Core SQL skipped.`
+3. Else **no-connection-source case (a)** — neither `$DATABASE_URL` nor a Neon MCP connstring is available. There is no connection, so no prod-data risk: this is NOT a prod-stop and NOT an abort. Hand off to the orchestrator's **Step 0a.6 no-connection-source path** — emit `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only` (the historical `No connection source — set $DATABASE_URL or configure Neon MCP. Core SQL skipped.` note may accompany it), run ONLY the zero-data-touch filesystem modules, assemble the partial report, and exit cleanly. Do NOT enter Phase 0b. Record `Connection source: none` in Meta.
 
 **NEVER echo the connection string** (redaction rule 4 — key NAMES only, never values). The resolved string is used only as the `psql`/`run_sql` target; it is never printed, logged, or written to the report.
 
