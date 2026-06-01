@@ -313,6 +313,6 @@ Match the request to its row; use the listed channel; don't improvise.
 
 - Runtime reference: [`skills/windows/SKILL.md`](../skills/windows/SKILL.md)
 - Cold-start read order + invariants: [`skills/windows/ONBOARDING.md`](../skills/windows/ONBOARDING.md)
-- Verified-vs-assumed reality + the two `/macmini` conflicts: [`skills/windows/docs/FINDINGS-2026-05-31.md`](../skills/windows/docs/FINDINGS-2026-05-31.md)
-- Sibling skill (architectural ancestor): [`commands/macmini.md`](./macmini.md)
+- Verified-vs-assumed reality + the `/macmini` twin notes: [`skills/windows/docs/FINDINGS-2026-05-31.md`](../skills/windows/docs/FINDINGS-2026-05-31.md)
+- Sibling skill (direct-CDP twin): [`commands/macmini.md`](./macmini.md)
 - Connection self-heal: `/devtools`
