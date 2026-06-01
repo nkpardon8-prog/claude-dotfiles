@@ -284,8 +284,9 @@ Match the request to its row; use the listed channel; don't improvise.
 ## First-session smoke tests (run once, on a safe scratch field)
 
 1. **click_at reaches host** — toggle a harmless checkbox / focus a field;
-   screenshot-confirm. (Covers the macmini "click_at deprecated/unreliable"
-   conflict — verified working here, but re-check.)
+   screenshot-confirm. (Covers the gist-era macmini "click_at
+   deprecated/unreliable" history — verified working here and on the Mac, but
+   re-check.)
 2. **Full shift-map** — `send_text("!@#$%^&*()_+{}|:\"<>?~ Az")` into a scratch
    field; screenshot-confirm EVERY char. (Only `Hi%` was live-verified.)
 3. **drag** — drag a scrollbar thumb a known distance; screenshot-confirm. If it
