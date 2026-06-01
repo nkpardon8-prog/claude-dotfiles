@@ -184,6 +184,94 @@ CREATE TABLE public.dbaudit_pii (
 GRANT SELECT ON public.dbaudit_pii TO anon;
 
 -- ===========================================================================
+-- D8 — public table with RLS ENABLED but FORCE RLS OFF (Q2.6, MEDIUM).
+-- relrowsecurity = true AND relforcerowsecurity = false. The table OWNER then
+-- bypasses every RLS policy silently. Q2.6 is public-scoped.
+-- ===========================================================================
+DROP TABLE IF EXISTS public.dbaudit_force_rls_off CASCADE;
+CREATE TABLE public.dbaudit_force_rls_off (
+  id   integer PRIMARY KEY,
+  data text
+);
+ALTER TABLE public.dbaudit_force_rls_off ENABLE ROW LEVEL SECURITY;
+-- FORCE is OFF by default; make it explicit so the defect is unambiguous.
+ALTER TABLE public.dbaudit_force_rls_off NO FORCE ROW LEVEL SECURITY;
+
+-- ===========================================================================
+-- D9 — FK with NO ON DELETE action (Q9.1, MEDIUM). Module 9 is public-scoped,
+-- so plant in public with a dbaudit_ prefix. A plain REFERENCES with no
+-- ON DELETE/ON UPDATE clause yields confdeltype='a'/confupdtype='a' (NO ACTION).
+-- ===========================================================================
+DROP TABLE IF EXISTS public.dbaudit_fk_child CASCADE;
+DROP TABLE IF EXISTS public.dbaudit_fk_parent CASCADE;
+CREATE TABLE public.dbaudit_fk_parent (
+  id integer PRIMARY KEY
+);
+CREATE TABLE public.dbaudit_fk_child (
+  id        integer PRIMARY KEY,
+  parent_id integer REFERENCES public.dbaudit_fk_parent (id)
+  -- no ON DELETE / ON UPDATE clause => NO ACTION (confdeltype='a')
+);
+
+-- ===========================================================================
+-- D10 — `timestamp` WITHOUT time zone column (Q9.4, MEDIUM). Public, dbaudit_
+-- prefix. data_type = 'timestamp without time zone' in information_schema.
+-- ===========================================================================
+DROP TABLE IF EXISTS public.dbaudit_ts_notz CASCADE;
+CREATE TABLE public.dbaudit_ts_notz (
+  id         integer PRIMARY KEY,
+  created_ts timestamp  -- without time zone
+);
+
+-- ===========================================================================
+-- D11 — `money`-typed column (Q9.5, MEDIUM). Public, dbaudit_ prefix.
+-- The `money` type is locale-dependent / discouraged.
+-- ===========================================================================
+DROP TABLE IF EXISTS public.dbaudit_money_col CASCADE;
+CREATE TABLE public.dbaudit_money_col (
+  id     integer PRIMARY KEY,
+  amount money
+);
+
+-- ===========================================================================
+-- D12 — table with a secret-shaped text column (Q15.3, HIGH, NAME-ONLY).
+-- Public. Q15.3's name regex matches `api_key`/`token`. We deliberately do NOT
+-- grant anon SELECT, so this is asserted via Q15.3 ONLY (grant-independent),
+-- NOT via Q3.1 (which requires the anon grant D12 omits).
+-- ===========================================================================
+DROP TABLE IF EXISTS public.dbaudit_secrets CASCADE;
+CREATE TABLE public.dbaudit_secrets (
+  id      integer PRIMARY KEY,
+  api_key text,
+  token   text
+);
+
+-- ===========================================================================
+-- D13 — extension installed in the `public` schema (Q15.4, MEDIUM).
+-- Top-level, explicit SCHEMA public (NOT search_path-dependent). pgcrypto ships
+-- in the postgres:16 contrib image (confirmed present in the digest-pinned
+-- image). Dropped up top for idempotency.
+-- ===========================================================================
+CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public;
+
+-- ===========================================================================
 -- REQUIRED: populate pg_stats. Q1.5/Q1.6 are invisible without this.
 -- ===========================================================================
 ANALYZE;
+
+-- ===========================================================================
+-- D15 — event trigger (Q15.5, INFO/MEDIUM). MUST be created LAST — AFTER the
+-- trailing ANALYZE — with a no-op `RETURNS event_trigger` function. If it were
+-- created earlier it would fire on the subsequent seed DDL and could abort the
+-- ON_ERROR_STOP=1 load. A no-op body + last position makes it inert during seed.
+-- Idempotent: drop the trigger and its function first.
+-- ===========================================================================
+DROP EVENT TRIGGER IF EXISTS dbaudit_evt_trigger;
+DROP FUNCTION IF EXISTS public.dbaudit_evt_noop();
+CREATE FUNCTION public.dbaudit_evt_noop()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$ BEGIN END $$;
+CREATE EVENT TRIGGER dbaudit_evt_trigger
+  ON ddl_command_end
+  EXECUTE FUNCTION public.dbaudit_evt_noop();
