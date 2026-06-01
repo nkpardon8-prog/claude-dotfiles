@@ -20,7 +20,7 @@ SQL
 
 - The `BEGIN READ ONLY; … ROLLBACK;` wrapper is the DB-enforced no-mutation guarantee (`guards.md` rule 6). It blocks WRITES; it does NOT discharge the prod guard.
 - If the connection requires TLS and `$DATABASE_URL` lacks an SSL mode, append `?sslmode=require` to the connection string. **Never echo `$DATABASE_URL`** (redaction rule 4 — key NAMES only).
-- Connection SOURCE: explicit `$DATABASE_URL` only. If `$DATABASE_URL` is empty/unset → SKIP the core with `[INFO] No connection source — set $DATABASE_URL. Core SQL skipped.` (no control plane to fall back to).
+- Connection SOURCE: explicit `$DATABASE_URL` only (no control plane to fall back to). If `$DATABASE_URL` is empty/unset → **no-connection-source case (a)**: there is no connection, hence no prod-data risk — this is NOT a prod-stop and NOT an abort. Hand off to the orchestrator's **Step 0a.6 no-connection-source path** — emit `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only` (the historical `No connection source — set $DATABASE_URL. Core SQL skipped.` note may accompany it), run ONLY the zero-data-touch filesystem modules, assemble the partial report, and exit cleanly. Do NOT enter Phase 0b. Record `Connection source: none` in Meta.
 
 ### Preflight detection (Phase 0a)
 
