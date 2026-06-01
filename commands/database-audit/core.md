@@ -8,6 +8,63 @@ Supabase-specific checks (`get_advisors`, anon/RLS classification, storage, edge
 
 ---
 
+## Table of contents
+
+| Module | Title | `--only` token |
+|--------|-------|----------------|
+| 1  | Schema                                  | `schema`      |
+| 2  | RLS                                     | `rls`         |
+| 3  | Security (portable subset)              | `security`    |
+| 4  | Production Readiness (portable subset)  | `prod`        |
+| 5  | Client integration (provider-driven)    | `client`      |
+| 6  | Operational Health                      | `health`      |
+| 7  | Config & CIS                            | `config`      |
+| 8  | Privileges & Roles                      | `privileges`  |
+| 9  | Schema Integrity                        | `integrity`   |
+| 10 | Audit Logging & Compliance              | `compliance`  |
+| 11 | Encryption (in-transit / at-rest)       | `compliance`  |
+| 12 | PII Governance                          | `pii`         |
+| 13 | Migration Safety lint (filesystem)      | `migrations`  |
+| 14 | Backup & Recovery                       | `backup`      |
+| 15 | Exfiltration & Supply-Chain             | `exfil`       |
+| FS | Filesystem security (zero-data-touch)    | per-check     |
+
+---
+
+## Preamble queries (run first in the health/config batch, behind the discharged prod guard — NOT preflight)
+
+These three named queries are **data-plane SQL** and MUST run as the first queries INSIDE the Phases 1–4 health/config module batch, behind the discharged prod guard — exactly like Q4.1 reads the version today. They MUST NOT run in preflight (Phase 0a): that would violate the "no data-plane SQL before the prod guard discharges" invariant. On case (a) no-connection and case (b) prod-stop, none of these run, the results are unknown, and every downstream version-branched / capability-gated check emits its `[INFO] … skipped — no connection` form.
+
+Run each ONCE. Downstream modules **REFERENCE these results, they never re-query** (N+1 prevention — do NOT re-`SELECT … FROM pg_extension` or re-probe capability per module).
+
+### Preamble P1 — Server-major-version probe (`server_major`)
+
+```sql
+SELECT current_setting('server_version_num')::int / 10000 AS server_major;
+```
+
+`server_major` feeds the §B version branches (6.13, 6.18, 6.19). **This probe is intentionally SEPARATE from Q4.1** (`current_setting('server_version')` string under the `prod` token for EOL-policy matching): P1 is the integer major used for catalog branching under `health`/`config`. Do NOT consolidate them — `--only=health` without `prod` must still get `server_major`.
+
+### Preamble P2 — Capability probe (`has_monitor`, `has_read_all_stats`)
+
+```sql
+SELECT pg_has_role(current_user,'pg_monitor','USAGE')        AS has_monitor,
+       pg_has_role(current_user,'pg_read_all_stats','USAGE') AS has_read_all_stats;
+```
+
+Feeds the §C silent-blanking gate. If BOTH columns are false, the cross-session-visibility checks (6.3, 6.9, 6.10, 6.13, and Module 11 `pg_stat_ssl`) emit their partial-visibility INFO **unconditionally — never a clean pass — regardless of row contents** (a restricted role cannot distinguish "blank because restricted" from "blank because idle").
+
+### Preamble P3 — Extension inventory
+
+```sql
+SELECT extname, extversion, n.nspname AS ext_schema
+FROM pg_extension e JOIN pg_namespace n ON e.extnamespace = n.oid;
+```
+
+The single source of truth for installed extensions + their schema placement. Referenced by 6.13/6.14 (`pg_stat_statements`), Module 10 (pgaudit/pgcrypto/anon), Module 12 (anon/vault), 15.1 (postgres_fdw/dblink), and 15.4 (extension-in-public + currency). Do NOT re-`SELECT … FROM pg_extension` per module — read this result.
+
+---
+
 ## Module 1 — Schema
 
 Skip this phase if `--only` is set and does not include `schema`.
