@@ -104,7 +104,35 @@ All control-plane checks below are **API/MCP-only** (no SQL). If Neon MCP is abs
 - **IP allowlist.** `allowed_ips`. Default `0.0.0.0` (or empty allowlist) = open to all IPs → HIGH on a prod branch. Report the policy, never the specific allowed addresses verbatim if they look sensitive.
 - **Protected branches.** Already surfaced in the prod-guard contribution ("prod branch not protected"). Also inventory which branches are protected → INFO.
 - **Branch sprawl / stale branches.** Count branches and flag long-lived non-default branches (cost driver AND data-exfiltration surface — each branch is a full copy-on-write fork of prod data). Many stale branches → MEDIUM (cost + exfil risk). Report count + oldest stale branch age.
-- **Restore / history window.** The configured history-retention / point-in-time-restore window (`history_retention_seconds` or plan equivalent). Very short window on a prod branch → MEDIUM (limited recovery). Inventory as INFO otherwise.
+- **Restore / history window.** The configured history-retention / point-in-time-restore window (`history_retention_seconds` or plan equivalent). Very short window on a prod branch → MEDIUM (limited recovery). Inventory as INFO otherwise. **(Also reachable via the `backup` token — see "Module 14 (Backup & Recovery)" below. The two are the SAME check; emit it ONCE and duplicate-guard so `--only=prod` and `--only=backup` do not both produce it.)**
+
+### Module 14 (Backup & Recovery) — Neon PITR / history-retention (manual-verify)
+
+`--only` token: **`backup`** (so `--only=backup` surfaces recovery posture on Neon, matching Supabase Step I-PITR).
+
+Most of Module 14 is portable-core (`pg_stat_archiver` WAL-archiving health 14.1, `wal_keep_size`/`max_wal_size` retention sanity 14.2) and runs from `core.md` over `run_sql`/psql. The Neon-specific facet is the managed **PITR / history-retention window**, which is a control-plane/`[PROVIDER]` signal — there is no SQL for it. This is the SAME `history_retention_seconds` signal described under "Restore / history window" above; surface it ONCE here under the `backup` token (duplicate-guard against the `prod` control-plane emission — emit whichever token fired first, never twice):
+
+```
+[INFO] PITR / history-retention window (Neon)
+- What: Neon provides continuous point-in-time restore within the configured history-retention window (`history_retention_seconds` / plan equivalent). A short window limits recovery.
+- Severity-if-absent: CRITICAL (no/zero retention → no PITR)
+- Verify: describe_project / describe_branch history_retention_seconds (control-plane); confirm the window on a prod branch. SKIP-with-INFO if Neon MCP absent.
+```
+
+(If the control-plane probe under `prod` already emitted this, do NOT re-emit it here; the `backup` token is an additional reachability path to the same check, not a second finding.)
+
+### Module 10/11 (Compliance & Encryption) — Neon at-rest encryption (manual-verify)
+
+`--only` token: **`compliance`**.
+
+Most of Modules 10/11 are portable-core (pgaudit/crypto-tooling posture via `pg_extension`, `ssl`/`pg_stat_ssl` in-transit checks) and run from `core.md` over `run_sql`/psql. The Neon-specific facet is **at-rest encryption**, a `[PROVIDER]` manual-verify INFO (never pass/fail):
+
+```
+[INFO] At-rest encryption (storage)
+- What: Neon encrypts data at rest using XTS-AES-256.
+- Severity-if-absent: N/A (platform-managed — verify, do not assert pass/fail)
+- Verify: Neon security & compliance docs (SOC2) → confirm XTS-AES-256 at-rest encryption.
+```
 
 ### Slow queries (control-plane)
 
