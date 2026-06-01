@@ -23,7 +23,7 @@ are only **three files** to read — read them in this order.
 |---|---|---|
 | 1 | **`../../commands/windows.md`** | The dispatcher (self-contained): mental model, embedded helpers, capability matrix, hard rules, smoke tests, sub-command table. Start here. |
 | 2 | **`SKILL.md`** | Full runtime reference: coordinate math (both spaces + worked letterbox example), text math, gotchas table, Verified-vs-Assumed matrix, safety. |
-| 3 | **`docs/FINDINGS-2026-05-31.md`** | What's verified vs assumed, and the two `/macmini` conflicts (`click_at` deprecation; CRD a11y `ignored`) — both worked here, re-check at runtime. |
+| 3 | **`docs/FINDINGS-2026-05-31.md`** | What's verified vs assumed, and the `/macmini` twin notes — the one runtime delta to re-check is CRD a11y mode (`ignored` on Mac vs uids here). |
 
 (Sub-command details live in `../../commands/windows/{connect,act,crd}.md` — read
 those when you actually drive the session.)
