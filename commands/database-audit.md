@@ -125,7 +125,7 @@ Because there is **no connection, there is no prod-data risk** — so this is NO
 
 This is distinct from the Phase 0b prod-stop (case (b)): there a connection EXISTS but prod is unconfirmed, so filesystem-only modules run and we STOP pending `--env=prod`. Here there is no connection, so we run filesystem-only modules and EXIT with a complete partial report (no stop, no resume prompt).
 
-Only TRUE preflight failures (e.g. the working directory is not a DB repo at all — no provider signal AND no `$DATABASE_URL`) stop with no report.
+**True-preflight-failure vs case (a) — stated once, no contradiction:** The case-(a) path here is for a repo that IS a DB project (some signal present per the Step 0a.2 true-preflight-failure gate) but has **no reachable connection/MCP**. That is ALWAYS a clean filesystem-only partial report — NEVER a bare abort. The ONLY abort-with-no-report case is the Step 0a.2 true preflight failure: **NONE** of the DB signals present (no Supabase/Neon signal, no `$DATABASE_URL`, no on-disk `*.sql`/migrations/schema files). That abort is decided in Step 0a.2 and never reached here — by the time Step 0a.6 runs, at least one signal exists, so the empty-`DATABASE_URL`-on-`postgres` situation is case (a) (filesystem-only report), not an abort.
 
 ---
 
