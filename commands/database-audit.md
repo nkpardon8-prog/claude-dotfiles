@@ -263,7 +263,9 @@ Skip if `--only` is set and does not include `client`.
   Return when written. Reply with just the path to the file you wrote.
   ```
 
-  Then perform the main-skill consumption (cross-reference) per `providers/supabase.md` "Main-skill consumption" steps 1–7 (table/rpc/channel/bucket/column existence, service_role-in-client → CRITICAL, anon-singleton → LOW, truncation → MEDIUM, `generate_typescript_types` diff → MEDIUM per drifted file). On any MCP error emit `[INFO] Module 5 — {tool} unavailable: {error}` and continue.
+  Then perform the main-skill consumption (cross-reference) per `providers/supabase.md` "Main-skill consumption" steps 1–7 — reading the scratch file back from the same resolved `$REPORT_DIR/.client-scan.md` (table/rpc/channel/bucket/column existence, service_role-in-client → CRITICAL, anon-singleton → LOW, truncation → MEDIUM, `generate_typescript_types` diff → MEDIUM per drifted file). On any MCP error emit `[INFO] Module 5 — {tool} unavailable: {error}` and continue.
+
+  **Cross-reference in-memory only (no repo literals in SQL).** The cross-reference of repo-derived table / function / column NAMES against the DB MUST be done by reading the catalog (`list_tables` / `information_schema` / `pg_proc`) into memory and comparing IN-MEMORY — NEVER by interpolating a repo-derived literal into a SQL string (that would violate the fixed-library guard and is an injection vector from a hostile repo). Repo literals are NEVER concatenated into executed SQL.
 
 - **neon / postgres** → emit `[INFO] Module 5 — no JS Supabase client; client-coherence N/A on <provider>.` and the `[INFO] generate_typescript_types N/A on <provider>.` note. Do not spawn the sub-agent.
 
