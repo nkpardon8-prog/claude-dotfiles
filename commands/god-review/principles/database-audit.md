@@ -24,6 +24,8 @@ This principle owns a **narrow set of repo-static findings** and explicitly defe
 
 Severity for each finding type defers entirely to `CRITERIA.md` — do not invent a severity taxonomy here, and do not invent a new category. Use only the existing `DATA_INTEGRITY` / `INJECTION` / `DATA_LEAK` categories listed above.
 
+> **Related — lock/rewrite-safety migration linting is NOT owned here.** Migration lock-safety / rewrite-safety lint (NOT NULL without default, volatile-default `ADD COLUMN`, ban-drop, type changes, missing `NOT VALID`, non-`CONCURRENTLY` index, `CONCURRENTLY`-in-transaction, renames, prefer-bigint/timestamptz) is owned by `/database-audit` Module 13 (`--only=migrations`) and is intentionally NOT duplicated here. This principle keeps only the 5 security/integrity rules above; the two finding sets are disjoint and neither side re-emits the other's.
+
 ## Stack Gate Check
 
 In Phase 1, recompute `HAS_DATABASE`:
