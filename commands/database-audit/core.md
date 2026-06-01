@@ -670,7 +670,7 @@ Severity: MEDIUM.
 SELECT s.schemaname, s.relname, s.n_mod_since_analyze, c.reltuples,
        current_setting('default_statistics_target') AS stats_target
 FROM pg_stat_user_tables s
-JOIN pg_class c ON c.relname = s.relname
+JOIN pg_class c ON c.oid = s.relid
 WHERE s.n_mod_since_analyze > 0
 ORDER BY s.n_mod_since_analyze DESC NULLS LAST
 LIMIT 50;
