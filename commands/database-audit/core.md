@@ -1117,3 +1117,128 @@ Severity: LOW.
 ### Q9.7 — int4 PK overflow risk [RO] (`integrity`) — CROSS-REF
 
 int4-backed PK / serial-vs-identity overflow is covered by **Q6.6**. Emit a pointer: `[INFO] 9.7 — int4 PK overflow risk → see Q6.6 (Module 6)`.
+
+---
+
+## Module 10 — Audit Logging & Compliance + Module 11 — Encryption (`compliance`)
+
+Skip this phase if `--only` is set and does not include `compliance`.
+
+On any MCP/SQL error: emit `[INFO] Module 10/11 — {tool} unavailable: {error}` and continue.
+
+Read extension presence from Preamble P3 and settings from Q7.1 (do NOT re-query `pg_extension` or `pg_settings`).
+
+### Q10.1 — pgaudit posture [RO] / [EXT] (`compliance`)
+
+Check Preamble P3 for `pgaudit`. If absent → INFO ("pgaudit not installed; statement-level audit relies on `log_statement`" — cross-ref Q7.1 `log_statement` inventory). If present, confirm it is in `shared_preload_libraries` (from Q7.1) AND read its logging policy:
+
+```sql
+SELECT name, setting
+FROM pg_settings
+WHERE name IN ('pgaudit.log','pgaudit.log_catalog','pgaudit.log_parameter');
+```
+
+`pgaudit.log` should include `WRITE`, `DDL`, `ROLE` for a compliance-grade audit trail. Also detect trigger-based audit tables as a fallback pattern:
+
+```sql
+SELECT t.table_name
+FROM information_schema.tables t
+WHERE t.table_schema = 'public'
+  AND t.table_name ~* '_history$|_audit$|^audit_'
+  AND EXISTS (
+    SELECT 1 FROM information_schema.triggers tr
+    WHERE tr.event_object_schema = 'public'
+  );
+```
+
+Severity: MEDIUM if no audit mechanism present; INFO inventory otherwise.
+
+### Q11.1 — In-transit encryption [RO] (`compliance`)
+
+`ssl` posture is read in Q7.1 — cross-ref ("ssl in-transit → see Module 7 / Q7.1"); emit the finding ONCE. `ssl='off'` → HIGH (connections unencrypted). `hostssl` enforcement in `pg_hba` is `[RO+priv]` (see Q7.2, degrade-with-INFO).
+
+Severity: HIGH (`ssl='off'`).
+
+### Q11.2 — Unencrypted live sessions [RO+priv] (`compliance`)
+
+§C gate: if Preamble P2 shows `has_monitor = false AND has_read_all_stats = false`, emit `[INFO] 11.2 — partial visibility; cross-session data restricted under current role (no pg_monitor/pg_read_all_stats)` UNCONDITIONALLY (never a clean pass) and skip. Otherwise:
+
+```sql
+SELECT count(*) FILTER (WHERE ssl = false) AS unencrypted_sessions,
+       count(*) AS total_sessions
+FROM pg_stat_ssl;
+```
+
+Any live session with `ssl = false` is transmitting in cleartext. Under a restricted role `pg_stat_ssl` shows only the current session — the §C gate prevents a false-clean.
+
+Severity: HIGH if unencrypted sessions present.
+
+### Q11.3 — Crypto tooling presence [RO] / [EXT] (`compliance`)
+
+From Preamble P3, report presence of `pgcrypto`, `supabase_vault`, `pgsodium`. Presence is informational (application-level encryption capability available); absence is INFO ("no in-DB crypto extension; column-level encryption, if required, is handled elsewhere").
+
+Severity: INFO.
+
+### Q10.2 — Log retention / immutability [PROVIDER] (`compliance`)
+
+Manual-verify INFO — not assessable from inside Postgres. Verify log retention meets the applicable regime (PCI 12 months / HIPAA ~6 years / SOC2 1–2 years) and that logs are immutable/exported. Emit one INFO line.
+
+`Severity-if-absent: HIGH.`
+
+### Q11.4 — At-rest encryption [PROVIDER] (`compliance`)
+
+Manual-verify INFO — never pass/fail. Verify at-rest encryption in the provider console (RDS KMS / Supabase AES-256 / Neon XTS-AES-256). Emit one INFO line: "verify at-rest encryption in provider console."
+
+`Severity-if-absent: HIGH.` (Manual-verify only — never asserted pass or fail from SQL.)
+
+---
+
+## Module 12 — PII Governance (`pii`)
+
+Skip this phase if `--only` is set and does not include `pii`.
+
+On any MCP/SQL error: emit `[INFO] Module 12 — {tool} unavailable: {error}` and continue.
+
+**NAME-ONLY.** Value-sampling is deferred (no `TABLESAMPLE`, no regex-on-values, no `--pii-sample` flag) — this eliminates reading real PII on a prod connection and the dynamic-identifier SQL that would violate the fixed-library guard.
+
+### Q12.1 — PII candidate scan [RO] (`pii`) — name+type only
+
+Reuse the existing **Q3.1** name+type candidate logic under the `pii` token (the provider adapter supplies the schema list + exposed role parameters; see Q3.1). Report column NAMES only — never SELECT actual PII values (redaction rule 3). When run under `--only=pii`, emit Q3.1's result here; do not duplicate the SQL body.
+
+Severity: HIGH (PII column exposed to an anon-reachable grant) — see Q3.1.
+
+### Q12.2 — Masking / anonymization tooling presence [RO] / [EXT] (`pii`)
+
+From Preamble P3, report presence of the `anon` extension and `supabase_vault`. Also detect `anon` security labels:
+
+```sql
+SELECT objoid::regclass AS object_name, label
+FROM pg_seclabel
+WHERE provider = 'anon';
+```
+
+Presence indicates masking capability is available; absence is INFO (no in-DB dynamic masking).
+
+Severity: INFO.
+
+### Q12.3 — Retention heuristics [RO] (`pii`)
+
+Soft-delete / expiry columns:
+
+```sql
+SELECT table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name ~* '^(deleted_at|expires_at|expired_at|retention_until)$';
+```
+
+Scheduled-job presence (`cron.job` SCHEDULE ONLY — NEVER select `cron.job.command`; command bodies can embed secrets, consistent with existing cron redaction):
+
+```sql
+SELECT jobid, schedule, jobname
+FROM cron.job;
+```
+
+(If the `pg_cron` schema/table is absent the per-module dispatch logs `[INFO] 12.3 — pg_cron not present` and continues.) The presence of `deleted_at`/`expires_at`, date-partitioning, or a retention cron job suggests a retention mechanism; their ABSENCE on PII-bearing tables is a gap. RTBF (right-to-be-forgotten) structural posture — soft-vs-hard delete, FK cascade for erasure — plus classification certainty is process-level → manual-verify INFO ("verify retention/erasure enforcement out-of-band").
+
+Severity: INFO (manual-verify; gap if no retention mechanism on PII tables).
