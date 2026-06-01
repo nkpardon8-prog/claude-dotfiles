@@ -2,6 +2,36 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-05-31 — Statusline line 2: live-activity label (fix the perpetual "working" spinner)
+
+After the single-bar rework, line 2 in real sessions sat on a generic spinner + the literal `working`
+forever (`15:25  ▱▱▱▰▰▰▱▱  working`). Root cause (verified, not a render bug): the v2 renderer + hooks work,
+but agents rarely call TodoWrite (0 calls in recent dentall transcripts), so `overall` never becomes
+determinate → spinner + `working`. The to-do list is not a reliable signal in practice.
+
+Fix — drive the line-2 **label** from the live tool stream, decoupled from the bar:
+- New `scripts/progress/on-tool-activity.sh` (PostToolUse, most tools) writes a short label —
+  `Edit migration.sql`, `Bash: run tests`, `Read foo.ts`, `Grep "pat"`, `Task: reviewer`, MCP last-segment —
+  to a **separate sidecar** `~/.claude/progress/<sid>.activity.json` = `{ts,label}`.
+- **Separate sidecar (not a shared-JSON RMW)** — like the beacon `<sid>.current.json` — so the async hook
+  can't clobber `overall`/`current` or race `on-todo-write`/`on-task-spawn`/`on-stop`. (Plan reviewers'
+  central finding; resolved by design rather than locking.)
+- Renderer label priority (decoupled from bar): `beacon → live activity → todo activeForm → "working"`. The
+  bar still fills from determinate beacon → determinate todos → spinner. Activity is ts-gated
+  (`ts >= prompt_started_at`) so a stale sidecar can't bleed into the next turn.
+- Matcher **anchored** `^(Edit|MultiEdit|Write|NotebookEdit|Read|Bash|Grep|Glob|WebFetch|WebSearch|Task|mcp__.*)$`
+  so `Write` can't substring-match `TodoWrite` under unanchored-regex semantics. `TodoWrite` excluded (ugly
+  label, owned by `on-todo-write.sh`); `Task` included (sidecar removes the race).
+- Single `python3`, zero `jq`, in the hook (env-var stdin); Bash labels prefer `description` and fall back to
+  the command's first token only (no secret leak); `active` is NOT written by the activity hook (no post-Stop
+  resurrection). `on-stop.sh` removes both sidecars.
+- Both `statusline.sh` copies kept byte-identical. **Requires a Claude Code reload** for the new
+  settings.json PostToolUse hook to register (the renderer change is live immediately).
+- Reviewed by 2 parallel plan-reviewers; the sidecar redesign came directly from their concurrency findings.
+  All render/label gates pass (Edit/Bash-secret-safe/MCP/Task labels, activity-over-spinner, todo-bar+activity
+  decoupling, stale-sidecar-ignored, on-stop-removes-sidecar). Docs: PROGRESS-BARS.md, STATUSLINE.md,
+  ARCHITECTURE.md updated.
+
 ## 2026-05-31 — /mission hardening: drive to a clean cross-model codex-review (8 review rounds)
 
 Closed the confirmed findings from the multi-Codex review of `/mission`, driven through the user's
