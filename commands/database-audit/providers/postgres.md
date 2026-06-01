@@ -8,15 +8,19 @@ This file is `Read` by the `/database-audit` orchestrator **only when the detect
 
 ## (a) Connection
 
-Direct `psql`, no control plane:
+Direct `psql`, no control plane. Dispatch the core library **per module** (each module's queries in their own `psql` invocation), NOT as one big `ON_ERROR_STOP=1` batch over the whole library — a single batch aborts every remaining query on the first error, which breaks the per-module `[INFO] {tool} unavailable … continue` contract in `core.md`. With per-module dispatch, a single module's (or query's) error is logged `[INFO]` and the other modules still run. The `BEGIN READ ONLY; … ROLLBACK;` read-only wrapper still applies per dispatch:
 
 ```sql
+-- one invocation per module (Module 1, then 2, then 3, then 4); ON_ERROR_STOP
+-- scopes failure to THAT module only, so others still run.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN READ ONLY;
-  -- core query library Qx.y verbatim from core.md
+  -- this module's core query library Qx.y verbatim from core.md
 ROLLBACK;
 SQL
 ```
+
+A module (or query) that errors → log `[INFO] Module N — {tool} unavailable: {error}` per `core.md` and continue with the next module's invocation. (This aligns with `guards.md`.)
 
 - The `BEGIN READ ONLY; … ROLLBACK;` wrapper is the DB-enforced no-mutation guarantee (`guards.md` rule 6). It blocks WRITES; it does NOT discharge the prod guard.
 - If the connection requires TLS and `$DATABASE_URL` lacks an SSL mode, append the `sslmode=require` parameter — but choose the separator conditionally: if the URL contains NO `?` (no existing query string), append `?sslmode=require`; if it ALREADY contains a `?` (existing query string), append `&sslmode=require`. Appending `?sslmode=require` unconditionally corrupts a URL that already has a query string. **Never echo `$DATABASE_URL`** (redaction rule 4 — key NAMES only).
