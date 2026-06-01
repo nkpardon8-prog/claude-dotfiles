@@ -15,8 +15,8 @@ argument-hint: "[free-form request, e.g. \"open notepad and type a note\"]"
 > - **Your hands are direct CDP input** — `mcp.click_at({x,y})`,
 >   `mcp.type_text(...)`, `mcp.press_key(...)`. These reach the Windows host
 >   natively. There is NO gist, NO cliclick, NO on-host agent, NO calibration
->   file, NO Terminal-foreground dance. (This is the big simplification over
->   `/macmini` — see the callout below.)
+>   file, NO Terminal-foreground dance. (`/macmini` is now the same direct-CDP
+>   model — historically it used gist/cliclick; see the callout below.)
 > - **Two interaction layers, two toolsets — always know which one you're on:**
 >   - **LAYER-1 — CRD's own chrome** (options panel, dialogs, Disconnect,
 >     Full-screen, "Synchronize clipboard", "Press Ctrl + Alt + Del",
