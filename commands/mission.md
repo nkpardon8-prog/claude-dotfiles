@@ -144,20 +144,24 @@ reopened. The clone is owned by your `<sid>` like any normal mission, so EVERYTH
    (sid <first8>)`. Render `unknown` as `active` (a freshly-created mission with no lifecycle line yet).
    Skip or clearly flag `corrupt` rows (unreadable/mismatched marker — not cloneable). Let the user pick
    a number, or cancel.
-4. **Live-fork warning.** If the picked mission's state is `active`/`unknown` AND its mtime is recent
-   (heuristic: within ~15 min), **WARN explicitly**: this mission looks active in another instance right
-   now; cloning it here produces a DIVERGENT COPY (both will evolve independently from this point —
-   there is no merge). Only proceed if you intend a fork. Require an explicit second confirmation. (If
-   the source instance is closed/dead, this is exactly the intended clean continuation — no divergence.)
+4. **Live-fork warning.** If the picked mission's state is `active` or `unknown` (i.e. NOT `cleared`),
+   **WARN explicitly** that cloning it produces a DIVERGENT COPY (both evolve independently from this
+   point — there is no merge), and require an explicit second confirmation. If its mtime is ALSO recent
+   (~15 min) say it looks **live in another instance right now** (stronger emphasis) — but warn even
+   when idle, since mtime is a weak liveness proxy and an overnight mission can be idle yet still owned.
+   (If the source instance is genuinely closed/dead, this is the intended clean continuation — no real
+   divergence; the user confirms knowing that.)
 5. **Clone** (on confirm). `mission_fork` copies the picked mission into your own `MISSION.<sid>.md`
-   (retargeting only the marker sid; the source stays intact) and verifies the clone:
+   (retargeting only the marker sid; the source stays intact) and verifies the clone; then render this
+   session's banner so a SessionStart before your first `/pre-compact` doesn't false-alarm:
    ```bash
    newfile=$(mission_fork "$sid" "$root" "$(mission_path "<picked_sid>" "$root")") \
      || { echo "resume: clone failed — STOP (do not start a half-made mission)" >&2; exit 1; }
+   bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh render-banner "$sid" "$root"
    ```
    **`mission_fork` failure is a HARD STOP.** On success the mission is now a normal mission owned by
-   your `<sid>` (rc 3 means you already have a mission — clear it first). No sid-swap, no manifest
-   rewrite, nothing else to thread.
+   your `<sid>` (rc 3 means you already own a mission — start a fresh instance to resume a different
+   one). No sid-swap, no manifest rewrite, nothing else to thread.
 6. **Resume the work.** Read the cloned mission IN FULL (`mission_read_zone` for each zone + the LOG via
    the §8 resume-read idiom) and continue Level-2 at the LOG's last `(part, phase, round, dry)`, writing
    with your own `<sid>`/`<root>` exactly as in §3-§5.
