@@ -29,10 +29,18 @@ Severity for each finding type defers entirely to `CRITERIA.md` — do not inven
 In Phase 1, recompute `HAS_DATABASE`:
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
+# IDENTICAL signal set to god-review.md Phase 0 (orchestrator gate must agree with
+# this self-gate) and to /database-audit Step 0a.2: on-disk SQL/migrations/schema,
+# supabase/config.toml, package.json deps, and SUPABASE_URL / non-empty DATABASE_URL
+# in any .env*.
+HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" -o -path "*/supabase/config.toml" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
 if [ -z "$HAS_DATABASE" ]; then
   pkgs=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name package.json -print0' _ "$WORKDIR" 2>/dev/null)
-  [ -n "$pkgs" ] && HAS_DATABASE=$(printf '%s' "$pkgs" | xargs -0 grep -l "@supabase/supabase-js\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
+  [ -n "$pkgs" ] && HAS_DATABASE=$(printf '%s' "$pkgs" | xargs -0 grep -l "@supabase/supabase-js\|@supabase/ssr\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
+fi
+if [ -z "$HAS_DATABASE" ]; then
+  envs=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name ".env*" -type f -print0' _ "$WORKDIR" 2>/dev/null)
+  [ -n "$envs" ] && HAS_DATABASE=$(printf '%s' "$envs" | xargs -0 grep -lE "SUPABASE_URL|^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=[[:space:]]*[^[:space:]'\"]" 2>/dev/null | head -1)
 fi
 ```
 
