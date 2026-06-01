@@ -1360,7 +1360,7 @@ Severity: INFO (MEDIUM when retention is clearly insufficient for the topology).
 
 ### Q14.3 — PITR / last-backup / retention [PROVIDER] (`backup`)
 
-Manual-verify INFO — core/vanilla + Neon ONLY. **On Supabase, 14.3 emits NOTHING here and cross-refs**: `[INFO] 14.3 — PITR → see Supabase Step I (provider adapter owns the PITR line)`. The Supabase adapter owns the PITR finding (its own title/severity), so this avoids a dedup collision (the `(severity,title,object_name)` key cannot collapse them — different titles + HIGH-vs-CRITICAL severities).
+Manual-verify INFO — core/vanilla + Neon ONLY. **On Supabase, 14.3 emits NOTHING here and cross-refs**: `[INFO] 14.3 — PITR → see Supabase Step I-PITR (provider adapter owns the PITR line)`. The Supabase adapter owns the PITR finding (its own title/severity), so this avoids a dedup collision (the `(severity,title,object_name)` key cannot collapse them — different titles + HIGH-vs-CRITICAL severities).
 
 For core/vanilla and Neon: verify PITR / last-backup / retention window in the provider console (RDS `BackupRetentionPeriod`; Neon history-retention). Emit one INFO line.
 
