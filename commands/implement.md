@@ -57,17 +57,30 @@ Use `Task tool` with `subagent_type: "implementer"` for each chunk.
 >
 > If `NO_REVIEW = false` (the default — no flag), run Step 5 and Step 6 below exactly as written.
 
-After all implementation agents complete, **automatically spawn an implementation-reviewer**:
+After all implementation agents complete, **automatically spawn an implementation-reviewer** AND, in the **same message**, a parallel `criticer` (the generative value-critic lane). Step 5 is entirely skipped under `--no-review` per the guard above, so `criticer` inherits that skip automatically — no new conditional, and it never runs under `/mission`.
 
 ```
-Task tool:
+Task tool (call 1):
   subagent_type: "implementation-reviewer"
   prompt: "Review the implementation against the plan at [path].
     Run npm run typecheck and npm run lint.
     Check every task in the plan was completed.
     Flag any gaps, missing integrations, or convention violations.
     Report completeness status for each plan task."
+
+Task tool (call 2, sent in the SAME message as call 1):
+  subagent_type: "criticer"
+  prompt: "Critique the completed implementation against the plan at [path] as a
+    generative value-critic. Apply up to 5 lenses — (1) biggest gap, (2) honest
+    assessment of where it quietly fails, (3) cheap win being skipped, (4) premise
+    check, (5) over-built. Return a `## Criticer Notes` block, at most 5 findings
+    ranked by value, empty is fine. NEVER ask the user anything — state, don't ask.
+    Do NOT emit an `## Assumption-Test Candidates` section."
 ```
+
+`criticer` is advisory only — it never asks, gates, or blocks. It critiques
+implementation-vs-plan, so it intentionally takes no brief-path (the plan already
+carries the intent). Hold its `## Criticer Notes` output for rendering in Step 7.
 
 ## Step 6: Move Plan to Done
 
