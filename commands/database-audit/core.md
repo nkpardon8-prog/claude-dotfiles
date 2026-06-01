@@ -1423,15 +1423,14 @@ Severity: HIGH.
 
 From Preamble P3 (`ext_schema`), flag any extension installed in the `public` schema — a search_path-hijack surface; extensions should live in a dedicated schema. **MEDIUM.**
 
-Version currency (INFO only — managed providers pin curated versions, so "newer exists upstream" ≠ "should upgrade"; must NOT look actionable):
+Version currency (INFO only — managed providers pin curated versions, so "newer exists upstream" ≠ "should upgrade"; must NOT look actionable). Compare the installed version against `pg_available_extensions.default_version` (the version `CREATE/ALTER EXTENSION` would install) — NOT `max()` over all available versions, which compares text LEXICOGRAPHICALLY and wrongly ranks `1.9 > 1.10`:
 
 ```sql
 SELECT e.extname, e.extversion AS installed_version,
-       max(av.version) AS latest_available
+       ae.default_version AS installable_version
 FROM pg_extension e
-JOIN pg_available_extension_versions av ON av.name = e.extname
-GROUP BY e.extname, e.extversion
-HAVING e.extversion <> max(av.version);
+JOIN pg_available_extensions ae ON ae.name = e.extname
+WHERE e.extversion IS DISTINCT FROM ae.default_version;
 ```
 
 Severity: MEDIUM (extension in `public`) / INFO (newer version available upstream).
