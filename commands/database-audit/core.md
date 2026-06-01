@@ -31,11 +31,14 @@ Supabase-specific checks (`get_advisors`, anon/RLS classification, storage, edge
 
 ---
 
-## Preamble queries (run first in the health/config batch, behind the discharged prod guard — NOT preflight)
+## Preamble queries (run ONCE behind the discharged prod guard whenever ANY referencing data-plane module is selected — NOT preflight, NOT gated on health/config)
 
-These three named queries are **data-plane SQL** and MUST run as the first queries INSIDE the Phases 1–4 health/config module batch, behind the discharged prod guard — exactly like Q4.1 reads the version today. They MUST NOT run in preflight (Phase 0a): that would violate the "no data-plane SQL before the prod guard discharges" invariant. On case (a) no-connection and case (b) prod-stop, none of these run, the results are unknown, and every downstream version-branched / capability-gated check emits its `[INFO] … skipped — no connection` form.
+These three named queries are **data-plane SQL** and run ONCE, behind the discharged prod guard, the FIRST time ANY data-plane module that references them is selected — exactly like Q4.1 reads the version today. They are **NOT gated on the `health`/`config` tokens.** The dependency graph is wider than health/config: the compliance Modules 10/11, the PII Module 12, and the exfil Module 15 ALL consume the P3 extension inventory, and Modules 10/11 additionally consume Q7.1's `pg_settings` result. Concretely:
 
-Run each ONCE. Downstream modules **REFERENCE these results, they never re-query** (N+1 prevention — do NOT re-`SELECT … FROM pg_extension` or re-probe capability per module).
+- **P3 (extension inventory)** is consumed by 6.13/6.14, Module 10 (pgaudit/pgcrypto/anon), Module 11 (crypto tooling), Module 12 (anon/vault), and Module 15 (15.1 postgres_fdw/dblink, 15.4 extension-in-public + currency). So P3 must run whenever ANY of `health`, `compliance`, `pii`, or `exfil` is selected — not just `health`/`config`.
+- **Q7.1 (`pg_settings` inventory)** is consumed by Modules 10/11 (pgaudit in `shared_preload_libraries`, `ssl` posture). When `compliance` is selected WITHOUT `config`, Q7.1 still runs once so 10/11 can read it.
+
+Whichever referencing module runs first triggers the preamble (and Q7.1) ONCE; every later module **REFERENCES the cached result and MUST NOT re-query** (N+1 prevention — do NOT re-`SELECT … FROM pg_extension`, re-probe capability, or re-`SELECT … FROM pg_settings` per module). They MUST NOT run in preflight (Phase 0a): that would violate the "no data-plane SQL before the prod guard discharges" invariant. On case (a) no-connection and case (b) prod-stop, none of these run, the results are unknown, and every downstream version-branched / capability-gated check emits its `[INFO] … skipped — no connection` form.
 
 ### Preamble P1 — Server-major-version probe (`server_major`)
 
