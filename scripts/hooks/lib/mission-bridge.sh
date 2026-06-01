@@ -319,39 +319,40 @@ mission_list() {
   done | sort -t"$(printf '\t')" -k2,2nr
 }
 
-# mission_attach <platform_sid> <root> <target_file> -> rewrite THIS session's chain-manifest
-# mission_path to <target_file> (so /post-compact-resume, which PREFERS the pointer, reattaches),
-# then echo the target's OWN sid — the working sid the caller MUST use for every subsequent
-# mission-write.sh write. Verifies the target first. rc!=0 => caller STOPS (do NOT write).
-mission_attach() {
-  _att_psid=$(_mission_sanitize_sid "$1"); _att_root="$2"; _att_target="$3"
-  [ -n "$_att_psid" ] || { echo "mission_attach: invalid platform sid" >&2; return 1; }
-  [ -f "$_att_target" ] || { echo "mission_attach: target missing: $_att_target" >&2; return 1; }
-  command -v jq >/dev/null 2>&1 || { echo "mission_attach: jq required" >&2; return 1; }
-  # lazy-source handoff-chain.sh (mission-bridge.sh sources handoff-locate.sh but not this).
-  if ! command -v chain_manifest_write >/dev/null 2>&1; then
-    if [ -n "${BASH_SOURCE:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/handoff-chain.sh" ]; then
-      . "$(dirname "${BASH_SOURCE[0]}")/handoff-chain.sh"
-    elif [ -f "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-chain.sh" ]; then
-      . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-chain.sh"
-    fi
+# mission_fork <dest_sid> <root> <source_file> -> CLONE-ON-RESUME. Copy <source_file> into the
+# canonical MISSION.<dest_sid>.md (+ .log) OWNED by <dest_sid> in <root>, so the resuming session
+# continues the mission under ITS OWN sid — no sid-swap, no "working sid" to thread through the rest
+# of the playbook, no split-brain. The source is left INTACT (a still-live source keeps running; this
+# is why resuming an active mission forks a divergent copy — §2b warns). Echoes the new file path.
+# Verifies source and clone. rc!=0 => caller STOPS. Only the marker `sid=` is retargeted; the nonce,
+# zone fences, and plan_hash are unchanged (PLAN content is identical), so mission_verify still holds.
+mission_fork() {
+  _fk_dsid=$(_mission_sanitize_sid "$1"); _fk_root="$2"; _fk_src="$3"
+  [ -n "$_fk_dsid" ] || { echo "mission_fork: invalid dest sid" >&2; return 1; }
+  [ -n "$_fk_root" ] || { echo "mission_fork: missing root" >&2; return 1; }
+  [ -f "$_fk_src" ] || { echo "mission_fork: source missing: $_fk_src" >&2; return 1; }
+  _fk_ssid=$(_mission_marker_field "$_fk_src" sid)
+  [ -n "$_fk_ssid" ] || { echo "mission_fork: source has no sid marker" >&2; return 1; }
+  mission_verify "$_fk_src" "$_fk_ssid" || { echo "mission_fork: source failed verify" >&2; return 2; }
+  _fk_dest=$(mission_path "$_fk_dsid" "$_fk_root") || return 1
+  [ "$_fk_dest" = "$_fk_src" ] && { printf '%s\n' "$_fk_dest"; return 0; }   # already mine — no-op
+  if [ -f "$_fk_dest" ]; then
+    echo "mission_fork: dest already exists (this session already owns a mission): $_fk_dest" >&2; return 3
   fi
-  command -v chain_manifest_write >/dev/null 2>&1 \
-    || { echo "mission_attach: chain helpers unavailable (cannot wire reattach)" >&2; return 1; }
-  _att_msid=$(_mission_marker_field "$_att_target" sid)
-  [ -n "$_att_msid" ] || { echo "mission_attach: target has no sid marker" >&2; return 1; }
-  # the target MUST be the canonical in-root MISSION.<its-own-sid>.md — rejects out-of-root or crafted
-  # targets and enforces §2b's "current canonical root only" contract (this is what <root> is for).
-  _att_expected=$(mission_path "$_att_msid" "$_att_root") || return 1
-  [ "$_att_target" = "$_att_expected" ] \
-    || { echo "mission_attach: target is not the canonical MISSION.<sid>.md for this root" >&2; return 1; }
-  mission_verify "$_att_target" "$_att_msid" || { echo "mission_attach: target failed verify" >&2; return 2; }
-  _att_cur=$(chain_manifest_read "$_att_psid" 2>/dev/null); [ -n "$_att_cur" ] || _att_cur='{}'
-  printf '%s' "$_att_cur" \
-    | jq --arg mp "$_att_target" '.mission_path = $mp' 2>/dev/null \
-    | chain_manifest_write "$_att_psid" \
-    || { echo "mission_attach: manifest update failed" >&2; return 1; }
-  printf '%s\n' "$_att_msid"
+  # clone .md, retargeting ONLY the canonical marker's sid= field (anchored to the marker line so a
+  # body line that merely contains 'sid=<src>' is never touched).
+  _fk_tmp=$(mktemp "${_fk_dest}.tmp.XXXXXX" 2>/dev/null) || { echo "mission_fork: mktemp failed" >&2; return 1; }
+  sed "s|^\\(<!-- MISSION schema=v1 sid=\\)${_fk_ssid}\\( \\)|\\1${_fk_dsid}\\2|" "$_fk_src" > "$_fk_tmp" \
+    || { rm -f "$_fk_tmp"; echo "mission_fork: clone write failed" >&2; return 1; }
+  mv -f "$_fk_tmp" "$_fk_dest" || { rm -f "$_fk_tmp"; echo "mission_fork: rename failed" >&2; return 1; }
+  # carry the log sidecar forward (observational; safe). Best-effort.
+  [ -f "${_fk_src%.md}.log" ] && cp -f "${_fk_src%.md}.log" "${_fk_dest%.md}.log" 2>/dev/null
+  # the clone MUST verify sound under the NEW sid, else back it out.
+  if ! mission_verify "$_fk_dest" "$_fk_dsid"; then
+    rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
+    echo "mission_fork: cloned file failed verify under dest sid — backed out" >&2; return 2
+  fi
+  printf '%s\n' "$_fk_dest"
 }
 
 # ===========================================================================================
