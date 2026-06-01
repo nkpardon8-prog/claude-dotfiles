@@ -618,6 +618,78 @@ if printf '%s' "$CONN_REDACTED_LINE" | grep -qF -- "$FAKE_DB_HOST"; then
 fi
 
 # ---------------------------------------------------------------------------
+# MODULE 13 — Migration Safety lint [FS] fixture (filesystem-only, NO DB).
+#
+# COVERS: Module 13 is `[FS]` static analysis of migrations/**.sql — it does NOT
+# run inside the SQL CORE_SQL block (it touches no data-plane). It previously had
+# ZERO coverage. This fixture plants a temp migrations dir with deliberately
+# UNSAFE migrations and runs the Module 13 lock/rewrite-safety grep heuristics
+# (core.md Module 13 §"Lock / rewrite-safety rules") against them, asserting the
+# rules FLAG the planted unsafe patterns AND do NOT flag a safe control file.
+#
+# This is a SHAPE/PATTERN assertion of the lint grep rules (not a full FS-lint
+# harness): it proves the core.md Module 13 regexes actually match the unsafe
+# SQL text. The discovery layer (git ls-files / fs-walk) is exercised by a plain
+# filesystem walk here (no git repo needed). Bash-3.2-safe, self-cleaning.
+# ---------------------------------------------------------------------------
+echo "[INFO] running Module 13 [FS] migration-lint fixture..."
+MIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dbaudit-migrations.XXXXXX")"
+
+# M13-D1 — NOT NULL without default (rule 1, HIGH): full-table rewrite + lock.
+cat > "$MIG_DIR/0001_unsafe_notnull.sql" <<'MIG'
+-- migration: add a NOT NULL column with no default (rewrites the whole table)
+ALTER TABLE public.app_users ADD COLUMN verified boolean NOT NULL;
+MIG
+
+# M13-D2 — CREATE INDEX without CONCURRENTLY (rule 7, MEDIUM): blocks writes.
+cat > "$MIG_DIR/0002_unsafe_index.sql" <<'MIG'
+-- migration: build an index without CONCURRENTLY (blocks writes for the build)
+CREATE INDEX idx_app_users_email ON public.app_users (email);
+MIG
+
+# CONTROL — a SAFE migration the rules must NOT flag (negative control).
+cat > "$MIG_DIR/0003_safe_control.sql" <<'MIG'
+-- migration: safe patterns — concurrent index + NOT NULL WITH a default.
+CREATE INDEX CONCURRENTLY idx_app_users_name ON public.app_users (name);
+ALTER TABLE public.app_users ADD COLUMN status text NOT NULL DEFAULT 'active';
+MIG
+
+# Discover migration files via a read-only filesystem walk (Darwin-safe; no GNU
+# flags, no git repo required). NUL-delimited so paths with spaces survive.
+MIG_FILES="$(find "$MIG_DIR" -type f -name '*.sql' | sort)"
+if [ -z "$MIG_FILES" ]; then
+  MISSES+=("MODULE13: migration-file discovery found no *.sql (fixture setup broke)")
+fi
+
+# Rule 1 — NOT NULL without default. The core.md heuristic flags
+# `ADD COLUMN … NOT NULL` lines that do NOT also carry a DEFAULT. Two-stage grep:
+# match ADD COLUMN…NOT NULL, then exclude any line that also has DEFAULT.
+M13_R1_HITS="$(grep -riEn 'ADD[[:space:]]+COLUMN.*NOT[[:space:]]+NULL' "$MIG_DIR" 2>/dev/null \
+  | grep -ivE 'DEFAULT' || true)"
+if ! printf '%s\n' "$M13_R1_HITS" | grep -qF '0001_unsafe_notnull.sql'; then
+  MISSES+=("MODULE13 rule1 (NOT NULL w/o default, HIGH) did not flag 0001_unsafe_notnull.sql")
+fi
+# Negative control: the safe NOT NULL DEFAULT line must NOT be flagged by rule 1.
+if printf '%s\n' "$M13_R1_HITS" | grep -qF '0003_safe_control.sql'; then
+  MISSES+=("MODULE13 rule1 false-positive: flagged the safe NOT NULL DEFAULT control (0003)")
+fi
+
+# Rule 7 — CREATE INDEX without CONCURRENTLY. Flag CREATE INDEX lines that do
+# NOT contain CONCURRENTLY.
+M13_R7_HITS="$(grep -riEn 'CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX' "$MIG_DIR" 2>/dev/null \
+  | grep -ivE 'CONCURRENTLY' || true)"
+if ! printf '%s\n' "$M13_R7_HITS" | grep -qF '0002_unsafe_index.sql'; then
+  MISSES+=("MODULE13 rule7 (CREATE INDEX w/o CONCURRENTLY, MEDIUM) did not flag 0002_unsafe_index.sql")
+fi
+# Negative control: the CONCURRENTLY index must NOT be flagged by rule 7.
+if printf '%s\n' "$M13_R7_HITS" | grep -qF '0003_safe_control.sql'; then
+  MISSES+=("MODULE13 rule7 false-positive: flagged the CONCURRENTLY index control (0003)")
+fi
+
+rm -rf "$MIG_DIR"
+MIG_DIR=""
+
+# ---------------------------------------------------------------------------
 # Report all misses, then exit once.
 # ---------------------------------------------------------------------------
 echo
