@@ -206,19 +206,33 @@ on run argv
     if not (exists window 1) then return "no-windows"
     set foundTab to missing value
     set foundWin to missing value
+    set winSeen to 0
+    set winSkipped to 0
+    set tabsSeen to 0
+    -- Per-window try (2026-06-01): `tabs of w` itself throws -1728 for an
+    -- un-enumerable window (mid-minimize / mid-close / odd state). The inner try
+    -- guards only `tty of t`, which is too late — the throw is at loop setup. Wrap
+    -- the whole inner enumeration so one bad window is SKIPPED, not fatal to the
+    -- entire search. Counters feed a diagnostic no-matching-tab return value.
     repeat with w in windows
-      repeat with t in tabs of w
-        try
-          if (tty of t) is targetTTY then
-            set foundTab to t
-            set foundWin to w
-            exit repeat
-          end if
-        end try
-      end repeat
+      set winSeen to winSeen + 1
+      try
+        repeat with t in tabs of w
+          set tabsSeen to tabsSeen + 1
+          try
+            if (tty of t) is targetTTY then
+              set foundTab to t
+              set foundWin to w
+              exit repeat
+            end if
+          end try
+        end repeat
+      on error
+        set winSkipped to winSkipped + 1
+      end try
       if foundTab is not missing value then exit repeat
     end repeat
-    if foundTab is missing value then return "no-matching-tab"
+    if foundTab is missing value then return "no-matching-tab/win=" & winSeen & "/skip=" & winSkipped & "/tabs=" & tabsSeen
     -- REVERTED 2026-05-31 to bare /compact. A field incident (dentall session fca8c4ab,
     -- 02:07Z) showed that firing /compact WITH a trailing instruction argument shifts the
     -- timing such that the queued /post-compact-resume (typed during compaction, line ~181)
