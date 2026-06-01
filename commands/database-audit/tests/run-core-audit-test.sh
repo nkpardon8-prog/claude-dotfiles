@@ -262,8 +262,9 @@ WHERE n.nspname = 'public'
   AND c.relrowsecurity = true
   AND c.relforcerowsecurity = false;
 
--- Q9.1 — FKs without ON DELETE / ON UPDATE action (D9). verbatim from core.md Module 9 (Q9.1)
-SELECT 'Q9.1|' || con.conrelid::regclass || '|' || con.conname || '|' || con.confdeltype || con.confupdtype
+-- Q9.1 — FKs without ON DELETE / ON UPDATE action (D9). verbatim from core.md Module 9 (Q9.1).
+-- (confdeltype/confupdtype are catalog "char"; cast to text for the marker concat only.)
+SELECT 'Q9.1|' || con.conrelid::regclass || '|' || con.conname || '|' || con.confdeltype::text || con.confupdtype::text
 FROM pg_constraint con
 JOIN pg_namespace n ON con.connamespace = n.oid
 WHERE con.contype = 'f'
