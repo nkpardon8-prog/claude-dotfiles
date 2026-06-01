@@ -299,8 +299,10 @@ plan-of-record that outlives any single handoff:
     (newest first), and do NOT silently ignore it or proceed as if no mission exists. Surface it, then
     fall back to the handoff alone only after the user is informed.
   - **If verify passes → read each zone IN FULL** via `mission_read_zone "$mission_file" <ZONE>` for
-    `PLAN`, `DURABLE NOTES`, `PLAN CHALLENGES`, and `PENDING DECISIONS`; and `tail` the
-    `MISSION.<sid>.log` sidecar (same dir) for recent progress entries.
+    `PLAN`, `DURABLE NOTES`, `PLAN CHALLENGES`, and `PENDING DECISIONS`; and read the LOG sidecar via
+    the **`/mission` §8 archive-inclusive resume-read idiom** (ALL rotated `.mission-backups/` archives
+    oldest→newest **plus** the live `MISSION.<sid>.log`) — **NOT a bare `tail`**, which silently misses
+    lifecycle/round lines that have rotated out of the live log.
 - **Surface to the user** in your resumption message: the **PLAN** (the standing directive), any
   **PLAN CHALLENGES** recorded against it, and any **NON-EMPTY PENDING DECISIONS** — the batched
   question queue awaiting the user's answers (each carries a `pd:<seq>-<short>` id; quote those ids
