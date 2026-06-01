@@ -315,9 +315,9 @@ Skip if `--only` is set and does not include `client`.
 - Provider metadata raw shape: <captured branch/project response for debugging — redacted>
 ```
 
-6. Write to `./tmp/db-audit/YYYY-MM-DD-HHmm.md`.
-7. Copy to `./tmp/db-audit/latest.md`.
-8. Print a one-screen summary with finding counts per severity and the report path.
+6. Write to the resolved `REPORT_FILE` from Step 0a.5 (`$REPORT_DIR/<ts>.md` in the normal case, or the `$(pwd)/db-audit-<ts>.md` fallback when `./tmp/` was unwritable). **Do NOT hardcode `./tmp/db-audit/` here — honor the resolved variable so the fallback path is actually used.**
+7. Copy to `$REPORT_DIR/latest.md` ONLY in the normal (`./tmp/` writable) case. In the fallback case there is no `REPORT_DIR` to host a rolling copy, so SKIP the `latest.md` copy (the single `$(pwd)/db-audit-<ts>.md` file is the sole sanctioned write).
+8. Print a one-screen summary with finding counts per severity and the resolved report path (`REPORT_FILE`).
 
 ---
 
