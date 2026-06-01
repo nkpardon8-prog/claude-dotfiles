@@ -10,6 +10,9 @@
 #      (SELECT-only guard rule 6) — the transaction is read-only and rolls back.
 #   3. The redaction rule 1 (../../redaction.md) redacts a JWT-shaped fake
 #      service_role string to `[REDACTED:...]` and never leaks the raw value.
+#   4. The redaction rule 5 (../../redaction.md) redacts a fake postgres://
+#      connection string to `[REDACTED:...]` and never leaks the raw password
+#      or host.
 #
 # CONVENTION (/script): idempotent, self-cleaning, deterministic exit codes,
 # namespaced synthetic data.
