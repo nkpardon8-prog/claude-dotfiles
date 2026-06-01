@@ -163,6 +163,38 @@ case "$verb" in
     _mw_status render-banner "$rc" "see stderr"
     ;;
 
+  timing-resume)
+    if [ -z "$sid" ] || [ -z "$root" ]; then
+      echo "mission-write: usage: timing-resume <sid> <root>"
+      exit 0
+    fi
+    # advisory — these lib fns always return 0 and capture compute stdout internally,
+    # so nothing leaks onto this verb's single status line.
+    mission_timing_resume "$sid" "$root"
+    rc=$?
+    _mw_status timing-resume "$rc" "see stderr"
+    ;;
+
+  timing-contact)
+    if [ -z "$sid" ] || [ -z "$root" ] || [ -z "${4:-}" ]; then
+      echo "mission-write: usage: timing-contact <sid> <root> <reason>"
+      exit 0
+    fi
+    mission_timing_contact "$sid" "$root" "$4"
+    rc=$?
+    _mw_status timing-contact "$rc" "see stderr"
+    ;;
+
+  timing-close)
+    if [ -z "$sid" ] || [ -z "$root" ] || [ -z "${4:-}" ]; then
+      echo "mission-write: usage: timing-close <sid> <root> <status>"
+      exit 0
+    fi
+    mission_timing_close "$sid" "$root" "$4"
+    rc=$?
+    _mw_status timing-close "$rc" "see stderr"
+    ;;
+
   ""|help|-h|--help)
     echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|resolve|rebaseline|render-banner> <sid> <root> [args...]"
     ;;
