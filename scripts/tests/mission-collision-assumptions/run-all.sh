@@ -9,11 +9,15 @@ if [ "${MISSION_SMOKE_ALLOW_DEV:-}" != "true" ]; then
   exit 2
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# timeout shim: GNU `timeout`, macOS `gtimeout`, else run bare (no hang guard).
+if command -v timeout >/dev/null 2>&1; then TO=(timeout 60)
+elif command -v gtimeout >/dev/null 2>&1; then TO=(gtimeout 60)
+else TO=(); fi
 TESTS=( "03-sid-matched-resolution.sh" "06-empty-pointer-fallthrough.sh" "07-resume-write-routing.sh" "05-manifest-pointer-wins.sh" "02-no-cross-bind.sh" )
 PASS=0; PENDING=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do
   echo; echo "--- ${t} ---"
-  if timeout 60 bash "${SCRIPT_DIR}/${t}"; then
+  if "${TO[@]}" bash "${SCRIPT_DIR}/${t}"; then
     PASS=$((PASS+1))
   else
     rc=$?
