@@ -365,9 +365,30 @@ FROM pg_stat_bgwriter;
 -- Q6.19 — collation version drift, DB-level. verbatim from core.md Module 6 (Q6.19, DB-level form).
 -- PG16 has pg_database_collation_actual_version(oid); pass a real OID so the
 -- function resolves (an empty-paren call would abort the transaction).
+-- NOTE: core.md's DB-level SELECT filters on
+--   WHERE datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+-- (drift only). The shape probe below keeps the verbatim SELECT-list but pins to
+-- the current DB row (always present) so this single-tx test deterministically
+-- emits a Q6.19 marker proving the PG16 collation func resolves RO.
 SELECT 'Q6.19|' || datname || '|' || COALESCE(datcollversion,'') || '|' || COALESCE(pg_database_collation_actual_version(oid),'')
 FROM pg_database
 WHERE oid = (SELECT oid FROM pg_database WHERE datname = current_database());
+
+-- Q6.19 — PER-INDEX collation attribution. verbatim from core.md Module 6 (Q6.19,
+-- per-INDEX form). SHAPE-ONLY: a fresh container has no drift so this returns 0
+-- rows; the point is proving the `unnest(i.indcollation::oid[])` CAST executes RO
+-- on PG16 (an uncast oidvector unnest would abort the whole transaction).
+SELECT 'Q6.19I|' || n.nspname || '|' || ic.relname || '|' || tc.relname || '|' || cl.collname || '|' || COALESCE(cl.collversion,'') || '|' || COALESCE(pg_collation_actual_version(cl.oid),'') || '|' || (count(*) OVER ())::text
+FROM pg_index i
+JOIN pg_class ic ON ic.oid = i.indexrelid
+JOIN pg_class tc ON tc.oid = i.indrelid
+JOIN pg_namespace n ON ic.relnamespace = n.oid
+JOIN unnest(i.indcollation::oid[]) WITH ORDINALITY AS col(colloid, ord) ON true
+JOIN pg_collation cl ON cl.oid = col.colloid
+WHERE col.colloid <> 0
+  AND cl.collversion IS DISTINCT FROM pg_collation_actual_version(cl.oid)
+ORDER BY n.nspname, ic.relname
+LIMIT 50;
 
 -- Q14.1 — WAL archiver runtime status. verbatim from core.md Module 14 (Q14.1, pg_stat_archiver form)
 SELECT 'Q14.1|' || archived_count::text || '|' || failed_count::text || '|' || COALESCE(last_failed_wal,'') || '|' || COALESCE(last_archived_wal,'')
