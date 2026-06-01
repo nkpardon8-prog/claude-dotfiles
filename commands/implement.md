@@ -125,6 +125,8 @@ Completeness: X/Y tasks done
 Issues found: [count]
 [Summarize key issues if any]
 
+Criticer: [≤5 value-critique findings from the criticer lane, or — if none]
+
 Manual steps remaining:
 - [ ] [Dangerous commands from Step 2]
 
