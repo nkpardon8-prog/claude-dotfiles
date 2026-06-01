@@ -375,7 +375,7 @@ LIMIT 50;
 -- `relkind IN ('r','p')` (partitioned parents visible, partition children
 -- excluded via NOT relispartition). The seed creates tables, so >=1 row likely,
 -- but we assert shape only (no finding).
-SELECT 'Q6.17|' || n.nspname || '|' || c.relname || '|' || c.relkind || '|' || pg_total_relation_size(c.oid)::text || '|' || (c.oid IN (SELECT partrelid FROM pg_partitioned_table))::text || '|' || (c.relkind = 'r' AND NOT c.relispartition AND c.oid NOT IN (SELECT partrelid FROM pg_partitioned_table))::text
+SELECT 'Q6.17|' || n.nspname || '|' || c.relname || '|' || c.relkind::text || '|' || pg_total_relation_size(c.oid)::text || '|' || (c.oid IN (SELECT partrelid FROM pg_partitioned_table))::text || '|' || (c.relkind = 'r' AND NOT c.relispartition AND c.oid NOT IN (SELECT partrelid FROM pg_partitioned_table))::text
 FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
 WHERE c.relkind IN ('r','p')
   AND NOT c.relispartition
