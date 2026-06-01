@@ -54,7 +54,7 @@ EXIT_SKIP=77
 # PRE-RUN reap of leaked containers (covers SIGKILL/OOM where the trap never
 # fired on a prior run). Matches the whole `dbaudit-test-` prefix.
 # ---------------------------------------------------------------------------
-docker rm -f $(docker ps -aq --filter name=dbaudit-test-) >/dev/null 2>&1 || true
+ids=$(docker ps -aq --filter name=dbaudit-test-); [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # Teardown trap — PRESERVES the real exit code. Removes only THIS run's
