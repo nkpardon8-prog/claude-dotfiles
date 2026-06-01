@@ -17,7 +17,9 @@ expected_subagents: 4
    ```
 
 2. `Read ~/.claude-dotfiles/commands/database-audit.md` and execute it as the orchestrator, with:
-   - First, **STRIP any user-supplied `--provider=...` token from `$ARGUMENTS`** (drop the whole `--provider=<val>` token, whatever its value) so the orchestrator never receives a duplicate `--provider` flag.
+   - First, **STRIP any user-supplied provider flag from `$ARGUMENTS` in BOTH forms** so the orchestrator never receives a duplicate `--provider` flag:
+     - the **equals form** `--provider=<val>` (drop the whole single token, whatever its value), AND
+     - the **split / space form** `--provider <val>` (drop BOTH tokens — the `--provider` flag word AND the following value token). A user passing `--provider postgres` (space-separated) must have BOTH tokens removed; forwarding either token would produce a conflicting double-provider that the strict parser rejects.
    - Then append `--provider=supabase` **forced** (always present, regardless of what `$ARGUMENTS` contained — this alias is Supabase-only by definition).
    - Any `--only=<csv>` and `--env=prod` flags the user supplied in `$ARGUMENTS` are passed through verbatim.
 
