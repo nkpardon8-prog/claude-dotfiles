@@ -27,7 +27,7 @@ host `psql` is not needed.
 
 | Code | Meaning                                                                 |
 |------|-------------------------------------------------------------------------|
-| `0`  | PASS — every planted finding was caught at the correct vanilla-context severity, and the redaction fixture redacted the fake secret. |
+| `0`  | PASS — each planted defect is DETECTED by the correct core query (Qx.y marker) and the redaction engine produces the `[REDACTED:<8hex>]` marker. Severity values themselves are defined in `core.md` and are not asserted here. |
 | `1`  | FAIL — one or more planted findings were missed, or redaction failed. Every miss is printed by name before exit. |
 | `77` | SKIPPED — the Postgres image is not cached locally and the host is offline, so it could not be pulled. This is **not** a failure; run once while online to cache the image. |
 
