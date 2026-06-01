@@ -35,7 +35,7 @@ These hold regardless of provider or flags — they are restated here and enforc
 Parse `$ARGUMENTS`:
 
 - `--provider=<p>` → force provider (`supabase`, `neon`, `postgres`); skips auto-detection.
-- `--only=<csv>` → run only named modules (`schema`, `rls`, `security`, `prod`, `client`).
+- `--only=<csv>` → run only named modules (`schema`, `rls`, `security`, `prod`, `client`, `health`, `config`, `privileges`, `integrity`, `compliance`, `pii`, `migrations`, `backup`, `exfil`).
 - `--env=prod` → user explicitly confirms prod access.
 
 Validation:
