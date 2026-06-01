@@ -357,13 +357,15 @@ Scan **git-tracked** files for the SAME secret pattern set as FS.1 (don't let th
 Use NUL-delimited plumbing so filenames with spaces survive (Darwin has no GNU `xargs -r`):
 
 ```bash
-git grep -n 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|postgres://\|postgresql://\|DATABASE_URL\|\(=\|:\|"\|'\''\)eyJ[A-Za-z0-9_-]\{20,\}'
+# ALWAYS terminate with | <redact-pipe> (redaction.md rules 1–5): it turns each
+# "file:line:rawmatch" into "file:line  [REDACTED:<8hex>]" and discards the raw secret.
+git grep -n 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|postgres://\|postgresql://\|DATABASE_URL\|\(=\|:\|"\|'\''\)eyJ[A-Za-z0-9_-]\{20,\}' | <redact-pipe>
 # preferred: file:line output, native NUL-safe over tracked files, clean no-op on no match.
 # Equivalent NUL-delimited form:
-git ls-files -z | xargs -0 grep -n 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|postgres://\|postgresql://\|DATABASE_URL\|\(=\|:\|"\|'\''\)eyJ[A-Za-z0-9_-]\{20,\}'
+git ls-files -z | xargs -0 grep -n 'SUPABASE_SERVICE_ROLE_KEY\|service_role\|postgres://\|postgresql://\|DATABASE_URL\|\(=\|:\|"\|'\''\)eyJ[A-Za-z0-9_-]\{20,\}' | <redact-pipe>
 ```
 
-Read-only git only (`git ls-files` / `git grep`); no mutation. Pipe the `file:line` output through the redaction step before printing — never emit the raw matched line.
+**WARNING: NEVER run the bare grep above without the trailing `| <redact-pipe>` — `git grep -n` prints the WHOLE matching line, which contains the raw `DATABASE_URL` / JWT / service-role secret.** Read-only git only (`git ls-files` / `git grep`); no mutation. Every match must pass through the redaction step before any byte reaches stdout, a file, or the report — emit `file:line` + `[REDACTED:<8hex>]` only, never the raw matched line.
 
 ### FS.3 — .env-tracked check (`--only=security`)
 
