@@ -42,7 +42,7 @@ Validation:
 
 - Any flag not in `{--provider, --only, --env}` → print `"Unknown flag: <flag>. Valid: --provider=<supabase|neon|postgres>, --only=<csv>, --env=prod"` and stop.
 - Any value for `--provider` other than `supabase|neon|postgres` → print `"Unknown value for --provider: <val>. Valid: supabase, neon, postgres"` and stop.
-- Any module name in `--only=<csv>` not in `{schema, rls, security, prod, client}` → print `"Unknown module in --only: <name>. Valid: schema, rls, security, prod, client"` and stop.
+- Any module name in `--only=<csv>` not in `{schema, rls, security, prod, client, health, config, privileges, integrity, compliance, pii, migrations, backup, exfil}` → print `"Unknown module in --only: <name>. Valid: schema, rls, security, prod, client, health, config, privileges, integrity, compliance, pii, migrations, backup, exfil"` and stop.
 - Any value for `--env` other than `prod` → print `"Unknown value for --env: <val>. Only --env=prod is supported"` and stop.
 
 ### Step 0a.2 — Provider auto-detection (DETERMINISTIC precedence)
