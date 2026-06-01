@@ -114,7 +114,7 @@ Call `list_slow_queries` (Neon's equivalent of the Supabase slow-query log). Eac
 
 ### Supported Postgres version (supplied to portable Q4.1)
 
-Neon supported major versions: `['14', '15', '16', '17']`. List last updated: `2026-05`. Major version not in this list → HIGH (passed to the portable Q4.1 check in `core.md`). EOL staleness: if today is more than 18 months after `2026-05` → INFO "Neon Postgres version data may be stale; verify at neon.com/docs."
+Neon supported major versions: `['14', '15', '16', '17', '18']`. List last updated: `2026-05`. Review this list against the provider's version calendar periodically; EOL majors removed (PG13 EOL 2025-11), new GA majors added (PG18 GA 2025) — without `'18'` a PG18 branch would FALSELY emit the HIGH "unsupported version" finding. Major version not in this list → HIGH (passed to the portable Q4.1 check in `core.md`). EOL staleness: if today is more than 18 months after `2026-05` → INFO "Neon Postgres version data may be stale; verify at neon.com/docs."
 
 ### Neon-only SQL-checkable (via `run_sql` / psql — vetted SELECTs, gated behind the prod guard)
 
