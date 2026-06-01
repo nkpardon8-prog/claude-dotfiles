@@ -281,7 +281,7 @@ mission_lifecycle_state() {
         if [ "${_mst_a##*.}" = gz ]; then gzip -dc "$_mst_a" 2>/dev/null; else cat "$_mst_a" 2>/dev/null; fi
       done
       cat "$_mst_live" 2>/dev/null
-    } | grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' | tail -1
+    } | grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' | tail -1 || true
   )
   case "$_mst_last" in
     *MISSION-REBASELINED*) printf 'active\n' ;;
