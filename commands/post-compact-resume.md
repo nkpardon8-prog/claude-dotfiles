@@ -287,12 +287,7 @@ plan-of-record that outlives any single handoff:
 - If it exists, run `mission_verify` first (source the lib, then verify):
   ```bash
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"
-  # Verify against the mission file's OWN marker sid, NOT $ARG_SID. A mission reattached via
-  # /mission resume legitimately has a DIFFERENT marker sid (the resumed mission's), and the chain
-  # manifest pointer is what reattached us to it — verifying against $ARG_SID would falsely flag a
-  # resumed mission as corrupt. `wsid` is also the working sid for any subsequent writes this session.
-  wsid=$(_mission_marker_field "$mission_file" sid 2>/dev/null); [ -n "$wsid" ] || wsid="$ARG_SID"
-  mission_verify "$mission_file" "$wsid"   # 0 = sound; non-zero = corrupt
+  mission_verify "$mission_file" "$ARG_SID"   # 0 = sound; non-zero = corrupt
   ```
   - **If verify FAILS → this is LOUD.** Tell the user the mission file is corrupt or tampered
     (failed `mission_verify`), point them at the timestamped backups under `<canonical_root>/.mission-backups/`
