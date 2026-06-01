@@ -280,7 +280,7 @@ SELECT current_setting('server_version') AS version;
 
 The provider adapter supplies the supported-major-version list and any EOL-staleness note. Extract the major version from the result; if not in the provider's supported list → HIGH.
 
-### Q4.2 — Connection saturation (severity always MEDIUM)
+### Q4.2 — Connection saturation (severity scales with the active/max ratio)
 
 ```sql
 SELECT
@@ -288,7 +288,12 @@ SELECT
   current_setting('max_connections')::int AS max_conn;
 ```
 
-Severity: always MEDIUM. Body includes: `"active N of max M (N/M%)"`. Severity never changes based on the ratio — ratio goes in the body only.
+Severity scales with the active/max ratio (`N/M`) to avoid flagging healthy databases as findings (no-noise principle):
+- ratio `< 80%` → INFO
+- ratio `>= 80%` → MEDIUM
+- ratio `>= 95%` → HIGH
+
+Body includes: `"active N of max M (N/M%)"`.
 
 ---
 
