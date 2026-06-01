@@ -72,21 +72,16 @@ MISSION file in the worktree-invariant shared root and so silently adopted ANOTH
 ```bash
 mfile=$(mission_resolve_path "$sid" "$root") \
   || { echo "FATAL: mission_resolve_path errored (bad sid/root) — STOP" >&2; exit 1; }
-# WORKING sid (for ALL writes) = the resolved mission's OWN marker sid. Normally == $sid; after
-# /mission resume it is the resumed mission's sid. Deriving it from the FILE (not from $sid) is what
-# keeps a resumed mission consistent across compaction — every resume re-reads the same manifest
-# pointer and re-derives the same working sid, so reads and writes never split-brain. No mission yet
-# (empty mfile) -> the working sid is simply $sid.
-wsid=$(_mission_marker_field "$mfile" sid 2>/dev/null); [ -n "$wsid" ] || wsid="$sid"
 ```
-`mission_resolve_path` returns the manifest-pointer target if set and present (and internally
-consistent — basename sid == marker sid), else the deterministic `MISSION.<sid>.md` if it exists, else
-**empty**. Empty means THIS session has no mission yet (proceed to create in §3/§4, or report none in
-`status`) — it does **NOT** mean "adopt whatever's newest". A non-zero rc is a hard error (invalid
-sid/root): STOP; never treat it as "no mission". The pointer is the authoritative anchor written by
-`mission_create`/`mission_attach`; the deterministic path is the sid-keyed backstop; there is no mtime
-backstop. Use `mfile` for all reads; use **`<wsid>`**`/<root>` for all writes (the working sid above —
-identical to `<sid>` unless this session `/mission resume`d).
+`mission_resolve_path` returns the manifest-pointer target if set and present (and in-root canonical —
+basename sid == marker sid == `mission_path` for this root), else the deterministic `MISSION.<sid>.md`
+if it exists, else **empty**. Empty means THIS session has no mission yet (proceed to create in §3/§4,
+or report none in `status`) — it does **NOT** mean "adopt whatever's newest". A non-zero rc is a hard
+error (invalid sid/root): STOP; never treat it as "no mission". The pointer is the authoritative anchor
+written by `mission_create`; the deterministic path is the sid-keyed backstop; there is no mtime
+backstop. **Your mission is always owned by your own `<sid>`** (see §2b — even `/mission resume` clones
+the picked mission into *your* `<sid>`), so use `mfile` for all reads and `<sid>`/`<root>` for all
+writes throughout — there is no separate "working sid" to track.
 
 ---
 
