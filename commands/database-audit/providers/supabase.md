@@ -167,6 +167,10 @@ Skip if `--only` is set and does not include `client`. On any MCP error during c
 
 > **CRITICAL GOTCHA:** A spawned sub-agent does **NOT** inherit the orchestrator's Read'd files. The sub-agent prompt below must be embedded **VERBATIM** into the `Agent` call as literal prompt text — do not reference this file from inside the sub-agent, and do not paraphrase it.
 
+**Scratch-file location (write-allowlist compliance).** The `.client-scan.md` scratch file is written under the RESOLVED report location (`$REPORT_DIR` from Step 0a.5), NOT a hardcoded `./tmp/db-audit/`. Substitute the resolved `$REPORT_DIR` into the `Write results to $REPORT_DIR/.client-scan.md` line before dispatching. In the `$(pwd)` fallback mode (no writable `./tmp/`, `REPORT_DIR=$(pwd)`), the single `$(pwd)/db-audit-<ts>.md` report is the only sanctioned write — so Module 5 is SKIPPED with `[INFO] Module 5 skipped — no writable tmp/ for the client-scan scratch file` (per orchestrator Phase 5) and the sub-agent is NOT spawned.
+
+**Cross-reference is IN-MEMORY only (no repo literals in SQL).** Cross-referencing compares repo-derived names against catalog results in memory; repo literals are NEVER concatenated into executed SQL. Read the catalog (`list_tables` / `information_schema` / `pg_proc`) into memory once, then compare the repo-derived table / function / column NAMES against those in-memory results — NEVER interpolate a repo-derived literal into a SQL string (that violates the fixed-library guard and is an injection vector from a hostile repo).
+
 ### Sub-agent contract — embed this block verbatim into the Agent call
 
 ```
