@@ -83,13 +83,30 @@ Task tool (call 2, sent in the same message as call 1):
   prompt: "Review the plan at [path]. Produce a numbered list of specific,
     actionable recommendations covering gaps, simplification opportunities,
     correctness issues, and better alternatives."
+
+Task tool (call 3, sent in the SAME message as calls 1 & 2):
+  subagent_type: "criticer"
+  prompt: "Critique the plan at [path] as a generative value-critic. Apply up to
+    5 lenses — (1) biggest gap, (2) honest assessment of where it quietly fails,
+    (3) cheap win being skipped, (4) premise check (right problem?), (5) over-built
+    (gold-plated / too rigid / solving non-problems). Return a `## Criticer Notes`
+    block, at most 5 findings ranked by value, fewer is better, empty is fine.
+    NEVER ask the user anything — state, don't ask. Do NOT emit an `## Assumption-
+    Test Candidates` section. Brief(s) for intent: [resolved brief path(s) from
+    Step 0, or 'none']."
 ```
 
-   When both return, merge the findings:
+   `criticer` is the **generative value-critic lane** — the opposite axis from the
+   two fidelity reviewers. It is advisory only: it never asks, gates, or blocks, so
+   it is safe under autonomous `/mission` runs. It is NOT fed into the item-2
+   meta-pass (that A/B compares only the two `plan-reviewer` outputs).
+
+   When the reviewers return, merge the findings:
    - If both reviewers raised the same issue → list it once, mark as `(both reviewers)` for higher confidence
    - If only one raised it → keep it, mark as `(reviewer 1)` or `(reviewer 2)`
    - Dedupe near-duplicates by topic, not by exact wording
-   - **Union the `## Assumption-Test Candidates` sections** from both reviewers (dedup by finding). Retain this merged candidate list — Step 5 reads it from the FINAL review pass.
+   - **Union the `## Assumption-Test Candidates` sections** from the two `plan-reviewer` outputs (dedup by finding). Retain this merged candidate list — Step 5 reads it from the FINAL review pass. (`criticer` never emits this section.)
+   - Hold the `criticer` output (its `## Criticer Notes` block) separately for rendering + persistence in item 3 below.
 
 2. **Anonymized peer-review meta-pass.**
 
