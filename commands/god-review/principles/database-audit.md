@@ -35,12 +35,14 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # in any .env*.
 HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o \( -name "*.sql" -o -path "*/migrations/*" -o -name "schema.prisma" -o -path "*/supabase/config.toml" \) -print' _ "$WORKDIR" 2>/dev/null | head -1)
 if [ -z "$HAS_DATABASE" ]; then
-  pkgs=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name package.json -print0' _ "$WORKDIR" 2>/dev/null)
-  [ -n "$pkgs" ] && HAS_DATABASE=$(printf '%s' "$pkgs" | xargs -0 grep -l "@supabase/supabase-js\|@supabase/ssr\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
+  # Direct pipe: -print0 goes STRAIGHT into xargs -0 (never captured into a shell
+  # variable, which cannot preserve NUL bytes and would mangle multi-file output).
+  # Only the FINAL grep result (a normal newline string) is assigned.
+  HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name package.json -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -l "@supabase/supabase-js\|@supabase/ssr\|@neondatabase/serverless\|\"pg\"\|drizzle-orm\|prisma" 2>/dev/null | head -1)
 fi
 if [ -z "$HAS_DATABASE" ]; then
-  envs=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name ".env*" -type f -print0' _ "$WORKDIR" 2>/dev/null)
-  [ -n "$envs" ] && HAS_DATABASE=$(printf '%s' "$envs" | xargs -0 grep -lE "SUPABASE_URL|^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=[[:space:]]*[^[:space:]'\"]" 2>/dev/null | head -1)
+  # Same direct-pipe form — never store -print0 (NUL-delimited) bytes in a variable.
+  HAS_DATABASE=$(/bin/bash -c 'find "$1" -maxdepth 6 \( -path "*/node_modules" -o -path "*/.git" \) -prune -o -name ".env*" -type f -print0' _ "$WORKDIR" 2>/dev/null | xargs -0 grep -lE "SUPABASE_URL|^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=[[:space:]]*[^[:space:]'\"]" 2>/dev/null | head -1)
 fi
 ```
 
