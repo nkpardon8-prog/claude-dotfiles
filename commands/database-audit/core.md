@@ -281,6 +281,20 @@ WHERE schemaname = 'public';
 
 Caveat: candidates only — the fixed query lists matviews; determining whether a matview reads RLS-protected tables requires reading its definition (`pg_get_viewdef`) during deep analysis. Emit as INFO-with-verify (flag for manual review), not an automatic MEDIUM, unless deep analysis confirms it reads an RLS-protected table. Note: matviews run as owner and ignore RLS on underlying tables.
 
+### Q2.6 — FORCE RLS gap [RO] (`rls`)
+
+```sql
+SELECT n.nspname, c.relname
+FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE n.nspname = 'public'
+  AND c.relrowsecurity = true
+  AND c.relforcerowsecurity = false;
+```
+
+A table with RLS enabled but FORCE RLS off is still bypassed by the table OWNER (and any role with `BYPASSRLS`), silently — policies do not apply to the owner. If the application connects as the table owner (common with a single bootstrap role), every RLS policy is a no-op for it. Scoped to `public` to match Q2.1/Q2.2; **non-public RLS tables are NOT covered by this check** (so Module 8.5's cross-ref does not over-claim).
+
+Severity: MEDIUM (CRITICAL if the application connects as the table owner).
+
 ---
 
 ## Module 3 — Security (portable subset)
