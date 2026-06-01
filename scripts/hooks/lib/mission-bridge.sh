@@ -259,11 +259,12 @@ mission_resolve_path() {
   return 0
 }
 
-# mission_state <sid> <root> -> stdout: active | cleared | unknown
+# mission_lifecycle_state <sid> <root> -> stdout: active | cleared | unknown
+# (named to NOT collide with the playbook's local `mission_state` grep variable in §8.)
 # Reuses the §8 archive-inclusive active-iff read (ALL rotated archives oldest->newest + live log),
 # so a CLEARED/REBASELINED line rotated out of the live log is NOT missed. `unknown` = no lifecycle
 # line yet (a freshly-created, still-active mission).
-mission_state() {
+mission_lifecycle_state() {
   _mst_sid=$(_mission_sanitize_sid "$1"); _mst_root="$2"
   { [ -n "$_mst_sid" ] && [ -n "$_mst_root" ]; } || { printf 'unknown\n'; return 0; }
   _mst_live="${_mst_root}/MISSION.${_mst_sid}.log"
