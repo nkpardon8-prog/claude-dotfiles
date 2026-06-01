@@ -2,7 +2,7 @@
 
 This file is a **fixed library** of provider-agnostic `pg_catalog` / `information_schema` / `pg_stats` queries. It is `Read` by the `/database-audit` orchestrator. **Its queries are dispatched only AFTER the prod guard resolves (Phase 0b in `guards.md`).** No query in this file may run before the guard discharges — and per SELECT-only guard rule 1 (`guards.md`), these queries are a FIXED library: they must be issued verbatim, never dynamically constructed from variables.
 
-Every query below runs identically on any Postgres (Supabase, Neon, vanilla). It is dispatched either via the universal `psql "$DATABASE_URL"` path wrapped in `BEGIN READ ONLY; … ROLLBACK;` (see `guards.md` rule 6) or via a provider MCP read-only SQL tool. Each query keeps its severity assignment exactly as below.
+Every query below runs identically on any Postgres (Supabase, Neon, vanilla). It is dispatched either via the universal `psql "$DATABASE_URL"` path wrapped in `BEGIN READ ONLY; … ROLLBACK;` (see `guards.md` rule 6) or via a provider MCP read-only SQL tool. Each query keeps its severity assignment exactly as below, EXCEPT Q2.1 (RLS-off), whose severity is context-dependent and set by the provider adapter — see the Module 2 note.
 
 Supabase-specific checks (`get_advisors`, anon/RLS classification, storage, edge functions, realtime, auth manual checks) are NOT here — they live in `providers/supabase.md`.
 
