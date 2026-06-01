@@ -124,7 +124,7 @@ Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) �
 
 **Step A — Performance advisors.** Call `mcp__supabase__get_advisors({type: "performance"})`. Include every finding verbatim.
 
-**Supported Postgres major versions** (supplied to portable Q4.1): `['15', '16', '17']`. List last updated: `2026-01`. Major version not in this list → HIGH. EOL staleness: if today's date is more than 18 months after `2026-01` → emit INFO: "Supabase Postgres version data may be stale; verify at supabase.com/docs."
+**Supported Postgres major versions** (supplied to portable Q4.1): `['15', '16', '17', '18']`. List last updated: `2026-05`. Review this list against the provider's version calendar periodically; EOL majors removed (PG13 EOL 2025-11), new GA majors added (PG18 GA 2025). `'18'` is included pre-emptively: a too-new-but-listed version is harmless (no false finding), whereas omitting a GA major that Supabase offers would produce a false HIGH "unsupported version" finding. Major version not in this list → HIGH. EOL staleness: if today's date is more than 18 months after `2026-05` → emit INFO: "Supabase Postgres version data may be stale; verify at supabase.com/docs."
 
 **Step D — Slow-query log scan.** Call `mcp__supabase__get_logs({type: "postgres"})`. Scan entries for `duration:` values greater than 1000ms. Each slow-query entry → MEDIUM finding. **Redaction:** logged query text can embed tokens, connection strings, and literal PII. Prefer reporting the query SHAPE/fingerprint over raw text; if raw text is included it MUST first be passed through the redaction pass (`redaction.md` rules 1–5) and truncated/summarized — never report a raw slow-query body.
 
