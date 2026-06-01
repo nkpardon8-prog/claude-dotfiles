@@ -401,6 +401,61 @@ assert_contains '^Q2\.4\|dbaudit_test\|secdef_no_searchpath$' 'D5 SECURITY DEFIN
 assert_contains '^Q3\.1\|dbaudit_pii\|email$' 'D7 PII column (email) with anon SELECT not caught by Q3.1 (HIGH)'
 
 # ---------------------------------------------------------------------------
+# MODULES 6–15 — SEEDABLE assertions (a defect was planted; assert detection).
+# ---------------------------------------------------------------------------
+
+# D8 — FORCE RLS gap (RLS on, FORCE off) caught by Q2.6 (MEDIUM)
+assert_contains '^Q2\.6\|public\|dbaudit_force_rls_off$' 'D8 FORCE RLS gap not caught by Q2.6 (MEDIUM)'
+
+# D9 — FK with NO ON DELETE action caught by Q9.1 (MEDIUM); confdeltype 'a' = NO ACTION
+assert_contains '^Q9\.1\|dbaudit_fk_child\|' 'D9 FK with no ON DELETE action not caught by Q9.1 (MEDIUM)'
+
+# D10 — timestamp (no tz) column caught by Q9.4 (MEDIUM)
+assert_contains '^Q9\.4\|dbaudit_ts_notz\|created_ts$' 'D10 timestamp-without-tz column not caught by Q9.4 (MEDIUM)'
+
+# D11 — money-typed column caught by Q9.5 (MEDIUM)
+assert_contains '^Q9\.5\|dbaudit_money_col\|amount$' 'D11 money-typed column not caught by Q9.5 (MEDIUM)'
+
+# D12 — secret-shaped column caught by Q15.3 NAME-ONLY (HIGH). Asserted via 15.3
+# ONLY (grant-independent) — NOT Q3.1, which would need an anon grant D12 omits.
+assert_contains '^Q15\.3\|public\|dbaudit_secrets\|api_key$' 'D12 secret-shaped column (api_key) not caught by Q15.3 name-only (HIGH)'
+
+# D13 — extension installed in public schema caught by Q15.4 (MEDIUM)
+assert_contains '^Q15\.4\|pgcrypto\|public$' 'D13 extension-in-public (pgcrypto) not caught by Q15.4 (MEDIUM)'
+
+# D15 — event trigger caught by Q15.5 (INFO/MEDIUM)
+assert_contains '^Q15\.5\|dbaudit_evt_trigger\|' 'D15 event trigger not caught by Q15.5 (INFO/MEDIUM)'
+
+# ---------------------------------------------------------------------------
+# MODULES 6–15 — SHAPE-ONLY assertions. These checks cannot be seeded in a
+# fresh container (no near-wraparound XID, near-max int4 sequence, failing
+# archiver, or failed-CONCURRENTLY index). We do NOT assert a finding — we only
+# prove the query EXECUTED under BEGIN READ ONLY and produced its marker-tagged
+# header row(s). Because the whole CORE_SQL is one ON_ERROR_STOP=1 transaction,
+# CORE_RC==0 already proves none of them raised an error; these markers prove
+# each specific query actually ran (vs. being silently absent).
+#
+# pg_database always has >=1 row, so Q6.4 / Q6.19 deterministically emit a
+# marker; the others may legitimately return zero rows (no slots, no invalid
+# index, no event of that kind) so we DO NOT assert their marker presence — for
+# those, the CORE_RC==0 guard + the TXN_RO=on assertion are the shape proof.
+# Q6.18 (pg_stat_bgwriter) and Q14.1 (pg_stat_archiver) are single-row catalog
+# views that always return exactly one row, so their markers are deterministic.
+# ---------------------------------------------------------------------------
+
+# Q6.4 — XID wraparound query ran RO and returned the per-DB shape (pg_database is non-empty)
+assert_contains '^Q6\.4\|' 'Q6.4 XID wraparound query did not run / returned no shape (expected >=1 pg_database row)'
+
+# Q6.18 — checkpoint tuning ran RO via the PG16 pg_stat_bgwriter branch (single-row view)
+assert_contains '^Q6\.18\|' 'Q6.18 checkpoint-tuning query did not run / no shape (PG16 pg_stat_bgwriter branch)'
+
+# Q6.19 — collation drift DB-level query ran RO (pg_database current_database row always present)
+assert_contains '^Q6\.19\|' 'Q6.19 collation-drift query did not run / no shape (PG16 collation func)'
+
+# Q14.1 — WAL archiver runtime status ran RO (pg_stat_archiver is a single-row view)
+assert_contains '^Q14\.1\|' 'Q14.1 WAL-archiver query did not run / no shape (pg_stat_archiver single row)'
+
+# ---------------------------------------------------------------------------
 # REDACTION fixture (proves redaction.md rule 1, hermetically, no real creds).
 # FAKE_SECRET is an obviously-fake JWT-shaped string (eyJ + >=20 chars). The
 # inline redactor below mirrors rule 1's JWT-shaped pattern:
