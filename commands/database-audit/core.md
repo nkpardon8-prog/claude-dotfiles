@@ -1317,11 +1317,17 @@ On any MCP/SQL error: emit `[INFO] Module 14 — {tool} unavailable: {error}` an
 
 ### Q14.1 — WAL archiving health [RO] (`backup`)
 
+**NEVER select the `archive_command` VALUE** — `archive_command` is an arbitrary shell string that frequently embeds backup credentials / tokens / bucket URLs. Report only a BOOLEAN ("set"/"unset") for it. `archive_mode` and `archive_library` are safe to surface verbatim. The boolean is computed in-SQL so the literal command never leaves the database:
+
 ```sql
-SELECT name, setting
-FROM pg_settings
-WHERE name IN ('archive_mode','archive_command','archive_library');
+SELECT
+  (SELECT setting FROM pg_settings WHERE name = 'archive_mode')    AS archive_mode,
+  (SELECT setting FROM pg_settings WHERE name = 'archive_library') AS archive_library,
+  ((SELECT setting FROM pg_settings WHERE name = 'archive_command') IS NOT NULL
+   AND (SELECT setting FROM pg_settings WHERE name = 'archive_command') <> '') AS archive_command_set;
 ```
+
+Report `archive_command_set` as "set"/"unset" only — never echo the command string itself.
 
 Archiver runtime status (the catalog identifier `pg_stat_archiver` contains the substring `archiver`, not a standalone blacklisted keyword — substring-only, intentional; no rule-4 trip):
 
