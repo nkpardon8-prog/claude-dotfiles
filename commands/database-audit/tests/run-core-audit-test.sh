@@ -314,10 +314,32 @@ FROM pg_database
 ORDER BY age(datfrozenxid) DESC
 LIMIT 50;
 
--- Q6.6 — sequence exhaustion. verbatim from core.md Module 6 (Q6.6, pg_sequences form)
+-- Q6.6 — sequence exhaustion, PART 1: raw consumption. verbatim from core.md Module 6 (Q6.6, pg_sequences form)
 SELECT 'Q6.6|' || schemaname || '|' || sequencename || '|' || COALESCE(last_value::text,'NULL') || '|' || max_value::text
 FROM pg_sequences
 ORDER BY (last_value::numeric / NULLIF(max_value,0)) DESC NULLS LAST
+LIMIT 50;
+
+-- Q6.6 — PART 2: int4-sequence-backed-column linkage with the new is_primary_key
+-- LEFT JOIN to pg_index (primary-index only). verbatim from core.md Module 6
+-- (Q6.6, second query). SHAPE-ONLY: a fresh container has no near-ceiling int4
+-- sequence to flag; this proves the tricky pg_depend join + the new
+-- `(pk.indrelid IS NOT NULL) AS is_primary_key` LEFT JOIN execute RO on PG16.
+SELECT 'Q6.6L|' || s.relname || '|' || t.relname || '|' || a.attname || '|' || (pk.indrelid IS NOT NULL)::text || '|' || COALESCE(seq.last_value::text,'NULL')
+FROM pg_depend d
+JOIN pg_class s ON s.oid = d.objid
+JOIN pg_class t ON t.oid = d.refobjid
+JOIN pg_attribute a ON (a.attrelid = d.refobjid AND a.attnum = d.refobjsubid)
+JOIN pg_sequences seq ON (seq.schemaname = (SELECT nspname FROM pg_namespace WHERE oid = s.relnamespace)
+                          AND seq.sequencename = s.relname)
+LEFT JOIN pg_index pk ON (pk.indrelid = d.refobjid
+                          AND pk.indisprimary
+                          AND d.refobjsubid = ANY(pk.indkey))
+WHERE d.classid = 'pg_class'::regclass
+  AND d.refclassid = 'pg_class'::regclass
+  AND d.deptype IN ('a','i')
+  AND a.atttypid = 'int4'::regtype
+ORDER BY seq.last_value DESC NULLS LAST
 LIMIT 50;
 
 -- Q6.7 — inactive/lagging replication slots. verbatim from core.md Module 6 (Q6.7)
