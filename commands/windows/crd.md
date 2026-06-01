@@ -69,14 +69,18 @@ Report each line; don't act, just diagnose:
    (`remotedesktop.google.com/access/session/`)? If `list_pages` HANGS/errors →
    frozen-tab; recommend `/devtools` (user-gated). Report the hang itself as a
    finding.
-2. **Title match?** Does the CRD tab title contain `OpenDentalDev1`? If two CRD
-   tabs and none match → ambiguous; recommend the user disambiguate.
-3. **Canvas rect ok?** Run the act.md rect helper; does it return a non-error
-   rect (remote canvas live)? If `error` → no live feed (reconnect/sign-in
-   overlay likely).
-4. **Clipboard sync state?** `take_snapshot`; is "Synchronize clipboard" present
-   and `checked`? (Informational — clipboard bridge is v2; not load-bearing for
-   ASCII typing.)
+2. **Title match + select the Windows tab READ-ONLY.** Does a CRD tab title
+   contain `OpenDentalDev1`? If yes, `mcp.select_page({pageId, bringToFront:false})`
+   so the rect/snapshot steps below read the **Windows** tab — never whatever is
+   foreground (which could be the Mac session). If 2+ CRD tabs and none match →
+   ambiguous: report it and **STOP — do NOT run steps 3–5** (a `take_snapshot`
+   would read the wrong, possibly Mac, tab).
+3. **Canvas rect ok?** (on the Windows tab from step 2) Run the act.md rect
+   helper; does it return a non-error rect (remote canvas live)? If `error` → no
+   live feed (reconnect/sign-in overlay likely).
+4. **Clipboard sync state?** `take_snapshot` (Windows tab); is "Synchronize
+   clipboard" present and `checked`? (Informational — clipboard bridge is v2; not
+   load-bearing for ASCII typing.)
 5. **a11y mode?** Did `take_snapshot` expose labeled CRD controls (uid mode) or
    return `ignored` (coordinate-fallback mode)?
 6. **Frozen-tab / hang probe.** Did any call in this audit hang or error? If so,
