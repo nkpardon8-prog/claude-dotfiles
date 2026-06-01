@@ -18,8 +18,8 @@
 # namespaced synthetic data.
 #
 # EXIT CODES:
-#   0   all planted findings caught AND redaction fixture passed
-#   1   one or more planted findings missed, or redaction failed
+#   0   all planted findings caught AND both redaction fixtures passed
+#   1   one or more planted findings missed, or either redaction fixture failed
 #   77  skipped — Postgres image not cached and host is offline (NOT a failure)
 #
 # USAGE:  bash run-core-audit-test.sh
