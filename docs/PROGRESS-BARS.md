@@ -44,7 +44,8 @@ Line 2's renderer (`scripts/statusline.sh`) reads `~/.claude/progress/<session_i
 | `on-prompt-submit.sh` | `UserPromptSubmit` | Creates the state file as `{active:true, prompt_started_at, last_tick, overall:indeterminate}`. Starts the timer. |
 | `on-todo-write.sh` | `PostToolUse[TodoWrite]` | Reads the todos array, computes `done/total`, sets `overall` + `active:true` + `last_tick`. |
 | `on-task-spawn.sh` | `PostToolUse[Task]` | Bumps `last_tick`. Atomically claims any beacon scratch file and writes `current` with `source:"beacon"`. No beacon → just the tick. |
-| `on-stop.sh` | `Stop` | Marks the session **idle** (`active:false`, drops `prompt_started_at`/`current`/`overall`) — does **not** delete the file, so line 2 falls cleanly to the idle label with no flicker. |
+| `on-tool-activity.sh` | `PostToolUse[most tools]` | Writes the live-activity label to a **separate sidecar** `<sid>.activity.json` = `{ts, label}`. Matcher `^(Edit\|MultiEdit\|Write\|NotebookEdit\|Read\|Bash\|Grep\|Glob\|WebFetch\|WebSearch\|Task\|mcp__.*)$` — excludes `TodoWrite` (ugly label, owned by `on-todo-write.sh`). A separate file → never read-modify-writes the shared progress JSON, so it can't clobber `overall`/`current` or race the other hooks. |
+| `on-stop.sh` | `Stop` | Marks the session **idle** (`active:false`, drops `prompt_started_at`/`current`/`overall`) and removes the `.current.json` + `.activity.json` sidecars — does **not** delete the main file, so line 2 falls cleanly to the idle label with no flicker. |
 
 `on-session-start-cleanup.sh` (`SessionStart`) GCs state files older than 7 days; it is not part of the render path.
 
