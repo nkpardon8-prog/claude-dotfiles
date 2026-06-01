@@ -30,6 +30,41 @@
 --   D7  PII-named column (email)              -> Q3.1  -> HIGH (only flagged when
 --         the column also has an `anon` SELECT grant — see D7 setup; we create
 --         the `anon` role and grant it so Q3.1's EXISTS clause matches)
+--   D8  public table, RLS enabled + FORCE off  -> Q2.6  -> MEDIUM (owner bypass)
+--   D9  FK with NO ON DELETE action (public,
+--         dbaudit_ prefix)                      -> Q9.1  -> MEDIUM
+--   D10 `timestamp` (no tz) column (public,
+--         dbaudit_ prefix)                      -> Q9.4  -> MEDIUM
+--   D11 `money`-typed column (public,
+--         dbaudit_ prefix)                      -> Q9.5  -> MEDIUM
+--   D12 table with a `token`/`api_key` text
+--         column                                -> Q15.3 -> HIGH (NAME-ONLY).
+--         Asserted via Q15.3 ONLY — NOT Q3.1: Q3.1 needs a `GRANT SELECT … TO
+--         anon` that D12 does NOT plant, and Q15.3 is grant-independent. So the
+--         clean assertion is 15.3.
+--   D13 extension installed in `public` schema
+--         (pgcrypto)                            -> Q15.4 -> MEDIUM (ext in public).
+--         Top-level `CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public;`
+--         (explicit SCHEMA, deterministic). pgcrypto ships in the postgres:16
+--         contrib image (CONFIRMED present in the digest-pinned image). A
+--         matching `DROP EXTENSION IF EXISTS pgcrypto;` near the top makes it
+--         idempotent (DROP SCHEMA dbaudit_test CASCADE does NOT drop a public
+--         extension). If this seed aborts under ON_ERROR_STOP=1, a missing
+--         pgcrypto in the image is the likely cause.
+--   D15 event trigger                          -> Q15.5 -> INFO/MEDIUM.
+--         Created LAST (after the trailing ANALYZE) with a no-op
+--         `RETURNS event_trigger` function so it does NOT fire on the earlier
+--         seed DDL and break the ON_ERROR_STOP=1 load. Idempotent
+--         (DROP EVENT TRIGGER / DROP FUNCTION IF EXISTS first).
+--
+-- SHAPE-ONLY (NOT seedable — no defect planted; the runner only asserts the
+-- query runs read-only, exits 0, returns its header columns, TXN_RO stays on):
+--   D14 invalid index (indisvalid=false) — cannot seed without a failed
+--         CONCURRENTLY build -> Q6.15 shape-only.
+--   XID wraparound (Q6.4), sequence/int4-PK exhaustion (Q6.6), replication
+--   slots (Q6.7), checkpoint tuning (Q6.18, PG16 -> pg_stat_bgwriter branch),
+--   collation drift (Q6.19), WAL archiver (Q14.1) — none cheaply fabricable in
+--   a fresh container; shape-only.
 --
 -- NOT PLANTED / NOT ASSERTED:
 --   Q1.3 (unused index) is GATED on `now() - stats_reset > interval '7 days'`.
