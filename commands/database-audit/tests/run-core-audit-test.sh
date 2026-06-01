@@ -414,7 +414,19 @@ WHERE col.colloid <> 0
 ORDER BY n.nspname, ic.relname
 LIMIT 50;
 
--- Q14.1 — WAL archiver runtime status. verbatim from core.md Module 14 (Q14.1, pg_stat_archiver form)
+-- Q14.1 — WAL archiving health. verbatim from core.md Module 14 (Q14.1).
+-- Re-synced: core.md NO LONGER selects the archive_command VALUE (it may embed
+-- backup creds — redaction). It reports a BOOLEAN `archive_command_set` computed
+-- in-SQL; archive_mode/archive_library are safe verbatim. PART 1 = settings.
+SELECT 'Q14.1S|'
+  || COALESCE((SELECT setting FROM pg_settings WHERE name = 'archive_mode'),'') || '|'
+  || COALESCE((SELECT setting FROM pg_settings WHERE name = 'archive_library'),'') || '|'
+  || (((SELECT setting FROM pg_settings WHERE name = 'archive_command') IS NOT NULL
+       AND (SELECT setting FROM pg_settings WHERE name = 'archive_command') <> ''))::text;
+
+-- Q14.1 — PART 2: archiver runtime status. verbatim from core.md Module 14
+-- (pg_stat_archiver form). Single-row catalog view, always 1 row -> deterministic
+-- marker. SELECT-list matches core.md (no archive_command value anywhere).
 SELECT 'Q14.1|' || archived_count::text || '|' || failed_count::text || '|' || COALESCE(last_failed_wal,'') || '|' || COALESCE(last_archived_wal,'')
 FROM pg_stat_archiver;
 
