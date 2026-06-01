@@ -62,8 +62,11 @@ Because this query filters on `stats_reset > 7 days`, an empty result is ambiguo
 
 ```sql
 -- Q1.3-age — unused-index analysis precondition (run before Q1.3)
+-- Gate on the CURRENT database's index-counter reset clock (pg_stat_database),
+-- NOT pg_stat_bgwriter (which is the bgwriter/checkpointer reset clock).
 SELECT stats_reset, now() - stats_reset AS stats_age
-FROM pg_stat_bgwriter;
+FROM pg_stat_database
+WHERE datname = current_database();
 ```
 
 Interpret using the companion result:
