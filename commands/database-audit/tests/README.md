@@ -181,6 +181,17 @@ a real application repo. Prove them by hand against **throwaway dev branches**
 - **Report assembly + redaction on real output:** confirm the written report in
   `./tmp/db-audit/` redacts any real secret-shaped strings and never echoes
   `DATABASE_URL`.
+- **PG17 `pg_stat_checkpointer` branch (Q6.18):** Tier 1 pins `postgres:16` and
+  only embeds the PG<17 `pg_stat_bgwriter` branch (the PG17 branch would abort
+  the shared transaction on PG16). Exercise the PG17 `pg_stat_checkpointer`
+  (`num_timed`/`num_requested`) branch against a real PG17 dev branch.
+- **`[RO+priv]` / `[EXT]` cross-session checks** (Q6.3/6.8/6.9/6.10/6.13/6.14,
+  Q7.2 `pg_hba_file_rules`, Q11.2 `pg_stat_ssl`) and the **shape-only Module
+  6/14 checks** (XID/sequence/slots/collation/archiver) only prove they RUN
+  hermetically — their real findings (near-wraparound XID, failing archiver,
+  collation drift, privileged-stat visibility) can only be observed against a
+  live provider; confirm the §C capability gate degrades them to the
+  partial-visibility INFO under an unprivileged role rather than false-clean.
 
 ### Teardown
 
