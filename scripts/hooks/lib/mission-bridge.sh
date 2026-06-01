@@ -846,6 +846,14 @@ mission_create() {
       echo "mission: create: birth-backup write failed" >&2; return 1; }
   fi
 
+  # --- run-timing birth anchors (advisory; fires exactly once per mission, fresh-create only) ---
+  # The re-entrant mission_log_append -> mission_ensure -> mission_create is SAFE here: the file
+  # already exists+verifies (self-verify above at :836), so mission_ensure short-circuits and the
+  # recursion terminates. A timing-stamp failure must NEVER fail create (rc ignored).
+  _mc_te=$(date +%s 2>/dev/null || echo 0)
+  mission_log_append "$_mc_sid" "$_mc_root" "[mission] MISSION-START epoch=$_mc_te" "m-mission-start" 2>/dev/null || true
+  mission_log_append "$_mc_sid" "$_mc_root" "[mission] WORK-START epoch=$_mc_te" "m-wstart-$_mc_te-$(_mission_nonce 2>/dev/null | cut -c1-4)" 2>/dev/null || true
+
   # set mission_path in the manifest via FRESH read-modify-write — ONLY if not already set.
   # Best-effort: a manifest failure here is NOT fatal to the mission file (the file is the
   # load-bearing artifact); warn and continue.
