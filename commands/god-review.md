@@ -487,7 +487,7 @@ STACK_GATED_PRINCIPLES = {
   "database-audit":        HAS_DATABASE,
 }
 
-ACTIVE_PRINCIPLES = ALWAYS_ON_PRINCIPLES + [p for p,sig in STACK_GATED_PRINCIPLES if sig != ""]
+ACTIVE_PRINCIPLES = ALWAYS_ON_PRINCIPLES + [p for p,sig in STACK_GATED_PRINCIPLES.items() if sig != ""]
 
 # Note: stack-gated lenses still self-skip in Phase 1 of their own file if the signal is empty.
 # The activation check here is the orchestrator-level gate.
