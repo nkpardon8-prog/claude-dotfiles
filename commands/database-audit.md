@@ -58,7 +58,16 @@ If `--provider` was passed, skip detection and use it. Otherwise evaluate in thi
 3. **Neon** if:
    - `package.json` contains `@neondatabase/serverless`, OR
    - `DATABASE_URL` is non-empty AND its host matches `*.neon.tech`.
-4. **Else `postgres`** (the fallback).
+4. **Else `postgres`** — but ONLY if at least one database signal is present (see below). The `postgres` fallback selects the *provider* for a repo that IS a DB project but matched no Supabase/Neon signal; it does NOT mean "always proceed."
+
+**True-preflight-failure gate (evaluated alongside detection):** Determine whether this repo is a database project at all. It IS a DB project if ANY of these signals is present:
+
+- a Supabase signal (`./supabase/config.toml`, `@supabase/supabase-js` / `@supabase/ssr` dep, any `.env*` with `SUPABASE_URL`), OR
+- a Neon signal (`@neondatabase/serverless` dep), OR
+- a non-empty `$DATABASE_URL` (any host), OR
+- any database artifact on disk: `*.sql` files, a migrations directory (`./supabase/migrations/`, `./migrations/`, `./db/migrations/`, `./drizzle/`, `./prisma/migrations/`), or a schema file (`schema.sql`, `schema.prisma`, `drizzle` schema).
+
+If **NONE** of these signals is present, this is the ONLY **true preflight failure**: print `"This repo doesn't appear to use a database (no Supabase/Neon/Postgres signal, no DATABASE_URL, no SQL/migration/schema files). Aborted — nothing to audit."` and **stop with no report** (mirrors `/supabase-audit` Step 0.2 abort). The `postgres` fallback in rule 4 is reached only when a signal IS present but it is not Supabase/Neon (e.g. a bare `$DATABASE_URL`, or only on-disk SQL/migrations). A repo with on-disk SQL but no reachable connection is a DB project → it proceeds to the filesystem-only path (case (a)), NOT this abort.
 
 Determinism rules (do NOT deviate):
 
