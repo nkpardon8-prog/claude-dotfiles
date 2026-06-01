@@ -172,7 +172,7 @@ Skip if `--only` is set and does not include `client`. On any MCP error during c
 ```
 Goal: catalog every Supabase client call in this repo for schema-coherence audit.
 
-Write results to ./tmp/db-audit/.client-scan.md using EXACTLY this structure:
+Write results to $REPORT_DIR/.client-scan.md using EXACTLY this structure:
 
   # client-scan
   <one line: `truncated: false` or `truncated: <reason>`>
