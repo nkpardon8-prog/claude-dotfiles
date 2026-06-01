@@ -314,7 +314,7 @@ Body includes: `"active N of max M (N/M%)"`.
 These checks are **provider-agnostic**, touch **no database** (only the local filesystem + read-only git), and are exactly the "filesystem / grep / secret-scan / migration-on-disk" modules the prod guard's `run_filesystem_only_modules` promises in `guards.md`. They run in BOTH paths:
 
 - **Normal path:** gated by `--only` as noted per check below (secret/.env checks under `security`, seed-data under `security`, env-drift under `prod`). When `--only` is unset, all run.
-- **Prod-stop path:** when the prod guard fires PROD without `--env=prod`, `guards.md` `run_filesystem_only_modules` invokes FS.1, FS.2, FS.3, FS.4 (and migration-on-disk drift + the `.gitignore tmp/` check) BEFORE the STOP — these are the only checks allowed to run against an unconfirmed prod, because they issue zero data-plane SQL.
+- **Prod-stop path:** when the prod guard fires PROD without `--env=prod`, `guards.md` `run_filesystem_only_modules` runs the SAME canonical filesystem-only set BEFORE the STOP — FS.1–FS.4 (security), FS.5 env-drift (prod-gated), migration-on-disk drift (schema/prod), and the always-on `.gitignore tmp/` check — honoring `--only` via each module's governing token. These are the only checks allowed to run against an unconfirmed prod, because they issue zero data-plane SQL. The set is identical to the no-connection case (a) path; see the canonical rule in `guards.md` (`run_filesystem_only_modules`).
 
 **Read-only constraint:** the only `git` subcommands permitted here are `git ls-files`, `git grep`, and `git check-ignore`. No mutating git. No filesystem writes outside `./tmp/db-audit/`.
 
