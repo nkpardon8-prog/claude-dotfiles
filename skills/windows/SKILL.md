@@ -12,8 +12,8 @@
 
 > **First-time agent? Read [`ONBOARDING.md`](./ONBOARDING.md)** for the read
 > order and invariants. **Reality matrix:** [`docs/FINDINGS-2026-05-31.md`](./docs/FINDINGS-2026-05-31.md)
-> — what's verified, what's assumed, and the two `/macmini` conflicts to
-> re-check at runtime.
+> — what's verified, what's assumed, and the `/macmini` twin notes (one runtime
+> delta to re-check: CRD a11y mode).
 
 You drive a **Windows 11 laptop** (running OpenDental) through the
 `chrome-devtools` MCP attached to the user's real-profile Chrome (port 9222,
