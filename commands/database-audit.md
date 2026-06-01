@@ -321,7 +321,7 @@ Skip if `--only` is set and does not include `client`.
 - Neon read-only mechanism (neon only): <?readonly=true | x-read-only header | N/A>
 - Modules skipped: <list or "none">
 - Sub-agent truncation: <none | reason>
-- Provider metadata raw shape: <captured branch/project response for debugging — redacted>
+- Provider control-plane metadata (summarized): <which prod/branch signal fired + minimal shape, e.g. "supabase Signal A; branch_count=2" or "neon default==true" — NOT the raw response>
 ```
 
 6. Write to the resolved `REPORT_FILE` from Step 0a.5 (`$REPORT_DIR/<ts>.md` in the normal case, or the `$(pwd)/db-audit-<ts>.md` fallback when `./tmp/` was unwritable). **Do NOT hardcode `./tmp/db-audit/` here — honor the resolved variable so the fallback path is actually used.**
