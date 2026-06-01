@@ -1,6 +1,6 @@
 ---
 description: "Autonomous long-build conductor (playbook, not an engine). Opt-in and HEAVY — per part it runs research + a full /plan reviewer loop (≈4-6 rounds) and a 4 Codex + 3 Claude cross-model code-review panel (≈3-6 rounds), across many parts and many compactions. Lays out a big multi-part roadmap WITH you once, then executes each part on its own through research → /plan(+reviewers) → /implement → /codex-review to honest 2-dry convergence, riding the mission-bridge + /pre-compact so it never loses the thread. For genuinely large builds only; overkill for small work."
-argument-hint: "[roadmap/goal | clear [reason] | status | (blank=status)]"
+argument-hint: "[roadmap/goal | resume | clear [reason] | status | (blank=status)]"
 ---
 
 # /mission — autonomous long-build conductor
