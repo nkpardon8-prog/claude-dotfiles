@@ -347,7 +347,7 @@ Classification:
 
 ### FS.2 — Tracked-files secret scan (`--only=security`)
 
-Scan **git-tracked** files for the same secret patterns (`SUPABASE_SERVICE_ROLE_KEY`, generic `service_role` / `DATABASE_URL` / connection-string shapes). Any match → **HIGH**. Report the **filename only**; the value is redacted per `redaction.md`.
+Scan **git-tracked** files for the same secret patterns (`SUPABASE_SERVICE_ROLE_KEY`, generic `service_role` / `DATABASE_URL` / connection-string shapes). Any match → **HIGH**. **Never print the raw matched line** — pipe every FS.2 match through the redaction pass (`redaction.md` rules 1–5) BEFORE anything is written or printed, and report the **filename + line number only**, with the value as a `[REDACTED:<first-8-of-sha256>]` placeholder. Report match LOCATIONS, not match CONTENTS. Prefer `grep -l` (filenames only) over a bare `grep` that emits whole lines.
 
 Use the portable no-files guard (Darwin has no GNU `xargs -r`):
 
