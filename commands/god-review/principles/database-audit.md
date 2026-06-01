@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git rev-parse:*), Bash(grep:*), Bash(find:*), Bash(cat:*), Bash(mkdir:*), Bash(head:*), Bash(xargs:*), Bash(wc:*), Bash(sort:*), Read, Grep, Glob, TodoWrite
+allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git rev-parse:*), Bash(grep:*), Bash(find:*), Bash(cat:*), Bash(mkdir:*), Bash(head:*), Bash(xargs:*), Bash(wc:*), Bash(sort:*), Bash(/bin/bash:*), Bash(source:*), Read, Grep, Glob, TodoWrite
 description: "Check for database schema/migration/RLS hygiene violations in repo SQL and schema files (stack-gated: HAS_DATABASE)"
 argument-hint: "[scope]"
 ---
