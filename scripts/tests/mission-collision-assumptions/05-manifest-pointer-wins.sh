@@ -31,28 +31,35 @@ if ! type mission_resolve_path >/dev/null 2>&1; then
   echo "PENDING (exit 3): mission_resolve_path not implemented yet — pre-impl gate." >&2; exit 3
 fi
 
-Q="dddddddd-4444-4ddd-8ddd-dddddddddddd"   # requester (no deterministic file of its own)
-P="eeee5555-5555-4eee-8eee-eeeeeeeeeeee"   # the divergence target, lives in-root
+Q="dddddddd-4444-4ddd-8ddd-dddddddddddd"   # the requester
+P="eeee5555-5555-4eee-8eee-eeeeeeeeeeee"   # a DIFFERENT sid's in-root mission (must NOT be adopted)
 mk() { printf '# MISSION %s\n<!-- MISSION schema=v1 sid=%s nonce=00000000-0000-0000-0000-000000000000 plan_hash=0000000000000000 -->\n' "$1" "$1" > "$2"; }
-mk "$P" "$ROOT/MISSION.$P.md"                       # in-root canonical
-mk "$P" "$BASE/elsewhere/MISSION.$P.md"             # same basename/marker but OUT of root
+mk "$Q" "$ROOT/MISSION.$Q.md"                       # Q's OWN in-root canonical file
+mk "$P" "$ROOT/MISSION.$P.md"                       # a stranger's in-root file
+mk "$Q" "$BASE/elsewhere/MISSION.$Q.md"             # Q's marker but OUT of root
 
 fail=0; FAILURES=()
 
-# A1 — manifest for Q points at the IN-ROOT MISSION.<P>.md (canonical) -> resolver returns it.
-printf '{"mission_path":"%s"}\n' "$ROOT/MISSION.$P.md" > "$HOMEDIR/.claude/chains/$Q.json"
+# A1 — manifest for Q points at Q's OWN in-root canonical file -> honored.
+printf '{"mission_path":"%s"}\n' "$ROOT/MISSION.$Q.md" > "$HOMEDIR/.claude/chains/$Q.json"
 got="$(HOME="$HOMEDIR" mission_resolve_path "$Q" "$ROOT")"
-[ "$got" = "$ROOT/MISSION.$P.md" ] || { fail=1; FAILURES+=("A1 expected in-root pointer target, got '$got'"); }
+[ "$got" = "$ROOT/MISSION.$Q.md" ] || { fail=1; FAILURES+=("A1 own-sid pointer should be honored, got '$got'"); }
 
-# A2 — manifest for Q points OUT-OF-ROOT (valid marker, wrong location) -> REJECTED -> empty.
-printf '{"mission_path":"%s"}\n' "$BASE/elsewhere/MISSION.$P.md" > "$HOMEDIR/.claude/chains/$Q.json"
+# A2 — manifest for Q points at a CROSS-SID in-root file (P) -> REJECTED. Q has no own file -> empty.
+rm -f "$ROOT/MISSION.$Q.md"
+printf '{"mission_path":"%s"}\n' "$ROOT/MISSION.$P.md" > "$HOMEDIR/.claude/chains/$Q.json"
 got2="$(HOME="$HOMEDIR" mission_resolve_path "$Q" "$ROOT" 2>/dev/null)"
-[ -z "$got2" ] || { fail=1; FAILURES+=("A2 out-of-root pointer should be rejected, got '$got2'"); }
+[ -z "$got2" ] || { fail=1; FAILURES+=("A2 cross-sid pointer should be rejected, got '$got2'"); }
+
+# A3 — manifest for Q points OUT-OF-ROOT (Q's own marker, wrong location) -> REJECTED -> empty.
+printf '{"mission_path":"%s"}\n' "$BASE/elsewhere/MISSION.$Q.md" > "$HOMEDIR/.claude/chains/$Q.json"
+got3="$(HOME="$HOMEDIR" mission_resolve_path "$Q" "$ROOT" 2>/dev/null)"
+[ -z "$got3" ] || { fail=1; FAILURES+=("A3 out-of-root pointer should be rejected, got '$got3'"); }
 
 if [ "$fail" = 0 ]; then
-  echo "PASS: 05-manifest-pointer-wins — 2 assertions (A1 in-root honored, A2 out-of-root rejected)"
+  echo "PASS: 05-manifest-pointer-wins — 3 assertions (A1 own-sid honored, A2 cross-sid rejected, A3 out-of-root rejected)"
   cat > "$(dirname "$0")/05-manifest-pointer-wins.fingerprint.json" <<EOF
-{"resolver":"mission_resolve_path","pointer_precedence":"in_root_canonical_only"}
+{"resolver":"mission_resolve_path","pointer_precedence":"own_sid_in_root_only"}
 EOF
   exit 0
 else
