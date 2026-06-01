@@ -62,7 +62,10 @@ remote `<canvas>`, not a CRD-UI `<div>`:
 
 ```js
 mcp.evaluate_script({ function: `() => {
-  const cs = [...document.querySelectorAll('canvas')].sort((a,b)=>b.width*b.height-a.width*a.height);
+  // same filter as the rect helper, so this resolves to the SAME canvas as the click target
+  const cs = [...document.querySelectorAll('canvas')]
+    .filter(e => { const r = e.getBoundingClientRect(); return r.width > 200 && r.height > 200; })
+    .sort((a,b)=>b.width*b.height-a.width*a.height);
   const target = cs[0];
   const el = document.elementFromPoint(${clickX}, ${clickY});
   return { isCanvas: el === target, actualTag: el ? el.tagName : null };
