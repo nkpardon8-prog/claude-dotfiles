@@ -326,7 +326,7 @@ files=$(git ls-files); [ -n "$files" ] && printf '%s\n' "$files" | xargs grep -l
 
 or use `git grep -l PATTERN` (which exits non-zero with no output on no match — a clean no-op).
 
-**Redaction:** any matched secret VALUE reported by these checks is redacted per `redaction.md` (rule 1 for secret/JWT values, rule 4 for env-key names, rule 5 for `postgres://`/`postgresql://` connection strings) — never echo a raw secret value or connection string. Report file names, key names, and `[REDACTED: …]` placeholders only.
+**Redaction:** any matched secret VALUE reported by these checks is redacted per `redaction.md` (rule 1 for secret/JWT values, rule 4 for env-key names, rule 5 for `postgres://`/`postgresql://` connection strings) — never echo a raw secret value or connection string. Report file names, key names, and `[REDACTED:…]` placeholders only.
 
 ### FS.1 — Repo secret scan (`--only=security`)
 
