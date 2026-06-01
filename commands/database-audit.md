@@ -122,6 +122,8 @@ Only TRUE preflight failures (e.g. the working directory is not a DB repo at all
 
 ## Phase 0b — Prod guard (resolves BEFORE any data-plane SQL)
 
+**Only reached when a connection source WAS resolved in Step 0a.4 (case (b) territory).** If Step 0a.6 (no-connection-source case (a)) fired, skip this phase entirely — there is no connection to guard and the report has already been assembled from filesystem-only modules.
+
 Invoke the **generalized provider-dispatched prod guard** from `guards.md`, dispatching to the detected provider's signal function:
 
 - **supabase** → the A/B/C/D branch-shape ladder (`providers/supabase.md` `supabase_branch_ladder()`, via the metadata-only `mcp__supabase__list_branches`). Capture the raw branch-list shape for Meta.
