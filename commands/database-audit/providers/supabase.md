@@ -23,9 +23,15 @@ Provider is `supabase` when ANY of these repo signals match (mirrors the proven 
 
 ### MCP reachability (Phase 0a)
 
-Call `mcp__supabase__get_project_url`. If it errors → print `"Supabase MCP unreachable. Run \`supabase link\` or check MCP config. Aborted."` and stop. (Supabase Preflight aborts on MCP error — there is no psql fallback for this adapter.)
+Call `mcp__supabase__get_project_url`. If it succeeds, parse project ref from the returned URL: match `/https:\/\/([a-z0-9]+)\.supabase\.co/`, capture group 1.
 
-Parse project ref from the returned URL: match `/https:\/\/([a-z0-9]+)\.supabase\.co/`, capture group 1.
+**If it errors → graceful degradation case (a), NOT a hard abort.** The Supabase adapter has no `psql` fallback, so an unreachable MCP means there is **no connection source at all** — and with no connection there is **no prod-data risk**, so this is neither a prod-stop nor an abort. Instead:
+
+1. Emit `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only` (include the MCP error text passed through the `redaction.md` rules first — scrub any connection string / secret-shaped token). A short human note such as `Supabase MCP unreachable — run \`supabase link\` or check MCP config` may accompany it, but do NOT abort.
+2. Hand off to the orchestrator's **Step 0a.6 no-connection-source path**: run ONLY the zero-data-touch filesystem modules (`run_filesystem_only_modules`), assemble the partial report, and exit cleanly. Do NOT enter Phase 0b.
+3. Record `Connection source: none` in Meta.
+
+(The one legitimate informational case is Phase 0 Supabase-detection-but-MCP-not-configured-at-all: same treatment — inform via the `[INFO]` finding and produce a filesystem-only report, never a bare abort.)
 
 ### Tool names (use these EXACT identifiers)
 
