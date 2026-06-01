@@ -84,7 +84,7 @@ These have NO vanilla-Postgres equivalent. Portable SQL checks (Q1.1–Q4.2) are
 
 `--only` token: **`rls`**.
 
-- **RLS-off severity = CRITICAL.** Q2.1 (RLS off on public tables) is the portable query in `core.md`; its portable floor is the exposed-API context. In the Supabase context the `public` schema is reachable through the auto-generated PostgREST API as the `anon` role, so RLS-off escalates to **CRITICAL** here (this is the Supabase context the `core.md` note refers to).
+- **RLS-off severity = CRITICAL (exposed-API case).** Q2.1 severity is CONTEXT-DEPENDENT (not a floor): CRITICAL when the table is reachable via an exposed data API (Supabase `anon` / Neon Data API), HIGH otherwise. Q2.1 (RLS off on public tables) is the portable query in `core.md`; it reports the condition only. In the Supabase context the `public` schema is reachable through the auto-generated PostgREST API as the `anon` role, so RLS-off resolves to **CRITICAL** here (this is the exposed-API case the `core.md` note refers to).
 - **anon/RLS classification heuristics (Q2.3 results).** Apply to the rows returned by the portable Q2.3 policy scan — these heuristics depend on the Supabase `anon` role:
   - `'anon'` in `roles` AND `cmd IN ('INSERT','UPDATE','DELETE')` → **HIGH** (anon write access)
   - `qual` contains `auth.uid()` without `(select auth.uid())` → **MEDIUM** (per-row re-eval perf bug; `auth.uid()` is Supabase-specific)
