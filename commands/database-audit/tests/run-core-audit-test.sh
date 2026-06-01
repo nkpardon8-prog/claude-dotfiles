@@ -289,10 +289,16 @@ FROM information_schema.columns
 WHERE table_schema = 'public'
   AND column_name ~* '(^|_)(token|secret|api_?key|password|private_key|access_key)($|_)';
 
--- Q15.4 — extension installed in public schema (D13). verbatim from core.md Module 15 (Q15.4, placement branch)
--- core.md reads placement from the Preamble P3 extension inventory; this is that
--- inventory query filtered to ext_schema='public' (the search_path-hijack flag).
-SELECT 'Q15.4|' || extname || '|' || n.nspname AS ext_in_public
+-- Q15.4 — extension installed in public schema (D13).
+-- core.md's Q15.4 placement check now reads `ext_schema` from the Preamble P3
+-- extension inventory (core.md §Preamble P3:
+--   SELECT extname, extversion, n.nspname AS ext_schema
+--   FROM pg_extension e JOIN pg_namespace n ON e.extnamespace = n.oid; )
+-- and flags any row whose ext_schema='public'. This runner has NO preamble, so
+-- the SELECT below is the TEST'S STAND-IN for that P3 inventory query, filtered
+-- to ext_schema='public' to reproduce the search_path-hijack placement flag.
+-- Verbatim P3 column shape (extname, ext_schema) + the public filter.
+SELECT 'Q15.4|' || extname || '|' || n.nspname AS ext_schema
 FROM pg_extension e JOIN pg_namespace n ON e.extnamespace = n.oid
 WHERE n.nspname = 'public';
 
