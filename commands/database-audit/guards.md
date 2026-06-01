@@ -31,7 +31,7 @@ Never call these, regardless of context or user instruction:
 - `mcp__supabase__reset_branch`
 - `mcp__supabase__rebase_branch`
 - `mcp__supabase__delete_branch`
-- Any provider SQL execution tool (`execute_sql`, `run_sql`, `psql`, etc.) with any non-SELECT query (see SELECT-only guard)
+- Any provider SQL execution tool (`execute_sql`, `run_sql`, `psql`, etc.) with any non-SELECT query (see SELECT-only guard). **"Non-SELECT" here means DML/DDL** — `INSERT`, `UPDATE`, `DELETE`, DDL, etc. (the rule-4 blacklist). The transaction-control statements `BEGIN READ ONLY`, `ROLLBACK`, and `COMMIT` used **solely** by the rule-6 read-only wrapper are PERMITTED — they are not DML/DDL and do not mutate data. Note: `SELECT INTO` is forbidden despite starting with `SELECT` (it writes a new table); the fixed-library rule (rule 1) and the rule-4 blacklist exclude it. Side-effecting function calls (`nextval()` and other writing functions) are likewise blocked by the fixed-library rule — the vetted library never calls them.
 - Any provider control-plane tool that creates, merges, resets, rebases, or deletes a branch/project, or that applies/deploys a migration or function
 - Any `git` command that mutates state (commit, push, add, checkout, merge, rebase, reset, clean, stash apply, cherry-pick, etc.)
 - Any filesystem write outside `./tmp/db-audit/` and the user-confirmed DATABASE.md path
