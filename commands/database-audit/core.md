@@ -588,20 +588,23 @@ FROM pg_collation cl JOIN pg_namespace n ON cl.collnamespace = n.oid
 WHERE cl.collversion IS DISTINCT FROM pg_collation_actual_version(cl.oid);
 ```
 
-Per-INDEX attribution (which btree indexes are at risk via `pg_index.indcollation`):
+Per-INDEX attribution (which btree indexes are at risk via `pg_index.indcollation`). `indcollation` is an `oidvector`; `unnest` does NOT accept an `oidvector` directly on every PG version, so cast it to `oid[]` first (`i.indcollation::oid[]`). Bounded (`ORDER BY … LIMIT 50`) with a total count so a cluster-wide collation drift does not dump every index:
 
 ```sql
 SELECT n.nspname, ic.relname AS index_name, tc.relname AS table_name,
        cl.collname, cl.collversion,
-       pg_collation_actual_version(cl.oid) AS actual_version
+       pg_collation_actual_version(cl.oid) AS actual_version,
+       count(*) OVER () AS total_affected_indexes
 FROM pg_index i
 JOIN pg_class ic ON ic.oid = i.indexrelid
 JOIN pg_class tc ON tc.oid = i.indrelid
 JOIN pg_namespace n ON ic.relnamespace = n.oid
-JOIN unnest(i.indcollation) WITH ORDINALITY AS col(colloid, ord) ON true
+JOIN unnest(i.indcollation::oid[]) WITH ORDINALITY AS col(colloid, ord) ON true
 JOIN pg_collation cl ON cl.oid = col.colloid
 WHERE col.colloid <> 0
-  AND cl.collversion IS DISTINCT FROM pg_collation_actual_version(cl.oid);
+  AND cl.collversion IS DISTINCT FROM pg_collation_actual_version(cl.oid)
+ORDER BY n.nspname, ic.relname
+LIMIT 50;
 ```
 
 A collation version drift after a libc/ICU upgrade means btree indexes built under the old collation may now be silently corrupt (wrong sort order → missed rows, unique-constraint violations). The per-index list says exactly which indexes need REINDEX.
