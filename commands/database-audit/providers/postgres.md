@@ -47,7 +47,7 @@ Vanilla Postgres has no provider-specific surface. It runs the portable `core.md
 
 ### RLS-off is NOT auto-CRITICAL here (vanilla-context severity)
 
-On vanilla Postgres there is no `anon` role and no auto-generated public API (no PostgREST / Supabase Data API), so an RLS-disabled `public` table is NOT automatically exposed. The portable Q2.1 finding therefore uses the **vanilla-context severity (HIGH, not CRITICAL)** — RLS is still a missing defense-in-depth control, but the breach-on-by-default exposure that justifies CRITICAL in the Supabase/Neon-Data-API context is absent here. Do not escalate Q2.1 to CRITICAL for `postgres`.
+Q2.1 severity is CONTEXT-DEPENDENT (not a floor): CRITICAL when the table is reachable via an exposed data API (Supabase `anon` / Neon Data API), HIGH otherwise. On vanilla Postgres there is no `anon` role and no auto-generated public API (no PostgREST / Supabase Data API), so an RLS-disabled `public` table is NOT automatically exposed — this is the HIGH/vanilla case. The portable Q2.1 finding therefore resolves to **HIGH** here — RLS is still a missing defense-in-depth control, but the breach-on-by-default exposure that justifies CRITICAL in the Supabase/Neon-Data-API context is absent. Do not escalate Q2.1 to CRITICAL for `postgres`.
 
 (This is the severity the Tier-1 Docker harness asserts — vanilla-context, not Supabase's CRITICAL.)
 
