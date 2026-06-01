@@ -212,7 +212,7 @@ FROM pg_matviews
 WHERE schemaname = 'public';
 ```
 
-Each matview becomes a MEDIUM finding unless it joins no RLS-protected tables. Note: matviews run as owner and ignore RLS on underlying tables.
+Caveat: candidates only — the fixed query lists matviews; determining whether a matview reads RLS-protected tables requires reading its definition (`pg_get_viewdef`) during deep analysis. Emit as INFO-with-verify (flag for manual review), not an automatic MEDIUM, unless deep analysis confirms it reads an RLS-protected table. Note: matviews run as owner and ignore RLS on underlying tables.
 
 ---
 
