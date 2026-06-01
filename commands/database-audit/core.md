@@ -1156,7 +1156,7 @@ FROM pg_settings
 WHERE name IN ('pgaudit.log','pgaudit.log_catalog','pgaudit.log_parameter');
 ```
 
-`pgaudit.log` should include `WRITE`, `DDL`, `ROLE` for a compliance-grade audit trail. Also detect trigger-based audit tables as a fallback pattern:
+`pgaudit.log` should include `WRITE`, `DDL`, `ROLE` for a compliance-grade audit trail. Also detect trigger-based audit tables as a fallback pattern. The trigger MUST be correlated to the candidate table — a trigger anywhere in `public` does NOT make an unrelated audit-named table "audited." A table counts as trigger-audited when a trigger fires ON it (`event_object_table = t.table_name`, the audit/history table populated by a trigger) OR ON its source table (`<base>_history`/`<base>_audit`/`audit_<base>` ⇒ base table `<base>`, the common write-side-trigger pattern):
 
 ```sql
 SELECT t.table_name
@@ -1166,6 +1166,11 @@ WHERE t.table_schema = 'public'
   AND EXISTS (
     SELECT 1 FROM information_schema.triggers tr
     WHERE tr.event_object_schema = 'public'
+      AND tr.event_object_table IN (
+        t.table_name,
+        regexp_replace(t.table_name, '(_history|_audit)$', ''),
+        regexp_replace(t.table_name, '^audit_', '')
+      )
   );
 ```
 
