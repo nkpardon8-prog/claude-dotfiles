@@ -11,7 +11,7 @@ Runs a provider-agnostic, severity-tiered, **read-only** audit of a Postgres-bac
 The orchestrator is a thin sequencer. The substance lives in sub-files that it `Read`s explicitly (they are NOT auto-loaded):
 
 - `database-audit/guards.md` — Forbidden Tools, SELECT-only 5-rule + `BEGIN READ ONLY` rule 6, the provider-dispatched prod guard, the two-phase preflight split.
-- `database-audit/redaction.md` — redaction rules 1–4.
+- `database-audit/redaction.md` — redaction rules 1–5 (incl. connection-string redaction).
 - `database-audit/core.md` — the portable `pg_catalog`/`information_schema`/`pg_stats` query library (Q1.1–Q4.2), shared by all providers.
 - `database-audit/providers/<provider>.md` — the connection method, prod-guard contribution, and non-portable platform checks for the detected provider.
 
