@@ -10,6 +10,34 @@ follow the pointers below, don't guess.
 ## Structure
 <Top-level layout — apps, packages, where the entry points are. A few lines.>
 
+## Map (the rail) — seed `docs/MAP.md` on day one
+The single traversable spine an agent follows to reach any part of the system — a road, not a forest.
+This routes **code** (how a request/command/job flows + the copy-this entrypoint for each backbone
+concern); a doc index (`docs/OVERVIEW.md`, if present) routes docs — don't duplicate it. Rules: keep
+it ONE screen, spine-only, **descriptive** (verify a path before trusting it), link out for depth, add
+a row only for a **shared, recurring** subsystem (rule of three), and never list a path that doesn't
+exist yet (mark in-flight surfaces as one un-anchored "evolving" row). Skeleton to fill:
+
+````markdown
+# MAP — the rail
+The spine of this system: how <a request / a command / a job> flows, and where each backbone part
+lives. Descriptive of current reality; spine-only — verify a path before trusting it.
+
+```mermaid
+flowchart TB
+  entry["<entry: HTTP route / CLI arg / event>"] --> core["<core: handler / service>"]
+  core --> store["<data: DB / file / external API>"]
+  core -.-> xcut["<cross-cutting: auth / audit / queue>"]
+```
+
+| Subsystem | Copy-this entrypoint (file:symbol) | The rail (canonical pattern) | Depth |
+|-----------|-----------------------------------|------------------------------|-------|
+| <e.g. request lifecycle> | `src/...:NN` `fn()` | <one line: the pattern to follow> | [doc](...) |
+````
+
+Adapt the spine to the stack: API → `route → service → store`; CLI → `command → handler → core`;
+worker/event → `trigger → queue → handler`. Wire it in: point `## Structure` and the README at it.
+
 ## Where things live (write to the right place)
 - `docs/` — committed, durable knowledge: architecture, runbooks, conventions, post-mortems. Decisions go here.
 - `tmp/` — GITIGNORED working state: plans, briefs, scratch. Never the source of truth.
