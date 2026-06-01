@@ -1242,3 +1242,98 @@ FROM cron.job;
 (If the `pg_cron` schema/table is absent the per-module dispatch logs `[INFO] 12.3 — pg_cron not present` and continues.) The presence of `deleted_at`/`expires_at`, date-partitioning, or a retention cron job suggests a retention mechanism; their ABSENCE on PII-bearing tables is a gap. RTBF (right-to-be-forgotten) structural posture — soft-vs-hard delete, FK cascade for erasure — plus classification certainty is process-level → manual-verify INFO ("verify retention/erasure enforcement out-of-band").
 
 Severity: INFO (manual-verify; gap if no retention mechanism on PII tables).
+
+---
+
+## Module 13 — Migration Safety lint (`migrations`)
+
+Skip this phase if `--only` is set and does not include `migrations`.
+
+**[FS] — filesystem-only, NO database connection.** Static analysis of migration SQL files. Because it touches no data-plane, it runs in BOTH the normal path AND the prod-stop / no-connection path (it is registered in `guards.md` `run_filesystem_only_modules` with the `migrations` token, alongside FS.1–FS.5). It does NOT branch on `server_major` (no connection).
+
+**Scope = LOCK-SAFETY / REWRITE-SAFETY rules ONLY** (the disjoint half). The god-review principle `god-review/principles/database-audit.md` already owns the 5 security/integrity static rules (RLS-off/blanket, SECURITY DEFINER search_path, migration drift/ordering, PII-without-RLS, unindexed FK) — Module 13 does NOT re-list or re-emit those; it cross-refs ("security/integrity migration rules → see god-review principle"). The taxonomy lives once, here.
+
+### Migration file discovery (Darwin-safe)
+
+Discover migration SQL under `migrations/`, `supabase/migrations/`, `db/migrate/`, `prisma/migrations/`. Use NUL-delimited plumbing (Darwin has NO GNU `xargs -r`):
+
+```bash
+# Read-only git only. NUL-delimited so paths with spaces survive.
+git ls-files -z -- 'migrations/*.sql' 'supabase/migrations/*.sql' 'db/migrate/*.sql' 'prisma/migrations/*.sql' \
+  | xargs -0 -I{} sh -c 'printf "%s\n" "{}"'
+```
+
+If `git ls-files` returns nothing, fall back to a read-only filesystem walk of those directories (no GNU-only flags). If no migration files exist → emit `[INFO] Module 13 — no migration files found; skipped` and continue.
+
+### Lock / rewrite-safety rules (static SQL pattern lint)
+
+Scan each discovered `.sql` file (line-numbered) for these patterns. Report `file:line` + rule name. (These are filesystem grep heuristics — they read migration TEXT, they do not run SQL, so no rule-4 concern.)
+
+1. **NOT NULL without default** — `ADD COLUMN … NOT NULL` with no `DEFAULT` on an existing table → full-table rewrite + long lock. HIGH.
+2. **Volatile-default ADD COLUMN** — `ADD COLUMN … DEFAULT <non-constant>` (PG < 11 rewrites the whole table; volatile defaults rewrite on any version). HIGH.
+3. **Ban DROP** — `DROP COLUMN` / `DROP TABLE` / `DROP NOT NULL` of in-use objects (destructive; coordinate with deploy). MEDIUM.
+4. **Changing column type** — `ALTER COLUMN … TYPE` → table rewrite + exclusive lock. HIGH.
+5. **Constraint without NOT VALID** — `ADD CONSTRAINT … CHECK`/`FOREIGN KEY` without `NOT VALID` → validates all existing rows under lock. MEDIUM (recommend add-`NOT VALID`-then-`VALIDATE`).
+6. **`ADD CONSTRAINT … UNIQUE` (inline)** — takes an exclusive lock building the index; prefer `CREATE UNIQUE INDEX CONCURRENTLY` then `ADD CONSTRAINT … USING INDEX`. MEDIUM.
+7. **Index build without CONCURRENTLY** — `CREATE INDEX` not followed by `CONCURRENTLY` → blocks writes for the build. MEDIUM.
+8. **CONCURRENTLY inside a transaction** — `CREATE INDEX CONCURRENTLY` (or `DROP … CONCURRENTLY`) appearing between `BEGIN`/`COMMIT` (or in a tool that wraps each migration in a transaction) → fails at runtime (cannot run in a txn block). HIGH.
+9. **Rename column / table** — `RENAME COLUMN` / `RENAME TO` → breaks the old name for any in-flight code (do it in a backward-compatible multi-step). MEDIUM.
+10. **Prefer-bigint / identity / timestamptz** — new `int4`/`serial` PK, `timestamp` (no tz) column, or `serial` instead of `GENERATED … AS IDENTITY` in a migration. LOW (cross-ref Q6.6 / Q9.4).
+
+`[FS]` note: Module 13 is filesystem-only and runs case (a) no-connection and case (b) prod-stop, exactly like FS.1–FS.5.
+
+Severity: per-rule as listed.
+
+---
+
+## Module 14 — Backup & Recovery (`backup`)
+
+Skip this phase if `--only` is set and does not include `backup`.
+
+On any MCP/SQL error: emit `[INFO] Module 14 — {tool} unavailable: {error}` and continue.
+
+### Q14.1 — WAL archiving health [RO] (`backup`)
+
+```sql
+SELECT name, setting
+FROM pg_settings
+WHERE name IN ('archive_mode','archive_command','archive_library');
+```
+
+Archiver runtime status (the catalog identifier `pg_stat_archiver` contains the substring `archiver`, not a standalone blacklisted keyword — substring-only, intentional; no rule-4 trip):
+
+```sql
+SELECT archived_count, failed_count, last_failed_wal, last_failed_time,
+       last_archived_wal, last_archived_time
+FROM pg_stat_archiver;
+```
+
+With `archive_mode='on'`, a nonzero `failed_count` with a recent `last_failed_time` (and a stale `last_archived_time`) means WAL archiving is SILENTLY FAILING — there is no point-in-time-recovery basis, even though the database looks healthy. This is the classic "backups were never actually working" outage.
+
+Severity: CRITICAL when archiving is on but failing (`failed_count` rising / `last_failed_time` recent).
+
+### Q14.2 — WAL retention sanity [RO] (`backup`)
+
+```sql
+SELECT name, setting, unit
+FROM pg_settings
+WHERE name IN ('wal_keep_size','max_wal_size','min_wal_size','wal_level');
+```
+
+`wal_keep_size` / `max_wal_size` too small relative to the recovery window or standby catch-up time risks standbys / slots falling off (needed WAL recycled before consumed). Inventory + flag obviously-tiny retention.
+
+Severity: INFO (MEDIUM when retention is clearly insufficient for the topology).
+
+### Q14.3 — PITR / last-backup / retention [PROVIDER] (`backup`)
+
+Manual-verify INFO — core/vanilla + Neon ONLY. **On Supabase, 14.3 emits NOTHING here and cross-refs**: `[INFO] 14.3 — PITR → see Supabase Step I (provider adapter owns the PITR line)`. The Supabase adapter owns the PITR finding (its own title/severity), so this avoids a dedup collision (the `(severity,title,object_name)` key cannot collapse them — different titles + HIGH-vs-CRITICAL severities).
+
+For core/vanilla and Neon: verify PITR / last-backup / retention window in the provider console (RDS `BackupRetentionPeriod`; Neon history-retention). Emit one INFO line.
+
+`Severity-if-absent: CRITICAL.`
+
+### Q14.4 — Restore drill [PROVIDER / process] (`backup`)
+
+Manual-verify INFO — an audit confirms backups EXIST and are not failing (Q14.1), NOT that they actually restore. Verify "when was the last test restore?" out-of-band. Emit one INFO line.
+
+`Severity-if-absent: HIGH.`
