@@ -125,7 +125,8 @@ Configured at the **global** Claude Code level, not per-repo:
 - `scripts/progress/on-prompt-submit.sh` — UserPromptSubmit hook
 - `scripts/progress/on-todo-write.sh` — TodoWrite hook
 - `scripts/progress/on-task-spawn.sh` — Task hook (beacon-claim + tick)
-- `scripts/progress/on-stop.sh` — Stop hook (mark idle)
+- `scripts/progress/on-tool-activity.sh` — most-tools hook → writes `<sid>.activity.json` (live label)
+- `scripts/progress/on-stop.sh` — Stop hook (mark idle + remove sidecars)
 - `scripts/progress/on-session-start-cleanup.sh` — SessionStart GC (>7d)
 - `scripts/progress/emit-beacon.sh` — opt-in beacon helper
 - `~/.claude/progress/` — runtime state directory (mode 700, gitignored)
