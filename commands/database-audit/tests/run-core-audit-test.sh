@@ -152,8 +152,12 @@ fi
 # -A (unaligned) -t (tuples only) -F '|' make output grep-stable.
 # ---------------------------------------------------------------------------
 echo "[INFO] running core queries (BEGIN READ ONLY wrapper)..."
-CORE_OUT="$(docker exec -i "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" \
-  -v ON_ERROR_STOP=1 -A -t -F '|' <<'SQL' 2>&1
+# NOTE: macOS system bash (3.2.57) mis-parses a quoted heredoc nested inside $( ),
+# so write the SQL to a temp file FIRST (heredoc NOT inside command substitution),
+# then run psql reading from it. The SQL stays verbatim and this is bash-3.2-safe.
+CORE_SQL="$(mktemp "${TMPDIR:-/tmp}/dbaudit-core-sql.XXXXXX")"
+CORE_OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/dbaudit-core-out.XXXXXX")"
+cat > "$CORE_SQL" <<'SQL'
 BEGIN READ ONLY;
 
 -- Prove the transaction is actually READ ONLY.
