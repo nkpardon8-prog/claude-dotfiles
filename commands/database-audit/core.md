@@ -321,10 +321,15 @@ These checks are **provider-agnostic**, touch **no database** (only the local fi
 **Portability constraint (macOS/Darwin):** there is NO GNU `xargs -r` on Darwin. Never rely on `xargs -r`. FS.1 and FS.2 must report `file:line` (use `grep -n` / `git grep -n` — NOT `grep -l`, which gives filenames only). For the tracked-files scan, use NUL-delimited plumbing so filenames with spaces survive — `git grep -n PATTERN` (preferred — handles this natively and no-ops cleanly with no match), OR `git ls-files -z | xargs -0 grep -n PATTERN`. Never use a newline-`xargs` form for the tracked scan:
 
 ```bash
-git grep -n PATTERN   # preferred: file:line output, clean no-op on no match
+# ALWAYS pipe matches through the redaction step BEFORE anything is printed/written.
+# <redact-pipe> applies redaction.md rules 1–5 to each "file:line:rawmatch" line,
+# emitting "file:line  [REDACTED:<8hex>]" and DISCARDING the raw matched content.
+git grep -n PATTERN | <redact-pipe>            # preferred: file:line, clean no-op on no match
 # or, NUL-delimited (survives spaces in filenames):
-git ls-files -z | xargs -0 grep -n PATTERN
+git ls-files -z | xargs -0 grep -n PATTERN | <redact-pipe>
 ```
+
+**WARNING: NEVER run the bare `git grep -n PATTERN` (or `grep -n PATTERN`) without the `<redact-pipe>` — the raw match contains the secret** (full `DATABASE_URL` / JWT / service-role value). The redact pipe (`redaction.md` rules 1–5) must consume the match before any byte reaches stdout, a file, or the report.
 
 **Redaction (mechanical, redact-before-print):** any matched secret VALUE reported by these checks is redacted per `redaction.md` (rule 1 for secret/JWT values, rule 4 for env-key names, rule 5 for `postgres://`/`postgresql://` connection strings) — never echo a raw secret value or connection string. A raw `grep -n` prints the WHOLE matching line, which contains the raw secret; pipe every match through the redaction step (`redaction.md` rules 1–5) BEFORE anything is written or printed, so output is `file:line` + `[REDACTED:<8hex>]` and NEVER the raw matched content. Report file names, line numbers, key names, and `[REDACTED:…]` placeholders only.
 
