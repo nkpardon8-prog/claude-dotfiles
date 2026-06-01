@@ -784,6 +784,20 @@ re-enter), and never change the active/inactive decision.
   `AskUserQuestion` round (draining PENDING DECISIONS) when the run is **explicitly interactive** /
   there is a recent user turn. Never block an unattended run on a modal. (When you do ask, include the
   current context-usage % in the question text, per global rules.)
+- **Run-timing — points of contact (advisory).** A "point of contact" is a surface where the run
+  genuinely hands back to the user: (1) the batched `AskUserQuestion` round above, (2) the 5-FAIL
+  STOP-LOUD (§10), (3) the corrupt-bridge STOP-LOUD (§10), and (4) the natural lifecycle close (§11).
+  At each, just BEFORE surfacing, record the timing contact and show the elapsed line:
+  ```bash
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh timing-contact <sid> <root> <ask|fail5|corrupt>
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"; set -- $(mission_timing_compute <sid> <root>)
+  printf '⏱ stretch %s · active %s · wall %s · idle %s\n' "$(_mission_fmt_dur "$1")" "$(_mission_fmt_dur "$2")" "$(_mission_fmt_dur "$3")" "$(_mission_fmt_dur "$4")"
+  ```
+  **Render that `⏱` line directly into the AskUserQuestion question text and into the STOP-LOUD message
+  body** — not only the banner. A **PLAN-divergence `challenge` is NOT a point of contact** (it proceeds
+  autonomously when away) — do not emit a contact there. Timing is advisory: a failed emit never blocks
+  or changes the lifecycle (at a corrupt-bridge contact the write itself may no-op — that's fine; the
+  read-side `⏱` still renders, or shows `timing unavailable`).
 - **Unattended blocking surfaces extend to `/implement`'s gates.** The away-default above applies to
   ANY surface that would block an unattended run — including `/implement`'s **dangerous-command
   Manual-Steps gate**. When away: do NOT block on that modal; log a `pending` PENDING-DECISION (the
