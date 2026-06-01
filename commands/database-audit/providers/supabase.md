@@ -156,6 +156,19 @@ Items: Custom SMTP configured; MFA + leaked-password protection enabled; DB webh
 - Verify manually: Supabase dashboard → Project Settings → Database → Point-in-Time Recovery (confirm enabled + retention window on a paid plan).
 ```
 
+### Module 10/11 (Compliance & Encryption) — Supabase at-rest encryption (manual-verify)
+
+`--only` token: **`compliance`**.
+
+Most of Modules 10/11 are portable-core (`pg_extension` pgaudit/crypto-tooling posture, `ssl`/`pg_stat_ssl` in-transit checks) and run from `core.md` via `mcp__supabase__execute_sql` — they need no Supabase-specific section. The one genuinely Supabase-specific facet is **at-rest encryption**, which cannot be verified via read-only SQL and is a `[PROVIDER]` manual-verify INFO (never pass/fail):
+
+```
+[INFO] At-rest encryption (storage)
+- What: Supabase encrypts the underlying database storage at rest with AES-256.
+- Severity-if-absent: N/A (platform-managed — verify, do not assert pass/fail)
+- Verify manually: Supabase dashboard / Supabase security & compliance docs (SOC2 report) → confirm AES-256 at-rest encryption for the project's region/plan.
+```
+
 ### Storage buckets
 
 `--only` token: **`client`**.
