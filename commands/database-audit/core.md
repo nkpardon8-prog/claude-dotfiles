@@ -56,7 +56,17 @@ WHERE s.idx_scan = 0
   AND now() - b.stats_reset > interval '7 days';
 ```
 
-If `stats_reset` is NULL or within 7 days → emit single INFO: "unused-index analysis skipped — stats reset within last 7 days." Severity of findings: LOW.
+Because this query filters on `stats_reset > 7 days`, an empty result is ambiguous: it could mean "no unused indexes" OR "stats too young to judge." To disambiguate, FIRST run the companion stats-age probe below (also a vetted fixed-library query), then run the unused-index query above:
+
+```sql
+-- Q1.3-age — unused-index analysis precondition (run before Q1.3)
+SELECT stats_reset, now() - stats_reset AS stats_age
+FROM pg_stat_bgwriter;
+```
+
+Interpret using the companion result:
+- If `stats_age < interval '7 days'` OR `stats_reset IS NULL` → emit the INFO `unused-index analysis skipped — stats reset within last 7 days` and do NOT report a clean unused-index result (the Q1.3 result is uninformative in this state).
+- Otherwise → the Q1.3 result is meaningful: an empty result is a genuine "no unused indexes," and any rows are LOW findings. Severity of findings: LOW.
 
 ### Q1.4 — Duplicate indexes
 
