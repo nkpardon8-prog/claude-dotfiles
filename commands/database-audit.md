@@ -135,6 +135,7 @@ Because there is **no connection, there is no prod-data risk** — so this is NO
 - FS.1–FS.4 are gated on `security`.
 - FS.5 (env-drift) is gated on `prod`.
 - migration-on-disk drift is gated on `schema` OR `prod` (either token enables it).
+- Module 13 migration-safety lint (`[FS]` lock/rewrite-safety static analysis of `migrations/**.sql`) is gated on `migrations` — so `--only=migrations` selects it here.
 - the `.gitignore tmp/` check is always-on / ungated (it runs regardless of `--only`).
 
 If `--only` is set and excludes **every** available filesystem module (e.g. `--only=client` or `--only=rls`), emit `[INFO] no filesystem modules selected under --only` and still write the (near-empty, ungated-`.gitignore`-check-only) report. When `--only` is unset, run all filesystem modules (current behavior).
