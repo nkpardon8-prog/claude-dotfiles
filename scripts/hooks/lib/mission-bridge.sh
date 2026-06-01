@@ -254,9 +254,16 @@ mission_resolve_path() {
     fi
     echo "mission_resolve_path: WARN manifest pointer rejected (not own-sid in-root canonical): $_rsv_mp" >&2
   fi
-  # 2) deterministic sid-keyed path
+  # 2) deterministic sid-keyed path — return ONLY if its marker sid matches the requester. A file
+  #    planted at our own canonical path but carrying a stranger's marker is NOT our mission (defense
+  #    -in-depth: closes the read window before the first mission_verify). Legit own/cloned files always
+  #    have marker == filename sid, so this never rejects a real mission.
   _rsv_det=$(mission_path "$_rsv_sid" "$_rsv_root") || return 1
-  if [ -f "$_rsv_det" ]; then printf '%s\n' "$_rsv_det"; return 0; fi
+  if [ -f "$_rsv_det" ]; then
+    _rsv_dmk=$(_mission_marker_field "$_rsv_det" sid 2>/dev/null)
+    if [ "$_rsv_dmk" = "$_rsv_sid" ]; then printf '%s\n' "$_rsv_det"; return 0; fi
+    echo "mission_resolve_path: WARN own-path file carries a foreign marker sid ('$_rsv_dmk') — not resolving" >&2
+  fi
   # 3) no mission for this sid
   return 0
 }
