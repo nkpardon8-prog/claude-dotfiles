@@ -90,7 +90,10 @@ DEVICE_NAME = "plan2bid-minim4"   # configurable: the Mac mini's CRD tab title
    I'll pick back up automatically once the canvas appears.
    ```
    Then wait for the canvas to mount via the side-panel labels (they appear only
-   once the canvas is interactive — they double as a "toggle-exists" check):
+   once the canvas is interactive — they double as a "toggle-exists" check).
+   **Only reach this AFTER step 5 confirmed the macOS menu bar** — these same
+   labels exist on the *Windows* CRD panel, so on their own they do NOT prove
+   you're on the Mac tab:
    ```
    mcp.wait_for({text: ["Send system keys", "Synchronize clipboard"], timeout: 120000})
    ```
