@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # timeout shim: GNU `timeout`, macOS `gtimeout`, else run bare (no hang guard).
 if command -v timeout >/dev/null 2>&1; then TO=(timeout 60)
 elif command -v gtimeout >/dev/null 2>&1; then TO=(gtimeout 60)
-else TO=(); fi
+else TO=(env); fi   # `env` is a no-op prefix; avoids bash-3.2 empty-array+set-u error
 TESTS=( "03-sid-matched-resolution.sh" "06-empty-pointer-fallthrough.sh" "07-resume-write-routing.sh" "05-manifest-pointer-wins.sh" "02-no-cross-bind.sh" )
 PASS=0; PENDING=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do
