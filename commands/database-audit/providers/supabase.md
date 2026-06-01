@@ -96,7 +96,7 @@ These have NO vanilla-Postgres equivalent. Portable SQL checks (Q1.1–Q4.2) are
 
 ### Module 3 (Security) — Supabase platform steps
 
-`--only` token: **`security`** (Step A advisors, Step E extensions, Step F pg_cron probe + inventory all gated by `security`).
+`--only` token: **`security`** (Step A advisors, Step E extensions, Step F pg_cron inventory all gated by `security`).
 
 **Step A — Supabase security advisors.** Call `mcp__supabase__get_advisors({type: "security"})`. Include every finding; map Supabase severity to our tiers. The Q3.x security-advisor mapping:
 
