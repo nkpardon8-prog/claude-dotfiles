@@ -44,7 +44,7 @@ postgres signal: always PROD (no control plane).
 
 ## (c) Platform modules — NONE
 
-Vanilla Postgres has no provider-specific surface. It runs the portable `core.md` library (schema Q1.x, RLS Q2.x, security Q3.1/Q3.3, prod Q4.1/Q4.2) and nothing else.
+Vanilla Postgres has no provider-specific surface. It runs the **full portable core** (`core.md` Q1.1–Q15.5 / Modules 1–15, minus the platform-only facets that have no vanilla analogue — e.g. control-plane advisors, managed PITR, storage/edge/realtime surfaces) and nothing else. See the Modules 6–15 note below for exactly how the expansion modules run from `core.md`.
 
 **Modules 6–15 are CORE-ONLY on vanilla Postgres.** The expansion modules — Operational Health (`health`), Config/CIS (`config`), Privileges (`privileges`), Schema Integrity (`integrity`), Compliance/Encryption (`compliance`), PII (`pii`), Migration-safety lint (`migrations`, `[FS]`), Backup/Recovery (`backup`), Exfiltration (`exfil`) — all run from `core.md` via the portable SELECT-only library (and the filesystem path for Module 13). Vanilla Postgres has **no control plane**, so the new `--only` tokens select only their core checks; there are NO postgres-specific platform sections to add. In particular, the `[PROVIDER]` manual-verify items that Supabase/Neon own — at-rest encryption (`compliance`) and managed PITR / history-retention (`backup`) — have no vanilla analogue: at-rest encryption is the host/disk operator's responsibility (emit nothing / verify out-of-band), and PITR posture is assessed from the core SQL signals only (14.1 `pg_stat_archiver` WAL-archiving health + 14.2 `wal_keep_size`/`max_wal_size`).
 
