@@ -130,9 +130,11 @@ reopened. The clone is owned by your `<sid>` like any normal mission, so EVERYTH
 "working sid" to track**. The pick is ALWAYS explicit, never a guess. The source is left intact.
 
 1. **Resolve `sid`/`root`** per §1. **First check if THIS session already owns a mission**
-   (`mission_resolve_path "$sid" "$root"` non-empty): if so, show its PLAN line-1 and STOP — you cannot
-   clone a second mission over your own (mission_fork refuses an existing dest). `/mission clear` first
-   if you really mean to replace it.
+   (`mission_resolve_path "$sid" "$root"` non-empty): if so, show its PLAN line-1 and STOP — one
+   session owns one mission, and `mission_fork` refuses an existing dest (rc 3). To continue a
+   *different* mission, start a fresh instance and `/mission resume` there. (`/mission clear` only marks
+   your current mission closed in its log; it does NOT remove `MISSION.<sid>.md`, so it does not free
+   this session to clone another.)
 2. **Enumerate** this repo's missions (read-only; space-safe; sid-matched, no mtime adoption):
    ```bash
    mission_list "$root"   # TAB rows: <sid>\t<mtime_epoch>\t<active|cleared|unknown|corrupt>\t<roadmap>
