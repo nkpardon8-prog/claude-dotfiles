@@ -21,8 +21,8 @@ cleaned in `finally` + a startup orphan-reaper (>1h). Real `~/.claude/chains` is
 |---|---|---|---|
 | 03 | `mission_resolve_path` returns MY sid's file, never the mtime-newest stranger; unknown→empty; spaced root | PENDING | must PASS |
 | 06 | empty-string manifest pointer (`mission_path:""`) falls through to deterministic file (the original `// empty` bug) | PENDING | must PASS |
-| 07 | a write with sid=B routes to `MISSION.<B>.*` and never bleeds into A (resume sid-swap is not split-brain) | PASS | must PASS |
-| 05 | resolver prefers a non-empty manifest pointer over the deterministic path (post-compact reattach) | PENDING | must PASS |
+| 07 | `/mission resume` = clone-on-resume: `mission_fork` copies the picked mission into the resuming session's own sid, source intact, dest verifies, refuses an existing dest | PENDING | must PASS |
+| 05 | resolver honors an IN-ROOT canonical manifest pointer (divergence reattach) and REJECTS an out-of-root one | PENDING | must PASS |
 | 02 | (advisory) real chain manifests have zero cross-binds; non-blocking | PASS | PASS |
 
 ## Exit codes
