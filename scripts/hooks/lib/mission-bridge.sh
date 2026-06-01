@@ -1151,6 +1151,161 @@ mission_rebaseline() {
 }
 
 # ===========================================================================================
+# Run-timing + lifetime metrics ledger (advisory; never blocks/corrupts the mission lifecycle)
+# Four numbers, stateless recompute from sid-scoped LOG anchors (archive-aware, never mtime):
+#   active = (active_sec on the LAST CONTACT, else 0) + open;  open = now-lastWORK-START iff working
+#   wall   = now - MISSION-START;  idle = wall - active.  Compaction counts as ACTIVE.
+# ===========================================================================================
+
+# _mission_fmt_dur <sec> -> human "Hh MMm" | "MMm" | "Ss"; empty/?/non-numeric/negative -> '?'.
+_mission_fmt_dur() {
+  _fd="$1"
+  case "$_fd" in ''|*[!0-9]*) printf '?'; return 0 ;; esac
+  _fh=$((_fd/3600)); _fm=$(((_fd%3600)/60)); _fs=$((_fd%60))
+  if   [ "$_fh" -gt 0 ]; then printf '%dh %02dm' "$_fh" "$_fm"
+  elif [ "$_fm" -gt 0 ]; then printf '%dm' "$_fm"
+  else printf '%ds' "$_fs"; fi
+}
+
+# _mission_timing_stream <sid> <root> -> concat archives (oldest->newest) + live log to stdout.
+# bash 3.2 SAFE: uses `if [ "${a##*.}" = gz ]`, NOT `case`, because it is captured in $( ). (:283-294)
+_mission_timing_stream() {
+  _mts2_sid=$(_mission_sanitize_sid "$1"); _mts2_root="$2"
+  {
+    for _mts2_a in "$_mts2_root"/.mission-backups/MISSION."$_mts2_sid".log.*.gz \
+                   "$_mts2_root"/.mission-backups/MISSION."$_mts2_sid".log.*.txt; do
+      [ -e "$_mts2_a" ] || continue
+      printf '%s\n' "$_mts2_a"
+    done | sort | while IFS= read -r _mts2_a; do
+      if [ "${_mts2_a##*.}" = gz ]; then gzip -dc "$_mts2_a" 2>/dev/null; else cat "$_mts2_a" 2>/dev/null; fi
+    done
+    cat "$_mts2_root/MISSION.$_mts2_sid.log" 2>/dev/null
+  }
+}
+
+# mission_timing_compute <sid> <root> -> prints "stretch active wall idle" (numbers OR literal ?).
+# ALL internals _mtc_-prefixed: this lib shares the global namespace with mission_log_append /
+# mission_render_banner / mission_create (bare f/sid/root) — bare names here would clobber them.
+mission_timing_compute() {
+  _mtc_sid=$(_mission_sanitize_sid "$1"); _mtc_root="$2"
+  _mtc_now=$(date +%s 2>/dev/null || echo 0)
+  _mtc_S=$(_mission_timing_stream "$_mtc_sid" "$_mtc_root")
+  _mtc_ms=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] MISSION-START epoch=' | head -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
+  _mtc_ws=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] WORK-START epoch='   | tail -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
+  _mtc_last=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] (WORK-START|CONTACT) ' | tail -1)
+  _mtc_la=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] CONTACT ' | tail -1 | sed -nE 's/.* active_sec=([0-9]+).*/\1/p')
+  [ -z "$_mtc_la" ] && _mtc_la=0
+  case "$_mtc_last" in *"] WORK-START "*) _mtc_work=1 ;; *) _mtc_work=0 ;; esac
+  _mtc_sane=$(printf '%s' "${MISSION_STRETCH_SANITY_SEC:-86400}" | tr -cd '0-9'); [ -n "$_mtc_sane" ] || _mtc_sane=86400
+  if [ "$_mtc_work" = 1 ] && [ -n "$_mtc_ws" ] && [ "$_mtc_now" -gt "$_mtc_ws" ] && [ $((_mtc_now-_mtc_ws)) -gt "$_mtc_sane" ]; then _mtc_work=0; fi
+  if [ "$_mtc_work" = 1 ] && [ -n "$_mtc_ws" ] && [ "$_mtc_now" -gt "$_mtc_ws" ]; then _mtc_open=$((_mtc_now-_mtc_ws)); else _mtc_open=0; fi
+  _mtc_active=$((_mtc_la + _mtc_open))
+  if [ -n "$_mtc_ms" ] && [ "$_mtc_now" -ge "$_mtc_ms" ]; then _mtc_wall=$((_mtc_now-_mtc_ms)); else _mtc_wall='?'; fi
+  if [ "$_mtc_wall" = '?' ]; then _mtc_idle='?'; else _mtc_idle=$(( _mtc_wall>_mtc_active ? _mtc_wall-_mtc_active : 0 )); fi
+  printf '%s %s %s %s\n' "$_mtc_open" "$_mtc_active" "$_mtc_wall" "$_mtc_idle"
+}
+
+# mission_timing_resume <sid> <root> -> re-stamp WORK-START ONLY on user re-engagement
+# (last anchor is a CONTACT). A mid-stretch compaction resume (last anchor WORK-START) is a no-op.
+mission_timing_resume() {
+  _mtr_sid=$(_mission_sanitize_sid "$1"); _mtr_root="$2"
+  _mtr_last=$(_mission_timing_stream "$_mtr_sid" "$_mtr_root" | grep -E '\[mission\] (WORK-START|CONTACT) ' | tail -1)
+  _mtr_now=$(date +%s 2>/dev/null || echo 0)
+  case "$_mtr_last" in
+    *"] CONTACT "*) mission_log_append "$_mtr_sid" "$_mtr_root" "[mission] WORK-START epoch=$_mtr_now" "m-wstart-$_mtr_now-$(_mission_nonce 2>/dev/null | cut -c1-4)" 2>/dev/null || true ;;
+    *) : ;;
+  esac
+  return 0
+}
+
+# mission_timing_contact <sid> <root> <reason> -> compute + write a CONTACT anchor (one per touchpoint).
+mission_timing_contact() {
+  _mtk_sid=$(_mission_sanitize_sid "$1"); _mtk_root="$2"
+  _mtk_slug=$(printf '%s' "$3" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-' | head -c 32)   # capture <reason> BEFORE set-- clobbers $3
+  set -- $(mission_timing_compute "$_mtk_sid" "$_mtk_root")
+  [ $# -eq 4 ] || set -- 0 0 '?' '?'
+  _mtk_stretch=$1 _mtk_active=$2 _mtk_wall=$3 _mtk_idle=$4
+  _mtk_now=$(date +%s 2>/dev/null || echo 0)
+  mission_log_append "$_mtk_sid" "$_mtk_root" \
+    "[mission] CONTACT reason=$_mtk_slug stretch_sec=$_mtk_stretch active_sec=$_mtk_active wall_sec=$_mtk_wall epoch=$_mtk_now" \
+    "m-contact-$_mtk_now-$(_mission_nonce 2>/dev/null | cut -c1-4)" 2>/dev/null || true
+  return 0
+}
+
+# _mission_metrics_append <jsonline> -> append to the machine-wide ledger, cross-mission + _MLOCK-safe.
+_mission_metrics_append() {
+  _mma_line="$1"
+  _mma_L="$HOME/.claude"; mkdir -p "$_mma_L" 2>/dev/null; _mma_F="$_mma_L/mission-metrics.jsonl"
+  _mma_save="${_MLOCK:-}"
+  _mission_lock "$_mma_L" metrics || { _MLOCK="$_mma_save"; echo "mission: metrics lock busy — dropping line (advisory)" >&2; return 0; }
+  if [ -s "$_mma_F" ]; then
+    _mma_lb=$(tail -c1 "$_mma_F" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+    [ -n "$_mma_lb" ] && [ "$_mma_lb" != 0a ] && printf '\n' >> "$_mma_F"
+  fi
+  printf '%s\n' "$_mma_line" >> "$_mma_F"
+  _mission_unlock; _MLOCK="$_mma_save"
+  return 0
+}
+
+# mission_timing_close <sid> <root> <status> -> final compute + the ONE ledger write per mission.
+# JSON-coerces any non-numeric/empty field to `null` so a `?` never poisons the ledger.
+mission_timing_close() {
+  _mtz_sid=$(_mission_sanitize_sid "$1"); _mtz_root="$2"
+  _mtz_status=$(printf '%s' "$3" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-' | head -c 32)   # capture <status> BEFORE set--
+  set -- $(mission_timing_compute "$_mtz_sid" "$_mtz_root"); [ $# -eq 4 ] || set -- 0 0 '?' '?'
+  _mtz_active=$2 _mtz_wall=$3 _mtz_idle=$4
+  _mtz_now=$(date +%s 2>/dev/null || echo 0)
+  _mtz_S=$(_mission_timing_stream "$_mtz_sid" "$_mtz_root")
+  _mtz_ms=$(printf '%s' "$_mtz_S" | grep -E '\[mission\] MISSION-START epoch=' | head -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
+  _mtz_contacts=$(printf '%s' "$_mtz_S" | grep -cE '\[mission\] CONTACT ')
+  _mtz_maxpart=$(printf '%s' "$_mtz_S" | sed -nE 's/.*\[mission\] .*part=([0-9]+).*/\1/p' | sort -n | tail -1); [ -n "$_mtz_maxpart" ] || _mtz_maxpart=0
+  _mtz_eps=$(printf '%s' "$_mtz_S" | grep -E '\[mission\] CONTACT ' | sed -nE 's/.* epoch=([0-9]+).*/\1/p' | sort -n)
+  if [ "${_mtz_contacts:-0}" -ge 2 ] 2>/dev/null; then
+    _mtz_f=$(printf '%s' "$_mtz_eps" | head -1); _mtz_l=$(printf '%s' "$_mtz_eps" | tail -1)
+    _mtz_gap=$(( (_mtz_l-_mtz_f)/(_mtz_contacts-1) ))
+  else _mtz_gap=0; fi
+  _mtz_slug2=$(mission_read_zone "${_mtz_root}/MISSION.${_mtz_sid}.md" PLAN 2>/dev/null | head -1 | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-' | head -c 40)
+  _mtz_rootb=$(basename "$_mtz_root")
+  for _mtz_v in _mtz_active _mtz_wall _mtz_idle _mtz_ms; do
+    eval "case \"\$$_mtz_v\" in ''|*[!0-9]*) $_mtz_v=null ;; esac"
+  done
+  _mission_metrics_append "{\"event\":\"close\",\"sid\":\"$_mtz_sid\",\"slug\":\"$_mtz_slug2\",\"root\":\"$_mtz_rootb\",\"start_epoch\":$_mtz_ms,\"end_epoch\":$_mtz_now,\"active_sec\":$_mtz_active,\"wall_sec\":$_mtz_wall,\"idle_sec\":$_mtz_idle,\"contacts\":$_mtz_contacts,\"avg_contact_gap_sec\":$_mtz_gap,\"parts\":$_mtz_maxpart,\"status\":\"$_mtz_status\"}"
+  return 0
+}
+
+# mission_stats_render -> print lifetime metrics from the machine-wide ledger (read-only, jq-free).
+# macOS /usr/bin/awk (BWK): no gensub/backrefs -> match()+substr()+(+0) coercion ("null" -> 0).
+mission_stats_render() {
+  _msr_F="$HOME/.claude/mission-metrics.jsonl"
+  if [ ! -s "$_msr_F" ]; then printf 'No missions recorded yet (%s).\n' "$_msr_F"; return 0; fi
+  awk -v now="$(date +%s 2>/dev/null || echo 0)" '
+    function field(s,k,  p){ p="\""k"\":[0-9]+"; if(match(s,p)) return substr(s,RSTART+length(k)+3, RLENGTH-length(k)-3)+0; return 0 }
+    function dur(x,  h,m){ if(x<0)x=0; h=int(x/3600); m=int((x%3600)/60); if(h>0)return h"h "sprintf("%02dm",m); else if(m>0)return m"m"; else return x"s" }
+    /"event":"close"/ {
+      a=field($0,"active_sec"); w=field($0,"wall_sec"); i=field($0,"idle_sec"); se=field($0,"start_epoch"); c=field($0,"contacts")
+      sumA+=a; sumW+=w; sumI+=i; sumC+=c; n++
+      if(a>maxA){ maxA=a }
+      if(match($0,/"status":"[a-z0-9-]*"/)){ st=substr($0,RSTART+10,RLENGTH-11); stc[st]++ }
+      if(match($0,/"root":"[^"]*"/)){ r=substr($0,RSTART+8,RLENGTH-9); rootA[r]+=a }
+      if(se>0 && se>=now-604800){ wkA+=a; wkN++ }
+    }
+    END {
+      if(n==0){ print "No completed missions in ledger."; exit }
+      printf "Missions run: %d\n", n
+      printf "Lifetime active: %s   wall: %s   idle: %s\n", dur(sumA), dur(sumW), dur(sumI)
+      printf "Active:idle ratio: %.2f\n", (sumI>0? sumA/sumI : sumA)
+      printf "Longest mission (active): %s\n", dur(maxA)
+      printf "Avg mission length (active): %s\n", dur(n? int(sumA/n):0)
+      printf "Avg contacts/mission: %.1f\n", (n? sumC/n : 0)
+      printf "This week: %d missions, %s active\n", wkN, dur(wkA)
+      print "By status:";  for(k in stc) printf "  %-12s %d\n", k, stc[k]
+      print "By project (active):"; for(k in rootA) printf "  %-20s %s\n", k, dur(rootA[k])
+    }
+  ' "$_msr_F" 2>/dev/null
+  return 0
+}
+
+# ===========================================================================================
 # Banner precompute (WRITE side, /pre-compact — no timeout) (PIVOT A, Key Pseudocode 131-144)
 # ===========================================================================================
 
