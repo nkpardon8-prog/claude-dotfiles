@@ -268,11 +268,11 @@ Severity: HIGH. Report column NAMES only — never SELECT actual PII values (see
 SELECT n.nspname, p.proname, p.prosrc
 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
 WHERE n.nspname = 'public'
-  AND p.prosrc ILIKE '%EXECUTE format%'
+  AND p.prosrc ~* 'EXECUTE\s'
 LIMIT 50;
 ```
 
-Any row → HIGH finding (SQL-injection surface). `prosrc` contents redacted if they contain secret-shaped strings (see `redaction.md` rule 1).
+This catches all PL/pgSQL dynamic SQL — `EXECUTE format(...)`, `EXECUTE sql_text`, `EXECUTE '...'` — not just `EXECUTE format`. Any row → HIGH finding (SQL-injection surface). During deep analysis, exclude the safe `EXECUTE ... USING` bound-parameter-only forms (no string concatenation into the statement) as non-findings. `prosrc` contents redacted if they contain secret-shaped strings (see `redaction.md` rule 1).
 
 ---
 
