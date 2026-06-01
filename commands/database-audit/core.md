@@ -40,6 +40,8 @@ WHERE c.contype = 'f'
     SELECT 1 FROM pg_index i
     WHERE i.indrelid = c.conrelid
       AND (i.indkey::int2[])[1:array_length(c.conkey,1)] = c.conkey
+      AND i.indpred IS NULL
+      AND i.indisvalid
   );
 ```
 
