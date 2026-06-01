@@ -105,6 +105,8 @@ Idle file (after `on-stop.sh`): `{"schema_version":2,"active":false}`.
 
 Beacon scratch (`<sid>.current.json`): `{ "step": 3, "total": 5, "label": "reviewing" }`.
 
+Activity sidecar (`<sid>.activity.json`, written by `on-tool-activity.sh`): `{ "ts": 1715000120, "label": "Edit migration.sql" }`. The renderer uses it only when `ts >= prompt_started_at`, so a stale sidecar from a prior turn can't bleed into the next one.
+
 The renderer treats a missing `active` key (pre-upgrade v1 files) as active only when `prompt_started_at` exists and `last_tick` is within 30 min, so live sessions don't blink to idle across the upgrade.
 
 ## Global scope — works in every repo
