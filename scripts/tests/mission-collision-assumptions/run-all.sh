@@ -32,3 +32,7 @@ for t in "${TESTS[@]}"; do
   fi
 done
 echo; echo "PASS: ${PASS}/${#TESTS[@]} (PENDING/infra: ${PENDING}) in $(( $(date +%s) - START ))s"
+# Post-implementation the resolver EXISTS, so a PENDING (exit 3) now signals a genuine infra/regression
+# problem, not the pre-impl stub path — surface it as a failure rather than a silent green.
+[ "${PENDING}" -gt 0 ] && { echo "FAIL: ${PENDING} test(s) PENDING/infra — expected all ${#TESTS[@]} to PASS post-implementation" >&2; exit 1; }
+exit 0
