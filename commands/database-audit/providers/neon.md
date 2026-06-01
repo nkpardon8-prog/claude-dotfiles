@@ -106,7 +106,7 @@ All control-plane checks below are **API/MCP-only** (no SQL). If Neon MCP is abs
 
 `--only` token: **`prod`**.
 
-Call `list_slow_queries` (Neon's equivalent of the Supabase slow-query log). Each entry exceeding the threshold → MEDIUM. Redact query text if it contains a secret-shaped string (redaction rule 1). SKIP-with-INFO if MCP absent.
+Call `list_slow_queries` (Neon's equivalent of the Supabase slow-query log). Each entry exceeding the threshold → MEDIUM. **Redaction:** logged query text can embed tokens, connection strings, and literal PII. Prefer reporting the query SHAPE/fingerprint over raw text; if raw text is included it MUST first be passed through the redaction pass (`redaction.md` rules 1–5) and truncated/summarized — never report a raw slow-query body. SKIP-with-INFO if MCP absent.
 
 ### Supported Postgres version (supplied to portable Q4.1)
 
