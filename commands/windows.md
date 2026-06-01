@@ -170,12 +170,19 @@ win   = first p in crd where DEVICE_NAME in p.title
 if win:
     mcp.select_page({pageId: win.id, bringToFront: true})
     screenshot; confirm Windows taskbar (Start orb + tray clock M/D/YYYY)
-elif len(crd) == 1 and screenshot confirms Windows taskbar:
-    bind it
+elif len(crd) == 1:
+    # NOT trusted yet — read-only select (does NOT foreground) to screenshot-confirm
+    mcp.select_page({pageId: crd[0].id, bringToFront: false})
+    screenshot
+    if Windows taskbar:  mcp.select_page({pageId: crd[0].id, bringToFront: true})  # now bind
+    else (macOS menu bar/Dock):  STOP — that's the Mac tab; never foreground/input
 else:
     STOP — ask the user which tab is Windows (NEVER bringToFront a maybe-Mac tab)
-if bound canvas is black/blank: mcp.press_key("Shift")   # safe wake, no char input
-if a Reconnect / Session-ended overlay is shown: surface to user (PIN/sign-in is user-only)
+# Lock/overlay check BEFORE any keypress (even Shift wakes a Windows lock screen):
+if a Reconnect / Session-ended / sign-in / lock / PIN screen is shown:
+    surface to user; STOP; press NOTHING
+elif bound canvas is black/blank (genuine idle, not locked):
+    mcp.press_key("Shift")   # safe wake, no char input
 ```
 
 ## Capability matrix (the agent's single source of truth)
