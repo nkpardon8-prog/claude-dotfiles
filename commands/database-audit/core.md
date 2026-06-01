@@ -310,6 +310,8 @@ On any MCP/SQL error: emit `[INFO] Module 3 — {tool} unavailable: {error}` and
 
 ### Q3.1 — PII inventory (PII-sensitive columns with anon SELECT access)
 
+**Governing token: `pii` (Module 12 / Q12.1), NOT `security`.** Although the SQL body is documented here for historical reasons (and the `Q3.1` marker is kept stable), Q3.1 is dispatched as Module 12's PII inventory and runs **iff `--only` includes `pii`**. It does NOT run under `--only=security`, and it is NOT part of Module 3's security-gated phase below — that phase (Q3.3 + the provider security steps) is the only `security`-gated content. This prevents the security+pii double-run (K1).
+
 The schema-list and exposed-role are PARAMETERS the provider adapter supplies. Defaults (Supabase / vanilla): `schema IN ('public')` and `grantee = 'anon'`. The **Neon adapter** passes `schema IN ('public','neon_auth')` and `grantee = 'anonymous'`. The query is still a vetted fixed-library constant — the adapter selects from the documented parameter sets below, it does not construct arbitrary SQL.
 
 Default (Supabase / vanilla) form:
