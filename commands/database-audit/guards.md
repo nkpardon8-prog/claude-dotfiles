@@ -18,7 +18,7 @@ When SQL cannot proceed, distinguish WHY — the responses differ:
 - **Case (a) — NO connection source available at all** (Supabase MCP unreachable; or neon/postgres with no `$DATABASE_URL` and no MCP connstring). There is **no connection, hence no prod-data risk.** Do NOT hard-abort and do NOT treat as a prod-stop. Run ONLY `run_filesystem_only_modules`, emit `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only`, assemble the partial report, and **exit cleanly** (no stop prompt, no resume path — there is nothing to resume). This is handled in orchestrator Step 0a.6, BEFORE Phase 0b is entered.
 - **Case (b) — connection present but prod unconfirmed** (the prod-guard case below). A connection EXISTS, so prod PII is reachable. Run ONLY `run_filesystem_only_modules`, then **STOP** pending `--env=prod` / `proceed on prod`. This is the prod-guard behavior in this file.
 
-Only a TRUE preflight failure (e.g. not a DB repo at all — no provider signal and no `$DATABASE_URL`) stops with no report.
+Only a TRUE preflight failure — **NONE** of the DB signals present: no Supabase/Neon provider signal, no `$DATABASE_URL`, AND no database artifacts on disk (`*.sql`, migrations dir, schema file) — stops with no report. A repo that IS a DB project (any one of those signals present) but has no reachable connection is case (a), not a preflight failure. This abort is decided in orchestrator Step 0a.2; by the time case (a) / case (b) is reached, a signal already exists. (See orchestrator Step 0a.2 for the exact signal list and abort message.)
 
 ## Forbidden Tools
 
