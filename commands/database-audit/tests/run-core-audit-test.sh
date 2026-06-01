@@ -236,6 +236,114 @@ WHERE c.table_schema = 'public'
       AND g.privilege_type = 'SELECT'
   );
 
+-- ===========================================================================
+-- MODULES 6–15 EXTENSION — verbatim query bodies hand-copied from ../../core.md
+-- (the runner does NOT read core.md at runtime). Two classes:
+--   (1) SEEDABLE — a defect is planted in seed-bad-schema.sql; assert the finding.
+--   (2) SHAPE-ONLY — non-seedable in a fresh container; the query is run only to
+--       prove it executes read-only, exits 0, and returns its header columns.
+--
+-- SINGLE-TRANSACTION BRANCH HAZARD: this whole heredoc is ONE
+-- `psql -v ON_ERROR_STOP=1` inside ONE BEGIN READ ONLY … ROLLBACK. A single
+-- missing-relation/function error ABORTS the transaction and fails ALL
+-- assertions (D1–D15). Therefore only the IMAGE-MAJOR-CORRECT branch of any
+-- version-branched query is pasted here. The pinned image is postgres:16, so:
+--   * Q6.18 uses pg_stat_bgwriter (PG<17), NOT pg_stat_checkpointer (PG17+).
+--   * Q6.19 calls pg_database_collation_actual_version(<oid>) (exists on PG16).
+-- The PG17 branches (pg_stat_checkpointer) are documented Tier-2 (README).
+-- ===========================================================================
+
+-- ---- SEEDABLE -------------------------------------------------------------
+
+-- Q2.6 — FORCE RLS gap (D8). verbatim from core.md Module 2 (Q2.6)
+SELECT 'Q2.6|' || n.nspname || '|' || c.relname
+FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE n.nspname = 'public'
+  AND c.relrowsecurity = true
+  AND c.relforcerowsecurity = false;
+
+-- Q9.1 — FKs without ON DELETE / ON UPDATE action (D9). verbatim from core.md Module 9 (Q9.1)
+SELECT 'Q9.1|' || con.conrelid::regclass || '|' || con.conname || '|' || con.confdeltype || con.confupdtype
+FROM pg_constraint con
+JOIN pg_namespace n ON con.connamespace = n.oid
+WHERE con.contype = 'f'
+  AND n.nspname = 'public'
+  AND (con.confdeltype = 'a' OR con.confupdtype = 'a');
+
+-- Q9.4 — timestamp without time zone (D10). verbatim from core.md Module 9 (Q9.4)
+SELECT 'Q9.4|' || table_name || '|' || column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND data_type = 'timestamp without time zone';
+
+-- Q9.5 — money-typed column (D11). verbatim from core.md Module 9 (Q9.5, money branch)
+SELECT 'Q9.5|' || table_name || '|' || column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND data_type = 'money';
+
+-- Q15.3 — plaintext-secret columns, NAME-ONLY (D12). verbatim from core.md Module 15 (Q15.3)
+SELECT 'Q15.3|' || table_schema || '|' || table_name || '|' || column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name ~* '(^|_)(token|secret|api_?key|password|private_key|access_key)($|_)';
+
+-- Q15.4 — extension installed in public schema (D13). verbatim from core.md Module 15 (Q15.4, placement branch)
+-- core.md reads placement from the Preamble P3 extension inventory; this is that
+-- inventory query filtered to ext_schema='public' (the search_path-hijack flag).
+SELECT 'Q15.4|' || extname || '|' || n.nspname AS ext_in_public
+FROM pg_extension e JOIN pg_namespace n ON e.extnamespace = n.oid
+WHERE n.nspname = 'public';
+
+-- Q15.5 — event triggers (D15). verbatim from core.md Module 15 (Q15.5)
+SELECT 'Q15.5|' || evtname || '|' || evtevent || '|' || (evtowner::regrole)::text || '|' || (evtfoid::regproc)::text
+FROM pg_event_trigger;
+
+-- ---- SHAPE-ONLY (non-seedable; prove RO execution + header columns) -------
+
+-- Q6.4 — XID wraparound horizon. verbatim from core.md Module 6 (Q6.4, per-DB form)
+SELECT 'Q6.4|' || datname || '|' || age(datfrozenxid)::text || '|' || current_setting('autovacuum_freeze_max_age')
+FROM pg_database
+ORDER BY age(datfrozenxid) DESC
+LIMIT 50;
+
+-- Q6.6 — sequence exhaustion. verbatim from core.md Module 6 (Q6.6, pg_sequences form)
+SELECT 'Q6.6|' || schemaname || '|' || sequencename || '|' || COALESCE(last_value::text,'NULL') || '|' || max_value::text
+FROM pg_sequences
+ORDER BY (last_value::numeric / NULLIF(max_value,0)) DESC NULLS LAST
+LIMIT 50;
+
+-- Q6.7 — inactive/lagging replication slots. verbatim from core.md Module 6 (Q6.7)
+SELECT 'Q6.7|' || slot_name || '|' || slot_type || '|' || active::text || '|' || COALESCE(wal_status,'')
+FROM pg_replication_slots
+ORDER BY pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) DESC NULLS LAST;
+
+-- Q6.15 — invalid indexes (D14 shape-only; cannot seed indisvalid=false cheaply).
+-- verbatim from core.md Module 6 (Q6.15)
+SELECT 'Q6.15|' || n.nspname || '|' || ic.relname || '|' || tc.relname || '|' || i.indisvalid::text || '|' || i.indisready::text
+FROM pg_index i
+JOIN pg_class ic ON ic.oid = i.indexrelid
+JOIN pg_class tc ON tc.oid = i.indrelid
+JOIN pg_namespace n ON ic.relnamespace = n.oid
+WHERE i.indisvalid = false OR i.indisready = false;
+
+-- Q6.18 — checkpoint tuning. verbatim from core.md Module 6 (Q6.18, PG<17 pg_stat_bgwriter branch).
+-- IMAGE IS PG16 — pg_stat_checkpointer does NOT exist here; using it would abort
+-- the whole transaction. The PG17 pg_stat_checkpointer branch is Tier-2.
+SELECT 'Q6.18|' || checkpoints_timed::text || '|' || checkpoints_req::text
+FROM pg_stat_bgwriter;
+
+-- Q6.19 — collation version drift, DB-level. verbatim from core.md Module 6 (Q6.19, DB-level form).
+-- PG16 has pg_database_collation_actual_version(oid); pass a real OID so the
+-- function resolves (an empty-paren call would abort the transaction).
+SELECT 'Q6.19|' || datname || '|' || COALESCE(datcollversion,'') || '|' || COALESCE(pg_database_collation_actual_version(oid),'')
+FROM pg_database
+WHERE oid = (SELECT oid FROM pg_database WHERE datname = current_database());
+
+-- Q14.1 — WAL archiver runtime status. verbatim from core.md Module 14 (Q14.1, pg_stat_archiver form)
+SELECT 'Q14.1|' || archived_count::text || '|' || failed_count::text || '|' || COALESCE(last_failed_wal,'') || '|' || COALESCE(last_archived_wal,'')
+FROM pg_stat_archiver;
+
 ROLLBACK;
 SQL
 docker exec -i "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" \
