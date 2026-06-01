@@ -32,7 +32,8 @@ Severity: CRITICAL.
 ### Q1.2 — FKs without backing index (1-based slice, composite FKs are INFO candidates)
 
 ```sql
-SELECT c.conrelid::regclass AS table, c.conname AS fk
+SELECT c.conrelid::regclass AS table, c.conname AS fk,
+       array_length(c.conkey, 1) AS fk_col_count
 FROM pg_constraint c
 WHERE c.contype = 'f'
   AND NOT EXISTS (
