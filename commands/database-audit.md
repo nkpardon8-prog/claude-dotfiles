@@ -324,6 +324,8 @@ Skip if `--only` is set and does not include `client`.
 - Provider control-plane metadata (summarized): <which prod/branch signal fired + minimal shape, e.g. "supabase Signal A; branch_count=2" or "neon default==true" — NOT the raw response>
 ```
 
+**Control-plane metadata is SUMMARIZED, never dumped.** The Meta "Provider control-plane metadata (summarized)" line MUST NOT contain the raw `list_branches` / `describe_project` / `get_project_url` response — those can carry operational details (IP allowlists, project refs, connection hosts, branch endpoints). Run the redaction pass (`redaction.md` rules 1–5) over the captured metadata and elide every host / IP / project-ref / credential-bearing field; keep ONLY the shape/signal that fired (e.g. which branch signal, branch count, `default==true`). The same redact-then-summarize discipline applies anywhere the captured control-plane shape would otherwise reach the report or stdout.
+
 6. Write to the resolved `REPORT_FILE` from Step 0a.5 (`$REPORT_DIR/<ts>.md` in the normal case, or the `$(pwd)/db-audit-<ts>.md` fallback when `./tmp/` was unwritable). **Do NOT hardcode `./tmp/db-audit/` here — honor the resolved variable so the fallback path is actually used.**
 7. Copy to `$REPORT_DIR/latest.md` ONLY in the normal (`./tmp/` writable) case. In the fallback case there is no `REPORT_DIR` to host a rolling copy, so SKIP the `latest.md` copy (the single `$(pwd)/db-audit-<ts>.md` file is the sole sanctioned write).
 8. Print a one-screen summary with finding counts per severity and the resolved report path (`REPORT_FILE`).
