@@ -180,7 +180,17 @@ Once the MCP is reconnected, **before doing browser work, check whether the task
 
 ## Step 4: Sub-agent delegation for DevTools work
 
-DevTools results (`take_snapshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`, screenshots) are large and bloat the parent context. **Default:** delegate `mcp__chrome-devtools__*` calls to a sub-agent (`Agent`, `subagent_type: "general-purpose"`), briefing it with the goal, URL/tab, what to look for, and asking for a short report. Relax only if the user explicitly says they want to watch the calls in the main thread.
+DevTools results (`take_snapshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`, screenshots) are large and bloat the parent context. **Default:** delegate `mcp__chrome-devtools__*` calls to a sub-agent rather than driving the browser from the main thread. Brief it with the goal, URL/tab, what to look for, and ask for a short report.
+
+**Model routing — cheap + fast by default, escalate only when it's actually hard.** (Note: the `Agent` tool has no reasoning-effort parameter — "effort" below is a hint you put in the sub-agent's *prompt body*, not a spawn argument.)
+
+- **Default → Sonnet.** Spawn with `Agent`, `subagent_type: "general-purpose"`, `model: "claude-sonnet-4-6"`. In the prompt body, tell it to work at **medium reasoning effort**. Sonnet's vision is strong enough for navigation, screenshots, console/network reads, and most debugging, at a fraction of Opus's cost.
+- **Escalate to Opus upfront** when the task is obviously hard going in: correlating network waterfalls + console + source across many steps; performance-trace (`performance_analyze_insight`) or heap-snapshot analysis; sustained cross-surface inference. Spawn with `model: "claude-opus-4-8"` and ask for **high reasoning effort** in the prompt body.
+- **Escalate to Opus on fallback.** Brief the Sonnet sub-agent: *if you're still stuck after ~2 attempts, STOP and return an "inconclusive" report — don't thrash.* Its report must be self-contained: what it tried, the current page/URL, and the open question. When it comes back inconclusive, re-spawn the SAME task as a NEW `Agent` call on `model: "claude-opus-4-8"` (you cannot change a running agent's model), pasting the Sonnet report in as context.
+
+**How the parent talks to the sub-agent (turn-based, not live):** the parent briefs fully upfront; the sub-agent then runs autonomously and the parent CANNOT steer it mid-run; its final message returns as the tool result. If the sub-agent asks a clarifying question, answer with `SendMessage` to the *same* agent — its context, and the live Chrome page on port 9222, are preserved, so it resumes where it left off. The Opus *escalation* is the one exception that is NOT `SendMessage`: it's a fresh `Agent` call, so the hand-off depends entirely on the self-contained report.
+
+**Relax** only if the user explicitly says they want to watch the calls in the main thread — then drive `mcp__chrome-devtools__*` directly on the main model.
 
 ## SETUP (one-time, per machine) — migrate the real profile
 
