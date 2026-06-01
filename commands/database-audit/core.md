@@ -850,3 +850,139 @@ Severity: INFO.
 Manual-verify INFO — not assessable from inside Postgres on managed providers. Check the provider's metrics (CloudWatch `FreeStorageSpace` / `TransactionLogsDiskUsage`; PgBouncer / Supavisor `SHOW POOLS` for connection-pool saturation). Emit one INFO line.
 
 `Severity-if-absent: HIGH.`
+
+---
+
+## Module 7 — Config & CIS (`config`)
+
+Skip this phase if `--only` is set and does not include `config`.
+
+On any MCP/SQL error: emit `[INFO] Module 7 — {tool} unavailable: {error}` and continue.
+
+All [RO]. Read every setting in ONE query (N+1 prevention — not N per-setting `SHOW`), then assert in-prose with LITERAL pass/fail predicates below. Where a setting is genuinely policy-dependent, emit `[INFO] inventory: <observed>` rather than pass/fail.
+
+### Q7.1 — CIS settings inventory [RO] (`config`)
+
+```sql
+SELECT name, setting, unit
+FROM pg_settings
+WHERE name IN (
+  'log_connections','log_disconnections','logging_collector','log_line_prefix',
+  'log_checkpoints','log_lock_waits','log_min_duration_statement','log_temp_files',
+  'log_statement','shared_preload_libraries',
+  'ssl','ssl_min_protocol_version','password_encryption',
+  'fsync','full_page_writes','autovacuum','track_counts','track_activities',
+  'statement_timeout','idle_in_transaction_session_timeout','lock_timeout',
+  'autovacuum_freeze_max_age','listen_addresses'
+);
+```
+
+Assertions (apply to the result rows):
+
+- **Logging / audit — MEDIUM if miss:** `log_connections='on'`, `log_disconnections='on'`, `logging_collector='on'`, `log_line_prefix` contains `%m %u %d`, `log_checkpoints='on'`, `log_lock_waits='on'`, `log_min_duration_statement` ≠ `-1`, `log_temp_files` ≠ `-1`, `shared_preload_libraries` ⊇ `pgaudit`. `log_statement` → **[INFO] inventory: <observed>** (policy-dependent, no fixed expectation).
+- **Security — HIGH if miss:** `ssl='on'`, `ssl_min_protocol_version` ≥ `TLSv1.2`, `password_encryption='scram-sha-256'` (flag `md5`).
+- **Durability / ops:** `fsync='on'` (HIGH), `full_page_writes='on'` (HIGH), `autovacuum='on'` (HIGH), `track_counts='on'` / `track_activities='on'` (MEDIUM), `statement_timeout='0'` (MEDIUM — no cap), `idle_in_transaction_session_timeout='0'` (MEDIUM), `lock_timeout='0'` (MEDIUM), `autovacuum_freeze_max_age` > `1000000000` (HIGH).
+- **Network exposure:** `listen_addresses='*'` → **INFO only** (expected on managed / containerized PG; real exposure is governed by `pg_hba` + network ACLs). Public-reachability / IP-allowlist = `[PROVIDER]` manual-verify.
+
+Cross-ref: `ssl` posture is also referenced by Module 11 (emit once here, cross-ref there); `pgaudit` presence is referenced by Module 10.
+
+Severity: per-setting as listed above.
+
+### Q7.2 — Host-based auth rules [RO+priv] (`config`)
+
+```sql
+SELECT type, database, user_name, address, auth_method
+FROM pg_hba_file_rules;
+```
+
+`pg_hba_file_rules` requires superuser/privileged access; on managed providers it errors for the non-superuser audit role. Per-module dispatch (guards.md rule 6) catches the permission error → emit `[INFO] 7.2 — host-based auth rules not assessable on this provider (needs pg_monitor/superuser)`. When readable: flag `auth_method` of `trust` (HIGH — no auth) or `password` (MEDIUM — cleartext-equivalent; prefer `scram-sha-256`); confirm `hostssl` is used for remote connections. Data-dir perms (0700) / unix-socket perms = `[PROVIDER]` manual-verify.
+
+Severity: HIGH (`trust`) / MEDIUM (weak method) / INFO (degraded).
+
+---
+
+## Module 8 — Privileges & Roles (`privileges`)
+
+Skip this phase if `--only` is set and does not include `privileges`.
+
+On any MCP/SQL error: emit `[INFO] Module 8 — {tool} unavailable: {error}` and continue.
+
+All [RO]. Read role attributes from `pg_roles` (NOT `pg_authid` — `pg_authid` exposes `rolpassword`, denied by redaction rule 6 and unreadable to non-superusers anyway).
+
+### Q8.1 — Role attribute sprawl [RO] (`privileges`)
+
+```sql
+SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolbypassrls,
+       rolcanlogin, rolconnlimit, rolvaliduntil
+FROM pg_roles
+WHERE rolname NOT LIKE 'pg\_%';
+```
+
+Flag over-privileged roles: `rolsuper` (SUPERUSER), `rolcreaterole`, `rolcreatedb`, and especially **`rolbypassrls = true`** (CRITICAL — a `BYPASSRLS` role silently defeats every RLS policy, the same exposure as Q2.6's owner bypass but DB-wide). Login roles with `rolconnlimit = -1` (no connection cap) are a saturation risk (MEDIUM); human login roles with a NULL `rolvaliduntil` (never-expiring) are a hygiene concern (LOW/MEDIUM).
+
+Severity: CRITICAL (`rolbypassrls`) / HIGH (superuser sprawl) / MEDIUM / LOW as above.
+
+### Q8.2 — PUBLIC grants [RO] (`privileges`)
+
+Table-level grants to PUBLIC:
+
+```sql
+SELECT table_schema, table_name, privilege_type
+FROM information_schema.role_table_grants
+WHERE grantee = 'PUBLIC';
+```
+
+Schema and function ACLs mentioning PUBLIC:
+
+```sql
+SELECT n.nspname AS schema_name, n.nspacl::text AS schema_acl
+FROM pg_namespace n
+WHERE n.nspacl::text LIKE '%=%'
+  AND array_to_string(n.nspacl, ',') LIKE '%=U%';
+```
+
+```sql
+SELECT p.proname, n.nspname, p.proacl::text AS proc_acl
+FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
+WHERE p.proacl IS NOT NULL
+  AND array_to_string(p.proacl, ',') LIKE '=%';
+```
+
+Default privileges granted to PUBLIC:
+
+```sql
+SELECT defaclnamespace::regnamespace AS schema_name, defaclobjtype, defaclacl::text
+FROM pg_default_acl
+WHERE array_to_string(defaclacl, ',') LIKE '=%';
+```
+
+A grant whose grantee is empty (the `=privs` ACL form) or `PUBLIC` means EVERY role — including `anon` on managed providers — gets that privilege. PUBLIC SELECT on a sensitive table, PUBLIC USAGE/CREATE on a schema, or PUBLIC EXECUTE on a function is a common over-exposure.
+
+Severity: HIGH (PUBLIC data/exec grant) / MEDIUM (PUBLIC schema USAGE).
+
+### Q8.3 — Privileged role membership [RO] (`privileges`)
+
+```sql
+SELECT m.roleid::regrole AS granted_role,
+       m.member::regrole AS member_role,
+       m.admin_option
+FROM pg_auth_members m
+WHERE m.roleid::regrole::text IN (
+  'pg_read_all_data','pg_write_all_data','pg_monitor',
+  'pg_read_all_stats','pg_execute_server_program',
+  'pg_read_server_files','pg_write_server_files'
+)
+   OR m.roleid IN (SELECT oid FROM pg_roles WHERE rolsuper);
+```
+
+Membership in superuser or the powerful `pg_*` default roles (especially `pg_write_all_data`, `pg_execute_server_program`, the server-file roles) is an escalation path. `admin_option = true` lets the member re-grant the role to others.
+
+Severity: HIGH.
+
+### Q8.4 — SECURITY DEFINER search_path [RO] (`privileges`) — CROSS-REF
+
+Already shipped as **Q2.4** (SECURITY DEFINER functions with mutable `search_path`, severity HIGH). Do NOT re-run any SQL here. Emit a pointer only: `[INFO] 8.4 — SECURITY DEFINER search_path → see Q2.4 (Module 2)`.
+
+### Q8.5 — FORCE RLS [RO] (`privileges`) — CROSS-REF
+
+Already covered by the new **Q2.6** (FORCE RLS gap, Module 2). Do NOT re-run any SQL here. Emit a pointer only: `[INFO] 8.5 — FORCE RLS / owner bypass → see Q2.6 (Module 2)`. Note Q2.6 is `public`-scoped, so this cross-ref does not claim coverage of non-public RLS tables.
