@@ -58,7 +58,7 @@ on.
 |---|---|
 | Left-click a host pixel | rect helper → `mcp.click_at({x,y})` |
 | Double-click | `mcp.click_at({x,y, dblClick:true})` |
-| Right-click | `mcp.press_key("Shift+F10")` — NO right-click param on `click_at` |
+| Right-click | `mcp.press_key("Shift+F10")` — opens at the **focused element**, not a pixel (NO right-click param on `click_at`). To target an element, `click_at` it first to focus (a real click — screenshot-verify, obey modal/PHI rules), then `Shift+F10`. |
 | Scroll | PageDown/Arrow with pane focus, or click scrollbar arrows; thumb-drag experimental |
 | Drag | `mcp.drag(...)`, same canvas-rect CSS-px space — **UNVERIFIED**, smoke-test first |
 
