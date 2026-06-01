@@ -238,6 +238,7 @@ mission_resolve_path() {
   _rsv_sid=$(_mission_sanitize_sid "$1"); _rsv_root="$2"
   [ -n "$_rsv_sid" ]  || { echo "mission_resolve_path: invalid sid" >&2; return 1; }
   [ -n "$_rsv_root" ] || { echo "mission_resolve_path: missing root" >&2; return 1; }
+  case "$_rsv_root" in *..*) echo "mission_resolve_path: refusing root containing '..'" >&2; return 1 ;; esac
   # 1) manifest pointer. `// empty` yields "" for a null/absent key; an on-disk empty-string
   #    mission_path ALSO yields "" -> [ -n ] rejects both (kills the original `// empty` fall-through).
   #    HARDENING (own-sid only): under clone-on-resume a session's mission is ALWAYS owned by its own
