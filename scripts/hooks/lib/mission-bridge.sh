@@ -258,7 +258,10 @@ mission_state() {
         [ -e "$_mst_a" ] || continue
         printf '%s\n' "$_mst_a"
       done | sort | while IFS= read -r _mst_a; do
-        case "$_mst_a" in *.gz) gzip -dc "$_mst_a" 2>/dev/null;; *) cat "$_mst_a" 2>/dev/null;; esac
+        case "$_mst_a" in
+          *.gz) gzip -dc "$_mst_a" 2>/dev/null ;;
+          *)    cat "$_mst_a" 2>/dev/null ;;
+        esac
       done
       cat "$_mst_live" 2>/dev/null
     } | grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' | tail -1
