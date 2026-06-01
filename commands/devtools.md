@@ -157,6 +157,27 @@ Always launch this Chrome via /devtools (or the `chrome-debug` alias), NOT the d
 the dock icon opens the default profile, which Chrome 136+ refuses to let us debug.
 ```
 
+## Step 3.5: After reconnect — route remote-desktop control to /macmini or /windows
+
+Once the MCP is reconnected, **before doing browser work, check whether the task is actually about controlling another computer through a Chrome Remote Desktop tab** — because driving a CRD canvas is NOT normal browser automation (opaque `<canvas>`, coordinate clicks, the two-layer model). There are dedicated skills for it.
+
+1. **Is this a remote-control task?** If the user wants to click/type/see/operate *a remote computer's desktop* (OpenDental, a remote app, "on the mac mini", "on the windows machine") — proceed. If they just want to read/debug/automate *a web page* in the browser, this section does NOT apply — continue normally with `chrome-devtools` tools.
+
+2. **Detect CRD tabs.** `mcp.list_pages()` → any page whose URL starts with `https://remotedesktop.google.com/access/session/` is a live remote-desktop session.
+
+3. **Identify the OS and route** (a CRD URL alone can't tell Mac from Windows — confirm by title + a screenshot):
+   | What you find | Route to |
+   |---|---|
+   | Tab title contains `OpenDentalDev1`, or screenshot shows a **Windows 11** taskbar (bottom Start orb, tray clock `M/D/YYYY`) | **`/windows`** |
+   | Screenshot shows a **macOS** menu bar (top) / Dock | **`/macmini`** |
+   | Two CRD tabs (both a Mac and a Windows) | pick the one matching the user's request; if ambiguous, **ask** — never act on the wrong machine |
+
+   Then invoke that skill (e.g. `/windows connect` or `/macmini connect`) and follow it — do not hand-roll CRD clicks from `/devtools`. Those skills own the coordinate mapping, the keyboard quirks, and the safety rails (never touch the wrong session, PHI defaults, PIN is user-only).
+
+4. **No CRD tab present** but the user wanted remote control → tell them to open/resume the CRD session themselves (the skills never start one or type a PIN), then re-run detection.
+
+> One-line mental model: **`/devtools` gets the MCP connected; if a Chrome Remote Desktop tab is in play, the actual driving belongs to `/macmini` or `/windows`, not to raw `chrome-devtools` calls.**
+
 ## Step 4: Sub-agent delegation for DevTools work
 
 DevTools results (`take_snapshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`, screenshots) are large and bloat the parent context. **Default:** delegate `mcp__chrome-devtools__*` calls to a sub-agent (`Agent`, `subagent_type: "general-purpose"`), briefing it with the goal, URL/tab, what to look for, and asking for a short report. Relax only if the user explicitly says they want to watch the calls in the main thread.
