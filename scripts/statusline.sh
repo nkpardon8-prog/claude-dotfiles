@@ -358,14 +358,30 @@ ov  = s.get("overall") or {}
 cur_total = cur.get("total")
 ov_total  = ov.get("total")
 
-if cur.get("source") == "beacon" and cur_total:        # real inner-step progress (e.g. /god-review)
-    bar = filled_bar(int(cur.get("step", 0)), int(cur_total)); lab = cur.get("label") or "working"
-elif ov_total:                                          # real to-do progress
-    bar = filled_bar(int(ov.get("done", 0)), int(ov_total)); lab = ov.get("label") or "working"
-elif cur.get("source") == "beacon":                     # beacon without a total → spinner + its label
-    bar = spinner(); lab = cur.get("label") or "working"
-else:                                                   # one-shot / no structure → honest spinner
-    bar = spinner(); lab = ov.get("label") or "working"
+# BAR (by specificity): determinate beacon → determinate todos → spinner.
+# (A totalless beacon folds into the spinner else — visually identical; its label is still
+#  preferred below via beacon_label.)
+if cur.get("source") == "beacon" and cur_total:
+    bar = filled_bar(int(cur.get("step", 0)), int(cur_total))
+elif ov_total:
+    bar = filled_bar(int(ov.get("done", 0)), int(ov_total))
+else:
+    bar = spinner()
+
+# LABEL (decoupled from bar) priority: beacon → live tool activity → todo activeForm → "working".
+# Live activity comes from the <sid>.activity.json sidecar (written by on-tool-activity.sh), gated
+# by ts >= prompt_started_at so a stale sidecar from a prior turn can't bleed into this one.
+beacon_label = cur.get("label") if cur.get("source") == "beacon" else None
+todo_label   = ov.get("label") if ov_total else None
+activity = None
+try:
+    with open(prog.replace(".json", ".activity.json")) as fh: _a = json.load(fh)
+    if int(_a.get("ts", 0)) >= int(s.get("prompt_started_at", 0)):
+        activity = _a.get("label")
+except Exception:
+    pass
+lab = beacon_label or activity or todo_label or "working"
+if len(lab) > 60: lab = lab[:59] + "…"
 
 print(f"{color}{mins}:{secs:02d}  {bar}  {lab}{RESET}")
 PY
