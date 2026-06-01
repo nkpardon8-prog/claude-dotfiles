@@ -35,11 +35,12 @@ DEVICE_NAME = "OpenDentalDev1"   # configurable: the Windows device's CRD tab ti
    ```
    win = first p in crd where DEVICE_NAME in p.title
    if win:
-       mcp.select_page({pageId: win.id, bringToFront: true})
+       mcp.select_page({pageId: win.id, bringToFront: true})   # title-gated → safe to foreground
    elif len(crd) == 1:
-       # only one CRD tab — bind it, but DO NOT trust it until the screenshot
-       # in step 4 confirms a Windows taskbar (not a macOS menu bar/Dock)
-       mcp.select_page({pageId: crd[0].id, bringToFront: true})
+       # one CRD tab, NO title match — NOT trusted. Select READ-ONLY (no foreground)
+       # so you can screenshot it WITHOUT acting on a maybe-Mac tab. Step 4 must
+       # confirm a Windows taskbar BEFORE you foreground or input.
+       mcp.select_page({pageId: crd[0].id, bringToFront: false})
    else:
        STOP — ask the user which tab is Windows.
        NEVER bringToFront a tab that might be the Mac session.
@@ -47,28 +48,45 @@ DEVICE_NAME = "OpenDentalDev1"   # configurable: the Windows device's CRD tab ti
 
 4. **Confirm it's Windows (screenshot, not assumption).** `mcp.take_screenshot()`.
    - **Windows 11** shows a **bottom taskbar**: Start orb, Search pill, Copilot,
-     system tray with a date in `M/D/YYYY`.
+     system tray with a date in `M/D/YYYY`. → If you selected a lone tab
+     **read-only** in step 3, NOW foreground it:
+     `mcp.select_page({pageId: crd[0].id, bringToFront: true})`.
    - **macOS** (the WRONG tab) shows a **top menu bar / Dock**. If you see that,
-     you bound the Mac tab — STOP, do not send input, ask the user.
+     you read the Mac tab — STOP, do NOT foreground it, do NOT send input, ask
+     the user.
 
-5. **Wake a black/blank screen.** If the canvas is black or blank:
-   `mcp.press_key("Shift")`. **Shift only** — it produces no character input, so
-   it can't hit a Windows sign-in field or submit a form. **NEVER** press
-   Enter / Space / a letter to wake (it could land on a sign-in or commit a form).
+5. **Overlay / lock detection — BEFORE any keypress.** If you see a
+   **"Reconnect" / "Session ended"** overlay, a **CRD PIN** prompt, or a
+   **Windows sign-in / lock** screen:
+   - Surface it to the user and STOP. **PIN and sign-in are user-only** — never
+     type into them, never screenshot-and-read a credential field, never approve.
+   - **Press NOTHING** — even a single `Shift` wakes a Windows lock screen and
+     surfaces its password box. Do not screenshot-loop hoping it clears; hand
+     back to the user and wait.
 
-6. **Overlay detection.** If you see a **"Reconnect" / "Session ended"** overlay,
-   a **CRD PIN** prompt, or a **Windows sign-in / lock** screen:
-   - Surface it to the user. **PIN and sign-in are user-only** — never type into
-     them, never screenshot-and-read a credential field, never approve.
-   - Do not screenshot-loop a sign-in/PIN page hoping it clears; hand back to the
-     user and wait.
+6. **Wake a genuine black/idle screen.** Only after step 5 has ruled out a
+   lock / sign-in / overlay: if the canvas is black or blank,
+   `mcp.press_key("Shift")`. **Shift only** — no character input; never
+   Enter / Space / a letter. If you cannot tell idle from locked, surface to the
+   user instead of pressing anything.
 
 7. **Mount signal (concrete).** Confirm the session is usable:
    - `DEVICE_NAME` is in the bound tab's title (or single-CRD + taskbar
      confirmed), AND
-   - the canvas-rect helper returns a non-error rect (a remote canvas exists):
-   ```
-   meta = mcp.evaluate_script({ function: "<the rect helper from windows.md>" })
+   - the canvas-rect helper returns a non-error rect (a remote canvas exists).
+     This is the SAME helper as `act.md` / `windows.md` — keep the copies
+     identical:
+   ```js
+   meta = mcp.evaluate_script({ function: `() => {
+     const cs = [...document.querySelectorAll('canvas')]
+       .map(e => { const r = e.getBoundingClientRect();
+                   return { x:r.x, y:r.y, w:r.width, h:r.height, bw:e.width, bh:e.height }; })
+       .filter(o => o.w > 200 && o.h > 200)
+       .sort((a,b) => b.w*b.h - a.w*a.h);
+     if (!cs.length) return { error: "no remote canvas found" };
+     const c = cs[0];
+     return { dpr: window.devicePixelRatio, rect:{x:c.x,y:c.y,w:c.w,h:c.h}, hostW:c.bw, hostH:c.bh };
+   }` })
    if meta.error: STOP — no remote canvas; the feed isn't live yet (likely a
                   reconnect/sign-in overlay). Surface to the user.
    else: bound + live. Ready for LAYER-2 actions.
