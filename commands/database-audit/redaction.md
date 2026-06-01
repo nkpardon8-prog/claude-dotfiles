@@ -1,6 +1,6 @@
 # database-audit — Redaction Rules
 
-This file is `Read` by the `/database-audit` orchestrator. Apply these rules during Phase 6 report assembly, before writing any report to disk.
+This file is `Read` by the `/database-audit` orchestrator. Apply the output-transform rules (rules 1–6) during Phase 6 report assembly, before writing any report to disk. Note that rule 6 is split-phase: its credential-column denylist + no-value-sampling half is a **SELECT-time** constraint (enforced when queries are dispatched, not at report assembly), while its `srvoptions` elision half is an **output transform** applied in the Phase 6 redaction pass alongside rules 1–5.
 
 1. **Secret values.** Replace with `[REDACTED:<first-8-of-sha256>]` any of:
    - JWT-shaped string: `eyJ[A-Za-z0-9_-]{20,}`.
