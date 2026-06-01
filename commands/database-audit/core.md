@@ -80,7 +80,7 @@ GROUP BY indrelid, indkey
 HAVING count(*) > 1;
 ```
 
-Severity: MEDIUM.
+Severity: MEDIUM. Caveat: this groups by `(indrelid, indkey)` only, ignoring predicates/opclasses/uniqueness/INCLUDE columns — candidates only; verify equivalence (same predicate, opclass, uniqueness, INCLUDE columns) before acting; emit as INFO-with-verify, not an automatic MEDIUM, when any grouped index differs in those dimensions.
 
 ### Q1.5 — Columns with 100% NULL
 
