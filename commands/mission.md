@@ -118,6 +118,50 @@ Parse `$ARGUMENTS`:
 
 ---
 
+## 2b. `/mission resume` — explicit cross-session attach (the ONLY sanctioned adoption)
+
+A mission is owned by the sid that created it. Resume is the deliberate exception: a NEW session (new
+sid) continues an EXISTING mission — e.g. you closed the instance that started it and reopened. This is
+the ONLY path that crosses sids, and it is ALWAYS an explicit pick, never a guess.
+
+1. **Resolve `sid`/`root`** per §1. **First check if THIS session already owns a mission**
+   (`mission_resolve_path "$sid" "$root"` non-empty): if so, show its PLAN line-1 and ask whether to
+   stay or pick another — do NOT silently rebind a session that already has a mission.
+2. **Enumerate** this repo's missions (read-only; space-safe; sid-matched, no mtime adoption):
+   ```bash
+   mission_list "$root"   # TAB rows: <sid>\t<mtime_epoch>\t<active|cleared|unknown|corrupt>\t<roadmap>
+   ```
+   If it prints nothing, tell the user there are no missions in this repo and stop.
+3. **Present a numbered list**, newest first (as emitted): `N) [<state> <relative-time>] <roadmap>
+   (sid <first8>)`. Render `unknown` as `active` (a freshly-created mission with no lifecycle line yet).
+   Skip or clearly flag `corrupt` rows (unreadable marker — unattachable). Let the user pick a number,
+   or cancel.
+4. **Live-collision warning.** If the picked mission's state is `active`/`unknown` AND its mtime is
+   recent (heuristic: within ~15 min), **WARN explicitly**: this mission looks active in another
+   instance right now, and resuming here means TWO sessions writing the same mission file — interleaved
+   (the `_mission_lock` prevents corruption, NOT interleaving). Require an explicit second confirmation
+   before attaching.
+5. **Attach** (on confirm). `mission_attach` verifies the target, rewrites THIS session's chain-manifest
+   pointer to the picked file (so `/post-compact-resume`, which PREFERS the pointer, reattaches here
+   after future compactions), and echoes the picked mission's OWN sid:
+   ```bash
+   msid=$(mission_attach "$sid" "$root" "$(mission_path "<picked_sid>" "$root")") \
+     || { echo "resume: attach failed — NOT switching; STOP" >&2; }
+   ```
+   **`mission_attach` failure is a HARD STOP** — do not begin writing an unwired mission. On success,
+   **`msid` is the working sid for ALL subsequent `mission-write.sh` writes in this session** — pass
+   `<msid>` (NOT your platform sid) as the `<sid>` arg from here on (proven routed + split-brain-free by
+   `scripts/tests/mission-collision-assumptions/07`). This is a deliberate sid-swap: the user opted into
+   continuing that exact mission file; step 4 is the guard.
+6. **Resume the work.** Read the resumed mission IN FULL (`mission_read_zone` for each zone + the LOG via
+   the §8 resume-read idiom) and continue Level-2 at the LOG's last `(part, phase, round, dry)`.
+
+**Scope:** `mission_list` covers the CURRENT canonical root (this repo) only. To resume a mission from
+another project, run `/mission resume` from that project's directory. Resume is **session-sticky** —
+once attached, this session stays on `<msid>` until `/mission clear`; there is no detach verb.
+
+---
+
 ## 3. Level-1 — explicit build mode (interactive, WITH the user)
 
 This first step is **collaborative, not autonomous.** Shape the multi-part roadmap together —
