@@ -240,17 +240,19 @@ mission_resolve_path() {
   [ -n "$_rsv_root" ] || { echo "mission_resolve_path: missing root" >&2; return 1; }
   # 1) manifest pointer. `// empty` yields "" for a null/absent key; an on-disk empty-string
   #    mission_path ALSO yields "" -> [ -n ] rejects both (kills the original `// empty` fall-through).
-  #    HARDENING: the pointer may legitimately target ANOTHER sid's file (after /mission resume), so we
-  #    do NOT require marker==requesting-sid. But we DO require the target to be a genuine, INTERNALLY
-  #    CONSISTENT mission file — its `MISSION.<X>.md` basename sid must equal its own marker sid — which
-  #    rejects a stale/corrupt/crafted pointer aimed at an arbitrary or tampered path. (mission_create
-  #    and mission_attach only ever write a pointer that satisfies this.)
+  #    HARDENING: the pointer must be an IN-ROOT CANONICAL mission file — equal to
+  #    mission_path(<its own marker sid>, <root>) — which simultaneously requires (a) basename sid ==
+  #    marker sid (internally consistent, not a tampered/arbitrary path) and (b) it lives in THIS root
+  #    (no cross-root/off-root adoption). It MAY be a different sid than the requester (sid divergence),
+  #    but only one that resolves canonically in this root. mission_create only ever writes such a
+  #    pointer; a stale/corrupt/crafted pointer is rejected and we fall through to the deterministic path.
   _rsv_mp=$(jq -r '.mission_path // empty' "$HOME/.claude/chains/${_rsv_sid}.json" 2>/dev/null)
   if [ -n "$_rsv_mp" ] && [ -f "$_rsv_mp" ]; then
-    _rsv_fn=$(basename "$_rsv_mp" .md); _rsv_fn=${_rsv_fn#MISSION.}
     _rsv_mk=$(_mission_marker_field "$_rsv_mp" sid 2>/dev/null)
-    if [ -n "$_rsv_mk" ] && [ "$_rsv_mk" = "$_rsv_fn" ]; then printf '%s\n' "$_rsv_mp"; return 0; fi
-    echo "mission_resolve_path: WARN manifest pointer rejected (basename/marker sid mismatch): $_rsv_mp" >&2
+    if [ -n "$_rsv_mk" ] && [ "$_rsv_mp" = "$(mission_path "$_rsv_mk" "$_rsv_root")" ]; then
+      printf '%s\n' "$_rsv_mp"; return 0
+    fi
+    echo "mission_resolve_path: WARN manifest pointer rejected (not in-root canonical): $_rsv_mp" >&2
   fi
   # 2) deterministic sid-keyed path
   _rsv_det=$(mission_path "$_rsv_sid" "$_rsv_root") || return 1
