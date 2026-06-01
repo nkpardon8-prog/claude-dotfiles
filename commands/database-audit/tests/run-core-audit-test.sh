@@ -296,5 +296,5 @@ if [ "${#MISSES[@]}" -gt 0 ]; then
   exit 1
 fi
 
-echo "[PASS] all planted findings caught at correct vanilla-context severity; redaction verified."
+echo "[PASS] all planted findings DETECTED by the correct core query (severity is assigned in core.md, not asserted here); redaction verified."
 exit 0
