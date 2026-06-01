@@ -337,6 +337,7 @@ mission_fork() {
   _fk_dsid=$(_mission_sanitize_sid "$1"); _fk_root="$2"; _fk_src="$3"
   [ -n "$_fk_dsid" ] || { echo "mission_fork: invalid dest sid" >&2; return 1; }
   [ -n "$_fk_root" ] || { echo "mission_fork: missing root" >&2; return 1; }
+  case "$_fk_root" in *..*) echo "mission_fork: refusing root containing '..'" >&2; return 1 ;; esac
   [ -f "$_fk_src" ] || { echo "mission_fork: source missing: $_fk_src" >&2; return 1; }
   _fk_ssid=$(_mission_marker_field "$_fk_src" sid)
   [ -n "$_fk_ssid" ] || { echo "mission_fork: source has no sid marker" >&2; return 1; }
