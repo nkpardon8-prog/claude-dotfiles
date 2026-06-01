@@ -162,14 +162,19 @@ WHERE c.relkind = 'r'
     SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary
   );
 
--- Q1.2 — FKs without backing index (single-col HIGH)
-SELECT 'Q1.2|' || c.conrelid::regclass || '|' || c.conname
+-- Q1.2 — FKs without backing index (single-col HIGH). Predicates VERBATIM from
+-- core.md: the inner EXISTS includes i.indpred IS NULL AND i.indisvalid so a
+-- partial or invalid index does not count as covering. The seed's planted FK has
+-- NO index at all, so it still matches.
+SELECT 'Q1.2|' || c.conrelid::regclass || '|' || c.conname || '|' || array_length(c.conkey, 1)
 FROM pg_constraint c
 WHERE c.contype = 'f'
   AND NOT EXISTS (
     SELECT 1 FROM pg_index i
     WHERE i.indrelid = c.conrelid
       AND (i.indkey::int2[])[1:array_length(c.conkey,1)] = c.conkey
+      AND i.indpred IS NULL
+      AND i.indisvalid
   );
 
 -- Q1.5 — Columns with 100% NULL (MEDIUM)
