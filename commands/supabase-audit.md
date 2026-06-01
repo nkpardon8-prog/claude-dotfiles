@@ -23,7 +23,7 @@ expected_subagents: 4
    - Then append `--provider=supabase` **forced** (always present, regardless of what `$ARGUMENTS` contained — this alias is Supabase-only by definition).
    - Any `--only=<csv>` and `--env=prod` flags the user supplied in `$ARGUMENTS` are passed through verbatim.
 
-   Effective invocation: `/database-audit <stripped $ARGUMENTS minus any --provider> --provider=supabase`.
+   Effective invocation: `/database-audit <stripped $ARGUMENTS minus any --provider in either the =val or split-val form> --provider=supabase`.
 
 ## Output
 
