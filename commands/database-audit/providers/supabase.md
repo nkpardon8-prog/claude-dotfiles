@@ -114,7 +114,7 @@ SELECT jobname, schedule, command, nodename, username
 FROM cron.job;
 ```
 
-Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) → MEDIUM.
+Each job is an INFO finding. Suspicious `command` values (DML, TRUNCATE, COPY) → MEDIUM. **Redaction:** cron `command` bodies can embed tokens, webhook URLs, connection strings, and literal PII. Pass every `command` through the redaction pass (`redaction.md` rules 1–5) AND truncate/summarize before reporting — report a redacted/elided form, never the raw command body.
 
 (`Q3.1` PII inventory and `Q3.3` dynamic-SQL scan are portable — they live in `core.md`.)
 
