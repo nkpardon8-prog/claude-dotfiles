@@ -81,6 +81,10 @@
 DROP SCHEMA IF EXISTS dbaudit_test CASCADE;
 CREATE SCHEMA dbaudit_test;
 
+-- Idempotency for the D13 public extension: a public-schema extension is NOT
+-- removed by DROP SCHEMA dbaudit_test CASCADE, so drop it explicitly up front.
+DROP EXTENSION IF EXISTS pgcrypto;
+
 -- ---------------------------------------------------------------------------
 -- anon role: Q3.1 only flags a PII column when an `anon` role holds SELECT on
 -- the table. Vanilla PG has no `anon` role, so we create one to exercise Q3.1.
