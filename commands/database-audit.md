@@ -213,12 +213,17 @@ Then run the detected provider's platform modules (each gated by its token above
 
 Skip if `--only` is set and does not include `client`.
 
-- **supabase** → spawn the Module-5 client-coherence sub-agent. **The sub-agent prompt MUST be embedded VERBATIM into the `Agent` call** — a spawned sub-agent does NOT inherit the orchestrator's Read'd files, so the contract from `providers/supabase.md` "Sub-agent contract — embed this block verbatim" must be passed as literal prompt text (do not reference the provider file from inside the sub-agent). Embed this exact block as the Agent prompt:
+**Scratch-file write-location rule (write-allowlist compliance).** Module 5's `.client-scan.md` scratch file is written under the **RESOLVED report location** — the same `$REPORT_DIR` variable Step 0a.5 set and Phase 6 uses — NOT a hardcoded `./tmp/db-audit/`. Concretely:
+
+- **Normal case (`./tmp/` writable, `REPORT_DIR=./tmp/db-audit`):** the sub-agent writes `$REPORT_DIR/.client-scan.md` (i.e. `./tmp/db-audit/.client-scan.md`). Substitute the resolved `$REPORT_DIR` into the embedded sub-agent prompt before dispatching — do NOT pass a literal `./tmp/db-audit/` if `REPORT_DIR` resolved elsewhere.
+- **Fallback case (`./tmp/` NOT writable, `REPORT_DIR=$(pwd)`):** the only sanctioned write in this mode is the single `$(pwd)/db-audit-<ts>.md` report (Step 0a.5 / `guards.md` Forbidden Tools). A scratch `.client-scan.md` would violate that write allowlist, so **SKIP Module 5 client-coherence entirely** and emit `[INFO] Module 5 skipped — no writable tmp/ for the client-scan scratch file`. Do not spawn the sub-agent in this case.
+
+- **supabase** (only when `REPORT_DIR` is a writable `./tmp/` location per the rule above) → spawn the Module-5 client-coherence sub-agent. **The sub-agent prompt MUST be embedded VERBATIM into the `Agent` call** — a spawned sub-agent does NOT inherit the orchestrator's Read'd files, so the contract from `providers/supabase.md` "Sub-agent contract — embed this block verbatim" must be passed as literal prompt text (do not reference the provider file from inside the sub-agent). Embed this exact block as the Agent prompt (substituting the resolved `$REPORT_DIR` for the write path):
 
   ```
   Goal: catalog every Supabase client call in this repo for schema-coherence audit.
 
-  Write results to ./tmp/db-audit/.client-scan.md using EXACTLY this structure:
+  Write results to $REPORT_DIR/.client-scan.md using EXACTLY this structure:
 
     # client-scan
     <one line: `truncated: false` or `truncated: <reason>`>
