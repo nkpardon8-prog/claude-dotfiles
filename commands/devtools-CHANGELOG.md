@@ -1,5 +1,15 @@
 # /devtools — changelog
 
+## 2026-06-01 — Step 4: model routing (Sonnet default, Opus escalation)
+
+**Change:** Step 4 now pins the delegated devtools sub-agent to **`claude-sonnet-4-6`** by default (was: inherited the parent's model, i.e. Opus), with a medium-reasoning-effort hint in the sub-agent's prompt body. Added **escalation to `claude-opus-4-8`** two ways — *upfront* for obviously hard tasks (cross-surface correlation, perf-trace / heap-snapshot analysis) and *fallback* when Sonnet returns an inconclusive, self-contained report (re-spawn the same task as a new Opus `Agent` call — a running agent's model can't be changed).
+
+**Why:** driving `chrome-devtools` on Opus is slow and costly; the work is vision-heavy and iterative, where Sonnet is strong enough at a fraction of the cost. Capability preserved via the Opus path.
+
+**Also documented:** the parent↔sub-agent communication model is turn-based (brief upfront → autonomous run → report → `SendMessage` to continue, with live Chrome state on 9222 persisting across rounds). Effort is a prompt hint, not a tool parameter. The "watch in main thread" escape hatch is retained.
+
+**Note:** `~/.claude/commands` is a symlink to `~/.claude-dotfiles/commands`, so each command is a single physical file — editing the SoT updates both paths (no separate "deployed copy" to sync, despite the earlier two-copies assumption).
+
 ## 2026-05-27 — fix the silent hang: wake discarded/frozen tabs before connecting (Step 1.5)
 
 **Problem:** `chrome-devtools` tool calls hung **forever** (observed: a `list_pages` spinner running 3h+) even though everything looked healthy — Chrome up on 9222, `/json/version` responding, all 28 real tabs present in `/json/list`, `initialize` succeeding (tools listed fine). Only the first *tool call* hung.
