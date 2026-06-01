@@ -337,6 +337,11 @@ mission_attach() {
     || { echo "mission_attach: chain helpers unavailable (cannot wire reattach)" >&2; return 1; }
   _att_msid=$(_mission_marker_field "$_att_target" sid)
   [ -n "$_att_msid" ] || { echo "mission_attach: target has no sid marker" >&2; return 1; }
+  # the target MUST be the canonical in-root MISSION.<its-own-sid>.md — rejects out-of-root or crafted
+  # targets and enforces §2b's "current canonical root only" contract (this is what <root> is for).
+  _att_expected=$(mission_path "$_att_msid" "$_att_root") || return 1
+  [ "$_att_target" = "$_att_expected" ] \
+    || { echo "mission_attach: target is not the canonical MISSION.<sid>.md for this root" >&2; return 1; }
   mission_verify "$_att_target" "$_att_msid" || { echo "mission_attach: target failed verify" >&2; return 2; }
   _att_cur=$(chain_manifest_read "$_att_psid" 2>/dev/null); [ -n "$_att_cur" ] || _att_cur='{}'
   printf '%s' "$_att_cur" \
