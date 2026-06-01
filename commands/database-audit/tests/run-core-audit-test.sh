@@ -229,8 +229,11 @@ WHERE c.table_schema = 'public'
 
 ROLLBACK;
 SQL
-)"
+docker exec -i "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" \
+  -v ON_ERROR_STOP=1 -A -t -F '|' < "$CORE_SQL" > "$CORE_OUT_FILE" 2>&1
 CORE_RC=$?
+CORE_OUT="$(cat "$CORE_OUT_FILE")"
+rm -f "$CORE_SQL" "$CORE_OUT_FILE"
 
 echo "----- core query output -----"
 printf '%s\n' "$CORE_OUT"
