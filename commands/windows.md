@@ -66,22 +66,32 @@ Windows laptop / OpenDental in plain English** ("on the windows machine do X",
 "in OpenDental click Y", "use /windows to do Z"):
 
 1. **Pre-flight bind (title-first).** `mcp.list_pages()`. Filter to CRD pages
-   (`url` contains `https://remotedesktop.google.com/access/session/`). Pick the
-   one whose `title` contains `DEVICE_NAME` (default `"OpenDentalDev1"` —
-   configurable). `mcp.select_page({pageId, bringToFront:true})`.
+   (`url` contains `https://remotedesktop.google.com/access/session/`).
+   - **Title match:** the CRD page whose `title` contains `DEVICE_NAME` (default
+     `"OpenDentalDev1"` — configurable) is the Windows tab →
+     `mcp.select_page({pageId, bringToFront:true})`.
+   - **No title match, exactly one CRD tab — NOT trusted yet.** Select it
+     **read-only** first: `mcp.select_page({pageId, bringToFront:false})` (this
+     sets it as screenshot context WITHOUT foregrounding/focusing it). Screenshot.
+     Only if it shows a **Windows 11 taskbar** (Start orb + tray clock `M/D/YYYY`)
+     do you then `mcp.select_page({pageId, bringToFront:true})` and proceed. If it
+     shows a **macOS menu bar / Dock**, you read the **Mac** tab → STOP, never
+     foreground it, never input, ask the user.
+   - **No title match, multiple CRD tabs → STOP and ask** which is Windows. NEVER
+     `bringToFront` a tab that might be the Mac session.
    - **If `list_pages` HANGS or errors** (a frozen/discarded background tab can
      freeze the enumeration itself) → run `/devtools` and hand off (see Hard
      rules). Do NOT auto-retry.
-   - **If no title match but exactly one CRD tab** and a screenshot confirms a
-     **Windows 11 taskbar** (Start orb + tray clock `M/D/YYYY`) → bind it.
-   - **Else STOP and ask** which tab is Windows. NEVER `bringToFront` a tab that
-     might be the Mac session.
-2. **Vision check.** `mcp.take_screenshot()`. Confirm the Windows desktop /
-   taskbar is visible. If the screen is **black/blank**, `mcp.press_key("Shift")`
-   to wake — **Shift only** (no character input; never Enter/Space/letters,
-   which could hit a Windows sign-in or submit a form).
-3. **Overlay check.** If a "Reconnect" / "Session ended" / sign-in / PIN overlay
-   is shown, surface it to the user — PIN/sign-in is user-only.
+2. **Overlay / lock check FIRST — before any keypress.** `mcp.take_screenshot()`.
+   If you see a **"Reconnect" / "Session ended"** overlay, a **CRD PIN** prompt,
+   or a **Windows sign-in / lock** screen → surface to the user and STOP; PIN /
+   sign-in is user-only. **Press NOTHING** — even `Shift` wakes a Windows lock
+   screen and lands focus on its credential box.
+3. **Wake only a genuine idle/blank desktop.** Only after step 2 has ruled out a
+   lock / sign-in / overlay: if the canvas is black/blank, `mcp.press_key("Shift")`
+   to wake — **Shift only** (no character input; never Enter/Space/letters). If
+   it's black and you cannot tell idle from locked, surface to the user instead
+   of pressing anything.
 4. **Infer the action** from the capability matrix below. Re-read the canvas rect
    before any click (see embedded helper).
 
