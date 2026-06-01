@@ -180,6 +180,8 @@ Dispatch the `core.md` fixed-library queries, gated behind the discharged guard,
 - **psql path (PREFERRED whenever a direct connection exists)** (neon / postgres, and neon when `get_connection_string` resolved a direct host): wrap in `BEGIN READ ONLY; … ROLLBACK;` (`guards.md` rule 6) so read-only is DB-ENFORCED, run with `psql "$DATABASE_URL" -v ON_ERROR_STOP=1` (or libpq `PG*` env / `~/.pgpass` on a shared host — see `guards.md` rule 6 credential-exposure note).
 - **MCP path (FALLBACK — only when no direct connection exists)** (supabase via `mcp__supabase__execute_sql`; neon via `run_sql` when no `$DATABASE_URL`/connstring): SELECT-only per the guard. Read-only here is NOT DB-enforced — it relies on the fixed-library + textual guard (rules 1–4), so the fixed-library discipline is load-bearing on this path (`guards.md` rule 6).
 
+**Per-module dispatch (one query error must NOT abort the batch — `guards.md` rule 6).** Dispatch the core library **per module (or per query)**, each in its own `BEGIN READ ONLY; … ROLLBACK;` invocation, so `ON_ERROR_STOP=1` scopes to a single invocation. A single failing query is logged `[INFO] Module N — {tool} unavailable: {error}` (pre-redacted) and the REST CONTINUE — never run the whole library as one all-or-nothing `ON_ERROR_STOP=1` batch, which would abort remaining queries on one error and violate the graceful per-module degradation contract (Invariant 6). This per-module isolation also aligns with `--only` gating, and applies on the MCP fallback path too.
+
 Run, honoring `--only`:
 
 - **Module 1 — Schema** (`schema`): Q1.1–Q1.8 + migration drift (applied-migrations list supplied by the provider adapter).
