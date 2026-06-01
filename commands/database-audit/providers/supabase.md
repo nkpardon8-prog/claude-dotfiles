@@ -220,7 +220,7 @@ Return when written. Reply with just the path to the file you wrote.
 
 1. Read `$REPORT_DIR/.client-scan.md` (the same resolved report location the sub-agent wrote to — NOT a hardcoded `./tmp/db-audit/`). If missing → emit `[INFO] Module 5 skipped: sub-agent output not found.` and continue.
 2. Parse each `##` section table.
-3. Cross-reference:
+3. Cross-reference — fetch the catalog ONCE into memory (`list_tables` for tables, a `pg_proc` SELECT for functions, `information_schema.columns` for columns, the realtime-publication SELECT for channels, `storage.buckets` for buckets) and compare the repo-derived names against those in-memory results. Repo-derived literals are NEVER concatenated into an executed SQL string — comparison is in-memory only:
    - `mcp__supabase__list_tables` → `.from('X')` table-existence. Unknown table → HIGH.
    - `pg_proc` SELECT → `.rpc('fn')` function-existence. Unknown function → HIGH.
    - Realtime publication SELECT → channel table membership. Not in publication → MEDIUM.
