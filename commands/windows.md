@@ -42,22 +42,26 @@ argument-hint: "[free-form request, e.g. \"open notepad and type a note\"]"
 
 ## How this differs from /macmini (read if you know /macmini)
 
-`/windows` is the leaner, safer sibling. **Negate every macmini mechanic:**
+`/macmini` is now a **direct-CDP twin**, not the opposite. It *historically*
+used `cliclick` + `gh gist` to dodge CRD's `isTrusted` gate, but was rewritten
+2026-06-01 to the same model as `/windows` (`click_at` + the `press_key`
+shift-map; no gist, no cliclick, no calibration). The contrast has collapsed to
+a few platform deltas:
 
-| `/macmini` | `/windows` |
+| `/macmini` (Mac, now direct-CDP) | `/windows` |
 |---|---|
-| Hands = `cliclick` on the mini via `gh gist` transport (bypasses CRD's `isTrusted` gate) | Hands = **direct CDP `mcp.click_at({x,y})`** into the CRD canvas — verified reaching the Windows host this session. NO gist, NO cliclick. |
-| Arbitrary text = `gh gist` paste channel | Arbitrary text = **per-char `press_key("Shift+<base>")`** with a US shift-map (embedded below). NO gist, NO GitHub, NO credential-leak surface. |
-| Per-session `/macmini measure` calibration file | **No calibration** — map via the live canvas rect (embedded helper). |
-| Terminal-foreground "dance" + run.sh + on-host agent | **None.** Click the pixel, screenshot to verify. |
-| `Cmd+Tab` / `Cmd+Space` niceties via system keys | System keys (Win/Alt+Tab) are **swallowed by CRD** — niceties use **clicks**: Start orb, taskbar icons; Ctrl+Alt+Del/PrtScr = CRD DOM buttons. |
+| Bind by title `plan2bid-minim4` + **macOS menu bar (top) / Dock** | Bind by title `OpenDentalDev1` + **Windows taskbar (bottom) / Start orb** |
+| `Cmd+Tab` / `Cmd+Space` / `Cmd+C/V` **forward** (Mac system keys reach the host, IF "Send system keys" is on) → niceties can use real shortcuts | System keys (Win/Alt+Tab) are **swallowed by CRD** → niceties use **clicks**: Start orb, taskbar icons; Ctrl+Alt+Del/PrtScr = CRD DOM buttons |
+| Right-click = **no CDP path on macOS** → use the app's **menu bar** | Right-click = `press_key("Shift+F10")` (focus first) |
+| Scroll = **KEYBOARD only** (overlay scrollbars; `drag` = text-selection) | Scroll = PageDown/Arrow or scrollbar-arrow clicks; thumb-drag experimental |
+| LAYER-1 CRD a11y exposes **only `Desktop`** → coordinate/user fallback | LAYER-1 CRD a11y **exposed uids** here → uid-by-label (probe + fall back) |
 
-Two things `/macmini` learned that `/windows` must RE-CHECK at runtime (both
-worked on this Windows session — see `docs/FINDINGS-2026-05-31.md`): (1) macmini
-deprecated `click_at` as unreliable, but it works here — run the toggle-and-
-confirm smoke test first session. (2) macmini found CRD's a11y tree `ignored`,
-but uids worked here — probe with `take_snapshot` and fall back to coordinates
-if `ignored`.
+Both skills share: direct `click_at` into the canvas, the embedded canvas-rect
+helper, the `press_key("Shift+<base>")` shift-map for capitals/symbols, the
+title-first bind, and the never-touch-the-other-session rule. One thing
+`/windows` should RE-CHECK at runtime (see `docs/FINDINGS-2026-05-31.md`): CRD's
+a11y mode differs by platform — uids worked here, but probe with `take_snapshot`
+and fall back to coordinates if `ignored` (the macOS case).
 
 ## Self-resolution
 
