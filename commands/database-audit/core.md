@@ -497,7 +497,9 @@ LIMIT 50;
 
 Severity: HIGH (CRITICAL near the wraparound threshold).
 
-### Q6.6 — Sequence / int4-PK exhaustion [RO] (`health`)
+### Q6.6 — int4 sequence-backed column exhaustion [RO] (`health`)
+
+Scope is ANY `int4` column backed by a sequence — not just primary keys. Exhaustion is a write-outage risk for any sequence-backed `int4` column (the next `INSERT` fails once the sequence crosses 2^31), so restricting to PKs would under-report. We report `is_primary_key` per column so PK cases are still distinguishable, but a non-PK int4 sequence near the ceiling is just as much an outage.
 
 Two parts. First, raw sequence consumption from `pg_sequences`:
 
@@ -508,12 +510,13 @@ ORDER BY (last_value::numeric / NULLIF(max_value,0)) DESC NULLS LAST
 LIMIT 50;
 ```
 
-Second, the int4-backed-PK linkage — the one genuinely tricky join, given **VERBATIM** (prose invites a wrong `pg_depend` direction). The sequence is the dependent object (`objid`); the table+column it feeds is the referenced object (`refobjid` + `refobjsubid`); both `classid` and `refclassid` are `pg_class`; `deptype` `'a'` = serial `OWNED BY`, `'i'` = `GENERATED … AS IDENTITY`:
+Second, the int4-sequence-backed-column linkage — the one genuinely tricky join, given **VERBATIM** (prose invites a wrong `pg_depend` direction). The sequence is the dependent object (`objid`); the table+column it feeds is the referenced object (`refobjid` + `refobjsubid`); both `classid` and `refclassid` are `pg_class`; `deptype` `'a'` = serial `OWNED BY`, `'i'` = `GENERATED … AS IDENTITY`. A LEFT JOIN to `pg_index` (primary-index only) flags whether the column is also a PK without restricting the result to PKs:
 
 ```sql
 SELECT s.relname AS sequence_name,
        t.relname AS table_name,
        a.attname AS column_name,
+       (pk.indrelid IS NOT NULL) AS is_primary_key,
        seq.last_value
 FROM pg_depend d
 JOIN pg_class s ON s.oid = d.objid
@@ -521,6 +524,9 @@ JOIN pg_class t ON t.oid = d.refobjid
 JOIN pg_attribute a ON (a.attrelid = d.refobjid AND a.attnum = d.refobjsubid)
 JOIN pg_sequences seq ON (seq.schemaname = (SELECT nspname FROM pg_namespace WHERE oid = s.relnamespace)
                           AND seq.sequencename = s.relname)
+LEFT JOIN pg_index pk ON (pk.indrelid = d.refobjid
+                          AND pk.indisprimary
+                          AND d.refobjsubid = ANY(pk.indkey))
 WHERE d.classid = 'pg_class'::regclass
   AND d.refclassid = 'pg_class'::regclass
   AND d.deptype IN ('a','i')
@@ -529,7 +535,7 @@ ORDER BY seq.last_value DESC NULLS LAST
 LIMIT 50;
 ```
 
-An `int4` PK overflows at 2^31 (~2.147B). When a sequence backing an `int4` column has `last_value` approaching that, inserts will start failing. A bare app-assigned `int4` PK with no backing sequence cannot be measured here → report "int4 PK present (no sequence to measure)". **Degradation (false-clean class):** `pg_sequences.last_value` returns NULL when the audit role lacks SELECT on the sequence (common on managed providers). A NULL `last_value` MUST emit `[INFO] 6.6 — sequence value not readable under current role`, **NEVER a clean pass.**
+An `int4` column overflows at 2^31 (~2.147B). When a sequence backing an `int4` column has `last_value` approaching that, inserts will start failing — whether or not the column is a PK (`is_primary_key` tells you which). A bare app-assigned `int4` column with no backing sequence cannot be measured here (it has no sequence row to read). **Degradation (false-clean class):** `pg_sequences.last_value` returns NULL when the audit role lacks SELECT on the sequence (common on managed providers). A NULL `last_value` MUST emit `[INFO] 6.6 — sequence value not readable under current role`, **NEVER a clean pass.**
 
 Severity: HIGH (approaching ~2.1B).
 
