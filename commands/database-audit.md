@@ -88,11 +88,30 @@ preflight loaded (provider=<provider>, signal=<which detection signal fired>) + 
 
 Resolve per the detected provider's `(a) Connection` section — metadata-only calls are allowed here, but do NOT open a core SQL session yet:
 
-- **supabase** → Supabase MCP. Call `mcp__supabase__get_project_url`; on error print the adapter's abort message (`"Supabase MCP unreachable…"`) and stop. Parse project ref.
-- **neon** → connection SOURCE precedence (from `providers/neon.md`): explicit `$DATABASE_URL` (non-empty) → else `get_connection_string` via Neon MCP (read-only, **DIRECT** non-pooler host) → else SKIP-core-with-INFO. If Neon MCP is configured, put it in read-only mode (`?readonly=true` on the server URL, header `x-read-only` fallback) and note which mechanism in Meta.
-- **postgres** → explicit `$DATABASE_URL` only; if empty/unset → SKIP-core-with-INFO ("No connection source — set $DATABASE_URL. Core SQL skipped.").
+- **supabase** → Supabase MCP. Call `mcp__supabase__get_project_url`. On success, parse project ref. On error → this is **no-connection-source case (a)** (see below): the Supabase adapter has no `psql` fallback, so an unreachable MCP means there is no connection source at all. Do NOT hard-abort. Emit `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only` (include the redacted MCP error text), record `Connection source: none` in Meta, then run the **filesystem-only path** (Step 0a.6) and skip Phases 0b–5 SQL.
+- **neon** → connection SOURCE precedence (from `providers/neon.md`): explicit `$DATABASE_URL` (non-empty) → else `get_connection_string` via Neon MCP (read-only, **DIRECT** non-pooler host) → else **no-connection-source case (a)** (no DATABASE_URL and no MCP connstring): filesystem-only path (Step 0a.6). If Neon MCP is configured, put it in read-only mode (`?readonly=true` on the server URL, header `x-read-only` fallback) and note which mechanism in Meta.
+- **postgres** → explicit `$DATABASE_URL` only; if empty/unset → **no-connection-source case (a)**: filesystem-only path (Step 0a.6).
 
 **NEVER echo the resolved connection string** (redaction rule 4). It is used only as the `psql`/`run_sql` target.
+
+### Step 0a.6 — No-connection-source path (graceful degradation case (a))
+
+This path fires whenever Step 0a.4 found **no usable connection source at all** for the detected provider:
+
+- **supabase** → `mcp__supabase__get_project_url` errored (no `psql` fallback exists for this adapter).
+- **neon** → no `$DATABASE_URL` AND no `get_connection_string` from Neon MCP.
+- **postgres** → no `$DATABASE_URL`.
+
+Because there is **no connection, there is no prod-data risk** — so this is NOT a prod-stop, and it is NOT a hard abort. Instead:
+
+1. Emit the finding `[INFO] No DB connection/MCP available — SQL + platform modules skipped; filesystem checks only`. If a tool error string is being surfaced, pass it through the `redaction.md` rules first (scrub connection strings / secret-shaped tokens) before writing or printing it.
+2. Do NOT enter Phase 0b (the prod guard needs no resolution — there is nothing to read).
+3. Run ONLY the zero-data-touch filesystem modules via `guards.md` `run_filesystem_only_modules` — `core.md` Module FS (FS.1 repo secret scan, FS.2 tracked-files scan, FS.3 `.env`-tracked check, FS.4 seed-data check), migration-on-disk drift, and the Step 0a.5 `.gitignore tmp/` check. These touch no DB.
+4. Proceed to Phase 6 report assembly and **write the partial report**, then exit cleanly. Record `Connection source: none` and `Modules skipped: <all SQL + platform modules>` in Meta.
+
+This is distinct from the Phase 0b prod-stop (case (b)): there a connection EXISTS but prod is unconfirmed, so filesystem-only modules run and we STOP pending `--env=prod`. Here there is no connection, so we run filesystem-only modules and EXIT with a complete partial report (no stop, no resume prompt).
+
+Only TRUE preflight failures (e.g. the working directory is not a DB repo at all — no provider signal AND no `$DATABASE_URL`) stop with no report.
 
 ### Step 0a.5 — Report directory + .gitignore check
 
