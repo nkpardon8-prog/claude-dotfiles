@@ -83,12 +83,19 @@ Screenshot before+after.
 ### `right <target>`
 
 There is **NO right-click param** on `click_at` (its schema is
-`{x,y,dblClick,includeSnapshot}`). Right-click = move focus to the target, then:
+`{x,y,dblClick,includeSnapshot}`). `Shift+F10` opens the context menu at the
+**current keyboard focus / selection**, NOT at a pixel — so to target a specific
+element you must focus it first with a real left-click:
 
 ```
-mcp.click_at({ x: clickX, y: clickY })    # left-click first to position/focus
-mcp.press_key("Shift+F10")                # opens the context menu at the focus point
-take_screenshot()
+meta = evaluate_script(helper)
+take_screenshot()                         # BEFORE
+mcp.click_at({ x: clickX, y: clickY })    # positioning click = a REAL click:
+take_screenshot()                         #   verify it focused the intended element;
+                                          #   obey the modal-recovery + PHI rules.
+                                          #   Do NOT do this on Buy/Send/Delete-class targets.
+mcp.press_key("Shift+F10")                # context menu opens at the now-focused element
+take_screenshot()                         # AFTER — confirm the menu opened
 ```
 
 ### `type <text>`
