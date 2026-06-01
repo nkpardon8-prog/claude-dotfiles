@@ -1391,7 +1391,7 @@ SELECT s.srvname AS server_name,
        w.fdwname AS fdw_type,
        ARRAY(
          SELECT opt FROM unnest(s.srvoptions) AS opt
-         WHERE opt !~ '^(password|passfile)='
+         WHERE opt !~* '^[[:space:]]*(password|passfile|sslpassword|sslkey)='
        ) AS egress_options,
        (SELECT count(*) FROM pg_user_mappings um WHERE um.srvid = s.oid) AS mapping_count
 FROM pg_foreign_server s
