@@ -56,8 +56,16 @@ printf '{"mission_path":"%s"}\n' "$BASE/elsewhere/MISSION.$Q.md" > "$HOMEDIR/.cl
 got3="$(HOME="$HOMEDIR" mission_resolve_path "$Q" "$ROOT" 2>/dev/null)"
 [ -z "$got3" ] || { fail=1; FAILURES+=("A3 out-of-root pointer should be rejected, got '$got3'"); }
 
+# A4 (MARKER-CHECK HALF — exercises the part path-equality alone can't) — a file planted at Q's OWN
+# canonical path MISSION.<Q>.md but carrying a STRANGER's marker (sid=P) must NOT be resolved (deterministic
+# tier marker check), and a pointer to it (== own path, own basename, foreign marker) must also be rejected.
+rm -f "$HOMEDIR/.claude/chains/$Q.json"
+printf '# MISSION %s\n<!-- MISSION schema=v1 sid=%s nonce=00000000-0000-0000-0000-000000000000 plan_hash=0000000000000000 -->\n' "$Q" "$P" > "$ROOT/MISSION.$Q.md"
+got4="$(HOME="$HOMEDIR" mission_resolve_path "$Q" "$ROOT" 2>/dev/null)"
+[ -z "$got4" ] || { fail=1; FAILURES+=("A4 own-path file with foreign marker should be rejected, got '$got4'"); }
+
 if [ "$fail" = 0 ]; then
-  echo "PASS: 05-manifest-pointer-wins — 3 assertions (A1 own-sid honored, A2 cross-sid rejected, A3 out-of-root rejected)"
+  echo "PASS: 05-manifest-pointer-wins — 4 assertions (A1 own-sid honored; A2 cross-sid, A3 out-of-root, A4 foreign-marker-at-own-path all rejected)"
   cat > "$(dirname "$0")/05-manifest-pointer-wins.fingerprint.json" <<EOF
 {"resolver":"mission_resolve_path","pointer_precedence":"own_sid_in_root_only"}
 EOF
