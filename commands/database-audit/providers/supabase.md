@@ -218,7 +218,7 @@ Return when written. Reply with just the path to the file you wrote.
 
 ### Main-skill consumption
 
-1. Read `./tmp/db-audit/.client-scan.md`. If missing → emit `[INFO] Module 5 skipped: sub-agent output not found.` and continue.
+1. Read `$REPORT_DIR/.client-scan.md` (the same resolved report location the sub-agent wrote to — NOT a hardcoded `./tmp/db-audit/`). If missing → emit `[INFO] Module 5 skipped: sub-agent output not found.` and continue.
 2. Parse each `##` section table.
 3. Cross-reference:
    - `mcp__supabase__list_tables` → `.from('X')` table-existence. Unknown table → HIGH.
