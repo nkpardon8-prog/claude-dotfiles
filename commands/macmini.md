@@ -216,7 +216,7 @@ Match the request to its row; use the listed channel; don't improvise.
 | Want to do | Channel |
 |---|---|
 | Press Enter / Tab / Esc / Backspace / arrows / Page* / Home / End | `mcp.press_key("<key>")` |
-| App-level shortcut (Cmd+C/V/A, Cmd+W) | `mcp.press_key("Meta+<x>")` — forwards IF "Send system keys" is ON |
+| App-level shortcut (Cmd+C/V/A) | `mcp.press_key("Meta+<x>")` — forwards IF "Send system keys" is ON. (Cmd+W/Cmd+Q are destructive — see hazard note below, not for casual use.) |
 | System combo (Cmd+Space, Cmd+Tab, Cmd+H) | `mcp.press_key("Meta+Space")` / `"Meta+Tab"` — **forwards on macOS IF "Send system keys" is ON** (a one-time USER toggle). If nothing happens → toggle is off → use the click fallback (Dock icon / Apple menu) and surface to the user. |
 
 > ⚠️ **macOS destructive-shortcut hazard:** never fire `Meta+q` / `Meta+w` /
