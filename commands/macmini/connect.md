@@ -89,11 +89,16 @@ DEVICE_NAME = "plan2bid-minim4"   # configurable: the Mac mini's CRD tab title
    PIN page open. Type your CRD PIN now.
    I'll pick back up automatically once the canvas appears.
    ```
-   Then wait for the canvas to mount via the side-panel labels (they appear only
-   once the canvas is interactive — they double as a "toggle-exists" check).
-   **Only reach this AFTER step 5 confirmed the macOS menu bar** — these same
-   labels exist on the *Windows* CRD panel, so on their own they do NOT prove
-   you're on the Mac tab:
+   Two cases reach here: **(a) existing-session path** — step 5 already
+   screenshot-confirmed the macOS menu bar, proceed. **(b) fresh Stage-B
+   tile-click path** — you EXPECT a CRD **PIN page** now (NOT the macOS desktop,
+   so step 5's menu-bar check does not apply yet); do NOT screenshot the PIN page
+   (privacy) — your safety is that you clicked the *title-matched* `DEVICE_NAME`
+   tile in Stage B. In BOTH cases, wait for the canvas to mount via the side-panel
+   labels (they appear only once the canvas is interactive — they double as a
+   "toggle-exists" check). **These labels also exist on the *Windows* CRD panel,
+   so AFTER the canvas mounts you MUST screenshot-confirm a macOS menu bar before
+   any input (step 7)** — the mount signal alone does not prove it's the Mac:
    ```
    mcp.wait_for({text: ["Send system keys", "Synchronize clipboard"], timeout: 120000})
    ```
