@@ -200,6 +200,17 @@ case "$verb" in
     _mw_status timing-close "$rc" "see stderr"
     ;;
 
+  archive-close)
+    if [ -z "$sid" ] || [ -z "$root" ]; then
+      echo "mission-write: usage: archive-close <sid> <root>"
+      exit 0
+    fi
+    # advisory — no-ops unless the mission is CLEARED; never blocks the close.
+    mission_archive_close "$sid" "$root"
+    rc=$?
+    _mw_status archive-close "$rc" "see stderr"
+    ;;
+
   ""|help|-h|--help)
     echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close> <sid> <root> [args...]"
     ;;
