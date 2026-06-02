@@ -1306,6 +1306,54 @@ mission_stats_render() {
 }
 
 # ===========================================================================================
+# Closed-mission archiving — file a CLEARED mission's artifacts into <root>/.mission-archive/<sid>/
+# (advisory; never blocks/corrupts the close). Strictly sid-scoped, never mtime.
+# ===========================================================================================
+
+# mission_archive_close <sid> <root> — move a CLEARED mission's files out of root into the archive.
+# No-op unless the mission's lifecycle state is `cleared` (self-guard: never strip an active mission).
+# Backups are moved FIRST so the live log (carrying the CLEARED line the guard reads) leaves root LAST —
+# a partial failure then leaves the live log in place so a later `tidy` re-reads `cleared` and recovers.
+mission_archive_close() {
+  _ac_sid=$(_mission_sanitize_sid "$1"); _ac_root="$2"
+  { [ -n "$_ac_sid" ] && [ -n "$_ac_root" ]; } || return 0
+  [ "$(mission_lifecycle_state "$_ac_sid" "$_ac_root")" = cleared ] || return 0
+  _ac_dst="$_ac_root/.mission-archive/$_ac_sid"
+  mkdir -p "$_ac_dst" 2>/dev/null || return 0
+  # per-sid backups FIRST (lazy backups/ mkdir; a mkdir failure must not strand the main move)
+  for _ac_b in "$_ac_root"/.mission-backups/MISSION."$_ac_sid".*; do
+    [ -e "$_ac_b" ] || continue
+    [ -d "$_ac_dst/backups" ] || mkdir -p "$_ac_dst/backups" 2>/dev/null || break
+    mv -n "$_ac_b" "$_ac_dst/backups/" 2>/dev/null || true   # mv -n: authoritative archived copy never clobbered
+  done
+  # main files LAST; live log is the final thing to leave root
+  for _ac_f in "$_ac_root"/MISSION."$_ac_sid".md "$_ac_root"/MISSION."$_ac_sid".banner "$_ac_root"/MISSION."$_ac_sid".log; do
+    [ -e "$_ac_f" ] || continue
+    mv -n "$_ac_f" "$_ac_dst/" 2>/dev/null || true
+  done
+  return 0
+}
+
+# mission_archive_sweep <root> — archive EVERY already-`cleared` mission still loose in root.
+# Powers `/mission tidy` + the one-time retro-sweep. NEVER touches an active/unknown/corrupt mission.
+# Globs <root>/MISSION.*.md (non-recursive — never descends into .mission-archive/). Prints a report
+# (so it is NOT a mission-write.sh verb — the tidy bullet sources the lib and calls it directly).
+mission_archive_sweep() {
+  _as_root="$1"; [ -n "$_as_root" ] || { echo "mission_archive_sweep: missing root" >&2; return 0; }
+  _as_n=0
+  for _as_f in "$_as_root"/MISSION.*.md; do
+    [ -e "$_as_f" ] || continue
+    _as_sid=$(basename "$_as_f" .md); _as_sid=${_as_sid#MISSION.}
+    if [ "$(mission_lifecycle_state "$_as_sid" "$_as_root")" = cleared ]; then
+      mission_archive_close "$_as_sid" "$_as_root"
+      _as_n=$((_as_n + 1)); printf 'archived %s\n' "$_as_sid"
+    fi
+  done
+  printf 'mission tidy: archived %d closed mission(s) -> %s/.mission-archive/\n' "$_as_n" "$_as_root"
+  return 0
+}
+
+# ===========================================================================================
 # Banner precompute (WRITE side, /pre-compact — no timeout) (PIVOT A, Key Pseudocode 131-144)
 # ===========================================================================================
 
