@@ -874,6 +874,15 @@ re-enter), and never change the active/inactive decision.
   ```
   This appends one rich record to `~/.claude/mission-metrics.jsonl` (the machine-wide lifetime ledger
   that `/mission stats` reads). Advisory — never blocks the close.
+- **Archive — lifecycle close (the LAST step).** AFTER the entire timing block above AND after the
+  `MISSION-CLEARED status=<achieved|could-not>` line is durably written, file the now-closed mission's
+  files into `<root>/.mission-archive/<sid>/` so the root stays clean. This must be the FINAL close
+  action — it moves the very log the timing block reads, so it runs strictly last:
+  ```bash
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh archive-close <sid> <root>
+  ```
+  Advisory — the `archive-close` self-guard no-ops unless the mission is `cleared`, and a failed move
+  never blocks the close. (A `/mission clear` already archives in §2; a double-fire is a harmless no-op.)
 - **`/mission status`** (and blank) reads the LOG **directly** via the Section 8 resume-read idiom
   (grep over the full live log + ALL rotated archives oldest→newest), derives mode/part/phase/round/dry
   + pending, and prints — no mutation. Mode/`status=` come from the `mission_state` grep (the LATEST
