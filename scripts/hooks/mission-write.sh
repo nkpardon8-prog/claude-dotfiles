@@ -34,6 +34,7 @@
 #     timing-resume <sid> <root>                 (advisory run-timing: re-stamp WORK-START on re-engagement)
 #     timing-contact <sid> <root> <reason>       (advisory: write a CONTACT timing anchor)
 #     timing-close  <sid> <root> <status>        (advisory: final compute + the one ledger write)
+#     archive-close <sid> <root>                 (advisory: file a CLEARED mission into .mission-archive/<sid>/)
 #
 # Exactly ONE status line is printed to stdout:
 #   mission-write: <verb> ok
