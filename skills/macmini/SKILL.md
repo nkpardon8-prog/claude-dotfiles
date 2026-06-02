@@ -131,7 +131,7 @@ bind by title.
 ## Text math (the shift-map sender)
 
 ```
-SAFE  = set("abcdefghijklmnopqrstuvwxyz0123456789 -_=/.,;:'`")   # type_text-safe
+SAFE  = set("abcdefghijklmnopqrstuvwxyz0123456789 -=/.,;'`")   # type_text-safe
 SHIFT = {'!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8','(':'9',')':'0',
          '_':'-','+':'=','{':'[','}':']','|':'\\',':':';','"':"'",'<':',','>':'.','?':'/','~':'`'}
 def send_text(s):

@@ -20,7 +20,11 @@ if snap exposes labeled CRD controls (Disconnect / the panel toggles are present
 else (only the 'Desktop' textbox shows — the EXPECTED macOS case):
     # uid mode unavailable → coordinate fallback or user action:
     #  (a) hover the right edge of the canvas to slide the panel in, screenshot,
-    #      map the on-screen control through the act.md rect helper, click_at it; OR
+    #      and click the control by its ON-SCREEN CSS position directly:
+    #      click_at({ x: shot_px_x/DPR, y: shot_px_y/DPR }).
+    #      Do NOT route it through the act.md rect helper — that maps HOST pixels
+    #      inside the remote canvas (1920x1080); the CRD panel is a page-DOM
+    #      overlay in CSS/screenshot space, NOT a host pixel. OR
     #  (b) ask the user to perform the toggle manually (they persist across reconnects).
     # Note which fallback you used in your reasoning so the next agent knows.
 ```

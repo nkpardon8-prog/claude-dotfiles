@@ -148,7 +148,7 @@ take_screenshot()   # verify. Re-read meta before the NEXT click — window can 
 `Shift+h`,`i`,`Shift+5` → `Hi%`). Route per character:
 
 ```
-SAFE  = set("abcdefghijklmnopqrstuvwxyz0123456789 -_=/.,;:'`")   # type_text-safe: lowercase + unshifted
+SAFE  = set("abcdefghijklmnopqrstuvwxyz0123456789 -=/.,;'`")   # type_text-safe: lowercase + unshifted
 SHIFT = {'!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8','(':'9',')':'0',
          '_':'-','+':'=','{':'[','}':']','|':'\\',':':';','"':"'",'<':',','>':'.','?':'/','~':'`'}
 

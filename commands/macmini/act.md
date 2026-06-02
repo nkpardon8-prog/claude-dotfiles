@@ -116,7 +116,7 @@ Use the shift-map sender (`type_text` strips Shift; `press_key("Shift+<base>")`
 forwards it). Click/focus the target field first, screenshot to confirm focus.
 
 ```
-SAFE  = set("abcdefghijklmnopqrstuvwxyz0123456789 -_=/.,;:'`")
+SAFE  = set("abcdefghijklmnopqrstuvwxyz0123456789 -=/.,;'`")
 SHIFT = {'!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8','(':'9',')':'0',
          '_':'-','+':'=','{':'[','}':']','|':'\\',':':';','"':"'",'<':',','>':'.','?':'/','~':'`'}
 def send_text(s):
