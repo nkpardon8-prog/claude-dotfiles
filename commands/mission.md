@@ -118,6 +118,9 @@ Parse `$ARGUMENTS`:
   reason_slug=$(printf '%s' "<reason-or-manual>" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-' | head -c 32)
   [ -z "$reason_slug" ] && reason_slug=manual
   bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] MISSION-CLEARED status=cleared reason=${reason_slug}" ""
+  # archive LAST — file the now-cleared mission's files into .mission-archive/<sid>/ (advisory; the
+  # archive-close self-guard requires the CLEARED line above to be on disk, which it now is):
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh archive-close <sid> <root>
   ```
   A bare `clear` sets `status=cleared`. `achieved` / `could-not` are set ONLY by the explicit
   lifecycle close at the natural end of a mission (Section 11) — not by this verb. Parse the returned
