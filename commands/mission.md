@@ -133,6 +133,15 @@ Parse `$ARGUMENTS`:
   . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"; mission_stats_render
   ```
   Then stop. (The ledger is appended once per mission close by the timing lifecycle below.)
+- **`tidy`** → **TIDY** (file away closed cases). A reserved keyword — match it here, BEFORE the free-text
+  fallback below, so a bare `/mission tidy` does NOT start a new mission literally named "tidy". Archives
+  EVERY already-`cleared` mission still loose in this repo's root into `<root>/.mission-archive/<sid>/`,
+  leaving active missions untouched. Source the lib in a fresh block and call the sweep directly (it
+  prints its own report, so it is NOT routed through `mission-write.sh`):
+  ```bash
+  . "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"; mission_archive_sweep "$(handoff_canonical_root)"
+  ```
+  Then stop. Surface the sweep's report (which sids were archived) to the user.
 - **`resume`** → **RESUME PICKER** (Section 2b). List this repo's missions and let the user explicitly
   pick one to **clone into THIS session** and continue (e.g. after closing the instance that started it).
   NEVER auto-inferred — the ONLY sanctioned way a session continues a mission it did not create.
