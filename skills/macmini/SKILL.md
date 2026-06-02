@@ -207,10 +207,13 @@ Recipe:
 
 1. Focus Terminal on the mini: `launch("terminal")` (Spotlight, with guardrails)
    or click the Dock Terminal icon; screenshot to confirm a shell prompt.
-2. `mcp.type_text("claude --dangerously-skip-permissions", "Enter")` — all
-   lowercase + dashes, types intact through CRD. The flag eliminates "Allow /
-   Deny" dialogs the Shift-strip pipeline can't reliably navigate. This is a
-   trusted machine fully owned by the same user.
+2. **Requires explicit user authorization** — `--dangerously-skip-permissions`
+   removes the approval gate for irreversible local actions on the user's real
+   Mac. Only launch it when the user has explicitly approved running an
+   autonomous mini-Claude for this task; otherwise launch plain `claude` (keeps
+   approvals). Then: `mcp.type_text({text: "claude --dangerously-skip-permissions", submitKey: "Enter"})`
+   — all lowercase + dashes, types intact through CRD. The flag eliminates "Allow
+   / Deny" dialogs the Shift-strip pipeline can't reliably navigate.
 3. Wait ~3s for the TUI; screenshot to confirm it started.
 4. Deliver the prompt: type it with the `send_text` shift-map (capitals/symbols
    handled), then `Enter`. (No clipboard/gist round-trip needed.)
