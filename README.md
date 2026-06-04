@@ -2,15 +2,18 @@
 
 **A multi-model web of commands, built to be driven dynamically by an agent — the answer to vibe coding. This is agentic engineering.**
 
-Vibe coding is one model, one prompt, one shot — and a lot of hope. This is the opposite. Each
-command does one job and hands its output to the next, so the work compounds instead of restarting.
-Every plan reviews itself. Every change is checked by a *second* model. And the whole thread
-survives context compaction across days. It's not a pile of prompts — it's a practice.
+This is a web of specialized commands that agents call as they work. Each command can trigger
+multiple specialist subagents for research, planning, implementation, testing, or review. Work
+flows through a chain of experts instead of a single model. And with a system built to preserve
+context, decisions, and progress across compactions (tested up to 23 hours non-stop), builds can
+run for hours without losing track of their mission.
 
-The core idea: **use Claude and Codex where each is actually good.** Claude for architectural
-judgment, breadth, and synthesis; OpenAI Codex (GPT-5.4) for precise correctness, security, and
-data-integrity passes. No model is the single point of failure. That's the best of both worlds —
-and what genuinely taking advantage of AI looks like.
+Use each model for what it does best. Claude handles architecture, planning, and big-picture
+thinking. Codex handles precision, correctness, security, and verification. No single model carries
+the full workload — each is used where it's proven to perform best. The result is higher quality,
+more scalable, and much closer to what real software engineering with AI should look like.
+
+*Developed by the team at IntegrateAPI.ai — Omid · Nick*
 
 ---
 
