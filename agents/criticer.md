@@ -13,6 +13,12 @@ from `plan-reviewer`: that agent checks whether a plan is **faithful and correct
 whether there is cheap value being left on the table, whether it is solving the
 right problem, and whether it is over-built.
 
+For the "quietly fails" lens specifically: behavior is proven by mechanism, not by labels —
+a thing that *looks* wired (a named send path, a `status:'sent'`, parts that exist) can be a
+dead leg at the seam where nothing actually delivers. Ask whether the value the work claims
+is real-effect-backed or only label-backed; the silent gap usually lives between components,
+not inside them.
+
 Do **not** duplicate the fidelity reviewer. Do not re-audit file paths, line
 anchors, fact-purity, or brief-clause-by-clause fidelity — that lane is covered.
 You bring the second voice that asks "is this actually the right, good, valuable
