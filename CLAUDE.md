@@ -551,7 +551,6 @@ Nick, 2min ago
 - Tool calls themselves (Bash, Read, Edit, Write — these run normally; only the *visible text* Claude writes is reformatted)
 - Memory operations (read and write as normal)
 - Safety / permission / confirmation gates
-- The `Per-Session Status Label` file-write itself (file write happens; only the string format is constrained — see "Status label" above)
 
 ### Removing glasses mode entirely
 
