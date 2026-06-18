@@ -59,17 +59,7 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude-dotfiles/scripts/progress/on-prompt-submit.sh",
-            "async": true
-          }
-        ]
-      }
-    ],
+    "UserPromptSubmit": [],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -80,49 +70,9 @@
             "async": true
           }
         ]
-      },
-      {
-        "matcher": "TodoWrite",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude-dotfiles/scripts/progress/on-todo-write.sh",
-            "async": true
-          }
-        ]
-      },
-      {
-        "matcher": "Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude-dotfiles/scripts/progress/on-task-spawn.sh",
-            "async": true
-          }
-        ]
-      },
-      {
-        "matcher": "^(Edit|MultiEdit|Write|NotebookEdit|Read|Bash|Grep|Glob|WebFetch|WebSearch|Task|mcp__.*)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude-dotfiles/scripts/progress/on-tool-activity.sh",
-            "async": true
-          }
-        ]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude-dotfiles/scripts/progress/on-stop.sh",
-            "async": true
-          }
-        ]
-      }
-    ]
+    "Stop": []
   },
   "enabledPlugins": {
     "swift-lsp@claude-plugins-official": true
