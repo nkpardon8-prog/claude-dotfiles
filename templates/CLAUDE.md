@@ -93,22 +93,10 @@ When asked to summarize a session, dump context, or save state before compaction
 ## GUI Fallback (local Mac)
 When you hit a GUI surface no CLI / MCP / native tool can reach (macOS permission dialogs, app modals without CLI equivalents, apps with no scriptable surface), use `/desktop`. Don't ask the user to click — use the skill. It self-routes, applies safety classifiers, and confirms before destructive or ambiguous actions.
 
-## Per-Session Status Label
-Write a one-line identifier for the current window to `~/.claude/session-status/<session_id>.txt` so it shows up as line 2 of the statusline. Format: `Client › Project › what's happening right now`.
-
-**Discover your session_id once per session** (the basename of the current transcript file):
-```
-ls -t ~/.claude/projects/$(pwd | sed 's|/|-|g; s|^|-|')/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl
-```
-(`$CLAUDE_SESSION_ID` is NOT reliably exposed to Bash subprocesses — the transcript-filename approach is the fallback that works.)
-
-**Before the first write:** `mkdir -p ~/.claude/session-status && chmod 700 ~/.claude/session-status` (idempotent).
-
-**Format rules:** chevron `›` with a single space each side · `Internal` for self/team, `Self` for personal · repo name when there's no codename · whole line under 100 chars · exactly one line of plain text (overwrite each time with the Write tool, never append).
-
-**When to write/update:** (a) the first real task is clear · (b) the topic shifts to a different client/project/area · (c) the user asks. Not every reply.
-
-Once this label is being written, **stop prepending `STATUS:` lines to responses** — the statusline replaces that.
+## Statusline Line 2 — set manually with `/line`
+Line 2 of the statusline is a **per-window label the user sets manually** with `/line <sentence>` (no
+argument clears it back to the folder/repo name). **Agents do NOT write it automatically.** Definition:
+`~/.claude-dotfiles/commands/line.md`.
 
 ---
 
