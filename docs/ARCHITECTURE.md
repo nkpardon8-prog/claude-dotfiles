@@ -76,14 +76,10 @@ Project repos are **not** auto-pushed. Only this dotfiles repo. The rule lives i
 
 | Hook | Script | Purpose |
 |---|---|---|
-| `Stop` (first entry) | `scripts/progress/on-stop.sh` | Marks the progress state idle when a turn finishes (line 2 falls to the idle label; file is kept, not deleted). |
-| `Stop` (second entry) | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app only. Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
-| `UserPromptSubmit` | `scripts/progress/on-prompt-submit.sh` | Progress-bar state init. |
-| `PostToolUse` (TodoWrite, Task) | `scripts/progress/on-{todo-write,task-spawn}.sh` | Progress-bar advances. |
-| `PostToolUse` (most tools) | `scripts/progress/on-tool-activity.sh` | Writes the live line-2 label (`Edit X`, `Bash: …`, `Task: …`) to a separate `<sid>.activity.json` sidecar; excludes TodoWrite. |
-| `SessionStart` (second entry) | `scripts/progress/on-session-start-cleanup.sh` | Prunes stale progress state + stale auto-compact sentinels (>12h). |
+| `Stop` | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app only. Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
+| `SessionStart` (cleanup entry) | `scripts/progress/on-session-start-cleanup.sh` | Prunes stale progress files + stale auto-compact / pre-compact sentinels (>12h). |
 
-Auto-compact is the only `Stop` hook that crosses the Claude/Terminal boundary; everything else is read-only state-file plumbing.
+Auto-compact is the `Stop` hook that crosses the Claude/Terminal boundary. (Statusline line 2 is now a manual `/line` label set per window — there are no progress-bar hooks; see [STATUSLINE.md](STATUSLINE.md).)
 
 ---
 
