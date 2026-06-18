@@ -1,6 +1,6 @@
 # Claude Code Status Line
 
-A 7-field status line that shows authoritative usage info pulled directly from Anthropic's API rate-limit response headers (same source `/usage` uses), plus a second line that shows a single progress bar (active) or a per-window label (idle) — and is **always present**.
+A 7-field status line that shows authoritative usage info pulled directly from Anthropic's API rate-limit response headers (same source `/usage` uses), plus a second line that shows a **per-window label you set manually with the `/line` command** (or the folder/repo name by default) — and is **always present**.
 
 ## What it shows
 
