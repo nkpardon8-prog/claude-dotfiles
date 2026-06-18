@@ -33,7 +33,7 @@ The rate-limit cache (`~/.claude/ratelimit.json`) is refreshed in the background
 
 ## Install
 
-> **As of 2026-06-15 the `settings.json.template` already wires this up** (the `statusLine` key + the line‑2 progress hooks). On a fresh machine, copying the template to `~/.claude/settings.json` gets the toolbar with no manual step. The manual steps below remain valid for retrofitting an existing `~/.claude/settings.json` that predates the template change. Tip: symlinking `~/.claude/statusline.sh` and `~/.claude/refresh-ratelimit.sh` to the `scripts/` copies (instead of `cp`) keeps them auto-synced via the dotfiles pull.
+> **The `settings.json.template` already wires this up** (the `statusLine` key). On a fresh machine, copying the template to `~/.claude/settings.json` gets the toolbar with no manual step. The manual steps below remain valid for retrofitting an existing `~/.claude/settings.json` that predates the template change. Line 2 (the `/line` label) needs no hooks — it's rendered directly by `statusline.sh`. Tip: symlinking `~/.claude/statusline.sh` and `~/.claude/refresh-ratelimit.sh` to the `scripts/` copies (instead of `cp`) keeps them auto-synced via the dotfiles pull.
 
 Two scripts and one settings change. The OAuth token comes from the macOS keychain (`Claude Code-credentials`), which Claude Code already populates — no extra auth setup.
 
