@@ -9,13 +9,15 @@ A 7-field status line that shows authoritative usage info pulled directly from A
 ctx 42%   2h 58m left   31% sess   53% wk   Opus 4.8 [hi]   wk→6th 4pm   my-repo
 ```
 
-**Line 2** — context-dependent, but **never blank**:
-- **Active prompt**: one progress bar + elapsed timer
-  ```
-  31:46  ▰▰▰▱▱▱▱▱  chunk 1b: email transport + routes
-  ```
-  Elapsed time + a single bar whose source is chosen by specificity: a determinate **beacon** (real inner-step progress, e.g. `/god-review`) → determinate **to-dos** (from TodoWrite, `done/total`) → an honest animated spinner (one-shot work with no sub-structure). The **label** is decoupled from the bar and shows what it's doing *right now*: beacon phase → **live tool activity** (`Edit migration.sql`, `Bash: run tests`, `Task: reviewer`, written by `on-tool-activity.sh`) → to-do `activeForm` → `working`. The bar dims to yellow if no tool call for 30s, and demotes to the idle line if a prompt somehow runs >30 min without a tick (misfired Stop hook).
-- **Idle** (between prompts / at session open): the per-session label (`Internal › repo › what's happening`), else the literal `idle`.
+**Line 2** — a per-window label, **never blank**:
+```
+auth bug in window A
+```
+Whatever you set with `/line <sentence>` in that window — it's per-window (keyed by session id), so
+every instance shows its own. With no label set (or after `/line` with no argument), it falls back to
+the worktree/repo name (the same value as the `repo` field on line 1). It's deterministic: the same
+text renders whether or not a prompt is active — no progress bars, timers, or auto-written labels.
+Set it with `/line` (see `commands/line.md`); rendered by `scripts/statusline.sh` section 7.
 
 | Field | Source | Notes |
 |---|---|---|
