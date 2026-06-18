@@ -23,76 +23,11 @@ When asking the user a question via the AskUserQuestion popup tool, ALWAYS inclu
 
 **All other repos** (project code, applications, libraries): NEVER push to GitHub without explicit user approval. Always show what will be pushed and ask for confirmation first. This applies to all branches, all remotes, no exceptions.
 
-## Per-Session Status Label
-Write a one-line identifier for the current Claude Code window to `~/.claude/session-status/<session_id>.txt` so it shows up as a dimmed line 2 of the statusline. The user runs many Claude Code windows simultaneously; this label is how they tell them apart at a glance.
-
-**Format:** `Client › Project › what's happening right now`
-
-**How to discover your session_id (do this once per session, near the start):**
-The session_id is the basename of the current session's transcript file. Run this via the Bash tool — it walks the project transcript dir and picks the most-recently-modified `.jsonl`:
-```
-ls -t ~/.claude/projects/$(pwd | sed 's|/|-|g; s|^|-|')/*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl
-```
-Capture the result and reuse it for every subsequent write in this session.
-
-(Note: `$CLAUDE_SESSION_ID` is NOT reliably exposed to Bash subprocesses spawned from the Bash tool — confirmed empirically. The transcript-filename approach is the fallback that works.)
-
-**Before the first write, ensure the directory exists with the right mode:**
-```
-mkdir -p ~/.claude/session-status && chmod 700 ~/.claude/session-status
-```
-Idempotent; safe to run every time. The unconditional `chmod` fixes the mode even if the directory was created earlier with a wider mode.
-
-**Format rules:**
-- Chevron `›` separator with single space on each side.
-- Use `Internal` if working for self/team, `Self` for personal projects.
-- Use the repo name when there is no project codename.
-- Keep the whole line under 100 characters.
-- Write exactly **one line** of plain text. A trailing newline is harmless; embedded newlines are silently dropped (the statusline reads only the first line).
-
-**When to write/update the file:**
-- (a) The first real task in this session is clear.
-- (b) The topic genuinely shifts to a different client/project/area.
-- (c) The user explicitly asks for a status update.
-- Not every reply. Updating noisily defeats the purpose.
-
-**File handling:** Overwrite the file each time (use the `Write` tool, not append). One line. No metadata, no JSON, no formatting markers.
-
-Once this label is being written, **stop prepending `STATUS:` lines to in-conversation responses** — the statusline replaces that mechanism.
-
-The label is now the **idle fallback** for line 2. While a prompt is running, line 2 is replaced by the dual progress bars described in the next section.
-
-## Progress Beacon Protocol (line 2 progress bars)
-
-Line 2 of the statusline shows two compact progress bars during active prompts: an **overall task** bar (driven by TodoWrite progress) and a **current command** bar. This works automatically for **every** command — no setup required. Beacons are an optional opt-in for finer granularity.
-
-**You don't need to do anything for the bars to work.** Bar 1 fills as you complete TodoWrite items. Bar 2 advances each time the Task tool spawns a sub-agent.
-
-**Optional optimization** — give Bar 2 a real denominator by adding to a command's frontmatter:
-```yaml
----
-name: ...
-description: ...
-expected_subagents: 5   # number of Task spawns this command typically issues
----
-```
-Without it, Bar 2 stays indeterminate (still useful — shows it's working, just no %).
-
-**Optional fine-grained beacons** — for commands with discrete phases, write a beacon at each phase boundary:
-
-- **Bash-fenced commands**: call the helper:
-  ```bash
-  bash $HOME/.claude-dotfiles/scripts/progress/emit-beacon.sh 3 5 "reviewing"
-  ```
-  Helper auto-discovers the session_id; pass `SESSION_ID=...` env var to override (required for sub-agents).
-
-- **LLM-orchestrated commands** (e.g. /god-review, /master-review): use the Write tool to create the beacon file directly:
-  ```
-  Write ~/.claude/progress/<session_id>.current.json with content {"step":3,"total":5,"label":"reviewing"}
-  ```
-  Use the same session_id discovery as the Per-Session Status Label rule above.
-
-The beacon scratch file is consumed (deleted) on the next Task tool call. Beacons override the Task-spawn-count fallback. Both are optional.
+## Statusline Line 2 — set manually with `/line`
+Line 2 of the statusline is a **per-window label the user sets manually** with the `/line <sentence>`
+command (no argument clears it back to the folder/repo name). **Agents do NOT write it automatically** —
+there is no per-session status-label rule and no progress-bar/beacon machinery any more. Command
+definition: `~/.claude-dotfiles/commands/line.md`; renderer: `scripts/statusline.sh` (section 7).
 
 ## Browser MCP Cleanup
 **Pre-flight (before driving anything via `chrome-devtools` / `playwright` MCP):**
