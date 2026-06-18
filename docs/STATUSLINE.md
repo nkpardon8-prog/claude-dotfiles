@@ -86,6 +86,14 @@ Paste this into a fresh Claude Code session on a machine where Claude Code is al
 - Check `~/.claude/settings.json` has the `statusLine` key at the top level.
 - Reload Claude Code (Ctrl+R or restart the app).
 
+**`/line` set a label but line 2 didn't change**
+- Line 2 refreshes on the next statusline render (next prompt/tick), not instantly.
+- `/line` echoes the resolved session id. If you have 2+ windows open in the *same folder*, the
+  newest-transcript resolution can rarely bind to a sibling window — just re-run `/line` in the
+  intended window (its transcript is freshened by the act of typing the command).
+- The label lives at `~/.claude/session-status/<session_id>.txt`; `/line` with no argument deletes it
+  and line 2 reverts to the folder/repo name.
+
 **Time-left and percentages show `—`**
 - Run `~/.claude/refresh-ratelimit.sh` manually and read the stderr — usually a keychain or curl problem.
 - Confirm keychain has the entry: `security find-generic-password -s "Claude Code-credentials" -w | head -c 50`. If empty, run `claude` interactively once to authenticate.
