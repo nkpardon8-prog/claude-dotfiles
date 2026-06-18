@@ -291,106 +291,29 @@ printf "%b  %b  %b  %b  %b  %b  %b\n" \
   "$WEEKRESET_FIELD" \
   "$REPO_FIELD"
 
-# ── 7. Line 2: single progress bar (active) or idle label — ALWAYS present ──
-# One bar, source chosen by specificity: determinate beacon → determinate todos →
-# indeterminate beacon → spinner. Active state drives an elapsed timer; idle state
-# shows the ~/.claude/session-status/<sid>.txt label (else "idle"). The renderer
-# NEVER blanks — a hard bash fallback below guarantees a line in every session.
+# ── 7. Line 2: per-window manual label (set via /line), else worktree name ───
+# Deterministic — ALWAYS renders exactly one line. No active/idle branching, no
+# progress bars. Source: ~/.claude/session-status/<sid>.txt (written by the /line
+# command). Falls back to REPO_NAME (already computed for line 1 above). Never blanks.
+# SESSION_ID/SAFE_SID are also consumed by the ctx-gate broker in section 8 below,
+# so they MUST stay defined here.
 SESSION_ID=$(jq_get '.session_id')
 SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -cd 'A-Za-z0-9_-' | head -c 128 || true)
-LINE2=""
 
+LINE2_TEXT="$REPO_NAME"
 if [ -n "$SAFE_SID" ]; then
-  PROGRESS_FILE="$HOME/.claude/progress/$SAFE_SID.json"
   LABEL_FILE="$HOME/.claude/session-status/$SAFE_SID.txt"
-  LINE2=$(python3 - "$PROGRESS_FILE" "$LABEL_FILE" <<'PY' 2>/dev/null
-import json, sys, time
-prog, labelf = sys.argv[1], sys.argv[2]
-RESET="\033[0m"; DIM="\033[2m"; GREEN="\033[0;32m"; YELLOW="\033[0;33m"
-WIDTH = 8
-
-def idle_line():
-    # Show the human session label if present, else a literal "idle". Always non-empty.
-    try:
-        with open(labelf) as fh: s = fh.readline().rstrip()
-    except Exception:
-        s = ""
-    if s:
-        if len(s) > 100: s = s[:99] + "…"
-        return f"{DIM}{s}{RESET}"
-    return f"{DIM}idle{RESET}"
-
-try:
-    with open(prog) as fh: s = json.load(fh)
-except Exception:
-    print(idle_line()); sys.exit(0)
-
-now_f = time.time(); now = int(now_f)
-last_tick = int(s.get("last_tick", 0))
-
-# Defensive v1→v2 read: pre-upgrade files have no "active" key.
-active = s.get("active")
-if active is None:
-    active = bool(s.get("prompt_started_at")) and (now - last_tick <= 1800)
-
-# Staleness guard: demote to idle (never blank) if a Stop hook misfired and left
-# an "active" file climbing for >30 min — well above any legitimate long tool call.
-if not active or (now - last_tick) > 1800:
-    print(idle_line()); sys.exit(0)
-
-elapsed = max(0, now - int(s.get("prompt_started_at", now)))
-mins, secs = divmod(elapsed, 60)
-color = YELLOW if (now - last_tick) > 30 else GREEN
-
-def spinner():
-    pos = int(now_f * 4) % WIDTH
-    cells = ["▱"] * WIDTH
-    for i in range(3): cells[(pos + i) % WIDTH] = "▰"
-    return "".join(cells)
-
-def filled_bar(done, total):
-    if total <= 0: total = 1
-    n = max(0, min(WIDTH, (done * WIDTH) // total))
-    return "▰"*n + "▱"*(WIDTH-n)
-
-cur = s.get("current") or {}
-ov  = s.get("overall") or {}
-cur_total = cur.get("total")
-ov_total  = ov.get("total")
-
-# BAR (by specificity): determinate beacon → determinate todos → spinner.
-# (A totalless beacon folds into the spinner else — visually identical; its label is still
-#  preferred below via beacon_label.)
-if cur.get("source") == "beacon" and cur_total:
-    bar = filled_bar(int(cur.get("step", 0)), int(cur_total))
-elif ov_total:
-    bar = filled_bar(int(ov.get("done", 0)), int(ov_total))
-else:
-    bar = spinner()
-
-# LABEL (decoupled from bar) priority: beacon → live tool activity → todo activeForm → "working".
-# Live activity comes from the <sid>.activity.json sidecar (written by on-tool-activity.sh), gated
-# by ts >= prompt_started_at so a stale sidecar from a prior turn can't bleed into this one.
-beacon_label = cur.get("label") if cur.get("source") == "beacon" else None
-todo_label   = ov.get("label") if ov_total else None
-activity = None
-try:
-    with open(prog.replace(".json", ".activity.json")) as fh: _a = json.load(fh)
-    if int(_a.get("ts", 0)) >= int(s.get("prompt_started_at", 0)):
-        activity = _a.get("label")
-except Exception:
-    pass
-lab = beacon_label or activity or todo_label or "working"
-if len(lab) > 60: lab = lab[:59] + "…"
-
-print(f"{color}{mins}:{secs:02d}  {bar}  {lab}{RESET}")
-PY
-  )
-  # Hard never-blank fallback: any python crash / empty output still shows a line.
-  [ -z "$LINE2" ] && LINE2="${DIM}idle${RESET}"
+  if [ -f "$LABEL_FILE" ]; then
+    _lbl=$(head -1 "$LABEL_FILE" 2>/dev/null | tr -d '\r')
+    [ -n "$_lbl" ] && LINE2_TEXT="$_lbl"
+  fi
 fi
 
-[ -n "$LINE2" ] && printf "%b\n" "$LINE2"
+# Defensive truncation; render dim. Always prints exactly one line.
+if [ -n "$LINE2_TEXT" ]; then
+  if [ "${#LINE2_TEXT}" -gt 120 ]; then LINE2_TEXT="$(printf '%s' "$LINE2_TEXT" | cut -c1-119)…"; fi
+  printf "%b\n" "${DIM}${LINE2_TEXT}${RESET}"
+fi
 
 # ── 8. ctx-gate broker write (per plan 2026-05-23) ─────────────────────────────
 # Writes the harness-supplied context % to ~/.claude/progress/ctx-<sid>.txt so
