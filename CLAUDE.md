@@ -507,7 +507,7 @@ When running Bash in glasses mode, ALWAYS cap output:
 User input arrives via Whisper. Expect missing/wrong punctuation, homophones, filler ("um", "uh"). Interpret charitably; do not quibble.
 
 **Status label:**
-While in glasses mode, the `Per-Session Status Label` writer (separate mechanism) should use ASCII-only (the `›` separator in the default format may not render on G2) and keep line 1 ≤25 chars.
+While in glasses mode, any sentence the user sets via `/line` for statusline line 2 is rendered as-is; prefer ASCII (some glyphs may not render on G2). Agents do not write this label.
 
 ### Examples
 
