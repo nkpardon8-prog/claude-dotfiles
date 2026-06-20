@@ -16,6 +16,7 @@ GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 DIM='\033[2m'
+LIGHTBLUE='\033[38;5;117m'   # popping light blue — statusline line 2
 RESET='\033[0m'
 
 # ── Read stdin once ───────────────────────────────────────────────────────────
@@ -312,7 +313,7 @@ fi
 # Defensive truncation; render dim. Always prints exactly one line.
 if [ -n "$LINE2_TEXT" ]; then
   if [ "${#LINE2_TEXT}" -gt 120 ]; then LINE2_TEXT="$(printf '%s' "$LINE2_TEXT" | cut -c1-119)…"; fi
-  printf "%b\n" "${DIM}${LINE2_TEXT}${RESET}"
+  printf "%b\n" "${LIGHTBLUE}${LINE2_TEXT}${RESET}"
 fi
 
 # ── 8. ctx-gate broker write (per plan 2026-05-23) ─────────────────────────────
