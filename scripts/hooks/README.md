@@ -1,7 +1,10 @@
 # scripts/hooks/
 
-Lifecycle hook scripts that cross the Claude/host boundary — distinct from `scripts/progress/`
-which is the progress-bar subsystem (read-only state-file plumbing for the statusline).
+Lifecycle hook scripts that cross the Claude/host boundary — distinct from `scripts/progress/`,
+which now holds only `on-session-start-cleanup.sh` (GCs stale progress files + pre-compact/
+auto-compact sentinels). The old progress-bar subsystem that fed statusline line 2 was removed on
+2026-06-18 — line 2 is now a manual per-window `/line` label rendered directly by `statusline.sh`
+(see [STATUSLINE.md](../../docs/STATUSLINE.md)).
 
 Today this directory hosts **one** subsystem: **auto-compact-after-pre-compact**.
 
