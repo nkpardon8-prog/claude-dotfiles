@@ -15,14 +15,15 @@ Run exactly this Bash, then report its output to the user verbatim (do not edito
 ```bash
 set -uo pipefail   # partial-failure tolerant, matches statusline.sh convention (NO -e)
 
-# Resolve THIS window's session id. The transcript filename basename == the statusline's stdin
-# .session_id, so the file written here is exactly what the renderer reads. Handles spaces in the
-# cwd; single leading dash. The newest *.jsonl in the project dir is THIS window's transcript,
-# because the user's own /line prompt was just appended to it moments ago.
-PROJDIR=$(pwd | sed 's|[/ ]|-|g')
-SID=$(ls -t "$HOME/.claude/projects/$PROJDIR/"*.jsonl 2>/dev/null | head -1 | xargs -I {} basename {} .jsonl)
-SID=$(printf '%s' "$SID" | tr -cd 'A-Za-z0-9_-' | head -c 128)
-[ -z "$SID" ] && { echo "Could not resolve this window's session id yet — try again in a moment."; exit 0; }
+# Resolve THIS window's session id from the harness-injected env var. Every Bash tool call in a
+# Claude Code session inherits CLAUDE_CODE_SESSION_ID = this very process's own session id — the
+# SAME id the statusline reads from its stdin .session_id, so the file written here is exactly what
+# THIS window's renderer reads. It is process-scoped, NOT a filesystem mtime guess, so it can never
+# bind to a sibling window — even when other tabs in this same folder are actively writing their
+# transcripts at the same moment. (The old `ls -t newest *.jsonl` heuristic lost that race and
+# could land your label on another tab; that is the bug this replaces.)
+SID=$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-}" | tr -cd 'A-Za-z0-9_-' | head -c 128)
+[ -z "$SID" ] && { echo "Could not resolve this window's session id (CLAUDE_CODE_SESSION_ID unset) — run /line again."; exit 0; }
 
 DIR="$HOME/.claude/session-status"
 mkdir -p "$DIR" && chmod 700 "$DIR"
