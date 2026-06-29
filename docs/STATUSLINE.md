@@ -88,9 +88,11 @@ Paste this into a fresh Claude Code session on a machine where Claude Code is al
 
 **`/line` set a label but line 2 didn't change**
 - Line 2 refreshes on the next statusline render (next prompt/tick), not instantly.
-- `/line` echoes the resolved session id. If you have 2+ windows open in the *same folder*, the
-  newest-transcript resolution can rarely bind to a sibling window — just re-run `/line` in the
-  intended window (its transcript is freshened by the act of typing the command).
+- `/line` echoes the resolved session id. It resolves the window from `$CLAUDE_SESSION_ID` /
+  `$CLAUDE_CODE_SESSION_ID` (this process's own session id — the same id the renderer reads), so it
+  always targets the window you ran it in, regardless of how many other tabs are open or busy. (It no
+  longer uses a newest-transcript guess, which used to occasionally bind to a sibling window.) If the
+  env id is ever unset it writes nothing and asks you to re-run, so a label can never hit the wrong tab.
 - The label lives at `~/.claude/session-status/<session_id>.txt`; `/line` with no argument deletes it
   and line 2 reverts to the folder/repo name.
 
