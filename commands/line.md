@@ -41,7 +41,9 @@ else
 fi
 ```
 
-The resolved `${SID}` is echoed on purpose: if you have 2+ windows open in the *same folder*, the
-newest-transcript resolution could in rare cases bind to a sibling window — printing the id makes
-that visible so you can confirm it's this window (or just re-run `/line` here). This is a cosmetic
-label; no heavier machinery is warranted.
+The resolved `${SID}` is echoed on purpose: it is the harness-supplied id for THIS window, so
+printing it lets you confirm at a glance that the label was written to the right tab. Because the id
+comes from `CLAUDE_CODE_SESSION_ID` (this process's own session) and not from a newest-file guess,
+it is correct regardless of how many other windows are open in this folder or how busy they are —
+run `/line`, switch tabs, keep working; the label lands on this tab only. If the env var is ever
+unset the command writes nothing and asks you to re-run, so a label can never land on the wrong tab.
