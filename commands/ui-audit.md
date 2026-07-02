@@ -362,8 +362,9 @@ echo "Coverage status: $STATUS"
 Assemble the reconciled findings into `$OUT/findings.json` (each finding conforms to `lib/findings.schema.json`: element id, display label, machine-resolvable locator, statePath, verdict class, confidence, source families, mechanism/evidence citation, screenshot ref). Then validate — **HARD GATE**:
 
 ```bash
+# validate-findings.sh signature is: <findings.json> [schema.json] — findings FIRST, schema
+# optional (auto-defaults to lib/findings.schema.json next to the script). Do NOT pass schema first.
 bash "$HOME/.claude-dotfiles/commands/ui-audit/lib/validate-findings.sh" \
-  "$HOME/.claude-dotfiles/commands/ui-audit/lib/findings.schema.json" \
   "$OUT/findings.json"
 VALIDATE_RC=$?
 [ "$VALIDATE_RC" -ne 0 ] && { echo "findings.json FAILED schema validation (rc=$VALIDATE_RC). Fix the emitter output before writing AUDIT.md."; exit 1; }
