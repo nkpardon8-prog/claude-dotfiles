@@ -89,9 +89,15 @@ display endpoint.
   the cross-source hint; reconciliation converges it.
 
 ## OUTPUT CONTRACT — CRITICAL
-Output **ONLY a JSON array** conforming to `../lib/findings.schema.json`. One array
-element per audited element. **NO markdown code fence. NO prose before or after. NO
-commentary.** The first character of your output must be `[` and the last `]`.
+This pass emits an **INTERMEDIATE per-element verdict record** (one per audited element, keyed by the
+element's `id`/`elementId` from the ledger) — NOT the final `findings.json`. Phase 5 assembles these
+intermediate records (across all passes) into the schema-shaped `findings.json`; the schema only
+hard-requires `id` + `verdict`, so the intermediate fields below (`pass`, `hypothesis`, `traceChain`,
+`mechanism`, `crossSourceHint`, `justification`, …) are allowed and carried through.
+
+Output **ONLY a JSON array** (loosely conforming to `../lib/findings.schema.json`, which is now
+`additionalProperties: true`). One array element per audited element. **NO markdown code fence. NO
+prose before or after. NO commentary.** The first character of your output must be `[` and the last `]`.
 
 This is a hard machine contract: Phase 2 runs `jq` / `ajv-cli` on your output and
 **degrades the entire batch to Claude on any parse failure** (this is why assumption
