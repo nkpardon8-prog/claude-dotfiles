@@ -210,6 +210,7 @@ After establishing FRAIM context, check whether any available skill applies to t
 | `/plan2bid:excel` | Export estimate to Excel | No |
 | `/plan2bid:pdf` | Export estimate to PDF | No |
 | `/ui-ux-pro-max` | Any UI/UX design, brand, slides, styling, or design system work | No |
+| `/ui-audit` | User wants to audit a tab's UI end-to-end / catch fake or dead UI elements (report-only) | No |
 
 **Adding new skills:** Add one row to this table. Column 1 = slash command or `fraim → job-name`, column 2 = when to trigger it (natural language — what the user would actually say), column 3 = YES or No for real-world consequences. No other changes needed.
 
