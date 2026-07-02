@@ -156,7 +156,9 @@ function countExpr(ns = '__uiAudit') {
   return `(window[${JSON.stringify(ns)}]||[]).length`;
 }
 
-// Independent visible-node count (fresh pass) for the fail-closed cross-check.
+// Independent visible-node count as a STANDALONE fresh pass. NOTE: drive.mjs no longer calls this for
+// the cross-check — `setupExpr` now returns the independent count from the SAME settled-DOM batch as the
+// enumeration (see setupExpr) so async DOM growth can't cause a false mismatch. Retained for ad-hoc use.
 function visibleCountExpr() {
   return `(${__countVisible.toString()})()`;
 }
