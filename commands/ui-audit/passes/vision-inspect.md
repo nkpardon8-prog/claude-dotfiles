@@ -69,8 +69,12 @@ re-judge it from the file.
   `UNVERIFIED`, never `FAKE-OR-DEAD`.
 
 ## Output
-Emit one finding per element conforming to `../lib/findings.schema.json`
-(`pass: "vision-inspect"`). For each finding include:
+Emit one **INTERMEDIATE per-element verdict record** per element (keyed by the ledger
+`id`/`elementId`, `pass: "vision-inspect"`) — NOT the final `findings.json`. Phase 5
+assembles these intermediate records into the schema-shaped `findings.json`; the schema
+(now `additionalProperties: true`, requiring only `id` + `verdict`) carries the
+intermediate fields (`corroborant`, `mechanism`, `justification`, …) through. For each
+record include:
 - `verdict` per `rubric.md` §3 (respecting the downgrade-to-`UNVERIFIED` rule above)
 - `mechanism` — the visual defect type (e.g. `broken-image`, `overlap`,
   `empty-state`, `value-mismatch`, `placeholder`), or `null`
