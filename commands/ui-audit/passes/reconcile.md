@@ -79,8 +79,13 @@ verdict, the element goes into the **`MODELS-DISAGREE`** bucket:
   human decides. (`rubric.md` §3 / §4e.)
 
 ## Output
-Emit the reconciled finding set conforming to `../lib/findings.schema.json`
-(`pass: "reconcile"`), where each finding carries:
+Emit the reconciled finding set as **INTERMEDIATE per-element verdict records** (one per
+enumerated element, keyed by the ledger `id`/`elementId`, `pass: "reconcile"`) to
+`$OUT/verdicts/reconciled.json` — NOT the final `findings.json`. This file feeds Phase 3.5
+(merged back into `ledger.json` by element id for the coverage gate) and Phase 5 (assembled
+into the schema-shaped `findings.json`). Every enumerated element MUST appear here with a
+resolved verdict (a `FALSE_POSITIVE` drop still leaves the element with a concrete verdict
+such as `REAL`), so the Phase-4 `COMPLETE` path stays reachable. Each record carries:
 - `verdict` — the final reconciled verdict per `rubric.md` §3, or the
   `MODELS-DISAGREE` bucket marker
 - `validation` — `CONFIRMED` / `FALSE_POSITIVE` / `UNCERTAIN`
