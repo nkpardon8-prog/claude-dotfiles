@@ -394,7 +394,24 @@ echo "Coverage status: $STATUS"
 
 ### 5a. Emit `findings.json` and hard-gate it
 
-Assemble the reconciled findings into `$OUT/findings.json` (each finding conforms to `lib/findings.schema.json`: element id, display label, machine-resolvable locator, statePath, verdict class, confidence, source families, mechanism/evidence citation, screenshot ref). Then validate — **HARD GATE**:
+Assemble the reconciled records (`$OUT/verdicts/reconciled.json`) into `$OUT/findings.json`. The passes
+emit INTERMEDIATE records with working field names; the final `findings.json` is the SCHEMA-SHAPED view.
+Apply this assembly mapping so `validate-findings.sh` passes:
+
+| Intermediate field (pass output) | Final `findings.json` field (schema) |
+|---|---|
+| `elementId` (= ledger `key`) | `id` |
+| `type` | `elementType` |
+| `traceChain` | `staticTrace` (array of `"file:line — what"`) |
+| `domPath` / `dataLocator` | `selector` |
+| `corroborant`, `mechanism` (vision/dynamic) | fold into `dynamicEvidence` / `visionEvidence` / `observed` |
+| `crossSourceHint` / cross-source compare | `dynamicEvidence.crossSource` |
+
+Carry through directly (same name): `verdict`, `confidence`, `severity`, `repro`, `statePath`, `box`,
+`screenshot`, and the `models` block (author/validator/agreement from reconcile). The schema now hard-
+requires only `id` + `verdict` and is `additionalProperties: true`, so any extra intermediate fields you
+carry along do not fail validation — but produce the mapped canonical names above so the finding is
+`/implement`-consumable. Then validate — **HARD GATE**:
 
 ```bash
 # validate-findings.sh signature is: <findings.json> [schema.json] — findings FIRST, schema
