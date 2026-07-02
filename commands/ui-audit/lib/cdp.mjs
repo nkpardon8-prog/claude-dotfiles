@@ -85,13 +85,19 @@ export async function openTab(url, { port = DEFAULT_PORT() } = {}) {
 }
 
 // --- Network capture: enable BEFORE navigate so mount requests are seen; bodies via getResponseBody.
-export async function installNetworkCapture(tab, { urlFilter } = {}) {
+// STACK-AGNOSTIC filter: capture bodies for every response whose CDP resourceType is XHR or Fetch
+// (fall back to a json mimeType), regardless of URL. This replaces the old dentall-shaped host/path
+// regex (`/api/|run.app|graphql|.json`) so non-dentall stacks (/v1/, /rest/, /trpc/, distinct API
+// hosts) are captured too. `maxBodyBytes` caps each retrieved body so a huge payload can't blow memory.
+export async function installNetworkCapture(tab, { maxBodyBytes = 512 * 1024 } = {}) {
   await tab.send('Network.enable');
   let responses = [];
   tab.on('Network.responseReceived', (p) => {
-    const url = p.response?.url || '';
-    if (!urlFilter || urlFilter.test(url)) {
-      responses.push({ requestId: p.requestId, url, status: p.response?.status, mimeType: p.response?.mimeType });
+    const type = p.type || '';
+    const mimeType = p.response?.mimeType || '';
+    const apiLike = type === 'XHR' || type === 'Fetch' || /json/i.test(mimeType);
+    if (apiLike) {
+      responses.push({ requestId: p.requestId, url: p.response?.url || '', status: p.response?.status, mimeType, type });
     }
   });
   return {
@@ -102,7 +108,7 @@ export async function installNetworkCapture(tab, { urlFilter } = {}) {
       for (const r of responses.slice(0, limit)) {
         try {
           const b = await tab.send('Network.getResponseBody', { requestId: r.requestId }, 8000);
-          if (b?.body) out.push({ url: r.url, status: r.status, body: b.base64Encoded ? '' : b.body });
+          if (b?.body) out.push({ url: r.url, status: r.status, body: b.base64Encoded ? '' : String(b.body).slice(0, maxBodyBytes) });
         } catch {}
       }
       return out;
