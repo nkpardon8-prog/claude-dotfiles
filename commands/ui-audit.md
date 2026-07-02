@@ -390,7 +390,7 @@ echo "Coverage status: $STATUS"
 
 ---
 
-## Phase 5: Emit `findings.json` + `AUDIT.md` + annotated screenshots
+## Phase 5: Emit `findings.json` + `AUDIT.md` + screenshots
 
 ### 5a. Emit `findings.json` and hard-gate it
 
