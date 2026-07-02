@@ -128,5 +128,8 @@ status, the `crossSourceValue` + its source, the normalized compare result, the
 observed signal(s), before/after screenshot paths, and the mechanism string. Codex
 independently reads THIS bundle in the reconcile pass and issues its own verdict
 (user decision #3) — so the bundle must stand on its own as evidence, not rely on
-your prose. Emit your own verdict per element conforming to
-`../lib/findings.schema.json` (`pass: "dynamic-exercise"`).
+your prose. Emit your own **INTERMEDIATE per-element verdict record** (one per element,
+keyed by the ledger `id`/`elementId`, `pass: "dynamic-exercise"`) — NOT the final
+`findings.json`. Phase 5 assembles these intermediate records into the schema-shaped
+`findings.json`; the schema (now `additionalProperties: true`, requiring only `id` +
+`verdict`) carries your intermediate fields through.
