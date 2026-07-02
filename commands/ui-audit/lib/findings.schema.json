@@ -8,10 +8,9 @@
   "definitions": {
     "finding": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
-        "id", "verdict", "elementType", "selector", "statePath",
-        "staticTrace", "dynamicEvidence", "models", "confidence", "severity", "repro"
+        "id", "verdict"
       ],
       "properties": {
         "id": {
