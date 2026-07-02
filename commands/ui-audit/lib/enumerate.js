@@ -131,9 +131,19 @@ function __countVisible() {
 // Expression builders (what the driver actually injects via Runtime.evaluate).
 // ---------------------------------------------------------------------------------------------
 
-// Build the whole surface onto window[ns] and RETURN its length (a small number, never the array).
+// Build the whole surface onto window[ns] and RETURN, from the SAME settled-DOM evaluation, both the
+// enumerated length AND an independent visible-node count. Computing both in one synchronous evaluate
+// (no CDP round-trip, no settle delay between them) means the two counts reflect the IDENTICAL DOM
+// moment — so the Phase-4 cross-check catches genuine enumeration-logic loss (dedup collisions,
+// paging drops) rather than async DOM growth between two separately-timed passes. Returns a JSON
+// string `{ reported, independentVisibleCount }`.
 function setupExpr(ns = '__uiAudit') {
-  return `window[${JSON.stringify(ns)}] = (${__collectSurface.toString()})(); window[${JSON.stringify(ns)}].length;`;
+  return `(function(){
+    var arr = (${__collectSurface.toString()})();
+    window[${JSON.stringify(ns)}] = arr;
+    var vis = (${__countVisible.toString()})();
+    return JSON.stringify({ reported: arr.length, independentVisibleCount: vis });
+  })()`;
 }
 
 // Page the pre-built surface in <=size chunks as a JSON string (avoids multi-MB single returns).
