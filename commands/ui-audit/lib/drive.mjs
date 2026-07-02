@@ -231,15 +231,17 @@ try {
     passes++;
     const stateId = st.id === 's0' ? 's0' : 'st-' + statePath;
 
-    // Enumerate the whole surface → paged records.
-    const reported = await tab.evaluate(enumerate.setupExpr(NS), 25000);
+    // Enumerate the whole surface → paged records. setupExpr returns BOTH the enumerated length and an
+    // independent visible-node count computed in the SAME settled-DOM batch (no extra settle delay), so
+    // the fail-closed cross-check catches genuine enumeration loss, not async DOM growth (FIX 6).
+    const setup = JSON.parse(await tab.evaluate(enumerate.setupExpr(NS), 25000));
+    const reported = setup.reported;
+    const independentVisibleCount = setup.independentVisibleCount;
     const records = [];
     for (let off = 0; off < reported; off += enumerate.PAGE_SIZE) {
       const chunk = await tab.evaluate(enumerate.pageExpr(NS, off, enumerate.PAGE_SIZE), 15000);
       for (const r of JSON.parse(chunk)) records.push(r);
     }
-    // INDEPENDENT visible-node count (separate pass) for the fail-closed cross-check.
-    const independentVisibleCount = await tab.evaluate(enumerate.visibleCountExpr(), 20000);
 
     // network-on-mount bodies for this state (provenance source).
     await sleep(600);
