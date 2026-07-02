@@ -14,7 +14,7 @@ This command is a **thin sequencer**. The substance lives in sub-files it invoke
 - `~/.claude-dotfiles/commands/ui-audit/passes/{static-trace,dynamic-exercise,vision-inspect,reconcile}.md` — the three pass rubrics + the cross-family reconciliation prompts.
 - `~/.claude-dotfiles/commands/ui-audit/lib/{codex-invoke.sh,cdp.mjs,enumerate.js,drive.mjs,ledger-assert.sh,findings.schema.json,validate-findings.sh}` — the RAW-CDP driver, the coverage/schema gates, the Codex adapter.
 
-This command has 6 phases:
+This command has 6 phases (plus a Phase 3.5 verdict-merge bridge before the coverage gate):
 - **Phase 0**: Parse args, connect the `:9222` debug Chrome, detect stack + harness, resolve tab→URL, print the traversal-safety banner.
 - **Phase 1**: Drive the browser over raw CDP → coverage ledger + evidence bundles + screenshots.
 - **Phase 2**: Batch elements; author verdicts split 50/50 Codex+Claude; persist BOTH families to one dir.
