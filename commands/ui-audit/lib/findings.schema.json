@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://claude-dotfiles/ui-audit/findings.schema.json",
+  "title": "ui-audit findings",
+  "description": "The per-finding contract emitted by /ui-audit. findings.json is an array of Finding objects.",
+  "type": "array",
+  "items": { "$ref": "#/definitions/finding" },
+  "definitions": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "verdict", "elementType", "selector", "statePath",
+        "staticTrace", "dynamicEvidence", "models", "confidence", "severity", "repro"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable per-element id = short hash(statePath + domPath). Merge key across passes."
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["REAL", "STATIC-BY-DESIGN", "FAKE-OR-DEAD", "UNVERIFIED", "MODELS-DISAGREE"]
+        },
+        "elementType": {
+          "type": "string",
+          "enum": ["text", "stat", "chart", "table", "button", "link", "input", "badge", "image", "icon", "progress", "region"]
+        },
+        "selector": {
+          "type": "string",
+          "description": "Machine-resolvable locator for the /implement handoff (data-* when present, else the document-order domPath). NOT a Playwright :text() string."
+        },
+        "statePath": {
+          "type": "string",
+          "description": "Structural state key (route + selector/type/path signature, text excluded) the element was found in."
+        },
+        "screenshot": {
+          "type": ["string", "null"],
+          "description": "Relative path to the annotated/plain screenshot for this element's state."
+        },
+        "box": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          },
+          "required": ["x", "y", "width", "height"]
+        },
+        "expected": {
+          "type": ["string", "null"],
+          "description": "What a correct/real element would show or do."
+        },
+        "observed": {
+          "type": ["string", "null"],
+          "description": "What was actually observed (the mechanism failure, for FAKE-OR-DEAD)."
+        },
+        "staticTrace": {
+          "type": "array",
+          "description": "Code-path trace: element -> prop -> hook -> API -> DB, each as a file:line anchor or note.",
+          "items": { "type": "string" }
+        },
+        "dynamicEvidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Live browser evidence bundle: provenance, network-on-mount, cross-source compare, effect proofs.",
+          "properties": {
+            "provenance": { "type": "string", "enum": ["api", "no-network-origin", "empty"] },
+            "hardcodedSignal": { "type": "boolean" },
+            "networkOnMount": { "type": "array", "items": { "type": "object" } },
+            "matchedUrl": { "type": ["string", "null"] },
+            "crossSource": { "type": ["object", "string", "null"] },
+            "effectPersists": { "type": ["boolean", "null"] }
+          }
+        },
+        "visionEvidence": {
+          "type": ["string", "null"],
+          "description": "Pixel-level observation, paired with its required DOM-measurable corroborant."
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Per-model verdict authorship + cross-family validation results.",
+          "properties": {
+            "author": { "type": "string", "enum": ["codex", "claude"] },
+            "authorVerdict": { "type": "string" },
+            "validator": { "type": ["string", "null"], "enum": ["codex", "claude", null] },
+            "validatorResult": { "type": ["string", "null"], "enum": ["CONFIRMED", "FALSE_POSITIVE", "UNCERTAIN", null] },
+            "agreement": { "type": ["string", "null"] }
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "repro": {
+          "type": "array",
+          "description": "Ordered, human-followable steps to reproduce the finding.",
+          "items": { "type": "string" }
+        },
+        "suggestedOwner": {
+          "type": ["string", "null"],
+          "description": "Best-guess owning area/file for the /implement or /god-review handoff."
+        }
+      }
+    }
+  }
+}
