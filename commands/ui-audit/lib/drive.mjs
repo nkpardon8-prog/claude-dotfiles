@@ -260,18 +260,31 @@ try {
         const nv = normalizeValue(rec.text);
         let provenance = 'empty';
         let matchedUrl = null;
+        let matchMode = 'no-value';
         if (nv) {
-          const hit = bodies.find((b) => b.body && normalizeValue(b.body).includes(nv));
-          provenance = hit ? 'api' : 'no-network-origin';
-          matchedUrl = hit ? hit.url : null;
+          if (nv.length < 2) {
+            // Trivially-short values (single digit/char) collide with far too much to be evidence of
+            // either verdict — they drive NEITHER 'api' nor 'no-network-origin'.
+            provenance = 'ambiguous';
+            matchMode = 'ambiguous-short';
+          } else {
+            // EXACT token-set membership (not substring): normalize each JSON string/number token in
+            // the body and require nv to be a member. Cache the token Set per body.
+            matchMode = 'token-exact';
+            const hit = bodies.find((b) =>
+              b.body && (b.__tokens || (b.__tokens = valueTokens(b.body))).has(nv));
+            provenance = hit ? 'api' : 'no-network-origin';
+            matchedUrl = hit ? hit.url : null;
+          }
         }
         // empty network-on-mount for a data element ⇒ hardcoded signal (the canonical hardcoded-$85 catch).
-        const hardcodedSignal = bodies.length === 0 || provenance === 'no-network-origin';
+        // 'ambiguous' never drives the hardcoded signal.
+        const hardcodedSignal = provenance !== 'ambiguous' && (bodies.length === 0 || provenance === 'no-network-origin');
         const id = sh(rec.key);
         writeFileSync(join(OUT, 'evidence', `${id}.json`), JSON.stringify({
           id, key: rec.key, stateId, statePath, type: rec.type, text: rec.text,
           dataLocator: rec.dataLocator, box: rec.box,
-          provenance, matchedUrl, hardcodedSignal,
+          provenance, matchedUrl, matchMode, hardcodedSignal,
           networkOnMount: bodies.map((b) => ({ url: b.url, status: b.status })),
           screenshot: `screenshots/${stateId}.png`,
         }, null, 2));
