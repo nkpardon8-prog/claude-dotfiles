@@ -433,7 +433,7 @@ Header reflects `$STATUS` from Phase 4 (COMPLETE / INCOMPLETE). Section order (r
 5. **REAL summary** — count + notable confirmations.
 6. **Coverage manifest** — states discovered, elements enumerated vs verdicted, FALSE_POSITIVE drop count, degraded-batch list, Codex/Claude split, `$STATUS` + why, and a **`traversal-actions.log` summary** (mutations fired, or "none — read-only").
 
-Reference annotated screenshots (per-state + per-finding, boxes drawn) from the `screenshots/` dir.
+Reference the full-page screenshots per state from the `screenshots/` dir, plus the per-element bounding-box coordinates in `findings.json` (the `box` field) for downstream overlay. (No boxes are drawn onto the PNGs — the `box` coords are provided for a downstream consumer to render overlays if desired.)
 
 ### 5c. Print the handoff line
 
