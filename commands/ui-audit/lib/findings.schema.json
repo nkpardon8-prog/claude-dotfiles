@@ -35,7 +35,7 @@
         },
         "screenshot": {
           "type": ["string", "null"],
-          "description": "Relative path to the annotated/plain screenshot for this element's state."
+          "description": "Relative path to the full-page screenshot for this element's state (not box-annotated; use the box field for overlay coords)."
         },
         "box": {
           "type": ["object", "null"],
