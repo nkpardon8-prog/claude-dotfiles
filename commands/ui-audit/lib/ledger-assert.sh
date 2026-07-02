@@ -34,10 +34,6 @@ fi
 
 # (b) per-state ledger count vs independent visible-node count
 mismatch=$(jq -r '[.states[] | select(.ledgerCount != .independentVisibleCount)
-  | "    - state " + (.id｜tostring) + ": ledgerCount=" + (.ledgerCount｜tostring)
-    + " independentVisibleCount=" + (.independentVisibleCount｜tostring)] | .[]' "$LEDGER" 2>/dev/null || true)
-# NOTE: the fancy pipe glyph above is invalid jq; use the ASCII query instead:
-mismatch=$(jq -r '[.states[] | select(.ledgerCount != .independentVisibleCount)
   | "    - state " + (.id|tostring) + ": ledgerCount=" + (.ledgerCount|tostring)
     + " independentVisibleCount=" + (.independentVisibleCount|tostring)] | .[]' "$LEDGER")
 if [ -n "$mismatch" ]; then
