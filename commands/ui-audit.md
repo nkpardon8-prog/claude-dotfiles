@@ -19,6 +19,7 @@ This command has 6 phases:
 - **Phase 1**: Drive the browser over raw CDP → coverage ledger + evidence bundles + screenshots.
 - **Phase 2**: Batch elements; author verdicts split 50/50 Codex+Claude; persist BOTH families to one dir.
 - **Phase 3**: Cross-family validation across all 3 passes; reconcile → verdicts; drop FALSE_POSITIVE; MODELS-DISAGREE bucket.
+- **Phase 3.5**: Merge reconciled verdicts back into `ledger.json` by element id (so the Phase-4 gate can see them).
 - **Phase 4**: Fail-closed coverage assertion (status from exit code).
 - **Phase 5**: Emit `findings.json` (hard-gated) + `AUDIT.md` + annotated screenshots; print handoff line.
 
