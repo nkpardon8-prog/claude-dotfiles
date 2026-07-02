@@ -174,7 +174,8 @@ try {
   } else {
     mutationLog = await installMutationLogger(tab, (rec) => logAction('FIRED', rec));
   }
-  const capture = await installNetworkCapture(tab, { urlFilter: /\/api\/|run\.app|graphql|\.json(\?|$)/ });
+  // Capture XHR/Fetch (+ json) responses regardless of URL — stack-agnostic (no dentall host/path regex).
+  const capture = await installNetworkCapture(tab);
 
   const goToState = async (chain) => {
     capture.reset();
