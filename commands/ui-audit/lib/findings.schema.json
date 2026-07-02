@@ -66,7 +66,7 @@
           "additionalProperties": true,
           "description": "Live browser evidence bundle: provenance, network-on-mount, cross-source compare, effect proofs.",
           "properties": {
-            "provenance": { "type": "string", "enum": ["api", "no-network-origin", "empty"] },
+            "provenance": { "type": "string", "enum": ["api", "no-network-origin", "empty", "ambiguous"] },
             "hardcodedSignal": { "type": "boolean" },
             "networkOnMount": { "type": "array", "items": { "type": "object" } },
             "matchedUrl": { "type": ["string", "null"] },
