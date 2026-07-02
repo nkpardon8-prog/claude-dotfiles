@@ -1,0 +1,25 @@
+# /ui-audit — skill file map
+
+Exhaustive, **report-only** per-tab UI reality audit. For ONE tab/screen of a running web app it enumerates the entire rendered surface across every reachable sub-state into a fail-closed coverage ledger, gives each element a strict verdict (`REAL` / `STATIC-BY-DESIGN` / `FAKE-OR-DEAD` / `UNVERIFIED`, plus a `MODELS-DISAGREE` bucket), and proves reality through three reconciled passes — static code trace, live browser x-ray over **raw CDP** (no MCP/Playwright), and screenshot vision — with verdict authoring + evidence judgment split ~50/50 Codex/Claude. Output: `findings.json` + `AUDIT.md` + annotated screenshots, handed to `/god-review` or `/implement`. **Never edits application code.**
+
+Transport is **RAW CDP** (rev 3): Node scripts talk to Chrome's `:9222` debug port directly via the global `WebSocket` (zero deps). Screenshots go to files that Claude `Read`s for vision.
+
+## Files
+
+| File | Role |
+|---|---|
+| `ui-audit.md` (parent dir: `commands/ui-audit.md`) | Orchestrator. Thin sequencer: 6 phases — parse args + connect `:9222` Chrome + detect stack/harness + resolve tab→URL (Phase 0); raw-CDP drive → ledger + evidence + screenshots (Phase 1); batch elements + author verdicts 50/50 Codex+Claude, persist both families (Phase 2); cross-family reconcile across all 3 passes (Phase 3); fail-closed coverage assertion (Phase 4); emit `findings.json` + `AUDIT.md` + handoff (Phase 5). |
+| `README.md` | This file. |
+| `CHANGELOG.md` | Version history. |
+| `rubric.md` | Taxonomy (element types), per-type proof-of-real bar, the 4 verdict definitions + `MODELS-DISAGREE`, precedence rules (STATIC-BY-DESIGN before convergence-to-FAKE; correlated-signal dedup). |
+| `lib/codex-invoke.sh` | Verbatim copy of god-review's Codex adapter. `bash codex-invoke.sh <outfile> <prompt> <workdir>` → runs `codex exec -s read-only --ephemeral --cd <workdir>` at `model_reasoning_effort=high`. Handles binary-missing → `[unavailable]`, `CODEX_HOME_1/2` failover, flock/mkdir spinlock. `chmod +x`. |
+| `lib/cdp.mjs` | Raw Chrome DevTools Protocol client over Node's global `WebSocket` (zero deps). `Runtime.evaluate` / `Network.*` (`getResponseBody` for bodies) / `Page.captureScreenshot` / `Fetch.enable`. The transport all browser evidence is captured through. |
+| `lib/enumerate.js` | In-page enumerator (injected via `Runtime.evaluate`). Whole-surface, unique `hash(statePath+domPath)` keys (no silent sibling/row merge), extracts descriptor attrs before labeling, `classify()` (recharts/canvas → chart; bare small `<svg>` → icon), chunked/paged return (≤200/page) so a multi-MB return never truncates/hangs. |
+| `lib/drive.mjs` | The RAW-CDP driver Phase 1 runs. `node drive.mjs --url <URL> --out <DIR> [--read-only] --max-enum-passes N`. BFS worklist-to-exhaustion traversal (structural `statePath` cycle-guard, recorded replay chains re-resolved after full nav reset), per-element dynamic evidence (network-on-mount / provenance, console, cross-source hints), before/after screenshots. `--read-only` fails closed at the wire (`Fetch.enable` aborts non-GET). Writes `ledger.json`, `evidence/`, `screenshots/`, `traversal-actions.log`. |
+| `lib/ledger-assert.sh` | Fail-closed coverage gate. `bash ledger-assert.sh <OUT>`. Exit 1 when `enumerated != verdicted` OR when a per-state ledger count disagrees with a fresh visible-node count; lists offenders. Phase 4 reads its EXIT CODE to set COMPLETE/INCOMPLETE. `chmod +x`. |
+| `lib/findings.schema.json` | AI-digestible per-finding contract (element id, display label, machine-resolvable locator, statePath, verdict class, confidence, source families, mechanism/evidence citation, screenshot ref). |
+| `lib/validate-findings.sh` | Hard schema gate. `bash validate-findings.sh <schema> <findings.json>` → `ajv-cli validate`. Non-zero exit blocks `AUDIT.md`. `chmod +x`. |
+| `passes/static-trace.md` | Pass 1 rubric: element → prop → hook → API → DB, with `file:line`. React + TanStack Query + axios + recharts hints plus a generic fallback. **Output contract = a JSON array conforming to `findings.schema.json`, NO prose** (so Codex output parses; Phase 2 `jq`-gates and degrades a non-parsing batch to Claude). |
+| `passes/dynamic-exercise.md` | Pass 2 rubric: per-type mechanism bar; endpoint from network-on-mount; the provenance + cross-source oracle + value normalization; the signal superset aligned to the harness walker (toast/url/networkResponse/auth_lost/selectorDisappears/...); full-traversal + `--read-only` behavior; mutation logging. |
+| `passes/vision-inspect.md` | Pass 3 rubric: the pixel-perception bar + the **required DOM-measurable corroborant** per pixel-only finding type (overlap → bbox intersection; broken image → `naturalWidth===0`; empty-state → zero child text). Claude-only (Codex is text-only). |
+| `passes/reconcile.md` | Cross-family validation prompts (both directions, "be ruthless about false positives"); Codex-judges-dynamic+vision-evidence prompts; merge-by-hash; confidence promotion; precedence; `MODELS-DISAGREE` surfacing; FALSE_POSITIVE drop + count. |
