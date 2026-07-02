@@ -333,7 +333,41 @@ Apply `reconcile.md` post-processing:
 - Enforce precedence: `STATIC-BY-DESIGN` is evaluated BEFORE convergence-to-FAKE; correlated signals (static "no data binding" + dynamic "no network-on-mount") count as ONE signal — a constant needs an ADDITIONAL independent signal to become FAKE.
 - Pixel-only vision finding with no DOM-measurable corroborant → downgrade to `UNVERIFIED`.
 
-Write the reconciled per-element verdicts to `$OUT/verdicts/reconciled.json`.
+Write the reconciled per-element verdicts to `$OUT/verdicts/reconciled.json`. That file MUST carry a
+verdict for EVERY enumerated element (a `FALSE_POSITIVE`-dropped finding still leaves its element with
+a resolved verdict — e.g. `REAL` — it is only dropped from the *findings* view, never left unverdicted).
+This is what makes the `COMPLETE` path in Phase 4 reachable.
+
+---
+
+## Phase 3.5: Merge reconciled verdicts into `ledger.json`
+
+`drive.mjs` writes `ledger.json` with every element `verdict: null`. Phases 2/3 author verdicts into a
+DIFFERENT file (`$OUT/verdicts/*.json` → `$OUT/verdicts/reconciled.json`). `ledger-assert.sh` (Phase 4)
+reads the verdict from `ledger.json` `.elements[].verdict` — so the reconciled verdicts MUST be merged
+back into `ledger.json` here, keyed by element id, BEFORE the Phase-4 gate runs. Without this step the
+gate is permanently `INCOMPLETE`.
+
+The join key is the ledger element's `key` field (`sha256(statePath + '|' + domPath)`, sliced) — this is
+the same value the orchestrator hands each pass as `elementId` and that reconciled findings carry as
+`id` (see the Phase-5 assembly mapping). The merge builds a `key → verdict` lookup from
+`reconciled.json` and stamps each ledger element's `verdict` from it (falling back to the element's
+existing verdict when no reconciled entry matches, so `UNVERIFIED` safety-cap rows are preserved):
+
+```bash
+jq --slurpfile v "$OUT/verdicts/reconciled.json" '
+  (reduce $v[0][] as $f ({}; .[($f.id // $f.elementId // $f.key)] = $f.verdict)) as $vmap
+  | .elements |= map(.verdict = ($vmap[.key] // $vmap[(.id // "")] // .verdict))
+' "$OUT/ledger.json" > "$OUT/ledger.merged.json" && mv "$OUT/ledger.merged.json" "$OUT/ledger.json"
+
+# Sanity: every element should now have a non-null verdict (else Phase 4 will report INCOMPLETE and list them).
+UNVERDICTED=$(jq '[.elements[] | select(.verdict == null)] | length' "$OUT/ledger.json")
+echo "Merged reconciled verdicts into ledger.json — $UNVERDICTED element(s) still unverdicted."
+```
+
+`// .verdict` uses jq's alternative operator: if `$vmap` has no entry for this element's `key` (and no
+`id` fallback), the element keeps whatever verdict it already had (`null` for un-reconciled elements,
+`UNVERIFIED` for safety-cap rows). A `null` here surfaces as `INCOMPLETE` in Phase 4 — never silently.
 
 ---
 
