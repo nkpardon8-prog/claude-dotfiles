@@ -66,6 +66,25 @@ const DENY = /^(Delete|Remove|Cancel|Break|Submit|Approve|Reject|Send|Finalize|D
 const sh = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 16);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Extract candidate value TOKENS from a response body for EXACT provenance matching (not substring).
+// Substring matching false-positives constantly: displayed "$85" → normalized "85" is a substring of
+// id:2850, 1985, epoch timestamps, etc. We instead pull JSON string values + numeric literals, normalize
+// each, and mark provenance 'api' ONLY on exact Set membership. Returns a Set of normalized tokens.
+function valueTokens(body) {
+  const set = new Set();
+  if (!body || typeof body !== 'string') return set;
+  // JSON string literals ("...") OR numeric literals (handles $, %, commas via normalizeValue after).
+  const re = /"(?:[^"\\]|\\.)*"|-?\d[\d.,]*/g;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    let raw = m[0];
+    if (raw.charCodeAt(0) === 34 /* " */) raw = raw.slice(1, -1); // strip surrounding quotes
+    const t = normalizeValue(raw);
+    if (t) set.add(t);
+  }
+  return set;
+}
+
 mkdirSync(OUT, { recursive: true });
 mkdirSync(join(OUT, 'evidence'), { recursive: true });
 mkdirSync(join(OUT, 'screenshots'), { recursive: true });
