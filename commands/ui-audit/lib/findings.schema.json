@@ -71,7 +71,7 @@
             "hardcodedSignal": { "type": "boolean" },
             "networkOnMount": { "type": "array", "items": { "type": "object" } },
             "matchedUrl": { "type": ["string", "null"] },
-            "crossSource": { "type": ["object", "string", "null"] },
+            "crossSource": { "description": "displayed value compared against an independent source (DB/canonical endpoint)" },
             "effectPersists": { "type": ["boolean", "null"] }
           }
         },
