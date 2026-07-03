@@ -384,7 +384,11 @@ the canonical root, never inside a per-part worktree), with Codex run `-s read-o
 Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees the other's output:
 - the **implementation-reviewer subagent** (plan-completeness / quality) — Claude, spawned normally (medium);
 - Invoke the Skill tool with `skill: codex-review --effort high`. Continue once it returns. (The
-  `--effort high` arg runs its Codex passes at high → the full 4 Codex + 3 Claude cross-model panel + verify.)
+  `--effort high` arg pins its Codex passes at high → the full 4 Codex + 3 Claude cross-model panel + verify.
+  High is the right floor for this convergence LOOP: it re-runs to 2-dry and finds everything across rounds,
+  so no single pass needs xhigh. For a part you judge genuinely critical — auth, payments, data migrations,
+  deletions / irreversible ops, prod config, untrusted-input parsing — you MAY raise that part's barrier to
+  `skill: codex-review --effort xhigh` instead. Rare by design; the loop default stays `--effort high`.)
 
 **Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID the round (do NOT count it as dry).** The RELIABLE
 machine signal is the **`Codex-passes: N/4`** token `/codex-review` emits on its Step 7f report
