@@ -57,8 +57,8 @@ a few platform deltas:
 | Scroll = **KEYBOARD only** (overlay scrollbars; `drag` = text-selection) | Scroll = PageDown/Arrow or scrollbar-arrow clicks; thumb-drag experimental |
 | LAYER-1 CRD a11y exposes **only `Desktop`** → coordinate/user fallback | LAYER-1 CRD a11y **exposed uids** here → uid-by-label (probe + fall back) |
 
-Both skills share: direct `click_at` into the canvas, the embedded canvas-rect
-helper, the `press_key("Shift+<base>")` shift-map for capitals/symbols, the
+Both skills share: direct `click_at` into the canvas, the embedded
+`crdMeta`/`crdMap` precision helpers, the `press_key("Shift+<base>")` shift-map for capitals/symbols, the
 title-first bind, and the never-touch-the-other-session rule. One thing
 `/windows` should RE-CHECK at runtime (see `docs/FINDINGS-2026-05-31.md`): CRD's
 a11y mode differs by platform — uids worked here, but probe with `take_snapshot`
