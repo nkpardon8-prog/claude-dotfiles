@@ -1,5 +1,24 @@
 # /devtools — changelog
 
+## 2026-07-02 — Sonnet 5 default + CRD precision-loop routing
+
+**Change:** Step 4's delegated devtools sub-agent default model moved
+**`claude-sonnet-4-6` → `claude-sonnet-5`**. Added a **scoped** routing line: the CRD
+precision click loop (driving a Chrome Remote Desktop canvas via `/windows` or
+`/macmini`) runs on `claude-sonnet-5` at **low/med** reasoning effort as **ONE
+whole-loop sub-agent**, using **JPEG screenshots** (`{format:'jpeg', quality:50}`) in
+**bounded batches of ~10 targets**. The general medium-effort default for ordinary
+devtools delegation is unchanged.
+
+**Why:** a precise-clicking technique was proven live 2026-07-02 on real OpenDental over
+CRD (96% hit-rate, 26 trials, 15-90px targets — see
+`skills/windows/docs/FINDINGS-2026-07-02-precision.md` and the `crdMeta`/`crdMap`/loupe/
+crosshair helpers now embedded in `/windows` + `/macmini`). Two load-bearing operational
+facts came out of that run: the whole loop must live in ONE Sonnet sub-agent (owning it
+end-to-end satisfies "never split a click→screenshot→verify loop"), and screenshots must
+be JPEG in small batches because a PNG-screenshotting loop hits the chrome-devtools MCP
+32MB request limit and dies.
+
 ## 2026-06-01 — Step 4: model routing (Sonnet default, Opus escalation)
 
 **Change:** Step 4 now pins the delegated devtools sub-agent to **`claude-sonnet-4-6`** by default (was: inherited the parent's model, i.e. Opus), with a medium-reasoning-effort hint in the sub-agent's prompt body. Added **escalation to `claude-opus-4-8`** two ways — *upfront* for obviously hard tasks (cross-surface correlation, perf-trace / heap-snapshot analysis) and *fallback* when Sonnet returns an inconclusive, self-contained report (re-spawn the same task as a new Opus `Agent` call — a running agent's model can't be changed).
