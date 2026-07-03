@@ -455,6 +455,12 @@ Match the request to its row; use the listed channel; don't improvise.
 5. **UNVERIFIED interactions** — if a flow needs them, smoke-test first:
    small-target double-click, `drag`. Right-click has no CDP path (use the menu
    bar). Mark results in your reasoning.
+6. **Precision loop + readback** — `crdLoupe` a known region → screenshot (JPEG) →
+   confirm the overlay shows crisp magnified host content (**NOT a black square** — the
+   same-origin readback is proven on Windows CRD, not yet macOS) → `crdLoupeUnmap` →
+   `crdCrosshair` → screenshot-confirm the dot is on-target → `crdClearOverlays` →
+   `click_at` → verify the reaction. Fail = black overlay ⇒ loupe not viable on this mac;
+   fall back to coarse `crdMap` + crosshair-confirm only.
 
 ## Sub-commands (for explicit invocation)
 
