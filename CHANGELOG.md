@@ -2,6 +2,22 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-07-02 — Codex reasoning-effort floor raised to `high`; heavy audits at `xhigh`
+
+Standardized every Codex (OpenAI Codex CLI, `gpt-5.5`) invocation across the dotfiles on a `high`
+reasoning-effort floor, with the heaviest audits escalated to `xhigh`. The model was already
+`gpt-5.5` everywhere via `~/.codex/config.toml`; stale "GPT-5.4" labels in skill descriptions/README
+were scrubbed to 5.5 (documentation drift, no behavior change).
+
+- **Global default** (`~/.codex/config.toml`): `model_reasoning_effort` `medium` → `high`.
+- **`/codex-review`**: `EFFORT` default `medium` → `high` (enforced floor); `--effort xhigh` escalates,
+  values below the floor are ignored.
+- **`/prepare-pr`**: inline `codex exec` review call now pins `model_reasoning_effort=high`.
+- **`/god-review` + `/god-report`**: shared `god-review/lib/codex-invoke.sh` `high` → `xhigh`.
+- **`/master-review`**: all Phase 1 + Phase 3 `codex_invoke` calls now pin `model_reasoning_effort=xhigh`.
+- **`/ui-audit`** and **`/mission`**: unchanged (stay at `high`).
+- Verified `xhigh` is accepted at runtime by Codex v0.142.5 on `gpt-5.5` (smoke test).
+
 ## 2026-05-31 — Statusline line 2: live-activity label (fix the perpetual "working" spinner)
 
 After the single-bar rework, line 2 in real sessions sat on a generic spinner + the literal `working`
