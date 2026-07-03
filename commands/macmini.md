@@ -58,7 +58,7 @@ gist/cliclick edifice is gone. **Negate every old mechanic:**
 |---|---|
 | Hands = `cliclick` on the mini via `gh gist` transport (to dodge `isTrusted`) | Hands = **direct CDP `mcp.click_at({x,y})`** into the CRD canvas — verified reaching the macOS host. NO gist, NO cliclick, NO GitHub. |
 | Arbitrary text = `gh gist` paste channel (`/macmini paste`) | Arbitrary text = **per-char `press_key("Shift+<base>")`** with a US shift-map (embedded below). NO gist. |
-| Per-mini `/macmini measure` calibration file | **No calibration** — map via the live canvas rect (embedded helper). |
+| Per-mini `/macmini measure` calibration file | **No calibration** — map via the live canvas rect (`crdMeta`/`crdMap`, embedded below). |
 | Terminal-foreground "dance" + `run.sh` + on-host cliclick | **None.** Click the pixel, screenshot to verify. |
 | `--secure`/`read -s` credential injection over gist | To put a credential on the mini, the **user types it via `read -s` directly in the mini Terminal**. The agent never carries/echoes it, never types a secret char-by-char through the canvas. (Story preserved — only the gist transport is gone.) |
 | AppleScript via `/macmini script` (gist-delivered) | Out of scope v1 (gist removed). If a genuine AppleScript need resurfaces it's a separate, opt-in channel — not this skill. |
