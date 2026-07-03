@@ -441,10 +441,16 @@ Match the request to its row; use the listed channel; don't improvise.
 | `/windows disconnect` | Click the CRD "Disconnect" button by label. (Lives in `crd.md`.) |
 | `/windows status` | Health audit: tab present? title match? `crdMeta()` rect ok? clipboard-sync checked? hang/frozen-tab probe? (Lives in `crd.md`.) |
 
-> **Delegation posture:** inline vision is the point of this skill, so reading
-> screenshots and acting on them stays in-thread. Heavy page enumeration (a big
-> `list_pages`, a deep `take_snapshot` dump) may be delegated, but never split a
-> click→screenshot→verify loop across agents.
+> **Delegation posture:** the **precision click loop runs in ONE Sonnet-5
+> sub-agent that owns the WHOLE loop** — coarse-locate → loupe → crosshair-confirm
+> → clear → `click_at` → verify. Delegating the entire loop to one agent satisfies
+> "never SPLIT a click→screenshot→verify loop" (it's wholly delegated, not split);
+> Opus main-thread only orchestrates and recovers. Spawn it on `model:
+> "claude-sonnet-5"` at low/med reasoning effort. **Screenshots MUST be
+> JPEG-compressed** — `take_screenshot({format:'jpeg', quality:50})` — in **bounded
+> batches of ~10 targets**: a PNG-screenshotting loop hits the chrome-devtools MCP
+> **32MB request limit and dies** (proven this session). Heavy page enumeration (a
+> big `list_pages`, a deep `take_snapshot` dump) may also be delegated.
 
 ## See also (dotfiles only — NOT on the deployed `~/.claude/` path)
 
