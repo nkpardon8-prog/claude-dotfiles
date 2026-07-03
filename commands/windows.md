@@ -432,10 +432,10 @@ Match the request to its row; use the listed channel; don't improvise.
 | Sub-command | Purpose |
 |---|---|
 | `/windows connect` | Bind the Windows session by title; `/devtools` handoff; Shift-wake; mount signal. PIN is user-only. |
-| `/windows act <action>` | LAYER-2 desktop: `click` / `double` / `right` / `type` / `key` / `scroll` / `launch` / `switch` — all via the one rect helper. |
+| `/windows act <action>` | LAYER-2 desktop: `click` / `double` / `right` / `type` / `key` / `scroll` / `launch` / `switch` — all via `crdMap` / the Precision targeting section. |
 | `/windows crd <action>` | LAYER-1 CRD UI by uid-label: panel, Ctrl+Alt+Del, PrtScr, Full-screen, clipboard toggle, plus `disconnect` and `status`. |
 | `/windows disconnect` | Click the CRD "Disconnect" button by label. (Lives in `crd.md`.) |
-| `/windows status` | Health audit: tab present? title match? canvas rect ok? clipboard-sync checked? hang/frozen-tab probe? (Lives in `crd.md`.) |
+| `/windows status` | Health audit: tab present? title match? `crdMeta()` rect ok? clipboard-sync checked? hang/frozen-tab probe? (Lives in `crd.md`.) |
 
 > **Delegation posture:** inline vision is the point of this skill, so reading
 > screenshots and acting on them stays in-thread. Heavy page enumeration (a big
