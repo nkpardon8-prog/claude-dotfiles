@@ -349,11 +349,12 @@ Match the request to its row; use the listed channel; don't improvise.
 | Type ANYTHING with a capital or shifted symbol | `send_text()` per-char shift-map (embedded above) |
 | Unicode / emoji / bulk paste | v2 (clipboard/file) — out of scope v1 |
 
-### Mouse — LAYER-2 (direct CDP, via the embedded rect helper)
+### Mouse — LAYER-2 (direct CDP, via `crdMap` / the Precision targeting section)
 
 | Want to do | Channel |
 |---|---|
-| Left-click a host pixel | rect helper → `mcp.click_at({x,y})` |
+| Left-click a host pixel | `crdMap` → `mcp.click_at({x,y})` |
+| Precise-click a small canvas-only target (12-20px) | loupe → crosshair-confirm → clear → `click_at` (see Precision targeting) |
 | Double-click | `mcp.click_at({x,y, dblClick:true})` |
 | Right-click | `mcp.press_key("Shift+F10")` — opens the context menu at the **current keyboard focus / selection**, NOT at a pixel (there is NO right-click param on click_at; schema is `{x,y,dblClick,includeSnapshot}`). To target a specific element, `click_at` it FIRST to focus it — that positioning click is a **real** click (screenshot-verify it, obey the modal/PHI rules) — then `Shift+F10`. |
 | Scroll | focus the pane → `press_key("PageDown")`/`"ArrowDown"`, or click the scrollbar arrow buttons. Thumb-drag is experimental (smoke-test `drag` first). No mouse-wheel tool exists. |
