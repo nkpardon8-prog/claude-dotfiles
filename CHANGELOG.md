@@ -10,8 +10,11 @@ reasoning-effort floor, with the heaviest audits escalated to `xhigh`. The model
 were scrubbed to 5.5 (documentation drift, no behavior change).
 
 - **Global default** (`~/.codex/config.toml`): `model_reasoning_effort` `medium` → `high`.
-- **`/codex-review`**: `EFFORT` default `medium` → `high` (enforced floor); `--effort xhigh` escalates,
-  values below the floor are ignored.
+- **`/codex-review`**: `EFFORT` default `medium` → `high` (enforced floor). Escalation to `xhigh` is now
+  **dynamic**: an explicit `--effort` from the caller wins (a convergence loop pins `--effort high`), but when
+  invoked with no flag the orchestrator self-assesses and reaches for `xhigh` only on genuinely critical,
+  one-shot targets (auth, payments, migrations, irreversible / prod, untrusted-input parsing). Values below
+  the floor are ignored. `/mission` documents the same escalation option for critical parts of its review loop.
 - **`/prepare-pr`**: inline `codex exec` review call now pins `model_reasoning_effort=high`.
 - **`/god-review` + `/god-report`**: shared `god-review/lib/codex-invoke.sh` `high` → `xhigh`.
 - **`/master-review`**: all Phase 1 + Phase 3 `codex_invoke` calls now pin `model_reasoning_effort=xhigh`.
