@@ -373,7 +373,7 @@ Match the request to its row; use the listed channel; don't improvise.
 | Double-click | `mcp.click_at({x,y, dblClick:true})` — ⚠️ **UNVERIFIED** on small targets (a ~50px Finder icon dblClick missed historically); smoke-test |
 | Right-click | **documented v1 gap.** No CDP path on macOS — `click_at` has no button/modifier param and there is NO macOS context-menu key (`Shift+F10` is Windows-only — do NOT use it here). **Substitute: use the app's menu bar (top, `click_at`-reachable).** |
 | Scroll | **KEYBOARD only** — `PageDown`/`PageUp`/`Space`/`ArrowDown`, `Meta+ArrowDown/Up` to jump. **NEVER `drag` to scroll** (macOS reads it as text-selection). |
-| Drag | `mcp.drag(...)` in the canvas-rect CSS-px space — ⚠️ **UNVERIFIED**; smoke-test first session |
+| Drag | `mcp.drag(...)` in the `crdMap` CSS-px space — ⚠️ **UNVERIFIED**; smoke-test first session |
 
 ### CRD UI — LAYER-1 (page DOM)
 
