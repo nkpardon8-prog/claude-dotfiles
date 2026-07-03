@@ -97,8 +97,8 @@ Windows laptop / OpenDental in plain English** ("on the windows machine do X",
    to wake — **Shift only** (no character input; never Enter/Space/letters). If
    it's black and you cannot tell idle from locked, surface to the user instead
    of pressing anything.
-4. **Infer the action** from the capability matrix below. Re-read the canvas rect
-   before any click (see embedded helper).
+4. **Infer the action** from the capability matrix below. Re-read `crdMeta()`
+   before any click (see the Precision targeting section).
 
 ## Precision targeting (LAYER-2)
 
