@@ -29,7 +29,7 @@ Before doing anything else, scan `$ARGUMENTS` for an optional `--effort <value>`
 - Any other / missing / malformed value (including `--effort medium` or `--effort low`) → leave `EFFORT="high"`. Values below the floor are ignored, not honored.
 - Remove the `--effort <value>` token pair from `$ARGUMENTS` before Step 1 classifies the target, so the flag never leaks into the file path / description / question.
 
-`EFFORT` defaults to `medium` and is set to `high` ONLY when `--effort high` is explicitly passed. This is additive and opt-in — every existing caller that passes no flag runs at `medium`, exactly as before. `EFFORT` is substituted into every Codex `model_reasoning_effort` setting in Step 3b (all 4 passes, all modes) and Step 6 (verification). This is what lets `/mission` raise the Codex passes to high via `skill: codex-review --effort high`.
+`EFFORT` defaults to `high` — the enforced floor. codex-review never runs Codex below `high` reasoning effort; `--effort xhigh` escalates to extra-high for the whole run, and any lower value is clamped back to `high`. `EFFORT` is substituted into every Codex `model_reasoning_effort` setting in Step 3b (all 4 passes, all modes) and Step 6 (verification). (`/mission` calls `skill: codex-review --effort high`, which now matches the default.)
 
 ---
 
