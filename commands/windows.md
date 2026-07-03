@@ -426,6 +426,10 @@ Match the request to its row; use the listed channel; don't improvise.
    fails → scroll falls back to PageDown / arrow-button click.
 4. **CRD a11y** — `take_snapshot`; confirm CRD controls expose clickable uids; if
    `ignored`, switch LAYER-1 to the coordinate fallback.
+5. **Precision loop** — pick a small known target (a toolbar item, a calendar day);
+   `crdLoupe` → screenshot (JPEG) → `crdLoupeUnmap` → `crdCrosshair` → screenshot-confirm
+   the dot is on-target → `crdClearOverlays` → `click_at` → verify the specific reaction.
+   Confirms the transform, the loupe readback, and the crosshair confirm end-to-end.
 
 ## Sub-commands (for explicit invocation)
 
