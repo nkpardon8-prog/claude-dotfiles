@@ -104,51 +104,182 @@ Mac mini in plain English** ("on the mac mini do X", "send X to the mini", "use
 4. **Infer the action** from the capability matrix below. Re-read the canvas rect
    before any click (see embedded helper).
 
-## EMBEDDED HELPER — the ONE canvas-rect mapping (use this for every click_at)
+## Precision targeting (LAYER-2)
 
-LAYER-2 clicks map a known macOS-host pixel into CSS-px canvas coordinates.
-`getBoundingClientRect()` and `click_at` are **BOTH CSS px**, so rect-derived
-coords are **NOT** divided by DPR. (Verified rect this session:
-`{x:9.66, y:0, w:1690.66, h:951}`, host streams `1920×1080` with a small
-horizontal letterbox.) Call this fresh before each click sequence:
+The ONE way to turn "a target on the mini's screen" into a reliable `click_at`.
+`crdMap` supersedes the old canvas-rect helper — one callable for host / normalized /
+screenshot space. `getBoundingClientRect()` and `click_at` are **BOTH CSS px**; the
+transform never divides host/CSS by DPR — only the **screenshot** path does (a native
+screenshot is innerW×DPR = DEVICE px). (Verified rect on this mini:
+`{x:9.66, y:0, w:1690.66, h:951}`, host streams `1920×1080` with a small horizontal
+letterbox.) The loupe was proven on the Windows twin (Demo DB, 96% / 26 trials); on
+macOS **re-run the readback probe first** (see the macOS deltas below).
+
+**Inject via `mcp.evaluate_script`. It is STATELESS for definitions** — each call
+re-includes the WHOLE block below, then `return` the one call you need, e.g.
+`() => { /* whole block */ ; return crdLoupe(277,47); }`. Overlay DOM persists across
+calls; function defs do not. This block is byte-identical to `skills/_shared/crd-precision.js`
+and to the `/windows` copy (single source, embedded twice — re-embed both on any edit).
 
 ```js
-// mcp.evaluate_script({ function: "() => { ... }" })   ← named-arg call shape
-() => {
-  const cs = [...document.querySelectorAll('canvas')]
+// Select the remote CRD canvas: largest by RENDERED area; decoys render 0x0 (area>40000 drops them).
+function _crdPickCanvas() {
+  return [...document.querySelectorAll('canvas')]
     .map(e => { const r = e.getBoundingClientRect();
-                // return {x,y,w,h} EXPLICITLY — DOMRect has .width/.height, not .w/.h
-                return { x:r.x, y:r.y, w:r.width, h:r.height, bw:e.width, bh:e.height }; })
-    .filter(o => o.w > 200 && o.h > 200)
-    .sort((a,b) => b.w*b.h - a.w*a.h);   // largest by RENDERED area; NO 1920 hard floor
-  if (!cs.length) return { error: "no remote canvas found" };
-  const c = cs[0];
-  return { dpr: window.devicePixelRatio, rect: {x:c.x,y:c.y,w:c.w,h:c.h}, hostW: c.bw, hostH: c.bh };
+                return { e, x:r.x, y:r.y, w:r.width, h:r.height, bw:e.width, bh:e.height }; })
+    .filter(o => o.w * o.h > 40000)          // rendered area; decoys render 0x0
+    .sort((a, b) => b.w * b.h - a.w * a.h)[0];
+}
+
+// Live geometry. EXPLICIT flat shape — DOMRect exposes .width/.height, not .w/.h. sx/sy = CSS-px per host-px.
+function crdMeta() {
+  const c = _crdPickCanvas();
+  if (!c) return { error: 'no remote canvas found' };
+  return {
+    rectX: c.x, rectY: c.y, rectW: c.w, rectH: c.h,   // CSS-px canvas rect
+    hostW: c.bw, hostH: c.bh,                          // backing store == host stream res
+    dpr: window.devicePixelRatio,
+    sx: c.w / c.bw, sy: c.h / c.bh                     // CSS-px per host-px
+  };
+}
+
+// Map host | norm | shot -> {clickX,clickY,host}. SHOT space is DEVICE px -> /dpr. Supersedes the rect helper.
+function crdMap(target, meta) {
+  const m = meta || crdMeta();
+  if (m.error) return m;
+  let hx, hy;
+  if (target.host)      { hx = target.host.x;             hy = target.host.y; }
+  else if (target.norm) { hx = target.norm.x * m.hostW;   hy = target.norm.y * m.hostH; }
+  else if (target.shot) { hx = (target.shot.x / m.dpr - m.rectX) / m.sx;   // SHOT = DEVICE px
+                          hy = (target.shot.y / m.dpr - m.rectY) / m.sy; }
+  else return { error: 'target needs {host}|{norm}|{shot}' };
+  return { clickX: m.rectX + hx * m.sx, clickY: m.rectY + hy * m.sy, host: { x: hx, y: hy } };
+}
+
+// Magnifier overlay (id __crd_loupe__), imageSmoothing OFF, returns its own src/overlay rects (no hand math).
+// Placed top-right, below the CRD toolbar occlusion band. sub-20px: half=40,zoom=8; larger: half=90,zoom=5.
+function crdLoupe(cx, cy, half, zoom) {
+  if (half == null) half = 40;
+  if (zoom == null) zoom = 8;
+  const c = _crdPickCanvas();
+  if (!c) return { error: 'no remote canvas found' };
+  const srcX = cx - half, srcY = cy - half, srcW = 2 * half, srcH = 2 * half;
+  const ovW = srcW * zoom, ovH = srcH * zoom;
+  const ovX = Math.max(10, window.innerWidth - ovW - 10);   // top-RIGHT
+  const ovY = 70;                                           // clear of the top ~60px band
+  const old = document.getElementById('__crd_loupe__');
+  if (old) old.remove();
+  const cv = document.createElement('canvas');
+  cv.id = '__crd_loupe__';
+  cv.width = ovW; cv.height = ovH;
+  Object.assign(cv.style, {
+    position: 'fixed', left: ovX + 'px', top: ovY + 'px',
+    width: ovW + 'px', height: ovH + 'px',
+    zIndex: '2147483647', pointerEvents: 'none',
+    border: '2px solid #ff2d55', boxShadow: '0 0 0 1px #000'
+  });
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(c.e, srcX, srcY, srcW, srcH, 0, 0, ovW, ovH);
+  document.body.appendChild(cv);
+  return { srcX, srcY, srcW, srcH, ovX, ovY, ovW, ovH };
+}
+
+// Inverse-map an in-loupe screenshot pixel (DEVICE px) back to host space.
+function crdLoupeUnmap(px, py, loupe, dpr) {
+  const cssX = px / dpr, cssY = py / dpr;                 // device px -> CSS px
+  const fx = (cssX - loupe.ovX) / loupe.ovW;             // fraction across the overlay
+  const fy = (cssY - loupe.ovY) / loupe.ovH;
+  return { x: loupe.srcX + fx * loupe.srcW, y: loupe.srcY + fy * loupe.srcH };
+}
+
+// Crosshair overlay (id __crd_cross__) at a HOST point — pure-DOM confirm BEFORE any click.
+function crdCrosshair(hx, hy) {
+  const m = crdMeta();
+  if (m.error) return m;
+  const clickX = m.rectX + hx * m.sx, clickY = m.rectY + hy * m.sy;
+  const old = document.getElementById('__crd_cross__');
+  if (old) old.remove();
+  const bar = (w, h, l, t, color) => {
+    const d = document.createElement('div');
+    Object.assign(d.style, {
+      position: 'fixed', left: l + 'px', top: t + 'px', width: w + 'px', height: h + 'px',
+      background: color, zIndex: '2147483647', pointerEvents: 'none'
+    });
+    return d;
+  };
+  const box = document.createElement('div');
+  box.id = '__crd_cross__';
+  Object.assign(box.style, { position: 'fixed', left: '0', top: '0', zIndex: '2147483647', pointerEvents: 'none' });
+  const arm = 12;
+  box.appendChild(bar(2 * arm, 1, clickX - arm, clickY, '#ff2d55'));   // horizontal arm
+  box.appendChild(bar(1, 2 * arm, clickX, clickY - arm, '#ff2d55'));   // vertical arm
+  box.appendChild(bar(3, 3, clickX - 1, clickY - 1, '#00e5ff'));       // center dot
+  document.body.appendChild(box);
+  return { clickX, clickY };
+}
+
+// Remove both overlays. Always call before click_at.
+function crdClearOverlays() {
+  const l = document.getElementById('__crd_loupe__'); if (l) l.remove();
+  const x = document.getElementById('__crd_cross__'); if (x) x.remove();
+  return { cleared: true };
 }
 ```
 
-Consumer (reads `.w`/`.h`, which the helper returned explicitly):
+### Per-target procedure
 
-```
-meta = evaluate_script(helper)
-if meta.error: STOP and tell the user (do NOT throw or guess a canvas)
+**(a) Keyboard-first is the DEFAULT.** If the target is reachable by Tab / a menu-bar
+accelerator / type-to-search / a Cmd shortcut (when "Send system keys" is on), use a
+keystroke — deterministic and no stray-click risk. Reserve the pixel path for genuinely
+**canvas-only** targets.
 
-# Click a KNOWN macOS-host pixel (hx,hy) in hostW×hostH space.
-# rect & click_at are BOTH CSS px → NO ÷DPR here:
-clickX = meta.rect.x + hx * (meta.rect.w / meta.hostW)
-clickY = meta.rect.y + hy * (meta.rect.h / meta.hostH)
-mcp.click_at({ x: clickX, y: clickY })
+**(b) Canvas-only targets — the closed loop (proven 96% on the Windows twin):**
+1. **Coarse-locate.** Estimate the host point from a screenshot via
+   `crdMap({shot:{x,y}})` (screenshot px are DEVICE px), or from a known anchor.
+2. **Loupe.** `crdLoupe(hx,hy)` → screenshot → read the exact target pixel in the
+   magnified overlay → `crdLoupeUnmap(px,py,loupe,dpr)` for the refined host point.
+3. **Crosshair-confirm.** `crdCrosshair(hx,hy)` → screenshot → verify the center dot sits
+   on the target BEFORE committing. Nudge and re-confirm on a miss (≤2 corrections).
+4. **Clear.** `crdClearOverlays()`.
+5. **Click.** `click_at({x:clickX, y:clickY})` from `crdMap`.
+6. **Verify the SPECIFIC reaction** AND no unintended change.
 
-# Click something you EYEBALLED off a raw screenshot (shots are innerW×DPR):
-# convert the screenshot pixel to a host pixel FIRST (÷DPR + subtract the
-# canvas letterbox offset rect.x/rect.y), then feed it through the formula above:
-#   hx = (shot_px_x/meta.dpr - meta.rect.x) * (meta.hostW / meta.rect.w)
-#   hy = (shot_px_y/meta.dpr - meta.rect.y) * (meta.hostH / meta.rect.h)
+### Grid-cell refinement
 
-# Before firing, optionally occlusion-check (CRD's auto-hiding toolbar can sit
-# over the top ~60px / bottom ~30px of the canvas) — see act.md "canvas-click".
-take_screenshot()   # verify. Re-read meta before the NEXT click — window can resize mid-flow.
-```
+Do NOT eyeball a lookalike cell in a dense grid — anchor row/column spacing off a known
+highlighted/labeled reference cell in the same grid, measure the pitch once (host-px per
+row/column), and index from the anchor. On the Windows twin, index-from-anchor hit 12/12
+with 0 corrections after calibration where coarse loupe-only reads missed a 19px row.
+
+### Tuning defaults
+
+- **Loupe:** sub-20px targets → `half=40, zoom=8`; larger targets → `half=90, zoom=5`.
+- **Corrections budget:** ≤2 crosshair nudges; if still off, re-loupe rather than thrash.
+
+### macOS deltas (vs the Windows twin)
+
+- **Re-run the readback probe on the mac before trusting the loupe.** The loupe relies on
+  a same-origin `drawImage`+`getImageData` readback of the remote canvas returning
+  non-black; that was proven on Windows CRD, NOT yet on macOS CRD. First session on the
+  mini: `crdLoupe` a known region, screenshot, and confirm the overlay shows the crisp
+  magnified host content (not a black square) before relying on it.
+- **CRD auto-hiding toolbar occlusion (preserved caveat).** The toolbar can sit over the
+  top ~60px / bottom ~30px of the canvas. `crdLoupe` is anchored at `ovY=70` to stay clear
+  of the top band; when placing a crosshair or reading near those bands, occlusion-check
+  (see `act.md` "canvas-click").
+- **No right-click** — `Shift+F10` is Windows-only; use the app's menu bar. a11y exposes
+  only `Desktop` (LAYER-1 stays coordinate/user fallback) — unchanged by this section.
+
+### Gotchas (fold into every run)
+
+- **Trusted Types enforced** — `element.innerHTML = …` THROWS on the CRD page. The
+  overlays use `createElement`/`appendChild`/`.style` only; never add innerHTML.
+- **`hover` is uid-only** — no coordinate hover, so no streamed cursor to servo against.
+  Confirm with the **crosshair overlay**, not cursor-servoing.
+- **`take_screenshot` may return a filePath** (temp file instead of inline when the page
+  is bound read-only) — Read the file. Both paths occur; handle both.
+- **Re-read `crdMeta()` before the NEXT click** — the window can resize mid-flow.
 
 ## EMBEDDED HELPER — type anything (capitals + symbols) via the shift-map
 
