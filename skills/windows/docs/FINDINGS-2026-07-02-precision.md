@@ -104,3 +104,43 @@ later targets used crosshair-confirm only (2 screenshots/target instead of 3), w
 accuracy on the top-menu/nav class. This is the "easier class" per the batch brief — small dense
 targets (calendar day cells, tiny icon buttons) still need the full 3-shot loupe+crosshair chain
 per the original probe-battery findings above.
+
+## Stress board — Batch 2 (tiny targets, 3 trials, Sonnet)
+
+Live session, same Demo DB / same canvas transform as above (rect `{0,3.78,1567,881.4}`,
+`sx=sy=0.8161`, DPR 2). **3 trials per target**, full loupe(half=70,zoom=5)+crosshair-confirm
+procedure for the first attempt at each target, then a session-local row/column calibration
+(anchored on the "Today" highlighted cell, row spacing measured at ~19.0 host-px, verified
+uniform to ±0.1px across 3 rows) reused for repeat trials. Reset between every trial via the
+"Today" mini-calendar button (recalibrated once, then reused at fixed host coords). App left
+clean on Appts/Day/Thu-Jul-2, no menus/dialogs open, at the end.
+
+| target | ~size px | trials | hits | mean corrections | wrong_element count | notes |
+|---|---|---|---|---|---|---|
+| Calendar day "16" | ~20×19 | 3 | 2 | 0.33 | 1 | Trial 1: loupe placed crosshair on the "9/16" row boundary; a "correction" nudge (+10 host-px down) intended to center on "16" instead overshot to the row-4/"23" boundary and the click landed on **Jul 23** — a genuine wrong-element miss caused by mis-reading an ambiguous crosshair position on a 19px-tall row. Recalibrated using the "Today" (Jul-2) highlighted cell as a precise anchor (row spacing = 19.0 host-px, confirmed uniform); trials 2-3 then hit "16" directly with 0 corrections. |
+| Calendar day "23" | ~20×19 | 3 | 3 | 0 | 0 | Using the row-spacing calibration from target 1, crosshair-confirm landed dead-on all 3 times; all 3 trials hit "Jul 23" with 0 corrections. |
+| Calendar day "25" (Sat, right edge) | ~20×19 | 3 | 3 | 0 | 0 | Right-edge column needed one loupe read to find the Thu→Sat column offset (~2 columns ≈ 88 host-px); crosshair-confirm then landed centered on "25" every time (crosshair's right arm extended slightly past the grid's right edge into whitespace but the center dot was on-digit). All 3 hit "Jul 25" with 0 corrections. |
+| Next-month arrow "M►" | ~15×15 | 3 | 3 | 0 | 0 | One loupe read located the black triangle precisely; crosshair-confirm centered on the arrow icon. All 3 clicks advanced the mini-calendar from July 2026 → August 2026 correctly, 0 corrections. |
+| View-span "3" button | ~18×18 | 3 | 3* | 0 | 0* | Crosshair independently re-confirmed **twice** at 5x and again at 8x zoom — both times dead-center on the "3" square button, distinct from neighboring "M"/"4". All 3 clicks reproducibly changed the header to **"Fri - Oct 2"** (mini-calendar jumped July→October, i.e. +3 months) — NOT the briefed "3-day schedule span" reaction. Because the same precise coordinate reproducibly triggered the same deterministic outcome 3/3 times, this is scored as a targeting **hit** (correct element, verified twice via tight zoom) with a **functional-expectation mismatch**, not a wrong_element miss — the button's real behavior on this OD build appears to be "advance mini-calendar by N months" (paired with M/W-mode) rather than a schedule day-span selector as assumed in the task brief. Flagging for whoever owns the target list to re-verify the intended semantics of the 3/4/6 buttons. |
+
+**Overall — Batch 2:** 15 trials across 5 targets, **14/15 hit (93.3%)**, mean corrections =
+1/15 ≈ **0.07**, wrong-element clicks = **1** (target-1 trial-1 only).
+
+**Bar check:** the **≤2-corrections-per-trial** bar held on all 15/15 trials (max observed was 1
+correction, on the trial that still missed). The **zero-wrong-element** bar did **NOT** hold —
+1 wrong-element click occurred (16→23 miss), directly traceable to reading an ambiguous
+mid-row crosshair position on a 19px-tall target rather than to the transform/loupe math itself.
+Once a precise per-row calibration anchor (the highlighted "Today" cell) was established, the
+remaining 12 trials across 4 targets were 12/12 correct with 0 corrections, suggesting the
+practical fix for ~19px-tall row targets is: **always calibrate off a known-highlighted/labeled
+cell in the same grid before trusting a coarse loupe-only estimate**, rather than eyeballing
+crosshair-vs-text overlap directly on lookalike unlabeled rows.
+
+**Loupe tuning signal:** `half=70` (140×140 host-px crop) was comfortably large enough to contain
+each ~19-20px calendar cell with margin — no target fell outside the inset. The harder problem
+on this batch was **row/column disambiguation within the loupe**, not target visibility: at
+zoom=5 two adjacent calendar rows (~19px apart in host space, ~95px apart in the magnified
+overlay) can look close enough together that a crosshair sitting between two digits is genuinely
+ambiguous from the screenshot alone. Tightening to `half=40, zoom=8` (used for the "3" button
+re-check) gave noticeably crisper digit/button separation and is recommended as the default for
+any target under ~20px, rather than reserving it as a fallback.
