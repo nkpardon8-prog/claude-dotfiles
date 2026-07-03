@@ -1,5 +1,5 @@
 ---
-description: "Universal review engine. OpenAI Codex CLI (GPT-5.4) runs 4 specialized review passes (Correctness, Security, Data-integrity, Contracts) plus 1 verification pass. Claude Opus runs 3 lens agents (Architecture, Integration, Adversarial+FP-filter) plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
+description: "Universal review engine. OpenAI Codex CLI (GPT-5.5) runs 4 specialized review passes (Correctness, Security, Data-integrity, Contracts) plus 1 verification pass. Claude Opus runs 3 lens agents (Architecture, Integration, Adversarial+FP-filter) plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
 argument-hint: "[--effort <medium|high>] [file/dir/plan path, question, or blank for auto-detect]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 expected_subagents: 8
@@ -9,7 +9,7 @@ expected_subagents: 8
 
 ## Engines
 
-- **Review — OpenAI Codex CLI (GPT-5.4):** 4 parallel review passes in Step 3, each a distinct independent lens (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Invoked via the `codex` binary (`codex review` or `codex exec -s read-only --ephemeral`).
+- **Review — OpenAI Codex CLI (GPT-5.5):** 4 parallel review passes in Step 3, each a distinct independent lens (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Invoked via the `codex` binary (`codex review` or `codex exec -s read-only --ephemeral`).
 - **Review — Claude Opus:** 3 parallel lens agents (Architecture/Maintainability, Cross-layer Integration/Footguns, Adversarial+FP-filter) in Step 4, plus meta-review in Step 5. Claude complements Codex's recall with precision — Codex owns correctness/security/data, so Claude leans architecture/integration/skepticism.
 - **Fix:** None. This skill is report-only and never modifies files.
 
@@ -396,7 +396,7 @@ Review the findings:
 
 ## Step 6: Codex Verification Pass (Code Targets Only)
 
-After the meta-review, run one final Codex exec call to verify the consolidated findings. This is quality control — Codex (GPT-5.4) independently validates what the entire pipeline produced.
+After the meta-review, run one final Codex exec call to verify the consolidated findings. This is quality control — Codex (GPT-5.5) independently validates what the entire pipeline produced.
 
 **Skip this step for non-code targets (Claude-only engine).**
 
@@ -506,7 +506,7 @@ real one, defeating a downstream parser. Keeping the title single-line makes tha
 
 ```markdown
 # Codex Review: [target summary — single line, newlines stripped]
-Engine: 4x Codex (GPT-5.4) + 3x Claude + Codex Verification | Codex-passes: N/4 | Verified: [Y/N]
+Engine: 4x Codex (GPT-5.5) + 3x Claude + Codex Verification | Codex-passes: N/4 | Verified: [Y/N]
 
 ## Critical [must fix]
 - [ ] [definite] Finding — file:line — explanation (codex-1 + codex-3 + claude/architecture)
