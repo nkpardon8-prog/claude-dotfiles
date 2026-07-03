@@ -539,27 +539,27 @@ codex_invoke() {
     # mkdir-spinlock if flock is missing.
     echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
     if command -v flock >/dev/null 2>&1; then
-      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
       return $?
     fi
     LOCKDIR=/tmp/codex-default-home.lock.d
     while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
-    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     rc=$?
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT INT TERM
     return $rc
   fi
   if [ -n "$primary" ]; then
-    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if CODEX_HOME="$primary" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
-      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+      CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
     fi
     return 1
   fi
   # primary empty but fallback non-empty: just use the fallback profile.
-  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
   return $?
 }
 codex_invoke /tmp/master-review-codex-1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
@@ -608,27 +608,27 @@ codex_invoke() {
     # mkdir-spinlock if flock is missing.
     echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
     if command -v flock >/dev/null 2>&1; then
-      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
       return $?
     fi
     LOCKDIR=/tmp/codex-default-home.lock.d
     while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
-    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     rc=$?
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT INT TERM
     return $rc
   fi
   if [ -n "$primary" ]; then
-    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if CODEX_HOME="$primary" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
-      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+      CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
     fi
     return 1
   fi
   # primary empty but fallback non-empty: just use the fallback profile.
-  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
   return $?
 }
 codex_invoke /tmp/master-review-codex-2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
@@ -690,27 +690,27 @@ codex_invoke() {
     # mkdir-spinlock if flock is missing.
     echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
     if command -v flock >/dev/null 2>&1; then
-      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
       return $?
     fi
     LOCKDIR=/tmp/codex-default-home.lock.d
     while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
-    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     rc=$?
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT INT TERM
     return $rc
   fi
   if [ -n "$primary" ]; then
-    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if CODEX_HOME="$primary" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
-      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+      CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
     fi
     return 1
   fi
   # primary empty but fallback non-empty: just use the fallback profile.
-  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
   return $?
 }
 codex_invoke /tmp/master-review-codex-3.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
@@ -1246,27 +1246,27 @@ codex_invoke() {
     # mkdir-spinlock if flock is missing.
     echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
     if command -v flock >/dev/null 2>&1; then
-      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
       return $?
     fi
     LOCKDIR=/tmp/codex-default-home.lock.d
     while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
-    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     rc=$?
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT INT TERM
     return $rc
   fi
   if [ -n "$primary" ]; then
-    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if CODEX_HOME="$primary" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
-      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+      CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
     fi
     return 1
   fi
   # primary empty but fallback non-empty: just use the fallback profile.
-  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
   return $?
 }
 codex_invoke /tmp/master-review-codex-v1.txt "$CODEX_HOME_1" "$CODEX_HOME_2" \
@@ -1304,27 +1304,27 @@ codex_invoke() {
     # mkdir-spinlock if flock is missing.
     echo "[no-profile] running with default CODEX_HOME (~/.codex). Multi-account threading unavailable — serializing this Codex call against /tmp/codex-default-home.lock to avoid colliding with sibling agents." > "$outfile"
     if command -v flock >/dev/null 2>&1; then
-      flock /tmp/codex-default-home.lock "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+      flock /tmp/codex-default-home.lock "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
       return $?
     fi
     LOCKDIR=/tmp/codex-default-home.lock.d
     while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.5; done
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
-    "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
+    "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" >> "$outfile" 2>&1
     rc=$?
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT INT TERM
     return $rc
   fi
   if [ -n "$primary" ]; then
-    if CODEX_HOME="$primary" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
+    if CODEX_HOME="$primary" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; then return 0; fi
     if [ -n "$fallback" ]; then
-      CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
+      CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1; return $?
     fi
     return 1
   fi
   # primary empty but fallback non-empty: just use the fallback profile.
-  CODEX_HOME="$fallback" "$CODEX_BIN" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
+  CODEX_HOME="$fallback" "$CODEX_BIN" -c model_reasoning_effort="xhigh" exec -s read-only --ephemeral --cd "$WORKDIR" "$prompt" > "$outfile" 2>&1
   return $?
 }
 codex_invoke /tmp/master-review-codex-v2.txt "$CODEX_HOME_2" "$CODEX_HOME_1" \
