@@ -1,5 +1,5 @@
 ---
-description: "Master Review — autonomous review + fix pipeline. Reviewers: 3 Claude Opus + 3 OpenAI Codex CLI (GPT-5.4) + 2 Antigravity (Google AI) agents in parallel. Fixer: Claude via /implement. Verification loop: 2 Claude Opus + 2 Codex + 2 Antigravity agents until 3 consecutive clean passes. Works on code or features."
+description: "Master Review — autonomous review + fix pipeline. Reviewers: 3 Claude Opus + 3 OpenAI Codex CLI (GPT-5.5) + 2 Antigravity (Google AI) agents in parallel. Fixer: Claude via /implement. Verification loop: 2 Claude Opus + 2 Codex + 2 Antigravity agents until 3 consecutive clean passes. Works on code or features."
 argument-hint: "[file/dir/feature description, or blank for auto-detect]"
 model: opus
 expected_subagents: 8
@@ -11,7 +11,7 @@ expected_subagents: 8
 
 ## Engines
 
-- **Review — OpenAI Codex CLI (GPT-5.4):** 3 parallel agents in Phase 1, 2 parallel agents in every Phase 3 verification round. Invoked via `codex exec -s read-only --ephemeral` so Codex can read the repo but never writes.
+- **Review — OpenAI Codex CLI (GPT-5.5):** 3 parallel agents in Phase 1, 2 parallel agents in every Phase 3 verification round. Invoked via `codex exec -s read-only --ephemeral` so Codex can read the repo but never writes.
 - **Review — Antigravity (Google AI):** 2 parallel agents in Phase 1 (google-pro-1 and google-pro-2), 2 parallel agents in every Phase 3 verification round. Invoked via the Antigravity CLI in agent mode with isolated profiles. Read-only — findings only, never writes files. If Antigravity times out (30s) or is unavailable, agents are marked "unavailable" and the loop continues with the remaining agents.
 - **Review — Claude Opus:** 3 parallel agents in Phase 1 (Deep Correctness, Architecture/Prod-Readiness, Security/Resilience), 2 parallel agents in every Phase 3 verification round.
 - **Review — Claude Lens Agents:** 6 specialized parallel lens agents in Phase 1 (`lens-single-pattern`, `lens-circular-deps` always-on; `lens-tanstack-query`, `lens-architecture-frontend`, `lens-architecture-backend`, `lens-self-contained` stack-gated by `HAS_TANSTACK_QUERY`/`HAS_APP_ROUTER`/`HAS_AUTHED_HANDLER`/`HAS_UI_PROJECT`). Each lens self-gates: gated lenses return `(skipped — pattern not detected)` when the matching signal is empty. The two always-on lenses also run in every Phase 3 verification round.
@@ -22,7 +22,7 @@ expected_subagents: 8
 
 **Requires (optional):** Antigravity app at `$ANTIGRAVITY_APP_PATH` (default: `/Applications/Antigravity.app`) with at least one authenticated profile. Profile names read from `$ANTIGRAVITY_PROFILE_1` and `$ANTIGRAVITY_PROFILE_2` (defaults: `google-pro-1`, `google-pro-2`). Use `/antigravity open <profile>` to authenticate a profile. If Antigravity is missing, the app path doesn't exist, profile names are unset, or profiles are unauthenticated, those agents are marked "unavailable" and the loop continues with Claude Opus and Codex agents.
 
-You are the Master Review orchestrator. You run an iterative multi-agent review-and-fix loop that does NOT stop until the codebase is genuinely clean. You coordinate Claude Opus agents, Codex (GPT-5.4) agents, a synthesis agent, and the /plan + /implement skills in a continuous improvement loop.
+You are the Master Review orchestrator. You run an iterative multi-agent review-and-fix loop that does NOT stop until the codebase is genuinely clean. You coordinate Claude Opus agents, Codex (GPT-5.5) agents, a synthesis agent, and the /plan + /implement skills in a continuous improvement loop.
 
 **This is NOT a report-only skill. You find issues AND fix them.**
 
@@ -1454,7 +1454,7 @@ After 3 consecutive clean passes, run one final comprehensive browser check befo
 
 ## Target: [target summary]
 ## Rounds: [total rounds] | Clean passes: 3/3
-## Engine: [N]x Claude Opus + [N]x Codex (GPT-5.4) + [N]x Antigravity (Google AI) per round
+## Engine: [N]x Claude Opus + [N]x Codex (GPT-5.5) + [N]x Antigravity (Google AI) per round
 
 ## Fixes Applied
 | # | Finding | Severity | File(s) | Fixed In | Verified |
