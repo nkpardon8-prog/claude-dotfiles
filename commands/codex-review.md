@@ -19,17 +19,23 @@ You are a review orchestrator. You coordinate 4 Codex review passes and 3 Claude
 
 ---
 
-## Step 0: Parse the `--effort` flag (optional, opt-in)
+## Step 0: Resolve reasoning EFFORT (default `high`; self-escalate to `xhigh` only when critical)
 
-Before doing anything else, scan `$ARGUMENTS` for an optional `--effort <value>` flag and strip it out so the remainder is treated as the review target:
+codex-review runs Codex at `high` reasoning effort by default — the enforced floor; it never runs below high. It has exactly one lever above that: `xhigh` ("extra high"), reserved for genuinely critical reviews. Resolve `EFFORT` in this priority order, then strip any `--effort <value>` token from `$ARGUMENTS` before Step 1 classifies the target (so the flag never leaks into the file path / description / question):
 
-- Set `EFFORT="high"` by default. `high` is the enforced floor — codex-review never runs Codex below high reasoning effort.
-- If `$ARGUMENTS` contains `--effort xhigh`, set `EFFORT="xhigh"` (escalate to extra-high for the whole run).
-- If `$ARGUMENTS` contains `--effort high`, set `EFFORT="high"` (explicit, same as default).
-- Any other / missing / malformed value (including `--effort medium` or `--effort low`) → leave `EFFORT="high"`. Values below the floor are ignored, not honored.
-- Remove the `--effort <value>` token pair from `$ARGUMENTS` before Step 1 classifies the target, so the flag never leaks into the file path / description / question.
+**1. Explicit caller flag wins — skip self-assessment.**
+- `--effort xhigh` → `EFFORT="xhigh"`.
+- `--effort high` → `EFFORT="high"`.
+- A caller that pins the effort has decided deliberately. In particular, a convergence **LOOP** pins `--effort high` on purpose: it re-runs and finds everything across rounds, so no single pass needs xhigh. Honor the pin verbatim and do NOT self-escalate.
+- Any value below high (`medium` / `low` / malformed) is ignored → `EFFORT="high"`.
 
-`EFFORT` defaults to `high` — the enforced floor. codex-review never runs Codex below `high` reasoning effort; `--effort xhigh` escalates to extra-high for the whole run, and any lower value is clamped back to `high`. `EFFORT` is substituted into every Codex `model_reasoning_effort` setting in Step 3b (all 4 passes, all modes) and Step 6 (verification). (`/mission` calls `skill: codex-review --effort high`, which now matches the default.)
+**2. No explicit flag → default `high`, then self-assess for one-shot escalation.**
+Set `EFFORT="high"`, then judge whether THIS review is critical enough to justify `xhigh`. Escalate to `EFFORT="xhigh"` only when the target trips a criticality signal AND this is a one-shot review (not one iteration of a loop that will re-run):
+- **Escalate to `xhigh` when the target touches:** authentication / authorization, secrets or credential handling, payments / billing / money movement, PII / PHI or other regulated data, database migrations or destructive schema changes, deletion or other irreversible operations, production deploy / config, or security-sensitive parsing of untrusted input — OR the user/caller explicitly called it critical, high-stakes, or "one shot, no retries."
+- **Stay at `high` (do NOT escalate) when:** it's a routine diff, a plan / idea / bug discussion, a low-blast-radius change, or one pass inside a review loop. Loops converge — xhigh on every iteration is wasted; a `high` floor across rounds finds everything.
+- **When genuinely unsure, stay at `high`.** `xhigh` is the rare exception, not the norm — expect it on only a small minority of reviews.
+
+**3.** `EFFORT` is substituted into every Codex `model_reasoning_effort` setting in Step 3b (all 4 passes, all modes) and Step 6 (verification). State the resolved `EFFORT` in the Step 7 report header, and if you self-escalated to `xhigh`, add one line naming the criticality signal that triggered it.
 
 ---
 
