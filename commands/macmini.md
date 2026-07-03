@@ -461,7 +461,7 @@ Match the request to its row; use the listed channel; don't improvise.
 | Sub-command | Purpose |
 |---|---|
 | `/macmini connect` | Bind the Mac session by title; PIN hand-off (user-only); reconnect-overlay; Shift-wake after a lock check; canvas mount signal. |
-| `/macmini act <action>` | LAYER-2 desktop: `click` / `double` / `type` / `key` / `scroll` / `launch` / `switch` — all via the one rect helper. (Right-click = documented gap.) |
+| `/macmini act <action>` | LAYER-2 desktop: `click` / `double` / `type` / `key` / `scroll` / `launch` / `switch` — all via `crdMap` / the Precision targeting section. (Right-click = documented gap.) |
 | `/macmini crd <action>` | LAYER-1 CRD UI (coordinate/user fallback on macOS), plus `disconnect` and `status`. |
 | `/macmini setup` | One-time: MCP via `/devtools`, the two CRD side-panel toggles, optional `CRD_DEVICE_NAME`, first connect. |
 
