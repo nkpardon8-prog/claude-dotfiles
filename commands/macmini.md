@@ -35,14 +35,15 @@ argument-hint: "[free-form request, e.g. \"open chrome and check my email\"]"
 >   `OpenDentalDev1`). Two CRD sessions exist; both are
 >   `remotedesktop.google.com/access/session/...` URLs. If you cannot tell which
 >   tab is the Mac → **STOP and ask.**
-> - **Coordinates are derived per click, never reused.** Re-read the canvas rect
+> - **Coordinates are derived per click, never reused.** Re-read `crdMeta()`
 >   before every click (the window can resize mid-flow and silently break reused
 >   coords). Screenshot before AND after.
 >
-> The three load-bearing snippets — the canvas-rect helper, the capital/symbol
-> shift-map, and the title-first pre-flight — are **embedded inline below** so
-> this file is self-contained. Depth refs (dotfiles only, not on the deployed
-> path): `skills/macmini/SKILL.md`, `ONBOARDING.md`, `docs/FINDINGS-2026-06-01.md`.
+> The load-bearing snippets — the `crdMeta`/`crdMap` precision helpers (loupe +
+> crosshair), the capital/symbol shift-map, and the title-first pre-flight — are
+> **embedded inline below** so this file is self-contained. Depth refs (dotfiles
+> only, not on the deployed path): `skills/macmini/SKILL.md`, `ONBOARDING.md`,
+> `docs/FINDINGS-2026-06-01.md`, `../windows/docs/FINDINGS-2026-07-02-precision.md`.
 
 ## How this differs from the OLD gist-era /macmini (read if you knew it)
 
