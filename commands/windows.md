@@ -389,7 +389,7 @@ Match the request to its row; use the listed channel; don't improvise.
 
 - **Windows session only.** Match title `OpenDentalDev1`; confirm the taskbar;
   never select / `bringToFront` / act on the Mac CRD tab; **STOP if ambiguous.**
-- **Screenshot before AND after every `click_at`. Re-read the canvas rect before
+- **Screenshot before AND after every `click_at`. Re-read `crdMeta()` before
   each click. Never reuse coords across screenshots** — the window resizes
   mid-flow (verified incident).
 - **Modal-recovery rule:** screenshot before+after; if the screen is unchanged
