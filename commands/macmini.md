@@ -471,13 +471,20 @@ Match the request to its row; use the listed channel; don't improvise.
 | `/macmini crd <action>` | LAYER-1 CRD UI (coordinate/user fallback on macOS), plus `disconnect` and `status`. |
 | `/macmini setup` | One-time: MCP via `/devtools`, the two CRD side-panel toggles, optional `CRD_DEVICE_NAME`, first connect. |
 
-> **Delegation posture:** inline vision is the point of this skill, so reading
-> screenshots and acting on them stays in-thread. Heavy page enumeration (a big
-> `list_pages`, a deep `take_snapshot` dump) may be delegated, but never split a
-> click→screenshot→verify loop across agents. For many sequential mini-LOCAL
-> actions (sudo, multi-file, git), prefer the **mini-Claude delegation** recipe
-> in `skills/macmini/SKILL.md` (`claude --dangerously-skip-permissions` on the
-> mini — needs only `type_text`+`press_key`, no gist).
+> **Delegation posture:** the **precision click loop runs in ONE Sonnet-5
+> sub-agent that owns the WHOLE loop** — coarse-locate → loupe → crosshair-confirm
+> → clear → `click_at` → verify. Delegating the entire loop to one agent satisfies
+> "never SPLIT a click→screenshot→verify loop" (it's wholly delegated, not split);
+> Opus main-thread only orchestrates and recovers. Spawn it on `model:
+> "claude-sonnet-5"` at low/med reasoning effort. **Screenshots MUST be
+> JPEG-compressed** — `take_screenshot({format:'jpeg', quality:50})` — in **bounded
+> batches of ~10 targets**: a PNG-screenshotting loop hits the chrome-devtools MCP
+> **32MB request limit and dies** (proven this session). Heavy page enumeration (a
+> big `list_pages`, a deep `take_snapshot` dump) may also be delegated. For many
+> sequential mini-LOCAL actions (sudo, multi-file, git), prefer the **mini-Claude
+> delegation** recipe in `skills/macmini/SKILL.md`
+> (`claude --dangerously-skip-permissions` on the mini — needs only
+> `type_text`+`press_key`, no gist).
 
 ## See also (dotfiles only — NOT on the deployed `~/.claude/` path)
 
