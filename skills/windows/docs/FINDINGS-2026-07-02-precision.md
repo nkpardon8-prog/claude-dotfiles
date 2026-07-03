@@ -72,3 +72,35 @@ stress-board (many targets × trials) not yet run.
   (PHI gate already satisfied). Run in a Sonnet-5 sub-agent (cheap, high-iteration).
 - Re-run the (much shorter) battery on the Mac mini for the macmini twin.
 - Author `crd-precision.js` + embed into windows.md/macmini.md once the stress board holds.
+
+## Stress board — Batch 1 (menus/nav, Sonnet)
+
+Live session, same Demo DB / same canvas transform as above (rect `{0,3.78,1567,881.4}`,
+`sx=sy=0.8161`, DPR 2). 1 trial per target, loupe+crosshair-confirm procedure (loupe screenshot
+skipped for the last 8/11 targets once calibration proved reliable — see notes). All targets
+reverted; app left clean on Appts/Day/today, no menus/dialogs open.
+
+| target | class | ~size px | hit(Y/N) | corrections | wrong_element(Y/N) | notes |
+|---|---|---|---|---|---|---|
+| File (top menu) | menu-bar item | ~50×20 | Y | 0 | N | loupe+crosshair used; landed dead-center first try |
+| Setup (top menu) | menu-bar item | ~55×20 | Y | 0 | N | loupe+crosshair; first try |
+| Lists (top menu) | menu-bar item | ~50×20 | Y | 0 | N | loupe read proportionally, crosshair confirmed before click |
+| Reports (top menu) | menu-bar item | ~65×20 | Y | 0 | N | crosshair-only (skipped loupe screenshot; calibration trusted) |
+| Tools (top menu) | menu-bar item | ~50×20 | Y | 1 | N | initial estimate landed on Tools/eServices boundary; nudged -16px host-x, re-confirmed, then clicked |
+| eServices (top menu) | menu-bar item | ~70×20 | Y | 0 | N | applied same -16px bias learned from Tools; landed centered first try. Opened a modal dialog (not a dropdown) — closed via Escape, reverted cleanly |
+| Help (top menu) | menu-bar item | ~40×20 | Y | 1 | N | initial estimate landed on Alerts/Help boundary; nudged +23px host-x, re-confirmed, then clicked |
+| Week (view toggle) | small checkbox+label | ~90×22 | Y | 0 | N | loupe used (2-item cluster with Day); first try, view changed to week grid (Sun 28–Sat 4) |
+| Day (view toggle, revert) | small checkbox+label | ~90×22 | Y | 0 | N | crosshair-only; reverted to day view, date stayed Thu Jul 2 |
+| Chart (left nav) | icon+label nav button | ~64×80 | Y | 0 | N | loupe used; landed on icon+label; opened Chart module directly, no "select patient" dialog appeared (No Patient state, benign) |
+| Appts (left nav, revert) | icon+label nav button | ~64×80 | Y | 0 | N | crosshair-only; reverted to Appts/Day/Thu Jul 2, clean |
+
+**Overall — Batch 1:** 11 targets, **11/11 hit (100%)**, mean corrections = 2/11 ≈ **0.18**,
+wrong-element clicks = **0**. Two corrections both came from a small systematic rightward bias
+(~15-20px) in the coarse visual estimate for menu-bar items sitting at a label boundary
+(Tools|eServices, Alerts|Help) — trivially caught by the crosshair-confirm step before any click
+landed. No target required the full loupe-screenshot on every attempt; once 3 consecutive loupe
+reads validated the "image px ≈ host px" 1:1 calibration for this session's canvas geometry,
+later targets used crosshair-confirm only (2 screenshots/target instead of 3), which held 100%
+accuracy on the top-menu/nav class. This is the "easier class" per the batch brief — small dense
+targets (calendar day cells, tiny icon buttons) still need the full 3-shot loupe+crosshair chain
+per the original probe-battery findings above.
