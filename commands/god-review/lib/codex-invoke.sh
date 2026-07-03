@@ -44,12 +44,12 @@ run_codex() {
   local home_arg="$1"
   if [ -n "$home_arg" ]; then
     CODEX_HOME="$home_arg" "$CODEX_BIN" \
-      -c model_reasoning_effort="high" \
+      -c model_reasoning_effort="xhigh" \
       exec -s read-only --ephemeral --cd "$WORKDIR" \
       "$PROMPT" >> "$OUTFILE" 2>&1
   else
     "$CODEX_BIN" \
-      -c model_reasoning_effort="high" \
+      -c model_reasoning_effort="xhigh" \
       exec -s read-only --ephemeral --cd "$WORKDIR" \
       "$PROMPT" >> "$OUTFILE" 2>&1
   fi
