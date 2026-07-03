@@ -412,7 +412,7 @@ Match the request to its row; use the listed channel; don't improvise.
   bar (top) / Dock; never select / `bringToFront` / act on the **Windows** CRD
   tab (`OpenDentalDev1`); **STOP if ambiguous.** (Symmetric to `/windows` never
   touching the Mac.)
-- **Screenshot before AND after every `click_at`. Re-read the canvas rect before
+- **Screenshot before AND after every `click_at`. Re-read `crdMeta()` before
   each click. Never reuse coords across screenshots** — the window can resize
   mid-flow and silently break reused coords.
 - **Modal-recovery rule:** screenshot before+after; if the screen is unchanged
