@@ -472,10 +472,28 @@ Only a `phase=review findings=0` (dry-advancing) round OR a completed `phase=fix
 actionable `phase=review findings>0` round always resumes into its own fix first.
 
 When converged (Section 6: 2 consecutive non-void dry rounds):
+
+**FIRST emit the live-verify line (Task 4 — UNCONDITIONAL, once per part, immediately AFTER the `dry=2`
+round is banked and BEFORE `PART-DONE`).** This is the ONLY position that satisfies the freshness rule:
+after the `dry=2` bank, before any advance, no later actionable event exists so the live-verify is the
+newest evidence. `mission-write.sh` enforces this — a `PART-DONE` without a FRESH, gen-current
+`live-verify part=<N>` is REFUSED `rc=4` and BLOCKS retirement. Run the part's live leg and record the
+evidence token; for a non-UI part with nothing to click, emit `status=n/a` with a mandatory reason:
+```bash
+# UI/effect part — run the live leg, capture the concrete effect (a filesystem path is STAT-verified;
+# an od:<num> / sha:<hex> / URL is a syntax-checked RECORDED token, not a round-trip proof):
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] live-verify part=<N> round=<K> status=ok evidence=<token>" "m<N>-live-verify-r<K>"
+# non-UI part — no interactable surface to drive:
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] live-verify part=<N> round=<K> status=n/a reason=<slug>" "m<N>-live-verify-r<K>"
+```
+`round=<K>` is the just-banked `dry=2` round; it scopes the idtag so a fresh re-verification after a
+later fix mints a NEW line instead of colliding. Parse the status line (Section 7). THEN log PART-DONE:
 ```bash
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-DONE part=<N> (converged)" "m<N>-part-done"
 ```
-Parse the status line (Section 7). Then **retire the part plan**: because `--no-review` made `/mission`
+Parse the status line (Section 7) — a `FAILED rc=4 (REFUSED …)` here means the part is NOT converged
+(missing/stale live-verify, or the dry-count fold is not machine-clean): do the named remediation and
+re-attempt; do **NOT** advance. Then **retire the part plan**: because `--no-review` made `/mission`
 own the plan lifecycle, MOVE the per-part plan from ready-plans to done-plans after `PART-DONE` (use
 the project's done-plans convention). A plan left in ready-plans is a stale plan a later part could
 wrongly grab. **Check the `mv` result — do NOT proceed silently on failure** — and make it idempotent
@@ -501,6 +519,12 @@ converged part from one still in progress (Section 8 / Section 9):
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-START part=<N+1> name=<slug>" "m<N+1>-part-start"
 ```
 Parse the status line (Section 7), then begin the next part's Phase 1.
+
+**Push guidance (if you push a converged part's work).** Pushing is not part of the per-part loop, but
+when you do surface completed work upstream, NEVER overwrite another agent's work: `git fetch` the base
+first and check for divergence; on any UNEXPECTED divergence **STOP** (rebase, never force). The bridge
+artifacts live at the canonical root, never inside a per-part worktree, so a push of the code worktree
+never touches the mission LOG.
 
 ---
 
@@ -588,6 +612,30 @@ rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
 - any other non-zero rc (4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
   feeds the 5-FAIL loop-breaker (§10).
 
+**EXACT-TOKEN status contract for the `log` verb (Task 4 — REPLACES the old "empty rc ⇒ ok" rule
+for `log`/`note`/`challenge`/`pending`).** `mission-write.sh log` now emits one of exactly four
+tokens after `mission-write: log ` — match the LEADING token and react MANDATORILY:
+- **`ok`** → the write appended (or was an idempotent no-op) → proceed. The ONLY success token.
+- **`COLLISION`** (`mission-write: log COLLISION (…)`) → the idtag exists with DIFFERENT content →
+  **STOP**, re-derive the gen/round numbering, and **never assume the line was banked** (a banked
+  round you think you wrote may not exist; a fresh line you meant to write did not land). Do NOT retry
+  blindly — reconcile against the recovered LOG first.
+- **`REROUTED-TO-NOTES`** (`mission-write: log REROUTED-TO-NOTES (…)`) → a free-text entry exceeded
+  480B and went to DURABLE NOTES → **rewrite it TERSE and re-log until you get `ok`** (a machine
+  shape that is too long is REFUSED `line-too-long` instead — see the length rule below).
+- **`FAILED rc=N (…)`** → a REFUSED/failed write. `rc=4` on a **PART-DONE or a live-verify** write
+  **BLOCKS retirement/advance** (the explicit carve-out from the generic rc-4 "log + proceed" policy):
+  the part is NOT converged — read the `(REFUSED …)` slug (`PART-DONE without live-verify` /
+  `live-verify-stale` / `convergence-not-machine-clean` / `gen-boundary-mismatch`), do the named
+  remediation (run the live leg, re-run the panel/fixes, repair the boundary), and re-attempt. `rc=5`
+  is a wrong-gen idtag prefix REFUSE (re-derive the gen). `rc=1 (REFUSED …)` is a grammar/control-char
+  refusal — fix the shape.
+- **`void-count` / `parse-codex-header`** are the TWO read-only verbs that DO NOT emit this status
+  line — their stdout is a bare machine token (`N` / `-1`, and `N/4` / empty). A `void-count` of
+  **`-1`** is the ERROR SENTINEL of a refused gen-sliced read: **STOP** (do not treat as count 0, do
+  not advance) and surface the corrupt/boundary condition (§10) until the write-path self-heal (or the
+  user) repairs it.
+
 **LOG schema — the SINGLE canonical definition; every resume rule (§5/§8/§9) reads lines
 back in EXACTLY these shapes.** These are `log`-verb entries with a structured `[mission]` payload —
 not new verbs; the real on-disk line is `<idtag>\t<entry>`; resume matches `[mission]` ANYWHERE on the
@@ -650,6 +698,38 @@ Other zones: `note` = forced research assumptions + verbose round findings (DURA
 `challenge` = PLAN divergence (loud; never silently edit PLAN); `pending` = the batched human-decision
 queue (`- [pd:<seq>-<slug>] <q>`); `resolve` drains a pending; `rebaseline` is the ONLY path that
 rewrites PLAN.
+
+**Per-shape grammar (Task 4 — `mission-write.sh log` VALIDATES every shape; the validator in the
+script is the authoritative source, this table is its documentation).** A malformed shape or an
+unknown `[mission]` leading token is REFUSED (`rc=1 REFUSED …`) so the malformed-shape hole is closed;
+the idtag's `part`/`round`/`phase` must equal the entry's where both carry them:
+
+| shape (leading token after `[mission] `) | entry grammar | idtag grammar |
+|---|---|---|
+| round (`part=`) | `part=N name=<slug> phase=(research\|plan\|implement\|review\|fix) round=K dry=[0-2]( findings=C)?` | `[g<G>-]m<N>-<phase>-r<K>-d<D>` |
+| `VOID` | `VOID part=N phase=review round=K reason=<slug>` | `[g<G>-]m<N>-void-r<K>-<runid6>h(<sha8>\|nofile)` |
+| `FAIL` | `FAIL part=N phase=<p> reason=<slug> attempt=A` (phase incl. `retire`) | `[g<G>-]m<N>-fail-<reason>-<A>` or `[g<G>-]m<N>-fail-panel3x-r<K>` |
+| `live-verify` | `live-verify part=N round=K status=(ok evidence=<tok>\|n/a reason=<slug>)` | `[g<G>-]m<N>-live-verify-r<K>` (K == entry round — a post-fix re-verify at a new round NEVER collides) |
+| `PART-START` | `PART-START part=N name=<slug>` (name REQUIRED) | `[g<G>-]m<N>-part-start` |
+| `PART-DONE` | `PART-DONE part=N (converged)` | `[g<G>-]m<N>-part-done` |
+| `PART-RETIRED` | `PART-RETIRED part=N` | `[g<G>-]m<N>-part-retired` |
+| `test-trust` | `test-trust part=N=(ok\|added\|n/a)` (legacy glued form) | `[g<G>-]m<N>-test-trust` |
+| `criticer` | `criticer part=N findings=C <bounded headline>` | `[g<G>-]m<N>-criticer-r<K>` |
+| `MISSION-CLEARED` | `MISSION-CLEARED status=(achieved\|could-not\|cleared) reason=<slug>` | EMPTY (always-append) |
+| `MISSION-REBASELINED` | `MISSION-REBASELINED status=active gen=<G> …` (lib-written; `gen=` is the boundary↔marker cross-check anchor) | EMPTY |
+
+**`MISSION-START` / `WORK-START` are LIB-ONLY emissions** — mission_create + the timing verbs append
+them via the lib directly; they are **NEVER routed through the `log` verb** (the validator REFUSES an
+external `log … "[mission] MISSION-START …"` as an unknown shape). Do not log them by hand.
+
+**Generation-scoped idtags (Task 4).** The marker carries `gen=` (minted `1` at create, BUMPED at
+rebaseline — the generation slice boundary). idtags are gen-scoped: **gen-1 idtags stay byte-identical
+(unprefixed)**; a **gen≥2** idtag is auto-prefixed `g<G>-…` by the lib (you pass the bare `m<N>-…`
+idtag — do NOT prefix it yourself; a WRONG `g<X>-` prefix is REFUSED `rc=5`). EMPTY idtags are exempt.
+Dedup is archive-inclusive within the active generation, and the PART-DONE precondition / VOID count /
+FAIL tally read only the CURRENT generation (the gen-sliced stream, after the latest gen-matching
+`MISSION-REBASELINED` boundary) — so a prior generation's evidence never satisfies this generation's
+convergence.
 
 ---
 

@@ -593,6 +593,9 @@ _mission_rewrite() {
   _rw_nonce=$(_mission_marker_field "$_rw_file" nonce)
   _rw_sid=$(_mission_marker_field "$_rw_file" sid)
   _rw_oldhash=$(_mission_marker_field "$_rw_file" plan_hash)
+  # generation is order-tolerant (key-value read; absent => 1). Preserve it on re-emit so a
+  # note/challenge/pending/resolve never drops the marker's gen (fix-plan Task 4).
+  _rw_gen=$(_mission_marker_field "$_rw_file" gen); [ -n "$_rw_gen" ] || _rw_gen=1
   [ -n "$_rw_nonce" ] || return 1
   _rw_n8=$(printf '%s' "$_rw_nonce" | cut -c1-8)
   if [ "$_rw_hashmode" = "keep" ] || [ -z "$_rw_hashmode" ]; then
@@ -653,8 +656,8 @@ _mission_rewrite() {
     }
   ' "$_rw_file"
 
-  # Re-emit the canonical marker byte-exact as the last line.
-  printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s -->\n' "$_rw_sid" "$_rw_nonce" "$_rw_hash"
+  # Re-emit the canonical marker byte-exact as the last line (gen preserved, order-tolerant).
+  printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s -->\n' "$_rw_sid" "$_rw_nonce" "$_rw_hash" "$_rw_gen"
 }
 
 # ===========================================================================================
@@ -822,7 +825,8 @@ mission_create() {
   _mc_hash=$(printf '%s' "$_mc_src" | _mission_hash_stream) || return 1
 
   # compose the file body + canonical marker, write atomically.
-  _mc_body=$(printf '# MISSION %s\n\n<!-- MZONE:PLAN n=%s -->\n%s\n<!-- /MZONE:PLAN n=%s -->\n<!-- MZONE:DURABLE NOTES n=%s -->\n<!-- /MZONE:DURABLE NOTES n=%s -->\n<!-- MZONE:PLAN CHALLENGES n=%s -->\n<!-- /MZONE:PLAN CHALLENGES n=%s -->\n<!-- MZONE:PENDING DECISIONS n=%s -->\n<!-- /MZONE:PENDING DECISIONS n=%s -->\n<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s -->' \
+  # gen=1 minted at create (generation scheme, fix-plan Task 4); bumped only at rebaseline.
+  _mc_body=$(printf '# MISSION %s\n\n<!-- MZONE:PLAN n=%s -->\n%s\n<!-- /MZONE:PLAN n=%s -->\n<!-- MZONE:DURABLE NOTES n=%s -->\n<!-- /MZONE:DURABLE NOTES n=%s -->\n<!-- MZONE:PLAN CHALLENGES n=%s -->\n<!-- /MZONE:PLAN CHALLENGES n=%s -->\n<!-- MZONE:PENDING DECISIONS n=%s -->\n<!-- /MZONE:PENDING DECISIONS n=%s -->\n<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=1 -->' \
     "$_mc_sid" \
     "$_mc_n8" "$_mc_src" "$_mc_n8" \
     "$_mc_n8" "$_mc_n8" \
@@ -903,6 +907,7 @@ mission_ensure() {
 #   idtag — optional idempotency tag; a duplicate <!-- mid:<idtag> --> short-circuits to 0.
 mission_mutate() {
   sid=$(_mission_sanitize_sid "$1"); root="$2"; verb="$3"; entry="$4"; idtag="${5:-}"
+  _MLA_OUTCOME=appended; _MLA_REASON=""     # outcome hygiene: cleared at entry, set before every return
   [ -n "$sid" ] || { echo "mission: mutate: invalid sid" >&2; return 1; }
   [ -n "$root" ] || { echo "mission: mutate: missing root" >&2; return 1; }
   f="${root}/MISSION.${sid}.md"
@@ -925,9 +930,31 @@ mission_mutate() {
     echo "mission: CORRUPT — refusing (backups in .mission-backups/)" >&2; return 2
   fi
 
-  # idempotent BEFORE backup
-  if [ -n "$idtag" ] && grep -qF "<!-- mid:$idtag -->" "$f" 2>/dev/null; then
-    _mission_unlock; return 0
+  # gen-prefix the zone mid: idtag (Task 4) — zone notes/challenges/pendings are gen-scoped too,
+  # not just log lines. EMPTY exempt; wrong-gen prefix REFUSED (surfaced via _MLA_OUTCOME).
+  if [ -n "$idtag" ]; then
+    _mu_gtag=$(_mission_gen_tag "$f" "$idtag"); _mu_gtrc=$?
+    if [ "$_mu_gtrc" -eq 5 ]; then
+      _mission_unlock; _MLA_OUTCOME=wrong-gen; _MLA_REASON="idtag prefix does not match current gen"
+      echo "mission: mutate: REFUSED wrong-gen idtag prefix" >&2; return 0
+    fi
+    idtag="$_mu_gtag"
+  fi
+
+  # CONTENT-BOUND mid: dedup (Task 4): the idempotency key is tag + content-hash, so a same-tag/
+  # DIFFERENT-content note surfaces as COLLISION instead of silently vanishing (old code keyed on the
+  # bare `<!-- mid:$idtag -->` existence and dropped the differing note). The `h=` delimiter is a
+  # SPACE so a `pd-9` tag never prefix-matches a `pd-99` marker.
+  _mu_midkey=""
+  if [ -n "$idtag" ]; then
+    _mu_h8=$(printf '%s' "$entry" | _mission_hash_stream 2>/dev/null | cut -c1-8); [ -n "$_mu_h8" ] || _mu_h8=nohash
+    _mu_midkey="${idtag} h=${_mu_h8}"
+    if grep -qF "<!-- mid:${_mu_midkey} -->" "$f" 2>/dev/null; then
+      _mission_unlock; _MLA_OUTCOME=dedup-idempotent; return 0     # same tag + same content
+    fi
+    if grep -qF "<!-- mid:${idtag} h=" "$f" 2>/dev/null; then
+      _mission_unlock; _MLA_OUTCOME=collision; return 0            # same tag, DIFFERENT content
+    fi
   fi
 
   mission_backup "$f" "$root" "$sid" || {
@@ -943,11 +970,12 @@ mission_mutate() {
     fi
   fi
 
+  # the mid: marker embeds the content hash (`<idtag> h=<h8>`) so dedup is content-bound.
   tmp=$(mktemp "${f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: mutate: mktemp failed" >&2; return 5; }
-  ( umask 077 && _mission_rewrite "$f" "$zone" "$entry" "$idtag" "$aux" "keep" > "$tmp" )
+  ( umask 077 && _mission_rewrite "$f" "$zone" "$entry" "$_mu_midkey" "$aux" "keep" > "$tmp" )
 
   if [ -s "$tmp" ] && mission_verify "$tmp" "$sid" \
-     && { [ -z "$idtag" ] || grep -qF "<!-- mid:$idtag -->" "$tmp"; }; then
+     && { [ -z "$idtag" ] || grep -qF "<!-- mid:${_mu_midkey} -->" "$tmp"; }; then
     if ! mv -f "$tmp" "$f"; then
       rm -f "$tmp"; _mission_unlock; echo "mission: mutate: rename failed — original intact" >&2; return 6
     fi
@@ -956,7 +984,130 @@ mission_mutate() {
   fi
 
   _mission_unlock
+  _MLA_OUTCOME=appended
   return 0
+}
+
+# ===========================================================================================
+# Generation scheme — gen-scoped idtags + gen-sliced reads + gen-boundary crash-safety (Task 4).
+#   The marker's `gen=` field (order-tolerant; absent => 1) partitions a mission's LOG into
+#   generations. rebaseline is the slice boundary: it BUMPS gen in the marker AND appends a
+#   gen-stamped MISSION-REBASELINED line. Writer-side idtag namespacing (gen-prefix) + reader-side
+#   slicing (after the latest boundary) together stop a re-emitted line in gen N from dedup-
+#   swallowing an identical line from gen N-1, and stop stale gen N-1 evidence from satisfying a
+#   gen N convergence read.
+# ===========================================================================================
+
+# _mission_gen_tag <MAIN_MD_FILE> <tag> -> stdout possibly-gen-prefixed tag; rc encodes outcome.
+#   gen lives in the .md marker (NOT the .log). Callers derive the .md path from sid/root.
+#   Contract (Key Pseudocode 1):
+#     empty tag             -> echoed unchanged, rc 0 (rebaseline lifecycle line depends on it)
+#     unprefixed + gen==1   -> unchanged, rc 0        (gen-1 idtags stay byte-identical)
+#     unprefixed + gen>=2   -> "g<gen>-<tag>", rc 0
+#     prefixed "g<G>-..."   -> accepted as-is iff <G> == CURRENT gen, else rc 5 (wrong-gen REFUSE,
+#                              NOT a collision — caller surfaces FAILED rc=5)
+_mission_gen_tag() {
+  _gt_md="$1"; _gt_tag="$2"
+  [ -n "$_gt_tag" ] || { printf '%s' "$_gt_tag"; return 0; }        # EMPTY tag exempt
+  _gt_gen=$(_mission_marker_field "$_gt_md" gen 2>/dev/null); [ -n "$_gt_gen" ] || _gt_gen=1
+  case "$_gt_gen" in ''|*[!0-9]*) _gt_gen=1 ;; esac
+  # a caller-supplied numeric gen prefix `g<digits>-...` must equal the current gen or REFUSE.
+  case "$_gt_tag" in
+    g[0-9]*-*)
+      _gt_pfx=${_gt_tag#g}; _gt_pfx=${_gt_pfx%%-*}
+      case "$_gt_pfx" in
+        ''|*[!0-9]*) : ;;   # not a numeric gen prefix after all — treat as unprefixed below
+        *)
+          if [ "$_gt_pfx" = "$_gt_gen" ]; then printf '%s' "$_gt_tag"; return 0; fi
+          echo "mission: gen-tag: REFUSED idtag prefix g${_gt_pfx}- does not match current gen ${_gt_gen}" >&2
+          return 5
+          ;;
+      esac
+      ;;
+  esac
+  if [ "$_gt_gen" -ge 2 ] 2>/dev/null; then printf 'g%s-%s' "$_gt_gen" "$_gt_tag"; return 0; fi
+  printf '%s' "$_gt_tag"; return 0   # gen 1, unprefixed
+}
+
+# _gen_sliced_stream <sid> <root> -> stdout the archive-inclusive LOG stream SLICED to the ACTIVE
+# generation (everything AFTER the latest gen-matching MISSION-REBASELINED boundary; the whole
+# stream for gen 1). rc 0 = stream emitted; rc 1 = REFUSED gen-boundary-mismatch (marker gen>=2 but
+# the latest boundary's gen disagrees or is absent — the rollover crash window at gate-22). Consumers
+# translate rc 1 into their own machine-blocking representation (PART-DONE => rc=4; void-count => -1).
+# READ-ONLY: never writes (the write-path self-heal repairs the boundary, not this reader).
+_gen_sliced_stream() {
+  _gss_sid=$(_mission_sanitize_sid "$1"); _gss_root="$2"
+  _gss_md="${_gss_root}/MISSION.${_gss_sid}.md"
+  _gss_gen=$(_mission_marker_field "$_gss_md" gen 2>/dev/null); [ -n "$_gss_gen" ] || _gss_gen=1
+  case "$_gss_gen" in ''|*[!0-9]*) _gss_gen=1 ;; esac
+  _gss_stream=$(_mission_timing_stream "$_gss_sid" "$_gss_root")
+  _gss_bline=$(printf '%s\n' "$_gss_stream" \
+    | grep -E '\[mission\] MISSION-REBASELINED status=active' | tail -1)
+  _gss_bgen=$(printf '%s' "$_gss_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
+  if [ "$_gss_gen" -ge 2 ] 2>/dev/null; then
+    if [ -z "$_gss_bline" ] || [ "$_gss_bgen" != "$_gss_gen" ]; then
+      echo "mission: gen-sliced-read REFUSED gen-boundary-mismatch (marker gen=${_gss_gen}, latest boundary gen=${_gss_bgen:-none})" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$_gss_bline" ]; then
+    printf '%s\n' "$_gss_stream" | awk -v b="$_gss_bline" 'seen==1{print} $0==b{seen=1}'
+  else
+    printf '%s\n' "$_gss_stream"
+  fi
+  return 0
+}
+
+# _void_consecutive_count <sid> <root> <part> <round> -> stdout a BARE integer: the number of
+# distinct gen-current VOID lines for part N / round K with NO banked `phase=review round=K` line
+# after them (a banked review round K RESETS the count — the round finally ran). Prints the `-1`
+# ERROR SENTINEL when the gen-sliced read REFUSES (boundary mismatch) or the args are non-numeric —
+# the machine-blocking stdout representation of a refused read (gate-23: stderr alone can't block a
+# count-testing caller). Exposed as the read-only `void-count` dispatcher verb (§5 never sources lib).
+_void_consecutive_count() {
+  _vcc_sid=$(_mission_sanitize_sid "$1"); _vcc_root="$2"; _vcc_part="$3"; _vcc_round="$4"
+  case "$_vcc_part"  in ''|*[!0-9]*) echo "-1"; return 0 ;; esac
+  case "$_vcc_round" in ''|*[!0-9]*) echo "-1"; return 0 ;; esac
+  _vcc_stream=$(_gen_sliced_stream "$_vcc_sid" "$_vcc_root") || { echo "-1"; return 0; }
+  printf '%s\n' "$_vcc_stream" | awk -v pn="$_vcc_part" -v rk="$_vcc_round" '
+    $0 ~ ("\\[mission\\] VOID part=" pn "[^0-9]") && $0 ~ ("round=" rk "([^0-9]|$)") { c++; next }
+    $0 ~ ("\\[mission\\] part=" pn "[^0-9]") && $0 ~ ("phase=review") && $0 ~ ("round=" rk "([^0-9]|$)") { c=0 }
+    END { print c+0 }
+  '
+  return 0
+}
+
+# mission_parse_codex_header <file> -> stdout the bare `N/4` token from the FIRST full-shape
+# `^Engine: ... Codex-passes: N/4 ... Verified:` line (anti-spoof: only the first canonical header
+# binds; reviewed body content that quotes the string never wins). Empty stdout on absent/malformed
+# header. Diagnostics to stderr; rc always 0 (read-only). Exposed as the `parse-codex-header` verb.
+mission_parse_codex_header() {
+  _pch_file="$1"
+  if [ ! -f "$_pch_file" ]; then
+    echo "mission: parse-codex-header: file not found: ${_pch_file:-<empty>}" >&2; return 0
+  fi
+  grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' "$_pch_file" 2>/dev/null \
+    | head -1 | grep -oE 'Codex-passes: [0-9]+/4' | head -1 | sed 's/Codex-passes: //'
+  return 0
+}
+
+# _mission_gen_selfheal <sid> <root> <marker_gen> <logfile> — WRITE-PATH self-heal for the rollover
+# crash window (gate-22): if the marker committed a gen bump (>=2) but the boundary append died, the
+# latest boundary's gen is BEHIND the marker. Append the missing `(recovered)` boundary FIRST so the
+# next gen-sliced read slices correctly. Idempotent: no-op once a gen-matching boundary exists. EMPTY
+# idtag (always-append; matches the boundary grammar). Raw append (NOT recursive) to avoid re-entry.
+_mission_gen_selfheal() {
+  _gsh_sid=$(_mission_sanitize_sid "$1"); _gsh_root="$2"; _gsh_gen="$3"; _gsh_log="$4"
+  _gsh_bline=$(_mission_timing_stream "$_gsh_sid" "$_gsh_root" \
+    | grep -E '\[mission\] MISSION-REBASELINED status=active' | tail -1)
+  _gsh_bgen=$(printf '%s' "$_gsh_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
+  if [ -z "$_gsh_bline" ] || [ "$_gsh_bgen" != "$_gsh_gen" ]; then
+    if [ -s "$_gsh_log" ]; then
+      _gsh_lb=$(tail -c 1 "$_gsh_log" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+      [ -n "$_gsh_lb" ] && [ "$_gsh_lb" != "0a" ] && printf '\n' >> "$_gsh_log" 2>/dev/null
+    fi
+    printf '\t[mission] MISSION-REBASELINED status=active gen=%s (recovered)\n' "$_gsh_gen" >> "$_gsh_log" 2>/dev/null
+  fi
 }
 
 # ===========================================================================================
@@ -964,18 +1115,44 @@ mission_mutate() {
 # ===========================================================================================
 
 # mission_log_append <sid> <root> <entry> <idtag>
+#   OUTCOME travels via the global _MLA_OUTCOME (cleared at entry, set before every return) —
+#   NEVER via new rc values (the numeric rc contract 0=success/idempotent is load-bearing for the
+#   ~6 internal callers). Outcomes: appended | dedup-idempotent | collision | rerouted | wrong-gen.
 mission_log_append() {
   sid=$(_mission_sanitize_sid "$1"); root="$2"; _la_entry="$3"; _la_idtag="$4"
+  _MLA_OUTCOME=appended; _MLA_REASON=""     # outcome hygiene: clear at entry, set before every return
   [ -n "$sid" ] || { echo "mission: log: invalid sid" >&2; return 1; }
   [ -n "$root" ] || { echo "mission: log: missing root" >&2; return 1; }
   f="${root}/MISSION.${sid}.log"
+  mdf="${root}/MISSION.${sid}.md"
 
   # lifecycle: main file + manifest pointer MUST exist first (no orphan log — #5/#35)
   mission_ensure "$sid" "$root" || {
     echo "mission-log: main file unavailable — refusing orphan log" >&2; return 7; }
 
+  # gen-boundary SELF-HEAL (WRITE path only; gate-22). If the marker committed a gen>=2 bump but the
+  # boundary append died, append the missing boundary BEFORE any gen>=2 append. Skip when THIS entry
+  # is itself the rebaseline boundary write (it IS the boundary; self-healing it would double it).
+  _la_gen=$(_mission_marker_field "$mdf" gen 2>/dev/null); [ -n "$_la_gen" ] || _la_gen=1
+  case "$_la_gen" in ''|*[!0-9]*) _la_gen=1 ;; esac
+  case "$_la_entry" in
+    "[mission] MISSION-REBASELINED"*) : ;;                 # the boundary write itself — never self-heal
+    *) [ "$_la_gen" -ge 2 ] 2>/dev/null && _mission_gen_selfheal "$sid" "$root" "$_la_gen" "$f" ;;
+  esac
+
   esc=$(printf '%s' "$_la_entry" | tr '\t\n' '__')          # squash to ledger convention (#32)
   tag=$(printf '%s' "$_la_idtag" | tr -cd 'A-Za-z0-9_.:-')
+  # gen-prefix the idtag (Key Pseudocode 1) — post-sanitization, PRE byte-measure (a g<N>- prefix
+  # adds bytes the reroute/length checks must see). EMPTY tags exempt; wrong-gen prefix REFUSED.
+  if [ -n "$tag" ]; then
+    _la_gtag=$(_mission_gen_tag "$mdf" "$tag"); _la_gtrc=$?
+    if [ "$_la_gtrc" -eq 5 ]; then
+      _MLA_OUTCOME=wrong-gen
+      _MLA_REASON="idtag prefix does not match current gen ${_la_gen}"
+      return 0    # REFUSED, no append; surfaced via _MLA_OUTCOME (rc stays 0 for internal callers)
+    fi
+    tag="$_la_gtag"
+  fi
   # Measure the FULL (untruncated) line first. If it would exceed the per-line budget, reroute
   # the WHOLE entry to the locked main file (DURABLE NOTES) — never truncate, never a torn
   # >PIPE_BUF append (C2: the old code capped to 470B THEN checked >=480, so the reroute was
@@ -983,14 +1160,29 @@ mission_log_append() {
   full_line=$(printf '%s\t%s' "$tag" "$esc")
   blen=$(printf '%s\n' "$full_line" | LC_ALL=C wc -c | tr -d ' ')
   if [ -n "$blen" ] && [ "$blen" -ge 480 ]; then
-    mission_mutate "$sid" "$root" note "$_la_entry" "$tag"; return $?
+    mission_mutate "$sid" "$root" note "$_la_entry" "$tag"; _la_rrc=$?
+    # rerouted only on SUCCESS; a collision/wrong-gen from the mutate keeps its own outcome; a real
+    # failure propagates its rc (surfaces as FAILED).
+    if [ "$_la_rrc" -eq 0 ] && [ "$_MLA_OUTCOME" != collision ] && [ "$_MLA_OUTCOME" != wrong-gen ]; then
+      _MLA_OUTCOME=rerouted
+    fi
+    return "$_la_rrc"
   fi
   # Fits the budget (<480B) and is already valid (no byte-cut), so no truncation/iconv needed.
   line="$full_line"
 
-  # idempotent, ANCHORED on a LEADING tag + literal TAB (NOT grep -qF — #32)
-  if [ -n "$tag" ] && grep -qE "^$(_re_escape "$tag")"$'\t' "$f" 2>/dev/null; then
-    return 0
+  # ARCHIVE-INCLUSIVE dedup + COLLISION detection, ANCHORED on a LEADING tag + literal TAB. The
+  # lookup spans ALL rotated archives + the live log (a rotated-out tag must still dedup); the tag
+  # is already gen-prefixed, so the search is automatically scoped to the ACTIVE generation
+  # (gen-1 unprefixed tags never match a g<N>- search, and vice-versa). same tag + same entry =>
+  # quiet idempotent; same tag + DIFFERENT entry => COLLISION (loud, surfaced, NOT silently vanished).
+  if [ -n "$tag" ]; then
+    _la_prev=$(_mission_timing_stream "$sid" "$root" | grep -E "^$(_re_escape "$tag")"$'\t' 2>/dev/null | head -1)
+    if [ -n "$_la_prev" ]; then
+      _la_prevcontent="${_la_prev#*$'\t'}"     # everything after the FIRST tab = the stored entry
+      if [ "$_la_prevcontent" = "$esc" ]; then _MLA_OUTCOME=dedup-idempotent; return 0
+      else _MLA_OUTCOME=collision; return 0; fi
+    fi
   fi
 
   _mission_log_rotate "$f" "$root" "$sid" || {
@@ -1006,6 +1198,7 @@ mission_log_append() {
   fi
 
   printf '%s\n' "$line" >> "$f" || { echo "mission: log: append failed" >&2; return 1; }
+  _MLA_OUTCOME=appended
   return 0
 }
 
@@ -1032,6 +1225,7 @@ mission_resolve_pending() {
   _rp_sid_marker=$(_mission_marker_field "$_rp_f" sid)
   _rp_nonce=$(_mission_marker_field "$_rp_f" nonce)
   _rp_hash=$(_mission_marker_field "$_rp_f" plan_hash)
+  _rp_gen=$(_mission_marker_field "$_rp_f" gen); [ -n "$_rp_gen" ] || _rp_gen=1   # preserve gen (Task 4)
   _rp_n8=$(printf '%s' "$_rp_nonce" | cut -c1-8)
 
   _rp_tmp=$(mktemp "${_rp_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: resolve: mktemp failed" >&2; return 5; }
@@ -1064,7 +1258,7 @@ mission_resolve_pending() {
         }
       }
     ' "$_rp_f" > "$_rp_tmp"
-    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s -->\n' "$_rp_sid_marker" "$_rp_nonce" "$_rp_hash" >> "$_rp_tmp"
+    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s -->\n' "$_rp_sid_marker" "$_rp_nonce" "$_rp_hash" "$_rp_gen" >> "$_rp_tmp"
   )
 
   if [ -s "$_rp_tmp" ] && mission_verify "$_rp_tmp" "$_rp_sid"; then
@@ -1101,6 +1295,10 @@ mission_rebaseline() {
   _rb_sidm=$(_mission_marker_field "$_rb_f" sid)
   _rb_nonce=$(_mission_marker_field "$_rb_f" nonce)
   _rb_n8=$(printf '%s' "$_rb_nonce" | cut -c1-8)
+  # BUMP the generation (Task 4): rebaseline is the generation slice boundary. gen absent => 1.
+  _rb_oldgen=$(_mission_marker_field "$_rb_f" gen); [ -n "$_rb_oldgen" ] || _rb_oldgen=1
+  case "$_rb_oldgen" in ''|*[!0-9]*) _rb_oldgen=1 ;; esac
+  _rb_gen=$((_rb_oldgen + 1))
   _rb_newhash=$(printf '%s' "$_rb_plan" | _mission_hash_stream) || { _mission_unlock; return 1; }
 
   _rb_tmp=$(mktemp "${_rb_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: rebaseline: mktemp failed" >&2; return 5; }
@@ -1124,7 +1322,7 @@ mission_rebaseline() {
         }
       }
     ' "$_rb_f" > "$_rb_tmp"
-    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s -->\n' "$_rb_sidm" "$_rb_nonce" "$_rb_newhash" >> "$_rb_tmp"
+    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s -->\n' "$_rb_sidm" "$_rb_nonce" "$_rb_newhash" "$_rb_gen" >> "$_rb_tmp"
   )
 
   if [ -s "$_rb_tmp" ] && mission_verify "$_rb_tmp" "$_rb_sid"; then
@@ -1141,10 +1339,12 @@ mission_rebaseline() {
   # must NOT swallow the append rc: the PLAN rewrite already committed, but if the lifecycle line
   # fails to persist the mission would stay inactive while mission-write reports `ok`. Capture the
   # rc, retry ONCE, and return the nonzero rc so mission-write surfaces FAILED rc=N.
-  mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active (PLAN rebaselined, hash re-stamped)" ""
+  # The boundary line carries gen=<G> (Task 4 gate-22): it is the marker↔boundary cross-check
+  # anchor every gen-sliced read verifies. EMPTY idtag (always-append; active-iff depends on it).
+  mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active gen=$_rb_gen (PLAN rebaselined, hash re-stamped)" ""
   _rb_logrc=$?
   if [ "$_rb_logrc" -ne 0 ]; then
-    mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active (PLAN rebaselined, hash re-stamped)" ""
+    mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active gen=$_rb_gen (PLAN rebaselined, hash re-stamped)" ""
     _rb_logrc=$?
   fi
   return "$_rb_logrc"

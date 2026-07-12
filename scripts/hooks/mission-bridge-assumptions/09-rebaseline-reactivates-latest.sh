@@ -52,10 +52,19 @@ case "$post_latest" in
 esac
 atest_assert "A1" "$_a1" "after rebaseline the latest [mission] lifecycle line is still a clear (or none): '${post_latest}' — mission_rebaseline emits no reactivating [mission] lifecycle line (lib:921), so a cleared mission can NEVER reactivate (adopt (c) / explicit-build stuck dead)."
 
-# --- A2: rebaseline appended a NEW [mission] lifecycle line after the clear ---------
-# Setup wrote exactly ONE [mission] line (the clear). A reactivating rebaseline adds >=1 more.
-nlc=$(grep -c '\[mission\] ' "$LOG" 2>/dev/null | tr -d ' ')
-[ -n "$nlc" ] && [ "$nlc" -ge 2 ]
-atest_assert "A2" "$?" "rebaseline did not append a new [mission] lifecycle line (count=${nlc:-0}, expected >=2) — the active-iff rule has nothing to key reactivation on."
+# --- A2: rebaseline appended a NEW, GEN-STAMPED [mission] reactivation line after the clear -----
+# (Task 4) mission_create writes its two run-timing birth anchors (MISSION-START + WORK-START) into
+# the log, so the pre-rebaseline [mission] count is already >1 — the load-bearing property is that
+# rebaseline appends a `MISSION-REBASELINED status=active gen=<G>` boundary line (the generation
+# slice boundary AND the marker↔boundary cross-check anchor). Assert that gen-stamped boundary exists.
+reb_line=$(grep -a 'MISSION-REBASELINED status=active gen=[0-9]' "$LOG" 2>/dev/null | tail -1)
+[ -n "$reb_line" ]
+atest_assert "A2" "$?" "rebaseline did not append a gen-stamped MISSION-REBASELINED boundary line — the active-iff rule + gen-sliced reads have nothing to key reactivation/slicing on (got: '${reb_line:-<none>}')."
+
+# --- A3 (Task 4): the marker gen BUMPED (>=2) and the boundary line's gen matches the marker ------
+mk_gen=$(_mission_marker_field "$ROOT/MISSION.${SID}.md" gen 2>/dev/null)
+bnd_gen=$(printf '%s' "$reb_line" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
+{ [ -n "$mk_gen" ] && [ "$mk_gen" -ge 2 ] 2>/dev/null && [ "$mk_gen" = "$bnd_gen" ]; }
+atest_assert "A3" "$?" "after rebaseline the marker gen ($mk_gen) is not >=2 or disagrees with the boundary gen ($bnd_gen) — gen bump + gen-stamped boundary must agree or every gen-sliced read refuses."
 
 atest_report

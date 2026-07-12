@@ -28,6 +28,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$ROOT/lib/handoff-locate.sh"
 . "$ROOT/lib/mission-bridge.sh"
 . "$ROOT/lib/handoff-chain.sh"
+MWSH="$ROOT/mission-write.sh"   # the real dispatcher (validator + verbs + PART-DONE preconditions)
 
 PASS=0
 FAIL=0
@@ -203,23 +204,32 @@ else fail "log byte-budget" "no log file written"; fi
 
 # ===========================================================================================
 # 12: anchored idempotency — a log entry whose BODY quotes an existing id does NOT suppress a
-# real new entry; a true duplicate tag IS suppressed.
+# real new entry; a same-tag/DIFFERENT-content write is refused (Task 4: it now surfaces as a
+# COLLISION instead of a silent drop, but either way it does NOT append a new line).
+#
+# CONTRACT UPDATE (Task 4): the earlier revision counted RAW log lines against a literal "2",
+# assuming mission_create wrote NOTHING to the log. But mission_create emits its two run-timing
+# birth anchors (MISSION-START + WORK-START) into the log, so the raw count starts at 2 — the old
+# assertions were reading `4` and failing (58/2 baseline). The load-bearing property is the DELTA:
+# a body-quoted id must ADD a line (tagB appends), and a same-tag write must NOT add a line
+# (idempotent-or-collision, never a silent second line). Measure against a post-create baseline.
 # ===========================================================================================
 SID="${UNIQ}-anchor"
 R=$(fresh_root anchor)
 mission_create "$SID" "$R" "anchor plan" >/dev/null 2>&1
 LOGF="$R/MISSION.${SID}.log"
+BASE_LINES=$(wc -l < "$LOGF" | tr -d ' ')          # MISSION-START + WORK-START birth anchors
 mission_log_append "$SID" "$R" "first real entry" "tagA" >/dev/null 2>&1
-# Body quotes the existing tag "tagA" but the NEW tag is tagB — must NOT be suppressed.
+# Body quotes the existing tag "tagA" but the NEW tag is tagB — must NOT be suppressed (appends).
 mission_log_append "$SID" "$R" "mentions tagA inside body text" "tagB" >/dev/null 2>&1
 LINES_AFTER_B=$(wc -l < "$LOGF" | tr -d ' ')
-# A true duplicate (tagA again) must be suppressed.
+# A same-tag write (tagA again, different content) must NOT add a line (surfaces as COLLISION).
 mission_log_append "$SID" "$R" "different body, same tag" "tagA" >/dev/null 2>&1
 LINES_AFTER_DUP=$(wc -l < "$LOGF" | tr -d ' ')
-if [ "$LINES_AFTER_B" = "2" ]; then pass "anchored idempotency: body-quoted id does NOT suppress a new tagged entry"
-else fail "anchor new entry" "expected 2 lines, got $LINES_AFTER_B"; fi
-if [ "$LINES_AFTER_DUP" = "2" ]; then pass "anchored idempotency: true duplicate tag IS suppressed"
-else fail "anchor dup suppress" "expected 2 lines (dup suppressed), got $LINES_AFTER_DUP"; fi
+if [ "$LINES_AFTER_B" = "$((BASE_LINES + 2))" ]; then pass "anchored idempotency: body-quoted id does NOT suppress a new tagged entry (+2 over baseline)"
+else fail "anchor new entry" "expected $((BASE_LINES + 2)) lines (baseline $BASE_LINES + tagA + tagB), got $LINES_AFTER_B"; fi
+if [ "$LINES_AFTER_DUP" = "$LINES_AFTER_B" ]; then pass "anchored idempotency: same-tag write adds no new line (idempotent/collision, not a silent second line)"
+else fail "anchor dup suppress" "expected no new line ($LINES_AFTER_B), got $LINES_AFTER_DUP"; fi
 
 # ===========================================================================================
 # 13: log rotation — exceeding MISSION_LOG_MAX_BYTES archives the oldest half into
@@ -734,6 +744,204 @@ NONBIRTH_CNT=$(ls -1 "$R/.mission-backups/"MISSION."${SID}".*.md 2>/dev/null | g
 if [ -n "$NONBIRTH_CNT" ] && [ "$NONBIRTH_CNT" -ge 2 ]; then
   pass "I3: two same-second backups BOTH survive (count $NONBIRTH_CNT >= 2, no overwrite)"
 else fail "I3 backup collision" "non-birth backup count=$NONBIRTH_CNT (<2 → one overwrote the other)"; fi
+
+# ===========================================================================================
+# 40 (Task 4): the `gen=` marker field survives the full lifecycle round-trip create→note→
+# challenge→pending→resolve→rebaseline. gen==1 through the mutating verbs; ==2 after rebaseline.
+# ===========================================================================================
+SID="${UNIQ}-genrt"
+R=$(fresh_root genrt)
+mission_create "$SID" "$R" "gen round-trip plan" >/dev/null 2>&1
+F="$R/MISSION.${SID}.md"
+G0=$(_mission_marker_field "$F" gen)
+mission_mutate "$SID" "$R" note "a note" "grt-note" >/dev/null 2>&1
+mission_mutate "$SID" "$R" challenge "a challenge" "grt-chal" >/dev/null 2>&1
+mission_mutate "$SID" "$R" pending "- [pd:1-x] a pending?" "grt-pend" >/dev/null 2>&1
+G1=$(_mission_marker_field "$F" gen)
+mission_resolve_pending "$SID" "$R" "1-x" "decided" >/dev/null 2>&1
+G2=$(_mission_marker_field "$F" gen)
+mission_rebaseline "$SID" "$R" "gen round-trip plan v2" >/dev/null 2>&1
+G3=$(_mission_marker_field "$F" gen)
+if [ "$G0" = "1" ] && [ "$G1" = "1" ] && [ "$G2" = "1" ] && [ "$G3" = "2" ] \
+   && mission_verify "$F" "$SID" 2>/dev/null; then
+  pass "gen survives create→note→challenge→pending→resolve→rebaseline (1,1,1→2)"
+else fail "gen round-trip" "gens: create=$G0 mutate=$G1 resolve=$G2 rebaseline=$G3 (want 1,1,1,2)"; fi
+
+# ===========================================================================================
+# 41 (Task 4): EMPTY idtags are exempt from gen-prefixing — the rebaseline boundary line (empty
+# idtag) persists under gen>=2, and re-clearing after rebaseline re-appends (always-append).
+# ===========================================================================================
+BND=$(grep -a 'MISSION-REBASELINED status=active gen=2' "$R/MISSION.${SID}.log" | head -1)
+if [ -n "$BND" ]; then
+  # the boundary line has an EMPTY leading idtag (a leading TAB), NOT a g2- prefix
+  case "$BND" in
+    "	[mission] MISSION-REBASELINED"*) pass "empty-idtag rebaseline boundary persists gen-unprefixed under gen 2" ;;
+    *) fail "empty-idtag boundary" "boundary line not empty-idtag: '$BND'" ;;
+  esac
+else fail "empty-idtag boundary" "no gen=2 boundary line found in log"; fi
+
+# ===========================================================================================
+# 42 (Task 4): a wrong-gen idtag prefix is REFUSED (FAILED rc=5), NOT a collision — via the real
+# mission-write.sh dispatcher.
+# ===========================================================================================
+SID="${UNIQ}-wronggen"
+R=$(fresh_root wronggen)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — wg" >/dev/null 2>&1
+OUT=$(bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=0 findings=1" "g7-m1-review-r1-d0" 2>/dev/null)
+case "$OUT" in
+  *"FAILED rc=5 (REFUSED:"*) pass "wrong-gen idtag prefix REFUSED rc=5 (not collision)" ;;
+  *) fail "wrong-gen refuse" "got: '$OUT'" ;;
+esac
+
+# ===========================================================================================
+# 43 (Task 4): control characters in the entry are REFUSED (literal case literals — a VALID line
+# passes first to prove the check is not vacuous).
+# ===========================================================================================
+OUT_OK=$(bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=0 findings=1" "m1-review-r1-d0" 2>/dev/null)
+OUT_TAB=$(bash "$MWSH" log "$SID" "$R" "$(printf '[mission] part=2 name=x\tphase=review round=1 dry=0')" "m2-review-r1-d0" 2>/dev/null)
+if printf '%s' "$OUT_OK" | grep -q 'log ok' && printf '%s' "$OUT_TAB" | grep -q 'REFUSED: control-char'; then
+  pass "control-char entry REFUSED (valid line passes first)"
+else fail "control-char refuse" "ok='$OUT_OK' tab='$OUT_TAB'"; fi
+
+# ===========================================================================================
+# 44 (Task 4): a machine-readable shape whose persisted line exceeds the 480B budget is REFUSED
+# `line-too-long` (never rerouted — machine shapes are terse by design).
+# ===========================================================================================
+LONGREASON=$(awk 'BEGIN{s="";for(i=0;i<500;i++)s=s"x";printf "%s", s}')
+OUT=$(bash "$MWSH" log "$SID" "$R" "[mission] FAIL part=1 phase=review reason=${LONGREASON} attempt=1" "m1-fail-x-1" 2>/dev/null)
+case "$OUT" in
+  *"REFUSED: line-too-long"*) pass "oversize machine shape REFUSED line-too-long (not rerouted)" ;;
+  *) fail "line-too-long" "got: '$OUT'" ;;
+esac
+
+# ===========================================================================================
+# 45 (Task 4): VOID and FAIL lines are ACCEPTED through the log verb (grammar + idtag valid).
+# ===========================================================================================
+OUT_V=$(bash "$MWSH" log "$SID" "$R" "[mission] VOID part=1 phase=review round=2 reason=codex-unavailable" "m1-void-r2-run123hdeadbeef" 2>/dev/null)
+OUT_F=$(bash "$MWSH" log "$SID" "$R" "[mission] FAIL part=1 phase=review reason=panel-dead attempt=1" "m1-fail-panel-dead-1" 2>/dev/null)
+OUT_FP=$(bash "$MWSH" log "$SID" "$R" "[mission] FAIL part=1 phase=review reason=panel-unavailable-3x attempt=3" "m1-fail-panel3x-r2" 2>/dev/null)
+if printf '%s' "$OUT_V" | grep -q 'log ok' && printf '%s' "$OUT_F" | grep -q 'log ok' && printf '%s' "$OUT_FP" | grep -q 'log ok'; then
+  pass "VOID + FAIL (incl. panel3x idtag) lines accepted through log"
+else fail "void/fail accept" "void='$OUT_V' fail='$OUT_F' fail3x='$OUT_FP'"; fi
+
+# ===========================================================================================
+# 46 (Task 4): idempotent PART-DONE re-emit is a quiet ok; a same-idtag/different-content write
+# is a COLLISION (loud, no silent second line).
+# ===========================================================================================
+SID="${UNIQ}-pdcol"
+R=$(fresh_root pdcol)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — pdcol" >/dev/null 2>&1
+# converge cleanly (two adjacent dry rounds + fresh live-verify)
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=1 findings=0" "m1-review-r1-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=2 findings=0" "m1-review-r2-d2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=2 status=n/a reason=not-ui" "m1-live-verify-r2" >/dev/null 2>&1
+OUT1=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+OUT2=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+COL=$(bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=1 findings=7" "m1-review-r1-d1" 2>/dev/null)
+if printf '%s' "$OUT1" | grep -q 'log ok' && printf '%s' "$OUT2" | grep -q 'log ok' \
+   && printf '%s' "$COL" | grep -q 'COLLISION'; then
+  pass "PART-DONE idempotent re-emit quiet ok; same-tag/diff-content = COLLISION"
+else fail "pd-idem/collision" "pd1='$OUT1' pd2='$OUT2' col='$COL'"; fi
+
+# ===========================================================================================
+# 47 (Task 4): gen-2 vs gen-1 evidence isolation — a VOID banked in gen 1 does NOT count toward
+# a reused round number in gen 2 (gen-sliced void-count).
+# ===========================================================================================
+SID="${UNIQ}-geniso"
+R=$(fresh_root geniso)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — iso" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] VOID part=1 phase=review round=1 reason=codex-unavailable" "m1-void-r1-g1runhdeadbeef" >/dev/null 2>&1
+VC_G1=$(bash "$MWSH" void-count "$SID" "$R" 1 1 2>/dev/null)
+bash "$MWSH" rebaseline "$SID" "$R" "MISSION MODE: build — iso v2" >/dev/null 2>&1
+VC_G2=$(bash "$MWSH" void-count "$SID" "$R" 1 1 2>/dev/null)   # gen-2: reused round 1, gen-1 VOID excluded
+if [ "$VC_G1" = "1" ] && [ "$VC_G2" = "0" ]; then
+  pass "gen-sliced void-count isolates gen-2 from gen-1 evidence (g1=1, g2=0)"
+else fail "gen isolation" "void-count g1=$VC_G1 g2=$VC_G2 (want 1,0)"; fi
+
+# ===========================================================================================
+# 48 (Task 4): live-verify STALENESS — early verify → fix → reconverge → PART-DONE REFUSED
+# `live-verify-stale` until a fresh round-scoped live-verify lands (and that re-emit does NOT
+# collide with the earlier round's line).
+# ===========================================================================================
+SID="${UNIQ}-stale"
+R=$(fresh_root stale)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — stale" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=1 status=ok evidence=od:1377" "m1-live-verify-r1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=1 findings=0" "m1-review-r1-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=fix round=2 dry=0 findings=3" "m1-fix-r2-d0" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=1 findings=0" "m1-review-r2-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=3 dry=2 findings=0" "m1-review-r3-d2" >/dev/null 2>&1
+STALE=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+# fresh round-scoped re-verify (r3 idtag != r1 idtag → no collision), then PART-DONE passes
+FRESH=$(bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=3 status=ok evidence=od:1400" "m1-live-verify-r3" 2>/dev/null)
+PASSED=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+if printf '%s' "$STALE" | grep -q 'live-verify-stale' \
+   && printf '%s' "$FRESH" | grep -q 'log ok' \
+   && printf '%s' "$PASSED" | grep -q 'log ok'; then
+  pass "live-verify staleness blocks PART-DONE until a fresh round-scoped re-verify (no collision)"
+else fail "live-verify stale" "stale='$STALE' fresh='$FRESH' passed='$PASSED'"; fi
+
+# ===========================================================================================
+# 49 (Task 4): gen-boundary rollover crash-safety — marker gen AHEAD of the latest boundary
+# (marker mv committed, boundary append died) ⇒ every gen-sliced read REFUSES loud (void-count
+# prints -1; PART-DONE FAILED rc=4); the WRITE path self-heals; subsequent reads slice correctly.
+# ===========================================================================================
+SID="${UNIQ}-rollover"
+R=$(fresh_root rollover)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — rollover" >/dev/null 2>&1
+F="$R/MISSION.${SID}.md"; LOGF="$R/MISSION.${SID}.log"
+# FAULT INJECT: bump the marker to gen 2 WITHOUT a boundary line (the crash window).
+sed 's/ gen=1 -->/ gen=2 -->/' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+VC_BAD=$(bash "$MWSH" void-count "$SID" "$R" 1 1 2>/dev/null)
+PD_BAD=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+# WRITE self-heals (a gen>=2 append writes the recovered boundary FIRST):
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=0 findings=1" "m1-review-r1-d0" >/dev/null 2>&1
+HEALED=$(grep -ac 'MISSION-REBASELINED status=active gen=2' "$LOGF")
+VC_OK=$(bash "$MWSH" void-count "$SID" "$R" 1 1 2>/dev/null)
+if [ "$VC_BAD" = "-1" ] && printf '%s' "$PD_BAD" | grep -q 'FAILED rc=4 (REFUSED gen-boundary-mismatch)' \
+   && [ "$HEALED" = "1" ] && [ "$VC_OK" = "0" ]; then
+  pass "gen-boundary mismatch: void-count=-1, PART-DONE rc=4; write self-heals; reads recover"
+else fail "gen-boundary crash-safety" "vc_bad=$VC_BAD pd_bad='$PD_BAD' healed=$HEALED vc_ok=$VC_OK"; fi
+
+# ===========================================================================================
+# 50 (Task 4 / DoD #6): a PRE-GEN fixture (a mission file created by the OLD code — NO gen= field
+# in the marker) still passes mission_verify AND reads as gen 1 (default), so old on-disk missions
+# keep working.
+# ===========================================================================================
+SID="${UNIQ}-pregen"
+R=$(fresh_root pregen)
+mission_create "$SID" "$R" "pre-gen plan" >/dev/null 2>&1
+F="$R/MISSION.${SID}.md"
+# strip the gen= field from the marker to reproduce an OLD-code file
+sed 's/ gen=1 -->/ -->/' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+GEN_READ=$(_mission_marker_field "$F" gen)
+GEN_TAG=$(_mission_gen_tag "$F" "sometag")   # gen 1 default => unprefixed
+if mission_verify "$F" "$SID" 2>/dev/null && [ -z "$GEN_READ" ] && [ "$GEN_TAG" = "sometag" ]; then
+  pass "pre-gen fixture (no gen= in marker) verifies and reads as gen 1 (unprefixed idtag)"
+else fail "pre-gen fixture" "verify/gen-read='$GEN_READ' gen-tag='$GEN_TAG'"; fi
+
+# ===========================================================================================
+# 51 (Task 4): the archive-inclusive gen-sliced read survives log ROTATION — a VOID line rotated
+# into an archive is still counted by void-count (union of archives + live log).
+# ===========================================================================================
+SID="${UNIQ}-rotgen"
+R=$(fresh_root rotgen)
+mission_create "$SID" "$R" "rotate-gen plan" >/dev/null 2>&1
+LOGF="$R/MISSION.${SID}.log"
+# one VOID for part=1 round=1, then many fillers, then force a rotation so the VOID lands in the archive.
+mission_log_append "$SID" "$R" "[mission] VOID part=1 phase=review round=1 reason=codex-unavailable" "m1-void-r1-earlyhdeadbeef" >/dev/null 2>&1
+(
+  MISSION_LOG_MAX_BYTES=4096; export MISSION_LOG_MAX_BYTES
+  i=0; while [ "$i" -lt 120 ]; do
+    mission_log_append "$SID" "$R" "[mission] part=1 name=x phase=implement round=$i dry=0 findings=0 padding padding padding padding" "rg-$i" >/dev/null 2>&1
+    i=$((i+1))
+  done
+)
+ARCH=$(ls -1 "$R/.mission-backups/"MISSION."${SID}".log.* 2>/dev/null | head -1)
+VC_ROT=$(bash "$MWSH" void-count "$SID" "$R" 1 1 2>/dev/null)
+if [ -n "$ARCH" ] && [ "$VC_ROT" = "1" ]; then
+  pass "void-count is archive-inclusive: a rotated-out VOID is still counted ($VC_ROT)"
+else fail "rotation-crossing count" "archive='$ARCH' void-count=$VC_ROT (want 1)"; fi
 
 echo
 printf 'PASS: %d  FAIL: %d\n' "$PASS" "$FAIL"

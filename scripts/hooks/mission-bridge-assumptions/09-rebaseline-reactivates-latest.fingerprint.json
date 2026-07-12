@@ -1,1 +1,1 @@
-{"assumption":"mission_rebaseline must append a [mission] reactivation lifecycle line; active-iff = latest [mission] log line is not MISSION-CLEARED","status":"RED-until-fix","bash":"3.2.57","os":"Darwin 25.5.0"}
+{"assumption":"mission_rebaseline appends a gen-stamped MISSION-REBASELINED status=active gen=<G> reactivation/slice-boundary line and BUMPS the marker gen; active-iff = latest [mission] log line is not MISSION-CLEARED; boundary gen must equal marker gen (Task 4 cross-check anchor)","status":"GREEN","bash":"3.2.57","os":"Darwin 25.5.0"}

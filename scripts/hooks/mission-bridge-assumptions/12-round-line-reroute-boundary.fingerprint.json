@@ -1,1 +1,1 @@
-{"assumption":"mission_log_append reroutes a >=480B (tag+TAB+entry+NL) line to DURABLE NOTES; a terse round line stays in the LOG","reroute_threshold_bytes":480,"bash":"3.2.57","os":"Darwin 25.5.0"}
+{"assumption":"Task 4: mission-write.sh log REFUSES an oversize (>=480B tag+TAB+entry+NL) machine shape as `line-too-long` (never rerouted/lost); a terse round line is accepted into the LOG. Free-text reroute is unchanged.","reroute_threshold_bytes":480,"contract":"REFUSE-expected","bash":"3.2.57","os":"Darwin 25.5.0"}

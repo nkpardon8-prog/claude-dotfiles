@@ -87,4 +87,53 @@ last_round=$(printf '%s\n' "$COMBINED" | grep -E "^round-last"$'\t' )
 [ -n "$last_round" ]
 atest_assert "A3" "$?" "the last round line (round-last) was not found via grep over (archive + live) — resume cannot recover the most recent round/phase/dry state after rotation."
 
+# ===============================================================================================
+# Task 4: the GEN-SLICED reads (void-count + the PART-DONE live-verify precondition) must ALSO
+# survive rotation — they read the archive-inclusive stream, so a VOID / live-verify / dry-round
+# rotated into an archive is still seen. Two fresh hermetic sub-scenarios, deterministic rotation.
+# ===============================================================================================
+MWSH="$(cd "$HERE/.." && pwd)/mission-write.sh"
+[ -f "$MWSH" ] || atest_infra "mission-write.sh not found at $MWSH"
+
+# --- A4: a VOID rotated into an archive is still counted by void-count -------------------------
+SIDB="atest13b"; ROOTB="$ATEST_DIR/anchorB"; mkdir -p "$ROOTB"
+LOGB="$ROOTB/MISSION.${SIDB}.log"
+bash "$MWSH" create "$SIDB" "$ROOTB" "MISSION MODE: build — t13b" >/dev/null 2>&1 \
+  || atest_infra "13b create failed"
+mission_log_append "$SIDB" "$ROOTB" "[mission] VOID part=1 phase=review round=1 reason=codex-unavailable" "m1-void-r1-earlyhdeadbeef" >/dev/null 2>&1 \
+  || atest_infra "13b VOID append failed"
+ib=1; while [ "$ib" -le 10 ]; do
+  mission_log_append "$SIDB" "$ROOTB" "[mission] part=1 name=x phase=implement round=$ib dry=0 findings=0 padding padding" "b-pre-$ib" >/dev/null 2>&1
+  ib=$((ib + 1))
+done
+MISSION_LOG_MAX_BYTES=1 _mission_log_rotate "$LOGB" "$ROOTB" "$SIDB" 2>/dev/null \
+  || atest_infra "13b rotation failed"
+ARCB=$(ls -1 "$ROOTB/.mission-backups/"MISSION.${SIDB}.log.* 2>/dev/null | head -1)
+[ -n "$ARCB" ] || atest_infra "13b produced no archive"
+# the VOID must be in the archive, not the live log (proves the seam)
+{ case "$ARCB" in *.gz) gzip -dc "$ARCB" 2>/dev/null;; *) cat "$ARCB" 2>/dev/null;; esac; } | grep -q 'VOID part=1' \
+  || atest_infra "13b: VOID did not rotate into the archive — tune fillers"
+VCB=$(bash "$MWSH" void-count "$SIDB" "$ROOTB" 1 1 2>/dev/null)
+[ "$VCB" = "1" ]
+atest_assert "A4" "$?" "void-count did not recover a VOID rotated into the archive (got '$VCB', want 1) — the gen-sliced read must union archives + live log, not read the live log alone."
+
+# --- A5: a live-verify + dry-round convergence that CROSSES a rotation still satisfies PART-DONE -
+SIDC="atest13c"; ROOTC="$ATEST_DIR/anchorC"; mkdir -p "$ROOTC"
+LOGC="$ROOTC/MISSION.${SIDC}.log"
+bash "$MWSH" create "$SIDC" "$ROOTC" "MISSION MODE: build — t13c" >/dev/null 2>&1 \
+  || atest_infra "13c create failed"
+# live-verify first (post-convergence in §5, but here it is the OLDEST evidence so it rotates out),
+# then the two adjacent dry review rounds. No actionable event after the live-verify ⇒ FRESH.
+bash "$MWSH" log "$SIDC" "$ROOTC" "[mission] live-verify part=1 round=2 status=ok evidence=od:1377" "m1-live-verify-r2" >/dev/null 2>&1
+bash "$MWSH" log "$SIDC" "$ROOTC" "[mission] part=1 name=x phase=review round=1 dry=1 findings=0" "m1-review-r1-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SIDC" "$ROOTC" "[mission] part=1 name=x phase=review round=2 dry=2 findings=0" "m1-review-r2-d2" >/dev/null 2>&1
+MISSION_LOG_MAX_BYTES=1 _mission_log_rotate "$LOGC" "$ROOTC" "$SIDC" 2>/dev/null \
+  || atest_infra "13c rotation failed"
+ARCC=$(ls -1 "$ROOTC/.mission-backups/"MISSION.${SIDC}.log.* 2>/dev/null | head -1)
+[ -n "$ARCC" ] || atest_infra "13c produced no archive"
+# PART-DONE must PASS: the live-verify EXISTENCE + freshness + dry fold all read across the rotation.
+PDC=$(bash "$MWSH" log "$SIDC" "$ROOTC" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+printf '%s' "$PDC" | grep -q 'log ok'
+atest_assert "A5" "$?" "PART-DONE was not accepted across a rotation (status='$PDC') — the gen-sliced live-verify/dry-fold precondition must read the archive-inclusive stream so rotated evidence still satisfies convergence."
+
 atest_report
