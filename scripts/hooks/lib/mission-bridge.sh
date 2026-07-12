@@ -955,6 +955,13 @@ mission_mutate() {
     if grep -qF "<!-- mid:${idtag} h=" "$f" 2>/dev/null; then
       _mission_unlock; _MLA_OUTCOME=collision; return 0            # same tag, DIFFERENT content
     fi
+    # BACK-COMPAT (codex-review 2026-07-12): a mission authored BEFORE the content-hash change carries
+    # legacy pre-hash markers `<!-- mid:${idtag} -->` (no `h=`). Without this check a replay of such a
+    # note across the code change would silently APPEND a duplicate. Treat the legacy marker as an
+    # existing entry and surface a COLLISION (do not silently duplicate; the conductor re-derives).
+    if grep -qF "<!-- mid:${idtag} -->" "$f" 2>/dev/null; then
+      _mission_unlock; _MLA_OUTCOME=collision; return 0            # legacy (pre-hash) marker present
+    fi
   fi
 
   mission_backup "$f" "$root" "$sid" || {

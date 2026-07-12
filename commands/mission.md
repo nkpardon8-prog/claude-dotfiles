@@ -460,7 +460,9 @@ if [ "$passes" != "4/4" ]; then
   # (refused gen-sliced read, e.g. gen-boundary-mismatch). -1 is the MACHINE-BLOCKING representation
   # of a refused read — stderr alone cannot block a count-testing caller. Callers MUST branch on it:
   if [ "$vc" = "-1" ]; then
-    # STOP: the gen-sliced read refused (boundary/marker mismatch or unreadable stream). Do NOT
+    # STOP: the gen-sliced read refused (gen-boundary/marker mismatch, or a non-numeric arg — the
+    # cases void-count actually detects; a physically-corrupt archive is NOT distinguished here and
+    # is instead caught by mission_verify under the lock + the §10 corrupt-bridge guard). Do NOT
     # treat as count=0 and do NOT advance — surface loud as the Section 10 corrupt-bridge point of
     # contact and halt this part until the write-path self-heal (or the user) repairs the boundary.
     :

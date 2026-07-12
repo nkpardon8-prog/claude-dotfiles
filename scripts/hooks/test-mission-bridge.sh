@@ -881,6 +881,21 @@ if printf '%s' "$STALE" | grep -q 'live-verify-stale' \
   pass "live-verify staleness blocks PART-DONE until a fresh round-scoped re-verify (no collision)"
 else fail "live-verify stale" "stale='$STALE' fresh='$FRESH' passed='$PASSED'"; fi
 
+# ---- live-verify evidence path-stat (codex-review 2026-07-12) --------------------------------
+# A filesystem-PATH evidence token is stat-verified: a non-existent path is REFUSED; an existing
+# path is accepted; a non-path token (od:/sha:/URL) stays recorded-not-verified (accepted).
+SID="${UNIQ}-evstat"
+R=$(fresh_root evstat)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — evstat" >/dev/null 2>&1
+EV_MISS=$(bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=1 status=ok evidence=/no/such/evfile" "m1-live-verify-r1" 2>&1)
+EV_HIT=$(bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=1 status=ok evidence=$MWSH" "m1-live-verify-r1" 2>&1)
+EV_OD=$(bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=2 round=1 status=ok evidence=od:1377" "m2-live-verify-r1" 2>&1)
+if printf '%s' "$EV_MISS" | grep -q 'live-verify-evidence-path-missing' \
+   && printf '%s' "$EV_HIT" | grep -q 'log ok' \
+   && printf '%s' "$EV_OD" | grep -q 'log ok'; then
+  pass "live-verify evidence: missing path REFUSED, existing path + od: token accepted"
+else fail "live-verify evidence path-stat" "miss='$EV_MISS' hit='$EV_HIT' od='$EV_OD'"; fi
+
 # ===========================================================================================
 # 49 (Task 4): gen-boundary rollover crash-safety — marker gen AHEAD of the latest boundary
 # (marker mv committed, boundary append died) ⇒ every gen-sliced read REFUSES loud (void-count

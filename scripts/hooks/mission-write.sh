@@ -203,6 +203,15 @@ _mw_validate_log() {
       _ir=$(printf '%s' "$_vl_bare" | sed -n 's/^m[0-9]*-live-verify-r\([0-9]*\)$/\1/p')
       { [ "$_en" = "$_in" ] && [ "$_er" = "$_ir" ]; } \
         || _mw_emit_refuse log 1 "REFUSED: idtag-entry-field-mismatch (live-verify)"
+      # EVIDENCE HONESTY-SCOPING (plan Success-Criteria; codex-review 2026-07-12): a filesystem-PATH
+      # evidence token (starts with `/`) is the one shape we CAN mechanically verify, so we STAT it —
+      # a non-existent path is fixture-theater and is REFUSED. Non-path tokens (`od:<num>`, `sha:<hex>`,
+      # URLs, bare slugs) stay RECORDED-not-verified by design (documented limitation; `status=n/a` is
+      # the honest escape hatch for a part with no stat-able artifact).
+      _ev=$(printf '%s' "$_vl_entry" | sed -n 's/.* status=ok evidence=\([^ ]*\).*/\1/p')
+      case "$_ev" in
+        /*) [ -e "$_ev" ] || _mw_emit_refuse log 1 "REFUSED: live-verify-evidence-path-missing ($_ev)" ;;
+      esac
       ;;
     "PART-START "*)
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] PART-START part=[0-9]+ name=[A-Za-z0-9_.:-]+$' \
