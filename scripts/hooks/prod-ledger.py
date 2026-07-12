@@ -27,10 +27,64 @@ PROD = re.compile(
     r"|prisma\s+migrate\s+deploy"
     r"|migrate\s+resolve\s+--applied"
     r"|ALLOW_PROD_MIGRATE_DEPLOY"
+    r"|MIGRATOR_DIRECT_URL"
+    r"|neon\.tech"
     r"|db:migrate:deploy"
     r"|ALTER\s+ROLE\b[^;]*\b(?:BYPASSRLS|NOBYPASSRLS)\b",
     re.IGNORECASE,
 )
+
+# --- Fail-closed prod classifier (duplicated verbatim in prod-coordination-gate.py)
+# A migrate is a prod op UNLESS every postgres URL in the migrate's OWN shell
+# clause PARSES (urlparse hostname — never substring) to exactly localhost /
+# 127.0.0.1 / the docker service hostname `postgres`. Anything unknown, spoofed
+# (user:localhost@prod.internal, @localhost.evil.example), or unparseable stays
+# PROD. `docker exec` / `POSTGRES_` tokens / env-var bare migrates do NOT exempt.
+# Spec: tmp/ready-plans/2026-07-10-skill-stack-top-fixes.md — "Prod narrowing"
+# (Key Pseudocode 6). These hook scripts have no shared import path, so the
+# classifier is duplicated in both by design; the fixture suite pins them equal.
+MIGRATE = re.compile(r"prisma\s+migrate\s+deploy|db:migrate:deploy", re.I)
+PRODMARK = re.compile(r"ALLOW_PROD_MIGRATE_DEPLOY|MIGRATOR_DIRECT_URL|neon\.tech", re.I)
+
+
+def _all_urls_local(cmd):
+    # Only exact hostname equality counts; parse failure = NOT local (prod-risk).
+    from urllib.parse import urlparse
+    urls = re.findall(r"postgres(?:ql)?://[^\s\"']+", cmd, re.I)
+    if not urls:
+        return False
+    for u in urls:
+        try:
+            host = (urlparse(u).hostname or "").lower()
+        except ValueError:
+            return False
+        if host not in ("localhost", "127.0.0.1", "postgres"):
+            return False
+    return True
+
+
+def is_prod(cmd):
+    if not PROD.search(cmd):
+        return False
+    # NON-MIGRATE prod signals win FIRST — a compound like
+    # `<cloud-deploy> && <local migrate>` (or ledger-side `<push> && <local
+    # migrate>`) must stay PROD; the local exemption applies ONLY when the
+    # migrate pattern is the SOLE prod signal present.
+    if PROD.search(MIGRATE.sub("", cmd)):
+        return True
+    # EXACTLY-ONE-MIGRATE rule (mixed-migrate masking): fail closed on multiples.
+    if len(MIGRATE.findall(cmd)) != 1:
+        return True
+    # PER-CLAUSE BINDING: the local URL must live in the SAME shell clause as the
+    # migrate — an unrelated local URL elsewhere in the compound never exempts.
+    # Split on ALL clause boundaries (alternation order: && before &, || before |).
+    clauses = re.split(r"&&|\|\||;|\||&|\n|\r", cmd)
+    migrate_clauses = [c for c in clauses if MIGRATE.search(c)]
+    if len(migrate_clauses) != 1:
+        return True
+    if _all_urls_local(migrate_clauses[0]) and not PRODMARK.search(cmd):
+        return False
+    return True  # unknown/unparseable target = prod-risk
 
 
 def project_slug(cwd):
@@ -155,7 +209,7 @@ def main():
             if (d.get("tool_name") or "") != "Bash":
                 return
             cmd = (d.get("tool_input") or {}).get("command", "") or ""
-            if not cmd or not PROD.search(cmd):
+            if not cmd or not is_prod(cmd):
                 return
             resp = d.get("tool_response") or {}
             # Skip clear failures / interruptions (fail-open: if unsure, record).
