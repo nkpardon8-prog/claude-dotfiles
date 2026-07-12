@@ -391,34 +391,61 @@ Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees 
   `skill: codex-review --effort xhigh` instead. Rare by design; the loop default stays `--effort high`.)
 
 **Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID the round (do NOT count it as dry).** The RELIABLE
-machine signal is the **`Codex-passes: N/4`** token `/codex-review` emits on its Step 7f report
-**`Engine:` header line**: **any `N < 4` means a Codex lens did not actually run** (and
-`(codex-K unavailable)` names which). The VOID condition for this signal is: the `^Engine:` line's
-`Codex-passes` token is **ABSENT, malformed, or NOT exactly `4/4`** (i.e. some lens missing). A FULL
-panel is **EXACTLY `4/4` = NOT void**; anything else voids. After `/codex-review` returns, parse the
-token **only from the `^Engine:` line** and VOID unless it is exactly `4/4`:
-- **Read `Codex-passes` ONLY from the `^Engine:` header line — NEVER anywhere in the report body.**
-  codex-review.md emits a free-form target/summary line BEFORE the `Engine:` header, so an untrusted
-  target title/summary containing the literal `Codex-passes: 4/4` could SPOOF the gate if you grepped
-  the whole report. Anchor the parse to `^Engine:`, then VOID unless that line carries EXACTLY `4/4`
-  (this also rejects malformed/impossible tokens like `10/4` or `40/4` that an `N<4`-only test would
-  let pass), set-e-safe (trailing `|| true` so a no-match grep can't abort under `set -e -o pipefail`):
-  ```bash
-  passes=$(printf '%s\n' "$report" \
-             | grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' \
-             | head -1 | grep -oE 'Codex-passes: [0-9]+/4' | head -1 || true)   # || true: no-match never aborts set -e
-  # Anti-spoof: anchor on the FULL canonical header shape (^Engine: ... Codex-passes: N/4 ... Verified:)
-  # and take the FIRST such line — the real header is emitted once near the top of the Step 7f report,
-  # so reviewed CONTENT that later quotes a fake "Engine: ... Codex-passes: 4/4 ... Verified:" line
-  # cannot override it (head, not tail). A free-form target/summary BEFORE the header can't win either:
-  # it would have to replicate the entire canonical shape INCLUDING the trailing "Verified:". Never
-  # read the token from a non-^Engine: body line.
-  # FULL panel iff EXACTLY "Codex-passes: 4/4" — absent, malformed (e.g. 10/4), or any N!=4 => VOID:
-  [ "$passes" = "Codex-passes: 4/4" ] || echo VOID
-  ```
+machine signal is the **`Codex-passes: N/4`** token on the **`Engine:` header line INSIDE the
+report FILE** `/codex-review` Step 7f persists (`report-final.md`) — the FILE-FED contract. 7f
+prints `Run-id: <run-dir basename>` UNCONDITIONALLY (even when report writing fails) and
+`Report-file: <path>` as its ACTUAL FINAL output line only when the file exists. Parse the file
+via the `parse-codex-header` verb (never grep the whole report body — anti-spoof lives in the
+verb: it reads only the FIRST full-shape `^Engine: … Codex-passes: N/4 … Verified:` line):
+
+```bash
+# Mint the attempt identity ONCE, BEFORE each panel invocation (fallback identity for a
+# broken/legacy producer that prints no Run-id line; that edge is non-replay-idempotent —
+# acceptable: an absent Run-id already means the producer contract failed, the attempt must count):
+attempt_id=$(uuidgen | tr 'A-F' 'a-f' | tr -cd 'a-f0-9' | tail -c 6)  # macOS uuidgen is UPPERCASE — lowercase FIRST
+
+# ... run the /codex-review panel; capture its full output as $review_output ...
+
+runid=$(printf '%s\n' "$review_output" | sed -n 's/^Run-id: //p' | tail -1 | tr -cd 'A-Za-z0-9.' | tail -c 6)
+# Report-file is accepted ONLY as the ACTUAL FINAL LINE (a tail -1 over all matches would let
+# reviewed content quote a fake path when report creation failed):
+rf=$(printf '%s\n' "$review_output" | tail -1 | sed -n 's/^Report-file: //p')
+case "$rf" in "${TMPDIR:-/tmp}"/codex-review.*/report-final.md) ;; *) rf="";; esac
+# path <-> identity binding: the run-dir basename must contain the parsed Run-id:
+[ -n "$rf" ] && { case "$(basename "$(dirname "$rf")")" in *"${runid:-__none__}"*) ;; *) rf="";; esac; }
+passes=""; [ -n "$rf" ] && [ -f "$rf" ] && passes=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh parse-codex-header "$rf")
+if [ "$passes" != "4/4" ]; then
+  h8=$( [ -n "$rf" ] && [ -f "$rf" ] && shasum -a 256 "$rf" | cut -c1-8 || echo nofile )
+  reason=$(printf 'codex-passes-%s' "${passes:-absent}" | tr -cd 'a-z0-9.-')
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$sid" "$root" \
+    "[mission] VOID part=$N phase=review round=$K reason=$reason" "m$N-void-r$K-${runid:-$attempt_id}h$h8"
+  # runid makes each panel ATTEMPT distinct (even identical bytes / missing report); replaying the
+  # SAME run+report dedups quietly. void-count is a READ-ONLY dispatcher verb (this block runs in a
+  # fresh shell and never sources the lib):
+  vc=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh void-count "$sid" "$root" "$N" "$K")
+  # void-count stdout contract: bare integer >= 0 = the consecutive count; -1 = ERROR SENTINEL
+  # (refused gen-sliced read, e.g. gen-boundary-mismatch). -1 is the MACHINE-BLOCKING representation
+  # of a refused read — stderr alone cannot block a count-testing caller. Callers MUST branch on it:
+  if [ "$vc" = "-1" ]; then
+    # STOP: the gen-sliced read refused (boundary/marker mismatch or unreadable stream). Do NOT
+    # treat as count=0 and do NOT advance — surface loud as the Section 10 corrupt-bridge point of
+    # contact and halt this part until the write-path self-heal (or the user) repairs the boundary.
+    :
+  elif [ "$vc" -ge 3 ]; then
+    bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$sid" "$root" \
+      "[mission] FAIL part=$N phase=review reason=panel-unavailable-3x attempt=3" "m$N-fail-panel3x-r$K"
+    # IMMEDIATE STOP-LOUD: panel-unavailable-3x is a NAMED Section 10 trigger (a point of contact,
+    # like corrupt-bridge) — do NOT wait for the 5-FAIL tally: the same round can never advance
+    # during a permanent panel outage, so no further FAILs would ever accrue and the run would loop
+    # forever. Surface to the user / away-policy checkpoint NOW; do not re-run the panel again.
+  fi
+fi
+```
+
+Belt-and-suspenders alongside the file-fed count (either also voids the round):
 - the legacy total-failure marker `Codex unavailable` (all 4 failed), OR
 - the legacy per-pass marker `(Codex-` … `unavailable)` / `(codex-K unavailable)` (any one of the 4
-  passes unavailable) — kept as belt-and-suspenders alongside the `Codex-passes` count.
+  passes unavailable).
 
 A round counts toward the 2-dry convergence ONLY if EVERY independent reviewer's verdict is present —
 ALL 4 Codex passes (`Codex-passes: 4/4`) plus the Claude reviewers (see Section 6 VOID-on-dead-reviewer).
@@ -672,8 +699,11 @@ line, not at column 0.
     (reviewer errored/empty/timeout, or "Codex unavailable"); a Codex hang/timeout; lock-busy still
     failing after retries (`reason=lock-busy`); a repeated tool failure that blocks the round.
 - **VOID line** (durable, so a compaction mid-void does not resume from the last banked dry state):
-  - entry: `[mission] VOID part=<N> phase=review round=<K> reason=<reviewer-dead|codex-unavailable|...>`
-  - idtag: `m<N>-void-r<K>` — on resume, a VOID for round K means re-run round K FRESH, never count it.
+  - entry: `[mission] VOID part=<N> phase=review round=<K> reason=<reviewer-dead|codex-passes-N.4|...>`
+  - idtag: `m<N>-void-r<K>-<runid6>h<sha8|nofile>` (run-id + report-hash identity, per the Section 5
+    block: replaying the SAME run+report dedups quietly; a NEW panel attempt mints a distinct line
+    even with identical report bytes; a missing report uses `nofile` and still counts) — on resume,
+    a VOID for round K means re-run round K FRESH, never count it.
 - **Lifecycle lines:**
   - `[mission] PART-START part=<N> name=<slug>` idtag `m<N>-part-start` (logged when advancing to a
     new part; resume uses it to skip a converged part — Section 8/9).
@@ -930,8 +960,18 @@ re-enter), and never change the active/inactive decision.
   (the guard can't live in volatile context): the resume-read idiom (Section 8) recovers FAIL lines,
   and because each FAIL is attempt-scoped (`m<N>-fail-<reason>-<attempt>`, Section 7) the lib does NOT
   dedup them, so 5 distinct lines for the same `part=<N> phase=<P>` actually accumulate and the guard
-  can fire. Tally `[mission] FAIL part=<N> phase=<P> …` lines per part+phase; at 5, STOP LOUD — do not
+  can fire. Tally `[mission] FAIL part=<N> phase=<P> …` lines per part+phase — **GEN-SLICED: count
+  only lines after the latest gen-matching `MISSION-REBASELINED` boundary** (Section 7's gen rules;
+  a prior generation's FAILs never trip this generation's guard); at 5, STOP LOUD — do not
   burn hours wrong.
+- **`panel-unavailable-3x` (NAMED IMMEDIATE trigger)** → **STOP LOUD the moment it is logged** (the
+  Section 5 void-count block emits it at exactly 3 consecutive VOIDs for one round). Do NOT wait for
+  the 5-FAIL tally — during a permanent panel outage the same round can never advance, so no further
+  FAILs would ever accrue and the run would loop forever. Surface to the user / away-policy
+  checkpoint; do not re-run the panel again.
+- **`void-count` returns `-1` (gen-boundary-mismatch / refused gen-sliced read)** → treat as the
+  corrupt-bridge point of contact below: do NOT treat as count=0, do NOT advance the part; the
+  write-path self-heal (or the user) must repair the boundary first.
 - **A corrupt or unreadable bridge** → **STOP LOUD**, surface it to the user, point them at the
   `.mission-backups/` under the canonical root; do not silently proceed. This guard is WIRED to the
   status-line parse (Section 7): any `mission-write.sh` call returning `FAILED rc=2` (corrupt — the

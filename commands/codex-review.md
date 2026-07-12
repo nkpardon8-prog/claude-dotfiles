@@ -9,7 +9,7 @@ expected_subagents: 8
 
 ## Engines
 
-- **Review — OpenAI Codex CLI (GPT-5.5):** 4 parallel review passes in Step 3, each a distinct independent lens (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Invoked via the `codex` binary (`codex review` or `codex exec -s read-only --ephemeral`).
+- **Review — OpenAI Codex CLI (GPT-5.5):** 4 parallel review passes in Step 3, each a distinct independent lens (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Every pass is a `codex exec -s read-only --ephemeral` invocation — the branch/uncommitted lenses run over a diff-as-text through the `codex-exec.sh` house wrapper (Step 3), the file/describe lenses and the Step 6 verify run `codex exec` directly.
 - **Review — Claude Opus:** 3 parallel lens agents (Architecture/Maintainability, Cross-layer Integration/Footguns, Adversarial+FP-filter) in Step 4, plus meta-review in Step 5. Claude complements Codex's recall with precision — Codex owns correctness/security/data, so Claude leans architecture/integration/skepticism.
 - **Fix:** None. This skill is report-only and never modifies files.
 
@@ -27,6 +27,7 @@ codex-review runs Codex at `high` reasoning effort by default — the enforced f
 - `--effort xhigh` → `EFFORT="xhigh"`.
 - `--effort high` → `EFFORT="high"`.
 - A caller that pins the effort has decided deliberately. In particular, a convergence **LOOP** pins `--effort high` on purpose: it re-runs and finds everything across rounds, so no single pass needs xhigh. Honor the pin verbatim and do NOT self-escalate.
+- When driven as a convergence loop, /codex-review converges in 3–5 rounds to diminishing returns (the default cadence for multi-round use).
 - Any value below high (`medium` / `low` / malformed) is ignored → `EFFORT="high"`.
 
 **2. No explicit flag → default `high`, then self-assess for one-shot escalation.**
@@ -35,7 +36,7 @@ Set `EFFORT="high"`, then judge whether THIS review is critical enough to justif
 - **Stay at `high` (do NOT escalate) when:** it's a routine diff, a plan / idea / bug discussion, a low-blast-radius change, or one pass inside a review loop. Loops converge — xhigh on every iteration is wasted; a `high` floor across rounds finds everything.
 - **When genuinely unsure, stay at `high`.** `xhigh` is the rare exception, not the norm — expect it on only a small minority of reviews.
 
-**3.** `EFFORT` is substituted into every Codex `model_reasoning_effort` setting in Step 3b (all 4 passes, all modes) and Step 6 (verification). State the resolved `EFFORT` in the Step 7 report header, and if you self-escalated to `xhigh`, add one line naming the criticality signal that triggered it.
+**3.** `EFFORT` is substituted into the Codex `model_reasoning_effort` setting of Step 3b's **file/describe** passes and Step 6 (verification). The **branch/uncommitted** passes run through `codex-exec.sh`, whose effort contract is config-authoritative (the config's `model_reasoning_effort = "max"`); `$EFFORT` is NOT plumbed into them. State the resolved `EFFORT` in the Step 7 report header, and if you self-escalated to `xhigh`, add one line naming the criticality signal that triggered it.
 
 ---
 
@@ -103,10 +104,10 @@ WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 **If `$ARGUMENTS` is a specific file path:**
 - → MODE="file" (always — file argument overrides branch/uncommitted detection)
-- Engine: Codex exec (since `codex review` requires a diff)
+- Engine: Codex exec (a single file has no branch diff to materialize)
 
 **If `$ARGUMENTS` is a directory path:**
-- Check for branch diff or uncommitted changes (below). Use Codex review engine.
+- Check for branch diff or uncommitted changes (below). Use the Codex diff-as-text engine (Step 3).
 - Append "Focus especially on files in [directory]" to each Claude agent prompt.
 
 **If `$ARGUMENTS` is a description/question that relates to code** (e.g., "review the auth system", "check the API routes", "find bugs in the database layer"):
@@ -121,8 +122,8 @@ WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
    - If clearly non-code (plan, idea, conceptual question) → Claude-only
 
 **Engine selection:**
-- MODE="branch" → **Codex review engine** (`codex review --base $BASE_BRANCH`)
-- MODE="uncommitted" → **Codex review engine** (`codex review --uncommitted`)
+- MODE="branch" → **Codex diff-as-text engine** (Step 3 builds a merge-base diff, then runs 4 lens passes over it via `codex-exec.sh`)
+- MODE="uncommitted" → **Codex diff-as-text engine** (Step 3 builds a staged+unstaged+untracked diff, then runs 4 lens passes over it via `codex-exec.sh`)
 - MODE="file" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C "$WORKDIR"`)
 - MODE="describe" → **Codex exec engine** (`codex exec -s read-only --ephemeral -C "$WORKDIR"`, prompt via stdin per Step 3b)
 - Clearly non-code (plan, idea, conceptual) → **Claude-only engine** (skip to Step 4)
@@ -147,7 +148,7 @@ Each invocation gets its own isolated temp directory so concurrent runs (paralle
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-review.XXXXXX")
 ```
 
-`$RUN_DIR` persists for the rest of this skill — Steps 3b, 3c, 6, and the final cleanup in 7e all reference it. Hold onto the exact path returned here and substitute it into every later `"$RUN_DIR"` reference, always double-quoted. (No stale-file cleanup is needed since the directory is fresh per run.)
+`$RUN_DIR` persists for the rest of this skill AND beyond it — Steps 3b, 3c, 6, and the report written in 7f all reference it, and it is deliberately NOT deleted at skill end (7f leaves `report-final.md` in place for downstream consumers such as `/mission`). Hold onto the exact path returned here and substitute it into every later `"$RUN_DIR"` reference, always double-quoted. (No stale-file cleanup is needed at start since the directory is fresh per run; old run dirs are TTL-swept — `>24h` — by `on-session-start-cleanup.sh`.)
 
 If FRAIM rules were loaded in Step 1b (`$FRAIM_RULES` non-empty), persist them verbatim to a file inside `"$RUN_DIR"` now, so the prompt can reference the file path instead of inlining repo-controlled content:
 ```bash
@@ -179,35 +180,70 @@ Report only what you can substantiate — but a speculative-but-real finding tag
 
 The mandatory trailing `Verdict: ship|needs-fixes` line is a contract, not decoration: the Step 3c usability gate keys on it (a real pass — clean or not — always emits a verdict line; a CLI error/usage/stack-trace does not), so it is what lets a genuinely-clean pass be counted as usable regardless of finding wording. Do not drop it.
 
-**For MODE="branch" or MODE="uncommitted"**, use `codex ... review` (the diff-based `review` subcommand takes no per-pass prompt, so the four passes run on the same diff and the lens is attributed at merge time; each pass is still an independent Codex invocation). Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution):
+**For MODE="branch" or MODE="uncommitted"**, do NOT use the `codex review` subcommand — its base detection is too narrow (main/master only) and it takes no per-pass prompt, so the four passes could not run as distinct lenses. Instead, materialize the change as a **diff-as-text** and run the same four distinct lens prompts over it through the house wrapper `codex-exec.sh`. Two steps: build the diff (3b-i), then spawn the four lens passes (3b-ii).
 
-> Note: these `codex review` calls intentionally carry no `-s read-only --ephemeral` (unlike the `codex exec` calls in the MODE="file"/"describe" path). The `review` SUBCOMMAND reviews a diff and is inherently read-only — it has no `-s` sandbox flag at all (that flag is specific to `codex exec`). So the "every Codex invocation is read-only" invariant holds here by the subcommand's nature, not by an explicit flag. This is not a missing-sandbox gap.
+**Step 3b-i — Build the diff-as-text** (written atomically; run via Bash). If this fails, STOP — do not run the lens passes (there is nothing to review) and report the failure to the user.
+
+For **MODE="branch"** — fetch, walk a base ladder, and diff from the merge-base:
+```bash
+git -C "$WORKDIR" fetch --quiet 2>/dev/null || true   # refresh origin/* so the ladder resolves current refs
+TRIED=""; BASE=""
+for cand in origin/dev dev origin/HEAD main master; do
+  TRIED="$TRIED $cand"
+  if git -C "$WORKDIR" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then BASE="$cand"; break; fi
+done
+[ -n "$BASE" ] || { echo "codex-review: FAILED — no base branch resolved (tried:$TRIED)" >&2; exit 1; }
+MB=$(git -C "$WORKDIR" merge-base "$BASE" HEAD) \
+  || { echo "codex-review: FAILED — no merge-base between $BASE and HEAD (tried:$TRIED)" >&2; exit 1; }
+git -C "$WORKDIR" diff "$MB"..HEAD > "$RUN_DIR/diff.txt.tmp" && mv -f "$RUN_DIR/diff.txt.tmp" "$RUN_DIR/diff.txt"
+[ -s "$RUN_DIR/diff.txt" ] || { echo "codex-review: FAILED — empty diff for $MB..HEAD (bases tried:$TRIED)" >&2; exit 1; }
+```
+The base ladder is `origin/dev → dev → origin/HEAD → main → master` (first that resolves wins). If NO base resolves, the merge-base is missing, or the diff is empty, FAIL LOUD naming every base tried — never silently review nothing.
+
+For **MODE="uncommitted"** — staged + unstaged + **untracked** (no base ladder):
+```bash
+{ git -C "$WORKDIR" diff; git -C "$WORKDIR" diff --cached; \
+  git -C "$WORKDIR" ls-files --others --exclude-standard \
+    | while read -r f; do git -C "$WORKDIR" diff --no-index /dev/null "$f" || true; done; \
+} > "$RUN_DIR/diff.txt.tmp" && mv -f "$RUN_DIR/diff.txt.tmp" "$RUN_DIR/diff.txt"
+[ -s "$RUN_DIR/diff.txt" ] || { echo "codex-review: no uncommitted changes to review" >&2; exit 1; }
+```
+The untracked leg turns each new-but-unstaged file into a proper new-file diff so brand-new scripts/tests are actually reviewed. **The `|| true` is REQUIRED**: `git diff --no-index` exits 1 on success-when-there-are-differences, which would otherwise abort the whole `while` loop (and the command substitution) under `set -e`.
+
+**Step 3b-ii — Run the four lens passes over the diff.** Effort is **config-authoritative** here — these passes go through `codex-exec.sh`, whose contract is the config's `model_reasoning_effort = "max"` (Step 0's `$EFFORT` is NOT plumbed into them; it still governs the file/describe passes below and the Step 6 verify). Assemble each lens prompt exactly as in the MODE="file"/"describe" convention (lead line + CONTEXT block + lens aim + output-contract block), but lead with `Review the following code diff (unified format).`; write it to a file with `printf '%s'` (literal, never shell-evaluated), then append the diff text with `cat` so the untrusted diff bytes never pass through the shell:
+```bash
+{ printf '%s\n\n---\nDIFF UNDER REVIEW:\n\n' "$PROMPT_N"; cat "$RUN_DIR/diff.txt"; } \
+  > "$RUN_DIR/codex-prompt-$N.txt.tmp" && mv -f "$RUN_DIR/codex-prompt-$N.txt.tmp" "$RUN_DIR/codex-prompt-$N.txt"
+```
+where `$PROMPT_N` is the literal lens body — reuse the exact `$PROMPT_1..4` lens aims defined for MODE="file"/"describe" below (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), swapping only the lead line. Because every lens now runs through OUR per-lens prompt (which mandates the trailing `Verdict: ship|needs-fixes` line), the branch/uncommitted passes emit the same verdict contract as file/describe — this is exactly what lets Step 3c apply `REVIEW_RE` to them.
+
+Then invoke the wrapper once per lens — it feeds the prompt file to `codex exec` via stdin (`- < promptfile`), writes the output file, and writes a `<out>.status` sidecar (`ok|timeout|unavailable|nonzero-N`) atomically. Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution):
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE_BRANCH" | --uncommitted] > "$RUN_DIR/codex-review-1.txt" 2>&1
+bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
 ```
 timeout: 600000
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
-cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE_BRANCH" | --uncommitted] > "$RUN_DIR/codex-review-2.txt" 2>&1
+bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-2.txt" "$RUN_DIR/codex-review-2.txt" "$WORKDIR"
 ```
 timeout: 600000
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE_BRANCH" | --uncommitted] > "$RUN_DIR/codex-review-3.txt" 2>&1
+bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-3.txt" "$RUN_DIR/codex-review-3.txt" "$WORKDIR"
 ```
 timeout: 600000
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
-cd "$WORKDIR" && codex -c model_reasoning_effort="$EFFORT" review [--base "$BASE_BRANCH" | --uncommitted] > "$RUN_DIR/codex-review-4.txt" 2>&1
+bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-4.txt" "$RUN_DIR/codex-review-4.txt" "$WORKDIR"
 ```
 timeout: 600000
 
-**For MODE="file" or MODE="describe"**, use `codex ... exec -o` with a per-lens prompt. For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical.
+**For MODE="file" or MODE="describe"**, use `codex ... exec -o` with a per-lens prompt (these run `codex exec` DIRECTLY, not through `codex-exec.sh` — deliberately: they keep the in-file `$EFFORT` plumbing described in Step 0, whereas the wrapper exists specifically for the diff-as-text branch/uncommitted lenses). For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical.
 
 **Pass each per-lens prompt to Codex via stdin, never as an inline double-quoted argument.** The prompt embeds the CONTEXT block (which references — but does not inline — untrusted FRAIM content) and may contain `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters. Inlining it into a `codex exec "..."` argument would let those characters be shell-evaluated. Instead, write each fully-assembled prompt to a file under `"$RUN_DIR"` with `printf '%s'` (literal, never re-interpreted), then feed it to `codex exec` as `- < promptfile` so the prompt is read verbatim from stdin and never touches the shell's word/expansion machinery. Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution). In each call below, `$PROMPT_N` is the literal prompt text you assembled (lead line + CONTEXT block + lens aim + output-contract block) — write it with `printf` exactly as authored.
 
@@ -253,27 +289,32 @@ After all four return, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/code
 # (Do NOT require an exact clean sentinel — a clean pass worded "no issues found" must still count,
 #  or CODEX_PASSES drops below 4/4 and /mission VOIDs forever. Case-insensitive on the verdict/clean parts.)
 REVIEW_RE='^[[:space:]]*(CRITICAL|IMPORTANT|MINOR)|[Vv]erdict:[[:space:]]*(ship|needs-fixes)|[Nn]o (additional |significant )?(findings|issues|concerns|problems)|[Cc]lean review|[Nn]othing (significant|notable|to flag)'
-# Mode-aware usability (the two engines produce differently-shaped output):
-#  - exec mode (MODE=file|describe): WE control the per-lens prompt, which mandates the trailing
-#    `Verdict: ship|needs-fixes` line, so REVIEW_RE (finding line OR verdict OR clean wording) is the gate.
-#  - review mode (MODE=branch|uncommitted): `codex review` takes NO per-pass prompt, so we CANNOT
-#    require a verdict line; a usable pass is simply one that RAN — exit 0 with non-empty output.
-#    (A failed `codex review` exits non-zero or empty.) Do NOT apply REVIEW_RE to review-mode passes.
+# TWO usability contracts by mode (documented — they consume differently-produced artifacts):
+#  (A) BRANCH / UNCOMMITTED — the rewritten lenses ran through codex-exec.sh, which wrote "<out>.status".
+#      A lens is USABLE iff .status reads EXACTLY `ok` AND its output matches REVIEW_RE. Because these
+#      passes use OUR per-lens prompt (which mandates the trailing `Verdict:` line), REVIEW_RE is a
+#      valid gate here (unlike the old `codex review` path, which had no per-pass prompt). Step 3c is
+#      the EXCLUSIVE writer of `<out>.usable` (codex-exec.sh writes .status only) — persist it atomically.
+#  (B) FILE / DESCRIBE — raw `codex exec`, no .status sidecar. Existing gate UNCHANGED: usable iff
+#      REVIEW_RE matches the output (success on exit 0, partial on non-zero exit); no `.usable` file.
+# Apply per lens N (1..4):
+out="$RUN_DIR/codex-review-$N.txt"
 if [ "$MODE" = "branch" ] || [ "$MODE" = "uncommitted" ]; then
-  if [ "$EXIT_N" = "0" ] && [ -s "$RUN_DIR/codex-review-$N.txt" ]; then USABLE=1; else USABLE=0; fi
-elif [ -s "$RUN_DIR/codex-review-$N.txt" ] && grep -E -q "$REVIEW_RE" "$RUN_DIR/codex-review-$N.txt"; then
-  USABLE=1   # exec-mode real review present (success OR partial-with-findings/verdict)
+  if [ "$(cat "$out.status" 2>/dev/null)" = "ok" ] && [ -s "$out" ] && grep -E -q "$REVIEW_RE" "$out"; then
+    v=ok; else v=no; fi
+  printf '%s\n' "$v" > "$out.usable.tmp" && mv -f "$out.usable.tmp" "$out.usable"   # Step 3c OWNS .usable
+  [ "$v" = "ok" ] && USABLE=1 || USABLE=0
 else
-  USABLE=0   # empty, or non-empty but only error/usage/sandbox-denied/stack-trace
+  if [ -s "$out" ] && grep -E -q "$REVIEW_RE" "$out"; then USABLE=1; else USABLE=0; fi   # file/describe: unchanged
 fi
 ```
 
-**Handle failures (per pass)** — per the mode-aware `USABLE` rule above:
-- **review mode** (`branch`/`uncommitted`): exit 0 + non-empty file → usable; non-zero exit OR empty → FAILED, note "(Codex-[N]: unavailable)".
-- **exec mode** (`file`/`describe`): file passes the `REVIEW_RE` gate (≥1 finding line, the mandatory `Verdict:` line, or clean wording) → usable (success on exit 0, partial on non-zero exit); empty OR non-empty but only a CLI error / usage / sandbox-denied / stack-trace (no finding/verdict line) → FAILED, note "(Codex-[N]: unavailable)" regardless of exit code (a zero-exit error page is still a failed pass).
+**Handle failures (per pass)** — per the mode-aware rule above:
+- **branch / uncommitted mode**: `<out>.status` == `ok` AND `REVIEW_RE` matches → usable, persist `<out>.usable=ok`; otherwise `<out>.usable=no`, FAILED, note "(Codex-[N]: unavailable)". A `.status` of `timeout`/`unavailable`/`nonzero-N`, or an `ok` run whose output is only a CLI error / usage / sandbox-denied / stack-trace (no finding/verdict line), is NOT usable.
+- **file / describe mode**: file passes the `REVIEW_RE` gate (≥1 finding line, the mandatory `Verdict:` line, or clean wording) → usable (success on exit 0, partial on non-zero exit); empty OR non-empty but only a CLI error / usage / sandbox-denied / stack-trace → FAILED, note "(Codex-[N]: unavailable)" regardless of exit code (a zero-exit error page is still a failed pass).
 - If ALL FOUR are not usable → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
 
-**Maintain a usable-pass count as you classify each pass.** Let `CODEX_PASSES` = the number of passes that pass the usability gate above (range 0-4), and track the lens numbers of any passes that were NOT usable (e.g. `codex-2`). Only a pass that produced a real, on-topic review counts toward `CODEX_PASSES`; an error-only / findings-empty output lowers the count (so a spoofed `4/4` cannot pass through to `/mission`, whose VOID-on-dead-reviewer guard relies on this count). This count is rendered verbatim into the Step 7f report header as a stable machine-readable contract — see Step 7f.
+**Maintain a usable-pass count as you classify each pass.** Let `CODEX_PASSES` = the number of passes that pass the usability gate above (range 0-4), and track the lens numbers of any passes that were NOT usable (e.g. `codex-2`). For branch/uncommitted that is the number of lenses whose persisted `<out>.usable` reads `ok`; for file/describe it is the `REVIEW_RE`-usable count. This is the SINGLE usability predicate — the SAME `CODEX_PASSES` value feeds Step 5's synthesis AND Step 7f's `Codex-passes: N/4` header (no split-brain). Only a pass that produced a real, on-topic review counts; an error-only / findings-empty output lowers the count (so a spoofed `4/4` cannot pass through to `/mission`, whose VOID-on-dead-reviewer guard relies on this count). This count is rendered verbatim into the Step 7f report header as a stable machine-readable contract — see Step 7f.
 
 ### Step 3d: Merge Codex outputs
 
@@ -364,6 +405,8 @@ Each agent does up to 3 passes internally (Pass 1: initial findings, Pass 2: dee
 
 ## Step 5: Meta-Review Layer
 
+**Which Codex lenses count.** Only Codex lenses whose usability verdict is usable (Step 3c — `<out>.usable == ok` for branch/uncommitted; the `REVIEW_RE` gate for file/describe) feed this synthesis. This is the SAME `CODEX_PASSES` predicate Step 7f counts for `Codex-passes: N/4` — one predicate, no split-brain. A lens that did not pass the usability gate contributes no findings and is not counted.
+
 After ALL 3 Claude agents return, Claude (you, the orchestrator) performs three checks:
 
 ### 5a. Parse and Map Codex Findings
@@ -419,7 +462,7 @@ The prompt should instruct Codex to:
 
 ### 6b. Run verification
 
-Assemble the verification prompt text (`$VERIFY_PROMPT`) and feed it to Codex via stdin, never as an inline double-quoted argument — the consolidated findings list can contain arbitrary code excerpts and shell metacharacters that must not be shell-evaluated:
+Assemble the verification prompt text (`$VERIFY_PROMPT`) and feed it to Codex via stdin, never as an inline double-quoted argument — the consolidated findings list can contain arbitrary code excerpts and shell metacharacters that must not be shell-evaluated. (This verify pass runs `codex exec` DIRECTLY, not through `codex-exec.sh` — like the file/describe lenses it keeps the in-file `$EFFORT` plumbing; the wrapper is scoped to the diff-as-text branch/uncommitted lenses.)
 ```bash
 printf '%s' "$VERIFY_PROMPT" > "$RUN_DIR/codex-verify-prompt.txt" && codex -c model_reasoning_effort="$EFFORT" exec -o "$RUN_DIR/codex-verify.txt" --ephemeral -s read-only -C "$WORKDIR" - < "$RUN_DIR/codex-verify-prompt.txt"
 ```
@@ -493,15 +536,29 @@ Multiple independent sources finding the same issue upgrades confidence:
 
 MISSING, ASSUMPTION, and CONTRADICTION are cross-cutting — they go to their dedicated sections regardless of confidence. If a finding is both `[definite]` and `ASSUMPTION`, it goes in Assumptions.
 
-### 7e. Cleanup
+### 7e. Retain the run directory (NO cleanup here)
 
+Do NOT delete `$RUN_DIR` at skill end. It holds `report-final.md` (written in 7f), which downstream
+consumers — e.g. `/mission`, which parses the `Report-file:` line AFTER this skill returns — need to
+read. Deleting it here would remove the report before it could be consumed (a verified defect: the old
+`rm -rf "$RUN_DIR"` ran before 7f's output could reach any consumer). Cleanup is deferred to a TTL sweep
+instead: `on-session-start-cleanup.sh` removes `${TMPDIR:-/tmp}/codex-review.*` run dirs older than 24h
+on every session start. (The verify temp files were already removed in 6e; only the reusable report
+directory persists.)
+
+### 7f. Write the report file, output it, and print the run identity
+
+7f has three obligations, in this order: (1) build the report and write it to `$RUN_DIR/report-final.md`
+atomically; (2) output the SAME report markdown to the conversation; (3) print the run-identity trailer
+that downstream consumers parse. The run dir is NOT deleted (see 7e) — the report persists for `/mission`.
+
+**Build + write the report file.** Assemble the report markdown (template below), then write it atomically
+(same bytes you are about to print):
 ```bash
-rm -rf "$RUN_DIR"
+printf '%s\n' "$REPORT_MD" > "$RUN_DIR/report-final.md.tmp" && mv -f "$RUN_DIR/report-final.md.tmp" "$RUN_DIR/report-final.md"
 ```
 
-### 7f. Output the Final Report
-
-Output this directly to the conversation (not to a file):
+**Output the report to the conversation** (emit the identical markdown inline so the user sees it).
 
 **`[target summary]` MUST be a single line** — collapse any newlines/carriage-returns in the target
 summary to spaces before rendering the title. The `Engine:` header (with the `Codex-passes: N/4`
@@ -510,9 +567,10 @@ multiple lines, an untrusted target/filename/description containing a newline + 
 `Engine: ... Codex-passes: 4/4 ... Verified:` line would inject a spoofed canonical header BEFORE the
 real one, defeating a downstream parser. Keeping the title single-line makes that injection impossible.
 
+<!-- ENGINE-HEADER-FORMAT -->
 ```markdown
 # Codex Review: [target summary — single line, newlines stripped]
-Engine: 4x Codex (GPT-5.5) + 3x Claude + Codex Verification | Codex-passes: N/4 | Verified: [Y/N]
+Engine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: N/4 | Verified: [Y/N]
 
 ## Critical [must fix]
 - [ ] [definite] Finding — file:line — explanation (codex-1 + codex-3 + claude/architecture)
@@ -535,9 +593,19 @@ Engine: 4x Codex (GPT-5.5) + 3x Claude + Codex Verification | Codex-passes: N/4 
 ## Meta-Review Notes
 - [Contradictions between sources, calibration adjustments, observations about the review quality itself]
 ```
+<!-- /ENGINE-HEADER-FORMAT -->
+
+**Print the run-identity trailer** — AFTER the report body, as the LAST output lines of this skill:
+```bash
+echo "Run-id: $(basename "$RUN_DIR")"                                             # UNCONDITIONAL
+[ -f "$RUN_DIR/report-final.md" ] && echo "Report-file: $RUN_DIR/report-final.md"  # ONLY when the file exists — the ACTUAL FINAL line
+```
+- **`Run-id:` is printed UNCONDITIONALLY** — even when writing `report-final.md` failed. A downstream VOID derives its attempt identity from the run-dir basename, so a missing report must still surface a run id (the attempt stays distinct and countable).
+- **`Report-file:` is CONDITIONAL and MUST be the ACTUAL FINAL output line** — print it only when `report-final.md` exists, and print nothing after it. Downstream (`/mission` §5) accepts `Report-file:` ONLY as the last line of this skill's output, so reviewed content that quotes the string mid-stream never binds. The path shape is `${TMPDIR:-/tmp}/codex-review.*/report-final.md`, and its run-dir basename matches the `Run-id:` just printed (path↔identity binding).
 
 **Rules:**
-- **`Codex-passes: N/4` is a mandatory, always-present token in the `Engine:` header line** — it is a stable machine-readable contract that other skills (e.g. `/mission`, which greps the report to decide whether to VOID a review round when not every independent reviewer reported) parse. `N` = the `CODEX_PASSES` count from Step 3c (usable passes, 0-4). Always render it, including the all-good case → `Codex-passes: 4/4`. When `N < 4`, append the missing lens(es) in parentheses, e.g. `Codex-passes: 3/4 (codex-2 unavailable)` or `Codex-passes: 2/4 (codex-1, codex-4 unavailable)`. When all four failed, the token reads `Codex-passes: 0/4` AND the existing `Codex unavailable, using Claude agents only` note (Step 3c) is still emitted — keep both.
+- **`Codex-passes: N/4` is a mandatory, always-present token in the `Engine:` header line** — it is a stable machine-readable contract that other skills (e.g. `/mission`, which greps the report to decide whether to VOID a review round when not every independent reviewer reported) parse. `N` = the `CODEX_PASSES` count from Step 3c (usable passes, 0-4) — for branch/uncommitted the count of lenses whose `<out>.usable == ok`, for file/describe the `REVIEW_RE`-usable count; the SAME predicate Step 5 uses (no split-brain). Always render it, including the all-good case → `Codex-passes: 4/4`. When `N < 4`, append the missing lens(es) in parentheses, e.g. `Codex-passes: 3/4 (codex-2 unavailable)` or `Codex-passes: 2/4 (codex-1, codex-4 unavailable)`. When all four failed, the token reads `Codex-passes: 0/4` AND the existing `Codex unavailable, using Claude agents only` note (Step 3c) is still emitted — keep both.
+- The `Engine:` header is **model-agnostic** — the literal reads `4x Codex` (no model ID / version). The downstream parser anchors on `^Engine:.*Codex-passes:`; the model name is not load-bearing and must not appear in this line.
 - Omit any section that has zero findings
 - Within each section, sort by specificity (findings with file:line references first, then cross-model findings, then single-source findings)
 - Verified findings should be marked with "(verified)" suffix
