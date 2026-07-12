@@ -181,6 +181,20 @@ CASES = [
     ("docker-exec inline-localhost migrate (historical FP)",
      f'docker exec summit-pg sh -lc "DATABASE_URL={LOCAL} prisma migrate deploy"', SAFE, SAFE),
 
+    # DECOY-URL bypass (codex-review CRITICAL 2026-07-12): the REAL target is an env var / ambient
+    # env while a local postgres URL sits in a COMMENT or an unused position. Must stay PROD on both.
+    ("decoy local URL in comment, env-var target",
+     f"DATABASE_URL=$PROD_URL prisma migrate deploy # {LOCAL}", PROD, PROD),
+    ("decoy local URL as extra arg, env-var target",
+     f"DATABASE_URL=$PROD_URL prisma migrate deploy {LOCAL}", PROD, PROD),
+    ("decoy 127 URL in comment, POSTGRES secret",
+     f"POSTGRES_PASSWORD=$SECRET prisma migrate deploy # {LOCAL_127}", PROD, PROD),
+    ("comment-only local URL, ambient env",
+     f"prisma migrate deploy # {LOCAL}", PROD, PROD),
+    # counter-case: an inline-local migrate that ALSO carries a trailing comment stays SAFE
+    ("inline-local migrate with a harmless comment",
+     f"DATABASE_URL={LOCAL} prisma migrate deploy # runs the local dev migration", SAFE, SAFE),
+
     # plain safe command -> never prod, gate stays silent (asserted separately too)
     ("plain safe command",         "ls -la",                                               SAFE, SAFE),
 ]

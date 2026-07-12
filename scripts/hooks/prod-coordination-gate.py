@@ -47,18 +47,48 @@ MIGRATE = re.compile(r"prisma\s+migrate\s+deploy|db:migrate:deploy", re.I)
 PRODMARK = re.compile(r"ALLOW_PROD_MIGRATE_DEPLOY|MIGRATOR_DIRECT_URL|neon\.tech", re.I)
 
 
-def _all_urls_local(cmd):
-    # Only exact hostname equality counts; parse failure = NOT local (prod-risk).
+# DB-connection env vars — a migrate's REAL target is whatever one of these points at.
+CONN_VAR = re.compile(
+    r"\b(?:[A-Z][A-Z0-9_]*_)?(?:DATABASE_URL|DB_URL|POSTGRES[A-Z0-9_]*|PG[A-Z0-9_]*|MIGRATOR[A-Z0-9_]*)"
+    r"\s*=\s*(\S+)", re.I)
+
+
+def _url_is_local(u):
+    # Exact hostname equality only; parse failure = NOT local (prod-risk).
     from urllib.parse import urlparse
+    try:
+        host = (urlparse(u).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in ("localhost", "127.0.0.1", "postgres")
+
+
+def _strip_comment(clause):
+    # Drop an inline shell comment (` #...` to end of the clause): a postgres URL that appears
+    # ONLY in a comment is a DECOY, never a real connection argument (codex-review CRITICAL 2026-07-12:
+    # `DATABASE_URL=$PROD_URL <migrate> # postgresql://localhost/x` was wrongly exempted).
+    return re.sub(r"(?:^|\s)#.*$", "", clause)
+
+
+def _all_urls_local(cmd):
     urls = re.findall(r"postgres(?:ql)?://[^\s\"']+", cmd, re.I)
     if not urls:
         return False
-    for u in urls:
-        try:
-            host = (urlparse(u).hostname or "").lower()
-        except ValueError:
-            return False
-        if host not in ("localhost", "127.0.0.1", "postgres"):
+    return all(_url_is_local(u) for u in urls)
+
+
+def _migrate_target_provably_local(clause):
+    # A migrate is exempt ONLY when its clause's connection target is PROVABLY local. Comments are
+    # stripped first (decoy URLs don't count). Then BOTH must hold:
+    #   (a) every remaining literal postgres URL is local AND there is >= 1 (no URL => unknown => prod),
+    #   (b) every DB-connection env assignment resolves to a proven-local LITERAL — a var ref
+    #       (`$PROD_URL`) or a non-local literal means the real target is not provably local => prod.
+    c = _strip_comment(clause)
+    if not _all_urls_local(c):
+        return False
+    for val in CONN_VAR.findall(c):
+        val = val.strip().strip("'\"")
+        if not (re.match(r"postgres(?:ql)?://", val, re.I) and _url_is_local(val)):
             return False
     return True
 
@@ -82,7 +112,7 @@ def is_prod(cmd):
     migrate_clauses = [c for c in clauses if MIGRATE.search(c)]
     if len(migrate_clauses) != 1:
         return True
-    if _all_urls_local(migrate_clauses[0]) and not PRODMARK.search(cmd):
+    if _migrate_target_provably_local(migrate_clauses[0]) and not PRODMARK.search(cmd):
         return False
     return True  # unknown/unparseable target = prod-risk
 
