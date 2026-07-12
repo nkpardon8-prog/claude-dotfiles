@@ -20,7 +20,10 @@ backdate() {  # backdate <file> <days>
 }
 
 run_guard() {  # run_guard <cwd> [sid] — real invocation shape: stdin JSON, bash <path>
-  printf '{"cwd":"%s","session_id":"%s"}' "$1" "${2:-test-sid-000}" | bash "$GUARD" 2>/dev/null
+  # The dotfiles-sync PAUSED notice is environment-dependent (fires whenever the user's real
+  # pause marker exists) — filter it so the per-repo silence assertions test THIS repo's behavior:
+  printf '{"cwd":"%s","session_id":"%s"}' "$1" "${2:-test-sid-000}" | bash "$GUARD" 2>/dev/null \
+    | grep -v 'auto-sync is PAUSED' || true
 }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/shg-test.XXXXXX")

@@ -34,6 +34,19 @@ case "$rc" in
     *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; exit 3 ;;
 esac
 
+# PUBLIC-REPO PUSH GUARD (2026-07-12: the remote was discovered PUBLIC with a third-party fork —
+# this repo carries the user's private global instructions and must never auto-publish them).
+# Block the PUSH only on an EXPLICIT isPrivate=false answer; any gh absence/error proceeds
+# (fail-open on infrastructure so a gh hiccup can't silently kill cross-device sync — the
+# commit below still happens either way, so nothing is lost while a push is blocked).
+_vis=$(gh repo view --json isPrivate -q .isPrivate 2>/dev/null)
+if [ "$_vis" = "false" ]; then
+    git add -A
+    git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)" 2>/dev/null
+    echo "(dotfiles-sync: PUSH BLOCKED — remote repo is PUBLIC; committed locally only. Flip the repo private, then push.)" >&2
+    exit 4
+fi
+
 # Auto-commit and push
 git add -A
 git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)" 2>/dev/null

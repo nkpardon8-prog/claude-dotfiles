@@ -40,6 +40,13 @@ fi   # hand-authored (no handoff fingerprint) -> NEVER touched
 find "$root" -maxdepth 1 -name 'CLAUDE.local.*.md' ! -name "CLAUDE.local.${sid:-none}.md" -type f -mtime +30 \
   -exec sh -c 'arch=$1; f=$2; mkdir -p "$arch"; mv -- "$f" "$arch/$(basename "$f").$(date +%s)"' sh "$root/.handoff-archive" {} \; 2>/dev/null
 
+# --- 2b. Surface a paused dotfiles auto-sync (criticer 2026-07-12: the out-of-repo marker is
+#         invisible to git status; without this notice, local dotfiles commits silently strand) ---
+if [ -f "$HOME/.claude/.dotfiles-sync-paused" ]; then
+  behind=$(git -C "$HOME/.claude-dotfiles" log --oneline @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ')
+  echo "stale-handoff-guard: NOTE — dotfiles auto-sync is PAUSED (~/.claude/.dotfiles-sync-paused present; ${behind:-?} unpushed commit(s)). Remove the marker + run dotfiles-sync.sh when the hold is over."
+fi
+
 # --- 3. MEMORY.md injection-cliff warning ---
 mem="$HOME/.claude/projects/$(printf '%s' "$root" | tr '/.' '--')/memory/MEMORY.md"
 if [ -f "$mem" ]; then
