@@ -34,15 +34,13 @@ case "$rc" in
     *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; exit 3 ;;
 esac
 
-# PUBLIC-REPO PUSH GUARD — FAIL CLOSED (2026-07-12: the remote was discovered PUBLIC with a
-# third-party fork — this repo carries the user's PRIVATE global instructions and must never
-# auto-publish them). The PUSH proceeds ONLY on an EXPLICIT isPrivate=true. Every other outcome
-# — isPrivate=false, empty (gh not authed / not installed / API error), or a repo with no gh
-# view — commits locally but HOLDS the push. Rationale (god-report 2026-07-12, two lenses):
-# a silent auto-publish of private instructions is far worse than a stalled sync, and a held
-# push is NOT silent — the SessionStart stale-handoff-guard surfaces a PAUSED/held notice with
-# the unpushed-commit count every session, so a legitimately-private repo whose gh momentarily
-# failed is a visible, recoverable one-liner (re-run this script), not lost work.
+# VISIBILITY-AWARE PUSH GUARD (2026-07-12). The user EXPLICITLY accepts this repo being PUBLIC
+# (informed choice after a private-vs-public review + a clean secret audit), so a public target
+# WARNS but PROCEEDS — the pre-push secret-scan above is the real "nothing private" gate, and it
+# hard-blocks any actual secret regardless of visibility. The guard still FAILS CLOSED on genuine
+# UNCERTAINTY (gh error / unresolvable target): it can't confirm the push target is the repo the
+# user meant, so it holds rather than push blind. A held push is never silent — the SessionStart
+# guard surfaces a PAUSED/held notice with the unpushed count.
 # SAME-REMOTE BINDING (codex-review CRITICAL 2026-07-12): a bare `gh repo view` resolves its repo
 # from $GH_REPO or cwd's default remote, while a bare `git push` targets the branch's tracking
 # remote — these can DIFFER, so a private result for some OTHER repo could authorize pushing THIS
@@ -62,9 +60,13 @@ if [ -n "$_slug" ]; then
 else
     _vis=""   # could not resolve the push target's slug — fail closed (hold)
 fi
-if [ "$_vis" = "true" ]; then
-    git push "$_remote" 2>/dev/null || true
-else
-    echo "(dotfiles-sync: PUSH HELD — could not confirm the push target ${_slug:-$_remote} is PRIVATE (isPrivate='${_vis:-unknown}'); committed locally only. Confirm the repo is private, then re-run this script to push.)" >&2
-    exit 4
-fi
+case "$_vis" in
+  true)
+    git push "$_remote" 2>/dev/null || true ;;                     # private — silent push
+  false)
+    echo "(dotfiles-sync: pushing to a PUBLIC repo ${_slug:-$_remote} — you accepted this; secret-scan passed above.)" >&2
+    git push "$_remote" 2>/dev/null || true ;;                     # public — warn + push (user's choice)
+  *)
+    echo "(dotfiles-sync: PUSH HELD — could not resolve/confirm the push target ${_slug:-$_remote} (isPrivate='${_vis:-unknown}'); committed locally only. Re-run this script once gh can see the repo.)" >&2
+    exit 4 ;;                                                       # genuine uncertainty — fail closed
+esac
