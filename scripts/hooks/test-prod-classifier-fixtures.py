@@ -34,6 +34,7 @@ command would (ironically) trip the very gate under test.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -228,6 +229,31 @@ def main():
     else:
         failed += 1
         print(f"FAIL [gate  ] safe 'ls' not silent: verdict={verdict} out={out!r} err={err!r}")
+
+    # DRIFT-GUARD (god-report 2026-07-12, single-pattern lens): the SHARED classifier logic
+    # (MIGRATE, PRODMARK, _all_urls_local, is_prod) is copy-pasted verbatim into both hook files
+    # with no import path — a silent divergence would let one hook block a migrate the other allows.
+    # Assert the shared region is byte-identical. NOTE: the `PROD` regex ABOVE this region is
+    # DELIBERATELY per-file (the ledger tracks a broader op set — git push / builds submit /
+    # migrate resolve --applied — than the gate blocks), so it is EXCLUDED from this guard on purpose.
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def _shared_logic(fname):
+        with open(os.path.join(here, fname)) as fh:
+            src = fh.read()
+        m = re.search(r"(?ms)^MIGRATE = re\.compile.*?unknown/unparseable target = prod-risk", src)
+        return m.group(0) if m else None
+
+    g_logic = _shared_logic("prod-coordination-gate.py")
+    l_logic = _shared_logic("prod-ledger.py")
+    if g_logic and l_logic and g_logic == l_logic:
+        passed += 1
+        print("PASS [drift ] shared classifier logic (MIGRATE..is_prod) byte-identical across both hooks")
+    else:
+        failed += 1
+        reason = "region not found in one file" if not (g_logic and l_logic) else "regions DIVERGED"
+        print(f"FAIL [drift ] shared classifier logic differs between the two hooks ({reason}) — "
+              "a fix to one hook's is_prod/_all_urls_local was not mirrored to the other")
 
     print("-" * 72)
     total = passed + failed

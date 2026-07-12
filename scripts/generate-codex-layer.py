@@ -233,7 +233,7 @@ Managed by `~/.claude-dotfiles/scripts/install-codex.sh`.
 ## Slash Alias Routing
 
 - Codex does not have Claude Code's native slash-command menu.
-- When the user types a Claude-style command such as `/plan`, `/implement`, `/verify`, `/plan2bid:run`, or `/ui-ux-pro-max:design`, treat it as a request to use the matching `claude-command-*` skill.
+- When the user types a Claude-style command such as `/plan`, `/implement`, `/codex-review`, `/plan2bid:run`, or `/ui-ux-pro-max:design`, treat it as a request to use the matching `claude-command-*` skill.
 - Text after the slash command is the command argument payload.
 - Also trigger these skills from natural language when the user clearly asks for the same workflow.
 - To list available ported commands, use the `claude-dotfiles-command-index` skill.

@@ -26,7 +26,7 @@ Invoke workflows in plain language or with their old Claude slash names:
 ```text
 /plan build a Stripe checkout flow
 use /implement on ./tmp/ready-plans/foo.md
-run /verify
+run /codex-review
 use /ui-ux-pro-max:design-system
 ```
 

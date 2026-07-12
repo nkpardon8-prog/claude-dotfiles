@@ -28,7 +28,10 @@ git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 # --- 1. Un-tagged CLAUDE.local.md: quarantine only handoff-shaped AND >7d old ---
 f="$root/CLAUDE.local.md"
 if [ -f "$f" ] && [ ! -L "$f" ] && grep -qE 'END-OF-HANDOFF|^# Post-Compact Reference' "$f" 2>/dev/null; then
-  age=$(( $(date +%s) - $(stat -f %m "$f" 2>/dev/null || date +%s) ))
+  # stat -f %m is BSD/macOS; stat -c %Y is GNU/Linux — try both so the >7d quarantine works off-macOS
+  # (a bare `stat -f` failure would return the current time → age 0 → a stale handoff silently kept):
+  mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo "")
+  age=$(( $(date +%s) - ${mtime:-$(date +%s)} ))
   if [ "$age" -gt 604800 ]; then
     mkdir -p "$root/.handoff-archive" \
       && mv "$f" "$root/.handoff-archive/CLAUDE.local.stale-$(date +%Y%m%d-%H%M%S)-$$.md" \
@@ -50,8 +53,10 @@ fi
 # --- 3. MEMORY.md injection-cliff warning ---
 mem="$HOME/.claude/projects/$(printf '%s' "$root" | tr '/.' '--')/memory/MEMORY.md"
 if [ -f "$mem" ]; then
-  n=$(grep -c '^- \[' "$mem" 2>/dev/null || echo 0)
-  l=$(wc -l < "$mem" 2>/dev/null | tr -d ' ' || echo 0)
+  # NOTE: `grep -c` PRINTS 0 and EXITS 1 on no-match, so `grep -c … || echo 0` yields "0\n0" which
+  # breaks the numeric test below. Take grep's stdout as-is and default only a truly empty capture.
+  n=$(grep -c '^- \[' "$mem" 2>/dev/null); n=${n:-0}
+  l=$(wc -l < "$mem" 2>/dev/null | tr -d ' '); l=${l:-0}
   if [ "$n" -gt 90 ] || [ "$l" -gt 150 ]; then
     echo "stale-handoff-guard: MEMORY.md at $n entries/$l lines — approaching the 200-line injection cliff (archive DONE entries to MEMORY-archive.md)"
   fi

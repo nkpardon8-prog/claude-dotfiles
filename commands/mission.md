@@ -337,6 +337,11 @@ Spawn in parallel, blind to each other:
   # authoritative effort (unpinned = newest-model default), and writes a machine-readable `.status`
   # sidecar; no untrusted text ever reaches the shell:
   bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh /tmp/mission-scope-prompt.$$ /tmp/mission-scope-out.$$ <root>
+  # CHECK THE .status sidecar — codex-exec writes ok|timeout|unavailable|nonzero-N. On anything but
+  # `ok` the scope pass did NOT run (Codex down / timed out); do NOT treat an empty/partial
+  # /tmp/mission-scope-out.$$ as "no facts found" — note the degrade and lean on the Claude fact pass:
+  st=$(cat /tmp/mission-scope-out.$$.status 2>/dev/null)
+  [ "$st" = "ok" ] || echo "mission: scope-prove Codex pass DEGRADED (status=${st:-missing}) — proceeding on the Claude fact pass alone; record the gap as a note"
   ```
   (If you must pass it as an arg instead, SINGLE-quote it; never double-quote derived/untrusted content.)
 Reconcile after both return. An **unresolved factual contradiction** → `pending` (batched) + a `note`
@@ -403,12 +408,27 @@ via the `parse-codex-header` verb (never grep the whole report body — anti-spo
 verb: it reads only the FIRST full-shape `^Engine: … Codex-passes: N/4 … Verified:` line):
 
 ```bash
+# ── BINDING CONTRACT (READ FIRST — this block is NOT self-sourcing) ────────────────────────
+# This fence runs in a FRESH shell that does NOT inherit your conductor context, so YOU (the
+# conductor) MUST bind its inputs before running it — exactly as every other write example in
+# this file substitutes <sid>/<root>/<N>/<K>. Set them as real shell vars at the TOP of the block:
+#   sid=<this mission's session id>     root=<canonical root>     # both from the §2 setup
+#   N=<current part number>             K=<current review round>  # from the live [mission] round line
+# AND — because the /codex-review Skill returns its text to YOUR context, not to a shell var — you
+# MUST materialize that text into review_output yourself: write the Skill's FINAL output verbatim to
+# a temp file and read it back (do NOT leave review_output unset — an empty value makes every parse
+# below empty, the VOID line's part=/round= empty, the validator REFUSE it as bad-shape, and the
+# panel-unavailable-3x loop-breaker can then NEVER fire — the exact silent chokepoint this guards):
+#   printf '%s' "$THE_CODEX_REVIEW_FINAL_OUTPUT" > "/tmp/mission-review-$sid.out"
+#   review_output=$(cat "/tmp/mission-review-$sid.out")
+# A REFUSED write (mission-write.sh prints `FAILED rc=4 …` / `COLLISION`) means the VOID did NOT
+# bank — do NOT proceed to void-count; re-derive N/K/round and re-log (§7 status-token reactions).
+# ───────────────────────────────────────────────────────────────────────────────────────────
+
 # Mint the attempt identity ONCE, BEFORE each panel invocation (fallback identity for a
 # broken/legacy producer that prints no Run-id line; that edge is non-replay-idempotent —
 # acceptable: an absent Run-id already means the producer contract failed, the attempt must count):
 attempt_id=$(uuidgen | tr 'A-F' 'a-f' | tr -cd 'a-f0-9' | tail -c 6)  # macOS uuidgen is UPPERCASE — lowercase FIRST
-
-# ... run the /codex-review panel; capture its full output as $review_output ...
 
 runid=$(printf '%s\n' "$review_output" | sed -n 's/^Run-id: //p' | tail -1 | tr -cd 'A-Za-z0-9.' | tail -c 6)
 # Report-file is accepted ONLY as the ACTUAL FINAL LINE (a tail -1 over all matches would let
@@ -677,8 +697,11 @@ line, not at column 0.
   the lib over the FULL on-disk line — `idtag + TAB + entry + newline` — NOT the visible entry text
   alone.** So budget conservatively: use a SHORT idtag and put only the integer `findings=<COUNT>` on
   the line (never finding text); the verbose findings live in a separate `note` (§5 synthesis barrier).
-  - entry: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K> dry=<D> findings=<COUNT>`
-  - `findings=<COUNT>` is a SHORT integer count ONLY (e.g. `findings=2`) — NEVER verbose finding text.
+  - entry: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K> dry=<D>[ findings=<COUNT>]`
+  - `findings=<COUNT>` is OPTIONAL in the grammar (the validator row is `( findings=C)?`) but is
+    MANDATORY on `phase=review` / `phase=fix` rounds — the PART-DONE dry-count machine fold reads it,
+    so a review round without it cannot bank toward convergence. It is a SHORT integer count ONLY
+    (e.g. `findings=2`) — NEVER verbose finding text.
     Verbose per-reviewer findings go in a SEPARATE `note` (DURABLE NOTES), referenced by `part/phase/
     round` (Section 5 synthesis barrier). **It has a READ use, not just an audit use:** on a
     `phase=review` resume it disambiguates the substate (§5/§8 decision table) — `findings=0` ⇒
@@ -703,7 +726,9 @@ line, not at column 0.
     (reviewer errored/empty/timeout, or "Codex unavailable"); a Codex hang/timeout; lock-busy still
     failing after retries (`reason=lock-busy`); a repeated tool failure that blocks the round.
 - **VOID line** (durable, so a compaction mid-void does not resume from the last banked dry state):
-  - entry: `[mission] VOID part=<N> phase=review round=<K> reason=<reviewer-dead|codex-passes-N.4|...>`
+  - entry: `[mission] VOID part=<N> phase=review round=<K> reason=<reviewer-dead|codex-passes-N4|...>`
+    (the §5 reason builder is `printf 'codex-passes-%s' "$passes" | tr -cd 'a-z0-9.-'` — the `/` in
+    `N/4` is STRIPPED, so a 3/4 panel yields `reason=codex-passes-34`, NOT `codex-passes-3.4`)
   - idtag: `m<N>-void-r<K>-<runid6>h<sha8|nofile>` (run-id + report-hash identity, per the Section 5
     block: replaying the SAME run+report dedups quietly; a NEW panel attempt mints a distinct line
     even with identical report bytes; a missing report uses `nofile` and still counts) — on resume,

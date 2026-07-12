@@ -1086,7 +1086,13 @@ mission_parse_codex_header() {
   if [ ! -f "$_pch_file" ]; then
     echo "mission: parse-codex-header: file not found: ${_pch_file:-<empty>}" >&2; return 0
   fi
-  grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' "$_pch_file" 2>/dev/null \
+  # Anti-spoof, two layers: (1) HEAD-BOUND — the 7f contract emits the canonical Engine header on the
+  # report's SECOND line (right after the single-line title), so only scan the header region. This
+  # closes the residual where, if the REAL header were ever absent/malformed, an attacker-planted
+  # `Engine: … Codex-passes: 4/4 … Verified:` line deep in the reviewed BODY could otherwise become
+  # the "first" match. (2) first full-shape match only.
+  head -n 20 "$_pch_file" 2>/dev/null \
+    | grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' \
     | head -1 | grep -oE 'Codex-passes: [0-9]+/4' | head -1 | sed 's/Codex-passes: //'
   return 0
 }
@@ -1159,6 +1165,8 @@ mission_log_append() {
   # dead and content >470B was silently LOST).
   full_line=$(printf '%s\t%s' "$tag" "$esc")
   blen=$(printf '%s\n' "$full_line" | LC_ALL=C wc -c | tr -d ' ')
+  # 480 = the per-line byte budget; MUST stay equal to the length-REFUSE threshold in
+  # mission-write.sh (_mw_validate_log, currently :156). Change one, change both.
   if [ -n "$blen" ] && [ "$blen" -ge 480 ]; then
     mission_mutate "$sid" "$root" note "$_la_entry" "$tag"; _la_rrc=$?
     # rerouted only on SUCCESS; a collision/wrong-gen from the mutate keeps its own outcome; a real

@@ -153,6 +153,9 @@ _mw_validate_log() {
   # LENGTH REFUSE — persisted line (gen-prefixed idtag + TAB + entry + newline) for EVERY machine
   # shape. Free text already returned above; every path below is a terse machine shape.
   _vl_blen=$(printf '%s\t%s\n' "$_vl_gtag" "$_vl_entry" | LC_ALL=C wc -c | tr -d ' ')
+  # 480 = the per-line byte budget. MUST stay equal to the reroute threshold in
+  # lib/mission-bridge.sh (mission_log_append, currently :1168) — the validator REFUSES at the same
+  # size the lib would otherwise reroute-to-notes. If you change one, change both.
   if [ -n "$_vl_blen" ] && [ "$_vl_blen" -ge 480 ]; then
     _mw_emit_refuse log 1 "REFUSED: line-too-long"
   fi

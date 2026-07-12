@@ -1,6 +1,6 @@
 ---
 description: Creates an implementation plan with thorough codebase and web research. Auto-reviews the plan after creation and iterates with user feedback. Use when planning a new feature or significant change.
-argument-hint: "[feature description or ticket reference]"
+argument-hint: "[feature description or ticket reference] [--no-tests]"
 allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Agent
 expected_subagents: 4
 ---
@@ -8,6 +8,14 @@ expected_subagents: 4
 # Plan Agent
 
 ## Feature: $ARGUMENTS
+
+**Parse arguments first.** Check `$ARGUMENTS` for a `--no-tests` token (opt-in, additive):
+- If `--no-tests` is present: set `NO_TESTS = true`, then STRIP the `--no-tests` token from `$ARGUMENTS`
+  before treating the remainder as the feature description (otherwise the flag pollutes the feature text).
+- If `--no-tests` is absent (the default): set `NO_TESTS = false` — tests are planned in (Step 2 default-IN rule).
+- `/mission` never passes `--no-tests`, so autonomous runs always keep `NO_TESTS = false`.
+
+The remaining (flag-stripped) `$ARGUMENTS` is the feature description used below.
 
 Generate a complete plan for feature implementation with thorough research. The plan must contain enough context for an AI agent to implement the feature in a single pass.
 
