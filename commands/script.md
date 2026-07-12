@@ -128,11 +128,33 @@ if [ "${<ENV_GATE>:-}" != "true" ]; then
   exit 2
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# pt_run — portable timeout (macOS has no `timeout`). This is a COPY of
+# ~/.claude-dotfiles/scripts/lib/portable-timeout.sh — KEEP THE TWO IN SYNC.
+# exit 124 = timed out (child's whole process GROUP got TERM, then KILL after 2s).
+# A $SIG{ALRM} handler does NOT survive exec, so the naive `alarm N; exec ...`
+# form exits 142 and dodges the infra-fail mapping — the fork/wait form is required.
+pt_run() {  # pt_run <secs> <cmd...>
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout --kill-after=2 "$1" "${@:2}"
+    return $?
+  fi
+  perl -e '
+    my $t = shift;
+    my $pid = fork;
+    if (!$pid) { setpgrp(0,0); exec @ARGV or exit 127 }
+    $SIG{ALRM} = sub { kill "TERM", -$pid; sleep 2; kill "KILL", -$pid; waitpid $pid, 0; exit 124 };
+    alarm $t;
+    waitpid $pid, 0;
+    exit(($? & 127) ? 128 + ($? & 127) : ($? >> 8));
+  ' "$@"
+}
+
 TESTS=( "01-foo.mjs" "02-bar.mjs" "03-baz.mjs" )
 PASS=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do
   echo; echo "--- ${t} ---"
-  if timeout 60 node "${SCRIPT_DIR}/${t}"; then
+  if pt_run 60 node "${SCRIPT_DIR}/${t}"; then
     PASS=$((PASS+1))
   else
     rc=$?; [ "$rc" = 124 ] && rc=3   # timeout/hang → INFRASTRUCTURE FAIL
@@ -201,7 +223,7 @@ This catches drift introduced by implementation that text-level impl-reviewer wo
 
 - **No more than 8 tests** for a single /script invocation. If you find 12 load-bearing assumptions, you're either over-classifying (some are cosmetic) or the scope is too big (split into smaller features, then /script each).
 - **No test over 150 lines.** If you can't prove an assumption in 150 lines, the assumption is too composite — decompose into 2-3 atomic assumptions.
-- **No test that takes more than 60 seconds to run.** Assumption tests are FAST feedback. (run-all.sh enforces this via `timeout 60`.) If you need long-running validation, that's an integration test.
+- **No test that takes more than 60 seconds to run.** Assumption tests are FAST feedback. (run-all.sh enforces this via `pt_run 60`, the portable-timeout helper.) If you need long-running validation, that's an integration test.
 - **No test that mutates state without cleanup.** Cleanup is in `finally` (by runId) + startup reaper (by marker+age). Always. For assumptions whose side effects CANNOT be rolled back (real Stripe charge, S3 PUT, consumed queue message), use **tag-and-reap + a hard environment-disposability check** (refuse to run unless the target is provably a disposable dev/test environment) rather than refusing to test them.
 - **Don't manufacture risks.** If you can't articulate "what would break if this assumption is wrong," don't write a test for it.
 
@@ -229,7 +251,7 @@ Before reporting done, verify:
 - [ ] Negative control recorded in a `// NEGATIVE CONTROL:` comment on each test (controllable-flip or synthetic-injection route).
 - [ ] Each test typechecks/parses clean via a standalone check (`node --check` / `tsc --noEmit <file>`) — assumption-test dirs are often outside the project's build `include`.
 - [ ] Catalog table presented to user (with all 5 fields) AND run through the adversarial review (Step 3.5).
-- [ ] `run-all.sh` (with `timeout 60` + 124→3 remap) + `README.md` written.
+- [ ] `run-all.sh` (with the embedded `pt_run 60` portable-timeout helper + 124→3 remap) + `README.md` written.
 - [ ] Suggested pre-implementation + post-slice gate placement told to user.
 - [ ] If `/plan-reviewer` surfaced `[ASSUMPTION-TEST]` findings, every candidate is addressed by a test OR explicitly deferred with justification.
 - [ ] User knows how to invoke `run-all.sh` (exact command with env gate prefilled).

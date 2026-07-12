@@ -1,7 +1,7 @@
 ---
 description: Creates an implementation plan with thorough codebase and web research. Auto-reviews the plan after creation and iterates with user feedback. Use when planning a new feature or significant change.
 argument-hint: "[feature description or ticket reference]"
-allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Task
+allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Agent
 expected_subagents: 4
 ---
 
@@ -33,7 +33,7 @@ If the approach is **genuinely unclear** (and not already covered by briefs), as
 
 ## Step 2: Write the Plan
 
-Using `.claude/commands/plan_base.md` as template.
+Using `~/.claude/commands/plan_base.md` as template.
 
 ### Critical Context to Include
 
@@ -56,7 +56,7 @@ The AI agent only gets the context in the plan plus codebase access. Include:
 
 - **No Backwards Compatibility**: Replace things completely. No shims, fallbacks, re-exports, or compatibility layers unless user explicitly requests it.
 - **Deprecated Code**: Include a section at the end to remove code we no longer use as a result of this plan.
-- **No Unit/Integration Tests**: Do not include test creation in the plan.
+- **Tests default-IN**: Include test creation in the plan by default — a plan's test coverage is part of its deliverable, and `plan-reviewer` now flags any changed behavior the plan leaves uncovered. `--no-tests` is the explicit (and only) opt-out for omitting tests; `/mission` never passes `--no-tests`, so autonomous runs always plan tests.
 - **Flag Uncertainty**: When uncertain about a requirement, design decision, or implementation detail, do NOT guess or assume. Insert a `[NEEDS CLARIFICATION]` marker with a brief explanation of what's unclear and why it matters. These markers must be resolved with the user before the plan is finalized.
 
 ## Step 3: Save the Plan
@@ -67,24 +67,26 @@ Save as: `./tmp/ready-plans/YYYY-MM-DD-description.md`
 
 After saving the plan, enter an iterative review cycle. **Do not skip this step.** Repeat until the user confirms the plan is ready.
 
+**Review-round defaults:** substantial plans default to 4-6 total review rounds (two parallel plan-reviewers + criticer per round) to diminishing returns, plus ONE parallel Codex plan pass per round via codex-exec.sh (graceful degrade when codex is unavailable — mark the degrade in the presented review).
+
 ### Loop:
 
-1. **Spawn TWO fresh plan-reviewer sub-agents in parallel** (single message, two `Task` tool calls). Two independent reviews catch more than one — overlap is signal, divergence is signal too.
+1. **Spawn TWO fresh plan-reviewer sub-agents in parallel** (single message, two `Agent` tool calls) AND, in the SAME batch, kick off ONE parallel Codex plan pass (see the Codex-plan-pass block below). Two independent reviews catch more than one — overlap is signal, divergence is signal too — and the Codex pass adds a cross-model lens per round.
 
 ```
-Task tool (call 1):
+Agent tool (call 1):
   subagent_type: "plan-reviewer"
   prompt: "Review the plan at [path]. Produce a numbered list of specific,
     actionable recommendations covering gaps, simplification opportunities,
     correctness issues, and better alternatives."
 
-Task tool (call 2, sent in the same message as call 1):
+Agent tool (call 2, sent in the same message as call 1):
   subagent_type: "plan-reviewer"
   prompt: "Review the plan at [path]. Produce a numbered list of specific,
     actionable recommendations covering gaps, simplification opportunities,
     correctness issues, and better alternatives."
 
-Task tool (call 3, sent in the SAME message as calls 1 & 2):
+Agent tool (call 3, sent in the SAME message as calls 1 & 2):
   subagent_type: "criticer"
   prompt: "Critique the plan at [path] as a generative value-critic. Apply up to
     5 lenses — (1) biggest gap, (2) honest assessment of where it quietly fails,
@@ -95,6 +97,31 @@ Task tool (call 3, sent in the SAME message as calls 1 & 2):
     Test Candidates` section. Brief(s) for intent: [resolved brief path(s) from
     Step 0, or 'none']."
 ```
+
+   **Codex plan pass (one per round, in the same batch as calls 1–3).** Write the
+   plan-review prompt to a temp file, then invoke the house Codex wrapper in the
+   same message as the three Agent calls above so the pass runs in parallel:
+
+```bash
+PROMPT=$(mktemp "${TMPDIR:-/tmp}/plan-codex-prompt.XXXXXX")
+OUT=$(mktemp "${TMPDIR:-/tmp}/plan-codex-out.XXXXXX")
+cat > "$PROMPT" <<'EOF'
+Review this implementation plan for gaps, correctness issues, simplification
+opportunities, hidden assumptions, and contradictions. List each finding on its
+own line with a severity (CRITICAL/IMPORTANT/MINOR) and a category tag
+(GAP/LOGIC/ARCHITECTURE/CONTRADICTION/ASSUMPTION/SIMPLIFY). The plan text follows.
+EOF
+cat [path] >> "$PROMPT"   # append the saved-plan file ([path] = the Step 3 saved-plan path) so Codex reviews the real text
+bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT" "$OUT" "$(pwd)"
+```
+
+   When the batch returns, read `"$OUT"` and `"$OUT".status`:
+   - `.status == ok` → fold the Codex findings into the merged review as a third
+     lens, labeled **Codex plan pass**.
+   - `.status != ok` (any of `unavailable` / `timeout` / `nonzero-<rc>`) → **graceful
+     degrade**: present the literal line `(Codex plan pass: unavailable)` in place of
+     Codex findings and continue with the two plan-reviewers + criticer. The degrade
+     is marked in the presented review — never silently dropped.
 
    `criticer` is the **generative value-critic lane** — the opposite axis from the
    two fidelity reviewers. It is advisory only: it never asks, gates, or blocks, so
@@ -110,14 +137,14 @@ Task tool (call 3, sent in the SAME message as calls 1 & 2):
 
 2. **Anonymized peer-review meta-pass.**
 
-   Skip this entire item if either reviewer's Task call failed or returned empty content — fall back to presenting the merged review as before (preserves existing feel when degraded).
+   Skip this entire item if either reviewer's Agent call failed or returned empty content — fall back to presenting the merged review as before (preserves existing feel when degraded).
 
    - Decide A/B assignment by simple non-positional ordering: if `($(date +%s) % 2) == 0` then reviewer-1 → Review A and reviewer-2 → Review B, else swap. The meta-agent never sees the reviewer-1/reviewer-2 mapping.
 
-   - Spawn ONE additional plan-reviewer sub-agent in the same Task-tool style as the existing two reviewers in step 1:
+   - Spawn ONE additional plan-reviewer sub-agent in the same Agent-tool style as the existing two reviewers in step 1:
 
    ```
-   Task tool:
+   Agent tool:
      subagent_type: "plan-reviewer"
      prompt: "Two reviewers independently reviewed the plan at [path].
               Their full anonymized outputs are below as Review A and Review B

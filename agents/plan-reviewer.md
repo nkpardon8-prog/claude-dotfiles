@@ -170,6 +170,9 @@ Example:
   incorrect integration points, or wrong validator/contract naming
 - Flag schema snippets or pseudocode that do not match current repo helper
   patterns
-- Don't recommend adding tests (the plan explicitly excludes them)
+- Verify test coverage: tests are now default-IN for plans, so check that the
+  plan's test plan actually covers the changed behavior. Flag any changed
+  behavior left uncovered (or a plan that silently ships no tests without a
+  `--no-tests` opt-out) as a completeness finding. Do NOT forbid tests.
 - Don't recommend backwards compatibility layers
 - Focus on things that would cause the implementation to fail or produce poor results

@@ -295,6 +295,15 @@ npm run typecheck          # TypeScript compilation
 # Expected: No errors. If errors, READ the error and fix.
 ```
 
+### Assumption Gates
+
+List the exact `scripts/<feature>-assumptions/run-all.sh` paths whose assumption
+tests guard this plan. `/implement` runs every listed gate BEFORE the first
+chunk, AFTER each shipped chunk, and once more at end-of-implementation; a FAIL
+halts implementation. Write `none` when this plan has no assumption-test gates.
+
+- [scripts/<feature>-assumptions/run-all.sh — or `none`]
+
 ### Factuality Checks
 
 - `Verified Repo Truths` uses `Fact / Evidence / Implication` for every bullet

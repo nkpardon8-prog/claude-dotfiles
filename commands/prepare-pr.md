@@ -168,6 +168,28 @@ codex -c model_reasoning_effort="high" exec -s read-only --ephemeral --cd "$WORK
 Per the global push policy in `~/.claude/CLAUDE.md`: **NEVER push to GitHub
 without explicit user approval** for non-dotfiles repos.
 
+### Step 5.0: Fetch + divergence check (never overwrite another agent's work)
+
+**Before showing anything or pushing**, fetch the remote and confirm the local branch has NOT diverged unexpectedly from its upstream. Another agent or teammate may have pushed to the same branch while we worked; force-pushing over them would destroy their commits. This is the machine half of "never overwrite another agent's work."
+
+```bash
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+# Fetch the base branch (from Step 2's $BASE_BRANCH) AND our own branch, when an origin remote exists.
+if git remote get-url origin >/dev/null 2>&1; then
+  [[ "$BASE_BRANCH" == origin/* ]] && git fetch origin "${BASE_BRANCH#origin/}"
+  git fetch origin "$BRANCH" 2>/dev/null || true
+fi
+# Compare local HEAD against its upstream tracking ref (origin/<branch>).
+if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+  BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+  echo "branch $BRANCH: ahead $AHEAD / behind $BEHIND vs @{u}"
+fi
+```
+
+- **`behind == 0`** (local is strictly ahead — the normal post-rebase state, or no upstream exists yet): proceed to the push-approval flow below.
+- **`behind > 0`** (the remote upstream has commits the local branch does not — unexpected divergence): **STOP. Do NOT push, and NEVER `--force` / `--force-with-lease` over them** — that would overwrite another agent's or teammate's work. Surface the divergence to the user: show `git log HEAD..@{u} --oneline` (what the remote has that you don't) and `git log @{u}..HEAD --oneline` (what you have that the remote doesn't), and ask how to proceed (rebase onto the new upstream commits, or abort). Only continue once the divergence is resolved and `behind == 0`.
+
 1. Show pending commits: `git log @{u}..HEAD --oneline 2>/dev/null` (or `git log "$BASE_BRANCH"..HEAD --oneline` if no upstream is set) — including any `fix: address codex review feedback` commits added in Step 4.
 2. Show the branch and remote: `git rev-parse --abbrev-ref HEAD` and `git remote get-url origin`
 3. **Ask the user**: "Push <branch> to <remote-url>? This is a force-with-lease push since we rebased — type 'yes' to push or 'no' to stop here."
