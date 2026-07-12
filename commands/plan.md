@@ -1,7 +1,7 @@
 ---
 description: Creates an implementation plan with thorough codebase and web research. Auto-reviews the plan after creation and iterates with user feedback. Use when planning a new feature or significant change.
 argument-hint: "[feature description or ticket reference] [--no-tests]"
-allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Agent
+allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Agent, Bash
 expected_subagents: 4
 ---
 

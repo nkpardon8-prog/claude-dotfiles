@@ -189,16 +189,27 @@ if git remote get-url origin >/dev/null 2>&1; then
   [[ "$BASE_BRANCH" == origin/* ]] && git fetch origin "${BASE_BRANCH#origin/}"
   git fetch origin "$BRANCH" 2>/dev/null || true
 fi
-# Compare local HEAD against its upstream tracking ref (origin/<branch>).
+# Compare local HEAD against its upstream — @{u} if tracking is configured, ELSE the explicit
+# origin/<branch> we just fetched. The explicit fallback matters: a branch can lack upstream
+# tracking config while origin/<branch> still exists with commits (codex-review 2026-07-12) — an
+# @{u}-only check would silently skip and let the force-with-lease below overwrite them.
+CMP=""
 if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-  AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-  BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
-  echo "branch $BRANCH: ahead $AHEAD / behind $BEHIND vs @{u}"
+  CMP='@{u}'
+elif git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+  CMP="origin/$BRANCH"
+fi
+if [ -n "$CMP" ]; then
+  AHEAD=$(git rev-list --count "$CMP..HEAD" 2>/dev/null || echo 0)
+  BEHIND=$(git rev-list --count "HEAD..$CMP" 2>/dev/null || echo 0)
+  echo "branch $BRANCH: ahead $AHEAD / behind $BEHIND vs $CMP"
+else
+  echo "branch $BRANCH: no upstream and no origin/$BRANCH — first push of a new branch (nothing to diverge from)"
 fi
 ```
 
-- **`behind == 0`** (local is strictly ahead — the normal post-rebase state, or no upstream exists yet): proceed to the push-approval flow below.
-- **`behind > 0`** (the remote upstream has commits the local branch does not — unexpected divergence): **STOP. Do NOT push, and NEVER `--force` / `--force-with-lease` over them** — that would overwrite another agent's or teammate's work. Surface the divergence to the user: show `git log HEAD..@{u} --oneline` (what the remote has that you don't) and `git log @{u}..HEAD --oneline` (what you have that the remote doesn't), and ask how to proceed (rebase onto the new upstream commits, or abort). Only continue once the divergence is resolved and `behind == 0`.
+- **`behind == 0`, or genuinely no remote ref exists** (`$CMP` empty — first push of a brand-new branch): proceed to the push-approval flow below.
+- **`behind > 0`** (the remote ref `$CMP` has commits the local branch does not — unexpected divergence): **STOP. Do NOT push, and NEVER `--force` / `--force-with-lease` over them** — that would overwrite another agent's or teammate's work. Surface the divergence to the user: show `git log HEAD..$CMP --oneline` (what the remote has that you don't) and `git log $CMP..HEAD --oneline` (what you have that the remote doesn't), and ask how to proceed (rebase onto the new upstream commits, or abort). Only continue once the divergence is resolved and `behind == 0`.
 
 1. Show pending commits: `git log @{u}..HEAD --oneline 2>/dev/null` (or `git log "$BASE_BRANCH"..HEAD --oneline` if no upstream is set) — including any `fix: address codex review feedback` commits added in Step 4.
 2. Show the branch and remote: `git rev-parse --abbrev-ref HEAD` and `git remote get-url origin`

@@ -1087,11 +1087,13 @@ mission_parse_codex_header() {
     echo "mission: parse-codex-header: file not found: ${_pch_file:-<empty>}" >&2; return 0
   fi
   # Anti-spoof, two layers: (1) HEAD-BOUND — the 7f contract emits the canonical Engine header on the
-  # report's SECOND line (right after the single-line title), so only scan the header region. This
+  # report's SECOND line (right after the single-line title), so only scan the first few lines. This
   # closes the residual where, if the REAL header were ever absent/malformed, an attacker-planted
-  # `Engine: … Codex-passes: 4/4 … Verified:` line deep in the reviewed BODY could otherwise become
-  # the "first" match. (2) first full-shape match only.
-  head -n 20 "$_pch_file" 2>/dev/null \
+  # `Engine: … Codex-passes: 4/4 … Verified:` line in the reviewed BODY could otherwise become the
+  # "first" match (codex-review 2026-07-12: two lenses asked for a tighter bound than 20). 5 lines
+  # tolerates a leading blank / minor format drift while keeping body content out of range.
+  # (2) first full-shape match only.
+  head -n 5 "$_pch_file" 2>/dev/null \
     | grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' \
     | head -1 | grep -oE 'Codex-passes: [0-9]+/4' | head -1 | sed 's/Codex-passes: //'
   return 0

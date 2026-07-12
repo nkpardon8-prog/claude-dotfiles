@@ -415,14 +415,15 @@ verb: it reads only the FIRST full-shape `^Engine: … Codex-passes: N/4 … Ver
 #   sid=<this mission's session id>     root=<canonical root>     # both from the §2 setup
 #   N=<current part number>             K=<current review round>  # from the live [mission] round line
 # AND — because the /codex-review Skill returns its text to YOUR context, not to a shell var — you
-# MUST materialize that text into review_output yourself: write the Skill's FINAL output verbatim to
-# a temp file and read it back (do NOT leave review_output unset — an empty value makes every parse
+# MUST materialize that text into review_output yourself: after /codex-review returns, WRITE its
+# FINAL output verbatim to a temp file (use the Write tool, or a heredoc you fill from the Skill's
+# result), then read it back. Do NOT leave review_output unset — an empty value makes every parse
 # below empty, the VOID line's part=/round= empty, the validator REFUSE it as bad-shape, and the
-# panel-unavailable-3x loop-breaker can then NEVER fire — the exact silent chokepoint this guards):
-#   printf '%s' "$THE_CODEX_REVIEW_FINAL_OUTPUT" > "/tmp/mission-review-$sid.out"
+# panel-unavailable-3x loop-breaker can then NEVER fire (the exact silent chokepoint this guards):
+#   # (you write /tmp/mission-review-<sid>.out from the /codex-review result first, THEN:)
 #   review_output=$(cat "/tmp/mission-review-$sid.out")
-# A REFUSED write (mission-write.sh prints `FAILED rc=4 …` / `COLLISION`) means the VOID did NOT
-# bank — do NOT proceed to void-count; re-derive N/K/round and re-log (§7 status-token reactions).
+# All FIVE of sid/root/N/K/review_output MUST be non-empty before this block runs — treat the
+# angle-bracket names above as MANDATORY substitutions, not optional defaults.
 # ───────────────────────────────────────────────────────────────────────────────────────────
 
 # Mint the attempt identity ONCE, BEFORE each panel invocation (fallback identity for a
@@ -441,8 +442,16 @@ passes=""; [ -n "$rf" ] && [ -f "$rf" ] && passes=$(bash /Users/omidzahrai/.clau
 if [ "$passes" != "4/4" ]; then
   h8=$( [ -n "$rf" ] && [ -f "$rf" ] && shasum -a 256 "$rf" | cut -c1-8 || echo nofile )
   reason=$(printf 'codex-passes-%s' "${passes:-absent}" | tr -cd 'a-z0-9.-')
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$sid" "$root" \
-    "[mission] VOID part=$N phase=review round=$K reason=$reason" "m$N-void-r$K-${runid:-$attempt_id}h$h8"
+  # CAPTURE the log stdout and REQUIRE it to be `ok` before proceeding — mission-write.sh ALWAYS
+  # exits 0, so rc is meaningless; the STATUS TOKEN on stdout is the only signal (§7). A `COLLISION`
+  # / `REROUTED-TO-NOTES` / `FAILED rc=N` means the VOID did NOT bank, and proceeding to void-count
+  # would undercount (the whole loop-breaker depends on the VOID being on disk):
+  void_status=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$sid" "$root" \
+    "[mission] VOID part=$N phase=review round=$K reason=$reason" "m$N-void-r$K-${runid:-$attempt_id}h$h8")
+  case "$void_status" in
+    *ok*) ;;   # banked, or idempotent same-run replay ("dedup-idempotent" also reports ok) — proceed
+    *) echo "mission: VOID did NOT bank (status: ${void_status:-<empty>}) — STOP; re-derive N/K/round and re-log per §7 status-token reactions, do NOT proceed to void-count"; return 1 2>/dev/null || exit 1 ;;
+  esac
   # runid makes each panel ATTEMPT distinct (even identical bytes / missing report); replaying the
   # SAME run+report dedups quietly. void-count is a READ-ONLY dispatcher verb (this block runs in a
   # fresh shell and never sources the lib):
@@ -456,8 +465,9 @@ if [ "$passes" != "4/4" ]; then
     # contact and halt this part until the write-path self-heal (or the user) repairs the boundary.
     :
   elif [ "$vc" -ge 3 ]; then
-    bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$sid" "$root" \
-      "[mission] FAIL part=$N phase=review reason=panel-unavailable-3x attempt=3" "m$N-fail-panel3x-r$K"
+    fail_status=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$sid" "$root" \
+      "[mission] FAIL part=$N phase=review reason=panel-unavailable-3x attempt=3" "m$N-fail-panel3x-r$K")
+    case "$fail_status" in *ok*) ;; *) echo "mission: panel-3x FAIL did NOT bank (status: ${fail_status:-<empty>}) — surface to the user regardless; the STOP-LOUD stands"; esac
     # IMMEDIATE STOP-LOUD: panel-unavailable-3x is a NAMED Section 10 trigger (a point of contact,
     # like corrupt-bridge) — do NOT wait for the 5-FAIL tally: the same round can never advance
     # during a permanent panel outage, so no further FAILs would ever accrue and the run would loop

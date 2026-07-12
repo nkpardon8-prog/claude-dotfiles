@@ -105,25 +105,21 @@ Agent tool (call 2, sent in the SAME message as call 1):
 implementation-vs-plan, so it intentionally takes no brief-path (the plan already
 carries the intent). Hold its `## Criticer Notes` output for rendering in Step 7.
 
-## Step 6: Move Plan to Done
+## Step 6: Move Plan to Done — DEFERRED to Step 7
 
-> Skipped when `NO_REVIEW = true` (see the Step 5 guard) — the caller owns the plan-move. Runs as normal in the default path.
-
-Once all tasks pass review and the implementation is complete, move the plan file from `./tmp/ready-plans/` to `./tmp/done-plans/`:
-
-```bash
-mv ./tmp/ready-plans/<plan-file>.md ./tmp/done-plans/
-```
-
-Create `./tmp/done-plans/` if it doesn't exist. Only move the plan when all tasks are confirmed complete — if the reviewer found unresolved issues, wait until they are fixed.
+> The plan-move does NOT happen here. It is DEFERRED into Step 7, AFTER the final
+> assumption-gate passes — a gate FAILURE must never leave the plan retired in
+> `done-plans/` (codex-review 2026-07-12: moving here, before the Step 7 gate, retired the
+> plan even on a final-gate failure). The `mv` instruction now lives at the end of Step 7's
+> default-path branch. Under `--no-review` the caller owns the plan lifecycle and no move happens.
 
 ## Step 7: Present Results
 
-### Final assumption-gate (runs regardless of `NO_REVIEW` — placed ahead of the `--no-review` early-return)
+### Final assumption-gate (runs regardless of `NO_REVIEW` — placed ahead of the `--no-review` early-return AND ahead of the plan-move)
 
-Before presenting anything, run the `scripts/*-assumptions/run-all.sh` gates discovered in Step 3.5 ONE final time as the end-of-implementation regression check. Same handling as Step 3.5: **FAIL (exit 1/3) ⇒ HALT and report** (do NOT present success and do NOT move the plan); **exit 2 ⇒ report the required gate + pause per the away-policy**.
+Before presenting anything OR moving the plan, run the `scripts/*-assumptions/run-all.sh` gates discovered in Step 3.5 ONE final time as the end-of-implementation regression check. Same handling as Step 3.5: **FAIL (exit 1/3) ⇒ HALT and report** (do NOT present success and do NOT move the plan — leave it in `ready-plans/` so the failure is fixed before retirement); **exit 2 ⇒ report the required gate + pause per the away-policy**.
 
-This final gate sits at the TOP of Step 7, **ahead of the `--no-review` early-return below**, on purpose: `/mission` runs `/implement --no-review`, which skips Steps 5–6 and jumps straight to Step 7. Because the gate precedes the early-return, the mission path gets this final regression check too — both the default path and the `--no-review` path pass through it before returning.
+This final gate sits at the TOP of Step 7, **ahead of both the `--no-review` early-return below and the default-path plan-move**, on purpose: `/mission` runs `/implement --no-review`, which skips Steps 5–6 and jumps straight to Step 7; the default path reaches Step 7 with the plan NOT yet moved (Step 6 defers it). Because the gate precedes both terminal actions, every path gets this final regression check before it commits — and a gate failure never retires the plan.
 
 **If `NO_REVIEW = true`:** present a brief result and return — do NOT present reviewer findings (none were produced) and do NOT report a plan move:
 
@@ -166,4 +162,10 @@ Next steps:
 - `/prepare-pr` — Commit, build, and open/update a PR
 ```
 
-If the reviewer found issues, offer to fix them before the user commits. Only move the plan to `done-plans/` after all issues are resolved.
+**Now (default path only) perform the DEFERRED plan-move** — ONLY after the final assumption-gate above passed AND all reviewer issues are resolved. This is the move Step 6 deferred; doing it here guarantees a gate failure never retires the plan:
+
+```bash
+mkdir -p ./tmp/done-plans && mv ./tmp/ready-plans/<plan-file>.md ./tmp/done-plans/
+```
+
+If the reviewer found unresolved issues, do NOT move the plan — leave it in `ready-plans/` until they are fixed. (Under `--no-review` the caller owns the plan lifecycle; no move happens here.)
