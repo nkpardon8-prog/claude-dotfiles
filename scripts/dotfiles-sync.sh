@@ -10,6 +10,10 @@
 #   - GitHub Actions runs the same scan on the server side
 # All four layers share the same regex from scripts/secret-scan.sh.
 
+# PAUSE GUARD: an out-of-repo marker silences auto-sync entirely (used while agents batch-edit
+# the dotfiles machinery, or while pushes are held). Out-of-repo so `git add -A` can never stage it.
+[ -f "$HOME/.claude/.dotfiles-sync-paused" ] && exit 0
+
 set -o pipefail
 LC_ALL=C
 
