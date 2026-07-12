@@ -69,7 +69,7 @@ where you left off. Multi-day builds stop losing the thread.
 The review ladder is the same idea at four sizes. Every rung fields a **mixed Claude + Codex fleet**
 so the two models cross-check each other instead of one model grading its own homework.
 
-**`/codex-review`** — The universal review engine, **report-only**. Codex (GPT-5.5) runs 4 specialist
+**`/codex-review`** — The universal review engine, **report-only**. Codex runs 4 specialist
 passes — Correctness, Security, Data-integrity, Contracts — plus a verification pass; Claude Opus
 runs 3 lens agents (Architecture, Integration, Adversarial + false-positive filter) plus a meta
 review. Point it at a diff, a plan, an idea, a bug — anything.
