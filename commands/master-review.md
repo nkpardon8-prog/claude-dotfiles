@@ -7,6 +7,11 @@ expected_subagents: 8
 
 # Master Review — Autonomous Review & Fix Pipeline
 
+> **FROZEN (2026-07-12):** this file is frozen — no further edits. Use `/god-review` or `/codex-review`
+> instead. Its browser (Chrome DevTools) and Antigravity capability port into the newer engines is still
+> pending; until that lands this file is kept intact as the parity reference (the `lens-*` agents it
+> shares with `/god-review` are settled and stay untouched). Do not sweep or restyle its contents.
+
 > **Note (2026-05-05):** `/master-review` is superseded by `/god-review`, which adds 23 principle lenses + a `--ruthless` redteam reviewer + cross-block var persistence. `/master-review` continues to work; new audits should prefer `/god-review`.
 
 ## Engines

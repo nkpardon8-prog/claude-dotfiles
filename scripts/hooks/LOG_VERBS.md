@@ -142,26 +142,54 @@ rename a verb or move the script without re-issuing the allow rule and updating 
 | `rebaseline` | mission-write.sh (`mission_rebaseline`) | The ONLY path that rewrites the PLAN zone: replace PLAN with a new plan, re-stamp `plan_hash` to match (locked, backed-up, self-verified), then log `PLAN rebaselined (hash re-stamped)` |
 | `render-banner` | mission-write.sh (`mission_render_banner`) | PIVOT A write-side precompute: render the bounded `MISSION.<sid>.banner` (PLAN slice `<=4000`B line-snapped + last-5 log lines + injection-safety framing) atomically. On a verify failure writes a LOUD `CRITICAL: … UNREADABLE/CORRUPT` banner (never silent) and returns 0 so the primer surfaces the alarm |
 
-### mission-write.sh status line (stdout, exactly one per invocation)
+### Read-only argv-exception verbs (bare-token stdout — NO `mission-write: …` status line)
+
+Two verbs break the `<verb> <sid> <root>` dispatcher shape: they are READ-ONLY, take a different argv,
+run BEFORE the root-guard, and print a BARE machine token to stdout (so a STOP-branching caller can read
+it directly — stderr alone cannot block a count-testing caller). Both still `exit 0`.
+
+| Verb (argv) | Script | stdout contract |
+|---|---|---|
+| `parse-codex-header <file>` | mission-write.sh (`mission_parse_codex_header`) | The bare `N/4` Codex-passes token parsed from the FIRST full-shape `^Engine: … Codex-passes: N/4 … Verified:` line of `<file>` (anti-spoof: first match only). EMPTY on an absent/malformed header. Diagnostics → stderr |
+| `void-count <sid> <root> <part> <round>` | mission-write.sh (`_void_consecutive_count`) | A bare integer `>=0` = the consecutive gen-current VOID count for part/round; **`-1`** = refused-read sentinel (gen-boundary mismatch, unreadable stream, or non-numeric args). The §5 caller MUST branch on `-1` (STOP), never treat it as `0` |
+
+### mission-write.sh status line (stdout, exactly one per invocation — every verb EXCEPT the two above)
 
 | Output | Script | Meaning |
 |---|---|---|
-| `mission-write: <verb> ok` | mission-write.sh | Lib call returned rc=0 |
-| `mission-write: <verb> FAILED rc=N (<reason>)` | mission-write.sh | Lib call returned rc=N; reason `see stderr` (lib stays fail-LOUD on stderr) or `lib mission-bridge.sh not found/sourced` (rc=127) |
+| `mission-write: <verb> ok` | mission-write.sh | Lib call returned rc=0 (append succeeded, or an idempotent dedup no-op) |
+| `mission-write: <verb> COLLISION (…)` | mission-write.sh | log/note/challenge/pending: the idtag already exists with DIFFERENT content. The conductor MUST STOP, re-derive gen/round numbering, and NOT assume the entry was banked |
+| `mission-write: <verb> REROUTED-TO-NOTES (…)` | mission-write.sh | log: a `>=480`B free-text entry was rerouted into the main file's NOTES zone. The conductor rewrites it TERSE and re-logs until it gets `ok` |
+| `mission-write: <verb> FAILED rc=N (<reason>)` | mission-write.sh | Validator/lib refused with rc=N. **rc=4** on a PART-DONE or live-verify write BLOCKS retirement/advance (the carve-out — stale/absent live-verify, an unclean dry-count fold, or a gen-boundary mismatch). **rc=5** = the idtag's `g<G>-` gen prefix does not match the current gen. rc=127 = lib not found/sourced. Otherwise reason = `see stderr` (lib stays fail-LOUD on stderr) |
 | `mission-write: usage: …` | mission-write.sh | Unknown verb or missing required args; no mutation attempted |
 
 ### `[mission]` structured LOG-line conventions (written via the `log` verb)
 
 These are NOT new CLI verbs. The `/mission` conductor reuses the existing `log` verb (above) and passes
-structured `[mission] …`-prefixed payloads as the narrative line. The bridge stores them verbatim in
-`MISSION.<sid>.log` (subject to the same `<480`B cap + leading-anchored idtag idempotency). A resume agent
-greps these lines to reconstruct loop state across compactions. Field order is part of the grep contract —
-do not reorder.
+structured `[mission] …`-prefixed payloads as the narrative line. Each shape is validated against the
+AUTHORITATIVE per-shape grammar table in `mission-write.sh` (`_mw_validate_log`): control chars are
+refused; the persisted line (gen-prefixed idtag + TAB + entry) must be `<480`B; an idtag whose part/round/
+phase fields disagree with the entry is refused; and an unknown `[mission]` leading token is refused
+(`REFUSED: unknown-shape`). Field order is part of the grep contract — do not reorder. The bridge stores
+accepted lines verbatim in `MISSION.<sid>.log`; a resume agent greps them to reconstruct loop state.
 
-| Line shape | idtag | Meaning |
+**Generation prefix.** Every idtag below may carry a leading `g<G>-` generation prefix (minted at
+rebaseline; gen-1 idtags are UNPREFIXED; EMPTY idtags are exempt). Reads that must not bleed across a
+rebaseline (the PART-DONE precondition, the VOID count, the FAIL tally) slice the archive-inclusive stream
+at the latest `MISSION-REBASELINED` boundary.
+
+| Line shape (leading token after `[mission] `) | idtag | Meaning |
 |---|---|---|
-| `[mission] part=<N> name=<slug> phase=<research\|plan\|implement\|review> round=<K> dry=<D> findings=<count-or-slugs>` | `m<N>-<phase>-r<K>-d<D>` | **Round line.** One per phase/round attempt for part `<N>`. `dry=<D>` is the running consecutive-dry count (`0`,`1`,`2`); a non-dry round resets it to `0`. The **`d<D>` in the idtag is REQUIRED**: `mission_log_append` is anchored-idempotent on the leading `^<idtag>\t`, so encoding the dry-count makes each advanced dry-state a brand-NEW line rather than an idempotent no-op — the resume agent can see the dry streak progress (e.g. `…-r5-d0`, `…-r6-d1`, `…-r7-d2`) instead of one collapsed entry |
-| `[mission] FAIL part=<N> phase=<P> reason=<slug>` | `m<N>-fail-<reason-hash>` | **Failure tally.** One durable line per distinct failure reason (idtag hashed from `<reason>`, so identical failures collapse to one anchored line that survives compactions). The resume agent counts how many times an identical failure has recurred; `5` identical → stop loud rather than loop forever |
-| `[mission] test-trust part=<N>=<ok\|added\|n/a>` | (round/lifecycle idtag) | **Lifecycle — test trust.** Emitted once before the FIRST implement round of part `<N>`: `ok` = pre-existing tests trusted, `added` = tests written first, `n/a` = no test surface |
-| `[mission] PART-DONE part=<N> (converged)` | (lifecycle idtag) | **Lifecycle — part converged.** Part `<N>` reached 2-dry convergence and is closed |
-| `[mission] MISSION-CLEARED status=<achieved\|could-not\|cleared>` | (lifecycle idtag) | **Lifecycle — mission end.** Terminal line: `achieved` = goal met, `could-not` = stopped loud (e.g. FAIL guard tripped), `cleared` = run wrapped up |
+| `part=<N> name=<slug> phase=<research\|plan\|implement\|review\|fix> round=<K> dry=<0-2>[ findings=<count>]` | `[g<G>-]m<N>-<phase>-r<K>-d<D>` | **Round line.** One per phase/round attempt for part `<N>`. `dry=<D>` is the running consecutive-dry count (`0`/`1`/`2`); a non-dry round resets it to `0`. `d<D>` in the idtag is REQUIRED — `mission_log_append` is anchored-idempotent on the leading `^<idtag>\t`, so encoding the dry-count makes each advance a brand-NEW line (`…-r5-d0`, `…-r6-d1`, `…-r7-d2`) instead of one collapsed entry. `phase` now includes `fix` |
+| `VOID part=<N> phase=review round=<K> reason=<slug>` | `[g<G>-]m<N>-void-r<K>-<runid6>h(<sha8>\|nofile)` | **Codex-panel VOID.** One per panel outage on round `<K>`. Identity = the panel's `$RUN_DIR` basename tail (`runid6`) + report SHA-256 prefix (`sha8`, or `nofile` when the report is missing); a same-run replay dedups, a new panel run counts distinctly. 3 consecutive → one FAIL (`panel3x`) |
+| `FAIL part=<N> phase=<P> reason=<slug> attempt=<A>` | `[g<G>-]m<N>-fail-<reason>-<A>` or `[g<G>-]m<N>-fail-panel3x-r<K>` | **Failure tally.** `phase` = `[a-z-]+` (incl. `retire`); `attempt=<A>` REQUIRED. Identical failures collapse on the anchored idtag; the resume agent counts recurrences — `5` identical → stop LOUD. `panel3x` is the immediate-stop VOID escalation |
+| `live-verify part=<N> round=<K> status=(ok evidence=<token>\|n/a reason=<slug>)` | `[g<G>-]m<N>-live-verify-r<K>` | **Live-leg evidence.** Emitted for EVERY part after convergence, immediately before PART-DONE (`n/a reason=<slug>` for non-UI parts). `round=` scopes the idtag so a post-fix re-verify mints a NEW line instead of colliding. Evidence: a filesystem path is STAT-verified; `od:<num>`/`sha:<hex>`/URL are syntax-checked RECORDED tokens |
+| `PART-START part=<N> name=<slug>` | `[g<G>-]m<N>-part-start` | **Lifecycle — part opened.** `name` REQUIRED |
+| `PART-DONE part=<N> (converged)` | `[g<G>-]m<N>-part-done` | **Lifecycle — part converged.** A genuinely-new PART-DONE is REFUSED (`rc=4`, blocks advance) unless THREE preconditions hold on the gen-sliced stream: (1) a FRESH `live-verify part=<N>` ordered after the last actionable event, (2) a clean adjacent `findings=0 dry=1`→`findings=0 dry=2` review fold with no later actionable event, (3) round-scoped live-verify format. Idempotent re-emits skip all three |
+| `PART-RETIRED part=<N>` | `[g<G>-]m<N>-part-retired` | **Lifecycle — part retired** (bare `part=<N>`) |
+| `test-trust part=<N>=<ok\|added\|n/a>` | `[g<G>-]m<N>-test-trust` | **Lifecycle — test trust** (LEGACY glued form, grandfathered). Emitted once before the FIRST implement round of part `<N>`: `ok` = pre-existing tests trusted, `added` = tests written first, `n/a` = no test surface |
+| `criticer part=<N> findings=<K> <headline>` | `[g<G>-]m<N>-criticer-r<K>` | **Advisory — criticer headline** (`<=200` chars; one per part+round). Advisory only; never gates |
+| `MISSION-CLEARED status=<achieved\|could-not\|cleared> reason=<slug>` | EMPTY (always-append) | **Lifecycle — mission end.** `achieved` = goal met, `could-not` = stopped LOUD (e.g. FAIL guard tripped), `cleared` = wrapped up. idtag MUST be empty |
+| `MISSION-REBASELINED status=active gen=<G> …` | EMPTY (lib-written) | **Generation boundary.** Written by `mission_rebaseline`; carries `gen=<G>` as the boundary↔marker cross-check anchor for gen-sliced reads. Never routed through the `log` verb by the conductor |
+
+(`MISSION-START` / `WORK-START` are LIB-ONLY emissions — never routed through the `log` verb, hence outside this table.)

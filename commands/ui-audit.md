@@ -1,5 +1,5 @@
 ---
-description: "Audit a tab's UI end-to-end — catch fake or dead UI elements. Report-only: enumerates the ENTIRE rendered surface of one tab across every reachable sub-state, gives each element a strict REAL / STATIC-BY-DESIGN / FAKE-OR-DEAD / UNVERIFIED verdict (plus a MODELS-DISAGREE bucket) proven through three reconciled passes — static code trace, live browser x-ray over RAW CDP, and screenshot vision — with verdict authoring + evidence judgment split ~50/50 Codex(GPT-5.5)/Claude and disagreements surfaced not averaged. Emits findings.json + AUDIT.md + full-page per-state screenshots (with per-element box coordinates in findings.json for downstream overlay), handed to /god-review or /implement. Never edits app code."
+description: "Audit a tab's UI end-to-end — catch fake or dead UI elements. Report-only: enumerates the ENTIRE rendered surface of one tab across every reachable sub-state, gives each element a strict REAL / STATIC-BY-DESIGN / FAKE-OR-DEAD / UNVERIFIED verdict (plus a MODELS-DISAGREE bucket) proven through three reconciled passes — static code trace, live browser x-ray over RAW CDP, and screenshot vision — with verdict authoring + evidence judgment split ~50/50 Codex/Claude and disagreements surfaced not averaged. Emits findings.json + AUDIT.md + full-page per-state screenshots (with per-element box coordinates in findings.json for downstream overlay), handed to /god-review or /implement. Never edits app code."
 argument-hint: "[tab|url] [--url=] [--base=] [--read-only] [--no-harness] [--max-enum-passes=N] [--out=] [--batch=N] [--codex-off]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 expected_subagents: 20
@@ -300,7 +300,7 @@ OUTPUT CONTRACT: a JSON array conforming to lib/findings.schema.json. NO prose."
 
 ### 2d. PERSIST BOTH families into ONE `verdicts/` dir, then gate
 
-Both families write into `$OUT/verdicts/` (Codex via the outfile arg above; Claude by writing the file). This is the **silent-inert-Codex trap** guard (god-review.md:637): do NOT aggregate from an in-memory Codex string — aggregate from the persisted files, and gate each Codex file:
+Both families write into `$OUT/verdicts/` (Codex via the outfile arg above; Claude by writing the file). This is the **silent-inert-Codex trap** guard — the same guard as god-review.md's Phase G ("copy Codex outputs into findings/ for Phase 2d consolidation") step: do NOT aggregate from an in-memory Codex string — aggregate from the persisted files, and gate each Codex file:
 
 ```bash
 for f in "$OUT/verdicts/"codex-batch-*.json; do

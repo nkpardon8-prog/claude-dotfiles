@@ -135,7 +135,7 @@ IF $PRINCIPLE is non-empty:
   If the file does not exist, abort: "god-review: unknown principle '<PRINCIPLE>'. Available principles: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector, database-audit"
   Spawn ONE Agent tool call:
     subagent_type: "general-purpose"
-    model: "claude-opus-4-7"
+    model: "opus"
     prompt: [content of the principle file] + "\n\nScope: " + ($SCOPE if non-empty, else "full repo")
     Note: pass --online flag context if $ONLINE=true (for hallucinated-imports)
   Exit after the agent completes.
@@ -275,7 +275,7 @@ write_env
 
 Now spawn 1 Claude Opus 4.7 agent to synthesize the bash output above into a structured context package:
 
-Spawn ONE Agent tool call with `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`, extended thinking enabled. Prompt:
+Spawn ONE Agent tool call with `subagent_type: "general-purpose"`, `model: "opus"`, extended thinking enabled. Prompt:
 
 ```
 You are building a shared context package for a multi-model codebase audit.
@@ -537,7 +537,7 @@ Each finding is tagged at collection time with source:
 
 For each of the three Claude broad reviewers, spawn an Agent tool call:
 - `subagent_type: "general-purpose"`
-- `model: "claude-opus-4-7"` with extended thinking enabled (high reasoning effort)
+- `model: "opus"` with extended thinking enabled (high reasoning effort)
 - Prompt loaded from `~/.claude-dotfiles/commands/god-review/broad-reviewers/<name>.md`
 - Scope passed as `$SCOPE` (or full repo if empty)
 - Context package path: `tmp/god-review/context-package.md`
@@ -576,7 +576,7 @@ fi
 broad-Claude reviewers when `RUTHLESS=true`):** spawn ONE additional Agent
 tool call alongside the existing 3:
 - `subagent_type: "general-purpose"`
-- `model: "claude-opus-4-7"` (extended thinking, high reasoning effort)
+- `model: "opus"` (extended thinking, high reasoning effort)
 - prompt: `$(cat /tmp/god-review-ruthless-prompt.txt)\n\nScope: $SCOPE\nContext package: $WORKDIR/tmp/god-review/context-package.md`
 
 After this Agent returns, capture its result text and call:
@@ -650,7 +650,7 @@ mkdir -p "$WORKDIR/tmp/god-review/findings"
 
 For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
 - `subagent_type: "general-purpose"`
-- `model: "claude-opus-4-7"` with extended thinking enabled
+- `model: "opus"` with extended thinking enabled
 - Prompt loaded from `~/.claude-dotfiles/commands/god-review/principles/<principle-name>.md`
 - Include path to context package: `tmp/god-review/context-package.md`
 - Scope: `$SCOPE` if set, else full repo
@@ -1262,7 +1262,7 @@ write_env PRE_FIX_REFTYPE "$PRE_FIX_REFTYPE"
 ```
 
 **(ii) Spawn ONE Architect Agent tool call.** You (the orchestrator) issue
-this Agent call with `subagent_type: "general-purpose"`, `model: "claude-opus-4-7"`,
+this Agent call with `subagent_type: "general-purpose"`, `model: "opus"`,
 extended thinking enabled.
 
 **Important — disk-based output capture:** The Architect MUST write its JSON
@@ -1398,7 +1398,7 @@ echo "Architect output validated for $FINDING_ID. Spawning Editor."
 ```
 
 **(iv) Spawn ONE Editor Agent tool call.** Use `subagent_type: "general-purpose"`,
-`model: "claude-opus-4-7"`, low reasoning effort. Prompt is the contents of
+`model: "opus"`, low reasoning effort. Prompt is the contents of
 `lib/editor-agent.md` followed by:
 
 ```
@@ -1630,13 +1630,13 @@ paragraphs without these structured fields.
 If you find no NEW issues, output exactly the single line: `NO_NEW_FINDINGS`
 ```
 
-- **Verifier 1**: `claude-opus-4-7`, `subagent_type: general-purpose`, prompt
+- **Verifier 1**: `opus`, `subagent_type: general-purpose`, prompt
   = "Re-review this diff and surrounding code. List any NEW issues. Do NOT
   re-flag findings already in `state.json.human_gate_emitted` or in
   `tmp/god-review/known-deferred-session.txt`. Diff:
   `$(git diff $PRE_FIX_BASE_REF..HEAD)`. Prior findings list: ..."
   + the OUTPUT FORMAT block above appended verbatim.
-- **Verifier 2**: same shape but model `claude-opus-4-7` with different focus
+- **Verifier 2**: same shape but model `opus` with different focus
   prompt (correctness vs. architecture). + OUTPUT FORMAT block appended.
 - **Verifier 3**: Codex via `bash $WORKDIR/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh`
   (only if `$CODEX_AVAILABLE=true`). + OUTPUT FORMAT block appended.

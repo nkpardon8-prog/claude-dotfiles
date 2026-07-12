@@ -70,7 +70,7 @@ last_verified: YYYY-MM-DD
 ```
 This lets an LLM load one small file and decide what to read next.
 
-Spawn parallel sub-agents using the Task tool with `subagent_type: Explore` (one per applicable area) to gather source material. Each agent returns: purpose of the area, key files and their roles, data shapes, entry points, gotchas. Write each doc from the agent's findings.
+Spawn parallel sub-agents using the Agent tool with `subagent_type: Explore` (one per applicable area) to gather source material. Each agent returns: purpose of the area, key files and their roles, data shapes, entry points, gotchas. Write each doc from the agent's findings.
 
 For `integrations.md`: list each external service, what it's used for, which env vars it needs (names only, never values), and where in the code it's invoked.
 

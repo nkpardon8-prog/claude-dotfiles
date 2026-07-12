@@ -40,7 +40,7 @@ has a reasonable next step; the block is a heads-up. The brief explicitly reject
 
 ## Active Skill State
 <!-- Populated by Step 3.G. If no skill detected, write: "No active skill detected — generic continuation. See ## Next Action below." Otherwise: -->
-- Detected skill: [/plan | /implement | /discussion | /master-review | /god-review | /god-report | /codex-review | none]
+- Detected skill: [/plan | /implement | /discussion | /mission | /ui-audit | /master-review | /god-review | /god-report | /codex-review | none]
 - Phase indicator: [skill-specific, e.g. "mid review round 2", "implement Phase 3 of 5", "Phase 2 of god-review round 4 (consecutive_clean=1)"]
 - Critical artifacts to preserve: [paths to in-flight files, e.g. ./tmp/ready-plans/foo.md, tmp/god-review/state.json]
 - Resumption directive: [skill-specific Next Action template from Step 3.G — verbatim]

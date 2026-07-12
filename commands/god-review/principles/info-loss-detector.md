@@ -69,7 +69,7 @@ Verify the persistence mechanism is correct: a `cat > .env.sh` that uses unquote
 
 ### 2.2 Subagent Invocation Boundaries
 
-Identify every place a subagent is spawned (subagent_type blocks, Task tool calls, delegated Claude invocations). For each:
+Identify every place a subagent is spawned (subagent_type blocks, Agent tool calls, delegated Claude invocations). For each:
 - Does the subagent's prompt instruct it to write output to a specific file path?
 - Does the orchestrator, after the subagent returns, read from that file path?
 - If the subagent is expected to write stdout and the orchestrator captures it — is there actually a capture mechanism (e.g., output stored to variable, piped, redirected)?

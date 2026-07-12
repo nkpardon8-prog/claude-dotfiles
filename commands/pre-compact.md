@@ -140,9 +140,12 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
      echo "WARNING: The handoff file will be written but auto-resume may not bind. Run /post-compact-resume <session_id> manually." >&2
      SID_RESOLVED="unknown-$(date +%s)-$$"
    fi
-   # R8: filename uses full SID (no truncation to SID8). The Stop hook threads this exact
+   # R8: filename uses the full SID (no truncation). The Stop hook threads this exact
    # value as the /post-compact-resume arg. Writer + reader use the same platform UUID.
-   SID8_RESOLVED="$SID_RESOLVED"
+   # (Legacy var name SID8_RESOLVED renamed → SID_FULL for honesty — it has always held the
+   #  full session UUID. The scratch-JSON key `sid8` and the `SID8=` capture label below stay
+   #  as-is: Steps 6A/6D read the value back by the `.sid8` key.)
+   SID_FULL="$SID_RESOLVED"
 
    # Canonical anchor (single source for ALL downstream location sites — Steps 6A/6D/8/snapshot/9.1
    # read it back from the scratch JSON, never re-derive). Identical from every git worktree, so the
@@ -173,7 +176,7 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
    rm -f "$SCRATCH_PATH" 2>/dev/null || true
    ( umask 077 && jq -n \
        --arg seq "$PARENT_SEQ" --arg label "$PARENT_LABEL" \
-       --arg sid "$SID_RESOLVED" --arg sid8 "$SID8_RESOLVED" \
+       --arg sid "$SID_RESOLVED" --arg sid8 "$SID_FULL" \
        --arg cr "$CANONICAL_ROOT" \
        --arg bp "$PARENT_BUILD_PLAN" --arg na "$PARENT_NEXT_ACTION" \
        --arg oi "$PARENT_OPEN_ISSUES" --arg tfl "$PARENT_FIX_LATER" \
@@ -182,7 +185,7 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted �
        > "$SCRATCH_PATH" )
    echo "SCRATCH_PATH=$SCRATCH_PATH"
    echo "SID=$SID_RESOLVED"
-   echo "SID8=$SID8_RESOLVED"
+   echo "SID8=$SID_FULL"
    echo "CANONICAL_ROOT=$CANONICAL_ROOT"
 
    # ---------------- Chain primitives (overnight-autonomy) ----------------
@@ -410,8 +413,8 @@ Extract the following structured fields. Stash in working memory for Step 6:
 - **pending_externals**: waits, blocked-on-people, scheduled-for-later, "user will send
   X tomorrow", scheduled cron jobs.
 - **pending_externals_background** (corrected extraction directive):
-  **Scan the transcript for Agent tool calls (sub-agent spawns), Bash tool calls
-  with run_in_background=true, and Task tool calls where no subsequent matching
+  **Scan the transcript for Agent tool calls (sub-agent spawns) and Bash tool calls
+  with run_in_background=true where no subsequent matching
   result/notification appears in the transcript.** The Bash tool DOES have a
   run_in_background parameter; the Agent tool dispatches sub-agents. Both can leave
   in-flight work that the post-compact session cannot observe directly.
@@ -467,27 +470,33 @@ Detect which slash-command skill (if any) is currently active by inventorying `.
 
 **Inference priorities (highest priority wins; report all that match):**
 
-1. **`tmp/god-review/state.json` exists** (relative to `$PWD`, or `~/.claude-dotfiles/tmp/god-review/state.json`) → ACTIVE: /god-review or /god-report
+1. **`MISSION.<sid>.md` exists at the canonical root** (`<CANONICAL_ROOT>/MISSION.<full-session-id>.md`, sid resolved in Step 3.B) → ACTIVE: /mission autonomous long-build. This is the OUTERMOST loop — it drives /plan + /implement per part — so it WINS over every signal below (report it first).
+   - Read the mission's LIVE state from the archive-inclusive log (mission.md §8: concatenate `.mission-backups/MISSION.<sid>.log.*` in filename-timestamp order, THEN the live `MISSION.<sid>.log`) — or the precomputed `MISSION.<sid>.banner`. From the last `[mission] part=N … phase=<p> round=K dry=D` line for the current part, derive the CURRENT part N, its phase (research|plan|implement|review|fix), the latest round K, and the consecutive dry-count D.
+   - Record part/phase/round/dry (plus any open `pd:` pendings and the last FAIL/VOID line) verbatim into `## Active Skill State` so the resuming agent re-enters the EXACT per-part loop position, not just the topic.
+   - Next-Action: "Resume /mission via `/mission resume` at part N, phase <phase>, round K, dry=D. Per-part plan is under ./tmp/ready-plans/. Do NOT restart the mission from scratch — clone into this session per mission.md §2b."
+
+2. **`tmp/god-review/state.json` exists** (relative to `$PWD`, or `~/.claude-dotfiles/tmp/god-review/state.json`) → ACTIVE: /god-review or /god-report
    - Read state.json: extract `round`, `consecutive_clean_rounds`, `human_gate_queue` length.
    - Note: this signal is most reliable when running INSIDE the dotfiles repo cwd. In other repos, also check `~/.claude-dotfiles/tmp/god-review/state.json` as a secondary signal.
    - Next-Action template:
      "Resume /god-review at round N (consecutive_clean=K). Findings: tmp/god-review/findings/*.txt. Phase 3 fix orchestrator state in state.json. If consecutive_clean_rounds >= 3, audit is already complete — review HUMAN_GATE_QUEUE.md before closing."
 
-2. **`/tmp/master-review-*.txt` files exist (ABSOLUTE PATH `/tmp/`, NOT relative `./tmp/`)** with mtime < 2h → ACTIVE: /master-review mid-pipeline.
+3. **`/tmp/master-review-*.txt` files exist (ABSOLUTE PATH `/tmp/`, NOT relative `./tmp/`)** with mtime < 2h → ACTIVE: /master-review mid-pipeline.
    - Count via: `ls -t /tmp/master-review-{codex-[1-3],ag-[1-2]}.txt 2>/dev/null | wc -l`
    - Next-Action: "Resume /master-review. Findings collected so far: /tmp/master-review-*.txt (N of expected 5 agents reported). Synthesize into ./tmp/ready-plans/master-review-fixes.md when all complete."
 
-3. **`/tmp/codex-review-*.txt` files exist** (ABSOLUTE PATH `/tmp/`) with mtime < 1h → ACTIVE: /codex-review.
-   - Next-Action: "Resume /codex-review. Codex agent outputs at /tmp/codex-review-{a,b,verify}.txt. 4 Claude lenses + Codex verify still pending if not done."
+4. **`${TMPDIR:-/tmp}/codex-review.*/` run dirs exist** (per-run `mktemp -d` dirs) with mtime < 1h → ACTIVE: /codex-review.
+   - Detect via: `ls -dt ${TMPDIR:-/tmp}/codex-review.*/ 2>/dev/null` (most-recent first), keeping only dirs modified within the last hour (e.g. `find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'codex-review.*' -mmin -60`).
+   - Next-Action: "Resume /codex-review. The per-lens Codex outputs are `codex-review-N.txt` (N=1..4) INSIDE the most recent run dir (from `ls -dt ${TMPDIR:-/tmp}/codex-review.*/`); `report-final.md` lands in that same dir once Step 7f completes. 4 Claude lenses + the Codex verify pass are still pending if not done."
 
-4. **`./tmp/ready-plans/*.md` exists with mtime < 24h AND no done-plans/ entry with same date** → POSSIBLY ACTIVE: /plan or /implement
+5. **`./tmp/ready-plans/*.md` exists with mtime < 24h AND no done-plans/ entry with same date** → POSSIBLY ACTIVE: /plan or /implement
    - Read the most recent ready-plan: check for `[NEEDS CLARIFICATION]` markers (still in /plan) or `[done]` vs `[pending]` checklist marks (in /implement).
    - Next-Action: "Resume /plan at review round N" OR "Resume /implement at phase N of M for plan <path>".
 
-5. **`./tmp/briefs/*.md` exists with mtime < 24h AND no corresponding ready-plan yet** → POSSIBLY ACTIVE: /discussion just concluded
+6. **`./tmp/briefs/*.md` exists with mtime < 24h AND no corresponding ready-plan yet** → POSSIBLY ACTIVE: /discussion just concluded
    - Next-Action: "Brief at <path> awaits /plan. Next: invoke /plan with brief reference."
 
-6. **None of the above** → no active skill. Section gets: "No active skill detected — generic continuation."
+7. **None of the above** → no active skill. Section gets: "No active skill detected — generic continuation."
 
 **Populate `## Active Skill State` in Step 6 with:**
 - Detected skill: <name>

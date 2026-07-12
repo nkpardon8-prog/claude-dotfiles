@@ -137,7 +137,7 @@ unavailable, skip this step and continue to Step 5.
 
 ### Review loop
 
-1. Launch a **Bash subagent** (via the Task tool) and recompute the base branch inside it (the parent shell's `BASE_BRANCH` does not propagate to a fresh subagent shell). The subagent should run:
+1. Launch a **Bash subagent** (via the Agent tool) and recompute the base branch inside it (the parent shell's `BASE_BRANCH` does not propagate to a fresh subagent shell). The subagent should run:
 
 ```bash
 WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -150,14 +150,24 @@ if [ -z "$BASE_BRANCH" ]; then
     if git rev-parse --verify "$cand" >/dev/null 2>&1; then BASE_BRANCH="$cand"; break; fi
   done
 fi
-codex -c model_reasoning_effort="high" exec -s read-only --ephemeral --cd "$WORKDIR" "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)."
+# Build the review prompt into a temp file (never inline it as a double-quoted arg — a branch name or
+# diff excerpt can carry shell metacharacters), then run it through the house wrapper. codex-exec.sh
+# feeds stdin from the file, inherits the config's authoritative effort (unpinned = newest-model
+# default), and writes a machine-readable `.status` sidecar; read BOTH the output and the status.
+PROMPT=$(mktemp "${TMPDIR:-/tmp}/prepare-pr-codex-prompt.XXXXXX")
+OUT=$(mktemp "${TMPDIR:-/tmp}/prepare-pr-codex-out.XXXXXX")
+printf '%s\n' "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)." > "$PROMPT"
+bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$PROMPT" "$OUT" "$WORKDIR"
+cat "$OUT.status"; echo "--- review ---"; cat "$OUT"
 ```
-   Wait for the full output.
+   Wait for the full output. `"$OUT.status"` is `ok | timeout | unavailable | nonzero-<rc>`; a
+   `timeout`/`unavailable` status means Codex could not run — treat it as "Codex unavailable" and skip
+   the gate per the Step-4 preamble rather than looping on an empty review.
 2. Read the response carefully.
 3. **If codex reports issues**:
    - Fix every issue it raised in the codebase.
    - Commit the fixes locally: `fix: address codex review feedback` (no push yet — the gate is still open).
-   - Go back to step 1 — re-launch the Bash subagent with the same `WORKDIR`/`BASE_BRANCH` recomputation block so the fresh shell does not inherit stale or empty `$BASE_BRANCH` from the parent. Do not call `codex exec` directly without first recomputing both vars.
+   - Go back to step 1 — re-launch the Bash subagent with the same `WORKDIR`/`BASE_BRANCH` recomputation block so the fresh shell does not inherit stale or empty `$BASE_BRANCH` from the parent. Do not call `codex-exec.sh` directly without first recomputing both vars.
 4. **If codex reports no issues** (e.g., "no defects", "no issues", "changes appear consistent"), the loop is done. Continue to Step 5.
 
 **Important**: Do not summarize or skip the codex output. Read it in full each iteration so you can act on every finding. The review gate stays in effect — code does not reach the remote until this loop finishes clean.

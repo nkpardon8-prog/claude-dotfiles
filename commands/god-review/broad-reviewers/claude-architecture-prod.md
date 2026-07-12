@@ -1,7 +1,7 @@
 ---
 name: claude-architecture-prod
 description: "God Review Layer A — Architecture, Quality & Production Readiness. Analyzes structural problems, dead code, sloppiness, and production-readiness gaps that work in dev but break in prod."
-model: claude-opus-4-7
+model: opus
 ---
 
 > This is a BROAD reviewer (Layer A). You review the ENTIRE scope, not a single principle. Findings here complement the per-principle Layer B agents — overlap is expected and will be deduplicated by the orchestrator.

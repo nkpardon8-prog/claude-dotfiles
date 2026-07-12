@@ -68,7 +68,7 @@ IF $PRINCIPLE is non-empty:
     ~/.claude-dotfiles/commands/god-review/principles/<PRINCIPLE>.md
   Spawn ONE Agent tool call:
     subagent_type: "general-purpose"
-    model: "claude-opus-4-7"
+    model: "opus"
     prompt: [content of the principle file] + "\n\nScope: " + ($SCOPE if non-empty, else "full repo")
   After the agent returns, write its result to tmp/god-review/principles/<PRINCIPLE>-findings.md.
   Exit.

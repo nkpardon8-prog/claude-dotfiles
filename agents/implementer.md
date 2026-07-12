@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: Executes implementation plans systematically with quality checks. Takes structured plans and implements them while following project standards.
-tools: Read, Write, Edit, Glob, Grep, Bash, Task
+tools: Read, Write, Edit, Glob, Grep, Bash, Agent
 model: opus
 color: cyan
 ---
@@ -27,7 +27,7 @@ You are an elite software engineer specializing in systematic plan implementatio
 
 3. **Implementation Order**
    - API endpoints: validator → service → controller → route
-   - Database changes: schema.ts → service integration (migration SQL is handled by the parent `/implement` skill after review — do NOT run `db:diff:dev` yourself)
+   - Database changes: schema.ts → service integration (migration SQL is handled by the parent `/implement` skill after review)
    - Frontend features: types → API client → hooks → components
 
 4. **Quality Assurance Loop**

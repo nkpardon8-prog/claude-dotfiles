@@ -332,8 +332,11 @@ Spawn in parallel, blind to each other:
   `codex -s read-only` ever starts (§7 injection rule). Write the prompt to a file and feed it via
   **stdin**, so no untrusted text is ever shell-evaluated:
   ```bash
-  # write the scope-prove prompt to a temp file (no shell expansion of its contents), then pipe via stdin:
-  codex -c model_reasoning_effort="high" exec -s read-only --ephemeral -C <root> - < /tmp/mission-scope-prompt.$$
+  # write the scope-prove prompt to a temp file (no shell expansion of its contents), then run it through
+  # the house wrapper — it always feeds stdin from the file (`- < promptfile`), inherits the config's
+  # authoritative effort (unpinned = newest-model default), and writes a machine-readable `.status`
+  # sidecar; no untrusted text ever reaches the shell:
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh /tmp/mission-scope-prompt.$$ /tmp/mission-scope-out.$$ <root>
   ```
   (If you must pass it as an arg instead, SINGLE-quote it; never double-quote derived/untrusted content.)
 Reconcile after both return. An **unresolved factual contradiction** → `pending` (batched) + a `note`
@@ -341,10 +344,11 @@ recording the forced assumption, then proceed on the **more-evidenced branch, LO
 `note` the reconciled scope. Log the research round (Section 7).
 
 ### Phase 2 — PLAN (Claude-authored; cross-model INDEPENDENT review loop)
-Invoke the Skill tool with `skill: plan`. Continue once it returns. (`/plan` runs its own Claude
-plan-reviewer subagents.) **ALSO**, in parallel and independent, spawn a **Codex plan-reviewer at
-high** attacking executability — missing commands, undefined steps, ordering/dependency bugs, and
-especially **TEST GAPS**.
+Invoke the Skill tool with `skill: plan`. Continue once it returns. `/plan` runs its own Claude
+plan-reviewer subagents AND a default parallel Codex plan pass every round (via `codex-exec.sh`) —
+that IS the cross-model review lane, so do NOT spawn a separate per-round Codex plan reviewer here
+(one lane, not two). That built-in Codex pass attacks executability — missing commands, undefined
+steps, ordering/dependency bugs, and especially **TEST GAPS**.
 
 **TEST-TRUSTWORTHINESS is a REQUIRED finding-class here.** Convergence is theater if the repo's tests
 are weak. Assess existing coverage; if weak or absent, the part-plan MUST add meaningful tests (for
