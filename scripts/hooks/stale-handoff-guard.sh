@@ -28,14 +28,22 @@ git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 # --- 1. Un-tagged CLAUDE.local.md: quarantine only handoff-shaped AND >7d old ---
 f="$root/CLAUDE.local.md"
 if [ -f "$f" ] && [ ! -L "$f" ] && grep -qE 'END-OF-HANDOFF|^# Post-Compact Reference' "$f" 2>/dev/null; then
-  # stat -f %m is BSD/macOS; stat -c %Y is GNU/Linux — try both so the >7d quarantine works off-macOS
-  # (a bare `stat -f` failure would return the current time → age 0 → a stale handoff silently kept):
-  mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo "")
-  age=$(( $(date +%s) - ${mtime:-$(date +%s)} ))
-  if [ "$age" -gt 604800 ]; then
-    mkdir -p "$root/.handoff-archive" \
-      && mv "$f" "$root/.handoff-archive/CLAUDE.local.stale-$(date +%Y%m%d-%H%M%S)-$$.md" \
-      && echo "stale-handoff-guard: QUARANTINED stale handoff CLAUDE.local.md (age $((age/86400))d) -> .handoff-archive/ (hand-authored files are never touched; restore from the archive if this was wrong)"
+  # stat -f %m is BSD/macOS; stat -c %Y is GNU/Linux. Try each SEPARATELY and validate the result is
+  # a pure integer before accepting it — on GNU, `stat -f` means --file-system and can print
+  # non-numeric data yet exit 0, which a naive `A || B` would wrongly accept (codex-review 2026-07-12).
+  mtime=$(stat -f %m "$f" 2>/dev/null)
+  case "$mtime" in ''|*[!0-9]*) mtime=$(stat -c %Y "$f" 2>/dev/null) ;; esac
+  case "$mtime" in ''|*[!0-9]*) mtime="" ;; esac
+  # Quarantine ONLY with a usable numeric mtime that proves age >7d. No usable mtime → leave the
+  # file in place (do NOT default to now: age 0 would silently keep a stale handoff; and never
+  # quarantine on an unprovable age).
+  if [ -n "$mtime" ]; then
+    age=$(( $(date +%s) - mtime ))
+    if [ "$age" -gt 604800 ]; then
+      mkdir -p "$root/.handoff-archive" \
+        && mv "$f" "$root/.handoff-archive/CLAUDE.local.stale-$(date +%Y%m%d-%H%M%S)-$$.md" \
+        && echo "stale-handoff-guard: QUARANTINED stale handoff CLAUDE.local.md (age $((age/86400))d) -> .handoff-archive/ (hand-authored files are never touched; restore from the archive if this was wrong)"
+    fi
   fi
 fi   # hand-authored (no handoff fingerprint) -> NEVER touched
 

@@ -43,12 +43,28 @@ esac
 # push is NOT silent — the SessionStart stale-handoff-guard surfaces a PAUSED/held notice with
 # the unpushed-commit count every session, so a legitimately-private repo whose gh momentarily
 # failed is a visible, recoverable one-liner (re-run this script), not lost work.
-_vis=$(gh repo view --json isPrivate -q .isPrivate 2>/dev/null)
+# SAME-REMOTE BINDING (codex-review CRITICAL 2026-07-12): a bare `gh repo view` resolves its repo
+# from $GH_REPO or cwd's default remote, while a bare `git push` targets the branch's tracking
+# remote — these can DIFFER, so a private result for some OTHER repo could authorize pushing THIS
+# one to a public origin. Bind both to ONE explicitly-resolved remote: derive owner/repo from the
+# exact remote we will push to, query THAT repo's visibility, and push to THAT remote by name.
+_remote=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null | cut -d/ -f1)
+[ -n "$_remote" ] || _remote=origin
+_url=$(git remote get-url "$_remote" 2>/dev/null)
+# owner/repo from either https://github.com/OWNER/REPO(.git) or git@github.com:OWNER/REPO(.git).
+# Portable (BSD/GNU sed): strip a trailing .git and slash, THEN the host prefix — no non-greedy ops.
+_slug=$(printf '%s' "$_url" | sed -e 's#\.git$##' -e 's#/$##' -e 's#^.*github\.com[:/]##')
 git add -A
 git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)" 2>/dev/null
-if [ "$_vis" = "true" ]; then
-    git push 2>/dev/null || true
+# Empty $GH_TOKEN-free env is fine; -R pins the query to the push target so $GH_REPO can't hijack it.
+if [ -n "$_slug" ]; then
+    _vis=$(GH_REPO= gh repo view "$_slug" --json isPrivate -q .isPrivate 2>/dev/null)
 else
-    echo "(dotfiles-sync: PUSH HELD — could not confirm the remote is PRIVATE (isPrivate='${_vis:-unknown}'); committed locally only. Confirm the repo is private, then re-run this script to push.)" >&2
+    _vis=""   # could not resolve the push target's slug — fail closed (hold)
+fi
+if [ "$_vis" = "true" ]; then
+    git push "$_remote" 2>/dev/null || true
+else
+    echo "(dotfiles-sync: PUSH HELD — could not confirm the push target ${_slug:-$_remote} is PRIVATE (isPrivate='${_vis:-unknown}'); committed locally only. Confirm the repo is private, then re-run this script to push.)" >&2
     exit 4
 fi
