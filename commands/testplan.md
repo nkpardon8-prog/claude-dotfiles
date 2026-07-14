@@ -127,7 +127,8 @@ mock.
 ### CORE (always emitted)
 1. **Scope + out-of-scope.** Each exclusion states rationale + risk + who approved it (no silent
    scope-laundering — you cannot hide a hard surface under "out of scope" and still claim exhaustiveness).
-2. **Role model** — personas + their jobs.
+2. **Role model** — personas + their jobs. (Single-persona target → state it once, in Phase 1 or here, not
+   both — don't re-table it.)
 3. **Arsenal + safety inventory** — each capability's class; the deny-by-default blast radius; deferred
    preflights.
 4. **One merged coverage table.** Each row: `case-id · claim/authority · dimensions covered · proving level ·
