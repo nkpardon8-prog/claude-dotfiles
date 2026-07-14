@@ -206,6 +206,12 @@ _mission_plan_hash() {
 # SENTINELS (never a real hash): `nogit` (not a repo), `nohead` (unborn HEAD, no commits), `nohash`
 # (no sha tool). Callers treat any sentinel / empty as "cannot verify" → SKIP, never a false refusal.
 # `git -C <root>` is worktree-correct (each worktree has its own HEAD/index/worktree).
+# The mission/handoff SCRATCH artifacts live AT the repo root (MISSION.<sid>.md/.log,
+# .mission-backups/, .mission-archive/, CLAUDE.local.<sid>.md) — they are AGENT STATE, not code.
+# EVERY mission-write append mutates MISSION.<sid>.log, so if the fingerprint counted them, the tree
+# would "change" on every log line and the guard would false-block on its own bookkeeping. Exclude
+# them from all three git reads via `:(exclude,glob)` pathspecs (glob magic: `*` does not cross `/`,
+# `**` does). An exclude-only pathspec subtracts from the default "everything".
 _mission_tree_fingerprint() {
   _tf_root="$1"
   git -C "$_tf_root" rev-parse --git-dir >/dev/null 2>&1 || { printf 'nogit'; return 0; }
@@ -213,9 +219,15 @@ _mission_tree_fingerprint() {
   _tf_out=$({
     git -C "$_tf_root" rev-parse HEAD 2>/dev/null
     git -C "$_tf_root" -c core.autocrlf=false -c core.quotepath=true \
-        diff HEAD --no-color --no-ext-diff --no-textconv 2>/dev/null
-    git -C "$_tf_root" status --porcelain=v1 --untracked-files=all 2>/dev/null
-    git -C "$_tf_root" ls-files --others --exclude-standard -z 2>/dev/null \
+        diff HEAD --no-color --no-ext-diff --no-textconv -- \
+        ':(exclude,glob)MISSION.*' ':(exclude,glob).mission-backups/**' \
+        ':(exclude,glob).mission-archive/**' ':(exclude,glob)CLAUDE.local.*' 2>/dev/null
+    git -C "$_tf_root" status --porcelain=v1 --untracked-files=all -- \
+        ':(exclude,glob)MISSION.*' ':(exclude,glob).mission-backups/**' \
+        ':(exclude,glob).mission-archive/**' ':(exclude,glob)CLAUDE.local.*' 2>/dev/null
+    git -C "$_tf_root" ls-files --others --exclude-standard -z -- \
+        ':(exclude,glob)MISSION.*' ':(exclude,glob).mission-backups/**' \
+        ':(exclude,glob).mission-archive/**' ':(exclude,glob)CLAUDE.local.*' 2>/dev/null \
       | while IFS= read -r -d '' _tf_uf; do
           printf '@@U:%s\n' "$_tf_uf"
           git -C "$_tf_root" hash-object "$_tf_uf" 2>/dev/null
