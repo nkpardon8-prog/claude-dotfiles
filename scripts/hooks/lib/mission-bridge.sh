@@ -195,6 +195,48 @@ _mission_plan_hash() {
   printf '%s' "$_ph_zone" | _mission_hash_stream
 }
 
+# _mission_tree_fingerprint <repo_root> -> stdout a first-16-hex sha256 over the FULL working state
+# (committed pointer + staged/unstaged TRACKED content + untracked NON-IGNORED names AND content).
+# The stale-claim guard compares this at PART-DONE against the fingerprint stamped at convergence.
+# Determinism: git flags are PINNED (core.autocrlf/quotepath, --no-color/--no-ext-diff/--no-textconv)
+# so an unchanged tree hashes identically across runs / configs / machines (else a config toggle would
+# flip the hash → false DRIFT). Untracked CONTENT is hashed explicitly because `git diff HEAD` excludes
+# untracked and `status --porcelain` records only untracked NAMES — editing an untracked file's content
+# would otherwise be invisible. `--exclude-standard` drops .gitignore'd build artifacts (no noise).
+# SENTINELS (never a real hash): `nogit` (not a repo), `nohead` (unborn HEAD, no commits), `nohash`
+# (no sha tool). Callers treat any sentinel / empty as "cannot verify" → SKIP, never a false refusal.
+# `git -C <root>` is worktree-correct (each worktree has its own HEAD/index/worktree).
+_mission_tree_fingerprint() {
+  _tf_root="$1"
+  git -C "$_tf_root" rev-parse --git-dir >/dev/null 2>&1 || { printf 'nogit'; return 0; }
+  git -C "$_tf_root" rev-parse --verify -q HEAD >/dev/null 2>&1 || { printf 'nohead'; return 0; }
+  _tf_out=$({
+    git -C "$_tf_root" rev-parse HEAD 2>/dev/null
+    git -C "$_tf_root" -c core.autocrlf=false -c core.quotepath=true \
+        diff HEAD --no-color --no-ext-diff --no-textconv 2>/dev/null
+    git -C "$_tf_root" status --porcelain=v1 --untracked-files=all 2>/dev/null
+    git -C "$_tf_root" ls-files --others --exclude-standard -z 2>/dev/null \
+      | while IFS= read -r -d '' _tf_uf; do
+          printf '@@U:%s\n' "$_tf_uf"
+          git -C "$_tf_root" hash-object "$_tf_uf" 2>/dev/null
+        done
+  } | _mission_hash_stream) || { printf 'nohash'; return 0; }
+  [ -n "$_tf_out" ] || { printf 'nohash'; return 0; }
+  printf '%s' "$_tf_out"
+}
+
+# _mission_goal_hash <sid> -> stdout first-16-hex sha256 of the FROZEN chain north_star (the immutable
+# goal). Recorded on the SNAPSHOT stamp for the report/future goal-drift work; not compared in v1.
+# Reads the manifest JSON directly (no handoff-chain.sh source dependency). `nogoal` when absent.
+_mission_goal_hash() {
+  _gh_sid=$(_mission_sanitize_sid "$1")
+  _gh_f="$HOME/.claude/chains/${_gh_sid}.json"
+  [ -f "$_gh_f" ] || { printf 'nogoal'; return 0; }
+  _gh_ns=$(jq -r '.north_star // empty' "$_gh_f" 2>/dev/null)
+  [ -n "$_gh_ns" ] || { printf 'nogoal'; return 0; }
+  printf '%s' "$_gh_ns" | _mission_hash_stream || printf 'nohash'
+}
+
 # ===========================================================================================
 # Path helpers
 # ===========================================================================================
