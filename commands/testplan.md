@@ -146,7 +146,9 @@ mock.
   event · webhook · DB schema · file · CLI · third-party callback): pin the authoritative producer's
   contract (shape, errors, optionality, versioning) and require every fixture / stub to conform, so a
   drifted mock fails loudly. Skip entirely if the target has no such boundary.
-- **Ordering + fault catalog** (Phase 3) — only if stateful/mutating/async/external workflows exist.
+- **Ordering + fault catalog** (Phase 3) — only if stateful/mutating/async/external workflows exist. Its
+  entries live in the catalog; reference them in the merged coverage table by id (one summary row) rather
+  than duplicating their detail.
 - **Full per-item recipe** — for the risk-bearing cases (below).
 
 ### Per-item recipe — TIERED (required fields depend on the case)
