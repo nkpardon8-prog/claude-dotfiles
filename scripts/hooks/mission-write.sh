@@ -128,6 +128,32 @@ _mw_efield() {
   printf '%s' "$1" | sed -n "s/.*$2=\\([A-Za-z0-9_.:-]*\\).*/\\1/p"
 }
 
+# _mw_emit_snapshot <entry> <sid> <root> — STALE-CLAIM GUARD, stamp half. If <entry> is a genuinely-new
+# CONVERGED review round (`phase=review findings=0 dry=2`), append a companion `[mission] SNAPSHOT` line
+# recording the tree fingerprint convergence was reached at, so `_mw_partdone_check` can later refuse a
+# PART-DONE whose tree drifted after that convergence. Best-effort + SILENT on stdout (the §5 log-verb
+# callers capture exactly one status token; a second stdout line would corrupt their capture — diagnostics
+# go to stderr only). The CALLER gates on `_MLA_OUTCOME=appended` so an idempotent re-emit never re-stamps
+# a drifted tree (which would mask drift). Written via mission_log_append DIRECTLY (bypasses _mw_validate_log
+# exactly like the other lib-level emitters). Idtag `snap-p<N>-conv-<tree16>` => same convergence state
+# stamped twice is idempotent; a different tree gets a different idtag (no false collision).
+_mw_emit_snapshot() {
+  _es_entry="$1"; _es_sid="$2"; _es_root="$3"
+  case "$_es_entry" in *"[mission] part="*"phase=review"*) : ;; *) return 0 ;; esac
+  [ "$(_mw_efield "$_es_entry" findings)" = 0 ] || return 0
+  [ "$(_mw_efield "$_es_entry" dry)" = 2 ] || return 0
+  _es_part=$(_mw_efield "$_es_entry" part)
+  case "$_es_part" in ''|*[!0-9]*) return 0 ;; esac
+  _es_tree=$(_mission_tree_fingerprint "$_es_root" 2>/dev/null)
+  case "$_es_tree" in ''|nogit|nohead|nohash) return 0 ;; esac   # cannot fingerprint → do not stamp
+  _es_goal=$(_mission_goal_hash "$_es_sid" 2>/dev/null); [ -n "$_es_goal" ] || _es_goal=nogoal
+  _es_files=$(git -C "$_es_root" -c core.autocrlf=false diff HEAD --name-only 2>/dev/null | grep -c .)
+  case "$_es_files" in ''|*[!0-9]*) _es_files=0 ;; esac
+  _es_line="[mission] SNAPSHOT part=${_es_part} kind=converged tree=${_es_tree} goal=${_es_goal} files=${_es_files} ver=1"
+  mission_log_append "$_es_sid" "$_es_root" "$_es_line" "snap-p${_es_part}-conv-${_es_tree}" >/dev/null 2>&1 || true
+  return 0
+}
+
 # ── per-shape LOG validator (mission-write.sh log ONLY) ─────────────────────────────────────
 # THE AUTHORITATIVE GRAMMAR TABLE lives here. A malformed `[mission]` shape (or an unknown leading
 # token) is REFUSED so the malformed-shape hole closes; free text (non-`[mission]`) passes through
