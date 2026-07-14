@@ -333,6 +333,24 @@ _mw_partdone_check() {
       a=n-1; b=n
       if (rf[a]==0 && rd[a]==1 && rf[b]==0 && rd[b]==2 && rr[b]==rr[a]+1 && !(act>rl[a])) print "yes"; else print "no" }')
   [ "$_pc_clean" = yes ] || _mw_emit_refuse log 4 "REFUSED: convergence-not-machine-clean"
+  # (3) TREE-DRIFT (stale-claim guard, enforcement half) — the tree must not have moved since the
+  # convergence this PART-DONE relies on. Compare the CURRENT fingerprint to the newest kind=converged
+  # SNAPSHOT for part N (stamped by _mw_emit_snapshot at the dry=2 round). Missing stamp (legacy mission)
+  # or an unfingerprintable tree (sentinel/empty) → SKIP: never false-block. A real drift → rc=4 (same
+  # carve-out as the checks above; the refusal IS the correction — a blocked PART-DONE means re-review).
+  _pc_snapline=$(printf '%s\n' "$_pc_stream" | grep -E "\[mission\] SNAPSHOT part=${_pc_pn}[^0-9].*kind=converged" | tail -1)
+  if [ -n "$_pc_snapline" ]; then
+    _pc_stamped=$(_mw_efield "$_pc_snapline" tree)
+    _pc_current=$(_mission_tree_fingerprint "$_pc_root" 2>/dev/null)
+    case "$_pc_current" in
+      ''|nogit|nohead|nohash) : ;;   # cannot verify → skip (never false-block)
+      *)
+        if [ -n "$_pc_stamped" ] && [ "$_pc_current" != "$_pc_stamped" ]; then
+          _mw_emit_refuse log 4 "REFUSED: convergence-stale — tree moved after convergence (stamped=${_pc_stamped} current=${_pc_current}); re-review at the current tree, then re-log PART-DONE"
+        fi
+        ;;
+    esac
+  fi
   return 0
 }
 
