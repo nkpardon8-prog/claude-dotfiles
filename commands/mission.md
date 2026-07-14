@@ -700,8 +700,9 @@ tokens after `mission-write: log ` — match the LEADING token and react MANDATO
 - **`FAILED rc=N (…)`** → a REFUSED/failed write. `rc=4` on a **PART-DONE or a live-verify** write
   **BLOCKS retirement/advance** (the explicit carve-out from the generic rc-4 "log + proceed" policy):
   the part is NOT converged — read the `(REFUSED …)` slug (`PART-DONE without live-verify` /
-  `live-verify-stale` / `convergence-not-machine-clean` / `gen-boundary-mismatch`), do the named
-  remediation (run the live leg, re-run the panel/fixes, repair the boundary), and re-attempt. `rc=5`
+  `live-verify-stale` / `convergence-not-machine-clean` / `convergence-stale` / `gen-boundary-mismatch`),
+  do the named remediation (run the live leg, re-run the panel/fixes, re-review at the current tree,
+  repair the boundary), and re-attempt. `rc=5`
   is a wrong-gen idtag prefix REFUSE (re-derive the gen). `rc=1 (REFUSED …)` is a grammar/control-char
   refusal — fix the shape.
 - **`void-count` / `parse-codex-header`** are the TWO read-only verbs that DO NOT emit this status
