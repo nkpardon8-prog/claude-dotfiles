@@ -2,6 +2,21 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-07-14 — New `/testplan` skill: capability-discovery test-plan generator
+
+Added `/testplan` (`commands/testplan.md`) — a domain-agnostic skill that writes an exhaustive,
+production-realistic TEST PLAN for any target (feature / API / CLI / library / worker). It comprehends the
+program's role, discovers what it can test with (read-only, deny-by-default — never mutates while planning),
+scales coverage to the target's archetype + risk (a small target collapses to a core; a money / PHI /
+external-write target gets the full machinery), designs real user journeys + every-order-that-matters
+end-to-end, and emits a risk-tiered plan with honest BLOCKED rows and a READY/NOT-READY verdict. It PLANS;
+it never executes. Built via `/discussion` → `/plan` → a 2-Claude + 3-Codex-xhigh review round → `/implement`.
+
+- **New:** `commands/testplan.md` — the playbook, with embedded worked micro-examples.
+- **New:** `scripts/lint-commands/lint-testplan.sh` — manual pre-commit structural lint (frontmatter, all
+  five phases, the tiered self-lint contract, and a domain-agnostic deny-list of project-specific literals).
+- **Registry:** `docs/COMMANDS.md` — `/testplan` added under Planning & implementation.
+
 ## 2026-07-02 — Codex reasoning-effort floor raised to `high`; heavy audits at `xhigh`
 
 Standardized every Codex (OpenAI Codex CLI, `gpt-5.5`) invocation across the dotfiles on a `high`
