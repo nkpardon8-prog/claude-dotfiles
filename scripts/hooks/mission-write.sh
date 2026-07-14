@@ -398,11 +398,18 @@ case "$verb" in
       exit 0
     fi
     # per-shape grammar/control-char/length validation (prints + exits on refusal), then the
-    # PART-DONE preconditions (dedup-first, gen-sliced, freshness-ordered, dry-count fold).
+    # PART-DONE preconditions (dedup-first, gen-sliced, freshness-ordered, dry-count fold, tree-drift).
     _mw_validate_log "$4" "${5:-}" "$sid" "$root"
     _mw_partdone_check "$4" "${5:-}" "$sid" "$root"
     mission_log_append "$sid" "$root" "$4" "${5:-}"
     rc=$?
+    # CAPTURE the log outcome BEFORE _mw_emit_snapshot's own mission_log_append clobbers the globals.
+    _mw_log_outcome="${_MLA_OUTCOME:-}"; _mw_log_reason="${_MLA_REASON:-}"
+    # Stale-claim guard, stamp half: on a genuinely-new converged dry=2 line ONLY (gate=appended), stamp
+    # the convergence snapshot. No-op for every other line / outcome. Silent on stdout.
+    [ "$_mw_log_outcome" = appended ] && _mw_emit_snapshot "$4" "$sid" "$root"
+    # RESTORE the captured outcome so the status line reflects the log line, not the snapshot emit.
+    _MLA_OUTCOME="$_mw_log_outcome"; _MLA_REASON="$_mw_log_reason"
     _mw_outcome_status log "$rc"
     ;;
 
