@@ -216,21 +216,28 @@ _mission_tree_fingerprint() {
   _tf_root="$1"
   git -C "$_tf_root" rev-parse --git-dir >/dev/null 2>&1 || { printf 'nogit'; return 0; }
   git -C "$_tf_root" rev-parse --verify -q HEAD >/dev/null 2>&1 || { printf 'nohead'; return 0; }
+  # DETERMINISM: hash the changed PATHS + their RAW content object-ids — never `git diff` HUNK TEXT
+  # (which is perturbed by color.diff / diff.algorithm / diff.noprefix / core.autocrlf / textconv, any of
+  # which would flip the hash on an unchanged tree → false DRIFT). `--name-only` is format-stable and
+  # `hash-object --no-filters` hashes raw on-disk bytes (immune to autocrlf/clean filters), so an unchanged
+  # tree is byte-identical across runs / configs / machines. `core.quotepath=false` pins non-ascii paths.
   _tf_out=$({
     git -C "$_tf_root" rev-parse HEAD 2>/dev/null
-    git -C "$_tf_root" -c core.autocrlf=false -c core.quotepath=true \
-        diff HEAD --no-color --no-ext-diff --no-textconv -- \
+    # TRACKED files differing from HEAD (staged+unstaged net vs the committed tree): path + raw content.
+    git -C "$_tf_root" -c core.quotepath=false diff HEAD --name-only -z -- \
         ':(exclude,glob)MISSION.*' ':(exclude,glob).mission-backups/**' \
-        ':(exclude,glob).mission-archive/**' ':(exclude,glob)CLAUDE.local.*' 2>/dev/null
-    git -C "$_tf_root" status --porcelain=v1 --untracked-files=all -- \
-        ':(exclude,glob)MISSION.*' ':(exclude,glob).mission-backups/**' \
-        ':(exclude,glob).mission-archive/**' ':(exclude,glob)CLAUDE.local.*' 2>/dev/null
-    git -C "$_tf_root" ls-files --others --exclude-standard -z -- \
+        ':(exclude,glob).mission-archive/**' ':(exclude,glob)CLAUDE.local.*' 2>/dev/null \
+      | while IFS= read -r -d '' _tf_tp; do
+          printf '@@T:%s\n' "$_tf_tp"
+          git -C "$_tf_root" hash-object --no-filters -- "$_tf_tp" 2>/dev/null   # empty if deleted → still captured
+        done
+    # UNTRACKED non-ignored files (the reviewer's blind spot — diff HEAD excludes these): name + raw content.
+    git -C "$_tf_root" -c core.quotepath=false ls-files --others --exclude-standard -z -- \
         ':(exclude,glob)MISSION.*' ':(exclude,glob).mission-backups/**' \
         ':(exclude,glob).mission-archive/**' ':(exclude,glob)CLAUDE.local.*' 2>/dev/null \
       | while IFS= read -r -d '' _tf_uf; do
           printf '@@U:%s\n' "$_tf_uf"
-          git -C "$_tf_root" hash-object "$_tf_uf" 2>/dev/null
+          git -C "$_tf_root" hash-object --no-filters -- "$_tf_uf" 2>/dev/null
         done
   } | _mission_hash_stream) || { printf 'nohash'; return 0; }
   [ -n "$_tf_out" ] || { printf 'nohash'; return 0; }
