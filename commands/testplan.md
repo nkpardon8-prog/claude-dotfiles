@@ -23,7 +23,9 @@ pinning, the full per-item recipe, parallel enumeration — is emitted **only wh
 risk, or surface warrants it**. A trivial read-only target collapses to the core; a money / PHI / permission
 / external-write / cross-boundary target gets the full treatment. Scale is *mechanical* (the collapse rules
 below), not a vibe. Producing a huge plan for a small target is a failure, not thoroughness — a plan too
-heavy to run proves nothing.
+heavy to run proves nothing. For a genuinely trivial target (single-persona, read-only, no boundary), the
+CORE itself compresses: the role model, the arsenal inventory, and the ledger may each collapse to a single
+line rather than a table — keep the honesty, drop the ceremony.
 
 ---
 
