@@ -113,8 +113,8 @@ behavior-changing orderings and faults:
 - **Commit-boundary faults:** timeout BEFORE vs AFTER the external commit · lost acknowledgement after a
   real mutation succeeded · duplicate delivery / retry · dependency down / partition / throttle / crash-
   restart.
-- It is smart-exhaustive: enumerate every order/fault that can change the outcome, and **document why any
-  permutation was excluded**. Never brute-force N!.
+- It is smart-exhaustive: **list only the orders/faults that can change THIS workflow's outcome** — silence
+  on the rest is fine (no per-permutation exclusion ledger). Never brute-force N!.
 
 **Choose the proving level per claim — a mock cannot stand in for a real effect.** A mock proves LOCAL
 behavior only; a pinned contract proves SHAPE; an integration test proves BOUNDARY behavior; a real
