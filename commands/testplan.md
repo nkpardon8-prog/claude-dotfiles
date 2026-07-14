@@ -168,7 +168,8 @@ mock.
 
 ### Output
 Write to `tmp/testplans/<YYYY-MM-DD>-<slug>.md` (collision-safe slug). If that destination is absent /
-read-only, RETURN the full plan in your response instead. Suggested next step: **execute the plan
+read-only — OR the plan is very small / this is a validation dry-run — RETURN the full plan in your response
+instead. Suggested next step: **execute the plan
 manually** (an execute-skill is future work — do not hand a test plan to `/mission`, which is a build
 conductor, not a test runner).
 
