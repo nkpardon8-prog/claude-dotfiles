@@ -550,13 +550,24 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid>
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] live-verify part=<N> round=<K> status=n/a reason=<slug>" "m<N>-live-verify-r<K>"
 ```
 `round=<K>` is the just-banked `dry=2` round; it scopes the idtag so a fresh re-verification after a
-later fix mints a NEW line instead of colliding. Parse the status line (Section 7). THEN log PART-DONE:
+later fix mints a NEW line instead of colliding. Parse the status line (Section 7).
+
+**Stale-claim guard (automatic — no action required).** Banking the `dry=2` round auto-stamps a
+`[mission] SNAPSHOT part=<N> kind=converged tree=<h16> …` line recording the code-tree fingerprint
+convergence was reached at (a deterministic hash of committed + staged + unstaged + untracked content,
+excluding the mission's own scratch files). This closes the ONE gap the write-time guards structurally
+cannot: a claim that was valid when written, then the tree changed under it with no new log line. THEN
+log PART-DONE:
 ```bash
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-DONE part=<N> (converged)" "m<N>-part-done"
 ```
 Parse the status line (Section 7) — a `FAILED rc=4 (REFUSED …)` here means the part is NOT converged
-(missing/stale live-verify, or the dry-count fold is not machine-clean): do the named remediation and
-re-attempt; do **NOT** advance. Then **retire the part plan**: because `--no-review` made `/mission`
+(missing/stale live-verify, the dry-count fold is not machine-clean, or **the tree moved after
+convergence** → `convergence-stale`): do the named remediation and re-attempt; do **NOT** advance. For
+`convergence-stale`, re-run the review at the current tree (a fresh `dry=1`→`dry=2` pair re-stamps the
+snapshot at the new tree), then re-log `PART-DONE`. A legacy part with no snapshot / a non-git root is
+never blocked by this check. (Manual on-demand check: `bash …/mission-drift-check.sh <sid> <root>` reports
+per-part `CLEAR`/`DRIFT`/`N/A` — read-only, never enforces.) Then **retire the part plan**: because `--no-review` made `/mission`
 own the plan lifecycle, MOVE the per-part plan from ready-plans to done-plans after `PART-DONE` (use
 the project's done-plans convention). A plan left in ready-plans is a stale plan a later part could
 wrongly grab. **Check the `mv` result — do NOT proceed silently on failure** — and make it idempotent
