@@ -37,8 +37,9 @@ Templates and base files (not invoked directly): `commands/plan_base.md`.
 | `/simple-plan` | Lightweight gut-check before doing something the user just asked for. Investigates, proposes, implements after approval. |
 | `/discussion` | Conversation-only mode. Researches the codebase, talks through tradeoffs, saves a brief to `./tmp/briefs/` for `/plan` to consume. No code changes. |
 | `/implement <plan path>` | Executes an approved plan from `./tmp/ready-plans/`. Breaks work into chunks, spawns implementer sub-agents in parallel, runs implementation-reviewer at the end, moves the plan to `./tmp/done-plans/`. |
+| `/testplan [target]` | Generate an exhaustive, production-realistic TEST PLAN for any target (feature / API / CLI / library / worker). Comprehends the program's role, discovers what it can test with (read-only, deny-by-default), scales coverage to the target's archetype + risk, designs real user journeys + every-order-that-matters E2E, and emits a risk-tiered plan with honest blockers to `./tmp/testplans/`. Plans; never executes. |
 
-Typical flow: `/discussion` → `/plan` → `/script <path>` (high-risk only) → `/implement <path>`.
+Typical flow: `/discussion` → `/plan` → `/script <path>` (high-risk only) → `/implement <path>`. Testing a built surface: `/testplan <target>`.
 
 ---
 
