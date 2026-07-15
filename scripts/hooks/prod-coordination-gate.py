@@ -8,15 +8,14 @@ irreversible prod op at once can overwrite each other (e.g. a blanket
 structurally impossible without over-constraining normal/local work.
 
 Design:
-  * FAIL-OPEN. Any unexpected condition -> exit 0 (allow). A bug here must never
-    block the user's work. We only ever BLOCK on a confirmed, fresh lock held by
-    a DIFFERENT session.
+  * FAIL-CLOSED FOR PROD. Once a command is classified as production-mutating,
+    malformed/unreadable lock state or a failed lock write blocks the command.
   * NARROW. Only genuinely prod-mutating commands are gated (Cloud Run deploy,
     prod migration apply, role BYPASSRLS flips). Everything else exits instantly.
-  * SELF-EXPIRING. The lock auto-expires after TTL so a crashed/abandoned agent
-    never wedges prod forever. The holder refreshes it on each prod op.
+  * MANUAL STALE RECOVERY. A stale lock is never auto-replaced: pathname-level
+    stale takeover has no compare-and-swap and can erase a concurrent renewal.
 """
-import sys, json, os, time, re
+import sys, json, os, time, re, secrets
 
 LOCK = os.path.expanduser("~/.claude/prod.lock")
 TTL = 900  # seconds (15 min) — stale locks are ignored/overwritten
@@ -121,6 +120,78 @@ def allow():
     sys.exit(0)
 
 
+def block(message):
+    print(f"PROD-COORDINATION: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def _validated_lock():
+    try:
+        with open(LOCK) as f:
+            value = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        block(f"prod lock is unreadable/malformed ({exc}); failing closed. Reconcile {LOCK} manually.")
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("sid"), str)
+        or not value["sid"].strip()
+        or not isinstance(value.get("op"), str)
+        or not isinstance(value.get("ts"), int)
+        or isinstance(value.get("ts"), bool)
+        or value["ts"] <= 0
+    ):
+        block(f"prod lock has an invalid shape; failing closed. Reconcile {LOCK} manually.")
+    return value
+
+
+def _write_complete_temp(value):
+    os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+    temp = f"{LOCK}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    fd = None
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            fd = None
+            json.dump(value, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return temp
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _atomic_claim_or_refresh(value, expected):
+    temp = _write_complete_temp(value)
+    try:
+        if expected is None:
+            os.link(temp, LOCK)
+        else:
+            current = _validated_lock()
+            if current != expected:
+                block("prod lock changed during refresh; no production command was allowed.")
+            os.replace(temp, LOCK)
+            temp = None
+        directory_fd = os.open(os.path.dirname(LOCK), os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temp is not None:
+            try:
+                os.unlink(temp)
+            except FileNotFoundError:
+                pass
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -140,42 +211,38 @@ def main():
 
     now = int(time.time())
 
-    holder, op_desc, ts = None, "", 0
-    try:
-        if os.path.exists(LOCK):
-            with open(LOCK) as f:
-                j = json.load(f)
-            holder = j.get("sid")
-            op_desc = j.get("op", "")
-            ts = int(j.get("ts", 0))
-    except Exception:
-        holder = None  # unreadable lock -> treat as free (fail-open)
+    existing = _validated_lock()
+    holder = existing["sid"] if existing else None
+    op_desc = existing["op"] if existing else ""
+    ts = existing["ts"] if existing else 0
 
-    fresh = bool(holder) and (now - ts) < TTL
+    age = now - ts if existing else 0
+    fresh = bool(holder) and 0 <= age < TTL
+
+    if existing and not fresh:
+        block(
+            f"prod lock is stale or time-invalid ({age}s; session {str(holder)[:8]}…). "
+            f"It is never auto-reclaimed. Prove the operation stopped, then remove {LOCK} manually."
+        )
 
     if fresh and holder != sid:
-        age = now - ts
         remain = max(0, TTL - age)
-        print(
-            "PROD-COORDINATION: a prod-mutating op is blocked. Another Claude "
+        block(
+            "a prod-mutating op is blocked. Another Claude "
             f"instance (session {str(holder)[:8]}…) holds the prod lock "
             f"[op: {op_desc or 'prod op'}, {age}s ago]. Two agents must not run "
             "irreversible prod ops at once. STOP and tell the user; resume once "
-            f"that instance is done (lock auto-clears in ~{remain}s). "
-            f"If you are sure it is abandoned: rm {LOCK}",
-            file=sys.stderr,
+            f"that instance is done (about {remain}s remain before manual stale reconciliation)."
         )
-        sys.exit(2)  # exit 2 blocks the tool call; stderr is shown to Claude
 
-    # Free / stale / already mine -> acquire-or-refresh, then allow.
+    # Free / already mine -> atomically publish a complete lock record.
     try:
         snippet = cmd.strip().replace("\n", " ")[:80]
-        tmp = LOCK + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"sid": sid, "op": snippet, "ts": now}, f)
-        os.replace(tmp, LOCK)
-    except Exception:
-        pass  # can't write -> still allow (fail-open)
+        _atomic_claim_or_refresh({"sid": sid, "op": snippet, "ts": now}, existing)
+    except FileExistsError:
+        block("another actor claimed the prod lock concurrently; retry only after reconciling its owner.")
+    except Exception as exc:
+        block(f"could not durably claim the prod lock ({exc}); failing closed.")
     allow()
 
 
@@ -184,4 +251,5 @@ try:
 except SystemExit:
     raise
 except Exception:
-    sys.exit(0)  # absolute fail-open backstop
+    print("PROD-COORDINATION: unexpected gate failure; production command blocked.", file=sys.stderr)
+    sys.exit(2)

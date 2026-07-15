@@ -113,6 +113,26 @@ def e2e_gate(cmd):
         raise RuntimeError(f"gate unexpected exit {r.returncode}: {r.stderr!r}")
 
 
+def gate_lock_case(initial_bytes=None):
+    """Run one real prod command against an exact initial lock snapshot."""
+    with tempfile.TemporaryDirectory() as home:
+        claude = os.path.join(home, ".claude")
+        os.makedirs(claude, exist_ok=True)
+        lock = os.path.join(claude, "prod.lock")
+        if initial_bytes is not None:
+            with open(lock, "wb") as stream:
+                stream.write(initial_bytes)
+        env = dict(os.environ, HOME=home)
+        result = subprocess.run(
+            [sys.executable, GATE],
+            input=json.dumps(_pretooluse_payload("gcloud run deploy summit-api")),
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        observed = open(lock, "rb").read() if os.path.exists(lock) else None
+        residue = [name for name in os.listdir(claude) if name != "prod.lock"]
+        return result, observed, residue
+
+
 def e2e_ledger(cmd):
     """Run the real ledger `record` with real stdin; HOME + cwd redirected to a
     throwaway dir. Returns PROD if a ledger line was written, else SAFE."""
@@ -243,6 +263,49 @@ def main():
     else:
         failed += 1
         print(f"FAIL [gate  ] safe 'ls' not silent: verdict={verdict} out={out!r} err={err!r}")
+
+    # Lock protocol regressions: prod commands fail closed on corrupt/stale
+    # state, never erase that evidence, and atomically publish a complete record
+    # from an absent state without leaving shared .tmp residue.
+    malformed = b"{broken"
+    result, observed, residue = gate_lock_case(malformed)
+    if result.returncode == 2 and observed == malformed and residue == []:
+        passed += 1
+        print("PASS [lock  ] malformed prod lock fails closed and is preserved")
+    else:
+        failed += 1
+        print(f"FAIL [lock  ] malformed lock handling rc={result.returncode} residue={residue}")
+
+    stale = json.dumps({
+        "sid": "OTHER-SESSION",
+        "op": "stale",
+        "ts": int(time.time()) - 901,
+    }, separators=(",", ":")).encode()
+    result, observed, residue = gate_lock_case(stale)
+    if result.returncode == 2 and observed == stale and residue == []:
+        passed += 1
+        print("PASS [lock  ] stale prod lock requires manual reconciliation and is preserved")
+    else:
+        failed += 1
+        print(f"FAIL [lock  ] stale lock handling rc={result.returncode} residue={residue}")
+
+    result, observed, residue = gate_lock_case()
+    try:
+        claimed = json.loads(observed or b"")
+    except Exception:
+        claimed = None
+    if (
+        result.returncode == 0
+        and claimed
+        and claimed.get("sid") == "MY-SESSION"
+        and isinstance(claimed.get("ts"), int)
+        and residue == []
+    ):
+        passed += 1
+        print("PASS [lock  ] absent prod lock is claimed atomically with complete JSON")
+    else:
+        failed += 1
+        print(f"FAIL [lock  ] absent lock claim rc={result.returncode} claimed={claimed} residue={residue}")
 
     # DRIFT-GUARD (god-report 2026-07-12, single-pattern lens): the SHARED classifier logic
     # (MIGRATE, PRODMARK, _all_urls_local, is_prod) is copy-pasted verbatim into both hook files
