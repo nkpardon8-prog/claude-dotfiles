@@ -2298,6 +2298,24 @@ if command -v handoff_resolve_path >/dev/null 2>&1; then
     fail "R7-INC-04g: future-mtime guard" "expected rc=0 HANDOFF_PATH=SID-tagged; got rc=$_HR04G_RC HANDOFF_PATH='$HANDOFF_PATH'"
   fi
 
+  # R10-04h: canonical anchor is a path PREFIX of cwd (the .claude/worktrees/* layout) → the
+  # dedup membership test must be line-anchored, or the canonical probe is silently skipped and
+  # a worktree resume gets rc=2 no-handoff despite a valid marker-matching file at the anchor.
+  mkdir -p "$_HR2_TMP/04h/root/.claude/worktrees/wt"
+  printf 'anchor content\n<!-- END-OF-HANDOFF schema=v1 sid=aaaa1111 nonce=n9 -->\n' \
+    > "$_HR2_TMP/04h/root/CLAUDE.local.aaaa1111.md"
+  handoff_canonical_root() { printf '%s\n' "$_HR2_TMP/04h/root"; }
+  HANDOFF_PATH=""
+  HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04h/root/.claude/worktrees/wt" "aaaa1111"
+  _HR04H_RC=$?
+  unset -f handoff_canonical_root
+  . "$SCRIPT_DIR/lib/handoff-locate.sh"
+  if [ "$_HR04H_RC" -eq 0 ] && [ "$HANDOFF_PATH" = "$_HR2_TMP/04h/root/CLAUDE.local.aaaa1111.md" ]; then
+    pass "R10-04h: canonical anchor prefix-of-cwd → probed (line-anchored dedup), rc=0"
+  else
+    fail "R10-04h: prefix-shadow dedup regression" "expected rc=0 HANDOFF_PATH=anchor file; got rc=$_HR04H_RC HANDOFF_PATH='$HANDOFF_PATH'"
+  fi
+
 else
   fail "R7-INC-04: handoff_resolve_path not available"
 fi
