@@ -2309,7 +2309,8 @@ if command -v handoff_resolve_path >/dev/null 2>&1; then
   HANDOFF_LEGACY_CUTOFF_EPOCH=$_LEGACY_CUTOFF2 handoff_resolve_path "$_HR2_TMP/04h/root/.claude/worktrees/wt" "aaaa1111"
   _HR04H_RC=$?
   unset -f handoff_canonical_root
-  . "$SCRIPT_DIR/lib/handoff-locate.sh"
+  unset _HANDOFF_LOCATE_LOADED 2>/dev/null || true
+  . "$_SELFDIR/lib/handoff-locate.sh" 2>/dev/null || true
   if [ "$_HR04H_RC" -eq 0 ] && [ "$HANDOFF_PATH" = "$_HR2_TMP/04h/root/CLAUDE.local.aaaa1111.md" ]; then
     pass "R10-04h: canonical anchor prefix-of-cwd → probed (line-anchored dedup), rc=0"
   else
