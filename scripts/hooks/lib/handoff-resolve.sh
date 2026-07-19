@@ -150,9 +150,15 @@ handoff_resolve_path() {
       # roots, and canonical==show-toplevel collapse to one probe). The probe itself uses the
       # ORIGINAL $_dir so HANDOFF_PATH keeps the caller's path shape (consumer contract).
       _key=$(cd "$_dir" 2>/dev/null && pwd -P) || _key="$_dir"
+      # Line-anchored membership test (leading AND trailing newline around $_key): an unanchored
+      # substring match falsely deduped the canonical anchor whenever it is a path PREFIX of an
+      # already-probed dir — true for EVERY .claude/worktrees/* worktree — silently skipping the
+      # one location the writer always uses and yielding no-handoff on worktree resumes.
       case "
-$_seen" in *"
-$_key"*) continue ;; esac
+$_seen
+" in *"
+$_key
+"*) continue ;; esac
       _seen="$_seen
 $_key"
       _handoff_try_candidate "$_dir/CLAUDE.local.${session_id}.md" "$session_id"
