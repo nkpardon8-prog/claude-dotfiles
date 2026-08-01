@@ -3,41 +3,245 @@ description: "Autonomous long-build conductor (playbook, not an engine). Opt-in 
 argument-hint: "[roadmap/goal | resume | clear [reason] | status | (blank=status)]"
 ---
 
-# /mission — autonomous long-build conductor
+# /mission - autonomous long-build conductor
 
-`/mission` is a **loose, judgment-driven PLAYBOOK — prose you follow, NOT an engine.**
-It conducts four skills you already have — **codebase-research → `/plan`(+reviewers) →
-`/implement` → `/codex-review`** — over the durable **mission-bridge**, riding `/pre-compact`,
-looping implement↔review to honest convergence, per part, across many compactions.
+`/mission` is a loose, judgment-driven PLAYBOOK - prose you follow, NOT an engine. It conducts
+four skills - codebase-research -> `/plan`(+reviewers) -> `/implement` -> `/codex-review` - over
+the durable mission-bridge, riding `/pre-compact`, looping implement<->review to honest
+convergence, per part, across many compactions. DO NOT over-engineer or over-constrain: the
+four-skill sequence is the SPINE, not a cage; you stay free to invoke any other skill. The LOG is
+a best-effort boundary checkpoint - observational, never a gate; missing one round's log degrades
+resume granularity, it never blocks work. Opt-in and HEAVY (per part: 4-6 plan-review rounds + a
+4 Codex + 3 Claude code-review panel over 3-6 rounds) - use it ONLY for genuinely large
+multi-part builds; never for a typo, a one-liner, or a single bug fix.
 
-The governing constraint, stated three times in the brief and load-bearing here:
-**DO NOT over-engineer or over-constrain.** Per-part work is *an objective you navigate*, never
-a rigid state machine you are trapped in. The four-skill sequence is the **SPINE, not a cage** —
-you stay free to invoke any other skill whenever it helps.
+## CONTRACT CORE
 
-The LOG you write is a **best-effort boundary checkpoint — observational, never a gate.**
-You checkpoint your position at a phase/round boundary so a post-compact agent can resume the
-exact round losslessly. Missing one round's log degrades resume *granularity*; it NEVER blocks
-work and you never "service the LOG or fail." This mirrors the bridge's own observational-not-
-gating invariant. Do not treat it as a machine you must feed.
+This core is self-sufficient for a post-compaction agent. Full operational detail for every step
+(worked bash blocks, edge cases, rationale) continues in §1-§11 below the CONTRACT-CORE-END
+marker; a live (untruncated) invocation must read and follow those sections.
 
----
+### A. Resolve sid + root + mission file FIRST (§1)
 
-## 0. When to use this — and when NOT
+- `sid` = the platform session UUID, STRICTLY `$CLAUDE_SESSION_ID` then `$CLAUDE_CODE_SESSION_ID`.
+  Both empty -> STOP loud. NEVER guess by transcript mtime (that is how two instances collide).
+- `root`: `. "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"` then
+  `root=$(handoff_canonical_root)`.
+- `mfile=$(mission_resolve_path "$sid" "$root")` - manifest pointer -> deterministic
+  `MISSION.<sid>.md` -> empty. Empty = THIS session has no mission yet; it NEVER means "adopt the
+  newest file". Non-zero rc = hard error -> STOP. Your mission is always owned by your own sid.
+- Before doing mission WORK (not status/clear/stats), stamp the timing entry once:
+  `mission-write.sh timing-resume <sid> <root>` (advisory). `MISSION-START` and the first
+  `WORK-START` are LIB-ONLY emissions stamped at create - never log them by hand (the validator
+  REFUSES them through the `log` verb).
 
-**Use `/mission` for genuinely large, multi-part builds** that span many hours and several
-compactions and deserve quality-first rigor: a real subsystem, a multi-phase migration, a
-feature that decomposes into several independently-shippable parts.
+### B. Dispatch modes (§2, §2b)
 
-It is **opt-in and heavy.** Per part it spends roughly 4-6 plan-review rounds + a 4 Codex + 3 Claude
-cross-model code-review panel over 3-6 rounds — multiply that across many parts. That is the right spend for
-big work and pure overkill for small work.
+- blank / `status` -> read-only: run the §H resume read, print mode/part/phase/round/dry + the
+  active PLAN directive + PENDING DECISIONS. No mutation.
+- `clear [reason]` -> log `[mission] MISSION-CLEARED status=cleared reason=<slug>` with an EMPTY
+  idtag (lifecycle lines ALWAYS append; a non-empty idtag would dedup-suppress a re-clear after a
+  rebaseline), then `archive-close`.
+- `stats` -> read-only `mission_stats_render` (machine-wide lifetime ledger).
+- `tidy` -> `mission_archive_sweep` over this root (reserved keyword, never a new mission).
+- `resume` -> explicit picker: `mission_list`, user picks, `mission_fork` CLONES the pick into
+  THIS sid (source intact; warn about divergent copy if not cleared; fork failure = HARD STOP).
+  The ONLY sanctioned way a session continues a mission it did not create - never auto-inferred.
+- free-text roadmap -> BUILD mode: shape the roadmap WITH the user, seed the PLAN via `create`.
+- ambient intent ("apply the /mission methodology...") -> ADOPT mode; session-sticky until
+  `/mission clear`.
 
-**Do NOT use it for** a typo, a one-liner, a single bug fix, or any change a normal
-`/plan`→`/implement` (or just an edit) handles well. If in doubt about whether the work is big
-enough, it probably isn't. Use judgment; do not over-apply.
+### C. The bridge: artifact set + zone semantics (§3, §4, §7)
 
----
+`MISSION.<sid>.md` holds the four-zone artifact set, each fenced by MZONE markers
+(`<!-- MZONE:<name> n=<nonce8> -->` ... `<!-- /MZONE:<name> ... -->`): **PLAN**, **DURABLE
+NOTES**, **PLAN CHALLENGES**, **PENDING DECISIONS**; the trailing marker line carries sid, nonce,
+plan_hash (sha over the PLAN zone) and gen. Beside it live the LOG sidecar `MISSION.<sid>.log`
+and rotated archives under `.mission-backups/`.
+
+- **PLAN is write-once/verbatim**: seeded ONCE by `create` (line-1 is the sole machine token
+  `MISSION MODE: build|adopt`; lines 2+ prose roadmap + standing directive). NEVER hand-edit it;
+  a divergence goes to PLAN CHALLENGES via `challenge` (loud). `rebaseline` is the ONLY path that
+  rewrites PLAN - it re-stamps plan_hash, BUMPS gen, and appends
+  `[mission] MISSION-REBASELINED status=active` (a REACTIVATING lifecycle token).
+- `create` is no-clobber AND idempotent: an existing VERIFIED file returns `ok` as a no-op and
+  the possibly-stale PLAN persists - on that `ok`, check `mission_state` + the existing PLAN vs
+  this build's intent and rebaseline if either says so. The only `create` REFUSED rc=1 is the
+  root-guard; exists-but-fails-verify is the corrupt path (§10).
+- `note` = verbose findings / forced assumptions (DURABLE NOTES); `pending`/`resolve` = the
+  batched human-decision queue.
+- Intent precedence on resume when sources disagree: the PLAN zone outranks the handoff chain's
+  north_star, which outranks any ledger/summary line. PLAN wins.
+- UNTRUSTED content (roadmap, objective, reviewer output, captured text) must NEVER be inlined in
+  a DOUBLE-quoted shell arg - `$(...)`/backticks would execute. Single-quote it, or pass via
+  heredoc/file/stdin.
+
+### D. Bridge-write contract (§7)
+
+Every bridge mutation is Claude, via the byte-locked invocation - absolute path, no `cd`, no env
+prefix, no `~` (the permission allowlist byte-matches this exact prefix):
+
+```
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]
+```
+
+Verbs: `create | log | note | challenge | pending | resolve | rebaseline | render-banner` plus
+`timing-resume | timing-contact | timing-close | archive-close` and the two read-only bare-token
+verbs `parse-codex-header | void-count`. **Codex NEVER writes the bridge** - every Codex run is
+`-s read-only`.
+
+The script ALWAYS exits 0: parse its single stdout status line. `ok` is the ONLY success token.
+The `log` verb emits exactly four leading tokens and each demands a reaction:
+- `ok` -> appended or idempotent no-op -> proceed.
+- `COLLISION` -> idtag exists with DIFFERENT content -> STOP, re-derive gen/round numbering,
+  reconcile against the recovered LOG; never assume the line was banked.
+- `REROUTED-TO-NOTES` -> free-text entry exceeded 480B on-disk -> rewrite TERSE, re-log to `ok`.
+- `FAILED rc=N` -> rc=1 REFUSED (guard/grammar - fix the shape); rc=2 corrupt bridge -> §10
+  STOP-LOUD immediately; rc=3 lock busy -> retry ~5x then FAIL-line it; **rc=4 on a PART-DONE or
+  live-verify write BLOCKS retirement/advance** (do the named remediation); rc=5 wrong-gen idtag
+  prefix (re-derive the gen); other rcs -> log + proceed, recurring ones feed the 5-FAIL breaker.
+`void-count` stdout is a bare integer; **`-1` is the ERROR SENTINEL of a refused gen-sliced read
+-> STOP** (never treat as count 0, never advance).
+
+### E. LOG-line grammar (§7 - resume greps read back EXACTLY these shapes)
+
+On-disk line = `<idtag>\t<entry>`. Keep round lines TERSE: the 480B reroute budget is measured
+over idtag + TAB + entry + newline; a rerouted line lands in DURABLE NOTES where resume cannot
+grep it. Verbose findings go in a separate `note`, written BEFORE the terse round line.
+
+- Round: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K>
+  dry=<D>[ findings=<COUNT>]`, idtag `m<N>-<phase>-r<K>-d<D>` (d<D> REQUIRED). `findings=` is a
+  bare integer COUNT, MANDATORY on `phase=review`/`phase=fix` rounds; `dry=` is the running
+  consecutive-dry count (0-2) after the round. `phase=review` = findings logged, fixes NOT yet
+  applied; advance the SAME round to `phase=fix` when fixing.
+- VOID: `[mission] VOID part=<N> phase=review round=<K> reason=<slug>`, idtag
+  `m<N>-void-r<K>-<runid6>h<sha8|nofile>`.
+- FAIL: `[mission] FAIL part=<N> phase=<P> reason=<slug> attempt=<A>`, idtag
+  `m<N>-fail-<reason>-<attempt>` (attempt REQUIRED - a reason-only idtag would dedup-collapse the
+  5-strike tally).
+- live-verify: `[mission] live-verify part=<N> round=<K> status=ok evidence=<token>` or
+  `... status=n/a reason=<slug>`, idtag `m<N>-live-verify-r<K>`.
+- SNAPSHOT: `[mission] SNAPSHOT part=<N> kind=converged tree=<h16> ...` - auto-stamped by the lib
+  when the dry=2 round banks (code-tree fingerprint; feeds the stale-claim guard).
+- Lifecycle: `[mission] PART-START part=<N> name=<slug>` (idtag `m<N>-part-start`);
+  `[mission] PART-DONE part=<N> (converged)` (`m<N>-part-done`);
+  `[mission] PART-RETIRED part=<N>` (`m<N>-part-retired`);
+  `[mission] test-trust part=<N>=<ok|added|n/a>` (`m<N>-test-trust`);
+  `[mission] criticer part=<N> findings=<K> <headline>` (`m<N>-criticer-r<round>`);
+  `[mission] MISSION-CLEARED status=<achieved|could-not|cleared> reason=<slug>` (EMPTY idtag);
+  `[mission] MISSION-REBASELINED status=active gen=<G> ...` (lib-written, EMPTY idtag).
+- Gen scoping: gen-1 idtags stay unprefixed; gen>=2 idtags are auto-prefixed `g<G>-` by the lib -
+  you always pass the bare `m<N>-...` form (a wrong prefix is REFUSED rc=5). Convergence, VOID
+  count and the FAIL tally read only the CURRENT generation slice.
+
+Example emission (the exact invocation form):
+
+```
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] part=2 name=auth phase=review round=3 dry=1 findings=2" "m2-review-r3-d1"
+```
+
+### F. The per-part phase loop + convergence (§5, §6)
+
+Per part: **research -> plan -> implement -> review barrier -> convergence loop**. Every fan-out
+is parallel-INDEPENDENT: self-contained prompts, no reviewer sees another's output,
+barrier-then-merge. Never chain reviewers.
+
+1. RESEARCH: Claude explorer subagent + Codex read-only fact pass (prompt via file/stdin, never
+   inlined; check the `.status` sidecar) in parallel; reconcile; contradictions -> `pending` +
+   `note`, proceed loudly on the more-evidenced branch.
+2. PLAN: `skill: plan` (its built-in Codex pass IS the cross-model lane - do not add a second).
+   REQUIRED before the first implement round: log the test-trust verdict
+   (`test-trust part=<N>=<ok|added|n/a>`); absence on resume = unresolved -> re-assess.
+   Surface a one-line criticer headline if `/plan`'s Criticer Notes have findings (advisory,
+   never gates).
+3. IMPLEMENT: `skill: implement --no-review <explicit-per-part-plan-path>` - always the explicit
+   path; `--no-review` makes /mission own the review barrier and the plan lifecycle.
+4. REVIEW BARRIER (parallel, independent): implementation-reviewer subagent + `skill:
+   codex-review --effort high` (raise to xhigh only for genuinely critical parts). A round is
+   VALID only if EVERY reviewer verdict is present: the report file's Engine header must show
+   `Codex-passes: 4/4`, parsed via the `parse-codex-header` verb on `report-final.md` (never grep
+   the body). After `/codex-review` returns you MUST materialize its final output text into
+   `review_output` yourself (Write it to a temp file, read it back); sid/root/N/K/review_output
+   all non-empty before the VOID block runs, or the loop-breaker can never fire (full BINDING
+   CONTRACT: §5). N<4, a dead/empty/timed-out reviewer, or the legacy `Codex unavailable` markers
+   -> the round is **VOID**: log the VOID line (require `ok` before counting), run `void-count`;
+   at 3 consecutive VOIDs log `FAIL ... reason=panel-unavailable-3x` and **STOP LOUD immediately**
+   (never wait for the 5-FAIL tally). `void-count` -1 -> STOP (§10). A VOIDed round is re-run
+   fresh, never banked.
+5. Round write order: verbose per-reviewer findings `note` FIRST, THEN the terse round line
+   (resume keys on the round line; the reverse order strands a banked round with no findings).
+   Actionable findings -> log `phase=fix` for the SAME round, fix, re-run the barrier as round
+   K+1. Never re-run an idtag round you already banked.
+
+CONVERGENCE rules: stop at **2 consecutive non-void DRY rounds** - "dry" = the independent
+reviewers returned zero new actionable findings, logged verbatim (never you grading yourself).
+An ACTIONABLE round **RESETS dry -> 0** (including an actionable re-run of a VOIDed round - a
+dry=2 streak can never span a code change); a VOID alone never advances dry. Soft targets: plan
+reviews 4-6, codex reviews 3-6; hard cap 6 either way. Honest early-exit at 2 dry is allowed.
+Findings are logged BEFORE acting. Convergence is computed ONLY from `phase=review` (or VOID)
+lines - never from fix/plan/implement/research lines.
+
+### G. PART-DONE gate (§5 tail)
+
+Immediately after the dry=2 round banks and BEFORE PART-DONE, emit the live-verify line
+(UNCONDITIONAL, once per part; `status=n/a` needs a reason slug). `mission-write.sh` REFUSES
+`PART-DONE` with rc=4 - BLOCKING advance - unless ALL of:
+1. a FRESH, **gen-current live-verify part=<N>** exists, newer than the last actionable event;
+2. the dry-count fold over this generation's review rounds is **machine-clean**;
+3. the code-tree fingerprint still matches the converged SNAPSHOT (**tree moved ->
+   `convergence-stale`** -> re-run review at the current tree to a fresh dry=1 -> dry=2 pair,
+   then re-log PART-DONE).
+Then retire the part plan (idempotent `mv` ready-plans -> done-plans; log `PART-RETIRED` on
+success, a `FAIL ... reason=plan-mv-failed` on failure - never proceed silently), then log
+`PART-START part=<N+1>` and begin the next part's research.
+
+### H. The §8 resume read (the SINGLE canonical recovery idiom)
+
+Used by status, resume, and every post-compaction re-entry:
+- `grep -F '[mission] '` over **ALL rotated archives**
+  (`.mission-backups/MISSION.<sid>.log.*.gz|.txt`, concatenated oldest->newest by
+  filename-timestamp sort) **THEN the live `MISSION.<sid>.log`**. `tail -n 40` is BANNED (misses
+  lines past the window/rotation); reading only the newest archive is banned (rotation archives
+  the OLDEST half each fire, so durable lines sit in OLDER archives).
+- Derive four values: `cur_part` (last PART-START|PART-DONE part=; empty -> 1); `mission_state`
+  (last `MISSION-(CLEARED|REBASELINED)` line - the GLOBAL active-iff gate; transient progress
+  lines NEVER gate it); `last_review` (part-scoped last `phase=review` round OR VOID - the ONLY
+  input to convergence: you need `2 - dry` more dry rounds); `last_round`/`last_progress`
+  (positioning only).
+- Active-iff: latest lifecycle = CLEARED -> INACTIVE; latest = REBASELINED status=active ->
+  ACTIVE; empty state + PLAN line-1 is a `MISSION MODE:` token -> ACTIVE.
+- Decision table (apply in order): latest progress `PART-DONE`/`PART-RETIRED` -> part COMPLETE
+  (re-attempt retirement if PART-RETIRED absent, then next part; never consult stale round
+  lines); `PART-START` with no round yet -> begin at research; last round `phase=fix` -> finish
+  the in-flight fix, then barrier as K+1; `phase=review findings>0` -> fix of the SAME round K;
+  `phase=review findings=0` -> next fresh round K+1; latest line for K is VOID -> re-run K fresh;
+  `phase=research|plan|implement` -> continue that phase, then the barrier.
+- `test-trust` recovered = honored; absent = unresolved. Intent precedence: PLAN > north_star >
+  ledger (see §C).
+
+### I. Hard rules + loud stops (§9, §10, §11)
+
+- NEVER hand-edit the PLAN zone; `challenge` loudly, `rebaseline` is the only rewrite path.
+- Codex is ALWAYS read-only; a second bridge writer is forbidden.
+- STOP LOUD on: **5 FAILs for the same part+phase** (gen-sliced tally from the durable record);
+  **panel-unavailable-3x the moment it is logged**; **void-count -1**; **a corrupt/unreadable
+  bridge** (any `FAILED rc=2`, or a failed `mission_verify`) - surface `.mission-backups/`.
+- Away default (autonomous runs): never block on a modal; log assumptions + `pending` and proceed
+  loudly. Credential / destructive / external-side-effect skills require a human PENDING decision
+  - never auto-run them.
+- Natural close order: `timing-close` -> `MISSION-CLEARED status=achieved|could-not` (EMPTY
+  idtag) -> `archive-close` LAST.
+
+Full operational detail for every step above - the worked bash blocks, the BINDING CONTRACT text,
+edge cases and rationale - continues below this marker; read it whenever you are not truncated.
+**Verb signatures (all `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]`):**
+`create "<seed>"` - seed PLAN once (idempotent on existing) | `log "<entry>" "<idtag>"` | `note "<text>"` | `challenge "<text>"` | `pending "<text>"` | `resolve "<text>"` | `rebaseline "<new-plan>"` (ONLY PLAN rewrite path) | `render-banner` | `timing-resume` / `timing-contact` / `timing-close` | `archive-close`. Two read-only argv EXCEPTIONS (bare-token stdout, no status line): `parse-codex-header <report-file>` and `void-count <sid> <root>`. Corrupt-bridge (rc=2) remediation and full verb detail: below the marker (SS7, SS10).
+
+(If this injected core ever diverges from the on-disk file, the ON-DISK file is authoritative - Read it.)
+
+<!-- CONTRACT-CORE-END -->
+
+# Full operational detail (S1-S11 below use the original section numbering; cross-references like "Section 7" / "§8" refer to these sections)
 
 ## 1. Resolve sid + root + mission file — FIRST, before anything else
 
