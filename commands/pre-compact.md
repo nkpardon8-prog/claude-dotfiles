@@ -35,10 +35,8 @@ Invoke the Skill tool with `skill: document` to audit or bootstrap `docs/`. Cont
 
 ## Step 2: Resolve project identity
 
-Determine `<project>` for the memory lookup in the next step:
-1. If a FRAIM `[Project: <name>]` has been established this session, use that.
-2. Else check `fraim/config.json` for a project name.
-3. Else use `basename "$PWD"` via Bash.
+Determine `<project>` for the memory lookup in the next step: use the project name
+established this session if one exists, else `basename "$PWD"` via Bash.
 
 Record the resolved name for later.
 

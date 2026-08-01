@@ -67,12 +67,12 @@ If `--provider` was passed, skip detection and use it. Otherwise evaluate in thi
 - a non-empty `$DATABASE_URL` (any host), OR
 - any database artifact on disk: `*.sql` files, a migrations directory (`./supabase/migrations/`, `./migrations/`, `./db/migrations/`, `./drizzle/`, `./prisma/migrations/`), or a schema file (`schema.sql`, `schema.prisma`, `drizzle` schema).
 
-If **NONE** of these signals is present, this is the ONLY **true preflight failure**: print `"This repo doesn't appear to use a database (no Supabase/Neon/Postgres signal, no DATABASE_URL, no SQL/migration/schema files). Aborted — nothing to audit."` and **stop with no report** (mirrors `/supabase-audit` Step 0.2 abort). The `postgres` fallback in rule 4 is reached only when a signal IS present but it is not Supabase/Neon (e.g. a bare `$DATABASE_URL`, or only on-disk SQL/migrations). A repo with on-disk SQL but no reachable connection is a DB project → it proceeds to the filesystem-only path (case (a)), NOT this abort.
+If **NONE** of these signals is present, this is the ONLY **true preflight failure**: print `"This repo doesn't appear to use a database (no Supabase/Neon/Postgres signal, no DATABASE_URL, no SQL/migration/schema files). Aborted — nothing to audit."` and **stop with no report** (carried forward from the prior Supabase-audit preflight abort). The `postgres` fallback in rule 4 is reached only when a signal IS present but it is not Supabase/Neon (e.g. a bare `$DATABASE_URL`, or only on-disk SQL/migrations). A repo with on-disk SQL but no reachable connection is a DB project → it proceeds to the filesystem-only path (case (a)), NOT this abort.
 
 Determinism rules (do NOT deviate):
 
 - **`DATABASE_URL` host-match fires ONLY when the var is non-empty AND matches a known host regex.** An empty or unset `DATABASE_URL` must NEVER auto-match a host — it falls through to the next rule.
-- **Dual-driver tiebreak:** because Supabase (rule 2) is evaluated before Neon (rule 3), a repo with BOTH a Supabase signal (`config.toml` / `SUPABASE_URL`) AND a bare `@neondatabase/serverless` dep resolves to **Supabase** — Supabase signals win over a bare Neon dep. This preserves parity with the proven `/supabase-audit` Step 0.2 so a Supabase repo never silently degrades to `postgres`.
+- **Dual-driver tiebreak:** because Supabase (rule 2) is evaluated before Neon (rule 3), a repo with BOTH a Supabase signal (`config.toml` / `SUPABASE_URL`) AND a bare `@neondatabase/serverless` dep resolves to **Supabase** — Supabase signals win over a bare Neon dep. This preserves parity with the prior Supabase-audit provider detection so a Supabase repo never silently degrades to `postgres`.
 
 Record which signal selected the provider (for the report Meta section).
 

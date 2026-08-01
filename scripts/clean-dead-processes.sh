@@ -40,7 +40,7 @@ while IFS= read -r line; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Killed orphaned MCP pid=$pid (dead parent $ppid)" >> "$LOGFILE"
     killed=$((killed + 1))
   fi
-done < <(ps aux | grep -E 'fraim-framework.*mcp|cyanheads.*git-mcp|fraim mcp|git-mcp-server' | grep -v grep)
+done < <(ps aux | grep -E 'cyanheads.*git-mcp|git-mcp-server' | grep -v grep)
 
 # Stale next/vite/tsx dev servers older than 2 days (running time > 2880 minutes)
 while IFS= read -r line; do

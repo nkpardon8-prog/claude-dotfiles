@@ -100,7 +100,7 @@ argument clears it back to the folder/repo name). **Agents do NOT write it autom
 
 ---
 
-> **Deeper, situational, and project-specific config** (full skill-routing table, FRAIM, MoleCopilot,
+> **Deeper, situational, and project-specific config** (full skill-routing table,
 > Supabase/Netlify safety, writing-style guide, glasses mode, MCP catalog, etc.) lives in
 > `~/.claude-dotfiles/CLAUDE-full-reference.md` — read it on demand when a task needs it, rather than
 > auto-loading it into every project. Per-project specifics belong in that project's own `AGENTS.md` /

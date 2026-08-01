@@ -1,7 +1,6 @@
 #!/bin/bash
 # Auto-sync claude dotfiles to GitHub.
-# Called by PostToolUse hook when files in ~/.claude-dotfiles/ are modified
-# and by /user:learn after saving patterns.
+# Called by PostToolUse hook when files in ~/.claude-dotfiles/ are modified.
 #
 # Defense in depth:
 #   - Local git pre-commit hook blocks staged secrets (see install-git-hooks.sh)

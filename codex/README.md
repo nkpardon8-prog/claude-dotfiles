@@ -27,7 +27,7 @@ Invoke workflows in plain language or with their old Claude slash names:
 /plan build a Stripe checkout flow
 use /implement on ./tmp/ready-plans/foo.md
 run /codex-review
-use /ui-ux-pro-max:design-system
+use /database-audit
 ```
 
 The slash names are aliases, not native Codex slash commands. Codex sees them

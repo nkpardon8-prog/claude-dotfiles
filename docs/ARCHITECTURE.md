@@ -12,13 +12,9 @@ How `~/.claude-dotfiles` plugs into Claude Code, and what runs when.
 ├── credentials.md                         ← 1Password op:// catalog (no secrets)
 ├── commands/                              ← slash commands → /name
 │   ├── *.md                               (top-level: /plan, /implement, ...)
-│   ├── parsa/                             (namespace: /parsa:*)
-│   ├── plan2bid/                          (namespace: /plan2bid:*)
-│   └── ui-ux-pro-max/                     (namespace: /ui-ux-pro-max:*)
+│   └── god-review/  database-audit/  ui-audit/  (namespaced suites: /<ns>:*)
 ├── agents/                                ← sub-agents spawned by skills
 ├── rules/                                 ← global rule files
-├── patterns/                              ← /learn-extracted behavioral patterns
-│   └── INDEX.md
 ├── docs/                                  ← long-form docs (this folder)
 ├── scripts/
 │   ├── dotfiles-sync.sh                   (auto-push on edit)
@@ -98,13 +94,9 @@ Auto-compact is the `Stop` hook that crosses the Claude/Terminal boundary. (Stat
    │
    ├─▶ Discovers slash commands from:
    │     • ~/.claude/commands/*.md           → /name
-   │     • ~/.claude/commands/parsa/*.md     → /parsa:name
-   │     • ~/.claude/commands/plan2bid/*.md  → /plan2bid:name
-   │     • ~/.claude/commands/ui-ux-pro-max/*.md  → /ui-ux-pro-max:name
+   │     • ~/.claude/commands/<ns>/*.md       → /<ns>:name
    │
    ├─▶ Discovers sub-agents from ~/.claude/agents/
-   │
-   ├─▶ Detects FRAIM project (if fraim/ dir exists or repo matches)
    │
    ├─▶ Loads project memory:
    │     ~/.claude/projects/<project>/memory/MEMORY.md
@@ -126,8 +118,7 @@ Three categories of entries in the table:
 | Form | Example | What it does |
 |---|---|---|
 | `/skill-name` | `/plan` | Loads the slash-command file |
-| `fraim → job-name` | `fraim → recommend-next-job` | Calls `get_fraim_job` via the FRAIM MCP server |
-| Cascade | `/parsa:review:all`, `/plan2bid` | Owns sub-commands; triggers them internally |
+| Cascade | `/god-review`, `/database-audit` | Owns sub-commands; triggers them internally |
 
 Adding a new skill = one row in the table.
 
@@ -212,7 +203,6 @@ Each `/pre-compact` run mines the conversation at a calibrated depth (Quick / De
 | Namespaced command | `commands/<ns>/foo.md` | `/<ns>:foo` |
 | Sub-agent | `agents/foo.md` | `subagent_type: "foo"` |
 | Global rule | `rules/foo.md` | Loaded on every session |
-| Behavioral pattern | `patterns/foo.md` (or via `/learn`) | Indexed in `patterns/INDEX.md` |
 | MCP server | Edit `CLAUDE.md` MCP Catalog + ask user to define before editing `.mcp.json` | Per-project |
 
 The PostToolUse hook auto-pushes after the edit lands.
@@ -223,13 +213,12 @@ The PostToolUse hook auto-pushes after the edit lands.
 
 | File | Purpose |
 |---|---|
-| `CLAUDE.md` | Master config: rules, skill routing, credentials, MCP, FRAIM, MoleCopilot context, writing style |
+| `CLAUDE.md` | Master config: rules, skill routing, credentials, MCP, writing style |
 | `credentials.md` | 1Password catalog (env var names + `op://`) |
 | `README.md` | Setup-on-a-new-machine guide |
 | `docs/COMMANDS.md` | Full command reference (categorized) |
 | `docs/ARCHITECTURE.md` | This file |
 | `docs/transcribe.md` | `/transcribe` setup details |
-| `patterns/INDEX.md` | Learned-pattern index (filled by `/learn`) |
 | `scripts/dotfiles-sync.sh` | Auto-push hook script |
 
 ---

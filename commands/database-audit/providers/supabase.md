@@ -12,7 +12,7 @@ Supabase is reached via the **Supabase MCP** — there is no direct `psql` path 
 
 ### Preflight detection (Phase 0a)
 
-Provider is `supabase` when ANY of these repo signals match (mirrors the proven `/supabase-audit` Step 0.2 — must keep parity so a Supabase repo never silently degrades to `postgres`):
+Provider is `supabase` when ANY of these repo signals match (carried forward from the proven detection of the prior Supabase-audit provider — must keep parity so a Supabase repo never silently degrades to `postgres`):
 
 - `package.json` contains `@supabase/supabase-js` or `@supabase/ssr`
 - `./supabase/config.toml` exists

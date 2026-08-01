@@ -20,10 +20,9 @@ operational lives here.
 │                           #   ~/.config/claude/credentials.md — local-only, gitignored)
 ├── commands/               # Slash commands (available as /command-name)
 │   ├── *.md                # Core commands (plan, implement, mission, ...)
-│   ├── parsa/  plan2bid/  ui-ux-pro-max/   # namespaced suites
+│   ├── god-review/  database-audit/  ui-audit/   # namespaced suites
 ├── agents/                 # Sub-agents spawned by skills
 ├── rules/                  # Global rules applied to all projects
-├── patterns/               # Learned behavioral patterns (filled by /learn)
 ├── docs/                   # Long-form docs (this file, ARCHITECTURE, COMMANDS, STATUSLINE, ...)
 ├── scripts/                # sync, statusline, cleanup, whisper, hooks
 ├── .env.example            # Whisper key template
@@ -162,7 +161,6 @@ Then start a session: global rules should load, and `/` should list the commands
 |---|---|
 | Session starts | `git pull` latest dotfiles (SessionStart hook) |
 | Any dotfile edited | `git add + commit + push` (PostToolUse hook, after a pre-push secret scan) |
-| `/learn` runs | Saves patterns, then pushes |
 | Manual | `cd ~/.claude-dotfiles && git add -A && git commit -m "update" && git push` |
 
 Changes appear on other devices at next session start.
@@ -230,4 +228,4 @@ call. Platform: POSIX shell + `op`; tested on macOS, works on Linux; Windows nee
 ---
 
 For how everything wires together (load order, sync flow, credential flow, skill routing):
-[`ARCHITECTURE.md`](ARCHITECTURE.md). For the full ~80-command reference: [`COMMANDS.md`](COMMANDS.md).
+[`ARCHITECTURE.md`](ARCHITECTURE.md). For the full command reference: [`COMMANDS.md`](COMMANDS.md).

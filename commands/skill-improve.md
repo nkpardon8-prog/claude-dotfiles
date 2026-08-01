@@ -1,6 +1,6 @@
 ---
 description: Turn the current Claude Code session into improvements for an existing skill or command. Reads the target skill's source, scans this session for direct evidence (what worked, what failed, what was confusing), and produces copy-ready patches. Report-only by default — pass --apply to hand off to /implement. Accepts one or more target skills.
-argument-hint: "[target-skill] [more-targets...] [--apply] (e.g. 'optimize-website', 'pdf-extractor estimate-builder', 'parsa:fix-bug --apply')"
+argument-hint: "[target-skill] [more-targets...] [--apply] (e.g. 'testplan', 'devtools ui-audit', 'god-review:principles:reuse --apply')"
 ---
 
 # /skill-improve — Session-Driven Skill Refinement
@@ -11,9 +11,7 @@ Take an existing skill name (or multiple) and use the current Claude Code sessio
 
 Most skills drift from reality. They were written once, then real sessions revealed: missing instructions, weak defaults, fragile assumptions, confusing steps, manual fixes the skill should have done automatically. This command harvests that.
 
-This is the **inverse** of `/learn`:
-- `/learn` extracts behavioral patterns into `~/.claude/patterns/`.
-- `/skill-improve` patches a specific skill file based on this session's evidence.
+`/skill-improve` patches a specific skill file based on this session's evidence.
 
 ## Behavior Rules (non-negotiable)
 
@@ -32,7 +30,7 @@ This is the **inverse** of `/learn`:
 `$ARGUMENTS` may contain:
 - A single skill name: `optimize-website`
 - Multiple names: `optimize-website pdf-extractor`
-- Plugin-namespaced names: `parsa:fix-bug`, `god-review:principles:reuse`, `ui-ux-pro-max:design`
+- Plugin-namespaced names: `god-review:principles:reuse`, `database-audit:providers:supabase`, `ui-audit:rubric`
 - Comma-separated: `"foo, bar"`
 - An optional `--apply` flag (anywhere in the argument string)
 
@@ -51,7 +49,7 @@ Extract:
 For each `target` in `TARGETS`, resolve to a file path. Try in order:
 
 1. `~/.claude-dotfiles/commands/{target}.md`
-2. `~/.claude-dotfiles/commands/{target.replace(':', '/')}.md` *(handles `parsa:fix-bug` → `parsa/fix-bug.md`, `god-review:principles:reuse` → `god-review/principles/reuse.md`)*
+2. `~/.claude-dotfiles/commands/{target.replace(':', '/')}.md` *(handles `god-review:principles:reuse` → `god-review/principles/reuse.md`, `database-audit:providers:supabase` → `database-audit/providers/supabase.md`)*
 3. `~/.claude-dotfiles/skills/{target}.md` and `{target.replace(':','/')}/SKILL.md`
 4. `~/.claude/commands/{target}.md` (mirror)
 5. `~/.claude/skills/{target}/SKILL.md`
