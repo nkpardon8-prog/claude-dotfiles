@@ -19,7 +19,7 @@ Arguments: `$ARGUMENTS`
 1. **No follow-up questions.** Never use `AskUserQuestion`. Every decision below is final.
 2. **No commits, no pushes.** Read-only git. Auto-fixes are written to disk and left uncommitted for the user to review.
 3. **Runtime requirement (state this in the status line):** Claude Code must remain open for the session to keep ticking. `ScheduleWakeup` only fires while the harness is alive. Closing Claude Code ends the session.
-4. **Single-agent.** Do not spawn sub-agents. Do not invoke `/master-review`, `/codex-review`, `/local-review`, `/ultrareview`, or any other review skill. The whole point is *cheap-per-hour*.
+4. **Single-agent.** Do not spawn sub-agents. Do not invoke `/master-review`, `/codex-review`, or any other review skill. The whole point is *cheap-per-hour*.
 5. **Conservative fix gate** (see below). If in doubt: write to `findings.md`, don't touch the code.
 6. **Never self-terminate on empty queue.** Refill (with dedup that uses `refill_generation`) and keep going. Empty queue means "haven't looked hard enough yet," not "done."
 7. **Stop conditions** (the *only* ways the session ends):
