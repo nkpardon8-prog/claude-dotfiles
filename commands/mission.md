@@ -999,7 +999,7 @@ re-enter), and never change the active/inactive decision.
   "proceed loudly when away" does NOT apply — the human must ratify before such a skill runs.
 - **Full agency (spine not cage).** The four-skill sequence is the backbone, not a fence. You are free
   to invoke ANY dotfiles skill whenever it helps — `/script` to prove load-bearing assumptions before
-  building (encouraged), `/investigate`, `/document`, `/gemini`, etc. (Credential/destructive skills
+  building (encouraged), `/investigate`, `/document`, etc. (Credential/destructive skills
   like `/load-creds` are gated by the guard above — they need a human PENDING decision in autonomous
   mode.)
 - **Test-trustworthiness** is both a plan-time precondition and a deliverable (see Section 5, Phase 2):
