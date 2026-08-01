@@ -1,29 +1,24 @@
 # Command Reference
 
-Every slash command in this repo, grouped by purpose. Type any of these in a Claude Code session.
+Regenerated 2026-08-01 from the live command set.
+
+Every slash command in `~/.claude-dotfiles/commands/`, grouped by purpose. Top-level commands are
+invoked as `/<name>`; pack subskills are invoked as `/<dir>:<name>` (e.g. `/desktop:click`,
+`/god-review:principles:reuse`). Templates and changelogs live beside the commands but are not
+directly invoked - see the note at the bottom.
 
 Cheat sheet of the categories below:
 
 | Category | Commands |
 |---|---|
-| [Planning & implementation](#planning--implementation) | `/plan`, `/simple-plan`, `/discussion`, `/script`, `/implement`, `/testplan` |
-| [Investigation & review](#investigation--review) | `/investigate`, `/codex-review`, `/master-review`, `/local-review`, `/afk`, `/supabase-audit` |
-| [Git, commits, PRs](#git-commits-prs) | `/commit`, `/checkpoint`, `/prepare-pr` |
-| [Sessions & context](#sessions--context) | `/pre-compact`, `/learn`, `/document`, `/architect` |
-| [Verification](#verification) | `/tdd` |
+| [Planning & implementation](#planning--implementation) | `/plan`, `/simple-plan`, `/discussion`, `/script`, `/implement`, `/testplan`, `/mission`, `/afk` |
+| [Investigation & review](#investigation--review) | `/investigate`, `/codex-review`, `/master-review`, `/god-review`, `/god-report`, `/ui-audit`, `/database-audit` |
+| [Git, commits, PRs](#git-commits-prs) | `/commit`, `/checkpoint`, `/prepare-pr`, `/share-fix` |
+| [Sessions & context](#sessions--context) | `/pre-compact`, `/post-compact-resume`, `/document`, `/claudemd`, `/skill-improve`, `/line` |
 | [Research](#research) | `/research-web`, `/transcribe` |
 | [Credentials & setup](#credentials--setup) | `/load-creds` |
-| [Skills toolkit](#skills-toolkit) | `/skillset`, `/buildskill` |
-| [Account & mode](#account--mode) | `/antigravity`, `/hybrid-status`, `/set-primary-cloud`, `/set-primary-local`, `/toggle-local-review` |
-| [Deployment](#deployment) | `/netlifydeploy`, `/renderdeploy` |
-| [CRM](#crm) | `/crm` |
-| [Construction estimation (`plan2bid`)](#construction-estimation-plan2bid) | `/plan2bid` and ~16 sub-commands |
-| [UI/UX (`ui-ux-pro-max`)](#uiux-ui-ux-pro-max) | `/ui-ux-pro-max` and 6 sub-commands |
-| [MoleCopilot (drug discovery)](#molecopilot-drug-discovery) | `/dock`, `/screen`, `/admet`, `/optimize`, `/prep-target`, `/dashboard` |
-| [FRAIM](#fraim) | `/fraim` |
-| [Partner suite (`parsa`)](#partner-suite-parsa) | 25+ commands |
-
-Templates and base files (not invoked directly): `commands/plan_base.md`.
+| [Remote control & GUI](#remote-control--gui) | `/devtools`, `/desktop`, `/macmini`, `/windows` |
+| [Utilities](#utilities) | `/wispralt-update` |
 
 ---
 
@@ -31,285 +26,90 @@ Templates and base files (not invoked directly): `commands/plan_base.md`.
 
 | Command | What it does |
 |---|---|
-| `/plan` | Build a thorough implementation plan with codebase + web research. Auto-runs the plan-reviewer and iterates with you. Step 5 ALWAYS emits a visible assumption-test assessment (recommend `/script`, or an explicit skip) before saving to `./tmp/ready-plans/`. |
-| `/script` | Generate pre-flight **assumption tests** that PROVE a plan's load-bearing runtime assumptions against real infrastructure before implementation, and re-run as regression catchers after. Always runs an adversarial catalog review; never auto-invoked. For high-risk / HIPAA / financial / safety-critical work. Full risk-lens catalog + worked example in [`docs/script-reference.md`](script-reference.md). |
-| `/share-fix` | After a non-trivial fix lands (especially upstream-library workarounds), find related GitHub issues, draft human-sounding outreach comments, and optionally file upstream issues. Always asks for explicit approval before posting publicly. |
-| `/simple-plan` | Lightweight gut-check before doing something the user just asked for. Investigates, proposes, implements after approval. |
-| `/discussion` | Conversation-only mode. Researches the codebase, talks through tradeoffs, saves a brief to `./tmp/briefs/` for `/plan` to consume. No code changes. |
-| `/implement <plan path>` | Executes an approved plan from `./tmp/ready-plans/`. Breaks work into chunks, spawns implementer sub-agents in parallel, runs implementation-reviewer at the end, moves the plan to `./tmp/done-plans/`. |
-| `/testplan [target]` | Generate an exhaustive, production-realistic TEST PLAN for any target (feature / API / CLI / library / worker). Comprehends the program's role, discovers what it can test with (read-only, deny-by-default), scales coverage to the target's archetype + risk, designs real user journeys + every-order-that-matters E2E, and emits a risk-tiered plan with honest blockers to `./tmp/testplans/`. Plans; never executes. |
-
-Typical flow: `/discussion` → `/plan` → `/script <path>` (high-risk only) → `/implement <path>`. Testing a built surface: `/testplan <target>`.
-
----
+| `/plan` | Creates an implementation plan with thorough codebase and web research. Auto-reviews the plan after creation and iterates with user feedback. Use when planning a new feature or significant change. |
+| `/simple-plan` | Quick gut-check before implementing when the user directly asks for something ("add X", "fix Y"). Investigates, proposes a lightweight plan, implements after approval. Use instead of `/plan` when the user wants something done, not a formal plan. |
+| `/discussion` | Interactive discussion about a topic, approach, or feature. Researches the codebase as needed, talks through options, and saves a brief to `./tmp/briefs/` (consumed by `/plan`). No code changes. |
+| `/script` | Generates pre-flight assumption tests that programmatically PROVE a feature's load-bearing assumptions against real infrastructure BEFORE implementation, and re-run as regression catchers after. For high-stakes work (prod, user data, HIPAA / financial / safety-critical). |
+| `/implement` | Executes an approved plan by breaking work into parallelizable chunks and spawning implementation sub-agents. Automatically reviews the result for completeness. |
+| `/testplan` | Generates an exhaustive, production-realistic TEST PLAN for any target - discovers available test capabilities, comprehends the program's role, scales coverage to the target's archetype and risk, emits a risk-tiered plan with honest blockers. Plans; never executes. |
+| `/mission` | Autonomous long-build conductor (playbook, not an engine). Opt-in and HEAVY: per part it runs research + a full `/plan` reviewer loop + `/implement` + a cross-model `/codex-review` panel to honest convergence, riding the mission-bridge + `/pre-compact` across many compactions. For genuinely large builds only. |
+| `/afk` | Fire-and-forget long-running code review. `/afk [hours]` (default 3, 0 = infinite). Single-agent Opus, medium effort. Walk away, come back to a useful report. |
 
 ## Investigation & review
 
 | Command | What it does |
 |---|---|
-| `/investigate` | Hypothesis-driven root cause analysis. Auto-invoked when you report a bug or "X isn't working." |
-| `/codex-review` | Universal review engine. OpenAI Codex CLI runs 4 specialized passes (Correctness, Security, Data-integrity, Contracts) + 1 verify; Claude Opus runs 3 lens agents (Architecture, Integration, Adversarial+FP-filter) + meta. Report-only. |
-| `/master-review` | Autonomous review + fix pipeline. 3 Opus + 3 Codex + 2 Antigravity reviewers in parallel; Claude fixes via `/implement`; verification loop until 3 consecutive clean passes. |
-| `/local-review` | Send the current diff to LM Studio for an offline second opinion (requires `/toggle-local-review` enabled). |
-| `/afk [hours] [--force\|--takeover]` | Fire-and-forget unattended review. You type it and walk away. Surveys repo state (diff vs default branch, TODOs, .md drift, modules, deps), packs tasks against a baked-in complexity-weight table (no model-side estimation), and ticks via `ScheduleWakeup` for the requested duration. Default 3h. `0` = infinite (only stops on `STOP` sentinel or 3 consecutive errors). Single-agent Opus 4.7 medium effort — no fanout, ~1/8th the cost of `/master-review`. Auto-fixes only when 100%-confident the change is purely additive (dead code, formatting, comment typos, redundant ops); never touches logic, control flow, or generated/lockfile/vendor files. Output to `<git_root>/tmp/afk/<session>/` (`plan.md`, `findings.md`, `fixes.md`, `errors.md`, `summary.md`). **Requires Claude Code to remain open** — `ScheduleWakeup` only fires while the harness is alive. Stop with `touch <session_dir>/STOP`. |
-| `/supabase-audit` | Read-only audit of a Supabase repo: schema, RLS, security, prod-readiness, client coherence. Refuses prod without `--env=prod`. Optionally writes `DATABASE.md`. |
+| `/investigate` | Investigates bugs through hypothesis-driven root cause analysis. Use when something is broken, failing, or behaving unexpectedly. Finds and explains the problem; does not fix. |
+| `/codex-review` | Universal review engine. OpenAI Codex CLI runs 4 specialized review passes (Correctness, Security, Data-integrity, Contracts) plus 1 verification pass; Claude Opus runs 3 lens agents plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything. |
+| `/master-review` | FROZEN (2026-07-12) - kept intact as the parity reference for its browser + Antigravity capabilities. Autonomous review + fix pipeline: 3 Claude + 3 Codex + 2 Antigravity reviewers, Claude fixer, verification loop. Use `/god-review` or `/codex-review` instead. |
+| `/god-review` | Autonomous multi-model codebase audit + fix loop. 4 Claude broad + 6 Codex broad + 24 principle agents in parallel; indefinite fix loop until 3 consecutive rounds yield zero new non-deferred findings; hard gates on schema/auth/deps/secrets/CI/tests batched for human review at the end. |
+| `/god-report` | Single-pass multi-model codebase review report - same reviewer fleet as `/god-review` but NO fixes applied; pure report. Optional `--rounds N` for de-noising. |
+| `/ui-audit` | Audits one tab's UI end-to-end to catch fake or dead elements. Report-only: enumerates the entire rendered surface across every reachable sub-state, gives each element a strict REAL / STATIC-BY-DESIGN / FAKE-OR-DEAD / UNVERIFIED verdict via three reconciled passes (static code trace, live-browser x-ray over raw CDP, screenshot vision). Emits findings.json + AUDIT.md + per-state screenshots. Never edits app code. |
+| `/database-audit` | Deep multi-provider database audit (Supabase, Neon, vanilla Postgres) - schema, RLS, security, prod-readiness, client coherence. Read-only; refuses prod without `--env=prod`. Optionally emits DATABASE.md. |
 
----
+Pack subskills (invoked as `/<pack>:<name>`):
+
+- **god-review** - 37 subskill files: 10 broad reviewers (`broad-reviewers:` `claude-architecture-prod`, `claude-deep-correctness`, `claude-ruthless-redteam`, `claude-security-resilience`, `codex-cross-layer`, `codex-data-integrity`, `codex-deep-correctness`, `codex-prod-scalability`, `codex-ruthless-redteam`, `codex-security-safeguards`); 24 principle lenses (`principles:` `antipatterns`, `architecture-backend`, `architecture-frontend`, `ci-yaml-tampering`, `circular-deps`, `clarity`, `contradiction-detector`, `database-audit`, `dead-code-conservatism`, `dead-end-detector`, `documentation`, `gap-detector`, `hallucinated-imports`, `info-loss-detector`, `perf-benchmark`, `perf-heuristic`, `prompt-injection`, `reuse`, `scope`, `secret-leak`, `self-contained`, `single-pattern`, `tanstack-query`, `test-deletion`); `lib:editor-agent`; plus CHANGELOG, CRITERIA, README.
+- **ui-audit** - 7 subskill files: 4 passes (`passes:` `static-trace`, `dynamic-exercise`, `vision-inspect`, `reconcile`), `rubric`, plus CHANGELOG, README.
+- **database-audit** - 7 subskill files: `core`, `guards`, `redaction`, 3 provider adapters (`providers:` `supabase`, `neon`, `postgres`), plus `tests:README`.
 
 ## Git, commits, PRs
 
 | Command | What it does |
 |---|---|
-| `/commit` | Selectively stage and commit only changes related to the current session. Skips unrelated modifications. |
-| `/checkpoint <name>` | Create a named git tag to mark a known-good state. Useful before risky changes. |
-| `/prepare-pr` | Commit by-plan, rebase main, build API + webapp, create or update a PR. Replaces the older `/commit` workflow for PR-ready work. |
-
-`/prepare-pr` is the right exit door at the end of a feature.
-
----
+| `/commit` | Selectively stages and commits only the changes related to the current session, skipping unrelated modifications. |
+| `/checkpoint` | Named git snapshot (tag) to mark a known-good state. Useful before risky changes, integration work, or major refactors. |
+| `/prepare-pr` | Commits changes grouped by done-plans, rebases main, builds the project, then creates or updates a PR. |
+| `/share-fix` | After shipping a non-trivial fix, finds related GitHub issues across the ecosystem, drafts helpful human-sounding comments linking the fix and root cause, and optionally files upstream issues. Always asks approval before posting anything public. |
 
 ## Sessions & context
 
 | Command | What it does |
 |---|---|
-| `/pre-compact` | Manual handoff before context compaction. Writes `CLAUDE.local.md` so post-compact Claude resumes cleanly. **Mining-pass calibration** (Quick/Deep/Chunked), **chain tracking** across compactions (`Seq:` + `Parent:`), **two-phase write** with floors, **What We Tried** and **Evidence & Data** sections, and a **Since Last Compact** diff vs prior session. Manual-only by design. **Auto-compact:** after writing the handoff, arms a Stop hook (`scripts/hooks/auto-compact-after-pre-compact.sh`) that fires `/compact` into the originating Terminal.app tab via AppleScript `do script` — Mac/Terminal.app only, refuses inside tmux/screen. Pass `no-auto-compact` to skip (also disarms a prior arm). Diagnostic log: `~/.claude/logs/auto-compact.log`. Uninstall: `scripts/hooks/uninstall-auto-compact.sh`. See [ARCHITECTURE.md § Other lifecycle hooks](ARCHITECTURE.md) and `scripts/hooks/README.md` for the full design. |
-| `/learn` | Extract behavioral patterns from this session and write them to `patterns/`. Auto-pushes. |
-| `/document` | Audit or bootstrap project docs in `docs/` (database, backend, frontend, APIs, integrations). Both human- and LLM-navigable. |
-| `/architect` | Interactive scaffolding for a new project's documentation tier. Run BEFORE starting a project. Asks one question at a time. |
-
-`/pre-compact` is the single dialed-in tool for session-to-session continuity. Don't write freeform handoffs — `CLAUDE.md` enforces this globally.
-
----
-
-## Verification
-
-| Command | What it does |
-|---|---|
-| `/tdd` | RED → GREEN → REFACTOR cycle for a feature or fix. |
-
----
+| `/pre-compact` | Run before context compaction. Refreshes project docs via `/document`, then writes a SID-tagged `CLAUDE.local.<sid8>.md` handoff (active task, plan, decisions, open issues, gaps) so post-compact Claude picks up the thread without losing info. |
+| `/post-compact-resume` | Fired automatically after `/compact` by the Stop-hook chain; locates the SID-tagged handoff file and resumes the thread. |
+| `/document` | Audits or creates clear project documentation covering database, backend, frontend, APIs, and external integrations. Updates existing docs or bootstraps a full `docs/` tree. Navigable for both humans and LLMs. |
+| `/claudemd` | Captures a lesson from the current moment into the RIGHT instruction surface - investigates what the lesson is and why, routes to the strongest enforcement layer (check > global CLAUDE.md > project AGENTS.md/CLAUDE.md > docs/), proposes the exact edit, applies on approval. |
+| `/skill-improve` | Turns the current session into improvements for an existing skill or command - scans the session for direct evidence (what worked, what failed, what confused) and produces copy-ready patches. Report-only by default; `--apply` hands off to `/implement`. |
+| `/line` | Sets this window's statusline line 2 to a sentence; no args clears it back to the repo name. |
 
 ## Research
 
 | Command | What it does |
 |---|---|
-| `/research-web` | Web research with validated references and citations. |
-| `/transcribe` | Audio (Voice Memos, calls) → Whisper transcript → project-aware analysis report. See [docs/transcribe.md](transcribe.md) for setup. |
-
----
+| `/research-web` | Conducts extensive web research on technical topics with validated references and citations. Use for external documentation, library comparisons, or best-practices research. |
+| `/transcribe` | Transcribes an audio recording (Voice Memos, phone call, etc.) via OpenAI Whisper and generates a project-context-aware analysis report. |
 
 ## Credentials & setup
 
 | Command | What it does |
 |---|---|
-| `/load-creds [VAR1,VAR2]` | Inject API keys from 1Password into the project's `.env` via `op inject`. With no args, auto-detects vars referenced by the project. Reads the catalog at `credentials.md`. |
+| `/load-creds` | Injects API keys from the user's 1Password vault into the current project's `.env` via `op inject`. Catalog at `~/.config/claude/credentials.md` (local-only, never synced). |
 
-The credential flow lives in `CLAUDE.md` → "Credential and MCP Handling". Full diagram in [ARCHITECTURE.md](ARCHITECTURE.md#credential-flow).
-
----
-
-## Skills toolkit
+## Remote control & GUI
 
 | Command | What it does |
 |---|---|
-| `/skillset` | Initialize or load `SKILLSET.md` for the current industry project. Tracks which skills are available and enforces cross-industry isolation. |
-| `/buildskill` | Conductor for designing a new industry-specific slash command. Loads `SKILLSET.md` context, asks targeted questions, hands off to `/plan`. |
+| `/devtools` | Self-healing chrome-devtools connector. Ensures a debug Chrome (with the user's real profile + tabs) is running on port 9222, kills stale MCP processes, scrubs corrupt npx installs, and prompts `/mcp` reconnect. |
+| `/desktop` | Self-resolving local-mac control. Tries CLI/AppleScript first; vision-clicks only when no scriptable handle exists. Handles permission dialogs, confirm modals, and apps without CLI. |
+| `/macmini` | Drives a remote Mac mini through Chrome Remote Desktop via the chrome-devtools MCP. Self-resolving; clicks are direct CDP click_at into the CRD canvas. |
+| `/windows` | Drives a remote Windows laptop (OpenDental) through Chrome Remote Desktop via the chrome-devtools MCP. Self-resolving; clicks are direct CDP click_at into the CRD canvas. |
 
----
+Pack subskills (invoked as `/<pack>:<name>`):
 
-## Account & mode
+- **desktop** - 7 subskills: `shot`, `window`, `click`, `key`, `type`, `status`, `setup`.
+- **macmini** - 4 subskills: `connect`, `crd`, `act`, `setup`.
+- **windows** - 3 subskills: `connect`, `crd`, `act`.
 
-| Command | What it does |
-|---|---|
-| `/antigravity` | Manage Google AI (Antigravity) profiles — switch active, open profile for auth, show status. Used by review loops that need Google-Pro accounts. |
-| `/hybrid-status` | Show current Cloud/Local routing mode and review-feature state for the hybrid control system. |
-| `/set-primary-cloud` | Switch Claude Code to Cloud mode (Anthropic). Restart needed. |
-| `/set-primary-local` | Switch Claude Code to Local mode (LM Studio at localhost:1234). Restart needed. |
-| `/toggle-local-review` | Toggle the on-demand local-review feature (used by `/local-review`). |
-
----
-
-## Deployment
+## Utilities
 
 | Command | What it does |
 |---|---|
-| `/netlifydeploy` | One-shot Netlify deploy. Researches Netlify docs and the codebase in parallel, synthesizes a strategy, deploys via the Netlify MCP. |
-| `/renderdeploy` | One-shot Render deploy of frontend (static site) + backend (web service) via Render MCP + REST API. |
-
-Both confirm before deploying. See `CLAUDE.md` → "Netlify Safety" for the rules.
+| `/wispralt-update` | Pulls the latest WisprAlt release and updates the installed app. Handles TCC reset if the code-signing cdhash changed. |
 
 ---
 
-## CRM
-
-| Command | What it does |
-|---|---|
-| `/crm` | Manage leads, deals, emails, campaigns, prospect via Apollo. Real data only. Confirms before destructive or credit-burning actions. |
-
----
-
-## Construction estimation (`plan2bid`)
-
-Construction-estimation suite. Top-level orchestrator + ~16 sub-commands.
-
-| Command | What it does |
-|---|---|
-| `/plan2bid` | Orchestrator. Routes to the right sub-command for takeoffs, bids, blueprints, pricing, scope, comparisons. |
-| `/plan2bid:run` | Full pipeline: read documents → extract quantities → price materials → estimate labor → apply markups → structured estimate. |
-| `/plan2bid:run-batched` | Variant B: parent reads ALL docs and extracts scope; sub-agents only do pricing math. Higher-fidelity. |
-| `/plan2bid:run-group` | Trade-group estimation. One specific set of trades from documents. Used by the multi-terminal worker pattern. |
-| `/plan2bid:run-merge` | Merge trade-group results into a final estimate. Validates, deduplicates, saves to DB. |
-| `/plan2bid:doc-reader` | Read/classify construction PDFs and blueprints; extract schedules; vision-analyze drawings. |
-| `/plan2bid:rag` | Semantic search across construction documents. Returns chunks with citations. |
-| `/plan2bid:scope` | Per-trade IN/OUT scope lists with source citations. Resolves document hierarchy and flags ambiguity. |
-| `/plan2bid:validate` | Pre-flight check for the 6 critical gaps that cause silent pricing failures. Run before `/plan2bid:run`. |
-| `/plan2bid:price-check` | Verify material pricing against web sources + your pricing profile. Flags low-confidence items. |
-| `/plan2bid:pricing-profile` | Manage labor rates, material prices, markups, vendor preferences, company info. |
-| `/plan2bid:scenarios` | What-if generator. Re-prices an estimate with changed context (material swap, scope change, value engineering). Auto-compares to base. |
-| `/plan2bid:compare` | Side-by-side comparison of two estimates. Flags missing items, quantity diffs, pricing variance. |
-| `/plan2bid:grade` | Grade an estimate against a known-good human reference. 5-category score with miss explanations. |
-| `/plan2bid:reverse-engineer` | Extract a human estimator's methodology from their completed estimate. |
-| `/plan2bid:pdf` | Export to GC-submission PDF. Three detail levels: summary / standard / detailed. |
-| `/plan2bid:excel` | Export to styled Excel with Summary tab + per-trade tabs. |
-| `/plan2bid:save-to-db` | Save line items + metadata to Supabase. |
-| `/plan2bid:save-scenario-to-db` | Save scenario re-pricings to Supabase mirror tables. |
-
----
-
-## UI/UX (`ui-ux-pro-max`)
-
-| Command | What it does |
-|---|---|
-| `/ui-ux-pro-max` | Top-level UI/UX intelligence. 50+ styles, 161 palettes, 57 font pairings, 25 chart types across 10 stacks. Plan, build, design, review. |
-| `/ui-ux-pro-max:design` | Comprehensive design: brand identity, design tokens, UI styling, logo (55 styles), CIP mockups, presentations, banners, icons, social photos. |
-| `/ui-ux-pro-max:design-system` | Token architecture (primitive → semantic → component), CSS vars, spacing/typography scales, component specs. |
-| `/ui-ux-pro-max:brand` | Brand voice, visual identity, messaging frameworks, asset management. |
-| `/ui-ux-pro-max:ui-styling` | shadcn/ui + Tailwind + canvas. Accessible components, dark mode, design tokens. |
-| `/ui-ux-pro-max:slides` | Strategic HTML presentations with Chart.js, design tokens, copywriting formulas. |
-| `/ui-ux-pro-max:banner-design` | Banners for social, ads, hero, print. 13+ styles. AI-generated visuals. |
-
----
-
-## MoleCopilot (drug discovery)
-
-Computational drug-discovery toolkit at `~/molecopilot/`. Calls the `molecopilot` MCP server (22 tools).
-
-| Command | What it does |
-|---|---|
-| `/dock` | Run a docking job. Parses compound (name/SMILES/CID) + target (PDB ID) + parameters; runs the full pipeline (fetch → prep → dock → analyze). |
-| `/screen` | Virtual screening campaign. Search PubChem → batch prep → batch dock → rank top hits. |
-| `/admet` | ADMET / drug-likeness on a compound. Lipinski + Veber + radar plot. |
-| `/optimize` | NVIDIA MolMIM AI optimizes a hit into better drug candidates. CMA-ES, 20 analogs, ADMET-rescored. |
-| `/prep-target` | Fetch a protein from RCSB PDB → clean → PDBQT → detect binding site. |
-| `/dashboard` | Launch the MoleCopilot Streamlit dashboard. Auto-picks a free port (8501–8510) and opens the browser. |
-
-Pharmacology context (binding energy thresholds, Lipinski rules, IC50 vs Ki vs EC50, etc.) lives in `CLAUDE.md` → "MoleCopilot".
-
----
-
-## FRAIM
-
-| Command | What it does |
-|---|---|
-| `/fraim [job or topic]` | Discover or run a FRAIM job via the `fraim` MCP server. With no arg, lists jobs grouped by business function and suggests starting points. With an arg, calls `get_fraim_job` for the matching job. |
-
-FRAIM jobs also auto-route from natural language. See `CLAUDE.md` → "Skill Routing" → `fraim → ...` rows for triggers (e.g., `fraim → recommend-next-job`, `fraim → end-of-day-debrief`).
-
----
-
-## Partner suite (`parsa`)
-
-A second slash-command set used in partner projects. Same shape as the core suite but with the `parsa:` namespace.
-
-### Planning & implementation
-
-| Command | What it does |
-|---|---|
-| `/parsa:simple-plan` | Quick plan to address a user question. |
-| `/parsa:create-prp` | Create a PRP (project requirements/plan) document. |
-| `/parsa:review-prp` | Review a PRP for simplification, gaps, bugs, alternatives. |
-| `/parsa:review-plan` | Review an implementation plan. |
-| `/parsa:implement-plan` | Execute implementation from a plan file. |
-| `/parsa:fix-bug` | Hypothesis-driven debug → logging → analysis → PRP generation. |
-
-### Code review by principle
-
-`/parsa:review:all` is the cascade — runs all 11 in parallel.
-
-| Command | Principle |
-|---|---|
-| `/parsa:review:all` | Run all 11 below |
-| `/parsa:review:principles:single-pattern` | Single Way to Do Things (most important) |
-| `/parsa:review:principles:reuse` | Reuse Over Recreation |
-| `/parsa:review:principles:self-contained` | Self-Contained Components |
-| `/parsa:review:principles:scope` | Correct Scope |
-| `/parsa:review:principles:clarity` | Clarity & Readability |
-| `/parsa:review:principles:documentation` | Documentation standards |
-| `/parsa:review:principles:antipatterns` | Anti-patterns and convention violations |
-| `/parsa:review:principles:circular-deps` | Circular dependencies and late imports |
-| `/parsa:review:principles:architecture-frontend` | Frontend architecture patterns |
-| `/parsa:review:principles:architecture-backend` | Backend architecture patterns |
-| `/parsa:review:principles:tanstack-query` | TanStack Query patterns |
-
-### Linting
-
-| Command | What it does |
-|---|---|
-| `/parsa:linter:codebase` | Fix all TS type errors + ESLint warnings across the repo, parallel agents. |
-| `/parsa:linter:local-changes` | Fix lint/type errors only in files changed on the current branch. Sequential. |
-| `/parsa:linter:commit` | Commit with lint validation gate. |
-| `/parsa:linter:update-claude-docs` | Update `CLAUDE.md` to reflect current code patterns. |
-| `/parsa:linter:validate-codebase-docs` | Verify docs match the actual codebase. |
-
-### Refactor
-
-| Command | Scope |
-|---|---|
-| `/parsa:refactor:simple` | Small change quick check. |
-| `/parsa:refactor:medium` | Medium-sized change quality score. |
-| `/parsa:refactor:deep` | Architectural review of a large change. |
-| `/parsa:refactor:refactor-full` | Comprehensive multi-dimensional refactor analysis. |
-
----
-
-## What's not a slash command
-
-Things that look like commands but aren't directly callable:
-
-| File | What it is |
-|---|---|
-| `commands/plan_base.md` | Base template for new plans. Copied by `/plan`. |
-| `docs/script-reference.md` | Risk-lens catalog, A3 worked example, and anti-patterns for `/script`. Consulted by the skill while classifying assumptions. |
-| `agents/*.md` | Sub-agent definitions (codebase-explorer, implementer, plan-reviewer, implementation-reviewer, researcher). Spawned by skills via `subagent_type:`. |
-| `rules/backend-patterns.md` | Global rule. Auto-loaded every session. |
-| `patterns/*.md` | Behavioral patterns from `/learn`. Indexed in `patterns/INDEX.md`. |
-
----
-
-## Adding a new command
-
-```bash
-# Top-level: becomes /foo
-$EDITOR ~/.claude-dotfiles/commands/foo.md
-
-# Namespaced: becomes /myteam:foo
-mkdir -p ~/.claude-dotfiles/commands/myteam
-$EDITOR ~/.claude-dotfiles/commands/myteam/foo.md
-```
-
-Command files are markdown with optional frontmatter:
-
-```markdown
----
-description: One-line summary for slash-menu autocomplete.
-argument-hint: "[optional argument format]"
----
-
-# /foo — Title
-
-Body of the command. Claude executes this when the user runs /foo.
-```
-
-If the new command needs a Skill Routing trigger, add one row to the table in `CLAUDE.md` (slash command, natural-language trigger, Consequence YES/No).
-
-The PostToolUse hook auto-pushes after you save.
+Templates and support files (not invoked directly): `commands/plan_base.md` (base template loaded by
+`/plan`), `commands/pre-compact-template.md` (handoff-file template written by `/pre-compact`),
+`commands/devtools-CHANGELOG.md` (changelog for `/devtools`). Removed packs (gemini, ui-ux-pro-max,
+antigravity, etc.) live in `commands/archive/` and are intentionally excluded.

@@ -2,6 +2,51 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-01 - Production cleanup: dead packs removed, contract-first skill restructure, anti-drift additions
+
+Full production defluff of the repo, verified by a 9-agent audit (3 Claude auditors, 6 Codex
+transcript verifiers) over the complete retained transcript corpus (4,585 jsonl / 4.4 GB / 19
+project dirs). Every removal was zero-usage AND zero-inbound-reference verified. User-approved
+keep list honored (afk, claudemd, commit, share-fix, skill-improve, investigate, research-web,
+database-audit, checkpoint, master-review - all health-checked, all clean).
+
+- **Removed** (commands/): hybrid/LM-Studio pack (5, hard-broken - target dir absent), minicrew/
+  (empty), patterns/ (empty + dead live symlink), fraim, molecular pack (admet/dock/screen/
+  optimize/prep-target/dashboard), crm, plan2bid (19), parsa (27), skillset, buildskill,
+  architect, learn, tdd, renderdeploy, netlifydeploy, supabase-audit (deprecated alias),
+  ui-ux-pro-max (7). All inbound references swept in the same commits (codex-review FRAIM
+  excision across 6 regions; generate-codex-layer + skill-improve + docs examples).
+- **Archived** (unlisted, kept): gemini/ (broken since 5/30), antigravity.md (built on the
+  absent hybrid-control tree), PRECOMPACT-STARTUP-HANG-FIX.md -> `archive/`.
+- **Contract-first restructure** of the three compaction-critical skills. Empirical finding:
+  invoked-skill bodies are re-injected after EVERY compaction HEAD-TRUNCATED to the first
+  20,000 CHARACTERS - mission.md and pre-compact.md were losing their operating contract at
+  every boundary. post-compact-resume.md slimmed 25,592 -> 19,997 chars (fits whole);
+  mission.md + pre-compact.md gained a self-sufficient CONTRACT CORE ending at a
+  `<!-- CONTRACT-CORE-END -->` marker (<=19.5k), full detail below. Cold-read tests (fresh
+  agent, 20k slice only): 8/10 both, correct bridge-write line emitted.
+- **New guards** (fail-closed): `lint-skill-size.sh` (20k ceiling, chained into pre-commit
+  BEFORE the terminal secret-scan exec; 6 fixture tests) + `lint-skill-contract.sh` (durable
+  required-literal inventories: 25 allowlisted mission-write invocation lines, banned ~/$HOME
+  variants, log grammars, all STATE tokens, all 24 pre-compact step headings).
+  `dotfiles-sync.sh` commit failures now LOUD + fail-closed (was silently pushing stale HEAD).
+- **Anti-drift additions** (from the openai/codex CLI study): a 4-rule continuation contract
+  rendered in every mission banner AND the post-compact primer message (keep the full
+  objective; worktree over memory; completion unproven until evidenced; blocked only after 3
+  repeats); ctx-gate FORCE message now names the durable surfaces; `handoff-smoke-check.sh`
+  (advisory) verifies handoff-referenced paths exist, warning into the handoff itself.
+- **Instruction layer:** settings.json.template synced HOOKS-ONLY from live (template
+  permission list stays intentionally stricter - note reworded to say so); global CLAUDE.md
+  ship-per-tab example + statusline tombstone cleaned; OpenWhip crumb removed from
+  settings.local.json. dentall CLAUDE.md/AGENTS.md trailer fix deferred to a patch (repo was
+  mid-merge).
+- **Purged:** .handoff-archive/, reference/settings.local.snapshot.json, .DS_Store (+
+  gitignored). `~/.claude/` junk (9 settings backups, commands.bak/, rules.bak, tmp-codex-r2)
+  quarantined to `~/.claude/.trash-20260801/` (NOT deleted); 25 verified-orphan memory
+  sidecars moved to `memory/orphans-archive/`.
+- **Registry:** docs/COMMANDS.md regenerated from the live command set; Codex mirror
+  refreshed via install-codex.sh (88 skills, zero dead names).
+
 ## 2026-07-14 — New `/testplan` skill: capability-discovery test-plan generator
 
 Added `/testplan` (`commands/testplan.md`) — a domain-agnostic skill that writes an exhaustive,
