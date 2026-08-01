@@ -9,10 +9,15 @@ HOOK_DIR="$DIR/.git/hooks"
 
 mkdir -p "$HOOK_DIR"
 
-# pre-commit: block secrets from entering local history
+# pre-commit: skill-size guard, then block secrets from entering local history.
+# ORDER + STRUCTURE are load-bearing: the size lint runs first and its failure
+# aborts the commit; secret-scan stays the TERMINAL check via exec (anything
+# appended after an exec is unreachable - do not add steps below it).
 cat > "$HOOK_DIR/pre-commit" <<'EOF'
 #!/bin/bash
-# Block commit if any staged file contains a recognized secret pattern.
+# 1) 20k-char re-injection-ceiling guard (staged files only).
+"$HOME/.claude-dotfiles/scripts/lint-commands/lint-skill-size.sh" --staged || exit 1
+# 2) Block commit if any staged file contains a recognized secret pattern.
 exec "$HOME/.claude-dotfiles/scripts/secret-scan.sh" --staged
 EOF
 chmod +x "$HOOK_DIR/pre-commit"

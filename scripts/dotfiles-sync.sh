@@ -52,7 +52,14 @@ _url=$(git remote get-url "$_remote" 2>/dev/null)
 # Portable (BSD/GNU sed): strip a trailing .git and slash, THEN the host prefix — no non-greedy ops.
 _slug=$(printf '%s' "$_url" | sed -e 's#\.git$##' -e 's#/$##' -e 's#^.*github\.com[:/]##')
 git add -A
-git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)" 2>/dev/null
+if git diff --cached --quiet; then
+    : # nothing staged — benign, fall through (push may still deliver an earlier held commit)
+elif ! git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)"; then
+    # LOUD fail-closed: a rejected commit (e.g. a pre-commit lint) must never silently
+    # strand staged changes while pushing stale HEAD. Surface it and stop.
+    echo "dotfiles-sync: COMMIT FAILED (pre-commit hook rejected or git error) — staged changes are NOT committed and NOT pushed. Fix the cause, then re-run scripts/dotfiles-sync.sh." >&2
+    exit 5
+fi
 # Empty $GH_TOKEN-free env is fine; -R pins the query to the push target so $GH_REPO can't hijack it.
 if [ -n "$_slug" ]; then
     _vis=$(GH_REPO= gh repo view "$_slug" --json isPrivate -q .isPrivate 2>/dev/null)

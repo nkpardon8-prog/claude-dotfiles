@@ -340,7 +340,7 @@ case "$SOURCE" in
     # the resumed session (correct sid, source=compact), so make self-resume the imperative FIRST
     # action — it does not depend on cross-tab delivery. The typed command is now a redundant
     # backstop; a one-shot (sid,nonce) marker in /post-compact-resume makes a double-fire idempotent.
-    MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. Your FIRST action: run /post-compact-resume ${SID:-<session_id>} — do not wait for the Stop-hook auto-fire (it may have been delivered to another tab; running it yourself is authoritative and idempotent)."
+    MSG="${ANOMALY_WARNING}${MARKER_WARNING}${STALE_WARNING}POST-COMPACT SESSION. A /pre-compact handoff is at ${HANDOFF_PATH}. Your FIRST action: run /post-compact-resume ${SID:-<session_id>} — do not wait for the Stop-hook auto-fire (it may have been delivered to another tab; running it yourself is authoritative and idempotent). Continuation contract: keep the FULL original objective intact (never redefine success down); the worktree and external state are authoritative over summarized memory - inspect before relying; completion stays UNPROVEN until verified requirement-by-requirement; do not declare blocked until the same blocker repeats 3 consecutive attempts."
     ;;
   resume|startup|clear)
     if [ "$SENTINEL_PRESENT" = "true" ]; then
