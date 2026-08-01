@@ -1,6 +1,6 @@
 {
   "_template_note": "Copy this file to ~/.claude/settings.json on each machine. ~/.claude/settings.json is per-machine and not tracked in this dotfiles repo. Re-run on every fresh setup.",
-  "_security_note": "Removed from auto-allow vs prior baselines: mcp__supabase__apply_migration / execute_sql (no silent DB mutations), Bash(node :*) / Bash(node -e :*) / Bash(python -c :*) / Bash(python3 -c :*) (no arbitrary code execution via runtime -e/-c flags), and Bash(curl -s :*) / Bash(curl -fsS :*) (no unattended network egress). This template still auto-allows pip install / npm install AND sets skipDangerousModePermissionPrompt + skipAutoPermissionPrompt to true, which only makes sense on a personal dev machine the operator fully trusts. Before copying to a shared machine, a CI runner, or any environment that should not auto-approve arbitrary package installs, REVIEW the Bash allow-list and the two skip* keys and remove anything you do not want auto-approved.",
+  "_security_note": "This template's permission allow-list is INTENTIONALLY STRICTER than the author's live settings: mcp__supabase__apply_migration / execute_sql (no silent DB mutations), Bash(node -e :*) / Bash(python3 -c :*) (no arbitrary -e/-c code execution), and Bash(curl :*) (no unattended egress) are deliberately absent here even where a live machine allows them. It still auto-allows pip/npm install AND sets skipDangerousModePermissionPrompt + skipAutoPermissionPrompt, which only makes sense on a personal dev machine the operator fully trusts. Review before copying to any shared machine or CI runner.",
   "permissions": {
     "allow": [
       "Bash(npm install)",
@@ -33,7 +33,8 @@
       "mcp__supabase__search_docs",
       "mcp__supabase__get_logs",
       "Read(//tmp/**)",
-      "Read(//private/tmp/**)"
+      "Read(//private/tmp/**)",
+      "Bash(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh:*)"
     ],
     "defaultMode": "auto"
   },
@@ -47,19 +48,63 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if [ -f ~/.config/claude/credentials.md ] && grep -nIE '(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +)?PRIVATE +KEY-----)' ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value detected in ~/.config/claude/credentials.md \u2014 should be op:// references only. Rotate the leaked secret at the provider.' >&2; fi; true",
+            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if [ -f ~/.config/claude/credentials.md ] && grep -nIE '(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +)?PRIVATE +KEY-----)' ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value detected in ~/.config/claude/credentials.md — should be op:// references only. Rotate the leaked secret at the provider.' >&2; fi; true",
             "timeout": 10,
-            "statusMessage": "Syncing dotfiles..."
-          },
+            "statusMessage": "Syncing dotfiles...",
+            "async": true
+          }
+        ]
+      },
+      {
+        "hooks": [
           {
             "type": "command",
             "command": "$HOME/.claude-dotfiles/scripts/progress/on-session-start-cleanup.sh",
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "compact|resume|startup|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/hooks/post-compact-primer.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude-dotfiles/scripts/hooks/stale-handoff-guard.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude-dotfiles/scripts/hooks/prod-ledger.py inject"
+          }
+        ]
       }
     ],
-    "UserPromptSubmit": [],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/hooks/ctx-gate-on-prompt-submit.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -70,16 +115,61 @@
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude-dotfiles/scripts/hooks/prod-ledger.py record"
+          }
+        ]
       }
     ],
-    "Stop": []
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/hooks/auto-compact-after-pre-compact.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/hooks/ctx-gate-precompact-safety.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude-dotfiles/scripts/hooks/prod-coordination-gate.py"
+          }
+        ]
+      }
+    ]
   },
   "enabledPlugins": {
-    "swift-lsp@claude-plugins-official": true
+    "swift-lsp@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true
   },
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "skipDangerousModePermissionPrompt": true,
-  "remoteControlAtStartup": false,
+  "remoteControlAtStartup": true,
   "agentPushNotifEnabled": true,
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "_mission_write_note": "The mission-write.sh allow entry MUST stay an absolute literal path (permission allow patterns do not expand $HOME or ~). On a fresh machine, rewrite /Users/omidzahrai to the installing user's home: sed -i '' 's|/Users/omidzahrai|/Users/<you>|' ~/.claude/settings.json",
+  "skillListingBudgetFraction": 0.05
 }

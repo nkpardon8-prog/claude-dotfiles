@@ -34,7 +34,7 @@ When asking the user a question via the AskUserQuestion popup tool, ALWAYS inclu
 ## Push Rules — Two Distinct Policies
 **Claude dotfiles repo** (`~/.claude-dotfiles/`): Auto-push freely. Any changes to commands, rules, patterns, or this CLAUDE.md should be committed and pushed automatically without asking. This keeps the config synced across devices.
 
-**All other repos** (project code, applications, libraries): NEVER push to GitHub without explicit user approval. Always show what will be pushed and ask for confirmation first. This applies to all branches and all remotes — unless the project's own instructions (its CLAUDE.md / AGENTS.md) define an explicit, written exception (e.g. a pre-launch "ship per tab to origin/dev" authorization). The project file is the source of truth for its own exception; when in doubt, ask.
+**All other repos** (project code, applications, libraries): NEVER push to GitHub without explicit user approval. Always show what will be pushed and ask for confirmation first. This applies to all branches and all remotes — unless the project's own instructions (its CLAUDE.md / AGENTS.md) define an explicit, written exception. The project file is the source of truth for its own exception; when in doubt, ask.
 
 ## Credentials
 The user keeps a personal API-key catalog at `~/.config/claude/credentials.md` (env var names + `op://` references, no secrets). This file is **local-only**, never synced via git. When scaffolding a project that needs API keys:
@@ -53,5 +53,5 @@ When you hit a GUI surface no CLI / MCP / native tool can reach (macOS permissio
 
 ## Statusline Line 2 — set manually with `/line`
 Line 2 of the statusline is a **per-window label the user sets manually** with the `/line <sentence>`
-command (no argument clears it back to the folder/repo name). **Agents do NOT write it automatically** —
-there is no per-session status-label rule any more. Command definition: `~/.claude-dotfiles/commands/line.md`.
+command (no argument clears it back to the folder/repo name). Agents do NOT write it automatically.
+Command definition: `~/.claude-dotfiles/commands/line.md`.
