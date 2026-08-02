@@ -34,9 +34,11 @@ STAMP="$HOOK_DIR/.secret-chain-version"
 # of machinery to protect against a SIGKILLed installer.
 #
 # So it is DELETED rather than patched. An orphaned lock now simply means the contention path
-# below cannot verify freshness, which exits 4 - LOUD, surfaced as a pause marker naming the
-# lock. A rare manual `rm -rf` beats three classes of silent concurrency bug, and a loud stop
-# is the correct direction for a gate that is supposed to fail closed.
+# below cannot verify freshness, which exits 4 - LOUD, surfaced as a pause marker. NOTE: the
+# marker carries a GENERIC reason, not this script's specific "remove this lock" message, because
+# both automatic callers redirect stderr to /dev/null. Run this installer by hand to see which
+# lock. A rare manual `rm -rf` still beats three classes of silent concurrency bug, and a loud
+# stop is the correct direction for a gate that is supposed to fail closed.
 _lock_held=0
 _i=0
 while [ "$_i" -lt 50 ]; do
