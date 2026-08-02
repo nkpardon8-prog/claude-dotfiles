@@ -66,7 +66,13 @@ scan_stdin() {
         m=$(printf '%s' "$content" | grep -anE -e "$RX_PIN"); rc=$?
         [ "$rc" -gt 1 ] && return 3
         if [ -n "$m" ]; then
-            m=$(printf '%s' "$m" | grep -vE '000000|123456|XXXXXX'); rc=$?
+            # Drop a line ONLY when the PIN's own VALUE is a placeholder. Filtering on the
+            # whole line let a real secret hide behind an unrelated mention: a line reading
+            # "<pin-key>=<real six digits>" followed by a comment that happens to name a
+            # placeholder value was silently accepted in full.
+            # (Deliberately described rather than shown - a literal example here would be a
+            #  true positive against this repo's own full-tree scan. It was, once.)
+            m=$(printf '%s' "$m" | grep -vE '([Pp][Ii][Nn]|CRD_PIN)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*(000000|123456|XXXXXX)'); rc=$?
             [ "$rc" -gt 1 ] && return 3
         fi
         # Written as an explicit if rather than ${hits:+$'\n'}: bash expands that form
@@ -180,7 +186,18 @@ WORST=0
 HITS=""
 while IFS= read -r -d '' f; do
     [ -z "$f" ] && continue
-    if [ "$MODE" = staged ]; then
+    if [ "$MODE" = patch ]; then
+        # A composite patch file is NOT a repository path: it must bypass the .git
+        # exclusion (a TMPDIR resolving inside .git made scan_file return clean and
+        # approved an unscanned push) and it must FAIL CLOSED if it has vanished,
+        # rather than inheriting scan_file's "missing path is clean" rule.
+        if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+            echo "secret-scan: --patch input missing or unreadable: $f" >&2
+            WORST=3
+            continue
+        fi
+        out=$(scan_stdin "$f" < "$f"); rc=$?
+    elif [ "$MODE" = staged ]; then
         # Read the INDEX blob, not the worktree. Enumerating index paths while reading
         # worktree bytes let `git add <secret>; echo harmless > <file>` pass cleanly.
         if ! t=$(git cat-file -t ":$f" 2>/dev/null); then

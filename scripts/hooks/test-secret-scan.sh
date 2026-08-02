@@ -112,6 +112,17 @@ PINLIT=$(printf '%s%s %s%s' 'P' 'IN:' '4829' '13')
 printf '%s\n' "$PINLIT" > pinonly.txt
 bash "$SCAN" pinonly.txt >/dev/null 2>&1
 chk "PIN lane fires for a normal file scan" "$?" "2"
+
+# 8b. Placeholder suppression must key on the PIN's own VALUE, not on the whole line.
+#     Filtering line-wide let a real PIN hide behind an unrelated mention of a placeholder.
+PINREAL=$(printf '%s%s%s' 'CRD_' 'PIN=4829' '13')
+PINFAKE=$(printf '%s%s' '1234' '56')
+printf '%s # changed from %s\n' "$PINREAL" "$PINFAKE" > pinmixed.txt
+bash "$SCAN" pinmixed.txt >/dev/null 2>&1
+chk "real PIN beside a placeholder mention is caught" "$?" "2"
+printf '%s%s\n' 'CRD_PIN=' "$PINFAKE" > pinplaceholder.txt
+bash "$SCAN" pinplaceholder.txt >/dev/null 2>&1
+chk "a genuine placeholder PIN is still exempt" "$?" "0"
 bash "$SCAN" --patch pinonly.txt >/dev/null 2>&1
 chk "PIN lane is skipped in --patch mode" "$?" "0"
 printf '%s\n' "$SECRET" > patchy.txt
@@ -233,9 +244,50 @@ git reset -q; rm -f s.txt
 ln -s /etc/hosts swapme; git add swapme
 HOME="$FIXHOME" git commit -qm "add symlink" --no-verify >/dev/null 2>&1
 rm swapme; printf '%s\n' "$SECRET" > swapme; git add swapme
+# Prove the entry really is status T. If the symlink commit had failed, this would be an
+# `A` entry that plain ACMR still scans - the case would pass without testing anything.
+chk "the staged entry really is a type change" \
+    "$(git diff --cached --name-status --diff-filter=T | awk '{print $1}' | head -1)" "T"
 bash "$SCAN" --staged >/dev/null 2>&1
 chk "staged symlink-to-file type change is scanned" "$?" "2"
 git reset -q --hard HEAD >/dev/null 2>&1
+
+# H. --text must defeat diff suppression. Without it `git log -p` prints "Binary files
+#    differ" (or nothing for a `-diff` path) and the pre-push scans no content at all.
+printf 'suppressed.txt -diff\n' > .gitattributes
+git add .gitattributes; HOME="$FIXHOME" git commit -qm attrs --no-verify >/dev/null 2>&1
+printf '%s\n' "$SECRET" > suppressed.txt; git add suppressed.txt
+HOME="$FIXHOME" git commit -qm "add suppressed" --no-verify >/dev/null 2>&1
+chk "a -diff path really is suppressed in a plain patch" \
+    "$(git log -p -1 --no-color | grep -c "$SECRET")" "0"
+herr=$(HOME="$FIXHOME" git push origin "$BR" 2>&1)
+chk "diff-suppressed secret is still rejected" \
+    "$(printf '%s' "$herr" | grep -c 'BLOCKED: secret detected')" "1"
+git reset -q --hard "$BASE"
+
+# I. A PIN in a COMMIT MESSAGE must still be caught. The --patch stream deliberately drops
+#    the path-aware PIN lane; the message stream must NOT, or this coverage is lost.
+PINMSG=$(printf '%s%s %s%s' 'P' 'IN:' '4829' '13')
+printf 'x\n' > pm.txt; git add pm.txt
+HOME="$FIXHOME" git commit -qm "rotate $PINMSG" --no-verify >/dev/null 2>&1
+ierr=$(HOME="$FIXHOME" git push origin "$BR" 2>&1)
+chk "PIN in a commit message is rejected" \
+    "$(printf '%s' "$ierr" | grep -c 'BLOCKED: secret detected')" "1"
+git reset -q --hard "$BASE"
+
+# J. Second remote: tracking refs for remote B must never excuse commits pushed to remote A.
+git init -q --bare "$WORK/other.git"
+git remote add other "$WORK/other.git"
+git checkout -q -b twinbranch "$BASE"
+printf '%s\n' "$SECRET" > tw.txt; git add tw.txt
+HOME="$FIXHOME" git commit -qm twin --no-verify >/dev/null 2>&1
+HOME="$FIXHOME" git push -q --no-verify other twinbranch >/dev/null 2>&1  # now on remote B only
+git fetch -q other >/dev/null 2>&1
+HOME="$FIXHOME" git push origin twinbranch >/dev/null 2>&1
+chk "commits known only to another remote are still scanned" \
+    "$(rgit rev-parse twinbranch >/dev/null 2>&1 && echo leaked || echo blocked)" "blocked"
+git checkout -q "$BR"; git branch -qD twinbranch >/dev/null 2>&1
+git remote remove other >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------
 echo

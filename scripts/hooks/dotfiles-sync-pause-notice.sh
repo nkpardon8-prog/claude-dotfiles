@@ -18,5 +18,21 @@ M="$HOME/.claude/.dotfiles-sync-paused"
 reason=$(sed -n 's/^reason: //p' "$M" 2>/dev/null | head -1)
 [ -n "$reason" ] || reason="(no reason recorded in the marker)"
 
-echo "dotfiles-sync PAUSED: ${reason} — auto-push to the dotfiles remote is HALTED and local edits are accumulating. Clear with: rm ${M}"
+# Guidance is REASON-AWARE on purpose. Telling someone to delete the marker is correct for a
+# transient failure, but actively dangerous when a secret triggered the pause: clearing it
+# resumes the auto-push and publishes the secret. Lead with rotate-and-remove in that case.
+case "$reason" in
+    *secret*|*scan*)
+        echo "dotfiles-sync PAUSED — a secret was detected or could not be ruled out: ${reason}"
+        echo "  Auto-push is HALTED. Do NOT simply delete the marker: that resumes pushing to a PUBLIC remote."
+        echo "  1) ROTATE the credential at its provider - assume it is already compromised."
+        echo "  2) Remove it from the working tree (and from history if it was committed)."
+        echo "  3) Confirm clean:  bash ~/.claude-dotfiles/scripts/secret-scan.sh --working"
+        echo "  4) Only then:      rm ${M}"
+        ;;
+    *)
+        echo "dotfiles-sync PAUSED: ${reason} — auto-push is HALTED and local commits are accumulating."
+        echo "  Fix the cause above, then clear with: rm ${M}"
+        ;;
+esac
 exit 0

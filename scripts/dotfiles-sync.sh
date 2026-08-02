@@ -40,9 +40,33 @@ _pause() {
 DOTFILES_DIR="$HOME/.claude-dotfiles"
 cd "$DOTFILES_DIR" || exit 0
 
-# Bail if no changes
+# SELF-HEALING HOOK INSTALL. .git/hooks/ is untracked, so a `git pull` that brings in a
+# fixed install-git-hooks.sh leaves the ALREADY-GENERATED hooks untouched - a clone would
+# keep an outdated, possibly fail-open, pre-push indefinitely with no signal. Compare the
+# stamped fingerprint against the current generator and reinstall when they disagree.
+_installer="$DOTFILES_DIR/scripts/install-git-hooks.sh"
+_stamp="$DOTFILES_DIR/.git/hooks/.secret-chain-version"
+if [ -r "$_installer" ]; then
+    _want=$(shasum "$_installer" 2>/dev/null | awk '{print $1}')
+    _have=$(cat "$_stamp" 2>/dev/null)
+    if [ -n "$_want" ] && [ "$_want" != "$_have" ]; then
+        if bash "$_installer" >/dev/null 2>&1; then
+            echo "(dotfiles-sync: git hooks were stale - reinstalled from $_installer)" >&2
+        else
+            echo "dotfiles-sync: FAILED to refresh the git hooks - the local secret gate may be stale or absent." >&2
+            _pause "git hook reinstall failed - the local secret gate may be stale"
+            exit 7
+        fi
+    fi
+fi
+
+# Bail only when there is genuinely nothing to do. A clean tree does NOT mean nothing is
+# pending: a previously blocked or failed push leaves commits sitting locally, and exiting
+# here would strand them forever once the pause was cleared.
 if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null && [ -z "$(git ls-files --others --exclude-standard)" ]; then
-    exit 0
+    _ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+    [ "${_ahead:-0}" -eq 0 ] && exit 0
+    echo "(dotfiles-sync: tree clean but ${_ahead} commit(s) unpushed - attempting to deliver them.)" >&2
 fi
 
 # Pre-push secret scan (working tree + untracked files about to be staged)
