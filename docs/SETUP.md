@@ -65,8 +65,11 @@ chmod +x "$HOME/.claude-dotfiles/scripts/dotfiles-sync.sh"
 bash "$HOME/.claude-dotfiles/scripts/install-git-hooks.sh"
 ```
 
-This installs `pre-commit` (blocks a staged secret) and `pre-push` (blocks a secret in any
-commit being pushed — blob or commit message). This repo pushes to a **public** remote, so
+This installs `pre-commit` (runs `lint-skill-size.sh --staged` and
+`lint-skill-contract.sh --staged` over the staged command files, then blocks a staged
+secret) and `pre-push` (blocks a secret in any commit being pushed — blob or commit
+message). Both lints are staged-scoped, so a commit touching nothing under `commands/`
+passes them without checking anything. This repo pushes to a **public** remote, so
 skipping this step means committing and pushing with no local protection whatsoever.
 
 Scope and known gaps: **[`SECURITY-secret-chain.md`](SECURITY-secret-chain.md)**.

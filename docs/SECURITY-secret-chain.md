@@ -12,7 +12,7 @@ Audited and repaired 2026-08-01. Every claim below was established by direct pro
 
 | Layer | Where | Fires on | Blocks? |
 |---|---|---|---|
-| pre-commit | `.git/hooks/pre-commit` (generated) | `git commit` | Yes — scans **index blobs** |
+| pre-commit | `.git/hooks/pre-commit` (generated) | `git commit` | Yes — scans **index blobs** (after two staged-scoped command lints: `lint-skill-size.sh`, then `lint-skill-contract.sh`) |
 | pre-push | `.git/hooks/pre-push` (generated) | `git push` | Yes — scans the commit range, blobs **and** messages |
 | auto-sync | `scripts/dotfiles-sync.sh` | any dotfile edit | Yes — scans the working tree before staging |
 | CI | `.github/workflows/secret-scan.yml` | push / PR | **No — detection only** |
@@ -44,7 +44,8 @@ person. All of the following defeat the entire local tier and are **not** defend
 - editing the unstaged `scripts/secret-scan.sh` to `exit 0`
 - cloning elsewhere and pushing without ever installing the hooks
 - creating commits via `git rebase` / `cherry-pick` / `am` / `commit-tree`, which do not
-  run the pre-commit pair
+  run the pre-commit hook at all - so neither its two command lints nor the secret scan
+  chained behind them ever sees the result
 
 Do **not** try to close these with more hook code. The correct control for a hostile
 pusher is server-side (branch protection / push rules), which this remote does not

@@ -263,6 +263,11 @@ _lint_ln=$(grep -n 'lint-skill-size\.sh' "$R/.git/hooks/pre-commit" | head -1 | 
 _exec_ln=$(grep -nE '^exec .*secret-scan\.sh' "$R/.git/hooks/pre-commit" | head -1 | cut -d: -f1)
 chk "size lint runs BEFORE the terminal exec" \
     "$([ -n "$_lint_ln" ] && [ -n "$_exec_ln" ] && [ "$_lint_ln" -lt "$_exec_ln" ] && echo yes)" "yes"
+# Same rule for the contract lint (added 2026-08-02): presence alone is not enough - a line
+# that drifts below the exec is unreachable and fails silently open.
+_clint_ln=$(grep -n 'lint-skill-contract\.sh' "$R/.git/hooks/pre-commit" | head -1 | cut -d: -f1)
+chk "contract lint runs BEFORE the terminal exec" \
+    "$([ -n "$_clint_ln" ] && [ -n "$_exec_ln" ] && [ "$_clint_ln" -lt "$_exec_ln" ] && echo yes)" "yes"
 
 BR=$(git symbolic-ref --short HEAD)   # never assume master vs main
 rgit() { git --git-dir="$WORK/remote.git" "$@"; }

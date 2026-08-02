@@ -76,15 +76,22 @@ install_hook() {
     mv -f "$_tmp" "$HOOK_DIR/$_name" || { rm -f "$_tmp"; exit 1; }
 }
 
-# pre-commit: skill-size guard, then block secrets from entering local history.
-# ORDER + STRUCTURE are load-bearing: the size lint runs first and its failure
+# pre-commit: skill-size guard, skill-contract guard, then block secrets from
+# entering local history.
+# ORDER + STRUCTURE are load-bearing: the two lints run first and either failure
 # aborts the commit; secret-scan stays the TERMINAL check via exec (anything
 # appended after an exec is unreachable - do not add steps below it).
+# Both lints are --staged, so a commit touching nothing under commands/ checks
+# nothing and passes - that scoping is what keeps this hook safe to run on every
+# commit (proven: scripts/lint-commands-assumptions/01).
 install_hook pre-commit <<'EOF'
 #!/bin/bash
 # 1) 20k-char re-injection-ceiling guard (staged files only).
 "$HOME/.claude-dotfiles/scripts/lint-commands/lint-skill-size.sh" --staged || exit 1
-# 2) Block commit if any staged file contains a recognized secret pattern.
+# 2) Contract-survival guard: required literals, their position above the
+#    contract-core marker, and swept wording that must not return (staged only).
+"$HOME/.claude-dotfiles/scripts/lint-commands/lint-skill-contract.sh" --staged || exit 1
+# 3) Block commit if any staged file contains a recognized secret pattern.
 #    secret-scan --staged reads INDEX BLOBS, so overwriting the worktree copy after
 #    `git add` no longer hides the staged secret.
 exec "$HOME/.claude-dotfiles/scripts/secret-scan.sh" --staged
