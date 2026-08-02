@@ -168,10 +168,19 @@ rediscover them, and so a future change does not quietly assume they are handled
   orphaned lock now makes the installer `exit 4`, which surfaces as a pause marker naming the
   exact lock and the command to remove it. Loud and manual beats silent and racy.
 
-- **The pause marker is one file, so a `secret` record can be lost to `rm`.** Non-secret writes
-  use `set -C` (O_EXCL) and can never clobber it, and only a confirmed secret may overwrite —
-  but nothing stops a human or a script from deleting the marker outright. It is a
+- **The pause marker is one file, so a `secret` record can be lost.** In `dotfiles-sync.sh`
+  non-secret writes use `set -C` (O_EXCL) and can never clobber an existing marker; only a
+  confirmed secret may overwrite. **The SessionStart writer is weaker**: it is a one-line shell
+  fragment in `settings.json`, so it uses `[ -f ] || printf`, a check-then-write with a
+  millisecond race. It is the low-frequency writer (once per session start, and only when the
+  installer fails), so the exposure is small — but it is not O_EXCL and this doc should not
+  claim otherwise. Nothing stops a human or script deleting the marker outright either. It is a
   notification channel, not an audit log.
+
+- **The orphan-lock pause does not carry its specific reason.** `install-git-hooks.sh` prints
+  which lock to remove and the exact `rm -rf`, but both automatic callers redirect its stderr
+  to `/dev/null`, so the marker records only a generic "could not refresh the git hooks". To
+  see the real cause, run `bash ~/.claude-dotfiles/scripts/install-git-hooks.sh` by hand.
 
 - **`--all-history` remains a coarse primary-pattern audit.** It does not apply the PIN lane and
   does not honor the rc=3 contract. It is a one-time sweep, not a gate, and is not

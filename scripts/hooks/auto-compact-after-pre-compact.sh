@@ -70,12 +70,18 @@ SENTINEL=$(ac_sentinel_path "$REAL_SID")
 # only routine cleanup path because most Stop events skip the sentinel-consume
 # path (`[ -f "$SENTINEL" ] || exit 0` below is the typical fast-path). Putting
 # GC here ensures it actually runs.
-# Also sweeps the `.attempts` retry counters written by the retain-and-confirm path below.
-# Losing one only resets a retry count to zero, which is harmless - it bounds retries, it
-# does not authorize them.
 find "$HOME/.claude/progress" -maxdepth 1 -type f \
-  \( -name 'auto-compact-*.json.claim.*' -o -name 'auto-compact-*.json.attempts' \) \
+  -name 'auto-compact-*.json.claim.*' \
   -mmin +60 -delete 2>/dev/null || true
+
+# `.attempts` counters are swept on the 24h schedule, NOT the 60-minute one. At 60 minutes an
+# ordinary sparse session (long gaps between Stop events) would have its counter deleted
+# between attempts, resetting the bound to zero every time and permitting indefinite retries -
+# which is exactly the runaway the bound exists to prevent. 24h is longer than any single
+# session's compaction interval, so the bound survives where it matters.
+find "$HOME/.claude/progress" -maxdepth 1 -type f \
+  -name 'auto-compact-*.json.attempts' \
+  -mmin +1440 -delete 2>/dev/null || true
 
 # V2-11 (R8): GC stale orphan breadcrumbs (>24h old) — sweeps migration residue from
 # pre-R8 sessions that wrote breadcrumbs. Also sweep stale .session-key-* files from
@@ -292,9 +298,11 @@ fi   # end of the real-fire block (skipped when the harness pre-set OSA_RESULT)
 # errored / returned empty (e.g. a bad CTX_GATE_PTY_DELAY_SEC, or the target tab closed in the final
 # window) — then letting the EXIT trap delete the claim would CONSUME the sentinel without compacting,
 # silently breaking the next-Stop retry AND the pending-handoff primer recovery. So restore it.
-# A result that STARTS WITH "fired" means the first `do script "/compact"` succeeded (even
-# "fired+queue-failed" — /compact ran; the typed resume is just a backstop and the self-driven primer
-# covers it), so we do NOT restore in that case.
+# SUPERSEDED IN PART (2026-08-02): "fired" no longer implies the sentinel may be discarded.
+# A result starting with "fired" means AppleScript delivered the text - NOT that a compaction
+# happened - so that branch now RETAINS the sentinel and counts the attempt, and
+# post-compact-primer.sh retires it on a confirmed source=compact start. Both branches below
+# therefore keep the sentinel alive; they differ only in whether an attempt is counted.
 case "${OSA_RESULT:-}" in
   fired*)
     # VERIFY EFFECT, NOT DELIVERY (2026-08-02). "fired" only means AppleScript wrote the text

@@ -167,17 +167,29 @@ _push_or_pause() {
         # A push rejected by our own pre-push hook means a secret is in the commits being
         # pushed - a materially different situation from a network failure, and the reader
         # must be told to rotate rather than to clear the marker and retry.
-        if printf '%s' "$_perr" | grep -q 'BLOCKED: secret detected'; then
-            _pause "pre-push rejected the push: a secret is present in the commits being pushed" secret
-        elif printf '%s' "$_perr" | grep -q 'RANGE-NOT-PROVEN-CLEAN'; then
+        # Classified with bash pattern matching rather than `printf | grep -q`. A reviewer
+        # argued the pipe could report a false negative under `pipefail` when grep exits early
+        # and printf takes SIGPIPE - which would record a CONFIRMED SECRET as a routine
+        # failure. PROBED: it does NOT reproduce (bash's builtin printf, 5MB payload, rc=0 and
+        # PIPESTATUS=0), so this is not a bug fix. It is kept because `case` is strictly
+        # simpler - no subshell, no pipe, no pipefail interaction - and removes the question
+        # permanently from the one classification that must never be wrong.
+        case "$_perr" in
+          *"BLOCKED: secret detected"*)
+            _pause "pre-push rejected the push: a secret is present in the commits being pushed" secret ;;
+          *"RANGE-NOT-PROVEN-CLEAN"*)
             # rc=3 from the gate: it could not PROVE the range clean (scanner missing, TMPDIR
             # unusable, commits unenumerable). That is not a confirmed leak, but it is also not
             # a routine network failure - clearing it and retrying just pushes unproven bytes.
             # It needs its own machine kind so the readers can say the right thing.
-            _pause "pre-push could not prove the pushed range clean: $(printf '%s' "$_perr" | grep -m1 'failing closed')" unproven
-        else
-            _pause "push to ${_slug:-$_remote} failed: $(printf '%s' "$_perr" | head -1)"
-        fi
+            # Extract the reason from the TOKEN line. This still grepped the old "failing
+            # closed" prose, which `_unproven` no longer prints - so every direct _unproven
+            # failure (mktemp, scanner missing, unenumerable range) recorded an EMPTY reason in
+            # the only channel the async hook has.
+            _pause "pre-push could not prove the pushed range clean: $(printf '%s' "$_perr" | grep -m1 'RANGE-NOT-PROVEN-CLEAN')" unproven ;;
+          *)
+            _pause "push to ${_slug:-$_remote} failed: $(printf '%s' "$_perr" | head -1)" ;;
+        esac
         exit 6
     fi
 }

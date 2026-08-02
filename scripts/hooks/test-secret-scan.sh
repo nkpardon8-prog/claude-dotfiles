@@ -453,10 +453,19 @@ printf 'kind: secret\nreason: test\n' > "$MKF"
 chk "kind=secret notice says ROTATE" \
     "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'ROTATE')" "1"
 printf 'kind: unproven\nreason: test\n' > "$MKF"
+# POSITIVE assertions on purpose. The earlier "does NOT say ROTATE" form was decorative:
+# deleting the whole `unproven)` arm falls through to `*)`, which also lacks ROTATE, so the
+# test stayed green while the branch it names was gone. Assert text unique to the arm.
+chk "kind=unproven notice states the range was not PROVEN clean" \
+    "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'could not PROVE the pushed range clean')" "1"
+chk "kind=unproven notice directs a push retry, not --working" \
+    "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'RETRYING THE PUSH')" "1"
 chk "kind=unproven notice does NOT say ROTATE" \
     "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'ROTATE')" "0"
-chk "kind=unproven notice does NOT recommend --working" \
-    "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'Re-prove:   bash.*--working')" "0"
+# The SECOND reader must know the same vocabulary, or a session-start warning contradicts the
+# prompt notice. Static check: stale-handoff-guard needs its own `unproven` branch.
+chk "stale-handoff-guard routes on kind=unproven too" \
+    "$(grep -c '_pkind. = unproven' "$REPO/scripts/hooks/stale-handoff-guard.sh")" "1"
 printf 'kind: other\nreason: test\n' > "$MKF"
 chk "kind=other notice is the plain clear-and-retry form" \
     "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'Fix the cause above')" "1"

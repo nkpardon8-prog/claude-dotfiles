@@ -206,6 +206,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         echo "pre-push: the finding above is in commits being pushed to ${remote_ref:-?} (range: $*)" >&2
     fi
 done
+# The SCANNER's own rc=3 (its temp-list mktemp failing, an unreadable composite input) arrives
+# here without ever passing through _unproven, so it would exit 3 carrying no token and
+# dotfiles-sync would file a could-not-prove-clean as a routine `kind: other`. Emit the token
+# for every rc=3 exit, whatever produced it - the token is the contract, not the code path.
+if [ "$rc" -eq 3 ]; then
+    echo "pre-push: RANGE-NOT-PROVEN-CLEAN - the scanner could not prove the pushed range clean" >&2
+fi
 exit $rc
 EOF
 

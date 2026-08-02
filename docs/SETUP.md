@@ -93,6 +93,14 @@ ln -sf "$HOME/.claude-dotfiles/patterns"   "$HOME/.claude/patterns"
 
 ## Step 4 — Auto-sync hooks in settings.json
 
+**`settings.json.template` at the repo root is the authoritative copy — merge from that file,
+not from the abridged excerpt below.** This doc previously inlined a third copy of the
+SessionStart command and it drifted: it kept a pull-only version with no `install-git-hooks.sh`
+refresh and no failure marker, so anyone who followed these steps got a machine whose local
+secret gate was never repaired or re-verified, and an older private-key regex besides. Two
+independent reviewers flagged it in round 7. The excerpt here is illustrative structure only;
+copy the real command strings from the template.
+
 Read `~/.claude/settings.json` (create if missing) and merge:
 
 ```json
@@ -101,7 +109,7 @@ Read `~/.claude/settings.json` (create if missing) and merge:
     "SessionStart": [
       { "hooks": [ {
         "type": "command",
-        "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; if [ -f ~/.config/claude/credentials.md ] && grep -nIE '(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +)?PRIVATE +KEY-----)' ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value in ~/.config/claude/credentials.md — should be op:// references only. Rotate the leaked secret.' >&2; fi; true",
+        "command": "SEE settings.json.template — pulls, re-runs install-git-hooks.sh, writes the pause marker on failure, then scans credentials.md",
         "timeout": 10,
         "statusMessage": "Syncing dotfiles..."
       } ] }
@@ -117,8 +125,11 @@ Read `~/.claude/settings.json` (create if missing) and merge:
 }
 ```
 
-- **SessionStart** — auto-pulls latest dotfiles, then runs a non-blocking secret-leak check on
-  `~/.config/claude/credentials.md`.
+- **SessionStart** — auto-pulls latest dotfiles, **re-runs `install-git-hooks.sh`** (`.git/hooks/`
+  is untracked, so a pull that fixes the generator does NOT update the hooks already on disk —
+  without this a clone keeps an outdated, possibly fail-open pre-push forever), writes the
+  `~/.claude/.dotfiles-sync-paused` marker if that install fails, then runs a non-blocking
+  secret-leak check on `~/.config/claude/credentials.md`.
 - **PostToolUse (Edit|Write)** — auto-pushes dotfiles changes. Runs a hard pre-push secret scan
   first; on any match the push is **blocked** (exit 2) and you're told to rotate.
 - **UserPromptSubmit** — add `scripts/hooks/dotfiles-sync-pause-notice.sh` alongside whatever is
