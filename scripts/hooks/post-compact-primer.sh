@@ -325,10 +325,10 @@ fi
 # See plan Architecture Overview "Source-routing decision matrix" for the full table.
 case "$SOURCE" in
   compact)
-    # Stop hook claimed sentinel; sentinel typically absent for compact source.
-    # ANOMALY: if sentinel IS still present here, the Stop hook mv-claim failed silently.
-    # Only emitted for compact source — resume/startup/clear can legitimately have a
-    # sentinel (indicates /pre-compact ran but /compact never fired).
+    # The sentinel is normally PRESENT here: the Stop hook retains it after firing (firing is
+    # not proof of compaction) and this branch is where it is retired, because source=compact
+    # means a compaction demonstrably happened. resume/startup/clear can also legitimately
+    # carry a sentinel - there it means /pre-compact ran but /compact never fired.
     # CONFIRMATION OF EFFECT (2026-08-02). Reaching this branch means source=compact, i.e. a
     # compaction DEMONSTRABLY happened - so this, not the Stop hook's "AppleScript wrote the
     # text", is where the sentinel is retired. The Stop hook now deliberately RETAINS the
