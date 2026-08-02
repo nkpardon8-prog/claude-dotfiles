@@ -70,8 +70,11 @@ SENTINEL=$(ac_sentinel_path "$REAL_SID")
 # only routine cleanup path because most Stop events skip the sentinel-consume
 # path (`[ -f "$SENTINEL" ] || exit 0` below is the typical fast-path). Putting
 # GC here ensures it actually runs.
+# Also sweeps the `.attempts` retry counters written by the retain-and-confirm path below.
+# Losing one only resets a retry count to zero, which is harmless - it bounds retries, it
+# does not authorize them.
 find "$HOME/.claude/progress" -maxdepth 1 -type f \
-  -name 'auto-compact-*.json.claim.*' \
+  \( -name 'auto-compact-*.json.claim.*' -o -name 'auto-compact-*.json.attempts' \) \
   -mmin +60 -delete 2>/dev/null || true
 
 # V2-11 (R8): GC stale orphan breadcrumbs (>24h old) — sweeps migration residue from
@@ -174,7 +177,14 @@ if [ -n "${AUTO_COMPACT_TEST_NO_FIRE:-}" ]; then
   OSA_EXIT=0
   ac_log "test-no-fire sid=$REAL_SID tty=$TARGET_TTY (AUTO_COMPACT_TEST_NO_FIRE set — osascript skipped, no keystrokes sent)"
   handoff_log "compact_chained sid=$REAL_SID tty=$TARGET_TTY result=$OSA_RESULT"
-  exit 0
+  # NO `exit 0` here. This block used to exit immediately while its own comment claimed the
+  # "claim/consume/restore logic is still exercised" - it was not: the early exit jumped
+  # straight to the EXIT trap, which deleted the claim. That is why the harness's "sentinel
+  # consumed by hook" assertion passed no matter what the consume logic actually did, and why
+  # the restore path went unvalidated for its whole life. Falling through to the case block
+  # below means the smoke harness now exercises the REAL post-fire decision. The osascript
+  # itself is skipped by the OSA_RESULT guard on the next block, so no keystrokes are sent.
+  :
 fi
 
 # Deliver /compact via `do script ... in foundTab` (AppleScript writes to tab PTY input).
@@ -185,6 +195,8 @@ fi
 # Slow machines may need 0.5-1.0; fast machines may be fine with 0.1.
 PTY_DELAY="${CTX_GATE_PTY_DELAY_SEC:-0.3}"
 
+# Skipped entirely when the test harness pre-set OSA_RESULT above: no osascript, no keystrokes.
+if [ -z "${OSA_RESULT:-}" ]; then
 OSA_STDERR_TMP=$(mktemp 2>/dev/null)
 # If mktemp fails (rare — full /tmp), keep $OSA_STDERR_TMP empty. We deliberately
 # do NOT use "/dev/null" as a sentinel because the EXIT trap would then attempt
@@ -273,6 +285,7 @@ fi
 ac_log "stop sid=$REAL_SID tty=$TARGET_TTY osa_exit=$OSA_EXIT result=${OSA_RESULT:-empty} stderr=${OSA_STDERR:-none}"
 # B20: unified handoff audit trail — log compact chain event. V2-15: log full session_id.
 handoff_log "compact_chained sid=$REAL_SID tty=$TARGET_TTY result=${OSA_RESULT:-unknown}"
+fi   # end of the real-fire block (skipped when the harness pre-set OSA_RESULT)
 
 # RESTORE-ON-FIRE-FAILURE (2026-05-31, codex-review C2): the sentinel was already CLAIMED above.
 # If /compact did NOT actually fire — osascript said not-running / no-windows / no-matching-tab, or
@@ -283,7 +296,34 @@ handoff_log "compact_chained sid=$REAL_SID tty=$TARGET_TTY result=${OSA_RESULT:-
 # "fired+queue-failed" — /compact ran; the typed resume is just a backstop and the self-driven primer
 # covers it), so we do NOT restore in that case.
 case "${OSA_RESULT:-}" in
-  fired*) : ;;   # /compact fired — sentinel correctly consumed
+  fired*)
+    # VERIFY EFFECT, NOT DELIVERY (2026-08-02). "fired" only means AppleScript wrote the text
+    # to the tab's PTY. If the session was NOT at an idle prompt - typically a background shell
+    # still running - the TUI takes that text as a PROMPT instead of a command: the model burns
+    # a full turn replying to a bare "/compact" (measured: 4m59s, and a 420s fire-to-compaction
+    # gap against a ~120s median) and no compaction happens. Consuming the sentinel here made
+    # that failure invisible and unrecoverable, which is why the restore path below had fired
+    # ZERO times across 29 logged compactions.
+    #
+    # So do NOT consume on fire. Put the sentinel back and count the attempt; the NEXT Stop
+    # event retries, and post-compact-primer.sh consumes it when a compaction actually occurs
+    # (source=compact), which is the only real proof of effect. Bounded so a tab that can never
+    # accept the command cannot spin forever.
+    _att_file="${SENTINEL}.attempts"
+    _att=$(cat "$_att_file" 2>/dev/null || printf '0')
+    case "$_att" in ''|*[!0-9]*) _att=0 ;; esac
+    _att=$((_att + 1))
+    if [ "$_att" -ge 3 ]; then
+      rm -f "$_att_file" 2>/dev/null || true
+      ac_log "give-up sid=$REAL_SID tty=$TARGET_TTY attempts=$_att (typed /compact $_att times with no confirmed compaction; sentinel consumed to stop retrying - native auto-compact remains the backstop)"
+    elif mv -f "$CLAIM" "$SENTINEL" 2>/dev/null; then
+      printf '%s\n' "$_att" > "$_att_file" 2>/dev/null || true
+      trap 'rm -f "${OSA_STDERR_TMP:-}"' EXIT
+      ac_log "fired-unconfirmed sid=$REAL_SID tty=$TARGET_TTY attempt=$_att (sentinel retained; primer consumes it once a compaction is confirmed)"
+    else
+      ac_log "retain-FAILED sid=$REAL_SID tty=$TARGET_TTY attempt=$_att (claim could not be moved back; native auto-compact is the remaining backstop)"
+    fi
+    ;;
   *)
     if mv -f "$CLAIM" "$SENTINEL" 2>/dev/null; then
       trap 'rm -f "${OSA_STDERR_TMP:-}"' EXIT

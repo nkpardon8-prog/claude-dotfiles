@@ -329,12 +329,18 @@ case "$SOURCE" in
     # ANOMALY: if sentinel IS still present here, the Stop hook mv-claim failed silently.
     # Only emitted for compact source — resume/startup/clear can legitimately have a
     # sentinel (indicates /pre-compact ran but /compact never fired).
+    # CONFIRMATION OF EFFECT (2026-08-02). Reaching this branch means source=compact, i.e. a
+    # compaction DEMONSTRABLY happened - so this, not the Stop hook's "AppleScript wrote the
+    # text", is where the sentinel is retired. The Stop hook now deliberately RETAINS the
+    # sentinel after firing, because a typed `/compact` that lands while the session is busy is
+    # swallowed as an ordinary prompt and never compacts anything; retaining it lets the next
+    # Stop retry. A sentinel still present here used to be logged as an ANOMALY; under the
+    # retain-and-confirm design it is the NORMAL and expected path.
     if [ "$SENTINEL_PRESENT" = "true" ]; then
-      ctx_gate_log "primer sid=${SID:-unknown} source=compact ANOMALY sentinel-still-present-after-compact path=$SENTINEL_PATH"
-      ANOMALY_WARNING=$'WARNING ANOMALY: sentinel still present after /compact. Stop hook may have failed to claim it. Check ~/.claude/logs/auto-compact.log if this repeats.\n\n'
-    else
-      ANOMALY_WARNING=""
+      rm -f "$SENTINEL_PATH" "${SENTINEL_PATH}.attempts" 2>/dev/null || true
+      ctx_gate_log "primer sid=${SID:-unknown} source=compact sentinel-consumed-on-confirmed-compaction path=$SENTINEL_PATH"
     fi
+    ANOMALY_WARNING=""
     # SELF-DRIVEN RESUME (2026-05-31): the typed cross-tab /post-compact-resume can misfire into a
     # SIBLING session's tab under concurrency (04:42Z incident). This primer runs AUTHORITATIVELY in
     # the resumed session (correct sid, source=compact), so make self-resume the imperative FIRST

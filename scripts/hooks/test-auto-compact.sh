@@ -153,26 +153,54 @@ esac
 export AUTO_COMPACT_TEST_NO_FIRE=1
 echo "== Hook end-to-end (no-fire seam) =="
 ac_write_sentinel "$TEST_SID" "/dev/ttys999" "/tmp" "hook-nonce-$$"
+ATT_PATH="${SENTINEL_PATH}.attempts"
+rm -f "$ATT_PATH"
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh"
 HOOK_EXIT=$?
 if [ "$HOOK_EXIT" = "0" ]; then check "hook exit 0" 1 1; else check "hook exit 0 (got $HOOK_EXIT)" 1 0; fi
-if [ ! -f "$SENTINEL_PATH" ]; then check "sentinel consumed by hook" 1 1; else check "sentinel consumed" 1 0; fi
+# RETAIN-AND-CONFIRM (2026-08-02): firing is NOT proof of compaction. A `/compact` typed while
+# the session is busy is swallowed as an ordinary prompt, so the sentinel must SURVIVE the fire
+# and be retired only by post-compact-primer.sh on a confirmed source=compact start. These
+# assertions previously read "sentinel consumed by hook" and passed unconditionally, because the
+# AUTO_COMPACT_TEST_NO_FIRE seam exited before ever reaching the consume logic.
+if [ -f "$SENTINEL_PATH" ]; then check "fire 1: sentinel RETAINED for retry" 1 1; else check "fire 1: sentinel retained" 1 0; fi
+check "fire 1: attempts=1" "$(cat "$ATT_PATH" 2>/dev/null)" "1"
+
+echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh"
+if [ -f "$SENTINEL_PATH" ]; then check "fire 2: sentinel still retained" 1 1; else check "fire 2: retained" 1 0; fi
+check "fire 2: attempts=2" "$(cat "$ATT_PATH" 2>/dev/null)" "2"
+
+# Bounded: a tab that can never accept the command must not spin forever.
+echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh"
+if [ ! -f "$SENTINEL_PATH" ]; then check "fire 3: give-up consumes the sentinel" 1 1; else check "fire 3: give-up" 1 0; fi
+if [ ! -f "$ATT_PATH" ]; then check "fire 3: attempts counter cleaned up" 1 1; else check "fire 3: attempts cleanup" 1 0; fi
 
 # Idempotency: re-firing the hook with no sentinel should be a clean no-op
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh"
 HOOK_EXIT2=$?
 if [ "$HOOK_EXIT2" = "0" ]; then check "no-sentinel hook re-fire is no-op" 1 1; else check "no-sentinel re-fire (got $HOOK_EXIT2)" 1 0; fi
 
+# The primer is the ONLY path that retires a sentinel on a confirmed compaction. Without this,
+# retaining after fire would loop forever - so assert the consuming code actually exists.
+if grep -q 'rm -f "\$SENTINEL_PATH" "\${SENTINEL_PATH}.attempts"' "$ROOT/post-compact-primer.sh" 2>/dev/null; then
+  check "primer consumes sentinel on confirmed compaction" 1 1
+else
+  check "primer consumes sentinel (MISSING — retain-after-fire would never terminate)" 1 0
+fi
+
 echo "== Concurrent claim race =="
-# Two hook invocations on the same sentinel must result in exactly ONE consuming it.
+# Two hook invocations on the same sentinel: exactly ONE may win the atomic claim. With
+# retain-and-confirm the winner puts the sentinel BACK, so the post-state is retained+attempts=1.
+rm -f "$ATT_PATH"
 ac_write_sentinel "$TEST_SID" "/dev/ttys999" "/tmp" "race-nonce-$$"
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh" &
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh" &
 wait
-# After both finish, sentinel must be gone (one consumed it) and no .claim.* lingers
-if [ ! -f "$SENTINEL_PATH" ]; then check "concurrent claim — sentinel consumed" 1 1; else check "concurrent claim consumed" 1 0; fi
+if [ -f "$SENTINEL_PATH" ]; then check "concurrent claim — sentinel retained by the winner" 1 1; else check "concurrent claim retained" 1 0; fi
+check "concurrent claim — exactly one attempt counted" "$(cat "$ATT_PATH" 2>/dev/null)" "1"
 CLAIM_LEFT=$(ls "$HOME/.claude/progress/auto-compact-${TEST_SID}.json.claim."* 2>/dev/null | wc -l | tr -d '[:space:]')
 if [ "$CLAIM_LEFT" = "0" ]; then check "concurrent claim — no orphan .claim files" 1 1; else check "concurrent claim orphans=$CLAIM_LEFT" 1 0; fi
+rm -f "$SENTINEL_PATH" "$ATT_PATH"
 
 echo "== Lib idempotent source guard =="
 # Sourcing the lib twice must NOT trigger 'readonly' redeclaration errors.
