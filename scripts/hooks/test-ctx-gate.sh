@@ -725,7 +725,13 @@ else
 fi
 rm -rf "$TMPHOME"
 
-# 3l-compact-anomaly-sentinel-present: source=compact + sentinel with MATCHING cwd present → ANOMALY warning
+# 3l-compact-sentinel-consumed: source=compact + sentinel with MATCHING cwd present → the
+# sentinel is RETIRED here and NO anomaly warning is emitted.
+# REWRITTEN 2026-08-02 (retain-and-confirm). This case used to assert an "ANOMALY" warning,
+# because the Stop hook consumed the sentinel on fire and a surviving sentinel meant the claim
+# had failed. That is now the NORMAL path: firing only proves AppleScript delivered the text,
+# so the Stop hook retains the sentinel and THIS branch - a demonstrable compaction - is what
+# retires it. Asserting the old warning made this suite fail against correct behavior.
 # R4 D3 fix: handoff must be at SID-tagged path (sentinel SID=oldsid → SID8=oldsid).
 # Phase 2 Round 4: session_id must match sentinel name for strict binding to work.
 # Use session_id=oldsid to match auto-compact-oldsid.json.
@@ -737,9 +743,11 @@ printf '{"schema_version":2,"target_tty":"/dev/ttys001","originating_command":"p
 JSON="{\"session_id\":\"oldsid\",\"source\":\"compact\",\"cwd\":\"$TMPHOME/repo\",\"hook_event_name\":\"SessionStart\"}"
 OUT=$(CTX_LEGACY_HANDOFF_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HANDOFF_LEGACY_CUTOFF_EPOCH_OVERRIDE="$LEGACY_OVERRIDE_PAST" HOME="$TMPHOME" ./post-compact-primer.sh <<< "$JSON" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("ANOMALY")' >/dev/null 2>&1; then
-  pass "3l-compact-anomaly-sentinel-present: source=compact + matching sentinel → ANOMALY warning"
+  fail "3l-compact-sentinel-consumed" "emitted the removed ANOMALY warning: $OUT"
+elif [ ! -f "$TMPHOME/.claude/progress/auto-compact-oldsid.json" ]; then
+  pass "3l-compact-sentinel-consumed: source=compact retires the sentinel, no anomaly warning"
 else
-  fail "3l-compact-anomaly-sentinel-present" "expected ANOMALY warning, got: $OUT"
+  fail "3l-compact-sentinel-consumed" "sentinel survived a confirmed compaction (retain-and-confirm would never terminate): $OUT"
 fi
 rm -rf "$TMPHOME"
 

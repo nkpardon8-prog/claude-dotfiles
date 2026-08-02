@@ -27,7 +27,9 @@ export LC_ALL=C
 # Consequence, accepted: a transient network failure holds sync until a human clears it.
 # The alternative was `|| true`, which lost the failure entirely.
 # _pause <reason> [kind]   kind: secret | unproven | other   (default: other)
-#   secret   - a secret was detected or could not be ruled out; rotate before clearing
+#   secret   - a secret was DETECTED (scanner exit 2); rotate the credential before clearing.
+#              NOT used for scan FAILURES - those are `unproven` (round-8 fix). Saying
+#              "or could not be ruled out" here is what let rc=3 be filed as `secret`.
 #   unproven - the gate could not PROVE the pushed range clean (scanner/TMPDIR/range failure)
 #   other    - routine failure (network, unresolved target); fix the cause and retry
 # `kind` is a machine field on purpose. The reader must NOT infer severity by grepping the

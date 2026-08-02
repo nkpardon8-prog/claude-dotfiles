@@ -206,8 +206,10 @@ CWD_CANON=$(ac_canonicalize_path "$CWD") || CWD_CANON="$CWD"
 # primer_resolve_handoff_path uses it to prefer the SID-tagged handoff file.
 # SENTINEL LIFECYCLE:
 # - /pre-compact Step 9.0 writes: $HOME/.claude/progress/auto-compact-${SID}.json
-# - Stop hook atomically RENAMES it to ${SENTINEL_PATH}.claim.<pid> on consumption.
-# - For source=compact: sentinel typically ABSENT at primer time (Stop hook claimed it).
+# - Stop hook atomically RENAMES it to ${SENTINEL_PATH}.claim.<pid> to claim it, then RESTORES
+#   it after firing (firing proves DELIVERY, not compaction) with an incremented .attempts.
+# - For source=compact: the sentinel is normally PRESENT at primer time, and THIS script
+#   retires it - a confirmed compaction is the only real proof of effect (2026-08-02).
 # - For source=resume/startup/clear: unconsumed sentinel means /pre-compact ran but
 #   /compact never fired (laptop close, crash, etc.). Hard channel was lost.
 # Phase 2 (Round 4): pass $SID so primer_find_sentinel_for_cwd can bind to the

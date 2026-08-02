@@ -19,6 +19,9 @@ Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
 | `abort` | auto-compact-after-pre-compact.sh | Stop hook aborted before firing; `reason=` appended (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire) — own-ancestry session-correlation verification failed; sentinel left intact for next-Stop retry |
 | `restore` | auto-compact-after-pre-compact.sh | Sentinel restored after a post-claim abort or a non-fire osascript result (no-matching-tab etc.) so the next Stop retries; `reason=` + `result=` appended |
 | `restore-FAILED` | auto-compact-after-pre-compact.sh | The post-claim sentinel restore `mv` itself failed (rare); the pending-handoff primer is the remaining recovery |
+| `fired-unconfirmed` | auto-compact-after-pre-compact.sh | `/compact` was DELIVERED but a compaction is not yet proven, so the sentinel is retained and `attempt=<N>` counted; post-compact-primer.sh retires it on a confirmed source=compact start. Firing is delivery, not effect |
+| `give-up` | auto-compact-after-pre-compact.sh | `/compact` typed 3 times with no confirmed compaction; the sentinel is consumed to stop retrying and native auto-compact remains the backstop. `attempts=<N>` logged |
+| `retain-FAILED` | auto-compact-after-pre-compact.sh | The retain-after-fire `mv` back to the sentinel path failed; native auto-compact is the remaining backstop. `attempt=<N>` logged |
 | `test-no-fire` | auto-compact-after-pre-compact.sh | AUTO_COMPACT_TEST_NO_FIRE was set; full resolve→verify→claim path ran but the osascript fire was skipped (no keystrokes) — test seam, never set by real Stop hooks |
 | `ac_write_sentinel` | lib/auto-compact-sentinel.sh | Sentinel write skipped in ac_write_sentinel; reason= appended (e.g., oversize) |
 | `invalid` | lib/auto-compact-sentinel.sh | Invalid TTY target detected during sentinel validation; raw value logged |
@@ -98,7 +101,7 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `action=skip reason=handoff-oversize` | post-compact-primer.sh | Handoff exceeds HANDOFF_MAX_SIZE_BYTES |
 | `action=stat-failed-mtime-zero stale-check-skipped` | post-compact-primer.sh | stat returned 0; freshness unknown |
 | `action=skip-legacy-sentinel` | post-compact-primer.sh | Sentinel has no cwd field (legacy schema v1) |
-| `ANOMALY sentinel-still-present-after-compact` | post-compact-primer.sh | source=compact but sentinel present; Stop hook mv-claim may have failed |
+| `sentinel-consumed-on-confirmed-compaction` | post-compact-primer.sh | source=compact with the sentinel present - the NORMAL path under retain-and-confirm. This is where the sentinel is retired, because a compaction demonstrably happened. Replaced `ANOMALY sentinel-still-present-after-compact`, which described the pre-2026-08-02 consume-on-fire design |
 | `sentinel=true\|false marker=true\|false legacy=true\|false age=Ns stale=yes\|no` | post-compact-primer.sh | Final routing decision summary |
 | `primer skip reason=multi-hardlink` | post-compact-primer-helpers.sh / handoff-resolve.sh | Handoff candidate rejected: hardlink count > 1 (swap-attack defense); path + linkcount logged |
 | `primer skip reason=invalid-sentinel-basename` | post-compact-primer-helpers.sh | Sentinel SID contains characters outside `[A-Za-z0-9_-]`; path-traversal defense |

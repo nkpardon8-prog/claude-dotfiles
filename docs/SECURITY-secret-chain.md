@@ -148,9 +148,11 @@ literal token in a tracked file would make the repo's own full-tree scan red for
 
 ## Known residual issues
 
-These survived seven review rounds and are recorded deliberately rather than fixed. Each was
-judged **not reachable without contrived timing or hand-built git configuration**, and in every
-case the fix costs more machinery than the risk justifies. They are listed so nobody has to
+These survived nine review rounds and are recorded deliberately rather than fixed, because in
+each case the fix costs more machinery than the risk justifies - or, in one case, cannot work
+at all from inside this repository. **Most** need contrived timing or hand-built git
+configuration; the older-branch item below is the exception and is reachable with ordinary
+commands, which is exactly why it is stated first-class rather than buried. They are listed so nobody has to
 rediscover them, and so a future change does not quietly assume they are handled.
 
 - **The generator fingerprint hashes a pathname, not the executing bytes.**
@@ -165,8 +167,9 @@ rediscover them, and so a future change does not quietly assume they are handled
   round 5 and **deleted** in round 6 after three independent reviewers showed it could steal a
   live lock from a stalled owner, whose cleanup would then delete the new owner's lock. Correct
   reclaim needs pid ownership, liveness checks and atomic compare-and-delete. Instead an
-  orphaned lock now makes the installer `exit 4`, which surfaces as a pause marker naming the
-  exact lock and the command to remove it. Loud and manual beats silent and racy.
+  orphaned lock now makes the installer `exit 4`, which surfaces as a pause marker. That marker
+  carries a GENERIC reason (see the next item); run the installer by hand to see which lock.
+  Loud and manual beats silent and racy.
 
 - **The pause marker is one file, so a `secret` record can be lost.** In `dotfiles-sync.sh`
   non-secret writes use `set -C` (O_EXCL) and can never clobber an existing marker; only a
@@ -203,6 +206,8 @@ rediscover them, and so a future change does not quietly assume they are handled
   because each needs a precisely timed external event. Stated plainly rather than implied by a
   green suite.
 
-The honest summary: the chain reliably stops **accidental** exposure through ordinary commit
-and push workflows on this setup. It is not a control against a determined person, and the
-residuals above are the places where "proven" degrades to "argued".
+The honest summary: on `main`, with the hooks installed, the chain reliably stops **accidental**
+exposure through ordinary commit and push workflows - that path is live-verified end to end.
+It is not a control against a determined person; it does not protect a checkout of an older
+revision, whose tooling is that revision's; and the residuals above are the places where
+"proven" degrades to "argued".

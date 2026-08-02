@@ -466,6 +466,11 @@ chk "kind=unproven notice does NOT say ROTATE" \
 # prompt notice. Static check: stale-handoff-guard needs its own `unproven` branch.
 chk "stale-handoff-guard routes on kind=unproven too" \
     "$(grep -c '_pkind. = unproven' "$REPO/scripts/hooks/stale-handoff-guard.sh")" "1"
+# Assert the guard's WARNING TEXT too, not just that the branch exists. A branch that routes
+# correctly but says nothing is still a silent session start, and the branch-only check stayed
+# green when the message was deleted (round-9 finding).
+chk "stale-handoff-guard actually warns on an unproven pause" \
+    "$(grep -c 'could not PROVE the pushed range clean' "$REPO/scripts/hooks/stale-handoff-guard.sh")" "1"
 printf 'kind: other\nreason: test\n' > "$MKF"
 chk "kind=other notice is the plain clear-and-retry form" \
     "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'Fix the cause above')" "1"
