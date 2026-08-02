@@ -25,19 +25,31 @@ Check `./tmp/briefs/` for any existing brief files. If briefs exist, read them a
 
 If no briefs exist, skip this step.
 
-## Step 1: Research (Only If Needed)
+## Step 1: Research (parallel fan-out - skip only per the exceptions below)
 
-If the approach is **genuinely unclear** (and not already covered by briefs), ask the user 1-3 targeted design questions. Otherwise, proceed directly.
+If the approach is genuinely unclear (and not already covered by briefs), ask the user 1-3 targeted design questions.
 
-### Codebase Analysis
-- Search for similar features/patterns in the codebase
-- Identify files to reference in the plan
-- Note existing conventions to follow
+**CRITICAL - research is a parallel fan-out, not orchestrator reading: spawn ALL research agents in a SINGLE message.** Reading the codebase yourself instead of fanning out is a playbook violation, not a shortcut.
 
-### External Research
-- Library documentation (include specific URLs)
-- Implementation examples
-- Best practices and common pitfalls
+### Skip conditions (the only two)
+
+- **(a) Trivially single-file** - the change is confined to one already-identified file. Say so explicitly in the plan (e.g. "Research skipped: single-file change to `<path>`").
+- **(b) Supplied research exists** - the invocation names a dossier / research path, OR any `./tmp/briefs/*-research/` directory shares a name token with the feature. Read that instead of re-deriving it.
+
+When in doubt, fan out: a redundant explorer costs minutes, a memory-built plan costs a bad plan.
+
+### The fan-out (all calls in one message)
+
+- **`codebase-explorer` #1 - files, patterns, conventions** for the feature itself: where this kind of thing already lives, what the house pattern is, what the plan must follow.
+- **`codebase-explorer` #2 - integration points + prior art**: callers, wiring, config/registration surfaces, and the nearest adjacent feature that already solved a similar problem.
+- **`researcher` - ONLY if external libraries/docs are involved**: library documentation (with specific URLs), version quirks, published implementation examples. Omit this call entirely when the work is in-repo only.
+
+Every research prompt MUST:
+
+- Pass the Step 0 brief path(s) (or the literal `none`) so the agent inherits the settled decisions.
+- Require the report shape `Fact / Evidence file:line / Implication`, plus a **Search Evidence** line (the exact searches run and what came back empty) behind every negative claim such as "no existing pattern for this".
+- Cap the report at **<= 12 verbatim excerpts, most-relevant first** - a dump is not a report.
+- Cite `~/.claude/agents/codebase-explorer.md:47-49` for the `file:line` + read-before-you-claim mandate rather than restating it.
 
 ## Step 2: Write the Plan
 
