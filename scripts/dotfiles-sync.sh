@@ -122,7 +122,12 @@ rc=$?
 case "$rc" in
     0) ;;  # clean — proceed
     2) echo "(secret-scan blocked auto-push)" >&2; _pause "secret-scan detected a secret in the working tree" secret; exit 2 ;;
-    *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; _pause "secret-scan could not prove the tree clean (exit $rc)" secret; exit 3 ;;
+    # rc=3 is "could not PROVE clean", which is exactly what `unproven` means - it was filed as
+    # `secret`, which both overstates the finding (no secret was detected) and force-overwrites
+    # a genuine `kind: secret` marker under the only-secret-may-overwrite rule. Telling someone
+    # to rotate a credential that may not exist is the cry-wolf failure this field exists to
+    # prevent, and it is the same class as the round-6 downgrade bug in the other direction.
+    *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; _pause "secret-scan could not prove the working tree clean (exit $rc)" unproven; exit 3 ;;
 esac
 
 # VISIBILITY-AWARE PUSH GUARD (2026-07-12). The user EXPLICITLY accepts this repo being PUBLIC
