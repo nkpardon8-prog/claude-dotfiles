@@ -121,6 +121,21 @@ Read `~/.claude/settings.json` (create if missing) and merge:
   `~/.config/claude/credentials.md`.
 - **PostToolUse (Edit|Write)** — auto-pushes dotfiles changes. Runs a hard pre-push secret scan
   first; on any match the push is **blocked** (exit 2) and you're told to rotate.
+- **UserPromptSubmit** — add `scripts/hooks/dotfiles-sync-pause-notice.sh` alongside whatever is
+  already registered for this event:
+
+  ```json
+  { "type": "command",
+    "command": "$HOME/.claude-dotfiles/scripts/hooks/dotfiles-sync-pause-notice.sh",
+    "timeout": 5 }
+  ```
+
+  **Do not skip this.** The PostToolUse sync hook is `async: true`, so its stderr and its exit
+  status reach nobody: when a push is blocked or fails, nothing says so. This hook reports the
+  held sync at your next prompt. It prints nothing when everything is healthy.
+  The full, current hook block lives in
+  [`settings.json.template`](../settings.json.template) — copy from there rather than
+  retyping, so the two never drift.
 
 ## Step 5 — Plugins (optional)
 

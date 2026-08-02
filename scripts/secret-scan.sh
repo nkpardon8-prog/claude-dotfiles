@@ -5,7 +5,9 @@
 #   - .git/hooks/pre-push       (blocks manual push)
 #   - .github/workflows/secret-scan.yml (CI)
 #
-# Usage: secret-scan.sh <file> [<file> ...]
+# Usage: secret-scan.sh [--] <file> [<file> ...]
+#        secret-scan.sh --patch <file> # one file of composite patch/message text, PRIMARY
+#                                      #   pattern only (no path-aware lanes). Pre-push uses this.
 #        secret-scan.sh --staged       # scan staged files (reads INDEX blobs, not worktree bytes)
 #        secret-scan.sh --working      # scan tracked + untracked working files
 #        secret-scan.sh --all-history  # COARSE audit over every blob in every commit (slow).
@@ -58,15 +60,18 @@ scan_stdin() {
     hits=$(printf '%s' "$content" | grep -anE -e "$RX"); rc=$?
     [ "$rc" -gt 1 ] && return 3
 
-    if ! crd_path_allowed "$f"; then
+    # In --patch mode the label is a temp file holding concatenated patch text, so the
+    # path-aware PIN lane cannot mean anything and is skipped entirely (see --patch below).
+    if [ "${MODE:-file}" != patch ] && ! crd_path_allowed "$f"; then
         m=$(printf '%s' "$content" | grep -anE -e "$RX_PIN"); rc=$?
         [ "$rc" -gt 1 ] && return 3
         if [ -n "$m" ]; then
             m=$(printf '%s' "$m" | grep -vE '000000|123456|XXXXXX'); rc=$?
             [ "$rc" -gt 1 ] && return 3
         fi
-        # NOTE: do NOT write ${hits:+$'\n'} here. Probed on bash 3.2: that form does not
-        # expand and splices the LITERAL characters $'\n' into the output.
+        # Written as an explicit if rather than ${hits:+$'\n'}: bash expands that form
+        # correctly, but zsh does not (it splices the literal characters), and these
+        # scripts get probed and sourced from both. The explicit form is unambiguous.
         if [ -n "$m" ]; then
             if [ -n "$hits" ]; then
                 hits=$(printf '%s\n%s' "$hits" "$m")
@@ -101,7 +106,7 @@ scan_file() {
 }
 
 usage() {
-    echo "Usage: $0 [--staged|--working|--all-history|<file>...]" >&2
+    echo "Usage: $0 [--staged|--working|--all-history|--patch <file>|[--] <file>...]" >&2
 }
 
 # Enumeration goes through a NUL-delimited temp file, never a newline-delimited scalar:
@@ -118,7 +123,21 @@ MODE=file
 case "${1:-}" in
     --staged)
         MODE=staged
-        git diff --cached --name-only --diff-filter=ACMR -z > "$TMPLIST" || exit 3
+        # ACMRT, not ACMR: T is a TYPE CHANGE. Staging a symlink-to-regular-file swap that
+        # carries a secret produced an empty ACMR enumeration and exited 0 - a real bypass
+        # of this very gate. A type-changed path is still an ordinary blob in the index.
+        git diff --cached --name-only --diff-filter=ACMRT -z > "$TMPLIST" || exit 3
+        ;;
+    --patch)
+        # Scan ONE file of composite patch/message text (used by the pre-push hook).
+        # PRIMARY RX ONLY: the path-aware secondary lane (crd_path_allowed) is meaningless
+        # against concatenated patch text, where every original path has been lost - it
+        # would apply the PIN pattern to allowlisted content and block legitimate pushes.
+        # Per-file PIN coverage with correct path semantics is the pre-commit hook's job.
+        MODE=patch
+        shift
+        [ -n "${1:-}" ] || { echo "secret-scan: --patch requires a file" >&2; exit 3; }
+        printf '%s\0' "$@" > "$TMPLIST" || exit 3
         ;;
     --working)
         if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -144,6 +163,13 @@ case "${1:-}" in
     "")
         usage
         exit 3
+        ;;
+    --)
+        # Explicit end of options: everything after is a PATH, even if it looks like a
+        # flag. CI passes `--` so a tracked file named "--staged" cannot switch modes and
+        # silently turn a full-tree scan into a scan of nothing.
+        shift
+        printf '%s\0' "$@" > "$TMPLIST" || exit 3
         ;;
     *)
         printf '%s\0' "$@" > "$TMPLIST" || exit 3

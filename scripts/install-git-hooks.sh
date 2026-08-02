@@ -68,24 +68,45 @@ TMP=$(mktemp "${TMPDIR:-/tmp}/prepush-scan.XXXXXX") || exit 3
 trap 'rm -f "$TMP"' EXIT
 trap 'rm -f "$TMP"; exit 3' HUP INT TERM
 
+# $1 is the remote NAME when pushing by name, but the URL when pushing by URL. Scope the
+# new-branch exclusion to THAT remote's tracking refs: a bare `--not --remotes` excludes
+# anything present on ANY other remote, which can hide a whole branch from the scan. If the
+# name is not a configured remote (URL push), fail CLOSED by scanning the full history.
+REMOTE_NAME="${1:-}"
+if [ -n "$REMOTE_NAME" ] && git config --get "remote.$REMOTE_NAME.url" >/dev/null 2>&1; then
+    EXCLUDE="--not --remotes=$REMOTE_NAME"
+else
+    EXCLUDE=""
+fi
+
 rc=0
 while read -r local_ref local_sha remote_ref remote_sha; do
     [ "$local_sha" = "$Z" ] && continue          # branch deletion: nothing new is published
     if [ "$remote_sha" = "$Z" ]; then
-        set -- "$local_sha" --not --remotes      # new branch: everything the remote lacks
+        set -- "$local_sha" $EXCLUDE             # new branch (unquoted: may be empty)
     else
         set -- "$remote_sha..$local_sha"
     fi
-    # </dev/null on every git call: this loop is reading the ref list from stdin, and a
-    # child that consumed it would silently skip the remaining refs.
-    if ! { git log -p -m --no-color "$@" </dev/null &&
+    # --text forces a textual diff, so a binary blob or a path marked `-diff` in
+    # .gitattributes cannot hide its contents behind "Binary files differ".
+    #
+    # Only ADDED lines are scanned. A raw patch also carries deleted and context lines,
+    # which describe content that is ALREADY on the remote - scanning those means the
+    # commit that REMOVES a leaked secret is itself blocked, so the cleanup can never be
+    # pushed. Commit messages have no +/- prefix and are appended separately.
+    #
+    # </dev/null on every git call: this loop reads the ref list from stdin, and a child
+    # that consumed it would silently skip the remaining refs.
+    # `&&` not `;` - a group ending in rev-list would return only rev-list's status and
+    # mask a failed enumeration. With pipefail, a failing git log fails the pipeline too.
+    if ! { git log -p -m --text --no-color "$@" </dev/null | sed -n 's/^+//p' &&
            git rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
         echo "pre-push: could not enumerate commits for ${local_ref:-?} - failing closed" >&2
         exit 3
     fi
-    "$SCAN" "$TMP"; s=$?
+    "$SCAN" --patch "$TMP"; s=$?
     if [ "$s" -ne 0 ]; then
-        echo "pre-push: above finding is in the commits being pushed to ${remote_ref:-?} (range: $*)" >&2
+        echo "pre-push: the finding above is in commits being pushed to ${remote_ref:-?} (range: $*)" >&2
     fi
     [ "$s" -gt "$rc" ] && rc=$s                  # precedence 3 > 2 > 0
 done

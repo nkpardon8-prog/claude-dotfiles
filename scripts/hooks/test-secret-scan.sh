@@ -99,12 +99,37 @@ chk "absent path exits 0 (CI drops its -f guard)" "$?" "0"
 bash "$SCAN" >/dev/null 2>&1
 chk "no arguments exits 3" "$?" "3"
 
+# 7. End-of-options. A tracked file named like a flag must not switch the scanner's mode
+#    and silently turn a full-tree scan into a scan of nothing.
+printf '%s\n' "$SECRET" > './--staged'
+bash "$SCAN" -- '--staged' >/dev/null 2>&1
+chk "-- treats a flag-named file as a path" "$?" "2"
+
+# 8. --patch mode: primary pattern still fires, path-aware PIN lane does not. The pre-push
+#    hook scans one concatenated temp file where every original path is gone, so applying
+#    the PIN lane there would block pushes carrying allowlisted PIN examples.
+PINLIT=$(printf '%s%s %s%s' 'P' 'IN:' '4829' '13')
+printf '%s\n' "$PINLIT" > pinonly.txt
+bash "$SCAN" pinonly.txt >/dev/null 2>&1
+chk "PIN lane fires for a normal file scan" "$?" "2"
+bash "$SCAN" --patch pinonly.txt >/dev/null 2>&1
+chk "PIN lane is skipped in --patch mode" "$?" "0"
+printf '%s\n' "$SECRET" > patchy.txt
+bash "$SCAN" --patch patchy.txt >/dev/null 2>&1
+chk "--patch still catches a provider token" "$?" "2"
+bash "$SCAN" --patch >/dev/null 2>&1
+chk "--patch with no file exits 3" "$?" "3"
+
 # ---------------------------------------------------------------------------
 echo "== false-positive gate: the real repository must stay clean =="
 # If this ever fails, a regex or filter change made the gate unusable: it would jam every
 # commit in this repo AND silently block the async auto-push.
-( cd "$REPO" && git ls-files -z | xargs -0 bash "$SCAN" ) >/dev/null 2>&1
+# pipefail matters here: without it a failing `git ls-files` yields empty input and the
+# gate passes having scanned nothing at all.
+( set -o pipefail; cd "$REPO" && git ls-files -z | xargs -0 bash "$SCAN" -- ) >/dev/null 2>&1
 chk "full tree of $(basename "$REPO") scans clean" "$?" "0"
+( set -o pipefail; cd "$REPO" && git ls-files -z | wc -c ) >/dev/null 2>&1
+chk "full-tree producer itself succeeds" "$?" "0"
 
 # ---------------------------------------------------------------------------
 echo "== end-to-end hook cases =="
@@ -149,19 +174,41 @@ chk "rejection shows the scanner banner" "$(printf '%s' "$perr" | grep -c 'BLOCK
 chk "remote ref did NOT move" "$(rgit rev-parse "$BR")" "$BASE"
 
 # C. A secret that exists only in a commit MESSAGE (no blob anywhere).
+# Assert the BANNER, not merely a nonzero exit: `git push` returns 1 for many unrelated
+# reasons (bad refspec, no upstream), so a bare rc check can pass without the gate firing.
 git reset -q --hard "$BASE"
 printf 'ok\n' > c.txt; git add c.txt
 HOME="$FIXHOME" git commit -qm "deploy key $SECRET" --no-verify >/dev/null
-HOME="$FIXHOME" git push origin "$BR" >/dev/null 2>&1
-chk "commit-message secret is rejected" "$([ "$?" -ne 0 ] && echo yes)" "yes"
+cerr=$(HOME="$FIXHOME" git push origin "$BR" 2>&1); crc=$?
+chk "commit-message secret is rejected" "$([ "$crc" -ne 0 ] && echo yes)" "yes"
+chk "message rejection shows the banner" "$(printf '%s' "$cerr" | grep -c 'BLOCKED: secret detected')" "1"
 chk "remote ref still did NOT move" "$(rgit rev-parse "$BR")" "$BASE"
+
+# C2. The cleanup case: a commit that REMOVES an already-public secret must still push.
+# A raw patch carries deleted and context lines, so scanning them blocks the very commit
+# that fixes the leak - the secret can never be removed.
+git reset -q --hard "$BASE"
+printf '%s\n' "$SECRET" > leaked.txt; git add leaked.txt
+HOME="$FIXHOME" git commit -qm "oops" --no-verify >/dev/null
+HOME="$FIXHOME" git push -q --no-verify origin "$BR" >/dev/null 2>&1   # simulate: already public
+LEAKED=$(rgit rev-parse "$BR")
+git rm -q leaked.txt; HOME="$FIXHOME" git commit -qm "remove the leaked file" >/dev/null 2>&1
+HOME="$FIXHOME" git push -q origin "$BR" >/dev/null 2>&1
+chk "removing an already-public secret still pushes" "$?" "0"
+chk "cleanup actually reached the remote" \
+    "$([ "$(rgit rev-parse "$BR")" != "$LEAKED" ] && echo moved)" "moved"
+git push -q --no-verify origin ":$BR" >/dev/null 2>&1 || true
+HOME="$FIXHOME" git reset -q --hard "$BASE"
+HOME="$FIXHOME" git push -q --no-verify --force origin "$BR" >/dev/null 2>&1
+BASE=$(rgit rev-parse "$BR")
 
 # D. New branch: the old hook diffed against the worktree and enumerated zero files.
 git reset -q --hard "$BASE"; git checkout -q -b leakbranch
 printf '%s\n' "$SECRET" > n.txt; git add n.txt
 HOME="$FIXHOME" git commit -qm new --no-verify >/dev/null
-HOME="$FIXHOME" git push origin leakbranch >/dev/null 2>&1
-chk "new-branch secret is rejected" "$([ "$?" -ne 0 ] && echo yes)" "yes"
+derr=$(HOME="$FIXHOME" git push origin leakbranch 2>&1); drc=$?
+chk "new-branch secret is rejected" "$([ "$drc" -ne 0 ] && echo yes)" "yes"
+chk "new-branch rejection shows the banner" "$(printf '%s' "$derr" | grep -c 'BLOCKED: secret detected')" "1"
 chk "new branch was NOT created on the remote" \
     "$(rgit rev-parse leakbranch >/dev/null 2>&1 && echo present || echo absent)" "absent"
 
@@ -173,11 +220,22 @@ chk "clean new branch pushes" "$?" "0"
 chk "clean new branch reached the remote" \
     "$(rgit rev-parse finebranch >/dev/null 2>&1 && echo present || echo absent)" "present"
 
-# F. pre-commit must block the staged-index bypass end to end.
+# F. pre-commit must block the staged-index bypass end to end (assert the banner too).
 git checkout -q "$BR"
 printf '%s\n' "$SECRET" > s.txt; git add s.txt; printf 'harmless\n' > s.txt
-HOME="$FIXHOME" git commit -qm sneaky >/dev/null 2>&1
-chk "pre-commit blocks a staged secret" "$([ "$?" -ne 0 ] && echo yes)" "yes"
+ferr=$(HOME="$FIXHOME" git commit -m sneaky 2>&1); frc=$?
+chk "pre-commit blocks a staged secret" "$([ "$frc" -ne 0 ] && echo yes)" "yes"
+chk "pre-commit rejection shows the banner" "$(printf '%s' "$ferr" | grep -c 'BLOCKED: secret detected')" "1"
+git reset -q; rm -f s.txt
+
+# G. TYPE CHANGE: staging a symlink-to-regular-file swap carrying a secret. --diff-filter
+#    without T enumerated nothing here and exited 0 - a real bypass of the staged gate.
+ln -s /etc/hosts swapme; git add swapme
+HOME="$FIXHOME" git commit -qm "add symlink" --no-verify >/dev/null 2>&1
+rm swapme; printf '%s\n' "$SECRET" > swapme; git add swapme
+bash "$SCAN" --staged >/dev/null 2>&1
+chk "staged symlink-to-file type change is scanned" "$?" "2"
+git reset -q --hard HEAD >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------
 echo
