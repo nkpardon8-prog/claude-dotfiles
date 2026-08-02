@@ -182,6 +182,18 @@ rediscover them, and so a future change does not quietly assume they are handled
   to `/dev/null`, so the marker records only a generic "could not refresh the git hooks". To
   see the real cause, run `bash ~/.claude-dotfiles/scripts/install-git-hooks.sh` by hand.
 
+- **Checking out an older branch installs that branch's hooks — and the stamp still looks
+  valid.** SessionStart runs `install-git-hooks.sh` *from the working tree*. Check out a branch
+  that predates this repair (`dotfiles-rebuild` and `macmini-strip` both do) and the old
+  generator installs the old, fail-open pre-push and stamps its own fingerprint — which
+  matches, so nothing reports staleness. Pushing from that branch runs the old gate.
+  **This is not fixable from inside the repository.** Any checker added to detect it would
+  itself be checked out at the old revision and therefore also old. Returning to `main` heals
+  it on the next SessionStart, because the fingerprint then mismatches and triggers a
+  reinstall. The real controls are server-side (branch protection) or making the repo private.
+  Raised as CRITICAL in round 8; recorded rather than papered over with a check that cannot
+  work.
+
 - **`--all-history` remains a coarse primary-pattern audit.** It does not apply the PIN lane and
   does not honor the rc=3 contract. It is a one-time sweep, not a gate, and is not
   composite-equivalent.
