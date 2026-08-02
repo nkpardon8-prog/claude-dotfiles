@@ -11,10 +11,31 @@
 
 # PAUSE GUARD: an out-of-repo marker silences auto-sync entirely (used while agents batch-edit
 # the dotfiles machinery, or while pushes are held). Out-of-repo so `git add -A` can never stage it.
-[ -f "$HOME/.claude/.dotfiles-sync-paused" ] && exit 0
+_MARKER="$HOME/.claude/.dotfiles-sync-paused"
+[ -f "$_MARKER" ] && exit 0
 
 set -o pipefail
-LC_ALL=C
+# EXPORTED: the push classifier below reads English git stderr, and an unexported
+# LC_ALL does not reach the git child (clean-shell probed).
+export LC_ALL=C
+
+# _pause <reason> - record a durable, human-readable reason for a held or blocked sync.
+# This script runs from an `async: true` PostToolUse hook, so its stderr AND its exit
+# status reach nobody. The marker is the only channel that survives; SessionStart and
+# UserPromptSubmit both surface it. Marker presence also halts further auto-sync (above),
+# which is deliberate - a blocked sync must stop stacking commits on a poisoned HEAD.
+# Consequence, accepted: a transient network failure holds sync until a human clears it.
+# The alternative was `|| true`, which lost the failure entirely.
+_pause() {
+    # Redact any userinfo in a URL before it reaches disk: git's stderr can echo a remote
+    # URL, and a remote URL can embed a token. Redacting at the choke point means no caller
+    # can leak one into the marker by accident. Also collapse to a single line.
+    _reason=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's#://[^/@[:space:]]*@#://REDACTED@#g' | cut -c1-300)
+    if ! printf 'reason: %s\nset_at: %s\nset_by: dotfiles-sync\nclear_with: rm %s\n' \
+            "$_reason" "$(date '+%Y-%m-%d %H:%M:%S')" "$_MARKER" > "$_MARKER" 2>/dev/null; then
+        echo "dotfiles-sync: CRITICAL - could not write the pause marker at $_MARKER (reason: $_reason). This failure now has NO visible channel." >&2
+    fi
+}
 
 DOTFILES_DIR="$HOME/.claude-dotfiles"
 cd "$DOTFILES_DIR" || exit 0
@@ -29,8 +50,8 @@ fi
 rc=$?
 case "$rc" in
     0) ;;  # clean — proceed
-    2) echo "(secret-scan blocked auto-push)" >&2; exit 2 ;;
-    *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; exit 3 ;;
+    2) echo "(secret-scan blocked auto-push)" >&2; _pause "secret-scan detected a secret in the working tree"; exit 2 ;;
+    *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; _pause "secret-scan could not prove the tree clean (exit $rc)"; exit 3 ;;
 esac
 
 # VISIBILITY-AWARE PUSH GUARD (2026-07-12). The user EXPLICITLY accepts this repo being PUBLIC
@@ -58,6 +79,7 @@ elif ! git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)"; t
     # LOUD fail-closed: a rejected commit (e.g. a pre-commit lint) must never silently
     # strand staged changes while pushing stale HEAD. Surface it and stop.
     echo "dotfiles-sync: COMMIT FAILED (pre-commit hook rejected or git error) — staged changes are NOT committed and NOT pushed. Fix the cause, then re-run scripts/dotfiles-sync.sh." >&2
+    _pause "commit failed (pre-commit hook rejected or git error) - staged changes are NOT committed"
     exit 5
 fi
 # Empty $GH_TOKEN-free env is fine; -R pins the query to the push target so $GH_REPO can't hijack it.
@@ -66,13 +88,24 @@ if [ -n "$_slug" ]; then
 else
     _vis=""   # could not resolve the push target's slug — fail closed (hold)
 fi
+# A failed push used to be `|| true` — the single worst line in this script: the commit
+# stays local, the next edit re-fires the sync, and nothing anywhere says the push died.
+_push_or_pause() {
+    if ! _perr=$(git push "$_remote" 2>&1); then
+        echo "dotfiles-sync: PUSH FAILED to ${_slug:-$_remote} — committed locally only." >&2
+        _pause "push to ${_slug:-$_remote} failed: $(printf '%s' "$_perr" | head -1)"
+        exit 6
+    fi
+}
+
 case "$_vis" in
   true)
-    git push "$_remote" 2>/dev/null || true ;;                     # private — silent push
+    _push_or_pause ;;                                               # private — silent push
   false)
     echo "(dotfiles-sync: pushing to a PUBLIC repo ${_slug:-$_remote} — you accepted this; secret-scan passed above.)" >&2
-    git push "$_remote" 2>/dev/null || true ;;                     # public — warn + push (user's choice)
+    _push_or_pause ;;                                               # public — warn + push (user's choice)
   *)
     echo "(dotfiles-sync: PUSH HELD — could not resolve/confirm the push target ${_slug:-$_remote} (isPrivate='${_vis:-unknown}'); committed locally only. Re-run this script once gh can see the repo.)" >&2
+    _pause "could not resolve/confirm the push target ${_slug:-$_remote} (isPrivate=${_vis:-unknown})"
     exit 4 ;;                                                       # genuine uncertainty — fail closed
 esac

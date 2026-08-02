@@ -6,17 +6,26 @@
 #   - .github/workflows/secret-scan.yml (CI)
 #
 # Usage: secret-scan.sh <file> [<file> ...]
-#        secret-scan.sh --staged       # scan staged files
+#        secret-scan.sh --staged       # scan staged files (reads INDEX blobs, not worktree bytes)
 #        secret-scan.sh --working      # scan tracked + untracked working files
-#        secret-scan.sh --all-history  # scan every blob in every commit (slow)
+#        secret-scan.sh --all-history  # COARSE audit over every blob in every commit (slow).
+#                                      #   Primary RX only: it does NOT apply the CRD/PIN lane
+#                                      #   and does NOT honor the rc=3 contract. One-time use.
 #
 # Exit codes:
 #   0 = clean
 #   2 = secret(s) detected (caller should block)
 #   3 = scan failure (caller should fail closed)
+#
+# Precedence is 3 > 2 > 0: if ANY input could not be proven clean, the run exits 3 even
+# when another input produced a real hit. "Could not prove clean" is never reported as clean.
+#
+# SCOPE: this chain defends against ACCIDENTAL exposure. It is NOT a defense against
+# deliberate circumvention by the person pushing (--no-verify, core.hooksPath, BASH_ENV,
+# PATH shims, or editing this file). See docs/SECURITY-secret-chain.md.
 
 set -o pipefail
-LC_ALL=C
+export LC_ALL=C
 
 RX='(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +|EC +|DSA +|PGP +)?PRIVATE +KEY-----)'
 export RX
@@ -35,29 +44,92 @@ crd_path_allowed() {
     return 1
 }
 
-scan_file() {
+# scan_stdin <label>
+# Reads candidate content on STDIN so the same matcher serves worktree files and index blobs.
+# Prints "<label>:<lineno>:<match>" lines on STDOUT.
+# Returns: 0 clean, 2 hit, 3 scan failure.
+#
+# Every filter's status is checked. grep exits 0=match, 1=no-match, >1=error; treating an
+# error as "no match" is precisely how a broken scanner reports a secret-bearing file clean.
+scan_stdin() {
     f="$1"
-    [ -f "$f" ] || return 0
-    case "$f" in *.git/*|.git/*) return 0 ;; esac
-    content=$(tr -d "\000" < "$f")
-    match=$(printf '%s' "$content" | grep -anE -e "$RX" | sed "s|^|$f:|")
+    content=$(tr -d "\000") || return 3
+
+    hits=$(printf '%s' "$content" | grep -anE -e "$RX"); rc=$?
+    [ "$rc" -gt 1 ] && return 3
+
     if ! crd_path_allowed "$f"; then
-        # Likely 6-digit PIN values (skip obvious template/example markers like 000000)
-        m=$(printf '%s' "$content" | grep -anE -e "$RX_PIN" | grep -vE '000000|123456|XXXXXX' | sed "s|^|$f:|")
-        [ -n "$m" ] && match="${match}${match:+$'\n'}$m"
+        m=$(printf '%s' "$content" | grep -anE -e "$RX_PIN"); rc=$?
+        [ "$rc" -gt 1 ] && return 3
+        if [ -n "$m" ]; then
+            m=$(printf '%s' "$m" | grep -vE '000000|123456|XXXXXX'); rc=$?
+            [ "$rc" -gt 1 ] && return 3
+        fi
+        # NOTE: do NOT write ${hits:+$'\n'} here. Probed on bash 3.2: that form does not
+        # expand and splices the LITERAL characters $'\n' into the output.
+        if [ -n "$m" ]; then
+            if [ -n "$hits" ]; then
+                hits=$(printf '%s\n%s' "$hits" "$m")
+            else
+                hits="$m"
+            fi
+        fi
     fi
-    [ -n "$match" ] && printf "%s\n" "$match"
+
+    [ -z "$hits" ] && return 0
+    # Prefix the label WITHOUT interpolating it into a sed program. `sed "s|^|$f:|"` breaks
+    # on any filename containing the delimiter `|`, a backslash, or a newline - probed: a
+    # newline in the name made the sed script invalid and turned a real hit into rc=3.
+    while IFS= read -r line; do
+        printf '%s:%s\n' "$f" "$line"
+    done <<< "$hits"
+    return 2
 }
 
+# scan_file <path> — scans the WORKTREE bytes at <path>.
+# Returns: 0 clean, 2 hit, 3 scan failure.
+scan_file() {
+    f="$1"
+    # Anchor on a real .git path component. The old `*.git/*` also matched ordinary
+    # paths such as vendor/leak.git/secret.txt, which silently skipped them everywhere.
+    case "$f" in .git/*|*/.git/*) return 0 ;; esac
+    [ -f "$f" ] || return 0      # absent or non-regular: nothing to publish
+    [ -r "$f" ] || return 3      # present but unreadable: cannot prove clean
+    scan_stdin "$f" < "$f"; rc=$?
+    [ "$rc" -eq 1 ] && return 3  # scan_stdin never returns 1; a 1 means the redirect failed
+    return "$rc"
+}
+
+usage() {
+    echo "Usage: $0 [--staged|--working|--all-history|<file>...]" >&2
+}
+
+# Enumeration goes through a NUL-delimited temp file, never a newline-delimited scalar:
+# bash cannot hold NUL in a variable, and a newline-delimited list silently splits any
+# path containing a newline. A file also lets the producer's exit status be checked,
+# which `< <(...)` process substitution structurally cannot report.
+TMPLIST=$(mktemp "${TMPDIR:-/tmp}/secret-scan.XXXXXX") || exit 3
+# Two separate traps on purpose: a single `trap ... EXIT HUP INT TERM` RESUMES after the
+# handler and exits 0 (probe-confirmed fail-open). Signal handlers must exit explicitly.
+trap 'rm -f "$TMPLIST"' EXIT
+trap 'rm -f "$TMPLIST"; exit 3' HUP INT TERM
+
+MODE=file
 case "${1:-}" in
     --staged)
-        FILES=$(git diff --cached --name-only --diff-filter=ACMR -z | tr '\0' '\n')
+        MODE=staged
+        git diff --cached --name-only --diff-filter=ACMR -z > "$TMPLIST" || exit 3
         ;;
     --working)
-        FILES=$( { git diff --name-only -z HEAD; git ls-files --others --exclude-standard -z; } | sort -uz | tr '\0' '\n')
+        if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+            { git diff --name-only -z HEAD && git ls-files --others --exclude-standard -z; } \
+                | sort -uz > "$TMPLIST" || exit 3
+        else
+            git ls-files --others --exclude-standard -z | sort -uz > "$TMPLIST" || exit 3
+        fi
         ;;
     --all-history)
-        # Scan every blob in every commit (slow — for one-time audit)
+        # Coarse one-time audit: primary RX only (see the usage note above).
         HITS=""
         while read -r sha; do
             while read -r f; do
@@ -70,34 +142,61 @@ case "${1:-}" in
         exit 0
         ;;
     "")
-        echo "Usage: $0 [--staged|--working|--all-history|<file>...]" >&2
+        usage
         exit 3
         ;;
     *)
-        FILES="$*"
-        FILES=$(printf '%s\n' $FILES)
+        printf '%s\0' "$@" > "$TMPLIST" || exit 3
         ;;
 esac
 
-[ -z "$FILES" ] && exit 0
-
+WORST=0
 HITS=""
-while IFS= read -r f; do
+while IFS= read -r -d '' f; do
     [ -z "$f" ] && continue
-    out=$(scan_file "$f") && [ -n "$out" ] && HITS="$HITS$out\n"
-done <<< "$FILES"
+    if [ "$MODE" = staged ]; then
+        # Read the INDEX blob, not the worktree. Enumerating index paths while reading
+        # worktree bytes let `git add <secret>; echo harmless > <file>` pass cleanly.
+        if ! t=$(git cat-file -t ":$f" 2>/dev/null); then
+            echo "secret-scan: cannot read index entry: $f" >&2
+            WORST=3
+            continue
+        fi
+        # --diff-filter=ACMR includes submodule (gitlink) updates, which have no blob.
+        [ "$t" = blob ] || continue
+        out=$(git cat-file blob ":$f" 2>/dev/null | scan_stdin "$f"); rc=$?
+    else
+        out=$(scan_file "$f"); rc=$?
+    fi
+    case "$rc" in
+        0) ;;
+        2)
+            if [ -n "$out" ]; then
+                if [ -n "$HITS" ]; then HITS=$(printf '%s\n%s' "$HITS" "$out"); else HITS="$out"; fi
+            fi
+            if [ "$WORST" -lt 2 ]; then WORST=2; fi
+            ;;
+        *)
+            echo "secret-scan: SCAN FAILED (rc=$rc): $f" >&2
+            WORST=3
+            ;;
+    esac
+done < "$TMPLIST"
 
 if [ -n "$HITS" ]; then
     {
-        echo "═══════════════════════════════════════════════════════════════"
+        echo "==============================================================="
         echo "BLOCKED: secret detected. Aborting."
-        echo "═══════════════════════════════════════════════════════════════"
-        printf "%b" "$HITS"
+        echo "==============================================================="
+        printf '%s\n' "$HITS"
         echo ""
         echo "Action: remove the secret, ROTATE it at the provider, then retry."
         echo "If false positive: relocate the example into a non-tracked fixture."
     } >&2
-    exit 2
 fi
 
-exit 0
+if [ "$WORST" -eq 3 ]; then
+    echo "secret-scan: at least one input could not be proven clean - failing closed (exit 3)." >&2
+fi
+
+exit "$WORST"

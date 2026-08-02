@@ -55,11 +55,21 @@ git clone https://github.com/nkpardon8-prog/claude-dotfiles.git "$HOME/.claude-d
 ls "$HOME/.claude-dotfiles/CLAUDE.md"   # verify
 ```
 
-## Step 2 — Make the sync script executable
+## Step 2 — Make the sync script executable, then install the git hooks
 
 ```bash
 chmod +x "$HOME/.claude-dotfiles/scripts/dotfiles-sync.sh"
+
+# REQUIRED. .git/hooks/ is not tracked, so a fresh clone has NO local secret gate
+# until this runs. Re-run it after every clone.
+bash "$HOME/.claude-dotfiles/scripts/install-git-hooks.sh"
 ```
+
+This installs `pre-commit` (blocks a staged secret) and `pre-push` (blocks a secret in any
+commit being pushed — blob or commit message). This repo pushes to a **public** remote, so
+skipping this step means committing and pushing with no local protection whatsoever.
+
+Scope and known gaps: **[`SECURITY-secret-chain.md`](SECURITY-secret-chain.md)**.
 
 ## Step 3 — Symlink into ~/.claude
 
@@ -150,6 +160,8 @@ alias cch='claude --model haiku'
 ls -la "$HOME/.claude/commands"                       # → symlink into .claude-dotfiles
 grep -c "SessionStart" "$HOME/.claude/settings.json"  # → ≥1
 test -x "$HOME/.claude-dotfiles/scripts/dotfiles-sync.sh" && echo "sync OK"
+test -x "$HOME/.claude-dotfiles/.git/hooks/pre-push"  && echo "secret gate OK"
+bash "$HOME/.claude-dotfiles/scripts/hooks/test-secret-scan.sh" >/dev/null && echo "secret chain verified"
 ```
 Then start a session: global rules should load, and `/` should list the commands.
 

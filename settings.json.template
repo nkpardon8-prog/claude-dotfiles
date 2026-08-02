@@ -101,6 +101,11 @@
             "type": "command",
             "command": "$HOME/.claude-dotfiles/scripts/hooks/ctx-gate-on-prompt-submit.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/hooks/dotfiles-sync-pause-notice.sh",
+            "timeout": 5
           }
         ]
       }

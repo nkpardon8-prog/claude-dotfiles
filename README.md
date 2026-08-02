@@ -130,6 +130,9 @@ actually connect.
 git clone https://github.com/nkpardon8-prog/claude-dotfiles.git "$HOME/.claude-dotfiles"
 chmod +x "$HOME/.claude-dotfiles/scripts/dotfiles-sync.sh"
 
+# REQUIRED — .git/hooks/ is untracked, so a fresh clone has no local secret gate until this runs
+bash "$HOME/.claude-dotfiles/scripts/install-git-hooks.sh"
+
 # symlink into ~/.claude (back up any existing targets first)
 for d in CLAUDE.md commands agents rules patterns; do
   rm -rf "$HOME/.claude/$d"; ln -sf "$HOME/.claude-dotfiles/$d" "$HOME/.claude/$d"
