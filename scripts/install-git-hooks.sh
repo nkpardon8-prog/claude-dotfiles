@@ -67,46 +67,49 @@ SCAN="$HOME/.claude-dotfiles/scripts/secret-scan.sh"
 
 Z=0000000000000000000000000000000000000000
 TMPBASE="${TMPDIR:-/tmp}"
-# A temp dir inside a .git directory would make the scanner treat its own input as a
-# repository internal and skip it. Refuse rather than scan nothing.
+# Belt only - `--composite` ignores path rules entirely, so a temp dir under .git can no
+# longer silence the scan. Kept because a TMPDIR inside a repository is worth refusing on
+# its own merits. `.git` must be listed literally: the bare relative form matches neither
+# `.git/*` nor `*/.git`.
 case "$TMPBASE" in
-    .git/*|*/.git/*|*/.git) echo "pre-push: TMPDIR resolves inside a .git directory - failing closed" >&2; exit 3 ;;
+    .git|.git/*|*/.git/*|*/.git) echo "pre-push: TMPDIR resolves inside a .git directory - failing closed" >&2; exit 3 ;;
 esac
-TMP=$(mktemp "$TMPBASE/prepush-patch.XXXXXX")  || exit 3
-TMPMSG=$(mktemp "$TMPBASE/prepush-msg.XXXXXX") || { rm -f "$TMP"; exit 3; }
+TMP=$(mktemp "$TMPBASE/prepush-scan.XXXXXX") || exit 3
 # Two separate traps: a single `trap ... EXIT HUP INT TERM` resumes after the handler
 # and exits 0, which would turn an interrupted scan into a successful push.
-trap 'rm -f "$TMP" "$TMPMSG"' EXIT
-trap 'rm -f "$TMP" "$TMPMSG"; exit 3' HUP INT TERM
+trap 'rm -f "$TMP"' EXIT
+trap 'rm -f "$TMP"; exit 3' HUP INT TERM
 
-# Exclusion is an OPTIMIZATION, never a correctness requirement: with EXCLUDE empty we scan
-# the branch's entire history, which is slow but can never miss anything.
+# Scoping the NEW-branch exclusion to this remote's tracking refs. A bare `--not --remotes`
+# would also excuse commits that exist only on some OTHER remote.
 #
-# $1 is the remote NAME when pushing by name, the URL when pushing by URL. Tracking refs
-# (refs/remotes/<name>/*) describe what the FETCH url holds. Trust them only when this is a
-# configured remote whose push destination is that same url - a distinct `pushurl`, extra
-# `remote.<name>.url` entries, or a raw-URL push all mean the tracking refs describe a
-# DIFFERENT repository than the one about to receive these objects.
+# There is deliberately NO further classification here. Earlier revisions tried to detect
+# `pushurl`, multiple `remote.<name>.url` entries and `url.*.pushInsteadOf` in order to
+# decide when tracking refs could be trusted; each partial heuristic simply produced another
+# finding, and none of them can be made complete. Multi-remote and URL-rewriting setups are
+# documented as an out-of-scope configuration in docs/SECURITY-secret-chain.md, beside the
+# existing caveat that tracking refs are trusted at all. Honest scope beats a half-check.
 REMOTE_NAME="${1:-}"
 EXCLUDE=""
 if [ -n "$REMOTE_NAME" ] && git config --get "remote.$REMOTE_NAME.url" >/dev/null 2>&1; then
-    _pushurl=$(git config --get-all "remote.$REMOTE_NAME.pushurl" 2>/dev/null)
-    _urls=$(git config --get-all "remote.$REMOTE_NAME.url" 2>/dev/null | wc -l | tr -d ' ')
-    if [ -z "$_pushurl" ] && [ "$_urls" = "1" ]; then
-        EXCLUDE="--not --remotes=$REMOTE_NAME"
-    else
-        echo "pre-push: $REMOTE_NAME has a pushurl or multiple urls - scanning full history" >&2
-    fi
+    EXCLUDE="--not --remotes=$REMOTE_NAME"
 fi
 
 rc=0
 while read -r local_ref local_sha remote_ref remote_sha; do
     [ "$local_sha" = "$Z" ] && continue          # branch deletion: nothing new is published
-    # ONE range shape for both new and existing branches: everything reachable from the tip
-    # that the target remote does not already have. `remote_sha..local_sha` looked tighter
-    # but rescans commits already public via another ref, so an ordinary merge could block
-    # on a secret that is already on the remote - and the cleanup commit with it.
-    set -- "$local_sha" $EXCLUDE                 # unquoted on purpose: EXCLUDE may be empty
+    if [ "$remote_sha" = "$Z" ]; then
+        # New branch: no authoritative answer exists locally, so approximate with this
+        # remote's tracking refs (unquoted: EXCLUDE may legitimately be empty).
+        set -- "$local_sha" $EXCLUDE
+    else
+        # Existing branch: git already negotiated `remote_sha` with the destination, so this
+        # range is authoritative and needs no heuristic at all. It can RE-scan commits that
+        # reached the remote through some other ref (an ordinary merge), which may block a
+        # push over an already-public secret. That false positive is accepted deliberately:
+        # a blocked push is visible and diagnosable, a missed secret is permanent.
+        set -- "$remote_sha..$local_sha"
+    fi
     # --text forces a textual diff, so a binary blob or a path marked `-diff` in
     # .gitattributes cannot hide its contents behind "Binary files differ".
     #
@@ -117,29 +120,26 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     #
     # </dev/null on every git call: this loop reads the ref list from stdin, and a child
     # that consumed it would silently skip the remaining refs.
-    # TWO streams, scanned differently on purpose.
+    # ONE stream: added patch lines followed by commit messages, scanned once as composite
+    # text. An earlier revision split these to give messages the path-aware PIN lane, but
+    # the message file's own temp path then decided whether that lane ran at all - so the
+    # split created two new holes instead of closing one.
     #
-    # Patch text (--patch, primary patterns only): every original path is gone once hunks
-    # are concatenated, so the scanner's path-aware PIN allowlist cannot mean anything -
-    # applying it here would block pushes carrying legitimate PIN examples from the
-    # allowlisted docs. Per-file PIN coverage stays with the pre-commit hook.
-    #
-    # Commit messages (ordinary scan, ALL patterns): messages have no path context to lose
-    # and no allowlist to honor, so suppressing the PIN lane there just dropped real
-    # coverage - a PIN-bearing commit message would have passed both hooks.
-    if ! git log -p -m --text --no-color "$@" </dev/null | sed -n 's/^+//p' > "$TMP"; then
-        echo "pre-push: could not enumerate patches for ${local_ref:-?} - failing closed" >&2
+    # --text  forces a textual diff, so a binary blob or a path marked `-diff` in
+    #         .gitattributes cannot hide behind "Binary files differ".
+    # --root  emits the initial commit's patch; `log.showRoot=false` is an ordinary setting
+    #         that otherwise makes a first push carry its root commit unscanned.
+    # ^+ only scans ADDED lines. Deleted and context lines describe content already on the
+    #         remote, and scanning them blocks the very commit that removes a leaked secret.
+    # </dev/null on every git call: this loop reads the ref list from stdin.
+    if ! { git log -p -m --text --root --no-color "$@" </dev/null | sed -n 's/^+//p' &&
+           git rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
+        echo "pre-push: could not enumerate commits for ${local_ref:-?} - failing closed" >&2
         exit 3
     fi
-    if ! git rev-list "$@" --format=%B </dev/null > "$TMPMSG"; then
-        echo "pre-push: could not enumerate commit messages for ${local_ref:-?} - failing closed" >&2
-        exit 3
-    fi
-    "$SCAN" --patch "$TMP"; s=$?
-    [ "$s" -gt "$rc" ] && rc=$s
-    "$SCAN" -- "$TMPMSG"; s=$?
+    "$SCAN" --composite "$TMP"; s=$?
     [ "$s" -gt "$rc" ] && rc=$s                  # precedence 3 > 2 > 0
-    if [ "$rc" -ne 0 ]; then
+    if [ "$s" -ne 0 ]; then
         echo "pre-push: the finding above is in commits being pushed to ${remote_ref:-?} (range: $*)" >&2
     fi
 done

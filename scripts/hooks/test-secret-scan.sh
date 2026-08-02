@@ -83,9 +83,15 @@ chk "no literal dollar-quote spliced into output" "$(printf '%s' "$err" | grep -
 printf '%s\n' "$SECRET" > "$(printf 'we\nird name.txt')"
 bash "$SCAN" "$(printf 'we\nird name.txt')" >/dev/null 2>&1
 chk "filename with a newline and a space" "$?" "2"
+# An exit-code assertion CANNOT detect glob expansion here: a pattern always matches its own
+# literal name, so an expanding scanner still reads the requested file and still exits 2.
+# The observable difference is SCOPE - expansion drags in siblings. The decoy therefore
+# carries its own secret, and the assertion is that only the REQUESTED path is reported.
 printf '%s\n' "$SECRET" > 'star*.txt'
-bash "$SCAN" 'star*.txt' >/dev/null 2>&1
-chk "filename with a glob char is literal" "$?" "2"
+printf '%s\n' "$SECRET" > 'star-decoy.txt'
+globerr=$(bash "$SCAN" 'star*.txt' 2>&1 >/dev/null)
+chk "glob-named file is scanned" "$(printf '%s' "$globerr" | grep -c 'star\*\.txt')" "1"
+chk "glob is NOT expanded to siblings" "$(printf '%s' "$globerr" | grep -c 'star-decoy')" "0"
 printf '%s\n' "$SECRET" > 'pipe|bar.txt'
 bash "$SCAN" 'pipe|bar.txt' >/dev/null 2>&1
 chk "filename with the sed delimiter" "$?" "2"
@@ -105,9 +111,8 @@ printf '%s\n' "$SECRET" > './--staged'
 bash "$SCAN" -- '--staged' >/dev/null 2>&1
 chk "-- treats a flag-named file as a path" "$?" "2"
 
-# 8. --patch mode: primary pattern still fires, path-aware PIN lane does not. The pre-push
-#    hook scans one concatenated temp file where every original path is gone, so applying
-#    the PIN lane there would block pushes carrying allowlisted PIN examples.
+# 8. --composite mode: primary pattern still fires, path-aware PIN lane does not, and a
+#    missing input fails CLOSED rather than inheriting "a missing path is clean".
 PINLIT=$(printf '%s%s %s%s' 'P' 'IN:' '4829' '13')
 printf '%s\n' "$PINLIT" > pinonly.txt
 bash "$SCAN" pinonly.txt >/dev/null 2>&1
@@ -123,13 +128,25 @@ chk "real PIN beside a placeholder mention is caught" "$?" "2"
 printf '%s%s\n' 'CRD_PIN=' "$PINFAKE" > pinplaceholder.txt
 bash "$SCAN" pinplaceholder.txt >/dev/null 2>&1
 chk "a genuine placeholder PIN is still exempt" "$?" "0"
-bash "$SCAN" --patch pinonly.txt >/dev/null 2>&1
-chk "PIN lane is skipped in --patch mode" "$?" "0"
+# The harder shape: a real PIN sitting beside a SECOND, labelled placeholder PIN. Both
+# earlier filter designs dropped this whole line and let the real value through.
+printf '%s %s%s\n' "$PINREAL" 'CRD_PIN=' "$PINFAKE" > pinboth.txt
+bash "$SCAN" pinboth.txt >/dev/null 2>&1
+chk "real PIN beside a labelled placeholder PIN is caught" "$?" "2"
+bash "$SCAN" --composite pinonly.txt >/dev/null 2>&1
+chk "PIN lane applies in --composite mode too" "$?" "2"
+# The allowlist must NOT be consulted for composite input: otherwise a TMPDIR under an
+# allowlisted directory silently disables a whole pattern lane.
+mkdir -p tmp/briefs; printf '%s\n' "$PINLIT" > tmp/briefs/composite-in.txt
+bash "$SCAN" tmp/briefs/composite-in.txt >/dev/null 2>&1
+chk "allowlist exempts a PIN at a real allowlisted path" "$?" "0"
+bash "$SCAN" --composite tmp/briefs/composite-in.txt >/dev/null 2>&1
+chk "allowlist is ignored for --composite input" "$?" "2"
 printf '%s\n' "$SECRET" > patchy.txt
-bash "$SCAN" --patch patchy.txt >/dev/null 2>&1
-chk "--patch still catches a provider token" "$?" "2"
-bash "$SCAN" --patch >/dev/null 2>&1
-chk "--patch with no file exits 3" "$?" "3"
+bash "$SCAN" --composite patchy.txt >/dev/null 2>&1
+chk "--composite still catches a provider token" "$?" "2"
+bash "$SCAN" --composite >/dev/null 2>&1
+chk "--composite with no file exits 3" "$?" "3"
 
 # ---------------------------------------------------------------------------
 echo "== false-positive gate: the real repository must stay clean =="
@@ -274,6 +291,22 @@ ierr=$(HOME="$FIXHOME" git push origin "$BR" 2>&1)
 chk "PIN in a commit message is rejected" \
     "$(printf '%s' "$ierr" | grep -c 'BLOCKED: secret detected')" "1"
 git reset -q --hard "$BASE"
+
+# I2. A secret in the ROOT commit of a first push. `log.showRoot=false` is an ordinary
+#     setting that makes `git log -p` omit the initial commit's patch entirely, so without
+#     --root a brand-new repository publishes its root commit unscanned.
+ROOTH="$WORK/roothome"; mkdir -p "$ROOTH/.claude-dotfiles"
+cp -R "$REPO/scripts" "$ROOTH/.claude-dotfiles/scripts"
+RR="$ROOTH/.claude-dotfiles"
+git init -q "$RR"; git init -q --bare "$WORK/rootremote.git"
+( cd "$RR" && git config log.showRoot false && git remote add origin "$WORK/rootremote.git" )
+HOME="$ROOTH" bash "$INSTALL" >/dev/null 2>&1
+( cd "$RR" && printf '%s\n' "$SECRET" > r.txt && git add r.txt && \
+  HOME="$ROOTH" git commit -qm root --no-verify ) >/dev/null 2>&1
+RB=$( cd "$RR" && git symbolic-ref --short HEAD )
+( cd "$RR" && HOME="$ROOTH" git push origin "$RB" ) >/dev/null 2>&1
+chk "root-commit secret is rejected under log.showRoot=false" \
+    "$(git --git-dir="$WORK/rootremote.git" rev-parse "$RB" >/dev/null 2>&1 && echo leaked || echo blocked)" "blocked"
 
 # J. Second remote: tracking refs for remote B must never excuse commits pushed to remote A.
 git init -q --bare "$WORK/other.git"

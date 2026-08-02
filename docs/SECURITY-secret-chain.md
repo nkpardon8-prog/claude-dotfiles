@@ -67,9 +67,34 @@ The scanner is a **regex over content**. It does not detect:
 - **Git LFS** objects (only the pointer is local) and **submodule** contents
 - Tag-only pushes do not trigger CI at all (`push.branches` only)
 
-On a **new branch** the pre-push range is `<sha> --not --remotes`, which trusts local
-remote-tracking refs. A stale or forged tracking ref can exclude commits the remote will
-actually receive.
+### How the pre-push range is chosen
+
+- **Existing branch:** `<remote_sha>..<local_sha>`. Git negotiated `remote_sha` with the
+  destination, so this is authoritative and uses no heuristic. It can RE-scan commits that
+  reached the remote through another ref (an ordinary merge), which may block a push over an
+  already-public secret. That false positive is accepted deliberately: a blocked push is
+  visible and diagnosable, a missed secret is permanent.
+- **New branch:** `<local_sha> --not --remotes=<name>`. No authoritative answer exists
+  locally, so this trusts that remote's tracking refs. A stale or forged tracking ref can
+  exclude commits the destination will actually receive.
+
+**Out-of-scope configurations** for the new-branch case: a remote with a `pushurl`, several
+`remote.<name>.url` entries, `url.*.pushInsteadOf`, or a push to a raw URL. In all of those
+the tracking refs describe a *different* repository than the one receiving the objects.
+Earlier revisions tried to detect each case; every partial heuristic produced a new hole and
+none can be made complete, so the limitation is stated here instead of half-checked in code.
+This repository has a single remote with no URL rewriting.
+
+### The PIN lane and composite text
+
+The CRD PIN pattern is normally path-aware: `crd_path_allowed` exempts docs that discuss the
+format in the abstract. Pre-push scans **composite text** (concatenated patch hunks plus
+commit messages) where original paths no longer exist, so the allowlist cannot be consulted —
+and must not be, or a `TMPDIR` under an allowlisted directory would silently disable the
+lane. Consequence: a PIN-shaped value inside an allowlisted document **will block a push**
+once it enters a pushed range. Placeholder values (`000000`, `123456`, `XXXXXX`) stay exempt
+and are what those documents should use. Measured 2026-08-01: zero PIN-pattern matches across
+this repository's entire history.
 
 ## CI is detection, not a gate
 

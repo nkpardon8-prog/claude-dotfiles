@@ -60,20 +60,30 @@ scan_stdin() {
     hits=$(printf '%s' "$content" | grep -anE -e "$RX"); rc=$?
     [ "$rc" -gt 1 ] && return 3
 
-    # In --patch mode the label is a temp file holding concatenated patch text, so the
-    # path-aware PIN lane cannot mean anything and is skipped entirely (see --patch below).
-    if [ "${MODE:-file}" != patch ] && ! crd_path_allowed "$f"; then
+    # crd_path_allowed keys on a real repository path. For --composite input the name is a
+    # temp file, so the allowlist can never legitimately fire - and MUST NOT, or a TMPDIR
+    # under an allowlisted directory would silently disable this lane.
+    if [ "${MODE:-file}" = composite ] || ! crd_path_allowed "$f"; then
         m=$(printf '%s' "$content" | grep -anE -e "$RX_PIN"); rc=$?
         [ "$rc" -gt 1 ] && return 3
         if [ -n "$m" ]; then
-            # Drop a line ONLY when the PIN's own VALUE is a placeholder. Filtering on the
-            # whole line let a real secret hide behind an unrelated mention: a line reading
-            # "<pin-key>=<real six digits>" followed by a comment that happens to name a
-            # placeholder value was silently accepted in full.
-            # (Deliberately described rather than shown - a literal example here would be a
-            #  true positive against this repo's own full-tree scan. It was, once.)
-            m=$(printf '%s' "$m" | grep -vE '([Pp][Ii][Nn]|CRD_PIN)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*(000000|123456|XXXXXX)'); rc=$?
-            [ "$rc" -gt 1 ] && return 3
+            # Keep a line if ANY PIN occurrence on it has a non-placeholder value.
+            # Both simpler forms were wrong: dropping lines that merely CONTAIN a
+            # placeholder anywhere hid a real PIN behind an unrelated mention, and dropping
+            # lines where a pin-key is followed by a placeholder hid a real PIN sitting
+            # beside a second, labelled placeholder. Neutralise every placeholder value,
+            # then re-test: whatever still matches is a real one.
+            # (Described, not shown - a literal example here would be a true positive
+            #  against this repo's own full-tree scan. It was, once.)
+            _kept=""
+            while IFS= read -r _ln; do
+                [ -z "$_ln" ] && continue
+                _probe=$(printf '%s' "${_ln#*:}" | sed -E 's/(000000|123456|XXXXXX)/PLACEHOLDER/g')
+                if printf '%s' "$_probe" | grep -qaE -e "$RX_PIN"; then
+                    if [ -n "$_kept" ]; then _kept=$(printf '%s\n%s' "$_kept" "$_ln"); else _kept="$_ln"; fi
+                fi
+            done <<< "$m"
+            m="$_kept"
         fi
         # Written as an explicit if rather than ${hits:+$'\n'}: bash expands that form
         # correctly, but zsh does not (it splices the literal characters), and these
@@ -134,15 +144,26 @@ case "${1:-}" in
         # of this very gate. A type-changed path is still an ordinary blob in the index.
         git diff --cached --name-only --diff-filter=ACMRT -z > "$TMPLIST" || exit 3
         ;;
-    --patch)
-        # Scan ONE file of composite patch/message text (used by the pre-push hook).
-        # PRIMARY RX ONLY: the path-aware secondary lane (crd_path_allowed) is meaningless
-        # against concatenated patch text, where every original path has been lost - it
-        # would apply the PIN pattern to allowlisted content and block legitimate pushes.
-        # Per-file PIN coverage with correct path semantics is the pre-commit hook's job.
-        MODE=patch
+    --composite)
+        # ONE file of concatenated patch + commit-message text (the pre-push hook's input).
+        #
+        # Its name is a temp path, NOT a repository path, so every path-based rule is
+        # bypassed: the .git exclusion (a TMPDIR inside .git made the scan silently return
+        # clean) and the CRD allowlist (a TMPDIR under an allowlisted directory silently
+        # disabled a pattern lane). Path rules that key on a meaningless name are not
+        # protection, they are three different ways to scan nothing.
+        #
+        # ALL patterns apply, including the PIN lane. Skipping it here dropped real coverage
+        # (a PIN reaching the repo through a merge or rebase runs no pre-commit hook, so
+        # push time is the only place left to catch it). The allowlist that would normally
+        # exempt a PIN example cannot be consulted for composite text, so the trade is: a
+        # PIN-shaped value inside an allowlisted doc WILL block a push once it enters the
+        # pushed range. Placeholder values stay exempt, which is what those docs should use.
+        # Measured 2026-08-01: zero PIN-pattern matches across this repository's entire
+        # history, so the practical false-positive rate today is zero.
+        MODE=composite
         shift
-        [ -n "${1:-}" ] || { echo "secret-scan: --patch requires a file" >&2; exit 3; }
+        [ -n "${1:-}" ] || { echo "secret-scan: --composite requires a file" >&2; exit 3; }
         printf '%s\0' "$@" > "$TMPLIST" || exit 3
         ;;
     --working)
@@ -186,13 +207,11 @@ WORST=0
 HITS=""
 while IFS= read -r -d '' f; do
     [ -z "$f" ] && continue
-    if [ "$MODE" = patch ]; then
-        # A composite patch file is NOT a repository path: it must bypass the .git
-        # exclusion (a TMPDIR resolving inside .git made scan_file return clean and
-        # approved an unscanned push) and it must FAIL CLOSED if it has vanished,
-        # rather than inheriting scan_file's "missing path is clean" rule.
+    if [ "$MODE" = composite ]; then
+        # Bypasses scan_file entirely: no path exclusion, no allowlist, and a vanished
+        # input FAILS CLOSED instead of inheriting "a missing path is clean".
         if [ ! -f "$f" ] || [ ! -r "$f" ]; then
-            echo "secret-scan: --patch input missing or unreadable: $f" >&2
+            echo "secret-scan: --composite input missing or unreadable: $f" >&2
             WORST=3
             continue
         fi

@@ -26,13 +26,19 @@ export LC_ALL=C
 # which is deliberate - a blocked sync must stop stacking commits on a poisoned HEAD.
 # Consequence, accepted: a transient network failure holds sync until a human clears it.
 # The alternative was `|| true`, which lost the failure entirely.
+# _pause <reason> [kind]   kind: secret | other   (default: other)
+# `kind` is a machine field on purpose. The reader must NOT infer severity by grepping the
+# prose - the reason text routinely contains the word "secret" for entirely benign reasons
+# (this repo's own work is named "secret-chain"), and mis-reporting a routine pause as a
+# credential leak trains people to ignore the one message that matters.
 _pause() {
     # Redact any userinfo in a URL before it reaches disk: git's stderr can echo a remote
     # URL, and a remote URL can embed a token. Redacting at the choke point means no caller
     # can leak one into the marker by accident. Also collapse to a single line.
     _reason=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's#://[^/@[:space:]]*@#://REDACTED@#g' | cut -c1-300)
-    if ! printf 'reason: %s\nset_at: %s\nset_by: dotfiles-sync\nclear_with: rm %s\n' \
-            "$_reason" "$(date '+%Y-%m-%d %H:%M:%S')" "$_MARKER" > "$_MARKER" 2>/dev/null; then
+    _kind="${2:-other}"
+    if ! printf 'kind: %s\nreason: %s\nset_at: %s\nset_by: dotfiles-sync\nclear_with: rm %s\n' \
+            "$_kind" "$_reason" "$(date '+%Y-%m-%d %H:%M:%S')" "$_MARKER" > "$_MARKER" 2>/dev/null; then
         echo "dotfiles-sync: CRITICAL - could not write the pause marker at $_MARKER (reason: $_reason). This failure now has NO visible channel." >&2
     fi
 }
@@ -49,7 +55,15 @@ _stamp="$DOTFILES_DIR/.git/hooks/.secret-chain-version"
 if [ -r "$_installer" ]; then
     _want=$(shasum "$_installer" 2>/dev/null | awk '{print $1}')
     _have=$(cat "$_stamp" 2>/dev/null)
-    if [ -n "$_want" ] && [ "$_want" != "$_have" ]; then
+    if [ -z "$_want" ]; then
+        # Cannot compute the fingerprint, so cannot tell whether the installed hooks are
+        # the current ones. Silently skipping here would let a stale fail-open hook survive
+        # exactly when the check that exists to catch it stopped working.
+        echo "dotfiles-sync: could not fingerprint $_installer - cannot verify the local secret gate." >&2
+        _pause "could not verify the installed git hooks are current"
+        exit 8
+    fi
+    if [ "$_want" != "$_have" ]; then
         if bash "$_installer" >/dev/null 2>&1; then
             echo "(dotfiles-sync: git hooks were stale - reinstalled from $_installer)" >&2
         else
@@ -64,9 +78,14 @@ fi
 # pending: a previously blocked or failed push leaves commits sitting locally, and exiting
 # here would strand them forever once the pause was cleared.
 if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null && [ -z "$(git ls-files --others --exclude-standard)" ]; then
-    _ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-    [ "${_ahead:-0}" -eq 0 ] && exit 0
-    echo "(dotfiles-sync: tree clean but ${_ahead} commit(s) unpushed - attempting to deliver them.)" >&2
+    if _ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null); then
+        [ "${_ahead:-0}" -eq 0 ] && exit 0
+        echo "(dotfiles-sync: tree clean but ${_ahead} commit(s) unpushed - attempting to deliver them.)" >&2
+    else
+        # No upstream, or the lookup failed. Collapsing that to "0 unpushed" would strand
+        # local commits permanently on exactly the branches least likely to be noticed.
+        echo "(dotfiles-sync: tree clean and no usable upstream for the current branch - attempting a push anyway.)" >&2
+    fi
 fi
 
 # Pre-push secret scan (working tree + untracked files about to be staged)
@@ -74,8 +93,8 @@ fi
 rc=$?
 case "$rc" in
     0) ;;  # clean — proceed
-    2) echo "(secret-scan blocked auto-push)" >&2; _pause "secret-scan detected a secret in the working tree"; exit 2 ;;
-    *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; _pause "secret-scan could not prove the tree clean (exit $rc)"; exit 3 ;;
+    2) echo "(secret-scan blocked auto-push)" >&2; _pause "secret-scan detected a secret in the working tree" secret; exit 2 ;;
+    *) echo "(secret-scan failed with exit $rc — refusing to push)" >&2; _pause "secret-scan could not prove the tree clean (exit $rc)" secret; exit 3 ;;
 esac
 
 # VISIBILITY-AWARE PUSH GUARD (2026-07-12). The user EXPLICITLY accepts this repo being PUBLIC
