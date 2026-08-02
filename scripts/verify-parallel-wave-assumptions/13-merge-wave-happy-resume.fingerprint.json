@@ -1,0 +1,1 @@
+{"merges":"--no-ff in declared order","records":"{id, merge_sha} = the MERGE COMMIT","resume":"skips ids in merged_chunks[]","teardown":"never","events_per_run":2}

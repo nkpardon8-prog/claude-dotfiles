@@ -1,0 +1,1 @@
+{"rule12":"multi-chunk requires high confidence + full independent_of -> low_confidence","rule13":"SERIAL_CORRECT -> exit 1 reason serial_correct","single_chunk":"rule 12 not applicable"}

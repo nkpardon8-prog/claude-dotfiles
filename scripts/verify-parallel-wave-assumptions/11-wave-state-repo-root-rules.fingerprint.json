@@ -1,0 +1,1 @@
+{"rule10":"HEAD in {base_sha} + merged_chunks[].merge_sha","rule11":"git status --porcelain --untracked-files=no","exemption":"impl_plan_path only when under repo_root","untracked_root":"tolerated"}

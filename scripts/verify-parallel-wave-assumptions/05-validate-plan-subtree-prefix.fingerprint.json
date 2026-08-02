@@ -1,0 +1,1 @@
+{"absent_dir":"exit 0","existing_dir":"exit 1 rule 7","evaluated_at":"the PASSED sha","hazard_prefix":"existence-unbounded","probe":"git ls-tree -z <sha> -- <dir>"}

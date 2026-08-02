@@ -1,0 +1,1 @@
+{"golden":"exit 0 reason fan_out","dependent":"exit 1 rule 9","schema_version_reject":true,"unknown_key_tolerated":true,"modeless_invocation":"exit 2, no event"}

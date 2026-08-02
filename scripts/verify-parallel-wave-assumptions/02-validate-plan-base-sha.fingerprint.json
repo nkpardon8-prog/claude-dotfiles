@@ -1,0 +1,1 @@
+{"equality":"exit 0","ancestor":"exit 0","divergent":"exit 1 rule 3","unresolvable_sha":"exit 2","predicate":"git merge-base --is-ancestor"}

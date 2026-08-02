@@ -1,0 +1,1 @@
+{"checker_red":"exit 1, nothing merged","corrupt_state":"exit 2, nothing merged","untracked_collision":"nonzero, no MERGE_HEAD, no abort attempted, content preserved","partial_wave":"clean at the last successful merge tip","resume":"merges only what is missing"}

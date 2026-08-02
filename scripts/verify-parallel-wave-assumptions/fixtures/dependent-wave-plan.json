@@ -1,0 +1,42 @@
+{
+  "schema_version": "parallelizer.v1",
+  "verdict": "FAN_OUT",
+  "confidence": "high",
+  "analysis_basis": {
+    "repo_root": "__REPO_ROOT__",
+    "base_sha": "__BASE_SHA__",
+    "shared_hazard_paths": ["package.json"]
+  },
+  "waves": [
+    {
+      "wave": 1,
+      "chunks": [
+        {
+          "id": "chunk-a",
+          "items": [{ "id": "ITEM-1", "text": "Rewrite the shared helper." }],
+          "exclusive_paths": ["src/a.ts", "src/shared.ts"],
+          "reads": [],
+          "rationale": "Owns the shared helper for this wave.",
+          "independent_of": [
+            { "chunk_id": "chunk-b", "reason": "Claimed independent - and it is NOT: chunk-b reads what this chunk rewrites." }
+          ],
+          "write_set_confidence": "high"
+        },
+        {
+          "id": "chunk-b",
+          "items": [{ "id": "ITEM-2", "text": "Build a consumer of the shared helper." }],
+          "exclusive_paths": ["src/b.ts"],
+          "reads": ["src/shared.ts"],
+          "rationale": "Correctness depends on the CONTENT of src/shared.ts, which the sibling is rewriting.",
+          "independent_of": [
+            { "chunk_id": "chunk-a", "reason": "Claimed independent - and it is NOT." }
+          ],
+          "write_set_confidence": "high"
+        }
+      ],
+      "post_integration_commands": ["npm run typecheck"]
+    }
+  ],
+  "hazards_found": [],
+  "serial_reasons": []
+}

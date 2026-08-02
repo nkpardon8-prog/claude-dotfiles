@@ -1,0 +1,1 @@
+{"clean":"exit 0","missing_worktree":"exit 2","tracked_dirty":"exit 1 dirty_repo_root","untracked_only":"exit 1 dirty_repo_root","zero_commit":"exit 1 malformed","off_history":"exit 1 malformed","corrupt_state":"exit 2"}

@@ -1,0 +1,1 @@
+{"rule8":"writes x writes","rule9":"writes x sibling reads (ordered)","rule10":"writes x shared_hazard_paths","predicate":"a==b or prefix-of either way","self_reads":"legal"}

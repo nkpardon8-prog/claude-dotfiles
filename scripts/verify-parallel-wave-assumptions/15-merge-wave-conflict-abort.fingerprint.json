@@ -1,0 +1,1 @@
+{"conflict":"exit 1","abort":"only when MERGE_HEAD exists","tree":"clean at the last successful merge tip","state":"unchanged on failure","repeatable":true,"shape":"deliberate checker hole (rule 10 compares SHAs, not provenance)"}

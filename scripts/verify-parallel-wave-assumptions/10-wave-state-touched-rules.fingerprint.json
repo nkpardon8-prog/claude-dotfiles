@@ -1,0 +1,1 @@
+{"probe":"git diff --name-only --no-renames -z base..HEAD","rule6":"touched subset of own declared","rule7":"declared pairwise disjoint","rule8":"touched pairwise disjoint","rule9":"touched x sibling reads","rename":"both sides counted"}

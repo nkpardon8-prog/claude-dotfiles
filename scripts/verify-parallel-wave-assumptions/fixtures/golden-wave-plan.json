@@ -1,0 +1,46 @@
+{
+  "schema_version": "parallelizer.v1",
+  "verdict": "FAN_OUT",
+  "confidence": "high",
+  "analysis_basis": {
+    "repo_root": "__REPO_ROOT__",
+    "base_sha": "__BASE_SHA__",
+    "shared_hazard_paths": ["package.json"],
+    "base_ref": "HEAD",
+    "max_wave_width": 4
+  },
+  "waves": [
+    {
+      "wave": 1,
+      "chunks": [
+        {
+          "id": "chunk-a",
+          "items": [{ "id": "ITEM-1", "text": "Verbatim pending work item for chunk a." }],
+          "exclusive_paths": ["src/a.ts"],
+          "reads": ["src/shared.ts"],
+          "rationale": "Leaf module; nothing in this wave consumes its output.",
+          "independent_of": [
+            { "chunk_id": "chunk-b", "reason": "Disjoint files, no shared generator, no shared fixture." }
+          ],
+          "write_set_confidence": "high",
+          "exclusive_resources": []
+        },
+        {
+          "id": "chunk-b",
+          "items": [{ "id": "ITEM-2", "text": "Verbatim pending work item for chunk b." }],
+          "exclusive_paths": ["src/b.ts", "client/panels/"],
+          "reads": ["src/shared.ts"],
+          "rationale": "Leaf module plus a NEW panel directory, absent at base_sha.",
+          "independent_of": [
+            { "chunk_id": "chunk-a", "reason": "Disjoint files; consumes no output of the sibling in this wave." }
+          ],
+          "write_set_confidence": "high",
+          "exclusive_resources": []
+        }
+      ],
+      "post_integration_commands": ["npm run typecheck"]
+    }
+  ],
+  "hazards_found": [],
+  "serial_reasons": []
+}
