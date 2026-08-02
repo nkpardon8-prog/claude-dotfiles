@@ -1,0 +1,4 @@
+{"ts":"2026-08-01T11:00:00.000Z","tool_mode":"wave-state","decision":null,"verdict":"fail","exit":1,"repo_root":"/tmp/fixture-repo","wave":1,"reason":"undeclared_write"}
+{"ts":"2026-08-01T11:05:00.000Z","tool_mode":"log-decision","decision":"serial","verdict":"ok","exit":0,"repo_root":"/tmp/fixture-repo","wave":null,"reason":"pct_over_60"}
+{"ts":"2026-08-01T11:06:00.000Z","tool_mode":"wave-state","decision":null,"verdict":"fail","exit":1,"repo_root":"/Users/x/.claude-dotfiles/scripts/verify-parallel-wave-assumptions/fixtures/repo","wave":2,"reason":"touched_overlap"}
+{"ts":"2026-08-01T11:07:00.000Z","tool_mode":"validate-plan","decision":"fan_out","verdict":"ok","exit":0,"repo_root":"/tmp/fixture-repo","wave":2,"reason":"fan_out"}

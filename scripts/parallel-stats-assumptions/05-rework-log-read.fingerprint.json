@@ -1,0 +1,1 @@
+{"with_fixture_log":"True 3 1 0 3","with_absent_log":"False 0 0 0 0","drop_rule":"repo_root contains -assumptions/fixtures","schema":"jsonl one event per line"}

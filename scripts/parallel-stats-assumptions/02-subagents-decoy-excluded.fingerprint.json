@@ -1,0 +1,1 @@
+{"dir_walk":"1 0 4 1","explicit_decoy":"1 1 4 1","decoy_tool_calls_ignored":5,"rule":"R1 exclude any path containing /subagents/"}
