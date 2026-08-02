@@ -15,6 +15,24 @@ HOOK_DIR="$DIR/.git/hooks"
 
 mkdir -p "$HOOK_DIR"
 
+# Serialize installs. SessionStart and the async PostToolUse sync can both invoke this, and
+# two concurrent runs spanning a generator edit could interleave hook bodies and stamps.
+LOCK="$HOOK_DIR/.install.lock"
+if mkdir "$LOCK" 2>/dev/null; then
+    trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+    trap 'rmdir "$LOCK" 2>/dev/null; exit 3' HUP INT TERM
+else
+    # Another install is mid-flight. It writes the same bytes, so exiting is safe - but say
+    # so rather than returning 0 as though this run had installed anything.
+    echo "install-git-hooks: another install is in progress ($LOCK) - skipping" >&2
+    exit 0
+fi
+
+# Fingerprint the generator BEFORE writing any hook, so the stamp can only ever describe the
+# bodies this run actually produced. Hashing $0 afterwards could stamp a newer generator's
+# fingerprint over hooks written from an older one.
+GEN_FP=$(shasum "$0" 2>/dev/null | awk '{print $1}')
+
 # Write a hook ATOMICALLY: an interrupted install must never leave a half-written
 # (and therefore silently permissive) hook behind. Body arrives on stdin.
 install_hook() {
@@ -132,7 +150,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # ^+ only scans ADDED lines. Deleted and context lines describe content already on the
     #         remote, and scanning them blocks the very commit that removes a leaked secret.
     # </dev/null on every git call: this loop reads the ref list from stdin.
-    if ! { git log -p -m --text --root --no-color "$@" </dev/null | sed -n 's/^+//p' &&
+    # --no-textconv is REQUIRED alongside --text: a textconv diff driver is a legitimate,
+    # ordinary configuration (readable diffs for binary or noisy files), and it rewrites what
+    # `git log -p` prints. Probed: a driver that scrubs tokens hid a plaintext secret
+    # completely while git still published the real blob.
+    if ! { git log -p -m --text --no-textconv --root --no-color "$@" </dev/null | sed -n 's/^+//p' &&
            git rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
         echo "pre-push: could not enumerate commits for ${local_ref:-?} - failing closed" >&2
         exit 3
@@ -146,12 +168,20 @@ done
 exit $rc
 EOF
 
-# Stamp the generator's fingerprint. `.git/hooks/` is NOT tracked, so `git pull` updates
-# THIS script without touching the hooks it already generated: every other clone would keep
-# running an older - possibly fail-open - pre-push forever, with nothing to indicate it.
-# dotfiles-sync.sh compares this marker against the current generator and reinstalls on
-# mismatch, so the repair propagates on sync instead of requiring a manual install per machine.
-shasum "$0" 2>/dev/null | awk '{print $1}' > "$HOOK_DIR/.secret-chain-version" || true
+# Stamp LAST, and only the fingerprint captured before the hooks were written. `.git/hooks/`
+# is NOT tracked, so `git pull` updates THIS script without touching the hooks it already
+# generated: every other clone would keep running an older - possibly fail-open - pre-push
+# forever, with nothing to indicate it. dotfiles-sync.sh and SessionStart compare this marker
+# against the current generator and reinstall on mismatch, so the repair propagates on sync
+# instead of needing a manual install per machine.
+if [ -n "$GEN_FP" ]; then
+    printf '%s\n' "$GEN_FP" > "$HOOK_DIR/.secret-chain-version"
+else
+    # No fingerprint means the freshness check cannot work. Remove any stale stamp so the
+    # mismatch is detected and this reinstalls, rather than leaving a lie on disk.
+    rm -f "$HOOK_DIR/.secret-chain-version"
+    echo "install-git-hooks: could not fingerprint $0 - freshness stamp not written" >&2
+fi
 
 echo "Installed pre-commit and pre-push hooks at $HOOK_DIR/"
 echo "Test: stage a file containing an AWS-style key (AKIA followed by 16 caps/digits) - git commit should block."

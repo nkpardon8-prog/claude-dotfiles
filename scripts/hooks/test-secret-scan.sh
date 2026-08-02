@@ -77,7 +77,15 @@ out=$(bash "$SCAN" hit.txt 2>/dev/null)
 chk "stdout stays empty on a hit" "${#out}" "0"
 err=$(bash "$SCAN" hit.txt 2>&1 >/dev/null)
 chk "stderr carries the banner" "$(printf '%s' "$err" | grep -c 'BLOCKED: secret detected')" "1"
-chk "no literal dollar-quote spliced into output" "$(printf '%s' "$err" | grep -c "\$'")" "0"
+# The dollar-quote assertion is only meaningful on a file that hits BOTH lanes, because the
+# corruption it names lives in the primary/PIN JOIN. Against a primary-only hit it asserted
+# nothing at all.
+_PJ=$(printf '%s%s %s%s' 'P' 'IN:' '4829' '13')
+printf '%s\n%s\n' "$SECRET" "$_PJ" > bothlanes.txt
+joinerr=$(bash "$SCAN" bothlanes.txt 2>&1 >/dev/null)
+chk "a both-lanes file really hits both" \
+    "$(printf '%s' "$joinerr" | grep -Ec 'bothlanes\.txt:[0-9]+:')" "2"
+chk "no literal dollar-quote spliced into the join" "$(printf '%s' "$joinerr" | grep -c "\$'")" "0"
 
 # 5. Filenames that broke the old `FILES="$*"` + unquoted expansion.
 printf '%s\n' "$SECRET" > "$(printf 'we\nird name.txt')"
@@ -110,6 +118,21 @@ chk "no arguments exits 3" "$?" "3"
 printf '%s\n' "$SECRET" > './--staged'
 bash "$SCAN" -- '--staged' >/dev/null 2>&1
 chk "-- treats a flag-named file as a path" "$?" "2"
+# Prove `--` is load-bearing, and that CI actually passes it. Without these two, deleting
+# `--` from the workflow - or the scanner's `--)` arm - left the suite entirely green.
+# Exit codes cannot tell these apart (this fixture has a staged secret, so mode-switching
+# also exits 2). The discriminator is WHICH path gets reported.
+_wq=$(bash "$SCAN" -- '--staged' 2>&1 >/dev/null)
+_woq=$(bash "$SCAN" '--staged' 2>&1 >/dev/null)
+chk "with -- the flag-named FILE is reported" "$(printf '%s' "$_wq" | grep -c -- '--staged:')" "1"
+chk "without -- it switches mode and reports the index instead" \
+    "$(printf '%s' "$_woq" | grep -c -- '--staged:')" "0"
+# Guarded: a mutation-test copy contains only scripts/, and an unconditional grep against a
+# missing workflow would fail every mutation run and drown the signal it exists to give.
+if [ -f "$REPO/.github/workflows/secret-scan.yml" ]; then
+    chk "CI passes -- to the scanner" \
+        "$(grep -c 'secret-scan\.sh --$' "$REPO/.github/workflows/secret-scan.yml")" "1"
+fi
 
 # 8. --composite mode: primary pattern still fires, path-aware PIN lane does not, and a
 #    missing input fails CLOSED rather than inheriting "a missing path is clean".
@@ -133,6 +156,25 @@ chk "a genuine placeholder PIN is still exempt" "$?" "0"
 printf '%s %s%s\n' "$PINREAL" 'CRD_PIN=' "$PINFAKE" > pinboth.txt
 bash "$SCAN" pinboth.txt >/dev/null 2>&1
 chk "real PIN beside a labelled placeholder PIN is caught" "$?" "2"
+# Each documented placeholder needs its own case: with only 123456 covered, deleting the
+# 000000 exemption left the whole suite green.
+printf '%s%s\n' 'CRD_PIN=' '000000' > pinzero.txt
+bash "$SCAN" pinzero.txt >/dev/null 2>&1
+chk "the 000000 placeholder is exempt" "$?" "0"
+printf '%s%s\n' 'CRD_PIN=' 'XXXXXX' > pinx.txt
+bash "$SCAN" pinx.txt >/dev/null 2>&1
+chk "the XXXXXX placeholder is exempt" "$?" "0"
+
+# 8c. A SYMLINK must be scanned as git stores it - the blob is the target PATH string, not
+#     the bytes it points at. Following it both invents false positives on content git never
+#     publishes and misses the content git does.
+mkdir -p outside_repo; printf '%s\n' "$SECRET" > outside_repo/external-secret
+ln -s "$U/outside_repo/external-secret" link-out
+bash "$SCAN" link-out >/dev/null 2>&1
+chk "a symlink is NOT followed to external content" "$?" "0"
+ln -s "$SECRET" link-target-is-secret
+bash "$SCAN" link-target-is-secret >/dev/null 2>&1
+chk "a symlink whose stored target is a secret is caught" "$?" "2"
 bash "$SCAN" --composite pinonly.txt >/dev/null 2>&1
 chk "PIN lane applies in --composite mode too" "$?" "2"
 # The allowlist must NOT be consulted for composite input: otherwise a TMPDIR under an
@@ -291,6 +333,21 @@ ierr=$(HOME="$FIXHOME" git push origin "$BR" 2>&1)
 chk "PIN in a commit message is rejected" \
     "$(printf '%s' "$ierr" | grep -c 'BLOCKED: secret detected')" "1"
 git reset -q --hard "$BASE"
+
+# H2. A textconv diff driver is a LEGITIMATE configuration (readable diffs for binary or
+#     noisy files) and it rewrites what `git log -p` prints. Without --no-textconv a driver
+#     that scrubs tokens hides the secret completely while git publishes the real blob.
+printf 'scrubbed.txt diff=redactor\n' > .gitattributes
+git config diff.redactor.textconv "sed s/${_AK}[A-Z0-9]*/SCRUBBED/"
+git add .gitattributes; HOME="$FIXHOME" git commit -qm textconv-attrs --no-verify >/dev/null 2>&1
+printf '%s\n' "$SECRET" > scrubbed.txt; git add scrubbed.txt
+HOME="$FIXHOME" git commit -qm "add scrubbed" --no-verify >/dev/null 2>&1
+chk "the textconv driver really does hide it from a plain patch" \
+    "$(git log -p --text -1 --no-color | grep -c "$SECRET")" "0"
+h2err=$(HOME="$FIXHOME" git push origin "$BR" 2>&1)
+chk "textconv-hidden secret is still rejected" \
+    "$(printf '%s' "$h2err" | grep -c 'BLOCKED: secret detected')" "1"
+git reset -q --hard "$BASE"; git config --unset diff.redactor.textconv 2>/dev/null; rm -f .gitattributes
 
 # I2. A secret in the ROOT commit of a first push. `log.showRoot=false` is an ordinary
 #     setting that makes `git log -p` omit the initial commit's patch entirely, so without

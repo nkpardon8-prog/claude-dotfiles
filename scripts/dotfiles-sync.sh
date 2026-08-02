@@ -52,6 +52,13 @@ cd "$DOTFILES_DIR" || exit 0
 # stamped fingerprint against the current generator and reinstall when they disagree.
 _installer="$DOTFILES_DIR/scripts/install-git-hooks.sh"
 _stamp="$DOTFILES_DIR/.git/hooks/.secret-chain-version"
+if [ ! -r "$_installer" ]; then
+    # FAIL CLOSED. Skipping the check because the installer is missing is backwards: that is
+    # the state in which the local hooks are most likely stale or absent entirely.
+    echo "dotfiles-sync: installer missing or unreadable at $_installer - cannot verify the local secret gate." >&2
+    _pause "install-git-hooks.sh missing or unreadable - local secret gate unverifiable"
+    exit 9
+fi
 if [ -r "$_installer" ]; then
     _want=$(shasum "$_installer" 2>/dev/null | awk '{print $1}')
     _have=$(cat "$_stamp" 2>/dev/null)
@@ -136,7 +143,14 @@ fi
 _push_or_pause() {
     if ! _perr=$(git push "$_remote" 2>&1); then
         echo "dotfiles-sync: PUSH FAILED to ${_slug:-$_remote} — committed locally only." >&2
-        _pause "push to ${_slug:-$_remote} failed: $(printf '%s' "$_perr" | head -1)"
+        # A push rejected by our own pre-push hook means a secret is in the commits being
+        # pushed - a materially different situation from a network failure, and the reader
+        # must be told to rotate rather than to clear the marker and retry.
+        if printf '%s' "$_perr" | grep -q 'BLOCKED: secret detected'; then
+            _pause "pre-push rejected the push: a secret is present in the commits being pushed" secret
+        else
+            _pause "push to ${_slug:-$_remote} failed: $(printf '%s' "$_perr" | head -1)"
+        fi
         exit 6
     fi
 }

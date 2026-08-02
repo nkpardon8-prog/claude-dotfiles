@@ -6,8 +6,11 @@
 #   - .github/workflows/secret-scan.yml (CI)
 #
 # Usage: secret-scan.sh [--] <file> [<file> ...]
-#        secret-scan.sh --patch <file> # one file of composite patch/message text, PRIMARY
-#                                      #   pattern only (no path-aware lanes). Pre-push uses this.
+#        secret-scan.sh --composite <file>
+#                                      # one file of concatenated patch + commit-message
+#                                      #   text. ALL patterns; every path-based rule (the
+#                                      #   .git exclusion and the CRD allowlist) is bypassed
+#                                      #   because the name is a temp path. Pre-push uses this.
 #        secret-scan.sh --staged       # scan staged files (reads INDEX blobs, not worktree bytes)
 #        secret-scan.sh --working      # scan tracked + untracked working files
 #        secret-scan.sh --all-history  # COARSE audit over every blob in every commit (slow).
@@ -78,8 +81,12 @@ scan_stdin() {
             _kept=""
             while IFS= read -r _ln; do
                 [ -z "$_ln" ] && continue
-                _probe=$(printf '%s' "${_ln#*:}" | sed -E 's/(000000|123456|XXXXXX)/PLACEHOLDER/g')
-                if printf '%s' "$_probe" | grep -qaE -e "$RX_PIN"; then
+                # Every status is checked: a failing sed or a grep ERROR (rc>1) must fail
+                # closed with 3, not silently drop the candidate as if it were a placeholder.
+                _probe=$(printf '%s' "${_ln#*:}" | sed -E 's/(000000|123456|XXXXXX)/PLACEHOLDER/g') || return 3
+                printf '%s' "$_probe" | grep -qaE -e "$RX_PIN"; _prc=$?
+                [ "$_prc" -gt 1 ] && return 3
+                if [ "$_prc" -eq 0 ]; then
                     if [ -n "$_kept" ]; then _kept=$(printf '%s\n%s' "$_kept" "$_ln"); else _kept="$_ln"; fi
                 fi
             done <<< "$m"
@@ -114,6 +121,13 @@ scan_file() {
     # Anchor on a real .git path component. The old `*.git/*` also matched ordinary
     # paths such as vendor/leak.git/secret.txt, which silently skipped them everywhere.
     case "$f" in .git/*|*/.git/*) return 0 ;; esac
+    # A SYMLINK must be scanned as git stores it: the blob is the TARGET PATH string, not
+    # the bytes it points at. Following it read content git never publishes (a tracked link
+    # to ~/.aws/credentials produced a false positive) while never reading what git does.
+    if [ -L "$f" ]; then
+        _t=$(readlink "$f") || return 3
+        printf '%s' "$_t" | scan_stdin "$f"; return $?
+    fi
     [ -f "$f" ] || return 0      # absent or non-regular: nothing to publish
     [ -r "$f" ] || return 3      # present but unreadable: cannot prove clean
     scan_stdin "$f" < "$f"; rc=$?
@@ -122,7 +136,7 @@ scan_file() {
 }
 
 usage() {
-    echo "Usage: $0 [--staged|--working|--all-history|--patch <file>|[--] <file>...]" >&2
+    echo "Usage: $0 [--staged|--working|--all-history|--composite <file>|[--] <file>...]" >&2
 }
 
 # Enumeration goes through a NUL-delimited temp file, never a newline-delimited scalar:
