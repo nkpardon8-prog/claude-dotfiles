@@ -73,7 +73,7 @@ Project repos are **not** auto-pushed. Only this dotfiles repo. The rule lives i
 | Hook | Script | Purpose |
 |---|---|---|
 | `Stop` | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app only. Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
-| `SessionStart` (cleanup entry) | `scripts/progress/on-session-start-cleanup.sh` | Prunes stale progress files + stale auto-compact / pre-compact sentinels (>12h). |
+| `SessionStart` (cleanup entry) | `scripts/progress/on-session-start-cleanup.sh` | Prunes stale progress files, stale auto-compact / pre-compact sentinels (>12h), and `codex-review.*` run dirs under `$TMPDIR` (>24h - they now outlive the skill so `/mission` can read `report-final.md`). Also sweeps abandoned parallelizer waves (>7d): dead wave-state files, plus orphaned `~/.claude/wave-worktrees/` dirs that no state file references - removing the tree, then `git worktree prune` + `branch -D` in the repo named by that dir's `.repo-root` breadcrumb. Finally runs `scripts/parallel-stats.py --replay` at most weekly (completion-marker throttled, 45s `pt_run` cap, 10 newest transcripts, tmp->mv) into `~/.claude/parallel-waves/replay-latest.txt`. `rework.log` and replay outputs are never swept. Every step is fail-open. |
 
 Auto-compact is the `Stop` hook that crosses the Claude/Terminal boundary. (Statusline line 2 is now a manual `/line` label set per window — there are no progress-bar hooks; see [STATUSLINE.md](STATUSLINE.md).)
 
