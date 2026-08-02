@@ -13,11 +13,15 @@
 #      (writes to the tab's PTY input — no keystroke synthesis, no focus race, no Accessibility
 #      requirement, only Terminal Automation permission).
 #
-# Anti-loop:
-#   The sentinel is moved (atomic claim) to a `.claim.<pid>` file before any external command,
-#   then removed entirely via EXIT trap. The Stop event that /compact triggers therefore finds
-#   no sentinel and exits silently. The atomic mv also prevents two concurrent Stop events
-#   from double-firing on the same sentinel (only one mv succeeds).
+# Anti-loop (REVISED 2026-08-02 - retain-and-confirm):
+#   The sentinel is moved (atomic claim) to a `.claim.<pid>` file before any external command.
+#   The atomic mv prevents two concurrent Stop events from acting on the same sentinel (only
+#   one mv succeeds). It is NO LONGER removed on a successful fire: "fired" means AppleScript
+#   delivered the text, not that a compaction happened, and a `/compact` typed while the
+#   session is busy is swallowed as an ordinary prompt. So the sentinel is RESTORED with an
+#   incremented `.attempts` counter and the next Stop retries; post-compact-primer.sh retires
+#   it on a confirmed source=compact start, which is the only real proof of effect. Bounded at
+#   3 attempts so a tab that can never accept the command cannot spin.
 #
 # Security:
 #   - TARGET_TTY passed to osascript via argv (NOT heredoc string interpolation).
