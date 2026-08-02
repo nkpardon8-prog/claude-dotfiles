@@ -1,5 +1,5 @@
 ---
-description: "Universal review engine. OpenAI Codex CLI runs 4 specialized review passes (Correctness, Security, Data-integrity, Contracts) plus 1 verification pass. Claude Opus runs 3 lens agents (Architecture, Integration, Adversarial+FP-filter) plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
+description: "Universal review engine. OpenAI Codex CLI runs 4 specialized review passes (Correctness, Security, Data-integrity, Contracts) plus 1 verification pass. Claude Opus runs 3 lens agents - Architecture and Integration launch alongside the Codex passes, Adversarial+FP-filter follows the merge - plus meta-review. Report-only. Works on code, plans, ideas, bugs, anything."
 argument-hint: "[--effort <high|xhigh>] [file/dir/plan path, question, or blank for auto-detect]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 expected_subagents: 8
@@ -10,12 +10,12 @@ expected_subagents: 8
 ## Engines
 
 - **Review — OpenAI Codex CLI:** 4 parallel review passes in Step 3, each a distinct independent lens (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), plus 1 verification pass in Step 6. Every pass is a `codex exec -s read-only --ephemeral` invocation — the branch/uncommitted lenses run over a diff-as-text through the `codex-exec.sh` house wrapper (Step 3), the file/describe lenses and the Step 6 verify run `codex exec` directly.
-- **Review — Claude Opus:** 3 parallel lens agents (Architecture/Maintainability, Cross-layer Integration/Footguns, Adversarial+FP-filter) in Step 4, plus meta-review in Step 5. Claude complements Codex's recall with precision — Codex owns correctness/security/data, so Claude leans architecture/integration/skepticism.
+- **Review — Claude Opus:** 3 lens agents, split by what they consume. Architecture/Maintainability and Cross-layer Integration/Footguns (**Step 4a**) launch in the SAME message as Step 3's backgrounded Codex passes and run concurrently with them, so they see the target but not Codex's output; Adversarial+FP-filter (**Step 4b**) is spawned after the Step 3d merge because its FP-filter half consumes the merged Codex findings. Plus meta-review in Step 5. Claude complements Codex's recall with precision — Codex owns correctness/security/data, so Claude leans architecture/integration/skepticism.
 - **Fix:** None. This skill is report-only and never modifies files.
 
-**Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing or all 4 passes fail, the pipeline falls back to Claude-only review and notes "Codex unavailable" in the report.
+**Requires:** OpenAI Codex CLI on PATH (the `codex` binary). Install via OpenAI's official instructions (e.g. `npm i -g @openai/codex`). If `codex` is missing or all 4 passes fail, the pipeline falls back to Claude-only review and notes "Codex unavailable" in the report — Step 4a already ran (it never depended on Codex) and Step 4b degrades to adversarial-only.
 
-You are a review orchestrator. You coordinate 4 Codex review passes and 3 Claude analysis agents to produce a comprehensive review. You NEVER modify files — this is report-only.
+You are a review orchestrator. You coordinate 4 backgrounded Codex review passes and 3 Claude analysis agents — 2 launched in the same message as the Codex passes (Step 4a), 1 after the merge (Step 4b) — to produce a comprehensive review. The Launch schedule below is binding: read it before Step 3. You NEVER modify files — this is report-only.
 
 ---
 
@@ -101,9 +101,29 @@ WORKDIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 ---
 
+## Launch schedule (READ BEFORE Step 3 - it binds Step 3 AND Step 4)
+
+Step 3's Codex lens passes and Step 4a's two Claude lenses are ONE launch, not two. This block is
+the binding shape; Steps 3 and 4 restate it locally and never contradict it.
+
+**Code targets (MODE = branch / uncommitted / file / describe) - Step 3 + Step 4a together:**
+CRITICAL - EXACTLY 6 tool calls in ONE message: 4 Bash lens passes with `run_in_background: true` + 2 Agent calls (4a: Architecture, Integration). Foreground Bash serializes (probe-proven) - backgrounding IS the parallelism. Collect via bounded wait on the `.status` sidecars (poll ~20s, ceiling 600s; absent at ceiling = that lens not-usable).
+
+**Non-code targets - Step 4:**
+NON-CODE TARGETS ONLY (arrived via Step 2b's Claude-only branch; CODEX_PASSES n/a): CRITICAL - EXACTLY 3 Agent calls in ONE message. Code targets: your 2 lenses already launched in Step 3 - at Step 4 run ONLY the single 4b Agent call.
+
+**Code targets - Step 4b, after the Step 3d merge:**
+CRITICAL - EXACTLY 1 Agent call: the Adversarial + FP-filter lens. It is spawned LATE on purpose - its FP-filter half consumes the merged Codex findings, which do not exist until 3d. `CODEX_PASSES` = 0 degrades it to adversarial-only (Step 4b's degrade rule).
+
+Consequence recorded, not hidden: the two 4a lenses launch BEFORE any Codex output exists, so they
+never see it. Their prompts must therefore contain no reference to Codex findings; the merged output
+still reaches the 4b FP-filter and the Step 5 meta-review.
+
+<!-- CONTRACT-CORE-END -->
+
 ## Step 3: Run Codex Review (Code Targets Only)
 
-Codex runs 4 DISTINCT independent lens passes in parallel. Each is a self-contained prompt; none sees another's output. The four lenses are:
+Codex runs 4 DISTINCT independent lens passes in parallel. Each is a self-contained prompt; none sees another's output. They are launched BACKGROUNDED in the SAME message as the two Step-4a Agent calls - six tool calls total; see the Launch schedule above. The four lenses are:
 
 - **Codex-1 — Correctness/Logic**
 - **Codex-2 — Security/Safety**
@@ -117,7 +137,17 @@ Codex runs 4 DISTINCT independent lens passes in parallel. Each is a self-contai
 Each invocation gets its own isolated temp directory so concurrent runs (parallel missions / multiple sessions) never clobber each other's output. Run via Bash:
 ```bash
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-review.XXXXXX")
+RUN_SHA=$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || echo "")   # branch mode only (see below)
+printf 'RUN_DIR=%s WORKDIR=%s RUN_SHA=%s\n' "$RUN_DIR" "$WORKDIR" "${RUN_SHA:-}"
 ```
+
+**PRINT those three values and hold the RESOLVED literals** — the Step-4a Agent prompts launched in
+this same step carry the diff path, `$WORKDIR`, and `RUN_SHA` as literal text. A literal `"$RUN_DIR"`
+(or `$WORKDIR`, or `$RUN_SHA`) inside an Agent prompt is a DEFECT: the subagent runs in a fresh shell
+that never had those variables, so the prompt would name a path that does not resolve. `RUN_SHA` is
+for **branch mode only** (it pins the commit the diff was cut from, so the agent's repo reads match
+the diff); in uncommitted mode there is no meaningful SHA — `diff.txt` is itself the frozen artifact
+and the working tree may move under the agent.
 
 `$RUN_DIR` persists for the rest of this skill AND beyond it — Steps 3b, 3c, 6, and the report written in 7f all reference it, and it is deliberately NOT deleted at skill end (7f leaves `report-final.md` in place for downstream consumers such as `/mission`). Hold onto the exact path returned here and substitute it into every later `"$RUN_DIR"` reference, always double-quoted. (No stale-file cleanup is needed at start since the directory is fresh per run; old run dirs are TTL-swept — `>24h` — by `on-session-start-cleanup.sh`.)
 
@@ -179,37 +209,41 @@ own analysis — it is emitted on the final line OUTSIDE the diff, per the outpu
 ```
 where `$PROMPT_N` is the literal lens body — reuse the exact `$PROMPT_1..4` lens aims defined for MODE="file"/"describe" below (Correctness/Logic, Security/Safety, Data-integrity/Concurrency/Resource, Contracts/Assumptions/Fragility), swapping only the lead line. Because every lens now runs through OUR per-lens prompt (which mandates the trailing `Verdict: ship|needs-fixes` line), the branch/uncommitted passes emit the same verdict contract as file/describe — this is exactly what lets Step 3c apply `REVIEW_RE` to them.
 
-Then invoke the wrapper once per lens — it feeds the prompt file to `codex exec` via stdin (`- < promptfile`), writes the output file, and writes a `<out>.status` sidecar (`ok|timeout|unavailable|nonzero-N`) atomically. Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution).
+Then invoke the wrapper once per lens — it feeds the prompt file to `codex exec` via stdin (`- < promptfile`), writes the output file, and writes a `<out>.status` sidecar (`ok|timeout|unavailable|nonzero-N`) atomically. Issue all four Bash calls with `run_in_background: true`, in the SAME message as the two Step-4a Agent calls — six tool calls total (4 Bash backgrounded + 2 Agent); see the Launch schedule.
 
-**Timeout coupling (REQUIRED):** each Bash tool call below carries a 600000 ms (600 s) harness timeout, and each passes `CODEX_TIMEOUT_SECS=540` so codex-exec.sh's OWN `pt_run` fires at 540 s — 60 s UNDER the harness cap. This ordering is load-bearing: if codex-exec's internal timeout (default 1800 s) were left to exceed the harness cap, the Bash tool would HARD-KILL the process at 600 s BEFORE codex-exec could write its graceful `<out>.status=timeout` sidecar, and Step 3c would then read a missing/stale `.status`. Keeping codex-exec's timeout below the harness cap guarantees a clean `timeout` status the usability gate can act on.
+**Self-timeout + collection (REQUIRED):** each Bash call below passes `CODEX_TIMEOUT_SECS=540` so codex-exec.sh's OWN `pt_run` fires at 540 s and writes the graceful `<out>.status=timeout` sidecar. Because these calls are BACKGROUNDED, the harness Bash timeout's applicability to a backgrounded task is UNPROVEN — so codex-exec's own self-timeout is the only mechanism guaranteed to terminate a hung pass, and the `.status` sidecar is the SOLE source of truth for whether a pass finished. Never infer completion from elapsed time or from the backgrounded call "returning". The 600000 ms value is retained on each call as a belt-and-braces ceiling; it is not relied upon. Collect per the bounded wait in Step 3c: poll the four sidecars roughly every 20 s, ceiling 600 s; a sidecar still absent at the ceiling means that lens is NOT usable (identical to a `timeout`/`unavailable` status downstream).
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
 CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
 ```
 timeout: 600000
+run_in_background: true
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
 CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-2.txt" "$RUN_DIR/codex-review-2.txt" "$WORKDIR"
 ```
 timeout: 600000
+run_in_background: true
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
 CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-3.txt" "$RUN_DIR/codex-review-3.txt" "$WORKDIR"
 ```
 timeout: 600000
+run_in_background: true
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
 CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-4.txt" "$RUN_DIR/codex-review-4.txt" "$WORKDIR"
 ```
 timeout: 600000
+run_in_background: true
 
 **For MODE="file" or MODE="describe"**, use `codex ... exec -o` with a per-lens prompt (these run `codex exec` DIRECTLY, not through `codex-exec.sh` — deliberately: they keep the in-file `$EFFORT` plumbing described in Step 0, whereas the wrapper exists specifically for the diff-as-text branch/uncommitted lenses). For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical.
 
-**Pass each per-lens prompt to Codex via stdin, never as an inline double-quoted argument.** The prompt embeds the CONTEXT block and may contain `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters. Inlining it into a `codex exec "..."` argument would let those characters be shell-evaluated. Instead, write each fully-assembled prompt to a file under `"$RUN_DIR"` with `printf '%s'` (literal, never re-interpreted), then feed it to `codex exec` as `- < promptfile` so the prompt is read verbatim from stdin and never touches the shell's word/expansion machinery. Spawn ALL FOUR Bash calls in a SINGLE message (parallel execution). In each call below, `$PROMPT_N` is the literal prompt text you assembled (lead line + CONTEXT block + lens aim + output-contract block) — write it with `printf` exactly as authored.
+**Pass each per-lens prompt to Codex via stdin, never as an inline double-quoted argument.** The prompt embeds the CONTEXT block and may contain `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters. Inlining it into a `codex exec "..."` argument would let those characters be shell-evaluated. Instead, write each fully-assembled prompt to a file under `"$RUN_DIR"` with `printf '%s'` (literal, never re-interpreted), then feed it to `codex exec` as `- < promptfile` so the prompt is read verbatim from stdin and never touches the shell's word/expansion machinery. Issue all four Bash calls with `run_in_background: true`, in the SAME message as the two Step-4a Agent calls — six tool calls total (4 Bash backgrounded + 2 Agent); see the Launch schedule. These four keep their 120000 ms timeouts, but as with the branch/uncommitted lenses the backgrounded harness timeout is unproven, so collect them by the same bounded wait (poll ~20 s, ceiling 600 s) and treat "no output file at the ceiling" exactly as the file/describe usability gate treats an unusable pass. In each call below, `$PROMPT_N` is the literal prompt text you assembled (lead line + CONTEXT block + lens aim + output-contract block) — write it with `printf` exactly as authored.
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
@@ -217,6 +251,7 @@ printf '%s' "$PROMPT_1" > "$RUN_DIR/codex-prompt-1.txt" && codex -c model_reason
 ```
 where `$PROMPT_1` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is correctness and logic. Find anything that makes this behave incorrectly — wrong results, broken logic, mishandled edge cases, off-by-ones, error paths that don't actually recover. We're not going to enumerate how; chase whatever would make a careful user say 'that's a bug.' [output-contract block]`
 timeout: 120000
+run_in_background: true
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
@@ -224,6 +259,7 @@ printf '%s' "$PROMPT_2" > "$RUN_DIR/codex-prompt-2.txt" && codex -c model_reason
 ```
 where `$PROMPT_2` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is security and safety. Find anything an attacker or a hostile input could exploit, and anything that could do real-world damage — untrusted input reaching dangerous sinks, broken authn/authz, leaked or hardcoded secrets, destructive operations without guardrails. We won't list every vector; assume an adversary is reading this code and think like them. [output-contract block]`
 timeout: 120000
+run_in_background: true
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
@@ -231,6 +267,7 @@ printf '%s' "$PROMPT_3" > "$RUN_DIR/codex-prompt-3.txt" && codex -c model_reason
 ```
 where `$PROMPT_3` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is data integrity, concurrency, and resource lifecycle. Find anything that corrupts or loses data, behaves wrongly when two things happen at once, or fails to clean up what it acquires — races, non-atomic updates, partial writes, leaked handles/connections/memory, lifecycle that ends in the wrong state. We won't enumerate the failure modes; reason about what happens under interleaving, retries, and partial failure. [output-contract block]`
 timeout: 120000
+run_in_background: true
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
@@ -238,10 +275,21 @@ printf '%s' "$PROMPT_4" > "$RUN_DIR/codex-prompt-4.txt" && codex -c model_reason
 ```
 where `$PROMPT_4` is: `[Review the file at $FILEPATH. | $DESCRIPTION.] [CONTEXT block] Your lens is contracts, assumptions, and fragility. Surface the unstated assumptions this code relies on, the API/data-shape contracts it could violate or that callers could violate, and what would break under reasonable future change. We won't tell you which assumptions to look for; ask 'what has to be true for this to work, and how likely is it to stop being true.' [output-contract block]`
 timeout: 120000
+run_in_background: true
 
 ### Step 3c: Collect Codex output
 
-After all four return, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/codex-review-4.txt`.
+**Bounded wait FIRST (the four lens passes are backgrounded — they do not "return"):** poll the run
+dir roughly every 20 s until all four passes have landed, with a hard ceiling of 600 s from launch.
+For branch/uncommitted, "landed" means `<out>.status` exists (any value); for file/describe, which
+has no sidecar, it means the output file exists. Do NOT read a lens's output before its sidecar
+exists — a partially-written file would be judged against `REVIEW_RE` and mis-gated. At the ceiling,
+stop waiting and classify: a pass whose sidecar (or, for file/describe, whose output file) is still
+absent is NOT usable, exactly as if its status read `timeout` — the pipeline proceeds with the
+remaining lenses rather than hanging. Do not spend the wait idle: the two Step-4a agents launched in
+the same message are working through it, and their results are collected the same way.
+
+Once the wait ends, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/codex-review-4.txt`.
 
 **Usability gate (apply to EVERY pass before classifying):** A pass is "usable" only if its output file contains a REAL, on-topic review — not merely non-empty bytes. A Codex CLI error page, usage text, sandbox-denied message, or stack trace also writes non-empty text, so non-emptiness alone does NOT qualify. The exact heuristic (bash 3.2.57 safe — use `grep -E -c` / `grep -E -q`):
 
@@ -276,7 +324,7 @@ fi
 **Handle failures (per pass)** — per the mode-aware rule above:
 - **branch / uncommitted mode**: `<out>.status` == `ok` AND `REVIEW_RE` matches → usable, persist `<out>.usable=ok`; otherwise `<out>.usable=no`, FAILED, note "(Codex-[N]: unavailable)". A `.status` of `timeout`/`unavailable`/`nonzero-N`, or an `ok` run whose output is only a CLI error / usage / sandbox-denied / stack-trace (no finding/verdict line), is NOT usable.
 - **file / describe mode**: file passes the `REVIEW_RE` gate (≥1 finding line, the mandatory `Verdict:` line, or clean wording) → usable (success on exit 0, partial on non-zero exit); empty OR non-empty but only a CLI error / usage / sandbox-denied / stack-trace → FAILED, note "(Codex-[N]: unavailable)" regardless of exit code (a zero-exit error page is still a failed pass).
-- If ALL FOUR are not usable → fall back to Claude-only engine (Step 4 with no Codex input), note "Codex unavailable, using Claude agents only"
+- If ALL FOUR are not usable → `CODEX_PASSES` = 0, the Claude-only fallback. It now applies to **Step 4b only**: Step 4a already ran (launched inside Step 3's message and Codex-free by construction), so there is nothing to re-spawn there. Spawn 4b **adversarial-only** per its degrade rule — the FP-filter half has nothing to filter — and note "Codex unavailable, using Claude agents only"
 
 **Maintain a usable-pass count as you classify each pass.** Let `CODEX_PASSES` = the number of passes that pass the usability gate above (range 0-4), and track the lens numbers of any passes that were NOT usable (e.g. `codex-2`). For branch/uncommitted that is the number of lenses whose persisted `<out>.usable` reads `ok`; for file/describe it is the `REVIEW_RE`-usable count. This is the SINGLE usability predicate — the SAME `CODEX_PASSES` value feeds Step 5's synthesis AND Step 7f's `Codex-passes: N/4` header (no split-brain). Only a pass that produced a real, on-topic review counts; an error-only / findings-empty output lowers the count (so a spoofed `4/4` cannot pass through to `/mission`, whose VOID-on-dead-reviewer guard relies on this count). This count is rendered verbatim into the Step 7f report header as a stable machine-readable contract — see Step 7f.
 
@@ -286,32 +334,71 @@ Combine findings from all four passes, attributing each to its lens (codex-1 …
 
 ---
 
-## Step 4: Spawn 3 Claude Analysis Agents in Parallel
+## Step 4: Claude Analysis Agents (4a launched with Step 3; 4b lands after the merge)
 
-**CRITICAL: Spawn ALL 3 agents in a SINGLE message so they run in parallel.**
+Step 4 is SPLIT, because its three lenses do not consume the same inputs:
 
-Use the `Agent` tool 3 times in one response. Each agent gets a fully self-contained prompt.
+- **Step 4a — Architecture/Maintainability + Cross-layer Integration.** For code targets these two
+  Agent calls were ALREADY LAUNCHED, inside Step 3's single message (Launch schedule). They read the
+  target directly and never see Codex output — that is the deliberate cost of launching them early.
+- **Step 4b — Adversarial + FP-filter.** Spawned HERE, after the Step 3d merge, because its
+  FP-filter half consumes the merged Codex findings and cannot run before they exist.
 
-Claude's job here is to COMPLEMENT Codex's recall with precision. Codex now owns correctness, security, and data-integrity, so the Claude lenses lean toward architecture, integration, and skeptical pressure (including filtering Codex's false positives). Apply the same "direct the aim, not the answer" posture: give each agent all the context it needs and state its lens's aim openly, rather than handing it an exhaustive find-this checklist.
+**NON-CODE TARGETS ONLY (arrived via Step 2b's Claude-only branch; CODEX_PASSES n/a): CRITICAL - EXACTLY 3 Agent calls in ONE message.** There is no Codex run to launch alongside and nothing to wait for, so all three lenses spawn together right here, each with a fully self-contained prompt. Code targets: your 2 lenses already launched in Step 3 - at Step 4 run ONLY the single 4b Agent call.
+
+Claude's job here is to COMPLEMENT Codex's recall with precision. Codex now owns correctness, security, and data-integrity, so the Claude lenses lean toward architecture, integration, and skeptical pressure (including, in 4b only, filtering Codex's false positives). Apply the same "direct the aim, not the answer" posture: give each agent all the context it needs and state its lens's aim openly, rather than handing it an exhaustive find-this checklist.
 
 ### What to include in each agent prompt:
 
-**For code targets (Codex engine was used):**
-- The merged Codex review output from Step 3d
-- The actual code: either read the files, or include the git diff
-- For large diffs (over 500 lines of actual diff output): use `git diff --stat` + the most-changed files rather than the full diff
-- The agent's specific lens instructions
+**Step 4a inputs — code targets, MODE="branch" / "uncommitted"** (these prompts are written when you
+compose Step 3's message):
+- **The RESOLVED ABSOLUTE path to the diff** — the `$RUN_DIR` value Step 3a PRINTED, substituted as
+  literal text, e.g. `/tmp/codex-review.ab12cd/diff.txt`. A literal `"$RUN_DIR"` (or any other
+  unexpanded variable) inside an Agent prompt is a DEFECT: the subagent's shell never had it.
+- **A first-line self-check, verbatim as the prompt's FIRST line:** `if you cannot read the file at
+  <resolved path>, output DIFF-UNREADABLE as your first line`. That turns a broken hand-off into a
+  loud, greppable failure instead of a confident review of nothing.
+- **The RESOLVED absolute `$WORKDIR`**, plus the instruction that every repo command uses
+  `git -C <WORKDIR> ...` and every file read uses an absolute path under it (the agent's shell starts
+  elsewhere and forgets cwd between calls).
+- **`RUN_SHA` — branch mode only** (the value Step 3a printed): "the diff was cut at `<RUN_SHA>`; read
+  the repo at that commit (`git -C <WORKDIR> show <RUN_SHA>:<path>`) if the working tree has moved."
+  In **uncommitted mode there is no RUN_SHA** — say so, and say that `diff.txt` is the frozen artifact
+  while the working tree may change underneath the agent.
+- **Large-diff triage (branch mode; restates the old inline-diff rule for the by-path hand-off).**
+  Passing the diff by path means a large diff no longer bloats the PROMPT, but it still bloats the
+  AGENT. When `diff.txt` exceeds 500 lines (`wc -l`), tell the agent its size and instruct it to
+  triage: read the file list first (`grep '^diff --git' <resolved path>`), then the hunks of the
+  most-changed files, reading whole sources from `<WORKDIR>` as needed rather than the entire diff.
+- The agent's specific lens instructions (4a versions below — Codex-free).
+- **NO Codex output.** None exists yet. Any sentence claiming the agent "has Codex's review" is wrong
+  at this point and must not appear in a 4a prompt.
 
-**For non-code targets (Claude-only engine):**
+**Step 4a inputs — code targets, MODE="file" / "describe":**
+- MODE="file": the RESOLVED absolute `$FILEPATH`, carrying the SAME first-line self-check (`if you
+  cannot read the file at <resolved path>, output DIFF-UNREADABLE as your first line`).
+  MODE="describe": the `$DESCRIPTION` text itself — no path exists, so no self-check line.
+- The RESOLVED absolute `$WORKDIR`, with the same `git -C <WORKDIR>` / absolute-path instruction.
+- Large-diff triage is **n/a** here (there is no diff file), and there is no `RUN_SHA`.
+- The agent's specific lens instructions; again NO Codex output.
+
+**Step 4b inputs — code targets:**
+- The merged Codex review output from Step 3d (this is what 4b waited for), or, when
+  `CODEX_PASSES` = 0, the explicit statement that no Codex findings exist (degrade rule in 4b below).
+- The actual code, handed over exactly as 4a's inputs describe: the resolved diff path + `$WORKDIR`
+  (+ `RUN_SHA` in branch mode) with the same first-line self-check and the same large-diff triage.
+- The agent's specific lens instructions.
+
+**For non-code targets (Claude-only engine — all 3 agents, spawned here):**
 - The full context: plan text, idea description, error output, conversation summary
 - The agent's specific lens instructions
 
 ### Agent lens adaptation:
 
 **If reviewing CODE:**
-- **Architecture/Maintainability**: "You have Codex's review and the actual code. Your lens is architecture and maintainability — Codex already covered correctness, security, and data integrity, so don't re-litigate those. Aim at how this is built and how it will age: coupling, abstraction quality, duplication, naming, readability, conformance to the project's conventions, and whether it fits the surrounding system. We won't enumerate what to find — surface whatever a senior engineer would want changed before this becomes load-bearing."
-- **Cross-layer Integration/Footguns**: "You have Codex's review and the actual code. Your lens is cross-layer integration and footguns. Aim at the seams: where this touches other layers/services/modules, what's missing entirely, what fails silently, and the cross-boundary bugs that only show up when components meet. We won't list the integration points — trace the data and control flow across boundaries and find where the contract between two pieces is wrong, unenforced, or absent."
-- **Adversarial + FP-filter**: "You have Codex's review and the actual code. You have two jobs. First, try to break it — find the way this behaves badly under hostile or unexpected conditions that everyone else assumed away. Second, and explicitly: challenge the Codex findings. For each Codex finding, judge whether it's real, overstated, or a false positive, and say so — your precision filtering is what makes the Codex recall trustworthy. We won't tell you which Codex findings are suspect; pressure-test all of them."
+- **Architecture/Maintainability (4a — launched in Step 3's message, no Codex output)**: "You have the target itself (the diff at the path given above, or the file/description) and the repo at WORKDIR. Your lens is architecture and maintainability — Codex separately covers correctness, security, and data integrity, so don't re-litigate those. Aim at how this is built and how it will age: coupling, abstraction quality, duplication, naming, readability, conformance to the project's conventions, and whether it fits the surrounding system. We won't enumerate what to find — surface whatever a senior engineer would want changed before this becomes load-bearing."
+- **Cross-layer Integration/Footguns (4a — launched in Step 3's message, no Codex output)**: "You have the target itself (the diff at the path given above, or the file/description) and the repo at WORKDIR. Your lens is cross-layer integration and footguns — Codex separately covers correctness, security, and data integrity, so don't re-litigate those. Aim at the seams: where this touches other layers/services/modules, what's missing entirely, what fails silently, and the cross-boundary bugs that only show up when components meet. We won't list the integration points — trace the data and control flow across boundaries and find where the contract between two pieces is wrong, unenforced, or absent."
+- **Adversarial + FP-filter (4b — spawned after Step 3d)**: "You have Codex's review and the actual code. You have two jobs. First, try to break it — find the way this behaves badly under hostile or unexpected conditions that everyone else assumed away. Second, and explicitly: challenge the Codex findings. For each Codex finding, judge whether it's real, overstated, or a false positive, and say so — your precision filtering is what makes the Codex recall trustworthy. We won't tell you which Codex findings are suspect; pressure-test all of them."
 
 **If reviewing a PLAN:**
 - **Architecture/Maintainability**: is the plan's structure sound — does it sequence dependencies correctly, account for all affected files/integration points, and avoid baking in coupling or rework
@@ -350,18 +437,43 @@ For EVERY finding, include:
 Output format — return findings as a flat list:
 - [confidence] CATEGORY: description — file:line (if applicable)
 
-If you find nothing new beyond what Codex already found, return: "No additional findings."
-
 Quality over quantity. Every finding should be worth acting on.
 ```
 
-### The 3 agents to spawn:
+**Step 4b ONLY — append this line to the Adversarial + FP-filter prompt:**
+`If you find nothing new beyond what Codex already found, return: "No additional findings."`
+It presumes the agent HAS the Codex findings. Step 4a does not (it launched before they existed), and
+the non-code 3-agent spawn has no Codex run at all — including it there would invite a 4a lens to
+suppress its own real findings against a review it never saw. Never put it in a 4a prompt. When
+`CODEX_PASSES` = 0, drop it from 4b as well: there is nothing for "already found" to refer to.
 
+### The 3 agents, and WHERE each is spawned:
+
+**Step 4a — inside Step 3's single message (code targets), 2 of the 6 tool calls:**
 1. **description**: "Codex Review — Architecture Agent"
 2. **description**: "Codex Review — Integration Agent"
+
+**Step 4b — here, after Step 3d (code targets):**
 3. **description**: "Codex Review — Adversarial+FP-filter Agent"
 
-Each agent does up to 3 passes internally (Pass 1: initial findings, Pass 2: deeper with Pass 1 context, Pass 3: final sweep for subtle issues). Stop early if a pass produces zero new findings.
+**Non-code targets:** all three of the above in ONE message right here — EXACTLY 3 Agent calls.
+
+Each agent does up to 3 passes internally (Pass 1: initial findings, Pass 2: deeper with Pass 1 context, Pass 3: final sweep for subtle issues). Stop early if a pass produces zero new findings. **The cap is PER AGENT and applies identically to both 4a lenses and the 4b lens** (and to each of the three on the non-code path) — it is not a budget shared across the step, and splitting Step 4 into 4a and 4b does not change it.
+
+### Step 4b: Adversarial + FP-filter (code targets — run AFTER Step 3d)
+
+**CRITICAL - EXACTLY 1 Agent call.** Both 4a lenses are already running or returned; the only Agent
+call owed here is the Adversarial + FP-filter agent, with the merged Step-3d Codex findings in its
+prompt. Do not re-spawn Architecture or Integration — a second copy would double-count findings into
+Step 7c's confidence promotion.
+
+**Degrade rule — `CODEX_PASSES` = 0:** spawn it **adversarial-only**. Its FP-filter half exists to
+challenge Codex findings, and there are none, so drop that half from the prompt (including the "No
+additional findings." line above) and keep the adversarial half verbatim. This sits beside the
+"Codex unavailable, using Claude agents only" note from Step 3c: that note records the Codex outage,
+this rule records what the outage does to Step 4b. Say so in the Meta-Review Notes — a review with
+the FP-filter half dropped is measurably weaker precision, not an equivalent run. Step 4a is
+unaffected either way; it never had Codex input to lose.
 
 ---
 
@@ -369,7 +481,7 @@ Each agent does up to 3 passes internally (Pass 1: initial findings, Pass 2: dee
 
 **Which Codex lenses count.** Only Codex lenses whose usability verdict is usable (Step 3c — `<out>.usable == ok` for branch/uncommitted; the `REVIEW_RE` gate for file/describe) feed this synthesis. This is the SAME `CODEX_PASSES` predicate Step 7f counts for `Codex-passes: N/4` — one predicate, no split-brain. A lens that did not pass the usability gate contributes no findings and is not counted.
 
-After ALL 3 Claude agents return, Claude (you, the orchestrator) performs three checks:
+After the Step-4a pair AND the Step-4b agent have returned (non-code targets: after all 3 agents of the single spawn return), Claude (you, the orchestrator) performs three checks:
 
 ### 5a. Parse and Map Codex Findings
 
