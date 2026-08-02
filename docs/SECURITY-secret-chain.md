@@ -112,8 +112,9 @@ documentation.
 
 The failure mode is asymmetric and severe: a false positive jams **every** commit in this
 repo *and* blocks the async auto-push. It is no longer *silent* - the pause marker records a
-machine-readable `kind:` and both the UserPromptSubmit notice and stale-handoff-guard surface
-it every session - but the machine still stops syncing until a human acts. A missed exotic
+machine-readable `kind:`. The UserPromptSubmit notice surfaces it on every prompt;
+stale-handoff-guard also surfaces it at session start, but only when the session's cwd is
+inside a git repository - it exits early otherwise, so it is a second channel, not a guarantee - but the machine still stops syncing until a human acts. A missed exotic
 secret is one exposure; a false positive is a dead toolchain.
 Patterns here stay **anchored to provider-specific prefixes**.
 

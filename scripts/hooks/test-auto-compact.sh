@@ -194,6 +194,11 @@ fi
 echo "== Concurrent claim race =="
 # Two hook invocations on the same sentinel: exactly ONE may win the atomic claim. With
 # retain-and-confirm the winner puts the sentinel BACK, so the post-state is retained+attempts=1.
+# HONEST SCOPE (round-10 finding): a SINGLE worker produces the identical post-state, so this
+# case does not by itself prove double-fire refusal - deleting one invocation leaves it green.
+# What it does prove is that two concurrent invocations do not corrupt the state or strand a
+# claim file. The atomic-claim guarantee itself is covered by the `claim-after-verify ordering`
+# assertion, which checks the mv happens after every verification step.
 rm -f "$ATT_PATH"
 ac_write_sentinel "$TEST_SID" "/dev/ttys999" "/tmp" "race-nonce-$$"
 echo "{\"session_id\":\"$TEST_SID\"}" | "$ROOT/auto-compact-after-pre-compact.sh" &

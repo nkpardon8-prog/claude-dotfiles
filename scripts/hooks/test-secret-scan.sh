@@ -463,14 +463,21 @@ chk "kind=unproven notice directs a push retry, not --working" \
 chk "kind=unproven notice does NOT say ROTATE" \
     "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'ROTATE')" "0"
 # The SECOND reader must know the same vocabulary, or a session-start warning contradicts the
-# prompt notice. Static check: stale-handoff-guard needs its own `unproven` branch.
-chk "stale-handoff-guard routes on kind=unproven too" \
-    "$(grep -c '_pkind. = unproven' "$REPO/scripts/hooks/stale-handoff-guard.sh")" "1"
-# Assert the guard's WARNING TEXT too, not just that the branch exists. A branch that routes
-# correctly but says nothing is still a silent session start, and the branch-only check stayed
-# green when the message was deleted (round-9 finding).
-chk "stale-handoff-guard actually warns on an unproven pause" \
-    "$(grep -c 'could not PROVE the pushed range clean' "$REPO/scripts/hooks/stale-handoff-guard.sh")" "1"
+# prompt notice. RUN IT - do not grep it. Rounds 9 and 10 both caught this assertion being
+# static: greps for the branch and for the message stayed green even with the `_pkind` reader
+# deleted, because the text is still present in the file while the runtime path falls through
+# to generic guidance. The guard sources its libs from $HOME/.claude-dotfiles and needs a
+# repository cwd, so the fixture HOME symlinks the real tree and the guard runs from $REPO.
+GK=$(mktemp -d); mkdir -p "$GK/.claude"; ln -s "$REPO" "$GK/.claude-dotfiles"
+printf 'kind: unproven\nreason: test\n' > "$GK/.claude/.dotfiles-sync-paused"
+chk "stale-handoff-guard WARNS at runtime on kind=unproven" \
+    "$(cd "$REPO" && HOME="$GK" bash "$REPO/scripts/hooks/stale-handoff-guard.sh" 2>&1 | grep -c 'could not PROVE the pushed range clean')" "1"
+printf 'kind: secret\nreason: test\n' > "$GK/.claude/.dotfiles-sync-paused"
+chk "stale-handoff-guard WARNS at runtime on kind=secret (rotate first)" \
+    "$(cd "$REPO" && HOME="$GK" bash "$REPO/scripts/hooks/stale-handoff-guard.sh" 2>&1 | grep -c 'Rotate the credential')" "1"
+chk "stale-handoff-guard does NOT say rotate for an unproven pause" \
+    "$(printf 'kind: unproven\nreason: t\n' > "$GK/.claude/.dotfiles-sync-paused"; cd "$REPO" && HOME="$GK" bash "$REPO/scripts/hooks/stale-handoff-guard.sh" 2>&1 | grep -c 'Rotate the credential')" "0"
+rm -rf "$GK"
 printf 'kind: other\nreason: test\n' > "$MKF"
 chk "kind=other notice is the plain clear-and-retry form" \
     "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'Fix the cause above')" "1"

@@ -29,7 +29,7 @@ reason=$(sed -n 's/^reason: //p' "$M" 2>/dev/null | head -1)
 kind=$(sed -n 's/^kind: //p' "$M" 2>/dev/null | head -1)
 case "$kind" in
     secret)
-        echo "dotfiles-sync PAUSED — a secret was detected or could not be ruled out: ${reason}"
+        echo "dotfiles-sync PAUSED — a secret was DETECTED: ${reason}"
         echo "  Auto-push is HALTED. Do NOT simply delete the marker: that resumes pushing to a PUBLIC remote."
         echo "  1) ROTATE the credential at its provider - assume it is already compromised."
         echo "  2) Remove it from the working tree (and from history if it was committed)."
