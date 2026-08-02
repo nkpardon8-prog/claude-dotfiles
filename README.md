@@ -49,12 +49,16 @@ stages.
 with you, and writes a brief to `./tmp/briefs/`. It never touches code. The brief is the input to
 `/plan`, so the thinking carries forward into a fresh context.
 
-**`/plan`** — Builds a real implementation plan with codebase *and* web research. It auto-loads the
-latest brief, then runs a `plan-reviewer` and a generative `criticer` and iterates with you until
-the plan is sound. Output lands in `./tmp/ready-plans/` — approved and ready to execute.
+**`/plan`** — Builds a real implementation plan with codebase *and* web research. Research is a
+mandatory parallel fan-out - every research agent launches in one message, instead of the
+orchestrator reading files one at a time. It auto-loads the latest brief, then runs a
+`plan-reviewer` and a generative `criticer` and iterates with you until the plan is sound. Output
+lands in `./tmp/ready-plans/` — approved and ready to execute.
 
 **`/implement`** — Takes an approved plan and executes it through parallel `implementer` sub-agents,
-then auto-runs an `implementation-reviewer` and `criticer` against the plan. When it's done the plan
+then auto-runs an `implementation-reviewer` and `criticer` against the plan. Chunks that provably
+do not overlap must be spawned together, and a post-batch check halts the whole batch if any worker
+wrote outside its declared files - bad parallelism is loud, never silent. When it's done the plan
 moves to `./tmp/done-plans/`. You hand it a plan; you get back reviewed, finished work.
 
 ### Stay alive
@@ -72,7 +76,9 @@ so the two models cross-check each other instead of one model grading its own ho
 **`/codex-review`** — The universal review engine, **report-only**. Codex runs 4 specialist
 passes — Correctness, Security, Data-integrity, Contracts — plus a verification pass; Claude Opus
 runs 3 lens agents (Architecture, Integration, Adversarial + false-positive filter) plus a meta
-review. Point it at a diff, a plan, an idea, a bug — anything.
+review. The Codex passes and the first two lenses all launch in a single message and run
+concurrently; the adversarial lens follows, because it grades Codex's merged findings. Point it at
+a diff, a plan, an idea, a bug — anything.
 
 **`/god-report`** — The whole-codebase review, **no fixes, pure report.** 4 Claude broad reviewers +
 6 Codex broad reviewers + 24 principle agents (Claude *and* Codex per principle) run in parallel.

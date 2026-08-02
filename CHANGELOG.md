@@ -2,6 +2,117 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-02 - Parallelizer v1: parallelism made binding, measured, and machine-checked
+
+Parallel execution is now the DEFAULT across the playbook layer, and it is enforced by text the
+orchestrator is bound by plus checks that fail closed - not by advice. Read-only fan-out registers
+ship on every run; the write-wave machinery ships fail-closed with serial as the universal
+fallback everywhere. Built through /discussion -> /plan (5 review rounds: 10 plan-reviewers, 5
+criticers, 3 Codex passes) -> /implement, on a plan whose own headline numbers were re-measured
+and CORRECTED before implementation started (below).
+
+- **Commands rewritten.** `codex-review.md`: one binding **Launch schedule** block above Step 3 -
+  "EXACTLY 6 tool calls in ONE message" (4 Codex lens passes with `run_in_background: true` + 2
+  Agent calls), and Step 4 split into **4a** (Architecture + Integration, launched early in that
+  same message) and **4b** ("EXACTLY 1 Agent call" - Adversarial + FP-filter, spawned late because
+  its FP half consumes the merged Codex findings, which do not exist until 3d). Non-code targets
+  get their own "EXACTLY 3 Agent calls" branch. The old "Spawn ALL FOUR Bash calls in a SINGLE
+  message" wording is GONE, and its absence is machine-asserted. `plan.md` Step 1 retitled to a
+  mandated **research fan-out** ("CRITICAL - research is a parallel fan-out, not orchestrator
+  reading: spawn ALL research agents in a SINGLE message") with exactly two named skip exceptions.
+  `implement.md` gained a chunk table, a **bounded chunk-parallel register** (chunks whose file
+  sets are determinable, pairwise disjoint and hazard-free MUST be spawned in one message; anything
+  indeterminable or hazardous is sequential) plus a **post-batch overlap check** that HALTs with the
+  batch jointly implicated, and a WAVE GATE + WAVE MODE section below `CONTRACT-CORE-END` - the
+  rewrite forced that 20k split, so a post-compaction truncation degrades cleanly to serial.
+- **Machinery added.** `agents/parallelizer.md` - advisory-only scheduling subagent (returns a wave
+  plan or SERIAL_CORRECT; never implements, never spawns). `docs/wave-plan-schema.md` freezes BOTH
+  schemas (wave plan + wave state) as the sole authority. `scripts/parallel-stats.py` (transcript
+  instrumentation + `--replay` counterfactuals), `scripts/verify-parallel-wave.mjs` (fail-closed
+  checker, 3 modes, one capped machine event per invocation), `scripts/merge-wave.sh` (incremental
+  resumable merges recording `merge_sha` per chunk). 26 new hermetic assumption cases across 3
+  suites (verify-parallel-wave 15, lint-commands 6, parallel-stats 5), each watched fail first.
+- **Guards.** `lint-skill-contract.sh` now carries the register literals for all three commands, a
+  `req_before` helper (a register must sit BEFORE `CONTRACT-CORE-END` by first-occurrence CHAR
+  offset; fails closed if either is absent), and the ABSENCE check for the retired codex-review
+  sentence - and it is **wired into pre-commit** with a new `--staged` mode (ROOT split: file
+  locations from `BASH_SOURCE`, staged-set query from `git rev-parse --show-toplevel`, so a linked
+  worktree's index is actually visible). `lint-skill-size.sh` Rule-2 + WARN-skip lists extended to
+  both rewritten commands. `on-session-start-cleanup.sh` sweeps stale wave worktrees (>7 days,
+  breadcrumb-guided `worktree prune` first) and runs a bounded weekly `--replay` (`timeout 45`,
+  tmp->mv on success only, completion-marker throttle - a killed run does not suppress the next).
+- **Measurement corrections - the headline numbers changed.** Baseline measured over the 10 newest
+  top-level transcripts (`tmp/briefs/parallelizer-research/baseline-2026-08-02.txt` in dentall).
+  Spawn turns: **47.2% solo** measured vs 54% hand-mined - ACCEPTED (same direction, 6.8pp, inside
+  the 10pp band). Codex turns: the hand-mined **91% is retired** - it was a per-JSONL-RECORD
+  measurement artifact. The harness writes each tool_use block to its own record, so per-record
+  grouping reports 100.0% solo BY CONSTRUCTION (843/843); grouping by `message.id` gives **68.4%
+  raw solo (409/598)**, and netting out 210 dependency-flagged report-chained calls that could
+  never have been batched gives **34.9% avoidably solo**. Quote 68.4 / 34.9; quote 91 only as the
+  corrected artifact. 31.6% of codex turns were ALREADY batched. Wave-gate eligibility: an UPPER
+  BOUND of 15 of 31 /implement phases (48.4%) - two conditions (repo_root cleanliness, stale-wave)
+  are not recorded in transcripts at all and are credited open, and both only subtract.
+- **Thesis checkpoint - v1 addresses a MINORITY of the codex waste, on purpose.** The plan's flagged
+  condition was "register-bearing surfaces dominate solo-codex". They do not: **/mission does, at
+  62-75%** under both attribution rules tested, while codex-review + master-review account for
+  15.2-26.4% (master-review: zero). mission.md surface is explicitly OUT OF SCOPE for v1
+  (Divergence 3), so v1's read-only rewrites buy the spawn-side win in full - codex-review is the
+  WORST surface for solo spawn turns at 56.5%, above the 47.2% average - plus that minority codex
+  slice. The majority remains on a surface v1 deliberately does not touch. Stated, not buried.
+- **Probe evidence (it changed the design).** `scripts/parallelizer-assumptions/PROBES.md` in
+  dentall: foreground Bash calls issued in ONE message **SERIALIZE** - measured, leg B started
+  0.09s after leg A ended (shared shell). Same-message batching alone does NOT parallelize the
+  codex passes, which FALSIFIED the Layer-1 premise as originally worded and restored the
+  backgrounding decision (Divergence 1): lens passes run `run_in_background: true`, collection is a
+  bounded wait on the `.status` sidecars (poll ~20s, ceiling 600s; absent at ceiling = not-usable),
+  and `codex-exec.sh`'s own `CODEX_TIMEOUT_SECS=540` graceful self-timeout now matters MORE, since
+  the harness timeout's applicability to backgrounded tasks is unproven. A second probe: a subagent
+  wrote and committed inside `~/.claude/wave-worktrees/` with ZERO permission prompts, so that
+  location is used as planned and no `settings.json` allowlist line is needed from the user.
+- **Dry run + dogfood.** The Task-9 wave dry-run drove 2 real chunks through the REAL machinery on
+  a throwaway fixture repo and PASSED end to end: worktree adds, two implementer subagents, checker
+  green, incremental merge with `merge_sha` recorded per chunk, the fixture's post-integration gate,
+  non-force teardown, live events in `~/.claude/parallel-waves/rework.log`, zero permission prompts.
+  The SID block resolved the live broker file. Dogfood: this plan's own late tasks were dispatched
+  as parallel chunks under the new `implement.md` register - observed, not yet machine-asserted;
+  follow-up (2) is that assertion and must run in a FRESH session (symlink liveness is next-session).
+- **Codex-surface survey - recorded, NOT applied.** `master-review.md` + `prepare-pr.md` came back
+  already compliant (all 5 master-review codex sites are bound by their phase's single-message
+  register; prepare-pr's is serial by a real review->fix->re-review data dependency). Zero sites
+  qualify for the pattern and lack it, so nothing was changed. Three findings are recorded for a
+  later pass: **F1** `master-review.md:256` still reads "Launch ALL 6 simultaneously" while its
+  Phase-1 register at `:182` binds 14 - an orchestrator reading the nearer heading could under-batch
+  and drop 6 lens agents plus 2 reviewers (minimal fix: retitle to 14; out of this plan's file set).
+  **F2** those 5 sites are FOREGROUND Bash, so they are message-batched but do not overlap in wall
+  clock - do not read master-review's low solo-codex count as "already fast"; converting them is not
+  zero-risk (their inline `codex_invoke` has no `.status` sidecar or self-timeout). **F3** their
+  `CODEX_BIN`/`CODEX_HOME_*` vars are derived in a SEPARATE bash fence from the consumers, and Bash
+  calls are fresh shells - so those lanes may be silently short-circuiting to `[unavailable]` in ~0s
+  (inferred from file structure, NOT from a live run; confirming needs one live master-review).
+  Treat any codex turns attributed to master-review as nominal until then.
+- **Not touched (decisions):** frontmatter `expected_subagents` left inert everywhere (Divergence
+  11); Layer-2 ambient nudge INJECTION stays deferred (Divergence 2 - replay says a nudger at these
+  thresholds would have spoken ~250 times across 10 sessions); no `settings.json` edits; no
+  mission.md surface; no wave machinery under `--no-review`.
+- **NAMED FOLLOW-UPS (not done - these are the honest remainder).**
+  1. **Fresh-session effect check** for the codex-review rewrite. Run one real `/codex-review` in
+     branch mode in a FRESH session, then: structural check with
+     `python3 ~/.claude-dotfiles/scripts/parallel-stats.py <newest transcript>` - the 6 calls must
+     share ONE `message.id`; wall-clock check of Step 3 -> Step 5 against the baseline; quality
+     check by DIFFING FINDING SETS against the same target run through the pre-change command. A
+     DIFF-UNREADABLE or structural failure is fixed first, not accepted. Named revert remedy if a
+     real regression shows: `git checkout 80ece6b~1 -- commands/codex-review.md`.
+  2. **Fresh-session serial regression** for the `implement.md` register: a 3-chunk
+     `/implement --no-review` against the throwaway fixture (cwd = fixture root), asserting
+     same-message chunk spawning MACHINE-SIDE via parallel-stats (shared `message.id`), plus the
+     gates and the Step 7 shape. Must be a fresh session - never nested inside the run that edited
+     the file.
+  3. **Weekly replay read-out.** The cleanup hook now accrues this by mechanism; read the first
+     auto-written `~/.claude/parallel-waves/replay-latest.txt`, make the Layer-2 enable/discard
+     decision from it, and re-confirm Divergence 2 with the user.
+  (Also accruing, no action needed: compliance RATE across later unprimed sessions - the lint proves
+  the text is present, only repeated sessions prove the behavior.)
+
 ## 2026-08-01 - Production cleanup: dead packs removed, contract-first skill restructure, anti-drift additions
 
 Full production defluff of the repo, verified by a 9-agent audit (3 Claude auditors, 6 Codex
