@@ -85,7 +85,13 @@ printf '%s\n%s\n' "$SECRET" "$_PJ" > bothlanes.txt
 joinerr=$(bash "$SCAN" bothlanes.txt 2>&1 >/dev/null)
 chk "a both-lanes file really hits both" \
     "$(printf '%s' "$joinerr" | grep -Ec 'bothlanes\.txt:[0-9]+:')" "2"
-chk "no literal dollar-quote spliced into the join" "$(printf '%s' "$joinerr" | grep -c "\$'")" "0"
+# HONEST SCOPE (round-5 finding): this runtime assertion CANNOT fail under bash, because bash
+# expands `${x:+$'\n'}` correctly and this suite runs under bash. It is kept only as an
+# output-sanity check, not as proof. The idiom splices literal characters under ZSH - and these
+# scripts get probed and sourced from both - so the check that can actually catch a regression
+# is STATIC, against the source. Reverting the explicit join now reddens the second line.
+chk "join output carries no literal dollar-quote" "$(printf '%s' "$joinerr" | grep -c "\$'")" "0"
+chk "source avoids the zsh-unsafe :+ dollar-quote idiom" "$(grep -c ":+\$'" "$SCAN")" "0"
 
 # 5. Filenames that broke the old `FILES="$*"` + unquoted expansion.
 printf '%s\n' "$SECRET" > "$(printf 'we\nird name.txt')"
@@ -161,9 +167,21 @@ chk "real PIN beside a labelled placeholder PIN is caught" "$?" "2"
 printf '%s%s\n' 'CRD_PIN=' '000000' > pinzero.txt
 bash "$SCAN" pinzero.txt >/dev/null 2>&1
 chk "the 000000 placeholder is exempt" "$?" "0"
+# The former "XXXXXX placeholder is exempt" case was DELETED in round 5: RX_PIN requires
+# [0-9]{6}, so a letter run is never a candidate in the first place and the case asserted only
+# that a non-match is clean. It stayed green when the XXXXXX filter entry was deleted, which is
+# how it was caught. The filter entry went with it - it was dead code. A letter run must still
+# read as clean, but the honest claim is "never matched", not "exempted":
 printf '%s%s\n' 'CRD_PIN=' 'XXXXXX' > pinx.txt
 bash "$SCAN" pinx.txt >/dev/null 2>&1
-chk "the XXXXXX placeholder is exempt" "$?" "0"
+chk "a letter run is not a PIN candidate at all" "$?" "0"
+# A six-digit value that is NOT a documented placeholder must still be caught - this is the
+# case that gives the two exemption cases above their meaning.
+# Digits split across arguments on purpose: written whole, this very line would match RX_PIN
+# and turn the repo's own full-tree scan red. It did, on first write.
+printf '%s%s%s\n' 'CRD_PIN=' '4829' '13' > pinreal2.txt
+bash "$SCAN" pinreal2.txt >/dev/null 2>&1
+chk "a non-placeholder six-digit PIN is still caught" "$?" "2"
 
 # 8c. A SYMLINK must be scanned as git stores it - the blob is the target PATH string, not
 #     the bytes it points at. Following it both invents false positives on content git never
@@ -189,6 +207,23 @@ bash "$SCAN" --composite patchy.txt >/dev/null 2>&1
 chk "--composite still catches a provider token" "$?" "2"
 bash "$SCAN" --composite >/dev/null 2>&1
 chk "--composite with no file exits 3" "$?" "3"
+# The missing-ARGUMENT case above does NOT cover the missing-FILE case: the pre-push hook
+# always passes a path, so the reachable failure is the temp file vanishing or being
+# unreadable between mktemp and the scan. Reverting that fail-closed branch was undetectable.
+_cmsg=$(bash "$SCAN" --composite ./definitely-not-here.txt 2>&1 >/dev/null); _crc=$?
+chk "--composite with a MISSING file fails closed (3)" "$_crc" "3"
+# The EXIT CODE alone cannot prove this branch exists: with it deleted, a vanished input still
+# reaches 3 via the failed redirect, so an rc assertion stays green either way (measured). The
+# branch's actual contribution is the specific, actionable diagnostic - so assert THAT. Deleting
+# the branch now reddens this line, which is the whole point of having it.
+chk "--composite names the missing input explicitly" \
+    "$(printf '%s' "$_cmsg" | grep -c 'composite input missing or unreadable')" "1"
+printf '%s\n' "$SECRET" > unreadable-composite.txt; chmod 000 unreadable-composite.txt
+_umsg=$(bash "$SCAN" --composite unreadable-composite.txt 2>&1 >/dev/null); _urc=$?
+chk "--composite with an UNREADABLE file fails closed (3)" "$_urc" "3"
+chk "--composite names the unreadable input explicitly" \
+    "$(printf '%s' "$_umsg" | grep -c 'composite input missing or unreadable')" "1"
+chmod 644 unreadable-composite.txt
 
 # ---------------------------------------------------------------------------
 echo "== false-positive gate: the real repository must stay clean =="

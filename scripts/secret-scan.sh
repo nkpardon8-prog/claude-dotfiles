@@ -79,22 +79,41 @@ scan_stdin() {
             # (Described, not shown - a literal example here would be a true positive
             #  against this repo's own full-tree scan. It was, once.)
             _kept=""
+            # Count what goes IN so the loop can prove it processed all of it. bash implements
+            # `<<<` with a temp file; if that file cannot be created (no space, unwritable
+            # TMPDIR) the loop body never runs at all, _kept stays empty, and every real PIN
+            # candidate is discarded as though it were a placeholder - a silent CLEAN verdict
+            # on a file that matched. awk is used rather than `grep -c` because grep exits 1 on
+            # a zero count, which would itself need special-casing.
+            _expect=$(printf '%s\n' "$m" | awk 'END{print NR}')
+            _seen=0
             while IFS= read -r _ln; do
+                _seen=$((_seen + 1))
                 [ -z "$_ln" ] && continue
                 # Every status is checked: a failing sed or a grep ERROR (rc>1) must fail
                 # closed with 3, not silently drop the candidate as if it were a placeholder.
-                _probe=$(printf '%s' "${_ln#*:}" | sed -E 's/(000000|123456|XXXXXX)/PLACEHOLDER/g') || return 3
+                # `XXXXXX` was removed from this list in round 5: RX_PIN requires [0-9]{6},
+                # so a letter run can never form part of a match and could never have needed
+                # exempting. It was dead code, and the test that claimed to cover it stayed
+                # green when it was deleted - the giveaway. Only digit placeholders belong here.
+                _probe=$(printf '%s' "${_ln#*:}" | sed -E 's/(000000|123456)/PLACEHOLDER/g') || return 3
                 printf '%s' "$_probe" | grep -qaE -e "$RX_PIN"; _prc=$?
                 [ "$_prc" -gt 1 ] && return 3
                 if [ "$_prc" -eq 0 ]; then
                     if [ -n "$_kept" ]; then _kept=$(printf '%s\n%s' "$_kept" "$_ln"); else _kept="$_ln"; fi
                 fi
             done <<< "$m"
+            # FAIL CLOSED when the here-string did not deliver every candidate line.
+            [ "$_seen" -eq "$_expect" ] || return 3
             m="$_kept"
         fi
-        # Written as an explicit if rather than ${hits:+$'\n'}: bash expands that form
-        # correctly, but zsh does not (it splices the literal characters), and these
-        # scripts get probed and sourced from both. The explicit form is unambiguous.
+        # Written as an explicit if rather than the "use-alternate-value" parameter expansion
+        # carrying a dollar-quoted newline: bash expands that form correctly, but zsh splices
+        # the literal characters, and these scripts get probed and sourced from both. The
+        # explicit form is unambiguous under either shell.
+        # (Described, not shown. Spelling the idiom out here would trip the static guard in
+        #  test-secret-scan.sh - exactly as a literal PIN example once tripped the scanner
+        #  against this repo's own full-tree scan.)
         if [ -n "$m" ]; then
             if [ -n "$hits" ]; then
                 hits=$(printf '%s\n%s' "$hits" "$m")
@@ -125,7 +144,13 @@ scan_file() {
     # the bytes it points at. Following it read content git never publishes (a tracked link
     # to ~/.aws/credentials produced a false positive) while never reading what git does.
     if [ -L "$f" ]; then
-        _t=$(readlink "$f") || return 3
+        # Guard an option-shaped name: a tracked symlink literally named `--help` or
+        # `--version` would be parsed as a FLAG by GNU readlink, which then prints help and
+        # exits 0 - so the link's real target (the bytes git publishes) is never scanned and
+        # the file is reported clean. Prefixing `./` makes it unambiguously a path. Done with
+        # a case test rather than `--`, whose support differs across BSD and GNU readlink.
+        case "$f" in -*) _rl="./$f" ;; *) _rl="$f" ;; esac
+        _t=$(readlink "$_rl") || return 3
         printf '%s' "$_t" | scan_stdin "$f"; return $?
     fi
     [ -f "$f" ] || return 0      # absent or non-regular: nothing to publish

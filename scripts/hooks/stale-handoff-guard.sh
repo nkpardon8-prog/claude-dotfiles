@@ -63,6 +63,8 @@ if [ -f "$HOME/.claude/.dotfiles-sync-paused" ]; then
   _preason=$(sed -n 's/^reason: //p' "$HOME/.claude/.dotfiles-sync-paused" 2>/dev/null | head -1)
   if [ "$_pkind" = secret ]; then
     echo "stale-handoff-guard: WARNING — dotfiles auto-sync is PAUSED because a secret was detected or could not be ruled out (${_preason:-no reason recorded}; ${behind:-?} unpushed commit(s)). Do NOT just remove the marker: that resumes pushing to a PUBLIC remote. Rotate the credential, remove it, verify with secret-scan.sh --working, then clear."
+  elif [ "$_pkind" = unproven ]; then
+    echo "stale-handoff-guard: WARNING — dotfiles auto-sync is PAUSED because the secret gate could not PROVE the pushed range clean (${_preason:-no reason recorded}; ${behind:-?} unpushed commit(s)). Not a confirmed leak, but nothing was verified either: fix the cause, re-prove with secret-scan.sh --working, and only then clear the marker."
   else
     echo "stale-handoff-guard: NOTE — dotfiles auto-sync is PAUSED (${_preason:-no reason recorded}; ${behind:-?} unpushed commit(s)). Fix the cause, then remove the marker + run dotfiles-sync.sh."
   fi

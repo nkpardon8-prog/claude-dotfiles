@@ -36,6 +36,17 @@ case "$kind" in
         echo "  3) Confirm clean:  bash ~/.claude-dotfiles/scripts/secret-scan.sh --working"
         echo "  4) Only then:      rm ${M}"
         ;;
+    unproven)
+        # rc=3 from the gate: NOT a confirmed leak, but the range was never proven clean, so
+        # "clear it and retry" would push unverified bytes to a public remote. Distinct wording
+        # from `secret` on purpose - telling someone to rotate a credential that may not exist
+        # is the cry-wolf failure this field was introduced to avoid.
+        echo "dotfiles-sync PAUSED — the secret gate could not PROVE the pushed range clean: ${reason}"
+        echo "  Auto-push is HALTED. This is not a confirmed leak, but nothing has been verified either."
+        echo "  1) Fix the cause above (missing scanner, unusable TMPDIR, unreadable range)."
+        echo "  2) Re-prove:   bash ~/.claude-dotfiles/scripts/secret-scan.sh --working"
+        echo "  3) Only then:  rm ${M}"
+        ;;
     *)
         echo "dotfiles-sync PAUSED: ${reason} — auto-push is HALTED and local commits are accumulating."
         echo "  Fix the cause above, then clear with: rm ${M}"

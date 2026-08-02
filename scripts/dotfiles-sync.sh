@@ -37,6 +37,16 @@ _pause() {
     # can leak one into the marker by accident. Also collapse to a single line.
     _reason=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's#://[^/@[:space:]]*@#://REDACTED@#g' | cut -c1-300)
     _kind="${2:-other}"
+    # NEVER DOWNGRADE a recorded leak. Both writers overwrite unconditionally, so a routine
+    # later failure (network down, installer missing) would replace an existing `kind: secret`
+    # with `kind: other` - and because both readers route on that field, the guidance silently
+    # flips from "rotate the credential, then clear" to "just clear it and retry". Sync is
+    # already halted either way, so keeping the more severe record costs nothing.
+    if [ "$_kind" != secret ] && [ -r "$_MARKER" ] \
+       && grep -q '^kind: secret$' "$_MARKER" 2>/dev/null; then
+        echo "dotfiles-sync: $_reason (existing kind=secret pause marker preserved, not downgraded)" >&2
+        return 0
+    fi
     if ! printf 'kind: %s\nreason: %s\nset_at: %s\nset_by: dotfiles-sync\nclear_with: rm %s\n' \
             "$_kind" "$_reason" "$(date '+%Y-%m-%d %H:%M:%S')" "$_MARKER" > "$_MARKER" 2>/dev/null; then
         echo "dotfiles-sync: CRITICAL - could not write the pause marker at $_MARKER (reason: $_reason). This failure now has NO visible channel." >&2
@@ -148,6 +158,12 @@ _push_or_pause() {
         # must be told to rotate rather than to clear the marker and retry.
         if printf '%s' "$_perr" | grep -q 'BLOCKED: secret detected'; then
             _pause "pre-push rejected the push: a secret is present in the commits being pushed" secret
+        elif printf '%s' "$_perr" | grep -q 'failing closed'; then
+            # rc=3 from the gate: it could not PROVE the range clean (scanner missing, TMPDIR
+            # unusable, commits unenumerable). That is not a confirmed leak, but it is also not
+            # a routine network failure - clearing it and retrying just pushes unproven bytes.
+            # It needs its own machine kind so the readers can say the right thing.
+            _pause "pre-push could not prove the pushed range clean: $(printf '%s' "$_perr" | grep -m1 'failing closed')" unproven
         else
             _pause "push to ${_slug:-$_remote} failed: $(printf '%s' "$_perr" | head -1)"
         fi

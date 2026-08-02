@@ -15,23 +15,54 @@ HOOK_DIR="$DIR/.git/hooks"
 
 mkdir -p "$HOOK_DIR"
 
+# Fingerprint the generator BEFORE the lock and before writing any hook. Both paths need it:
+# the contention path compares another run's stamp against it, and the stamping path must
+# describe only the bodies THIS run produced. Hashing $0 afterwards could stamp a newer
+# generator's fingerprint over hooks written from an older one.
+GEN_FP=$(shasum "$0" 2>/dev/null | awk '{print $1}')
+
 # Serialize installs. SessionStart and the async PostToolUse sync can both invoke this, and
 # two concurrent runs spanning a generator edit could interleave hook bodies and stamps.
 LOCK="$HOOK_DIR/.install.lock"
-if mkdir "$LOCK" 2>/dev/null; then
+STAMP="$HOOK_DIR/.secret-chain-version"
+
+# Portable mtime: BSD first, then GNU. Empty when neither works.
+_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+
+_lock_held=0
+_i=0
+while [ "$_i" -lt 50 ]; do
+    _i=$((_i + 1))
+    if mkdir "$LOCK" 2>/dev/null; then _lock_held=1; break; fi
+    # Break an ORPHANED lock. A SIGKILLed install (or power loss) leaves the directory behind,
+    # and the EXIT/signal traps cannot help. Without this, EVERY later install takes the
+    # contention path forever - the local gate would be reported fresh while never actually
+    # being reinstalled again. That is silent, permanent staleness, so it must self-heal.
+    _lt=$(_mtime "$LOCK" 2>/dev/null || printf '')
+    _now=$(date +%s)
+    if [ -n "$_lt" ] && [ "$((_now - _lt))" -gt 120 ]; then
+        echo "install-git-hooks: breaking an orphaned install lock ($LOCK, age $((_now - _lt))s)" >&2
+        rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null || true
+        continue
+    fi
+    sleep 0.1
+done
+
+if [ "$_lock_held" -eq 1 ]; then
     trap 'rmdir "$LOCK" 2>/dev/null' EXIT
     trap 'rmdir "$LOCK" 2>/dev/null; exit 3' HUP INT TERM
 else
-    # Another install is mid-flight. It writes the same bytes, so exiting is safe - but say
-    # so rather than returning 0 as though this run had installed anything.
-    echo "install-git-hooks: another install is in progress ($LOCK) - skipping" >&2
-    exit 0
+    # Could not acquire. The other run writes the same bytes, so skipping is safe ONLY if that
+    # run actually finished and stamped the fingerprint this run would have written. Returning
+    # 0 without that proof is exactly what let an interrupted or stale install be certified as
+    # fresh by dotfiles-sync and SessionStart (round-5 finding, all three reviewers).
+    if [ -n "$GEN_FP" ] && [ -r "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$GEN_FP" ]; then
+        echo "install-git-hooks: another install already produced this generator's hooks - nothing to do" >&2
+        exit 0
+    fi
+    echo "install-git-hooks: another install is in progress ($LOCK) and the hooks are NOT verified current - install NOT performed" >&2
+    exit 4
 fi
-
-# Fingerprint the generator BEFORE writing any hook, so the stamp can only ever describe the
-# bodies this run actually produced. Hashing $0 afterwards could stamp a newer generator's
-# fingerprint over hooks written from an older one.
-GEN_FP=$(shasum "$0" 2>/dev/null | awk '{print $1}')
 
 # Write a hook ATOMICALLY: an interrupted install must never leave a half-written
 # (and therefore silently permissive) hook behind. Body arrives on stdin.
@@ -154,8 +185,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # ordinary configuration (readable diffs for binary or noisy files), and it rewrites what
     # `git log -p` prints. Probed: a driver that scrubs tokens hid a plaintext secret
     # completely while git still published the real blob.
-    if ! { git log -p -m --text --no-textconv --root --no-color "$@" </dev/null | sed -n 's/^+//p' &&
-           git rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
+    # `--no-replace-objects`: git log and rev-list are replacement-aware by default, so a
+    # refs/replace entry makes them print the REPLACEMENT while pack transfer still ships the
+    # original object. Scanning the replacement would prove the wrong bytes clean. Creating a
+    # replace ref takes a deliberate `git replace`, so reachability is low - but the flag is
+    # free and removes the whole question.
+    if ! { git --no-replace-objects log -p -m --text --no-textconv --root --no-color "$@" </dev/null | sed -n 's/^+//p' &&
+           git --no-replace-objects rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
         echo "pre-push: could not enumerate commits for ${local_ref:-?} - failing closed" >&2
         exit 3
     fi
@@ -174,13 +210,25 @@ EOF
 # forever, with nothing to indicate it. dotfiles-sync.sh and SessionStart compare this marker
 # against the current generator and reinstall on mismatch, so the repair propagates on sync
 # instead of needing a manual install per machine.
-if [ -n "$GEN_FP" ]; then
-    printf '%s\n' "$GEN_FP" > "$HOOK_DIR/.secret-chain-version"
+# Re-hash and require the generator to be UNCHANGED before stamping. `shasum "$0"` hashes the
+# PATHNAME, not the bytes bash is currently executing, so an atomic replacement landing
+# mid-run (a `git pull`, an editor save) could stamp the NEW generator's fingerprint over
+# hooks built from the OLD one. The stamp would then match forever and no future run would
+# ever reinstall - permanent, silent staleness. Refusing to stamp converts that into a
+# self-correcting reinstall on the very next invocation.
+GEN_FP_AFTER=$(shasum "$0" 2>/dev/null | awk '{print $1}')
+if [ -n "$GEN_FP" ] && [ "$GEN_FP" = "$GEN_FP_AFTER" ]; then
+    printf '%s\n' "$GEN_FP" > "$STAMP"
 else
-    # No fingerprint means the freshness check cannot work. Remove any stale stamp so the
-    # mismatch is detected and this reinstalls, rather than leaving a lie on disk.
-    rm -f "$HOOK_DIR/.secret-chain-version"
-    echo "install-git-hooks: could not fingerprint $0 - freshness stamp not written" >&2
+    # No fingerprint, or the generator moved under us: either way the freshness check cannot
+    # be trusted. Remove any stale stamp so the mismatch is detected and this reinstalls,
+    # rather than leaving a lie on disk.
+    rm -f "$STAMP"
+    if [ -z "$GEN_FP" ]; then
+        echo "install-git-hooks: could not fingerprint $0 - freshness stamp not written" >&2
+    else
+        echo "install-git-hooks: $0 changed during install - stamp withheld so the next run reinstalls" >&2
+    fi
 fi
 
 echo "Installed pre-commit and pre-push hooks at $HOOK_DIR/"
