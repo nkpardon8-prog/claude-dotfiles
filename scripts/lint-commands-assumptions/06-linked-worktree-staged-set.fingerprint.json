@@ -1,0 +1,1 @@
+{"worktree_staged":"exit 1 from the worktree index","main_tree_index":"empty -> exit 0","content_authority":"the committing tree in --staged mode","size_lint":"same split, exit 1 on a staged marker violation"}
