@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Smoke test for the auto-compact arming + hook pipeline.
-# Does NOT actually fire /compact — uses a synthetic non-existent TTY so the AppleScript
-# walk returns "no-matching-tab" cleanly.
+# Does NOT actually fire /compact — AUTO_COMPACT_TEST_NO_FIRE pre-sets OSA_RESULT so the
+# osascript block is skipped entirely and NO keystrokes reach any tab. The hook then falls
+# THROUGH to the real post-fire decision, so the retain/consume/restore logic is genuinely
+# exercised. (Before 2026-08-02 that seam exited early, which is why its "sentinel consumed"
+# assertion passed no matter what the consume logic did.)
 #
 # Verifies:
 #   - lib/auto-compact-sentinel.sh sources cleanly
