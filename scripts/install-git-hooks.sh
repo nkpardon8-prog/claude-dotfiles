@@ -26,25 +26,22 @@ GEN_FP=$(shasum "$0" 2>/dev/null | awk '{print $1}')
 LOCK="$HOOK_DIR/.install.lock"
 STAMP="$HOOK_DIR/.secret-chain-version"
 
-# Portable mtime: BSD first, then GNU. Empty when neither works.
-_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
-
+# NO AGE-BASED LOCK BREAKING. Round 5 added an orphan-reclaim that broke any lock older than
+# 120s; round 6 produced three separate findings from it across two independent reviewers - it
+# can steal a LIVE lock from a stalled owner, whose EXIT trap then removes the NEW owner's
+# lock, letting two installs interleave hook bodies under one matching stamp. Every fix for
+# that needs real lock ownership (pid + liveness + atomic compare-and-delete), which is a lot
+# of machinery to protect against a SIGKILLed installer.
+#
+# So it is DELETED rather than patched. An orphaned lock now simply means the contention path
+# below cannot verify freshness, which exits 4 - LOUD, surfaced as a pause marker naming the
+# lock. A rare manual `rm -rf` beats three classes of silent concurrency bug, and a loud stop
+# is the correct direction for a gate that is supposed to fail closed.
 _lock_held=0
 _i=0
 while [ "$_i" -lt 50 ]; do
     _i=$((_i + 1))
     if mkdir "$LOCK" 2>/dev/null; then _lock_held=1; break; fi
-    # Break an ORPHANED lock. A SIGKILLed install (or power loss) leaves the directory behind,
-    # and the EXIT/signal traps cannot help. Without this, EVERY later install takes the
-    # contention path forever - the local gate would be reported fresh while never actually
-    # being reinstalled again. That is silent, permanent staleness, so it must self-heal.
-    _lt=$(_mtime "$LOCK" 2>/dev/null || printf '')
-    _now=$(date +%s)
-    if [ -n "$_lt" ] && [ "$((_now - _lt))" -gt 120 ]; then
-        echo "install-git-hooks: breaking an orphaned install lock ($LOCK, age $((_now - _lt))s)" >&2
-        rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null || true
-        continue
-    fi
     sleep 0.1
 done
 
@@ -60,7 +57,8 @@ else
         echo "install-git-hooks: another install already produced this generator's hooks - nothing to do" >&2
         exit 0
     fi
-    echo "install-git-hooks: another install is in progress ($LOCK) and the hooks are NOT verified current - install NOT performed" >&2
+    echo "install-git-hooks: could not acquire $LOCK and the hooks are NOT verified current - install NOT performed." >&2
+    echo "install-git-hooks: if no install is actually running, that lock is orphaned (killed installer or power loss) - remove it with: rm -rf '$LOCK'" >&2
     exit 4
 fi
 
@@ -112,7 +110,15 @@ set -o pipefail
 # reason - any commit touching a non-UTF-8 file would be unpushable.
 export LC_ALL=C
 SCAN="$HOME/.claude-dotfiles/scripts/secret-scan.sh"
-[ -r "$SCAN" ] || { echo "pre-push: scanner missing at $SCAN - failing closed" >&2; exit 3; }
+
+# EVERY rc=3 path prints this exact token. dotfiles-sync classifies a rejected push by reading
+# the hook's stderr, and it previously grepped the PROSE "failing closed" - which the mktemp
+# and trap paths never printed, so a disk-full or unusable-TMPDIR failure was recorded as a
+# routine `kind: other` instead of `unproven` (round-6 finding, two reviewers). Classify on a
+# stable machine token, never on prose - the same rule the `kind:` field already follows.
+_unproven() { echo "pre-push: RANGE-NOT-PROVEN-CLEAN${1:+ - $1}" >&2; exit 3; }
+
+[ -r "$SCAN" ] || _unproven "scanner missing at $SCAN"
 
 Z=0000000000000000000000000000000000000000
 TMPBASE="${TMPDIR:-/tmp}"
@@ -121,13 +127,13 @@ TMPBASE="${TMPDIR:-/tmp}"
 # its own merits. `.git` must be listed literally: the bare relative form matches neither
 # `.git/*` nor `*/.git`.
 case "$TMPBASE" in
-    .git|.git/*|*/.git/*|*/.git) echo "pre-push: TMPDIR resolves inside a .git directory - failing closed" >&2; exit 3 ;;
+    .git|.git/*|*/.git/*|*/.git) _unproven "TMPDIR resolves inside a .git directory" ;;
 esac
-TMP=$(mktemp "$TMPBASE/prepush-scan.XXXXXX") || exit 3
+TMP=$(mktemp "$TMPBASE/prepush-scan.XXXXXX") || _unproven "could not create a temp file under $TMPBASE"
 # Two separate traps: a single `trap ... EXIT HUP INT TERM` resumes after the handler
 # and exits 0, which would turn an interrupted scan into a successful push.
 trap 'rm -f "$TMP"' EXIT
-trap 'rm -f "$TMP"; exit 3' HUP INT TERM
+trap 'rm -f "$TMP"; echo "pre-push: RANGE-NOT-PROVEN-CLEAN - interrupted" >&2; exit 3' HUP INT TERM
 
 # Scoping the NEW-branch exclusion to this remote's tracking refs. A bare `--not --remotes`
 # would also excuse commits that exist only on some OTHER remote.
@@ -192,8 +198,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # free and removes the whole question.
     if ! { git --no-replace-objects log -p -m --text --no-textconv --root --no-color "$@" </dev/null | sed -n 's/^+//p' &&
            git --no-replace-objects rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
-        echo "pre-push: could not enumerate commits for ${local_ref:-?} - failing closed" >&2
-        exit 3
+        _unproven "could not enumerate commits for ${local_ref:-?}"
     fi
     "$SCAN" --composite "$TMP"; s=$?
     [ "$s" -gt "$rc" ] && rc=$s                  # precedence 3 > 2 > 0
@@ -225,9 +230,19 @@ else
     # rather than leaving a lie on disk.
     rm -f "$STAMP"
     if [ -z "$GEN_FP" ]; then
+        # Hooks ARE current here - only the stamp is unobtainable (no shasum). Deliberately
+        # still exit 0: failing closed on this would make EVERY install non-zero on such a
+        # system, so SessionStart would write a pause marker forever and auto-sync would be
+        # permanently dead. The cost of exit 0 is a redundant reinstall each sync, which is
+        # harmless. Asymmetry with the branch below is intentional.
         echo "install-git-hooks: could not fingerprint $0 - freshness stamp not written" >&2
     else
-        echo "install-git-hooks: $0 changed during install - stamp withheld so the next run reinstalls" >&2
+        # The generator MOVED under us, so the hooks on disk were built from the OLD one and
+        # may be the fail-open version. Removing the stamp alone is not enough: exiting 0 tells
+        # dotfiles-sync and SessionStart "the gate is fresh", and dotfiles-sync would push
+        # immediately, through stale hooks, before any reinstall could happen.
+        echo "install-git-hooks: $0 changed during install - hooks are from the OLD generator and are NOT verified current" >&2
+        exit 4
     fi
 fi
 

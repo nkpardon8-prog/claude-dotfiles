@@ -44,8 +44,12 @@ case "$kind" in
         echo "dotfiles-sync PAUSED — the secret gate could not PROVE the pushed range clean: ${reason}"
         echo "  Auto-push is HALTED. This is not a confirmed leak, but nothing has been verified either."
         echo "  1) Fix the cause above (missing scanner, unusable TMPDIR, unreadable range)."
-        echo "  2) Re-prove:   bash ~/.claude-dotfiles/scripts/secret-scan.sh --working"
-        echo "  3) Only then:  rm ${M}"
+        echo "  2) rm ${M}"
+        echo "  3) Re-prove by RETRYING THE PUSH: bash ~/.claude-dotfiles/scripts/dotfiles-sync.sh"
+        echo "     The pre-push hook re-scans the whole range, commit messages included, and"
+        echo "     blocks again if it still cannot prove it - so the gate itself is the proof."
+        echo "     (NOT secret-scan.sh --working: that reads the WORKING TREE only and cannot"
+        echo "      say anything about queued commits or their messages.)"
         ;;
     *)
         echo "dotfiles-sync PAUSED: ${reason} — auto-push is HALTED and local commits are accumulating."

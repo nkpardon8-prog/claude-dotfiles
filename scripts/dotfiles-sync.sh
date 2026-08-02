@@ -26,7 +26,10 @@ export LC_ALL=C
 # which is deliberate - a blocked sync must stop stacking commits on a poisoned HEAD.
 # Consequence, accepted: a transient network failure holds sync until a human clears it.
 # The alternative was `|| true`, which lost the failure entirely.
-# _pause <reason> [kind]   kind: secret | other   (default: other)
+# _pause <reason> [kind]   kind: secret | unproven | other   (default: other)
+#   secret   - a secret was detected or could not be ruled out; rotate before clearing
+#   unproven - the gate could not PROVE the pushed range clean (scanner/TMPDIR/range failure)
+#   other    - routine failure (network, unresolved target); fix the cause and retry
 # `kind` is a machine field on purpose. The reader must NOT infer severity by grepping the
 # prose - the reason text routinely contains the word "secret" for entirely benign reasons
 # (this repo's own work is named "secret-chain"), and mis-reporting a routine pause as a
@@ -37,16 +40,24 @@ _pause() {
     # can leak one into the marker by accident. Also collapse to a single line.
     _reason=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's#://[^/@[:space:]]*@#://REDACTED@#g' | cut -c1-300)
     _kind="${2:-other}"
-    # NEVER DOWNGRADE a recorded leak. Both writers overwrite unconditionally, so a routine
-    # later failure (network down, installer missing) would replace an existing `kind: secret`
-    # with `kind: other` - and because both readers route on that field, the guidance silently
-    # flips from "rotate the credential, then clear" to "just clear it and retry". Sync is
-    # already halted either way, so keeping the more severe record costs nothing.
-    if [ "$_kind" != secret ] && [ -r "$_MARKER" ] \
-       && grep -q '^kind: secret$' "$_MARKER" 2>/dev/null; then
-        echo "dotfiles-sync: $_reason (existing kind=secret pause marker preserved, not downgraded)" >&2
+    # NEVER DOWNGRADE a recorded leak, and do it ATOMICALLY. Both writers used to overwrite
+    # unconditionally, so a routine later failure (network down, installer missing) replaced an
+    # existing `kind: secret` with `kind: other` - and because both readers route on that field,
+    # the guidance silently flipped from "rotate the credential, then clear" to "just clear it".
+    # A check-then-write does not fix it either: this script runs from an `async: true`
+    # PostToolUse hook, so two jobs can interleave between the test and the truncate (round-6
+    # finding, two reviewers). `set -C` makes the redirect an O_EXCL create, so a non-secret
+    # pause can NEVER clobber an existing marker - first pause wins, no window.
+    if [ "$_kind" != secret ]; then
+        if ( set -C; printf 'kind: %s\nreason: %s\nset_at: %s\nset_by: dotfiles-sync\nclear_with: rm %s\n' \
+                "$_kind" "$_reason" "$(date '+%Y-%m-%d %H:%M:%S')" "$_MARKER" > "$_MARKER" ) 2>/dev/null; then
+            return 0
+        fi
+        echo "dotfiles-sync: $_reason (a pause marker is already present and was left intact)" >&2
         return 0
     fi
+    # kind=secret is the ONLY upgrade allowed to overwrite: a confirmed leak must replace any
+    # lesser record, and losing that record is far worse than losing a routine one.
     if ! printf 'kind: %s\nreason: %s\nset_at: %s\nset_by: dotfiles-sync\nclear_with: rm %s\n' \
             "$_kind" "$_reason" "$(date '+%Y-%m-%d %H:%M:%S')" "$_MARKER" > "$_MARKER" 2>/dev/null; then
         echo "dotfiles-sync: CRITICAL - could not write the pause marker at $_MARKER (reason: $_reason). This failure now has NO visible channel." >&2
@@ -158,7 +169,7 @@ _push_or_pause() {
         # must be told to rotate rather than to clear the marker and retry.
         if printf '%s' "$_perr" | grep -q 'BLOCKED: secret detected'; then
             _pause "pre-push rejected the push: a secret is present in the commits being pushed" secret
-        elif printf '%s' "$_perr" | grep -q 'failing closed'; then
+        elif printf '%s' "$_perr" | grep -q 'RANGE-NOT-PROVEN-CLEAN'; then
             # rc=3 from the gate: it could not PROVE the range clean (scanner missing, TMPDIR
             # unusable, commits unenumerable). That is not a confirmed leak, but it is also not
             # a routine network failure - clearing it and retrying just pushes unproven bytes.

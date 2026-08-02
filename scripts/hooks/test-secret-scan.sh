@@ -193,6 +193,13 @@ chk "a symlink is NOT followed to external content" "$?" "0"
 ln -s "$SECRET" link-target-is-secret
 bash "$SCAN" link-target-is-secret >/dev/null 2>&1
 chk "a symlink whose stored target is a secret is caught" "$?" "2"
+# An OPTION-SHAPED link name must still be scanned as a path. Without the `./` guard the name
+# reaches readlink as a flag: GNU prints help and exits 0 (link never scanned, reported clean),
+# BSD errors out (rc=3). Either way it is not the 2 this must produce. Passed after `--` so the
+# leading dash survives argument parsing and actually reaches scan_file.
+ln -s "$SECRET" ./-weird-link
+bash "$SCAN" -- -weird-link >/dev/null 2>&1
+chk "an option-shaped symlink name is still scanned as a path" "$?" "2"
 bash "$SCAN" --composite pinonly.txt >/dev/null 2>&1
 chk "PIN lane applies in --composite mode too" "$?" "2"
 # The allowlist must NOT be consulted for composite input: otherwise a TMPDIR under an
@@ -413,6 +420,47 @@ chk "commits known only to another remote are still scanned" \
     "$(rgit rev-parse twinbranch >/dev/null 2>&1 && echo leaked || echo blocked)" "blocked"
 git checkout -q "$BR"; git branch -qD twinbranch >/dev/null 2>&1
 git remote remove other >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# INSTALLER CONTENTION. Round 6's unanimous CRITICAL: the installer reported success while
+# installing nothing, so dotfiles-sync and SessionStart read "the local gate is fresh" when it
+# could be stale or absent. Exercised against a THROWAWAY HOME so the real .git/hooks is never
+# touched. Round 5 also deleted age-based lock breaking, so a lock that is never released must
+# now produce a LOUD non-zero - never a silent 0.
+INST="$REPO/scripts/install-git-hooks.sh"
+IH=$(mktemp -d); mkdir -p "$IH/.claude-dotfiles"
+cp -R "$REPO/scripts" "$IH/.claude-dotfiles/" 2>/dev/null
+( cd "$IH/.claude-dotfiles" && git init -q . 2>/dev/null )
+HOME="$IH" bash "$IH/.claude-dotfiles/scripts/install-git-hooks.sh" >/dev/null 2>&1
+chk "installer succeeds on a clean tree" "$?" "0"
+STAMP_IH="$IH/.claude-dotfiles/.git/hooks/.secret-chain-version"
+chk "installer writes a freshness stamp" "$([ -s "$STAMP_IH" ] && echo yes || echo no)" "yes"
+# A held lock with a MATCHING stamp is genuinely nothing-to-do -> 0.
+mkdir -p "$IH/.claude-dotfiles/.git/hooks/.install.lock"
+HOME="$IH" bash "$IH/.claude-dotfiles/scripts/install-git-hooks.sh" >/dev/null 2>&1
+chk "contention with a matching stamp is a real no-op (0)" "$?" "0"
+# A held lock with NO stamp cannot be verified -> must FAIL LOUD, not report success.
+rm -f "$STAMP_IH"
+HOME="$IH" bash "$IH/.claude-dotfiles/scripts/install-git-hooks.sh" >/dev/null 2>&1
+chk "contention with no verifiable stamp exits 4, not 0" "$?" "4"
+rm -rf "$IH"
+
+# PAUSE-MARKER ROUTING. Both readers route on the machine `kind:` field; a wrong branch tells
+# the user to clear a leak-caused pause, which resumes pushing to a PUBLIC remote.
+NOTICE="$REPO/scripts/hooks/dotfiles-sync-pause-notice.sh"
+MK=$(mktemp -d); MKF="$MK/.claude/.dotfiles-sync-paused"; mkdir -p "$MK/.claude"
+printf 'kind: secret\nreason: test\n' > "$MKF"
+chk "kind=secret notice says ROTATE" \
+    "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'ROTATE')" "1"
+printf 'kind: unproven\nreason: test\n' > "$MKF"
+chk "kind=unproven notice does NOT say ROTATE" \
+    "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'ROTATE')" "0"
+chk "kind=unproven notice does NOT recommend --working" \
+    "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'Re-prove:   bash.*--working')" "0"
+printf 'kind: other\nreason: test\n' > "$MKF"
+chk "kind=other notice is the plain clear-and-retry form" \
+    "$(HOME="$MK" bash "$NOTICE" 2>&1 | grep -c 'Fix the cause above')" "1"
+rm -rf "$MK"
 
 # ---------------------------------------------------------------------------
 echo

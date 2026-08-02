@@ -92,7 +92,7 @@ format in the abstract. Pre-push scans **composite text** (concatenated patch hu
 commit messages) where original paths no longer exist, so the allowlist cannot be consulted —
 and must not be, or a `TMPDIR` under an allowlisted directory would silently disable the
 lane. Consequence: a PIN-shaped value inside an allowlisted document **will block a push**
-once it enters a pushed range. Placeholder values (`000000`, `123456`, `XXXXXX`) stay exempt
+once it enters a pushed range. Placeholder values (`000000`, `123456`) stay exempt
 and are what those documents should use. Measured 2026-08-01: zero PIN-pattern matches across
 this repository's entire history.
 
@@ -111,8 +111,10 @@ filter tables. A greedy `eyJ`-prefix or `scheme://user:pass@host` rule matches o
 documentation.
 
 The failure mode is asymmetric and severe: a false positive jams **every** commit in this
-repo *and* silently blocks the async auto-push, so the machine stops syncing and nothing
-says why. A missed exotic secret is one exposure; a false positive is a dead toolchain.
+repo *and* blocks the async auto-push. It is no longer *silent* - the pause marker records a
+machine-readable `kind:` and both the UserPromptSubmit notice and stale-handoff-guard surface
+it every session - but the machine still stops syncing until a human acts. A missed exotic
+secret is one exposure; a false positive is a dead toolchain.
 Patterns here stay **anchored to provider-specific prefixes**.
 
 ## If you change the regex
