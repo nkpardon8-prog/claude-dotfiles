@@ -366,6 +366,24 @@ while IFS= read -r -d '' f; do
         [ "$t" = blob ] || continue
         out=$(git cat-file blob ":$f" 2>/dev/null | scan_stdin "$f"); rc=$?
     else
+        # EXPLICIT-PATH mode fails closed on a path that is not there (2026-08-03, round-2
+        # review). scan_file's `[ -f "$f" ] || return 0` is correct for an ENUMERATION - a
+        # staged-deleted or since-removed path really is clean, there are no bytes to
+        # publish - but for a path the CALLER NAMED it is "scanned nothing, reported clean",
+        # the exact class this scanner exists to prevent. MEASURED before the fix:
+        # `secret-scan.sh /no/such/file` -> rc=0.
+        if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+            echo "secret-scan: no such path: $f" >&2
+            WORST=3
+            continue
+        fi
+        # A dangling symlink is still scannable (scan_file reads the stored target string,
+        # which is what git publishes), so -L is checked before the regular-file test.
+        if [ ! -L "$f" ] && [ ! -f "$f" ]; then
+            echo "secret-scan: not a regular file, cannot prove clean: $f" >&2
+            WORST=3
+            continue
+        fi
         out=$(scan_file "$f"); rc=$?
     fi
     case "$rc" in
