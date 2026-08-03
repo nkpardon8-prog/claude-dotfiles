@@ -4,6 +4,19 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 
 ## 2026-08-02 - Parallelizer v1: parallelism made binding, measured, and machine-checked
 
+**Closeout addendum (post-implementation review, same day):** the Task-8 LIVE smoke is done and
+green - the registered `parallelizer` agent (registry picked it up in-session) emitted a real
+FAN_OUT wave_plan for a 2-item envelope and `verify-parallel-wave.mjs --validate-plan` accepted
+it (exit 0; the first live validate-plan event is in rework.log). Task-0 gate baselines recorded
+in the dentall suite README (all three unrelated suites: exit 2 env-gate REFUSED). Three phantom
+dry-run events purged from rework.log (the Shared Fixture repo_root escaped the fixtures-drop
+predicate - broadening it is follow-up hygiene). Weekly-replay project-dir selection switched
+from dir-mtime to top-level transcript VOLUME (a near-empty dir had won and burned the throttle;
+throttle re-armed, empty artifact deleted). Review verdicts: implementation-reviewer - all
+quality gates green, 26/26 assumption cases, "genuinely fail-closed rather than
+fail-closed-by-naming"; criticer items on mission-surface successor work and a wave-retirement
+threshold are folded into the follow-ups below.
+
 Parallel execution is now the DEFAULT across the playbook layer, and it is enforced by text the
 orchestrator is bound by plus checks that fail closed - not by advice. Read-only fan-out registers
 ship on every run; the write-wave machinery ships fail-closed with serial as the universal

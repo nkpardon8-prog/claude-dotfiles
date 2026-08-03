@@ -72,14 +72,17 @@ done || true
 # (b) Weekly transcript replay (Divergence 2: layer-2 telemetry accrues by mechanism, no
 # ambient nudging). Throttle is keyed on a COMPLETION marker, never on the output's mtime -
 # a killed or timed-out run must not suppress the next attempt. Bounded three ways: the 10
-# newest top-level transcripts of the newest project dir, a 45s pt_run cap, and tmp->mv so a
-# partial run never overwrites the last good output.
+# newest top-level transcripts of the busiest project dir, a 45s pt_run cap, and tmp->mv so a
+# partial run never overwrites the last good output. Dir selection is by top-level transcript
+# VOLUME, not dir mtime - a freshly-touched near-empty project dir would otherwise win and the
+# weekly read-out would be made from a zero-signal file (implementation-review finding, 2026-08-02).
 _PW="$HOME/.claude/parallel-waves"
 _MARK="$_PW/replay-last-success"
 if [ ! -f "$_MARK" ] || [ -n "$(find "$_MARK" -mtime +7 2>/dev/null)" ]; then
-  _PROJ=""
-  for _d in $(ls -dt "$HOME"/.claude/projects/*/ 2>/dev/null); do
-    if ls "$_d"*.jsonl >/dev/null 2>&1; then _PROJ="$_d"; break; fi
+  _PROJ=""; _BEST=0
+  for _d in "$HOME"/.claude/projects/*/; do
+    _sz=$(du -sk "$_d"*.jsonl 2>/dev/null | awk '{s+=$1} END {print s+0}')
+    if [ "${_sz:-0}" -gt "$_BEST" ] 2>/dev/null; then _BEST="$_sz"; _PROJ="$_d"; fi
   done
   if [ -n "$_PROJ" ]; then
     _FILES=()
