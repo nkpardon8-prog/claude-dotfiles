@@ -23,8 +23,13 @@ Both commands share `commands/god-review/{lib,principles,broad-reviewers}/`.
 
 ### Phase-2 Two-Layer Model
 
-**Layer A — Broad Reviewers (9 total; 10 with `--ruthless`):**
-- 3 Claude broad reviewers: `claude-deep-correctness`, `claude-architecture-prod`, `claude-security-resilience`
+**Layer A — Broad Reviewers (9 spawn by default; 10 with `--ruthless`):**
+
+`broad-reviewers/` holds **10** prompt files - 4 Claude + 6 Codex. Nine of them spawn on every run;
+the 4th Claude one is gated on the flag, which is why the file count and the fleet count differ.
+
+- 3 always-on Claude broad reviewers: `claude-deep-correctness`, `claude-architecture-prod`, `claude-security-resilience`
+- 1 conditional Claude broad reviewer: `claude-ruthless-redteam` - spawned only when `--ruthless` is passed
 - 6 Codex broad reviewers:
   - Checklist-style (original): `codex-cross-layer`, `codex-prod-scalability`, `codex-security-safeguards`
   - Open-posture ("direct the aim, not the answer"): `codex-deep-correctness` (logic correctness — wrong results, edge cases, broken error paths, off-by-ones, bad state transitions), `codex-ruthless-redteam` (adversarial — malicious/malformed input, abuse, hostile load, dependency misbehavior), `codex-data-integrity` (data integrity/concurrency/resource lifecycle — races, atomicity, data loss/corruption windows, leaks, ordering bugs)

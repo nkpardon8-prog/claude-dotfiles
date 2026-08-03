@@ -80,8 +80,9 @@ review. The Codex passes and the first two lenses all launch in a single message
 concurrently; the adversarial lens follows, because it grades Codex's merged findings. Point it at
 a diff, a plan, an idea, a bug — anything.
 
-**`/god-report`** — The whole-codebase review, **no fixes, pure report.** 4 Claude broad reviewers +
-6 Codex broad reviewers + 24 principle agents (Claude *and* Codex per principle) run in parallel.
+**`/god-report`** — The whole-codebase review, **no fixes, pure report.** 9 broad reviewers by
+default (3 Claude + 6 Codex) plus 24 principle agents (Claude *and* Codex per principle) run in
+parallel; `--ruthless` adds a 4th Claude broad reviewer (`claude-ruthless-redteam`) for 10.
 Add `--rounds N` to de-noise. Use it when you want the truth about a codebase without anything
 changing underneath you.
 

@@ -9,17 +9,31 @@ How `~/.claude-dotfiles` plugs into Claude Code, and what runs when.
 ```
 ~/.claude-dotfiles/                        ← this repo, version-controlled
 ├── CLAUDE.md                              ← global rules (loaded every session)
-├── credentials.md                         ← 1Password op:// catalog (no secrets)
+├── credentials.template.md                ← template for the op:// catalog (the real
+│                                             catalog is local-only, see "Credential flow")
+├── settings.json.template                 ← reference copy of ~/.claude/settings.json
+├── CHANGELOG.md
 ├── commands/                              ← slash commands → /name
 │   ├── *.md                               (top-level: /plan, /implement, ...)
-│   └── god-review/  database-audit/  ui-audit/  (namespaced suites: /<ns>:*)
+│   └── god-review/  database-audit/  ui-audit/  desktop/  macmini/  windows/
+│                                          (namespaced suites: /<ns>:*)
 ├── agents/                                ← sub-agents spawned by skills
 ├── rules/                                 ← global rule files
+├── skills/                                ← non-command skill assets (_shared/, desktop/, ...)
+├── templates/                             ← CLAUDE.md / AGENTS.md scaffolds for new projects
+├── codex/                                 ← generated Codex-CLI layer (codex/generated/)
 ├── docs/                                  ← long-form docs (this folder)
+├── archive/                               ← retired packs + write-ups, not loaded by Claude Code
 ├── scripts/
 │   ├── dotfiles-sync.sh                   (auto-push on edit)
+│   ├── statusline.sh                      (statusline renderer)
+│   ├── secret-scan.sh                     (pre-commit / sync secret gate)
 │   ├── clean-dead-processes.sh            (RAM cleanup, cron 2-day)
-│   └── whisper-transcribe.sh              (used by /transcribe)
+│   ├── whisper-transcribe.sh              (used by /transcribe)
+│   ├── hooks/                             (lifecycle hooks - see scripts/hooks/README.md)
+│   ├── progress/on-session-start-cleanup.sh
+│   ├── lint-commands/                     (skill size + contract lints)
+│   └── *-assumptions/                     (hermetic assumption suites, bash run-all.sh)
 ├── .env / .env.example                    (Whisper key, etc.)
 └── .gitignore
 ```
@@ -27,11 +41,12 @@ How `~/.claude-dotfiles` plugs into Claude Code, and what runs when.
 `~/.claude/` is the runtime location Claude Code reads. It's wired to this repo via symlinks:
 
 ```
-~/.claude/CLAUDE.md   →   ~/.claude-dotfiles/CLAUDE.md
-~/.claude/commands    →   ~/.claude-dotfiles/commands
-~/.claude/agents      →   ~/.claude-dotfiles/agents
-~/.claude/rules       →   ~/.claude-dotfiles/rules
-~/.claude/patterns    →   ~/.claude-dotfiles/patterns
+~/.claude/CLAUDE.md             →   ~/.claude-dotfiles/CLAUDE.md
+~/.claude/commands              →   ~/.claude-dotfiles/commands
+~/.claude/agents                →   ~/.claude-dotfiles/agents
+~/.claude/rules                 →   ~/.claude-dotfiles/rules
+~/.claude/statusline.sh         →   ~/.claude-dotfiles/scripts/statusline.sh
+~/.claude/refresh-ratelimit.sh  →   ~/.claude-dotfiles/scripts/refresh-ratelimit.sh
 ```
 
 Edit a file in `~/.claude-dotfiles/`, the change is live in the next session — no copy step.
@@ -63,17 +78,26 @@ Two hooks in `~/.claude/settings.json` make this happen:
 
 | Hook | Trigger | Action |
 |---|---|---|
-| `SessionStart` | New Claude Code session | `git pull --ff-only` + secret-leak scan against `credentials.md` |
+| `SessionStart` | New Claude Code session | `git pull --ff-only`, reinstall the local git hooks, and secret-leak scan `~/.config/claude/credentials.md` (warn-only; it should hold `op://` references, never values) |
 | `PostToolUse` (Edit\|Write) | Any file edit | Run `scripts/dotfiles-sync.sh` — checks if the edit was inside the dotfiles dir, then `git add + commit + push` |
 
 Project repos are **not** auto-pushed. Only this dotfiles repo. The rule lives in `CLAUDE.md` and the script checks the path before pushing.
 
 ### Other lifecycle hooks
 
+Full inventory (what is registered, what each one does, and which are invoked by skills rather
+than by an event) lives in `scripts/hooks/README.md`; `settings.json.template` is the reference
+copy of the actual registration. The load-bearing ones:
+
 | Hook | Script | Purpose |
 |---|---|---|
 | `Stop` | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app only. Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
 | `SessionStart` (cleanup entry) | `scripts/progress/on-session-start-cleanup.sh` | Prunes stale progress files, stale auto-compact / pre-compact sentinels (>12h), and `codex-review.*` run dirs under `$TMPDIR` (>24h - they now outlive the skill so `/mission` can read `report-final.md`). Also sweeps abandoned parallelizer waves (>7d): dead wave-state files, plus orphaned `~/.claude/wave-worktrees/` dirs that no state file references - removing the tree, then `git worktree prune` + `branch -D` in the repo named by that dir's `.repo-root` breadcrumb. Finally runs `scripts/parallel-stats.py --replay` at most weekly (completion-marker throttled, 45s `pt_run` cap, 10 newest transcripts, tmp->mv) into `~/.claude/parallel-waves/replay-latest.txt`. `rework.log` and replay outputs are never swept. Every step is fail-open. |
+| `SessionStart` (primer) | `scripts/hooks/post-compact-primer.sh` | Source-routing primer for `compact`/`resume`/`startup`/`clear`: resolves the pending SID-tagged handoff and emits session-start navigation. Followed by `stale-handoff-guard.sh`, which quarantines an un-tagged `CLAUDE.local.md` so an old handoff cannot be silently re-ingested. |
+| `UserPromptSubmit` | `scripts/hooks/ctx-gate-on-prompt-submit.sh` | Three-tier context-budget nudge off the statusline's `~/.claude/progress/ctx-<sid>.txt` sidecar. `dotfiles-sync-pause-notice.sh` runs alongside it to surface a held or blocked auto-sync (the sync itself is async, so its stderr reaches nobody). |
+| `PreCompact` (matcher `auto`) | `scripts/hooks/ctx-gate-precompact-safety.sh` | Last-resort net when native auto-compaction is about to fire without a handoff. |
+| `PreToolUse` | `scripts/hooks/prod-coordination-gate.py` | Serializes prod-mutating ops across parallel Claude instances via `~/.claude/prod.lock`. |
+| `SessionStart` + `PostToolUse` | `scripts/hooks/prod-ledger.py` (`inject` / `record`) | Shared ledger of prod-facing actions (push / deploy / migrate) so parallel agents know what is already live. |
 
 Auto-compact is the `Stop` hook that crosses the Claude/Terminal boundary. (Statusline line 2 is now a manual `/line` label set per window — there are no progress-bar hooks; see [STATUSLINE.md](STATUSLINE.md).)
 
@@ -111,41 +135,43 @@ Auto-compact is the `Stop` hook that crosses the Claude/Terminal boundary. (Stat
 
 ## Skill routing
 
-`CLAUDE.md` contains a Skill Trigger Table. On each user prompt, Claude scans it for a natural-language match. When a row triggers, Claude announces "using /skill-name" and runs it. Some skills have `Consequence = YES` (writes git, deploys, mutates DB) and require explicit confirmation.
+A command is invoked by typing `/name` (or `/<ns>:name` for a pack). Claude Code discovers them
+from `~/.claude/commands/`, so a new `commands/foo.md` is live in the next session with no
+registration step.
 
-Three categories of entries in the table:
+There is no central trigger table. Routing to a skill without an explicit `/` invocation is
+driven by prose rules in `CLAUDE.md` - e.g. the Pre-Compaction Handoffs rule mandates
+`/pre-compact`, the GUI Fallback rule mandates `/desktop`, the Credentials rule mandates
+`/load-creds`. A skill that owns sub-commands (`/god-review`, `/database-audit`, `/ui-audit`)
+triggers them internally from its own pack directory.
 
-| Form | Example | What it does |
-|---|---|---|
-| `/skill-name` | `/plan` | Loads the slash-command file |
-| Cascade | `/god-review`, `/database-audit` | Owns sub-commands; triggers them internally |
-
-Adding a new skill = one row in the table.
+`docs/COMMANDS.md` is the human-facing catalog of what exists.
 
 ---
 
 ## Credential flow
 
 ```
-┌─────────────────┐      catalog (op:// only,        ┌─────────────────┐
-│  1Password app  │ ───── no secret values) ───────▶ │ credentials.md  │
-│  (vault)        │                                   │ (committed)     │
-└────────┬────────┘                                   └────────┬────────┘
-         │                                                     │
-         │ op inject -i .env.op -o .env                        │ /load-creds
-         │ ◀───────────────────────────────────────────────────┘ reads catalog
+┌─────────────────┐      catalog (op:// only,     ┌────────────────────────────────┐
+│  1Password app  │ ───── no secret values) ─────▶ │ ~/.config/claude/              │
+│  (vault)        │                                │   credentials.md               │
+└────────┬────────┘                                │ (local-only, NEVER committed)  │
+         │                                         └────────┬───────────────────────┘
+         │ op inject -i .env.op -o .env                     │ /load-creds
+         │ ◀────────────────────────────────────────────────┘ reads catalog
          ▼
-┌──────────────────────────┐
-│  project/.env (gitignored)│
-└──────────────────────────┘
+┌───────────────────────────┐
+│ project/.env (gitignored) │
+└───────────────────────────┘
 ```
 
 Rules:
-- `credentials.md` only ever holds `op://` references and env var names. A SessionStart hook scans it for `sk-*`, `AIza*`, full JWTs and warns on commit-time leaks.
+- The catalog lives **outside this repo**, at `~/.config/claude/credentials.md`. It is local-only and never synced by git; `credentials.md` is gitignored here too. The committed artifact is `credentials.template.md` - copy it to `~/.config/claude/credentials.md` and edit.
+- The catalog only ever holds `op://` references and env var names. A SessionStart hook scans it for provider key shapes (`sk-*`, `AIza*`, `ghp_*`, `AKIA*`, private-key headers, ...) and warns if a real value landed there.
 - `/load-creds` is the canonical way to populate a project `.env`.
-- New credentials shared in chat get offered to 1Password first, fallback to `~/.zshrc`, never to a repo.
+- New credentials shared in chat are treated as compromised: rotate, then store in 1Password and reference as `op://`. Never commit a raw secret to any repo.
 
-Full rules: `CLAUDE.md` → "Credential and MCP Handling".
+Full rules: `CLAUDE.md` → "Credentials". The end-to-end secret chain is documented in [SECURITY-secret-chain.md](SECURITY-secret-chain.md).
 
 ---
 
@@ -203,7 +229,7 @@ Each `/pre-compact` run mines the conversation at a calibrated depth (Quick / De
 | Namespaced command | `commands/<ns>/foo.md` | `/<ns>:foo` |
 | Sub-agent | `agents/foo.md` | `subagent_type: "foo"` |
 | Global rule | `rules/foo.md` | Loaded on every session |
-| MCP server | Edit `CLAUDE.md` MCP Catalog + ask user to define before editing `.mcp.json` | Per-project |
+| Lifecycle hook | `scripts/hooks/foo.sh` + register in `settings.json.template` | See `scripts/hooks/README.md` |
 
 The PostToolUse hook auto-pushes after the edit lands.
 
@@ -213,13 +239,20 @@ The PostToolUse hook auto-pushes after the edit lands.
 
 | File | Purpose |
 |---|---|
-| `CLAUDE.md` | Master config: rules, skill routing, credentials, MCP, writing style |
-| `credentials.md` | 1Password catalog (env var names + `op://`) |
+| `CLAUDE.md` | The global rules loaded into every session |
+| `credentials.template.md` | Template for the local-only `op://` catalog |
+| `settings.json.template` | Reference copy of `~/.claude/settings.json` (statusline + every hook registration) |
 | `README.md` | Setup-on-a-new-machine guide |
 | `docs/COMMANDS.md` | Full command reference (categorized) |
 | `docs/ARCHITECTURE.md` | This file |
+| `docs/SETUP.md` | Install / bootstrap detail |
+| `docs/STATUSLINE.md` | Statusline rendering + the `ctx-<sid>` sidecar |
+| `docs/SECURITY-secret-chain.md` | End-to-end secret handling |
+| `docs/RATIONALE.md` | Why things are built the way they are |
+| `docs/script-reference.md` | Per-script reference for `scripts/` |
 | `docs/transcribe.md` | `/transcribe` setup details |
 | `scripts/dotfiles-sync.sh` | Auto-push hook script |
+| `scripts/hooks/README.md` | Lifecycle hook inventory + contracts |
 
 ---
 

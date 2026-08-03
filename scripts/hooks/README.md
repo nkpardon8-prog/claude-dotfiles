@@ -6,7 +6,52 @@ auto-compact sentinels). The old progress-bar subsystem that fed statusline line
 2026-06-18 — line 2 is now a manual per-window `/line` label rendered directly by `statusline.sh`
 (see [STATUSLINE.md](../../docs/STATUSLINE.md)).
 
-Today this directory hosts **one** subsystem: **auto-compact-after-pre-compact**.
+## What lives here
+
+Several subsystems now share this directory. Auto-compact (documented in full below) was the
+first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coordination work.
+
+**Registered as Claude Code hooks** (see `settings.json.template` for the exact matchers):
+
+| Script | Hook event | Purpose |
+|---|---|---|
+| `auto-compact-after-pre-compact.sh` | `Stop` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed a sentinel. |
+| `post-compact-primer.sh` | `SessionStart` (`compact\|resume\|startup\|clear`) | Source-routing primer: resolves the pending SID-tagged handoff and emits session-start navigation. |
+| `stale-handoff-guard.sh` | `SessionStart` (after the primer) | Quarantines an un-tagged `CLAUDE.local.md` so a months-old handoff cannot be silently re-ingested. |
+| `ctx-gate-on-prompt-submit.sh` | `UserPromptSubmit` | Three-tier context-budget nudge off the statusline's `ctx-<sid>.txt` sidecar. |
+| `dotfiles-sync-pause-notice.sh` | `UserPromptSubmit` | Surfaces a HELD/BLOCKED dotfiles auto-sync at the next prompt (the async PostToolUse sync's stderr reaches nobody). |
+| `ctx-gate-precompact-safety.sh` | `PreCompact` (matcher `auto`) | Last-resort safety net when native auto-compaction is about to fire without a handoff. |
+| `prod-coordination-gate.py` | `PreToolUse` | Serializes prod-mutating ops across parallel Claude instances via `~/.claude/prod.lock`. |
+| `prod-ledger.py` | `SessionStart` (`inject`) + `PostToolUse` (`record`) | Shared ledger of prod-facing actions (push / deploy / migrate) so parallel agents know what is already live. |
+
+**Invoked by skills or by hand** (not hook-registered):
+
+| Script | Called by | Purpose |
+|---|---|---|
+| `arm-auto-compact.sh` | `/pre-compact` Step 9.0 | Writes the auto-compact sentinel. |
+| `mission-write.sh` | `/pre-compact`, `/mission` | The ONLY mutator of the on-disk `MISSION.<sid>.*` artifacts; dispatches into `lib/mission-bridge.sh`. |
+| `mission-drift-check.sh` | operator, by hand | Read-only report of per-part working-tree drift since each convergence snapshot. Reports; never enforces. |
+| `post-compact-resume-step2.sh` | `/post-compact-resume` | Identity-via-arg reader; takes the session id threaded verbatim from the Stop hook. |
+| `diagnose-pre-compact.sh` | operator, by hand | Prints hook registration, sentinel, handoff, and recent log state for the `/pre-compact` + ctx-gate system. |
+| `uninstall-auto-compact.sh` | operator, by hand | Removes the Stop hook entry and cleans runtime state. |
+
+**Shared code and contracts:**
+
+- `lib/` - shared helpers: `auto-compact-sentinel.sh`, `ctx-gate-config.sh`, `handoff-chain.sh`,
+  `handoff-config.sh`, `handoff-locate.sh`, `handoff-marker.sh`, `handoff-resolve.sh`,
+  `mission-bridge.sh`, `post-compact-primer-helpers.sh`, `writer-verify.sh`.
+- `LOG_VERBS.md` - the canonical registry of every log action verb these scripts emit. It is
+  **machine-enforced, in both directions**: `test-ctx-gate.sh` §G5 FAILS if a script emits a verb
+  that is not documented here, and also if a verb documented here has no emit site. Adding or
+  renaming a log verb means editing `LOG_VERBS.md` in the same change.
+- `mission-bridge-assumptions/` and `session-correlation-assumptions/` - hermetic assumption
+  suites (each `bash <dir>/run-all.sh`, with per-assumption `.fingerprint.json` files that pin
+  the behavior each test depends on).
+- `test-*.sh` - per-subsystem harnesses (`test-auto-compact.sh`, `test-ctx-gate.sh`,
+  `test-chain-primitives.sh`, `test-mission-bridge.sh`, `test-mission-drift-check.sh`,
+  `test-stale-handoff-guard.sh`, `test-handoff-smoke-check.sh`, `test-secret-scan.sh`,
+  `test-engine-header.sh`, `test-lint-skill-size.sh`), plus `verify-test-integrity.sh`, which
+  checks that each adversarial defense's test actually fails when the defense is removed.
 
 ## Auto-compact
 
@@ -56,10 +101,11 @@ attackers without same-UID access:
 
 ### Adding another hook subsystem
 
-If you add a second lifecycle hook to this directory, factor any cross-cutting helpers
-into `lib/`, follow the `ac_*` (auto-compact prefix) → your own prefix convention to
-avoid namespace clashes, and add your README section above. Tests live alongside the
-code under a `test-*` prefix.
+Factor any cross-cutting helpers into `lib/`, follow the `ac_*` (auto-compact prefix) → your own
+prefix convention to avoid namespace clashes, register the script in `settings.json.template` if
+it is hook-driven, add it to the inventory table above, and document every log verb it emits in
+`LOG_VERBS.md` (otherwise `test-ctx-gate.sh` §G5 fails). Tests live alongside the code under a
+`test-*` prefix.
 
 See `docs/COMMANDS.md` (`/pre-compact` row) and `docs/ARCHITECTURE.md` ("Other lifecycle
 hooks") for cross-references.

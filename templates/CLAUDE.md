@@ -100,8 +100,8 @@ argument clears it back to the folder/repo name). **Agents do NOT write it autom
 
 ---
 
-> **Deeper, situational, and project-specific config** (full skill-routing table,
-> Supabase/Netlify safety, writing-style guide, glasses mode, MCP catalog, etc.) lives in
-> `~/.claude-dotfiles/CLAUDE-full-reference.md` — read it on demand when a task needs it, rather than
-> auto-loading it into every project. Per-project specifics belong in that project's own `AGENTS.md` /
-> `CLAUDE.md` (scaffold: `~/.claude-dotfiles/templates/AGENTS.md`).
+> **Deeper, situational config** is not carried in this file. Read it on demand:
+> `~/.claude-dotfiles/docs/COMMANDS.md` for the full command reference,
+> `~/.claude-dotfiles/rules/*.md` for the global rule files, and each command's own
+> `commands/<name>.md` for its contract. Per-project specifics belong in that project's own
+> `AGENTS.md` / `CLAUDE.md` (scaffold: `~/.claude-dotfiles/templates/AGENTS.md`).
