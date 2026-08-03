@@ -235,7 +235,7 @@ Used by status, resume, and every post-compaction re-entry:
 Full operational detail for every step above - the worked bash blocks, the BINDING CONTRACT text,
 edge cases and rationale - continues below this marker; read it whenever you are not truncated.
 **Verb signatures (all `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]`):**
-`create "<seed>"` - seed PLAN once (idempotent on existing) | `log "<entry>" "<idtag>"` | `note "<text>"` | `challenge "<text>"` | `pending "<text>"` | `resolve "<text>"` | `rebaseline "<new-plan>"` (ONLY PLAN rewrite path) | `render-banner` | `timing-resume` / `timing-contact` / `timing-close` | `archive-close`. Two read-only argv EXCEPTIONS (bare-token stdout, no status line): `parse-codex-header <report-file>` and `void-count <sid> <root>`. Corrupt-bridge (rc=2) remediation and full verb detail: below the marker (SS7, SS10).
+`create "<seed>"` - seed PLAN once (idempotent on existing) | `log "<entry>" "<idtag>"` | `note "<text>"` | `challenge "<text>"` | `pending "<text>"` | `resolve "<text>"` | `rebaseline "<new-plan>"` (ONLY PLAN rewrite path) | `render-banner` | `timing-resume` / `timing-contact` / `timing-close` | `archive-close`. Two read-only argv EXCEPTIONS (bare-token stdout, no status line): `parse-codex-header <report-file>` and `void-count <sid> <root> <part-N> <round-K>` (ALL FOUR args REQUIRED - part number then round number; a 2-arg call returns the `-1` STOP sentinel and will halt a healthy mission). Corrupt-bridge (rc=2) remediation and full verb detail: below the marker (SS7, SS10).
 
 (If this injected core ever diverges from the on-disk file, the ON-DISK file is authoritative - Read it.)
 

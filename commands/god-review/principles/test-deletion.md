@@ -153,13 +153,13 @@ git diff HEAD 2>/dev/null | grep "^+" | grep -E 'describe\(|it\(|test\(' | head 
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/test-deletion-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-test-deletion}.txt`
 2. Print summary:
    - PASS: zero deletions, zero significant shrinkage
    - FAIL: any deletion or shrinkage beyond threshold
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

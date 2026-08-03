@@ -209,13 +209,13 @@ git log --all --oneline --diff-filter=A -- "<file>" 2>/dev/null | head -3
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/secret-leak-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-secret-leak}.txt`
 2. Print summary:
    - PASS: no .env values in source, no high-entropy key-pattern strings outside test fixtures
    - FAIL: any .env value found in non-.env source files OR any high-entropy API-key-pattern string in tracked non-test source
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

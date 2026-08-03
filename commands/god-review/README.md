@@ -277,12 +277,25 @@ Categories covered:
 │   └── Layer B: principles/ (up to 24 × Claude+Codex pairs)
 ├── Phase 3 (always-on for /god-review): lib/editor-agent.md per fix
 │   └── snapshot → fix → re-verify → keep/revert → churn-ledger check
-└── Outputs: tmp/god-review/{context-package,report,state,round-N-findings}.md
+└── Outputs (all under tmp/god-review/):
+    ├── context-package.md            Phase 0 shared ground truth
+    ├── state.json / .env.sh          run state + cross-bash-block variables
+    ├── findings/<family>-<layer>-<name>.txt
+    │       ONE file per reviewer, the pipeline's only reviewer-output path.
+    │       claude-broad-*, claude-principle-*, codex-broad-*, codex-principle-*
+    │       (Phase 2d consolidates by globbing claude-* vs codex-*; the family
+    │        prefix is what makes Phase 2e's cross-model "(both)" promotion work)
+    ├── report-round-N.md             one per round, never overwritten
+    └── report.md                     the consumed report, derived from the
+                                      round files by lib/merge-round-reports.sh
 ```
 
 Key supporting files:
 - `CRITERIA.md` — single source of truth for severity/confidence definitions and principle index
 - `lib/codex-invoke.sh` — Codex CLI invocation with optional 2-account threading
+- `lib/merge-round-reports.sh` — Phase 2e STEP 5: derives `report.md` from the
+  `report-round-N.md` files. Copy mode by default; hash-deduplicated union when
+  `GOD_REVIEW_MERGE_ROUNDS=true` (set by `/god-report --rounds N`)
 - `lib/editor-agent.md` — Editor sub-agent spawned by Phase 3 for atomic single-file fixes
 - `lib/e2e-test.sh` — Synthetic test project generator for E2E regression testing
 

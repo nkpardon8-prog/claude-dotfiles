@@ -179,7 +179,7 @@ After this review, here are the ways to do {common thing}:
 
 ## Phase 5: Output
 
-1. Save to `tmp/god-review/principles/single-pattern-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-single-pattern}.txt`
 2. Print PASS/WARN/FAIL summary with pattern proliferation risk level
 
 ## Scoring Criteria

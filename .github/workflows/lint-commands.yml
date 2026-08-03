@@ -1,0 +1,67 @@
+name: Lint Commands
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      # Shallow checkout on purpose. Unlike secret-scan.yml (fetch-depth: 0, because
+      # gitleaks scans history), these lints in --all mode read the WORKING TREE only:
+      # the --staged index query short-circuits in --all, so no history is needed.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Both lints shell out to python3 to count CHARACTERS (not bytes) - that is how the
+      # 20,000-char re-injection ceiling is defined. The dependency is load-bearing and,
+      # in one of the two, silent when unmet:
+      #   lint-skill-contract.sh fails CLOSED (its first_pos has a `|| echo -1` fallback,
+      #     so a dead python3 surfaces as a contract violation - exit 1).
+      #   lint-skill-size.sh fails OPEN (verified 2026-08-02): chars_of/marker_pos yield an
+      #     empty string, every `[ "$n" -gt ... ]` degrades to "integer expression expected"
+      #     on stderr, `fail` is never set, and the script exits 0 having checked NOTHING.
+      # A green build that measured nothing is worse than a red one, so assert the
+      # interpreter functionally - `command -v` would still pass a stub that cannot run.
+      # Fixing this in the script itself is the right long-term home; this step is the
+      # boundary guard until then.
+      - name: Preflight - python3 must be present AND working
+        id: preflight
+        run: |
+          set -euo pipefail
+          python3 --version
+          probe=$(python3 -c "print(len('abc'))")
+          if [ "$probe" != "3" ]; then
+            echo "Preflight FAIL: python3 did not evaluate correctly (got '$probe', want '3')." >&2
+            echo "lint-skill-size.sh would silently pass without checking anything." >&2
+            exit 1
+          fi
+
+      # Invoked through an explicit `bash` rather than executing the file directly. Both
+      # scripts need real bash (${BASH_SOURCE[0]} for the ROOT split, process substitution
+      # in the size lint), and this pins the interpreter regardless of the file's exec bit
+      # or the runner's /bin/sh (dash on Ubuntu). No chmod needed - unlike secret-scan.sh,
+      # both lint scripts are tracked mode 100755, and `bash <file>` ignores the exec bit.
+      #
+      # --all is the phase-gate/CI mode: it checks every rule unconditionally instead of
+      # only the staged set. Ordering mirrors the generated pre-commit hook
+      # (scripts/install-git-hooks.sh: size first, then contract).
+      #
+      # WHY THIS WORKFLOW EXISTS: the pre-commit hook is the only other invocation path,
+      # and it is bypassable with `git commit --no-verify` and simply absent on a fresh
+      # clone until install-git-hooks.sh is run. CI is the non-bypassable enforcement.
+      - name: lint-skill-size (--all)
+        run: bash scripts/lint-commands/lint-skill-size.sh --all
+
+      # Runs even when the size lint above failed, so one push reports BOTH lints instead
+      # of hiding the second behind the first. Still gated on the preflight: there is no
+      # point linting with a known-broken interpreter. Either failing step fails the job.
+      - name: lint-skill-contract (--all)
+        if: ${{ !cancelled() && steps.preflight.outcome == 'success' }}
+        run: bash scripts/lint-commands/lint-skill-contract.sh --all

@@ -296,7 +296,7 @@ The codebase's canonical exemplar — check AGENTS.md or CLAUDE.md if declared. 
 
 ## Phase 5: Output
 
-1. Save to `tmp/god-review/principles/architecture-frontend-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-architecture-frontend}.txt`
 2. Print PASS/WARN/FAIL/skipped summary with count of violations by pattern
 
 ## Scoring Criteria

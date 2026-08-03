@@ -230,7 +230,7 @@ Full report structure:
 
 ## Phase 5: Output
 
-1. Save to `tmp/god-review/principles/antipatterns-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-antipatterns}.txt`
 2. Print PASS/WARN/FAIL summary with count of anti-patterns by category; call out XSS/log-injection findings explicitly even if severity is low
 
 ## Scoring Criteria

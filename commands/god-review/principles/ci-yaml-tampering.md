@@ -158,13 +158,13 @@ This finding is always HUMAN_GATE — CI YAML changes are never auto-applied.
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/ci-yaml-tampering-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-ci-yaml-tampering}.txt`
 2. Print summary:
    - PASS: zero CI/CD file modifications
    - FAIL: any modification detected (regardless of apparent intent)
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

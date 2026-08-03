@@ -174,14 +174,14 @@ git log --oneline --diff-filter=A --since="30 days ago" -- "<file>" 2>/dev/null 
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/prompt-injection-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-prompt-injection}.txt`
 2. Print summary:
    - PASS: no injection patterns found
    - LIKELY: patterns found that require human review (default for any hit — could be legitimate)
    - FAIL: confirmed intentional injection pattern (explicit "ignore previous instructions" in non-meta-doc context)
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

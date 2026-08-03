@@ -122,7 +122,7 @@ Full report structure:
 
 ## Phase 5: Output
 
-1. Save to `tmp/god-review/principles/reuse-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-reuse}.txt`
 2. Print PASS/WARN/FAIL summary with count of violations
 
 ## Scoring Criteria

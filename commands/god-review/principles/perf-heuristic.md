@@ -211,13 +211,13 @@ For each candidate:
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/perf-heuristic-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-perf-heuristic}.txt`
 2. Print summary:
    - PASS: no heuristic performance smells found
    - WARN: smells found (LIKELY severity — requires human judgment to confirm whether optimization is worthwhile)
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

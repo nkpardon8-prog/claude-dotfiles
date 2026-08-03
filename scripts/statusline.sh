@@ -100,7 +100,85 @@ RL_SEVEN_D_UTIL=""
 RL_SEVEN_D_STATUS=""
 
 if [ -f "$RL_CACHE" ]; then
-  RL_FETCHED_AT=$(python3 -c "import json,sys; d=json.load(open('$RL_CACHE')); print(d.get('fetched_at',0))" 2>/dev/null || echo "0")
+  # SECURITY: ratelimit.json is written from raw HTTP response headers, so every
+  # value in it originated OFF this machine and is untrusted. It is read here
+  # WITHOUT eval (an eval here was a shell-injection sink). One python3 call
+  # emits exactly 7 fields, in a fixed order, one per line - each coerced to its
+  # declared type (int / float / status token) and emptied if it will not coerce,
+  # so no cached value can carry a newline that breaks the one-field-per-line
+  # framing, and none can survive as anything but a plain scalar.
+  # Field order is the ratelimit.json key contract shared with
+  # scripts/refresh-ratelimit.sh; change one end and you change the other.
+  _rl_raw=$(python3 - "$RL_CACHE" <<'PYEOF' 2>/dev/null || true
+import json, re, sys
+
+# \Z not $ - `$` also matches just before a trailing newline, which would let a
+# status of "allowed\n" through and break the one-field-per-line framing below.
+STATUS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}\Z")
+
+
+def as_int(value):
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        return ""
+
+
+def as_float(value):
+    try:
+        return repr(float(value))
+    except (TypeError, ValueError):
+        return ""
+
+
+def as_status(value):
+    return value if isinstance(value, str) and STATUS_RE.match(value) else ""
+
+
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    if not isinstance(d, dict):
+        raise ValueError("ratelimit cache is not an object")
+    fields = [
+        as_int(d.get("fetched_at")),
+        as_int(d.get("five_h_reset")),
+        as_float(d.get("five_h_util")),
+        as_status(d.get("five_h_status")),
+        as_int(d.get("seven_d_reset")),
+        as_float(d.get("seven_d_util")),
+        as_status(d.get("seven_d_status")),
+    ]
+    sys.stdout.write("\n".join(fields) + "\n")
+except Exception:
+    sys.exit(1)
+PYEOF
+)
+
+  # Positional reads - no eval, no expansion of any cached value.
+  {
+    IFS= read -r RL_FETCHED_AT
+    IFS= read -r RL_FIVE_H_RESET
+    IFS= read -r RL_FIVE_H_UTIL
+    IFS= read -r RL_FIVE_H_STATUS
+    IFS= read -r RL_SEVEN_D_RESET
+    IFS= read -r RL_SEVEN_D_UTIL
+    IFS= read -r RL_SEVEN_D_STATUS
+  } <<RLEOF || true
+$_rl_raw
+RLEOF
+
+  # Belt-and-braces: these feed arithmetic ($((…)) re-evaluates its operands) and
+  # `date -r`, so re-assert the shape in shell too. Anything unexpected degrades
+  # to empty, which every consumer below already renders as a dim placeholder.
+  case "$RL_FETCHED_AT"    in ''|*[!0-9]*)              RL_FETCHED_AT=0 ;; esac
+  case "$RL_FIVE_H_RESET"  in *[!0-9]*)                 RL_FIVE_H_RESET="" ;; esac
+  case "$RL_SEVEN_D_RESET" in *[!0-9]*)                 RL_SEVEN_D_RESET="" ;; esac
+  case "$RL_FIVE_H_UTIL"   in ''|*[!0-9.eE+-]*)         RL_FIVE_H_UTIL="" ;; esac
+  case "$RL_SEVEN_D_UTIL"  in ''|*[!0-9.eE+-]*)         RL_SEVEN_D_UTIL="" ;; esac
+  case "$RL_FIVE_H_STATUS" in *[!A-Za-z0-9_-]*)         RL_FIVE_H_STATUS="" ;; esac
+  case "$RL_SEVEN_D_STATUS" in *[!A-Za-z0-9_-]*)        RL_SEVEN_D_STATUS="" ;; esac
+
   CACHE_AGE=$(( NOW_EPOCH - RL_FETCHED_AT ))
 
   # Background refresh if stale
@@ -109,25 +187,15 @@ if [ -f "$RL_CACHE" ]; then
     disown 2>/dev/null || true
   fi
 
-  # Use cache data unless it's too old
-  if [ "$CACHE_AGE" -le "$STALE_CUTOFF" ]; then
-    _rl_parse() {
-      python3 -c "
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-    q = lambda v: '' if v is None else str(v)
-    print('RL_FIVE_H_RESET=' + q(d.get('five_h_reset')))
-    print('RL_FIVE_H_UTIL=' + q(d.get('five_h_util')))
-    print('RL_FIVE_H_STATUS=' + q(d.get('five_h_status')))
-    print('RL_SEVEN_D_RESET=' + q(d.get('seven_d_reset')))
-    print('RL_SEVEN_D_UTIL=' + q(d.get('seven_d_util')))
-    print('RL_SEVEN_D_STATUS=' + q(d.get('seven_d_status')))
-except Exception:
-    pass
-" "$RL_CACHE" 2>/dev/null
-    }
-    eval "$(_rl_parse)" 2>/dev/null || true
+  # Drop the values if the cache is too old (the fields were read above so that
+  # fetched_at and the data come from a single python3 fork on the render path).
+  if [ "$CACHE_AGE" -gt "$STALE_CUTOFF" ]; then
+    RL_FIVE_H_RESET=""
+    RL_FIVE_H_UTIL=""
+    RL_FIVE_H_STATUS=""
+    RL_SEVEN_D_RESET=""
+    RL_SEVEN_D_UTIL=""
+    RL_SEVEN_D_STATUS=""
   fi
 else
   # No cache at all — kick off refresh and carry on with empty fields
@@ -175,10 +243,15 @@ if [ "${CLAUDE_STATUSLINE_DEBUG:-0}" = "1" ]; then
 fi
 
 # ── 3. Session usage (5-hour rate limit) ─────────────────────────────────────
+# The utilization value is cache-borne (off-machine origin), so it goes to python
+# via argv - never interpolated into the -c program text. One fork yields both
+# numbers: "<percent-left> <percent-used>".
 if [ -n "$RL_FIVE_H_UTIL" ]; then
-  SESSION_USAGE_LEFT=$(python3 -c "print(round((1 - float('$RL_FIVE_H_UTIL')) * 100))" 2>/dev/null || echo "")
+  _five_pcts=$(python3 -c 'import sys; u = float(sys.argv[1]); print(round((1 - u) * 100), round(u * 100))' "$RL_FIVE_H_UTIL" 2>/dev/null || echo "")
+  SESSION_USAGE_LEFT="${_five_pcts%% *}"
+  UTIL_INT="${_five_pcts##* }"
+  [ -n "$_five_pcts" ] || UTIL_INT=0
   if [ -n "$SESSION_USAGE_LEFT" ]; then
-    UTIL_INT=$(python3 -c "print(round(float('$RL_FIVE_H_UTIL') * 100))" 2>/dev/null || echo "0")
     if [ "$UTIL_INT" -gt 90 ] 2>/dev/null; then
       SESSION_USAGE_FIELD="${RED}${SESSION_USAGE_LEFT}% sess${RESET}"
     elif [ "$UTIL_INT" -gt 75 ] 2>/dev/null; then
@@ -195,9 +268,11 @@ fi
 
 # ── 4. Weekly usage ───────────────────────────────────────────────────────────
 if [ -n "$RL_SEVEN_D_UTIL" ]; then
-  WEEK_LEFT=$(python3 -c "print(round((1 - float('$RL_SEVEN_D_UTIL')) * 100))" 2>/dev/null || echo "")
+  _week_pcts=$(python3 -c 'import sys; u = float(sys.argv[1]); print(round((1 - u) * 100), round(u * 100))' "$RL_SEVEN_D_UTIL" 2>/dev/null || echo "")
+  WEEK_LEFT="${_week_pcts%% *}"
+  UTIL_WK="${_week_pcts##* }"
+  [ -n "$_week_pcts" ] || UTIL_WK=0
   if [ -n "$WEEK_LEFT" ]; then
-    UTIL_WK=$(python3 -c "print(round(float('$RL_SEVEN_D_UTIL') * 100))" 2>/dev/null || echo "0")
     if [ "$UTIL_WK" -gt 90 ] 2>/dev/null; then
       WEEK_FIELD="${RED}${WEEK_LEFT}% wk${RESET}"
     elif [ "$UTIL_WK" -gt 75 ] 2>/dev/null; then

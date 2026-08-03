@@ -311,7 +311,7 @@ Baseline is updated when 3 consecutive non-regressing rounds pass (prevents slow
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/perf-benchmark-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-perf-benchmark}.txt`
 2. Save current timings to `tmp/god-review/perf-current.json` (compare mode)
 3. Print summary:
    - PASS: all benchmarks within 5% of baseline (or no baseline yet — report mode)
@@ -319,7 +319,7 @@ Baseline is updated when 3 consecutive non-regressing rounds pass (prevents slow
    - CRITICAL: one or more benchmarks regressed >5% — revert triggered by orchestrator
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

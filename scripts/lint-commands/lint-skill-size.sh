@@ -36,6 +36,23 @@ CONTENT_ROOT="$ROOT"
 
 fail=0
 
+# FAIL CLOSED IF python3 IS UNUSABLE. Both helpers below are python3 one-liners. When python3
+# is missing or broken they printed NOTHING, every `[ "$n" -gt 20000 ]` degraded to an
+# "integer expression expected" error on stderr, `fail` was never set, and this lint EXITED 0
+# HAVING MEASURED NOTHING - a green gate that checked zero files. Proven by shadowing python3
+# with an `exit 127` stub: this script returned 0 while lint-skill-contract.sh correctly
+# returned 1 (it has a `|| echo -1` fallback). A size guard that silently passes everything is
+# worse than no guard, because the pre-commit chain reports success.
+#
+# The probe is FUNCTIONAL, not `command -v`: a stub on PATH satisfies command -v and still
+# cannot run. Checked once, up front, so the failure is one clear message rather than a burst
+# of arithmetic errors.
+if [ "$(python3 -c 'print(len("abc"))' 2>/dev/null)" != "3" ]; then
+    echo "lint-skill-size: python3 is missing or not working - cannot measure file sizes." >&2
+    echo "lint-skill-size: refusing to report success on an unmeasured tree (fail closed)." >&2
+    exit 3
+fi
+
 chars_of() { python3 -c "import sys;print(len(open(sys.argv[1],encoding='utf-8').read()))" "$1"; }
 marker_pos() { python3 -c "
 import sys

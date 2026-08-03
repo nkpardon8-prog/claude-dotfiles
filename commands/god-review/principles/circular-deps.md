@@ -215,7 +215,7 @@ Find the project's service bootstrap or DI wiring file (where services are compo
 
 ## Phase 5: Output
 
-1. Save to `tmp/god-review/principles/circular-deps-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-circular-deps}.txt`
 2. Print PASS/WARN/FAIL summary with count of late imports and identified circular cycles
 
 ## Scoring Criteria

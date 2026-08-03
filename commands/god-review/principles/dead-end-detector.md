@@ -110,7 +110,7 @@ Apply confidence levels per CRITERIA.md:
 
 ## Phase 4: Generate Report
 
-Save findings to `$WORKDIR/tmp/god-review/principles/dead-end-detector-findings.md`:
+Save findings to `$WORKDIR/tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-dead-end-detector}.txt`:
 
 ```markdown
 # Dead-End Detector Report
@@ -163,9 +163,9 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$WORKDIR/tmp/god-review/.env.sh" ] && source "$WORKDIR/tmp/god-review/.env.sh"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 
-mkdir -p "$WORKDIR/tmp/god-review/principles"
+mkdir -p "$WORKDIR/tmp/god-review/findings"
 # (Report written by Phase 4 above)
-echo "dead-end-detector: complete. Results in $WORKDIR/tmp/god-review/principles/dead-end-detector-findings.md"
+echo "dead-end-detector: complete. Results in $WORKDIR/tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-dead-end-detector}.txt"
 ```
 
 Print PASS/WARN/FAIL summary with count of dead-end findings by category.

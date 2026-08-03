@@ -122,7 +122,7 @@ Apply confidence levels per CRITERIA.md:
 
 ## Phase 4: Generate Report
 
-Save findings to `$WORKDIR/tmp/god-review/principles/contradiction-detector-findings.md`:
+Save findings to `$WORKDIR/tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-contradiction-detector}.txt`:
 
 ```markdown
 # Contradiction Detector Report
@@ -184,8 +184,8 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$WORKDIR/tmp/god-review/.env.sh" ] && source "$WORKDIR/tmp/god-review/.env.sh"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 
-mkdir -p "$WORKDIR/tmp/god-review/principles"
-echo "contradiction-detector: complete. Results in $WORKDIR/tmp/god-review/principles/contradiction-detector-findings.md"
+mkdir -p "$WORKDIR/tmp/god-review/findings"
+echo "contradiction-detector: complete. Results in $WORKDIR/tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-contradiction-detector}.txt"
 ```
 
 Print PASS/WARN/FAIL summary with count of contradictions by category.

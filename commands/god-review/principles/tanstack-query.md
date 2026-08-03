@@ -288,7 +288,7 @@ Full report structure:
 
 ## Phase 11: Output
 
-1. Save to `tmp/god-review/principles/tanstack-query-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-tanstack-query}.txt`
 2. Print PASS/WARN/FAIL/skipped summary with count of violations by category; call out prefix matching trap and mismatched keys explicitly
 
 ## Scoring Criteria

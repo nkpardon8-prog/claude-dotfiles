@@ -1,5 +1,71 @@
 # god-review changelog
 
+## 2026-08-02 - pipeline repair: 5 dead legs between the parts
+
+Five defects that each severed one connection in the /god-review + /god-report
+chain. Every part existed; the wires between them did not.
+
+**1. `write_env` dropped `HAS_DATABASE`.** Phase 0 computed the signal and
+Phase 2a gated the `database-audit` lens on it, but the variable was absent
+from `write_env`'s persisted list, so it read empty in every later block and the
+lens never activated on a database repo. Added to the list in
+`lib/env-helpers.sh`.
+
+**2. The principle output contract pointed at a directory nobody read.** All 24
+`principles/*.md` said "Save to `tmp/god-review/principles/<name>-findings.md`";
+the orchestrator consolidated `tmp/god-review/findings/*.txt`. Every principle
+agent's report landed in a directory the pipeline never opened.
+
+Normalized on **`findings/<family>-<layer>-<name>.txt`**, and moved both sides
+in the same change. `findings/` won because the family prefix is load-bearing:
+Phase 2d consolidates by globbing `claude-*.txt` against `codex-*.txt`, and
+Phase 2e's cross-model `(both)` promotion exists only because those globs are
+disjoint. The old convention had no family prefix, so the Claude run and the
+Codex run of the same principle wrote the same path and clobbered each other -
+destroying the exact agreement signal the promotion pass consumes. Principle
+files now write `findings/${GOD_REVIEW_AGENT_ID:-claude-principle-<name>}.txt`;
+Codex principle runs are read-only sandboxed and print to stdout, which
+`codex-invoke.sh` captures and the orchestrator files under `codex-principle-*`.
+
+`write_agent_finding` is now **no-clobber**: the agent's own full report beats
+the summary text an Agent call returns. Phase 3's round-start cleanup therefore
+also clears `findings/claude-*.txt` (it previously cleared only `codex-*`), or a
+surviving file would silently reject the next round's write.
+
+**3. Phase 2e never read the consolidated corpus.** 2d built
+`/tmp/{claude,codex}-findings-consolidated.txt` and 2e aggregated from the
+orchestrator's memory of the transcript - which never contained the Codex
+reviewers at all. 2e gained a STEP 0 that names the four input artifacts, reads
+them, and refuses to write a report when both corpora are empty (a "zero
+findings" report from an empty corpus is a false green). Consolidation also
+moved out of the Codex-availability-gated block into its own always-run 2d.1, so
+a Claude-only run still produces a corpus.
+
+**4. Multi-round runs overwrote `report.md`.** Phase 2e STEP 4 now writes
+`report-round-$ROUND.md`; new STEP 5 calls `lib/merge-round-reports.sh` to
+derive `report.md` - a copy of the current round for /god-review's fix loop
+(which must not be re-handed already-fixed findings), or a hash-deduplicated
+union of all rounds when `GOD_REVIEW_MERGE_ROUNDS=true`, which is what
+`/god-report --rounds N` sets. Union mode tags findings seen in 2+ rounds
+`(consistent across rounds)`. Dedup key is the pipeline's existing
+`sha256(file | line_range/5 | category)`, so a finding has one identity across
+2e STEP 1, the merge, and Phase 3a's replay check.
+
+**5. `--ruthless`, `--online`, `--codex-validation-every` never reached their
+gates.** Root cause: Step 0 parsed them and then ended its bash block without
+calling `write_env`. Each block is a fresh shell that rebuilds state from
+`.env.sh`, so the parse died where it was made and every gate downstream read
+empty - `--ruthless` never spawned the 4th Claude broad reviewer (fleet 9
+instead of 10), `--online` never reached hallucinated-imports, and the
+validation cadence silently fell back to the default. Step 0 (both commands) now
+calls `write_env` and echoes the parse, followed by a fresh-shell round-trip
+check. The `RUTHLESS` and `CODEX_VALIDATION_EVERY` gates now fail loud on an
+unset value instead of defaulting, so this class of break cannot recur silently.
+
+**Files:** `commands/god-review.md`, `commands/god-report.md`,
+`commands/god-review/lib/env-helpers.sh`, `commands/god-review/principles/*.md`
+(all 24), new `commands/god-review/lib/merge-round-reports.sh`, `README.md`.
+
 ## 2026-05-31 — 3 new open-posture Codex broad reviewers
 
 Broad-reviewer roster grows from 4 Claude + 3 Codex to **4 Claude + 6 Codex**

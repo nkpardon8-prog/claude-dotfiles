@@ -18,7 +18,7 @@ write_env() {
   {
     echo "# refreshed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     for var in WORKDIR HAS_TANSTACK_QUERY HAS_APP_ROUTER HAS_AUTHED_HANDLER HAS_UI_PROJECT \
-               HAS_BACKEND_PROJECT HAS_BACKEND_LENS_TRIGGER HAS_BENCH_SCRIPT \
+               HAS_BACKEND_PROJECT HAS_BACKEND_LENS_TRIGGER HAS_BENCH_SCRIPT HAS_DATABASE \
                MAX_ROUNDS MAX_WALL_HOURS RESUME FORCE_RESUME PRINCIPLE \
                RESCOPE_ON_FIX ONLINE CODEX_VALIDATION_EVERY RUTHLESS SCOPE \
                REF REFTYPE STARTED_AT CODEX_AVAILABLE \
@@ -34,7 +34,7 @@ write_env() {
                REGRESSION REGRESSION_REASON REVERT_REASON \
                NEW_NEW_FINDINGS DEFERRED_THIS_ROUND GATED_THIS_ROUND \
                LOOP_EXIT LOOP_EXIT_CODE RE_ENTERED_PHASE_2 \
-               VERIFIER_NEW_COUNT SKIP_CODEX_VALIDATION ROUNDS \
+               VERIFIER_NEW_COUNT SKIP_CODEX_VALIDATION ROUNDS GOD_REVIEW_MERGE_ROUNDS \
                PERF_REGRESS_PCT INSTABILITY_RATE FROZEN_UNITS_CAP \
                SHRINKAGE_PCT SECRET_LEN_FLOOR TEST_FILE_LINE_FLOOR; do
       eval "val=\${$var:-}"
@@ -361,10 +361,21 @@ json.dump(d, open(p+".tmp","w"), indent=2)
 # write_agent_finding <agent_name> <result_text>
 # Writes Agent tool result text to findings/<agent_name>.txt. Used by Phase 2d
 # cat-consolidation. Orchestrator calls this after each parallel batch returns.
+#
+# NO-CLOBBER: principle agents write their OWN full report to this exact path
+# (principles/*.md Phase 5 -> findings/${GOD_REVIEW_AGENT_ID:-claude-principle-<name>}.txt).
+# That self-written report is richer than the summary an Agent call returns, so a
+# non-empty existing file wins. Set GOD_REVIEW_OVERWRITE_FINDING=1 to force.
+# (Phase 3 verifier files are rm'd at round start, so they never hit this branch.)
 write_agent_finding() {
   local name="$1" text="$2"
+  local dest="$WORKDIR/tmp/god-review/findings/${name}.txt"
   mkdir -p "$WORKDIR/tmp/god-review/findings"
-  printf '%s\n' "$text" > "$WORKDIR/tmp/god-review/findings/${name}.txt"
+  if [ -s "$dest" ] && [ "${GOD_REVIEW_OVERWRITE_FINDING:-0}" != "1" ]; then
+    echo "write_agent_finding: keeping agent-written $dest ($(wc -c < "$dest" | tr -d ' ') bytes); not clobbering with returned text." >&2
+    return 0
+  fi
+  printf '%s\n' "$text" > "$dest"
 }
 
 # check_phase_drift

@@ -55,7 +55,24 @@ done
 export SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"
 export LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"
 
-echo "/god-report: SCOPE=${SCOPE:-<full repo>} ROUNDS=$ROUNDS RUTHLESS=$RUTHLESS"
+# Multi-round aggregation mode for Phase 2e STEP 5. With --rounds N (N > 1) the
+# per-round reports are union-deduplicated into report.md; with a single round
+# report.md is just that round's report.
+ROUND=1
+GOD_REVIEW_MERGE_ROUNDS=false
+[ "$ROUNDS" -gt 1 ] && GOD_REVIEW_MERGE_ROUNDS=true
+
+# PERSIST THE PARSE. Every later bash block is a FRESH shell that rebuilds state
+# by sourcing tmp/god-review/.env.sh. Without this, RUTHLESS / ONLINE /
+# CODEX_VALIDATION_EVERY / SCOPE / ROUND / GOD_REVIEW_MERGE_ROUNDS all read empty
+# in the delegated Phase 0-2 blocks and their gates silently no-op.
+write_env
+
+# A previous invocation's per-round reports would be unioned into this run's
+# report.md by STEP 5. Clear them; /god-report has no --resume.
+rm -f "$WORKDIR/tmp/god-review/report-round-"*.md 2>/dev/null
+
+echo "/god-report: SCOPE=${SCOPE:-<full repo>} ROUNDS=$ROUNDS RUTHLESS=$RUTHLESS ONLINE=$ONLINE CODEX_VALIDATION_EVERY=$CODEX_VALIDATION_EVERY MERGE_ROUNDS=$GOD_REVIEW_MERGE_ROUNDS"
 ```
 
 ## Step 0.5: Single-Principle Delegation
@@ -70,7 +87,12 @@ IF $PRINCIPLE is non-empty:
     subagent_type: "general-purpose"
     model: "opus"
     prompt: [content of the principle file] + "\n\nScope: " + ($SCOPE if non-empty, else "full repo")
-  After the agent returns, write its result to tmp/god-review/principles/<PRINCIPLE>-findings.md.
+  After the agent returns, persist its result with the shared helper:
+    source ~/.claude-dotfiles/commands/god-review/lib/env-helpers.sh
+    write_agent_finding "claude-principle-<PRINCIPLE>" "<result text>"
+  which writes tmp/god-review/findings/claude-principle-<PRINCIPLE>.txt - the one
+  output path the whole pipeline reads (write_agent_finding keeps the agent's own
+  richer self-written report if it already created that file).
   Exit.
 ```
 
@@ -93,21 +115,47 @@ in `/god-review`.** To execute them:
 2. **Skip Phase 3.** When you reach `## Phase 3: Fix Loop` in god-review.md,
    STOP. Do not enter Phase 3. Phase 3 is /god-review's domain only.
 
-3. **If `$ROUNDS > 1`**, after Phase 2 completes, repeat Phase 0–2 `($ROUNDS - 1)`
-   more times. Each round writes a separate `tmp/god-review/report-round-N.md`.
-   At the end, merge all round reports into one `tmp/god-review/report.md`,
-   union-deduplicating findings by hash (compute_finding_hash from
-   `lib/env-helpers.sh`). Findings present in 2+ rounds get the
-   `(consistent across rounds)` tag.
+3. **If `$ROUNDS > 1`**, repeat Phase 0–2 `($ROUNDS - 1)` more times. The
+   per-round artifact and the union are already mechanized in Phase 2e STEP 4 +
+   STEP 5 - you do not hand-roll the merge. Between rounds, bump `$ROUND` so
+   STEP 4 writes to a fresh file:
 
-4. **After Phase 2** (or after the multi-round merge if `$ROUNDS > 1`), write
-   the final `tmp/god-review/report.md` and print a summary:
+   ```bash
+   WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+   [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+   ROUND=$(( ${ROUND:-1} + 1 ))
+   write_env
+   echo "Starting /god-report round $ROUND of $ROUNDS"
    ```
-   /god-report complete.
-   Rounds run: $ROUNDS
-   Total findings: <N>
-   Report at: tmp/god-review/report.md
+
+   Because Step 0 set `GOD_REVIEW_MERGE_ROUNDS=true` for `$ROUNDS > 1`, STEP 5's
+   `merge-round-reports.sh` call at the end of every round rebuilds
+   `tmp/god-review/report.md` as the union of every `report-round-*.md` written
+   so far, deduplicated by `compute_finding_hash(file, line_range/5, category)`,
+   tagging anything seen in 2+ rounds `(consistent across rounds)`. Re-running it
+   each round is idempotent, so `report.md` is always valid mid-run.
+
+   Note: `/god-review`'s Phase 3 stale-file cleanup does not run here (no Phase 3),
+   so before each extra round clear the reviewer outputs yourself, or the previous
+   round's files will be re-consolidated as if they were fresh:
+
+   ```bash
+   rm -f "$WORKDIR/tmp/god-review/findings/"claude-*.txt "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null
+   rm -f /tmp/codex-principle-*.txt /tmp/codex-broad-*.txt 2>/dev/null
    ```
+
+4. **After the final round**, verify the artifacts exist and print the summary:
+
+   ```bash
+   WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+   [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+   echo "/god-report complete."
+   echo "Rounds run: ${ROUNDS:-1}"
+   echo "Per-round reports: $(ls "$WORKDIR/tmp/god-review"/report-round-*.md 2>/dev/null | wc -l | tr -d ' ')"
+   echo "Total findings: $(grep -c '^### ' "$WORKDIR/tmp/god-review/report.md" 2>/dev/null || echo 0)"
+   echo "Report at: $WORKDIR/tmp/god-review/report.md"
+   ```
+
    Then exit.
 
 ## Why this command is split from /god-review

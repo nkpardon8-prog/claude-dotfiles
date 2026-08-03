@@ -78,7 +78,7 @@ Flag as info-loss candidate: any subagent spawn where the output path is unspeci
 
 ### 2.3 Aggregation Gaps
 
-Identify every per-agent or per-principle output file (findings/*.txt, principles/*-findings.md). For each:
+Identify every per-agent or per-principle output file (for god-review itself: `tmp/god-review/findings/*.txt` - one file per reviewer, family-prefixed `claude-*` / `codex-*`). For each:
 - Is there an aggregation step that reads these files and incorporates them into the final report?
 - Does the aggregation step reference each output file by the exact path the agent was instructed to write to?
 
@@ -117,7 +117,7 @@ Apply confidence levels per CRITERIA.md:
 
 ## Phase 4: Generate Report
 
-Save findings to `$WORKDIR/tmp/god-review/principles/info-loss-detector-findings.md`:
+Save findings to `$WORKDIR/tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-info-loss-detector}.txt`:
 
 ```markdown
 # Info-Loss Detector Report
@@ -171,8 +171,8 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$WORKDIR/tmp/god-review/.env.sh" ] && source "$WORKDIR/tmp/god-review/.env.sh"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/gather-context.sh"
 
-mkdir -p "$WORKDIR/tmp/god-review/principles"
-echo "info-loss-detector: complete. Results in $WORKDIR/tmp/god-review/principles/info-loss-detector-findings.md"
+mkdir -p "$WORKDIR/tmp/god-review/findings"
+echo "info-loss-detector: complete. Results in $WORKDIR/tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-info-loss-detector}.txt"
 ```
 
 Print PASS/WARN/FAIL summary with count of info-loss findings by boundary type.

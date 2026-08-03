@@ -179,13 +179,13 @@ git log --oneline -5 -- package.json requirements.txt Cargo.toml go.mod pyprojec
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/hallucinated-imports-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-hallucinated-imports}.txt`
 2. Print summary:
    - PASS: all imports are declared or stdlib/relative
    - FAIL: any undeclared non-relative non-stdlib import found
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

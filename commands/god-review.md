@@ -71,6 +71,34 @@ while [ $# -gt 0 ]; do
       shift ;;
   esac
 done
+
+# PERSIST THE PARSE. Every bash block below runs in a FRESH shell and rebuilds
+# its state by sourcing tmp/god-review/.env.sh. Without this call the flags
+# parsed above die with this block, and their downstream gates
+# (RUTHLESS -> the 4th Claude broad reviewer, ONLINE -> hallucinated-imports,
+# CODEX_VALIDATION_EVERY -> the Phase 2d validation cadence, plus SCOPE /
+# RESUME / RESCOPE_ON_FIX) all read empty. This is the ONLY place those values
+# exist, so write_env here is load-bearing, not defensive.
+write_env
+
+# Drop a PREVIOUS invocation's per-round reports on a fresh start. Phase 2e
+# STEP 5 globs report-round-*.md; leaving last week's behind would union stale
+# findings into this run's report.md. --resume keeps them (same run).
+if [ "$RESUME" != "true" ]; then
+  rm -f "$WORKDIR/tmp/god-review/report-round-"*.md 2>/dev/null
+fi
+
+echo "Parsed: SCOPE=${SCOPE:-<full repo>} RUTHLESS=$RUTHLESS ONLINE=$ONLINE CODEX_VALIDATION_EVERY=$CODEX_VALIDATION_EVERY RESUME=$RESUME RESCOPE_ON_FIX=$RESCOPE_ON_FIX MAX_ROUNDS=$MAX_ROUNDS MAX_WALL_HOURS=$MAX_WALL_HOURS"
+```
+
+**Verify the flags actually crossed the block boundary** (a fresh shell, exactly
+like every later phase). If any value here disagrees with what you passed, stop -
+the rest of the run will silently ignore that flag:
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+echo "Flag round-trip: RUTHLESS=${RUTHLESS:-<LOST>} ONLINE=${ONLINE:-<LOST>} CODEX_VALIDATION_EVERY=${CODEX_VALIDATION_EVERY:-<LOST>} SCOPE=${SCOPE:-<empty>}"
 ```
 
 **Validation (abort early on bad inputs):**
@@ -565,10 +593,17 @@ principle-Claude batch returns (use name format `claude-principle-<principle-nam
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-if [ "$RUTHLESS" = "true" ]; then
-  echo "RUTHLESS=true — orchestrator MUST spawn the 4th Claude broad reviewer below."
+# $RUTHLESS is restored from tmp/god-review/.env.sh, which Step 0 wrote after
+# parsing. If it reads empty here, Step 0's write_env did not run - fix that
+# before interpreting this gate's answer.
+if [ -z "${RUTHLESS:-}" ]; then
+  echo "ERROR: RUTHLESS is unset - the Step 0 parse did not persist. Re-run Step 0's write_env; do NOT silently proceed as if --ruthless were absent." >&2
+elif [ "$RUTHLESS" = "true" ]; then
+  echo "RUTHLESS=true - orchestrator MUST spawn the 4th Claude broad reviewer below (fleet: 10 broad reviewers this run)."
   cat "$HOME/.claude-dotfiles/commands/god-review/broad-reviewers/claude-ruthless-redteam.md" > /tmp/god-review-ruthless-prompt.txt
   echo "Ruthless prompt staged at /tmp/god-review-ruthless-prompt.txt"
+else
+  echo "RUTHLESS=false - 4th Claude broad reviewer NOT spawned (fleet: 9 broad reviewers this run)."
 fi
 ```
 
@@ -654,7 +689,30 @@ For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
 - Prompt loaded from `~/.claude-dotfiles/commands/god-review/principles/<principle-name>.md`
 - Include path to context package: `tmp/god-review/context-package.md`
 - Scope: `$SCOPE` if set, else full repo
-- Pass `ONLINE=$ONLINE` to hallucinated-imports principle
+- Append this line to the prompt so the agent's own file-write lands where 2d
+  consolidates from: `Set GOD_REVIEW_AGENT_ID=claude-principle-<principle-name> before your Phase 5 output step.`
+  (That is also the principle file's built-in default, so the write is correct
+  even if the agent ignores the line.)
+- Pass `ONLINE=$ONLINE` to hallucinated-imports principle. Read the live value
+  first - `source ~/.claude-dotfiles/commands/god-review/lib/env-helpers.sh; echo "$ONLINE"` -
+  do NOT retype the literal `false`; Step 0's parse is the source of truth.
+
+**Output contract (single convention for the whole pipeline).** Every reviewer,
+both families and both layers, produces exactly one file:
+
+```
+$WORKDIR/tmp/god-review/findings/<family>-<layer>-<name>.txt
+  claude-broad-<name>.txt      claude-principle-<name>.txt
+  codex-broad-<name>.txt       codex-principle-<name>.txt
+```
+
+Nothing else is read downstream. The family prefix is load-bearing: Phase 2d
+consolidates by globbing `claude-*.txt` vs `codex-*.txt`, and Phase 2e's
+cross-model `(both)` promotion exists only because those two globs are disjoint.
+(The retired `tmp/god-review/principles/<name>-findings.md` convention had no
+family prefix, so the Claude and Codex runs of the same principle wrote the same
+path and clobbered each other - destroying the exact agreement signal the
+promotion pass consumes.)
 
 **Principle file absolute paths (all 24):**
 ```
@@ -689,10 +747,21 @@ For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
-# For each active principle, invoke Codex with the principle file content as the prompt:
+# For each active principle, invoke Codex with the principle file content as the prompt.
+# codex-invoke.sh runs `codex exec -s read-only`, so the Codex agent CANNOT write
+# its own findings file - the trailing override below tells it to print the report
+# instead, and codex-invoke.sh captures stdout into the outfile. The copy loop that
+# follows then files it under the codex-* family prefix.
 bash ~/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh \
   /tmp/codex-principle-<NAME>.txt \
-  "$(cat ~/.claude-dotfiles/commands/god-review/principles/<NAME>.md)\n\nScope: $SCOPE\nContext: see tmp/god-review/context-package.md" \
+  "$(cat ~/.claude-dotfiles/commands/god-review/principles/<NAME>.md)
+Scope: $SCOPE
+Context: see tmp/god-review/context-package.md
+ONLINE=$ONLINE
+
+OUTPUT OVERRIDE: you are running in a read-only sandbox and cannot create files.
+Ignore the Phase 5 'Save to ...' instruction above and print the FULL report to
+stdout instead. Your stdout is captured verbatim as this reviewer's findings file." \
   "$WORKDIR"
 
 # Phase G: copy each Codex principle output to findings/ for Phase 2d cat-consolidate.
@@ -706,9 +775,31 @@ done
 
 ### 2d: Collect findings and run validation pass
 
-After all agents complete, collect all findings. Tag each finding with its source.
+**2d.1 - Consolidate (ALWAYS runs; not gated on Codex).** This block is the
+single point where the per-reviewer files become the round's corpus. It must run
+even when Codex is unavailable and even on rounds that skip Codex validation,
+because Phase 2e aggregates from its two outputs and nothing else.
 
-**Step 2d validation — batched cross-family verification:**
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+mkdir -p "$WORKDIR/tmp/god-review/findings"
+cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt 2>/dev/null > /tmp/claude-findings-consolidated.txt || true
+cat "$WORKDIR/tmp/god-review/findings/"codex-*.txt  2>/dev/null > /tmp/codex-findings-consolidated.txt  || true
+
+CLAUDE_FILES=$(ls "$WORKDIR/tmp/god-review/findings/"claude-*.txt 2>/dev/null | wc -l | tr -d ' ')
+CODEX_FILES=$(ls  "$WORKDIR/tmp/god-review/findings/"codex-*.txt  2>/dev/null | wc -l | tr -d ' ')
+echo "Consolidated: $CLAUDE_FILES claude-* file(s) -> /tmp/claude-findings-consolidated.txt ($(wc -c < /tmp/claude-findings-consolidated.txt | tr -d ' ') bytes)"
+echo "Consolidated: $CODEX_FILES codex-* file(s) -> /tmp/codex-findings-consolidated.txt ($(wc -c < /tmp/codex-findings-consolidated.txt | tr -d ' ') bytes)"
+if [ "$CLAUDE_FILES" -eq 0 ] && [ "$CODEX_FILES" -eq 0 ]; then
+  echo "ERROR: findings/ is empty. Every reviewer's output was dropped - do NOT proceed to 2e and report 'zero findings'; that is a false green. Check that write_agent_finding ran after each Claude batch and that the Codex cp loops ran." >&2
+fi
+```
+
+Tag each finding with its source as you read it (`claude-broad:<name>`,
+`codex-principle:<name>`, ...) - the family prefix on the filename is the tag.
+
+**2d.2 validation - batched cross-family verification:**
 
 Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0` (default every 3 rounds). On skipped rounds, tag all Claude-found findings as `(unverified-this-round)`.
 
@@ -717,30 +808,28 @@ Codex validation runs only on rounds where `round % CODEX_VALIDATION_EVERY == 0`
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 
-# Phase G3: honor --codex-validation-every. Skip Codex validation on rounds
-# where round % CODEX_VALIDATION_EVERY != 0 (cost optimization for long --loop runs).
-# Round 1 always validates (avoids skipping the very first round's findings).
-if [ "${CODEX_AVAILABLE:-false}" = "true" ] && [ "${ROUND:-1}" -ge 2 ] && [ $(( ROUND % ${CODEX_VALIDATION_EVERY:-3} )) -ne 0 ]; then
-  echo "Skipping Codex validation this round ($ROUND % $CODEX_VALIDATION_EVERY != 0). All Claude findings tagged (unverified-this-round)."
+# Honor --codex-validation-every. $CODEX_VALIDATION_EVERY is restored from
+# .env.sh (Step 0 persisted it); if it reads empty the parse never crossed the
+# block boundary and this gate is meaningless - say so rather than defaulting.
+if [ -z "${CODEX_VALIDATION_EVERY:-}" ]; then
+  echo "ERROR: CODEX_VALIDATION_EVERY is unset - Step 0's write_env did not run. The validation cadence below is NOT honoring --codex-validation-every." >&2
+  CODEX_VALIDATION_EVERY=3
+fi
+# Skip Codex validation on rounds where round % CODEX_VALIDATION_EVERY != 0
+# (cost optimization for long runs). Round 1 always validates.
+if [ "${CODEX_AVAILABLE:-false}" = "true" ] && [ "${ROUND:-1}" -ge 2 ] && [ $(( ${ROUND:-1} % CODEX_VALIDATION_EVERY )) -ne 0 ]; then
+  echo "Skipping Codex validation this round (${ROUND:-1} % $CODEX_VALIDATION_EVERY != 0). All Claude findings tagged (unverified-this-round)."
   SKIP_CODEX_VALIDATION=true
 else
   SKIP_CODEX_VALIDATION=false
+  echo "Codex validation ACTIVE this round (round=${ROUND:-1}, every=$CODEX_VALIDATION_EVERY)."
 fi
 write_env
 
-# Build consolidated finding lists ALWAYS (regardless of skip) — they're used
-# by FP extraction in Phase 2d's post-processing AND by aggregation in Phase 2e.
-# This must run BEFORE the skip-check exit; otherwise FP recording on the
-# 2-of-3 skipped rounds reads a stale consolidated.txt and records garbage.
-mkdir -p "$WORKDIR/tmp/god-review/findings"
-cat "$WORKDIR/tmp/god-review/findings/"claude-*.txt 2>/dev/null > /tmp/claude-findings-consolidated.txt || true
-cat "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null > /tmp/codex-findings-consolidated.txt || true
-
 if [ "$SKIP_CODEX_VALIDATION" = "true" ]; then
-  echo "(Codex validation skipped this round; consolidated files refreshed for FP extraction)"
+  echo "(Codex validation skipped this round; 2d.1 already refreshed the consolidated files for FP extraction and 2e)"
   exit 0
 fi
-# Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 # Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 
 CLAUDE_FINDINGS_PROMPT="You are validating a list of code-review findings produced by Claude Opus 4.7.
@@ -846,6 +935,37 @@ also get their hash recorded).
 
 ### 2e: Aggregate findings (you, the orchestrator, ARE the aggregator)
 
+**STEP 0 - Load the corpus. These four artifacts are the ONLY inputs to
+aggregation.** Read them now, with the Read tool, before doing anything in
+STEP 1. Do not aggregate from what you remember of the agent transcripts - the
+transcript is lossy and the Codex reviewers never appear in it at all.
+
+| Artifact | Produced by | Contains |
+|---|---|---|
+| `/tmp/claude-findings-consolidated.txt` | 2d.1 | every `findings/claude-*.txt` (Claude broad + Claude principle) |
+| `/tmp/codex-findings-consolidated.txt` | 2d.1 | every `findings/codex-*.txt` (Codex broad + Codex principle) |
+| `/tmp/codex-validation-output.txt` | 2d.2 | Codex CONFIRMED/FALSE_POSITIVE/UNCERTAIN verdicts on the Claude findings. Absent when Codex is unavailable or this round skipped validation |
+| the Claude validator Agent's return text | 2d.2 | the same verdicts on the Codex findings |
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+for f in /tmp/claude-findings-consolidated.txt /tmp/codex-findings-consolidated.txt /tmp/codex-validation-output.txt; do
+  if [ -s "$f" ]; then
+    echo "2e input OK: $f ($(wc -c < "$f" | tr -d ' ') bytes, $(grep -c '^### ' "$f" 2>/dev/null || echo 0) '### ' headings)"
+  else
+    echo "2e input MISSING/EMPTY: $f"
+  fi
+done
+if [ ! -s /tmp/claude-findings-consolidated.txt ] && [ ! -s /tmp/codex-findings-consolidated.txt ]; then
+  echo "ERROR: both consolidated corpora are empty. STOP - re-run 2d.1 and check findings/. A report written from here would falsely claim a clean codebase." >&2
+fi
+```
+
+Source-tag every finding as you read it, from the family prefix of the file it
+came out of (`claude-broad:`, `claude-principle:`, `codex-broad:`,
+`codex-principle:`). STEP 2's cross-model promotion depends on those tags.
+
 **STEP 1 — Pre-promotion merge by hash:**
 
 Hash each finding using: `sha256(file_path + line_range_normalized + category)`
@@ -875,16 +995,21 @@ Otherwise use standard mapping (post-promotion confidence):
 - `[likely]` → Important
 - `[investigate]` → Minor
 
-**STEP 4 — Write report:**
+**STEP 4 - Write this round's report:**
 
-Write `tmp/god-review/report.md` atomically (`.tmp` → `mv`):
+Write **`tmp/god-review/report-round-$ROUND.md`** atomically (`.tmp` → `mv`) -
+per-round, NOT straight to `report.md`. Every round keeps its own artifact, so
+no round's output is destroyed by the next one; STEP 5 then derives `report.md`
+from the per-round files. (`$ROUND` is 1 on the first pass. Read it from
+`.env.sh`, do not assume.)
 
 ```
-cat > tmp/god-review/report.md.tmp << 'REPORTEOF'
+cat > tmp/god-review/report-round-$ROUND.md.tmp << 'REPORTEOF'
 # god-review Report
 
 **Generated**: <timestamp>
 **Scope**: <SCOPE or "full repo">
+**Round**: <this round's number>
 **Rounds run**: <N>
 **Stack**: <which HAS_* signals fired>
 **Active principles**: <count> of 24
@@ -950,10 +1075,41 @@ Format per finding (REQUIRED — Phase 3a parses these fields exactly):
 - Principles with zero findings: [list]
 - Principles with most findings: [list]
 REPORTEOF
-mv tmp/god-review/report.md.tmp tmp/god-review/report.md
+mv tmp/god-review/report-round-$ROUND.md.tmp tmp/god-review/report-round-$ROUND.md
 ```
 
-Output: `Phase 2 complete. [N] findings ([X] critical, [Y] important, [Z] minor). Report: tmp/god-review/report.md`
+**STEP 5 - Derive `report.md` from the per-round reports:**
+
+`report.md` is the pipeline's single consumed artifact: Phase 3's
+`TOTAL_OPEN_FINDINGS` count and its per-round finding parse both read it, and
+`/god-report` prints it. STEP 5 produces it from the `report-round-*.md` files
+in one of two modes.
+
+```bash
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+[ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
+bash ~/.claude-dotfiles/commands/god-review/lib/merge-round-reports.sh
+```
+
+`merge-round-reports.sh` branches on `$GOD_REVIEW_MERGE_ROUNDS`:
+
+- **`false` / unset - CURRENT mode (the `/god-review` fix loop).** `report.md`
+  becomes a copy of `report-round-$ROUND.md` alone. The fix loop must see only
+  the live findings of the round it is about to act on; unioning in round 1's
+  already-fixed findings would send Phase 3 to re-fix them and inflate
+  `TOTAL_OPEN_FINDINGS`. The older `report-round-*.md` files remain on disk as
+  the run's audit trail.
+- **`true` - UNION mode (`/god-report --rounds N`, set by that command).**
+  `report.md` becomes the hash-deduplicated union of every `report-round-*.md`.
+  Dedup key is `compute_finding_hash(file, normalized_line_range, category)` -
+  the same key Phase 2e STEP 1 and Phase 3a use. A finding seen in 2+ rounds
+  keeps its first-seen body and gets ` (consistent across rounds)` appended to
+  its `### ` heading, which is the de-noising signal `--rounds` exists to
+  produce.
+
+Both modes write atomically (`.tmp` → `mv`) and leave the per-round files intact.
+
+Output: `Phase 2 complete. [N] findings ([X] critical, [Y] important, [Z] minor). Round report: tmp/god-review/report-round-$ROUND.md. Consumed report: tmp/god-review/report.md`
 
 ---
 
@@ -1047,13 +1203,17 @@ PRE_FIX_BASE_REF=$(git rev-parse HEAD)
 # Verifier outputs are produced FRESH every round — always safe to clean.
 rm -f /tmp/verifier-all-findings.tsv 2>/dev/null
 rm -f "$WORKDIR/tmp/god-review/findings/"verifier-*.txt 2>/dev/null
-# Codex findings: ONLY clean if Phase 2 will re-run this round (because
-# only Phase 2 writes them). The "re-enter 3a directly" loop branch skips
-# Phase 2, and we'd otherwise wipe stable Codex output. The orchestrator
-# sets $RE_ENTERED_PHASE_2 before this cleanup runs (true|false).
+# Reviewer findings (BOTH families): ONLY clean if Phase 2 will re-run this
+# round, because only Phase 2 writes them. The "re-enter 3a directly" loop
+# branch skips Phase 2, and we'd otherwise wipe stable reviewer output. The
+# orchestrator sets $RE_ENTERED_PHASE_2 before this cleanup runs (true|false).
+# The claude-* half is not optional: write_agent_finding is no-clobber, so a
+# surviving round-N file would silently reject round-N+1's write and the report
+# would be built from last round's findings.
 if [ "${RE_ENTERED_PHASE_2:-true}" = "true" ]; then
   rm -f /tmp/codex-principle-*.txt /tmp/codex-broad-*.txt 2>/dev/null
   rm -f "$WORKDIR/tmp/god-review/findings/"codex-*.txt 2>/dev/null
+  rm -f "$WORKDIR/tmp/god-review/findings/"claude-*.txt 2>/dev/null
 fi
 rm -f "$WORKDIR/tmp/god-review/architect-output-"*.json 2>/dev/null
 
@@ -1070,8 +1230,9 @@ echo "Round $ROUND baseline ref: $PRE_FIX_BASE_REF"
 
 Read the latest aggregated findings from `tmp/god-review/report.md`. Parse each
 finding from the markdown sections (Critical, Important, Minor, Gaps,
-Assumptions, Contradictions, HUMAN_GATE_QUEUE). The Phase 2e template at
-line ~853 specifies the exact per-finding format — extract these fields:
+Assumptions, Contradictions, HUMAN_GATE_QUEUE). `report.md` was derived by
+Phase 2e STEP 5 from `report-round-$ROUND.md`; the STEP 4 template specifies
+the exact per-finding format - extract these fields:
 
 | Field | Template line |
 |-------|---------------|

@@ -188,14 +188,14 @@ Discard candidates that are clearly placeholders, comments, fixtures, or test se
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/database-audit-findings.md`.
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-database-audit}.txt`.
 2. ALWAYS emit the single INFO finding above recommending `/database-audit` on a dev branch — even on PASS — because the live checks were not (and cannot be) performed here.
 3. Print summary:
    - PASS: no owned violations found in repo SQL/schema files.
    - FAIL: any owned violation found.
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria

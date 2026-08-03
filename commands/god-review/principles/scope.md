@@ -157,7 +157,7 @@ Suggested split:
 
 ## Phase 5: Output
 
-1. Save to `tmp/god-review/principles/scope-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-scope}.txt`
 2. Print PASS/WARN/FAIL summary with number of distinct objectives identified
 
 ## Scoring Criteria

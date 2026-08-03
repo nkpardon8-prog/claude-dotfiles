@@ -202,7 +202,7 @@ useEffect(() => {
 
 ## Phase 5: Output
 
-1. Save to `tmp/god-review/principles/self-contained-findings.md`
+1. Save to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-self-contained}.txt`
 2. Print PASS/WARN/FAIL/skipped summary with number of non-self-contained components and files required for removal
 
 ## Scoring Criteria

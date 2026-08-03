@@ -206,13 +206,13 @@ git mv {file} _deprecated/{file}
 
 ## Phase 5: Output
 
-1. Save findings to `tmp/god-review/principles/dead-code-conservatism-findings.md`
+1. Save findings to `tmp/god-review/findings/${GOD_REVIEW_AGENT_ID:-claude-principle-dead-code-conservatism}.txt`
 2. Print summary:
    - PASS: no confirmed unused exports/functions
    - WARN: confirmed unused symbols found (all require HUMAN_GATE quarantine, never auto-apply)
 
 ```bash
-mkdir -p tmp/god-review/principles
+mkdir -p tmp/god-review/findings
 ```
 
 ## Scoring Criteria
