@@ -49,15 +49,26 @@ credentials.json
 # secret-bearing file is one `direnv allow` / `npm login` / `docker login` from exposure.
 # The asymmetry that makes gitignore load-bearing here: .envrc holds an arbitrary
 # `export DB_PASSWORD=<opaque>`, which NO scanner can pattern-match - so for that file this
-# is the only control that can work. (An npm_ lane was added to secret-scan.sh as the
-# second layer for .npmrc, whose token has a fixed prefix.)
+# is the only control that can work.
+#
+# NOT "defense in depth" for these files, and the earlier comment claiming so was wrong:
+# once a path is ignored, `--working` (which enumerates via `git ls-files --others
+# --exclude-standard`) never sees it and it can never be staged, so the scanner and this
+# file are MUTUALLY EXCLUSIVE here, not stacked. The npm_ lane added to secret-scan.sh is
+# still worth having, but for a DIFFERENT surface: a token pasted into a doc, a commit
+# message, or any non-ignored file.
+#
 # NOTE `*.credentials.json` above does NOT cover a bare `credentials.json` - the wildcard
 # reads broader than it is, which is exactly how that one slipped through; hence the
 # explicit entry added above it.
+#
+# NOTE every pattern here is intentionally SLASH-FREE so it matches at any depth. A pattern
+# containing a slash is root-anchored: `.docker/config.json` would NOT match
+# `sub/.docker/config.json`. Hence the `**/` form below.
 .envrc
 .npmrc
 .dockercfg
-.docker/config.json
+**/.docker/config.json
 .npmrc.local
 .pypirc
 

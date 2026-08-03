@@ -144,7 +144,7 @@ grep -rn --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
          --include="*.java" --include="*.php" --include="*.toml" \
          --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir="dist" \
          --exclude-dir="target" --exclude-dir=".next" \
-         -E "(sk-[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|AIza[A-Za-z0-9_-]{35}|SG\.[A-Za-z0-9_-]{22}\.|ya29\.[A-Za-z0-9_-]+)" \
+         -E "((^|[^A-Za-z0-9])sk-[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|AIza[A-Za-z0-9_-]{35}|SG\.[A-Za-z0-9_-]{22}\.|ya29\.[A-Za-z0-9_-]+)" \
          "$WORKDIR" 2>/dev/null | grep -v '\.env' | head -30
 ```
 

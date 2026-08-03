@@ -545,6 +545,16 @@ printf 'key=%s%s\n' 'sk-' "$(printf 'A%.0s' $(seq 40))" > "$P2W/realkey.txt"
 bash "$SCAN" "$P2W/realkey.txt" >/dev/null 2>&1
 chk "a real sk- key is still caught after anchoring" "$?" "2"
 
+# --- P2 REVIEW FIX: the boundary must exclude ONLY alphanumerics. The first draft used
+# [^A-Za-z0-9_-], which treats _ and - as part of the preceding word and so MISSED a real
+# key glued to a separator - trading a false positive for a false NEGATIVE on the one
+# control between this repo and a public remote. Caught by 3 of 4 Codex lenses.
+for _sep in '_' '-'; do
+    printf 'token=backup%s%s%s\n' "$_sep" 'sk-' "$(printf 'D%.0s' $(seq 40))" > "$P2W/glued.txt"
+    bash "$SCAN" "$P2W/glued.txt" >/dev/null 2>&1
+    chk "a real key glued to a '$_sep' separator is still CAUGHT" "$?" "2"
+done
+
 # --- P3: an unrecognized flag fell through the mode `case` to the path branch, became a
 # nonexistent filename, was skipped, and the scanner exited 0 having scanned NOTHING.
 # Three of the four consumers are exit-code-only, so none of them would notice.
@@ -552,6 +562,18 @@ bash "$SCAN" --no-such-flag >/dev/null 2>&1
 chk "unknown flag is rejected, not treated as a filename" "$?" "3"
 bash "$SCAN" --stdin >/dev/null 2>&1
 chk "unknown flag --stdin is rejected (there is no stdin mode)" "$?" "3"
+# P3 REVIEW FIX: the first draft matched `--*` only, so SINGLE-dash options still fell
+# through and exited 0 having scanned nothing. `-staged` is the most likely typo of the
+# flag the pre-commit hook actually passes. Caught by all 4 Codex lenses.
+for _bad in -staged -x -working; do
+    bash "$SCAN" "$_bad" >/dev/null 2>&1
+    chk "single-dash '$_bad' is rejected, not silently skipped" "$?" "3"
+done
+# A real file whose name begins with a dash must STILL be reachable via the `--` sentinel,
+# so the widened rejection cannot have broken the documented escape hatch.
+printf 'nothing to see\n' > "$P2W/-dashfile.txt"
+( cd "$P2W" && bash "$SCAN" -- "-dashfile.txt" >/dev/null 2>&1 )
+chk "a dash-leading PATH is still scannable after -- (clean file)" "$?" "0"
 
 # --- P1b: npm auth tokens had no lane at all, so an .npmrc sailed through the scanner.
 printf '//registry.npmjs.org/:_authToken=%s%s\n' 'npm_' "$(printf 'B%.0s' $(seq 36))" \
@@ -564,9 +586,17 @@ rm -rf "$P2W"
 # auto-pushes to a PUBLIC remote. Note the asymmetry that makes this the load-bearing
 # layer: an arbitrary `export DB_PASSWORD=<opaque>` in .envrc is uncatchable by ANY
 # scanner, so for that file gitignore is the ONLY control that can work.
-for _f in .envrc .npmrc .dockercfg credentials.json .netrc; do
+for _f in .envrc .npmrc .dockercfg credentials.json .netrc .docker/config.json; do
     ( cd "$REPO" && git check-ignore -q "$_f" )
     chk "$_f is gitignored" "$?" "0"
+done
+# REVIEW FIX: a gitignore pattern containing a slash is ROOT-ANCHORED. The first draft wrote
+# `.docker/config.json`, which does not match at depth - and it was the one new entry the
+# loop above originally omitted, so the gap was untested. These assert depth-matching for
+# every new entry, which is what the sibling slash-free patterns already give for free.
+for _f in sub/.envrc deep/nested/.npmrc sub/.docker/config.json; do
+    ( cd "$REPO" && git check-ignore -q "$_f" )
+    chk "$_f is gitignored at depth" "$?" "0"
 done
 
 # --- P6: settings.json.template inlined a SECOND copy of RX for its SessionStart scan of

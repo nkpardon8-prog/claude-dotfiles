@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; bash ~/.claude-dotfiles/scripts/install-git-hooks.sh >/dev/null 2>&1 || { [ -f ~/.claude/.dotfiles-sync-paused ] || printf 'kind: other\nreason: SessionStart could not refresh the git hooks - local secret gate may be stale\n' > ~/.claude/.dotfiles-sync-paused; }; if [ -f ~/.config/claude/credentials.md ] && ! bash ~/.claude-dotfiles/scripts/secret-scan.sh ~/.config/claude/credentials.md 2>/dev/null; then echo 'WARNING: possible secret value detected in ~/.config/claude/credentials.md - should be op:// references only. Rotate the leaked secret at the provider.' >&2; fi; true",
+            "command": "cd ~/.claude-dotfiles && git pull --ff-only 2>/dev/null; bash ~/.claude-dotfiles/scripts/install-git-hooks.sh >/dev/null 2>&1 || { [ -f ~/.claude/.dotfiles-sync-paused ] || printf 'kind: other\nreason: SessionStart could not refresh the git hooks - local secret gate may be stale\n' > ~/.claude/.dotfiles-sync-paused; }; if [ -f ~/.config/claude/credentials.md ]; then bash ~/.claude-dotfiles/scripts/secret-scan.sh ~/.config/claude/credentials.md 2>/dev/null; case $? in 0) ;; 2) echo 'WARNING: possible secret value detected in ~/.config/claude/credentials.md - should be op:// references only. Rotate the leaked secret at the provider.' >&2 ;; *) echo 'WARNING: could NOT scan ~/.config/claude/credentials.md - this is a SCAN FAILURE, not a detected secret. Do not rotate anything; investigate the scanner.' >&2 ;; esac; fi; true",
             "timeout": 10,
             "statusMessage": "Syncing dotfiles...",
             "async": true

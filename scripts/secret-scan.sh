@@ -1,9 +1,18 @@
 #!/bin/bash
 # Shared secret-scanner. Used by:
-#   - scripts/dotfiles-sync.sh  (PostToolUse auto-push)
-#   - .git/hooks/pre-commit     (blocks local commit)
-#   - .git/hooks/pre-push       (blocks manual push)
-#   - .github/workflows/secret-scan.yml (CI)
+#   - scripts/dotfiles-sync.sh  (PostToolUse auto-push)     exit-code-only
+#   - .git/hooks/pre-commit     (blocks local commit)       exit-code-only
+#   - .git/hooks/pre-push       (blocks manual push)        exit-code-only
+#   - .github/workflows/secret-scan.yml (CI)                exit-code-only
+#   - settings.json.template SessionStart credentials.md scan  (added 2026-08-03)
+#         The ONLY consumer that maps the exit code to user-facing prose, so it is the only
+#         one that must distinguish rc=2 (a real hit -> rotate) from any other non-zero
+#         (the scan could not run -> do NOT tell anyone to rotate). Keep this list accurate:
+#         the "three of four are exit-code-only" reasoning used elsewhere depends on it.
+#
+# KEEP THIS LIST COMPLETE. Anyone changing the exit-code vocabulary below must be able to
+# enumerate every caller from here; a consumer missing from this list is a consumer that
+# silently keeps the old contract.
 #
 # Usage: secret-scan.sh [--] <file> [<file> ...]
 #        secret-scan.sh --composite <file>
@@ -32,18 +41,33 @@
 set -o pipefail
 export LC_ALL=C
 
-# ANCHORING (2026-08-03): the `sk-` lane is LEFT-ANCHORED on a non-identifier boundary.
+# ANCHORING (2026-08-03): the `sk-` lane is LEFT-ANCHORED on an ALPHANUMERIC boundary.
 # Unanchored it matched INSIDE a word: any word ending in those two letters, followed by a
 # hyphen and a 20+ character hyphenated run, was a hit - so ordinary prose about a
 # task-specific thing, a risk-based approach, or disk-space monitoring all returned rc=2.
 # In this repo, whose prose is full of long kebab-case identifiers, that is not a cosmetic
 # false positive: a hit jams EVERY commit and silently halts the async auto-push to the
-# public remote. The other lanes (AKIA/ghp_/AIza/npm_) are self-anchoring via their fixed
-# prefixes and need no boundary.
-# Negative cases for all three phrases live in scripts/hooks/test-secret-scan.sh.
+# public remote.
+#
+# THE BOUNDARY EXCLUDES ONLY [A-Za-z0-9] - NOT `_` AND NOT `-`. This is load-bearing and was
+# corrected after review: an earlier draft used [^A-Za-z0-9_-], which treats _ and - as part
+# of the preceding word and therefore MISSED a real key written `backup_sk-<payload>` or
+# `prefix-sk-<payload>`. That trades a false positive for a false NEGATIVE on the one control
+# standing between this repo and a public remote - strictly the wrong direction. The
+# false-positive cases only ever needed alphanumeric exclusion (task/risk/disk end in a, i, i),
+# so this boundary rejects them AND still catches a key glued to a separator.
+#
+# NOT every other lane is self-anchoring. AKIA/ghp_/AIza/npm_/github_pat_ are, via fixed
+# prefixes. `hf_`, `xox[abposr]-`, and `(rk|sk|pk)_(live|test)_` are NOT - measured rc=2 on
+# `branchf_...`, `prefixoxb-...`, `network_live_...`. Left unanchored deliberately for now:
+# they are far rarer in prose than the task/risk/disk family, and widening the fix without a
+# measured false-positive is how the previous over-correction happened. Tracked, not closed.
+#
+# Negative cases for all three phrases, and positive cases for the separator-glued forms,
+# live in scripts/hooks/test-secret-scan.sh.
 # Do NOT write those example words here with a separator between the two halves - a
-# non-identifier character in that position makes this very comment match the lane.
-RX='((^|[^A-Za-z0-9_-])sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|npm_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +|EC +|DSA +|PGP +)?PRIVATE +KEY-----)'
+# non-alphanumeric character in that position makes this very comment match the lane.
+RX='((^|[^A-Za-z0-9])sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|npm_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +|EC +|DSA +|PGP +)?PRIVATE +KEY-----)'
 export RX
 
 # Connection strings and JWTs (added 2026-08-03 by explicit user decision on pd:2-rx-conn-scope,
@@ -276,13 +300,20 @@ case "${1:-}" in
         shift
         printf '%s\0' "$@" > "$TMPLIST" || exit 3
         ;;
-    --*)
+    -*)
         # FAIL CLOSED on an unrecognized option (2026-08-03). Without this branch the
         # catch-all below treated `--stdin` / a typo / a renamed flag as a PATH: the file
         # does not exist, the per-file existence check skips it, and the scanner exits 0
         # having scanned NOTHING while reporting clean. Three of the four consumers are
-        # exit-code-only, so none of them would ever notice. An argument beginning with `-`
-        # that is not a known mode and did not follow `--` is an invocation error, never a path.
+        # exit-code-only, so none of them would ever notice.
+        #
+        # THE PATTERN IS `-*`, NOT `--*`. Corrected after review: the first draft matched
+        # only double-dash, so `-staged` - the single most likely typo of the flag the
+        # pre-commit hook actually passes - still fell through to the path branch and exited
+        # 0 having scanned nothing. That left the exact fail-open this branch exists to close.
+        # The literal `--` end-of-options token is claimed by the case above, so widening to
+        # `-*` cannot swallow it, and a real file whose name begins with a dash is still
+        # reachable via `--`.
         echo "secret-scan: unknown option '$1'" >&2
         usage
         exit 3
