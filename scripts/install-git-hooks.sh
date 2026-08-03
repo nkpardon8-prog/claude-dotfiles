@@ -94,7 +94,10 @@ install_hook pre-commit <<'EOF'
 # 3) Block commit if any staged file contains a recognized secret pattern.
 #    secret-scan --staged reads INDEX BLOBS, so overwriting the worktree copy after
 #    `git add` no longer hides the staged secret.
-exec "$HOME/.claude-dotfiles/scripts/secret-scan.sh" --staged
+# See the pre-push note: invoked through `bash` so a lost executable bit cannot turn this
+# into a 126 that no consumer understands. (pre-commit already fails closed on any nonzero,
+# so this was never a bypass here - it is kept identical to pre-push for one contract.)
+exec bash "$HOME/.claude-dotfiles/scripts/secret-scan.sh" --staged
 EOF
 
 # pre-push: block a push whose commits carry a secret in a BLOB or a COMMIT MESSAGE.

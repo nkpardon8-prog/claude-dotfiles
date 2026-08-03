@@ -114,8 +114,19 @@ chk "filename with the sed delimiter" "$?" "2"
 printf 'nothing to see\n' > clean.txt
 bash "$SCAN" clean.txt >/dev/null 2>&1
 chk "clean file exits 0" "$?" "0"
+# CONTRACT CHANGED 2026-08-03 (round-2 review). This used to assert rc=0, on the rationale
+# "CI drops its -f guard" - true of the DIFF-based CI job, which passed deleted paths and
+# went red on every deletion-bearing push. That job no longer exists: the workflow now scans
+# the full tree via `git ls-files`, so the rationale for the fail-open was already gone.
+# A scanner told to scan ONE path that is not there, answering "clean", is exactly the
+# "guard that cannot reach its target reports success" class. It now reports rc=3.
 bash "$SCAN" definitely-absent.txt >/dev/null 2>&1
-chk "absent path exits 0 (CI drops its -f guard)" "$?" "0"
+chk "a lone absent path is rc=3 (nothing was scanned, so nothing is proven)" "$?" "3"
+# The deletion tolerance the old contract protected is preserved where it actually matters:
+# a MIXED batch (the CI shape) stays green, because something really was scanned.
+printf 'nothing to see\n' > mixed-present.txt
+bash "$SCAN" mixed-present.txt definitely-absent.txt >/dev/null 2>&1
+chk "an absent path alongside a scanned one stays rc=0 (CI deletion tolerance)" "$?" "0"
 bash "$SCAN" >/dev/null 2>&1
 chk "no arguments exits 3" "$?" "3"
 
@@ -526,7 +537,10 @@ rm -rf "$MK"
 # PART 2 (2026-08-03) - defects found by /god-report and each VERIFIED BY EXECUTION before
 # a line of the fix was written. Every case below was watched to FAIL first.
 
-P2W=$(mktemp -d) || { echo "mktemp failed"; exit 1; }
+# Under $WORK so it inherits the EXIT/signal trap above. It used to be its own mktemp -d
+# with a hand `rm -rf` at the end of the block, which leaked on a signal and gave the file
+# two competing temp-dir conventions (round-2 review).
+P2W="$WORK/p2"; mkdir -p "$P2W" || { echo "mkdir failed"; exit 1; }
 
 # --- P2: the sk- lane was UNANCHORED, so it matched inside a word: ta|sk-specific...,
 # ri|sk-based..., di|sk-space... A false positive here is not cosmetic - it jams every
@@ -557,7 +571,7 @@ done
 
 # --- P3: an unrecognized flag fell through the mode `case` to the path branch, became a
 # nonexistent filename, was skipped, and the scanner exited 0 having scanned NOTHING.
-# Three of the four consumers are exit-code-only, so none of them would notice.
+# Four of the five consumers render no human-facing prose, so none of them would notice.
 bash "$SCAN" --no-such-flag >/dev/null 2>&1
 chk "unknown flag is rejected, not treated as a filename" "$?" "3"
 bash "$SCAN" --stdin >/dev/null 2>&1
@@ -608,6 +622,158 @@ chk "template no longer inlines a second copy of RX" \
     "$(grep -c 'AKIA\[0-9A-Z\]' "$REPO/settings.json.template")" "0"
 chk "template credentials scan calls the canonical scanner" \
     "$(grep -q 'secret-scan.sh' "$REPO/settings.json.template" && echo yes || echo no)" "yes"
+
+# ---------------------------------------------------------------------------
+echo
+echo "== PART 3: round-2 review fixes (every case measured 2026-08-03) =="
+P3W="$WORK/p3"; mkdir -p "$P3W"
+
+# --- R2-CRITICAL: NUL must be TRANSLATED, never deleted. `tr -d "\000"` closed the gap
+# between the bytes around a NUL, so `X\0sk-<key>` collapsed to `Xsk-<key>` and the
+# round-1 boundary anchor `(^|[^A-Za-z0-9])` had nothing to match. MEASURED rc=0 before
+# the fix, rc=2 after, on identical bytes. This is a false NEGATIVE the anchoring fix
+# itself introduced - the unanchored regex it replaced caught this case.
+python3 - "$P3W/nul-sep.bin" <<'PYEOF'
+import sys
+open(sys.argv[1], 'wb').write(b'X\x00' + ('sk-' + 'A' * 44).encode() + b'\n')
+PYEOF
+bash "$SCAN" "$P3W/nul-sep.bin" >/dev/null 2>&1
+chk "a NUL byte before a token does not hide it (boundary survives)" "$?" "2"
+
+# Line numbering must survive the translation - a newline substitute would renumber every
+# reported hit in a NUL-bearing file, making the hit output point at the wrong line.
+python3 - "$P3W/nul-multi.bin" <<'PYEOF'
+import sys
+open(sys.argv[1], 'wb').write(b'line1\nline2 has\x00' + ('sk-' + 'A' * 44).encode() + b'\nline3\n')
+PYEOF
+chk "NUL translation preserves line numbers in the hit output" \
+    "$(bash "$SCAN" "$P3W/nul-multi.bin" 2>&1 | grep -oE 'nul-multi\.bin:[0-9]+' | head -1)" \
+    "nul-multi.bin:2"
+
+# --- R2: an EXPLICIT-PATH invocation that scanned zero files must never report clean.
+# Each of these was a SEPARATE route to "scanned nothing, exited 0"; all MEASURED rc=0
+# before the fix. The counter asserts the invariant rather than enumerating the routes.
+printf 'nothing to see here\n' > "$P3W/ok.txt"
+bash "$SCAN" -- >/dev/null 2>&1
+chk "-- with no paths refuses to report clean" "$?" "3"
+bash "$SCAN" /no/such/file >/dev/null 2>&1
+chk "a nonexistent EXPLICIT path is rc=3, not rc=0" "$?" "3"
+bash "$SCAN" "$P3W/ok.txt" --stdin >/dev/null 2>&1
+chk "an unknown option in NON-first position is rejected" "$?" "3"
+bash "$SCAN" "$P3W/ok.txt" -staged >/dev/null 2>&1
+chk "a single-dash typo in non-first position is rejected" "$?" "3"
+# A directory cannot be scanned, so it cannot be pronounced clean either.
+bash "$SCAN" "$P3W" >/dev/null 2>&1
+chk "a directory argument is rc=3, not rc=0" "$?" "3"
+# ...while the legitimate shapes must all still work.
+bash "$SCAN" "$P3W/ok.txt" >/dev/null 2>&1
+chk "a real clean file is still rc=0" "$?" "0"
+bash "$SCAN" -- "$P3W/ok.txt" >/dev/null 2>&1
+chk "-- followed by a real clean path is still rc=0" "$?" "0"
+
+# --- R2: the .aws pair was the SAME root-anchoring defect the .gitignore comment
+# documents, three lines above it. MEASURED NOT-IGNORED at depth before the fix.
+# .aws/config is the sharper case: it carries no AKIA-shaped token, so the scanner lane
+# offered as the alternate cover does not fire either - both layers assumed the other.
+for _f in .aws/credentials .aws/config .git-credentials; do
+    ( cd "$REPO" && git check-ignore -q "$_f" )
+    chk "$_f is gitignored" "$?" "0"
+done
+# Depth coverage for EVERY ignore entry this chain relies on. The round-1 loop covered
+# only three of them, so the two it omitted could have become root-anchored unnoticed.
+for _f in sub/.aws/credentials deep/x/.aws/config sub/.git-credentials \
+          sub/.dockercfg sub/credentials.json sub/.netrc; do
+    ( cd "$REPO" && git check-ignore -q "$_f" )
+    chk "$_f is gitignored at depth" "$?" "0"
+done
+
+# --- R2: the rc=2 / rc=3 split in the SessionStart consumer had ZERO regression net -
+# reverting it left the suite 116/0 green (proved by mutation). It is the only consumer
+# that renders the exit code as prose a human reads, so collapsing "scan failed" into
+# "rotate your credential" cries wolf. Assert the BEHAVIOUR, not the source text.
+# Extract ONLY the credentials-scan segment. The full hook command begins with
+# `cd ~/.claude-dotfiles && git pull ... && install-git-hooks.sh`, so running it whole
+# under a fake HOME measures the scanner PATH failing to resolve, not the scan logic
+# (that mistake made this very test report a warning on a clean catalog). The scanner
+# path is rewritten to the real one so HOME only redirects the catalog location.
+_tmpl_cmd=$(python3 - "$REPO/settings.json.template" "$SCAN" <<'PYEOF'
+import json, sys, re
+raw = open(sys.argv[1]).read()
+raw = re.sub(r'^\s*//.*$', '', raw, flags=re.M)
+cfg = json.loads(raw)
+for grp in cfg.get('hooks', {}).get('SessionStart', []):
+    for h in grp.get('hooks', []):
+        c = h.get('command', '')
+        # Anchored on the start of the credentials segment (the symlink-resolution
+        # assignment), NOT on the `if [ -f ... ]` that used to open it - changing the
+        # command shape must not silently make this extractor find nothing and skip.
+        i = c.find('C=~/.config/claude/credentials.md')
+        if i != -1:
+            seg = c[i:]
+            print(seg.replace('~/.claude-dotfiles/scripts/secret-scan.sh', sys.argv[2]))
+            sys.exit(0)
+sys.exit(1)
+PYEOF
+) || _tmpl_cmd=""
+if [ -n "$_tmpl_cmd" ]; then
+    _FH="$P3W/fakehome"; mkdir -p "$_FH/.config/claude"
+    # clean catalog -> silent
+    printf 'OPENAI_API_KEY  op://Personal/openai/key\n' > "$_FH/.config/claude/credentials.md"
+    chk "template hook: clean catalog says nothing" \
+        "$(HOME="$_FH" bash -c "$_tmpl_cmd" 2>&1 | grep -c 'WARNING')" "0"
+    # real secret -> tells the human to ROTATE
+    printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" >> "$_FH/.config/claude/credentials.md"
+    chk "template hook: a real secret warns" \
+        "$(HOME="$_FH" bash -c "$_tmpl_cmd" 2>&1 | grep -ci 'possible secret')" "1"
+    # A SYMLINKED catalog must still be scanned by CONTENT. `[ -f ]` follows the link, but
+    # scan_file deliberately reads a symlink's stored TARGET PATH (that string is what git
+    # publishes) - correct for the git consumers, silently wrong for this one, which scans a
+    # file outside any repo. MEASURED before the fix: a symlink to a secret-bearing catalog
+    # returned rc=0 while the target itself returned rc=2. The consumer now resolves first.
+    _SL="$P3W/slhome"; mkdir -p "$_SL/.config/claude" "$_SL/real"
+    printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" > "$_SL/real/actual-credentials.md"
+    ln -sf "$_SL/real/actual-credentials.md" "$_SL/.config/claude/credentials.md"
+    chk "template hook: a SYMLINKED catalog is scanned by content, not by link target" \
+        "$(HOME="$_SL" bash -c "$_tmpl_cmd" 2>&1 | grep -ci 'possible secret')" "1"
+
+    # unreadable catalog -> a SCAN FAILURE, and must NOT say rotate
+    chmod 000 "$_FH/.config/claude/credentials.md" 2>/dev/null
+    _out=$(HOME="$_FH" bash -c "$_tmpl_cmd" 2>&1)
+    chmod 644 "$_FH/.config/claude/credentials.md" 2>/dev/null
+    if [ "$(id -u)" -eq 0 ]; then
+        # root ignores the mode bits, so the unreadable case cannot be staged. Skip
+        # honestly rather than assert something the environment cannot produce.
+        chk "template hook: scan failure is distinguished from a hit (SKIPPED as root)" "skip" "skip"
+    else
+        # The message legitimately CONTAINS the word "rotate" - as "Do not rotate anything".
+        # Asserting absence of the bare word matched that and failed; the property is that
+        # it must not issue the ROTATE IMPERATIVE the rc=2 branch issues.
+        chk "template hook: scan failure does NOT tell the human to rotate" \
+            "$(printf '%s' "$_out" | grep -ci 'Rotate the leaked secret')" "0"
+        chk "template hook: scan failure explicitly says do NOT rotate" \
+            "$(printf '%s' "$_out" | grep -ci 'Do not rotate')" "1"
+        chk "template hook: scan failure is reported as a scan failure" \
+            "$(printf '%s' "$_out" | grep -ci 'SCAN FAILURE')" "1"
+    fi
+else
+    chk "template hook command was extractable from settings.json.template" "no" "yes"
+fi
+
+# --- R2: pre-push executed the scanner directly while guarding only readability, so a
+# lost executable bit produced rc=126 - outside the 0/2/3 vocabulary - and the
+# RANGE-NOT-PROVEN-CLEAN token every consumer greps for was never printed.
+chk "pre-push invokes the scanner via bash (exec bit cannot break the contract)" \
+    "$(grep -c 'bash "\$SCAN" --composite' "$INSTALL")" "1"
+chk "pre-push normalizes an out-of-contract rc to 3" \
+    "$(grep -c 'treating as could-not-scan' "$INSTALL")" "1"
+
+# --- R2: the consumer count drifted inside the very commit that forbade drifting.
+# The pattern is ASSEMBLED from fragments so this check cannot match its own source - the
+# first draft grepped for a literal and found ITSELF, reporting a defect that did not
+# exist. Same self-matching trap the fake credentials above are assembled to avoid.
+_stale=$(printf '%s of the %s' 'hree' 'four')
+chk "no stale consumer count remains in scripts/ or docs/" \
+    "$(grep -ril "t$_stale" "$REPO/scripts" "$REPO/docs" 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 # ---------------------------------------------------------------------------
 echo

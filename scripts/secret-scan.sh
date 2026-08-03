@@ -7,8 +7,17 @@
 #   - settings.json.template SessionStart credentials.md scan  (added 2026-08-03)
 #         The ONLY consumer that maps the exit code to user-facing prose, so it is the only
 #         one that must distinguish rc=2 (a real hit -> rotate) from any other non-zero
-#         (the scan could not run -> do NOT tell anyone to rotate). Keep this list accurate:
-#         the "three of four are exit-code-only" reasoning used elsewhere depends on it.
+#         (the scan could not run -> do NOT tell anyone to rotate).
+#
+# FIVE consumers. All five branch on the exit code; the SessionStart one is the only one that
+# renders it as PROSE A HUMAN READS, which is why it alone has to tell rc=2 from rc=3. Two of
+# the other four do more than pass the code through - dotfiles-sync maps rc=2 and rc=3 to
+# different marker states, and pre-push emits its RANGE-NOT-PROVEN-CLEAN token on rc=3 - so
+# "exit-code-only" means "no human-facing prose", not "ignores the value".
+# (Corrected 2026-08-03 round-2 review: the FIVE-consumer list and a stale "three of four"
+#  count shipped in the same commit, which is precisely the drift the next paragraph forbids.
+#  A hand-maintained count replicated across files is the failure mode - if you change this,
+#  grep the repo for the old wording rather than trusting that this is the only copy.)
 #
 # KEEP THIS LIST COMPLETE. Anyone changing the exit-code vocabulary below must be able to
 # enumerate every caller from here; a consumer missing from this list is a consumer that
@@ -62,6 +71,17 @@ export LC_ALL=C
 # `branchf_...`, `prefixoxb-...`, `network_live_...`. Left unanchored deliberately for now:
 # they are far rarer in prose than the task/risk/disk family, and widening the fix without a
 # measured false-positive is how the previous over-correction happened. Tracked, not closed.
+#
+# THE RESIDUAL GAP THIS BOUNDARY ACCEPTS (documented 2026-08-03 - three reviewers derived it
+# independently because it was written down nowhere): an ALPHANUMERIC-glued key is a false
+# negative. MEASURED: `PREFIXsk-<44 chars>` -> rc=0. That is the unavoidable cost of excluding
+# only [A-Za-z0-9]; the alternative reintroduces the prose false positives above. It is a much
+# narrower class than the `backup_sk-` case (a key run together with a preceding WORD, no
+# separator at all, is not a shape secrets are normally written in), so the trade is accepted -
+# but it is ACCEPTED, not absent. Do not "fix" it without a measured false-positive count.
+#
+# A NUL byte is a separator too, and deleting one used to close this boundary - see the note
+# in scan_stdin about `tr` translating rather than deleting.
 #
 # Negative cases for all three phrases, and positive cases for the separator-glued forms,
 # live in scripts/hooks/test-secret-scan.sh.
@@ -121,7 +141,20 @@ crd_path_allowed() {
 # error as "no match" is precisely how a broken scanner reports a secret-bearing file clean.
 scan_stdin() {
     f="$1"
-    content=$(tr -d "\000") || return 3
+    # NUL is TRANSLATED TO A SPACE, never deleted (2026-08-03, round-2 review - a real
+    # false negative, found by one reviewer of seven).
+    #
+    # Bash cannot hold a NUL in a variable, so it has to go. But DELETING it closes the gap
+    # between the bytes on either side, and the boundary-anchored lanes added in round 1
+    # need that gap: `X\0sk-<key>` collapsed to `Xsk-<key>`, where `(^|[^A-Za-z0-9])` has
+    # no non-alphanumeric character to match, so grep returned 1 and the scanner exited 0.
+    # MEASURED: `X\0sk-<44 chars>` -> rc=0, while the identical content with a space ->
+    # rc=2. The anchoring fix introduced this; the unanchored regex it replaced caught it.
+    #
+    # A space is the minimal correct substitute: it restores the word boundary while
+    # preserving line numbering exactly (a newline would renumber every reported hit in a
+    # NUL-bearing file). Any non-alphanumeric byte would do; space is the least surprising.
+    content=$(tr "\000" " ") || return 3
 
     hits=$(printf '%s' "$content" | grep -anE -e "$RX"); rc=$?
     [ "$rc" -gt 1 ] && return 3
@@ -281,7 +314,10 @@ case "${1:-}" in
         HITS=""
         while read -r sha; do
             while read -r f; do
-                content=$(git show "$sha:$f" 2>/dev/null | tr -d '\000')
+                # NUL -> space, not deleted: same boundary-collapse false negative as in
+                # scan_stdin (see the note there). This lane is a coarse audit, but it
+                # must not be MORE blind than the live one.
+                content=$(git show "$sha:$f" 2>/dev/null | tr '\000' ' ')
                 m=$(printf '%s' "$content" | grep -anEH -e "$RX" 2>/dev/null)
                 [ -n "$m" ] && HITS="$HITS$sha:$f:$m\n"
             done < <(git ls-tree -r --name-only "$sha")
@@ -304,7 +340,7 @@ case "${1:-}" in
         # FAIL CLOSED on an unrecognized option (2026-08-03). Without this branch the
         # catch-all below treated `--stdin` / a typo / a renamed flag as a PATH: the file
         # does not exist, the per-file existence check skips it, and the scanner exits 0
-        # having scanned NOTHING while reporting clean. Three of the four consumers are
+        # having scanned NOTHING while reporting clean. Four of the five consumers are
         # exit-code-only, so none of them would ever notice.
         #
         # THE PATTERN IS `-*`, NOT `--*`. Corrected after review: the first draft matched
@@ -344,7 +380,6 @@ HITS=""
 SCANNED=0
 while IFS= read -r -d '' f; do
     [ -z "$f" ] && continue
-    SCANNED=$((SCANNED + 1))
     if [ "$MODE" = composite ]; then
         # Bypasses scan_file entirely: no path exclusion, no allowlist, and a vanished
         # input FAILS CLOSED instead of inheriting "a missing path is clean".
@@ -366,15 +401,17 @@ while IFS= read -r -d '' f; do
         [ "$t" = blob ] || continue
         out=$(git cat-file blob ":$f" 2>/dev/null | scan_stdin "$f"); rc=$?
     else
-        # EXPLICIT-PATH mode fails closed on a path that is not there (2026-08-03, round-2
-        # review). scan_file's `[ -f "$f" ] || return 0` is correct for an ENUMERATION - a
-        # staged-deleted or since-removed path really is clean, there are no bytes to
-        # publish - but for a path the CALLER NAMED it is "scanned nothing, reported clean",
-        # the exact class this scanner exists to prevent. MEASURED before the fix:
-        # `secret-scan.sh /no/such/file` -> rc=0.
+        # An absent path is TOLERATED here but does NOT count as scanned. Two intents meet
+        # at this line and both are legitimate:
+        #   - CI pipes `git ls-files` in, so a path that vanished between enumeration and
+        #     scan must not turn the whole run red (an earlier diff-based CI job did exactly
+        #     that on every deletion-bearing push, which is why the -f guard was dropped).
+        #   - But a scanner told to scan ONE path that is not there, answering "clean", is
+        #     "scanned nothing, reported success" - the class this whole effort exists to kill.
+        # Counting rather than failing satisfies both: a mixed batch stays green, while an
+        # invocation where NOTHING was scanned fails closed at the counter below.
         if [ ! -e "$f" ] && [ ! -L "$f" ]; then
-            echo "secret-scan: no such path: $f" >&2
-            WORST=3
+            echo "secret-scan: no such path (not counted as scanned): $f" >&2
             continue
         fi
         # A dangling symlink is still scannable (scan_file reads the stored target string,
@@ -385,6 +422,7 @@ while IFS= read -r -d '' f; do
             continue
         fi
         out=$(scan_file "$f"); rc=$?
+        SCANNED=$((SCANNED + 1))   # only a REAL scan counts toward the invariant below
     fi
     case "$rc" in
         0) ;;

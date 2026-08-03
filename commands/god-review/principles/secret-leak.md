@@ -100,7 +100,13 @@ def entropy(s):
 # Pattern: 20+ char strings with high entropy matching API key character sets
 key_pattern = re.compile(r'\b([A-Za-z0-9_\-+/]{20,})\b')
 
-# Known patterns that signal API keys even without scanning .env
+# NOT THE CANONICAL PATTERN LIST. This is an ENTROPY heuristic that happens to prefix-filter;
+# the authoritative list lives in ~/.claude-dotfiles/scripts/secret-scan.sh (RX). This copy is
+# knowingly narrower (no npm_, hf_, whsec_, ASIA, private-key, JWT or connection-string lanes)
+# and is kept only because this block does something the scanner does not: Shannon-entropy
+# ranking of unknown-shape strings. Do NOT sync the two by hand - that hand-syncing is exactly
+# the drift this file's own §2.4 was rewritten to eliminate. If you need authoritative prefix
+# matching, call the scanner (§2.4); if you extend THIS list, say why the entropy lens needs it.
 known_prefixes = re.compile(r'^(sk-|pk-|sk_live|sk_test|pk_live|pk_test|AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghu_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{59}|xox[baprs]-[A-Za-z0-9-]+|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}|ya29\.[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]{35})')
 
 workdir = os.environ.get('WORKDIR', os.getcwd())
@@ -137,15 +143,32 @@ PYEOF
 
 ### 2.4 Known Secret Pattern Direct Scan
 
+Call the CANONICAL scanner. This block used to carry its own copy of the pattern list, which
+had already drifted from `scripts/secret-scan.sh` (it lacked `npm_`, `github_pat_`, `ASIA`,
+`hf_`, `xox`, `whsec_`, the private-key block, and the JWT / connection-string lanes, while
+carrying an `SG.` lane the scanner did not have). Its `--include` list also omitted `.sh`,
+`.json`, `.yaml`, `.md` and `.txt` - the principal surfaces of a dotfiles or infra repo - and
+its `2>/dev/null | grep | head` pipeline turned an enumeration error into an apparently clean
+result. One source of truth, and the exit code is read rather than discarded:
+
 ```bash
-# Scan for strings matching known secret prefixes directly in source (belt-and-suspenders)
-grep -rn --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
-         --include="*.py" --include="*.rb" --include="*.go" --include="*.rs" \
-         --include="*.java" --include="*.php" --include="*.toml" \
-         --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir="dist" \
-         --exclude-dir="target" --exclude-dir=".next" \
-         -E "((^|[^A-Za-z0-9])sk-[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|AIza[A-Za-z0-9_-]{35}|SG\.[A-Za-z0-9_-]{22}\.|ya29\.[A-Za-z0-9_-]+)" \
-         "$WORKDIR" 2>/dev/null | grep -v '\.env' | head -30
+SCANNER="$HOME/.claude-dotfiles/scripts/secret-scan.sh"
+cd "$WORKDIR" || exit 3
+if git rev-parse --git-dir >/dev/null 2>&1; then
+    git ls-files -z | xargs -0 bash "$SCANNER" --
+else
+    find . -type f -not -path './.git/*' -not -path '*/node_modules/*' \
+         -not -path '*/dist/*' -not -path '*/target/*' -print0 \
+      | xargs -0 bash "$SCANNER" --
+fi
+rc=$?
+# 0 = clean, 2 = secret found (hits are on stderr), 3 = COULD NOT SCAN.
+# rc=3 is NOT clean - never report a scan failure as a pass.
+case $rc in
+    0) echo "secret prefix scan: clean" ;;
+    2) echo "secret prefix scan: FINDINGS above" ;;
+    *) echo "secret prefix scan: FAILED (rc=$rc) - result is unknown, not clean" ;;
+esac
 ```
 
 ## Phase 3: Deep Analysis

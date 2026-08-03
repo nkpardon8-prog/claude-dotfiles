@@ -16,9 +16,34 @@ Audited and repaired 2026-08-01. Every claim below was established by direct pro
 | pre-push | `.git/hooks/pre-push` (generated) | `git push` | Yes — scans the commit range, blobs **and** messages |
 | auto-sync | `scripts/dotfiles-sync.sh` | any dotfile edit | Yes — scans the working tree before staging |
 | CI | `.github/workflows/secret-scan.yml` | push / PR | **No — detection only** |
+| SessionStart | `settings.json.template` `credentials.md` scan | session start | **No — warns only** |
+| **`.gitignore`** | `.gitignore` | `git add` / `git add -A` | Yes — the path never becomes stageable |
 
-All four call the same scanner, `scripts/secret-scan.sh` (exit `0` clean / `2` secret /
+All five *scanner* layers call `scripts/secret-scan.sh` (exit `0` clean / `2` secret /
 `3` could-not-prove-clean; precedence `3 > 2 > 0`; hits to stderr, stdout stays empty).
+
+**`.gitignore` is a control, not merely defence in depth — and for some files it is the
+only control that can work.** The two layers are frequently **mutually exclusive** rather
+than stacked: once a path is ignored, `--working` (which enumerates via `git ls-files
+--others --exclude-standard`) never sees it, so the scanner *cannot* be the backstop.
+That division is deliberate, and it matters most where no pattern can help:
+
+- `.envrc` holds an arbitrary `export DB_PASSWORD=<opaque>`. No regex can match an
+  arbitrary value, so ignoring the path is the *only* possible control.
+- `.aws/config`, `.docker/config.json`, `.git-credentials` likewise carry values
+  (base64 `auth` blobs, plaintext `https://user:password@host`) that no lane matches.
+- Verified 2026-08-03: with `.gitignore` emptied, a `--working` scan of a tree containing
+  all nine fixtures caught **only** the two `.npmrc` files. The other seven are invisible
+  to the scanner by construction.
+
+Every pattern for these files is intentionally **slash-free or `**/`-prefixed**: a pattern
+containing a slash is root-anchored, so `.aws/credentials` would not match
+`sub/.aws/credentials`. That defect was live until 2026-08-03.
+
+**A caveat the ignore layer cannot escape:** ignoring a path does not protect one that is
+*already tracked*, nor one added with `git add -f`. For those the scanner is the only
+remaining gate, and for opaque-value files it will not fire. Do not add such a file to the
+index in the first place.
 
 Local hooks live in `.git/hooks/`, which is **not tracked**. They exist only after someone
 runs `scripts/install-git-hooks.sh`. A fresh clone has **no local gate at all** until then.
@@ -104,12 +129,29 @@ prevent exposure; it tells you exposure happened. Treat a CI secret failure as a
 **rotate the credential at the provider first**, then clean history. Removing the commit
 does not un-publish it.
 
-## Why there are no JWT or connection-string patterns
+## Why the JWT and connection-string patterns are narrowly anchored
 
-Measured on this repo: the postgres-DSN lane produced **0** true positives across 302
-tracked files and **1** confirmed false positive, and needed two hand-tuned placeholder
-filter tables. A greedy `eyJ`-prefix or `scheme://user:pass@host` rule matches ordinary
-documentation.
+**Corrected 2026-08-03.** This section previously read "Why there are **no** JWT or
+connection-string patterns" and was false: `RX_JWT` and `RX_CONN` are defined at
+`scripts/secret-scan.sh:105-106` and folded into `RX` at `:107`. Verified by execution — a
+three-segment `eyJ…` token and a postgres DSN carrying inline credentials each return rc=2.
+(Both example shapes are described in prose rather than written literally: this file is
+tracked, and the repo's own full-tree scan would match a real one. Writing that example out
+turned the tree scan red while this very section was being corrected.) The lanes
+were added after this section was written and the section was never updated, so the document
+understated the scanner's coverage. The historical measurement below is why they are shaped
+the way they are, not evidence that they are absent.
+
+Measured on this repo when the DSN lane was first considered: it produced **0** true
+positives across 302 tracked files and **1** confirmed false positive, and needed two
+hand-tuned placeholder filter tables. A greedy `eyJ`-prefix or `scheme://user:pass@host`
+rule matches ordinary documentation. Hence both lanes require full structure — three
+dot-separated base64url segments; an explicit scheme with a non-empty user *and* password —
+rather than a bare prefix.
+
+**Still deliberately absent:** a lane for plain HTTP(S) credential URLs
+(`https://user:pass@host`), which is why `.git-credentials` is covered by `.gitignore`
+instead.
 
 The failure mode is asymmetric and severe: a false positive jams **every** commit in this
 repo *and* blocks the async auto-push. It is no longer *silent* - the pause marker records a
