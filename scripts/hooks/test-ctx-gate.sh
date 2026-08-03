@@ -1256,11 +1256,15 @@ if [ ! -f "$PRETOOLUSE_FILE" ]; then
 else
   fail "NEW-2: PreToolUse-deleted regression" "$PRETOOLUSE_FILE still exists — should have been deleted"
 fi
-PRETOOLUSE_ENTRY=$(jq '.hooks.PreToolUse // "ABSENT"' "$HOME/.claude/settings.json" 2>/dev/null)
-if [ "$PRETOOLUSE_ENTRY" = '"ABSENT"' ] || [ "$PRETOOLUSE_ENTRY" = 'null' ] || [ -z "$PRETOOLUSE_ENTRY" ]; then
-  pass "NEW-2: settings.json has no PreToolUse entry (deleted per N4)"
+# N4 deleted the ctx-gate PreToolUse hook. Other PreToolUse hooks (prod-coordination-gate,
+# no-detach-gate) are legitimate and expected, so assert only that the DELETED ctx-gate hook is
+# not registered — NOT that the whole PreToolUse array is absent (it stopped being absent when
+# prod-coordination-gate shipped, which made the old whole-array assertion permanently stale).
+CTXGATE_PTU=$(jq -r '[.hooks.PreToolUse[]?.hooks[]?.command // empty] | map(select(test("ctx-gate-on-pretooluse"))) | length' "$HOME/.claude/settings.json" 2>/dev/null)
+if [ "${CTXGATE_PTU:-0}" = "0" ]; then
+  pass "NEW-2: ctx-gate-on-pretooluse.sh is not registered under PreToolUse (deleted per N4)"
 else
-  fail "NEW-2: PreToolUse settings entry" "expected ABSENT, got: $PRETOOLUSE_ENTRY"
+  fail "NEW-2: PreToolUse settings entry" "ctx-gate-on-pretooluse still registered under PreToolUse ($CTXGATE_PTU)"
 fi
 
 # ---------------------------------------------------------------------------

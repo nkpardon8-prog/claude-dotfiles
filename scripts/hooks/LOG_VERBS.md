@@ -144,17 +144,19 @@ rename a verb or move the script without re-issuing the allow rule and updating 
 | `resolve` | mission-write.sh (`mission_resolve_pending`) | Strip the matching `- [pd:<id>] …` line (and its paired `<!-- mid:… -->`) from PENDING DECISIONS via locked rewrite, then append a `resolved pd:<id> — <resolution>` narrative to the LOG |
 | `rebaseline` | mission-write.sh (`mission_rebaseline`) | The ONLY path that rewrites the PLAN zone: replace PLAN with a new plan, re-stamp `plan_hash` to match (locked, backed-up, self-verified), then log `PLAN rebaselined (hash re-stamped)` |
 | `render-banner` | mission-write.sh (`mission_render_banner`) | PIVOT A write-side precompute: render the bounded `MISSION.<sid>.banner` (PLAN slice `<=4000`B line-snapped + last-5 log lines + injection-safety framing) atomically. On a verify failure writes a LOUD `CRITICAL: … UNREADABLE/CORRUPT` banner (never silent) and returns 0 so the primer surfaces the alarm |
+| `await` | mission-write.sh (`mission_await_append`) | Open/update the durable `AWAIT` "work in flight" marker (mission-stall-fix §C). Reassembles `<fields>` (part/phase/round/kind/op/attempt/need/got[/started_at]) into the canonical `[mission] AWAIT …` line and appends it via `mission_log_append` (the dedicated lib emitter — BYPASSES `_mw_validate_log`, exactly like `_mw_emit_snapshot`/WORK-START). Idempotent on the `m<N>-await-<op>-r<K>-a<A>-g<G>` idtag; a same-idtag different-content re-append surfaces `COLLISION` |
 
 ### Read-only argv-exception verbs (bare-token stdout — NO `mission-write: …` status line)
 
-Two verbs break the `<verb> <sid> <root>` dispatcher shape: they are READ-ONLY, take a different argv,
+Three verbs break the `<verb> <sid> <root>` dispatcher shape: they are READ-ONLY, take a different argv,
 run BEFORE the root-guard, and print a BARE machine token to stdout (so a STOP-branching caller can read
-it directly — stderr alone cannot block a count-testing caller). Both still `exit 0`.
+it directly — stderr alone cannot block a count-testing caller). All still `exit 0`.
 
 | Verb (argv) | Script | stdout contract |
 |---|---|---|
 | `parse-codex-header <file>` | mission-write.sh (`mission_parse_codex_header`) | The bare `N/4` Codex-passes token parsed from the FIRST full-shape `^Engine: … Codex-passes: N/4 … Verified:` line of `<file>` (anti-spoof: first match only). EMPTY on an absent/malformed header. Diagnostics → stderr |
 | `void-count <sid> <root> <part> <round>` | mission-write.sh (`_void_consecutive_count`) | A bare integer `>=0` = the consecutive gen-current VOID count for part/round; **`-1`** = refused-read sentinel (gen-boundary mismatch, unreadable stream, or non-numeric args). The §5 caller MUST branch on `-1` (STOP), never treat it as `0` |
+| `await-state <sid> <root>` | mission-write.sh (`mission_await_state`) | The bare token for the newest OUTSTANDING AWAIT: `none`, or `await kind=<job\|human> op=<slug> part=<N> round=<K> need=<M> got=<G> started_at=<epoch>`. Outstanding = an `AWAIT` line with `got < need` not superseded by a later `phase=review` round line / `PART-DONE` for that part, and the mission not `MISSION-CLEARED`. A `..` root fails safe to `none`. The `/mission` wake routine reads it directly |
 
 ### mission-write.sh status line (stdout, exactly one per invocation — every verb EXCEPT the two above)
 
@@ -192,6 +194,7 @@ at the latest `MISSION-REBASELINED` boundary.
 | `PART-RETIRED part=<N>` | `[g<G>-]m<N>-part-retired` | **Lifecycle — part retired** (bare `part=<N>`) |
 | `test-trust part=<N>=<ok\|added\|n/a>` | `[g<G>-]m<N>-test-trust` | **Lifecycle — test trust** (LEGACY glued form, grandfathered). Emitted once before the FIRST implement round of part `<N>`: `ok` = pre-existing tests trusted, `added` = tests written first, `n/a` = no test surface |
 | `criticer part=<N> findings=<K> <headline>` | `[g<G>-]m<N>-criticer-r<K>` | **Advisory — criticer headline** (`<=200` chars; one per part+round). Advisory only; never gates |
+| `AWAIT part=<N> phase=<P> round=<K> kind=<job\|human> op=<slug> attempt=<A> need=<M> got=<G> started_at=<epoch>` | `[g<G>-]m<N>-await-<op>-r<K>-a<A>-g<G>` | **Durable "work in flight" marker** (mission-stall-fix §C). Written by the dedicated `await` verb (`mission_await_append` → `mission_log_append`, which BYPASSES `_mw_validate_log` like the other lib emitters); a matching validator case exists only for §7 consistency if ever routed through the generic `log` verb. `got=<G>` is a progress mask (e.g. review barrier bit1=impl-reviewer, bit2=codex-review, `need=3`); distinct `got` values mint distinct lines (`…-g0`, `…-g1`, `…-g3`). `got<need` = outstanding; `got==need` = join-ready. Superseded (no longer outstanding) by a later `phase=review` round line / `PART-DONE` for the part, or `MISSION-CLEARED`. Read via the `await-state` verb; the `await`-replay §8 row re-runs a missing lane if a wake is ever lost |
 | `MISSION-CLEARED status=<achieved\|could-not\|cleared> reason=<slug>` | EMPTY (always-append) | **Lifecycle — mission end.** `achieved` = goal met, `could-not` = stopped LOUD (e.g. FAIL guard tripped), `cleared` = wrapped up. idtag MUST be empty |
 | `MISSION-REBASELINED status=active gen=<G> …` | EMPTY (lib-written) | **Generation boundary.** Written by `mission_rebaseline`; carries `gen=<G>` as the boundary↔marker cross-check anchor for gen-sliced reads. Never routed through the `log` verb by the conductor |
 

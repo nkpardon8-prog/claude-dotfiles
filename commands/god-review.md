@@ -544,16 +544,21 @@ write_env
 
 ### 2c: Spawn all review agents
 
-**CRITICAL: All agents are launched in ONE or more assistant messages with mixed Agent + Bash tool calls. Up to ~20 tool calls per message. 3-4 round-trips worst case.**
+**CRITICAL: the Claude Agent calls and the Codex `codex-invoke.sh` Bash calls launch on DIFFERENT schedules. Claude agents batch in parallel; Codex passes run as a bounded SERIAL FIFO. Do NOT lump all 13+ Codex Bash calls into one parallel batch — that is exactly the f71c8667 stall shape.**
 
-The canonical schedule for full 24-principle × 2-family pipeline (covers all 24: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector, database-audit):
-- **Message 1**: 10 Agent calls (3 broad-Claude + 7 principle-Claude) + 13 Bash calls (6 broad-Codex + 7 principle-Codex) = 23 in parallel. (The 6 broad-Codex calls are cheap serialized `codex-invoke.sh` shell calls, so Message 1 runs slightly over the ~20 soft cap; if you prefer to stay at/under 20, move the 3 open-posture broad-Codex calls — deep-correctness, ruthless-redteam, data-integrity — into Message 2's Bash batch instead.)
-- **Message 2**: 10 Agent calls (next 10 principle-Claude) + 10 Bash calls (next 10 principle-Codex) = 20 in parallel
-- **Message 3**: remaining 7 principle-Claude + remaining 7 principle-Codex = 14 in parallel (covers principles 18-24 across both families — Message 1 covered 1-7, Message 2 covered 8-17)
-- **Message 4**: 2 batched validation calls (1 Claude validates Codex findings, 1 Codex validates Claude findings)
-- **With `--ruthless`:** add the 4th broad-Claude reviewer (claude-broad-ruthless) to Message 1 = 24 in parallel.
+Why the Codex side is serial, not parallel: every `codex-invoke.sh` call contends on the SAME shared `~/.codex` flock, so launching 13-24 of them "in parallel" does not parallelize — they queue on the lock, and the late waiters burn their whole bounded deadline sitting in that queue (a wake-storm + starvation, the f71c8667 origin surface). One bounded run at a time is both correct and no slower.
 
-With Codex unavailable, drop all Codex Bash calls — Claude-only pipeline needs 2-3 round-trips.
+**Codex passes — bounded serial FIFO (all 6 broad + all principle-Codex):**
+- Run ONE `codex-invoke.sh` pass at a time, each in the FOREGROUND of a `run_in_background: true` Bash — never `nohup`/`&`/detach. The tracked background call's own completion is the wake; a shell-detached codex orphans and never wakes the orchestrator (road 1).
+- On each completion wake, identify the NEXT pass by the first missing `<outfile>` / `<outfile>.status` sidecar (codex-invoke.sh writes both atomically at the end), launch it the same way, and repeat until every Codex pass has an output+status. A `.status` of `timeout`/`nonzero-N` counts that pass as attempted-and-done (do NOT relaunch it in this round) — only a MISSING output/status is an un-launched pass.
+- **Isolated-profile exception:** if `CODEX_HOME_1` and/or `CODEX_HOME_2` are set, each DISTINCT profile may run one bounded lane concurrently (they do not share the `~/.codex` lock) — at most 2 concurrent lanes, one per profile. On the shared default `~/.codex` (no isolated profile) NEVER launch more than 1 concurrently.
+
+**Claude passes — parallel batches (unchanged; they do not touch the Codex lock):**
+- **Batch 1**: 3 broad-Claude + up to ~7 principle-Claude Agent calls in parallel (add the 4th broad-Claude `claude-broad-ruthless` here when `--ruthless`).
+- **Batch 2 / 3**: the remaining principle-Claude Agent calls, up to ~20 per message.
+- **Validation**: after both families' findings are persisted, the 2 batched cross-family validation calls (1 Claude validates Codex, 1 Codex validates Claude — the Codex one is one more bounded FIFO pass).
+
+With Codex unavailable, drop all Codex Bash calls entirely — Claude-only pipeline, parallel batches only.
 
 Each finding is tagged at collection time with source:
 - `claude-broad:<name>` for Layer A Claude broad reviewers
@@ -635,7 +640,13 @@ security+safeguards / logic correctness / adversarial robustness /
 data-integrity+concurrency+resource-lifecycle). The 3 open-posture files could
 be migrated to the new opener style for the original 3 later — not done here.
 
-Invoke via Bash:
+Invoke via Bash **per the §2c bounded serial FIFO** — the six calls below are the
+reference invocations, NOT a batch: launch them ONE AT A TIME, each in the foreground
+of a `run_in_background: true` Bash, advancing to the next only after the prior pass's
+`<outfile>.status` sidecar lands (never `nohup`/`&`/detach; never all six at once — they
+would only queue on the shared `~/.codex` flock and burn their deadlines). With isolated
+`CODEX_HOME_1`/`CODEX_HOME_2` profiles, up to one bounded lane per distinct profile may run
+concurrently:
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
@@ -743,6 +754,11 @@ promotion pass consumes.)
 ```
 
 **Layer B — Codex principle agents** (1 per active principle, only if $CODEX_AVAILABLE=true):
+
+Launch these the SAME way as the Layer A Codex passes: the §2c bounded serial FIFO — one
+`codex-invoke.sh` pass at a time in the foreground of a `run_in_background: true` Bash,
+next pass chosen by the first missing `<outfile>.status` sidecar, never a concurrent batch
+on the shared `~/.codex` flock, never `nohup`/`&`/detach. (Isolated profiles: one lane each.)
 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"

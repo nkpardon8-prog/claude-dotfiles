@@ -22,6 +22,7 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 | `dotfiles-sync-pause-notice.sh` | `UserPromptSubmit` | Surfaces a HELD/BLOCKED dotfiles auto-sync at the next prompt (the async PostToolUse sync's stderr reaches nobody). |
 | `ctx-gate-precompact-safety.sh` | `PreCompact` (matcher `auto`) | Last-resort safety net when native auto-compaction is about to fire without a handoff. |
 | `prod-coordination-gate.py` | `PreToolUse` | Serializes prod-mutating ops across parallel Claude instances via `~/.claude/prod.lock`. |
+| `no-detach-gate.py` | `PreToolUse` | Fail-OPEN backstop: blocks a shell-detach (`nohup`/`&`/`disown`/`setsid`) wrapping a `codex` launch, which would orphan it from the harness completion wake. Only detach-around-codex; the Chrome/statusline `nohup`s pass. |
 | `prod-ledger.py` | `SessionStart` (`inject`) + `PostToolUse` (`record`) | Shared ledger of prod-facing actions (push / deploy / migrate) so parallel agents know what is already live. |
 
 **Invoked by skills or by hand** (not hook-registered):
@@ -29,7 +30,7 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 | Script | Called by | Purpose |
 |---|---|---|
 | `arm-auto-compact.sh` | `/pre-compact` Step 9.0 | Writes the auto-compact sentinel. |
-| `mission-write.sh` | `/pre-compact`, `/mission` | The ONLY mutator of the on-disk `MISSION.<sid>.*` artifacts; dispatches into `lib/mission-bridge.sh`. |
+| `mission-write.sh` | `/pre-compact`, `/mission` | The ONLY mutator of the on-disk `MISSION.<sid>.*` artifacts; dispatches into `lib/mission-bridge.sh`. Verbs incl. `await` (open/update the durable AWAIT "work in flight" marker) and the read-only `await-state` (bare-token: newest outstanding AWAIT, or `none`) consumed by the `/mission` wake routine. |
 | `mission-drift-check.sh` | operator, by hand | Read-only report of per-part working-tree drift since each convergence snapshot. Reports; never enforces. |
 | `post-compact-resume-step2.sh` | `/post-compact-resume` | Identity-via-arg reader; takes the session id threaded verbatim from the Stop hook. |
 | `diagnose-pre-compact.sh` | operator, by hand | Prints hook registration, sentinel, handoff, and recent log state for the `/pre-compact` + ctx-gate system. |

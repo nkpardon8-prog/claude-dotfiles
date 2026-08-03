@@ -107,7 +107,7 @@ Step 3's Codex lens passes and Step 4a's two Claude lenses are ONE launch, not t
 the binding shape; Steps 3 and 4 restate it locally and never contradict it.
 
 **Code targets (MODE = branch / uncommitted / file / describe) - Step 3 + Step 4a together:**
-CRITICAL - EXACTLY 6 tool calls in ONE message: 4 Bash lens passes with `run_in_background: true` + 2 Agent calls (4a: Architecture, Integration). Foreground Bash serializes (probe-proven) - backgrounding IS the parallelism. Collect via bounded wait on the `.status` sidecars (poll ~20s, ceiling 600s; absent at ceiling = that lens not-usable).
+CRITICAL - EXACTLY 6 tool calls in ONE message: 4 Bash lens passes with `run_in_background: true` + 2 Agent calls (4a: Architecture, Integration). Foreground Bash serializes (probe-proven) - backgrounding IS the parallelism. Collect via bounded wait on the `.status` sidecars (poll ~20s, ceiling 3660s; absent at ceiling = that lens not-usable). Launch each codex pass in the FOREGROUND of a `run_in_background: true` Bash - never `nohup`/`&`/detach - so the tracked call's own completion is the wake; a shell-detached codex orphans and never wakes the orchestrator.
 
 **Non-code targets - Step 4:**
 NON-CODE TARGETS ONLY (arrived via Step 2b's Claude-only branch; CODEX_PASSES n/a): CRITICAL - EXACTLY 3 Agent calls in ONE message. Code targets: your 2 lenses already launched in Step 3 - at Step 4 run ONLY the single 4b Agent call.
@@ -211,39 +211,41 @@ where `$PROMPT_N` is the literal lens body — reuse the exact `$PROMPT_1..4` le
 
 Then invoke the wrapper once per lens — it feeds the prompt file to `codex exec` via stdin (`- < promptfile`), writes the output file, and writes a `<out>.status` sidecar (`ok|timeout|unavailable|nonzero-N`) atomically. Issue all four Bash calls with `run_in_background: true`, in the SAME message as the two Step-4a Agent calls — six tool calls total (4 Bash backgrounded + 2 Agent); see the Launch schedule.
 
-**Self-timeout + collection (REQUIRED):** each Bash call below passes `CODEX_TIMEOUT_SECS=540` so codex-exec.sh's OWN `pt_run` fires at 540 s and writes the graceful `<out>.status=timeout` sidecar. Because these calls are BACKGROUNDED, the harness Bash timeout's applicability to a backgrounded task is UNPROVEN — so codex-exec's own self-timeout is the only mechanism guaranteed to terminate a hung pass, and the `.status` sidecar is the SOLE source of truth for whether a pass finished. Never infer completion from elapsed time or from the backgrounded call "returning". The 600000 ms value is retained on each call as a belt-and-braces ceiling; it is not relied upon. Collect per the bounded wait in Step 3c: poll the four sidecars roughly every 20 s, ceiling 600 s; a sidecar still absent at the ceiling means that lens is NOT usable (identical to a `timeout`/`unavailable` status downstream).
+**Self-timeout + collection (REQUIRED):** each Bash call below passes `CODEX_TIMEOUT_SECS=3600` so codex-exec.sh's OWN `pt_run` fires at 3600 s and writes the graceful `<out>.status=timeout` sidecar. Because these calls are BACKGROUNDED, the harness Bash timeout's applicability to a backgrounded task is UNPROVEN — so codex-exec's own self-timeout is the only mechanism guaranteed to terminate a hung pass, and the `.status` sidecar is the SOLE source of truth for whether a pass finished. Never infer completion from elapsed time or from the backgrounded call "returning". The 3660000 ms value is retained on each call as a belt-and-braces ceiling; it is not relied upon. The cap (3600 s) and the collection ceiling (3660 s / 3660000 ms) move in LOCKSTEP: the ceiling must never be LESS than the cap, or the wait would abandon a pass that `pt_run` still intends to terminate gracefully. Collect per the bounded wait in Step 3c: poll the four sidecars roughly every 20 s, ceiling 3660 s; a sidecar still absent at the ceiling means that lens is NOT usable (identical to a `timeout`/`unavailable` status downstream). (Maintainer grep-guard: if you edit these, `grep '600 s\|600000'` must show NO bare `600` collection ceiling beside a `3600` cap — the ceiling stays `>=` the cap.)
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
+CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
 ```
-timeout: 600000
+timeout: 3660000
 run_in_background: true
 
 **Bash 2 (Codex-2 Security/Safety):**
 ```bash
-CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-2.txt" "$RUN_DIR/codex-review-2.txt" "$WORKDIR"
+CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-2.txt" "$RUN_DIR/codex-review-2.txt" "$WORKDIR"
 ```
-timeout: 600000
+timeout: 3660000
 run_in_background: true
 
 **Bash 3 (Codex-3 Data-integrity/Concurrency/Resource):**
 ```bash
-CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-3.txt" "$RUN_DIR/codex-review-3.txt" "$WORKDIR"
+CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-3.txt" "$RUN_DIR/codex-review-3.txt" "$WORKDIR"
 ```
-timeout: 600000
+timeout: 3660000
 run_in_background: true
 
 **Bash 4 (Codex-4 Contracts/Assumptions/Fragility):**
 ```bash
-CODEX_TIMEOUT_SECS=540 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-4.txt" "$RUN_DIR/codex-review-4.txt" "$WORKDIR"
+CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-4.txt" "$RUN_DIR/codex-review-4.txt" "$WORKDIR"
 ```
-timeout: 600000
+timeout: 3660000
 run_in_background: true
 
 **For MODE="file" or MODE="describe"**, use `codex ... exec -o` with a per-lens prompt (these run `codex exec` DIRECTLY, not through `codex-exec.sh` — deliberately: they keep the in-file `$EFFORT` plumbing described in Step 0, whereas the wrapper exists specifically for the diff-as-text branch/uncommitted lenses). For MODE="file", lead the prompt with `Review the file at $FILEPATH.`; for MODE="describe", lead with `$DESCRIPTION.` — otherwise the four lens prompts are identical.
 
-**Pass each per-lens prompt to Codex via stdin, never as an inline double-quoted argument.** The prompt embeds the CONTEXT block and may contain `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters. Inlining it into a `codex exec "..."` argument would let those characters be shell-evaluated. Instead, write each fully-assembled prompt to a file under `"$RUN_DIR"` with `printf '%s'` (literal, never re-interpreted), then feed it to `codex exec` as `- < promptfile` so the prompt is read verbatim from stdin and never touches the shell's word/expansion machinery. Issue all four Bash calls with `run_in_background: true`, in the SAME message as the two Step-4a Agent calls — six tool calls total (4 Bash backgrounded + 2 Agent); see the Launch schedule. These four keep their 120000 ms timeouts, but as with the branch/uncommitted lenses the backgrounded harness timeout is unproven, so collect them by the same bounded wait (poll ~20 s, ceiling 600 s) and treat "no output file at the ceiling" exactly as the file/describe usability gate treats an unusable pass. In each call below, `$PROMPT_N` is the literal prompt text you assembled (lead line + CONTEXT block + lens aim + output-contract block) — write it with `printf` exactly as authored.
+**Pass each per-lens prompt to Codex via stdin, never as an inline double-quoted argument.** The prompt embeds the CONTEXT block and may contain `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters. Inlining it into a `codex exec "..."` argument would let those characters be shell-evaluated. Instead, write each fully-assembled prompt to a file under `"$RUN_DIR"` with `printf '%s'` (literal, never re-interpreted), then feed it to `codex exec` as `- < promptfile` so the prompt is read verbatim from stdin and never touches the shell's word/expansion machinery. Issue all four Bash calls with `run_in_background: true`, in the SAME message as the two Step-4a Agent calls — six tool calls total (4 Bash backgrounded + 2 Agent); see the Launch schedule. These four keep their modest 120000 ms timeouts (leave them low — they are the fast per-lens passes, not the long diff lenses), but as with the branch/uncommitted lenses the backgrounded harness timeout is unproven, so collect them by the same bounded wait (poll ~20 s, ceiling 3660 s) and treat "no output file at the ceiling" exactly as the file/describe usability gate treats an unusable pass. In each call below, `$PROMPT_N` is the literal prompt text you assembled (lead line + CONTEXT block + lens aim + output-contract block) — write it with `printf` exactly as authored.
+
+**No-pt_run bound on these four (route them through `codex-exec.sh`).** Unlike the branch/uncommitted lenses, the file/describe passes call `codex exec` DIRECTLY, so they have NO `pt_run` deadline — only the unproven backgrounded harness `timeout`, which is not a reliable kill for a hung pass. The minimal robust fix is to route them through `codex-exec.sh` (the same house wrapper the diff lenses use), which applies `pt_run` and writes the `<out>.status` sidecar; pass the reasoning effort to it via `CODEX_EFFORT="$EFFORT"` (the wrapper's effort env var) rather than the in-line `-c model_reasoning_effort` plumbing. Until they are so routed they remain bounded only by the harness timeout above — never `nohup`/`&`/detach them; launch each in the FOREGROUND of a `run_in_background: true` Bash so its completion is the wake.
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
@@ -280,7 +282,9 @@ run_in_background: true
 ### Step 3c: Collect Codex output
 
 **Bounded wait FIRST (the four lens passes are backgrounded — they do not "return"):** poll the run
-dir roughly every 20 s until all four passes have landed, with a hard ceiling of 600 s from launch.
+dir roughly every 20 s until all four passes have landed, with a hard ceiling of 3660 s from launch
+(the ceiling moves in lockstep with the 3600 s `CODEX_TIMEOUT_SECS` cap — it must never be lower, or
+the wait would abandon a pass `pt_run` is still gracefully terminating).
 For branch/uncommitted, "landed" means `<out>.status` exists (any value); for file/describe, which
 has no sidecar, it means the output file exists. Do NOT read a lens's output before its sidecar
 exists — a partially-written file would be judged against `REVIEW_RE` and mis-gated. At the ceiling,

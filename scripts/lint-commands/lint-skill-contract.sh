@@ -233,7 +233,7 @@ X="commands/codex-review.md"
 # Every lens invocation must carry the self-timeout: the collection step is a bounded wait
 # on the .status sidecars, and a backgrounded pass that never writes one hangs the wait to
 # its ceiling instead of degrading to "lens not usable".
-req "$X" "CODEX_TIMEOUT_SECS=540" 4
+req "$X" "CODEX_TIMEOUT_SECS=3600" 4
 req "$X" "Codex-passes:"
 req "$X" "Report-file:"
 req "$X" "EXACTLY 6 tool calls"

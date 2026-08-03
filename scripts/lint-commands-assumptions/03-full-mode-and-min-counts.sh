@@ -25,14 +25,14 @@ lc_setup "03-full-mode-and-min-counts"
 lc_baseline
 
 # A1 - below the min: 5 lines carry the self-timeout, drop 2, leaving 3 (< 4).
-lc_edit commands/codex-review.md "s = s.replace('CODEX_TIMEOUT_SECS=540', 'CODEX_TIMEOUT_SECS=300', 2)"
+lc_edit commands/codex-review.md "s = s.replace('CODEX_TIMEOUT_SECS=3600', 'CODEX_TIMEOUT_SECS=300', 2)"
 lc_run 1 "A1 min-count 4 rejects 3 remaining lines" "$FIX" "$CONTRACT"
 lc_out_has "need >=4, have 3" "A1"
 
 # A2 - the OTHER side of the same boundary: 4 remaining lines is accepted. Without this,
 # the min could be any number from 1 to 4 and the suite could not tell.
 lc_restore
-lc_edit commands/codex-review.md "s = s.replace('CODEX_TIMEOUT_SECS=540', 'CODEX_TIMEOUT_SECS=300', 1)"
+lc_edit commands/codex-review.md "s = s.replace('CODEX_TIMEOUT_SECS=3600', 'CODEX_TIMEOUT_SECS=300', 1)"
 lc_run 0 "A2 min-count 4 accepts 4 remaining lines" "$FIX" "$CONTRACT"
 
 # A3 - full mode ignores the index: stage nothing, break plan.md, still red.

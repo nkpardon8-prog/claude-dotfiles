@@ -1281,6 +1281,124 @@ mission_log_append() {
 }
 
 # ===========================================================================================
+# AWAIT primitive — the ONE durable "work in flight" marker (mission-stall-fix §C + Task 4).
+#   Line shape (field order is the grep contract — do NOT reorder):
+#     [mission] AWAIT part=N phase=P round=K kind=<job|human> op=<slug> attempt=A need=<M> got=<G> started_at=<epoch>
+#   idtag: m<N>-await-<op>-r<K>-a<A>-g<G>   (gen-prefixed automatically by mission_log_append)
+#   Distinct got values mint distinct lines (…-g0, …-g1, …-g3), so the barrier's progress is an
+#   append-only trail; the newest AWAIT for a part/round carries the latest got. The barrier is
+#   banked (a normal phase=review round line / PART-DONE) ONLY once got==need, which SUPERSEDES the
+#   AWAIT. The `await`-replay §8 row re-runs the missing lane if a background-completion wake is lost,
+#   so correctness never depends on 100% wake delivery.
+# ===========================================================================================
+
+# _mission_await_field <fields-string> <key> -> stdout the value of <key> (run of grammar chars) in
+# the passed fields, or empty. Tolerant (single-token values; no overlap between our field names).
+_mission_await_field() {
+  printf '%s' "$1" | sed -n "s/.*$2=\\([A-Za-z0-9_.:-]*\\).*/\\1/p"
+}
+
+# mission_await_append <sid> <root> "<fields>" — append ONE AWAIT line via mission_log_append.
+# Reconstructs the line in CANONICAL field order (so the exact shape holds regardless of caller
+# ordering) and appends started_at (from <fields> if present, else `date +%s`). The idtag is derived
+# from part/op/round/attempt/got. Returns the mission_log_append outcome (rc + _MLA_OUTCOME).
+mission_await_append() {
+  _aw_sid=$(_mission_sanitize_sid "$1"); _aw_root="$2"; _aw_fields="$3"
+  [ -n "$_aw_sid" ]  || { echo "mission: await: invalid sid" >&2; return 1; }
+  [ -n "$_aw_root" ] || { echo "mission: await: missing root" >&2; return 1; }
+  _aw_part=$(_mission_await_field "$_aw_fields" part)
+  _aw_phase=$(_mission_await_field "$_aw_fields" phase)
+  _aw_round=$(_mission_await_field "$_aw_fields" round)
+  _aw_kind=$(_mission_await_field "$_aw_fields" kind)
+  _aw_op=$(_mission_await_field "$_aw_fields" op)
+  _aw_attempt=$(_mission_await_field "$_aw_fields" attempt)
+  _aw_need=$(_mission_await_field "$_aw_fields" need)
+  _aw_got=$(_mission_await_field "$_aw_fields" got)
+  _aw_started=$(_mission_await_field "$_aw_fields" started_at)
+  [ -n "$_aw_started" ] || _aw_started=$(date +%s 2>/dev/null || echo 0)
+  _aw_entry="[mission] AWAIT part=${_aw_part} phase=${_aw_phase} round=${_aw_round} kind=${_aw_kind} op=${_aw_op} attempt=${_aw_attempt} need=${_aw_need} got=${_aw_got} started_at=${_aw_started}"
+  _aw_idtag="m${_aw_part}-await-${_aw_op}-r${_aw_round}-a${_aw_attempt}-g${_aw_got}"
+  mission_log_append "$_aw_sid" "$_aw_root" "$_aw_entry" "$_aw_idtag"
+}
+
+# mission_cursor_hash <sid> <root> -> stdout a STABLE full-length sha256 hex digest of the
+# current-generation `[mission]` state stream (archive-inclusive, oldest->newest, via
+# _gen_sliced_stream). The idempotency cursor for the mission wake routine: two wakes that read the
+# same state hash identically; ANY append changes it. ROTATION-INVARIANT — _gen_sliced_stream
+# concatenates archives before the live log, so a rotation that moves lines to an archive yields the
+# same stream. TOLERANT: a refused gen-sliced read (boundary mismatch) degrades to hashing the empty
+# state rather than erroring (the wake routine handles boundary corruption on its own path). Full
+# 64-hex digest (NOT the 16-char detection prefix) for cursor collision-resistance.
+mission_cursor_hash() {
+  _ch_sid=$(_mission_sanitize_sid "$1"); _ch_root="$2"
+  [ -n "$_ch_sid" ]  || { echo "mission: cursor-hash: invalid sid" >&2; return 1; }
+  [ -n "$_ch_root" ] || { echo "mission: cursor-hash: missing root" >&2; return 1; }
+  _ch_stream=$(_gen_sliced_stream "$_ch_sid" "$_ch_root" 2>/dev/null) || true
+  _ch_state=$(printf '%s\n' "$_ch_stream" | grep -E '\[mission\] ' 2>/dev/null || true)
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$_ch_state" | shasum -a 256 2>/dev/null | awk '{print $1}'
+    return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$_ch_state" | sha256sum 2>/dev/null | awk '{print $1}'
+    return 0
+  fi
+  echo "mission: cursor-hash: no sha256 tool (shasum/sha256sum) — refusing to hash" >&2
+  return 1
+}
+
+# mission_await_state <sid> <root> -> stdout ONE bare machine token for the newest OUTSTANDING AWAIT,
+# or `none`. Reads the gen-scoped, archive-inclusive stream (_gen_sliced_stream). Outstanding = an
+# AWAIT line with got < need that is NOT superseded by a later durable progress line for the same
+# part/round (a newer `phase=review` round line, or a PART-DONE for that part) AND the mission is not
+# MISSION-CLEARED. Emits: `none` | `await kind=<job|human> op=<slug> part=N round=K need=<M> got=<G>
+# started_at=<epoch>`. TOLERANT (`|| true`, empty=valid) like the §8 resume-read idiom.
+mission_await_state() {
+  _as_sid=$(_mission_sanitize_sid "$1"); _as_root="$2"
+  { [ -n "$_as_sid" ] && [ -n "$_as_root" ]; } || { printf 'none\n'; return 0; }
+  _as_stream=$(_gen_sliced_stream "$_as_sid" "$_as_root" 2>/dev/null) || true
+  printf '%s\n' "$_as_stream" | awk '
+    function fval(s, key,   p, idx, rest, a) {
+      p = key "="; idx = index(s, p)
+      if (idx == 0) return ""
+      rest = substr(s, idx + length(p)); split(rest, a, " "); return a[1]
+    }
+    BEGIN { cleared = 0 }
+    /\[mission\] MISSION-CLEARED/ { cleared = 1; next }
+    # An AWAIT line: record/update the per-(part,round) outstanding state on the NEWEST occurrence.
+    /\[mission\] AWAIT part=/ {
+      pt = fval($0, "part"); rd = fval($0, "round"); k = pt SUBSEP rd
+      nd = fval($0, "need") + 0; gt = fval($0, "got") + 0
+      if (gt < nd) {
+        out[k] = 1; seq[k] = NR
+        okind[k] = fval($0, "kind"); oop[k] = fval($0, "op")
+        opart[k] = pt; oround[k] = rd
+        oneed[k] = fval($0, "need"); ogot[k] = fval($0, "got"); ostart[k] = fval($0, "started_at")
+      } else { out[k] = 0 }
+      next
+    }
+    # A banked review round line (leading token part=, NOT AWAIT) supersedes its part/round AWAIT.
+    /\[mission\] part=[0-9]+ / && /phase=review/ {
+      pt = fval($0, "part"); rd = fval($0, "round"); out[pt SUBSEP rd] = 0; next
+    }
+    # PART-DONE supersedes ALL awaits for that part.
+    /\[mission\] PART-DONE part=/ {
+      pt = fval($0, "part")
+      for (kk in out) { split(kk, kp, SUBSEP); if (kp[1] == pt) out[kk] = 0 }
+      next
+    }
+    END {
+      if (cleared) { print "none"; exit }
+      best = ""; bestseq = -1
+      for (kk in out) if (out[kk] == 1 && seq[kk] > bestseq) { bestseq = seq[kk]; best = kk }
+      if (best == "") { print "none"; exit }
+      printf "await kind=%s op=%s part=%s round=%s need=%s got=%s started_at=%s\n", \
+        okind[best], oop[best], opart[best], oround[best], oneed[best], ogot[best], ostart[best]
+    }
+  '
+}
+
+# ===========================================================================================
 # Resolve a PENDING decision + rebaseline
 # ===========================================================================================
 

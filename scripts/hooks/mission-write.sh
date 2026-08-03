@@ -22,7 +22,7 @@
 # ── USAGE ─────────────────────────────────────────────────────────────────────────────────
 #   mission-write.sh <verb> <sid> <root> [args...]
 #   verb ∈ create | log | note | challenge | pending | resolve | rebaseline | render-banner
-#          | timing-resume | timing-contact | timing-close
+#          | timing-resume | timing-contact | timing-close | archive-close | await
 #     create        <sid> <root> [plan_source]
 #     log           <sid> <root> <entry> [idtag]
 #     note          <sid> <root> <entry> [idtag]
@@ -35,11 +35,16 @@
 #     timing-contact <sid> <root> <reason>       (advisory: write a CONTACT timing anchor)
 #     timing-close  <sid> <root> <status>        (advisory: final compute + the one ledger write)
 #     archive-close <sid> <root>                 (advisory: file a CLEARED mission into .mission-archive/<sid>/)
+#     await         <sid> <root> <fields>        (open/update the durable AWAIT marker; <fields> = the
+#                                                 space-separated part/phase/round/kind/op/attempt/need/got
+#                                                 [/started_at] pairs — reassembled in canonical order)
 #
-#   TWO DOCUMENTED ARGV EXCEPTIONS (read-only verbs — different argv shape; bare-token stdout; NO
+#   THREE DOCUMENTED ARGV EXCEPTIONS (read-only verbs — different argv shape; bare-token stdout; NO
 #   `mission-write: <verb> …` status line; handled BEFORE the root-guard):
 #     parse-codex-header <file>                  (stdout: bare `N/4`, empty on absent/malformed header)
 #     void-count <sid> <root> <part> <round>     (stdout: bare integer >=0, or `-1` refused-read sentinel)
+#     await-state <sid> <root>                   (stdout: bare `none` or `await kind=… op=… part=… round=…
+#                                                 need=… got=… started_at=…` — the newest outstanding AWAIT)
 #
 # Exactly ONE status line is printed to stdout (EXCEPT the two read-only verbs above, whose stdout is
 # a bare machine token):
@@ -69,12 +74,14 @@ fi
 verb="${1:-}"; sid="${2:-}"; root="${3:-}"
 
 # ── DOCUMENTED PRE-ROOT-GUARD ARGV EXCEPTIONS (read-only verbs) ─────────────────────────────
-# Two verbs break the `<verb> <sid> <root>` dispatcher shape because they are READ-ONLY and their
+# Three verbs break the `<verb> <sid> <root>` dispatcher shape because they are READ-ONLY and their
 # stdout is a BARE machine token (no `mission-write: <verb> …` status line). They run BEFORE the
-# root-guard (their argv is different) and BEFORE the general dispatch. Both still `exit 0`.
+# root-guard (their argv/output shape is different) and BEFORE the general dispatch. All still `exit 0`.
 #   parse-codex-header <file>              → stdout: bare `N/4` (empty on absent/malformed header)
 #   void-count <sid> <root> <part> <round> → stdout: bare integer >=0 (the count) or `-1` sentinel
 #                                            (refused gen-sliced read / non-numeric args)
+#   await-state <sid> <root>               → stdout: bare `none` or `await …` (newest outstanding AWAIT;
+#                                            a `..` root fails safe to `none`)
 case "$verb" in
   parse-codex-header)
     # argv exception: <verb> <file>. Anti-spoof: first full-shape ^Engine: line only.
@@ -87,6 +94,24 @@ case "$verb" in
     _vc_out=$(_void_consecutive_count "${2:-}" "${3:-}" "${4:-}" "${5:-}" 2>/dev/null)
     case "$_vc_out" in ''|*[!0-9-]*|-|-*[!0-9]*) _vc_out=-1 ;; esac
     printf '%s\n' "$_vc_out"
+    exit 0
+    ;;
+  await-state)
+    # argv exception: <verb> <sid> <root>. stdout MUST be a BARE token (`none` or `await …`) — the
+    # mission wake routine reads it directly, so a `mission-write: …` status line would corrupt the
+    # capture. Same read-only shape as void-count/parse-codex-header. A `..` root (I6) fails safe to
+    # `none` (an unreachable mission has no outstanding await). mission_await_state is itself tolerant.
+    case "${3:-}" in *..*) printf 'none\n'; exit 0 ;; esac
+    mission_await_state "${2:-}" "${3:-}" 2>/dev/null
+    exit 0
+    ;;
+  cursor-hash)
+    # argv exception: <verb> <sid> <root>. stdout MUST be a BARE hex digest (or empty) — the
+    # mission wake routine reads it directly for the idempotency cursor compare, so a
+    # `mission-write: …` status line would corrupt the capture. Same read-only shape as
+    # await-state/void-count. A `..` root (I6) fails safe to empty. mission_cursor_hash is tolerant.
+    case "${3:-}" in *..*) printf '\n'; exit 0 ;; esac
+    mission_cursor_hash "${2:-}" "${3:-}" 2>/dev/null
     exit 0
     ;;
 esac
@@ -271,6 +296,21 @@ _mw_validate_log() {
         || _mw_emit_refuse log 1 "REFUSED: bad-criticer-shape"
       printf '%s' "$_vl_bare" | grep -qE '^m[0-9]+-criticer-r[0-9]+$' || _mw_emit_refuse log 1 "REFUSED: bad-criticer-idtag"
       ;;
+    "AWAIT "*)
+      # §7 grammar-consistency case ONLY. The PRIMARY path for AWAIT is the dedicated `await` verb →
+      # mission_await_append → mission_log_append (which BYPASSES this validator, exactly like
+      # _mw_emit_snapshot / WORK-START). This case exists so that if anyone ever routes an AWAIT line
+      # through the generic `log` verb it VALIDATES rather than hitting the `*)` unknown-shape REFUSE.
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] AWAIT part=[0-9]+ phase=[a-z]+ round=[0-9]+ kind=(job|human) op=[a-z0-9-]+ attempt=[0-9]+ need=[0-9]+ got=[0-9]+ started_at=[0-9]+$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-await-shape"
+      printf '%s' "$_vl_bare" | grep -qE '^m[0-9]+-await-[a-z0-9-]+-r[0-9]+-a[0-9]+-g[0-9]+$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-await-idtag"
+      _en=$(_mw_efield "$_vl_entry" part); _er=$(_mw_efield "$_vl_entry" round)
+      _in=$(printf '%s' "$_vl_bare" | sed -n 's/^m\([0-9]*\)-await-.*/\1/p')
+      _ir=$(printf '%s' "$_vl_bare" | sed -n 's/.*-r\([0-9]*\)-a[0-9]*-g[0-9]*$/\1/p')
+      { [ "$_en" = "$_in" ] && [ "$_er" = "$_ir" ]; } \
+        || _mw_emit_refuse log 1 "REFUSED: idtag-entry-field-mismatch (await)"
+      ;;
     "MISSION-CLEARED "*)
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] MISSION-CLEARED status=(achieved|could-not|cleared) reason=[a-z0-9-]*$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-mission-cleared-shape"
@@ -359,7 +399,7 @@ _mw_partdone_check() {
 # exit 0. The normal absolute-path case (no `..`) is unaffected. Only enforced for verbs that
 # actually take a <root> arg (i.e. not the help/usage paths, which have no root).
 case "$verb" in
-  create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close)
+  create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash)
     case "$root" in
       ""|*..*)
         # I2: emit the parseable failure shape (FAILED rc=N), not a bare REFUSED line — the
@@ -516,12 +556,26 @@ case "$verb" in
     _mw_status archive-close "$rc" "see stderr"
     ;;
 
+  await)
+    if [ -z "$sid" ] || [ -z "$root" ] || [ -z "${4:-}" ]; then
+      echo "mission-write: usage: await <sid> <root> <fields>"
+      exit 0
+    fi
+    # Open/update the durable AWAIT marker. Routes through the DEDICATED lib emitter
+    # mission_await_append → mission_log_append (which BYPASSES _mw_validate_log, exactly like
+    # _mw_emit_snapshot / WORK-START). Reuses the anchored-idempotent log path, so a re-append of the
+    # same got is a quiet dedup no-op; a same-idtag different-content append surfaces COLLISION.
+    mission_await_append "$sid" "$root" "$4"
+    rc=$?
+    _mw_outcome_status await "$rc"
+    ;;
+
   ""|help|-h|--help)
-    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close> <sid> <root> [args...]"
+    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash> <sid> <root> [args...]"
     ;;
 
   *)
-    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close)"
+    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash)"
     ;;
 esac
 
