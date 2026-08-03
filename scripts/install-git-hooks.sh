@@ -209,7 +209,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
            git --no-replace-objects rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
         _unproven "could not enumerate commits for ${local_ref:-?}"
     fi
-    "$SCAN" --composite "$TMP"; s=$?
+    # Invoked through `bash` rather than executed directly (2026-08-03, round-2 review): a
+    # lost executable bit made this return 126, which is outside the 0/2/3 vocabulary every
+    # consumer branches on. The guard above tests -r, not -x, so nothing caught it. `bash`
+    # needs only readability, which is exactly what the guard already proves.
+    bash "$SCAN" --composite "$TMP"; s=$?
+    # Normalize ANY rc outside the contract to 3. This is the class fix behind the -x case:
+    # 126, 127, a signal death at 130+ - all of them mean "the scan did not prove this range
+    # clean", and all of them must reach the rc=3 token below rather than exit carrying a
+    # number no consumer understands.
+    case "$s" in 0|2|3) ;; *) echo "pre-push: scanner returned unexpected rc=$s - treating as could-not-scan" >&2; s=3 ;; esac
     [ "$s" -gt "$rc" ] && rc=$s                  # precedence 3 > 2 > 0
     if [ "$s" -ne 0 ]; then
         echo "pre-push: the finding above is in commits being pushed to ${remote_ref:-?} (range: $*)" >&2
