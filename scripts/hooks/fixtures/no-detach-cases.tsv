@@ -1,0 +1,16 @@
+nohup codex exec x & echo launched	block	nohup + trailing-& detach of codex
+codex exec x & disown	block	bare & then disown detaches codex
+setsid codex exec x	block	setsid detaches codex from the shell
+codex exec x >/dev/null 2>&1 &	block	redirect-then-& classic orphan form
+codex exec x & true	block	bare & then no-op true detaches codex
+nohup "$CHROME" --headless >/dev/null 2>&1 &	allow	detach but no codex token - not our concern
+nohup "$RL_REFRESH" &	allow	detach but no codex token - not our concern
+CODEX_TIMEOUT_SECS=3600 bash scripts/codex-exec.sh a b c	allow	foreground codex-exec.sh, no detach - the sanctioned form
+while pgrep -f 'codex exec'; do sleep 20; done	allow	polls for codex, launches nothing - no detach
+git log && codex exec x	allow	&& is a sequence not a detach ((?<!&) lookbehind)
+codex exec x && echo launched	allow	&& sequence, codex runs in foreground - the critical && case
+( codex exec x ) & wait	allow	& wait blocks until codex exits - wait dropped from alternation
+ls -la	allow	plain safe command, no codex no detach
+git commit -m "never nohup codex"	block	DOCUMENTED FALSE POSITIVE - nohup+codex appear only in a commit message; escape hatch: git commit -F <file>
+bash -c 'nohup codex exec x &'	allow	DOCUMENTED KNOWN-OPEN (plan F) - bash -c quoting: nohup preceded by a quote and & followed by a quote, so neither DETACH branch fires; accepted bypass
+$CODEX_BIN exec x &	allow	GENUINE KNOWN-OPEN accepted miss - $CODEX_BIN is case-sensitive-unmatched so a real detach slips through
