@@ -40,13 +40,13 @@ SIDE="$(g "$REPO" rev-parse HEAD)"
 g "$REPO" checkout -q main
 wc_mutate "$PLAN" "$MUT" "p['analysis_basis']['base_sha'] = '${SIDE}'"
 wc_check 1 "A3 non-ancestor rejected" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$SHA2"
-wc_expect_reason malformed "A3 non-ancestor rejected"
+wc_expect_reason rule_violation "A3 non-ancestor rejected"
 wc_out_has "plan rule 3" "A3 non-ancestor rejected"
 
 # A4 - a base_sha that is not a 40-char hex sha is malformed (shape, rule 1)
 wc_mutate "$PLAN" "$MUT" "p['analysis_basis']['base_sha'] = 'HEAD'"
 wc_check 1 "A4 non-sha base_sha" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$BASE_SHA"
-wc_expect_reason malformed "A4 non-sha base_sha"
+wc_expect_reason rule_violation "A4 non-sha base_sha"
 
 # A5 - a PASSED sha that does not resolve in the repo is an ENVIRONMENT error, not a verdict
 wc_check 2 "A5 unresolvable passed sha" --validate-plan "$PLAN" --repo-root "$REPO" \

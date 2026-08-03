@@ -45,6 +45,8 @@ TESTS=(
   "13-merge-wave-happy-resume.sh"
   "14-merge-wave-refusal-and-resume.sh"
   "15-merge-wave-conflict-abort.sh"
+  "16-wave-state-plan-binding.sh"
+  "17-merge-wave-branch-and-reasons.sh"
 )
 PASS=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do

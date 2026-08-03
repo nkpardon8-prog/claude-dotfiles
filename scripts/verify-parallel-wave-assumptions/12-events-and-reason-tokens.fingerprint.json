@@ -1,1 +1,1 @@
-{"tokens":12,"unknown_token":"exit 2 reason malformed, decision preserved","modes_x_exits":6,"key_order":"ts,tool_mode,decision,verdict,exit,repo_root,wave,reason","cap_bytes":480,"overflow":"last 80 chars + truncated:true"}
+{"tokens":17,"unknown_token":"exit 2 reason usage_error, decision preserved","modes_x_exits":6,"key_order":"ts,tool_mode,decision,verdict,exit,repo_root,wave,reason","cap_bytes":480,"overflow":"last 80 chars + truncated:true"}

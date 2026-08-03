@@ -48,8 +48,18 @@ wc_out_has "typecheck-class" "A5 typecheck floor unmet"
 # A6 - POSITIVE control: floor met, plus an allowlisted assumption-suite command
 cmd_case 0 "A6 suite plus typecheck" "['bash scripts/wavefix-assumptions/run-all.sh', 'npm run typecheck']"
 
-# A7 - POSITIVE control: the remaining allowlist arms, with the floor met by npm run test
+# A7 - POSITIVE control: the remaining allowlist arms, with the floor met by npm run test.
+#      `make build` is the accepted bare-target form.
 cmd_case 0 "A7 npx tsc / node --check / make" "['npx tsc --noEmit', 'node --check src/a.mjs', 'make build', 'npm run test']"
+
+# A7b - C9: `make` accepts ONLY a bare target token. A flag-shaped second token (`make -f
+# evil.mk` selecting a foreign makefile, or `make -C other` selecting a foreign directory) is
+# REJECTED - it must not smuggle an arbitrary makefile/dir past the allowlist. FAIL-FIRST:
+# before the fix `make <anything>` was accepted, so these validated 0 and the floor was met.
+cmd_case 1 "A7b make -f foreign makefile" "['make -f evil.mk', 'npm run typecheck']"
+wc_out_has "make target" "A7b make -f foreign makefile"
+cmd_case 1 "A7c make -C foreign dir" "['make -C /tmp/other build', 'npm run typecheck']"
+cmd_case 1 "A7d make path target" "['make sub/dir:thing', 'npm run typecheck']"
 
 # A8 - post_integration_commands must be non-empty (rule 11 / s3.3)
 cmd_case 1 "A8 empty command list" "[]"
@@ -69,5 +79,5 @@ p['analysis_basis']['base_sha'] = '${SHA_R2}'
 p['waves'][0]['post_integration_commands'] = ['npm run typecheck']"
 wc_check 1 "A9b no package.json means no npm arm" --validate-plan "$MUT" --repo-root "$REPO2" --base-sha "$SHA_R2"
 
-wc_finish '{"stage1":"; | & $ ` > < newline","stage2":"npm|yarn|pnpm run <declared script> | npx tsc | node --check | bash scripts/<x>-assumptions/run-all.sh | make <target>","floor":"typecheck|tsc|lint|check|test","no_package_json":"floor n/a, npm arm dead"}' \
-  "10 assertions (A1-A2b stage 1, A3/A4 stage 2, A5 floor, A6/A7 positive controls, A8 non-empty, A9/A9b no package.json)"
+wc_finish '{"stage1":"; | & $ ` > < newline","stage2":"npm|yarn|pnpm run <declared script> | npx tsc | node --check | bash scripts/<x>-assumptions/run-all.sh | make <bare-target>","make_rejects":["-f evil.mk","-C other","path/target"],"floor":"typecheck|tsc|lint|check|test","no_package_json":"floor n/a, npm arm dead"}' \
+  "13 assertions (A1-A2b stage 1, A3/A4 stage 2, A5 floor, A6/A7 positive controls, A7b-A7d make target, A8 non-empty, A9/A9b no package.json)"

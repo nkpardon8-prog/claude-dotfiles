@@ -42,34 +42,17 @@ command -v node >/dev/null 2>&1 || die "node is required"
 REPO=""
 WAVE="null"
 
-# --- event emission (schema doc s7: single-line JSONL, hard cap 480 bytes) ---------------
-# merge-wave writes with tool_mode "wave-state": it is an operation ON the wave-state, and
-# the closed tool_mode set has no fourth value to invent.
-json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
-
+# --- event emission (schema doc s7 + s8: ONE serializer) ----------------------------------
+# merge-wave writes with tool_mode "wave-state" (an operation ON the wave-state; the closed
+# tool_mode set has no fourth value to invent). There is exactly ONE event serializer -
+# buildEventLine() in the checker - and merge-wave routes through it via the --emit-event mode
+# instead of re-implementing the 480-byte fixed-key line in bash+sed. PARALLEL_WAVES_DIR is
+# inherited by the child, so the event lands in the same log the checker itself appends to.
 emit_event() {  # emit_event <exit> <reason>
-  local ex="$1" reason="$2" ts rr line bytes
-  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$WAVES_DIR" 2>/dev/null || {
     echo "merge-wave: WARNING - cannot create ${WAVES_DIR}; event not recorded" >&2; return 0; }
-  rr="$(json_escape "$REPO")"
-  line="$(printf '{"ts":"%s","tool_mode":"wave-state","decision":null,"verdict":null,"exit":%s,"repo_root":"%s","wave":%s,"reason":"%s"}' \
-    "$ts" "$ex" "$rr" "$WAVE" "$reason")"
-  bytes="$(printf '%s\n' "$line" | wc -c | tr -d ' ')"
-  if [ "$bytes" -gt 480 ]; then
-    # s7.1 overflow rule step 1: keep the LAST 80 chars of repo_root, flag truncated.
-    rr="$(json_escape "${REPO: -80}")"
-    line="$(printf '{"ts":"%s","tool_mode":"wave-state","decision":null,"verdict":null,"exit":%s,"repo_root":"%s","wave":%s,"reason":"%s","truncated":true}' \
-      "$ts" "$ex" "$rr" "$WAVE" "$reason")"
-    bytes="$(printf '%s\n' "$line" | wc -c | tr -d ' ')"
-    if [ "$bytes" -gt 480 ]; then
-      # step 2: drop repo_root entirely rather than emit a line that can interleave.
-      line="$(printf '{"ts":"%s","tool_mode":"wave-state","decision":null,"verdict":null,"exit":%s,"repo_root":"","wave":%s,"reason":"%s","truncated":true}' \
-        "$ts" "$ex" "$WAVE" "$reason")"
-    fi
-  fi
-  printf '%s\n' "$line" >> "${WAVES_DIR}/rework.log" \
-    || echo "merge-wave: WARNING - could not append event to ${WAVES_DIR}/rework.log" >&2
+  node "$CHECKER" --emit-event --exit "$1" --reason "$2" --repo-root "$REPO" --wave "$WAVE" \
+    || echo "merge-wave: WARNING - could not append event via ${CHECKER}" >&2
 }
 
 # --- 1. fresh inline verification -------------------------------------------------------
@@ -111,6 +94,24 @@ WAVE="$(printf '%s\n' "$STATE_TSV" | sed -n '1p' | cut -f2)"
 CHUNK_LINES="$(printf '%s\n' "$STATE_TSV" | sed -n '2,$p')"
 [ -n "$REPO" ] || die "wave-state has an empty repo_root"
 
+# --- 1c. branch-name safety (schema doc s2.1 / s5.2) --------------------------------------
+# Every branch name is handed to `git merge`. The node pre-check only rejected tab/newline, so
+# a leading dash could be read as a git option and a malformed ref could name the wrong commit.
+# Validate each branch as a real git branch ref (format-only; existence is proven by the
+# checker's rule 13 branch==HEAD binding) and reject a leading dash, BEFORE any merge. Fail
+# closed: refuse the whole wave and merge nothing.
+while IFS="$(printf '\t')" read -r _BID _BBRANCH _BDONE; do
+  [ -n "${_BBRANCH:-}" ] || continue
+  case "$_BBRANCH" in
+    -*) echo "merge-wave: REFUSING - chunk ${_BID} branch '${_BBRANCH}' begins with a dash" >&2
+        emit_event 2 io_error; exit 2 ;;
+  esac
+  if ! git -C "$REPO" check-ref-format --branch "$_BBRANCH" >/dev/null 2>&1; then
+    echo "merge-wave: REFUSING - chunk ${_BID} branch '${_BBRANCH}' is not a valid git branch ref" >&2
+    emit_event 2 io_error; exit 2
+  fi
+done <<< "$CHUNK_LINES"
+
 # --- state mutation: read-modify-write via node, tmp + rename -----------------------------
 record_merge() {  # record_merge <chunk-id> <merge-sha>
   node -e '
@@ -144,7 +145,7 @@ while IFS="$(printf '\t')" read -r CID CBRANCH CDONE; do
     MERGE_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
     if [ -z "$MERGE_SHA" ]; then
       echo "merge-wave: merged ${CID} but could not resolve the new HEAD" >&2
-      emit_event 2 malformed
+      emit_event 2 io_error
       exit 2
     fi
     if ! record_merge "$CID" "$MERGE_SHA"; then
@@ -152,7 +153,7 @@ while IFS="$(printf '\t')" read -r CID CBRANCH CDONE; do
       # a silent miss here would make the next resume merge the same branch twice.
       echo "merge-wave: MERGED ${CID} as ${MERGE_SHA} but FAILED to record it in ${STATE}" >&2
       echo "merge-wave: fix the state file by hand before re-running, or the resume will repeat this merge." >&2
-      emit_event 2 malformed
+      emit_event 2 io_error
       exit 2
     fi
     MERGED=$((MERGED + 1))
@@ -181,11 +182,11 @@ while IFS="$(printf '\t')" read -r CID CBRANCH CDONE; do
     echo "merge-wave: WARNING - ${REPO} is NOT clean after the failed merge; inspect it before re-running" >&2
   fi
   echo "merge-wave: ${MERGED} chunk(s) merged before the failure and remain in history - a re-run RESUMES from ${CID}." >&2
-  emit_event 1 malformed
+  emit_event 1 merge_conflict
   exit 1
 done <<< "$CHUNK_LINES"   # here-STRING, not a here-doc: the content must never be re-expanded
 
 # --- 3. success ---------------------------------------------------------------------------
-emit_event 0 fan_out
+emit_event 0 merge_success
 echo "merge-wave: wave ${WAVE} integrated - ${MERGED} merged, ${SKIPPED} already present. HEAD: $(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
 exit 0

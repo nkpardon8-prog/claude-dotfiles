@@ -102,16 +102,47 @@ json.dump(p, open(dst, "w"))
 PY
 }
 
-# wc_state <out> <A_paths> <A_reads> <B_paths> <B_reads> [<impl_plan_path json>] [<merged json>]
+# wc_state <out> <A_paths> <A_reads> <B_paths> <B_reads> \
+#          [<impl_plan_path json>] [<merged json>] [<shared_hazard_paths json>] [<nosidecar>]
+#
+# v1.1: the state now names the wave_plan it was derived from (wave_plan_path) and echoes that
+# plan's shared_hazard_paths. To keep every otherwise-valid state BLESSED, wc_state writes a
+# matching wave_plan and runs --validate-plan to emit its <plan>.validated sidecar (the SAME
+# code path --wave-state reads, so there is no hand-authored hash to drift). A state with bad
+# topology fails plan validation, leaves no sidecar, and the wave-state rule the test targets
+# fires anyway (the reason token is rule_violation either way). Pass "nosidecar" as arg 9 to
+# suppress the sidecar entirely (the dedicated absent-sidecar case). Exports WC_PLAN.
 wc_state() {
-  cat > "$1" <<JSON
+  local out="$1" ap="$2" ar="$3" bp="$4" br="$5"
+  local impl="${6:-null}" merged="${7:-[]}" hazards="${8:-[]}" nosidecar="${9:-}"
+  WC_PLAN="${out%.json}.waveplan.json"
+  cat > "$WC_PLAN" <<JSON
+{"schema_version":"parallelizer.v1.1","verdict":"FAN_OUT","confidence":"high",
+ "analysis_basis":{"repo_root":"${REPO}","base_sha":"${BASE_SHA}","shared_hazard_paths":${hazards}},
+ "waves":[{"wave":1,"chunks":[
+  {"id":"chunk-a","items":[{"id":"I1","text":"chunk a"}],"exclusive_paths":${ap},"reads":${ar},
+   "rationale":"chunk a","independent_of":[{"chunk_id":"chunk-b","reason":"disjoint"}],"write_set_confidence":"high"},
+  {"id":"chunk-b","items":[{"id":"I2","text":"chunk b"}],"exclusive_paths":${bp},"reads":${br},
+   "rationale":"chunk b","independent_of":[{"chunk_id":"chunk-a","reason":"disjoint"}],"write_set_confidence":"high"}
+ ],"post_integration_commands":["npm run typecheck"]}],
+ "hazards_found":[],"serial_reasons":[]}
+JSON
+  if [ "$nosidecar" != "nosidecar" ]; then
+    # Best-effort blessing; a bad-topology plan simply leaves no sidecar (the target rule fires).
+    node "$CHECKER" --validate-plan "$WC_PLAN" --repo-root "$REPO" --base-sha "$BASE_SHA" >/dev/null 2>&1 || true
+  else
+    rm -f "${WC_PLAN}.validated" 2>/dev/null || true
+  fi
+  cat > "$out" <<JSON
 {"repo_root":"${REPO}","base_sha":"${BASE_SHA}","wave":1,
- "impl_plan_path":${6:-null},
- "merged_chunks":${7:-[]},
+ "wave_plan_path":"${WC_PLAN}",
+ "shared_hazard_paths":${hazards},
+ "impl_plan_path":${impl},
+ "merged_chunks":${merged},
  "gate_list":["npm run typecheck"],
  "chunks":[
-  {"id":"chunk-a","branch":"${BR_A}","worktree":"${WT_A}","exclusive_paths":${2},"reads":${3}},
-  {"id":"chunk-b","branch":"${BR_B}","worktree":"${WT_B}","exclusive_paths":${4},"reads":${5}}]}
+  {"id":"chunk-a","branch":"${BR_A}","worktree":"${WT_A}","exclusive_paths":${ap},"reads":${ar}},
+  {"id":"chunk-b","branch":"${BR_B}","worktree":"${WT_B}","exclusive_paths":${bp},"reads":${br}}]}
 JSON
 }
 
@@ -156,6 +187,7 @@ wc_check() {  # wc_check <expected-exit> <label> <checker args...>
   [ "$ev_exit" = "$WC_RC" ] || wc_fail "${label}: event exit=${ev_exit} disagrees with process exit ${WC_RC}"
   case "$ev_reason" in
     lt2_chunks|no_review|dirty_repo_root|merge_in_progress|pct_unknown|pct_over_60|stale_wave|dotfiles_unpaused|serial_correct|malformed|low_confidence|fan_out) ;;
+    rule_violation|usage_error|io_error|merge_success|merge_conflict) ;;  # v1.1 de-aliased tokens
     *) wc_fail "${label}: event reason '${ev_reason}' is outside the closed set" ;;
   esac
   case "$ev_mode" in

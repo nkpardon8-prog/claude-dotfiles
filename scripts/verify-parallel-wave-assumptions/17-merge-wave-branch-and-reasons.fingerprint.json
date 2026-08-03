@@ -1,0 +1,1 @@
+{"merge_success":"exit 0 outcome","merge_conflict":"exit 1 outcome","inline_verify":"fan_out (distinct)","branch_guard":"leading dash + check-ref-format --branch => refuse before merge, nothing merged"}

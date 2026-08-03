@@ -31,17 +31,19 @@ printf 'a1\n' >> "${WT_A}/src/a.ts"; wc_commit "$WT_A" "chunk a work"
 printf 'b1\n' >> "${WT_B}/src/b.ts"; wc_commit "$WT_B" "chunk b work"
 wc_state "$STATE" '["src/a.ts"]' '[]' '["src/b.ts"]' '[]'
 
-# A1 - every token in the closed set is accepted and echoed verbatim
+# A1 - every token in the v1.1 closed set is accepted and echoed verbatim (17 tokens: the 11
+#      carried-over gate/pass tokens, malformed as the fallback, plus the 5 de-aliased tokens).
 for tok in lt2_chunks no_review dirty_repo_root merge_in_progress pct_unknown pct_over_60 \
-           stale_wave dotfiles_unpaused serial_correct malformed low_confidence fan_out; do
+           stale_wave dotfiles_unpaused serial_correct malformed low_confidence fan_out \
+           rule_violation usage_error io_error merge_success merge_conflict; do
   wc_check 0 "A1 token ${tok}" --log-decision serial --reason "$tok" --repo-root "$REPO"
   wc_expect_reason "$tok" "A1 token ${tok}"
 done
 
-# A2 - an unknown token is REJECTED (exit 2) and still writes ONE event, recorded as malformed
-#      with the passed decision preserved because that argument was itself valid (s7.2).
+# A2 - an unknown token is REJECTED (exit 2, a usage_error) and still writes ONE event, with the
+#      passed decision preserved because that argument was itself valid (s7.2).
 wc_check 2 "A2 unknown reason token" --log-decision serial --reason typo_token --repo-root "$REPO"
-wc_expect_reason malformed "A2 unknown reason token"
+wc_expect_reason usage_error "A2 unknown reason token"
 [ "$(wc_event_field decision)" = "serial" ] \
   || wc_fail "A2: decision should be preserved as 'serial', got '$(wc_event_field decision)'"
 wc_out_has "closed set" "A2 unknown reason token"
@@ -109,5 +111,5 @@ wc_check 0 "A7 waves dir created" --log-decision fan_out --reason fan_out --repo
 # A8 - hermetic: everything written lives under this case's sandbox
 case "$WAVES" in "${BASE}"/*) ;; *) wc_fail "A8: PARALLEL_WAVES_DIR escaped the sandbox: ${WAVES}" ;; esac
 
-wc_finish '{"tokens":12,"unknown_token":"exit 2 reason malformed, decision preserved","modes_x_exits":6,"key_order":"ts,tool_mode,decision,verdict,exit,repo_root,wave,reason","cap_bytes":480,"overflow":"last 80 chars + truncated:true"}' \
-  "20 assertions (A1 x12 tokens, A2 unknown, A3 decision, A4 modes x exits, A5-A5c shape, A6/A6b cap, A7 dir creation, A8 hermetic)"
+wc_finish '{"tokens":17,"unknown_token":"exit 2 reason usage_error, decision preserved","modes_x_exits":6,"key_order":"ts,tool_mode,decision,verdict,exit,repo_root,wave,reason","cap_bytes":480,"overflow":"last 80 chars + truncated:true"}' \
+  "25 assertions (A1 x17 tokens, A2 unknown, A3 decision, A4 modes x exits, A5-A5c shape, A6/A6b cap, A7 dir creation, A8 hermetic)"

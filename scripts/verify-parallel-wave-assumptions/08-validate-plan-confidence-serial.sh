@@ -60,14 +60,14 @@ wc_out_has "plan rule 13" "A5 SERIAL_CORRECT"
 wc_mutate "$PLAN" "$MUT" "p['verdict'] = 'SERIAL_CORRECT'
 p['serial_reasons'] = ['claimed serial']"
 wc_check 1 "A6 SERIAL_CORRECT with 2 chunks" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$BASE_SHA"
-wc_expect_reason malformed "A6 SERIAL_CORRECT with 2 chunks"
+wc_expect_reason rule_violation "A6 SERIAL_CORRECT with 2 chunks"
 
 # A7 - SERIAL_CORRECT with no reasons is malformed: an unexplained refusal is not evidence
 wc_mutate "$PLAN" "$MUT" "${SINGLE}
 p['verdict'] = 'SERIAL_CORRECT'
 p['serial_reasons'] = []"
 wc_check 1 "A7 SERIAL_CORRECT without reasons" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$BASE_SHA"
-wc_expect_reason malformed "A7 SERIAL_CORRECT without reasons"
+wc_expect_reason rule_violation "A7 SERIAL_CORRECT without reasons"
 
 wc_finish '{"rule12":"multi-chunk requires high confidence + full independent_of -> low_confidence","rule13":"SERIAL_CORRECT -> exit 1 reason serial_correct","single_chunk":"rule 12 not applicable"}' \
   "7 assertions (A1-A3 rule 12, A4 positive control, A5-A7 rule 13)"

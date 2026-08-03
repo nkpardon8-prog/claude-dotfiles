@@ -40,6 +40,11 @@ writes_case 1 "A5 glob metacharacter" "['src/*.ts']"
 writes_case 1 "A6 bracket glob" "['src/[ab].ts']"
 writes_case 1 "A7 duplicate entry" "['src/a.ts', './src/a.ts']"
 writes_case 1 "A8 dot" "['.']"
+# A8b - a MID-PATH "." segment (src/./x): normalizePath only strips a LEADING "./", so without
+# an explicit "." segment reject this would slip through and dodge the rule-9 write-into-read
+# comparison (which is exact-string). FAIL-FIRST: before the dot-segment fix this validated 0.
+writes_case 1 "A8b dot segment mid-path" "['src/./x.ts']"
+wc_out_has "plan rule 6" "A8b dot segment mid-path"
 writes_case 1 "A9 windows separator" "['src' + chr(92) + 'a.ts']"
 
 # A10 - reads[] must be EXACT file paths: a subtree read would let a chunk fence off a
@@ -52,5 +57,5 @@ wc_out_has "reads" "A10 subtree prefix in reads"
 wc_mutate "$PLAN" "$MUT" "p['analysis_basis']['shared_hazard_paths'] = ['../lock.json']"
 wc_check 1 "A11 hazard path syntax" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$BASE_SHA"
 
-wc_finish '{"rejects":["..","/abs","a//b","glob","dup",".","backslash","prefix-in-reads"],"normalized":"./a -> a","authority":"schema doc s2.2 (plan text deferred to it for ./y)"}' \
-  "11 assertions (A1-A9 exclusive_paths syntax, A10 reads exactness, A11 hazard paths)"
+wc_finish '{"rejects":["..","/abs","a//b","glob","dup",".","./ mid-path .","backslash","prefix-in-reads"],"normalized":"./a -> a","authority":"schema doc s2.2 (plan text deferred to it for ./y)"}' \
+  "12 assertions (A1-A9 exclusive_paths syntax incl mid-path dot, A10 reads exactness, A11 hazard paths)"

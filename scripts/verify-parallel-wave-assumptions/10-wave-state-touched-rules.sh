@@ -37,7 +37,7 @@ wc_check 0 "A1 touched within declared" --wave-state "$STATE"
 # A2 - rule 6: a write outside the chunk's own declared set
 printf 'stray\n' >> "${WT_A}/src/shared.ts"; wc_commit "$WT_A" "chunk a strayed"
 wc_check 1 "A2 undeclared write" --wave-state "$STATE"
-wc_expect_reason malformed "A2 undeclared write"
+wc_expect_reason rule_violation "A2 undeclared write"
 wc_out_has "wave-state rule 6" "A2 undeclared write"
 wc_out_has "src/shared.ts" "A2 undeclared write"
 wc_out_has "chunk-a" "A2 undeclared write"

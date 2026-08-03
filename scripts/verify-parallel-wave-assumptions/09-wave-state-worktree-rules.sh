@@ -62,7 +62,7 @@ BR_B_REAL="$BR_B"; WT_B_REAL="$WT_B"
 BR_B="$BR_C"; WT_B="$WT_C"
 wc_state "$STATE" '["src/a.ts"]' '[]' '["src/b.ts"]' '[]'
 wc_check 1 "A5 zero-commit worktree" --wave-state "$STATE"
-wc_expect_reason malformed "A5 zero-commit worktree"
+wc_expect_reason rule_violation "A5 zero-commit worktree"
 wc_out_has "wave-state rule 4" "A5 zero-commit worktree"
 BR_B="$BR_B_REAL"; WT_B="$WT_B_REAL"
 
@@ -71,7 +71,7 @@ g "$WT_A" checkout -q --orphan orphan-branch
 wc_commit "$WT_A" "orphan root commit"
 wc_state "$STATE" '["src/a.ts"]' '[]' '["src/b.ts"]' '[]'
 wc_check 1 "A6 worktree off the base history" --wave-state "$STATE"
-wc_expect_reason malformed "A6 worktree off the base history"
+wc_expect_reason rule_violation "A6 worktree off the base history"
 wc_out_has "wave-state rule 2" "A6 worktree off the base history"
 
 # A7 - a state file that is not structurally a wave_state cannot have rules 1-11 evaluated at

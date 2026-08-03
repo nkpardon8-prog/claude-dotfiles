@@ -103,6 +103,19 @@ CONSECUTIVE_SOLO_K = 2        # replay - K consecutive solo spawn groups
 WAVE_WIDTH_MAX = 4
 PCT_CEILING = 60              # wave gate: PCT empty or > 60 => serial
 
+# R7 - the CLOSED rework.log reason vocabulary, mirroring wave-plan-schema.md s7.2
+# (schema_version parallelizer.v1.1). A reason outside this set is a DRIFTED token and is
+# counted separately so a silent new category is visible rather than blending into by_reason.
+# The v1.1 de-aliasing lets analytics tell a merged wave (merge_success) from a verify pass
+# (fan_out), and a rule violation from a merge conflict from a usage/io error.
+REWORK_REASONS = frozenset((
+    "lt2_chunks", "no_review", "dirty_repo_root", "merge_in_progress", "pct_unknown",
+    "pct_over_60", "stale_wave", "dotfiles_unpaused", "serial_correct",
+    "low_confidence", "fan_out",
+    "rule_violation", "usage_error", "io_error", "merge_success", "merge_conflict",
+    "malformed",
+))
+
 _TS_RE = re.compile(r'"timestamp":"([^"]+)"')
 _CMDNAME_RE = re.compile(r"<command-name>\s*/([a-z0-9][a-z0-9-]*)")
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,6}")
@@ -512,12 +525,15 @@ def read_rework_log():
         "~/.claude/parallel-waves")
     path = os.path.join(base, "rework.log")
     result = {"path": path, "present": False, "events": 0, "dropped_fixture": 0,
-              "malformed": 0, "by_reason": {}, "by_repo_root": {}}
+              "malformed": 0, "by_reason": {}, "by_repo_root": {},
+              "recognized_reason": 0, "unrecognized_reason": 0,
+              "unrecognized_reasons": {}}
     if not os.path.isfile(path):
         return result
     result["present"] = True
     reasons = collections.Counter()
     roots = collections.Counter()
+    unrecognized = collections.Counter()
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -536,10 +552,17 @@ def read_rework_log():
                 result["dropped_fixture"] += 1
                 continue
             result["events"] += 1
-            reasons[str(ev.get("reason") or ev.get("verdict") or "unknown")] += 1
+            reason = str(ev.get("reason") or ev.get("verdict") or "unknown")
+            reasons[reason] += 1
+            if reason in REWORK_REASONS:
+                result["recognized_reason"] += 1
+            else:
+                result["unrecognized_reason"] += 1
+                unrecognized[reason] += 1
             roots[root or "unknown"] += 1
     result["by_reason"] = dict(sorted(reasons.items()))
     result["by_repo_root"] = dict(sorted(roots.items()))
+    result["unrecognized_reasons"] = dict(sorted(unrecognized.items()))
     return result
 
 
@@ -842,8 +865,11 @@ def render_text(report, out):
         w("  events kept          : %d\n" % rework["events"])
         w("  dropped (fixtures)   : %d\n" % rework["dropped_fixture"])
         w("  malformed lines      : %d\n" % rework["malformed"])
+        w("  recognized reasons   : %d\n" % rework["recognized_reason"])
+        w("  drifted reasons      : %d\n" % rework["unrecognized_reason"])
         for reason, count in rework["by_reason"].items():
-            w("    reason %-24s %5d\n" % (reason, count))
+            tag = "" if reason in REWORK_REASONS else "  (drifted - not in the v1.1 closed set)"
+            w("    reason %-24s %5d%s\n" % (reason, count, tag))
     w("\n")
 
     if "replay" in report:

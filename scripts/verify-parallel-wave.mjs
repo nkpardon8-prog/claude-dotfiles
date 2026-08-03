@@ -23,6 +23,7 @@
 // on NUL, and every diff pins --no-renames so a rename counts BOTH sides (schema doc, s6.5).
 
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,7 +32,7 @@ import path from 'node:path';
 // Constants - all frozen by docs/wave-plan-schema.md
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 'parallelizer.v1';
+const SCHEMA_VERSION = 'parallelizer.v1.1';
 const WAVE_WIDTH_MAX = 4; // s2.5 - a constant, never an input
 const EVENT_CAP_BYTES = 480; // s7.1 - the line INCLUDING its newline
 const REPO_ROOT_TRUNC_CHARS = 80; // s7.1 overflow rule, step 1
@@ -43,9 +44,19 @@ const VERDICTS = new Set(['FAN_OUT', 'SERIAL_CORRECT']); // s2.5
 const DECISIONS = new Set(['serial', 'fan_out']); // s7 decision field
 const TOOL_MODES = new Set(['validate-plan', 'wave-state', 'log-decision']); // s7
 const REASONS = new Set([ // s7.2 - CLOSED set; an unknown token is rejected
+  // orchestrator serial-gate + checker-pass tokens (carried from v1)
   'lt2_chunks', 'no_review', 'dirty_repo_root', 'merge_in_progress', 'pct_unknown',
-  'pct_over_60', 'stale_wave', 'dotfiles_unpaused', 'serial_correct', 'malformed',
+  'pct_over_60', 'stale_wave', 'dotfiles_unpaused', 'serial_correct',
   'low_confidence', 'fan_out',
+  // v1.1 - de-aliased outcome tokens (schema doc s7.2, change control s8). Each names a
+  // DISTINCT event that v1 flattened into `malformed`/`fan_out`:
+  'rule_violation',   // a real schema/rule violation of a plan or a wave-state (exit 1)
+  'usage_error',      // a CLI/argument usage error (exit 2)
+  'io_error',         // unreadable/unparseable input, or a git/environment failure (exit 2)
+  'merge_success',    // merge-wave integrated the wave (exit 0)
+  'merge_conflict',   // merge-wave hit a conflict/refusal and merged nothing further (exit 1)
+  // retained as the fail-closed fallback when an unknown token reaches writeEvent
+  'malformed',
 ]);
 const METACHARS = [';', '|', '&', '$', '`', '>', '<', '\n']; // s2.4 stage 1
 const PKG_RUNNERS = ['npm', 'yarn', 'pnpm']; // s2.4 stage 2
@@ -126,9 +137,10 @@ function usage(message) {
     'usage:\n'
     + '  verify-parallel-wave.mjs --validate-plan <wave_plan.json> --repo-root <path> --base-sha <sha>\n'
     + '  verify-parallel-wave.mjs --wave-state <wave-state.json>\n'
-    + '  verify-parallel-wave.mjs --log-decision <serial|fan_out> --reason <token> --repo-root <path>\n',
+    + '  verify-parallel-wave.mjs --log-decision <serial|fan_out> --reason <token> --repo-root <path>\n'
+    + '  verify-parallel-wave.mjs --emit-event --exit <n> --reason <token> --repo-root <path> --wave <n>\n',
   );
-  finish(2, 'malformed');
+  finish(2, 'usage_error');
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +236,9 @@ function pathIssues(raw, allowPrefix) {
     const segs = body.split('/');
     if (segs.some((s) => s === '')) issues.push('contains an empty segment');
     if (segs.some((s) => s === '..')) issues.push('contains a ".." segment');
+    // s2.2: a "." segment (e.g. src/./x) is rejected too - normalizePath only strips a
+    // LEADING "./", so a mid-path "." would otherwise dodge the rule-9 write-into-read check.
+    if (segs.some((s) => s === '.')) issues.push('contains a "." segment');
   }
   return issues;
 }
@@ -322,6 +337,72 @@ function report(violations) {
 }
 
 // ---------------------------------------------------------------------------
+// Plan<->state binding sidecar (schema doc, s4a + s6a - the C2 fix)
+// ---------------------------------------------------------------------------
+
+// The canonical per-wave content whose sha256 binds a runtime wave_state to the wave_plan that
+// --validate-plan blessed. It is the intersection of what BOTH artifacts carry verbatim:
+// repo_root, the wave's shared_hazard_paths, the wave number, and each chunk's id + normalized
+// exclusive_paths + reads. base_sha is DELIBERATELY excluded - the orchestrator re-pins it every
+// wave (s3.2 ancestry rule), so it legitimately drifts and is verified separately by ancestry.
+// Paths are normalized, de-duplicated, and sorted so ordering never changes the hash.
+function canonicalWaveHash(repoRoot, sharedHazardPaths, waveNum, chunks) {
+  const normList = (list) => {
+    const seen = new Set();
+    const out = [];
+    for (const raw of Array.isArray(list) ? list : []) {
+      if (typeof raw !== 'string') continue;
+      const n = normalizePath(raw);
+      if (seen.has(n)) continue;
+      seen.add(n);
+      out.push(n);
+    }
+    return out.sort();
+  };
+  const normChunks = (Array.isArray(chunks) ? chunks : [])
+    .map((c) => ({
+      id: typeof (c && c.id) === 'string' ? c.id : '',
+      exclusive_paths: normList(c && c.exclusive_paths),
+      reads: normList(c && c.reads),
+    }))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const canonical = JSON.stringify({
+    v: SCHEMA_VERSION,
+    repo_root: realPathOrResolve(repoRoot),
+    shared_hazard_paths: normList(sharedHazardPaths),
+    wave: Number.isInteger(waveNum) ? waveNum : null,
+    chunks: normChunks,
+  });
+  return crypto.createHash('sha256').update(canonical).digest('hex');
+}
+
+const sidecarPathFor = (planPath) => `${planPath}.validated`;
+
+// Written by --validate-plan on the exit-0 (fan_out) path: one hash per wave. Best-effort - a
+// telemetry-class failure to write must never turn a passing plan into a failing one, but it is
+// said loudly so a missing blessing is diagnosable.
+function writeSidecar(planPath, plan, repoRoot) {
+  const waves = {};
+  for (const w of plan.waves) {
+    waves[String(w.wave)] = canonicalWaveHash(
+      repoRoot, plan.analysis_basis.shared_hazard_paths, w.wave, w.chunks,
+    );
+  }
+  const body = { schema_version: SCHEMA_VERSION, waves };
+  try {
+    fs.writeFileSync(sidecarPathFor(planPath), `${JSON.stringify(body, null, 2)}\n`);
+  } catch (err) {
+    process.stderr.write(`verify-parallel-wave: WARNING - could not write sidecar ${sidecarPathFor(planPath)}: ${err && err.message}\n`);
+  }
+}
+
+// Removed on the exit-1 (rule) path so a plan that FAILS validation cannot leave a stale
+// blessing behind that a later wave_state could match.
+function removeSidecar(planPath) {
+  try { fs.rmSync(sidecarPathFor(planPath), { force: true }); } catch { /* best effort */ }
+}
+
+// ---------------------------------------------------------------------------
 // Mode: --validate-plan   (schema doc, s3 + s4)
 // ---------------------------------------------------------------------------
 
@@ -346,7 +427,16 @@ function commandIssue(cmd, scripts) {
   if (t[0] === 'npx' && t[1] === 'tsc') return { ok: true };
   if (t[0] === 'node' && t[1] === '--check') return { ok: true };
   if (t[0] === 'bash' && t[1] && /^scripts\/[A-Za-z0-9._-]+-assumptions\/run-all\.sh$/.test(t[1])) return { ok: true };
-  if (t[0] === 'make' && t[1]) return { ok: true };
+  if (t[0] === 'make') {
+    // s2.4: `make <target>` accepts ONLY a bare target token - no leading dash (so `make -f
+    // evil.mk` / `make -C other` cannot select a foreign makefile or directory), no path
+    // separator, no flags. Trailing args beyond the target are still permitted.
+    if (!t[1]) return { ok: false, issue: 'make names no target (stage 2)' };
+    if (t[1].startsWith('-') || !/^[A-Za-z0-9._-]+$/.test(t[1])) {
+      return { ok: false, issue: `make target ${JSON.stringify(t[1])} must be a bare target name, not a flag or path (stage 2)` };
+    }
+    return { ok: true };
+  }
   return { ok: false, issue: 'argv prefix is not in the section 2.4 allowlist (stage 2)' };
 }
 
@@ -471,21 +561,21 @@ function modeValidatePlan(args) {
   // Environment first: an unusable repo is exit 2, never a rule verdict.
   if (!isGitRepo(repoRoot)) {
     process.stderr.write(`verify-parallel-wave: --repo-root ${repoRoot} is not a git repository\n`);
-    finish(2, 'malformed');
+    finish(2, 'io_error');
   }
   if (!SHA40_RE.test(baseSha)) {
     process.stderr.write(`verify-parallel-wave: --base-sha must be a 40-char lowercase hex sha, got "${baseSha}"\n`);
-    finish(2, 'malformed');
+    finish(2, 'io_error');
   }
   if (!gitRun(repoRoot, ['rev-parse', '--verify', '--quiet', `${baseSha}^{commit}`]).ok) {
     process.stderr.write(`verify-parallel-wave: --base-sha ${baseSha} does not resolve to a commit in ${repoRoot}\n`);
-    finish(2, 'malformed');
+    finish(2, 'io_error');
   }
 
   const read = readJson(planPath);
   if (!read.ok) {
     process.stderr.write(`verify-parallel-wave: ${read.reason}\n`);
-    finish(2, 'malformed'); // s4: unreadable or unparseable input -> exit 2
+    finish(2, 'io_error'); // s4: unreadable or unparseable input -> exit 2
   }
   const plan = read.value;
   if (isObj(plan)) {
@@ -497,7 +587,8 @@ function modeValidatePlan(args) {
   // Shape must hold before any rule that indexes into the structure.
   if (malformed.length > 0) {
     report(malformed);
-    finish(1, 'malformed');
+    removeSidecar(planPath);
+    finish(1, 'rule_violation');
   }
 
   const lowConfidence = [];
@@ -557,7 +648,7 @@ function modeValidatePlan(args) {
         const exists = dirExistsAtSha(repoRoot, baseSha, dir);
         if (exists === null) {
           process.stderr.write(`verify-parallel-wave: git ls-tree failed for ${dir} at ${baseSha}\n`);
-          finish(2, 'malformed');
+          finish(2, 'io_error');
         }
         if (exists) {
           malformed.push(`[plan rule 7] ${waveLabel} chunk ${c.id}: subtree prefix ${JSON.stringify(e)} covers a directory that already exists at ${baseSha} - enumerate the files instead`);
@@ -647,11 +738,15 @@ function modeValidatePlan(args) {
   const all = [...malformed, ...lowConfidence, ...serialCorrect];
   if (all.length > 0) {
     report(all);
-    if (malformed.length > 0) finish(1, 'malformed');
+    removeSidecar(planPath); // a plan that fails validation must not leave a stale blessing
+    if (malformed.length > 0) finish(1, 'rule_violation');
     if (lowConfidence.length > 0) finish(1, 'low_confidence');
     finish(1, 'serial_correct');
   }
 
+  // s4a (C2): the plan is blessed - write the plan<->state binding sidecar so a later
+  // --wave-state can prove its topology matches this validated plan.
+  writeSidecar(planPath, plan, repoRoot);
   process.stdout.write(`verify-parallel-wave: wave_plan OK - ${plan.waves.length} wave(s), ${plan.waves.reduce((n, w) => n + w.chunks.length, 0)} chunk(s) at ${baseSha}\n`);
   finish(0, 'fan_out');
 }
@@ -670,6 +765,10 @@ function stateShapeIssues(st) {
   if (!isNonEmptyStr(st.repo_root) || !path.isAbsolute(st.repo_root)) v.push('repo_root must be an absolute path string');
   if (!isStr(st.base_sha) || !SHA40_RE.test(st.base_sha)) v.push('base_sha must be a 40-char lowercase hex sha');
   if (!isInt(st.wave) || st.wave < 1) v.push('wave must be a 1-based integer');
+  // v1.1 (C2): the state names the validated wave_plan it was derived from, and echoes that
+  // plan's shared_hazard_paths so the barrier can re-run the hazard-intersection rule.
+  if (!isNonEmptyStr(st.wave_plan_path) || !path.isAbsolute(st.wave_plan_path)) v.push('wave_plan_path must be an absolute path string');
+  if (!isArr(st.shared_hazard_paths)) v.push('shared_hazard_paths must be an array');
   if (!(st.impl_plan_path === null || (isNonEmptyStr(st.impl_plan_path) && path.isAbsolute(st.impl_plan_path)))) {
     v.push('impl_plan_path must be null or an absolute path string');
   }
@@ -703,7 +802,7 @@ function modeWaveState(args) {
   const read = readJson(statePath);
   if (!read.ok) {
     process.stderr.write(`verify-parallel-wave: ${read.reason}\n`);
-    finish(2, 'malformed'); // s6: unreadable or unparseable input -> exit 2
+    finish(2, 'io_error'); // s6: unreadable or unparseable input -> exit 2
   }
   const st = read.value;
   if (isObj(st)) {
@@ -714,17 +813,40 @@ function modeWaveState(args) {
   const shape = stateShapeIssues(st);
   if (shape.length > 0) {
     report(shape.map((s) => `[wave-state shape] ${s}`));
-    finish(2, 'malformed');
+    finish(2, 'io_error'); // a non-wave_state input cannot have rules evaluated: input error
   }
 
   const repo = st.repo_root;
   if (!isGitRepo(repo)) {
     process.stderr.write(`verify-parallel-wave: repo_root ${repo} is not a git repository\n`);
-    finish(2, 'malformed'); // s6 rule 1 class: path-missing input
+    finish(2, 'io_error'); // s6 rule 1 class: path-missing input
   }
 
   const dirty = []; // rules 3, 10, 11 -> reason dirty_repo_root
-  const malformed = []; // every other rule -> reason malformed
+  const malformed = []; // every other rule -> reason rule_violation
+
+  // s6 rule 12 half (C2): re-validate the echoed shared_hazard_paths syntax before it is used
+  // by the hazard-intersection re-run below (prefixes allowed, existence-unbounded).
+  const hazard = validatePathList(st.shared_hazard_paths, 'shared_hazard_paths', true);
+  for (const i of hazard.issues) malformed.push(`[wave-state] ${i}`);
+
+  // s6a (C2): bind this state to the wave_plan --validate-plan blessed. The sidecar is an
+  // INDEPENDENT artifact only that pass could have produced; an absent or mismatching one means
+  // the state's topology was never gated (the plan-only rules would otherwise vanish). Its
+  // hash covers exactly the shared content, so a matching sidecar transitively re-applies the
+  // plan-gate rules to the runtime state. Absent/mismatch => rule violation (fail-closed).
+  const sidecarPath = sidecarPathFor(st.wave_plan_path);
+  const sidecarRead = readJson(sidecarPath);
+  if (!sidecarRead.ok) {
+    malformed.push(`[wave-state rule 12] no validated-plan sidecar at ${sidecarPath} - this state was never blessed by --validate-plan (${sidecarRead.reason})`);
+  } else {
+    const sc = sidecarRead.value;
+    const recorded = isObj(sc) && isObj(sc.waves) ? sc.waves[String(st.wave)] : undefined;
+    const expected = canonicalWaveHash(repo, st.shared_hazard_paths, st.wave, st.chunks);
+    if (recorded !== expected) {
+      malformed.push(`[wave-state rule 12] sidecar ${sidecarPath} does not bless wave ${st.wave} of this state (recorded ${JSON.stringify(recorded)} != computed ${expected}) - state topology drifted from the validated plan`);
+    }
+  }
 
   const declared = [];
   const reads = [];
@@ -745,13 +867,45 @@ function modeWaveState(args) {
     // rule 1 - the worktree exists and is a git worktree. Missing -> exit 2.
     if (!fs.existsSync(c.worktree) || !gitRun(c.worktree, ['rev-parse', '--is-inside-work-tree']).ok) {
       process.stderr.write(`verify-parallel-wave: ${label}: worktree ${c.worktree} is missing or is not a git worktree\n`);
-      finish(2, 'malformed');
+      finish(2, 'io_error');
     }
 
     const head = revParse(c.worktree, 'HEAD');
     if (!head) {
       process.stderr.write(`verify-parallel-wave: ${label}: worktree ${c.worktree} has no resolvable HEAD\n`);
-      finish(2, 'malformed');
+      finish(2, 'io_error');
+    }
+
+    // rule 13 (C3): the branch NAME merge-wave will merge must resolve, FROM repo_root, to
+    // exactly this verified worktree HEAD. Otherwise merge-wave (which merges the branch by
+    // name) could integrate a wrong or advanced ref that the barrier's touched-path checks
+    // never inspected. Unresolvable or mismatched => violation.
+    const branchSha = revParse(repo, c.branch);
+    if (branchSha === null) {
+      malformed.push(`[wave-state rule 13] ${label}: branch ${JSON.stringify(c.branch)} does not resolve from repo_root ${repo} - merge-wave would merge an unverifiable ref`);
+    } else if (branchSha !== head) {
+      malformed.push(`[wave-state rule 13] ${label}: branch ${JSON.stringify(c.branch)} resolves to ${branchSha} but the verified worktree HEAD is ${head} - merge-wave would merge a ref the barrier never checked`);
+    }
+
+    // rule 14 (C2 defense-in-depth): a subtree prefix is admissible ONLY over a directory
+    // absent at base_sha - re-run here, not just at --validate-plan, so a hand-forged state
+    // cannot smuggle a blank-cheque prefix over an existing dir past the barrier.
+    for (const e of ex.entries) {
+      if (!e.endsWith('/')) continue;
+      const dir = e.slice(0, -1);
+      const exists = dirExistsAtSha(repo, st.base_sha, dir);
+      if (exists === null) {
+        process.stderr.write(`verify-parallel-wave: ${label}: git ls-tree failed for ${dir} at ${st.base_sha}\n`);
+        finish(2, 'io_error');
+      }
+      if (exists) {
+        malformed.push(`[wave-state rule 14] ${label}: subtree prefix ${JSON.stringify(e)} covers a directory that already exists at ${st.base_sha} - enumerate the files instead`);
+      }
+    }
+
+    // rule 15 (C2 defense-in-depth): declared writes disjoint from shared_hazard_paths.
+    for (const [a, b] of overlappingPairs(ex.entries, hazard.entries)) {
+      malformed.push(`[wave-state rule 15] ${label}: declared write ${JSON.stringify(a)} overlaps shared hazard path ${JSON.stringify(b)}`);
     }
 
     // rule 2 - base_sha is an ancestor of the worktree HEAD
@@ -765,7 +919,7 @@ function modeWaveState(args) {
     const wtStatus = statusPaths(c.worktree, true);
     if (wtStatus === null) {
       process.stderr.write(`verify-parallel-wave: ${label}: git status failed in ${c.worktree}\n`);
-      finish(2, 'malformed');
+      finish(2, 'io_error');
     }
     if (wtStatus.length > 0) {
       dirty.push(`[wave-state rule 3] ${label}: chunk left uncommitted work in ${c.worktree}: ${wtStatus.slice(0, 12).join(', ')}${wtStatus.length > 12 ? ` (+${wtStatus.length - 12} more)` : ''}`);
@@ -775,7 +929,7 @@ function modeWaveState(args) {
     const count = gitRun(c.worktree, ['rev-list', '--count', `${st.base_sha}..HEAD`]);
     if (!count.ok) {
       process.stderr.write(`verify-parallel-wave: ${label}: git rev-list failed in ${c.worktree}\n`);
-      finish(2, 'malformed');
+      finish(2, 'io_error');
     }
     if (Number(count.out.trim()) < 1) {
       malformed.push(`[wave-state rule 4] ${label}: no commit beyond base_sha ${st.base_sha} - the chunk produced nothing to merge`);
@@ -785,7 +939,7 @@ function modeWaveState(args) {
     const diff = gitRun(c.worktree, ['diff', '--name-only', '--no-renames', '-z', `${st.base_sha}..HEAD`]);
     if (!diff.ok) {
       process.stderr.write(`verify-parallel-wave: ${label}: git diff failed in ${c.worktree}\n`);
-      finish(2, 'malformed');
+      finish(2, 'io_error');
     }
     const touched = splitZ(diff.out).map(normalizePath);
     touchedSets.push(touched);
@@ -835,18 +989,38 @@ function modeWaveState(args) {
   const repoHead = revParse(repo, 'HEAD');
   if (!repoHead) {
     process.stderr.write(`verify-parallel-wave: repo_root ${repo} has no resolvable HEAD\n`);
-    finish(2, 'malformed');
+    finish(2, 'io_error');
   }
   const allowedHeads = [st.base_sha, ...st.merged_chunks.map((m) => m.merge_sha)];
   if (!allowedHeads.includes(repoHead)) {
     dirty.push(`[wave-state rule 10] repo_root HEAD ${repoHead} is neither base_sha nor a recorded merge_sha (${allowedHeads.join(', ')}) - the integration checkout moved outside the wave`);
   }
 
+  // rule 16 (C4): merged_chunks integrity. Each entry must name a UNIQUE chunk that belongs to
+  // THIS wave, and its merge_sha must be a real commit AND an ancestor of repo_root HEAD. A
+  // shape-only check let a forged/duplicated/dangling entry widen rule 10's allow-list.
+  const chunkIds = new Set(st.chunks.map((c) => c.id));
+  const seenMerged = new Set();
+  for (const m of st.merged_chunks) {
+    if (seenMerged.has(m.id)) {
+      malformed.push(`[wave-state rule 16] merged_chunks id ${JSON.stringify(m.id)} appears more than once`);
+    }
+    seenMerged.add(m.id);
+    if (!chunkIds.has(m.id)) {
+      malformed.push(`[wave-state rule 16] merged_chunks id ${JSON.stringify(m.id)} is not a chunk in this wave`);
+    }
+    if (!gitRun(repo, ['cat-file', '-e', `${m.merge_sha}^{commit}`]).ok) {
+      malformed.push(`[wave-state rule 16] merged_chunks merge_sha ${m.merge_sha} is not a commit in repo_root ${repo}`);
+    } else if (!isAncestor(repo, m.merge_sha, 'HEAD')) {
+      malformed.push(`[wave-state rule 16] merged_chunks merge_sha ${m.merge_sha} for ${JSON.stringify(m.id)} is not an ancestor of repo_root HEAD ${repoHead}`);
+    }
+  }
+
   // rule 11 - repo_root tracked-clean, except impl_plan_path when it is UNDER repo_root
   const rootStatus = statusPaths(repo, false);
   if (rootStatus === null) {
     process.stderr.write(`verify-parallel-wave: git status failed in ${repo}\n`);
-    finish(2, 'malformed');
+    finish(2, 'io_error');
   }
   const exempt = st.impl_plan_path ? relativeUnder(repo, st.impl_plan_path) : null;
   const offending = rootStatus.filter((p) => exempt === null || normalizePath(p) !== exempt);
@@ -858,7 +1032,7 @@ function modeWaveState(args) {
   if (all.length > 0) {
     report(all);
     // A boundary breach is the more specific signal; cleanliness alone is dirty_repo_root.
-    finish(1, malformed.length > 0 ? 'malformed' : 'dirty_repo_root');
+    finish(1, malformed.length > 0 ? 'rule_violation' : 'dirty_repo_root');
   }
 
   process.stdout.write(`verify-parallel-wave: wave ${st.wave} state OK - ${st.chunks.length} chunk(s), ${st.merged_chunks.length} already merged\n`);
@@ -881,15 +1055,37 @@ function modeLogDecision(args) {
 
   if (!DECISIONS.has(decisionRaw)) {
     process.stderr.write(`verify-parallel-wave: --log-decision must be serial|fan_out, got ${JSON.stringify(decisionRaw)}\n`);
-    finish(2, 'malformed');
+    finish(2, 'usage_error');
   }
   if (!REASONS.has(reasonRaw)) {
     process.stderr.write(`verify-parallel-wave: unknown --reason token ${JSON.stringify(reasonRaw)}; the closed set is: ${[...REASONS].join(' | ')}\n`);
-    finish(2, 'malformed'); // a typo'd reason would otherwise become a silent new category
+    finish(2, 'usage_error'); // a typo'd reason would otherwise become a silent new category
   }
 
   process.stdout.write(`verify-parallel-wave: logged ${decisionRaw} (${reasonRaw}) for ${repoRoot}\n`);
   finish(0, reasonRaw);
+}
+
+// ---------------------------------------------------------------------------
+// Mode: --emit-event   (schema doc, s7 + s8 - the ONE event serializer, C-dup fix)
+// ---------------------------------------------------------------------------
+
+// A pure serializer used by merge-wave.sh so the 480-byte fixed-key event line is built in
+// exactly ONE place (buildEventLine), never hand-rolled in bash. merge-wave's events are
+// operations ON a wave-state, so tool_mode is fixed to `wave-state`; the event's own `exit`
+// and `reason` are the merge outcome the caller passes. The invocation itself always exits 0
+// on a successful append - its process exit is not the event's exit.
+function modeEmitEvent(args) {
+  const { exitRaw, reasonRaw, repoRoot, waveRaw } = args;
+  ctx.tool_mode = 'wave-state';
+  ctx.decision = null;
+  ctx.verdict = null;
+  ctx.repo_root = typeof repoRoot === 'string' ? repoRoot : '';
+  ctx.wave = typeof waveRaw === 'string' && /^\d+$/.test(waveRaw) ? Number(waveRaw) : null;
+  const exitCode = typeof exitRaw === 'string' && /^-?\d+$/.test(exitRaw) ? Number(exitRaw) : 2;
+  // writeEvent maps a reason outside the closed set to the fail-closed `malformed` fallback.
+  writeEvent(exitCode, typeof reasonRaw === 'string' ? reasonRaw : 'malformed');
+  process.exit(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +1095,7 @@ function modeLogDecision(args) {
 function parseArgs(argv) {
   const a = {
     mode: null, planPath: null, statePath: null, repoRoot: null, baseSha: null,
-    decisionRaw: null, reasonRaw: null,
+    decisionRaw: null, reasonRaw: null, exitRaw: null, waveRaw: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
@@ -914,9 +1110,14 @@ function parseArgs(argv) {
       case '--log-decision':
         if (a.mode) { ctx.tool_mode = a.mode; usage('only one mode may be named'); }
         a.mode = 'log-decision'; a.decisionRaw = value ?? null; i += 1; break;
+      case '--emit-event':
+        if (a.mode) { ctx.tool_mode = a.mode; usage('only one mode may be named'); }
+        a.mode = 'emit-event'; break; // consumes no value; fields come from --exit/--reason/--repo-root/--wave
       case '--repo-root': a.repoRoot = value ?? null; i += 1; break;
       case '--base-sha': a.baseSha = value ?? null; i += 1; break;
       case '--reason': a.reasonRaw = value ?? null; i += 1; break;
+      case '--exit': a.exitRaw = value ?? null; i += 1; break;
+      case '--wave': a.waveRaw = value ?? null; i += 1; break;
       case '-h': case '--help': usage(null); break;
       default:
         // ctx.tool_mode may already be set - an unknown flag is still that mode's event.
@@ -933,6 +1134,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.mode === 'validate-plan') modeValidatePlan(args);
   else if (args.mode === 'wave-state') modeWaveState(args);
+  else if (args.mode === 'emit-event') modeEmitEvent(args);
   else modeLogDecision(args);
 }
 
@@ -940,5 +1142,5 @@ try {
   main();
 } catch (err) {
   process.stderr.write(`verify-parallel-wave: unexpected error: ${(err && err.stack) || err}\n`);
-  finish(2, 'malformed');
+  finish(2, 'io_error');
 }

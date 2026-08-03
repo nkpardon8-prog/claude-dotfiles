@@ -1,15 +1,16 @@
-# Wave-plan schemas (FROZEN, v1)
+# Wave-plan schemas (FROZEN, v1.1)
 
-`schema_version: "parallelizer.v1"`
+`schema_version: "parallelizer.v1.1"`
 
-**This file is the SOLE schema authority** for the write-wave machinery. Three artifacts are
+**This file is the SOLE schema authority** for the write-wave machinery. Four artifacts are
 frozen here:
 
 | Artifact | Written by | Read by |
 | --- | --- | --- |
 | `wave_plan` | the PARALLELIZER subagent (`agents/parallelizer.md`) | `scripts/verify-parallel-wave.mjs --validate-plan`, the orchestrator (`commands/implement.md` wave mode) |
+| `wave_plan` binding sidecar (`<wave_plan>.validated`) | `--validate-plan` (on pass) | `--wave-state` (s4a / s6a) |
 | `wave_state` | the orchestrator, once per wave | `scripts/verify-parallel-wave.mjs --wave-state`, `scripts/merge-wave.sh` |
-| `rework.log` event | `scripts/verify-parallel-wave.mjs` (every invocation), `scripts/merge-wave.sh` | `scripts/parallel-stats.py` |
+| `rework.log` event | `scripts/verify-parallel-wave.mjs` (every invocation), `scripts/merge-wave.sh` (via the checker's `--emit-event` serializer) | `scripts/parallel-stats.py` |
 
 Nothing else may restate these shapes. `agents/parallelizer.md` and the checker both cite this
 file; when they disagree with it, this file wins and they are the bug.
@@ -17,6 +18,29 @@ file; when they disagree with it, this file wins and they are the bug.
 Frozen means: no field may be added, removed, renamed, or have its meaning changed without a
 `schema_version` bump and a matching update to the checker, its assumption suite, and the agent
 definition in the same commit.
+
+## v1.1 changes (codex-review C2/C3/C4/C9 + adversarial)
+
+Bumped `parallelizer.v1` -> `parallelizer.v1.1`. Summary (full detail in the cited sections):
+
+1. **`wave_state` gains two REQUIRED fields** (s5): `wave_plan_path` (absolute path to the
+   `wave_plan` that `--validate-plan` blessed) and `shared_hazard_paths` (the wave's hazard list,
+   echoed from that plan). They power the binding sidecar and the re-run of the hazard rule.
+2. **Plan<->state binding sidecar** (s4a / s6a, fixes C2): `--validate-plan` writes
+   `<wave_plan>.validated` on pass; `--wave-state` requires a sidecar whose recorded per-wave hash
+   equals the hash recomputed from the state. Absent or mismatched => violation.
+3. **`--wave-state` re-runs two plan-only rules** as defense-in-depth (s6 rules 14-15, fixes C2):
+   subtree-prefix-only-over-absent-dirs, and writes disjoint from `shared_hazard_paths`.
+4. **`--wave-state` binds branch to verified HEAD** (s6 rule 13, fixes C3): each chunk's `branch`
+   must resolve, from `repo_root`, to exactly the verified worktree HEAD.
+5. **`--wave-state` proves `merged_chunks` integrity** (s6 rule 16, fixes C4): unique ids, each a
+   member of `chunks[]`, each `merge_sha` a real commit AND an ancestor of `repo_root` HEAD.
+6. **`make <target>` allowlist tightened** (s2.4, fixes C9): only a bare target token, no flags or
+   paths. A `.` path segment is now rejected (s2.2).
+7. **De-aliased `reason` token set** (s7.2): `merge_conflict`, `merge_success`, `usage_error`,
+   `io_error`, `rule_violation` split apart events v1 flattened into `malformed`/`fan_out`.
+8. **One event serializer** (s7 / s8): merge-wave emits via the checker's `--emit-event` mode, and
+   validates each branch (`check-ref-format --branch`, no leading dash) before merging.
 
 ---
 
@@ -93,6 +117,8 @@ Every entry is a repo-root-relative POSIX path. An entry is REJECTED if it:
 - contains a glob metacharacter (`*`, `?`, `[`, `]`),
 - is empty, `.`, or `./` after normalization,
 - contains an empty segment (`a//b`),
+- contains a `.` segment (`src/./x` - normalization only strips a LEADING `./`, so a mid-path
+  `.` would otherwise dodge the exact-string rule-9 comparison),
 - duplicates another entry in the same list.
 
 `./` prefixes are normalized away (`./a/b.ts` -> `a/b.ts`) before every comparison. A trailing `/`
@@ -152,7 +178,7 @@ parsing rules by this checker, so anything that only has meaning to a shell is o
 | `npx tsc` | - |
 | `node --check` | - |
 | `bash scripts/<x>-assumptions/run-all.sh` | `<x>` matches `[A-Za-z0-9._-]+`; path is repo-root-relative |
-| `make <target>` | - |
+| `make <target>` | `<target>` is a BARE target token matching `^[A-Za-z0-9._-]+$` (no leading `-`, no path separator, no flags) - so `make -f evil.mk` / `make -C other` cannot select a foreign makefile or directory |
 
 Trailing arguments beyond the matched prefix are allowed (they still passed stage 1).
 
@@ -314,7 +340,7 @@ human reader and for `serial_reasons`, not a checker input.
 Run per wave, at that wave's re-pinned `base_sha`. Rules, all evaluated at the PASSED sha:
 
 1. Shape: every required key present with the declared type; enums in range; `schema_version` is
-   `parallelizer.v1`. Violation -> exit 1, reason `malformed`.
+   `parallelizer.v1.1`. Violation -> exit 1, reason `rule_violation`.
 2. `analysis_basis.repo_root` equals `--repo-root`.
 3. `analysis_basis.base_sha` satisfies the ancestry rule (3.2).
 4. Chunk ids match 2.1 and are unique plan-wide.
@@ -333,7 +359,31 @@ Run per wave, at that wave's re-pinned `base_sha`. Rules, all evaluated at the P
     non-empty; the checker exits 1 with reason `serial_correct` (the orchestrator runs serial and
     does not need a validated plan).
 
-Exit 0 -> reason `fan_out`. An unreadable or unparseable input file -> exit 2, reason `malformed`.
+A rule violation (rules 1-11) -> exit 1, reason `rule_violation`. Rule 12 -> `low_confidence`;
+rule 13 -> `serial_correct`. Exit 0 -> reason `fan_out`. An unreadable or unparseable input file,
+a non-git `--repo-root`, an unresolvable `--base-sha`, or a git failure -> exit 2, reason
+`io_error`.
+
+---
+
+## 4a. `wave_plan` binding sidecar (the C2 fix)
+
+On the exit-0 (`fan_out`) path, `--validate-plan` writes a sidecar next to the plan at
+`<wave_plan_path>.validated`. On the exit-1 (rule) path it REMOVES any stale sidecar, so a plan
+that fails validation cannot leave a blessing behind. Shape:
+
+```json
+{ "schema_version": "parallelizer.v1.1", "waves": { "1": "<sha256hex>", "2": "<sha256hex>" } }
+```
+
+Each per-wave value is the sha256 of the CANONICAL content shared verbatim by the plan and the
+runtime `wave_state`: `repo_root` (symlink-resolved), the wave's `shared_hazard_paths`, the wave
+number, and each chunk's `{id, exclusive_paths, reads}` - every path list normalized (2.2),
+de-duplicated, and sorted, and the chunks sorted by id. `base_sha` is DELIBERATELY excluded: the
+orchestrator re-pins it every wave (3.2), so it drifts legitimately and is verified separately by
+ancestry. The sidecar is the INDEPENDENT artifact only a passing `--validate-plan` could produce;
+`--wave-state` recomputes the same hash and requires a match (s6 rule 12). The write is best-effort
+telemetry - a failure to write is loud but never turns a passing plan into a failing one.
 
 ---
 
@@ -349,6 +399,8 @@ actually lives. `merge-wave.sh` mutates only `merged_chunks[]`, via node read-mo
 | `repo_root` | absolute path string | yes | the integration checkout |
 | `base_sha` | 40-char hex string | yes | this wave's re-pinned base; every worktree starts here |
 | `wave` | integer | yes | 1-based; matches the `w<W>` in the filename |
+| `wave_plan_path` | absolute path string | yes | **v1.1** - the `wave_plan` that `--validate-plan` blessed; `<this>.validated` is the binding sidecar (4a, s6 rule 12) |
+| `shared_hazard_paths` | array of path (2.2) | yes | **v1.1** - echoed verbatim from that plan's `analysis_basis.shared_hazard_paths`; feeds the binding hash and the s6 rule 15 re-run |
 | `impl_plan_path` | absolute path string or `null` | yes | dirty-tree exemption applies ONLY when this resolves UNDER `repo_root`; outside or `null` -> no exemption |
 | `merged_chunks` | array of `{id, merge_sha}` | yes | `[]` before the first merge; append-only, in merge order; `merge_sha` is the resulting MERGE COMMIT, not the branch tip |
 | `gate_list` | array of string | yes | the Step-3.5-discovered gate commands, recorded verbatim so the barrier re-runs EXACTLY that list; NOT allowlist-checked (5.1) |
@@ -378,6 +430,8 @@ the orchestrator's cwd, the gates are re-discovered under `repo_root` and the de
   "repo_root": "/Users/me/repo",
   "base_sha": "0123456789abcdef0123456789abcdef01234567",
   "wave": 1,
+  "wave_plan_path": "/Users/me/.claude/parallel-waves/a1b2c3d4-w1.plan.json",
+  "shared_hazard_paths": ["package-lock.json", "prisma/schema.prisma"],
   "impl_plan_path": "/Users/me/repo/tmp/ready-plans/2026-08-02-example.md",
   "merged_chunks": [],
   "gate_list": ["npm run typecheck", "bash scripts/example-assumptions/run-all.sh"],
@@ -399,7 +453,15 @@ the orchestrator's cwd, the gates are re-discovered under `repo_root` and the de
 
 `node scripts/verify-parallel-wave.mjs --wave-state <wave-state.json>`
 
-Run at the barrier, before any merge, and again inline by `merge-wave.sh`. Per chunk:
+Run at the barrier, before any merge, and again inline by `merge-wave.sh`. Before the per-chunk
+loop, the state is BOUND to the blessed plan (4a, the C2 fix):
+
+- **rule 12 (binding sidecar).** Read `<wave_plan_path>.validated`. Recompute the canonical
+  per-wave hash (4a) from THIS state's `repo_root`, `shared_hazard_paths`, `wave`, and `chunks`.
+  The sidecar must exist and record a matching hash for `wave`. Absent or mismatch -> violation
+  (the state's topology was never gated, or drifted after blessing).
+
+Per chunk:
 
 1. The `worktree` path exists and is a git worktree. Missing -> exit 2.
 2. `base_sha` is an ANCESTOR of the worktree HEAD.
@@ -408,6 +470,15 @@ Run at the barrier, before any merge, and again inline by `merge-wave.sh`. Per c
 4. The worktree has at least ONE commit beyond `base_sha`.
 5. `touched = git -C <worktree> diff --name-only --no-renames -z <base_sha>..HEAD`. Renames count
    BOTH sides (that is what `--no-renames` buys).
+13. **(C3) branch binds to verified HEAD.** `branch` must resolve, from `repo_root`, to exactly
+    the verified worktree HEAD. Unresolvable or mismatched -> violation. Without this, `merge-wave`
+    (which merges the branch by NAME) could integrate a wrong/advanced ref the barrier never
+    inspected.
+14. **(C2 defense-in-depth) subtree prefix.** Any trailing-`/` `exclusive_paths` entry is
+    admissible ONLY over a directory ABSENT at `base_sha` (2.3), re-checked here, not only at
+    `--validate-plan`.
+15. **(C2 defense-in-depth) hazard disjointness.** Declared `exclusive_paths` disjoint from
+    `shared_hazard_paths` (the rule 10 of `--validate-plan`, re-run against the runtime state).
 
 Then across chunks:
 
@@ -418,22 +489,42 @@ Then across chunks:
 10. `repo_root` HEAD is in `{base_sha} union merged_chunks[].merge_sha` (verbatim sha comparison -
     merge commits, not branch tips). This is what makes an interrupted merge RESUMABLE rather than
     a refusal.
+16. **(C4) `merged_chunks` integrity.** Each entry's `id` is UNIQUE, is a member of `chunks[]`, and
+    its `merge_sha` is a real commit (`git cat-file -e <sha>^{commit}`) AND an ancestor of
+    `repo_root` HEAD. A shape-only check let a forged/duplicated/dangling entry widen rule 10's
+    allow-list.
 11. `repo_root` is tracked-clean (`git status --porcelain --untracked-files=no`), except for
     `impl_plan_path` when it resolves under `repo_root`.
 
-Exit 0 -> reason `fan_out`. A cleanliness or HEAD-position violation (rules 3, 10, 11) -> exit 1,
-reason `dirty_repo_root`. Any other rule violation -> exit 1, reason `malformed`. An unreadable,
-unparseable, or path-missing input -> exit 2, reason `malformed`.
+A cleanliness or HEAD-position violation (rules 3, 10, 11) -> exit 1, reason `dirty_repo_root`.
+Any other rule violation (rules 2, 4, 6-9, 12-16) -> exit 1, reason `rule_violation`. Exit 0 ->
+reason `fan_out`. An unreadable, unparseable, or path-missing input, or a git failure -> exit 2,
+reason `io_error`.
 
 On failure the wave HALTS: preserve every worktree and branch, merge nothing, start no next wave,
 reconcile serially, then re-verify.
+
+### 6a. `merge-wave.sh` branch pre-check (Fix 6)
+
+Before merging, `merge-wave.sh` validates each `branch` with `git check-ref-format --branch` and
+rejects a leading `-`, so an unvalidated ref cannot be read as a git option by `git merge`. rule 13
+(above, run inline) is the primary catcher; this is the callsite backstop. Either way a bad branch
+merges NOTHING.
 
 ---
 
 ## 7. `rework.log` event schema
 
-One event per invocation of `verify-parallel-wave.mjs` (all three modes, BOTH exit paths) and per
-outcome of `merge-wave.sh`. Appended with a single `fs.appendFileSync` to `<waves dir>/rework.log`.
+One event per invocation of `verify-parallel-wave.mjs` (the `validate-plan`, `wave-state`, and
+`log-decision` modes, BOTH exit paths) and per outcome of `merge-wave.sh`. Appended with a single
+`fs.appendFileSync` to `<waves dir>/rework.log`.
+
+**One serializer (s8, the event-format dedup fix).** The event line is built in exactly ONE place
+- `buildEventLine()` in the checker. `merge-wave.sh` does NOT hand-roll the line; it emits through
+the checker's `--emit-event --exit <n> --reason <token> --repo-root <p> --wave <n>` mode, which
+sets `tool_mode: wave-state` (a merge is an operation ON a wave-state) and appends via the same
+serializer. This mode emits ONLY the passed event and does not write a second event for its own
+invocation.
 
 ### 7.1 Format
 
@@ -471,14 +562,20 @@ A reader treats `truncated: true` as "repo_root is not a reliable join key for t
 
 ```
 lt2_chunks | no_review | dirty_repo_root | merge_in_progress | pct_unknown |
-pct_over_60 | stale_wave | dotfiles_unpaused | serial_correct | malformed |
-low_confidence | fan_out
+pct_over_60 | stale_wave | dotfiles_unpaused | serial_correct | low_confidence | fan_out |
+rule_violation | usage_error | io_error | merge_success | merge_conflict | malformed
 ```
 
-An unknown token is REJECTED: the checker exits 2 and still writes ONE event, with
-`reason: "malformed"` and `decision` set to the passed decision when that argument was itself
-valid, `null` otherwise. Rejecting unknown tokens is what keeps the denominator honest - a typo'd
-reason would otherwise become a silent new category.
+**v1.1** de-aliased the five tokens on the second row from what v1 flattened into
+`malformed`/`fan_out`: a merge conflict, a merge success, a usage error, an environment/io error,
+and a real rule violation are now distinct, so analytics can tell a bad plan from a conflict from a
+merged wave. `malformed` is RETAINED as the fail-closed fallback `writeEvent` uses when a token
+outside this set somehow reaches it.
+
+An unknown `--log-decision --reason` token is REJECTED: the checker exits 2 with `reason:
+"usage_error"` and still writes ONE event, with `decision` set to the passed decision when that
+argument was itself valid, `null` otherwise. Rejecting unknown tokens is what keeps the denominator
+honest - a typo'd reason would otherwise become a silent new category.
 
 Token meanings (the orchestrator's serial-gate conditions come first; these are the
 `--log-decision` reasons):
@@ -487,23 +584,29 @@ Token meanings (the orchestrator's serial-gate conditions come first; these are 
 | --- | --- |
 | `lt2_chunks` | fewer than 2 pending chunks |
 | `no_review` | `NO_REVIEW = true` (mission path) |
-| `dirty_repo_root` | tracked-dirty `repo_root`, or a barrier cleanliness/HEAD violation |
+| `dirty_repo_root` | tracked-dirty `repo_root`, or a barrier cleanliness/HEAD violation (rules 3, 10, 11) |
 | `merge_in_progress` | a merge or rebase is in progress at `repo_root` |
 | `pct_unknown` | the context-percentage broker value is empty or unresolvable |
 | `pct_over_60` | context usage above 60% |
 | `stale_wave` | a wave-state for the same `repo_root` still has worktrees on disk |
 | `dotfiles_unpaused` | `repo_root` is `~/.claude-dotfiles` without the sync-pause marker |
 | `serial_correct` | PARALLELIZER returned `SERIAL_CORRECT` |
-| `malformed` | PARALLELIZER output or an input file failed schema/rule validation |
 | `low_confidence` | a multi-chunk wave lacked `high` confidence |
-| `fan_out` | the fan-out proceeded, or a checker mode passed |
+| `fan_out` | the fan-out proceeded, or a checker mode PASSED (`--validate-plan` / `--wave-state` exit 0) |
+| `rule_violation` | a `wave_plan` or `wave_state` failed schema/rule validation (exit 1) |
+| `usage_error` | a CLI/argument usage error, incl. an unknown `--reason` token (exit 2) |
+| `io_error` | unreadable/unparseable input, a non-git repo, or a git/environment failure (exit 2) |
+| `merge_success` | `merge-wave.sh` integrated the wave (exit 0) |
+| `merge_conflict` | `merge-wave.sh` hit a conflict/refusal and merged nothing further (exit 1) |
+| `malformed` | fail-closed fallback for a token outside this set reaching `writeEvent` |
 
 ### 7.3 Examples
 
 ```
 {"ts":"2026-08-02T18:04:11Z","tool_mode":"log-decision","decision":"serial","verdict":null,"exit":0,"repo_root":"/Users/me/repo","wave":null,"reason":"pct_over_60"}
 {"ts":"2026-08-02T18:09:02Z","tool_mode":"validate-plan","decision":null,"verdict":"FAN_OUT","exit":0,"repo_root":"/Users/me/repo","wave":1,"reason":"fan_out"}
-{"ts":"2026-08-02T18:31:44Z","tool_mode":"wave-state","decision":null,"verdict":null,"exit":1,"repo_root":"/Users/me/repo","wave":1,"reason":"malformed"}
+{"ts":"2026-08-02T18:31:44Z","tool_mode":"wave-state","decision":null,"verdict":null,"exit":1,"repo_root":"/Users/me/repo","wave":1,"reason":"rule_violation"}
+{"ts":"2026-08-02T18:33:10Z","tool_mode":"wave-state","decision":null,"verdict":null,"exit":0,"repo_root":"/Users/me/repo","wave":1,"reason":"merge_success"}
 ```
 
 ---
@@ -516,3 +619,9 @@ Token meanings (the orchestrator's serial-gate conditions come first; these are 
 - The checker rejects a `schema_version` it does not implement rather than best-effort parsing it.
   A silently accepted older shape is exactly the failure this freeze exists to prevent.
 - Adding a `reason` token is a schema change: the closed set is the measurement contract.
+- **2026-08-03 - `parallelizer.v1` -> `parallelizer.v1.1`** (codex-review C2/C3/C4/C9 + adversarial):
+  added `wave_state.wave_plan_path` + `shared_hazard_paths`, the `<wave_plan>.validated` binding
+  sidecar (4a/6a), `wave_state` rules 12-16, the tightened `make`/path rules (2.2/2.4), the
+  de-aliased `reason` tokens (7.2), and the single `--emit-event` serializer (7/8). `parallelizer.md`
+  is the one remaining v1 citation to reconcile when the agent definition is next revised; the
+  checker rejects a plain `parallelizer.v1` document, so no v1 plan is silently accepted.

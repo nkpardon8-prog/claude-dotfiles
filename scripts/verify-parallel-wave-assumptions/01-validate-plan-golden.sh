@@ -29,7 +29,7 @@ wc_expect_reason fan_out "A1 golden plan"
 
 # A2 - the known-DEPENDENT pair is rejected, naming the rule and the file
 wc_check 1 "A2 dependent plan" --validate-plan "$DEP" --repo-root "$REPO" --base-sha "$BASE_SHA"
-wc_expect_reason malformed "A2 dependent plan"
+wc_expect_reason rule_violation "A2 dependent plan"
 wc_out_has "plan rule 9" "A2 dependent plan"
 wc_out_has "src/shared.ts" "A2 dependent plan"
 wc_out_has "chunk-b" "A2 dependent plan"
@@ -38,7 +38,7 @@ wc_out_has "chunk-b" "A2 dependent plan"
 #      parsed (schema doc s8).
 wc_mutate "$PLAN" "$MUT" 'p["schema_version"] = "parallelizer.v2"'
 wc_check 1 "A3 schema_version" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$BASE_SHA"
-wc_expect_reason malformed "A3 schema_version"
+wc_expect_reason rule_violation "A3 schema_version"
 
 # A4 - rule 2: analysis_basis.repo_root must equal the passed --repo-root
 wc_mutate "$PLAN" "$MUT" 'p["analysis_basis"]["repo_root"] = "/nowhere/else"'
@@ -48,7 +48,7 @@ wc_out_has "plan rule 2" "A4 repo_root mismatch"
 # A5 - rule 1: a missing required chunk key is malformed
 wc_mutate "$PLAN" "$MUT" 'del p["waves"][0]["chunks"][0]["rationale"]'
 wc_check 1 "A5 missing required key" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$BASE_SHA"
-wc_expect_reason malformed "A5 missing required key"
+wc_expect_reason rule_violation "A5 missing required key"
 
 # A6 - s3.1 forward tolerance: an UNKNOWN top-level key is ignored, not rejected. Nothing about
 #      a chunk's permissions is inferable from an unknown key, so tolerating it cannot widen a

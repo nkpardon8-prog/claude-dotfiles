@@ -31,7 +31,7 @@ wc_mutate "$PLAN" "$MUT" "p['waves'][0]['chunks'][0]['exclusive_paths'] = ['src/
 p['waves'][0]['chunks'][1]['exclusive_paths'] = ['client/panels/']
 p['waves'][0]['chunks'][1]['reads'] = []"
 wc_check 1 "A2 prefix over an existing dir" --validate-plan "$MUT" --repo-root "$REPO" --base-sha "$BASE_SHA"
-wc_expect_reason malformed "A2 prefix over an existing dir"
+wc_expect_reason rule_violation "A2 prefix over an existing dir"
 wc_out_has "plan rule 7" "A2 prefix over an existing dir"
 
 # A directory that appears AFTER base_sha - exactly what a merged earlier wave produces.

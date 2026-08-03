@@ -1,1 +1,1 @@
-{"rejects":["..","/abs","a//b","glob","dup",".","backslash","prefix-in-reads"],"normalized":"./a -> a","authority":"schema doc s2.2 (plan text deferred to it for ./y)"}
+{"rejects":["..","/abs","a//b","glob","dup",".","./ mid-path .","backslash","prefix-in-reads"],"normalized":"./a -> a","authority":"schema doc s2.2 (plan text deferred to it for ./y)"}

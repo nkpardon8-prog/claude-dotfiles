@@ -1,1 +1,1 @@
-{"stage1":"; | & $ ` > < newline","stage2":"npm|yarn|pnpm run <declared script> | npx tsc | node --check | bash scripts/<x>-assumptions/run-all.sh | make <target>","floor":"typecheck|tsc|lint|check|test","no_package_json":"floor n/a, npm arm dead"}
+{"stage1":"; | & $ ` > < newline","stage2":"npm|yarn|pnpm run <declared script> | npx tsc | node --check | bash scripts/<x>-assumptions/run-all.sh | make <bare-target>","make_rejects":["-f evil.mk","-C other","path/target"],"floor":"typecheck|tsc|lint|check|test","no_package_json":"floor n/a, npm arm dead"}
