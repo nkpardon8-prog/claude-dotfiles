@@ -44,6 +44,19 @@ credentials.json
 *service-account*.json
 *-key.json
 .netrc
+# 2026-08-03 round-2 review: these two were the SAME root-anchoring defect the note at the
+# bottom of this file documents, sitting three lines above it. MEASURED before the fix:
+# `sub/.aws/credentials` and `deep/x/.aws/config` were NOT ignored. `.aws/config` is the
+# sharper of the two - it carries no AKIA-shaped token, so the scanner lane offered as the
+# alternate cover does not fire either, making a nested checkout a path BOTH layers assume
+# the other is handling.
+**/.aws/credentials
+**/.aws/config
+# git's own credential-store writes PLAINTEXT `https://user:password@host` lines here, and
+# the scanner deliberately excludes credential URLs (too many false positives on ordinary
+# URLs), so before this entry neither layer covered it. Verified NOT ignored at any depth.
+.git-credentials
+**/git/credentials
 # Added 2026-08-03 after a god-report finding verified BOTH layers missing these.
 # This repo runs `git add -A` and auto-pushes to a PUBLIC remote, so an unignored
 # secret-bearing file is one `direnv allow` / `npm login` / `docker login` from exposure.
