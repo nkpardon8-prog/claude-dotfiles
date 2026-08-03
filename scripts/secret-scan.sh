@@ -32,7 +32,18 @@
 set -o pipefail
 export LC_ALL=C
 
-RX='(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +|EC +|DSA +|PGP +)?PRIVATE +KEY-----)'
+# ANCHORING (2026-08-03): the `sk-` lane is LEFT-ANCHORED on a non-identifier boundary.
+# Unanchored it matched INSIDE a word: any word ending in those two letters, followed by a
+# hyphen and a 20+ character hyphenated run, was a hit - so ordinary prose about a
+# task-specific thing, a risk-based approach, or disk-space monitoring all returned rc=2.
+# In this repo, whose prose is full of long kebab-case identifiers, that is not a cosmetic
+# false positive: a hit jams EVERY commit and silently halts the async auto-push to the
+# public remote. The other lanes (AKIA/ghp_/AIza/npm_) are self-anchoring via their fixed
+# prefixes and need no boundary.
+# Negative cases for all three phrases live in scripts/hooks/test-secret-scan.sh.
+# Do NOT write those example words here with a separator between the two halves - a
+# non-identifier character in that position makes this very comment match the lane.
+RX='((^|[^A-Za-z0-9_-])sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|npm_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +|EC +|DSA +|PGP +)?PRIVATE +KEY-----)'
 export RX
 
 # Connection strings and JWTs (added 2026-08-03 by explicit user decision on pd:2-rx-conn-scope,
@@ -264,6 +275,17 @@ case "${1:-}" in
         # silently turn a full-tree scan into a scan of nothing.
         shift
         printf '%s\0' "$@" > "$TMPLIST" || exit 3
+        ;;
+    --*)
+        # FAIL CLOSED on an unrecognized option (2026-08-03). Without this branch the
+        # catch-all below treated `--stdin` / a typo / a renamed flag as a PATH: the file
+        # does not exist, the per-file existence check skips it, and the scanner exits 0
+        # having scanned NOTHING while reporting clean. Three of the four consumers are
+        # exit-code-only, so none of them would ever notice. An argument beginning with `-`
+        # that is not a known mode and did not follow `--` is an invocation error, never a path.
+        echo "secret-scan: unknown option '$1'" >&2
+        usage
+        exit 3
         ;;
     *)
         printf '%s\0' "$@" > "$TMPLIST" || exit 3

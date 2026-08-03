@@ -523,6 +523,63 @@ chk "kind=other notice is the plain clear-and-retry form" \
 rm -rf "$MK"
 
 # ---------------------------------------------------------------------------
+# PART 2 (2026-08-03) - defects found by /god-report and each VERIFIED BY EXECUTION before
+# a line of the fix was written. Every case below was watched to FAIL first.
+
+P2W=$(mktemp -d) || { echo "mktemp failed"; exit 1; }
+
+# --- P2: the sk- lane was UNANCHORED, so it matched inside a word: ta|sk-specific...,
+# ri|sk-based..., di|sk-space... A false positive here is not cosmetic - it jams every
+# commit AND silently halts the async auto-push to the public remote. Measured rc=2 on all
+# three of these before the anchor was added.
+for _p in 'task-specific-handoff-resolution' 'risk-based-approach-to-secret-scanning' \
+          'disk-space-monitoring-and-cleanup-policy'; do
+    printf 'A design note about %s in prose.\n' "$_p" > "$P2W/prose.md"
+    bash "$SCAN" "$P2W/prose.md" >/dev/null 2>&1
+    chk "ordinary prose containing '${_p%%-*}-' is not a secret" "$?" "0"
+done
+
+# Regression guard for the anchor: a REAL sk- key must STILL be caught. Without this the
+# "fix" could be a deletion of the lane and the suite would stay green.
+printf 'key=%s%s\n' 'sk-' "$(printf 'A%.0s' $(seq 40))" > "$P2W/realkey.txt"
+bash "$SCAN" "$P2W/realkey.txt" >/dev/null 2>&1
+chk "a real sk- key is still caught after anchoring" "$?" "2"
+
+# --- P3: an unrecognized flag fell through the mode `case` to the path branch, became a
+# nonexistent filename, was skipped, and the scanner exited 0 having scanned NOTHING.
+# Three of the four consumers are exit-code-only, so none of them would notice.
+bash "$SCAN" --no-such-flag >/dev/null 2>&1
+chk "unknown flag is rejected, not treated as a filename" "$?" "3"
+bash "$SCAN" --stdin >/dev/null 2>&1
+chk "unknown flag --stdin is rejected (there is no stdin mode)" "$?" "3"
+
+# --- P1b: npm auth tokens had no lane at all, so an .npmrc sailed through the scanner.
+printf '//registry.npmjs.org/:_authToken=%s%s\n' 'npm_' "$(printf 'B%.0s' $(seq 36))" \
+    > "$P2W/npmrc.txt"
+bash "$SCAN" "$P2W/npmrc.txt" >/dev/null 2>&1
+chk "an npm auth token is caught" "$?" "2"
+rm -rf "$P2W"
+
+# --- P1a: secret-bearing filenames MUST be gitignored. This repo runs `git add -A` and
+# auto-pushes to a PUBLIC remote. Note the asymmetry that makes this the load-bearing
+# layer: an arbitrary `export DB_PASSWORD=<opaque>` in .envrc is uncatchable by ANY
+# scanner, so for that file gitignore is the ONLY control that can work.
+for _f in .envrc .npmrc .dockercfg credentials.json .netrc; do
+    ( cd "$REPO" && git check-ignore -q "$_f" )
+    chk "$_f is gitignored" "$?" "0"
+done
+
+# --- P6: settings.json.template inlined a SECOND copy of RX for its SessionStart scan of
+# ~/.config/claude/credentials.md. It had already diverged - missing the JWT and
+# connection-string lanes - so a JWT there was never warned about while the same value in
+# a repo file was caught. The fix is single-source: call the real scanner, do not sync two
+# copies. These assert the duplicate is GONE, not that it matches.
+chk "template no longer inlines a second copy of RX" \
+    "$(grep -c 'AKIA\[0-9A-Z\]' "$REPO/settings.json.template")" "0"
+chk "template credentials scan calls the canonical scanner" \
+    "$(grep -q 'secret-scan.sh' "$REPO/settings.json.template" && echo yes || echo no)" "yes"
+
+# ---------------------------------------------------------------------------
 echo
 echo "---- $PASS passed, $FAIL failed ----"
 [ "$FAIL" -eq 0 ] || exit 1

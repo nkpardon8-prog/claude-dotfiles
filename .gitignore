@@ -40,9 +40,24 @@ id_ecdsa.*
 .aws/config
 .gcp/
 *.credentials.json
+credentials.json
 *service-account*.json
 *-key.json
 .netrc
+# Added 2026-08-03 after a god-report finding verified BOTH layers missing these.
+# This repo runs `git add -A` and auto-pushes to a PUBLIC remote, so an unignored
+# secret-bearing file is one `direnv allow` / `npm login` / `docker login` from exposure.
+# The asymmetry that makes gitignore load-bearing here: .envrc holds an arbitrary
+# `export DB_PASSWORD=<opaque>`, which NO scanner can pattern-match - so for that file this
+# is the only control that can work. (An npm_ lane was added to secret-scan.sh as the
+# second layer for .npmrc, whose token has a fixed prefix.)
+# NOTE `*.credentials.json` above does NOT cover a bare `credentials.json` - the wildcard
+# reads broader than it is, which is exactly how that one slipped through; hence the
+# explicit entry added above it.
+.envrc
+.npmrc
+.dockercfg
+.docker/config.json
 .npmrc.local
 .pypirc
 
