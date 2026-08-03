@@ -36,8 +36,8 @@ id_ed25519.*
 id_ecdsa
 id_ecdsa.*
 .ssh/
-.aws/credentials
-.aws/config
+# (the root-anchored `.aws/credentials` and `.aws/config` that used to sit here were REPLACED
+#  by the depth-matching `**/` forms below - one rule per intent, not two)
 .gcp/
 *.credentials.json
 credentials.json
