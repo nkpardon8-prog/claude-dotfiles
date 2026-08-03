@@ -1,0 +1,1 @@
+{"staged_broken_worktree_clean":"exit 1","all_reads_worktree":"exit 0","staged_deletion":"exit 1 fail-closed","inverse_staged_clean_worktree_broken":"exit 0 (reads index)","size_lint_same_split":"exit 1"}

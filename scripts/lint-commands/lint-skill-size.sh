@@ -29,10 +29,35 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT")"
 MODE="${1:---all}"
 
-# In --staged mode the tree being COMMITTED is the authority for content too (identical
-# to $ROOT in the ordinary main-tree case; only the worktree case differs).
-CONTENT_ROOT="$ROOT"
-[ "$MODE" = "--staged" ] && CONTENT_ROOT="$GITROOT"
+# CONTENT AUTHORITY (2026-08-03, codex-review C1 fix - see lint-skill-contract.sh for the
+# full rationale): in --staged mode measure the STAGED BLOB (`git show :<path>`), not the
+# worktree. Selecting files from the index but sizing the worktree let a file staged
+# oversize / marker-broken but left clean in the worktree pass the ceiling gate. In --all
+# mode the working tree is the authority (no index divergence to reconcile).
+STAGED_TMP=""
+_lint_cleanup() { [ -n "$STAGED_TMP" ] && rm -rf "$STAGED_TMP" 2>/dev/null; return 0; }
+trap _lint_cleanup EXIT
+
+# resolve_content <repo-relative-path> -> prints an absolute path to size, or NOTHING when
+# the content does not exist (worktree file absent in --all; staged deletion in --staged).
+# Memoized per path. A deletion is not a size violation, so callers skip an empty result.
+resolve_content() {
+    local path="$1" out
+    if [ "$MODE" != "--staged" ]; then
+        [ -f "$ROOT/$path" ] && printf '%s\n' "$ROOT/$path"
+        return 0
+    fi
+    [ -n "$STAGED_TMP" ] || STAGED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lint-staged-XXXXXX")" || return 0
+    out="$STAGED_TMP/$path"
+    if [ ! -f "$out" ]; then
+        mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
+        if ! git -C "$GITROOT" show ":$path" > "$out" 2>/dev/null; then
+            rm -f "$out" 2>/dev/null
+            return 0
+        fi
+    fi
+    printf '%s\n' "$out"
+}
 
 fail=0
 
@@ -67,11 +92,14 @@ staged_has() {
 
 # Rule 1: post-compact-resume must fit the ceiling whole
 F="commands/post-compact-resume.md"
-if [ -f "$CONTENT_ROOT/$F" ] && staged_has "$F"; then
-    n=$(chars_of "$CONTENT_ROOT/$F")
-    if [ "$n" -gt 20000 ]; then
-        echo "lint-skill-size: FAIL $F is $n chars (> 20000). Its body is re-injected head-truncated at 20,000 chars after every compaction - it must fit whole." >&2
-        fail=1
+if staged_has "$F"; then
+    cf="$(resolve_content "$F")"
+    if [ -n "$cf" ]; then
+        n=$(chars_of "$cf")
+        if [ "$n" -gt 20000 ]; then
+            echo "lint-skill-size: FAIL $F is $n chars (> 20000). Its body is re-injected head-truncated at 20,000 chars after every compaction - it must fit whole." >&2
+            fail=1
+        fi
     fi
 fi
 
@@ -80,8 +108,10 @@ fi
 # re-injection ceiling outright, so their launch registers only survive a compaction if
 # the contract core ends before char 19500.
 for F in commands/mission.md commands/pre-compact.md commands/codex-review.md commands/implement.md; do
-    if [ -f "$CONTENT_ROOT/$F" ] && staged_has "$F"; then
-        p=$(marker_pos "$CONTENT_ROOT/$F")
+    if staged_has "$F"; then
+        cf="$(resolve_content "$F")"
+        [ -n "$cf" ] || continue
+        p=$(marker_pos "$cf")
         if [ "$p" -lt 0 ]; then
             echo "lint-skill-size: FAIL $F lacks the '<!-- CONTRACT-CORE-END -->' marker. The first 20,000 chars are all a post-compaction agent sees - the contract core must end (marker) before char 19500." >&2
             fail=1
@@ -103,8 +133,9 @@ if [ "$MODE" = "--staged" ]; then
             commands/*.md) ;;
             *) continue ;;
         esac
-        [ -f "$CONTENT_ROOT/$f" ] || continue
-        n=$(chars_of "$CONTENT_ROOT/$f")
+        cf="$(resolve_content "$f")"
+        [ -n "$cf" ] || continue
+        n=$(chars_of "$cf")
         [ "$n" -gt 30000 ] && echo "lint-skill-size: WARN $f is $n chars; only its first 20,000 survive re-injection after a compaction." >&2
     done < <(git -C "$GITROOT" diff --cached --name-only 2>/dev/null)
 fi

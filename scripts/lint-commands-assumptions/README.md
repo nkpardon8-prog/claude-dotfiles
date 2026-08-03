@@ -60,6 +60,7 @@ and every individual case exit 2.
 | `04-req-before-contract-core.sh` | a gated literal's first occurrence must precede the marker; missing literal AND missing marker both fail CLOSED; the comparison is relative, not a fixed offset | Presence is not the property that matters. `codex-review.md` is ~57k chars and `implement.md` ~23k, so most of each is invisible after a compaction. A4 is the case no other check can see: the register is MOVED below the marker while the file still carries two lines with the literal, so `req`'s min-count of 2 stays satisfied and only the position rule notices. A6 is the anti-tautology - lowering the marker stays green, which is only possible if the check compares positions rather than a constant that happens to pass today. | yes |
 | `05-absent-banned-literal.sh` | the swept "Spawn ALL FOUR Bash calls in a SINGLE message" wording fails if it returns, with the same staged scoping as presence | The deleted sentence and its replacement are not mutually exclusive in a file. `req` cannot catch the old wording coming back, because the new wording is present too: every presence check stays green while the file hands an agent two contradictory launch counts. Re-growth is the likely failure, not the exotic one - this text is edited by agents that routinely hold an older revision of the same file in context. | yes |
 | `06-linked-worktree-staged-set.sh` | a commit from a LINKED WORKTREE is linted against that worktree's staged set and that worktree's file content; the same split holds for `lint-skill-size.sh` | The seam the ROOT split exists for, and a named open risk in the plan. Linked worktrees SHARE `.git/hooks`, so a worktree commit runs the same generated pre-commit, which invokes the lint by its `$HOME` path. Before the split both the reads and the `--cached` query were pinned to `$HOME/.claude-dotfiles`, so a worktree commit was measured against the MAIN tree's (empty) staged set: every check skipped and the hook reported success having examined nothing. It matters now because the parallelizer's own write-wave machinery creates linked worktrees and has subagents commit inside them. | yes |
+| `07-staged-blob-not-worktree.sh` | in `--staged` mode both lints read the STAGED BLOB (`git show :<path>`), not the worktree; a staged deletion fails CLOSED for a guarded file | The codex-review **C1 bypass**. Both lints SELECT files from the git INDEX (`staged_has`) but, before this fix, READ content from the WORKING TREE. Index and worktree diverge in the most ordinary git workflows - stage a file then keep editing, or `git rm --cached` a file you still have on disk - so a commit could record broken or absent content while the gate graded the clean copy still in the worktree and printed OK. A1 pins the core case (staged-broken/worktree-clean must fail); A3 the sharpest form (a staged deletion of a guarded command); A4 is the inverse control that proves the fix reads the INDEX and not merely the broken copy (staged-clean/worktree-broken must PASS); A5 pins the identical split in the size lint, the check pre-commit has always run. | yes |
 
 **watched-fail: yes** on every row means the case was **observed exiting 1** before it was
 trusted. The negative control is built in and repeatable rather than hand-applied:
@@ -69,12 +70,19 @@ LINTCMD_SMOKE_ALLOW_DEV=true LINTCMD_NEGATIVE_CONTROL=head bash scripts/lint-com
 ```
 
 `LINTCMD_NEGATIVE_CONTROL=head` populates the fixture with the lint scripts **as of git HEAD**
-instead of the working copy. Those scripts hardcode `ROOT="$HOME/.claude-dotfiles"`, so they
-ignore the sandbox entirely and report on the real tree (read-only) - which is itself the defect
-the ROOT split fixes, and what makes the control honest rather than a rigged mutation.
+instead of the working copy - so the control tracks whatever HEAD is at the moment it runs, and
+the defect it exposes moved as the scripts evolved:
 
-Observed at authoring time (2026-08-02, git 2.50.1, python 3.13.5, bash 3.2.57), every case
-`exit 1`:
+- **For cases 01-06** the relevant HEAD was `7a826b8` (pre-ROOT-split): those scripts hardcode
+  `ROOT="$HOME/.claude-dotfiles"`, so they ignore the sandbox entirely and report on the real
+  tree (read-only) - itself the defect the ROOT split fixes.
+- **For case 07** the relevant HEAD was `ac1d11a` (the ROOT split landed, but the C1 content bug
+  is still live): that script reads the sandbox correctly via the split, then reads file CONTENT
+  from the **worktree** instead of the staged blob - so it prints OK on a staged-broken tree with
+  a clean worktree, which is the C1 bypass verbatim.
+
+Observed at authoring time (2026-08-02, git 2.50.1, python 3.13.5, bash 3.2.57 - HEAD `7a826b8`),
+every case `exit 1`:
 
 | Case | Failed assertions | First observed failure |
 |---|---|---|
@@ -85,23 +93,46 @@ Observed at authoring time (2026-08-02, git 2.50.1, python 3.13.5, bash 3.2.57),
 | 05 | 6 | A2: exit 0 where 1 expected; `banned literal` never printed (no absence check existed) |
 | 06 | 4 | A1: exit 0 where 1 expected - the worktree's staged break is invisible to a `$HOME`-pinned `--cached` query, which is the bug verbatim |
 
+Case 07 was watched failing against the C1-buggy HEAD (2026-08-03, git 2.50.1, python 3.13.5,
+bash 3.2.57 - HEAD `ac1d11a`), `exit 1` with 9 failed assertions:
+
+| Case | Failed assertions | First observed failure |
+|---|---|---|
+| 07 | 9 | A1: exit 0 where 1 expected - the buggy lint read the CLEAN worktree and printed OK on a staged-broken tree; A3 same on a staged deletion; A4: exit 1 where 0 expected (it read the broken worktree, proving the fix now reads the index); A5: the size lint's identical blind spot |
+
+(Once the fix at HEAD includes the staged-blob read, re-running the control for case 07 no longer
+reproduces C1 - the durable guarantee is the case running GREEN against the fixed lint in
+`run-all.sh`; the table above is the point-in-time watched-fail record.)
+
 Gate: with `LINTCMD_SMOKE_ALLOW_DEV` unset, `run-all.sh` and every individual case exit 2.
 
-## One deliberate refinement of the plan's wording (recorded, not silent)
+## Two deliberate refinements of the plan's wording (recorded, not silent)
 
-Task 11 specified the split as: file location from `BASH_SOURCE`, staged-set QUERY from
-`git rev-parse --show-toplevel`. Split exactly that way, a linked-worktree commit is LISTED from
-the worktree but READ from the main tree - so a break staged in the worktree is judged against
-the main tree's untouched text and passes. That is the same silent pass the split was added to
-remove, arriving by a different route. Both lints therefore treat the tree being committed as
-the authority for content as well **in `--staged` mode only**:
+**1. Content follows the committing tree (Task 11).** Task 11 specified the split as: file
+location from `BASH_SOURCE`, staged-set QUERY from `git rev-parse --show-toplevel`. Split exactly
+that way, a linked-worktree commit is LISTED from the worktree but READ from the main tree - so a
+break staged in the worktree is judged against the main tree's untouched text and passes. That is
+the same silent pass the split was added to remove, arriving by a different route. Both lints
+therefore treat the tree being committed as the authority for content in `--staged` mode. Case 06
+A3 pins it.
+
+**2. Content is the STAGED BLOB, not the worktree file (codex-review C1).** The first cut of
+refinement 1 read the committing tree's WORKTREE (`CONTENT_ROOT="$GITROOT"`). But the file SET
+comes from the git INDEX (`git diff --cached --name-only`), and the index diverges from the
+worktree in the most ordinary workflows - `git add` then keep editing, or `git rm --cached`. So a
+file staged broken (or staged-deleted) but left clean/present in the worktree still passed. Both
+lints now read the exact bytes being committed:
 
 ```
-CONTENT_ROOT="$ROOT"; [ "$MODE" = "--staged" ] && CONTENT_ROOT="$GITROOT"
+resolve_content <path>  # --staged: git show :<path> materialized to a temp file (staged blob)
+                        # --all:    $ROOT/<path> (working tree - no index divergence to reconcile)
 ```
 
-The two paths are identical in the ordinary main-tree case (the generated hook's own
-invocation), so nothing but the worktree case changes. Case 06 A3 pins it.
+A staged DELETION makes `git show :<path>` fail, so `resolve_content` returns nothing and every
+required-literal check fails CLOSED - a deleted guarded command cannot ship. The two modes are
+identical in the ordinary main-tree case where the index matches the worktree, so nothing but the
+staged-divergence case changes. Case 07 pins it (A1 core bypass, A3 deletion, A4 inverse control,
+A5 size lint).
 
 ## Layout
 

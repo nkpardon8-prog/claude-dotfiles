@@ -33,12 +33,47 @@ case "$MODE" in
     *) echo "lint-skill-contract: unknown argument: $MODE (expected --staged or --all)" >&2; exit 2 ;;
 esac
 
-# In --staged mode the tree being COMMITTED is the authority for content as well: reading
-# $ROOT's copy while listing $GITROOT's index would let a linked-worktree commit pass
-# against the main tree's untouched text - a silent hole. The two paths are identical in
-# the ordinary main-tree case, so this only ever changes the worktree case.
-CONTENT_ROOT="$ROOT"
-[ "$MODE" = "--staged" ] && CONTENT_ROOT="$GITROOT"
+# CONTENT AUTHORITY (2026-08-03, codex-review C1 fix): WHICH BYTES do the checks read?
+#   --all     the WORKING TREE ($ROOT/<path>). The phase-gate/CI invocation judges the
+#             files on disk; there is no index/worktree divergence to reconcile.
+#   --staged  the STAGED BLOB (`git show :<path>` from $GITROOT) - the exact bytes this
+#             commit will record. Reading the WORKTREE here was the bypass (C1): a file
+#             staged broken, or `git rm --cached`'d, but left clean/present in the worktree
+#             sailed past the gate while the COMMITTED content was broken/absent. Selecting
+#             files from the index (staged_has) but reading their content from the worktree
+#             is the exact index-vs-worktree seam an attacker (or an honest stage-then-edit)
+#             slips through. resolve_content closes it by materializing the staged blob.
+#
+# A staged DELETION is the sharpest form of that bypass: `git show :<path>` fails, so
+# resolve_content returns NOTHING, and every required-literal check below fails CLOSED on
+# it - a deleted guarded command is exactly the thing the machine must refuse to ship.
+STAGED_TMP=""
+_lint_cleanup() { [ -n "$STAGED_TMP" ] && rm -rf "$STAGED_TMP" 2>/dev/null; return 0; }
+trap _lint_cleanup EXIT
+
+# resolve_content <repo-relative-path> -> prints an absolute path whose bytes are the
+# content to check for the active mode, or prints NOTHING when that content does not exist
+# (worktree file absent in --all; staged deletion / unreadable blob in --staged). Memoized
+# per path via the temp dir so repeated req/absent/req_before calls materialize once.
+resolve_content() {
+    local path="$1" out
+    if [ "$MODE" != "--staged" ]; then
+        [ -f "$ROOT/$path" ] && printf '%s\n' "$ROOT/$path"
+        return 0
+    fi
+    [ -n "$STAGED_TMP" ] || STAGED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lint-staged-XXXXXX")" || return 0
+    out="$STAGED_TMP/$path"
+    if [ ! -f "$out" ]; then
+        mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
+        # git show writes the staged blob; on a staged deletion (or any missing index
+        # entry) it exits non-zero. Drop the truncated file so callers see "no content".
+        if ! git -C "$GITROOT" show ":$path" > "$out" 2>/dev/null; then
+            rm -f "$out" 2>/dev/null
+            return 0
+        fi
+    fi
+    printf '%s\n' "$out"
+}
 
 fail=0
 
@@ -51,11 +86,16 @@ staged_has() { # staged_has <repo-relative-path>
 # NOTE: grep -cF counts matching LINES, not occurrences. A min-count of N therefore means
 # "N separate lines carry this literal" - verify that shape before raising a min.
 req() { # req <file> <fixed-string> [min-count]
-    local f="$CONTENT_ROOT/$1" s="$2" min="${3:-1}" n
-    staged_has "$1" || return 0
+    local rel="$1" s="$2" min="${3:-1}" f n
+    staged_has "$rel" || return 0
+    f="$(resolve_content "$rel")"
+    if [ -z "$f" ]; then
+        echo "lint-skill-contract: FAIL $rel is missing/deleted in the checked tree (cannot prove required literal is present, need >=$min): $s" >&2
+        fail=1; return 0
+    fi
     n=$(grep -cF -- "$s" "$f" 2>/dev/null || true)
     if [ "${n:-0}" -lt "$min" ]; then
-        echo "lint-skill-contract: FAIL $1 missing required literal (need >=$min, have ${n:-0}): $s" >&2
+        echo "lint-skill-contract: FAIL $rel missing required literal (need >=$min, have ${n:-0}): $s" >&2
         fail=1
     fi
 }
@@ -63,15 +103,16 @@ req() { # req <file> <fixed-string> [min-count]
 # A literal that must NOT survive. Swept wording re-grows by copy-paste from an older
 # revision; req() cannot catch that, because the replacement text is present too.
 absent() { # absent <file> <fixed-string>
-    local f="$CONTENT_ROOT/$1" s="$2" hits
-    staged_has "$1" || return 0
-    if [ ! -f "$f" ]; then
-        echo "lint-skill-contract: FAIL $1 is missing (cannot prove the banned literal is gone): $s" >&2
+    local rel="$1" s="$2" f hits
+    staged_has "$rel" || return 0
+    f="$(resolve_content "$rel")"
+    if [ -z "$f" ]; then
+        echo "lint-skill-contract: FAIL $rel is missing (cannot prove the banned literal is gone): $s" >&2
         fail=1; return 0
     fi
     hits=$(grep -nF -- "$s" "$f" || true)
     if [ -n "$hits" ]; then
-        echo "lint-skill-contract: FAIL $1 still carries a banned literal: $s" >&2
+        echo "lint-skill-contract: FAIL $rel still carries a banned literal: $s" >&2
         echo "$hits" >&2
         fail=1
     fi
@@ -92,24 +133,25 @@ print(s.find(sys.argv[2]))" "$1" "$2" 2>/dev/null || echo -1
 # agent, so a register that drifts below it is present in the file and absent in practice.
 # FAILS CLOSED: a missing literal, a missing marker, or an unreadable file all fail.
 req_before() { # req_before <file> <fixed-string>
-    local f="$CONTENT_ROOT/$1" s="$2" p m
-    staged_has "$1" || return 0
-    if [ ! -f "$f" ]; then
-        echo "lint-skill-contract: FAIL $1 is missing (cannot check contract-core position): $s" >&2
+    local rel="$1" s="$2" f p m
+    staged_has "$rel" || return 0
+    f="$(resolve_content "$rel")"
+    if [ -z "$f" ]; then
+        echo "lint-skill-contract: FAIL $rel is missing (cannot check contract-core position): $s" >&2
         fail=1; return 0
     fi
     p=$(first_pos "$f" "$s")
     m=$(first_pos "$f" "<!-- CONTRACT-CORE-END -->")
     if [ "${p:--1}" -lt 0 ]; then
-        echo "lint-skill-contract: FAIL $1 missing required literal (contract-core position check): $s" >&2
+        echo "lint-skill-contract: FAIL $rel missing required literal (contract-core position check): $s" >&2
         fail=1; return 0
     fi
     if [ "${m:--1}" -lt 0 ]; then
-        echo "lint-skill-contract: FAIL $1 lacks the '<!-- CONTRACT-CORE-END -->' marker, so the contract-core position of this literal cannot be proven: $s" >&2
+        echo "lint-skill-contract: FAIL $rel lacks the '<!-- CONTRACT-CORE-END -->' marker, so the contract-core position of this literal cannot be proven: $s" >&2
         fail=1; return 0
     fi
     if [ "$p" -ge "$m" ]; then
-        echo "lint-skill-contract: FAIL $1 has a contract-core literal at char $p, BELOW the marker at char $m (a post-compaction agent never sees it): $s" >&2
+        echo "lint-skill-contract: FAIL $rel has a contract-core literal at char $p, BELOW the marker at char $m (a post-compaction agent never sees it): $s" >&2
         fail=1
     fi
 }
@@ -122,11 +164,17 @@ req "$M" "bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh
 # tilde/$HOME variants of the invocation would MISS the allowlist byte-match and
 # permission-prompt an autonomous run - forbid them outright.
 if staged_has "$M"; then
-    bad=$(grep -nE '(~|\$HOME)/\.claude-dotfiles/scripts/hooks/mission-write\.sh' "$CONTENT_ROOT/$M" || true)
-    if [ -n "$bad" ]; then
-        echo "lint-skill-contract: FAIL $M has ~/\$HOME mission-write.sh invocation variant(s) (allowlist requires the absolute literal path):" >&2
-        echo "$bad" >&2
+    mf="$(resolve_content "$M")"
+    if [ -z "$mf" ]; then
+        echo "lint-skill-contract: FAIL $M is missing/deleted (cannot check mission-write.sh invocation shape)" >&2
         fail=1
+    else
+        bad=$(grep -nE '(~|\$HOME)/\.claude-dotfiles/scripts/hooks/mission-write\.sh' "$mf" || true)
+        if [ -n "$bad" ]; then
+            echo "lint-skill-contract: FAIL $M has ~/\$HOME mission-write.sh invocation variant(s) (allowlist requires the absolute literal path):" >&2
+            echo "$bad" >&2
+            fail=1
+        fi
     fi
 fi
 for tok in "[mission] criticer" "[mission] FAIL" "[mission] live-verify" \

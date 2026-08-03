@@ -35,6 +35,7 @@ TESTS=(
   "04-req-before-contract-core.sh"
   "05-absent-banned-literal.sh"
   "06-linked-worktree-staged-set.sh"
+  "07-staged-blob-not-worktree.sh"
 )
 PASS=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do
