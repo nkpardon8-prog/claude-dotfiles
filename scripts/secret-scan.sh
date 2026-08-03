@@ -319,14 +319,32 @@ case "${1:-}" in
         exit 3
         ;;
     *)
+        # Validate EVERY argument, not just $1 (2026-08-03, round-2 review). The `-*` guard
+        # above inspects only the FIRST token, so `clean.txt --stdin` fell through to here:
+        # the flag became a "path", the per-file existence check skipped it, and the scanner
+        # exited 0 having scanned only `clean.txt` while silently dropping an argument it did
+        # not understand. MEASURED before the fix: `secret-scan.sh ok.txt --stdin` -> rc=0.
+        # Options are only ever meaningful in first position, so any later dash-leading token
+        # is a mistake; `--` above remains the escape hatch for a real file named `-x`.
+        for _a in "$@"; do
+            case "$_a" in
+                -*)
+                    echo "secret-scan: unknown option '$_a' (use -- before a path starting with a dash)" >&2
+                    usage
+                    exit 3
+                    ;;
+            esac
+        done
         printf '%s\0' "$@" > "$TMPLIST" || exit 3
         ;;
 esac
 
 WORST=0
 HITS=""
+SCANNED=0
 while IFS= read -r -d '' f; do
     [ -z "$f" ] && continue
+    SCANNED=$((SCANNED + 1))
     if [ "$MODE" = composite ]; then
         # Bypasses scan_file entirely: no path exclusion, no allowlist, and a vanished
         # input FAILS CLOSED instead of inheriting "a missing path is clean".
