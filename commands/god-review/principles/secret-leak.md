@@ -152,6 +152,12 @@ its `2>/dev/null | grep | head` pipeline turned an enumeration error into an app
 result. One source of truth, and the exit code is read rather than discarded:
 
 ```bash
+#!/usr/bin/env bash
+# REQUIRES BASH, not POSIX sh: the arrays below are a bash feature and a dash/ash parse of
+# this block dies with `Syntax error: "(" unexpected` BEFORE any guard could run (verified
+# with `dash -n`). Arrays are used deliberately - piping through `xargs` was the previous
+# version's bug, because xargs reports ITS OWN exit status (BSD 1 / GNU 123) and so can
+# never convey the scanner's 2-vs-3. Run this block with bash.
 SCANNER="$HOME/.claude-dotfiles/scripts/secret-scan.sh"
 [ -r "$SCANNER" ] || { echo "secret prefix scan: FAILED - scanner not found at $SCANNER"; exit 3; }
 cd "$WORKDIR" || exit 3
