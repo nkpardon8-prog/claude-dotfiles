@@ -58,3 +58,4 @@ skills/macmini/client/dist/
 
 # Codex bridge — generated locally from commands/ and skills/
 codex/generated/
+__pycache__/
