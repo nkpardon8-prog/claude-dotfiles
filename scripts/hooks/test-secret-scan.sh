@@ -767,6 +767,102 @@ chk "pre-push invokes the scanner via bash (exec bit cannot break the contract)"
 chk "pre-push normalizes an out-of-contract rc to 3" \
     "$(grep -c 'treating as could-not-scan' "$INSTALL")" "1"
 
+# ===========================================================================
+echo
+echo "== PART 4: round-3 review fixes (every case measured 2026-08-03) =="
+P4W="$WORK/p4"; mkdir -p "$P4W"
+
+# --- R3-CRITICAL: --working was the ONLY mode branch that never assigned MODE, so it ran as
+# MODE=file and inherited the explicit-path zero-scanned invariant: a CLEAN working tree
+# returned rc=3. dotfiles-sync.sh (the sole --working consumer) maps any non-0/2 to a
+# `kind: unproven` pause marker that halts ALL future auto-sync - so this would have jammed
+# the auto-push permanently, behind a false "could not prove the working tree clean".
+# This shipped green because ZERO of the previous 144 cases invoked --working at all: the one
+# mode the public auto-push depends on was the one mode with no coverage.
+_wt="$P4W/wt"; mkdir -p "$_wt"
+( cd "$_wt" && git init -q . && git config user.email t@t.invalid && git config user.name t \
+  && printf 'hello\n' > a.txt && git add a.txt && git commit -qm init ) >/dev/null 2>&1
+( cd "$_wt" && bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working on a CLEAN tree is rc=0 (never jams the auto-push)" "$?" "0"
+( cd "$_wt" && git rm -q a.txt && bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working on a DELETION-ONLY change is rc=0" "$?" "0"
+( cd "$_wt" && git reset -q --hard >/dev/null 2>&1
+  printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" > leak.txt
+  bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working still CATCHES an untracked secret (rc=2)" "$?" "2"
+( cd "$_wt" && rm -f leak.txt
+  printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" > tracked.txt
+  git add tracked.txt >/dev/null 2>&1
+  bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working catches a secret in a MODIFIED tracked file (rc=2)" "$?" "2"
+( cd "$_wt" && git reset -q --hard >/dev/null 2>&1; rm -f tracked.txt )
+
+# --- R3: the enumerate-everything modes silently DISCARDED extra arguments. `--staged <path>`
+# exited 0 having scanned the index while the caller believed it scanned that path.
+( cd "$_wt" && bash "$SCAN" --staged --bogus >/dev/null 2>&1 )
+chk "--staged rejects an extra unknown flag instead of ignoring it" "$?" "3"
+( cd "$_wt" && bash "$SCAN" --staged some-path.txt >/dev/null 2>&1 )
+chk "--staged rejects a stray PATH instead of silently scanning the index" "$?" "3"
+( cd "$_wt" && bash "$SCAN" --working extra >/dev/null 2>&1 )
+chk "--working rejects an extra argument" "$?" "3"
+
+# --- R3: a non-regular entry must NOT be rc=3. `git ls-files` emits submodule GITLINK paths,
+# which are directories on disk; failing on them would turn the CI full-tree scan permanently
+# red the day a submodule is added - and a gate that reddens on a legitimate repo shape gets
+# switched off by a human. It must still not count as scanned (see the lone-directory case).
+mkdir -p "$P4W/adir"
+printf 'nothing\n' > "$P4W/plain.txt"
+bash "$SCAN" "$P4W/plain.txt" "$P4W/adir" >/dev/null 2>&1
+chk "a directory ALONGSIDE a real file does not fail the batch" "$?" "0"
+bash "$SCAN" "$P4W/adir" >/dev/null 2>&1
+chk "a directory ALONE is rc=3 (nothing was actually scanned)" "$?" "3"
+
+# --- R3: the pre-push assertions were grep-only and PROVEN HOLLOW - the rc-normalization
+# could be moved to where it no longer works and the suite stayed 144/0 green. Assert the
+# BEHAVIOUR: with a scanner that returns an out-of-contract rc, the hook must still emit the
+# RANGE-NOT-PROVEN-CLEAN token that dotfiles-sync greps for, and must still fail closed.
+# A REAL push against a REAL bare remote, with the scanner replaced by a stub returning an
+# out-of-contract rc. Hand-driving the hook body does not work (the hook assigns SCAN itself
+# and reads its ref list from stdin), and grep-only assertions are exactly what proved hollow.
+# The HOME override is what makes the generated hook resolve to the stub.
+_PPH="$P4W/pphome"; mkdir -p "$_PPH/.claude-dotfiles"
+cp -R "$REPO/scripts" "$_PPH/.claude-dotfiles/scripts"
+_PPR="$_PPH/.claude-dotfiles"
+git init -q "$_PPR"; git init -q --bare "$P4W/ppremote.git"
+( cd "$_PPR" && git remote add origin "$P4W/ppremote.git" && HOME="$_PPH" bash "$INSTALL" ) >/dev/null 2>&1
+# Out-of-contract rc: neither 0, 2, nor 3. Pre-round-3 this exited carrying 126 and the token
+# every consumer greps for was never printed, so a could-not-scan was filed as a routine failure.
+printf '#!/bin/bash\nexit 126\n' > "$_PPR/scripts/secret-scan.sh"
+chmod +x "$_PPR/scripts/secret-scan.sh"
+_ppbr=$( cd "$_PPR" && git symbolic-ref --short HEAD )
+_ppout=$( cd "$_PPR" && printf 'x\n' > f.txt && git add f.txt \
+          && HOME="$_PPH" git -c core.hooksPath=.git/hooks commit -qm t --no-verify \
+          && HOME="$_PPH" git push origin "$_ppbr" 2>&1 )
+_pprc=$?
+chk "pre-push FAILS CLOSED on an out-of-contract scanner rc" \
+    "$([ "$_pprc" -ne 0 ] && echo blocked || echo allowed)" "blocked"
+chk "pre-push still emits RANGE-NOT-PROVEN-CLEAN for an out-of-contract rc" \
+    "$(printf '%s' "$_ppout" | grep -c 'RANGE-NOT-PROVEN-CLEAN' | tr -d ' ')" "1"
+
+# --- R3: the anti-drift guard grepped ONE literal in TWO directories, so it reported green
+# while a stale count sat in scripts/dotfiles-sync.sh - a file inside its own search path,
+# with different wording. Widened to the whole repo, but the phrasings are tied to THIS
+# subject: the first widening matched commands/implement.md's ordinary English ("three of the
+# four outcomes are serial"), a false positive. A guard that cries wolf on unrelated prose
+# gets deleted by the next person, so it must name consumers/layers explicitly.
+_p1=$(printf 'of the %s consumers' 'four'); _p2=$(printf 'All %s layers' 'four')
+_p3=$(printf 'All %s call' 'four');        _p4=$(printf '%s consumers' 'four')
+chk "no stale consumer/layer count anywhere in the repo" \
+    "$(grep -ril -e "$_p1" -e "$_p2" -e "$_p3" -e "$_p4" "$REPO" \
+         --exclude-dir=.git --exclude-dir=tmp --exclude-dir=node_modules 2>/dev/null \
+       | wc -l | tr -d ' ')" "0"
+
+# --- R3: this entry shipped with NO assertion at all, at any depth.
+for _f in .config/git/credentials sub/git/credentials; do
+    ( cd "$REPO" && git check-ignore -q "$_f" )
+    chk "$_f is gitignored" "$?" "0"
+done
+
 # --- R2: the consumer count drifted inside the very commit that forbade drifting.
 # The pattern is ASSEMBLED from fragments so this check cannot match its own source - the
 # first draft grepped for a literal and found ITSELF, reporting a defect that did not

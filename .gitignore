@@ -75,9 +75,14 @@ credentials.json
 # reads broader than it is, which is exactly how that one slipped through; hence the
 # explicit entry added above it.
 #
-# NOTE every pattern here is intentionally SLASH-FREE so it matches at any depth. A pattern
-# containing a slash is root-anchored: `.docker/config.json` would NOT match
-# `sub/.docker/config.json`. Hence the `**/` form below.
+# NOTE every pattern here is intentionally SLASH-FREE **or `**/`-prefixed**, so it matches at
+# any depth. A pattern containing a slash is root-anchored: `.docker/config.json` would NOT
+# match `sub/.docker/config.json`. Hence the `**/` forms above and below.
+# (The original wording said only "SLASH-FREE", which was already false about its own
+#  neighbours - `**/.aws/credentials`, `**/.aws/config`, `**/git/credentials` and
+#  `**/.docker/config.json` all contain slashes and all match at depth. A rule stated in two
+#  places drifted; the authoritative statement now lives in docs/SECURITY-secret-chain.md and
+#  this is the short form.)
 .envrc
 .npmrc
 .dockercfg

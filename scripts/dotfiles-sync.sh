@@ -7,7 +7,11 @@
 #   - This script blocks pre-push via secret-scan.sh
 #   - Native git pre-push hook also blocks (belt-and-suspenders for manual `git push`)
 #   - GitHub Actions runs the same scan on the server side
-# All four layers share the same regex from scripts/secret-scan.sh.
+#   - SessionStart scans ~/.config/claude/credentials.md (warn-only)
+# All FIVE layers share the same regex from scripts/secret-scan.sh. A sixth control, .gitignore,
+# does NOT use the regex and is frequently MUTUALLY EXCLUSIVE with it: an ignored path is
+# invisible to `--working`, and for opaque-value files (.envrc) it is the only control that can
+# work. Full division of responsibility: docs/SECURITY-secret-chain.md.
 
 # PAUSE GUARD: an out-of-repo marker silences auto-sync entirely (used while agents batch-edit
 # the dotfiles machinery, or while pushes are held). Out-of-repo so `git add -A` can never stage it.
@@ -119,7 +123,11 @@ if git diff --quiet HEAD 2>/dev/null && git diff --cached --quiet 2>/dev/null &&
 fi
 
 # Pre-push secret scan (working tree + untracked files about to be staged)
-"$DOTFILES_DIR/scripts/secret-scan.sh" --working
+# Invoked through `bash`, matching pre-commit and pre-push (2026-08-03, round-3 review): this
+# was the THIRD executing consumer and the only one the exec-bit class fix missed. A lost
+# executable bit here returns 126, which falls into the `*)` arm below and writes a permanent
+# `unproven` pause marker - halting all auto-sync until a human clears it.
+bash "$DOTFILES_DIR/scripts/secret-scan.sh" --working
 rc=$?
 case "$rc" in
     0) ;;  # clean — proceed

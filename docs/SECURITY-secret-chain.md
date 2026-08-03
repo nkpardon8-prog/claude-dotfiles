@@ -133,7 +133,10 @@ does not un-publish it.
 
 **Corrected 2026-08-03.** This section previously read "Why there are **no** JWT or
 connection-string patterns" and was false: `RX_JWT` and `RX_CONN` are defined at
-`scripts/secret-scan.sh:105-106` and folded into `RX` at `:107`. Verified by execution — a
+`scripts/secret-scan.sh` (grep for `RX_JWT=` / `RX_CONN=`; they are folded into `RX` on the
+line immediately after). Line numbers are deliberately NOT cited: the first version of this
+correction named `:105-107`, and the same commit added comment lines above them, so the
+reference was stale before it was even pushed. Verified by execution — a
 three-segment `eyJ…` token and a postgres DSN carrying inline credentials each return rc=2.
 (Both example shapes are described in prose rather than written literally: this file is
 tracked, and the repo's own full-tree scan would match a real one. Writing that example out

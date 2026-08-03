@@ -271,6 +271,22 @@ trap 'rm -f "$TMPLIST"' EXIT
 trap 'rm -f "$TMPLIST"; exit 3' HUP INT TERM
 
 MODE=file
+# The three enumerate-everything modes take NO further arguments. Without this, an extra
+# argument was silently DISCARDED (round-3 review): `--staged --bogus` exited 0 ignoring the
+# typo, and worse, `--staged <path>` exited 0 having scanned the index while the caller
+# believed it had scanned that path. Same "an argument I did not understand vanished" shape
+# the per-path validation below closes for the explicit-path branch - fail closed, both sides.
+case "${1:-}" in
+    --staged|--working|--all-history)
+        if [ "$#" -gt 1 ]; then
+            _mode_name="$1"; shift
+            echo "secret-scan: $_mode_name takes no further arguments (got: $*)" >&2
+            usage
+            exit 3
+        fi
+        ;;
+esac
+
 case "${1:-}" in
     --staged)
         MODE=staged
@@ -302,6 +318,16 @@ case "${1:-}" in
         printf '%s\0' "$@" > "$TMPLIST" || exit 3
         ;;
     --working)
+        # MODE MUST be set here. This branch was the ONLY mode branch that never assigned it,
+        # so it silently ran as MODE=file and inherited the explicit-path zero-scanned
+        # invariant below - making a CLEAN working tree (or a deletion-only change) return
+        # rc=3. dotfiles-sync.sh, the sole --working consumer, maps any non-0/2 to a
+        # `kind: unproven` pause marker and then halts EVERY subsequent auto-sync, so that
+        # would have permanently jammed the auto-push behind a false "could not prove the
+        # working tree clean". Found in round 3, reproduced end to end against a real bare
+        # remote. An enumeration finding nothing is legitimately clean - there is nothing
+        # to publish - and only an EXPLICIT-PATH caller can be said to have scanned nothing.
+        MODE=working
         if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
             { git diff --name-only -z HEAD && git ls-files --others --exclude-standard -z; } \
                 | sort -uz > "$TMPLIST" || exit 3
@@ -416,9 +442,16 @@ while IFS= read -r -d '' f; do
         fi
         # A dangling symlink is still scannable (scan_file reads the stored target string,
         # which is what git publishes), so -L is checked before the regular-file test.
+        #
+        # A non-regular entry is NOT COUNTED rather than rc=3 (round-3 review). `git ls-files`
+        # emits SUBMODULE GITLINK paths, which exist on disk as directories - failing on them
+        # would turn the CI full-tree scan permanently red the day a submodule is added, and a
+        # gate that reddens on a legitimate repo shape gets disabled by a human. A gitlink also
+        # has no blob in THIS repo, so there is genuinely nothing here to publish. The
+        # zero-scanned invariant below still catches the degenerate case where a directory was
+        # the ONLY argument, so nothing can be pronounced clean without a real scan.
         if [ ! -L "$f" ] && [ ! -f "$f" ]; then
-            echo "secret-scan: not a regular file, cannot prove clean: $f" >&2
-            WORST=3
+            echo "secret-scan: not a regular file, not counted as scanned: $f" >&2
             continue
         fi
         out=$(scan_file "$f"); rc=$?

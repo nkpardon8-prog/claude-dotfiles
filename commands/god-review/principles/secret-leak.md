@@ -153,15 +153,40 @@ result. One source of truth, and the exit code is read rather than discarded:
 
 ```bash
 SCANNER="$HOME/.claude-dotfiles/scripts/secret-scan.sh"
+[ -r "$SCANNER" ] || { echo "secret prefix scan: FAILED - scanner not found at $SCANNER"; exit 3; }
 cd "$WORKDIR" || exit 3
+
+# NOTE: xargs DESTROYS the scanner's exit code - it reports its own (BSD: 1 for any child
+# failure; GNU: 123), so `rc=$?` after a pipeline through xargs can never see 2 vs 3. An
+# earlier version of this block did exactly that, which made a REAL SECRET (rc=2) render as
+# "FAILED - result is unknown". Enumerate into an array and call the scanner directly.
+# The enumeration's own failure is checked too: a `git ls-files` that dies must not become
+# an empty list that scans nothing and reports clean.
+files=()
 if git rev-parse --git-dir >/dev/null 2>&1; then
-    git ls-files -z | xargs -0 bash "$SCANNER" --
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z) || {
+        echo "secret prefix scan: FAILED - could not enumerate tracked files"; exit 3; }
 else
-    find . -type f -not -path './.git/*' -not -path '*/node_modules/*' \
-         -not -path '*/dist/*' -not -path '*/target/*' -print0 \
-      | xargs -0 bash "$SCANNER" --
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(
+        find . -type f -not -path './.git/*' -not -path '*/node_modules/*' \
+             -not -path '*/dist/*' -not -path '*/target/*' -print0) || {
+        echo "secret prefix scan: FAILED - could not enumerate files"; exit 3; }
 fi
-rc=$?
+
+if [ "${#files[@]}" -eq 0 ]; then
+    echo "secret prefix scan: FAILED - zero files enumerated, nothing was proven"; exit 3
+fi
+
+# Batched so a huge repo cannot blow the argv limit, while still reading the REAL exit code.
+rc=0
+i=0
+while [ "$i" -lt "${#files[@]}" ]; do
+    bash "$SCANNER" -- "${files[@]:$i:500}"
+    s=$?
+    [ "$s" -gt "$rc" ] && rc=$s      # precedence 3 > 2 > 0, same as the scanner's own
+    i=$((i + 500))
+done
+
 # 0 = clean, 2 = secret found (hits are on stderr), 3 = COULD NOT SCAN.
 # rc=3 is NOT clean - never report a scan failure as a pass.
 case $rc in
