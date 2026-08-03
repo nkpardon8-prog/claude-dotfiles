@@ -1,0 +1,1 @@
+{"idle_reads":"identical + non-empty","after_append":"changed","post_append_reads":"identical (re-stable)","rotation":"deferred to _gen_sliced_stream coverage"}

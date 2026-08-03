@@ -219,6 +219,43 @@ ledger (which carries `north_star_first_120` for goal recovery). See `commands/p
 
 Each `/pre-compact` run mines the conversation at a calibrated depth (Quick / Deep / Chunked) based on size, captures every approach tried (with results and reasons), and validates the output hit a per-pass line floor before it claims done. See `commands/pre-compact.md` for the full skill spec.
 
+### Mission continuation-owner invariant (`/mission` never silently stalls)
+
+An autonomous `/mission` is a self-driving loop, so every turn has to leave SOMETHING that will
+re-drive it. The **continuation-owner invariant** makes that a hard rule: a `/mission` turn must
+not end unless (a) a tracked `run_in_background` job is pending, (b) it just called
+`ScheduleWakeup(...)` as its last action, or (c) it is at a genuine human-handback point. Anything
+else is a "naked yield" - the turn banks a log line and stops with nothing to wake it, and the
+mission freezes. A failed schedule is LOUD, never silent.
+
+Only **two wake mechanisms are load-bearing**, both empirically proven: a tracked
+`run_in_background` Bash re-invokes the idle agent when it exits, and `ScheduleWakeup` called
+directly by a skill fires a timed re-entry (proven by `commands/afk.md`; it only fires while
+Claude Code is OPEN, so cross-close recovery falls back to resume + the `/pre-compact` chain).
+Background-completion, a `ScheduleWakeup` tick, and post-compact resume all funnel into ONE
+idempotent wake routine: acquire `mkdir tick.lock` (atomic, with sleep-skew + backward-clock
+clamps), run the existing §8 resume-read, hash the current-generation state stream into a cursor,
+select one transition, then recompute the cursor immediately before dispatch and restart if it
+moved. Lock + cursor-compare + deterministic idtags make two queued wakes advance exactly once.
+
+The state that lets a wake tell "work never launched" from "work launched, one lane returned" is
+the **AWAIT bookmark** - one durable log line (`[mission] AWAIT ... need=<mask> got=<mask>`)
+written via `mission-write.sh await` and read via `await-state`. When `got<need` and no tracked
+job is pending, the wake routine REPLAYS only the missing lane, so correctness never depends on
+100% wake delivery. A banked `phase=review` successor supersedes its AWAIT; `got==need` reads
+`none`.
+
+The **no-detach invariant** is the machine backstop for the orphan road: a PreToolUse Bash gate
+(`scripts/hooks/no-detach-gate.py`) blocks a shell-detach (`nohup`/trailing-`&`/`disown`/`setsid`)
+wrapping a codex launch, because that wrapper exits in ~1s and leaves codex orphaned with no wake.
+It FAILS OPEN on any parse error (the harm direction is a false positive wedging Bash) and
+documents its known-open bypasses - it catches the common foot-gun, it does not remove discretion.
+
+All of this reuses the existing mission bridge (`scripts/hooks/lib/mission-bridge.sh`) and §8/§H
+recovery read rather than adding parallel machinery. The runtime contracts are pinned by the
+hermetic `scripts/hooks/mission-continuity-assumptions/` suite. See `commands/mission.md` for the
+full loop.
+
 ---
 
 ## Adding things

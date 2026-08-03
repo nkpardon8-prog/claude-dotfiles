@@ -2,6 +2,65 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-03 - Missions never silently stall: continuation-owner invariant + AWAIT bookmark + no-detach gate
+
+An autonomous `/mission` used to freeze when a turn ended with nothing to wake it back up. Two
+roads: **road 1** a review launched shell-detached (`nohup codex ... &`) - the wrapper exits in
+~1s, the harness tracks the launcher not codex, codex finishes orphaned, no wake (`f71c8667`,
+idle 3h38m); **road 2** the agent banks a log line and just stops - no pending job, no scheduled
+wake, no compaction (5 of 6 stalled missions were road 2). The fix is built ONLY on the two
+empirically-proven wake mechanisms (a tracked `run_in_background` Bash re-invoking the idle agent
+on exit; `ScheduleWakeup` called directly by a skill, proven by `commands/afk.md`) and REUSES the
+mission loop's existing §8/§H recovery read instead of adding parallel machinery. The disputed
+`asyncRewake` and `/goal` mechanisms were dropped as non-establishable.
+
+- **The continuation-owner invariant (road 2).** A `/mission` turn MUST NOT end unless a tracked
+  `run_in_background` job is pending, OR it just called `ScheduleWakeup(...)` as its last action,
+  OR it is at a genuine human-handback point. Stated as a HARD return invariant in the contract
+  core; a failed schedule is LOUD, never a silent naked yield. The epilogue is wired at the four
+  naked-yield seams (synthesis round-bank, fix-cycle re-arm, PART-DONE, PART-START advance).
+- **The AWAIT bookmark (one new durable marker).** `[mission] AWAIT part=N phase=P round=K
+  kind=<job|human> op=<slug> attempt=A need=<mask> got=<mask>` rides the existing log via the new
+  `mission-write.sh await` / `await-state` verbs (in `lib/mission-bridge.sh`). It distinguishes
+  "work never launched" from "work launched, one lane returned", so the wake routine replays ONLY
+  the missing lane. The §8 `AWAIT got<need + NO tracked job -> replay` row is the safety net:
+  correctness does NOT depend on 100% wake delivery. A banked `phase=review round=K` successor
+  SUPERSEDES its AWAIT; `got==need` reads `none`; a `kind=human got=0` stops the loop for a real
+  user turn.
+- **The single idempotent wake routine.** Background-completion, a `ScheduleWakeup` tick, and
+  post-compact resume all funnel into ONE routine: `mkdir tick.lock` (atomic, sleep-skew +
+  backward-clock clamps) -> §8 resume-read -> `cursor_before` = sha256 of the current-generation
+  state stream (`mission-write.sh cursor-hash`, rotation-invariant via `_gen_sliced_stream`) ->
+  one transition -> recompute the cursor immediately before dispatch, discard + restart if it
+  moved. Lock + cursor-compare + deterministic idtags = two queued wakes advance exactly once.
+- **No-detach gate (road 1 backstop).** `scripts/hooks/no-detach-gate.py` (PreToolUse Bash,
+  registered in both settings files) `exit 2`-blocks a shell-detach (`nohup`/trailing-`&`/`disown`/
+  `setsid`) wrapping a codex launch, and FAILS OPEN on any parse/classifier error (the harm
+  direction is a false positive wedging Bash). `&&` is allowed via `(?<!&)`; `& wait` is allowed
+  (it blocks). Known-open bypasses (`bash -c '...'`, `$CODEX_BIN`, quoted subshells) are ACCEPTED
+  and documented - it backstops the common literal foot-gun, it does not remove discretion. A
+  shared fixture table (`fixtures/no-detach-cases.tsv`) + `test-no-detach-fixtures.py` pin it.
+- **Timeout raises + god-review bounding.** `codex-review.md` raises `CODEX_TIMEOUT_SECS`
+  540->3600 and the collection ceiling in lockstep (fast per-lens 120000 values left alone).
+  `god-review.md` §2c switches to a serial-FIFO bounded `run_in_background` launch (concurrency on
+  the shared `~/.codex` flock was a wake-storm), and `codex-invoke.sh` gets a whole-wrapper
+  deadline (~3300s covering profile fallback + flock + spin + codex) with a `set -e`-safe rc
+  capture and atomic `.status` sidecar, so a timed-out partial is never counted as a reviewer.
+- **Hermetic proof + recovery reporter.** `scripts/hooks/mission-continuity-assumptions/` (4
+  cases, 22 assertions, `MISSIONCONT_SMOKE_ALLOW_DEV=true`): gate parity, AWAIT lifecycle,
+  lost-wake replay, idempotent cursor - each watched failing first, all green. Throwaway `mktemp`
+  mission roots, no DB/OD/network/PHI. `scripts/mission-recovery-scan.py` is a MINIMAL read-only
+  reporter (not durable machinery): it surveys the frozen chains and prints a table (heuristic
+  dead-gap, status, outstanding-AWAIT, PENDING-DECISIONS parked flag, and a PINNED manual
+  `/mission resume` command per mission) - it executes NOTHING.
+- **Deferred follow-ups (NOT built).** (1) An out-of-session mission-supervisor daemon for
+  autonomy that survives Claude being fully closed (`ScheduleWakeup` only fires while the app is
+  open; today's cross-close recovery is resume-within-7-days + the post-compact chain). (2) A
+  `prod.lock` ownership-lease (heartbeat + CAS) plus a fix for its false line-21 comment - do NOT
+  force-clear the live `f71c8667` lock. (3) v2's `wait-open`/`wait-close` verbs,
+  `mission-waiting-reconcile.py`, and the `_mw_validate_log` WAITING edits were never built; the
+  single AWAIT marker + the ScheduleWakeup epilogue + the existing §8 recovery read replace them.
+
 ## 2026-08-02 - Parallelizer v1: parallelism made binding, measured, and machine-checked
 
 **Closeout addendum (post-implementation review, same day):** the Task-8 LIVE smoke is done and
