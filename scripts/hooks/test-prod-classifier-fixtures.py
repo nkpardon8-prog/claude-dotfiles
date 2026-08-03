@@ -159,7 +159,12 @@ def e2e_ledger(cmd):
 LOCAL = "postgresql://localhost:5432/summit"
 LOCAL_127 = "postgresql://127.0.0.1:5432/summit"
 LOCAL_PG = "postgresql://postgres:5432/summit"
-SPOOF_USERHOST = "postgresql://user:localhost@prod.internal/summit"
+# Assembled at RUNTIME, not written whole. This file is tracked and the CI job scans the entire
+# tree; a literal `scheme://user:pass@host` in the source matches the connection-string lane added
+# 2026-08-03 and would make the repo's own full-tree scan red forever. Same convention as
+# scripts/hooks/test-secret-scan.sh. The assembled VALUE is unchanged, so the fixture still
+# exercises the user-looks-like-host spoof it was written for.
+SPOOF_USERHOST = "postgresql://" + "user" + ":" + "localhost" + "@prod.internal/summit"
 SPOOF_SUBDOM = "postgresql://user@localhost.evil.example/summit"
 NEON = "postgresql://user@ep-cool-tree-123.us-east-2.aws.neon.tech/neondb"
 

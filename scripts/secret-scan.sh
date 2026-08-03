@@ -35,6 +35,34 @@ export LC_ALL=C
 RX='(sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghu_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|ghr_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hf_[A-Za-z0-9]{30,}|ya29\.[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9]{20,}|(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}|-----BEGIN +(RSA +|OPENSSH +|EC +|DSA +|PGP +)?PRIVATE +KEY-----)'
 export RX
 
+# Connection strings and JWTs (added 2026-08-03 by explicit user decision on pd:2-rx-conn-scope,
+# after an earlier measurement had argued AGAINST them). Folded into RX so they apply everywhere
+# the primary lane does, including --composite at push time.
+#
+# FALSE POSITIVES ARE THE DOMINANT RISK HERE, not misses: a false positive jams EVERY commit in
+# this repo AND silently blocks the async auto-push, which is strictly worse than one missed
+# exotic secret. So both patterns are anchored to STRUCTURE, never to a loose prefix:
+#
+#   JWT - requires all THREE base64url segments AND a `eyJ` first segment (base64 of `{"`).
+#         A bare `eyJ...` prefix rule would match ordinary base64 in docs; three dot-separated
+#         segments of >=10 chars each is a shape prose does not accidentally produce.
+#         MEASURED before adding: 0 hits across every tracked file.
+#
+#   CONN - requires scheme + BOTH a user and a password + host. `postgres://localhost/db` and
+#          `https://example.com` correctly do NOT match; only an embedded credential pair does.
+#          Schemes are enumerated (no generic `://`) so ordinary URLs cannot trip it.
+#          An INTERPOLATED password (`${VAR}`, `$VAR`) is excluded - it is a reference, not a
+#          literal secret, and matching it would red the tree on ordinary fixtures.
+#          KNOWN BLIND SPOT, accepted deliberately: a real literal password CONTAINING `$` is
+#          missed. That is the correct trade here - see the asymmetry argument above.
+#          MEASURED before adding: 2 hits, both tracked test fixtures; one was an interpolated
+#          password (now excluded by the pattern) and one was a literal that was converted to
+#          runtime assembly, matching this repo's existing fixture convention.
+RX_JWT='eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+RX_CONN='(postgres|postgresql|mysql|mongodb(\+srv)?|redis|rediss|amqp|amqps|mssql)://[^:/@[:space:]]+:[^@/[:space:]$\{]+@[^[:space:]/]+'
+RX="${RX%)}|${RX_JWT}|${RX_CONN})"
+export RX RX_JWT RX_CONN
+
 # Mac mini CRD skill secondary patterns (path-aware allowlisting applied per-file)
 RX_PIN='([Pp][Ii][Nn]|CRD_PIN)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*[0-9]{6}([^0-9]|$)'
 export RX_PIN

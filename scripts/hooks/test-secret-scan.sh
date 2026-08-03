@@ -427,6 +427,40 @@ git checkout -q "$BR"; git branch -qD twinbranch >/dev/null 2>&1
 git remote remove other >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------
+# CONNECTION-STRING + JWT LANES (added 2026-08-03, pd:2-rx-conn-scope resolved "expand properly").
+# The DOMINANT risk for these two is FALSE POSITIVES, not misses - a false positive jams every
+# commit and silently blocks the async auto-push. So the negative cases below are not padding:
+# they are the actual acceptance criteria, and they are what must stay green.
+CJ="$WORK/connjwt"; mkdir -p "$CJ"
+# Assembled at runtime - a literal JWT or DSN in this tracked file would red the full-tree scan.
+_JWT="eyJ$(printf '%s' 'hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9')"".""eyJ$(printf '%s' 'zdWIiOiIxMjM0NTY3ODkwIn0')"".""$(printf '%s' 'dQw4w9WgXcQabcdefghij')"
+printf 'token=%s\n' "$_JWT" > "$CJ/jwt.txt"
+bash "$SCAN" "$CJ/jwt.txt" >/dev/null 2>&1
+chk "a three-segment JWT is caught" "$?" "2"
+# A bare eyJ-prefixed base64 blob is NOT a JWT - only three dot-separated segments are.
+printf 'blob=%s\n' "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" > "$CJ/notjwt.txt"
+bash "$SCAN" "$CJ/notjwt.txt" >/dev/null 2>&1
+chk "a bare eyJ base64 blob is NOT flagged (prefix alone is not a JWT)" "$?" "0"
+
+_DSN="postgres://admin:$(printf '%s' 's3cr3tpw')@db.example.com:5432/app"
+printf 'DATABASE_URL=%s\n' "$_DSN" > "$CJ/dsn.txt"
+bash "$SCAN" "$CJ/dsn.txt" >/dev/null 2>&1
+chk "a DSN with embedded credentials is caught" "$?" "2"
+# NEGATIVE CASES - these are the false positives that would jam every commit in this repo.
+printf '%s\n' "postgres://localhost:5432/mydb" > "$CJ/nocred.txt"
+bash "$SCAN" "$CJ/nocred.txt" >/dev/null 2>&1
+chk "a credential-less DSN is NOT flagged" "$?" "0"
+printf '%s\n' "see https://example.com/docs and http://user@host/x" > "$CJ/http.txt"
+bash "$SCAN" "$CJ/http.txt" >/dev/null 2>&1
+chk "ordinary http(s) URLs are NOT flagged" "$?" "0"
+printf 'DB=%s\n' 'postgres://u:${PGPASSWORD}@host/db' > "$CJ/interp.txt"
+bash "$SCAN" "$CJ/interp.txt" >/dev/null 2>&1
+chk "an INTERPOLATED password is NOT flagged (reference, not a literal)" "$?" "0"
+# The repo's own tree is the real regression net for these two lanes.
+( cd "$REPO" && git ls-files -z | xargs -0 bash "$SCAN" -- ) >/dev/null 2>&1
+chk "full tracked tree stays clean with the new lanes enabled" "$?" "0"
+
+# ---------------------------------------------------------------------------
 # INSTALLER CONTENTION. Round 6's unanimous CRITICAL: the installer reported success while
 # installing nothing, so dotfiles-sync and SessionStart read "the local gate is fresh" when it
 # could be stale or absent. Exercised against a THROWAWAY HOME so the real .git/hooks is never
