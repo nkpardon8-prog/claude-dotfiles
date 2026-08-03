@@ -913,7 +913,7 @@ env prefix, no `~`/`$HOME` (changing it breaks the `~/.claude/settings.json` all
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]
 ```
 Verbs: `create | log | note | challenge | pending | resolve | rebaseline | render-banner | await`
-plus the three read-only bare-token verbs `parse-codex-header | void-count | await-state | cursor-hash`
+plus the four read-only bare-token verbs `parse-codex-header | void-count | await-state | cursor-hash`
 (bare-token stdout, no `mission-write: <verb> …` status line — see the AWAIT marker + wake-routine §12).
 
 **Codex NEVER writes the bridge.** EVERY Codex invocation — research, plan-review, code-review, any
