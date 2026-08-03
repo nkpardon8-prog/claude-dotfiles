@@ -401,6 +401,20 @@ while IFS= read -r -d '' f; do
     esac
 done < "$TMPLIST"
 
+# THE INVARIANT, asserted rather than assumed (2026-08-03, round-2 review): an explicit-path
+# invocation that scanned ZERO files has proved nothing, so it must not report clean. Every
+# individual route to "scanned nothing, exited 0" that has been found here was a DIFFERENT
+# route - an unknown flag, a nonexistent path, an empty argument list after `--`. Closing them
+# one at a time is whack-a-mole; this counter closes the shape, including the next route.
+# MEASURED before the fix: `secret-scan.sh --` (no paths) -> rc=0.
+#
+# Scoped to explicit-path mode ONLY. An enumeration legitimately finds nothing to scan: a
+# commit that stages a submodule pointer alone, or a clean working tree, must stay rc=0.
+if [ "$MODE" = file ] && [ "$SCANNED" -eq 0 ]; then
+    echo "secret-scan: explicit-path invocation scanned ZERO files - refusing to report clean" >&2
+    WORST=3
+fi
+
 if [ -n "$HITS" ]; then
     {
         echo "==============================================================="
