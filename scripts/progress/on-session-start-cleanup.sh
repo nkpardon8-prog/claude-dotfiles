@@ -35,13 +35,36 @@ mkdir -p "$HOME/.claude/parallel-waves" 2>/dev/null
 # it. An unparseable state file is left alone on purpose - merge-wave.sh refuses loudly on
 # corruption, and silently deleting the evidence would hide that.
 find "$HOME/.claude/parallel-waves" -maxdepth 1 -type f -name '*-w*.json' -mtime +7 2>/dev/null | while IFS= read -r _st; do
-  python3 -c 'import json, os, sys
+  # Emit "<repo_root>\n<branch>\n<branch>..." on stdout ONLY when the state is DEAD (none of
+  # the worktrees it records still exists); exit 1 (printing nothing) when any worktree
+  # survives - a RECOVERABLE wave that age alone never justifies deleting. An unparseable
+  # file also exits 1 (left alone on purpose, as above).
+  _meta=$(python3 -c 'import json, os, sys
 try:
     doc = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(1)
-paths = [c.get("worktree") for c in doc.get("chunks", []) if isinstance(c, dict)]
-sys.exit(1 if any(p and os.path.isdir(p) for p in paths) else 0)' "$_st" 2>/dev/null && rm -f "$_st" 2>/dev/null
+chunks = [c for c in doc.get("chunks", []) if isinstance(c, dict)]
+if any(c.get("worktree") and os.path.isdir(c.get("worktree")) for c in chunks):
+    sys.exit(1)
+print(doc.get("repo_root", ""))
+for c in chunks:
+    b = c.get("branch")
+    if b:
+        print(b)' "$_st" 2>/dev/null) || continue
+  # DEAD state file. Before deleting it, delete the w<W>-<SID8>-* branches it names, using
+  # repo_root FROM THE STATE FILE ITSELF. Branch cleanup otherwise lives only in (a2), which
+  # needs the <SID8> dir + breadcrumb to still exist - a hand-abandoned worktree (dir removed
+  # by hand, state file left behind) would leak its branches with no sweeper. A missing repo
+  # or already-gone branch is a logged no-op, never an error.
+  _root=$(printf '%s\n' "$_meta" | sed -n '1p')
+  if [ -n "$_root" ] && [ -e "$_root/.git" ]; then
+    printf '%s\n' "$_meta" | sed -n '2,$p' | while IFS= read -r _br; do
+      [ -n "$_br" ] || continue
+      git -C "$_root" branch -D "$_br" >/dev/null 2>&1 || true
+    done
+  fi
+  rm -f "$_st" 2>/dev/null
 done || true
 
 # (a2) Orphaned wave worktrees: >7 days old with NO surviving wave-state referencing them
@@ -51,15 +74,46 @@ done || true
 # is still checked out in a registered worktree. So: rm -rf the tree, prune the registration,
 # then delete this session's w<W>-<SID8>-<chunk> branches.
 find "$HOME/.claude/wave-worktrees" -mindepth 1 -maxdepth 1 -type d -mtime +7 2>/dev/null | while IFS= read -r _wt; do
-  grep -lF -- "$_wt" "$HOME"/.claude/parallel-waves/*-w*.json >/dev/null 2>&1 && continue
+  # Distinguish a grep ERROR (exit >=2, e.g. an unreadable state file) from a clean no-match
+  # (exit 1). Treating them alike let an unreadable state file - which might be the very file
+  # that references this worktree - fall through to the destructive rm -rf + branch -D below,
+  # deleting recoverable work. So: if ANY wave-state file exists, a grep error SKIPS this
+  # worktree (logged), and only a clean exit-1 no-match proceeds. When NO state file exists at
+  # all, nothing can reference the worktree, so it is genuinely orphaned and we proceed.
+  _states=( "$HOME"/.claude/parallel-waves/*-w*.json )
+  if [ -e "${_states[0]}" ]; then
+    grep -lF -- "$_wt" "${_states[@]}" >/dev/null 2>&1
+    _g=$?
+    if [ "$_g" -eq 0 ]; then
+      continue
+    elif [ "$_g" -ge 2 ]; then
+      printf '%s wave-worktree sweep SKIPPED (grep error %s reading a wave-state file): %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_g" "$_wt" >> "$HOME/.claude/parallel-waves/sweep.log" 2>/dev/null || true
+      continue
+    fi
+    # _g == 1: clean no-match across all readable state files - safe to reclaim.
+  fi
   _sid8=$(basename "$_wt")
-  _root=""
-  [ -f "$_wt/.repo-root" ] && _root=$(head -n 1 "$_wt/.repo-root" 2>/dev/null)
+  # Per-repo breadcrumbs (implement.md wave step 1): a session can run waves in two repos
+  # under one <SID8>, each writing its own .repo-root-<shorthash>. Collect EVERY breadcrumb's
+  # repo_root (legacy single-file .repo-root still honored) BEFORE the rm removes them, then
+  # run one prune + branch-delete pass per DISTINCT repo so no repo's cleanup is stranded.
+  _roots=""
+  for _rb in "$_wt"/.repo-root "$_wt"/.repo-root-*; do
+    [ -f "$_rb" ] || continue
+    _r=$(head -n 1 "$_rb" 2>/dev/null)
+    [ -n "$_r" ] && _roots="${_roots}${_r}
+"
+  done
   rm -rf "$_wt" 2>/dev/null
-  if [ -n "$_root" ] && [ -e "$_root/.git" ]; then
-    git -C "$_root" worktree prune 2>/dev/null || true
-    git -C "$_root" for-each-ref --format='%(refname:short)' "refs/heads/w*-$_sid8-*" 2>/dev/null | while IFS= read -r _br; do
-      git -C "$_root" branch -D "$_br" >/dev/null 2>&1 || true
+  if [ -n "$_roots" ]; then
+    printf '%s' "$_roots" | sort -u | while IFS= read -r _root; do
+      [ -n "$_root" ] || continue
+      [ -e "$_root/.git" ] || continue
+      git -C "$_root" worktree prune 2>/dev/null || true
+      git -C "$_root" for-each-ref --format='%(refname:short)' "refs/heads/w*-$_sid8-*" 2>/dev/null | while IFS= read -r _br; do
+        git -C "$_root" branch -D "$_br" >/dev/null 2>&1 || true
+      done
     done
   else
     # No breadcrumb: the tree is gone but its repo cannot be identified, so the stale worktree

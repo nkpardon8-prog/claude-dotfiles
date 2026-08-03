@@ -225,7 +225,7 @@ The required top-level shape (see the schema doc for full field rules):
 
 ```json
 {
-  "schema_version": "parallelizer.v1",
+  "schema_version": "parallelizer.v1.1",
   "verdict": "FAN_OUT",
   "confidence": "high",
   "analysis_basis": { "repo_root": "...", "base_sha": "...", "shared_hazard_paths": [] },

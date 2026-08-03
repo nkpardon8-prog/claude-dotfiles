@@ -1,7 +1,7 @@
 ---
 description: Executes an approved plan by breaking work into parallelizable chunks and spawning implementation sub-agents. Automatically reviews the result for completeness. Use after a plan is approved.
 argument-hint: "[plan file path] [--no-review]"
-expected_subagents: 5
+expected_subagents: 7
 ---
 
 # Implementation Agent
@@ -51,7 +51,13 @@ chunk-id | phase | parallel|sequential | task files
 
 `chunk-id` must match `^[a-z0-9][a-z0-9-]{0,31}$` (lowercase alphanumerics and hyphens, 1-32 chars, never leading with a hyphen). It becomes a git branch name and a worktree directory name downstream, so anything outside that set is a shell/filesystem hazard. The `task files` column is the chunk's **declared** file set - the Step 4 post-batch overlap check is evaluated against exactly these declarations, so a vague or omitted declaration is a chunk that cannot be run in parallel.
 
-If >= 2 chunks are pending and NO_REVIEW is not set, consult the WAVE GATE section below the contract-core marker; otherwise proceed serial.
+If >= 2 chunks are pending and NO_REVIEW is not set, consult the WAVE GATE section below the contract-core marker; otherwise proceed serial. These two serial branches log their decision HERE, on the serial branch - NOT in the WAVE GATE, which is never reached on either path (it is entered only when >= 2 chunks AND NOT NO_REVIEW, exactly when these two tokens cannot occur). Before the serial path continues, emit exactly one decision event with the same absolute call the gate uses:
+
+```bash
+node ~/.claude-dotfiles/scripts/verify-parallel-wave.mjs --log-decision serial --reason <token> --repo-root <repo_root>
+```
+
+`--reason lt2_chunks` when fewer than 2 chunks are pending; `--reason no_review` when NO_REVIEW is set (a >= 2-chunk run invoked with `--no-review`). Without these two log points, `rework.log`'s serial denominator silently omits the two commonest serial paths, because neither token can ever fire inside the gate.
 
 ## Step 3.5: Assumption-Gate — Pre-Implementation (runs on EVERY path, `--no-review`/`/mission` included)
 
@@ -211,10 +217,13 @@ That sha is this wave's `base_sha`. Re-run `--validate-plan` at it. If wave N-1 
 
 ```bash
 git -C <repo_root> worktree add -b w<W>-<SID8>-<chunk-id> ~/.claude/wave-worktrees/<SID8>/w<W>-<chunk-id> <base_sha>
-printf '%s\n' '<repo_root>' > ~/.claude/wave-worktrees/<SID8>/.repo-root
+# Per-repo breadcrumb, named by a short hash of <repo_root>: one session can run waves in
+# TWO repos under the same <SID8>, and a single shared .repo-root would be overwritten by
+# the second repo - stranding the first repo's cleanup. Write it ONCE per repo (idempotent).
+printf '%s\n' '<repo_root>' > ~/.claude/wave-worktrees/<SID8>/.repo-root-$(printf '%s' '<repo_root>' | shasum -a 256 | cut -c1-12)
 ```
 
-`<SID8>` and `<base_sha>` are the LITERAL values printed earlier. The `.repo-root` breadcrumb is not optional bookkeeping: it is how the SessionStart cleanup sweep finds the right repo to `worktree prune` and delete `w*-<SID8>-*` branches from if this session dies mid-wave.
+`<SID8>` and `<base_sha>` are the LITERAL values printed earlier. The `.repo-root-<shorthash>` breadcrumb is not optional bookkeeping: it is how the SessionStart cleanup sweep finds the right repo to `worktree prune` and delete `w*-<SID8>-*` branches from if this session dies mid-wave. It is PER-REPO (filename suffixed with a short sha256 of `<repo_root>`) because one `<SID8>` dir can hold worktrees from two different repos in the same session; the sweep reads EVERY `.repo-root-*` in the dir and runs one prune + branch-delete pass per distinct repo, so no repo's cleanup is stranded.
 
 ### 2. Write the wave-state BEFORE spawning
 
@@ -240,7 +249,13 @@ Each chunk prompt MUST carry:
 
 **(b) Merge.** `bash ~/.claude-dotfiles/scripts/merge-wave.sh <state.json>` - the ONLY merge path. It re-verifies inline, merges chunks in declared order with `--no-ff`, and records each `{id, merge_sha}` into the wave-state as it goes, so a re-run resumes and skips what already merged. On conflict the tree is left CLEAN at the last successful merge tip; earlier merges stay, by design. Never hand-merge a chunk branch around this script.
 
-**(c) Integrate.** Run the RECORDED `gate_list` plus the wave's `post_integration_commands`, with cwd = `repo_root`, all exiting 0. Failure here FAILS FORWARD: record a rework event, then ONE serial fixer repairs the INTEGRATED tree (the code is already merged; unmerging it is not the cheaper move). Re-runs of (c) do NOT re-invoke the checker, and the wave-state closes at (d) either way.
+**(c) Integrate.** Run the RECORDED `gate_list` plus the wave's `post_integration_commands`, with cwd = `repo_root`. Handle each command's exit as the SAME TRI-STATE the gate contract uses in Steps 3.5 / 4 / 7 - 0 = pass, 1/3 = fail, 2 = REFUSED - never collapse REFUSED into failure:
+
+- **exit 0 (pass)** — continue.
+- **exit 1 or 3 (fail)** — FAIL FORWARD: record a rework event, then ONE serial fixer repairs the INTEGRATED tree (the code is already merged; unmerging it is not the cheaper move). Re-runs of (c) do NOT re-invoke the checker.
+- **exit 2 (REFUSED — the safety env-gate is not set)** — do NOT treat this as a failure and do NOT fail-forward. An env-gated assumption suite exits 2 WITHOUT its `<PROJECT>_SMOKE_ALLOW_DEV`-class var, so a healthy tree would otherwise trigger a spurious rework event + serial fixer. Report the exact gate + the env var it requires and **pause per the away-policy** (surface it for the user / the `/mission` checkpoint rather than silently skipping — an unrun gate is not a passed gate).
+
+Barrier (c) is a LOOP: re-run it until every command is GREEN (exit 0) before teardown (d). A failed (exit 1/3) or refused (exit 2) integrate NEVER proceeds to (d) and NEVER starts wave W+1 — teardown fires ONLY on an all-green integrate, so the next wave can never begin on a red tree.
 
 **(d) Tear down.** Per chunk: `git -C <repo_root> worktree remove <worktree>` then `git -C <repo_root> branch -d <branch>` (plain `-d` - it refuses to delete anything unmerged, which is exactly the check you want here). Delete the wave-state file. Record plan progress NOW, before the next wave: an interrupted run must never lose the record of what already landed. Then wave W+1 from step 0.
 
