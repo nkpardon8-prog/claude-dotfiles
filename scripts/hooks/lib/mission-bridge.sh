@@ -2047,7 +2047,9 @@ mission_rebaseline() {
 
   _rb_sidm=$(_mission_marker_field "$_rb_f" sid)
   _rb_nonce=$(_mission_marker_field "$_rb_f" nonce)
-  _rb_pdseq=$(_mission_marker_field "$_rb_f" pdseq); case "$_rb_pdseq" in ''|*[!0-9]*) _rb_pdseq=0 ;; esac  # preserve pdseq across the gen boundary (R7-1: monotonic, never reset)
+  _rb_pdseq_raw=$(_mission_marker_field "$_rb_f" pdseq)  # preserve pdseq across the gen boundary (R7-1: monotonic, never reset)
+  _rb_pdseq=$(_mission_pdseq_parse "$_rb_pdseq_raw") || {   # D9: corrupt counter fails closed, no silent reset
+    _mission_unlock; echo "mission: rebaseline: REFUSED — malformed marker pdseq '${_rb_pdseq_raw}' (corrupt monotonic counter)" >&2; return 2; }
   _rb_n8=$(printf '%s' "$_rb_nonce" | cut -c1-8)
   # BUMP the generation (Task 4): rebaseline is the generation slice boundary. gen absent => 1.
   _rb_oldgen=$(_mission_marker_field "$_rb_f" gen); [ -n "$_rb_oldgen" ] || _rb_oldgen=1
