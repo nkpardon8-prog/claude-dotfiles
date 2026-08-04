@@ -197,8 +197,12 @@ if [ -f "$REPO/.github/workflows/secret-scan.yml" ]; then
         "$(grep -vE '^[[:space:]]*#' "$_wf" | grep -cE '\|[[:space:]]*xargs')" "0"
 
     # An enumeration that yields nothing is a broken enumeration, not a clean tree.
+    # Anchored on THIS message, not on the shared "refusing to report clean" phrase: three
+    # separate guards now end with that phrase, so counting it asserted 1 and got 3 - a
+    # self-inflicted red that reached CI. A guard keyed on a string its own siblings also
+    # emit is a guard that breaks every time a sibling is added.
     chk "CI fails closed when no tracked files are enumerated" \
-        "$(grep -c 'refusing to report clean' "$_wf")" "1"
+        "$(printf '%s\n' "$_wfc" | grep -c 'enumerated NO tracked files')" "1"
 
     # Third-party action pinned to an immutable commit, not a tag its publisher can move
     # under us while holding GITHUB_TOKEN. Silent (a moved tag produces no diff here) and
