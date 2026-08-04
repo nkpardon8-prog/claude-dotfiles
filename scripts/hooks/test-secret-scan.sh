@@ -251,14 +251,36 @@ if [ -f "$_wf" ]; then
         ); rm -rf "$_d"
     }
     _fx_clean()  { echo a > a.txt; echo b > b.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
-    _fx_secret() { echo a > a.txt; echo s > zz-secret.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
-    _fx_unread() { echo a > a.txt; echo u > unreadable.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
-    _fx_both()   { echo s > zz-secret.txt; echo u > unreadable.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
+    _fx_secret() { echo a > a.txt; echo s > zz-LEAKY.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
+    _fx_unread() { echo a > a.txt; echo u > zz-NOSCAN.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
+    _fx_both()   { echo s > zz-LEAKY.txt; echo u > zz-NOSCAN.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
     _fx_empty()  { :; }   # a git repo with zero tracked files
-    _fx_dying()  { echo a > a.txt; echo s > zz-secret.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1
+    _fx_dying()  { echo a > a.txt; echo s > zz-LEAKY.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1
                    printf '#!/usr/bin/env bash\nif [ "$1" = "ls-files" ]; then printf "a.txt\\0"; exit 141; fi\nexec /usr/bin/git "$@"\n' > bin/git; chmod +x bin/git; }
-    _fx_trunc()  { echo a > a.txt; echo s > zz-secret.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1
-                   printf '#!/usr/bin/env bash\nif [ "$1" = "ls-files" ]; then printf "a.txt\\0zz-secret.txt"; exit 0; fi\nexec /usr/bin/git "$@"\n' > bin/git; chmod +x bin/git; }
+    _fx_trunc()  { echo a > a.txt; echo s > zz-LEAKY.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1
+                   printf '#!/usr/bin/env bash\nif [ "$1" = "ls-files" ]; then printf "a.txt\\0zz-LEAKY.txt"; exit 0; fi\nexec /usr/bin/git "$@"\n' > bin/git; chmod +x bin/git; }
+
+    # FIXTURE SELF-CHECKS FIRST. These assert the test's OWN scaffolding before any case that
+    # depends on it. Added 2026-08-04 after the behavioural cases passed on macOS and failed on
+    # Linux CI with an opaque `got=<0>`: three cases went red at once with no way to tell whether
+    # the stub, the enumeration, or the step was at fault. A test whose failure cannot be
+    # localised is only marginally better than no test.
+    _selfchk() {
+        _d=$(mktemp -d); ( cd "$_d" || exit 99
+            git init -q . 2>/dev/null; git config user.email t@t; git config user.name t
+            mkdir -p scripts bin
+            printf '#!/usr/bin/env bash\n[ "${1:-}" = "--" ] && shift\nrc=0\nfor f in "$@"; do case "$f" in *NOSCAN*) rc=3 ;; *LEAKY*) [ "$rc" -eq 3 ] || rc=2 ;; esac; done\nexit $rc\n' > scripts/secret-scan.sh
+            chmod +x scripts/secret-scan.sh
+            echo a > a.txt; echo s > zz-LEAKY.txt
+            git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1
+            case "$1" in
+              stub)  bash scripts/secret-scan.sh -- zz-LEAKY.txt >/dev/null 2>&1; echo $? ;;
+              enum)  git ls-files -z | tr '\0' '\n' | grep -c 'zz-LEAKY.txt' ;;
+            esac
+        ); rm -rf "$_d"
+    }
+    chk "fixture self-check: the stub scanner returns 2 for a LEAKY path"  "$(_selfchk stub)" "2"
+    chk "fixture self-check: git enumerates the LEAKY file in the fixture" "$(_selfchk enum)" "1"
 
     chk "CI step: a clean tree exits 0"                       "$(_ci_run _fx_clean)"  "0"
     chk "CI step: a secret exits 2 (rotate), not 1 or 3"      "$(_ci_run _fx_secret)" "2"
