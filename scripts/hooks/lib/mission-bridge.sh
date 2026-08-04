@@ -1959,7 +1959,11 @@ mission_await_state() {
 # mission_resolve_pending <sid> <root> <pd_id> <resolution> — strip the `- [pd:<id>] ...` line
 # from PENDING DECISIONS (locked rewrite) and append a resolution narrative to the LOG.
 mission_resolve_pending() {
-  _rp_sid=$(_mission_sanitize_sid "$1"); _rp_root="$2"; _rp_id="$3"; _rp_res="${4:-resolved}"
+  _rp_sid=$(_mission_sanitize_sid "$1"); _rp_root="$2"; _rp_res="${4:-resolved}"
+  # D16 (R8-16): strip an OPTIONAL leading `pd:` so BOTH the echoed form (`pd:1-approve`) and the bare
+  # form (`1-approve`) resolve the same decision (the real double-prefix bug — the mint echoes `pd:…`
+  # and the AWAIT op is the bare `…`, so callers pass either).
+  _rp_id="${3#pd:}"
   [ -n "$_rp_id" ] || { echo "mission: resolve: missing pd-id" >&2; return 1; }
   _rp_f="${_rp_root}/MISSION.${_rp_sid}.md"
 
