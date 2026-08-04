@@ -223,27 +223,34 @@ Each `/pre-compact` run mines the conversation at a calibrated depth (Quick / De
 
 An autonomous `/mission` is a self-driving loop, so every turn has to leave SOMETHING that will
 re-drive it. The **continuation-owner invariant** makes that a hard rule: a `/mission` turn must
-not end unless (a) a tracked `run_in_background` job is pending, (b) it just called
-`ScheduleWakeup(...)` as its last action, or (c) it is at a genuine human-handback point. Anything
-else is a "naked yield" - the turn banks a log line and stops with nothing to wake it, and the
-mission freezes. A failed schedule is LOUD, never silent.
+not end unless (a) it just called `ScheduleWakeup(...)` as its last continuation-deciding call (only
+the tick-lock release may follow) AND that call SUCCEEDED, or (b) it is at a genuine human-handback /
+stop point. A **scheduled wake is the ONLY continuation
+owner** - a tracked `run_in_background` job is NOT sufficient alone (its completion wake can be
+lost), so a turn yielding with a job pending STILL schedules a long fallback heartbeat: the
+completion is the fast signal, the heartbeat the backstop. Anything else is a "naked yield" and the
+mission freezes. A failed schedule retries then STOPS LOUD (a `pending` + human AWAIT), never silent.
 
-Only **two wake mechanisms are load-bearing**, both empirically proven: a tracked
-`run_in_background` Bash re-invokes the idle agent when it exits, and `ScheduleWakeup` called
-directly by a skill fires a timed re-entry (proven by `commands/afk.md`; it only fires while
-Claude Code is OPEN, so cross-close recovery falls back to resume + the `/pre-compact` chain).
-Background-completion, a `ScheduleWakeup` tick, and post-compact resume all funnel into ONE
-idempotent wake routine: acquire `mkdir tick.lock` (atomic, with sleep-skew + backward-clock
-clamps), run the existing §8 resume-read, hash the current-generation state stream into a cursor,
-select one transition, then recompute the cursor immediately before dispatch and restart if it
-moved. Lock + cursor-compare + deterministic idtags make two queued wakes advance exactly once.
+The two wake SIGNALS are both empirically proven: a tracked `run_in_background` Bash re-invokes the
+idle agent when it exits, and `ScheduleWakeup` fires a timed re-entry (proven by `commands/afk.md`;
+it only fires while Claude Code is OPEN, so cross-close recovery falls back to resume + the
+`/pre-compact` chain). Background-completion, a `ScheduleWakeup` tick, and post-compact resume all
+funnel into ONE idempotent wake routine: acquire `mkdir tick.lock` (released only if acquired; with
+sleep-skew clamps), run the §8 resume-read, hash the current-gen state stream into a cursor (a
+`corrupt`/empty cursor STOPS LOUD), select one transition, recompute the cursor before dispatch and
+re-enter if it moved (bounded). The real dedup for queued wakes is the **tick-lock serializing +
+each wake re-reading current state**; the cursor is the in-turn consistency check, and deterministic
+idtags make any re-bank idempotent.
 
 The state that lets a wake tell "work never launched" from "work launched, one lane returned" is
-the **AWAIT bookmark** - one durable log line (`[mission] AWAIT ... need=<mask> got=<mask>`)
-written via `mission-write.sh await` and read via `await-state`. When `got<need` and no tracked
-job is pending, the wake routine REPLAYS only the missing lane, so correctness never depends on
-100% wake delivery. A banked `phase=review` successor supersedes its AWAIT; `got==need` reads
-`none`.
+the **AWAIT bookmark** - one durable log line (`[mission] AWAIT … kind=<job|human> … need=<mask>
+got=<mask>`) written via `mission-write.sh await` and read via `await-state`. Its identity is
+(part,round,attempt,`kind`,`op`) so a job bit never satisfies a human `need` AND two distinct human
+decisions (each pd's unique `<seq>-<slug>` op) never share a mask, while both review lanes share
+`op=review-barrier` and still join; each lane writes ONLY its own bit and the reader OR-accumulates. When a barrier is short a lane and no tracked job is pending,
+the wake routine REPLAYS only the missing lane (gated on a lane-timeout), so correctness never
+depends on 100% wake delivery. A banked `phase=review` successor / `VOID` / `PART-DONE` supersedes
+its AWAIT; a `kind=human` barrier is resolved by its own `got==need`.
 
 The **no-detach invariant** is the machine backstop for the orphan road: a PreToolUse Bash gate
 (`scripts/hooks/no-detach-gate.py`) blocks a shell-detach (`nohup`/trailing-`&`/`disown`/`setsid`)

@@ -351,8 +351,12 @@ mission_lifecycle_state() {
         if [ "${_mst_a##*.}" = gz ]; then gzip -dc "$_mst_a" 2>/dev/null; else cat "$_mst_a" 2>/dev/null; fi
       done
       cat "$_mst_live" 2>/dev/null
-    } | grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' | tail -1 || true
+    } | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-(CLEARED|REBASELINED)/' | tail -1 || true
   )
+  # B2 (round-2 S1): anchored to the empty-idtag column + body prefix. MISSION-CLEARED/REBASELINED are
+  # the only lines the validator mints with an EMPTY idtag, so a criticer/note line (which always carries
+  # a non-empty `m<N>-…` idtag) that merely EMBEDS `MISSION-CLEARED` can no longer flip the mission to
+  # `cleared` and silently halt it.
   case "$_mst_last" in
     *MISSION-REBASELINED*) printf 'active\n' ;;
     *MISSION-CLEARED*)     printf 'cleared\n' ;;
@@ -657,6 +661,11 @@ _mission_rewrite() {
   # generation is order-tolerant (key-value read; absent => 1). Preserve it on re-emit so a
   # note/challenge/pending/resolve never drops the marker's gen (fix-plan Task 4).
   _rw_gen=$(_mission_marker_field "$_rw_file" gen); [ -n "$_rw_gen" ] || _rw_gen=1
+  # pdseq (R7-1) is order-tolerant too (absent => 0). Preserve it on re-emit so a note/challenge/
+  # resolve/rebaseline never drops the monotonic pending-decision counter. The `pending` mint
+  # BUMPS it: when _MISSION_REWRITE_PDSEQ is set (non-empty numeric), re-emit THAT value instead.
+  _rw_pdseq=$(_mission_marker_field "$_rw_file" pdseq); case "$_rw_pdseq" in ''|*[!0-9]*) _rw_pdseq=0 ;; esac
+  case "${_MISSION_REWRITE_PDSEQ:-}" in ''|*[!0-9]*) : ;; *) _rw_pdseq="$_MISSION_REWRITE_PDSEQ" ;; esac
   [ -n "$_rw_nonce" ] || return 1
   _rw_n8=$(printf '%s' "$_rw_nonce" | cut -c1-8)
   if [ "$_rw_hashmode" = "keep" ] || [ -z "$_rw_hashmode" ]; then
@@ -717,8 +726,8 @@ _mission_rewrite() {
     }
   ' "$_rw_file"
 
-  # Re-emit the canonical marker byte-exact as the last line (gen preserved, order-tolerant).
-  printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s -->\n' "$_rw_sid" "$_rw_nonce" "$_rw_hash" "$_rw_gen"
+  # Re-emit the canonical marker byte-exact as the last line (gen + pdseq preserved, order-tolerant).
+  printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s pdseq=%s -->\n' "$_rw_sid" "$_rw_nonce" "$_rw_hash" "$_rw_gen" "$_rw_pdseq"
 }
 
 # ===========================================================================================
@@ -887,7 +896,9 @@ mission_create() {
 
   # compose the file body + canonical marker, write atomically.
   # gen=1 minted at create (generation scheme, fix-plan Task 4); bumped only at rebaseline.
-  _mc_body=$(printf '# MISSION %s\n\n<!-- MZONE:PLAN n=%s -->\n%s\n<!-- /MZONE:PLAN n=%s -->\n<!-- MZONE:DURABLE NOTES n=%s -->\n<!-- /MZONE:DURABLE NOTES n=%s -->\n<!-- MZONE:PLAN CHALLENGES n=%s -->\n<!-- /MZONE:PLAN CHALLENGES n=%s -->\n<!-- MZONE:PENDING DECISIONS n=%s -->\n<!-- /MZONE:PENDING DECISIONS n=%s -->\n<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=1 -->' \
+  # pdseq=0 minted at create (R7-1): the monotonic pending-decision sequence, bumped only by the
+  # `pending` mint (mission_pending_mint), NEVER reset — guarantees a unique op per human decision.
+  _mc_body=$(printf '# MISSION %s\n\n<!-- MZONE:PLAN n=%s -->\n%s\n<!-- /MZONE:PLAN n=%s -->\n<!-- MZONE:DURABLE NOTES n=%s -->\n<!-- /MZONE:DURABLE NOTES n=%s -->\n<!-- MZONE:PLAN CHALLENGES n=%s -->\n<!-- /MZONE:PLAN CHALLENGES n=%s -->\n<!-- MZONE:PENDING DECISIONS n=%s -->\n<!-- /MZONE:PENDING DECISIONS n=%s -->\n<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=1 pdseq=0 -->' \
     "$_mc_sid" \
     "$_mc_n8" "$_mc_src" "$_mc_n8" \
     "$_mc_n8" "$_mc_n8" \
@@ -1056,6 +1067,64 @@ mission_mutate() {
   return 0
 }
 
+# mission_pending_mint <sid> <root> <slug> <question> — R7-1 ROOT FIX.
+#   MINT a monotonic pending-decision id `pd:<seq>-<slug>` (seq = marker pdseq + 1, machine-assigned,
+#   NEVER reused even across resolve), append `- [pd:<seq>-<slug>] <question>` into PENDING DECISIONS,
+#   BUMP the marker pdseq to <seq> in the SAME locked rewrite, and ECHO the minted `pd:<seq>-<slug>` on
+#   stdout. The agent captures the echoed id and uses it for BOTH `resolve` and the human-AWAIT
+#   `op=<seq>-<slug>`. Because the seq is monotonic, two same-SLUG decisions get DISTINCT ops -> DISTINCT
+#   idtags -> the reopener LANDS (no mission_log_append dedup) -> await-state reads it LIVE. The
+#   agent-supplied slug is validated [a-z0-9-]; any agent-supplied seq is IGNORED (seq is machine-minted).
+mission_pending_mint() {
+  _pm_sid=$(_mission_sanitize_sid "$1"); _pm_root="$2"; _pm_slug="$3"; _pm_q="$4"
+  [ -n "$_pm_sid" ]  || { echo "mission: pending: invalid sid" >&2; return 1; }
+  [ -n "$_pm_root" ] || { echo "mission: pending: missing root" >&2; return 1; }
+  # slug grammar: non-empty, ONLY [a-z0-9-] (matches the human-op slug the AWAIT grammar accepts).
+  case "$_pm_slug" in
+    '') echo "mission: pending: missing slug" >&2; return 1 ;;
+    *[!a-z0-9-]*) echo "mission: pending: invalid slug '$_pm_slug' (want [a-z0-9-])" >&2; return 1 ;;
+  esac
+  [ -n "$_pm_q" ] || { echo "mission: pending: missing question" >&2; return 1; }
+  _pm_f="${_pm_root}/MISSION.${_pm_sid}.md"
+
+  lb=$(_mission_lockbase "$_pm_root")
+  _mission_lock "$lb" "$_pm_sid" || {
+    echo "mission: LOCK busy (data safe; retry next compaction)" >&2; return 3; }
+  if ! mission_verify "$_pm_f" "$_pm_sid"; then
+    _mission_unlock; echo "mission: CORRUPT — refusing pending (backups in .mission-backups/)" >&2; return 2
+  fi
+  # read the current pdseq UNDER LOCK (absent => 0) and mint the next; monotonic, never reused.
+  _pm_cur=$(_mission_marker_field "$_pm_f" pdseq 2>/dev/null); case "$_pm_cur" in ''|*[!0-9]*) _pm_cur=0 ;; esac
+  _pm_next=$((_pm_cur + 1))
+  _pm_id="pd:${_pm_next}-${_pm_slug}"
+  _pm_entry="- [${_pm_id}] ${_pm_q}"
+
+  mission_backup "$_pm_f" "$_pm_root" "$_pm_sid" || {
+    _mission_unlock; echo "mission: BACKUP FAILED — refusing" >&2; return 4; }
+
+  # gen-scoped mid idtag for the pending line (resolve strips the paired `<!-- mid: -->`). The seq
+  # already makes the id unique, so no content-dedup is needed — each mint is a fresh decision.
+  _pm_midkey=$(_mission_gen_tag "$_pm_f" "pd-${_pm_next}-${_pm_slug}")
+
+  tmp=$(mktemp "${_pm_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: pending: mktemp failed" >&2; return 5; }
+  # _MISSION_REWRITE_PDSEQ bumps the marker pdseq to <next> in the SAME re-emit (atomic under the lock).
+  ( umask 077 && _MISSION_REWRITE_PDSEQ="$_pm_next" _mission_rewrite "$_pm_f" "PENDING DECISIONS" "$_pm_entry" "$_pm_midkey" "" "keep" > "$tmp" )
+
+  if [ -s "$tmp" ] && mission_verify "$tmp" "$_pm_sid" \
+     && grep -qF "<!-- mid:${_pm_midkey} -->" "$tmp" \
+     && [ "$(_mission_marker_field "$tmp" pdseq)" = "$_pm_next" ]; then
+    if ! mv -f "$tmp" "$_pm_f"; then
+      rm -f "$tmp"; _mission_unlock; echo "mission: pending: rename failed — original intact" >&2; return 6
+    fi
+  else
+    rm -f "$tmp"; _mission_unlock; echo "mission: pending: self-check FAILED — original intact" >&2; return 6
+  fi
+  _mission_unlock
+  # ECHO the minted id so the agent uses it for resolve + the human-AWAIT op.
+  printf '%s\n' "$_pm_id"
+  return 0
+}
+
 # ===========================================================================================
 # Generation scheme — gen-scoped idtags + gen-sliced reads + gen-boundary crash-safety (Task 4).
 #   The marker's `gen=` field (order-tolerant; absent => 1) partitions a mission's LOG into
@@ -1109,8 +1178,11 @@ _gen_sliced_stream() {
   _gss_gen=$(_mission_marker_field "$_gss_md" gen 2>/dev/null); [ -n "$_gss_gen" ] || _gss_gen=1
   case "$_gss_gen" in ''|*[!0-9]*) _gss_gen=1 ;; esac
   _gss_stream=$(_mission_timing_stream "$_gss_sid" "$_gss_root")
+  # B1 (round-2 S1): the boundary line has an EMPTY idtag column (validator requirement), so anchor to
+  # `$1=="" && body prefix` — a criticer/note line embedding `MISSION-REBASELINED` (always a non-empty
+  # idtag) can no longer become the slice boundary and hide earlier current-gen AWAIT/progress state.
   _gss_bline=$(printf '%s\n' "$_gss_stream" \
-    | grep -E '\[mission\] MISSION-REBASELINED status=active' | tail -1)
+    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active/' | tail -1)
   _gss_bgen=$(printf '%s' "$_gss_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
   if [ "$_gss_gen" -ge 2 ] 2>/dev/null; then
     if [ -z "$_gss_bline" ] || [ "$_gss_bgen" != "$_gss_gen" ]; then
@@ -1137,9 +1209,11 @@ _void_consecutive_count() {
   case "$_vcc_part"  in ''|*[!0-9]*) echo "-1"; return 0 ;; esac
   case "$_vcc_round" in ''|*[!0-9]*) echo "-1"; return 0 ;; esac
   _vcc_stream=$(_gen_sliced_stream "$_vcc_sid" "$_vcc_root") || { echo "-1"; return 0; }
-  printf '%s\n' "$_vcc_stream" | awk -v pn="$_vcc_part" -v rk="$_vcc_round" '
-    $0 ~ ("\\[mission\\] VOID part=" pn "[^0-9]") && $0 ~ ("round=" rk "([^0-9]|$)") { c++; next }
-    $0 ~ ("\\[mission\\] part=" pn "[^0-9]") && $0 ~ ("phase=review") && $0 ~ ("round=" rk "([^0-9]|$)") { c=0 }
+  # B3 (round-2 S1): double-anchored on the idtag column ($1) + body prefix ($2), so a criticer/note
+  # line embedding `[mission] VOID …` cannot inflate the outage count into a false STOP-LOUD.
+  printf '%s\n' "$_vcc_stream" | awk -F'\t' -v pn="$_vcc_part" -v rk="$_vcc_round" '
+    $1 ~ "^(g[0-9]+-)?m[0-9]+-void-r" && $2 ~ ("^\\[mission\\] VOID part=" pn "[^0-9]") && $2 ~ ("round=" rk "([^0-9]|$)") { c++; next }
+    $1 ~ "^(g[0-9]+-)?m[0-9]+-review-r" && $2 ~ ("^\\[mission\\] part=" pn "[^0-9]") && $2 ~ "phase=review" && $2 ~ ("round=" rk "([^0-9]|$)") { c=0 }
     END { print c+0 }
   '
   return 0
@@ -1175,7 +1249,7 @@ mission_parse_codex_header() {
 _mission_gen_selfheal() {
   _gsh_sid=$(_mission_sanitize_sid "$1"); _gsh_root="$2"; _gsh_gen="$3"; _gsh_log="$4"
   _gsh_bline=$(_mission_timing_stream "$_gsh_sid" "$_gsh_root" \
-    | grep -E '\[mission\] MISSION-REBASELINED status=active' | tail -1)
+    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active/' | tail -1)
   _gsh_bgen=$(printf '%s' "$_gsh_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
   if [ -z "$_gsh_bline" ] || [ "$_gsh_bgen" != "$_gsh_gen" ]; then
     if [ -s "$_gsh_log" ]; then
@@ -1294,12 +1368,20 @@ mission_log_append() {
 #   ((got&need)==need, surfaced as `ready=1`), which SUPERSEDES the AWAIT; a VOID for that part/round
 #   also supersedes it (a dead lane never replays forever — C8). The `await`-replay §8 row re-runs the
 #   missing lane if a background-completion wake is lost, so correctness never needs 100% wake delivery.
+#   SINGLE-WRITER ASSUMPTION (I6): AWAIT lines are written SEQUENTIALLY by ONE orchestrator turn (the
+#   tick-lock in §12 serializes wakes, and the two lanes' got bits are recorded as each returns to the
+#   same turn), so mission_await_append uses the lock-free log path. It is NOT safe for two truly
+#   concurrent writers of the SAME (part,round) barrier; the wake routine's tick-lock is what guarantees
+#   that never happens. Reads (await-state) OR-accumulate defensively, so a benign interleave still joins.
 # ===========================================================================================
 
 # _mission_await_field <fields-string> <key> -> stdout the value of <key> (run of grammar chars) in
-# the passed fields, or empty. Tolerant (single-token values; no overlap between our field names).
+# the passed fields, or empty. A5 — TOKEN-BOUND: the key must be at the string start or after a space
+# (we prepend one), so an embedded `-kind=` inside another field`s value (e.g. `op=review-kind=human`)
+# is NOT mistaken for the real `kind=` field. Duplicate/embedded-`=` tokens are separately rejected by
+# mission_await_append`s token scan, so the greedy last-match here only ever sees one occurrence.
 _mission_await_field() {
-  printf '%s' "$1" | sed -n "s/.*$2=\\([A-Za-z0-9_.:-]*\\).*/\\1/p"
+  printf ' %s' "$1" | sed -n "s/.* $2=\\([A-Za-z0-9_.:-]*\\).*/\\1/p"
 }
 
 # mission_await_append <sid> <root> "<fields>" — append ONE AWAIT line via mission_log_append.
@@ -1310,6 +1392,21 @@ mission_await_append() {
   _aw_sid=$(_mission_sanitize_sid "$1"); _aw_root="$2"; _aw_fields="$3"
   [ -n "$_aw_sid" ]  || { echo "mission: await: invalid sid" >&2; return 1; }
   [ -n "$_aw_root" ] || { echo "mission: await: missing root" >&2; return 1; }
+  # A5 — TOKEN SCAN before extraction: every whitespace token must be `<known-key>=<value>` with NO
+  # duplicate key and NO embedded `=` in the value. This rejects the `op=review-kind=human` forgery
+  # (embedded second field) and any duplicate `kind=`/`need=` token that could smuggle control state
+  # past the per-field validation below.
+  _aw_seen=" "
+  for _aw_tok in $_aw_fields; do
+    case "$_aw_tok" in
+      part=*|phase=*|round=*|kind=*|op=*|attempt=*|need=*|got=*|started_at=*) : ;;
+      *) echo "mission: await: unknown/malformed field token '${_aw_tok}'" >&2; return 1 ;;
+    esac
+    case "${_aw_tok#*=}" in *=*) echo "mission: await: embedded '=' in field '${_aw_tok}'" >&2; return 1 ;; esac
+    _aw_key=${_aw_tok%%=*}
+    case "$_aw_seen" in *" ${_aw_key} "*) echo "mission: await: duplicate field '${_aw_key}'" >&2; return 1 ;; esac
+    _aw_seen="${_aw_seen}${_aw_key} "
+  done
   _aw_part=$(_mission_await_field "$_aw_fields" part)
   _aw_phase=$(_mission_await_field "$_aw_fields" phase)
   _aw_round=$(_mission_await_field "$_aw_fields" round)
@@ -1330,21 +1427,58 @@ mission_await_append() {
   case "$_aw_kind"    in job|human) : ;; *) echo "mission: await: bad kind '${_aw_kind}' (want job|human)" >&2; return 1 ;; esac
   case "$_aw_op"      in ''|*[!a-z0-9-]*) echo "mission: await: bad op '${_aw_op}'" >&2; return 1 ;; esac
   case "$_aw_phase"   in ''|*[!a-z]*) echo "mission: await: bad phase '${_aw_phase}'" >&2; return 1 ;; esac
-  # need/got range (bitmask universe is bits 1,2 => need 1..7, got 0..7). Reject need=0 (a barrier
-  # that can never complete) and out-of-universe masks (would make the containment test nonsense).
+  # need/got range (bitmask universe is bits 1,2 => need 1..7, got 0..7).
   { [ "$_aw_need" -ge 1 ] && [ "$_aw_need" -le 7 ]; } || { echo "mission: await: need out of range '${_aw_need}'" >&2; return 1; }
   { [ "$_aw_got"  -ge 0 ] && [ "$_aw_got"  -le 7 ]; } || { echo "mission: await: got out of range '${_aw_got}'" >&2; return 1; }
+  # A4 — kind<->need coupling + got MUST be a subset of need. Closes a human `need=1 got=3` reading
+  # resolved and a `need=7` barrier that can never complete. need is pinned to the real producer
+  # universe: human=1 (single decision), job=3 (two-lane review: bit1 impl-reviewer, bit2 codex-review).
+  case "$_aw_kind" in
+    human) [ "$_aw_need" -eq 1 ] || { echo "mission: await: human need must be 1 (got need=${_aw_need})" >&2; return 1; } ;;
+    job)   [ "$_aw_need" -eq 3 ] || { echo "mission: await: job need must be 3 (got need=${_aw_need})" >&2; return 1; }
+           # R4 — each job append is ONE lane writing its OWN bit (impl-reviewer=1, codex-review=2) or
+           # the got=0 opener; a single call may NEVER report got=3 (that would let one lane close the
+           # two-lane barrier alone, defeating the each-lane-own-bit contract).
+           case "$_aw_got" in 0|1|2) : ;; *) echo "mission: await: job got must be 0, 1, or 2 per single-lane append (got=${_aw_got})" >&2; return 1 ;; esac ;;
+  esac
+  # R6 (round-5 CRITICAL) — kind<->op NAMESPACE coupling, enforced at the mechanism (verify-by-mechanism),
+  # not just in prose. Barrier identity is (part,round,attempt,KIND,OP); the persisted AWAIT idtag is
+  # kind-LESS (`m<N>-await-<op>-r<K>-a<A>-g<GOT>`), so identity separation rests ENTIRELY on op. This
+  # guard makes the human and job op NAMESPACES provably DISJOINT so the kind-less idtag can never conflate
+  # a human barrier with a job lane (no false COLLISION, no shared mask): a HUMAN op MUST carry the pending
+  # decision`s UNIQUE numeric sequence (`op=<pd-seq>-<slug>`, matching `^[0-9]+-`) — without the seq, two
+  # same-SLUG decisions at the same part/round/attempt=1 share one barrier and the 2nd opener inherits the
+  # 1st`s resolved got=1, so the mandatory human STOP silently vanishes (unapproved autonomous work) — while
+  # a JOB op MUST NOT be seq-prefixed (that prefix is RESERVED for human decisions). We deliberately do NOT
+  # pin the job op to a single literal (the prose uses `review-barrier`); the disjointness invariant is what
+  # keeps the idtag safe, and over-pinning would be needless rigidity.
+  # R6 (round-6) — is the op SEQ-PREFIXED? A non-empty PURE-NUMERIC run, a hyphen, then a non-empty slug.
+  # A shell glob `[0-9]*-*` is NOT `^[0-9]+-`: it accepts a mixed `1abc-approve`, an empty-slug `1-`, and
+  # mis-treats job `7zip-review` as seq-prefixed. Test the FIRST-hyphen split explicitly via param expansion.
+  _aw_is_seq=0
+  case "$_aw_op" in
+    *-*) _aw_seqpfx=${_aw_op%%-*}; _aw_seqrest=${_aw_op#*-}
+         case "$_aw_seqpfx" in ''|*[!0-9]*) : ;; *) [ -n "$_aw_seqrest" ] && _aw_is_seq=1 ;; esac ;;
+  esac
+  case "$_aw_kind" in
+    human) [ "$_aw_is_seq" = 1 ] || { echo "mission: await: human op must be '<pd-seq>-<slug>' - a non-empty NUMERIC seq, a hyphen, then a non-empty slug (got op=${_aw_op})" >&2; return 1; } ;;
+    job)   [ "$_aw_is_seq" = 0 ] || { echo "mission: await: job op must NOT be numeric-seq-prefixed (that namespace is reserved for human decisions; got op=${_aw_op})" >&2; return 1; } ;;
+  esac
+  [ "$(( _aw_got & _aw_need ))" -eq "$_aw_got" ] || { echo "mission: await: got ${_aw_got} not a subset of need ${_aw_need}" >&2; return 1; }
   # C3 — started_at is BARRIER-STABLE. Reuse the EARLIEST started_at already recorded for this
-  # (part,round,attempt) so (a) a same-got re-report is byte-identical => mission_log_append dedups
-  # it (no idtag collision: the idtag excludes started_at, so a fresh epoch on retry would collide),
-  # and (b) the barrier age never resets under a partial-completion retry. Only when no prior AWAIT
-  # exists for this barrier do we stamp a fresh epoch. Read is best-effort (a refused/empty stream
-  # just means "no prior" => fresh stamp); the write path never depends on the gen-sliced read.
-  _aw_prev_start=$(_gen_sliced_stream "$_aw_sid" "$_aw_root" 2>/dev/null | awk -v pt="$_aw_part" -v rd="$_aw_round" -v at="$_aw_attempt" '
+  # barrier so (a) a same-got re-report is byte-identical => mission_log_append dedups it (no idtag
+  # collision: the idtag excludes started_at, so a fresh epoch on retry would collide), and (b) the
+  # barrier age never resets under a partial-completion retry. R4 — the reuse key is the FULL barrier
+  # identity (part,round,attempt,KIND,OP), matching mission_await_state`s k4: a new job barrier must
+  # NOT inherit an old human (or superseded) barrier`s timestamp at the same part/round/attempt (else
+  # D11 would classify a freshly launched lane as already timed out and double-launch it). Numeric
+  # fields are +0-normalized. Only when no prior AWAIT exists for THIS barrier do we stamp fresh. Read
+  # is best-effort (a refused/empty stream just means "no prior" => fresh stamp).
+  _aw_prev_start=$(_gen_sliced_stream "$_aw_sid" "$_aw_root" 2>/dev/null | awk -v pt="$_aw_part" -v rd="$_aw_round" -v at="$_aw_attempt" -v kn="$_aw_kind" -v opv="$_aw_op" '
     function fval(s,key,   p,idx,rest,a){ p=key"="; idx=index(s,p); if(idx==0) return ""; rest=substr(s,idx+length(p)); split(rest,a," "); return a[1] }
     { t=index($0,"\t"); idt=(t>0)?substr($0,1,t-1):""; body=(t>0)?substr($0,t+1):$0 }
     (idt ~ /^(g[0-9]+-)?m[0-9]+-await-/) && (body ~ /^\[mission\] AWAIT part=/) {
-      if (fval(body,"part")==pt && fval(body,"round")==rd && fval(body,"attempt")==at) {
+      if ((fval(body,"part")+0)==(pt+0) && (fval(body,"round")+0)==(rd+0) && (fval(body,"attempt")+0)==(at+0) && fval(body,"kind")==kn && fval(body,"op")==opv) {
         s=fval(body,"started_at")+0
         if (s>0 && (best==0 || s<best)) best=s
       }
@@ -1369,6 +1503,10 @@ mission_await_append() {
 # window) is NOT valid empty state: it emits the distinct `corrupt` token (rc 3) so the wake routine
 # takes its STOP-LOUD path instead of hashing an empty stream and mistaking corruption for "no
 # change". Full 64-hex digest (NOT the 16-char detection prefix) for cursor collision-resistance.
+# I7 (bounded, noted): the digest is NOT snapshot-atomic across a concurrent log rotation — a rotation
+# that moves lines archive<->live WHILE this reads can transiently change the gen-1 digest. The window
+# is tiny and self-correcting (the §12 cursor-compare simply re-reads and re-enters), and under the
+# single-writer tick-lock a rotation never races a live decision; so it is a benign re-read, not a bug.
 mission_cursor_hash() {
   _ch_sid=$(_mission_sanitize_sid "$1"); _ch_root="$2"
   [ -n "$_ch_sid" ]  || { echo "mission: cursor-hash: invalid sid" >&2; return 1; }
@@ -1387,18 +1525,32 @@ mission_cursor_hash() {
     printf '%s' "$_ch_state" | sha256sum 2>/dev/null | awk '{print $1}'
     return 0
   fi
+  # C1 — no sha tool: emit the distinct `corrupt` token (NOT empty). An empty stdout would make two
+  # failed cursors compare EQUAL and silently disable the §12 consistency guard; `corrupt` forces the
+  # STOP-LOUD path instead. (Same posture as the gen-boundary refusal above.)
   echo "mission: cursor-hash: no sha256 tool (shasum/sha256sum) — refusing to hash" >&2
-  return 1
+  printf 'corrupt\n'; return 3
 }
 
 # mission_await_state <sid> <root> -> stdout ONE bare machine token for the newest OUTSTANDING AWAIT,
 # or `none`, or `corrupt`. Reads the gen-scoped, archive-inclusive stream (_gen_sliced_stream).
 # Outstanding = an AWAIT barrier that is NOT superseded by a LATER durable event for the same
-# part/round (a newer `phase=review` round line, a VOID for that part/round, or a PART-DONE for that
-# part) AND the mission is not MISSION-CLEARED. Emits:
+# part/round (a newer `phase=review` round line or a VOID for that part/round supersedes a JOB barrier;
+# a PART-DONE for the part supersedes ALL kinds) AND the mission is not MISSION-CLEARED. Emits:
 #   `none` | `corrupt` |
-#   `await kind=<job|human> op=<slug> part=N round=K attempt=A need=<M> got=<G> ready=<0|1> started_at=<epoch>`
-# Semantics (fixes from the round-1 review):
+#   `await kind=<job|human> op=<slug> part=N round=K attempt=A phase=<P> need=<M> got=<G> ready=<0|1> started_at=<epoch>`
+# Semantics (round-1 + round-2 review fixes):
+#  - A1: barrier IDENTITY is (part,round,attempt,KIND,OP) — a job bit must NEVER satisfy a human need,
+#        and two distinct human decisions (distinct op) never share a mask (R6)
+#    (a job `got=1 need=3` then a same-tuple human `got=0 need=1` must NOT read resolved).
+#  - A2: got-accumulation excludes bits from AWAIT lines at/before the barrier`s supersede boundary (a
+#    bank/VOID/PART-DONE is an aggregation boundary; reopening a tuple after a superseder starts fresh).
+#  - A3: among live barriers, a kind=human STOP outranks a job barrier; then highest ATTEMPT, then NR
+#    (a late lower-attempt completion must not reselect a superseded attempt).
+#  - A6: EVERY control line is double-anchored (idtag column + body prefix) — superseders included.
+#  - D6: emits `phase` so the returning-user close can reuse the exact phase when it re-appends the
+#        barrier (phase is NOT part of the idtag or k4 identity — it is carried for the close, not for dedup).
+# Prior fixes retained:
 #  - C1: an AWAIT is emitted whether got<need OR got==need (join-ready). The join transition (banking
 #    the round) is UNREACHABLE if a got==need barrier reads as `none`; the WAKE ROUTINE, not this
 #    reader, decides bank-vs-wait off the emitted `ready` bit. Supersession (a banked review line /
@@ -1428,54 +1580,100 @@ mission_await_state() {
       if (idx == 0) return ""
       rest = substr(s, idx + length(p)); split(rest, a, " "); return a[1]
     }
-    BEGIN { cleared = 0 }
+    BEGIN { cleared = 0; n = 0 }
     { t = index($0, "\t"); idt = (t>0)?substr($0,1,t-1):""; body = (t>0)?substr($0,t+1):$0 }
-    # MISSION-CLEARED (body-anchored) — the mission is done; nothing outstanding.
-    body ~ /^\[mission\] MISSION-CLEARED/ { cleared = 1; next }
-    # AWAIT — S1 double-anchor (idtag column grammar + body prefix). Accumulate the got mask by OR
-    # per (part,round,attempt); carry the earliest started_at; track this barrier`s newest line NR.
+    # ALL control lines are DOUBLE-ANCHORED (A6/S1): the idtag COLUMN must match the shape the log
+    # validator mints AND the body must start with the token. A free-text/criticer/note line can forge
+    # neither column, so it can never inject or clear control state.
+    # MISSION-CLEARED — empty idtag column (validator requires it empty) + body prefix.
+    (idt == "") && (body ~ /^\[mission\] MISSION-CLEARED/) { cleared = 1; next }
+    # AWAIT — recorded into a flat list; accumulation happens in END (two-pass) so a LATER supersede
+    # boundary can exclude pre-boundary bits (A2).
     (idt ~ /^(g[0-9]+-)?m[0-9]+-await-/) && (body ~ /^\[mission\] AWAIT part=/) {
-      pt = fval(body,"part"); rd = fval(body,"round"); at = fval(body,"attempt")
-      k3 = pt SUBSEP rd SUBSEP at
-      gotmask[k3] = bor(gotmask[k3], fval(body,"got") + 0)
-      oneed[k3]   = fval(body,"need") + 0
-      okind[k3]   = fval(body,"kind"); oop[k3] = fval(body,"op")
-      opart[k3]   = pt; oround[k3] = rd; oatt[k3] = at
-      st = fval(body,"started_at") + 0
-      if (st > 0 && (ostart[k3] == 0 || st < ostart[k3])) ostart[k3] = st
-      if (NR > maxnr[k3]) maxnr[k3] = NR
-      k2of[k3] = pt SUBSEP rd; seen[k3] = 1
+      n++
+      awpart[n]=fval(body,"part"); awround[n]=fval(body,"round"); awatt[n]=fval(body,"attempt")
+      awkind[n]=fval(body,"kind"); awop[n]=fval(body,"op"); awphase[n]=fval(body,"phase")
+      awgot[n]=fval(body,"got")+0; awneed[n]=fval(body,"need")+0; awstart[n]=fval(body,"started_at")+0
+      awnr[n]=NR
       next
     }
-    # Supersession, body-anchored, keyed by (part,round): a banked review round line or a VOID.
-    (body ~ /^\[mission\] part=[0-9]+ /) && (body ~ /phase=review/) {
-      key = fval(body,"part") SUBSEP fval(body,"round"); if (NR > supnr[key]) supnr[key] = NR; next
+    # JOB-superseder: a banked phase=review round line (idtag m<N>-review-r...) OR a VOID
+    # (idtag m<N>-void-r...). Keyed by (part,round); supersedes only JOB barriers of that round.
+    (idt ~ /^(g[0-9]+-)?m[0-9]+-review-r/) && (body ~ /^\[mission\] part=[0-9]+ /) && (body ~ /phase=review/) {
+      key = (fval(body,"part")+0) SUBSEP (fval(body,"round")+0); if (NR > supnr[key]) supnr[key] = NR; next
     }
-    body ~ /^\[mission\] VOID part=/ {
-      key = fval(body,"part") SUBSEP fval(body,"round"); if (NR > supnr[key]) supnr[key] = NR; next
+    (idt ~ /^(g[0-9]+-)?m[0-9]+-void-r/) && (body ~ /^\[mission\] VOID part=/) {
+      key = (fval(body,"part")+0) SUBSEP (fval(body,"round")+0); if (NR > supnr[key]) supnr[key] = NR; next
     }
-    # PART-DONE supersedes ALL rounds of that part (keyed by part, compared by NR).
-    body ~ /^\[mission\] PART-DONE part=/ { pd = fval(body,"part"); if (NR > pdnr[pd]) pdnr[pd] = NR; next }
+    # PART-DONE (idtag m<N>-part-done) supersedes ALL rounds/kinds of that part.
+    (idt ~ /^(g[0-9]+-)?m[0-9]+-part-done$/) && (body ~ /^\[mission\] PART-DONE part=/) {
+      pd = fval(body,"part")+0; if (NR > pdnr[pd]) pdnr[pd] = NR; next
+    }
     END {
       if (cleared) { print "none"; exit }
-      best = ""; bestnr = -1
+      # Two-pass accumulation. Barrier identity is (part,round,attempt,KIND,OP) — A1: a job bit must
+      # NEVER satisfy a human need; R4: two DISTINCT human decisions (distinct op) at the same
+      # part/round/attempt must NOT share a mask (both job lanes share op=review-barrier, so they still
+      # join — verified in mission.md §7). Numeric fields are +0-normalized so attempt=1 and attempt=01
+      # are the SAME barrier. Accumulate ONLY bits from AWAIT lines AFTER the barrier`s supersede
+      # boundary — A2: a bank/VOID (job) or PART-DONE (any) is an aggregation boundary, so reopening a
+      # tuple after a superseder starts fresh. R4: a barrier is live ONLY with a post-boundary got=0
+      # OPENER — a late stale got=1/got=2 arriving after a bank/VOID cannot resurrect a closed round.
+      # Metadata is taken from the newest post-boundary line.
+      for (i = 1; i <= n; i++) {
+        # R6 — the supersede lookup keys MUST be +0-normalized exactly like the superseder rules
+        # (review/void/part-done) and like k4 below; else a validator-legal `part=01 round=01` AWAIT
+        # would look up `supnr["01","01"]`/`pdnr["01"]` (never set) and survive a `part=1 round=1`
+        # bank/VOID/PART-DONE, letting a late bit resurrect a superseded round.
+        pr = (awpart[i]+0) SUBSEP (awround[i]+0)
+        b = pdnr[awpart[i]+0] + 0
+        if (awkind[i] == "job" && supnr[pr] > b) b = supnr[pr]
+        if (awnr[i] <= b) continue   # pre-boundary => stale, excluded
+        k4 = (awpart[i]+0) SUBSEP (awround[i]+0) SUBSEP (awatt[i]+0) SUBSEP awkind[i] SUBSEP awop[i]
+        if (awgot[i] == 0) opened[k4] = 1   # post-boundary opener seen => barrier may be live
+        gotmask[k4] = bor(gotmask[k4], awgot[i])
+        if (awnr[i] > maxnr[k4]) {
+          maxnr[k4]=awnr[i]; oneed[k4]=awneed[i]; oop[k4]=awop[i]; ophase[k4]=awphase[i]
+          opart[k4]=awpart[i]; oround[k4]=awround[i]; oatt[k4]=awatt[i]; okind[k4]=awkind[i]
+          # R6 (round-6 CRITICAL) — the got on the NEWEST post-boundary line. HUMAN liveness reads THIS,
+          # not the OR gotmask: a human barrier is need=1, so a REUSED op (a new got=0 opener AFTER a
+          # prior got=1 close, e.g. pd:1-approve reused for a second decision) must read LIVE. The OR mask
+          # still carries the old got=1 (a human close is not a boundary), so gotmask alone reads RESOLVED
+          # and silently drops the 2nd mandatory STOP. The latest line`s got distinguishes decision
+          # INSTANCES; JOB barriers keep the OR mask (two lanes write bits 1,2 on separate lines).
+          lastgot[k4]=awgot[i]
+        }
+        if (awstart[i] > 0 && (ostart[k4] == 0 || awstart[i] < ostart[k4])) ostart[k4] = awstart[i]
+        seen[k4] = 1
+      }
+      # Select ONE live barrier. Priority (§8 AWAIT-ROWS-FIRST): a live kind=human STOP outranks any job
+      # barrier (N4); then highest ATTEMPT (A3 — a late lower-attempt completion must not reselect an old
+      # attempt); then highest NR. A kind=human barrier at (got&need)==need is RESOLVED (C6), not live.
+      best = ""; bestkind = ""; bestatt = -1; bestnr = -1
       for (kk in seen) {
-        key2 = k2of[kk]
-        superseded = (supnr[key2] > maxnr[kk]) ? 1 : 0
-        split(key2, p2, SUBSEP)
-        if (pdnr[p2[1]] > maxnr[kk]) superseded = 1
-        if (superseded) continue
-        # C6 — a kind=human barrier has NO separate bank event: reaching got==need IS its resolution
-        # (the returning user-turn writes got=need to close it). A job barrier stays outstanding at
-        # ready=1 so the wake routine banks it; a human one at ready=1 is DONE and not outstanding
-        # (else it would park the loop forever after the user already answered).
-        if (okind[kk] == "human" && oneed[kk] > 0 && band(gotmask[kk], oneed[kk]) == oneed[kk]) continue
-        if (maxnr[kk] > bestnr) { bestnr = maxnr[kk]; best = kk }
+        if (!opened[kk]) continue   # R4: no post-boundary got=0 opener => stale-late reopen, not live
+        # R6 — a human barrier is RESOLVED iff its NEWEST line already met need (lastgot), NOT iff the OR
+        # mask ever met need; else a reused-op reopen inherits the prior close and the STOP vanishes.
+        if (okind[kk] == "human" && oneed[kk] > 0 && band(lastgot[kk], oneed[kk]) == oneed[kk]) continue
+        ishuman = (okind[kk] == "human") ? 1 : 0
+        besthuman = (bestkind == "human") ? 1 : 0
+        pick = 0
+        if (best == "") pick = 1
+        else if (ishuman > besthuman) pick = 1
+        else if (ishuman == besthuman) {
+          if (oatt[kk]+0 > bestatt) pick = 1
+          else if (oatt[kk]+0 == bestatt && maxnr[kk] > bestnr) pick = 1
+        }
+        if (pick) { best = kk; bestkind = okind[kk]; bestatt = oatt[kk]+0; bestnr = maxnr[kk] }
       }
       if (best == "") { print "none"; exit }
-      rdy = (oneed[best] > 0 && band(gotmask[best], oneed[best]) == oneed[best]) ? 1 : 0
-      printf "await kind=%s op=%s part=%s round=%s attempt=%s need=%s got=%s ready=%s started_at=%s\n", \
-        okind[best], oop[best], opart[best], oround[best], oatt[best], oneed[best], gotmask[best], rdy, ostart[best]
+      # R6 — effective got: HUMAN uses the newest line`s got (instance-correct); JOB uses the OR mask
+      # (two lanes accumulate). ready + the emitted got both use it, so a reused-op human reopen reports
+      # got=0 ready=0 (a live STOP), never the stale got=1 of the prior resolved instance.
+      effgot = (okind[best] == "human") ? lastgot[best] : gotmask[best]
+      rdy = (oneed[best] > 0 && band(effgot, oneed[best]) == oneed[best]) ? 1 : 0
+      printf "await kind=%s op=%s part=%s round=%s attempt=%s phase=%s need=%s got=%s ready=%s started_at=%s\n", \
+        okind[best], oop[best], opart[best], oround[best], oatt[best], ophase[best], oneed[best], effgot, rdy, ostart[best]
     }
   '
 }
@@ -1504,6 +1702,7 @@ mission_resolve_pending() {
   _rp_nonce=$(_mission_marker_field "$_rp_f" nonce)
   _rp_hash=$(_mission_marker_field "$_rp_f" plan_hash)
   _rp_gen=$(_mission_marker_field "$_rp_f" gen); [ -n "$_rp_gen" ] || _rp_gen=1   # preserve gen (Task 4)
+  _rp_pdseq=$(_mission_marker_field "$_rp_f" pdseq); case "$_rp_pdseq" in ''|*[!0-9]*) _rp_pdseq=0 ;; esac  # preserve pdseq monotonic (R7-1)
   _rp_n8=$(printf '%s' "$_rp_nonce" | cut -c1-8)
 
   _rp_tmp=$(mktemp "${_rp_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: resolve: mktemp failed" >&2; return 5; }
@@ -1536,7 +1735,7 @@ mission_resolve_pending() {
         }
       }
     ' "$_rp_f" > "$_rp_tmp"
-    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s -->\n' "$_rp_sid_marker" "$_rp_nonce" "$_rp_hash" "$_rp_gen" >> "$_rp_tmp"
+    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s pdseq=%s -->\n' "$_rp_sid_marker" "$_rp_nonce" "$_rp_hash" "$_rp_gen" "$_rp_pdseq" >> "$_rp_tmp"
   )
 
   if [ -s "$_rp_tmp" ] && mission_verify "$_rp_tmp" "$_rp_sid"; then
@@ -1572,6 +1771,7 @@ mission_rebaseline() {
 
   _rb_sidm=$(_mission_marker_field "$_rb_f" sid)
   _rb_nonce=$(_mission_marker_field "$_rb_f" nonce)
+  _rb_pdseq=$(_mission_marker_field "$_rb_f" pdseq); case "$_rb_pdseq" in ''|*[!0-9]*) _rb_pdseq=0 ;; esac  # preserve pdseq across the gen boundary (R7-1: monotonic, never reset)
   _rb_n8=$(printf '%s' "$_rb_nonce" | cut -c1-8)
   # BUMP the generation (Task 4): rebaseline is the generation slice boundary. gen absent => 1.
   _rb_oldgen=$(_mission_marker_field "$_rb_f" gen); [ -n "$_rb_oldgen" ] || _rb_oldgen=1
@@ -1600,7 +1800,7 @@ mission_rebaseline() {
         }
       }
     ' "$_rb_f" > "$_rb_tmp"
-    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s -->\n' "$_rb_sidm" "$_rb_nonce" "$_rb_newhash" "$_rb_gen" >> "$_rb_tmp"
+    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s pdseq=%s -->\n' "$_rb_sidm" "$_rb_nonce" "$_rb_newhash" "$_rb_gen" "$_rb_pdseq" >> "$_rb_tmp"
   )
 
   if [ -s "$_rb_tmp" ] && mission_verify "$_rb_tmp" "$_rb_sid"; then
@@ -1668,10 +1868,16 @@ mission_timing_compute() {
   _mtc_sid=$(_mission_sanitize_sid "$1"); _mtc_root="$2"
   _mtc_now=$(date +%s 2>/dev/null || echo 0)
   _mtc_S=$(_mission_timing_stream "$_mtc_sid" "$_mtc_root")
-  _mtc_ms=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] MISSION-START epoch=' | head -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
-  _mtc_ws=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] WORK-START epoch='   | tail -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
-  _mtc_last=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] (WORK-START|CONTACT) ' | tail -1)
-  _mtc_la=$(printf '%s' "$_mtc_S" | grep -E '\[mission\] CONTACT ' | tail -1 | sed -nE 's/.* active_sec=([0-9]+).*/\1/p')
+  # R4: timing readers are DOUBLE-ANCHORED (idtag column + body prefix), mirroring the AWAIT/superseder
+  # readers — a criticer/note free-text line embedding `[mission] WORK-START epoch=` in its body can
+  # forge neither the tab-delimited idtag column nor pass field $2`s prefix, so it cannot poison timing.
+  # R6: the idtag anchors carry the optional `(g[0-9]+-)?` gen prefix — WORK-START/CONTACT are written
+  # via mission_log_append, which gen-prefixes every idtag at gen>=2 (`g<N>-m-wstart-…`); without it
+  # every timing anchor went blind after a rebaseline (mission read as "not working", active/idle wrong).
+  _mtc_ms=$(printf '%s' "$_mtc_S" | awk -F'\t' '$1=="m-mission-start" && $2 ~ /^\[mission\] MISSION-START epoch=/' | head -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
+  _mtc_ws=$(printf '%s' "$_mtc_S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m-wstart-/ && $2 ~ /^\[mission\] WORK-START epoch=/' | tail -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
+  _mtc_last=$(printf '%s' "$_mtc_S" | awk -F'\t' '($1 ~ /^(g[0-9]+-)?m-wstart-/ && $2 ~ /^\[mission\] WORK-START /) || ($1 ~ /^(g[0-9]+-)?m-contact-/ && $2 ~ /^\[mission\] CONTACT /)' | tail -1)
+  _mtc_la=$(printf '%s' "$_mtc_S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m-contact-/ && $2 ~ /^\[mission\] CONTACT /' | tail -1 | sed -nE 's/.* active_sec=([0-9]+).*/\1/p')
   [ -z "$_mtc_la" ] && _mtc_la=0
   case "$_mtc_last" in *"] WORK-START "*) _mtc_work=1 ;; *) _mtc_work=0 ;; esac
   _mtc_sane=$(printf '%s' "${MISSION_STRETCH_SANITY_SEC:-86400}" | tr -cd '0-9'); [ -n "$_mtc_sane" ] || _mtc_sane=86400
@@ -1687,7 +1893,7 @@ mission_timing_compute() {
 # (last anchor is a CONTACT). A mid-stretch compaction resume (last anchor WORK-START) is a no-op.
 mission_timing_resume() {
   _mtr_sid=$(_mission_sanitize_sid "$1"); _mtr_root="$2"
-  _mtr_last=$(_mission_timing_stream "$_mtr_sid" "$_mtr_root" | grep -E '\[mission\] (WORK-START|CONTACT) ' | tail -1)
+  _mtr_last=$(_mission_timing_stream "$_mtr_sid" "$_mtr_root" | awk -F'\t' '($1 ~ /^(g[0-9]+-)?m-wstart-/ && $2 ~ /^\[mission\] WORK-START /) || ($1 ~ /^(g[0-9]+-)?m-contact-/ && $2 ~ /^\[mission\] CONTACT /)' | tail -1)
   _mtr_now=$(date +%s 2>/dev/null || echo 0)
   case "$_mtr_last" in
     *"] CONTACT "*) mission_log_append "$_mtr_sid" "$_mtr_root" "[mission] WORK-START epoch=$_mtr_now" "m-wstart-$_mtr_now-$(_mission_nonce 2>/dev/null | cut -c1-4)" 2>/dev/null || true ;;
@@ -1734,10 +1940,14 @@ mission_timing_close() {
   _mtz_active=$2 _mtz_wall=$3 _mtz_idle=$4
   _mtz_now=$(date +%s 2>/dev/null || echo 0)
   _mtz_S=$(_mission_timing_stream "$_mtz_sid" "$_mtz_root")
-  _mtz_ms=$(printf '%s' "$_mtz_S" | grep -E '\[mission\] MISSION-START epoch=' | head -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
-  _mtz_contacts=$(printf '%s' "$_mtz_S" | grep -cE '\[mission\] CONTACT ')
-  _mtz_maxpart=$(printf '%s' "$_mtz_S" | sed -nE 's/.*\[mission\] .*part=([0-9]+).*/\1/p' | sort -n | tail -1); [ -n "$_mtz_maxpart" ] || _mtz_maxpart=0
-  _mtz_eps=$(printf '%s' "$_mtz_S" | grep -E '\[mission\] CONTACT ' | sed -nE 's/.* epoch=([0-9]+).*/\1/p' | sort -n)
+  # R6 — final-metrics readers are DOUBLE-ANCHORED (idtag column $1 + body prefix $2) exactly like
+  # mission_timing_compute; the pre-R6 unanchored grep/sed let a criticer/note free-text body embedding
+  # `[mission] MISSION-START`/`CONTACT`/`part=` forge the closing metrics. Anchors carry the optional
+  # `(g[0-9]+-)?` gen prefix (post-rebaseline idtags are `g<N>-m-…`).
+  _mtz_ms=$(printf '%s' "$_mtz_S" | awk -F'\t' '$1=="m-mission-start" && $2 ~ /^\[mission\] MISSION-START epoch=/' | head -1 | sed -nE 's/.*epoch=([0-9]+).*/\1/p')
+  _mtz_contacts=$(printf '%s' "$_mtz_S" | awk -F'\t' '($1 ~ /^(g[0-9]+-)?m-contact-/ && $2 ~ /^\[mission\] CONTACT /){c++} END{print c+0}')
+  _mtz_maxpart=$(printf '%s' "$_mtz_S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-/ && $2 ~ /^\[mission\] / { if (match($2,/part=[0-9]+/)) { p=substr($2,RSTART+5,RLENGTH-5)+0; if(p>mx)mx=p } } END{print mx+0}')
+  _mtz_eps=$(printf '%s' "$_mtz_S" | awk -F'\t' '($1 ~ /^(g[0-9]+-)?m-contact-/ && $2 ~ /^\[mission\] CONTACT /)' | sed -nE 's/.* epoch=([0-9]+).*/\1/p' | sort -n)
   if [ "${_mtz_contacts:-0}" -ge 2 ] 2>/dev/null; then
     _mtz_f=$(printf '%s' "$_mtz_eps" | head -1); _mtz_l=$(printf '%s' "$_mtz_eps" | tail -1)
     _mtz_gap=$(( (_mtz_l-_mtz_f)/(_mtz_contacts-1) ))

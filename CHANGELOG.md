@@ -14,25 +14,31 @@ on exit; `ScheduleWakeup` called directly by a skill, proven by `commands/afk.md
 mission loop's existing §8/§H recovery read instead of adding parallel machinery. The disputed
 `asyncRewake` and `/goal` mechanisms were dropped as non-establishable.
 
-- **The continuation-owner invariant (road 2).** A `/mission` turn MUST NOT end unless a tracked
-  `run_in_background` job is pending, OR it just called `ScheduleWakeup(...)` as its last action,
-  OR it is at a genuine human-handback point. Stated as a HARD return invariant in the contract
-  core; a failed schedule is LOUD, never a silent naked yield. The epilogue is wired at the four
-  naked-yield seams (synthesis round-bank, fix-cycle re-arm, PART-DONE, PART-START advance).
+- **The continuation-owner invariant (road 2).** A `/mission` turn MUST NOT end unless it just called
+  `ScheduleWakeup(...)` as its last action AND that call SUCCEEDED, OR it is at a genuine human-handback
+  / stop point. A **scheduled wake is the ONLY continuation owner** - a tracked `run_in_background` job
+  is NOT sufficient alone (its completion wake can be lost), so a turn yielding with a job pending STILL
+  schedules a long fallback heartbeat. Stated as a HARD return invariant in the contract core; a failed
+  schedule retries then STOPS LOUD (never a silent naked yield). The invariant covers EVERY turn-end (the
+  four named epilogue seams are examples, not the whole set).
 - **The AWAIT bookmark (one new durable marker).** `[mission] AWAIT part=N phase=P round=K
   kind=<job|human> op=<slug> attempt=A need=<mask> got=<mask>` rides the existing log via the new
   `mission-write.sh await` / `await-state` verbs (in `lib/mission-bridge.sh`). It distinguishes
   "work never launched" from "work launched, one lane returned", so the wake routine replays ONLY
-  the missing lane. The §8 `AWAIT got<need + NO tracked job -> replay` row is the safety net:
-  correctness does NOT depend on 100% wake delivery. A banked `phase=review round=K` successor
-  SUPERSEDES its AWAIT; `got==need` reads `none`; a `kind=human got=0` stops the loop for a real
-  user turn.
+  the missing lane. Barrier identity is (part,round,attempt,`kind`) - a job bit never satisfies a human
+  `need`; each lane writes ONLY its own bit and `await-state` OR-accumulates. The §8 `ready=0 + NO tracked
+  job -> replay` row (gated on a lane-timeout) is the safety net: correctness does NOT depend on 100% wake
+  delivery. A banked `phase=review round=K` successor / `VOID` / `PART-DONE` SUPERSEDES a job AWAIT (a
+  join-ready `ready=1` barrier stays outstanding until then, so the bank is reachable); a `kind=human`
+  barrier is resolved by its own `got==need`. `await-state` emits `none` | `corrupt` | the `await …` token.
 - **The single idempotent wake routine.** Background-completion, a `ScheduleWakeup` tick, and
   post-compact resume all funnel into ONE routine: `mkdir tick.lock` (atomic, sleep-skew +
   backward-clock clamps) -> §8 resume-read -> `cursor_before` = sha256 of the current-generation
   state stream (`mission-write.sh cursor-hash`, rotation-invariant via `_gen_sliced_stream`) ->
-  one transition -> recompute the cursor immediately before dispatch, discard + restart if it
-  moved. Lock + cursor-compare + deterministic idtags = two queued wakes advance exactly once.
+  one transition -> recompute the cursor immediately before dispatch, re-enter (bounded) if it
+  moved. The dedup for queued wakes is the tick-lock SERIALIZING + each wake re-reading current
+  state; the cursor is the in-turn consistency check, and deterministic idtags make any re-bank an
+  idempotent no-op (the cursor alone does NOT make two queued wakes advance exactly once).
 - **No-detach gate (road 1 backstop).** `scripts/hooks/no-detach-gate.py` (PreToolUse Bash,
   registered in both settings files) `exit 2`-blocks a shell-detach (`nohup`/trailing-`&`/`disown`/
   `setsid`) wrapping a codex launch, and FAILS OPEN on any parse/classifier error (the harm

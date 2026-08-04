@@ -52,7 +52,18 @@ while [ $# -gt 0 ]; do
 done
 
 # Export tunables for codex-invoke.sh subprocess (matches /god-review pattern)
-export SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"
+# F1: align to the invoke budget, NOT a fixed 600 that would evict a live long holder.
+# SECURITY (arithmetic-injection): validate GODREVIEW_INVOKE_TIMEOUT_SECS BEFORE it reaches `$(( ))` -
+# a payload like 'x[$(cmd)]' executes during arithmetic eval (RCE) and '08' aborts as invalid octal.
+# Accept only a plain, bounded, non-octal integer; otherwise fall back to the 3300 default.
+_gr_invoke_raw="${GODREVIEW_INVOKE_TIMEOUT_SECS:-3300}"
+if [[ "$_gr_invoke_raw" =~ ^[0-9]{1,6}$ ]] && [[ "$_gr_invoke_raw" != 0[0-9]* ]]; then
+  _gr_invoke="$_gr_invoke_raw"
+else
+  echo "[warn] GODREVIEW_INVOKE_TIMEOUT_SECS rejected (len=${#_gr_invoke_raw}); using default 3300" >&2
+  _gr_invoke=3300
+fi
+export SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-$(( _gr_invoke + 60 ))}"
 export LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"
 
 # Multi-round aggregation mode for Phase 2e STEP 5. With --rounds N (N > 1) the

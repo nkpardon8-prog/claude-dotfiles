@@ -88,6 +88,12 @@ mc_await() { bash "$MW" await "$2" "${ROOT}/$1" "$3" >/dev/null 2>&1; }
 mc_state() { bash "$MW" await-state "$2" "${ROOT}/$1" 2>/dev/null; }
 # mc_cursor <subdir> <sid> -> stdout the bare cursor hash.
 mc_cursor() { bash "$MW" cursor-hash "$2" "${ROOT}/$1" 2>/dev/null; }
+# mc_pending <subdir> <sid> <slug> <question> -> stdout the MINTED pd id (from `pending ok id=<pd>`).
+mc_pending() { bash "$MW" pending "$2" "${ROOT}/$1" "$3" "$4" 2>/dev/null | sed -n 's/^mission-write: pending ok id=//p'; }
+# mc_resolve <subdir> <sid> <pd-id> [resolution] - drain a minted pending decision.
+mc_resolve() { bash "$MW" resolve "$2" "${ROOT}/$1" "$3" "${4:-resolved}" >/dev/null 2>&1; }
+# mc_log_out <subdir> <sid> <entry> [idtag] -> combined stdout+stderr of the log verb (for refusal asserts).
+mc_log_out() { bash "$MW" log "$2" "${ROOT}/$1" "$3" "${4:-}" 2>&1; }
 
 # --- finish -------------------------------------------------------------------------------
 mc_finish() {  # mc_finish <fingerprint-json> <summary>

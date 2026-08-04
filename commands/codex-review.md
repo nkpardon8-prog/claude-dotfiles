@@ -245,7 +245,7 @@ run_in_background: true
 
 **Pass each per-lens prompt to Codex via stdin, never as an inline double-quoted argument.** The prompt embeds the CONTEXT block and may contain `$FILEPATH`/`$DESCRIPTION` text with shell metacharacters. Inlining it into a `codex exec "..."` argument would let those characters be shell-evaluated. Instead, write each fully-assembled prompt to a file under `"$RUN_DIR"` with `printf '%s'` (literal, never re-interpreted), then feed it to `codex exec` as `- < promptfile` so the prompt is read verbatim from stdin and never touches the shell's word/expansion machinery. Issue all four Bash calls with `run_in_background: true`, in the SAME message as the two Step-4a Agent calls — six tool calls total (4 Bash backgrounded + 2 Agent); see the Launch schedule. These four keep their modest 120000 ms timeouts (leave them low — they are the fast per-lens passes, not the long diff lenses), but as with the branch/uncommitted lenses the backgrounded harness timeout is unproven, so collect them by the same bounded wait (poll ~20 s, ceiling 3660 s) and treat "no output file at the ceiling" exactly as the file/describe usability gate treats an unusable pass. In each call below, `$PROMPT_N` is the literal prompt text you assembled (lead line + CONTEXT block + lens aim + output-contract block) — write it with `printf` exactly as authored.
 
-**No-pt_run bound on these four (route them through `codex-exec.sh`).** Unlike the branch/uncommitted lenses, the file/describe passes call `codex exec` DIRECTLY, so they have NO `pt_run` deadline — only the unproven backgrounded harness `timeout`, which is not a reliable kill for a hung pass. The minimal robust fix is to route them through `codex-exec.sh` (the same house wrapper the diff lenses use), which applies `pt_run` and writes the `<out>.status` sidecar; pass the reasoning effort to it via `CODEX_EFFORT="$EFFORT"` (the wrapper's effort env var) rather than the in-line `-c model_reasoning_effort` plumbing. Until they are so routed they remain bounded only by the harness timeout above — never `nohup`/`&`/detach them; launch each in the FOREGROUND of a `run_in_background: true` Bash so its completion is the wake.
+**Bound on these four — DECIDED (round-1 review I9).** Unlike the branch/uncommitted lenses, the file/describe passes call `codex exec` DIRECTLY, so they carry no `pt_run` child-kill deadline. That is ACCEPTED here, because the property that actually matters — the orchestrator never STALLS — is guaranteed at a different layer: the **bounded collection wait** (Step 3c, poll ~20s, hard ceiling 3660s) advances the pipeline regardless of any child's fate, classifying a pass whose output is still absent at the ceiling as not-usable (identical to `timeout`). So a hung/orphaned file/describe child is a bounded RESOURCE nuisance, never a wake-stall (the road-1 failure mode). These are also the FAST per-lens passes (single file / short description), so a runaway is unlikely in the first place. If you ever want a hard child-kill too, route them through `codex-exec.sh` with `CODEX_EFFORT="$EFFORT"` (the same house wrapper the diff lenses use, which adds `pt_run` + a `.status` sidecar) — but that is an optional hardening, not required for stall-safety. Never `nohup`/`&`/detach them; launch each in the FOREGROUND of a `run_in_background: true` Bash so its completion is the wake.
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
@@ -290,7 +290,24 @@ has no sidecar, it means the output file exists. Do NOT read a lens's output bef
 exists — a partially-written file would be judged against `REVIEW_RE` and mis-gated. At the ceiling,
 stop waiting and classify: a pass whose sidecar (or, for file/describe, whose output file) is still
 absent is NOT usable, exactly as if its status read `timeout` — the pipeline proceeds with the
-remaining lenses rather than hanging. Do not spend the wait idle: the two Step-4a agents launched in
+remaining lenses rather than hanging.
+
+**Terminate any lens child still running at the ceiling BEFORE proceeding (REQUIRED).** Classifying an
+absent pass as not-usable does NOT stop its Codex child - the file/describe passes call `codex exec`
+DIRECTLY with no `pt_run` child-kill (Step 3, "Bound on these four"), so an unterminated child survives
+the ceiling, holds a Codex slot / the shared `~/.codex` lock, and can deliver a stale completion wake
+into the NEXT round. For each lens whose sidecar (branch/uncommitted) or output file (file/describe) is
+still absent at the ceiling, terminate its still-running pass. Each pass was launched in the FOREGROUND
+of its own `run_in_background: true` Bash (Launch schedule), so its child dies with that tracked shell:
+kill the shell via the harness `KillShell` tool on the shell id returned when you launched that pass
+(the same tracked-shell handles you already poll) - this is the tracked-foreground kill idiom this file
+relies on (never `nohup`/`&`/detach, precisely so the child cannot outlive its tracked shell). As a
+belt-and-braces reap for any codex process that somehow detached, also run
+`pkill -f "$RUN_DIR" 2>/dev/null || true` once after the KillShell calls - every lens child was invoked
+with prompt/output paths under `"$RUN_DIR"`, so this matches only THIS run's orphans, never another
+run's. Only after the still-running children are terminated do you proceed to the usability gate.
+
+Do not spend the wait idle: the two Step-4a agents launched in
 the same message are working through it, and their results are collected the same way.
 
 Once the wait ends, read `$RUN_DIR/codex-review-1.txt` through `$RUN_DIR/codex-review-4.txt`.

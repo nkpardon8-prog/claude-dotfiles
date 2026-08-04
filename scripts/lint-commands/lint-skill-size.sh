@@ -29,6 +29,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT")"
 MODE="${1:---all}"
 
+# UNKNOWN ARGUMENT = REFUSE (2026-08-03). The sibling lint-skill-contract.sh already exits 2
+# here; this one silently accepted anything, so `--bogus` (or a renamed flag, or a typo of
+# --staged) exited 0 having linted nothing. MEASURED: `--bogus` -> rc=0 here vs rc=2 there.
+# Same shape as the secret scanner's unknown-flag fail-open closed earlier in this mission.
+case "$MODE" in
+    --staged|--all) ;;
+    *) echo "lint-skill-size: unknown argument: $MODE (expected --staged or --all)" >&2; exit 2 ;;
+esac
+
 # FAIL CLOSED WHEN ROOT DOES NOT RESOLVE TO A REAL COMMAND TREE (2026-08-03, P4).
 # ROOT is derived from BASH_SOURCE, so it is only correct while this script sits inside the
 # tree it is meant to lint. Run a COPY from anywhere else - which is exactly what the test
@@ -64,7 +73,17 @@ resolve_content() {
         [ -f "$ROOT/$path" ] && printf '%s\n' "$ROOT/$path"
         return 0
     fi
-    [ -n "$STAGED_TMP" ] || STAGED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lint-staged-XXXXXX")" || return 0
+    # FAIL CLOSED, never "no content" (2026-08-03). `|| return 0` made an unusable TMPDIR
+    # indistinguishable from "this path is not staged", so with a broken mktemp the lint
+    # cleared an OVERSIZE STAGED FILE. MEASURED: staged 25,000-char file + failing mktemp
+    # -> rc=0. The staging dir is how --staged sees content at all; without it the lint has
+    # measured nothing and must say so.
+    if [ -z "$STAGED_TMP" ]; then
+        STAGED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lint-staged-XXXXXX")" || {
+            echo "lint-skill-size: FAIL - cannot create a staging tempdir (TMPDIR unusable); refusing to report success on unmeasured staged content." >&2
+            exit 3
+        }
+    fi
     out="$STAGED_TMP/$path"
     if [ ! -f "$out" ]; then
         mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
@@ -95,12 +114,18 @@ if [ "$(python3 -c 'print(len("abc"))' 2>/dev/null)" != "3" ]; then
     exit 3
 fi
 
-chars_of() { python3 -c "import sys;print(len(open(sys.argv[1],encoding='utf-8').read()))" "$1"; }
+# Both measurers emit -1 ON ANY FAILURE and the callers treat -1 as UNMEASURABLE -> FAIL
+# (2026-08-03, mission part 3). The preflight above catches a MISSING python3, but not a
+# PER-FILE failure: an unreadable or undecodable guarded file made python3 print a traceback
+# and nothing to stdout, so `n` was empty, `[ "$n" -gt 20000 ]` errored with "integer
+# expression expected", and the lint EXITED 0. MEASURED: a 25,000-char guarded file at mode
+# 000 -> rc=0. A file the lint cannot measure is precisely the file it must not clear.
+chars_of() { python3 -c "import sys;print(len(open(sys.argv[1],encoding='utf-8').read()))" "$1" 2>/dev/null || echo -1; }
 marker_pos() { python3 -c "
 import sys
 s=open(sys.argv[1],encoding='utf-8').read()
 m='<!-- CONTRACT-CORE-END -->'
-print(s.index(m) if m in s else -1)" "$1"; }
+print(s.index(m) if m in s else -1)" "$1" 2>/dev/null || echo -2; }
 
 staged_has() {
     [ "$MODE" != "--staged" ] && return 0
@@ -113,7 +138,11 @@ if staged_has "$F"; then
     cf="$(resolve_content "$F")"
     if [ -n "$cf" ]; then
         n=$(chars_of "$cf")
-        if [ "$n" -gt 20000 ]; then
+        case "$n" in ''|*[!0-9-]*) n=-1 ;; esac      # non-numeric == unmeasurable
+        if [ "$n" -lt 0 ]; then
+            echo "lint-skill-size: FAIL $F could not be measured (unreadable or undecodable). Refusing to pass a file the lint could not read." >&2
+            fail=1
+        elif [ "$n" -gt 20000 ]; then
             echo "lint-skill-size: FAIL $F is $n chars (> 20000). Its body is re-injected head-truncated at 20,000 chars after every compaction - it must fit whole." >&2
             fail=1
         fi
@@ -129,7 +158,11 @@ for F in commands/mission.md commands/pre-compact.md commands/codex-review.md co
         cf="$(resolve_content "$F")"
         [ -n "$cf" ] || continue
         p=$(marker_pos "$cf")
-        if [ "$p" -lt 0 ]; then
+        case "$p" in ''|*[!0-9-]*) p=-2 ;; esac
+        if [ "$p" = "-2" ]; then
+            echo "lint-skill-size: FAIL $F could not be measured (unreadable or undecodable). Refusing to pass a file the lint could not read." >&2
+            fail=1
+        elif [ "$p" -lt 0 ]; then
             echo "lint-skill-size: FAIL $F lacks the '<!-- CONTRACT-CORE-END -->' marker. The first 20,000 chars are all a post-compaction agent sees - the contract core must end (marker) before char 19500." >&2
             fail=1
         elif [ "$p" -gt 19500 ]; then

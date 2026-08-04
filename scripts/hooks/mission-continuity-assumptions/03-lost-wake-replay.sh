@@ -23,8 +23,10 @@ mc_setup "03-lost-wake-replay"
 SUB="job"; SID="lostwake$$"
 mc_new_mission "$SUB" "$SID"
 
-# Open a two-lane barrier and land ONE lane (simulating one completion wake that DID arrive),
-# then drop the second lane's wake entirely - got stays 1, below need=3.
+# Open a two-lane barrier (got=0 opener - R4: a live barrier requires a post-boundary opener) and land
+# ONE lane (simulating one completion wake that DID arrive), then drop the second lane's wake entirely -
+# got stays 1, below need=3.
+mc_await "$SUB" "$SID" "part=1 phase=review round=1 kind=job op=lane attempt=1 need=3 got=0"
 mc_await "$SUB" "$SID" "part=1 phase=review round=1 kind=job op=lane attempt=1 need=3 got=1"
 
 # A1 - first read after the dropped wake: still outstanding (the replay signal is live).

@@ -188,7 +188,18 @@ FROZEN_UNITS_CAP="${FROZEN_UNITS_CAP:-3}"    # bounded-mode freeze cap
 SECRET_LEN_FLOOR="${SECRET_LEN_FLOOR:-16}"       # secret-leak min char length
 TEST_FILE_LINE_FLOOR="${TEST_FILE_LINE_FLOOR:-25}"  # test-deletion shrinkage floor
 LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"       # circular-deps cutoff
-SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"  # codex-invoke spinlock max
+# codex-invoke spinlock max - F1: align to the invoke budget (a fixed 600 evicts a live 3300s holder).
+# SECURITY (arithmetic-injection): validate GODREVIEW_INVOKE_TIMEOUT_SECS BEFORE it reaches `$(( ))` -
+# a payload like 'x[$(cmd)]' executes during arithmetic eval (RCE) and '08' aborts as invalid octal.
+# Accept only a plain, bounded, non-octal integer; otherwise fall back to the 3300 default.
+_gr_invoke_raw="${GODREVIEW_INVOKE_TIMEOUT_SECS:-3300}"
+if [[ "$_gr_invoke_raw" =~ ^[0-9]{1,6}$ ]] && [[ "$_gr_invoke_raw" != 0[0-9]* ]]; then
+  _gr_invoke="$_gr_invoke_raw"
+else
+  echo "[warn] GODREVIEW_INVOKE_TIMEOUT_SECS rejected (len=${#_gr_invoke_raw}); using default 3300" >&2
+  _gr_invoke=3300
+fi
+SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-$(( _gr_invoke + 60 ))}"
 ```
 
 ---
@@ -758,7 +769,7 @@ promotion pass consumes.)
 Launch these the SAME way as the Layer A Codex passes: the §2c bounded serial FIFO — one
 `codex-invoke.sh` pass at a time in the foreground of a `run_in_background: true` Bash,
 next pass chosen by the first missing `<outfile>.status` sidecar, never a concurrent batch
-on the shared `~/.codex` flock, never `nohup`/`&`/detach. (Isolated profiles: one lane each.)
+on the shared `~/.codex` flock, never `nohup`/`&`/detach. (Strict serial regardless of profiles — I3.)
 
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -1154,7 +1165,18 @@ WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
 
 # Export tunables that subprocess scripts (codex-invoke.sh) consume.
-export SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-600}"
+# F1: align to the invoke budget, NOT a fixed 600. SECURITY (arithmetic-injection): validate
+# GODREVIEW_INVOKE_TIMEOUT_SECS BEFORE it reaches `$(( ))` - a payload like 'x[$(cmd)]' executes
+# during arithmetic eval (RCE) and '08' aborts as invalid octal. Accept only a plain, bounded,
+# non-octal integer; otherwise fall back to the 3300 default.
+_gr_invoke_raw="${GODREVIEW_INVOKE_TIMEOUT_SECS:-3300}"
+if [[ "$_gr_invoke_raw" =~ ^[0-9]{1,6}$ ]] && [[ "$_gr_invoke_raw" != 0[0-9]* ]]; then
+  _gr_invoke="$_gr_invoke_raw"
+else
+  echo "[warn] GODREVIEW_INVOKE_TIMEOUT_SECS rejected (len=${#_gr_invoke_raw}); using default 3300" >&2
+  _gr_invoke=3300
+fi
+export SPINLOCK_TIMEOUT_SEC="${SPINLOCK_TIMEOUT_SEC:-$(( _gr_invoke + 60 ))}"
 export LATE_IMPORT_LINE="${LATE_IMPORT_LINE:-40}"
 
 # Initialize loop counters (or restore from state.json on --resume)

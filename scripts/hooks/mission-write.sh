@@ -27,7 +27,7 @@
 #     log           <sid> <root> <entry> [idtag]
 #     note          <sid> <root> <entry> [idtag]
 #     challenge     <sid> <root> <entry> [idtag]
-#     pending       <sid> <root> <entry> [idtag]
+#     pending       <sid> <root> <slug> <question...>   (mints+echoes a monotonic pd:<seq>-<slug> id)
 #     resolve       <sid> <root> <pd_id> [resolution]
 #     rebaseline    <sid> <root> <new_plan>
 #     render-banner <sid> <root>
@@ -116,7 +116,10 @@ case "$verb" in
     # argv exception: <verb> <sid> <root>. stdout MUST be a BARE hex digest (or empty) — the
     # mission wake routine reads it directly for the idempotency cursor compare, so a
     # `mission-write: …` status line would corrupt the capture. Same read-only shape as
-    # await-state/void-count. A `..` root (I6) fails safe to empty. mission_cursor_hash is tolerant.
+    # await-state/void-count. A `..` root (I6) returns EMPTY; note this is NOT a silent "safe"
+    # value for cursor-hash - the §12.1 consumer treats an empty cursor as corrupt (C1 STOP-LOUD),
+    # so a `..` root fails LOUD downstream (unreachable in normal operation - the wake routine
+    # always passes an absolute canonical root). mission_cursor_hash is otherwise tolerant.
     case "${3:-}" in *..*) printf '\n'; exit 0 ;; esac
     mission_cursor_hash "${2:-}" "${3:-}" 2>/dev/null
     exit 0
@@ -304,19 +307,14 @@ _mw_validate_log() {
       printf '%s' "$_vl_bare" | grep -qE '^m[0-9]+-criticer-r[0-9]+$' || _mw_emit_refuse log 1 "REFUSED: bad-criticer-idtag"
       ;;
     "AWAIT "*)
-      # §7 grammar-consistency case ONLY. The PRIMARY path for AWAIT is the dedicated `await` verb →
-      # mission_await_append → mission_log_append (which BYPASSES this validator, exactly like
-      # _mw_emit_snapshot / WORK-START). This case exists so that if anyone ever routes an AWAIT line
-      # through the generic `log` verb it VALIDATES rather than hitting the `*)` unknown-shape REFUSE.
-      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] AWAIT part=[0-9]+ phase=[a-z]+ round=[0-9]+ kind=(job|human) op=[a-z0-9-]+ attempt=[0-9]+ need=[0-9]+ got=[0-9]+ started_at=[0-9]+$' \
-        || _mw_emit_refuse log 1 "REFUSED: bad-await-shape"
-      printf '%s' "$_vl_bare" | grep -qE '^m[0-9]+-await-[a-z0-9-]+-r[0-9]+-a[0-9]+-g[0-9]+$' \
-        || _mw_emit_refuse log 1 "REFUSED: bad-await-idtag"
-      _en=$(_mw_efield "$_vl_entry" part); _er=$(_mw_efield "$_vl_entry" round)
-      _in=$(printf '%s' "$_vl_bare" | sed -n 's/^m\([0-9]*\)-await-.*/\1/p')
-      _ir=$(printf '%s' "$_vl_bare" | sed -n 's/.*-r\([0-9]*\)-a[0-9]*-g[0-9]*$/\1/p')
-      { [ "$_en" = "$_in" ] && [ "$_er" = "$_ir" ]; } \
-        || _mw_emit_refuse log 1 "REFUSED: idtag-entry-field-mismatch (await)"
+      # R6 (round-5) — AWAIT is durable barrier control state whose SAFETY invariants (kind<->need<->got
+      # coupling A4, single-lane got<=2 rejection, kind<->op namespace guard, started_at reuse, opener
+      # semantics) are ALL enforced by mission_await_append and NONE by this validator. The generic `log`
+      # verb enforces none of them, so a `log`-routed AWAIT (e.g. `kind=job need=3 got=3`) would forge a
+      # two-lane review join in a SINGLE append, bypassing the each-lane-own-bit contract. AWAIT is written
+      # ONLY via the dedicated `await` verb (→ mission_await_append → mission_log_append, which BYPASSES
+      # this validator). Routing one through `log` is therefore ALWAYS illegitimate — fail closed.
+      _mw_emit_refuse log 1 "REFUSED: AWAIT must be written via the dedicated 'await' verb, never 'log' (log bypasses the barrier safety invariants)"
       ;;
     "MISSION-CLEARED "*)
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] MISSION-CLEARED status=(achieved|could-not|cleared) reason=[a-z0-9-]*$' \
@@ -324,9 +322,14 @@ _mw_validate_log() {
       [ -z "$_vl_idtag" ] || _mw_emit_refuse log 1 "REFUSED: mission-cleared-idtag-must-be-empty"
       ;;
     "MISSION-REBASELINED "*)
-      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+.*$' \
-        || _mw_emit_refuse log 1 "REFUSED: bad-mission-rebaselined-shape"
-      [ -z "$_vl_idtag" ] || _mw_emit_refuse log 1 "REFUSED: mission-rebaselined-idtag-must-be-empty"
+      # R6 (round-6) — MISSION-REBASELINED is a gen-boundary written ONLY by the dedicated `rebaseline`
+      # verb (mission_rebaseline -> mission_log_append, which BYPASSES this validator AND bumps the marker
+      # gen in the SAME op). A `log`-routed one would write the boundary line WITHOUT the marker gen bump,
+      # so `_gen_sliced_stream` would honor a FORGED current-gen boundary and slice away an earlier human
+      # AWAIT -> mandatory-gate bypass. The `log` verb is never a legit path for it -> fail closed.
+      # (MISSION-CLEARED is DIFFERENT: the agent writes it via `log` with an EMPTY idtag as the natural
+      # close order - it has no lib writer - so that case stays a validating case, not a refusal.)
+      _mw_emit_refuse log 1 "REFUSED: MISSION-REBASELINED must be written via the dedicated 'rebaseline' verb, never 'log' (log bypasses the marker gen bump -> forged gen boundary)"
       ;;
     *)
       # MISSION-START / WORK-START are LIB-ONLY emissions (never routed through the log verb); any
@@ -352,29 +355,32 @@ _mw_partdone_check() {
   # gen-sliced archive-inclusive stream (REFUSE loud on gen-boundary-mismatch → rc=4 blocks advance).
   _pc_stream=$(_gen_sliced_stream "$_pc_sid" "$_pc_root") \
     || _mw_emit_refuse log 4 "REFUSED gen-boundary-mismatch"
-  # (1) a gen-current live-verify part=N line EXISTS (word-bounded).
-  printf '%s\n' "$_pc_stream" | grep -qE "\[mission\] live-verify part=${_pc_pn}([[:space:]]|\$)" \
+  # (1) a gen-current live-verify part=N line EXISTS. B4 (round-2 S1): match the BODY after the idtag
+  # TAB ($2), prefix-anchored, so a criticer/note line EMBEDDING `[mission] live-verify …` (its body
+  # starts with `[mission] criticer …`, not `live-verify`) can no longer satisfy the convergence gate.
+  printf '%s\n' "$_pc_stream" | awk -F'\t' -v pn="$_pc_pn" \
+    '$2 ~ ("^\\[mission\\] live-verify part=" pn "([[:space:]]|$)") { f=1 } END { exit f?0:1 }' \
     || _mw_emit_refuse log 4 "REFUSED: PART-DONE without live-verify part=${_pc_pn} — run the live leg or log status=n/a reason=<slug>"
   # (1b) FRESHNESS — the LAST live-verify for part N must be ordered AFTER the last actionable event
   # (phase=review findings>0, VOID, phase=fix|implement) for part N. Otherwise stale evidence.
-  _pc_fresh=$(printf '%s\n' "$_pc_stream" | awk -v pn="$_pc_pn" '
+  _pc_fresh=$(printf '%s\n' "$_pc_stream" | awk -F'\t' -v pn="$_pc_pn" '
     function num(s,key,   p){ p=key"[0-9]+"; if(match(s,p)) return substr(s,RSTART+length(key),RLENGTH-length(key))+0; return -1 }
-    $0 ~ ("\\[mission\\] live-verify part=" pn "([^0-9]|$)") { lv=NR }
-    ( $0 ~ ("\\[mission\\] part=" pn "[^0-9]") && $0 ~ "phase=review" && num($0,"findings=")>0 ) { act=NR }
-    ( $0 ~ ("\\[mission\\] VOID part=" pn "[^0-9]") ) { act=NR }
-    ( $0 ~ ("\\[mission\\] part=" pn "[^0-9]") && ($0 ~ "phase=fix" || $0 ~ "phase=implement") ) { act=NR }
+    $2 ~ ("^\\[mission\\] live-verify part=" pn "([^0-9]|$)") { lv=NR }
+    ( $2 ~ ("^\\[mission\\] part=" pn "[^0-9]") && $2 ~ "phase=review" && num($2,"findings=")>0 ) { act=NR }
+    ( $2 ~ ("^\\[mission\\] VOID part=" pn "[^0-9]") ) { act=NR }
+    ( $2 ~ ("^\\[mission\\] part=" pn "[^0-9]") && ($2 ~ "phase=fix" || $2 ~ "phase=implement") ) { act=NR }
     END { if (lv>0 && lv>act) print "fresh"; else print "stale" }')
   [ "$_pc_fresh" = fresh ] \
     || _mw_emit_refuse log 4 "REFUSED live-verify-stale: part=${_pc_pn} was mutated after its last live-verify — re-run the live leg, then re-log with the CURRENT round"
   # (2) DRY-COUNT MACHINE FOLD — the last two banked review rounds for part N must be findings=0 dry=1
-  # then findings=0 dry=2 (adjacent K, K+1), with NO actionable event after the dry=1 line.
-  _pc_clean=$(printf '%s\n' "$_pc_stream" | awk -v pn="$_pc_pn" '
+  # then findings=0 dry=2 (adjacent K, K+1), with NO actionable event after the dry=1 line. Body-anchored.
+  _pc_clean=$(printf '%s\n' "$_pc_stream" | awk -F'\t' -v pn="$_pc_pn" '
     function num(s,key,   p){ p=key"[0-9]+"; if(match(s,p)) return substr(s,RSTART+length(key),RLENGTH-length(key))+0; return -1 }
-    $0 ~ ("\\[mission\\] part=" pn "[^0-9]") && $0 ~ "phase=review" {
-      n++; rr[n]=num($0,"round="); rf[n]=num($0,"findings="); rd[n]=num($0,"dry="); rl[n]=NR }
-    ( $0 ~ ("\\[mission\\] part=" pn "[^0-9]") && $0 ~ "phase=review" && num($0,"findings=")>0 ) { act=NR }
-    ( $0 ~ ("\\[mission\\] VOID part=" pn "[^0-9]") ) { act=NR }
-    ( $0 ~ ("\\[mission\\] part=" pn "[^0-9]") && ($0 ~ "phase=fix" || $0 ~ "phase=implement") ) { act=NR }
+    $2 ~ ("^\\[mission\\] part=" pn "[^0-9]") && $2 ~ "phase=review" {
+      n++; rr[n]=num($2,"round="); rf[n]=num($2,"findings="); rd[n]=num($2,"dry="); rl[n]=NR }
+    ( $2 ~ ("^\\[mission\\] part=" pn "[^0-9]") && $2 ~ "phase=review" && num($2,"findings=")>0 ) { act=NR }
+    ( $2 ~ ("^\\[mission\\] VOID part=" pn "[^0-9]") ) { act=NR }
+    ( $2 ~ ("^\\[mission\\] part=" pn "[^0-9]") && ($2 ~ "phase=fix" || $2 ~ "phase=implement") ) { act=NR }
     END {
       if (n<2) { print "no"; exit }
       a=n-1; b=n
@@ -385,7 +391,7 @@ _mw_partdone_check() {
   # SNAPSHOT for part N (stamped by _mw_emit_snapshot at the dry=2 round). Missing stamp (legacy mission)
   # or an unfingerprintable tree (sentinel/empty) → SKIP: never false-block. A real drift → rc=4 (same
   # carve-out as the checks above; the refusal IS the correction — a blocked PART-DONE means re-review).
-  _pc_snapline=$(printf '%s\n' "$_pc_stream" | grep -E "\[mission\] SNAPSHOT part=${_pc_pn}[^0-9].*kind=converged" | tail -1)
+  _pc_snapline=$(printf '%s\n' "$_pc_stream" | awk -F'\t' -v pn="$_pc_pn" '$2 ~ ("^\\[mission\\] SNAPSHOT part=" pn "[^0-9]") && $2 ~ "kind=converged"' | tail -1)
   if [ -n "$_pc_snapline" ]; then
     _pc_stamped=$(_mw_efield "$_pc_snapline" tree)
     _pc_current=$(_mission_tree_fingerprint "$_pc_root" 2>/dev/null)
@@ -481,13 +487,23 @@ case "$verb" in
     ;;
 
   pending)
-    if [ -z "$sid" ] || [ -z "$root" ] || [ -z "${4:-}" ]; then
-      echo "mission-write: usage: pending <sid> <root> <entry> [idtag]"
+    # R7-1: interface = pending <sid> <root> <slug> <question...>. The verb MINTS a monotonic
+    # `pd:<seq>-<slug>` id (seq machine-assigned, never reused), appends the pending line, and ECHOES
+    # the minted id so the agent uses it for BOTH `resolve` and the human-AWAIT `op=<seq>-<slug>`.
+    if [ -z "$sid" ] || [ -z "$root" ] || [ -z "${4:-}" ] || [ -z "${5:-}" ]; then
+      echo "mission-write: usage: pending <sid> <root> <slug> <question...>  (slug=[a-z0-9-]; seq is machine-minted)"
       exit 0
     fi
-    mission_mutate "$sid" "$root" pending "$4" "${5:-}"
+    _mw_pslug="$4"
+    shift 4
+    _mw_pquestion="$*"
+    _mw_pid=$(mission_pending_mint "$sid" "$root" "$_mw_pslug" "$_mw_pquestion")
     rc=$?
-    _mw_outcome_status pending "$rc"
+    if [ "$rc" -eq 0 ]; then
+      echo "mission-write: pending ok id=${_mw_pid}"
+    else
+      _mw_status pending "$rc" "see stderr"
+    fi
     ;;
 
   resolve)

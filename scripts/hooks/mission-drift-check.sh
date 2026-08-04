@@ -35,8 +35,13 @@ fi
 stream=$(_gen_sliced_stream "$sid" "$root" 2>/dev/null) || {
   echo "drift-check: N/A (gen-sliced read refused — gen-boundary mismatch)"; exit 0; }
 
+# S2 (round-4): double-anchored the same way mission-bridge.sh's gen-sliced readers are (grep them for
+# `-F'\t'` / `$1 ~` / `$2 ~`) - match on BOTH the snapshot idtag column ($1, `(g<N>-)?snap-p<N>-conv-…`,
+# the idtag _mw_emit_snapshot stamps) AND the body prefix ($2 starts with `[mission] SNAPSHOT `). A
+# criticer/note free-text line that merely EMBEDS a forged `SNAPSHOT … tree=<current>` carries a
+# non-snapshot idtag column, so it can no longer make this report falsely claim CLEAR.
 parts=$(printf '%s\n' "$stream" \
-  | grep -oE '\[mission\] SNAPSHOT part=[0-9]+ kind=converged' \
+  | awk -F'\t' '$1 ~ /^(g[0-9]+-)?snap-p[0-9]+-conv-/ && $2 ~ /^\[mission\] SNAPSHOT part=[0-9]+ kind=converged/ { print $2 }' \
   | grep -oE 'part=[0-9]+' | sed 's/part=//' | sort -un)
 if [ -z "$parts" ]; then
   echo "drift-check: no convergence snapshots yet (nothing to check)"; exit 0
@@ -45,7 +50,9 @@ fi
 current=$(_mission_tree_fingerprint "$root" 2>/dev/null)
 drift=0; checked=0
 for p in $parts; do
-  snapline=$(printf '%s\n' "$stream" | grep -E "\[mission\] SNAPSHOT part=${p}[^0-9].*kind=converged" | tail -1)
+  # S2 (round-4): double-anchored ($1 snapshot idtag column + $2 body prefix), mirroring mission-write.sh's
+  # _mw_partdone_check reader so a forged free-text SNAPSHOT line cannot be picked as the stamp.
+  snapline=$(printf '%s\n' "$stream" | awk -F'\t' -v pn="$p" '$1 ~ /^(g[0-9]+-)?snap-p[0-9]+-conv-/ && $2 ~ ("^\\[mission\\] SNAPSHOT part=" pn "[^0-9]") && $2 ~ "kind=converged"' | tail -1)
   stamped=$(printf '%s' "$snapline" | sed -n "s/.*tree=\\([A-Za-z0-9_.:-]*\\).*/\\1/p")
   checked=$((checked + 1))
   case "$current" in

@@ -11,32 +11,31 @@ the durable mission-bridge, riding `/pre-compact`, looping implement<->review to
 convergence, per part, across many compactions. DO NOT over-engineer or over-constrain: the
 four-skill sequence is the SPINE, not a cage; you stay free to invoke any other skill. Most LOG lines
 are a best-effort boundary checkpoint - observational, never a gate; a missed phase-line degrades resume
-granularity, never blocks work. EXCEPTION: the wake-routine control state - the `AWAIT` marker +
-`cursor-hash` (§7/§12) - IS load-bearing, so an `await`/`cursor-hash`/bank write returning
-`FAILED`/`COLLISION` must be retried, then treated as corrupt-bridge STOP-LOUD (§10) - never proceed as if
-it succeeded. Opt-in and HEAVY (per part: 4-6 plan-review rounds + a
+granularity, not work. EXCEPTION: the wake-routine control state (the `AWAIT` marker + the
+`cursor-hash`/`await-state` reads, §7/§12) IS load-bearing: an `await`/bank `FAILED` → retry then §10
+STOP-LOUD; a `COLLISION` → re-read + reconcile; a `corrupt` cursor/await → §10 STOP-LOUD. Never proceed
+as if succeeded. Opt-in and HEAVY (per part: 4-6 plan-review rounds + a
 4 Codex + 3 Claude code-review panel over 3-6 rounds) - use it ONLY for genuinely large
 multi-part builds; never for a typo, a one-liner, or a single bug fix.
 
 ## CONTRACT CORE
 
-This core is self-sufficient for a post-compaction agent. Full operational detail for every step
-(worked bash blocks, edge cases, rationale) continues in §1-§12 below the CONTRACT-CORE-END
-marker; a live (untruncated) invocation must read and follow those sections.
+This core is self-sufficient for a post-compaction agent; full detail continues in §1-§12 below the
+marker, which a live (untruncated) invocation must read and follow.
 
 ### CONTINUATION-OWNER INVARIANT (read first - a mission turn NEVER yields naked)
 
 A `/mission` turn MUST NOT end unless ONE holds: (a) it JUST called `ScheduleWakeup(delaySeconds,
-prompt=SELF_CONTAINED_TICK, reason)` as its LAST action AND the call SUCCEEDED, or (b) it is at a genuine
-human-handback / stop point (a §9 point-of-contact or a §12.3 stop, incl. an `AWAIT kind=human`). **A
-scheduled wake is the ONLY continuation owner** - a tracked `run_in_background` job is NOT sufficient alone
-(its completion wake can be lost), so a turn yielding with a job pending STILL schedules a long fallback
-heartbeat (§12.1 step 7). Any other turn-end is a NAKED YIELD that silently freezes the mission. This
-covers **EVERY** turn-end (§8's four epilogues are examples, not the whole set). A `ScheduleWakeup` that
-FAILS is not (a): retry once, then STOP LOUD via a `pending` + `AWAIT kind=human` (§12.3) - never yield
-naked. The wake routine satisfying (a) - `mkdir` tick-lock + §8 resume-read + cursor-compare + reschedule -
-lives in §12; every wake source (background completion, a ScheduleWakeup tick, a post-compact resume)
-funnels through it and advances by exactly ONE transition.
+prompt=SELF_CONTAINED_TICK, reason)` as its LAST continuation-deciding call AND it SUCCEEDED (only the
+tick-lock release may follow it), or (b) it is at a genuine human-handback / stop point (a §9
+point-of-contact or a §12.3 stop, incl. an `AWAIT kind=human`). **A scheduled wake is the ONLY continuation
+owner** - a tracked `run_in_background` job is NOT sufficient alone (its completion wake can be lost), so a
+turn yielding with a job pending STILL schedules a long fallback heartbeat (§12.1 step 7). Any other
+turn-end is a NAKED YIELD that silently freezes the mission - EVERY turn-end (§8's four epilogues are
+examples). A `ScheduleWakeup` that FAILS is not (a): retry once, then STOP LOUD via a `pending` + `AWAIT
+kind=human` (§12.3) - never yield naked. The wake routine satisfying (a) - `mkdir` tick-lock + §8
+resume-read + cursor-compare + reschedule - lives in §12; every wake source (bg completion, a tick, a
+post-compact resume) funnels through it and advances by exactly ONE transition.
 
 ### A. Resolve sid + root + mission file FIRST (§1)
 
@@ -219,8 +218,8 @@ Used by status, resume, and every post-compaction re-entry:
 - `grep -F '[mission] '` over **ALL rotated archives**
   (`.mission-backups/MISSION.<sid>.log.*.gz|.txt`, concatenated oldest->newest by
   filename-timestamp sort) **THEN the live `MISSION.<sid>.log`**. `tail -n 40` is BANNED (misses
-  lines past the window/rotation); reading only the newest archive is banned (rotation archives
-  the OLDEST half each fire, so durable lines sit in OLDER archives).
+  lines past the window/rotation); reading only the newest archive is banned (older archives hold
+  durable lines).
 - Derive four values: `cur_part` (last PART-START|PART-DONE part=; empty -> 1); `mission_state`
   (last `MISSION-(CLEARED|REBASELINED)` line - the GLOBAL active-iff gate; transient progress
   lines NEVER gate it); `last_review` (part-scoped last `phase=review` round OR VOID - the ONLY
@@ -229,10 +228,11 @@ Used by status, resume, and every post-compaction re-entry:
 - Active-iff: latest lifecycle = CLEARED -> INACTIVE; latest = REBASELINED status=active ->
   ACTIVE; empty state + PLAN line-1 is a `MISSION MODE:` token -> ACTIVE.
 - Decision table (apply in order; **AWAIT rows FIRST**): `AWAIT kind=human got<need` -> stop
-  scheduled continuation, await a real user turn; `AWAIT kind=job got<need` + a tracked job pending
-  -> the job owns continuation (collect nothing yet); `AWAIT kind=job got<need` + NO tracked job ->
-  replay ONLY the missing lane (same attempt) or record timeout/FAIL + start attempt A+1; `AWAIT
-  got=need` -> reconcile persisted results + bank the single normal successor. Then:
+  scheduled continuation; a real user enters §12.1 and closes it under the lock (C6); `AWAIT kind=job
+  got<need` + a tracked job pending -> collect nothing yet but STILL schedule a fallback wake (a
+  pending job NEVER owns continuation); `AWAIT kind=job got<need` + NO tracked job -> replay the
+  missing lane (same attempt) or on timeout/FAIL start attempt A+1; `AWAIT got=need` -> reconcile +
+  bank the single normal successor. Then:
   latest progress `PART-DONE`/`PART-RETIRED` -> part COMPLETE
   (re-attempt retirement if PART-RETIRED absent, then next part; never consult stale round
   lines); `PART-START` with no round yet -> begin at research; last round `phase=fix` -> finish
@@ -246,7 +246,7 @@ Used by status, resume, and every post-compaction re-entry:
 
 - NEVER hand-edit the PLAN zone; `challenge` loudly, `rebaseline` is the only rewrite path.
 - Codex is ALWAYS read-only; a second bridge writer is forbidden.
-- STOP LOUD on: **5 FAILs for the same part+phase** (gen-sliced tally from the durable record);
+- STOP LOUD on: **5 FAILs for the same part+phase** (gen-sliced tally);
   **panel-unavailable-3x the moment it is logged**; **void-count -1**; **a corrupt/unreadable
   bridge** (any `FAILED rc=2`, or a failed `mission_verify`) - surface `.mission-backups/`.
 - Away default (autonomous runs): never block on a modal; log assumptions + `pending` and proceed
@@ -255,10 +255,10 @@ Used by status, resume, and every post-compaction re-entry:
 - Natural close order: `timing-close` -> `MISSION-CLEARED status=achieved|could-not` (EMPTY
   idtag) -> `archive-close` LAST.
 
-Full operational detail for every step above - the worked bash blocks, the BINDING CONTRACT text,
-edge cases and rationale - continues below this marker; read it whenever you are not truncated.
+Full operational detail (worked bash blocks, binding-contract text, edge cases, rationale) continues
+below the marker; read it when not truncated.
 **Verb signatures (all `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]`):**
-`create "<seed>"` - seed PLAN once (idempotent on existing) | `log "<entry>" "<idtag>"` | `note "<text>"` | `challenge "<text>"` | `pending "<text>"` | `resolve "<text>"` | `rebaseline "<new-plan>"` (ONLY PLAN rewrite path) | `render-banner` | `timing-resume` / `timing-contact` / `timing-close` | `archive-close`. Two read-only argv EXCEPTIONS (bare-token stdout, no status line): `parse-codex-header <report-file>` and `void-count <sid> <root> <part-N> <round-K>` (ALL FOUR args REQUIRED - part number then round number; a 2-arg call returns the `-1` STOP sentinel and will halt a healthy mission). Corrupt-bridge (rc=2) remediation and full verb detail: below the marker (SS7, SS10).
+`create "<seed>"` - seed PLAN once (idempotent) | `log "<entry>" "<idtag>"` | `await "<fields>"` (barrier open/close - §7/§12; NEVER via `log`) | `note "<text>"` | `challenge "<text>"` | `pending "<slug>" "<q>"` | `resolve "<pd-id>"` | `rebaseline "<new-plan>"` (ONLY PLAN rewrite path) | `render-banner` | `timing-resume` / `timing-contact` / `timing-close` | `archive-close`. FOUR read-only bare-token argv EXCEPTIONS (no status line): `parse-codex-header <report-file>`; `void-count <sid> <root> <part-N> <round-K>` (all four REQUIRED - part then round; a 2-arg call returns the `-1` STOP sentinel that halts a healthy mission); `await-state <sid> <root>` (`none`|`corrupt`|`await …`); `cursor-hash <sid> <root>` (§12 change-detect). Corrupt-bridge (rc=2) remediation and full verb detail: below the marker (SS7, SS10).
 
 (If this injected core ever diverges from the on-disk file, the ON-DISK file is authoritative - Read it.)
 
@@ -618,7 +618,9 @@ specified chunks — and ONLY in a worktree that does NOT contain the bridge art
 the canonical root, never inside a per-part worktree), with Codex run `-s read-only`.
 
 **BEFORE dispatching the barrier, OPEN the AWAIT marker** (Task C — the durable "work launched, not
-yet all-returned" record; `A` is this round's barrier attempt, starting at 1 and incrementing on a
+yet all-returned" record; `A` is this round's barrier attempt, starting at 1. R4 — a lost-wake REPLAY
+re-runs the missing lane on the SAME attempt A (the persisted lane bits are reused, not discarded);
+`A` increments to A+1 ONLY when a lane genuinely times out / FAILs (§8, §12.1 step 4), NEVER on a bare
 replay). This is what a wake sees when a background lane completes but this turn already ended:
 ```bash
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <sid> <root> "part=<N> phase=review round=<K> kind=job op=review-barrier attempt=<A> need=3 got=0"
@@ -638,10 +640,12 @@ findings; and the `/codex-review` output you materialize into `review_output` pe
 below), UPDATE the AWAIT marker with that lane's got bit set — impl-reviewer sets `bit1`, codex-review
 sets `bit2`:
 ```bash
-# after the impl-reviewer findings are in DURABLE NOTES (got: 0 -> 1):
+# impl-reviewer lane writes ONLY ITS bit (bit1). got=1:
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <sid> <root> "part=<N> phase=review round=<K> kind=job op=review-barrier attempt=<A> need=3 got=1"
-# after the codex-review result is in DURABLE NOTES too (got -> 3 = join-ready):
-bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <sid> <root> "part=<N> phase=review round=<K> kind=job op=review-barrier attempt=<A> need=3 got=3"
+# codex-review lane writes ONLY ITS bit (bit2). got=2 — NOT got=3. The reader OR-accumulates the two
+# lane bits (1|2=3 = join-ready), so the ORDER of the lanes does not matter. Writing got=3 from one
+# lane would falsely read ready=1 if that lane returned FIRST, banking before the other lane finished (D2):
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <sid> <root> "part=<N> phase=review round=<K> kind=job op=review-barrier attempt=<A> need=3 got=2"
 ```
 **Returning from `/codex-review` alone NEVER advances the round.** The round's normal `phase=review …
 findings=<COUNT>` (or VOID) line is banked ONLY at the whole-barrier join (`got=need=3`, BOTH lanes'
@@ -762,9 +766,10 @@ record rather than asserted by you.
 
 **Continuation epilogue (Task A/B — naked-yield seam).** After the barrier join banks this round line
 with work still owed (findings to fix, or the next fresh review round), do NOT end the turn naked: run
-the §12 continuation epilogue — schedule the self-wake as your LAST action — UNLESS a tracked
-`run_in_background` lane is still pending (its completion is the wake) or you are at one of the four §9
-points-of-contact. A failed/absent schedule here is a LOUD error, never a silent stop.
+the §12 continuation epilogue — schedule the self-wake as your LAST continuation-deciding call (only the
+tick-lock release may follow) — UNLESS you are at one of the four §9 points-of-contact / a §12.3 stop. Schedule EVEN when a tracked `run_in_background` lane is
+pending: its completion is the fast wake, the scheduled heartbeat is the backstop that self-heals a lost
+one (a scheduled wake is the ONLY continuation owner — D1). A failed schedule is a LOUD error, never a silent stop.
 
 ### CONVERGENCE (implement ↔ review fix-cycle)
 Loop, per round K: if findings are actionable, log the **`phase=fix`** checkpoint for the SAME round
@@ -777,8 +782,10 @@ convergence rules. On a PLAN divergence → `challenge` (loud). On an open human
 **Continuation epilogue (Task A/B — naked-yield seam).** After logging the `phase=fix` checkpoint and
 re-arming the next round (whether the fix runs this turn or a fresh barrier is launched), if the turn
 would otherwise end with the fix/re-review still owed, run the §12 continuation epilogue (schedule the
-self-wake as your LAST action) UNLESS a tracked `run_in_background` lane is pending or you are at a §9
-point-of-contact. Never yield naked with a fix cycle mid-flight.
+self-wake as your LAST continuation-deciding call — only the tick-lock release may follow) UNLESS you are
+at a §9 point-of-contact / stop. Schedule EVEN when a
+tracked `run_in_background` lane is pending (the completion is the fast wake, the heartbeat the backstop —
+D1). Never yield naked with a fix cycle mid-flight.
 
 **Resume substates within a round (Section 7 schema; these are the WITHIN-ROUND rows of the §8
 round-ambiguity decision table — they MUST match §8 verbatim, one decision, two cross-references. §8 is
@@ -853,8 +860,8 @@ advancing.
 **Continuation epilogue (Task A/B — naked-yield seam).** `PART-DONE` banking with a later part still to
 run is NOT the end of the mission — it is a mid-mission transition. If the turn would end here with
 retirement or the next-part advance still owed (and this is NOT the final part's natural lifecycle close,
-§11), run the §12 continuation epilogue (schedule the self-wake as your LAST action). The natural
-lifecycle close of the FINAL part is the one §9 point-of-contact where the loop legitimately stops.
+§11), run the §12 continuation epilogue (schedule the self-wake as your LAST continuation-deciding call —
+only the tick-lock release may follow). The natural lifecycle close of the FINAL part is the one §9 point-of-contact where the loop legitimately stops.
 
 **Advance to the next part** — log a `PART-START` lifecycle line for the new part so resume can tell a
 converged part from one still in progress (Section 8 / Section 9):
@@ -865,8 +872,10 @@ Parse the status line (Section 7), then begin the next part's Phase 1.
 
 **Continuation epilogue (Task A/B — naked-yield seam).** After banking `PART-START part=<N+1>`, the next
 part's research is owed. If the turn would end before that research is dispatched, run the §12
-continuation epilogue (schedule the self-wake as your LAST action) UNLESS a tracked `run_in_background`
-job is pending or you are at a §9 point-of-contact.
+continuation epilogue (schedule the self-wake as your LAST continuation-deciding call — only the tick-lock
+release may follow) UNLESS you are at a §9 point-of-contact / stop. Schedule EVEN when a tracked
+`run_in_background` job is pending (D1: the completion is the fast
+wake, the heartbeat the backstop).
 
 **Push guidance (if you push a converged part's work).** Pushing is not part of the per-part loop, but
 when you do surface completed work upstream, NEVER overwrite another agent's work: `git fetch` the base
@@ -1052,21 +1061,27 @@ line, not at column 0.
   the `log`-verb validator; read back via the `await-state` bare-token verb, never grepped by hand):
   - entry: `[mission] AWAIT part=<N> phase=<P> round=<K> kind=<job|human> op=<slug> attempt=<A> need=<mask> got=<mask>`
   - idtag: `m<N>-await-<op>-r<K>-a<A>-g<GOT>` (generation-prefixed automatically). `started_at` is
-    auto-filled by the lib. `need`/`got` are bitmasks. For the review barrier: `bit1` = impl-reviewer
-    result persisted, `bit2` = codex-review result persisted, `need=3`. Persist each lane's usable
-    result to the EXISTING DURABLE NOTES *before* setting its got bit. `got=need` = join-ready — the
-    barrier's normal `phase=review … findings=<COUNT>` (or VOID) line is banked ONLY at that join.
+    auto-filled by the lib (barrier-stable). `need`/`got` are bitmasks; a barrier`s IDENTITY is
+    (part,round,attempt,KIND,OP) — OP separates two distinct human decisions (each pd's unique
+    `<seq>-<slug>`) while both review lanes share `op=review-barrier` so they still join. For the review barrier: `need=3`, `bit1` = impl-reviewer, `bit2` =
+    codex-review. **EACH LANE WRITES ONLY ITS OWN BIT** (impl `got=1`, codex `got=2`); the `await-state`
+    reader OR-accumulates them (1|2=3), so lane ORDER is irrelevant. Persist each lane`s usable result to
+    DURABLE NOTES *before* setting its bit. `(got&need)==need` = join-ready (`ready=1`); the barrier stays
+    OUTSTANDING until a later `phase=review`/VOID/PART-DONE line SUPERSEDES it (that bank IS the join). A
+    human barrier is `need=1`, closed by its own `got=1` (no separate bank).
     Write form (fields reassembled in canonical order by the lib):
     ```bash
-    bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <sid> <root> "part=<N> phase=review round=<K> kind=job op=review-barrier attempt=<A> need=3 got=<G>"
+    bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <sid> <root> "part=<N> phase=review round=<K> kind=job op=review-barrier attempt=<A> need=3 got=<this-lane-bit>"
     ```
-    Read form (bare `none` or `await kind=… op=… part=<N> round=<K> need=<M> got=<G> started_at=<E>`):
+    Read form — bare `none` | `corrupt` | `await kind=… op=… part=<N> round=<K> attempt=<A> phase=<P> need=<M> got=<G> ready=<0|1> started_at=<E>` (`corrupt` = a refused/failed read → §10 STOP-LOUD):
     ```bash
     bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await-state <sid> <root>
     ```
   The `await-state` + `cursor-hash` verbs are the wake routine's inputs (§12): `cursor-hash` returns a
   bare 64-hex rotation-invariant digest of the current-gen `[mission]` state stream (changes on ANY
-  append) — the idempotency cursor that makes two queued wakes advance exactly once.
+  append), or `corrupt` on a failed read. It is the wake routine`s in-turn CONSISTENCY check — NOT the
+  dedup for queued wakes (the tick-lock + read-current-state is that; §12 intro). Two wakes advancing
+  exactly once is the LAYERED guard, not the cursor alone.
 
 Example round line:
 ```bash
@@ -1074,9 +1089,10 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid>
 ```
 
 Other zones: `note` = forced research assumptions + verbose round findings (DURABLE NOTES);
-`challenge` = PLAN divergence (loud; never silently edit PLAN); `pending` = the batched human-decision
-queue (`- [pd:<seq>-<slug>] <q>`); `resolve` drains a pending; `rebaseline` is the ONLY path that
-rewrites PLAN.
+`challenge` = PLAN divergence (loud; never silently edit PLAN); `pending <slug> "<q>"` = the batched
+human-decision queue — the verb MINTS a monotonic `pd:<seq>-<slug>` line (`- [pd:<seq>-<slug>] <q>`; seq
+is machine-assigned + never reused, e.g. `pd:1-approve`) and ECHOES the id; `resolve <pd-id>` drains a
+pending; `rebaseline` is the ONLY path that rewrites PLAN.
 
 **Per-shape grammar (Task 4 — `mission-write.sh log` VALIDATES every shape; the validator in the
 script is the authoritative source, this table is its documentation).** A malformed shape or an
@@ -1157,27 +1173,36 @@ live_log="$root/MISSION.$sid.log"
 # is a normal empty value, never a failure. The capture file may be empty; that is fine.
 
 # Derive the CURRENT part N first — convergence reads MUST be scoped to it (a prior part's final
-# dry=2 review line would otherwise bleed into part N+1's convergence math). Every derivation grep
-# below appends `|| true` for the SAME reason: an expected no-match (zero matching lines) is a VALID
-# empty result, not an abort condition under `set -e -o pipefail`:
-cur_part=$(grep -E '\[mission\] (PART-START|PART-DONE) part=[0-9]+' /tmp/mission-resume.$$ \
+# dry=2 review line would otherwise bleed into part N+1's convergence math).
+# R4 (log-injection defense, S1) — the capture file holds `<idtag>\t<body>` lines, so EVERY control
+# derivation is DOUBLE-ANCHORED via `awk -F'\t'`: it keys on BOTH the idtag COLUMN ($1, the exact
+# shape mission-write.sh mints and its validator enforces) AND the body prefix ($2). A criticer/note
+# free-text line whose BODY merely EMBEDS `[mission] MISSION-CLEARED` (or VOID / PART-DONE) carries a
+# NON-matching idtag column, so it can no longer forge control state (a silent HALT, a false
+# convergence, or a skipped part). `|| true`: awk exits 0 even on no-match, but the `|| true` is kept
+# so an expected empty derivation stays a VALID early state, never a `set -e -o pipefail` abort.
+cur_part=$(awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-part-(start|done)$/ && $2 ~ /^\[mission\] (PART-START|PART-DONE) part=[0-9]+/' /tmp/mission-resume.$$ \
             | tail -1 | sed -n 's/.*part=\([0-9][0-9]*\).*/\1/p' || true)
 [ -z "$cur_part" ] && cur_part=1   # no part-lifecycle yet ⇒ part 1 (empty = valid, not an error)
 
-# state gate (active-iff) — GLOBAL, keys ONLY on CLEARED/REBASELINED (see active-iff rule below).
-# EMPTY mission_state is a VALID state (never cleared/rebaselined) ⇒ ACTIVE with a live PLAN (§8):
-mission_state=$(grep -E '\[mission\] MISSION-(CLEARED|REBASELINED)' /tmp/mission-resume.$$ | tail -1 || true)
-# convergence — PART-SCOPED to N, keys on the last phase=review round OR a VOID for this part (the
-# decision table keys on "latest line for round K is VOID", so VOID MUST be in this read). Empty =
-# no review round banked yet for part N (a valid early state), not a failure:
-last_review=$(grep -E "\[mission\] (part=${cur_part} .*phase=review |VOID part=${cur_part} )" \
+# state gate (active-iff) — GLOBAL, keys ONLY on CLEARED/REBASELINED. Both are minted with an EMPTY
+# idtag column (the validator REFUSES a non-empty one), so anchor on $1=="" — a note line (which
+# always carries a real idtag) that embeds the text can NEVER forge INACTIVE. EMPTY mission_state is
+# a VALID state (never cleared/rebaselined) ⇒ ACTIVE with a live PLAN (§8):
+mission_state=$(awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-(CLEARED|REBASELINED)/' /tmp/mission-resume.$$ | tail -1 || true)
+# convergence — PART-SCOPED to N: the last phase=review round (idtag m<N>-review-r<K>-d<d>) OR a VOID
+# (idtag m<N>-void-r...) for this part. VOID MUST be in this read (the table keys on "latest line for
+# round K is VOID"). Empty = no review round banked yet for part N (a valid early state):
+last_review=$(awk -F'\t' -v p="$cur_part" '($1 ~ /^(g[0-9]+-)?m[0-9]+-review-r[0-9]+-d[0-2]$/ && $2 ~ ("^\\[mission\\] part=" p " ") && $2 ~ /phase=review/) || ($1 ~ /^(g[0-9]+-)?m[0-9]+-void-r/ && $2 ~ ("^\\[mission\\] VOID part=" p " "))' \
                 /tmp/mission-resume.$$ | tail -1 || true)
-# round positioning — PART-SCOPED to N: last round-activity of ANY phase OR a VOID for this part:
-last_round=$(grep -E "\[mission\] (part=${cur_part} |VOID part=${cur_part} )" \
+# round positioning — PART-SCOPED to N: last round-activity of ANY phase (any m<N>-<phase>-r<K>-d<d>)
+# OR a VOID for this part:
+last_round=$(awk -F'\t' -v p="$cur_part" '($1 ~ /^(g[0-9]+-)?m[0-9]+-(research|plan|implement|review|fix)-r[0-9]+-d[0-2]$/ && $2 ~ ("^\\[mission\\] part=" p " ")) || ($1 ~ /^(g[0-9]+-)?m[0-9]+-void-r/ && $2 ~ ("^\\[mission\\] VOID part=" p " "))' \
                 /tmp/mission-resume.$$ | tail -1 || true)
-# progress/lifecycle positioning — GLOBAL (must include PART-RETIRED so "PART-DONE present but
-# PART-RETIRED absent ⇒ re-attempt retirement" is decidable; and VOID for the decision table):
-last_progress=$(grep -E '\[mission\] (PART-START|PART-DONE|PART-RETIRED|test-trust|VOID)' \
+# progress/lifecycle positioning — GLOBAL: PART-START|PART-DONE|PART-RETIRED (idtag m<N>-part-*),
+# test-trust (idtag m<N>-test-trust), VOID (idtag m<N>-void-r...). Must include PART-RETIRED (so
+# "PART-DONE present but PART-RETIRED absent ⇒ re-attempt retirement" is decidable) + VOID:
+last_progress=$(awk -F'\t' '($1 ~ /^(g[0-9]+-)?m[0-9]+-part-(start|done|retired)$/ && $2 ~ /^\[mission\] (PART-START|PART-DONE|PART-RETIRED) part=/) || ($1 ~ /^(g[0-9]+-)?m[0-9]+-test-trust$/ && $2 ~ /^\[mission\] /) || ($1 ~ /^(g[0-9]+-)?m[0-9]+-void-r/ && $2 ~ /^\[mission\] VOID part=/)' \
                 /tmp/mission-resume.$$ | tail -1 || true)
 ```
 **Every grep above whose no-match is an expected/valid outcome appends `|| true`** so that under
@@ -1209,11 +1234,11 @@ phase line must not drive the `2 − D` math).
 
   | Last round/progress line for the current part | Resume action |
   |---|---|
-  | **`await kind=human ready=0`** (AWAIT ROWS FIRST — read via the `await-state` verb, which emits `ready=<0\|1>`) | **STOP the scheduled continuation** and wait for a real user turn: a human hand-back is outstanding (do NOT reschedule a wake, do NOT auto-advance). The returning user-turn CLOSES it (see below), after which `await-state` reports `none` for it. |
-  | **`await kind=job ready=0` and a tracked `run_in_background` job is still pending** | the JOB owns continuation — collect nothing yet; its completion is the wake. Do not replay a lane. |
+  | **`await kind=human ready=0` AND this turn is a REAL USER TURN answering it** (D3 — checked FIRST, before the STOP row below; only a genuine user turn, never a wake tick) | ENTER §12.1 and CLOSE it UNDER the tick lock (step 4), NOT before entering: once the lock is held, FIRST write `mission-write.sh await … kind=human op=<same-op> part=<same> phase=<same> round=<same> attempt=<same> need=1 got=1` (a human barrier has no separate bank — `got==need` IS its resolution, C6; reuse the EXACT op/part/phase/round/attempt/need from the `await-state` token so the close idtag/line matches, D6), THEN RESOLVE the pending decision (`resolve` verb). Order got=1 BEFORE resolve (R7-3): a crash then leaves a RESOLVED barrier + a cosmetic stale pd line (benign), NOT a removed pd + a ready=0 park. This close IS the wake's ONE transition (R7-11): go to step 7 and RESCHEDULE — do NOT drive a further transition this turn. Closing under the lock stops a queued wake from observing the resolution before this turn holds the lock (R6 — no double-drive). |
+  | **`await kind=human ready=0`** on a WAKE tick (AWAIT ROWS FIRST — read via `await-state`, which emits `ready=<0\|1>`) | **STOP the scheduled continuation** and wait for a real user turn: a human hand-back is outstanding (do NOT reschedule a wake, do NOT auto-advance). |
+  | **`await kind=job ready=0` and a tracked `run_in_background` job is still pending** | collect nothing yet, do not replay a lane — the job's completion is the FAST wake. BUT this turn STILL schedules a fallback heartbeat (§12.1 step 7): a lost completion wake must self-heal — a scheduled wake is the ONLY continuation owner (D1). |
   | **`await kind=job ready=0` and NO tracked job is pending** (the lost-wake safety net) | replay ONLY the missing lane (its `attempt`, its round — the token carries `attempt=A`) and set its got bit on return; OR, if the lane has genuinely timed out, record a timeout/`FAIL` and open `attempt` A+1. Never re-run an already-persisted lane. |
   | **`await kind=job ready=1`** (join-ready — `(got&need)==need`) | reconcile the persisted lane results and bank the single normal successor (the `phase=review … findings=<COUNT>` or VOID line for this round), which SUPERSEDES the AWAIT, then proceed. |
-  | **returning USER turn while an `await kind=human ready=0` is outstanding** (NOT a wake — only a real user turn does this) | RESOLVE the pending decision (`resolve` verb) AND close the human await with `mission-write.sh await … kind=human … got=<need>` (a human barrier has no separate bank event — `got==need` IS its resolution, C6), THEN re-enter §12.1 to continue. |
   | **current part's latest progress line is `PART-DONE` or `PART-RETIRED`** (HIGHEST PRIORITY — both are in `last_progress`) | the part is **COMPLETE** → advance to the next part (first re-attempt retirement if `PART-DONE` present but `PART-RETIRED` absent, per the PART-DONE rule below; then await/emit the next `PART-START`). Do **NOT** consult `last_round`/`last_review` for a completed part — a stale prior `phase=review dry=2` line must NOT re-enter already-converged review. |
   | **current part's latest progress line is `PART-START` and NO phase round has been logged yet** (the only line `last_round` carries for this part is the `PART-START` line itself — it has NO `phase=<…> round=<…>` token — and `last_review` is empty: no `phase=` round and no `VOID` banked for this part) | the part has been STARTED but no phase round exists → **BEGIN the part at its first phase, `research`**, then proceed through the part's phase sequence (research → plan → implement → review/fix per Section 5). This is the fresh-part entry state; do NOT consult `last_review` (no review round banked). |
   | `phase=fix` (a fix was in flight) | FINISH the in-flight fix to completion against the working tree, THEN re-run the barrier as the NEXT round K+1. Do not assume the fix finished. |
@@ -1314,8 +1339,12 @@ re-enter), and never change the active/inactive decision.
 **Every STOP-LOUD path below is a WAKE stop condition (§12.3): the wake RETURNS WITHOUT rescheduling** —
 release the tick lock, surface, and stop. A STOP-LOUD must NEVER schedule the next self-wake (that would
 loop a wedged mission forever). For a **mandatory human decision** (the §9 credential / destructive /
-external-side-effect guard, or any genuinely blocking decision), the stop sequence is: write the existing
-`pending` PENDING decision → open `await kind=human got=0` (the `await` verb) → then stop. The outstanding
+external-side-effect guard, or any genuinely blocking decision), the stop sequence is: call `pending
+<slug> "<q>"` (the verb MINTS + ECHOES a monotonic `pd:<seq>-<slug>`; capture it) → open the FULL-FIELD
+human AWAIT (the `await` verb with the COMPLETE field set per §12.3 —
+`part/phase/round/kind=human/op=<seq>-<slug>/attempt=1/need=1/got=0` (op = the echoed pd's UNIQUE seq —
+R6/R7-1); an abbreviated `kind=human got=0` alone is REFUSED by validation and would leave no durable stop
+marker) → then stop. The outstanding
 `AWAIT kind=human` keeps the §8 rows parked until a real user turn resolves it (an ordinary away-policy
 `pending` is NOT blocking and does not stop the loop — §9).
 
@@ -1386,9 +1415,12 @@ self-wake loop stops on purpose: `timing-close` → `MISSION-CLEARED` → `archi
 ## 12. The mission wake routine (self-wake — the continuation-owner mechanism)
 
 This section is the operational body of the **CONTINUATION-OWNER INVARIANT** in the contract core: a
-`/mission` turn NEVER yields naked. When a turn has work still owed but no tracked `run_in_background`
-job pending and no genuine human-handback point (§9), it **schedules its own next wake as its LAST
-action** and then returns. **EVERY wake source funnels through the ONE routine below** — a tracked
+`/mission` turn NEVER yields naked. When a turn has work still owed and is not at a genuine human-handback
+/ stop point (§9/§12.3), it **schedules its own next wake as its LAST continuation-deciding call (only the
+tick-lock release may follow)** and then returns — ALWAYS,
+even when a tracked `run_in_background` job is pending (D1: the completion is the fast wake, the scheduled
+heartbeat is the backstop that self-heals a lost completion wake; a scheduled wake is the ONLY continuation
+owner). **EVERY wake source funnels through the ONE routine below** — a tracked
 background-job completion, a `ScheduleWakeup` tick, AND a post-compact resume — and each advances the
 mission by **exactly ONE transition**. What makes 2-3 queued/racing wakes safe is a LAYERED guard, in
 priority order: (1) the `mkdir` tick-lock SERIALIZES wakes — only the holder acts; a wake that finds the
@@ -1415,12 +1447,33 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
      # held: stat its mtime. FRESH (<15m) -> another turn owns it: reschedule 60s + RETURN, and do NOT
      #   touch the lock (you never acquired it). STALE (>15m) -> the owning tick crashed: rm -rf + retry
      #   the mkdir ONCE (set i_own_lock=1 only if the retry mkdir SUCCEEDS).
+     # D5 — if the retry mkdir ALSO FAILS (another wake won the race in between), i_own_lock STAYS 0:
+     #   reschedule 60s + RETURN. NEVER fall through into step 2+ with i_own_lock=0 (that is two owners
+     #   driving the same tick). Only an acquired lock proceeds.
+     # R4 — a non-owner reschedule (FRESH-held OR D5 retry-lost) holds NO lock, so it cannot write a
+     #   lock-held fallback: if that ScheduleWakeup itself FAILS, retry ONCE, then STOP-LOUD (surface it).
+     #   The lock-owner is presumably still driving its own wake, but a doubly-failed schedule is a real
+     #   degradation that must never be a silent naked yield.
      # SLEEP-SKEW GRACE: if THIS wake is itself >10m later than its scheduled fire (laptop slept),
      #   give the held lock ONE more 60s grace wake before treating it as stale — a suspended owner's
      #   lock must not be cleared out from under it.
      :
    fi
+   # HARD GUARD (pseudocode): if you did not acquire the lock, you have already rescheduled above —
+   #   [ "$i_own_lock" = 1 ] || { <return from the wake now>; }   # NEVER run steps 2-7 without the lock
    ```
+   D14 (ABA, bounded — NOT fully proof): the stale-clear+reacquire is not ABA-proof (two wakes can both
+   judge the lock stale in the same window). The layered guard (cursor recompute at step 5 + the AWAIT
+   marker + deterministic idtags) dedupes any double LOG transition (idtag-keyed appends are idempotent)
+   and catches the common interleaving (whoever writes first moves the cursor; the other re-enters). It
+   does NOT by itself prevent a double EXTERNAL dispatch (spawning a review panel, a worktree mutation) in
+   the rare window where BOTH wakes recompute the cursor before EITHER writes — so before any non-idempotent
+   dispatch, step 6 RE-READS `await-state` and skips the launch if that lane's bit is already set or a
+   tracked job is pending, and every launched lane's usable result is persisted to DURABLE NOTES BEFORE
+   its got bit is set, so a duplicate lane re-derives rather than corrupts. The re-read + the tick lock
+   keep the window rare but do NOT fully close it: a run-id / lease that would make a duplicate EXTERNAL
+   dispatch reliably detectable is NOT yet wired into the launch path — it is a documented deferred
+   follow-up (do not claim it as present).
    **Release the lock on every exit path THAT ACQUIRED IT (`i_own_lock=1`)** — the stop conditions, the
    cursor-changed re-enter, and the normal end. A turn that found the lock FRESH-held (and rescheduled
    without acquiring) must **NOT** release it — deleting a lock you do not own hands two turns the same
@@ -1432,61 +1485,86 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    ```bash
    cursor_before=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh cursor-hash "$sid" "$root")
    ```
-   If it is the literal `corrupt` (a refused gen-boundary read — the rollover/corruption window), take the
-   §10 corrupt-bridge STOP-LOUD: release the lock, do NOT reschedule, surface it. `corrupt` is NEVER a
-   valid cursor — never treat it as "unchanged".
+   If it is the literal `corrupt` (a refused gen-boundary read — the rollover/corruption window) OR EMPTY
+   (C1 — a missing sha tool / unreadable state also fails, and two empties would falsely compare equal),
+   take the §10 corrupt-bridge STOP-LOUD: release the lock, do NOT reschedule, surface it. Neither
+   `corrupt` nor empty is ever a valid cursor — never treat it as "unchanged".
 4. **Apply the §8/§H decision table** (AWAIT rows FIRST, then the round-ambiguity grid) plus the
    `await-state` verb → select exactly **ONE** next transition. `await-state` returns bare `none`,
-   `corrupt`, or `await kind=… op=… part=<N> round=<K> attempt=<A> need=<M> got=<G> ready=<0|1>
-   started_at=<E>`:
+   `corrupt`, or `await kind=… op=… part=<N> round=<K> attempt=<A> phase=<P> need=<M> got=<G>
+   ready=<0|1> started_at=<E>` (field order matches the lib's emit; `phase` is reused on the human close):
    ```bash
    aw=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await-state "$sid" "$root")
    ```
    `corrupt` → §10 corrupt-bridge STOP-LOUD (release lock, do NOT reschedule).
-   `await kind=human ready=0` → STOP the scheduled continuation (a human hand-back is owed; only a real
-   user turn closes it — §8).
-   `await kind=job ready=0` + a tracked job pending → the job owns continuation (do nothing this tick).
-   `await kind=job ready=0` + NO tracked job → replay ONLY the missing lane (its `attempt=A`) or record a
-   timeout/`FAIL` and open attempt A+1. `await kind=job ready=1` → reconcile + bank the single successor.
+   `await kind=human ready=0` → on a WAKE tick (no user answer): STOP the scheduled continuation (a human
+   hand-back is owed). On a REAL USER TURN answering it (D3): CLOSE it HERE, UNDER this tick lock — FIRST
+   append the SAME barrier with `got=1` (reuse the EXACT op/part/phase/round/attempt/need from the token,
+   D6), THEN `resolve` the pd whose UNIQUE `<seq>-<slug>` matches the token's `op`. Order got=1 BEFORE
+   resolve (R7-3): a crash in the window then leaves a RESOLVED barrier + a cosmetic stale pd line (benign),
+   NOT a removed pd + a ready=0 park. This close IS this wake's ONE transition (R7-11): go straight to step
+   7 and RESCHEDULE — do NOT re-enter step 5 to drive a FURTHER transition this turn; the scheduled wake
+   drives the now-open post-approval step. Closing under the lock (NOT before entering §12.1) stops a queued
+   wake from racing the resolution (R6 — no double-drive).
+   `await kind=job ready=0` + a tracked job pending → do NOT replay a lane this tick (the completion is
+   the fast wake), but STILL fall through to step 7 and schedule a fallback heartbeat (D1).
+   `await kind=job ready=0` + NO tracked job → replay ONLY the missing lane, but ONLY once the barrier has
+   aged past a lane timeout (started_at older than ~the lane's max runtime); a cold tick cannot tell a
+   still-running job from a lost wake, so a fresh barrier just reschedules and waits (D11). On a genuine
+   timeout, record a timeout/`FAIL` and open attempt A+1 (its `attempt=A` is in the token). `await
+   kind=job ready=1` → reconcile + bank the single successor.
 5. **Immediately before dispatching/banking, RECOMPUTE the cursor.** If it changed, another wake already
    advanced the mission — DISCARD this decision, but do NOT yield: the mission still needs a continuation
    owner. Release the lock and **RE-ENTER the routine from step 1** (re-acquire, re-read the now-advanced
-   state, pick the NEXT transition). This is a normal in-turn loop, not a return. Bounded self-heal: if the
-   cursor is STILL changing after a couple of re-reads (another wake is actively driving), skip banking and
-   go straight to step 7 to schedule a short heartbeat, then RETURN — never a bare naked return:
+   state, pick the NEXT transition). This is a normal in-turn loop, not a return. BOUNDED (D7): keep a
+   `reenter_count` for THIS wake (it resets per wake, NEVER per re-enter). Allow at most **2** re-enters;
+   on the 3rd cursor-change (another wake is actively driving), skip banking and go straight to step 7 to
+   schedule a short heartbeat, then RETURN — never a bare naked return. An EMPTY or `corrupt` cursor is a
+   fail, never "unchanged":
    ```bash
    cursor_now=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh cursor-hash "$sid" "$root")
    # pseudocode — this block runs inside the wake routine, not a shell function:
-   #   if [ "$cursor_now" = corrupt ];        then release_lock; STOP-LOUD (§10); fi   # never reschedule
-   #   if [ "$cursor_now" != "$cursor_before" ]; then release_lock; goto step 1 (bounded); fi
+   #   if [ -z "$cursor_now" ] || [ "$cursor_now" = corrupt ]; then release_lock; STOP-LOUD (§10); fi  # C1: empty is NOT "unchanged"
+   #   if [ "$cursor_now" != "$cursor_before" ]; then reenter_count=$((reenter_count+1))
+   #        if [ "$reenter_count" -le 2 ]; then release_lock; goto step 1;   # re-acquire in step 1
+   #        else goto step 7 STILL HOLDING the lock (step 7 schedules the heartbeat + releases — do NOT
+   #             release here, or the schedule-failure fallback write would be lock-free); fi
+   #   fi
    ```
 6. **Bank / dispatch the transition** using the EXISTING deterministic idtags (`ok` = appended or an
    idempotent no-op; `COLLISION` → re-read and reconcile, never assume the line banked). A bank/dispatch
    write that returns `FAILED` is load-bearing control state (§intro): retry, then §10 STOP-LOUD if it
    still fails — do NOT proceed to step 7 as if it banked.
-7. **Schedule the next wake UNLESS a stop condition holds** (§12.3). Release the tick lock FIRST, then
-   call `ScheduleWakeup` as the LAST action:
+7. **Schedule the next wake UNLESS a stop condition holds** (§12.3). D10 — ORDER matters: call
+   `ScheduleWakeup` while STILL HOLDING the lock, then release only after you know the outcome (so a
+   schedule failure`s durable fallback write is never done lock-free). Call it with:
    - `delaySeconds`: a **~60s floor** when a transition is actively in flight; a **longer fallback
      heartbeat** (up to the 3600s ceiling) while a tracked `run_in_background` job is pending — do NOT
      poll a 40-minute job every 60s; the completion wake is primary, the heartbeat is just the backstop
      if that wake is ever lost. The tool **clamps `delaySeconds` to [60, 3600]s**.
    - `prompt`: the SAME self-contained tick body (§12.2), verbatim.
    - `reason`: e.g. `"mission <sid> tick"`.
-   Then **RETURN immediately** — nothing else this turn.
+   - **On SUCCESS** → release the lock and **RETURN immediately** (nothing else this turn).
+   - **On FAILURE** (C12/D10) → retry ONCE; if it still fails, do NOT yield naked: while STILL holding the
+     lock, write the durable human-handback fallback (`pending` + `await kind=human …` per §12.3), THEN
+     release the lock and STOP LOUD so the user sees it. A failed schedule is never a silent stop.
 
 ### 12.2 The self-contained tick prompt (cold-start-safe)
 
 `ScheduleWakeup` only fires **while Claude Code is OPEN**; state survival across compaction/close is via
 the on-disk log + this self-contained prompt, NOT via wake persistence — so the prompt must carry
 everything a cold start needs and must re-derive ALL position from the §8 resume-read. Substitute these
-FOUR absolute values (all single-line — `<SID>` is the sanitized session id, `<ROOT>` the canonical
-mission root, `<MFILE>` the mission artifact, `<PLAYBOOK>` this mission.md, `<MW>` the mission-write.sh
-CLI; if any contains a newline the substitution is malformed — abort and STOP-LOUD rather than emit a
-multi-line prompt that an attacker path could inject into). Pass this body verbatim as the `prompt`:
+FIVE absolute values — `<SID>` is the sanitized session id, `<ROOT>` the canonical mission root,
+`<MFILE>` the mission artifact, `<PLAYBOOK>` this mission.md, `<MW>` the mission-write.sh CLI. R4 —
+BEFORE substituting, verify NONE contains a newline OR any of `"` `` ` `` `$` `\`: the cold prompt embeds
+`<ROOT>` inside a double-quoted `mkdir "<ROOT>/…"`, so an unescaped quote / `$()` / backtick would break
+the quoting and inject shell expansion. If any value contains a newline or such a metacharacter the
+substitution is malformed — abort and STOP-LOUD rather than emit a prompt an attacker path could inject
+into. Pass this body verbatim as the `prompt`:
 
 ```
 You are resuming an autonomous /mission tick for sid <SID> at root <ROOT>.
-Files: mission artifact <MFILE> (PLAN + LOG zones only) | bridge CLI <MW> | full playbook <PLAYBOOK>.
+Files: mission artifact <MFILE> (4 zones: PLAN + DURABLE NOTES + PLAN CHALLENGES + PENDING DECISIONS; the LOG is the separate .log sidecar) | bridge CLI <MW> | full playbook <PLAYBOOK>.
 You have NO memory of prior ticks — COLD START. Read ALL state from the log/bridge; carry nothing.
 Run the §12.1 mission wake routine EXACTLY (use <MW> for every bridge verb: cursor-hash/await-state/log):
   1. mkdir "<ROOT>/.mission-backups/tick.<SID>.lock" (afk lock: fresh<15m -> reschedule 60s + return WITHOUT
@@ -1499,10 +1577,12 @@ Run the §12.1 mission wake routine EXACTLY (use <MW> for every bridge verb: cur
   5. Recompute cursor-hash; if changed, DISCARD + RE-ENTER at step 1 (never a bare return); if still
      churning after a couple re-reads, go to step 7 and schedule a short heartbeat.
   6. Bank/dispatch with the existing idtags (FAILED -> retry, then §10 STOP-LOUD; never proceed).
-  7. If a §12.3 stop condition holds, release the lock and RETURN WITHOUT rescheduling. Else release the
-     lock, then ScheduleWakeup(delaySeconds in [60,3600] — 60s floor / long heartbeat even while a tracked
-     job is pending, prompt = THIS SAME body, reason) as the LAST action. A FAILED schedule -> retry once,
-     then STOP-LOUD via pending + AWAIT kind=human; never yield naked. Then RETURN.
+  7. If a §12.3 stop condition holds, release the lock and RETURN WITHOUT rescheduling. Else call
+     ScheduleWakeup WHILE STILL HOLDING the lock (delaySeconds in [60,3600] — 60s floor / long heartbeat
+     even while a tracked job is pending, prompt = THIS SAME body, reason); it is the LAST continuation-
+     deciding call (only the tick-lock release may follow), and the lock release FOLLOWS its outcome. On SUCCESS release the lock + RETURN. On FAILURE retry once; if
+     it still fails, write the pending + AWAIT kind=human fallback UNDER the lock, THEN release + STOP-LOUD;
+     never yield naked. Then RETURN.
 Read the PLAYBOOK <PLAYBOOK> (its CONTRACT CORE + §5/§8/§10/§11/§12) for full detail before acting.
 ```
 
@@ -1517,11 +1597,31 @@ A wake **RETURNS WITHOUT rescheduling** — releasing the tick lock, then stoppi
 - **A named STOP-LOUD**: 5 FAILs for the same part+phase, `panel-unavailable-3x` the moment it is
   logged, `void-count` returning `-1`, or a corrupt/unreadable bridge (`FAILED rc=2`). None reschedule.
 - **A mandatory human decision** (credential / destructive / external-side-effect skill, or any
-  genuinely blocking decision): write the EXISTING `pending` PENDING decision, THEN open
-  `await kind=human got=0` (via the `await` verb), THEN stop — the outstanding `AWAIT kind=human`
-  makes the §8 rows keep the loop stopped until a real user turn resolves it. **Closing it (C6):** the
-  first turn AFTER the user answers `resolve`s the pending AND writes `await … kind=human … got=<need>`
-  (a human barrier has no separate bank — `got==need` IS its close), then re-enters §12.1 to continue.
+  genuinely blocking decision): call `pending <slug> "<question>"` — the verb MINTS a monotonic
+  `pd:<seq>-<slug>` id (seq machine-assigned + monotonic + NEVER reused, even across `resolve`; the 1st
+  decision is `pd:1-approve`, the 2nd `pd:2-approve`, and so on) and ECHOES it on stdout (`pending ok
+  id=pd:<seq>-<slug>`). CAPTURE the echoed id — do NOT hand-pick the seq (any agent-supplied seq is
+  ignored). THEN open the human AWAIT with the FULL required field set (D4 — `mission_await_append`
+  validates EVERY field, so an abbreviated `await kind=human got=0` is REFUSED and would leave no durable
+  stop marker → a naked yield). **R6/R7-1 — the AWAIT `op` MUST equal the echoed pd's UNIQUE
+  `<seq>-<slug>`** (the `pd:` id with the `pd:` prefix removed), NOT the bare `<slug>`: without the minted
+  seq, two same-slug decisions would share `(part,round,attempt=1,kind,op)` and the 2nd `got=0` opener
+  would inherit the 1st's already-resolved `got=1` — silently skipping the mandatory stop (unapproved
+  autonomous work). The minted seq guarantees each pd a DISTINCT op → DISTINCT idtag → the reopener LANDS;
+  `mission_await_append` ALSO ENFORCES the numeric-seq prefix (a human op lacking a leading `<digits>-` is
+  REFUSED at the mechanism):
+  `mission-write.sh await <sid> <root> "part=<current part> phase=decision round=<current round, or 0 if not in a review> kind=human op=<seq>-<slug> attempt=1 need=1 got=0"`,
+  THEN stop — the outstanding `await kind=human ready=0` keeps the §8 rows parked until a real user turn.
+  **Closing it (C6, D6):** the first turn AFTER the user answers ENTERS §12.1 and closes the barrier
+  UNDER its tick lock (step 4) — NOT before entering (R6: closing outside the lock lets a queued wake race
+  the resolution → double-drive). Under the lock, FIRST append the SAME barrier with `got=1` (reuse the
+  exact op/part/phase/round/attempt/need from the token), THEN `resolve` the pd whose `<seq>-<slug>` id
+  matches the `await-state` token's `op` (an EXACT unique match — the seq removes the old slug-repeat
+  ambiguity). Order got=1 BEFORE resolve (R7-3): a crash then leaves a RESOLVED barrier + a cosmetic stale
+  pd line (benign), NOT a removed pd + a ready=0 park. R4 — the append is a DISTINCT record (the idtag ends
+  `-g<GOT>`, so the got=1 line does NOT overwrite the got=0 opener); `await-state` reads the newest line's
+  got so `got==need=1` reads RESOLVED — that IS the close. This close IS the wake's ONE transition (R7-11):
+  go to step 7 and RESCHEDULE — do NOT drive a further transition this turn.
 - **`await kind=human ready=0`** already outstanding (a prior turn parked on the user).
 
 An **ordinary away-policy `pending`** (a non-blocking batched question logged under §9's away default) is
@@ -1532,7 +1632,11 @@ MANDATORY human decision (above) parks the loop with an `AWAIT kind=human`.
 
 Post-compact resume is **just another wake source** into §12.1 — not a second state machine. Keep the
 existing `(sid,nonce)` post-compact resume marker, then enter the SAME routine (tick lock → §8 read →
-cursor → one transition). If the SessionStart primer AND a restored scheduled wake both fire, the FIRST
-takes the tick lock and advances; the SECOND recomputes the cursor (step 5), sees it changed, and is a
-no-op. **Intent precedence on resume: the PLAN zone and the LOG outrank the handoff chain's `Next
-Action`** (§C / §8) — a stale handoff hint never overrides the durable on-disk position.
+cursor → one transition). If the SessionStart primer AND a restored scheduled wake both fire, the
+**tick lock serializes them** (D8 — the real dedup): the FIRST takes the lock and advances; the SECOND
+finds the lock fresh-held and reschedules WITHOUT touching state (or, if it acquires only after the first
+released, it re-reads the now-advanced state and simply picks the NEXT step — the deterministic idtags make
+any re-bank an idempotent no-op). It does NOT rely on the second wake "seeing the cursor change at step 5"
+(a wake that recomputes its baseline after the winner's append would read it unchanged). **Intent
+precedence on resume: the PLAN zone and the LOG outrank the handoff chain's `Next Action`** (§C / §8) —
+a stale handoff hint never overrides the durable on-disk position.

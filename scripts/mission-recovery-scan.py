@@ -93,7 +93,15 @@ def read_manifest(sid):
 
 
 def await_state(sid, root):
-    """Call the READ-ONLY mission-write.sh await-state verb. Returns its bare token."""
+    """Call the READ-ONLY mission-write.sh await-state verb. Returns its LAST-line token.
+
+    await-state emits its meaningful token on the LAST line: a normal `await ...` line,
+    the literal `none` (genuinely no live barrier), or a failure token (`corrupt` when a
+    gen-sliced read is refused). Anything that is NOT a clean `await ...`/`none` token -
+    an empty read, a wrapper error, an unavailable bridge, an unknown token - is an
+    UNREADABLE state that classify_await() routes to CORRUPT (fail-closed): a broken
+    bridge read must never be mistaken for a healthy no-barrier mission (H1/F1).
+    """
     if not os.path.exists(MISSION_WRITE):
         return "(await-state unavailable)"
     try:
@@ -105,8 +113,45 @@ def await_state(sid, root):
         )
     except (OSError, subprocess.SubprocessError):
         return "(await-state error)"
-    out = (r.stdout or "").strip()
-    return out if out else "none"
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    # Empty output is NOT "none" - a bare `none` is emitted explicitly by the bridge; an EMPTY read
+    # is an unreadable state (F1). Surface it as a distinct token so classify_await() buckets it CORRUPT.
+    return lines[-1] if lines else "(await-state empty)"
+
+
+# R7-6 — the healthy `await …` grammar mission_await_state emits, matched EXACTLY (end-anchored, every
+# field in the lib's emitted order: kind op part round attempt phase need got ready started_at). The old
+# loose `^await kind=(job|human) .*need=<n>.*got=<n>` accepted `await kind=job garbage need=3 got=0
+# trailing` and `got=0xyz` (a `.*` between fields swallows garbage; no end anchor). Full-match is
+# fail-closed: only a fully well-formed token is "await"; anything else (garbage, extra/missing fields,
+# a non-numeric value) buckets CORRUPT (none stays none, handled separately).
+_AWAIT_HEALTHY_RE = re.compile(
+    r"^await kind=(?:job|human) op=[a-z0-9-]+ part=[0-9]+ round=[0-9]+ attempt=[0-9]+"
+    r" phase=[a-z]+ need=[0-9]+ got=[0-9]+ ready=[01] started_at=[0-9]+$"
+)
+
+
+def classify_await(token):
+    """Fail-closed 3-way classification of an await-state token (F1).
+
+    Returns one of:
+      * "await"   - a real `await ...` line: there IS an outstanding barrier.
+      * "none"    - the EXACT literal `none`: genuinely no barrier.
+      * "corrupt" - ANYTHING ELSE (empty, `corrupt`, `(await-state error)`,
+                    `(await-state unavailable)`, an unknown token): an UNREADABLE/CORRUPT
+                    state that must be surfaced LOUDLY and never treated as healthy-idle.
+    """
+    # R6 (round-5) — EXACT-grammar match, not a loose startswith(). `mission_await_state` emits a healthy
+    # barrier as `await kind=(job|human) …need=<n>…got=<n>…` (kind is ALWAYS the first field). The old
+    # `token.startswith("await")` also accepted malformed/unknown tokens such as `await-garbage`,
+    # `await nonsense`, `awaitgarbage`, and the surfaced-unreadable markers `(await-state error)` /
+    # `await-state unavailable`, mis-classifying an UNREADABLE state as a healthy outstanding barrier and
+    # emitting bogus resume instructions — the exact fail-OPEN this classifier was added to prevent.
+    if token == "none":
+        return "none"
+    if _AWAIT_HEALTHY_RE.match(token):
+        return "await"
+    return "corrupt"
 
 
 def humanize_gap(seconds):
@@ -167,7 +212,9 @@ def main():
         outstanding = await_state(sid, mission_root)
         # I14 - parked = an outstanding AWAIT kind=human (the ONLY blocking signal). An ordinary
         # PENDING DECISIONS zone is the non-blocking away-policy case and must NOT read as parked.
-        parked = outstanding.startswith("await") and "kind=human" in outstanding
+        # R6 - route through classify_await (the exact-grammar gate) so a malformed token embedding
+        # `kind=human` cannot forge a parked reading; a healthy human barrier is `await …kind=human…`.
+        parked = classify_await(outstanding) == "await" and "kind=human" in outstanding
 
         rows.append(
             {
@@ -192,7 +239,17 @@ def main():
         print(header)
         print("-" * len(header))
         for r in rows:
-            aw = "yes" if r["await"].startswith("await") else "no"
+            # H1/F1 - an UNREADABLE await-state (empty / `corrupt` gen-boundary read / `(await-state
+            # error)` / `(await-state unavailable)` / any unknown token) is the WORST state and must be
+            # surfaced LOUD as CORRUPT, never bucketed as await=no (which would render a broken bridge as
+            # healthy-idle and recommend resuming blindly). Only the EXACT `none` reads as no-barrier.
+            cls = classify_await(r["await"])
+            if cls == "corrupt":
+                aw = "CORRUPT"
+            elif cls == "await":
+                aw = "yes"
+            else:
+                aw = "no"
             nxt = r["next"]
             if len(nxt) > 70:
                 nxt = nxt[:67] + "..."
@@ -204,15 +261,24 @@ def main():
         print("  last_heartbeat_at is /pre-compact-updated, so a long gap is a signal to")
         print("  LOOK, not a verdict. 'parked'=yes is authoritative: an AWAIT kind=human is")
         print("  outstanding (a real blocking hand-back). 'await'=yes means ANY AWAIT lane")
-        print("  (job or human) is still outstanding.\n")
-        print("PINNED manual resume commands (NOT run by this script; each clones the")
-        print("frozen state into a NEW sid):\n")
+        print("  (job or human) is still outstanding. 'await'=CORRUPT means the bridge read was")
+        print("  UNREADABLE (empty / corrupt gen-boundary read / error / unavailable / unknown token)")
+        print("  - inspect that mission FIRST, do NOT resume blindly.\n")
+        print("Manual resume - OPERATOR INSTRUCTIONS (NOT a runnable shell line; this script runs nothing).")
+        print("`/mission resume` is a Claude Code slash command with an interactive picker - it cannot be")
+        print("prefixed with `cd … &&` nor take a bare <sid> argument on a shell line:\n")
         for r in rows:
             print(f"  # {r['sid']}  ({r['status']}, dead-gap {r['gap']})")
-            # S4 - shell-quote the path + sid: a mission root with a space or metachar would
-            # otherwise break (or, if pasted, execute) the printed command.
-            print(f"  cd {shlex.quote(r['cwd'])} && /mission resume {shlex.quote(r['sid'])}")
-            if r["await"].startswith("await"):
+            cls = classify_await(r["await"])
+            if cls == "corrupt":
+                # F1 - ANY unreadable token (empty / corrupt / error / unavailable / unknown), not just
+                # the literal `corrupt`, is a fail-closed refusal: emit NO resume instructions for it.
+                print(f"    !! CORRUPT/UNREADABLE BRIDGE - await-state returned {r['await']!r}. Do NOT resume blindly.")
+                print(f"    !! Needs manual inspection: {shlex.quote(r['cwd'])} (log + MISSION file); see §10 corrupt-bridge.")
+                continue
+            # H2 - reframe as instructions. S4 still shell-quotes the path for safe copy/paste of the cd.
+            print(f"    open a Claude Code session in {shlex.quote(r['cwd'])}, then run  /mission resume  and pick sid {r['sid']}")
+            if cls == "await":
                 print(f"    outstanding: {r['await']}")
         print()
 

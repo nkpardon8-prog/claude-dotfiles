@@ -53,7 +53,13 @@ INVOKE_TIMEOUT="${GODREVIEW_INVOKE_TIMEOUT_SECS:-3300}"
 case "$INVOKE_TIMEOUT" in
   ''|*[!0-9]*) echo "[warn] GODREVIEW_INVOKE_TIMEOUT_SECS is not a plain integer; using default 3300" >&2; INVOKE_TIMEOUT=3300 ;;
 esac
-# now digits-only + non-empty; a 0 or an absurd ceiling collapses to the default.
+# F2 (round-2): digits-only is NOT enough. `08`/`09` are invalid OCTAL and would ERROR under `$(( ))`
+# (aborting before finish() writes a status), and an overlong digit string can overflow. Reject an
+# overlong value by STRING length BEFORE any arithmetic, then force base-10 so leading zeros never
+# read as octal. Only then is the numeric range test safe.
+if [ "${#INVOKE_TIMEOUT}" -gt 6 ]; then echo "[warn] GODREVIEW_INVOKE_TIMEOUT_SECS too long; using default 3300" >&2; INVOKE_TIMEOUT=3300; fi
+INVOKE_TIMEOUT=$((10#$INVOKE_TIMEOUT))
+# now a plain base-10 int <= 999999; a 0 or an absurd ceiling collapses to the default.
 if [ "$INVOKE_TIMEOUT" -lt 1 ] || [ "$INVOKE_TIMEOUT" -gt 21600 ]; then INVOKE_TIMEOUT=3300; fi
 
 # Partial output accumulates here; promoted to OUTFILE atomically at the end. Per-PID (I4) so two
@@ -66,16 +72,23 @@ WORK_OUT="${OUTFILE}.partial.$$"
 # system gtimeout/timeout; if none is available, fail CLOSED (guarded below, once finish() exists).
 PT_LIB="$HOME/.claude-dotfiles/scripts/lib/portable-timeout.sh"
 PT_OK=1
-if [ -f "$PT_LIB" ]; then
+# F3 (round-2): a PRESENT-but-broken/unreadable helper must NOT abort the wrapper under `set -e` before
+# finish() exists (that leaves the FIFO with no output/status, looking never-launched). Source it
+# defensively (`|| true`), then VERIFY pt_run was actually defined; if not, fall back to system
+# gtimeout/timeout, else fail CLOSED. C11 — never degrade to an unbounded runner.
+if [ -f "$PT_LIB" ] && [ -r "$PT_LIB" ]; then
   # shellcheck disable=SC1090
-  . "$PT_LIB"
-elif command -v gtimeout >/dev/null 2>&1; then
-  pt_run() { gtimeout --kill-after=2 "$@"; }
-elif command -v timeout >/dev/null 2>&1; then
-  pt_run() { timeout --kill-after=2 "$@"; }
-else
-  PT_OK=0
-  pt_run() { return 125; }   # never reached (guarded below); a defined stub keeps set -u happy
+  . "$PT_LIB" 2>/dev/null || true
+fi
+if ! command -v pt_run >/dev/null 2>&1; then
+  if command -v gtimeout >/dev/null 2>&1; then
+    pt_run() { gtimeout --kill-after=2 "$@"; }
+  elif command -v timeout >/dev/null 2>&1; then
+    pt_run() { timeout --kill-after=2 "$@"; }
+  else
+    PT_OK=0
+    pt_run() { return 125; }   # never reached (guarded once finish() exists); defined for set -u
+  fi
 fi
 
 # remaining budget in seconds (never negative; 0 means the deadline is spent).
@@ -193,18 +206,48 @@ fi
 
 # flock unavailable — mkdir-spinlock fallback with stale-lock detection.
 # A SIGKILLed prior run leaves the lockdir behind indefinitely; detect and remove it once its mtime
-# is older than the stale threshold. I5 — that threshold MUST exceed the longest LEGIT hold, which is
-# a full wrapper budget (INVOKE_TIMEOUT). A fixed 600s would evict a live holder of a 3300s run and
-# hand two runs the same ~/.codex. Default to INVOKE_TIMEOUT + 60s of margin.
+# is older than the stale threshold. I5 — that threshold MUST exceed the longest LEGIT hold.
+# R7-5 — the longest legit hold is the HOLDER's OWN budget, NOT the waiter's. A short-budget waiter
+# (e.g. 3300 s) must NEVER evict a still-live holder that was launched with a larger budget (e.g.
+# 21600 s). So the HOLDER publishes its INVOKE_TIMEOUT into `$LOCKDIR/budget` on acquire, and a WAITER
+# sizes its stale threshold to (holder_budget + 60). When that file is absent/unreadable/invalid, the
+# waiter falls back to the CAP (21600) + 60 — conservative: never evict a possibly-live holder.
 LOCKDIR=/tmp/codex-default-home.lock.d
-LOCK_TIMEOUT="${SPINLOCK_TIMEOUT_SEC:-$((INVOKE_TIMEOUT + 60))}"
+_LOCK_CAP_FLOOR=$((21600 + 60))
+
+# _holder_stale_threshold -> the age (s) past which the CURRENT lockdir holder is deemed dead. Reads the
+# holder's own budget file; validates with the SAME anti-injection idiom used for INVOKE_TIMEOUT (reject
+# non-numeric / over-long / out-of-range BEFORE any `$(( ))`), else the conservative CAP+60 fallback.
+_holder_stale_threshold() {
+  _hb_file="$LOCKDIR/budget"; _hb=""
+  [ -r "$_hb_file" ] && _hb=$(head -1 "$_hb_file" 2>/dev/null)
+  case "$_hb" in
+    ''|*[!0-9]*) printf '%s' "$_LOCK_CAP_FLOOR"; return 0 ;;
+  esac
+  if [ "${#_hb}" -gt 6 ]; then printf '%s' "$_LOCK_CAP_FLOOR"; return 0; fi
+  _hb=$((10#$_hb))
+  if [ "$_hb" -lt 1 ] || [ "$_hb" -gt 21600 ]; then printf '%s' "$_LOCK_CAP_FLOOR"; return 0; fi
+  printf '%s' "$((_hb + 60))"
+}
+
+# S2 (round-4) - SPINLOCK_TIMEOUT_SEC arrives from the environment. It may only RAISE the stale threshold
+# above the holder-sized value, NEVER lower it (round-5: a too-small value like 1 must not make a live
+# lockdir look stale after 1 s). Validate with the same anti-injection idiom BEFORE any `$(( ))`.
+_SPIN_RAISE=0
+case "${SPINLOCK_TIMEOUT_SEC:-}" in
+  ''|*[!0-9]*) _SPIN_RAISE=0 ;;
+  *) if [ "${#SPINLOCK_TIMEOUT_SEC}" -le 6 ]; then _SPIN_RAISE=$((10#$SPINLOCK_TIMEOUT_SEC)); fi ;;
+esac
 
 if [ -d "$LOCKDIR" ]; then
   lock_mtime=$(stat -f "%m" "$LOCKDIR" 2>/dev/null || stat -c "%Y" "$LOCKDIR" 2>/dev/null || echo 0)
   now=$(date +%s)
   age=$((now - lock_mtime))
+  LOCK_TIMEOUT=$(_holder_stale_threshold)
+  if [ "$_SPIN_RAISE" -gt "$LOCK_TIMEOUT" ]; then LOCK_TIMEOUT=$_SPIN_RAISE; fi
   if [ "$age" -gt "$LOCK_TIMEOUT" ]; then
     echo "[spinlock] stale lockdir detected (age=${age}s > ${LOCK_TIMEOUT}s); force-removing." >> "$WORK_OUT"
+    rm -f "$LOCKDIR/budget" 2>/dev/null || true
     rmdir "$LOCKDIR" 2>/dev/null || true
   fi
 fi
@@ -214,10 +257,13 @@ while ! mkdir "$LOCKDIR" 2>/dev/null; do
   if [ "$(remaining)" -le 0 ]; then finish 124; fi
   sleep 0.5
 done
-trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
+# We hold the lock: publish OUR budget so a future waiter sizes ITS stale threshold to OUR hold (R7-5).
+printf '%s\n' "$INVOKE_TIMEOUT" > "$LOCKDIR/budget" 2>/dev/null || true
+trap 'rm -f "$LOCKDIR/budget" 2>/dev/null; rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
 
 rc=0; run_codex "" || rc=$?
 
+rm -f "$LOCKDIR/budget" 2>/dev/null || true
 rmdir "$LOCKDIR" 2>/dev/null || true
 trap - EXIT INT TERM
 finish "$rc"
