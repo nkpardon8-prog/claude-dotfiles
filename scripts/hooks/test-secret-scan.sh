@@ -155,8 +155,34 @@ chk "without -- it switches mode and reports the index instead" \
 # Guarded: a mutation-test copy contains only scripts/, and an unconditional grep against a
 # missing workflow would fail every mutation run and drown the signal it exists to give.
 if [ -f "$REPO/.github/workflows/secret-scan.yml" ]; then
+    _wf="$REPO/.github/workflows/secret-scan.yml"
+    # `--` used to sit at end-of-line (`secret-scan.sh --$`) because the arguments arrived
+    # from a pipe. They are now passed directly, so anchor on the argument that follows.
     chk "CI passes -- to the scanner" \
-        "$(grep -c 'secret-scan\.sh --$' "$REPO/.github/workflows/secret-scan.yml")" "1"
+        "$(grep -cE 'secret-scan\.sh -- "' "$_wf")" "1"
+
+    # The scanner speaks 0 / 2 / 3, and 2 (rotate a live credential) and 3 (the scan could
+    # not prove anything) demand opposite responses. Piping it through xargs destroys that:
+    # xargs reports its OWN status for any non-zero child - BSD 1, GNU 123 - so both arrive
+    # as one indistinguishable red. This is exactly the shape that earns a machine guard:
+    # the loss is SILENT (the job is red either way, so nothing looks broken) and the bad
+    # shape is the OBVIOUS way to write this step, so it can recur at any time.
+    # Comment lines are stripped first - the workflow's own explanation names `| xargs -0`,
+    # and a guard that matches its own rationale is a guard that can never fail.
+    chk "CI does not pipe the scanner through xargs (rc=2 vs rc=3 must stay distinct)" \
+        "$(grep -vE '^[[:space:]]*#' "$_wf" | grep -cE '\|[[:space:]]*xargs')" "0"
+
+    # An enumeration that yields nothing is a broken enumeration, not a clean tree.
+    chk "CI fails closed when no tracked files are enumerated" \
+        "$(grep -c 'refusing to report clean' "$_wf")" "1"
+
+    # Third-party action pinned to an immutable commit, not a tag its publisher can move
+    # under us while holding GITHUB_TOKEN. Silent (a moved tag produces no diff here) and
+    # recurrent (`@v2` is how everyone writes it), so it gets a guard rather than a note.
+    chk "gitleaks action is pinned to a 40-hex commit sha" \
+        "$(grep -cE 'uses: gitleaks/gitleaks-action@[0-9a-f]{40}' "$_wf")" "1"
+    chk "no third-party action is pinned to a mutable version tag" \
+        "$(grep -vE '^[[:space:]]*#' "$_wf" | grep -E 'uses: [^ ]+/' | grep -vE 'uses: actions/' | grep -cE '@v[0-9]')" "0"
 fi
 
 # 8. --composite mode: primary pattern still fires, path-aware PIN lane does not, and a
