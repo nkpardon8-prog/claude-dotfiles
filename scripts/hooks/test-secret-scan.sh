@@ -191,11 +191,15 @@ if [ -f "$_wf" ]; then
     # recurs; hence a machine forbids it rather than a comment asking nicely.
     chk "CI does not enumerate via process substitution (producer status must be checkable)" \
         "$(printf '%s\n' "$_wfc" | grep -cF '< <(')" "0"
-    chk "CI checks the enumerator's exit status" \
-        "$(printf '%s\n' "$_wfc" | grep -cE 'git ls-files -z > "\$enum"')" "1"
-    # A NUL-terminated stream cut off mid-record silently loses its last path to `read -d ''`.
-    chk "CI rejects a truncated (non NUL-terminated) enumeration" \
-        "$(printf '%s\n' "$_wfc" | grep -c 'no trailing NUL')" "1"
+    # The enumerator-status and truncation guards used to be asserted by grepping for their
+    # literal source text. That was doubly wrong and an adversarial pass proved both halves:
+    # VACUOUS - deleting the fail-closed `exit 3` from all three guards, or changing the final
+    # `exit "$worst"` to `exit 0`, left every case green while the step returned rc=0 on a tree
+    # containing a live secret; and BRITTLE - renaming `$enum`, dropping the space in `> "$enum"`,
+    # or hoisting the scanner into a variable reddened a perfectly correct workflow. Grepping for
+    # code is not testing it. Those two assertions are now BEHAVIOURAL (see below) and the string
+    # forms are deleted rather than kept alongside, because a redundant brittle guard is exactly
+    # the thing that gets deleted-in-anger later, taking the real one with it.
 
     # The scanner speaks 0 / 2 / 3, and 2 (rotate a live credential) and 3 (the scan could
     # not prove anything) demand opposite responses. Piping it through xargs destroys that:
