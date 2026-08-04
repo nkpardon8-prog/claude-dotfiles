@@ -152,10 +152,18 @@ _woq=$(bash "$SCAN" '--staged' 2>&1 >/dev/null)
 chk "with -- the flag-named FILE is reported" "$(printf '%s' "$_wq" | grep -c -- '--staged:')" "1"
 chk "without -- it switches mode and reports the index instead" \
     "$(printf '%s' "$_woq" | grep -c -- '--staged:')" "0"
-# Guarded: a mutation-test copy contains only scripts/, and an unconditional grep against a
-# missing workflow would fail every mutation run and drown the signal it exists to give.
-if [ -f "$REPO/.github/workflows/secret-scan.yml" ]; then
-    _wf="$REPO/.github/workflows/secret-scan.yml"
+# NOT conditional any more. This block used to be wrapped in `if [ -f <workflow> ]`, on the
+# rationale that a mutation-test copy contains only scripts/ and unconditional greps would
+# drown the signal. That rationale was already false: two sibling assertions further down
+# grep the SAME path unguarded, so renaming the workflow reddens the suite regardless
+# (measured: 165 passed / 25 failed). The conditional therefore protected nothing while
+# silently withdrawing five assertions whenever it fired - a guard that skips itself when
+# its target disappears, which is the exact class this whole part exists to eliminate.
+# A missing workflow is now a stated FAILURE, not a silent skip.
+_wf="$REPO/.github/workflows/secret-scan.yml"
+chk "the CI workflow exists (every assertion below reads it)" \
+    "$([ -f "$_wf" ] && echo 1 || echo 0)" "1"
+if [ -f "$_wf" ]; then
     # EVERY assertion in this block reads CODE ONLY - comments are stripped first via _wfc.
     # An adversarial review found the `--` assertion below matching prose in a comment while
     # its neighbours stripped them, i.e. the block was inconsistent with itself. These stay
