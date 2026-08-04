@@ -718,7 +718,9 @@ for grp in cfg.get('hooks', {}).get('SessionStart', []):
         i = c.find('C=~/.config/claude/credentials.md')
         if i != -1:
             seg = c[i:]
-            print(seg.replace('~/.claude-dotfiles/scripts/secret-scan.sh', sys.argv[2]))
+            seg = seg.replace('"$HOME/.claude-dotfiles/scripts/secret-scan.sh"', '"%s"' % sys.argv[2])
+            seg = seg.replace('~/.claude-dotfiles/scripts/secret-scan.sh', sys.argv[2])
+            print(seg)
             sys.exit(0)
 sys.exit(1)
 PYEOF
@@ -884,9 +886,16 @@ _chainfiles=( "$REPO/scripts/secret-scan.sh" "$REPO/scripts/dotfiles-sync.sh" "$
 _missing=0
 for _cf in "${_chainfiles[@]}"; do [ -r "$_cf" ] || _missing=$((_missing + 1)); done
 chk "the count guard can actually reach all of its target files" "$_missing" "0"
+# grep's OWN STATUS is captured, not just its line count. `grep | wc | tr` discards it, so a
+# regex error or an unreadable target yielded 0 matches -> "0" -> PASS, the guard reporting
+# success without having evaluated anything (three reviewers, and the comment above used to
+# claim the status WAS checked while it was not). grep: 0=match 1=no-match >1=error.
+_gout=$(grep -ilE "(^|[^A-Za-z])${_n}[[:space:]]+(consumers|layers)|(all|of the)[[:space:]]+${_n}[[:space:]]+(consumers|layers|branch|share|call)" \
+          "${_chainfiles[@]}" 2>/dev/null); _grc=$?
+chk "the count guard's grep ran without error (rc 0 or 1, never >1)" \
+    "$([ "$_grc" -le 1 ] && echo ok || echo "error-rc=$_grc")" "ok"
 chk "no numeric consumer/layer count in the chain's own files (the numeral drifted 3x)" \
-    "$(grep -ilE "(^|[^A-Za-z])${_n}[[:space:]]+(consumers|layers)|(all|of the)[[:space:]]+${_n}[[:space:]]+(consumers|layers|branch|share|call)" \
-         "${_chainfiles[@]}" 2>/dev/null | wc -l | tr -d ' ')" "0"
+    "$(printf '%s' "$_gout" | grep -c . | tr -d ' ')" "0"
 
 # --- R3: this entry shipped with NO assertion at all, at any depth.
 for _f in .config/git/credentials sub/git/credentials; do
@@ -1057,6 +1066,18 @@ chk "an explicit batch of ONLY gitlinks is rc=0 (CI cannot go red on a valid rep
 mkdir -p "$_r6/plaindir"
 ( cd "$_r6" && bash "$SCAN" plaindir >/dev/null 2>&1 )
 chk "a lone PLAIN directory argument is still rc=3" "$?" "3"
+# ...and specifically a directory whose FIRST indexed entry is a gitlink. `git ls-files -s --
+# <dir>` treats the path as a PATHSPEC and lists contents recursively, so the round-6 probe
+# read the gitlink and counted the whole DIRECTORY as accounted - returning rc=0 CLEAN with a
+# real key sitting inside it. The case above uses an EMPTY dir and could not see that.
+mkdir -p "$_r6/pkg/m"
+printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" > "$_r6/pkg/zsecret.txt"
+( cd "$_r6" && git add pkg/zsecret.txt >/dev/null 2>&1 \
+  && git update-index --add --cacheinfo "160000,$_r6sha,pkg/m" ) >/dev/null 2>&1
+( cd "$_r6" && bash "$SCAN" -- pkg >/dev/null 2>&1 )
+chk "a directory hiding a secret behind a gitlink is rc=3, never clean" "$?" "3"
+( cd "$_r6" && bash "$SCAN" -- pkg/m >/dev/null 2>&1 )
+chk "the gitlink entry ITSELF is still accounted for (rc=0)" "$?" "0"
 
 # --- R6: the 2.4 scan block enumerated with a bare `git ls-files`, which lists ONLY TRACKED
 # files - so a real token in a brand-new UNTRACKED file was skipped and it printed "clean".
@@ -1070,9 +1091,15 @@ chk "2.4 enumerates untracked files too (--cached --others)" \
 # the edit never reached the remote. MEASURED: an untracked nested repo makes `git add -A`
 # exit 128 and stage nothing at all - the very shape round 5 taught the scanner to tolerate.
 chk "dotfiles-sync checks git add -A and fails loudly" \
-    "$(grep -c 'if ! git add -A; then' "$REPO/scripts/dotfiles-sync.sh")" "1"
+    "$(grep -c 'if git add -A; then _add_ok=1; break; fi' "$REPO/scripts/dotfiles-sync.sh")" "1"
+# ...but RETRIES first. This script runs from an async hook, so two invocations overlap
+# routinely and an ordinary .git/index.lock collision is expected. Pausing on the FIRST
+# failure turned a transient collision into a durable halt while the winning run pushed
+# fine - the false-positive direction that has already failed three times in this arc.
+chk "dotfiles-sync retries a transient index.lock before pausing" \
+    "$(grep -c 'for _try in 1 2 3 4 5; do' "$REPO/scripts/dotfiles-sync.sh")" "1"
 chk "dotfiles-sync pauses rather than silently delivering nothing" \
-    "$(grep -c 'git add -A failed - nothing staged' "$REPO/scripts/dotfiles-sync.sh")" "1"
+    "$(grep -c 'git add -A failed after retries' "$REPO/scripts/dotfiles-sync.sh")" "1"
 # Behavioural: `git add -A` really does fail on this shape, so the guard has a live trigger.
 _ga="$P7W/ga"; mkdir -p "$_ga"
 ( cd "$_ga" && git init -q . && git config user.email t@t.invalid && git config user.name t \

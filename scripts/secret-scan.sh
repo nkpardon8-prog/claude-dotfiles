@@ -531,8 +531,16 @@ while IFS= read -r -d '' f; do
             # only gitlinks returned rc=3 and would have turned CI red on a valid repository.
             # MEASURED: `secret-scan.sh -- m1 m2` (two gitlinks) -> rc=3 before this.
             # A gitlink is identifiable from the index in any mode, so ask that directly.
+            # The index lookup must match the ENTRY EXACTLY. `git ls-files -s -- <dir>`
+            # applies the path as a PATHSPEC and lists the directory's CONTENTS recursively,
+            # so a directory whose first sorted entry happened to be a gitlink was itself
+            # counted as an accounted gitlink - and the scan exited 0 CLEAN having opened
+            # nothing, with a real key sitting inside it. MEASURED (round 7): a repo with
+            # `pkg/m` (mode 160000) and a secret-bearing `pkg/zsecret.txt` returned rc=0 for
+            # `-- pkg`, while `-- pkg/zsecret.txt` returned 2. Compare the path field.
             if [ "$MODE" = working ] || \
-               [ "$(git ls-files -s -- "$f" 2>/dev/null | awk '{print $1; exit}')" = 160000 ]; then
+               [ "$(git -c core.quotePath=false ls-files -s -- "$f" 2>/dev/null \
+                    | awk -F'\t' -v p="$f" '$2==p{split($1,a," "); print a[1]; exit}')" = 160000 ]; then
                 SCANNED=$((SCANNED + 1))   # no blob in THIS repo; legitimately accounted
             else
                 # A plain directory the caller NAMED is still not accounted for, so a lone

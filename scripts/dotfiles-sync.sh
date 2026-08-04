@@ -171,9 +171,22 @@ _slug=$(printf '%s' "$_url" | sed -e 's#\.git$##' -e 's#/$##' -e 's#^.*github\.c
 # .git/index.lock, which two overlapping async PostToolUse syncs can produce on their own.
 # Shape (a) is the very shape round 5 taught the scanner to tolerate: removing the loud
 # failure upstream exposed a silent one here.
-if ! git add -A; then
-    echo "dotfiles-sync: git add -A FAILED - nothing was staged, so nothing can be delivered. Common causes: an untracked nested git repo in the tree, or a stale .git/index.lock." >&2
-    _pause "git add -A failed - nothing staged, edits are NOT delivered" other
+# RETRY BEFORE PAUSING (round-7 review). This script runs from an `async: true` PostToolUse
+# hook, so two invocations overlap routinely and an ordinary `.git/index.lock` collision is
+# EXPECTED, not exceptional. The first version of this guard paused on the first failure,
+# which turned a transient collision into a DURABLE halt - the loser wrote a marker that
+# stops every future run, while the winner went on to commit and push perfectly well. That
+# is the false-positive direction again: a guard that jams the toolchain gets switched off.
+# A bounded retry distinguishes "someone else holds the index for a moment" from a real,
+# persistent failure (an untracked nested repo, a stale lock), and only the latter pauses.
+_add_ok=0
+for _try in 1 2 3 4 5; do
+    if git add -A; then _add_ok=1; break; fi
+    sleep 1
+done
+if [ "$_add_ok" -ne 1 ]; then
+    echo "dotfiles-sync: git add -A FAILED after 5 attempts - nothing was staged, so nothing can be delivered. Common causes: an untracked nested git repo in the tree, or a stale .git/index.lock." >&2
+    _pause "git add -A failed after retries - nothing staged, edits are NOT delivered" other
     exit 10
 fi
 if git diff --cached --quiet; then
