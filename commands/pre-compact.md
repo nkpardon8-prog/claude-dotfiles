@@ -296,9 +296,23 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
        echo "WARN: chain manifest for $SID is unreadable AND ledger recovery failed." >&2
        echo "WARN: this chain EXISTS - NOT reseeding it as a first run. Seq is taken from the" >&2
        echo "WARN: ledger's last seq if available; the handoff will note the degraded chain." >&2
+       # Seq recovery must NEVER be able to produce 1. Reading only the LAST ledger line and
+       # defaulting a malformed value to 0 gave NEW_SEQ=1 - re-creating the exact
+       # "this is link 1 of a fresh chain" claim this whole branch exists to prevent, and
+       # doing it precisely when the ledger is damaged (round-7 review; measured with a
+       # `seq=NOTANUMBER` last line). Scan the WHOLE ledger for the highest valid seq, since
+       # one corrupt trailing line says nothing about the rest. If no line yields a number,
+       # fall back to the ledger's LINE COUNT: /pre-compact appends exactly one entry per
+       # link, so it is an honest lower bound on how far the chain got - and for any real
+       # multi-link chain it is >1, which is the property that matters here.
        LEDGER="$HOME/.claude/chains/${SID}.log"
-       LAST_SEQ=$(awk -F'\t' 'END{print $2}' "$LEDGER" 2>/dev/null | sed 's/^seq=//')
+       LAST_SEQ=$(awk -F'\t' '{ s=$2; sub(/^seq=/,"",s); if (s ~ /^[0-9]+$/ && s+0 > m) m=s+0 } END { print m+0 }' "$LEDGER" 2>/dev/null)
        case "${LAST_SEQ:-}" in ''|*[!0-9]*) LAST_SEQ=0 ;; esac
+       if [ "$LAST_SEQ" -eq 0 ]; then
+         LAST_SEQ=$(wc -l < "$LEDGER" 2>/dev/null | tr -d ' ')
+         case "${LAST_SEQ:-}" in ''|*[!0-9]*) LAST_SEQ=0 ;; esac
+         echo "WARN: no parseable seq in the ledger; using its line count ($LAST_SEQ) as a lower bound." >&2
+       fi
        NEW_SEQ=$(( LAST_SEQ + 1 ))
        IS_FIRST_RUN=0
        CHAIN_STATUS="active"
