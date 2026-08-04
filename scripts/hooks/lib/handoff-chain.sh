@@ -166,8 +166,11 @@ chain_manifest_read() {
         printf '%s\n' "$_recovered"
         return 0
     fi
+    # rc=2, NOT 1: a ledger exists, so this chain is real. Returning 1 here would tell the
+    # caller "genuinely first run" and make it reset seq to 1 and overwrite the manifest.
     echo "chain_manifest_read: ledger recovery produced no valid manifest for $sid (jq missing or failed)" >&2
-    return 1
+    echo "chain_manifest_read: this chain EXISTS (ledger present) - do not treat it as a first run" >&2
+    return 2
   fi
 
   # Truly first run.
