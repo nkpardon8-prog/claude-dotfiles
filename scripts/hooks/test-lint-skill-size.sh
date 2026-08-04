@@ -52,6 +52,14 @@ s += 'y'*max(0, n-len(s))
 open(sys.argv[1],'w').write(s[:n] if not marker else s)
 " "$1" "$2" "$3" "$4"; }
 
+# ALL FIVE guarded files must exist in the fixture. Until 2026-08-04 only three were created,
+# and every --all case below passed while commands/codex-review.md and commands/implement.md
+# were ABSENT - the lint simply skipped the rules it could not reach. The new guarded-file
+# check in the lint caught this fixture, which is the point: a fixture missing two of the five
+# targets was quietly proving less than its case names claimed.
+mk "$ROOT/commands/codex-review.md" 5000 1 1000
+mk "$ROOT/commands/implement.md"    5000 1 1000
+
 # Fixture 1: post-compact-resume over the ceiling -> FAIL
 mk "$ROOT/commands/post-compact-resume.md" 20500 0 0
 mk "$ROOT/commands/mission.md" 30000 1 1000
