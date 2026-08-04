@@ -292,20 +292,21 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
      # IS_FIRST_RUN=1 / NEW_SEQ=1 below and overwrite a live chain's manifest, discarding its
      # history and north star. On rc=2 we keep the chain's identity and refuse to reseed.
      MANIFEST=$(chain_manifest_read "$SID"); CMR_RC=$?
-     if [ "$CMR_RC" -eq 2 ]; then
-       echo "WARN: chain manifest for $SID is unreadable AND ledger recovery failed." >&2
-       echo "WARN: this chain EXISTS - NOT reseeding it as a first run. Seq is taken from the" >&2
-       echo "WARN: ledger's last seq if available; the handoff will note the degraded chain." >&2
-       # Seq recovery must NEVER be able to produce 1. Reading only the LAST ledger line and
-       # defaulting a malformed value to 0 gave NEW_SEQ=1 - re-creating the exact
-       # "this is link 1 of a fresh chain" claim this whole branch exists to prevent, and
-       # doing it precisely when the ledger is damaged (round-7 review; measured with a
-       # `seq=NOTANUMBER` last line). Scan the WHOLE ledger for the highest valid seq, since
-       # one corrupt trailing line says nothing about the rest. If no line yields a number,
-       # fall back to the ledger's LINE COUNT: /pre-compact appends exactly one entry per
-       # link, so it is an honest lower bound on how far the chain got - and for any real
-       # multi-link chain it is >1, which is the property that matters here.
-       LEDGER="$HOME/.claude/chains/${SID}.log"
+     LEDGER="$HOME/.claude/chains/${SID}.log"
+     MANIFEST_FILE="$HOME/.claude/chains/${SID}.json"
+     # rc=2 means "a chain existed here but the manifest is unusable". It splits in two, and the
+     # split matters: WITH a ledger the chain is RECOVERABLE, without one it is not. The first
+     # version of this branch treated both the same and got both wrong - it hard-coded an
+     # "<unrecoverable>" north star even though the ledger carries the real goal in field 9
+     # (so one transient jq failure permanently destroyed the chain's goal), and with no ledger
+     # it still produced NEW_SEQ=1, the exact claim the branch exists to prevent. Both found in
+     # the round-7 barrier, both measured.
+     if [ "$CMR_RC" -eq 2 ] && [ -s "$LEDGER" ]; then
+       echo "WARN: chain manifest for $SID is unusable; REBUILDING it from the ledger." >&2
+       # Seq: scan the WHOLE ledger for the highest valid seq - one corrupt trailing line says
+       # nothing about the rest. If no line parses, fall back to the LINE COUNT: /pre-compact
+       # appends exactly one entry per link, so it is an honest lower bound, and >1 for any
+       # real multi-link chain, which is the property that matters.
        LAST_SEQ=$(awk -F'\t' '{ s=$2; sub(/^seq=/,"",s); if (s ~ /^[0-9]+$/ && s+0 > m) m=s+0 } END { print m+0 }' "$LEDGER" 2>/dev/null)
        case "${LAST_SEQ:-}" in ''|*[!0-9]*) LAST_SEQ=0 ;; esac
        if [ "$LAST_SEQ" -eq 0 ]; then
@@ -317,9 +318,42 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
        IS_FIRST_RUN=0
        CHAIN_STATUS="active"
        [ "${HALT_TRIPPED:-0}" = "1" ] && CHAIN_STATUS="halted"
-       NORTH_STAR="<unrecoverable - manifest corrupt and ledger recovery failed>"
-       NS_SOURCE="degraded"
-     elif [ "$CMR_RC" -eq 0 ]; then
+       # RECOVER THE GOAL rather than destroying it. Field 9 is north_star_first_120=<goal>;
+       # take the LAST non-empty one. Only if the ledger truly carries none do we say so.
+       NORTH_STAR=$(awk -F'\t' '$9 ~ /^north_star_first_120=/ { v=$9 } END { sub(/^north_star_first_120=/,"",v); print v }' "$LEDGER" 2>/dev/null)
+       if [ -n "$NORTH_STAR" ]; then
+         NS_SOURCE="recovered"
+       else
+         NORTH_STAR="<unrecoverable - manifest corrupt and ledger carries no north_star>"
+         NS_SOURCE="degraded"
+       fi
+       # SELF-HEAL. Leaving MANIFEST empty made the later chain_manifest_write fail on invalid
+       # JSON, so the corrupt file was never replaced and EVERY subsequent /pre-compact re-entered
+       # rc=2 - a chain that hit one transient failure stayed bannerless for life. The old rc=1
+       # path self-healed by rewriting; rc=2 must not remove that without replacing it.
+       MANIFEST=$(jq -nc --arg sid "$SID" --arg ns "$NORTH_STAR" --arg nss "$NS_SOURCE" \
+         --arg st "$CHAIN_STATUS" --argjson seq "$LAST_SEQ" \
+         '{chain_id:$sid, started_at:"1970-01-01T00:00:00Z", north_star:$ns,
+           north_star_source:$nss, current_seq:$seq, last_handoff_path:"",
+           last_heartbeat_at:"1970-01-01T00:00:00Z", status:$st, host:"rebuilt",
+           mission_path:"", recovered_from_ledger:true}' 2>/dev/null) || MANIFEST=""
+     elif [ "$CMR_RC" -eq 2 ]; then
+       # A manifest file exists but is unusable AND there is no ledger: nothing survives to
+       # continue FROM. Preserving the corrupt file is what actually protects the evidence -
+       # that was the real data-loss concern - after which starting a fresh chain is the honest
+       # description of the situation. Claiming IS_FIRST_RUN=0 with NEW_SEQ=1 was neither.
+       if [ -f "$MANIFEST_FILE" ]; then
+         _bak="$MANIFEST_FILE.corrupt-$(date +%Y%m%d-%H%M%S)"
+         if mv "$MANIFEST_FILE" "$_bak" 2>/dev/null; then
+           echo "WARN: unusable chain manifest preserved at $_bak (no ledger to recover from)." >&2
+         else
+           echo "WARN: could NOT preserve the unusable manifest at $MANIFEST_FILE - not overwriting it." >&2
+         fi
+       fi
+       echo "WARN: no ledger for $SID; starting a NEW chain. Prior chain state is unrecoverable." >&2
+       CMR_RC=1   # fall through to the genuine first-run derivation below
+     fi
+     if [ "$CMR_RC" -eq 0 ]; then
        CHAIN_STATUS=$(printf '%s' "$MANIFEST" | jq -r '.status')
        if [ "$CHAIN_STATUS" = "halted" ] && [ "${USER_INPUT_AFTER_HALT:-0}" = "1" ]; then
          CHAIN_STATUS="active"
