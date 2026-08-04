@@ -216,9 +216,24 @@ if [ -f "$_wf" ]; then
     # under us while holding GITHUB_TOKEN. Silent (a moved tag produces no diff here) and
     # recurrent (`@v2` is how everyone writes it), so it gets a guard rather than a note.
     chk "gitleaks action is pinned to a 40-hex commit sha" \
-        "$(grep -cE 'uses: gitleaks/gitleaks-action@[0-9a-f]{40}' "$_wf")" "1"
-    chk "no third-party action is pinned to a mutable version tag" \
-        "$(grep -vE '^[[:space:]]*#' "$_wf" | grep -E 'uses: [^ ]+/' | grep -vE 'uses: actions/' | grep -cE '@v[0-9]')" "0"
+        "$(printf '%s\n' "$_wfc" | grep -cE 'uses: gitleaks/gitleaks-action@[0-9a-f]{40}')" "1"
+fi
+
+# ACROSS EVERY WORKFLOW, not just secret-scan.yml. The first version of this guard inspected
+# one file, so lint-commands.yml - edited by the very same work that added the guard - was
+# covered by nothing. A pinning rule that only watches one of two workflows is a rule an
+# unpinned action simply walks around.
+# `uses:[[:space:]]+` tolerates the two-space form, which is valid YAML and which a single
+# literal space missed entirely. actions/* are GitHub's own first-party actions and are
+# exempted by convention; every other publisher must be a 40-hex commit sha.
+_wfdir="$REPO/.github/workflows"
+if [ -d "$_wfdir" ]; then
+    _unpinned=$(cat "$_wfdir"/*.yml 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -E 'uses:[[:space:]]+[^[:space:]]+/' \
+        | grep -vE 'uses:[[:space:]]+actions/' \
+        | grep -vcE 'uses:[[:space:]]+[^[:space:]]+@[0-9a-f]{40}')
+    chk "every non-actions/ third-party action in EVERY workflow is sha-pinned" "$_unpinned" "0"
 fi
 
 # 8. --composite mode: primary pattern still fires, path-aware PIN lane does not, and a
