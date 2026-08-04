@@ -151,17 +151,65 @@ def kind_of(cmd):
     return "migrate"
 
 
+# Credential shapes are REDACTED AT THIS CHOKEPOINT, before anything is written
+# (2026-08-03). The ledger records the TEXT OF COMMANDS an agent ran, is world-readable by
+# default, and is RE-INJECTED INTO EVERY SESSION at SessionStart - so anything captured here
+# is both on disk for any local process and back in an LLM context on the next run.
+#
+# Measured on this machine before the fix: 119 connection strings with inline credentials in
+# a single project's ledger. All of them were LOCAL docker test databases
+# (postgres@localhost) - no production host, no API key - so nothing live was exposed. That
+# is luck, not design: the recorder had no redaction at all, so a real DSN typed into one
+# command would have been captured verbatim and replayed into context indefinitely.
+#
+# Redacting at the writer rather than scrubbing the file afterwards is the point: a scrub
+# fixes today's rows, the chokepoint fixes every future one.
+_REDACTIONS = [
+    # scheme://user:password@host  ->  keep the shape, drop the credential
+    (re.compile(r'\b([a-zA-Z][a-zA-Z0-9+.-]*://)([^:/@\s]+):([^@/\s]+)@'), r'\1\2:REDACTED@'),
+    # provider-prefixed tokens: keep the prefix so the entry stays readable, drop the payload
+    (re.compile(r'\b(sk-(?:ant|proj|svcacct)?-?|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|npm_|'
+                r'AIza|ya29\.|whsec_|hf_|xox[abposr]-)[A-Za-z0-9_-]{16,}'), r'\1REDACTED'),
+    (re.compile(r'\b(AKIA|ASIA)[0-9A-Z]{16}\b'), r'\1REDACTED'),
+    (re.compile(r'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'), 'JWT-REDACTED'),
+    (re.compile(r'-----BEGIN[^-]*PRIVATE KEY-----'), 'PRIVATE-KEY-REDACTED'),
+]
+
+
+def redact(text):
+    """Strip credential shapes from a string before it is persisted or re-injected."""
+    if not text:
+        return text
+    for rx, repl in _REDACTIONS:
+        text = rx.sub(repl, text)
+    return text
+
+
 def add_entry(slug, sid, kind, detail, cwd):
     e = {
         "ts": int(time.time()),
         "sid": (sid or "?")[:8],
         "kind": kind,
-        "detail": (detail or "").replace("\n", " ").strip()[:200],
+        "detail": redact((detail or "").replace("\n", " ").strip())[:200],
         "cwd": os.path.basename(os.path.abspath(cwd or ".")),
     }
     try:
-        with open(ledger_path(slug), "a") as f:
-            f.write(json.dumps(e) + "\n")
+        path = ledger_path(slug)
+        # 0600 the ledger and 0700 its directory: it was world-readable (-rw-r--r--), so any
+        # local process could read whatever had been captured before redaction existed.
+        try:
+            os.chmod(LEDGER_DIR, 0o700)
+        except Exception:
+            pass
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, (json.dumps(e) + "\n").encode())
+        finally:
+            os.close(fd)
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
     except Exception:
         pass
 
