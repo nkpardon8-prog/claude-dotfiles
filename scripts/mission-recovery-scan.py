@@ -201,8 +201,9 @@ def main():
             )
         print("\n* dead-gap = now - max(last ledger ts, mission-file mtime). HEURISTIC:")
         print("  last_heartbeat_at is /pre-compact-updated, so a long gap is a signal to")
-        print("  LOOK, not a verdict. 'parked'=yes is authoritative (PENDING DECISIONS")
-        print("  zone non-empty). 'await'=yes means an AWAIT lane is still outstanding.\n")
+        print("  LOOK, not a verdict. 'parked'=yes is authoritative: an AWAIT kind=human is")
+        print("  outstanding (a real blocking hand-back). 'await'=yes means ANY AWAIT lane")
+        print("  (job or human) is still outstanding.\n")
         print("PINNED manual resume commands (NOT run by this script; each clones the")
         print("frozen state into a NEW sid):\n")
         for r in rows:
