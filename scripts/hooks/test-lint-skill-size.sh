@@ -93,5 +93,38 @@ cp "$LINT" "$TMP/orphan-lint.sh"
 rc=$(HOME="$FAKE_HOME" bash "$TMP/orphan-lint.sh" --all >/dev/null 2>&1; echo $?)
 check "lint fails closed when ROOT has no commands/" 1 "$rc"
 
+# --- guard-integrity (2026-08-03, part 3). Three MEASURED fail-open paths in this lint,
+# all the same class: it reported success having measured nothing.
+
+# #190: an unknown argument was silently accepted (rc=0, linted nothing). The sibling
+# lint-skill-contract.sh already exited 2 here; this one did not.
+rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --bogus >/dev/null 2>&1; echo $?)
+check "unknown argument is refused, not silently accepted" 2 "$rc"
+
+# #101/#102: a PER-FILE measurement failure (unreadable/undecodable) left `n` empty, so
+# `[ "$n" -gt 20000 ]` errored with "integer expression expected" and the lint exited 0.
+# The preflight only covers a MISSING python3, not a file it cannot read.
+mk "$ROOT/commands/post-compact-resume.md" 25000 0 0
+mk "$ROOT/commands/mission.md" 30000 1 1000
+chmod 000 "$ROOT/commands/post-compact-resume.md"
+if [ "$(id -u)" -eq 0 ]; then
+    check "unmeasurable file fails closed (SKIPPED as root)" 1 1
+else
+    rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+    check "an unmeasurable guarded file fails closed" 1 "$rc"
+fi
+chmod 644 "$ROOT/commands/post-compact-resume.md"
+
+# #100: in --staged the content is read THROUGH a staging tempdir, and `|| return 0` made an
+# unusable TMPDIR indistinguishable from "nothing staged" - so a broken mktemp cleared an
+# OVERSIZE STAGED FILE. The dir is now created eagerly in the MAIN shell: created lazily
+# inside resolve_content, the exit ran in a command substitution's subshell and was swallowed.
+MKBIN="$TMP/mkbin"; mkdir -p "$MKBIN"
+printf '#!/bin/sh\nexit 1\n' > "$MKBIN/mktemp"; chmod +x "$MKBIN/mktemp"
+mk "$ROOT/commands/post-compact-resume.md" 25000 0 0
+git -C "$ROOT" add commands/post-compact-resume.md 2>/dev/null
+rc=$(cd "$ROOT" && HOME="$FAKE_HOME" PATH="$MKBIN:$PATH" bash "$LINT_COPY" --staged >/dev/null 2>&1; echo $?)
+check "an unusable staging tempdir fails closed, not 'nothing staged'" 3 "$rc"
+
 echo "test-lint-skill-size: $pass passed, $fail failed"
 exit $([ $fail -eq 0 ] && echo 0 || echo 1)
