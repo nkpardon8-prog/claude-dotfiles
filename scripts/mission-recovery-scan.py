@@ -91,31 +91,6 @@ def read_manifest(sid):
         return None
 
 
-def pending_zone_nonempty(mission_file):
-    """AUTHORITATIVE parked-for-human signal: a non-empty PENDING DECISIONS zone.
-
-    Non-empty = at least one `- [pd:...]` decision line between the zone fences. Zone
-    fences are `<!-- MZONE:PENDING DECISIONS n=.. -->` / its `/MZONE` close (mirrors
-    mission_create in lib/mission-bridge.sh). Read-only.
-    """
-    try:
-        with open(mission_file, encoding="utf-8", errors="replace") as f:
-            text = f.read()
-    except OSError:
-        return False
-    in_zone = False
-    for ln in text.splitlines():
-        if ln.startswith("<!-- MZONE:PENDING DECISIONS"):
-            in_zone = True
-            continue
-        if ln.startswith("<!-- /MZONE:PENDING DECISIONS"):
-            in_zone = False
-            continue
-        if in_zone and ln.strip().startswith("- [pd:"):
-            return True
-    return False
-
-
 def await_state(sid, root):
     """Call the READ-ONLY mission-write.sh await-state verb. Returns its bare token."""
     if not os.path.exists(MISSION_WRITE):
