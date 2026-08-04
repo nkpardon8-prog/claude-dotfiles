@@ -127,8 +127,14 @@ check "unknown argument is refused, not silently accepted" 2 "$rc"
 # makes it discriminate - mutation-verified in BOTH directions.
 mv "$ROOT/commands/mission.md" "$ROOT/commands/mission-renamed.md"
 _out=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
-check "a RENAMED guarded file fails FOR THAT REASON (rule with no target is unenforced)" \
-      1 "$(printf '%s' "$_out" | grep -c 'guarded file(s) absent.*commands/mission\.md')"
+_rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+# BOTH the reason AND a non-zero exit. Message-only was itself a vacuous assertion: deleting
+# the `exit 1` left the lint printing its complaint and then PASSING, and this case stayed
+# green (round-7 review, reproduced). A guard that reports a violation and exits 0 is not a
+# guard. rc-only is equally weak here - rc=1 is reachable by other routes - so assert the pair.
+check "a RENAMED guarded file fails FOR THAT REASON and EXITS NON-ZERO" \
+      "reason=1 rc=nonzero" \
+      "reason=$(printf '%s' "$_out" | grep -c 'guarded file(s) absent.*commands/mission\.md') rc=$([ "$_rc" -ne 0 ] && echo nonzero || echo zero)"
 mv "$ROOT/commands/mission-renamed.md" "$ROOT/commands/mission.md"
 
 # The same guard must NOT fire in --staged, which reads the index via GITROOT and never
