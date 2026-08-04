@@ -32,8 +32,8 @@ point-of-contact or a §12.3 stop, incl. an `AWAIT kind=human`). **A scheduled w
 owner** - a tracked `run_in_background` job is NOT sufficient alone (its completion wake can be lost), so a
 turn yielding with a job pending STILL schedules a long fallback heartbeat (§12.1 step 7). Any other
 turn-end is a NAKED YIELD that silently freezes the mission - EVERY turn-end (§8's four epilogues are
-examples). A `ScheduleWakeup` that FAILS is not (a): retry once, then STOP LOUD via a `pending` + `AWAIT
-kind=human` (§12.3) - never yield naked. The wake routine satisfying (a) - `mkdir` tick-lock + §8
+examples). A `ScheduleWakeup` that FAILS is not (a): retry once, then STOP LOUD via `pending-stop`
+(§12.3) - never yield naked. The wake routine satisfying (a) - `mkdir` tick-lock + §8
 resume-read + cursor-compare + reschedule - lives in §12; every wake source (bg completion, a tick, a
 post-compact resume) funnels through it and advances by exactly ONE transition.
 
