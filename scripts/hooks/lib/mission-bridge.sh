@@ -1739,6 +1739,22 @@ mission_await_append() {
   else
     case "$_aw_started" in ''|*[!0-9]*) _aw_started=$(date +%s 2>/dev/null || echo 0) ;; esac
   fi
+  # D14 (R8-14) — DECISION-FIRST at the mechanism, not just prose (Codex round-2 CRITICAL). A human
+  # barrier CLOSE (kind=human need=1 got=1) is REFUSED unless a same-op durable DECISION line already
+  # exists in the ACTIVE-generation stream (`[mission] DECISION op=<seq>-<slug> outcome=...`). The
+  # barrier therefore cannot clear without a recorded, surfaced outcome — the close order is
+  # DECISION -> got=1 -> resolve. The got=0 opener + a job bit are exempt (only the human got=1 close is
+  # gated). A refused/empty gen-sliced read makes the DECISION unprovable => fail closed (refuse).
+  if [ "$_aw_kind" = human ] && [ "$_aw_got" -eq 1 ] && [ "$_aw_need" -eq 1 ]; then
+    if ! _gen_sliced_stream "$_aw_sid" "$_aw_root" 2>/dev/null | awk -F'\t' -v opv="$_aw_op" '
+        ($2 ~ /^\[mission\] DECISION op=/) {
+          p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); if(a[1]==opv) found=1 }
+        }
+        END { exit(found?0:1) }'; then
+      echo "mission: await: REFUSED human close op=${_aw_op} (got=1) — DECISION-first: a durable '[mission] DECISION op=${_aw_op} outcome=<approve|deny>' must be recorded BEFORE closing the barrier" >&2
+      return 1
+    fi
+  fi
   _aw_entry="[mission] AWAIT part=${_aw_part} phase=${_aw_phase} round=${_aw_round} kind=${_aw_kind} op=${_aw_op} attempt=${_aw_attempt} need=${_aw_need} got=${_aw_got} started_at=${_aw_started}"
   _aw_idtag="m${_aw_part}-await-${_aw_op}-r${_aw_round}-a${_aw_attempt}-g${_aw_got}"
   mission_log_append "$_aw_sid" "$_aw_root" "$_aw_entry" "$_aw_idtag"
