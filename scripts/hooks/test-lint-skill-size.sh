@@ -148,12 +148,29 @@ mk "$ROOT/commands/post-compact-resume.md" 25000 0 0
 mk "$ROOT/commands/mission.md" 30000 1 1000
 chmod 000 "$ROOT/commands/post-compact-resume.md"
 if [ "$(id -u)" -eq 0 ]; then
-    check "unmeasurable file fails closed (SKIPPED as root)" 1 1
+    # NOT `check 1 1`. That asserted a tautology and still incremented the pass counter, so a
+    # root container reported "N passed" while one case had not been exercised at all - it
+    # inflated the very number this mission cites as its proof. A skip is now visible and
+    # counted as a skip.
+    printf '  SKIP: an unmeasurable guarded file fails closed (running as root; chmod 000 has no effect)\n'
 else
     rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
-    check "an unmeasurable guarded file fails closed" 1 "$rc"
+    check "an unmeasurable guarded file fails closed (Rule 1 / chars_of)" 1 "$rc"
 fi
 chmod 644 "$ROOT/commands/post-compact-resume.md"
+
+# Rule 2's TWIN, which no test covered until 2026-08-04. The round-5 reviewer mutation-proved
+# the gap: reverting marker_pos's `|| echo -2` AND its -2 branch left this harness at 10/0, so
+# half the per-file fail-closed fix could regress silently while Rule 1's half stayed guarded.
+# mission.md is a marker-rule file, so an unreadable one exercises marker_pos, not chars_of.
+if [ "$(id -u)" -eq 0 ]; then
+    printf '  SKIP: an unmeasurable MARKER file fails closed (running as root)\n'
+else
+    chmod 000 "$ROOT/commands/mission.md"
+    rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+    check "an unmeasurable MARKER file fails closed (Rule 2 / marker_pos)" 1 "$rc"
+    chmod 644 "$ROOT/commands/mission.md"
+fi
 
 # #100: in --staged the content is read THROUGH a staging tempdir, and `|| return 0` made an
 # unusable TMPDIR indistinguishable from "nothing staged" - so a broken mktemp cleared an
