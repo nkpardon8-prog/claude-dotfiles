@@ -337,6 +337,7 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
            north_star_source:$nss, current_seq:$seq, last_handoff_path:"",
            last_heartbeat_at:"1970-01-01T00:00:00Z", status:$st, host:"rebuilt",
            mission_path:"", recovered_from_ledger:true}' 2>/dev/null) || MANIFEST=""
+       CHAIN_RESOLVED=1   # every variable is set here; do NOT re-derive below
      elif [ "$CMR_RC" -eq 2 ]; then
        # A manifest file exists but is unusable AND there is no ledger: nothing survives to
        # continue FROM. Preserving the corrupt file is what actually protects the evidence -
