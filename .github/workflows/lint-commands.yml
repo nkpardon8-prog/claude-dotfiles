@@ -112,9 +112,18 @@ jobs:
       # Listed EXPLICITLY rather than globbed. A glob would silently pick up a newly added
       # harness (good) but would also silently drop one that gets renamed (bad), and it would
       # hide which harnesses are deliberately excluded below.
+      # EVERY harness runs, then the job fails with the full list. The first version used
+      # `set -e` around the loop, which aborted on the first red and silently withdrew the
+      # remaining harnesses from coverage - reproduced with a 3-item loop failing on #2:
+      # item #3 never ran. That contradicted the principle stated two steps above in this
+      # same file ("one push should report every lint, not just the first to break"), and it
+      # mattered more here than there: this job is the ONLY automated path for these seven,
+      # so one red harness took the other six offline while still looking like a normal
+      # failure. Deliberately NOT `set -e` in this step - the per-harness rc is the signal.
       - name: Run shell harnesses
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          failed=""
           for h in \
             scripts/hooks/test-auto-compact.sh \
             scripts/hooks/test-chain-primitives.sh \
@@ -124,8 +133,22 @@ jobs:
             scripts/hooks/test-mission-drift-check.sh \
             scripts/hooks/test-stale-handoff-guard.sh ; do
             echo "=== $h ==="
-            bash "$h" </dev/null
+            if [ ! -f "$h" ]; then
+              # A renamed or deleted harness must not vanish from coverage quietly - that is
+              # the same failure this job exists to prevent, one level up.
+              echo "MISSING: $h - listed here but not on disk" >&2
+              failed="$failed $h(missing)"
+              continue
+            fi
+            rc=0
+            bash "$h" </dev/null || rc=$?
+            [ "$rc" -eq 0 ] || failed="$failed $h(rc=$rc)"
           done
+          if [ -n "$failed" ]; then
+            echo "FAILED harnesses:$failed" >&2
+            exit 1
+          fi
+          echo "all harnesses green"
 
       # DELIBERATELY EXCLUDED, recorded rather than silently omitted:
       #   test-secret-scan.sh   - already run by secret-scan.yml; running it twice buys nothing.
