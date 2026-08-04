@@ -156,10 +156,34 @@ chk "without -- it switches mode and reports the index instead" \
 # missing workflow would fail every mutation run and drown the signal it exists to give.
 if [ -f "$REPO/.github/workflows/secret-scan.yml" ]; then
     _wf="$REPO/.github/workflows/secret-scan.yml"
+    # EVERY assertion in this block reads CODE ONLY - comments are stripped first via _wfc.
+    # An adversarial review found the `--` assertion below matching prose in a comment while
+    # its neighbours stripped them, i.e. the block was inconsistent with itself. These stay
+    # TEXT assertions over YAML (this is a bash harness; it cannot run a GitHub job), so they
+    # prove the SHAPE has not regressed - they are not a substitute for the job running.
+    _wfc=$(grep -vE '^[[:space:]]*#' "$_wf")
+
     # `--` used to sit at end-of-line (`secret-scan.sh --$`) because the arguments arrived
     # from a pipe. They are now passed directly, so anchor on the argument that follows.
     chk "CI passes -- to the scanner" \
-        "$(grep -cE 'secret-scan\.sh -- "' "$_wf")" "1"
+        "$(printf '%s\n' "$_wfc" | grep -cE 'secret-scan\.sh -- "')" "1"
+
+    # THE REGRESSION THIS BLOCK EXISTS FOR, and the reason it is a guard rather than a note:
+    # the first rewrite of the CI step replaced `| xargs` with `< <(git ls-files -z)` and so
+    # traded a COVERAGE guarantee for a diagnosis improvement. `set -euo pipefail` does not
+    # cover process substitution - its exit status is structurally unobservable - so with a
+    # git that emitted 2 of 3 paths and died (141), the step printed "clean (2 tracked files
+    # scanned)" and exited 0 with an unscanned secret in the tree, where the `| xargs` form
+    # it replaced went red at 141. Enumeration must go through a FILE whose producer status
+    # is checked. This shape has now regressed ONCE, which is the empirical proof that it
+    # recurs; hence a machine forbids it rather than a comment asking nicely.
+    chk "CI does not enumerate via process substitution (producer status must be checkable)" \
+        "$(printf '%s\n' "$_wfc" | grep -cF '< <(')" "0"
+    chk "CI checks the enumerator's exit status" \
+        "$(printf '%s\n' "$_wfc" | grep -cE 'git ls-files -z > "\$enum"')" "1"
+    # A NUL-terminated stream cut off mid-record silently loses its last path to `read -d ''`.
+    chk "CI rejects a truncated (non NUL-terminated) enumeration" \
+        "$(printf '%s\n' "$_wfc" | grep -c 'no trailing NUL')" "1"
 
     # The scanner speaks 0 / 2 / 3, and 2 (rotate a live credential) and 3 (the scan could
     # not prove anything) demand opposite responses. Piping it through xargs destroys that:
