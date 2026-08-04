@@ -1976,7 +1976,9 @@ mission_resolve_pending() {
   _rp_nonce=$(_mission_marker_field "$_rp_f" nonce)
   _rp_hash=$(_mission_marker_field "$_rp_f" plan_hash)
   _rp_gen=$(_mission_marker_field "$_rp_f" gen); [ -n "$_rp_gen" ] || _rp_gen=1   # preserve gen (Task 4)
-  _rp_pdseq=$(_mission_marker_field "$_rp_f" pdseq); case "$_rp_pdseq" in ''|*[!0-9]*) _rp_pdseq=0 ;; esac  # preserve pdseq monotonic (R7-1)
+  _rp_pdseq_raw=$(_mission_marker_field "$_rp_f" pdseq)  # preserve pdseq monotonic (R7-1)
+  _rp_pdseq=$(_mission_pdseq_parse "$_rp_pdseq_raw") || {   # D9: corrupt counter fails closed, no silent reset
+    _mission_unlock; echo "mission: resolve: REFUSED — malformed marker pdseq '${_rp_pdseq_raw}' (corrupt monotonic counter)" >&2; return 2; }
   _rp_n8=$(printf '%s' "$_rp_nonce" | cut -c1-8)
 
   _rp_tmp=$(mktemp "${_rp_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: resolve: mktemp failed" >&2; return 5; }
