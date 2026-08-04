@@ -121,9 +121,14 @@ check "unknown argument is refused, not silently accepted" 2 "$rc"
 # guarded file did, so a tree with the directory present and the files renamed returned rc=0
 # from --all having measured nothing. CI runs exactly --all, so renaming commands/mission.md
 # would have switched the marker rule off and stayed green.
+# ASSERTS THE REASON, NOT JUST THE RC. First draft of this case checked `rc == 1` and was
+# VACUOUS: with the guarded-file check deleted the lint still exited 1 by another route, so
+# the case stayed green under mutation and proved nothing. Keying on the specific message
+# makes it discriminate - mutation-verified in BOTH directions.
 mv "$ROOT/commands/mission.md" "$ROOT/commands/mission-renamed.md"
-rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
-check "a RENAMED guarded file fails the lint (rule with no target is unenforced)" 1 "$rc"
+_out=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
+check "a RENAMED guarded file fails FOR THAT REASON (rule with no target is unenforced)" \
+      1 "$(printf '%s' "$_out" | grep -c 'guarded file(s) absent.*commands/mission\.md')"
 mv "$ROOT/commands/mission-renamed.md" "$ROOT/commands/mission.md"
 
 # The same guard must NOT fire in --staged, which reads the index via GITROOT and never
