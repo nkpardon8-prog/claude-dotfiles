@@ -182,9 +182,13 @@ else
     mk "$ROOT/commands/post-compact-resume.md" 19000 0 0
     chmod 000 "$ROOT/commands/mission.md"
     _mout=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
+    _mrc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
     chmod 644 "$ROOT/commands/mission.md"
+    # Reason AND exit code, for the same reason as the renamed-target case above: removing
+    # `fail=1` leaves the message printed and the lint passing.
     check "an unmeasurable MARKER file fails closed (Rule 2 / marker_pos)" \
-          1 "$(printf '%s' "$_mout" | grep -c 'commands/mission\.md could not be measured')"
+          "reason=1 rc=nonzero" \
+          "reason=$(printf '%s' "$_mout" | grep -c 'commands/mission\.md could not be measured') rc=$([ "$_mrc" -ne 0 ] && echo nonzero || echo zero)"
 fi
 
 # #100: in --staged the content is read THROUGH a staging tempdir, and `|| return 0` made an
