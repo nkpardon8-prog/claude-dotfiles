@@ -222,7 +222,7 @@ if [ -f "$_wf" ]; then
     # against throwaway fixtures with a STUB scanner, so these cases test what the job DOES.
     # They survive any rename or reformat of the step, and they go red if a fail-closed exit is
     # removed - which the string assertions did not.
-    _ciblk="$FIXROOT/ci-block.sh"
+    _ciblk=$(mktemp "${TMPDIR:-/tmp}/ci-block.XXXXXX")
     awk '
       /^      - name: Run native scanner/ {found=1}
       found && /^        run: \|/ {inblk=1; next}
