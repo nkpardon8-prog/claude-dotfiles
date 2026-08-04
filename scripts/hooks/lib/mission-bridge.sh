@@ -784,6 +784,14 @@ _mission_log_rotate() {
   # /pre-compact writes a given sid at a time). A FUTURE parallel-writer /mission would need the
   # rename-aside approach (rename the log out from under writers, then archive the renamed copy).
   _lr_lb=$(_mission_lockbase "$_lr_root")
+  # D8 (2b #10): if THIS sid's mission lock is ALREADY held by us — the stop-mint appends the human
+  # AWAIT while holding the mint lock — do NOT attempt rotation. _mission_lock is NOT reentrant, so it
+  # would spin the full ~5s tries loop against our own lock and then skip anyway. Key on THIS sid's
+  # EXACT lock path, NOT a bare `[ -n "$_MLOCK" ]` (_MLOCK is a REUSED global :1924). Rotation is
+  # deferrable — it resumes on the next unlocked append.
+  if [ -n "${_MLOCK:-}" ] && [ "$_MLOCK" = "${_lr_lb}/.claude-mission-${_lr_sid}.lock" ]; then
+    return 0
+  fi
   _lr_had_lock=0
   # C3: rotation MUST hold the lock — two concurrent UNLOCKED rotators would both archive+trim
   # and lose/duplicate ranges. If the lock is busy, do NOT rotate this pass: rotation is
