@@ -168,3 +168,17 @@ jobs:
       #   test-mission-bridge.sh - RED at the time this job was added (2 failures) AND owned by
       #                           a different concurrent session actively editing the bridge.
       #                           Not this mission's to fix; see the mission PLAN's ATTRIBUTION.
+      #
+      # NOT YET PORTABLE - these five were in the first version of this job and are the reason
+      # it was red 16/16. Each is a REAL coverage gap, recorded here so it stays visible rather
+      # than quietly forgotten. Every one needs the same treatment test-lint-skill-size.sh got:
+      # derive the target from BASH_SOURCE instead of $HOME, and replace BSD-only utilities.
+      # MEASURED on the runner (run 30880718877) and in a local relocated-checkout fixture:
+      #   test-engine-header.sh       - greps $HOME/.claude-dotfiles/commands/codex-review.md;
+      #                                 "No such file or directory", PASS: 0 FAIL: 1.
+      #   test-handoff-smoke-check.sh - 6 passed / 3 failed; one case gets rc=127 ($HOME path).
+      #   test-auto-compact.sh        - PASS: 73 FAIL: 17 on Linux; BSD-only `stat -f` at :52,:220.
+      #   test-stale-handoff-guard.sh - PASS: 5 FAIL: 3; BSD-only `date -v` at :19.
+      #   test-mission-drift-check.sh - rc=2 in a relocated checkout; also owned by the other
+      #                                 concurrent session, so ATTRIBUTION applies as above.
+      # Re-enroll a harness ONLY after proving it green with the checkout outside $HOME.
