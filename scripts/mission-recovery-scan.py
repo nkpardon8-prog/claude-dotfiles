@@ -20,8 +20,9 @@ For each ~/.claude/chains/<sid>.log:
   * heuristic-dead-gap  -> now - max(last ledger ts, mission-file mtime). LABELLED
     heuristic: last_heartbeat_at is /pre-compact-updated, so it is NOT proof of a stall;
     a long gap is a signal to LOOK, not a verdict.
-  * parked-for-human  -> AUTHORITATIVE: the mission's PENDING DECISIONS zone is non-empty
-    (a real blocking decision was banked), NOT a next= string-grep.
+  * parked-for-human  -> AUTHORITATIVE: an outstanding `AWAIT kind=human` (via await-state). This is
+    the ONLY blocking signal - an ordinary non-empty PENDING DECISIONS zone is the away-policy
+    NON-blocking case (the loop proceeds loudly on its assumption), so it must NOT read as parked (I14).
   * outstanding-AWAIT?  -> via `mission-write.sh await-state <sid> <mission-root>`.
   * next=  -> the last ledger next= line (truncated).
   * a PINNED manual resume command - stated, never run. `/mission resume` clones the
