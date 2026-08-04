@@ -163,8 +163,10 @@ def main():
             candidates.append(mtime_epoch)
         gap = (now.timestamp() - max(candidates)) if candidates else None
 
-        parked = pending_zone_nonempty(mission_path)
         outstanding = await_state(sid, mission_root)
+        # I14 - parked = an outstanding AWAIT kind=human (the ONLY blocking signal). An ordinary
+        # PENDING DECISIONS zone is the non-blocking away-policy case and must NOT read as parked.
+        parked = outstanding.startswith("await") and "kind=human" in outstanding
 
         rows.append(
             {
