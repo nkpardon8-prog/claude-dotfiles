@@ -202,7 +202,7 @@ if [ -f "$_wf" ]; then
     # Comment lines are stripped first - the workflow's own explanation names `| xargs -0`,
     # and a guard that matches its own rationale is a guard that can never fail.
     chk "CI does not pipe the scanner through xargs (rc=2 vs rc=3 must stay distinct)" \
-        "$(grep -vE '^[[:space:]]*#' "$_wf" | grep -cE '\|[[:space:]]*xargs')" "0"
+        "$(printf '%s\n' "$_wfc" | grep -cE '\|[[:space:]]*xargs')" "0"
 
     # An enumeration that yields nothing is a broken enumeration, not a clean tree.
     # Anchored on THIS message, not on the shared "refusing to report clean" phrase: three
