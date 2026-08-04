@@ -189,6 +189,53 @@ else
 fi
 cleanup_sid "$SID"
 
+# --- round-5 review fixes (2026-08-04). Two halves of chain_manifest_read disagreed with
+# each other: the recovery branch validated what it produced, while the FAST path trusted any
+# parseable JSON, and "recovery failed" was reported with the same rc as "first run".
+
+# 1. The fast path must check SHAPE, not just parseability. `jq -e .` returns 0 for {}, [],
+#    0 and "a string"; the primer then rendered a chain banner from .north_star // "" etc -
+#    a hollow banner of defaults, the exact outcome the recovery branch was hardened against.
+SID="chaintest-shape-$$"
+cleanup_sid "$SID"
+for _bad in '{}' '[]' '"just a string"' '0'; do
+    printf '%s' "$_bad" > "$HOME/.claude/chains/${SID}.json"
+    _o=$(chain_manifest_read "$SID" 2>/dev/null); _r=$?
+    if [ "$_r" -ne 0 ]; then
+        pass "non-manifest JSON is rejected by the fast path: $_bad"
+    else
+        fail "fast-path shape check ($_bad)" "rc=0 with bytes=${#_o} - parseable is not the same as valid"
+    fi
+done
+cleanup_sid "$SID"
+
+# 2. rc=2 (ledger exists, recovery failed) must NOT be reported as rc=1 (genuinely first run).
+#    pre-compact.md sets IS_FIRST_RUN=1 / NEW_SEQ=1 and re-derives NORTH_STAR on the first-run
+#    branch, so collapsing these two silently RESTARTS a live chain at seq 1 and discards its
+#    history. This case asserts the DISTINCTION, not merely "non-zero".
+SID="chaintest-rc2-$$"
+cleanup_sid "$SID"
+printf 'not json' > "$HOME/.claude/chains/${SID}.json"
+printf '2026-01-01T00:00:00Z\tseq=7\tctx_pct=1\telapsed=1\tstatus=active\tnext=x\tfiles=1\tcommits=1\tnorth_star_first_120=goal\n' \
+    > "$HOME/.claude/chains/${SID}.log"
+_JQ2=$(mktemp -d); printf '#!/bin/sh\nexit 1\n' > "$_JQ2/jq"; chmod +x "$_JQ2/jq"
+_o2=$(PATH="$_JQ2:$PATH" chain_manifest_read "$SID" 2>/dev/null); _r2=$?
+if [ "$_r2" -eq 2 ]; then
+    pass "a chain WITH a ledger reports rc=2, never rc=1 (must not be reseeded as first run)"
+else
+    fail "rc=2 distinction" "rc=$_r2 (1 would make pre-compact restart this chain at seq 1)"
+fi
+rm -rf "$_JQ2"
+# ...and a genuinely first run must still be rc=1, or the distinction is meaningless.
+cleanup_sid "$SID"
+chain_manifest_read "$SID" >/dev/null 2>&1; _r3=$?
+if [ "$_r3" -eq 1 ]; then
+    pass "a genuinely first run is still rc=1"
+else
+    fail "first-run rc" "rc=$_r3 (want 1)"
+fi
+cleanup_sid "$SID"
+
 echo
 printf 'PASS: %d  FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]
