@@ -119,7 +119,12 @@ jobs:
       # same file ("one push should report every lint, not just the first to break"), and it
       # mattered more here than there: this job is the ONLY automated path for these seven,
       # so one red harness took the other six offline while still looking like a normal
-      # failure. Deliberately NOT `set -e` in this step - the per-harness rc is the signal.
+      # failure. NOTE the runner invokes every `run:` step as `bash -e {0}`, so `set -e` IS in
+      # effect here no matter what the `set -uo pipefail` line says - an earlier version of this
+      # comment claimed the step deliberately ran without it, which was simply false. What
+      # actually keeps the loop alive is `|| rc=$?` absorbing each harness's failure. The
+      # mechanism is the guard, not the absence of -e; stating the wrong reason is how the next
+      # person "simplifies" the guard away.
       - name: Run shell harnesses
         run: |
           set -uo pipefail

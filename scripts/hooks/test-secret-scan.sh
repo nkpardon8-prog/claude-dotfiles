@@ -236,7 +236,7 @@ if [ -d "$_wfdir" ]; then
     # tag literally named `<40 hex chars>-something` satisfied the pin check while remaining
     # under the publisher's control - measured passing before this fix. A SHA pin must be the
     # WHOLE ref, not a prefix of one.
-    _unpinned=$(cat "$_wfdir"/*.yml 2>/dev/null \
+    _unpinned=$(cat "$_wfdir"/*.yml "$_wfdir"/*.yaml 2>/dev/null \
         | grep -vE '^[[:space:]]*#' \
         | grep -E 'uses:[[:space:]]+[^[:space:]]+/' \
         | grep -vE 'uses:[[:space:]]+actions/' \
