@@ -208,7 +208,9 @@ def main():
         print("frozen state into a NEW sid):\n")
         for r in rows:
             print(f"  # {r['sid']}  ({r['status']}, dead-gap {r['gap']})")
-            print(f"  cd {r['cwd']} && /mission resume {r['sid']}")
+            # S4 - shell-quote the path + sid: a mission root with a space or metachar would
+            # otherwise break (or, if pasted, execute) the printed command.
+            print(f"  cd {shlex.quote(r['cwd'])} && /mission resume {shlex.quote(r['sid'])}")
             if r["await"].startswith("await"):
                 print(f"    outstanding: {r['await']}")
         print()
