@@ -327,7 +327,27 @@ case "${1:-}" in
         # working tree clean". Found in round 3, reproduced end to end against a real bare
         # remote. An enumeration finding nothing is legitimately clean - there is nothing
         # to publish - and only an EXPLICIT-PATH caller can be said to have scanned nothing.
+        #
+        # ROUND 4: that exemption then opened a false NEGATIVE, which is the worse direction.
+        # `git diff --name-only` and `git ls-files` emit paths relative to the REPOSITORY ROOT,
+        # but the scan resolved them against the CALLER's cwd - so from any subdirectory every
+        # enumerated path missed, was "not counted", and the exempted invariant let it return
+        # rc=0. MEASURED on one dirty tree holding a real key: rc=2 from the root, rc=0 from
+        # `deep/`, rc=0 from an unrelated repo entirely.
+        #
+        # This was NOT theoretical: dotfiles-sync-pause-notice.sh tells a human recovering from
+        # a CONFIRMED leak to run `bash ~/.claude-dotfiles/scripts/secret-scan.sh --working`
+        # - an absolute path, no cd - as the "Confirm clean" gate immediately before deleting
+        # the marker and resuming pushes to the PUBLIC remote. Run from anywhere but the root,
+        # it answered "clean" about a tree it never looked at.
+        #
+        # Fixed at the cause: enumerate AND scan from the repository root, so the paths git
+        # emits are the paths that get opened. The invariant below is simultaneously widened
+        # from "MODE=file" to "enumerated something but reached none of it", which keeps a
+        # clean tree at rc=0 while failing closed on reach-nothing in EVERY mode.
         MODE=working
+        cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || {
+            echo "secret-scan: --working requires a git repository" >&2; exit 3; }
         if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
             { git diff --name-only -z HEAD && git ls-files --others --exclude-standard -z; } \
                 | sort -uz > "$TMPLIST" || exit 3
