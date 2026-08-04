@@ -166,10 +166,19 @@ chmod 644 "$ROOT/commands/post-compact-resume.md"
 if [ "$(id -u)" -eq 0 ]; then
     printf '  SKIP: an unmeasurable MARKER file fails closed (running as root)\n'
 else
+    # TWO things make this case discriminate, both learned the hard way here:
+    #  1. post-compact-resume.md is restored to a PASSING size first. The Rule-1 case above
+    #     leaves it at 25000 chars (over the 20000 ceiling) and never shrinks it, so every
+    #     later --all run exits 1 for THAT reason - a first draft of this case asserted rc=1
+    #     and passed under every mutation, proving nothing.
+    #  2. It asserts the specific stderr MESSAGE, not the rc. rc=1 is reachable by many
+    #     routes; only this message means "the marker rule could not measure its file".
+    mk "$ROOT/commands/post-compact-resume.md" 19000 0 0
     chmod 000 "$ROOT/commands/mission.md"
-    rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
-    check "an unmeasurable MARKER file fails closed (Rule 2 / marker_pos)" 1 "$rc"
+    _mout=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
     chmod 644 "$ROOT/commands/mission.md"
+    check "an unmeasurable MARKER file fails closed (Rule 2 / marker_pos)" \
+          1 "$(printf '%s' "$_mout" | grep -c 'commands/mission\.md could not be measured')"
 fi
 
 # #100: in --staged the content is read THROUGH a staging tempdir, and `|| return 0` made an
