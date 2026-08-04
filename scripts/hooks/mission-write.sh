@@ -582,6 +582,47 @@ case "$verb" in
     fi
     ;;
 
+  pending-stop)
+    # [D2/D1] BLOCKING sibling of `pending` — the ONE barrier-opener. `pending` (above) stays
+    # NON-BLOCKING; this verb ALSO opens the durable human STOP AWAIT got=0 (via the lib mint).
+    # Interface: pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> <question...>.
+    # DISPATCH ARG THREADING: the verb token is still $1 here, so the fixed args are $2..$8 and the
+    # question tail is $9+. We capture the coords from $4..$8, then `shift 8` (drop
+    # verb+sid+root+slug+part+round+attempt+phase) leaving the question words in $* — exactly how the
+    # `pending` verb threads its <slug> <question...> via `shift 4`. The lib fn
+    # mission_pending_stop_mint wants <sid> <root> <slug> <part> <round> <attempt> <phase> then the
+    # question as its rest, so we hand it the reassembled question as a single argument.
+    if [ -z "$sid" ] || [ -z "$root" ] || [ -z "${4:-}" ] || [ -z "${5:-}" ] || [ -z "${6:-}" ] || [ -z "${7:-}" ] || [ -z "${8:-}" ] || [ -z "${9:-}" ]; then
+      echo "mission-write: usage: pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> <question...>  (BLOCKING barrier-opener; slug=[a-z0-9-]; seq is machine-minted)"
+      exit 0
+    fi
+    _mw_psslug="$4"; _mw_pspart="$5"; _mw_psround="$6"; _mw_psattempt="$7"; _mw_psphase="$8"
+    shift 8
+    _mw_psquestion="$*"
+    _mw_psid=$(mission_pending_stop_mint "$sid" "$root" "$_mw_psslug" "$_mw_pspart" "$_mw_psround" "$_mw_psattempt" "$_mw_psphase" "$_mw_psquestion")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      echo "mission-write: pending-stop ok id=${_mw_psid}"
+    else
+      # Surface the lib fn's fail-closed non-zero returns as a clear, parseable FAILED line (the mint
+      # writes NO pd line and echoes NOTHING on any refusal — a fail-closed orphan the next pending-stop
+      # adopts). rc map mirrors mission_pending_stop_mint's returns.
+      case "$rc" in
+        1) _mw_psreason="bad args / invalid-or-too-long slug / missing question" ;;
+        2) _mw_psreason="corrupt: lock/verify/nonce/pdseq or await-state unreadable — fail closed" ;;
+        3) _mw_psreason="a DIFFERENT open human STOP is already live — resolve/deny it before opening another" ;;
+        4) _mw_psreason="backup failed" ;;
+        5) _mw_psreason="mktemp failed" ;;
+        6) _mw_psreason="gen-tag/rewrite self-check failed — original intact" ;;
+        7) _mw_psreason="sequence-exhausted (next seq would be >999999)" ;;
+        8) _mw_psreason="assembled AWAIT line >= 480B budget" ;;
+        9) _mw_psreason="human AWAIT did not land on the fresh seq (non-land) — no pd line minted" ;;
+        *) _mw_psreason="see stderr" ;;
+      esac
+      echo "mission-write: pending-stop FAILED rc=${rc} (${_mw_psreason})"
+    fi
+    ;;
+
   resolve)
     if [ -z "$sid" ] || [ -z "$root" ] || [ -z "${4:-}" ]; then
       echo "mission-write: usage: resolve <sid> <root> <pd_id> [resolution]"
