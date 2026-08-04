@@ -117,6 +117,25 @@ check "lint fails closed when ROOT has no commands/" 1 "$rc"
 rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --bogus >/dev/null 2>&1; echo $?)
 check "unknown argument is refused, not silently accepted" 2 "$rc"
 
+# #190b / #201 (round-5 review): the ROOT guard proved commands/ EXISTED but not that any
+# guarded file did, so a tree with the directory present and the files renamed returned rc=0
+# from --all having measured nothing. CI runs exactly --all, so renaming commands/mission.md
+# would have switched the marker rule off and stayed green.
+mv "$ROOT/commands/mission.md" "$ROOT/commands/mission-renamed.md"
+rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+check "a RENAMED guarded file fails the lint (rule with no target is unenforced)" 1 "$rc"
+mv "$ROOT/commands/mission-renamed.md" "$ROOT/commands/mission.md"
+
+# The same guard must NOT fire in --staged, which reads the index via GITROOT and never
+# consults $ROOT. Firing there failed runs for a path they do not use, and forced the
+# secret-scan fixture to mkdir an EMPTY commands/ to get past it - passing by having nothing
+# to lint, the very masquerade this part exists to remove.
+_ns="$TMP/nostaged"; mkdir -p "$_ns"
+( cd "$_ns" && git init -q . && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
+cp "$LINT" "$_ns/lint.sh"
+rc=$( cd "$_ns" && HOME="$FAKE_HOME" bash "$_ns/lint.sh" --staged >/dev/null 2>&1; echo $? )
+check "--staged does NOT fail for a missing ROOT/commands (guard is --all scoped)" 0 "$rc"
+
 # #101/#102: a PER-FILE measurement failure (unreadable/undecodable) left `n` empty, so
 # `[ "$n" -gt 20000 ]` errored with "integer expression expected" and the lint exited 0.
 # The preflight only covers a MISSING python3, not a file it cannot read.
