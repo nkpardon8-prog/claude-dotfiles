@@ -232,11 +232,15 @@ fi
 # exempted by convention; every other publisher must be a 40-hex commit sha.
 _wfdir="$REPO/.github/workflows"
 if [ -d "$_wfdir" ]; then
+    # The 40-hex class is BOUNDED with ([[:space:]]|$). Without a boundary, a publisher-movable
+    # tag literally named `<40 hex chars>-something` satisfied the pin check while remaining
+    # under the publisher's control - measured passing before this fix. A SHA pin must be the
+    # WHOLE ref, not a prefix of one.
     _unpinned=$(cat "$_wfdir"/*.yml 2>/dev/null \
         | grep -vE '^[[:space:]]*#' \
         | grep -E 'uses:[[:space:]]+[^[:space:]]+/' \
         | grep -vE 'uses:[[:space:]]+actions/' \
-        | grep -vcE 'uses:[[:space:]]+[^[:space:]]+@[0-9a-f]{40}')
+        | grep -vcE 'uses:[[:space:]]+[^[:space:]]+@[0-9a-f]{40}([[:space:]]|$)')
     chk "every non-actions/ third-party action in EVERY workflow is sha-pinned" "$_unpinned" "0"
 fi
 
