@@ -1992,32 +1992,62 @@ mission_resolve_pending() {
   # C4: the strip is SCOPED to the live-nonce PENDING DECISIONS zone — a `[pd:<id>]` string that
   # appears anywhere else (e.g. quoted in the PLAN zone) is NEVER stripped. We track in-zone state
   # via the live-nonce open/close fences (nonce8 passed through ENVIRON, like mission_rebaseline).
-  ( umask 077 && _RP_PID="[pd:${_rp_id}]" _RP_N8="$_rp_n8" awk '
-      BEGIN { pid = ENVIRON["_RP_PID"]; n8 = ENVIRON["_RP_N8"] }
-      { lines[NR] = $0 }
-      END {
-        openf  = "<!-- MZONE:PENDING DECISIONS n=" n8 " -->"
-        closef = "<!-- /MZONE:PENDING DECISIONS n=" n8 " -->"
-        marker_idx = 0
-        for (i = 1; i <= NR; i++) if (lines[i] ~ /^<!-- MISSION schema=v1 /) marker_idx = i
-        inzone = 0
-        skip_next_mid = 0
-        for (i = 1; i <= NR; i++) {
-          if (i == marker_idx) continue
-          if (lines[i] == openf)  { inzone = 1; printf "%s\n", lines[i]; continue }
-          if (lines[i] == closef) { inzone = 0; printf "%s\n", lines[i]; continue }
-          if (inzone == 1 && index(lines[i], pid) > 0) { skip_next_mid = 1; continue }  # strip resolved pending line (in-zone only)
-          if (skip_next_mid == 1) {
-            skip_next_mid = 0
-            if (lines[i] ~ /^<!-- mid:/) continue                        # strip its paired mid marker
+  # D18 (R8-18): the in-zone match is anchored to LINE-START via a LITERAL prefix `- [pd:<id>] `
+  # (index()==1) — line-start + the trailing `] ` prevents both stripping a pid quoted inside another
+  # line`s question text AND a `1-a` id stripping a `1-a-long` line. D17 (R8-17): the awk COUNTS the
+  # in-zone matches and prints the count to /dev/stderr from THIS SAME `( umask 077 … )` subshell; the
+  # shell captures it and (matched==0) fails loud on never-existed / quiet-ok on idempotent redrive,
+  # (matched>1) treats as corruption — returning BEFORE the narrative append and skipping the mv (the
+  # tmp is content-identical to the original when matched==0).
+  _rp_matched=$( ( umask 077 && _RP_PAT="- [pd:${_rp_id}] " _RP_N8="$_rp_n8" awk '
+        BEGIN { pat = ENVIRON["_RP_PAT"]; n8 = ENVIRON["_RP_N8"]; matched = 0 }
+        { lines[NR] = $0 }
+        END {
+          openf  = "<!-- MZONE:PENDING DECISIONS n=" n8 " -->"
+          closef = "<!-- /MZONE:PENDING DECISIONS n=" n8 " -->"
+          marker_idx = 0
+          for (i = 1; i <= NR; i++) if (lines[i] ~ /^<!-- MISSION schema=v1 /) marker_idx = i
+          inzone = 0
+          skip_next_mid = 0
+          for (i = 1; i <= NR; i++) {
+            if (i == marker_idx) continue
+            if (lines[i] == openf)  { inzone = 1; printf "%s\n", lines[i]; continue }
+            if (lines[i] == closef) { inzone = 0; printf "%s\n", lines[i]; continue }
+            if (inzone == 1 && index(lines[i], pat) == 1) { matched++; skip_next_mid = 1; continue }  # strip resolved pending line (in-zone, line-start anchored)
+            if (skip_next_mid == 1) {
+              skip_next_mid = 0
+              if (lines[i] ~ /^<!-- mid:/) continue                        # strip its paired mid marker
+            }
+            printf "%s\n", lines[i]
           }
-          printf "%s\n", lines[i]
+          print matched+0 > "/dev/stderr"
         }
-      }
-    ' "$_rp_f" > "$_rp_tmp"
-    printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s pdseq=%s -->\n' "$_rp_sid_marker" "$_rp_nonce" "$_rp_hash" "$_rp_gen" "$_rp_pdseq" >> "$_rp_tmp"
-  )
+      ' "$_rp_f" > "$_rp_tmp"
+      printf '<!-- MISSION schema=v1 sid=%s nonce=%s plan_hash=%s gen=%s pdseq=%s -->\n' "$_rp_sid_marker" "$_rp_nonce" "$_rp_hash" "$_rp_gen" "$_rp_pdseq" >> "$_rp_tmp"
+    ) 2>&1 1>/dev/null )
+  # keep only the trailing count digits (defends against any stray subshell stderr).
+  _rp_matched=$(printf '%s\n' "$_rp_matched" | grep -oE '[0-9]+' | tail -1)
+  case "$_rp_matched" in ''|*[!0-9]*) _rp_matched=0 ;; esac
 
+  if [ "$_rp_matched" -gt 1 ]; then
+    rm -f "$_rp_tmp"; _mission_unlock
+    echo "mission: resolve: CORRUPT — ${_rp_matched} pending lines match [pd:${_rp_id}] (expected exactly 1)" >&2; return 2
+  fi
+  if [ "$_rp_matched" -eq 0 ]; then
+    rm -f "$_rp_tmp"
+    # matched nothing: an idempotent redrive (a prior `resolve-<id>` narrative exists in the active-gen
+    # stream) is a QUIET OK; otherwise the id never existed => fail LOUD (distinct rc 8). NOTE: the rare
+    # strip-committed-but-narrative-lost double-fault degrades to this loud REFUSE on redrive (safe: the
+    # pd line is already gone, so no false STOP lingers — a human re-runs and sees the loud message).
+    if _gen_sliced_stream "$_rp_sid" "$_rp_root" 2>/dev/null | awk -F'\t' -v id="$_rp_id" '
+         ($1 ~ /^(g[0-9]+-)?resolve-/) && (index($2, "resolved pd:" id " ") == 1) { found=1 }
+         END { exit(found?0:1) }'; then
+      _mission_unlock; echo "mission: resolve: pd:${_rp_id} already resolved (idempotent no-op)" >&2; return 0
+    fi
+    _mission_unlock; echo "mission: resolve: REFUSED — no pending decision matches pd:${_rp_id} (never existed)" >&2; return 8
+  fi
+
+  # matched exactly 1 — commit the strip.
   if [ -s "$_rp_tmp" ] && mission_verify "$_rp_tmp" "$_rp_sid"; then
     if ! mv -f "$_rp_tmp" "$_rp_f"; then
       rm -f "$_rp_tmp"; _mission_unlock; echo "mission: resolve: rename failed — original intact" >&2; return 6
