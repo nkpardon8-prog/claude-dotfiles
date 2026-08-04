@@ -8,7 +8,8 @@
 #   - Native git pre-push hook also blocks (belt-and-suspenders for manual `git push`)
 #   - GitHub Actions runs the same scan on the server side
 #   - SessionStart scans ~/.config/claude/credentials.md (warn-only)
-# All FIVE layers share the same regex from scripts/secret-scan.sh. A sixth control, .gitignore,
+# Every scanner layer shares the same regex from scripts/secret-scan.sh (no count here - see
+# the note in that file: the numeral drifted three times). A separate control, .gitignore,
 # does NOT use the regex and is frequently MUTUALLY EXCLUSIVE with it: an ignored path is
 # invisible to `--working`, and for opaque-value files (.envrc) it is the only control that can
 # work. Full division of responsibility: docs/SECURITY-secret-chain.md.

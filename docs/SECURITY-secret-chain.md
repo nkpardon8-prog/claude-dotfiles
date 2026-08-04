@@ -20,11 +20,12 @@ Audited and repaired 2026-08-01. Every claim below was established by direct pro
 | god-review 2.4 | `commands/god-review/principles/secret-leak.md` | audit run | **No — reports only** |
 | **`.gitignore`** | `.gitignore` | `git add` / `git add -A` | Yes — the path never becomes stageable |
 
-All six *scanner* layers call `scripts/secret-scan.sh` (exit `0` clean / `2` secret /
+Every *scanner* layer above calls `scripts/secret-scan.sh` (exit `0` clean / `2` secret /
 `3` could-not-prove-clean; precedence `3 > 2 > 0`; hits to stderr, stdout stays empty).
 
 **`.gitignore` is a control, not merely defence in depth — and for some files it is the
-only control that can work.** The two layers are frequently **mutually exclusive** rather
+only control that can work.** The ignore layer and the scanner are frequently **mutually
+exclusive** rather
 than stacked: once a path is ignored, `--working` (which enumerates via `git ls-files
 --others --exclude-standard`) never sees it, so the scanner *cannot* be the backstop.
 That division is deliberate, and it matters most where no pattern can help:
@@ -202,6 +203,26 @@ at all from inside this repository. **Most** need contrived timing or hand-built
 configuration; the older-branch item below is the exception and is reachable with ordinary
 commands, which is exactly why it is stated first-class rather than buried. They are listed so nobody has to
 rediscover them, and so a future change does not quietly assume they are handled.
+
+### Two accepted regex residuals (measured, not theoretical)
+
+Both were live in `scripts/secret-scan.sh` and stated only in a code comment until 2026-08-03,
+which is how three separate reviewers each re-derived them from scratch. They belong here.
+
+- **An alphanumeric-glued key is a false NEGATIVE.** The `sk-` lane is left-anchored on
+  `(^|[^A-Za-z0-9])`, so `PREFIXsk-<44 chars>` returns **rc=0** (measured). This is the
+  unavoidable cost of excluding only `[A-Za-z0-9]`: widening the boundary to also exclude `_`
+  and `-` is what made `backup_sk-<key>` invisible in an earlier round, and narrowing it
+  reintroduces false positives on ordinary kebab-case prose - which jam every commit. A key
+  run together with a preceding word and no separator at all is not a shape secrets are
+  normally written in, so the trade is **accepted**. It is accepted, not absent. Do not
+  "fix" it without a measured false-positive count.
+- **Three lanes are deliberately still unanchored**, in the false-positive (jam) direction:
+  `hf_`, `xox[abposr]-`, and `(rk|sk|pk)_(live|test)_`. Measured rc=2 on the ordinary strings
+  `branchf_...`, `prefixoxb-...`, `network_live_...`. They are far rarer in prose than the
+  `task-`/`risk-`/`disk-` family that forced the original anchoring, and widening a fix
+  without a measured false-positive rate is precisely how the previous over-correction
+  happened. **Tracked, not closed.**
 
 - **The generator fingerprint hashes a pathname, not the executing bytes.**
   `install-git-hooks.sh` computes `shasum "$0"`, but bash has already opened and is reading the

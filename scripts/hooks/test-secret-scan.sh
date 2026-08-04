@@ -579,7 +579,7 @@ done
 
 # --- P3: an unrecognized flag fell through the mode `case` to the path branch, became a
 # nonexistent filename, was skipped, and the scanner exited 0 having scanned NOTHING.
-# Four of the five consumers render no human-facing prose, so none of them would notice.
+# Most consumers render no human-facing prose, so none of them would notice.
 bash "$SCAN" --no-such-flag >/dev/null 2>&1
 chk "unknown flag is rejected, not treated as a filename" "$?" "3"
 bash "$SCAN" --stdin >/dev/null 2>&1
@@ -858,12 +858,28 @@ chk "pre-push still emits RANGE-NOT-PROVEN-CLEAN for an out-of-contract rc" \
 # subject: the first widening matched commands/implement.md's ordinary English ("three of the
 # four outcomes are serial"), a false positive. A guard that cries wolf on unrelated prose
 # gets deleted by the next person, so it must name consumers/layers explicitly.
-_p1=$(printf 'of the %s consumers' 'four'); _p2=$(printf 'All %s layers' 'four')
-_p3=$(printf 'All %s call' 'four');        _p4=$(printf '%s consumers' 'four')
-chk "no stale consumer/layer count anywhere in the repo" \
-    "$(grep -ril -e "$_p1" -e "$_p2" -e "$_p3" -e "$_p4" "$REPO" \
-         --exclude-dir=.git --exclude-dir=tmp --exclude-dir=node_modules 2>/dev/null \
-       | wc -l | tr -d ' ')" "0"
+# THE GUARD NOW CHECKS THE PROPERTY, NOT THE PREVIOUS WORDING. The old versions were a
+# blocklist of the LAST round's numeral, so each time the count drifted forward they passed
+# while a stale count sat in the repo - a guard reporting success on a target it structurally
+# could not see, which is this mission's governing bug class inside the proof suite itself.
+# It drifted three times that way ("three of four" -> "FIVE" -> "SIX"). The numerals are now
+# DELETED from the source; this asserts that no NEW one appears, in any spelling.
+# Two shapes, because the first draft of this guard matched neither "SIX consumers." nor
+# "All six branch on the exit code" - it was mutation-tested and stayed GREEN, i.e. it was
+# itself a guard that could not reach its target. Widened and re-mutated until it goes red:
+#   (1) a number immediately qualifying consumers/layers  ("six consumers", "5 layers")
+#   (2) "all <number>" / "of the <number>"                 ("All six branch", "of the four")
+# SCOPED TO THE FILES THAT DESCRIBE THIS CHAIN, deliberately. A repo-wide version matched
+# ordinary unrelated English ("Two layers" in the macmini skill, in pre-compact's wrong-load
+# defense) - 84 files on the first attempt, 12 on the second. A guard that cries wolf gets
+# deleted by the next person, so it is aimed where the invariant actually lives. Mutation-
+# tested in both directions: it goes RED when a numeral is reintroduced, and GREEN on the
+# unrelated prose elsewhere in the repo.
+_n='(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)'
+_chainfiles="$REPO/scripts/secret-scan.sh $REPO/scripts/dotfiles-sync.sh $REPO/docs/SECURITY-secret-chain.md"
+chk "no numeric consumer/layer count in the chain's own files (the numeral drifted 3x)" \
+    "$(grep -ilE "(^|[^A-Za-z])${_n}[[:space:]]+(consumers|layers)|(all|of the)[[:space:]]+${_n}[[:space:]]+(consumers|layers|branch|share|call)" \
+         $_chainfiles 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 # --- R3: this entry shipped with NO assertion at all, at any depth.
 for _f in .config/git/credentials sub/git/credentials; do
@@ -955,6 +971,60 @@ chk "2.4 scan block propagates the scanner exit code" \
     "$(grep -c '^exit \$rc' "$REPO/commands/god-review/principles/secret-leak.md")" "1"
 chk "2.4 scan block refuses an unset WORKDIR" \
     "$(grep -c 'WORKDIR is unset' "$REPO/commands/god-review/principles/secret-leak.md")" "1"
+
+# ===========================================================================
+echo
+echo "== PART 6: round-5 review fixes (every case measured 2026-08-03) =="
+P6W="$WORK/p6"; mkdir -p "$P6W"
+
+# --- R5-CRITICAL: --working returned rc=3 whenever EVERY enumerated path was non-regular,
+# which dotfiles-sync turns into a permanent pause marker halting all auto-push. Round 4
+# widened the "enumerated but reached none" invariant to every mode while leaving this
+# branch's round-3 "not counted as scanned" skip in place; the two contradicted each other.
+# All three shapes below are ORDINARY, not exotic - (a) is any agent running `git init` in a
+# scratch directory.
+_r5="$P6W/wt"; mkdir -p "$_r5"
+( cd "$_r5" && git init -q . && git config user.email t@t.invalid && git config user.name t \
+  && printf 'base\n' > base.txt && git add base.txt && git commit -qm init ) >/dev/null 2>&1
+# (a) an untracked NESTED REPO is the only change
+( cd "$_r5" && mkdir -p nested && cd nested && git init -q . ) >/dev/null 2>&1
+( cd "$_r5" && bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working tolerates an untracked nested repo (no auto-push jam)" "$?" "0"
+rm -rf "$_r5/nested"
+# (b) a submodule GITLINK bump is the only change
+_r5sub="$P6W/sub"
+( git init -q "$_r5sub" && cd "$_r5sub" && git config user.email t@t.invalid && git config user.name t \
+  && printf 'x\n' > f && git add f && git commit -qm s1 ) >/dev/null 2>&1
+( cd "$_r5" && mkdir -p modx \
+  && git update-index --add --cacheinfo "160000,$(git -C "$_r5sub" rev-parse HEAD),modx" \
+  && git commit -qm addsub ) >/dev/null 2>&1
+( cd "$_r5sub" && printf 'y\n' >> f && git commit -qam s2 ) >/dev/null 2>&1
+( cd "$_r5" && git update-index --cacheinfo "160000,$(git -C "$_r5sub" rev-parse HEAD),modx" ) >/dev/null 2>&1
+( cd "$_r5" && bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working tolerates a submodule gitlink bump alone (no auto-push jam)" "$?" "0"
+( cd "$_r5" && git reset -q --hard ) >/dev/null 2>&1
+# ...and the tolerance must NOT have blinded it: a real secret alongside is still caught.
+( cd "$_r5" && mkdir -p nested2 && cd nested2 && git init -q . ) >/dev/null 2>&1
+printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" > "$_r5/leak.txt"
+( cd "$_r5" && bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working still catches a secret beside a nested repo" "$?" "2"
+rm -rf "$_r5/nested2" "$_r5/leak.txt"
+
+# --- R5: an EXPLICIT-PATH caller must keep the opposite accounting - a lone directory is
+# NOT accounted for, so it still trips the invariant. The two intents differ by who chose
+# the path, which is exactly the distinction round 4 collapsed.
+mkdir -p "$P6W/adir"
+bash "$SCAN" "$P6W/adir" >/dev/null 2>&1
+chk "a lone directory ARGUMENT is still rc=3 (caller asked, nothing scanned)" "$?" "3"
+
+# --- R5: the repo-root guards were structurally DEAD - `cd ""` succeeds and does not move,
+# so outside a repo they never fired (the rc=3 came from the enumeration failing later).
+# Same `cd ""` class fixed in the 2.4 block; the instance was fixed there, the class was not.
+_nr="$P6W/notarepo"; mkdir -p "$_nr"
+chk "--working outside a git repo names the real reason" \
+    "$(cd "$_nr" && bash "$SCAN" --working 2>&1 >/dev/null | grep -c 'requires a git repository')" "1"
+chk "--staged outside a git repo names the real reason" \
+    "$(cd "$_nr" && bash "$SCAN" --staged 2>&1 >/dev/null | grep -c 'requires a git repository')" "1"
 
 # --- R2: the consumer count drifted inside the very commit that forbade drifting.
 # The pattern is ASSEMBLED from fragments so this check cannot match its own source - the

@@ -11,17 +11,18 @@
 #   - commands/god-review/principles/secret-leak.md 2.4      (added 2026-08-03)
 #         Also renders the exit code as prose, and applies the same 3>2>0 precedence.
 #
-# SIX consumers. All six branch on the exit code; TWO of them (SessionStart and the 2.4 scan
-# block) render it as PROSE A HUMAN READS, which is why those two must tell rc=2 from rc=3.
-# Of the rest, dotfiles-sync maps rc=2 and rc=3 to different marker states and pre-push emits
-# its RANGE-NOT-PROVEN-CLEAN token on rc=3 - so "exit-code-only" means "no human-facing
-# prose", never "ignores the value".
+# NO COUNT IS WRITTEN HERE ON PURPOSE. A numeral drifted THREE TIMES - in three consecutive
+# commits that each forbade exactly that drift ("three of four" -> "FIVE" -> "SIX") - and the
+# proof-suite guard could only ever forbid the PREVIOUS wording, so it reported success while
+# a stale count sat in the repo. Deleting the numerals removes the surface: the BULLET LIST
+# above is the fact, and a list cannot go stale without someone editing the thing it lists.
 #
-# THIS COUNT HAS NOW GONE STALE TWICE, in the two commits that each added a consumer while
-# forbidding exactly that drift (round 2 left "three of four"; round 3 added the 2.4 consumer
-# and left "FIVE"). The guard in the proof suite can only forbid the PREVIOUS wording, so it
-# is a lagging indicator, not a check of the invariant - do not trust it to catch the next
-# one. If you add a consumer: add it here, and grep the repo for the old count.
+# The property that actually matters: EVERY consumer branches on the exit code, and the two
+# that render it as PROSE A HUMAN READS (SessionStart and the 2.4 scan block) must tell rc=2
+# from rc=3, because only they can tell a person to rotate a credential. Of the others,
+# dotfiles-sync maps rc=2 and rc=3 to different marker states and pre-push emits its
+# RANGE-NOT-PROVEN-CLEAN token on rc=3 - so "exit-code-only" means "no human-facing prose",
+# never "ignores the value".
 #
 # KEEP THIS LIST COMPLETE. Anyone changing the exit-code vocabulary below must be able to
 # enumerate every caller from here; a consumer missing from this list is a consumer that
@@ -296,8 +297,13 @@ case "${1:-}" in
         MODE=staged
         # Same root-relative reasoning as --working below: git emits repo-relative paths, so
         # the index keys (":$f") and any path test must be evaluated from the repo root.
-        cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || {
-            echo "secret-scan: --staged requires a git repository" >&2; exit 3; }
+        # `cd ""` SUCCEEDS and does not move, so the old form of this guard could never
+        # fire outside a repo - the rc=3 those cases returned came from the enumeration
+        # failing downstream, not from here. Capture first, test for emptiness, then cd.
+        # (Same `cd ""` class fixed in the 2.4 block; instance fixed there, class not.)
+        _root=$(git rev-parse --show-toplevel 2>/dev/null)
+        [ -n "$_root" ] || { echo "secret-scan: --staged requires a git repository" >&2; exit 3; }
+        cd "$_root" || { echo "secret-scan: cannot cd to repo root $_root" >&2; exit 3; }
         # ACMRT, not ACMR: T is a TYPE CHANGE. Staging a symlink-to-regular-file swap that
         # carries a secret produced an empty ACMR enumeration and exited 0 - a real bypass
         # of this very gate. A type-changed path is still an ordinary blob in the index.
@@ -354,8 +360,13 @@ case "${1:-}" in
         # from "MODE=file" to "enumerated something but reached none of it", which keeps a
         # clean tree at rc=0 while failing closed on reach-nothing in EVERY mode.
         MODE=working
-        cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || {
-            echo "secret-scan: --working requires a git repository" >&2; exit 3; }
+        # `cd ""` SUCCEEDS and does not move, so the old form of this guard could never
+        # fire outside a repo - the rc=3 those cases returned came from the enumeration
+        # failing downstream, not from here. Capture first, test for emptiness, then cd.
+        # (Same `cd ""` class fixed in the 2.4 block; instance fixed there, class not.)
+        _root=$(git rev-parse --show-toplevel 2>/dev/null)
+        [ -n "$_root" ] || { echo "secret-scan: --working requires a git repository" >&2; exit 3; }
+        cd "$_root" || { echo "secret-scan: cannot cd to repo root $_root" >&2; exit 3; }
         # --diff-filter=d EXCLUDES deletions (lowercase d = "not deleted"). A deleted path has
         # no bytes to publish, so enumerating it only to skip it is noise - and it is what
         # made the strict invariant below unusable: a deletion-only commit would have
@@ -401,7 +412,7 @@ case "${1:-}" in
         # FAIL CLOSED on an unrecognized option (2026-08-03). Without this branch the
         # catch-all below treated `--stdin` / a typo / a renamed flag as a PATH: the file
         # does not exist, the per-file existence check skips it, and the scanner exits 0
-        # having scanned NOTHING while reporting clean. Four of the five consumers are
+        # having scanned NOTHING while reporting clean. Most consumers render no prose, so
         # exit-code-only, so none of them would ever notice.
         #
         # THE PATTERN IS `-*`, NOT `--*`. Corrected after review: the first draft matched
@@ -497,15 +508,28 @@ while IFS= read -r -d '' f; do
         # A dangling symlink is still scannable (scan_file reads the stored target string,
         # which is what git publishes), so -L is checked before the regular-file test.
         #
-        # A non-regular entry is NOT COUNTED rather than rc=3 (round-3 review). `git ls-files`
-        # emits SUBMODULE GITLINK paths, which exist on disk as directories - failing on them
-        # would turn the CI full-tree scan permanently red the day a submodule is added, and a
-        # gate that reddens on a legitimate repo shape gets disabled by a human. A gitlink also
-        # has no blob in THIS repo, so there is genuinely nothing here to publish. The
-        # zero-scanned invariant below still catches the degenerate case where a directory was
-        # the ONLY argument, so nothing can be pronounced clean without a real scan.
+        # A non-regular entry is accounted for DIFFERENTLY depending on who chose the path,
+        # and that distinction is the whole fix (round-5 review). Round 4 widened the
+        # "enumerated but reached none" invariant to every mode while leaving this branch's
+        # round-3 skip in place, and the two then contradicted each other: when EVERY
+        # enumerated path was non-regular, --working reported rc=3 and dotfiles-sync turned
+        # that into a permanent pause marker. MEASURED, all three reachable and ordinary:
+        # an untracked NESTED REPO (any agent running `git init` in a scratch dir), a
+        # submodule pointer bump alone, and a dirty submodule worktree alone.
+        #
+        #   ENUMERATED BY GIT (--working): git legitimately lists gitlinks and nested repos.
+        #     There is no blob here to publish, so the entry IS accounted for - exactly the
+        #     accounting the --staged branch already uses for index mode 160000. Not doing
+        #     this makes a normal repo shape jam the auto-push.
+        #   NAMED BY THE CALLER (explicit path): a directory is NOT accounted for, so a lone
+        #     directory argument still trips the invariant and returns 3. A caller who asked
+        #     for one thing and got nothing scanned must not be told "clean".
         if [ ! -L "$f" ] && [ ! -f "$f" ]; then
-            echo "secret-scan: not a regular file, not counted as scanned: $f" >&2
+            if [ "$MODE" = working ]; then
+                SCANNED=$((SCANNED + 1))   # nothing to publish here; legitimately accounted
+            else
+                echo "secret-scan: not a regular file, not counted as scanned: $f" >&2
+            fi
             continue
         fi
         out=$(scan_file "$f"); rc=$?
