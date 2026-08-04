@@ -101,7 +101,7 @@ prefix, no `~` (the permission allowlist byte-matches this exact prefix):
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]
 ```
 
-Verbs: `create | log | note | challenge | pending | resolve | rebaseline | render-banner | await`
+Verbs: `create | log | note | challenge | pending | pending-stop | resolve | rebaseline | render-banner | await`
 (the `await` verb opens/updates the durable AWAIT barrier marker - §7/§12) plus `timing-resume |
 timing-contact | timing-close | archive-close` and the read-only bare-token verbs `parse-codex-header |
 void-count | await-state | cursor-hash` (the wake routine's inputs - §12). **Codex NEVER writes the
