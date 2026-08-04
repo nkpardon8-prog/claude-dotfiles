@@ -78,6 +78,31 @@ _file_size() {
   stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0
 }
 
+# _mission_pdseq_parse <token> -> stdout the STRICT-validated pdseq; rc 0 valid, rc 1 malformed.
+#   D9 (R8-9): the pdseq is the monotonic pending-decision high-water counter. Accept EXACTLY:
+#     - `0`                          (the create-time seed; a legit value — mission_create:730/901)
+#     - a non-leading-zero positive `^[1-9][0-9]{0,5}$` (1..999999, <=6 digits)
+#     - ABSENT/empty  => 0
+#   REJECT present-but-malformed: leading-zero-multidigit (`01`, `007`), non-numeric, or >6 digits.
+#   Every WRITE-path re-emitter (rewrite/resolve/rebaseline/stop-mint) routes the marker pdseq
+#   through this so a corrupt counter FAILS LOUD instead of the old silent coerce-to-0 — a silent
+#   reset would let a future mint REUSE a live pd seq, collapsing two decisions onto one barrier and
+#   vanishing a mandatory human STOP. NOT used by mission_verify (it also gates clearing the STOP; a
+#   corrupt counter must never lock the mission out of resolving/clearing).
+_mission_pdseq_parse() {
+  case "${1:-}" in
+    '') printf '0'; return 0 ;;
+    0)  printf '0'; return 0 ;;
+    [1-9]) printf '%s' "$1"; return 0 ;;
+    [1-9][0-9]) printf '%s' "$1"; return 0 ;;
+    [1-9][0-9][0-9]) printf '%s' "$1"; return 0 ;;
+    [1-9][0-9][0-9][0-9]) printf '%s' "$1"; return 0 ;;
+    [1-9][0-9][0-9][0-9][0-9]) printf '%s' "$1"; return 0 ;;
+    [1-9][0-9][0-9][0-9][0-9][0-9]) printf '%s' "$1"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # _file_mtime <path> -> stdout mtime epoch seconds (0 if absent/unreadable). BSD stat then GNU stat
 # (same order as _file_size — BSD `-f %m` errors out on GNU and falls through, never contaminates).
 _file_mtime() {
