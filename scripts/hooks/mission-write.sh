@@ -334,6 +334,26 @@ _mw_validate_log() {
       # close order - it has no lib writer - so that case stays a validating case, not a refusal.)
       _mw_emit_refuse log 1 "REFUSED: MISSION-REBASELINED must be written via the dedicated 'rebaseline' verb, never 'log' (log bypasses the marker gen bump -> forged gen boundary)"
       ;;
+    "DECISION "*)
+      # R8-8 (D13) — the durable human-decision outcome for a pending-stop op. Grammar mirrors PART-DONE
+      # (~:284): body `[mission] DECISION op=<seq>-<slug> outcome=<approve|deny>`, a NON-EMPTY idtag
+      # pinned to the `(g<G>-)?pd-<seq>-decision-<slug>` namespace (DISTINCT from the `m<part>-` namespace,
+      # 2a #13), and idtag<->body `op` EQUALITY. The idtag bind makes DECISION UN-FORGEABLE: a free-text
+      # note carries its own idtag and fails the pin, so it can never masquerade as a decision. This
+      # explicit case ALSO stops the generic `*)` default from REFUSING DECISION as unknown-shape (the
+      # `await got=1` close is lib-enforced to require a same-op DECISION, so this write MUST be allowed).
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] DECISION op=[0-9]+-[a-z0-9-]+ outcome=(approve|deny)$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-decision-shape"
+      [ -n "$_vl_idtag" ] || _mw_emit_refuse log 1 "REFUSED: decision-idtag-must-be-non-empty"
+      printf '%s' "$_vl_bare" | grep -qE '^pd-[0-9]+-decision-[a-z0-9-]+$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-decision-idtag"
+      # idtag<->body op EQUALITY (mirror PART-DONE's idtag<->part check ~:288): the `<seq>-<slug>` encoded
+      # in the idtag (pd-<seq>-decision-<slug>) MUST equal the body `op=<seq>-<slug>`.
+      _dbop=$(printf '%s' "$_vl_entry" | sed -n 's/^\[mission\] DECISION op=\([0-9][0-9]*-[a-z0-9-]*\) outcome=.*/\1/p')
+      _diop=$(printf '%s' "$_vl_bare" | sed -n 's/^pd-\([0-9][0-9]*\)-decision-\([a-z0-9-]*\)$/\1-\2/p')
+      { [ -n "$_dbop" ] && [ "$_dbop" = "$_diop" ]; } \
+        || _mw_emit_refuse log 1 "REFUSED: idtag-entry-field-mismatch (decision)"
+      ;;
     *)
       # MISSION-START / WORK-START are LIB-ONLY emissions (never routed through the log verb); any
       # other unknown `[mission]` leading token is a malformed shape.
