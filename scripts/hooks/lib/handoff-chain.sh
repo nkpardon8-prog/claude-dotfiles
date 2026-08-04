@@ -122,13 +122,31 @@ chain_manifest_read() {
   # Corrupt or missing manifest. Try to rebuild from the ledger if it exists.
   if [ -f "$l" ]; then
     local first_ts last_line last_ts last_seq last_status last_ns inferred_handoff inferred_mission
-    first_ts=$(awk -F'\t' 'NR==1{print $1; exit}' "$l")
-    last_line=$(tail -n 1 "$l" 2>/dev/null)
+    # SCAN THE WHOLE LEDGER, never `tail -n 1`. A single TRAILING BLANK LINE was enough to turn
+    # a live seq=47 chain into `rc=0 current_seq:1 north_star:"<unrecoverable>"` - and because
+    # that came back through the SUCCESS branch, none of the rc=2 machinery fired and the caller
+    # cheerfully rewrote the manifest at seq 2. Measured; found by the round-7 adversarial lens.
+    # The identical whole-ledger scan already existed in commands/pre-compact.md's rc=2 path, so
+    # the bug was fixed in the consumer and left in the producer - it belongs HERE, at the source,
+    # where every caller gets it.
     # Locked field positions: 1=ts  2=seq=  3=ctx_pct=  4=elapsed=  5=status=  6=next=  7=files=  8=commits=  9=north_star_first_120=
-    last_ts=$(printf  '%s' "$last_line" | awk -F'\t' '{print $1}')
-    last_seq=$(printf '%s' "$last_line" | awk -F'\t' '{print $2}' | sed 's/^seq=//')
-    last_status=$(printf '%s' "$last_line" | awk -F'\t' '{print $5}' | sed 's/^status=//')
-    last_ns=$(printf '%s' "$last_line" | awk -F'\t' '{print $9}' | sed 's/^north_star_first_120=//')
+    first_ts=$(awk -F'\t' 'NF>1 && $1 != "" {print $1; exit}' "$l")
+    # Highest VALID seq anywhere, not whatever the final byte happens to be.
+    last_seq=$(awk -F'\t' '{ s=$2; sub(/^seq=/,"",s); if (s ~ /^[0-9]+$/ && s+0 > m) m=s+0 } END { if (m>0) print m }' "$l" 2>/dev/null)
+    # Last NON-EMPTY value for each of these, so a blank or partial final line cannot erase them.
+    last_ts=$(awk -F'\t' 'NF>1 && $1 != "" {v=$1} END{print v}' "$l" 2>/dev/null)
+    last_status=$(awk -F'\t' '$5 ~ /^status=/ {v=$5} END{sub(/^status=/,"",v); print v}' "$l" 2>/dev/null)
+    last_ns=$(awk -F'\t' '$9 ~ /^north_star_first_120=/ {v=$9} END{sub(/^north_star_first_120=/,"",v); print v}' "$l" 2>/dev/null)
+    # A ledger that yields NOTHING usable is not a recovery source. Fabricating an all-defaults
+    # manifest from a 0-byte or non-TSV file manufactured precisely the hollow-manifest-of-
+    # defaults the fast path above was hardened to REJECT - the two halves of this function
+    # disagreed again, with the direction merely flipped. Refuse instead, and let the caller
+    # see rc=2 ("a chain existed, it cannot be rebuilt") rather than a confident lie.
+    if [ -z "$last_seq" ] && [ -z "$last_ns" ] && [ -z "$last_ts" ]; then
+      echo "chain_manifest_read: ledger for $sid yields no usable fields (empty, truncated, or not TSV)" >&2
+      echo "chain_manifest_read: refusing to fabricate a manifest from it" >&2
+      return 2
+    fi
     # Best-effort inference of last_handoff_path. handoff_canonical_root is provided by
     # lib/handoff-locate.sh, which the writer + primer both source before calling us. If it isn't
     # available (e.g. someone sources this lib in isolation), we emit an empty path; consumers can
