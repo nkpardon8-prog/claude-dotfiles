@@ -179,8 +179,13 @@ cd "$WORKDIR" || { echo "secret prefix scan: FAILED - cannot cd to $WORKDIR"; ex
 # this section was rewritten to fix - checked properly here.
 _list=$(mktemp) || { echo "secret prefix scan: FAILED - mktemp"; exit 3; }
 if git rev-parse --git-dir >/dev/null 2>&1; then
-    git ls-files -z > "$_list" || {
-        rm -f "$_list"; echo "secret prefix scan: FAILED - could not enumerate tracked files"; exit 3; }
+    # --cached AND --others: a bare `git ls-files -z` lists ONLY TRACKED files, so a real
+    # token in a brand-new untracked file was skipped entirely and the block printed "clean"
+    # (measured). That was a coverage REGRESSION against the recursive `find` this replaced -
+    # and untracked is precisely where a freshly-pasted credential lives. --exclude-standard
+    # keeps ignored paths out, matching what the scanner's own --working mode enumerates.
+    git ls-files -z --cached --others --exclude-standard > "$_list" || {
+        rm -f "$_list"; echo "secret prefix scan: FAILED - could not enumerate files"; exit 3; }
 else
     find . -type f -not -path './.git/*' -not -path '*/node_modules/*' \
          -not -path '*/dist/*' -not -path '*/target/*' -print0 > "$_list" || {

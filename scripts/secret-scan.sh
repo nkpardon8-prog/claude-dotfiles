@@ -525,9 +525,18 @@ while IFS= read -r -d '' f; do
         #     directory argument still trips the invariant and returns 3. A caller who asked
         #     for one thing and got nothing scanned must not be told "clean".
         if [ ! -L "$f" ] && [ ! -f "$f" ]; then
-            if [ "$MODE" = working ]; then
-                SCANNED=$((SCANNED + 1))   # nothing to publish here; legitimately accounted
+            # WHAT the entry is, not WHO named it (corrected round 6). The round-5 rule keyed
+            # on MODE, but CI and the god-review 2.4 block both ENUMERATE via `git ls-files`
+            # and then pass the result as EXPLICIT PATHS - so a batch that happened to contain
+            # only gitlinks returned rc=3 and would have turned CI red on a valid repository.
+            # MEASURED: `secret-scan.sh -- m1 m2` (two gitlinks) -> rc=3 before this.
+            # A gitlink is identifiable from the index in any mode, so ask that directly.
+            if [ "$MODE" = working ] || \
+               [ "$(git ls-files -s -- "$f" 2>/dev/null | awk '{print $1; exit}')" = 160000 ]; then
+                SCANNED=$((SCANNED + 1))   # no blob in THIS repo; legitimately accounted
             else
+                # A plain directory the caller NAMED is still not accounted for, so a lone
+                # directory argument keeps returning 3 rather than a bare "clean".
                 echo "secret-scan: not a regular file, not counted as scanned: $f" >&2
             fi
             continue

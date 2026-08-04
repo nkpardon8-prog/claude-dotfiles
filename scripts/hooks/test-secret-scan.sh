@@ -876,10 +876,17 @@ chk "pre-push still emits RANGE-NOT-PROVEN-CLEAN for an out-of-contract rc" \
 # tested in both directions: it goes RED when a numeral is reintroduced, and GREEN on the
 # unrelated prose elsewhere in the repo.
 _n='(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)'
-_chainfiles="$REPO/scripts/secret-scan.sh $REPO/scripts/dotfiles-sync.sh $REPO/docs/SECURITY-secret-chain.md"
+# An ARRAY, and grep's own status is checked. The first draft used an unquoted scalar, so a
+# checkout path containing a space would split every target into nonexistent arguments,
+# suppress the errors with 2>/dev/null, count 0 and report PASS having scanned nothing - the
+# governing bug class, in the guard written to enforce it. Now: missing target => loud FAIL.
+_chainfiles=( "$REPO/scripts/secret-scan.sh" "$REPO/scripts/dotfiles-sync.sh" "$REPO/docs/SECURITY-secret-chain.md" )
+_missing=0
+for _cf in "${_chainfiles[@]}"; do [ -r "$_cf" ] || _missing=$((_missing + 1)); done
+chk "the count guard can actually reach all of its target files" "$_missing" "0"
 chk "no numeric consumer/layer count in the chain's own files (the numeral drifted 3x)" \
     "$(grep -ilE "(^|[^A-Za-z])${_n}[[:space:]]+(consumers|layers)|(all|of the)[[:space:]]+${_n}[[:space:]]+(consumers|layers|branch|share|call)" \
-         $_chainfiles 2>/dev/null | wc -l | tr -d ' ')" "0"
+         "${_chainfiles[@]}" 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 # --- R3: this entry shipped with NO assertion at all, at any depth.
 for _f in .config/git/credentials sub/git/credentials; do
@@ -965,7 +972,7 @@ chk "CI bounds the suite with timeout-minutes" \
 chk "SessionStart reports a scan failure past the symlink hop limit" \
     "$(grep -c 'symlink chain deeper than 10 hops' "$REPO/settings.json.template")" "1"
 
-# --- R4: the god-review 2.4 block is a SIXTH consumer; it must propagate the scanner's
+# --- R4: the god-review 2.4 block is another scanner consumer; it must propagate the
 # status rather than exiting 0 while printing FINDINGS, and must not accept an unset WORKDIR.
 chk "2.4 scan block propagates the scanner exit code" \
     "$(grep -c '^exit \$rc' "$REPO/commands/god-review/principles/secret-leak.md")" "1"
@@ -1025,6 +1032,55 @@ chk "--working outside a git repo names the real reason" \
     "$(cd "$_nr" && bash "$SCAN" --working 2>&1 >/dev/null | grep -c 'requires a git repository')" "1"
 chk "--staged outside a git repo names the real reason" \
     "$(cd "$_nr" && bash "$SCAN" --staged 2>&1 >/dev/null | grep -c 'requires a git repository')" "1"
+
+# ===========================================================================
+echo
+echo "== PART 7: round-6 review fixes (every case measured 2026-08-03) =="
+P7W="$WORK/p7"; mkdir -p "$P7W"
+
+# --- R6: the non-regular accounting must key on WHAT THE ENTRY IS, not WHO NAMED IT. Round 5
+# keyed it on MODE, but CI and the god-review 2.4 block both ENUMERATE via `git ls-files` and
+# then pass the result as EXPLICIT PATHS - so a batch that happened to hold only gitlinks
+# returned rc=3 and would have turned CI red on a perfectly valid repository.
+_r6="$P7W/main"; _r6sub="$P7W/sub"
+( git init -q "$_r6sub" && cd "$_r6sub" && git config user.email t@t.invalid && git config user.name t \
+  && printf 'x\n' > f && git add f && git commit -qm s ) >/dev/null 2>&1
+( git init -q "$_r6" && cd "$_r6" && git config user.email t@t.invalid && git config user.name t \
+  && printf 'base\n' > base.txt && git add base.txt && git commit -qm i ) >/dev/null 2>&1
+_r6sha=$( cd "$_r6sub" && git rev-parse HEAD )
+( cd "$_r6" && mkdir -p m1 m2 \
+  && git update-index --add --cacheinfo "160000,$_r6sha,m1" \
+  && git update-index --add --cacheinfo "160000,$_r6sha,m2" ) >/dev/null 2>&1
+( cd "$_r6" && bash "$SCAN" -- m1 m2 >/dev/null 2>&1 )
+chk "an explicit batch of ONLY gitlinks is rc=0 (CI cannot go red on a valid repo)" "$?" "0"
+# ...but a plain directory the caller NAMED is still not accounted for.
+mkdir -p "$_r6/plaindir"
+( cd "$_r6" && bash "$SCAN" plaindir >/dev/null 2>&1 )
+chk "a lone PLAIN directory argument is still rc=3" "$?" "3"
+
+# --- R6: the 2.4 scan block enumerated with a bare `git ls-files`, which lists ONLY TRACKED
+# files - so a real token in a brand-new UNTRACKED file was skipped and it printed "clean".
+# That was a coverage regression against the recursive `find` it replaced, and untracked is
+# exactly where a freshly-pasted credential lives.
+chk "2.4 enumerates untracked files too (--cached --others)" \
+    "$(grep -c 'ls-files -z --cached --others --exclude-standard' "$REPO/commands/god-review/principles/secret-leak.md")" "1"
+
+# --- R6: dotfiles-sync ignored `git add -A`'s status while treating "nothing staged" as
+# benign, so a FAILED staging looked exactly like a clean tree: exit 0, NO pause marker, and
+# the edit never reached the remote. MEASURED: an untracked nested repo makes `git add -A`
+# exit 128 and stage nothing at all - the very shape round 5 taught the scanner to tolerate.
+chk "dotfiles-sync checks git add -A and fails loudly" \
+    "$(grep -c 'if ! git add -A; then' "$REPO/scripts/dotfiles-sync.sh")" "1"
+chk "dotfiles-sync pauses rather than silently delivering nothing" \
+    "$(grep -c 'git add -A failed - nothing staged' "$REPO/scripts/dotfiles-sync.sh")" "1"
+# Behavioural: `git add -A` really does fail on this shape, so the guard has a live trigger.
+_ga="$P7W/ga"; mkdir -p "$_ga"
+( cd "$_ga" && git init -q . && git config user.email t@t.invalid && git config user.name t \
+  && printf 'b\n' > base.txt && git add base.txt && git commit -qm i \
+  && printf 'edit\n' > edit.txt && mkdir nested && cd nested && git init -q . ) >/dev/null 2>&1
+( cd "$_ga" && git add -A >/dev/null 2>&1 )
+chk "git add -A really does fail on an untracked nested repo (guard has a live trigger)" \
+    "$([ "$?" -ne 0 ] && echo fails || echo succeeds)" "fails"
 
 # --- R2: the consumer count drifted inside the very commit that forbade drifting.
 # The pattern is ASSEMBLED from fragments so this check cannot match its own source - the

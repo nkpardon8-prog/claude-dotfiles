@@ -159,7 +159,23 @@ _url=$(git remote get-url "$_remote" 2>/dev/null)
 # owner/repo from either https://github.com/OWNER/REPO(.git) or git@github.com:OWNER/REPO(.git).
 # Portable (BSD/GNU sed): strip a trailing .git and slash, THEN the host prefix — no non-greedy ops.
 _slug=$(printf '%s' "$_url" | sed -e 's#\.git$##' -e 's#/$##' -e 's#^.*github\.com[:/]##')
-git add -A
+# `git add -A`'s status is CHECKED (2026-08-03, round-6 review). It was unchecked, and the
+# next line treats "nothing staged" as benign - so a FAILED staging looked exactly like a
+# clean tree: this script exited 0, wrote NO pause marker, and the edit never reached the
+# remote. Silent non-delivery, which is worse than the loud jam it replaced, and it directly
+# contradicts this file's own _pause doctrine that the marker is the only channel that
+# survives an async hook.
+#
+# MEASURED, two ordinary shapes: (a) an untracked NESTED REPO with no commit - `git add -A`
+# exits 128 and stages NOTHING AT ALL, including unrelated real edits; (b) a contended
+# .git/index.lock, which two overlapping async PostToolUse syncs can produce on their own.
+# Shape (a) is the very shape round 5 taught the scanner to tolerate: removing the loud
+# failure upstream exposed a silent one here.
+if ! git add -A; then
+    echo "dotfiles-sync: git add -A FAILED - nothing was staged, so nothing can be delivered. Common causes: an untracked nested git repo in the tree, or a stale .git/index.lock." >&2
+    _pause "git add -A failed - nothing staged, edits are NOT delivered" other
+    exit 10
+fi
 if git diff --cached --quiet; then
     : # nothing staged — benign, fall through (push may still deliver an earlier held commit)
 elif ! git commit -m "auto-sync: $(date +%Y-%m-%d-%H:%M) from $(hostname -s)"; then

@@ -204,26 +204,6 @@ configuration; the older-branch item below is the exception and is reachable wit
 commands, which is exactly why it is stated first-class rather than buried. They are listed so nobody has to
 rediscover them, and so a future change does not quietly assume they are handled.
 
-### Two accepted regex residuals (measured, not theoretical)
-
-Both were live in `scripts/secret-scan.sh` and stated only in a code comment until 2026-08-03,
-which is how three separate reviewers each re-derived them from scratch. They belong here.
-
-- **An alphanumeric-glued key is a false NEGATIVE.** The `sk-` lane is left-anchored on
-  `(^|[^A-Za-z0-9])`, so `PREFIXsk-<44 chars>` returns **rc=0** (measured). This is the
-  unavoidable cost of excluding only `[A-Za-z0-9]`: widening the boundary to also exclude `_`
-  and `-` is what made `backup_sk-<key>` invisible in an earlier round, and narrowing it
-  reintroduces false positives on ordinary kebab-case prose - which jam every commit. A key
-  run together with a preceding word and no separator at all is not a shape secrets are
-  normally written in, so the trade is **accepted**. It is accepted, not absent. Do not
-  "fix" it without a measured false-positive count.
-- **Three lanes are deliberately still unanchored**, in the false-positive (jam) direction:
-  `hf_`, `xox[abposr]-`, and `(rk|sk|pk)_(live|test)_`. Measured rc=2 on the ordinary strings
-  `branchf_...`, `prefixoxb-...`, `network_live_...`. They are far rarer in prose than the
-  `task-`/`risk-`/`disk-` family that forced the original anchoring, and widening a fix
-  without a measured false-positive rate is precisely how the previous over-correction
-  happened. **Tracked, not closed.**
-
 - **The generator fingerprint hashes a pathname, not the executing bytes.**
   `install-git-hooks.sh` computes `shasum "$0"`, but bash has already opened and is reading the
   old bytes. If the file is atomically replaced in the window between bash's read and the hash,
@@ -280,3 +260,24 @@ exposure through ordinary commit and push workflows - that path is live-verified
 It is not a control against a determined person; it does not protect a checkout of an older
 revision, whose tooling is that revision's; and the residuals above are the places where
 "proven" degrades to "argued".
+
+
+### Two accepted regex residuals (measured, not theoretical)
+
+Both were live in `scripts/secret-scan.sh` and stated only in a code comment until 2026-08-03,
+which is how three separate reviewers each re-derived them from scratch. They belong here.
+
+- **An alphanumeric-glued key is a false NEGATIVE.** The `sk-` lane is left-anchored on
+  `(^|[^A-Za-z0-9])`, so `PREFIXsk-<44 chars>` returns **rc=0** (measured). This is the
+  unavoidable cost of excluding only `[A-Za-z0-9]`: widening the boundary to also exclude `_`
+  and `-` is what made `backup_sk-<key>` invisible in an earlier round, and narrowing it
+  reintroduces false positives on ordinary kebab-case prose - which jam every commit. A key
+  run together with a preceding word and no separator at all is not a shape secrets are
+  normally written in, so the trade is **accepted**. It is accepted, not absent. Do not
+  "fix" it without a measured false-positive count.
+- **Three lanes are deliberately still unanchored**, in the false-positive (jam) direction:
+  `hf_`, `xox[abposr]-`, and `(rk|sk|pk)_(live|test)_`. Measured rc=2 on the ordinary strings
+  `branchf_...`, `prefixoxb-...`, `network_live_...`. They are far rarer in prose than the
+  `task-`/`risk-`/`disk-` family that forced the original anchoring, and widening a fix
+  without a measured false-positive rate is precisely how the previous over-correction
+  happened. **Tracked, not closed.**
