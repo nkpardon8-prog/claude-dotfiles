@@ -160,6 +160,35 @@ case "$F9" in
 esac
 cleanup_sid "$SID"
 
+# --- guard-integrity (2026-08-03, mission part 3): chain_manifest_read must NOT report
+# success while producing nothing. The ledger-recovery path ended in a bare `jq -nc ...`
+# followed by an unconditional `return 0`, so a missing or failing jq gave rc=0 with ZERO
+# bytes on stdout - and callers branch on that rc (`if MANIFEST=$(chain_manifest_read ...)`),
+# so they entered the success path and rendered a chain banner of empty fields.
+# jq is stubbed to fail rather than removed from PATH, because "absent" and "present but
+# broken" are different failures and the broken one is the quieter of the two.
+SID="${UNIQ}-jqfail"
+cleanup_sid "$SID"
+chain_ledger_append "$SID" "$NOW" "seq=1" "ctx_pct=10" "elapsed=0h 0m" "status=active" \
+  "next=jq failure test" "files=0" "commits=0" "north_star_first_120=jq failure verifies"
+rm -f "$HOME/.claude/chains/${SID}.json"          # force the ledger-recovery path
+_JQBIN=$(mktemp -d); printf '#!/bin/sh\nexit 3\n' > "$_JQBIN/jq"; chmod +x "$_JQBIN/jq"
+_out=$(PATH="$_JQBIN:$PATH" chain_manifest_read "$SID" 2>/dev/null); _rc=$?
+rm -rf "$_JQBIN"
+if [ "$_rc" -ne 0 ] && [ -z "$_out" ]; then
+  pass "chain_manifest_read fails closed when jq cannot build the manifest"
+else
+  fail "chain_manifest_read jq-failure" "rc=$_rc bytes=${#_out} (rc=0 with 0 bytes = success reported for nothing)"
+fi
+# ...and the same path must still SUCCEED when jq works, or the guard above is worthless.
+_out2=$(chain_manifest_read "$SID" 2>/dev/null); _rc2=$?
+if [ "$_rc2" -eq 0 ] && [ -n "$_out2" ]; then
+  pass "chain_manifest_read still recovers from the ledger when jq works"
+else
+  fail "chain_manifest_read recovery" "rc=$_rc2 bytes=${#_out2}"
+fi
+cleanup_sid "$SID"
+
 echo
 printf 'PASS: %d  FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]

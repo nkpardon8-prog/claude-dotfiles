@@ -118,7 +118,15 @@ chain_manifest_read() {
       inferred_handoff="$(handoff_canonical_root)/CLAUDE.local.${sid}.md"
       inferred_mission="$(handoff_canonical_root)/MISSION.${sid}.md"
     fi
-    jq -nc \
+    # BUILD, VALIDATE, THEN claim success (2026-08-03, mission part 3 "guard-integrity").
+    # This used to be a bare `jq -nc ... ` followed by an unconditional `return 0`, so if jq
+    # failed or was missing the function returned rc=0 having written NOTHING to stdout.
+    # MEASURED with a stubbed failing jq: rc=0, stdout 0 bytes. Callers branch on the rc
+    # (`if MANIFEST=$(chain_manifest_read "$SID"); then`), so they entered the success path
+    # with an empty manifest and rendered a chain banner of empty fields - success reported
+    # by a function that produced nothing, the class this part exists to kill.
+    local _recovered
+    _recovered=$(jq -nc \
       --arg sid "$sid" --arg st "${first_ts:-1970-01-01T00:00:00Z}" \
       --arg ls "${last_status:-active}" \
       --argjson seq "${last_seq:-1}" \
@@ -129,8 +137,16 @@ chain_manifest_read() {
         north_star:$ns, north_star_source:"recovered",
         current_seq:$seq, last_handoff_path:$lhp,
         last_heartbeat_at:$hb, status:$ls,
-        host:"recovered", mission_path:$mp, recovered_from_ledger:true}'
-    return 0
+        host:"recovered", mission_path:$mp, recovered_from_ledger:true}') || _recovered=""
+    # Non-empty AND parseable, or this is not a success. rc=1 is the honest answer: the
+    # caller then treats the chain as unavailable (no banner) instead of rendering a
+    # hollow one, and the reason goes to stderr where a human can see it.
+    if [ -n "$_recovered" ] && printf '%s' "$_recovered" | jq -e . >/dev/null 2>&1; then
+        printf '%s\n' "$_recovered"
+        return 0
+    fi
+    echo "chain_manifest_read: ledger recovery produced no valid manifest for $sid (jq missing or failed)" >&2
+    return 1
   fi
 
   # Truly first run.
