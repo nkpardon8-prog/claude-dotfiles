@@ -239,8 +239,12 @@ if [ -f "$_wf" ]; then
         _d=$(mktemp -d); ( cd "$_d" || exit 99
             git init -q . 2>/dev/null; git config user.email t@t; git config user.name t
             mkdir -p scripts bin
-            # Stub scanner: exit 2 for a path containing "secret", 3 for "unreadable", else 0.
-            printf '#!/usr/bin/env bash\n[ "${1:-}" = "--" ] && shift\nrc=0\nfor f in "$@"; do case "$f" in *secret*) rc=2 ;; *unreadable*) rc=3 ;; esac; done\nexit $rc\n' > scripts/secret-scan.sh
+            # Stub scanner. The markers are LEAKY / NOSCAN, deliberately NOT "secret" or
+            # "unreadable": the first draft matched *secret* and so matched the scanner's own
+            # path `scripts/secret-scan.sh`, making a clean tree report rc=2. The stub also
+            # applies precedence 3 > 2 itself - without it, the final rc depended on the order
+            # git happened to enumerate the files, which made the both-conditions case flap.
+            printf '#!/usr/bin/env bash\n[ "${1:-}" = "--" ] && shift\nrc=0\nfor f in "$@"; do case "$f" in *NOSCAN*) rc=3 ;; *LEAKY*) [ "$rc" -eq 3 ] || rc=2 ;; esac; done\nexit $rc\n' > scripts/secret-scan.sh
             chmod +x scripts/secret-scan.sh
             "$1"
             PATH="$_d/bin:$PATH" bash "$_ciblk" >/dev/null 2>&1; echo $?
