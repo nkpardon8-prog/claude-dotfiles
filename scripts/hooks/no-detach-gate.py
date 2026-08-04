@@ -33,8 +33,10 @@ DETACH = re.compile(
     r'(^|\s)(nohup|disown|setsid)(\s|$)'
     r'|(?<!&)&\s*(disown|echo|true|printf|#|$)'
 )
-# The classic redirect-then-detach form: `... >/dev/null 2>&1 &` (not `&&`).
-REDIR_DETACH = re.compile(r'>\s*/dev/null\s+2>&1\s*&(?!&)')
+# The classic redirect-then-detach form: `... >/dev/null 2>&1 &` (not `&&`). A trailing `wait` is
+# EXEMPT (I2): `codex >/dev/null 2>&1 & wait` blocks until codex exits, which is SAFE and tracked -
+# it must not be gated, exactly like the `& wait` case the DETACH alternation already lets through.
+REDIR_DETACH = re.compile(r'>\s*/dev/null\s+2>&1\s*&(?!&)(?!\s*wait\b)')
 # A codex launch token. Case-sensitive by design: `$CODEX_BIN` deliberately does
 # NOT match (accepted known-open).
 CODEX = re.compile(r'\bcodex\b|codex-exec\.sh|codex-invoke\.sh')

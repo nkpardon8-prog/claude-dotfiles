@@ -34,6 +34,8 @@ TESTS=(
   "02-await-lifecycle.sh"
   "03-lost-wake-replay.sh"
   "04-idempotent-cursor.sh"
+  "05-corrupt-read-loud.sh"
+  "06-wiring-present.sh"
 )
 PASS=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do

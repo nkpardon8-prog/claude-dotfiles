@@ -2,6 +2,7 @@ nohup codex exec x & echo launched	block	nohup + trailing-& detach of codex
 codex exec x & disown	block	bare & then disown detaches codex
 setsid codex exec x	block	setsid detaches codex from the shell
 codex exec x >/dev/null 2>&1 &	block	redirect-then-& classic orphan form
+codex exec x >/dev/null 2>&1 & wait	allow	redirect-then-& but a trailing wait blocks until codex exits - I2 exemption in REDIR_DETACH
 codex exec x & true	block	bare & then no-op true detaches codex
 nohup "$CHROME" --headless >/dev/null 2>&1 &	allow	detach but no codex token - not our concern
 nohup "$RL_REFRESH" &	allow	detach but no codex token - not our concern

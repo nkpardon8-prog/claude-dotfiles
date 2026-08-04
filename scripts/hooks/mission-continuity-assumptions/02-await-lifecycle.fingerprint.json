@@ -1,1 +1,1 @@
-{"open_got0":"outstanding","partial_got2":"outstanding got=2","join_got_eq_need":"none","banked_round_supersedes":"none","human_await":"outstanding kind=human"}
+{"open_got0":"outstanding ready=0","partial_got2":"outstanding got=2 ready=0","or_join":"outstanding got=3 ready=1","banked_round_supersedes":"none","void_supersedes":"none","void_then_fresh_attempt":"outstanding attempt=2","human_await":"outstanding kind=human","human_await_closed":"none","started_at_stable":"1000","embedded_await_no_inject":"none"}

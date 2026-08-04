@@ -39,14 +39,17 @@
 #                                                 space-separated part/phase/round/kind/op/attempt/need/got
 #                                                 [/started_at] pairs — reassembled in canonical order)
 #
-#   THREE DOCUMENTED ARGV EXCEPTIONS (read-only verbs — different argv shape; bare-token stdout; NO
+#   FOUR DOCUMENTED ARGV EXCEPTIONS (read-only verbs — different argv shape; bare-token stdout; NO
 #   `mission-write: <verb> …` status line; handled BEFORE the root-guard):
 #     parse-codex-header <file>                  (stdout: bare `N/4`, empty on absent/malformed header)
 #     void-count <sid> <root> <part> <round>     (stdout: bare integer >=0, or `-1` refused-read sentinel)
-#     await-state <sid> <root>                   (stdout: bare `none` or `await kind=… op=… part=… round=…
-#                                                 need=… got=… started_at=…` — the newest outstanding AWAIT)
+#     await-state <sid> <root>                   (stdout: bare `none` | `corrupt` | `await kind=… op=…
+#                                                 part=… round=… attempt=… need=… got=… ready=<0|1>
+#                                                 started_at=…` — the newest outstanding AWAIT barrier)
+#     cursor-hash <sid> <root>                   (stdout: bare 64-hex sha256 of the gen-scoped state,
+#                                                 empty, or `corrupt` on a refused gen-boundary read)
 #
-# Exactly ONE status line is printed to stdout (EXCEPT the two read-only verbs above, whose stdout is
+# Exactly ONE status line is printed to stdout (EXCEPT the four read-only verbs above, whose stdout is
 # a bare machine token):
 #   mission-write: <verb> ok
 #   mission-write: <verb> COLLISION (…)                 (log/note/challenge/pending — idtag+diff content)
@@ -74,14 +77,18 @@ fi
 verb="${1:-}"; sid="${2:-}"; root="${3:-}"
 
 # ── DOCUMENTED PRE-ROOT-GUARD ARGV EXCEPTIONS (read-only verbs) ─────────────────────────────
-# Three verbs break the `<verb> <sid> <root>` dispatcher shape because they are READ-ONLY and their
+# FOUR verbs break the `<verb> <sid> <root>` dispatcher shape because they are READ-ONLY and their
 # stdout is a BARE machine token (no `mission-write: <verb> …` status line). They run BEFORE the
 # root-guard (their argv/output shape is different) and BEFORE the general dispatch. All still `exit 0`.
+# Because they self-handle a `..` root here (fail-safe token), they are DELIBERATELY absent from the
+# general root-guard case below — listing them there would be dead code (unreachable after this block).
 #   parse-codex-header <file>              → stdout: bare `N/4` (empty on absent/malformed header)
 #   void-count <sid> <root> <part> <round> → stdout: bare integer >=0 (the count) or `-1` sentinel
 #                                            (refused gen-sliced read / non-numeric args)
-#   await-state <sid> <root>               → stdout: bare `none` or `await …` (newest outstanding AWAIT;
-#                                            a `..` root fails safe to `none`)
+#   await-state <sid> <root>               → stdout: bare `none` | `corrupt` | `await …` (newest
+#                                            outstanding AWAIT; a `..` root fails safe to `none`)
+#   cursor-hash <sid> <root>               → stdout: bare 64-hex digest | empty | `corrupt`
+#                                            (a `..` root fails safe to empty)
 case "$verb" in
   parse-codex-header)
     # argv exception: <verb> <file>. Anti-spoof: first full-shape ^Engine: line only.
@@ -399,7 +406,7 @@ _mw_partdone_check() {
 # exit 0. The normal absolute-path case (no `..`) is unaffected. Only enforced for verbs that
 # actually take a <root> arg (i.e. not the help/usage paths, which have no root).
 case "$verb" in
-  create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash)
+  create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await)
     case "$root" in
       ""|*..*)
         # I2: emit the parseable failure shape (FAILED rc=N), not a bare REFUSED line — the

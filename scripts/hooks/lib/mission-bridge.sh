@@ -1285,11 +1285,15 @@ mission_log_append() {
 #   Line shape (field order is the grep contract — do NOT reorder):
 #     [mission] AWAIT part=N phase=P round=K kind=<job|human> op=<slug> attempt=A need=<M> got=<G> started_at=<epoch>
 #   idtag: m<N>-await-<op>-r<K>-a<A>-g<G>   (gen-prefixed automatically by mission_log_append)
-#   Distinct got values mint distinct lines (…-g0, …-g1, …-g3), so the barrier's progress is an
-#   append-only trail; the newest AWAIT for a part/round carries the latest got. The barrier is
-#   banked (a normal phase=review round line / PART-DONE) ONLY once got==need, which SUPERSEDES the
-#   AWAIT. The `await`-replay §8 row re-runs the missing lane if a background-completion wake is lost,
-#   so correctness never depends on 100% wake delivery.
+#   EACH LANE WRITES ONLY ITS OWN BIT (impl-reviewer => got=1, codex-review => got=2); the reader
+#   (mission_await_state) OR-accumulates every bit reported for the current (part,round,attempt) so a
+#   codex-first sequence never loses the impl bit (round-1 review C2). Distinct got values mint
+#   distinct lines (…-g0, …-g1, …-g2), so the barrier is an append-only trail; started_at is
+#   barrier-stable (C3) so a same-bit re-report dedups byte-for-byte instead of colliding. The barrier
+#   is banked (a normal phase=review round line / PART-DONE) once the OR'd got satisfies need
+#   ((got&need)==need, surfaced as `ready=1`), which SUPERSEDES the AWAIT; a VOID for that part/round
+#   also supersedes it (a dead lane never replays forever — C8). The `await`-replay §8 row re-runs the
+#   missing lane if a background-completion wake is lost, so correctness never needs 100% wake delivery.
 # ===========================================================================================
 
 # _mission_await_field <fields-string> <key> -> stdout the value of <key> (run of grammar chars) in
@@ -1315,7 +1319,42 @@ mission_await_append() {
   _aw_need=$(_mission_await_field "$_aw_fields" need)
   _aw_got=$(_mission_await_field "$_aw_fields" got)
   _aw_started=$(_mission_await_field "$_aw_fields" started_at)
-  [ -n "$_aw_started" ] || _aw_started=$(date +%s 2>/dev/null || echo 0)
+  # C4 — validate EVERY field BEFORE any append (mirror the _mw_validate_log AWAIT grammar). A
+  # malformed marker must fail LOUD (rc 1, no write): an AWAIT is durable control state the wake
+  # routine acts on, so a blank/garbage part/round/kind must NEVER land with a clean append.
+  case "$_aw_part"    in ''|*[!0-9]*) echo "mission: await: bad part '${_aw_part}'" >&2; return 1 ;; esac
+  case "$_aw_round"   in ''|*[!0-9]*) echo "mission: await: bad round '${_aw_round}'" >&2; return 1 ;; esac
+  case "$_aw_attempt" in ''|*[!0-9]*) echo "mission: await: bad attempt '${_aw_attempt}'" >&2; return 1 ;; esac
+  case "$_aw_need"    in ''|*[!0-9]*) echo "mission: await: bad need '${_aw_need}'" >&2; return 1 ;; esac
+  case "$_aw_got"     in ''|*[!0-9]*) echo "mission: await: bad got '${_aw_got}'" >&2; return 1 ;; esac
+  case "$_aw_kind"    in job|human) : ;; *) echo "mission: await: bad kind '${_aw_kind}' (want job|human)" >&2; return 1 ;; esac
+  case "$_aw_op"      in ''|*[!a-z0-9-]*) echo "mission: await: bad op '${_aw_op}'" >&2; return 1 ;; esac
+  case "$_aw_phase"   in ''|*[!a-z]*) echo "mission: await: bad phase '${_aw_phase}'" >&2; return 1 ;; esac
+  # need/got range (bitmask universe is bits 1,2 => need 1..7, got 0..7). Reject need=0 (a barrier
+  # that can never complete) and out-of-universe masks (would make the containment test nonsense).
+  { [ "$_aw_need" -ge 1 ] && [ "$_aw_need" -le 7 ]; } || { echo "mission: await: need out of range '${_aw_need}'" >&2; return 1; }
+  { [ "$_aw_got"  -ge 0 ] && [ "$_aw_got"  -le 7 ]; } || { echo "mission: await: got out of range '${_aw_got}'" >&2; return 1; }
+  # C3 — started_at is BARRIER-STABLE. Reuse the EARLIEST started_at already recorded for this
+  # (part,round,attempt) so (a) a same-got re-report is byte-identical => mission_log_append dedups
+  # it (no idtag collision: the idtag excludes started_at, so a fresh epoch on retry would collide),
+  # and (b) the barrier age never resets under a partial-completion retry. Only when no prior AWAIT
+  # exists for this barrier do we stamp a fresh epoch. Read is best-effort (a refused/empty stream
+  # just means "no prior" => fresh stamp); the write path never depends on the gen-sliced read.
+  _aw_prev_start=$(_gen_sliced_stream "$_aw_sid" "$_aw_root" 2>/dev/null | awk -v pt="$_aw_part" -v rd="$_aw_round" -v at="$_aw_attempt" '
+    function fval(s,key,   p,idx,rest,a){ p=key"="; idx=index(s,p); if(idx==0) return ""; rest=substr(s,idx+length(p)); split(rest,a," "); return a[1] }
+    { t=index($0,"\t"); idt=(t>0)?substr($0,1,t-1):""; body=(t>0)?substr($0,t+1):$0 }
+    (idt ~ /^(g[0-9]+-)?m[0-9]+-await-/) && (body ~ /^\[mission\] AWAIT part=/) {
+      if (fval(body,"part")==pt && fval(body,"round")==rd && fval(body,"attempt")==at) {
+        s=fval(body,"started_at")+0
+        if (s>0 && (best==0 || s<best)) best=s
+      }
+    }
+    END { if (best>0) print best }')
+  if [ -n "$_aw_prev_start" ]; then
+    _aw_started="$_aw_prev_start"
+  else
+    case "$_aw_started" in ''|*[!0-9]*) _aw_started=$(date +%s 2>/dev/null || echo 0) ;; esac
+  fi
   _aw_entry="[mission] AWAIT part=${_aw_part} phase=${_aw_phase} round=${_aw_round} kind=${_aw_kind} op=${_aw_op} attempt=${_aw_attempt} need=${_aw_need} got=${_aw_got} started_at=${_aw_started}"
   _aw_idtag="m${_aw_part}-await-${_aw_op}-r${_aw_round}-a${_aw_attempt}-g${_aw_got}"
   mission_log_append "$_aw_sid" "$_aw_root" "$_aw_entry" "$_aw_idtag"
@@ -1326,14 +1365,19 @@ mission_await_append() {
 # _gen_sliced_stream). The idempotency cursor for the mission wake routine: two wakes that read the
 # same state hash identically; ANY append changes it. ROTATION-INVARIANT — _gen_sliced_stream
 # concatenates archives before the live log, so a rotation that moves lines to an archive yields the
-# same stream. TOLERANT: a refused gen-sliced read (boundary mismatch) degrades to hashing the empty
-# state rather than erroring (the wake routine handles boundary corruption on its own path). Full
-# 64-hex digest (NOT the 16-char detection prefix) for cursor collision-resistance.
+# same stream. C5 — a refused gen-sliced read (boundary mismatch: the rollover/corruption crash
+# window) is NOT valid empty state: it emits the distinct `corrupt` token (rc 3) so the wake routine
+# takes its STOP-LOUD path instead of hashing an empty stream and mistaking corruption for "no
+# change". Full 64-hex digest (NOT the 16-char detection prefix) for cursor collision-resistance.
 mission_cursor_hash() {
   _ch_sid=$(_mission_sanitize_sid "$1"); _ch_root="$2"
   [ -n "$_ch_sid" ]  || { echo "mission: cursor-hash: invalid sid" >&2; return 1; }
   [ -n "$_ch_root" ] || { echo "mission: cursor-hash: missing root" >&2; return 1; }
-  _ch_stream=$(_gen_sliced_stream "$_ch_sid" "$_ch_root" 2>/dev/null) || true
+  _ch_stream=$(_gen_sliced_stream "$_ch_sid" "$_ch_root" 2>/dev/null); _ch_grc=$?
+  if [ "$_ch_grc" -ne 0 ]; then
+    echo "mission: cursor-hash: gen-boundary REFUSED (corrupt read window) — not hashing stale state" >&2
+    printf 'corrupt\n'; return 3
+  fi
   _ch_state=$(printf '%s\n' "$_ch_stream" | grep -E '\[mission\] ' 2>/dev/null || true)
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "$_ch_state" | shasum -a 256 2>/dev/null | awk '{print $1}'
@@ -1348,52 +1392,90 @@ mission_cursor_hash() {
 }
 
 # mission_await_state <sid> <root> -> stdout ONE bare machine token for the newest OUTSTANDING AWAIT,
-# or `none`. Reads the gen-scoped, archive-inclusive stream (_gen_sliced_stream). Outstanding = an
-# AWAIT line with got < need that is NOT superseded by a later durable progress line for the same
-# part/round (a newer `phase=review` round line, or a PART-DONE for that part) AND the mission is not
-# MISSION-CLEARED. Emits: `none` | `await kind=<job|human> op=<slug> part=N round=K need=<M> got=<G>
-# started_at=<epoch>`. TOLERANT (`|| true`, empty=valid) like the §8 resume-read idiom.
+# or `none`, or `corrupt`. Reads the gen-scoped, archive-inclusive stream (_gen_sliced_stream).
+# Outstanding = an AWAIT barrier that is NOT superseded by a LATER durable event for the same
+# part/round (a newer `phase=review` round line, a VOID for that part/round, or a PART-DONE for that
+# part) AND the mission is not MISSION-CLEARED. Emits:
+#   `none` | `corrupt` |
+#   `await kind=<job|human> op=<slug> part=N round=K attempt=A need=<M> got=<G> ready=<0|1> started_at=<epoch>`
+# Semantics (fixes from the round-1 review):
+#  - C1: an AWAIT is emitted whether got<need OR got==need (join-ready). The join transition (banking
+#    the round) is UNREACHABLE if a got==need barrier reads as `none`; the WAKE ROUTINE, not this
+#    reader, decides bank-vs-wait off the emitted `ready` bit. Supersession (a banked review line /
+#    VOID / PART-DONE arriving AFTER the barrier's newest AWAIT line) is what clears it.
+#  - C2: `got` is the OR of every lane bit reported for the CURRENT (part,round,attempt) barrier, so a
+#    codex-first (got=2) then impl (got=1) sequence still joins (bit 1 is never lost by a later write).
+#  - C8: a VOID for (part,round) supersedes an incomplete barrier so a dead lane does not replay
+#    forever; a fresh attempt's AWAIT (higher NR than the VOID) is live again.
+#  - I1: emits `attempt` so the §8 replay row can re-run the missing lane at the right attempt.
+#  - S1: AWAIT + supersession lines are body-anchored (`^\[mission\] …` AFTER the idtag/TAB column),
+#    and AWAIT additionally requires an await-grammar idtag column, so a free-text note/criticer line
+#    that merely EMBEDS the substring `[mission] AWAIT …` can never inject control state.
+#  - C5: a refused gen-sliced read (rollover/corruption window) emits `corrupt` (rc 3), not `none`.
 mission_await_state() {
   _as_sid=$(_mission_sanitize_sid "$1"); _as_root="$2"
   { [ -n "$_as_sid" ] && [ -n "$_as_root" ]; } || { printf 'none\n'; return 0; }
-  _as_stream=$(_gen_sliced_stream "$_as_sid" "$_as_root" 2>/dev/null) || true
+  _as_stream=$(_gen_sliced_stream "$_as_sid" "$_as_root" 2>/dev/null); _as_grc=$?
+  if [ "$_as_grc" -ne 0 ]; then
+    echo "mission: await-state: gen-boundary REFUSED (corrupt read window)" >&2
+    printf 'corrupt\n'; return 3
+  fi
   printf '%s\n' "$_as_stream" | awk '
+    function bor(a,b,   r,bit){ r=0; bit=1; while(a>0||b>0){ if((a%2)==1||(b%2)==1) r+=bit; a=int(a/2); b=int(b/2); bit*=2 } return r }
+    function band(a,b,  r,bit){ r=0; bit=1; while(a>0&&b>0){ if((a%2)==1&&(b%2)==1) r+=bit; a=int(a/2); b=int(b/2); bit*=2 } return r }
     function fval(s, key,   p, idx, rest, a) {
       p = key "="; idx = index(s, p)
       if (idx == 0) return ""
       rest = substr(s, idx + length(p)); split(rest, a, " "); return a[1]
     }
     BEGIN { cleared = 0 }
-    /\[mission\] MISSION-CLEARED/ { cleared = 1; next }
-    # An AWAIT line: record/update the per-(part,round) outstanding state on the NEWEST occurrence.
-    /\[mission\] AWAIT part=/ {
-      pt = fval($0, "part"); rd = fval($0, "round"); k = pt SUBSEP rd
-      nd = fval($0, "need") + 0; gt = fval($0, "got") + 0
-      if (gt < nd) {
-        out[k] = 1; seq[k] = NR
-        okind[k] = fval($0, "kind"); oop[k] = fval($0, "op")
-        opart[k] = pt; oround[k] = rd
-        oneed[k] = fval($0, "need"); ogot[k] = fval($0, "got"); ostart[k] = fval($0, "started_at")
-      } else { out[k] = 0 }
+    { t = index($0, "\t"); idt = (t>0)?substr($0,1,t-1):""; body = (t>0)?substr($0,t+1):$0 }
+    # MISSION-CLEARED (body-anchored) — the mission is done; nothing outstanding.
+    body ~ /^\[mission\] MISSION-CLEARED/ { cleared = 1; next }
+    # AWAIT — S1 double-anchor (idtag column grammar + body prefix). Accumulate the got mask by OR
+    # per (part,round,attempt); carry the earliest started_at; track this barrier`s newest line NR.
+    (idt ~ /^(g[0-9]+-)?m[0-9]+-await-/) && (body ~ /^\[mission\] AWAIT part=/) {
+      pt = fval(body,"part"); rd = fval(body,"round"); at = fval(body,"attempt")
+      k3 = pt SUBSEP rd SUBSEP at
+      gotmask[k3] = bor(gotmask[k3], fval(body,"got") + 0)
+      oneed[k3]   = fval(body,"need") + 0
+      okind[k3]   = fval(body,"kind"); oop[k3] = fval(body,"op")
+      opart[k3]   = pt; oround[k3] = rd; oatt[k3] = at
+      st = fval(body,"started_at") + 0
+      if (st > 0 && (ostart[k3] == 0 || st < ostart[k3])) ostart[k3] = st
+      if (NR > maxnr[k3]) maxnr[k3] = NR
+      k2of[k3] = pt SUBSEP rd; seen[k3] = 1
       next
     }
-    # A banked review round line (leading token part=, NOT AWAIT) supersedes its part/round AWAIT.
-    /\[mission\] part=[0-9]+ / && /phase=review/ {
-      pt = fval($0, "part"); rd = fval($0, "round"); out[pt SUBSEP rd] = 0; next
+    # Supersession, body-anchored, keyed by (part,round): a banked review round line or a VOID.
+    (body ~ /^\[mission\] part=[0-9]+ /) && (body ~ /phase=review/) {
+      key = fval(body,"part") SUBSEP fval(body,"round"); if (NR > supnr[key]) supnr[key] = NR; next
     }
-    # PART-DONE supersedes ALL awaits for that part.
-    /\[mission\] PART-DONE part=/ {
-      pt = fval($0, "part")
-      for (kk in out) { split(kk, kp, SUBSEP); if (kp[1] == pt) out[kk] = 0 }
-      next
+    body ~ /^\[mission\] VOID part=/ {
+      key = fval(body,"part") SUBSEP fval(body,"round"); if (NR > supnr[key]) supnr[key] = NR; next
     }
+    # PART-DONE supersedes ALL rounds of that part (keyed by part, compared by NR).
+    body ~ /^\[mission\] PART-DONE part=/ { pd = fval(body,"part"); if (NR > pdnr[pd]) pdnr[pd] = NR; next }
     END {
       if (cleared) { print "none"; exit }
-      best = ""; bestseq = -1
-      for (kk in out) if (out[kk] == 1 && seq[kk] > bestseq) { bestseq = seq[kk]; best = kk }
+      best = ""; bestnr = -1
+      for (kk in seen) {
+        key2 = k2of[kk]
+        superseded = (supnr[key2] > maxnr[kk]) ? 1 : 0
+        split(key2, p2, SUBSEP)
+        if (pdnr[p2[1]] > maxnr[kk]) superseded = 1
+        if (superseded) continue
+        # C6 — a kind=human barrier has NO separate bank event: reaching got==need IS its resolution
+        # (the returning user-turn writes got=need to close it). A job barrier stays outstanding at
+        # ready=1 so the wake routine banks it; a human one at ready=1 is DONE and not outstanding
+        # (else it would park the loop forever after the user already answered).
+        if (okind[kk] == "human" && oneed[kk] > 0 && band(gotmask[kk], oneed[kk]) == oneed[kk]) continue
+        if (maxnr[kk] > bestnr) { bestnr = maxnr[kk]; best = kk }
+      }
       if (best == "") { print "none"; exit }
-      printf "await kind=%s op=%s part=%s round=%s need=%s got=%s started_at=%s\n", \
-        okind[best], oop[best], opart[best], oround[best], oneed[best], ogot[best], ostart[best]
+      rdy = (oneed[best] > 0 && band(gotmask[best], oneed[best]) == oneed[best]) ? 1 : 0
+      printf "await kind=%s op=%s part=%s round=%s attempt=%s need=%s got=%s ready=%s started_at=%s\n", \
+        okind[best], oop[best], opart[best], oround[best], oatt[best], oneed[best], gotmask[best], rdy, ostart[best]
     }
   '
 }
