@@ -287,7 +287,25 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
    . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-chain.sh"
    ( set +e
      SID="$SID_RESOLVED"
-     if MANIFEST=$(chain_manifest_read "$SID"); then
+     # CMR_RC is captured because chain_manifest_read distinguishes rc=1 (genuinely first run)
+     # from rc=2 (a ledger EXISTS for this sid but recovery failed). Treating 2 as 1 would set
+     # IS_FIRST_RUN=1 / NEW_SEQ=1 below and overwrite a live chain's manifest, discarding its
+     # history and north star. On rc=2 we keep the chain's identity and refuse to reseed.
+     MANIFEST=$(chain_manifest_read "$SID"); CMR_RC=$?
+     if [ "$CMR_RC" -eq 2 ]; then
+       echo "WARN: chain manifest for $SID is unreadable AND ledger recovery failed." >&2
+       echo "WARN: this chain EXISTS - NOT reseeding it as a first run. Seq is taken from the" >&2
+       echo "WARN: ledger's last seq if available; the handoff will note the degraded chain." >&2
+       LEDGER="$HOME/.claude/chains/${SID}.log"
+       LAST_SEQ=$(awk -F'\t' 'END{print $2}' "$LEDGER" 2>/dev/null | sed 's/^seq=//')
+       case "${LAST_SEQ:-}" in ''|*[!0-9]*) LAST_SEQ=0 ;; esac
+       NEW_SEQ=$(( LAST_SEQ + 1 ))
+       IS_FIRST_RUN=0
+       CHAIN_STATUS="active"
+       [ "${HALT_TRIPPED:-0}" = "1" ] && CHAIN_STATUS="halted"
+       NORTH_STAR="<unrecoverable - manifest corrupt and ledger recovery failed>"
+       NS_SOURCE="degraded"
+     elif [ "$CMR_RC" -eq 0 ]; then
        CHAIN_STATUS=$(printf '%s' "$MANIFEST" | jq -r '.status')
        if [ "$CHAIN_STATUS" = "halted" ] && [ "${USER_INPUT_AFTER_HALT:-0}" = "1" ]; then
          CHAIN_STATUS="active"
