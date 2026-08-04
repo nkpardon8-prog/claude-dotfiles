@@ -719,7 +719,7 @@ case "$verb" in
     ;;
 
   *)
-    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash)"
+    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash)"
     ;;
 esac
 
