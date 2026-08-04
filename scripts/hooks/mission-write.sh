@@ -410,6 +410,42 @@ _mw_partdone_check() {
   return 0
 }
 
+# ── R8-10 human-STOP writer guard (D11) ──────────────────────────────────────────────────────
+# _mw_human_barrier_guard <status_verb> <action_phrase> <sid> <root> — REFUSE (rc=4) a
+# state-advancing / state-erasing write while an OPEN human STOP barrier (kind=human ready=0) is
+# live. Scoped to EXACTLY {genuinely-new PART-DONE, MISSION-CLEARED, rebaseline}: an unanswered human
+# decision must be resolved/denied (closing the barrier) BEFORE the mission may advance a part, be
+# cleared, or be rebaselined — otherwise those writes silently step over the STOP.
+#
+# FAIL CLOSED on ambiguity (Codex I-2): proceed ONLY on a trustworthy `none` or a resolved/away/job
+# `await …` line. A `corrupt`/empty/unexpected await-state output REFUSES (we cannot prove no open
+# human STOP). Prints the parseable FAILED line + exits 0 on refusal (never aborts the caller).
+#
+# CRITICAL EXEMPTIONS — this guard must NEVER run for the CLOSE sequence. The DECISION `log` write,
+# the `await` got=1 close, and `resolve` are exactly HOW a human barrier gets closed; guarding them
+# would self-deadlock DECISION-first (the barrier could never close). Only the three call sites named
+# above invoke this guard; DECISION/await/resolve deliberately do NOT.
+_mw_human_barrier_guard() {
+  _hb_verb="$1"; _hb_act="$2"; _hb_sid="$3"; _hb_root="$4"
+  _hb_state=$(mission_await_state "$_hb_sid" "$_hb_root" 2>/dev/null)
+  # Trust ONLY a bare `none` or a well-formed `await …` line; anything else (corrupt/empty/unexpected)
+  # fails closed.
+  case "$_hb_state" in
+    none|"await "*) : ;;
+    *) _mw_emit_refuse "$_hb_verb" 4 "REFUSED: await-state unreadable ('${_hb_state:-empty}') — fail closed; resolve any open human STOP, then retry" ;;
+  esac
+  case "$_hb_state" in
+    "await "*)
+      _hb_kind=$(_mission_await_field "$_hb_state" kind)
+      _hb_ready=$(_mission_await_field "$_hb_state" ready)
+      if [ "$_hb_kind" = human ] && [ "$_hb_ready" = 0 ]; then
+        _mw_emit_refuse "$_hb_verb" 4 "REFUSED: an OPEN human STOP barrier is live — resolve/deny the decision (closing the barrier) BEFORE ${_hb_act}"
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # I6: light root-escape guard (defense-in-depth; root is trusted-caller-supplied). Refuse an
 # empty root or one containing `..` traversal. NEVER abort the caller — print a status line and
 # exit 0. The normal absolute-path case (no `..`) is unaffected. Only enforced for verbs that
