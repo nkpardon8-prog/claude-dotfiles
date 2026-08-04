@@ -236,6 +236,23 @@ else
 fi
 cleanup_sid "$SID"
 
+# 3. An unusable manifest with NO ledger is ALSO rc=2, not rc=1. This branch shipped in round 7
+#    with no coverage at all - deleting it left this harness green at 18/0, which the round-7
+#    reviewer demonstrated. The distinction matters because rc=1 makes pre-compact treat the
+#    sid as a first run; the file's mere existence is proof a chain was here, and its contents
+#    are the only surviving evidence of it.
+SID="chaintest-noledger-$$"
+cleanup_sid "$SID"
+printf 'not valid json' > "$HOME/.claude/chains/${SID}.json"
+[ -e "$HOME/.claude/chains/${SID}.log" ] && rm -f "$HOME/.claude/chains/${SID}.log"
+chain_manifest_read "$SID" >/dev/null 2>&1; _r4=$?
+if [ "$_r4" -eq 2 ]; then
+    pass "an unusable manifest with NO ledger is rc=2 (a chain existed here)"
+else
+    fail "no-ledger rc=2" "rc=$_r4 (want 2; rc=1 would let pre-compact overwrite the evidence)"
+fi
+cleanup_sid "$SID"
+
 echo
 printf 'PASS: %d  FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]
