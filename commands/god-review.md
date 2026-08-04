@@ -644,9 +644,9 @@ Invoke via Bash **per the §2c bounded serial FIFO** — the six calls below are
 reference invocations, NOT a batch: launch them ONE AT A TIME, each in the foreground
 of a `run_in_background: true` Bash, advancing to the next only after the prior pass's
 `<outfile>.status` sidecar lands (never `nohup`/`&`/detach; never all six at once — they
-would only queue on the shared `~/.codex` flock and burn their deadlines). With isolated
-`CODEX_HOME_1`/`CODEX_HOME_2` profiles, up to one bounded lane per distinct profile may run
-concurrently:
+would only queue on the shared `~/.codex` flock and burn their deadlines). One bounded pass at
+a time regardless of `CODEX_HOME_1`/`CODEX_HOME_2` (codex-invoke.sh always tries profile 1 first,
+so concurrent lanes would not isolate — round-1 review I3):
 ```bash
 WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 [ -f "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh" ] && source "$HOME/.claude-dotfiles/commands/god-review/lib/env-helpers.sh"
