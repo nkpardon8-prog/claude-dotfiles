@@ -5,19 +5,23 @@
 #   - .git/hooks/pre-push       (blocks manual push)        exit-code-only
 #   - .github/workflows/secret-scan.yml (CI)                exit-code-only
 #   - settings.json.template SessionStart credentials.md scan  (added 2026-08-03)
-#         The ONLY consumer that maps the exit code to user-facing prose, so it is the only
-#         one that must distinguish rc=2 (a real hit -> rotate) from any other non-zero
-#         (the scan could not run -> do NOT tell anyone to rotate).
+#         Maps the exit code to user-facing prose, so it must distinguish rc=2 (a real hit
+#         -> rotate) from any other non-zero (the scan could not run -> do NOT tell anyone
+#         to rotate).
+#   - commands/god-review/principles/secret-leak.md 2.4      (added 2026-08-03)
+#         Also renders the exit code as prose, and applies the same 3>2>0 precedence.
 #
-# FIVE consumers. All five branch on the exit code; the SessionStart one is the only one that
-# renders it as PROSE A HUMAN READS, which is why it alone has to tell rc=2 from rc=3. Two of
-# the other four do more than pass the code through - dotfiles-sync maps rc=2 and rc=3 to
-# different marker states, and pre-push emits its RANGE-NOT-PROVEN-CLEAN token on rc=3 - so
-# "exit-code-only" means "no human-facing prose", not "ignores the value".
-# (Corrected 2026-08-03 round-2 review: the FIVE-consumer list and a stale "three of four"
-#  count shipped in the same commit, which is precisely the drift the next paragraph forbids.
-#  A hand-maintained count replicated across files is the failure mode - if you change this,
-#  grep the repo for the old wording rather than trusting that this is the only copy.)
+# SIX consumers. All six branch on the exit code; TWO of them (SessionStart and the 2.4 scan
+# block) render it as PROSE A HUMAN READS, which is why those two must tell rc=2 from rc=3.
+# Of the rest, dotfiles-sync maps rc=2 and rc=3 to different marker states and pre-push emits
+# its RANGE-NOT-PROVEN-CLEAN token on rc=3 - so "exit-code-only" means "no human-facing
+# prose", never "ignores the value".
+#
+# THIS COUNT HAS NOW GONE STALE TWICE, in the two commits that each added a consumer while
+# forbidding exactly that drift (round 2 left "three of four"; round 3 added the 2.4 consumer
+# and left "FIVE"). The guard in the proof suite can only forbid the PREVIOUS wording, so it
+# is a lagging indicator, not a check of the invariant - do not trust it to catch the next
+# one. If you add a consumer: add it here, and grep the repo for the old count.
 #
 # KEEP THIS LIST COMPLETE. Anyone changing the exit-code vocabulary below must be able to
 # enumerate every caller from here; a consumer missing from this list is a consumer that
@@ -290,6 +294,10 @@ esac
 case "${1:-}" in
     --staged)
         MODE=staged
+        # Same root-relative reasoning as --working below: git emits repo-relative paths, so
+        # the index keys (":$f") and any path test must be evaluated from the repo root.
+        cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || {
+            echo "secret-scan: --staged requires a git repository" >&2; exit 3; }
         # ACMRT, not ACMR: T is a TYPE CHANGE. Staging a symlink-to-regular-file swap that
         # carries a secret produced an empty ACMR enumeration and exited 0 - a real bypass
         # of this very gate. A type-changed path is still an ordinary blob in the index.
@@ -348,8 +356,15 @@ case "${1:-}" in
         MODE=working
         cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || {
             echo "secret-scan: --working requires a git repository" >&2; exit 3; }
+        # --diff-filter=d EXCLUDES deletions (lowercase d = "not deleted"). A deleted path has
+        # no bytes to publish, so enumerating it only to skip it is noise - and it is what
+        # made the strict invariant below unusable: a deletion-only commit would have
+        # enumerated one path, scanned none, and failed closed, re-jamming the auto-push that
+        # round 3 just unjammed. Excluding deletions here means every path that IS enumerated
+        # must be openable, which is exactly what makes "enumerated but reached none" a sound
+        # error signal rather than a false alarm.
         if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
-            { git diff --name-only -z HEAD && git ls-files --others --exclude-standard -z; } \
+            { git diff --name-only -z --diff-filter=d HEAD && git ls-files --others --exclude-standard -z; } \
                 | sort -uz > "$TMPLIST" || exit 3
         else
             git ls-files --others --exclude-standard -z | sort -uz > "$TMPLIST" || exit 3
@@ -424,8 +439,10 @@ esac
 WORST=0
 HITS=""
 SCANNED=0
+ENUMERATED=0
 while IFS= read -r -d '' f; do
     [ -z "$f" ] && continue
+    ENUMERATED=$((ENUMERATED + 1))
     if [ "$MODE" = composite ]; then
         # Bypasses scan_file entirely: no path exclusion, no allowlist, and a vanished
         # input FAILS CLOSED instead of inheriting "a missing path is clean".
@@ -435,17 +452,34 @@ while IFS= read -r -d '' f; do
             continue
         fi
         out=$(scan_stdin "$f" < "$f"); rc=$?
+        SCANNED=$((SCANNED + 1))
     elif [ "$MODE" = staged ]; then
         # Read the INDEX blob, not the worktree. Enumerating index paths while reading
         # worktree bytes let `git add <secret>; echo harmless > <file>` pass cleanly.
+        #
+        # SUBMODULE GITLINKS ARE CHECKED FIRST, by index MODE (160000), because
+        # `git cat-file -t ":<gitlink>"` FAILS with rc=128 rather than printing a type - so
+        # the `[ "$t" = blob ] || continue` line below, written to handle exactly this case,
+        # was unreachable dead code and every gitlink hit the rc=3 arm instead. MEASURED with
+        # a real installed pre-commit: a commit whose only change was a submodule bump was
+        # refused permanently, and dotfiles-sync turned that into a pause marker that halts
+        # all auto-sync. A gitlink has no blob in THIS repository - there is nothing here to
+        # publish - so it is legitimately accounted for, which is why it counts as scanned
+        # (it must not trip the "enumerated but reached none" invariant either).
+        _mode=$(git ls-files -s -- "$f" 2>/dev/null | awk '{print $1; exit}')
+        if [ "$_mode" = 160000 ]; then
+            SCANNED=$((SCANNED + 1))
+            continue
+        fi
         if ! t=$(git cat-file -t ":$f" 2>/dev/null); then
             echo "secret-scan: cannot read index entry: $f" >&2
             WORST=3
             continue
         fi
-        # --diff-filter=ACMR includes submodule (gitlink) updates, which have no blob.
-        [ "$t" = blob ] || continue
+        # A non-blob index entry (nothing to read) is accounted for, not skipped silently.
+        [ "$t" = blob ] || { SCANNED=$((SCANNED + 1)); continue; }
         out=$(git cat-file blob ":$f" 2>/dev/null | scan_stdin "$f"); rc=$?
+        SCANNED=$((SCANNED + 1))
     else
         # An absent path is TOLERATED here but does NOT count as scanned. Two intents meet
         # at this line and both are legitimate:
@@ -501,7 +535,20 @@ done < "$TMPLIST"
 #
 # Scoped to explicit-path mode ONLY. An enumeration legitimately finds nothing to scan: a
 # commit that stages a submodule pointer alone, or a clean working tree, must stay rc=0.
-if [ "$MODE" = file ] && [ "$SCANNED" -eq 0 ]; then
+# TWO shapes, both meaning "nothing was proven" (widened in round 4):
+#
+# (a) We ENUMERATED work and reached NONE of it. This holds in EVERY mode, and it is the
+#     shape that caught the round-4 defect: --working listed repo-relative paths, resolved
+#     them against the wrong cwd, missed every one, and returned rc=0. Scoping the check to
+#     explicit-path mode (round 2) is what let that be silent. A clean tree enumerates zero
+#     and so is untouched by this - it is legitimately clean, there is nothing to publish.
+# (b) An EXPLICIT-PATH caller passed nothing scannable at all (`--` with no paths). An
+#     enumeration finding nothing is fine; a caller asking for nothing and being told "clean"
+#     is not.
+if [ "$ENUMERATED" -gt 0 ] && [ "$SCANNED" -eq 0 ]; then
+    echo "secret-scan: enumerated $ENUMERATED path(s) but scanned NONE - refusing to report clean" >&2
+    WORST=3
+elif [ "$MODE" = file ] && [ "$ENUMERATED" -eq 0 ]; then
     echo "secret-scan: explicit-path invocation scanned ZERO files - refusing to report clean" >&2
     WORST=3
 fi

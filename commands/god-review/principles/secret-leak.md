@@ -160,7 +160,10 @@ result. One source of truth, and the exit code is read rather than discarded:
 # never convey the scanner's 2-vs-3. Run this block with bash.
 SCANNER="$HOME/.claude-dotfiles/scripts/secret-scan.sh"
 [ -r "$SCANNER" ] || { echo "secret prefix scan: FAILED - scanner not found at $SCANNER"; exit 3; }
-cd "$WORKDIR" || exit 3
+# WORKDIR must be non-empty: `cd ""` SUCCEEDS and does not move, so an unset WORKDIR silently
+# scanned the agent's own cwd and reported "clean" about a tree that was never the target.
+[ -n "${WORKDIR:-}" ] || { echo "secret prefix scan: FAILED - WORKDIR is unset"; exit 3; }
+cd "$WORKDIR" || { echo "secret prefix scan: FAILED - cannot cd to $WORKDIR"; exit 3; }
 
 # NOTE: xargs DESTROYS the scanner's exit code - it reports its own (BSD: 1 for any child
 # failure; GNU: 123), so `rc=$?` after a pipeline through xargs can never see 2 vs 3. An
@@ -168,16 +171,24 @@ cd "$WORKDIR" || exit 3
 # "FAILED - result is unknown". Enumerate into an array and call the scanner directly.
 # The enumeration's own failure is checked too: a `git ls-files` that dies must not become
 # an empty list that scans nothing and reports clean.
-files=()
+# The enumeration goes through a TEMP FILE so the PRODUCER's exit status can actually be
+# checked. `while ...; done < <(cmd) || { ... }` does NOT do that: the `||` binds to the
+# WHILE, which exits 0 even when the process substitution dies, so a `git ls-files` that
+# failed after emitting a partial list was accepted as a complete one and the block printed
+# "clean" over a truncated set. That is the same read-the-wrong-status shape as the xargs bug
+# this section was rewritten to fix - checked properly here.
+_list=$(mktemp) || { echo "secret prefix scan: FAILED - mktemp"; exit 3; }
 if git rev-parse --git-dir >/dev/null 2>&1; then
-    while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z) || {
-        echo "secret prefix scan: FAILED - could not enumerate tracked files"; exit 3; }
+    git ls-files -z > "$_list" || {
+        rm -f "$_list"; echo "secret prefix scan: FAILED - could not enumerate tracked files"; exit 3; }
 else
-    while IFS= read -r -d '' f; do files+=("$f"); done < <(
-        find . -type f -not -path './.git/*' -not -path '*/node_modules/*' \
-             -not -path '*/dist/*' -not -path '*/target/*' -print0) || {
-        echo "secret prefix scan: FAILED - could not enumerate files"; exit 3; }
+    find . -type f -not -path './.git/*' -not -path '*/node_modules/*' \
+         -not -path '*/dist/*' -not -path '*/target/*' -print0 > "$_list" || {
+        rm -f "$_list"; echo "secret prefix scan: FAILED - could not enumerate files"; exit 3; }
 fi
+files=()
+while IFS= read -r -d '' f; do files+=("$f"); done < "$_list"
+rm -f "$_list"
 
 if [ "${#files[@]}" -eq 0 ]; then
     echo "secret prefix scan: FAILED - zero files enumerated, nothing was proven"; exit 3
@@ -200,6 +211,9 @@ case $rc in
     2) echo "secret prefix scan: FINDINGS above" ;;
     *) echo "secret prefix scan: FAILED (rc=$rc) - result is unknown, not clean" ;;
 esac
+# Propagate. Without this the block exits with the status of `case` (0) while printing
+# FINDINGS - the read-the-wrong-status shape this whole section is about.
+exit $rc
 ```
 
 ## Phase 3: Deep Analysis

@@ -20,6 +20,14 @@
 
 set -u
 
+# stdin is CLOSED for the whole suite (2026-08-03, round-4 review). Several cases invoke
+# stale-handoff-guard.sh, which begins `HOOK_JSON=$(cat)` and therefore blocks FOREVER on an
+# inherited stdin that never reaches EOF. Round 3 patched only the CI call site with
+# `</dev/null`; that left every OTHER caller - a human in a pipeline, another workflow, an
+# agent - able to hang the suite indefinitely. Reproduced: `sleep 400 | bash <suite>` was
+# still running at 100s. Closing it here fixes the class rather than one call site.
+exec </dev/null
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCAN="$REPO/scripts/secret-scan.sh"
 INSTALL="$REPO/scripts/install-git-hooks.sh"
@@ -862,6 +870,91 @@ for _f in .config/git/credentials sub/git/credentials; do
     ( cd "$REPO" && git check-ignore -q "$_f" )
     chk "$_f is gitignored" "$?" "0"
 done
+
+# ===========================================================================
+echo
+echo "== PART 5: round-4 review fixes (every case measured 2026-08-03) =="
+P5W="$WORK/p5"; mkdir -p "$P5W"
+
+# --- R4-CRITICAL: --working enumerates REPO-ROOT-RELATIVE paths but used to resolve them
+# against the CALLER's cwd, so from any subdirectory every path missed and the mode - which
+# round 3 had exempted from the zero-scanned invariant - returned rc=0 CLEAN on a tree
+# holding a real key. Round 3 closed a false positive and opened a false negative.
+# It was reachable by a HUMAN: dotfiles-sync-pause-notice.sh names this exact command as the
+# "Confirm clean" gate before deleting a leak marker and resuming PUBLIC pushes.
+_r4="$P5W/wt"; mkdir -p "$_r4/deep/nest"
+( cd "$_r4" && git init -q . && git config user.email t@t.invalid && git config user.name t \
+  && printf 'x\n' > deep/nest/a.txt && git add -A && git commit -qm init ) >/dev/null 2>&1
+printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" > "$_r4/deep/nest/a.txt"
+for _d in "" "deep" "deep/nest"; do
+    ( cd "$_r4/$_d" && bash "$SCAN" --working >/dev/null 2>&1 )
+    chk "--working catches a secret from subdir '${_d:-<root>}'" "$?" "2"
+done
+# The round-3 tolerances must survive the round-4 fix.
+( cd "$_r4" && git checkout -q -- deep/nest/a.txt && bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working clean tree still rc=0 after the cwd fix" "$?" "0"
+( cd "$_r4" && git rm -q deep/nest/a.txt && bash "$SCAN" --working >/dev/null 2>&1 )
+chk "--working deletion-only still rc=0 after the cwd fix" "$?" "0"
+( cd "$_r4" && git reset -q --hard ) >/dev/null 2>&1
+
+# --- R4: a staged SUBMODULE GITLINK made pre-commit rc=3, refusing the commit permanently
+# and turning into a pause marker that halts auto-sync. `git cat-file -t ":<gitlink>"` exits
+# 128 instead of printing a type, so the `[ "$t" = blob ] || continue` guard written for
+# this case was unreachable dead code. Gitlinks are now detected by index MODE (160000).
+_sub="$P5W/sub"; _main="$P5W/main"
+( git init -q "$_sub" && cd "$_sub" && git config user.email t@t.invalid && git config user.name t \
+  && printf 'x\n' > f.txt && git add f.txt && git commit -qm s1 ) >/dev/null 2>&1
+( git init -q "$_main" && cd "$_main" && git config user.email t@t.invalid && git config user.name t \
+  && printf 'base\n' > base.txt && git add base.txt && git commit -qm init ) >/dev/null 2>&1
+_subsha=$( cd "$_sub" && git rev-parse HEAD )
+( cd "$_main" && mkdir -p mod && git update-index --add --cacheinfo "160000,$_subsha,mod" ) >/dev/null 2>&1
+chk "fixture really staged a gitlink (mode 160000)" \
+    "$(cd "$_main" && git ls-files -s -- mod | awk '{print $1}')" "160000"
+( cd "$_main" && bash "$SCAN" --staged >/dev/null 2>&1 )
+chk "--staged tolerates a submodule gitlink (never jams the commit gate)" "$?" "0"
+# ...and a real staged secret alongside the gitlink must STILL be caught.
+( cd "$_main" && printf 'k=sk-%s\n' "$(python3 -c "print('A'*44)")" > s.txt && git add s.txt \
+  && bash "$SCAN" --staged >/dev/null 2>&1 )
+chk "--staged still catches a secret staged alongside a gitlink" "$?" "2"
+
+# --- R4: the "enumerated something but reached none of it" invariant. Round 2 scoped the
+# zero-scanned check to explicit-path mode, which is what let the --working cwd bug be
+# silent. It now applies in EVERY mode - while a clean tree, which enumerates nothing, is
+# untouched (that distinction is the whole reason deletions are excluded at enumeration).
+chk "a lone unreachable explicit path is still rc=3" \
+    "$(bash "$SCAN" /no/such/file >/dev/null 2>&1; echo $?)" "3"
+
+# --- R4: the suite closes stdin at source. Round 3 patched only the CI call site, leaving
+# every other caller able to hang forever on stale-handoff-guard's `HOOK_JSON=$(cat)`.
+chk "the suite closes its own stdin (hang cannot recur for any caller)" \
+    "$(grep -c '^exec </dev/null' "$REPO/scripts/hooks/test-secret-scan.sh")" "1"
+
+# --- R4: dotfiles-sync was the consumer round 3's exec-bit class fix missed. Proven
+# load-bearing by execution: without the `bash` prefix a lost exec bit gives 126 -> an
+# `unproven` marker -> all auto-sync halted.
+chk "dotfiles-sync invokes the scanner via bash (exec bit cannot jam auto-sync)" \
+    "$(grep -c 'bash "\$DOTFILES_DIR/scripts/secret-scan.sh" --working' "$REPO/scripts/dotfiles-sync.sh")" "1"
+
+# --- R4: the CI step must keep BOTH the stdin redirect and a timeout. A hung job is neither
+# green nor red - the governing bug class one level up.
+chk "CI runs the suite with </dev/null" \
+    "$(grep -c 'test-secret-scan.sh </dev/null' "$REPO/.github/workflows/secret-scan.yml")" "1"
+# Matches the YAML KEY, not the word: the first draft counted its own explanatory comment
+# too and reported 2. An assertion that can match prose about itself is not an assertion.
+chk "CI bounds the suite with timeout-minutes" \
+    "$(grep -cE '^[[:space:]]*timeout-minutes:' "$REPO/.github/workflows/secret-scan.yml")" "1"
+
+# --- R4: the SessionStart symlink loop must report a scan FAILURE past its hop limit rather
+# than falling through and scanning the link path (silent clean on a real secret).
+chk "SessionStart reports a scan failure past the symlink hop limit" \
+    "$(grep -c 'symlink chain deeper than 10 hops' "$REPO/settings.json.template")" "1"
+
+# --- R4: the god-review 2.4 block is a SIXTH consumer; it must propagate the scanner's
+# status rather than exiting 0 while printing FINDINGS, and must not accept an unset WORKDIR.
+chk "2.4 scan block propagates the scanner exit code" \
+    "$(grep -c '^exit \$rc' "$REPO/commands/god-review/principles/secret-leak.md")" "1"
+chk "2.4 scan block refuses an unset WORKDIR" \
+    "$(grep -c 'WORKDIR is unset' "$REPO/commands/god-review/principles/secret-leak.md")" "1"
 
 # --- R2: the consumer count drifted inside the very commit that forbade drifting.
 # The pattern is ASSEMBLED from fragments so this check cannot match its own source - the

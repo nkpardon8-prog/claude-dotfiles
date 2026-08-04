@@ -17,9 +17,10 @@ Audited and repaired 2026-08-01. Every claim below was established by direct pro
 | auto-sync | `scripts/dotfiles-sync.sh` | any dotfile edit | Yes — scans the working tree before staging |
 | CI | `.github/workflows/secret-scan.yml` | push / PR | **No — detection only** |
 | SessionStart | `settings.json.template` `credentials.md` scan | session start | **No — warns only** |
+| god-review 2.4 | `commands/god-review/principles/secret-leak.md` | audit run | **No — reports only** |
 | **`.gitignore`** | `.gitignore` | `git add` / `git add -A` | Yes — the path never becomes stageable |
 
-All five *scanner* layers call `scripts/secret-scan.sh` (exit `0` clean / `2` secret /
+All six *scanner* layers call `scripts/secret-scan.sh` (exit `0` clean / `2` secret /
 `3` could-not-prove-clean; precedence `3 > 2 > 0`; hits to stderr, stdout stays empty).
 
 **`.gitignore` is a control, not merely defence in depth — and for some files it is the

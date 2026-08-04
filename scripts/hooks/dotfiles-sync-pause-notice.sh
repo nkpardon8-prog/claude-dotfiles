@@ -33,7 +33,12 @@ case "$kind" in
         echo "  Auto-push is HALTED. Do NOT simply delete the marker: that resumes pushing to a PUBLIC remote."
         echo "  1) ROTATE the credential at its provider - assume it is already compromised."
         echo "  2) Remove it from the working tree (and from history if it was committed)."
-        echo "  3) Confirm clean:  bash ~/.claude-dotfiles/scripts/secret-scan.sh --working"
+        # The `cd` is load-bearing, not tidiness: --working enumerates REPO-ROOT-RELATIVE
+        # paths, so run from anywhere else it used to scan nothing and answer "clean" - on
+        # the one command a human runs to confirm a CONFIRMED leak is gone, immediately
+        # before deleting the marker and resuming pushes to a PUBLIC remote. The scanner now
+        # cd's to the repo root itself, so this is belt-and-braces; keep them in step.
+        echo "  3) Confirm clean:  cd ~/.claude-dotfiles && bash scripts/secret-scan.sh --working"
         echo "  4) Only then:      rm ${M}"
         ;;
     unproven)
