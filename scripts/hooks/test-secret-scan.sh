@@ -173,8 +173,12 @@ if [ -f "$_wf" ]; then
 
     # `--` used to sit at end-of-line (`secret-scan.sh --$`) because the arguments arrived
     # from a pipe. They are now passed directly, so anchor on the argument that follows.
+    # AT LEAST ONE, not exactly one. The count form failed a correct workflow the moment a
+    # second legitimate scanner invocation was added - a guard that breaks on valid edits gets
+    # deleted by the next person, which is how a repo loses its guards. What must never happen
+    # is ZERO; more than one is fine.
     chk "CI passes -- to the scanner" \
-        "$(printf '%s\n' "$_wfc" | grep -cE 'secret-scan\.sh -- "')" "1"
+        "$([ "$(printf '%s\n' "$_wfc" | grep -cE 'secret-scan\.sh -- "')" -ge 1 ] && echo 1 || echo 0)" "1"
 
     # THE REGRESSION THIS BLOCK EXISTS FOR, and the reason it is a guard rather than a note:
     # the first rewrite of the CI step replaced `| xargs` with `< <(git ls-files -z)` and so
