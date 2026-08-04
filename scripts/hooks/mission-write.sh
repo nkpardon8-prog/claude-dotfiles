@@ -388,6 +388,10 @@ _mw_partdone_check() {
   if _mission_timing_stream "$_pc_sid" "$_pc_root" | grep -qE "^$(_re_escape "$_pc_gtag")"$'\t' 2>/dev/null; then
     return 0
   fi
+  # D11 (R8-10) — a GENUINELY-NEW PART-DONE (the idempotent re-emit above already returned) must NOT
+  # advance the mission past an OPEN human STOP. Placed AFTER the dedup-first return so an idempotent
+  # re-emit is never blocked (mirrors this function's dedup-first ordering). Fails closed on ambiguity.
+  _mw_human_barrier_guard log "advancing this part (PART-DONE)" "$_pc_sid" "$_pc_root"
   # gen-sliced archive-inclusive stream (REFUSE loud on gen-boundary-mismatch → rc=4 blocks advance).
   _pc_stream=$(_gen_sliced_stream "$_pc_sid" "$_pc_root") \
     || _mw_emit_refuse log 4 "REFUSED gen-boundary-mismatch"
