@@ -2,6 +2,43 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-03 - CI tells you WHICH failure it found; the last unwired lint gets wired
+
+Mission part 3 ("guard-integrity"), slice D - the three remaining `ci-1`/`lint-1` findings from the
+2026-08-03 `/god-report`. Each was reproduced by execution before any fix was written, per the
+mission's standing rule that findings are not a source of truth.
+
+- **CI could not distinguish "a secret is in the tree" from "the scan proved nothing."**
+  `git ls-files -z | xargs -0 bash scripts/secret-scan.sh --` discarded the scanner's exit code:
+  `xargs` reports its **own** status for any non-zero child (BSD 1, GNU 123), so rc=2 (rotate a
+  live credential now) and rc=3 (the scanner is broken, go fix it) both arrived as one
+  indistinguishable red. MEASURED both directions on BSD xargs before fixing. Scope stated
+  honestly: xargs runs every batch even after one fails (also measured), so **no file was ever
+  skipped and the job was red in both cases** - this was a diagnosis defect, not a coverage one.
+  Replaced with enumeration into an array + a direct call, batched at 500 against ARG_MAX, with
+  precedence 3 > 2 > 0 and a distinct message per outcome. An empty enumeration is now treated as
+  a broken enumeration (rc=3), never as a clean tree.
+- **The gitleaks action was pinned to `v2`, a tag its publisher can re-point at will**, while
+  holding `secrets.GITHUB_TOKEN` - third-party code execution in our CI with no diff on our side
+  to review. Resolved `refs/tags/v2` to commit `ff98106` (identical to v2.3.9; the project has
+  since shipped v3.0.0, so `v2` is a stale floating pointer) and pinned the SHA with the version
+  in a trailing comment, which is now the only human-readable record of which release it is.
+- **`lint-testplan.sh` ran nowhere.** Its header asserted "There is NO aggregate test runner / CI /
+  husky in ~/.claude-dotfiles" - false on both counts, and self-fulfilling: it read as a reason not
+  to look for a wiring point, and this was in fact the only one of the three lints that no
+  automated path invoked (not CI, not the generated pre-commit hook, which runs only the two lints
+  with a `--staged` mode). Wired into `lint-commands.yml` with the explicit ROOT argument CI needs,
+  and the header corrected. Verified green (26/0) and verified to fail **closed** (exit 2) on a
+  wrong ROOT before wiring.
+- **Four machine-guards shipped WITH the fixes**, not as follow-ups, because both bad shapes are
+  silent (a red job either way; a moved tag produces no diff) and both are the obvious way to
+  write the code, so they can recur at any time: CI passes `--`, CI does not pipe through `xargs`,
+  CI refuses to report clean on an empty enumeration, and no non-`actions/` third-party action is
+  pinned to a mutable `@vN` tag. Each was mutation-tested in both directions - reintroduce the
+  defect and watch the guard go red. The `xargs` guard strips comment lines first: the workflow's
+  own rationale names `| xargs -0`, and a guard that matches its own explanation can never fail.
+  `test-secret-scan.sh`: 191 -> 195 cases, 0 failures.
+
 ## 2026-08-03 - Missions never silently stall: continuation-owner invariant + AWAIT bookmark + no-detach gate
 
 An autonomous `/mission` used to freeze when a turn ended with nothing to wake it back up. Two
