@@ -597,6 +597,10 @@ case "$verb" in
       echo "mission-write: usage: rebaseline <sid> <root> <new_plan>"
       exit 0
     fi
+    # D11 (R8-10) — REFUSE a rebaseline while an OPEN human STOP is live (a gen boundary would slice the
+    # open barrier away). Resolve/deny the decision first (closing the barrier), then rebaseline. Fails
+    # closed on ambiguous await-state. EXEMPT close-sequence verbs (DECISION/await/resolve) never call this.
+    _mw_human_barrier_guard rebaseline "rebaselining (gen boundary)" "$sid" "$root"
     mission_rebaseline "$sid" "$root" "$4"
     rc=$?
     _mw_status rebaseline "$rc" "see stderr"
