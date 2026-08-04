@@ -173,7 +173,19 @@ chain_manifest_read() {
     return 2
   fi
 
-  # Truly first run.
+  # No ledger. Distinguish "nothing was ever here" from "something was here and is broken":
+  # a manifest FILE that exists is proof a chain existed, even when it is unreadable and there
+  # is no ledger to rebuild it from. Returning 1 there told pre-compact "genuinely first run",
+  # which reseeds NEW_SEQ=1 and OVERWRITES the corrupt file - destroying the only remaining
+  # evidence of the chain. Found in round 7; the round-6 fix had only covered the
+  # ledger-present case, so the identical data-loss path survived one branch over.
+  if [ -f "$p" ]; then
+    echo "chain_manifest_read: $p exists but is unusable and there is no ledger to recover from" >&2
+    echo "chain_manifest_read: a chain EXISTED here - refusing to report a first run" >&2
+    return 2
+  fi
+
+  # Truly first run: no manifest file, no ledger.
   return 1
 }
 
