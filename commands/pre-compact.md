@@ -354,7 +354,9 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
        echo "WARN: no ledger for $SID; starting a NEW chain. Prior chain state is unrecoverable." >&2
        CMR_RC=1   # fall through to the genuine first-run derivation below
      fi
-     if [ "$CMR_RC" -eq 0 ]; then
+     if [ "${CHAIN_RESOLVED:-0}" = "1" ]; then
+       : # the rc=2-with-ledger branch above already set every variable - do not re-derive
+     elif [ "$CMR_RC" -eq 0 ]; then
        CHAIN_STATUS=$(printf '%s' "$MANIFEST" | jq -r '.status')
        if [ "$CHAIN_STATUS" = "halted" ] && [ "${USER_INPUT_AFTER_HALT:-0}" = "1" ]; then
          CHAIN_STATUS="active"
