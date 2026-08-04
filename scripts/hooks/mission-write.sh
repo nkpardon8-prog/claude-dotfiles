@@ -333,6 +333,11 @@ _mw_validate_log() {
       _mw_human_barrier_guard log "MISSION-CLEARED — resolve/deny the open decision first, then clear" "$_vl_sid" "$_vl_root"
       ;;
     "MISSION-REBASELINED "*)
+      # D12 SINGLE-WRITE-PATH INVARIANT: MISSION-REBASELINED has EXACTLY ONE writer path — the dedicated
+      # `rebaseline` verb (→ mission_rebaseline → mission_log_append, which bumps the marker gen in the
+      # SAME op). This `log`-route is REFUSED below precisely to keep that single path. A future direct
+      # lib emitter that appended a MISSION-REBASELINED line WITHOUT the marker gen bump would forge a gen
+      # boundary and slice away an earlier human AWAIT — do NOT add one; route every rebaseline via the verb.
       # R6 (round-6) — MISSION-REBASELINED is a gen-boundary written ONLY by the dedicated `rebaseline`
       # verb (mission_rebaseline -> mission_log_append, which BYPASSES this validator AND bumps the marker
       # gen in the SAME op). A `log`-routed one would write the boundary line WITHOUT the marker gen bump,
