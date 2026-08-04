@@ -67,13 +67,36 @@ fi
 # for a tree it never looked at. That is the governing bug class this part exists to kill,
 # and it made four of the harness's six cases vacuously green.
 #
-# There is no legitimate invocation where ROOT lacks `commands/`: every real checkout has it,
-# and --staged reads the index via GITROOT rather than this path. So an absent commands/ can
-# only mean "this lint cannot see its target", which must never be reported as success.
-if [ ! -d "$ROOT/commands" ]; then
-    echo "lint-skill-size: FAIL - ROOT does not resolve to a command tree (no commands/ under $ROOT)." >&2
-    echo "lint-skill-size: refusing to report success for a tree that was never scanned." >&2
-    exit 1
+# SCOPED TO --all (2026-08-04). The first version fired in BOTH modes, contradicting the
+# sentence directly above it: --staged reads the index via GITROOT and never consults $ROOT,
+# so failing a --staged run for a missing $ROOT/commands/ fails it for a path it does not use.
+# The visible cost of that over-broad guard was a masquerade - the secret-scan e2e fixture had
+# to `mkdir` an EMPTY commands/ just to get its pre-commit hook past this line, i.e. the fix
+# was made to pass by giving it nothing to lint.
+#
+# AND IT NOW CHECKS FOR THE GUARDED FILES, NOT JUST THE DIRECTORY. `[ -d commands ]` proved
+# only that a directory exists: a tree with commands/ present but every guarded file renamed
+# or moved returned rc=0 from --all having measured NOTHING - the identical clean-bill-of-
+# health this guard was written to prevent, one level in. That is verdict-corpus #190/#201,
+# found in the corpus and independently confirmed by the round-5 review panel. CI runs exactly
+# --all, so a renamed commands/mission.md would have switched the marker rule off silently
+# and stayed green.
+if [ "$MODE" = "--all" ]; then
+    if [ ! -d "$ROOT/commands" ]; then
+        echo "lint-skill-size: FAIL - ROOT does not resolve to a command tree (no commands/ under $ROOT)." >&2
+        echo "lint-skill-size: refusing to report success for a tree that was never scanned." >&2
+        exit 1
+    fi
+    _missing=""
+    for _g in post-compact-resume.md mission.md pre-compact.md codex-review.md implement.md; do
+        [ -f "$ROOT/commands/$_g" ] || _missing="$_missing commands/$_g"
+    done
+    if [ -n "$_missing" ]; then
+        echo "lint-skill-size: FAIL - guarded file(s) absent:$_missing" >&2
+        echo "lint-skill-size: a rule whose target is missing is an UNENFORCED rule, not a satisfied one." >&2
+        echo "lint-skill-size: if a command was intentionally renamed or retired, update this list in the same commit." >&2
+        exit 1
+    fi
 fi
 
 # CONTENT AUTHORITY (2026-08-03, codex-review C1 fix - see lint-skill-contract.sh for the
