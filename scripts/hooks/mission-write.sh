@@ -715,7 +715,7 @@ case "$verb" in
     ;;
 
   ""|help|-h|--help)
-    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash> <sid> <root> [args...]"
+    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash> <sid> <root> [args...]"
     ;;
 
   *)
