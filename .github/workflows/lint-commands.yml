@@ -24,13 +24,16 @@ jobs:
       # in one of the two, silent when unmet:
       #   lint-skill-contract.sh fails CLOSED (its first_pos has a `|| echo -1` fallback,
       #     so a dead python3 surfaces as a contract violation - exit 1).
-      #   lint-skill-size.sh fails OPEN (verified 2026-08-02): chars_of/marker_pos yield an
-      #     empty string, every `[ "$n" -gt ... ]` degrades to "integer expression expected"
-      #     on stderr, `fail` is never set, and the script exits 0 having checked NOTHING.
-      # A green build that measured nothing is worse than a red one, so assert the
-      # interpreter functionally - `command -v` would still pass a stub that cannot run.
-      # Fixing this in the script itself is the right long-term home; this step is the
-      # boundary guard until then.
+      #   lint-skill-size.sh ALSO fails closed now (2026-08-03). It previously failed OPEN,
+      #     and this comment described that defect in the present tense long after it was
+      #     fixed - a doc-vs-code drift an agent would faithfully act on. Both halves are
+      #     closed today: a MISSING python3 is caught by a preflight in the script itself
+      #     (exit 3), and a PER-FILE measurement failure - an unreadable or undecodable
+      #     guarded file, which the preflight cannot see - now yields -1 and fails the lint
+      #     rather than leaving `n` empty and degrading to "integer expression expected".
+      # A green build that measured nothing is worse than a red one, so this step still
+      # asserts the interpreter FUNCTIONALLY - `command -v` would pass a stub that cannot
+      # run, and the script-level preflight is a second layer, not a replacement.
       - name: Preflight - python3 must be present AND working
         id: preflight
         run: |
@@ -55,7 +58,13 @@ jobs:
       #
       # WHY THIS WORKFLOW EXISTS: the pre-commit hook is the only other invocation path,
       # and it is bypassable with `git commit --no-verify` and simply absent on a fresh
-      # clone until install-git-hooks.sh is run. CI is the non-bypassable enforcement.
+      # clone until install-git-hooks.sh is run.
+      #
+      # CI is the LAST line, not a NON-BYPASSABLE one - the earlier wording claimed the
+      # latter and docs/SECURITY-secret-chain.md contradicts it directly. On a `push` event
+      # this job runs AFTER the objects are already on the remote, so it DETECTS rather than
+      # PREVENTS; and with no branch protection configured, a red run blocks nothing by
+      # itself. Treat a failure here as "this already shipped, go fix it", not as a gate.
       - name: lint-skill-size (--all)
         run: bash scripts/lint-commands/lint-skill-size.sh --all
 
