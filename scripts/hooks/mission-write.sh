@@ -320,9 +320,17 @@ _mw_validate_log() {
       _mw_emit_refuse log 1 "REFUSED: AWAIT must be written via the dedicated 'await' verb, never 'log' (log bypasses the barrier safety invariants)"
       ;;
     "MISSION-CLEARED "*)
+      # D12 SINGLE-WRITE-PATH INVARIANT: MISSION-CLEARED has NO dedicated lib emitter — the agent writes
+      # it through THIS `log` verb with an EMPTY idtag as the natural close order, so this validator case
+      # is the ONE-AND-ONLY writer path for it. A future direct `mission_log_append` emitter of a
+      # MISSION-CLEARED line would BYPASS this case (and the human-STOP guard below), silently reopening
+      # the erase hole. Keep it single-path: any new emitter MUST route through here, never the lib.
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] MISSION-CLEARED status=(achieved|could-not|cleared) reason=[a-z0-9-]*$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-mission-cleared-shape"
       [ -z "$_vl_idtag" ] || _mw_emit_refuse log 1 "REFUSED: mission-cleared-idtag-must-be-empty"
+      # D11 (R8-10) — REFUSE a MISSION-CLEARED while an OPEN human STOP is live. The intended escape is to
+      # resolve/deny the open decision FIRST (closing the barrier), THEN clear — not a blanket wedge.
+      _mw_human_barrier_guard log "MISSION-CLEARED — resolve/deny the open decision first, then clear" "$_vl_sid" "$_vl_root"
       ;;
     "MISSION-REBASELINED "*)
       # R6 (round-6) — MISSION-REBASELINED is a gen-boundary written ONLY by the dedicated `rebaseline`
