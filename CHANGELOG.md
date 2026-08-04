@@ -2,6 +2,52 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-04 - The review barrier catches two shipped CRITICALs, including one this repo introduced
+
+Mission part 3, round 5-6. A 4-Codex + 2-Claude review panel over the part-3 diff. It found two
+defects that had already been committed and auto-pushed to the public remote, and the honest
+summary is that the previous round's "fix" caused one of them.
+
+- **The `xargs` fix was a coverage regression.** Replacing `| xargs` with
+  `< <(git ls-files -z)` traded a coverage guarantee for a diagnosis improvement:
+  `set -euo pipefail` **cannot** observe a process substitution's exit status. Reproduced with a
+  `git` emitting 2 of 3 paths then exiting 141 - the new form printed `clean (2 tracked files
+  scanned)` and exited **0 with an unscanned secret in the tree**, where the form it replaced
+  went red at 141. `secret-scan.sh` already documented this rule in its own comments. Found
+  independently by two Codex lenses and the adversarial Claude lens. Enumeration now goes
+  through a file with the producer status captured, plus a trailing-NUL check (a truncated
+  stream silently loses its last record to `read -r -d ''` - also reproduced).
+- **The new CI `harnesses` job had been red on every push since it landed** - 16 consecutive
+  failures, verified via `gh run list`, not inferred. Six of seven harnesses resolved their
+  target from `$HOME/.claude-dotfiles` (absent on a runner) or used BSD-only `stat -f` /
+  `date -v`, and the `set -e` loop aborted at harness #1 - so `test-lint-skill-size.sh`, the
+  centerpiece of this part, **had never once executed in CI**. Fixed by accumulating results so
+  every harness reports, giving that harness a `BASH_SOURCE`-derived root, and cutting the list
+  to the two proven green outside `$HOME`. The other five are recorded in-file as NOT YET
+  PORTABLE with each exact cause. CI verified green afterward.
+- **`chain_manifest_read`'s two halves disagreed.** Its recovery branch validated its output
+  while its fast path trusted any parseable JSON - `jq -e .` returns 0 for `{}`, `[]`, `0` and a
+  bare string, so the primer rendered a chain banner of default fields. And "recovery failed"
+  shared rc=1 with "genuinely first run", which makes `pre-compact` set `IS_FIRST_RUN=1` /
+  `NEW_SEQ=1`: a live chain with an intact ledger would have **restarted at seq 1 and
+  overwritten its own manifest**. Fast path now shape-checks; recovery failure returns rc=2; and
+  the caller was taught the difference rather than just the contract being documented.
+- **The `lint-skill-size` ROOT guard proved a directory existed, not that its targets did** -
+  `--all` (exactly what CI runs) returned 0 having measured nothing when the guarded files were
+  renamed. It also fired in `--staged`, where its own adjacent comment says ROOT is unused,
+  which had forced a fixture to `mkdir` an empty `commands/` to get past it. Both fixed; the new
+  check immediately caught that the test fixture had only ever created three of the five
+  guarded files.
+- **Three tests I wrote in this round were themselves vacuous** and only caught by mutating
+  them: two asserted `rc==1` where the lint reaches 1 by other routes, and one was masked by a
+  prior case leaving a file oversize. All now assert the specific failure *reason* and are
+  mutation-verified in both directions. Guards were also widened (action pinning now covers
+  every workflow, not just one) and loosened where they produced false positives on correct
+  edits, because a guard that breaks valid work gets deleted.
+
+Suites: `test-secret-scan` 199/0, `test-lint-skill-size` 13/0, `test-chain-primitives` 18/0
+(both portable ones also green in a relocated-checkout fixture).
+
 ## 2026-08-03 - CI tells you WHICH failure it found; the last unwired lint gets wired
 
 Mission part 3 ("guard-integrity"), slice D - the three remaining `ci-1`/`lint-1` findings from the
