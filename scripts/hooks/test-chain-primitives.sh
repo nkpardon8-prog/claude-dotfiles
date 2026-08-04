@@ -241,6 +241,40 @@ cleanup_sid "$SID"
 #    reviewer demonstrated. The distinction matters because rc=1 makes pre-compact treat the
 #    sid as a first run; the file's mere existence is proof a chain was here, and its contents
 #    are the only surviving evidence of it.
+# 3a. A TRAILING BLANK LINE must not erase the chain. Recovery used to `tail -n 1` and
+#     `${last_seq:-1}`, so one blank final line turned a live seq=47 chain into
+#     current_seq=1 with an "<unrecoverable>" goal - returned through the SUCCESS branch, so
+#     none of the rc=1/rc=2 machinery fired and the caller rewrote the manifest at seq 2.
+SID="chaintest-blankline-$$"
+cleanup_sid "$SID"
+printf 'not json' > "$HOME/.claude/chains/${SID}.json"
+printf '2026-01-01\tseq=47\tc\te\tstatus=active\tn\tf\tcm\tnorth_star_first_120=Real goal here\n\n' \
+    > "$HOME/.claude/chains/${SID}.log"
+_o5=$(chain_manifest_read "$SID" 2>/dev/null); _r5=$?
+_seq5=$(printf '%s' "$_o5" | jq -r '.current_seq // "?"' 2>/dev/null)
+_ns5=$(printf '%s' "$_o5" | jq -r '.north_star // "?"' 2>/dev/null)
+if [ "$_r5" -eq 0 ] && [ "$_seq5" = "47" ] && [ "$_ns5" = "Real goal here" ]; then
+    pass "a trailing blank line does not reset seq or erase the north star"
+else
+    fail "blank-line recovery" "rc=$_r5 seq=$_seq5 ns=$_ns5 (want rc=0 seq=47 and the real goal)"
+fi
+cleanup_sid "$SID"
+
+# 3b. A ledger that yields NOTHING usable must NOT be turned into a confident all-defaults
+#     manifest. Fabricating one manufactured exactly the hollow-manifest-of-defaults that the
+#     fast path was hardened to reject - the same disagreement, direction flipped.
+SID="chaintest-garbage-$$"
+cleanup_sid "$SID"
+printf 'not json' > "$HOME/.claude/chains/${SID}.json"
+printf 'total garbage not tsv at all\n' > "$HOME/.claude/chains/${SID}.log"
+_o6=$(chain_manifest_read "$SID" 2>/dev/null); _r6=$?
+if [ "$_r6" -eq 2 ] && [ -z "$_o6" ]; then
+    pass "a non-TSV ledger is refused (rc=2), not fabricated into a defaults manifest"
+else
+    fail "garbage-ledger refusal" "rc=$_r6 bytes=${#_o6} (want rc=2 and no output)"
+fi
+cleanup_sid "$SID"
+
 SID="chaintest-noledger-$$"
 cleanup_sid "$SID"
 printf 'not valid json' > "$HOME/.claude/chains/${SID}.json"
