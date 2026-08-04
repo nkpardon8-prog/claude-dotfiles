@@ -123,15 +123,24 @@ jobs:
       - name: Run shell harnesses
         run: |
           set -uo pipefail
+          # ONLY harnesses PROVEN to pass in a CI layout (checkout not under $HOME, Linux).
+          # The first version of this job listed seven and turned CI RED on every push from
+          # the moment it landed - 16 consecutive failures before anyone looked, on a repo
+          # that auto-pushes on every file edit. Cause: six of the seven resolve their target
+          # as "$HOME/.claude-dotfiles/..." (HOME=/home/runner on a runner, checkout under
+          # /home/runner/work) and/or use BSD-only `stat -f` / `date -v`, so they exited 127
+          # or failed wholesale. That is precisely the "listed, not run" failure this job was
+          # added to prevent, reproduced one level up - and it contradicted this file's own
+          # exclusion rationale, which refuses to add a harness that "would redden CI for
+          # everyone without fixing anything".
+          #
+          # Enrolling a harness here REQUIRES first proving it green with the checkout
+          # OUTSIDE $HOME. test-lint-skill-size.sh qualified only after its $HOME hard-code
+          # was replaced with a BASH_SOURCE-derived root.
           failed=""
           for h in \
-            scripts/hooks/test-auto-compact.sh \
             scripts/hooks/test-chain-primitives.sh \
-            scripts/hooks/test-engine-header.sh \
-            scripts/hooks/test-handoff-smoke-check.sh \
-            scripts/hooks/test-lint-skill-size.sh \
-            scripts/hooks/test-mission-drift-check.sh \
-            scripts/hooks/test-stale-handoff-guard.sh ; do
+            scripts/hooks/test-lint-skill-size.sh ; do
             echo "=== $h ==="
             if [ ! -f "$h" ]; then
               # A renamed or deleted harness must not vanish from coverage quietly - that is
