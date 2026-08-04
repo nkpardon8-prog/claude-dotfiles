@@ -1892,8 +1892,16 @@ mission_await_state() {
         # would look up `supnr["01","01"]`/`pdnr["01"]` (never set) and survive a `part=1 round=1`
         # bank/VOID/PART-DONE, letting a late bit resurrect a superseded round.
         pr = (awpart[i]+0) SUBSEP (awround[i]+0)
-        b = pdnr[awpart[i]+0] + 0
-        if (awkind[i] == "job" && supnr[pr] > b) b = supnr[pr]
+        # D10 (R8-10) — a HUMAN barrier is superseded by NOTHING: a PART-DONE / bank / VOID must NEVER
+        # erase an open human STOP (the erase hole). Only its OWN got=1 (lastgot/effgot below) resolves
+        # it. ONLY a JOB barrier is superseded — by a PART-DONE for the part (pdnr) or a same-round
+        # bank/VOID (supnr). The MISSION-CLEARED global short-circuit above is intact (a cleared mission
+        # still returns none).
+        b = 0
+        if (awkind[i] == "job") {
+          b = pdnr[awpart[i]+0] + 0
+          if (supnr[pr] > b) b = supnr[pr]
+        }
         if (awnr[i] <= b) continue   # pre-boundary => stale, excluded
         k4 = (awpart[i]+0) SUBSEP (awround[i]+0) SUBSEP (awatt[i]+0) SUBSEP awkind[i] SUBSEP awop[i]
         if (awgot[i] == 0) opened[k4] = 1   # post-boundary opener seen => barrier may be live
