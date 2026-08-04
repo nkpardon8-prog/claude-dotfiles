@@ -36,6 +36,8 @@ TESTS=(
   "04-idempotent-cursor.sh"
   "05-corrupt-read-loud.sh"
   "06-wiring-present.sh"
+  "07-decision-durability.sh"
+  "08-r8-review-fixes.sh"
 )
 PASS=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do

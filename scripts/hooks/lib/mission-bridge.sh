@@ -103,6 +103,66 @@ _mission_pdseq_parse() {
   esac
 }
 
+# _mission_strip_zeros <digits> -> the value with leading zeros stripped (all-zero -> "0"). NO shell
+# arithmetic: R8r2-G - `$(( 10#... ))` WRAPS at 2^63 on bash 3.2's 64-bit ints, so 1 and
+# 18446744073709551617 both normalize to 1 and two DISTINCT coords would falsely compare equal in the
+# barrier-identity gate. A pure STRING strip (param-expansion only) never overflows. Input is already
+# digit-validated upstream (the coord grammar gates part/round/attempt to `[0-9]+`).
+_mission_strip_zeros() {
+  _sz="${1:-0}"
+  _sz="${_sz#"${_sz%%[!0]*}"}"   # drop the leading-zero run (`%%[!0]*` isolates it, `#` removes it)
+  [ -n "$_sz" ] || _sz=0         # an all-zeros input collapses to empty -> canonical "0"
+  printf '%s' "$_sz"
+}
+
+# _mission_pdseq_highwater <sid> <root> -> stdout the HISTORY high-water pdseq: the max sequence over
+#   (a) the live-nonce PENDING DECISIONS md-zone `- [pd:<N>-` lines, AND
+#   (b) the archive-inclusive LOG's DOUBLE-ANCHORED `op=<N>-` AWAIT idtag lines, `resolved pd:<N>-`
+#       resolve idtag lines, AND `op=<N>-` DECISION idtag lines.
+#   EXCLUDES the marker pdseq (callers strict-parse + max it in themselves). Shared by BOTH the blocking
+#   mission_pending_stop_mint (D5) and the non-blocking mission_pending_mint (I2) so neither can re-mint a
+#   seq already present in history. C1a — DECISION lines ARE scanned: without this, a `log`-preplanted
+#   `[mission] DECISION op=1-…` (no AWAIT, no pd line) left the seed at 0, a fresh mint reused op=1, and the
+#   preplanted DECISION then satisfied the DECISION-first human close — a stale-approve STOP bypass. I6 —
+#   EVERY scan is idtag-column + body double-anchored, so a free-text note/question body carrying `op=999-`
+#   or `pd:999-` (no structured idtag) cannot poison the counter into a false sequence-exhaustion. Each
+#   candidate is bounded to <=6 digits in awk; prints 0 when there is no history.
+_mission_pdseq_highwater() {
+  _hw_sid=$(_mission_sanitize_sid "$1"); _hw_root="$2"
+  _hw_md="${_hw_root}/MISSION.${_hw_sid}.md"
+  _hw_nonce=$(_mission_marker_field "$_hw_md" nonce 2>/dev/null)
+  _hw_n8=$(printf '%s' "$_hw_nonce" | cut -c1-8)
+  _hw_mdmax=0
+  if [ -n "$_hw_n8" ]; then
+    _hw_mdmax=$(awk -v n8="$_hw_n8" '
+      BEGIN{ openf="<!-- MZONE:PENDING DECISIONS n=" n8 " -->"; closef="<!-- /MZONE:PENDING DECISIONS n=" n8 " -->"; inz=0; mx=0 }
+      $0==openf{inz=1;next} $0==closef{inz=0;next}
+      inz==1 && match($0, /^- \[pd:[0-9]+/) {
+        s=substr($0, RSTART, RLENGTH); sub(/^- \[pd:/, "", s)
+        if (length(s)>=1 && length(s)<=6) { v=s+0; if (v>mx) mx=v }
+      }
+      END{ print mx+0 }' "$_hw_md")
+  fi
+  _hw_logmax=$(_mission_timing_stream "$_hw_sid" "$_hw_root" | awk -F'\t' '
+    function digpfx(s,   num,i,c){ num=""; for(i=1;i<=length(s);i++){c=substr(s,i,1); if(c>="0"&&c<="9") num=num c; else break} return num }
+    ($1 ~ /^(g[0-9]+-)?m[0-9]+-await-/) && ($2 ~ /^\[mission\] AWAIT /) {
+      p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
+        dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } }
+    ($1 ~ /^(g[0-9]+-)?resolve-/) && ($2 ~ /^resolved pd:[0-9]+-/) {
+      # R8r2-I - bind the resolve-<id> idtag encoded id to the body pd:<id> id; a generic-log line
+      # resolved pd:999999-X under an idtag resolve-note (id mismatch) must NOT bump the high-water.
+      it=$1; sub(/^g[0-9]+-/,"",it); sub(/^resolve-/,"",it)
+      rest=substr($2, length("resolved pd:")+1); split(rest, bb, " "); bid=bb[1]
+      if(it==bid){ dp=digpfx(bid); if(dp!="" && length(dp)<=6){ v=dp+0; if(v>mx) mx=v } } }
+    ($1 ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && ($2 ~ /^\[mission\] DECISION op=[0-9]+-/) {
+      p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
+        dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } }
+    END{ print mx+0 }')
+  case "$_hw_mdmax"  in ''|*[!0-9]*) _hw_mdmax=0 ;; esac
+  case "$_hw_logmax" in ''|*[!0-9]*) _hw_logmax=0 ;; esac
+  if [ "$_hw_mdmax" -ge "$_hw_logmax" ] 2>/dev/null; then printf '%s' "$_hw_mdmax"; else printf '%s' "$_hw_logmax"; fi
+}
+
 # _file_mtime <path> -> stdout mtime epoch seconds (0 if absent/unreadable). BSD stat then GNU stat
 # (same order as _file_size — BSD `-f %m` errors out on GNU and falls through, never contaminates).
 _file_mtime() {
@@ -1126,6 +1186,15 @@ mission_pending_mint() {
     *[!a-z0-9-]*) echo "mission: pending: invalid slug '$_pm_slug' (want [a-z0-9-])" >&2; return 1 ;;
   esac
   [ -n "$_pm_q" ] || { echo "mission: pending: missing question" >&2; return 1; }
+  # I1 — the question becomes an md PENDING-zone line `- [pd:<id>] <question>`; a NEWLINE would forge a
+  # second line and a leading `- [pd:` a sibling pending entry. Reject both (fail closed, no lock taken).
+  # LITERAL `$'\n'`/`$'\r'` — NEVER `*"$(printf '\n')"*` (subst strips the newline to "" -> matches ALL).
+  case "$_pm_q" in
+    *$'\n'*|*$'\r'*) echo "mission: pending: REFUSED — question contains a newline (would forge an md line)" >&2; return 1 ;;
+  esac
+  case "$_pm_q" in
+    "- [pd:"*) echo "mission: pending: REFUSED — question starts with '- [pd:' (would forge a pending line)" >&2; return 1 ;;
+  esac
   _pm_f="${_pm_root}/MISSION.${_pm_sid}.md"
 
   lb=$(_mission_lockbase "$_pm_root")
@@ -1134,9 +1203,17 @@ mission_pending_mint() {
   if ! mission_verify "$_pm_f" "$_pm_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing pending (backups in .mission-backups/)" >&2; return 2
   fi
-  # read the current pdseq UNDER LOCK (absent => 0) and mint the next; monotonic, never reused.
+  # I2 — seed the next seq from the FULL high-water: max(marker pdseq, md-zone + double-anchored log
+  # AWAIT/resolve/DECISION history), sharing _mission_pdseq_highwater with the blocking mint. A legacy/
+  # pre-R8 marker that under-counts (pdseq=0 while history holds a higher seq) can no longer re-mint a
+  # LIVE seq (which would collapse two decisions onto one idtag). Monotonic, never reused.
   _pm_cur=$(_mission_marker_field "$_pm_f" pdseq 2>/dev/null); case "$_pm_cur" in ''|*[!0-9]*) _pm_cur=0 ;; esac
+  _pm_hist=$(_mission_pdseq_highwater "$_pm_sid" "$_pm_root"); case "$_pm_hist" in ''|*[!0-9]*) _pm_hist=0 ;; esac
+  [ "$_pm_hist" -gt "$_pm_cur" ] 2>/dev/null && _pm_cur="$_pm_hist"
   _pm_next=$((_pm_cur + 1))
+  if [ "$_pm_next" -gt 999999 ]; then
+    _mission_unlock; echo "mission: pending: REFUSED — sequence-exhausted (next=${_pm_next} > 999999)" >&2; return 7
+  fi
   _pm_id="pd:${_pm_next}-${_pm_slug}"
   _pm_entry="- [${_pm_id}] ${_pm_q}"
 
@@ -1200,6 +1277,16 @@ mission_pending_stop_mint() {
   case "$_ps_attempt" in ''|*[!0-9]*) echo "mission: pending-stop: bad attempt '${_ps_attempt}'" >&2; return 1 ;; esac
   case "$_ps_phase"   in ''|*[!a-z]*) echo "mission: pending-stop: bad phase '${_ps_phase}' (want [a-z])" >&2; return 1 ;; esac
   [ -n "$_ps_q" ] || { echo "mission: pending-stop: missing question" >&2; return 1; }
+  # I1 — the question becomes an md PENDING-zone line `- [pd:<id>] <question>`; a NEWLINE would forge a
+  # second md line and a leading `- [pd:` a sibling pending entry (a forged approval line). Reject both
+  # BEFORE the lock (fail closed, no barrier, no pd line). LITERAL `$'\n'`/`$'\r'` patterns — NEVER
+  # `*"$(printf '\n')"*` (command substitution strips the trailing newline to "" -> matches EVERYTHING).
+  case "$_ps_q" in
+    *$'\n'*|*$'\r'*) echo "mission: pending-stop: REFUSED — question contains a newline (would forge an md line)" >&2; return 1 ;;
+  esac
+  case "$_ps_q" in
+    "- [pd:"*) echo "mission: pending-stop: REFUSED — question starts with '- [pd:' (would forge a pending line)" >&2; return 1 ;;
+  esac
   _ps_f="${_ps_root}/MISSION.${_ps_sid}.md"
 
   lb=$(_mission_lockbase "$_ps_root")
@@ -1216,6 +1303,18 @@ mission_pending_stop_mint() {
   _ps_markerpdseq=$(_mission_pdseq_parse "$_ps_markerpdseq_raw") || {
     _mission_unlock; echo "mission: pending-stop: REFUSED — malformed marker pdseq '${_ps_markerpdseq_raw}'" >&2; return 2; }
 
+  # R8r2-D - under THIS lock, refuse opening a STOP below a MISSION-CLEARED lifecycle. If clear won the
+  # lock first, await-state reads `none` (a cleared mission has no outstanding await) and a fresh STOP
+  # would be appended BELOW the MISSION-CLEARED line, where the reader's cleared short-circuit hides it
+  # PERMANENTLY. mission_lifecycle_state reads the archive-inclusive stream (no lock re-acquire). Fail
+  # closed on anything not provably active.
+  _ps_life=$(mission_lifecycle_state "$_ps_sid" "$_ps_root" 2>/dev/null)
+  case "$_ps_life" in
+    active|unknown) : ;;
+    cleared) _mission_unlock; echo "mission: pending-stop: REFUSED - mission is CLEARED; refusing to open a STOP below MISSION-CLEARED (it would be permanently hidden)" >&2; return 3 ;;
+    *) _mission_unlock; echo "mission: pending-stop: REFUSED - lifecycle unreadable ('${_ps_life:-empty}'); fail closed" >&2; return 3 ;;
+  esac
+
   # ---- [D3/D4] a single OPEN human barrier is the ONLY thing that diverts from a fresh mint --------
   _ps_await=$(mission_await_state "$_ps_sid" "$_ps_root" 2>/dev/null)
   case "$_ps_await" in
@@ -1225,98 +1324,94 @@ mission_pending_stop_mint() {
   _ps_ak=$(_mission_await_field "$_ps_await" kind)
   _ps_ar=$(_mission_await_field "$_ps_await" ready)
   if [ "$_ps_ak" = human ] && [ "$_ps_ar" = 0 ]; then
-    # an OPEN human barrier exists — adopt an orphan, return an exact re-request, or fail closed.
+    # An OPEN human barrier exists. C2 — the ONLY diversions from a fail-closed refusal are (a) an
+    # idempotent re-request (same slug+coords+question, pd line present) and (b) a crash-orphan adopt
+    # (same slug+coords, pd line lost, NO durable DECISION). We compute the EXACT-identity match FIRST,
+    # BEFORE any adopt, so a DIFFERENT request can never bind its question onto the open op (the old code
+    # adopted before checking identity and would rebind an unrelated question to the live barrier).
     _ps_bop=$(_mission_await_field "$_ps_await" op)
     _ps_bseq=${_ps_bop%%-*}; _ps_bslug=${_ps_bop#*-}
     _ps_bseqv=$(_mission_pdseq_parse "$_ps_bseq") || {
       _mission_unlock; echo "mission: pending-stop: REFUSED — open human barrier op '${_ps_bop}' has a malformed seq" >&2; return 2; }
     case "$_ps_bseqv" in 0) _mission_unlock; echo "mission: pending-stop: REFUSED — open human barrier op '${_ps_bop}' seq is 0 (never minted)" >&2; return 2 ;; esac
-    # does that op ALREADY have a fence-scoped pd line in the live-nonce PENDING DECISIONS zone?
+    _ps_bpart=$(_mission_await_field "$_ps_await" part)
+    _ps_bround=$(_mission_await_field "$_ps_await" round)
+    _ps_batt=$(_mission_await_field "$_ps_await" attempt)
+    _ps_bphase=$(_mission_await_field "$_ps_await" phase)
+    # EXACT-identity match: slug + part/round/attempt/phase. R8r2-G - coords compared as leading-zero-
+    # STRIPPED STRINGS (no `$(( ))`): a validator-legal octal-looking `08`/`09` round-trips AND two
+    # distinct large coords that collide under bash's 64-bit `$(( 10#… ))` wrap stay distinct.
+    _ps_match=0
+    if [ "$_ps_bslug" = "$_ps_slug" ] \
+       && [ "$(_mission_strip_zeros "${_ps_bpart:-0}")"  = "$(_mission_strip_zeros "$_ps_part")" ] \
+       && [ "$(_mission_strip_zeros "${_ps_bround:-0}")" = "$(_mission_strip_zeros "$_ps_round")" ] \
+       && [ "$(_mission_strip_zeros "${_ps_batt:-0}")"   = "$(_mission_strip_zeros "$_ps_attempt")" ] \
+       && [ "$_ps_bphase" = "$_ps_phase" ]; then
+      _ps_match=1
+    fi
+    if [ "$_ps_match" != 1 ]; then
+      # C2/[D3] a DIFFERENT open human barrier => FAIL CLOSED (never open/rebind a second invisible STOP).
+      _mission_unlock
+      echo "mission: pending-stop: REFUSED — a DIFFERENT open human STOP (op=${_ps_bop}) is already live; resolve/deny it before opening another" >&2
+      return 3
+    fi
+    # identity matches. Does that op ALREADY have a fence-scoped pd line in the live-nonce zone?
     _ps_haspd=$(awk -v n8="$_ps_n8" -v op="$_ps_bop" '
       BEGIN{ openf="<!-- MZONE:PENDING DECISIONS n=" n8 " -->"; closef="<!-- /MZONE:PENDING DECISIONS n=" n8 " -->"; inz=0; found=0 }
       $0==openf{inz=1;next} $0==closef{inz=0;next}
       inz==1 && $0 ~ ("^- \\[pd:" op "\\] ") { found=1 }
       END{ print found+0 }' "$_ps_f")
-    if [ "$_ps_haspd" != 1 ]; then
-      # [D4] crash ORPHAN (barrier live, pd line lost) => ADOPT: write ONLY the missing pd line for
-      # this op; keep the marker pdseq a true HIGH-WATER (max of current + adopted seq). No new mint,
-      # no re-append of the barrier (it is already live+correct).
-      _ps_adopt_pdseq="$_ps_markerpdseq"
-      [ "$_ps_bseqv" -gt "$_ps_adopt_pdseq" ] && _ps_adopt_pdseq="$_ps_bseqv"
-      mission_backup "$_ps_f" "$_ps_root" "$_ps_sid" || {
-        _mission_unlock; echo "mission: pending-stop: BACKUP FAILED — refusing adopt" >&2; return 4; }
-      _ps_id="pd:${_ps_bop}"
-      _ps_entry="- [${_ps_id}] ${_ps_q}"
-      _ps_midkey=$(_mission_gen_tag "$_ps_f" "pd-${_ps_bseqv}-${_ps_bslug}") || {
-        _mission_unlock; echo "mission: pending-stop: gen-tag REFUSED (adopt)" >&2; return 6; }
-      tmp=$(mktemp "${_ps_f}.tmp.XXXXXX") || { _mission_unlock; echo "mission: pending-stop: mktemp failed" >&2; return 5; }
-      ( umask 077 && _MISSION_REWRITE_PDSEQ="$_ps_adopt_pdseq" _mission_rewrite "$_ps_f" "PENDING DECISIONS" "$_ps_entry" "$_ps_midkey" "" "keep" > "$tmp" )
-      if [ -s "$tmp" ] && mission_verify "$tmp" "$_ps_sid" \
-         && grep -qF "<!-- mid:${_ps_midkey} -->" "$tmp" \
-         && [ "$(_mission_marker_field "$tmp" pdseq)" = "$_ps_adopt_pdseq" ]; then
-        if ! mv -f "$tmp" "$_ps_f"; then
-          rm -f "$tmp"; _mission_unlock; echo "mission: pending-stop: rename failed — original intact" >&2; return 6
-        fi
-      else
-        rm -f "$tmp"; _mission_unlock; echo "mission: pending-stop: adopt self-check FAILED — original intact" >&2; return 6
+    if [ "$_ps_haspd" = 1 ]; then
+      # I7 — an idempotent re-request is honored ONLY when the STORED question also matches; a changed
+      # question at the same slug+coords is a DIFFERENT action (the approval would refer to the wrong
+      # thing) => FAIL CLOSED. Extract the pd line's question (everything after `- [pd:<op>] `).
+      _ps_storedq=$(awk -v n8="$_ps_n8" -v op="$_ps_bop" '
+        BEGIN{ openf="<!-- MZONE:PENDING DECISIONS n=" n8 " -->"; closef="<!-- /MZONE:PENDING DECISIONS n=" n8 " -->"; inz=0; pfx="- [pd:" op "] " }
+        $0==openf{inz=1;next} $0==closef{inz=0;next}
+        inz==1 && index($0,pfx)==1 { print substr($0, length(pfx)+1); exit }' "$_ps_f")
+      if [ "$_ps_storedq" = "$_ps_q" ]; then
+        _mission_unlock; printf 'pd:%s\n' "$_ps_bop"; return 0
       fi
       _mission_unlock
-      printf '%s\n' "$_ps_id"
-      return 0
+      echo "mission: pending-stop: REFUSED — op=${_ps_bop} is live with a DIFFERENT question; resolve/deny it before re-asking a changed decision" >&2
+      return 3
     fi
-    # the op HAS a pd line — an EXACT request match (same slug + coords) is an idempotent re-request.
-    _ps_bpart=$(_mission_await_field "$_ps_await" part)
-    _ps_bround=$(_mission_await_field "$_ps_await" round)
-    _ps_batt=$(_mission_await_field "$_ps_await" attempt)
-    _ps_bphase=$(_mission_await_field "$_ps_await" phase)
-    if [ "$_ps_bslug" = "$_ps_slug" ] \
-       && [ "$((_ps_bpart+0))" = "$((_ps_part+0))" ] \
-       && [ "$((_ps_bround+0))" = "$((_ps_round+0))" ] \
-       && [ "$((_ps_batt+0))" = "$((_ps_attempt+0))" ] \
-       && [ "$_ps_bphase" = "$_ps_phase" ]; then
-      _mission_unlock; printf 'pd:%s\n' "$_ps_bop"; return 0
+    # [D4] crash ORPHAN (barrier live, pd line lost). R8r2-B - the ORIGINAL question is GONE with the pd
+    # line, so the supplied question can NOT be proven equal to it. NEVER silently adopt an unprovable
+    # question onto a mandatory human STOP (a different question at the same slug+coords would rebind the
+    # barrier to the wrong decision). FAIL CLOSED (rc=3) EITHER WAY; the idtag+body double-anchored,
+    # C-reader-bound DECISION scan only picks which refusal to surface. Resolve/deny the orphan explicitly.
+    _ps_hasdec=$(_gen_sliced_stream "$_ps_sid" "$_ps_root" 2>/dev/null | awk -F'\t' -v opv="$_ps_bop" '
+      function idtag_op(t,   s,seq,slug,p){ s=t; sub(/^g[0-9]+-/,"",s); sub(/^pd-/,"",s);
+        p=index(s,"-decision-"); if(p==0) return ""; seq=substr(s,1,p-1); slug=substr(s,p+length("-decision-")); return seq "-" slug }
+      ($1 ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && ($2 ~ /^\[mission\] DECISION op=[a-z0-9-]+ outcome=(approve|deny)$/) {
+        p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); if(a[1]==opv && idtag_op($1)==a[1]) f=1 } }
+      END{ print f+0 }')
+    if [ "$_ps_hasdec" = 1 ]; then
+      _mission_unlock
+      echo "mission: pending-stop: REFUSED — orphan op=${_ps_bop} already has a durable DECISION; resolve/deny it, do not re-open" >&2
+      return 3
     fi
-    # [D3] a DIFFERENT open human barrier => FAIL CLOSED (never open a second invisible human STOP).
     _mission_unlock
-    echo "mission: pending-stop: REFUSED — a DIFFERENT open human STOP (op=${_ps_bop}) is already live; resolve/deny it before opening another" >&2
+    echo "mission: pending-stop: REFUSED — orphan op=${_ps_bop} lost its pd line; question unverifiable — resolve/deny it explicitly, do not re-open" >&2
     return 3
   fi
 
-  # ---- [D5] fresh-mint seed = scan-ONCE max(marker pdseq, md-zone-max, log-max) --------------------
-  # md-zone-max: fence-scoped `^- [pd:<N>-` inside the live-nonce PENDING DECISIONS zone.
-  _ps_mdmax=$(awk -v n8="$_ps_n8" '
-    BEGIN{ openf="<!-- MZONE:PENDING DECISIONS n=" n8 " -->"; closef="<!-- /MZONE:PENDING DECISIONS n=" n8 " -->"; inz=0; mx=0 }
-    $0==openf{inz=1;next} $0==closef{inz=0;next}
-    inz==1 && match($0, /^- \[pd:[0-9]+/) {
-      s=substr($0, RSTART, RLENGTH); sub(/^- \[pd:/, "", s)
-      if (length(s)>=1 && length(s)<=6) { v=s+0; if (v>mx) mx=v }
-    }
-    END{ print mx+0 }' "$_ps_f")
-  # log-max: DOUBLE-ANCHORED — the `op=<N>-` of `[mission] AWAIT` idtag lines and the `pd:<N>-` of a
-  # `resolved pd:<N>-` narrative on a `resolve-<id>` idtag line. Free-text `op=999-`/`pd:999-` in a
-  # note/question body has neither the structured idtag column NOR the anchored body prefix, so it
-  # cannot poison the counter. (DECISION lines need not be scanned: barrier-first guarantees an AWAIT
-  # op=<N> exists for every DECISION.)
-  _ps_logmax=$(_mission_timing_stream "$_ps_sid" "$_ps_root" | awk -F'\t' '
-    function digpfx(s,   num,i,c){ num=""; for(i=1;i<=length(s);i++){c=substr(s,i,1); if(c>="0"&&c<="9") num=num c; else break} return num }
-    ($1 ~ /^(g[0-9]+-)?m[0-9]+-await-/) && ($2 ~ /^\[mission\] AWAIT /) {
-      p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
-        dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } }
-    ($1 ~ /^(g[0-9]+-)?resolve-/) && ($2 ~ /^resolved pd:[0-9]+-/) {
-      rest=substr($2, length("resolved pd:")+1); dp=digpfx(rest)
-      if(dp!="" && length(dp)<=6){ v=dp+0; if(v>mx) mx=v } }
-    END{ print mx+0 }')
-  # base-10 normalize + bound each candidate `^[0-9]{1,6}$` before arithmetic; a >6-digit candidate
-  # (impossible from the bounded awk, but defended) fails closed.
+  # ---- [D5/C1a] fresh-mint seed = max(marker pdseq, HISTORY high-water) -----------------------------
+  # The HISTORY high-water (md-zone `- [pd:<N>-` + DOUBLE-ANCHORED log AWAIT/resolve/DECISION `<N>-`) is
+  # computed ONCE by the shared _mission_pdseq_highwater helper. C1a — it INCLUDES anchored DECISION
+  # `op=<N>-` lines, so an op that already carries a durable DECISION can NEVER be re-minted: that was
+  # the stale-approve preplant bypass (a `log`-planted DECISION op=1 with a seed that omitted DECISION
+  # let a fresh mint reuse op=1, and the DECISION then satisfied the human close). I6 — every scan is
+  # idtag+body anchored so a free-text `op=999-`/`pd:999-` cannot poison the counter.
+  _ps_hist=$(_mission_pdseq_highwater "$_ps_sid" "$_ps_root")
+  case "$_ps_hist" in ''|*[!0-9]*) _ps_hist=0 ;; esac
+  if [ "${#_ps_hist}" -gt 6 ]; then
+    _mission_unlock; echo "mission: pending-stop: REFUSED — history high-water '${_ps_hist}' out of range (>6 digits)" >&2; return 2
+  fi
   _ps_seed=$(( 10#$_ps_markerpdseq ))
-  for _ps_c in "$_ps_mdmax" "$_ps_logmax"; do
-    case "$_ps_c" in ''|*[!0-9]*) _ps_c=0 ;; esac
-    if [ "${#_ps_c}" -gt 6 ]; then
-      _mission_unlock; echo "mission: pending-stop: REFUSED — seed candidate '${_ps_c}' out of range (>6 digits)" >&2; return 2
-    fi
-    _ps_cn=$(( 10#$_ps_c ))
-    [ "$_ps_cn" -gt "$_ps_seed" ] && _ps_seed="$_ps_cn"
-  done
+  _ps_histn=$(( 10#$_ps_hist ))
+  [ "$_ps_histn" -gt "$_ps_seed" ] && _ps_seed="$_ps_histn"
   # [D6b] sequence-exhausted refusal BEFORE opening any barrier.
   _ps_next=$((_ps_seed + 1))
   if [ "$_ps_next" -gt 999999 ]; then
@@ -1342,8 +1437,12 @@ mission_pending_stop_mint() {
   # outcome is `appended`; a dedup-idempotent/collision/rerouted means the "fresh" idtag already
   # existed = a bug, so fail closed with NO pd line and NO echo. stdout->/dev/null (append is silent
   # on success anyway); stderr kept for diagnostics. The D8 rotate fast-path avoids a self-lock spin
-  # here (we hold the mint lock).
-  mission_await_append "$_ps_sid" "$_ps_root" \
+  # here (we hold the mint lock). R8r2-A - this is the ONE sanctioned human got=0 opener, so it carries
+  # the call-scoped `_MISSION_INTERNAL_HUMAN_OPEN=1` prefix that lifts mission_await_append's got=0
+  # refusal (the `VAR=val cmd` form scopes it to THIS single invocation - it never leaks to the public
+  # `await` verb, which is refused). This opener runs UNDER the mint lock, so it is mutually exclusive
+  # with clear/rebaseline (the whole point of forbidding the lock-free public opener).
+  _MISSION_INTERNAL_HUMAN_OPEN=1 mission_await_append "$_ps_sid" "$_ps_root" \
     "part=${_ps_part} phase=${_ps_phase} round=${_ps_round} kind=human op=${_ps_op} attempt=${_ps_attempt} need=1 got=0 started_at=${_ps_started}" >/dev/null
   _ps_awrc=$?
   if [ "$_ps_awrc" -ne 0 ] || [ "${_MLA_OUTCOME:-}" != appended ]; then
@@ -1715,6 +1814,19 @@ mission_await_append() {
     job)   [ "$_aw_is_seq" = 0 ] || { echo "mission: await: job op must NOT be numeric-seq-prefixed (that namespace is reserved for human decisions; got op=${_aw_op})" >&2; return 1; } ;;
   esac
   [ "$(( _aw_got & _aw_need ))" -eq "$_aw_got" ] || { echo "mission: await: got ${_aw_got} not a subset of need ${_aw_need}" >&2; return 1; }
+  # R8r2-A - a human STOP OPENER (kind=human got=0) must be minted ONLY via `pending-stop`, which opens
+  # under the mkdir-lock (mutually exclusive with rebaseline/clear). The plain `await` verb reaches
+  # mission_log_append (LOCK-FREE), so a got=0 human opener here could interleave INSIDE clear's/
+  # rebaseline's held-lock window and be sliced/hidden. Job openers (got=0) and the human got=1 CLOSE
+  # stay valid here; only the human got=0 OPEN is refused. The SECURITY boundary is the mkdir-lock (a
+  # human open MUST be lock-HELD, mutually exclusive with clear/rebaseline); _MISSION_INTERNAL_HUMAN_OPEN
+  # is an internal call-path signal that the sanctioned mint (pending_stop_mint) sets on its ONE opener
+  # call and nothing else does - NOT a secret (the threat model is forged log lines + prose-following
+  # agents, not a hostile shell, which could edit the file directly anyway).
+  if [ "$_aw_kind" = human ] && [ "$_aw_got" -eq 0 ] && [ "${_MISSION_INTERNAL_HUMAN_OPEN:-}" != 1 ]; then
+    echo "mission: await: REFUSED - open a human STOP via 'pending-stop' (atomic under-lock), never the lock-free 'await' verb" >&2
+    return 1
+  fi
   # C3 — started_at is BARRIER-STABLE. Reuse the EARLIEST started_at already recorded for this
   # barrier so (a) a same-got re-report is byte-identical => mission_log_append dedups it (no idtag
   # collision: the idtag excludes started_at, so a fresh epoch on retry would collide), and (b) the
@@ -1745,18 +1857,50 @@ mission_await_append() {
   # barrier therefore cannot clear without a recorded, surfaced outcome — the close order is
   # DECISION -> got=1 -> resolve. The got=0 opener + a job bit are exempt (only the human got=1 close is
   # gated). A refused/empty gen-sliced read makes the DECISION unprovable => fail closed (refuse).
-  if [ "$_aw_kind" = human ] && [ "$_aw_got" -eq 1 ] && [ "$_aw_need" -eq 1 ]; then
-    if ! _gen_sliced_stream "$_aw_sid" "$_aw_root" 2>/dev/null | awk -F'\t' -v opv="$_aw_op" '
-        ($2 ~ /^\[mission\] DECISION op=/) {
-          p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); if(a[1]==opv) found=1 }
-        }
-        END { exit(found?0:1) }'; then
-      echo "mission: await: REFUSED human close op=${_aw_op} (got=1) — DECISION-first: a durable '[mission] DECISION op=${_aw_op} outcome=<approve|deny>' must be recorded BEFORE closing the barrier" >&2
-      return 1
-    fi
-  fi
   _aw_entry="[mission] AWAIT part=${_aw_part} phase=${_aw_phase} round=${_aw_round} kind=${_aw_kind} op=${_aw_op} attempt=${_aw_attempt} need=${_aw_need} got=${_aw_got} started_at=${_aw_started}"
   _aw_idtag="m${_aw_part}-await-${_aw_op}-r${_aw_round}-a${_aw_attempt}-g${_aw_got}"
+  if [ "$_aw_kind" = human ] && [ "$_aw_got" -eq 1 ] && [ "$_aw_need" -eq 1 ]; then
+    # R8r2-C-atomic - the human got=1 CLOSE is made ATOMIC w.r.t. the opener mint: acquire the SAME
+    # mkdir-lock pending_stop_mint opens the barrier under, RE-CHECK DECISION-first UNDER the lock, then
+    # append the got=1 close while holding it. Without this the lock-free DECISION reader could interleave
+    # a stale/precomputed approve after a fresh opener and satisfy decnr>openernr (a decnr-vs-openernr NR
+    # race). Mirror mission_clear_append: lock -> verify -> re-check -> mission_log_append (LOCK-FREE,
+    # rotate self-skips under our held lock) -> unlock. Job bits + the got=0 opener stay lock-free.
+    _aw_f="${_aw_root}/MISSION.${_aw_sid}.md"
+    _aw_lb=$(_mission_lockbase "$_aw_root")
+    _mission_lock "$_aw_lb" "$_aw_sid" || {
+      echo "mission: await: LOCK busy (data safe; retry next compaction)" >&2; return 3; }
+    if ! mission_verify "$_aw_f" "$_aw_sid"; then
+      _mission_unlock; echo "mission: await: CORRUPT - refusing human close" >&2; return 2
+    fi
+    # C1b + C3 + R8r2-C-reader - the DECISION must (i) be DOUBLE-ANCHORED: an idtag-column
+    # `pd-<seq>-decision-<slug>` whose ENCODED op equals BOTH the body `op=<op>` AND this barrier's op
+    # (a forged `pd-999-decision-other` + body `op=1-approve` no longer counts - C-reader), AND a body
+    # that FULLY matches `[mission] DECISION op=<op> outcome=(approve|deny)$` (a torn append ending at
+    # `op=<op>` with no `outcome=` does NOT satisfy it - C3), AND (ii) appear AFTER this barrier's got=0
+    # opener in the active-gen stream (a DECISION preplanted BEFORE the opener cannot authorize the close
+    # - C1b). NR compare within the SAME gen-sliced stream: latest got=0 opener NR vs latest matching
+    # DECISION NR; the DECISION must be strictly later. A refused/empty read or a missing opener makes the
+    # DECISION unprovable => fail closed (refuse).
+    if ! _gen_sliced_stream "$_aw_sid" "$_aw_root" 2>/dev/null | awk -F'\t' -v opv="$_aw_op" '
+        function idtag_op(t,   s,seq,slug,p){ s=t; sub(/^g[0-9]+-/,"",s); sub(/^pd-/,"",s);
+          p=index(s,"-decision-"); if(p==0) return ""; seq=substr(s,1,p-1); slug=substr(s,p+length("-decision-")); return seq "-" slug }
+        ($1 ~ /^(g[0-9]+-)?m[0-9]+-await-/) && ($2 ~ /^\[mission\] AWAIT /) {
+          p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
+            g=""; q=index($2,"got="); if(q>0){ r2=substr($2,q+4); split(r2,b," "); g=b[1] }
+            if(op==opv && g=="0") openernr=NR } }
+        ($1 ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && ($2 ~ /^\[mission\] DECISION op=[a-z0-9-]+ outcome=(approve|deny)$/) {
+          p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); if(a[1]==opv && idtag_op($1)==a[1]) decnr=NR } }
+        END { exit( (decnr>0 && openernr>0 && decnr>openernr) ? 0 : 1 ) }'; then
+      _mission_unlock
+      echo "mission: await: REFUSED human close op=${_aw_op} (got=1) — DECISION-first: a durable '[mission] DECISION op=${_aw_op} outcome=<approve|deny>' must be recorded AFTER the barrier's got=0 opener BEFORE closing it" >&2
+      return 1
+    fi
+    mission_log_append "$_aw_sid" "$_aw_root" "$_aw_entry" "$_aw_idtag"
+    _aw_rc=$?
+    _mission_unlock
+    return "$_aw_rc"
+  fi
   mission_log_append "$_aw_sid" "$_aw_root" "$_aw_entry" "$_aw_idtag"
 }
 
@@ -1965,6 +2109,11 @@ mission_resolve_pending() {
   # and the AWAIT op is the bare `…`, so callers pass either).
   _rp_id="${3#pd:}"
   [ -n "$_rp_id" ] || { echo "mission: resolve: missing pd-id" >&2; return 1; }
+  # I3 — VALIDATE the pd-id grammar AFTER stripping the optional `pd:`. Without this a crafted id like
+  # `1-a] victim` breaks the line-start-anchored strip (the `] ` boundary + the injected text). Require
+  # EXACTLY `<seq>-<slug>` (`^[0-9]+-[a-z0-9-]+$`), matching the mint's echoed shape; reject anything else.
+  printf '%s' "$_rp_id" | grep -qE '^[0-9]+-[a-z0-9-]+$' || {
+    echo "mission: resolve: REFUSED — malformed pd-id '${_rp_id}' (want <seq>-<slug>)" >&2; return 1; }
   _rp_f="${_rp_root}/MISSION.${_rp_sid}.md"
 
   lb=$(_mission_lockbase "$_rp_root")
@@ -2039,8 +2188,15 @@ mission_resolve_pending() {
     # stream) is a QUIET OK; otherwise the id never existed => fail LOUD (distinct rc 8). NOTE: the rare
     # strip-committed-but-narrative-lost double-fault degrades to this loud REFUSE on redrive (safe: the
     # pd line is already gone, so no false STOP lingers — a human re-runs and sees the loud message).
-    if _gen_sliced_stream "$_rp_sid" "$_rp_root" 2>/dev/null | awk -F'\t' -v id="$_rp_id" '
-         ($1 ~ /^(g[0-9]+-)?resolve-/) && (index($2, "resolved pd:" id " ") == 1) { found=1 }
+    # I5 — search the ARCHIVE-INCLUSIVE (all-generation) stream, NOT the active-gen slice. A prior
+    # `resolve-<id>` narrative recorded in gen N-1 lives BEFORE a later rebaseline boundary, so a
+    # gen-sliced read would drop it and falsely report the id "never existed" (rc=8) on a post-rebaseline
+    # redrive. The idtag anchor `^(g[0-9]+-)?resolve-` still matches any generation.
+    if _mission_timing_stream "$_rp_sid" "$_rp_root" 2>/dev/null | awk -F'\t' -v id="$_rp_id" '
+         # R8r2-I - bind the resolve-<id> idtag encoded id to the body id; a generic-log narrative
+         # resolved pd:<id> under a mismatched idtag (e.g. resolve-note) must NOT read as resolved.
+         ($1 ~ /^(g[0-9]+-)?resolve-/) && (index($2, "resolved pd:" id " ") == 1) {
+           it=$1; sub(/^g[0-9]+-/,"",it); sub(/^resolve-/,"",it); if(it==id) found=1 }
          END { exit(found?0:1) }'; then
       _mission_unlock; echo "mission: resolve: pd:${_rp_id} already resolved (idempotent no-op)" >&2; return 0
     fi
@@ -2075,6 +2231,20 @@ mission_rebaseline() {
     echo "mission: LOCK busy (data safe; retry next compaction)" >&2; return 3; }
   if ! mission_verify "$_rb_f" "$_rb_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing rebaseline" >&2; return 2
+  fi
+  # C4 — re-check the human-barrier guard UNDER this mutation lock (the mission-write _mw_human_barrier_guard
+  # ran BEFORE the lock; a pending-stop could open a barrier in the window between that check and the gen
+  # bump below, which would then slice the open STOP away). pending-stop opens its barrier while holding
+  # THIS SAME lock, so once we hold it the await-state read is authoritative: an open human STOP here means
+  # the barrier opened after the pre-lock check. Fail closed on an unreadable await-state.
+  _rb_await=$(mission_await_state "$_rb_sid" "$_rb_root" 2>/dev/null)
+  case "$_rb_await" in
+    none|"await "*) : ;;
+    *) _mission_unlock; echo "mission: rebaseline: REFUSED — await-state unreadable under lock ('${_rb_await:-empty}'); fail closed" >&2; return 7 ;;
+  esac
+  _rb_awk=$(_mission_await_field "$_rb_await" kind); _rb_awr=$(_mission_await_field "$_rb_await" ready)
+  if [ "$_rb_awk" = human ] && [ "$_rb_awr" = 0 ]; then
+    _mission_unlock; echo "mission: rebaseline: REFUSED — an OPEN human STOP barrier is live (opened since the pre-lock check); resolve/deny it before rebaselining" >&2; return 7
   fi
   mission_backup "$_rb_f" "$_rb_root" "$_rb_sid" || {
     _mission_unlock; echo "mission: BACKUP FAILED — refusing" >&2; return 4; }
@@ -2138,6 +2308,85 @@ mission_rebaseline() {
     _rb_logrc=$?
   fi
   return "$_rb_logrc"
+}
+
+# mission_clear_append <sid> <root> <entry> <idtag> — the UNDER-LOCK MISSION-CLEARED writer (C4).
+#   MISSION-CLEARED has no dedicated lib emitter; the agent writes it via the `log` verb, whose
+#   _mw_human_barrier_guard runs BEFORE mission_log_append (which is itself lock-free). That is a TOCTOU:
+#   a pending-stop could open a human STOP in the window between the guard check and the clear landing,
+#   and a cleared mission reads await-state `none` — erasing the just-opened STOP. This wrapper closes the
+#   window by acquiring the SAME mint lock pending-stop uses, RE-CHECKING await-state under it, and only
+#   then appending. Holding the lock across mission_log_append is safe: the append is lock-free and
+#   _mission_log_rotate self-skips when THIS sid's lock is already held (:792); a MISSION-CLEARED line is
+#   always <480B so it never reroutes to the (locking) mission_mutate. rc mirrors mission_log_append plus
+#   rc=4 for the open-human-barrier refusal (surfaced by mission-write as a parseable FAILED line).
+mission_clear_append() {
+  _ca_sid=$(_mission_sanitize_sid "$1"); _ca_root="$2"; _ca_entry="$3"; _ca_idtag="${4:-}"
+  _MLA_OUTCOME=appended; _MLA_REASON=""
+  [ -n "$_ca_sid" ]  || { echo "mission: clear: invalid sid" >&2; return 1; }
+  [ -n "$_ca_root" ] || { echo "mission: clear: missing root" >&2; return 1; }
+  _ca_f="${_ca_root}/MISSION.${_ca_sid}.md"
+  _ca_lb=$(_mission_lockbase "$_ca_root")
+  _mission_lock "$_ca_lb" "$_ca_sid" || {
+    echo "mission: LOCK busy (data safe; retry next compaction)" >&2; return 3; }
+  if ! mission_verify "$_ca_f" "$_ca_sid"; then
+    _mission_unlock; echo "mission: CORRUPT — refusing clear" >&2; return 2
+  fi
+  # C4 — under-lock human-barrier re-check (authoritative; pending-stop holds this same lock to open).
+  _ca_await=$(mission_await_state "$_ca_sid" "$_ca_root" 2>/dev/null)
+  case "$_ca_await" in
+    none|"await "*) : ;;
+    *) _mission_unlock; echo "mission: clear: REFUSED — await-state unreadable under lock ('${_ca_await:-empty}'); fail closed" >&2; return 4 ;;
+  esac
+  _ca_awk=$(_mission_await_field "$_ca_await" kind); _ca_awr=$(_mission_await_field "$_ca_await" ready)
+  if [ "$_ca_awk" = human ] && [ "$_ca_awr" = 0 ]; then
+    _mission_unlock; echo "mission: clear: REFUSED — an OPEN human STOP barrier is live (opened since the pre-lock check); resolve/deny it before clearing" >&2; return 4
+  fi
+  # Append while HOLDING the lock (rotate self-skips; short line never reroutes). Preserve rc + outcome.
+  mission_log_append "$_ca_sid" "$_ca_root" "$_ca_entry" "$_ca_idtag"
+  _ca_rc=$?
+  _mission_unlock
+  return "$_ca_rc"
+}
+
+# mission_partdone_append <sid> <root> <entry> <idtag> - the UNDER-LOCK PART-DONE writer (R8r2-J).
+#   PART-DONE has no dedicated lib emitter; mission-write routes it through here. Its preconditions run in
+#   _mw_partdone_check, whose _mw_human_barrier_guard is a LOCK-FREE pre-check that runs BEFORE
+#   mission_log_append (itself lock-free). That is a TOCTOU: a pending-stop could open a human STOP in the
+#   window between the pre-check and the PART-DONE landing, and PART-DONE would then advance the mission
+#   past the just-opened STOP. This wrapper closes the window by acquiring the SAME mint lock pending-stop
+#   opens under, RE-CHECKING await-state under it, and only then appending. Holding the lock across
+#   mission_log_append is safe (the append is lock-free; _mission_log_rotate self-skips when THIS sid`s
+#   lock is held; a PART-DONE line is always <480B so it never reroutes to the locking mission_mutate).
+#   The lock-free pre-check stays as a fast-fail; THIS is the authoritative guard. rc mirrors
+#   mission_log_append plus rc=4 for the open-human-barrier refusal (surfaced by mission-write as FAILED).
+mission_partdone_append() {
+  _pa_sid=$(_mission_sanitize_sid "$1"); _pa_root="$2"; _pa_entry="$3"; _pa_idtag="${4:-}"
+  _MLA_OUTCOME=appended; _MLA_REASON=""
+  [ -n "$_pa_sid" ]  || { echo "mission: part-done: invalid sid" >&2; return 1; }
+  [ -n "$_pa_root" ] || { echo "mission: part-done: missing root" >&2; return 1; }
+  _pa_f="${_pa_root}/MISSION.${_pa_sid}.md"
+  _pa_lb=$(_mission_lockbase "$_pa_root")
+  _mission_lock "$_pa_lb" "$_pa_sid" || {
+    echo "mission: LOCK busy (data safe; retry next compaction)" >&2; return 3; }
+  if ! mission_verify "$_pa_f" "$_pa_sid"; then
+    _mission_unlock; echo "mission: CORRUPT - refusing part-done" >&2; return 2
+  fi
+  # R8r2-J - under-lock human-barrier re-check (authoritative; pending-stop holds this same lock to open).
+  _pa_await=$(mission_await_state "$_pa_sid" "$_pa_root" 2>/dev/null)
+  case "$_pa_await" in
+    none|"await "*) : ;;
+    *) _mission_unlock; echo "mission: part-done: REFUSED - await-state unreadable under lock ('${_pa_await:-empty}'); fail closed" >&2; return 4 ;;
+  esac
+  _pa_awk=$(_mission_await_field "$_pa_await" kind); _pa_awr=$(_mission_await_field "$_pa_await" ready)
+  if [ "$_pa_awk" = human ] && [ "$_pa_awr" = 0 ]; then
+    _mission_unlock; echo "mission: part-done: REFUSED - an OPEN human STOP barrier is live (opened since the pre-lock check); resolve/deny it before advancing the part" >&2; return 4
+  fi
+  # Append while HOLDING the lock (rotate self-skips; short line never reroutes). Preserve rc + outcome.
+  mission_log_append "$_pa_sid" "$_pa_root" "$_pa_entry" "$_pa_idtag"
+  _pa_rc=$?
+  _mission_unlock
+  return "$_pa_rc"
 }
 
 # ===========================================================================================

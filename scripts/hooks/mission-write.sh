@@ -47,7 +47,7 @@
 #     parse-codex-header <file>                  (stdout: bare `N/4`, empty on absent/malformed header)
 #     void-count <sid> <root> <part> <round>     (stdout: bare integer >=0, or `-1` refused-read sentinel)
 #     await-state <sid> <root>                   (stdout: bare `none` | `corrupt` | `await kind=… op=…
-#                                                 part=… round=… attempt=… need=… got=… ready=<0|1>
+#                                                 part=… round=… attempt=… phase=… need=… got=… ready=<0|1>
 #                                                 started_at=…` — the newest outstanding AWAIT barrier)
 #     cursor-hash <sid> <root>                   (stdout: bare 64-hex sha256 of the gen-scoped state,
 #                                                 empty, or `corrupt` on a refused gen-boundary read)
@@ -88,8 +88,10 @@ verb="${1:-}"; sid="${2:-}"; root="${3:-}"
 #   parse-codex-header <file>              → stdout: bare `N/4` (empty on absent/malformed header)
 #   void-count <sid> <root> <part> <round> → stdout: bare integer >=0 (the count) or `-1` sentinel
 #                                            (refused gen-sliced read / non-numeric args)
-#   await-state <sid> <root>               → stdout: bare `none` | `corrupt` | `await …` (newest
-#                                            outstanding AWAIT; a `..` root fails safe to `none`)
+#   await-state <sid> <root>               → stdout: bare `none` | `corrupt` | `await kind=… op=… part=…
+#                                            round=… attempt=… phase=… need=… got=… ready=<0|1>
+#                                            started_at=…` (newest outstanding AWAIT; a `..` root fails
+#                                            safe to `none`)
 #   cursor-hash <sid> <root>               → stdout: bare 64-hex digest | empty | `corrupt`
 #                                            (a `..` root fails safe to empty)
 case "$verb" in
@@ -530,15 +532,35 @@ case "$verb" in
     # PART-DONE preconditions (dedup-first, gen-sliced, freshness-ordered, dry-count fold, tree-drift).
     _mw_validate_log "$4" "${5:-}" "$sid" "$root"
     _mw_partdone_check "$4" "${5:-}" "$sid" "$root"
-    mission_log_append "$sid" "$root" "$4" "${5:-}"
-    rc=$?
-    # CAPTURE the log outcome BEFORE _mw_emit_snapshot's own mission_log_append clobbers the globals.
-    _mw_log_outcome="${_MLA_OUTCOME:-}"; _mw_log_reason="${_MLA_REASON:-}"
-    # Stale-claim guard, stamp half: on a genuinely-new converged dry=2 line ONLY (gate=appended), stamp
-    # the convergence snapshot. No-op for every other line / outcome. Silent on stdout.
-    [ "$_mw_log_outcome" = appended ] && _mw_emit_snapshot "$4" "$sid" "$root"
-    # RESTORE the captured outcome so the status line reflects the log line, not the snapshot emit.
-    _MLA_OUTCOME="$_mw_log_outcome"; _MLA_REASON="$_mw_log_reason"
+    case "$4" in
+      "[mission] MISSION-CLEARED "*)
+        # C4 — route the clear through the UNDER-LOCK guard (mission_clear_append re-checks await-state
+        # under the SAME mint lock pending-stop opens under, closing the TOCTOU where a barrier opened
+        # after the pre-lock _mw_human_barrier_guard but before the clear landed). rc=4 = open STOP.
+        mission_clear_append "$sid" "$root" "$4" "${5:-}"
+        rc=$?
+        ;;
+      "[mission] PART-DONE "*)
+        # FIX J (R8r2) - route PART-DONE through the UNDER-LOCK guard. _mw_partdone_check (above) already
+        # ran its LOCK-FREE _mw_human_barrier_guard pre-check; mission_partdone_append re-checks await-state
+        # under the SAME mint lock pending-stop opens under, closing the TOCTOU where a STOP opened after
+        # the pre-check but before the append landed. rc=4 = open human STOP (blocks advance). PART-DONE is
+        # not a converged dry=2 review line, so it never needs the _mw_emit_snapshot stamp path.
+        mission_partdone_append "$sid" "$root" "$4" "${5:-}"
+        rc=$?
+        ;;
+      *)
+        mission_log_append "$sid" "$root" "$4" "${5:-}"
+        rc=$?
+        # CAPTURE the log outcome BEFORE _mw_emit_snapshot's own mission_log_append clobbers the globals.
+        _mw_log_outcome="${_MLA_OUTCOME:-}"; _mw_log_reason="${_MLA_REASON:-}"
+        # Stale-claim guard, stamp half: on a genuinely-new converged dry=2 line ONLY (gate=appended),
+        # stamp the convergence snapshot. No-op for every other line / outcome. Silent on stdout.
+        [ "$_mw_log_outcome" = appended ] && _mw_emit_snapshot "$4" "$sid" "$root"
+        # RESTORE the captured outcome so the status line reflects the log line, not the snapshot emit.
+        _MLA_OUTCOME="$_mw_log_outcome"; _MLA_REASON="$_mw_log_reason"
+        ;;
+    esac
     _mw_outcome_status log "$rc"
     ;;
 

@@ -207,46 +207,56 @@ fi
 # flock unavailable — mkdir-spinlock fallback with stale-lock detection.
 # A SIGKILLed prior run leaves the lockdir behind indefinitely; detect and remove it once its mtime
 # is older than the stale threshold. I5 — that threshold MUST exceed the longest LEGIT hold.
-# R7-5 — the longest legit hold is the HOLDER's OWN budget, NOT the waiter's. A short-budget waiter
-# (e.g. 3300 s) must NEVER evict a still-live holder that was launched with a larger budget (e.g.
-# 21600 s). So the HOLDER publishes its INVOKE_TIMEOUT into `$LOCKDIR/budget` on acquire, and a WAITER
-# sizes its stale threshold to (holder_budget + 60). When that file is absent/unreadable/invalid, the
-# waiter falls back to the CAP (21600) + 60 — conservative: never evict a possibly-live holder.
+#
+# R8-5 (revert of R7-5) — the stale threshold is a FLAT _LOCK_CAP_FLOOR (21660s), NOT a per-holder
+# budget read. INVOKE_TIMEOUT is clamped to [1,21600] (:63), so 21660 >= any live holder's max hold and
+# a live holder is NEVER force-evicted (R7-5's goal is preserved). The round-7 `$LOCKDIR/budget` FILE is
+# GONE: writing dir content broke the plain-`rmdir` reclaim protocol shared by the THREE clients of this
+# lockdir (this script, ui-audit/lib, master-review.md) — a non-empty dir cannot be `rmdir`'d, so those
+# other clients' reclaim silently failed. A stale lockdir is EMPTY again, so every client reclaims it
+# with a plain `rmdir`. The only cost: a truly-dead small-budget lock lingers up to ~6h — fine for a dev lock.
+#
+# DEFERRED follow-up (do NOT implement here — pre-existing review-tooling debt, NOT the round-7 regression):
+# ui-audit + master-review still have unbounded mkdir/flock waits and a flat/absent stale threshold that
+# could evict a live long-running god-review holder; and the shared lock logic should be extracted into one
+# `scripts/lib/codex-lock.sh` helper. Both are a coordinated-moment refactor the brief explicitly defers.
 LOCKDIR=/tmp/codex-default-home.lock.d
 _LOCK_CAP_FLOOR=$((21600 + 60))
 
-# _holder_stale_threshold -> the age (s) past which the CURRENT lockdir holder is deemed dead. Reads the
-# holder's own budget file; validates with the SAME anti-injection idiom used for INVOKE_TIMEOUT (reject
-# non-numeric / over-long / out-of-range BEFORE any `$(( ))`), else the conservative CAP+60 fallback.
-_holder_stale_threshold() {
-  _hb_file="$LOCKDIR/budget"; _hb=""
-  [ -r "$_hb_file" ] && _hb=$(head -1 "$_hb_file" 2>/dev/null)
-  case "$_hb" in
-    ''|*[!0-9]*) printf '%s' "$_LOCK_CAP_FLOOR"; return 0 ;;
-  esac
-  if [ "${#_hb}" -gt 6 ]; then printf '%s' "$_LOCK_CAP_FLOOR"; return 0; fi
-  _hb=$((10#$_hb))
-  if [ "$_hb" -lt 1 ] || [ "$_hb" -gt 21600 ]; then printf '%s' "$_LOCK_CAP_FLOOR"; return 0; fi
-  printf '%s' "$((_hb + 60))"
-}
-
-# S2 (round-4) - SPINLOCK_TIMEOUT_SEC arrives from the environment. It may only RAISE the stale threshold
-# above the holder-sized value, NEVER lower it (round-5: a too-small value like 1 must not make a live
-# lockdir look stale after 1 s). Validate with the same anti-injection idiom BEFORE any `$(( ))`.
+# S2 (round-4) / R8-6 - SPINLOCK_TIMEOUT_SEC arrives from the environment. It may only RAISE the stale
+# threshold above the flat _LOCK_CAP_FLOOR, NEVER lower it (round-5: a too-small value like 1 must not make
+# a live lockdir look stale after 1 s). R8-6 — clamp the accepted range to [1,21600] (mirroring
+# INVOKE_TIMEOUT at :63) so an env value like 999999 (~11.6 days) can no longer wildly inflate the
+# threshold. Validate with the same anti-injection idiom BEFORE any `$(( ))`: length-guard, then base-10
+# normalize, then reject out-of-range.
+# M1 (round-8) — NOTE: with the range clamped to <=21600 and the floor at 21660, `_SPIN_RAISE` can NEVER
+# exceed LOCK_TIMEOUT (:248 `_SPIN_RAISE > LOCK_TIMEOUT` is unreachable), so the raise is CURRENTLY INERT.
+# It is retained (not deleted) as a validated, anti-injection-hardened clamp so that if the flat floor is
+# ever lowered the raise stays safe by construction; assumption-test D9 pins the clamp's 0/in-range/0 shape.
 _SPIN_RAISE=0
 case "${SPINLOCK_TIMEOUT_SEC:-}" in
   ''|*[!0-9]*) _SPIN_RAISE=0 ;;
-  *) if [ "${#SPINLOCK_TIMEOUT_SEC}" -le 6 ]; then _SPIN_RAISE=$((10#$SPINLOCK_TIMEOUT_SEC)); fi ;;
+  *)
+    if [ "${#SPINLOCK_TIMEOUT_SEC}" -le 6 ]; then
+      _SPIN_RAISE=$((10#$SPINLOCK_TIMEOUT_SEC))
+      if [ "$_SPIN_RAISE" -lt 1 ] || [ "$_SPIN_RAISE" -gt 21600 ]; then _SPIN_RAISE=0; fi
+    fi
+    ;;
 esac
 
 if [ -d "$LOCKDIR" ]; then
   lock_mtime=$(stat -f "%m" "$LOCKDIR" 2>/dev/null || stat -c "%Y" "$LOCKDIR" 2>/dev/null || echo 0)
   now=$(date +%s)
   age=$((now - lock_mtime))
-  LOCK_TIMEOUT=$(_holder_stale_threshold)
+  LOCK_TIMEOUT=$_LOCK_CAP_FLOOR
   if [ "$_SPIN_RAISE" -gt "$LOCK_TIMEOUT" ]; then LOCK_TIMEOUT=$_SPIN_RAISE; fi
   if [ "$age" -gt "$LOCK_TIMEOUT" ]; then
     echo "[spinlock] stale lockdir detected (age=${age}s > ${LOCK_TIMEOUT}s); force-removing." >> "$WORK_OUT"
+    # I8 — a lockdir left by a SIGKILLed ROUND-7 holder still contains a `budget` FILE (this script no
+    # longer writes it, but a legacy stale dir on disk may). A non-empty dir cannot be `rmdir`'d, so the
+    # reclaim below would silently fail and every client would spin forever behind the wedged dir. Clear
+    # the legacy residue first so the plain-`rmdir` reclaim protocol (shared with ui-audit/master-review)
+    # succeeds. Harmless when absent.
     rm -f "$LOCKDIR/budget" 2>/dev/null || true
     rmdir "$LOCKDIR" 2>/dev/null || true
   fi
@@ -257,13 +267,12 @@ while ! mkdir "$LOCKDIR" 2>/dev/null; do
   if [ "$(remaining)" -le 0 ]; then finish 124; fi
   sleep 0.5
 done
-# We hold the lock: publish OUR budget so a future waiter sizes ITS stale threshold to OUR hold (R7-5).
-printf '%s\n' "$INVOKE_TIMEOUT" > "$LOCKDIR/budget" 2>/dev/null || true
-trap 'rm -f "$LOCKDIR/budget" 2>/dev/null; rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
+# We hold the lock. R8-5 — write NO dir content (the reverted budget file broke the shared rmdir reclaim);
+# the empty lockdir IS the lock, and a plain rmdir releases it for all three clients.
+trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT INT TERM
 
 rc=0; run_codex "" || rc=$?
 
-rm -f "$LOCKDIR/budget" 2>/dev/null || true
 rmdir "$LOCKDIR" 2>/dev/null || true
 trap - EXIT INT TERM
 finish "$rc"

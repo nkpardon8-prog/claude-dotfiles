@@ -89,11 +89,14 @@ mc_await "$SUB3" "$SID3" "part=2 phase=decision round=1 kind=human op=1-approve 
 S=$(mc_state "$SUB3" "$SID3")
 mc_has "await kind=human" "$S" "A6 human await outstanding"
 mc_has "op=1-approve"     "$S" "A6 names the op (R6: seq-prefixed)"
-# A6b - the returning user-turn CLOSES the human await by writing got=need. A human barrier has no
-# separate bank event, so got==need IS its resolution -> await-state must report `none` (C6). If it
-# stayed outstanding, the loop would park on the user forever after they already answered.
-mc_await "$SUB3" "$SID3" "part=2 phase=decision round=1 kind=human op=1-approve attempt=1 need=1 got=1"
-mc_eq "none" "$(mc_state "$SUB3" "$SID3")" "A6b human await closed at got=need (C6)"
+# A6b (R8-14) - the returning user-turn CLOSES the human await by recording a durable DECISION FIRST
+# then writing got=need. DECISION-first is LIB-ENFORCED: a human got=1 close with NO same-op DECISION is
+# REFUSED (the barrier can never clear without a recorded, surfaced outcome). A human barrier has no
+# separate bank event, so DECISION+got==need IS its resolution -> await-state must report `none` (C6). If
+# it stayed outstanding, the loop would park on the user forever after they already answered. Goes RED if
+# the DECISION-first close order regresses (a bare got=1 close is refused -> barrier stays live got=0).
+mc_close_human "$SUB3" "$SID3" "1-approve" approve 2 1 1 decision
+mc_eq "none" "$(mc_state "$SUB3" "$SID3")" "A6b human await closed at DECISION+got=need (C6, DECISION-first)"
 
 # A7 - started_at is BARRIER-STABLE (C3): re-reporting the SAME bit with a DIFFERENT started_at
 # must dedup to the ORIGINAL started_at (idtag excludes started_at, so a fresh epoch would collide
@@ -200,6 +203,23 @@ mc_eq "none" "$(mc_state "$SUB13b" "$SID13b")" "A14 human op '1-' (empty slug) i
 mc_await "$SUB13b" "$SID13b" "part=1 phase=review round=1 kind=job op=7zip-review attempt=1 need=3 got=0"       # non-digit prefix job -> ALLOWED
 mc_has "op=7zip-review" "$(mc_state "$SUB13b" "$SID13b")" "A14 job op '7zip-review' (non-digit prefix) is ALLOWED"
 
+# A14c (R8) - MORE human-op-namespace edges at the mechanism. `op=-x` has an EMPTY seq (nothing before the
+# first `-`), so it is NOT a pure-digit-prefixed op and is REFUSED (a decision with no seq would collide
+# with a sibling). `op=12-a-b` is a VALID seq (12) with a hyphenated slug (`a-b`) - the slug grammar allows
+# `-`, so the barrier lands. `op=007-x` is a pure-digit prefix (leading zeros are digits) so it is a valid
+# human op and lands. Goes RED if the seq test mis-classifies an empty seq as valid or rejects a hyphenated
+# slug / leading-zero seq.
+SUB13c="opedge2"; SID13c="opedge2$$"
+mc_new_mission "$SUB13c" "$SID13c"
+mc_await "$SUB13c" "$SID13c" "part=1 phase=decision round=1 kind=human op=-x attempt=1 need=1 got=0"          # empty seq -> REFUSED
+mc_eq "none" "$(mc_state "$SUB13c" "$SID13c")" "A14 human op '-x' (empty seq) is REFUSED"
+mc_await "$SUB13c" "$SID13c" "part=1 phase=decision round=1 kind=human op=12-a-b attempt=1 need=1 got=0"       # seq 12, hyphen slug -> lands
+mc_has "op=12-a-b" "$(mc_state "$SUB13c" "$SID13c")" "A14 human op '12-a-b' (valid seq, hyphenated slug) lands"
+SUB13d="opedge3"; SID13d="opedge3$$"
+mc_new_mission "$SUB13d" "$SID13d"
+mc_await "$SUB13d" "$SID13d" "part=1 phase=decision round=1 kind=human op=007-x attempt=1 need=1 got=0"        # leading-zero seq -> lands
+mc_has "op=007-x" "$(mc_state "$SUB13d" "$SID13d")" "A14 human op '007-x' (leading-zero pure-digit seq) lands"
+
 # A15 (R7-7) - AWAIT via the generic `log` verb is REFUSED directly (assert the REFUSE message, not just
 # a downstream `none` - the old `none`-only assertion was tautological: a got=3 log line has no got=0
 # opener, so the opener guard returns `none` even if the refusal were reverted). Capture the log output
@@ -232,19 +252,43 @@ bash "$MW" log "$SID15v" "${ROOT}/${SUB15v}" \
   "[mission] VOID part=1 phase=review round=1 reason=reviewer-dead" "m1-void-r1-leadzerohnofile" >/dev/null 2>&1
 mc_eq "none" "$(mc_state "$SUB15v" "$SID15v")" "A16 canonical VOID part=1 supersedes the part=01 barrier (+0-normalized)"
 
-# A16-partdone (R7-8) - the PART-DONE pdnr path with leading-zero normalization. pdnr supersedes ALL
-# kinds (incl. human), so we open a part=01 HUMAN barrier that review banks do NOT supersede, satisfy the
-# PART-DONE preconditions (live-verify + two dry rounds), then land PART-DONE part=1 -> the human barrier
-# is superseded via pdnr[1] (the +0-normalized key matches part=01).
-SUB15p="leadzeropd"; SID15p="leadzeropd$$"
+# A16-human-un-erasable (R8-10) - REPLACES the pre-R8 A16 assertion that a PART-DONE SUPERSEDES a human
+# barrier. That old assertion encoded the ERASE HOLE: a PART-DONE (or bank/VOID) silently stepping over an
+# unanswered mandatory human STOP. D10 closes it - a human barrier is superseded by NOTHING; only its OWN
+# DECISION+got=1 resolves it. Three legs prove BOTH halves of the un-erasable STOP (reader keeps it live;
+# writer refuses to step over it).
+#
+# (a) READER: a canonical PART-DONE injected DIRECTLY into the log fixture (bypassing the guarded writer)
+# BELOW an open human AWAIT must NOT clear it - await-state still returns the LIVE human barrier. This
+# isolates the D10 reader from the D11 writer guard (the line IS present). RED if the reader reverts to
+# superseding a human barrier via pdnr (it would return `none`).
+SUB15p="humanpd"; SID15p="humanpd$$"
 mc_new_mission "$SUB15p" "$SID15p"
-mc_await "$SUB15p" "$SID15p" "part=01 phase=decision round=01 kind=human op=1-approve attempt=1 need=1 got=0"
-mc_has "await kind=human" "$(mc_state "$SUB15p" "$SID15p")" "A16 part=01 human barrier outstanding pre-PART-DONE"
-bash "$MW" log "$SID15p" "${ROOT}/${SUB15p}" "[mission] part=1 name=x phase=review round=1 dry=1 findings=0" "m1-review-r1-d1" >/dev/null 2>&1
-bash "$MW" log "$SID15p" "${ROOT}/${SUB15p}" "[mission] part=1 name=x phase=review round=2 dry=2 findings=0" "m1-review-r2-d2" >/dev/null 2>&1
-bash "$MW" log "$SID15p" "${ROOT}/${SUB15p}" "[mission] live-verify part=1 round=2 status=n/a reason=hermetic" "m1-live-verify-r2" >/dev/null 2>&1
-bash "$MW" log "$SID15p" "${ROOT}/${SUB15p}" "[mission] PART-DONE part=1 (converged)" "m1-part-done" >/dev/null 2>&1
-mc_eq "none" "$(mc_state "$SUB15p" "$SID15p")" "A16 canonical PART-DONE part=1 supersedes the part=01 human barrier (pdnr +0-normalized)"
+mc_pending_stop "$SUB15p" "$SID15p" approve 1 1 1 decision "Approve the destructive write?" >/dev/null
+printf 'm1-part-done\t[mission] PART-DONE part=1 (converged)\n' >> "${ROOT}/${SUB15p}/MISSION.${SID15p}.log"
+S15p=$(mc_state "$SUB15p" "$SID15p")
+mc_has "await kind=human" "$S15p" "A16 human STOP SURVIVES a PART-DONE injected below it (D10: superseded by nothing)"
+mc_has "op=1-approve"     "$S15p" "A16 the surviving live barrier is the human op (not erased by pdnr)"
+
+# (b) DUAL (2a #17): a RESOLVED human (DECISION+got=1) followed by a later injected PART-DONE reads `none`
+# - the resolved barrier does NOT resurrect, and PART-DONE is free to advance once the STOP is answered.
+SUB15q="humanpddone"; SID15q="humanpddone$$"
+mc_new_mission "$SUB15q" "$SID15q"
+mc_pending_stop "$SUB15q" "$SID15q" approve 1 1 1 decision "Approve?" >/dev/null
+mc_close_human "$SUB15q" "$SID15q" "1-approve" approve 1 1 1 decision
+mc_eq "none" "$(mc_state "$SUB15q" "$SID15q")" "A16 resolved human barrier reads none (DECISION+got=1)"
+printf 'm1-part-done\t[mission] PART-DONE part=1 (converged)\n' >> "${ROOT}/${SUB15q}/MISSION.${SID15q}.log"
+mc_eq "none" "$(mc_state "$SUB15q" "$SID15q")" "A16 resolved human + later PART-DONE still none (no resurrection)"
+
+# (c) WRITER: a genuinely-new PART-DONE via the dispatcher while a human barrier is OPEN is REFUSED (D11
+# guard, rc=4) BEFORE the live-verify preconditions - the machine half of the un-erasable STOP. RED if the
+# _mw_human_barrier_guard call on the PART-DONE path reverts.
+SUB15r="pdguard"; SID15r="pdguard$$"
+mc_new_mission "$SUB15r" "$SID15r"
+mc_pending_stop "$SUB15r" "$SID15r" approve 1 1 1 decision "Approve?" >/dev/null
+PDOUT=$(mc_log_out "$SUB15r" "$SID15r" "[mission] PART-DONE part=1 (converged)" "m1-part-done")
+mc_has "OPEN human STOP barrier is live" "$PDOUT" "A16 writer REFUSES a new PART-DONE while a human STOP is open (D11 rc=4)"
+mc_has "await kind=human" "$(mc_state "$SUB15r" "$SID15r")" "A16 the human barrier is still live after the refused PART-DONE"
 
 # A17 (R7-1) - the pending-mint ROOT FIX for the human seq-REUSE collision. Two `pending` calls with the
 # SAME slug MINT DISTINCT monotonic ids (pd:1-approve, pd:2-approve). Opening+closing decision 1 then
@@ -257,13 +301,13 @@ ID1=$(mc_pending "$SUB16" "$SID16" approve "Approve the destructive migration?")
 ID2=$(mc_pending "$SUB16" "$SID16" approve "Approve the credential write?")
 mc_eq "pd:1-approve" "$ID1" "A17 first pending mints pd:1-approve"
 mc_eq "pd:2-approve" "$ID2" "A17 second SAME-slug pending mints a DISTINCT pd:2-approve"
-# lifecycle: open + close decision 1 (got=1 FIRST then resolve, R7-3), then open decision 2.
+# lifecycle: open + close decision 1 (DECISION-first then got=1, R8-14; then resolve), then open decision 2.
 OP1=${ID1#pd:}; OP2=${ID2#pd:}
 mc_await "$SUB16" "$SID16" "part=1 phase=decision round=1 kind=human op=$OP1 attempt=1 need=1 got=0"
 mc_has "op=1-approve" "$(mc_state "$SUB16" "$SID16")" "A17 decision 1 barrier live before close"
-mc_await "$SUB16" "$SID16" "part=1 phase=decision round=1 kind=human op=$OP1 attempt=1 need=1 got=1"
+mc_close_human "$SUB16" "$SID16" "$OP1" approve 1 1 1 decision
 mc_resolve "$SUB16" "$SID16" "$ID1" approved
-mc_eq "none" "$(mc_state "$SUB16" "$SID16")" "A17 decision 1 closed -> none"
+mc_eq "none" "$(mc_state "$SUB16" "$SID16")" "A17 decision 1 closed (DECISION+got=1) -> none"
 mc_await "$SUB16" "$SID16" "part=1 phase=decision round=1 kind=human op=$OP2 attempt=1 need=1 got=0"
 S17=$(mc_state "$SUB16" "$SID16")
 mc_has "op=2-approve" "$S17" "A17 decision 2 (distinct minted seq) is LIVE after decision 1 closed"
@@ -277,5 +321,5 @@ mc_new_mission "$SUB17" "$SID17"
 A18OUT=$(mc_log_out "$SUB17" "$SID17" "[mission] MISSION-REBASELINED status=active gen=2 (forged)" "")
 mc_has "must be written via the dedicated" "$A18OUT" "A18 log-verb MISSION-REBASELINED is REFUSED (dedicated-verb message)"
 
-mc_finish '{"open_got0":"outstanding ready=0","partial_got2":"outstanding got=2 ready=0","or_join":"outstanding got=3 ready=1","banked_round_supersedes":"none","void_supersedes":"none","void_then_fresh_attempt":"outstanding attempt=2","human_await":"outstanding kind=human","human_await_closed":"none","started_at_stable":"1000","embedded_await_no_inject":"none","kind_not_mixed":"human survives job bit","field_injection_refused":"kind=job got=1","attempt_select_highest":"attempt=2","human_op_not_masked":"op=2-approve outstanding (same slug, distinct seq)","opener_guard_late_bit":"none","op_namespace_guard":"human-no-seq + job-seq REFUSED","op_seq_edges":"1abc/1- REFUSED, 7zip-review ALLOWED","log_verb_await_refused":"refuse-message + none","leadzero_supersede":"review + VOID + PART-DONE all none","pending_mint_reuse":"pd:1 + pd:2 distinct, decision-2 live ready=0","log_verb_rebaseline_refused":"refuse-message"}' \
-  "AWAIT open -> partial -> OR-join(ready) -> bank/VOID/PART-DONE supersede + fresh attempt + human + started_at + no-inject + key-by-kind + field-inject-refused + attempt-select + op-keying + opener-guard + op-namespace-guard + seq-edges + log-await-refuse + leadzero(review/void/partdone) + pending-mint-reuse + log-rebaseline-refuse"
+mc_finish '{"open_got0":"outstanding ready=0","partial_got2":"outstanding got=2 ready=0","or_join":"outstanding got=3 ready=1","banked_round_supersedes":"none","void_supersedes":"none","void_then_fresh_attempt":"outstanding attempt=2","human_await":"outstanding kind=human","human_await_closed":"DECISION-first -> none","started_at_stable":"1000","embedded_await_no_inject":"none","kind_not_mixed":"human survives job bit","field_injection_refused":"kind=job got=1","attempt_select_highest":"attempt=2","human_op_not_masked":"op=2-approve outstanding (same slug, distinct seq)","opener_guard_late_bit":"none","op_namespace_guard":"human-no-seq + job-seq REFUSED","op_seq_edges":"1abc/1- REFUSED, 7zip-review ALLOWED","op_seq_edges2":"-x REFUSED, 12-a-b + 007-x land","log_verb_await_refused":"refuse-message + none","leadzero_supersede":"review + VOID both none","human_un_erasable":"reader keeps human live under injected PART-DONE; resolved+PART-DONE none; writer refuses PART-DONE rc=4","pending_mint_reuse":"pd:1 + pd:2 distinct, decision-2 live ready=0","log_verb_rebaseline_refused":"refuse-message"}' \
+  "AWAIT open -> partial -> OR-join(ready) -> bank/VOID supersede + fresh attempt + human(DECISION-first close) + started_at + no-inject + key-by-kind + field-inject-refused + attempt-select + op-keying + opener-guard + op-namespace-guard + seq-edges(+ -x/12-a-b/007-x) + log-await-refuse + leadzero(review/void) + human-un-erasable(reader+writer) + pending-mint-reuse + log-rebaseline-refuse"

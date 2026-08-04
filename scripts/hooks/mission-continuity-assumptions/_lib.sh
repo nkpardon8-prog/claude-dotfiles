@@ -83,7 +83,12 @@ mc_new_mission() {  # mc_new_mission <subdir> <sid>  -> creates ROOT/<subdir>/MI
 }
 
 # mc_await <subdir> <sid> <fields...> - open/update the AWAIT marker.
-mc_await() { bash "$MW" await "$2" "${ROOT}/$1" "$3" >/dev/null 2>&1; }
+# R8r2-A: the public `await` verb REFUSES a human got=0 opener (only pending-stop may mint one, under the
+# mint lock). This WHITE-BOX helper sets the SAME call-path marker pending_stop_mint sets so the suite's
+# lib-level AWAIT grammar + lifecycle cases can still mint a human opener directly. The marker is ignored
+# for job barriers and for got=1 closes (FIX A gates only the human got=0 branch). The PUBLIC-verb refusal
+# itself is proven by a raw (marker-less) await call in 09-r8r2-fixes.sh.
+mc_await() { _MISSION_INTERNAL_HUMAN_OPEN=1 bash "$MW" await "$2" "${ROOT}/$1" "$3" >/dev/null 2>&1; }
 # mc_state <subdir> <sid> -> stdout the bare await-state token.
 mc_state() { bash "$MW" await-state "$2" "${ROOT}/$1" 2>/dev/null; }
 # mc_cursor <subdir> <sid> -> stdout the bare cursor hash.
@@ -94,6 +99,53 @@ mc_pending() { bash "$MW" pending "$2" "${ROOT}/$1" "$3" "$4" 2>/dev/null | sed 
 mc_resolve() { bash "$MW" resolve "$2" "${ROOT}/$1" "$3" "${4:-resolved}" >/dev/null 2>&1; }
 # mc_log_out <subdir> <sid> <entry> [idtag] -> combined stdout+stderr of the log verb (for refusal asserts).
 mc_log_out() { bash "$MW" log "$2" "${ROOT}/$1" "$3" "${4:-}" 2>&1; }
+
+# mc_pending_stop <subdir> <sid> <slug> <part> <round> <attempt> <phase> <question>
+#   -> stdout the MINTED (or adopted) pd id (from `pending-stop ok id=<pd>`); empty on any refusal.
+#   The BLOCKING barrier-opener: mints pd:<seq>-<slug> AND opens the durable human STOP AWAIT got=0.
+mc_pending_stop() {
+  bash "$MW" pending-stop "$2" "${ROOT}/$1" "$3" "$4" "$5" "$6" "$7" "$8" 2>/dev/null \
+    | sed -n 's/^mission-write: pending-stop ok id=//p'
+}
+# mc_pending_stop_out <subdir> <sid> <slug> <part> <round> <attempt> <phase> <question>
+#   -> combined stdout+stderr (for FAILED/refusal asserts: rc, sequence-exhausted, slug/line cap, etc).
+mc_pending_stop_out() {
+  bash "$MW" pending-stop "$2" "${ROOT}/$1" "$3" "$4" "$5" "$6" "$7" "$8" 2>&1
+}
+# mc_decision <subdir> <sid> <op> <outcome> -> write the durable DECISION marker for a human op.
+#   op is `<seq>-<slug>`; the idtag is the pinned `pd-<seq>-decision-<slug>` (the lib gen-tags it).
+mc_decision() {
+  local _seq="${3%%-*}" _slug="${3#*-}"
+  bash "$MW" log "$2" "${ROOT}/$1" "[mission] DECISION op=${3} outcome=${4}" "pd-${_seq}-decision-${_slug}" >/dev/null 2>&1
+}
+# mc_close_human <subdir> <sid> <op> [outcome] [part] [round] [attempt] [phase]
+#   Close a human STOP the way the lib demands: DECISION marker FIRST (lib-enforced DECISION-first),
+#   THEN the `await got=need` close. Without the DECISION the got=1 close is REFUSED and the barrier
+#   stays live, so this two-step is the ONLY legitimate close order.
+mc_close_human() {
+  local _sub="$1" _sid="$2" _op="$3" _out="${4:-approve}"
+  local _part="${5:-1}" _round="${6:-1}" _att="${7:-1}" _phase="${8:-decision}"
+  mc_decision "$_sub" "$_sid" "$_op" "$_out"
+  bash "$MW" await "$_sid" "${ROOT}/${_sub}" \
+    "part=${_part} phase=${_phase} round=${_round} kind=human op=${_op} attempt=${_att} need=1 got=1" >/dev/null 2>&1
+}
+# mc_await_out <subdir> <sid> <fields...> -> combined stdout+stderr of the await verb (for refusal asserts).
+# Carries the R8r2-A white-box marker (mirrors mc_await) so a got=1 close under test reaches the
+# DECISION-first gate rather than the public-verb human-opener refusal. Marker is inert for got=1 closes.
+mc_await_out() { _MISSION_INTERNAL_HUMAN_OPEN=1 bash "$MW" await "$2" "${ROOT}/$1" "$3" 2>&1; }
+# mc_resolve_out <subdir> <sid> <pd-id> [resolution] -> combined stdout+stderr of resolve (for drain /
+# never-existed / idempotent-redrive asserts). The process always exits 0; the rc is in the printed line.
+mc_resolve_out() { bash "$MW" resolve "$2" "${ROOT}/$1" "$3" "${4:-resolved}" 2>&1; }
+# mc_has_pd <subdir> <sid> <pd-id> -> stdout the count of `- [pd:<id>]` lines in the mission .md (drain
+# check). grep -c prints `0` AND exits 1 on no match, so capture-then-print (never `|| echo`, which would
+# double the count line).
+mc_has_pd() {
+  local _n
+  _n=$(grep -c "^- \[${3}\] " "${ROOT}/$1/MISSION.$2.md" 2>/dev/null)
+  printf '%s\n' "${_n:-0}"
+}
+# mc_log_file <subdir> <sid> -> the mission LOG path (where DECISION lines and idtag stream land).
+mc_log_file() { printf '%s\n' "${ROOT}/$1/MISSION.$2.log"; }
 
 # --- finish -------------------------------------------------------------------------------
 mc_finish() {  # mc_finish <fingerprint-json> <summary>

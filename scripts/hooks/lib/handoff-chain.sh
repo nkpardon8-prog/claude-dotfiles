@@ -81,6 +81,15 @@ chain_ensure_dir() {
 # Returns:
 #   0 — success: stdout contains a valid JSON manifest (live or recovered)
 #   1 — genuinely first run: no manifest AND no ledger for this sid
+#   2 — a ledger EXISTS for this sid but recovery could not produce a valid manifest
+#
+# 1 AND 2 ARE NOT INTERCHANGEABLE, and conflating them is a data-loss bug (found in the
+# round-5 review, 2026-08-04). When the "recovery failed" case was first added it returned 1,
+# colliding with "genuinely first run" — and callers act on that difference. commands/
+# pre-compact.md sets IS_FIRST_RUN=1, NEW_SEQ=1 and re-derives NORTH_STAR from $ARGUMENTS on
+# the non-zero branch, so a chain with an intact ledger and one unparseable field would have
+# silently RESTARTED AT SEQ 1 and overwritten the manifest, discarding the chain's history and
+# its original goal. rc=2 means "this chain exists — do NOT treat it as new."
 #
 # Callers MUST inspect `.recovered_from_ledger == true` after rc=0 to decide whether
 # to surface the recovery warning to the user (and optionally rebind north_star from
