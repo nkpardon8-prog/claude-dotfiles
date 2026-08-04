@@ -104,8 +104,8 @@ fi
 # worktree. Selecting files from the index but sizing the worktree let a file staged
 # oversize / marker-broken but left clean in the worktree pass the ceiling gate. In --all
 # mode the working tree is the authority (no index divergence to reconcile).
-_lint_cleanup() { [ -n "$STAGED_TMP" ] && rm -rf "$STAGED_TMP" 2>/dev/null; return 0; }
-trap _lint_cleanup EXIT
+# (The _lint_cleanup trap used to be installed here. It now sits beside the mktemp it cleans
+# up, above the ROOT guard, so an early exit cannot leak the staging directory.)
 
 # resolve_content <repo-relative-path> -> prints an absolute path to size, or NOTHING when
 # the content does not exist (worktree file absent in --all; staged deletion in --staged).
