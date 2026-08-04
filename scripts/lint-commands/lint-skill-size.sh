@@ -45,6 +45,12 @@ esac
 # exit is real - inside resolve_content it would run in a command substitution's subshell and
 # be swallowed.
 STAGED_TMP=""
+# The cleanup trap is installed BEFORE the mktemp it removes. It used to be installed ~30
+# lines further down, after the ROOT guard, so any `exit` between the two leaked the staging
+# directory (measured: a --staged run against a tree with no commands/ left lint-staged-XXXXXX
+# behind). A trap that is armed after the resource it guards is not a trap.
+_lint_cleanup() { [ -n "$STAGED_TMP" ] && rm -rf "$STAGED_TMP" 2>/dev/null; return 0; }
+trap _lint_cleanup EXIT
 if [ "$MODE" = "--staged" ]; then
     STAGED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lint-staged-XXXXXX")" || {
         echo "lint-skill-size: FAIL - cannot create a staging tempdir (TMPDIR unusable);" >&2
