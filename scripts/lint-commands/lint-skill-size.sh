@@ -38,6 +38,21 @@ case "$MODE" in
     *) echo "lint-skill-size: unknown argument: $MODE (expected --staged or --all)" >&2; exit 2 ;;
 esac
 
+# --staged reads content THROUGH a staging tempdir, so an unusable TMPDIR means the lint can
+# see no content at all. That used to be indistinguishable from "nothing is staged" (a bare
+# `|| return 0`), and the lint cleared an OVERSIZE STAGED FILE. MEASURED before this fix:
+# staged 25,000-char file + a failing mktemp -> rc=0. Created HERE, in the main shell, so the
+# exit is real - inside resolve_content it would run in a command substitution's subshell and
+# be swallowed.
+STAGED_TMP=""
+if [ "$MODE" = "--staged" ]; then
+    STAGED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lint-staged-XXXXXX")" || {
+        echo "lint-skill-size: FAIL - cannot create a staging tempdir (TMPDIR unusable);" >&2
+        echo "lint-skill-size: refusing to report success on staged content it could not read." >&2
+        exit 3
+    }
+fi
+
 # FAIL CLOSED WHEN ROOT DOES NOT RESOLVE TO A REAL COMMAND TREE (2026-08-03, P4).
 # ROOT is derived from BASH_SOURCE, so it is only correct while this script sits inside the
 # tree it is meant to lint. Run a COPY from anywhere else - which is exactly what the test
@@ -60,7 +75,6 @@ fi
 # worktree. Selecting files from the index but sizing the worktree let a file staged
 # oversize / marker-broken but left clean in the worktree pass the ceiling gate. In --all
 # mode the working tree is the authority (no index divergence to reconcile).
-STAGED_TMP=""
 _lint_cleanup() { [ -n "$STAGED_TMP" ] && rm -rf "$STAGED_TMP" 2>/dev/null; return 0; }
 trap _lint_cleanup EXIT
 
@@ -73,17 +87,12 @@ resolve_content() {
         [ -f "$ROOT/$path" ] && printf '%s\n' "$ROOT/$path"
         return 0
     fi
-    # FAIL CLOSED, never "no content" (2026-08-03). `|| return 0` made an unusable TMPDIR
-    # indistinguishable from "this path is not staged", so with a broken mktemp the lint
-    # cleared an OVERSIZE STAGED FILE. MEASURED: staged 25,000-char file + failing mktemp
-    # -> rc=0. The staging dir is how --staged sees content at all; without it the lint has
-    # measured nothing and must say so.
-    if [ -z "$STAGED_TMP" ]; then
-        STAGED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lint-staged-XXXXXX")" || {
-            echo "lint-skill-size: FAIL - cannot create a staging tempdir (TMPDIR unusable); refusing to report success on unmeasured staged content." >&2
-            exit 3
-        }
-    fi
+    # The staging dir is created ONCE, EAGERLY, before any caller (see below). It must not
+    # be created here: callers invoke this function as `cf="$(resolve_content "$F")"`, and an
+    # `exit` inside a command substitution kills only the SUBSHELL - the failure would be
+    # swallowed and read as "no content", which is the very fail-open being closed. (Measured:
+    # a first attempt that exited here still returned rc=0 on an oversize staged file.)
+    [ -n "$STAGED_TMP" ] || return 1
     out="$STAGED_TMP/$path"
     if [ ! -f "$out" ]; then
         mkdir -p "$(dirname "$out")" 2>/dev/null || return 0
