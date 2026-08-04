@@ -21,13 +21,16 @@
 #
 # ── USAGE ─────────────────────────────────────────────────────────────────────────────────
 #   mission-write.sh <verb> <sid> <root> [args...]
-#   verb ∈ create | log | note | challenge | pending | resolve | rebaseline | render-banner
-#          | timing-resume | timing-contact | timing-close | archive-close | await
+#   verb ∈ create | log | note | challenge | pending | pending-stop | resolve | rebaseline
+#          | render-banner | timing-resume | timing-contact | timing-close | archive-close | await
 #     create        <sid> <root> [plan_source]
 #     log           <sid> <root> <entry> [idtag]
 #     note          <sid> <root> <entry> [idtag]
 #     challenge     <sid> <root> <entry> [idtag]
-#     pending       <sid> <root> <slug> <question...>   (mints+echoes a monotonic pd:<seq>-<slug> id)
+#     pending       <sid> <root> <slug> <question...>   (NON-BLOCKING; mints+echoes a monotonic pd:<seq>-<slug> id)
+#     pending-stop  <sid> <root> <slug> <part> <round> <attempt> <phase> <question...>
+#                   (BLOCKING sibling of `pending`: the ONE barrier-opener — mints pd:<seq>-<slug> AND
+#                    opens the durable human STOP AWAIT got=0; echoes the minted id)
 #     resolve       <sid> <root> <pd_id> [resolution]
 #     rebaseline    <sid> <root> <new_plan>
 #     render-banner <sid> <root>
