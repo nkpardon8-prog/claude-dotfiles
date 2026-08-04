@@ -65,3 +65,49 @@ jobs:
       - name: lint-skill-contract (--all)
         if: ${{ !cancelled() && steps.preflight.outcome == 'success' }}
         run: bash scripts/lint-commands/lint-skill-contract.sh --all
+
+  # THE SHELL HARNESSES THEMSELVES (added 2026-08-03, mission part 3 "guard-integrity").
+  # Until this job existed, NINE of the ten scripts/hooks/test-*.sh harnesses ran ONLY when
+  # a human typed the command. That is how test-lint-skill-size.sh sat VACUOUS: it copied the
+  # lint outside its own tree, so the lint's BASH_SOURCE-derived ROOT resolved to an unrelated
+  # ancestor with no commands/, matched no files and exited 0 - four of its six cases asserted
+  # rc=1 behaviour that was never exercised, and the suite reported all-green regardless. A
+  # guard nobody runs is indistinguishable from a guard that passes.
+  #
+  # `</dev/null` is load-bearing, not boilerplate: several harnesses drive hooks that begin
+  # `HOOK_JSON=$(cat)` and block forever on an inherited stdin. timeout-minutes bounds the
+  # rest - a hung job is neither green nor red, which is the same bug class one level up.
+  harnesses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Listed EXPLICITLY rather than globbed. A glob would silently pick up a newly added
+      # harness (good) but would also silently drop one that gets renamed (bad), and it would
+      # hide which harnesses are deliberately excluded below.
+      - name: Run shell harnesses
+        run: |
+          set -euo pipefail
+          for h in \
+            scripts/hooks/test-auto-compact.sh \
+            scripts/hooks/test-chain-primitives.sh \
+            scripts/hooks/test-engine-header.sh \
+            scripts/hooks/test-handoff-smoke-check.sh \
+            scripts/hooks/test-lint-skill-size.sh \
+            scripts/hooks/test-mission-drift-check.sh \
+            scripts/hooks/test-stale-handoff-guard.sh ; do
+            echo "=== $h ==="
+            bash "$h" </dev/null
+          done
+
+      # DELIBERATELY EXCLUDED, recorded rather than silently omitted:
+      #   test-secret-scan.sh   - already run by secret-scan.yml; running it twice buys nothing.
+      #   test-ctx-gate.sh      - RED at the time this job was added (1 failure: "phantom verbs
+      #                           documented but never emitted"). Pre-existing and unrelated to
+      #                           this mission; adding it would redden CI for everyone without
+      #                           fixing anything. Tracked, not silently dropped.
+      #   test-mission-bridge.sh - RED at the time this job was added (2 failures) AND owned by
+      #                           a different concurrent session actively editing the bridge.
+      #                           Not this mission's to fix; see the mission PLAN's ATTRIBUTION.

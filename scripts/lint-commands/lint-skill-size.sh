@@ -29,6 +29,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT")"
 MODE="${1:---all}"
 
+# FAIL CLOSED WHEN ROOT DOES NOT RESOLVE TO A REAL COMMAND TREE (2026-08-03, P4).
+# ROOT is derived from BASH_SOURCE, so it is only correct while this script sits inside the
+# tree it is meant to lint. Run a COPY from anywhere else - which is exactly what the test
+# harness did - and ROOT resolves to some unrelated ancestor directory that contains no
+# `commands/`, the file loop matches nothing, and the lint EXITS 0: a clean bill of health
+# for a tree it never looked at. That is the governing bug class this part exists to kill,
+# and it made four of the harness's six cases vacuously green.
+#
+# There is no legitimate invocation where ROOT lacks `commands/`: every real checkout has it,
+# and --staged reads the index via GITROOT rather than this path. So an absent commands/ can
+# only mean "this lint cannot see its target", which must never be reported as success.
+if [ ! -d "$ROOT/commands" ]; then
+    echo "lint-skill-size: FAIL - ROOT does not resolve to a command tree (no commands/ under $ROOT)." >&2
+    echo "lint-skill-size: refusing to report success for a tree that was never scanned." >&2
+    exit 1
+fi
+
 # CONTENT AUTHORITY (2026-08-03, codex-review C1 fix - see lint-skill-contract.sh for the
 # full rationale): in --staged mode measure the STAGED BLOB (`git show :<path>`), not the
 # worktree. Selecting files from the index but sizing the worktree let a file staged

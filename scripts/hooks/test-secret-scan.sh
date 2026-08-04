@@ -266,6 +266,13 @@ chk "full-tree producer itself succeeds" "$?" "0"
 echo "== end-to-end hook cases =="
 FIXHOME="$WORK/home"; mkdir -p "$FIXHOME/.claude-dotfiles"
 cp -R "$REPO/scripts" "$FIXHOME/.claude-dotfiles/scripts"
+# A `commands/` directory is REQUIRED for the fixture to be a faithful stand-in for a real
+# checkout: the pre-commit hook this fixture exercises runs lint-skill-size.sh, which now
+# fails CLOSED when its ROOT holds no commands/ (a lint that cannot see its tree must not
+# report success). Without this the fixture is an incomplete masquerade and every commit in
+# it is rejected for the wrong reason - which is exactly what happened when that guard
+# landed. The dir is empty on purpose: this suite tests the SECRET gate, not the size lint.
+mkdir -p "$FIXHOME/.claude-dotfiles/commands"
 R="$FIXHOME/.claude-dotfiles"
 git init -q "$R"; git init -q --bare "$WORK/remote.git"
 cd "$R" || exit 1
