@@ -688,9 +688,17 @@ _mission_rewrite() {
   _rw_gen=$(_mission_marker_field "$_rw_file" gen); [ -n "$_rw_gen" ] || _rw_gen=1
   # pdseq (R7-1) is order-tolerant too (absent => 0). Preserve it on re-emit so a note/challenge/
   # resolve/rebaseline never drops the monotonic pending-decision counter. The `pending` mint
-  # BUMPS it: when _MISSION_REWRITE_PDSEQ is set (non-empty numeric), re-emit THAT value instead.
-  _rw_pdseq=$(_mission_marker_field "$_rw_file" pdseq); case "$_rw_pdseq" in ''|*[!0-9]*) _rw_pdseq=0 ;; esac
-  case "${_MISSION_REWRITE_PDSEQ:-}" in ''|*[!0-9]*) : ;; *) _rw_pdseq="$_MISSION_REWRITE_PDSEQ" ;; esac
+  # BUMPS it: when _MISSION_REWRITE_PDSEQ is set (valid), re-emit THAT value instead.
+  # D9 (R8-9): STRICT-parse the counter — a corrupt marker pdseq REFUSES the rewrite (fail LOUD, empty
+  # stdout => the caller's `[ -s "$tmp" ]` self-check fails, original intact) instead of silently
+  # coercing to 0 (a reset would let a future mint reuse a live pd seq).
+  _rw_pdseq_raw=$(_mission_marker_field "$_rw_file" pdseq)
+  _rw_pdseq=$(_mission_pdseq_parse "$_rw_pdseq_raw") || {
+    echo "mission: rewrite: REFUSED — malformed marker pdseq '${_rw_pdseq_raw}' (corrupt monotonic counter; not silently resetting)" >&2; return 1; }
+  if [ -n "${_MISSION_REWRITE_PDSEQ:-}" ]; then
+    _rw_pdseq=$(_mission_pdseq_parse "$_MISSION_REWRITE_PDSEQ") || {
+      echo "mission: rewrite: REFUSED — malformed pdseq override '${_MISSION_REWRITE_PDSEQ}'" >&2; return 1; }
+  fi
   [ -n "$_rw_nonce" ] || return 1
   _rw_n8=$(printf '%s' "$_rw_nonce" | cut -c1-8)
   if [ "$_rw_hashmode" = "keep" ] || [ -z "$_rw_hashmode" ]; then
