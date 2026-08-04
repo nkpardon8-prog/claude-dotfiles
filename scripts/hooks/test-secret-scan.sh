@@ -217,8 +217,52 @@ if [ -f "$_wf" ]; then
     # separate guards now end with that phrase, so counting it asserted 1 and got 3 - a
     # self-inflicted red that reached CI. A guard keyed on a string its own siblings also
     # emit is a guard that breaks every time a sibling is added.
-    chk "CI fails closed when no tracked files are enumerated" \
-        "$(printf '%s\n' "$_wfc" | grep -c 'enumerated NO tracked files')" "1"
+    # ---- BEHAVIOURAL: EXTRACT THE CI STEP AND RUN IT ----------------------------------
+    # Pulled straight out of the YAML with awk (this harness has no YAML parser) and executed
+    # against throwaway fixtures with a STUB scanner, so these cases test what the job DOES.
+    # They survive any rename or reformat of the step, and they go red if a fail-closed exit is
+    # removed - which the string assertions did not.
+    _ciblk="$FIXROOT/ci-block.sh"
+    awk '
+      /^      - name: Run native scanner/ {found=1}
+      found && /^        run: \|/ {inblk=1; next}
+      inblk {
+        if ($0 ~ /^          / || $0 ~ /^[[:space:]]*$/) { sub(/^          /,""); print; next }
+        exit
+      }
+    ' "$_wf" > "$_ciblk"
+    chk "the CI scanner step could be extracted from the YAML" \
+        "$([ -s "$_ciblk" ] && bash -n "$_ciblk" 2>/dev/null && echo 1 || echo 0)" "1"
+
+    # _ci_run <fixture-setup-fn> -> prints the rc the CI step returns.
+    _ci_run() {
+        _d=$(mktemp -d); ( cd "$_d" || exit 99
+            git init -q . 2>/dev/null; git config user.email t@t; git config user.name t
+            mkdir -p scripts bin
+            # Stub scanner: exit 2 for a path containing "secret", 3 for "unreadable", else 0.
+            printf '#!/usr/bin/env bash\n[ "${1:-}" = "--" ] && shift\nrc=0\nfor f in "$@"; do case "$f" in *secret*) rc=2 ;; *unreadable*) rc=3 ;; esac; done\nexit $rc\n' > scripts/secret-scan.sh
+            chmod +x scripts/secret-scan.sh
+            "$1"
+            PATH="$_d/bin:$PATH" bash "$_ciblk" >/dev/null 2>&1; echo $?
+        ); rm -rf "$_d"
+    }
+    _fx_clean()  { echo a > a.txt; echo b > b.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
+    _fx_secret() { echo a > a.txt; echo s > zz-secret.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
+    _fx_unread() { echo a > a.txt; echo u > unreadable.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
+    _fx_both()   { echo s > zz-secret.txt; echo u > unreadable.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1; }
+    _fx_empty()  { :; }   # a git repo with zero tracked files
+    _fx_dying()  { echo a > a.txt; echo s > zz-secret.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1
+                   printf '#!/usr/bin/env bash\nif [ "$1" = "ls-files" ]; then printf "a.txt\\0"; exit 141; fi\nexec /usr/bin/git "$@"\n' > bin/git; chmod +x bin/git; }
+    _fx_trunc()  { echo a > a.txt; echo s > zz-secret.txt; git add -A >/dev/null 2>&1; git commit -qm c >/dev/null 2>&1
+                   printf '#!/usr/bin/env bash\nif [ "$1" = "ls-files" ]; then printf "a.txt\\0zz-secret.txt"; exit 0; fi\nexec /usr/bin/git "$@"\n' > bin/git; chmod +x bin/git; }
+
+    chk "CI step: a clean tree exits 0"                       "$(_ci_run _fx_clean)"  "0"
+    chk "CI step: a secret exits 2 (rotate), not 1 or 3"      "$(_ci_run _fx_secret)" "2"
+    chk "CI step: an unscannable file exits 3"                "$(_ci_run _fx_unread)" "3"
+    chk "CI step: secret AND unscannable exits 3 (3 > 2)"     "$(_ci_run _fx_both)"   "3"
+    chk "CI step: zero tracked files fails closed (3), never clean" "$(_ci_run _fx_empty)" "3"
+    chk "CI step: an enumerator that dies mid-stream exits 3, never clean" "$(_ci_run _fx_dying)" "3"
+    chk "CI step: a truncated (non NUL-terminated) enumeration exits 3"    "$(_ci_run _fx_trunc)" "3"
 
     # Third-party action pinned to an immutable commit, not a tag its publisher can move
     # under us while holding GITHUB_TOKEN. Silent (a moved tag produces no diff here) and
