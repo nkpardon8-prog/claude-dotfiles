@@ -125,6 +125,20 @@ check "unknown argument is refused, not silently accepted" 2 "$rc"
 # VACUOUS: with the guarded-file check deleted the lint still exited 1 by another route, so
 # the case stayed green under mutation and proved nothing. Keying on the specific message
 # makes it discriminate - mutation-verified in BOTH directions.
+# RESET ALL FIVE guarded files to a PASSING state first, and assert that baseline, before
+# changing the one thing under test. Earlier fixtures deliberately leave files broken (oversize
+# post-compact-resume, a too-deep marker in pre-compact), and those persist - so without this
+# reset `--all` exits 1 for an unrelated reason and NO later case can discriminate. This is the
+# second time that masking silently produced a vacuous case here; the baseline assertion below
+# is what makes it impossible a third time, because a dirty fixture now fails loudly and
+# immediately rather than quietly propping up the case that follows.
+mk "$ROOT/commands/post-compact-resume.md" 19000 0 0
+for _g in mission pre-compact codex-review implement; do
+    mk "$ROOT/commands/$_g.md" 5000 1 1000
+done
+_base=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+check "fixture baseline is CLEAN before the renamed-target case (else it cannot discriminate)" 0 "$_base"
+
 mv "$ROOT/commands/mission.md" "$ROOT/commands/mission-renamed.md"
 _out=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
 _rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
