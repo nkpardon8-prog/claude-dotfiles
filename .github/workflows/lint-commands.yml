@@ -75,6 +75,22 @@ jobs:
         if: ${{ !cancelled() && steps.preflight.outcome == 'success' }}
         run: bash scripts/lint-commands/lint-skill-contract.sh --all
 
+      # Added 2026-08-03. This is the third lint in scripts/lint-commands/ and until now the
+      # only one NO automated path invoked - not this workflow, and not the generated
+      # pre-commit hook (which runs only the two lints that have a --staged mode). Its own
+      # header asserted the repo had no CI at all, which had stopped being true.
+      #
+      # The explicit `.` is REQUIRED, not stylistic: the script's ROOT defaults to
+      # $HOME/.claude-dotfiles, which does not exist on the runner. Omitting it does not
+      # silently pass - the script's `[ -f "$F" ]` check exits 2 (verified against a fake
+      # HOME before wiring this) - but it would be a confusing red for the wrong reason.
+      #
+      # Runs even if the lints above failed, for the same reason lint-skill-contract does:
+      # one push should report every lint, not just the first to break.
+      - name: lint-testplan
+        if: ${{ !cancelled() }}
+        run: bash scripts/lint-commands/lint-testplan.sh .
+
   # THE SHELL HARNESSES THEMSELVES (added 2026-08-03, mission part 3 "guard-integrity").
   # Until this job existed, NINE of the ten scripts/hooks/test-*.sh harnesses ran ONLY when
   # a human typed the command. That is how test-lint-skill-size.sh sat VACUOUS: it copied the
