@@ -102,9 +102,21 @@ chain_manifest_read() {
   local l="$HOME/.claude/chains/${sid}.log"
 
   # Valid live manifest → fast path.
-  if [ -f "$p" ] && jq -e . "$p" >/dev/null 2>&1; then
+  # SHAPE-CHECKED, not merely parseable. `jq -e .` alone answers "is this JSON?", which is a
+  # different question from "is this a manifest": measured, it returns 0 for `{}`, `[]`, `0`
+  # and `"just a string"`. The primer then took the success branch and rendered a chain banner
+  # out of `.north_star // ""` / `.current_seq // 1` / `.status // "active"` — a hollow banner
+  # of default fields, which is exactly what the recovery branch below was hardened to prevent.
+  # The two halves of this function disagreed: one validated its output, the other trusted the
+  # file. Keys kept minimal (an object carrying chain_id and current_seq) so a manifest that
+  # gains or loses optional fields is not rejected.
+  if [ -f "$p" ] && jq -e 'type == "object" and has("chain_id") and has("current_seq")' "$p" >/dev/null 2>&1; then
     cat "$p"
     return 0
+  fi
+  # A file that exists but is not a manifest is NOT a first run - say so, and say why.
+  if [ -f "$p" ]; then
+    echo "chain_manifest_read: $p is not a valid manifest (bad JSON, or not an object with chain_id + current_seq) - attempting ledger recovery" >&2
   fi
 
   # Corrupt or missing manifest. Try to rebuild from the ledger if it exists.
