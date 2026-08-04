@@ -5,7 +5,15 @@
 # bash 3.2 compatible.
 
 set -u
-LINT="$HOME/.claude-dotfiles/scripts/lint-commands/lint-skill-size.sh"
+# Resolved from THIS FILE's location, not from $HOME (2026-08-04). The $HOME form made this
+# harness rc=127 on a CI runner - HOME=/home/runner there and the checkout lives under
+# /home/runner/work/..., so `cp` could not find the lint and all ten cases failed with 127.
+# It was enrolled in CI while still hard-coding a developer-machine path, so the job it was
+# added to had never once actually exercised it: the harness written to prove a guard was
+# itself unreachable. Same pattern as the sibling test-secret-scan.sh.
+_TLS_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LINT="$_TLS_REPO/scripts/lint-commands/lint-skill-size.sh"
+[ -f "$LINT" ] || { echo "FATAL: lint not found at $LINT (repo root resolved to $_TLS_REPO)" >&2; exit 2; }
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/lint-size-test.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
