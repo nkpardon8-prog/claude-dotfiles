@@ -159,7 +159,8 @@ SUBi7="i7question"; SIDi7="i7question$$"
 mc_new_mission "$SUBi7" "$SIDi7"
 mc_pending_stop "$SUBi7" "$SIDi7" approve 1 1 1 decision "Question ONE" >/dev/null
 OUTi7=$(mc_pending_stop_out "$SUBi7" "$SIDi7" approve 1 1 1 decision "Question TWO")
-mc_has "rc=3" "$OUTi7" "I7 same slug+coords with a CHANGED question is REFUSED (rc=3, not a silent idempotent reuse)"
+# R8r3-R8: a changed question at the same op is the DISTINCT rc=13 (non-retryable), not the conflated rc=3.
+mc_has "rc=13" "$OUTi7" "I7 same slug+coords with a CHANGED question is REFUSED (rc=13, not a silent idempotent reuse)"
 IDi7=$(mc_pending_stop "$SUBi7" "$SIDi7" approve 1 1 1 decision "Question ONE")
 mc_eq "pd:1-approve" "$IDi7" "I7 an EXACT re-request (same slug+coords+question) is the idempotent no-op"
 
