@@ -1748,14 +1748,10 @@ _mission_gen_selfheal() {
   # is the correct key: heal ONLY the exact crash signature "the marker bumped but NO boundary AT the marker
   # gen was ever appended". Compute both the existence of a marker-gen boundary AND the MAX boundary gen (to
   # preserve the forged-FUTURE-gen refusal).
-  _gsh_scan=$(_mission_timing_stream "$_gsh_sid" "$_gsh_root" \
-    | awk -F'\t' -v mg="$_gsh_gen" '
-        $1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ \([^\t]*\)$/ {
-          g=$2; sub(/.* gen=/,"",g); sub(/[^0-9].*/,"",g);
-          if (g!="") { if (g+0==mg+0) found=1; if (g+0>mx) mx=g+0 } }
-        END { print (found?1:0) " " (mx+0) }')
-  _gsh_has_marker=$(printf '%s' "$_gsh_scan" | awk '{print $1+0}')
-  _gsh_maxbgen=$(printf '%s' "$_gsh_scan" | awk '{print $2+0}')
+  _gsh_bline=$(_mission_timing_stream "$_gsh_sid" "$_gsh_root" \
+    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ \([^\t]*\)$/' | tail -1)
+  _gsh_bgen=$(printf '%s' "$_gsh_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
+  case "$_gsh_bgen" in ''|*[!0-9]*) _gsh_bgen="" ;; esac
   # R8r6-G2 / R8r7-CL2 - heal ONLY the EXACT crash signature: marker gen>=2, NO boundary AT the marker gen
   # exists, AND no FUTURE-gen (> marker) boundary exists. A boundary already AT the marker gen => no-op
   # (idempotent — CL2: a forged lower-gen boundary alongside the real marker-gen boundary does NOT trigger a
@@ -1764,10 +1760,10 @@ _mission_gen_selfheal() {
   # intervening state; leaving the mismatch makes _gen_sliced_stream keep failing closed (`corrupt`), the
   # correct fail-closed outcome. (maxbgen==0 means NO valid boundary at all => a legit lost-boundary crash.)
   _gsh_heal=0
-  if [ "$_gsh_gen" -ge 2 ] 2>/dev/null \
-     && [ "$_gsh_has_marker" = 0 ] \
-     && { [ "$_gsh_maxbgen" = 0 ] || [ "$_gsh_maxbgen" -lt "$_gsh_gen" ] 2>/dev/null; }; then
-    _gsh_heal=1
+  if [ "$_gsh_gen" -ge 2 ] 2>/dev/null; then
+    if [ -z "$_gsh_bline" ]; then _gsh_heal=1
+    elif [ "$_gsh_bgen" -lt "$_gsh_gen" ] 2>/dev/null; then _gsh_heal=1
+    fi
   fi
   if [ "$_gsh_heal" = 1 ]; then
     if [ -s "$_gsh_log" ]; then
