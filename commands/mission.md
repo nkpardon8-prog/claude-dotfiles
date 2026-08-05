@@ -1690,7 +1690,10 @@ A wake **RETURNS WITHOUT rescheduling** — releasing the tick lock, then stoppi
   human `AWAIT kind=human … op=<seq>-<slug> attempt=1 need=1 got=0` STOP barrier AND mints the monotonic pd
   (seq machine-assigned + monotonic + NEVER reused, even across `resolve`; 1st = `pd:1-<slug>`, 2nd =
   `pd:2-<slug>`, …), ECHOING `pending-stop ok id=pd:<seq>-<slug>`. CAPTURE the echoed id — do NOT hand-pick
-  the seq (any agent-supplied seq is ignored). **R6/R7-1 — the AWAIT `op` is the echoed pd's UNIQUE
+  the seq (any agent-supplied seq is ignored). Extract it from the status line (a bare `$(…)` would capture
+  the WHOLE `mission-write: pending-stop ok id=pd:…` line = an invalid op/resolve id):
+  `pid=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q" | sed -n 's/.*id=\(pd:[^ ]*\).*/\1/p')`
+  — `pid` is the FULL `pd:<seq>-<slug>` (use it verbatim for `resolve`); the barrier/DECISION `op` is `${pid#pd:}`. **R6/R7-1 — the AWAIT `op` is the echoed pd's UNIQUE
   `<seq>-<slug>`** (the `pd:` id minus the `pd:` prefix), NOT the bare `<slug>`: without the minted seq,
   two same-slug decisions would share `(part,round,attempt=1,kind,op)` and the 2nd `got=0` opener would
   inherit the 1st's already-resolved `got=1` — silently skipping the mandatory stop (unapproved autonomous
