@@ -1470,13 +1470,23 @@ mission_pending_stop_mint() {
   if [ "${#_ps_hist}" -gt 6 ]; then
     _mission_unlock; echo "mission: pending-stop: REFUSED — history high-water '${_ps_hist}' out of range (>6 digits)" >&2; return 2
   fi
-  _ps_seed=$(( 10#$_ps_markerpdseq ))
+  _ps_markerseed=$(( 10#$_ps_markerpdseq ))
+  _ps_seed="$_ps_markerseed"
   _ps_histn=$(( 10#$_ps_hist ))
   [ "$_ps_histn" -gt "$_ps_seed" ] && _ps_seed="$_ps_histn"
   # [D6b] sequence-exhausted refusal BEFORE opening any barrier.
   _ps_next=$((_ps_seed + 1))
   if [ "$_ps_next" -gt 999999 ]; then
-    _mission_unlock; echo "mission: pending-stop: REFUSED — sequence-exhausted (next=${_ps_next} > 999999)" >&2; return 7
+    # R8r4-C10 - the MARKER pdseq is the AUTHORITATIVE monotonic counter (bumped under this same lock at
+    # every REAL mint); the history high-water is only a legacy backstop. A planted self-consistent high-op
+    # DECISION/AWAIT (e.g. op=999999-x) can inflate the history past the cap and force a false rc=7
+    # (which S1 would then STOP on = total stall). If the overflow is HISTORY-driven while the authoritative
+    # marker still has room, the history value is poison: fall back to the marker so a planted DECISION can
+    # never force sequence-exhaustion. TRUE exhaustion is only when the marker itself is at the cap.
+    if [ "$((_ps_markerseed + 1))" -gt 999999 ]; then
+      _mission_unlock; echo "mission: pending-stop: REFUSED — sequence-exhausted (marker pdseq at cap; next=${_ps_next} > 999999)" >&2; return 7
+    fi
+    _ps_seed="$_ps_markerseed"; _ps_next=$((_ps_markerseed + 1))
   fi
   _ps_op="${_ps_next}-${_ps_slug}"
 
