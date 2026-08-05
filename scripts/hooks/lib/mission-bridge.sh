@@ -2129,9 +2129,16 @@ mission_await_state() {
       best = ""; bestkind = ""; bestatt = -1; bestnr = -1
       for (kk in seen) {
         if (!opened[kk]) continue   # R4: no post-boundary got=0 opener => stale-late reopen, not live
-        # R6 — a human barrier is RESOLVED iff its NEWEST line already met need (lastgot), NOT iff the OR
-        # mask ever met need; else a reused-op reopen inherits the prior close and the STOP vanishes.
-        if (okind[kk] == "human" && oneed[kk] > 0 && band(lastgot[kk], oneed[kk]) == oneed[kk]) continue
+        # R8r4-C4 - when a target op is supplied (resolve's OP-SPECIFIC open-barrier check), restrict the
+        # selection to THAT op's barrier, so an outranking human STOP for a DIFFERENT op cannot mask the
+        # requested op's still-open STOP (await_state's single top-selection would otherwise hide it).
+        if (targetop != "" && oop[kk] != targetop) continue
+        # R8r4-C9 (KEYSTONE) - a HUMAN barrier is RESOLVED (skipped as not-live) ONLY IF its newest got
+        # meets need (lastgot, instance-correct per R6) AND a matching durable DECISION exists AFTER its
+        # got=0 opener (decnr>openernr). A got=1 with NO such DECISION (a forged/planted close) stays
+        # LIVE - the reader enforces DECISION-first, not just the writer. JOB barriers are unaffected.
+        if (okind[kk] == "human" && oneed[kk] > 0 && band(lastgot[kk], oneed[kk]) == oneed[kk] \
+            && decnr[oop[kk]] > openernr[kk]) continue
         ishuman = (okind[kk] == "human") ? 1 : 0
         besthuman = (bestkind == "human") ? 1 : 0
         pick = 0
