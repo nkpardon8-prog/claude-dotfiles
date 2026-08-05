@@ -2105,7 +2105,9 @@ mission_await_state() {
         }
         if (awnr[i] <= b) continue   # pre-boundary => stale, excluded
         k4 = (awpart[i]+0) SUBSEP (awround[i]+0) SUBSEP (awatt[i]+0) SUBSEP awkind[i] SUBSEP awop[i]
-        if (awgot[i] == 0) opened[k4] = 1   # post-boundary opener seen => barrier may be live
+        # R8r4-C9 - the got=0 opener's NR (newest, mirroring the writer's latest-opener rule). A DECISION
+        # authorizes a human close ONLY if it is recorded AFTER this NR (a pre-opener DECISION cannot).
+        if (awgot[i] == 0) { opened[k4] = 1; if (awnr[i] > openernr[k4]) openernr[k4] = awnr[i] }
         gotmask[k4] = bor(gotmask[k4], awgot[i])
         if (awnr[i] > maxnr[k4]) {
           maxnr[k4]=awnr[i]; oneed[k4]=awneed[i]; oop[k4]=awop[i]; ophase[k4]=awphase[i]
