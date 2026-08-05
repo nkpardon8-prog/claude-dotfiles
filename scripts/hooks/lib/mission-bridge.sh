@@ -1274,10 +1274,13 @@ mission_pending_mint() {
 # mission_pending_stop_mint <sid> <root> <slug> <part> <round> <attempt> <phase> <question...>
 #   The ONE BLOCKING barrier-opener (Task 1, D3-D8). Modeled on mission_pending_mint but, under the
 #   SAME mint lock and in this order:
-#     [D3/D4] If mission_await_state shows an OPEN kind=human ready=0 barrier: adopt a crash ORPHAN
-#             (op has no live-nonce pd line) by writing ONLY the missing pd line, OR return the
-#             existing id on an EXACT request match (same slug+coords), OR FAIL CLOSED (a DIFFERENT
-#             open human barrier — never open a second; await-state returns only one).
+#     [D3/D4] If mission_await_state shows an OPEN kind=human ready=0 barrier: return the existing id on
+#             an EXACT request match (same slug+coords+question, pd line PRESENT), else FAIL CLOSED with a
+#             DISTINCT rc (R8r3-R8): a DIFFERENT open barrier => rc=12; a changed question at the same op
+#             => rc=13; a lost-pd crash ORPHAN => rc=14 (R8r2-B/FIX-B: the original question is GONE with
+#             the pd line so it is UNVERIFIABLE — NEVER silently adopt/re-bind it; recovery is an explicit
+#             human resolve/deny of that op, or a NEW decision under a DIFFERENT slug). NEVER open a second
+#             barrier (await-state returns only one). rc=3 is lock-busy ONLY (the one retryable code).
 #     [D5]    Fresh-mint seed = scan-ONCE max(marker pdseq, md-zone-max, log-max) — double-anchored so
 #             free-text `op=999-`/`pd:999-` cannot poison the counter.
 #     [D6b]   REFUSE `sequence-exhausted` BEFORE opening the barrier if max+1 would be 7 digits.
