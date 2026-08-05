@@ -429,6 +429,29 @@ mission_resolve_path() {
   return 0
 }
 
+# _mission_log_read_integrity <sid> <root> -> rc 0 if EVERY existing live log + archive is readable AND
+# every .gz archive passes `gzip -t` (decompressable); rc 1 on a genuine read/decompress failure of an
+# EXISTING file. An ABSENT log/archive is NOT a failure (a fresh/active mission). R8r4-C5/C11 - the
+# timing stream (`_mission_timing_stream`) reads every source with `2>/dev/null`, so a readable-but-
+# CORRUPT gzip archive silently yields no line; a caller that maps an empty stream to `none`/`unknown`
+# would then HIDE an open STOP or a MISSION-CLEARED. This lets await_state + lifecycle_state FAIL CLOSED
+# (`corrupt`/`unreadable`) on it. `gzip -t` catches the readable-but-corrupt case the `-r` bit misses.
+_mission_log_read_integrity() {
+  _lri_sid=$(_mission_sanitize_sid "$1"); _lri_root="$2"
+  _lri_live="${_lri_root}/MISSION.${_lri_sid}.log"
+  if [ -e "$_lri_live" ] && [ ! -r "$_lri_live" ]; then return 1; fi
+  for _lri_a in "$_lri_root"/.mission-backups/MISSION."$_lri_sid".log.*.gz; do
+    [ -e "$_lri_a" ] || continue
+    [ -r "$_lri_a" ] || return 1
+    gzip -t "$_lri_a" 2>/dev/null || return 1   # readable-but-corrupt archive (the `-r` bit misses this)
+  done
+  for _lri_a in "$_lri_root"/.mission-backups/MISSION."$_lri_sid".log.*.txt; do
+    [ -e "$_lri_a" ] || continue
+    [ -r "$_lri_a" ] || return 1
+  done
+  return 0
+}
+
 # mission_lifecycle_state <sid> <root> -> stdout: active | cleared | unknown | unreadable
 # (named to NOT collide with the playbook's local `mission_state` grep variable in §8.)
 # Reuses the §8 archive-inclusive active-iff read (ALL rotated archives oldest->newest + live log),
