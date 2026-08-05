@@ -1611,7 +1611,7 @@ mission_pending_stop_mint() {
 
   # THEN write the pd line + BUMP pdseq to <next> in the SAME locked rewrite (mirror mission_pending_mint).
   mission_backup "$_ps_f" "$_ps_root" "$_ps_sid" || {
-    _mission_unlock; echo "mission: pending-stop: BACKUP FAILED — refusing (barrier is a fail-closed orphan; the next pending-stop will NOT adopt it — resolve/deny it explicitly)" >&2; return 4; }
+    _mission_unlock; echo "mission: pending-stop: BACKUP FAILED — refusing (barrier is a fail-closed orphan; the next pending-stop will NOT adopt it — safe-ABORT deny it: outcome=deny, close, do not proceed)" >&2; return 4; }
   _ps_id="pd:${_ps_op}"
   _ps_entry="- [${_ps_id}] ${_ps_q}"
   _ps_midkey=$(_mission_gen_tag "$_ps_f" "pd-${_ps_next}-${_ps_slug}") || {
