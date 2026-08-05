@@ -213,14 +213,14 @@ mc_eq "pd:1-approve" "$IDa8" "R8r2-A pending-stop STILL opens the human STOP (sa
 # ── R8r2-D - pending-stop REFUSES opening a STOP below a MISSION-CLEARED lifecycle ──────────────────────
 # If clear wins the lock first, await-state reads `none` (cleared short-circuit); a fresh STOP appended
 # below MISSION-CLEARED would be permanently hidden. pending-stop re-checks the cleared lifecycle UNDER the
-# lock and fails closed (rc=3). RED if the cleared-lifecycle refusal reverts.
+# lock and fails closed. R8r3-R8: CLEARED is now the DISTINCT rc=10 (non-retryable), not the conflated rc=3.
 SUBd8="d_cleared"; SIDd8="d_cleared$$"
 mc_new_mission "$SUBd8" "$SIDd8"
 # source the lib in a subshell (08 sources it only inside subshells, mirroring C4) and clear directly.
 ( . "${HOOKS}/lib/mission-bridge.sh" 2>/dev/null
   mission_clear_append "$SIDd8" "${ROOT}/${SUBd8}" "[mission] MISSION-CLEARED status=cleared reason=test" "" >/dev/null 2>&1 )
 OUTd8=$(mc_pending_stop_out "$SUBd8" "$SIDd8" approve 1 1 1 decision "Approve after clear?")
-mc_has "rc=3" "$OUTd8" "R8r2-D pending-stop REFUSES (rc=3) opening a STOP below MISSION-CLEARED"
+mc_has "rc=10" "$OUTd8" "R8r2-D pending-stop REFUSES (rc=10) opening a STOP below MISSION-CLEARED"
 
 # ── R8r2-C-reader - a DECISION whose IDTAG encoded-op != BODY op does NOT authorize the close ────────────
 # The DECISION-first close reader matches idtag `pd-<seq>-decision-<slug>` + body `op=<op>`. Without binding
