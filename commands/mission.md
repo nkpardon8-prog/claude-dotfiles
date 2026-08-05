@@ -1631,11 +1631,12 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    aw=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await-state "$sid" "$root")
    ```
    `corrupt` → §10 corrupt-bridge STOP-LOUD (release lock, do NOT reschedule).
-   `await kind=human ready=0` → branch on `last_decision` for the op (§8, D15): **op HAS a same-op
-   `[mission] DECISION`** ⇒ ANSWERED ⇒ CONSUME on THIS tick — `approve` ⇒ perform the idempotent gated
+   `await kind=human ready=0` → branch on `last_decision` for the op (§8, D15): **`last_decision` is
+   NON-EMPTY** (the full resolved-predicate holds — a raw same-op `[mission] DECISION` line alone is NOT
+   enough) ⇒ ANSWERED ⇒ CONSUME on THIS tick — `approve` ⇒ perform the idempotent gated
    action, `deny` ⇒ ABORT it, THEN finish the close (`await … got=1` → `resolve`, each a no-op if already
-   done); the action runs WITH the close on THIS wake, never split (C2); NEVER re-ask. **NO DECISION on a
-   WAKE tick** ⇒ STOP the scheduled continuation (a human hand-back is owed; an ORPHAN — no `pd:<op>` line
+   done); the action runs WITH the close on THIS wake, never split (C2); NEVER re-ask. **EMPTY `last_decision`
+   on a WAKE tick** (UNANSWERED, regardless of any raw DECISION line present) ⇒ STOP the scheduled continuation (a human hand-back is owed; an ORPHAN — no `pd:<op>` line
    either — ⇒ surface it + recover per §12.1 (iii) C7: `log` a DECISION `deny` for the orphan op → `await …
    got=1` close → `resolve` (moot); do NOT re-state via `pending-stop` (fails closed rc=14 — unverifiable);
    do NOT proceed). **On a REAL USER TURN answering it (D3):** CONSUME it HERE, UNDER this tick lock, in
