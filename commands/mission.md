@@ -497,13 +497,18 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
 
 - **(a) No mission exists** → seed one, capturing the current objective from the in-flight context:
   ```bash
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> 'MISSION MODE: adopt
+  PLAN=$(cat <<'EOF'
+  MISSION MODE: adopt
   <captured current objective + state>
 
-  Standing directive: <same directive text as Section 3>'
+  Standing directive: <same directive text as Section 3>
+  EOF
+  )
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> "$PLAN"
   ```
-  (SINGLE-quoted — the captured objective is untrusted; never double-quote it, §7 injection rule. If it
-  may contain a single quote, write it to a temp file / heredoc and pass that instead.)
+  (Capture into `"$PLAN"` via a quoted heredoc and pass it double-quoted — the captured objective is
+  untrusted; a single-quoted literal breaks on an apostrophe, a double-quoted raw literal executes
+  `$(...)`; §7 rule.)
   Parse the status line (Section 7). **`create` is idempotent: if a `MISSION.<sid>.md` already existed
   and verified, it returns `ok` as a no-op and the EXISTING (possibly non-mission/stale) PLAN persists —
   the seed did NOT take.** So if `create` says `ok` but PLAN line-1 is NOT this adopt directive (re-read
