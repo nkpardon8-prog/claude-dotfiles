@@ -110,7 +110,8 @@ async function processContact({ id, first, msg }) {
     const frame = await cdp(ifr.webSocketDebuggerUrl);
 
     // 4c. belt and braces: widget header must show this contact's first name
-    const hasName = await evalIn(frame, `document.body.innerText.includes(${JSON.stringify(first)})`);
+    // case-insensitive: the copy may normalize the stored name (e.g. HubSpot "Rj" -> "RJ")
+    const hasName = await evalIn(frame, `document.body.innerText.toLowerCase().includes(${JSON.stringify(String(first).toLowerCase())})`);
     if (!hasName) { out.err = 'widget body does not show contact first name'; frame.close(); page.close(); return out; }
 
     // 5. focus the message field inside the widget
