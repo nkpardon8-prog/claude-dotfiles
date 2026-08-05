@@ -61,7 +61,7 @@ mc_lifecycle() { ( . "${HOOKS}/lib/mission-bridge.sh" >/dev/null 2>&1; mission_l
 # program is the 4th single-quote-delimited field (it carries no single-quote of its own). Driving THIS
 # (not a re-spelling) is what makes a prose-side drift of the active-iff gate redden the test. This closes
 # the "the suite never EXECUTES mission_state" gap (criticer A1 / the L1-L4 finding).
-MISSION_STATE_AWK="$(grep 'mission_state=[$][(]awk -F' "$MISSION_MD" | head -1 | awk -F"'"'"'" '{print $4}')"
+MISSION_STATE_AWK="$(grep 'mission_state=[$][(]awk -F' "$MISSION_MD" | head -1 | cut -d"'" -f4)"
 case "$MISSION_STATE_AWK" in
   *"MISSION-REBASELINED"*"MISSION-CLEARED"*|*"MISSION-CLEARED"*"MISSION-REBASELINED"*) : ;;
   *) echo "INFRA: could not extract the wake mission_state awk from mission.md" >&2; exit 3 ;;
