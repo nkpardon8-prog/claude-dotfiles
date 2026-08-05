@@ -2154,7 +2154,13 @@ mission_await_state() {
       # R6 — effective got: HUMAN uses the newest line`s got (instance-correct); JOB uses the OR mask
       # (two lanes accumulate). ready + the emitted got both use it, so a reused-op human reopen reports
       # got=0 ready=0 (a live STOP), never the stale got=1 of the prior resolved instance.
-      effgot = (okind[best] == "human") ? lastgot[best] : gotmask[best]
+      # R8r4-C9 (KEYSTONE) - a selected HUMAN barrier whose newest got MEETS need but has NO matching
+      # post-opener DECISION is a forged/planted close: report got=0 ready=0 (fail-closed). It reached
+      # here (not skipped above) precisely because the DECISION is absent, so the got=1 bit is untrusted.
+      if (okind[best] == "human") {
+        effgot = lastgot[best]
+        if (oneed[best] > 0 && band(lastgot[best], oneed[best]) == oneed[best] && !(decnr[oop[best]] > openernr[best])) effgot = 0
+      } else effgot = gotmask[best]
       rdy = (oneed[best] > 0 && band(effgot, oneed[best]) == oneed[best]) ? 1 : 0
       printf "await kind=%s op=%s part=%s round=%s attempt=%s phase=%s need=%s got=%s ready=%s started_at=%s\n", \
         okind[best], oop[best], opart[best], oround[best], oatt[best], ophase[best], oneed[best], effgot, rdy, ostart[best]
