@@ -1277,7 +1277,9 @@ last_progress=$(awk -F'\t' '($1 ~ /^(g[0-9]+-)?m[0-9]+-part-(start|done|retired)
 op="<the await-state token's op, e.g. 3-approve>"; seq="${op%%-*}"; slug="${op#*-}"; dtag="pd-${seq}-decision-${slug}"
 last_decision=$(awk -F'\t' -v t="$dtag" -v op="$op" '($1==t || $1 ~ ("^g[0-9]+-" t "$")) && $2 ~ ("^\\[mission\\] DECISION op=" op " outcome=(approve|deny)$")' /tmp/mission-resume.$$ | tail -1 || true)
 # EMPTY  ⇒ this op is UNANSWERED (stop for a real user; an ORPHAN if the `- [pd:<op>]` PENDING line is
-#          ALSO absent — a prior-crash artifact → surface + re-state via pending-stop, do NOT proceed).
+#          ALSO absent — a prior-crash artifact. R8r3-R7/FIX-B: you CANNOT silently re-state it — a re-
+#          `pending-stop` for that op FAILS CLOSED rc=14 (the lost question is unverifiable). Recovery =
+#          an explicit human resolve/deny of that op, or a NEW decision under a DIFFERENT slug; do NOT proceed).
 # NON-EMPTY ⇒ ANSWERED ⇒ CONSUME (parse outcome=approve|deny) per the human-AWAIT rows below.
 ```
 **Every grep above whose no-match is an expected/valid outcome appends `|| true`** so that under
