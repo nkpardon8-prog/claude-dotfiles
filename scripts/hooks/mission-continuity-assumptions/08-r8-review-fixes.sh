@@ -235,5 +235,64 @@ OUTc8=$(mc_await_out "$SUBc8" "$SIDc8" "part=1 phase=decision round=1 kind=human
 mc_has "DECISION-first" "$OUTc8" "R8r2-C-reader a DECISION whose idtag op != body op does NOT authorize the close"
 mc_has "await kind=human" "$(mc_state "$SUBc8" "$SIDc8")" "R8r2-C-reader the barrier STAYS live (mismatched-idtag DECISION rejected)"
 
+# ── R8r3-R1 - an ENV-inherited internal flag CANNOT bypass FIX A (mission-write unsets it at the CLI entry) ─
+# _MISSION_INTERNAL_HUMAN_OPEN is the SANCTIONED opener's same-process function-prefix. If a caller EXPORTS
+# it, the child `bash mission-write.sh` would INHERIT it and the public `await ... kind=human got=0` would
+# open a LOCK-FREE human STOP through the public path - defeating FIX A (the clear/rebaseline TOCTOU race).
+# R1 unsets it at the top of mission-write.sh, so even an env-inherited flag is dropped: the public got=0
+# human opener STAYS refused and no barrier lands. Distinct from R8r2-A (marker-LESS refusal): this proves
+# the ENV-inheritance bypass specifically. RED if `unset _MISSION_INTERNAL_HUMAN_OPEN` reverts.
+SUBr1="r1env"; SIDr1="r1env$$"
+mc_new_mission "$SUBr1" "$SIDr1"
+OUTr1=$(_MISSION_INTERNAL_HUMAN_OPEN=1 bash "$MW" await "$SIDr1" "${ROOT}/${SUBr1}" "part=1 phase=decision round=1 kind=human op=1-approve attempt=1 need=1 got=0" 2>&1)
+mc_has "REFUSED" "$OUTr1" "R8r3-R1 an ENV-inherited _MISSION_INTERNAL_HUMAN_OPEN STILL cannot open a human got=0 via the public await verb"
+mc_eq "none" "$(mc_state "$SUBr1" "$SIDr1")" "R8r3-R1 no human STOP opened via the env-inherited bypass (FIX A holds)"
+
+# ── R8r3-R10 - STRUCTURED seed poison: an idtag-PRESENT line whose ENCODED op != BODY op is IGNORED ──────
+# I6 covers FREE-TEXT poison (no anchored idtag). R10 covers STRUCTURED poison: a forged AWAIT/DECISION
+# whose idtag encodes op=1-approve but whose BODY says op=999999-x. Without the idtag<->body-op bind in the
+# AWAIT + DECISION high-water scans, the body op=999999 drives the seed -> next mint 1000000 > 999999 =
+# REFUSED sequence-exhausted = a PERMANENT stall (all future mints refused). With the bind the mismatched
+# lines are ignored -> the fresh mint seeds from 0 -> pd:1. Forge both directly into the log (forged-line
+# threat model; got=1 so the AWAIT is not a live STOP). RED if the AWAIT/DECISION idtag<->body-op bind reverts.
+SUBr10="r10poison"; SIDr10="r10poison$$"
+mc_new_mission "$SUBr10" "$SIDr10"
+LOGr10="$(mc_log_file "$SUBr10" "$SIDr10")"
+printf 'm1-await-1-approve-r1-a1-g1\t[mission] AWAIT part=1 phase=decision round=1 kind=human op=999999-x attempt=1 need=1 got=1 started_at=1\n' >> "$LOGr10"
+printf 'pd-1-decision-approve\t[mission] DECISION op=999999-x outcome=approve\n' >> "$LOGr10"
+IDr10=$(mc_pending_stop "$SUBr10" "$SIDr10" approve 1 1 1 decision "Approve after structured poison?")
+mc_eq "pd:1-approve" "$IDr10" "R8r3-R10 a STRUCTURED (idtag-present, op-mismatched) AWAIT+DECISION does NOT poison the seed -> pd:1"
+
+# ── R8r3-R11 - the PART-DONE UNDER-LOCK wrapper itself refuses an open STOP (real RED-on-revert for FIX J) ─
+# 02-A16(c) drives PART-DONE through the DISPATCHER, whose LOCK-FREE _mw_partdone_check pre-check refuses
+# FIRST - so reverting the UNDER-LOCK wrapper (mission_partdone_append) stays GREEN there (the pre-check
+# masks it). This exercises the wrapper DIRECTLY (bypassing the dispatcher pre-check): with an open human
+# STOP, a genuinely-new PART-DONE via mission_partdone_append must return rc=4 and NOT append. RED if the
+# under-lock human-barrier re-check in mission_partdone_append reverts (a plain append would return rc=0).
+SUBr11="r11wrap"; SIDr11="r11wrap$$"
+mc_new_mission "$SUBr11" "$SIDr11"
+mc_pending_stop "$SUBr11" "$SIDr11" approve 1 1 1 decision "Approve?" >/dev/null
+RCr11=$( . "${HOOKS}/lib/mission-bridge.sh" 2>/dev/null
+         mission_partdone_append "$SIDr11" "${ROOT}/${SUBr11}" "[mission] PART-DONE part=1 (converged)" "m1-part-done" >/dev/null 2>&1
+         echo $? )
+mc_eq "4" "$RCr11" "R8r3-R11 mission_partdone_append (under-lock wrapper) REFUSES rc=4 while a human STOP is open"
+mc_eq "0" "$(grep -c 'PART-DONE part=1' "$(mc_log_file "$SUBr11" "$SIDr11")")" "R8r3-R11 the refused PART-DONE did NOT append"
+
+# ── R8r3-R12 - the PART-DONE wrapper is DEDUP-FIRST (an idempotent re-emit is NOT refused as rc=4) ───────
+# _mw_partdone_check returns early on an already-banked idtag (so the dispatcher pre-check never runs), but
+# the dispatcher STILL calls the wrapper. If a human STOP opened after the part banked, an UNCONDITIONAL
+# re-check would turn a quiet dedup into rc=4. The wrapper must dedup-FIRST: bank the PART-DONE, open a STOP,
+# then RE-EMIT the SAME idtag -> quiet ok (rc=0), not rc=4. RED if the dedup-first guard reverts.
+SUBr12="r12dedup"; SIDr12="r12dedup$$"
+mc_new_mission "$SUBr12" "$SIDr12"
+( . "${HOOKS}/lib/mission-bridge.sh" 2>/dev/null
+  mission_partdone_append "$SIDr12" "${ROOT}/${SUBr12}" "[mission] PART-DONE part=1 (converged)" "m1-part-done" >/dev/null 2>&1 )
+mc_eq "1" "$(grep -c 'PART-DONE part=1' "$(mc_log_file "$SUBr12" "$SIDr12")")" "R8r3-R12 the initial PART-DONE banked (no STOP)"
+mc_pending_stop "$SUBr12" "$SIDr12" approve 1 1 1 decision "Approve next?" >/dev/null
+RCr12=$( . "${HOOKS}/lib/mission-bridge.sh" 2>/dev/null
+         mission_partdone_append "$SIDr12" "${ROOT}/${SUBr12}" "[mission] PART-DONE part=1 (converged)" "m1-part-done" >/dev/null 2>&1
+         echo $? )
+mc_eq "0" "$RCr12" "R8r3-R12 an idempotent PART-DONE re-emit is a QUIET dedup (rc=0), NOT rc=4, even with a STOP open"
+
 mc_finish '{"c1a_seed_includes_decision":"preplanted DECISION op=1 -> mint pd:2 (no remint)","c1b_decision_after_opener":"pre-opener DECISION rejected; post-opener allowed","c2_orphan_bind":"different request rc=12 no forge; lost-pd exact re-request rc=14 (unverifiable)","c3_torn_decision":"no outcome= body does not close","c4_toctou":"under-lock rebaseline rc=7 / clear rc=4; STOP survives","i1_question_injection":"newline + leading pd: rejected rc=1","i2_nonblocking_seed":"pending seeds high-water -> pd:5","i3_resolve_grammar":"1-a] victim rejected rc=1","i4_coord_octal":"part=08 idempotent re-request matches via string-compare","i5_redrive_archive":"already-resolved redrive post-rebaseline is quiet ok","i7_retry_question":"changed question rc=13; same question idempotent","i6_seed_poison":"free-text 999999 ignored -> pd:1","i8_budget_residue":"legacy budget file cleared, lockdir reclaimed","r8r2_a_opener":"public await verb refuses human got=0; pending-stop still opens","r8r2_d_cleared":"pending-stop rc=10 below MISSION-CLEARED","r8r2_c_reader":"idtag op != body op does not authorize close"}' \
   "round-8 review fixes: C1a/C1b stale-approve + C2 orphan-bind + C3 torn-decision + C4 rebaseline/clear TOCTOU + I1 question-injection + I2 non-blocking-seed + I3 resolve-grammar + I4 coord-octal + I6 seed-poison + I8 legacy-budget-residue"
