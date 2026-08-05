@@ -1533,16 +1533,17 @@ mission_pending_stop_mint() {
       ($1 ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && ($2 ~ /^\[mission\] DECISION op=[a-z0-9-]+ outcome=(approve|deny)$/) {
         p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); if(a[1]==opv && idtag_op($1)==a[1]) f=1 } }
       END{ print f+0 }')
-    # R8r3-R8 - rc=14 for BOTH orphan variants (lost pd line, with or without a durable DECISION): the
-    # recovery for either is the SAME - resolve/deny the orphan EXPLICITLY, never re-open/retry - so one
-    # NON-retryable rc conveys the class; the distinct stderr text picks which orphan it is. NOT rc=3.
+    # R8r3-R8 / R8r7-CL8 - rc=14 for BOTH orphan variants (lost pd line, with or without a durable DECISION):
+    # the recovery for either is the SAME safe-ABORT deny (write outcome=deny, close the barrier, do NOT
+    # proceed; a still-needed decision opens a FRESH pending-stop under a DIFFERENT slug) - never re-open/retry
+    # - so one NON-retryable rc conveys the class; the distinct stderr text picks which orphan it is. NOT rc=3.
     if [ "$_ps_hasdec" = 1 ]; then
       _mission_unlock
-      echo "mission: pending-stop: REFUSED — orphan op=${_ps_bop} already has a durable DECISION; resolve/deny it, do not re-open" >&2
+      echo "mission: pending-stop: REFUSED — orphan op=${_ps_bop} already has a durable DECISION; safe-ABORT deny it (outcome=deny, close, do not proceed), do not re-open" >&2
       return 14
     fi
     _mission_unlock
-    echo "mission: pending-stop: REFUSED — orphan op=${_ps_bop} lost its pd line; question unverifiable — resolve/deny it explicitly, do not re-open" >&2
+    echo "mission: pending-stop: REFUSED — orphan op=${_ps_bop} lost its pd line; question unverifiable — safe-ABORT deny it (outcome=deny, close, do not proceed), do not re-open" >&2
     return 14
   fi
 
