@@ -987,9 +987,18 @@ rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
 - `rc=2` (**corrupt/unreadable bridge**) → trigger the **§10 STOP-LOUD guardrail** immediately
   (surface to the user, point at `.mission-backups/`); do NOT silently proceed. (This is the wire
   that connects the corrupt-bridge signal to STOP-LOUD.)
-- `rc=3` (**lock busy**) → retry the SAME call a few times (e.g. up to 5, brief pause between); if
-  still `rc=3`, log a `FAIL …reason=lock-busy` line (it routes through a DIFFERENT lock attempt) or
-  proceed and note it, per the away policy (§9).
+- `rc=3` (**lock busy — the ONE retryable rc**) → retry the SAME call a few times (e.g. up to 5, brief
+  pause between); if still `rc=3`, log a `FAIL …reason=lock-busy` line (it routes through a DIFFERENT lock
+  attempt) or proceed and note it, per the away policy (§9). **Only `rc=3` is retryable** — never blind-retry
+  any other non-zero rc.
+- **`pending-stop` fail-closed rc codes (R8r3 — DISTINCT from the retryable `rc=3`, do NOT retry, do NOT
+  silently proceed past the mandatory stop):** `rc=10` mission is CLEARED (a STOP below MISSION-CLEARED is
+  permanently hidden — the mission is done; do not re-open); `rc=11` lifecycle unreadable (fail closed —
+  §10 corrupt-bridge surface, do not retry until the log/archive is readable); `rc=12` a DIFFERENT open
+  human STOP is already live (resolve/deny it FIRST, then re-open); `rc=13` the same op is live with a
+  DIFFERENT question (resolve/deny it FIRST — a changed question is a new decision); `rc=14` an ORPHAN
+  barrier (its pd line was lost, or it already carries a durable DECISION) — resolve/deny it EXPLICITLY,
+  never re-open. Each is a deliberate, agent-handled outcome, not a retry and not a proceed.
 - any other non-zero rc (4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
   feeds the 5-FAIL loop-breaker (§10).
 
