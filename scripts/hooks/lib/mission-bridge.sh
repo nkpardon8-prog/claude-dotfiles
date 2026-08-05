@@ -145,9 +145,21 @@ _mission_pdseq_highwater() {
   fi
   _hw_logmax=$(_mission_timing_stream "$_hw_sid" "$_hw_root" | awk -F'\t' '
     function digpfx(s,   num,i,c){ num=""; for(i=1;i<=length(s);i++){c=substr(s,i,1); if(c>="0"&&c<="9") num=num c; else break} return num }
+    # R8r3-R10 - extract the op ENCODED in the AWAIT idtag `[g<G>-]m<part>-await-<op>-r<K>-a<A>-g<G>`
+    # (strip the gen prefix, the `m<part>-await-` head, and the trailing `-r..-a..-g..` tail -> <op>).
+    function await_op(t,   s,p){ s=t; sub(/^g[0-9]+-/,"",s); p=index(s,"-await-"); if(p==0) return "";
+      s=substr(s,p+length("-await-")); sub(/-r[0-9]+-a[0-9]+-g[0-9]+$/,"",s); return s }
+    # R8r3-R10 - the op ENCODED in the DECISION idtag `[g<G>-]pd-<seq>-decision-<slug>` -> `<seq>-<slug>`.
+    function dec_op(t,   s,p,seq,slug){ s=t; sub(/^g[0-9]+-/,"",s); sub(/^pd-/,"",s);
+      p=index(s,"-decision-"); if(p==0) return ""; seq=substr(s,1,p-1); slug=substr(s,p+length("-decision-")); return seq "-" slug }
     ($1 ~ /^(g[0-9]+-)?m[0-9]+-await-/) && ($2 ~ /^\[mission\] AWAIT /) {
       p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
-        dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } }
+        # R8r3-R10 - BIND the idtag-encoded op to the body op; a forged AWAIT whose idtag says op=1-approve
+        # but body says op=999999-x must NOT bump the high-water (else a false sequence-exhaustion refuses
+        # ALL future mints = total stall). I6 already blocks free-text (no idtag); this blocks STRUCTURED
+        # (idtag-present, op-mismatched) poison too. Mirrors the resolve-scan idtag<->body bind (R8r2-I).
+        iop=await_op($1)
+        if(iop!="" && iop==op){ dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } } }
     ($1 ~ /^(g[0-9]+-)?resolve-/) && ($2 ~ /^resolved pd:[0-9]+-/) {
       # R8r2-I - bind the resolve-<id> idtag encoded id to the body pd:<id> id; a generic-log line
       # resolved pd:999999-X under an idtag resolve-note (id mismatch) must NOT bump the high-water.
@@ -156,7 +168,10 @@ _mission_pdseq_highwater() {
       if(it==bid){ dp=digpfx(bid); if(dp!="" && length(dp)<=6){ v=dp+0; if(v>mx) mx=v } } }
     ($1 ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && ($2 ~ /^\[mission\] DECISION op=[0-9]+-/) {
       p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
-        dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } }
+        # R8r3-R10 - same STRUCTURED idtag<->body-op bind for the DECISION scan (a forged
+        # pd-1-decision-x idtag + body op=999999-y no longer poisons the counter into false exhaustion).
+        iop=dec_op($1)
+        if(iop!="" && iop==op){ dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } } }
     END{ print mx+0 }')
   case "$_hw_mdmax"  in ''|*[!0-9]*) _hw_mdmax=0 ;; esac
   case "$_hw_logmax" in ''|*[!0-9]*) _hw_logmax=0 ;; esac
