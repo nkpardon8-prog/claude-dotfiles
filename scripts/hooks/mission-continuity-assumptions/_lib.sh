@@ -84,11 +84,15 @@ mc_new_mission() {  # mc_new_mission <subdir> <sid>  -> creates ROOT/<subdir>/MI
 
 # mc_await <subdir> <sid> <fields...> - open/update the AWAIT marker.
 # R8r2-A: the public `await` verb REFUSES a human got=0 opener (only pending-stop may mint one, under the
-# mint lock). This WHITE-BOX helper sets the SAME call-path marker pending_stop_mint sets so the suite's
-# lib-level AWAIT grammar + lifecycle cases can still mint a human opener directly. The marker is ignored
-# for job barriers and for got=1 closes (FIX A gates only the human got=0 branch). The PUBLIC-verb refusal
-# itself is proven by a raw (marker-less) await call in 09-r8r2-fixes.sh.
-mc_await() { _MISSION_INTERNAL_HUMAN_OPEN=1 bash "$MW" await "$2" "${ROOT}/$1" "$3" >/dev/null 2>&1; }
+# mint lock). This WHITE-BOX helper needs to mint a human opener directly for the suite's lib-level AWAIT
+# grammar + lifecycle cases. R8r3-R1: mission-write.sh now UNSETS `_MISSION_INTERNAL_HUMAN_OPEN` at its CLI
+# entry, so passing it as an ENV var to `bash $MW await` (child-inherited) no longer lifts the got=0 human
+# refusal - that env-inheritance path is exactly the bypass R1 closed. So this helper SOURCES the lib and
+# calls mission_await_append directly with the flag as a same-process FUNCTION prefix - the identical
+# sanctioned mechanism mission_pending_stop_mint uses (set inside the running process, not inherited). The
+# flag is inert for job barriers and for got=1 closes (FIX A gates only the human got=0 branch). The
+# PUBLIC-verb refusal (marker-less AND env-inherited) is proven by R8r2-A + R8r3-R1 in 08.
+mc_await() { ( . "${HOOKS}/lib/mission-bridge.sh" >/dev/null 2>&1; _MISSION_INTERNAL_HUMAN_OPEN=1 mission_await_append "$2" "${ROOT}/$1" "$3" ) >/dev/null 2>&1; }
 # mc_state <subdir> <sid> -> stdout the bare await-state token.
 mc_state() { bash "$MW" await-state "$2" "${ROOT}/$1" 2>/dev/null; }
 # mc_cursor <subdir> <sid> -> stdout the bare cursor hash.
