@@ -683,7 +683,7 @@ case "$verb" in
         11) _mw_psreason="lifecycle unreadable — fail closed; do NOT retry until the log/archive is readable" ;;
         12) _mw_psreason="a DIFFERENT open human STOP is already live — resolve/deny it first; do NOT retry" ;;
         13) _mw_psreason="op is live with a DIFFERENT question — resolve/deny it first; do NOT retry" ;;
-        14) _mw_psreason="ORPHAN barrier (lost pd line / already has a DECISION) — resolve/deny it explicitly; do NOT re-open/retry" ;;
+        14) _mw_psreason="ORPHAN barrier (lost pd line / already has a DECISION) — safe-ABORT deny it (write outcome=deny, close the barrier, do NOT proceed); a fresh decision needs a DIFFERENT slug; do NOT re-open/retry" ;;
         *)  _mw_psreason="see stderr" ;;
       esac
       echo "mission-write: pending-stop FAILED rc=${rc} (${_mw_psreason})"
