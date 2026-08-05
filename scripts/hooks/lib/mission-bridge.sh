@@ -1358,11 +1358,12 @@ mission_pending_stop_mint() {
   _ps_ak=$(_mission_await_field "$_ps_await" kind)
   _ps_ar=$(_mission_await_field "$_ps_await" ready)
   if [ "$_ps_ak" = human ] && [ "$_ps_ar" = 0 ]; then
-    # An OPEN human barrier exists. C2 — the ONLY diversions from a fail-closed refusal are (a) an
-    # idempotent re-request (same slug+coords+question, pd line present) and (b) a crash-orphan adopt
-    # (same slug+coords, pd line lost, NO durable DECISION). We compute the EXACT-identity match FIRST,
-    # BEFORE any adopt, so a DIFFERENT request can never bind its question onto the open op (the old code
-    # adopted before checking identity and would rebind an unrelated question to the live barrier).
+    # An OPEN human barrier exists. C2/FIX-B — the ONLY non-refusal outcome is an idempotent re-request
+    # (same slug+coords+question, pd line PRESENT) which returns the existing id. Everything else FAILS
+    # CLOSED with a DISTINCT rc: a DIFFERENT request => rc=12, a changed question => rc=13, a lost-pd crash
+    # orphan => rc=14 (there is NO crash-orphan ADOPT anymore — the lost question is unverifiable). We
+    # compute the EXACT-identity match FIRST so a DIFFERENT request can never bind its question onto the
+    # open op (the OLD pre-FIX-B code adopted before checking identity and would rebind an unrelated one).
     _ps_bop=$(_mission_await_field "$_ps_await" op)
     _ps_bseq=${_ps_bop%%-*}; _ps_bslug=${_ps_bop#*-}
     _ps_bseqv=$(_mission_pdseq_parse "$_ps_bseq") || {
