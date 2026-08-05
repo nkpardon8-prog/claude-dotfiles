@@ -588,7 +588,8 @@ Spawn in parallel, blind to each other:
   st=$(cat /tmp/mission-scope-out.$$.status 2>/dev/null)
   [ "$st" = "ok" ] || echo "mission: scope-prove Codex pass DEGRADED (status=${st:-missing}) — proceeding on the Claude fact pass alone; record the gap as a note"
   ```
-  (If you must pass it as an arg instead, SINGLE-quote it; never double-quote derived/untrusted content.)
+  (If you must pass it as an arg instead, capture it into a variable via a quoted heredoc/file and pass
+  it double-quoted `"$VAR"`; never inline derived/untrusted content as a single- or double-quoted literal.)
 Reconcile after both return. An **unresolved factual contradiction** → `pending` (batched) + a `note`
 recording the forced assumption, then proceed on the **more-evidenced branch, LOUDLY**. Otherwise
 `note` the reconciled scope. Log the research round (Section 7).
