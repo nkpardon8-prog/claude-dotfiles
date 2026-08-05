@@ -414,15 +414,28 @@ mission_resolve_path() {
   return 0
 }
 
-# mission_lifecycle_state <sid> <root> -> stdout: active | cleared | unknown
+# mission_lifecycle_state <sid> <root> -> stdout: active | cleared | unknown | unreadable
 # (named to NOT collide with the playbook's local `mission_state` grep variable in §8.)
 # Reuses the §8 archive-inclusive active-iff read (ALL rotated archives oldest->newest + live log),
 # so a CLEARED/REBASELINED line rotated out of the live log is NOT missed. `unknown` = no lifecycle
-# line yet (a freshly-created, still-active mission).
+# line yet (a freshly-created, still-active mission). R8r3-R9: `unreadable` = a genuine READ FAILURE
+# (a log/archive that EXISTS but cannot be read) - DISTINCT from `unknown` so a caller (FIX D in
+# mission_pending_stop_mint) fails CLOSED on it instead of treating a silently-unreadable stream as
+# active and opening a STOP below a hidden MISSION-CLEARED. A truly-absent log stays normal `unknown`.
 mission_lifecycle_state() {
   _mst_sid=$(_mission_sanitize_sid "$1"); _mst_root="$2"
   { [ -n "$_mst_sid" ] && [ -n "$_mst_root" ]; } || { printf 'unknown\n'; return 0; }
   _mst_live="${_mst_root}/MISSION.${_mst_sid}.log"
+  # R8r3-R9 - fail CLOSED on a genuine read error (a file that EXISTS but is not readable). The awk
+  # pipeline below reads with `2>/dev/null` and an unreadable file would silently yield no line -> a false
+  # `unknown`. Distinguish it here: an existing-but-unreadable live log OR archive => `unreadable`. An
+  # ABSENT log is normal (fresh/active mission) and falls through to the no-line `unknown`.
+  if [ -e "$_mst_live" ] && [ ! -r "$_mst_live" ]; then printf 'unreadable\n'; return 0; fi
+  for _mst_ra in "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.gz \
+                 "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.txt; do
+    [ -e "$_mst_ra" ] || continue
+    [ -r "$_mst_ra" ] || { printf 'unreadable\n'; return 0; }
+  done
   # Concatenate archives oldest->newest + live, keep the LAST lifecycle line. Uses `if`/`${a##*.}`
   # rather than `case` so the whole thing is safe inside $( … ) — bash 3.2 misparses a `)` case-pattern
   # inside command substitution. No temp file (so nothing to leak on interruption).
