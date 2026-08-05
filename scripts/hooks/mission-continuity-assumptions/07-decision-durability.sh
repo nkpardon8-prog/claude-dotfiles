@@ -135,7 +135,7 @@ perl -0pi -e 's/^- \[pd:1-approve\][^\n]*\n(<!-- mid:[^\n]*-->\n)?//m' "$MDd5"
 mc_eq "0" "$(mc_has_pd "$SUBd5" "$SIDd5" pd:1-approve)" "D5 pd line gone after the crash sim (orphaned barrier)"
 mc_has "await kind=human" "$(mc_state "$SUBd5" "$SIDd5")" "D5 the human barrier is still live (crash orphan)"
 OUTd5=$(mc_pending_stop_out "$SUBd5" "$SIDd5" approve 1 1 1 decision "A DIFFERENT question?")
-mc_has "rc=3" "$OUTd5" "D5 re-pending-stop on a lost-pd orphan FAILS CLOSED (rc=3, question unverifiable)"
+mc_has "rc=14" "$OUTd5" "D5 re-pending-stop on a lost-pd orphan FAILS CLOSED (rc=14, question unverifiable)"
 mc_eq "0" "$(mc_has_pd "$SUBd5" "$SIDd5" pd:1-approve)" "D5 the pd line is NOT restored (no silent adopt of a possibly-changed question)"
 mc_has "await kind=human" "$(mc_state "$SUBd5" "$SIDd5")" "D5 the orphan barrier stays live for an explicit resolve/deny"
 mc_eq "1" "$(sed -n 's/.*pdseq=\([0-9][0-9]*\).*/\1/p' "$MDd5" | tail -1)" "D5 marker pdseq stays the high-water (1, not re-minted)"
