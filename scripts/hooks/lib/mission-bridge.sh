@@ -2066,6 +2066,16 @@ mission_await_state() {
     (idt ~ /^(g[0-9]+-)?m[0-9]+-part-done$/) && (body ~ /^\[mission\] PART-DONE part=/) {
       pd = fval(body,"part")+0; if (NR > pdnr[pd]) pdnr[pd] = NR; next
     }
+    # R8r4-C9 (KEYSTONE) - DECISION lines: record the NEWEST NR per op of a DOUBLE-ANCHORED, idtag<->body-
+    # bound, fully-formed durable DECISION. The END block treats a HUMAN barrier as resolved ONLY IF its
+    # got meets need AND a matching DECISION for its op exists AFTER the barrier's got=0 opener. A forged
+    # `AWAIT kind=human got=1` with NO such DECISION therefore stays LIVE (fail-closed) - the reader, not
+    # just the writer, now enforces DECISION-first (the wake consumes THIS verdict).
+    (idt ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && (body ~ /^\[mission\] DECISION op=[a-z0-9-]+ outcome=(approve|deny)$/) {
+      dbop = fval(body,"op"); diop = idtag_op(idt)
+      if (dbop != "" && diop == dbop) { if (NR > decnr[dbop]) decnr[dbop] = NR }
+      next
+    }
     END {
       if (cleared) { print "none"; exit }
       # Two-pass accumulation. Barrier identity is (part,round,attempt,KIND,OP) — A1: a job bit must
