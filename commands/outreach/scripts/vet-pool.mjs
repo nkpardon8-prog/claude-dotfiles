@@ -46,6 +46,9 @@ const r = await hub.call('Runtime.evaluate', { expression: `(async () => {
       if (g('hs_v2_date_entered_customer')) probs.push('CUSTOMER');
       if (smsDay === today) probs.push('SMS_TODAY');
       if (lc && (now - lc) < 30*DAY) probs.push('CONTACTED_' + Math.round((now-lc)/DAY) + 'd');
+      if (/fail|undeliver/i.test(g('last_sms_sent_status'))) probs.push('DEADNUMBER:' + g('last_sms_sent_status'));
+      const fn = g('firstname').trim();
+      if (!fn || fn.length < 2 || /^(.)\\1+$/i.test(fn)) probs.push('JUNKNAME:' + (fn || 'empty'));
       if (probs.length) { skipped.push(id + ':' + (g('firstname')||'?') + ':' + probs.join('+')); return; }
       clean.push({
         id, fn: g('firstname'), ln: g('lastname'), st: g('state'), ct: g('city'),

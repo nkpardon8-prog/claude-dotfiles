@@ -36,6 +36,9 @@ const r = await hub.call('Runtime.evaluate', { expression: `(async () => {
     if (/out|unsub/i.test(g('opt_in_status'))) problems.push('OPT:' + g('opt_in_status'));
     if (/dnc|unqual/i.test(g('hs_lead_status'))) problems.push('LS:' + g('hs_lead_status'));
     if (smsDay === today) problems.push('SMS_TODAY');
+    if (/fail|undeliver/i.test(g('last_sms_sent_status'))) problems.push('DEADNUMBER:' + g('last_sms_sent_status'));
+    const lc2 = +g('last_contacted_date') || 0;
+    if (lc2 && (Date.now() - lc2) < 30*86400000) problems.push('CONTACTED_' + Math.round((Date.now()-lc2)/86400000) + 'd');
     if (g('hs_v2_date_entered_customer')) problems.push('CUSTOMER');
     problems.length ? bad.push(id + ':' + g('firstname') + ':' + problems.join('+')) : ok.push(id);
   }

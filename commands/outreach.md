@@ -81,6 +81,10 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
    SMS'd today, **last contacted <30 days ago** (compute from `max(last_contacted_date,
    last_sms_sent_date)`; the source report does NOT enforce 30 days, and Nick sends between
    batches so this MUST be re-checked immediately before drafting, not just at pool time).
+   Also skip **dead numbers**: `last_sms_sent_status` matching /fail|undeliver/i means the
+   carrier rejected the last text (found 2026-08-05 on a contact whose booked-demo reminder
+   bounced). Re-texting is wasted; flag for a phone-number fix instead.
+   Skip **junk first names** too (e.g. "Ddd", initials-only) — you cannot personalize them.
    Log every skip with its reason.
 5. **Pick the batch** (default cap 20, confirm with user): NV first if in scope, then
    Active engagement > Inactive > Unresponsive, SQL > MQL, most recent last-contact first.
