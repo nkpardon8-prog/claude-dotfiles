@@ -1682,8 +1682,6 @@ _gen_sliced_stream() {
       echo "mission: gen-sliced-read REFUSED gen-boundary-mismatch (marker gen=${_gss_gen}, latest boundary gen=${_gss_bgen:-none})" >&2
       return 1
     fi
-  fi
-  if [ -n "$_gss_bline" ]; then
     printf '%s\n' "$_gss_stream" | awk -v b="$_gss_bline" 'seen==1{print} $0==b{seen=1}'
   else
     printf '%s\n' "$_gss_stream"
