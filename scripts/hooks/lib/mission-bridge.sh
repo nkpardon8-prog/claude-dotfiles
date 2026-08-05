@@ -2179,9 +2179,9 @@ mission_await_state() {
       best = ""; bestkind = ""; bestatt = -1; bestnr = -1
       for (kk in seen) {
         if (!opened[kk]) continue   # R4: no post-boundary got=0 opener => stale-late reopen, not live
-        # R8r4-C4 - when a target op is supplied (resolve's OP-SPECIFIC open-barrier check), restrict the
-        # selection to THAT op's barrier, so an outranking human STOP for a DIFFERENT op cannot mask the
-        # requested op's still-open STOP (await_state's single top-selection would otherwise hide it).
+        # R8r4-C4 - when a target op is supplied (resolve`s OP-SPECIFIC open-barrier check), restrict the
+        # selection to THAT op`s barrier, so an outranking human STOP for a DIFFERENT op cannot mask the
+        # requested op`s still-open STOP (await_state`s single top-selection would otherwise hide it).
         if (targetop != "" && oop[kk] != targetop) continue
         # R8r4-C9 (KEYSTONE) - a HUMAN barrier is RESOLVED (skipped as not-live) ONLY IF its newest got
         # meets need (lastgot, instance-correct per R6) AND a matching durable DECISION exists AFTER its
