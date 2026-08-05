@@ -464,16 +464,12 @@ mission_lifecycle_state() {
   _mst_sid=$(_mission_sanitize_sid "$1"); _mst_root="$2"
   { [ -n "$_mst_sid" ] && [ -n "$_mst_root" ]; } || { printf 'unknown\n'; return 0; }
   _mst_live="${_mst_root}/MISSION.${_mst_sid}.log"
-  # R8r3-R9 - fail CLOSED on a genuine read error (a file that EXISTS but is not readable). The awk
-  # pipeline below reads with `2>/dev/null` and an unreadable file would silently yield no line -> a false
-  # `unknown`. Distinguish it here: an existing-but-unreadable live log OR archive => `unreadable`. An
-  # ABSENT log is normal (fresh/active mission) and falls through to the no-line `unknown`.
-  if [ -e "$_mst_live" ] && [ ! -r "$_mst_live" ]; then printf 'unreadable\n'; return 0; fi
-  for _mst_ra in "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.gz \
-                 "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.txt; do
-    [ -e "$_mst_ra" ] || continue
-    [ -r "$_mst_ra" ] || { printf 'unreadable\n'; return 0; }
-  done
+  # R8r3-R9 + R8r4-C5/C11 - fail CLOSED on a genuine read error. The awk pipeline below reads with
+  # `2>/dev/null` and an unreadable OR readable-but-corrupt-gzip file would silently yield no line -> a
+  # false `unknown`. `_mission_log_read_integrity` distinguishes it: an existing-but-unreadable live log
+  # or archive, OR a `.gz` that fails `gzip -t`, => `unreadable`. An ABSENT log is normal (fresh/active
+  # mission) and falls through to the no-line `unknown`.
+  if ! _mission_log_read_integrity "$_mst_sid" "$_mst_root"; then printf 'unreadable\n'; return 0; fi
   # Concatenate archives oldest->newest + live, keep the LAST lifecycle line. Uses `if`/`${a##*.}`
   # rather than `case` so the whole thing is safe inside $( … ) — bash 3.2 misparses a `)` case-pattern
   # inside command substitution. No temp file (so nothing to leak on interruption).
