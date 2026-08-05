@@ -2118,7 +2118,7 @@ mission_await_state() {
     }
     # R8r4-C9 (KEYSTONE) - DECISION lines: record the NEWEST NR per op of a DOUBLE-ANCHORED, idtag<->body-
     # bound, fully-formed durable DECISION. The END block treats a HUMAN barrier as resolved ONLY IF its
-    # got meets need AND a matching DECISION for its op exists AFTER the barrier's got=0 opener. A forged
+    # got meets need AND a matching DECISION for its op exists AFTER the barrier`s got=0 opener. A forged
     # `AWAIT kind=human got=1` with NO such DECISION therefore stays LIVE (fail-closed) - the reader, not
     # just the writer, now enforces DECISION-first (the wake consumes THIS verdict).
     (idt ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && (body ~ /^\[mission\] DECISION op=[a-z0-9-]+ outcome=(approve|deny)$/) {
