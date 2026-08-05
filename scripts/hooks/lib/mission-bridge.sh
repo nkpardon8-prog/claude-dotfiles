@@ -2017,14 +2017,22 @@ mission_cursor_hash() {
 #    that merely EMBEDS the substring `[mission] AWAIT …` can never inject control state.
 #  - C5: a refused gen-sliced read (rollover/corruption window) emits `corrupt` (rc 3), not `none`.
 mission_await_state() {
-  _as_sid=$(_mission_sanitize_sid "$1"); _as_root="$2"
+  _as_sid=$(_mission_sanitize_sid "$1"); _as_root="$2"; _as_targetop="${3:-}"
   { [ -n "$_as_sid" ] && [ -n "$_as_root" ]; } || { printf 'none\n'; return 0; }
+  # R8r4-C11 - FAIL CLOSED on a genuine read/decompress failure of an EXISTING log/archive (not just the
+  # `-r` bit): the timing stream reads with `2>/dev/null`, so a readable-but-CORRUPT gzip archive would
+  # silently yield a short stream and this reader would emit `none`, erasing an open STOP. Detect it here
+  # and emit `corrupt` (the fail-closed token callers already treat as do-not-proceed), never `none`.
+  if ! _mission_log_read_integrity "$_as_sid" "$_as_root"; then
+    echo "mission: await-state: log read/decompress FAILED (corrupt archive) — failing closed" >&2
+    printf 'corrupt\n'; return 3
+  fi
   _as_stream=$(_gen_sliced_stream "$_as_sid" "$_as_root" 2>/dev/null); _as_grc=$?
   if [ "$_as_grc" -ne 0 ]; then
     echo "mission: await-state: gen-boundary REFUSED (corrupt read window)" >&2
     printf 'corrupt\n'; return 3
   fi
-  printf '%s\n' "$_as_stream" | awk '
+  printf '%s\n' "$_as_stream" | awk -v targetop="$_as_targetop" '
     function bor(a,b,   r,bit){ r=0; bit=1; while(a>0||b>0){ if((a%2)==1||(b%2)==1) r+=bit; a=int(a/2); b=int(b/2); bit*=2 } return r }
     function band(a,b,  r,bit){ r=0; bit=1; while(a>0&&b>0){ if((a%2)==1&&(b%2)==1) r+=bit; a=int(a/2); b=int(b/2); bit*=2 } return r }
     function fval(s, key,   p, idx, rest, a) {
