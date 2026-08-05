@@ -27,11 +27,14 @@ mc_setup "07-decision-durability"
 # The mint ECHOES `pd:<seq>-<slug>` but the AWAIT op is the bare `<seq>-<slug>`, so a caller passes EITHER;
 # both must strip the same pd line. Separate missions so each drain is independent. RED if the optional
 # `pd:` strip reverts (the bare form would then never match -> `already`/`never-existed`, no drain).
+# R8r3-R5: resolve now REFUSES to drain while the same-op human STOP is still OPEN (got=0), so we CLOSE the
+# barrier (DECISION -> got=1, via mc_close_human) FIRST - the sanctioned order DECISION -> got=1 -> resolve.
 SUBd1="drainecho"; SIDd1="drainecho$$"
 mc_new_mission "$SUBd1" "$SIDd1"
 IDd1=$(mc_pending_stop "$SUBd1" "$SIDd1" approve 1 1 1 decision "Approve A?")
 mc_eq "pd:1-approve" "$IDd1" "D1 pending-stop mints pd:1-approve"
 mc_eq "1" "$(mc_has_pd "$SUBd1" "$SIDd1" pd:1-approve)" "D1 pd line present before drain"
+mc_close_human "$SUBd1" "$SIDd1" "1-approve" approve 1 1 1 decision   # DECISION -> got=1 (close) BEFORE resolve
 RESd1=$(mc_resolve_out "$SUBd1" "$SIDd1" "pd:1-approve" approved)
 mc_has "resolve ok" "$RESd1" "D1 resolve of the ECHOED form 'pd:1-approve' succeeds"
 mc_eq "0" "$(mc_has_pd "$SUBd1" "$SIDd1" pd:1-approve)" "D1 the pd line is actually DRAINED (echoed form)"
@@ -39,9 +42,26 @@ mc_eq "0" "$(mc_has_pd "$SUBd1" "$SIDd1" pd:1-approve)" "D1 the pd line is actua
 SUBd1b="drainbare"; SIDd1b="drainbare$$"
 mc_new_mission "$SUBd1b" "$SIDd1b"
 mc_pending_stop "$SUBd1b" "$SIDd1b" approve 1 1 1 decision "Approve B?" >/dev/null
+mc_close_human "$SUBd1b" "$SIDd1b" "1-approve" approve 1 1 1 decision   # close (DECISION -> got=1) BEFORE resolve
 RESd1b=$(mc_resolve_out "$SUBd1b" "$SIDd1b" "1-approve" approved)   # BARE form (no pd:)
 mc_has "resolve ok" "$RESd1b" "D1 resolve of the BARE form '1-approve' succeeds"
 mc_eq "0" "$(mc_has_pd "$SUBd1b" "$SIDd1b" pd:1-approve)" "D1 the pd line is actually DRAINED (bare form)"
+
+# ── D1r5 (R8r3-R5) - resolve is REFUSED while the SAME-op human STOP is still OPEN (got=0) ───────────────
+# Draining the pd line BEFORE a DECISION+got=1 close would create the forbidden pd-missing + ready=0 orphan
+# that FIX B refuses to re-open (permanent stall). So resolve fails LOUD (rc=9) until the barrier is closed,
+# and the pd line + the live STOP both survive. Closing first (mc_close_human) then lets the resolve drain.
+# RED if the open-human-barrier refusal in mission_resolve_pending reverts (the bare drain would succeed).
+SUBd1r="resbeforeclose"; SIDd1r="resbeforeclose$$"
+mc_new_mission "$SUBd1r" "$SIDd1r"
+mc_pending_stop "$SUBd1r" "$SIDd1r" approve 1 1 1 decision "Approve before close?" >/dev/null
+RESd1r=$(mc_resolve_out "$SUBd1r" "$SIDd1r" "pd:1-approve" approved)
+mc_has "FAILED rc=9" "$RESd1r" "D1r5 resolve BEFORE the got=1 close is REFUSED (rc=9, open human STOP)"
+mc_eq "1" "$(mc_has_pd "$SUBd1r" "$SIDd1r" pd:1-approve)" "D1r5 the pd line is NOT drained by the refused resolve"
+mc_has "await kind=human" "$(mc_state "$SUBd1r" "$SIDd1r")" "D1r5 the open human STOP survives the refused resolve"
+mc_close_human "$SUBd1r" "$SIDd1r" "1-approve" approve 1 1 1 decision   # now close it (DECISION -> got=1)
+RESd1r2=$(mc_resolve_out "$SUBd1r" "$SIDd1r" "pd:1-approve" approved)
+mc_has "resolve ok" "$RESd1r2" "D1r5 resolve SUCCEEDS once the barrier is closed (sanctioned order)"
 
 # ── D2 - resolve fail-loud vs quiet-ok vs mismatched-op (R8-17) ─────────────────────────────────────────
 # never-existed => LOUD (FAILED rc=8); an idempotent re-drive of an already-resolved id => QUIET OK; a
