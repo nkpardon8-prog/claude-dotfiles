@@ -12,8 +12,8 @@
 #        op=1 (expects pd:2, revert -> pd:1).
 #   C1b: drop the NR (after-opener) check in mission_await_append's DECISION-first gate -> a pre-opener
 #        DECISION satisfies the got=1 close (expects REFUSED).
-#   C2:  restore adopt-before-match -> a DIFFERENT request adopts the orphan (expects rc=3, no forge);
-#        FIX B (R8r2): a LOST-pd orphan is UNVERIFIABLE so even an EXACT re-request fails closed (rc=3).
+#   C2:  restore adopt-before-match -> a DIFFERENT request adopts the orphan (expects rc=12, no forge);
+#        FIX B (R8r2): a LOST-pd orphan is UNVERIFIABLE so even an EXACT re-request fails closed (rc=14).
 #   C3:  drop the `outcome=(approve|deny)$` body anchor -> a torn DECISION satisfies the close.
 #   C4:  drop the under-lock await-state re-check in mission_rebaseline / mission_clear_append -> a direct
 #        call proceeds and erases the open STOP (expects rc=7 / rc=4, barrier survives).
