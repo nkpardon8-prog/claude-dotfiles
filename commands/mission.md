@@ -1682,7 +1682,7 @@ A wake **RETURNS WITHOUT rescheduling** — releasing the tick lock, then stoppi
   logged, `void-count` returning `-1`, or a corrupt/unreadable bridge (`FAILED rc=2`). None reschedule.
 - **A mandatory human decision** (credential / destructive / external-side-effect skill, or any
   genuinely blocking decision): open the stop with a SINGLE atomic call —
-  `q=$(cat qfile); pending-stop <slug> <part> <round> <attempt> <phase> "$q"` (SS7 — the question is
+  `q=$(cat qfile); bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q"` (SS7 — the question is
   untrusted mission-derived content: CAPTURE it into `"$q"` via a quoted heredoc/file and pass it
   double-quoted; NEVER inline it as a single-quoted literal (an apostrophe breaks out) or a double-quoted
   raw literal (a `$(...)`/backtick executes before the script sees it); the mint ALSO fails closed on a
