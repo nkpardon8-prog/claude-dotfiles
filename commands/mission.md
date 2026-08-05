@@ -1588,8 +1588,9 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    `[mission] DECISION`** ⇒ ANSWERED ⇒ CONSUME on THIS tick — idempotently finish the close (DECISION
    exists → `await … got=1` → `resolve`, each a no-op if already done), THEN `approve` ⇒ proceed the
    idempotent gated action, `deny` ⇒ ABORT it; NEVER re-ask. **NO DECISION on a WAKE tick** ⇒ STOP the
-   scheduled continuation (a human hand-back is owed; an ORPHAN — no `pd:<op>` line either — ⇒ surface +
-   re-state via `pending-stop`, do NOT proceed). **On a REAL USER TURN answering it (D3):** CLOSE it HERE,
+   scheduled continuation (a human hand-back is owed; an ORPHAN — no `pd:<op>` line either — ⇒ surface it;
+   R8r3-R7/FIX-B: do NOT re-state via `pending-stop` (fails closed rc=14 — unverifiable); recovery = an
+   explicit human resolve/deny of that op, or a NEW decision under a DIFFERENT slug; do NOT proceed). **On a REAL USER TURN answering it (D3):** CLOSE it HERE,
    UNDER this tick lock, in THIS order (D14): (a) `log` the `[mission] DECISION op=<seq>-<slug>
    outcome=<approve|deny>` (idtag `pd-<seq>-decision-<slug>`) with the user's ACTUAL answer; (b) append the
    SAME barrier with `got=1` (reuse the EXACT op/part/phase/round/attempt/need from the token, D6 — the
