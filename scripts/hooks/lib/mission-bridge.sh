@@ -2221,20 +2221,28 @@ mission_resolve_pending() {
   if ! mission_verify "$_rp_f" "$_rp_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing resolve" >&2; return 2
   fi
-  # R8r3-R5 - REFUSE to drain the pd line while the SAME op's human AWAIT is still OPEN (kind=human
+  # R8r3-R5 + R8r4-C4 - REFUSE to drain the pd line while THIS op's human AWAIT is still OPEN (kind=human
   # ready=0). Draining FIRST (before a DECISION + got=1 close) would create the forbidden pd-missing +
   # ready=0 ORPHAN that FIX B then refuses to re-open -> permanent stall. The sanctioned close order is
-  # DECISION -> got=1 (close) -> resolve; resolve is the LAST step. Best-effort read (mission_await_state
-  # is a lock-free reader; safe to call while holding the lock - no re-acquire): only a PROVABLY-open
-  # same-op human barrier blocks; a corrupt/unreadable await-state does NOT block (resolve is itself the
-  # recovery path for a lost pd line, and pending-stop already fails closed on corrupt await-state).
-  _rp_await=$(mission_await_state "$_rp_sid" "$_rp_root" 2>/dev/null)
+  # DECISION -> got=1 (close) -> resolve; resolve is the LAST step. C4 - the open-barrier check is now
+  # OP-SPECIFIC: mission_await_state is called with THIS op as the 3rd arg so it returns THIS op's
+  # barrier (not the single top selection). Without it, an outranking human STOP for a DIFFERENT op would
+  # be the returned barrier, its op != this op, the guard would pass, and resolve would drain THIS op's pd
+  # while ITS STOP is still open. mission_await_state is a lock-free reader (safe under the held lock, no
+  # re-acquire). C4 - fail CLOSED on a corrupt/unreadable await-state: the STOP cannot be PROVEN closed,
+  # so refuse (the recovery path for a lost pd is now DECISION-deny -> got=1 close -> resolve-moot, not a
+  # blind drain over an unreadable state).
+  _rp_await=$(mission_await_state "$_rp_sid" "$_rp_root" "$_rp_id" 2>/dev/null)
   case "$_rp_await" in
+    corrupt|unreadable)
+      _mission_unlock
+      echo "mission: resolve: REFUSED — await-state ${_rp_await} for op ${_rp_id}; cannot prove the human STOP is closed (fail-closed)" >&2
+      return 9
+      ;;
     "await "*)
       _rp_awk=$(_mission_await_field "$_rp_await" kind)
       _rp_awr=$(_mission_await_field "$_rp_await" ready)
-      _rp_awop=$(_mission_await_field "$_rp_await" op)
-      if [ "$_rp_awk" = human ] && [ "$_rp_awr" = 0 ] && [ "$_rp_awop" = "$_rp_id" ]; then
+      if [ "$_rp_awk" = human ] && [ "$_rp_awr" = 0 ]; then
         _mission_unlock
         echo "mission: resolve: REFUSED — op ${_rp_id} still has an OPEN human STOP (got=0); record a DECISION and close the barrier (got=1) BEFORE resolving" >&2
         return 9
