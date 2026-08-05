@@ -1394,7 +1394,7 @@ mission_pending_mint() {
 #     [D7]    BARRIER-FIRST: open the human AWAIT got=0 and REQUIRE _MLA_OUTCOME=appended on the fresh
 #             path (dedup/collision/rerouted on a fresh monotonic seq = bug => fail closed, no pd line,
 #             no echo). THEN write the pd line + bump pdseq. A crash between = a fail-CLOSED orphan; the
-#             next pending-stop does NOT adopt it (rc=14, unverifiable) — it needs an explicit resolve/deny.
+#             next pending-stop does NOT adopt it (rc=14, unverifiable) — it needs the safe-ABORT deny (outcome=deny).
 #   Fail-closed everywhere: NO pd line and NO echo on any refusal.
 mission_pending_stop_mint() {
   _ps_sid=$(_mission_sanitize_sid "$1"); _ps_root="$2"; _ps_slug="$3"
