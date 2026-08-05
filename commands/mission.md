@@ -1682,10 +1682,11 @@ A wake **RETURNS WITHOUT rescheduling** — releasing the tick lock, then stoppi
   logged, `void-count` returning `-1`, or a corrupt/unreadable bridge (`FAILED rc=2`). None reschedule.
 - **A mandatory human decision** (credential / destructive / external-side-effect skill, or any
   genuinely blocking decision): open the stop with a SINGLE atomic call —
-  `pending-stop <slug> <part> <round> <attempt> <phase> '<question>'` (SS7 — SINGLE-quote the `<question>`;
-  it is untrusted mission-derived content, so NEVER inline it into a DOUBLE-quoted arg where a `$(...)`/
-  backtick would execute before the script sees it; the mint ALSO fails closed on a newline / leading
-  `- [pd:` in the question). It ATOMICALLY (one lock) opens the
+  `q=$(cat qfile); pending-stop <slug> <part> <round> <attempt> <phase> "$q"` (SS7 — the question is
+  untrusted mission-derived content: CAPTURE it into `"$q"` via a quoted heredoc/file and pass it
+  double-quoted; NEVER inline it as a single-quoted literal (an apostrophe breaks out) or a double-quoted
+  raw literal (a `$(...)`/backtick executes before the script sees it); the mint ALSO fails closed on a
+  newline / leading `- [pd:` in the question). It ATOMICALLY (one lock) opens the
   human `AWAIT kind=human … op=<seq>-<slug> attempt=1 need=1 got=0` STOP barrier AND mints the monotonic pd
   (seq machine-assigned + monotonic + NEVER reused, even across `resolve`; 1st = `pd:1-<slug>`, 2nd =
   `pd:2-<slug>`, …), ECHOING `pending-stop ok id=pd:<seq>-<slug>`. CAPTURE the echoed id — do NOT hand-pick
