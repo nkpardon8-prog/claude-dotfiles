@@ -2395,6 +2395,42 @@ mission_partdone_append() {
   return "$_pa_rc"
 }
 
+# mission_decision_append <sid> <root> <entry> <idtag> - the UNDER-LOCK DECISION writer (R8r3-R4).
+#   DECISION has no dedicated lib emitter; mission-write routes it here (AFTER _mw_validate_log). The `log`
+#   DECISION path was LOCK-FREE (mission_log_append: the anchored-idtag dedup-check and the append are
+#   SEPARATE ops), so two concurrent approve/deny could both land under one idtag and the got=1 close would
+#   accept whichever a newest-wins reader picks - a NONDETERMINISTIC gated outcome. Worse, because the next
+#   op seq is monotonic/predictable, a stale approval could be appended right after a FRESH opener while
+#   pending-stop holds the lock and satisfy decnr>openernr (the NR race). This wrapper acquires the SAME
+#   mint lock the opener/close use, so dedup+append is ATOMIC and DECISIONs serialize with the opener and
+#   the got=1 close. Holding the lock across mission_log_append is safe (the append is lock-free; rotate
+#   self-skips under THIS sid's held lock; a DECISION line is <480B so it never reroutes to the locking
+#   mission_mutate) - the same under-lock-append template as mission_clear_append. Unlike clear/part-done
+#   this wrapper does NOT refuse on an open human STOP: the DECISION is exactly HOW that barrier is closed,
+#   so guarding it would self-deadlock DECISION-first (mirrors _mw_human_barrier_guard's close-path exemption).
+#   HONEST RESIDUAL: serializing under the lock proves DECISION ORDER (decnr>openernr), no-op-reuse, and the
+#   idtag<->op bind; it does NOT prove the DECISION came from a REAL human turn. That freshness is the
+#   accepted HITL/prose residual (the LEAN decision) - a non-reentrant mkdir-lock cannot attest it, so do
+#   NOT read this serialization as a freshness guarantee it does not provide. rc mirrors mission_log_append.
+mission_decision_append() {
+  _de_sid=$(_mission_sanitize_sid "$1"); _de_root="$2"; _de_entry="$3"; _de_idtag="${4:-}"
+  _MLA_OUTCOME=appended; _MLA_REASON=""
+  [ -n "$_de_sid" ]  || { echo "mission: decision: invalid sid" >&2; return 1; }
+  [ -n "$_de_root" ] || { echo "mission: decision: missing root" >&2; return 1; }
+  _de_f="${_de_root}/MISSION.${_de_sid}.md"
+  _de_lb=$(_mission_lockbase "$_de_root")
+  _mission_lock "$_de_lb" "$_de_sid" || {
+    echo "mission: LOCK busy (data safe; retry next compaction)" >&2; return 3; }
+  if ! mission_verify "$_de_f" "$_de_sid"; then
+    _mission_unlock; echo "mission: decision: CORRUPT - refusing decision" >&2; return 2
+  fi
+  # Append while HOLDING the lock (rotate self-skips; short line never reroutes). Preserve rc + outcome.
+  mission_log_append "$_de_sid" "$_de_root" "$_de_entry" "$_de_idtag"
+  _de_rc=$?
+  _mission_unlock
+  return "$_de_rc"
+}
+
 # ===========================================================================================
 # Run-timing + lifetime metrics ledger (advisory; never blocks/corrupts the mission lifecycle)
 # Four numbers, stateless recompute from sid-scoped LOG anchors (archive-aware, never mtime):
