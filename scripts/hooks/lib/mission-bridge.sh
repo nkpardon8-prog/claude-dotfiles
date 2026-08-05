@@ -2426,15 +2426,28 @@ mission_partdone_append() {
   if ! mission_verify "$_pa_f" "$_pa_sid"; then
     _mission_unlock; echo "mission: CORRUPT - refusing part-done" >&2; return 2
   fi
-  # R8r2-J - under-lock human-barrier re-check (authoritative; pending-stop holds this same lock to open).
-  _pa_await=$(mission_await_state "$_pa_sid" "$_pa_root" 2>/dev/null)
-  case "$_pa_await" in
-    none|"await "*) : ;;
-    *) _mission_unlock; echo "mission: part-done: REFUSED - await-state unreadable under lock ('${_pa_await:-empty}'); fail closed" >&2; return 4 ;;
-  esac
-  _pa_awk=$(_mission_await_field "$_pa_await" kind); _pa_awr=$(_mission_await_field "$_pa_await" ready)
-  if [ "$_pa_awk" = human ] && [ "$_pa_awr" = 0 ]; then
-    _mission_unlock; echo "mission: part-done: REFUSED - an OPEN human STOP barrier is live (opened since the pre-lock check); resolve/deny it before advancing the part" >&2; return 4
+  # R8r3-R12 - DEDUP-FIRST: if this exact (gen-prefixed) idtag is already banked, this call is an idempotent
+  # PART-DONE re-emit, so SKIP the human-STOP re-check (mirrors _mw_partdone_check's dedup-first ordering).
+  # _mw_partdone_check returns early on a banked idtag so the dispatcher's LOCK-FREE pre-check never runs,
+  # but the dispatcher STILL calls this wrapper; an UNCONDITIONAL re-check would turn a quiet dedup into an
+  # rc=4 refusal whenever a human STOP opened after the part was banked (a benign replay). The append below
+  # then dedup-returns quiet ok. A genuinely-NEW PART-DONE (not banked) still gets the full re-check.
+  _pa_dup=0
+  _pa_gtag=$(_mission_gen_tag "$_pa_f" "$_pa_idtag" 2>/dev/null)
+  if [ -n "$_pa_gtag" ] && _mission_timing_stream "$_pa_sid" "$_pa_root" 2>/dev/null | grep -qE "^$(_re_escape "$_pa_gtag")"$'\t'; then
+    _pa_dup=1
+  fi
+  if [ "$_pa_dup" = 0 ]; then
+    # R8r2-J - under-lock human-barrier re-check (authoritative; pending-stop holds this same lock to open).
+    _pa_await=$(mission_await_state "$_pa_sid" "$_pa_root" 2>/dev/null)
+    case "$_pa_await" in
+      none|"await "*) : ;;
+      *) _mission_unlock; echo "mission: part-done: REFUSED - await-state unreadable under lock ('${_pa_await:-empty}'); fail closed" >&2; return 4 ;;
+    esac
+    _pa_awk=$(_mission_await_field "$_pa_await" kind); _pa_awr=$(_mission_await_field "$_pa_await" ready)
+    if [ "$_pa_awk" = human ] && [ "$_pa_awr" = 0 ]; then
+      _mission_unlock; echo "mission: part-done: REFUSED - an OPEN human STOP barrier is live (opened since the pre-lock check); resolve/deny it before advancing the part" >&2; return 4
+    fi
   fi
   # Append while HOLDING the lock (rotate self-skips; short line never reroutes). Preserve rc + outcome.
   mission_log_append "$_pa_sid" "$_pa_root" "$_pa_entry" "$_pa_idtag"
