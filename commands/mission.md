@@ -434,19 +434,23 @@ This first step is **collaborative, not autonomous.** Shape the multi-part roadm
 part-plan. Each part later runs its own full `/plan` reviewer loop in Section 5.
 
 Then seed the immutable PLAN once. **PLAN line-1 is the sole machine token; lines 2+ are prose.**
-The PLAN payload contains the (untrusted) roadmap text, so pass it **SINGLE-quoted** — never
-double-quoted — so a `$(...)`/backtick in the captured roadmap cannot execute (§7 injection rule):
+The PLAN payload contains the (untrusted) roadmap text, so CAPTURE it into a variable via a QUOTED
+`<<'EOF'` heredoc (nothing inside expands — a `$(...)`/backtick/apostrophe is inert) and pass it
+DOUBLE-quoted `"$PLAN"` (§7 rule — safe against BOTH command-substitution AND quote-breakout; a
+`'…'` single-quoted literal would break on a benign apostrophe):
 ```bash
-bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> 'MISSION MODE: build
+PLAN=$(cat <<'EOF'
+MISSION MODE: build
 <the multi-part roadmap: parts, sequence, intended outcome>
 
 Standing directive: route substantial work through research → /plan(+reviewers) → /implement →
 /codex-review, looping to 2 honest dry rounds (independent reviewers judge dryness); soft targets
 plan 4-6 / codex 3-6, hard cap 6; /pre-compact freely interleaved; active until a
-[mission] MISSION-CLEARED line appears in the LOG.'
+[mission] MISSION-CLEARED line appears in the LOG.
+EOF
+)
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> "$PLAN"
 ```
-(If the captured roadmap itself contains a single quote, prefer a heredoc/file/stdin over escaping —
-e.g. write the payload to a temp file and pass it, so no quoting of untrusted text is needed at all.)
 `create` is **no-clobber** — it will not overwrite an existing mission, and (load-bearing) it is
 **idempotent**: when a `MISSION.<sid>.md` already EXISTS and VERIFIES, the lib returns `ok` and leaves
 the file untouched (other callers depend on that). So an existing **stale** PLAN does **NOT** surface as
