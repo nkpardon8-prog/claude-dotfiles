@@ -2292,21 +2292,27 @@ mission_rebaseline() {
   else
     rm -f "$_rb_tmp"; _mission_unlock; echo "mission: rebaseline: self-check FAILED — original intact" >&2; return 6
   fi
-  _mission_unlock
-  # C1+I5: the lifecycle line MUST always persist (active-iff depends on it). Use an EMPTY idtag
-  # so the append bypasses the anchored idtag dedup (lib:774-777 `[ -n "$tag" ] && grep ...`) —
-  # re-rebaselining to the SAME plan text after a re-clear must still emit a fresh line. AND we
-  # must NOT swallow the append rc: the PLAN rewrite already committed, but if the lifecycle line
-  # fails to persist the mission would stay inactive while mission-write reports `ok`. Capture the
-  # rc, retry ONCE, and return the nonzero rc so mission-write surfaces FAILED rc=N.
-  # The boundary line carries gen=<G> (Task 4 gate-22): it is the marker↔boundary cross-check
-  # anchor every gen-sliced read verifies. EMPTY idtag (always-append; active-iff depends on it).
+  # R8r3-R3 - append the MISSION-REBASELINED gen-boundary WHILE STILL HOLDING the lock, BEFORE unlocking.
+  # Publishing the boundary AFTER releasing the lock (the prior order) left a window - marker gen bumped,
+  # boundary line not yet written - in which a lock-free mission_log_append (or a _mission_log self-heal)
+  # could land state, e.g. a human STOP opened right after unlock, that the LATER boundary would then
+  # gen-slice/hide. mission_log_append is lock-free (rotation self-skips under THIS sid's held lock) and a
+  # MISSION-REBASELINED line is <480B so it never reroutes to the locking mission_mutate - so it is safe to
+  # call while holding the lock (the same under-lock-append template as mission_clear_append).
+  # C1+I5: the lifecycle line MUST always persist (active-iff depends on it). EMPTY idtag so the append
+  # bypasses the anchored idtag dedup (lib:774-777 `[ -n "$tag" ] && grep ...`) - re-rebaselining to the
+  # SAME plan text after a re-clear must still emit a fresh line. We must NOT swallow the append rc: the
+  # PLAN rewrite already committed, but if the lifecycle line fails to persist the mission would stay
+  # inactive while mission-write reports `ok`. Capture the rc, retry ONCE, then unlock and return the rc so
+  # mission-write surfaces FAILED rc=N. The boundary carries gen=<G> (Task 4 gate-22): the marker<->boundary
+  # cross-check anchor every gen-sliced read verifies.
   mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active gen=$_rb_gen (PLAN rebaselined, hash re-stamped)" ""
   _rb_logrc=$?
   if [ "$_rb_logrc" -ne 0 ]; then
     mission_log_append "$_rb_sid" "$_rb_root" "[mission] MISSION-REBASELINED status=active gen=$_rb_gen (PLAN rebaselined, hash re-stamped)" ""
     _rb_logrc=$?
   fi
+  _mission_unlock
   return "$_rb_logrc"
 }
 
