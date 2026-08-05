@@ -1723,21 +1723,23 @@ A wake **RETURNS WITHOUT rescheduling** — releasing the tick lock, then stoppi
   op/part/phase/round/attempt/need from the token) — the `await` verb REFUSES this got=1 close unless the
   same-op DECISION already exists (DECISION-first is LIB-ENFORCED, so the outcome is DURABLE before the
   barrier ever reads resolved); **(c)** `resolve` the pd whose `<seq>-<slug>` matches the `await-state`
-  token's `op` (an EXACT unique match — the seq removes the old slug-repeat ambiguity). THEN, in the SAME
-  turn and BEFORE the reschedule (step 7), act on the recorded outcome: `approve` ⇒ proceed with the gated
-  action; `deny` ⇒ ABORT it (the DECISION line already durably recorded the denial — the wake OBEYS that
-  record; this final act is prose, not machine-forced — the ACCEPTED RESIDUAL). It is safe ONLY because the
-  gated action **MUST carry its own idempotency key** — the same idtag/idempotencyKey-dedup invariant the
-  bridge itself uses (an external write is idempotent BY KEY), so an approve-replay is a no-op and a
-  deny-replay never fires. **R1 accepted FAIL-SAFE residual:** a crash AFTER `got=1` but BEFORE the gated
-  action runs leaves the barrier RESOLVED with the action not yet taken — on re-drive this either skips
-  (=stall, loud) or re-asks/re-runs the idempotent action (=re-confirm), NEVER a silent bypass; both legs
-  fail safe, which is why we do NOT build an applied/aborted lifecycle for it. Order DECISION → got=1 →
-  resolve (D14/R7-3): a crash mid-close leaves a durable DECISION (+ maybe a RESOLVED barrier + cosmetic
-  stale pd line, benign), NEVER a removed pd + a ready=0 park with no recorded outcome. R4 — the got=1 append is a DISTINCT record (the idtag ends
-  `-g<GOT>`, so it does NOT overwrite the got=0 opener); `await-state` reads the newest line's got so
-  `got==need=1` reads RESOLVED — that IS the close. This close IS the wake's ONE transition (R7-11): go to
-  step 7 and RESCHEDULE — do NOT drive a further transition this turn.
+  token's `op` (an EXACT unique match — the seq removes the old slug-repeat ambiguity). Do NOT execute the
+  gated action on this answering turn — the close (DECISION → got=1 → resolve) IS this turn's ONE transition.
+  The gated action is performed by the CONSUMING wake exactly once: `approve` ⇒ the wake runs the gated
+  action; `deny` ⇒ the wake OBEYS the durable DECISION and ABORTS it (prose, not machine-forced — the
+  ACCEPTED RESIDUAL). It is safe ONLY because the gated action **MUST carry its own idempotency key** — the
+  same idtag/idempotencyKey-dedup invariant the bridge itself uses (an external write is idempotent BY KEY),
+  so an approve-replay is a no-op and a deny-replay never fires — which is what makes "the consuming wake
+  runs it, not the answering turn" exactly-once. **R1 accepted FAIL-SAFE residual:** a crash AFTER `got=1`
+  but BEFORE the gated action runs leaves the barrier RESOLVED with the action not yet taken — on the next
+  wake this either skips (=stall, loud) or re-runs the idempotent action (=re-confirm), NEVER a silent
+  bypass; both legs fail safe, which is why we do NOT build an applied/aborted lifecycle for it. Order
+  DECISION → got=1 → resolve (D14/R7-3): a crash mid-close leaves a durable DECISION (+ maybe a RESOLVED
+  barrier + cosmetic stale pd line, benign), NEVER a removed pd + a ready=0 park with no recorded outcome.
+  R4 — the got=1 append is a DISTINCT record (the idtag ends `-g<GOT>`, so it does NOT overwrite the got=0
+  opener); `await-state` reads the newest line's got so `got==need=1` reads RESOLVED — that IS the close.
+  This close IS the wake's ONE transition (R7-11/R6): go to step 7 and RESCHEDULE — do NOT drive a further
+  transition this turn, and do NOT immediately-execute the gated action here (that is the consuming wake's job).
 - **`await kind=human ready=0`** already outstanding (a prior turn parked on the user).
 
 An **ordinary away-policy `pending`** (a non-blocking batched question logged under §9's away default) is
