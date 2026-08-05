@@ -1364,9 +1364,12 @@ re-enter), and never change the active/inactive decision.
   credential, external-side-effect, or destructive skills — e.g. `/load-creds`, anything that exfils
   secrets, mutates production, or performs irreversible external actions — require a **human decision in
   autonomous mode. Do NOT auto-run them.** These are BLOCKING: open the stop with a single
-  `pending-stop <slug> <part> <round> <attempt> <phase> '<q>'` call (the atomic human-`AWAIT` opener —
-  §10/§12.3; SINGLE-quote the question — it is untrusted content, never double-quoted, §7 injection rule)
-  describing what wants to run and why, then PARK on the barrier until a real user turn closes
+  `pending-stop` call (the atomic human-`AWAIT` opener — §10/§12.3). The question is untrusted content,
+  so CAPTURE it into a variable first (a quoted `<<'EOF'` heredoc or a file), then pass it DOUBLE-quoted:
+  `q=$(cat qfile); mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q"`
+  — NEVER a `'<q>'` single-quoted literal (an embedded `'`, even a benign apostrophe, breaks out and
+  executes) NOR a `"<raw text>"` double-quoted literal (an embedded `$(...)`/backtick executes); a
+  captured `"$q"` is inert against both. Describe what wants to run and why, then PARK on the barrier until a real user turn closes
   it (DECISION → got=1 → resolve). These are the one class where "proceed loudly when away" does NOT apply
   — the human must ratify before such a skill runs; a plain NON-BLOCKING `pending` would NOT stop the loop.
 - **Full agency (spine not cage).** The four-skill sequence is the backbone, not a fence. You are free
