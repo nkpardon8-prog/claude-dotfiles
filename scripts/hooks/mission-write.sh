@@ -77,6 +77,16 @@ if ! command -v mission_create >/dev/null 2>&1; then
   exit 0
 fi
 
+# R8r3-R1 - CLEAR the internal human-opener flag at the CLI entry. `_MISSION_INTERNAL_HUMAN_OPEN` is the
+# same-process signal the SANCTIONED opener (mission_pending_stop_mint) sets as a call-scoped FUNCTION
+# prefix on its ONE mission_await_append invocation. If a caller EXPORTS it into the environment, the
+# child `bash mission-write.sh` inherits it, so a public `await <fields> kind=human got=0` would open a
+# LOCK-FREE human STOP barrier through the public path - defeating FIX A (the clear/rebaseline TOCTOU race
+# it closes) and R8r2-A. Unsetting it HERE (before any dispatch) is safe: pending_stop_mint re-sets it as
+# a `VAR=val cmd` function prefix scoped to its single call INSIDE this same process, AFTER this unset, so
+# the sanctioned mint still opens; only an INHERITED env value (the bypass) is dropped.
+unset _MISSION_INTERNAL_HUMAN_OPEN
+
 verb="${1:-}"; sid="${2:-}"; root="${3:-}"
 
 # ── DOCUMENTED PRE-ROOT-GUARD ARGV EXCEPTIONS (read-only verbs) ─────────────────────────────
