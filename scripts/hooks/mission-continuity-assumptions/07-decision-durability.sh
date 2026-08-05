@@ -123,9 +123,9 @@ mc_eq "1" "$(sed -n 's/.*pdseq=\([0-9][0-9]*\).*/\1/p' "$MDd4" | tail -1)" "D4 p
 # A crash BETWEEN the barrier-first AWAIT and the pd-line write leaves a live got=0 human barrier whose op
 # has NO pd line. The ORIGINAL question is GONE with the pd line, so a re-`pending-stop` for the SAME
 # slug/coords CANNOT prove the supplied question equals the lost one - a silent ADOPT would rebind a
-# possibly-DIFFERENT question to the mandatory STOP (approval-binding bug). So it FAILS CLOSED (rc=3): no
-# adopt, no re-mint, pd line stays absent, the barrier stays live for an explicit resolve/deny. RED if the
-# fail-closed reverts to the old silent-adopt behavior.
+# possibly-DIFFERENT question to the mandatory STOP (approval-binding bug). So it FAILS CLOSED: no adopt,
+# no re-mint, pd line stays absent, the barrier stays live for an explicit resolve/deny. R8r3-R8: the
+# orphan class is the DISTINCT rc=14 (non-retryable), not the conflated rc=3. RED if the fail-closed reverts.
 SUBd5="orphan"; SIDd5="orphan$$"
 mc_new_mission "$SUBd5" "$SIDd5"
 mc_pending_stop "$SUBd5" "$SIDd5" approve 1 1 1 decision "Approve?" >/dev/null
