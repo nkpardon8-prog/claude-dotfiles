@@ -1339,8 +1339,11 @@ mission_pending_stop_mint() {
   _ps_life=$(mission_lifecycle_state "$_ps_sid" "$_ps_root" 2>/dev/null)
   case "$_ps_life" in
     active|unknown) : ;;
-    cleared) _mission_unlock; echo "mission: pending-stop: REFUSED - mission is CLEARED; refusing to open a STOP below MISSION-CLEARED (it would be permanently hidden)" >&2; return 3 ;;
-    *) _mission_unlock; echo "mission: pending-stop: REFUSED - lifecycle unreadable ('${_ps_life:-empty}'); fail closed" >&2; return 3 ;;
+    # R8r3-R8 - DISTINCT rc codes for the NON-retryable fail-closed cases (rc=3 is now lock-busy ONLY, the
+    # single retryable meaning). rc=10 = mission CLEARED (retry is futile - a STOP below MISSION-CLEARED is
+    # permanently hidden; resolve/deny differently). rc=11 = lifecycle unreadable/read-failure (fail closed).
+    cleared) _mission_unlock; echo "mission: pending-stop: REFUSED - mission is CLEARED; refusing to open a STOP below MISSION-CLEARED (it would be permanently hidden)" >&2; return 10 ;;
+    *) _mission_unlock; echo "mission: pending-stop: REFUSED - lifecycle unreadable ('${_ps_life:-empty}'); fail closed" >&2; return 11 ;;
   esac
 
   # ---- [D3/D4] a single OPEN human barrier is the ONLY thing that diverts from a fresh mint --------
