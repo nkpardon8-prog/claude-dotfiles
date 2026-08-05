@@ -1382,9 +1382,11 @@ mission_pending_stop_mint() {
     fi
     if [ "$_ps_match" != 1 ]; then
       # C2/[D3] a DIFFERENT open human barrier => FAIL CLOSED (never open/rebind a second invisible STOP).
+      # R8r3-R8 - rc=12 (NON-retryable: resolve/deny the live STOP first), NOT rc=3 (which now means only
+      # lock-busy/retryable) - retrying this would loop forever against the live different barrier.
       _mission_unlock
       echo "mission: pending-stop: REFUSED — a DIFFERENT open human STOP (op=${_ps_bop}) is already live; resolve/deny it before opening another" >&2
-      return 3
+      return 12
     fi
     # identity matches. Does that op ALREADY have a fence-scoped pd line in the live-nonce zone?
     _ps_haspd=$(awk -v n8="$_ps_n8" -v op="$_ps_bop" '
