@@ -588,17 +588,28 @@ mission_fork() {
   if [ -f "$_fk_dest" ]; then
     echo "mission_fork: dest already exists (this session already owns a mission): $_fk_dest" >&2; return 3
   fi
-  # clone .md, retargeting ONLY the canonical marker's sid= field (anchored to the marker line so a
-  # body line that merely contains 'sid=<src>' is never touched).
-  _fk_tmp=$(mktemp "${_fk_dest}.tmp.XXXXXX" 2>/dev/null) || { echo "mission_fork: mktemp failed" >&2; return 1; }
-  sed "s|^\\(<!-- MISSION schema=v1 sid=\\)${_fk_ssid}\\( \\)|\\1${_fk_dsid}\\2|" "$_fk_src" > "$_fk_tmp" \
-    || { rm -f "$_fk_tmp"; echo "mission_fork: clone write failed" >&2; return 1; }
-  mv -f "$_fk_tmp" "$_fk_dest" || { rm -f "$_fk_tmp"; echo "mission_fork: rename failed" >&2; return 1; }
-  # carry the FULL log history forward — rotated archives (oldest->newest) + live log — flattened into
-  # the clone's single live log, so lifecycle / convergence / FAIL / test-trust state survives the clone
-  # (copying only the live log would lose archived lifecycle lines and could mis-resume). Best-effort.
-  # (_fk_srcdir was set + integrity-checked above - E5.)
-  rm -f "${_fk_dest%.md}.log" 2>/dev/null   # defeat a symlink/orphan planted at the dest log path
+  # R8r7-CL3 - ATOMIC PUBLISH ORDERING. Build BOTH the clone .md and the clone .log to TEMP paths first,
+  # then publish the .log FIRST and the .md LAST, so the resolvable .md's PRESENCE always IMPLIES a complete
+  # .log. Readers key on the .md (mission_path / mission_list enumerate `MISSION.<sid>.md`), so a crash in
+  # the publish window leaves at worst an orphan dest.log with NO dest.md - invisible to readers, and a
+  # retry succeeds (dest.md still absent). The OLD ordering published the .md FIRST (:591) then built the
+  # .log: a crash there left a RESOLVABLE .md with an absent/empty .log => readers accept it and a retry
+  # refuses (dest exists) => the source STOP/lifecycle is LOST.
+  _fk_dlog="${_fk_dest%.md}.log"
+  _fk_tmp_md=$(mktemp "${_fk_dest}.mdtmp.XXXXXX" 2>/dev/null)   || { echo "mission_fork: mktemp .md failed" >&2; return 1; }
+  _fk_tmp_log=$(mktemp "${_fk_dlog}.logtmp.XXXXXX" 2>/dev/null) || { rm -f "$_fk_tmp_md"; echo "mission_fork: mktemp .log failed" >&2; return 1; }
+  # (1) retargeted .md -> temp (retarget ONLY the marker line's sid= field; a body `sid=<src>` is untouched).
+  sed "s|^\\(<!-- MISSION schema=v1 sid=\\)${_fk_ssid}\\( \\)|\\1${_fk_dsid}\\2|" "$_fk_src" > "$_fk_tmp_md" \
+    || { rm -f "$_fk_tmp_md" "$_fk_tmp_log"; echo "mission_fork: clone .md write failed" >&2; return 1; }
+  # (2) COMPLETENESS SNAPSHOT of the source stream BEFORE the copy: line count + last non-empty line. A
+  #     rotation during the multi-pass copy that keeps the SOURCE self-consistent (moves lines into a new
+  #     archive + trims the live log) passes the post-copy integrity re-verify yet the CLONE may have missed
+  #     the window; comparing the clone tail/count to this pre-copy snapshot closes that window WITHOUT the
+  #     lock. (mission_fork holds NO lock and its caller - the resume picker - holds none, VERIFIED.)
+  _fk_src_stream=$(_mission_timing_stream "$_fk_ssid" "$_fk_srcdir")
+  _fk_src_lc=$(printf '%s' "$_fk_src_stream" | awk 'END{print NR+0}'); [ -n "$_fk_src_lc" ] || _fk_src_lc=0
+  _fk_src_tail=$(printf '%s' "$_fk_src_stream" | awk 'NF{last=$0} END{print last}')
+  # (3) carry the FULL log history (archives oldest->newest + live, flattened) into the clone .log TEMP.
   {
     for _fk_a in "$_fk_srcdir"/.mission-backups/MISSION."$_fk_ssid".log.*.gz \
                  "$_fk_srcdir"/.mission-backups/MISSION."$_fk_ssid".log.*.txt; do
@@ -608,22 +619,38 @@ mission_fork() {
       if [ "${_fk_a##*.}" = gz ]; then gzip -dc "$_fk_a" 2>/dev/null; else cat "$_fk_a" 2>/dev/null; fi
     done
     [ -f "${_fk_src%.md}.log" ] && cat "${_fk_src%.md}.log" 2>/dev/null
-  } > "${_fk_dest%.md}.log" 2>/dev/null \
-    || { rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
-         echo "mission_fork: log-history carry-forward FAILED — backed out the clone (fail closed)" >&2; return 2; }
-  # R8r6-G3/E5 - RE-VERIFY source read-integrity AFTER the copy. The pre-copy check (:564) and the multi-pass
-  # copy above are otherwise a TOCTOU: a concurrent rotation, or an archive that became unreadable / corrupt
-  # DURING the copy, would let the per-file `gzip -dc`/`cat 2>/dev/null` silently drop an archived human STOP
-  # (or a MISSION-CLEARED) from the clone - a resume that then proceeds past it. Fail CLOSED: if the source
-  # set no longer passes integrity, back out the clone (the .md + .log) rather than return a truncated history.
+  } > "$_fk_tmp_log" 2>/dev/null \
+    || { rm -f "$_fk_tmp_md" "$_fk_tmp_log"; echo "mission_fork: log-history carry-forward FAILED (fail closed)" >&2; return 2; }
+  # (4a) RE-VERIFY source read-integrity AFTER the copy (an archive that became unreadable/corrupt during the
+  #      copy would let the per-file `gzip -dc`/`cat 2>/dev/null` silently drop an archived STOP/CLEARED).
   if ! _mission_log_read_integrity "$_fk_ssid" "$_fk_srcdir"; then
-    rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
-    echo "mission_fork: source log/archive became unreadable/corrupt during clone — backed out (fail closed)" >&2; return 2
+    rm -f "$_fk_tmp_md" "$_fk_tmp_log"
+    echo "mission_fork: source log/archive became unreadable/corrupt during clone — fail closed" >&2; return 2
   fi
-  # the clone MUST verify sound under the NEW sid, else back it out.
-  if ! mission_verify "$_fk_dest" "$_fk_dsid"; then
-    rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
-    echo "mission_fork: cloned file failed verify under dest sid — backed out" >&2; return 2
+  # (4b) CLONE COMPLETENESS: the clone must have AT LEAST as many lines as the pre-copy snapshot AND must
+  #      contain the snapshot's last line. A rotation-during-copy that dropped the rotated prefix would fail
+  #      one of these (fewer lines / missing tail). Fail CLOSED rather than resume on a truncated history.
+  _fk_clone_lc=$(awk 'END{print NR+0}' "$_fk_tmp_log" 2>/dev/null); [ -n "$_fk_clone_lc" ] || _fk_clone_lc=0
+  if [ "$_fk_clone_lc" -lt "$_fk_src_lc" ] 2>/dev/null; then
+    rm -f "$_fk_tmp_md" "$_fk_tmp_log"
+    echo "mission_fork: clone log short (${_fk_clone_lc} < ${_fk_src_lc}) — a rotation during copy dropped lines; fail closed" >&2; return 2
+  fi
+  if [ -n "$_fk_src_tail" ] && ! grep -Fxq -- "$_fk_src_tail" "$_fk_tmp_log" 2>/dev/null; then
+    rm -f "$_fk_tmp_md" "$_fk_tmp_log"
+    echo "mission_fork: clone log is missing the source's last line — incomplete carry-forward; fail closed" >&2; return 2
+  fi
+  # (5) the clone .md must verify sound under the NEW sid (on the TEMP path), else back out both temps.
+  if ! mission_verify "$_fk_tmp_md" "$_fk_dsid"; then
+    rm -f "$_fk_tmp_md" "$_fk_tmp_log"
+    echo "mission_fork: cloned .md failed verify under dest sid — fail closed" >&2; return 2
+  fi
+  # (6) PUBLISH atomically: .log FIRST, then .md - so a resolvable .md always has its complete .log.
+  rm -f "$_fk_dlog" 2>/dev/null   # defeat a symlink/orphan planted at the dest log path
+  if ! mv -f "$_fk_tmp_log" "$_fk_dlog"; then
+    rm -f "$_fk_tmp_md" "$_fk_tmp_log"; echo "mission_fork: .log publish failed" >&2; return 1
+  fi
+  if ! mv -f "$_fk_tmp_md" "$_fk_dest"; then
+    rm -f "$_fk_tmp_md" "$_fk_dlog" 2>/dev/null; echo "mission_fork: .md publish failed — backed out the .log" >&2; return 1
   fi
   printf '%s\n' "$_fk_dest"
 }

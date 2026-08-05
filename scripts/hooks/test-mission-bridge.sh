@@ -966,6 +966,96 @@ if [ -n "$ARCH" ] && [ "$VC_ROT" = "1" ]; then
   pass "void-count is archive-inclusive: a rotated-out VOID is still counted ($VC_ROT)"
 else fail "rotation-crossing count" "archive='$ARCH' void-count=$VC_ROT (want 1)"; fi
 
+# ── R8r7-CL3 — mission_fork atomicity: .md presence implies a COMPLETE .log ────────────────────
+# A normal fork carries the FULL history forward AND publishes the .log so the resolvable .md always
+# has its complete .log. Build a source with an ARCHIVE (rotated STOP) + live lines, fork it, and
+# assert (a) the clone .md verifies, (b) the clone .log contains BOTH the archived STOP and the live
+# tail (nothing dropped), (c) the clone await-state still sees the open human STOP.
+R="${WORKBASE}-fork-cl3"; mkdir -p "$R"; SID="forksrc$$"
+mission_create "$SID" "$R" "fork cl3 plan" >/dev/null 2>&1
+LOGF="$R/MISSION.${SID}.log"
+# open a human STOP, then force a rotation so the STOP opener lands in an ARCHIVE (archive-inclusive carry).
+bash "$MWSH" pending-stop "$SID" "$R" approve 1 1 1 decision "Fork STOP?" >/dev/null 2>&1
+(
+  MISSION_LOG_MAX_BYTES=4096; export MISSION_LOG_MAX_BYTES
+  i=0; while [ "$i" -lt 120 ]; do
+    mission_log_append "$SID" "$R" "[mission] part=1 name=x phase=implement round=$i dry=0 findings=0 pad pad pad pad pad" "fk-$i" >/dev/null 2>&1
+    i=$((i+1))
+  done
+)
+FK_ARCH=$(ls -1 "$R/.mission-backups/"MISSION."${SID}".log.* 2>/dev/null | head -1)
+DSID="forkdst$$"
+NEWF=$(mission_fork "$DSID" "$R" "$R/MISSION.${SID}.md" 2>/dev/null); FK_RC=$?
+DLOG="$R/MISSION.${DSID}.log"
+FK_SRC_LC=$(_mission_timing_stream "$SID" "$R" | awk 'END{print NR+0}')
+FK_CLONE_LC=$(awk 'END{print NR+0}' "$DLOG" 2>/dev/null)
+FK_HASSTOP=$(grep -c 'AWAIT part=1 .*kind=human' "$DLOG" 2>/dev/null)
+FK_AS=$(bash "$MWSH" await-state "$DSID" "$R" 2>/dev/null)
+if [ "$FK_RC" = 0 ] && [ -f "$NEWF" ] && [ -n "$FK_ARCH" ] \
+   && mission_verify "$NEWF" "$DSID" >/dev/null 2>&1 \
+   && [ "$FK_CLONE_LC" -ge "$FK_SRC_LC" ] 2>/dev/null && [ "$FK_HASSTOP" -ge 1 ] 2>/dev/null \
+   && [ -f "$R/MISSION.${DSID}.md" ]; then
+  pass "fork carries full history forward (archive-inclusive), clone .md verifies + .log complete (src=$FK_SRC_LC clone=$FK_CLONE_LC stop=$FK_HASSTOP)"
+else fail "fork atomicity/completeness" "rc=$FK_RC arch='$FK_ARCH' src=$FK_SRC_LC clone=$FK_CLONE_LC stop=$FK_HASSTOP as='$FK_AS'"; fi
+# a resolvable clone .md must never exist WITHOUT its .log (the CL3 publish-ordering invariant).
+if [ -f "$R/MISSION.${DSID}.md" ] && [ -f "$DLOG" ]; then
+  pass "fork publish ordering: the clone .md is accompanied by its .log (no .md-without-.log window)"
+else fail "fork .md/.log co-presence" "md=$([ -f "$R/MISSION.${DSID}.md" ] && echo 1) log=$([ -f "$DLOG" ] && echo 1)"; fi
+cleanup_root "$R"
+
+# ── R8r7-CL5 — rotation ordering that makes the live-first read DROP-SAFE ───────────────────────
+# _mission_timing_stream reads the LIVE log first then archives, which is drop-safe ONLY because
+# _mission_log_rotate creates the new ARCHIVE before it TRIMS the live log. Pin that source ordering
+# structurally: the archive-publishing `mv` (`$_lr_arc`) must appear BEFORE the live-log trim `mv`
+# (`$_lr_log`) in _mission_log_rotate. If a refactor ever reversed them, a mid-rotation read could drop.
+ROT_FN=$(awk '/^_mission_log_rotate\(\)/{g=1} g{print} /^}/{if(g)exit}' "$ROOT/lib/mission-bridge.sh")
+ARC_LINE=$(printf '%s\n' "$ROT_FN" | grep -n 'mv -f "\$_lr_arctmp" "\$_lr_arc"' | head -1 | cut -d: -f1)
+TRIM_LINE=$(printf '%s\n' "$ROT_FN" | grep -n 'mv -f "\$_lr_tmp" "\$_lr_log"' | head -1 | cut -d: -f1)
+if [ -n "$ARC_LINE" ] && [ -n "$TRIM_LINE" ] && [ "$ARC_LINE" -lt "$TRIM_LINE" ] 2>/dev/null; then
+  pass "rotation publishes the archive BEFORE trimming live (arc@${ARC_LINE} < trim@${TRIM_LINE}) — live-first read is drop-safe"
+else fail "rotation archive-before-trim ordering" "arc=$ARC_LINE trim=$TRIM_LINE"; fi
+# functional: the live-first reader still returns the archived STOP after a rotation (no drop).
+R="${WORKBASE}-cl5"; mkdir -p "$R"; SID="cl5$$"
+mission_create "$SID" "$R" "cl5 plan" >/dev/null 2>&1
+bash "$MWSH" pending-stop "$SID" "$R" approve 1 1 1 decision "CL5 STOP?" >/dev/null 2>&1
+(
+  MISSION_LOG_MAX_BYTES=4096; export MISSION_LOG_MAX_BYTES
+  i=0; while [ "$i" -lt 120 ]; do
+    mission_log_append "$SID" "$R" "[mission] part=1 name=x phase=implement round=$i dry=0 findings=0 pad pad pad pad" "c5-$i" >/dev/null 2>&1
+    i=$((i+1))
+  done
+)
+CL5_ARCH=$(ls -1 "$R/.mission-backups/"MISSION."${SID}".log.* 2>/dev/null | head -1)
+CL5_AS=$(bash "$MWSH" await-state "$SID" "$R" 2>/dev/null)
+case "$CL5_AS" in
+  *"await kind=human"*) [ -n "$CL5_ARCH" ] && pass "live-first read still finds the archived human STOP after rotation (no drop)" || fail "cl5 no rotation happened" "arch empty";;
+  *) fail "cl5 archived STOP dropped by the reader" "as='$CL5_AS' arch='$CL5_ARCH'";;
+esac
+cleanup_root "$R"
+
+# ── R8r7-CL6 — pdseq high-water validates the FULL AWAIT grammar (a forged barrier cannot exhaust) ─
+# A forged `AWAIT ... op=999999-x` whose idtag-op == body-op but whose grammar is BOGUS (need=9, out of the
+# 1..7 range) must NOT bump the pdseq high-water. The OLD scan bound only idtag<->body op and would seed the
+# high-water to 999999 => the next mint reports false sequence-exhaustion rc=7 => PERMANENT STALL. Assert the
+# high-water IGNORES it. Also assert a legit big op is STILL counted (the validation is not over-broad).
+R="${WORKBASE}-cl6"; mkdir -p "$R"; SID="cl6$$"
+mission_create "$SID" "$R" "cl6 plan" >/dev/null 2>&1
+LOGF="$R/MISSION.${SID}.log"
+printf 'm1-await-999999-x-r1-a1-g0\t[mission] AWAIT part=1 phase=decision round=1 kind=job op=999999-x attempt=1 need=9 got=0 started_at=1\n' >> "$LOGF"
+CL6_HW=$(_mission_pdseq_highwater "$SID" "$R" 2>/dev/null)
+if [ "$CL6_HW" != "999999" ] 2>/dev/null; then
+  pass "high-water ignores a grammar-invalid forged AWAIT (need=9 out of range; hw=$CL6_HW != 999999) — no false sequence-exhaustion"
+else fail "high-water grammar validation" "hw='$CL6_HW' (a forged need=9 barrier must not seed exhaustion)"; fi
+# positive control: a GRAMMAR-VALID big-op barrier (need=1, kind=human, numeric coords) IS counted.
+R2="${WORKBASE}-cl6b"; mkdir -p "$R2"; SID2="cl6b$$"
+mission_create "$SID2" "$R2" "cl6b plan" >/dev/null 2>&1
+printf 'm1-await-123456-x-r1-a1-g0\t[mission] AWAIT part=1 phase=decision round=1 kind=human op=123456-x attempt=1 need=1 got=0 started_at=1\n' >> "$R2/MISSION.${SID2}.log"
+CL6_HW2=$(_mission_pdseq_highwater "$SID2" "$R2" 2>/dev/null)
+if [ "$CL6_HW2" = "123456" ]; then
+  pass "high-water still counts a GRAMMAR-VALID big-op barrier (hw=$CL6_HW2) — validation is not over-broad"
+else fail "high-water positive control" "hw='$CL6_HW2' (want 123456)"; fi
+cleanup_root "$R"; cleanup_root "$R2"
+
 echo
 printf 'PASS: %d  FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]
