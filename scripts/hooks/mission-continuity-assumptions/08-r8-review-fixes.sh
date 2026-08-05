@@ -214,6 +214,9 @@ mc_eq "pd:1-approve" "$IDa8" "R8r2-A pending-stop STILL opens the human STOP (sa
 SUBd8="d_cleared"; SIDd8="d_cleared$$"
 mc_new_mission "$SUBd8" "$SIDd8"
 mission_clear_append "$SIDd8" "${ROOT}/${SUBd8}" "[mission] MISSION-CLEARED status=cleared reason=test" "" >/dev/null 2>&1
+echo "DBGD8 clear-append-rc-inline: $(mission_clear_append "$SIDd8" "${ROOT}/${SUBd8}" "[mission] MISSION-CLEARED status=cleared reason=test2" ""; echo rc=$?)" >&2
+echo "DBGD8 log CLEARED od:" >&2; od -c "$(mc_log_file "$SUBd8" "$SIDd8")" 2>/dev/null | grep -i clear >&2 || echo "  none" >&2
+echo "DBGD8 fresh lifecycle: [$(bash -c '. "'"$HOOKS"'/lib/mission-bridge.sh"; mission_lifecycle_state "'"$SIDd8"'" "'"${ROOT}/${SUBd8}"'"' 2>/dev/null)]" >&2
 OUTd8=$(mc_pending_stop_out "$SUBd8" "$SIDd8" approve 1 1 1 decision "Approve after clear?")
 mc_has "rc=3" "$OUTd8" "R8r2-D pending-stop REFUSES (rc=3) opening a STOP below MISSION-CLEARED"
 
