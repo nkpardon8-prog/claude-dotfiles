@@ -1254,12 +1254,18 @@ mission_pending_mint() {
   # AWAIT/resolve/DECISION history), sharing _mission_pdseq_highwater with the blocking mint. A legacy/
   # pre-R8 marker that under-counts (pdseq=0 while history holds a higher seq) can no longer re-mint a
   # LIVE seq (which would collapse two decisions onto one idtag). Monotonic, never reused.
-  _pm_cur=$(_mission_marker_field "$_pm_f" pdseq 2>/dev/null); case "$_pm_cur" in ''|*[!0-9]*) _pm_cur=0 ;; esac
+  _pm_marker=$(_mission_marker_field "$_pm_f" pdseq 2>/dev/null); case "$_pm_marker" in ''|*[!0-9]*) _pm_marker=0 ;; esac
   _pm_hist=$(_mission_pdseq_highwater "$_pm_sid" "$_pm_root"); case "$_pm_hist" in ''|*[!0-9]*) _pm_hist=0 ;; esac
+  _pm_cur="$_pm_marker"
   [ "$_pm_hist" -gt "$_pm_cur" ] 2>/dev/null && _pm_cur="$_pm_hist"
   _pm_next=$((_pm_cur + 1))
   if [ "$_pm_next" -gt 999999 ]; then
-    _mission_unlock; echo "mission: pending: REFUSED — sequence-exhausted (next=${_pm_next} > 999999)" >&2; return 7
+    # R8r4-C10 - marker pdseq is authoritative; a HISTORY-driven overflow (a planted high-op DECISION/AWAIT)
+    # falls back to the marker so it cannot force a false sequence-exhaustion. TRUE exhaustion = marker at cap.
+    if [ "$((_pm_marker + 1))" -gt 999999 ]; then
+      _mission_unlock; echo "mission: pending: REFUSED — sequence-exhausted (marker pdseq at cap; next=${_pm_next} > 999999)" >&2; return 7
+    fi
+    _pm_cur="$_pm_marker"; _pm_next=$((_pm_marker + 1))
   fi
   _pm_id="pd:${_pm_next}-${_pm_slug}"
   _pm_entry="- [${_pm_id}] ${_pm_q}"
