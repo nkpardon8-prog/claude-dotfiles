@@ -64,13 +64,15 @@ MDc2="${ROOT}/${SUBc2}/MISSION.${SIDc2}.md"
 perl -0pi -e 's/^- \[pd:1-approve\][^\n]*\n(<!-- mid:[^\n]*-->\n)?//m' "$MDc2"   # crash -> orphan
 mc_eq "0" "$(mc_has_pd "$SUBc2" "$SIDc2" pd:1-approve)" "C2 pd line gone (orphan) after the crash sim"
 OUTc2=$(mc_pending_stop_out "$SUBc2" "$SIDc2" deploy 2 1 1 decision "Deploy prod?")
-mc_has "rc=3" "$OUTc2" "C2 a DIFFERENT request while a human barrier is open FAILS CLOSED (rc=3, no adopt)"
+# R8r3-R8: a DIFFERENT open human STOP is now the DISTINCT rc=12 (non-retryable), not the conflated rc=3.
+mc_has "rc=12" "$OUTc2" "C2 a DIFFERENT request while a human barrier is open FAILS CLOSED (rc=12, no adopt)"
 mc_eq "0" "$(mc_has_pd "$SUBc2" "$SIDc2" pd:1-approve)" "C2 the different request did NOT forge/rebind a pd line onto the open op"
 mc_has "op=1-approve" "$(mc_state "$SUBc2" "$SIDc2")" "C2 the ORIGINAL orphan barrier is still the single live STOP"
 # FIX B (R8r2): a LOST-pd orphan can NOT be re-adopted even by an EXACT re-request - the ORIGINAL question
-# is GONE with the pd line so the supplied question is UNVERIFIABLE => FAIL CLOSED (rc=3), no silent adopt.
+# is GONE with the pd line so the supplied question is UNVERIFIABLE => FAIL CLOSED, no silent adopt.
+# R8r3-R8: the orphan class is now the DISTINCT rc=14 (non-retryable: resolve/deny explicitly), not rc=3.
 OUTc2b=$(mc_pending_stop_out "$SUBc2" "$SIDc2" approve 1 1 1 decision "Approve orig?")
-mc_has "rc=3" "$OUTc2b" "C2 an EXACT re-request on a LOST-pd orphan is REFUSED (rc=3, question unverifiable) - no silent adopt"
+mc_has "rc=14" "$OUTc2b" "C2 an EXACT re-request on a LOST-pd orphan is REFUSED (rc=14, question unverifiable) - no silent adopt"
 mc_eq "0" "$(mc_has_pd "$SUBc2" "$SIDc2" pd:1-approve)" "C2 the refused exact re-request did NOT restore/forge the pd line"
 
 # ── C3 - DECISION-FIRST DOUBLE-ANCHOR: a torn DECISION (no outcome=) cannot close the barrier ───────────
