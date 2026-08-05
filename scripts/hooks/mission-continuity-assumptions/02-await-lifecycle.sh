@@ -159,6 +159,10 @@ mc_has "attempt=2" "$(mc_state "$SUB10" "$SID10")" "A11 selects highest attempt,
 SUB11="humanop"; SID11="humanop$$"
 mc_new_mission "$SUB11" "$SID11"
 mc_await "$SUB11" "$SID11" "part=1 phase=decision round=1 kind=human op=1-approve attempt=1 need=1 got=0"
+# R8r3-R14: the got=1 close is lib-enforced DECISION-first (a bare got=1 with no same-op DECISION is now
+# REFUSED + suppressed, so the old bare close never landed and the assertion no longer tested its stated
+# resolved-sibling condition). Record the DECISION for op=1-approve FIRST so the got=1 close actually lands.
+mc_decision "$SUB11" "$SID11" "1-approve" approve
 mc_await "$SUB11" "$SID11" "part=1 phase=decision round=1 kind=human op=1-approve attempt=1 need=1 got=1"
 mc_await "$SUB11" "$SID11" "part=1 phase=decision round=1 kind=human op=2-approve attempt=1 need=1 got=0"
 S=$(mc_state "$SUB11" "$SID11")
