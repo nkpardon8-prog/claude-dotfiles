@@ -1405,9 +1405,11 @@ mission_pending_stop_mint() {
       if [ "$_ps_storedq" = "$_ps_q" ]; then
         _mission_unlock; printf 'pd:%s\n' "$_ps_bop"; return 0
       fi
+      # R8r3-R8 - rc=13 (NON-retryable: a changed question at the same op is a DIFFERENT decision; resolve/
+      # deny the live one first). Distinct from rc=3 (lock-busy/retryable) so the agent does not silently retry.
       _mission_unlock
       echo "mission: pending-stop: REFUSED — op=${_ps_bop} is live with a DIFFERENT question; resolve/deny it before re-asking a changed decision" >&2
-      return 3
+      return 13
     fi
     # [D4] crash ORPHAN (barrier live, pd line lost). R8r2-B - the ORIGINAL question is GONE with the pd
     # line, so the supplied question can NOT be proven equal to it. NEVER silently adopt an unprovable
