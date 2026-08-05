@@ -1287,8 +1287,8 @@ mission_pending_mint() {
 #     [D6]    Slug/full-AWAIT-line preflight (slug [a-z0-9-] <=64; assembled line REFUSED if >=480B).
 #     [D7]    BARRIER-FIRST: open the human AWAIT got=0 and REQUIRE _MLA_OUTCOME=appended on the fresh
 #             path (dedup/collision/rerouted on a fresh monotonic seq = bug => fail closed, no pd line,
-#             no echo). THEN write the pd line + bump pdseq. A crash between = a fail-CLOSED orphan the
-#             next pending-stop ADOPTS (D4).
+#             no echo). THEN write the pd line + bump pdseq. A crash between = a fail-CLOSED orphan; the
+#             next pending-stop does NOT adopt it (rc=14, unverifiable) — it needs an explicit resolve/deny.
 #   Fail-closed everywhere: NO pd line and NO echo on any refusal.
 mission_pending_stop_mint() {
   _ps_sid=$(_mission_sanitize_sid "$1"); _ps_root="$2"; _ps_slug="$3"
