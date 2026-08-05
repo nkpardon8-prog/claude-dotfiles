@@ -74,6 +74,7 @@ RESd2a=$(mc_resolve_out "$SUBd2" "$SIDd2" "pd:2-other" x)          # never exist
 mc_has "FAILED rc=8" "$RESd2a" "D2 resolve of a never-existed id fails LOUD (rc=8)"
 mc_has "never existed" "$RESd2a" "D2 the loud refusal names 'never existed'"
 mc_eq "1" "$(mc_has_pd "$SUBd2" "$SIDd2" pd:1-approve)" "D2 the mismatched-op resolve leaves the REAL pd line intact"
+mc_close_human "$SUBd2" "$SIDd2" "1-approve" approve 1 1 1 decision   # R8r3-R5: close (DECISION -> got=1) BEFORE the real drain
 mc_resolve_out "$SUBd2" "$SIDd2" "pd:1-approve" ok >/dev/null      # real drain
 RESd2b=$(mc_resolve_out "$SUBd2" "$SIDd2" "pd:1-approve" ok)       # idempotent redrive
 mc_has "resolve ok" "$RESd2b" "D2 an idempotent re-drive of an already-resolved id is QUIET OK"
