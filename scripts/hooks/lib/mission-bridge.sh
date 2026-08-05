@@ -1384,8 +1384,8 @@ mission_pending_mint() {
 #             an EXACT request match (same slug+coords+question, pd line PRESENT), else FAIL CLOSED with a
 #             DISTINCT rc (R8r3-R8): a DIFFERENT open barrier => rc=12; a changed question at the same op
 #             => rc=13; a lost-pd crash ORPHAN => rc=14 (R8r2-B/FIX-B: the original question is GONE with
-#             the pd line so it is UNVERIFIABLE — NEVER silently adopt/re-bind it; recovery is an explicit
-#             human resolve/deny of that op, or a NEW decision under a DIFFERENT slug). NEVER open a second
+#             the pd line so it is UNVERIFIABLE — NEVER silently adopt/re-bind it; recovery is the safe-ABORT
+#             deny of that op (outcome=deny, close, do NOT proceed), then a NEW decision under a DIFFERENT slug). NEVER open a second
 #             barrier (await-state returns only one). rc=3 is lock-busy ONLY (the one retryable code).
 #     [D5]    Fresh-mint seed = scan-ONCE max(marker pdseq, md-zone-max, log-max) — double-anchored so
 #             free-text `op=999-`/`pd:999-` cannot poison the counter.
