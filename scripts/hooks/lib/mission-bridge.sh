@@ -2122,6 +2122,26 @@ mission_resolve_pending() {
   if ! mission_verify "$_rp_f" "$_rp_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing resolve" >&2; return 2
   fi
+  # R8r3-R5 - REFUSE to drain the pd line while the SAME op's human AWAIT is still OPEN (kind=human
+  # ready=0). Draining FIRST (before a DECISION + got=1 close) would create the forbidden pd-missing +
+  # ready=0 ORPHAN that FIX B then refuses to re-open -> permanent stall. The sanctioned close order is
+  # DECISION -> got=1 (close) -> resolve; resolve is the LAST step. Best-effort read (mission_await_state
+  # is a lock-free reader; safe to call while holding the lock - no re-acquire): only a PROVABLY-open
+  # same-op human barrier blocks; a corrupt/unreadable await-state does NOT block (resolve is itself the
+  # recovery path for a lost pd line, and pending-stop already fails closed on corrupt await-state).
+  _rp_await=$(mission_await_state "$_rp_sid" "$_rp_root" 2>/dev/null)
+  case "$_rp_await" in
+    "await "*)
+      _rp_awk=$(_mission_await_field "$_rp_await" kind)
+      _rp_awr=$(_mission_await_field "$_rp_await" ready)
+      _rp_awop=$(_mission_await_field "$_rp_await" op)
+      if [ "$_rp_awk" = human ] && [ "$_rp_awr" = 0 ] && [ "$_rp_awop" = "$_rp_id" ]; then
+        _mission_unlock
+        echo "mission: resolve: REFUSED — op ${_rp_id} still has an OPEN human STOP (got=0); record a DECISION and close the barrier (got=1) BEFORE resolving" >&2
+        return 9
+      fi
+      ;;
+  esac
   mission_backup "$_rp_f" "$_rp_root" "$_rp_sid" || {
     _mission_unlock; echo "mission: BACKUP FAILED — refusing" >&2; return 4; }
 
