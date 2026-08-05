@@ -559,6 +559,15 @@ case "$verb" in
         mission_partdone_append "$sid" "$root" "$4" "${5:-}"
         rc=$?
         ;;
+      "[mission] DECISION "*)
+        # R8r3-R4 - route the DECISION through the UNDER-LOCK wrapper so its anchored-idtag dedup + append is
+        # ATOMIC and the DECISION serializes with the opener/close. The prior lock-free log path let two
+        # concurrent approve/deny both land under one idtag (nondeterministic gated outcome) AND let a stale
+        # monotonic-seq approval be appended right after a fresh opener and satisfy decnr>openernr (NR race).
+        # _mw_validate_log already validated the DECISION shape + idtag<->op bind above; this is the write.
+        mission_decision_append "$sid" "$root" "$4" "${5:-}"
+        rc=$?
+        ;;
       *)
         mission_log_append "$sid" "$root" "$4" "${5:-}"
         rc=$?
