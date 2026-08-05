@@ -61,10 +61,11 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
   "View Conversation in Salesmsg" link on the record page. Contacts never texted have no such
   link — fall back to matching `contact_integration_id=<id>` in the iframe src. With ~20+
   widgets open Chrome consolidates iframe processes and some targets vanish from /json/list;
-  fallbacks in order: browser-endpoint `Target.getTargets` + flat session attach → reload tab
-  and relaunch → precise mouse click on the "Write a message" line (45% width, ~92px above
-  iframe bottom — NEVER lower, the icon/send row is ~55px above bottom) then page-level
-  insertText + screenshot verify.
+  fallbacks in order: browser-endpoint `Target.getTargets` + flat session attach → **close the
+  tab and reopen the record fresh** (NOT `Page.reload`, see below) → precise mouse click on the
+  "Write a message" line (45% width, ~92px above iframe bottom — NEVER lower, the icon/send row
+  is ~55px above bottom) then page-level insertText + screenshot verify. Tab pressure is the
+  root cause: past ~50 open tabs Chrome consolidates iframe processes and targets disappear.
 
 ## Workflow
 
@@ -121,6 +122,17 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
 - **"surf" beats "ride"** as the CTA verb (Nick's call 2026-08-05): "get you out for a surf",
   "line you up for a surf". Also banned: "we're getting Arizona folks on the water" — say what
   Arc is DOING ("we're kicking up demos in AZ soon"), not what the customer is a member of.
+
+## NEVER reload a record tab to fix a widget
+
+`Page.reload` on a contact record drops the Salesmsg widget's auth: it re-renders as a bare
+**"Sign in"** screen with no conversation and no composer, and a coordinate click then lands on
+the page body (focus reads BODY) instead of the iframe. Do NOT click that Sign in button.
+The fix is to **discard that tab and reopen the contact record fresh** so the widget inherits the
+already-authenticated Salesmsg session from the profile. Safe to close because a signed-out
+widget by definition holds no draft — verify that first (no
+`widget-light/conversations/<convId>` target exists for it), then close and re-run `cdp-draft.mjs`,
+which creates a new tab. Prefer this over the coordinate fallback whenever a reload has happened.
 
 ## Known false negative: the widget name-check
 
