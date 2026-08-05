@@ -1592,13 +1592,15 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    outcome=<approve|deny>` (idtag `pd-<seq>-decision-<slug>`) with the user's ACTUAL answer; (b) append the
    SAME barrier with `got=1` (reuse the EXACT op/part/phase/round/attempt/need from the token, D6 — the
    `await` verb REFUSES got=1 until the same-op DECISION exists, DECISION-first lib-enforced); (c)
-   `resolve` the pd whose UNIQUE `<seq>-<slug>` matches the token's `op`; THEN act (approve ⇒ proceed, deny
-   ⇒ abort). Order DECISION → got=1 → resolve (D14/R7-3): a crash in the window then leaves a durable
-   DECISION (+ maybe a RESOLVED barrier + cosmetic stale pd line, benign), NOT a removed pd + a ready=0
-   park with no recorded outcome. This close IS this wake's ONE transition (R7-11): go straight to step
-   7 and RESCHEDULE — do NOT re-enter step 5 to drive a FURTHER transition this turn; the scheduled wake
-   drives the now-open post-approval step. Closing under the lock (NOT before entering §12.1) stops a queued
-   wake from racing the resolution (R6 — no double-drive).
+   `resolve` the pd whose UNIQUE `<seq>-<slug>` matches the token's `op`. Do NOT execute the gated action on
+   this answering turn. Order DECISION → got=1 → resolve (D14/R7-3): a crash in the window then leaves a
+   durable DECISION (+ maybe a RESOLVED barrier + cosmetic stale pd line, benign), NOT a removed pd + a
+   ready=0 park with no recorded outcome. This close (DECISION → got=1 → resolve) IS this wake's ONE
+   transition (R7-11/R6): go straight to step 7 and RESCHEDULE — do NOT re-enter step 5 to drive a FURTHER
+   transition this turn. The CONSUMING wake performs the gated action exactly once — `approve` ⇒ it runs the
+   idempotent gated action (idempotency key ⇒ a replay is a no-op); `deny` ⇒ it obeys the durable DECISION
+   and ABORTS. No separate immediate-execute on this turn (SKIP-or-DOUBLE-DRIVE ambiguity removed). Closing
+   under the lock (NOT before entering §12.1) stops a queued wake from racing the resolution (R6 — no double-drive).
    `await kind=job ready=0` + a tracked job pending → do NOT replay a lane this tick (the completion is
    the fast wake), but STILL fall through to step 7 and schedule a fallback heartbeat (D1).
    `await kind=job ready=0` + NO tracked job → replay ONLY the missing lane, but ONLY once the barrier has
