@@ -159,14 +159,15 @@ bash "$MW" note "$SIDd6" "${ROOT}/${SUBd6}" "an unrelated later note" >/dev/null
 mc_eq "1" "$(grep -c 'DECISION op=1-approve outcome=deny' "$(mc_log_file "$SUBd6" "$SIDd6")")" "D6b the deny DECISION SURVIVES a later append (durable)"
 
 # ── D7 - fail-closed refusals BEFORE any barrier opens (R8: D3/D6/D6b) ──────────────────────────────────
-# second-open: a DIFFERENT human STOP while one is open is REFUSED (rc=3) - a second invisible barrier is
-# never opened. slug>64, an assembled AWAIT line >=480B, and a sequence-exhausted (>999999) each fail
-# CLOSED (no barrier, no pd line, state stays as it was). RED if any preflight is dropped.
+# second-open: a DIFFERENT human STOP while one is open is REFUSED - a second invisible barrier is never
+# opened. R8r3-R8: this is the DISTINCT rc=12 (non-retryable), not the conflated rc=3. slug>64, an assembled
+# AWAIT line >=480B, and a sequence-exhausted (>999999) each fail CLOSED (no barrier, no pd line, state
+# stays as it was). RED if any preflight is dropped.
 SUBd7="secondopen"; SIDd7="secondopen$$"
 mc_new_mission "$SUBd7" "$SIDd7"
 mc_pending_stop "$SUBd7" "$SIDd7" approve 1 1 1 decision "First?" >/dev/null
 OUTd7=$(mc_pending_stop_out "$SUBd7" "$SIDd7" credwrite 2 1 1 decision "Second?")
-mc_has "rc=3" "$OUTd7" "D7 a DIFFERENT open human STOP is REFUSED (rc=3, no second barrier)"
+mc_has "rc=12" "$OUTd7" "D7 a DIFFERENT open human STOP is REFUSED (rc=12, no second barrier)"
 mc_has "op=1-approve" "$(mc_state "$SUBd7" "$SIDd7")" "D7 the ORIGINAL barrier is still the single live STOP"
 
 SUBd7b="slugcap"; SIDd7b="slugcap$$"
