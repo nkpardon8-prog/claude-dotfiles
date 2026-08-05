@@ -1004,8 +1004,9 @@ rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
   unreadable (§10 corrupt-bridge surface, do not retry until the log/archive is readable); `rc=12` a
   DIFFERENT open human STOP is already live (resolve/deny it FIRST, then re-open); `rc=13` the same op is
   live with a DIFFERENT question (resolve/deny it FIRST — a changed question is a new decision); `rc=14` an
-  ORPHAN barrier (its pd line was lost, or it already carries a durable DECISION) — resolve/deny it
-  EXPLICITLY, never re-open. Each is a deliberate, agent-handled do-not-proceed outcome.
+  ORPHAN barrier (its pd line was lost, or it already carries a durable DECISION) — safe-ABORT deny it
+  (write `outcome=deny`, close the barrier, do NOT proceed; a still-needed decision opens a FRESH
+  pending-stop under a DIFFERENT slug), never re-open. Each is a deliberate, agent-handled do-not-proceed outcome.
 - any other non-zero rc (4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
   feeds the 5-FAIL loop-breaker (§10). **EXCEPTION: this proceed rule does NOT apply to `pending-stop`
   (see the fail-closed block just above) — for the blocking opener, every non-zero rc is do-not-proceed.**
