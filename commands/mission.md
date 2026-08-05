@@ -78,19 +78,18 @@ and rotated archives under `.mission-backups/`.
 - **PLAN is write-once/verbatim**: seeded ONCE by `create` (line-1 is the sole machine token
   `MISSION MODE: build|adopt`; lines 2+ prose roadmap + standing directive). NEVER hand-edit it;
   a divergence goes to PLAN CHALLENGES via `challenge` (loud). `rebaseline` is the ONLY path that
-  rewrites PLAN - it re-stamps plan_hash, BUMPS gen, and appends
-  `[mission] MISSION-REBASELINED status=active` (a REACTIVATING lifecycle token).
-- `create` is no-clobber AND idempotent: an existing VERIFIED file returns `ok` as a no-op and
-  the possibly-stale PLAN persists - on that `ok`, check `mission_state` + the existing PLAN vs
-  this build's intent and rebaseline if either says so. The only `create` REFUSED rc=1 is the
-  root-guard; exists-but-fails-verify is the corrupt path (§10).
+  rewrites PLAN - it re-stamps plan_hash, BUMPS gen, and appends the REACTIVATING lifecycle token
+  `[mission] MISSION-REBASELINED status=active`.
+- `create` is no-clobber AND idempotent: an existing VERIFIED file returns `ok` (no-op; the stale
+  PLAN persists) - on that `ok`, check `mission_state` + PLAN vs this build's intent, rebaseline if
+  either says so. The only `create` REFUSED rc=1 is the root-guard; fails-verify = corrupt (§10).
 - `note` = verbose findings / forced assumptions (DURABLE NOTES); `pending`/`resolve` = the
   batched human-decision queue.
 - Intent precedence on resume when sources disagree: the PLAN zone outranks the handoff chain's
   north_star, which outranks any ledger/summary line. PLAN wins.
 - UNTRUSTED content (roadmap, objective, reviewer output, captured text) must NEVER be inlined in
-  a DOUBLE-quoted shell arg - `$(...)`/backticks would execute. Single-quote it, or pass via
-  heredoc/file/stdin.
+  a shell arg - a DOUBLE-quoted literal executes `$(...)`; a SINGLE-quoted one breaks on an
+  apostrophe. CAPTURE into a var (quoted heredoc/file), pass `"$VAR"`, or file/stdin (§7).
 
 ### D. Bridge-write contract (§7)
 
@@ -117,6 +116,8 @@ The `log` verb emits exactly four leading tokens and each demands a reaction:
   STOP-LOUD immediately; rc=3 lock busy -> retry ~5x then FAIL-line it; **rc=4 on a PART-DONE or
   live-verify write BLOCKS retirement/advance** (do the named remediation); rc=5 wrong-gen idtag
   prefix (re-derive the gen); other rcs -> log + proceed, recurring ones feed the 5-FAIL breaker.
+**`pending-stop` EXCEPTION to "other rcs -> log+proceed": ONLY `ok id=pd:<seq>-<slug>` proceeds; ANY
+non-zero rc = the STOP did NOT open -> do NOT proceed/auto-advance (S1 naked-yield).**
 `void-count` stdout is a bare integer; **`-1` is the ERROR SENTINEL of a refused gen-sliced read
 -> STOP** (never treat as count 0, never advance).
 
@@ -139,7 +140,7 @@ grep it. Verbose findings go in a separate `note`, written BEFORE the terse roun
 - live-verify: `[mission] live-verify part=<N> round=<K> status=ok evidence=<token>` or
   `... status=n/a reason=<slug>`, idtag `m<N>-live-verify-r<K>`.
 - SNAPSHOT: `[mission] SNAPSHOT part=<N> kind=converged tree=<h16> ...` - auto-stamped by the lib
-  when the dry=2 round banks (code-tree fingerprint; feeds the stale-claim guard).
+  when the dry=2 round banks (feeds the stale-claim guard).
 - Lifecycle: `[mission] PART-START part=<N> name=<slug>` (idtag `m<N>-part-start`);
   `[mission] PART-DONE part=<N> (converged)` (`m<N>-part-done`);
   `[mission] PART-RETIRED part=<N>` (`m<N>-part-retired`);
@@ -160,8 +161,8 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid>
 ### F. The per-part phase loop + convergence (§5, §6)
 
 Per part: **research -> plan -> implement -> review barrier -> convergence loop**. Every fan-out
-is parallel-INDEPENDENT: self-contained prompts, no reviewer sees another's output,
-barrier-then-merge. Never chain reviewers.
+is parallel-INDEPENDENT: self-contained prompts, no reviewer sees another's output.
+Never chain reviewers.
 
 1. RESEARCH: Claude explorer subagent + Codex read-only fact pass (prompt via file/stdin, never
    inlined; check the `.status` sidecar) in parallel; reconcile; contradictions -> `pending` +
@@ -191,11 +192,10 @@ barrier-then-merge. Never chain reviewers.
    K+1. Never re-run an idtag round you already banked.
 
 CONVERGENCE rules: stop at **2 consecutive non-void DRY rounds** - "dry" = the independent
-reviewers returned zero new actionable findings, logged verbatim (never you grading yourself).
+reviewers returned zero new actionable findings, logged verbatim.
 An ACTIONABLE round **RESETS dry -> 0** (including an actionable re-run of a VOIDed round - a
 dry=2 streak can never span a code change); a VOID alone never advances dry. Soft targets: plan
-reviews 4-6, codex reviews 3-6; hard cap 6 either way. Honest early-exit at 2 dry is allowed.
-Findings are logged BEFORE acting. Convergence is computed ONLY from `phase=review` (or VOID)
+reviews 4-6, codex reviews 3-6; hard cap 6 either way. Convergence is computed ONLY from `phase=review` (or VOID)
 lines - never from fix/plan/implement/research lines.
 
 ### G. PART-DONE gate (§5 tail)
@@ -218,8 +218,7 @@ Used by status, resume, and every post-compaction re-entry:
 - `grep -F '[mission] '` over **ALL rotated archives**
   (`.mission-backups/MISSION.<sid>.log.*.gz|.txt`, concatenated oldest->newest by
   filename-timestamp sort) **THEN the live `MISSION.<sid>.log`**. `tail -n 40` is BANNED (misses
-  lines past the window/rotation); reading only the newest archive is banned (older archives hold
-  durable lines).
+  lines past rotation); reading only the newest archive is banned.
 - Derive four values: `cur_part` (last PART-START|PART-DONE part=; empty -> 1); `mission_state`
   (last `MISSION-(CLEARED|REBASELINED)` line - the GLOBAL active-iff gate; transient progress
   lines NEVER gate it); `last_review` (part-scoped last `phase=review` round OR VOID - the ONLY
@@ -242,7 +241,7 @@ Used by status, resume, and every post-compaction re-entry:
   `phase=review findings=0` -> next fresh round K+1; latest line for K is VOID -> re-run K fresh;
   `phase=research|plan|implement` -> continue that phase, then the barrier.
 - `test-trust` recovered = honored; absent = unresolved. Intent precedence: PLAN > north_star >
-  ledger (see §C).
+  ledger (§C).
 
 ### I. Hard rules + loud stops (§9, §10, §11)
 
@@ -991,16 +990,25 @@ rc=$(printf '%s' "$status_line" | sed -n 's/.*FAILED rc=\([0-9][0-9]*\).*/\1/p')
   pause between); if still `rc=3`, log a `FAIL …reason=lock-busy` line (it routes through a DIFFERENT lock
   attempt) or proceed and note it, per the away policy (§9). **Only `rc=3` is retryable** — never blind-retry
   any other non-zero rc.
-- **`pending-stop` fail-closed rc codes (R8r3 — DISTINCT from the retryable `rc=3`, do NOT retry, do NOT
-  silently proceed past the mandatory stop):** `rc=10` mission is CLEARED (a STOP below MISSION-CLEARED is
-  permanently hidden — the mission is done; do not re-open); `rc=11` lifecycle unreadable (fail closed —
-  §10 corrupt-bridge surface, do not retry until the log/archive is readable); `rc=12` a DIFFERENT open
-  human STOP is already live (resolve/deny it FIRST, then re-open); `rc=13` the same op is live with a
-  DIFFERENT question (resolve/deny it FIRST — a changed question is a new decision); `rc=14` an ORPHAN
-  barrier (its pd line was lost, or it already carries a durable DECISION) — resolve/deny it EXPLICITLY,
-  never re-open. Each is a deliberate, agent-handled outcome, not a retry and not a proceed.
+- **`pending-stop` is the BLOCKING mandatory-stop opener: its ONLY proceed-able outcome is `rc=0` with an
+  echoed `id=pd:<seq>-<slug>`. EVERY non-zero rc means the STOP did NOT open — do NOT proceed, do NOT
+  auto-advance; STOP-LOUD / surface to the user. The generic "any other non-zero rc → log + proceed" rule
+  below NEVER applies to `pending-stop` (proceeding after a stop that never opened is the exact naked-yield
+  this contract forbids).** The full fail-closed enumeration (R8r3 + R8r4-S1 — none is a retry except the
+  one `rc=3`, and none is a proceed): `rc=1` bad args / refused (fix + re-issue); `rc=2` corrupt bridge
+  (§10 surface); `rc=3` lock busy (the ONE retryable — retry the SAME call; if still busy, STOP-LOUD, do
+  NOT proceed); `rc=4` backup failed; `rc=5` mktemp failed; `rc=6` self-check / rename failed (originals
+  intact); `rc=7` sequence-exhausted (no barrier opened); `rc=8` the assembled AWAIT line ≥480B (no barrier
+  opened); `rc=9` the human AWAIT did not land cleanly (no pd line, no echo); `rc=10` mission is CLEARED (a
+  STOP below MISSION-CLEARED is permanently hidden — the mission is done; do not re-open); `rc=11` lifecycle
+  unreadable (§10 corrupt-bridge surface, do not retry until the log/archive is readable); `rc=12` a
+  DIFFERENT open human STOP is already live (resolve/deny it FIRST, then re-open); `rc=13` the same op is
+  live with a DIFFERENT question (resolve/deny it FIRST — a changed question is a new decision); `rc=14` an
+  ORPHAN barrier (its pd line was lost, or it already carries a durable DECISION) — resolve/deny it
+  EXPLICITLY, never re-open. Each is a deliberate, agent-handled do-not-proceed outcome.
 - any other non-zero rc (4/5/6/7/127) → log it + proceed; if it recurs for the same part+phase it
-  feeds the 5-FAIL loop-breaker (§10).
+  feeds the 5-FAIL loop-breaker (§10). **EXCEPTION: this proceed rule does NOT apply to `pending-stop`
+  (see the fail-closed block just above) — for the blocking opener, every non-zero rc is do-not-proceed.**
 
 **EXACT-TOKEN status contract for the `log` verb (Task 4 — REPLACES the old "empty rc ⇒ ok" rule
 for `log`/`note`/`challenge`/`pending`).** `mission-write.sh log` now emits one of exactly four
@@ -1131,8 +1139,11 @@ line, not at column 0.
     DECISION line — double-anchored (idtag `pd-<seq>-decision-` column + a body fully matching
     `outcome=(approve|deny)$`, so a torn append never counts) — exists AND appears AFTER the barrier's
     `got=0` opener in the active-gen stream, so the outcome is ALWAYS durable-and-current BEFORE the barrier
-    reads resolved (a DECISION preplanted before the opener cannot authorize the close). The close is
-    DECISION -> `await … got=1` -> `resolve` (§8 D3 row, §12.1/§12.3).
+    reads resolved (a DECISION preplanted before the opener cannot authorize the close). **C9 — the READER
+    (`await-state`, the verdict the wake consumes) ALSO enforces DECISION-first: a human barrier reads
+    resolved ONLY IF its got meets need AND a matching post-opener DECISION exists, so a forged `got=1`
+    without a DECISION stays LIVE.** The consume is DECISION -> gated action -> `await … got=1` -> `resolve`,
+    ALL on the SAME wake (C2 — never close then defer the action; §8 D3 row, §12.1/§12.3).
     Write it with the ACTUAL outcome:
     ```bash
     bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] DECISION op=<seq>-<slug> outcome=<approve|deny>" "pd-<seq>-decision-<slug>"
@@ -1253,8 +1264,15 @@ cur_part=$(awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-part-(start|done)$/ && $2 ~ /^\
 # state gate (active-iff) — GLOBAL, keys ONLY on CLEARED/REBASELINED. Both are minted with an EMPTY
 # idtag column (the validator REFUSES a non-empty one), so anchor on $1=="" — a note line (which
 # always carries a real idtag) that embeds the text can NEVER forge INACTIVE. EMPTY mission_state is
-# a VALID state (never cleared/rebaselined) ⇒ ACTIVE with a live PLAN (§8):
-mission_state=$(awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-(CLEARED|REBASELINED)/' /tmp/mission-resume.$$ | tail -1 || true)
+# a VALID state (never cleared/rebaselined) ⇒ ACTIVE with a live PLAN (§8). R8r6-G1 — FULL-GRAMMAR
+# anchor (not a prefix), byte-mirroring the lib readers (mission_lifecycle_state / mission_await_state /
+# the gen-boundary readers): require the WHOLE writer grammar for BOTH forms — CLEARED
+# `status=(achieved|could-not|cleared) reason=<slug>$` and the REBASELINED boundary END-ANCHORED to the
+# writer's ` (...)` suffix (`status=active gen=<N> \([^\t]*\)$`).
+# A PREFIX match let a TORN/forged lifecycle line (missing/mangled tail) be picked and flip the mission to
+# cleared/active, bypassing an open human STOP on resume; a torn line is now IGNORED so the last VALID
+# lifecycle line wins (fail-closed). SHARED INVARIANT: keep this uniform with the four lib consumers:
+mission_state=$(awk -F'\t' '$1=="" && ( $2 ~ /^\[mission\] MISSION-CLEARED status=(achieved|could-not|cleared) reason=[a-z0-9-]*$/ || $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ \([^\t]*\)$/ )' /tmp/mission-resume.$$ | tail -1 || true)
 # convergence — PART-SCOPED to N: the last phase=review round (idtag m<N>-review-r<K>-d<d>) OR a VOID
 # (idtag m<N>-void-r...) for this part. VOID MUST be in this read (the table keys on "latest line for
 # round K is VOID"). Empty = no review round banked yet for part N (a valid early state):
@@ -1275,11 +1293,39 @@ last_progress=$(awk -F'\t' '($1 ~ /^(g[0-9]+-)?m[0-9]+-part-(start|done|retired)
 # `[mission] DECISION op=<seq>-<slug> outcome=(approve|deny)` — so a free-text line that merely embeds the
 # text (carrying a non-matching idtag) can NEVER forge an outcome. newest-wins:
 op="<the await-state token's op, e.g. 3-approve>"; seq="${op%%-*}"; slug="${op#*-}"; dtag="pd-${seq}-decision-${slug}"
-last_decision=$(awk -F'\t' -v t="$dtag" -v op="$op" '($1==t || $1 ~ ("^g[0-9]+-" t "$")) && $2 ~ ("^\\[mission\\] DECISION op=" op " outcome=(approve|deny)$")' /tmp/mission-resume.$$ | tail -1 || true)
+# R8r6-W1 (the FULL C9 resolved-predicate at the consumer) — last_decision counts a DECISION as ANSWERED
+# only if the WHOLE reader resolved-predicate holds, byte-mirroring mission_await_state (:2277): (1) it was
+# recorded AFTER this barrier's got=0 opener (dnr>opnr ⇔ decnr>openernr — E1); (2) the op has NO
+# conflicting-outcome DECISION (a same-op set carrying BOTH approve AND deny ⇒ CORRUPTION ⇒ NO answer, treat
+# unanswered/STOP — E3: a forged approve appended after a durable deny must NOT be consumed); and (3) it is
+# BEFORE any post-opener got=1 close (dnr<g1nr ⇔ decnr<maxnr — D3: an out-of-order got=1-before-DECISION close
+# is untrusted). PRE-opener / conflicting / post-close DECISIONs are all fail-closed to EMPTY so the WAKE
+# re-confronts the STOP instead of executing a stale/forged/corrupt outcome (the consumer bypass). SHARED
+# INVARIANT: this predicate is byte-aligned with the reader keystone + the writer close-gate + the highwater —
+# keep all four in lockstep.
+last_decision=$(awk -F'\t' -v t="$dtag" -v op="$op" '
+  function fval(s,k,   p,i,r,a){ p=k"="; i=index(s,p); if(i==0) return ""; r=substr(s,i+length(p)); split(r,a," "); return a[1] }
+  # newest got=0 OPENER NR + newest post-need got=1 close NR for this op (double-anchored: AWAIT idtag + body)
+  ($1 ~ /^(g[0-9]+-)?m[0-9]+-await-/) && ($2 ~ /^\[mission\] AWAIT /) {
+    if (fval($2,"op")==op) { g=fval($2,"got")+0
+      if (g==0 && NR>opnr) opnr=NR
+      if (g>=1 && NR>g1nr) g1nr=NR } }   # newest got>=1 line (the human need=1 close) for this op
+  # newest DECISION for this op (double-anchored idtag<->body; a mismatched-idtag/free-text line cannot match).
+  # Track outcome CONFLICT: a same-op DECISION set with two DIFFERENT outcomes is corruption (E3).
+  (($1==t) || ($1 ~ ("^g[0-9]+-" t "$"))) && ($2 ~ ("^\\[mission\\] DECISION op=" op " outcome=(approve|deny)$")) {
+    o=fval($2,"outcome"); if (dseen && dprev!=o) conflict=1; dprev=o; dseen=1; dnr=NR; dline=$0 }
+  # ANSWERED iff the full reader predicate holds: after-opener AND no-conflict AND before any post-opener got=1
+  # (g1nr<=opnr ⇒ no post-opener close yet ⇒ before-got=1 trivially holds; else require dnr<g1nr — mirror C9/D3/E3)
+  END { if (dnr>0 && opnr>0 && dnr>opnr && !conflict && (g1nr<=opnr || dnr<g1nr)) print dline }
+' /tmp/mission-resume.$$ || true)
 # EMPTY  ⇒ this op is UNANSWERED (stop for a real user; an ORPHAN if the `- [pd:<op>]` PENDING line is
 #          ALSO absent — a prior-crash artifact. R8r3-R7/FIX-B: you CANNOT silently re-state it — a re-
-#          `pending-stop` for that op FAILS CLOSED rc=14 (the lost question is unverifiable). Recovery =
-#          an explicit human resolve/deny of that op, or a NEW decision under a DIFFERENT slug; do NOT proceed).
+#          `pending-stop` for that op FAILS CLOSED rc=14 (the lost question is unverifiable). R8r6-E10b
+#          recovery = the C7 safe-ABORT deny of that op (the ORPHAN row below): the lost-question orphan has
+#          NO recoverable human answer (the question died with the pd line) and CANNOT be re-presented, so the
+#          ONLY safe outcome is to write `outcome=deny` (ABORT the pending action), close the barrier, then —
+#          if a decision is genuinely still needed — open a FRESH pending-stop under a DIFFERENT slug; do NOT
+#          proceed. NEVER fabricate an `approve` for a question you can no longer read).
 # NON-EMPTY ⇒ ANSWERED ⇒ CONSUME (parse outcome=approve|deny) per the human-AWAIT rows below.
 ```
 **Every grep above whose no-match is an expected/valid outcome appends `|| true`** so that under
@@ -1311,8 +1357,8 @@ phase line must not drive the `2 − D` math).
 
   | Last round/progress line for the current part | Resume action |
   |---|---|
-  | **`await kind=human ready=0` AND this turn is a REAL USER TURN answering it** (D3 — checked FIRST, before the STOP row below; only a genuine user turn, never a wake tick) | ENTER §12.1 and CLOSE it UNDER the tick lock (step 4), NOT before entering. Once the lock is held, run the close in THIS EXACT order (D14): **(a)** record the outcome — `log … "[mission] DECISION op=<seq>-<slug> outcome=<approve\|deny>" "pd-<seq>-decision-<slug>"` with the user's ACTUAL answer (the `<seq>-<slug>` is the `await-state` token's `op`); **(b)** close the barrier — `mission-write.sh await … kind=human op=<same-op> part=<same> phase=<same> round=<same> attempt=<same> need=1 got=1` (the `await` verb now REFUSES this got=1 close unless the same-op DECISION already exists — DECISION-first is LIB-ENFORCED; a human barrier has no separate bank, `got==need` IS its resolution, C6; reuse the EXACT op/part/phase/round/attempt/need from the token, D6); **(c)** `resolve <full pd:id>` draining the pending. Do NOT execute the gated action on this answering turn. Order DECISION → got=1 → resolve (D14/R7-3): a crash mid-close leaves a durable DECISION (+ maybe a RESOLVED barrier + cosmetic stale pd line, benign), NEVER a removed pd + a ready=0 park with no recorded outcome. **This close (DECISION → got=1 → resolve) IS the wake's ONE transition (R7-11/R6):** go to step 7 and RESCHEDULE — do NOT drive a further transition this turn. The gated action is performed by the CONSUMING wake exactly once — `approve` ⇒ the wake runs the idempotent gated action (its own idempotency key makes a replay a no-op); `deny` ⇒ the wake obeys the durable DECISION and ABORTS it. There is NO separate immediate-execute on the answering turn (that ambiguity permitted a SKIP or a DOUBLE-DRIVE); closing under the lock also stops a queued wake from observing the resolution before this turn holds the lock (R6 — no double-drive). |
-  | **`await kind=human ready=0`** on a WAKE tick (AWAIT ROWS FIRST — read via `await-state`, which emits `ready=<0\|1>`; branch on `last_decision` for this barrier's op, derived above) | **(i) op HAS a same-op `[mission] DECISION` ⇒ ANSWERED ⇒ CONSUME it on THIS wake** (a prior turn recorded the outcome but may have crashed before fully closing): idempotently complete the close (the DECISION exists → `await … got=1` → `resolve <full pd:id>`, each a no-op if already done), THEN `approve` ⇒ proceed with the idempotent gated action, `deny` ⇒ ABORT it. **NEVER re-ask** — re-issuing `pending-stop` collides on the DECISION idtag and would silently keep the old outcome. **(ii) op has NO DECISION (unanswered)** ⇒ **STOP the scheduled continuation** and wait for a real user turn (do NOT reschedule, do NOT auto-advance) — the only re-surface case. **(iii) ORPHAN** (got=0, no `- [pd:<op>]` PENDING line AND no DECISION — a prior-crash artifact) ⇒ SURFACE "approval pending but the question text was lost to a prior crash". R8r3-R7/FIX-B: do NOT re-state it via `pending-stop` (that FAILS CLOSED rc=14 — the lost question is unverifiable, so it can never be re-opened onto the same op). Recovery = an explicit human resolve/deny of that op (closing the barrier), or open a NEW decision under a DIFFERENT slug. Do NOT proceed. |
+  | **`await kind=human ready=0` AND this turn is a REAL USER TURN answering it** (D3 — checked FIRST, before the STOP row below; only a genuine user turn, never a wake tick) | ENTER §12.1 and CONSUME it UNDER the tick lock (step 4), NOT before entering. **C2 — the gated action runs on THIS wake, together with the close; NEVER close (got=1 + resolve) while deferring the action (once got=1 resolves the barrier the C9 reader DROPS it, so a later wake finds nothing to consume — the action would never run).** Once the lock is held, in THIS EXACT order (D14/C2): **(a)** record the outcome — `log … "[mission] DECISION op=<seq>-<slug> outcome=<approve\|deny>" "pd-<seq>-decision-<slug>"` with the user's ACTUAL answer (the `<seq>-<slug>` is the `await-state` token's `op`; the barrier stays LIVE at `got=0` with the DECISION — the C9 reader keeps it live so this wake can consume it); **(b)** CONSUME — `approve` ⇒ perform the idempotent gated action; `deny` ⇒ ABORT it; **(c)** close the barrier — `mission-write.sh await … kind=human op=<same-op> part=<same> phase=<same> round=<same> attempt=<same> need=1 got=1` (the `await` verb REFUSES this got=1 close unless the same-op DECISION already exists — DECISION-first is LIB-ENFORCED and the READER also requires it; `got==need` IS the human barrier's resolution, C6; reuse the EXACT fields from the token, D6); **(d)** `resolve <full pd:id>` draining the pending. Order DECISION → action → got=1 → resolve (D14/R7-3): a crash mid-consume leaves a durable DECISION + a LIVE barrier, so the next wake re-CONSUMES (idempotent) — NEVER a removed pd + a ready=0 park with no recorded outcome. **This whole CONSUME IS the wake's ONE transition (R7-11/R6):** go to step 7 and RESCHEDULE — do NOT drive a further transition this turn. Consuming under the lock also stops a queued wake from observing the resolution before this turn holds the lock (R6 — no double-drive). |
+  | **`await kind=human ready=0`** on a WAKE tick (AWAIT ROWS FIRST — read via `await-state`, which emits `ready=<0\|1>`; branch on `last_decision` for this barrier's op, derived above) | **(i) op HAS a same-op `[mission] DECISION` ⇒ ANSWERED ⇒ CONSUME it on THIS wake** (a prior turn recorded the outcome but may have crashed before consuming — the C9 reader keeps the `got=0`-with-a-DECISION barrier LIVE for exactly this): `approve` ⇒ perform the idempotent gated action, `deny` ⇒ ABORT it, THEN complete the close (`await … got=1` → `resolve <full pd:id>`, each a no-op if already done). The action runs on THIS wake WITH the close (C2), never split. **NEVER re-ask** — re-issuing `pending-stop` collides on the DECISION idtag and would silently keep the old outcome. **(ii) op has NO DECISION (unanswered)** ⇒ **STOP the scheduled continuation** and wait for a real user turn (do NOT reschedule, do NOT auto-advance) — the only re-surface case. **(iii) ORPHAN** (got=0, no `- [pd:<op>]` PENDING line AND no DECISION — a prior-crash artifact) ⇒ SURFACE "approval pending but the question text was lost to a prior crash", do NOT proceed. **C7 — the WORKING recovery sequence** (do NOT re-state via `pending-stop`: it FAILS CLOSED rc=14, the lost question is unverifiable): **(1)** write a DECISION for the orphan op = `deny` — `log … "[mission] DECISION op=<orphan-op> outcome=deny" "pd-<seq>-decision-<slug>"`. This is a safe-ABORT, NOT a reconstructed human choice: the lost-question orphan has NO recoverable human answer (the question text died with the pd line), so the ONLY safe outcome is to ABORT the pending action — `deny`. NEVER fabricate an `approve` for a question you can no longer read; **(2)** close the barrier — `await … kind=human op=<orphan-op> … need=1 got=1` (the DECISION now authorizes it; the barrier clears); **(3)** `resolve <full pd:id>` is a MOOT no-op (the pd line is already gone — it returns `already resolved` / `never existed`, harmless). The barrier is now closed with a recorded outcome, no stall loop. If a decision is still genuinely needed, open a FRESH `pending-stop` under a DIFFERENT slug (a new seq). |
   | **`await kind=job ready=0` and a tracked `run_in_background` job is still pending** | collect nothing yet, do not replay a lane — the job's completion is the FAST wake. BUT this turn STILL schedules a fallback heartbeat (§12.1 step 7): a lost completion wake must self-heal — a scheduled wake is the ONLY continuation owner (D1). |
   | **`await kind=job ready=0` and NO tracked job is pending** (the lost-wake safety net) | replay ONLY the missing lane (its `attempt`, its round — the token carries `attempt=A`) and set its got bit on return; OR, if the lane has genuinely timed out, record a timeout/`FAIL` and open `attempt` A+1. Never re-run an already-persisted lane. |
   | **`await kind=job ready=1`** (join-ready — `(got&need)==need`) | reconcile the persisted lane results and bank the single normal successor (the `phase=review … findings=<COUNT>` or VOID line for this round), which SUPERSEDES the AWAIT, then proceed. |
@@ -1585,25 +1631,27 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    ```
    `corrupt` → §10 corrupt-bridge STOP-LOUD (release lock, do NOT reschedule).
    `await kind=human ready=0` → branch on `last_decision` for the op (§8, D15): **op HAS a same-op
-   `[mission] DECISION`** ⇒ ANSWERED ⇒ CONSUME on THIS tick — idempotently finish the close (DECISION
-   exists → `await … got=1` → `resolve`, each a no-op if already done), THEN `approve` ⇒ proceed the
-   idempotent gated action, `deny` ⇒ ABORT it; NEVER re-ask. **NO DECISION on a WAKE tick** ⇒ STOP the
-   scheduled continuation (a human hand-back is owed; an ORPHAN — no `pd:<op>` line either — ⇒ surface it;
-   R8r3-R7/FIX-B: do NOT re-state via `pending-stop` (fails closed rc=14 — unverifiable); recovery = an
-   explicit human resolve/deny of that op, or a NEW decision under a DIFFERENT slug; do NOT proceed). **On a REAL USER TURN answering it (D3):** CLOSE it HERE,
-   UNDER this tick lock, in THIS order (D14): (a) `log` the `[mission] DECISION op=<seq>-<slug>
-   outcome=<approve|deny>` (idtag `pd-<seq>-decision-<slug>`) with the user's ACTUAL answer; (b) append the
-   SAME barrier with `got=1` (reuse the EXACT op/part/phase/round/attempt/need from the token, D6 — the
-   `await` verb REFUSES got=1 until the same-op DECISION exists, DECISION-first lib-enforced); (c)
-   `resolve` the pd whose UNIQUE `<seq>-<slug>` matches the token's `op`. Do NOT execute the gated action on
-   this answering turn. Order DECISION → got=1 → resolve (D14/R7-3): a crash in the window then leaves a
-   durable DECISION (+ maybe a RESOLVED barrier + cosmetic stale pd line, benign), NOT a removed pd + a
-   ready=0 park with no recorded outcome. This close (DECISION → got=1 → resolve) IS this wake's ONE
-   transition (R7-11/R6): go straight to step 7 and RESCHEDULE — do NOT re-enter step 5 to drive a FURTHER
-   transition this turn. The CONSUMING wake performs the gated action exactly once — `approve` ⇒ it runs the
-   idempotent gated action (idempotency key ⇒ a replay is a no-op); `deny` ⇒ it obeys the durable DECISION
-   and ABORTS. No separate immediate-execute on this turn (SKIP-or-DOUBLE-DRIVE ambiguity removed). Closing
-   under the lock (NOT before entering §12.1) stops a queued wake from racing the resolution (R6 — no double-drive).
+   `[mission] DECISION`** ⇒ ANSWERED ⇒ CONSUME on THIS tick — `approve` ⇒ perform the idempotent gated
+   action, `deny` ⇒ ABORT it, THEN finish the close (`await … got=1` → `resolve`, each a no-op if already
+   done); the action runs WITH the close on THIS wake, never split (C2); NEVER re-ask. **NO DECISION on a
+   WAKE tick** ⇒ STOP the scheduled continuation (a human hand-back is owed; an ORPHAN — no `pd:<op>` line
+   either — ⇒ surface it + recover per §12.1 (iii) C7: `log` a DECISION `deny` for the orphan op → `await …
+   got=1` close → `resolve` (moot); do NOT re-state via `pending-stop` (fails closed rc=14 — unverifiable);
+   do NOT proceed). **On a REAL USER TURN answering it (D3):** CONSUME it HERE, UNDER this tick lock, in
+   THIS order (D14/C2): (a) `log` the `[mission] DECISION op=<seq>-<slug> outcome=<approve|deny>` (idtag
+   `pd-<seq>-decision-<slug>`) with the user's ACTUAL answer (the barrier stays LIVE at `got=0` with the
+   DECISION — the C9 reader keeps it live so this same wake can consume it); (b) CONSUME — `approve` ⇒ run
+   the idempotent gated action, `deny` ⇒ ABORT it; (c) append the SAME barrier with `got=1` (reuse the EXACT
+   op/part/phase/round/attempt/need from the token, D6 — the `await` verb REFUSES got=1 until the same-op
+   DECISION exists, DECISION-first lib-enforced AND reader-enforced); (d) `resolve` the pd whose UNIQUE
+   `<seq>-<slug>` matches the token's `op`. **C2 — NEVER close (got=1 + resolve) while deferring the action
+   to a later wake: once `got=1` resolves the barrier the C9 reader DROPS it, so a deferred wake finds
+   nothing to consume and the approved action never runs.** Order DECISION → action → got=1 → resolve
+   (D14/R7-3): a crash mid-consume leaves a durable DECISION + a LIVE barrier, so the next wake re-CONSUMES
+   idempotently — NOT a removed pd + a ready=0 park with no recorded outcome. This whole CONSUME IS this
+   wake's ONE transition (R7-11/R6): go straight to step 7 and RESCHEDULE — do NOT re-enter step 5 to drive
+   a FURTHER transition this turn. Consuming under the lock (NOT before entering §12.1) stops a queued wake
+   from racing the resolution (R6 — no double-drive).
    `await kind=job ready=0` + a tracked job pending → do NOT replay a lane this tick (the completion is
    the fast wake), but STILL fall through to step 7 and schedule a fallback heartbeat (D1).
    `await kind=job ready=0` + NO tracked job → replay ONLY the missing lane, but ONLY once the barrier has
@@ -1704,10 +1752,25 @@ A wake **RETURNS WITHOUT rescheduling** — releasing the tick lock, then stoppi
   human `AWAIT kind=human … op=<seq>-<slug> attempt=1 need=1 got=0` STOP barrier AND mints the monotonic pd
   (seq machine-assigned + monotonic + NEVER reused, even across `resolve`; 1st = `pd:1-<slug>`, 2nd =
   `pd:2-<slug>`, …), ECHOING `pending-stop ok id=pd:<seq>-<slug>`. CAPTURE the echoed id — do NOT hand-pick
-  the seq (any agent-supplied seq is ignored). Extract it from the status line (a bare `$(…)` would capture
-  the WHOLE `mission-write: pending-stop ok id=pd:…` line = an invalid op/resolve id):
-  `pid=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q" | sed -n 's/.*id=\(pd:[^ ]*\).*/\1/p')`
-  — `pid` is the FULL `pd:<seq>-<slug>` (use it verbatim for `resolve`); the barrier/DECISION `op` is `${pid#pd:}`. **R6/R7-1 — the AWAIT `op` is the echoed pd's UNIQUE
+  the seq (any agent-supplied seq is ignored). **C6 — capture the FULL output and CHECK the status line
+  (rc) FIRST, THEN extract the id ONLY on the ok path.** `mission-write.sh` ALWAYS exits 0 (the rc is IN
+  the printed line) and `sed` emits NOTHING on a failure line, so a bare `pid=$(… | sed …)` cannot tell a
+  real mint from a `FAILED rc=3/7/8/9/10-14` — proceeding on an empty `pid` is a naked yield (S1). Do:
+  ```
+  out=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q" 2>&1)
+  # R8r5-E6/D4 - ANCHOR to the EXACT status line `^mission-write: pending-stop ok id=pd:<seq>-<slug>` and
+  # extract in ONE step. Do NOT wildcard-match `*id=pd:*` over the combined stdout+stderr: the untrusted
+  # echoed question/args (or a lib diagnostic) could embed that token and SPOOF a mint on a FAILED rc.
+  # PORTABLE sed only (BSD/macOS sed has NO `\b` and NO `\+`); BRE `[0-9][0-9]*` / `[a-z0-9-][a-z0-9-]*`.
+  # An empty pid = no matching status line = the STOP did NOT open.
+  pid=$(printf '%s\n' "$out" | sed -n 's/^mission-write: pending-stop ok id=\(pd:[0-9][0-9]*-[a-z0-9-][a-z0-9-]*\).*$/\1/p' | head -1)
+  if [ -n "$pid" ]; then
+    : # the ONLY proceed-able path — pid is the FULL, VALIDATED pd:<seq>-<slug> (use it verbatim for resolve)
+  else
+    : # every FAILED rc (see the `pending-stop` fail-closed rc block) OR an empty/spoofed id => the STOP did NOT open => do NOT proceed; STOP-LOUD / surface (S1)
+  fi
+  ```
+  — on the ok path `pid` is the FULL `pd:<seq>-<slug>` (use it verbatim for `resolve`); the barrier/DECISION `op` is `${pid#pd:}`. **R6/R7-1 — the AWAIT `op` is the echoed pd's UNIQUE
   `<seq>-<slug>`** (the `pd:` id minus the `pd:` prefix), NOT the bare `<slug>`: without the minted seq,
   two same-slug decisions would share `(part,round,attempt=1,kind,op)` and the 2nd `got=0` opener would
   inherit the 1st's already-resolved `got=1` — silently skipping the mandatory stop (unapproved autonomous
@@ -1718,31 +1781,35 @@ A wake **RETURNS WITHOUT rescheduling** — releasing the tick lock, then stoppi
   Do NOT hand-open a separate `await` barrier (the atomic verb already opened it) and do NOT substitute
   plain `pending` (NON-BLOCKING — it does not stop the loop, §9).
   THEN stop — the outstanding `await kind=human ready=0` keeps the §8 rows parked until a real user turn.
-  **Closing it (C6, D6, D14):** the first turn AFTER the user answers ENTERS §12.1 and closes the barrier
-  UNDER its tick lock (step 4) — NOT before entering (R6: closing outside the lock lets a queued wake race
-  the resolution → double-drive). Under the lock, in THIS EXACT order: **(a)** record the outcome —
-  `log … "[mission] DECISION op=<seq>-<slug> outcome=<approve|deny>" "pd-<seq>-decision-<slug>"` with the
-  user's ACTUAL answer; **(b)** append the SAME barrier with `got=1` (reuse the exact
+  **Closing it (C6, D6, D14, C2):** the first turn AFTER the user answers ENTERS §12.1 and CONSUMES the
+  barrier UNDER its tick lock (step 4) — NOT before entering (R6: acting outside the lock lets a queued wake
+  race the resolution → double-drive). **C2 — the gated action MUST run on the SAME wake that consumes the
+  DECISION; NEVER close the barrier (got=1 + resolve) while deferring the action to a later wake.** Once
+  `got=1` resolves the barrier the reader (C9 keystone) DROPS it, so a deferred wake would find nothing to
+  consume and the approved action would NEVER run. Under the lock, in THIS EXACT order: **(a)** record the
+  outcome — `log … "[mission] DECISION op=<seq>-<slug> outcome=<approve|deny>" "pd-<seq>-decision-<slug>"`
+  with the user's ACTUAL answer (the barrier stays LIVE at `got=0` with the DECISION present — the C9 reader
+  keeps a human `got=0`-with-a-DECISION barrier LIVE precisely so this wake can consume it); **(b)** CONSUME
+  it — `approve` ⇒ perform the idempotent gated action; `deny` ⇒ ABORT it (prose, not machine-forced — the
+  ACCEPTED RESIDUAL); **(c)** append the SAME barrier with `got=1` (reuse the exact
   op/part/phase/round/attempt/need from the token) — the `await` verb REFUSES this got=1 close unless the
-  same-op DECISION already exists (DECISION-first is LIB-ENFORCED, so the outcome is DURABLE before the
-  barrier ever reads resolved); **(c)** `resolve` the pd whose `<seq>-<slug>` matches the `await-state`
-  token's `op` (an EXACT unique match — the seq removes the old slug-repeat ambiguity). Do NOT execute the
-  gated action on this answering turn — the close (DECISION → got=1 → resolve) IS this turn's ONE transition.
-  The gated action is performed by the CONSUMING wake exactly once: `approve` ⇒ the wake runs the gated
-  action; `deny` ⇒ the wake OBEYS the durable DECISION and ABORTS it (prose, not machine-forced — the
-  ACCEPTED RESIDUAL). It is safe ONLY because the gated action **MUST carry its own idempotency key** — the
-  same idtag/idempotencyKey-dedup invariant the bridge itself uses (an external write is idempotent BY KEY),
-  so an approve-replay is a no-op and a deny-replay never fires — which is what makes "the consuming wake
-  runs it, not the answering turn" exactly-once. **R1 accepted FAIL-SAFE residual:** a crash AFTER `got=1`
-  but BEFORE the gated action runs leaves the barrier RESOLVED with the action not yet taken — on the next
-  wake this either skips (=stall, loud) or re-runs the idempotent action (=re-confirm), NEVER a silent
-  bypass; both legs fail safe, which is why we do NOT build an applied/aborted lifecycle for it. Order
-  DECISION → got=1 → resolve (D14/R7-3): a crash mid-close leaves a durable DECISION (+ maybe a RESOLVED
-  barrier + cosmetic stale pd line, benign), NEVER a removed pd + a ready=0 park with no recorded outcome.
-  R4 — the got=1 append is a DISTINCT record (the idtag ends `-g<GOT>`, so it does NOT overwrite the got=0
-  opener); `await-state` reads the newest line's got so `got==need=1` reads RESOLVED — that IS the close.
-  This close IS the wake's ONE transition (R7-11/R6): go to step 7 and RESCHEDULE — do NOT drive a further
-  transition this turn, and do NOT immediately-execute the gated action here (that is the consuming wake's job).
+  same-op DECISION already exists (DECISION-first is LIB-ENFORCED, and the reader ALSO requires the DECISION
+  before it reads resolved); **(d)** `resolve` the pd whose `<seq>-<slug>` matches the `await-state` token's
+  `op` (an EXACT unique match — the seq removes the old slug-repeat ambiguity). The whole CONSUME
+  (DECISION → action → got=1 → resolve) IS this turn's ONE transition: go to step 7 and RESCHEDULE — do NOT
+  drive a further transition this turn. **C8 — exactly-once depends on the gated action's OWN
+  idempotency/single-shot nature (the ACCEPTED residual):** the STOP contract does NOT persist or enforce an
+  applied/aborted flag, so the agent MUST make the gated action idempotent or single-shot (an external write
+  idempotent BY KEY, the same idtag/idempotencyKey-dedup invariant the bridge uses) — so a re-consume after a
+  crash is an approve-replay no-op / a deny that never fires. **R1 accepted FAIL-SAFE residual:** with the
+  action BEFORE `got=1`, a crash between the action and `got=1` leaves the barrier LIVE + DECISION, so the
+  next wake re-CONSUMES (idempotent action re-run = re-confirm, then closes); a crash after `got=1` leaves it
+  RESOLVED with the action already done. NEVER a silent bypass; both legs fail safe, which is why we do NOT
+  build an applied/aborted lifecycle. Order DECISION → action → got=1 → resolve (D14/R7-3): a crash mid-close
+  leaves a durable DECISION (+ maybe a RESOLVED barrier + cosmetic stale pd line, benign), NEVER a removed pd
+  + a ready=0 park with no recorded outcome. R4 — the got=1 append is a DISTINCT record (the idtag ends
+  `-g<GOT>`, so it does NOT overwrite the got=0 opener); `await-state` reads the newest line's got so
+  `got==need=1` (with the DECISION present) reads RESOLVED — that IS the close.
 - **`await kind=human ready=0`** already outstanding (a prior turn parked on the user).
 
 An **ordinary away-policy `pending`** (a non-blocking batched question logged under §9's away default) is

@@ -477,11 +477,31 @@ _mw_partdone_check() {
 _mw_human_barrier_guard() {
   _hb_verb="$1"; _hb_act="$2"; _hb_sid="$3"; _hb_root="$4"
   _hb_state=$(mission_await_state "$_hb_sid" "$_hb_root" 2>/dev/null)
+  # R8r6-G4/G2 - a CRASHED rebaseline (marker gen bumped, the boundary append died) makes await-state read
+  # `corrupt` (gen-boundary-mismatch). That is a RECOVERABLE crash orphan, NOT real corruption - but this
+  # LOCK-FREE pre-check runs BEFORE clear/part-done/rebaseline acquire the lock and run their own under-lock
+  # _mission_lockheld_gen_recover, so without this those three paths would fail closed (rc=4) here and NEVER
+  # reach recovery => a permanent wedge (G4). Attempt the bounded under-lock recovery HERE, then RE-READ.
+  # The recover is integrity-FIRST + bounded to the exact crash signature (marker gen strictly ahead of the
+  # newest VALID boundary) + idempotent, so it heals ONLY a real crashed rebaseline and NO-OPs a forged
+  # future-gen / malformed boundary (those stay `corrupt` and still fail closed below). _mission_lock is
+  # non-reentrant; we release before the writer re-acquires it, so this serializes with (never nests) the
+  # writer's own recover - which then finds the boundary already present (idempotent no-op).
+  if [ "$_hb_state" = corrupt ]; then
+    _hb_lb=$(_mission_lockbase "$_hb_root")
+    if _mission_lock "$_hb_lb" "$_hb_sid" 2>/dev/null; then
+      _mission_lockheld_gen_recover "$_hb_sid" "$_hb_root"
+      _mission_unlock
+    fi
+    _hb_state=$(mission_await_state "$_hb_sid" "$_hb_root" 2>/dev/null)
+  fi
   # Trust ONLY a bare `none` or a well-formed `await …` line; anything else (corrupt/empty/unexpected)
-  # fails closed.
+  # fails closed. R8r6-G4 - an HONEST message: after the recovery attempt a STILL-`corrupt` read is a real
+  # unreadable/corrupt archive or a forged gen boundary (there is NO open STOP to "resolve" - the prior text
+  # was misleading and retrying never healed it); name the real recovery (repair/restore the log or archive).
   case "$_hb_state" in
     none|"await "*) : ;;
-    *) _mw_emit_refuse "$_hb_verb" 4 "REFUSED: await-state unreadable ('${_hb_state:-empty}') — fail closed; resolve any open human STOP, then retry" ;;
+    *) _mw_emit_refuse "$_hb_verb" 4 "REFUSED: await-state '${_hb_state:-empty}' after gen-recovery attempt — fail closed; a corrupt/unreadable log-or-archive or a forged gen boundary remains (repair/restore it — retrying alone will not heal it)" ;;
   esac
   case "$_hb_state" in
     "await "*)

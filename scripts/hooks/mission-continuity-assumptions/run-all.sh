@@ -38,6 +38,7 @@ TESTS=(
   "06-wiring-present.sh"
   "07-decision-durability.sh"
   "08-r8-review-fixes.sh"
+  "09-consumer-agreement.sh"
 )
 PASS=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do

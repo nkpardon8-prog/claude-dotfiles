@@ -905,17 +905,24 @@ SID="${UNIQ}-rollover"
 R=$(fresh_root rollover)
 bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — rollover" >/dev/null 2>&1
 F="$R/MISSION.${SID}.md"; LOGF="$R/MISSION.${SID}.log"
-# FAULT INJECT: bump the marker to gen 2 WITHOUT a boundary line (the crash window).
-sed 's/ gen=1 -->/ gen=2 -->/' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+# FAULT INJECT: bump the marker to gen 2 WITHOUT a boundary line (the crash window). The marker carries
+# ` gen=1 pdseq=<N> ` (pdseq was added after gen), so anchor the bump on ` gen=1 pdseq=` — NOT ` gen=1 -->`
+# (the old anchor silently no-op'd once pdseq landed, leaving this whole crash-safety leg a dead fixture).
+sed 's/ gen=1 pdseq=/ gen=2 pdseq=/' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+# READ path fails closed loud: void-count is a pure gen-sliced read (no lock, no self-heal) so it still
+# REFUSES on the marker>boundary mismatch (-1). Reads never auto-heal; only the under-lock WRITE path does.
 VC_BAD=$(bash "$MWSH" void-count "$SID" "$R" 1 1 2>/dev/null)
+# R8r6-G4/G2 - a genuinely-new PART-DONE runs the _mw_human_barrier_guard pre-check, which on a `corrupt`
+# read now RECOVERS the crashed rebaseline UNDER THE LOCK (the missing boundary is healed) and RE-READS,
+# so the gen-boundary no longer WEDGES part-done. The advance is still GATED (rc=4) — here on the legit
+# missing live-verify — but the crashed rebaseline is REPAIRED as a side effect (HEALED=1) rather than
+# leaving the mission permanently stuck at the gen-boundary refusal.
 PD_BAD=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
-# WRITE self-heals (a gen>=2 append writes the recovered boundary FIRST):
-bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=0 findings=1" "m1-review-r1-d0" >/dev/null 2>&1
 HEALED=$(grep -ac 'MISSION-REBASELINED status=active gen=2' "$LOGF")
 VC_OK=$(bash "$MWSH" void-count "$SID" "$R" 1 1 2>/dev/null)
-if [ "$VC_BAD" = "-1" ] && printf '%s' "$PD_BAD" | grep -q 'FAILED rc=4 (REFUSED gen-boundary-mismatch)' \
+if [ "$VC_BAD" = "-1" ] && printf '%s' "$PD_BAD" | grep -q 'FAILED rc=4' \
    && [ "$HEALED" = "1" ] && [ "$VC_OK" = "0" ]; then
-  pass "gen-boundary mismatch: void-count=-1, PART-DONE rc=4; write self-heals; reads recover"
+  pass "gen-boundary mismatch: void-count=-1 (read fails closed); PART-DONE rc=4 but the guard recovers the boundary under lock (HEALED=1); reads recover"
 else fail "gen-boundary crash-safety" "vc_bad=$VC_BAD pd_bad='$PD_BAD' healed=$HEALED vc_ok=$VC_OK"; fi
 
 # ===========================================================================================
@@ -927,8 +934,9 @@ SID="${UNIQ}-pregen"
 R=$(fresh_root pregen)
 mission_create "$SID" "$R" "pre-gen plan" >/dev/null 2>&1
 F="$R/MISSION.${SID}.md"
-# strip the gen= field from the marker to reproduce an OLD-code file
-sed 's/ gen=1 -->/ -->/' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+# strip the gen= field from the marker to reproduce an OLD-code file (anchor on ` gen=1 pdseq=`, since the
+# marker carries ` gen=1 pdseq=<N> `; the old ` gen=1 -->` anchor no-op'd once pdseq was added to the marker)
+sed 's/ gen=1 pdseq=/ pdseq=/' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
 GEN_READ=$(_mission_marker_field "$F" gen)
 GEN_TAG=$(_mission_gen_tag "$F" "sometag")   # gen 1 default => unprefixed
 if mission_verify "$F" "$SID" 2>/dev/null && [ -z "$GEN_READ" ] && [ "$GEN_TAG" = "sometag" ]; then

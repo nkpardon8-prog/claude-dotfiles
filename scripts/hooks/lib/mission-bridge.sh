@@ -125,8 +125,14 @@ _mission_strip_zeros() {
 #   `[mission] DECISION op=1-…` (no AWAIT, no pd line) left the seed at 0, a fresh mint reused op=1, and the
 #   preplanted DECISION then satisfied the DECISION-first human close — a stale-approve STOP bypass. I6 —
 #   EVERY scan is idtag-column + body double-anchored, so a free-text note/question body carrying `op=999-`
-#   or `pd:999-` (no structured idtag) cannot poison the counter into a false sequence-exhaustion. Each
-#   candidate is bounded to <=6 digits in awk; prints 0 when there is no history.
+#   or `pd:999-` (no structured idtag) cannot poison the counter into a false sequence-exhaustion. Every
+#   candidate is bounded to <=6 digits. R8r6-E2-cap-edge SPLITS the cap bound by OCCUPANCY: a REAL occupying
+#   structure — a live pd LINE or an AWAIT BARRIER — is counted to the FULL cap 999999 (reusing its seq would
+#   COLLIDE with it), so a barrier-first crash at the cap (marker still 999998, a genuine pd/AWAIT at 999999)
+#   makes the next mint report TRUE exhaustion instead of stepping onto the occupied op. A NON-occupying
+#   DECISION / resolve line stays bounded to <=999998, so a PLANTED op=999999 DECISION with NO barrier/pd
+#   still cannot force a false exhaustion (round-5 E2 intent preserved). >6-digit forgeries are always
+#   ignored; the marker (bumped every real mint) stays the authority. Prints 0 when no in-range history.
 _mission_pdseq_highwater() {
   _hw_sid=$(_mission_sanitize_sid "$1"); _hw_root="$2"
   _hw_md="${_hw_root}/MISSION.${_hw_sid}.md"
@@ -139,7 +145,14 @@ _mission_pdseq_highwater() {
       $0==openf{inz=1;next} $0==closef{inz=0;next}
       inz==1 && match($0, /^- \[pd:[0-9]+/) {
         s=substr($0, RSTART, RLENGTH); sub(/^- \[pd:/, "", s)
-        if (length(s)>=1 && length(s)<=6) { v=s+0; if (v>mx) mx=v }
+        # R8r6-E2-cap-edge - a live pd LINE is a REAL occupying structure (a new mint reusing its seq would
+        # collide with it), so it is counted up to the FULL cap 999999. If a genuine pd:999999 exists, the
+        # seed reaches 999999 and the next mint reports TRUE exhaustion (rc=7) rather than REUSING 999999 - a
+        # barrier-first crash at the cap (marker still 999998, a real pd/AWAIT at 999999) no longer lets the
+        # next mint step onto the occupied op. DECISION/resolve lines (drained / non-occupying) stay bounded
+        # to <=999998 below so a PLANTED op=999999 DECISION with NO barrier/pd still cannot force a false
+        # exhaustion (round-5 E2 intent). >6-digit forgeries are still ignored (never seed a valid mint).
+        if (length(s)>=1 && length(s)<=6) { v=s+0; if (v<=999999 && v>mx) mx=v }
       }
       END{ print mx+0 }' "$_hw_md")
   fi
@@ -152,26 +165,38 @@ _mission_pdseq_highwater() {
     # R8r3-R10 - the op ENCODED in the DECISION idtag `[g<G>-]pd-<seq>-decision-<slug>` -> `<seq>-<slug>`.
     function dec_op(t,   s,p,seq,slug){ s=t; sub(/^g[0-9]+-/,"",s); sub(/^pd-/,"",s);
       p=index(s,"-decision-"); if(p==0) return ""; seq=substr(s,1,p-1); slug=substr(s,p+length("-decision-")); return seq "-" slug }
-    ($1 ~ /^(g[0-9]+-)?m[0-9]+-await-/) && ($2 ~ /^\[mission\] AWAIT /) {
-      p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
-        # R8r3-R10 - BIND the idtag-encoded op to the body op; a forged AWAIT whose idtag says op=1-approve
-        # but body says op=999999-x must NOT bump the high-water (else a false sequence-exhaustion refuses
-        # ALL future mints = total stall). I6 already blocks free-text (no idtag); this blocks STRUCTURED
-        # (idtag-present, op-mismatched) poison too. Mirrors the resolve-scan idtag<->body bind (R8r2-I).
-        iop=await_op($1)
-        if(iop!="" && iop==op){ dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } } }
+    # R8r7-CL6 - a single-field extractor (key=<value up to space>) to validate the AWAIT grammar below.
+    function hwf(s,k,   p,i,r,a){ p=k"="; i=index(s,p); if(i==0) return ""; r=substr(s,i+length(p)); split(r,a," "); return a[1] }
+    ($1 ~ /^(g[0-9]+-)?m[0-9]+-await-/) && ($2 ~ /^\[mission\] AWAIT part=/) {
+      # R8r7-CL6 - VALIDATE THE FULL WRITER AWAIT GRAMMAR before counting an op as occupying. The idtag<->body
+      # op bind alone was insufficient: a forged `AWAIT ... kind=job op=999999-x need=1` (idtag-op==body-op but
+      # bogus barrier fields) bumped the high-water to 999999 -> the next mint reported false exhaustion rc=7 ->
+      # PERMANENT STALL. Mirror the mission_await_append bounds (kind in {human,job}; need 1..7; got 0..7;
+      # part/round/attempt numeric). A line failing the grammar is NOT a real barrier => do NOT bump.
+      _hkind=hwf($2,"kind"); _hneed=hwf($2,"need"); _hgot=hwf($2,"got")
+      _hpart=hwf($2,"part"); _hround=hwf($2,"round"); _hatt=hwf($2,"attempt")
+      if ((_hkind=="human"||_hkind=="job") \
+          && _hneed ~ /^[0-9]+$/ && (_hneed+0)>=1 && (_hneed+0)<=7 \
+          && _hgot ~ /^[0-9]+$/ && (_hgot+0)>=0 && (_hgot+0)<=7 \
+          && _hpart ~ /^[0-9]+$/ && _hround ~ /^[0-9]+$/ && _hatt ~ /^[0-9]+$/) {
+        p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
+          # R8r3-R10 - BIND the idtag-encoded op to the body op; a forged AWAIT whose idtag says op=1-approve
+          # but body says op=999999-x must NOT bump the high-water. I6 blocks free-text; this + CL6 block
+          # STRUCTURED (idtag-present, op-mismatched OR grammar-invalid) poison too.
+          iop=await_op($1)
+          if(iop!="" && iop==op){ dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v<=999999 && v>mx) mx=v } } } } }   # R8r6-E2-cap-edge a REAL AWAIT barrier is an occupying structure -> counted to the full cap 999999 (a crashed barrier-first mint at the cap must report exhaustion, not reuse 999999); >6-digit still ignored
     ($1 ~ /^(g[0-9]+-)?resolve-/) && ($2 ~ /^resolved pd:[0-9]+-/) {
       # R8r2-I - bind the resolve-<id> idtag encoded id to the body pd:<id> id; a generic-log line
       # resolved pd:999999-X under an idtag resolve-note (id mismatch) must NOT bump the high-water.
       it=$1; sub(/^g[0-9]+-/,"",it); sub(/^resolve-/,"",it)
       rest=substr($2, length("resolved pd:")+1); split(rest, bb, " "); bid=bb[1]
-      if(it==bid){ dp=digpfx(bid); if(dp!="" && length(dp)<=6){ v=dp+0; if(v>mx) mx=v } } }
+      if(it==bid){ dp=digpfx(bid); if(dp!="" && length(dp)<=6){ v=dp+0; if(v<=999998 && v>mx) mx=v } } }   # R8r5-E2 out-of-range (>999998) ignored
     ($1 ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && ($2 ~ /^\[mission\] DECISION op=[0-9]+-/) {
       p=index($2,"op="); if(p>0){ rest=substr($2,p+3); split(rest,a," "); op=a[1]
         # R8r3-R10 - same STRUCTURED idtag<->body-op bind for the DECISION scan (a forged
         # pd-1-decision-x idtag + body op=999999-y no longer poisons the counter into false exhaustion).
         iop=dec_op($1)
-        if(iop!="" && iop==op){ dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v>mx) mx=v } } } }
+        if(iop!="" && iop==op){ dp=digpfx(op); if(dp!="" && length(dp)<=6 && substr(op,length(dp)+1,1)=="-"){ v=dp+0; if(v<=999998 && v>mx) mx=v } } } }   # R8r5-E2 out-of-range (>999998) ignored
     END{ print mx+0 }')
   case "$_hw_mdmax"  in ''|*[!0-9]*) _hw_mdmax=0 ;; esac
   case "$_hw_logmax" in ''|*[!0-9]*) _hw_logmax=0 ;; esac
@@ -436,6 +461,14 @@ mission_resolve_path() {
 # CORRUPT gzip archive silently yields no line; a caller that maps an empty stream to `none`/`unknown`
 # would then HIDE an open STOP or a MISSION-CLEARED. This lets await_state + lifecycle_state FAIL CLOSED
 # (`corrupt`/`unreadable`) on it. `gzip -t` catches the readable-but-corrupt case the `-r` bit misses.
+# R8r5-D7 (residual, DOCUMENTED not fixed - deliberately NOT over-built): `gzip -t` here decompresses each
+# archive once, and the caller's subsequent _gen_sliced_stream decompresses it AGAIN (a second inflate).
+# A crafted high-ratio (zip-bomb) .gz could make the double-inflate pin the held lock. Judged a BENIGN
+# single-writer residual: the .mission-backups/ archives are SELF-PRODUCED by this lib's own rotation
+# (per-line 480B budget, bounded volume) - a zip-bomb requires WRITE access to .mission-backups/, and an
+# attacker with that access can corrupt/delete mission state directly (the threat model is forged log
+# LINES, not adversarial archive bytes). Bounding the inflate risks truncating a legitimately large real
+# archive (a false corrupt), so we accept the two-pass cost rather than add a cap.
 _mission_log_read_integrity() {
   _lri_sid=$(_mission_sanitize_sid "$1"); _lri_root="$2"
   _lri_live="${_lri_root}/MISSION.${_lri_sid}.log"
@@ -463,32 +496,34 @@ _mission_log_read_integrity() {
 mission_lifecycle_state() {
   _mst_sid=$(_mission_sanitize_sid "$1"); _mst_root="$2"
   { [ -n "$_mst_sid" ] && [ -n "$_mst_root" ]; } || { printf 'unknown\n'; return 0; }
-  _mst_live="${_mst_root}/MISSION.${_mst_sid}.log"
   # R8r3-R9 + R8r4-C5/C11 - fail CLOSED on a genuine read error. The awk pipeline below reads with
   # `2>/dev/null` and an unreadable OR readable-but-corrupt-gzip file would silently yield no line -> a
   # false `unknown`. `_mission_log_read_integrity` distinguishes it: an existing-but-unreadable live log
   # or archive, OR a `.gz` that fails `gzip -t`, => `unreadable`. An ABSENT log is normal (fresh/active
   # mission) and falls through to the no-line `unknown`.
   if ! _mission_log_read_integrity "$_mst_sid" "$_mst_root"; then printf 'unreadable\n'; return 0; fi
-  # Concatenate archives oldest->newest + live, keep the LAST lifecycle line. Uses `if`/`${a##*.}`
-  # rather than `case` so the whole thing is safe inside $( … ) — bash 3.2 misparses a `)` case-pattern
-  # inside command substitution. No temp file (so nothing to leak on interruption).
+  # Concatenate archives oldest->newest + live via _mission_timing_stream (the ONE shared reader), keep the
+  # LAST lifecycle line. R8r7-CL5 - reusing _mission_timing_stream (rather than an inline duplicate) means
+  # this consumer inherits the DROP-SAFE live-first read order vs a concurrent rotation, so a rotation can
+  # never drop a MISSION-CLEARED/REBASELINED line out from under this read and flip the state.
   _mst_last=$(
-    {
-      for _mst_a in "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.gz \
-                    "$_mst_root"/.mission-backups/MISSION."$_mst_sid".log.*.txt; do
-        [ -e "$_mst_a" ] || continue
-        printf '%s\n' "$_mst_a"
-      done | sort | while IFS= read -r _mst_a; do
-        if [ "${_mst_a##*.}" = gz ]; then gzip -dc "$_mst_a" 2>/dev/null; else cat "$_mst_a" 2>/dev/null; fi
-      done
-      cat "$_mst_live" 2>/dev/null
-    } | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-(CLEARED|REBASELINED)/' | tail -1 || true
+    _mission_timing_stream "$_mst_sid" "$_mst_root" \
+      | awk -F'\t' '$1=="" && ( $2 ~ /^\[mission\] MISSION-CLEARED status=(achieved|could-not|cleared) reason=[a-z0-9-]*$/ || $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ \([^\t]*\)$/ )' | tail -1 || true
   )
   # B2 (round-2 S1): anchored to the empty-idtag column + body prefix. MISSION-CLEARED/REBASELINED are
   # the only lines the validator mints with an EMPTY idtag, so a criticer/note line (which always carries
   # a non-empty `m<N>-…` idtag) that merely EMBEDS `MISSION-CLEARED` can no longer flip the mission to
   # `cleared` and silently halt it.
+  # R8r6-G1 / R8r7-CL1 - FULL-GRAMMAR anchor (not a prefix): the SELECTION above requires the WHOLE
+  # writer/validator grammar for BOTH forms - CLEARED `status=(achieved|could-not|cleared) reason=<slug>$`
+  # (mission-write.sh :340) and the REBASELINED boundary END-ANCHORED to the writer's ` (...)` suffix
+  # (`status=active gen=<N> \([^\t]*\)$`, the writer's exact shape). A PREFIX match
+  # (`^\[mission\] MISSION-(CLEARED|REBASELINED)`) let a TORN/forged lifecycle line (missing/mangled tail) be
+  # picked as the last lifecycle line and flip the mission to `cleared`/`active`, bypassing an open human STOP
+  # on post-compact resume / archive cleanup. A torn line is now IGNORED, so the last VALID lifecycle line
+  # wins (fail-closed). Byte-mirrors the mission_await_state reader (:2157) - readers validate what the writer
+  # validates. SHARED INVARIANT: full-grammar MISSION-CLEARED/REBASELINED anchoring lives here + await_state +
+  # the gen-boundary readers (:1635/:1702) + the wake mission_state prose - keep them uniform.
   case "$_mst_last" in
     *MISSION-REBASELINED*) printf 'active\n' ;;
     *MISSION-CLEARED*)     printf 'cleared\n' ;;
@@ -539,6 +574,15 @@ mission_fork() {
   _fk_ssid=$(_mission_marker_field "$_fk_src" sid)
   [ -n "$_fk_ssid" ] || { echo "mission_fork: source has no sid marker" >&2; return 1; }
   mission_verify "$_fk_src" "$_fk_ssid" || { echo "mission_fork: source failed verify" >&2; return 2; }
+  # R8r5-E5 - the source LOG + archives must be READABLE and decompressable BEFORE we clone their history
+  # forward. mission_verify covers the .md marker/zones but NOT the log stream; a source whose live log is
+  # unreadable or whose .gz archive fails `gzip -t` would clone a TRUNCATED history, silently dropping an
+  # archived human STOP (or a MISSION-CLEARED) into a resume that then proceeds past it. Fail CLOSED - the
+  # same read-integrity gate await_state/lifecycle_state use (an ABSENT log is normal and passes).
+  _fk_srcdir=$(dirname "$_fk_src")
+  if ! _mission_log_read_integrity "$_fk_ssid" "$_fk_srcdir"; then
+    echo "mission_fork: source log/archive unreadable or corrupt — refusing to clone a truncated history (fail closed)" >&2; return 2
+  fi
   _fk_dest=$(mission_path "$_fk_dsid" "$_fk_root") || return 1
   [ "$_fk_dest" = "$_fk_src" ] && { printf '%s\n' "$_fk_dest"; return 0; }   # already mine — no-op
   if [ -f "$_fk_dest" ]; then
@@ -553,7 +597,7 @@ mission_fork() {
   # carry the FULL log history forward — rotated archives (oldest->newest) + live log — flattened into
   # the clone's single live log, so lifecycle / convergence / FAIL / test-trust state survives the clone
   # (copying only the live log would lose archived lifecycle lines and could mis-resume). Best-effort.
-  _fk_srcdir=$(dirname "$_fk_src")
+  # (_fk_srcdir was set + integrity-checked above - E5.)
   rm -f "${_fk_dest%.md}.log" 2>/dev/null   # defeat a symlink/orphan planted at the dest log path
   {
     for _fk_a in "$_fk_srcdir"/.mission-backups/MISSION."$_fk_ssid".log.*.gz \
@@ -565,7 +609,17 @@ mission_fork() {
     done
     [ -f "${_fk_src%.md}.log" ] && cat "${_fk_src%.md}.log" 2>/dev/null
   } > "${_fk_dest%.md}.log" 2>/dev/null \
-    || echo "mission_fork: WARN log-history carry-forward incomplete (clone .md is intact): ${_fk_dest%.md}.log" >&2
+    || { rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
+         echo "mission_fork: log-history carry-forward FAILED — backed out the clone (fail closed)" >&2; return 2; }
+  # R8r6-G3/E5 - RE-VERIFY source read-integrity AFTER the copy. The pre-copy check (:564) and the multi-pass
+  # copy above are otherwise a TOCTOU: a concurrent rotation, or an archive that became unreadable / corrupt
+  # DURING the copy, would let the per-file `gzip -dc`/`cat 2>/dev/null` silently drop an archived human STOP
+  # (or a MISSION-CLEARED) from the clone - a resume that then proceeds past it. Fail CLOSED: if the source
+  # set no longer passes integrity, back out the clone (the .md + .log) rather than return a truncated history.
+  if ! _mission_log_read_integrity "$_fk_ssid" "$_fk_srcdir"; then
+    rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
+    echo "mission_fork: source log/archive became unreadable/corrupt during clone — backed out (fail closed)" >&2; return 2
+  fi
   # the clone MUST verify sound under the NEW sid, else back it out.
   if ! mission_verify "$_fk_dest" "$_fk_dsid"; then
     rm -f "$_fk_dest" "${_fk_dest%.md}.log" 2>/dev/null
@@ -1260,12 +1314,12 @@ mission_pending_mint() {
   [ "$_pm_hist" -gt "$_pm_cur" ] 2>/dev/null && _pm_cur="$_pm_hist"
   _pm_next=$((_pm_cur + 1))
   if [ "$_pm_next" -gt 999999 ]; then
-    # R8r4-C10 - marker pdseq is authoritative; a HISTORY-driven overflow (a planted high-op DECISION/AWAIT)
-    # falls back to the marker so it cannot force a false sequence-exhaustion. TRUE exhaustion = marker at cap.
-    if [ "$((_pm_marker + 1))" -gt 999999 ]; then
-      _mission_unlock; echo "mission: pending: REFUSED — sequence-exhausted (marker pdseq at cap; next=${_pm_next} > 999999)" >&2; return 7
-    fi
-    _pm_cur="$_pm_marker"; _pm_next=$((_pm_marker + 1))
+    # R8r5-E2 - TRUE sequence-exhaustion => FAIL CLOSED (rc=7). _pm_cur is already max(marker,
+    # max-IN-RANGE-history); the shared _mission_pdseq_highwater IGNORES >6-digit forgeries (never counts
+    # them), so a planted high-op value cannot inflate the seed. NEVER fall back to marker+1: the old C10
+    # fallback DISCARDED in-range history and reused an OCCUPIED low op (e.g. op=1), letting the immutable
+    # old DECISION satisfy a new decision = fail-OPEN reuse. Fail-SAFE stall beats low-op reuse.
+    _mission_unlock; echo "mission: pending: REFUSED — sequence-exhausted (next=${_pm_next} > 999999; max(marker,in-range-history) at cap)" >&2; return 7
   fi
   _pm_id="pd:${_pm_next}-${_pm_slug}"
   _pm_entry="- [${_pm_id}] ${_pm_q}"
@@ -1351,6 +1405,7 @@ mission_pending_stop_mint() {
   if ! mission_verify "$_ps_f" "$_ps_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing pending-stop (backups in .mission-backups/)" >&2; return 2
   fi
+  _mission_lockheld_gen_recover "$_ps_sid" "$_ps_root"   # R8r5-D2 - heal a crash-orphaned gen bump BEFORE the gen-sliced lifecycle/await reads below would refuse
   _ps_nonce=$(_mission_marker_field "$_ps_f" nonce)
   _ps_n8=$(printf '%s' "$_ps_nonce" | cut -c1-8)
   [ -n "$_ps_n8" ] || { _mission_unlock; echo "mission: pending-stop: cannot read marker nonce" >&2; return 2; }
@@ -1483,16 +1538,14 @@ mission_pending_stop_mint() {
   # [D6b] sequence-exhausted refusal BEFORE opening any barrier.
   _ps_next=$((_ps_seed + 1))
   if [ "$_ps_next" -gt 999999 ]; then
-    # R8r4-C10 - the MARKER pdseq is the AUTHORITATIVE monotonic counter (bumped under this same lock at
-    # every REAL mint); the history high-water is only a legacy backstop. A planted self-consistent high-op
-    # DECISION/AWAIT (e.g. op=999999-x) can inflate the history past the cap and force a false rc=7
-    # (which S1 would then STOP on = total stall). If the overflow is HISTORY-driven while the authoritative
-    # marker still has room, the history value is poison: fall back to the marker so a planted DECISION can
-    # never force sequence-exhaustion. TRUE exhaustion is only when the marker itself is at the cap.
-    if [ "$((_ps_markerseed + 1))" -gt 999999 ]; then
-      _mission_unlock; echo "mission: pending-stop: REFUSED — sequence-exhausted (marker pdseq at cap; next=${_ps_next} > 999999)" >&2; return 7
-    fi
-    _ps_seed="$_ps_markerseed"; _ps_next=$((_ps_markerseed + 1))
+    # R8r5-E2 - TRUE sequence-exhaustion => FAIL CLOSED (rc=7). _ps_seed is already max(marker,
+    # max-IN-RANGE-history); _mission_pdseq_highwater bounds every history candidate to <=6 digits, so
+    # OUT-OF-RANGE (>999999) forgeries are IGNORED (never counted) and cannot inflate the seed. The OLD C10
+    # blanket fallback to marker+1 was itself the bug (E2): with marker=0 + a legit op=1 history + a planted
+    # op=999999, it DISCARDED all in-range history and re-minted op=1 (OCCUPIED) - the immutable old DECISION
+    # for op=1 could then satisfy the NEW human STOP = a fail-OPEN stale-approve bypass. A fail-SAFE stall
+    # (rc=7) beats reusing an occupied low op; NEVER fall back to marker+1.
+    _mission_unlock; echo "mission: pending-stop: REFUSED — sequence-exhausted (next=${_ps_next} > 999999; max(marker,in-range-history) at cap)" >&2; return 7
   fi
   _ps_op="${_ps_next}-${_ps_slug}"
 
@@ -1607,16 +1660,28 @@ _gen_sliced_stream() {
   # B1 (round-2 S1): the boundary line has an EMPTY idtag column (validator requirement), so anchor to
   # `$1=="" && body prefix` — a criticer/note line embedding `MISSION-REBASELINED` (always a non-empty
   # idtag) can no longer become the slice boundary and hide earlier current-gen AWAIT/progress state.
+  # R8r6-G5 / R8r7-CL1 - FULL boundary grammar END-ANCHORED to the writer's ` (...)` suffix: the writer
+  # ALWAYS emits an open-paren suffix (:2605 `... gen=<N> (PLAN rebaselined ...)`, the self-heal `... gen=<N>
+  # (recovered)`). The earlier PREFIX (`gen=<N> ` unanchored tail) let a forged `... gen=<N> malformed-tail`
+  # (digits then a space, NO parens) become the slice point and hide an earlier open AWAIT. Requiring
+  # `gen=[0-9]+ \([^\t]*\)$` (digits, a space, then a parenthesized body to end-of-field — the boundary body
+  # is a single `-F'\t'` field, so `[^\t]*` = the rest of it) rejects any tail the writer never emits. Keep
+  # the `$1==""` empty-idtag anchor. The gen-uniqueness check below (bgen == marker gen) binds it to the marker.
+  # SHARED-INVARIANT (end-anchored to the writer's ` (...)` suffix): four sites move in lockstep -
+  # _gen_sliced_stream (here) + _mission_gen_selfheal (:1734) + mission_lifecycle_state (:507) + the wake
+  # mission_state prose (mission.md:1274). Edit all four together.
   _gss_bline=$(printf '%s\n' "$_gss_stream" \
-    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active/' | tail -1)
+    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ \([^\t]*\)$/' | tail -1)
   _gss_bgen=$(printf '%s' "$_gss_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
+  # R8r7-CL1(b) - a gen<=1 (or gen-unset) mission has NO legitimate rebaseline boundary, so a forged one
+  # must NEVER become a slice point. Slicing fires ONLY under the >=2 guard (bound to the marker gen);
+  # gen<=1 returns the whole stream UNSLICED. (Previously the slice fired whenever _gss_bline was non-empty,
+  # even at gen<=1, so a forged gen=1 boundary sliced an earlier open STOP away = hidden.)
   if [ "$_gss_gen" -ge 2 ] 2>/dev/null; then
     if [ -z "$_gss_bline" ] || [ "$_gss_bgen" != "$_gss_gen" ]; then
       echo "mission: gen-sliced-read REFUSED gen-boundary-mismatch (marker gen=${_gss_gen}, latest boundary gen=${_gss_bgen:-none})" >&2
       return 1
     fi
-  fi
-  if [ -n "$_gss_bline" ]; then
     printf '%s\n' "$_gss_stream" | awk -v b="$_gss_bline" 'seen==1{print} $0==b{seen=1}'
   else
     printf '%s\n' "$_gss_stream"
@@ -1674,16 +1739,70 @@ mission_parse_codex_header() {
 # idtag (always-append; matches the boundary grammar). Raw append (NOT recursive) to avoid re-entry.
 _mission_gen_selfheal() {
   _gsh_sid=$(_mission_sanitize_sid "$1"); _gsh_root="$2"; _gsh_gen="$3"; _gsh_log="$4"
-  _gsh_bline=$(_mission_timing_stream "$_gsh_sid" "$_gsh_root" \
-    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active/' | tail -1)
-  _gsh_bgen=$(printf '%s' "$_gsh_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
-  if [ -z "$_gsh_bline" ] || [ "$_gsh_bgen" != "$_gsh_gen" ]; then
+  # R8r6-G5 / R8r7-CL1 - scan the FULL-GRAMMAR boundaries (`status=active gen=<N> \([^\t]*\)$`, END-ANCHORED
+  # to the writer's ` (...)` suffix), byte-mirroring _gen_sliced_stream (:1664). A malformed boundary is
+  # IGNORED. R8r7-CL2 - the heal decision keys on WHETHER A MARKER-GEN BOUNDARY EXISTS (scan ALL boundaries),
+  # NOT on the NEWEST boundary's gen. The old newest-only test (`newest bgen < marker`) had a hole: a VALID
+  # gen=2 boundary -> open STOP -> a forged LATER gen=1 boundary made the NEWEST boundary gen=1 < marker 2,
+  # so it healed a NEW gen=2 `(recovered)` boundary AFTER the STOP and permanently sliced it away. Existence
+  # is the correct key: heal ONLY the exact crash signature "the marker bumped but NO boundary AT the marker
+  # gen was ever appended". Compute both the existence of a marker-gen boundary AND the MAX boundary gen (to
+  # preserve the forged-FUTURE-gen refusal).
+  _gsh_scan=$(_mission_timing_stream "$_gsh_sid" "$_gsh_root" \
+    | awk -F'\t' -v mg="$_gsh_gen" '
+        $1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ \([^\t]*\)$/ {
+          g=$2; sub(/.* gen=/,"",g); sub(/[^0-9].*/,"",g);
+          if (g!="") { if (g+0==mg+0) found=1; if (g+0>mx) mx=g+0 } }
+        END { print (found?1:0) " " (mx+0) }')
+  _gsh_has_marker=$(printf '%s' "$_gsh_scan" | awk '{print $1+0}')
+  _gsh_maxbgen=$(printf '%s' "$_gsh_scan" | awk '{print $2+0}')
+  # R8r6-G2 / R8r7-CL2 - heal ONLY the EXACT crash signature: marker gen>=2, NO boundary AT the marker gen
+  # exists, AND no FUTURE-gen (> marker) boundary exists. A boundary already AT the marker gen => no-op
+  # (idempotent — CL2: a forged lower-gen boundary alongside the real marker-gen boundary does NOT trigger a
+  # duplicate heal). A boundary AHEAD of the marker gen (maxbgen > marker) is a FORGED future-gen boundary,
+  # NOT a crash orphan: REFUSE to heal - appending a lower-gen `(recovered)` boundary after it would mask
+  # intervening state; leaving the mismatch makes _gen_sliced_stream keep failing closed (`corrupt`), the
+  # correct fail-closed outcome. (maxbgen==0 means NO valid boundary at all => a legit lost-boundary crash.)
+  _gsh_heal=0
+  if [ "$_gsh_gen" -ge 2 ] 2>/dev/null \
+     && [ "$_gsh_has_marker" = 0 ] \
+     && { [ "$_gsh_maxbgen" = 0 ] || [ "$_gsh_maxbgen" -lt "$_gsh_gen" ] 2>/dev/null; }; then
+    _gsh_heal=1
+  fi
+  if [ "$_gsh_heal" = 1 ]; then
     if [ -s "$_gsh_log" ]; then
       _gsh_lb=$(tail -c 1 "$_gsh_log" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
       [ -n "$_gsh_lb" ] && [ "$_gsh_lb" != "0a" ] && printf '\n' >> "$_gsh_log" 2>/dev/null
     fi
     printf '\t[mission] MISSION-REBASELINED status=active gen=%s (recovered)\n' "$_gsh_gen" >> "$_gsh_log" 2>/dev/null
   fi
+}
+
+# R8r5-D2 - _mission_lockheld_gen_recover <sid> <root> — UNDER-LOCK crash-recovery for the rollover window.
+# Call ONLY while _mission_lock is HELD (_MLOCK set), from a guarded writer, AFTER mission_verify and BEFORE
+# any gen-sliced read (mission_await_state / _gen_sliced_stream). PROBLEM (D2): R8r4-C1 gated the READ-path
+# self-heal on _MLOCK to stop a lock-free double-boundary race — correct — but that left a crash AFTER a
+# marker gen>=2 bump with NO boundary UNRECOVERABLE: every guarded writer (rebaseline / pending-stop / clear
+# / part-done / resolve / human-close) reads gen-sliced state first, the read REFUSES with a boundary-
+# mismatch (`corrupt`), and the writer fails closed BEFORE it ever reaches mission_log_append (where the
+# gated self-heal lives) => permanent wedge. FIX: repair the missing `(recovered)` boundary UNDER the lock,
+# THEN proceed — a legitimate rebaseline crash recovers WITHOUT reopening the lock-free race (we hold the
+# same lock rebaseline writes its boundary under, so the two serialize). Idempotent: a no-op once a
+# gen-matching boundary already exists. NEVER call this lock-free (the _MLOCK guard makes it a no-op).
+_mission_lockheld_gen_recover() {
+  _lgr_sid=$(_mission_sanitize_sid "$1"); _lgr_root="$2"
+  [ -n "${_MLOCK:-}" ] || return 0   # only ever runs under the held lock (else it is the C1 race)
+  # R8r6-G2 - INTEGRITY-FIRST: NEVER heal while any live log / archive is unreadable or a `.gz` fails
+  # `gzip -t`. The REAL current-gen boundary may be hidden in that unreadable archive; appending a
+  # `(recovered)` boundary now would mask it after the archive is repaired (the STOP below it stays hidden).
+  # Defer recovery until the set is fully readable - the gen-sliced reads fail closed (`corrupt`) meanwhile,
+  # so no stale state advances. Mirrors await_state/lifecycle_state, which also gate on this integrity read.
+  _mission_log_read_integrity "$_lgr_sid" "$_lgr_root" || return 0
+  _lgr_md="${_lgr_root}/MISSION.${_lgr_sid}.md"
+  _lgr_gen=$(_mission_marker_field "$_lgr_md" gen 2>/dev/null); [ -n "$_lgr_gen" ] || _lgr_gen=1
+  case "$_lgr_gen" in ''|*[!0-9]*) _lgr_gen=1 ;; esac
+  [ "$_lgr_gen" -ge 2 ] 2>/dev/null && _mission_gen_selfheal "$_lgr_sid" "$_lgr_root" "$_lgr_gen" "${_lgr_root}/MISSION.${_lgr_sid}.log"
+  return 0
 }
 
 # ===========================================================================================
@@ -1957,6 +2076,7 @@ mission_await_append() {
     if ! mission_verify "$_aw_f" "$_aw_sid"; then
       _mission_unlock; echo "mission: await: CORRUPT - refusing human close" >&2; return 2
     fi
+    _mission_lockheld_gen_recover "$_aw_sid" "$_aw_root"   # R8r5-D2 - heal a crash-orphaned gen bump BEFORE the gen-sliced DECISION-first read below would refuse
     # C1b + C3 + R8r2-C-reader - the DECISION must (i) be DOUBLE-ANCHORED: an idtag-column
     # `pd-<seq>-decision-<slug>` whose ENCODED op equals BOTH the body `op=<op>` AND this barrier's op
     # (a forged `pd-999-decision-other` + body `op=1-approve` no longer counts - C-reader), AND a body
@@ -2065,6 +2185,15 @@ mission_await_state() {
   # `-r` bit): the timing stream reads with `2>/dev/null`, so a readable-but-CORRUPT gzip archive would
   # silently yield a short stream and this reader would emit `none`, erasing an open STOP. Detect it here
   # and emit `corrupt` (the fail-closed token callers already treat as do-not-proceed), never `none`.
+  # R8r5-D6 / R8r7-CL5 (FIXED at the reader): the integrity check and the _gen_sliced_stream read below are
+  # TWO passes, each via _mission_timing_stream. A log ROTATION landing mid-pass could DROP the rotated
+  # prefix - and the earlier "benign" claim that such a short read would fail the integrity gate was WRONG:
+  # a drop produces a well-formed SHORTER stream that passes integrity and, on the LOCK-FREE public
+  # `await-state` verb (tick lock != mutation lock, so a rotation CAN interleave here), could return a false
+  # `none` that HIDES an open human STOP. FIX: _mission_timing_stream now snapshots the LIVE log FIRST then
+  # enumerates archives (:2775). Because rotation creates the archive BEFORE trimming live, a mid-rotation
+  # read can only ever DOUBLE-count, never DROP - so both passes here are drop-safe and the false-`none`
+  # window is closed (structural ordering pinned by test-mission-bridge.sh's rotate-order assertion).
   if ! _mission_log_read_integrity "$_as_sid" "$_as_root"; then
     echo "mission: await-state: log read/decompress FAILED (corrupt archive) — failing closed" >&2
     printf 'corrupt\n'; return 3
@@ -2087,20 +2216,33 @@ mission_await_state() {
     # writer agree on the exact anchoring grammar.
     function idtag_op(t,   s,seq,slug,p){ s=t; sub(/^g[0-9]+-/,"",s); sub(/^pd-/,"",s);
       p=index(s,"-decision-"); if(p==0) return ""; seq=substr(s,1,p-1); slug=substr(s,p+length("-decision-")); return seq "-" slug }
-    BEGIN { cleared = 0; n = 0 }
+    BEGIN { cleared = 0; n = 0; corrupt = 0 }
     { t = index($0, "\t"); idt = (t>0)?substr($0,1,t-1):""; body = (t>0)?substr($0,t+1):$0 }
     # ALL control lines are DOUBLE-ANCHORED (A6/S1): the idtag COLUMN must match the shape the log
     # validator mints AND the body must start with the token. A free-text/criticer/note line can forge
     # neither column, so it can never inject or clear control state.
-    # MISSION-CLEARED — empty idtag column (validator requires it empty) + body prefix.
-    (idt == "") && (body ~ /^\[mission\] MISSION-CLEARED/) { cleared = 1; next }
+    # R8r5-E4 - MISSION-CLEARED: empty idtag column (validator requires it empty) + FULL-GRAMMAR body anchor
+    # `status=(achieved|could-not|cleared) reason=<slug>$`, byte-mirroring the writer/validator grammar
+    # (mission-write.sh :340). A PREFIX match (`^\[mission\] MISSION-CLEARED`) let a TORN/forged line whose
+    # tail is missing/mangled clear ALL barriers and hide an open human STOP; the reader must anchor the
+    # whole grammar the writer emits, not just the token. SHARED INVARIANT: reader validates what the
+    # writer validates (same class as E8 got/need bounds).
+    (idt == "") && (body ~ /^\[mission\] MISSION-CLEARED status=(achieved|could-not|cleared) reason=[a-z0-9-]*$/) { cleared = 1; next }
     # AWAIT — recorded into a flat list; accumulation happens in END (two-pass) so a LATER supersede
     # boundary can exclude pre-boundary bits (A2).
     (idt ~ /^(g[0-9]+-)?m[0-9]+-await-/) && (body ~ /^\[mission\] AWAIT part=/) {
+      # R8r5-E8 - RANGE-VALIDATE got/need to the writer`s bitmask universe (need 1..7, got 0..7) BEFORE any
+      # bor/band. An UNBOUNDED forged `got` (e.g. got=999999999) coerces to awk `inf`, and the bor/band
+      # while-loop below (a>0||b>0) NEVER terminates -> await-state FREEZES -> the mission hangs (reader
+      # DoS). A got/need outside 0..7 (or non-numeric) is corruption the log validator would never mint, so
+      # FAIL CLOSED (corrupt), never trusted. SHARED INVARIANT: the reader must validate exactly what the
+      # writer validates (mission_await_append :1863-1865) - keep the 0..7 bounds in lockstep.
+      _g=fval(body,"got"); _nd=fval(body,"need")
+      if (_g !~ /^[0-9]+$/ || _nd !~ /^[0-9]+$/ || (_g+0)>7 || (_nd+0)>7) { corrupt=1; next }
       n++
       awpart[n]=fval(body,"part"); awround[n]=fval(body,"round"); awatt[n]=fval(body,"attempt")
       awkind[n]=fval(body,"kind"); awop[n]=fval(body,"op"); awphase[n]=fval(body,"phase")
-      awgot[n]=fval(body,"got")+0; awneed[n]=fval(body,"need")+0; awstart[n]=fval(body,"started_at")+0
+      awgot[n]=_g+0; awneed[n]=_nd+0; awstart[n]=fval(body,"started_at")+0
       awnr[n]=NR
       next
     }
@@ -2123,10 +2265,23 @@ mission_await_state() {
     # just the writer, now enforces DECISION-first (the wake consumes THIS verdict).
     (idt ~ /^(g[0-9]+-)?pd-[0-9]+-decision-/) && (body ~ /^\[mission\] DECISION op=[a-z0-9-]+ outcome=(approve|deny)$/) {
       dbop = fval(body,"op"); diop = idtag_op(idt)
-      if (dbop != "" && diop == dbop) { if (NR > decnr[dbop]) decnr[dbop] = NR }
+      if (dbop != "" && diop == dbop) {
+        # R8r5-E3 - two DIFFERENT-outcome DECISIONs for the SAME op = CORRUPTION (immutability break: a
+        # forged/raw approve appended AFTER a durable deny must NOT flip the outcome by winning on newest-NR).
+        # Track the outcome per op; a conflicting outcome MARKS the op so the END resolved-check keeps its
+        # barrier LIVE (fail-closed) - the wake re-confronts the STOP instead of executing a corrupt verdict.
+        # SHARED INVARIANT: after-opener DECISION resolved-ness is consumed here + END + wake-prose + highwater.
+        dout = fval(body,"outcome")
+        if (decseen[dbop] && decout[dbop] != dout) decconflict[dbop] = 1
+        decout[dbop] = dout; decseen[dbop] = 1
+        if (NR > decnr[dbop]) decnr[dbop] = NR
+      }
       next
     }
     END {
+      # R8r5-E8 - a malformed (out-of-range/non-numeric got|need) AWAIT was seen: FAIL CLOSED before any
+      # bor/band accumulation could hang, and before the cleared short-circuit (corrupt beats none).
+      if (corrupt) { print "corrupt"; exit }
       if (cleared) { print "none"; exit }
       # Two-pass accumulation. Barrier identity is (part,round,attempt,KIND,OP) — A1: a job bit must
       # NEVER satisfy a human need; R4: two DISTINCT human decisions (distinct op) at the same
@@ -2155,7 +2310,7 @@ mission_await_state() {
         }
         if (awnr[i] <= b) continue   # pre-boundary => stale, excluded
         k4 = (awpart[i]+0) SUBSEP (awround[i]+0) SUBSEP (awatt[i]+0) SUBSEP awkind[i] SUBSEP awop[i]
-        # R8r4-C9 - the got=0 opener's NR (newest, mirroring the writer's latest-opener rule). A DECISION
+        # R8r4-C9 - the got=0 opener`s NR (newest, mirroring the writer`s latest-opener rule). A DECISION
         # authorizes a human close ONLY if it is recorded AFTER this NR (a pre-opener DECISION cannot).
         if (awgot[i] == 0) { opened[k4] = 1; if (awnr[i] > openernr[k4]) openernr[k4] = awnr[i] }
         gotmask[k4] = bor(gotmask[k4], awgot[i])
@@ -2183,12 +2338,17 @@ mission_await_state() {
         # selection to THAT op`s barrier, so an outranking human STOP for a DIFFERENT op cannot mask the
         # requested op`s still-open STOP (await_state`s single top-selection would otherwise hide it).
         if (targetop != "" && oop[kk] != targetop) continue
-        # R8r4-C9 (KEYSTONE) - a HUMAN barrier is RESOLVED (skipped as not-live) ONLY IF its newest got
-        # meets need (lastgot, instance-correct per R6) AND a matching durable DECISION exists AFTER its
-        # got=0 opener (decnr>openernr). A got=1 with NO such DECISION (a forged/planted close) stays
-        # LIVE - the reader enforces DECISION-first, not just the writer. JOB barriers are unaffected.
+        # R8r4-C9 + R8r5-D3/E3 (KEYSTONE) - a HUMAN barrier is RESOLVED (skipped as not-live) ONLY IF its
+        # newest got meets need (lastgot, instance-correct per R6) AND a matching durable DECISION exists
+        # AFTER its got=0 opener (decnr>openernr) AND BEFORE the resolving got=1 (decnr<maxnr - for a
+        # resolved human barrier maxnr IS the got=1 close line`s NR; the sanctioned order is DECISION->got=1,
+        # so a got=1-that-preceded-its-DECISION stays LIVE - D3) AND the op has NO conflicting-outcome
+        # DECISION (decconflict - E3). A got=1 with NO/late/conflicting DECISION (a forged/planted close)
+        # stays LIVE - the reader enforces DECISION-first, not just the writer. JOB barriers are unaffected.
+        # SHARED INVARIANT: keep this predicate byte-identical to the effgot fail-closed test below (FU3
+        # lockstep) and aligned with the writer close-gate (:1970), highwater (:146), wake-prose (§12.1).
         if (okind[kk] == "human" && oneed[kk] > 0 && band(lastgot[kk], oneed[kk]) == oneed[kk] \
-            && decnr[oop[kk]] > openernr[kk]) continue
+            && decnr[oop[kk]] > openernr[kk] && decnr[oop[kk]] < maxnr[kk] && !decconflict[oop[kk]]) continue
         ishuman = (okind[kk] == "human") ? 1 : 0
         besthuman = (bestkind == "human") ? 1 : 0
         pick = 0
@@ -2209,7 +2369,12 @@ mission_await_state() {
       # here (not skipped above) precisely because the DECISION is absent, so the got=1 bit is untrusted.
       if (okind[best] == "human") {
         effgot = lastgot[best]
-        if (oneed[best] > 0 && band(lastgot[best], oneed[best]) == oneed[best] && !(decnr[oop[best]] > openernr[best])) effgot = 0
+        # R8r5-D3/E3 - mirror the resolved-check predicate EXACTLY (FU3 lockstep): need met but NOT properly
+        # resolved (post-opener DECISION recorded BEFORE the got=1 close, with no conflicting outcome) = a
+        # forged/planted/out-of-order close => report got=0 (fail-closed). Any drift from the predicate above
+        # reopens the bypass.
+        if (oneed[best] > 0 && band(lastgot[best], oneed[best]) == oneed[best] \
+            && !(decnr[oop[best]] > openernr[best] && decnr[oop[best]] < maxnr[best] && !decconflict[oop[best]])) effgot = 0
       } else effgot = gotmask[best]
       rdy = (oneed[best] > 0 && band(effgot, oneed[best]) == oneed[best]) ? 1 : 0
       printf "await kind=%s op=%s part=%s round=%s attempt=%s phase=%s need=%s got=%s ready=%s started_at=%s\n", \
@@ -2244,6 +2409,7 @@ mission_resolve_pending() {
   if ! mission_verify "$_rp_f" "$_rp_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing resolve" >&2; return 2
   fi
+  _mission_lockheld_gen_recover "$_rp_sid" "$_rp_root"   # R8r5-D2 - heal a crash-orphaned gen bump BEFORE the gen-sliced read below would refuse
   # R8r3-R5 + R8r4-C4 - REFUSE to drain the pd line while THIS op's human AWAIT is still OPEN (kind=human
   # ready=0). Draining FIRST (before a DECISION + got=1 close) would create the forbidden pd-missing +
   # ready=0 ORPHAN that FIX B then refuses to re-open -> permanent stall. The sanctioned close order is
@@ -2382,6 +2548,7 @@ mission_rebaseline() {
   if ! mission_verify "$_rb_f" "$_rb_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing rebaseline" >&2; return 2
   fi
+  _mission_lockheld_gen_recover "$_rb_sid" "$_rb_root"   # R8r5-D2 - heal a crash-orphaned gen bump BEFORE the gen-sliced read below would refuse
   # C4 — re-check the human-barrier guard UNDER this mutation lock (the mission-write _mw_human_barrier_guard
   # ran BEFORE the lock; a pending-stop could open a barrier in the window between that check and the gen
   # bump below, which would then slice the open STOP away). pending-stop opens its barrier while holding
@@ -2488,6 +2655,7 @@ mission_clear_append() {
   if ! mission_verify "$_ca_f" "$_ca_sid"; then
     _mission_unlock; echo "mission: CORRUPT — refusing clear" >&2; return 2
   fi
+  _mission_lockheld_gen_recover "$_ca_sid" "$_ca_root"   # R8r5-D2 - heal a crash-orphaned gen bump BEFORE the gen-sliced read below would refuse
   # C4 — under-lock human-barrier re-check (authoritative; pending-stop holds this same lock to open).
   _ca_await=$(mission_await_state "$_ca_sid" "$_ca_root" 2>/dev/null)
   case "$_ca_await" in
@@ -2528,6 +2696,7 @@ mission_partdone_append() {
   if ! mission_verify "$_pa_f" "$_pa_sid"; then
     _mission_unlock; echo "mission: CORRUPT - refusing part-done" >&2; return 2
   fi
+  _mission_lockheld_gen_recover "$_pa_sid" "$_pa_root"   # R8r5-D2 - heal a crash-orphaned gen bump BEFORE the gen-sliced read below would refuse
   # R8r3-R12 - DEDUP-FIRST: if this exact (gen-prefixed) idtag is already banked, this call is an idempotent
   # PART-DONE re-emit, so SKIP the human-STOP re-check (mirrors _mw_partdone_check's dedup-first ordering).
   # _mw_partdone_check returns early on a banked idtag so the dispatcher's LOCK-FREE pre-check never runs,
@@ -2587,6 +2756,17 @@ mission_decision_append() {
   if ! mission_verify "$_de_f" "$_de_sid"; then
     _mission_unlock; echo "mission: decision: CORRUPT - refusing decision" >&2; return 2
   fi
+  # R8r5-D5 - DECISION immutability rests on mission_log_append's ARCHIVE-INCLUSIVE idtag dedup: a second
+  # DECISION for the same op carries the SAME `pd-<seq>-decision-<slug>` idtag, so the dedup normally SKIPS
+  # it. If a corrupt/unreadable .gz archive HIDES the original DECISION, the dedup read yields a short
+  # stream, misses the idtag, and an opposite-outcome append SUCCEEDS = an immutability break (a forged
+  # approve landing over a durable deny that the corrupt archive concealed). Gate the append on read-
+  # integrity so a DECISION is NEVER recorded over an unreadable history - the same C5 gate await_state
+  # uses. Fail CLOSED (rc=2). Reader-side E3 catches an already-landed conflicting pair; this stops the
+  # write-side path from creating one.
+  if ! _mission_log_read_integrity "$_de_sid" "$_de_root"; then
+    _mission_unlock; echo "mission: decision: REFUSED - log/archive unreadable or corrupt; cannot prove this op has no prior DECISION (fail closed)" >&2; return 2
+  fi
   # Append while HOLDING the lock (rotate self-skips; short line never reroutes). Preserve rc + outcome.
   mission_log_append "$_de_sid" "$_de_root" "$_de_entry" "$_de_idtag"
   _de_rc=$?
@@ -2615,6 +2795,17 @@ _mission_fmt_dur() {
 # bash 3.2 SAFE: uses `if [ "${a##*.}" = gz ]`, NOT `case`, because it is captured in $( ). (:283-294)
 _mission_timing_stream() {
   _mts2_sid=$(_mission_sanitize_sid "$1"); _mts2_root="$2"
+  # R8r7-CL5 - DROP-SAFE read order vs a concurrent rotation. _mission_log_rotate creates the new archive
+  # (mv, :1015) BEFORE it trims the live log (:1046). If we enumerated archives FIRST and read the live log
+  # LAST (the old order), a rotation landing IN BETWEEN moved the oldest-half into an archive we never
+  # enumerated AND trimmed it out of the live log we then read => those lines DROPPED from the stream. On the
+  # LOCK-FREE public `await-state` path (tick lock != mutation lock, so a rotation CAN interleave) that drop
+  # silently shortens the stream, passes the integrity gate (every remaining line is well-formed), and can
+  # return a false `none` that HIDES an open human STOP. FIX: snapshot the LIVE log FIRST (byte-exact), THEN
+  # enumerate+read archives. Any line that has since left live is GUARANTEED already in an archive we now
+  # enumerate, so the worst case is a DUPLICATE (harmless for the tail-1/OR-mask/NR-ordering consumers),
+  # NEVER a drop. Output order is UNCHANGED (archives oldest->newest, then the live snapshot).
+  _mts2_live=$(cat "$_mts2_root/MISSION.$_mts2_sid.log" 2>/dev/null; printf x); _mts2_live=${_mts2_live%x}
   {
     for _mts2_a in "$_mts2_root"/.mission-backups/MISSION."$_mts2_sid".log.*.gz \
                    "$_mts2_root"/.mission-backups/MISSION."$_mts2_sid".log.*.txt; do
@@ -2623,7 +2814,7 @@ _mission_timing_stream() {
     done | sort | while IFS= read -r _mts2_a; do
       if [ "${_mts2_a##*.}" = gz ]; then gzip -dc "$_mts2_a" 2>/dev/null; else cat "$_mts2_a" 2>/dev/null; fi
     done
-    cat "$_mts2_root/MISSION.$_mts2_sid.log" 2>/dev/null
+    printf '%s' "$_mts2_live"
   }
 }
 
