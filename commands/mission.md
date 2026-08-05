@@ -474,10 +474,15 @@ handle by outcome — **never silent-no-op on `ok`**:
   legitimately rewrites PLAN, and it appends a `[mission] MISSION-REBASELINED status=active` lifecycle
   line that REACTIVATES a previously-cleared mission per the active-iff rule in Section 8):
   ```bash
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> 'MISSION MODE: build
-  <the multi-part roadmap + the same standing-directive text as above>'
+  PLAN=$(cat <<'EOF'
+  MISSION MODE: build
+  <the multi-part roadmap + the same standing-directive text as above>
+  EOF
+  )
+  bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> "$PLAN"
   ```
-  (SINGLE-quoted — the roadmap is untrusted; never double-quote captured content, §7 injection rule.)
+  (Capture into `"$PLAN"` via a quoted heredoc and pass it double-quoted — the roadmap is untrusted; a
+  single-quoted literal breaks on an apostrophe, a double-quoted raw literal executes `$(...)`; §7 rule.)
   Parse that status line too (Section 7). If the user is away, log a loud `challenge` explaining the
   rebaseline and proceed.
 
