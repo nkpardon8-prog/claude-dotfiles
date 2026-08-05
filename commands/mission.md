@@ -227,8 +227,8 @@ Used by status, resume, and every post-compaction re-entry:
 - Active-iff: latest lifecycle = CLEARED -> INACTIVE; latest = REBASELINED status=active ->
   ACTIVE; empty state + PLAN line-1 is a `MISSION MODE:` token -> ACTIVE.
 - Decision table (apply in order; **AWAIT rows FIRST**): `AWAIT kind=human got<need` -> human STOP:
-  op WITH a `[mission] DECISION` = CONSUME (approve=proceed the idempotent action, deny=abort;
-  never re-ask); NO DECISION -> stop for a user; close under the lock (C6) = DECISION ->
+  op with NON-EMPTY `last_decision` = CONSUME (approve=do the idempotent action, deny=abort;
+  never re-ask); EMPTY = STOP for a user; close under the lock (C6) = DECISION ->
   `await got=1` -> `resolve`; `AWAIT kind=job
   got<need` + a tracked job pending -> collect nothing yet but STILL schedule a fallback wake (a
   pending job NEVER owns continuation); `AWAIT kind=job got<need` + NO tracked job -> replay the

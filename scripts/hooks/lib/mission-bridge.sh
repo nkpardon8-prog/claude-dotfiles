@@ -461,14 +461,20 @@ mission_resolve_path() {
 # CORRUPT gzip archive silently yields no line; a caller that maps an empty stream to `none`/`unknown`
 # would then HIDE an open STOP or a MISSION-CLEARED. This lets await_state + lifecycle_state FAIL CLOSED
 # (`corrupt`/`unreadable`) on it. `gzip -t` catches the readable-but-corrupt case the `-r` bit misses.
-# R8r5-D7 (residual, DOCUMENTED not fixed - deliberately NOT over-built): `gzip -t` here decompresses each
-# archive once, and the caller's subsequent _gen_sliced_stream decompresses it AGAIN (a second inflate).
-# A crafted high-ratio (zip-bomb) .gz could make the double-inflate pin the held lock. Judged a BENIGN
-# single-writer residual: the .mission-backups/ archives are SELF-PRODUCED by this lib's own rotation
-# (per-line 480B budget, bounded volume) - a zip-bomb requires WRITE access to .mission-backups/, and an
-# attacker with that access can corrupt/delete mission state directly (the threat model is forged log
-# LINES, not adversarial archive bytes). Bounding the inflate risks truncating a legitimately large real
-# archive (a false corrupt), so we accept the two-pass cost rather than add a cap.
+# R8r5-D7 / R8r7-CL10 (residual, DOCUMENTED not fixed - deliberately NOT over-built): `gzip -t` here
+# decompresses each archive once, and the caller's subsequent _gen_sliced_stream decompresses it AGAIN
+# (a second inflate). HONEST cost note (the earlier "bounded volume" claim was WRONG): archives ACCUMULATE
+# until mission close, so this integrity pass + the stream read inflate the WHOLE archive set twice, and
+# that cost GROWS with mission length - it is NOT bounded. Judged an ACCEPTABLE residual, not benign-by-
+# boundedness: every reader that inflates runs under the single-writer tick lock, so the cost is SERIALIZED
+# (never a concurrent inflate storm) and is small for expected mission lengths (a handful of 256KB archives).
+# A crafted high-ratio (zip-bomb) .gz could make the double-inflate pin the held lock, but the
+# .mission-backups/ archives are SELF-PRODUCED by this lib's own rotation - a zip-bomb requires WRITE access
+# to .mission-backups/, and an attacker with that access can corrupt/delete mission state directly (the
+# threat model is forged log LINES, not adversarial archive bytes). Bounding the inflate (newest-N only, or a
+# `gzip -l` size pre-check) risks a false `corrupt` on a legitimately large real archive, so we accept the
+# real, serialized two-pass cost rather than add a cap; revisit only if a future PARALLEL-writer /mission
+# lands (then a rename-aside snapshot amortizes both passes).
 _mission_log_read_integrity() {
   _lri_sid=$(_mission_sanitize_sid "$1"); _lri_root="$2"
   _lri_live="${_lri_root}/MISSION.${_lri_sid}.log"
@@ -2178,7 +2184,9 @@ mission_cursor_hash() {
 # or `none`, or `corrupt`. Reads the gen-scoped, archive-inclusive stream (_gen_sliced_stream).
 # Outstanding = an AWAIT barrier that is NOT superseded by a LATER durable event for the same
 # part/round (a newer `phase=review` round line or a VOID for that part/round supersedes a JOB barrier;
-# a PART-DONE for the part supersedes ALL kinds) AND the mission is not MISSION-CLEARED. Emits:
+# a PART-DONE for the part supersedes JOB barriers only — R8r7-CL12/D10: a HUMAN STOP is superseded by
+# NOTHING, only its own got=1 resolves it, matching the runtime at :~2286) AND the mission is not
+# MISSION-CLEARED. Emits:
 #   `none` | `corrupt` |
 #   `await kind=<job|human> op=<slug> part=N round=K attempt=A phase=<P> need=<M> got=<G> ready=<0|1> started_at=<epoch>`
 # Semantics (round-1 + round-2 review fixes):
