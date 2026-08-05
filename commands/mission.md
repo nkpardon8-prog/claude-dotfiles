@@ -1390,7 +1390,7 @@ re-enter), and never change the active/inactive decision.
   autonomous mode. Do NOT auto-run them.** These are BLOCKING: open the stop with a single
   `pending-stop` call (the atomic human-`AWAIT` opener — §10/§12.3). The question is untrusted content,
   so CAPTURE it into a variable first (a quoted `<<'EOF'` heredoc or a file), then pass it DOUBLE-quoted:
-  `q=$(cat qfile); mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q"`
+  `q=$(cat qfile); bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q"`
   — NEVER a `'<q>'` single-quoted literal (an embedded `'`, even a benign apostrophe, breaks out and
   executes) NOR a `"<raw text>"` double-quoted literal (an embedded `$(...)`/backtick executes); a
   captured `"$q"` is inert against both. Describe what wants to run and why, then PARK on the barrier until a real user turn closes
