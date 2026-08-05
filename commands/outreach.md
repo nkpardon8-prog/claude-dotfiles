@@ -78,7 +78,10 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
    - Utah, Arizona: all cities.
 4. **Vet everyone via API** (bulk, concurrency ~6): skip if any of — associated deal, no phone,
    lead status DNC/Unqualified, opt_in_status opted-out/Unsubscribed, became customer,
-   SMS'd today, last contacted <30 days ago. Log every skip with its reason.
+   SMS'd today, **last contacted <30 days ago** (compute from `max(last_contacted_date,
+   last_sms_sent_date)`; the source report does NOT enforce 30 days, and Nick sends between
+   batches so this MUST be re-checked immediately before drafting, not just at pool time).
+   Log every skip with its reason.
 5. **Pick the batch** (default cap 20, confirm with user): NV first if in scope, then
    Active engagement > Inactive > Unresponsive, SQL > MQL, most recent last-contact first.
 6. **Re-vet the picks** with `precheck.mjs` immediately before drafting (things change fast).
@@ -106,9 +109,23 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
   - Generic: "Hey {First}, it's Nick with Arc. It's been a while since we last connected.
     Still thinking about the Sport? Would love to get you out on the water for a ride."
   - Utah: "... We've had the Sport out on lakes across Utah this summer. Still interested?
-    Would love to get you out for a ride."
+    Would love to get you out for a surf."
   - Arizona: "... The Sport has been out across the Southwest this summer and the Phoenix area
-    is on our list. Want me to line you up for a ride?"
+    is on our list. Want me to line you up for a surf?"
+  - Arizona outside Phoenix metro (e.g. Tucson): "... We're kicking up demos in AZ soon.
+    Still interested? Would love to get you out for a surf."
+- **"surf" beats "ride"** as the CTA verb (Nick's call 2026-08-05): "get you out for a surf",
+  "line you up for a surf". Also banned: "we're getting Arizona folks on the water" — say what
+  Arc is DOING ("we're kicking up demos in AZ soon"), not what the customer is a member of.
+
+## Known false negative: the widget name-check
+
+`cdp-draft.mjs` refuses to type unless the widget body shows the contact's first name. The
+conversation pane can lag behind the iframe load, so a correct contact fails with "widget body
+does not show contact first name". Do NOT weaken the guard. Re-run those contacts with a longer
+name-wait (poll ~20x2s) plus triple identity proof: record-page `document.title` contains the
+first name, iframe src contains `contact_integration_id=<id>`, and the conversation id matches
+the record page's Salesmsg link. Only then insertText.
 
 ## Per-draft logic-test checklist
 
