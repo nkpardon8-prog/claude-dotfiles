@@ -1693,11 +1693,18 @@ mission_log_append() {
   # gen-boundary SELF-HEAL (WRITE path only; gate-22). If the marker committed a gen>=2 bump but the
   # boundary append died, append the missing boundary BEFORE any gen>=2 append. Skip when THIS entry
   # is itself the rebaseline boundary write (it IS the boundary; self-healing it would double it).
+  # R8r4-C1 - the self-heal WRITES a `(recovered)` boundary and mission_log_append is LOCK-FREE, so a
+  # concurrent READ-triggered append (another wake / post-compact-resume) firing it in the marker-bumped
+  # window of a live rebaseline could leave TWO gen boundaries and hide intervening state (incl. a human
+  # STOP). GATE it to fire ONLY while WE hold _mission_lock (mission_rebaseline writes its boundary under
+  # the same lock, so a legit crash-repair is serialized with it; a lock-free append during the crash
+  # window simply defers the repair to the next under-lock op - reads fail closed (`corrupt`) meanwhile
+  # via the gen-boundary-mismatch refusal, never advancing stale state). `_MLOCK` non-empty == lock held.
   _la_gen=$(_mission_marker_field "$mdf" gen 2>/dev/null); [ -n "$_la_gen" ] || _la_gen=1
   case "$_la_gen" in ''|*[!0-9]*) _la_gen=1 ;; esac
   case "$_la_entry" in
     "[mission] MISSION-REBASELINED"*) : ;;                 # the boundary write itself — never self-heal
-    *) [ "$_la_gen" -ge 2 ] 2>/dev/null && _mission_gen_selfheal "$sid" "$root" "$_la_gen" "$f" ;;
+    *) [ -n "${_MLOCK:-}" ] && [ "$_la_gen" -ge 2 ] 2>/dev/null && _mission_gen_selfheal "$sid" "$root" "$_la_gen" "$f" ;;
   esac
 
   esc=$(printf '%s' "$_la_entry" | tr '\t\n' '__')          # squash to ledger convention (#32)
