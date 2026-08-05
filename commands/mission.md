@@ -476,7 +476,7 @@ handle by outcome — **never silent-no-op on `ok`**:
   PLAN=$(cat <<'EOF'
   MISSION MODE: build
   <the multi-part roadmap + the same standing-directive text as above>
-  EOF
+EOF
   )
   bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> "$PLAN"
   ```
@@ -501,7 +501,7 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
   <captured current objective + state>
 
   Standing directive: <same directive text as Section 3>
-  EOF
+EOF
   )
   bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create <sid> <root> "$PLAN"
   ```
@@ -537,7 +537,7 @@ The user retrofits mission rigor onto in-flight work. Resolve any existing missi
   PLAN=$(cat <<'EOF'
   MISSION MODE: adopt
   <captured objective + standing directive>
-  EOF
+EOF
   )
   bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh rebaseline <sid> <root> "$PLAN"
   ```
