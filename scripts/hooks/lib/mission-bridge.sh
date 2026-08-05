@@ -2032,6 +2032,11 @@ mission_await_state() {
       if (idx == 0) return ""
       rest = substr(s, idx + length(p)); split(rest, a, " "); return a[1]
     }
+    # R8r4-C9 - the op ENCODED in a DECISION idtag `[g<G>-]pd-<seq>-decision-<slug>` -> `<seq>-<slug>`.
+    # Byte-mirrors the writer-side DECISION-first bind (mission_await_append idtag_op) so the reader and
+    # writer agree on the exact anchoring grammar.
+    function idtag_op(t,   s,seq,slug,p){ s=t; sub(/^g[0-9]+-/,"",s); sub(/^pd-/,"",s);
+      p=index(s,"-decision-"); if(p==0) return ""; seq=substr(s,1,p-1); slug=substr(s,p+length("-decision-")); return seq "-" slug }
     BEGIN { cleared = 0; n = 0 }
     { t = index($0, "\t"); idt = (t>0)?substr($0,1,t-1):""; body = (t>0)?substr($0,t+1):$0 }
     # ALL control lines are DOUBLE-ANCHORED (A6/S1): the idtag COLUMN must match the shape the log
