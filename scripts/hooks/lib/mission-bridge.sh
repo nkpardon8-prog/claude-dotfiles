@@ -1671,7 +1671,7 @@ _gen_sliced_stream() {
   # _gen_sliced_stream (here) + _mission_gen_selfheal (:1734) + mission_lifecycle_state (:507) + the wake
   # mission_state prose (mission.md:1274). Edit all four together.
   _gss_bline=$(printf '%s\n' "$_gss_stream" \
-    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ \([^\t]*\)$/' | tail -1)
+    | awk -F'\t' '$1=="" && $2 ~ /^\[mission\] MISSION-REBASELINED status=active gen=[0-9]+ /' | tail -1)
   _gss_bgen=$(printf '%s' "$_gss_bline" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')
   # R8r7-CL1(b) - a gen<=1 (or gen-unset) mission has NO legitimate rebaseline boundary, so a forged one
   # must NEVER become a slice point. Slicing fires ONLY under the >=2 guard (bound to the marker gen);
