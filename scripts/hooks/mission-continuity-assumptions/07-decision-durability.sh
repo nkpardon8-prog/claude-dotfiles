@@ -98,11 +98,13 @@ bash "$MW" rebaseline "$SIDd4" "${ROOT}/${SUBd4}" "a fresh rebaselined plan" >/d
 mc_eq "2" "$(sed -n 's/.*gen=\([0-9][0-9]*\).*/\1/p' "$MDd4" | tail -1)" "D4 rebaseline bumped gen to 2"
 mc_eq "1" "$(sed -n 's/.*pdseq=\([0-9][0-9]*\).*/\1/p' "$MDd4" | tail -1)" "D4 pdseq SURVIVES the gen boundary (monotonic, not reset)"
 
-# ── D5 - crash-orphan ADOPT (barrier live, pd line lost) ────────────────────────────────────────────────
+# ── D5 - crash-orphan FAIL-CLOSED (barrier live, pd line lost) [R8r2-B] ──────────────────────────────────
 # A crash BETWEEN the barrier-first AWAIT and the pd-line write leaves a live got=0 human barrier whose op
-# has NO pd line. The next `pending-stop` for the SAME slug/coords must ADOPT that orphan: re-write ONLY the
-# missing pd line, echo the SAME seq (NO increment), and keep exactly ONE live STOP. RED if adopt reverts
-# (a fresh mint would open a SECOND invisible barrier or bump the seq).
+# has NO pd line. The ORIGINAL question is GONE with the pd line, so a re-`pending-stop` for the SAME
+# slug/coords CANNOT prove the supplied question equals the lost one - a silent ADOPT would rebind a
+# possibly-DIFFERENT question to the mandatory STOP (approval-binding bug). So it FAILS CLOSED (rc=3): no
+# adopt, no re-mint, pd line stays absent, the barrier stays live for an explicit resolve/deny. RED if the
+# fail-closed reverts to the old silent-adopt behavior.
 SUBd5="orphan"; SIDd5="orphan$$"
 mc_new_mission "$SUBd5" "$SIDd5"
 mc_pending_stop "$SUBd5" "$SIDd5" approve 1 1 1 decision "Approve?" >/dev/null
@@ -111,10 +113,11 @@ MDd5="${ROOT}/${SUBd5}/MISSION.${SIDd5}.md"
 perl -0pi -e 's/^- \[pd:1-approve\][^\n]*\n(<!-- mid:[^\n]*-->\n)?//m' "$MDd5"
 mc_eq "0" "$(mc_has_pd "$SUBd5" "$SIDd5" pd:1-approve)" "D5 pd line gone after the crash sim (orphaned barrier)"
 mc_has "await kind=human" "$(mc_state "$SUBd5" "$SIDd5")" "D5 the human barrier is still live (crash orphan)"
-IDd5=$(mc_pending_stop "$SUBd5" "$SIDd5" approve 1 1 1 decision "Approve?")
-mc_eq "pd:1-approve" "$IDd5" "D5 re-pending-stop ADOPTS the orphan op (SAME seq, no increment)"
-mc_eq "1" "$(mc_has_pd "$SUBd5" "$SIDd5" pd:1-approve)" "D5 the missing pd line is restored by the adopt"
-mc_eq "1" "$(sed -n 's/.*pdseq=\([0-9][0-9]*\).*/\1/p' "$MDd5" | tail -1)" "D5 marker pdseq stays the high-water (1, adopted not re-minted)"
+OUTd5=$(mc_pending_stop_out "$SUBd5" "$SIDd5" approve 1 1 1 decision "A DIFFERENT question?")
+mc_has "rc=3" "$OUTd5" "D5 re-pending-stop on a lost-pd orphan FAILS CLOSED (rc=3, question unverifiable)"
+mc_eq "0" "$(mc_has_pd "$SUBd5" "$SIDd5" pd:1-approve)" "D5 the pd line is NOT restored (no silent adopt of a possibly-changed question)"
+mc_has "await kind=human" "$(mc_state "$SUBd5" "$SIDd5")" "D5 the orphan barrier stays live for an explicit resolve/deny"
+mc_eq "1" "$(sed -n 's/.*pdseq=\([0-9][0-9]*\).*/\1/p' "$MDd5" | tail -1)" "D5 marker pdseq stays the high-water (1, not re-minted)"
 
 # ── D6 - DECISION-first close, lib-enforced (R8-14); deny durability read-side (R8-8) ───────────────────
 # (a) a human got=1 close with NO same-op DECISION is REFUSED at the mechanism (not just prose); the barrier
