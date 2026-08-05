@@ -1412,7 +1412,7 @@ re-enter), and never change the active/inactive decision.
 release the tick lock, surface, and stop. A STOP-LOUD must NEVER schedule the next self-wake (that would
 loop a wedged mission forever). For a **mandatory human decision** (the §9 credential / destructive /
 external-side-effect guard, or any genuinely blocking decision), the stop sequence is a SINGLE call:
-`q=$(cat qfile); pending-stop <slug> <part> <round> <attempt> <phase> "$q"` (capture the untrusted
+`q=$(cat qfile); bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q"` (capture the untrusted
 question into `"$q"` via a quoted heredoc/file and pass it double-quoted; a single-quoted literal breaks
 on an apostrophe, a double-quoted raw literal executes `$(...)`; §7 rule) — it ATOMICALLY opens the FULL-FIELD human
 `AWAIT kind=human op=<seq>-<slug> attempt=1 need=1 got=0` STOP barrier AND mints the pd in ONE lock, then
