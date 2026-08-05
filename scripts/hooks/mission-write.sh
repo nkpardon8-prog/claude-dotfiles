@@ -646,19 +646,25 @@ case "$verb" in
       echo "mission-write: pending-stop ok id=${_mw_psid}"
     else
       # Surface the lib fn's fail-closed non-zero returns as a clear, parseable FAILED line (the mint
-      # writes NO pd line and echoes NOTHING on any refusal — a fail-closed orphan the next pending-stop
-      # adopts). rc map mirrors mission_pending_stop_mint's returns.
+      # writes NO pd line and echoes NOTHING on any refusal). rc map mirrors mission_pending_stop_mint's
+      # returns. R8r3-R8 - rc=3 is now lock-busy ONLY (the single RETRYABLE meaning); the NON-retryable
+      # fail-closed cases carry DISTINCT codes (10-14) with an accurate, do-NOT-retry reason each.
       case "$rc" in
-        1) _mw_psreason="bad args / invalid-or-too-long slug / missing question" ;;
-        2) _mw_psreason="corrupt: lock/verify/nonce/pdseq or await-state unreadable — fail closed" ;;
-        3) _mw_psreason="a DIFFERENT open human STOP is already live — resolve/deny it before opening another" ;;
-        4) _mw_psreason="backup failed" ;;
-        5) _mw_psreason="mktemp failed" ;;
-        6) _mw_psreason="gen-tag/rewrite self-check failed — original intact" ;;
-        7) _mw_psreason="sequence-exhausted (next seq would be >999999)" ;;
-        8) _mw_psreason="assembled AWAIT line >= 480B budget" ;;
-        9) _mw_psreason="human AWAIT did not land on the fresh seq (non-land) — no pd line minted" ;;
-        *) _mw_psreason="see stderr" ;;
+        1)  _mw_psreason="bad args / invalid-or-too-long slug / missing question" ;;
+        2)  _mw_psreason="corrupt: lock/verify/nonce/pdseq or await-state unreadable — fail closed" ;;
+        3)  _mw_psreason="LOCK busy (RETRYABLE — retry the SAME call ~5x, then FAIL-line it per §9)" ;;
+        4)  _mw_psreason="backup failed" ;;
+        5)  _mw_psreason="mktemp failed" ;;
+        6)  _mw_psreason="gen-tag/rewrite self-check failed — original intact" ;;
+        7)  _mw_psreason="sequence-exhausted (next seq would be >999999)" ;;
+        8)  _mw_psreason="assembled AWAIT line >= 480B budget" ;;
+        9)  _mw_psreason="human AWAIT did not land on the fresh seq (non-land) — no pd line minted" ;;
+        10) _mw_psreason="mission is CLEARED — do NOT retry; a STOP below MISSION-CLEARED is permanently hidden" ;;
+        11) _mw_psreason="lifecycle unreadable — fail closed; do NOT retry until the log/archive is readable" ;;
+        12) _mw_psreason="a DIFFERENT open human STOP is already live — resolve/deny it first; do NOT retry" ;;
+        13) _mw_psreason="op is live with a DIFFERENT question — resolve/deny it first; do NOT retry" ;;
+        14) _mw_psreason="ORPHAN barrier (lost pd line / already has a DECISION) — resolve/deny it explicitly; do NOT re-open/retry" ;;
+        *)  _mw_psreason="see stderr" ;;
       esac
       echo "mission-write: pending-stop FAILED rc=${rc} (${_mw_psreason})"
     fi
