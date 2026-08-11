@@ -1,6 +1,6 @@
 ---
-description: "Arc Boats SMS re-engagement pipeline — pull a stale-lead list from HubSpot, vet every contact via the internal API (deals/DNC/opt-out/phone/30-day rule), and place short unsent drafts into the Salesmsg widget, one Chrome tab per contact, for Nick to review and send. DRAFT ONLY: never sends, never edits HubSpot."
-argument-hint: "[batch size (default 20)] [states/regions] [extra instructions]"
+description: "Arc Boats SMS re-engagement pipeline — ALWAYS asks which report or list to draw leads from (no default source), vets every contact via the internal API (deals/DNC/opt-out/dead-number/30-day rule), reads their message history to tailor, and places short unsent drafts into the Salesmsg widget, one Chrome tab per contact, for Nick to review and send. DRAFT ONLY: never sends, never edits HubSpot."
+argument-hint: "[report/list URL or name] [batch size (default 20)] [demo locations] [extra instructions]"
 ---
 
 # /outreach — HubSpot → Salesmsg draft pipeline (Arc Boats)
@@ -24,12 +24,21 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
 5. The user often sends batches WHILE the agent drafts the next one. Expect churn: tabs closing,
    replies arriving, `last_sms_sent_date` flipping to today for already-sent drafts. Flag warm
    replies to the user; never touch conversations with fresh inbound.
+6. **No default lead source, ever.** Never start harvesting from a remembered report, a
+   previously used list, or anything in this file's reference list. Ask which source to use
+   (Step 0) and wait for an answer. Guessing wrong means real texts drafted to the wrong people.
 
 ## Environment / setup facts
 
-- HubSpot portal **44031266**, team **SouthWest** (id 71073924). Dashboard "Arc Product Advisor";
-  source report "SQLs/MQLs Last Contacted > 30D ago" (id 167965371) — its REAL filter is
-  >7 days, so enforce the 30-day rule yourself. Report already excludes Lead status DNC/Unqualified.
+- HubSpot portal **44031266**, team **SouthWest** (id 71073924). Dashboard "Arc Product Advisor".
+- **There is no default lead source. Always ask (see Step 0).** Sources used before, for
+  reference only — do NOT assume any of them:
+  - report "SQLs/MQLs Last Contacted > 30D ago" (id 167965371) — its REAL filter is >7 days, so
+    enforce the 30-day rule yourself. Already excludes Lead status DNC/Unqualified. EXHAUSTED
+    for NV/UT/AZ as of 2026-08-05.
+  - list view "AZ For CC" (id 66215328) — EXHAUSTED as of 2026-08-06.
+  - dashboard tile "Total MQL by owner" filtered to owner `__hs__ME` — 85 contacts, never
+    harvested (chart tile, see Source types).
 - Salesmsg shared line "West" (213) 444-5717. Widget opens via the **"Launch Salesmsg Widget"**
   button on the contact record (right-rail CRM card). Compose field = contenteditable DIV,
   a11y name `TextInput_MessageField`, auto-focuses on load. Typed text auto-persists as a
@@ -93,6 +102,14 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
 
 ## Workflow
 
+0. **ASK FOR THE SOURCE. Every single run. Do not skip, do not guess, do not reuse last time's.**
+   Nick's lists change constantly and the wrong source means texting the wrong people. If he did
+   not paste a URL or name a list in the invoking message, stop and ask before doing anything
+   else. Use `AskUserQuestion` (include the context % per the global rule) or a direct question,
+   offering the reference sources above plus "something else / I'll paste a URL".
+   Confirm back what you understood before harvesting: **source, expected size, and geography**.
+   Also ask, if not stated: batch size (default 20), demo locations to name in the copy, and any
+   geography rule beyond the default. Never invent locations — they change per campaign.
 1. **Preflight**: `/devtools`; user logs into HubSpot (and Salesmsg auto-signs-in via the
    widget) if the migrated profile session expired. Confirm CSRF API access with one profile fetch.
    Check tab count — start a big batch under ~30 open tabs.
