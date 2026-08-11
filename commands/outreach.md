@@ -1,5 +1,5 @@
 ---
-description: "Arc Boats SMS re-engagement pipeline — ALWAYS asks which report or list to draw leads from (no default source), vets every contact via the internal API (deals/DNC/opt-out/dead-number/30-day rule), reads their message history to tailor, and places short unsent drafts into the Salesmsg widget, one Chrome tab per contact, for Nick to review and send. DRAFT ONLY: never sends, never edits HubSpot."
+description: "Arc Boats SMS re-engagement pipeline — ALWAYS opens with an intake (which report/list, campaign goal, message phrasing, and what to weigh in HubSpot; no defaults, samples approved before drafting), then vets every contact via the internal API (deals/DNC/opt-out/dead-number/30-day rule), reads their message history to tailor, and places short unsent drafts into the Salesmsg widget, one Chrome tab per contact, for Nick to review and send. DRAFT ONLY: never sends, never edits HubSpot."
 argument-hint: "[report/list URL or name] [batch size (default 20)] [demo locations] [extra instructions]"
 ---
 
@@ -24,9 +24,11 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
 5. The user often sends batches WHILE the agent drafts the next one. Expect churn: tabs closing,
    replies arriving, `last_sms_sent_date` flipping to today for already-sent drafts. Flag warm
    replies to the user; never touch conversations with fresh inbound.
-6. **No default lead source, ever.** Never start harvesting from a remembered report, a
-   previously used list, or anything in this file's reference list. Ask which source to use
-   (Step 0) and wait for an answer. Guessing wrong means real texts drafted to the wrong people.
+6. **No default lead source, no assumed copy, no assumed goal.** Never start from a remembered
+   report, last run's wording, or anything in this file's reference list. Run the Step 0 intake
+   (source, campaign goal, phrasing, HubSpot decision rules, run shape) and wait for answers.
+   Guessing means real texts drafted to the wrong people saying the wrong thing. When proposing
+   copy yourself, get 2-3 samples approved BEFORE drafting the batch.
 
 ## Environment / setup facts
 
@@ -102,14 +104,48 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
 
 ## Workflow
 
-0. **ASK FOR THE SOURCE. Every single run. Do not skip, do not guess, do not reuse last time's.**
-   Nick's lists change constantly and the wrong source means texting the wrong people. If he did
-   not paste a URL or name a list in the invoking message, stop and ask before doing anything
-   else. Use `AskUserQuestion` (include the context % per the global rule) or a direct question,
-   offering the reference sources above plus "something else / I'll paste a URL".
-   Confirm back what you understood before harvesting: **source, expected size, and geography**.
-   Also ask, if not stated: batch size (default 20), demo locations to name in the copy, and any
-   geography rule beyond the default. Never invent locations — they change per campaign.
+0. **INTAKE — ask before doing anything else. Every single run. Never guess, never reuse
+   last run's answers.** Nick's lists, campaigns and copy change constantly; wrong assumptions
+   here mean real texts drafted to the wrong people saying the wrong thing. Ask whatever he did
+   not already state in the invoking message, then **confirm your understanding back to him in
+   one short block and start only after that.** Batch the questions (`AskUserQuestion` takes up
+   to 4 at a time; include the context % per the global rule) rather than interrogating him
+   one at a time. Anything he already specified, do not re-ask — just reflect it back.
+
+   **A. Source** (never assume; see the reference list above, all do-not-assume)
+   - Which report, list view, or dashboard view? Ask for the URL or exact name.
+   - Roughly how many people should this contain? A mismatch after harvesting means you got
+     the wrong view or hit a pagination/1000-row cap — stop and re-ask rather than proceeding.
+
+   **B. Goal of this campaign** — this drives the CTA and what counts as a good draft.
+   - What is the ask? Book a demo, fill specific demo days, revive cold leads, push an
+     inventory or pricing update, re-engage no-shows, something else.
+   - Is there a deadline, event, or capacity behind it (dates opening, slots filling)? That
+     changes urgency and whether a date belongs in the copy at all.
+   - What does success look like — replies, booked demos, or just reopening the thread?
+
+   **C. Message phrasing** — never invent this.
+   - Does he have wording in mind, or should you propose it? If proposing, **show him 2-3
+     sample drafts and get approval before drafting the batch.** Cheaper to fix one sample
+     than 40 widgets.
+   - Which demo locations, dates or offers should be named? Verify anything factual; never
+     invent a location or date (arcboats.com/tour blocks bots, so ask rather than scrape).
+   - Any phrasing to use or avoid this run, on top of the standing style rules below.
+   - CTA verb and form: current default is "surf" and a question ending.
+
+   **D. What to look for in HubSpot** — segmentation and decision rules beyond the standard vet.
+   - Any property, lifecycle stage, lead status, engagement status, owner or tag that should
+     include or exclude someone this run?
+   - Geography rule for this run (default: NV excluding the Tahoe basin, plus UT and AZ).
+   - Should message history change the copy? Default yes: never replied gets the template,
+     a usable thread in the last 3 texts gets tailored. Confirm he still wants that.
+   - Anything in notes, call summaries, or demo history to weigh — past demo attendance,
+     no-shows, specific objections, boat model interest.
+   - Anyone to hand-exclude beyond the automatic vetting.
+
+   **E. Run shape**
+   - Batch size (default 20; 40 works, split into two ~20 runs).
+   - Leave prior tabs open, or is he done with them?
 1. **Preflight**: `/devtools`; user logs into HubSpot (and Salesmsg auto-signs-in via the
    widget) if the migrated profile session expired. Confirm CSRF API access with one profile fetch.
    Check tab count — start a big batch under ~30 open tabs.
