@@ -37,11 +37,20 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
 - Browser: debug Chrome on port 9222 via `/devtools`. The chrome-devtools MCP **crashes
   repeatedly** once ~15+ heavy HubSpot tabs exist — for batch work use **raw CDP from node**
   (Node 24 has built-in WebSocket). Proven scripts live in `commands/outreach/scripts/`:
+  - `lib-cdp.mjs` — shared helpers (`cdp`, `ev`, `hubTab`); every other script imports it.
+  - `harvest-listview.mjs <viewId> [out]` — pull every member of a saved list view.
+  - `vet-pool.mjs '<json ids>'` — bulk vet + rank. Writes `pool-vetted.json` / `pool-skipped.txt`.
+  - `chains.mjs '<json ids>' [out]` — read recent SMS/call/note history for tailoring; prints a
+    HARD STOPS / REPLIED / NEVER REPLIED digest.
+  - `overlap.mjs '<json ids>'` — filter against the ledger of already-drafted + never-contact.
+    Record after each batch: `node overlap.mjs --record '<ids>' "2026-08-06 batch9"`.
+  - `precheck.mjs '<json ids>'` — re-vet immediately before drafting (deals, phone, opt_in,
+    lead status, SMS today, customer date, dead number, 30-day rule).
   - `cdp-draft.mjs '<json>'` — [{id, first, msg}] → tab, launch widget, map conversation,
     name-check, empty-check, insertText, verify. Overwrites own prior "Hey ..." drafts only.
-  - `precheck.mjs '<json ids>'` — re-vet immediately before drafting (deals, phone, opt_in,
-    lead status, SMS today, customer date).
+  - `check30.mjs '<json ids>'` — prints days since last contact per person; proves the 30-day floor.
   - `final-verify.mjs '<json ids>'` — post-batch sweep: SENT_TODAY empty + every composer holds a draft.
+  - `/json/new` **requires PUT**, not GET, when opening a tab by URL.
 - HubSpot **internal API** (from any app.hubspot.com tab; cookie auth + header
   `X-HubSpot-CSRF-hubspotapi` = value of `hubspotapi-csrf` cookie):
   - profile: `/api/contacts/v1/contact/vid/<id>/profile?portalId=44031266`
@@ -67,12 +76,31 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
   is ~55px above bottom) then page-level insertText + screenshot verify. Tab pressure is the
   root cause: past ~50 open tabs Chrome consolidates iframe processes and targets disappear.
 
+## Source types (three, and they behave differently)
+
+1. **Report drill-down** (e.g. "SQLs/MQLs Last Contacted > 30D ago", id 167965371): a real table.
+   100 rows/page, silently caps at 1000 — see the drill-down gotchas above.
+2. **Saved list view** (`/contacts/44031266/objects/0-1/views/<viewId>/list`, e.g. "AZ For CC"
+   = 66215328): **virtualized and paginated**. Only rendered rows exist in the DOM, so you must
+   scroll-loop until the id set stops growing, then click Next and repeat.
+   Use `harvest-listview.mjs`.
+3. **Dashboard chart tile** (e.g. "Total MQL by owner" with an owner quick-filter): the tile
+   click opens a *chart*, not a contact table. The bar's `aria-label` gives the count
+   ("Nicholas Pardon, 85") but clicking the bar did **not** yield a contact list in testing
+   (2026-08-06, unresolved). If a chart tile is the only source, get the contacts another way:
+   rebuild the same filter as a contact list view, or ask the user to save it as a list.
+   Do not burn a session fighting the chart.
+
 ## Workflow
 
 1. **Preflight**: `/devtools`; user logs into HubSpot (and Salesmsg auto-signs-in via the
    widget) if the migrated profile session expired. Confirm CSRF API access with one profile fetch.
-2. **Pull the list**: open the report drill-down, 100 rows/page, harvest id|state|city rows
-   (or apply the ephemeral state filter directly). Save to scratchpad.
+   Check tab count — start a big batch under ~30 open tabs.
+2. **Pull the list** per the source type above. Save to scratchpad.
+2b. **Overlap guard**: run `overlap.mjs` over the harvested ids BEFORE vetting. Nick reuses and
+   overlaps lists (the AZ list shared members with the report), and re-texting someone who
+   already declined is worse than missing them. The 30-day rule catches anyone already *sent* to;
+   the ledger catches people who have an unsent draft or said no.
 3. **Geography filter** (default; user can override per run):
    - Nevada: EXCLUDE Tahoe basin — Reno, Incline Village, Stateline, Glenbrook, Carson City,
      Sparks, Minden, Gardnerville, Sun Valley. KEEP Las Vegas, North Las Vegas, Henderson, Boulder City.
@@ -87,14 +115,45 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
    bounced). Re-texting is wasted; flag for a phone-number fix instead.
    Skip **junk first names** too (e.g. "Ddd", initials-only) — you cannot personalize them.
    Log every skip with its reason.
-5. **Pick the batch** (default cap 20, confirm with user): NV first if in scope, then
-   Active engagement > Inactive > Unresponsive, SQL > MQL, most recent last-contact first.
-6. **Re-vet the picks** with `precheck.mjs` immediately before drafting (things change fast).
-7. **Draft** with `cdp-draft.mjs`. One tab per contact, left open for review.
-8. **Verify** with `final-verify.mjs` + fix stragglers individually. Screenshot-verify anything
-   that needed the coordinate-click fallback.
-9. **Report**: counts drafted/skipped(+why), review-sheet path, warm replies spotted,
+5. **Pick the batch** (default cap 20, confirm with user; 40 works fine, split into halves of
+   ~20 per `cdp-draft.mjs` run): NV first if in scope, then Active > Inactive > Unresponsive,
+   SQL > MQL, most recent last-contact first.
+6. **Read the chains** with `chains.mjs` over the picks. This drives both tailoring and safety.
+7. **Re-vet the picks** with `precheck.mjs` immediately before drafting (things change fast).
+8. **Draft** with `cdp-draft.mjs`. One tab per contact, left open for review.
+9. **Verify**: `confirm` pass (composer text === intended, per contact) then `final-verify.mjs`.
+   Re-run stragglers individually. Screenshot-verify anything that used the coordinate fallback.
+10. **Record** the batch into the ledger: `node overlap.mjs --record '<ids>' "<date> <label>"`,
+   and anyone newly disqualified: `node overlap.mjs --record '<ids>' --never "<reason>"`.
+11. **Report**: counts drafted/skipped(+why), review-sheet path, warm replies spotted,
    remaining pool size for the next batch.
+
+## Tailoring from message history (what Nick asked for 2026-08-06)
+
+Rule he gave: **never replied → cookie-cutter template. Something in the last 3 texts worth
+building on → tailor it.** Keep tailored copy the same length and tone as the template; one
+clause of personalization, not a rewritten message.
+
+- The highest-value tailoring is **answering a question they actually asked and never got an
+  answer to** ("Are you coming back to Lake Pleasant?", "Are you coming to Saguaro?",
+  "Where are you doing the demos?"). Lead with the answer.
+- Second best: **removing the obstacle they named** (had a scheduling conflict → "new dates
+  opened up"; couldn't make morning slots → "we've got more than mornings now"; was traveling
+  for work → "hope the travel wrapped up").
+- Do NOT tailor from an outbound-only thread. Do not reference how long it has been or what
+  campaign they came from. Forward-looking only, per the style rules.
+
+**Hard stops — drop them from the batch and record them as `never`:**
+explicit declines ("No", "Not interested", "can't afford", "won't work at that price point"),
+wrong-number replies, and anyone whose note says wrong/fake number. `chains.mjs` flags likely
+ones, but read them yourself; a human decides. Texting someone who already said no is the
+worst failure mode this pipeline has.
+
+**Also watch for:**
+- **Duplicate contact records** for the same human (two records, different cities). Text one.
+- **A pre-existing human-written draft** in the composer. `cdp-draft.mjs` refuses to overwrite
+  anything that is not its own prior "Hey ..." draft and reports `field has unexpected text`.
+  Read it, leave it alone, and surface it to Nick — it is probably his own work in progress.
 
 ## Message styling guide (Nick's rules — follow exactly)
 
@@ -110,6 +169,10 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
   Utah lakes, Lake Mead NV, Phoenix-area Southwest stops via info.arcboats.com/arc-sport-demo-west).
   **Never fabricate demo dates or locations** — arcboats.com/tour blocks bots, so verify stops
   with the user if a date is needed.
+- **Name the actual demo locations** when Nick supplies them; they change per campaign and he
+  will tell you which. Run them as a plain list, no dashes: "We're bringing the Sport out to
+  Havasu, Saguaro and Pleasant." (2026-08-05 run used Havasu, St George, Lake Mead, Park City,
+  Phoenix; 2026-08-06 used Havasu, Saguaro, Pleasant.) Never invent a location or a date.
 - Approved templates:
   - Generic: "Hey {First}, it's Nick with Arc. It's been a while since we last connected.
     Still thinking about the Sport? Would love to get you out on the water for a ride."
@@ -145,7 +208,18 @@ the record page's Salesmsg link. Only then insertText.
 
 ## Per-draft logic-test checklist
 
-correct contact/tab pairing (record page name = widget header name) · state passes geography
-rule · no associated deal · no DNC/opt-out · not a customer · >30d since last contact ·
-no SMS today · phone on file · message passes style rules · composer text === intended draft ·
-Send never touched.
+correct contact/tab pairing (record page name = widget header name) · not already drafted and
+not in the never-contact ledger · never explicitly declined or replied wrong-number · not a
+duplicate of another record in the same batch · state passes geography rule · no associated
+deal · no DNC/opt-out · not a customer · live phone (no undelivered status) · >30d since last
+contact · no SMS today · real first name · message passes style rules (no dashes, no
+"been a minute", forward-looking, real locations only) · composer was empty or held only our
+own prior draft · composer text === intended draft · Send never touched.
+
+## Scale reference (what a real run looks like)
+
+229 drafts across 10 batches, 2026-08-03 to 08-06, zero accidental sends. A 20-batch takes
+roughly 15 minutes of drafting plus vetting; a 40-batch splits into two runs. Expect 1-3
+stragglers per 20 from iframe-target churn — the fallback chain recovers them. Vetting
+routinely disqualifies 30-50% of a raw list (Unqualified lead status, open deals, missing or
+dead phones, contacted <30d), so a "166-member list" is realistically ~84 textable people.
