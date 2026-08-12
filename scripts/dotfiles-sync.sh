@@ -233,6 +233,24 @@ _push_or_pause() {
             # the only channel the async hook has.
             _pause "pre-push could not prove the pushed range clean: $(printf '%s' "$_perr" | grep -m1 'RANGE-NOT-PROVEN-CLEAN')" unproven ;;
           *)
+            # Before pausing: ask the REMOTE whether this commit already landed. This hook is
+            # async and "two invocations overlap routinely" (see the index-lock note above), so
+            # when two runs race, the loser's `git push` returns non-zero for work the winner
+            # already pushed - and the marker it writes halts syncing repo-wide until a human
+            # clears it. Observed TWICE on 2026-08-12: `git push` reported failure while
+            # `ls-remote` showed the remote already at our HEAD, both times a false alarm.
+            #
+            # Deliberately placed in this branch ALONE, after the secret and unproven arms.
+            # A pre-push rejection must never be softened by a race check, and it cannot reach
+            # here anyway: if the hook rejects a secret it rejects it for every racing run, so
+            # the remote could not be holding our HEAD in the first place.
+            _head=$(git rev-parse HEAD 2>/dev/null)
+            _branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+            _rhead=$(git ls-remote "$_remote" "refs/heads/${_branch}" 2>/dev/null | awk 'NR==1{print $1}')
+            if [ -n "$_head" ] && [ "$_head" = "$_rhead" ]; then
+                echo "dotfiles-sync: push errored, but the remote is already at ${_head} — a concurrent sync won the race. Work is pushed; NOT pausing." >&2
+                return 0
+            fi
             _pause "push to ${_slug:-$_remote} failed: $(printf '%s' "$_perr" | head -1)" ;;
         esac
         exit 6
