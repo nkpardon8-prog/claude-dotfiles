@@ -43,7 +43,7 @@ const fs = await import('fs');
 fs.writeFileSync(out, JSON.stringify(res, null, 1));
 
 // Flag likely hard stops so they are never drafted. Review by eye; this is a hint, not a gate.
-const STOP = /\b(not interested|no thanks|wrong number|stop|unsubscribe|can'?t afford|cannot afford|too expensive|already bought|not looking)\b/i;
+const STOP = /\b(not interested|no thanks|wrong number|stop|unsubscribe|can'?t afford|cannot afford|too expensive|already bought|not looking|fuck off|f\*ck off|asshole|idiot|never (reached out|contacted|texted) (you|me)|don'?t (ever )?(text|contact|call|message) (this number|me) again|leave me alone|piss off)\b/i;
 const rep = [], quiet = [], stops = [];
 for (const id of ids) {
   const v = res[id] || {};
