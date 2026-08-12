@@ -2,6 +2,37 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-11 - /line now sets the address, not just the caption (line agent communicator)
+
+"Message my summit admin hub agent" could not work, and the reason was structural: a window carried
+**two unrelated names**. `/line` wrote a caption to `~/.claude/session-status/<sid>.txt` (cosmetic,
+read only by the statusline renderer), while the peer address `ListAgents` shows and `SendMessage`
+resolves lived in `~/.claude/sessions/<pid>.json`. A window captioned "summit admin hub" was
+addressable only as `dentall-ae`, and nothing on the machine could translate between the two.
+
+- **`/line <sentence>` now writes both.** It derives a handle from the sentence
+  (`patient retention` -> `patient-retention`) and sets it as the real peer address. The name you
+  type IS the address. No second step, no `/rename`.
+- **New `scripts/line-agent-communicator.py`.** `set` does the dual write; `list` (`--json`) is the
+  directory - every live window with its address, its caption, and whether it can actually receive
+  a message. Global `CLAUDE.md` now routes agents through `list` whenever the user names another
+  window, because `ListAgents` alone shows auto-derived names and will never contain the user's word
+  for it.
+- **Writing `.name` is unsupported but verified.** The documented ways to name a session are
+  `claude -n` at startup and `/rename` typed by a human; neither is drivable from a slash command.
+  So the script edits the registry itself - locating its own entry by `sessionId` (never pid or
+  mtime), preserving unowned fields, writing atomically. Confirmed on 2.1.227/2.1.228 that the
+  harness re-saves that file on every status change and **preserves** a name marked
+  `nameSource: "explicit"`. If that ever stops holding, `set` degrades to caption-only and says so,
+  so discovery fails loud rather than silent.
+- **Collisions are resolved, not inherited.** `dentall-4c` currently names two live windows, which
+  is exactly what forces callers back to opaque refs. A handle already held by a *live* window gets
+  a numeric suffix; dead windows never block a name.
+- **The wall the naming fix does not move:** cross-session messaging arrived in **2.1.224** and the
+  receiving socket binds at process start, so a window on an older build cannot be messaged until it
+  is closed and reopened - upgrading alone does nothing. Measured at the time of writing: 16 live
+  windows, **1** reachable. `list` reports the reason per window so no one sends into a void.
+
 ## 2026-08-04 - The review barrier catches two shipped CRITICALs, including one this repo introduced
 
 Mission part 3, round 5-6. A 4-Codex + 2-Claude review panel over the part-3 diff. It found two
