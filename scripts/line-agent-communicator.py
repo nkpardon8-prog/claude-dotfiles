@@ -312,6 +312,7 @@ def cmd_set(session_id: str, sentence: str) -> int:
 
     old = mine.get("name", "")
     if old == handle and mine.get("nameSource") == "explicit":
+        remember(sid, sentence, handle, mine.get("cwd", ""))
         print(f"Peer address: already {handle}")
         return 0
 
