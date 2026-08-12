@@ -2,6 +2,27 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-12 (later) - A mistyped verb no longer renames the window
+
+Running `line-agent-communicator.py --help` did not print help. `main()` ended in a bare
+`return dispatch_set(sid, args)`, so any argv that was not a known verb was treated as a name: the
+command set the caption to `--help`, overwrote the window's peer address with `help`, and printed
+`Caption set: --help` as though that had been the request. The previous address - the thing other
+agents use to reach that window - was simply gone, and nothing said so. It happened to the window
+that built this system, minutes after it shipped.
+
+- **Unknown options are refused, not adopted.** `help` / `-h` / `--help` / `usage` print a usage
+  summary and exit 0. Any other leading `-...` token exits 2, names the option, and says explicitly
+  that it will not be treated as a name. A bare sentence is still shorthand for `set` - that is the
+  form `/line` sends, and it is unchanged.
+- **`10-verb-fallthrough-rename.sh`** joins the suite (now 9 tests). It seeds a registry entry under
+  a throwaway `$HOME`, fires `--help` and an unknown flag at the real script, and asserts the stored
+  name is byte-identical afterward - with a positive control proving a legitimate `set` still does
+  change it, and a negative control that restores the fallthrough and watches six assertions go red.
+- Repairing the damaged window meant hand-editing its registry entry back to a derived name.
+  `clear` deliberately keeps the peer address (dropping it mid-conversation would make the window
+  unreachable), so there is no verb that undoes an unwanted rename - only setting a new one.
+
 ## 2026-08-12 - Peer messaging gets a verifiable identity, a guaranteed reply route, and a written protocol
 
 Cross-window messaging shipped yesterday and produced two failures within hours. A message arrived

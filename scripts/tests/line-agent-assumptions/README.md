@@ -104,6 +104,32 @@ prints that secret into the reading agent's context, with no error.
   listing filter alone and a refactor of one cannot silently remove both.
 - **A4** positive control - a legitimate reply in the same dropbox is still read.
 
+### 09-reply-retention.sh - does the reply reaper ever delete something nobody read?
+
+Retention must fail toward keeping. A reply is a message a colleague could not deliver any other way,
+so age alone is never grounds for removal.
+
+- **A1** a reply that was read and is older than the window is reaped.
+- **A2** an UNREAD reply of the same age is kept - unread is immortal.
+- **A3** recent contact is kept regardless.
+- **A4** never-displayed files survive a real reap (not just a dry run).
+- **A5** the dry run and the real reap agree, so `--dry-run` is an honest preview.
+
+### 10-verb-fallthrough-rename.sh - can a typo rename the window?
+
+`main()` used to end in `return dispatch_set(sid, args)`, so anything that was not a known verb became
+the window's caption *and* its peer address. `--help` renamed this window to `help` on 2026-08-12 and
+printed a success line while doing it: silent, destructive (the old address is gone), and repeatable
+on every typo.
+
+- **A1** `--help` exits 0 and prints usage.
+- **A2** `--help` leaves the peer address untouched.
+- **A3** an unknown flag exits 2 and says the option is unknown.
+- **A4** an unknown flag leaves the peer address untouched.
+- **A5** neither wrote a caption file.
+- **A6** positive control - a real `set` still changes the address, so A2/A4 mean "refused" rather
+  than "this probe cannot see a rename at all".
+
 ## Why 04 and 05 are expected red before the implementation
 
 They encode the two defects the fix is for. Both are **silent wrong answers** - the directory looks

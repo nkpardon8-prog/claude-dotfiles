@@ -53,6 +53,7 @@ TESTS=(
   "07-banner-injection.sh"
   "08-dropbox-symlink.sh"
   "09-reply-retention.sh"
+  "10-verb-fallthrough-rename.sh"
 )
 # The two tests that are red until the fix ships. Empty this list as each one is fixed.
 # Emptied 2026-08-12: 04 and 05 were authored RED on purpose (they encoded the orphaned-socket and
