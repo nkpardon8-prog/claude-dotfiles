@@ -1908,8 +1908,41 @@ def dispatch_set(sid: str, args: list[str]) -> int:
     return cmd_set(sid, sentence, owns)
 
 
+USAGE = """line-agent-communicator.py - name this window and reach the others.
+
+  list [--json]              the directory: every window, its name, whether it can receive
+  find "<words>"             resolve a human name (live first, then last-seen) to an address
+  card                       this window's identity header - paste it INTO what you send
+  whois <pid> [--claims X]   UNAUTHENTICATED registry lookup; never proof of who someone is
+  reply <address> "<text>"   leave an answer for a window that cannot receive
+  replies | replies-count    read / count answers left for this window
+  note "<text>" | notes      shared notes every window can read
+  set "<sentence>" [--owns "<what this window owns>"]
+  clear                      drop the caption (the peer address is kept)
+  reap [--dry-run] [--sockets]
+
+  A bare sentence is shorthand for `set` - that is what /line sends.
+"""
+
+
+def _usage(stream, rc: int) -> int:
+    print(USAGE, file=stream, end="")
+    return rc
+
+
 def main() -> int:
     args = sys.argv[1:]
+
+    # A mistyped verb or a flag must NEVER fall through to `set`: that silently overwrites the
+    # window's peer address (its identity in the directory) with the typo. `--help` renamed this
+    # window to "help" on 2026-08-12. Failure is silent and the shape recurs, so it is refused here.
+    if args and args[0] in ("help", "-h", "--help", "-help", "usage"):
+        return _usage(sys.stdout, 0)
+    if args and args[0].startswith("-"):
+        print(f"line-agent-communicator: unknown option {args[0]!r}.", file=sys.stderr)
+        print("Refusing to treat it as a name - that would overwrite this window's "
+              "peer address. Use `set \"<sentence>\"` if you meant to rename.\n", file=sys.stderr)
+        return _usage(sys.stderr, 2)
     sid = os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
 
     if not args or args[0] in ("list", "ls", "directory"):
