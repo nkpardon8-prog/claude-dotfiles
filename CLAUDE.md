@@ -59,15 +59,18 @@ resolves. Command definition: `~/.claude-dotfiles/commands/line.md`.
 
 **When the user refers to another window/instance/agent by a human name** ("message my summit admin
 hub agent", "ask the billing window"), that name is a `/line` caption, NOT an address — resolve it
-before giving up or guessing:
+before giving up or guessing. Pass their words through verbatim:
 
 ```bash
-python3 "$HOME/.claude-dotfiles/scripts/line-agent-communicator.py" list      # add --json to parse
+LAC="$HOME/.claude-dotfiles/scripts/line-agent-communicator.py"
+python3 "$LAC" find "my summit admin hub agent"   # -> ranked matches + the address to use
+python3 "$LAC" list                               # everything (--json to parse)
 ```
 
-Match the user's words against the `WHAT IT IS` column, then `SendMessage` the `ADDRESS`. Never
-report a window unreachable on the strength of `ListAgents` alone — it shows auto-derived names for
-any window not yet `/line`d, so the user's name will not appear there.
+`find` searches live windows first, then ones it has seen before, so a closed window reports as
+closed with a last-seen date instead of vanishing into "no such agent". Never report a window
+unreachable on the strength of `ListAgents` alone — it shows auto-derived names for any window not
+yet `/line`d, so the user's own word for it will not appear there.
 
 `CAN RECEIVE` is load-bearing: cross-session messaging arrived in **2.1.224** and the socket binds at
 startup, so an older window cannot be messaged until it is **closed and reopened** (upgrading alone
