@@ -29,6 +29,16 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
    (source, campaign goal, phrasing, HubSpot decision rules, run shape) and wait for answers.
    Guessing means real texts drafted to the wrong people saying the wrong thing. When proposing
    copy yourself, get 2-3 samples approved BEFORE drafting the batch.
+7. **Never draft to a contact with a future demo already booked.** Check their engagement
+   timeline for a `MEETING` type engagement with `metadata.startTime` in the future — a booked
+   demo means the re-engagement ask is already answered; texting anyway is redundant and reads
+   as sloppy. This is a hard API check (`FUTURE_DEMO:<date>` skip reason in `vet-pool.mjs` and
+   `precheck.mjs`), not a judgment call — added 2026-08-12 after the user asked for it directly.
+8. **Always read Notes on the contact and use them as context**, at both the pool-vet stage and
+   the final pre-draft check. Notes carry real signal a property field won't show — e.g. "doesn't
+   want a boat for a few years" (soft skip candidate, use judgment) or "came to check out the
+   boat on lake Pleasant" (a tailoring hook). Both scripts surface the most recent note; read it
+   before deciding to draft or how to phrase the message — don't just check for disqualifiers.
 
 ## Environment / setup facts
 
@@ -167,6 +177,10 @@ sends). The user reviews each tab and presses Send himself — the agent NEVER s
    carrier rejected the last text (found 2026-08-05 on a contact whose booked-demo reminder
    bounced). Re-texting is wasted; flag for a phone-number fix instead.
    Skip **junk first names** too (e.g. "Ddd", initials-only) — you cannot personalize them.
+   Skip anyone with a **future demo already booked** (`MEETING` engagement, `metadata.startTime`
+   in the future — `vet-pool.mjs`/`precheck.mjs` do this automatically, `FUTURE_DEMO:<date>`).
+   Pull the most recent **Note** on every contact and read it — it's a hard signal (soft-decline,
+   already-visited-a-demo, etc.) that no property field captures; both scripts surface it.
    Log every skip with its reason.
 5. **Pick the batch** (default cap 20, confirm with user; 40 works fine, split into halves of
    ~20 per `cdp-draft.mjs` run): NV first if in scope, then Active > Inactive > Unresponsive,
