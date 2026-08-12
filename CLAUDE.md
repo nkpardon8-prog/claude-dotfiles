@@ -51,7 +51,26 @@ When asked to summarize a session, dump context, or save state before compaction
 ## GUI Fallback (local Mac)
 When you hit a GUI surface no CLI / MCP / native tool can reach (macOS permission dialogs, app modals without CLI equivalents, apps with no scriptable surface), use `/desktop`. Don't ask the user to click — use the skill. It self-routes, applies safety classifiers, and confirms before destructive or ambiguous actions.
 
-## Statusline Line 2 — set manually with `/line`
-Line 2 of the statusline is a **per-window label the user sets manually** with the `/line <sentence>`
-command (no argument clears it back to the folder/repo name). Agents do NOT write it automatically.
-Command definition: `~/.claude-dotfiles/commands/line.md`.
+## Window naming + reaching other windows — `/line`
+`/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).
+Agents do NOT run it or write the caption automatically. It sets two things at once: the statusline
+line-2 caption, and the window's **peer address** — the name `ListAgents` shows and `SendMessage`
+resolves. Command definition: `~/.claude-dotfiles/commands/line.md`.
+
+**When the user refers to another window/instance/agent by a human name** ("message my summit admin
+hub agent", "ask the billing window"), that name is a `/line` caption, NOT an address — resolve it
+before giving up or guessing:
+
+```bash
+python3 "$HOME/.claude-dotfiles/scripts/line-agent-communicator.py" list      # add --json to parse
+```
+
+Match the user's words against the `WHAT IT IS` column, then `SendMessage` the `ADDRESS`. Never
+report a window unreachable on the strength of `ListAgents` alone — it shows auto-derived names for
+any window not yet `/line`d, so the user's name will not appear there.
+
+`CAN RECEIVE` is load-bearing: cross-session messaging arrived in **2.1.224** and the socket binds at
+startup, so an older window cannot be messaged until it is **closed and reopened** (upgrading alone
+does not do it). If the target says `no`, say so plainly with that reason instead of sending into a
+void — and note the reverse direction still works: that window can message us first, and its message
+arrives with a `from` we can reply to.
