@@ -112,9 +112,23 @@ if [ "$FAIL_N" -gt 0 ]; then
   exit 1
 fi
 
+# Every value here must be STABLE across runs. A fingerprint is checked in, and this suite is
+# triggered by a pre-commit hook on changes under this directory: a value that differs per run makes
+# the suite dirty the very files that gate it, so the auto-sync stages them, the hook re-triggers,
+# the run re-dirties them, and it never converges. This file used to record `ps_comm_observed`
+# verbatim - which embeds that run's mktemp path - and did exactly that. Record the DERIVED FACT the
+# assumption is about, never a per-run path, pid, timestamp, hostname, or run id.
+COMM_IS_BASENAME=false;      case "$COMM" in claude) COMM_IS_BASENAME=true ;; esac
+COMM_IS_ABSOLUTE_PATH=false; case "$COMM" in /*)     COMM_IS_ABSOLUTE_PATH=true ;; esac
+COMM_ENDS_IN_BINNAME=false;  case "$COMM" in *"/${BINNAME}"|"${BINNAME}") COMM_ENDS_IN_BINNAME=true ;; esac
+UNAME_S="$(uname -s)"
+OS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+
 cat > "${HERE}/03-fake-home-fixture.fingerprint.json" <<EOF
-{"assumption":"hermetic_fixture_satisfies_liveness_check","uname":"$(uname -s)","os_version":"$(sw_vers -productVersion 2>/dev/null || echo unknown)","ps_comm_observed":"${COMM}","comm_is_basename":$([ "$COMM" = "claude" ] && echo true || echo false)}
+{"assumption":"hermetic_fixture_satisfies_liveness_check","uname":"${UNAME_S}","os_version":"${OS_VERSION}","comm_is_basename":${COMM_IS_BASENAME},"comm_is_absolute_path":${COMM_IS_ABSOLUTE_PATH},"comm_ends_in_fixture_binary_name":${COMM_ENDS_IN_BINNAME},"real_script_listed_the_fixture_window":true}
 EOF
+python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "${HERE}/03-fake-home-fixture.fingerprint.json" \
+  || { echo "FAIL: 03-fake-home-fixture wrote an unparseable fingerprint file" >&2; exit 1; }
 
 echo "PASS: 03-fake-home-fixture — 2 assertions (A1 ps-comm, A2 real-script-lists-fixture)"
 exit 0

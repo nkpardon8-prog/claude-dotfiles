@@ -1,1 +1,1 @@
-{"assumption":"hermetic_fixture_satisfies_liveness_check","uname":"Darwin","os_version":"26.5","ps_comm_observed":"/var/folders/mc/6xd4rvtd7d7gwmq5_lp37vjh0000gn/T//lac-atest-7e1c3b1e6b99-VlNPgs/claude","comm_is_basename":false}
+{"assumption":"hermetic_fixture_satisfies_liveness_check","uname":"Darwin","os_version":"26.5","comm_is_basename":false,"comm_is_absolute_path":true,"comm_ends_in_fixture_binary_name":true,"real_script_listed_the_fixture_window":true}

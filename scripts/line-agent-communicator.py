@@ -61,6 +61,7 @@ import os
 import re
 import shlex
 import socket
+import stat as statmod
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,41 @@ MAX_ENTRY_BYTES = 4000
 MAX_NOTES_BYTES = 20000
 MAX_ENTRY_FILES = 20
 
+# --------------------------------------------------------------------------------------
+# retention
+#
+# Three things here only ever grew: reply files (reading is non-destructive), contacts (every window
+# ever seen, rescanned by every find/resolve), and orphaned sockets (correctly DETECTED as dead since
+# the reachability fix, never cleaned up). Retention is deliberately timid - the cost of reaping too
+# late is a slightly bigger directory; the cost of reaping too early is destroying the one artifact
+# this feature exists to deliver.
+# --------------------------------------------------------------------------------------
+
+# A reply is reaped only when it is BOTH already-read AND older than this. Never on age alone:
+# deleting an unread reply destroys the answer a peer went out of its way to file, which is the exact
+# failure the dropbox exists to prevent - so an unread reply is immortal at any age, full stop.
+# 30 days is far past the life of any conversation that produced it (the reader has already had the
+# content in context, and a window that has not run `replies` in a month has moved on), while still
+# leaving a wide window to go back and re-read something.
+REPLY_RETENTION_DAYS = 30
+
+# A contact is dropped only after this long unseen. `find` answering "that one is closed, last seen
+# <date>" is a FEATURE - it is what turns "no such agent" into a next step - so this has to stay far
+# longer than anyone's memory of a window they might ask for by name. 180 days is ~6 months of never
+# once being open; anything reopened even briefly inside that window resets lastSeen and survives.
+# An entry with a missing or unparseable lastSeen is KEPT, never guessed at.
+CONTACT_RETENTION_DAYS = 180
+
+# An orphaned socket file must be this old before it is even a CANDIDATE - a freshly bound socket is
+# never one. See _orphan_sockets() for the four gates and cmd_reap() for why unlinking is opt-in.
+SOCKET_ORPHAN_MIN_AGE_DAYS = 7
+
+# Reaping walks two directories, so it must not ride on every invocation - `list` runs constantly and
+# from a hook. Gate: one cheap stat of a stamp file, and at most one real pass per day. Retention
+# measured in months does not care whether it runs now or in 23 hours.
+REAP_INTERVAL_SEC = 24 * 3600
+REAP_STAMP = HOME / ".claude" / ".lac-reap-stamp"
+
 
 # --------------------------------------------------------------------------------------
 # helpers
@@ -152,31 +188,59 @@ def parse_version(v: str) -> tuple:
 # So the outcome of every probe is tallied and the "nothing worked" case is reported out loud.
 _PS_STATS = {"answered": 0, "unusable": 0}
 
+# One probe per pid for the whole run. Two things bought here, both measured on the real machine
+# (18 live windows):
+#   - BOTH fields in ONE fork. identity_state needs comm and lstart; asking for them separately was
+#     two forks per window.
+#   - memoised per pid, so a caller that asks twice pays once. `list` used to call identity_state
+#     AND reachable() -> identity_state again (~4 forks/window, ~72 processes to draw one table).
+#     reachable() now takes the already-computed state, and this cache is the backstop for every
+#     other path that asks twice (cmd_set: unique_handle + reachable).
+# Liveness cannot meaningfully change during one sub-second CLI run, and the code ALREADY assumes
+# that (it computes state once and passes it around), so caching adds no new assumption.
+_PS_CACHE: dict[int, dict | None] = {}
 
-def _ps(pid: int, fmt: str) -> str | None:
+
+def _ps_probe(pid: int) -> dict | None:
     """
-    One `ps` field for one pid, whitespace-squeezed.
+    Everything `ps` can tell us about one pid, in a single fork.
 
-    Returns "" when ps ANSWERED and the pid is gone; None when ps could not answer at all (binary
-    missing, timeout, sandbox refusal). Callers must not treat None as "dead".
+    Returns {"comm": ..., "lstart": ...} - both "" when ps ANSWERED and the pid is gone - or None
+    when ps could not answer at all (binary missing, timeout, sandbox refusal). Callers must not
+    treat None as "dead".
+
+    `ps -p <pid> -o lstart=,comm=` emits the columns in the order requested; lstart is always
+    exactly five whitespace-separated tokens ("Wed Aug 12 01:05:22 2026" - day-padded, hence the
+    squeeze), so the split point is fixed and comm is whatever follows. Verified on macOS 26.
     """
     if not pid:
-        return ""
+        return {"comm": "", "lstart": ""}
+    if pid in _PS_CACHE:
+        return _PS_CACHE[pid]
+    res: dict | None
     try:
         out = subprocess.run(
-            ["ps", "-p", str(pid), "-o", fmt],
+            ["ps", "-p", str(pid), "-o", "lstart=,comm="],
             capture_output=True, text=True, timeout=5,
         )
     except Exception:
         _PS_STATS["unusable"] += 1
+        _PS_CACHE[pid] = None
         return None
     # macOS ps exits 1 for a pid that is simply not there - that IS an answer. Any other nonzero
     # exit means ps itself failed, and no conclusion about the pid may be drawn from it.
     if out.returncode not in (0, 1):
         _PS_STATS["unusable"] += 1
+        _PS_CACHE[pid] = None
         return None
     _PS_STATS["answered"] += 1
-    return " ".join(out.stdout.split())
+    toks = out.stdout.split()
+    if len(toks) < 5:
+        res = {"comm": "", "lstart": ""}  # ps answered; the pid is gone
+    else:
+        res = {"lstart": " ".join(toks[:5]), "comm": " ".join(toks[5:])}
+    _PS_CACHE[pid] = res
+    return res
 
 
 def ps_is_unusable() -> bool:
@@ -210,9 +274,10 @@ def is_claude_process(pid: int) -> bool | None:
     `claude` and pass it, so a True here is never evidence that the registry entry's NAME is real.
     See cmd_whois: that is precisely why whois vouches for nobody.
     """
-    comm = _ps(pid, "comm=")
-    if comm is None:
+    probe = _ps_probe(pid)
+    if probe is None:
         return None
+    comm = probe["comm"]
     if not comm:
         return False
     base = os.path.basename(comm).lower()
@@ -230,7 +295,8 @@ def process_start_epoch(pid: int) -> float | None:
 
     `ps -o lstart=` renders in the LOCAL timezone, so it is parsed as local time here.
     """
-    raw = _ps(pid, "lstart=")
+    probe = _ps_probe(pid)
+    raw = probe["lstart"] if probe else ""
     if not raw:  # "" (pid gone) and None (ps unusable) are both "no reading available" here
         return None
     try:
@@ -1223,7 +1289,13 @@ def cmd_reply(session_id: str, target: str, text: str) -> int:
         return 0
 
     print(f"Reply filed for {rhandle or '(unnamed)'} -> {path}")
-    print("  They see it when they run `replies`. It is not delivered - they have to look.")
+    # Still not a delivery - but no longer a file nobody is told about. hooks/line-replies-notice.sh
+    # (SessionStart) prints the recipient's unread COUNT and the command to read it, so an answer
+    # filed here surfaces at their next session start instead of waiting for someone to think of
+    # looking. It is not read to them: they run `replies`, which is the only path that frames peer
+    # text as untrusted data.
+    print("  It is not delivered. They are told the COUNT at their next session start; they read it")
+    print("  by running `replies`. If they are reachable, SendMessage is still the faster route.")
     return 0
 
 
@@ -1246,11 +1318,56 @@ def _write_state(d: dict) -> None:
         pass  # last-read tracking is a convenience; losing it must never break reading
 
 
-def _mark_read(sid: str, newest: float) -> None:
-    """Read-modify-write the shared last-read map under a lock, so a sibling's mark is not lost."""
+def _state_mark(state: dict, sid: str) -> float:
+    """This window's last-read watermark: mtime <= mark means `replies` has shown it. 0 = never read.
+
+    Accepts both on-disk shapes. The value used to be a bare float; it is now
+    {"mark": <newest shown mtime>, "floor": <oldest mtime ever shown>} - see _mark_read. A state file
+    written before that change is still read correctly (and a floor of 0 means "unknown", which the
+    reaper treats as no permission to delete below the mark, not as blanket permission).
+    """
+    v = state.get(sid)
+    if isinstance(v, dict):
+        v = v.get("mark")
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _state_floor(state: dict, sid: str) -> float:
+    """Oldest mtime this window has EVER been shown, or 0.0 if we do not know."""
+    v = state.get(sid)
+    if not isinstance(v, dict):
+        return 0.0
+    try:
+        return float(v.get("floor") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _mark_read(sid: str, newest: float, floor: float = 0.0) -> None:
+    """Read-modify-write the shared last-read map under a lock, so a sibling's mark is not lost.
+
+    `floor` is the mtime of the OLDEST file that was actually displayed in this run. It exists
+    because of a real data loss: `replies` displays at most MAX_ENTRY_FILES but marked read with the
+    NEWEST file's mtime, so with 25 replies it printed "Showing the newest 20; 5 older not shown",
+    then maybe_reap() deleted those 5 never-displayed answers in the SAME invocation - and a later
+    explicit `reap` reported "0 removed", so nothing ever reported the loss. The watermark alone
+    cannot express "these five below the window are still unread"; the floor can, and the reaper
+    refuses to delete anything below it.
+
+    The floor only ever moves DOWN (min with what is already recorded): it is the union of every
+    display window this session has ever been shown, not just the latest one.
+    """
     with file_lock(REPLIES_READ_STATE):
         state = _read_state()
-        state[sid] = newest
+        prev_floor = _state_floor(state, sid)
+        if prev_floor and floor:
+            floor = min(prev_floor, floor)
+        elif prev_floor:
+            floor = prev_floor
+        state[sid] = {"mark": newest, "floor": floor}
         _write_state(state)
 
 
@@ -1331,7 +1448,7 @@ def cmd_replies(session_id: str) -> int:
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
     state = _read_state()
-    last_read = float(state.get(sid) or 0)
+    last_read = _state_mark(state, sid)
 
     # A reply filed against a sessionId nobody has is invisible forever, so count it out loud.
     known = set(known_sessions())
@@ -1351,12 +1468,16 @@ def cmd_replies(session_id: str) -> int:
         print(f"{len(files)} reply file(s) addressed to this window, {n_new} new since last read.")
         if len(files) > len(shown):
             print(f"Showing the newest {len(shown)}; {len(files) - len(shown)} older not shown.")
+            print("  Those older ones are NOT marked read and retention will never delete them.")
         for p in shown:
             tag = "NEW " if p.stat().st_mtime > last_read else ""
             when = datetime.datetime.fromtimestamp(p.stat().st_mtime).replace(microsecond=0).isoformat()
             framed(f"{tag}{p.name}  ({when})", _capped(p, MAX_ENTRY_BYTES))
         print(f"\nReading is non-destructive - {len(files)} file(s) left in {REPLY_DIR}.")
-        _mark_read(sid, newest)
+        # Mark read with the newest DISPLAYED mtime, and record the oldest DISPLAYED mtime as the
+        # floor. Anything below the floor was never put in front of anyone, so retention may not
+        # treat it as read. Marking with the newest alone is what deleted five undisplayed answers.
+        _mark_read(sid, newest, shown[-1].stat().st_mtime)
 
     if links:
         print(f"\n{len(links)} SYMLINK(s) in the dropbox were NOT read - a link here is an attempt to")
@@ -1368,6 +1489,312 @@ def cmd_replies(session_id: str) -> int:
         print(f"\n{len(orphans)} file(s) matching no addressee (misfiled, nobody will ever read them):")
         for p in orphans[:5]:
             print(f"  {p.name}")
+    return 0
+
+
+def unread_reply_count(session_id: str) -> int:
+    """
+    How many reply files addressed to this window are NEW since it last ran `replies`.
+
+    Exactly the `n_new` cmd_replies prints, computed from exactly the same two inputs (the
+    sessionId-prefixed glob and REPLIES_READ_STATE) so there is ONE definition of "unread" and a
+    notice can never disagree with the inbox it points at. Reads nothing else and marks nothing read.
+    """
+    sid = safe_sid(session_id)
+    if not sid or not REPLY_DIR.is_dir():
+        return 0
+    last_read = 0.0
+    try:
+        last_read = _state_mark(_read_state(), sid)
+    except Exception:
+        last_read = 0.0
+    n = 0
+    for p in REPLY_DIR.glob(f"{sid}--*.md"):
+        try:
+            if p.is_symlink() or not p.is_file():
+                continue
+            if p.stat().st_mtime > last_read:
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
+def cmd_replies_count(session_id: str) -> int:
+    """
+    Print the unread count and NOTHING else - one integer, always, on every path.
+
+    This is the machine-readable half of `replies`, for the SessionStart notice hook. It prints no
+    filenames and no CONTENT: reply bodies are peer-authored and may only ever reach an agent inside
+    the untrusted-data frame that `replies` emits. A hook that leaked one line of a reply body would
+    be an unframed injection channel straight into session context.
+    """
+    try:
+        print(unread_reply_count(session_id))
+    except Exception:
+        print(0)  # a notice that cannot count says "nothing to see", never an error
+    return 0
+
+
+def _reap_replies(now: float, dry_run: bool = False) -> tuple[int, int]:
+    """
+    Delete replies that are BOTH already-read AND older than REPLY_RETENTION_DAYS.
+
+    Returns (removed, spared_old_unread). With dry_run=True it counts exactly the same candidates
+    and deletes nothing - ONE implementation of the predicates, because the dry run used to re-derive
+    them and drifted: after the loss described below it reported "0 removed" for files it had just
+    helped delete, so nothing ever reported the loss.
+
+    THE RULE THAT MATTERS: an unread reply is never reaped, at any age. "Read" means what `replies`
+    means by it, and that is now TWO conditions, not one:
+
+      1. the file's mtime is at or before this recipient's last-read mark, AND
+      2. the file was actually DISPLAYED.
+
+    (2) is not redundant. `replies` shows at most MAX_ENTRY_FILES; with 25 replies it printed
+    "Showing the newest 20; 5 older not shown" and then this function deleted those 5 in the same
+    invocation, because their mtimes are BELOW the mark and the mark was all it looked at. Two
+    independent guards now stop that, deliberately belt-and-braces on a mailbox whose whole purpose
+    is guaranteed delivery:
+
+      * STATE: the recorded floor - the oldest mtime ever displayed to this sid. Anything older was
+        never shown, so it is spared. Absent (a pre-existing state file) = 0 = unknown, in which case
+        this guard abstains and the next one still holds.
+      * STRUCTURE: only the newest MAX_ENTRY_FILES per sid are eligible at all, because that is the
+        most `replies` can ever have put in front of someone. This needs no state to be right. It can
+        spare a file that WAS displayed once (it has since been pushed out of the window by newer
+        arrivals) - sparing is the safe direction; deleting is not.
+
+    A window that has never run `replies` (no mark) has nothing reaped, and a MISFILED reply
+    addressed to a sessionId nobody holds is unread by definition and therefore immortal. Skipped
+    without comment: symlinks (never followed, and `replies` reports them as an attack signal worth
+    keeping), anything that is not a plain file, and any name we cannot parse a sessionId out of.
+    """
+    if not REPLY_DIR.is_dir():
+        return 0, 0
+    cutoff = now - REPLY_RETENTION_DAYS * 86400
+    state = _read_state()
+    removed = spared = 0
+    try:
+        box = REPLY_DIR.resolve()
+    except Exception:
+        return 0, 0
+
+    # Group first: eligibility depends on a file's RANK among its sid's replies, which cannot be
+    # decided one file at a time.
+    by_sid: dict[str, list] = {}
+    for p in sorted(REPLY_DIR.glob("*.md")):
+        try:
+            st = p.lstat()
+            if p.is_symlink() or not statmod.S_ISREG(st.st_mode):
+                continue
+            sid = p.name.split("--", 1)[0]
+            if not sid or sid != safe_sid(sid):
+                continue
+            by_sid.setdefault(sid, []).append((st.st_mtime, p))
+        except Exception:
+            continue  # one unreadable file must never stop the sweep
+
+    for sid, entries in by_sid.items():
+        entries.sort(key=lambda e: e[0], reverse=True)          # newest first, as `replies` shows them
+        displayable = set(id(e[1]) for e in entries[:MAX_ENTRY_FILES])
+        mark = _state_mark(state, sid)
+        floor = _state_floor(state, sid)
+        for mtime, p in entries:
+            try:
+                if mtime >= cutoff:
+                    continue  # young: kept regardless of read state
+                if not mark or mtime > mark:
+                    spared += 1  # never read -> never reaped
+                    continue
+                if id(p) not in displayable:
+                    spared += 1  # beyond what `replies` can show -> never displayed -> never reaped
+                    continue
+                if floor and mtime < floor:
+                    spared += 1  # older than anything ever displayed to this window
+                    continue
+                if dry_run:
+                    removed += 1
+                    continue
+                # Containment on the RESOLVED path, immediately before the unlink, for the same
+                # reason cmd_reply asserts it immediately before the open: it is the check that does
+                # not depend on any upstream sanitisation still being true.
+                if p.resolve().parent != box:
+                    continue
+                p.unlink()
+                removed += 1
+            except Exception:
+                continue
+    return removed, spared
+
+
+def _reap_contacts(now: float) -> int:
+    """
+    Drop contacts not seen in CONTACT_RETENTION_DAYS. Purely additive to existing behavior.
+
+    Everything still inside the window is untouched, so `find` keeps answering "closed, last seen
+    <date>" for every window from the last six months - the reap only removes entries that would
+    have answered with a date nobody could act on anyway.
+    """
+    cutoff = now - CONTACT_RETENTION_DAYS * 86400
+    dropped = 0
+    with file_lock(CONTACTS):
+        c = load_contacts()
+        if not c:
+            return 0
+        keep = {}
+        for sid, v in c.items():
+            ts = None
+            if isinstance(v, dict):
+                try:
+                    ts = datetime.datetime.fromisoformat(str(v.get("lastSeen") or "")).timestamp()
+                except Exception:
+                    ts = None
+            if ts is None or ts >= cutoff:
+                keep[sid] = v  # unparseable/missing lastSeen is KEPT - never guessed at
+                continue
+            dropped += 1
+        if dropped:
+            save_contacts(keep)
+    return dropped
+
+
+def _orphan_sockets(now: float) -> list[Path]:
+    """
+    Socket files in SOCK_DIR that are PROVABLY dead. Detection only - see cmd_reap for the unlink.
+
+    Unlinking a live window's socket would silently cut it off from all messaging with no error
+    anywhere, which is far worse than a stale zero-byte file, so a candidate has to clear FOUR
+    independent gates and any one of them failing keeps the file:
+
+      1. the name is <pid>.sock and the file is a real socket we own (never a symlink, never another
+         user's file, never something that merely lives in the directory);
+      2. `ps` ANSWERED and that pid is gone - a probe that could not run is not evidence of death,
+         and a live pid (even a recycled one wearing a different program) disqualifies immediately;
+      3. no live registry entry names this path as its messagingSocketPath;
+      4. nothing accepts a connection on it, and it is older than SOCKET_ORPHAN_MIN_AGE_DAYS - a
+         window that just bound its socket cannot be mistaken for a corpse by a clock skew.
+    """
+    out: list[Path] = []
+    if not SOCK_DIR.is_dir():
+        return out
+    cutoff = now - SOCKET_ORPHAN_MIN_AGE_DAYS * 86400
+    try:
+        live_paths = {str(d.get("messagingSocketPath") or "") for d in load_sessions()}
+        live_paths |= {str(SOCK_DIR / f"{entry_pid(d)}.sock") for d in load_sessions()}
+    except Exception:
+        return out  # cannot enumerate live windows -> cannot prove anything is dead
+    uid = os.getuid()
+    for p in sorted(SOCK_DIR.glob("*.sock")):
+        try:
+            if not re.fullmatch(r"\d+\.sock", p.name):
+                continue
+            st = p.lstat()
+            if p.is_symlink() or not statmod.S_ISSOCK(st.st_mode) or st.st_uid != uid:
+                continue
+            if st.st_mtime >= cutoff:
+                continue
+            if str(p) in live_paths:
+                continue
+            pid = int(p.stem)
+            probe = _ps_probe(pid)
+            if probe is None or probe["comm"]:
+                continue  # ps could not answer, or the pid is alive - either way, hands off
+            if socket_listening(str(p))[0]:
+                continue
+            out.append(p)
+        except Exception:
+            continue
+    return out
+
+
+def maybe_reap() -> None:
+    """
+    Run retention at most once a day, silently, and never let it break the command that called it.
+
+    Called from `list` and `replies` (both already walking these directories) AFTER their output, so
+    a reap can never remove something the caller just printed. Sockets are deliberately NOT touched
+    here - see cmd_reap.
+    """
+    try:
+        now = time.time()
+        try:
+            last = REAP_STAMP.stat().st_mtime
+        except Exception:
+            last = 0.0
+        if now - last < REAP_INTERVAL_SEC:
+            return
+        # Stamp FIRST: if the sweep dies half-way, the next invocation must not retry immediately
+        # and turn a one-a-day cost into a per-command one.
+        REAP_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        REAP_STAMP.write_text(now_stamp() + "\n")
+        _reap_replies(now)
+        _reap_contacts(now)
+    except Exception:
+        pass  # retention is housekeeping; it may never be the reason a command fails
+
+
+def cmd_reap(dry_run: bool = False, do_sockets: bool = False) -> int:
+    """
+    Run retention now and say what it did. `--dry-run` reports without deleting.
+
+    Sockets are DETECTED here but only unlinked with an explicit `--sockets`, and never by
+    maybe_reap(). The asymmetry is deliberate: SOCK_DIR is /tmp/cc-socks - a fixed path OUTSIDE
+    $HOME, so unlike every other path in this file it is shared by every invocation on the machine,
+    including test fixtures running under a fake HOME. The upside of automatic cleanup is a few
+    zero-byte inodes in a directory the OS purges on reboot; the downside of being wrong once is a
+    live window silently unable to receive anything. That trade does not justify an automatic
+    destructive write to a shared path, so the report is free and the unlink is asked for.
+    """
+    now = time.time()
+    if dry_run:
+        # The SAME function the real pass runs, with deletion switched off. It used to be a second
+        # hand-written copy of the predicates here, and the copy drifted: it counted a never-
+        # displayed reply as reapable, then reported "0 removed" once the real pass had already
+        # deleted it. A dry run that does not share the implementation is not a dry run.
+        cand, old_unread = _reap_replies(now, dry_run=True)
+        stale = 0
+        for _sid, v in load_contacts().items():
+            try:
+                ts = datetime.datetime.fromisoformat(str(v.get("lastSeen") or "")).timestamp()
+            except Exception:
+                continue
+            if ts < now - CONTACT_RETENTION_DAYS * 86400:
+                stale += 1
+        print("DRY RUN - nothing deleted.")
+        print(f"  replies:  {cand} read and older than {REPLY_RETENTION_DAYS}d would be removed; "
+              f"{old_unread} old but UNREAD would be kept.")
+        print(f"  contacts: {stale} not seen in {CONTACT_RETENTION_DAYS}d would be dropped.")
+    else:
+        removed, spared = _reap_replies(now)
+        dropped = _reap_contacts(now)
+        try:
+            REAP_STAMP.parent.mkdir(parents=True, exist_ok=True)
+            REAP_STAMP.write_text(now_stamp() + "\n")
+        except Exception:
+            pass
+        print(f"replies:  {removed} removed (read and older than {REPLY_RETENTION_DAYS}d), "
+              f"{spared} old but UNREAD kept.")
+        print(f"contacts: {dropped} dropped (not seen in {CONTACT_RETENTION_DAYS}d).")
+
+    orphans = _orphan_sockets(now)
+    if not orphans:
+        print("sockets:  no provably-dead socket files.")
+        return 0
+    if do_sockets and not dry_run:
+        n = 0
+        for p in orphans:
+            try:
+                p.unlink()
+                n += 1
+            except Exception:
+                continue
+        print(f"sockets:  {n} orphaned socket file(s) unlinked (of {len(orphans)} candidates).")
+        return 0
+    print(f"sockets:  {len(orphans)} orphaned file(s) detected, NOT removed "
+          f"(shared path outside $HOME - pass --sockets to unlink):")
+    for p in orphans[:10]:
+        print(f"  {p}")
     return 0
 
 
@@ -1486,7 +1913,11 @@ def main() -> int:
     sid = os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
 
     if not args or args[0] in ("list", "ls", "directory"):
-        return cmd_list(sid, json_out="--json" in args)
+        # Retention rides on the two commands that already walk these directories, and runs AFTER
+        # the output so it can never remove something we just printed. At most one pass a day.
+        rc = cmd_list(sid, json_out="--json" in args)
+        maybe_reap()
+        return rc
     if args[0] == "clear":
         return cmd_clear(sid)
     if args[0] in ("find", "who", "resolve"):
@@ -1515,7 +1946,14 @@ def main() -> int:
     if args[0] in ("reply", "answer"):
         return cmd_reply(sid, args[1] if len(args) > 1 else "", " ".join(args[2:]))
     if args[0] in ("replies", "inbox"):
-        return cmd_replies(sid)
+        rc = cmd_replies(sid)
+        maybe_reap()
+        return rc
+    if args[0] in ("replies-count", "unread"):
+        # Machine-readable: one integer on stdout, nothing else. The notice hook's only input.
+        return cmd_replies_count(sid)
+    if args[0] == "reap":
+        return cmd_reap(dry_run="--dry-run" in args, do_sockets="--sockets" in args)
     if args[0] == "note":
         return cmd_note(sid, " ".join(args[1:]))
     if args[0] == "notes":

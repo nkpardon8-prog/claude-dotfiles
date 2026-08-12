@@ -227,9 +227,19 @@ if [ "$FAIL_N" -gt 0 ]; then
   exit 1
 fi
 
+# STABLE VALUES ONLY. `live_windows_listed:${N_UTC}` used to live here, and the count of open windows
+# changes between runs, so this checked-in file churned on every run - and a pre-commit hook runs this
+# suite whenever anything under this directory is staged, so the auto-sync stages the churn, the hook
+# re-triggers, the run re-dirties it, and it never converges. The assumption is that the window set is
+# non-empty and env-invariant, not what its cardinality happened to be; record that instead.
+UNAME_S="$(uname -s)"
+OS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+
 cat > "${HERE}/02-starttime-comparison.fingerprint.json" <<EOF
-{"assumption":"script_identity_comparison_is_env_invariant_and_discriminating","uname":"$(uname -s)","os_version":"$(sw_vers -productVersion 2>/dev/null || echo unknown)","driver":"line-agent-communicator.py list --json","live_windows_listed":${N_UTC},"env_invariant_session_set":true,"identity_verbatim_entry":"${ID_GOOD}","identity_hour_shifted_entry":"${ID_BAD}"}
+{"assumption":"script_identity_comparison_is_env_invariant_and_discriminating","uname":"${UNAME_S}","os_version":"${OS_VERSION}","driver":"line-agent-communicator.py list --json","live_window_set_non_empty":true,"env_invariant_session_set":true,"identity_verbatim_entry":"${ID_GOOD}","identity_hour_shifted_entry":"${ID_BAD}"}
 EOF
+python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "${HERE}/02-starttime-comparison.fingerprint.json" \
+  || { echo "FAIL: 02-starttime-comparison wrote an unparseable fingerprint file" >&2; exit 1; }
 
 echo "PASS: 02-starttime-comparison - 3 assertions (A1 same non-empty window set under 4 TZ/LC_TIME envs, A2 verbatim=verified + shifted=mismatch, A3 mismatch still listed)"
 exit 0

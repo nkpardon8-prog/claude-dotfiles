@@ -198,13 +198,23 @@ fi
 # and under `set -uo pipefail` (no -e) that parse failure is NON-FATAL: the test printed PASS and
 # exited 0 while leaving a syntactically corrupt fingerprint file on disk. Green-on-crash is worse
 # than red. Keep every substitution in a heredoc trivial.
+#
+# And every value must be STABLE across runs. This file is checked in, and a pre-commit hook runs
+# this suite whenever anything under this directory is staged: a per-run value means the suite
+# dirties the files that gate it, the auto-sync stages them, the hook re-triggers, and the loop never
+# converges. `ps_comm_observed` was recorded verbatim here - it embeds that run's mktemp path - so
+# it is gone, replaced by the derived facts the assumption is actually about.
 COMM_IS_FULL_PATH=false
 case "$COMM" in /*) COMM_IS_FULL_PATH=true ;; esac
+COMM_ENDS_IN_DECOY=false
+case "$COMM" in */zzsleep) COMM_ENDS_IN_DECOY=true ;; esac
+COMM_CONTAINS_CLAUDE=false
+case "$COMM" in *claude*) COMM_CONTAINS_CLAUDE=true ;; esac
 UNAME_S="$(uname -s)"
 OS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
 
 cat > "${HERE}/05-comm-overmatch.fingerprint.json" <<EOF
-{"assumption":"liveness_check_does_not_overmatch_on_path_substring","uname":"${UNAME_S}","os_version":"${OS_VERSION}","ps_comm_observed":"${COMM}","comm_is_full_path":${COMM_IS_FULL_PATH},"decoy_parent_dir":"${DECOY_DIR}","listed_as_live_window":false,"positive_control_real_window_listed":true,"positive_control_exit_code":0}
+{"assumption":"liveness_check_does_not_overmatch_on_path_substring","uname":"${UNAME_S}","os_version":"${OS_VERSION}","comm_is_full_path":${COMM_IS_FULL_PATH},"comm_ends_in_decoy_binary":${COMM_ENDS_IN_DECOY},"comm_contains_claude":${COMM_CONTAINS_CLAUDE},"decoy_parent_dir":"${DECOY_DIR}","listed_as_live_window":false,"positive_control_real_window_listed":true,"positive_control_exit_code":0}
 EOF
 python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "${HERE}/05-comm-overmatch.fingerprint.json" \
   || { echo "FAIL: 05-comm-overmatch wrote an unparseable fingerprint file" >&2; exit 1; }

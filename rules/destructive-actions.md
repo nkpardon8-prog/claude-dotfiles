@@ -22,3 +22,16 @@ luck, not a procedure.
 (SCOPE: paths with no undo. This is NOT a rule against ordinary in-repo edits — a tracked file under
 version control has `git` as its backup, and adding `.bak` files beside it is clutter, not safety.
 The line is whether a prior version still exists somewhere after you write.)
+
+**A machine now backs the second rule, and it is a net, not a licence.** A `PreToolUse` hook
+(`scripts/hooks/shared-path-overwrite-guard.sh`) copies the prior contents to `<name>.bak-<UTC minute>`
+before a `Write`/`Edit` lands on an existing file in those paths. It exists because a rule that lives
+only in a context window enforces nothing, and this failure is both silent and able to recur — the two
+conditions `verify-by-mechanism.md` sets before a rule earns a guard. It deliberately does NOT block:
+it makes the destruction reversible, it does not decide whether you were right to destroy. So it
+changes nothing about your obligation — still write a new filename, still say what you overwrote and
+where the backup is. And it does not cover `Bash` (`rm`, `mv`, `>`), a **symlink** target (following
+one copied the link's target into the shared directory as a new plaintext file, so it now skips them
+outright — a symlink has no prior contents of its own to preserve), a window that has not restarted
+since the hook was added, or a machine where it is disabled. Its own backups age out after 14 days.
+Behave as though it is not there.

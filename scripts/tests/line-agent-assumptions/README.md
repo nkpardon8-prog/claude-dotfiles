@@ -164,7 +164,30 @@ A control run prints `NEG-CONTROL OK` and exits 0 when the test correctly went r
   >= 2.1.224 or `reachable()` short-circuits on the version gate before it ever looks at the socket.
 - Only 02 touches the user's real `~/.claude`, and only to READ.
 - Every test writes `<NN>-<name>.fingerprint.json` on PASS, holding only the facts the assumption
-  turns on.
+  turns on - and **every value in it must be identical from one run to the next**. These files are
+  checked in, and the pre-commit hook runs this suite whenever anything under this directory is
+  staged, so a per-run value (an absolute `mktemp` path, a pid, a timestamp, a hostname, a run id,
+  a count of open windows) makes the suite dirty the very files that gate it: the auto-sync stages
+  the churn, the hook re-triggers, the run re-dirties it, forever. 03 and 05 recorded
+  `ps_comm_observed` verbatim - which embeds that run's temp path - and 02 recorded
+  `live_windows_listed`; all three are now derived booleans (`comm_is_basename`,
+  `comm_is_full_path`, `live_window_set_non_empty`). The check: run the suite twice, `md5` every
+  fingerprint, demand identical.
+
+## Exit codes
+
+`run-all.sh` distinguishes "a defense regressed" from "we could not measure":
+
+| code | meaning | pre-commit |
+|------|---------|------------|
+| 0 | every test not in `EXPECTED_RED` passed | commit proceeds |
+| 1 | a genuine assertion failure | **BLOCKS** |
+| 3 | skips (missing tool, no live window for 05's positive control, a fixture process that died, a 120s timeout) and no genuine failures | does not block |
+
+Skips must never be reported as failures. They used to be appended to `RED_UNEXPECTED_MSGS`, so
+7 passes plus one exit-3 skip exited 1 - and a 1 there makes `dotfiles-sync.sh` take its COMMIT
+FAILED branch, which writes `~/.claude/.dotfiles-sync-paused` and stops **all** dotfiles syncing in
+**every** window until a human deletes it. A transient probe failure must not be able to do that.
 
 ## Bash 3.2 note
 

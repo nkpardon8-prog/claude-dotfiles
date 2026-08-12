@@ -103,6 +103,16 @@
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude-dotfiles/scripts/hooks/line-replies-notice.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -176,6 +186,16 @@
           {
             "type": "command",
             "command": "python3 $HOME/.claude-dotfiles/scripts/hooks/no-detach-gate.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude-dotfiles/scripts/hooks/shared-path-overwrite-guard.sh",
+            "timeout": 10
           }
         ]
       }

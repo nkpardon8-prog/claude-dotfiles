@@ -68,6 +68,64 @@ otherwise have caught a bad instruction.
   the literal END-banner inside a reply body and fails if it escapes its frame; `08-dropbox-symlink.sh`
   plants a symlink in the dropbox and fails if `replies` reads through it. Each was proven red with
   its defense removed before being trusted green.
+- **Something finally LOOKS in the reply dropbox.** `reply` printed "it is not delivered - they have
+  to look", and nothing ever looked: no hook, no prompt, no reminder. So a peer filed an answer,
+  marked its task done believing it had communicated, and the file sat unread forever - which makes a
+  "guaranteed reply route" actively worse than no route, because the sender stops looking for another
+  one. New SessionStart hook `scripts/hooks/line-replies-notice.sh` prints the unread COUNT and the
+  command to read it, and prints **nothing at all** when the count is zero (a hook that speaks every
+  session start is noise, and noise is what gets skimmed past). It never prints reply content, sender
+  or filename: hook stdout is injected into context raw, so echoing peer-authored text there would be
+  an unframed injection channel that bypasses every defense `replies` was built with. The count comes
+  from a new `replies-count` verb that reuses the same glob and the same last-read state file
+  `replies` uses, so a notice can never disagree with the inbox it points at.
+- **Retention, timid by design, for three things that only ever grew.** Reply files (reading is
+  non-destructive), contacts (every window ever seen, rescanned by every `find`), and orphaned
+  sockets (correctly detected as dead since the reachability fix, never cleaned up). A reply is
+  deleted only when it is **already-read AND older than 30 days** - an unread reply is immortal at
+  any age, including one misfiled against a sessionId nobody holds, because deleting an undelivered
+  answer destroys the one artifact this feature exists to produce. Contacts are dropped after 180
+  days unseen, which keeps `find` answering "closed, last seen <date>" for everything within memory.
+  Reaping runs at most once a day, gated on a stamp file, from `list`/`replies` AFTER their output,
+  and is fail-soft everywhere - it may never be the reason a command fails. `reap [--dry-run]` runs
+  it explicitly.
+- **Orphaned sockets are reported, not silently deleted.** `/tmp/cc-socks` is a fixed path OUTSIDE
+  `$HOME`, so every invocation on the machine shares it - including test fixtures running under a
+  fake HOME - and unlinking a live window's socket would cut it off from all messaging with no error
+  at either end. The payoff is a few zero-byte inodes the OS purges on reboot, which does not buy an
+  automatic destructive write to a shared path. So `reap` lists candidates and unlinks only with an
+  explicit `--sockets`, behind four gates: `<pid>.sock` we own, `ps` ANSWERED and that pid is gone,
+  no live registry entry names the path, and nothing accepts a connection on it after 7 days.
+- **`list` stopped forking `ps` twice per window, twice over.** It computed `identity_state` and then
+  called `reachable`, which computed it again - and each `identity_state` was two `ps` forks (comm,
+  then lstart). `reachable` now takes the already-computed state, both fields come back in ONE fork,
+  and the probe is memoised per pid for the life of the run. Measured on the real machine with 18 live
+  windows: **36 forks -> 18**, with byte-identical `list` output before and after.
+- **A data-loss gate for the reaper.** `09-reply-retention.sh` files two ANCIENT replies whose only
+  difference is whether the last-read mark covers them, and fails if the unread one is deleted;
+  proven red with the unread guard removed. Its negative control moves the mark to now, which makes
+  the same fixture legitimately reapable and must turn the assertion red - so a green cannot mean
+  "the reaper never deletes anything". Suite is 8/8.
+- **A safety review blocked the unattended ship, and found six things - four of them proven by
+  execution.** (1) Two fingerprint files recorded `ps_comm_observed`, which embeds that run's
+  `mktemp` path, so every suite run dirtied the checked-in files that the pre-commit hook watches:
+  any `Write` in any window -> auto-sync `git add -A` -> hook matches -> suite runs -> re-dirties
+  them, forever. All eight fingerprints now hold derived booleans only (02's `live_windows_listed`
+  was the same class), proven by two runs with identical `md5` and a clean tree across three runs.
+  (2) `run-all.sh` folded infra skips and the 124/142 timeout remap into the failure list, so 7
+  passes plus one skip exited **1** - which makes `dotfiles-sync` write `.dotfiles-sync-paused` and
+  stop syncing in every window until a human intervenes. Skips are now exit **3**, failures **1**,
+  reported separately, with stubbed proof of all four cases. (3) **Real data loss:** `replies`
+  displayed the newest 20 but marked read with the NEWEST mtime, and `maybe_reap()` then deleted all
+  25 - the 5 it had just said it was not showing, with a later `reap` reporting "0 removed" so
+  nothing ever surfaced it. "Read" now means *displayed* (recorded floor + only the newest 20 per
+  window are ever eligible), the dry run shares the one implementation instead of a drifting copy,
+  and `09` grew A4/A5, proven red against the old logic. (4) The overwrite guard followed symlinks:
+  `~/Downloads/innocent.md -> a secret` produced a plaintext `.bak-` of that secret in a
+  browser-facing, cloud-synced directory; it now skips symlinks like the sibling dropbox code does.
+  (5) Its 256KB stdin cap truncated the JSON of any Write over ~256KB - no backup for exactly the
+  largest overwrites, plus EPIPE for the writer; it now reads to EOF. (6) It had no `[ -t 0 ]` guard
+  and hung on an idle stdin. Backups also age out after 14 days by the stamp in the name.
 - **What is still unfixed:** CI does not run the assumption suite. The `harnesses` job is a
   two-script allowlist requiring proof-green with the checkout outside `$HOME`, and this suite depends
   on `ps` semantics that differ on a Linux runner - so these defenses are protected by a suite someone

@@ -84,6 +84,18 @@ install_hook() {
 # Both lints are --staged, so a commit touching nothing under commands/ checks
 # nothing and passes - that scoping is what keeps this hook safe to run on every
 # commit (proven: scripts/lint-commands-assumptions/01).
+#
+# Step 2.5 follows that same scoping contract. The line-agent assumption suite encodes
+# three DEMONSTRATED attacks (forged registry, banner injection, dropbox symlink) plus two
+# self-DoS regressions; until now it was "protected by a suite someone has to remember to
+# run", which is not protection. It runs ONLY when the code it guards is staged, so every
+# other commit pays nothing.
+#
+# It reads the suite's own exit vocabulary instead of treating non-zero as failure:
+# 1 = a defense actually broke (BLOCK - the entire point), while 2 (env gate unset) and
+# 3 (infrastructure: no live windows to read, timeout) mean the tests could not run and
+# must NOT block. Collapsing 3 into failure would strand every commit on a machine with no
+# Claude windows open - the same self-inflicted-outage shape this suite exists to catch.
 install_hook pre-commit <<'EOF'
 #!/bin/bash
 # 1) 20k-char re-injection-ceiling guard (staged files only).
@@ -91,6 +103,23 @@ install_hook pre-commit <<'EOF'
 # 2) Contract-survival guard: required literals, their position above the
 #    contract-core marker, and swept wording that must not return (staged only).
 "$HOME/.claude-dotfiles/scripts/lint-commands/lint-skill-contract.sh" --staged || exit 1
+# 2.5) line-agent assumption suite - ONLY when the code it guards is staged.
+if git diff --cached --name-only 2>/dev/null \
+     | grep -qE '^scripts/(line-agent-communicator\.py|tests/line-agent-assumptions/)'; then
+  _lac_out="$(mktemp "${TMPDIR:-/tmp}/lac-precommit.XXXXXX")"
+  LINE_AGENT_TESTS_ALLOW_DEV=true \
+    bash "$HOME/.claude-dotfiles/scripts/tests/line-agent-assumptions/run-all.sh" >"$_lac_out" 2>&1
+  _lac_rc=$?
+  if [ "$_lac_rc" = "1" ]; then
+    echo "BLOCKED: the line-agent assumption suite FAILED - a defense regressed." >&2
+    tail -25 "$_lac_out" >&2
+    echo "Reproduce: LINE_AGENT_TESTS_ALLOW_DEV=true bash ~/.claude-dotfiles/scripts/tests/line-agent-assumptions/run-all.sh" >&2
+    rm -f "$_lac_out"
+    exit 1
+  fi
+  [ "$_lac_rc" = "0" ] || echo "NOTE: line-agent suite could not run (exit ${_lac_rc}) - not blocking." >&2
+  rm -f "$_lac_out"
+fi
 # 3) Block commit if any staged file contains a recognized secret pattern.
 #    secret-scan --staged reads INDEX BLOBS, so overwriting the worktree copy after
 #    `git add` no longer hides the staged secret.
