@@ -95,6 +95,7 @@ Pack subskills (invoked as `/<pack>:<name>`):
 | `/desktop` | Self-resolving local-mac control. Tries CLI/AppleScript first; vision-clicks only when no scriptable handle exists. Handles permission dialogs, confirm modals, and apps without CLI. |
 | `/macmini` | Drives a remote Mac mini through Chrome Remote Desktop via the chrome-devtools MCP. Self-resolving; clicks are direct CDP click_at into the CRD canvas. |
 | `/windows` | Drives a remote Windows laptop (OpenDental) through Chrome Remote Desktop via the chrome-devtools MCP. Self-resolving; clicks are direct CDP click_at into the CRD canvas. |
+| `/outreach` | HubSpot -> Salesmsg SMS draft pipeline (Arc Boats). Opens with an intake (which report/list, campaign goal, message phrasing, HubSpot decision rules - no default lead source). Vets contacts via the internal HubSpot API, reads message history to tailor copy, drafts unsent texts into the Salesmsg widget one Chrome tab per contact, and maintains a never-contact ledger so a declined or dead-number contact is never re-drafted. Draft-only: never sends, never edits HubSpot. Scripts in `commands/outreach/scripts/` (raw CDP over WebSocket, no chrome-devtools MCP dependency). |
 
 Pack subskills (invoked as `/<pack>:<name>`):
 
