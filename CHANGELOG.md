@@ -126,11 +126,34 @@ otherwise have caught a bad instruction.
   (5) Its 256KB stdin cap truncated the JSON of any Write over ~256KB - no backup for exactly the
   largest overwrites, plus EPIPE for the writer; it now reads to EOF. (6) It had no `[ -t 0 ]` guard
   and hung on an idle stdin. Backups also age out after 14 days by the stamp in the name.
-- **What is still unfixed:** CI does not run the assumption suite. The `harnesses` job is a
+- **The suite now gates itself, locally.** "Protected by a suite someone has to remember to run" is
+  not protection, so `pre-commit` step 2.5 runs it - but ONLY when `line-agent-communicator.py` or the
+  suite itself is staged, so every other commit pays nothing. It reads the suite's own exit vocabulary
+  rather than treating non-zero as failure: 1 (a defense broke) blocks; 2 (env gate unset) and 3
+  (infrastructure - no live windows, a timeout) do not, because collapsing 3 into failure would strand
+  every commit on a machine with no Claude windows open. Two prerequisites had to be fixed first, both
+  found by review before this ran unattended: `run-all.sh` was returning 1 for infra/timeout, which
+  would have written the sync-pause marker and halted dotfiles syncing machine-wide until a human
+  cleared it; and two fingerprints recorded a per-run `mktemp` path, so every suite run dirtied the
+  very files that trigger it - auto-sync would stage them, the hook would re-fire, and the run would
+  re-dirty them, forever. Fingerprints now record derived booleans only, proven byte-identical across
+  consecutive runs.
+- **`dotfiles-sync` no longer halts syncing over a push that succeeded.** This hook is async and two
+  invocations overlap routinely, so when they race the loser's `git push` returns non-zero for work
+  the winner already pushed - and the marker it writes stops syncing repo-wide. It fired twice while
+  shipping this change, both times with the remote provably already at our HEAD. The routine-failure
+  branch now asks `ls-remote` before pausing. Placed in that branch ALONE, after the secret and
+  unproven arms: a pre-push secret rejection must never be softened, and it cannot reach the check
+  anyway, since a hook that rejects a secret rejects it for every racing run. Fails toward pausing
+  when the remote is unreachable.
+- **What is still unfixed:** CI does not run the assumption suite - the `harnesses` job is a
   two-script allowlist requiring proof-green with the checkout outside `$HOME`, and this suite depends
-  on `ps` semantics that differ on a Linux runner - so these defenses are protected by a suite someone
-  has to remember to run. And the identity header remains a prose convention that nothing parses: an
-  agent that skips `card` sends an anonymous message and no machine notices.
+  on `ps` semantics that differ on a Linux runner, so the local pre-commit gate is the only automatic
+  enforcement. The identity header remains a prose convention that nothing parses: an agent that skips
+  `card` sends an anonymous message and no machine notices. The overwrite guard does not cover `Bash`
+  (`rm`, `mv`, `>`) - that needs a shell-intent classifier, and a fragile one would block real work.
+  And neither new hook protects a window that was already open when it landed: hooks bind at session
+  start, so every currently-running window needs a restart to get them.
 
 ## 2026-08-11 - /line now sets the address, not just the caption (line agent communicator)
 
