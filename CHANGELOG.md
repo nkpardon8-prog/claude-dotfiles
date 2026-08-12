@@ -25,6 +25,19 @@ addressable only as `dentall-ae`, and nothing on the machine could translate bet
   harness re-saves that file on every status change and **preserves** a name marked
   `nameSource: "explicit"`. If that ever stops holding, `set` degrades to caption-only and says so,
   so discovery fails loud rather than silent.
+- **Contacts, so a closed window is closed rather than nonexistent.** The live registry only knows
+  running windows, which made "message my insurance agent" indistinguishable from a name that never
+  existed once that window closed. `~/.claude/agent-contacts.json` remembers every window seen
+  named, learned automatically from whatever is live (no `/line` required). New `find "<what the
+  user said>"` ranks live windows first, then remembered ones, and prints the address to use —
+  `find "my summit admin hub agent"` now returns `dentall-ae` with its exact unreachability reason,
+  which is the request that failed and started this. Contacts are a cache, never an authority:
+  reachability is always recomputed live, so a stale contact can misname a window but can never make
+  a dead one look alive.
+- **`crossSessionInbound: "accept"`** in user settings, so peer messages deliver without a manual
+  approval step. Default behaviour holds a message whenever the sender's permission-mode class
+  differs from the receiver's, which is what interrupted the first successful send. Applies to
+  sessions started after the change.
 - **Collisions are resolved, not inherited.** `dentall-4c` currently names two live windows, which
   is exactly what forces callers back to opaque refs. A handle already held by a *live* window gets
   a numeric suffix; dead windows never block a name.
