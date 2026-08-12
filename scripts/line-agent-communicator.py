@@ -377,9 +377,18 @@ def cmd_list(session_id: str = "", json_out: bool = False) -> int:
         })
 
     rows.sort(key=lambda r: (not r["reachable"], r["name"]))
+    sync_contacts(rows)
+
+    live_sids = {r["sessionId"] for r in rows}
+    offline = [
+        {"sessionId": sid, **v}
+        for sid, v in load_contacts().items()
+        if sid not in live_sids and (v.get("label") or v.get("handle"))
+    ]
+    offline.sort(key=lambda c: c.get("lastSeen", ""), reverse=True)
 
     if json_out:
-        print(json.dumps(rows, indent=2))
+        print(json.dumps({"live": rows, "offline": offline}, indent=2))
         return 0
 
     if not rows:
