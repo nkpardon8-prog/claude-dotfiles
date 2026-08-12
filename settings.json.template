@@ -92,6 +92,17 @@
             "command": "python3 $HOME/.claude-dotfiles/scripts/hooks/prod-ledger.py inject"
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude-dotfiles/scripts/hooks/line-reassert-identity.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

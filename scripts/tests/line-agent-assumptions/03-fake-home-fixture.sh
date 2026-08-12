@@ -27,7 +27,10 @@ command -v python3 >/dev/null 2>&1 || { echo "INFRA: python3 missing" >&2; exit 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MARKER="lac-atest"                       # stable namespace marker, for the orphan reaper
 RUN_ID="$(python3 -c 'import uuid;print(uuid.uuid4().hex[:12])')"
-BINNAME="claude"; [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ] && BINNAME="notclaude"
+# Decoy name must not CONTAIN "claude" — the check is a substring match, so `notclaude` passes it.
+# (Discovered by this very negative control: the first decoy was `notclaude` and the test stayed
+# green, which is itself the over-match defect this suite exists to surface. See 05.)
+BINNAME="claude"; [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ] && BINNAME="zzsleep"
 
 # --- startup orphan reaper: `finally` does not survive SIGKILL, so reap prior crashed runs -------
 find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name "${MARKER}-*" -mmin +60 -exec rm -rf {} + 2>/dev/null
@@ -43,20 +46,28 @@ trap cleanup EXIT
 
 mkdir -p "$FAKE_HOME/.claude/sessions" "$FAKE_HOME/.claude/session-status"
 
-# a real process whose comm looks like claude
-cp /bin/sleep "$FAKE_HOME/$BINNAME" 2>/dev/null || { echo "INFRA: cannot copy /bin/sleep" >&2; exit 3; }
+# A real process whose comm looks like claude. SYMLINK, not copy: macOS SIGKILLs a copied system
+# binary on exec (code-signature check) - `cp /bin/sleep .../claude` dies instantly with "Killed: 9".
+# A symlink keeps the original signed inode while presenting our name on the exec path.
+ln -s /bin/sleep "$FAKE_HOME/$BINNAME" 2>/dev/null || { echo "INFRA: cannot symlink /bin/sleep" >&2; exit 3; }
 "$FAKE_HOME/$BINNAME" 120 &
 FAKE_PID=$!
 sleep 0.3
 kill -0 "$FAKE_PID" 2>/dev/null || { echo "INFRA: fixture process died immediately" >&2; exit 3; }
 
-FAILURES=()
+# Counter + string, NOT a bash array: this repo runs on macOS bash 3.2, where `${#arr[@]}` on an
+# EMPTY array under `set -u` aborts with "unbound variable" — i.e. the all-assertions-passed path is
+# exactly the one that would crash. Same class of bash-3.2 trap the sibling run-all.sh documents.
+FAIL_N=0
+FAIL_MSGS=""
+fail() { FAIL_N=$((FAIL_N + 1)); FAIL_MSGS="${FAIL_MSGS}  - $1
+"; }
 
 # --- A1 — does ps report a comm containing "claude"? --------------------------------------------
 COMM="$(ps -p "$FAKE_PID" -o comm= 2>/dev/null | tr -d ' ')"
 case "$COMM" in
   *claude*) ;;
-  *) FAILURES+=("A1 expected ps comm to contain 'claude', got '${COMM}'") ;;
+  *) fail "A1 expected ps comm to contain 'claude', got '${COMM}'" ;;
 esac
 
 # --- A2 — does the REAL script list a synthetic window backed by that pid? -----------------------
@@ -82,22 +93,22 @@ PY
 OUT="$(HOME="$FAKE_HOME" python3 "$SCRIPT" list 2>&1)"
 case "$OUT" in
   *atest-window*) ;;
-  *) FAILURES+=("A2 real script did not list the fixture window; output was: $(printf '%s' "$OUT" | head -3 | tr '\n' '|')") ;;
+  *) fail "A2 real script did not list the fixture window; output was: $(printf '%s' "$OUT" | head -3 | tr '\n' '|')" ;;
 esac
 
 # --- verdict ------------------------------------------------------------------------------------
 if [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ]; then
-  if [ ${#FAILURES[@]} -gt 0 ]; then
-    echo "NEG-CONTROL OK: test correctly went RED with a non-claude binary (${#FAILURES[@]} assertion(s) failed)"
+  if [ "$FAIL_N" -gt 0 ]; then
+    echo "NEG-CONTROL OK: test correctly went RED with a non-claude binary (${FAIL_N} assertion(s) failed)"
     exit 0
   fi
   echo "NEG-CONTROL BROKEN: test stayed GREEN with a binary named '$BINNAME' - it proves nothing" >&2
   exit 1
 fi
 
-if [ ${#FAILURES[@]} -gt 0 ]; then
+if [ "$FAIL_N" -gt 0 ]; then
   echo "FAIL: 03-fake-home-fixture" >&2
-  for f in "${FAILURES[@]}"; do echo "  - $f" >&2; done
+  printf '%s' "$FAIL_MSGS" >&2
   exit 1
 fi
 

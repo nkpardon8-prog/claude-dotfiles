@@ -72,7 +72,7 @@ Pack subskills (invoked as `/<pack>:<name>`):
 | `/document` | Audits or creates clear project documentation covering database, backend, frontend, APIs, and external integrations. Updates existing docs or bootstraps a full `docs/` tree. Navigable for both humans and LLMs. |
 | `/claudemd` | Captures a lesson from the current moment into the RIGHT instruction surface - investigates what the lesson is and why, routes to the strongest enforcement layer (check > global CLAUDE.md > project AGENTS.md/CLAUDE.md > docs/), proposes the exact edit, applies on approval. |
 | `/skill-improve` | Turns the current session into improvements for an existing skill or command - scans the session for direct evidence (what worked, what failed, what confused) and produces copy-ready patches. Report-only by default; `--apply` hands off to `/implement`. |
-| `/line` | Sets this window's statusline line 2 to a sentence; no args clears it back to the repo name. |
+| `/line` | Names this window once, setting BOTH its statusline line-2 caption and its peer address - the name `ListAgents` shows and `SendMessage` resolves. No args clears the caption (the address is deliberately left alone). Its script also carries the peer protocol: `list`/`find` to resolve a window the user named in prose, `card` to introduce yourself, `whois <pid>` to look up (never authenticate) an inbound sender, `reply`/`replies` for the fallback dropbox, `note`/`notes` for shared answers. |
 
 ## Research
 

@@ -1,0 +1,1 @@
+{"assumption":"dropbox_symlinks_are_refused_not_followed","uname":"Darwin","defenses":"listing_is_symlink_first + O_NOFOLLOW","assertions":4}

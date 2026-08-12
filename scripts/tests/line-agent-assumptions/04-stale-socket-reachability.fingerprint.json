@@ -1,0 +1,1 @@
+{"assumption":"reachable_means_a_listener_is_bound","uname":"Darwin","os_version":"26.5","reachable_with_listener":"true","reachable_with_orphaned_socket":"false","socket_file_outlives_listener":true}
