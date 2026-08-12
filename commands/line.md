@@ -40,14 +40,17 @@ python3 "$HOME/.claude-dotfiles/scripts/line-agent-communicator.py" set "${ARGUM
 
 ## Finding and messaging other windows
 
-To see every live window — its address, what it is, and whether it can actually receive a message:
-
 ```bash
-python3 "$HOME/.claude-dotfiles/scripts/line-agent-communicator.py" list
+LAC="$HOME/.claude-dotfiles/scripts/line-agent-communicator.py"
+python3 "$LAC" find "my summit admin hub agent"   # resolve prose -> an address
+python3 "$LAC" list                               # everything, live + remembered
 ```
 
-Add `--json` for a machine-readable form. Message a window with `SendMessage` using the `ADDRESS`
-column. The `CAN RECEIVE` column matters: cross-session messaging arrived in Claude Code **2.1.224**
+`find` takes the user's words as typed and ranks matches, printing the address to `SendMessage`.
+`list` shows every live window with its address, what it is, and whether it can receive; below that,
+windows it has seen before that are no longer running, with a last-seen date — so a closed window
+reads as closed rather than nonexistent. Both accept `--json`. Contacts are learned automatically
+from whatever is live, so the address book fills in even for windows nobody ran `/line` in. The `CAN RECEIVE` column matters: cross-session messaging arrived in Claude Code **2.1.224**
 and the receiving socket is bound at startup, so a window running an older build cannot be messaged
 until it is **closed and reopened** — upgrading alone is not enough. The listing says which windows
 are in that state and why, so you never send into a void.
