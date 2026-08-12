@@ -326,6 +326,7 @@ def cmd_set(session_id: str, sentence: str) -> int:
         print("  Caption and directory still work; use `/rename` to set the address by hand.")
         return 0
 
+    remember(sid, sentence, handle, mine.get("cwd", ""))
     print(f"Peer address: {old} -> {handle}")
     print(f"  Other agents can now reach this window with SendMessage to: {handle}")
 
