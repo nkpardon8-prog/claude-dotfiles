@@ -411,6 +411,77 @@ def cmd_list(session_id: str = "", json_out: bool = False) -> int:
     print(f"{len(rows)} live, {len(rows) - unreach} reachable.")
     if unnamed:
         print(f"{unnamed} still carry an auto-generated address - run /line in those windows to name them.")
+
+    if offline:
+        print()
+        print(f"Known but not running ({len(offline)}) - reopen the window to reach it:")
+        for c in offline[:12]:
+            when = (c.get("lastSeen") or "").replace("T", " ")[:16]
+            print(f"  {(c.get('label') or c.get('handle'))[:44]:<44}  last seen {when}")
+        if len(offline) > 12:
+            print(f"  ... and {len(offline) - 12} more (use --json for all)")
+    return 0
+
+
+def cmd_find(session_id: str, query: str) -> int:
+    """
+    Resolve what a person said into an address.
+
+    This is the entry point an agent should use when the user names a window in prose. It searches
+    live windows first, then remembered ones, so a closed window reports as closed instead of
+    vanishing into "no such agent" - the failure that started all this.
+    """
+    if not query.strip():
+        return cmd_list(session_id)
+
+    rows = []
+    for d in load_sessions():
+        if not pid_alive(int(d.get("pid") or 0)):
+            continue
+        ok, why = reachable(d)
+        rows.append({
+            "name": d.get("name", ""), "label": label_for(d.get("sessionId", "")),
+            "cwd": d.get("cwd", ""), "sessionId": d.get("sessionId", ""),
+            "reachable": ok, "why": why,
+        })
+    sync_contacts(rows)
+
+    hits = sorted(
+        ((score_match(query, r["label"], r["name"], Path(r["cwd"]).name), r) for r in rows),
+        key=lambda t: -t[0],
+    )
+    hits = [(s, r) for s, r in hits if s > 0]
+
+    if hits:
+        print(f"Live matches for \"{query}\":")
+        for s, r in hits[:5]:
+            state = "reachable" if r["reachable"] else f"NOT reachable - {r['why']}"
+            print(f"  {r['name']:<28}  {r['label'] or '(unnamed)':<36}  {state}")
+        print()
+        print(f"SendMessage to: {hits[0][1]['name']}")
+        return 0
+
+    live_sids = {r["sessionId"] for r in rows}
+    known = sorted(
+        (
+            (score_match(query, v.get("label", ""), v.get("handle", "")), sid, v)
+            for sid, v in load_contacts().items()
+            if sid not in live_sids
+        ),
+        key=lambda t: -t[0],
+    )
+    known = [k for k in known if k[0] > 0]
+    if known:
+        print(f"No LIVE window matches \"{query}\", but this one is remembered:")
+        for s, sid, v in known[:3]:
+            when = (v.get("lastSeen") or "").replace("T", " ")[:16]
+            print(f"  {v.get('handle', ''):<28}  {v.get('label', ''):<36}  last seen {when}")
+        print()
+        print("It is not running. Reopen that window (and run /line in it) to make it reachable.")
+        return 0
+
+    print(f"Nothing matches \"{query}\" - not running, and never seen named.")
+    print("Run `list` to see everything, or ask which window they mean.")
     return 0
 
 
