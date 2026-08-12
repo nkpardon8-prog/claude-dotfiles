@@ -180,6 +180,102 @@ def unique_handle(base: str, my_session_id: str, sessions: list[dict]) -> str:
 
 
 # --------------------------------------------------------------------------------------
+# contacts
+#
+# The live registry only knows windows that are RUNNING, which makes "message my insurance
+# agent" unanswerable the moment that window closes - indistinguishable from a name that never
+# existed. Contacts is the remembered half: every window we have ever seen named, with when we
+# last saw it. It turns "no such agent" into "that one is closed, last seen Tuesday", which is
+# the difference between a dead end and a next step.
+#
+# It is a cache, never an authority. Reachability is always recomputed from the live registry,
+# so a stale contact can misname a window but can never make a dead one look alive.
+# --------------------------------------------------------------------------------------
+
+CONTACTS = HOME / ".claude" / "agent-contacts.json"
+
+
+def load_contacts() -> dict:
+    try:
+        d = json.loads(CONTACTS.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_contacts(c: dict) -> None:
+    try:
+        CONTACTS.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(CONTACTS.parent), prefix=".lac-c-", suffix=".tmp")
+        with os.fdopen(fd, "w") as fh:
+            json.dump(c, fh, indent=2, sort_keys=True)
+        os.replace(tmp, CONTACTS)
+    except Exception:
+        pass  # a contacts write must never break naming or listing
+
+
+def now_stamp() -> str:
+    import datetime
+    return datetime.datetime.now().replace(microsecond=0).isoformat()
+
+
+def remember(session_id: str, label: str, handle: str, cwd: str) -> None:
+    """Record one window. Keyed by sessionId so a rename updates rather than duplicates."""
+    c = load_contacts()
+    prev = c.get(session_id, {})
+    c[session_id] = {
+        "label": label or prev.get("label", ""),
+        "handle": handle or prev.get("handle", ""),
+        "cwd": cwd or prev.get("cwd", ""),
+        "firstSeen": prev.get("firstSeen") or now_stamp(),
+        "lastSeen": now_stamp(),
+    }
+    save_contacts(c)
+
+
+def sync_contacts(rows: list[dict]) -> None:
+    """Learn from whatever is live, so contacts fill in without anyone running /line."""
+    c = load_contacts()
+    changed = False
+    for r in rows:
+        sid = r.get("sessionId")
+        if not sid:
+            continue
+        prev = c.get(sid, {})
+        entry = {
+            "label": r.get("label") or prev.get("label", ""),
+            "handle": r.get("name") or prev.get("handle", ""),
+            "cwd": r.get("cwd") or prev.get("cwd", ""),
+            "firstSeen": prev.get("firstSeen") or now_stamp(),
+            "lastSeen": now_stamp(),
+        }
+        if entry != prev:
+            c[sid] = entry
+            changed = True
+    if changed:
+        save_contacts(c)
+
+
+def score_match(query: str, *fields: str) -> int:
+    """
+    Rank a contact against what the user actually said.
+
+    People name windows in prose ("my summit admin hub agent") and recall them loosely, so exact
+    matching is the wrong test - overlap of meaningful words is. Returns 0 for no match.
+    """
+    q = re.sub(r"[^a-z0-9 ]+", " ", (query or "").lower())
+    words = [w for w in q.split() if w not in {"the", "my", "agent", "window", "session", "a", "an"}]
+    if not words:
+        return 0
+    hay = " ".join(re.sub(r"[^a-z0-9 ]+", " ", (f or "").lower()) for f in fields)
+    if not hay.strip():
+        return 0
+    if " ".join(words) in hay:
+        return 100 + len(words)
+    return sum(4 if w in hay.split() else (2 if w in hay else 0) for w in words)
+
+
+# --------------------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------------------
 
