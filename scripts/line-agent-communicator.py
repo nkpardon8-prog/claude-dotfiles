@@ -493,6 +493,8 @@ def main() -> int:
         return cmd_list(sid, json_out="--json" in args)
     if args[0] == "clear":
         return cmd_clear(sid)
+    if args[0] in ("find", "who", "resolve"):
+        return cmd_find(sid, " ".join(args[1:]))
     if args[0] == "set":
         return cmd_set(sid, " ".join(args[1:]))
     return cmd_set(sid, " ".join(args))
