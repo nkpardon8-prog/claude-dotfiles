@@ -356,14 +356,18 @@ def main():
 
     # kind_of() reads the same stripped text: a real push whose commit-message heredoc
     # mentions a deploy must be filed as `push`, not `deploy` (ledger-only helper).
-    _kind_cmd = "cat > /tmp/m.txt <<'MSGEOF'\ngcloud run deploy notes\nMSGEOF\ngit push origin dev"
+    # Ordered so it can only pass for the right reason: kind_of() checks "git push" BEFORE
+    # "gcloud run deploy", so a real DEPLOY whose commit-message heredoc merely mentions a
+    # push was filed as `push` until the stripping landed.
+    _kind_cmd = ("cat > /tmp/m.txt <<'MSGEOF'\nnotes: git push this after review\nMSGEOF\n"
+                 "gcloud run deploy summit-api")
     _kind = load_ns(LEDGER)["kind_of"](_kind_cmd)
-    if _kind == "push":
+    if _kind == "deploy":
         passed += 1
-        print("PASS [kind  ] heredoc-mentioned deploy does not mis-file a real push")
+        print("PASS [kind  ] heredoc-mentioned push does not mis-file a real deploy")
     else:
         failed += 1
-        print(f"FAIL [kind  ] real push filed as {_kind!r}, expected 'push'")
+        print(f"FAIL [kind  ] real deploy filed as {_kind!r}, expected 'deploy'")
 
     # DRIFT-GUARD (god-report 2026-07-12, single-pattern lens): the SHARED classifier logic
     # (MIGRATE, PRODMARK, _all_urls_local, is_prod) is copy-pasted verbatim into both hook files
