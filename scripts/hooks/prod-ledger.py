@@ -47,6 +47,71 @@ MIGRATE = re.compile(r"prisma\s+migrate\s+deploy|db:migrate:deploy", re.I)
 PRODMARK = re.compile(r"ALLOW_PROD_MIGRATE_DEPLOY|MIGRATOR_DIRECT_URL|neon\.tech", re.I)
 
 
+# --- Inert-data stripping (part of the shared, duplicated classifier) ---------
+# The classifier reads the TEXT of a Bash command, so a dangerous phrase that is
+# merely DATA - a commit message, a mission-bridge note, a heredoc body - used to
+# be classified as PERFORMING the operation. Measured 2026-08-13: 11 of 1344
+# prod-ledger entries were `mission-write.sh` bridge writes filed as push/migrate,
+# and two sessions took ~/.claude/prod.lock for a note-write (one held it 2d17h,
+# blocking every other agent's prod work until a human reconciled it).
+#
+# So quoted string literals and quoted/plain heredoc bodies are removed BEFORE
+# classification: the shell never EXECUTES their contents. Fail-closed carve-outs
+# leave the text INTACT (still scanned) when:
+#   * an interpreter-style token is present, where a quoted string IS code
+#     (`bash -c '...'`, `ssh host '...'`, `psql -c 'ALTER ROLE ...'`, `... | sh`,
+#     `eval`, `xargs`, any `-c '` / `-e "` / `--command=`);
+#   * the quoted run or heredoc body contains a command substitution (`$(` or a
+#     backtick), which executes regardless of the quoting;
+#   * the quoting/heredoc is unbalanced (no match => nothing is stripped).
+# This does NOT lower the classifier's ceiling: text matching was always blind to
+# indirection (write a script in one call, run it in the next), so the operations
+# this can newly miss were already invisible to it.
+INTERP = re.compile(
+    r"(?:^|[\s|;&(])(?:eval|xargs|ssh)\b"
+    r"|sh\s+-c\b"                     # bash / zsh / dash / sh -c
+    r"|\s-(?:c|e)\s+['\"]"             # psql -c '...', python -c, node -e, ...
+    r"|--(?:command|eval)="
+    r"|\|\s*(?:ba|z|da|k)?sh\b",
+    re.IGNORECASE,
+)
+SUBST = re.compile(r"\$\(|`")
+QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", re.S)
+HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _strip_heredocs(cmd):
+    out, pos = [], 0
+    while True:
+        m = HEREDOC_OPEN.search(cmd, pos)
+        if not m:
+            out.append(cmd[pos:])
+            return "".join(out)
+        nl = cmd.find("\n", m.end())
+        if nl == -1:                                  # no body on this call
+            out.append(cmd[pos:])
+            return "".join(out)
+        end = re.compile(r"^[ \t]*" + re.escape(m.group(2)) + r"[ \t]*$",
+                         re.M).search(cmd, nl + 1)
+        if not end:                                   # unterminated => fail closed
+            out.append(cmd[pos:])
+            return "".join(out)
+        if SUBST.search(cmd[nl + 1:end.start()]):     # substitutions execute => keep
+            out.append(cmd[pos:end.end()])
+        else:
+            out.append(cmd[pos:nl + 1])
+            out.append(cmd[end.start():end.end()])
+        pos = end.end()
+
+
+def _strip_inert_data(cmd):
+    if INTERP.search(cmd):
+        return cmd
+    cmd = _strip_heredocs(cmd)
+    return QUOTED.sub(lambda m: m.group(0) if SUBST.search(m.group(0)) else " ", cmd)
+
+
+
 # DB-connection env vars — a migrate's REAL target is whatever one of these points at.
 CONN_VAR = re.compile(
     r"\b(?:[A-Z][A-Z0-9_]*_)?(?:DATABASE_URL|DB_URL|POSTGRES[A-Z0-9_]*|PG[A-Z0-9_]*|MIGRATOR[A-Z0-9_]*)"
@@ -94,6 +159,8 @@ def _migrate_target_provably_local(clause):
 
 
 def is_prod(cmd):
+    # Classify what the command RUNS, not every phrase it mentions.
+    cmd = _strip_inert_data(cmd)
     if not PROD.search(cmd):
         return False
     # NON-MIGRATE prod signals win FIRST — a compound like
@@ -139,7 +206,8 @@ def ledger_path(slug):
 
 
 def kind_of(cmd):
-    c = cmd.lower()
+    # Same inert-data rule as is_prod: a note whose TEXT says "git push" is not a push.
+    c = _strip_inert_data(cmd).lower()
     if "git push" in c:
         return "push"
     if "gcloud run deploy" in c or "run services update" in c:
