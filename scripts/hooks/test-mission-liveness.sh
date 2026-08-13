@@ -132,8 +132,13 @@ fi
 
 # === 3 — Unarmed session is never touched. Without this the hook would fire on every turn end of
 # every session on the machine, including sibling windows in the same repo and live human chat.
-SID="$UNIQ-unarmed"; R=$(fresh_root unarmed)
+SID="$UNIQ-unarmed"; R=$(fresh_root unarmed); CREATED_SIDS+=("$SID")
 mk_live_mission "$SID" "$R"
+# mission-write.sh now arms on any bridge write (that is the point of test 18), so an unarmed session
+# has to be made unarmed deliberately. Assert the removal landed - otherwise this test would silently
+# become a duplicate of test 1 and stop covering the unarmed path at all.
+rm -f "$HOME/.claude/progress/mission-liveness-$SID.json"
+[ -f "$HOME/.claude/progress/mission-liveness-$SID.json" ] && fail "unarmed fixture" "could not disarm"
 T="$R/t.jsonl"; mk_transcript "$T" without "$SID"
 run_hook "$SID" "p1" "$T"
 if [ "$RC" = "0" ] && [ -z "$OUT" ]; then
@@ -350,7 +355,28 @@ else
   fail "log hygiene" "no log written at $ML_LOG_UNDER_TEST — the hook logged nothing at all"
 fi
 
-# === 18 — Registration coexistence: uninstalling auto-compact must not remove this hook.
+# === 18 — THE PRODUCTION ARMING PATH. Every other test in this file arms via the local arm() helper,
+# which proves only "the hook reads what the test writes". This one proves the real writer arms, which
+# is the property that actually keeps the guard from being inert in the field.
+# Regression: arming used to live ONLY in mission.md's wake routine (step 0), so a mission driven
+# entirely by USER turns never armed and the guard was permanently inert for it - measured on this
+# machine as an active 34-day mission with zero arming sentinels. The conversational-to-overnight
+# handoff ("continue, I'm going to bed") is exactly that population.
+SID="$UNIQ-prodarm"; R=$(fresh_root prodarm); CREATED_SIDS+=("$SID")
+ARMFILE="$HOME/.claude/progress/mission-liveness-$SID.json"
+rm -f "$ARMFILE"
+if [ -f "$ARMFILE" ]; then
+  fail "production arming" "sentinel existed before any mission write"
+else
+  bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — prod arm" >/dev/null 2>&1
+  if [ -f "$ARMFILE" ] && python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get('sid')==sys.argv[2] and d.get('root')==sys.argv[3] else 1)" "$ARMFILE" "$SID" "$R"; then
+    pass "mission-write.sh arms the guard on a real bridge mutation (sid+root correct, valid JSON)"
+  else
+    fail "production arming" "no valid sentinel at $ARMFILE after create"
+  fi
+fi
+
+# === 19 — Registration coexistence: uninstalling auto-compact must not remove this hook.
 if [ -f "$ROOT/uninstall-auto-compact.sh" ]; then
   if grep -q 'auto-compact-after-pre-compact' "$ROOT/uninstall-auto-compact.sh" 2>/dev/null &&
      ! grep -q 'mission-liveness' "$ROOT/uninstall-auto-compact.sh" 2>/dev/null; then

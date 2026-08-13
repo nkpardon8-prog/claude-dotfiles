@@ -1580,7 +1580,12 @@ serializer; the cursor is the in-turn consistency check on top.
 Carry `sid`, `root`, and every absolute path in the tick prompt itself (§12.2) — a wake has NO
 conversation memory; treat it as a COLD START and read ALL state from the log/bridge.
 
-0. **ARM the liveness guard (idempotent, do this FIRST, before the lock).** The `Stop` hook
+0. **ARM the liveness guard (belt-and-braces; `mission-write.sh` already arms on any bridge write, so
+   this step is a redundancy, not the only path).** Arming ONLY here was a real coverage gap: a
+   mission driven entirely by USER turns never runs a wake routine, so it never armed and the guard
+   was inert for it — and the conversational-to-overnight handoff ("continue, I'm going to bed") is
+   exactly that population. The writer now arms on `create`/`log`/`note`/`challenge`/`pending`, so any
+   session doing mission work is covered whatever drove the turn. The `Stop` hook
    `scripts/hooks/mission-liveness.sh` catches a turn that ends with work owed and no `ScheduleWakeup`
    in it — the naked yield §12.5 describes — and blocks the stop so the run continues instead of
    freezing. **It is inert until armed, and it is armed per-session, ON PURPOSE:** an always-on

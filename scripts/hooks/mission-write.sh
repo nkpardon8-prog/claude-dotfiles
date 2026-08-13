@@ -152,6 +152,9 @@ _mw_emit_refuse() {
 # fall through to the plain ok/FAILED status).
 _mw_outcome_status() {
   _os_verb="$1"; _os_rc="$2"
+  # Arm the liveness guard on any successful bridge mutation (see _mw_arm_liveness for why this seam
+  # and not only the wake routine's step 0). Best-effort and silent: it never touches rc or stdout.
+  [ "$_os_rc" -eq 0 ] && _mw_arm_liveness "${sid:-}" "${root:-}"
   case "${_MLA_OUTCOME:-}" in
     collision) echo "mission-write: ${_os_verb} COLLISION (idtag exists with DIFFERENT content — re-derive gen/round; do NOT assume banked)" ;;
     rerouted)  echo "mission-write: ${_os_verb} REROUTED-TO-NOTES (>=480B — rewrite TERSE and re-log)" ;;
@@ -577,6 +580,7 @@ case "$verb" in
     fi
     mission_create "$sid" "$root" "${4:-}"
     rc=$?
+    [ "$rc" -eq 0 ] && _mw_arm_liveness "$sid" "$root"
     _mw_status create "$rc" "see stderr"
     ;;
 
