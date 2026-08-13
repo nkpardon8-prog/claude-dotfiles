@@ -81,9 +81,12 @@ if (v.err) { console.log(JSON.stringify(v)); process.exit(1); }
 const eRank = e => ({ 'Active':0, 'Inactive':1, 'Unresponsive':2 }[e] ?? 3);
 v.clean.sort((a,b) => eRank(a.es)-eRank(b.es) || (a.lcs==='SQL'?0:1)-(b.lcs==='SQL'?0:1) || a.lcDays-b.lcDays);
 const fs = await import('fs');
-const dir = '/private/tmp/claude-501/-Users-nickpardon/5b0374a5-da5e-4934-99d9-30ca5a065614/scratchpad/';
+const os = await import('os');
+const path = await import('path');
+const dir = path.join(os.tmpdir(), 'outreach-pool') + path.sep;
+fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(dir + 'pool-vetted.json', JSON.stringify(v.clean, null, 1));
 fs.writeFileSync(dir + 'pool-skipped.txt', v.skipped.join('\n'));
-console.log('CLEAN', v.cleanCount, 'SKIPPED', v.skippedCount);
+console.log('CLEAN', v.cleanCount, 'SKIPPED', v.skippedCount, '-> written to', dir);
 console.log('SKIP REASONS:', JSON.stringify(v.skipped.slice(0, 40)));
 console.log('TOP 25:', JSON.stringify(v.clean.slice(0,25).map(c => [c.id,c.fn,c.ln,c.st,c.ct,c.lcs,c.es,c.lcDays+'d',c.note?('NOTE:'+c.note):''].join('|'))));
