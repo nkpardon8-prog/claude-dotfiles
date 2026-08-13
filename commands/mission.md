@@ -1825,6 +1825,41 @@ An **ordinary away-policy `pending`** (a non-blocking batched question logged un
 NOT a stop — the loop proceeds loudly on its assumption and the epilogue reschedules as usual. Only a
 MANDATORY human decision (above) parks the loop with an `AWAIT kind=human`.
 
+**The list above is CLOSED and EXHAUSTIVE.** Anything not on it is not a stop, however finished it feels.
+Named explicitly because each of these has ended a real run:
+- **Finishing a unit of work is NOT a stop.** A `git commit` returning success is the single most
+  common false terminal — in one observed session it ended four consecutive turns. Your private
+  planning unit (build → test → mutate → commit) is FINER-GRAINED than any mission transition, so its
+  completion is never a turn boundary. Generalize: **a tool result that completes your own planning
+  unit is not a turn boundary.** The four "naked-yield seam" reminders in §5 are EXAMPLES, not the
+  closed set of places you must not stop.
+- **Writing a report is NOT a stop.** Prose describing what landed belongs at the END of a turn that
+  already contains the next transition, or at a real §12.3 stop. Starting a summary does not convert
+  the turn into a handback.
+- **Replying to a peer window is NOT a stop.** An inbound peer message is a wake source like any
+  other; it did not enter through the tick lock, so after answering it, RE-ENTER §12.1 and exit
+  through step 7 like everything else. In one observed session, peer replies caused three consecutive
+  naked yields.
+- **Verification-completeness is not task-completeness.** A green suite + watched mutations + a clean
+  typecheck + a commit is a very strong done signal for a SLICE. Check the Build Plan for the next
+  item before believing it.
+
+**Announcing an action NEVER substitutes for taking it.** Narration accompanies action in the SAME
+turn; it does not replace it. If a turn's only content is a description of what you are about to do
+("checkpointing next", "running the barrier now"), that turn is a NAKED YIELD and the mission is now
+frozen — the observed failure is exactly this, writing "context ~84%, checkpointing next" and then
+stopping instead of checkpointing. The global reply-style rule asks you to narrate intent BEFORE a
+batch of tool calls; that rule presumes the batch follows in the same turn. Narration with no
+following tool call is the failure, not the rule.
+
+### 12.5 Why a dropped step 7 is unrecoverable
+
+There is no timer, no expiring lock, and no watcher behind the continuation invariant. A turn that
+ends without a successful `ScheduleWakeup` leaves the mission at its last banked state **indefinitely**,
+until a human types something — which may be many hours later, and the run produces nothing in the
+meantime. This is why step 7 is a gate rather than a step: the cost of dropping it is not a slow
+mission, it is a dead one.
+
 ### 12.4 Post-compact resume composes here (no double-drive)
 
 Post-compact resume is **just another wake source** into §12.1 — not a second state machine. Keep the
