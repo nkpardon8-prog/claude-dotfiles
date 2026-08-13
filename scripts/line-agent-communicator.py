@@ -1962,15 +1962,22 @@ USAGE = """line-agent-communicator.py - name this window and reach the others.
   list [--json]              the directory: every window, its name, whether it can receive
   find "<words>"             resolve a human name (live first, then last-seen) to an address
   card                       this window's identity header - paste it INTO what you send
-  whois <pid> [--claims X]   UNAUTHENTICATED registry lookup; never proof of who someone is
+  whois <pid> [--claims "<name>"] [--transport socket|bridge]
+                             UNAUTHENTICATED registry lookup; never proof of who someone is.
+                             --transport says how the pid reached you; it pins a PROCESS, not a NAME
   reply <address> "<text>"   leave an answer for a window that cannot receive
   replies | replies-count    read / count answers left for this window
   note "<text>" | notes      shared notes every window can read
   set "<sentence>" [--owns "<what this window owns>"]
+                             name this window: caption AND the peer address others reach it by
+  set -- "<sentence>"        same, for a caption that really starts with a dash
   clear                      drop the caption (the peer address is kept)
   reap [--dry-run] [--sockets]
+  help                       this text
 
-  A bare sentence is shorthand for `set` - that is what /line sends.
+  A bare sentence with no verb also means `set`. (/line itself sends an explicit `set`.)
+  Naming has NO UNDO - the previous peer address is gone - so anything flag-shaped is refused
+  rather than adopted as a name.
 """
 
 
@@ -1979,15 +1986,38 @@ def _usage(stream, rc: int) -> int:
     return rc
 
 
+# Every token the dispatch ladder below recognizes, aliases included. Used ONLY for the near-miss
+# check: a lone `Help` or `SET` is a verb the user got the case wrong on, not a caption they meant.
+# Kept beside the ladder deliberately - if you add a verb there, add it here, or a typo of it goes
+# back to silently renaming the window.
+VERBS = frozenset({
+    "list", "ls", "directory", "clear", "find", "who", "resolve", "card", "me", "whoami",
+    "whois", "verify", "reply", "answer", "replies", "inbox", "replies-count", "unread",
+    "reap", "note", "notes", "set", "help", "usage",
+})
+
+
 def main() -> int:
     args = sys.argv[1:]
 
+    # An empty leading argv element is not a verb and not a name. It reached `dispatch_set` before,
+    # so `lac "" --help` renamed the window to `help` - any wrapper passing an unset variable
+    # positionally reopened the whole defect. Drop them; an all-empty argv is just `list`.
+    while args and args[0] == "":
+        args.pop(0)
+
     # A mistyped verb or a flag must NEVER fall through to `set`: that silently overwrites the
-    # window's peer address (its identity in the directory) with the typo. `--help` renamed this
-    # window to "help" on 2026-08-12. Failure is silent and the shape recurs, so it is refused here.
-    if args and args[0] in ("help", "-h", "--help", "-help", "usage"):
+    # window's peer address (its identity in the directory) with the typo, and there is no undo.
+    # `--help` renamed this window to "help" on 2026-08-12. The companion guard - the one that
+    # covers the `/line` path - is in dispatch_set(); this one only makes `--help` print help.
+    # Help is matched ONLY as a lone argument: `lac usage notes window` is someone naming a window,
+    # and printing usage at them would be the same class of bug (a request quietly becoming
+    # something else) this guard exists to end.
+    if len(args) == 1 and args[0] in ("help", "-h", "--help", "-help", "usage"):
         return _usage(sys.stdout, 0)
-    if args and args[0].startswith("-"):
+    # `--` is the escape, not an option: it must reach dispatch_set, which strips it and takes the
+    # rest as literal caption text. Refusing it here would leave a dash-leading caption unsettable.
+    if args and args[0].startswith("-") and args[0] != "--":
         print(f"line-agent-communicator: unknown option {args[0]!r}.", file=sys.stderr)
         print("Refusing to treat it as a name - that would overwrite this window's "
               "peer address. Use `set \"<sentence>\"` if you meant to rename.\n", file=sys.stderr)
@@ -2042,6 +2072,18 @@ def main() -> int:
         return cmd_notes(sid)
     if args[0] == "set":
         return dispatch_set(sid, args[1:])
+
+    # Bare-sentence shorthand. A caption is arbitrary words, so an unknown WORD cannot be told from
+    # a name in general - `lst` is indistinguishable from someone naming a window "lst". The one
+    # case that IS decidable is a lone token that is a known verb in the wrong case: nobody captions
+    # a window `Help`, and that spelling is one shift key from the original incident.
+    if len(args) == 1 and args[0].lower() in VERBS and args[0] not in VERBS:
+        print(f"line-agent-communicator: {args[0]!r} looks like the verb "
+              f"{args[0].lower()!r} with the wrong case, not a window name.", file=sys.stderr)
+        print("Refusing rather than renaming this window - naming has no undo. To really use it "
+              f"as the name: set -- \"{args[0]}\"\n", file=sys.stderr)
+        return _usage(sys.stderr, 2)
+
     return dispatch_set(sid, args)
 
 

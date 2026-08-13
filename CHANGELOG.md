@@ -2,7 +2,7 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
-## 2026-08-12 (later) - A mistyped verb no longer renames the window
+## 2026-08-12 (later) - Flag-shaped input is refused instead of becoming the window's name
 
 Running `line-agent-communicator.py --help` did not print help. `main()` ended in a bare
 `return dispatch_set(sid, args)`, so any argv that was not a known verb was treated as a name: the
@@ -11,14 +11,36 @@ command set the caption to `--help`, overwrote the window's peer address with `h
 agents use to reach that window - was simply gone, and nothing said so. It happened to the window
 that built this system, minutes after it shipped.
 
-- **Unknown options are refused, not adopted.** `help` / `-h` / `--help` / `usage` print a usage
-  summary and exit 0. Any other leading `-...` token exits 2, names the option, and says explicitly
-  that it will not be treated as a name. A bare sentence is still shorthand for `set` - that is the
-  form `/line` sends, and it is unchanged.
-- **`10-verb-fallthrough-rename.sh`** joins the suite (now 9 tests). It seeds a registry entry under
-  a throwaway `$HOME`, fires `--help` and an unknown flag at the real script, and asserts the stored
-  name is byte-identical afterward - with a positive control proving a legitimate `set` still does
-  change it, and a negative control that restores the fallthrough and watches six assertions go red.
+**The first fix was in the wrong place, and a review round caught it before anyone relied on it.**
+It guarded `main()`, which only sees a DIRECT CLI call. The path users actually take is `/line`,
+whose body is `... set "${ARGUMENTS:-}"` - so `/line --help` arrived as `["set", "--help"]`, sailed
+past that guard, and still renamed the window. Four independent reviewers plus two analysis passes
+found this and four other live bypasses; all of them were reproduced against the real script under a
+throwaway `$HOME` before being fixed.
+
+- **The guard lives in `dispatch_set()`**, which every rename funnels through, so it covers the
+  bare-sentence path, the explicit `set` path, and any future caller. It refuses two shapes: a
+  sentence that STARTS with a dash, and any unknown long option anywhere in it - `set "billing"
+  --own "x"` (one keystroke from `--owns`) used to address the window as `billing-own-x`.
+- **`--` is the escape**, so a caption that genuinely starts with a dash is still settable:
+  `set -- "-v my caption"`. A single dash mid-sentence is left alone - "e-mail follow-ups" is prose.
+- **An empty leading argv element no longer smuggles a flag through.** `lac "" --help` renamed the
+  window, because `""` is neither a help verb nor dash-prefixed; any wrapper passing an unset
+  variable positionally reopened the entire defect.
+- **`help` is matched only as a lone argument.** Matching it anywhere would mean `lac usage notes
+  window` silently prints usage instead of naming the window - the same class of bug (a request
+  quietly becoming something else) this change exists to end.
+- **A lone known verb in the wrong case is refused** - nobody captions a window `Help`, and that
+  spelling is one shift key from the original incident.
+- **What is NOT claimed:** that any mistyped verb is caught. A caption is arbitrary words, so a bare
+  `lst` cannot be told apart from someone naming a window "lst". The earlier headline here claimed
+  verb coverage the code did not have; the test fingerprint made the same overclaim and now records
+  what is actually proven.
+- **`10-verb-fallthrough-rename.sh`** joins the suite (now 9 tests), with 11 assertions covering each
+  bypass above, a whole-file hash proving the registry entry is untouched rather than merely
+  same-named, three positive controls (deleting the rename path outright would otherwise leave every
+  refusal assertion green), and a negative control that removes both guards and requires each
+  no-rename assertion to go red BY NAME - accepting "something failed" proved nothing.
 - Repairing the damaged window meant hand-editing its registry entry back to a derived name.
   `clear` deliberately keeps the peer address (dropping it mid-conversation would make the window
   unreachable), so there is no verb that undoes an unwanted rename - only setting a new one.

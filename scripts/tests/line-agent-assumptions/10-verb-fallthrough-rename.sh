@@ -1,24 +1,39 @@
 #!/usr/bin/env bash
-# 10 — Can a mistyped verb or a flag silently RENAME the window?
+# 10 — Can a typo rename the window?
 #
-# main() ended in `return dispatch_set(sid, args)`: anything that was not a known verb became a
-# caption AND a peer address. So `--help` did not print help — it renamed the window to "help",
-# replacing the address other agents use to reach it, and printed a cheerful success line. That
-# happened for real on 2026-08-12, to the window that built this system.
+# Naming is destructive: the peer address is what other windows reach this one by, and setting a new
+# one destroys the old with no undo. So anything that is not plainly a name must be REFUSED, never
+# adopted. `main()` used to end in a bare `return dispatch_set(sid, args)`, and `--help` renamed this
+# window to `help` on 2026-08-12 while printing a success line.
 #
-# The failure is SILENT (it reports success), it DESTROYS state (the previous address is gone), and
-# the shape recurs on every typo, so it is fenced here rather than left to care.
+# The first fix guarded `main()` only — and review proved that missed the path users actually take:
+# `/line`'s body is `... set "${ARGUMENTS:-}"`, so `/line --help` arrives as ["set", "--help"],
+# never touches main()'s guard, and renamed the window anyway. The guard now lives in dispatch_set(),
+# which every rename funnels through. These assertions exist because each one was demonstrated live.
 #
-# A1 — `--help` exits 0 and prints usage
-# A2 — `--help` leaves the peer address untouched
-# A3 — an unknown flag exits 2 (not 0) and says why
-# A4 — an unknown flag leaves the peer address untouched
-# A5 — neither one wrote a caption file
-# A6 — POSITIVE CONTROL: a real `set` DOES change the address, so A2/A4 mean "refused", not
-#      "the probe cannot see a rename at all"
+# What is NOT claimed: that any mistyped verb is caught. A caption is arbitrary words, so a bare
+# `lst` cannot be distinguished from someone naming a window "lst". What IS caught: flag-shaped
+# input on every path, and a lone known verb in the wrong case.
 #
-# NEGATIVE CONTROL (LINE_AGENT_NEG_CONTROL=true): copy the script, delete the two guard branches to
-# restore the bare fallthrough, and re-run. A1-A5 must go RED.
+# A1  `--help` exits 0, prints usage, renames nothing
+# A2  an unknown flag exits 2, renames nothing
+# A3  `set --help` — THE /line PATH — exits 2, renames nothing
+# A4  an empty leading argv element does not smuggle a flag through
+# A5  `set "billing" --own "x"` (mistyped --owns) exits 2, renames nothing
+# A6  a lone `Help` (wrong case) exits 2, renames nothing
+# A7  no refused invocation wrote a caption file
+# A8  the whole registry entry is byte-identical after every refusal above
+# A9  POSITIVE CONTROL — an explicit `set` still renames
+# A10 POSITIVE CONTROL — the bare-sentence shorthand still renames
+# A11 POSITIVE CONTROL — `set -- "-v caption"` can still set a dash-leading caption
+#
+# The positive controls are load-bearing: without them, deleting the rename path outright would
+# leave every no-rename assertion green.
+#
+# NEGATIVE CONTROL (LINE_AGENT_NEG_CONTROL=true): copy the script, neutralise BOTH guards (main()'s
+# branches and flaglike()'s return), and re-run. The no-rename assertions must go red — and the
+# check is specific: it requires A1/A2/A3/A5/A6 by name, so an unrelated fixture failure can no
+# longer masquerade as a working negative control.
 set -uo pipefail
 
 GATE="${LINE_AGENT_TESTS_ALLOW_DEV:-}"
@@ -35,10 +50,15 @@ RUN_ID="$(python3 -c 'import uuid;print(uuid.uuid4().hex[:12])')"
 find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name "${MARKER}-*" -mmin +60 -exec rm -rf {} + 2>/dev/null
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/${MARKER}-${RUN_ID}-XXXXXX")"
+# Under `set -u` without `-e` a failed mktemp leaves ROOT empty, which would make FAKE_HOME "/home"
+# and put this test's writes outside its sandbox. Refuse to run rather than escape containment.
+[ -n "$ROOT" ] && [ -d "$ROOT" ] || { echo "INFRA: mktemp -d failed; refusing to run unsandboxed" >&2; exit 3; }
 FAKE_HOME="$ROOT/home"
 FAKE_PID=""
 cleanup() {
-  [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
+  # Braces + 2>/dev/null: the shell prints its own "Terminated: 15" job notice when it reaps the
+  # fixture, which lands under the verdict and reads as a failure to anyone scanning the output.
+  { [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null; } 2>/dev/null
   rm -rf "$ROOT" 2>/dev/null || echo "CLEANUP WARNING: could not remove $ROOT" >&2
 }
 trap cleanup EXIT
@@ -48,17 +68,25 @@ SCRIPT="$REAL_SCRIPT"
 if [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ]; then
   SCRIPT="$ROOT/regressed.py"
   cp "$REAL_SCRIPT" "$SCRIPT"
-  # Put the bare fallthrough back: strip both guard branches so any argv reaches dispatch_set.
+  # Restore the pre-fix behaviour: main() adopts anything, and dispatch_set stops objecting.
   python3 - "$SCRIPT" <<'PY'
-import re, sys
+import sys
 p = sys.argv[1]
 s = open(p).read()
-start = s.index('    if args and args[0] in ("help", "-h", "--help", "-help", "usage"):')
-end = s.index('        return _usage(sys.stderr, 2)') + len('        return _usage(sys.stderr, 2)\n')
-open(p, "w").write(s[:start] + s[end:])
+a = '    if len(args) == 1 and args[0] in ("help", "-h", "--help", "-help", "usage"):'
+b = '        return _usage(sys.stderr, 2)'
+start = s.index(a)
+end = s.index(b, start) + len(b) + 1
+s = s[:start] + s[end:]
+anchor = '    toks = sentence.split()\n'
+i = s.index(anchor)
+s = s[:i] + '    return ""\n' + s[i:]          # flaglike() now never objects
+open(p, "w").write(s)
 PY
-  grep -q 'return _usage(sys.stderr, 2)' "$SCRIPT" \
-    && { echo "INFRA: neg-control patch did not remove the guard - anchors moved" >&2; exit 3; }
+  grep -q 'unknown option' "$SCRIPT" \
+    && { echo "INFRA: neg-control patch did not remove main()'s guard - anchors moved" >&2; exit 3; }
+  python3 -c "import ast,sys;ast.parse(open(sys.argv[1]).read())" "$SCRIPT" \
+    || { echo "INFRA: neg-control patch produced invalid python" >&2; exit 3; }
 fi
 
 # A live process named `claude` so the seeded registry entry is treated as a real window.
@@ -86,6 +114,7 @@ entry = {
 with open(path, "w") as fh:
     json.dump(entry, fh, separators=(",", ":"))
 PY
+ENTRY_SHA0="$(shasum "$ENTRY" | awk '{print $1}')"
 
 name_now() { python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('name',''))" "$ENTRY"; }
 
@@ -98,46 +127,84 @@ run_lac() {  # run_lac <argv...> -> sets RC / OUT
   OUT="$(HOME="$FAKE_HOME" CLAUDE_SESSION_ID="$SID" python3 "$SCRIPT" "$@" 2>&1)"
   RC=$?
 }
+# Assert a refusal did not rename. `label` is the assertion tag the neg-control looks for by name.
+assert_no_rename() {  # assert_no_rename <label> <expected-rc>
+  label="$1"; want="$2"
+  [ "$RC" = "$want" ] || fail "${label}: exited ${RC}, expected ${want}"
+  [ "$(name_now)" = "$ORIGINAL_NAME" ] \
+    || fail "${label}: RENAMED the window to '$(name_now)' (was ${ORIGINAL_NAME})"
+}
 
-# --- A1/A2: --help --------------------------------------------------------------------------------
+# --- A1: --help prints help instead of becoming one ----------------------------------------------
 run_lac --help
-[ "$RC" = "0" ] || fail "A1: \`--help\` exited ${RC}, expected 0"
+assert_no_rename "A1" 0
 case "$OUT" in
   *"line-agent-communicator.py - name this window"*) ;;
-  *) fail "A1: \`--help\` printed no usage; got: $(printf '%s' "$OUT" | head -1)" ;;
+  *) fail "A1: printed no usage; got: $(printf '%s' "$OUT" | head -1)" ;;
 esac
-[ "$(name_now)" = "$ORIGINAL_NAME" ] \
-  || fail "A2: \`--help\` RENAMED the window to '$(name_now)' (was ${ORIGINAL_NAME}) - this is the shipped defect"
 
-# --- A3/A4: an unknown flag -----------------------------------------------------------------------
+# --- A2: an unknown flag ---------------------------------------------------------------------------
 run_lac --bogus-flag
-[ "$RC" = "2" ] || fail "A3: unknown flag exited ${RC}, expected 2 (0 would mean it was accepted as a name)"
+assert_no_rename "A2" 2
 case "$OUT" in
   *"unknown option"*) ;;
-  *) fail "A3: unknown flag did not say it was unknown; got: $(printf '%s' "$OUT" | head -1)" ;;
+  *) fail "A2: did not say the option was unknown; got: $(printf '%s' "$OUT" | head -1)" ;;
 esac
-[ "$(name_now)" = "$ORIGINAL_NAME" ] \
-  || fail "A4: an unknown flag RENAMED the window to '$(name_now)' (was ${ORIGINAL_NAME})"
 
-# --- A5: no caption was written either -------------------------------------------------------------
+# --- A3: THE /line PATH. `/line --help` reaches the script as ["set", "--help"] --------------------
+run_lac set --help
+assert_no_rename "A3" 2
+
+# --- A4: an empty leading argv element must not smuggle a flag through -----------------------------
+run_lac "" --help
+assert_no_rename "A4" 0
+
+# --- A5: a mistyped --owns must not be folded into the caption -------------------------------------
+run_lac set "billing" --own "Stripe webhooks"
+assert_no_rename "A5" 2
+
+# --- A6: a lone known verb in the wrong case is a verb, not a name ---------------------------------
+run_lac Help
+assert_no_rename "A6" 2
+
+# --- A7: no refused invocation wrote a caption -----------------------------------------------------
 if [ -e "$FAKE_HOME/.claude/session-status/${SID}.txt" ]; then
-  fail "A5: a caption file was written for a refused invocation: $(cat "$FAKE_HOME/.claude/session-status/${SID}.txt")"
+  fail "A7: a caption file was written by a refused invocation: $(cat "$FAKE_HOME/.claude/session-status/${SID}.txt")"
 fi
 
-# --- A6 positive control: a REAL set still works --------------------------------------------------
-run_lac set "billing reconciliation"
-if [ "$(name_now)" = "$ORIGINAL_NAME" ]; then
-  fail "A6 positive control: a real \`set\` did NOT change the address - the probe cannot detect a rename, so A2/A4 prove nothing"
+# --- A8: the registry entry is untouched, not merely same-named ------------------------------------
+if [ "$(shasum "$ENTRY" | awk '{print $1}')" != "$ENTRY_SHA0" ]; then
+  fail "A8: the registry entry changed on disk despite every invocation above being refused"
 fi
+
+# --- A9/A10/A11 positive controls: the real paths still work --------------------------------------
+run_lac set "billing reconciliation"
+[ "$(name_now)" = "billing-reconciliation" ] \
+  || fail "A9 positive control: explicit \`set\` did not rename (name is '$(name_now)') - the no-rename assertions above would pass even with the rename path deleted"
+
+run_lac "patient retention"
+[ "$(name_now)" = "patient-retention" ] \
+  || fail "A10 positive control: the bare-sentence shorthand no longer renames (name is '$(name_now)')"
+
+run_lac set -- "-v dash caption"
+[ "$(name_now)" = "v-dash-caption" ] \
+  || fail "A11 positive control: \`set --\` cannot set a dash-leading caption (name is '$(name_now)') - the guard has no escape hatch"
 
 # --- verdict --------------------------------------------------------------------------------------
 if [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ]; then
-  if [ "$FAIL_N" -gt 0 ]; then
-    echo "NEG-CONTROL OK: with the bare fallthrough restored, the assertions went RED (${FAIL_N} failed)"
+  # Specific, not merely non-zero: every no-rename assertion must have fired. A broken fixture that
+  # only trips a positive control used to print NEG-CONTROL OK and prove nothing.
+  MISSING=""
+  for tag in A1 A2 A3 A5 A6; do
+    case "$FAIL_MSGS" in *"${tag}: RENAMED"*) ;; *) MISSING="${MISSING} ${tag}" ;; esac
+  done
+  if [ -z "$MISSING" ]; then
+    echo "NEG-CONTROL OK: with both guards removed, every no-rename assertion went RED (${FAIL_N} failed)"
     printf '%s' "$FAIL_MSGS"
     exit 0
   fi
-  echo "NEG-CONTROL BROKEN: assertions stayed GREEN against a deliberately regressed script" >&2
+  echo "NEG-CONTROL BROKEN: these assertions did NOT report a rename against a deliberately regressed script:${MISSING}" >&2
+  printf '%s' "$FAIL_MSGS" >&2
   exit 1
 fi
 
@@ -148,8 +215,8 @@ if [ "$FAIL_N" -gt 0 ]; then
 fi
 
 cat > "${HERE}/10-verb-fallthrough-rename.fingerprint.json" <<EOF
-{"assumption":"an_unknown_verb_or_flag_never_rewrites_the_peer_address","uname":"$(uname -s)","help_exit":0,"unknown_flag_exit":2,"assertions":7}
+{"assumption":"flag_shaped_input_is_refused_on_every_rename_path_including_set","uname":"$(uname -s)","paths_covered":"bare,set,empty-argv,wrong-case-verb","escape_hatch":"set --","assertions":11}
 EOF
 
-echo "PASS: 10-verb-fallthrough-rename - 7 assertions (A1 help x2, A2 no-rename, A3 refusal x2, A4 no-rename, A5 no caption, A6 positive control)"
+echo "PASS: 10-verb-fallthrough-rename - 11 assertions (A1-A6 refusals incl. the /line set path, A7 no caption, A8 entry byte-identical, A9-A11 positive controls)"
 exit 0

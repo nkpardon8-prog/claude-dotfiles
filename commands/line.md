@@ -70,6 +70,15 @@ surface). Consequence: a **caption** containing the literal text `--owns` cannot
 and unbalanced quotes make the whole string fall through as a plain caption rather than be guessed
 at. Calling the script directly — `python3 "$LAC" set "billing" --owns "..."` — is unaffected.
 
+**Flag-shaped input is refused, not adopted as a name.** Naming is destructive — it overwrites the
+peer address other windows reach you by, and nothing undoes that — so a sentence beginning with a
+dash, or containing an unknown long option, exits 2 instead of becoming the name. This is not
+hypothetical: `/line --help` used to rename the window to `help` and report success, because the
+Bash block above sends `set "$ARGUMENTS"` and the original guard only covered direct CLI calls. A
+mistyped `--own` behaved the same way, addressing the window as `billing-own-stripe`. If you really
+want a caption that starts with a dash, `--` ends the options: `python3 "$LAC" set -- "-v caption"`.
+A single dash mid-sentence is prose and passes through untouched.
+
 ## Talking to a peer — identity, and a reply route that always exists
 
 ```bash

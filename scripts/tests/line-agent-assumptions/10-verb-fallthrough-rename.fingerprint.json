@@ -1,1 +1,1 @@
-{"assumption":"an_unknown_verb_or_flag_never_rewrites_the_peer_address","uname":"Darwin","help_exit":0,"unknown_flag_exit":2,"assertions":7}
+{"assumption":"flag_shaped_input_is_refused_on_every_rename_path_including_set","uname":"Darwin","paths_covered":"bare,set,empty-argv,wrong-case-verb","escape_hatch":"set --","assertions":11}

@@ -119,21 +119,37 @@ so age alone is never grounds for removal.
 
 `main()` used to end in `return dispatch_set(sid, args)`, so anything that was not a known verb became
 the window's caption *and* its peer address. `--help` renamed this window to `help` on 2026-08-12 and
-printed a success line while doing it: silent, destructive (the old address is gone), and repeatable
-on every typo.
+printed a success line while doing it: silent, destructive (the old address is gone, with no undo),
+and repeatable on every typo.
 
-- **A1** `--help` exits 0 and prints usage.
-- **A2** `--help` leaves the peer address untouched.
-- **A3** an unknown flag exits 2 and says the option is unknown.
-- **A4** an unknown flag leaves the peer address untouched.
-- **A5** neither wrote a caption file.
-- **A6** positive control - a real `set` still changes the address, so A2/A4 mean "refused" rather
-  than "this probe cannot see a rename at all".
+The first fix guarded `main()` alone, which missed the path users actually take: `/line`'s body is
+`... set "${ARGUMENTS:-}"`, so `/line --help` arrives as `["set", "--help"]` and never reaches that
+guard. The guard now sits in `dispatch_set()`, which every rename funnels through. Each assertion
+below corresponds to a bypass that was demonstrated live.
 
-## Why 04 and 05 are expected red before the implementation
+- **A1** `--help` exits 0, prints usage, renames nothing.
+- **A2** an unknown flag exits 2, says the option is unknown, renames nothing.
+- **A3** `set --help` - **the `/line` path** - exits 2 and renames nothing.
+- **A4** an empty leading argv element cannot smuggle a flag through (`lac "" --help`).
+- **A5** a mistyped `--own` is refused rather than folded into the caption.
+- **A6** a lone `Help` is treated as a wrong-case verb, not a name.
+- **A7** no refused invocation wrote a caption file.
+- **A8** the registry entry is byte-identical on disk afterward, not merely same-named.
+- **A9/A10/A11** positive controls - explicit `set`, the bare-sentence shorthand, and the `set --`
+  escape for a dash-leading caption all still rename. Without these, deleting the rename path
+  outright would leave every assertion above green.
 
-They encode the two defects the fix is for. Both are **silent wrong answers** - the directory looks
-healthy while handing an agent an address that cannot receive.
+**Not claimed:** that any mistyped verb is caught. A caption is arbitrary words, so a bare `lst`
+cannot be distinguished from someone naming a window "lst". What is fenced is flag-shaped input on
+every path, plus the wrong-case-verb case.
+
+## Why 04 and 05 were authored RED (historical - both now gate like everything else)
+
+They were written before the fix, and each encoded a defect that was live at the time. `EXPECTED_RED`
+in `run-all.sh` was emptied on 2026-08-12 when both fixes landed, so a red in 04 or 05 today is a real
+regression that blocks a commit. This section is kept because it records WHAT they catch. Both defects
+are **silent wrong answers** - the directory looks healthy while handing an agent an address that
+cannot receive.
 
 - **04** - `reachable()` ends at `Path(sock).exists()`. A unix socket file outlives the process that
   bound it; nothing unlinks it on SIGKILL or power loss. An orphaned inode advertises a dead window as
@@ -146,10 +162,10 @@ healthy while handing an agent an address that cannot receive.
   prints `KNOWN DEFECT (pre-fix): substring match on full ps path - any process under a
   claude-containing path is judged a live window` and still exits 1.
 
-They exit 1 rather than 3 on purpose: a skip is not a gate. `run-all.sh` carries them in an
-`EXPECTED_RED` list so they are reported separately and do not mask a real regression in 02 or 03.
-**When the fix lands, empty that list** - from then on 04 and 05 gate like everything else, and they
-become the regression catchers that stop either defect from re-growing.
+They exited 1 rather than 3 on purpose: a skip is not a gate. While the defects were open, `run-all.sh`
+carried them in an `EXPECTED_RED` list so they were reported separately and could not mask a real
+regression in 02 or 03. That list is now empty, and they are ordinary regression catchers that stop
+either defect from re-growing.
 
 ## Negative-control routes
 
@@ -168,8 +184,10 @@ LINE_AGENT_TESTS_ALLOW_DEV=true LINE_AGENT_NEG_CONTROL=true bash <test>.sh
 | 06 | copies the script and restores the vouching header (`IDENTITY (attested)`) verbatim as it shipped | observed RED, 6 of 6 no-vouch assertions failing across all three transports |
 | 07 | copies the script and makes `defang()` the identity function | observed RED: A1 (banner not neutralised) and A2 (3 END banners - the peer drew one) |
 | 08 | copies the script, drops `O_NOFOLLOW` and lets the listing classify a symlink as a file | observed RED: A1 (target printed) and A3 (`_capped()` followed the link) |
+| 09 | seeds read/unread replies at controlled ages and dry-runs the reaper first; A5 requires the dry run and the real reap to agree | the retention rule is being evaluated, not a fixed answer |
+| 10 | copies the script, deletes `main()`'s guard branches and makes `flaglike()` return `""` | observed RED, 13 assertions failing - including A3 renaming to `help`, the `/line --help` path |
 
-06-08 patch a **copy** of the real script rather than a flag inside it: a defense you can switch off
+06-08 and 10 patch a **copy** of the real script rather than a flag inside it: a defense you can switch off
 at runtime is a defense an attacker can switch off. Each patch is anchored on an exact source line
 and the test exits 3 (infrastructure) if that anchor has moved, so a silently-not-applied control can
 never report a false `NEG-CONTROL OK`. The control run also prints WHICH assertions went red - a
