@@ -2,6 +2,47 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-13 (later) - The prod gate stopped confusing a sentence about a deploy with a deploy
+
+`prod-coordination-gate.py` and `prod-ledger.py` classify a Bash command by matching patterns against
+its raw TEXT. So a command that merely *carries* a dangerous phrase as data - a commit message, a
+heredoc body, a `mission-write.sh` note - was treated as performing the operation.
+
+That is not theoretical. Measured on this machine: **11 of 1344 prod-ledger rows are mission-bridge
+note-writes filed as `push` or `migrate`**, across 6 sessions between 2026-06-08 and 2026-08-10, and
+two of those note-writes took `~/.claude/prod.lock` - one held it for **2d17h**, during which every
+other agent's genuine prod work was refused, because a stale lock is deliberately never auto-reclaimed
+and needs a human to reconcile it. The audit trail was wrong in both directions at once: it recorded
+prod events that never happened, and it blocked prod events that should have run.
+
+The fix strips what the shell will never execute - quoted string literals and heredoc bodies - before
+classification. It stays fail-closed at every edge, leaving the text intact and still scanned when:
+
+- an interpreter-style token is present, where a quoted string genuinely IS code: `bash -c '...'`,
+  `sh -lc "..."`, `ssh host '...'`, `psql -c 'ALTER ROLE ...'`, `... | sh`, `eval`, `xargs`,
+  any `-c '` / `-e "` / `--command=`;
+- the quoted run or heredoc body contains a command substitution (`$(` or a backtick), which executes
+  regardless of the quoting;
+- the quoting or the heredoc is unbalanced, so nothing can be parsed with confidence.
+
+This does not lower the classifier's ceiling. Text matching was always blind to indirection - write a
+script in one call, run it in the next - so the only operations this can newly miss were already
+invisible to it.
+
+`kind_of()` in the ledger reads the same stripped text, so a real deploy whose commit message mentions
+a push is filed as `deploy` rather than `push`.
+
+The addition sits inside the region the existing drift guard pins byte-identical across both hooks, so
+the two copies cannot diverge silently. `test-prod-classifier-fixtures.py` grew from 59 to 86 checks.
+Every new check was watched failing before it passed: the false-positive cases go red against the
+pre-fix hooks, and the fail-closed carve-outs go red under two mutants that disable them. The exact
+2026-08-10 command that held the lock for 2d17h was replayed end-to-end through both real hooks - it
+now passes through, leaves the lock untouched, and files nothing.
+
+Not done here, because it destroys history in a shared audit file and that is the owner's call: the 11
+contaminated rows already in `~/.claude/prod-ledger/dentall.jsonl` are left in place, as is the second
+spurious lock still open on another window's board (sid `3ea886c4`, 2026-08-03).
+
 ## 2026-08-13 - Subagent reasoning effort is pinned instead of silently inherited
 
 The owner asked for this directly: *"I want your sub-agents to all be a non-minimum just high. And
