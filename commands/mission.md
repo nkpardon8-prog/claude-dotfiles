@@ -26,16 +26,17 @@ marker, which a live (untruncated) invocation must read and follow.
 ### CONTINUATION-OWNER INVARIANT (read first - a mission turn NEVER yields naked)
 
 A `/mission` turn MUST NOT end unless ONE holds: (a) it JUST called `ScheduleWakeup(delaySeconds,
-prompt=SELF_CONTAINED_TICK, reason)` as its LAST continuation-deciding call AND it SUCCEEDED (only the
-tick-lock release may follow it), or (b) it is at a genuine human-handback / stop point (a §9
-point-of-contact or a §12.3 stop, incl. an `AWAIT kind=human`). **A scheduled wake is the ONLY continuation
-owner** - a tracked `run_in_background` job is NOT sufficient alone (its completion wake can be lost), so a
-turn yielding with a job pending STILL schedules a long fallback heartbeat (§12.1 step 7). Any other
-turn-end is a NAKED YIELD that silently freezes the mission - EVERY turn-end (§8's four epilogues are
-examples). A `ScheduleWakeup` that FAILS is not (a): retry once, then STOP LOUD via `pending-stop`
-(§12.3) - never yield naked. The wake routine satisfying (a) - `mkdir` tick-lock + §8
-resume-read + cursor-compare + reschedule - lives in §12; every wake source (bg completion, a tick, a
-post-compact resume) funnels through it and advances by exactly ONE transition.
+prompt=SELF_CONTAINED_TICK, reason)` as its LAST such call AND it SUCCEEDED (only the
+tick-lock release may follow), or (b) it is at a genuine stop (§9 contact / §12.3 stop, incl.
+`AWAIT kind=human`). **A scheduled wake is the ONLY continuation owner** - a tracked
+`run_in_background` job is NOT sufficient (its wake can be lost); a turn yielding with a job pending
+STILL schedules a fallback heartbeat. Any other turn-end is a NAKED YIELD that freezes the mission -
+NOTHING retries it (§12.5). A `ScheduleWakeup` that FAILS is not (a): retry once, then STOP LOUD via
+`pending-stop`. **§12.1 step 7 is the MANDATORY EXIT GATE - no path returns except through it.** A commit /
+finished unit / report / peer reply is NOT a stop (§12.3), and
+**announcing an action never substitutes for taking it**. The wake routine - `mkdir` tick-lock + §8
+resume-read + cursor-compare + reschedule - lives in §12; every wake source (bg completion, tick,
+post-compact resume) funnels through it, ONE transition.
 
 ### A. Resolve sid + root + mission file FIRST (§1)
 
@@ -1539,6 +1540,13 @@ self-wake loop stops on purpose: `timing-close` → `MISSION-CLEARED` → `archi
   ```
   Advisory — the `archive-close` self-guard no-ops unless the mission is `cleared`, and a failed move
   never blocks the close. (A `/mission clear` already archives in §2; a double-fire is a harmless no-op.)
+  Then **disarm the liveness guard** (§12.1 step 0) so a finished run stops being watched:
+  ```bash
+  rm -f "$HOME/.claude/progress/mission-liveness-<sid>.json"
+  ```
+  Advisory and idempotent — a missed disarm is self-correcting rather than harmful: the guard reads
+  `mission_lifecycle_state`, sees `cleared`, and exits silent on every subsequent turn. Leaving the
+  file behind therefore costs a stat and a state read, never a spurious block.
 - **`/mission status`** (and blank) reads the LOG **directly** via the Section 8 resume-read idiom
   (grep over the full live log + ALL rotated archives oldest→newest), derives mode/part/phase/round/dry
   + pending, and prints — no mutation. Mode/`status=` come from the `mission_state` grep (the LATEST
@@ -1572,6 +1580,24 @@ serializer; the cursor is the in-turn consistency check on top.
 Carry `sid`, `root`, and every absolute path in the tick prompt itself (§12.2) — a wake has NO
 conversation memory; treat it as a COLD START and read ALL state from the log/bridge.
 
+0. **ARM the liveness guard (idempotent, do this FIRST, before the lock).** The `Stop` hook
+   `scripts/hooks/mission-liveness.sh` catches a turn that ends with work owed and no `ScheduleWakeup`
+   in it — the naked yield §12.5 describes — and blocks the stop so the run continues instead of
+   freezing. **It is inert until armed, and it is armed per-session, ON PURPOSE:** an always-on
+   version would fire on every turn end of every window on the machine, and because several windows
+   routinely sit in the same repo it would drive a mission tick into a SIBLING window or into the
+   user's own live conversation. Re-arming every wake is deliberate — it self-heals if the file is
+   ever lost, and the write is idempotent:
+   ```bash
+   mkdir -p "$HOME/.claude/progress" 2>/dev/null
+   printf '{"sid":"%s","root":"%s"}' "<sid>" "<root>" > "$HOME/.claude/progress/mission-liveness-<sid>.json"
+   ```
+   The guard reads `root` from THIS file (never from `cwd`, which is often a per-part worktree) and
+   resolves the mission by `sid`, so it can never adopt another session's mission. Retire it at the
+   natural close, beside `archive-close` (§11):
+   `rm -f "$HOME/.claude/progress/mission-liveness-<sid>.json"`.
+   Everything it decides is appended to `~/.claude/logs/mission-liveness.log`, so "ran and stayed
+   silent" is distinguishable from "never ran".
 1. **Acquire the tick lock (atomic, afk pattern).** The lock dir lives beside the mission file:
    `tick_dir="$root/.mission-backups/tick.$sid.lock"`.
    ```bash
@@ -1852,14 +1878,6 @@ stopping instead of checkpointing. The global reply-style rule asks you to narra
 batch of tool calls; that rule presumes the batch follows in the same turn. Narration with no
 following tool call is the failure, not the rule.
 
-### 12.5 Why a dropped step 7 is unrecoverable
-
-There is no timer, no expiring lock, and no watcher behind the continuation invariant. A turn that
-ends without a successful `ScheduleWakeup` leaves the mission at its last banked state **indefinitely**,
-until a human types something — which may be many hours later, and the run produces nothing in the
-meantime. This is why step 7 is a gate rather than a step: the cost of dropping it is not a slow
-mission, it is a dead one.
-
 ### 12.4 Post-compact resume composes here (no double-drive)
 
 Post-compact resume is **just another wake source** into §12.1 — not a second state machine. Keep the
@@ -1872,3 +1890,11 @@ any re-bank an idempotent no-op). It does NOT rely on the second wake "seeing th
 (a wake that recomputes its baseline after the winner's append would read it unchanged). **Intent
 precedence on resume: the PLAN zone and the LOG outrank the handoff chain's `Next Action`** (§C / §8) —
 a stale handoff hint never overrides the durable on-disk position.
+
+### 12.5 Why a dropped step 7 is unrecoverable
+
+There is no timer, no expiring lock, and no watcher behind the continuation invariant. A turn that
+ends without a successful `ScheduleWakeup` leaves the mission at its last banked state **indefinitely**,
+until a human types something — which may be many hours later, and the run produces nothing in the
+meantime. This is why step 7 is a gate rather than a step: the cost of dropping it is not a slow
+mission, it is a dead one.

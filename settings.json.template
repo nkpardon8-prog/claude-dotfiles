@@ -159,6 +159,11 @@
             "type": "command",
             "command": "$HOME/.claude-dotfiles/scripts/hooks/auto-compact-after-pre-compact.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/hooks/mission-liveness.sh",
+            "timeout": 10
           }
         ]
       }
