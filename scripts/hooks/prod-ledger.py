@@ -69,8 +69,8 @@ PRODMARK = re.compile(r"ALLOW_PROD_MIGRATE_DEPLOY|MIGRATOR_DIRECT_URL|neon\.tech
 # this can newly miss were already invisible to it.
 INTERP = re.compile(
     r"(?:^|[\s|;&(])(?:eval|xargs|ssh)\b"
-    r"|sh\s+-c\b"                     # bash / zsh / dash / sh -c
-    r"|\s-(?:c|e)\s+['\"]"             # psql -c '...', python -c, node -e, ...
+    r"|sh\s+-[a-z]*c\b"               # bash / zsh / dash / sh  -c, -lc, -ec
+    r"|\s-[a-z]*[ce]\s+['\"]"          # psql -c '...', python -c, node -e, sh -lc "..."
     r"|--(?:command|eval)="
     r"|\|\s*(?:ba|z|da|k)?sh\b",
     re.IGNORECASE,
