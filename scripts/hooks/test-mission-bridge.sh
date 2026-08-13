@@ -57,7 +57,10 @@ fresh_root() {
   printf '%s' "$_fr_d"
 }
 
-trap 'rm -rf "${WORKBASE}"* 2>/dev/null || true' EXIT
+# Sweep by UNIQ prefix on exit. Most tests here never call cleanup_sid, and mission-write.sh now arms
+# the liveness guard on any bridge write - so without this every run left arming sentinels in the live
+# ~/.claude/progress directory, making it impossible to tell a real armed mission from test debris.
+trap 'rm -rf "${WORKBASE}"* 2>/dev/null || true; rm -f "$HOME/.claude/progress/mission-liveness-${UNIQ}"*.json 2>/dev/null || true' EXIT
 
 echo
 echo "=== mission-bridge regression harness ==="
