@@ -48,9 +48,9 @@ PROD = "PROD"
 SAFE = "SAFE"
 
 
-def load_isprod(path):
+def load_ns(path):
     """Exec the hook's module body up to its `main()` invocation so we get the
-    real is_prod() without running the live hook."""
+    real module namespace (is_prod, kind_of, ...) without running the live hook."""
     with open(path) as f:
         src = f.read()
     marker = "\ntry:\n    main()"
@@ -59,6 +59,11 @@ def load_isprod(path):
         src = src[:idx]
     ns = {"__name__": "hook_under_test"}
     exec(compile(src, path, "exec"), ns)  # noqa: S102 — trusted local hook source
+    return ns
+
+
+def load_isprod(path):
+    ns = load_ns(path)
     if "is_prod" not in ns:
         raise RuntimeError(f"{path}: no is_prod() found")
     return ns["is_prod"]
@@ -164,6 +169,7 @@ LOCAL_PG = "postgresql://postgres:5432/summit"
 # 2026-08-03 and would make the repo's own full-tree scan red forever. Same convention as
 # scripts/hooks/test-secret-scan.sh. The assembled VALUE is unchanged, so the fixture still
 # exercises the user-looks-like-host spoof it was written for.
+MW = "bash /Users/x/.claude-dotfiles/scripts/hooks/mission-write.sh"
 SPOOF_USERHOST = "postgresql://" + "user" + ":" + "localhost" + "@prod.internal/summit"
 SPOOF_SUBDOM = "postgresql://user@localhost.evil.example/summit"
 NEON = "postgresql://user@ep-cool-tree-123.us-east-2.aws.neon.tech/neondb"
@@ -222,6 +228,42 @@ CASES = [
 
     # plain safe command -> never prod, gate stays silent (asserted separately too)
     ("plain safe command",         "ls -la",                                               SAFE, SAFE),
+
+    # --- INERT-DATA CLASS (2026-08-13). A dangerous phrase carried as an ARGUMENT or a
+    # heredoc body is DATA, not an operation. Measured harm before the fix: 11 of 1344
+    # ledger rows were mission-bridge note-writes filed as push/migrate, and two sessions
+    # took ~/.claude/prod.lock for a note-write (one held it 2d17h). Must be SAFE on both.
+    ("mission-bridge note quoting a migrate",
+     MW + ' note "SID" "/root" "do not run prisma migrate deploy on shared prod"', SAFE, SAFE),
+    ("mission-bridge note quoting a push",
+     MW + ' note "SID" "/root" "owed: git push origin dev after review"',          SAFE, SAFE),
+    ("commit message quoting a migrate (single-quoted)",
+     "git commit -m 'docs: explain why db:migrate:deploy is gated'",               SAFE, SAFE),
+    ("commit-message heredoc quoting a deploy",
+     "cat > /tmp/m.txt <<'MSGEOF'\ndocs: never gcloud run deploy by hand\nMSGEOF",  SAFE, SAFE),
+
+    # --- CARVE-OUTS: the same shapes where the quoted text really IS executed, or where
+    # the parse is not provable. All must stay PROD -- these are the fail-closed edges.
+    ("sh -lc runs the quoted deploy",
+     'docker exec box sh -lc "gcloud run deploy summit-api"',                      PROD, PROD),
+    ("bash -c runs the quoted migrate",
+     "bash -c 'ALLOW_PROD_MIGRATE_DEPLOY=1 npm run db:migrate:deploy'",            PROD, PROD),
+    ("psql -c runs the quoted role flip",
+     "psql \"$PROD_URL\" -c 'ALTER ROLE app BYPASSRLS'",                           PROD, PROD),
+    ("ssh runs the quoted deploy",
+     "ssh deploybox 'gcloud run deploy summit-api'",                               PROD, PROD),
+    ("heredoc piped to sh executes its body",
+     "cat <<'EOF' | sh\ngcloud run deploy summit-api\nEOF",                        PROD, PROD),
+    ("command substitution inside quotes is never stripped",
+     'echo "$(gcloud run deploy summit-api)"',                                     PROD, PROD),
+    ("unterminated heredoc fails closed",
+     "cat <<'EOF'\ngcloud run deploy summit-api",                                  PROD, PROD),
+    ("unbalanced quote fails closed",
+     'echo "gcloud run deploy summit-api',                                         PROD, PROD),
+    # a REAL prod op is untouched by stripping when it sits outside the quoted data
+    ("real push alongside an inert heredoc (ledger side)",
+     "cat > /tmp/m.txt <<'MSGEOF'\ndocs: prisma migrate deploy notes\nMSGEOF\ngit push origin dev",
+     SAFE, PROD),
 ]
 
 # gate-21 unrelated-URL masking repro: an unrelated localhost URL in a DIFFERENT
@@ -311,6 +353,17 @@ def main():
     else:
         failed += 1
         print(f"FAIL [lock  ] absent lock claim rc={result.returncode} claimed={claimed} residue={residue}")
+
+    # kind_of() reads the same stripped text: a real push whose commit-message heredoc
+    # mentions a deploy must be filed as `push`, not `deploy` (ledger-only helper).
+    _kind_cmd = "cat > /tmp/m.txt <<'MSGEOF'\ngcloud run deploy notes\nMSGEOF\ngit push origin dev"
+    _kind = load_ns(LEDGER)["kind_of"](_kind_cmd)
+    if _kind == "push":
+        passed += 1
+        print("PASS [kind  ] heredoc-mentioned deploy does not mis-file a real push")
+    else:
+        failed += 1
+        print(f"FAIL [kind  ] real push filed as {_kind!r}, expected 'push'")
 
     # DRIFT-GUARD (god-report 2026-07-12, single-pattern lens): the SHARED classifier logic
     # (MIGRATE, PRODMARK, _all_urls_local, is_prod) is copy-pasted verbatim into both hook files
