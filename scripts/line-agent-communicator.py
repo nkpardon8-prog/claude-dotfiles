@@ -1899,12 +1899,61 @@ def take_inline_owns(text: str) -> tuple[str, str]:
     return " ".join(rest), owns
 
 
+def flaglike(sentence: str) -> str:
+    """
+    Return the token that makes this sentence look like a mistyped flag, or "" if it is prose.
+
+    Two shapes, both observed as real renames rather than imagined:
+      - the sentence STARTS with a dash (`--help`, `-h`) - the 2026-08-12 incident;
+      - any token is an unknown LONG option (`--own` for `--owns`) - one keystroke from the
+        documented form, and it used to be folded into the caption, so `set "billing" --own "x"`
+        addressed the window as `billing-own-x`.
+    A single dash MID-sentence is left alone on purpose: "e-mail follow-ups -v2" is prose, and
+    refusing it would break real captions to catch a typo nobody makes. `--` escapes all of this.
+    """
+    toks = sentence.split()
+    if not toks:
+        return ""
+    if toks[0].startswith("-"):
+        return toks[0]
+    for t in toks:
+        if t.startswith("--"):
+            return t
+    return ""
+
+
 def dispatch_set(sid: str, args: list[str]) -> int:
-    """argv-level `--owns` first; fall back to the one-argument text form `/line` produces."""
+    """
+    argv-level `--owns` first; fall back to the one-argument text form `/line` produces.
+
+    THIS is where the flag guard has to live. `main()`'s guard only sees a DIRECT CLI call, but the
+    documented user path is `/line`, whose body is `... set "${ARGUMENTS:-}"` - so `/line --help`
+    arrives as ["set", "--help"], sails past main() entirely, and renames the window to `help`.
+    Every rename funnels through here, so a refusal here covers both paths and any future caller.
+    """
     rest, owns = take_owns(args)
+
+    # POSIX end-of-options: everything after `--` is caption text, dashes and all. Without this
+    # there is no way to set a dash-leading caption once the guard below exists.
+    if rest and rest[0] == "--":
+        sentence = " ".join(rest[1:])
+        if not owns:
+            sentence, owns = take_inline_owns(sentence)
+        return cmd_set(sid, sentence, owns)
+
     sentence = " ".join(rest)
     if not owns:
         sentence, owns = take_inline_owns(sentence)
+
+    bad = flaglike(sentence)
+    if bad:
+        print(f"line-agent-communicator: refusing to use {bad!r} as this window's name.",
+              file=sys.stderr)
+        print("Naming is destructive - it overwrites the peer address other windows reach you by,\n"
+              "and there is no undo. If you meant a caption that really starts with a dash:\n"
+              f"  set -- \"{sentence}\"\n", file=sys.stderr)
+        return _usage(sys.stderr, 2)
+
     return cmd_set(sid, sentence, owns)
 
 
