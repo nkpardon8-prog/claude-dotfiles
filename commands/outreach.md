@@ -190,6 +190,16 @@ Targeting: Z. Batch cap: N, stop at exhaustion or cap." — and wait for explici
 before Workflow Step 1 begins. If nothing else in the run changes anyone's mind, this is the
 one step that must never be skipped or rushed, for any user.
 
+<!-- CONTRACT-CORE-END -->
+
+**Truncation note:** this file re-injects head-truncated to its first 20,000 characters after a
+context compaction. Everything above this line — Hard safety rails, Automated setup, Browser
+automation guidance, and the full Step 0 intake gate — is self-sufficient to run this skill
+safely. Everything below (script reference, Workflow execution detail, tailoring rules, style
+memory mechanics, style examples, known gotchas, the per-draft checklist) is real operational
+detail Workflow Steps 1+ depend on — if it's missing from this turn's context, Read
+`~/.claude-dotfiles/commands/outreach.md` from disk before proceeding past Step 0.
+
 ## Environment / setup facts
 
 - HubSpot portal **44031266**, team **SouthWest** (id 71073924). Dashboard "Arc Product Advisor".
