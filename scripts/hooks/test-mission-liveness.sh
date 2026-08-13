@@ -41,6 +41,12 @@ cleanup() {
           "$(ac_sentinel_path "$s")" 2>/dev/null
     rm -f "$STATE_DIR/$s".* 2>/dev/null
   done
+  # Sweep by UNIQ prefix too. mission-write.sh now ARMS on any bridge write, so every fixture mission
+  # leaves an arming sentinel whether or not the test called arm() - tracking only arm()'d sids left
+  # debris in the live sentinel directory, which is the one place a human looks to answer "is any
+  # mission actually armed?". A peer window hit exactly that confusion.
+  rm -f "$HOME/.claude/progress/mission-liveness-${UNIQ}"*.json 2>/dev/null
+  rm -f "$STATE_DIR/${UNIQ}"* 2>/dev/null
   rm -rf "$WORKBASE" 2>/dev/null
 }
 trap cleanup EXIT

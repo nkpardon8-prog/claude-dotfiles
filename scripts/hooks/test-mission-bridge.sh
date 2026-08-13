@@ -42,6 +42,9 @@ cleanup_root() { rm -rf "$1" 2>/dev/null || true; }
 
 cleanup_sid() {
   s="$1"
+  # mission-write.sh arms the liveness guard on any bridge write, so a created fixture mission now
+  # leaves an arming sentinel behind. Remove it or the live sentinel directory fills with test debris.
+  rm -f "$HOME/.claude/progress/mission-liveness-${s}.json" 2>/dev/null
   rm -f "$HOME/.claude/chains/${s}.json" "$HOME/.claude/chains/${s}.log" \
         "$HOME/.claude/chains/.${s}.json."* 2>/dev/null || true
 }
