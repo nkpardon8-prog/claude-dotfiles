@@ -27,7 +27,7 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 | `ctx-gate-precompact-safety.sh` | `PreCompact` (matcher `auto`) | Last-resort safety net when native auto-compaction is about to fire without a handoff. |
 | `prod-coordination-gate.py` | `PreToolUse` | Serializes prod-mutating ops across parallel Claude instances via `~/.claude/prod.lock`. Classifies what a command **runs**, not every phrase it mentions: quoted string arguments and heredoc bodies are stripped before matching, so a commit message or a `mission-write.sh` note that merely *quotes* `prisma migrate deploy` no longer takes the lock. Fail-closed carve-outs keep the text intact where a quoted string really is code (`bash -c`, `ssh`, `psql -c`, `\| sh`, any `$(`/backtick) or where the quoting is unbalanced. |
 | `no-detach-gate.py` | `PreToolUse` | Fail-OPEN backstop: blocks a shell-detach (`nohup`/`&`/`disown`/`setsid`) wrapping a `codex` launch, which would orphan it from the harness completion wake. Only detach-around-codex; the Chrome/statusline `nohup`s pass. |
-| `prod-ledger.py` | `SessionStart` (`inject`) + `PostToolUse` (`record`) | Shared ledger of prod-facing actions (push / deploy / migrate) so parallel agents know what is already live. |
+| `prod-ledger.py` | `SessionStart` (`inject`) + `PostToolUse` (`record`) | Shared ledger of prod-facing actions (push / deploy / migrate) so parallel agents know what is already live. Shares the gate's classifier verbatim (the fixture suite pins them byte-identical), including the inert-data stripping - `kind_of()` reads the stripped text too, so a real deploy whose commit message mentions a push is no longer filed as `push`. |
 
 **Invoked by skills or by hand** (not hook-registered):
 
