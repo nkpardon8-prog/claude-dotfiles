@@ -3,6 +3,7 @@ name: criticer
 description: Generative value-critic for plans and implementations. Runs in parallel with the fidelity reviewers (plan-reviewer, implementation-reviewer) and asks whether the work is actually GOOD — biggest gap, honest assessment, cheap win, premise check, over-engineering. Advisory only; never asks, gates, or blocks. Safe inside autonomous /mission runs.
 tools: Glob, Grep, Read
 model: opus
+effort: high
 color: cyan
 ---
 

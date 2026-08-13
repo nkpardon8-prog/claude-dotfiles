@@ -3,6 +3,7 @@ name: research-dossier-writer
 description: Creates a PRP-style research dossier for a feature brief, focused on concrete codebase anchors, patterns, gotchas, and supporting docs. Used by create-plan as a supporting artifact before reconciliation.
 tools: Read, Write, Grep, Glob, WebFetch, WebSearch
 model: opus
+effort: high
 color: green
 ---
 

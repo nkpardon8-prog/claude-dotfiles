@@ -532,6 +532,33 @@ case "$verb" in
     ;;
 esac
 
+# ARM THE LIVENESS GUARD on any mission-bridge mutation (best-effort, silent, idempotent).
+#
+# WHY HERE and not only at the wake routine's step 0. Arming at step 0 alone covers only missions
+# that a wake has already driven. A mission driven entirely by USER turns has never executed a wake
+# routine, so it never armed, so the guard was permanently inert for it - and the moment it matters
+# most is exactly the transition from conversational to overnight ("continue, I'm going to bed"),
+# which happens BEFORE any wake routine has run. Verified on this machine: an active 34-day mission
+# with zero arming sentinels present. A peer session running that very mission reported the gap.
+#
+# This seam is the right one because it fires on any session doing mission WORK, whatever drove the
+# turn. Arming broadly is safe only because the hook independently discriminates turn ORIGIN (it
+# requires the sid to appear in the turn's opening prompt), so an armed session in which the user is
+# simply conversing is never blocked. Disarm stays at the lifecycle close.
+_mw_arm_liveness() {
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 0
+  case "$2" in *..*) return 0 ;; esac
+  _mwa_d="$HOME/.claude/progress"
+  [ -d "$_mwa_d" ] || mkdir -p "$_mwa_d" 2>/dev/null || return 0
+  _mwa_f="$_mwa_d/mission-liveness-$1.json"
+  [ -f "$_mwa_f" ] && return 0          # idempotent: never rewrite on every log line
+  # python for JSON-safe encoding - a root containing a quote or backslash would otherwise emit
+  # invalid JSON and silently disarm the guard.
+  python3 -c 'import json,sys; sys.stdout.write(json.dumps({"sid":sys.argv[1],"root":sys.argv[2]}))' \
+    "$1" "$2" > "$_mwa_f.tmp" 2>/dev/null && mv -f "$_mwa_f.tmp" "$_mwa_f" 2>/dev/null
+  return 0
+}
+
 # Short helper: emit the single status line for a captured rc, then the caller exits 0.
 _mw_status() {
   _s_verb="$1"; _s_rc="$2"; _s_reason="$3"

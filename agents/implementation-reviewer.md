@@ -3,6 +3,7 @@ name: implementation-reviewer
 description: Reviews completed implementations against their plan. Runs quality checks, verifies plan completeness, reviews code quality using shared criteria, and generates a report of remaining work. Automatically invoked after the implement skill finishes.
 tools: Glob, Grep, Read, Bash
 model: opus
+effort: high
 color: yellow
 ---
 

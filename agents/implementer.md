@@ -3,6 +3,7 @@ name: implementer
 description: Executes implementation plans systematically with quality checks. Takes structured plans and implements them while following project standards.
 tools: Read, Write, Edit, Glob, Grep, Bash, Agent
 model: opus
+effort: high
 color: cyan
 ---
 
