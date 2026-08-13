@@ -1683,7 +1683,14 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    idempotent no-op; `COLLISION` → re-read and reconcile, never assume the line banked). A bank/dispatch
    write that returns `FAILED` is load-bearing control state (§intro): retry, then §10 STOP-LOUD if it
    still fails — do NOT proceed to step 7 as if it banked.
-7. **Schedule the next wake UNLESS a stop condition holds** (§12.3). D10 — ORDER matters: call
+7. **Schedule the next wake UNLESS a stop condition holds** (§12.3).
+   **STEP 7 IS THE MANDATORY EXIT GATE: no path in this routine returns except through it.** Step 6 is
+   the act that FEELS like completion, and step 7 is a separate later errand — which is exactly why it
+   gets dropped, and a dropped step 7 silently freezes the mission forever (nothing retries it; see
+   §12.5). Do not treat step 6's success as permission to end the turn. Several paths above reach step 7
+   while deliberately skipping step 6 (the CONSUME path, the `await kind=job ready=0` heartbeat, the
+   re-enter-exhausted path); that is intended — they still exit through here.
+   D10 — ORDER matters: call
    `ScheduleWakeup` while STILL HOLDING the lock, then release only after you know the outcome (so a
    schedule failure`s durable fallback write is never done lock-free). Call it with:
    - `delaySeconds`: a **~60s floor** when a transition is actively in flight; a **longer fallback
