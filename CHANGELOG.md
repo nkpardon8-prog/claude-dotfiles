@@ -2,6 +2,38 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-13 - Subagent reasoning effort is pinned instead of silently inherited
+
+The owner asked for this directly: *"I want your sub-agents to all be a non-minimum just high. And
+then extra high on request."* None of the 14 definitions in `agents/` carried an `effort` field, and
+the documented default is **"inherits from session"** - so every subagent quietly ran at whatever the
+parent session happened to be set to. A window dropped to medium handed medium to fourteen agents and
+said nothing about it. That silent inheritance was the accident being pointed at, not a preference.
+
+**The key was verified before the edit, not inferred, and that mattered more than it sounds.** An
+unrecognized frontmatter key is silently ignored - so a plausible-but-wrong guess (`reasoning_effort`,
+`reasoningEffort`, `thinking`) would have produced fourteen files that LOOK configured, changed
+nothing, and left the owner believing effort was raised. That is the label-versus-mechanism failure
+this repo's own review rules exist to catch, and it would have been committed while citing them.
+Authoritative sources: the "Supported frontmatter fields" table in the Claude Code sub-agents docs and
+the `AgentDefinition` table in the Agent SDK docs. The key is `effort`; accepted values are
+`low | medium | high | xhigh | max`, with availability depending on the model.
+
+- **Set to `high`, not `xhigh`, deliberately.** `xhigh` is what the owner reserved for on-request
+  escalation, and a per-call override still beats the definition, so pinning the ceiling in the file
+  would have removed the distinction he asked for.
+- **`criticer.md` keeps its prose instruction** to run one focused pass without excavating the whole
+  codebase. That constrains SCOPE, which is a different axis from reasoning effort - raising the
+  latter does not contradict the former.
+- All 14 frontmatter blocks were re-parsed after the edit; `name`, `model` and `effort` present in
+  every one, zero malformed.
+
+**Footnote worth keeping, because it will happen again.** The commit carrying this reasoning lost a
+ref-lock race with the auto-sync daemon (`cannot lock ref 'HEAD'`), which swept the staged files into
+a generic `auto-sync:` commit and pushed that instead. The content landed correctly and in sync; only
+the explanation was lost, which is why it is written here. In a repo with a background committer, a
+commit message is not a durable place to put reasoning - the changelog is.
+
 ## 2026-08-12 (later) - Flag-shaped input is refused instead of becoming the window's name
 
 Running `line-agent-communicator.py --help` did not print help. `main()` ended in a bare
