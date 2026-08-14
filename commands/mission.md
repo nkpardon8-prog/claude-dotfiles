@@ -996,6 +996,43 @@ or `phase=implement` line ordered after the `dry=1` line sets `act`, and the fol
   `git diff --stat` since `PART-START` shows test/proof lines exceeding source lines by a wide
   margin, record a one-line reason in the round note. No ratio, no per-round arithmetic.
 
+#### 6.4 Fan-out is a mechanism, not an aspiration
+
+"Parallel, independent" was already written down and a run serialized the panel anyway, so state the
+mechanism per tool type:
+
+- **Agent calls:** every reviewer in **ONE assistant message**, multiple `Agent` tool calls. Separate
+  messages are sequential and are the bug.
+- **Skill invocations:** likewise — one message, multiple calls.
+- **Bash / Codex passes:** backgrounded together in one message. Note that `codex-exec.sh` has **no
+  flock**, so its passes genuinely run concurrently.
+- **Within a part:** independent work items dispatch concurrently. **Parts themselves stay serial.**
+- **Stop at 2 consecutive DRY rounds.** "Dry" = the **independent reviewers** returned **zero new
+  actionable findings**, logged verbatim — NOT you grading your own work.
+- **An ACTIONABLE round RESETS `dry → 0`** (not merely "does not count"). Any round whose independent
+  reviewers produced ≥1 new actionable finding breaks the consecutive-dry streak: the post-round `dry=`
+  on that round line is `0`, and the NEXT round's `dry=` starts again at `0`. Only two back-to-back
+  zero-actionable rounds reach `dry=2`. State the post-round `dry` on the round line accordingly
+  (Section 7). **This also covers the post-VOID case:** if a re-run of a VOIDed round turns out
+  ACTIONABLE (the reviewer that finally ran found ≥1 finding), `dry` RESETS to `0` too — so a `dry=2`
+  streak can NEVER span a code change, whether that change came from a normal actionable round or from
+  an actionable round that previously VOIDed. A VOID by itself does not advance `dry` (the round did
+  not count); an actionable VOID-rerun resets it.
+- **VOID-on-dead-reviewer (the single biggest false-converge risk).** A round counts toward the
+  2-dry tally **ONLY if EVERY independent reviewer produced a parseable, on-topic, evidence-citing
+  verdict** — that means ALL **4 Codex passes + 3 Claude reviewers** of the panel actually ran, i.e. the
+  report shows **`Codex-passes: 4/4`** (see "Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID" in Section 5).
+  A reviewer that errors, returns empty, times out (e.g. a Codex CLI hang), or any report showing
+  **`Codex-passes: N/4` with N<4** (equivalently the legacy markers **`Codex unavailable`** = all 4
+  failed, or per-pass **`(Codex-N: unavailable)`** = even 1 of the 4 failed) makes the round **VOID** →
+  re-run the panel; do **NOT** bank a void round as dry. A VOID must be made DURABLE so a compaction mid-void
+  doesn't resume from the last banked dry state — log the VOID marker (Section 7 lifecycle/VOID line)
+  before re-running; on resume, a VOID for round K means re-run round K fresh, NOT count it.
+- **Honest early-exit** is allowed: if a super-honest look says the part is genuinely light, 2 dry
+  rounds may close it early. Quality is the bar; saving time when truly converged is fine.
+- **Findings logged BEFORE acting** — always persist the reconciled per-reviewer findings (or an
+  explicit `0` per named reviewer) into the LOG before you fix.
+
 #### 6.5 Codex may WRITE code - through one guarded wrapper, and only through it
 
 The old rule bundled two different things into "Codex is ALWAYS read-only". Split them:
@@ -1041,43 +1078,6 @@ binary so the misbehaviours can be driven on demand, every refusal paired with a
 reaches `ok`). It earned its place immediately - the bridge-write check was anchored on `^MISSION\.`,
 which never matches a `git status --porcelain` line because of the leading status field, so a forged
 `MISSION.*.md` passed straight through until fixture 8 went red.
-
-#### 6.4 Fan-out is a mechanism, not an aspiration
-
-"Parallel, independent" was already written down and a run serialized the panel anyway, so state the
-mechanism per tool type:
-
-- **Agent calls:** every reviewer in **ONE assistant message**, multiple `Agent` tool calls. Separate
-  messages are sequential and are the bug.
-- **Skill invocations:** likewise — one message, multiple calls.
-- **Bash / Codex passes:** backgrounded together in one message. Note that `codex-exec.sh` has **no
-  flock**, so its passes genuinely run concurrently.
-- **Within a part:** independent work items dispatch concurrently. **Parts themselves stay serial.**
-- **Stop at 2 consecutive DRY rounds.** "Dry" = the **independent reviewers** returned **zero new
-  actionable findings**, logged verbatim — NOT you grading your own work.
-- **An ACTIONABLE round RESETS `dry → 0`** (not merely "does not count"). Any round whose independent
-  reviewers produced ≥1 new actionable finding breaks the consecutive-dry streak: the post-round `dry=`
-  on that round line is `0`, and the NEXT round's `dry=` starts again at `0`. Only two back-to-back
-  zero-actionable rounds reach `dry=2`. State the post-round `dry` on the round line accordingly
-  (Section 7). **This also covers the post-VOID case:** if a re-run of a VOIDed round turns out
-  ACTIONABLE (the reviewer that finally ran found ≥1 finding), `dry` RESETS to `0` too — so a `dry=2`
-  streak can NEVER span a code change, whether that change came from a normal actionable round or from
-  an actionable round that previously VOIDed. A VOID by itself does not advance `dry` (the round did
-  not count); an actionable VOID-rerun resets it.
-- **VOID-on-dead-reviewer (the single biggest false-converge risk).** A round counts toward the
-  2-dry tally **ONLY if EVERY independent reviewer produced a parseable, on-topic, evidence-citing
-  verdict** — that means ALL **4 Codex passes + 3 Claude reviewers** of the panel actually ran, i.e. the
-  report shows **`Codex-passes: 4/4`** (see "Codex-unavailable (TOTAL or PARTIAL) ⇒ VOID" in Section 5).
-  A reviewer that errors, returns empty, times out (e.g. a Codex CLI hang), or any report showing
-  **`Codex-passes: N/4` with N<4** (equivalently the legacy markers **`Codex unavailable`** = all 4
-  failed, or per-pass **`(Codex-N: unavailable)`** = even 1 of the 4 failed) makes the round **VOID** →
-  re-run the panel; do **NOT** bank a void round as dry. A VOID must be made DURABLE so a compaction mid-void
-  doesn't resume from the last banked dry state — log the VOID marker (Section 7 lifecycle/VOID line)
-  before re-running; on resume, a VOID for round K means re-run round K fresh, NOT count it.
-- **Honest early-exit** is allowed: if a super-honest look says the part is genuinely light, 2 dry
-  rounds may close it early. Quality is the bar; saving time when truly converged is fine.
-- **Findings logged BEFORE acting** — always persist the reconciled per-reviewer findings (or an
-  explicit `0` per named reviewer) into the LOG before you fix.
 
 ---
 

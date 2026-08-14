@@ -110,6 +110,26 @@ if [ -r "$LIVENESS" ]; then
   fi
 fi
 
+# ── 7b. DOC <-> CODE: the Codex-may-write split (6.5) is backed by the guarded wrapper ──────────
+# 6.5 tells the conductor Codex may write code THROUGH ONE WRAPPER, and that the wrapper refuses a
+# main working tree. If the wrapper loses that refusal the doc is licensing an unguarded writable
+# Codex pointed at the tree holding the mission bridge.
+CBC="$HERE/../codex-build-chunk.sh"
+if grep -a -q 'codex-build-chunk' "$DOC"; then pass "doc routes Codex code-writing through the wrapper"
+else fail "doc routes Codex code-writing through the wrapper" "missing"; fi
+
+if [ -r "$CBC" ]; then
+  if grep -a -q 'refused-main-worktree\|main-worktree' "$CBC" && grep -a -q 'workspace-write' "$CBC"; then
+    pass "CODE: the wrapper refuses a main working tree (the sandbox-boundary property)"
+  else
+    fail "CODE: the wrapper refuses a main working tree" "the linked-worktree refusal is gone from codex-build-chunk.sh"
+  fi
+  if grep -a -q 'no-changes' "$CBC"; then pass "CODE: zero changed files is a failure, not an ok"
+  else fail "CODE: zero changed files is a failure" "the no-op guard is gone"; fi
+else
+  fail "codex-build-chunk.sh exists" "not found at $CBC — 6.5 names a wrapper that is not there"
+fi
+
 # ── 8. The contract core still fits its injection budget ────────────────────────────────────────
 CORE=$(python3 -c "
 import io,sys
