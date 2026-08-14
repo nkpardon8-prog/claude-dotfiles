@@ -908,7 +908,96 @@ never touches the mission LOG.
 
 - **Soft targets:** plan reviews typically **4-6** (4 is the usual floor); codex reviews typically
   **3-6**. These are *guidance, not gates*.
-- **Hard cap 6** either way.
+
+#### 6.0 What counts as a finding — the severity floor (canonical definition)
+
+> A finding is **BLOCKING** if and only if it is: wrong behaviour reaching a user or a record; data
+> loss or corruption; a security or tenant-isolation breach; PHI exposure; a broken operator or
+> recovery path; or a test that can pass while the thing it guards is broken. **Everything else is
+> NON-BLOCKING.** Classify by which list it belongs to, **not by how confident or how large the
+> finding is.**
+
+Defined by ENUMERATION on purpose. The obvious-looking tie-break — *"if a reviewer is unsure, call it
+BLOCKING"* — was tried and **abandoned**: with seven reviewer lanes that carry no severity vocabulary,
+nearly everything reads as unsure, so everything becomes blocking and the exit stays exactly as
+unreachable as it was before the floor existed.
+
+**`findings=` on a `phase=review` round line counts BLOCKING findings ONLY.** That single sentence is
+what makes a part closable, and it needs no new machinery: the PART-DONE fold in
+`mission-write.sh` already keys on `findings=0`, so a round that produced only non-blocking findings
+banks as dry. `criticer`'s own `findings=` keeps its **raw** count — the floor is scoped to the round
+line and nowhere else.
+
+**Lane assignment.** The lane that found it assigns the class. The Claude reviewer lane's prompt
+requires a class. `codex-review` returns findings **unclassified** (its output shape is owned by that
+skill, not by this one), so **the conductor classifies that lane by the rubric above and records in
+the round note that it did so.** Where two lanes classify the same finding differently, **the highest
+class wins.**
+
+**Everything is still recorded.** Per-round, EVERY finding goes verbatim into the findings `note`
+with its label — blocking and non-blocking alike. The floor changes what *gates the round*, never
+what is *written down*. That note is already the crash-safe record (§7).
+
+#### 6.1 The cap — what it actually does
+
+- **At most 6 rounds that produce BLOCKING findings**, per part. Rounds that produce only
+  non-blocking findings, and VOID rounds, do **not** count against it.
+- **The `dry=1 → dry=2` pair is EXEMPT** and always runs to completion.
+
+Both clauses are load-bearing. Counting *all* rounds against a cap of 6 makes a part whose first
+clean round is round 6 permanently unclosable — the fold needs **two adjacent** clean rounds, so it
+would need a round 7 the cap forbids. Counting only blocking-producing rounds, with the dry pair
+exempt, removes that trap.
+
+**Cap exhausted → PARK the part, do not STOP the mission.** A STOP-LOUD here would freeze every
+remaining part over one stubborn one:
+
+```
+pending-stop  ->  PushNotification  ->  FAIL ... reason=cap-exhausted-blocking
+              ->  PART-RETIRED part=N  ->  PART-START part=N+1
+```
+
+The `FAIL` note carries a **REQUIRED disposition field** for the defective code left in the tree —
+`disposition=reverted` | `isolated` | `left-with-recorded-risk`. Later parts build on that tree, so
+the choice must be explicit rather than implied by silence.
+
+#### 6.2 The non-blocking ordering rule (both halves are load-bearing)
+
+> **Non-blocking findings are NEVER fixed inside the part.** They go to the record and are reviewed at
+> mission end. If a change happens anyway, it MUST be logged `phase=fix`, and that **resets `dry` to
+> 0**.
+>
+> **Once `dry=1` banks, the window is FROZEN:** no code change and no `phase=fix`/`phase=implement`
+> line until `dry=2`, the live-verify and `PART-DONE` have all landed.
+
+The first half prevents the unclosable-part bug (fixing non-blocking findings resets the streak
+forever). The second half keeps the live-verify freshness guard honest, which the severity floor
+would otherwise blind. **Both are already machine-enforced** by the PART-DONE fold: any `phase=fix`
+or `phase=implement` line ordered after the `dry=1` line sets `act`, and the fold refuses with
+`convergence-not-machine-clean` (rc=4).
+
+#### 6.3 Fix hygiene and proportionality
+
+- After each `phase=fix` round, run the **affected** suites. Run the **full** suite once before any
+  barrier that could reach `dry=1`. Scoped deliberately: a full DB-dependent suite after each of 27
+  fix rounds is what made one overnight run worse, not safer.
+- Tag each new finding `regression` (this part's fixes caused it) or `pre-existing`. **Two
+  regressions traced to one fix ⇒ revert and re-approach.** Do not patch the patch.
+- **Proportionality, one sentence, measured off something you already have:** when
+  `git diff --stat` since `PART-START` shows test/proof lines exceeding source lines by a wide
+  margin, record a one-line reason in the round note. No ratio, no per-round arithmetic.
+
+#### 6.4 Fan-out is a mechanism, not an aspiration
+
+"Parallel, independent" was already written down and a run serialized the panel anyway, so state the
+mechanism per tool type:
+
+- **Agent calls:** every reviewer in **ONE assistant message**, multiple `Agent` tool calls. Separate
+  messages are sequential and are the bug.
+- **Skill invocations:** likewise — one message, multiple calls.
+- **Bash / Codex passes:** backgrounded together in one message. Note that `codex-exec.sh` has **no
+  flock**, so its passes genuinely run concurrently.
+- **Within a part:** independent work items dispatch concurrently. **Parts themselves stay serial.**
 - **Stop at 2 consecutive DRY rounds.** "Dry" = the **independent reviewers** returned **zero new
   actionable findings**, logged verbatim — NOT you grading your own work.
 - **An ACTIONABLE round RESETS `dry → 0`** (not merely "does not count"). Any round whose independent
