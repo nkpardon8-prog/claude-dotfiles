@@ -89,8 +89,28 @@ all, so it cannot fail for fold reasons today; and fixture 49d is defended by tw
 so only a DOUBLE mutant turns it red (it was run, and it does). Neither is a dead test, but neither
 proves what its name alone suggests.
 
-Not proven by any of this: none of these rules has yet run in a real autonomous overnight mission.
-The first genuine run is the actual test.
+**FIRST REAL-MISSION EVIDENCE, same day.** The caveat above ("none of this has run in a real
+mission") is now partly closed. A second live mission window (sid `a7aba834`, the perio-chart tab)
+reported both hooks firing, and `~/.claude/logs/mission-liveness.log` corroborates it independently
+rather than on that window's word:
+
+```
+06:39:54  sid=a7aba834…  NAKED-YIELD action=block life=unknown
+06:41:26  sid=a7aba834…  already-blocked action=silent
+06:46:09  sid=a7aba834…  wake-booked action=silent
+```
+
+Three things that were previously only argued are now observed: the guard blocks a genuine naked
+yield in a real mission; the `prompt_id` loop bound stops the SAME prompt being blocked twice (the
+unbounded-block-loop a reviewer reproduced 3/3 before the fix); and the mission resumes normally
+afterwards. `life=unknown` is the detail that matters most - `unknown` IS the normal state of a
+healthy active mission, and the earlier reading that treated it as "not active" would have made this
+exact block impossible. Several `human-initiated-turn action=silent` entries in the same window also
+confirm the turn-origin check does not fire on a human conversing. `mission-pending-reask.sh` printed
+that window's 18 open PENDING DECISIONS on prompt submit, and its throttle marker exists on disk.
+
+Still unproven: the severity floor, the cap-park and the spend brake are conducting rules, not hooks -
+nothing has yet driven a part to a cap or a budget park in a real run.
 
 ## 2026-08-13 (later) - The prod gate stopped confusing a sentence about a deploy with a deploy
 
