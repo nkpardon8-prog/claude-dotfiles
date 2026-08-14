@@ -109,6 +109,14 @@ exact block impossible. Several `human-initiated-turn action=silent` entries in 
 confirm the turn-origin check does not fire on a human conversing. `mission-pending-reask.sh` printed
 that window's 18 open PENDING DECISIONS on prompt submit, and its throttle marker exists on disk.
 
+**Migration hazard, found in the field the same day.** A third live mission (OD-sync, sid `02e6c6c9`)
+had banked dry rounds carrying RAW reviewer counts in `findings=`, and its PART-DONE was correctly
+refused `convergence-not-machine-clean`. That is the guard working, and it is also the one transition
+cost of the severity floor: a run already in flight under the old habit will be refused. mission.md
+6.0 now states the forward-only fix - re-run the barrier as round K+1 with the blocking-only count,
+and never re-log a banked round to "correct" it (a same-idtag write with different content is a
+COLLISION by design, and a converged streak must not be edited into existence after the fact).
+
 **Correction, from the same evidence:** the notice sent to the other windows said a session that
 had not restarted would not have loaded the new `UserPromptSubmit` hook. That was WRONG. Two windows
 predating the change reported it firing without any restart and without pulling the repo, so Claude
