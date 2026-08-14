@@ -445,7 +445,7 @@ MISSION MODE: build
 
 Standing directive: route substantial work through research → /plan(+reviewers) → /implement →
 /codex-review, looping to 2 honest dry rounds (independent reviewers judge dryness); soft targets
-plan 4-6 / codex 3-6, hard cap 6; /pre-compact freely interleaved; active until a
+plan 4-6 / codex 3-6, cap per §6.1; /pre-compact freely interleaved; active until a
 [mission] MISSION-CLEARED line appears in the LOG.
 EOF
 )
