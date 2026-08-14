@@ -102,15 +102,14 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <s
 ```
 
 Every verb + its full signature: the **Verb signatures** table at the end of this core (§I) - the
-single listing, so the two can never drift. **Codex NEVER writes the bridge** - every Codex run is
-`-s read-only`.
+single listing, so the two can never drift. **Codex NEVER writes the bridge** - absolute. Code hand-off: §6.5.
 
 The script ALWAYS exits 0: parse its one stdout status line. `ok` is the ONLY success token.
 The `log` verb emits exactly four leading tokens and each demands a reaction:
 - `ok` -> appended or idempotent no-op -> proceed.
 - `COLLISION` -> idtag exists with DIFFERENT content -> STOP, re-derive gen/round numbering,
   reconcile against the recovered LOG; never assume the line was banked.
-- `REROUTED-TO-NOTES` -> free-text entry over 480B on-disk -> rewrite TERSE, re-log to `ok`.
+- `REROUTED-TO-NOTES` -> free-text over 480B on-disk -> rewrite TERSE, re-log to `ok`.
 - `FAILED rc=N` -> rc=1 REFUSED (guard/grammar - fix the shape); rc=2 corrupt bridge -> §10
   STOP-LOUD immediately; rc=3 lock busy -> retry ~5x then FAIL-line; **rc=4 on a PART-DONE or
   live-verify write BLOCKS retirement/advance** (do the named remediation); rc=5 wrong-gen idtag
@@ -247,7 +246,7 @@ Used by status, resume, and every post-compaction re-entry:
 ### I. Hard rules + loud stops (§9, §10, §11)
 
 - NEVER hand-edit the PLAN zone; `challenge` loudly, `rebaseline` is the only rewrite path.
-- Codex is ALWAYS read-only; a second bridge writer is forbidden.
+- Codex NEVER writes the bridge; no 2nd writer. Code: §6.5 wrapper ONLY.
 - STOP LOUD on: **5 FAILs for the same part+phase** (gen-sliced tally);
   **panel-unavailable-3x the moment it is logged**; **void-count -1**; **a corrupt/unreadable
   bridge** (any `FAILED rc=2`, or a failed `mission_verify`) - surface `.mission-backups/`.
@@ -635,8 +634,9 @@ retiring the plan), the plan path must be unambiguous. The `--no-review` flag su
 `/implement`'s built-in tail implementation-reviewer so **`/mission` owns the review barrier** (no
 double impl-reviewer; the barrier runs concurrently). **Claude owns integration**;
 Codex assists per-chunk. Full hand-over to Codex is allowed ONLY for isolated, mechanical, well-
-specified chunks — and ONLY in a worktree that does NOT contain the bridge artifacts (they live at
-the canonical root, never inside a per-part worktree), with Codex run `-s read-only`.
+specified chunks, and ONLY through the guarded wrapper in §6.5 — which enforces the worktree
+isolation this sentence used to only ask for. (It previously ended "with Codex run `-s read-only`",
+which made the licence unexecutable: read-only cannot write a chunk.)
 
 **BEFORE dispatching the barrier, OPEN the AWAIT marker** (Task C — the durable "work launched, not
 yet all-returned" record; `A` is this round's barrier attempt, starting at 1. R4 — a lost-wake REPLAY
@@ -995,6 +995,52 @@ or `phase=implement` line ordered after the `dry=1` line sets `act`, and the fol
 - **Proportionality, one sentence, measured off something you already have:** when
   `git diff --stat` since `PART-START` shows test/proof lines exceeding source lines by a wide
   margin, record a one-line reason in the round note. No ratio, no per-round arithmetic.
+
+#### 6.5 Codex may WRITE code - through one guarded wrapper, and only through it
+
+The old rule bundled two different things into "Codex is ALWAYS read-only". Split them:
+
+- **Codex NEVER writes the mission bridge.** Absolute, unchanged, non-negotiable. A second bridge
+  writer is the one thing the whole artifact set cannot survive.
+- **Codex MAY implement an isolated, mechanical, well-specified chunk.** New. This half was already
+  half-written into this playbook ("full hand-over to Codex is allowed ONLY for isolated, mechanical,
+  well-specified chunks") and then made **unexecutable** by pinning `-s read-only` on the same line.
+  A licence that cannot execute is worse than no licence: it reads as capability that is not there.
+
+**The ONLY sanctioned path is `scripts/codex-build-chunk.sh <promptfile> <outfile> <worktree>`.**
+Never hand-roll `codex exec -s workspace-write`; every property below is enforced by that script and
+by nothing else, and this session's own lesson is that a rule with no machine is not a rule.
+
+**It REFUSES unless the target is a LINKED git worktree** (`git worktree add`), and this is the
+load-bearing safety property rather than tidiness. `-s workspace-write` makes the `-C` directory
+writable. In a MAIN working tree `.git/` sits INSIDE that directory, and the bridge artifacts
+(`MISSION.<sid>.md`, `.mission-backups/`) sit at the canonical root beside it - so pointing a writable
+Codex at a main tree hands it both. In a LINKED worktree the real gitdir is
+`<canonical-root>/.git/worktrees/<name>`, OUTSIDE the writable root, so the **sandbox boundary**
+enforces the absolute half instead of a promise in a prompt.
+
+Also enforced, each one a refusal with its own status token:
+
+| Check | Why it exists |
+|---|---|
+| toplevel == the passed dir | a subdir leaves the rest of the tree writable and unaudited |
+| registered in `git worktree list` | a hand-made lookalike directory is not a worktree |
+| worktree CLEAN before the run | a dirty start makes the before/after diff a lie in both directions |
+| HEAD, branch ref and index unchanged after | Codex must EDIT FILES ONLY; "don't run git" is instructed in the prompt AND verified, because an instruction is not a control |
+| no `MISSION.*` / `.mission-backups/` path in the diff | the absolute half, checked at the artifact |
+| **at least one changed file** | **zero changes is a FAILURE, never an `ok`** - a silent no-op that reports success is how a build step gets believed without having built anything |
+
+**Claude runs the tests on Codex's output before it counts for anything.** `status=ok` from this
+wrapper means "Codex ran, wrote something, and touched nothing it must not" - it is NOT a verdict
+that the change is correct, and it never banks a round on its own.
+
+One worktree per chunk. Two builders in one directory is two writers in one directory.
+
+Proof: `scripts/hooks/test-codex-build-chunk.sh` (13 checks, a stub standing in for the `codex`
+binary so the misbehaviours can be driven on demand, every refusal paired with a control that
+reaches `ok`). It earned its place immediately - the bridge-write check was anchored on `^MISSION\.`,
+which never matches a `git status --porcelain` line because of the leading status field, so a forged
+`MISSION.*.md` passed straight through until fixture 8 went red.
 
 #### 6.4 Fan-out is a mechanism, not an aspiration
 
