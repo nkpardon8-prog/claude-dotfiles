@@ -887,6 +887,81 @@ if printf '%s' "$STALE" | grep -q 'live-verify-stale' \
   pass "live-verify staleness blocks PART-DONE until a fresh round-scoped re-verify (no collision)"
 else fail "live-verify stale" "stale='$STALE' fresh='$FRESH' passed='$PASSED'"; fi
 
+# ===========================================================================================
+# 49 (severity floor / §6.1-6.2): the SEVERITY-FLOOR contract, pinned at the machine.
+# The floor is prose ("`findings=` counts BLOCKING findings ONLY"), but it only WORKS because the
+# existing PART-DONE fold keys on findings=0 and refuses any actionable event after the dry=1 bank.
+# These four fixtures pin that dependency, so a future change to the fold cannot silently make the
+# documented severity floor either unclosable again or a rubber stamp.
+# ===========================================================================================
+
+# 49a — FLOOR-CONVERGED PART CLOSES: earlier rounds carried BLOCKING findings, the last two carry
+# findings=0 (non-blocking findings existed but, per §6.2, were recorded and NOT fixed in-part).
+SID="${UNIQ}-floorconv"
+R=$(fresh_root floorconv)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — floorconv" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=0 findings=4" "m1-review-r1-d0" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=fix round=1 dry=0 findings=4" "m1-fix-r1-d0" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=1 findings=0" "m1-review-r2-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=3 dry=2 findings=0" "m1-review-r3-d2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=3 status=n/a reason=not-ui" "m1-live-verify-r3" >/dev/null 2>&1
+FC=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+if printf '%s' "$FC" | grep -q 'log ok'; then
+  pass "floor-converged part closes (blocking rounds early, findings=0 pair last)"
+else fail "floor-converged part closes" "out='$FC'"; fi
+
+# 49b — NOTE BETWEEN dry=1 AND dry=2 DOES NOT BREAK THE FOLD. §6.0 requires every finding to be
+# recorded verbatim in a note, INCLUDING during the frozen window; if a note counted as an
+# actionable event the floor's own bookkeeping would make every part unclosable.
+# HONESTY NOTE: this is a STREAM-COMPOSITION guard, not a fold-logic one. Measured 2026-08-14: a
+# `note` does not enter the gen-sliced stream the fold reads AT ALL, so today this cannot fail for
+# fold reasons. It is kept deliberately, because the thing it pins is exactly what would silently
+# break the floor: if notes ever became stream-visible, every part would stop closing. Mutating the
+# fold's `act` match to cover every stream line does turn it red.
+SID="${UNIQ}-notefold"
+R=$(fresh_root notefold)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — notefold" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=1 findings=0" "m1-review-r1-d1" >/dev/null 2>&1
+bash "$MWSH" note "$SID" "$R" "round 2 findings: 3 NON-BLOCKING (style, naming, a stale comment) — recorded, not fixed in-part per 6.2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=2 findings=0" "m1-review-r2-d2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=2 status=n/a reason=not-ui" "m1-live-verify-r2" >/dev/null 2>&1
+NF=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+if printf '%s' "$NF" | grep -q 'log ok'; then
+  pass "a note between dry=1 and dry=2 does NOT break the fold"
+else fail "note between dry=1/dry=2 breaks the fold" "out='$NF'"; fi
+
+# 49c — REGRESSION PIN (the revision-3 bug): a `phase=fix` AFTER the dry=1 bank must be REFUSED.
+# Plan revision 3 would have allowed fixing non-blocking findings inside the frozen window, which
+# blinds the live-verify freshness guard: the tree moves after the evidence was taken.
+SID="${UNIQ}-frozenwin"
+R=$(fresh_root frozenwin)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — frozenwin" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=1 findings=0" "m1-review-r1-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=fix round=1 dry=1 findings=0" "m1-fix-r1-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=2 findings=0" "m1-review-r2-d2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=2 status=n/a reason=not-ui" "m1-live-verify-r2" >/dev/null 2>&1
+FW=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+if printf '%s' "$FW" | grep -qE 'convergence-not-machine-clean|live-verify-stale'; then
+  pass "a phase=fix inside the frozen window (after dry=1) REFUSES PART-DONE"
+else fail "frozen window not enforced" "out='$FW'"; fi
+
+# 49d — findings>0 ON THE LAST ROUND IS REFUSED. The floor changes WHAT counts as a finding, never
+# whether a round with findings can converge. A round line still claiming dry=2 with findings>0 is
+# a contradiction and must never close a part.
+SID="${UNIQ}-lastfind"
+R=$(fresh_root lastfind)
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — lastfind" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=1 dry=1 findings=0" "m1-review-r1-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=2 findings=2" "m1-review-r2-d2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=2 status=n/a reason=not-ui" "m1-live-verify-r2" >/dev/null 2>&1
+LF=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+# HONESTY NOTE: two independent guards each refuse this on their own (`rf[b]==0` and
+# `!(act>rl[a])`), so no SINGLE mutation turns it red - only removing BOTH does. That redundancy is
+# real defence in depth, not a dead test; the double-mutant was run and this assertion goes red.
+if printf '%s' "$LF" | grep -qE 'convergence-not-machine-clean|live-verify-stale'; then
+  pass "findings>0 on the last (dry=2) round REFUSES PART-DONE"
+else fail "findings>0 on last round not refused" "out='$LF'"; fi
+
 # ---- live-verify evidence path-stat (codex-review 2026-07-12) --------------------------------
 # A filesystem-PATH evidence token is stat-verified: a non-existent path is REFUSED; an existing
 # path is accepted; a non-path token (od:/sha:/URL) stays recorded-not-verified (accepted).

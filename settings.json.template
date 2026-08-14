@@ -127,6 +127,11 @@
             "type": "command",
             "command": "$HOME/.claude-dotfiles/scripts/hooks/dotfiles-sync-pause-notice.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude-dotfiles/scripts/hooks/mission-pending-reask.sh",
+            "timeout": 5
           }
         ]
       }

@@ -157,9 +157,18 @@ if [ -n "$ML_CUR" ]; then
   if [ "$ML_CUR" = "$ML_PREV" ]; then
     ML_N=$(cat "$STATE_DIR/$SID.stall" 2>/dev/null); ML_N=$((${ML_N:-0} + 1))
     printf '%s' "$ML_N" > "$STATE_DIR/$SID.stall" 2>/dev/null
-    [ "$ML_N" -ge "${MISSION_LIVENESS_STALL_TICKS:-12}" ] && ml_log "sid=$SID STALL ticks=$ML_N cursor=$ML_CUR"
+    if [ "$ML_N" -ge "${MISSION_LIVENESS_STALL_TICKS:-12}" ]; then
+      ml_log "sid=$SID STALL ticks=$ML_N cursor=$ML_CUR"
+      # Drop a marker the CONDUCTOR reads at §12.1, because the log alone reaches nobody. A stalled
+      # mission books a wake every tick, so this file's own hook exits "yes" at step 5 and stays
+      # silent forever - exactly the 11-hour shape. A Stop hook cannot reach the model without
+      # exit 2, and blocking would be wrong for an advisory, so the signal is handed over as state:
+      # §12.1 step 4b reads it, fires PushNotification, and deletes it (re-armed while still stalled).
+      printf 'ticks=%s cursor=%s\n' "$ML_N" "$ML_CUR" > "$STATE_DIR/$SID.stall-alert" 2>/dev/null
+    fi
   else
     printf '0' > "$STATE_DIR/$SID.stall" 2>/dev/null
+    rm -f "$STATE_DIR/$SID.stall-alert" 2>/dev/null
   fi
   printf '%s' "$ML_CUR" > "$ML_CURFILE" 2>/dev/null
 fi

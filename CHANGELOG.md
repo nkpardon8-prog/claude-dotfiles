@@ -2,6 +2,96 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-14 - /mission can now END a part, and its recorded questions actually get asked
+
+Two overnight autonomous runs made deep but extremely narrow progress at very high cost - one burned
+an entire weekly quota to reach part 2 of 9. Slice 0 (2026-08-13) fixed the freezing. This is the rest:
+nothing in the playbook could ever decide a part was DONE ENOUGH, and nothing ever brought a recorded
+question back to the human.
+
+**The severity floor (§6.0).** BLOCKING is now defined by ENUMERATION - wrong behaviour reaching a
+user or a record, data loss, a security or tenant-isolation breach, PHI exposure, a broken operator
+path, or a test that can pass while the thing it guards is broken. Everything else is non-blocking.
+The obvious tie-break ("if unsure, call it BLOCKING") was tried and abandoned: with seven reviewer
+lanes that carry no severity vocabulary, nearly everything reads as unsure, so everything becomes
+blocking and the exit stays exactly as unreachable as before.
+
+The load-bearing sentence is one line: **`findings=` on a round line counts BLOCKING findings only.**
+That needs no new machinery - the PART-DONE fold in `mission-write.sh` already keys on `findings=0`,
+so a round that produced only non-blocking findings banks as dry. Every finding is still recorded
+verbatim with its label; the floor changes what GATES a round, never what is written down.
+
+**The cap now does something (§6.1).** "Hard cap 6" was stated three times with no behaviour attached,
+which left `dry=2` as the only real exit. It is now **at most 6 rounds that PRODUCE blocking findings,
+with the `dry=1 -> dry=2` pair exempt.** Both clauses matter: counting all rounds against 6 makes a
+part whose first clean round is round 6 permanently unclosable, because the fold needs two ADJACENT
+clean rounds and the cap would forbid the round 7 that finishes it. Hitting the cap PARKS the part
+(`pending-stop` -> PushNotification -> `FAIL reason=cap-exhausted-blocking` -> `PART-RETIRED` ->
+advance) and never STOPs the mission, which would freeze every part still owed. The `FAIL` carries a
+REQUIRED `disposition=reverted|isolated|left-with-recorded-risk` for the defective code left in the
+tree, because later parts build on that tree.
+
+**The per-part spend brake (§12.1 step 4b).** 25 wake ticks OR 90 minutes since `PART-START`,
+whichever trips first, takes the same park path under `reason=part-over-budget` - a second reason
+slug, not a second mechanism. Both thresholds are named settings with defaults. This is the only rule
+in the playbook that would have interrupted the eleven-hour single-part run; the review cap would not
+have, because that run reached only three rounds.
+
+**The frozen window (§6.2).** Non-blocking findings are never fixed in-part, and once `dry=1` banks,
+no code change lands until `dry=2` + live-verify + PART-DONE have. Already machine-enforced - the fold
+refuses `convergence-not-machine-clean` on any actionable event ordered after the dry=1 line - and now
+pinned by four fixtures so a change to the fold cannot silently make the floor a rubber stamp.
+
+**Alerting.** `PushNotification` on every path that ends or parks work: all four §10 STOP-LOUD paths,
+both parks, and the stall detector. An autonomous run exists because the user is asleep; a stop that
+only writes to a terminal nobody is watching is a mission that is silently dead until morning. The
+`panel-unavailable-3x` message must distinguish quota exhaustion from a Codex outage - one run died of
+the former and read as the latter, and they need opposite responses.
+
+**The stall detector now reaches someone.** `mission-liveness.sh` has always sampled the cursor every
+armed turn end, but a stalled mission books a wake every tick, so the hook's own check passes and it
+stayed silent forever - the exact 11-hour shape. It now drops a `<sid>.stall-alert` marker; §12.1
+step 4a reads it, alerts, and clears it. A `Stop` hook cannot reach the model without BLOCKING, which
+is wrong for an advisory, so the hand-off is state.
+
+**`mission-pending-reask.sh` (new `UserPromptSubmit` hook).** The away rule is "write the question
+down and move on", but nothing implemented the other half. A question recorded at 3am was never
+actually asked: the next morning's turn resumed mid-build and never opened the zone. This re-asks on
+the one event that means a human is present. Resolves STRICTLY by sid (never cwd, never mtime -
+siblings share repos), only for an `active`/`unknown` lifecycle, labels each question BLOCKING vs
+non-blocking by cross-referencing the `AWAIT kind=human` marker (the zone line shape alone cannot tell
+`pending` from `pending-stop`), frames injected text as untrusted recorded data with a byte cap, ships
+the copy-runnable `resolve` command, and throttles to once per session per pd-id-set so an unanswered
+question does not nag every prompt while a NEW one fires at once. Silent when there is nothing, and
+ALWAYS exits 0 - a hook that can swallow a prompt is worse than a missed question.
+
+**Fan-out is now a mechanism (§6.4)** - one assistant message, multiple Agent calls - because
+"parallel, independent" was already written down and a run serialized the panel anyway.
+
+**The contract core stayed at exactly 19500 chars** (its injection budget). Every addition was paid
+for by compressing existing core text, including deleting a duplicated verb list that restated the §I
+signature table - so the two can no longer drift.
+
+New: `test-mission-doc-drift.sh` (16 checks). Its load-bearing assertions are DOC <-> CODE: where
+mission.md claims `mission-write.sh` refuses something, the test greps the actual guard out of
+`mission-write.sh`, so prose that quietly becomes a wish goes red. Also `test-mission-pending-reask.sh`
+(21 checks, every silence case paired with a firing control) and four severity-floor fixtures in
+`test-mission-bridge.sh` (79 -> 83).
+
+**Proof, and what it did NOT prove.** Every new suite was mutation-tested rather than merely run
+green. All six re-ask mutants (throttle, lifecycle gate, byte cap, blocking cross-reference, sid
+isolation, untrusted framing) were each caught by exactly their intended assertion and nothing else.
+All five doc-drift mutants were caught - one only after fixing the counter, which used `grep -c`
+(matching LINES) and so let an inline duplicate of the BLOCKING rubric pass. Two findings recorded in
+the test file itself rather than papered over: fixture 49b (a `note` between `dry=1` and `dry=2`) is a
+STREAM-COMPOSITION guard, not a fold-logic one - a `note` does not enter the stream the fold reads at
+all, so it cannot fail for fold reasons today; and fixture 49d is defended by two independent guards,
+so only a DOUBLE mutant turns it red (it was run, and it does). Neither is a dead test, but neither
+proves what its name alone suggests.
+
+Not proven by any of this: none of these rules has yet run in a real autonomous overnight mission.
+The first genuine run is the actual test.
+
 ## 2026-08-13 (later) - The prod gate stopped confusing a sentence about a deploy with a deploy
 
 `prod-coordination-gate.py` and `prod-ledger.py` classify a Bash command by matching patterns against

@@ -29,9 +29,9 @@ A `/mission` turn MUST NOT end unless ONE holds: (a) it JUST called `ScheduleWak
 prompt=SELF_CONTAINED_TICK, reason)` as its LAST such call AND it SUCCEEDED (only the
 tick-lock release may follow), or (b) it is at a genuine stop (§9 contact / §12.3 stop, incl.
 `AWAIT kind=human`). **A scheduled wake is the ONLY continuation owner** - a tracked
-`run_in_background` job is NOT sufficient (its wake can be lost); a turn yielding with a job pending
-STILL schedules a fallback heartbeat. Any other turn-end is a NAKED YIELD that freezes the mission -
-NOTHING retries it (§12.5). A `ScheduleWakeup` that FAILS is not (a): retry once, then STOP LOUD via
+`run_in_background` job is NOT (its wake can be lost); a turn yielding with a job pending STILL
+schedules a fallback heartbeat. Any other turn-end is a NAKED YIELD that freezes the mission -
+NOTHING retries it (§12.5). A FAILED `ScheduleWakeup` is not (a): retry once, then STOP LOUD via
 `pending-stop`. **§12.1 step 7 is the MANDATORY EXIT GATE - no path returns except through it.** A commit /
 finished unit / report / peer reply is NOT a stop (§12.3), and
 **announcing an action never substitutes for taking it**. The wake routine - `mkdir` tick-lock + §8
@@ -101,47 +101,45 @@ prefix, no `~` (the permission allowlist byte-matches this exact prefix):
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]
 ```
 
-Verbs: `create | log | note | challenge | pending | pending-stop | resolve | rebaseline | render-banner | await`
-(the `await` verb opens/updates the durable AWAIT barrier marker - §7/§12) plus `timing-resume |
-timing-contact | timing-close | archive-close` and the read-only bare-token verbs `parse-codex-header |
-void-count | await-state | cursor-hash` (the wake routine's inputs - §12). **Codex NEVER writes the
-bridge** - every Codex run is `-s read-only`.
+Every verb + its full signature: the **Verb signatures** table at the end of this core (§I) - the
+single listing, so the two can never drift. **Codex NEVER writes the bridge** - every Codex run is
+`-s read-only`.
 
-The script ALWAYS exits 0: parse its single stdout status line. `ok` is the ONLY success token.
+The script ALWAYS exits 0: parse its one stdout status line. `ok` is the ONLY success token.
 The `log` verb emits exactly four leading tokens and each demands a reaction:
 - `ok` -> appended or idempotent no-op -> proceed.
 - `COLLISION` -> idtag exists with DIFFERENT content -> STOP, re-derive gen/round numbering,
   reconcile against the recovered LOG; never assume the line was banked.
-- `REROUTED-TO-NOTES` -> free-text entry exceeded 480B on-disk -> rewrite TERSE, re-log to `ok`.
+- `REROUTED-TO-NOTES` -> free-text entry over 480B on-disk -> rewrite TERSE, re-log to `ok`.
 - `FAILED rc=N` -> rc=1 REFUSED (guard/grammar - fix the shape); rc=2 corrupt bridge -> §10
-  STOP-LOUD immediately; rc=3 lock busy -> retry ~5x then FAIL-line it; **rc=4 on a PART-DONE or
+  STOP-LOUD immediately; rc=3 lock busy -> retry ~5x then FAIL-line; **rc=4 on a PART-DONE or
   live-verify write BLOCKS retirement/advance** (do the named remediation); rc=5 wrong-gen idtag
   prefix (re-derive the gen); other rcs -> log + proceed, recurring ones feed the 5-FAIL breaker.
 **`pending-stop` EXCEPTION to "other rcs -> log+proceed": ONLY `ok id=pd:<seq>-<slug>` proceeds; ANY
 non-zero rc = the STOP did NOT open -> do NOT proceed/auto-advance (S1 naked-yield).**
 `void-count` stdout is a bare integer; **`-1` is the ERROR SENTINEL of a refused gen-sliced read
--> STOP** (never treat as count 0, never advance).
+-> STOP** (never count 0, never advance).
 
 ### E. LOG-line grammar (§7 - resume greps read back EXACTLY these shapes)
 
-On-disk line = `<idtag>\t<entry>`. Keep round lines TERSE: the 480B reroute budget is measured
-over idtag + TAB + entry + newline; a rerouted line lands in DURABLE NOTES where resume cannot
+On-disk line = `<idtag>\t<entry>`. Keep round lines TERSE: the 480B reroute budget covers
+idtag + TAB + entry + newline, and a rerouted line lands in DURABLE NOTES where resume cannot
 grep it. Verbose findings go in a separate `note`, written BEFORE the terse round line.
 
 - Round: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K>
-  dry=<D>[ findings=<COUNT>]`, idtag `m<N>-<phase>-r<K>-d<D>` (d<D> REQUIRED). `findings=` is a
-  bare integer COUNT, MANDATORY on `phase=review`/`phase=fix` rounds; `dry=` is the running
+  dry=<D>[ findings=<COUNT>]`, idtag `m<N>-<phase>-r<K>-d<D>` (d<D> REQUIRED). `findings=` is a bare
+  integer COUNT, MANDATORY on `phase=review`/`phase=fix` rounds; `dry=` is the running
   consecutive-dry count (0-2) after the round. `phase=review` = findings logged, fixes NOT yet
   applied; advance the SAME round to `phase=fix` when fixing.
 - VOID: `[mission] VOID part=<N> phase=review round=<K> reason=<slug>`, idtag
   `m<N>-void-r<K>-<runid6>h<sha8|nofile>`.
 - FAIL: `[mission] FAIL part=<N> phase=<P> reason=<slug> attempt=<A>`, idtag
-  `m<N>-fail-<reason>-<attempt>` (attempt REQUIRED - a reason-only idtag would dedup-collapse the
+  `m<N>-fail-<reason>-<attempt>` (attempt REQUIRED - a reason-only idtag dedup-collapses the
   5-strike tally).
 - live-verify: `[mission] live-verify part=<N> round=<K> status=ok evidence=<token>` or
   `... status=n/a reason=<slug>`, idtag `m<N>-live-verify-r<K>`.
-- SNAPSHOT: `[mission] SNAPSHOT part=<N> kind=converged tree=<h16> ...` - auto-stamped by the lib
-  when the dry=2 round banks (feeds the stale-claim guard).
+- SNAPSHOT: `[mission] SNAPSHOT part=<N> kind=converged tree=<h16> ...` - auto-stamped by the lib at
+  the dry=2 round (feeds the stale-claim guard).
 - Lifecycle: `[mission] PART-START part=<N> name=<slug>` (idtag `m<N>-part-start`);
   `[mission] PART-DONE part=<N> (converged)` (`m<N>-part-done`);
   `[mission] PART-RETIRED part=<N>` (`m<N>-part-retired`);
@@ -149,9 +147,9 @@ grep it. Verbose findings go in a separate `note`, written BEFORE the terse roun
   `[mission] criticer part=<N> findings=<K> <headline>` (`m<N>-criticer-r<round>`);
   `[mission] MISSION-CLEARED status=<achieved|could-not|cleared> reason=<slug>` (EMPTY idtag);
   `[mission] MISSION-REBASELINED status=active gen=<G> ...` (lib-written, EMPTY idtag).
-- Gen scoping: gen-1 idtags stay unprefixed; gen>=2 idtags are auto-prefixed `g<G>-` by the lib -
-  you always pass the bare `m<N>-...` form (a wrong prefix is REFUSED rc=5). Convergence, VOID
-  count and the FAIL tally read only the CURRENT generation slice.
+- Gen scoping: gen-1 idtags stay unprefixed; gen>=2 are auto-prefixed `g<G>-` by the lib - always
+  pass the bare `m<N>-...` form (a wrong prefix is REFUSED rc=5). Convergence, VOID count and the
+  FAIL tally read only the CURRENT generation slice.
 
 Example emission (the exact invocation form):
 
@@ -169,8 +167,8 @@ Never chain reviewers.
    inlined; check the `.status` sidecar) in parallel; reconcile; contradictions -> `pending` +
    `note`, proceed loudly on the more-evidenced branch.
 2. PLAN: `skill: plan` (its built-in Codex pass IS the cross-model lane - do not add a second).
-   REQUIRED before the first implement round: log the test-trust verdict
-   (`test-trust part=<N>=<ok|added|n/a>`); absence on resume = unresolved -> re-assess.
+   REQUIRED before the first implement round: log
+   `test-trust part=<N>=<ok|added|n/a>`; absent on resume = unresolved -> re-assess.
    Surface a one-line criticer headline if `/plan`'s Criticer Notes have findings (advisory,
    never gates).
 3. IMPLEMENT: `skill: implement --no-review <explicit-per-part-plan-path>` - always the explicit
@@ -179,14 +177,13 @@ Never chain reviewers.
    codex-review --effort high` (raise to xhigh only for genuinely critical parts). A round is
    VALID only if EVERY reviewer verdict is present: the report file's Engine header must show
    `Codex-passes: 4/4`, parsed via the `parse-codex-header` verb on `report-final.md` (never grep
-   the body). After `/codex-review` returns you MUST materialize its final output text into
-   `review_output` yourself (Write it to a temp file, read it back); sid/root/N/K/review_output
-   all non-empty before the VOID block runs, or the loop-breaker can never fire (full BINDING
-   CONTRACT: §5). N<4, a dead/empty/timed-out reviewer, or the legacy `Codex unavailable` markers
-   -> the round is **VOID**: log the VOID line (require `ok` before counting), run `void-count`;
-   at 3 consecutive VOIDs log `FAIL ... reason=panel-unavailable-3x` and **STOP LOUD immediately**
-   (never wait for the 5-FAIL tally). `void-count` -1 -> STOP (§10). A VOIDed round is re-run
-   fresh, never banked.
+   the body). After `/codex-review` returns, materialize its final text into
+   `review_output` yourself (Write a temp file, read it back); sid/root/N/K/review_output must ALL
+   be non-empty before the VOID block runs (BINDING CONTRACT: §5). N<4, a dead/empty/timed-out
+   reviewer, or legacy `Codex unavailable` -> round is **VOID**: log the VOID line (require `ok`
+   first), run `void-count`; 3 consecutive VOIDs -> `FAIL ... reason=panel-unavailable-3x` +
+   **STOP LOUD immediately** (never wait for the 5-FAIL tally). `void-count` -1 -> STOP (§10).
+   A VOID is re-run fresh, never banked.
 5. Round write order: verbose per-reviewer findings `note` FIRST, THEN the terse round line
    (resume keys on the round line; the reverse order strands a banked round with no findings).
    Actionable findings -> log `phase=fix` for the SAME round, fix, re-run the barrier as round
@@ -196,7 +193,11 @@ CONVERGENCE rules: stop at **2 consecutive non-void DRY rounds** - "dry" = the i
 reviewers returned zero new actionable findings, logged verbatim.
 An ACTIONABLE round **RESETS dry -> 0** (including an actionable re-run of a VOIDed round - a
 dry=2 streak can never span a code change); a VOID alone never advances dry. Soft targets: plan
-reviews 4-6, codex reviews 3-6; hard cap 6 either way. Convergence is computed ONLY from `phase=review` (or VOID)
+reviews 4-6, codex reviews 3-6. `findings=` on a round line counts BLOCKING findings ONLY (§6.0); non-blocking ones are recorded
+verbatim and NEVER fixed in-part. CAP: <=6 BLOCKING-producing rounds, dry pair EXEMPT; cap hit -> PARK
+the part, never a STOP (§6.1). Once dry=1 banks the window is FROZEN: no code change, no
+phase=fix/implement until dry=2 + live-verify + PART-DONE land (§6.2).
+Convergence is computed ONLY from `phase=review` (or VOID)
 lines - never from fix/plan/implement/research lines.
 
 ### G. PART-DONE gate (§5 tail)
@@ -209,17 +210,17 @@ Immediately after the dry=2 round banks and BEFORE PART-DONE, emit the live-veri
 3. the code-tree fingerprint still matches the converged SNAPSHOT (**tree moved ->
    `convergence-stale`** -> re-run review at the current tree to a fresh dry=1 -> dry=2 pair,
    then re-log PART-DONE).
-Then retire the part plan (idempotent `mv` ready-plans -> done-plans; log `PART-RETIRED` on
-success, a `FAIL ... reason=plan-mv-failed` on failure - never proceed silently), then log
-`PART-START part=<N+1>` and begin the next part's research.
+Then retire the part plan (idempotent `mv` ready-plans -> done-plans; `PART-RETIRED` on success,
+`FAIL ... reason=plan-mv-failed` on failure - never silently), then `PART-START part=<N+1>` and
+begin that part's research.
 
 ### H. The §8 resume read (the SINGLE canonical recovery idiom)
 
 Used by status, resume, and every post-compaction re-entry:
 - `grep -F '[mission] '` over **ALL rotated archives**
-  (`.mission-backups/MISSION.<sid>.log.*.gz|.txt`, concatenated oldest->newest by
-  filename-timestamp sort) **THEN the live `MISSION.<sid>.log`**. `tail -n 40` is BANNED (misses
-  lines past rotation); reading only the newest archive is banned.
+  (`.mission-backups/MISSION.<sid>.log.*.gz|.txt`, oldest->newest by filename-timestamp)
+  **THEN the live `MISSION.<sid>.log`**. `tail -n 40` and newest-archive-only are BANNED (both
+  miss lines past rotation).
 - Derive four values: `cur_part` (last PART-START|PART-DONE part=; empty -> 1); `mission_state`
   (last `MISSION-(CLEARED|REBASELINED)` line - the GLOBAL active-iff gate; transient progress
   lines NEVER gate it); `last_review` (part-scoped last `phase=review` round OR VOID - the ONLY
@@ -228,13 +229,12 @@ Used by status, resume, and every post-compaction re-entry:
 - Active-iff: latest lifecycle = CLEARED -> INACTIVE; latest = REBASELINED status=active ->
   ACTIVE; empty state + PLAN line-1 is a `MISSION MODE:` token -> ACTIVE.
 - Decision table (apply in order; **AWAIT rows FIRST**): `AWAIT kind=human got<need` -> human STOP:
-  op with NON-EMPTY `last_decision` = CONSUME (approve=do the idempotent action, deny=abort;
-  never re-ask); EMPTY = STOP for a user; close under the lock (C6) = DECISION ->
-  `await got=1` -> `resolve`; `AWAIT kind=job
-  got<need` + a tracked job pending -> collect nothing yet but STILL schedule a fallback wake (a
-  pending job NEVER owns continuation); `AWAIT kind=job got<need` + NO tracked job -> replay the
-  missing lane (same attempt) or on timeout/FAIL start attempt A+1; `AWAIT got=need` -> reconcile +
-  bank the single normal successor. Then:
+  NON-EMPTY `last_decision` = CONSUME (approve=run the idempotent action, deny=abort; never
+  re-ask); EMPTY = STOP for a user; close under the lock (C6) = DECISION -> `await got=1` ->
+  `resolve`. `AWAIT kind=job got<need`: tracked job pending -> collect nothing but STILL schedule a
+  fallback wake (a pending job NEVER owns continuation); NO tracked job -> replay the missing lane
+  (same attempt), or on timeout/FAIL start attempt A+1. `AWAIT got=need` -> reconcile + bank the
+  single successor. Then:
   latest progress `PART-DONE`/`PART-RETIRED` -> part COMPLETE
   (re-attempt retirement if PART-RETIRED absent, then next part; never consult stale round
   lines); `PART-START` with no round yet -> begin at research; last round `phase=fix` -> finish
@@ -251,14 +251,16 @@ Used by status, resume, and every post-compaction re-entry:
 - STOP LOUD on: **5 FAILs for the same part+phase** (gen-sliced tally);
   **panel-unavailable-3x the moment it is logged**; **void-count -1**; **a corrupt/unreadable
   bridge** (any `FAILED rc=2`, or a failed `mission_verify`) - surface `.mission-backups/`.
-- Away default (autonomous runs): never block on a modal; log assumptions + `pending` and proceed
-  loudly. Credential / destructive / external-side-effect skills require a human PENDING decision
+- Blocked-on-human (autonomous runs) - SPLIT by whether the answer GATES the work: **no gate** ->
+  `pending` + loud assumption, proceed. **Gates this item** -> `pending`, MOVE to work that does not
+  depend on it, re-ask on return. **Gates all remaining work** -> `pending-stop` + PushNotification,
+  park. Never guess past a gate; never idle behind one. Credential / destructive / external-side-effect skills require a human PENDING decision
   - never auto-run them.
 - Natural close order: `timing-close` -> `MISSION-CLEARED status=achieved|could-not` (EMPTY
   idtag) -> `archive-close` LAST.
 
 **Verb signatures (all `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]`):**
-`create "<seed>"` - seed PLAN once (idempotent) | `log "<entry>" "<idtag>"` | `await "<fields>"` (barrier open/close - §7/§12; NEVER via `log`) | `note "<text>"` | `challenge "<text>"` | `pending "<slug>" "<q>"` (non-blocking) | `pending-stop …` (BLOCKING: opens the human STOP + records pd, ECHOES `id=pd:<seq>-<slug>`; CAPTURE it; op=id minus `pd:`) | `resolve "<full pd:id>"` | `rebaseline "<new-plan>"` (ONLY PLAN rewrite path) | `render-banner` | `timing-resume` / `timing-contact` / `timing-close` | `archive-close`. FOUR read-only bare-token argv EXCEPTIONS (no status line): `parse-codex-header <report-file>`; `void-count <sid> <root> <part-N> <round-K>` (all four REQUIRED - part then round; a 2-arg call returns the `-1` STOP sentinel that halts a healthy mission); `await-state <sid> <root>` (`none`|`corrupt`|`await …`); `cursor-hash <sid> <root>` (§12 change-detect). Corrupt-bridge (rc=2) remediation and full verb detail: below the marker (SS7, SS10).
+`create "<seed>"` - seed PLAN once (idempotent) | `log "<entry>" "<idtag>"` | `await "<fields>"` (barrier open/close - §7/§12; NEVER via `log`) | `note "<text>"` | `challenge "<text>"` | `pending "<slug>" "<q>"` (non-blocking) | `pending-stop …` (BLOCKING: opens the human STOP + records pd, ECHOES `id=pd:<seq>-<slug>`; CAPTURE it; op=id minus `pd:`) | `resolve "<full pd:id>"` | `rebaseline "<new-plan>"` (ONLY PLAN rewrite path) | `render-banner` | `timing-resume` / `timing-contact` / `timing-close` | `archive-close`. FOUR read-only bare-token argv EXCEPTIONS (no status line): `parse-codex-header <report-file>`; `void-count <sid> <root> <part-N> <round-K>` (all 4 REQUIRED, part then round; a 2-arg call returns the `-1` STOP sentinel); `await-state <sid> <root>` (`none`|`corrupt`|`await …`); `cursor-hash <sid> <root>` (§12 change-detect). Corrupt-bridge (rc=2) remediation + full verb detail: below (SS7, SS10).
 
 <!-- CONTRACT-CORE-END -->
 
@@ -1556,6 +1558,20 @@ re-enter), and never change the active/inactive decision.
 
 ## 10. Guardrails — stop LOUD
 
+**ALERT ON EVERY PATH THAT ENDS OR PARKS WORK — `PushNotification`, immediately, before you stop.**
+An autonomous run exists because the user is asleep or away; a stop that only writes to a terminal
+nobody is watching converts "the mission needs you" into "the mission is silently dead until morning",
+which is the failure this whole playbook is built to avoid. Fire one on **all four §10 paths below**
+(5-FAIL, `panel-unavailable-3x`, `void-count -1`, corrupt bridge), on the **§6.1 cap-exhausted park**,
+on the **§12.1 step 4b `part-over-budget` park**, and on the **§12 stall detector**. A park still
+alerts even though the mission continues — the user needs to know a part was set aside with a
+disposition, not discover it later in the log.
+
+Say which trigger fired, which part, and what is owed. For `panel-unavailable-3x` the message MUST
+**distinguish quota exhaustion from a Codex outage** — one overnight run died of the former and read
+as the latter, and they need opposite responses (wait vs. re-run). If `PushNotification` itself fails,
+that is not a reason to skip the stop: stop anyway and surface the notify failure too.
+
 **Every STOP-LOUD path below is a WAKE stop condition (§12.3): the wake RETURNS WITHOUT rescheduling** —
 release the tick lock, surface, and stop. A STOP-LOUD must NEVER schedule the next self-wake (that would
 loop a wedged mission forever). For a **mandatory human decision** (the §9 credential / destructive /
@@ -1781,6 +1797,50 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    still-running job from a lost wake, so a fresh barrier just reschedules and waits (D11). On a genuine
    timeout, record a timeout/`FAIL` and open attempt A+1 (its `attempt=A` is in the token). `await
    kind=job ready=1` → reconcile + bank the single successor.
+4a. **READ THE STALL ALERT (one file, then delete it).** `mission-liveness.sh` samples the cursor on
+   every armed turn end and, after `MISSION_LIVENESS_STALL_TICKS` (default 12) ticks with the state
+   stream unchanged, writes `~/.claude/progress/mission-liveness/<sid>.stall-alert`. It cannot tell
+   you directly — a stalled mission books a wake every tick, so the hook's own check passes and it
+   stays silent, and a `Stop` hook can only reach the model by BLOCKING, which is wrong for an
+   advisory. So the hand-off is state:
+   ```bash
+   ML_STALL="$HOME/.claude/progress/mission-liveness/<sid>.stall-alert"
+   [ -f "$ML_STALL" ] && { cat "$ML_STALL"; rm -f "$ML_STALL"; }   # alert, then clear
+   ```
+   Present ⇒ **fire `PushNotification`** naming the part and the tick count, record a `challenge`, and
+   re-examine what this part is actually doing before dispatching again. Booking wakes forever while
+   the tree never moves is the failure shape that produced one part out of eight in eleven hours. It
+   is ADVISORY — it never blocks and never parks the part on its own; the §12.1 step 4b brake below is
+   what actually ends an over-budget part.
+
+4b. **PER-PART SPEND BRAKE — evaluated HERE, before any dispatch.** One part must not be allowed to
+   eat the whole night. This is the ONLY rule in this playbook that would have interrupted the
+   eleven-hour single-part run that motivated it; the review-round cap (§6.1) would not have, because
+   that run reached only three rounds.
+
+   Both thresholds are **named settings carrying defaults**, not constants — one night of evidence
+   should be enough to tune them without editing prose:
+
+   | Setting | Default | Source |
+   |---|---|---|
+   | `MISSION_PART_MAX_TICKS` | `25` | wake ticks since this part's `PART-START` (count them in the log) |
+   | `MISSION_PART_MAX_MINUTES` | `90` | wall-clock since the `PART-START` line's timestamp |
+
+   ```
+   part_ticks   = wake ticks since this part's PART-START
+   part_elapsed = wall-clock since this part's PART-START
+
+     part_ticks >= MISSION_PART_MAX_TICKS  OR  part_elapsed >= MISSION_PART_MAX_MINUTES
+       -> the part is OVER BUDGET. Take the §6.1 cap-exhausted step-aside path VERBATIM:
+          pending-stop -> PushNotification -> FAIL ... reason=part-over-budget
+          with the same REQUIRED disposition= field -> PART-RETIRED part=N -> PART-START part=N+1
+   ```
+
+   **A second reason slug, not a second mechanism** — `reason=part-over-budget` re-uses the
+   cap-exhausted park exactly, so there is one park path to reason about and one to test. Whichever
+   threshold trips first wins; do not wait for both. Like the cap, this PARKS the part and advances
+   the mission; it is never a STOP-LOUD (that would freeze every part still owed).
+
 5. **Immediately before dispatching/banking, RECOMPUTE the cursor.** If it changed, another wake already
    advanced the mission — DISCARD this decision, but do NOT yield: the mission still needs a continuation
    owner. Release the lock and **RE-ENTER the routine from step 1** (re-acquire, re-read the now-advanced
