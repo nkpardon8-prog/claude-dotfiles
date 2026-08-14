@@ -109,6 +109,14 @@ exact block impossible. Several `human-initiated-turn action=silent` entries in 
 confirm the turn-origin check does not fire on a human conversing. `mission-pending-reask.sh` printed
 that window's 18 open PENDING DECISIONS on prompt submit, and its throttle marker exists on disk.
 
+**Correction, from the same evidence:** the notice sent to the other windows said a session that
+had not restarted would not have loaded the new `UserPromptSubmit` hook. That was WRONG. Two windows
+predating the change reported it firing without any restart and without pulling the repo, so Claude
+Code re-reads `~/.claude/settings.json` hooks for RUNNING sessions rather than binding them once at
+session start. Worth knowing in both directions: a hook edit reaches live windows immediately, which
+is convenient for a fix and a hazard for a half-written one. Also observed: a cross-session peer
+message counts as a prompt submit, so it can trigger the re-ask.
+
 Still unproven: the severity floor, the cap-park and the spend brake are conducting rules, not hooks -
 nothing has yet driven a part to a cap or a budget park in a real run.
 
