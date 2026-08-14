@@ -121,7 +121,11 @@ esac
 
 # ── ASSERTION 5: the bridge was NOT touched (absolute half of the rule) ─────────────────────────
 AFTER=$(cd "$WT_ABS" && git status --porcelain -z 2>/dev/null | tr '\0' '\n')
-if printf '%s\n' "$AFTER" | grep -qE '(^|/)MISSION\.[^/]*\.md$|(^| )\.mission-backups/|(^|/)MISSION\.[^/]*\.log'; then
+# NOTE the leading status field: `git status --porcelain` lines are `?? path` / ` M path` / `A  path`,
+# so a path-anchored `^MISSION\.` never matches. Anchor on start-OR-space-OR-slash instead. The first
+# version of this check anchored on `^`, silently matched nothing, and let a forged MISSION.*.md
+# through - caught by fixture 8, which is exactly why that fixture exists.
+if printf '%s\n' "$AFTER" | grep -qE '(^|[[:space:]]|/)MISSION\.[^[:space:]/]*\.(md|log)|(^|[[:space:]]|/)\.mission-backups/'; then
   echo "codex-build-chunk: REFUSED — Codex touched mission bridge artifacts. Revert this worktree before doing anything else." >&2
   _status refused-touched-bridge
   exit 4
