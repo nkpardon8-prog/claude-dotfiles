@@ -930,6 +930,13 @@ what makes a part closable, and it needs no new machinery: the PART-DONE fold in
 banks as dry. `criticer`'s own `findings=` keeps its **raw** count — the floor is scoped to the round
 line and nowhere else.
 
+**If you are mid-part and already banked rounds with RAW counts** (the pre-floor habit), your
+PART-DONE will be REFUSED `convergence-not-machine-clean` — observed in a live mission the day this
+shipped, and it is the guard working, not a bug. The fix is forward-only: **re-run the barrier as
+round K+1 and log the blocking-only count.** Do NOT rewrite or re-log a banked round to "correct" it —
+a same-idtag write with different content is a `COLLISION` by design, and a converged streak must
+never be edited into existence after the fact.
+
 **Lane assignment.** The lane that found it assigns the class. The Claude reviewer lane's prompt
 requires a class. `codex-review` returns findings **unclassified** (its output shape is owned by that
 skill, not by this one), so **the conductor classifies that lane by the rubric above and records in
