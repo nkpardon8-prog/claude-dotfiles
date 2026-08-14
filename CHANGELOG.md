@@ -2,6 +2,45 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-14 (later) - Codex may finally write code, behind the guard that makes that safe
+
+The last item of the tuning plan, deliberately sequenced last. `/mission` bundled two unrelated
+things into "Codex is ALWAYS read-only". They are now split:
+
+- **Codex NEVER writes the mission bridge** - absolute, unchanged. A second bridge writer is the one
+  thing the artifact set cannot survive.
+- **Codex MAY implement an isolated, mechanical, well-specified chunk** - new, and it closes a
+  contradiction that was already in the file: mission.md ALREADY said "full hand-over to Codex is
+  allowed ONLY for isolated, mechanical, well-specified chunks" and then ended the same sentence with
+  "with Codex run `-s read-only`". A licence that cannot execute is worse than none, because it reads
+  as a capability that is not there.
+
+New `scripts/codex-build-chunk.sh` is the only sanctioned path, and the reason it exists rather than
+a paragraph is this session's own lesson: a rule with no machine is not a rule.
+
+**The load-bearing property is the linked worktree, and it is a sandbox boundary rather than a
+convention.** `-s workspace-write` makes the `-C` directory writable. In a MAIN working tree `.git/`
+is INSIDE that directory and the bridge artifacts sit at the canonical root beside it - so a writable
+Codex pointed at a main tree has both. In a LINKED worktree the real gitdir is
+`<canonical-root>/.git/worktrees/<name>`, OUTSIDE the writable root. The wrapper therefore refuses
+anything that is not a registered linked worktree at its own toplevel, and the absolute half of the
+rule is then enforced by the OS rather than by a sentence in a prompt.
+
+It also refuses a dirty start (which would make the before/after diff a lie in both directions), any
+post-run HEAD / branch-ref / index movement (Codex must edit files only - instructed in the prompt AND
+verified afterwards, because an instruction is not a control), any `MISSION.*` path in the diff, and
+**zero changed files, which is a FAILURE and never an `ok`** - a silent no-op reporting success is how
+a build step gets believed without having built anything. `status=ok` means Codex ran and touched
+nothing forbidden; it is not a verdict that the change is correct. Claude runs the tests before it
+counts, and one worktree per chunk.
+
+`test-codex-build-chunk.sh` (13 checks) drives a stub in place of the `codex` binary, so the
+misbehaviours can be produced on demand - a real Codex cannot be asked to commit on cue. It paid for
+itself on the first run: the bridge-write check was anchored on `^MISSION\.`, which never matches a
+`git status --porcelain` line because of the leading status field, so a forged `MISSION.*.md` passed
+straight through until fixture 8 went red. Two more DOC <-> CODE assertions were added to
+`test-mission-doc-drift.sh` (16 -> 19) so 6.5 cannot outlive the guard it describes.
+
 ## 2026-08-14 - /mission can now END a part, and its recorded questions actually get asked
 
 Two overnight autonomous runs made deep but extremely narrow progress at very high cost - one burned
