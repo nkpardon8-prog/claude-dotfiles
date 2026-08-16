@@ -103,3 +103,12 @@ skills/macmini/client/dist/
 # Codex bridge — generated locally from commands/ and skills/
 codex/generated/
 __pycache__/
+
+# /mission bridge artifacts — per-session working state, never shared config.
+# Added 2026-08-16: a mission was about to be created in THIS repo (the work lives here, not in
+# the app repo), and the auto-sync daemon would have committed + pushed MISSION.<sid>.md and its
+# rotated log archives on its next timer tick.
+MISSION.*.md
+MISSION.*.log
+**/.mission-backups/
+**/.mission-archive/
