@@ -593,7 +593,8 @@ spots. Never chain reviewers "to save work."
 
 ### Phase 1 — RESEARCH (parallel, independent, barrier-then-merge)
 Spawn in parallel, blind to each other:
-- a **Claude explorer subagent** (primary: architecture / scope / risk) — spawned normally (medium);
+- a **Claude explorer subagent** (primary: architecture / scope / risk) — spawned normally; its model
+  and effort come from `agents/codebase-explorer.md`, so pass NO per-call override;
 - a **Codex read-only fact pass** proving deps / build & test commands / runtime. The scope-prove
   prompt carries mission-DERIVED scope (untrusted), so it must **NEVER** be inlined into a double-quoted
   command arg — a `$(...)`/backtick in the derived scope would EXECUTE in your shell before
