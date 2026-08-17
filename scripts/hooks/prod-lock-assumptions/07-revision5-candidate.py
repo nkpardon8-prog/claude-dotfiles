@@ -100,9 +100,20 @@ HOLDOUT = [
     (f"git commit -m \"runbook: '/usr/bin/ssh box {DEPLOY}' is banned\"", 0, 0, "Codex F2"),
 ]
 
+# Variant: does the SAME path-prefix technique that closed the absolute-ssh residual also close
+# `/usr/bin/psql -c` on the NAME branch, and at what false-positive cost? The lead class excludes
+# quote characters, so `rg '/usr/bin/psql -c "x"'` cannot reach it - the same reason branch 4 is safe.
+INTERP_R5P = re.compile(
+    INTERP_R5.pattern.replace(LEAD + r"(?:" + NAMES5 + r")\b",
+                              LEAD + PATHPFX + r"(?:" + NAMES5 + r")\b"),
+    re.IGNORECASE,
+)
+assert INTERP_R5P.pattern != INTERP_R5.pattern, "variant did not apply"
+
 CANDS = [("current (shipped)", m.mk_current),
          ("revision 4 (plan rev 3 as written)", m.probe_form(m.INTERP_R4)),
-         ("revision 5 (plan rev 4, this)", m.probe_form(INTERP_R5))]
+         ("revision 5 (plan rev 4, this)", m.probe_form(INTERP_R5)),
+         ("revision 5p (+ path prefix on the NAME branch)", m.probe_form(INTERP_R5P))]
 
 
 def score(rows, fn):
