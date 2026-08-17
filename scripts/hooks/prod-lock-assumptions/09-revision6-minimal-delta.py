@@ -157,6 +157,20 @@ ROUND5 = [
     (f"rg --engine=auto -e '{DEP}' docs/", 0, 0, "plan-reviewer rg -e"),
     (f"sed -i.bak -e 's/{DEP}/x/' f", 0, 0, "plan-reviewer sed -e"),
 ]
+ROUND6 = [
+    # the env-var-name class: without the (?=[ \t]|$) terminator these were SILENT false negatives
+    (f"GREP=1 psql -c '{ROLE}'", 1, 1, "lane2 env-var NAME is a denied word"),
+    (f"env GREP=1 /usr/bin/psql -c '{ROLE}'", 1, 1, "lane2 env GREP=1 then psql"),
+    (f"RG=1 psql -c '{ROLE}'", 1, 1, "lane2 RG=1 psql"),
+    (f"GREPX=1 psql -c '{ROLE}'", 1, 1, "lane2 control: GREPX not denied"),
+    # the `(` class: quadratic before the SCAN fix, and two false positives
+    (f'(grep -niE "{DEP}|gcloud run services" docs/)', 0, 0, "plan-reviewer subshell grep"),
+    (f'n=$(grep -niE "{DEP}" docs/)', 0, 0, "plan-reviewer VAR=$(grep"),
+    # STILL BROKEN after both round-6 fixes - the reason this part is PARKED, not shipped
+    (f"sudo sed -i -e '1e {DEP}' /etc/hosts", 1, 1, "plan-reviewer sudo sed EXEC channel"),
+    (f"ack --pager='psql -c \"{ROLE}\"' foo", 1, 1, "plan-reviewer ack --pager EXECUTES"),
+    (f"cat <<'SH' |\n{DEP}\nSH\nwc -l", 0, 0, "plan-reviewer heredoc |SH LEMMA COUNTEREXAMPLE"),
+]
 ALL = list(m.CORPUS) + HOLDOUT + ROUND4 + ROUND5
 
 # The two rows this whole part exists for. OBSERVED, not invented.
