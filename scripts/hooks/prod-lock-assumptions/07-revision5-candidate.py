@@ -163,6 +163,29 @@ for name, fn in CANDS[1:]:
         print(f"    REGRESSION [{hook:6}] {why}")
 print()
 
+# ------------------------------------------- do the candidates KEEP the 40 pinned fixtures?
+# 06-fixture-agreement.py measures the files ON DISK and reports the LIVE hooks at 80/80 - that
+# figure describes SHIPPED, since the fixtures pin current behavior. The question that actually
+# matters here is whether a candidate PRESERVES it. Round 3 reported "80/80" for a candidate from
+# an inline scratch script; this is that check, in the repo, over both hooks.
+print("########## PINNED-FIXTURE PRESERVATION (40 cases x 2 hooks) ##########")
+_f = os.path.join(os.path.dirname(D), "test-prod-classifier-fixtures.py")
+_fsrc = open(_f).read()
+_fns = {"__name__": "fix_probe", "__file__": _f}
+exec(compile(_fsrc[:_fsrc.find("\ndef main()")], _f, "exec"), _fns)
+CASES, PRODC = _fns["CASES"], _fns["PROD"]
+
+for name, fn in CANDS:
+    broke = []
+    for cname, cmd, ge, le in CASES:
+        for hookname, ns, exp in (("gate", gate, ge), ("ledger", ledger, le)):
+            if m.classify(cmd, fn, ns) is not (exp == PRODC):
+                broke.append((hookname, cname))
+    print(f"{name}: {len(CASES)*2-len(broke)}/{len(CASES)*2}")
+    for hookname, cname in broke:
+        print(f"    BREAKS [{hookname:6}] {cname}")
+print()
+
 # ------------------------------------------------------------- linear-time budget
 print("########## LINEAR-TIME BUDGET (round-3 ReDoS was 8.06s at 23 tokens) ##########")
 print(f"{'tokens':>7} {'rev4':>12} {'rev5':>12}")
