@@ -278,6 +278,30 @@ _mw_validate_log() {
       _en=$(_mw_efield "$_vl_entry" part); _in=$(printf '%s' "$_vl_bare" | sed -n 's/^m\([0-9]*\)-fail-.*/\1/p')
       [ "$_en" = "$_in" ] || _mw_emit_refuse log 1 "REFUSED: idtag-entry-field-mismatch (fail)"
       ;;
+    "REVIEW-EVIDENCE "*)
+      # Binds a CLEAN review round to the report that actually produced it (2026-08-17, item 7).
+      # THE HOLE THIS CLOSES: _mw_partdone_check gates on ARITHMETIC over round lines the agent
+      # writes itself — two adjacent findings=0 dry=1/dry=2 lines. An agent that ran 3 of 9 lanes,
+      # or ran NO review at all, writes a line indistinguishable from a full panel. The Engine-header
+      # VOID (added earlier today) catches a lens that DIED mid-review; it cannot catch a review that
+      # never ran, because a review that never ran produces no report to parse. Owner ruling:
+      # "we cannot move on without reviewing."
+      # Same honesty-scoping as live-verify below: the report PATH is the one thing we can check
+      # mechanically, so we stat it — a missing path is fixture-theater and is REFUSED.
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] REVIEW-EVIDENCE part=[0-9]+ round=[0-9]+ codex=[0-9]+/4 claude=[0-9]+/3 report=[^ ]+$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-review-evidence-shape"
+      printf '%s' "$_vl_bare" | grep -qE '^m[0-9]+-review-evidence-r[0-9]+$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-review-evidence-idtag"
+      _en=$(_mw_efield "$_vl_entry" part); _er=$(_mw_efield "$_vl_entry" round)
+      _in=$(printf '%s' "$_vl_bare" | sed -n 's/^m\([0-9]*\)-review-evidence-.*/\1/p')
+      _ir=$(printf '%s' "$_vl_bare" | sed -n 's/^m[0-9]*-review-evidence-r\([0-9]*\)$/\1/p')
+      { [ "$_en" = "$_in" ] && [ "$_er" = "$_ir" ]; } \
+        || _mw_emit_refuse log 1 "REFUSED: idtag-entry-field-mismatch (review-evidence)"
+      _rep=$(printf '%s' "$_vl_entry" | sed -n 's/.* report=\([^ ]*\).*/\1/p')
+      case "$_rep" in
+        /*) [ -e "$_rep" ] || _mw_emit_refuse log 1 "REFUSED: review-evidence-report-missing ($_rep)" ;;
+      esac
+      ;;
     "live-verify "*)
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] live-verify part=[0-9]+ round=[0-9]+ status=(ok evidence=[^ ]+|n/a reason=[a-z0-9-]+)$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-live-verify-shape"
