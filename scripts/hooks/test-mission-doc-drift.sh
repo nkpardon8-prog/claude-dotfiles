@@ -16,7 +16,12 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DOC="${1:-$HOME/.claude-dotfiles/commands/mission.md}"
+# DOC defaults from $HERE, not $HOME (2026-08-17). CI invokes every harness as
+# `bash "$h" </dev/null` with NO arguments, so the DEFAULT is the only path that matters
+# there; the old $HOME form made this harness exit 2 ("FATAL: cannot read ...") on any
+# checkout not living at ~/.claude-dotfiles. commands/ is two levels up from scripts/hooks/.
+# An explicit $1 still wins, so callers that already pass a path are unaffected.
+DOC="${1:-$HERE/../../commands/mission.md}"
 MW="${2:-$HERE/mission-write.sh}"
 
 PASS=0
