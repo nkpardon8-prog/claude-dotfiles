@@ -165,16 +165,32 @@ def errset(fn, rows=None):
     return out
 
 
+# A detection this change KNOWINGLY gives up, tied to the open decision that owns it. Declaring it
+# here is the point: the gate must not pass silently over a real loss, and must not fail opaquely
+# either. Anything NOT in this set is an undeclared regression and fails the run.
+ACCEPTED_LOSSES = {
+    "plan-reviewer GNU sed e EXECUTES [pd:7 accepted loss]":
+        "pd:7-sed-deny-tradeoff - denying `sed` fixes the ubiquitous `sed -e 's/x/y/'` false "
+        "positive (4 checks) but gives up GNU sed's exotic executing form `sed -e '1e <cmd>'`. "
+        "Default taken pending a human answer; reversing it is one name in DENY.",
+}
+
 rc = 0
 base = errset(m.mk_current)
 cand = errset(m.probe_form(INTERP_R7))
 new = cand - base
+undeclared = {r for r in new if r[2] not in ACCEPTED_LOSSES}
+declared = new - undeclared
 print(f"rows {len(ALL)}   checks {len(ALL) * 2}   shipped errors {len(base)}\n")
 print(f"revision 6: {len(ALL) * 2 - len(cand)}/{len(ALL) * 2} | fixed {len(base - cand)} | "
-      f"{'STRICT SUBSET of shipped' if not new else f'NOT a subset ({len(new)} regressions)'}")
-for _, hn, why in sorted(new, key=lambda x: x[2]):
-    print(f"    REGRESSION [{hn:6}] {why}")
-rc |= 1 if new else 0
+      f"{'strict subset APART FROM the declared losses below' if not undeclared else f'NOT a subset ({len(undeclared)} UNDECLARED regressions)'}")
+for _, hn, why in sorted(undeclared, key=lambda x: x[2]):
+    print(f"    UNDECLARED REGRESSION [{hn:6}] {why}")
+for _, hn, why in sorted(declared, key=lambda x: x[2]):
+    print(f"    declared loss [{hn:6}] {why}")
+for why in sorted({w for _, _, w in declared}):
+    print(f"        -> {ACCEPTED_LOSSES[why]}")
+rc |= 1 if undeclared else 0
 print("  (the number is a property of these rows, not of the classifier)")
 
 print("\n1. OBSERVED incident rows, asserted by name:")
