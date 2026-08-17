@@ -183,15 +183,54 @@ jobs:
           fi
           echo "all harnesses green"
 
+      # THE LIST ABOVE IS THE WHOLE INVENTORY MINUS THE LEDGER BELOW (2026-08-17). Before this
+      # date the "listed EXPLICITLY, exclusions stay visible" principle stated at the top of this
+      # step was only half kept: two harnesses ran, five were recorded as excluded, and SIX were
+      # neither - absent from the list AND absent from the ledger, so nothing in the repo said
+      # they existed. That silence is worse than a recorded gap: a recorded gap is a decision, an
+      # unrecorded one is indistinguishable from an oversight, and two of the six were the proofs
+      # for the highest-stakes surfaces in the repo. Every scripts/hooks/test-* file must now
+      # appear EITHER in the loop above OR in the ledger below. Nothing else is acceptable.
+      #
       # DELIBERATELY EXCLUDED, recorded rather than silently omitted:
       #   test-secret-scan.sh   - already run by secret-scan.yml; running it twice buys nothing.
       #   test-ctx-gate.sh      - RED at the time this job was added (1 failure: "phantom verbs
       #                           documented but never emitted"). Pre-existing and unrelated to
       #                           this mission; adding it would redden CI for everyone without
       #                           fixing anything. Tracked, not silently dropped.
-      #   test-mission-bridge.sh - RED at the time this job was added (2 failures) AND owned by
-      #                           a different concurrent session actively editing the bridge.
-      #                           Not this mission's to fix; see the mission PLAN's ATTRIBUTION.
+      #
+      # RED ON LINUX ONLY - both fail for ONE shared root cause, measured 2026-08-17 in an
+      # ubuntu:latest container, non-root uid 1001, checkout relocated outside a shadowed $HOME,
+      # invoked exactly as the loop does (`bash "$h" </dev/null`, no arguments):
+      #   test-mission-bridge.sh   - macOS 83 PASS / 0 FAIL, Linux RED (incl. "file_size - got
+      #                              '  File: ...'", "banner bounded", "log rotation archive").
+      #   test-mission-liveness.sh - macOS 21 PASS / 0 FAIL, Linux 10 PASS / 11 FAIL (most cases
+      #                              print `mission-liveness.sh: line 59: [: File: "..."`).
+      # ROOT CAUSE, one line, in PRODUCTION code rather than in the harnesses:
+      #   `sz=$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null)`
+      # This idiom looks portable and is not. On GNU coreutils `-f` means --file-system, so the
+      # call does not merely fail - it PRINTS A FILESYSTEM DUMP TO STDOUT ("File: ..." / "Blocks:
+      # ...") and then exits 1. The `2>/dev/null` silences nothing, because the dump is on stdout;
+      # the `||` fallback then runs and APPENDS its answer to that dump inside the same command
+      # substitution. The variable ends up holding both, and the next `[ "$sz" -gt N ]` throws.
+      # A BSD-only utility that failed cleanly would be caught by the fallback; this one corrupts
+      # the value while looking like it worked, which is why both harnesses are green on the
+      # author's Mac and red on any runner.
+      # THE FIX (deliberately NOT done here): put the GNU form FIRST, or add `>/dev/null` to the
+      # BSD attempt, at scripts/hooks/mission-liveness.sh:58,125 and scripts/hooks/lib/
+      # mission-bridge.sh:78,209,781 - and note the same shape also sits in lib/
+      # auto-compact-sentinel.sh:291, lib/handoff-resolve.sh:56 and lib/post-compact-primer-
+      # helpers.sh:88. That is a multi-site edit to the LIVE mission bridge, well past the
+      # "small and clearly safe" bar this job's enrollment rule sets, and it is a correctness fix
+      # in its own right rather than CI plumbing. Enroll both the moment it lands - they need
+      # nothing else. (Two harness-level instances exist too - test-mission-liveness.sh:354
+      # `stat -f %Lp` and test-mission-bridge.sh:727 `date -v` - but fixing only those leaves the
+      # 11 SUT-driven failures untouched, so they are not a shortcut to enrollment.)
+      # This supersedes the previous note, which claimed test-mission-bridge.sh was "RED at the
+      # time this job was added (2 failures)" and owned by another session. Both halves had gone
+      # stale: it is 83/0 green on macOS today and the attribution no longer applies. A stale
+      # exclusion is a re-enrollment that never happens, so it is recorded here as MEASURED, with
+      # the platform named - "green" with no platform attached is what hid this for months.
       #
       # NOT YET PORTABLE - these five were in the first version of this job and are the reason
       # it was red 16/16. Each is a REAL coverage gap, recorded here so it stays visible rather
