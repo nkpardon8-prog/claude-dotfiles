@@ -1311,6 +1311,14 @@ chk "the negotiated remote_sha really is ABSENT from the local object store" \
 _serr=$( cd "$_sr" && HOME="$_shome" git push origin "$_sbr" 2>&1 ); _src=$?
 chk "an unknown remote_sha FAILS CLOSED (the push is refused)" \
     "$([ "$_src" -ne 0 ] && echo blocked || echo allowed)" "blocked"
+# ...and it is the HOOK that refused, not the server. MUTATION-TESTED, and the assertion above
+# is PROVEN HOLLOW on its own: with the hook's enumerate-failure branch replaced by a fail-open
+# `continue`, the push is still nonzero because git's own non-fast-forward check catches it a
+# moment later - so a bare rc assertion here certifies the gate while the gate is dead. The
+# discriminator is WHICH layer spoke: git prints "fetch first" / "non-fast-forward" only when
+# the push got past the hook.
+chk "the HOOK refused it, not the server's non-fast-forward check" \
+    "$(printf '%s' "$_serr" | grep -Ec 'fetch first|non-fast-forward' | tr -d ' ')" "0"
 chk "an unknown remote_sha emits RANGE-NOT-PROVEN-CLEAN" \
     "$(printf '%s' "$_serr" | grep -c 'RANGE-NOT-PROVEN-CLEAN' | tr -d ' ')" "1"
 chk "the remote ref did NOT move under an unproven range" \
