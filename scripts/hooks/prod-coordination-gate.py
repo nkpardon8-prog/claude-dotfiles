@@ -476,6 +476,27 @@ def main():
     now = int(time.time())
 
     existing = _validated_lock()
+
+    # AUTO-RECLAIM a lock whose holder is PROVABLY dead. This is the second half
+    # of the duration fix: release covers a session that finishes, reclaim covers
+    # one that dies (crash, kill, closed window) with the lock still held.
+    # Age is irrelevant here — a dead holder's lock is garbage at 10 seconds just
+    # as much as at 2 days — so this runs BEFORE the freshness/stale branches.
+    #
+    # unlink-THEN-link, NEVER os.replace (constraint B): the refresh path's
+    # read-then-compare is a TOCTOU, so reclaiming in place could clobber a
+    # renewal that landed in between. Unlinking drops us onto the FREE path,
+    # where os.link is no-clobber: a concurrent live claimant that got there
+    # first makes us lose the race loudly with FileExistsError, already handled.
+    if existing and existing["sid"] != sid and _holder_provably_dead(existing):
+        try:
+            os.unlink(LOCK)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            block(f"could not reclaim a dead holder's prod lock ({exc}); failing closed.")
+        existing = None
+
     holder = existing["sid"] if existing else None
     op_desc = existing["op"] if existing else ""
     ts = existing["ts"] if existing else 0
