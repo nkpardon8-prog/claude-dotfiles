@@ -81,7 +81,16 @@ REF_BEFORE=$(cd "$WT_ABS" && git symbolic-ref -q HEAD 2>/dev/null)
 command -v codex >/dev/null 2>&1 || [ -n "${CODEX_BUILD_CHUNK_CMD:-}" ] \
   || { echo "codex-build-chunk: codex CLI not on PATH" >&2; _status unavailable; exit 127; }
 
-. "$HOME/.claude-dotfiles/scripts/lib/portable-timeout.sh"
+# ROOT from BASH_SOURCE, not $HOME (2026-08-17). The lib is a SIBLING of this script
+# (scripts/lib/), so deriving the path from our own location resolves identically in the
+# installed tree while ALSO working in a relocated copy - a linked worktree, a CI checkout,
+# a hermetic sandbox. The old "$HOME/.claude-dotfiles/..." form made this script - the ONE
+# sanctioned `-s workspace-write` path - unrunnable anywhere $HOME was not the dotfiles
+# home, and it did so LOUDLY-but-misleadingly: sourcing a missing file exits 127, the exact
+# code line 82 uses for "codex CLI not on PATH", so the failure read as a missing binary.
+# That is what kept test-codex-build-chunk.sh out of CI. Same house pattern as
+# lint-skill-contract.sh:26.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/portable-timeout.sh"
 
 EFFORT_ARGS=()
 if [ -n "${CODEX_EFFORT:-}" ]; then
