@@ -158,6 +158,16 @@ in place. Never create a duplicate entry and never drop what's already there. Ov
 this becomes a real map of how this person actually works in HubSpot, grown from what they've
 actually used rather than a one-time guess.
 
+**6. Print the welcome guide.** Immediately after saving the profile (once, right after
+onboarding — never on a returning run), print the full text under "Welcome guide for new
+users" further down this file, verbatim, as a normal chat message. This skill is written for
+someone comfortable with AI tools; a lot of the people who'll actually run this are not, and
+that message is their entire manual. If this section got truncated out of your context by a
+compaction, Read this file from disk for the exact text rather than paraphrasing it from
+memory — the whole point is that a non-technical user gets something consistent and reliable,
+not a summary. Reprint the same guide, verbatim, any time the user later asks something like
+"how does this work," "help," or "what can I say to you."
+
 ## Step 0 — Mandatory intake gate (complete before touching devtools, Chrome, or HubSpot)
 
 **Do not call `/devtools`. Do not open a HubSpot tab. Do not make a single API call. Do not
@@ -261,6 +271,69 @@ safely. Everything below (script reference, Workflow execution detail, tailoring
 memory mechanics, style examples, known gotchas, the per-draft checklist) is real operational
 detail Workflow Steps 1+ depend on — if it's missing from this turn's context, Read
 `~/.claude-dotfiles/commands/outreach.md` from disk before proceeding past Step 0.
+
+## Welcome guide for new users (print verbatim, per the Onboarding section's step 6)
+
+Print this exact text as a normal chat message — no jargon added, no paraphrasing, no
+technical asides. Fill in `{Name}` from onboarding; leave everything else as written. This is
+written for someone who has never used an AI tool before and doesn't want to have to learn one.
+
+> **Hi {Name} — here's everything you need to know to use this. No tech background required.**
+>
+> **What this does, in plain terms.** This helps you write personalized text messages to leads
+> in HubSpot and gets them ready to send in Salesmsg. You review every single message before it
+> goes out — nothing is ever sent automatically. Think of it as a fast, careful assistant who
+> drafts your texts and lines them up for your approval.
+>
+> **How to start.** Just tell me in plain English what you want. For example:
+> - "I want to text my Arizona leads about the new demo dates."
+> - "Let's follow up with people we haven't reached in a while."
+> - "Run another batch of 20."
+>
+> You don't need to remember any commands. If you want to be precise you can also just say
+> "Run outreach" and I'll ask you everything I need to know.
+>
+> **What happens when you run it:**
+> 1. I'll ask a few questions — which contacts, what the message should say (or I'll suggest
+>    some for you to approve), and roughly how many people. I won't do anything until you answer.
+> 2. I'll show you sample messages first and wait for your okay before writing anything for real.
+> 3. I'll check every contact against your rules (skip anyone with a deal already going, anyone
+>    who opted out, anyone texted too recently, anyone who already has an appointment booked) so
+>    you don't have to think about that part.
+> 4. I'll open a browser tab for each person with their message already typed in, ready for you
+>    to look at.
+> 5. You review and hit Send yourself, one at a time, whenever you're ready. I never click Send.
+>
+> **Where to find your drafts.** After a batch finishes, look at your open Chrome tabs — each
+> one is a different contact's HubSpot page with their text already sitting in the box, unsent.
+> Read it, change it if you want, and press send yourself.
+>
+> **Things you never have to worry about:**
+> - I will never send a text without you personally pressing send.
+> - I will never change anything in HubSpot itself — no edited contacts, no deleted notes, no
+>   changed lists.
+> - I will never text someone twice, or someone who already said no, or someone who already has
+>   an appointment booked — that's tracked automatically.
+>
+> **If something looks wrong or confusing**, just say so — "that doesn't look right," "stop,"
+> "wait, why did you do that" all work fine. You're always allowed to pause or ask questions.
+> Nothing bad happens if you stop partway through a batch — nothing sends unless you send it.
+>
+> **Common things to say:**
+> - "Do another batch of 20"
+> - "Only text people in [state/city]"
+> - "Use this exact wording: ..."
+> - "Stop for now, I'll finish reviewing these first"
+> - "Don't text [person] again"
+>
+> **The first time only,** I asked about your name, role, and writing style — that's saved and I
+> won't ask again. Every time after today, we go straight to planning the actual batch.
+>
+> **If something breaks** — Chrome doesn't open, HubSpot asks you to log in, or I seem stuck —
+> just tell me and I'll walk you through it. It's always safe to say "stop"; nothing sends
+> itself, so there's no risk in pausing.
+>
+> Ask me "how does this work" any time you want to see this again.
 
 ## Environment / setup facts
 
