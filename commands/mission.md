@@ -1066,9 +1066,14 @@ The old rule bundled two different things into "Codex is ALWAYS read-only". Spli
   well-specified chunks") and then made **unexecutable** by pinning `-s read-only` on the same line.
   A licence that cannot execute is worse than no licence: it reads as capability that is not there.
 
-**The ONLY sanctioned path is `scripts/codex-build-chunk.sh <promptfile> <outfile> <worktree>`.**
+**The ONLY sanctioned path is `CODEX_EFFORT=high bash scripts/codex-build-chunk.sh <promptfile> <outfile> <worktree>`.**
 Never hand-roll `codex exec -s workspace-write`; every property below is enforced by that script and
 by nothing else, and this session's own lesson is that a rule with no machine is not a rule.
+
+**Pass `CODEX_EFFORT` explicitly, exactly as the review lanes do.** The variable was set NOWHERE in
+this repo until 2026-08-17, so this wrapper's effort branch was dead code and every mechanical chunk
+silently ran at whatever `~/.codex/config.toml` happened to say. `high` is the floor for a lane that
+WRITES CODE; raise it per chunk if the work warrants, never lower it.
 
 **It REFUSES unless the target is a LINKED git worktree** (`git worktree add`), and this is the
 load-bearing safety property rather than tidiness. `-s workspace-write` makes the `-C` directory
