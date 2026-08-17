@@ -263,6 +263,12 @@ req "$X" 'model: "sonnet"' 2
 req "$X" "Claude-lenses: N/3"
 req "$X" "claude-<slug>.usable"
 req "commands/mission.md" "parse-claude-header"
+# Item 7: the round line proves ARITHMETIC, not that a review happened. REVIEW-EVIDENCE binds a
+# clean round to the report that produced it, and _mw_partdone_check refuses convergence unless both
+# folding rounds read codex=4/4 claude=3/3. The gate is only reachable if the playbook still tells the
+# agent to EMIT the line - that emission is the one half no machine can force, so pin the instruction.
+req "commands/mission.md" "REVIEW-EVIDENCE part="
+req "commands/mission.md" "m\$N-review-evidence-r\$K"
 # The counts and the non-code scoping are what an agent reads BEFORE it launches, and
 # Step 4 is entered by both target classes - a count that drifts below the marker is a
 # count nobody applies.
