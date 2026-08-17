@@ -12,7 +12,9 @@ Reads the shared 47-row corpus + candidates from 05-classifier-candidates.py, th
   - the 11 out-of-corpus regressions found in round 3 (the frozen independent holdout)
   - a linear-time budget assertion (the round-3 ReDoS was 8s at 23 tokens)
 """
+import contextlib
 import importlib.util
+import io
 import os
 import re
 import sys
