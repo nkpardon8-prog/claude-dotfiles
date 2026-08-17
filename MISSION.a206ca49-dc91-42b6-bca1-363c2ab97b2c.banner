@@ -48,15 +48,25 @@ plan 4-6 / codex 3-6, cap per 6.1; /pre-compact freely interleaved; active until
 --- PENDING DECISIONS (answer in one batched round) ---
 - [pd:1-codex-model-pin] Codex model pin: the routing spec names gpt-5.6-sol and ~/.codex/config.toml already pins it, but scripts/codex-exec.sh carries a deliberate 2026-07-12 drift-guard that warns "policy is UNPINNED, remove the pin" on EVERY run against that config. Keep the pin and retire the guard, or drop the pin and track newest? Config and guard currently contradict each other. Does NOT gate Parts 1-3.
 <!-- mid:pd-1-codex-model-pin -->
+- [pd:2-live-legacy-lock] The live ~/.claude/prod.lock is held by session f71c8667 (stale, pid-less, foreign). After this part ships it will STILL hard-block the prod lane, and CHANGELOG:623-627 forbids force-clearing it. Options: ask that window to release it, or delete it deliberately. Until then no real end-to-end verification of the fix is possible. Does NOT gate building Part 1 - gates only its final live check.
+<!-- mid:pd-2-live-legacy-lock -->
+- [pd:3-prod-lock-ttl] TTL is 900s. With release now covering the common case in seconds, 900s is arguably far too long a worst case for the reclaim path; lowering it (e.g. 300s) shortens every stranded-lock outage and does not weaken safety (reclaim still needs a provably-dead holder, and a same-sid holder can always refresh). Flagged rather than done because it changes machine-wide behavior. Does NOT gate Part 1.
+<!-- mid:pd-3-prod-lock-ttl -->
+- [pd:4-part1-scope-split] RECOMMEND splitting Part 1 into 1A and 1B and building only 1A now. 1A = release-on-completion (3 events) + ONE serialization mechanism for all four writers + an unconditional Stop-event sweep + a lower TTL + the false-comment/message corrections. 1B = pid + pid_start liveness and automatic dead-holder reclaim. WHY: two review rounds x 3 independent lanes agree the 1B half is where all the risk lives and almost none of the value - bounded reclaim cannot beat the TTL, a dead window does not prove the deploy stopped, and 1B is what forces the tri-state ps, the locale pinning, the argv tiebreak, the reclaim mutex and the two-process race fixture. The brief LOCKED pid+reclaim, so narrowing it is a deviation from a settled decision, not an implementation detail - hence asking. Proceeding with 1A in the meantime, structured so 1B bolts on without rework if you want it.
+<!-- mid:pd-4-part1-scope-split -->
+- [pd:5-probe-capture-hook] To answer P0/P1/P2/P3/P5 I need to see REAL hook payloads (does PostToolUse carry isError/interrupted? is tool_use_id present and reused on a retry? is run_in_background readable? do subagents share session_id? is hook_event_name emitted?). That means registering a passive capture hook that writes payloads to a file. Appending to the EXISTING PostToolUse-Bash array is low-risk and reversible (timestamped backup first, and it is the array prod-ledger.py record already uses), but it IS a machine-wide change affecting every window on this machine, so I am not doing it unilaterally. Say go and I register the capture hook, gather the payloads, answer P0-P5, then remove it. Everything else in Part 1A is blocked behind those answers.
+<!-- mid:pd-5-probe-capture-hook -->
+- [pd:6-gate-false-negatives] MEASURED, pre-existing, live right now, and unrelated to any plan: the SHIPPED prod gate classifies two real production-execution shapes as SAFE. (1) A heredoc fed STRAIGHT to a shell (the opener names the shell, with no pipe at all). There is no INTERP alternative for that shape at all. (2) A heredoc piped to an ABSOLUTE-PATH shell. The pipe alternative is a backslash-pipe followed by an optional ba/z/da/k prefix and a word boundary, which cannot cross a slash or a sudo. Both let a real production command through the gate unlocked and unlogged TODAY. Probe 04 (scripts/hooks/prod-lock-assumptions/04-classifier-corpus.sh) demonstrates both. Part 2 is already editing this exact regex, so closing them there is nearly free - but it widens Part 2 beyond the two defects it was scoped for, so I am flagging rather than assuming. Want them closed in Part 2? 
+<!-- mid:pd-6-gate-false-negatives -->
 --- continuation contract ---
 1. Keep the FULL objective intact - never redefine success down to a smaller, easier, or merely test-passing subset.
 2. The worktree and external state are authoritative; conversation memory only hints where to look - inspect current state before relying on it.
 3. Completion is UNPROVEN until verified requirement-by-requirement against current evidence; partial progress and plausible-looking output are not proof.
 4. Do not declare blocked until the SAME blocker has repeated 3 consecutive attempts; blocked means truly unable to progress without user input.
-⏱ stretch 9m · active 9m · wall 9m · idle 0s
+⏱ stretch 4h 30m · active 4h 30m · wall 4h 30m · idle 0s
 --- recent log ---
-m1-await-research-barrier-r1-a1-g0	[mission] AWAIT part=1 phase=research round=1 kind=job op=research-barrier attempt=1 need=3 got=0 started_at=1786922923
-m1-await-research-barrier-r1-a1-g2	[mission] AWAIT part=1 phase=research round=1 kind=job op=research-barrier attempt=1 need=3 got=2 started_at=1786922923
-m1-await-research-barrier-r1-a1-g1	[mission] AWAIT part=1 phase=research round=1 kind=job op=research-barrier attempt=1 need=3 got=1 started_at=1786922923
-m1-research-r1-d0	[mission] part=1 name=lock-lifecycle phase=research round=1 dry=0
-seq-2	[c#2] Enter Part 1 Phase 2 (/plan) for the lock lifecycle
+m1-part-retired	[mission] PART-RETIRED part=1
+m2-part-start	[mission] PART-START part=2 name=detector-accuracy
+m2-research-r1-d0	[mission] part=2 name=detector-accuracy phase=research round=1 dry=0
+m2-review-r1-d0	[mission] part=2 name=detector-accuracy phase=review round=1 dry=0 findings=2
+seq-3	[c#3] Rewrite the Part 2 detector plan around measured findings, then implement
