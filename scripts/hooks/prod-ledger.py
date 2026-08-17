@@ -67,10 +67,39 @@ PRODMARK = re.compile(r"ALLOW_PROD_MIGRATE_DEPLOY|MIGRATOR_DIRECT_URL|neon\.tech
 # This does NOT lower the classifier's ceiling: text matching was always blind to
 # indirection (write a script in one call, run it in the next), so the operations
 # this can newly miss were already invisible to it.
+# Alt-3 is NAME-AGNOSTIC and that is why it never regresses: no interpreter list, no gap walker,
+# no path prefix - so an unnamed interpreter, a quoted executable name (`"/bin/bash" -c`) and a
+# redirect before the flag (`bash 2>/tmp/err -c`) all stay caught. Four attempts to replace it with
+# a closed name list each lost real executions it already covered. So the ONLY change is a
+# SUBTRACTION: a search tool cannot trigger alt-3. `grep -niE "..."` - a SEARCH - held the
+# machine-wide lock 4+ hours because IGNORECASE lets [ce] match the E.
+# Spec + full measured record: tmp/ready-plans/2026-08-16-prod-classifier-residual-fix.md
+#
+# Three things here are load-bearing and each was learned by measurement, not reasoning:
+#  * the blanks live INSIDE the lookahead. A standalone `[ \t]*` BACKTRACKS, so the guard gets
+#    re-evaluated at a whitespace position where no denied name can match - which silently reduced
+#    this to "only works when the tool name is the first byte of the command".
+#  * the lookahead is PREFIX-AWARE, so a tool reached through sudo/git/env X=1//usr/bin//./ is seen.
+#  * a BACKTICK and a `(` are in the anchor class AND excluded from the scan class. Either one in
+#    the anchor class ALONE is QUADRATIC, because the scan must exclude what it anchors on.
+#  * the name ends with (?=[ \t]|$), not \b: `\b` is satisfied by `=`, so `GREP=1 psql -c '...'`
+#    would exempt its whole clause - a silent false negative shipped catches.
+#
+# A name is denied only when removing it is MEASURED to fix a real false positive, and a name whose
+# own flags can EXECUTE another program is admitted only with that loss DECLARED:
+#   grep/egrep/fgrep  no execution channel at all -> denying them cannot create a false negative.
+#   rg/sed            have one (`rg --pre=CMD`, `sed -e '1e CMD'`, `s///e`) but each is measured to
+#                     fix a real false positive -> kept, and the channel is GIVEN UP knowingly.
+#                     Reversing that is one name in the alternation below.
+#   ag/ack            have one (`--pager=CMD`) and fix nothing -> NOT denied.
+#   awk               shells out via system() and takes program text via -e -> NOT denied.
 INTERP = re.compile(
     r"(?:^|[\s|;&(])(?:eval|xargs|ssh)\b"
     r"|sh\s+-[a-z]*c\b"               # bash / zsh / dash / sh  -c, -lc, -ec
-    r"|\s-[a-z]*[ce]\s+['\"]"          # psql -c '...', python -c, node -e, sh -lc "..."
+    r"|(?:^|[\n;|&(`])(?![ \t]*(?:(?:sudo|env|command|time|nohup|git)[ \t]+"
+    r"|[A-Za-z_][A-Za-z0-9_]*=[^\s]*[ \t]+)*(?:[A-Za-z0-9_.~$-]*/)*"
+    r"(?:grep|egrep|fgrep|rg|sed)(?=[ \t]|$))"
+    r"[^\n;|&`(]*?\s-[a-z]*[ce]\s+['\"]"   # psql -c '...', python -c, node -e, sh -lc "..."
     r"|--(?:command|eval)="
     r"|\|\s*(?:ba|z|da|k)?sh\b",
     re.IGNORECASE,
@@ -99,16 +128,33 @@ def _strip_heredocs(cmd):
         if SUBST.search(cmd[nl + 1:end.start()]):     # substitutions execute => keep
             out.append(cmd[pos:end.end()])
         else:
+            # The `#` is the SPLICE GUARD. Deleting the body joins the opener line's tail directly
+            # to the terminator tag, and `cat <<'SH' |` + `SH` matched branch 5 (`\|\s*sh\b`) in
+            # the STRIPPED text while the ORIGINAL matched nothing - so stripping a note-write
+            # CREATED a production verdict, the exact harm this stripping exists to remove.
+            # `#` is monotone-SAFE: it is in no lead class, no anchor class and no literal of any
+            # branch, so no branch can REQUIRE it - inserting it can only destroy a match, never
+            # create one. It also leaves what remains reading as a shell comment.
             out.append(cmd[pos:nl + 1])
+            out.append("#")
             out.append(cmd[end.start():end.end()])
         pos = end.end()
 
 
 def _strip_inert_data(cmd):
-    if INTERP.search(cmd):
+    # ORDER MATTERS, and so does WHICH TEXT each half looks at. Decide the interpreter question on
+    # the heredoc-STRIPPED text, so a body's PROSE cannot veto the stripping of its own container
+    # (that is how a `cat > tmp/briefs/...` write was filed as a push and held the lock 2d17h).
+    # When an interpreter fires, return the ORIGINAL so a body it may consume stays scannable
+    # (`ssh box <<EOF ... EOF` really does run its body). Deliberately FAIL-CLOSED and deliberately
+    # imprecise: in a multi-clause command the interpreter may live in a DIFFERENT clause from the
+    # heredoc, so `ssh box 'true' && cat > notes.md <<EOF ... EOF` scans the note body and can file
+    # a note-write as production. That is the safe direction, but it IS a false-positive source -
+    # do not read this branch as proof that the interpreter owns the heredoc.
+    stripped = _strip_heredocs(cmd)
+    if INTERP.search(stripped):
         return cmd
-    cmd = _strip_heredocs(cmd)
-    return QUOTED.sub(lambda m: m.group(0) if SUBST.search(m.group(0)) else " ", cmd)
+    return QUOTED.sub(lambda m: m.group(0) if SUBST.search(m.group(0)) else " ", stripped)
 
 
 

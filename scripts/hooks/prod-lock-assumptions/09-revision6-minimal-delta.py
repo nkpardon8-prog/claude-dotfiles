@@ -134,6 +134,11 @@ def compile_with(a3):
 
 
 INTERP_R7 = compile_with(alt3())
+# Shipped's alt-3, parameterised for the same reason the filler is: the baseline this gate scores
+# against must NOT be read off disk, or the gate silently stops being a gate the moment it is
+# applied - `mk_current` would then BE the candidate, every fix would read as 0, and every declared
+# loss as STALE. Section 6 proves the disk is one of these two forms and says which.
+INTERP_SHIPPED = compile_with(r"\s-[a-z]*[ce]\s+['\"]")
 
 
 # ------------------------------------------------------- EDIT B, the splice-safe heredoc stripper
