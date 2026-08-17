@@ -267,6 +267,28 @@ Used by status, resume, and every post-compaction re-entry:
 
 ## 1. Resolve sid + root + mission file — FIRST, before anything else
 
+### 1.0 Assert the conductor's model — assert, NEVER select
+
+The conductor is the window YOU are running in, and its model is set by the owner at launch
+(`claude --model`). **No file can change it and this playbook must never try.** What it CAN do is
+notice a mismatch and say so, which is the difference between a routing decision and a routing hope.
+
+Standing setting: **Opus 4.8 at xhigh** — authority and continuity for the whole mission. The lanes
+below it are routed per call; the conductor is not, because it is the one thing that has to remember
+everything across compactions.
+
+At mission start, state the model you are actually running as. If it is not the expected conductor
+model, emit ONE loud line and continue:
+
+```
+mission: WARNING - conductor model is <actual>, expected Opus 4.8 at xhigh. Routing below the
+conductor is unaffected, but authority/continuity assumptions in this playbook were written for
+that setting. Owner set this at launch; /mission cannot change it.
+```
+
+Do NOT stop the mission over it. A conductor on the wrong model still conducts; a mission that
+refuses to start because of a launch flag is worse than one that says what it noticed.
+
 Every `mission-write.sh` call needs `<sid>` and `<root>`, and a fresh `/mission` invocation
 (unlike `/post-compact-resume`) has **no Stop-hook arg supplying them**. Resolve all three ONCE,
 up front, and reuse them for the whole session. Mirror exactly what `post-compact-resume.md` does
@@ -580,9 +602,9 @@ Spawn in parallel, blind to each other:
   ```bash
   # write the scope-prove prompt to a temp file (no shell expansion of its contents), then run it through
   # the house wrapper — it always feeds stdin from the file (`- < promptfile`), inherits the config's
-  # authoritative effort (unpinned = newest-model default), and writes a machine-readable `.status`
+  # effort — pinned to `high` by the explicit CODEX_EFFORT prefix — and writes a machine-readable `.status`
   # sidecar; no untrusted text ever reaches the shell:
-  bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh /tmp/mission-scope-prompt.$$ /tmp/mission-scope-out.$$ <root>
+  CODEX_EFFORT=high bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh /tmp/mission-scope-prompt.$$ /tmp/mission-scope-out.$$ <root>
   # CHECK THE .status sidecar — codex-exec writes ok|timeout|unavailable|nonzero-N. On anything but
   # `ok` the scope pass did NOT run (Codex down / timed out); do NOT treat an empty/partial
   # /tmp/mission-scope-out.$$ as "no facts found" — note the degrade and lean on the Claude fact pass:

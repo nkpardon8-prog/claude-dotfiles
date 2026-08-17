@@ -80,11 +80,25 @@ If the glob matches nothing, there are no assumption gates for this plan — rec
 
 Use the `Agent` tool with `subagent_type: "implementer"` for each chunk.
 
+**CLASSIFY EACH CHUNK BEFORE DISPATCH - you, not the worker, choose the model.** There are three
+classes and they are NOT interchangeable:
+
+| Class | Route | Signal |
+|---|---|---|
+| hard / ambiguous / cross-layer / architecture-sensitive / high-risk | **`model: "opus"`** (the definition's default - pass nothing) | touches a contract, a schema, auth, or more than one layer |
+| normal bounded chunk with a strong reviewed plan | **`model: "sonnet"`** on the call | file set is known, the plan already answered the design questions |
+| isolated, mechanical, fully specified | **Codex** via `scripts/codex-build-chunk.sh` | pure mechanical edit, no judgment left in it |
+
+`agents/implementer.md` stays `opus` deliberately, as the FAIL-SAFE: a chunk you forget to classify
+runs at full capacity rather than silently dropping to the cheap lane. Never set the cheap model in
+the definition - a frontmatter value is a GLOBAL route, which is exactly what "do not globally route
+every implementer to one model" forbids. The class decision belongs on the call, every time.
+
 - CRITICAL - chunk-parallel spawn: chunks whose table rows are marked parallel AND whose
   file sets are determinable from task text, pairwise disjoint, and free of hazard classes
   (shared types/contracts, generated outputs, lockfiles, schema/migrations, shared
   fixtures) MUST be spawned together in a SINGLE message - one implementer Agent call per
-  chunk, full-capacity, max effort. Indeterminable or hazardous ⇒ sequential. One-at-a-time
+  chunk, at the model its class selects. Indeterminable or hazardous ⇒ sequential. One-at-a-time
   spawning of qualifying chunks is a playbook violation. Record HEAD before the batch.
   Each chunk prompt includes the report contract: "return a short digest + your file list,
   not a dump".
@@ -170,7 +184,7 @@ This log is instructed-per-path, so it is not self-verifying; `scripts/parallel-
 
 ### No serial condition fired ⇒ spawn PARALLELIZER
 
-ONE `Agent` call, `subagent_type: "parallelizer"`, model opus, max effort. It is ADVISORY: it reads the repo and returns a schedule. It never implements and never spawns. You remain the single scheduler.
+ONE `Agent` call, `subagent_type: "parallelizer"`. Its definition pins `opus`/`high` and that IS full capacity for this role - do not pass a model or claim "max effort" here; the owner set `high` as the standing ceiling, with `xhigh` reserved for explicit on-request escalation. It is ADVISORY: it reads the repo and returns a schedule. It never implements and never spawns. You remain the single scheduler.
 
 Envelope, passed as JSON in the prompt:
 
@@ -231,7 +245,7 @@ Path: `~/.claude/parallel-waves/<SAFE_SID>-w<W>.json`. Shape: `docs/wave-plan-sc
 
 ### 3. CRITICAL: spawn ALL N chunks in a SINGLE message
 
-One `Agent` call per chunk, `subagent_type: "implementer"`, full-capacity, max effort. Spawning them one at a time defeats the entire mechanism.
+One `Agent` call per chunk, `subagent_type: "implementer"`, each at the model its class selects (Step 4's classification table - opus for hard/cross-layer, `model: "sonnet"` for a bounded chunk with a strong plan). Spawning them one at a time defeats the entire mechanism.
 
 Each chunk prompt MUST carry:
 

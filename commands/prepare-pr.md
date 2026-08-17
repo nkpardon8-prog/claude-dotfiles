@@ -152,12 +152,12 @@ if [ -z "$BASE_BRANCH" ]; then
 fi
 # Build the review prompt into a temp file (never inline it as a double-quoted arg — a branch name or
 # diff excerpt can carry shell metacharacters), then run it through the house wrapper. codex-exec.sh
-# feeds stdin from the file, inherits the config's authoritative effort (unpinned = newest-model
-# default), and writes a machine-readable `.status` sidecar; read BOTH the output and the status.
+# feeds stdin from the file, runs at the effort this call pins via CODEX_EFFORT (here `high`), and
+# writes a machine-readable `.status` sidecar; read BOTH the output and the status.
 PROMPT=$(mktemp "${TMPDIR:-/tmp}/prepare-pr-codex-prompt.XXXXXX")
 OUT=$(mktemp "${TMPDIR:-/tmp}/prepare-pr-codex-out.XXXXXX")
 printf '%s\n' "Review the diff between $BASE_BRANCH and HEAD. Look for bugs, logic errors, security issues, missing validation, and architectural problems. List each finding on its own line with CRITICAL/IMPORTANT/MINOR severity and a category tag (BUG/LOGIC/ARCHITECTURE/SECURITY/PERFORMANCE/MISSING/ASSUMPTION/CONTRADICTION/FRAGILITY)." > "$PROMPT"
-bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$PROMPT" "$OUT" "$WORKDIR"
+CODEX_EFFORT=high bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$PROMPT" "$OUT" "$WORKDIR"
 cat "$OUT.status"; echo "--- review ---"; cat "$OUT"
 ```
    Wait for the full output. `"$OUT.status"` is `ok | timeout | unavailable | nonzero-<rc>`; a

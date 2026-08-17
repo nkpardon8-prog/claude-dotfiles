@@ -87,26 +87,27 @@ Save as: `./tmp/ready-plans/YYYY-MM-DD-description.md`
 
 After saving the plan, enter an iterative review cycle. **Do not skip this step.** Repeat until the user confirms the plan is ready.
 
-**Review-round defaults:** substantial plans default to 4-6 total review rounds (two parallel plan-reviewers + criticer per round) to diminishing returns, plus ONE parallel Codex plan pass per round via codex-exec.sh (graceful degrade when codex is unavailable — mark the degrade in the presented review).
+**Review-round defaults:** substantial plans default to 4-6 total review rounds to diminishing returns. Each round runs FOUR lanes in parallel, each attacking a different failure class: one Claude breadth reviewer, one Claude `criticer` (value), one Codex executability pass at xhigh, one Codex value-critic pass at high (both via codex-exec.sh; graceful degrade when codex is unavailable or refuses — mark the degrade in the presented review, never drop it silently).
 
 ### Loop:
 
-1. **Spawn TWO fresh plan-reviewer sub-agents in parallel** (single message, two `Agent` tool calls) AND, in the SAME batch, kick off ONE parallel Codex plan pass (see the Codex-plan-pass block below). Two independent reviews catch more than one — overlap is signal, divergence is signal too — and the Codex pass adds a cross-model lens per round.
+1. **Spawn THREE INDEPENDENT reviewers in parallel**, plus the criticer, in a SINGLE message: one Claude breadth lane (`Agent`), and TWO Codex lanes with **materially different prompts** (see the Codex-plan-pass block below).
+
+   **The lanes must attack DIFFERENT failure classes.** Until 2026-08-17 this step spawned two
+   `plan-reviewer` calls whose prompts were byte-identical, which buys correlated findings and calls
+   them independent. Two reviewers asking the same question is one reviewer with error bars. If you
+   ever find yourself pasting the same prompt twice, the lane is not earning its cost.
 
 ```
-Agent tool (call 1):
+Agent tool (call 1) - BREADTH lane, Claude:
   subagent_type: "plan-reviewer"
-  prompt: "Review the plan at [path]. Produce a numbered list of specific,
-    actionable recommendations covering gaps, simplification opportunities,
-    correctness issues, and better alternatives."
+  prompt: "Review the plan at [path]. Cover CORRECTNESS, ARCHITECTURE, BRIEF FIDELITY,
+    and INTEGRATION GAPS: is the design right, does it match the brief's settled
+    decisions, and does it wire into what already exists? Verify the plan's file:line
+    anchors actually say what it claims. Produce a numbered list of specific,
+    actionable recommendations."
 
-Agent tool (call 2, sent in the same message as call 1):
-  subagent_type: "plan-reviewer"
-  prompt: "Review the plan at [path]. Produce a numbered list of specific,
-    actionable recommendations covering gaps, simplification opportunities,
-    correctness issues, and better alternatives."
-
-Agent tool (call 3, sent in the SAME message as calls 1 & 2):
+Agent tool (call 2, sent in the SAME message as call 1) - VALUE lane, Claude:
   subagent_type: "criticer"
   prompt: "Critique the plan at [path] as a generative value-critic. Apply up to
     5 lenses — (1) biggest gap, (2) honest assessment of where it quietly fails,
@@ -118,70 +119,103 @@ Agent tool (call 3, sent in the SAME message as calls 1 & 2):
     Step 0, or 'none']."
 ```
 
-   **Codex plan pass (one per round, in the same batch as calls 1–3).** Write the
-   plan-review prompt to a temp file, then invoke the house Codex wrapper in the
-   same message as the three Agent calls above so the pass runs in parallel:
+   **TWO Codex plan lanes (per round, in the same batch as the Agent calls).** They exist to
+   attack DIFFERENT failure classes and their prompts must stay materially different - near-identical
+   prompts are the failure this whole design prevents. Lane A runs at `xhigh` because executability
+   review is where a missed dependency costs a whole implementation round; lane B runs at `high`.
 
 ```bash
-PROMPT=$(mktemp "${TMPDIR:-/tmp}/plan-codex-prompt.XXXXXX")
-OUT=$(mktemp "${TMPDIR:-/tmp}/plan-codex-out.XXXXXX")
-cat > "$PROMPT" <<'EOF'
-Review this implementation plan for gaps, correctness issues, simplification
-opportunities, hidden assumptions, and contradictions. List each finding on its
-own line with a severity (CRITICAL/IMPORTANT/MINOR) and a category tag
+PROMPT_A=$(mktemp "${TMPDIR:-/tmp}/plan-codex-exec.XXXXXX")
+OUT_A=$(mktemp "${TMPDIR:-/tmp}/plan-codex-exec-out.XXXXXX")
+cat > "$PROMPT_A" <<'EOF'
+Review this implementation plan for EXECUTABILITY. The failure you are hunting is "this plan
+cannot actually be run as written, or it breaks a contract it did not know about": missing
+dependencies, unstated runtime assumptions, missing wiring, wrong ordering between steps,
+violated contracts, and whether its tests would actually catch the thing they claim to catch.
+Verify its file:line anchors say what it claims. List each finding on its own line with a
+severity (CRITICAL/IMPORTANT/MINOR) and a category tag
 (GAP/LOGIC/ARCHITECTURE/CONTRADICTION/ASSUMPTION/SIMPLIFY). The plan text follows.
 EOF
-cat [path] >> "$PROMPT"   # append the saved-plan file ([path] = the Step 3 saved-plan path) so Codex reviews the real text
-bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT" "$OUT" "$(pwd)"
+cat [path] >> "$PROMPT_A"   # [path] = the Step 3 saved-plan path
+
+PROMPT_B=$(mktemp "${TMPDIR:-/tmp}/plan-codex-value.XXXXXX")
+OUT_B=$(mktemp "${TMPDIR:-/tmp}/plan-codex-value-out.XXXXXX")
+cat > "$PROMPT_B" <<'EOF'
+Critique this implementation plan on VALUE, not fidelity. Is the premise even right - is it
+solving the real problem? Where is it over-engineered, too rigid, or gold-plating a
+non-problem? What is the cheap win it is skipping? What is the single biggest thing it missed?
+What hidden costs does it not price? Do NOT list style nits or restate the plan back. List each
+finding on its own line with a severity (CRITICAL/IMPORTANT/MINOR) and a category tag
+(PREMISE/OVERBUILT/CHEAP-WIN/MISSED/COST). The plan text follows.
+EOF
+cat [path] >> "$PROMPT_B"
+
+CODEX_EFFORT=xhigh bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A" "$OUT_A" "$(pwd)"
+CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_B" "$OUT_B" "$(pwd)"
 ```
 
-   When the batch returns, read `"$OUT"` and `"$OUT".status`:
-   - `.status == ok` → fold the Codex findings into the merged review as a third
-     lens, labeled **Codex plan pass**.
+   When the batch returns, read each `"$OUT_*"` and its `.status`:
+   - `.status == ok` → fold that lane's findings into the merged review, labeled
+     **Codex executability** / **Codex value-critic**.
    - `.status != ok` (any of `unavailable` / `timeout` / `nonzero-<rc>`) → **graceful
-     degrade**: present the literal line `(Codex plan pass: unavailable)` in place of
-     Codex findings and continue with the two plan-reviewers + criticer. The degrade
-     is marked in the presented review — never silently dropped.
+     degrade**: present the literal line `(Codex plan pass: unavailable)` for that lane and
+     continue with whatever returned. The degrade is marked in the presented review - never
+     silently dropped, because a round that lost a lane is measurably weaker, not equivalent.
+   - **A Codex refusal is a degrade, not a failure.** Codex declines content-wise on
+     security-adjacent plans (measured: it refused a classifier review outright). Substitute a
+     Claude lane, say so in the presented review, and do not retry the refused prompt shape.
 
-   `criticer` is the **generative value-critic lane** — the opposite axis from the
-   two fidelity reviewers. It is advisory only: it never asks, gates, or blocks, so
-   it is safe under autonomous `/mission` runs. It is NOT fed into the item-2
-   meta-pass (that A/B compares only the two `plan-reviewer` outputs).
+   `criticer` is a **Claude value-critic lane that ALWAYS runs**, deliberately overlapping the Codex
+   value lane. The redundancy is the point: Codex can refuse or die, and a value critique that only
+   sometimes happens is one nobody can rely on. It is advisory only — it never asks, gates, or
+   blocks, so it is safe under autonomous `/mission` runs.
 
-   When the reviewers return, merge the findings:
-   - If both reviewers raised the same issue → list it once, mark as `(both reviewers)` for higher confidence
-   - If only one raised it → keep it, mark as `(reviewer 1)` or `(reviewer 2)`
+   When the lanes return, merge the findings:
+   - Raised by MORE THAN ONE lane → list once, mark `(N lanes)`. Agreement across lanes attacking
+     different failure classes is the strongest signal available here.
+   - Raised by one → keep it, mark which lane. A finding only the executability lane could have
+     found is not weaker for being unique; it is why that lane exists.
    - Dedupe near-duplicates by topic, not by exact wording
-   - **Union the `## Assumption-Test Candidates` sections** from the two `plan-reviewer` outputs (dedup by finding). Retain this merged candidate list — Step 5 reads it from the FINAL review pass. (`criticer` never emits this section.)
+   - **Union the `## Assumption-Test Candidates` sections** from every lane that emits one (dedup by finding). Retain this merged candidate list — Step 5 reads it from the FINAL review pass. (`criticer` never emits this section.)
    - Hold the `criticer` output (its `## Criticer Notes` block) separately for rendering + persistence in item 3 below.
 
 2. **Anonymized peer-review meta-pass.**
 
-   Skip this entire item if either reviewer's Agent call failed or returned empty content — fall back to presenting the merged review as before (preserves existing feel when degraded).
+   Skip this entire item if FEWER THAN TWO lanes returned usable content — a meta-pass over one
+   review is just that review again.
 
-   - Decide A/B assignment by simple non-positional ordering: if `($(date +%s) % 2) == 0` then reviewer-1 → Review A and reviewer-2 → Review B, else swap. The meta-agent never sees the reviewer-1/reviewer-2 mapping.
+   - Label the returned lanes anonymously as Review A / B / C in a non-positional order: if
+     `($(date +%s) % 2) == 0` keep source order, else reverse it. The meta-agent never learns which
+     letter was Claude and which was Codex, so it cannot defer to a model instead of to an argument.
 
-   - Spawn ONE additional plan-reviewer sub-agent in the same Agent-tool style as the existing two reviewers in step 1:
+   - Spawn ONE meta-reviewer, passing `model: "opus"` explicitly. This lane judges other reviewers'
+     judgment, which is the hardest read in the loop:
 
    ```
    Agent tool:
      subagent_type: "plan-reviewer"
-     prompt: "Two reviewers independently reviewed the plan at [path].
-              Their full anonymized outputs are below as Review A and Review B
-              (the same numbered findings format the parallel reviewers produced).
+     model: "opus"
+     prompt: "Independent reviewers reviewed the plan at [path], attacking different
+              failure classes. Their full anonymized outputs are below as Review A,
+              Review B (and Review C when present).
               Answer:
-              (a) Which review (A or B) raises the strongest concern, and why?
-              (b) Which review (A or B) has the biggest blind spot, and what is it?
-              (c) What did BOTH reviews miss that matters for this plan?
-              Reference reviews by their wrapper letter (A/B) and individual
-              findings by the reviewer's own numbering (e.g. 'Review A finding #3').
+              (a) Which review raises the strongest concern, and why?
+              (b) Which review has the biggest blind spot, and what is it?
+              (c) Where do the reviews DISAGREE, and which side is right?
+              (d) What did ALL of them miss that matters for this plan?
+              Reference reviews by their wrapper letter and individual findings by
+              the reviewer's own numbering (e.g. 'Review A finding #3').
+              Do NOT simply average them - name the disagreements, do not smooth them.
               Keep under 250 words.
 
               Review A:
-              [paste full text of one reviewer's numbered findings here]
+              [paste one lane's full numbered findings here]
 
               Review B:
-              [paste full text of the other reviewer's numbered findings here]"
+              [paste another lane's full numbered findings here]
+
+              Review C (omit this block entirely if only two lanes returned):
+              [paste the third lane's full numbered findings here]"
    ```
 
    The `[path]` placeholder uses the same literal-placeholder convention as the two parallel reviewer prompts above — the orchestrator substitutes the actual saved-plan path at runtime.

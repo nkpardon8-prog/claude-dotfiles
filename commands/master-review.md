@@ -838,6 +838,7 @@ detection vars in the prompt:
 ```
 description: "Master Review R1 — Single-Pattern Lens"
 subagent_type: "lens-single-pattern"
+model: opus
 prompt: |
   Review the changed files in this diff for Single Pattern violations.
   Working directory: $WORKDIR
@@ -848,6 +849,7 @@ prompt: |
 ```
 description: "Master Review R1 — Circular Dependencies Lens"
 subagent_type: "lens-circular-deps"
+model: opus
 prompt: |
   Review the changed files in this diff for circular dependencies and late imports.
   Working directory: $WORKDIR
@@ -858,6 +860,7 @@ prompt: |
 ```
 description: "Master Review R1 — TanStack Query Lens"
 subagent_type: "lens-tanstack-query"
+model: opus
 prompt: |
   Review the diff for TanStack Query pattern violations.
   HAS_TANSTACK_QUERY signal: $HAS_TANSTACK_QUERY
@@ -868,6 +871,7 @@ prompt: |
 ```
 description: "Master Review R1 — Frontend Architecture Lens"
 subagent_type: "lens-architecture-frontend"
+model: opus
 prompt: |
   Review the diff for frontend architecture pattern violations.
   HAS_APP_ROUTER signal: $HAS_APP_ROUTER
@@ -878,6 +882,7 @@ prompt: |
 ```
 description: "Master Review R1 — Backend Architecture Lens"
 subagent_type: "lens-architecture-backend"
+model: opus
 prompt: |
   Review the diff for backend architecture pattern violations.
   HAS_AUTHED_HANDLER signal: $HAS_AUTHED_HANDLER
@@ -888,6 +893,7 @@ prompt: |
 ```
 description: "Master Review R1 — Self-Contained Components Lens"
 subagent_type: "lens-self-contained"
+model: opus
 prompt: |
   Review the diff for Self-Contained Components principle violations.
   HAS_UI_PROJECT signal: $HAS_UI_PROJECT
@@ -1128,6 +1134,7 @@ HAS_UI_PROJECT=$(/bin/bash -c 'find "$1" -maxdepth 3 \( -path "*/node_modules" -
 ```
 description: "Master Review R[N] — Single-Pattern Lens (verification)"
 subagent_type: "lens-single-pattern"
+model: opus
 prompt: |
   Re-check the just-fixed diff for Single Pattern violations. Working directory: $WORKDIR. Branch: $BASE_BRANCH...HEAD. Context: $CONTEXT_PACKAGE.
 ```
@@ -1135,6 +1142,7 @@ prompt: |
 ```
 description: "Master Review R[N] — Circular Dependencies Lens (verification)"
 subagent_type: "lens-circular-deps"
+model: opus
 prompt: |
   Re-check the just-fixed diff for circular dependencies and late imports. Working directory: $WORKDIR. Branch: $BASE_BRANCH...HEAD. Context: $CONTEXT_PACKAGE.
 ```

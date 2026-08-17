@@ -4,8 +4,11 @@
 # WHY A THIRD WRAPPER (deliberate — do not consolidate): the existing
 # god-review/lib/codex-invoke.sh and ui-audit/lib/codex-invoke.sh pin xhigh effort, thread
 # CODEX_HOME accounts, and write "[unavailable]" INLINE into the output file — load-bearing
-# contracts for those subsystems. THIS wrapper has a different contract: unpinned effort
-# (the config's `max` is authoritative), a SEPARATE machine-readable `.status` sidecar
+# contracts for those subsystems. THIS wrapper has a different contract: effort comes from the
+# CALLER when it sets one, else from `~/.codex/config.toml` — the wrapper never hardcodes a value
+# and never asserts what the config currently says. (It said `max` here until 2026-08-17; it was
+# `high`, and codex-review.md cited this header as its authority, so the wrong value propagated.
+# State the MECHANISM, never the value.) Plus a SEPARATE machine-readable `.status` sidecar
 # (the output file stays pure model output), and a portable process-group timeout.
 #
 # Usage: codex-exec.sh <promptfile> <outfile> [workdir]
@@ -38,14 +41,17 @@ _status() {  # _status <token> — atomic sidecar write
 [ -f "$PROMPT" ] || { echo "codex-exec: prompt file not found: $PROMPT" >&2; _status unavailable; exit 127; }
 command -v codex >/dev/null 2>&1 || { echo "codex-exec: codex CLI not on PATH" >&2; _status unavailable; exit 127; }
 
-# NEWEST-MODEL drift-guard: the config was deliberately UNPINNED live on 2026-07-12 so the CLI
-# default tracks the newest model on every Codex release. A re-added pin silently strands every
-# consumer on an old model — warn LOUDLY (do not auto-edit the user's config).
-if grep -Eq '^model *=' "$HOME/.codex/config.toml" 2>/dev/null; then
-  echo "codex-exec: WARNING — ~/.codex/config.toml pins 'model=' again; policy (2026-07-12) is UNPINNED so the CLI tracks the newest model. Remove the pin." >&2
-fi
+# MODEL PIN: allowed, deliberately. The 2026-07-12 never-pin policy was REVERSED by the owner on
+# 2026-08-17 ("it just has the models I want") — the config names the model the owner wants and this
+# wrapper does not second-guess it. The drift-guard that used to live here is GONE on purpose: it
+# fired on EVERY invocation for weeks against a config the owner intended, so it taught readers to
+# ignore wrapper stderr, which is worse than having no guard at all. A warning nobody reads is not a
+# safety feature. Do not re-add it without a new owner ruling.
 
-# ONE effort contract: no override by default; env may only raise.
+# ONE effort contract: the CALLER sets its lane's effort; unset = the config value is used as-is.
+# Review lanes pass CODEX_EFFORT explicitly (codex-review.md, mission.md, plan.md, prepare-pr.md) —
+# before 2026-08-17 nothing anywhere set this variable, so the branch below was dead code and every
+# pass silently took the config value.
 EFFORT_ARGS=()
 if [ -n "${CODEX_EFFORT:-}" ]; then
   case "$CODEX_EFFORT" in

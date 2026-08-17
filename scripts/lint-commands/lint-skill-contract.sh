@@ -257,5 +257,25 @@ L="commands/plan.md"
 req "$L" "CRITICAL - research is a parallel fan-out"
 req "$L" "in a SINGLE message"
 
+# --- Codex effort is PINNED per lane, never inherited (2026-08-17) ---
+# Until this date NOTHING anywhere set CODEX_EFFORT, so codex-exec.sh's effort branch was dead
+# code and every Codex pass silently ran at whatever ~/.codex/config.toml happened to say. The
+# failure was invisible: a lane running at the wrong effort returns a weaker review, not an error.
+# These pins are the machine that keeps a caller from quietly dropping back to inheritance.
+# NOTE the shape being pinned is the SAME-LINE env prefix. req() counts LINES, so a prefix that
+# gets split onto its own line would still satisfy a naive grep while no longer applying to the
+# command - hence the literal includes the trailing `bash `.
+req "$X" "CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash " 4
+req "$L" "CODEX_EFFORT=high bash "
+req "commands/mission.md" "CODEX_EFFORT=high bash "
+req "commands/prepare-pr.md" "CODEX_EFFORT=high bash "
+# plan.md runs TWO Codex lanes at DIFFERENT efforts on purpose: executability at xhigh (a missed
+# dependency there costs a whole implementation round), value-critic at high. Pinning both is what
+# stops the pair collapsing back into one lane, or into two lanes with the same prompt and effort -
+# which is what it was before 2026-08-17 (two reviewers, byte-identical prompts, called independent).
+req "$L" "CODEX_EFFORT=xhigh bash "
+# The three DIRECT `codex exec` sites (codex-review.md :244/:248/:560) deliberately do NOT take
+# this prefix - they never read the variable. Do not "fix" them by adding one.
+
 [ $fail -eq 0 ] && echo "lint-skill-contract: OK"
 exit $fail
