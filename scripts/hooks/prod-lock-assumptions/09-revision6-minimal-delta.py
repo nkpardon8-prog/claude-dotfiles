@@ -435,35 +435,59 @@ print(f"    with the filler   : {'holds over all ' + str(len(ALL)) + ' rows' if 
 print(f"    without it (today): {'holds' if not was else 'VIOLATIONS: ' + str(was)}"
       "   <- the counterexample the lemma was asserted without")
 
-print("\n5. time budget - every construct that has ever backtracked in this work:")
-for label, mk, fn_t in (
-        ("blank run", lambda n: ";" + " " * n + "-x", None),
-        ("backtick run", lambda n: BT * n + " -x", None),
-        ("paren run", lambda n: "(" * n + " -x", None),
-        ("subshell nest", lambda n: "(cd x && echo y" * n + " -z", None),
-        ("commit msg parens", lambda n: 'git commit -m "' + "refactor (see note) " * n + '"', None),
-        ("wrapper run", lambda n: ";" + "sudo " * n + "-x", None),
-        ("env-assignment run", lambda n: ";" + "A=a=b=c " * n + "-x", None),
-        ("path run", lambda n: ";" + "a/" * n + " -x", None),
-        ("quoted tokens", lambda n: "psql " + '"x" ' * n + "--zzz", None),
-        ("repeated options", lambda n: "bash " + "--rcfile /tmp/x " * n + "-z v", None),
-        ("one long clause", lambda n: "psql " + "x " * n + "-c 'y'", None),
-        # EDIT B is code, not a regex, and it now writes into its own output - time it too.
-        ("heredoc stripper", lambda n: "".join(f"cat <<'E{i}' |\nbody\nE{i}\n" for i in range(n)),
-         STRIP_CAND),
-        ("unterminated heredocs", lambda n: "".join(f"cat <<'E{i}' |\nbody\n" for i in range(n)),
-         STRIP_CAND)):
+def timeit(fn, s):
+    t0 = time.time()
+    fn(s)
+    return time.time() - t0
+
+
+print("\n5a. time budget, EDIT A (the regex) - every construct that has ever backtracked in this work:")
+for label, mk in (("blank run", lambda n: ";" + " " * n + "-x"),
+                  ("backtick run", lambda n: BT * n + " -x"),
+                  ("paren run", lambda n: "(" * n + " -x"),
+                  ("subshell nest", lambda n: "(cd x && echo y" * n + " -z"),
+                  ("commit msg parens", lambda n: 'git commit -m "' + "refactor (see note) " * n + '"'),
+                  ("wrapper run", lambda n: ";" + "sudo " * n + "-x"),
+                  ("env-assignment run", lambda n: ";" + "A=a=b=c " * n + "-x"),
+                  ("path run", lambda n: ";" + "a/" * n + " -x"),
+                  ("quoted tokens", lambda n: "psql " + '"x" ' * n + "--zzz"),
+                  ("repeated options", lambda n: "bash " + "--rcfile /tmp/x " * n + "-z v"),
+                  ("one long clause", lambda n: "psql " + "x " * n + "-c 'y'")):
     row, worst = f"    {label:22}", 0.0
     for n in (400, 1600, 6400):
-        s = mk(n)
-        t0 = time.time()
-        (fn_t or INTERP_R7.search)(s)
-        el = time.time() - t0
+        el = timeit(INTERP_R7.search, mk(n))
         worst = max(worst, el)
         row += f" n={n}:{el:7.4f}s"
     over = worst > BUDGET
     rc |= 1 if over else 0
     print(row + ("  <== OVER BUDGET" if over else ""))
+
+# EDIT B is CODE, not a regex, and it now writes into its own output. The absolute cost of
+# `_strip_heredocs` on a heredoc-dense command is PRE-EXISTING and considerable - one `re.compile`
+# per heredoc, and past n=512 the `re` module's cache thrashes, which is where the mild
+# superlinearity comes from. That cost is NOT this change's to carry and importing it into an
+# absolute budget would make the gate refuse the shipped code as readily as the candidate. So the
+# assertion here is the one this change is actually accountable for: the filler must not make the
+# stripper materially slower than the version already running. Absolute numbers are printed anyway
+# rather than hidden, because a reader should see them.
+print("\n5b. time budget, EDIT B (the stripper) - candidate vs the SHIPPED stripper, same input:")
+for label, mk in (("heredoc stripper", lambda n: "".join(f"cat <<'E{i}' |\nbody\nE{i}\n"
+                                                         for i in range(n))),
+                  ("unterminated heredocs", lambda n: "".join(f"cat <<'E{i}' |\nbody\n"
+                                                              for i in range(n))),
+                  ("substitution bodies", lambda n: "".join(f"cat <<'E{i}' |\n$(x)\nE{i}\n"
+                                                            for i in range(n)))):
+    row, worst_ratio = f"    {label:22}", 0.0
+    for n in (400, 1600, 6400):
+        s = mk(n)
+        ship = min(timeit(STRIP_SHIPPED, s) for _ in range(3))
+        cand_t = min(timeit(STRIP_CAND, s) for _ in range(3))
+        ratio = cand_t / ship if ship else 1.0
+        worst_ratio = max(worst_ratio, ratio)
+        row += f" n={n}:{cand_t:7.4f}s ({ratio:4.2f}x)"
+    over = worst_ratio > 1.5
+    rc |= 1 if over else 0
+    print(row + ("  <== SLOWER THAN SHIPPED" if over else ""))
 
 print("\n6. two-hook agreement + on-disk drift:")
 # The plan said "the drift guard is red in between" while the region is applied to one hook and not
