@@ -124,7 +124,12 @@ def _strip_heredocs(cmd):
         if not end:                                   # unterminated => fail closed
             out.append(cmd[pos:])
             return "".join(out)
-        if SUBST.search(cmd[nl + 1:end.start()]):     # substitutions execute => keep
+        # QUOTED heredocs (<<'TAG') do NOT expand substitutions - `$(` and a backtick are
+        # literal text there. Keeping the body on their account was unsound, and the kept
+        # body's PROSE then reached the classifier: a note-write merely DESCRIBING a deploy
+        # took the machine-wide lock (observed twice, 2026-08-17). m.group(1) is the opener's
+        # quote, so an empty group means unquoted, which is the only case that can execute.
+        if not m.group(1) and SUBST.search(cmd[nl + 1:end.start()]):  # unquoted only => keep
             out.append(cmd[pos:end.end()])
         else:
             # The `#` is the SPLICE GUARD. Deleting the body joins the opener line's tail directly

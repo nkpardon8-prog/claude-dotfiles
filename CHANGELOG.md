@@ -2,6 +2,67 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-17 (later) - The prod classifier stops filing documentation as deployment
+
+Second of the two things this hook got wrong. It decides "is this a production command?" by
+pattern-matching command TEXT, and it had been answering yes to searches, notes and diagnostics.
+
+### What landed
+
+| | before | after |
+|---|---|---|
+| checks (113 rows x 2 hooks) | 142/226 | **180/226** |
+| false positives | 60 | **16** |
+| undeclared regressions | 6 | **0** |
+| pinned fixtures | 80/80 | 80/80 |
+| fixture suite | 86/86 | 86/86 |
+
+`ag` and `ack` were **removed** from the ignore-list rather than kept with a declared loss. Each was
+measured to fix exactly zero real rows while each carries a channel that executes another program
+(`ack --pager='psql -c ...'`), so removing them closed that miss outright instead of documenting it.
+That is the difference between a trade-off and a mistake: a trade-off buys something.
+
+`sed` and `rg` stay, because each demonstrably fixes a common false alarm, and their exec channels
+are declared as one named class and printed on every run rather than buried.
+
+### The heredoc splice, and why the guard is a `#`
+
+Stripping a heredoc body joined the opener line's tail directly onto the terminator tag, so
+`cat <<'SH' |` followed by `SH` matched a shell-pipe branch in the STRIPPED text while the ORIGINAL
+matched nothing. Stripping a note-write CREATED a production verdict - the exact harm the stripping
+exists to prevent. The splice now writes a `#`, which is monotone-safe: `#` appears in no lead class,
+no anchor class and no literal of any branch, so no branch can REQUIRE it. Inserting it can only
+destroy a match, never create one.
+
+### A quoted heredoc does not expand substitutions, and we were pretending otherwise
+
+Found by being bitten by it twice in one session, including by the probe written to demonstrate it.
+
+`_strip_heredocs` kept ANY body containing `$(` or a backtick, on the reasoning that substitutions
+execute regardless of quoting. **Inside `<<'TAG'` they do not** - they are literal text. So a body
+that merely mentioned a deploy was kept, its prose reached the classifier, and a note-write took the
+machine-wide lock.
+
+The fix is one clause: `if not m.group(1) and SUBST.search(...)`. `m.group(1)` is the opener's quote,
+so an empty group means unquoted, which is the only case that can actually execute. Watched failing
+first (`is_prod` on a documentation heredoc: True -> False) with the unquoted control confirmed
+unchanged.
+
+### Declared losses now key on something unique
+
+`ACCEPTED_LOSSES` keyed on a free-text label, which made it a per-row allowlist wearing a per-class
+declaration's clothes: simultaneously too tight (in-class rows read as undeclared) and too loose (a
+future unrelated row reusing the label would be auto-forgiven on both hooks). It now keys on exact
+command text under a class id, with three integrity assertions that run BEFORE it may forgive
+anything.
+
+### The ceiling, stated because a score invites the wrong conclusion
+
+A lexical bypass defeats every version of this classifier. More importantly: **the lock still has no
+release path**, and 100% of the measured damage is DURATION, not frequency. This change means the
+machine is blocked wrongly less OFTEN. It does nothing about how LONG. That is the release work, and
+until it lands the honest summary of this entry is "an improvement, not a fix".
+
 ## 2026-08-17 - Model routing: effort is chosen per lane, and the routing is PROVEN to take effect
 
 Written here rather than in a commit message because the auto-sync daemon swept these changes into
