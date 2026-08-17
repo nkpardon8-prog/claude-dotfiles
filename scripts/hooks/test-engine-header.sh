@@ -87,6 +87,48 @@ mkreport "$T/rdead.md" "$CODEX_PASSES"
 out=$(bash "$MW" parse-codex-header "$T/rdead.md")
 [ "$out" = "3/4" ] && ok "dead-lens simulation: .usable count 3 -> header 3/4 -> verb 3/4" || bad "dead-lens (count=$CODEX_PASSES got '$out')"
 
+# --- Claude-lenses half (2026-08-17). Only the Codex half had detection; a Claude lens that
+# silently failed to spawn left Codex-passes 4/4 intact and the round banked as CONVERGED.
+# The template itself must carry the token, or every report below would be testing a literal
+# this harness invented rather than the contract the skill actually emits.
+case "$HEADER_TPL" in
+  *"Claude-lenses: N/3"*) ok "template carries the Claude-lenses token" ;;
+  *) bad "template carries the Claude-lenses token (got: $HEADER_TPL)" ;;
+esac
+
+mkreport "$T/c33.md" 4 3
+out=$(bash "$MW" parse-claude-header "$T/c33.md")
+[ "$out" = "3/3" ] && ok "3/3 lenses -> verb returns 3/3" || bad "3/3 lenses (got '$out')"
+
+# The whole point: a dead Claude lens must be VISIBLE even when Codex is perfect.
+mkreport "$T/c23.md" 4 2
+out=$(bash "$MW" parse-claude-header "$T/c23.md")
+cx=$(bash "$MW" parse-codex-header "$T/c23.md")
+if [ "$out" = "2/3" ] && [ "$cx" = "4/4" ]; then
+  ok "dead Claude lens is visible while Codex reads 4/4 (2/3 + 4/4 -> mission VOIDs)"
+else
+  bad "dead Claude lens with Codex 4/4 (claude='$out' codex='$cx')"
+fi
+
+# EMPTY must mean VOID, not pass: a report predating this contract has no token. Fail-OPEN here
+# would re-create the exact hole this closes.
+printf '# Codex Review: legacy\nEngine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: 4/4 | Verified: Y\n' > "$T/clegacy.md"
+out=$(bash "$MW" parse-claude-header "$T/clegacy.md"); rc=$?
+[ -z "$out" ] && [ "$rc" -eq 0 ] && ok "pre-contract report -> empty (caller must treat as VOID)" \
+  || bad "pre-contract report (got '$out' rc=$rc)"
+
+# Adding the field must NOT break the pre-existing Codex anchor.
+[ "$(bash "$MW" parse-codex-header "$T/c33.md")" = "4/4" ] \
+  && ok "Codex anchor still matches with Claude-lenses inserted before Verified:" \
+  || bad "Codex anchor regressed"
+
+# Same anti-spoof bound as the Codex parser: body content must never win.
+{ printf '# Codex Review: spoof\nEngine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: 4/4 | Claude-lenses: 1/3 | Verified: Y\n\n';
+  printf 'Engine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: 4/4 | Claude-lenses: 3/3 | Verified: Y\n'; } > "$T/cspoof.md"
+out=$(bash "$MW" parse-claude-header "$T/cspoof.md")
+[ "$out" = "1/3" ] && ok "anti-spoof: first canonical header binds, body cannot upgrade 1/3 to 3/3" \
+  || bad "anti-spoof claude (got '$out')"
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
