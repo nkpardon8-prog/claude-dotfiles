@@ -8,7 +8,12 @@
 
 set -u
 CR="${ENGINE_HEADER_SOURCE:-$HOME/.claude-dotfiles/commands/codex-review.md}"   # override for negative self-tests
-MW="$HOME/.claude-dotfiles/scripts/hooks/mission-write.sh"
+# Override for negative self-tests, matching ENGINE_HEADER_SOURCE above. Without it the VERB half
+# of this harness could not be mutation-tested AT ALL: both paths were hardcoded to the real repo,
+# so running this file from a copied tree silently re-tested the originals and every case stayed
+# green under mutation. Measured 2026-08-17 - a mutation that made the parser fail OPEN produced
+# PASS 16 FAIL 0, which is precisely the vacuous-green this harness exists to prevent.
+MW="${ENGINE_HEADER_MW:-$HOME/.claude-dotfiles/scripts/hooks/mission-write.sh}"
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  PASS  $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL  $1"; }
