@@ -670,7 +670,10 @@ replay). This is what a wake sees when a background lane completes but this turn
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await <sid> <root> "part=<N> phase=review round=<K> kind=job op=review-barrier attempt=<A> need=3 got=0"
 ```
 Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees the other's output:
-- the **implementation-reviewer subagent** (plan-completeness / quality) — Claude, spawned normally (medium);
+- the **implementation-reviewer subagent** (plan-completeness / quality) — Claude, spawned normally at
+  its definition's model and effort. Pass NO per-call model here: this lane is the primary Claude
+  judgment on whether the build matches the plan, and a cheaper model reviewing its own tier's work
+  is how a bad build gets waved through;
 - Invoke the Skill tool with `skill: codex-review --effort high`. Continue once it returns. (The
   `--effort high` arg pins its Codex passes at high → the full 4 Codex + 3 Claude cross-model panel + verify.
   High is the right floor for this convergence LOOP: it re-runs to 2-dry and finds everything across rounds,
