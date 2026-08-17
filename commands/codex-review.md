@@ -665,7 +665,7 @@ real one, defeating a downstream parser. Keeping the title single-line makes tha
 <!-- ENGINE-HEADER-FORMAT -->
 ```markdown
 # Codex Review: [target summary — single line, newlines stripped]
-Engine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: N/4 | Verified: [Y/N]
+Engine: 4x Codex + 3x Claude + Codex Verification | Codex-passes: N/4 | Claude-lenses: N/3 | Verified: [Y/N]
 
 ## Critical [must fix]
 - [ ] [definite] Finding — file:line — explanation (codex-1 + codex-3 + claude/architecture)
