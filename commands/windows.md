@@ -441,16 +441,21 @@ Match the request to its row; use the listed channel; don't improvise.
 | `/windows disconnect` | Click the CRD "Disconnect" button by label. (Lives in `crd.md`.) |
 | `/windows status` | Health audit: tab present? title match? `crdMeta()` rect ok? clipboard-sync checked? hang/frozen-tab probe? (Lives in `crd.md`.) |
 
-> **Delegation posture:** the **precision click loop runs in ONE Sonnet-5
-> sub-agent that owns the WHOLE loop** — coarse-locate → loupe → crosshair-confirm
-> → clear → `click_at` → verify. Delegating the entire loop to one agent satisfies
-> "never SPLIT a click→screenshot→verify loop" (it's wholly delegated, not split);
-> Opus main-thread only orchestrates and recovers. Spawn it on `model:
-> "claude-sonnet-5"` at low/med reasoning effort. **Screenshots MUST be
+> **Delegation posture — the browser work runs on SONNET, always (owner instruction,
+> 2026-08-17: put the work under a Sonnet sub-agent, "that's it").** The **precision
+> click loop runs in ONE Sonnet-5 sub-agent that owns the WHOLE loop** — coarse-locate
+> → loupe → crosshair-confirm → clear → `click_at` → verify. Delegating the entire loop
+> to one agent satisfies "never SPLIT a click→screenshot→verify loop" (it's wholly
+> delegated, not split); the main thread only orchestrates and recovers — it does NOT
+> drive the canvas itself. Spawn on `model: "claude-sonnet-5"` at low/med reasoning
+> effort. **There is no Opus escalation path**: a sub-agent that gets stuck returns an
+> "inconclusive" report after ~2 attempts, and that report goes to the USER — never
+> re-spawn the same task on a bigger model. To retry with more guidance, `SendMessage`
+> the SAME agent (its context and the live CRD tab are preserved). **Screenshots MUST be
 > JPEG-compressed** — `take_screenshot({format:'jpeg', quality:50})` — in **bounded
 > batches of ~10 targets**: a PNG-screenshotting loop hits the chrome-devtools MCP
 > **32MB request limit and dies** (proven this session). Heavy page enumeration (a
-> big `list_pages`, a deep `take_snapshot` dump) may also be delegated.
+> big `list_pages`, a deep `take_snapshot` dump) is delegated the same way.
 
 ## See also (dotfiles only — NOT on the deployed `~/.claude/` path)
 
