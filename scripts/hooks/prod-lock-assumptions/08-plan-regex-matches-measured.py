@@ -104,12 +104,12 @@ print(f"B1 _strip_heredocs vs scorer   identical on {len(rows) - len(hd)}/{len(r
 rc |= 0 if not hd else 1
 
 # --- B2: ...and the _strip_heredocs the LIVE HOOKS are running -----------------------------------
-for hookname, hns in (("gate", m.gate), ("ledger", m.ledger)):
-    disk_h = hns["_strip_heredocs"]
-    bad = [c for c in rows if disk_h(c) != plan_strip_h(c)]
-    rc |= 0 if not bad else 1
-    print(f"B2 _strip_heredocs vs {hookname:6} on disk  ->  "
-          f"{'MATCH' if not bad else f'MISMATCH on {len(bad)}/{len(rows)} rows - NOT APPLIED'}")
+for fname, planfn in (("_strip_heredocs", plan_strip_h), ("_strip_inert_data", plan_strip)):
+    for hookname, hns in (("gate", m.gate), ("ledger", m.ledger)):
+        bad = [c for c in rows if hns[fname](c) != planfn(c)]
+        rc |= 0 if not bad else 1
+        print(f"B2 {fname:18} vs {hookname:6} on disk  ->  "
+              f"{'MATCH' if not bad else f'MISMATCH on {len(bad)}/{len(rows)} rows - NOT APPLIED'}")
 
 print(f"\n{'plan == scorer == both hooks on disk' if rc == 0 else 'PLAN, MEASUREMENT AND DISK DISAGREE - see above'}")
 sys.exit(rc)
