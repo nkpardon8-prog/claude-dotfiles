@@ -142,10 +142,26 @@ jobs:
           # Enrolling a harness here REQUIRES first proving it green with the checkout
           # OUTSIDE $HOME. test-lint-skill-size.sh qualified only after its $HOME hard-code
           # was replaced with a BASH_SOURCE-derived root.
+          #
+          # TWO INTERPRETERS, ONE LIST (2026-08-17). Two of the harnesses are PYTHON, and the
+          # bash loop physically cannot run them: `bash test-prod-classifier-fixtures.py` does
+          # not fail closed with a clean nonzero - it parses the file AS SHELL and emits
+          # "import: command not found" for every import, then a syntax error. Measured. So the
+          # loop dispatches on the extension rather than assuming one interpreter. They stay in
+          # the SAME list and the SAME `failed` aggregate on purpose: a second step would split
+          # the report in half and reintroduce, at the step level, exactly the "one red harness
+          # hides the rest" bug the `|| rc=$?` guard below exists to prevent.
+          # A missing python3 is NOT silently tolerated - it surfaces as rc=127 through the same
+          # `|| rc=$?` path and fails the job, which is the fail-closed direction.
           failed=""
           for h in \
             scripts/hooks/test-chain-primitives.sh \
-            scripts/hooks/test-lint-skill-size.sh ; do
+            scripts/hooks/test-lint-skill-size.sh \
+            scripts/hooks/test-codex-build-chunk.sh \
+            scripts/hooks/test-mission-doc-drift.sh \
+            scripts/hooks/test-mission-pending-reask.sh \
+            scripts/hooks/test-prod-classifier-fixtures.py \
+            scripts/hooks/test-no-detach-fixtures.py ; do
             echo "=== $h ==="
             if [ ! -f "$h" ]; then
               # A renamed or deleted harness must not vanish from coverage quietly - that is
@@ -155,7 +171,10 @@ jobs:
               continue
             fi
             rc=0
-            bash "$h" </dev/null || rc=$?
+            case "$h" in
+              *.py) python3 "$h" </dev/null || rc=$? ;;
+              *)    bash    "$h" </dev/null || rc=$? ;;
+            esac
             [ "$rc" -eq 0 ] || failed="$failed $h(rc=$rc)"
           done
           if [ -n "$failed" ]; then
