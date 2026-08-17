@@ -115,6 +115,11 @@ NON-CODE TARGETS ONLY (arrived via Step 2b's Claude-only branch; CODEX_PASSES n/
 **Code targets - Step 4b, after the Step 3d merge:**
 CRITICAL - EXACTLY 1 Agent call: the Adversarial + FP-filter lens, passing **`model: "opus"`** - it overrules the other lanes and filters their false positives, so it is the one lens where judgment quality is load-bearing. It is spawned LATE on purpose - its FP-filter half consumes the merged Codex findings, which do not exist until 3d. `CODEX_PASSES` = 0 degrades it to adversarial-only (Step 4b's degrade rule).
 
+**Step 3c-claude - EVERY Claude lens must PROVE it ran (sidecar), exactly as each Codex pass does.**
+Append this line verbatim to the prompt of EVERY Claude lens Agent call (all three: architecture, integration, adversarial):
+`As your FINAL action, run: printf 'ok\n' > "<dir>/claude-<slug>.usable"  (<slug> = architecture|integration|adversarial). Do this LAST, after your findings are written - it is the only proof you ran.`
+Then `Claude-lenses: N/3` = the count of `claude-*.usable` files reading `ok` in `<dir>`, **counted off disk at Step 7f**, never from memory. WHY A SIDECAR AND NOT THE ORCHESTRATOR'S OWN RECOLLECTION: a lens that fails to spawn returns nothing, and "nothing" is indistinguishable from "I did not look" in a context window - it is precisely the failure that stayed invisible here. A file on disk is the only version of this claim that can be checked by someone other than the claimant. An Agent call that returns an error, returns empty, or leaves no sidecar is NOT usable and MUST lower `N` - and per the owner ruling of 2026-08-17 (`we cannot move on without reviewing`) a short count VOIDs the round downstream rather than degrading it silently.
+
 Consequence recorded, not hidden: the two 4a lenses launch BEFORE any Codex output exists, so they
 never see it. Their prompts must therefore contain no reference to Codex findings; the merged output
 still reaches the 4b FP-filter and the Step 5 meta-review.
