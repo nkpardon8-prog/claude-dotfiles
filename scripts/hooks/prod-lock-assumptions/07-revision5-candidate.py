@@ -29,7 +29,9 @@ def _load_05():
     spec = importlib.util.spec_from_file_location("sc", os.path.join(D, "05-classifier-candidates.py"))
     m = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(m)
+        # 05 scores on import; swallow its report so only THIS file's numbers are printed.
+        with contextlib.redirect_stdout(io.StringIO()):
+            spec.loader.exec_module(m)
     except SystemExit:
         pass
     finally:
