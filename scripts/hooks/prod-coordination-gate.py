@@ -12,13 +12,39 @@ Design:
     malformed/unreadable lock state or a failed lock write blocks the command.
   * NARROW. Only genuinely prod-mutating commands are gated (Cloud Run deploy,
     prod migration apply, role BYPASSRLS flips). Everything else exits instantly.
-  * MANUAL STALE RECOVERY. A stale lock is never auto-replaced: pathname-level
-    stale takeover has no compare-and-swap and can erase a concurrent renewal.
+  * RELEASED ON COMPLETION. The PostToolUse half (prod-lock-release.py) removes
+    THIS session's lock the instant the command returns — success, error, or
+    user interrupt alike. Before that existed, NOTHING ever released the lock:
+    every claim, including every false positive, was held until a human deleted
+    the file (measured holds: 2d17h, 18h52m, 4h+). 100% of the measured damage
+    was DURATION, and that is what the release half removes.
+  * AUTO-RECLAIM ONLY FROM A PROVABLY DEAD HOLDER. The lock now records the
+    holder's session `claude` pid AND its start time. A holder that `ps`
+    positively reports as gone (or whose pid has been REUSED by a
+    different-start-time process) is dead, and its lock is reclaimed regardless
+    of age. Anything less certain — a live holder, a `ps` that failed, or a
+    legacy lock with no pid — is NEVER reclaimed and still needs a human.
+  * NO IN-PLACE STALE TAKEOVER. Reclaim is unlink-THEN-link, never os.replace:
+    a pathname-level replace has no compare-and-swap and can erase a renewal
+    that landed between the read and the write.
 """
-import sys, json, os, time, re, secrets
+import os
+import json
+import re
+import secrets
+import subprocess
+import sys
+import time
 
 LOCK = os.path.expanduser("~/.claude/prod.lock")
-TTL = 900  # seconds (15 min) — stale locks are ignored/overwritten
+# Seconds. A lock older than this is STALE. Stale does NOT mean ignored and does
+# NOT mean overwritten — the comment that used to claim that here was simply
+# false, and it papered over the whole defect: a stale lock BLOCKS and is left
+# byte-for-byte in place for a human to reconcile (see `block()` below). Lowered
+# 900 -> 300 once the PostToolUse release covered the ordinary case in seconds:
+# the TTL is now only the worst case for a holder we cannot prove dead, and 15
+# minutes of machine-wide blockage was a far too generous worst case.
+TTL = 300
 
 # Narrow set of genuinely prod-mutating, hard-to-undo operations.
 PROD = re.compile(
