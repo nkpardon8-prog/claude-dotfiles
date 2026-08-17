@@ -31,6 +31,25 @@ OPPOSITE and release on those too: a failed or user-interrupted command is
 precisely the case that strands the lock today. So `tool_response` is read for
 nothing. It is not consulted anywhere below, and that is the whole point.
 
+MEASURED HARNESS GAP — read this before trusting the polarity above.
+The hook ignores tool_response, so it WOULD release on a failed or interrupted
+command. The harness never gives it the chance: probed 2026-08-17 with a
+throwaway PostToolUse hook, a Bash tool call that exits non-zero fires NO
+PostToolUse hook at all (a succeeding call in the same session logged; the
+failing one did not). Two further facts from the same probe: the Bash
+`tool_response` carries {stdout, stderr, interrupted, isImage, noOutputExpected}
+and NO `isError` key at all, and the release still ran correctly on the success
+path. So in practice a lock taken by a command that then FAILS is not released
+here; it is released by that session's NEXT successful Bash command (same sid),
+and if the window is abandoned instead, by the gate's provably-dead reclaim once
+the window exits. Worst case is bounded by one command or one window lifetime —
+not the days it used to be — but it is NOT zero.
+
+This file needs nothing but `session_id`, so registering it additionally on
+`Stop` would close that gap. That is deliberately NOT done here: it could not be
+verified inside the session that wrote it, and an unverified registration on a
+machine-wide safety path is worse than a stated gap.
+
 RACE SAFETY. Reading the lock and then unlinking it is a check-then-act, so in
 principle we could unlink a lock some other session took in between. That cannot
 happen, by construction: the only way another session takes a lock it does not
