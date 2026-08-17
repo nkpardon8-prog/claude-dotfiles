@@ -144,7 +144,7 @@ def gate_lock_case(initial_bytes=None, ps_shim=None):
             os.makedirs(bindir, exist_ok=True)
             shim = os.path.join(bindir, "ps")
             with open(shim, "w") as stream:
-                stream.write("#!/bin/sh\nLOCK=" + lock + "\n" + ps_shim)
+                stream.write("#!/bin/sh\nLOCK='" + lock + "'\n" + ps_shim)
             os.chmod(shim, 0o755)
             env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
         result = subprocess.run(
