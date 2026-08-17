@@ -245,3 +245,25 @@ jobs:
       #   test-mission-drift-check.sh - rc=2 in a relocated checkout; also owned by the other
       #                                 concurrent session, so ATTRIBUTION applies as above.
       # Re-enroll a harness ONLY after proving it green with the checkout outside $HOME.
+      #
+      # THAT BAR IS NECESSARY BUT NOT SUFFICIENT - tightened 2026-08-17, after test-mission-
+      # bridge.sh and test-mission-liveness.sh passed the outside-$HOME test on macOS (83/0 and
+      # 21/0) and were still red on Linux. Reproduce the RUNNER, not just the relocation. All
+      # four of these are load-bearing and each one caught something the others missed:
+      #   1. checkout OUTSIDE a shadowed $HOME  - catches the $HOME/.claude-dotfiles hard-codes
+      #   2. LINUX, not macOS                   - catches BSD-only stat/date (the two above)
+      #   3. NON-ROOT                           - as root, chmod-based negative cases go SKIP or
+      #                                           falsely pass; run as a normal uid or the proof
+      #                                           is weaker than it reads
+      #   4. the tools the runner actually has  - `jq` is preinstalled on ubuntu-latest, so a
+      #                                           bare container without it produces FAKE reds.
+      #                                           test-chain-primitives.sh reported 17/4 that way
+      #                                           and is 21/0 with jq present; do not "fix" a
+      #                                           harness against a container poorer than CI.
+      # A local recipe that satisfies all four (docker is enough; no runner access needed):
+      #   git clone --no-hardlinks <repo> /tmp/co
+      #   docker run --rm -v /tmp/co:/src:ro ubuntu:latest bash -c '
+      #     apt-get update -qq && apt-get install -y -qq git python3 jq
+      #     useradd -m -u 1001 ci; cp -r /src /w2; chown -R ci /w2
+      #     su ci -c "export HOME=/home/ci; cd /w2; bash scripts/hooks/<harness>.sh </dev/null"'
+      # Never suppress stderr while doing this: a silenced failure reads as a confident pass.
