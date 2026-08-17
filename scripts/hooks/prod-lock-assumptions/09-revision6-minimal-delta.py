@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Revision 6 - MINIMAL DELTA from shipped, and the scorer that gates it.
+"""Revision 7 - MINIMAL DELTA from shipped, and the scorer that gates it.
 
 WHY THIS SHAPE. Revisions 1-4 replaced shipped's third branch with a closed interpreter-name list
 plus extra branches. Each collapsed the moment a review lane that had not written the regex
@@ -7,18 +7,51 @@ contributed rows (rev4: declared a mechanically verified strict subset, then mea
 and two catastrophic-backtracking families). The converged diagnosis is a DESIGN one: shipped's
 alt-3 `\\s-[a-z]*[ce]\\s+['\"]` is NAME-AGNOSTIC, and that is exactly why it never regresses.
 
-So all five shipped branches stay EXACTLY as they are and the only change is a SUBTRACTION: a
-demonstrable search tool cannot trigger alt-3.
+So all five shipped branches stay EXACTLY as they are and there are exactly TWO changes:
+  EDIT A  a SUBTRACTION on alt-3: a demonstrable search tool cannot trigger it.
+  EDIT B  `_strip_inert_data` decides on the heredoc-STRIPPED text, and `_strip_heredocs` writes a
+          `#` between the opener line and the terminator tag so the deletion cannot SPLICE.
 
 WHAT THIS FILE GATES (it exits non-zero on any failure):
-  1. strict subset of shipped's error set, computed mechanically, over every row any lane wrote
+  1. strict subset of shipped's error set, computed mechanically, over every row any lane wrote,
+     with false POSITIVES and false NEGATIVES reported separately (they are not the same harm)
   2. both OBSERVED incident rows asserted BY NAME, not folded into an aggregate
-  3. the 40 pinned fixtures still preserved - checked BEFORE any file is edited
-  4. two mutation checks, as CODE, each with a sentinel that must flip
+  3. the 40 pinned fixtures (80 checks) still preserved - checked BEFORE any file is edited
+  4. five mutation checks, as CODE, each with a sentinel that must flip
   5. the heredoc lemma that "strict subset" silently depends on
   6. a linear-time budget over every construct that has ever backtracked here
 
-Round-5 review corrections folded in, each measured, none assumed:
+Round-7 resolutions (the three items that PARKED revision 6):
+
+  P1  THE DENIED NAME'S EXEC CHANNEL, resolved by name rather than declared once and understated.
+      Every name on the deny-list is now classified by whether it has a channel that EXECUTES
+      another program:
+        grep / egrep / fgrep  - NO exec channel. Safe to deny outright.
+        rg / sed              - HAVE one (`rg --pre`, `sed -e '1e cmd'` / `s///e`) and are each
+                                MEASURED to fix a real false positive, so the owner's ruling on
+                                `sed` applies to both: keep the name, take the loss, DECLARE it.
+        ag / ack              - HAVE one (`--pager`) and are measured to fix NOTHING (removing them
+                                changes the score by zero). Both tests agree, so they are REMOVED.
+                                That closes the `ack --pager='psql -c "..."'` false negative.
+      The residual is now one named class with an enumerated membership, not a prose aside.
+
+  P2  THE HEREDOC LEMMA WAS FALSE. `cat <<'SH' |` / body / `SH` / `wc -l`: deleting the body
+      spliced the opener line's trailing `|` onto the `SH` terminator, so shipped's branch 5
+      (`\\|\\s*(?:ba|z|da|k)?sh\\b`) matched the STRIPPED text and not the original - falsifying the
+      lemma AND creating a NEW false positive on a note-write, the exact harm this work removes.
+      Fixed by writing a `#` at the splice. `#` is monotone-SAFE: it appears in no lead class, no
+      anchor class and no literal in any branch, so no branch can REQUIRE it - insertion can only
+      ever destroy a match, never create one. It is also the right thing semantically: what is left
+      of the heredoc now reads as a shell comment.
+
+  P3  ACCEPTED_LOSSES KEYED ON FREE TEXT - a per-row allowlist wearing a per-class label. It was
+      simultaneously too tight (`sudo sed -i -e '1e cmd'`, in-class, read as UNDECLARED) and too
+      loose (any future row reusing the label string is forgiven silently, on BOTH hooks). Now
+      keyed on exact COMMAND TEXT, grouped under a class id, with three integrity assertions:
+      every declared command matches EXACTLY one row, no command is declared twice, and no
+      declared command is stale (declared but not actually a regression).
+
+Round-5 review corrections, still in force, each measured, none assumed:
   CR1  `awk` REMOVED from the deny-list - gawk takes program text via -e and awk shells out via
        system(); denying it silently removed detection shipped has.
   PRR1 the blanks moved INSIDE the lookahead. A standalone `[ \\t]*` BACKTRACKS, so the lookahead
@@ -53,8 +86,17 @@ with contextlib.redirect_stdout(io.StringIO()):      # 05 scores on import; we w
 gate, ledger = m.gate, m.ledger
 DEP, ROLE = m.DEPLOY, m.ROLEFLIP
 
-# ----------------------------------------------------------------- the candidate
-DENY = ["grep", "egrep", "fgrep", "rg", "ag", "ack", "sed"]
+# ----------------------------------------------------------------- EDIT A, the candidate pattern
+# Deny-list membership is decided by TWO tests, and a name must pass BOTH to stay:
+#   (justified)   removing it is MEASURED to fix a real false positive - rule 6 of the plan;
+#   (no exec)     OR, if it does have an execution channel, the loss that denying it takes is
+#                 enumerated in ACCEPTED_LOSSES below.
+# grep/egrep/fgrep: no execution channel of any kind, so denying them cannot create a false
+# negative. egrep/fgrep are measured-INERT on this corpus (removing them changes nothing) and are
+# retained as grep aliases on the mechanical argument, not an evidential one - recorded, not hidden.
+# rg/sed: justified AND have an exec channel -> kept, loss declared.
+# ag/ack: NOT justified AND have an exec channel (`--pager=CMD`) -> removed.
+DENY = ["grep", "egrep", "fgrep", "rg", "sed"]
 WRAP = (r"(?:(?:sudo|env|command|time|nohup|git)[ \t]+"
         r"|[A-Za-z_][A-Za-z0-9_]*=[^\s]*[ \t]+)*")
 PATHP = r"(?:[A-Za-z0-9_.~$-]*/)*"
@@ -92,6 +134,54 @@ def compile_with(a3):
 
 
 INTERP_R7 = compile_with(alt3())
+
+
+# ------------------------------------------------------- EDIT B, the splice-safe heredoc stripper
+# Parameterised on the FILLER so the mutation check can revert exactly this one construct, and so
+# this file holds no undrifted private copy of the hook: `disk_filler()` below proves the version on
+# disk is one of these two and says which.
+def mk_strip_heredocs(filler):
+    SUBST, HEREDOC_OPEN = gate["SUBST"], gate["HEREDOC_OPEN"]
+
+    def strip(cmd):
+        out, pos = [], 0
+        while True:
+            mo = HEREDOC_OPEN.search(cmd, pos)
+            if not mo:
+                out.append(cmd[pos:])
+                return "".join(out)
+            nl = cmd.find("\n", mo.end())
+            if nl == -1:                                  # no body on this call
+                out.append(cmd[pos:])
+                return "".join(out)
+            end = re.compile(r"^[ \t]*" + re.escape(mo.group(2)) + r"[ \t]*$",
+                             re.M).search(cmd, nl + 1)
+            if not end:                                   # unterminated => fail closed
+                out.append(cmd[pos:])
+                return "".join(out)
+            if SUBST.search(cmd[nl + 1:end.start()]):     # substitutions execute => keep
+                out.append(cmd[pos:end.end()])
+            else:
+                out.append(cmd[pos:nl + 1])
+                out.append(filler)
+                out.append(cmd[end.start():end.end()])
+            pos = end.end()
+
+    return strip
+
+
+STRIP_SHIPPED = mk_strip_heredocs("")     # what shipped does today
+STRIP_CAND = mk_strip_heredocs("#")       # what this change ships
+
+
+def probe_form(rx, strip):
+    """The candidate `_strip_inert_data`: decide on the STRIPPED text, return the ORIGINAL when an
+    interpreter fires (a body it may consume must stay scannable)."""
+    def f(cmd):
+        h = strip(cmd)
+        return cmd if rx.search(h) else m.quoted_sub(h)
+    return f
+
 
 # ----------------------------------------------------------------- the rows
 # Provenance is the point. Rows authored by a lane that did NOT write the regex are tagged with
@@ -139,7 +229,7 @@ ROUND5 = [
     (f"awk -e 'BEGIN{{system(\"{DEP}\")}}'", 1, 1, "criticer awk -e EXECUTES"),
     (f"grep -rn foo docs/ {BT}psql \"$U\" -c '{ROLE}'{BT}", 1, 1, "lane3 BACKTICK psql EXECUTES"),
     (f"grep -rn foo docs/ $(psql \"$U\" -c '{ROLE}')", 1, 1, "lane3 $( ) twin"),
-    (f"sed -e '1e {DEP}' /etc/hosts", 1, 1, "plan-reviewer GNU sed e EXECUTES [pd:7 accepted loss]"),
+    (f"sed -e '1e {DEP}' /etc/hosts", 1, 1, "plan-reviewer GNU sed e EXECUTES [exec-channel class]"),
     (f"sudo psql \"$P\" -c '{ROLE}'", 1, 1, "control sudo psql REAL"),
     (f"env FOO=1 psql \"$P\" -c '{ROLE}'", 1, 1, "control env psql REAL"),
     (f"./deploy.sh -c '{ROLE}'", 1, 1, "control relative-path REAL"),
@@ -166,12 +256,23 @@ ROUND6 = [
     # the `(` class: quadratic before the SCAN fix, and two false positives
     (f'(grep -niE "{DEP}|gcloud run services" docs/)', 0, 0, "plan-reviewer subshell grep"),
     (f'n=$(grep -niE "{DEP}" docs/)', 0, 0, "plan-reviewer VAR=$(grep"),
-    # STILL BROKEN after both round-6 fixes - the reason this part is PARKED, not shipped
+    # the three rows that PARKED revision 6, all resolved in round 7
     (f"sudo sed -i -e '1e {DEP}' /etc/hosts", 1, 1, "plan-reviewer sudo sed EXEC channel"),
     (f"ack --pager='psql -c \"{ROLE}\"' foo", 1, 1, "plan-reviewer ack --pager EXECUTES"),
     (f"cat <<'SH' |\n{DEP}\nSH\nwc -l", 0, 0, "plan-reviewer heredoc |SH LEMMA COUNTEREXAMPLE"),
 ]
-ALL = list(m.CORPUS) + HOLDOUT + ROUND4 + ROUND5 + ROUND6
+ROUND7 = [
+    # the exec-channel class, completed. `ag`/`ack` leave DENY (unjustified AND executing), so these
+    # two must PASS. `rg`/`sed` stay (each measured to fix a real FP) and their channel is DECLARED.
+    (f"ag --pager='psql -c \"{ROLE}\"' foo", 1, 1, "round7 ag --pager EXECUTES"),
+    (f"rg --pre='psql -c \"{ROLE}\"' foo .", 1, 1, "round7 rg --pre EXECUTES [exec-channel class]"),
+    (f"fgrep -e '{DEP}' docs/notes.md", 0, 0, "round7 fgrep is a search, no exec channel"),
+    # the splice class generalised beyond the SH tag that found it
+    (f"cat <<'BASH' |\n{DEP}\nBASH\nwc -l", 0, 0, "round7 splice, (ba)sh tag"),
+    (f"cat <<'ZSH' |\n{DEP}\nZSH\nsort", 0, 0, "round7 splice, zsh tag"),
+    (f"cat > notes.md <<'EOF'\n{DEP}\nEOF", 0, 0, "round7 splice control: no trailing pipe"),
+]
+ALL = list(m.CORPUS) + HOLDOUT + ROUND4 + ROUND5 + ROUND6 + ROUND7
 
 # The two rows this whole part exists for. OBSERVED, not invented.
 OBSERVED = [
@@ -182,46 +283,102 @@ OBSERVED = [
 
 
 def errset(fn, rows=None):
+    """(row index, command, hook, why, kind). `kind` is restored because a false POSITIVE and a
+    false NEGATIVE are not the same harm: 100% of the measured damage in this work is false
+    positives (a lock taken for a search), and there is no recorded false-negative incident at all.
+    Folding them into one count made the gate unable to say which direction it was refusing."""
     out = set()
     for i, (cmd, wg, wl, why) in enumerate(rows or ALL):
         for hn, ns, want in (("gate", gate, wg), ("ledger", ledger, wl)):
-            if m.classify(cmd, fn, ns) is not bool(want):
-                out.add((i, hn, why))
+            got = m.classify(cmd, fn, ns)
+            if got is not bool(want):
+                out.add((i, cmd, hn, why, "FALSE-NEG" if want else "FALSE-POS"))
     return out
 
 
-# A detection this change KNOWINGLY gives up, tied to the open decision that owns it. Declaring it
-# here is the point: the gate must not pass silently over a real loss, and must not fail opaquely
-# either. Anything NOT in this set is an undeclared regression and fails the run.
+# Detections this change KNOWINGLY gives up. Keyed on the exact COMMAND TEXT, grouped under a class
+# id - NOT on the free-text `why` label, which made this a per-row allowlist wearing a per-class
+# name: too tight (an in-class row with a different label read as UNDECLARED) and too loose (any
+# future unrelated row reusing the label was forgiven silently, on BOTH hooks). Three integrity
+# assertions below stop it drifting back: each declared command must match EXACTLY one corpus row,
+# no command may be declared twice, and a declared command that is not actually a regression is
+# STALE and fails the run.
 ACCEPTED_LOSSES = {
-    "plan-reviewer GNU sed e EXECUTES [pd:7 accepted loss]":
-        "pd:7-sed-deny-tradeoff - denying `sed` fixes the ubiquitous `sed -e 's/x/y/'` false "
-        "positive (4 checks) but gives up GNU sed's exotic executing form `sed -e '1e <cmd>'`. "
-        "Default taken pending a human answer; reversing it is one name in DENY.",
+    "pd:7-denied-name-exec-channel": {
+        "rationale":
+            "A deny-list name that itself has a channel for EXECUTING another program. `rg` and "
+            "`sed` are each MEASURED to fix a real false positive, so both stay denied and the "
+            "channel is given up - the owner's ruling on `sed` (keep the name, take the loss, "
+            "declare it openly) applied to the whole class rather than to one form of one name. "
+            "`ag`/`ack` had the same channel and fixed NOTHING, so they were REMOVED from DENY "
+            "instead. Reversing any of this is one name in DENY. Members enumerated below; the "
+            "class is CLOSED over the deny-list, since a name with no exec channel cannot join it.",
+        "commands": [
+            f"sed -e '1e {DEP}' /etc/hosts",
+            f"sudo sed -i -e '1e {DEP}' /etc/hosts",
+            f"rg --pre='psql -c \"{ROLE}\"' foo .",
+        ],
+    },
 }
 
 rc = 0
+
+# --- ACCEPTED_LOSSES integrity, asserted BEFORE it is allowed to forgive anything ---------------
+declared_cmds, dup, unmatched, ambiguous = {}, [], [], []
+for cls, spec in ACCEPTED_LOSSES.items():
+    for c in spec["commands"]:
+        if c in declared_cmds:
+            dup.append((cls, c))
+        declared_cmds[c] = cls
+        n = sum(1 for cmd, _, _, _ in ALL if cmd == c)
+        if n == 0:
+            unmatched.append((cls, c))
+        elif n > 1:
+            ambiguous.append((cls, c, n))
+
 base = errset(m.mk_current)
-cand = errset(m.probe_form(INTERP_R7))
+cand = errset(probe_form(INTERP_R7, STRIP_CAND))
 new = cand - base
-undeclared = {r for r in new if r[2] not in ACCEPTED_LOSSES}
+undeclared = {r for r in new if r[1] not in declared_cmds}
 declared = new - undeclared
+stale = sorted(set(declared_cmds) - {r[1] for r in new})
+
 print(f"rows {len(ALL)}   checks {len(ALL) * 2}   shipped errors {len(base)}\n")
-print(f"revision 6: {len(ALL) * 2 - len(cand)}/{len(ALL) * 2} | fixed {len(base - cand)} | "
+print("0. ACCEPTED_LOSSES integrity (keyed on COMMAND TEXT, not a label):")
+for cls, c in dup:
+    print(f"    DECLARED TWICE   [{cls}] {c!r}")
+for cls, c in unmatched:
+    print(f"    MATCHES NO ROW   [{cls}] {c!r}")
+for cls, c, n in ambiguous:
+    print(f"    MATCHES {n} ROWS  [{cls}] {c!r}")
+for c in stale:
+    print(f"    STALE (declared, not a regression) [{declared_cmds[c]}] {c!r}")
+bad_decl = bool(dup or unmatched or ambiguous or stale)
+rc |= 1 if bad_decl else 0
+print(f"    {len(declared_cmds)} declared command(s) in {len(ACCEPTED_LOSSES)} class(es); "
+      f"{'OK - each matches exactly one row and each is a real regression' if not bad_decl else 'BROKEN - see above'}")
+
+fp = sum(1 for r in cand if r[4] == "FALSE-POS")
+fn = len(cand) - fp
+bfp = sum(1 for r in base if r[4] == "FALSE-POS")
+print(f"\nrevision 7: {len(ALL) * 2 - len(cand)}/{len(ALL) * 2} | fixed {len(base - cand)} | "
       f"{'strict subset APART FROM the declared losses below' if not undeclared else f'NOT a subset ({len(undeclared)} UNDECLARED regressions)'}")
-for _, hn, why in sorted(undeclared, key=lambda x: x[2]):
-    print(f"    UNDECLARED REGRESSION [{hn:6}] {why}")
-for _, hn, why in sorted(declared, key=lambda x: x[2]):
-    print(f"    declared loss [{hn:6}] {why}")
-for why in sorted({w for _, _, w in declared}):
-    print(f"        -> {ACCEPTED_LOSSES[why]}")
+print(f"    errors by direction: shipped {bfp} FALSE-POS / {len(base) - bfp} FALSE-NEG"
+      f"  ->  candidate {fp} FALSE-POS / {fn} FALSE-NEG")
+for _, _, hn, why, kind in sorted(undeclared, key=lambda x: x[3]):
+    print(f"    UNDECLARED REGRESSION [{hn:6}] {kind} {why}")
+for _, c, hn, why, kind in sorted(declared, key=lambda x: x[3]):
+    print(f"    declared loss [{hn:6}] {kind} {why}  ({declared_cmds[c]})")
+for cls in sorted({declared_cmds[c] for _, c, _, _, _ in declared}):
+    print(f"        -> {cls}: {ACCEPTED_LOSSES[cls]['rationale']}")
 rc |= 1 if undeclared else 0
 print("  (the number is a property of these rows, not of the classifier)")
 
 print("\n1. OBSERVED incident rows, asserted by name:")
 for cmd, why in OBSERVED:
-    g = m.classify(cmd, m.probe_form(INTERP_R7), gate)
-    l = m.classify(cmd, m.probe_form(INTERP_R7), ledger)
+    fn_ = probe_form(INTERP_R7, STRIP_CAND)
+    g = m.classify(cmd, fn_, gate)
+    l = m.classify(cmd, fn_, ledger)
     ok = not g and not l
     rc |= 0 if ok else 1
     print(f"    {why:22} gate={'PROD' if g else 'SAFE'} ledger={'PROD' if l else 'SAFE'} "
@@ -235,7 +392,7 @@ exec(compile(_src[:_src.find("\ndef main()")], _f, "exec"), _ns)
 CASES, PRODC = _ns["CASES"], _ns["PROD"]
 broke = [(hn, cn) for cn, cmd, ge, le in CASES
          for hn, ns, exp in (("gate", gate, ge), ("ledger", ledger, le))
-         if m.classify(cmd, m.probe_form(INTERP_R7), ns) is not (exp == PRODC)]
+         if m.classify(cmd, probe_form(INTERP_R7, STRIP_CAND), ns) is not (exp == PRODC)]
 rc |= 1 if broke else 0
 print(f"    {len(CASES) * 2 - len(broke)}/{len(CASES) * 2}")
 for hn, cn in broke:
@@ -244,20 +401,25 @@ for hn, cn in broke:
 print("\n3. mutation checks - each must FLIP its sentinel (a test never watched failing is not a test):")
 MUTATIONS = [
     ("M1 remove the deny-list entirely",
-     compile_with(r"(?:^|" + ANCHOR + r")" + SCAN + r"*?\s-[a-z]*[ce]\s+['\"]"),
+     compile_with(r"(?:^|" + ANCHOR + r")" + SCAN + r"*?\s-[a-z]*[ce]\s+['\"]"), STRIP_CAND,
      f'grep -niE "{DEP}" docs/', 0),
     ("M2 anchor the deny-list at the token before the flag, not clause start",
      compile_with(r"(?:^|" + ANCHOR + r")(?![ \t]*" + WRAP + PATHP
-                  + r"(?:" + "|".join(DENY) + r")\b)\s*\S*\s-[a-z]*[ce]\s+['\"]"),
+                  + r"(?:" + "|".join(DENY) + r")\b)\s*\S*\s-[a-z]*[ce]\s+['\"]"), STRIP_CAND,
      f'psql "$PROD_URL" -c \'{ROLE}\'', 1),
     ("M3 blanks back OUTSIDE the lookahead (the PRR1 defect)",
-     compile_with(alt3(blanks_inside=False)), f'  grep -niE "{DEP}" docs/', 0),
+     compile_with(alt3(blanks_inside=False)), STRIP_CAND, f'  grep -niE "{DEP}" docs/', 0),
     ("M4 drop the backtick from the anchor class (the F2 defect)",
-     compile_with(alt3(anchor=r"[\n;|&(]", scan=r"[^\n;|&]")),
+     compile_with(alt3(anchor=r"[\n;|&(]", scan=r"[^\n;|&]")), STRIP_CAND,
      f"grep -rn foo docs/ {BT}psql \"$U\" -c '{ROLE}'{BT}", 1),
+    ("M5 drop the heredoc splice filler (the P2 defect)",
+     INTERP_R7, STRIP_SHIPPED, f"cat <<'SH' |\n{DEP}\nSH\nwc -l", 0),
+    ("M6 keep ag/ack denied (the P1 exec channel)",
+     compile_with(alt3(deny=DENY + ["ag", "ack"])), STRIP_CAND,
+     f"ack --pager='psql -c \"{ROLE}\"' foo", 1),
 ]
-for label, rx, sentinel, want in MUTATIONS:
-    got = m.classify(sentinel, m.probe_form(rx), gate)
+for label, rx, strip, sentinel, want in MUTATIONS:
+    got = m.classify(sentinel, probe_form(rx, strip), gate)
     red = got is not bool(want)
     rc |= 0 if red else 1
     print(f"    {label:62} {'flips -> RED' if red else 'STILL PASSES -> USELESS'}")
@@ -265,26 +427,37 @@ for label, rx, sentinel, want in MUTATIONS:
 print("\n4. heredoc lemma - 'strict subset' silently depends on this and nothing tested it:")
 print("   stripping a heredoc body must never CREATE a shipped match spanning the splice.")
 viol = [why for cmd, _, _, why in ALL
-        if m.INTERP_CUR.search(m.strip_heredocs(cmd)) and not m.INTERP_CUR.search(cmd)]
+        if m.INTERP_CUR.search(STRIP_CAND(cmd)) and not m.INTERP_CUR.search(cmd)]
+was = [why for cmd, _, _, why in ALL
+       if m.INTERP_CUR.search(STRIP_SHIPPED(cmd)) and not m.INTERP_CUR.search(cmd)]
 rc |= 1 if viol else 0
-print(f"    {'holds over all ' + str(len(ALL)) + ' rows' if not viol else 'VIOLATIONS: ' + str(viol)}")
+print(f"    with the filler   : {'holds over all ' + str(len(ALL)) + ' rows' if not viol else 'VIOLATIONS: ' + str(viol)}")
+print(f"    without it (today): {'holds' if not was else 'VIOLATIONS: ' + str(was)}"
+      "   <- the counterexample the lemma was asserted without")
 
 print("\n5. time budget - every construct that has ever backtracked in this work:")
-for label, mk in (("blank run", lambda n: ";" + " " * n + "-x"),
-                  ("backtick run", lambda n: BT * n + " -x"),
-                  ("paren run", lambda n: "(" * n + " -x"),
-                  ("subshell nest", lambda n: "(cd x && echo y" * n + " -z"),
-                  ("commit msg parens", lambda n: 'git commit -m "' + "refactor (see note) " * n + '"'),
-                  ("wrapper run", lambda n: ";" + "sudo " * n + "-x"),
-                  ("env-assignment run", lambda n: ";" + "A=a=b=c " * n + "-x"),
-                  ("path run", lambda n: ";" + "a/" * n + " -x"),
-                  ("quoted tokens", lambda n: "psql " + '"x" ' * n + "--zzz"),
-                  ("repeated options", lambda n: "bash " + "--rcfile /tmp/x " * n + "-z v"),
-                  ("one long clause", lambda n: "psql " + "x " * n + "-c 'y'")):
-    row, worst = f"    {label:20}", 0.0
+for label, mk, fn_t in (
+        ("blank run", lambda n: ";" + " " * n + "-x", None),
+        ("backtick run", lambda n: BT * n + " -x", None),
+        ("paren run", lambda n: "(" * n + " -x", None),
+        ("subshell nest", lambda n: "(cd x && echo y" * n + " -z", None),
+        ("commit msg parens", lambda n: 'git commit -m "' + "refactor (see note) " * n + '"', None),
+        ("wrapper run", lambda n: ";" + "sudo " * n + "-x", None),
+        ("env-assignment run", lambda n: ";" + "A=a=b=c " * n + "-x", None),
+        ("path run", lambda n: ";" + "a/" * n + " -x", None),
+        ("quoted tokens", lambda n: "psql " + '"x" ' * n + "--zzz", None),
+        ("repeated options", lambda n: "bash " + "--rcfile /tmp/x " * n + "-z v", None),
+        ("one long clause", lambda n: "psql " + "x " * n + "-c 'y'", None),
+        # EDIT B is code, not a regex, and it now writes into its own output - time it too.
+        ("heredoc stripper", lambda n: "".join(f"cat <<'E{i}' |\nbody\nE{i}\n" for i in range(n)),
+         STRIP_CAND),
+        ("unterminated heredocs", lambda n: "".join(f"cat <<'E{i}' |\nbody\n" for i in range(n)),
+         STRIP_CAND)):
+    row, worst = f"    {label:22}", 0.0
     for n in (400, 1600, 6400):
+        s = mk(n)
         t0 = time.time()
-        INTERP_R7.search(mk(n))
+        (fn_t or INTERP_R7.search)(s)
         el = time.time() - t0
         worst = max(worst, el)
         row += f" n={n}:{el:7.4f}s"
@@ -292,18 +465,28 @@ for label, mk in (("blank run", lambda n: ";" + " " * n + "-x"),
     rc |= 1 if over else 0
     print(row + ("  <== OVER BUDGET" if over else ""))
 
-print("\n6. two-hook agreement - the check the plan CLAIMED existed and did not:")
+print("\n6. two-hook agreement + on-disk drift:")
 # The plan said "the drift guard is red in between" while the region is applied to one hook and not
 # the other. Measured in round 6: ZERO of the 40 pinned fixtures change verdict under this edit, so
 # 06 reports 80/80 whether zero, one, or both hooks are edited. Nothing anywhere compared the two
 # hooks' INTERP patterns. Post-edit, THIS is the assertion that catches a one-hook typo.
-same_pat = gate["INTERP"].pattern == ledger["INTERP"].pattern
+same_pat = (gate["INTERP"].pattern == ledger["INTERP"].pattern
+            and gate["INTERP"].flags == ledger["INTERP"].flags)
 sens = sum(1 for cn, cmd, ge, le in CASES
-           if m.classify(cmd, m.mk_current, gate) is not m.classify(cmd, m.probe_form(INTERP_R7), gate))
-print(f"    gate.INTERP == ledger.INTERP on disk: {same_pat}")
+           if m.classify(cmd, m.mk_current, gate)
+           is not m.classify(cmd, probe_form(INTERP_R7, STRIP_CAND), gate))
+# Which `_strip_heredocs` is on disk? This file holds a PARAMETERISED copy rather than a frozen one,
+# so it must prove the disk version is one of the two parameterisations and say which.
+probe_rows = [c for c, _, _, _ in ALL] + [c for c, _ in OBSERVED]
+fillers = [f for f, s in (("", STRIP_SHIPPED), ("#", STRIP_CAND))
+           if all(s(c) == m.strip_heredocs(c) for c in probe_rows)]
+print(f"    gate.INTERP == ledger.INTERP on disk (pattern + flags): {same_pat}")
+print(f"    on-disk _strip_heredocs filler: {fillers!r}"
+      f"{'   <== THIRD FORM - neither parameterisation matches disk' if len(fillers) != 1 else ''}")
 print(f"    pinned fixtures whose verdict CHANGES under this edit: {sens}/{len(CASES)}"
       f"{'   <== so 06 CANNOT detect a half-applied edit' if sens == 0 else ''}")
 rc |= 0 if same_pat else 1
+rc |= 0 if len(fillers) == 1 else 1
 
 print(f"\n{'ALL GATES PASS' if rc == 0 else 'GATE REFUSES - see above'}")
 sys.exit(rc)
