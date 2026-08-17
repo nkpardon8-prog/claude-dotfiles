@@ -19,11 +19,13 @@ bad() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$1"; }
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/raceprobe.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
-run_race() {  # $1 = use_flock (1|0), $2 = claimants -> prints "winners=N|survivor=SID|records=N"
-python3 - "$TMP" "$1" "$2" <<'PY'
+run_race() {  # $1 = use_flock (1|0), $2 = claimants, $3 = unique tag -> prints "winners=N|survivor=SID"
+python3 - "$TMP" "$1" "$2" "$3" <<'PY'
 import fcntl, json, os, secrets, subprocess, sys, time
-tmp, use_flock, n = sys.argv[1], sys.argv[2] == "1", int(sys.argv[3])
-run = os.path.join(tmp, f"race{'F' if use_flock else 'N'}")
+tmp, use_flock, n, tag = sys.argv[1], sys.argv[2] == "1", int(sys.argv[3]), sys.argv[4]
+# A FRESH directory per invocation. The first version reused one dir per flock-mode, so the lock
+# from run 1 survived and every later claimant saw a live foreign holder -> winners=0 every time.
+run = os.path.join(tmp, f"race-{tag}")
 os.makedirs(run, exist_ok=True)
 LOCK, MUTEX, BARRIER = os.path.join(run, "prod.lock"), os.path.join(run, "prod.lock.mx"), os.path.join(run, "go")
 open(MUTEX, "w").close()
