@@ -2,6 +2,66 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-17 (latest) - Auto-sync fetches before it pushes, and stops on divergence
+
+The daemon that keeps this repo synced had never once run `git fetch`. Its only remote reads were
+`ls-remote` and `gh repo view`, and neither updates a ref. Three machines push here (`Mac`,
+`macbookair-m4`, `MacBook-Air-158`), so `origin/main` went stale as a matter of routine.
+
+### The failure was a secret gate refusing to certify, for a reason that had nothing to do with secrets
+
+When another machine pushed first, `git push` negotiated the real remote tip with the server and
+handed the pre-push hook a `remote_sha` **that does not exist in the local object store**. The hook
+built `"$remote_sha..$local_sha"`, both of its git calls died with `fatal: Invalid revision range`,
+and it correctly tripped `_unproven` - which writes a `kind: unproven` marker and HALTS all
+auto-sync until a human clears it. Everything downstream behaved exactly as designed. The gate was
+right; the input was garbage. It cost a manual rebase to clear, and it was reproduced
+byte-identically in a sandbox against the real generated hook before anything was changed.
+
+### Diverged means STOP, not rebase
+
+A bare fetch is not the fix and would have been a comfortable place to stop. On the day this was
+diagnosed local main was `[ahead 1, behind 3]` and the remote tip was not an ancestor: post-fetch
+the range gate passes, the object is now local, and git rejects the push as non-fast-forward
+instead - filed as a generic `kind: other` pause carrying git's prose and no action.
+
+So the script now classifies the three shapes itself: fast-forwardable proceeds, strictly-behind
+exits quietly (an idle machine must not halt its own sync), and **diverged pauses with the exact
+command to run**. It does NOT rebase. Rebase is the clever option and the wrong one: this runs
+unattended, from an `async` hook, with no human present, and by that point `git add -A` + `git
+commit` have already turned the user's dirty tree into a real commit. An automatic rebase would
+replay that work onto a moved base and can stop mid-conflict, with every later sync run inheriting
+a repo with a rebase in progress. The asymmetry decides it - a refused push costs one manual
+`git pull --rebase`; a wedged unattended rebase costs work that no longer exists in reviewable form.
+That is the same posture the rest of the file already takes on genuine uncertainty.
+
+### A failed fetch must not become a worse halt than the bug
+
+The offline case warns and proceeds. A fetch that cannot run leaves the script exactly where it was
+before the fetch existed - push, fail, classify - so nothing new is halted by having no network.
+The fetch is bounded by `scripts/lib/portable-timeout.sh` at 60s, and a missing lib falls back to a
+bare fetch rather than pausing: the timeout is insurance on latency, never part of the safety
+contract. All four branches were exercised live against real fixtures, not just read.
+
+### The test gap that let it ship, and the hollow assertion inside the fix for it
+
+`test-secret-scan.sh` was 82KB and extensive on rc vocabulary and token emission, and had **no case
+at all** for a `remote_sha` absent from the local object store - grep it for `remote_sha`, `stale`
+or `non-fast` and nothing relevant comes back. There is now an end-to-end case: a second clone
+pushes first, the precondition (object genuinely absent) is asserted rather than assumed, the push
+must fail closed with `RANGE-NOT-PROVEN-CLEAN` and leave the remote ref unmoved, and then - after a
+fetch makes the object present - the same negotiated `remote_sha` must enumerate and the identical
+push must go through. Without that second half the case is satisfied by a hook that refuses
+everything.
+
+Mutation-tested, and the first draft was caught being hollow by it. With the hook's
+enumerate-failure branch replaced by a fail-open `continue`, the `push is refused` assertion **still
+passed** - because git's own non-fast-forward check rejects the push a moment later, certifying a
+gate that was dead. The discriminator is which layer spoke: git only prints `fetch first` /
+`non-fast-forward` once a push has got past the hook. With that assertion added the mutant goes red
+on two lines instead of one. The cause-side assertions on `dotfiles-sync.sh` were watched red on
+the pre-fix file (4 failures) and green after. Suite: 220 passed, 0 failed.
+
 ## 2026-08-17 (later) - The prod classifier stops filing documentation as deployment
 
 Second of the two things this hook got wrong. It decides "is this a production command?" by
