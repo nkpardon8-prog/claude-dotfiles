@@ -480,8 +480,12 @@ for label, mk in (("heredoc stripper", lambda n: "".join(f"cat <<'E{i}' |\nbody\
     row, worst_ratio = f"    {label:22}", 0.0
     for n in (400, 1600, 6400):
         s = mk(n)
-        ship = min(timeit(STRIP_SHIPPED, s) for _ in range(3))
-        cand_t = min(timeit(STRIP_CAND, s) for _ in range(3))
+        # alternate the order so a warm-cache advantage cannot land on one side only
+        pairs = [(timeit(STRIP_SHIPPED, s), timeit(STRIP_CAND, s)) if i % 2 == 0
+                 else tuple(reversed((timeit(STRIP_CAND, s), timeit(STRIP_SHIPPED, s))))
+                 for i in range(5)]
+        ship = min(p[0] for p in pairs)
+        cand_t = min(p[1] for p in pairs)
         ratio = cand_t / ship if ship else 1.0
         worst_ratio = max(worst_ratio, ratio)
         row += f" n={n}:{cand_t:7.4f}s ({ratio:4.2f}x)"
