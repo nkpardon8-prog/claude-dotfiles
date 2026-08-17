@@ -2,6 +2,116 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-08-17 - Model routing: effort is chosen per lane, and the routing is PROVEN to take effect
+
+Written here rather than in a commit message because the auto-sync daemon swept these changes into
+a generic `auto-sync:` commit before the real message could land - the same footnote recorded under
+2026-08-13, happening again. In a repo with a background committer the changelog is the only durable
+place for reasoning.
+
+**The headline: nothing here was ever verified before today.** No test parsed `agents/*.md`
+frontmatter, nothing read `~/.codex/config.toml`, nothing asserted a model or an effort value
+anywhere. Swapping all 14 agents to `sonnet`/`low` would have turned nothing red.
+
+### Codex effort was inherited, not chosen
+
+`CODEX_EFFORT` was set **nowhere** - not in the repo, not in any shell profile. So `codex-exec.sh`'s
+effort branch was dead code, no `-c` flag was ever passed, and every Codex pass silently ran at
+whatever the global config happened to say. The chokepoint had an optional guard and every caller
+had opted out without knowing it.
+
+Seven wrapper call sites now pin effort explicitly: the four-lens panel in `codex-review.md`
+(`high`), `mission.md`'s scope pass (`high`), `plan.md`'s two lanes (`xhigh` executability,
+`high` value-critic), and `prepare-pr.md` (`high`). Guarded by `req` pins in
+`lint-skill-contract.sh`, each watched failing and restored.
+
+The three DIRECT `codex exec` sites (`codex-review.md:244/:248/:560`) deliberately take NO prefix -
+they never read the variable, so a prefix there would look like routing while doing nothing.
+
+### The `max` claim was false in three places, and it propagated from a comment
+
+`codex-exec.sh:8` asserted "the config's `max` is authoritative". The config said `high`, and it had
+never said `max` (the global default went medium -> high on 2026-07-02). `codex-review.md:39` and
+`:192` then cited the wrapper's own header as their authority, so a throwaway remark in a script
+became a "fact" in two other files. All three now state the MECHANISM and never a value, which is
+the only shape that cannot drift by restatement.
+
+### The drift-guard was removed, on purpose
+
+`codex-exec.sh` warned on every invocation whenever the config pinned a model. The owner reversed
+the 2026-07-12 never-pin policy ("it just has the models I want"), so the guard had been firing for
+weeks against a config that was intended. A warning nobody reads is not a safety feature - it had
+trained readers to ignore wrapper stderr, which is worse than no guard. Do not re-add it without a
+new ruling.
+
+### `/plan`'s two "independent" reviewers had byte-identical prompts
+
+Two reviewers asking the same question is one reviewer with error bars. There are now four lanes
+attacking different failure classes: Claude breadth, Claude `criticer` (value), Codex executability
+at `xhigh`, Codex value-critic at `high`. `criticer` stays alongside the Codex value lane
+deliberately - Codex can refuse or die, and a value critique that only sometimes happens is one
+nobody can rely on. The meta-reviewer names disagreements instead of averaging them, and never
+learns which lettered review came from which model, so it cannot defer to a model instead of to an
+argument.
+
+### `master-review.md` Rule 1 is now mechanical
+
+Rule 1 says every Claude agent must be `opus`, "no downgrading to sonnet or haiku. Ever." It
+dispatches six `lens-*` agents - and **zero** of its eight dispatch blocks carried an explicit
+model. They do now. A rule enforced only by prose is a rule a future edit does not see.
+
+### No `agents/*.md` frontmatter was changed, and that was the correction
+
+An earlier revision of this work proposed downgrading ten definitions to `sonnet`. That was wrong
+twice over: it violates Rule 1 in the file that dispatches six of them, and `agents/` is user-global
+via the `~/.claude/agents` symlink, so the change would have followed into a healthcare project.
+A frontmatter value IS a global route, which is precisely what the routing spec's own anti-decision
+forbids. All routing now happens per CALL. `implementer.md` stays `opus` as the FAIL-SAFE: a chunk
+nobody classified runs at full capacity rather than silently dropping to the cheap lane.
+
+### Proven by live experiment, not assumed
+
+The question that had gone unanswered since `effort:` was introduced: do these values actually do
+anything? A probe settled all four assumptions from a headless session.
+
+- Frontmatter `model:` is honored. A bare alias (`model: sonnet`) is accepted; no fully-qualified
+  string needed.
+- Frontmatter `effort:` is honored. A session running at `medium` dispatched a definition pinned
+  `high` and the run recorded `high` - it did not inherit.
+- `effort: max` is valid on `opus`.
+- Per-call `model:` is honored and OUTRANKS the definition. Per-call **effort does not exist**:
+  across 5,107 historical dispatches, `meta.json` records a `model` key on 1,075 and an `effort`
+  key on zero. So the definition file is the only lever for effort - a real limitation, not a
+  preference.
+- A newly created definition does NOT resolve mid-session; the registry is snapshotted at startup.
+  Any plan that creates a definition and dispatches it in the same run is broken.
+
+**The control is what makes the rest trustworthy.** A definition carrying `effort: banana` did not
+record `banana` - the value was discarded and fell back to the session default. That proves the
+recorded field is the HONORED value and not an echo of the request. Without that control, every
+other reading above would have been a label.
+
+### The guard that fell out of it
+
+An unrecognised effort VALUE is discarded **silently**, indistinguishable from having no key at
+all: no error, no warning, and the file still looks configured while the agent quietly runs at the
+parent session's setting. Silent failure in a shape that already recurred once (effort was added to
+14 files in one bulk edit) is exactly the bar this repo sets before adding a machine.
+
+`lint-skill-contract.sh` now fails closed on any `agents/*.md` whose `model` is not a known alias,
+whose `effort` is not in `low|medium|high|xhigh|max`, or which is missing either key. It reads only
+the frontmatter block, so a body mention cannot satisfy or trip it, and it checks vocabulary only -
+`max` is confirmed on opus and untested elsewhere. Watched failing on all three shapes.
+
+**Still unknown, stated rather than glossed:** whether `effort: max` works on non-opus models, and
+whether effort changes observable REASONING quality as opposed to being faithfully recorded and
+transmitted. The second needs a benchmark, not a transcript. Do not claim it either way.
+
+**Unrelated landmine found while measuring:** `commands/mission.md`'s contract core is 19497 chars
+against a 19500 budget. Three characters of headroom. Any edit adding a short phrase inside that
+core fails the size guard for no obvious reason. `codex-review.md` has 8761 spare and
+`implement.md` 11971, so `mission.md` is the sole hazard.
+
 ## 2026-08-14 (later) - Codex may finally write code, behind the guard that makes that safe
 
 The last item of the tuning plan, deliberately sequenced last. `/mission` bundled two unrelated
