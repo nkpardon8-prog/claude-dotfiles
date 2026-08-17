@@ -240,6 +240,20 @@ req "$X" "EXACTLY 6 tool calls"
 req "$X" "EXACTLY 1 Agent call"
 req "$X" "EXACTLY 3 Agent calls"
 req "$X" "NON-CODE TARGETS ONLY"
+# MODEL ROUTING IS PART OF THE CONTRACT, NOT A STYLE CHOICE (2026-08-17, part-5 verify lane).
+# The Adversarial + FP-filter lens OVERRULES the other lanes and filters their false positives,
+# so it is the one lane where judgment quality is load-bearing - it is the verdict author. Its
+# `model: "opus"` lived ONLY in prose: the sole model-touching machine check validates the
+# VOCABULARY (opus|sonnet|haiku|fable all pass), never the TIER, so silently re-routing the
+# verdict lane to sonnet kept CI fully green. That is a cheaper model waving through its own
+# tier's work - the exact failure the routing was built to prevent, with nothing to catch it.
+# Pinned as the FULL phrase, not the bare model token: the bare token also appears on the
+# non-code branch, so a bare pin would stay satisfied by the OTHER line while this one drifted.
+req "$X" 'the Adversarial + FP-filter lens, passing **`model: "opus"`**'
+# Both workforce lanes keep sonnet on the CALL (they have no agent definition to carry it):
+# line 110 (code path, 2 Agent calls) and line 113 (non-code path). Floor of 2 = two separate
+# lines carry it, so dropping either one fails.
+req "$X" 'model: "sonnet"' 2
 # The counts and the non-code scoping are what an agent reads BEFORE it launches, and
 # Step 4 is entered by both target classes - a count that drifts below the marker is a
 # count nobody applies.
