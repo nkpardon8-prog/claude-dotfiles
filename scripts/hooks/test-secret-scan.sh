@@ -1333,7 +1333,7 @@ chk "the now-provable push actually reached the remote" \
 # `ls-remote` and `gh repo view`, neither of which updates a ref.
 _dsf="$REPO/scripts/dotfiles-sync.sh"
 chk "dotfiles-sync fetches before it pushes" \
-    "$(grep -qc 'git fetch --quiet' "$_dsf" && echo yes || echo no)" "yes"
+    "$(grep -q 'git fetch --quiet' "$_dsf" && echo yes || echo no)" "yes"
 # ORDER IS LOAD-BEARING, and compared by position rather than a line number so a comment edit
 # cannot quietly turn this into a no-op (same rule as the pre-commit lint/exec ordering above).
 # A fetch that lands after the push is a fetch that fixes nothing.
