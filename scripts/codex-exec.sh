@@ -2,13 +2,17 @@
 # codex-exec.sh — the ONE house wrapper for diff-as-text / prompt-file Codex passes.
 #
 # WHY A THIRD WRAPPER (deliberate — do not consolidate): the existing
-# god-review/lib/codex-invoke.sh and ui-audit/lib/codex-invoke.sh pin xhigh effort, thread
-# CODEX_HOME accounts, and write "[unavailable]" INLINE into the output file — load-bearing
-# contracts for those subsystems. THIS wrapper has a different contract: effort comes from the
-# CALLER when it sets one, else from `~/.codex/config.toml` — the wrapper never hardcodes a value
-# and never asserts what the config currently says. (It said `max` here until 2026-08-17; it was
-# `high`, and codex-review.md cited this header as its authority, so the wrong value propagated.
-# State the MECHANISM, never the value.) Plus a SEPARATE machine-readable `.status` sidecar
+# commands/god-review/lib/codex-invoke.sh and commands/ui-audit/lib/codex-invoke.sh each HARDCODE
+# their own effort on the argv, thread CODEX_HOME accounts, and write "[unavailable]" INLINE into
+# the output file — load-bearing contracts for those subsystems. (They do NOT pin the same value as
+# each other; read each file rather than trusting this comment for a value.) THIS wrapper has a
+# different contract: effort comes from the CALLER when it sets one, else from `~/.codex/config.toml`
+# — the wrapper never hardcodes a value and never asserts what the config currently says. (It said
+# `max` here until 2026-08-17; it was `high`, and codex-review.md cited this header as its authority,
+# so the wrong value propagated. Then on 2026-08-17 this same header was found asserting that BOTH
+# sibling wrappers pin xhigh — god-review does, ui-audit pins high — i.e. the fix reintroduced the
+# exact bug it removed, one line up. State the MECHANISM, never the value; a header that names a
+# value in ANOTHER file is drift waiting to happen.) Plus a SEPARATE machine-readable `.status` sidecar
 # (the output file stays pure model output), and a portable process-group timeout.
 #
 # Usage: codex-exec.sh <promptfile> <outfile> [workdir]
