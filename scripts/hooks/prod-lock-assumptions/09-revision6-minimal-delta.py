@@ -188,6 +188,19 @@ def probe_form(rx, strip):
     return f
 
 
+def shipped_form(rx, strip):
+    """Shipped's `_strip_inert_data`, whose ORDER is the other way round: the interpreter question is
+    decided on the RAW command, so a heredoc body's prose vetoes the stripping of its own container.
+    That is the brief-write incident, and reversing this order is half of Edit B."""
+    def f(cmd):
+        return cmd if rx.search(cmd) else m.quoted_sub(strip(cmd))
+    return f
+
+
+CAND_FN = probe_form(INTERP_R7, STRIP_CAND)
+SHIPPED_FN = shipped_form(INTERP_SHIPPED, STRIP_SHIPPED)
+
+
 # ----------------------------------------------------------------- the rows
 # Provenance is the point. Rows authored by a lane that did NOT write the regex are tagged with
 # that lane; rows I wrote are tagged [mine]. A claim is only ever as wide as the rows it ran over.
