@@ -507,7 +507,9 @@ def main():
     if existing and not fresh:
         block(
             f"prod lock is stale or time-invalid ({age}s; session {str(holder)[:8]}…). "
-            f"It is never auto-reclaimed. Prove the operation stopped, then remove {LOCK} manually."
+            "Its holder could NOT be proven dead (it is alive, it predates pid stamping, "
+            "or `ps` gave no usable answer), so it is not auto-reclaimed. "
+            f"Prove the operation stopped, then remove {LOCK} manually."
         )
 
     if fresh and holder != sid:
