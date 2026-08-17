@@ -186,6 +186,40 @@ for name, fn in CANDS:
         print(f"    BREAKS [{hookname:6}] {cname}")
 print()
 
+# ------------------------------------------------------------------- mutation checks
+# Round-3 finding P4: mutation 1 as worded did NOT go red. A mutation is only worth shipping if it
+# is an exact one-token diff PLUS a sentinel row that only that token covers - and if it has been
+# WATCHED failing. Each row below is measured, not asserted.
+print("########## MUTATION CHECKS (each must flip its sentinel) ##########")
+MUTATIONS = [
+    ("M1 name list -> python only", INTERP_R5P.pattern.replace(NAMES5, r"python[0-9.]*"),
+     f"tsx -e '{DEPLOY}'", 1),
+    ("M2 delete the gap walker", INTERP_R5P.pattern.replace(GAP5, ""),
+     f'psql "$PROD_URL" -c \'{ROLE}\'', 1),
+    ("M3 drop the line-continuation separator", INTERP_R5P.pattern.replace(SEP, r"[ \t]+"),
+     f"node{BS}-e 'exec(\"{DEPLOY}\")'", 1),
+    ("M4 drop the per-flag value in the sh -c branch",
+     INTERP_R5P.pattern.replace(OPT6, r"(?:" + SEP + r"--?[A-Za-z-]+)*"),
+     f"sh -o pipefail -c '{DEPLOY}'", 1),
+    ("M5 drop the path prefix on the NAME branch",
+     INTERP_R5P.pattern.replace(LEAD + PATHPFX + r"(?:" + NAMES5, LEAD + r"(?:" + NAMES5),
+     f"/usr/bin/psql -c '{ROLE}'", 1),
+    ("M6 widen the heredoc branch lead to \\s", INTERP_R5P.pattern.replace(CMDPOS, r"(?:^|\s)"),
+     f"cat > /tmp/sh <<'EOF'\n{DEPLOY}\nEOF", 0),
+]
+allred = True
+for label, pat, sentinel, want in MUTATIONS:
+    if pat == INTERP_R5P.pattern:
+        print(f"    {label}: NO-OP - the replace did not apply  <== BROKEN MUTATION")
+        allred = False
+        continue
+    fn = m.probe_form(re.compile(pat, re.IGNORECASE))
+    got = m.classify(sentinel, fn, gate)
+    red = got is not bool(want)
+    allred &= red
+    print(f"    {label}: sentinel {'flips -> RED' if red else 'still passes -> USELESS'}")
+print(f"\nall mutations go red: {allred}\n")
+
 # ------------------------------------------------------------- linear-time budget
 print("########## LINEAR-TIME BUDGET (round-3 ReDoS was 8.06s at 23 tokens) ##########")
 print(f"{'tokens':>7} {'rev4':>12} {'rev5':>12}")
