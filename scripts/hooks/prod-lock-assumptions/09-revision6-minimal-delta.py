@@ -59,7 +59,13 @@ WRAP = (r"(?:(?:sudo|env|command|time|nohup|git)[ \t]+"
         r"|[A-Za-z_][A-Za-z0-9_]*=[^\s]*[ \t]+)*")
 PATHP = r"(?:[A-Za-z0-9_.~$-]*/)*"
 ANCHOR = r"[\n;|&(`]"
-SCAN = r"[^\n;|&`]"
+# `(` must be excluded from SCAN for the same reason the backtick is: a character that is an ANCHOR
+# but not excluded from the SCAN class makes every occurrence a start position whose lazy scan can
+# run over all the remaining ones - quadratic. Round 6 measured 0.0593s on a 4000-paren run and
+# 0.0591s on a ROUTINE ~17KB `git commit -m` message containing parenthetical asides, versus 0.0005s
+# shipped. Both round-6 lanes found this independently, and it is this plan's own stated lemma
+# ("both, or neither") applied to the backtick and not to the paren.
+SCAN = r"[^\n;|&`(]"
 SHIPPED_BRANCHES = (r"(?:^|[\s|;&(])(?:eval|xargs|ssh)\b"
                     r"|sh\s+-[a-z]*c\b"
                     r"|{ALT3}"
