@@ -67,10 +67,10 @@ plan 4-6 / codex 3-6, cap per 6.1; /pre-compact freely interleaved; active until
 2. The worktree and external state are authoritative; conversation memory only hints where to look - inspect current state before relying on it.
 3. Completion is UNPROVEN until verified requirement-by-requirement against current evidence; partial progress and plausible-looking output are not proof.
 4. Do not declare blocked until the SAME blocker has repeated 3 consecutive attempts; blocked means truly unable to progress without user input.
-⏱ stretch 7h 31m · active 7h 31m · wall 7h 31m · idle 0s
+⏱ stretch 7h 42m · active 7h 42m · wall 7h 42m · idle 0s
 --- recent log ---
-m2-await-review-barrier-r6-a1-g2	[mission] AWAIT part=2 phase=review round=6 kind=job op=review-barrier attempt=1 need=3 got=2 started_at=1786948508
-m2-review-r6-d0	[mission] part=2 name=detector-accuracy phase=review round=6 dry=0 findings=6
 m2-fix-r6-d0	[mission] part=2 name=detector-accuracy phase=fix round=6 dry=0 findings=6
 m2-fail-round-cap-reached-parked-1	[mission] FAIL part=2 phase=review reason=round-cap-reached-parked attempt=1
 m4-part-start	[mission] PART-START part=4 name=model-routing
+m4-research-r1-d0	[mission] part=4 name=model-routing phase=research round=1 dry=0
+seq-5	[c#5] Run skill: plan for Part 4 model routing; Part 2 PARKED at cap
