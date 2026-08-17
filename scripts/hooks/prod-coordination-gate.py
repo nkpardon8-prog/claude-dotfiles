@@ -269,6 +269,119 @@ def block(message):
     sys.exit(2)
 
 
+# --- Holder liveness ---------------------------------------------------------
+# DECISION (D): these ~30 lines are PORTED from shell, not shelled out to. The
+# prior art (ac_resolve_own_claude_pid / ac_pid_starttime,
+# scripts/hooks/lib/auto-compact-sentinel.sh ~:225-245) is short, but calling it
+# would mean spawning bash and sourcing a ~900-line library on the fail-closed
+# path of a machine-wide safety gate — and, decisively, a shell function can only
+# hand back a STRING, which COLLAPSES the tri-state: "ps answered, the pid is
+# gone" and "ps itself failed" both arrive as empty. That is exactly the
+# distinction that decides whether we are allowed to reclaim, so it must not be
+# flattened. We need `subprocess` for `ps` either way, so the port costs nothing.
+#
+# Anchored `claude` argv matcher, same rationale as _AC_CLAUDE_ERE: matches
+# `claude`, `/path/to/claude`, `claude --flags`; rejects `.claude-dotfiles`,
+# `claude-cli.js`, `claudette`. Matched against `ps -o args=`, NEVER ucomm.
+CLAUDE_ARGV = re.compile(r"(?:^|[\s/])claude(?:\s|$)")
+
+
+def _norm_lstart(text):
+    # `ps -o lstart=` double-spaces single-digit days ("Aug  5") and pads the
+    # tail. Collapse to a deterministic comparison key, or a whitespace/locale
+    # quirk turns "same process" into "pid reuse" and licenses a wrong reclaim.
+    return " ".join((text or "").split())
+
+
+def _probe_pid(pid):
+    """Tri-state process probe — NEVER a boolean (constraint C).
+
+      ("dead",     "")      ps ANSWERED and the pid is not there
+      ("live",     lstart)  ps answered and the pid exists
+      ("unusable", "")      ps itself failed; NO conclusion may be drawn
+
+    Prior art: line-agent-communicator.py (~:230-235). On macOS `ps -p` exits 1
+    for a pid that is simply not there, and that IS an answer; ANY other nonzero
+    means ps failed. rc 0 with no row is ambiguous, so it is also `unusable` —
+    reclaim happens only on a positive dead reading.
+    """
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5)
+    except Exception:
+        return "unusable", ""
+    if out.returncode == 1:
+        return "dead", ""
+    if out.returncode != 0:
+        return "unusable", ""
+    lstart = _norm_lstart(out.stdout)
+    return ("live", lstart) if lstart else ("unusable", "")
+
+
+def _resolve_session_pid():
+    """(pid, lstart) of THIS session's `claude` process, or (None, None).
+
+    os.getpid() is NOT it — that is this python hook, dead milliseconds from now,
+    so a lock stamped with it would read as dead to the very next command. We
+    walk the PPID chain up to 8 hops looking for the anchored `claude` argv, the
+    way ac_resolve_own_claude_pid does. We deliberately do NOT read
+    ~/.claude/sessions/<pid>.json: it is a plain file any local process can
+    write and is documented FORGEABLE, so it can vouch for nothing.
+
+    Failing to resolve is not an error: the lock is then written WITHOUT pid
+    keys, i.e. as a legacy lock that simply cannot be liveness-checked and falls
+    back to TTL behaviour.
+    """
+    pid = os.getppid()
+    for _ in range(8):
+        if not pid or pid <= 1:
+            return None, None
+        try:
+            args = subprocess.run(["ps", "-ww", "-o", "args=", "-p", str(pid)],
+                                  capture_output=True, text=True, timeout=5)
+        except Exception:
+            return None, None
+        if args.returncode == 0 and CLAUDE_ARGV.search(args.stdout or ""):
+            state, lstart = _probe_pid(pid)
+            return (pid, lstart) if state == "live" else (None, None)
+        try:
+            up = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                                capture_output=True, text=True, timeout=5)
+        except Exception:
+            return None, None
+        if up.returncode != 0:
+            return None, None
+        try:
+            pid = int((up.stdout or "").strip())
+        except ValueError:
+            return None, None
+    return None, None
+
+
+def _holder_provably_dead(lock):
+    """True ONLY on a positive dead reading. Everything else is False:
+
+      * a LEGACY lock with no/invalid pid keys (constraint H) — not checkable;
+      * a LIVE holder whose start time matches — obviously not dead;
+      * an UNUSABLE `ps` — liveness UNKNOWN, so we fail closed and leave it.
+
+    A live pid whose start time DIFFERS is dead: macOS recycles pids, so the
+    process now wearing that number is not the one that took the lock.
+    """
+    pid = lock.get("pid")
+    start = lock.get("pid_start")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if not isinstance(start, str) or not start.strip():
+        return False
+    state, observed = _probe_pid(pid)
+    if state == "dead":
+        return True
+    if state == "live" and observed != _norm_lstart(start):
+        return True
+    return False
+
+
 def _validated_lock():
     try:
         with open(LOCK) as f:
