@@ -523,7 +523,15 @@ def main():
     # Free / already mine -> atomically publish a complete lock record.
     try:
         snippet = cmd.strip().replace("\n", " ")[:80]
-        _atomic_claim_or_refresh({"sid": sid, "op": snippet, "ts": now}, existing)
+        record = {"sid": sid, "op": snippet, "ts": now}
+        # Stamp the holder's identity so a LATER window can prove us dead instead
+        # of waiting out a TTL. Both keys or neither: a pid without its start time
+        # is defeated by pid reuse, and half a stamp is worse than none.
+        own_pid, own_start = _resolve_session_pid()
+        if own_pid and own_start:
+            record["pid"] = own_pid
+            record["pid_start"] = own_start
+        _atomic_claim_or_refresh(record, existing)
     except FileExistsError:
         block("another actor claimed the prod lock concurrently; retry only after reconciling its owner.")
     except Exception as exc:
