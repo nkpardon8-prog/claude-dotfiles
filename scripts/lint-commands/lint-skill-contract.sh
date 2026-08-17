@@ -277,5 +277,40 @@ req "$L" "CODEX_EFFORT=xhigh bash "
 # The three DIRECT `codex exec` sites (codex-review.md :244/:248/:560) deliberately do NOT take
 # this prefix - they never read the variable. Do not "fix" them by adding one.
 
+# --- agents/*.md frontmatter: model + effort must be values the harness ACTUALLY honors ---
+# PROVEN by live probe 2026-08-17, not assumed: frontmatter `model:` and `effort:` are both
+# honored at dispatch (a session at effort=medium dispatched a definition pinned `high` and the
+# run recorded `high`), and a bare alias like `model: sonnet` is accepted.
+#
+# WHY THIS GUARD EXISTS: an UNRECOGNISED effort VALUE is discarded silently and falls back to the
+# session default - identical in every observable way to having no key at all. The probe set
+# `effort: banana` and got `medium` with NO error anywhere. So a typo here does not fail, it just
+# quietly un-pins the agent, and the file still LOOKS configured. That is a silent failure in a
+# shape that already recurred once (effort was added to 14 files in a single bulk edit), which is
+# the bar this repo sets before adding a machine.
+# Values per CHANGELOG.md:224-225. `max` is confirmed available on opus; availability on other
+# models is UNTESTED, so this checks the vocabulary only, never the model/effort pairing.
+_agents_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)/agents"
+if [ -d "$_agents_dir" ]; then
+    for _af in "$_agents_dir"/*.md; do
+        [ -f "$_af" ] || continue
+        _an="$(basename "$_af" .md)"
+        # read ONLY the frontmatter block, so a body mention can never satisfy or trip this
+        _fm="$(awk 'NR==1 && $0=="---"{inb=1;next} inb && $0=="---"{exit} inb' "$_af")"
+        _am="$(printf '%s\n' "$_fm" | sed -n 's/^model: *//p' | head -1)"
+        _ae="$(printf '%s\n' "$_fm" | sed -n 's/^effort: *//p' | head -1)"
+        case "$_am" in
+            opus|sonnet|haiku|fable) ;;
+            "") echo "lint-skill-contract: FAIL agents/$_an.md has no 'model:' in frontmatter (it would inherit the session silently)" >&2; fail=1 ;;
+            *)  echo "lint-skill-contract: FAIL agents/$_an.md model '$_am' is not a known alias (opus|sonnet|haiku|fable)" >&2; fail=1 ;;
+        esac
+        case "$_ae" in
+            low|medium|high|xhigh|max) ;;
+            "") echo "lint-skill-contract: FAIL agents/$_an.md has no 'effort:' in frontmatter (it would inherit the session silently)" >&2; fail=1 ;;
+            *)  echo "lint-skill-contract: FAIL agents/$_an.md effort '$_ae' is not honored (low|medium|high|xhigh|max); an unknown value is DISCARDED silently" >&2; fail=1 ;;
+        esac
+    done
+fi
+
 [ $fail -eq 0 ] && echo "lint-skill-contract: OK"
 exit $fail
