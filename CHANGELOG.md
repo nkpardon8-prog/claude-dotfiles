@@ -2,7 +2,100 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
-## 2026-08-17 (latest) - Auto-sync fetches before it pushes, and stops on divergence
+## 2026-08-17 (latest) - Six test harnesses were running nowhere and were written down nowhere
+
+`lint-commands.yml` states, above its harness list, that harnesses are "Listed EXPLICITLY rather
+than globbed" so that every deliberate exclusion stays visible. Half of that was true. The repo has
+16 harnesses under `scripts/hooks/`; two ran in CI, five were recorded as excluded, and **six were
+neither** - absent from the list and absent from the ledger, so no file in the repo acknowledged
+they existed. A recorded gap is a decision someone can revisit. An unrecorded one is
+indistinguishable from an oversight, and that silence - not the missing coverage - was the defect.
+
+Two of the six were the proofs for the highest-stakes surfaces here. `test-codex-build-chunk.sh`
+proves the **only** `-s workspace-write` path in the repo, the single place an AI is permitted to
+write code to disk; it ran on no automated trigger at all. `test-prod-classifier-fixtures.py`
+guards the prod-lock hook that can block every Claude window on the machine.
+
+Five harnesses are enrolled (total now 7, up from 2): `test-codex-build-chunk.sh` (13/0),
+`test-mission-doc-drift.sh` (19/0), `test-mission-pending-reask.sh` (21/0),
+`test-prod-classifier-fixtures.py` (102/102), `test-no-detach-fixtures.py` (22/22). Every harness is
+now in the loop or in the ledger - 16 of 16, asserted rather than eyeballed.
+
+### The bash loop could not have run the Python harnesses, and would not have said so
+
+Two harnesses are Python. Adding them to the existing loop would not have failed usefully:
+`bash test-prod-classifier-fixtures.py` parses the file **as shell**, emits `import: command not
+found` per import, then a syntax error. The loop now dispatches on the extension. They stay in the
+*same* list and the *same* `failed` aggregate rather than getting their own step, because a second
+step would split the report and reintroduce, one level up, exactly the "one red harness hides the
+rest" bug that the `|| rc=$?` guard exists to prevent.
+
+### Three portability fixes, all the same house pattern
+
+Each of the three newly-enrolled shell harnesses failed for one cause and one only - proven by
+symlinking a throwaway `$HOME` at the checkout, which took all three from red to fully green with
+no other change:
+
+- `scripts/codex-build-chunk.sh:84` sourced `$HOME/.claude-dotfiles/scripts/lib/portable-timeout.sh`.
+  Now `BASH_SOURCE`-derived (the lib is a sibling), same as `lint-skill-contract.sh:26`. This one was
+  actively **misleading**: sourcing a missing file exits 127, the exact code the script uses for
+  "codex CLI not on PATH", so a location failure presented as a missing binary.
+- `test-mission-doc-drift.sh:19` defaulted `DOC` to a `$HOME` path. CI passes no arguments, so the
+  default is the only path that matters there; it exited 2 outright.
+- `test-mission-pending-reask.sh` now exports `MISSION_REASK_HOOKS_DIR`, an override the hook already
+  exposed - so no production hook was edited. 13 of 21 cases had been failing with `missing <text>`:
+  a location failure wearing the costume of a behaviour failure.
+
+### "Green" with no platform attached is what hid this
+
+The stale ledger entry for `test-mission-bridge.sh` said "RED at the time this job was added (2
+failures)". It is 83/0 green on macOS today, and the attribution to another session had expired.
+But it is **still red on Linux**, and so is `test-mission-liveness.sh` (21/0 on macOS, 10/11 on
+Linux). Both for one shared root cause in production code:
+
+```sh
+sz=$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null)
+```
+
+This idiom looks portable and is not. On GNU coreutils `-f` is `--file-system`, so the call does not
+merely fail - it prints a filesystem dump **to stdout** and then exits 1. The `2>/dev/null` silences
+nothing; the `||` fallback runs and appends its answer to that dump inside the same substitution. The
+variable holds both, and the next `[ "$sz" -gt N ]` throws. A BSD-only utility that failed *cleanly*
+would be caught by the fallback - this one corrupts the value while looking like it worked. Sites:
+`mission-liveness.sh:58,125`, `lib/mission-bridge.sh:78,209,781`, and the same shape in
+`lib/auto-compact-sentinel.sh:291`, `lib/handoff-resolve.sh:56`,
+`lib/post-compact-primer-helpers.sh:88`. Deliberately **not** fixed here: it is a multi-site edit to
+the live mission bridge and a correctness fix in its own right, not CI plumbing. Both harnesses are
+recorded as excluded with the measured failure mode and enroll the moment it lands.
+
+### The enrollment rule was necessary but not sufficient
+
+The existing rule - prove it green with the checkout outside `$HOME` - exists because an earlier
+enrollment produced 16 consecutive red pushes. Both bridge harnesses **pass** that rule on macOS and
+are still red on a runner, so it is now four conditions: outside `$HOME`, **Linux**, **non-root**,
+and **with the tools the runner actually has**. The last two were learned the hard way in the same
+sitting: as root, `chmod`-based negative cases go SKIP or falsely pass; and in a bare container
+without `jq`, the already-enrolled `test-chain-primitives.sh` reported 17/4 - a *fake* red produced
+by an instrument poorer than CI, which with `jq` present is 21/0. Nearly "fixed" a harness against
+that. The workflow now carries a copy-runnable docker recipe satisfying all four.
+
+Verification was that recipe, not inspection: a fresh clone, ubuntu container, uid 1001,
+`HOME=/home/ci`, checkout outside it, each harness invoked exactly as CI does
+(`bash "$h" </dev/null`, no arguments), with the list parsed **out of the workflow file** so the
+proof cannot drift from what CI runs. All 7 green. The three edited files were then re-run on macOS
+in the installed layout - 19/0, 21/0, 13/0 - to confirm the portability fixes did not trade the
+developer path for the CI one.
+
+### What CI covers now, and what it still does not
+
+Newly covered: the sanctioned Codex write-to-disk boundary, the machine-wide prod-lock classifier,
+the no-detach gate, mission doc-drift, and the pending-reask hook. Still uncovered: the mission
+bridge and liveness guard (Linux `stat`, above), `test-ctx-gate.sh` (pre-existing red),
+and the five long-standing `$HOME`/BSD cases. `test-secret-scan.sh` runs in `secret-scan.yml`.
+Unchanged: this job **detects rather than prevents** - it runs after the objects are on the remote
+and there is no branch protection, so a red run blocks nobody.
+
+## 2026-08-17 - Auto-sync fetches before it pushes, and stops on divergence
 
 The daemon that keeps this repo synced had never once run `git fetch`. Its only remote reads were
 `ls-remote` and `gh repo view`, and neither updates a ref. Three machines push here (`Mac`,
