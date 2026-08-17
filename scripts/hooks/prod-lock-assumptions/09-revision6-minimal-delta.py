@@ -17,9 +17,13 @@ WHAT THIS FILE GATES (it exits non-zero on any failure):
      with false POSITIVES and false NEGATIVES reported separately (they are not the same harm)
   2. both OBSERVED incident rows asserted BY NAME, not folded into an aggregate
   3. the 40 pinned fixtures (80 checks) still preserved - checked BEFORE any file is edited
-  4. five mutation checks, as CODE, each with a sentinel that must flip
+  4. six mutation checks, as CODE, each with a sentinel that must flip
   5. the heredoc lemma that "strict subset" silently depends on
-  6. a linear-time budget over every construct that has ever backtracked here
+  6. a linear-time budget over every construct that has ever backtracked here, plus a
+     relative budget on the stripper (its absolute cost is pre-existing and not this change's)
+  7. that the two hooks agree with each other AND that what is ON DISK is one of the two forms
+     this file parameterises - so the gate stays meaningful after the change is applied, instead
+     of quietly re-baselining onto its own output
 
 Round-7 resolutions (the three items that PARKED revision 6):
 
@@ -354,8 +358,8 @@ for cls, spec in ACCEPTED_LOSSES.items():
         elif n > 1:
             ambiguous.append((cls, c, n))
 
-base = errset(m.mk_current)
-cand = errset(probe_form(INTERP_R7, STRIP_CAND))
+base = errset(SHIPPED_FN)
+cand = errset(CAND_FN)
 new = cand - base
 undeclared = {r for r in new if r[1] not in declared_cmds}
 declared = new - undeclared
@@ -394,7 +398,7 @@ print("  (the number is a property of these rows, not of the classifier)")
 
 print("\n1. OBSERVED incident rows, asserted by name:")
 for cmd, why in OBSERVED:
-    fn_ = probe_form(INTERP_R7, STRIP_CAND)
+    fn_ = CAND_FN
     g = m.classify(cmd, fn_, gate)
     l = m.classify(cmd, fn_, ledger)
     ok = not g and not l
@@ -410,7 +414,7 @@ exec(compile(_src[:_src.find("\ndef main()")], _f, "exec"), _ns)
 CASES, PRODC = _ns["CASES"], _ns["PROD"]
 broke = [(hn, cn) for cn, cmd, ge, le in CASES
          for hn, ns, exp in (("gate", gate, ge), ("ledger", ledger, le))
-         if m.classify(cmd, probe_form(INTERP_R7, STRIP_CAND), ns) is not (exp == PRODC)]
+         if m.classify(cmd, CAND_FN, ns) is not (exp == PRODC)]
 rc |= 1 if broke else 0
 print(f"    {len(CASES) * 2 - len(broke)}/{len(CASES) * 2}")
 for hn, cn in broke:
@@ -444,10 +448,10 @@ for label, rx, strip, sentinel, want in MUTATIONS:
 
 print("\n4. heredoc lemma - 'strict subset' silently depends on this and nothing tested it:")
 print("   stripping a heredoc body must never CREATE a shipped match spanning the splice.")
-viol = [why for cmd, _, _, why in ALL
-        if m.INTERP_CUR.search(STRIP_CAND(cmd)) and not m.INTERP_CUR.search(cmd)]
-was = [why for cmd, _, _, why in ALL
-       if m.INTERP_CUR.search(STRIP_SHIPPED(cmd)) and not m.INTERP_CUR.search(cmd)]
+viol = sorted({why for cmd, _, _, why in ALL for rx in (INTERP_SHIPPED, INTERP_R7)
+               if rx.search(STRIP_CAND(cmd)) and not rx.search(cmd)})
+was = sorted({why for cmd, _, _, why in ALL for rx in (INTERP_SHIPPED, INTERP_R7)
+              if rx.search(STRIP_SHIPPED(cmd)) and not rx.search(cmd)})
 rc |= 1 if viol else 0
 print(f"    with the filler   : {'holds over all ' + str(len(ALL)) + ' rows' if not viol else 'VIOLATIONS: ' + str(viol)}")
 print(f"    without it (today): {'holds' if not was else 'VIOLATIONS: ' + str(was)}"
@@ -473,7 +477,10 @@ for label, mk in (("blank run", lambda n: ";" + " " * n + "-x"),
                   ("one long clause", lambda n: "psql " + "x " * n + "-c 'y'")):
     row, worst = f"    {label:22}", 0.0
     for n in (400, 1600, 6400):
-        el = timeit(INTERP_R7.search, mk(n))
+        s = mk(n)
+        # min of 3: the budget is about the SHAPE of the growth curve, and a single sample on a
+        # loaded machine flakes at the 0.01s line without any regex having changed.
+        el = min(timeit(INTERP_R7.search, s) for _ in range(3))
         worst = max(worst, el)
         row += f" n={n}:{el:7.4f}s"
     over = worst > BUDGET
@@ -519,20 +526,24 @@ print("\n6. two-hook agreement + on-disk drift:")
 same_pat = (gate["INTERP"].pattern == ledger["INTERP"].pattern
             and gate["INTERP"].flags == ledger["INTERP"].flags)
 sens = sum(1 for cn, cmd, ge, le in CASES
-           if m.classify(cmd, m.mk_current, gate)
-           is not m.classify(cmd, probe_form(INTERP_R7, STRIP_CAND), gate))
+           if m.classify(cmd, SHIPPED_FN, gate) is not m.classify(cmd, CAND_FN, gate))
 # Which `_strip_heredocs` is on disk? This file holds a PARAMETERISED copy rather than a frozen one,
 # so it must prove the disk version is one of the two parameterisations and say which.
 probe_rows = [c for c, _, _, _ in ALL] + [c for c, _ in OBSERVED]
 fillers = [f for f, s in (("", STRIP_SHIPPED), ("#", STRIP_CAND))
            if all(s(c) == m.strip_heredocs(c) for c in probe_rows)]
+forms = [f for f, rx in (("shipped", INTERP_SHIPPED), ("revision-7", INTERP_R7))
+         if rx.pattern == gate["INTERP"].pattern and rx.flags == gate["INTERP"].flags]
 print(f"    gate.INTERP == ledger.INTERP on disk (pattern + flags): {same_pat}")
+print(f"    on-disk INTERP form: {forms!r}"
+      f"{'   <== THIRD FORM - neither parameterisation matches disk' if len(forms) != 1 else ''}")
 print(f"    on-disk _strip_heredocs filler: {fillers!r}"
       f"{'   <== THIRD FORM - neither parameterisation matches disk' if len(fillers) != 1 else ''}")
 print(f"    pinned fixtures whose verdict CHANGES under this edit: {sens}/{len(CASES)}"
       f"{'   <== so 06 CANNOT detect a half-applied edit' if sens == 0 else ''}")
 rc |= 0 if same_pat else 1
 rc |= 0 if len(fillers) == 1 else 1
+rc |= 0 if len(forms) == 1 else 1
 
 print(f"\n{'ALL GATES PASS' if rc == 0 else 'GATE REFUSES - see above'}")
 sys.exit(rc)
