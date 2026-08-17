@@ -57,8 +57,10 @@ whole package is needed, not just this file.
 Run these checks automatically, in order, before Step 0 begins. Fix what's fixable; only
 surface a question if it genuinely needs a human (e.g. logging into HubSpot):
 
-1. **Node.** `node --version` — need 18+ (raw CDP scripts use the built-in `WebSocket`; 20+
-   preferred). If missing or too old, tell the user to install a current Node and stop here.
+1. **Node.** `node --version` — need 20+ (raw CDP scripts rely on the built-in `WebSocket`,
+   which needs 20+ to be reliable). If missing or too old, tell the user to install a current
+   Node — easiest path: https://nodejs.org (download the LTS installer) — then stop here until
+   `node --version` shows 20 or higher.
 2. **Scripts present.** Confirm all 9 files exist in `commands/outreach/scripts/`: `lib-cdp.mjs`,
    `harvest-listview.mjs`, `vet-pool.mjs`, `chains.mjs`, `overlap.mjs`, `precheck.mjs`,
    `cdp-draft.mjs`, `check30.mjs`, `final-verify.mjs`. Missing files mean an incomplete copy —
@@ -293,6 +295,10 @@ written for someone who has never used an AI tool before and doesn't want to hav
 > You don't need to remember any commands. If you want to be precise you can also just say
 > "Run outreach" and I'll ask you everything I need to know.
 >
+> **Get the best results.** At the start of each session, type `/model sonnet` and press Enter
+> (uses the recommended model), then type `/effort high` and press Enter (makes me think more
+> carefully before drafting). Two seconds each, worth doing every time you start a new session.
+>
 > **What happens when you run it:**
 > 1. I'll ask a few questions — which contacts, what the message should say (or I'll suggest
 >    some for you to approve), and roughly how many people. I won't do anything until you answer.
@@ -306,7 +312,24 @@ written for someone who has never used an AI tool before and doesn't want to hav
 >
 > **Where to find your drafts.** After a batch finishes, look at your open Chrome tabs — each
 > one is a different contact's HubSpot page with their text already sitting in the box, unsent.
-> Read it, change it if you want, and press send yourself.
+> Read it, change it if you want, and press send yourself. Heads-up: during a real batch you'll
+> see a LOT of tabs open at once — one per person, sometimes 20, 40, or more. That's completely
+> normal, not a glitch — don't close them until you're done reviewing.
+>
+> **How I remember things.** Two separate kinds of memory:
+> - *What I remember about you* — your name, role, writing style, and the HubSpot lists/
+>   dashboards you use. Saved once during onboarding, used automatically from then on, even in
+>   a brand new conversation with you.
+> - *What I remember about today's conversation* — everything we've said to each other in this
+>   chat. If we talk for a long time, older parts get automatically compressed behind the
+>   scenes so I can keep going without slowing down. You don't have to do anything for this.
+>
+> **If a session dies or your computer closes Claude unexpectedly:** your work isn't lost.
+> Any message you already drafted is sitting safely in its HubSpot tab whether or not I'm still
+> running, and the tool always remembers who's already been contacted. Just open a new terminal
+> window, run `claude` again in this same folder, and say "let's continue" — I'll pick up
+> cleanly. If you want to save a summary of where we left off before closing on purpose, just
+> say "save our progress" and I'll write it down for next time.
 >
 > **Things you never have to worry about:**
 > - I will never send a text without you personally pressing send.

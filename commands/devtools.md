@@ -149,8 +149,10 @@ Debug Chrome is up on port 9222 with your real profile + tabs, and chrome-devtoo
 
 Next step (you must do this yourself — Claude can't restart its own MCP transport mid-session):
   1. Type /mcp into the Claude Code chat input and press Enter.
-  2. Find chrome-devtools in the list.
-  3. Reconnect it.
+  2. A list of connections will appear. Find the one called "chrome-devtools".
+  3. Select it — there will be a "Reconnect" option next to it. Choose that.
+  (First time only: you may also see a one-time approval prompt asking if you trust this
+  connection — that's expected and safe to accept for this project.)
 
 It connects to your migrated profile (~/.chrome-debug-profile) — same logins, same tabs.
 Always launch this Chrome via /devtools (or the `chrome-debug` alias), NOT the dock icon —
@@ -196,6 +198,13 @@ DevTools results (`take_snapshot`, `list_console_messages`, `list_network_reques
 ## SETUP (one-time, per machine) — migrate the real profile
 
 Run this ONCE to create the debuggable copy of the user's real Chrome profile. It needs Chrome fully quit so cookie/login DBs copy cleanly.
+
+**Before running the bash block below, tell the user first** (plain language, no jargon —
+this step genuinely surprises people the first time): *"Heads up — Chrome is about to quit on
+its own for about 15-20 seconds so I can safely set up a debug-friendly copy of your profile.
+This is expected, not a crash. Your tabs, logins, and bookmarks will restore automatically when
+it reopens — your original Chrome profile is never touched, this makes a separate copy."* Then
+run it.
 
 ```bash
 SRC="$HOME/Library/Application Support/Google/Chrome"
