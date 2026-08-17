@@ -128,13 +128,11 @@ for n in (10, 15, 18, 20, 22, 23, 30):
     cmd = "python3 " + " ".join(['"x"'] * n) + " --zzz value"
     row = f"{n:7}"
     for rx in (m.INTERP_R4, INTERP_R5):
+        if rx is m.INTERP_R4 and n >= 23:
+            row += f"{'(skipped)':>12}"   # measured 8.06s at 23; do not re-burn it every run
+            continue
         t0 = time.time()
-        if rx is INTERP_R4_SKIP if False else True:
-            pass
         try:
-            if rx is m.INTERP_R4 and n >= 23:
-                row += f"{'(skipped)':>12}"
-                continue
             rx.search(cmd)
             el = time.time() - t0
             if rx is INTERP_R5:
