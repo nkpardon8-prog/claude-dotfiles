@@ -85,7 +85,7 @@ PY
 }
 
 # ── C1: WITH the flock, exactly one of 8 simultaneous claimants wins ────────────────────────
-res=$(run_race 1 8)
+res=$(run_race 1 8 c1)
 w=${res#winners=}; w=${w%%|*}; s=${res#*survivor=}
 if [ "$w" = "1" ] && [ -n "$s" ] && [ "$s" != "None" ]; then
   ok "C1 8 barrier-released claimants under flock: exactly 1 winner, survivor=$s"
@@ -93,23 +93,105 @@ else
   bad "C1 flock did NOT serialize 8 real claimants (got: $res)"
 fi
 
-# ── C2: the surviving record belongs to the winner (not a loser's overwrite) ────────────────
-# Re-run and confirm the invariant holds across repeats, not once by luck.
+# ── C2: the invariant holds across repeats, not once by luck ────────────────────────────────
 allgood=1
 for i in 1 2 3; do
-  r=$(run_race 1 6); ww=${r#winners=}; ww=${ww%%|*}
+  r=$(run_race 1 6 "c2r$i"); ww=${r#winners=}; ww=${ww%%|*}
   [ "$ww" = "1" ] || { allgood=0; bad "C2 repeat $i: winners=$ww (expected 1) — $r"; }
 done
 [ "$allgood" = "1" ] && ok "C2 invariant holds across 3 repeats of 6 claimants (1 winner each)"
 
-# ── C1-neg: WITHOUT the flock the same race must produce MORE THAN ONE winner ───────────────
-# If this does not go red, C1 proves nothing — the race may simply not be tight enough to matter.
-neg=$(run_race 0 8)
+# ── C3: WITHOUT the flock, claim-vs-claim STILL yields exactly one winner ───────────────────
+# FINDING, measured not assumed: os.link IS a create-exclusive CAS, so claim-vs-claim is already
+# serialized by the link alone. The flock is NOT what makes concurrent CLAIM safe. Its real job is
+# serializing the four DIFFERENT writers (claim / refresh / release / sweep), where one path's
+# unlink can land inside another's read-decide-write. C4 below is the case that actually needs it.
+neg=$(run_race 0 8 c3)
 nw=${neg#winners=}; nw=${nw%%|*}
-if [ "$nw" -gt 1 ] 2>/dev/null; then
-  ok "C1-neg without the flock, $nw claimants won simultaneously (probe can go red)"
+[ "$nw" = "1" ] && ok "C3 without the flock, claim-vs-claim still yields 1 winner (os.link is the CAS)" \
+                || bad "C3 unexpected: link-only claim race produced winners=$nw"
+
+# ── C4: the case the flock actually exists for — claim racing a concurrent unlink ────────────
+# A releaser/sweeper unlinking between a claimant's read and its link is the interleaving link
+# cannot protect against. WITHOUT the flock this must corrupt the invariant; WITH it, it must not.
+c4() {  # $1 = use_flock -> prints "twoholders=N" over repeated trials
+python3 - "$TMP" "$1" <<'PY'
+import fcntl, json, os, secrets, sys, threading, time
+tmp, use_flock = sys.argv[1], sys.argv[2] == "1"
+run = os.path.join(tmp, f"c4-{'F' if use_flock else 'N'}"); os.makedirs(run, exist_ok=True)
+LOCK, MUTEX = os.path.join(run, "prod.lock"), os.path.join(run, "prod.lock.mx")
+open(MUTEX, "w").close()
+violations = 0
+
+def mutex():
+    fd = os.open(MUTEX, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+def claim(sid):
+    """read-decide-write. Without serialization, a concurrent unlink lands inside it."""
+    global violations
+    fd = mutex() if use_flock else None
+    try:
+        try:
+            with open(LOCK) as fh: cur = json.load(fh)
+        except Exception:
+            cur = None
+        if cur is not None:
+            return                                   # someone holds it -> we block
+        time.sleep(0.0005)                           # the read-decide-write window
+        rec = {"sid": sid, "op": "deploy", "ts": int(time.time())}
+        temp = f"{LOCK}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+        f = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(f, "w") as s: json.dump(rec, s, separators=(",", ":"))
+        try:
+            os.link(temp, LOCK)
+        except FileExistsError:
+            os.unlink(temp); return
+        os.unlink(temp)
+    finally:
+        if fd is not None: os.close(fd)
+
+def sweeper():
+    """A turn-end sweep unlinking a lock it believes is its own."""
+    fd = mutex() if use_flock else None
+    try:
+        try:
+            with open(LOCK) as fh: cur = json.load(fh)
+        except Exception:
+            return
+        time.sleep(0.0005)                           # its own read-decide-write window
+        if cur is not None:
+            try: os.unlink(LOCK)
+            except FileNotFoundError: pass
+    finally:
+        if fd is not None: os.close(fd)
+
+for trial in range(60):
+    try: os.unlink(LOCK)
+    except FileNotFoundError: pass
+    with open(LOCK, "w") as s: json.dump({"sid": "A", "op": "deploy", "ts": 1}, s)
+    t1 = threading.Thread(target=claim, args=("B",)); t2 = threading.Thread(target=sweeper)
+    t1.start(); t2.start(); t1.join(); t2.join()
+    # VIOLATION: the sweeper removed A's lock AND B installed its own -> B proceeds believing it
+    # holds a lock that the sweeper had already decided to clear. Detect by B winning at all.
+    try:
+        with open(LOCK) as fh: final = json.load(fh).get("sid")
+    except Exception:
+        final = None
+    if final == "B":
+        violations += 1
+print(f"violations={violations}")
+PY
+}
+vf=$(c4 1); vn=$(c4 0)
+vfn=${vf#violations=}; vnn=${vn#violations=}
+if [ "$vfn" = "0" ] && [ "$vnn" -gt 0 ] 2>/dev/null; then
+  ok "C4 claim-vs-sweep: $vnn violations WITHOUT the flock, 0 WITH it — this is what the flock buys"
+elif [ "$vfn" = "0" ]; then
+  bad "C4-neg NEGATIVE CONTROL DID NOT GO RED (unserialized violations=$vnn) — C4 proves nothing"
 else
-  bad "C1-neg NEGATIVE CONTROL DID NOT GO RED (winners=$nw) — C1 may pass for the wrong reason"
+  bad "C4 THE FLOCK DID NOT PREVENT claim-vs-sweep corruption (violations=$vfn)"
 fi
 
 printf '\nTALLY: %d passed, %d failed\n' "$PASS" "$FAIL"
