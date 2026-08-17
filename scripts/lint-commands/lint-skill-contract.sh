@@ -254,6 +254,15 @@ req "$X" 'the Adversarial + FP-filter lens, passing **`model: "opus"`**'
 # line 110 (code path, 2 Agent calls) and line 113 (non-code path). Floor of 2 = two separate
 # lines carry it, so dropping either one fails.
 req "$X" 'model: "sonnet"' 2
+# BOTH reviewer families must be COUNTED, not just launched (2026-08-17, owner ruling
+# "we cannot move on without reviewing"). The Claude half had no sidecar, no count and no
+# parser, so a lens that silently failed to spawn left `Codex-passes: 4/4` intact and the
+# round banked AS CONVERGED. Pin all three legs of the new contract - the emitted token, the
+# per-lens sidecar that makes the count evidence rather than recollection, and the mission-side
+# parse - so removing any one of them goes red instead of quietly restoring the false green.
+req "$X" "Claude-lenses: N/3"
+req "$X" "claude-<slug>.usable"
+req "commands/mission.md" "parse-claude-header"
 # The counts and the non-code scoping are what an agent reads BEFORE it launches, and
 # Step 4 is entered by both target classes - a count that drifts below the marker is a
 # count nobody applies.
