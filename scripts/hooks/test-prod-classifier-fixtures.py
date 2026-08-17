@@ -125,8 +125,12 @@ def e2e_gate(cmd):
         raise RuntimeError(f"gate unexpected exit {r.returncode}: {r.stderr!r}")
 
 
-def gate_lock_case(initial_bytes=None):
-    """Run one real prod command against an exact initial lock snapshot."""
+def gate_lock_case(initial_bytes=None, ps_shim=None):
+    """Run one real prod command against an exact initial lock snapshot.
+
+    `ps_shim` is optional shell source for a fake `ps` placed FIRST on PATH, so a
+    test can dictate what the gate's liveness probe observes (a positive dead
+    reading, or a `ps` that fails outright)."""
     with tempfile.TemporaryDirectory() as home:
         claude = os.path.join(home, ".claude")
         os.makedirs(claude, exist_ok=True)
@@ -135,14 +139,70 @@ def gate_lock_case(initial_bytes=None):
             with open(lock, "wb") as stream:
                 stream.write(initial_bytes)
         env = dict(os.environ, HOME=home)
+        if ps_shim is not None:
+            bindir = os.path.join(home, "shimbin")
+            os.makedirs(bindir, exist_ok=True)
+            shim = os.path.join(bindir, "ps")
+            with open(shim, "w") as stream:
+                stream.write("#!/bin/sh\nLOCK=" + lock + "\n" + ps_shim)
+            os.chmod(shim, 0o755)
+            env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
         result = subprocess.run(
             [sys.executable, GATE],
             input=json.dumps(_pretooluse_payload("gcloud run deploy summit-api")),
             capture_output=True, text=True, env=env, timeout=30,
         )
         observed = open(lock, "rb").read() if os.path.exists(lock) else None
-        residue = [name for name in os.listdir(claude) if name != "prod.lock"]
+        residue = [name for name in os.listdir(claude)
+                   if name not in ("prod.lock", "shimbin")]
         return result, observed, residue
+
+
+# --- prod-lock LIFECYCLE helpers --------------------------------------------
+def _ps_lstart(pid):
+    """The real, normalized `ps -o lstart=` key for a pid (same normalization the
+    gate applies), or "" if ps has nothing to say."""
+    out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                         capture_output=True, text=True, timeout=10)
+    return " ".join(out.stdout.split()) if out.returncode == 0 else ""
+
+
+def _dead_pid():
+    """A pid that has PROVABLY exited: spawn a trivial child, reap it, hand back
+    its number. Recording its start time first means the fixture also pins the
+    exact {pid, pid_start} record shape the gate writes."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    start = _ps_lstart(child.pid)
+    child.wait()
+    return child.pid, (start or "Thu Jan  1 00:00:00 1970")
+
+
+def release_run(lock_obj, sid, is_error=False, interrupted=False):
+    """Run the REAL PostToolUse release hook against an exact lock snapshot.
+    Returns (returncode, lock_still_present, observed_bytes)."""
+    with tempfile.TemporaryDirectory() as home:
+        claude = os.path.join(home, ".claude")
+        os.makedirs(claude, exist_ok=True)
+        lock = os.path.join(claude, "prod.lock")
+        if lock_obj is not None:
+            with open(lock, "wb") as stream:
+                stream.write(lock_obj if isinstance(lock_obj, bytes)
+                             else json.dumps(lock_obj, separators=(",", ":")).encode())
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gcloud run deploy summit-api"},
+            "tool_response": {"isError": is_error, "interrupted": interrupted},
+            "cwd": home,
+            "session_id": sid,
+        }
+        result = subprocess.run(
+            [sys.executable, RELEASE],
+            input=json.dumps(payload),
+            capture_output=True, text=True, env=dict(os.environ, HOME=home), timeout=30,
+        )
+        present = os.path.exists(lock)
+        observed = open(lock, "rb").read() if present else None
+        return result.returncode, present, observed
 
 
 def e2e_ledger(cmd):
