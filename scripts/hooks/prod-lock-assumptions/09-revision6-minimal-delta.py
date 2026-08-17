@@ -292,5 +292,18 @@ for label, mk in (("blank run", lambda n: ";" + " " * n + "-x"),
     rc |= 1 if over else 0
     print(row + ("  <== OVER BUDGET" if over else ""))
 
-print(f"\n{'ALL GATES PASS' if rc == 0 else 'FAILED - see above'}")
+print("\n6. two-hook agreement - the check the plan CLAIMED existed and did not:")
+# The plan said "the drift guard is red in between" while the region is applied to one hook and not
+# the other. Measured in round 6: ZERO of the 40 pinned fixtures change verdict under this edit, so
+# 06 reports 80/80 whether zero, one, or both hooks are edited. Nothing anywhere compared the two
+# hooks' INTERP patterns. Post-edit, THIS is the assertion that catches a one-hook typo.
+same_pat = gate["INTERP"].pattern == ledger["INTERP"].pattern
+sens = sum(1 for cn, cmd, ge, le in CASES
+           if m.classify(cmd, m.mk_current, gate) is not m.classify(cmd, m.probe_form(INTERP_R7), gate))
+print(f"    gate.INTERP == ledger.INTERP on disk: {same_pat}")
+print(f"    pinned fixtures whose verdict CHANGES under this edit: {sens}/{len(CASES)}"
+      f"{'   <== so 06 CANNOT detect a half-applied edit' if sens == 0 else ''}")
+rc |= 0 if same_pat else 1
+
+print(f"\n{'ALL GATES PASS' if rc == 0 else 'GATE REFUSES - see above'}")
 sys.exit(rc)
