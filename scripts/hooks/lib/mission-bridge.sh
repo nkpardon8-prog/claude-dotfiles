@@ -1766,6 +1766,31 @@ mission_parse_codex_header() {
   return 0
 }
 
+# mission_parse_claude_header <file> -> stdout the bare `N/3` token from the FIRST full-shape
+# `^Engine: ... Claude-lenses: N/3 ... Verified:` line. Same two-layer anti-spoof as the Codex
+# parser above (HEAD-BOUND to 5 lines + first full-shape match only) for the same reason: body
+# content that quotes the string must never win over the real header.
+#
+# WHY THIS EXISTS (2026-08-17): only the 4 Codex lanes had machine detection. The 3 Claude lenses
+# had no sidecar, no count and no parser, so a Claude lens that silently failed to spawn left
+# `Codex-passes: 4/4` intact and the round BANKED AS CONVERGED - a false green in the convergence
+# gate itself. Owner ruling: "we cannot move on without reviewing."
+#
+# EMPTY stdout means absent OR malformed - and the CALLER MUST TREAT EMPTY AS VOID, never as pass.
+# That is deliberate and it is why this is a separate function rather than an optional field: a
+# report predating this contract has no token, and fail-OPEN there would re-create the exact hole
+# this closes. rc always 0 (read-only); diagnostics to stderr.
+mission_parse_claude_header() {
+  _pclh_file="$1"
+  if [ ! -f "$_pclh_file" ]; then
+    echo "mission: parse-claude-header: file not found: ${_pclh_file:-<empty>}" >&2; return 0
+  fi
+  head -n 5 "$_pclh_file" 2>/dev/null \
+    | grep -E '^Engine:.*Claude-lenses: [0-9]+/3.*Verified:' \
+    | head -1 | grep -oE 'Claude-lenses: [0-9]+/3' | head -1 | sed 's/Claude-lenses: //'
+  return 0
+}
+
 # _mission_gen_selfheal <sid> <root> <marker_gen> <logfile> — WRITE-PATH self-heal for the rollover
 # crash window (gate-22): if the marker committed a gen bump (>=2) but the boundary append died, the
 # latest boundary's gen is BEHIND the marker. Append the missing `(recovered)` boundary FIRST so the
