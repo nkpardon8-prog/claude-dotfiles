@@ -20,20 +20,7 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/flockprobe.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 # ── A1: a flock is released when the holding process EXITS (no explicit unlock) ─────────────
-python3 - "$TMP" <<'PY'
-import fcntl, os, subprocess, sys, json
-tmp = sys.argv[1]; p = os.path.join(tmp, "a1.mx")
-open(p, "w").close()
-# child takes the lock and exits WITHOUT unlocking
-child = "import fcntl,os,sys;fd=os.open(sys.argv[1],os.O_RDWR);fcntl.flock(fd,fcntl.LOCK_EX)"
-subprocess.run([sys.executable, "-c", child, p], timeout=10)
-fd = os.open(p, os.O_RDWR)
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    print(json.dumps({"a1": "released-on-exit"}))
-except OSError:
-    print(json.dumps({"a1": "STILL-HELD"}))
-PY
+# The child takes LOCK_EX and exits without unlocking; the parent must then acquire immediately.
 res=$(python3 - "$TMP" <<'PY'
 import fcntl, os, subprocess, sys
 tmp = sys.argv[1]; p = os.path.join(tmp, "a1b.mx"); open(p, "w").close()
