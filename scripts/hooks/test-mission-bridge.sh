@@ -1137,6 +1137,66 @@ if [ "$CL6_HW2" = "123456" ]; then
 else fail "high-water positive control" "hw='$CL6_HW2' (want 123456)"; fi
 cleanup_root "$R"; cleanup_root "$R2"
 
+# ===========================================================================================
+# REVIEW-EVIDENCE (2026-08-17, item 7): convergence must be bound to a report that really ran a
+# FULL panel. Check (2) proves the round lines' ARITHMETIC folds; it cannot prove a review HAPPENED,
+# because the agent writes those lines itself.
+# ===========================================================================================
+SID="${UNIQ}-revid"
+R=$(fresh_root revid)
+RPT="$R/report-final.md"; printf 'Engine: x | Codex-passes: 4/4 | Claude-lenses: 3/3 | Verified: Y\n' > "$RPT"
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — revid" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=3 status=ok evidence=od:1" "m1-live-verify-r3" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=1 findings=0" "m1-review-r2-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=3 dry=2 findings=0" "m1-review-r3-d2" >/dev/null 2>&1
+
+# Shape: a fabricated report path is refused (same honesty-scoping as live-verify evidence).
+GHOST=$(bash "$MWSH" log "$SID" "$R" "[mission] REVIEW-EVIDENCE part=1 round=2 codex=4/4 claude=3/3 report=/nope/ghost.md" "m1-review-evidence-r2" 2>&1)
+printf '%s' "$GHOST" | grep -q 'review-evidence-report-missing' \
+  && pass "REVIEW-EVIDENCE stats the report path — a fabricated path is REFUSED" \
+  || fail "review-evidence ghost path" "got='$GHOST'"
+
+# SELF-CUTOVER: with NO evidence banked, the legacy fold still converges (banked history is not
+# retroactively bricked).
+LEGACY=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+printf '%s' "$LEGACY" | grep -q 'log ok' \
+  && pass "no evidence banked -> legacy fold still converges (self-cutover, no retroactive break)" \
+  || fail "review-evidence self-cutover" "got='$LEGACY'"
+
+# Once a part STARTS producing evidence, a SHORT panel must refuse convergence.
+SID="${UNIQ}-revid2"; R=$(fresh_root revid2)
+RPT="$R/report-final.md"; printf 'Engine: x | Codex-passes: 4/4 | Claude-lenses: 2/3 | Verified: Y\n' > "$RPT"
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — revid2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=3 status=ok evidence=od:1" "m1-live-verify-r3" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=1 findings=0" "m1-review-r2-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=3 dry=2 findings=0" "m1-review-r3-d2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] REVIEW-EVIDENCE part=1 round=2 codex=4/4 claude=2/3 report=$RPT" "m1-review-evidence-r2" >/dev/null 2>&1
+SHORT=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+printf '%s' "$SHORT" | grep -q 'convergence-without-full-panel' \
+  && pass "a SHORT panel (claude=2/3) REFUSES convergence once evidence exists" \
+  || fail "review-evidence short panel" "got='$SHORT'"
+
+# Both folding rounds full -> converges.
+bash "$MWSH" log "$SID" "$R" "[mission] REVIEW-EVIDENCE part=1 round=3 codex=4/4 claude=3/3 report=$RPT" "m1-review-evidence-r3" >/dev/null 2>&1
+STILL=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+printf '%s' "$STILL" | grep -q 'convergence-without-full-panel' \
+  && pass "round 2 still short -> STILL refuses (both folding rounds must be full, not just the last)" \
+  || fail "review-evidence partial fix" "got='$STILL'"
+
+SID="${UNIQ}-revid3"; R=$(fresh_root revid3)
+RPT="$R/report-final.md"; printf 'ok\n' > "$RPT"
+bash "$MWSH" create "$SID" "$R" "MISSION MODE: build — revid3" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] live-verify part=1 round=3 status=ok evidence=od:1" "m1-live-verify-r3" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=2 dry=1 findings=0" "m1-review-r2-d1" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] part=1 name=x phase=review round=3 dry=2 findings=0" "m1-review-r3-d2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] REVIEW-EVIDENCE part=1 round=2 codex=4/4 claude=3/3 report=$RPT" "m1-review-evidence-r2" >/dev/null 2>&1
+bash "$MWSH" log "$SID" "$R" "[mission] REVIEW-EVIDENCE part=1 round=3 codex=4/4 claude=3/3 report=$RPT" "m1-review-evidence-r3" >/dev/null 2>&1
+FULL=$(bash "$MWSH" log "$SID" "$R" "[mission] PART-DONE part=1 (converged)" "m1-part-done" 2>/dev/null)
+printf '%s' "$FULL" | grep -q 'log ok' \
+  && pass "both folding rounds full (4/4 + 3/3) -> convergence banks" \
+  || fail "review-evidence full panel" "got='$FULL'"
+cleanup_root "$R"
+
 echo
 printf 'PASS: %d  FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]
