@@ -132,58 +132,66 @@ def mutex():
     fcntl.flock(fd, fcntl.LOCK_EX)
     return fd
 
-def claim(sid):
-    """read-decide-write. Without serialization, a concurrent unlink lands inside it."""
-    global violations
+b_linked = False
+
+def handoff():
+    """A's call ends (release unlinks A), then B claims. Both under the mutex when serialized."""
+    global b_linked
     fd = mutex() if use_flock else None
     try:
-        try:
-            with open(LOCK) as fh: cur = json.load(fh)
-        except Exception:
-            cur = None
-        if cur is not None:
-            return                                   # someone holds it -> we block
-        time.sleep(0.0005)                           # the read-decide-write window
-        rec = {"sid": sid, "op": "deploy", "ts": int(time.time())}
+        try: os.unlink(LOCK)                         # A releases
+        except FileNotFoundError: pass
+        rec = {"sid": "B", "op": "deploy", "ts": int(time.time())}
         temp = f"{LOCK}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
         f = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(f, "w") as s: json.dump(rec, s, separators=(",", ":"))
         try:
-            os.link(temp, LOCK)
+            os.link(temp, LOCK); b_linked = True
         except FileExistsError:
-            os.unlink(temp); return
+            pass
         os.unlink(temp)
     finally:
         if fd is not None: os.close(fd)
 
 def sweeper():
-    """A turn-end sweep unlinking a lock it believes is its own."""
+    """Turn-end sweep for session A. Reads FIRST (possibly stale), then acts."""
+    try:
+        with open(LOCK) as fh: cur = json.load(fh)
+    except Exception:
+        return
+    if cur.get("sid") != "A":
+        return                                       # not ours -> nothing to do
+    time.sleep(0.001)                                # the stale-read window
     fd = mutex() if use_flock else None
     try:
-        try:
-            with open(LOCK) as fh: cur = json.load(fh)
-        except Exception:
-            return
-        time.sleep(0.0005)                           # its own read-decide-write window
-        if cur is not None:
-            try: os.unlink(LOCK)
-            except FileNotFoundError: pass
+        if use_flock:
+            # THE FIX: re-verify UNDER the lock. Without this the stale decision is acted on.
+            try:
+                with open(LOCK) as fh: again = json.load(fh)
+            except Exception:
+                return
+            if again.get("sid") != "A":
+                return
+        try: os.unlink(LOCK)
+        except FileNotFoundError: pass
     finally:
         if fd is not None: os.close(fd)
 
-for trial in range(60):
+for trial in range(80):
+    b_linked = False
     try: os.unlink(LOCK)
     except FileNotFoundError: pass
     with open(LOCK, "w") as s: json.dump({"sid": "A", "op": "deploy", "ts": 1}, s)
-    t1 = threading.Thread(target=claim, args=("B",)); t2 = threading.Thread(target=sweeper)
-    t1.start(); t2.start(); t1.join(); t2.join()
-    # VIOLATION: the sweeper removed A's lock AND B installed its own -> B proceeds believing it
-    # holds a lock that the sweeper had already decided to clear. Detect by B winning at all.
+    t2 = threading.Thread(target=sweeper); t1 = threading.Thread(target=handoff)
+    t2.start(); time.sleep(0.0003); t1.start()
+    t2.join(); t1.join()
     try:
         with open(LOCK) as fh: final = json.load(fh).get("sid")
     except Exception:
         final = None
-    if final == "B":
+    # VIOLATION: B linked and passed its read-back, but the lock is gone -> B believes it holds a
+    # lock that no longer exists, and the next arrival claims freely. Two holders.
+    if b_linked and final is None:
         violations += 1
 print(f"violations={violations}")
 PY
