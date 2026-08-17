@@ -191,7 +191,27 @@ fi
 # implement.md joined 2026-08-02 (parallelizer v1): both now exceed the 20,000-char
 # re-injection ceiling outright, so their launch registers only survive a compaction if
 # the contract core ends before char 19500.
-for F in commands/mission.md commands/pre-compact.md commands/codex-review.md commands/implement.md; do
+#
+# THE TARGET SET IS DERIVED, NOT HAND-MAINTAINED (2026-08-17, #202). It was a hardcoded
+# four-file loop, so a command that ADOPTED the marker was never measured. Found live:
+# commands/outreach.md carries a contract core and sat unguarded at 19427 chars - 73 from the
+# threshold - with nothing that would ever have caught it crossing. Carrying the marker is
+# what makes a file's core survive compaction, so carrying it IS the enrollment signal; a
+# second hand-maintained list of who-is-enrolled can only drift away from it.
+# It is a UNION, not a replacement: the four names below stay hardcoded so a guarded file
+# that LOSES its marker still FAILS. A purely derived set would silently drop that file out
+# of the guard - the same fail-open shape, one level in.
+_rule2_targets() {
+    printf '%s\n' commands/mission.md commands/pre-compact.md commands/codex-review.md commands/implement.md
+    for _f in "$ROOT"/commands/*.md; do
+        [ -f "$_f" ] || continue
+        # grep -a: a single NUL byte makes plain grep skip a file SILENTLY, which here would
+        # read as "not enrolled" - a confident negative from an unread file.
+        grep -aqF -- '<!-- CONTRACT-CORE-END -->' "$_f" 2>/dev/null || continue
+        printf 'commands/%s\n' "${_f##*/}"
+    done
+}
+for F in $(_rule2_targets | sort -u); do
     if staged_has "$F"; then
         cf="$(resolve_content "$F")"
         [ -n "$cf" ] || continue
