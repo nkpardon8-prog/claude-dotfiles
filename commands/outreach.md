@@ -1,5 +1,5 @@
 ---
-description: "HubSpot → Salesmsg draft pipeline (Arc Boats), built to be handed to any teammate safely. MANDATORY interactive intake happens FIRST, before any devtools/HubSpot access: data source, campaign goal, message content (your template or approved samples), which HubSpot fields/signals to weigh, and targeting — all asked explicitly every run, nothing defaulted or reused from memory. Then it vets every contact via the internal API, reads message history to tailor, and places short unsent drafts into the Salesmsg widget, one Chrome tab per contact, for the user to review and send. DRAFT ONLY: never sends, never edits HubSpot."
+description: "HubSpot → Salesmsg draft pipeline (Arc Boats), built to be handed to any teammate safely. First run per person: a one-time onboarding (identity, voice, a HubSpot map) saved to native memory, never repeated. Every run: MANDATORY interactive intake before any devtools/HubSpot access — data source, campaign goal, message content (your template or approved samples), which HubSpot fields/signals to weigh, and targeting, all asked explicitly, nothing defaulted. Then it vets every contact via the internal API, reads message history to tailor, and places short unsent drafts into the Salesmsg widget, one Chrome tab per contact, for the user to review and send. DRAFT ONLY: never sends, never edits HubSpot."
 argument-hint: "[report/list URL or name] [batch size (default 20)] [demo locations] [extra instructions]"
 ---
 
@@ -30,7 +30,8 @@ knowledge to run this safely.
 6. **No default lead source, no assumed copy, no assumed goal, no assumed vetting criteria,
    no assumed targeting.** Every one of those is asked fresh in Step 0, every run, regardless
    of who is running it or what a past run used. Guessing means real texts drafted to the wrong
-   people saying the wrong thing.
+   people saying the wrong thing. (The one deliberate exception: onboarding identity/voice —
+   see the Onboarding section — persists per person and is never re-asked once captured.)
 7. **Never draft to a contact with a future demo already booked.** Check their engagement
    timeline for a `MEETING` type engagement with `metadata.startTime` in the future — a booked
    demo means the re-engagement ask is already answered; texting anyway is redundant and reads
@@ -98,6 +99,65 @@ work, not habit.
 - If none of the three are available or connected, that's a setup gap, not a workflow decision —
   go back to Automated setup, run `/devtools`, and retry before doing anything else.
 
+## Onboarding (first time only, per person — uses your platform's memory system, not a repo file)
+
+Runs once per person, ever — not once per run, not once per repo clone. This is the one
+deliberate exception to hard rail #6 ("never assume, always ask fresh"): identity and voice are
+meant to persist; per-run specifics (source, goal, targeting) still get asked every time in
+Step 0 regardless of what onboarding captured.
+
+**Use your own persistent memory system for this** — the cross-session memory mechanism your
+environment provides you, if you have one — never a file inside this repo. That keeps each
+person's profile correctly scoped to their own account, and nowhere near this git repo (which
+may be public). If you have no memory system available in this environment at all, say so
+plainly and skip onboarding entirely — fall back to asking what you need inline during Step 0
+each run rather than blocking the tool on a foundation that doesn't exist here.
+
+**Check first, before asking anything.** Look for an existing memory entry from a prior
+`/outreach` onboarding — search for something named/described like "outreach onboarding" or
+"Arc Boats outreach user profile." If found, **load it silently and do not re-ask any of it** —
+go straight to Step 0. Never run this interview twice for the same person.
+
+**If not onboarded, run this interview once:**
+
+1. **Identity**: full name, and role (what they actually do — sales rep, regional manager,
+   etc.).
+2. **Hobbies / interests**: for calibrating tone and rapport in *their* drafts, not for
+   mentioning to leads. A surfer and a numbers-first closer write differently — this is about
+   making drafts sound like this specific person instead of generic AI copy.
+3. **Writing voice**: ask directly — *"Want to paste a few texts or emails you've actually
+   sent, so I can match your voice? Or, if HubSpot's already connected, I can pull a handful of
+   your own recent outbound SMS as samples instead."* Either way, distill what you're given
+   into a few concrete voice notes (sentence length, formality, recurring phrases, things they
+   never say) rather than storing walls of raw text.
+4. **Anything else that shapes tailoring**: typical CTA style, whether they always sign off
+   with their name, phrasing or topics to avoid, their usual demo circuit/region — anything
+   Step 0 would otherwise have to ask fresh every single run.
+5. **A first HubSpot map** (below) — part of the same onboarding pass, not a separate ask.
+
+Save the result as a **`user`-type** memory (role/hobbies/voice/preferences) via your memory
+system's normal save contract. Name it clearly (e.g. `outreach_user_profile`) so it is easy to
+find and update later, and so it never collides with unrelated memories from other work this
+person's account has done.
+
+### First HubSpot map (part of onboarding, then kept current over time)
+
+Ask: *"What are the lists, reports, and dashboards you use most for outreach like this?"*
+Capture name + URL/id + what each is for. If HubSpot is already connected (`/devtools` has run),
+do one light live pass — open the Lists and Reports/Dashboards pages, screenshot, and use that
+to jog their memory or confirm ids. Best effort, not a full crawl of the portal.
+
+Save this as a **`reference`-type** memory (e.g. `outreach_hubspot_map`) — portal id, team id,
+Salesmsg line, and the lists/reports/dashboards named, each with what it's for. Never store
+credential values or session tokens in it — structure and purpose only, same as everywhere else
+in this skill.
+
+**Keep it current, not static.** After every future run, if Step 0.1's data source isn't
+already in the map, add it — name, id, date first used — by updating the existing memory entry
+in place. Never create a duplicate entry and never drop what's already there. Over enough runs
+this becomes a real map of how this person actually works in HubSpot, grown from what they've
+actually used rather than a one-time guess.
+
 ## Step 0 — Mandatory intake gate (complete before touching devtools, Chrome, or HubSpot)
 
 **Do not call `/devtools`. Do not open a HubSpot tab. Do not make a single API call. Do not
@@ -133,8 +193,10 @@ silently.**
   `{First}`) and any location/date/offer detail that needs to vary per contact — verify anything
   factual rather than inventing it (arcboats.com/tour blocks bots, so ask rather than scrape).
 - **If they want options proposed**: first read `commands/outreach/memory/style-prefs.json`
-  (see the Style memory section below) and summarize what's worked before as your starting
-  point — this makes the proposal smarter without skipping confirmation. Then show 2-3 sample
+  (see the Style memory section below) AND this person's `outreach_user_profile` memory (see
+  Onboarding above) if they have one — voice notes from onboarding should shape the samples as
+  much as the team's shared style log. Summarize both as your starting point — this makes the
+  proposal smarter without skipping confirmation. Then show 2-3 sample
   drafts before drafting a single real message to a real contact. Ground the samples in the
   stated goal. The style examples later in this file (Nick's historical rules) are a reasonable
   fallback starting point when memory is empty, not a rulebook a different user is bound to —
