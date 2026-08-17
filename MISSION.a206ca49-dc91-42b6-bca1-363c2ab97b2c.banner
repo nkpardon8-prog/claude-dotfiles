@@ -58,15 +58,19 @@ plan 4-6 / codex 3-6, cap per 6.1; /pre-compact freely interleaved; active until
 <!-- mid:pd-5-probe-capture-hook -->
 - [pd:6-gate-false-negatives] MEASURED, pre-existing, live right now, and unrelated to any plan: the SHIPPED prod gate classifies two real production-execution shapes as SAFE. (1) A heredoc fed STRAIGHT to a shell (the opener names the shell, with no pipe at all). There is no INTERP alternative for that shape at all. (2) A heredoc piped to an ABSOLUTE-PATH shell. The pipe alternative is a backslash-pipe followed by an optional ba/z/da/k prefix and a word boundary, which cannot cross a slash or a sudo. Both let a real production command through the gate unlocked and unlogged TODAY. Probe 04 (scripts/hooks/prod-lock-assumptions/04-classifier-corpus.sh) demonstrates both. Part 2 is already editing this exact regex, so closing them there is nearly free - but it widens Part 2 beyond the two defects it was scoped for, so I am flagging rather than assuming. Want them closed in Part 2? 
 <!-- mid:pd-6-gate-false-negatives -->
+- [pd:7-sed-deny-tradeoff] Deny-list keeps sed: fixes 4 checks of the ubiquitous 'sed -e s/x/y/' false positive, but LOSES detection of GNU sed's exotic executing form (sed -e '1e <cmd>'), which shipped catches. Measured both ways. Default taken: keep sed denied, document the loss. Confirm or reverse.
+<!-- mid:pd-7-sed-deny-tradeoff -->
+- [pd:8-part3-snapshot-observed-rows] HARD PRECONDITION ON PART 3: the 11 contaminated ledger rows are the ONLY real-world observed false-positive corpus this project has (the scorer carries just 2 OBSERVED rows out of 98), and Part 3 is slated to DELETE them. Snapshot all 11 into the corpus as OBSERVED rows BEFORE Part 3 filters the file. Every one of six revisions collapsed on rows the author wrote; this is the cheapest fix for that and the window closes when Part 3 runs.
+<!-- mid:pd-8-part3-snapshot-observed-rows -->
 --- continuation contract ---
 1. Keep the FULL objective intact - never redefine success down to a smaller, easier, or merely test-passing subset.
 2. The worktree and external state are authoritative; conversation memory only hints where to look - inspect current state before relying on it.
 3. Completion is UNPROVEN until verified requirement-by-requirement against current evidence; partial progress and plausible-looking output are not proof.
 4. Do not declare blocked until the SAME blocker has repeated 3 consecutive attempts; blocked means truly unable to progress without user input.
-⏱ stretch 5h 54m · active 5h 54m · wall 5h 54m · idle 0s
+⏱ stretch 7h 31m · active 7h 31m · wall 7h 31m · idle 0s
 --- recent log ---
-m2-criticer-r3	[mission] criticer part=2 findings=5 FALSIFIED my zero-regressions claim: closed-world name list drops 2 shapes shipped catches
-m2-await-review-barrier-r3-a1-g1	[mission] AWAIT part=2 phase=review round=3 kind=job op=review-barrier attempt=1 need=3 got=1 started_at=1786942001
-m2-await-review-barrier-r3-a1-g2	[mission] AWAIT part=2 phase=review round=3 kind=job op=review-barrier attempt=1 need=3 got=2 started_at=1786942001
-m2-review-r3-d0	[mission] part=2 name=detector-accuracy phase=review round=3 dry=0 findings=12
-seq-4	[c#4] Apply round-3 fix then barrier round 4
+m2-await-review-barrier-r6-a1-g2	[mission] AWAIT part=2 phase=review round=6 kind=job op=review-barrier attempt=1 need=3 got=2 started_at=1786948508
+m2-review-r6-d0	[mission] part=2 name=detector-accuracy phase=review round=6 dry=0 findings=6
+m2-fix-r6-d0	[mission] part=2 name=detector-accuracy phase=fix round=6 dry=0 findings=6
+m2-fail-round-cap-reached-parked-1	[mission] FAIL part=2 phase=review reason=round-cap-reached-parked attempt=1
+m4-part-start	[mission] PART-START part=4 name=model-routing
