@@ -471,6 +471,35 @@ _mw_partdone_check() {
       a=n-1; b=n
       if (rf[a]==0 && rd[a]==1 && rf[b]==0 && rd[b]==2 && rr[b]==rr[a]+1 && !(act>rl[a])) print "yes"; else print "no" }')
   [ "$_pc_clean" = yes ] || _mw_emit_refuse log 4 "REFUSED: convergence-not-machine-clean"
+  # (2b) REVIEW-EVIDENCE — the two folding rounds must EACH be bound to a report that really ran a
+  # FULL panel (codex=4/4 AND claude=3/3). Check (2) above proves the ARITHMETIC of the round lines;
+  # it cannot prove a review happened, because the agent writes those lines itself. This is the
+  # difference between "the numbers fold" and "the work was done".
+  # SELF-CUTOVER, and deliberately so: enforced only once this part has EVER banked a REVIEW-EVIDENCE
+  # line. Rounds banked before this shipped carry none, and retroactively blocking them would brick
+  # in-flight missions for work that was genuinely reviewed under the old contract — a convention
+  # governs new work, it is not a licence to invalidate banked history. Once a part starts producing
+  # evidence it must keep producing it; a later round that drops it FAILS.
+  # RESIDUAL LIMIT, stated plainly: this cannot force an agent to emit the line in the first place.
+  # Nothing in a log-append bridge can. It makes SKIPPING visible and makes a PARTIAL panel refuse;
+  # a part that never emits any evidence is still gated only by (1),(2),(3). The emission mandate
+  # lives in mission.md and is pinned by lint-skill-contract.sh.
+  _pc_haveev=$(printf '%s\n' "$_pc_stream" | awk -F'\t' -v pn="$_pc_pn" \
+    '$2 ~ ("^\\[mission\\] REVIEW-EVIDENCE part=" pn "[^0-9]") { f=1 } END { exit f?0:1 }' && echo yes || echo no)
+  if [ "$_pc_haveev" = yes ]; then
+    _pc_evok=$(printf '%s\n' "$_pc_stream" | awk -F'\t' -v pn="$_pc_pn" '
+      function num(s,key,   p){ p=key"[0-9]+"; if(match(s,p)) return substr(s,RSTART+length(key),RLENGTH-length(key))+0; return -1 }
+      $2 ~ ("^\\[mission\\] part=" pn "[^0-9]") && $2 ~ "phase=review" { n++; rr[n]=num($2,"round=") }
+      $2 ~ ("^\\[mission\\] REVIEW-EVIDENCE part=" pn "[^0-9]") {
+        r=num($2,"round="); cx=num($2,"codex="); cl=num($2,"claude=")
+        if (cx==4 && cl==3) full[r]=1 }
+      END {
+        if (n<2) { print "no"; exit }
+        a=rr[n-1]; b=rr[n]
+        if (full[a] && full[b]) print "yes"; else print "no" }')
+    [ "$_pc_evok" = yes ] \
+      || _mw_emit_refuse log 4 "REFUSED: convergence-without-full-panel — both folding rounds need a REVIEW-EVIDENCE line with codex=4/4 claude=3/3; a round whose panel was short or absent cannot bank convergence"
+  fi
   # (3) TREE-DRIFT (stale-claim guard, enforcement half) — the tree must not have moved since the
   # convergence this PART-DONE relies on. Compare the CURRENT fingerprint to the newest kind=converged
   # SNAPSHOT for part N (stamped by _mw_emit_snapshot at the dry=2 round). Missing stamp (legacy mission)
