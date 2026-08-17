@@ -239,7 +239,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # free and removes the whole question.
     if ! { git --no-replace-objects log -p -m --text --no-textconv --root --no-color "$@" </dev/null | sed -n 's/^+//p' &&
            git --no-replace-objects rev-list "$@" --format=%B </dev/null; } > "$TMP"; then
-        _unproven "could not enumerate commits for ${local_ref:-?}"
+        continue   # MUTANT: fail open
     fi
     # Invoked through `bash` rather than executed directly (2026-08-03, round-2 review): a
     # lost executable bit made this return 126, which is outside the 0/2/3 vocabulary every

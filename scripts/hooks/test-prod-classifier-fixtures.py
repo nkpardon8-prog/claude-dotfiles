@@ -533,14 +533,26 @@ def main():
     # The gate stamps {pid, pid_start} so a LATER window can prove this holder
     # dead. Both keys or neither - a pid without its start time is defeated by
     # pid reuse, so half a stamp must never ship.
-    result, observed, residue = gate_lock_case()
+    # Driven through a shim so the assertion is DETERMINISTIC rather than
+    # vacuous: the shim makes the immediate parent look like a session `claude`
+    # with a known start time, so a claim MUST come out stamped with both keys.
+    # Without the shim this would silently pass on any machine where the walk
+    # simply finds nothing - which is how a missing stamp would ship unnoticed.
+    STAMP_DATE = "Mon Aug 17 09:00:00 2026"
+    stamp_shim = (
+        "case \"$*\" in\n"
+        "  *args=*) echo 'claude --resume'; exit 0 ;;\n"
+        "  *lstart=*) echo '" + STAMP_DATE + "'; exit 0 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+    result, observed, residue = gate_lock_case(ps_shim=stamp_shim)
     stamped = json.loads(observed) if observed else {}
-    has_pid = "pid" in stamped
-    check("lock", "claim stamps BOTH pid and pid_start, or neither",
-          has_pid == ("pid_start" in stamped)
-          and (not has_pid or (isinstance(stamped["pid"], int) and stamped["pid"] > 0
-                               and isinstance(stamped["pid_start"], str) and stamped["pid_start"])),
-          f"stamped={stamped}")
+    check("lock", "a claim is STAMPED with the session pid and its start time",
+          result.returncode == 0
+          and isinstance(stamped.get("pid"), int) and stamped["pid"] > 0
+          and stamped.get("pid_start") == STAMP_DATE,
+          f"rc={result.returncode} stamped={stamped}")
 
     result, observed, residue = gate_lock_case()
     try:
