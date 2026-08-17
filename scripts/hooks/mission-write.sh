@@ -110,6 +110,12 @@ case "$verb" in
     mission_parse_codex_header "${2:-}"
     exit 0
     ;;
+  parse-claude-header)
+    # argv exception: <verb> <file>. Same anti-spoof shape as parse-codex-header.
+    # EMPTY stdout = absent or malformed = the caller MUST treat it as VOID, never as pass.
+    mission_parse_claude_header "${2:-}"
+    exit 0
+    ;;
   void-count)
     # argv exception: <verb> <sid> <root> <part> <round>. stdout MUST be a bare integer or -1 — a
     # STOP-branching §5 caller reads it directly (stderr alone cannot block a count-testing caller).
