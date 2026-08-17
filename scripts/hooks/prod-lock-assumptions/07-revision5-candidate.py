@@ -135,6 +135,34 @@ for label, rows in (("CORPUS (47 rows, mine)", m.CORPUS),
             print(f"    {kind:9} [{hook:6}] {why}")
     print()
 
+# --------------------------------------------- MECHANICAL strict-subset check (not by eye)
+# "zero regressions" was over-claimed twice by eyeballing a score DIFFERENCE. A lower error count
+# does not imply a subset: a candidate can fix 5 and break 3 and still score higher. Assert the
+# actual set relation, over corpus + holdout together, and print the qualifier with the number.
+ALL = list(m.CORPUS) + list(HOLDOUT)
+
+
+def errset(fn):
+    out = set()
+    for i, (cmd, wg, wl, why) in enumerate(ALL):
+        for hookname, ns, want in (("gate", gate, wg), ("ledger", ledger, wl)):
+            if m.classify(cmd, fn, ns) is not bool(want):
+                out.add((i, hookname, why))
+    return out
+
+
+print("########## STRICT-SUBSET CHECK (corpus + holdout, both hooks) ##########")
+base = errset(m.mk_current)
+for name, fn in CANDS[1:]:
+    e = errset(fn)
+    new = e - base
+    print(f"{name}: {len(ALL)*2-len(e)}/{len(ALL)*2} on the {len(ALL)} measured rows | "
+          f"fixed {len(base - e)} | NEW errors (regressions) {len(new)} "
+          f"| {'STRICT SUBSET of shipped' if not new else 'NOT a subset'}")
+    for _, hook, why in sorted(new, key=lambda x: x[2]):
+        print(f"    REGRESSION [{hook:6}] {why}")
+print()
+
 # ------------------------------------------------------------- linear-time budget
 print("########## LINEAR-TIME BUDGET (round-3 ReDoS was 8.06s at 23 tokens) ##########")
 print(f"{'tokens':>7} {'rev4':>12} {'rev5':>12}")
