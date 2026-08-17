@@ -1275,6 +1275,86 @@ _ga="$P7W/ga"; mkdir -p "$_ga"
 chk "git add -A really does fail on an untracked nested repo (guard has a live trigger)" \
     "$([ "$?" -ne 0 ] && echo fails || echo succeeds)" "fails"
 
+# --- R7-CRITICAL: a `remote_sha` that is ABSENT from the local object store. This suite was
+# extensive on rc vocabulary and token emission and had NO case for it at all - grep it for
+# `remote_sha`, `stale` or `non-fast` before this entry and nothing relevant comes back. The
+# shape is ordinary, not exotic: THREE machines push to this repo and dotfiles-sync never
+# fetched, so `origin/<branch>` goes stale routinely. `git push` then negotiates the real tip
+# with the server and hands the hook a `remote_sha` it has never seen; `remote_sha..local_sha`
+# is an invalid revision range, BOTH git calls die, and `_unproven` halts every future
+# auto-sync behind a `kind: unproven` marker. The hook is RIGHT to refuse - an unenumerable
+# range is genuinely unproven - so this case pins that fail-closed behaviour permanently, and
+# the fix belongs upstream in dotfiles-sync (asserted below). Measured live on 2026-08-17.
+_sw="$P7W/stale"; mkdir -p "$_sw"
+_shome="$_sw/home"; mkdir -p "$_shome/.claude-dotfiles/commands"
+cp -R "$REPO/scripts" "$_shome/.claude-dotfiles/scripts"
+_sr="$_shome/.claude-dotfiles"
+git init -q "$_sr"; git init -q --bare "$_sw/remote.git"
+( cd "$_sr" && git remote add origin "$_sw/remote.git" && HOME="$_shome" bash "$INSTALL" ) >/dev/null 2>&1
+_sbr=$( cd "$_sr" && git symbolic-ref --short HEAD )
+( cd "$_sr" && printf 'a\n' > a.txt && git add a.txt && HOME="$_shome" git commit -qm base --no-verify \
+  && HOME="$_shome" git push -q -u origin "$_sbr" ) >/dev/null 2>&1
+# A SECOND machine pushes first. That is the entire mechanism - a plain clone standing in for
+# the other laptop, doing nothing unusual.
+git clone -q "$_sw/remote.git" "$_sw/other" >/dev/null 2>&1
+( cd "$_sw/other" && printf 'b\n' > b.txt && git add b.txt && git commit -qm other --no-verify -q \
+  && git push -q origin "HEAD:$_sbr" ) >/dev/null 2>&1
+_stip=$( git --git-dir="$_sw/remote.git" rev-parse "$_sbr" )
+# Local work on the now-stale base: ahead 1, behind 1, remote tip NOT an ancestor.
+( cd "$_sr" && printf 'c\n' > c.txt && git add c.txt \
+  && HOME="$_shome" git commit -qm local --no-verify -q ) >/dev/null 2>&1
+# The PRECONDITION is asserted, not assumed. If that object were already local the push would
+# simply succeed and every assertion below would pass while testing nothing - the hollow-test
+# class this suite has already been burned by twice.
+chk "the negotiated remote_sha really is ABSENT from the local object store" \
+    "$( cd "$_sr" && git cat-file -e "$_stip" 2>/dev/null && echo present || echo absent )" "absent"
+_serr=$( cd "$_sr" && HOME="$_shome" git push origin "$_sbr" 2>&1 ); _src=$?
+chk "an unknown remote_sha FAILS CLOSED (the push is refused)" \
+    "$([ "$_src" -ne 0 ] && echo blocked || echo allowed)" "blocked"
+chk "an unknown remote_sha emits RANGE-NOT-PROVEN-CLEAN" \
+    "$(printf '%s' "$_serr" | grep -c 'RANGE-NOT-PROVEN-CLEAN' | tr -d ' ')" "1"
+chk "the remote ref did NOT move under an unproven range" \
+    "$(git --git-dir="$_sw/remote.git" rev-parse "$_sbr")" "$_stip"
+# THE OTHER HALF, and it is not padding: without it this case is satisfied by a hook that
+# refuses everything. Once a fetch puts that object in the store, the SAME negotiated
+# remote_sha enumerates and the identical push goes through.
+( cd "$_sr" && git fetch -q origin && HOME="$_shome" git merge -q --no-edit "origin/$_sbr" ) >/dev/null 2>&1
+chk "after the fetch the remote_sha object IS present locally" \
+    "$( cd "$_sr" && git cat-file -e "$_stip" 2>/dev/null && echo present || echo absent )" "present"
+_s2err=$( cd "$_sr" && HOME="$_shome" git push origin "$_sbr" 2>&1 ); _s2rc=$?
+chk "the same remote_sha range enumerates and PASSES once the object is present" "$_s2rc" "0"
+chk "no RANGE-NOT-PROVEN-CLEAN once the object is present" \
+    "$(printf '%s' "$_s2err" | grep -c 'RANGE-NOT-PROVEN-CLEAN' | tr -d ' ')" "0"
+chk "the now-provable push actually reached the remote" \
+    "$([ "$(git --git-dir="$_sw/remote.git" rev-parse "$_sbr")" != "$_stip" ] && echo moved)" "moved"
+
+# --- R7: the CAUSE. The hook refusing an unenumerable range is correct; what SHIPPED the halt
+# was dotfiles-sync pushing against a ref it never refreshed - its only remote reads were
+# `ls-remote` and `gh repo view`, neither of which updates a ref.
+_dsf="$REPO/scripts/dotfiles-sync.sh"
+chk "dotfiles-sync fetches before it pushes" \
+    "$(grep -qc 'git fetch --quiet' "$_dsf" && echo yes || echo no)" "yes"
+# ORDER IS LOAD-BEARING, and compared by position rather than a line number so a comment edit
+# cannot quietly turn this into a no-op (same rule as the pre-commit lint/exec ordering above).
+# A fetch that lands after the push is a fetch that fixes nothing.
+_ds_fetch_ln=$(grep -n 'git fetch --quiet' "$_dsf" | head -1 | cut -d: -f1)
+_ds_push_ln=$(grep -n '_push_or_pause ;;' "$_dsf" | head -1 | cut -d: -f1)
+chk "the fetch runs BEFORE the push" \
+    "$([ -n "$_ds_fetch_ln" ] && [ -n "$_ds_push_ln" ] && [ "$_ds_fetch_ln" -lt "$_ds_push_ln" ] && echo yes)" "yes"
+# A fetch alone is NOT the fix: post-fetch the range gate passes and git rejects the push as
+# non-fast-forward instead, filed as a generic pause with no action in it.
+chk "dotfiles-sync detects divergence explicitly" \
+    "$(grep -c 'DIVERGED from' "$_dsf")" "1"
+# ...and STOPS. An unattended rebase can halt mid-conflict with no human present, against a
+# tree the user is actively editing, and every later sync run would then inherit a repo with a
+# rebase in progress. A refused push costs one manual pull; a wedged rebase costs work.
+chk "dotfiles-sync never invokes git rebase unattended" \
+    "$(grep -c 'git rebase' "$_dsf")" "0"
+# The offline case must not become a NEW halt reason worse than the one being fixed: a fetch
+# that cannot run leaves this script exactly where it was before the fetch existed.
+chk "a failed fetch does NOT itself pause the daemon" \
+    "$(grep -c 'Proceeding WITHOUT a freshness check' "$_dsf")" "1"
+
 # --- R2: the consumer count drifted inside the very commit that forbade drifting.
 # The pattern is ASSEMBLED from fragments so this check cannot match its own source - the
 # first draft grepped for a literal and found ITSELF, reporting a defect that did not
