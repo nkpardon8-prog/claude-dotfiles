@@ -171,7 +171,7 @@ ROUND6 = [
     (f"ack --pager='psql -c \"{ROLE}\"' foo", 1, 1, "plan-reviewer ack --pager EXECUTES"),
     (f"cat <<'SH' |\n{DEP}\nSH\nwc -l", 0, 0, "plan-reviewer heredoc |SH LEMMA COUNTEREXAMPLE"),
 ]
-ALL = list(m.CORPUS) + HOLDOUT + ROUND4 + ROUND5
+ALL = list(m.CORPUS) + HOLDOUT + ROUND4 + ROUND5 + ROUND6
 
 # The two rows this whole part exists for. OBSERVED, not invented.
 OBSERVED = [
