@@ -272,6 +272,9 @@ print(f"    {'holds over all ' + str(len(ALL)) + ' rows' if not viol else 'VIOLA
 print("\n5. time budget - every construct that has ever backtracked in this work:")
 for label, mk in (("blank run", lambda n: ";" + " " * n + "-x"),
                   ("backtick run", lambda n: BT * n + " -x"),
+                  ("paren run", lambda n: "(" * n + " -x"),
+                  ("subshell nest", lambda n: "(cd x && echo y" * n + " -z"),
+                  ("commit msg parens", lambda n: 'git commit -m "' + "refactor (see note) " * n + '"'),
                   ("wrapper run", lambda n: ";" + "sudo " * n + "-x"),
                   ("env-assignment run", lambda n: ";" + "A=a=b=c " * n + "-x"),
                   ("path run", lambda n: ";" + "a/" * n + " -x"),
