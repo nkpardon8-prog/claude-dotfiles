@@ -63,10 +63,10 @@ plan 4-6 / codex 3-6, cap per 6.1; /pre-compact freely interleaved; active until
 2. The worktree and external state are authoritative; conversation memory only hints where to look - inspect current state before relying on it.
 3. Completion is UNPROVEN until verified requirement-by-requirement against current evidence; partial progress and plausible-looking output are not proof.
 4. Do not declare blocked until the SAME blocker has repeated 3 consecutive attempts; blocked means truly unable to progress without user input.
-⏱ stretch 4h 30m · active 4h 30m · wall 4h 30m · idle 0s
+⏱ stretch 5h 54m · active 5h 54m · wall 5h 54m · idle 0s
 --- recent log ---
-m1-part-retired	[mission] PART-RETIRED part=1
-m2-part-start	[mission] PART-START part=2 name=detector-accuracy
-m2-research-r1-d0	[mission] part=2 name=detector-accuracy phase=research round=1 dry=0
-m2-review-r1-d0	[mission] part=2 name=detector-accuracy phase=review round=1 dry=0 findings=2
-seq-3	[c#3] Rewrite the Part 2 detector plan around measured findings, then implement
+m2-criticer-r3	[mission] criticer part=2 findings=5 FALSIFIED my zero-regressions claim: closed-world name list drops 2 shapes shipped catches
+m2-await-review-barrier-r3-a1-g1	[mission] AWAIT part=2 phase=review round=3 kind=job op=review-barrier attempt=1 need=3 got=1 started_at=1786942001
+m2-await-review-barrier-r3-a1-g2	[mission] AWAIT part=2 phase=review round=3 kind=job op=review-barrier attempt=1 need=3 got=2 started_at=1786942001
+m2-review-r3-d0	[mission] part=2 name=detector-accuracy phase=review round=3 dry=0 findings=12
+seq-4	[c#4] Apply round-3 fix then barrier round 4
