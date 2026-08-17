@@ -215,7 +215,7 @@ Then invoke the wrapper once per lens — it feeds the prompt file to `codex exe
 
 **Bash 1 (Codex-1 Correctness/Logic):**
 ```bash
-CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
+CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash "$HOME/.claude-dotfiles/scripts/codex-exec.sh" "$RUN_DIR/codex-prompt-1.txt" "$RUN_DIR/codex-review-1.txt" "$WORKDIR"
 ```
 timeout: 3660000
 run_in_background: true
