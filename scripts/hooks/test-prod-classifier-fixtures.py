@@ -49,6 +49,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 GATE = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "prod-coordination-gate.py")
 LEDGER = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(HERE, "prod-ledger.py")
+RELEASE = os.path.abspath(sys.argv[3]) if len(sys.argv) > 3 else os.path.join(HERE, "prod-lock-release.py")
 
 PROD = "PROD"
 SAFE = "SAFE"
