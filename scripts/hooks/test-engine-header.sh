@@ -34,10 +34,11 @@ else
 fi
 case "$HEADER_TPL" in *GPT*) bad "template is model-agnostic (found a model ID)";; *) ok "template is model-agnostic";; esac
 
-mkreport() {  # mkreport <outfile> <N-token> — sample report from the REAL fenced literal
+mkreport() {  # mkreport <outfile> <N-token> [claude-N, default 3] — from the REAL fenced literal
   {
     echo "# Codex Review: sample target"
-    printf '%s\n' "$HEADER_TPL" | sed "s|Codex-passes: N/4|Codex-passes: $2/4|; s|Verified: \[Y/N\]|Verified: Y|"
+    printf '%s\n' "$HEADER_TPL" \
+      | sed "s|Codex-passes: N/4|Codex-passes: $2/4|; s|Claude-lenses: N/3|Claude-lenses: ${3:-3}/3|; s|Verified: \[Y/N\]|Verified: Y|"
     echo
     echo "## Critical [must fix]"
     echo "- [ ] finding one"
