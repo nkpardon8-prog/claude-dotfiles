@@ -741,9 +741,16 @@ case "$rf" in "${TMPDIR:-/tmp}"/codex-review.*/report-final.md) ;; *) rf="";; es
 # path <-> identity binding: the run-dir basename must contain the parsed Run-id:
 [ -n "$rf" ] && { case "$(basename "$(dirname "$rf")")" in *"${runid:-__none__}"*) ;; *) rf="";; esac; }
 passes=""; [ -n "$rf" ] && [ -f "$rf" ] && passes=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh parse-codex-header "$rf")
-if [ "$passes" != "4/4" ]; then
+# BOTH reviewer families must report. Until 2026-08-17 only the Codex half was checked, so a Claude
+# lens that silently failed to spawn left `4/4` intact and the round banked AS CONVERGED — a false
+# green in the convergence gate itself. Owner ruling: "we cannot move on without reviewing."
+# EMPTY is VOID, never pass: a report predating this contract carries no token, and failing OPEN
+# there would re-create the exact hole this closes.
+lenses=""; [ -n "$rf" ] && [ -f "$rf" ] && lenses=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh parse-claude-header "$rf")
+if [ "$passes" != "4/4" ] || [ "$lenses" != "3/3" ]; then
   h8=$( [ -n "$rf" ] && [ -f "$rf" ] && shasum -a 256 "$rf" | cut -c1-8 || echo nofile )
-  reason=$(printf 'codex-passes-%s' "${passes:-absent}" | tr -cd 'a-z0-9.-')
+  # Name BOTH halves so the VOID reason says which reviewer family was short.
+  reason=$(printf 'codex-passes-%s-claude-lenses-%s' "${passes:-absent}" "${lenses:-absent}" | tr -cd 'a-z0-9.-')
   # CAPTURE the log stdout and REQUIRE it to be `ok` before proceeding — mission-write.sh ALWAYS
   # exits 0, so rc is meaningless; the STATUS TOKEN on stdout is the only signal (§7). A `COLLISION`
   # / `REROUTED-TO-NOTES` / `FAILED rc=N` means the VOID did NOT bank, and proceeding to void-count
