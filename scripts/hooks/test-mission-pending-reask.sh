@@ -18,6 +18,16 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$ROOT/mission-pending-reask.sh"
 MWSH="$ROOT/mission-write.sh"
 
+# Point the hook at the tree BESIDE THIS HARNESS (2026-08-17). mission-pending-reask.sh
+# resolves its sibling hooks from $HOME/.claude-dotfiles/scripts/hooks by default; on any
+# checkout not living there (CI, a linked worktree) that directory does not exist and the
+# hook emits nothing, which surfaced as 13 of 21 cases failing with "missing <text>" - a
+# LOCATION failure wearing the costume of a behaviour failure. Using the override the hook
+# already exposes keeps the fix inside the harness: no production hook is edited. It also
+# makes the harness properly hermetic - it now proves the copy it ships with rather than
+# whatever happens to be installed in the developer's $HOME.
+export MISSION_REASK_HOOKS_DIR="$ROOT"
+
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
