@@ -34,8 +34,9 @@ assert edit_d, "Edit D block not found in the plan"
 # which means the last literal's trailing comma moves to the end of the spliced block.
 tail = "    re.IGNORECASE,\n)"
 assert tail in edit_a, "Edit A does not end in the expected re.IGNORECASE close"
+# lambda repl: the block is regex source, so backslashes must NOT be template-expanded.
 spliced, n = re.subn(r'",\n(?=    re\.IGNORECASE,\n\))',
-                     '"\n' + edit_d.rstrip("\n") + ",\n", edit_a)
+                     lambda _: '"\n' + edit_d.rstrip("\n") + ",\n", edit_a)
 assert n == 1, f"expected exactly one splice point, found {n}"
 
 ns = {"re": re}
