@@ -797,6 +797,25 @@ ALL 4 Codex passes (`Codex-passes: 4/4`) plus the Claude reviewers (see Section 
 If any of the above matches, this round is **VOID**: log the durable VOID marker (Section 7), re-run the
 panel; do NOT bank a void round.
 
+**MANDATORY on every round that survives the VOID check — bind the round to its report:**
+```bash
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log "$sid" "$root" \
+  "[mission] REVIEW-EVIDENCE part=$N round=$K codex=$passes claude=$lenses report=$rf" \
+  "m$N-review-evidence-r$K"
+```
+`$passes` / `$lenses` / `$rf` are the values already parsed above — do NOT re-type them from memory,
+and never write `4/4` or `3/3` that you did not read out of the report. `_mw_partdone_check` refuses
+convergence unless BOTH folding rounds carry a `REVIEW-EVIDENCE` line reading `codex=4/4 claude=3/3`,
+and the validator STATS the `report=` path, so a fabricated path is refused.
+
+WHY THIS EXISTS: the convergence gate checks the ARITHMETIC of round lines the agent writes itself —
+two adjacent `findings=0 dry=1`/`dry=2` lines. An agent that ran 3 of 9 lanes, or ran no panel at all,
+writes a line indistinguishable from a full one. The Engine-header VOID above catches a reviewer that
+DIED mid-review; it cannot catch a review that never ran, because there is then no report to parse.
+This line is what makes "the numbers fold" and "the work was done" the same claim. Its honest limit:
+nothing in a log-append bridge can force you to emit it at all — it makes a SHORT or FABRICATED panel
+refuse, and it makes skipping visible.
+
 Merge ALL findings at **ONE synthesis barrier**. Write the round checkpoint in TWO parts so it
 survives the log machinery (the lib reroutes any LOG line whose FULL on-disk form — `idtag + TAB +
 entry + newline`, NOT the visible entry alone — is ≥480 bytes to DURABLE NOTES, where the resume grep
