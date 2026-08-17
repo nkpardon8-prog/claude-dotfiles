@@ -111,9 +111,13 @@ nw=${neg#winners=}; nw=${nw%%|*}
 [ "$nw" = "1" ] && ok "C3 without the flock, claim-vs-claim still yields 1 winner (os.link is the CAS)" \
                 || bad "C3 unexpected: link-only claim race produced winners=$nw"
 
-# ── C4: the case the flock actually exists for — claim racing a concurrent unlink ────────────
-# A releaser/sweeper unlinking between a claimant's read and its link is the interleaving link
-# cannot protect against. WITHOUT the flock this must corrupt the invariant; WITH it, it must not.
+# ── C4: the case the flock actually exists for — a sweeper acting on a STALE read ────────────
+# The hazard is NOT "sweeper clears A, then B claims" — that is a legal serialization and a correct
+# outcome. It is: the sweeper reads A and decides to unlink; A's call finishes and B claims; the
+# sweeper then unlinks B's FRESH lock. B has passed its read-back and believes it holds the lock,
+# while the file is gone and the next arrival will claim freely. That is two holders.
+# The oracle is therefore "B linked successfully AND the lock is absent at the end", and the model
+# includes the sid re-check the plan specifies, since re-verifying UNDER the lock is the fix.
 c4() {  # $1 = use_flock -> prints "twoholders=N" over repeated trials
 python3 - "$TMP" "$1" <<'PY'
 import fcntl, json, os, secrets, sys, threading, time
