@@ -22,7 +22,13 @@ Every case is checked against BOTH hooks by TWO independent paths:
 
   Both paths must agree with the expected classification for a case to PASS.
 
-Usage:  test-prod-classifier-fixtures.py [GATE_PATH] [LEDGER_PATH]
+It ALSO covers the prod-lock LIFECYCLE, which is a separate concern from
+classification and was, until 2026-08-17, entirely missing: nothing ever released
+the lock, so every claim (including every false positive) was held until a human
+deleted the file. Those cases exercise the PostToolUse release half
+(prod-lock-release.py) and the gate's provably-dead auto-reclaim.
+
+Usage:  test-prod-classifier-fixtures.py [GATE_PATH] [LEDGER_PATH] [RELEASE_PATH]
         (defaults to the in-place hook files; scratch runs pass the .new copies)
 
 Prints PASS/FAIL per (case, hook); prints a final tally; exits non-zero on any FAIL.
