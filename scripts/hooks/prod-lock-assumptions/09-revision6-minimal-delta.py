@@ -77,8 +77,13 @@ def alt3(deny=DENY, wrap=WRAP, path=PATHP, anchor=ANCHOR, scan=SCAN, blanks_insi
     """Shipped's alt-3, gated by a clause-anchored deny-list. Parameterised so the mutation
     checks below can perturb exactly one construct at a time."""
     lead = r"(?:^|" + anchor + r")"
-    look = (r"(?![ \t]*" + wrap + path + r"(?:" + "|".join(deny) + r")\b)" if blanks_inside
-            else r"[ \t]*(?!" + wrap + path + r"(?:" + "|".join(deny) + r")\b)")
+    # The deny name is terminated with (?=[ \t]|$), NOT \b. `\b` is satisfied by `=`, so WRAP could
+    # match ZERO assignments and the deny alternation would match an ENVIRONMENT VARIABLE NAME -
+    # `GREP=1 psql -c '<role flip>'` exempted the whole clause, a SILENT FALSE NEGATIVE that shipped
+    # catches. That refuted the claim that this deny-list's incompleteness is always benign.
+    end = r"(?=[ \t]|$)"
+    look = (r"(?![ \t]*" + wrap + path + r"(?:" + "|".join(deny) + r")" + end + r")" if blanks_inside
+            else r"[ \t]*(?!" + wrap + path + r"(?:" + "|".join(deny) + r")" + end + r")")
     return lead + look + scan + r"*?\s-[a-z]*[ce]\s+['\"]"
 
 
