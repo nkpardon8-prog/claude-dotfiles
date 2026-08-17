@@ -216,5 +216,41 @@ git -C "$ROOT" add commands/post-compact-resume.md 2>/dev/null
 rc=$(cd "$ROOT" && HOME="$FAKE_HOME" PATH="$MKBIN:$PATH" bash "$LINT_COPY" --staged >/dev/null 2>&1; echo $?)
 check "an unusable staging tempdir fails closed, not 'nothing staged'" 3 "$rc"
 
+# #202 (2026-08-17, mission part 5 verification lane): Rule 2's target list was a HARDCODED
+# four-file loop, so a command file that ADOPTS the contract-core marker was never measured.
+# Found live: commands/outreach.md carries the marker and sat unguarded at 19427 chars, 73
+# from the threshold, with nothing that would ever have caught it crossing. The marker is the
+# thing that makes a file's core survive compaction, so carrying one IS the enrollment signal
+# - the guarded set must be DERIVED from it, not maintained by hand in a second place.
+# Baseline first (same discipline as the renamed-target case): earlier fixtures leave files
+# broken, and without a reset --all exits 1 for an unrelated reason and this case cannot
+# discriminate.
+mk "$ROOT/commands/post-compact-resume.md" 19000 0 0
+for _g in mission pre-compact codex-review implement; do
+    mk "$ROOT/commands/$_g.md" 5000 1 1000
+done
+rm -f "$ROOT/commands/adopter.md"
+_base2=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+check "fixture baseline is CLEAN before the marker-adopter case (else it cannot discriminate)" 0 "$_base2"
+
+# A NEW file, in no hardcoded list, that carries the marker beyond 19500.
+mk "$ROOT/commands/adopter.md" 30000 1 19800
+_aout=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
+_arc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+# Reason AND rc, so deleting `fail=1` cannot leave this green.
+check "a marker-carrying file outside the hardcoded list is GUARDED (Rule 2 derived set)" \
+      "reason=1 rc=nonzero" \
+      "reason=$(printf '%s' "$_aout" | grep -c 'commands/adopter\.md contract-core marker') rc=$([ "$_arc" -ne 0 ] && echo nonzero || echo zero)"
+
+# The derived set must not WEAKEN the hand-maintained one: a guarded file that LOSES its
+# marker must still fail. A purely derived set would silently drop it from the guard, which
+# is the same fail-open shape one level in.
+rm -f "$ROOT/commands/adopter.md"
+mk "$ROOT/commands/mission.md" 30000 0 0
+_lout=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
+check "a hardcoded-list file that LOSES its marker still fails (derived set is a union, not a replacement)" \
+      "1" "$(printf '%s' "$_lout" | grep -c "commands/mission\.md lacks the")"
+mk "$ROOT/commands/mission.md" 5000 1 1000
+
 echo "test-lint-skill-size: $pass passed, $fail failed"
 exit $([ $fail -eq 0 ] && echo 0 || echo 1)
