@@ -400,6 +400,13 @@ def _validated_lock():
         or value["ts"] <= 0
     ):
         block(f"prod lock has an invalid shape; failing closed. Reconcile {LOCK} manually.")
+    # BACKWARD COMPAT (constraint H): `pid` / `pid_start` are OPTIONAL and are
+    # deliberately NOT validated here. A lock written by an un-upgraded window
+    # carries neither — that is a LEGACY lock, not a malformed one, and treating
+    # it as malformed would strand exactly the windows we are trying to unstick.
+    # _holder_provably_dead() type-checks both itself and answers False for
+    # anything it cannot read, so an absent or garbled pid can only ever COST us
+    # a reclaim (falling back to TTL), never license a wrong one.
     return value
 
 
