@@ -390,18 +390,157 @@ def main():
         failed += 1
         print(f"FAIL [lock  ] malformed lock handling rc={result.returncode} residue={residue}")
 
-    stale = json.dumps({
-        "sid": "OTHER-SESSION",
-        "op": "stale",
-        "ts": int(time.time()) - 901,
+    def check(tag, name, ok, detail=""):
+        nonlocal passed, failed
+        if ok:
+            passed += 1
+            print(f"PASS [{tag:6s}] {name}")
+        else:
+            failed += 1
+            print(f"FAIL [{tag:6s}] {name}  {detail}")
+
+    # ---- STALE IS NOW PID-CONDITIONED (2026-08-17) -------------------------
+    # This used to be a single assertion: "a 901s lock stays rc=2 and BYTE-
+    # PRESERVED, always". That is no longer the whole truth and asserting it
+    # would now BLOCK the fix. Age alone never decides anything; the HOLDER's
+    # liveness does. So it splits into a pair with opposite expectations, and the
+    # preserve-half is repeated once per way of NOT being provably dead.
+    def _stale(extra=None):
+        rec = {"sid": "OTHER-SESSION", "op": "stale", "ts": int(time.time()) - 901}
+        rec.update(extra or {})
+        return json.dumps(rec, separators=(",", ":")).encode()
+
+    # (a) DEAD holder -> reclaimed, no matter how old. This is the whole point:
+    #     a lock whose owner is gone is garbage that a human should never have to
+    #     clear by hand (measured holds before the fix: 2d17h, 18h52m, 4h+).
+    dead_pid, dead_start = _dead_pid()
+    stale_dead = _stale({"pid": dead_pid, "pid_start": dead_start})
+    result, observed, residue = gate_lock_case(stale_dead)
+    claimed = json.loads(observed) if observed else None
+    check("lock", "stale lock from a PROVABLY DEAD holder is auto-reclaimed",
+          result.returncode == 0 and claimed and claimed.get("sid") == "MY-SESSION" and residue == [],
+          f"rc={result.returncode} claimed={claimed} residue={residue}")
+
+    # (a2) FRESH lock from a dead holder is reclaimed too - age is irrelevant to
+    #      a dead owner, and waiting out a TTL for a corpse is the old bug.
+    fresh_dead = json.dumps({
+        "sid": "OTHER-SESSION", "op": "fresh", "ts": int(time.time()),
+        "pid": dead_pid, "pid_start": dead_start,
     }, separators=(",", ":")).encode()
-    result, observed, residue = gate_lock_case(stale)
-    if result.returncode == 2 and observed == stale and residue == []:
-        passed += 1
-        print("PASS [lock  ] stale prod lock requires manual reconciliation and is preserved")
-    else:
-        failed += 1
-        print(f"FAIL [lock  ] stale lock handling rc={result.returncode} residue={residue}")
+    result, observed, residue = gate_lock_case(fresh_dead)
+    claimed = json.loads(observed) if observed else None
+    check("lock", "FRESH lock from a dead holder is reclaimed (age is irrelevant)",
+          result.returncode == 0 and claimed and claimed.get("sid") == "MY-SESSION",
+          f"rc={result.returncode} claimed={claimed}")
+
+    # (b) LIVE holder -> refused and preserved, exactly as before. The live pid
+    #     used is this test process itself, with its REAL start time.
+    live_start = _ps_lstart(os.getpid())
+    stale_live = _stale({"pid": os.getpid(), "pid_start": live_start})
+    result, observed, residue = gate_lock_case(stale_live)
+    check("lock", "stale lock from a LIVE holder still rc=2 and byte-preserved",
+          result.returncode == 2 and observed == stale_live and residue == [],
+          f"rc={result.returncode} preserved={observed == stale_live}")
+
+    # (c) `ps` UNUSABLE -> refused and preserved. A probe that failed is not a
+    #     death certificate; liveness is UNKNOWN and we fail closed.
+    result, observed, residue = gate_lock_case(stale_live, ps_shim="exit 3\n")
+    check("lock", "stale lock + UNUSABLE ps fails closed: rc=2, byte-preserved",
+          result.returncode == 2 and observed == stale_live and residue == [],
+          f"rc={result.returncode} preserved={observed == stale_live}")
+
+    # (d) LEGACY lock with no pid keys -> tolerated, NOT treated as malformed,
+    #     and falls back to plain TTL behaviour. Written by an un-upgraded
+    #     window; refusing to parse it would strand the very windows being fixed.
+    stale_legacy = _stale()
+    result, observed, residue = gate_lock_case(stale_legacy)
+    check("lock", "LEGACY pid-less stale lock is tolerated and falls back to TTL",
+          result.returncode == 2 and observed == stale_legacy
+          and "invalid shape" not in result.stderr and residue == [],
+          f"rc={result.returncode} stderr={result.stderr!r}")
+
+    # (e) PID REUSE is defeated by the start time: the number is live, but it
+    #     belongs to a DIFFERENT process now, so the recorded holder is dead.
+    reuse = _stale({"pid": os.getpid(), "pid_start": "Thu Jan  1 00:00:00 1970"})
+    result, observed, residue = gate_lock_case(reuse)
+    claimed = json.loads(observed) if observed else None
+    check("lock", "pid REUSE (live pid, mismatched start time) counts as dead -> reclaimed",
+          result.returncode == 0 and claimed and claimed.get("sid") == "MY-SESSION",
+          f"rc={result.returncode} claimed={claimed}")
+
+    # (f) TTL VALUE is itself pinned. A silent bump back to 900s would restore
+    #     the worst case this change exists to shorten, and no other assertion
+    #     here would notice.
+    check("lock", "TTL is 300s (lowered from 900s once release covered the common case)",
+          load_ns(GATE)["TTL"] == 300, f"TTL={load_ns(GATE).get('TTL')}")
+
+    # (g) CONCURRENT LINK RACE. The reclaim is unlink-THEN-link precisely so a
+    #     claimant that lands in between LOSES the race loudly instead of being
+    #     silently clobbered by an os.replace. The shim reports the holder dead,
+    #     then recreates the lock on the gate's next `ps` call - which happens
+    #     after the unlink and before the link - standing in for that claimant.
+    #     The interloper's lock must survive and the gate must refuse.
+    interloper = json.dumps({"sid": "INTERLOPER", "op": "raced", "ts": int(time.time())},
+                            separators=(",", ":"))
+    race_shim = (
+        "case \"$*\" in\n"
+        "  *args=*) printf '%s' '" + interloper + "' > \"$LOCK\"; exit 1 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+    result, observed, residue = gate_lock_case(stale_dead, ps_shim=race_shim)
+    check("lock", "concurrent claim during reclaim loses the link race; interloper preserved",
+          result.returncode == 2 and observed == interloper.encode()
+          and "concurrently" in result.stderr and residue == [],
+          f"rc={result.returncode} observed={observed!r} stderr={result.stderr!r}")
+
+    # ---- RELEASE (PostToolUse) --------------------------------------------
+    # Nothing released the lock before this hook existed. Its polarity is the
+    # INVERSE of prod-ledger.py's: the ledger SKIPS isError/interrupted, the
+    # release must fire on them, because a failed or interrupted command is
+    # exactly the case that stranded the lock.
+    mine = {"sid": "MY-SESSION", "op": "deploy", "ts": int(time.time())}
+    for label, kwargs in (
+        ("success", {}),
+        ("isError=True", {"is_error": True}),
+        ("interrupted=True", {"interrupted": True}),
+        ("isError AND interrupted", {"is_error": True, "interrupted": True}),
+    ):
+        rc, present, _ = release_run(dict(mine), "MY-SESSION", **kwargs)
+        check("rel", f"release removes THIS session's lock on {label}",
+              rc == 0 and not present, f"rc={rc} present={present}")
+
+    # It must release ONLY a lock this session took. A foreign lock is another
+    # agent's in-flight prod op - removing it is the failure mode the whole gate
+    # exists to prevent.
+    foreign = json.dumps({"sid": "OTHER-SESSION", "op": "deploy", "ts": int(time.time())},
+                         separators=(",", ":")).encode()
+    rc, present, observed = release_run(foreign, "MY-SESSION")
+    check("rel", "release leaves ANOTHER session's lock byte-untouched",
+          rc == 0 and present and observed == foreign, f"rc={rc} observed={observed!r}")
+
+    # Malformed / absent state: never blocks, never deletes evidence.
+    rc, present, observed = release_run(b"{broken", "MY-SESSION")
+    check("rel", "release leaves a MALFORMED lock in place and still exits 0",
+          rc == 0 and present and observed == b"{broken", f"rc={rc} observed={observed!r}")
+    rc, present, _ = release_run(None, "MY-SESSION")
+    check("rel", "release with NO lock present is a silent no-op (exit 0)",
+          rc == 0 and not present, f"rc={rc} present={present}")
+    rc, present, observed = release_run(dict(mine), "")
+    check("rel", "release with an empty session id refuses to remove anything",
+          rc == 0 and present, f"rc={rc} present={present}")
+
+    # The gate stamps {pid, pid_start} so a LATER window can prove this holder
+    # dead. Both keys or neither - a pid without its start time is defeated by
+    # pid reuse, so half a stamp must never ship.
+    result, observed, residue = gate_lock_case()
+    stamped = json.loads(observed) if observed else {}
+    has_pid = "pid" in stamped
+    check("lock", "claim stamps BOTH pid and pid_start, or neither",
+          has_pid == ("pid_start" in stamped)
+          and (not has_pid or (isinstance(stamped["pid"], int) and stamped["pid"] > 0
+                               and isinstance(stamped["pid_start"], str) and stamped["pid_start"])),
+          f"stamped={stamped}")
 
     result, observed, residue = gate_lock_case()
     try:
