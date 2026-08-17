@@ -1,64 +1,67 @@
 #!/usr/bin/env python3
-# Does the candidate break any of the EXISTING 40 fixture cases (gate side)?
-# Patches the gate module's _strip_inert_data/INTERP in memory and calls the REAL is_prod.
-# Nothing on disk is modified; the gate's main() is never reached.
-import os, re, sys
+"""Do the two hook files on disk agree with the 40 pinned fixture cases - on BOTH sides?
+
+Round-3 finding P2/P3: the previous version of this file hardcoded a FROZEN COPY of plan
+revision 2's regex, evaluated the GATE ONLY (it unpacked `ledger_exp` and never used it), and
+printed at most 40 of the 80 possible checks. A "80/80 agree" figure was reported from an inline
+scratch script and is NOT reproducible from this file. That is the exact unauditability the
+scorer relocation was supposed to fix, reintroduced.
+
+This version holds NO regex. It loads whatever is on disk and calls each hook's REAL `is_prod`,
+so it measures the files rather than a third undrifted copy of them.
+
+    ./06-fixture-agreement.py [GATE_PATH] [LEDGER_PATH]
+
+With no argv it checks the LIVE hooks (pre-edit: expect the known failures; post-edit: expect
+80/80). Point it at `.mut` copies to check a mutation without ever reverting the live gate -
+every other window on this machine runs the live one.
+"""
+import os
+import sys
 
 H = os.path.expanduser("~/.claude-dotfiles/scripts/hooks")
-GATE = os.path.join(H, "prod-coordination-gate.py")
+GATE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(H, "prod-coordination-gate.py")
+LEDGER = sys.argv[2] if len(sys.argv) > 2 else os.path.join(H, "prod-ledger.py")
 FIX = os.path.join(H, "test-prod-classifier-fixtures.py")
 
-src = open(GATE).read()
-ns = {"__name__": "gate_probe"}
-exec(compile(src[:src.find("\ntry:\n    main()")], GATE, "exec"), ns)
+MARKER = "\ntry:\n    main()"
 
-# fixture CASES: truncate before its main() invocation the same way
+
+def load(path, name):
+    """Load a hook's module namespace WITHOUT executing its main()."""
+    src = open(path).read()
+    cut = src.find(MARKER)
+    if cut == -1:
+        sys.exit(f"06: {path} has no `{MARKER.strip()}` marker - cannot load without running it")
+    ns = {"__name__": name, "__file__": path}
+    exec(compile(src[:cut], path, "exec"), ns)
+    for need in ("is_prod", "PROD"):
+        if need not in ns:
+            sys.exit(f"06: {path} defines no {need}()")
+    return ns
+
+
+gate, ledger = load(GATE, "gate_probe"), load(LEDGER, "ledger_probe")
+
 fsrc = open(FIX).read()
-fcut = fsrc.find("\ndef main()")
 fns = {"__name__": "fix_probe", "__file__": FIX}
-exec(compile(fsrc[:fcut], FIX, "exec"), fns)
-CASES = fns["CASES"]
-PRODC, SAFEC = fns["PROD"], fns["SAFE"]
+exec(compile(fsrc[:fsrc.find("\ndef main()")], FIX, "exec"), fns)
+CASES, PRODC = fns["CASES"], fns["PROD"]
 
-NAMES = r"python[0-9.]*|perl|ruby|node|deno|psql|mysql|mariadb|osascript|fish|pwsh"
-SHELL = r"(?:ba|z|da|k|a)?sh"
-LEAD = r"(?:^|[\s|;&(/\"'])"
-GAP = r"(?:\s+[^\s|;&<>\n]+)*?"
-CMDPOS = r"(?:^|[\n;|&(])\s*"
-INTERP_AD = re.compile(
-    LEAD + r"(?:eval|xargs|ssh|su|runuser|doas)\b"
-    + r"|" + LEAD + SHELL + r"\b(?:\s+--?[A-Za-z-]+)*\s+-[A-Za-z]*c\b"
-    + r"|" + LEAD + r"(?:" + NAMES + r")\b" + GAP + r"\s+-[A-Za-z]*[ce]\s+['\"]"
-    + r"|--(?:command|eval)="
-    + r"|\|\s*(?:\S*/)?" + SHELL + r"\b"
-    + r"|" + CMDPOS + r"(?:\S*/)?" + SHELL + r"\b(?:\s+-[A-Za-z]+)*\s*<<",
-    re.IGNORECASE,
-)
-
-QUOTED, SUBST, strip_heredocs = ns["QUOTED"], ns["SUBST"], ns["_strip_heredocs"]
-
-
-def candidate_strip(cmd):
-    if INTERP_AD.search(strip_heredocs(cmd)):
-        return cmd
-    c = strip_heredocs(cmd)
-    return QUOTED.sub(lambda m: m.group(0) if SUBST.search(m.group(0)) else " ", c)
-
+print(f"gate   : {GATE}")
+print(f"ledger : {LEDGER}")
+print(f"cases  : {len(CASES)}  ->  {len(CASES) * 2} checks (both hooks, as the fixtures expect)\n")
 
 bad = 0
 for name, cmd, gate_exp, ledger_exp in CASES:
-    base = ns["is_prod"](cmd)                    # shipped behavior
-    ns["_strip_inert_data"] = candidate_strip
-    cand = ns["is_prod"](cmd)
-    ns["_strip_inert_data"] = ns["__builtins__"] and None  # restore below
-    exec(compile(src[:src.find("\ntry:\n    main()")], GATE, "exec"), ns)  # reset module state
-    want_prod = (gate_exp == PRODC)
-    # the gate has no `git push` pattern, so a push-only case is SAFE for the gate regardless
-    tag = ""
-    if cand is not want_prod:
-        tag = "  <== CANDIDATE WRONG"
-        bad += 1
-    if base is not cand or tag:
-        print(f"{'PROD' if want_prod else 'SAFE':4} want | shipped={str(base):5} cand={str(cand):5} | {name}{tag}")
+    for hookname, ns, exp in (("gate", gate, gate_exp), ("ledger", ledger, ledger_exp)):
+        want = (exp == PRODC)
+        got = ns["is_prod"](cmd)
+        if got is not want:
+            bad += 1
+            print(f"    {'FALSE-NEG' if want else 'FALSE-POS':9} [{hookname:6}] {name}")
 
-print(f"\ncandidate disagrees with fixture expectation on {bad} of {len(CASES)} gate cases")
+total = len(CASES) * 2
+print(f"\n{total - bad}/{total} agree with the pinned fixture expectations "
+      f"({bad} disagreement{'' if bad == 1 else 's'})")
+sys.exit(1 if bad else 0)
