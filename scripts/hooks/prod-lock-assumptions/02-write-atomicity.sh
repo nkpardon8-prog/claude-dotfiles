@@ -93,7 +93,11 @@ def reader():
             with open(LOCK) as fh: raw = fh.read()
         except Exception:
             continue
+        # An EMPTY read is exactly the tear truncate-then-write produces: the reader caught the
+        # file between O_TRUNC and the write. The first version of this control skipped empties
+        # and so could never go red — it filtered out the very evidence it existed to find.
         if not raw:
+            torn.append("<empty>")
             continue
         try:
             json.loads(raw)
