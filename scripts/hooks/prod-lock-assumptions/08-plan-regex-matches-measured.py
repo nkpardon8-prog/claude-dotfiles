@@ -30,10 +30,13 @@ edit_d = next((b for b in blocks if b.lstrip().startswith('r"|(?:^|[\\n;|&(])'))
 assert edit_a, "Edit A block not found in the plan"
 assert edit_d, "Edit D block not found in the plan"
 
-# The implementer splices Edit D in as the final alternative, before the closing flags line.
+# The implementer splices Edit D in as the final ALTERNATIVE - i.e. inside the pattern argument,
+# which means the last literal's trailing comma moves to the end of the spliced block.
 tail = "    re.IGNORECASE,\n)"
 assert tail in edit_a, "Edit A does not end in the expected re.IGNORECASE close"
-spliced = edit_a.replace(tail, edit_d.rstrip("\n") + "\n" + tail)
+spliced, n = re.subn(r'",\n(?=    re\.IGNORECASE,\n\))',
+                     '"\n' + edit_d.rstrip("\n") + ",\n", edit_a)
+assert n == 1, f"expected exactly one splice point, found {n}"
 
 ns = {"re": re}
 exec(compile(spliced, "<plan Edit A + Edit D>", "exec"), ns)
