@@ -51,7 +51,7 @@ const r = await hub.call('Runtime.evaluate', { expression: `(async () => {
       if (deals !== 0) probs.push(deals > 0 ? 'DEAL' : 'DEALCHECK');
       if (!(g('hs_calculated_phone_number') || g('phone') || g('mobilephone'))) probs.push('NOPHONE');
       if (/out|unsub/i.test(g('opt_in_status'))) probs.push('OPTOUT:' + g('opt_in_status'));
-      if (/dnc|unqual/i.test(g('hs_lead_status'))) probs.push('LS:' + g('hs_lead_status'));
+      if (/dnc|do.?not.?contact|unqual/i.test(g('hs_lead_status'))) probs.push('LS:' + g('hs_lead_status'));
       if (g('hs_v2_date_entered_customer')) probs.push('CUSTOMER');
       if (smsDay === today) probs.push('SMS_TODAY');
       if (lc && (now - lc) < 30*DAY) probs.push('CONTACTED_' + Math.round((now-lc)/DAY) + 'd');

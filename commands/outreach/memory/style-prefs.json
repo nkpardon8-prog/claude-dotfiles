@@ -1,12 +1,64 @@
 {
  "entries": [
-  {"date": "2026-08-05", "user": "nick", "note": "No dashes, em dashes, or typical AI styling in any draft.", "source": "correction"},
-  {"date": "2026-08-05", "user": "nick", "note": "Don't open with 'been a minute' — use 'It's been a while since we last connected.'", "source": "correction"},
-  {"date": "2026-08-05", "user": "nick", "note": "CTA verb: 'surf' beats 'ride' — 'get you out for a surf'.", "source": "correction"},
-  {"date": "2026-08-06", "user": "nick", "note": "Forward-looking only — don't reference old activities or past interactions (e.g. 'we talked about a factory tour a while back' is banned).", "source": "correction"},
-  {"date": "2026-08-06", "user": "nick", "note": "Avoid phrasing that makes the customer sound like a member of a group ('Arizona folks') — say what the business is doing instead ('we're kicking up demos in AZ soon').", "source": "correction"},
-  {"date": "2026-08-06", "user": "nick", "note": "Region personalization is welcome but must be grounded in real, confirmed activity — never invent a location or date.", "source": "correction"},
-  {"date": "2026-08-12", "user": "nick", "note": "Drop 'Want me to pencil you in?' as the closing CTA — reads as an immediate scheduling ask. Use a lighter 'You interested?' instead.", "source": "correction"},
-  {"date": "2026-08-12", "user": "nick", "note": "Approved sample style for a location-announcement campaign: 'Hey {First}, it's Nick with Arc. We've got demos coming up at [locations]. Would love to get you out for a surf. You interested?' — short, 1-2 sentences, no dashes.", "source": "approved-sample"}
+  {
+   "date": "2026-08-05",
+   "user": "nick",
+   "note": "No dashes, em dashes, or typical AI styling in any draft.",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-05",
+   "user": "nick",
+   "note": "Don't open with 'been a minute' \u2014 use 'It's been a while since we last connected.'",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-05",
+   "user": "nick",
+   "note": "CTA verb: 'surf' beats 'ride' \u2014 'get you out for a surf'.",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-06",
+   "user": "nick",
+   "note": "Forward-looking only \u2014 don't reference old activities or past interactions (e.g. 'we talked about a factory tour a while back' is banned).",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-06",
+   "user": "nick",
+   "note": "Avoid phrasing that makes the customer sound like a member of a group ('Arizona folks') \u2014 say what the business is doing instead ('we're kicking up demos in AZ soon').",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-06",
+   "user": "nick",
+   "note": "Region personalization is welcome but must be grounded in real, confirmed activity \u2014 never invent a location or date.",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-12",
+   "user": "nick",
+   "note": "Drop 'Want me to pencil you in?' as the closing CTA \u2014 reads as an immediate scheduling ask. Use a lighter 'You interested?' instead.",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-12",
+   "user": "nick",
+   "note": "Approved sample style for a location-announcement campaign: 'Hey {First}, it's Nick with Arc. We've got demos coming up at [locations]. Would love to get you out for a surf. You interested?' \u2014 short, 1-2 sentences, no dashes.",
+   "source": "approved-sample"
+  },
+  {
+   "date": "2026-08-23",
+   "user": "nick",
+   "note": "Supplied exact copy for the Sausalito September campaign and chose to KEEP the hyphen in 'Booking Link - https://...' verbatim, overriding the standing no-dashes rule. A user-supplied template wins over the style rule when he says keep it verbatim.",
+   "source": "correction"
+  },
+  {
+   "date": "2026-08-23",
+   "user": "nick",
+   "note": "Tahoe exclusion: exclude leads who themselves mention Tahoe, have Tahoe notes, or demoed there. Do NOT exclude on our own outbound boilerplate that pitched 'Tahoe and Sausalito' as a pair, that is us talking not them. For prospecting_tahoe Meta-ad-sourced leads, exclude only the ones outside the Bay Area.",
+   "source": "correction"
+  }
  ]
 }

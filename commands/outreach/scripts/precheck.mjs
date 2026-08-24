@@ -41,7 +41,7 @@ const r = await hub.call('Runtime.evaluate', { expression: `(async () => {
     if (deals > 0) problems.push('DEAL');
     if (!(g('hs_calculated_phone_number') || g('phone') || g('mobilephone'))) problems.push('NOPHONE');
     if (/out|unsub/i.test(g('opt_in_status'))) problems.push('OPT:' + g('opt_in_status'));
-    if (/dnc|unqual/i.test(g('hs_lead_status'))) problems.push('LS:' + g('hs_lead_status'));
+    if (/dnc|do.?not.?contact|unqual/i.test(g('hs_lead_status'))) problems.push('LS:' + g('hs_lead_status'));
     if (smsDay === today) problems.push('SMS_TODAY');
     if (/fail|undeliver/i.test(g('last_sms_sent_status'))) problems.push('DEADNUMBER:' + g('last_sms_sent_status'));
     const lc2 = +g('last_contacted_date') || 0;

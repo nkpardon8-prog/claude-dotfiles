@@ -142,7 +142,11 @@ async function processContact({ id, first, msg }) {
       const el = document.activeElement;
       return (el && (el.value || el.textContent) || '').trim();
     })()`);
-    out.verified = after === msg;
+    // contenteditable turns blank lines into <br>/<div>, so textContent never matches
+    // byte-for-byte on a multi-line message. Compare with whitespace normalized; the
+    // full content (link included) is still compared exactly.
+    const nrm = t => String(t || '').replace(/^\s*SMS\s+/, '').replace(/\s+/g, ' ').trim();
+    out.verified = nrm(after) === nrm(msg);
     out.after = after.slice(0, 80);
     frame.close();
     page.close();
