@@ -54,6 +54,36 @@ have 'deny-by-default'         'deny-by-default blast radius present'
 have 'archetype'              'archetype classification present'
 have 'ZERO'                    'zero-mutation planning stated'
 
+# --- ceiling-honesty contract (2026-08-27). These are the rules the skill exists to enforce;
+# each one has been watched fail. Do not relax a pattern to make an edit pass - fix the edit. ---
+have 'Never predict where a limit sits'        'honesty rule 1: no predictions'
+have 'never an answer on its own'              'honesty rule 2: "nothing broke" is not a result'
+have 'too small to find out'                   'the undersized-setup finding is spelled out'
+have 'OBSERVED'                                'OBSERVED (not "proven") vocabulary present'
+have 'HUNTABLE'                                'ceiling class: HUNTABLE'
+have 'NOT-WORTH-HUNTING'                       'ceiling class: NOT-WORTH-HUNTING (with a reason)'
+have 'UNREACHABLE'                             'ceiling class: UNREACHABLE (no instrument)'
+have 'One line may answer a whole surface'     'the ceilings answer is allowed to collapse'
+have 'instrument-of-record'                    'every number carries its instrument'
+have 'NOT a break in the target'               'instrument-distortion rule present'
+have 'THROWN AWAY afterward'                   'hunting: whole-environment teardown, no per-record deletes'
+have 'before you may break it'                 'hunting: rebuild proof precedes destruction'
+have 'prohibitions, not defaults'              'hunting: prod/live/shared-tenant are prohibitions'
+have 'CONTRACT-CORE-END'                       'contract-core marker present (post-compaction safety)'
+
+# --- the two worked examples are the only proof the skill scales DOWN as well as UP, and nothing
+# else lints them. A golden that lost the ceilings answer would silently model omission. ---
+for _ex in trivial-static-page rich-account-settings; do
+    _f="$ROOT/docs/testplan-examples/$_ex.example.md"
+    if [ -f "$_f" ]; then
+        grep -qE 'HUNTABLE|NOT-WORTH-HUNTING|UNREACHABLE' "$_f" \
+            && ok "example $_ex answers the ceilings question" \
+            || bad "example $_ex is missing the ceilings answer"
+    else
+        bad "example $_ex.example.md not found at $_f"
+    fi
+done
+
 # --- domain-agnostic: DENY concrete project literals (paths / code symbols / hosts) ---
 deny 'projects/dentall'                              'no dentall filesystem path'
 deny 'lib/api\.ts'                                   'no lib/api.ts hardcode'

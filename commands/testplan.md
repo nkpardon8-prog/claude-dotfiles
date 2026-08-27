@@ -27,6 +27,21 @@ heavy to run proves nothing. For a genuinely trivial target (single-persona, rea
 CORE itself compresses: the role model, the arsenal inventory, and the ledger may each collapse to a single
 line rather than a table — keep the honesty, drop the ceremony.
 
+## The two honesty rules (these govern every phase below)
+
+**1. Never predict where a limit sits.** Not from the code, not from the arithmetic, not from
+experience - not even when the answer looks obvious. A ceiling is `OBSERVED` (something broke in a
+run someone actually made) or `UNKNOWN`. Nothing in between; an estimate NEVER appears in a result.
+Aiming a probe is a decision, not a claim - decide, then write down only what happened. Say
+`OBSERVED`, never "proven": one run under one configuration saw a break, which is not the system's
+ceiling.
+
+**2. "Nothing broke" is never an answer on its own.** Before reporting that anything survived, show
+the setup could have broken it. If it could not, the finding is "our setup was too small to find
+out" - never "it held up". A small environment yields small limits, and a survival claim from an
+underpowered test is the most misleading sentence this skill can emit. If the setup is too small,
+say so plainly and offer what it would take to fill it.
+
 ---
 
 ## Phase 0 — Resolve the target + classify its archetype
@@ -82,12 +97,19 @@ a regression case.
   the workflow catalog · (archetype-applicable) quality attributes — see the note below.
 - **If you fan out:** give every lens the SAME canonical context (authority hierarchy, architecture
   baseline, evidence standard, citation rules) and a concrete **ID SCHEME** — a per-slice prefix so results
-  reconcile without collision (e.g. `UI-001`, `API-001`, `WF-001`, `RISK-001`, `BLK-001`). Run a
+  reconcile without collision (e.g. `UI-001`, `API-001`, `WF-001`, `RISK-001`, `LIM-001`, `BLK-001`). Run a
   **reconcile pass** that adjudicates conflicts and rejects unsupported claims. If a lens agent fails,
   retry / reassign serially — closure never depends on N agents being available.
 - **Closure = traceability, not "nothing new appeared":** stop when every authoritative requirement /
   invariant, every discovered entry point / state / role / seam / risk, and every archetype-applicable
   quality attribute maps to a case OR an explicit ledger gap. State the bar you used.
+- **Ask where every surface's ceiling is - ungated question, collapsing answer.** Give each surface
+  one of: `HUNTABLE` (a real limit worth pushing - name the probe and the signal that would count as
+  the break), `NOT-WORTH-HUNTING - <reason>` (dismissed, with a reason someone can argue with), or
+  `UNREACHABLE - <no instrument here reaches it>`. **One line may answer a whole surface** - a
+  read-only render deserves a sentence, not a table. Never claim a path structurally cannot have a
+  limit; everything runs out of something eventually. What is forbidden is silence: a surface absent
+  from this answer is a hole, not a pass.
 - **Quality attributes are applicable-or-explicitly-skipped, never silently dropped:** security / privacy /
   abuse, accessibility, performance / capacity, resilience / recovery, compatibility, observability /
   audit, deploy / upgrade / rollback, data lifecycle. Include the ones the target actually has; for the
@@ -116,6 +138,20 @@ behavior-changing orderings and faults:
 - It is smart-exhaustive: **list only the orders/faults that can change THIS workflow's outcome** — silence
   on the rest is fine (no per-permutation exclusion ledger). Never brute-force N!.
 
+**Push classes - what "the edge" means (four lines, never four sections):**
+- **Slowdown** - how much (records, tenants, concurrent actors, payload size) before it is too slow.
+- **Break / data loss** - keep going past slow: a record vanishes, a duplicate appears, a job stalls forever.
+- **Hostile or bizarre input** - enormous text, unusual characters, empty vs null, negatives, precision,
+  boundary dates and timezones, collections that are empty or enormous.
+- **The ceiling of our own testing** - paths we cannot exercise here at all, named so blind spots are
+  visible rather than assumed fine.
+
+**Name what the instrument distorts before trusting any number - a break at the instrument's own
+limit is NOT a break in the target.** A client pool cap throttling concurrency below the real
+ceiling; a schema built by a path that silently drops constraints; a connection that never consults
+the policy under test. State the instrument-of-record beside every number, and keep cheap-local and
+realistic measurements SEPARATE.
+
 **Choose the proving level per claim — a mock cannot stand in for a real effect.** A mock proves LOCAL
 behavior only; a pinned contract proves SHAPE; an integration test proves BOUNDARY behavior; a real
 cross-system claim requires observation in a **safe real instance** OR is marked **BLOCKED**. Pick the
@@ -134,10 +170,14 @@ mock.
 4. **One merged coverage table.** Each row: `case-id · claim/authority · dimensions covered · proving level ·
    risk tier · status (planned / blocked / excluded) · oracle`. Risk tier from a stated rule
    (impact × likelihood × reversibility × data-sensitivity × external-side-effects).
-5. **Coverage ledger tail** — covered / out-of-scope / known oracle+access gaps. **"No access / couldn't
+5. **Ceilings answer** (Phase 2's three words; may collapse to a line). Each `HUNTABLE` names its
+   probe, break signal, instrument-of-record, and `OBSERVED <what broke>` or `UNKNOWN`. No branch
+   writes "held up fine": a break at the instrument's own limit is `UNKNOWN - the instrument broke
+   first`; no break in an undersized setup is `UNKNOWN - too small to find out`.
+6. **Coverage ledger tail** — covered / out-of-scope / known oracle+access gaps. **"No access / couldn't
    test" is a BLOCKER row, never silence.** Each gap/blocker names its disposition (test / fix / documented
    deferral).
-6. **Final verdict** — counts of proven / planned / blocked / excluded claims, a blunt **READY / NOT-READY**
+7. **Final verdict** — counts of proven / planned / blocked / excluded claims, a blunt **READY / NOT-READY**
    line, and a residual-risk statement. Never write "proven" or "exhaustive" while blockers remain;
    exhaustiveness is bounded to the declared scope + inventory.
 
@@ -178,6 +218,33 @@ conductor, not a test runner).
 
 ---
 
+## If a limit is ever HUNTED (execution is not in this version - these bind it when it is)
+
+Planning stays zero-mutation (Phase 1). Hunting deliberately causes failures, so bind it before
+building it:
+- **Hunt only where the whole environment is THROWN AWAY afterward, never cleaned up afterward.** No
+  per-record deletes, no cleanup scripts - deleting records one at a time is how the wrong thing
+  gets deleted. Destroy the whole disposable target instead.
+- **Prove you can rebuild it before you may break it.** Emit the proof; halt if absent.
+- **Never production, never the live datastore, never a customer-visible shared tenant** -
+  prohibitions, not defaults. A ceiling reachable only there stays `UNREACHABLE`.
+- **The one real external instance stays out of the blast zone, behind a stand-in** - admissible
+  only if the stand-in's fidelity was confirmed and the plan says when. Assert the RESOLVED
+  endpoint, never merely that a stand-in was started.
+- **Read-only measurement of a live system is PERMITTED** (counts, distributions, timings) and is
+  distinct from hunting.
+- **Order:** read-only preflight -> choose probes -> show exactly those for approval -> rebuild
+  proof -> probe. Rebuilding before approval destroys something before consent and leaves the
+  approval unable to name what it will hammer.
+
+<!-- CONTRACT-CORE-END -->
+
+**Truncation note:** after a compaction this file re-injects head-truncated to its first 20,000
+characters. Everything above this line - the honesty rules, all five phases, the hunting constraints
+- is self-sufficient. Below are the worked examples that keep output concrete rather than a
+checklist: if they are missing from this turn's context, Read this file from disk before emitting a
+plan.
+
 ## Worked micro-examples (fill one per section — this is what keeps output concrete, not a checklist)
 
 > Illustrative only (a dental example); adapt the shape to the actual target.
@@ -213,9 +280,9 @@ a visible hole, not a silent one. "No access is a blocker, never a skip."
 
 ## Deferred / noted-for-later (deliberately NOT in this version)
 
-Recorded so the omissions read as intentional, not oversights: change-impact / diff-targeted depth ·
-explicit ship / no-ship exit-criteria gate wired to CI · a dedicated security/abuse negative-space pass ·
-incident-to-regression as a formal step (partly absorbed here as the Phase-1 history scan) ·
-operability / audit-signal assertions as a mandatory section · a safe-synthetic test-data + tagging
-strategy as a first-class deliverable · rollback / mixed-version / migration safety as a standing section.
-Add these only when a concrete target makes one of them load-bearing.
+Recorded so the omissions read as intentional, not oversights: **the HUNT itself** (running the
+probes - deferred until a target has a real instrument, since with none every ceiling honestly
+returns `UNKNOWN`) · change-impact / diff-targeted depth · a ship / no-ship gate wired to CI ·
+incident-to-regression as a formal step (partly absorbed as the Phase-1 history scan) · operability /
+audit-signal assertions · a safe-synthetic test-data + tagging strategy · rollback / mixed-version /
+migration safety. Add these only when a concrete target makes one load-bearing.

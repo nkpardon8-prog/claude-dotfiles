@@ -51,6 +51,10 @@ network request is observed — proving the page isn't secretly non-static.*
   no blocker prevents the five in-scope cases. (Not "proven" — execution is the next step.)
 - **Residual risk:** near-zero within scope; only the external destination can drift (BLK-1).
 
+**Ceilings** (the whole answer - this is what "collapses to a line" looks like): NOT-WORTH-HUNTING -
+static render, no I/O, no unbounded input, no concurrency; the only conceivable limit is absurd DOM
+size, which no realistic content path can reach here.
+
 **Extensions deliberately omitted** (no surface for them): contract-pinning (no producer↔consumer boundary);
 ordering/concurrency/fault catalog (nothing stateful/mutating/async); mutating recipe fields
 `forbidden-effects / still-correct-after-reload / cleanup` (all cases pure read-only → `N/A`, justified).

@@ -143,6 +143,18 @@ pinned by INV-2, not the provider's.
 - **EP-01 / GET settings** (read-only) · precond: authed session · action: GET · oracle: current state ·
   forbidden/reload/cleanup: **N/A — pure read** (justified).
 
+### CORE — ceilings answer (no measured rows: this is a PLAN, and a number here would be invented)
+
+| id | surface | class | push class | status | instrument-of-record | probe + break signal |
+|---|---|---|---|---|---|---|
+| LIM-001 | bulk member import | HUNTABLE | slowdown, then data loss | UNKNOWN | none yet — a timing instrument must be added, and that is itself the first task | ramp member count until p95 import exceeds the request timeout; then keep going and assert no member is silently dropped |
+| LIM-002 | display-name field | HUNTABLE | hostile input | UNKNOWN | local render harness (cheap-local; a realistic measurement is still owed) | grapheme clusters, RTL overrides, 64KB of text; break signal = stored value differs from redisplayed value |
+| LIM-003 | concurrent settings writes | UNREACHABLE | slowdown | UNKNOWN | the local pool caps concurrency below any plausible real ceiling, so a knee found here would be the pool's, not the target's — see the instrument-distortion rule | blocked until a target with a real pool exists |
+| LIM-004 | static help panel | NOT-WORTH-HUNTING — read-only, no I/O, fixed content | — | — | — | — |
+
+Note the shape of LIM-003: the honest answer is that the instrument would break first, so no number
+is reported at all. Reporting a knee there would be exactly the lie this section exists to prevent.
+
 ### CORE — coverage ledger (gaps are BLOCKER rows, never silence)
 | id | gap / blocker | disposition |
 |---|---|---|
