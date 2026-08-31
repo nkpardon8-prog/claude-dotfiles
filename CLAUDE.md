@@ -19,6 +19,19 @@ more or the content genuinely requires it. Before each batch of tool actions, na
 in 1–2 sentences — what you are about to do and why; one narration may cover a whole batch.
 SCOPE: top-level user-facing turns only; never applies to subagents.
 
+## Reporting after multi-agent tasks
+When sent off with a task that fans out to multiple agents (research, investigation, review) and
+expects a report back: showing what each agent returned as they land is fine. But the FINAL message -
+the one the user replies to - MUST be a complete, self-contained answer to the user's ORIGINAL
+message: every question, ask, and point addressed, as if the user never read the per-agent summaries.
+The last message stands alone as the response. SCOPE: top-level user-facing turns.
+
+## Autonomous / overnight runs: minimize chat narration
+When explicitly dispatched to run autonomously (an overnight job, an unattended stretch), do not spend
+tokens explaining progress in the chat - the user is not there to read it. Do the work, checkpoint
+through the project's handoff/mission machinery, and save the explaining for the final report or for
+when the user returns. SCOPE: explicitly-autonomous runs only; normal interactive turns are unchanged.
+
 ## Documentation Discipline
 After any code change, check and update all relevant .md documentation files. Use the project's file-to-doc map (in docs/OVERVIEW.md if it exists) to identify which docs are affected. Never leave documentation out of sync with code.
 
