@@ -20,6 +20,11 @@
 #   Env: CODEX_EFFORT   optional; low|medium are RAISED to xhigh; high|xhigh|max pass through;
 #                       unset = NO override (config `model_reasoning_effort` is authoritative).
 #        CODEX_TIMEOUT_SECS  default 1800 (max-effort passes have taken 5-25 min).
+#        CODEX_OUTPUT_SCHEMA optional path to a JSON Schema file; passes --output-schema so the
+#                            final message is structured JSON (callers that parse output should
+#                            use this rather than regexing prose).
+#        CODEX_LAST_MESSAGE  optional path; passes -o so ONLY the final agent message is written
+#                            there (<outfile> still gets the full stdout+stderr transcript).
 #
 # Writes (atomic .tmp -> mv):
 #   <outfile>          full codex stdout+stderr
@@ -65,10 +70,24 @@ if [ -n "${CODEX_EFFORT:-}" ]; then
   esac
 fi
 
+WRAPPER_NAME=codex-exec
+
+# Optional structured-output pass-through. Both are OFF unless the caller sets them, so every
+# existing caller is byte-for-byte unaffected. A declared-but-missing schema file is a caller bug
+# and fails BEFORE spending a model call.
+EXTRA_ARGS=()
+if [ -n "${CODEX_OUTPUT_SCHEMA:-}" ]; then
+  [ -f "$CODEX_OUTPUT_SCHEMA" ] || { echo "$WRAPPER_NAME: output schema not found: $CODEX_OUTPUT_SCHEMA" >&2; _status unavailable; exit 127; }
+  EXTRA_ARGS+=(--output-schema "$CODEX_OUTPUT_SCHEMA")
+fi
+if [ -n "${CODEX_LAST_MESSAGE:-}" ]; then
+  EXTRA_ARGS+=(-o "$CODEX_LAST_MESSAGE")
+fi
+
 TIMEOUT="${CODEX_TIMEOUT_SECS:-1800}"
 # ${arr[@]+...} guard: macOS ships bash 3.2, where an EMPTY array under `set -u` is an
 # "unbound variable" error (caught live by the 6a timeout fixture).
-pt_run "$TIMEOUT" codex exec ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} -s read-only --ephemeral -C "$WORKDIR" - < "$PROMPT" > "$OUT.tmp" 2>&1
+pt_run "$TIMEOUT" codex exec ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} -s read-only --ephemeral -C "$WORKDIR" - < "$PROMPT" > "$OUT.tmp" 2>&1
 rc=$?
 mv -f "$OUT.tmp" "$OUT"
 
