@@ -21,6 +21,13 @@ import sys, os, json, time, subprocess, re
 LEDGER_DIR = os.path.expanduser("~/.claude/prod-ledger")
 PROD = re.compile(
     r"git\s+push\b"
+    # The SANCTIONED push path (audit 2026-09-04, TOOL-4). `npm run safe-push` /
+    # `node scripts/safe-push.mjs` do a `git push` INSIDE node, so their command TEXT
+    # carries no "git push" and the ledger recorded ONLY the forbidden raw pushes - so
+    # "know what is live before you push" saw every bypass and no compliant landing.
+    # Recorded here (like git push); the GATE deliberately does NOT match it (safe-push
+    # is not serialized by the prod lock), exactly as the git-push fixtures assert.
+    r"|safe-push\b"
     r"|gcloud\s+run\s+deploy"
     r"|gcloud\s+run\s+services\s+update"
     r"|gcloud\s+builds\s+submit"
