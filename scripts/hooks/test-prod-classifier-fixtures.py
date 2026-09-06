@@ -270,6 +270,13 @@ CASES = [
     ("push && local migrate (ledger side)",
      f"git push origin dev && DATABASE_URL={LOCAL} prisma migrate deploy",           SAFE, PROD),
 
+    # safe-push is the SANCTIONED push path (TOOL-4): the ledger RECORDS it (its git push happens
+    # inside node, so the command text never says "git push"); the gate does NOT serialize it -
+    # same per-hook split as raw git push above.
+    ("safe-push via npm",          "npm run safe-push",                                    SAFE, PROD),
+    ("safe-push via node",         "node scripts/safe-push.mjs",                           SAFE, PROD),
+    ("safe-push with flags",       "npm run safe-push -- --yes",                           SAFE, PROD),
+
     # mixed-migrate masking: two migrate patterns -> exactly-one rule fails closed
     ("local-URL migrate && bare db:migrate:deploy",
      f"DATABASE_URL={LOCAL} prisma migrate deploy && npm run db:migrate:deploy", PROD, PROD),
