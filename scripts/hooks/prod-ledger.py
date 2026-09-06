@@ -266,7 +266,7 @@ def ledger_path(slug):
 def kind_of(cmd):
     # Same inert-data rule as is_prod: a note whose TEXT says "git push" is not a push.
     c = _strip_inert_data(cmd).lower()
-    if "git push" in c:
+    if "git push" in c or "safe-push" in c:
         return "push"
     if "gcloud run deploy" in c or "run services update" in c:
         return "deploy"
