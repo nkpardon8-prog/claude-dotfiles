@@ -61,6 +61,7 @@ else
     disown
     for i in $(seq 1 15); do sleep 1; cdp_healthy && break; done
     sleep 5  # let tabs restore
+    [ -n "$FRONT_APP" ] && open -b "$FRONT_APP" 2>/dev/null
     if cdp_healthy; then
       echo "Debug Chrome up on $DEBUG_PORT — $(page_count) tab(s) restored."
     else
