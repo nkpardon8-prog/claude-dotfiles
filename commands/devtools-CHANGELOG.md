@@ -1,5 +1,19 @@
 # /devtools — changelog
 
+## 2026-09-18 — Stop stealing the user's screen
+
+**Change:** new `PreToolUse` hook `scripts/hooks/devtools-no-focus-steal.py` forces
+`select_page {bringToFront:false}` and `new_page {background:true}` (skipped in `/macmini` /
+`/windows` sessions). Step 1 (launch) and Step 1.5 (wake tabs) now record the user's front app
+and hand focus back to it with `open -b` afterward. Header gains a "Never steal the user's
+screen" rule.
+
+**Why:** the user works in other apps while agents drive Chrome, and kept getting yanked into
+the browser. The MCP's click/type never raise the window (it emulates focus per page) — the
+cause was agents passing `bringToFront:true` (9x in past transcripts) or opening foreground tabs
+(16+x), plus Step 1.5's `/json/activate` loop. Verified end to end with a headless `claude -p`
+run: the hook rewrote `new_page` to background, the tab opened hidden, Terminal stayed in front.
+
 ## 2026-07-02 — Sonnet 5 default + CRD precision-loop routing
 
 **Change:** Step 4's delegated devtools sub-agent default model moved

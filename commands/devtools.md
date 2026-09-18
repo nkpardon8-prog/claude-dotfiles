@@ -78,7 +78,7 @@ fi
 
 Chrome freezes/discards background tabs. A frozen tab's CDP target stops answering, and the MCP's page-enumeration `Promise.all` hangs on it forever (failure mode #4 above). Activating each page target wakes discarded tabs so they all respond. Idempotent; cheap; run it every time.
 
-Activating a tab raises Chrome over whatever the user is doing, so this step **puts them back**: it re-selects the tab that was in front and re-activates the app they were in (`lsappinfo` + `open -b` — no Accessibility/Automation permission needed). Never leave the user parked on a random tab.
+Activating a tab raises Chrome over whatever the user is doing, so this step **puts them back**: it re-activates the app they were in (`lsappinfo` + `open -b` — no Accessibility/Automation permission needed). (Chrome's own active tab still ends on the last one woken — `/json/list` order is not activation order, so there is no reliable way to restore it.)
 
 ```bash
 DEBUG_PORT=9222
@@ -86,14 +86,12 @@ echo "Waking all tabs so none hang the MCP connection..."
 FRONT_APP=$(lsappinfo info -only bundleid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*"CFBundleIdentifier"="\([^"]*\)".*/\1/p')
 IDS=$(curl -s --max-time 5 "http://127.0.0.1:$DEBUG_PORT/json/list" 2>/dev/null \
   | python3 -c "import sys,json;print('\n'.join(t['id'] for t in json.load(sys.stdin) if t.get('type')=='page'))" 2>/dev/null)
-FRONT_TAB=$(echo "$IDS" | head -1)   # /json/list is most-recently-active first
 N=0
 for id in $IDS; do
   curl -s --max-time 4 "http://127.0.0.1:$DEBUG_PORT/json/activate/$id" >/dev/null 2>&1 && N=$((N+1))
 done
-[ -n "$FRONT_TAB" ] && curl -s --max-time 4 "http://127.0.0.1:$DEBUG_PORT/json/activate/$FRONT_TAB" >/dev/null 2>&1
 [ -n "$FRONT_APP" ] && open -b "$FRONT_APP" 2>/dev/null
-echo "Activated $N tab(s); restored front tab + app ($FRONT_APP). Waiting 6s for discarded tabs to reload..."
+echo "Activated $N tab(s); handed focus back to $FRONT_APP. Waiting 6s for discarded tabs to reload..."
 sleep 6
 echo "Tabs woken — all CDP targets should now answer."
 ```
