@@ -48,6 +48,8 @@ else
   else
     # restore_on_startup=1 (continue where you left off) is set in Preferences during SETUP,
     # so a normal launch restores the user's tabs. --profile-directory=Default skips the picker.
+    # Launching raises Chrome; remember the user's app so we can hand focus back once it's up.
+    FRONT_APP=$(lsappinfo info -only bundleid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*"CFBundleIdentifier"="\([^"]*\)".*/\1/p')
     nohup "$CHROME" \
       --remote-debugging-port=$DEBUG_PORT \
       --user-data-dir="$DEBUG_PROFILE" \
