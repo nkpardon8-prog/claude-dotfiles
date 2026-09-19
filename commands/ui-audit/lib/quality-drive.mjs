@@ -175,7 +175,7 @@ async function shoot(tab, path, clip) {
 // IntersectionObserver) paints everything below the fold at opacity 0 under captureBeyondViewport,
 // which silently blinds the vision half of the pass. Scrolling makes the reveal actually fire.
 async function shootViewport(tab, path, y) {
-  await tab.evaluate(`window.scrollTo(0, ${Number(y)}); null`);
+  await tab.evaluate(`(() => { const sc = window.__uiAuditScroller; if (sc) sc.scrollTop = ${Number(y)}; else window.scrollTo(0, ${Number(y)}); })(); null`);
   await sleep(650); // let reveal transitions settle
   const r = await tab.send('Page.captureScreenshot', { format: 'png' }, 45000);
   if (!r?.data) throw new Error('Page.captureScreenshot returned no data');
