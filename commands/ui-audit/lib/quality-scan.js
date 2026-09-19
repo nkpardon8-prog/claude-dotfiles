@@ -218,7 +218,7 @@
     fontFamilies[fam] = (fontFamilies[fam] || 0) + 1;
   }
   const isButtonLike = (el) => el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || (el.tagName === 'INPUT' && /^(button|submit|reset)$/.test(el.type)) ||
-    (el.tagName === 'A' && /\b(btn|button|cta)\b/i.test(el.className && el.className.baseVal === undefined ? el.className : ''));
+    (el.tagName === 'A' && /\b(btn|button|cta)\b/i.test(typeof el.className === 'string' ? el.className : ''));
   const buttons = interactive.filter(isButtonLike);
   const pageHeightInViewports = round(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) / VH);
   const density = {
