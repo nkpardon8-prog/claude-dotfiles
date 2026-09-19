@@ -82,6 +82,16 @@ const CRAWL_EXPR = `(() => {
   return { nav, rest };
 })()`;
 
+// Scroll the whole page once (viewport steps, bounded) so lazy images and scroll-reveal sections
+// render before the scan + screenshot, then return to the top. Scrolling is read-only.
+const SCROLL_PASS_EXPR = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let steps = 0;
+  for (let y = 0; y < document.documentElement.scrollHeight && steps < 40; y += Math.round(window.innerHeight * 0.8)) { window.scrollTo(0, y); steps++; await wait(120); }
+  window.scrollTo(0, 0); await wait(400);
+  return steps;
+})()`;
+
 // Opening <details> is a pure DOM property write: no click handler runs, no request fires.
 const OPEN_DETAILS_EXPR = `(() => { const d = Array.from(document.querySelectorAll('details:not([open])')); d.forEach((x) => { x.open = true; }); return d.length; })()`;
 
@@ -210,7 +220,7 @@ async function main() {
         const rec = { route, slug, viewport: vp.name };
         try {
           await tab.navigate(route);
-          await tab.evaluate('window.scrollTo(0, 0)');
+          rec.scrollSteps = await tab.evaluate(SCROLL_PASS_EXPR, 40000);
           const landed = await tab.evaluate('location.href');
           rec.landedUrl = landed;
           const lp = new URL(landed);

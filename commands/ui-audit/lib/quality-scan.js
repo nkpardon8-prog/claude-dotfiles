@@ -75,6 +75,7 @@
       if (!raw || !raw.trim()) continue;
       const el = node.parentElement;
       if (!el || el.closest(SKIP_TEXT_ANCESTORS) || !isVisible(el)) continue;
+      { const tr = el.getBoundingClientRect(); if (tr.width < 3 || tr.height < 3) continue; } // sr-only / visually-hidden text
       texts.push({ text: raw.replace(/\s+/g, ' ').trim(), el });
     }
     // Attribute-borne UI text that users also read.
