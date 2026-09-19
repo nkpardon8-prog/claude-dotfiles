@@ -292,20 +292,32 @@ async function main() {
           writeFileSync(scanPath, JSON.stringify(scan, null, 2));
           rec.scan = scanPath; rec.summary = scan.summary;
 
+          // Re-read the scroller AFTER details/expand: opening disclosures changes the height.
+          const sc = await tab.evaluate(SCROLLER_EXPR, 20000);
+          rec.scroller = sc;
           const full = join(OUT, 'screenshots', `${slug}.${vp.name}.png`);
-          const pageH = Math.min(scan.document.scrollHeight, 16000); // Chrome's capture ceiling; taller pages are tiled only
-          await shoot(tab, full, { x: 0, y: 0, width: vp.width, height: pageH });
+          // Effective page height: the document height, or - in an app shell whose window never
+          // scrolls - the inner scroller's content height plus its top offset. Using
+          // scan.document.scrollHeight alone yields exactly one viewport on such a shell.
+          const effH = Math.max(scan.document.scrollHeight, sc?.effectiveHeight || 0);
+          const pageH = Math.min(effH, 16000); // Chrome's capture ceiling; taller pages are tiled only
+          // captureBeyondViewport cannot paint an inner scroller's off-screen content, so in inner
+          // mode the full-page shot is honestly just the first viewport - the tiles carry the rest.
+          await shoot(tab, full, { x: 0, y: 0, width: vp.width, height: sc?.mode === 'inner' ? vp.height : pageH });
           rec.screenshot = full; rec.tiles = [];
-          const tileCount = Math.min(args.maxTiles, Math.ceil(scan.document.scrollHeight / vp.height));
+          rec.effectivePageHeight = effH;
+          const tileStep = sc?.mode === 'inner' ? Math.max(1, sc.clientHeight) : vp.height;
+          const tilesNeeded = Math.ceil((sc?.mode === 'inner' ? sc.scrollHeight : effH) / tileStep);
+          const tileCount = Math.min(args.maxTiles, tilesNeeded);
           if (tileCount > 1) {
             for (let i = 0; i < tileCount; i++) {
-              const y = i * vp.height;
+              const y = i * tileStep;
               const p = join(OUT, 'screenshots', `${slug}.${vp.name}.tile-${i + 1}.png`);
               await shootViewport(tab, p, y);
-              rec.tiles.push({ path: p, pageY: y });
+              rec.tiles.push({ path: p, pageY: y, scrollMode: sc?.mode || 'window' });
             }
-            if (Math.ceil(scan.document.scrollHeight / vp.height) > tileCount) rec.tilesTruncatedAt = tileCount;
-            await tab.evaluate('window.scrollTo(0, 0); null');
+            if (tilesNeeded > tileCount) rec.tilesTruncatedAt = tileCount;
+            await tab.evaluate('(() => { const s = window.__uiAuditScroller; if (s) s.scrollTop = 0; else window.scrollTo(0, 0); })(); null');
           }
           scans.push({ route, viewport: vp.name, scan });
           console.log(`  OK ${vp.name} ${route} -> machineText=${scan.summary.machineText} smallTap=${scan.summary.smallTapTargets} headerFlags=${scan.summary.headerFlags} lowContrast=${scan.summary.lowContrast}`);
