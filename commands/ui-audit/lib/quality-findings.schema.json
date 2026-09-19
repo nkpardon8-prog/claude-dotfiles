@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://claude-dotfiles/ui-audit/quality-findings.schema.json",
+  "title": "ui-audit quality findings",
+  "description": "The report emitted by `/ui-audit --quality`. One object with a run header, the per-screen census, and a flat ranked findings array. Companion rubric: passes/quality.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "base", "generatedAt", "screens", "findings"],
+  "properties": {
+    "schema": { "const": "ui-audit.quality-findings/1" },
+    "base": { "type": "string", "description": "Base URL the run targeted." },
+    "generatedAt": { "type": "string", "description": "ISO timestamp of report assembly." },
+    "mode": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "How the run was driven.",
+      "properties": {
+        "viewports": { "type": "array", "items": { "type": "string" } },
+        "routeSource": { "type": "string", "enum": ["explicit", "crawl"] },
+        "expand": { "type": "boolean" },
+        "wireGuard": { "type": "boolean" },
+        "reviewer": { "const": "claude", "description": "Quality mode is Claude-only; Codex is never invoked." }
+      }
+    },
+    "screens": {
+      "type": "array",
+      "description": "One entry per route x viewport actually scanned.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["route", "slug", "viewport"],
+        "properties": {
+          "route": { "type": "string" },
+          "slug": { "type": "string" },
+          "viewport": { "type": "string" },
+          "landedUrl": { "type": ["string", "null"] },
+          "authRedirect": { "type": "boolean" },
+          "screenshot": { "type": ["string", "null"] },
+          "tiles": { "type": "array", "items": { "type": "object" } },
+          "scan": { "type": ["string", "null"], "description": "Path to the quality-scan JSON this screen's measurements came from." },
+          "summary": { "type": "object", "additionalProperties": true, "description": "Verbatim `summary` block from the scan." },
+          "findingCount": { "type": "integer", "minimum": 0 },
+          "error": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/qualityFinding" }
+    },
+    "crossScreen": {
+      "type": "array",
+      "description": "App-level findings drawn from census.json. Each is ALSO present in `findings` with scope 'cross-screen'; this array holds their ids for convenience.",
+      "items": { "type": "string" }
+    },
+    "droppedFalsePositives": {
+      "type": "array",
+      "description": "Scan hits the vision review rejected. Recorded, never silently discarded (the quality-mode analogue of the default mode's FALSE_POSITIVE count).",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["category", "reason"],
+        "properties": {
+          "category": { "type": "string" },
+          "route": { "type": ["string", "null"] },
+          "selector": { "type": ["string", "null"] },
+          "match": { "type": ["string", "null"] },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "description": "Honest scope caps: routes that failed, capped arrays (scan `truncatedLists`), auth-gated screens, tiles truncated, anything vision could not resolve.",
+      "items": { "type": "string" }
+    }
+  },
+  "definitions": {
+    "qualityFinding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "category", "severity", "scope", "title", "evidence", "suggestedFix"],
+      "properties": {
+        "id": { "type": "string", "description": "Stable within a run: '<slug>-<category>-<n>' or 'cross-<category>-<n>'." },
+        "category": {
+          "type": "string",
+          "enum": [
+            "machine-text",
+            "format-inconsistency",
+            "spacing-alignment",
+            "density",
+            "text-for-symbol",
+            "vague-label",
+            "state-design",
+            "redundant-action",
+            "long-card",
+            "tap-target",
+            "contrast",
+            "variant-drift",
+            "cross-screen"
+          ],
+          "description": "Defined in passes/quality.md; each id maps to one numbered section there."
+        },
+        "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
+        "scope": { "type": "string", "enum": ["screen", "cross-screen"] },
+        "route": { "type": ["string", "null"], "description": "Null only for scope 'cross-screen'." },
+        "routes": { "type": "array", "items": { "type": "string" }, "description": "Every affected route, for cross-screen findings." },
+        "viewport": { "type": ["string", "null"], "enum": ["mobile", "desktop", null] },
+        "title": { "type": "string", "description": "One line, specific. Not a category restatement." },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["measured"],
+          "description": "Both families. `measured` is copied verbatim from the scan; `vision` is the screenshot read.",
+          "properties": {
+            "measured": { "description": "The scan numbers/strings this finding rests on (object or array). Never paraphrased." },
+            "scanField": { "type": ["string", "null"], "description": "Dotted path into the scan JSON, e.g. 'headers[3].flags'." },
+            "vision": { "type": ["string", "null"], "description": "What the screenshot shows. Null when the finding is measurement-only." },
+            "screenshot": { "type": ["string", "null"] },
+            "corroborated": { "type": "boolean", "description": "False = pixel-only, which caps severity at 'low' per the rubric." }
+          }
+        },
+        "selector": { "type": ["string", "null"], "description": "Copied verbatim from the scan. Null for vision-only findings." },
+        "box": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["x", "y", "w", "h"],
+          "description": "Page CSS px at this viewport (scroll offsets included), matching the scan's box shape.",
+          "properties": {
+            "x": { "type": "number" }, "y": { "type": "number" },
+            "w": { "type": "number" }, "h": { "type": "number" }
+          }
+        },
+        "suggestedFix": { "type": "string", "description": "A sentence, not a patch. What to change and to what." },
+        "rank": { "type": ["integer", "null"], "minimum": 1, "description": "Position in the report's global ranking." }
+      }
+    }
+  }
+}

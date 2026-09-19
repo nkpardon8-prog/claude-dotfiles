@@ -1,6 +1,6 @@
 ---
 description: "Audit a tab's UI end-to-end — catch fake or dead UI elements. Report-only: enumerates the ENTIRE rendered surface of one tab across every reachable sub-state, gives each element a strict REAL / STATIC-BY-DESIGN / FAKE-OR-DEAD / UNVERIFIED verdict (plus a MODELS-DISAGREE bucket) proven through three reconciled passes — static code trace, live browser x-ray over RAW CDP, and screenshot vision — with verdict authoring + evidence judgment split ~50/50 Codex/Claude and disagreements surfaced not averaged. Emits findings.json + AUDIT.md + full-page per-state screenshots (with per-element box coordinates in findings.json for downstream overlay), handed to /god-review or /implement. Never edits app code."
-argument-hint: "[tab|url] [--url=] [--base=] [--read-only] [--no-harness] [--max-enum-passes=N] [--out=] [--batch=N] [--codex-off]"
+argument-hint: "[tab|url] [--url=] [--base=] [--read-only] [--no-harness] [--max-enum-passes=N] [--out=] [--batch=N] [--codex-off] | --quality --base= [--routes=a,b,c] [--max-routes=N] [--desktop] [--expand] [--out=]"
 allowed-tools: "Read, Glob, Grep, Bash, Agent"
 expected_subagents: 20
 ---
@@ -12,7 +12,21 @@ You are a senior frontend-reliability engineer running a **report-only** reality
 This command is a **thin sequencer**. The substance lives in sub-files it invokes by absolute path (they are NOT auto-loaded):
 - `~/.claude-dotfiles/commands/ui-audit/rubric.md` — taxonomy, per-type proof-of-real bar, verdict defs, precedence rules.
 - `~/.claude-dotfiles/commands/ui-audit/passes/{static-trace,dynamic-exercise,vision-inspect,reconcile}.md` — the three pass rubrics + the cross-family reconciliation prompts.
+- `~/.claude-dotfiles/commands/ui-audit/passes/quality.md` - the `--quality` mode rubric (see MODE DISPATCH below).
 - `~/.claude-dotfiles/commands/ui-audit/lib/{codex-invoke.sh,cdp.mjs,enumerate.js,drive.mjs,ledger-assert.sh,findings.schema.json,validate-findings.sh}` — the RAW-CDP driver, the coverage/schema gates, the Codex adapter.
+- `~/.claude-dotfiles/commands/ui-audit/lib/{quality-drive.mjs,quality-scan.js,quality-findings.schema.json}` - the `--quality` driver, in-page scan, and report schema.
+
+## MODE DISPATCH (read this first)
+
+`/ui-audit` has TWO modes, and they share only the `:9222` connect block:
+
+| Mode | Trigger | Question it answers | Sections to follow |
+|---|---|---|---|
+| **Reality** (default) | no `--quality` | "Is this element REAL or FAKE/DEAD?" | Phases 0-5 below. Unchanged. |
+| **Quality** (additive) | `--quality` present in `$ARGUMENTS` | "Is this screen well made - consistent, legible, calm, human?" | The `--quality` section at the END of this file. Skip Phases 1-5 entirely. |
+
+If `--quality` is present: run Phase 0b (the Chrome connect block) **only**, then jump straight to
+`## --quality mode`. Do NOT parse the reality-mode flags, do NOT build a ledger, do NOT invoke Codex.
 
 This command has 6 phases (plus a Phase 3.5 verdict-merge bridge before the coverage gate):
 - **Phase 0**: Parse args, connect the `:9222` debug Chrome, detect stack + harness, resolve tab→URL, print the traversal-safety banner.
@@ -457,3 +471,180 @@ echo "Next: run  /god-review $WORKDIR  (broad follow-up)  OR  /implement <plan> 
 - **Auth redirect** during traversal: HALT with `sign into $ORIGIN in the :9222 debug profile, then re-run` (T7).
 - **`--out` outside the repo**: Codex's `-s read-only --cd` sandbox cannot read the evidence bundles → Codex batches degrade to Claude (warned in Phase 0e). Prefer the default `$WORKDIR/tmp/ui-audit/...`.
 - **Harness run fails**: it is non-load-bearing (T9) — log and continue; the driver's own dynamic pass stands alone.
+
+---
+---
+
+# `--quality` mode - UI Quality + Consistency Audit
+
+**This section is reached ONLY when `--quality` is in `$ARGUMENTS`.** Everything above (ledger,
+verdicts, Codex, coverage gate) is skipped. The default mode's behavior is unchanged by this section.
+
+You are a senior product designer reviewing a running app for **craft**: consistency, legibility,
+calm, and whether it reads as made by a person who cared. This is orthogonal to the reality audit - a
+perfectly REAL element can still be a quality finding (a live, correctly-wired phone number rendered
+as `+16505551234`).
+
+## Quality-mode invariants
+
+1. **Report-only, read-only navigation only.** The driver navigates, scrolls, and opens `<details>` by
+   DOM property. It never clicks actions, never types, **never enters credentials**, never submits.
+   `--expand` is the one exception (it clicks collapsed disclosure toggles) and it is only allowed
+   with the wire-level read-only guard installed, which the driver does automatically.
+2. **Claude-only. Codex is NEVER invoked in this mode.** Every category needs pixel perception, which
+   Codex does not have. There is no cross-family reconcile, no `codex-invoke.sh` call, no 50/50 split.
+3. **Both evidence families or it is not a finding.** Measured (scan JSON) + vision (screenshot). A
+   pixel-only observation with no scan corroborant caps at `severity: low`. See `passes/quality.md`.
+4. **A new tab, closed afterwards. Never touch the user's existing tabs.** `quality-drive.mjs` opens
+   one tab via `/json/new` and closes it in a `finally`.
+5. **No coverage gate, no COMPLETE/INCOMPLETE.** Quality mode is advisory. The only hard gate is the
+   `quality-findings.json` schema.
+6. **Never invent a selector or a box.** Copy them verbatim from the scan JSON.
+
+## Q0. Parse quality args + connect Chrome
+
+Run the Phase-0b Chrome connect block verbatim (it is idempotent), then:
+
+```bash
+set -o pipefail
+WORKDIR="${WORKDIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+BASE=""; ROUTES=""; MAX_ROUTES=12; DESKTOP=false; EXPAND=false; OUT=""
+eval set -- $ARGUMENTS
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --quality)        shift ;;
+    --base=*)         BASE="${1#*=}"; shift ;;
+    --base)           BASE="$2"; shift 2 ;;
+    --url=*)          BASE="${1#*=}"; shift ;;
+    --routes=*)       ROUTES="${1#*=}"; shift ;;
+    --routes)         ROUTES="$2"; shift 2 ;;
+    --max-routes=*)   MAX_ROUTES="${1#*=}"; shift ;;
+    --max-routes)     MAX_ROUTES="$2"; shift 2 ;;
+    --desktop)        DESKTOP=true; shift ;;
+    --expand)         EXPAND=true; shift ;;
+    --out=*)          OUT="${1#*=}"; shift ;;
+    --out)            OUT="$2"; shift 2 ;;
+    *)                [ -z "$BASE" ] && BASE="$1"; shift ;;
+  esac
+done
+[ -n "$BASE" ] || { echo "Error: --quality needs --base=<origin-or-url>" >&2; exit 1; }
+[ "$MAX_ROUTES" -ge 1 ] 2>/dev/null || { echo "Error: --max-routes must be an integer >= 1" >&2; exit 1; }
+
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+OUT="${OUT:-$WORKDIR/tmp/ui-audit/quality-$TS}"
+mkdir -p "$OUT"
+echo "=== /ui-audit --quality - REPORT-ONLY, READ-ONLY NAVIGATION ==="
+echo "Base: $BASE"
+echo "Routes: ${ROUTES:-<bounded nav-link crawl, max $MAX_ROUTES>}"
+echo "Viewports: mobile 390x844$( [ "$DESKTOP" = true ] && echo ' + desktop 1440x900' )"
+echo "Artifacts: $OUT"
+```
+
+**Route resolution.** `--routes=a,b,c` wins (each resolved against `--base`). With no `--routes`, the
+driver runs a **bounded nav-link crawl**: it loads the base, harvests `nav`/`header`/`tablist`/
+`sidebar`/`footer` links first and then the rest of `a[href]`, keeps same-origin http(s) links only,
+dedupes by pathname, skips anything matching the session-ending/destructive/download denylist
+(`logout`, `delete`, `unsubscribe`, `/api/`, `.pdf|.zip|.csv|...`), and stops at `--max-routes`.
+
+## Q1. Drive: screenshots + per-route scan JSON
+
+```bash
+EXTRA=""; [ "$DESKTOP" = true ] && EXTRA="$EXTRA --desktop"; [ "$EXPAND" = true ] && EXTRA="$EXTRA --expand"
+ROUTE_ARG=""; [ -n "$ROUTES" ] && ROUTE_ARG="--routes=$ROUTES"
+node "$HOME/.claude-dotfiles/commands/ui-audit/lib/quality-drive.mjs" \
+  --base "$BASE" --out "$OUT" --max-routes "$MAX_ROUTES" $ROUTE_ARG $EXTRA \
+  2>&1 | tee "$OUT/quality-drive.log"
+DRIVE_RC=${PIPESTATUS[0]}
+[ "$DRIVE_RC" -ne 0 ] && echo "quality-drive.mjs exited $DRIVE_RC - see $OUT/quality-drive.log"
+```
+
+Per route x viewport the driver navigates, runs a bounded scroll pass (so lazy images and
+scroll-reveal sections render), opens `<details>`, injects `lib/quality-scan.js`, and captures a
+full-page PNG plus viewport-height tiles. **Tiles are captured by scrolling to the offset and
+shooting the real viewport**, never with `captureBeyondViewport` - a site with scroll-reveal
+animations paints everything below the fold at opacity 0 under `captureBeyondViewport`, which
+silently blinds the vision pass.
+
+Products in `$OUT`:
+- `quality/<slug>.<viewport>.scan.json` - per-screen measurements (`ui-audit.quality-scan/1`).
+- `quality/census.json` - cross-screen format + button-variant census, with pre-computed
+  `crossScreenInconsistencies` candidates.
+- `quality/manifest.json` - routes, viewports, screenshots, tiles, errors, **auth redirects**.
+- `screenshots/<slug>.<viewport>.png` and `.tile-N.png`.
+- `quality-network.log` - every non-GET the page itself fired (or, under the guard, blocked).
+
+**Auth-gated target.** If `manifest.json` rows carry `authRedirect: true` (the route landed on a
+`/login`-ish path), the run is measuring the sign-in wall, not the app. STOP and tell the user to
+sign into that origin in the `:9222` debug profile and re-run - or, if they named a public surface as
+the fallback, re-run against that and **say plainly in the report which target was audited**. Never
+sign in yourself.
+
+## Q2. Vision review (Claude only)
+
+Read `~/.claude-dotfiles/commands/ui-audit/passes/quality.md` in full - it is the rubric: 13 finding
+categories, each with a checkable definition, the scan field that signals it, a severity guide, the
+false-positive drops, and the evidence to cite.
+
+Then, **per screen**:
+1. Read that screen's `scan.json` (and `census.json` once, for the app-level view).
+2. `Read` that screen's full-page PNG and every tile PNG. The tiles are the legible ones on tall pages.
+3. Walk the 13 categories in rubric order. For each scan hit, confirm or drop it against the pixels;
+   for each pixel observation, find its scan corroborant or cap it at `low`.
+4. Record every drop in `droppedFalsePositives` with a reason. A silently discarded hit is the same
+   failure mode the default mode's FALSE_POSITIVE count exists to prevent.
+
+For a large run, fan out with one `Agent` (`subagent_type: "general-purpose"`) per screen - paste the
+rubric text into the prompt (sub-agents do not inherit your `Read`s), hand it the scan path + the
+screenshot paths, and have it write `$OUT/quality/findings-<slug>.json` and reply with the path. Then
+you assemble. Cross-screen findings are yours alone: they need `census.json` plus every screen at once.
+
+**Ranking.** Within a screen: severity, then measured magnitude, then breadth. Globally: severity,
+then whether it is cross-screen (systemic beats local at equal severity), then magnitude. Report every
+`critical` and `high`; cap `low` at 5 per screen and note the remainder as a count.
+
+## Q3. Emit `QUALITY.md` + `quality-findings.json`
+
+Write `$OUT/quality-findings.json` conforming to
+`~/.claude-dotfiles/commands/ui-audit/lib/quality-findings.schema.json` (`ui-audit.quality-findings/1`):
+a run header (`schema`, `base`, `generatedAt`, `mode`), `screens[]` (one per route x viewport, with
+its scan path, screenshot, summary, finding count), a flat ranked `findings[]`, `crossScreen[]` (ids),
+`droppedFalsePositives[]`, and `limitations[]`. Each finding carries `id`, `category`, `severity`,
+`scope`, `route`/`routes`, `title`, `evidence{measured, scanField, vision, screenshot, corroborated}`,
+`selector`, `box`, `suggestedFix`, `rank`.
+
+```bash
+bash "$HOME/.claude-dotfiles/commands/ui-audit/lib/validate-findings.sh" \
+  "$OUT/quality-findings.json" \
+  "$HOME/.claude-dotfiles/commands/ui-audit/lib/quality-findings.schema.json"
+[ $? -ne 0 ] && echo "quality-findings.json FAILED schema validation - fix it before writing QUALITY.md."
+```
+
+Then write `$OUT/QUALITY.md`:
+1. **Header** - target audited (say so explicitly if it was a fallback), routes x viewports, when,
+   reviewer (Claude-only), and the honest `limitations` list.
+2. **Top findings, ranked** - the global ranking, each with category, severity, route, evidence
+   (measured number FIRST, then the vision read), selector + box, and the suggested fix.
+3. **Per screen** - a short table of that screen's findings, plus its scan `summary` line.
+4. **Cross-screen inconsistencies** - called out once, at the app level, listing every affected route.
+   Never repeat a cross-screen finding per screen.
+5. **Dropped false positives** - what the scan flagged and vision rejected, with reasons.
+6. **Run manifest** - routes scanned/failed/auth-redirected, capped arrays (`truncatedLists`), tiles
+   truncated, non-GET requests observed (`quality-network.log`).
+
+```bash
+echo "=== /ui-audit --quality complete - REPORT-ONLY (no app code edited, no credentials entered) ==="
+echo "Report:   $OUT/QUALITY.md"
+echo "Findings: $OUT/quality-findings.json"
+echo "Next: /implement to fix the ranked findings, or re-run with --desktop for the wide viewport."
+```
+
+## Quality-mode graceful-degrade
+
+- **CDP won't connect**: same as default mode - run `/devtools`, then re-run. Do not produce a
+  screenshot-less quality report; vision is half the evidence.
+- **A route fails to scan** (`manifest.errors[]`): log it, continue with the rest, and list it under
+  `limitations`. Never let one bad route abort the run.
+- **Auth redirect on every route**: STOP per Q1. The report would describe a login page.
+- **A scan array hit its cap** (`truncatedLists` non-empty): say "at least N", never a bare count.
+- **Tiles truncated** (`tilesTruncatedAt`): the page is taller than `--max-tiles` viewports; the
+  region below is unreviewed by vision. Say so in `limitations`.

@@ -87,6 +87,9 @@ const DENY_HREF = /\/(log-?out|sign-?out|signout|logout|delete|remove|destroy|un
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...m) => console.error('[speedeval]', ...m);
+// Progress lines are read by a human in a terminal: keep a URL short there. The FULL (redacted) url
+// still lands in report.json - only this console line is trimmed.
+const logUrl = (u) => { const s = redact(u); return s.length > 110 ? s.slice(0, 90) + '...(' + s.length + ' chars)' : s; };
 const r1 = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
 
 // Strip secrets from URLs before they reach a report another agent will read.
@@ -196,8 +199,8 @@ async function setup() {
   // Keep the tab rendering (paint metrics, un-throttled timers) WITHOUT stealing the user's screen.
   try { await tab.send('Emulation.setFocusEmulationEnabled', { enabled: true }); } catch {}
   net = createNetLog(tab);
-  if (args.readOnly) guard = await installReadOnlyGuard(tab, (rec) => log(`read-only: blocked ${rec.method} ${redact(rec.url)}`));
-  else mutations = await installMutationLogger(tab, (rec) => log(`non-GET fired: ${rec.method} ${redact(rec.url)}`));
+  if (args.readOnly) guard = await installReadOnlyGuard(tab, (rec) => log(`read-only: blocked ${rec.method} ${logUrl(rec.url)}`));
+  else mutations = await installMutationLogger(tab, (rec) => log(`non-GET fired: ${rec.method} ${logUrl(rec.url)}`));
   if (args.cold) await tab.send('Network.setCacheDisabled', { cacheDisabled: true });
 
   tab.on('Page.loadEventFired', () => { ctx.loadFired = true; });
@@ -415,7 +418,7 @@ async function measureClick(route, cand) {
   let loc;
   try { loc = await pageEval(`window.__se.resolve(${JSON.stringify(cand._desc)})`); } catch (e) { loc = { found: false, err: e.message }; }
   if (!loc.found) return { ...result, status: 'UNREACHABLE', note: 'element not found after a fresh navigation (dynamic list or state-dependent control)' };
-  if (loc.obscured) return { ...result, status: 'UNREACHABLE', note: `click point is covered by <${loc.topTag}> (overlay, sticky bar or pointer-events)` };
+  if (loc.obscured) return { ...result, status: 'UNREACHABLE', note: loc.topTag ? `click point is covered by <${loc.topTag}> (overlay, sticky bar or pointer-events)` : 'click point resolves to no element (off-viewport, or a visually-hidden control such as a skip link that only appears on keyboard focus)' };
 
   // Pre-click DOM quiet: if the page mutates on its own (carousel, ticker) the feedback metric is noise.
   const quiet = await waitFor(async () => { try { const s = await pageEval('window.__se.state()'); return s.lastMutAny === null || s.now - s.lastMutAny >= 300; } catch { return false; } }, 3000, 60);

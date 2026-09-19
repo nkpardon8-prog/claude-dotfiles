@@ -131,6 +131,19 @@ async function shoot(tab, path, clip) {
   return path;
 }
 
+// Tiles are captured by SCROLLING to the offset and shooting the real viewport - never with
+// captureBeyondViewport. A site with scroll-reveal animations (opacity/transform driven by an
+// IntersectionObserver) paints everything below the fold at opacity 0 under captureBeyondViewport,
+// which silently blinds the vision half of the pass. Scrolling makes the reveal actually fire.
+async function shootViewport(tab, path, y) {
+  await tab.evaluate(`window.scrollTo(0, ${Number(y)}); null`);
+  await sleep(650); // let reveal transitions settle
+  const r = await tab.send('Page.captureScreenshot', { format: 'png' }, 45000);
+  if (!r?.data) throw new Error('Page.captureScreenshot returned no data');
+  writeFileSync(path, Buffer.from(r.data, 'base64'));
+  return path;
+}
+
 function mergeCensus(scans) {
   const kinds = ['phones', 'dates', 'times', 'money'];
   const out = { formats: {}, buttonVariants: [], machineTextByKind: {}, crossScreenInconsistencies: [] };
@@ -248,10 +261,11 @@ async function main() {
             for (let i = 0; i < tileCount; i++) {
               const y = i * vp.height;
               const p = join(OUT, 'screenshots', `${slug}.${vp.name}.tile-${i + 1}.png`);
-              await shoot(tab, p, { x: 0, y, width: vp.width, height: Math.min(vp.height, scan.document.scrollHeight - y) });
+              await shootViewport(tab, p, y);
               rec.tiles.push({ path: p, pageY: y });
             }
             if (Math.ceil(scan.document.scrollHeight / vp.height) > tileCount) rec.tilesTruncatedAt = tileCount;
+            await tab.evaluate('window.scrollTo(0, 0); null');
           }
           scans.push({ route, viewport: vp.name, scan });
           console.log(`  OK ${vp.name} ${route} -> machineText=${scan.summary.machineText} smallTap=${scan.summary.smallTapTargets} headerFlags=${scan.summary.headerFlags} lowContrast=${scan.summary.lowContrast}`);

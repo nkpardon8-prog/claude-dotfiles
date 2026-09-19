@@ -32,6 +32,7 @@ export const FIX_CLASSES = {
   'waterfall': ['parallelize independent fetches (Promise.all)', 'one combined endpoint instead of chained calls', 'prefetch on hover / viewport', 'hoist data fetching to the route level'],
   'cold-start': ['always-on compute / minimum instances', 'keep-warm ping', 'smaller server bundle for faster boot', 'edge runtime for latency-critical routes', 'pooled DB connections (avoid connect-on-boot)'],
   'no-feedback': ['loading skeleton (loading.tsx / Suspense fallback)', 'optimistic UI', 'pending state on the control (useTransition, aria-busy, spinner)', 'prefetch so the next view is instant'],
+  'unattributed': ['confirm the tail is an animation / media / polling widget and not real work (record a performance trace)', 'if it is an entrance animation, shorten it - the settle number is what the user waits through', 'if it is polling, back the interval off or switch to an event push', 'if it is a third-party embed, defer or lazy-mount it'],
 };
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -122,6 +123,16 @@ export function classifyRoute(route) {
     cold = true; flags.push('cold-start');
     evidence.push(`first-hit document wait ${r0(fw)}ms vs warm median ${r0(ww)}ms (+${r0(fw - ww)}ms, ${(fw / Math.max(ww, 1)).toFixed(1)}x)`);
   }
+  // A median over 2 warm samples is their mean, so ONE outlier run silently becomes the
+  // "steady state". Say so instead: an unstable route needs re-measuring, not a fix.
+  const warmWaits = warm.map((x) => x.document?.phases?.wait).filter((v) => num(v) !== null);
+  if (warmWaits.length >= 2) {
+    const lo = Math.min(...warmWaits), hi = Math.max(...warmWaits);
+    if (hi >= 3 * Math.max(lo, 1) && hi - lo >= 300) {
+      flags.push('unstable-measurement');
+      evidence.push(`warm document wait varied ${r0(lo)}ms to ${r0(hi)}ms across ${warmWaits.length} run(s) (${(hi / Math.max(lo, 1)).toFixed(1)}x spread): the warm median ${r0(median(warmWaits))}ms is NOT a reliable steady state - re-run with more --runs before acting on this route`);
+    }
+  }
   const firstBudget = num(first.lcp) ?? num(first.load) ?? 0;
   const slowFirst = firstBudget > THRESHOLDS.routeSlowMs || (num(fw) ?? 0) > THRESHOLDS.docWaitSlowMs;
 
@@ -160,21 +171,35 @@ export function classifyAction(a) {
   }
   let layers = null;
   if (total > 0) {
+    // Only time we can NAME goes into a layer. The tail after the main response is charged to
+    // client-render ONLY up to the long-task time actually observed (and to waterfall only when a
+    // sequential chain is actually present). Whatever is left is `unattributedMs` - it is NOT
+    // silently dumped on client-render, because a 2s tail with zero long tasks is an animation or a
+    // polling widget, not rendering work, and telling a fixing agent otherwise sends it to the wrong file.
     const pre = Math.max(0, num(t.timeToFirstRequestMs) ?? 0);
     const serverWaitMs = main?.phases?.wait ?? main?.waitMs ?? 0;
     const networkMs = main ? phaseNet(main.phases) : 0;
     const after = main && num(main.responseEndMs) !== null ? Math.max(0, total - main.responseEndMs) : (main ? 0 : total);
     const isWaterfall = (a.requests?.sequential?.depth || 0) >= THRESHOLDS.waterfallDepth;
     const lt = num(t.longTaskTotalMs) ?? 0;
-    const waterfallMs = isWaterfall ? Math.max(0, after - lt) : 0;
-    layers = { totalMs: r0(total), serverWaitMs: r0(serverWaitMs), networkMs: r0(networkMs), clientRenderMs: r0((main ? pre : 0) + (isWaterfall ? Math.min(after, lt) : after)), waterfallMs: r0(waterfallMs) };
+    const clientRenderMs = (main ? Math.min(pre, after + pre) : 0) + Math.min(after, lt);
+    const waterfallMs = isWaterfall ? Math.max(0, after - Math.min(after, lt)) : 0;
+    const unattributedMs = Math.max(0, total - serverWaitMs - networkMs - clientRenderMs - waterfallMs);
+    layers = { totalMs: r0(total), serverWaitMs: r0(serverWaitMs), networkMs: r0(networkMs), clientRenderMs: r0(clientRenderMs), waterfallMs: r0(waterfallMs), unattributedMs: r0(unattributedMs) };
   }
   const slow = total > THRESHOLDS.actionSlowMs;
   let dominantLayer = 'none';
   if (a.status === 'BLOCKED') { flags.push('blocked-by-read-only'); evidence.push('a non-GET request was aborted by the read-only wire guard, so server time for this action is NOT measured'); }
-  if (slow && layers) dominantLayer = dominantOf(layers);
-  else if (feelsDead) dominantLayer = 'no-feedback';
-  if (layers) evidence.push(`click -> settle ${layers.totalMs}ms: server-wait ${layers.serverWaitMs}ms, network ${layers.networkMs}ms, client-render ${layers.clientRenderMs}ms, waterfall ${layers.waterfallMs}ms`);
+  if (slow && layers) {
+    const best = dominantOf(layers);
+    const bestMs = best === 'none' ? 0 : layers[{ 'server-wait': 'serverWaitMs', network: 'networkMs', 'client-render': 'clientRenderMs', waterfall: 'waterfallMs' }[best]];
+    if (layers.unattributedMs > bestMs) {
+      dominantLayer = 'unattributed';
+      flags.push('unattributed-tail');
+      evidence.push(`${layers.unattributedMs}ms of the ${layers.totalMs}ms has no server wait, no transfer and no long task behind it - ${a.mutations ?? 0} DOM mutation(s) kept firing, which is the signature of an animation, a media player or a polling widget rather than work the user is waiting on`);
+    } else dominantLayer = best;
+  } else if (feelsDead) dominantLayer = 'no-feedback';
+  if (layers) evidence.push(`click -> settle ${layers.totalMs}ms: server-wait ${layers.serverWaitMs}ms, network ${layers.networkMs}ms, client-render ${layers.clientRenderMs}ms, waterfall ${layers.waterfallMs}ms, unattributed ${layers.unattributedMs}ms`);
   if (main) {
     evidence.push(`main response: ${main.kind} ${main.method} ${shortUrl(main.url)} -> ${main.status}, request fired at +${r0(main.startMs)}ms, wait ${r0(main.waitMs)}ms, download ${r0(main.receiveMs)}ms${main.fromCache ? ' (browser cache)' : ''}`);
     evidence.push(...headerEvidence(main.headers));
@@ -212,6 +237,7 @@ export function buildHypotheses(routes, actions) {
     'waterfall': 'Requests run one after another instead of in parallel',
     'cold-start': 'Cold start: the first hit pays a boot penalty that warm hits do not',
     'no-feedback': 'Feels dead: the click works, but nothing visible happens within 100 ms',
+    'unattributed': 'The slow tail has no server, transfer or long-task cause - the DOM just keeps changing (animation, media or polling)',
   };
   const out = [];
   for (const layer of Object.keys(titles)) {
