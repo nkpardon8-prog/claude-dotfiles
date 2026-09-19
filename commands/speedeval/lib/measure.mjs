@@ -82,7 +82,7 @@ mkdirSync(OUT, { recursive: true });
 // Never clicked / never crawled, in ANY mode: session + account + auth-flow controls.
 const ALWAYS_SKIP = /\b(log[ -]?out|sign[ -]?out|log[ -]?in|sign[ -]?in|sign[ -]?up|register|continue with|delete (my )?account|close account|deactivate|revoke|disconnect|unlink)\b/i;
 // Skipped unless --read-only --include-destructive. Word-boundary, anywhere in the label.
-const DENY = new RegExp(args.deny || String.raw`\b(delete|remove|destroy|erase|discard|clear all|send|resend|cancel|confirm|pay|purchase|buy|checkout|charge|refund|submit|approve|reject|decline|accept|archive|publish|unpublish|block|ban|reset|book|reschedule|void|unsubscribe|invite|save|apply|merge|transfer)\b`, 'i');
+const DENY = new RegExp(args.deny || String.raw`\b(delete|remove|destroy|erase|discard|clear all|send|resend|cancel|confirm|pay|purchase|buy|checkout|charge|refund|submit|approve|reject|decline|accept|archive|publish|unpublish|block|ban|reset|book|reschedule|void|unsubscribe|invite|save|apply|merge|transfer|call|dial|text|sms|notify|email)\b`, 'i');
 const DENY_HREF = /\/(log-?out|sign-?out|signout|logout|delete|remove|destroy|unsubscribe|revoke|api)(\/|$|\?)/i;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
