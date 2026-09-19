@@ -10,6 +10,9 @@
 //   waterfall      several requests that run one after another instead of in parallel
 //   cold-start     first hit much slower than warm hits, warm hits are fine
 //   no-feedback    the work is fast enough, but nothing visible happened within 100 ms of the click
+//   unattributed   time passed with no server wait, no transfer and no long task to blame it on
+//                  (typically continuing DOM mutation: an animation, a carousel, a video player,
+//                  a polling widget). Reported honestly instead of being dumped on client-render.
 //   none           not slow
 
 export const THRESHOLDS = {

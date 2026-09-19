@@ -84,10 +84,13 @@ const CRAWL_EXPR = `(() => {
 
 // Scroll the whole page once (viewport steps, bounded) so lazy images and scroll-reveal sections
 // render before the scan + screenshot, then return to the top. Scrolling is read-only.
+// `documentElement` can be momentarily null while a client-side route swap is in flight, which used
+// to throw and lose the whole route. Re-read the height each step and bail out instead of throwing.
 const SCROLL_PASS_EXPR = `(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const docH = () => { const d = document.documentElement, b = document.body; return Math.max(d ? d.scrollHeight : 0, b ? b.scrollHeight : 0); };
   let steps = 0;
-  for (let y = 0; y < document.documentElement.scrollHeight && steps < 40; y += Math.round(window.innerHeight * 0.8)) { window.scrollTo(0, y); steps++; await wait(120); }
+  for (let y = 0; y < docH() && steps < 40; y += Math.max(1, Math.round(window.innerHeight * 0.8))) { window.scrollTo(0, y); steps++; await wait(120); }
   window.scrollTo(0, 0); await wait(400);
   return steps;
 })()`;
