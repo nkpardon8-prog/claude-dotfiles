@@ -175,7 +175,8 @@ function summarize(r) {
   return {
     url: redact(r.url), method: r.method, type: r.type, kind: kindOf(r), status: r.status, protocol: r.protocol,
     fromCache: r.fromCache, fromServiceWorker: r.fromSW, bytes: r.bytes, failed: r.failed,
-    startEpoch: r1(r.wallMs), endEpoch: r1(endEpoch), durationMs: endEpoch !== null ? r1(endEpoch - r.wallMs) : null,
+    startEpoch: r1(r.wallMs), endEpoch: r1(endEpoch),
+    responseStartEpoch: r.timing && !r.fromCache ? r1(epochOf(r, r.timing.requestTime + r.timing.receiveHeadersEnd / 1000)) : null, durationMs: endEpoch !== null ? r1(endEpoch - r.wallMs) : null,
     phases: phasesOf(r), headers: r.headers,
   };
 }
@@ -240,7 +241,13 @@ async function waitNetworkQuiet(mark, quietMs, maxMs) {
   }, maxMs);
 }
 
-const pageEval = (expr, timeoutMs = 5000) => tab.evaluate(`(() => { ${INPAGE}; return ${expr}; })()`, timeoutMs);
+// Cheap path first: the probe is normally already installed by addScriptToEvaluateOnNewDocument, so
+// do not re-send (and re-compile) its source on every poll - that would itself be main-thread noise.
+async function pageEval(expr, timeoutMs = 5000) {
+  const v = await tab.evaluate(`(() => { if (!window.__se) return '__se_missing__'; return ${expr}; })()`, timeoutMs);
+  if (v !== '__se_missing__') return v;
+  return tab.evaluate(`(() => { ${INPAGE}; return ${expr}; })()`, timeoutMs);
+}
 
 async function gotoBlank() {
   ctx.loadFired = false;
@@ -473,7 +480,7 @@ async function measureClick(route, cand) {
   let main = null;
   if (pick) {
     const p = pick.phases;
-    const headersAt = p ? pick.startEpoch + p.stalled + p.dns + p.connect + p.ssl + p.send + p.wait : null;
+    const headersAt = pick.responseStartEpoch;
     main = {
       kind: pick.kind, url: pick.url, method: pick.method, status: pick.status, fromCache: pick.fromCache, bytes: pick.bytes,
       startMs: r1(pick.startEpoch - t0), waitMs: p ? p.wait : null, receiveMs: p ? p.receive : null,

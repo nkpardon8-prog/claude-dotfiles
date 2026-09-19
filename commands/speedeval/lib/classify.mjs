@@ -96,7 +96,7 @@ export function layersForRun(run) {
 }
 
 export function classifyRoute(route) {
-  const ok = route.runs.filter((x) => !x.error);
+  const ok = route.runs.filter((x) => !x.error || x.document);
   if (!ok.length) return { slow: false, dominantLayer: 'none', layers: null, flags: ['all-runs-failed'], evidence: route.runs.map((x) => x.error).filter(Boolean) };
   const first = ok[0];
   const warm = ok.slice(1);
