@@ -275,6 +275,7 @@ async function main() {
         const rec = { route, slug, viewport: vp.name };
         try {
           await tab.navigate(route);
+          rec.scroller = await tab.evaluate(SCROLLER_EXPR, 20000);
           rec.scrollSteps = await tab.evaluate(SCROLL_PASS_EXPR, 40000);
           const landed = await tab.evaluate('location.href');
           rec.landedUrl = landed;
