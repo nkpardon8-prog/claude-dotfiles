@@ -82,16 +82,55 @@ const CRAWL_EXPR = `(() => {
   return { nav, rest };
 })()`;
 
-// Scroll the whole page once (viewport steps, bounded) so lazy images and scroll-reveal sections
+// --- App-shell inner scroller support -------------------------------------------------------
+// Many app shells (fixed header + fixed bottom tab bar + a scrolling <main>) never scroll the
+// WINDOW: document.scrollHeight equals the viewport height forever, while the real content lives
+// in an inner element with overflow-y:auto. Under the old window-only logic that meant the scroll
+// pass was a no-op, tileCount computed to 1, and the full-page clip captured only the first
+// viewport - so every pixel below the fold was silently unreviewed by vision while the scan JSON
+// (which measures elements at rest, wherever they sit) still reported them. Vision is half the
+// evidence in this mode, so a blinded vision pass is a silent half-audit.
+//
+// SCROLLER_EXPR finds the dominant inner vertical scroller and parks it on window.__uiAuditScroller
+// so every later expression scrolls the SAME element. It returns the effective scroll metrics the
+// driver uses for tiling. Pure reads plus a property write - no clicks, no requests.
+const SCROLLER_EXPR = `(() => {
+  window.__uiAuditScroller = null;
+  const vh = window.innerHeight || 1;
+  let best = null;
+  for (const el of Array.from(document.querySelectorAll('*'))) {
+    const s = getComputedStyle(el);
+    if (!/(auto|scroll)/.test(s.overflowY)) continue;
+    const over = el.scrollHeight - el.clientHeight;
+    if (over < 40) continue;
+    const r = el.getBoundingClientRect();
+    if (r.height < vh * 0.4 || r.width < (window.innerWidth || 1) * 0.5) continue;
+    if (!best || over > best.over) best = { el: el, over: over };
+  }
+  const docH = Math.max(document.documentElement ? document.documentElement.scrollHeight : 0, document.body ? document.body.scrollHeight : 0);
+  const windowOver = docH - vh;
+  if (best && best.over > windowOver) {
+    window.__uiAuditScroller = best.el;
+    const r = best.el.getBoundingClientRect();
+    return { mode: 'inner', scrollHeight: best.el.scrollHeight, clientHeight: best.el.clientHeight, topPx: Math.round(r.top), effectiveHeight: Math.round(best.el.scrollHeight + r.top) };
+  }
+  return { mode: 'window', scrollHeight: docH, clientHeight: vh, topPx: 0, effectiveHeight: docH };
+})()`;
+
+// Scroll the page once (viewport steps, bounded) so lazy images and scroll-reveal sections
 // render before the scan + screenshot, then return to the top. Scrolling is read-only.
 // `documentElement` can be momentarily null while a client-side route swap is in flight, which used
 // to throw and lose the whole route. Re-read the height each step and bail out instead of throwing.
+// Scrolls window.__uiAuditScroller when SCROLLER_EXPR found an app-shell inner scroller.
 const SCROLL_PASS_EXPR = `(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const docH = () => { const d = document.documentElement, b = document.body; return Math.max(d ? d.scrollHeight : 0, b ? b.scrollHeight : 0); };
+  const sc = window.__uiAuditScroller || null;
+  const step = Math.max(1, Math.round((sc ? sc.clientHeight : window.innerHeight) * 0.8));
+  const total = () => (sc ? sc.scrollHeight : Math.max(document.documentElement ? document.documentElement.scrollHeight : 0, document.body ? document.body.scrollHeight : 0));
+  const to = (y) => { if (sc) sc.scrollTop = y; else window.scrollTo(0, y); };
   let steps = 0;
-  for (let y = 0; y < docH() && steps < 40; y += Math.max(1, Math.round(window.innerHeight * 0.8))) { window.scrollTo(0, y); steps++; await wait(120); }
-  window.scrollTo(0, 0); await wait(400);
+  for (let y = 0; y < total() && steps < 40; y += step) { to(y); steps++; await wait(120); }
+  to(0); await wait(400);
   return steps;
 })()`;
 
