@@ -23,8 +23,8 @@ Arguments: `$ARGUMENTS`
 Run exactly this one Bash block. It resolves the session id the same way `/line` does
 (`$CLAUDE_SESSION_ID` then `$CLAUDE_CODE_SESSION_ID`), prints any state this tab saved from a
 previous `/pickup`, and — unless the argument is `cancel` — calls `pickup-time.py` to turn the
-argument (or the cached rate-limit data) into a fire time. `"$ARGUMENTS"` is quoted so a spaced
-argument like `5 pm` survives as one string.
+argument (or the cached rate-limit data) into a fire time. The argument is captured through a
+quoted heredoc and passed as one string, so a spaced argument like `5 pm` survives intact.
 
 ```bash
 set -uo pipefail
