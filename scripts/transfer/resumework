@@ -492,7 +492,7 @@ git_plan_or_restore() {  # $1 = dry|real
   [ "$(git -C "$WT" rev-parse HEAD)" = "$target" ] || die "restored HEAD does not match the sender's"
   [ "$(tx_git_diff_head "$WT" | shasum -a 256 | cut -d' ' -f1)" = "$G_PATCH_SHA" ] \
     || die "restored uncommitted changes do not hash the same as the sender's"
-  GIT_NOTE="HEAD ${G_HEAD:0:12} on ${G_BRANCH:-detached HEAD}; uncommitted changes applied (all staged)${STASHED:+; this Mac's departure edits stashed as $STASHED}"
+  GIT_NOTE="HEAD ${G_HEAD:0:12} on ${G_BRANCH:-detached HEAD}; uncommitted changes applied (all staged)${STASHED:+; this Mac had departure edits, stashed as $STASHED}"
   return 0
 }
 
