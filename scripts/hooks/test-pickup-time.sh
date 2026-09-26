@@ -109,11 +109,14 @@ run 12:30
 check "12:30 at 11 AM -> 12:30 today" "0" "$RC"
 check "12:30 at 11 AM -> 12:30 today (epoch)" "$(epoch 2026 9 26 12 30)" "$(field "$OUT" fire_epoch)"
 
-NOW=$(epoch 2026 9 26 0 0)
+# Deliberately NOT exactly midnight: "today at 00:00" would already be in the
+# past relative to a now of exactly 00:00 and roll to tomorrow, which would
+# make this case indistinguishable from the midnight-crossing case below.
+NOW=$(epoch 2026 9 26 20 0)   # 8:00 PM
 run 12am
-check "12am -> 00:00" "$(epoch 2026 9 26 0 0)" "$(field "$OUT" fire_epoch)"
+check "12am -> 00:00 (next midnight)" "$(epoch 2026 9 27 0 0)" "$(field "$OUT" fire_epoch)"
 run 12pm
-check "12pm -> 12:00" "$(epoch 2026 9 26 12 0)" "$(field "$OUT" fire_epoch)"
+check "12pm -> 12:00 (next noon)" "$(epoch 2026 9 27 12 0)" "$(field "$OUT" fire_epoch)"
 
 # ── Rejected forms (Task 2, bullet 3) ─────────────────────────────────────────
 NOW=$(epoch 2026 9 26 12 0)
