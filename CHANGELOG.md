@@ -2,7 +2,38 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
-## 2026-08-17 (latest) - Six test harnesses were running nowhere and were written down nowhere
+## 2026-09-25 (latest) - `/pickup`: a tab can now resume itself after the usage limit resets
+
+New command: `/pickup [5:40pm | +90m | cancel]`. Before this, hitting the usage limit meant either
+babysitting a clock or losing the thread entirely - closing the tab and coming back later loses the
+conversation's live context, and there was no way to make an idle tab prompt itself. `/pickup` arms
+two session-only one-shot jobs (`CronCreate`, `recurring: false`) for THIS tab: a main resume at the
+computed fire time and a backup 20 minutes later, saving the job ids and a short resume note so
+`/pickup cancel` (or a re-arm) can find and remove them, with a `[pickup`-prefix `CronList` fallback
+for a lost or pre-existing state file.
+
+The time math (`scripts/pickup-time.py`, stdlib-only, `scripts/hooks/test-pickup-time.sh`, 41/0) is
+the part worth testing on its own: it accepts an explicit clock time (`5:40pm`, `17:40`, bare `5:40`
+resolved as whichever of AM/PM is soonest), a relative offset (`+90m`), or - with no argument - reads
+`~/.claude/ratelimit.json` and picks the 5-hour or weekly reset, whichever is the actual blocker
+(`rejected` status or ≥98% utilization). Every field off that cache is untrusted and coerced (a reset
+can be JSON `null`, a status can be `"unknown"`); a reset in the past, a null reset, or data staler
+than 3600s all refuse rather than schedule something wrong. All local-time math builds aware
+datetimes via `.astimezone()` rather than adding `86400` to cross a day, so it stays correct across
+the November DST transition and a Dec-31-to-Jan-1 crossing.
+
+**User decisions baked in, not re-litigated in review:** a busy tab is Esc, then `/pickup <time>` -
+it arms, then continues the interrupted task in the same turn; a weekly-limit resume is scheduled
+anyway, with an honest warning that it dies if the tab or Mac doesn't stay up for days; no
+`caffeinate`, so a sleeping Mac may simply miss the fire time; no explicit-time staggering - an exact
+time fires at exactly that time (space your own tabs out), with only a warning on `:00`/`:30` where
+the scheduler can fire up to 90s early.
+
+**First real-use result: TBD** - the live smoke test (`/pickup +2m`, wait for the `[pickup]` prompt
+to actually fire, then `/pickup cancel`) is a separate follow-up; this entry covers the implementation
+and its test coverage, not a confirmed live fire.
+
+## 2026-08-17 - Six test harnesses were running nowhere and were written down nowhere
 
 `lint-commands.yml` states, above its harness list, that harnesses are "Listed EXPLICITLY rather
 than globbed" so that every deliberate exclusion stays visible. Half of that was true. The repo has
