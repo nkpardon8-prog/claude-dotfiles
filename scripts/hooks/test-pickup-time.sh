@@ -136,16 +136,62 @@ check "+95m -> now + 5700 (not on :00/:30, unchanged)" "$((NOW + 5700))" "$(fiel
 run 1:30pm
 check "typed 1:30pm stays exact (no nudge)" "$(epoch 2026 9 26 13 30)" "$(field "$OUT" fire_epoch)"
 
-# A typed time under the 2-minute lead rolls to its next occurrence - with a warning, never silently.
-NOW=$(epoch 2026 9 26 17 39)
+# A typed time under the 1-minute lead rolls to its next occurrence - with a warning, never silently.
+NOW=$(( $(epoch 2026 9 26 17 39) + 30 ))   # 5:39:30 PM - 30s before 5:40, under the 1-minute lead
 run 5:40pm
 check "5:40pm at 5:39 PM -> tomorrow" "$(epoch 2026 9 27 17 40)" "$(field "$OUT" fire_epoch)"
-case "$(field "$OUT" warnings)" in *"under 2 minutes"*) r=yes ;; *) r=no ;; esac
+case "$(field "$OUT" warnings)" in *"under a minute"*) r=yes ;; *) r=no ;; esac
 check "5:40pm at 5:39 PM warns about the rollover" "yes" "$r"
 NOW=$(epoch 2026 9 26 12 0)
 
 run +1m
-check "+1m -> exit 2 (under lead time)" "2" "$RC"
+check "+1m -> allowed (1-minute minimum lead)" "$((NOW + 60))" "$(field "$OUT" fire_epoch)"
+run +0m
+check "+0m -> exit 2" "2" "$RC"
+
+# ── Natural phrasings (user-requested: "whatever format I put") ───────────────
+# All evaluated at 12:00 PM; each row: <input> <expected LA wall-clock Y M D h m>.
+NOW=$(epoch 2026 9 26 12 0)
+while IFS='|' read -r in y mo d h mi; do
+    run "$in"
+    check "natural '$in'" "$(epoch "$y" "$mo" "$d" "$h" "$mi")" "$(field "$OUT" fire_epoch 2>/dev/null)"
+done <<'ROWS'
+1 min|2026|9|26|12|1
+1min|2026|9|26|12|1
+1 minute|2026|9|26|12|1
+5 minutes|2026|9|26|12|5
+in 5 minutes|2026|9|26|12|5
+5m|2026|9|26|12|5
+5 mins|2026|9|26|12|5
+2 hours|2026|9|26|14|1
+2hrs|2026|9|26|14|1
+an hour|2026|9|26|13|1
+half an hour|2026|9|26|12|31
+1h30m|2026|9|26|13|31
+1 hour 30 minutes|2026|9|26|13|31
+1.5h|2026|9|26|13|31
+90 min from now|2026|9|26|13|31
+5 30 am|2026|9|27|5|30
+5 30 pm|2026|9|26|17|30
+530am|2026|9|27|5|30
+0530|2026|9|27|5|30
+1730|2026|9|26|17|30
+5.30pm|2026|9|26|17|30
+5:30 a.m.|2026|9|27|5|30
+5:30a|2026|9|27|5|30
+5:30 PM|2026|9|26|17|30
+at 5:30pm|2026|9|26|17|30
+5 o'clock|2026|9|26|17|0
+noon|2026|9|27|12|0
+midnight|2026|9|27|0|0
+tomorrow 5:30am|2026|9|27|5|30
+5:30pm tomorrow|2026|9|27|17|30
+today 5:30pm|2026|9|26|17|30
+ROWS
+for bad in banana tomorrow "today 9am" "2 hours tomorrow"; do
+    run "$bad"
+    check "'$bad' is rejected" "2" "$RC"
+done
 
 run +200h
 check "+200h -> exit 2 (over 7 days)" "2" "$RC"
@@ -194,6 +240,12 @@ check "auto: missing file -> exit 2" "2" "$RC"
 mkrl "$NOW" "$FIVE_RESET" 0.2 "allowed" "$SEVEN_RESET" 0.5 "allowed"
 run_auto
 check "auto: low util -> a warning" "1" "$(python3 -c "import json,sys; print(1 if json.loads(sys.argv[1])['warnings'] else 0)" "$OUT")"
+
+mkrl "$NOW" "$FIVE_RESET" 0.9 "allowed" "$SEVEN_RESET" 0.96 "allowed_warning"
+run_auto
+check "auto: weekly 96% -> still 5-hour reset" "$((FIVE_RESET + 180))" "$(field "$OUT" fire_epoch)"
+case "$(field "$OUT" warnings)" in *"weekly limit is 96% used"*) r=yes ;; *) r=no ;; esac
+check "auto: weekly 96% -> warns it may still be blocked" "yes" "$r"
 
 # ── :30 warning, fire time unchanged (Task 2, bullet 6) ───────────────────────
 NOW=$(epoch 2026 9 26 12 0)

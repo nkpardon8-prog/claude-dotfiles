@@ -1,6 +1,6 @@
 ---
-description: "Schedule this session to resume itself when your usage limit resets. /pickup [5:40pm | +90m] arms a one-shot resume for THIS tab (plus a 20-minute-later backup); with no argument it reads the cached rate-limit reset time. Esc out of a running task first, then run /pickup - once armed, it continues that task in the same turn. /pickup cancel removes this tab's jobs."
-argument-hint: "[5:40pm | +90m | cancel]"
+description: "Schedule this session to resume itself when your usage limit resets. /pickup <time> (5:40pm, 5 30 am, 10 min, 2 hours, tomorrow 6am...) arms a one-shot resume for THIS tab (plus a 20-minute-later backup); with no argument it reads the cached rate-limit reset time. Esc out of a running task first, then run /pickup - once armed, it continues that task in the same turn. /pickup cancel removes this tab's jobs."
+argument-hint: "[5:40pm | 5 30 am | 10 min | 2 hours | tomorrow 6am | cancel]"
 allowed-tools: Bash, Write, ToolSearch, CronCreate, CronList, CronDelete
 ---
 
@@ -17,6 +17,12 @@ ToolSearch select:CronCreate,CronList,CronDelete
 Do this once, before the first call to any of the three, in every branch below.
 
 Arguments: `$ARGUMENTS`
+
+Any natural time works - pass it through untouched; `pickup-time.py` does the parsing. Durations:
+`1 min`, `5 minutes`, `in 2 hours`, `1h30m`, `1.5h`, `half an hour`, `+90m`. Clock times: `5:40pm`,
+`5 30 am`, `530am`, `0530` (leading zero = 24-hour), `17:40`, `5.30pm`, `5:30 a.m.`, `noon`,
+`midnight`, `at 5pm`, `tomorrow 5:30am`. A bare `5:40` means the next 5:40, AM or PM. Minimum 1
+minute out, maximum 7 days.
 
 ## Step 1 — resolve the session, read prior state, compute the fire time
 

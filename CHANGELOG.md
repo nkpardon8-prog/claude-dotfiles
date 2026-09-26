@@ -2,6 +2,16 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-09-26 - `/pickup` understands any natural time
+
+`/pickup 5 30 am`, `1 min`, `in 2 hours`, `half an hour`, `1h30m`, `0530`, `noon`, `tomorrow 6am` and
+similar all used to fail with "unrecognized time" - only `5:40pm`-style and `+90m` parsed.
+`pickup-time.py` now normalizes filler (`at`/`in`/`from now`/`a.m.`/`o'clock`/`today`/`tomorrow`)
+before parsing, accepts any duration spelling (including combined `1 hour 30 minutes`), and treats a
+leading-zero compact time (`0530`) as 24-hour. The minimum lead drops from 2 minutes to 1 so
+`/pickup 1 min` works. Auto mode also warns when the WEEKLY limit is 90%+ used, since a 5-hour-reset
+resume then lands while still blocked. Test harness: 83/0, including a 31-row natural-phrasing table.
+
 ## 2026-09-25 (latest) - `/pickup`: a tab can now resume itself after the usage limit resets
 
 New command: `/pickup [5:40pm | +90m | cancel]`. Before this, hitting the usage limit meant either
@@ -12,7 +22,7 @@ computed fire time and a backup 20 minutes later, saving the job ids and a short
 `/pickup cancel` (or a re-arm) can find and remove them, with a `[pickup`-prefix `CronList` fallback
 for a lost or pre-existing state file.
 
-The time math (`scripts/pickup-time.py`, stdlib-only, `scripts/hooks/test-pickup-time.sh`, 45/0) is
+The time math (`scripts/pickup-time.py`, stdlib-only, `scripts/hooks/test-pickup-time.sh`, 83/0) is
 the part worth testing on its own: it accepts an explicit clock time (`5:40pm`, `17:40`, bare `5:40`
 resolved as whichever of AM/PM is soonest), a relative offset (`+90m`), or - with no argument - reads
 `~/.claude/ratelimit.json` and picks the 5-hour or weekly reset, whichever is the actual blocker

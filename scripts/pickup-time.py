@@ -9,6 +9,10 @@ Usage:
     pickup-time.py 17:40      same, 24-hour form
     pickup-time.py +90m       relative: minutes or hours from now
 
+Input is forgiving (see normalize()): "1 min", "in 5 minutes", "2 hours", "1h30m", "1.5h",
+"half an hour", "5 30 am", "530am", "0530", "5.30pm", "5:30 a.m.", "noon", "midnight",
+"at 5:30pm", "tomorrow 5:30am" all resolve.
+
 Env (mainly for the test harness, scripts/hooks/test-pickup-time.sh):
     PICKUP_NOW              epoch seconds to use as "now" instead of time.time()
     PICKUP_RATELIMIT_FILE   path to use instead of ~/.claude/ratelimit.json
@@ -36,14 +40,19 @@ from datetime import datetime, timedelta
 
 BUFFER = 180            # seconds after a reset before firing, so the reset has actually landed
 BACKUP_OFFSET = 1200     # 20 minutes after the main fire time
-MIN_LEAD = 120           # refuse anything closer than this
+MIN_LEAD = 60            # refuse anything closer than this (so "/pickup 1 min" works)
 MAX_OUT = 7 * 86400      # refuse anything further than this
 REFRESH_AFTER = 300      # auto mode refreshes cached data older than this
 HARD_STALE = 3600        # ...but refuses data older than this even after a refresh attempt
 
 STATUS_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
-CLOCK_RE = re.compile(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?")
-RELATIVE_RE = re.compile(r"\+(\d+)\s*(m|min|h|hr)")
+# Clock: "5", "5:40", "5.40", "5 40", each with optional am/pm/a/p; or compact "530", "0530", "1730".
+CLOCK_RE = re.compile(r"(\d{1,2})(?:[:. ](\d{2}))?\s*(am|pm|a|p)?")
+COMPACT_CLOCK_RE = re.compile(r"(\d{1,2})(\d{2})\s*(am|pm|a|p)?")
+# Relative: one or more "<number> <unit>" parts, e.g. "90m", "1h30m", "1.5 hours", "2 hours 15 minutes".
+REL_UNIT = r"(?:h|hr|hrs|hour|hours|m|min|mins|minute|minutes)"
+RELATIVE_RE = re.compile(r"\+?\s*(?:\d+(?:\.\d+)?\s*%s\s*(?:and\s*|,\s*)?)+" % REL_UNIT)
+REL_PART_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(%s)" % REL_UNIT)
 
 warnings = []
 
@@ -196,23 +205,60 @@ def resolve_auto(now):
             "usage is only %d%% - you may not hit the limit before this reset; the resume could fire early"
             % round((rl["five_h_util"] or 0) * 100)
         )
+    if not weekly and (rl["seven_d_util"] or 0) >= 0.9:
+        warn(
+            "weekly limit is %d%% used - if THAT runs out first, this resume lands while still blocked "
+            "(weekly resets %s)"
+            % (round(rl["seven_d_util"] * 100), human(local_dt_from_epoch(rl["seven_d_reset"]), local_dt_from_epoch(now))
+               if rl["seven_d_reset"] else "unknown")
+        )
     return fire, source
 
 
-def resolve_relative(now, m):
-    n = int(m.group(1))
-    unit = m.group(2)
-    mult = 60 if unit in ("m", "min") else 3600
-    return now + n * mult, "relative"
+def normalize(arg):
+    """Lowercase + strip filler so natural phrasings reach the two parsers.
+    Returns (text, day) where day is None, "today" or "tomorrow"."""
+    a = arg.strip().lower()
+    a = a.replace("a.m.", "am").replace("p.m.", "pm").replace("a.m", "am").replace("p.m", "pm")
+    a = re.sub(r"\s+", " ", a)
+    day = None
+    for d in ("tomorrow", "tmrw", "tmr", "today"):
+        if re.search(r"\b%s\b" % d, a):
+            day = "today" if d == "today" else "tomorrow"
+            a = re.sub(r"\b%s\b" % d, " ", a)
+    a = re.sub(r"^(?:at|in|for|after|resume|around|about|by)\b", " ", a.strip()).strip()
+    a = re.sub(r"\b(?:from now|later)\b", " ", a).strip()
+    a = a.replace("half an hour", "30 minutes").replace("half hour", "30 minutes")
+    a = re.sub(r"\b(?:an|a|one) hour\b", "1 hour", a)
+    a = re.sub(r"\b(?:a|one) minute\b", "1 minute", a)
+    a = re.sub(r"\s*o'?clock\b", "", a)
+    a = re.sub(r"\s+", " ", a).strip()
+    return a, day
 
 
-def resolve_clock(now, arg):
-    m = CLOCK_RE.fullmatch(arg)
+def resolve_relative(now, arg):
+    total = 0.0
+    for n, unit in REL_PART_RE.findall(arg):
+        total += float(n) * (3600 if unit.startswith("h") else 60)
+    if total <= 0:
+        err("a relative time must be more than zero")
+    return now + int(round(total)), "relative"
+
+
+def resolve_clock(now, arg, day=None):
+    if arg == "noon":
+        arg = "12:00pm"
+    elif arg == "midnight":
+        arg = "12:00am"
+    m = CLOCK_RE.fullmatch(arg) or COMPACT_CLOCK_RE.fullmatch(arg)
     if not m:
-        err("unrecognized time; try '5:40pm', '17:40', '+90m', or run /pickup with no argument")
+        err("unrecognized time %r; try '5:40pm', '5 30 am', '17:40', '10 min', '2 hours', "
+            "or run /pickup with no argument" % arg)
     h = int(m.group(1))
     mi = int(m.group(2)) if m.group(2) else 0
     ap = m.group(3)
+    if ap in ("a", "p"):
+        ap += "m"
     if mi > 59:
         err("minutes must be 00-59")
 
@@ -220,7 +266,8 @@ def resolve_clock(now, arg):
         if not (1 <= h <= 12):
             err("hour must be 1-12 when am/pm is given")
         hours = [(h % 12) + (12 if ap == "pm" else 0)]
-    elif h > 12 or h == 0:
+    elif h > 12 or h == 0 or (len(m.group(1)) == 2 and m.group(1).startswith("0")):
+        # "0530" / "05:30": a leading zero means 24-hour time, not "5:30 AM or PM"
         if h > 23:
             err("hour must be 0-23")
         hours = [h]
@@ -230,17 +277,18 @@ def resolve_clock(now, arg):
     local_now = local_dt_from_epoch(now)
     today = local_now.date()
     tomorrow = today + timedelta(days=1)
+    days = {"today": (today,), "tomorrow": (tomorrow,)}.get(day, (today, tomorrow))
     candidates = [
         local_dt(d, hh, mi).timestamp()
-        for d in (today, tomorrow)
+        for d in days
         for hh in hours
     ]
     valid = [c for c in candidates if c >= now + MIN_LEAD]
     if not valid:
-        err("that time cannot be scheduled at least 2 minutes out")
+        err("that time has already passed (or is under a minute away)")
     fire = min(valid)
     if any(now < c < now + MIN_LEAD for c in candidates):
-        warn("that time is under 2 minutes away, so it was scheduled for the next occurrence instead")
+        warn("that time is under a minute away, so it was scheduled for the next occurrence instead")
 
     rl = load_rl(now, refresh=False)
     if rl and rl.get("five_h_reset") and (now - rl["fetched_at"] <= HARD_STALE) and fire < rl["five_h_reset"]:
@@ -254,16 +302,18 @@ def resolve_clock(now, arg):
 
 def main():
     now = now_epoch()
-    arg = " ".join(sys.argv[1:]).strip().lower()
+    arg, day = normalize(" ".join(sys.argv[1:]))
 
-    if arg == "":
+    if arg == "" and day is None:
         fire, source = resolve_auto(now)
+    elif arg == "":
+        err("give a time with that, e.g. '/pickup tomorrow 5:30am'")
+    elif RELATIVE_RE.fullmatch(arg) and re.search(r"[a-z]", arg):
+        if day:
+            err("use either a duration ('2 hours') or a day + time ('tomorrow 5:30am'), not both")
+        fire, source = resolve_relative(now, arg)
     else:
-        m = RELATIVE_RE.fullmatch(arg)
-        if m:
-            fire, source = resolve_relative(now, m)
-        else:
-            fire, source = resolve_clock(now, arg)
+        fire, source = resolve_clock(now, arg.lstrip("+"), day)
 
     fire = ceil_to_minute(int(fire))
     # CronCreate fires one-shots on :00/:30 up to 90s EARLY (observed live 2026-09-26: a 12:30 job
@@ -272,7 +322,7 @@ def main():
     if source != "your time" and local_dt_from_epoch(fire).minute in (0, 30):
         fire += 60
     if fire - now < MIN_LEAD:
-        err("too soon - at least 2 minutes out")
+        err("too soon - at least 1 minute out")
     if fire - now > MAX_OUT:
         err("more than 7 days out")
     backup = fire + BACKUP_OFFSET
