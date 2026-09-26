@@ -15,7 +15,7 @@ Cheat sheet of the categories below:
 | [Planning & implementation](#planning--implementation) | `/plan`, `/simple-plan`, `/discussion`, `/script`, `/implement`, `/testplan`, `/mission`, `/afk` |
 | [Investigation & review](#investigation--review) | `/investigate`, `/codex-review`, `/master-review`, `/god-review`, `/god-report`, `/ui-audit`, `/database-audit` |
 | [Git, commits, PRs](#git-commits-prs) | `/commit`, `/checkpoint`, `/prepare-pr`, `/share-fix` |
-| [Sessions & context](#sessions--context) | `/pre-compact`, `/post-compact-resume`, `/document`, `/claudemd`, `/skill-improve`, `/line` |
+| [Sessions & context](#sessions--context) | `/pre-compact`, `/post-compact-resume`, `/document`, `/claudemd`, `/skill-improve`, `/line`, `/pickup` |
 | [Research](#research) | `/research-web`, `/transcribe` |
 | [Credentials & setup](#credentials--setup) | `/load-creds` |
 | [Remote control & GUI](#remote-control--gui) | `/devtools`, `/desktop`, `/macmini`, `/windows` |
