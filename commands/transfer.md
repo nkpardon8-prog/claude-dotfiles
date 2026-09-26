@@ -9,9 +9,12 @@ allowed-tools: Bash, Skill, Read, Write, Edit, CronList, CronDelete, TaskStop
 `/transfer` packs THIS Claude Code chat (or, with `codex <id>`, a closed Codex chat) into one
 encrypted file in iCloud Drive and prints a code like `TX-XXXX-XXXX-XXXX-XXXX`. On the other Mac the
 owner types `resumework <code>` in Terminal and the same chat reopens: verbatim history, `/line` name,
-handoff and mission files, and the git worktree (unpushed commits, uncommitted edits, untracked files).
-Running things (servers, containers, background tasks, scheduled wakes) do NOT move; they are
-written down so the new Mac can restart them.
+handoff and mission files, and the git worktree (unpushed commits, uncommitted edits, and every
+untracked or ignored file, `.env` and credential files included - they travel inside the encrypted
+bundle, so the new Mac works without reloading them). Machine-bound state (locks, liveness and
+sentinel files, pid files, sockets, logins, keychains) and rebuildable folders (`node_modules`,
+`dist`, `.next`, `coverage`) never move. Running things (servers, containers, background tasks,
+scheduled wakes) do NOT move either; they are written down so the new Mac can restart them.
 
 This is a planned move: this Mac must be healthy enough to finish the steps below.
 The heavy lifting lives in tested scripts under `~/.claude-dotfiles/scripts/transfer/`; this file
@@ -89,13 +92,13 @@ docker ps --format '{{.Names}}  {{.Image}}  {{.Status}}' 2>&1 | head -20
 lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $1, $2, $9}' | sort -u | head -30
 lsof -nP -iTCP:9222 -sTCP:LISTEN 2>/dev/null | head -3
 ls -ld "$HOME/.claude/prod.lock" 2>&1
-find "$CWD" -maxdepth 3 \( -name node_modules -prune -o -name '.env*' -print \) 2>/dev/null | grep -v node_modules
 find "$CWD" -maxdepth 3 -type d -name node_modules -prune 2>/dev/null
 ```
 
 Then use the Write tool to create (or overwrite) `<ROOT>/TRANSFER.<SID>.md`. Names only, never a
 secret value. The send script does not edit this file; `resumework` appends a "Restored on this
-Mac" record (what it copied, checksums, how git moved) when the chat arrives on the other Mac.
+Mac" record (what it copied, checksums, how git moved, and - as FYI - the secret-named files that
+travelled and any secret-scan hits, by file and rule only) when the chat arrives on the other Mac.
 
 ```markdown
 # Transfer notes - <SID>
@@ -111,7 +114,7 @@ Written <local date and time> on <this Mac's name> by /transfer.
 - Anything else running: <or "none">
 
 ## Restart checklist on the new Mac
-- [ ] Reload credentials by file NAME (the files were not copied): <each .env / creds file path>; use /load-creds
+- [ ] Logins that live outside the repo (not moved): <e.g. gcloud / ADC, `codex login`, shell-exported keys; or "none">. Repo .env / creds files travel inside the bundle.
 - [ ] `npm ci --legacy-peer-deps` in: <each folder that had node_modules>
 - [ ] `npx prisma generate` from the repo root <if this project uses Prisma>
 - [ ] Docker test database <if needed>; always remove with `docker rm -f -v`
@@ -152,10 +155,13 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-s
 "$HOME/.claude-dotfiles/scripts/transfer/transfer-send.sh" --tool claude --sid "<SID>" --cwd "<CWD>" --seal-after-exit; echo "send_rc=$?"
 ```
 
-It prints `CODE=TX-...` and `LOCATOR=...` (the locator is for logs; do not show it). On a non-zero
+It prints `CODE=TX-...` and `LOCATOR=...` (the locator is for logs; do not show it). A
+"secret scan: ... hit(s)" line on stderr is FYI only - it never stops the send. On a non-zero
 `send_rc` (2 = refused, reason on stderr): tell the owner plainly why, say that nothing was sent and
 the chat is still here, and that if the mission was parked, answering its question here resumes it.
-Do NOT continue to Step 6.
+If the reason is the size cap (untracked and ignored files over 5 GB), re-run the send with
+`--dry-run` (no `--seal-after-exit`), show the owner the 10 largest items it lists, and ask whether
+to send anyway; only on a yes, re-run Step 5 with `--force` added. Do NOT continue to Step 6 otherwise.
 
 ## Step 6 - Hand over (Claude path)
 

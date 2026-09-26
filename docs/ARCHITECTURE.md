@@ -74,7 +74,8 @@ Nothing runs on both Macs at once — the sealer only writes after A's chat has 
 
 **Placement rule:** Claude/Codex session state (transcripts, chains, memory) is re-homed under the
 receiving Mac's own `$HOME`; repo files (the git worktree, handoff, MISSION/TRANSFER notes,
-untracked files) keep the SAME absolute path as on the sending Mac. `scripts/transfer/make-home-alias.sh`
+every untracked and ignored file, secrets included) keep the SAME absolute path as on the sending
+Mac. Machine-bound state and rebuildable heavy dirs never travel. `scripts/transfer/make-home-alias.sh`
 bridges the second case when the two Macs log in as different usernames. Full design:
 `commands/transfer.md`; what each script does: `docs/COMMANDS.md`.
 

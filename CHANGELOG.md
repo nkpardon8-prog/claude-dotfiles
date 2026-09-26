@@ -7,8 +7,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 ### What it does
 `/transfer` moves a live Claude Code chat (or, with `codex <session-id>`, a closed Codex chat) from
 one Mac to another, terminal only. It carries the verbatim transcript, the `/line` name, handoff and
-mission files, and the git worktree - unpushed commits, staged and unstaged edits, untracked files -
-so the chat resumes on the other Mac exactly where it left off, same session id. Running things
+mission files, and the git worktree - unpushed commits, staged and unstaged edits, and every untracked
+or ignored file (`.env` and credential files included) - so the chat resumes on the other Mac exactly
+where it left off, same session id. Running things
 (dev servers, containers, background tasks, scheduled wakes) do not move; they're written into a
 restart checklist instead. Separately, `/line` now also sets the display name Remote Control shows
 for a chat on your other Macs, so the name you see there is the name you message it by.
@@ -23,10 +24,16 @@ execs `claude --resume` (or `codex resume`). One-time per-Mac setup (settings ke
 ### Safety
 - The bundle is one **encrypted, single-use** file in iCloud Drive - the one-time code is both its
   locator and its decryption key, and it's deleted after a successful restore.
-- Secrets are **never copied**: `.env*`, credential and key-shaped files are excluded by name from
-  repo content, and a secret scan runs over everything staged before it's encrypted, refusing the
-  send on any hit. Excluded file names land in the restart checklist so the owner reloads them with
-  `/load-creds`.
+- **Secrets travel inside the encrypted bundle; machine-bound state never does** (owner decision,
+  2026-09-26: "just move everything ... it's my own device"). Every untracked and ignored file under
+  the worktree and repo root moves, `.env` and credential files included, so the other Mac works
+  without reloading them. Never copied: machine-bound state (locks, liveness and sentinel files,
+  pid files, sockets, keychains, Claude/Codex logins, the session registry) and rebuildable heavy
+  dirs (`node_modules`, `dist`, `.next`, `coverage`). A secret scan still runs over what is staged,
+  but only as FYI: hits never refuse the send; they are recorded by file name and rule (never the
+  matched text) in the manifest and listed in the TRANSFER notes on arrival, along with the
+  secret-named files that moved. Sanity caps: 5 GB of untracked + ignored files in total and 1 GB
+  per file (transcripts uncapped); `--force` lifts both, and `--dry-run` shows the 10 largest items.
 - The bundle is written by a detached sealer that waits for Mac A's chat process to actually exit,
   so it is **sealed only after the window closes** - never while two copies could still be live.
 - `/transfer` never runs `git push`; git state moves by `git bundle` + a patch, never by pushing to
@@ -36,7 +43,7 @@ execs `claude --resume` (or `codex resume`). One-time per-Mac setup (settings ke
 ### Tests
 `scripts/tests/transfer-assumptions/` - a hermetic, `$HOME`-sandboxed suite (`run-all.sh`) driving
 the real `transfer-send.sh` and `resumework` as subprocesses: Claude and Codex round-trips, five git
-shapes, secret and heavy-dir exclusions (with a watched-failing negative control), the public-dotfiles-repo
+shapes, machine-bound and heavy-dir exclusions with secrets travelling (with a watched-failing negative control), the public-dotfiles-repo
 guard, wrong-code and tamper detection, cross-username/home-alias refusal and acceptance, memory-file
 merge, handoff refusal, bundle expiry, reverse transfer, a fake-pid sealer proof, separate-worktree
 restore, git back-out on a partial failure, and the installer's app marker. One gated test

@@ -127,8 +127,8 @@ if git diff --cached --name-only 2>/dev/null \
   rm -f "$_lac_out"
 fi
 # 2.6) transfer assumption suite - ONLY when /transfer's engine or its tests are staged.
-#      Same exit vocabulary as 2.5: 1 = a transfer defense broke (public-repo guard, secret
-#      exclusion, tamper refusal...) -> BLOCK; anything else means it could not run -> note only.
+#      Same exit vocabulary as 2.5: 1 = a transfer defense broke (public-repo guard, machine-bound
+#      state exclusion, tamper refusal...) -> BLOCK; anything else means it could not run -> note only.
 if git diff --cached --name-only 2>/dev/null \
      | grep -qE '^scripts/(transfer/|tests/transfer-assumptions/)'; then
   _tx_out="$(mktemp "${TMPDIR:-/tmp}/transfer-precommit.XXXXXX")"

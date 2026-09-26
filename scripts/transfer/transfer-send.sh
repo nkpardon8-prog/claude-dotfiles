@@ -86,6 +86,7 @@ FILE_CAP=1073741824                      # 1 GB per untracked/ignored file unles
 TOTAL_CAP=5368709120                     # 5 GB of untracked + ignored files unless --force
 SCAN_FILE_MAX=5242880                    # files over 5 MB are not content-scanned (FYI scan only)
 [ "$DEV_OK" = 1 ] && [ -n "${TX_TEST_TOTAL_CAP_BYTES:-}" ] && TOTAL_CAP="$TX_TEST_TOTAL_CAP_BYTES"
+[ "$DEV_OK" = 1 ] && [ -n "${TX_TEST_FILE_CAP_BYTES:-}" ] && FILE_CAP="$TX_TEST_FILE_CAP_BYTES"
 HANDOFF_MAX_AGE=1800                     # the handoff must be under 30 minutes old
 SEAL_TIMEOUT=1800
 [ "$DEV_OK" = 1 ] && [ -n "${TX_TEST_SEAL_TIMEOUT:-}" ] && SEAL_TIMEOUT="$TX_TEST_SEAL_TIMEOUT"
@@ -852,6 +853,7 @@ with open(hitsf, "a", encoding="utf-8", errors="surrogateescape") as fo:
 print("%d %d" % (worst, large))
 PY
 ) || res="3 0"
+  case "$res" in [0-9]" "[0-9]*) ;; *) res="3 0" ;; esac
   SCAN_RESULT="${res%% *}"
   SCAN_SKIPPED_LARGE=$(( ${SCAN_SKIPPED_LARGE:-0} + ${res##* } ))
 }
@@ -919,8 +921,11 @@ enforce_scan_policy() {
   local worst="$SCAN_ABS_RESULT" n list="" extra="" hitpart=""
   [ "$SCAN_HOME_RESULT" -gt "$worst" ] && worst="$SCAN_HOME_RESULT"
   n=$(sed '/^$/d' "$SCAN_HITS_F" 2>/dev/null | wc -l | tr -d ' ')
+  case "$n" in "" | *[!0-9]*) n=0 ;; esac
   if [ "$n" -gt 0 ]; then
-    list=$(awk -F'\t' 'NF { printf "%s%s (%s)", (NR > 1 ? ", " : ""), $1, $2 }' "$SCAN_HITS_F")
+    # at most 10 names on this one line; the manifest and the TRANSFER notes carry all of them
+    list=$(awk -F'\t' 'NF && ++k <= 10 { printf "%s%s (%s)", (k > 1 ? ", " : ""), $1, $2 }
+                       END { if (k > 10) printf ", and %d more", k - 10 }' "$SCAN_HITS_F")
     hitpart="; $n hit(s): $list"
   fi
   [ "${SCAN_SKIPPED_LARGE:-0}" -gt 0 ] && extra="; ${SCAN_SKIPPED_LARGE} file(s) over $(human "$SCAN_FILE_MAX") not scanned"

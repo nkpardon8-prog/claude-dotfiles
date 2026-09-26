@@ -83,20 +83,28 @@ survives the round trip. (F) `transfer-send.sh` refuses while a merge is in prog
 present) and writes nothing.
 
 ### 04-exclusions-negative-control.sh
-Auto-compact sentinels, mission-liveness files, `*.lock` (including a `tick.<sid>.lock`-shaped
-name), `prod.lock`, `node_modules`, `.env`, and two `tmp/` secret files
-(`tmp/od-test/creds.local.env`, `tmp/telnyx/x-dev.env`) are all absent from the bundle and absent
-on B after a real restore; the `.env`-shaped names are surfaced in the dry-run's "left behind"
-list. Then, under the dev-only `TX_TEST_DISABLE_EXCLUDES=1` knob, the SAME planted non-secret
-files (auto-compact/mission-liveness/lock/node_modules) DO travel - watched failing once, so the
-guard is proven real rather than vacuous. (The secret-named files are not re-tested with excludes
-disabled: the independent `secret-scan.sh` step would refuse that send outright, which is
-defense-in-depth, not this test's subject.) Part 3: a context reference with a `..` component
-(`tmp/../../outside-3.txt`, which climbs out of the repo) is never followed and is recorded in the
-manifest as `unsafe-reference`, while the ordinary `tmp/` file beside it still ships. Part 4: memory
-notes NAMED like secrets (`reference_od_test_creds.md`) are Claude state and travel - the name
-filter covers repo files only - but their CONTENT is still scanned: a secret-shaped line in one
-refuses the send, naming the file and never echoing the secret.
+What travels and what never does, under the owner's 2026-09-26 "move everything" policy: secrets
+travel inside the encrypted bundle; machine-bound state and rebuildable heavy dirs never do. Part 1
+(defaults): machine-bound state - an auto-compact sentinel, a mission-liveness file, a
+`tick.<sid>.lock`-shaped lock, `prod.lock`, a pid file, a keychain file and a live unix socket - and
+heavy dirs (`node_modules` at the top and nested, `dist`, `.next`, `coverage`) are all absent from
+the bundle and absent on B after a real restore. Everything else untracked or ignored DOES travel
+and lands byte-identical on B: `.env`, `tmp/od-test/creds.local.env`, `tmp/telnyx/x-dev.env`, a
+30-day-old ignored `tmp/` file (mtime kept), an ignored file outside `tmp/`, an untracked
+`yarn.lock` (package-manager lockfiles are content, not runtime locks). The secret-named files are
+listed in the dry-run and in the manifest's `secret_named_files_moved`, `excluded_secret_names` is
+empty, and B's TRANSFER notes list them as FYI. Another chat's sid-keyed handoff/TRANSFER files
+(`other-chat-state`) and a nested repo stay behind. Part 2: under the dev-only
+`TX_TEST_DISABLE_EXCLUDES=1` knob the SAME machine-bound + heavy set DOES travel - watched failing,
+so the guard is proven real rather than vacuous. Part 3: symlinks inside the repo that point
+outside it (a file and a directory) are never followed and are recorded as skipped (`symlink`),
+while the ordinary `tmp/` file beside them ships. Part 4: memory notes NAMED like secrets
+(`reference_od_test_creds.md`) travel; secret-shaped CONTENT in a memory note and in a repo file no
+longer refuses - the send succeeds, the manifest records each hit as file + rule
+(`secret_scan_hits`, status `hits`) and never the matched text, both files travel as-is, and
+`resumework` lists the hits in `TRANSFER.<sid>.md` as FYI. Part 5: the sanity caps - a file over the
+per-file cap (`TX_TEST_FILE_CAP_BYTES`) is left out and listed by the dry-run, `--force` takes it; a
+total over the cap (`TX_TEST_TOTAL_CAP_BYTES`) refuses, `--force` sends.
 
 ### 05-public-repo-guard.sh
 Nothing transfer-related may ever land under the public dotfiles repo: `transfer-send.sh` refuses
@@ -199,18 +207,19 @@ a human. If this ever fails: stop and re-plan - the whole design rests on it.
 
 ## Dev-only test hooks (honored ONLY under `TRANSFER_TESTS_ALLOW_DEV=true`)
 
-- `TX_TEST_DISABLE_EXCLUDES=1` - `transfer-send.sh` skips its never-copy/heavy-dir/secret-name
-  filters, for test 04's negative control.
+- `TX_TEST_DISABLE_EXCLUDES=1` - `transfer-send.sh` skips its machine-bound-state and heavy-dir
+  filters (and walks heavy dirs), for test 04's negative control.
 - `TX_SEAL_PID=<pid>` - `--seal-after-exit` waits on this pid instead of the sender's own
   registered claude process, for test 12.
-- `TX_TEST_SEAL_TIMEOUT`, `TX_TEST_TOTAL_CAP_BYTES` - override the sealer timeout / the
-  untracked+context size cap for faster or more targeted tests.
+- `TX_TEST_SEAL_TIMEOUT`, `TX_TEST_TOTAL_CAP_BYTES`, `TX_TEST_FILE_CAP_BYTES` - override the sealer
+  timeout / the total untracked+ignored size cap (5 GB) / the per-file cap (1 GB), for faster or
+  more targeted tests.
 - `TX_TEST_ALIAS_HOMES_BASE=<dir>` - `tx_alias_homes` (transfer-lib.sh) looks for verified home
   aliases in `<dir>/*` instead of `/Users`, for tests 07 and 15 (tests cannot write `/Users`).
 
 None of these are reachable without the dev gate, so a stray environment variable can never make a
-real transfer carry secrets, skip machine-bound-state exclusion, seal against the wrong process, or
-treat an arbitrary directory as a verified home alias.
+real transfer carry machine-bound state or heavy dirs, change its caps, seal against the wrong
+process, or treat an arbitrary directory as a verified home alias.
 
 ## Hermetic-fixture conventions
 
