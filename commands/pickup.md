@@ -41,7 +41,14 @@ echo "NOTE_FILE=$NOTE"
 echo "PRIOR_STATE:"
 if [ -f "$STATE" ]; then cat "$STATE"; else echo "none"; fi
 
-ARG_NORM="$(printf '%s' "${ARGUMENTS:-}" | tr '[:upper:]' '[:lower:]' | sed -e 's/^ *//' -e 's/ *$//')"
+# Claude Code substitutes the literal token $ARGUMENTS into this file before the shell sees it;
+# a shell-style ${ARGUMENTS...} is NOT substituted and would always read empty (= silent auto mode).
+# The quoted heredoc keeps any quotes or $ in the argument inert.
+ARG="$(cat <<'PICKUP_ARG'
+$ARGUMENTS
+PICKUP_ARG
+)"
+ARG_NORM="$(printf '%s' "$ARG" | tr '[:upper:]' '[:lower:]' | sed -e 's/^ *//' -e 's/ *$//')"
 
 if [ "$ARG_NORM" = "cancel" ]; then
   echo "MODE=cancel"
