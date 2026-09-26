@@ -29,9 +29,14 @@ anyway, with an honest warning that it dies if the tab or Mac doesn't stay up fo
 time fires at exactly that time (space your own tabs out), with only a warning on `:00`/`:30` where
 the scheduler can fire up to 90s early.
 
-**First real-use result: TBD** - the live smoke test (`/pickup +2m`, wait for the `[pickup]` prompt
-to actually fire, then `/pickup cancel`) is a separate follow-up; this entry covers the implementation
-and its test coverage, not a confirmed live fire.
+**Live smoke test (2026-09-26): PASS, with one finding.** `/pickup +2m` armed a 12:30 AM job; the
+`[pickup]` prompt fired on its own into the idle tab and resumed the work. It arrived at 12:28:42 -
+78s EARLY, the documented `:00`/`:30` jitter - so computed times (auto, `+Nm`) now step one minute
+off those marks; typed times stay exact by user choice. Cancel-by-saved-id removed the backup and
+`CronList` came back empty. The same test caught `${ARGUMENTS:-}` never being substituted (every
+`/pickup <time>` silently ran auto mode); the Bash block now captures `$ARGUMENTS` via a quoted
+heredoc. **Still unproven:** firing after a real usage-limit error, and across Mac sleep - record
+the first real-use result here.
 
 ## 2026-08-17 - Six test harnesses were running nowhere and were written down nowhere
 
