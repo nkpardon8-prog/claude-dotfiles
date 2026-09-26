@@ -25,6 +25,16 @@ cause, 5m vs 1h cache-write split, loop-tick gap buckets).
   session, parses the payload with one python call instead of two, and is registered with a 15s
   timeout (was 5s).
 
+**Verified (2026-09-26):** smoke subagents spawned after the change ran `review-worker` on
+`claude-opus-5-5` and `criticer` on `claude-sonnet-5` (exact IDs honored, not dropped), and every
+subagent cache write was `ephemeral_1h` (0 tokens at 5m) - the TTL key applied without a restart.
+
+**Baseline before the change** (dental repo, `token-usage-report.py --days 3`, approximate relative
+weights): cache reads 56.6% / cache writes 35.4% / output 8.0% of spend; implementers 72.1% (avg peak
+context 477k), general-purpose lenses 15.6%, main 8.1%; subagent cache writes 99.4% on the 5m TTL;
+subagent re-caches after >5 min idle = 20.7% of spend. Re-run the same command after a few days of
+work to compare.
+
 ## 2026-09-26 - `/transfer`: move a live chat between Macs; `/line` names across Macs
 
 ### What it does
