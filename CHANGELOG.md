@@ -12,7 +12,7 @@ computed fire time and a backup 20 minutes later, saving the job ids and a short
 `/pickup cancel` (or a re-arm) can find and remove them, with a `[pickup`-prefix `CronList` fallback
 for a lost or pre-existing state file.
 
-The time math (`scripts/pickup-time.py`, stdlib-only, `scripts/hooks/test-pickup-time.sh`, 41/0) is
+The time math (`scripts/pickup-time.py`, stdlib-only, `scripts/hooks/test-pickup-time.sh`, 44/0) is
 the part worth testing on its own: it accepts an explicit clock time (`5:40pm`, `17:40`, bare `5:40`
 resolved as whichever of AM/PM is soonest), a relative offset (`+90m`), or - with no argument - reads
 `~/.claude/ratelimit.json` and picks the 5-hour or weekly reset, whichever is the actual blocker

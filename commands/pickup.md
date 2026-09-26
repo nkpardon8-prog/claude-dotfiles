@@ -69,7 +69,7 @@ collide with the first. Say so in the report; don't block on it.
 
 ## Step 2 — cancel path (`MODE=cancel`)
 
-1. If `PRIOR_STATE` was not `none`, parse its `ids` array and call `CronDelete` on each.
+1. If `PRIOR_STATE` was not `none`, parse its `ids` array and call `CronDelete` on each (an id that already fired returns an error - ignore it and do not count it).
 2. Fallback, always run: `CronList`, then `CronDelete` any job whose `prompt` starts with the
    literal text `[pickup` — this catches jobs from a state file that was lost, renamed, or never
    written (e.g. an interrupted prior `/pickup`).
@@ -110,8 +110,8 @@ Otherwise `PICKUP_TIME_OUT` is a JSON object:
    > be older than your last turn; live context wins): <note>. Resume ONLY if your last turn was
    > cut off partway through work; if it finished normally or ended waiting on the user (a
    > question, an approval, a choice), reply "pickup: nothing to resume" and stop. Either way,
-   > first CronDelete any remaining job whose prompt starts "[pickup backup]" and delete <note>
-   > and <state>.`
+   > after reading <note>: CronDelete any remaining job whose prompt starts "[pickup backup]"
+   > (load CronList/CronDelete via ToolSearch if needed), then delete <note> and <state>.`
 
    BACKUP (`CronCreate(cron=<backup_cron from JSON>, recurring=false, prompt=...)`) → save as `id2`:
    > `[pickup backup] If a [pickup] resume already ran in this session and got a normal response,
@@ -128,6 +128,7 @@ Otherwise `PICKUP_TIME_OUT` is a JSON object:
    ```
    Armed: resumes at <fire_human> (backup <backup_human>). Source: <source>.
    Note: <NOTE_FILE>
+   Heads up: keep this tab open; a sleeping Mac may miss the time.
    ```
 6. **Continue the interrupted task.** If the turn immediately before this `/pickup` call was
    interrupted mid-task (you were cut off — by Esc, by the usage limit, or otherwise — while doing

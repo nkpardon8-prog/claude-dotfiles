@@ -33,9 +33,9 @@ The rate-limit cache (`~/.claude/ratelimit.json`) is refreshed in the background
 
 ## The `ratelimit.json` contract
 
-`refresh-ratelimit.sh` writes the file, `statusline.sh` reads it. The key set is a contract between
-the two - **rename a key in one and you must change the other in the same commit**, or the status
-line silently loses a field.
+`refresh-ratelimit.sh` writes the file; `statusline.sh` and `pickup-time.py` (the `/pickup` auto
+mode) read it. The key set is a contract between all three - **rename a key in one and you must
+change the others in the same commit**, or a reader silently loses a field.
 
 | Key | Type | Written from | Empty/absent renders as |
 |---|---|---|---|
@@ -45,7 +45,7 @@ line silently loses a field.
 | `five_h_status` | token `[A-Za-z0-9_-]{1,32}` | `…-5h-status` | no `rate_limited` coloring |
 | `seven_d_reset` | int (epoch) or `null` | `…-7d-reset` | `wk→—` |
 | `seven_d_util` | float | `…-7d-utilization` | `— wk` |
-| `seven_d_status` | token | `…-7d-status` | (unused today) |
+| `seven_d_status` | token | `…-7d-status` | not rendered; `pickup-time.py` treats `rejected` as "weekly limit is the blocker" |
 
 If either utilization header is missing or non-numeric, the refresher writes **nothing** and exits
 non-zero, leaving the previous cache in place rather than replacing it with junk.

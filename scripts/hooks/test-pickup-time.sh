@@ -136,6 +136,14 @@ check "+95m -> now + 5700 (not on :00/:30, unchanged)" "$((NOW + 5700))" "$(fiel
 run 1:30pm
 check "typed 1:30pm stays exact (no nudge)" "$(epoch 2026 9 26 13 30)" "$(field "$OUT" fire_epoch)"
 
+# A typed time under the 2-minute lead rolls to its next occurrence - with a warning, never silently.
+NOW=$(epoch 2026 9 26 17 39)
+run 5:40pm
+check "5:40pm at 5:39 PM -> tomorrow" "$(epoch 2026 9 27 17 40)" "$(field "$OUT" fire_epoch)"
+case "$(field "$OUT" warnings)" in *"under 2 minutes"*) r=yes ;; *) r=no ;; esac
+check "5:40pm at 5:39 PM warns about the rollover" "yes" "$r"
+NOW=$(epoch 2026 9 26 12 0)
+
 run +1m
 check "+1m -> exit 2 (under lead time)" "2" "$RC"
 

@@ -26,6 +26,7 @@ moment) so DST transitions resolve correctly. Never add 86400 to cross a day
 is what stays correct across DST changes and month/year boundaries.
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -79,9 +80,10 @@ def coerce_int(v):
 
 def coerce_float(v):
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return None
+    return f if math.isfinite(f) else None  # NaN/Infinity would crash round() later
 
 
 def coerce_status(v):
@@ -237,6 +239,8 @@ def resolve_clock(now, arg):
     if not valid:
         err("that time cannot be scheduled at least 2 minutes out")
     fire = min(valid)
+    if any(now < c < now + MIN_LEAD for c in candidates):
+        warn("that time is under 2 minutes away, so it was scheduled for the next occurrence instead")
 
     rl = load_rl(now, refresh=False)
     if rl and rl.get("five_h_reset") and (now - rl["fetched_at"] <= HARD_STALE) and fire < rl["five_h_reset"]:
