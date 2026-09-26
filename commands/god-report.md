@@ -95,8 +95,7 @@ IF $PRINCIPLE is non-empty:
   Read the principle file content from:
     ~/.claude-dotfiles/commands/god-review/principles/<PRINCIPLE>.md
   Spawn ONE Agent tool call:
-    subagent_type: "general-purpose"
-    model: "opus"
+    subagent_type: "review-worker"   # review-worker (Opus 5.5, medium effort)
     prompt: [content of the principle file] + "\n\nScope: " + ($SCOPE if non-empty, else "full repo")
   After the agent returns, persist its result with the shared helper:
     source ~/.claude-dotfiles/commands/god-review/lib/env-helpers.sh

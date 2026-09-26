@@ -7,7 +7,7 @@ expected_subagents: 35
 
 # /god-review — Multi-Model Codebase Audit
 
-You are a senior engineering lead conducting a ground-up, multi-model codebase audit. You orchestrate parallel agents across two model families (Claude Opus 4.7 + Codex CLI), apply 24 principle lenses plus 9 broad reviewers (3 Claude + 6 Codex; 10 with `--ruthless`), snapshot the repo before any mutation, and enforce hard gates on irreversible changes.
+You are a senior engineering lead conducting a ground-up, multi-model codebase audit. You orchestrate parallel agents across two model families (Claude Opus 5.5 via review-worker + Codex CLI), apply 24 principle lenses plus 9 broad reviewers (3 Claude + 6 Codex; 10 with `--ruthless`), snapshot the repo before any mutation, and enforce hard gates on irreversible changes.
 
 This command has 4 phases:
 - **Phase 0**: Context Map — stack fingerprint, architecture, hot zones, baseline gates
@@ -162,8 +162,7 @@ IF $PRINCIPLE is non-empty:
     ~/.claude-dotfiles/commands/god-review/principles/<PRINCIPLE>.md
   If the file does not exist, abort: "god-review: unknown principle '<PRINCIPLE>'. Available principles: single-pattern, reuse, clarity, scope, antipatterns, documentation, circular-deps, architecture-backend, architecture-frontend, self-contained, tanstack-query, test-deletion, ci-yaml-tampering, hallucinated-imports, secret-leak, prompt-injection, dead-code-conservatism, perf-heuristic, perf-benchmark, dead-end-detector, info-loss-detector, contradiction-detector, gap-detector, database-audit"
   Spawn ONE Agent tool call:
-    subagent_type: "general-purpose"
-    model: "opus"
+    subagent_type: "review-worker"   # review-worker (Opus 5.5, medium effort)
     prompt: [content of the principle file] + "\n\nScope: " + ($SCOPE if non-empty, else "full repo")
     Note: pass --online flag context if $ONLINE=true (for hallucinated-imports)
   Exit after the agent completes.
@@ -312,9 +311,9 @@ fi
 write_env
 ```
 
-Now spawn 1 Claude Opus 4.7 agent to synthesize the bash output above into a structured context package:
+Now spawn 1 Claude review-worker (Opus 5.5, medium effort) agent to synthesize the bash output above into a structured context package:
 
-Spawn ONE Agent tool call with `subagent_type: "general-purpose"`, `model: "opus"`, extended thinking enabled. Prompt:
+Spawn ONE Agent tool call with `subagent_type: "review-worker"` (review-worker (Opus 5.5, medium effort)). Prompt:
 
 ```
 You are building a shared context package for a multi-model codebase audit.
@@ -580,8 +579,7 @@ Each finding is tagged at collection time with source:
 **Layer A — 3 Claude broad reviewers** (always-on, full-codebase generalists):
 
 For each of the three Claude broad reviewers, spawn an Agent tool call:
-- `subagent_type: "general-purpose"`
-- `model: "opus"` with extended thinking enabled (high reasoning effort)
+- `subagent_type: "review-worker"` (review-worker (Opus 5.5, medium effort))
 - Prompt loaded from `~/.claude-dotfiles/commands/god-review/broad-reviewers/<name>.md`
 - Scope passed as `$SCOPE` (or full repo if empty)
 - Context package path: `tmp/god-review/context-package.md`
@@ -626,8 +624,7 @@ fi
 **Orchestrator instruction (executed in the same parallel batch as the 3 standard
 broad-Claude reviewers when `RUTHLESS=true`):** spawn ONE additional Agent
 tool call alongside the existing 3:
-- `subagent_type: "general-purpose"`
-- `model: "opus"` (extended thinking, high reasoning effort)
+- `subagent_type: "review-worker"` (review-worker (Opus 5.5, medium effort))
 - prompt: `$(cat /tmp/god-review-ruthless-prompt.txt)\n\nScope: $SCOPE\nContext package: $WORKDIR/tmp/god-review/context-package.md`
 
 After this Agent returns, capture its result text and call:
@@ -706,8 +703,7 @@ mkdir -p "$WORKDIR/tmp/god-review/findings"
 **Layer B — Claude principle agents** (1 per active principle):
 
 For each principle in ACTIVE_PRINCIPLES, spawn one Agent tool call:
-- `subagent_type: "general-purpose"`
-- `model: "opus"` with extended thinking enabled
+- `subagent_type: "review-worker"` (review-worker (Opus 5.5, medium effort))
 - Prompt loaded from `~/.claude-dotfiles/commands/god-review/principles/<principle-name>.md`
 - Include path to context package: `tmp/god-review/context-package.md`
 - Scope: `$SCOPE` if set, else full repo
@@ -859,7 +855,7 @@ if [ "$SKIP_CODEX_VALIDATION" = "true" ]; then
 fi
 # Use --cd "$WORKDIR" (NOT -C) per codex-invoke.sh convention
 
-CLAUDE_FINDINGS_PROMPT="You are validating a list of code-review findings produced by Claude Opus 4.7.
+CLAUDE_FINDINGS_PROMPT="You are validating a list of code-review findings produced by Claude Opus 5.5.
 For each finding below, respond with: CONFIRMED / FALSE_POSITIVE / UNCERTAIN and a one-line reason.
 Format: FINDING_ID: STATUS — reason
 
@@ -1461,8 +1457,8 @@ write_env PRE_FIX_REFTYPE "$PRE_FIX_REFTYPE"
 ```
 
 **(ii) Spawn ONE Architect Agent tool call.** You (the orchestrator) issue
-this Agent call with `subagent_type: "general-purpose"`, `model: "opus"`,
-extended thinking enabled.
+this Agent call with `subagent_type: "review-worker"`
+(review-worker (Opus 5.5, medium effort)).
 
 **Important — disk-based output capture:** The Architect MUST write its JSON
 output to a file path you provide (NOT return it as inline text). This avoids
@@ -1596,8 +1592,8 @@ fi
 echo "Architect output validated for $FINDING_ID. Spawning Editor."
 ```
 
-**(iv) Spawn ONE Editor Agent tool call.** Use `subagent_type: "general-purpose"`,
-`model: "opus"`, low reasoning effort. Prompt is the contents of
+**(iv) Spawn ONE Editor Agent tool call.** Use `subagent_type: "review-worker"`
+(review-worker (Opus 5.5, medium effort)). Prompt is the contents of
 `lib/editor-agent.md` followed by:
 
 ```
@@ -1829,13 +1825,13 @@ paragraphs without these structured fields.
 If you find no NEW issues, output exactly the single line: `NO_NEW_FINDINGS`
 ```
 
-- **Verifier 1**: `opus`, `subagent_type: general-purpose`, prompt
+- **Verifier 1**: `subagent_type: "review-worker"` (review-worker (Opus 5.5, medium effort)), prompt
   = "Re-review this diff and surrounding code. List any NEW issues. Do NOT
   re-flag findings already in `state.json.human_gate_emitted` or in
   `tmp/god-review/known-deferred-session.txt`. Diff:
   `$(git diff $PRE_FIX_BASE_REF..HEAD)`. Prior findings list: ..."
   + the OUTPUT FORMAT block above appended verbatim.
-- **Verifier 2**: same shape but model `opus` with different focus
+- **Verifier 2**: same shape (`review-worker`) with different focus
   prompt (correctness vs. architecture). + OUTPUT FORMAT block appended.
 - **Verifier 3**: Codex via `bash $WORKDIR/.claude-dotfiles/commands/god-review/lib/codex-invoke.sh`
   (only if `$CODEX_AVAILABLE=true`). + OUTPUT FORMAT block appended.

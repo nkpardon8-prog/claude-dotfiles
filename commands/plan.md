@@ -87,7 +87,7 @@ Save as: `./tmp/ready-plans/YYYY-MM-DD-description.md`
 
 After saving the plan, enter an iterative review cycle. **Do not skip this step.** Repeat until the user confirms the plan is ready.
 
-**Review-round defaults:** substantial plans default to 4-6 total review rounds to diminishing returns. Each round runs FOUR lanes in parallel, each attacking a different failure class: one Claude breadth reviewer, one Claude `criticer` (value), one Codex executability pass at xhigh, one Codex value-critic pass at high (both via codex-exec.sh; graceful degrade when codex is unavailable or refuses — mark the degrade in the presented review, never drop it silently).
+**Review-round defaults:** substantial plans default to 4-6 total review rounds to diminishing returns. Each round runs FOUR lanes in parallel, each attacking a different failure class: one Claude breadth reviewer, one Claude `criticer` (value), one Codex executability pass at xhigh, one Codex value-critic pass at high (both via codex-exec.sh; graceful degrade when codex is unavailable or refuses — mark the degrade in the presented review, never drop it silently). When two or more lanes return, an anonymized meta-review runs as a Codex pass (`gpt-6-sol` at xhigh, backgrounded; skipped silently on failure).
 
 ### Loop:
 
@@ -188,39 +188,46 @@ CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_B" "$OU
      `($(date +%s) % 2) == 0` keep source order, else reverse it. The meta-agent never learns which
      letter was Claude and which was Codex, so it cannot defer to a model instead of to an argument.
 
-   - Spawn ONE meta-reviewer, passing `model: "opus"` explicitly. This lane judges other reviewers'
-     judgment, which is the hardest read in the loop:
+   - Run ONE meta-reviewer as a **Codex pass** (`gpt-6-sol` at `xhigh`). This lane judges other
+     reviewers' judgment, which is the hardest read in the loop, and a model outside the Claude
+     lanes it is judging is the least likely to share their blind spots. Write the prompt to a temp
+     file, then launch `codex-exec.sh` in the FOREGROUND of a Bash call made with
+     `run_in_background: true` (never `nohup`/`&` - a guard hook rejects detached codex; and a plain
+     foreground Bash call caps at 10 min while `codex-exec.sh` may run up to 30). When that
+     background call completes, read `"$OUT_M"` and `"$OUT_M.status"`:
 
-   ```
-   Agent tool:
-     subagent_type: "plan-reviewer"
-     model: "opus"
-     prompt: "Independent reviewers reviewed the plan at [path], attacking different
-              failure classes. Their full anonymized outputs are below as Review A,
-              Review B (and Review C when present).
-              Answer:
-              (a) Which review raises the strongest concern, and why?
-              (b) Which review has the biggest blind spot, and what is it?
-              (c) Where do the reviews DISAGREE, and which side is right?
-              (d) What did ALL of them miss that matters for this plan?
-              Reference reviews by their wrapper letter and individual findings by
-              the reviewer's own numbering (e.g. 'Review A finding #3').
-              Do NOT simply average them - name the disagreements, do not smooth them.
-              Keep under 250 words.
+```bash
+PROMPT_M=$(mktemp "${TMPDIR:-/tmp}/plan-codex-meta.XXXXXX")
+OUT_M=$(mktemp "${TMPDIR:-/tmp}/plan-codex-meta-out.XXXXXX")
+cat > "$PROMPT_M" <<'EOF'
+Independent reviewers reviewed the plan at [path], attacking different failure classes.
+Their full anonymized outputs are below as Review A, Review B (and Review C when present).
+Answer:
+(a) Which review raises the strongest concern, and why?
+(b) Which review has the biggest blind spot, and what is it?
+(c) Where do the reviews DISAGREE, and which side is right?
+(d) What did ALL of them miss that matters for this plan?
+Reference reviews by their wrapper letter and individual findings by the reviewer's own
+numbering (e.g. 'Review A finding #3'). Do NOT simply average them - name the
+disagreements, do not smooth them. Keep under 250 words.
 
-              Review A:
-              [paste one lane's full numbered findings here]
+Review A:
+[paste one lane's full numbered findings here]
 
-              Review B:
-              [paste another lane's full numbered findings here]
+Review B:
+[paste another lane's full numbered findings here]
 
-              Review C (omit this block entirely if only two lanes returned):
-              [paste the third lane's full numbered findings here]"
-   ```
+Review C (omit this block entirely if only two lanes returned):
+[paste the third lane's full numbered findings here]
+EOF
+
+# Bash tool call with run_in_background: true - this line runs in its FOREGROUND:
+CODEX_MODEL=gpt-6-sol CODEX_EFFORT=xhigh bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_M" "$OUT_M" "$(pwd)"
+```
 
    The `[path]` placeholder uses the same literal-placeholder convention as the two parallel reviewer prompts above — the orchestrator substitutes the actual saved-plan path at runtime.
 
-   - If the meta-pass agent fails or times out: skip silently and proceed to step 3 with only the merged review (preserves existing behavior).
+   - If `"$OUT_M.status"` is not `ok` (`unavailable` / `timeout` / `nonzero-<rc>`), Codex refused, or `"$OUT_M"` is empty: skip silently and proceed to step 3 with only the merged review (preserves existing behavior).
 
    - The meta-pass output is rendered to the user inside step 3 (Present the merged review summary) as a single bold-prose section placed BEFORE existing sub-item a) Plan Summary. Format as: `**Meta-pass:** [the meta-agent's response, lightly formatted]`. Use bold prose, NOT a level-2 H2 heading — H2 inside a numbered list item conflicts with the file's H2 hierarchy.
 

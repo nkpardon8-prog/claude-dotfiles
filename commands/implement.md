@@ -35,7 +35,7 @@ Review the plan to understand: implementation phases, task checklist, technical 
 
 1. **Identify Independent Units**: Group related tasks that can be completed together
 2. **Respect Dependencies**: Schema before API, backend before frontend, types before implementations
-3. **Chunk Size**: 2-5 related tasks with clear boundaries
+3. **Chunk Size**: 1-3 tightly related tasks with clear boundaries; prefer more, smaller chunks (small-context implementers measured ~4x cheaper per turn than ones that grow past ~600k)
 
 ```
 Phase 1: Foundation (Sequential) → Schema, types
@@ -80,25 +80,24 @@ If the glob matches nothing, there are no assumption gates for this plan — rec
 
 Use the `Agent` tool with `subagent_type: "implementer"` for each chunk.
 
-**CLASSIFY EACH CHUNK BEFORE DISPATCH - you, not the worker, choose the model.** There are three
-classes and they are NOT interchangeable:
+**CLASSIFY EACH CHUNK BEFORE DISPATCH - you, not the worker, choose the lane.** There are two
+classes:
 
 | Class | Route | Signal |
 |---|---|---|
-| hard / ambiguous / cross-layer / architecture-sensitive / high-risk | **`model: "opus"`** (the definition's default - pass nothing) | touches a contract, a schema, auth, or more than one layer |
-| normal bounded chunk with a strong reviewed plan | **`model: "sonnet"`** on the call | file set is known, the plan already answered the design questions |
+| everything with judgment in it (the default) | **`implementer` definition** - pass no `model:` | any chunk not in the row below |
 | isolated, mechanical, fully specified | **Codex** via `scripts/codex-build-chunk.sh` | pure mechanical edit, no judgment left in it |
 
-`agents/implementer.md` stays `opus` deliberately, as the FAIL-SAFE: a chunk you forget to classify
-runs at full capacity rather than silently dropping to the cheap lane. Never set the cheap model in
-the definition - a frontmatter value is a GLOBAL route, which is exactly what "do not globally route
-every implementer to one model" forbids. The class decision belongs on the call, every time.
+There is no cheap Claude lane. Every implementer chunk runs at what `agents/implementer.md` sets
+(`claude-opus-5-5`, `effort: medium`) - never pass a `model:` override on the call. FAIL-SAFE: a chunk
+you forget to classify lands in the definition's lane, not Codex. The cost lever is chunk SIZE (Step 3:
+1-3 tasks) and prompt size (task text + invariants excerpt, not the whole plan), not a weaker model.
 
 - CRITICAL - chunk-parallel spawn: chunks whose table rows are marked parallel AND whose
   file sets are determinable from task text, pairwise disjoint, and free of hazard classes
   (shared types/contracts, generated outputs, lockfiles, schema/migrations, shared
   fixtures) MUST be spawned together in a SINGLE message - one implementer Agent call per
-  chunk, at the model its class selects. Indeterminable or hazardous ⇒ sequential. One-at-a-time
+  chunk, at the definition's model (no `model:` override). Indeterminable or hazardous ⇒ sequential. One-at-a-time
   spawning of qualifying chunks is a playbook violation. Record HEAD before the batch.
   Each chunk prompt includes the report contract: "return a short digest + your file list,
   not a dump".
@@ -110,7 +109,9 @@ every implementer to one model" forbids. The class decision belongs on the call,
   gates once; on FAIL the batch is jointly implicated (:71-75 exit-code semantics
   unchanged).
 - **Sequential**: Wait for dependent chunks to complete before next phase
-- Each agent prompt must include: specific tasks, relevant context, file paths, success criteria
+- Each agent prompt must include: the chunk's task text VERBATIM, a short excerpt of the plan's shared
+  invariants/gotchas (Verified Repo Truths + Gotchas lines that bear on this chunk), file paths, success
+  criteria. The plan path is reference only - the implementer should not need to read the whole plan
 
 ### Re-run the assumption-gates after each chunk / wave (INSIDE this step, on purpose)
 
@@ -184,7 +185,7 @@ This log is instructed-per-path, so it is not self-verifying; `scripts/parallel-
 
 ### No serial condition fired ⇒ spawn PARALLELIZER
 
-ONE `Agent` call, `subagent_type: "parallelizer"`. Its definition pins `opus`/`high` and that IS full capacity for this role - do not pass a model or claim "max effort" here; the owner set `high` as the standing ceiling, with `xhigh` reserved for explicit on-request escalation. It is ADVISORY: it reads the repo and returns a schedule. It never implements and never spawns. You remain the single scheduler.
+ONE `Agent` call, `subagent_type: "parallelizer"`. It runs its definition (`claude-sonnet-5`, `effort: medium`) by design - scheduling is bounded work and its wave plans are machine-validated by `verify-parallel-wave.mjs`, so do not pass a model override here. It is ADVISORY: it reads the repo and returns a schedule. It never implements and never spawns. You remain the single scheduler.
 
 Envelope, passed as JSON in the prompt:
 
@@ -245,11 +246,11 @@ Path: `~/.claude/parallel-waves/<SAFE_SID>-w<W>.json`. Shape: `docs/wave-plan-sc
 
 ### 3. CRITICAL: spawn ALL N chunks in a SINGLE message
 
-One `Agent` call per chunk, `subagent_type: "implementer"`, each at the model its class selects (Step 4's classification table - opus for hard/cross-layer, `model: "sonnet"` for a bounded chunk with a strong plan). Spawning them one at a time defeats the entire mechanism.
+One `Agent` call per chunk, `subagent_type: "implementer"`, no `model:` override - every chunk runs the implementer definition (Step 4's classification table). Spawning them one at a time defeats the entire mechanism.
 
 Each chunk prompt MUST carry:
 
-- the chunk's tasks (verbatim item text) and the plan path, for context only;
+- the chunk's tasks (verbatim item text) plus a short excerpt of the plan's shared invariants/gotchas that bear on this chunk; the plan path is reference only;
 - the worktree's ABSOLUTE path and the chunk's `exclusive_paths`;
 - "EVERY git command uses `git -C <worktree path>` and every file edit uses absolute paths under it (your shell starts elsewhere and forgets cwd between calls)";
 - "`git -C <worktree path> add <your exclusive_paths>` then commit - NEVER `git add -A`; leave nothing untracked, the checker fails an untracked-dirty worktree";
