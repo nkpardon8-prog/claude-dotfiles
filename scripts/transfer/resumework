@@ -351,8 +351,23 @@ done < "$STAGE/meta.tsv"
 # ------------------------------------------------------------------------------------------------
 # 3. Identity and layout
 # ------------------------------------------------------------------------------------------------
-[ "$M_USER" = "$(id -un)" ] || refuse "this bundle belongs to user '$M_USER' but you are '$(id -un)'; a transfer needs the same username on both Macs"
-[ "$M_HOME" = "$HOME_P" ] || refuse "this bundle expects home $M_HOME but this Mac's is $HOME_P; a transfer needs the same paths on both Macs"
+# Same account is the common case. A different username/home is allowed ONLY through a home
+# alias (make-home-alias.sh): A's home path must exist here, and A_home/.claude must resolve
+# (realpath) to this Mac's OWN $HOME/.claude - i.e. the alias really does point back at us,
+# it is not just a same-named coincidence. Session/memory payload still lands under this Mac's
+# REAL $HOME_P (never under the alias path) - see py_place below.
+_realdir() { (cd -P "$1" 2>/dev/null && pwd -P) || true; }
+if [ "$M_HOME" = "$HOME_P" ]; then
+  :
+else
+  _a_claude=$(_realdir "$M_HOME/.claude")
+  _b_claude=$(_realdir "$HOME_P/.claude")
+  if [ -d "$M_HOME" ] && [ -n "$_a_claude" ] && [ -n "$_b_claude" ] && [ "$_a_claude" = "$_b_claude" ]; then
+    note "identity: $M_HOME (user $M_USER) is a home alias of this Mac's \$HOME ($HOME_P) - proceeding"
+  else
+    refuse "this bundle's home ($M_HOME, user $M_USER) is not this Mac's \$HOME ($HOME_P), and no home alias links them. Fix:  sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh $M_USER"
+  fi
+fi
 if [ -n "$ROOT" ] && [ ! -d "$ROOT" ]; then
   if [ "$GIT" = 1 ] && [ -n "$G_ORIGIN" ]; then
     refuse "repo root $ROOT does not exist on this Mac. Clone it first:  git clone $G_ORIGIN $ROOT"
