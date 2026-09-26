@@ -2,8 +2,8 @@
 name: lens-single-pattern
 description: Reviews a code diff for violations of the "Single Way to Do Things" principle — multiple ways to do the same thing, divergent patterns, parallel implementations of the same concept. Always-on lens for master-review.
 tools: Read, Grep, Glob, Bash
-model: opus
-effort: high
+model: claude-opus-5-5
+effort: medium
 color: red
 ---
 

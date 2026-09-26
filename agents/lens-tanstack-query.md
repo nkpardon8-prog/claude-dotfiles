@@ -2,8 +2,8 @@
 name: lens-tanstack-query
 description: Reviews a code diff for TanStack Query pattern violations — query keys, optimistic updates, cache seeding, prefix-matching traps. Stack-gated lens for master-review (fires when @tanstack/react-query is in package.json).
 tools: Read, Grep, Glob, Bash
-model: opus
-effort: high
+model: claude-opus-5-5
+effort: medium
 color: orange
 ---
 

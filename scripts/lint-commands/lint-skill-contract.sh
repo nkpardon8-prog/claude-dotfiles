@@ -331,10 +331,13 @@ if [ -d "$_agents_dir" ]; then
         _fm="$(awk 'NR==1 && $0=="---"{inb=1;next} inb && $0=="---"{exit} inb' "$_af")"
         _am="$(printf '%s\n' "$_fm" | sed -n 's/^model: *//p' | head -1)"
         _ae="$(printf '%s\n' "$_fm" | sed -n 's/^effort: *//p' | head -1)"
+        # Aliases plus an EXPLICIT list of full model IDs (no regex/glob: a typo'd or unreleased ID
+        # must fail here rather than be silently dropped by the harness). Add new IDs by hand.
         case "$_am" in
             opus|sonnet|haiku|fable) ;;
+            claude-opus-5-5|claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5) ;;
             "") echo "lint-skill-contract: FAIL agents/$_an.md has no 'model:' in frontmatter (it would inherit the session silently)" >&2; fail=1 ;;
-            *)  echo "lint-skill-contract: FAIL agents/$_an.md model '$_am' is not a known alias (opus|sonnet|haiku|fable)" >&2; fail=1 ;;
+            *)  echo "lint-skill-contract: FAIL agents/$_an.md model '$_am' is not an allowed value (aliases: opus|sonnet|haiku|fable; full IDs: claude-opus-5-5|claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5)" >&2; fail=1 ;;
         esac
         case "$_ae" in
             low|medium|high|xhigh|max) ;;

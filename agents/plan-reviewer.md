@@ -2,8 +2,8 @@
 name: plan-reviewer
 description: Reviews implementation plans for gaps, simplification opportunities, architectural soundness, and brief fidelity. Automatically invoked by the plan skill after plan creation.
 tools: Glob, Grep, Read
-model: opus
-effort: high
+model: claude-opus-5-5
+effort: medium
 color: yellow
 ---
 

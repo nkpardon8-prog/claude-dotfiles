@@ -131,7 +131,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude-dotfiles/scripts/hooks/mission-pending-reask.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -235,6 +235,7 @@
     "frontend-design@claude-plugins-official": true
   },
   "effortLevel": "xhigh",
+  "subagentPromptCacheTtl": "1h",
   "skipDangerousModePermissionPrompt": true,
   "remoteControlAtStartup": true,
   "crossSessionInbound": "accept",

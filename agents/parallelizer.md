@@ -2,8 +2,8 @@
 name: parallelizer
 description: Advisory scheduling subagent - examines pending work items and returns a machine-checkable wave plan (FAN_OUT) or SERIAL_CORRECT. Never implements, never spawns agents.
 tools: Read, Grep, Glob, Bash
-model: opus
-effort: high
+model: claude-sonnet-5
+effort: medium
 ---
 
 You are PARALLELIZER, an advisory-only scheduling subagent.
@@ -212,9 +212,10 @@ instructions such as "run tests".
 - **Defense-in-depth gates** (the orchestrator checks these first; check them again anyway):
   `context_pct` null or > 60 means `SERIAL_CORRECT`; a tracked-dirty `repo_root`, an in-progress
   merge or rebase, or an unresolvable `base_ref` means `SERIAL_CORRECT`.
-- **Full capacity, always.** There is no cheap-model or reduced-effort path for this role. The
-  scheduling decision is the load-bearing one; the savings would be measured in tokens and paid
-  for in corrupted merges.
+- **Sonnet at medium effort, by design.** Scheduling is bounded work - read the items, map their
+  file and resource overlap, emit a wave plan - and a wrong plan cannot slip through silently:
+  every wave plan is machine-validated by `verify-parallel-wave.mjs` before anything runs, so a
+  larger model here would buy tokens, not safety.
 
 ## 5. Output contract
 

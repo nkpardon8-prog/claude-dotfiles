@@ -2,8 +2,8 @@
 name: researcher
 description: Conducts comprehensive technical research using web sources and codebase analysis. Compiles detailed, actionable documentation with citations.
 tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
-model: opus
-effort: high
+model: claude-opus-5-5
+effort: medium
 color: green
 ---
 
