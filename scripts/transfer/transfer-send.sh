@@ -7,18 +7,21 @@
 #                    [--seal-after-exit] [--code <TX-...>]
 #   transfer-send.sh --tool codex <id>                      (a positional id is accepted too)
 #
-#   --dry-run          list what would travel (counts, total size, the 10 largest items, excluded
-#                      secret names, git plan, secret-scan verdict) and write NOTHING. Exits 2 when a
-#                      real run would refuse. A missing/stale handoff is reported as an informational
-#                      "A real run would refuse: ..." line instead (the /transfer command writes the
-#                      handoff only on a real run), and the listing continues.
-#   --force            allow untracked + tmp/ context over the 500 MB cap (session transcripts and
-#                      Codex rollouts never count toward it: they are the point of a transfer).
-#   --seal-after-exit  (claude only) validate everything, print CODE/LOCATOR at once, then hand off to
-#                      a fully detached sealer that waits (max 30 min) for this chat's claude process
-#                      to exit, snapshots the now-complete transcript and git state, and packages.
-#                      Without it, packaging happens immediately (tests, the Codex path, a chat that
-#                      is already closed).
+#   --dry-run          list what would travel (counts, total size, the 10 largest items, secret-named
+#                      files that travel, files over the per-file cap, git plan, secret-scan hits) and
+#                      write NOTHING. Exits 2 when a real run would refuse. A missing/stale handoff is
+#                      reported as an informational "A real run would refuse: ..." line instead (the
+#                      /transfer command writes the handoff only on a real run), and the listing
+#                      continues.
+#   --force            lift the sanity caps: untracked + ignored repo files over 5 GB in total, and a
+#                      single such file over 1 GB (session transcripts and Codex rollouts never count
+#                      toward either: they are the point of a transfer).
+#   --seal-after-exit  (claude only) validate (collect, plan, caps, disk space), print CODE/LOCATOR at
+#                      once, then hand off to a fully detached sealer that waits (max 30 min) for this
+#                      chat's claude process to exit, snapshots the now-complete transcript and git
+#                      state, and packages (copy, scan, encrypt - the slow part, so it never runs
+#                      inside the chat's own tool call). Without it, packaging happens immediately
+#                      (tests, the Codex path, a chat that is already closed).
 #   --code <TX-...>    use this code instead of generating one (the code is visible in `ps` while
 #                      this runs; /transfer never passes it).
 #
@@ -35,19 +38,25 @@
 #           [abs] at ROOT: CLAUDE.local.<sid>.md(.prev), MISSION.<sid>.*, TRANSFER.<sid>.md,
 #           .mission-backups/*<sid>*
 #   codex   [home] the rollout file plus every history_base / forked_from parent, from $CODEX_HOME
-#   both    [abs] git: a bundle of commits no remote has (or none), a `git diff HEAD` patch,
-#           untracked files; context: worktree tmp/ and ROOT tmp/ files modified in the last 7 days
-#           or named in the handoff / TRANSFER / MISSION files (5 MB per file; a named path with a
-#           '..' component is never followed)
+#   both    [abs] git: a bundle of commits no remote has (or none), a `git diff HEAD` patch, and
+#           EVERY untracked and ignored file under the worktree and the repo root (owner policy
+#           2026-09-26, "just move everything"): .env / creds / key files included, so the other
+#           Mac works without reloading credentials. Nested repos and other worktrees are not
+#           entered, and other chats' sid-keyed handoff/MISSION/TRANSFER files are left alone. A
+#           cwd outside any git repo contributes only its tmp/ tree.
+#           Sanity caps: 5 GB of untracked + ignored files in total (refuses) and 1 GB per file
+#           (that file is skipped and listed); --force lifts both. Transcripts are uncapped.
 # The chat's cwd (and so its repo) must be under $HOME or under a verified home alias of this
 # account (make-home-alias.sh); the manifest records both `home` (real) and `repo_home`.
-# What never travels: auto-compact sentinels, mission liveness, locks (incl. tick.<sid>.lock),
-#   prod.lock, resumed-/transferred- markers, node_modules/dist/.next/coverage, and any secret-named
-#   REPO file (.env*, *.env, *creds*, *credential*, *.pem, *.key, *.p12, .envrc, .npmrc, *secret*,
-#   auth.json) - their NAMES go into the manifest so B's restart checklist can say what to reload.
-#   Claude/Codex state (session files, the memory dir, the ROOT handoff docs) is not name-filtered.
-#   EVERY staged file is then run through scripts/secret-scan.sh, per placement class, and any hit
-#   in either class refuses the send (enforce_scan_policy is the one place that decides).
+# What never travels: machine-bound state (auto-compact sentinels, mission liveness, locks incl.
+#   tick.<sid>.lock and prod.lock, resumed-/transferred- markers, pid files, sockets, keychains,
+#   ~/.claude/.credentials*, the ~/.claude/sessions registry, Codex auth.json and thread locks) and
+#   rebuildable heavy dirs (TX_HEAVY_DIRS: node_modules, dist, .next, coverage, ...).
+#   Secret-named repo files that travel are listed by name in the manifest
+#   (secret_named_files_moved). Every staged file up to 5 MB is also run through
+#   scripts/secret-scan.sh; hits NEVER refuse - they are recorded as file name + rule (never the
+#   matched text) in the manifest (secret_scan_hits), and resumework lists them in the TRANSFER
+#   notes as FYI (enforce_scan_policy is the one place that decides).
 #
 # SEALER DETACH (why not launchctl submit): `launchctl submit` tells launchd to keep the job alive,
 # i.e. to RESTART it when it exits - wrong for a one-shot. Instead: nohup + all fds redirected +
@@ -69,12 +78,13 @@ PROG="transfer-send"
 DEV_OK=0
 [ "${TRANSFER_TESTS_ALLOW_DEV:-}" = "true" ] && DEV_OK=1
 # Test-only switch for the exclusion negative control. Honored ONLY under the test gate, so a stray
-# environment variable can never make a real transfer carry secrets or machine-bound state.
+# environment variable can never make a real transfer carry machine-bound state or heavy dirs.
 EXCLUDES_OFF=0
 [ "$DEV_OK" = 1 ] && [ "${TX_TEST_DISABLE_EXCLUDES:-}" = "1" ] && EXCLUDES_OFF=1
 
-CONTEXT_FILE_CAP=5242880                 # 5 MB per context file
-TOTAL_CAP=524288000                      # 500 MB of untracked + context unless --force
+FILE_CAP=1073741824                      # 1 GB per untracked/ignored file unless --force
+TOTAL_CAP=5368709120                     # 5 GB of untracked + ignored files unless --force
+SCAN_FILE_MAX=5242880                    # files over 5 MB are not content-scanned (FYI scan only)
 [ "$DEV_OK" = 1 ] && [ -n "${TX_TEST_TOTAL_CAP_BYTES:-}" ] && TOTAL_CAP="$TX_TEST_TOTAL_CAP_BYTES"
 HANDOFF_MAX_AGE=1800                     # the handoff must be under 30 minutes old
 SEAL_TIMEOUT=1800
@@ -391,9 +401,10 @@ if [ "$TOOL" = claude ] && [ "$IN_SEALER" = 0 ]; then
 fi
 
 # ------------------------------------------------------------------------------------------------
-# Collection. LIST = kind<TAB>abs ; SKIP = reason<TAB>abs ; SECR = names left behind on purpose.
+# Collection. LIST = kind<TAB>abs ; SKIP = reason<TAB>abs ; SECR = abs<TAB>display of every
+# secret-named repo file seen (the manifest splits it into moved / not moved).
 # ------------------------------------------------------------------------------------------------
-LIST="$WORK/list.tsv"; SKIP="$WORK/skipped.tsv"; SECR="$WORK/secrets.txt"
+LIST="$WORK/list.tsv"; SKIP="$WORK/skipped.tsv"; SECR="$WORK/secrets.tsv"
 
 disp() {  # display a path relative to its worktree, repo root, or $HOME
   if [ -n "$WT" ]; then case "$1" in "$WT"/*) printf '%s' "${1#"$WT"/}"; return ;; esac; fi
@@ -411,18 +422,33 @@ add_file() {  # add_file <kind> <abs> [<relpath used for the machine-bound check
   if [ "$EXCLUDES_OFF" != 1 ]; then
     if tx_is_never_name "$rel"; then printf 'machine-bound\t%s\n' "$f" >> "$SKIP"; return 0; fi
     case "$kind" in
+      session | memory)
+        if tx_is_never_home claude "${f#"$HOME_P/.claude/"}"; then printf 'machine-bound\t%s\n' "$f" >> "$SKIP"; return 0; fi ;;
+      codex)
+        if tx_is_never_home codex "${f#"$CODEX_DIR/"}"; then printf 'machine-bound\t%s\n' "$f" >> "$SKIP"; return 0; fi ;;
       untracked | context)
-        # Name filters apply to REPO content only. Claude/Codex state (session files, the memory
-        # dir, the ROOT handoff docs) is found by construction, and a memory note named e.g.
-        # reference_od_test_creds.md is exactly what must travel; its CONTENT is still scanned.
         if tx_is_heavy_path "$rel"; then printf 'heavy-dir\t%s\n' "$f" >> "$SKIP"; return 0; fi
-        if tx_is_secret_name "$f"; then disp "$f" >> "$SECR"; printf '\n' >> "$SECR"; return 0; fi
+        if other_chat_state "$rel"; then printf 'other-chat-state\t%s\n' "$f" >> "$SKIP"; return 0; fi
         ;;
     esac
   fi
+  # Secret-named REPO files travel (owner policy 2026-09-26); their names are reported. Claude
+  # state (e.g. a memory note named reference_od_test_creds.md) is not name-reported.
+  case "$kind" in
+    untracked | context) tx_is_secret_name "$f" && printf '%s\t%s\n' "$f" "$(disp "$f")" >> "$SECR" ;;
+  esac
   if [ -L "$f" ]; then printf 'symlink\t%s\n' "$f" >> "$SKIP"; return 0; fi
   [ -f "$f" ] || return 0
   printf '%s\t%s\n' "$kind" "$f" >> "$LIST"
+}
+
+other_chat_state() {  # rc 0 for ANOTHER chat's sid-keyed ROOT/worktree files (this chat's own are kind root)
+  case "$1" in
+    CLAUDE.local.*.md | CLAUDE.local.*.md.prev | MISSION.*.* | TRANSFER.*.md | .mission-backups/*)
+      case "$1" in *"$SID"*) return 1 ;; esac
+      return 0 ;;
+  esac
+  return 1
 }
 
 add_tree() {  # add_tree <kind> <dir> <relpath-prefix>
@@ -499,62 +525,114 @@ $(sed -n 's/^FILE	//p' "$WORK/codex.tsv")
 EOF
 }
 
-collect_untracked() {
-  local r
-  [ "$GIT" = 1 ] || return 0
-  git -C "$WT" ls-files -o --exclude-standard -z 2>/dev/null | tr '\0' '\n' > "$WORK/untracked.raw"
-  while IFS= read -r r; do
-    [ -n "$r" ] && add_file untracked "$WT/$r" "$r"
-  done < "$WORK/untracked.raw"
+# walk_repo <base> git|tree -> "abs<TAB>rel" lines for every untracked AND ignored file under a git
+# worktree (git mode: `git ls-files -o --directory` so wholly-untracked dirs arrive as one entry,
+# then walked), or every file under a plain dir (tree mode). Heavy dirs (TX_HEAVY_DIRS) are pruned
+# and recorded once each as heavy-dir; a dir holding a .git entry (a nested repo or another
+# worktree) is never entered; symlinks are emitted so add_file records them as skipped; sockets and
+# other special files are recorded as machine-bound. With the dev-only exclusion knob on, heavy
+# dirs are walked like any other.
+walk_repo() {
+  local heavy="$TX_HEAVY_DIRS"
+  [ "$EXCLUDES_OFF" = 1 ] && heavy=""
+  python3 - "$1" "$2" "$heavy" "$SKIP" <<'PY'
+import os, stat, subprocess, sys
+base, mode, heavy, skipf = sys.argv[1], sys.argv[2], set(sys.argv[3].split()), sys.argv[4]
+out, skip = sys.stdout.buffer, open(skipf, "ab")
+
+def enc(p):
+    return p.encode("utf-8", "surrogateescape")
+
+def emit(ab):
+    b = enc(ab)
+    if b"\t" in b or b"\n" in b:
+        skip.write(b"unsupported-name\t" + b.replace(b"\t", b"?").replace(b"\n", b"?") + b"\n")
+        return
+    out.write(b + b"\t" + enc(os.path.relpath(ab, base)) + b"\n")
+
+def one(full):
+    try:
+        st = os.lstat(full)
+    except OSError:
+        return
+    if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        emit(full)
+    elif not stat.S_ISDIR(st.st_mode):
+        skip.write(b"machine-bound\t" + enc(full) + b"\n")   # socket, fifo, device
+
+def walk_dir(d):
+    if os.path.basename(d) in heavy:
+        skip.write(b"heavy-dir\t" + enc(d) + b"\n")
+        return
+    if os.path.lexists(os.path.join(d, ".git")):
+        return   # nested repo or another worktree: not this chat's files
+    for dp, dn, fn in os.walk(d):
+        keep = []
+        for n in dn:
+            full = os.path.join(dp, n)
+            if os.path.islink(full):
+                emit(full)
+            elif n in heavy:
+                skip.write(b"heavy-dir\t" + enc(full) + b"\n")
+            elif not os.path.lexists(os.path.join(full, ".git")):
+                keep.append(n)
+        dn[:] = keep
+        for n in fn:
+            one(os.path.join(dp, n))
+
+if mode == "tree":
+    if os.path.isdir(base) and not os.path.islink(base):
+        walk_dir(base)
+else:
+    raw = subprocess.run(["git", "-C", base, "ls-files", "-o", "--directory", "--no-empty-directory", "-z"],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+    for e in raw.split(b"\0"):
+        if not e:
+            continue
+        full = os.path.join(base, os.fsdecode(e.rstrip(b"/")))
+        if e.endswith(b"/") and os.path.isdir(full) and not os.path.islink(full):
+            walk_dir(full)
+        else:
+            one(full)
+PY
 }
 
-collect_context() {
-  local base f r seen="" files
-  for base in "$WT" "$ROOT"; do
-    [ -n "$base" ] && [ -d "$base/tmp" ] || continue
-    case " $seen " in *" $base "*) continue ;; esac
-    seen="$seen $base"
-    find "$base/tmp" \( -name node_modules -o -name .git -o -name dist -o -name .next -o -name coverage \) -prune \
-      -o \( -type f -o -type l \) -mmin -10080 -print 2>/dev/null | while IFS= read -r f; do
-      add_file context "$f" "${f#"$base"/}"
+# Worktree files git does not ignore are kind "untracked" (git state); every other untracked or
+# ignored file under the worktree and the repo root is kind "context". py_files keeps the FIRST
+# kind seen for a path, so this order matters.
+collect_repo_files() {
+  local r ab base seen=""
+  if [ "$GIT" = 1 ]; then
+    git -C "$WT" ls-files -o --exclude-standard -z 2>/dev/null | tr '\0' '\n' > "$WORK/untracked.raw"
+    while IFS= read -r r; do
+      [ -n "$r" ] && add_file untracked "$WT/$r" "$r"
+    done < "$WORK/untracked.raw"
+    for base in "$WT" "$ROOT"; do
+      case " $seen " in *" $base "*) continue ;; esac
+      seen="$seen $base"
+      if ! git -C "$base" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        note "warning: $base is not a git work tree; its untracked files were not collected"
+        continue
+      fi
+      walk_repo "$base" git > "$WORK/walk.tsv" || die "listing untracked and ignored files in $base failed"
+      while IFS='	' read -r ab r; do
+        [ -n "$ab" ] && add_file context "$ab" "$r"
+      done < "$WORK/walk.tsv"
     done
-  done
-  # Anything under tmp/ that the handoff, TRANSFER or MISSION files name by path, however old.
-  files=""
-  for f in "$ROOT/CLAUDE.local.$SID.md" "$ROOT/TRANSFER.$SID.md" "$ROOT"/MISSION."$SID".*; do
-    [ -f "$f" ] && files="$files
-$f"
-  done
-  [ -n "$files" ] || return 0
-  printf '%s\n' "$files" | while IFS= read -r f; do [ -n "$f" ] && cat "$f"; done 2>/dev/null \
-    | grep -aoE 'tmp/[A-Za-z0-9._@+/-]+' | sed -E 's#[.,:;/]+$##' | sort -u | while IFS= read -r r; do
-      # A reference with a '..' component could climb out of tmp/ (and out of the repo) - never
-      # follow one; record it so the skip is visible in the manifest.
-      case "/$r/" in
-        */../*) printf 'unsafe-reference\t%s\n' "$r" >> "$SKIP"; continue ;;
-      esac
-      for base in "$WT" "$ROOT"; do
-        [ -n "$base" ] || continue
-        if [ -e "$base/$r" ] || [ -L "$base/$r" ]; then add_entry context "$base/$r" "$r"; fi
-      done
-    done
+  elif [ -n "$ROOT" ]; then
+    # Not a git repo: the cwd could be as broad as $HOME itself, so only its tmp/ tree travels.
+    walk_repo "$ROOT/tmp" tree > "$WORK/walk.tsv" || die "listing $ROOT/tmp failed"
+    while IFS='	' read -r ab r; do
+      [ -n "$ab" ] && add_file context "$ab" "tmp/$r"
+    done < "$WORK/walk.tsv"
+  fi
 }
 
 collect_all() {
-  : > "$LIST"; : > "$SKIP"; : > "$SECR"
+  : > "$LIST"; : > "$SKIP"; : > "$SECR"; : > "$WORK/untracked.raw"
   if [ "$TOOL" = claude ]; then collect_claude; else collect_codex; fi
   collect_root
-  collect_untracked
-  collect_context
-  # .env* names that exist in the repo (typically gitignored, so the untracked walk never sees them)
-  local base
-  for base in "$WT" "$ROOT"; do
-    [ -n "$base" ] && [ -d "$base" ] || continue
-    find "$base" -maxdepth 4 \( -name node_modules -o -name .git -o -name tmp \) -prune -o \
-      -type f \( -name '.env*' -o -name '*.env' -o -name '.envrc' \) -print 2>/dev/null | while IFS= read -r f; do
-      disp "$f" >> "$SECR"; printf '\n' >> "$SECR"
-    done
-  done
+  collect_repo_files
   sort -u "$SECR" | sed '/^$/d' > "$SECR.sorted" && mv "$SECR.sorted" "$SECR"
 }
 
@@ -562,14 +640,16 @@ collect_all() {
 # plan / stage (python: sizes, per-file cap, copy with mtime+mode, hash the STAGED bytes)
 # ------------------------------------------------------------------------------------------------
 py_files() {  # py_files plan|stage <out> [<stage-payload-dir>]
-  python3 - "$1" "$LIST" "$SKIP" "$HOME_P/.claude" "$CONTEXT_FILE_CAP" "$2" "${3:-}" "${CODEX_DIR:-}" \
+  local fcap="$FILE_CAP"
+  [ "$FORCE" = 1 ] && fcap=0
+  python3 - "$1" "$LIST" "$SKIP" "$HOME_P/.claude" "$fcap" "$2" "${3:-}" "${CODEX_DIR:-}" \
     "$ROOT" "$WT" "$CWD" <<'PY'
 import hashlib, json, os, shutil, stat, sys
 mode, lst, skipf, claude_dir, cap, out, payload, codex_dir, root, wt, cwd = sys.argv[1:12]
-cap = int(cap)
+cap = int(cap)   # 0 = no per-file cap (--force)
 anchors = [a for a in (root, wt, cwd) if a]
 HOME_KINDS = {"session": ("claude", claude_dir), "memory": ("claude", claude_dir), "codex": ("codex", codex_dir)}
-CAPPED_KINDS = ("untracked", "context")   # session transcripts / rollouts never count toward the cap
+CAPPED_KINDS = ("untracked", "context")   # session transcripts / rollouts never count toward the caps
 
 def inside(p, base):
     return p == base or p.startswith(base.rstrip("/") + "/")
@@ -619,8 +699,8 @@ with open(lst, encoding="utf-8", errors="surrogateescape") as fh:
         if c is None:
             skipped.append([why, ab])
             continue
-        if kind == "context" and st.st_size > cap:
-            skipped.append(["over-%dMB-cap" % (cap // 1048576), ab])
+        if kind in CAPPED_KINDS and cap and st.st_size > cap:
+            skipped.append(["over-%dMB-file-cap" % (cap // 1048576), ab])
             continue
         entries.append((kind, ab, st, c))
 by_kind, total, capped, by_class = {}, 0, 0, {"home": 0, "abs": 0}
@@ -671,42 +751,109 @@ check_space() {  # check_space <dir> <bytes-needed>
   [ "$avail_kb" -ge "$need_kb" ] || refuse "not enough free disk space at $1: need $((need_kb / 1024)) MB (2x the bundle), have $((avail_kb / 1024)) MB"
 }
 
-# Secret scan: the repo's own scanner, in batches. Its hit report quotes the matched text, so it is
-# captured to a private file and only FILE NAMES are ever shown.
+# Secret scan (FYI - it never refuses; see enforce_scan_policy): the repo's own scanner, in
+# batches of 200, driven from python so its hit report - which QUOTES the matched text - stays in
+# memory and is never written or shown. Only "<file><TAB><rule>" leaves this function, appended to
+# $SCAN_HITS_F. The rule label is derived here from the hit line's shape; the scanner itself does
+# not name its lanes, so a shape this table does not know reads "secret-shaped text (unclassified)"
+# rather than being dropped. Files over SCAN_FILE_MAX are not scanned (counted instead).
+# Sets SCAN_RESULT (0 clean | 2 hits | 3 incomplete) and adds to SCAN_SKIPPED_LARGE.
+SCAN_HITS_F="$WORK/scan.hits.tsv"
 scan_secrets() {  # scan_secrets <NUL-list of files> <prefix-to-strip-for-display>
-  local scanner="$TX_REPO_DIR/scripts/secret-scan.sh" worst=0 n=0 f rc out="$WORK/scan.out" hits=""
-  local -a batch
-  [ -f "$scanner" ] || refuse "secret scanner not found at $scanner"
-  : > "$out"; chmod 600 "$out"
-  _scan_batch() {
-    bash "$scanner" -- "${batch[@]}" >> "$out" 2>&1; rc=$?
-    case "$rc" in 0) ;; 2) [ "$worst" -lt 2 ] && worst=2 ;; *) worst=3 ;; esac
-    batch=(); n=0
-  }
-  while IFS= read -r -d '' f; do
-    batch[n]="$f"; n=$((n + 1))
-    [ "$n" -ge 200 ] && _scan_batch
-  done < "$1"
-  [ "$n" -gt 0 ] && _scan_batch
-  if [ "$worst" = 2 ]; then
-    while IFS= read -r -d '' f; do
-      if grep -qF -- "$f:" "$out" 2>/dev/null; then
-        case "$f" in
-          "$2"*) f="${f#"$2"}" ;;
-          */uncommitted.patch) f="git: uncommitted changes" ;;
-          */unpushed-commits.txt) f="git: commits no remote has" ;;
-        esac
-        case "$f" in   # staged payload layout -> the path the owner knows
-          home/claude/*) f="~/.claude/${f#home/claude/}" ;;
-          home/codex/*) f="\$CODEX_HOME/${f#home/codex/}" ;;
-          abs/*) f="${f#abs}" ;;
-        esac
-        hits="${hits}${hits:+, }$f"
-      fi
-    done < "$1"
+  local scanner="$TX_REPO_DIR/scripts/secret-scan.sh" res
+  if [ ! -f "$scanner" ]; then
+    note "warning: secret scanner not found at $scanner; the FYI scan was skipped"
+    SCAN_RESULT=3
+    return 0
   fi
-  rm -f "$out"
-  SCAN_RESULT="$worst"; SCAN_HITS="$hits"
+  res=$(python3 - "$scanner" "$1" "$2" "$SCAN_FILE_MAX" "$SCAN_HITS_F" "$HOME_P" <<'PY'
+import os, re, subprocess, sys
+scanner, listf, prefix, maxb, hitsf, home = sys.argv[1:7]
+maxb = int(maxb)
+RULES = [
+    ("private key block", r"-----BEGIN +(RSA +|OPENSSH +|EC +|DSA +|PGP +)?PRIVATE +KEY-----"),
+    ("Stripe key", r"(rk|sk|pk)_(live|test)_[A-Za-z0-9]{20,}"),
+    ("OpenAI/Anthropic-style API key", r"(^|[^A-Za-z0-9])sk-(ant|proj|svcacct)?-?[A-Za-z0-9_-]{20,}"),
+    ("Google API key", r"AIza[0-9A-Za-z_-]{35}"),
+    ("Google OAuth token", r"ya29\.[A-Za-z0-9_-]{20,}"),
+    ("GitHub token", r"(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,})"),
+    ("npm token", r"npm_[A-Za-z0-9]{36}"),
+    ("AWS access key id", r"(AKIA|ASIA)[0-9A-Z]{16}"),
+    ("Slack token", r"xox[abposr]-[A-Za-z0-9-]{10,}"),
+    ("Hugging Face token", r"hf_[A-Za-z0-9]{30,}"),
+    ("webhook signing secret", r"whsec_[A-Za-z0-9]{20,}"),
+    ("JWT", r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    ("connection string with password", r"(postgres|postgresql|mysql|mongodb(\+srv)?|redis|rediss|amqp|amqps|mssql)://[^:/@\s]+:[^@/\s$\{]+@"),
+    ("6-digit PIN", r"([Pp][Ii][Nn]|CRD_PIN)[^A-Za-z0-9]*[=:]?[^A-Za-z0-9]*[0-9]{6}([^0-9]|$)"),
+]
+RULES = [(n, re.compile(r)) for n, r in RULES]
+
+def rule_of(text):
+    for n, rx in RULES:
+        if rx.search(text):
+            return n
+    return "secret-shaped text (unclassified)"
+
+def shown(f):
+    if prefix and f.startswith(prefix):
+        f = f[len(prefix):]
+    elif f.endswith("/uncommitted.patch"):
+        return "git: uncommitted changes"
+    elif f.endswith("/unpushed-commits.txt"):
+        return "git: commits no remote has"
+    if f.startswith("home/claude/"):
+        return "~/.claude/" + f[len("home/claude/"):]
+    if f.startswith("home/codex/"):
+        return "$CODEX_HOME/" + f[len("home/codex/"):]
+    if f.startswith("abs/"):
+        return f[len("abs"):]
+    if f.startswith(home + "/.claude/"):
+        return "~/.claude/" + f[len(home + "/.claude/"):]
+    return f
+
+files, large = [], 0
+with open(listf, "rb") as fh:
+    for raw in fh.read().split(b"\0"):
+        if not raw:
+            continue
+        f = os.fsdecode(raw)
+        try:
+            if os.path.getsize(f) > maxb:
+                large += 1
+                continue
+        except OSError:
+            continue
+        files.append(f)
+worst, report = 0, []
+for i in range(0, len(files), 200):
+    batch = files[i:i + 200]
+    p = subprocess.run(["bash", scanner, "--"] + batch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if p.returncode == 2:
+        worst = max(worst, 2)
+    elif p.returncode != 0:
+        worst = 3
+    report.append(os.fsdecode(p.stdout))
+names = set(files)
+hits = []
+for line in "\n".join(report).splitlines():
+    # "<file>:<lineno>:<text>" - find the scanned file this line belongs to
+    for m in re.finditer(r":(\d+):", line):
+        f = line[:m.start()]
+        if f in names:
+            h = (shown(f), rule_of(line[m.end():]))
+            if h not in hits:
+                hits.append(h)
+            break
+if worst == 2 and not hits:
+    hits.append(("(file name not recoverable from the scanner report)", "secret-shaped text (unclassified)"))
+with open(hitsf, "a", encoding="utf-8", errors="surrogateescape") as fo:
+    for f, r in hits:
+        fo.write("%s\t%s\n" % (f.replace("\t", " ").replace("\n", " "), r))
+print("%d %d" % (worst, large))
+PY
+) || res="3 0"
+  SCAN_RESULT="${res%% *}"
+  SCAN_SKIPPED_LARGE=$(( ${SCAN_SKIPPED_LARGE:-0} + ${res##* } ))
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -743,43 +890,53 @@ stage_git() {  # writes <dir>/branch.bundle (only if commits no remote has) + un
 # ------------------------------------------------------------------------------------------------
 # Build: collect -> plan -> caps/space -> stage -> scan -> manifest -> tar. Leaves $STAGE/inner.tgz.
 # ------------------------------------------------------------------------------------------------
-over_cap() {  # over_cap <plan.json> -> rc 0 (and a reason on stdout) when untracked+context exceed the cap
+over_cap() {  # over_cap <plan.json> -> rc 0 (and a reason on stdout) when untracked+ignored files exceed the cap
   local capped
   capped=$(jget "$1" 'd["capped_bytes"]')
   if [ "$capped" -gt "$TOTAL_CAP" ] && [ "$FORCE" != 1 ]; then
-    echo "untracked files + tmp/ context would be $(human "$capped") (cap $(human "$TOTAL_CAP"); session transcripts do not count)"
+    echo "untracked + ignored repo files would be $(human "$capped") (cap $(human "$TOTAL_CAP"); session transcripts do not count)"
     return 0
   fi
   return 1
 }
 
-# scan_by_class <home-list> <abs-list> <prefix> -> SCAN_HOME_RESULT/HITS + SCAN_ABS_RESULT/HITS
-# (NUL-separated file lists; the git patch and unpushed-commit diffs belong in the abs list).
+# scan_by_class <home-list> <abs-list> <prefix> -> SCAN_HOME_RESULT + SCAN_ABS_RESULT, hits in
+# $SCAN_HITS_F (NUL-separated file lists; the git patch and unpushed-commit diffs go in the abs list).
 scan_by_class() {
-  SCAN_HOME_RESULT=0; SCAN_HOME_HITS=""; SCAN_ABS_RESULT=0; SCAN_ABS_HITS=""
-  if [ -s "$1" ]; then scan_secrets "$1" "$3"; SCAN_HOME_RESULT="$SCAN_RESULT"; SCAN_HOME_HITS="$SCAN_HITS"; fi
-  if [ -s "$2" ]; then scan_secrets "$2" "$3"; SCAN_ABS_RESULT="$SCAN_RESULT"; SCAN_ABS_HITS="$SCAN_HITS"; fi
+  SCAN_HOME_RESULT=0; SCAN_ABS_RESULT=0; SCAN_SKIPPED_LARGE=0
+  : > "$SCAN_HITS_F"; chmod 600 "$SCAN_HITS_F"
+  if [ -s "$1" ]; then scan_secrets "$1" "$3"; SCAN_HOME_RESULT="$SCAN_RESULT"; fi
+  if [ -s "$2" ]; then scan_secrets "$2" "$3"; SCAN_ABS_RESULT="$SCAN_RESULT"; fi
 }
 
-# THE one decision point for secret-scan hits. Today every hit refuses, in either class (owner
-# decision pending). The planned switch - allow hits in home-class session transcripts and list
-# them in the TRANSFER notes, still refuse abs-class hits - changes only the home branch here.
-# Prints nothing and returns 0 when the send may proceed; otherwise prints the refusal reason.
+# THE one decision point for secret-scan hits. Owner policy 2026-09-26 ("just move everything",
+# it is the owner's own device): a hit NEVER refuses, in either placement class, and neither does
+# a scanner that could not run. Everything travels inside the encrypted bundle; the hits are
+# recorded (file + rule, never the matched text) in the manifest and listed by resumework in the
+# TRANSFER notes. Sets SCAN_STATUS (clean | hits | incomplete) and prints a one-line summary.
+# Always returns 0.
 enforce_scan_policy() {
-  local worst="$SCAN_ABS_RESULT" hits=""
+  local worst="$SCAN_ABS_RESULT" n list="" extra="" hitpart=""
   [ "$SCAN_HOME_RESULT" -gt "$worst" ] && worst="$SCAN_HOME_RESULT"
+  n=$(sed '/^$/d' "$SCAN_HITS_F" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$n" -gt 0 ]; then
+    list=$(awk -F'\t' 'NF { printf "%s%s (%s)", (NR > 1 ? ", " : ""), $1, $2 }' "$SCAN_HITS_F")
+    hitpart="; $n hit(s): $list"
+  fi
+  [ "${SCAN_SKIPPED_LARGE:-0}" -gt 0 ] && extra="; ${SCAN_SKIPPED_LARGE} file(s) over $(human "$SCAN_FILE_MAX") not scanned"
   case "$worst" in
-    0) return 0 ;;
-    2)
-      [ "$SCAN_HOME_RESULT" = 2 ] && hits="Claude/Codex state: $SCAN_HOME_HITS"
-      [ "$SCAN_ABS_RESULT" = 2 ] && hits="${hits}${hits:+; }repo files: $SCAN_ABS_HITS"
-      echo "secret-shaped content found in: $hits (names only; contents not shown). Remove or redact it, then retry"
-      ;;
-    *) echo "the secret scan could not prove the payload clean (scanner failure)" ;;
+    0) SCAN_STATUS=clean; echo "clean${extra}" ;;
+    2) SCAN_STATUS=hits
+       echo "$n hit(s), FYI only - they travel inside the encrypted bundle and are listed in the TRANSFER notes on arrival (file and rule; contents never shown): ${list}${extra}" ;;
+    *) SCAN_STATUS=incomplete
+       echo "incomplete - the scanner could not run over everything (FYI only; the send proceeds)${hitpart}${extra}" ;;
   esac
-  return 1
+  return 0
 }
 
+# build_bundle [validate] - validate stops after the checks that can refuse (collect, plan, caps,
+# disk space) and stages nothing: the --seal-after-exit launcher runs inside the chat's own tool
+# call, and copying + scanning + compressing up to 5 GB there could outlast it.
 build_bundle() {
   local total why
   collect_all
@@ -789,6 +946,11 @@ build_bundle() {
   if why=$(over_cap "$WORK/plan.json"); then
     refuse "$why; run with --dry-run to see the largest items, or --force"
   fi
+  if [ "${1:-}" = validate ]; then
+    check_space "${TMPDIR:-/tmp}" "$total"
+    check_space "$(tx_drop_dir)" "$total"
+    return 0
+  fi
   STAGE=$(mktemp -d "${TMPDIR:-/tmp}/tx-stage.XXXXXX") || die "cannot create a staging dir"
   tx_guard_path "$STAGE" || refuse "staging would sit inside the public dotfiles repo (fix \$TMPDIR)"
   chmod 700 "$STAGE"
@@ -797,8 +959,8 @@ build_bundle() {
   [ "$GIT" = 1 ] && stage_git "$STAGE/b/git"
   py_files stage "$WORK/staged.json" "$STAGE/b/payload" || die "staging failed"
 
-  # secret scan over exactly the bytes that will ship (+ the patch + the unpushed commits' diffs),
-  # one list per placement class
+  # secret scan (FYI) over exactly the bytes that will ship (+ the patch + the unpushed commits'
+  # diffs), one list per placement class
   : > "$WORK/scan.home"; : > "$WORK/scan.abs"
   [ -d "$STAGE/b/payload/home" ] && find "$STAGE/b/payload/home" -type f -print0 >> "$WORK/scan.home"
   [ -d "$STAGE/b/payload/abs" ] && find "$STAGE/b/payload/abs" -type f -print0 >> "$WORK/scan.abs"
@@ -807,7 +969,8 @@ build_bundle() {
     [ -s "$WORK/unpushed-commits.txt" ] && printf '%s\0' "$WORK/unpushed-commits.txt" >> "$WORK/scan.abs"
   fi
   scan_by_class "$WORK/scan.home" "$WORK/scan.abs" "$STAGE/b/payload/"
-  why=$(enforce_scan_policy) || refuse "$why. Nothing was sent."
+  enforce_scan_policy > "$WORK/scan.summary"
+  note "secret scan: $(cat "$WORK/scan.summary")"
 
   write_manifest "$STAGE/b/manifest.json"
   ( cd "$STAGE/b" && COPYFILE_DISABLE=1 tar -czf "$STAGE/inner.tgz" manifest.json payload git ) \
@@ -829,10 +992,11 @@ write_manifest() {
     printf 'git=%s\ngit_origin=%s\ngit_branch=%s\ngit_upstream=%s\ngit_head=%s\n' "$GIT" "$G_ORIGIN" "$G_BRANCH" "$G_UPSTREAM" "$G_HEAD"
     printf 'git_bundle=%s\ngit_bundle_ref=%s\ngit_patch_sha256=%s\ngit_patch_bytes=%s\n' "$G_BUNDLE" "$G_REF" "$G_PATCH_SHA" "$G_PATCH_BYTES"
     printf 'git_worktree_is_root=%s\n' "$([ -n "$WT" ] && [ "$WT" = "$ROOT" ] && echo 1 || echo 0)"
+    printf 'secret_scan_status=%s\nsecret_scan_skipped_large=%s\n' "${SCAN_STATUS:-incomplete}" "${SCAN_SKIPPED_LARGE:-0}"
   } > "$WORK/meta"
-  python3 - "$WORK/meta" "$WORK/staged.json" "$SECR" "$WORK/untracked.raw" "$out" <<'PY' || die "manifest write failed"
+  python3 - "$WORK/meta" "$WORK/staged.json" "$SECR" "$SCAN_HITS_F" "$out" <<'PY' || die "manifest write failed"
 import json, os, sys
-meta_f, staged_f, secr_f, untracked_f, out = sys.argv[1:6]
+meta_f, staged_f, secr_f, hits_f, out = sys.argv[1:6]
 m = {}
 with open(meta_f, encoding="utf-8", errors="surrogateescape") as fh:
     for line in fh:
@@ -840,7 +1004,21 @@ with open(meta_f, encoding="utf-8", errors="surrogateescape") as fh:
         m[k] = v
 st = json.load(open(staged_f))
 files = st.get("files", [])
-secrets = [l.strip() for l in open(secr_f) if l.strip()] if os.path.exists(secr_f) else []
+shipped = set(f["abs"] for f in files if "abs" in f)
+moved, not_moved = [], []
+if os.path.exists(secr_f):
+    with open(secr_f, encoding="utf-8", errors="surrogateescape") as fh:
+        for line in fh:
+            ab, _, shown = line.rstrip("\n").partition("\t")
+            if ab and shown:
+                (moved if ab in shipped else not_moved).append(shown)
+hits = []
+if os.path.exists(hits_f):
+    with open(hits_f, encoding="utf-8", errors="surrogateescape") as fh:
+        for line in fh:
+            f, _, r = line.rstrip("\n").partition("\t")
+            if f:
+                hits.append({"file": f, "rule": r})
 g = None
 if m["git"] == "1":
     untracked = sum(1 for f in files if f["kind"] == "untracked")
@@ -850,7 +1028,7 @@ if m["git"] == "1":
          "patch": "git/uncommitted.patch", "patch_sha256": m["git_patch_sha256"],
          "patch_bytes": int(m["git_patch_bytes"] or 0), "untracked_count": untracked,
          "worktree": m["worktree"], "worktree_is_root": m["git_worktree_is_root"] == "1",
-         "staged_split_flattened": True, "env_files_present": [s for s in secrets if os.path.basename(s).lower().startswith(".env") or s.lower().endswith(".env")]}
+         "staged_split_flattened": True}
 manifest = {
     "format": 2, "tool": m["tool"], "sid": m["sid"], "cwd": m["cwd"] or None, "root": m["root"] or None,
     "user": m["user"], "home": m["home"], "repo_home": m["repo_home"] or None,
@@ -858,7 +1036,13 @@ manifest = {
     "sealed_after_exit_at": m["sealed_after_exit_at"] or None, "argv": m["argv"] or None,
     "versions": {"claude": m["claude_version"] or None, "codex": m["codex_version"] or None},
     "departure": {"head": m["git_head"] or None, "diff_sha256": m["git_patch_sha256"] or None},
-    "git": g, "excluded_secret_names": secrets,
+    "git": g,
+    # Owner policy 2026-09-26: secret-named repo files travel (inside the encrypted bundle).
+    # excluded_secret_names = secret-named files that exist but did NOT travel (a symlink, over the
+    # per-file cap, outside the repo) - normally empty; resumework tells B to reload those.
+    "secret_named_files_moved": sorted(set(moved)), "excluded_secret_names": sorted(set(not_moved)),
+    "secret_scan_status": m["secret_scan_status"], "secret_scan_hits": hits,
+    "secret_scan_skipped_large": int(m["secret_scan_skipped_large"] or 0),
     "skipped": [{"reason": r, "path": p} for r, p in st.get("skipped", [])],
     "files": files,
 }
@@ -912,12 +1096,35 @@ if [ "$DRY" = 1 ]; then
   [ "$GIT" = 1 ] && echo "  worktree: $WT"
   echo "  files:    $(jget "$WORK/plan.json" 'd["count"]') ($(human "$total"))  $(jget "$WORK/plan.json" '"  ".join("%s=%d" % (k, v[0]) for k, v in sorted(d["by_kind"].items()))')"
   echo "  placement: Claude/Codex state $(human "$(jget "$WORK/plan.json" 'd["by_class"]["home"]')") under the other Mac's own \$HOME; repo files $(human "$(jget "$WORK/plan.json" 'd["by_class"]["abs"]')") at the same absolute paths"
-  echo "  capped:   untracked + tmp/ context $(human "$(jget "$WORK/plan.json" 'd["capped_bytes"]')") of $(human "$TOTAL_CAP") (session transcripts do not count)"
+  echo "  capped:   untracked + ignored repo files $(human "$(jget "$WORK/plan.json" 'd["capped_bytes"]')") of $(human "$TOTAL_CAP")$([ "$FORCE" = 1 ] && echo ' (--force: caps lifted)') (session transcripts do not count)"
   if [ "$GIT" = 1 ]; then
     echo "  git:      ${G_BRANCH:-<detached>} @ ${G_HEAD:0:12}; commits no remote has: $G_UNPUSHED ($([ "$G_UNPUSHED" -gt 0 ] && echo bundle || echo 'no bundle; B fetches origin')); uncommitted patch: $(tx_git_diff_head "$WT" | wc -c | tr -d ' ') bytes"
   fi
-  if [ -s "$SECR" ]; then echo "  left behind on purpose (reload on B):"; sed 's/^/    - /' "$SECR"; fi
-  echo "  skipped:  $(jget "$WORK/plan.json" 'len(d["skipped"])') (machine-bound, symlink, unsafe or outside the repo) + $(grep -c '^heavy-dir' "$SKIP" | tr -d ' ') in heavy dirs"
+  python3 - "$WORK/plan.json" "$SECR" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+shipped = set(p for _, p in d["scan"])
+moved, stay = [], []
+with open(sys.argv[2], encoding="utf-8", errors="surrogateescape") as fh:
+    for line in fh:
+        ab, _, shown = line.rstrip("\n").partition("\t")
+        if ab and shown:
+            (moved if ab in shipped else stay).append(shown)
+if moved:
+    print("  secret-named files that travel (inside the encrypted bundle):")
+    for n in sorted(set(moved)):
+        print("    - " + n)
+if stay:
+    print("  secret-named files that will NOT travel (symlink / over the cap / outside the repo; reload on B):")
+    for n in sorted(set(stay)):
+        print("    - " + n)
+big = [p for r, p in d["skipped"] if r.startswith("over-")]
+if big:
+    print("  over the per-file cap, left out (use --force to include):")
+    for p in big:
+        print("    - " + p)
+PY
+  echo "  skipped:  $(jget "$WORK/plan.json" 'len(d["skipped"])') (machine-bound, symlink, other chats' state, over the per-file cap, unsafe or outside the repo) + $(grep -c '^heavy-dir' "$SKIP" | tr -d ' ') heavy dirs left out"
   echo "  10 largest:"
   python3 -c 'import json,sys
 for b, p in json.load(open(sys.argv[1]))["top10"]:
@@ -932,19 +1139,14 @@ with open(sys.argv[2], "wb") as h, open(sys.argv[3], "wb") as a:
         (h if klass == "home" else a).write(p.encode("utf-8", "surrogateescape") + b"\0")' \
     "$WORK/plan.json" "$WORK/scan.home" "$WORK/scan.abs"
   scan_by_class "$WORK/scan.home" "$WORK/scan.abs" ""
-  if why=$(enforce_scan_policy); then
-    echo "  secret scan: clean"
-  else
-    echo "  secret scan: $why"
-    would_refuse="${would_refuse}${would_refuse:+; }$why"
-  fi
+  echo "  secret scan: $(enforce_scan_policy)"
   echo "Nothing was written."
   if [ -n "$would_refuse" ]; then echo "A real run would REFUSE: $would_refuse" >&2; exit 2; fi
   exit 0
 fi
 
 # ------------------------------------------------------------------------------------------------
-# Seal-after-exit launcher (runs inside the live chat): validate fully, print the code, detach.
+# Seal-after-exit launcher (runs inside the live chat): validate, print the code, detach.
 # ------------------------------------------------------------------------------------------------
 lstart_of() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'; }
 
@@ -954,8 +1156,7 @@ if [ "$SEAL" = 1 ]; then
   WLSTART=$(lstart_of "$WPID")
   [ -n "$WLSTART" ] || refuse "the claude process ($WPID) is not running; send without --seal-after-exit instead"
   ARGV_STR=$(ps -o args= -p "$WPID" 2>/dev/null | tr '\n\t' '  ')
-  build_bundle                      # the full pipeline, so a refusal happens NOW, while someone is watching
-  rm -rf "$STAGE"; STAGE=""
+  build_bundle validate             # every check that can refuse, NOW, while someone is watching
   [ -n "$CODE_N" ] || CODE_N=$(tx_normalize "$(tx_new_code)") || die "could not generate a code"
   LOC=$(tx_locator "$CODE_N")
   SEALDIR=$(mktemp -d "${TMPDIR:-/tmp}/tx-seal.XXXXXX") || die "cannot create the sealer dir"

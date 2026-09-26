@@ -18,9 +18,18 @@
 #   tx_drop_dir                 -> prints (and creates) the iCloud drop folder; TX_DROP_DIR overrides
 #   tx_log <msg>                -> appends to ~/.claude/logs/transfer.log (mode 600); codes are redacted
 #   tx_expire_sweep             -> deletes *.tx / *.tx.sha256 / *.tx.failed older than 7 days in the drop dir
-#   tx_is_secret_name <path>    -> rc 0 if the basename looks secret-bearing (never copied)
-#   tx_is_never_name <relpath>  -> rc 0 if the path is machine-bound state (locks, sentinels, liveness)
-#   tx_is_heavy_path <relpath>  -> rc 0 if a component is a rebuildable heavy dir (node_modules, dist...)
+#   tx_is_secret_name <path>    -> rc 0 if the basename looks secret-bearing. REPORTING ONLY: such
+#                                  files travel inside the encrypted bundle; their names are listed
+#                                  in the manifest (secret_named_files_moved)
+#   tx_is_never_name <relpath>  -> rc 0 if the path is machine-bound state (locks, sentinels, liveness,
+#                                  pid files, sockets, keychains) - never copied
+#   tx_is_never_home <claude|codex> <rel-to-state-dir>
+#                               -> rc 0 if a Claude/Codex state file is machine-bound (login
+#                                  credentials, the session registry, Codex auth.json and thread
+#                                  locks) or tx_is_never_name says so - never copied
+#   tx_is_heavy_path <relpath>  -> rc 0 if a component is a rebuildable heavy dir (TX_HEAVY_DIRS)
+#   TX_HEAVY_DIRS               -> the space-separated heavy dir names (one list: tx_is_heavy_path and
+#                                  transfer-send.sh's repo walker both read it)
 #   tx_git_diff_head <dir>      -> the ONE canonical `git diff HEAD` both Macs hash (config-proof flags)
 #   tx_git_info_exclude <repo>  -> adds TRANSFER/CLAUDE.local/MISSION patterns to <common-dir>/info/exclude
 #   tx_resolve_self [path]      -> real directory of path after following symlinks (resumework runs via
@@ -34,8 +43,8 @@
 # PLACEMENT RULE (transfer-send.sh writes it, resumework enforces it): every payload file is one of
 #   "home" - Claude/Codex state ($HOME/.claude/..., $CODEX_HOME/...): stored relative to that state
 #            dir and placed under the RECEIVER's own real $HOME/.claude or CODEX_HOME;
-#   "abs"  - repo/worktree content (ROOT handoff, MISSION files, TRANSFER notes, untracked files,
-#            tmp/ context): stored by absolute path and placed at the SAME absolute path, which must
+#   "abs"  - repo/worktree content (ROOT handoff, MISSION files, TRANSFER notes, untracked and
+#            ignored files): stored by absolute path and placed at the SAME absolute path, which must
 #            sit under the receiver's own $HOME or one of its verified home aliases.
 #
 # WHY the public-repo guard: ~/.claude-dotfiles is a PUBLIC GitHub repo whose auto-sync stages
@@ -260,9 +269,14 @@ EOF
 }
 
 # ---------------------------------------------------------------------------------------------
-# What never travels
+# What never travels. Owner policy 2026-09-26: "just move everything" - secrets and every other
+# untracked or ignored repo file travel inside the encrypted bundle. The two things that never do:
+# machine-bound state (only meaningful on the Mac that wrote it; copying it would lie to the other
+# Mac about locks, liveness, logins or live processes) and rebuildable heavy dirs.
 # ---------------------------------------------------------------------------------------------
-tx_is_secret_name() {  # rc 0 if the BASENAME looks secret-bearing (case-insensitive)
+TX_HEAVY_DIRS="node_modules dist .next coverage .git .turbo .venv __pycache__"
+
+tx_is_secret_name() {  # rc 0 if the BASENAME looks secret-bearing (case-insensitive); reporting only
   local b="${1##*/}" had=0 rc=1
   shopt -q nocasematch && had=1
   shopt -s nocasematch
@@ -277,23 +291,36 @@ tx_is_never_name() {  # rc 0 if <relpath> is machine-bound state: pid/tty-bound,
   local rel="$1" base="${1##*/}" rest comp
   case "$base" in
     auto-compact-* | mission-liveness-* | resumed-* | .ctx-zone-bucket-* | transferred-* | \
-    transfer-arrived-* | prod.lock | .DS_Store) return 0 ;;
+    transfer-arrived-* | prod.lock | .DS_Store | *.pid | *.sock | *.socket | \
+    *.keychain | *.keychain-db) return 0 ;;
   esac
   rest="$rel"
   while [ -n "$rest" ]; do
     comp="${rest%%/*}"
-    case "$comp" in *.lock | node_modules) return 0 ;; esac
+    case "$comp" in
+      # Package-manager lockfiles are project content, not runtime locks: they travel.
+      yarn.lock | bun.lock | Cargo.lock | Gemfile.lock | poetry.lock | Pipfile.lock | composer.lock | \
+      flake.lock | pdm.lock | uv.lock | Podfile.lock | mix.lock | pubspec.lock) ;;
+      *.lock | node_modules) return 0 ;;
+    esac
     [ "$rest" = "$comp" ] && break
     rest="${rest#*/}"
   done
   return 1
 }
 
-tx_is_heavy_path() {  # rc 0 if a component is a rebuildable dependency/output dir
+tx_is_never_home() {  # tx_is_never_home <claude|codex> <path relative to that state dir>
+  case "$1:$2" in
+    claude:.credentials* | claude:sessions/* | codex:auth.json | codex:thread-writer-locks/*) return 0 ;;
+  esac
+  tx_is_never_name "$2"
+}
+
+tx_is_heavy_path() {  # rc 0 if a component is a rebuildable dependency/output dir (TX_HEAVY_DIRS)
   local rest="$1" comp
   while [ -n "$rest" ]; do
     comp="${rest%%/*}"
-    case "$comp" in node_modules | dist | .next | coverage | .git | .turbo | .venv | __pycache__) return 0 ;; esac
+    case " $TX_HEAVY_DIRS " in *" $comp "*) return 0 ;; esac
     [ "$rest" = "$comp" ] && break
     rest="${rest#*/}"
   done
