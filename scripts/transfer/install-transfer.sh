@@ -81,6 +81,38 @@ else
     rm -rf "$APP_TMP"
 fi
 
+# Settings this machine needs for cross-Mac messaging and /line display names. Idempotent:
+# backs the file up once per run, only adds what is missing, never removes or reorders anything.
+SETTINGS="$HOME/.claude/settings.json"
+if [ -f "$SETTINGS" ] && [ ! -L "$SETTINGS" ]; then
+    cp -p "$SETTINGS" "$SETTINGS.bak-transfer-$(date -u +%Y%m%dT%H%M%S)"
+    python3 - "$SETTINGS" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+d = json.load(open(p))
+changed = []
+if d.get("remoteControlAtStartup") is not True:
+    d["remoteControlAtStartup"] = True; changed.append("remoteControlAtStartup")
+if d.get("crossSessionInbound") != "accept":
+    d["crossSessionInbound"] = "accept"; changed.append("crossSessionInbound")
+cmd = "$HOME/.claude-dotfiles/scripts/hooks/line-apply-rename.sh"
+stop = d.setdefault("hooks", {}).setdefault("Stop", [])
+if not stop:
+    stop.append({"hooks": []})
+hooks = stop[0].setdefault("hooks", [])
+if not any(h.get("command") == cmd for h in hooks):
+    idx = next((i + 1 for i, h in enumerate(hooks) if "auto-compact-after-pre-compact" in h.get("command", "")), len(hooks))
+    hooks.insert(idx, {"type": "command", "command": cmd, "timeout": 10})
+    changed.append("Stop hook line-apply-rename.sh")
+tmp = p + ".tmp"
+json.dump(d, open(tmp, "w"), indent=2)
+os.replace(tmp, p)
+print("  settings: " + (", ".join(changed) + " added" if changed else "already configured"))
+PY
+else
+    echo "WARNING: $SETTINGS missing or a symlink - copy settings.json.template there first (docs/SETUP.md)." >&2
+fi
+
 case ":$PATH:" in
     *":$BIN_DIR:"*)
         echo "$BIN_DIR is on PATH."
