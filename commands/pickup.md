@@ -57,7 +57,7 @@ if [ "$ARG_NORM" = "cancel" ]; then
 fi
 
 echo "MODE=schedule"
-OUT=$(python3 "$HOME/.claude-dotfiles/scripts/pickup-time.py" "${ARGUMENTS:-}" 2>&1)
+OUT=$(python3 "$HOME/.claude-dotfiles/scripts/pickup-time.py" "$ARG_NORM" 2>&1)
 RC=$?
 echo "PICKUP_TIME_RC=$RC"
 echo "PICKUP_TIME_OUT=$OUT"
