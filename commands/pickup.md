@@ -99,16 +99,19 @@ Otherwise `PICKUP_TIME_OUT` is a JSON object:
    ```
    If nothing in this session looks unfinished, write `Nothing in flight — /pickup was armed
    pre-emptively.` instead.
-3. **Schedule two one-shot jobs**, both `recurring: false`, with `<note>` below replaced by the
-   absolute `NOTE_FILE` path:
+3. **Schedule two one-shot jobs**, both `recurring: false`, with `<note>` and `<state>` below
+   replaced by the absolute `NOTE_FILE` and `STATE_FILE` paths:
 
    MAIN (`CronCreate(cron=<cron from JSON>, recurring=false, prompt=...)`) → save as `id1`:
    > `[pickup] Automatic resume scheduled by /pickup. You most likely stopped because the Claude
    > usage limit ran out; it has reset now. This is not a new request from the user. Continue
    > exactly the work you were doing: your conversation above is intact, and your last turn was
    > probably cut off by the limit error. Resume note (written when /pickup was armed, so it may
-   > be older than your last turn; live context wins): <note>. If you were not mid-task, reply
-   > "pickup: nothing to resume" and stop.`
+   > be older than your last turn; live context wins): <note>. Resume ONLY if your last turn was
+   > cut off partway through work; if it finished normally or ended waiting on the user (a
+   > question, an approval, a choice), reply "pickup: nothing to resume" and stop. Either way,
+   > first CronDelete any remaining job whose prompt starts "[pickup backup]" and delete <note>
+   > and <state>.`
 
    BACKUP (`CronCreate(cron=<backup_cron from JSON>, recurring=false, prompt=...)`) → save as `id2`:
    > `[pickup backup] If a [pickup] resume already ran in this session and got a normal response,
@@ -131,23 +134,22 @@ Otherwise `PICKUP_TIME_OUT` is a JSON object:
    something), resume that work now, in this same turn, right after the report above. If nothing
    was interrupted, the report from step 5 is the whole response.
 
-After a resume prompt (`[pickup]` or `[pickup backup]`) gets a normal response and the model has
-actually picked the work back up (not the "nothing to resume" / "already resumed" short-circuits),
-delete both `<sid>.md` and `<sid>.json` for this session — the prompts above say this explicitly,
-but do it as an explicit step: the jobs already fired and won't fire again (`recurring: false`),
-so the files are stale from that point on.
+The MAIN prompt tells the resumed session to cancel the backup job and delete the note and state
+files itself, so a successful resume leaves nothing behind and the backup never spends a turn.
 
 ## Limits
 
 - **Per tab.** `/pickup` only knows about the session it runs in. Two tabs need two `/pickup` calls.
-- **Lost if the tab closes, the app restarts, or the Mac goes to sleep or shuts down before the
-  fire time.** Cron jobs here are session-only and in-memory — nothing persists them.
+- **Lost if the tab closes, the app restarts, or the Mac shuts down before the fire time.** Cron
+  jobs here are session-only and in-memory — nothing persists them. A Mac asleep at the fire time
+  may miss or delay it (untested); keep it awake if it matters.
 - **One-shots only fire while this tab is idle.** A job that comes due while you're mid-conversation
   fires at the next idle moment, not necessarily on the second.
 - **Running `/pickup` after the limit has already hit costs credits you don't have.** Arm it
   *before* you hit the wall, ideally as soon as you notice usage climbing.
-- **`:00`/`:30` explicit times may fire up to 90s early** (a `CronCreate` quirk); the 20-minute
-  backup exists mainly to cover this and a missed idle window, not to hedge a wrong reset time.
+- **Jobs on `:00`/`:30` fire up to 90s early** (a `CronCreate` quirk, seen live: a 12:30 job ran at
+  12:28:42). Computed times (no argument, `+Nm`) are stepped one minute off those marks
+  automatically; a time you type stays exact, and the 20-minute backup covers an early fire.
 - **Weekly-limit resumes are days out.** They only work if this exact tab stays open and the Mac
   stays on the whole time — `pickup-time.py` warns about this, and the report should carry the
   warning forward, not silently drop it.
