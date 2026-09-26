@@ -52,6 +52,8 @@ documented here to satisfy the G5 drift checker.
 | `handoff:session_started` | post-compact-primer.sh | Primer fired; SID + source logged |
 | `handoff:ctx_broker_invalidated` | post-compact-primer.sh | Stale-broker guard: ctx-<sid>.txt sidecar deleted at a compact/clear boundary so the first post-event UserPromptSubmit doesn't read a stale-high ctx%; SID + source logged |
 | `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD (R4 D6: logged AFTER resolver sets HANDOFF_PATH); SID8 + file + sentinel_present logged |
+| `handoff:transfer_away_warning` | post-compact-primer.sh | `/transfer`: `~/.claude/progress/transferred-<sid>` exists on this Mac, so the chat was moved away; the fork warning was emitted (every start) |
+| `handoff:transfer_arrived_notice` | post-compact-primer.sh | `/transfer`: one-shot `transfer-arrived-<sid>` marker (written by resumework) consumed; pointer to ROOT/TRANSFER.<sid>.md emitted; `notes_present` (yes or no) logged |
 
 ### Migration residue GC events (within auto-compact.log)
 

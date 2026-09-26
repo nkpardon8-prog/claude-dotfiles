@@ -55,6 +55,12 @@ and the receiving socket is bound at startup, so a window running an older build
 until it is **closed and reopened** — upgrading alone is not enough. The listing says which windows
 are in that state and why, so you never send into a void.
 
+**Windows on your other Macs.** A window running on another Mac signed in to the same claude.ai
+account, with Remote Control on (`remoteControlAtStartup: true`, plus `crossSessionInbound: "accept"`
+to receive), shows up in `ListAgents` as a Remote Control row and is messaged by that name with
+`SendMessage`, exactly like a local one. `find` and `list` cannot see those windows - nothing on this
+Mac's disk lists them - so when `find` has no local match it says so and points you at `ListAgents`.
+
 `set` also takes `--owns "<one line>"`, the window's own description of the domain it covers
 (`/line "billing" --owns "Stripe webhooks + invoice reconciliation"`). It shows in `list` and `find`
 as the tiebreaker between windows whose captions read alike, and it can be set on its own later

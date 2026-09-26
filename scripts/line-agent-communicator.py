@@ -988,6 +988,11 @@ def cmd_find(session_id: str, query: str) -> int:
 
     print(f"Nothing matches \"{query}\" - not running, and never seen named.")
     print("Run `list` to see everything, or ask which window they mean.")
+    # Remote Control peers (windows on the owner's other Macs) exist only inside the harness's
+    # ListAgents view - nothing on this disk lists them - so this script cannot search them. Point
+    # there instead of letting "nothing matches" read as "that window does not exist".
+    print("No local window matches. Windows on your other Macs appear in ListAgents as Remote "
+          "Control rows - message them by that name.")
     return 0
 
 

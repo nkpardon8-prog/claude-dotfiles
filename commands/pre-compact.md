@@ -40,10 +40,11 @@ Tokens are standalone (whitespace-fenced) or flag-form; everything else in `$ARG
 - `no-auto-compact` (or `--no-auto-compact`, "no auto compact") - skip Step 9.0 arming AND disarm any sentinel a previous run in this session armed.
 - `no-gitignore` (or "no gitignore") - skip Step 8 entirely.
 - `auto-confirm` (or `--auto-confirm`) - Step 5 proceeds without waiting for the user (the same happens after ~3 minutes of silence).
+- `no-document` (or `--no-document`) - skip Step 1 (`/document`) entirely. Used by `/transfer`, which needs a fast, fresh handoff and must not refresh project docs as a side effect.
 
 ### Map of the steps
 
-- Step 1: invoke the Skill tool with `skill: document`; skip if it reports nothing to document.
+- Step 1: invoke the Skill tool with `skill: document`; skip if it reports nothing to document, or if the `no-document` token is present.
 - Step 2: resolve `<project>` (session-established name, else `basename "$PWD"`).
 - Step 3: gather handoff context. 3.A then 3.B run sequentially; 3.C-3.F batch in parallel; 3.G after.
   - Step 3.A: pass pick. Quick floor 150 / ceiling 300; Deep 250/400; Chunked 400/500 (map-reduce over 3-4 chronological segments). Announce the pass + Phase 2 preview.
@@ -110,6 +111,8 @@ Pointer: this core is only the contract. The complete executable detail - every 
 <!-- CONTRACT-CORE-END -->
 
 ## Step 1: Run /document
+
+**Skip this step entirely when `$ARGUMENTS` carries the `no-document` token** (standalone or `--no-document`); go straight to Step 2.
 
 Invoke the Skill tool with `skill: document` to audit or bootstrap `docs/`. Continue once it returns. If `/document` reports "nothing substantial to document yet," skip it and proceed.
 

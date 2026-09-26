@@ -1,1 +1,1 @@
-{"assumption":"hermetic_fixture_satisfies_liveness_check","uname":"Darwin","os_version":"26.5","comm_is_basename":false,"comm_is_absolute_path":true,"comm_ends_in_fixture_binary_name":true,"real_script_listed_the_fixture_window":true}
+{"assumption":"hermetic_fixture_satisfies_liveness_check","uname":"Darwin","os_version":"27.0","comm_is_basename":false,"comm_is_absolute_path":true,"comm_ends_in_fixture_binary_name":true,"real_script_listed_the_fixture_window":true}

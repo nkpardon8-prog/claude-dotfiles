@@ -96,6 +96,12 @@ install_hook() {
 # 3 (infrastructure: no live windows to read, timeout) mean the tests could not run and
 # must NOT block. Collapsing 3 into failure would strand every commit on a machine with no
 # Claude windows open - the same self-inflicted-outage shape this suite exists to catch.
+#
+# Step 2.6 (2026-09-26) applies the identical contract to the /transfer suite
+# (scripts/tests/transfer-assumptions/), gated on scripts/transfer/ or its tests being staged.
+# That code writes chat bundles and must never let one land in this PUBLIC repo, so its suite
+# guards the same class of silent, recurring failure. Editing this file changes GEN_FP below, so
+# every clone reinstalls its hooks on the next SessionStart or sync - no separate version bump.
 install_hook pre-commit <<'EOF'
 #!/bin/bash
 # 1) 20k-char re-injection-ceiling guard (staged files only).
@@ -119,6 +125,25 @@ if git diff --cached --name-only 2>/dev/null \
   fi
   [ "$_lac_rc" = "0" ] || echo "NOTE: line-agent suite could not run (exit ${_lac_rc}) - not blocking." >&2
   rm -f "$_lac_out"
+fi
+# 2.6) transfer assumption suite - ONLY when /transfer's engine or its tests are staged.
+#      Same exit vocabulary as 2.5: 1 = a transfer defense broke (public-repo guard, secret
+#      exclusion, tamper refusal...) -> BLOCK; anything else means it could not run -> note only.
+if git diff --cached --name-only 2>/dev/null \
+     | grep -qE '^scripts/(transfer/|tests/transfer-assumptions/)'; then
+  _tx_out="$(mktemp "${TMPDIR:-/tmp}/transfer-precommit.XXXXXX")"
+  TRANSFER_TESTS_ALLOW_DEV=true \
+    bash "$HOME/.claude-dotfiles/scripts/tests/transfer-assumptions/run-all.sh" >"$_tx_out" 2>&1
+  _tx_rc=$?
+  if [ "$_tx_rc" = "1" ]; then
+    echo "BLOCKED: the transfer assumption suite FAILED - a /transfer defense regressed." >&2
+    tail -25 "$_tx_out" >&2
+    echo "Reproduce: TRANSFER_TESTS_ALLOW_DEV=true bash ~/.claude-dotfiles/scripts/tests/transfer-assumptions/run-all.sh" >&2
+    rm -f "$_tx_out"
+    exit 1
+  fi
+  [ "$_tx_rc" = "0" ] || echo "NOTE: transfer suite could not run (exit ${_tx_rc}) - not blocking." >&2
+  rm -f "$_tx_out"
 fi
 # 3) Block commit if any staged file contains a recognized secret pattern.
 #    secret-scan --staged reads INDEX BLOBS, so overwriting the worktree copy after

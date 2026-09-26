@@ -1,0 +1,597 @@
+#!/bin/bash
+# transfer-doctor - machine-readiness checker for /transfer + resumework.
+#
+# Standalone by design: it does NOT source transfer-lib.sh (owned by a
+# different build chunk). Every helper it needs is defined inline so it can
+# run on a bare machine before any other transfer script exists there.
+#
+# Usage:
+#   transfer-doctor [--local] [--json]
+#   transfer-doctor canary-write
+#   transfer-doctor canary-read <name> <sha256>
+#
+# Exit codes (main mode): 0 = no FAIL, 1 = at least one FAIL.
+# Exit codes (canary-read): 0 = verified, 1 = timed out or mismatch.
+#
+# Never prints secret values, emails, or tokens. Auth checks report only a
+# logged-in yes/no and the auth method.
+
+set -uo pipefail
+
+MODE_LOCAL=0
+MODE_JSON=0
+MIN_CLAUDE_VERSION="2.1.225"
+ICLOUD_BASE="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
+DROP_DIR="$ICLOUD_BASE/claude-transfers"
+DOTFILES_DIR="$HOME/.claude-dotfiles"
+SETTINGS_FILE="$HOME/.claude/settings.json"
+DENTALL_REPO="$HOME/Developer/CODEBASES/integrateAPI/projects/dentall"
+
+RESULT_STATUS=()
+RESULT_NAME=()
+RESULT_DETAIL=()
+
+record() {
+    RESULT_STATUS+=("$1")
+    RESULT_NAME+=("$2")
+    RESULT_DETAIL+=("$3")
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+have_python3() { have python3; }
+
+# version_ge A B -> exit 0 if dotted-numeric A >= B, else 1. Ignores any
+# trailing non-numeric suffix on each dotted component.
+version_ge() {
+    if ! have_python3; then
+        return 2
+    fi
+    python3 -c "
+import sys
+def parts(s):
+    out = []
+    for tok in s.strip().split('.'):
+        digits = ''
+        for ch in tok:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        out.append(int(digits) if digits else 0)
+    return tuple(out)
+a = parts('''$1''')
+b = parts('''$2''')
+sys.exit(0 if a >= b else 1)
+"
+}
+
+# ---------------------------------------------------------------------------
+# identity
+# ---------------------------------------------------------------------------
+check_identity() {
+    local user_name expected
+    user_name="${USER:-$(id -un 2>/dev/null)}"
+    expected="/Users/$user_name"
+    if [ "$HOME" = "$expected" ]; then
+        record PASS identity "user=$user_name home=$HOME"
+    else
+        record FAIL identity "user=$user_name home=$HOME (expected $expected)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# dotfiles
+# ---------------------------------------------------------------------------
+check_dotfiles() {
+    if [ ! -d "$DOTFILES_DIR" ]; then
+        record FAIL dotfiles "missing at $DOTFILES_DIR"
+        return
+    fi
+    if [ ! -d "$DOTFILES_DIR/.git" ]; then
+        record FAIL dotfiles "present at $DOTFILES_DIR but is not a git repo"
+        return
+    fi
+
+    local branch dirty_count clean_state fetch_rc behind
+    branch=$(git -C "$DOTFILES_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+    dirty_count=$(git -C "$DOTFILES_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${dirty_count:-0}" -eq 0 ]; then
+        clean_state="clean"
+    else
+        clean_state="dirty($dirty_count)"
+    fi
+
+    # Bound the fetch at 20s with a perl alarm (no timeout(1) on macOS).
+    if have perl; then
+        perl -e '
+            my $t = 20;
+            my $pid = fork;
+            if (!$pid) {
+                open(STDOUT, ">", "/dev/null"); open(STDERR, ">", "/dev/null");
+                exec("git", "-C", $ARGV[0], "fetch", "--quiet", "origin");
+                exit 127;
+            }
+            $SIG{ALRM} = sub { kill "TERM", $pid; waitpid($pid, 0); exit 124; };
+            alarm($t);
+            waitpid($pid, 0);
+            exit($? >> 8);
+        ' "$DOTFILES_DIR" >/dev/null 2>&1
+        fetch_rc=$?
+    else
+        git -C "$DOTFILES_DIR" fetch --quiet origin >/dev/null 2>&1
+        fetch_rc=$?
+    fi
+
+    if [ "$fetch_rc" -ne 0 ]; then
+        record WARN dotfiles "branch=$branch $clean_state; fetch origin failed or offline (rc=$fetch_rc)"
+        return
+    fi
+
+    behind=$(git -C "$DOTFILES_DIR" rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo "?")
+    if [ "$clean_state" != "clean" ]; then
+        record WARN dotfiles "branch=$branch $clean_state behind=$behind"
+    elif [ "$behind" != "0" ] && [ "$behind" != "?" ]; then
+        record WARN dotfiles "branch=$branch $clean_state behind=$behind"
+    else
+        record PASS dotfiles "branch=$branch $clean_state behind=$behind"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# symlinks
+# ---------------------------------------------------------------------------
+check_symlinks() {
+    local names="CLAUDE.md commands agents rules"
+    local n target resolved ok=1 detail=""
+    for n in $names; do
+        local link="$HOME/.claude/$n"
+        if [ ! -L "$link" ]; then
+            ok=0
+            detail="$detail $n=missing-or-not-symlink;"
+            continue
+        fi
+        target=$(readlink "$link" 2>/dev/null || echo "")
+        case "$target" in
+            "$DOTFILES_DIR"/*|"$DOTFILES_DIR")
+                detail="$detail $n=ok;"
+                ;;
+            *)
+                ok=0
+                detail="$detail $n=points-elsewhere($target);"
+                ;;
+        esac
+    done
+    if [ "$ok" -eq 1 ]; then
+        record PASS symlinks "$detail"
+    else
+        record FAIL symlinks "$detail"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# settings
+# ---------------------------------------------------------------------------
+check_settings() {
+    if [ ! -f "$SETTINGS_FILE" ]; then
+        record FAIL settings "missing at $SETTINGS_FILE"
+        return
+    fi
+    if ! have_python3; then
+        record FAIL settings "python3 not found; cannot inspect $SETTINGS_FILE"
+        return
+    fi
+    local out rc
+    out=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('''$SETTINGS_FILE'''))
+except Exception as e:
+    print('unparsable: %s' % e)
+    sys.exit(2)
+problems = []
+if d.get('remoteControlAtStartup') is not True:
+    problems.append('remoteControlAtStartup!=true')
+if d.get('crossSessionInbound') != 'accept':
+    problems.append('crossSessionInbound!=accept')
+if 'SessionStart' not in d.get('hooks', {}):
+    problems.append('hooks.SessionStart missing')
+ipm = d.get('isolatePeerMachines')
+if ipm not in (None, False):
+    problems.append('isolatePeerMachines=%r' % (ipm,))
+if problems:
+    print('; '.join(problems))
+    sys.exit(1)
+print('ok')
+sys.exit(0)
+" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        record PASS settings "$out"
+    else
+        record FAIL settings "$out"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# claude
+# ---------------------------------------------------------------------------
+check_claude() {
+    if ! have claude; then
+        record FAIL claude "not on PATH"
+        return
+    fi
+    local ver_raw ver ver_ok auth_raw auth_summary logged_in method
+    ver_raw=$(claude --version 2>&1)
+    ver=$(printf '%s\n' "$ver_raw" | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
+    if [ -z "$ver" ]; then
+        record FAIL claude "could not parse version from '$ver_raw'"
+        return
+    fi
+    if version_ge "$ver" "$MIN_CLAUDE_VERSION"; then
+        ver_ok=1
+    else
+        ver_ok=0
+    fi
+
+    auth_raw=$(claude auth status 2>&1)
+    auth_summary=$(printf '%s' "$auth_raw" | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+    logged_in = bool(d.get('loggedIn'))
+    method = d.get('authMethod', 'unknown')
+except Exception:
+    low = raw.lower()
+    logged_in = ('logged in' in low) and ('not logged in' not in low)
+    if 'claude.ai' in low:
+        method = 'claude.ai'
+    elif 'api key' in low or 'apikey' in low:
+        method = 'apikey'
+    else:
+        method = 'unknown'
+print('yes' if logged_in else 'no')
+print(method)
+" 2>/dev/null)
+    logged_in=$(printf '%s\n' "$auth_summary" | sed -n '1p')
+    method=$(printf '%s\n' "$auth_summary" | sed -n '2p')
+    [ -n "$logged_in" ] || logged_in="no"
+    [ -n "$method" ] || method="unknown"
+
+    if [ "$ver_ok" -ne 1 ]; then
+        record FAIL claude "version=$ver < $MIN_CLAUDE_VERSION (run: claude update)"
+    elif [ "$logged_in" != "yes" ]; then
+        record FAIL claude "version=$ver; not logged in (Remote Control needs claude.ai login)"
+    elif [ "$method" != "claude.ai" ]; then
+        record FAIL claude "version=$ver; logged in via $method, not claude.ai (Remote Control needs claude.ai)"
+    else
+        record PASS claude "version=$ver; logged in via claude.ai"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# codex
+# ---------------------------------------------------------------------------
+check_codex() {
+    if ! have codex; then
+        record WARN codex "not on PATH (only needed for codex transfers)"
+        return
+    fi
+    local ver login_raw login_rc logged_in
+    ver=$(codex --version 2>&1 | head -1)
+    login_raw=$(codex login status 2>&1)
+    login_rc=$?
+    if [ "$login_rc" -eq 0 ] && ! printf '%s' "$login_raw" | grep -qi "not logged in"; then
+        logged_in="yes"
+    else
+        logged_in="no"
+    fi
+    if [ "$logged_in" = "yes" ]; then
+        record PASS codex "$ver; logged in"
+    else
+        record WARN codex "$ver; not logged in (only needed for codex transfers)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# openssl
+# ---------------------------------------------------------------------------
+resolve_openssl() {
+    local candidate path_openssl
+    path_openssl=$(command -v openssl 2>/dev/null || echo "")
+    for candidate in /usr/bin/openssl "$path_openssl"; do
+        [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+        if printf 'probe' | "$candidate" enc -aes-256-cbc -pbkdf2 -iter 1000 -md sha256 -salt -pass stdin >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+check_openssl() {
+    local bin
+    bin=$(resolve_openssl)
+    if [ -z "$bin" ]; then
+        record FAIL openssl "no usable openssl with -pbkdf2 support found (checked /usr/bin/openssl and PATH)"
+        return
+    fi
+    local flavor_ver smoke_dir smoke_ok=0
+    flavor_ver=$("$bin" version 2>&1)
+
+    smoke_dir=$(mktemp -d "${TMPDIR:-/tmp}/txdoctor-openssl.XXXXXX" 2>/dev/null) || smoke_dir=""
+    if [ -n "$smoke_dir" ]; then
+        printf 'transfer-doctor-smoke-test' > "$smoke_dir/plain"
+        if printf '%s' "doctor-smoke-pass" | "$bin" enc -aes-256-cbc -pbkdf2 -iter 1000 -md sha256 -salt \
+                -pass stdin -in "$smoke_dir/plain" -out "$smoke_dir/enc" >/dev/null 2>"$smoke_dir/err"; then
+            if printf '%s' "doctor-smoke-pass" | "$bin" enc -d -aes-256-cbc -pbkdf2 -iter 1000 -md sha256 \
+                    -pass stdin -in "$smoke_dir/enc" -out "$smoke_dir/dec" >/dev/null 2>>"$smoke_dir/err"; then
+                if diff -q "$smoke_dir/plain" "$smoke_dir/dec" >/dev/null 2>&1; then
+                    smoke_ok=1
+                fi
+            fi
+        fi
+        rm -rf "$smoke_dir"
+    fi
+
+    if [ "$smoke_ok" -eq 1 ]; then
+        record PASS openssl "$bin ($flavor_ver); pbkdf2 encrypt/decrypt roundtrip ok"
+    else
+        record FAIL openssl "$bin ($flavor_ver); pbkdf2 encrypt/decrypt roundtrip FAILED"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# tools (git, gh, perl, shasum, tar)
+# ---------------------------------------------------------------------------
+check_tools() {
+    local detail="" ok=1 gh_state
+    if have git; then detail="$detail git=yes;"; else detail="$detail git=NO;"; ok=0; fi
+    if have perl; then detail="$detail perl=yes;"; else detail="$detail perl=NO;"; ok=0; fi
+    if have shasum; then detail="$detail shasum=yes;"; else detail="$detail shasum=NO;"; ok=0; fi
+    if have tar; then detail="$detail tar=yes;"; else detail="$detail tar=NO;"; ok=0; fi
+
+    if have gh; then
+        if gh auth status >/dev/null 2>&1; then
+            gh_state="yes(auth)"
+        else
+            gh_state="yes(not-auth)"
+        fi
+    else
+        gh_state="NO"
+    fi
+    detail="$detail gh=$gh_state;"
+
+    if [ "$ok" -eq 1 ]; then
+        case "$gh_state" in
+            "yes(auth)") record PASS tools "$detail" ;;
+            *) record WARN tools "$detail (gh needed only to clone a missing repo on B)" ;;
+        esac
+    else
+        record FAIL tools "$detail"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# icloud
+# ---------------------------------------------------------------------------
+check_icloud() {
+    if [ ! -d "$ICLOUD_BASE" ]; then
+        record FAIL icloud "iCloud Drive not found at $ICLOUD_BASE"
+        return
+    fi
+    local probe write_ok=0
+    probe="$ICLOUD_BASE/.transfer-doctor-probe-$$"
+    if printf 'probe' > "$probe" 2>/dev/null; then
+        write_ok=1
+        rm -f "$probe" 2>/dev/null
+    fi
+    if [ ! -d "$DROP_DIR" ]; then
+        if [ "$write_ok" -eq 1 ]; then
+            record WARN icloud "iCloud writable; drop dir missing at $DROP_DIR (install-transfer.sh creates it)"
+        else
+            record FAIL icloud "iCloud not writable; drop dir also missing"
+        fi
+        return
+    fi
+    if [ "$write_ok" -eq 1 ]; then
+        record PASS icloud "writable; drop dir present at $DROP_DIR"
+    else
+        record FAIL icloud "not writable at $ICLOUD_BASE"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# repo
+# ---------------------------------------------------------------------------
+check_repo() {
+    if [ -d "$DENTALL_REPO/.git" ]; then
+        record PASS repo "$DENTALL_REPO"
+        return
+    fi
+    if [ "$MODE_LOCAL" -eq 1 ]; then
+        record WARN repo "missing at $DENTALL_REPO"
+    else
+        record FAIL repo "missing at $DENTALL_REPO"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# path (resumework) - skipped in --local
+# ---------------------------------------------------------------------------
+check_path() {
+    if [ "$MODE_LOCAL" -eq 1 ]; then
+        return
+    fi
+    if have resumework; then
+        record PASS path "resumework at $(command -v resumework)"
+    else
+        record FAIL path "resumework not on PATH (run install-transfer.sh)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# disk
+# ---------------------------------------------------------------------------
+check_disk() {
+    local free_gb
+    free_gb=$(df -g /System/Volumes/Data 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -z "$free_gb" ]; then
+        record WARN disk "could not determine free space on /System/Volumes/Data"
+        return
+    fi
+    if [ "$free_gb" -lt 20 ]; then
+        record WARN disk "${free_gb}GB free (below 20GB)"
+    else
+        record PASS disk "${free_gb}GB free"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# canary-write / canary-read (Round 1 revision item 15: prove both Macs
+# share one iCloud account by round-tripping a random file through the drop
+# dir; canary-read forces the dataless placeholder to materialize.)
+# ---------------------------------------------------------------------------
+canary_write() {
+    mkdir -p "$DROP_DIR" 2>/dev/null
+    local host ts name path content sha
+    host=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "unknown-host")
+    ts=$(date +%s)
+    name=".canary-$host-$ts"
+    path="$DROP_DIR/$name"
+    content=$(head -c 64 /dev/urandom 2>/dev/null | shasum -a 256 | awk '{print $1}')
+    printf '%s' "$content" > "$path"
+    sha=$(shasum -a 256 "$path" | awk '{print $1}')
+    printf '%s %s\n' "$name" "$sha"
+}
+
+canary_read() {
+    local name="$1" expected_sha="$2"
+    local path="$DROP_DIR/$name"
+    local deadline materialized actual_sha now
+    deadline=$(( $(date +%s) + 300 ))
+    materialized=0
+    while :; do
+        now=$(date +%s)
+        if [ -e "$path" ]; then
+            # Reading forces download of a dataless placeholder.
+            cat "$path" > /dev/null 2>/dev/null || true
+            if ! ls -lO "$path" 2>/dev/null | awk '{print $5}' | grep -q '^dataless$'; then
+                materialized=1
+                break
+            fi
+        fi
+        if [ "$now" -ge "$deadline" ]; then
+            break
+        fi
+        sleep 5
+    done
+    if [ "$materialized" -ne 1 ]; then
+        echo "FAIL canary-read $name did not materialize within 5 minutes" >&2
+        return 1
+    fi
+    actual_sha=$(shasum -a 256 "$path" | awk '{print $1}')
+    if [ "$actual_sha" = "$expected_sha" ]; then
+        rm -f "$path"
+        echo "PASS canary-read $name sha256 matched; both Macs share one iCloud account"
+        return 0
+    fi
+    echo "FAIL canary-read $name sha256 mismatch (expected $expected_sha got $actual_sha)" >&2
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+print_text() {
+    local i
+    for i in "${!RESULT_STATUS[@]}"; do
+        printf '%-4s  %-10s  %s\n' "${RESULT_STATUS[$i]}" "${RESULT_NAME[$i]}" "${RESULT_DETAIL[$i]}"
+    done
+}
+
+print_json() {
+    if ! have_python3; then
+        echo '[]'
+        return
+    fi
+    local tmp i
+    tmp=$(mktemp "${TMPDIR:-/tmp}/txdoctor-json.XXXXXX")
+    : > "$tmp"
+    for i in "${!RESULT_STATUS[@]}"; do
+        printf '%s\x01%s\x01%s\n' "${RESULT_STATUS[$i]}" "${RESULT_NAME[$i]}" "${RESULT_DETAIL[$i]}" >> "$tmp"
+    done
+    python3 -c "
+import json, sys
+rows = []
+with open('''$tmp''', 'r') as f:
+    for line in f:
+        line = line.rstrip('\n')
+        if not line:
+            continue
+        parts = line.split('\x01')
+        status = parts[0] if len(parts) > 0 else ''
+        name = parts[1] if len(parts) > 1 else ''
+        detail = parts[2] if len(parts) > 2 else ''
+        rows.append({'status': status, 'name': name, 'detail': detail})
+print(json.dumps(rows, indent=2))
+"
+    rm -f "$tmp"
+}
+
+main() {
+    if [ "${1:-}" = "canary-write" ]; then
+        canary_write
+        exit $?
+    fi
+    if [ "${1:-}" = "canary-read" ]; then
+        if [ $# -lt 3 ]; then
+            echo "usage: transfer-doctor canary-read <name> <sha256>" >&2
+            exit 2
+        fi
+        canary_read "$2" "$3"
+        exit $?
+    fi
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --local) MODE_LOCAL=1 ;;
+            --json) MODE_JSON=1 ;;
+            *)
+                echo "usage: transfer-doctor [--local] [--json] | canary-write | canary-read <name> <sha256>" >&2
+                exit 2
+                ;;
+        esac
+        shift
+    done
+
+    check_identity
+    check_dotfiles
+    check_symlinks
+    check_settings
+    check_claude
+    check_codex
+    check_openssl
+    check_tools
+    check_icloud
+    check_repo
+    check_path
+    check_disk
+
+    if [ "$MODE_JSON" -eq 1 ]; then
+        print_json
+    else
+        print_text
+    fi
+
+    local i
+    for i in "${!RESULT_STATUS[@]}"; do
+        if [ "${RESULT_STATUS[$i]}" = "FAIL" ]; then
+            exit 1
+        fi
+    done
+    exit 0
+}
+
+main "$@"

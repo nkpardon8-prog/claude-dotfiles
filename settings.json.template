@@ -232,6 +232,7 @@
   "effortLevel": "xhigh",
   "skipDangerousModePermissionPrompt": true,
   "remoteControlAtStartup": true,
+  "crossSessionInbound": "accept",
   "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
   "_mission_write_note": "The mission-write.sh allow entry MUST stay an absolute literal path (permission allow patterns do not expand $HOME or ~). On a fresh machine, rewrite /Users/omidzahrai to the installing user's home: sed -i '' 's|/Users/omidzahrai|/Users/<you>|' ~/.claude/settings.json",
