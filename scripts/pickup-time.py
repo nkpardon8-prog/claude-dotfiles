@@ -261,7 +261,7 @@ def main():
         else:
             fire, source = resolve_clock(now, arg)
 
-    fire = ceil_to_minute(fire)
+    fire = ceil_to_minute(int(fire))
     if fire - now < MIN_LEAD:
         err("too soon - at least 2 minutes out")
     if fire - now > MAX_OUT:
