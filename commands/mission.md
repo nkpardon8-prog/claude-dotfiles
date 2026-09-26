@@ -271,23 +271,14 @@ Used by status, resume, and every post-compaction re-entry:
 
 The conductor is the window YOU are running in, and its model is set by the owner at launch
 (`claude --model`). **No file can change it and this playbook must never try.** What it CAN do is
-notice a mismatch and say so, which is the difference between a routing decision and a routing hope.
+say what it is actually running as, so the owner sees the real setting instead of assuming one.
 
-Standing setting: **Opus 4.8 at xhigh** — authority and continuity for the whole mission. The lanes
-below it are routed per call; the conductor is not, because it is the one thing that has to remember
-everything across compactions.
-
-At mission start, state the model you are actually running as. If it is not the expected conductor
-model, emit ONE loud line and continue:
-
-```
-mission: WARNING - conductor model is <actual>, expected Opus 4.8 at xhigh. Routing below the
-conductor is unaffected, but authority/continuity assumptions in this playbook were written for
-that setting. Owner set this at launch; /mission cannot change it.
-```
-
-Do NOT stop the mission over it. A conductor on the wrong model still conducts; a mission that
-refuses to start because of a launch flag is worse than one that says what it noticed.
+At mission start, state the model you are actually running as — ONCE, one line. The owner chooses
+the conductor model at launch (Opus 5.5 or Opus 4.8); either is a valid conductor, so there is no
+"expected" model to warn against. Subagents are not the conductor: they follow their agent
+definitions (`claude-opus-5-5` at `medium` effort unless a definition says otherwise). The conductor
+is the one thing that has to remember everything across compactions, which is why it is set at
+launch and never re-routed per call.
 
 Every `mission-write.sh` call needs `<sid>` and `<root>`, and a fresh `/mission` invocation
 (unlike `/post-compact-resume`) has **no Stop-hook arg supplying them**. Resolve all three ONCE,
@@ -1984,9 +1975,11 @@ conversation memory; treat it as a COLD START and read ALL state from the log/br
    `ScheduleWakeup` while STILL HOLDING the lock, then release only after you know the outcome (so a
    schedule failure`s durable fallback write is never done lock-free). Call it with:
    - `delaySeconds`: a **~60s floor** when a transition is actively in flight; a **longer fallback
-     heartbeat** (up to the 3600s ceiling) while a tracked `run_in_background` job is pending — do NOT
-     poll a 40-minute job every 60s; the completion wake is primary, the heartbeat is just the backstop
-     if that wake is ever lost. The tool **clamps `delaySeconds` to [60, 3600]s**.
+     heartbeat** (up to the **3300s** /mission ceiling) while a tracked `run_in_background` job is
+     pending — do NOT poll a 40-minute job every 60s; the completion wake is primary, the heartbeat is
+     just the backstop if that wake is ever lost. The tool clamps `delaySeconds` to [60, 3600]s;
+     **/mission caps at 3300** so a wake lands inside the 1h prompt-cache TTL — a 3600s wake lands just
+     past it and re-caches the whole context (~360k tokens measured) instead of ~1k. Never pass >3300.
    - `prompt`: the SAME self-contained tick body (§12.2), verbatim.
    - `reason`: e.g. `"mission <sid> tick"`.
    - **On SUCCESS** → release the lock and **RETURN immediately** (nothing else this turn).
@@ -2023,8 +2016,8 @@ Run the §12.1 mission wake routine EXACTLY (use <MW> for every bridge verb: cur
      churning after a couple re-reads, go to step 7 and schedule a short heartbeat.
   6. Bank/dispatch with the existing idtags (FAILED -> retry, then §10 STOP-LOUD; never proceed).
   7. If a §12.3 stop condition holds, release the lock and RETURN WITHOUT rescheduling. Else call
-     ScheduleWakeup WHILE STILL HOLDING the lock (delaySeconds in [60,3600] — 60s floor / long heartbeat
-     even while a tracked job is pending, prompt = THIS SAME body, reason); it is the LAST continuation-
+     ScheduleWakeup WHILE STILL HOLDING the lock (delaySeconds in [60,3300] — 60s floor / long heartbeat
+     capped at 3300s to stay inside the 1h cache TTL, even while a tracked job is pending, prompt = THIS SAME body, reason); it is the LAST continuation-
      deciding call (only the tick-lock release may follow), and the lock release FOLLOWS its outcome. On SUCCESS release the lock + RETURN. On FAILURE retry once; if
      it still fails, write the pending-stop fallback (the atomic human-STOP opener) UNDER the lock, THEN release + STOP-LOUD;
      never yield naked. Then RETURN.

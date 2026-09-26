@@ -15,6 +15,8 @@
 #     worse than a missed question. Every failure path is `exit 0` with no output.
 #   * Emits NOTHING when there is nothing to ask. Silence is the overwhelmingly common case and
 #     an unconditional preamble would be pure noise on every prompt.
+#   * Gated FIRST on the per-sid arming sentinel (~/.claude/progress/mission-liveness-<sid>.json,
+#     the same file mission-liveness.sh uses): an unarmed session exits before any git/lib work.
 #   * Resolves the mission STRICTLY BY SID via mission_resolve_path — never by cwd, never by
 #     mtime, never another session's file. Several windows routinely sit in the same repo.
 #   * Throttled to once per (session, pd-id-set): re-asking the same unanswered question on every
@@ -34,17 +36,33 @@ MAX_QUESTIONS="${MISSION_REASK_MAX_QUESTIONS:-8}"
 PAYLOAD=$(cat 2>/dev/null) || exit 0
 [ -n "$PAYLOAD" ] || exit 0
 
-_field() { printf '%s' "$PAYLOAD" | python3 -c '
-import json,sys
+# ONE python3 call parses both fields (was two - each python start is ~20-40ms on every prompt).
+# Output is `<sid>\t<cwd>\n`. The sid is sanitized HERE, and an empty sid prints nothing: a line
+# starting with a tab would be eaten by `read` (tab is IFS whitespace, so leading tabs collapse)
+# and the cwd would land in SID. A cwd containing a tab/newline/CR cannot round-trip through this
+# line format, so it is dropped and the $PWD fallback below applies.
+PARSED=$(printf '%s' "$PAYLOAD" | python3 -c '
+import json,re,sys
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(0)
-v=d.get(sys.argv[1]) if isinstance(d,dict) else None
-if isinstance(v,str): sys.stdout.write(v)
-' "$1" 2>/dev/null; }
-
-SID=$(_field session_id | tr -cd 'A-Za-z0-9_-' | head -c 128)
-CWD=$(_field cwd)
+if not isinstance(d,dict): sys.exit(0)
+sid=d.get("session_id"); cwd=d.get("cwd")
+sid=re.sub(r"[^A-Za-z0-9_-]","",sid)[:128] if isinstance(sid,str) else ""
+cwd=cwd if isinstance(cwd,str) and not any(c in cwd for c in "\t\n\r") else ""
+if sid: sys.stdout.write(sid+"\t"+cwd+"\n")
+' 2>/dev/null) || exit 0
+SID=""; CWD=""
+IFS=$'\t' read -r SID CWD <<< "$PARSED"
+SID=$(printf '%s' "$SID" | tr -cd 'A-Za-z0-9_-' | head -c 128)
 [ -n "$SID" ] || exit 0
+
+# CHEAP EARLY EXIT: no mission armed for this sid -> nothing can be owed. This hook fires on EVERY
+# prompt of EVERY session; without this gate each one paid for a git root lookup + sourcing two
+# libs. The arming sentinel is the same one mission-liveness.sh gates on: mission-write.sh writes it
+# on `create` and on every successful bridge mutation, /mission's wake step 0 re-arms it, and it is
+# removed only at the lifecycle close (after which the mission is not active and never re-asks).
+[ -f "$HOME/.claude/progress/mission-liveness-$SID.json" ] || exit 0
+
 [ -n "$CWD" ] && [ -d "$CWD" ] || CWD="$PWD"
 case "$CWD" in *..*) exit 0 ;; esac
 

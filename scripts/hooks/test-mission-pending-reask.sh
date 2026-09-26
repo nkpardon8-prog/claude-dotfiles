@@ -163,6 +163,36 @@ else
   fail "long question text is byte-capped" "kept ${XCOUNT} chars"
 fi
 
+# ── 17. A cwd containing SPACES is parsed intact (single tab-separated parse) ───────────────────
+# If the parse split on spaces, CWD would be a non-existent prefix, fall back to $PWD (not this
+# root) and the hook would stay silent — so FIRING here is the proof the path survived.
+R17=$(fresh_root "r17 dir with spaces"); S17="${UNIQ}-spaces"
+seed_mission "$S17" "$R17"
+bash "$MWSH" pending "$S17" "$R17" "spaceq" "SPACES-IN-CWD-MARKER" >/dev/null 2>&1
+run_hook "$S17" "$R17"
+[ "$RC" = 0 ] && has "SPACES-IN-CWD-MARKER" "$OUT" "a cwd containing spaces is parsed intact and fires" \
+  || fail "a cwd containing spaces is parsed intact and fires" "rc=$RC"
+
+# ── 18. An UNARMED sid exits 0 silently, before any git/lib work ────────────────────────────────
+R18=$(fresh_root r18); S18="${UNIQ}-unarmed"
+seed_mission "$S18" "$R18"
+bash "$MWSH" pending "$S18" "$R18" "armq" "UNARMED-GATE-MARKER" >/dev/null 2>&1
+ARM18="$HOME/.claude/progress/mission-liveness-${S18}.json"
+ARM18_SAVED=$(cat "$ARM18" 2>/dev/null)
+rm -f "$ARM18"
+run_hook "$S18" "$R18"
+[ "$RC" = 0 ] && [ -z "$OUT" ] && pass "an unarmed sid exits 0 with no output" \
+  || fail "an unarmed sid exits 0 with no output" "rc=$RC out=${OUT:0:80}"
+
+# ── 19. NEGATIVE CONTROL for 18: same fixture, sentinel restored -> it FIRES ────────────────────
+if [ -n "$ARM18_SAVED" ]; then
+  printf '%s' "$ARM18_SAVED" > "$ARM18"
+  run_hook "$S18" "$R18"
+  has "UNARMED-GATE-MARKER" "$OUT" "same fixture WITH the arming sentinel fires (control for 18)"
+else
+  fail "same fixture WITH the arming sentinel fires (control for 18)" "create did not arm $ARM18"
+fi
+
 # ── 16. Malformed / empty stdin never breaks a prompt ───────────────────────────────────────────
 RC_A=0; printf 'not json at all' | bash "$HOOK" >/dev/null 2>&1 || RC_A=$?
 RC_B=0; printf ''                | bash "$HOOK" >/dev/null 2>&1 || RC_B=$?
