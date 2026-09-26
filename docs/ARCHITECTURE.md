@@ -259,7 +259,9 @@ the tick-lock release may follow) AND that call SUCCEEDED, or (b) it is at a gen
 stop point. A **scheduled wake is the ONLY continuation
 owner** - a tracked `run_in_background` job is NOT sufficient alone (its completion wake can be
 lost), so a turn yielding with a job pending STILL schedules a long fallback heartbeat: the
-completion is the fast signal, the heartbeat the backstop. Anything else is a "naked yield" and the
+completion is the fast signal, the heartbeat the backstop. Every `/mission` wake is capped at
+**3300s** (not the 3600s tool maximum): a wake inside the 1h prompt-cache TTL re-caches ~1k tokens,
+while one landing just past it re-caches the whole context (~360k measured). Anything else is a "naked yield" and the
 mission freezes. A failed schedule retries then STOPS LOUD (a `pending` + human AWAIT), never silent.
 
 The two wake SIGNALS are both empirically proven: a tracked `run_in_background` Bash re-invokes the

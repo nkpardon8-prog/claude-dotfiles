@@ -2,6 +2,29 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-09-26 - Token usage: cheaper agents, smaller implement chunks, cache-aware mission wakes
+
+Cuts Claude token spend without lowering review quality. Measure before/after with the new
+`scripts/token-usage-report.py` (spend by component, agent type and model, big cache re-writes by
+cause, 5m vs 1h cache-write split, loop-tick gap buckets).
+
+- **Agents:** every `agents/*.md` now pins the exact `claude-opus-5-5` at `effort: medium`;
+  `criticer` and `parallelizer` run `claude-sonnet-5` at medium. New `review-worker` agent (Opus 5.5,
+  medium) replaces `general-purpose` + `model: "opus"` at every `/god-review` and `/god-report`
+  Claude spawn. The skill-contract lint now allows those exact model IDs.
+- **Settings:** `subagentPromptCacheTtl: "1h"`, so subagent prompt caches survive long tool waits.
+- **`/implement`:** chunks are 1-3 tasks; implementers receive their chunk's task text plus the
+  plan's shared invariants instead of reading the whole plan; the Sonnet implementer route is gone
+  (all implementers run Opus 5.5 at medium).
+- **`/plan`:** the anonymized meta-reviewer is now a Codex pass (`gpt-6-sol` at xhigh), run
+  backgrounded with a bounded wait; still skipped silently on failure.
+- **`/mission`:** `ScheduleWakeup` capped at 3300s (was 3600s) so every wake lands inside the 1h
+  prompt-cache TTL (~1k tokens re-cached instead of ~360k). The conductor now states the model it
+  runs as instead of asserting Opus 4.8 at xhigh.
+- **`mission-pending-reask.sh`:** exits before any git/lib work when no mission is armed for the
+  session, parses the payload with one python call instead of two, and is registered with a 15s
+  timeout (was 5s).
+
 ## 2026-09-26 - `/transfer`: move a live chat between Macs; `/line` names across Macs
 
 ### What it does
