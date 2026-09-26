@@ -196,6 +196,35 @@ Then start a session: global rules should load, and `/` should list the commands
 
 ---
 
+## Second Mac (transfer + cross-Mac messaging)
+
+Do this once on a second Mac to enable `/transfer` (move a live chat between Macs) and cross-Mac
+agent messaging (`ListAgents` / `SendMessage`).
+
+1. **Pull the dotfiles.** Clone or `git pull` at `~/.claude-dotfiles` (Step 1 above).
+2. **Symlink into `~/.claude`** (Step 3 above).
+3. **Merge these settings** from `settings.json.template` into `~/.claude/settings.json` (Step 4
+   above): `"remoteControlAtStartup": true`, `"crossSessionInbound": "accept"`, and the `Stop` hook
+   line running `scripts/hooks/line-apply-rename.sh` (it types the live `/rename` into this window's
+   own Terminal tab when `/line` sets a display name).
+4. **Run the installer**: `bash ~/.claude-dotfiles/scripts/transfer/install-transfer.sh` —
+   idempotently symlinks `resumework` and `transfer-doctor` onto `~/.local/bin` and creates the
+   iCloud `claude-transfers/` drop dir.
+5. **Different username on this Mac?** A transfer restores repo files (handoff, worktree, TRANSFER
+   notes) at the SAME absolute path as the sending Mac, so if this Mac logs in as a different
+   account, run once: `sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh <the-other-Macs-username>`.
+   This creates a directory owned by THIS account, aliasing the other Mac's username so paths
+   written under it still resolve here — needed in both transfer directions.
+6. **Clone every repo** you'll transfer chats for, at the same absolute path as the other Mac.
+7. **Log in**: `claude` (the claude.ai account Remote Control needs) and `codex login`.
+8. **Verify.** Run `transfer-doctor` — every line should read PASS. Then prove both Macs share one
+   iCloud account: on this Mac run `transfer-doctor canary-write`, and on the other Mac run
+   `transfer-doctor canary-read <name> <sha256>` with the values it printed.
+
+Full command reference: `commands/transfer.md`. What each bound script does: `docs/COMMANDS.md`.
+
+---
+
 ## Auto-sync behavior
 
 | Event | Action |
