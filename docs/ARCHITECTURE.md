@@ -54,6 +54,30 @@ How `~/.claude-dotfiles` plugs into Claude Code, and what runs when.
 
 Edit a file in `~/.claude-dotfiles/`, the change is live in the next session — no copy step.
 
+Two more scripts are linked onto `PATH` (not into `~/.claude/`), by `install-transfer.sh`:
+
+```
+~/.local/bin/resumework       →   ~/.claude-dotfiles/scripts/transfer/resumework
+~/.local/bin/transfer-doctor  →   ~/.claude-dotfiles/scripts/transfer/transfer-doctor
+```
+
+---
+
+## Transfer flow (`/transfer` + `resumework`)
+
+`/transfer`, run inside a live chat on Mac A, writes a fresh handoff and starts a detached sealer
+that waits for A's own process to exit, then packages the transcript, `/line` name, handoff/mission
+files and the git worktree into one encrypted file in iCloud Drive and prints a one-time code. On
+Mac B, the owner runs `resumework <code>` in Terminal: it downloads and decrypts the bundle, verifies
+every checksum, restores everything, and `exec`s `claude --resume <sid>` (or `codex resume <id>`).
+Nothing runs on both Macs at once — the sealer only writes after A's chat has closed.
+
+**Placement rule:** Claude/Codex session state (transcripts, chains, memory) is re-homed under the
+receiving Mac's own `$HOME`; repo files (the git worktree, handoff, MISSION/TRANSFER notes,
+untracked files) keep the SAME absolute path as on the sending Mac. `scripts/transfer/make-home-alias.sh`
+bridges the second case when the two Macs log in as different usernames. Full design:
+`commands/transfer.md`; what each script does: `docs/COMMANDS.md`.
+
 ---
 
 ## Sync flow (multi-device)
