@@ -129,7 +129,12 @@ done
 NOW=$(epoch 2026 9 26 12 0)
 run +90m
 check "+90m -> exit 0" "0" "$RC"
-check "+90m -> now + 5400" "$((NOW + 5400))" "$(field "$OUT" fire_epoch)"
+# 12:00 + 90m = 13:30, a :30 mark - computed times step one minute off it (early-fire quirk).
+check "+90m -> now + 5400, nudged off :30" "$((NOW + 5460))" "$(field "$OUT" fire_epoch)"
+run +95m
+check "+95m -> now + 5700 (not on :00/:30, unchanged)" "$((NOW + 5700))" "$(field "$OUT" fire_epoch)"
+run 1:30pm
+check "typed 1:30pm stays exact (no nudge)" "$(epoch 2026 9 26 13 30)" "$(field "$OUT" fire_epoch)"
 
 run +1m
 check "+1m -> exit 2 (under lead time)" "2" "$RC"
