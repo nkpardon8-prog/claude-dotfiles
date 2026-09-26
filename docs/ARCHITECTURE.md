@@ -30,6 +30,9 @@ How `~/.claude-dotfiles` plugs into Claude Code, and what runs when.
 │   ├── secret-scan.sh                     (pre-commit / sync secret gate)
 │   ├── clean-dead-processes.sh            (RAM cleanup, cron 2-day)
 │   ├── whisper-transcribe.sh              (used by /transcribe)
+│   ├── transfer/                          (used by /transfer: transfer-lib.sh, transfer-send.sh,
+│   │                                        resumework, transfer-doctor, install-transfer.sh,
+│   │                                        make-home-alias.sh)
 │   ├── hooks/                             (lifecycle hooks - see scripts/hooks/README.md)
 │   ├── progress/on-session-start-cleanup.sh
 │   ├── lint-commands/                     (skill size + contract lints)
