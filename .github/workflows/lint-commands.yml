@@ -160,6 +160,7 @@ jobs:
             scripts/hooks/test-codex-build-chunk.sh \
             scripts/hooks/test-mission-doc-drift.sh \
             scripts/hooks/test-mission-pending-reask.sh \
+            scripts/hooks/test-pickup-time.sh \
             scripts/hooks/test-prod-classifier-fixtures.py \
             scripts/hooks/test-no-detach-fixtures.py ; do
             echo "=== $h ==="
