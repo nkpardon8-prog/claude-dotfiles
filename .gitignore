@@ -112,3 +112,13 @@ MISSION.*.md
 MISSION.*.log
 **/.mission-backups/
 **/.mission-archive/
+
+# /transfer artifacts (2026-09-26) — TRANSFER.<sid>.md is the per-transfer manifest the sender/
+# receiver append to at ROOT (never in this repo, but a belt-and-suspenders entry costs nothing);
+# *.tx / *.tx.sha256 / *.tx.failed are the encrypted bundle + sidecar/failure markers, which must
+# never land in this PUBLIC repo even transiently (the real guard is tx_guard_path, this is the
+# second line of defense).
+TRANSFER.*.md
+*.tx
+*.tx.sha256
+*.tx.failed
