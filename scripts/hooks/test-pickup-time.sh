@@ -139,11 +139,9 @@ NOW=$(epoch 2026 9 26 12 0)
 FIVE_RESET=$((NOW + 3600))
 SEVEN_RESET=$((NOW + 5 * 86400))
 
-mkrl "$NOW" "$FIVE_RESET" 0.9 "allowed" "$SEVEN_RESET" 0.5 "allowed"
-run
-check "auto: five_h_reset + 180" "0" "$RC"
-PICKUP_RATELIMIT_FILE="$RATELIMIT" true  # no-op, PICKUP_RATELIMIT_FILE set on the run below
 run_auto() { OUT=$(PICKUP_NOW="$NOW" PICKUP_RATELIMIT_FILE="$RATELIMIT" python3 "$SCRIPT" 2>"$TMP/err"); RC=$?; ERR=$(cat "$TMP/err"); }
+
+mkrl "$NOW" "$FIVE_RESET" 0.9 "allowed" "$SEVEN_RESET" 0.5 "allowed"
 run_auto
 check "auto: five_h_reset + 180 (exit)" "0" "$RC"
 check "auto: five_h_reset + 180 (epoch)" "$((FIVE_RESET + 180))" "$(field "$OUT" fire_epoch)"
