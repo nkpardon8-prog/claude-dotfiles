@@ -2,6 +2,47 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-09-26 - `/transfer`: move a live chat between Macs; `/line` names across Macs
+
+### What it does
+`/transfer` moves a live Claude Code chat (or, with `codex <session-id>`, a closed Codex chat) from
+one Mac to another, terminal only. It carries the verbatim transcript, the `/line` name, handoff and
+mission files, and the git worktree - unpushed commits, staged and unstaged edits, untracked files -
+so the chat resumes on the other Mac exactly where it left off, same session id. Running things
+(dev servers, containers, background tasks, scheduled wakes) do not move; they're written into a
+restart checklist instead. Separately, `/line` now also sets the display name Remote Control shows
+for a chat on your other Macs, so the name you see there is the name you message it by.
+
+### How to use it
+On Mac A, inside the chat: `/transfer` (or `/transfer codex <session-id>`). It prints a one-time code
+like `TX-XXXX-XXXX-XXXX-XXXX`. On Mac B, in Terminal: `resumework <code>`. It downloads, decrypts,
+verifies every checksum, restores the worktree and session files, prints the restart checklist, then
+execs `claude --resume` (or `codex resume`). One-time per-Mac setup (settings keys, `install-transfer.sh`,
+`make-home-alias.sh` if the two Macs use different usernames): `docs/SETUP.md` → "Second Mac".
+
+### Safety
+- The bundle is one **encrypted, single-use** file in iCloud Drive - the one-time code is both its
+  locator and its decryption key, and it's deleted after a successful restore.
+- Secrets are **never copied**: `.env*`, credential and key-shaped files are excluded by name from
+  repo content, and a secret scan runs over everything staged before it's encrypted, refusing the
+  send on any hit. Excluded file names land in the restart checklist so the owner reloads them with
+  `/load-creds`.
+- The bundle is written by a detached sealer that waits for Mac A's chat process to actually exit,
+  so it is **sealed only after the window closes** - never while two copies could still be live.
+- `/transfer` never runs `git push`; git state moves by `git bundle` + a patch, never by pushing to
+  a remote.
+- Unclaimed bundles **expire after 7 days** (swept by both `transfer-send` and `resumework`).
+
+### Tests
+`scripts/tests/transfer-assumptions/` - a hermetic, `$HOME`-sandboxed suite (`run-all.sh`) driving
+the real `transfer-send.sh` and `resumework` as subprocesses: Claude and Codex round-trips, five git
+shapes, secret and heavy-dir exclusions (with a watched-failing negative control), the public-dotfiles-repo
+guard, wrong-code and tamper detection, cross-username/home-alias refusal and acceptance, memory-file
+merge, handoff refusal, bundle expiry, reverse transfer, a fake-pid sealer proof, separate-worktree
+restore, git back-out on a partial failure, and the installer's app marker. One gated test
+(`99-resume-keeps-sid.sh`, `TRANSFER_LIVE_CLAUDE=1`) costs a real model call and proves the whole
+design's load-bearing assumption: `claude --resume <sid>` keeps the same session id.
+
 ## 2026-09-26 - `/pickup` understands any natural time
 
 `/pickup 5 30 am`, `1 min`, `in 2 hours`, `half an hour`, `1h30m`, `0530`, `noon`, `tomorrow 6am` and
