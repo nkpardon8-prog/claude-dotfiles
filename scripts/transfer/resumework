@@ -19,7 +19,7 @@
 #      no links), verify EVERY file's sha256 against the manifest, reject unlisted files
 #   3. placement (transfer-lib.sh PLACEMENT RULE; the sender's username/home may differ):
 #      "home" files (Claude/Codex state) go under THIS Mac's real $HOME/.claude or CODEX_HOME;
-#      "abs" files (handoff, MISSION, TRANSFER notes, untracked, tmp/ context) go to the SAME
+#      "abs" files (handoff, MISSION, TRANSFER notes, untracked and ignored files) go to the SAME
 #      absolute path, which must lie inside the manifest's repo root / worktree / cwd tree, whose
 #      parent must exist here and resolve under this Mac's $HOME or a verified home alias
 #      (otherwise: refuse with the make-home-alias.sh fix). No '..', no symlink escapes, never
@@ -34,7 +34,8 @@
 #      harmless): what `git fetch origin` fetched, and the .git/info/exclude entries.
 #   5. place files: an existing different file is kept as <name>.bak-<ts>; in the memory dir this
 #      Mac's file wins and the incoming one lands as <name>.from-<host>
-#   6. append a "Restored on this Mac" record to ROOT/TRANSFER.<sid>.md, clear
+#   6. append a "Restored on this Mac" record to ROOT/TRANSFER.<sid>.md (including, as FYI, the
+#      secret-named files that travelled and the sender's secret-scan hits - file and rule only), clear
 #      progress/transferred-<sid>, write progress/transfer-arrived-<sid> (claude), delete the bundle
 #      (single use), print the restart checklist, then exec
 #      `claude --resume <sid> "/post-compact-resume <sid>"` (re-applying the sender's safe launch
@@ -367,6 +368,14 @@ for shown, sha in keys:
 for s in man.get("excluded_secret_names") or []:
     if clean(s):
         out.append(("SECRET", s))
+for s in man.get("secret_named_files_moved") or []:
+    if clean(s):
+        out.append(("SECMOVED", s))
+for h in man.get("secret_scan_hits") or []:
+    if isinstance(h, dict) and clean(h.get("file")) and clean(h.get("rule")):
+        out.append(("SCANHIT", "%s  (%s)" % (h["file"], h["rule"])))
+if man.get("secret_scan_status") == "incomplete":
+    out.append(("SCANINCOMPLETE", "1"))
 # Launch flags: only an allowlist, each value shape-checked. Everything else in A's argv is dropped.
 toks = (man.get("argv") or "").split()
 i = 0
@@ -402,6 +411,7 @@ fi
 TOOL=""; SID=""; M_USER=""; M_HOME=""; REPO_HOME=""; SRC_HOST=""; CREATED=""; SEALED=""; CWD=""; ROOT=""
 FILES=0; BYTES=0; GIT=0; WT=""; G_HEAD=""; G_BRANCH=""; G_UPSTREAM=""; G_ORIGIN=""; G_BUNDLE=0
 G_REF=""; G_PATCH_SHA=""; G_PATCH_BYTES=0; COUNTS=""; KEYSHAS=""; SECRETS=""; NFLAG=0
+SECMOVED=""; SCANHITS=""; SCANINC=0
 FLAGS=()
 while IFS=$'\t' read -r _k _a _b; do
   case "$_k" in
@@ -417,6 +427,11 @@ while IFS=$'\t' read -r _k _a _b; do
 " ;;
     SECRET) SECRETS="${SECRETS}$_a
 " ;;
+    SECMOVED) SECMOVED="${SECMOVED}$_a
+" ;;
+    SCANHIT) SCANHITS="${SCANHITS}$_a
+" ;;
+    SCANINCOMPLETE) SCANINC=1 ;;
     FLAG1) FLAGS[NFLAG]="$_a"; NFLAG=$((NFLAG + 1)) ;;
     FLAG2)
       if [ "$_a" = "--add-dir" ] && [ ! -d "$_b" ]; then
@@ -737,7 +752,10 @@ if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then
     [ "$GIT" = 1 ] && printf -- '- Git transport: %s bundle; %s\n' "$([ "$G_BUNDLE" = 1 ] && echo "a" || echo "no (every commit was already on origin)")" "$GIT_NOTE"
     [ -n "$BAKS" ] && printf -- '- Replaced files (previous versions kept):\n%s\n' "$BAKS"
     [ -n "$FROMS" ] && printf -- '- Memory conflicts (this Mac kept its file; incoming beside it):\n%s\n' "$FROMS"
-    [ -n "$SECRETS" ] && printf -- '- Secrets NOT copied - reload them here (/load-creds):\n%s' "$(printf '%s' "$SECRETS" | sed 's/^/    - /')"
+    [ -n "$SECMOVED" ] && printf -- '- Secret-named files that travelled inside the encrypted bundle (FYI; nothing to reload):\n%s\n' "$(printf '%s' "$SECMOVED" | sed 's/^/    - /')"
+    [ -n "$SCANHITS" ] && printf -- '- Secret-scan hits on the sending Mac (FYI; file and rule only, the files travelled as they were):\n%s\n' "$(printf '%s' "$SCANHITS" | sed 's/^/    - /')"
+    [ "$SCANINC" = 1 ] && printf -- '- The sending Mac'"'"'s secret scan did not complete (FYI only).\n'
+    [ -n "$SECRETS" ] && printf -- '- Secret-named files that did NOT travel - reload them here (/load-creds):\n%s\n' "$(printf '%s' "$SECRETS" | sed 's/^/    - /')"
     printf '\n'
   } >> "$TF"
 fi
@@ -759,7 +777,8 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/TRANSFER.$SID.md" ]; then
 fi
 echo
 echo "Also:"
-[ -n "$SECRETS" ] && { echo "  - Secrets were not copied. Reload them here (/load-creds):"; printf '%s' "$SECRETS" | sed 's/^/      /'; }
+[ -n "$SECRETS" ] && { echo "  - These secret-named files did not travel. Reload them here (/load-creds):"; printf '%s' "$SECRETS" | sed 's/^/      /'; }
+[ -n "$SECMOVED$SCANHITS" ] && echo "  - Secret-named files and secret-scan hits travelled inside the encrypted bundle (FYI list in TRANSFER.$SID.md)."
 [ -n "$BAKS" ] && { echo "  - Files replaced (previous versions kept):"; echo "$BAKS"; }
 [ -n "$FROMS" ] && { echo "  - Memory conflicts - this Mac kept its file, the incoming one is beside it:"; echo "$FROMS"; }
 echo "  - prod-ledger is machine-local; check \`prod-ledger.py show\` on $SRC_HOST before any prod work."
