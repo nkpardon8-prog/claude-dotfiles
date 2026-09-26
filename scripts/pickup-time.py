@@ -262,6 +262,11 @@ def main():
             fire, source = resolve_clock(now, arg)
 
     fire = ceil_to_minute(int(fire))
+    # CronCreate fires one-shots on :00/:30 up to 90s EARLY (observed live 2026-09-26: a 12:30 job
+    # ran at 12:28:42). For a COMPUTED time (auto / relative) that could land before the reset, so
+    # step one minute off. A time the user typed stays exact by their choice (it only warns).
+    if source != "your time" and local_dt_from_epoch(fire).minute in (0, 30):
+        fire += 60
     if fire - now < MIN_LEAD:
         err("too soon - at least 2 minutes out")
     if fire - now > MAX_OUT:
