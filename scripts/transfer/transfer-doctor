@@ -1,9 +1,11 @@
 #!/bin/bash
 # transfer-doctor - machine-readiness checker for /transfer + resumework.
 #
-# Standalone by design: it does NOT source transfer-lib.sh (owned by a
-# different build chunk). Every helper it needs is defined inline so it can
-# run on a bare machine before any other transfer script exists there.
+# Mostly standalone (inline helpers), with ONE dependency: transfer-lib.sh's
+# tx_alias_homes, so "is this a verified home alias" is decided by the same
+# rule resumework and transfer-send use, never a second copy that could drift.
+# The lib sits beside this script in the same checkout, so it is always present
+# where the doctor is.
 #
 # Usage:
 #   transfer-doctor [--local] [--json]
@@ -18,6 +20,15 @@
 
 set -uo pipefail
 
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do   # installed as a ~/.local/bin symlink: find the real checkout
+    _t=$(readlink "$_self")
+    case "$_t" in /*) _self="$_t" ;; *) _self="$(dirname "$_self")/$_t" ;; esac
+done
+# shellcheck source=transfer-lib.sh
+. "$(cd -P "$(dirname "$_self")" && pwd -P)/transfer-lib.sh" \
+    || { echo "transfer-doctor: cannot load transfer-lib.sh next to this script" >&2; exit 1; }
+
 MODE_LOCAL=0
 MODE_JSON=0
 MIN_CLAUDE_VERSION="2.1.225"
@@ -25,7 +36,8 @@ ICLOUD_BASE="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
 DROP_DIR="$ICLOUD_BASE/claude-transfers"
 DOTFILES_DIR="$HOME/.claude-dotfiles"
 SETTINGS_FILE="$HOME/.claude/settings.json"
-DENTALL_REPO="$HOME/Developer/CODEBASES/integrateAPI/projects/dentall"
+DENTALL_REL="Developer/CODEBASES/integrateAPI/projects/dentall"
+DENTALL_REPO="$HOME/$DENTALL_REL"
 
 RESULT_STATUS=()
 RESULT_NAME=()
@@ -405,15 +417,38 @@ check_icloud() {
 # ---------------------------------------------------------------------------
 # repo
 # ---------------------------------------------------------------------------
+# The repo may live under this account's own $HOME, or - on a Mac whose username
+# differs from the other Mac's - under a verified home alias (make-home-alias.sh),
+# where transfers place repo files at the same absolute path as on the other Mac.
 check_repo() {
-    if [ -d "$DENTALL_REPO/.git" ]; then
-        record PASS repo "$DENTALL_REPO"
+    local alias_home tried="$DENTALL_REPO"
+    if [ -e "$DENTALL_REPO/.git" ]; then
+        record PASS repo "$DENTALL_REPO (under this account's own home)"
         return
     fi
+    while IFS= read -r alias_home; do
+        [ -n "$alias_home" ] || continue
+        if [ -e "$alias_home/$DENTALL_REL/.git" ]; then
+            record PASS repo "$alias_home/$DENTALL_REL (under the verified home alias $alias_home)"
+            return
+        fi
+        tried="$tried, $alias_home/$DENTALL_REL"
+    done <<EOF
+$(tx_alias_homes)
+EOF
     if [ "$MODE_LOCAL" -eq 1 ]; then
-        record WARN repo "missing at $DENTALL_REPO"
+        record WARN repo "missing (looked in: $tried)"
     else
-        record FAIL repo "missing at $DENTALL_REPO"
+        record FAIL repo "missing (looked in: $tried)"
+    fi
+}
+
+# jq: /transfer's preflight reads the chat's cwd from the session registry with it.
+check_jq() {
+    if have jq; then
+        record PASS jq "$(command -v jq)"
+    else
+        record WARN jq "not on PATH (/transfer's preflight uses it to find the chat's folder; brew install jq)"
     fi
 }
 
@@ -576,6 +611,7 @@ main() {
     check_tools
     check_icloud
     check_repo
+    check_jq
     check_path
     check_disk
 

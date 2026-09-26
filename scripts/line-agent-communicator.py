@@ -704,6 +704,153 @@ def score_match(query: str, *fields: str) -> int:
     return sum(4 if w in hay.split() else (2 if w in hay else 0) for w in words)
 
 
+def write_display_name(sid: str, title: str) -> bool:
+    """Append a custom-title record (the exact shape /rename writes) to this session's transcript.
+
+    Shape observed from a real /rename on Claude Code 2.1.283:
+      {"type":"custom-title","customTitle":"<title>","sessionId":"<sid>"}
+    One short line written with O_APPEND in a single write, so it cannot interleave with the
+    harness's own appends. Best-effort: returns False (and changes nothing) if no transcript is found.
+    """
+    projects = HOME / ".claude" / "projects"
+    try:
+        paths = sorted(projects.glob(f"*/{sid}.jsonl"))
+    except OSError:
+        return False
+    if not paths:
+        return False
+    line = (json.dumps({"type": "custom-title", "customTitle": title, "sessionId": sid},
+                       ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    wrote = False
+    for p in paths:
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_APPEND)
+            try:
+                os.write(fd, line)
+                wrote = True
+            finally:
+                os.close(fd)
+        except OSError:
+            continue
+    return wrote
+
+
+# The display name IS the peer handle ("mac-mini-setup", suffix included) - never the free-text
+# sentence, which stays the statusline caption only. Reason: the built-in /rename that makes the name
+# live ALSO sets the session registry name to its raw argument (nameSource "user"). Typing the handle
+# means that side effect writes exactly the address /line chose, so address == display name
+# everywhere and nothing needs restoring afterwards.
+#
+# The name is also TYPED into the window's own Terminal tab by the Stop hook
+# scripts/hooks/line-apply-rename.sh, so it is checked against the handle shape here, at the boundary
+# that feeds a keystroke path, and again by the hook. slugify() already guarantees it; this is the
+# fail-closed backstop, not a sanitizer.
+TYPEABLE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,59}$")
+RENAME_REQUEST_DIR = HOME / ".claude" / "progress"
+
+
+def live_rename_supported() -> bool:
+    """Can the Stop hook type /rename into this window? Only in a plain macOS Terminal.app tab: the
+    hook finds the tab through Terminal's AppleScript dictionary by tty, which iTerm, tmux, and screen
+    do not expose. Read from the environment the harness passes to its children (tool calls and hooks
+    alike), so it describes THIS window, not whichever app happens to be frontmost."""
+    return (sys.platform == "darwin"
+            and os.environ.get("TERM_PROGRAM") == "Apple_Terminal"
+            and not os.environ.get("TMUX")
+            and not os.environ.get("STY"))
+
+
+def rename_request_path(sid: str) -> Path:
+    return RENAME_REQUEST_DIR / f"line-rename-{safe_sid(sid)}.json"
+
+
+def write_rename_request(sid: str, name: str) -> bool:
+    """One-shot request for the Stop hook to type `/rename <name>` when this turn ends.
+
+    Atomic (temp + rename in the same directory) and mode 600. Best-effort: False on any failure.
+    """
+    sid = safe_sid(sid)
+    if not sid or not TYPEABLE_NAME.match(name or ""):
+        return False
+    try:
+        RENAME_REQUEST_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(RENAME_REQUEST_DIR), prefix=".line-rename-", suffix=".tmp")
+    except OSError:
+        return False
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"name": name, "at": int(time.time())}, fh, separators=(",", ":"))
+        os.replace(tmp, rename_request_path(sid))
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def last_display_name(sid: str) -> str | None:
+    """The customTitle of the LAST custom-title record in this session's transcript (last-wins, the
+    same rule Claude Code applies on resume). None when there is no transcript or no such record."""
+    projects = HOME / ".claude" / "projects"
+    try:
+        paths = sorted(projects.glob(f"*/{safe_sid(sid)}.jsonl"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return None
+    if not paths:
+        return None
+    last = None
+    try:
+        with open(paths[-1], "rb") as fh:
+            for raw in fh:
+                if b'"custom-title"' not in raw:
+                    continue   # cheap prefilter; a transcript can be many MB
+                try:
+                    rec = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("type") == "custom-title" \
+                        and isinstance(rec.get("customTitle"), str):
+                    last = rec["customTitle"]
+    except OSError:
+        return None
+    return last
+
+
+def apply_display_name(sid: str, name: str, queue: str = "always") -> tuple[str, bool]:
+    """Make the chat's display name `name`: the transcript record, plus a live /rename request.
+
+    The record is appended only when the transcript does not already end on `name` (no duplicate
+    lines). `queue` decides the live request: "always" (an interactive /line - a record written
+    earlier may never have gone live) or "if-changed" (after a reopen, where a record that already
+    matched was read back at startup, so the live name is already right).
+    Returns (outcome, queued); outcome is "invalid", "no-transcript", "written", or "match".
+    """
+    if not TYPEABLE_NAME.match(name or ""):
+        return "invalid", False
+    changed = last_display_name(sid) != name
+    if changed and not write_display_name(sid, name):
+        return "no-transcript", False
+    want = queue == "always" or (queue == "if-changed" and changed)
+    queued = bool(want and live_rename_supported() and write_rename_request(sid, name))
+    return ("written" if changed else "match"), queued
+
+
+def display_handle_for(sid: str, sessions: list[dict] | None = None) -> str:
+    """The handle this window's display name should carry: the peer address /line wrote (registry
+    entry with nameSource "explicit"), else the handle /line would derive from the caption."""
+    caption = label_for(sid)
+    if not caption:
+        return ""
+    sessions = load_sessions() if sessions is None else sessions
+    mine = next((d for d in sessions if d.get("sessionId") == sid), None)
+    if mine and mine.get("nameSource") == "explicit" and TYPEABLE_NAME.match(mine.get("name") or ""):
+        return mine["name"]
+    return unique_handle(slugify(caption), sid, sessions)
+
+
 # --------------------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------------------
@@ -730,12 +877,31 @@ def cmd_set(session_id: str, sentence: str, owns: str = "") -> int:
     os.chmod(STATUS_DIR, 0o700)
     (STATUS_DIR / f"{sid}.txt").write_text(sentence + "\n")
 
+    # 3) display name - the name Remote Control shows on the owner's OTHER Macs. It is the HANDLE
+    # (see TYPEABLE_NAME), saved as the same custom-title record /rename appends to the chat's own
+    # transcript, so it survives a restart, a resume, and a /transfer; a running window only picks it
+    # up live via /rename, so a one-shot request is left for the Stop hook line-apply-rename.sh.
+    # LINE_RENAME_QUEUE=if-changed is set only by line-reassert-identity.sh after a reopen.
+    queue = "if-changed" if os.environ.get("LINE_RENAME_QUEUE") == "if-changed" else "always"
+
+    def show_display(name: str) -> None:
+        outcome, queued = apply_display_name(sid, name, queue)
+        if outcome == "invalid":
+            print("Display name: UNCHANGED - that sentence has no letters or digits to build a name from.")
+        elif outcome == "no-transcript":
+            print("Display name: could not be saved to this chat (no transcript found for this window).")
+        elif queued:
+            print(f"Display name: {name}")
+            print("  Your other Macs will show this name as soon as this reply finishes.")
+        else:
+            print(f"Display name: {name} (saved to this chat; your other Macs see it after a restart).")
+            print(f"  To show it on your other Macs right now, also type: /rename {name}")
+
     # 2) peer address
     sessions = load_sessions()
     mine = next((d for d in sessions if d.get("sessionId") == sid), None)
 
     print(f"Caption set: {sentence}")
-
     if owns:
         print(f"Owns: {owns}")
 
@@ -744,6 +910,9 @@ def cmd_set(session_id: str, sentence: str, owns: str = "") -> int:
             remember(sid, sentence, "", "", owns)
         print("Peer address: UNCHANGED - no registry entry for this window yet.")
         print("  (Other agents can still find it by caption via `line-agent-communicator.py list`.)")
+        # No registry entry to hold a handle: the display name falls back to the handle /line would
+        # derive, so the /rename side effect gives the window that address anyway.
+        show_display(unique_handle(slugify(sentence), sid, sessions))
         return 0
 
     handle = unique_handle(slugify(sentence), sid, sessions)
@@ -751,12 +920,14 @@ def cmd_set(session_id: str, sentence: str, owns: str = "") -> int:
         if owns:
             remember(sid, sentence, "", mine.get("cwd", ""), owns)
         print("Peer address: UNCHANGED - that sentence has no letters or digits to build a name from.")
+        show_display("")
         return 0
 
     old = mine.get("name", "")
     if old == handle and mine.get("nameSource") == "explicit":
         remember(sid, sentence, handle, mine.get("cwd", ""), owns)
         print(f"Peer address: already {handle}")
+        show_display(handle)
         return 0
 
     try:
@@ -769,12 +940,14 @@ def cmd_set(session_id: str, sentence: str, owns: str = "") -> int:
         if owns:
             remember(sid, sentence, old, mine.get("cwd", ""), owns)
         print(f"Peer address: UNCHANGED - could not update the registry ({e.__class__.__name__}).")
-        print("  Caption and directory still work; use `/rename` to set the address by hand.")
+        print("  Caption and directory still work; the /rename below sets the address through Claude Code.")
+        show_display(handle)
         return 0
 
     remember(sid, sentence, handle, mine.get("cwd", ""), owns)
     print(f"Peer address: {old} -> {handle}")
     print(f"  Other agents can now reach this window with SendMessage to: {handle}")
+    show_display(handle)
 
     ok, why = reachable(mine)
     if not ok:
@@ -795,6 +968,35 @@ def cmd_clear(session_id: str) -> int:
         pass
     print(f"Cleared caption for window {sid} - line 2 reverts to the folder name on next render.")
     print("Peer address left as-is (clearing a caption should not make a window unreachable mid-conversation).")
+    return 0
+
+
+def cmd_sync_display_name(session_id: str) -> int:
+    """Hook-facing: make the chat's display name match this window's handle again after a reopen.
+
+    Called by line-reassert-identity.sh on SessionStart (startup/resume), AFTER its address step. The
+    target is display_handle_for(): the explicit registry name /line wrote, else the handle derived
+    from the caption. If the transcript's LAST custom-title record already equals it this is a no-op
+    (that record was read back at startup, so the live name is right); otherwise it appends the record
+    and leaves a /rename request so the name also goes live when the first turn ends.
+    Prints exactly one outcome token on stdout (the hook logs it): no-sid, no-caption, no-handle,
+    match, written, written-no-request, no-transcript.
+    """
+    sid = safe_sid(session_id)
+    if not sid:
+        print("no-sid")
+        return 0
+    if not label_for(sid):
+        print("no-caption")
+        return 0
+    want = display_handle_for(sid)
+    outcome, queued = apply_display_name(sid, want, "if-changed")
+    if outcome == "invalid":
+        print("no-handle")
+    elif outcome == "written" and not queued:
+        print("written-no-request")
+    else:
+        print(outcome)
     return 0
 
 
@@ -1977,6 +2179,7 @@ USAGE = """line-agent-communicator.py - name this window and reach the others.
                              name this window: caption AND the peer address others reach it by
   set -- "<sentence>"        same, for a caption that really starts with a dash
   clear                      drop the caption (the peer address is kept)
+  sync-display-name          (hook use) restore the display name from the caption after a reopen
   reap [--dry-run] [--sockets]
   help                       this text
 
@@ -1998,7 +2201,7 @@ def _usage(stream, rc: int) -> int:
 VERBS = frozenset({
     "list", "ls", "directory", "clear", "find", "who", "resolve", "card", "me", "whoami",
     "whois", "verify", "reply", "answer", "replies", "inbox", "replies-count", "unread",
-    "reap", "note", "notes", "set", "help", "usage",
+    "reap", "note", "notes", "set", "help", "usage", "sync-display-name",
 })
 
 
@@ -2077,6 +2280,8 @@ def main() -> int:
         return cmd_notes(sid)
     if args[0] == "set":
         return dispatch_set(sid, args[1:])
+    if args[0] == "sync-display-name":
+        return cmd_sync_display_name(sid)
 
     # Bare-sentence shorthand. A caption is arbitrary words, so an unknown WORD cannot be told from
     # a name in general - `lst` is indistinguishable from someone naming a window "lst". The one

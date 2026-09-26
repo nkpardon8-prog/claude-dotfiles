@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # resumework - reopen, on THIS Mac, a chat that /transfer (transfer-send.sh) packaged on another Mac.
 #
-# Usage:  resumework <code> [--dry-run] [--no-exec] [--wait <secs>]
+# Usage:  resumework <code> [--dry-run] [--no-exec] [--safe] [--wait <secs>]
 #
 #   <code>       TX-XXXX-XXXX-XXXX-XXXX (case-insensitive; I/L read as 1, O as 0; dashes optional)
 #   --dry-run    fetch, verify and decrypt, then show what WOULD change here - change nothing, keep
 #                the bundle, launch nothing.
 #   --no-exec    restore everything but do not launch the chat; print the command instead.
+#   --safe       do NOT add --dangerously-skip-permissions / --dangerously-bypass-approvals-and-sandbox
+#                (see step 6 below) - resume with normal permission prompts instead.
 #   --wait N     how long to wait for the bundle to arrive (default 900 s). The sender seals only
 #                after its chat exits, and iCloud needs time to deliver, so waiting is normal.
 #
@@ -15,18 +17,31 @@
 #      materialize an iCloud placeholder by reading it, check the ciphertext sha256 + size
 #   2. decrypt (wrong code -> refuse), unpack with every entry checked (no absolute paths, no '..',
 #      no links), verify EVERY file's sha256 against the manifest, reject unlisted files
-#   3. identity: same username and same $HOME as the sender; every destination under $HOME and never
-#      inside the public dotfiles repo; the repo root must already exist (setup clones it)
+#   3. placement (transfer-lib.sh PLACEMENT RULE; the sender's username/home may differ):
+#      "home" files (Claude/Codex state) go under THIS Mac's real $HOME/.claude or CODEX_HOME;
+#      "abs" files (handoff, MISSION, TRANSFER notes, untracked, tmp/ context) go to the SAME
+#      absolute path, which must lie inside the manifest's repo root / worktree / cwd tree, whose
+#      parent must exist here and resolve under this Mac's $HOME or a verified home alias
+#      (otherwise: refuse with the make-home-alias.sh fix). No '..', no symlink escapes, never
+#      inside the public dotfiles repo. A git repo root must already exist (setup clones it).
 #   4. git: fetch origin, verify + fetch the bundle, fast-forward only, stash a dirty worktree ONLY
 #      when it exactly matches this Mac's own departure state (reverse transfer), refuse any other
 #      drift, refuse a branch checked out in another worktree; apply the patch; prove HEAD and the
-#      `git diff HEAD` hash equal the sender's
-#   5. place files: an existing different file is kept as <name>.bak-<ts>; in the memory dir B's file
-#      wins and the incoming one lands as <name>.from-<host>
-#   6. append a "Restored on B" record to ROOT/TRANSFER.<sid>.md, clear progress/transferred-<sid>,
-#      write progress/transfer-arrived-<sid> (claude), delete the bundle (single use), print the
-#      restart checklist, then exec `claude --resume <sid> "/post-compact-resume <sid>"` (re-applying
-#      the sender's safe launch flags) or `codex resume <id>`, from the chat's working directory.
+#      `git diff HEAD` hash equal the sender's. If anything fails AFTER the first git change, it
+#      BACKS OUT: removes a worktree it created, deletes a branch it created (or moves a moved
+#      branch back), returns an existing worktree to its previous HEAD/branch, and pops its own
+#      stash - then prints exactly what it undid and anything it could not. Left as they are (both
+#      harmless): what `git fetch origin` fetched, and the .git/info/exclude entries.
+#   5. place files: an existing different file is kept as <name>.bak-<ts>; in the memory dir this
+#      Mac's file wins and the incoming one lands as <name>.from-<host>
+#   6. append a "Restored on this Mac" record to ROOT/TRANSFER.<sid>.md, clear
+#      progress/transferred-<sid>, write progress/transfer-arrived-<sid> (claude), delete the bundle
+#      (single use), print the restart checklist, then exec
+#      `claude --resume <sid> "/post-compact-resume <sid>"` (re-applying the sender's safe launch
+#      flags, PLUS --dangerously-skip-permissions unless --safe, PLUS `-n <handle>` - the peer
+#      handle /line derives from the restored caption, which by the display-name == handle rule is
+#      the Remote Control display name) or `codex resume <id>` (PLUS
+#      --dangerously-bypass-approvals-and-sandbox unless --safe), from the chat's working directory.
 #
 # Binary overrides (tests): TX_CLAUDE_BIN, TX_CODEX_BIN. Codex files honor CODEX_HOME.
 # Exit: 0 ok (or exec) | 2 refused | 1 error
@@ -50,13 +65,14 @@ trap 'exit 130' INT TERM
 refuse() { echo "$PROG: REFUSED: $*" >&2; tx_log "resume refused locator=${LOC:-none}: $*"; exit 2; }
 die()    { echo "$PROG: ERROR: $*" >&2; tx_log "resume error locator=${LOC:-none}: $*"; exit 1; }
 note()   { echo "$PROG: $*" >&2; }
-usage()  { sed -n '2,33p' "$_self" | sed 's/^# \{0,1\}//'; }
+usage()  { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$_self"; }
 
-CODE=""; DRY=0; NOEXEC=0; WAIT=900; LOC=""
+CODE=""; DRY=0; NOEXEC=0; WAIT=900; LOC=""; SAFE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
     --no-exec) NOEXEC=1; shift ;;
+    --safe) SAFE=1; shift ;;
     --wait) [ $# -ge 2 ] || refuse "--wait needs a number of seconds"; WAIT="$2"; shift 2 ;;
     --wait=*) WAIT="${1#*=}"; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -136,10 +152,12 @@ case $? in
   *) die "decryption could not run" ;;
 esac
 
+ALIAS_HOMES=$(tx_alias_homes)
+CODEX_B="${CODEX_HOME:-$HOME_P/.codex}"
 python3 - "$STAGE/inner.tgz" "$STAGE/x" "$HOME_P" "$HOME_P/.claude-dotfiles" "$TX_REPO_DIR" \
-  "${CODEX_HOME:-$HOME_P/.codex}" > "$STAGE/meta.tsv" <<'PY'
+  "$CODEX_B" "$ALIAS_HOMES" > "$STAGE/meta.tsv" <<'PY'
 import hashlib, json, os, re, stat, sys, tarfile
-tgz, xdir, home, df1, df2, codex_b = sys.argv[1:7]
+tgz, xdir, home, df1, df2, codex_b, alias_s = sys.argv[1:8]
 
 def refuse(msg):
     print("REFUSE\t" + msg.replace("\t", " ").replace("\n", " "))
@@ -169,14 +187,17 @@ try:
     man = json.load(open(os.path.join(xdir, "manifest.json")))
 except Exception:
     refuse("the bundle has no readable manifest")
-if man.get("format") != 1:
-    refuse("unsupported bundle format %r (update the dotfiles on this Mac)" % man.get("format"))
+if man.get("format") != 2:
+    refuse("unsupported bundle format %r (update the dotfiles on both Macs, then re-send)" % man.get("format"))
 tool, sid = man.get("tool"), man.get("sid")
 if tool not in ("claude", "codex") or not isinstance(sid, str) or not re.match(r"^[A-Za-z0-9_-]+$", sid):
     refuse("the manifest names no valid tool/session")
-home_m = man.get("home")
 real_home = os.path.realpath(home)
+alias_homes = [os.path.realpath(a) for a in alias_s.split("\n") if a]
 dotfiles = [os.path.realpath(d) for d in (df1, df2) if d]
+BASES = {"claude": os.path.join(home, ".claude"), "codex": codex_b}
+HOME_KINDS = {"session": "claude", "memory": "claude", "codex": "codex"}
+ABS_KINDS = ("root", "untracked", "context")
 
 def clean(s):
     return isinstance(s, str) and s != "" and not any(c in s for c in "\t\n\r\0")
@@ -188,29 +209,69 @@ def clean_rel(p, what):
 def inside(p, base):
     return p == base or p.startswith(base.rstrip("/") + "/")
 
-def dest_ok(dest):
-    p = dest
-    while not os.path.lexists(p):
-        p = os.path.dirname(p)
-    full = os.path.normpath(os.path.join(os.path.realpath(p), os.path.relpath(dest, p)))
-    if not inside(full, real_home):
-        refuse("%s would land outside $HOME (%s)" % (dest, full))
+def resolved(p):
+    """Physical path of p: realpath of its nearest existing ancestor + the not-yet-existing tail."""
+    q = p
+    while not os.path.lexists(q):
+        q = os.path.dirname(q)
+    return os.path.normpath(os.path.join(os.path.realpath(q), os.path.relpath(p, q)))
+
+def not_dotfiles(full, dest):
     for d in dotfiles:
         if inside(full, d):
             refuse("%s would land inside the public dotfiles repo" % dest)
 
-def abs_ok(p, what):
+def abs_path(p, what, homes):
+    """A manifest absolute path: normalized, and under the sender's home or repo home."""
     if p is None:
         return ""
-    if not clean(p) or not p.startswith("/") or os.path.normpath(p) != p or not inside(p, home_m or "/nonexistent"):
+    if not clean(p) or not p.startswith("/") or os.path.normpath(p) != p \
+            or not any(inside(p, h) for h in homes if h):
         refuse("the manifest's %s is not an absolute path under the sender's home: %r" % (what, p))
     return p
 
 for k in ("user", "home", "source_host"):
     if not clean(man.get(k)):
         refuse("the manifest has no valid %s" % k)
-cwd = abs_ok(man.get("cwd"), "cwd")
-root = abs_ok(man.get("root"), "root")
+home_m = abs_path(man.get("home"), "home", ["/"])
+repo_home_m = abs_path(man.get("repo_home"), "repo_home", ["/"])
+sender_homes = [home_m, repo_home_m]
+cwd = abs_path(man.get("cwd"), "cwd", sender_homes)
+root = abs_path(man.get("root"), "root", sender_homes)
+g = man.get("git")
+wt = abs_path(g.get("worktree"), "worktree", sender_homes) if isinstance(g, dict) else ""
+
+# Anchors: every "abs" file must sit inside one of these trees, and each tree must be mirrorable
+# here - its parent exists, and it resolves under this Mac's own $HOME or a verified home alias.
+anchors = []
+for a in (root, wt, cwd):
+    if a and a not in anchors:
+        anchors.append(a)
+if anchors and not repo_home_m:
+    refuse("the manifest has repo paths but no repo_home")
+
+def unmirrorable(a, why):
+    if os.path.realpath(repo_home_m) == real_home or os.path.basename(repo_home_m) == os.path.basename(real_home):
+        fix = "create that folder here (or clone the repo to %s), then run resumework again" % (root or a)
+    else:
+        fix = ("sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh %s   (then clone the repo to %s "
+               "and run resumework again)" % (os.path.basename(repo_home_m), root or a))
+    refuse("the chat's repo path %s (under %s on %s) cannot be mirrored on this Mac: %s. Repo files "
+           "land at the same absolute path, so this Mac needs it natively or through a home alias. "
+           "Fix:  %s" % (a, repo_home_m, man["source_host"], why, fix))
+
+anchor_real = {}
+for a in anchors:
+    parent = os.path.dirname(a)
+    if not os.path.isdir(parent):
+        unmirrorable(a, "%s does not exist here" % parent)
+    ra = resolved(a)
+    if not (inside(ra, real_home) or any(inside(ra, h) for h in alias_homes)):
+        unmirrorable(a, "it is neither under this Mac's $HOME (%s) nor under a verified home alias of "
+                        "this account%s" % (real_home, "" if ra == a else " (it resolves to %s)" % ra))
+    not_dotfiles(ra, a)
+    anchor_real[a] = ra
+
 files = man.get("files")
 if not isinstance(files, list) or not files:
     refuse("the manifest lists no files")
@@ -218,12 +279,38 @@ listed, total, counts, keys = set(), 0, {}, []
 for f in files:
     if not isinstance(f, dict):
         refuse("malformed file entry")
-    rel, kind = f.get("path"), f.get("kind")
+    rel, kind, klass = f.get("path"), f.get("kind"), f.get("class")
     clean_rel(rel, "payload")
-    if kind not in ("session", "memory", "root", "untracked", "context", "codex"):
-        refuse("unknown file kind %r for %s" % (kind, rel))
     if not re.match(r"^[0-7]{3,4}$", str(f.get("mode", ""))) or not isinstance(f.get("mtime_ns"), int):
         refuse("bad mode/mtime for %s" % rel)
+    if klass == "home":
+        base, hrel = f.get("base"), f.get("rel")
+        if HOME_KINDS.get(kind) != base:
+            refuse("file kind %r does not belong in the %r state dir (%s)" % (kind, base, rel))
+        clean_rel(hrel, base)
+        if rel != "home/%s/%s" % (base, hrel):
+            refuse("payload path %s does not match its placement" % rel)
+        dest = os.path.join(BASES[base], hrel)
+        full = resolved(dest)
+        if not inside(full, resolved(BASES[base])):
+            refuse("%s would escape %s through a symlink (%s)" % (dest, BASES[base], full))
+        shown = ("~/.claude/" if base == "claude" else "$CODEX_HOME/") + hrel
+    elif klass == "abs":
+        if kind not in ABS_KINDS:
+            refuse("file kind %r cannot be placed by absolute path (%s)" % (kind, rel))
+        dest = abs_path(f.get("abs"), "file", sender_homes)
+        if rel != "abs" + dest:
+            refuse("payload path %s does not match its placement" % rel)
+        owner = next((a for a in anchors if inside(dest, a)), None)
+        if owner is None:
+            refuse("%s is outside the chat's repo root, worktree and working directory" % dest)
+        full = resolved(dest)
+        if not inside(full, anchor_real[owner]):
+            refuse("%s would escape %s through a symlink (%s)" % (dest, owner, full))
+        shown = dest
+    else:
+        refuse("unknown placement class %r for %s" % (klass, rel))
+    not_dotfiles(full, dest)
     src = os.path.join(xdir, "payload", rel)
     if os.path.islink(src) or not os.path.isfile(src):
         refuse("%s is listed but missing from the bundle" % rel)
@@ -233,18 +320,12 @@ for f in files:
             h.update(chunk)
     if h.hexdigest() != f.get("sha256") or os.path.getsize(src) != f.get("size"):
         refuse("checksum mismatch for %s - the bundle was altered or damaged; nothing was changed" % rel)
-    if kind == "codex":
-        clean_rel(f.get("codex_rel"), "codex")
-        dest = os.path.join(codex_b, f["codex_rel"])
-    else:
-        dest = os.path.join(home, rel)
-    dest_ok(dest)
     listed.add(rel)
     total += f["size"]
     counts[kind] = counts.get(kind, 0) + 1
-    base = os.path.basename(rel)
-    if kind in ("root", "codex") or (kind == "session" and rel.count("/") == 3 and base == sid + ".jsonl"):
-        keys.append((rel, f["sha256"]))
+    is_transcript = kind == "session" and re.match(r"^projects/[^/]+/%s\.jsonl$" % re.escape(sid), f.get("rel") or "")
+    if kind in ("root", "codex") or is_transcript:
+        keys.append((shown, f["sha256"]))
 pay = os.path.join(xdir, "payload")
 for dp, dn, fn in os.walk(pay):
     for n in fn:
@@ -252,13 +333,11 @@ for dp, dn, fn in os.walk(pay):
         if r not in listed:
             refuse("the bundle carries a file its manifest does not list: %s" % r)
 
-g = man.get("git")
-out = [("TOOL", tool), ("SID", sid), ("USER", man["user"]), ("HOME", home_m), ("HOST", man["source_host"]),
-       ("CREATED", man.get("created_at") or ""), ("SEALED", man.get("sealed_after_exit_at") or ""),
-       ("CWD", cwd), ("ROOT", root), ("FILES", str(len(files))), ("BYTES", str(total)),
-       ("GIT", "1" if g else "0")]
+out = [("TOOL", tool), ("SID", sid), ("USER", man["user"]), ("HOME", home_m), ("REPO_HOME", repo_home_m),
+       ("HOST", man["source_host"]), ("CREATED", man.get("created_at") or ""),
+       ("SEALED", man.get("sealed_after_exit_at") or ""), ("CWD", cwd), ("ROOT", root),
+       ("FILES", str(len(files))), ("BYTES", str(total)), ("GIT", "1" if g else "0")]
 if g:
-    wt = abs_ok(g.get("worktree"), "worktree")
     head = g.get("head")
     if not isinstance(head, str) or not re.match(r"^[0-9a-f]{40}([0-9a-f]{24})?$", head):
         refuse("the manifest's git HEAD is not a commit id")
@@ -283,8 +362,8 @@ if g:
             ("GIT_PATCH_SHA", g.get("patch_sha256")), ("GIT_PATCH_BYTES", str(g.get("patch_bytes") or 0))]
 for k, v in sorted(counts.items()):
     out.append(("COUNT", "%s=%d" % (k, v)))
-for rel, sha in keys:
-    out.append(("KEYSHA", "%s  %s" % (sha, rel)))
+for shown, sha in keys:
+    out.append(("KEYSHA", "%s  %s" % (sha, shown)))
 for s in man.get("excluded_secret_names") or []:
     if clean(s):
         out.append(("SECRET", s))
@@ -320,13 +399,14 @@ if [ "$_prc" -ne 0 ]; then
   die "bundle validation crashed (rc=$_prc)"
 fi
 
-TOOL=""; SID=""; M_USER=""; M_HOME=""; SRC_HOST=""; CREATED=""; SEALED=""; CWD=""; ROOT=""
+TOOL=""; SID=""; M_USER=""; M_HOME=""; REPO_HOME=""; SRC_HOST=""; CREATED=""; SEALED=""; CWD=""; ROOT=""
 FILES=0; BYTES=0; GIT=0; WT=""; G_HEAD=""; G_BRANCH=""; G_UPSTREAM=""; G_ORIGIN=""; G_BUNDLE=0
 G_REF=""; G_PATCH_SHA=""; G_PATCH_BYTES=0; COUNTS=""; KEYSHAS=""; SECRETS=""; NFLAG=0
 FLAGS=()
 while IFS=$'\t' read -r _k _a _b; do
   case "$_k" in
     TOOL) TOOL="$_a" ;; SID) SID="$_a" ;; USER) M_USER="$_a" ;; HOME) M_HOME="$_a" ;;
+    REPO_HOME) REPO_HOME="$_a" ;;
     HOST) SRC_HOST="$_a" ;; CREATED) CREATED="$_a" ;; SEALED) SEALED="$_a" ;; CWD) CWD="$_a" ;;
     ROOT) ROOT="$_a" ;; FILES) FILES="$_a" ;; BYTES) BYTES="$_a" ;; GIT) GIT="$_a" ;;
     WORKTREE) WT="$_a" ;; GIT_HEAD) G_HEAD="$_a" ;; GIT_BRANCH) G_BRANCH="$_a" ;;
@@ -349,30 +429,14 @@ while IFS=$'\t' read -r _k _a _b; do
 done < "$STAGE/meta.tsv"
 
 # ------------------------------------------------------------------------------------------------
-# 3. Identity and layout
+# 3. Layout (placement itself was validated above; the sender's username/home may differ)
 # ------------------------------------------------------------------------------------------------
-# Same account is the common case. A different username/home is allowed ONLY through a home
-# alias (make-home-alias.sh): A's home path must exist here, and A_home/.claude must resolve
-# (realpath) to this Mac's OWN $HOME/.claude - i.e. the alias really does point back at us,
-# it is not just a same-named coincidence. Session/memory payload still lands under this Mac's
-# REAL $HOME_P (never under the alias path) - see py_place below.
-_realdir() { (cd -P "$1" 2>/dev/null && pwd -P) || true; }
-if [ "$M_HOME" = "$HOME_P" ]; then
-  :
-else
-  _a_claude=$(_realdir "$M_HOME/.claude")
-  _b_claude=$(_realdir "$HOME_P/.claude")
-  if [ -d "$M_HOME" ] && [ -n "$_a_claude" ] && [ -n "$_b_claude" ] && [ "$_a_claude" = "$_b_claude" ]; then
-    note "identity: $M_HOME (user $M_USER) is a home alias of this Mac's \$HOME ($HOME_P) - proceeding"
-  else
-    refuse "this bundle's home ($M_HOME, user $M_USER) is not this Mac's \$HOME ($HOME_P), and no home alias links them. Fix:  sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh $M_USER"
-  fi
+if [ "$M_HOME" != "$HOME_P" ]; then
+  note "sent from $M_USER's home $M_HOME: Claude/Codex state goes under this Mac's \$HOME ($HOME_P); repo files keep their absolute paths${REPO_HOME:+ (under $REPO_HOME)}"
 fi
-if [ -n "$ROOT" ] && [ ! -d "$ROOT" ]; then
-  if [ "$GIT" = 1 ] && [ -n "$G_ORIGIN" ]; then
-    refuse "repo root $ROOT does not exist on this Mac. Clone it first:  git clone $G_ORIGIN $ROOT"
-  fi
-  refuse "directory $ROOT does not exist on this Mac; create or clone it first"
+if [ "$GIT" = 1 ] && [ ! -d "$ROOT" ]; then
+  [ -n "$G_ORIGIN" ] && refuse "repo root $ROOT does not exist on this Mac. Clone it first:  git clone $G_ORIGIN $ROOT"
+  refuse "repo root $ROOT does not exist on this Mac; clone it there first"
 fi
 _avail_kb=$(df -k "$HOME_P" | awk 'NR==2{print $4}')
 [ -z "$_avail_kb" ] || [ "$_avail_kb" -ge $(( (BYTES / 1024) * 2 + 1024 )) ] \
@@ -385,9 +449,70 @@ DEPART="$HOME_P/.claude/progress/transferred-$SID"
 GIT_NOTE=""; STASHED=""
 _depart_get() { sed -n "s/^$1=//p" "$DEPART" 2>/dev/null | head -1; }
 
+# Back-out state for a real restore that fails part-way (git_backout undoes exactly these).
+GB_WT_CREATED=0        # we ran `git worktree add` on a path that did not exist before
+GB_PREV_HEAD=""        # an EXISTING worktree's HEAD before we touched it (it was clean, or stashed)
+GB_PREV_BRANCH=""      # ... and the branch it had checked out ("" = detached)
+GB_BRANCH_TOUCHED=0    # we pointed $G_BRANCH somewhere with `git branch -f`
+GB_BRANCH_CREATED=0    # ... and it did not exist before
+GB_BRANCH_PREV=""      # ... else where it pointed before
+GB_REPORT=""
+
+git_backout() {  # undo this run's git changes; sets GB_REPORT to what was and was not undone
+  local undone="" left="" cur ref
+  if [ "$GB_WT_CREATED" = 1 ]; then
+    git -C "$ROOT" worktree remove --force --force "$WT" >/dev/null 2>&1
+    [ -e "$WT" ] && rm -rf "$WT"     # safe: the path did not exist before this run
+    git -C "$ROOT" worktree prune >/dev/null 2>&1
+    if [ -e "$WT" ]; then left="${left}; the new worktree $WT could not be removed"
+    else undone="${undone}; removed the worktree it was creating at $WT"; fi
+  elif [ -n "$GB_PREV_HEAD" ]; then
+    # The worktree was clean (or stashed below) before we started, so a hard reset only discards
+    # this run's own changes; untracked files are never touched by it.
+    git -C "$WT" reset -q --hard >/dev/null 2>&1
+    if [ -n "$GB_PREV_BRANCH" ]; then
+      cur=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
+      [ "$cur" = "$GB_PREV_BRANCH" ] || git -C "$WT" checkout -q "$GB_PREV_BRANCH" >/dev/null 2>&1
+      git -C "$WT" reset -q --hard "$GB_PREV_HEAD" >/dev/null 2>&1
+    else
+      git -C "$WT" checkout -q --detach "$GB_PREV_HEAD" >/dev/null 2>&1
+    fi
+    cur=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
+    if [ "$(git -C "$WT" rev-parse -q --verify HEAD 2>/dev/null)" = "$GB_PREV_HEAD" ] && [ "$cur" = "$GB_PREV_BRANCH" ]; then
+      undone="${undone}; returned $WT to ${GB_PREV_BRANCH:-detached HEAD} at ${GB_PREV_HEAD:0:12}"
+    else
+      left="${left}; $WT is NOT back at ${GB_PREV_BRANCH:-detached HEAD} ${GB_PREV_HEAD:0:12} - check it by hand"
+    fi
+  fi
+  # The branch ref itself, unless it is the one the existing worktree was on (reset above moved it).
+  if [ "$GB_BRANCH_TOUCHED" = 1 ] && { [ "$GB_WT_CREATED" = 1 ] || [ "$G_BRANCH" != "$GB_PREV_BRANCH" ]; }; then
+    if [ "$GB_BRANCH_CREATED" = 1 ]; then
+      if git -C "$ROOT" branch -q -D "$G_BRANCH" >/dev/null 2>&1; then undone="${undone}; deleted the branch $G_BRANCH it had created"
+      else left="${left}; the branch $G_BRANCH it created is still there"; fi
+    elif [ -n "$GB_BRANCH_PREV" ]; then
+      if git -C "$ROOT" branch -q -f "$G_BRANCH" "$GB_BRANCH_PREV" >/dev/null 2>&1; then undone="${undone}; moved $G_BRANCH back to ${GB_BRANCH_PREV:0:12}"
+      else left="${left}; $G_BRANCH still points at the transferred commit (was ${GB_BRANCH_PREV:0:12})"; fi
+    fi
+  fi
+  if [ -n "$STASHED" ]; then
+    ref=$(git -C "$WT" stash list 2>/dev/null | grep -F "$STASHED" | head -1 | cut -d: -f1)
+    if [ -n "$ref" ] && git -C "$WT" stash pop -q --index "$ref" >/dev/null 2>&1; then
+      undone="${undone}; put this Mac's departure edits back (from stash $STASHED)"
+    else
+      left="${left}; this Mac's departure edits are still safe in the stash $STASHED (git stash list)"
+    fi
+  fi
+  git -C "$ROOT" update-ref -d "refs/transfer/$SID" >/dev/null 2>&1
+  if [ -n "$undone" ]; then GB_REPORT="backed out: ${undone#; }"; else GB_REPORT="nothing had changed yet"; fi
+  [ -n "$left" ] && GB_REPORT="$GB_REPORT. NOT undone: ${left#; }"
+  GB_REPORT="$GB_REPORT. Left as they are (harmless): what git fetch origin fetched, and .git/info/exclude entries. The bundle is still in the drop folder."
+}
+gdie() { git_backout; die "$* - $GB_REPORT"; }                           # after changes began
+grefuse() { git -C "$ROOT" update-ref -d "refs/transfer/$SID" >/dev/null 2>&1; refuse "$*"; }  # before
+
 git_plan_or_restore() {  # $1 = dry|real
   local mode="$1" common top bundle="$STAGE/x/git/branch.bundle" target="" wt_exists=0 cur_head cur_diff
-  local other bh cur_branch
+  local other bh cur_branch need_stash=0
   git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || refuse "$ROOT exists but is not a git repository"
   top=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)
   [ "$top" = "$ROOT" ] || refuse "$ROOT is not the top of its own git checkout (it resolves to $top)"
@@ -404,9 +529,9 @@ git_plan_or_restore() {  # $1 = dry|real
       refuse "the git bundle needs commits this clone does not have, even after fetching origin. Push or fetch the base branch, then retry (the bundle was left in place)."
     fi
     if [ "$mode" = real ]; then
-      git -C "$ROOT" fetch -q "$bundle" "+$G_REF:refs/transfer/$SID" 2>/dev/null || die "could not fetch from the git bundle"
+      git -C "$ROOT" fetch -q "$bundle" "+$G_REF:refs/transfer/$SID" 2>/dev/null || grefuse "could not fetch from the git bundle"
       target=$(git -C "$ROOT" rev-parse "refs/transfer/$SID")
-      [ "$target" = "$G_HEAD" ] || refuse "the bundle's tip ($target) is not the manifest's HEAD ($G_HEAD)"
+      [ "$target" = "$G_HEAD" ] || grefuse "the bundle's tip ($target) is not the manifest's HEAD ($G_HEAD)"
     fi
     target="$G_HEAD"
   else
@@ -417,81 +542,98 @@ git_plan_or_restore() {  # $1 = dry|real
     target="$G_HEAD"
   fi
 
+  # ---- every refusal check first; nothing below this block refuses before changing git state ----
   if [ -e "$WT" ]; then
     wt_exists=1
-    [ -d "$WT" ] || refuse "$WT exists and is not a directory"
+    [ -d "$WT" ] || grefuse "$WT exists and is not a directory"
     [ "$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$common" ] \
       && [ "$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null)" = "$WT" ] \
-      || refuse "$WT exists but is not a worktree of $ROOT; move it aside first"
+      || grefuse "$WT exists but is not a worktree of $ROOT; move it aside first"
     cur_head=$(git -C "$WT" rev-parse -q --verify HEAD 2>/dev/null || true)
+    cur_branch=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
     cur_diff=$(tx_git_diff_head "$WT" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
     if [ "$cur_head" = "$target" ] && [ "$cur_diff" = "$G_PATCH_SHA" ]; then
+      [ "$mode" = real ] && git -C "$ROOT" update-ref -d "refs/transfer/$SID" 2>/dev/null
       GIT_NOTE="worktree already at the sender's state"
       return 0
     fi
     if [ -n "$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
       if [ -f "$DEPART" ] && [ "$(_depart_get head)" = "$cur_head" ] && [ "$(_depart_get diff_sha256)" = "$cur_diff" ]; then
-        if [ "$mode" = real ]; then
-          git -C "$WT" stash push -q -m "transfer-backup-$TS" || die "could not stash the departure-state edits in $WT"
-          STASHED="transfer-backup-$TS"
-        else
-          GIT_NOTE="would stash this Mac's departure-state edits as transfer-backup-<ts>"
-        fi
+        need_stash=1
       else
-        refuse "$WT has uncommitted changes that do not match this Mac's own departure state; commit or stash them yourself, then retry"
+        grefuse "$WT has uncommitted changes that do not match this Mac's own departure state; commit or stash them yourself, then retry"
       fi
     fi
   fi
-
   if [ -n "$G_BRANCH" ]; then
     other=$(git -C "$ROOT" worktree list --porcelain | awk -v b="refs/heads/$G_BRANCH" -v w="$WT" \
       '/^worktree /{p=substr($0,10)} $0=="branch " b && p!=w {print p}' | head -1)
-    [ -n "$other" ] && refuse "branch $G_BRANCH is checked out in another worktree on this Mac ($other); switch that worktree away first"
+    [ -n "$other" ] && grefuse "branch $G_BRANCH is checked out in another worktree on this Mac ($other); switch that worktree away first"
     if git -C "$ROOT" show-ref -q --verify "refs/heads/$G_BRANCH"; then
       bh=$(git -C "$ROOT" rev-parse "refs/heads/$G_BRANCH")
       if [ "$bh" != "$target" ] && ! git -C "$ROOT" merge-base --is-ancestor "$bh" "$target" 2>/dev/null; then
-        refuse "local branch $G_BRANCH here has commits the transfer does not (diverged); not overwriting it"
+        grefuse "local branch $G_BRANCH here has commits the transfer does not (diverged); not overwriting it"
       fi
     fi
   fi
   if [ "$mode" = dry ]; then
+    [ "$need_stash" = 1 ] && GIT_NOTE="would stash this Mac's departure-state edits as transfer-backup-<ts>"
     GIT_NOTE="${GIT_NOTE}${GIT_NOTE:+; }$([ "$wt_exists" = 1 ] && echo "update" || echo "create") $WT at ${G_HEAD:0:12} (${G_BRANCH:-detached})"
     return 0
   fi
 
+  # ---- changes start here; any failure from now on backs out (gdie) ----
+  if [ "$wt_exists" = 1 ]; then
+    GB_PREV_HEAD="$cur_head"; GB_PREV_BRANCH="$cur_branch"
+  fi
+  if [ "$need_stash" = 1 ]; then
+    git -C "$WT" stash push -q -m "transfer-backup-$TS" || gdie "could not stash the departure-state edits in $WT"
+    STASHED="transfer-backup-$TS"
+  fi
+  _branch_to_target() {
+    local prev="" created=0
+    if git -C "$ROOT" show-ref -q --verify "refs/heads/$G_BRANCH"; then
+      prev=$(git -C "$ROOT" rev-parse "refs/heads/$G_BRANCH")
+    else
+      created=1
+    fi
+    git -C "$ROOT" branch -f "$G_BRANCH" "$target" >/dev/null 2>&1 || gdie "could not point $G_BRANCH at the transferred commit"
+    GB_BRANCH_TOUCHED=1; GB_BRANCH_CREATED="$created"; GB_BRANCH_PREV="$prev"
+  }
   if [ -n "$G_BRANCH" ]; then
     if [ "$wt_exists" = 1 ]; then
-      cur_branch=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
       if [ "$cur_branch" = "$G_BRANCH" ]; then
-        git -C "$WT" merge -q --ff-only "$target" >/dev/null 2>&1 || die "fast-forward of $G_BRANCH failed in $WT"
+        git -C "$WT" merge -q --ff-only "$target" >/dev/null 2>&1 || gdie "fast-forward of $G_BRANCH failed in $WT"
       else
-        git -C "$ROOT" branch -f "$G_BRANCH" "$target" >/dev/null 2>&1 || die "could not point $G_BRANCH at the transferred commit"
-        git -C "$WT" checkout -q "$G_BRANCH" 2>/dev/null || die "could not check out $G_BRANCH in $WT"
+        _branch_to_target
+        git -C "$WT" checkout -q "$G_BRANCH" 2>/dev/null || gdie "could not check out $G_BRANCH in $WT"
       fi
     else
-      git -C "$ROOT" branch -f "$G_BRANCH" "$target" >/dev/null 2>&1 || die "could not point $G_BRANCH at the transferred commit"
+      _branch_to_target
       git -C "$ROOT" worktree prune 2>/dev/null
-      git -C "$ROOT" worktree add -q "$WT" "$G_BRANCH" 2>/dev/null || die "git worktree add $WT failed"
+      GB_WT_CREATED=1
+      git -C "$ROOT" worktree add -q "$WT" "$G_BRANCH" 2>/dev/null || gdie "git worktree add $WT failed"
     fi
     if [ -n "$G_UPSTREAM" ] && git -C "$ROOT" rev-parse -q --verify "refs/remotes/$G_UPSTREAM" >/dev/null 2>&1; then
       git -C "$WT" branch -q --set-upstream-to="$G_UPSTREAM" "$G_BRANCH" >/dev/null 2>&1 || true
     fi
   else
     if [ "$wt_exists" = 1 ]; then
-      git -C "$WT" checkout -q --detach "$target" 2>/dev/null || die "could not detach $WT at the transferred commit"
+      git -C "$WT" checkout -q --detach "$target" 2>/dev/null || gdie "could not detach $WT at the transferred commit"
     else
       git -C "$ROOT" worktree prune 2>/dev/null
-      git -C "$ROOT" worktree add -q --detach "$WT" "$target" 2>/dev/null || die "git worktree add --detach $WT failed"
+      GB_WT_CREATED=1
+      git -C "$ROOT" worktree add -q --detach "$WT" "$target" 2>/dev/null || gdie "git worktree add --detach $WT failed"
     fi
   fi
   if [ "$G_PATCH_BYTES" -gt 0 ]; then
     git -C "$WT" apply --index --binary --whitespace=nowarn "$STAGE/x/git/uncommitted.patch" 2>"$STAGE/apply.err" \
-      || die "the uncommitted changes did not apply cleanly in $WT: $(head -3 "$STAGE/apply.err" | tr '\n' ' ')"
+      || gdie "the uncommitted changes did not apply cleanly in $WT: $(head -3 "$STAGE/apply.err" | tr '\n' ' ')"
   fi
-  git -C "$ROOT" update-ref -d "refs/transfer/$SID" 2>/dev/null
-  [ "$(git -C "$WT" rev-parse HEAD)" = "$target" ] || die "restored HEAD does not match the sender's"
+  [ "$(git -C "$WT" rev-parse HEAD)" = "$target" ] || gdie "restored HEAD does not match the sender's"
   [ "$(tx_git_diff_head "$WT" | shasum -a 256 | cut -d' ' -f1)" = "$G_PATCH_SHA" ] \
-    || die "restored uncommitted changes do not hash the same as the sender's"
+    || gdie "restored uncommitted changes do not hash the same as the sender's"
+  git -C "$ROOT" update-ref -d "refs/transfer/$SID" 2>/dev/null
   GIT_NOTE="HEAD ${G_HEAD:0:12} on ${G_BRANCH:-detached HEAD}; uncommitted changes applied (all staged)${STASHED:+; this Mac had departure edits, stashed as $STASHED}"
   return 0
 }
@@ -499,10 +641,11 @@ git_plan_or_restore() {  # $1 = dry|real
 # ------------------------------------------------------------------------------------------------
 # 5. Placement
 # ------------------------------------------------------------------------------------------------
-py_place() {  # py_place dry|real -> action lines on stdout
-  python3 - "$1" "$STAGE/x" "$HOME_P" "${CODEX_HOME:-$HOME_P/.codex}" "$SRC_HOST" "$TS" <<'PY'
+py_place() {  # py_place dry|real -> action lines on stdout (destinations validated in step 2)
+  python3 - "$1" "$STAGE/x" "$HOME_P" "$CODEX_B" "$SRC_HOST" "$TS" <<'PY'
 import hashlib, json, os, re, shutil, sys
 mode, xdir, home, codex_b, host, ts = sys.argv[1:7]
+BASES = {"claude": os.path.join(home, ".claude"), "codex": codex_b}
 host = re.sub(r"[^A-Za-z0-9._-]", "-", host) or "other-mac"
 man = json.load(open(os.path.join(xdir, "manifest.json")))
 
@@ -523,7 +666,8 @@ def put(src, dst, f):
 
 for f in man["files"]:
     src = os.path.join(xdir, "payload", f["path"])
-    dst = os.path.join(codex_b, f["codex_rel"]) if f["kind"] == "codex" else os.path.join(home, f["path"])
+    # "home": under THIS Mac's own state dir; "abs": the same absolute path as on the sender.
+    dst = os.path.join(BASES[f["base"]], f["rel"]) if f["class"] == "home" else f["abs"]
     if os.path.lexists(dst) and not os.path.islink(dst) and os.path.isfile(dst) and sha(dst) == f["sha256"]:
         if mode == "real":
             os.chmod(dst, int(f["mode"], 8))
@@ -581,7 +725,7 @@ if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then
   TF="$ROOT/TRANSFER.$SID.md"
   {
     [ -f "$TF" ] || printf '# TRANSFER %s\n\n(The sender wrote no TRANSFER notes; this record was created on arrival.)\n' "$SID"
-    printf '\n## Restored on B (%s, %s)\n\n' "$HOST_B" "$NOW"
+    printf '\n## Restored on this Mac (%s, %s) by resumework\n\n' "$HOST_B" "$NOW"
     printf -- '- Sent from %s at %s; bundle %s.tx (%s files, %s bytes), every file sha256-verified.\n' "$SRC_HOST" "$CREATED" "$LOC" "$FILES" "$BYTES"
     if [ -n "$SEALED" ]; then
       printf -- '- A closed: the sending chat exited at %s, before the snapshot was sealed.\n' "$SEALED"
@@ -623,12 +767,51 @@ echo "  - Dependencies, containers and dev servers did not travel: follow the ch
 [ "$GIT" = 1 ] && echo "  - Staged and unstaged edits were merged: every uncommitted change is now staged."
 [ "$TOOL" = codex ] && echo "  - If codex says the session is not found, try: codex resume --all"
 
+# The resumed chat always launches unattended (--dangerously-skip-permissions / its codex
+# equivalent) unless --safe was passed - a transfer is already a deliberate, owner-initiated
+# handoff, and stopping to re-approve every tool call on arrival defeats the point. Deduped
+# against whatever A's own argv already carried, so it is never doubled.
+_has_flag() {  # _has_flag <needle> <array elements...>
+  local needle="$1"; shift
+  local a
+  for a in "$@"; do [ "$a" = "$needle" ] && return 0; done
+  return 1
+}
 if [ "$TOOL" = claude ]; then
   BIN="${TX_CLAUDE_BIN:-claude}"
+  if [ "$SAFE" != 1 ] && ! _has_flag "--dangerously-skip-permissions" "${FLAGS[@]+"${FLAGS[@]}"}"; then
+    FLAGS[NFLAG]="--dangerously-skip-permissions"; NFLAG=$((NFLAG + 1))
+  fi
+  # -n <handle>: the Remote Control display name other Macs see in ListAgents. By the /line rule
+  # the display name IS the peer handle ("mac-mini-setup"), never the free-text caption sentence.
+  # It is derived by LAC's own display_handle_for() - the helper the SessionStart reassert hook
+  # uses (slugify + uniqueness against this Mac's live windows) - so there is no second copy of
+  # the slug rule to drift. The caption file is already placed (home class) by this point.
+  if [ -s "$HOME_P/.claude/session-status/$SID.txt" ]; then
+    HANDLE=$(python3 - "$TX_REPO_DIR/scripts/line-agent-communicator.py" "$SID" 2>"$STAGE/handle.err" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("line_agent_communicator", sys.argv[1])
+lac = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lac)
+h = lac.display_handle_for(sys.argv[2])
+print(h if lac.TYPEABLE_NAME.match(h or "") else "")
+PY
+)
+    if [ -n "$HANDLE" ]; then
+      FLAGS[NFLAG]="-n"; NFLAG=$((NFLAG + 1))
+      FLAGS[NFLAG]="$HANDLE"; NFLAG=$((NFLAG + 1))
+    else
+      note "could not derive the /line display name ($(head -1 "$STAGE/handle.err" 2>/dev/null)); the SessionStart hook restores it on launch"
+    fi
+  fi
   CMD=("$BIN" "${FLAGS[@]+"${FLAGS[@]}"}" --resume "$SID" "/post-compact-resume $SID")
 else
   BIN="${TX_CODEX_BIN:-codex}"
-  CMD=("$BIN" resume "$SID")
+  CODEX_FLAGS=()
+  if [ "$SAFE" != 1 ]; then
+    CODEX_FLAGS=(--dangerously-bypass-approvals-and-sandbox)
+  fi
+  CMD=("$BIN" resume "$SID" "${CODEX_FLAGS[@]+"${CODEX_FLAGS[@]}"}")
 fi
 DEST="$CWD"
 [ -n "$DEST" ] && [ -d "$DEST" ] || DEST="$ROOT"
@@ -643,4 +826,7 @@ command -v "$BIN" >/dev/null 2>&1 || die "$BIN is not on PATH. Everything is res
 echo
 echo "Launching: ${_show% }"
 cd "$DEST" || die "cannot cd to $DEST"
+# exec replaces this process, so the EXIT trap never fires: remove the decrypted staging copy
+# (plaintext chat + repo files) explicitly first.
+cleanup; STAGE=""
 exec "${CMD[@]}"

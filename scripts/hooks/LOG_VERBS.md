@@ -125,6 +125,27 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `arg-not-my-session` | post-compact-resume-step2.sh | R9 HIGH-1 (wrong-load guard): session_id arg != this session's own id (CLAUDE_CODE_SESSION_ID) — command mis-delivered/mis-pasted; refuse to load another session's handoff. self= and arg= logged |
 | `self-unverifiable` | post-compact-resume-step2.sh | R9-Round2 (fail-closed): this session's own id is unreadable (CLAUDE_CODE_SESSION_ID + CLAUDE_SESSION_ID both empty) so arg-vs-self cannot run — REFUSE rather than degrade to content-only (degrading is a wrong-load path in a shared repo-root). arg= logged. Never fires on supported Claude Code (env var always set) |
 
+## line-rename.log (line-apply-rename.sh `lr_log`) and line-reassert.log (line-reassert-identity.sh `log_line`)
+
+Own loggers, not ac_log/ctx_gate_log/handoff_log, so the G5 drift scan does not cover them; listed
+here as bullets (not table rows) so the G5 reverse scan does not look for ac_log emit sites.
+
+`~/.claude/logs/line-rename.log` - the Stop hook that types `/rename <name>` for a `/line` request:
+
+- `fired` - `/rename` delivered into this session's own Terminal tab; `tty=` + `name=` logged; request removed.
+- `defer` - an auto-compact sentinel for this session is armed or mid-claim; request kept untouched for a later Stop.
+- `abort` - a verification or the osascript failed before anything was typed; `reason=` (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire, osascript-failed/...) and whether the request was kept for its one retry.
+- `give-up` - the request already had its retry; dropped (the name stays saved in the chat and applies on the next restart).
+- `stale` - request older than 1 hour (or dated in the future); deleted without typing.
+- `drop` - request rejected: `reason=symlink`, `oversized`, or `malformed` (bad JSON, or a name that is not a peer handle: `[a-z0-9-]{1,60}`, no leading hyphen).
+- `unsupported-terminal` - not a plain Terminal.app tab (iTerm, tmux, screen); request deleted, nothing typed.
+- `test-seam-ignored` - `LINE_RENAME_OSASCRIPT` was set with the real HOME; the override was refused.
+
+`~/.claude/logs/line-reassert.log` - the SessionStart identity re-assert:
+
+- `reassert` - the peer address was re-derived from the caption; `nameSource=` + `rc=` logged.
+- `display-name` - on startup/resume the transcript's last title did not match the window's peer handle; `result=` is `written` (record + /rename request), `written-no-request` (non-Terminal.app), `no-transcript`, `no-handle` (caption has no letters or digits), or `error`.
+
 ## MISSION.<sid>.log (mission-write.sh)
 
 The mission-bridge spine has its OWN log file `<canonical_root>/MISSION.<sid>.log` (NOT a shared hook

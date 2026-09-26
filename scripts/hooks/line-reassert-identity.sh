@@ -2,6 +2,9 @@
 # line-reassert-identity.sh — async SessionStart hook (startup|resume|clear|compact).
 #
 # Re-applies this window's PEER ADDRESS from its `/line` caption after a restart.
+# On a real open (startup|resume) it also restores the DISPLAY NAME (what Remote Control shows on
+# the other Macs, = the peer handle) when the transcript's last custom-title record no longer matches: the
+# record is re-appended and a /rename request is left for the Stop hook line-apply-rename.sh.
 #
 # Why it exists: the two names a window carries are keyed differently. The caption lives at
 # ~/.claude/session-status/<sessionId>.txt and SURVIVES a resume; the peer address lives in
@@ -64,6 +67,9 @@ caption=$(head -n 1 "$STATUS_DIR/$sid.txt" 2>/dev/null)
 caption=$(printf '%s' "$caption" | tr -d '\r')
 [ -n "$caption" ] || exit 0   # never /line'd, or the caption was cleared — nothing to re-assert
 
+# SessionStart source (startup|resume|clear|compact) - gates the display-name step at the end.
+source=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null | tr -cd 'a-z')
+
 # Read nameSource for THIS session's registry entry.
 #
 # jq is still run on ONE file at a time, never over a glob: at least one file in this directory is
@@ -100,16 +106,34 @@ while [ "$attempt" -lt 6 ]; do
   sleep 0.5
 done
 
-[ -n "$name_source" ] || exit 0
-[ "$name_source" = "explicit" ] && exit 0   # address already survived — nothing diverged
+# Address re-assert, only when the registry entry exists and its name did not survive. (These used to
+# be early `exit 0`s; a guarded block keeps the flow to one exit at the end.)
+if [ -n "$name_source" ] && [ "$name_source" != "explicit" ]; then
+  # Re-derive the address from the caption through the SAME code path /line uses, so handle
+  # slugging and live-collision suffixing stay in one place rather than being reimplemented here.
+  # `set` also re-writes the display name (= the handle). LINE_RENAME_QUEUE=if-changed: it queues a
+  # live /rename only when the record actually changed - a record that already matched was read back
+  # at startup, so the live name is right and typing /rename again would be noise.
+  CLAUDE_SESSION_ID="$sid" LINE_RENAME_QUEUE=if-changed python3 "$LAC" set "$caption" >/dev/null 2>&1
+  rc=$?
 
-# Re-derive the address from the caption through the SAME code path /line uses, so handle
-# slugging and live-collision suffixing stay in one place rather than being reimplemented here.
-CLAUDE_SESSION_ID="$sid" python3 "$LAC" set "$caption" >/dev/null 2>&1
-rc=$?
+  # The proof this hook ran. Logged AFTER the work, with the outcome, so the line means "a re-assert
+  # was attempted for this session" and not merely "the hook was invoked".
+  log_line "reassert sid=${sid} nameSource=${name_source} caption=$(printf '%s' "$caption" | head -c 60) rc=${rc}"
+fi
 
-# The proof this hook ran. Logged AFTER the work, with the outcome, so the line means "a re-assert
-# was attempted for this session" and not merely "the hook was invoked".
-log_line "reassert sid=${sid} nameSource=${name_source} caption=$(printf '%s' "$caption" | head -c 60) rc=${rc}"
+# Display name (what Remote Control shows on the owner's other Macs) = this window's peer HANDLE.
+# It lives in the transcript as the LAST custom-title record, which a reopen by any route
+# (claude --resume, the /resume picker, resumework on the other Mac) reads back. If that record is
+# missing or no longer matches the handle, `sync-display-name` appends it and leaves a one-shot
+# request so the Stop hook line-apply-rename.sh types /rename live when this session's first turn
+# ends. Matching -> no-op. Runs AFTER the address step, so it compares against the handle that step
+# settled on. Only on a real open: `clear` and `compact` keep the same live process and name.
+case "$source" in
+  startup|resume)
+    dn=$(CLAUDE_SESSION_ID="$sid" python3 "$LAC" sync-display-name 2>/dev/null | head -n 1 | tr -cd 'a-z-')
+    [ "$dn" = "match" ] || log_line "display-name sid=${sid} source=${source} result=${dn:-error}"
+    ;;
+esac
 
 exit 0

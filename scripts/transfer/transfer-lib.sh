@@ -25,6 +25,18 @@
 #   tx_git_info_exclude <repo>  -> adds TRANSFER/CLAUDE.local/MISSION patterns to <common-dir>/info/exclude
 #   tx_resolve_self [path]      -> real directory of path after following symlinks (resumework runs via
 #                                  a ~/.local/bin symlink)
+#   tx_alias_homes              -> one physical path per VERIFIED home alias of this account: a real
+#                                  directory <base>/<name> (base /Users) holding a .home-alias-of
+#                                  marker (make-home-alias.sh) whose alias_of= line names `id -un`,
+#                                  both owned by this account. TX_TEST_ALIAS_HOMES_BASE replaces
+#                                  the base, honored ONLY under TRANSFER_TESTS_ALLOW_DEV=true.
+#
+# PLACEMENT RULE (transfer-send.sh writes it, resumework enforces it): every payload file is one of
+#   "home" - Claude/Codex state ($HOME/.claude/..., $CODEX_HOME/...): stored relative to that state
+#            dir and placed under the RECEIVER's own real $HOME/.claude or CODEX_HOME;
+#   "abs"  - repo/worktree content (ROOT handoff, MISSION files, TRANSFER notes, untracked files,
+#            tmp/ context): stored by absolute path and placed at the SAME absolute path, which must
+#            sit under the receiver's own $HOME or one of its verified home aliases.
 #
 # WHY the public-repo guard: ~/.claude-dotfiles is a PUBLIC GitHub repo whose auto-sync stages
 # everything with `git add -A` and pushes. A bundle, staging dir or log written there is published.
@@ -182,6 +194,23 @@ tx_guard_path() {  # rc 2 + reason on stderr when <path> resolves inside the pub
         return 2
         ;;
     esac
+  done
+  return 0
+}
+
+tx_alias_homes() {  # verified home aliases of this account (see the header); physical paths
+  local base="/Users" me d who
+  if [ "${TRANSFER_TESTS_ALLOW_DEV:-}" = "true" ] && [ -n "${TX_TEST_ALIAS_HOMES_BASE:-}" ]; then
+    base="$TX_TEST_ALIAS_HOMES_BASE"
+  fi
+  me=$(id -un 2>/dev/null) || return 0
+  [ -n "$me" ] || return 0
+  for d in "$base"/*; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || continue
+    [ -f "$d/.home-alias-of" ] && [ ! -L "$d/.home-alias-of" ] && [ -O "$d/.home-alias-of" ] || continue
+    who=$(sed -n 's/^alias_of=//p' "$d/.home-alias-of" 2>/dev/null | head -1)
+    [ "$who" = "$me" ] || continue
+    (cd -P "$d" 2>/dev/null && pwd -P)
   done
   return 0
 }

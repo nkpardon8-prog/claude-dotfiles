@@ -69,7 +69,9 @@ echo "MODE=$MODE SID=$SID DRY=${DRY:-no} ROOT=$ROOT CWD=$CWD"
   and explain that a Codex chat is moved with `/transfer codex <id>` (see below).
 
 **`--dry-run` on either path:** run the Step 5 or Codex send command with `--dry-run` added (no
-`--seal-after-exit`), relay what it lists, and stop. Skip everything else.
+`--seal-after-exit`), relay what it lists, and stop. Skip everything else. A line "A real run would
+refuse: no handoff ..." is expected here (a dry run skips Step 2) and is not a problem; any
+"A real run would REFUSE" at the end is.
 
 ## Step 2 - Fresh handoff (Claude path)
 
@@ -92,7 +94,8 @@ find "$CWD" -maxdepth 3 -type d -name node_modules -prune 2>/dev/null
 ```
 
 Then use the Write tool to create (or overwrite) `<ROOT>/TRANSFER.<SID>.md`. Names only, never a
-secret value. The send script later appends what it copied and how git moved.
+secret value. The send script does not edit this file; `resumework` appends a "Restored on this
+Mac" record (what it copied, checksums, how git moved) when the chat arrives on the other Mac.
 
 ```markdown
 # Transfer notes - <SID>

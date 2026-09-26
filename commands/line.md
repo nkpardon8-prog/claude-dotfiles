@@ -18,6 +18,14 @@ window captioned "summit admin hub" was addressable only as `dentall-ae`, so ask
 "message my summit admin hub agent" could not work — the caption was cosmetic and nothing could
 translate it. One `/line` now sets both, so the name you type IS the address.
 
+`/line` also sets the **display name** - the name Remote Control shows for this chat on your other
+Macs - to that same short handle (`patient-retention`), so the name you see everywhere is the name
+agents message; your full sentence stays the statusline caption. It is saved in the chat itself (the
+same record `/rename` writes), so it survives a restart, a resume, and a transfer, and it goes live
+as soon as the reply finishes: a Stop hook (`scripts/hooks/line-apply-rename.sh`) types
+`/rename <handle>` into this window's own Terminal tab. Outside Terminal.app (iTerm, tmux) nothing is
+typed and `/line` prints the `/rename` to type yourself.
+
 With no argument it clears the caption. The peer address is deliberately left alone: clearing a
 caption should never make a window unreachable while someone is mid-conversation with it.
 

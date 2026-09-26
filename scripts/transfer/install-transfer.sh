@@ -56,6 +56,31 @@ else
     echo "  iCloud drop dir already present: $DROP_DIR"
 fi
 
+# Clickable "Resume Chat" app on the Desktop: asks for the code, opens Terminal, runs resumework.
+# Only ever (re)builds an app THIS script made: the marker below lives inside the bundle, so an app
+# of the same name that the owner made or installed some other way is never overwritten. Built in
+# a scratch dir first, so a failed compile never leaves a half-replaced app behind.
+APP="$HOME/Desktop/Resume Chat.app"
+APP_MARKER_REL="Contents/Resources/.built-by-install-transfer"
+if [ -e "$APP" ] && [ ! -f "$APP/$APP_MARKER_REL" ]; then
+    echo "WARNING: $APP exists and was not built by this script (no $APP_MARKER_REL inside it) - left untouched." >&2
+    echo "  Move or rename it and re-run to get the transfer version; resumework still works from Terminal." >&2
+else
+    APP_TMP=$(mktemp -d "${TMPDIR:-/tmp}/resume-chat-app.XXXXXX")
+    if osacompile -o "$APP_TMP/Resume Chat.app" "$REPO/scripts/transfer/resume-chat.applescript" 2>/dev/null \
+        && mkdir -p "$APP_TMP/Resume Chat.app/Contents/Resources" \
+        && printf 'built by %s at %s\n' "scripts/transfer/install-transfer.sh" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            > "$APP_TMP/Resume Chat.app/$APP_MARKER_REL"; then
+        mkdir -p "$(dirname "$APP")"
+        rm -rf "$APP"
+        mv "$APP_TMP/Resume Chat.app" "$APP"
+        echo "  built $APP (first launch: allow it to control Terminal)"
+    else
+        echo "WARNING: could not build $APP (osacompile failed); resumework still works from Terminal." >&2
+    fi
+    rm -rf "$APP_TMP"
+fi
+
 case ":$PATH:" in
     *":$BIN_DIR:"*)
         echo "$BIN_DIR is on PATH."
