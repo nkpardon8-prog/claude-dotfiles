@@ -211,6 +211,13 @@ codex process above the shell (the send runs detached) and no `--source-pid` -> 
 process is watched and the bundle waits for the lock. The post-close grace is 2 s here
 (`TX_TEST_CLOSE_GRACE`), so a sealer that stopped watching the lock fails B and D.
 
+### 18-newer-local-kept.sh
+A ride-along file (ignored repo context) is never rolled back. (N) B's copy is newer than the
+incoming one: it stays in place, the incoming version lands beside it as `<name>.from-<host>`, and
+the dry-run's "would replace" list omits it. (O) negative control: B's copy is older - replaced, old
+copy kept as `.bak-<ts>`. Found live 2026-09-26 when a reverse transfer would have reverted another
+agent's newer plan; goes red with the mtime check disabled.
+
 ### 19-codex-skill-and-no-mission.sh
 On a throwaway copy of the repo, `generate-codex-layer.py` emits `command-transfer/SKILL.md`
 byte-identical to `codex/overrides/command-transfer/SKILL.md` (other commands still ported; an

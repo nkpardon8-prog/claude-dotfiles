@@ -43,6 +43,7 @@ TESTS=(
   "15-alias-reverse.sh"
   "16-install-app-marker.sh"
   "17-codex-seal-after-exit.sh"
+  "18-newer-local-kept.sh"
   "19-codex-skill-and-no-mission.sh"
 )
 
