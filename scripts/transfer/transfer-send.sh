@@ -446,6 +446,14 @@ if [ "$GIT" = 1 ]; then
   for _m in MERGE_HEAD rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD; do
     [ -e "$_gd/$_m" ] && refuse "a git operation is in progress in $WT ($_m present) - finish or abort it first"
   done
+  # Conflicted files can outlive the operation that made them (a `git stash pop` that conflicts
+  # leaves no MERGE_HEAD), and a patch cannot carry git's conflict stages: the other Mac rebuilt a
+  # different index and backed out only after a full upload. Refuse here, in seconds, instead.
+  _unmerged=$(git -C "$WT" diff --name-only --diff-filter=U 2>/dev/null | head -5 | sed 's/^/    /')
+  [ -n "$_unmerged" ] && refuse "$WT has files with unresolved merge conflicts (git cannot move a half-merged file):
+$_unmerged
+  Resolve them (edit, then git add) or put them aside, then run the transfer again"
+  unset _unmerged
   git -C "$WT" rev-parse -q --verify HEAD >/dev/null 2>&1 || refuse "the repository at $WT has no commits yet"
 fi
 
