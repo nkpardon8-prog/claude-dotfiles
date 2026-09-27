@@ -2,6 +2,18 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-09-27 - `/transfer` refuses half-merged files up front; subagents in the notes
+
+- A folder with unresolved merge conflicts (e.g. a `git stash pop` that conflicted, which leaves no
+  MERGE_HEAD) is now refused on the SENDING Mac in seconds, naming the files. Before, the bundle
+  was packed and uploaded (~700 MB) and the receiving Mac backed out when its staged diff could not
+  match. Test 25.
+- The TRANSFER notes (Claude `/transfer` and Codex `$transfer`) now list subagents still running or
+  unreported - task, progress, files touched, a brief to relaunch - and the restart checklist says
+  to relaunch them.
+- `resumework --dry-run` names every file it would replace; a newer local copy of a ride-along file
+  is kept (incoming beside it as `.from-<host>`). Test 18.
+
 ## 2026-09-27 - `/transfer` delta sends, iCloud nudge, pre-commit transfer suite actually runs
 
 - **Delta sends (bundle format 4; update both Macs together).** "Move everything" stays, but a

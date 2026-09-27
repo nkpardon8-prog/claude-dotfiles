@@ -269,6 +269,12 @@ under `$HOME/Library/Mobile Documents/`: started as `brctl monitor com.apple.Clo
 resumework waits, and dead after a give-up, a TERM mid-wait, a `kill -9` mid-wait (the watchdog) and
 a normal restore. With a drop folder outside iCloud it is never started.
 
+### 25-unmerged-refused-early.sh
+Files left half-merged by a conflicting `git stash pop` (unmerged index entries, no MERGE_HEAD) are
+refused at SEND time, naming the file, with no bundle published - a patch cannot carry git's
+conflict stages, and live on 2026-09-27 the receiving Mac backed out only after a full upload.
+Negative control: resolved (git add), the same chat sends. Red with the check disabled.
+
 ### 99-resume-keeps-sid.sh (assumption A1, gated, NOT in run-all.sh)
 `claude --resume <sid>`, run against a copy of a real transcript placed under a fresh project dir,
 keeps the SAME session id and continues the transcript - for a cleanly-ended shape, one cut off at
