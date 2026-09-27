@@ -30,7 +30,14 @@
 #   tx_is_heavy_path <relpath>  -> rc 0 if a component is a rebuildable heavy dir (TX_HEAVY_DIRS)
 #   TX_HEAVY_DIRS               -> the space-separated heavy dir names (one list: tx_is_heavy_path and
 #                                  transfer-send.sh's repo walker both read it)
-#   tx_git_diff_head <dir>      -> the ONE canonical `git diff HEAD` both Macs hash (config-proof flags)
+#   tx_git_diff_head <dir>      -> the ONE canonical `git diff HEAD` both Macs hash (config-proof
+#                                  flags); staged + unstaged combined, used ONLY as a post-apply sanity
+#                                  check (both Macs must land on the same total diff), never shipped
+#   tx_git_diff_staged <dir>    -> the canonical `git diff --cached` (index vs HEAD): what travels as
+#                                  git/staged.patch and is applied on the receiver with `git apply --index`
+#   tx_git_diff_worktree <dir>  -> the canonical `git diff` (worktree vs index): what travels as
+#                                  git/worktree.patch and is applied on the receiver with plain `git apply`
+#                                  (never --index, so it never re-stages what was unstaged on the sender)
 #   tx_git_info_exclude <repo>  -> adds TRANSFER/CLAUDE.local/MISSION patterns to <common-dir>/info/exclude
 #   tx_resolve_self [path]      -> real directory of path after following symlinks (resumework runs via
 #                                  a ~/.local/bin symlink)
@@ -330,13 +337,25 @@ tx_is_heavy_path() {  # rc 0 if a component is a rebuildable dependency/output d
 # ---------------------------------------------------------------------------------------------
 # Git
 # ---------------------------------------------------------------------------------------------
-tx_git_diff_head() {  # the canonical uncommitted-change patch; both Macs hash exactly this output
-  # Every flag pins something a user config could otherwise change between the two Macs: colour,
-  # prefixes, external/textconv drivers, rename detection, and abbreviated blob ids (whose length
-  # depends on each clone's object count).
+tx_git_diff_head() {  # the canonical uncommitted-change patch (staged + unstaged); both Macs hash
+  # exactly this output as the post-apply sanity check. Every flag pins something a user config could
+  # otherwise change between the two Macs: colour, prefixes, external/textconv drivers, rename
+  # detection, and abbreviated blob ids (whose length depends on each clone's object count).
   git -C "$1" -c core.quotePath=true -c diff.noprefix=false -c diff.mnemonicPrefix=false \
     -c diff.relative=false diff --no-color --no-ext-diff --no-textconv --no-renames \
     --full-index --binary HEAD
+}
+
+tx_git_diff_staged() {  # the STAGED half only: index vs HEAD (`git diff --cached`), same config-proof flags
+  git -C "$1" -c core.quotePath=true -c diff.noprefix=false -c diff.mnemonicPrefix=false \
+    -c diff.relative=false diff --cached --no-color --no-ext-diff --no-textconv --no-renames \
+    --full-index --binary
+}
+
+tx_git_diff_worktree() {  # the UNSTAGED half only: worktree vs index (`git diff`), same config-proof flags
+  git -C "$1" -c core.quotePath=true -c diff.noprefix=false -c diff.mnemonicPrefix=false \
+    -c diff.relative=false diff --no-color --no-ext-diff --no-textconv --no-renames \
+    --full-index --binary
 }
 
 tx_git_info_exclude() {  # keep sid-keyed handoff/transfer files out of `git status` (local, untracked)

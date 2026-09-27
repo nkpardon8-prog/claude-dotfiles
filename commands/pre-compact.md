@@ -379,7 +379,7 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
 
        # Tier 1: $ARGUMENTS minus pass-flag tokens (incl. --auto-confirm).
        STRIPPED=$(printf '%s' "${ARGUMENTS:-}" | tr ' ' '\n' \
-         | grep -vE '^(quick|deep|chunked|no-auto-compact|no-gitignore|auto-confirm|pass=quick|pass=deep|pass=chunked|--quick|--deep|--chunked|--auto-confirm)$' \
+         | grep -vE '^(quick|deep|chunked|no-auto-compact|no-gitignore|auto-confirm|no-document|pass=quick|pass=deep|pass=chunked|--quick|--deep|--chunked|--auto-confirm|--no-document)$' \
          | tr '\n' ' ' | sed 's/  */ /g;s/^[[:space:]]*//;s/[[:space:]]*$//')
        NORTH_STAR=""; NS_SOURCE=""
        if [ -n "$STRIPPED" ]; then

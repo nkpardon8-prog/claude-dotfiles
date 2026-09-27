@@ -293,8 +293,9 @@ set_title() { printf '{"type":"custom-title","customTitle":"%s","sessionId":"%s"
 reset; printf 'summit admin hub\n' > "$FAKE_HOME/.claude/session-status/$SID.txt"
 reg "summit-admin-hub" explicit; set_title "summit-admin-hub"
 N0=$(titles); reassert resume
-check "resume, title == handle -> no request" "$([ ! -e "$REQ" ] && echo 1 || echo 0)"
-check "resume, title == handle -> transcript unchanged" "$([ "$(titles)" = "$N0" ] && echo 1 || echo 0)"
+check "resume, title == handle -> request queued anyway (live name reverts on every reopen)" \
+  "$([ -f "$REQ" ] && [ "$(jq -r '.name' "$REQ" 2>/dev/null)" = "summit-admin-hub" ] && echo 1 || echo 0)"
+check "resume, title == handle -> no duplicate title record" "$([ "$(titles)" = "$N0" ] && echo 1 || echo 0)"
 check "resume, title == handle -> no display-name log line" "$(grep -q 'display-name' "$RLOG" 2>/dev/null && echo 0 || echo 1)"
 
 reset; set_title "summit admin hub"
@@ -331,11 +332,14 @@ check "derived address + stale title -> exactly one new record, one request (han
 check "derived address -> existing reassert log line still written" "$(grep -q 'reassert sid=.* nameSource=derived' "$RLOG" 2>/dev/null && echo 1 || echo 0)"
 
 # After a live /rename fired, the registry says nameSource "user" with the handle as its name and the
-# transcript already ends on it: a reopen must re-mark the address but NOT type /rename again.
+# transcript already ends on it: a reopen re-marks the address AND still queues one /rename request
+# (the live bridge name is not restored from the transcript, so even a match must retype it once) -
+# but it must not append a duplicate title record.
 reset; reg "summit-admin-hub" user; set_title "summit-admin-hub"
 reassert resume
-check "post-rename reopen (user source, title == handle) -> no request, no new record" \
-  "$([ ! -e "$REQ" ] && [ "$(titles)" = 1 ] && [ "$(reg_name)" = "summit-admin-hub|explicit" ] && echo 1 || echo 0)"
+check "post-rename reopen (user source, title == handle) -> request queued, no new record" \
+  "$([ -f "$REQ" ] && [ "$(jq -r '.name' "$REQ" 2>/dev/null)" = "summit-admin-hub" ] \
+     && [ "$(titles)" = 1 ] && [ "$(reg_name)" = "summit-admin-hub|explicit" ] && echo 1 || echo 0)"
 
 echo "== Registration =="
 check "settings.json.template is valid JSON" "$(python3 -m json.tool "$TEMPLATE" >/dev/null 2>&1 && echo 1 || echo 0)"

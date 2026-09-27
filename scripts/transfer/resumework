@@ -26,8 +26,11 @@
 #      inside the public dotfiles repo. A git repo root must already exist (setup clones it).
 #   4. git: fetch origin, verify + fetch the bundle, fast-forward only, stash a dirty worktree ONLY
 #      when it exactly matches this Mac's own departure state (reverse transfer), refuse any other
-#      drift, refuse a branch checked out in another worktree; apply the patch; prove HEAD and the
-#      `git diff HEAD` hash equal the sender's. If anything fails AFTER the first git change, it
+#      drift, refuse a branch checked out in another worktree; apply the STAGED patch with
+#      `git apply --index` and then the UNSTAGED patch with plain `git apply`, so the staged/unstaged
+#      split survives exactly - never flattened into one all-staged blob; prove HEAD and all three
+#      hashes (staged, unstaged, and their `git diff HEAD` combination) equal the sender's. If
+#      anything fails AFTER the first git change, it
 #      BACKS OUT: removes a worktree it created, deletes a branch it created (or moves a moved
 #      branch back), returns an existing worktree to its previous HEAD/branch, and pops its own
 #      stash - then prints exactly what it undid and anything it could not. Left as they are (both
@@ -188,7 +191,7 @@ try:
     man = json.load(open(os.path.join(xdir, "manifest.json")))
 except Exception:
     refuse("the bundle has no readable manifest")
-if man.get("format") != 2:
+if man.get("format") != 3:
     refuse("unsupported bundle format %r (update the dotfiles on both Macs, then re-send)" % man.get("format"))
 tool, sid = man.get("tool"), man.get("sid")
 if tool not in ("claude", "codex") or not isinstance(sid, str) or not re.match(r"^[A-Za-z0-9_-]+$", sid):
@@ -350,17 +353,29 @@ if g:
         refuse("the manifest's bundle ref is unexpected: %r" % ref)
     if g.get("bundle") and not os.path.isfile(os.path.join(xdir, "git", "branch.bundle")):
         refuse("the git bundle is missing")
-    if not os.path.isfile(os.path.join(xdir, "git", "uncommitted.patch")):
-        refuse("the git patch is missing")
-    if hashlib.sha256(open(os.path.join(xdir, "git", "uncommitted.patch"), "rb").read()).hexdigest() != g.get("patch_sha256"):
-        refuse("checksum mismatch for the git patch - the bundle was altered or damaged")
+    # Staged and unstaged travel as TWO separate patches (staged.patch = index vs HEAD, applied with
+    # `git apply --index`; worktree.patch = worktree vs index, applied plain) so the receiver lands on
+    # the exact same staged/unstaged split the sender had - never flattened into one all-staged blob.
+    for part, sumkey in (("staged", "staged_patch_sha256"), ("worktree", "worktree_patch_sha256")):
+        pf = os.path.join(xdir, "git", "%s.patch" % part)
+        if not os.path.isfile(pf):
+            refuse("the git %s patch is missing" % part)
+        if hashlib.sha256(open(pf, "rb").read()).hexdigest() != g.get(sumkey):
+            refuse("checksum mismatch for the git %s patch - the bundle was altered or damaged" % part)
+    combined_sha = g.get("combined_diff_sha256")
+    if not (isinstance(combined_sha, str) and re.match(r"^[0-9a-f]{64}$", combined_sha)):
+        refuse("the manifest's combined diff checksum is missing or malformed")
     up = g.get("upstream") or ""
     if up and (not clean(up) or up.startswith("-") or " " in up):
         up = ""
     out += [("WORKTREE", wt), ("GIT_HEAD", head), ("GIT_BRANCH", br), ("GIT_UPSTREAM", up),
             ("GIT_ORIGIN", g.get("origin") if clean(g.get("origin")) else ""),
             ("GIT_BUNDLE", "1" if g.get("bundle") else "0"), ("GIT_BUNDLE_REF", ref),
-            ("GIT_PATCH_SHA", g.get("patch_sha256")), ("GIT_PATCH_BYTES", str(g.get("patch_bytes") or 0))]
+            ("GIT_STAGED_SHA", g.get("staged_patch_sha256")),
+            ("GIT_STAGED_BYTES", str(g.get("staged_patch_bytes") or 0)),
+            ("GIT_WORKTREE_SHA", g.get("worktree_patch_sha256")),
+            ("GIT_WORKTREE_BYTES", str(g.get("worktree_patch_bytes") or 0)),
+            ("GIT_COMBINED_SHA", combined_sha)]
 for k, v in sorted(counts.items()):
     out.append(("COUNT", "%s=%d" % (k, v)))
 for shown, sha in keys:
@@ -410,7 +425,8 @@ fi
 
 TOOL=""; SID=""; M_USER=""; M_HOME=""; REPO_HOME=""; SRC_HOST=""; CREATED=""; SEALED=""; CWD=""; ROOT=""
 FILES=0; BYTES=0; GIT=0; WT=""; G_HEAD=""; G_BRANCH=""; G_UPSTREAM=""; G_ORIGIN=""; G_BUNDLE=0
-G_REF=""; G_PATCH_SHA=""; G_PATCH_BYTES=0; COUNTS=""; KEYSHAS=""; SECRETS=""; NFLAG=0
+G_REF=""; G_STAGED_SHA=""; G_STAGED_BYTES=0; G_WORKTREE_SHA=""; G_WORKTREE_BYTES=0; G_COMBINED_SHA=""
+COUNTS=""; KEYSHAS=""; SECRETS=""; NFLAG=0
 SECMOVED=""; SCANHITS=""; SCANINC=0
 FLAGS=()
 while IFS=$'\t' read -r _k _a _b; do
@@ -421,7 +437,10 @@ while IFS=$'\t' read -r _k _a _b; do
     ROOT) ROOT="$_a" ;; FILES) FILES="$_a" ;; BYTES) BYTES="$_a" ;; GIT) GIT="$_a" ;;
     WORKTREE) WT="$_a" ;; GIT_HEAD) G_HEAD="$_a" ;; GIT_BRANCH) G_BRANCH="$_a" ;;
     GIT_UPSTREAM) G_UPSTREAM="$_a" ;; GIT_ORIGIN) G_ORIGIN="$_a" ;; GIT_BUNDLE) G_BUNDLE="$_a" ;;
-    GIT_BUNDLE_REF) G_REF="$_a" ;; GIT_PATCH_SHA) G_PATCH_SHA="$_a" ;; GIT_PATCH_BYTES) G_PATCH_BYTES="$_a" ;;
+    GIT_BUNDLE_REF) G_REF="$_a" ;;
+    GIT_STAGED_SHA) G_STAGED_SHA="$_a" ;; GIT_STAGED_BYTES) G_STAGED_BYTES="$_a" ;;
+    GIT_WORKTREE_SHA) G_WORKTREE_SHA="$_a" ;; GIT_WORKTREE_BYTES) G_WORKTREE_BYTES="$_a" ;;
+    GIT_COMBINED_SHA) G_COMBINED_SHA="$_a" ;;
     COUNT) COUNTS="${COUNTS}${COUNTS:+ }$_a" ;;
     KEYSHA) KEYSHAS="${KEYSHAS}    $_a
 " ;;
@@ -567,7 +586,7 @@ git_plan_or_restore() {  # $1 = dry|real
     cur_head=$(git -C "$WT" rev-parse -q --verify HEAD 2>/dev/null || true)
     cur_branch=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
     cur_diff=$(tx_git_diff_head "$WT" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
-    if [ "$cur_head" = "$target" ] && [ "$cur_diff" = "$G_PATCH_SHA" ]; then
+    if [ "$cur_head" = "$target" ] && [ "$cur_diff" = "$G_COMBINED_SHA" ]; then
       [ "$mode" = real ] && git -C "$ROOT" update-ref -d "refs/transfer/$SID" 2>/dev/null
       GIT_NOTE="worktree already at the sender's state"
       return 0
@@ -641,15 +660,27 @@ git_plan_or_restore() {  # $1 = dry|real
       git -C "$ROOT" worktree add -q --detach "$WT" "$target" 2>/dev/null || gdie "git worktree add --detach $WT failed"
     fi
   fi
-  if [ "$G_PATCH_BYTES" -gt 0 ]; then
-    git -C "$WT" apply --index --binary --whitespace=nowarn "$STAGE/x/git/uncommitted.patch" 2>"$STAGE/apply.err" \
-      || gdie "the uncommitted changes did not apply cleanly in $WT: $(head -3 "$STAGE/apply.err" | tr '\n' ' ')"
+  # Staged first (index vs HEAD, applied WITH --index so it lands in both the index and the working
+  # tree), then unstaged (worktree vs index, applied WITHOUT --index so it touches only the working
+  # tree) - in that order, so the receiver ends up with the exact same staged/unstaged split the
+  # sender had, never everything flattened into the index.
+  if [ "$G_STAGED_BYTES" -gt 0 ]; then
+    git -C "$WT" apply --index --binary --whitespace=nowarn "$STAGE/x/git/staged.patch" 2>"$STAGE/apply.err" \
+      || gdie "the staged changes did not apply cleanly in $WT: $(head -3 "$STAGE/apply.err" | tr '\n' ' ')"
+  fi
+  if [ "$G_WORKTREE_BYTES" -gt 0 ]; then
+    git -C "$WT" apply --binary --whitespace=nowarn "$STAGE/x/git/worktree.patch" 2>"$STAGE/apply.err" \
+      || gdie "the unstaged changes did not apply cleanly in $WT: $(head -3 "$STAGE/apply.err" | tr '\n' ' ')"
   fi
   [ "$(git -C "$WT" rev-parse HEAD)" = "$target" ] || gdie "restored HEAD does not match the sender's"
-  [ "$(tx_git_diff_head "$WT" | shasum -a 256 | cut -d' ' -f1)" = "$G_PATCH_SHA" ] \
-    || gdie "restored uncommitted changes do not hash the same as the sender's"
+  [ "$(tx_git_diff_staged "$WT" | shasum -a 256 | cut -d' ' -f1)" = "$G_STAGED_SHA" ] \
+    || gdie "restored staged changes do not hash the same as the sender's (git diff --cached mismatch)"
+  [ "$(tx_git_diff_worktree "$WT" | shasum -a 256 | cut -d' ' -f1)" = "$G_WORKTREE_SHA" ] \
+    || gdie "restored unstaged changes do not hash the same as the sender's (git diff mismatch)"
+  [ "$(tx_git_diff_head "$WT" | shasum -a 256 | cut -d' ' -f1)" = "$G_COMBINED_SHA" ] \
+    || gdie "restored uncommitted changes (staged + unstaged combined) do not hash the same as the sender's"
   git -C "$ROOT" update-ref -d "refs/transfer/$SID" 2>/dev/null
-  GIT_NOTE="HEAD ${G_HEAD:0:12} on ${G_BRANCH:-detached HEAD}; uncommitted changes applied (all staged)${STASHED:+; this Mac had departure edits, stashed as $STASHED}"
+  GIT_NOTE="HEAD ${G_HEAD:0:12} on ${G_BRANCH:-detached HEAD}; uncommitted changes applied (staged and unstaged kept separate)${STASHED:+; this Mac had departure edits, stashed as $STASHED}"
   return 0
 }
 
@@ -783,7 +814,7 @@ echo "Also:"
 [ -n "$FROMS" ] && { echo "  - Memory conflicts - this Mac kept its file, the incoming one is beside it:"; echo "$FROMS"; }
 echo "  - prod-ledger is machine-local; check \`prod-ledger.py show\` on $SRC_HOST before any prod work."
 echo "  - Dependencies, containers and dev servers did not travel: follow the checklist (npm ci --legacy-peer-deps, prisma generate, ...)."
-[ "$GIT" = 1 ] && echo "  - Staged and unstaged edits were merged: every uncommitted change is now staged."
+[ "$GIT" = 1 ] && echo "  - Staged and unstaged edits arrived exactly as they were: nothing was flattened into the index."
 [ "$TOOL" = codex ] && echo "  - If codex says the session is not found, try: codex resume --all"
 
 # The resumed chat always launches unattended (--dangerously-skip-permissions / its codex

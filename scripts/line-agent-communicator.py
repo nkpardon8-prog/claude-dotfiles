@@ -823,9 +823,11 @@ def apply_display_name(sid: str, name: str, queue: str = "always") -> tuple[str,
     """Make the chat's display name `name`: the transcript record, plus a live /rename request.
 
     The record is appended only when the transcript does not already end on `name` (no duplicate
-    lines). `queue` decides the live request: "always" (an interactive /line - a record written
-    earlier may never have gone live) or "if-changed" (after a reopen, where a record that already
-    matched was read back at startup, so the live name is already right).
+    lines) - that part is unconditional on `changed` no matter what `queue` says. `queue` decides
+    the live /rename request instead: "always" (an interactive /line, or a resume/startup reassert
+    - either way a record already on disk may never have gone live in THIS process, so the Stop hook
+    should type it regardless of whether the transcript record itself just changed), or "if-changed"
+    (only queue the request when the record changed - used where a match truly means nothing to do).
     Returns (outcome, queued); outcome is "invalid", "no-transcript", "written", or "match".
     """
     if not TYPEABLE_NAME.match(name or ""):
@@ -976,9 +978,12 @@ def cmd_sync_display_name(session_id: str) -> int:
 
     Called by line-reassert-identity.sh on SessionStart (startup/resume), AFTER its address step. The
     target is display_handle_for(): the explicit registry name /line wrote, else the handle derived
-    from the caption. If the transcript's LAST custom-title record already equals it this is a no-op
-    (that record was read back at startup, so the live name is right); otherwise it appends the record
-    and leaves a /rename request so the name also goes live when the first turn ends.
+    from the caption. The transcript record is appended only when the LAST custom-title record does
+    not already equal it (no duplicate records). The live /rename request is queued unconditionally
+    ("always") whenever a caption exists, even when the record already matched: a live Remote Control
+    name reverts to an auto-derived handle on every reopen independent of the transcript record (the
+    record only fixes what a FUTURE resume reads back, not what THIS window is showing right now), so
+    a bare "match" must still make the Stop hook type /rename once at the end of the first turn.
     Prints exactly one outcome token on stdout (the hook logs it): no-sid, no-caption, no-handle,
     match, written, written-no-request, no-transcript.
     """
@@ -990,7 +995,7 @@ def cmd_sync_display_name(session_id: str) -> int:
         print("no-caption")
         return 0
     want = display_handle_for(sid)
-    outcome, queued = apply_display_name(sid, want, "if-changed")
+    outcome, queued = apply_display_name(sid, want, "always")
     if outcome == "invalid":
         print("no-handle")
     elif outcome == "written" and not queued:

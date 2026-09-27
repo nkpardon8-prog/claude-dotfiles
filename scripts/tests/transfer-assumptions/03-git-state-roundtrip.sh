@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 03 - git state travels correctly:
-#   A. unpushed commit + staged + unstaged + untracked -> HEAD, diff hash and untracked file match
+#   A. unpushed commit + staged + unstaged + untracked -> HEAD, diff hash and untracked file match,
+#      AND staged vs unstaged land separately (git diff --cached / git diff checked independently,
+#      not just their combination) - a regression that flattens one into the other must fail here
 #      (this is also the cwd==ROOT case: every test in this suite uses a plain repo, no separate
 #      worktree, so ROOT == WT == CWD throughout).
 #   B. a B clone that has not fetched A's last push needs `git fetch origin` before the bundle's
@@ -31,6 +33,7 @@ send_ok() {  # send_ok <cwd> <sid> -> sets CODE/LOC or fails/exits 3
 # ---------------------------------------------------------------------------------------------
 scenario_a() {
   local origin="$HOME_T/origin-a.git" wt="$HOME_T/work/proj-a" sid untracked_before diff_before head_before
+  local staged_before unstaged_before
   sid=$(tx_new_sid)
   tx_init_origin "$origin" "$wt" >/dev/null
   printf 'tracked v1\n' > "$wt/tracked.txt"
@@ -42,12 +45,26 @@ scenario_a() {
   printf 'staged edit\n' >> "$wt/tracked.txt"
   git -C "$wt" add tracked.txt
   printf 'more staged\n' >> "$wt/tracked.txt"          # now also unstaged on top of the staged add
+  printf 'a second staged-only file\n' > "$wt/staged-only.txt"
+  git -C "$wt" add staged-only.txt                     # a file with ONLY a staged side, no unstaged edit
+  printf 'a second unstaged-only file\n' > "$wt/unstaged-only.txt"
+  git -C "$wt" add unstaged-only.txt
+  git -C "$wt" commit -q -m "commit the unstaged-only fixture file"
+  printf 'unstaged edit, never staged\n' >> "$wt/unstaged-only.txt"
   printf 'an untracked file\n' > "$wt/scratch.txt"
   tx_write_handoff "$wt" "$sid"
 
   head_before=$(git -C "$wt" rev-parse HEAD)
   diff_before=$(tx_git_diff_head "$wt" | tx_sha_stdin)
+  staged_before=$(tx_git_diff_staged "$wt" | tx_sha_stdin)
+  unstaged_before=$(tx_git_diff_worktree "$wt" | tx_sha_stdin)
   untracked_before=$(cat "$wt/scratch.txt")
+  # Sanity on the fixture itself: this scenario is worthless if staged and unstaged happen to hash
+  # the same (a regression that flattens one into the other would then go undetected).
+  [ "$staged_before" != "$unstaged_before" ] || { echo "INFRA(A): fixture's staged and unstaged diffs collide" >&2; exit 3; }
+  local staged_before_git_status unstaged_before_git_status
+  staged_before_git_status=$(git -C "$wt" diff --cached --name-only | sort)
+  unstaged_before_git_status=$(git -C "$wt" diff --name-only | sort)
 
   send_ok "$wt" "$sid" "A"
   local code="$TX_LAST_CODE"
@@ -62,6 +79,17 @@ scenario_a() {
   fi
   [ "$(git -C "$wt" rev-parse HEAD)" = "$head_before" ] || fail "A: restored HEAD does not match sender's"
   [ "$(tx_git_diff_head "$wt" | tx_sha_stdin)" = "$diff_before" ] || fail "A: restored uncommitted diff hash does not match"
+  # Staged and unstaged must land SEPARATELY, matching the sender's own `git diff --cached` / `git
+  # diff` exactly - not merely reproducing the combined diff (which a flatten-everything-into-the-
+  # index bug would also satisfy).
+  [ "$(tx_git_diff_staged "$wt" | tx_sha_stdin)" = "$staged_before" ] \
+    || fail "A: restored STAGED diff hash does not match sender's (git diff --cached)"
+  [ "$(tx_git_diff_worktree "$wt" | tx_sha_stdin)" = "$unstaged_before" ] \
+    || fail "A: restored UNSTAGED diff hash does not match sender's (git diff)"
+  [ "$(git -C "$wt" diff --cached --name-only | sort)" = "$staged_before_git_status" ] \
+    || fail "A: restored staged file set differs from sender's"
+  [ "$(git -C "$wt" diff --name-only | sort)" = "$unstaged_before_git_status" ] \
+    || fail "A: restored unstaged file set differs from sender's"
   [ -f "$wt/scratch.txt" ] || fail "A: untracked file was not restored"
   [ "$(cat "$wt/scratch.txt" 2>/dev/null)" = "$untracked_before" ] || fail "A: untracked file content differs"
   local top_phys wt_phys
@@ -228,4 +256,4 @@ scenario_c
 scenario_d
 scenario_f
 
-ok_report "03-git-state-roundtrip" "A(unpushed+staged+unstaged+untracked+cwd==ROOT) B(stale-clone-needs-fetch) C(empty-bundle) D(detached-HEAD) F(merge-in-progress refusal)"
+ok_report "03-git-state-roundtrip" "A(unpushed+staged+unstaged separately verified+untracked+cwd==ROOT) B(stale-clone-needs-fetch) C(empty-bundle) D(detached-HEAD) F(merge-in-progress refusal)"

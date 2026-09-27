@@ -798,8 +798,10 @@ def rule_of(text):
 def shown(f):
     if prefix and f.startswith(prefix):
         f = f[len(prefix):]
-    elif f.endswith("/uncommitted.patch"):
-        return "git: uncommitted changes"
+    elif f.endswith("/staged.patch"):
+        return "git: staged changes"
+    elif f.endswith("/worktree.patch"):
+        return "git: unstaged changes"
     elif f.endswith("/unpushed-commits.txt"):
         return "git: commits no remote has"
     if f.startswith("home/claude/"):
@@ -862,7 +864,9 @@ PY
 # Git staging
 # ------------------------------------------------------------------------------------------------
 G_HEAD=""; G_BRANCH=""; G_UPSTREAM=""; G_ORIGIN=""; G_BUNDLE=0; G_REF=""; G_UNPUSHED=0
-G_PATCH_SHA=""; G_PATCH_BYTES=0; G_BUNDLE_BYTES=0
+G_PATCH_SHA=""; G_PATCH_BYTES=0; G_BUNDLE_BYTES=0        # combined `git diff HEAD`: hash-only, never shipped
+G_STAGED_SHA=""; G_STAGED_BYTES=0                        # git diff --cached  -> git/staged.patch
+G_WORKTREE_SHA=""; G_WORKTREE_BYTES=0                    # git diff (worktree vs index) -> git/worktree.patch
 git_facts() {
   G_HEAD=$(git -C "$WT" rev-parse HEAD)
   G_BRANCH=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
@@ -872,7 +876,7 @@ git_facts() {
   if [ -n "$G_BRANCH" ]; then G_REF="refs/heads/$G_BRANCH"; else G_REF="HEAD"; fi
 }
 
-stage_git() {  # writes <dir>/branch.bundle (only if commits no remote has) + uncommitted.patch
+stage_git() {  # writes <dir>/branch.bundle (only if commits no remote has) + staged.patch + worktree.patch
   local d="$1" err
   mkdir -p "$d"
   if [ "$G_UNPUSHED" -gt 0 ]; then
@@ -884,9 +888,23 @@ stage_git() {  # writes <dir>/branch.bundle (only if commits no remote has) + un
   else
     G_BUNDLE=0
   fi
-  tx_git_diff_head "$WT" > "$d/uncommitted.patch" || die "git diff failed in $WT"
-  G_PATCH_SHA=$(sha_of "$d/uncommitted.patch")
-  G_PATCH_BYTES=$(stat -f %z "$d/uncommitted.patch")
+  # Combined `git diff HEAD` (staged + unstaged as ONE diff): never shipped as a file - resumework
+  # recomputes the same command after applying both patches below and compares hashes, as a
+  # belt-and-suspenders check that the two halves reassembled into the identical total diff.
+  tx_git_diff_head "$WT" > "$WORK/combined-diff.tmp" || die "git diff failed in $WT"
+  G_PATCH_SHA=$(sha_of "$WORK/combined-diff.tmp")
+  G_PATCH_BYTES=$(stat -f %z "$WORK/combined-diff.tmp")
+  rm -f "$WORK/combined-diff.tmp"
+  # The two halves that DO ship, kept separate end to end so a receiver's `git apply --index` (staged)
+  # and plain `git apply` (unstaged) reproduce the exact same staged/unstaged split as the sender -
+  # never flattened into one all-staged blob (that was the R-so-far bug: both used to travel as one
+  # `git diff HEAD` patch, always applied with --index, so an unstaged edit on A arrived staged on B).
+  tx_git_diff_staged "$WT" > "$d/staged.patch" || die "git diff --cached failed in $WT"
+  G_STAGED_SHA=$(sha_of "$d/staged.patch")
+  G_STAGED_BYTES=$(stat -f %z "$d/staged.patch")
+  tx_git_diff_worktree "$WT" > "$d/worktree.patch" || die "git diff failed in $WT"
+  G_WORKTREE_SHA=$(sha_of "$d/worktree.patch")
+  G_WORKTREE_BYTES=$(stat -f %z "$d/worktree.patch")
 }
 
 # ------------------------------------------------------------------------------------------------
@@ -970,7 +988,8 @@ build_bundle() {
   [ -d "$STAGE/b/payload/home" ] && find "$STAGE/b/payload/home" -type f -print0 >> "$WORK/scan.home"
   [ -d "$STAGE/b/payload/abs" ] && find "$STAGE/b/payload/abs" -type f -print0 >> "$WORK/scan.abs"
   if [ "$GIT" = 1 ]; then
-    [ -s "$STAGE/b/git/uncommitted.patch" ] && printf '%s\0' "$STAGE/b/git/uncommitted.patch" >> "$WORK/scan.abs"
+    [ -s "$STAGE/b/git/staged.patch" ] && printf '%s\0' "$STAGE/b/git/staged.patch" >> "$WORK/scan.abs"
+    [ -s "$STAGE/b/git/worktree.patch" ] && printf '%s\0' "$STAGE/b/git/worktree.patch" >> "$WORK/scan.abs"
     [ -s "$WORK/unpushed-commits.txt" ] && printf '%s\0' "$WORK/unpushed-commits.txt" >> "$WORK/scan.abs"
   fi
   scan_by_class "$WORK/scan.home" "$WORK/scan.abs" "$STAGE/b/payload/"
@@ -995,7 +1014,9 @@ write_manifest() {
     printf 'created_at=%s\nsealed_after_exit_at=%s\nargv=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$SEALED_AT" "$ARGV_STR"
     printf 'claude_version=%s\ncodex_version=%s\nrepo_home=%s\n' "$cver" "$xver" "$REPO_HOME"
     printf 'git=%s\ngit_origin=%s\ngit_branch=%s\ngit_upstream=%s\ngit_head=%s\n' "$GIT" "$G_ORIGIN" "$G_BRANCH" "$G_UPSTREAM" "$G_HEAD"
-    printf 'git_bundle=%s\ngit_bundle_ref=%s\ngit_patch_sha256=%s\ngit_patch_bytes=%s\n' "$G_BUNDLE" "$G_REF" "$G_PATCH_SHA" "$G_PATCH_BYTES"
+    printf 'git_bundle=%s\ngit_bundle_ref=%s\ngit_combined_sha256=%s\n' "$G_BUNDLE" "$G_REF" "$G_PATCH_SHA"
+    printf 'git_staged_sha256=%s\ngit_staged_bytes=%s\n' "$G_STAGED_SHA" "$G_STAGED_BYTES"
+    printf 'git_worktree_sha256=%s\ngit_worktree_bytes=%s\n' "$G_WORKTREE_SHA" "$G_WORKTREE_BYTES"
     printf 'git_worktree_is_root=%s\n' "$([ -n "$WT" ] && [ "$WT" = "$ROOT" ] && echo 1 || echo 0)"
     printf 'secret_scan_status=%s\nsecret_scan_skipped_large=%s\n' "${SCAN_STATUS:-incomplete}" "${SCAN_SKIPPED_LARGE:-0}"
   } > "$WORK/meta"
@@ -1030,17 +1051,24 @@ if m["git"] == "1":
     g = {"origin": m["git_origin"], "branch": m["git_branch"] or None, "detached": m["git_branch"] == "",
          "upstream": m["git_upstream"] or None, "head": m["git_head"],
          "bundle": "git/branch.bundle" if m["git_bundle"] == "1" else None, "bundle_ref": m["git_bundle_ref"],
-         "patch": "git/uncommitted.patch", "patch_sha256": m["git_patch_sha256"],
-         "patch_bytes": int(m["git_patch_bytes"] or 0), "untracked_count": untracked,
-         "worktree": m["worktree"], "worktree_is_root": m["git_worktree_is_root"] == "1",
-         "staged_split_flattened": True}
+         # Staged and unstaged travel as TWO separate patches so a receiver's `git apply --index`
+         # (staged.patch) and plain `git apply` (worktree.patch) reproduce the sender's exact
+         # staged/unstaged split. combined_diff_sha256 (a whole `git diff HEAD`) is never shipped as
+         # a file - it is a post-apply-only sanity check that the two halves reassemble correctly.
+         "staged_patch": "git/staged.patch", "staged_patch_sha256": m["git_staged_sha256"],
+         "staged_patch_bytes": int(m["git_staged_bytes"] or 0),
+         "worktree_patch": "git/worktree.patch", "worktree_patch_sha256": m["git_worktree_sha256"],
+         "worktree_patch_bytes": int(m["git_worktree_bytes"] or 0),
+         "combined_diff_sha256": m["git_combined_sha256"],
+         "untracked_count": untracked,
+         "worktree": m["worktree"], "worktree_is_root": m["git_worktree_is_root"] == "1"}
 manifest = {
-    "format": 2, "tool": m["tool"], "sid": m["sid"], "cwd": m["cwd"] or None, "root": m["root"] or None,
+    "format": 3, "tool": m["tool"], "sid": m["sid"], "cwd": m["cwd"] or None, "root": m["root"] or None,
     "user": m["user"], "home": m["home"], "repo_home": m["repo_home"] or None,
     "source_host": m["source_host"], "created_at": m["created_at"],
     "sealed_after_exit_at": m["sealed_after_exit_at"] or None, "argv": m["argv"] or None,
     "versions": {"claude": m["claude_version"] or None, "codex": m["codex_version"] or None},
-    "departure": {"head": m["git_head"] or None, "diff_sha256": m["git_patch_sha256"] or None},
+    "departure": {"head": m["git_head"] or None, "diff_sha256": m["git_combined_sha256"] or None},
     "git": g,
     # Owner policy 2026-09-26: secret-named repo files travel (inside the encrypted bundle).
     # excluded_secret_names = secret-named files that exist but did NOT travel (a symlink, over the
@@ -1103,7 +1131,7 @@ if [ "$DRY" = 1 ]; then
   echo "  placement: Claude/Codex state $(human "$(jget "$WORK/plan.json" 'd["by_class"]["home"]')") under the other Mac's own \$HOME; repo files $(human "$(jget "$WORK/plan.json" 'd["by_class"]["abs"]')") at the same absolute paths"
   echo "  capped:   untracked + ignored repo files $(human "$(jget "$WORK/plan.json" 'd["capped_bytes"]')") of $(human "$TOTAL_CAP")$([ "$FORCE" = 1 ] && echo ' (--force: caps lifted)') (session transcripts do not count)"
   if [ "$GIT" = 1 ]; then
-    echo "  git:      ${G_BRANCH:-<detached>} @ ${G_HEAD:0:12}; commits no remote has: $G_UNPUSHED ($([ "$G_UNPUSHED" -gt 0 ] && echo bundle || echo 'no bundle; B fetches origin')); uncommitted patch: $(tx_git_diff_head "$WT" | wc -c | tr -d ' ') bytes"
+    echo "  git:      ${G_BRANCH:-<detached>} @ ${G_HEAD:0:12}; commits no remote has: $G_UNPUSHED ($([ "$G_UNPUSHED" -gt 0 ] && echo bundle || echo 'no bundle; B fetches origin')); staged: $(tx_git_diff_staged "$WT" | wc -c | tr -d ' ') bytes; unstaged: $(tx_git_diff_worktree "$WT" | wc -c | tr -d ' ') bytes"
   fi
   python3 - "$WORK/plan.json" "$SECR" <<'PY'
 import json, sys

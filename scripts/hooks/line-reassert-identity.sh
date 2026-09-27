@@ -125,10 +125,14 @@ fi
 # Display name (what Remote Control shows on the owner's other Macs) = this window's peer HANDLE.
 # It lives in the transcript as the LAST custom-title record, which a reopen by any route
 # (claude --resume, the /resume picker, resumework on the other Mac) reads back. If that record is
-# missing or no longer matches the handle, `sync-display-name` appends it and leaves a one-shot
-# request so the Stop hook line-apply-rename.sh types /rename live when this session's first turn
-# ends. Matching -> no-op. Runs AFTER the address step, so it compares against the handle that step
-# settled on. Only on a real open: `clear` and `compact` keep the same live process and name.
+# missing or no longer matches the handle, `sync-display-name` appends it. Either way (record
+# matched already, or was just written) it ALSO leaves a one-shot request so the Stop hook
+# line-apply-rename.sh types /rename live when this session's first turn ends: the LIVE name Remote
+# Control shows reverts to an auto-derived handle on every reopen regardless of the transcript
+# record (the record only controls what the NEXT reopen reads back, not what this window is
+# showing right now), so a bare record-match must still re-fire /rename once, live. Runs AFTER the
+# address step, so it compares against the handle that step settled on. Only on a real open:
+# `clear` and `compact` keep the same live process and name.
 case "$source" in
   startup|resume)
     dn=$(CLAUDE_SESSION_ID="$sid" python3 "$LAC" sync-display-name 2>/dev/null | head -n 1 | tr -cd 'a-z-')
