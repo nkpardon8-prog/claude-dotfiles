@@ -216,6 +216,9 @@ agent messaging (`ListAgents` / `SendMessage`).
    This creates a directory owned by THIS account, aliasing the other Mac's username so paths
    written under it still resolve here — needed in both transfer directions.
 6. **Clone every repo** you'll transfer chats for, at the same absolute path as the other Mac.
+   Keep the dotfiles on the same version on both Macs: `resumework` refuses a bundle whose format it
+   does not know (format 4 since 2026-09-27, when delta sends arrived) and says to update both.
+   Nothing to set up for delta sends: each Mac keeps its own record in `~/.claude/transfer-state/`.
 7. **Log in**: `claude` (the claude.ai account Remote Control needs) and `codex login`.
 8. **Verify.** Run `transfer-doctor` — every line should read PASS. Then prove both Macs share one
    iCloud account: on this Mac run `transfer-doctor canary-write`, and on the other Mac run

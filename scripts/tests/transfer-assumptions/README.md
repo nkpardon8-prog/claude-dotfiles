@@ -22,6 +22,13 @@ One test at a time:
 TRANSFER_TESTS_ALLOW_DEV=true bash ~/.claude-dotfiles/scripts/tests/transfer-assumptions/03-git-state-roundtrip.sh
 ```
 
+Against another checkout (a linked worktree, a scratch copy) - every test reads the scripts from
+`$TX_REPO`, default `~/.claude-dotfiles`:
+
+```sh
+TRANSFER_TESTS_ALLOW_DEV=true TX_REPO=~/.claude-dotfiles-wt-x bash ~/.claude-dotfiles-wt-x/scripts/tests/transfer-assumptions/run-all.sh
+```
+
 The one test NOT in `run-all.sh` (it costs a real model call, and is never run by an agent on its
 own initiative):
 
@@ -226,6 +233,42 @@ sandboxed `$CODEX_HOME/skills/claude-dotfiles/`. Then `/pre-compact`'s `no-missi
 stripped from the north star (both forms), read by the `NO_MISSION` switch (not fooled by
 `no-missionary`), gating `mission-write.sh create`, and passed by `/transfer`.
 
+### 20-delta-second-send.sh
+Delta sends, sender side. (A) the first send from a repo is full ("no record yet"), and resumework
+then writes `~/.claude/transfer-state/<hash>.json` (dir 700, file 600, role=receive) with each
+ride-along file's sha256. (B) the second send leaves unchanged ignored, untracked and `.env` files
+out of the bundle and lists them under `assumed_present` (sha256 + size), ships a changed and a new
+file, reports "N ride-along file(s) ... were not re-sent" in the send summary, and rewrites the state
+(role=send, this locator); the receiver counts all of them verified identical. (C) a send after an
+uncollected one (its bundle still in the drop folder) is full and says why.
+
+### 21-assumed-present-report.sh
+Delta sends, receiver side. Between the send and resumework, "B" deletes one assumed file, edits
+another and replaces a third with a symlink. resumework still exits 0, touches none of them (no
+recreate, no .bak/.from, the symlink target untouched), counts the one identical file, and names the
+missing/differing ones in the dry run, the checklist and TRANSFER.<sid>.md under "Not re-sent (the
+other Mac assumed you already had it) - differs/missing here". The receiver state records the
+SENDER's sha256 for every assumed file.
+
+### 22-delta-full-and-corrupt-state.sh
+Fail-safe toward sending more. (A) `--full` ignores a valid state: every ride-along file ships and
+the state is still rewritten. (B) a non-JSON state, a state for another repo root, one with a
+malformed entry, and an unreadable (mode 000) one each give a full send with a reason. (C) the expiry
+sweep removing an uncollected bundle also removes the state that send wrote. (D) resumework refuses
+format-3 and format-5 bundles with the "update the dotfiles on both Macs" message, changing nothing.
+
+### 23-delta-never-skips-chat-files.sh
+A forged state claiming exact copies of the handoff (+ .prev), MISSION, TRANSFER notes, transcript,
+the project memory file (no sid in its path - only the kind rule protects it) and a sid-named ignored
+file: all still ship, as does the git worktree patch; only the ordinary ignored file is assumed
+present. Goes red with the kind rule or the sid rule removed.
+
+### 24-icloud-nudge.sh
+A stub `brctl` on PATH (records pid + argv, then sleeps like the real monitor). With the drop folder
+under `$HOME/Library/Mobile Documents/`: started as `brctl monitor com.apple.CloudDocs` while
+resumework waits, and dead after a give-up, a TERM mid-wait, a `kill -9` mid-wait (the watchdog) and
+a normal restore. With a drop folder outside iCloud it is never started.
+
 ### 99-resume-keeps-sid.sh (assumption A1, gated, NOT in run-all.sh)
 `claude --resume <sid>`, run against a copy of a real transcript placed under a fresh project dir,
 keeps the SAME session id and continues the transcript - for a cleanly-ended shape, one cut off at
@@ -260,6 +303,10 @@ process, or treat an arbitrary directory as a verified home alias.
 - `_common.sh` is a shared helper library, not a test itself - `run-all.sh` only picks up
   `NN-*.sh`, so it is never invoked directly.
 - Every test cleans up its own sandbox via a `trap ... EXIT`.
+- Every `GIT_*` variable is cleared first (`run-all.sh` and `_common.sh`). The dotfiles pre-commit
+  hook runs this suite, and git exports `GIT_INDEX_FILE` (plus `GIT_PREFIX`, `GIT_AUTHOR_DATE`, ...)
+  into hooks; inherited, it pointed every sandbox `git` call at the committing repo's index, so tests
+  13-15 could not build their fixtures and the hook always reported "could not run (exit 3)".
 
 ## Why CI does not run this suite
 

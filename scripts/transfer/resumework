@@ -14,7 +14,11 @@
 #
 # What it does, in order (any refusal leaves this Mac unchanged unless stated):
 #   1. find <locator>.tx + .tx.sha256 in the drop folder (TX_DROP_DIR or iCloud Drive/claude-transfers),
-#      materialize an iCloud placeholder by reading it, check the ciphertext sha256 + size
+#      materialize an iCloud placeholder by reading it, check the ciphertext sha256 + size. While it
+#      waits, and only when the drop folder is inside iCloud Drive, `brctl monitor com.apple.CloudDocs`
+#      runs in the background (output discarded): a live query makes the iCloud daemon notice new
+#      files promptly. It is stopped when the wait ends, on every exit path, and by a watchdog if
+#      this script dies without running its traps.
 #   2. decrypt (wrong code -> refuse), unpack with every entry checked (no absolute paths, no '..',
 #      no links), verify EVERY file's sha256 against the manifest, reject unlisted files
 #   3. placement (transfer-lib.sh PLACEMENT RULE; the sender's username/home may differ):
@@ -36,7 +40,13 @@
 #      stash - then prints exactly what it undid and anything it could not. Left as they are (both
 #      harmless): what `git fetch origin` fetched, and the .git/info/exclude entries.
 #   5. place files: an existing different file is kept as <name>.bak-<ts>; in the memory dir this
-#      Mac's file wins and the incoming one lands as <name>.from-<host>
+#      Mac's file wins and the incoming one lands as <name>.from-<host> (so does a ride-along file
+#      that is newer here). Delta sends (format 4): every manifest.assumed_present entry - a
+#      ride-along file the sender left out because this Mac held that exact content as of the last
+#      transfer - is checked: identical here is counted; missing or different here is NEVER a failure
+#      and is never touched, but is listed in the checklist and the TRANSFER notes. After a
+#      successful restore, ~/.claude/transfer-state/ records what the sender held (transfer-lib.sh
+#      DELTA STATE), so a send back from this Mac can leave those files out too.
 #   6. append a "Restored on this Mac" record to ROOT/TRANSFER.<sid>.md (including, as FYI, the
 #      secret-named files that travelled and the sender's secret-scan hits - file and rule only), clear
 #      progress/transferred-<sid>, write progress/transfer-arrived-<sid> (claude), delete the bundle
@@ -61,8 +71,35 @@ SELF_DIR="$(cd -P "$(dirname "$_self")" && pwd -P)"
 . "$SELF_DIR/transfer-lib.sh" || { echo "resumework: cannot load transfer-lib.sh" >&2; exit 1; }
 
 PROG="resumework"
-STAGE=""
-cleanup() { [ -n "$STAGE" ] && rm -rf "$STAGE"; return 0; }
+STAGE=""; NUDGE_PID=""
+cleanup() { nudge_stop; [ -n "$STAGE" ] && rm -rf "$STAGE"; return 0; }
+
+# iCloud nudge (step 1). A perl watchdog owns brctl: TERM to the watchdog stops brctl at once, and
+# the watchdog also stops it by itself if this script disappears without running its traps (kill -9).
+nudge_start() {
+  local d
+  command -v brctl >/dev/null 2>&1 || return 0
+  command -v perl >/dev/null 2>&1 || return 0
+  d=$(cd -P "$DROP" 2>/dev/null && pwd -P) || return 0
+  case "$d/" in "$HOME_P/Library/Mobile Documents/"*) ;; *) return 0 ;; esac
+  perl -e '
+    my $parent = shift;
+    my $pid = fork;
+    exit 0 unless defined $pid;
+    if (!$pid) { open(STDOUT, ">/dev/null"); open(STDERR, ">/dev/null"); exec @ARGV or exit 127 }
+    $SIG{TERM} = $SIG{INT} = $SIG{HUP} = sub { kill "TERM", $pid; waitpid $pid, 0; exit 0 };
+    while (kill(0, $parent)) { last if waitpid($pid, 1) > 0; sleep 1 }
+    kill "TERM", $pid; waitpid $pid, 0; exit 0;
+  ' "$$" brctl monitor com.apple.CloudDocs </dev/null >/dev/null 2>&1 &
+  NUDGE_PID=$!
+}
+nudge_stop() {
+  [ -n "$NUDGE_PID" ] || return 0
+  kill -TERM "$NUDGE_PID" 2>/dev/null
+  wait "$NUDGE_PID" 2>/dev/null
+  NUDGE_PID=""
+  return 0
+}
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
@@ -111,6 +148,7 @@ _materialize() {  # an iCloud placeholder is "dataless" until something reads it
 }
 
 _start=$(date +%s); _last=0; _ok=0
+nudge_start
 while :; do
   if [ -f "$DROP/$LOC.tx.failed" ]; then
     _r=$(sed -n 's/^reason=//p' "$DROP/$LOC.tx.failed" | head -1)
@@ -138,6 +176,7 @@ while :; do
   fi
   sleep 2
 done
+nudge_stop
 [ "$_ok" = 1 ] || die "Code not recognized or bundle not found (looked for $LOC in $DROP for ${WAIT}s). Check the code, or that the other Mac finished sealing."
 
 # ------------------------------------------------------------------------------------------------
@@ -191,7 +230,7 @@ try:
     man = json.load(open(os.path.join(xdir, "manifest.json")))
 except Exception:
     refuse("the bundle has no readable manifest")
-if man.get("format") != 3:
+if man.get("format") != 4:
     refuse("unsupported bundle format %r (update the dotfiles on both Macs, then re-send)" % man.get("format"))
 tool, sid = man.get("tool"), man.get("sid")
 if tool not in ("claude", "codex") or not isinstance(sid, str) or not re.match(r"^[A-Za-z0-9_-]+$", sid):
@@ -337,10 +376,33 @@ for dp, dn, fn in os.walk(pay):
         if r not in listed:
             refuse("the bundle carries a file its manifest does not list: %s" % r)
 
+# DELTA SENDS: files the sender left out because this Mac held them as of the last transfer. Each
+# path gets the same placement checks as a shipped "abs" file; the check itself happens in py_place.
+assumed = man.get("assumed_present")
+if not isinstance(assumed, list):
+    refuse("the manifest has no valid assumed_present list")
+for a in assumed:
+    if not isinstance(a, dict) or a.get("kind") not in ("untracked", "context") \
+            or not (isinstance(a.get("sha256"), str) and re.match(r"^[0-9a-f]{64}$", a["sha256"])) \
+            or not isinstance(a.get("size"), int) or isinstance(a.get("size"), bool) or a["size"] < 0:
+        refuse("malformed assumed_present entry")
+    dest = abs_path(a.get("path"), "assumed_present file", sender_homes)
+    owner = next((x for x in anchors if inside(dest, x)), None)
+    if owner is None:
+        refuse("%s is outside the chat's repo root, worktree and working directory" % dest)
+    # Nothing is ever written here, so only the PARENT must stay inside the tree (a symlinked
+    # directory could otherwise point the check at a file elsewhere); a symlink AT the path itself
+    # is simply reported as "differs here" by py_place, never followed.
+    full = os.path.join(resolved(os.path.dirname(dest)), os.path.basename(dest))
+    if not inside(full, anchor_real[owner]):
+        refuse("%s would escape %s through a symlink (%s)" % (dest, owner, full))
+    not_dotfiles(full, dest)
+
 out = [("TOOL", tool), ("SID", sid), ("USER", man["user"]), ("HOME", home_m), ("REPO_HOME", repo_home_m),
        ("HOST", man["source_host"]), ("CREATED", man.get("created_at") or ""),
        ("SEALED", man.get("sealed_after_exit_at") or ""), ("CWD", cwd), ("ROOT", root),
-       ("FILES", str(len(files))), ("BYTES", str(total)), ("GIT", "1" if g else "0")]
+       ("FILES", str(len(files))), ("BYTES", str(total)), ("GIT", "1" if g else "0"),
+       ("ASSUMED", str(len(assumed)))]
 if g:
     head = g.get("head")
     if not isinstance(head, str) or not re.match(r"^[0-9a-f]{40}([0-9a-f]{24})?$", head):
@@ -424,7 +486,7 @@ if [ "$_prc" -ne 0 ]; then
 fi
 
 TOOL=""; SID=""; M_USER=""; M_HOME=""; REPO_HOME=""; SRC_HOST=""; CREATED=""; SEALED=""; CWD=""; ROOT=""
-FILES=0; BYTES=0; GIT=0; WT=""; G_HEAD=""; G_BRANCH=""; G_UPSTREAM=""; G_ORIGIN=""; G_BUNDLE=0
+FILES=0; BYTES=0; GIT=0; ASSUMED_N=0; WT=""; G_HEAD=""; G_BRANCH=""; G_UPSTREAM=""; G_ORIGIN=""; G_BUNDLE=0
 G_REF=""; G_STAGED_SHA=""; G_STAGED_BYTES=0; G_WORKTREE_SHA=""; G_WORKTREE_BYTES=0; G_COMBINED_SHA=""
 COUNTS=""; KEYSHAS=""; SECRETS=""; NFLAG=0
 SECMOVED=""; SCANHITS=""; SCANINC=0
@@ -435,6 +497,7 @@ while IFS=$'\t' read -r _k _a _b; do
     REPO_HOME) REPO_HOME="$_a" ;;
     HOST) SRC_HOST="$_a" ;; CREATED) CREATED="$_a" ;; SEALED) SEALED="$_a" ;; CWD) CWD="$_a" ;;
     ROOT) ROOT="$_a" ;; FILES) FILES="$_a" ;; BYTES) BYTES="$_a" ;; GIT) GIT="$_a" ;;
+    ASSUMED) ASSUMED_N="$_a" ;;
     WORKTREE) WT="$_a" ;; GIT_HEAD) G_HEAD="$_a" ;; GIT_BRANCH) G_BRANCH="$_a" ;;
     GIT_UPSTREAM) G_UPSTREAM="$_a" ;; GIT_ORIGIN) G_ORIGIN="$_a" ;; GIT_BUNDLE) G_BUNDLE="$_a" ;;
     GIT_BUNDLE_REF) G_REF="$_a" ;;
@@ -748,6 +811,17 @@ for f in man["files"]:
         os.rename(dst, bak)
         put(src, dst, f)
     print("BAK\t%s\t%s" % (dst, bak))
+
+# DELTA SENDS: check, never place, never touch. A symlink or non-file counts as different.
+for a in man.get("assumed_present") or []:
+    dst = a["path"]
+    if not os.path.lexists(dst):
+        print("AMISS\t%s" % dst)
+    elif os.path.islink(dst) or not os.path.isfile(dst) or os.path.getsize(dst) != a["size"] \
+            or sha(dst) != a["sha256"]:
+        print("ADIFF\t%s" % dst)
+    else:
+        print("ASAME\t%s" % dst)
 PY
 }
 
@@ -764,6 +838,10 @@ if [ "$DRY" = 1 ]; then
     awk -F'\t' '$1 == "BAK" { print "    " $2 }' "$STAGE/place.tsv" | head -40
     [ "$(grep -c '^BAK' "$STAGE/place.tsv")" -gt 40 ] && echo "    ... and $(( $(grep -c '^BAK' "$STAGE/place.tsv") - 40 )) more"
   fi
+  if [ "$ASSUMED_N" -gt 0 ]; then
+    echo "  not re-sent (the other Mac assumed this Mac already had them): $(grep -c '^ASAME' "$STAGE/place.tsv") identical here, $(grep -c '^AMISS' "$STAGE/place.tsv") missing here, $(grep -c '^ADIFF' "$STAGE/place.tsv") different here"
+    awk -F'\t' '$1 == "AMISS" { print "    missing:   " $2 } $1 == "ADIFF" { print "    different: " $2 }' "$STAGE/place.tsv" | head -40
+  fi
   [ "$GIT" = 1 ] && echo "  git:    $GIT_NOTE"
   echo "  then:   cd ${CWD:-$HOME_P} && $([ "$TOOL" = claude ] && echo "claude --resume $SID" || echo "codex resume $SID")"
   echo "Nothing was changed; the bundle is still in the drop folder."
@@ -775,6 +853,8 @@ py_place real > "$STAGE/place.tsv" || die "placing files failed part-way; see th
 [ "$GIT" = 1 ] || { [ -n "$ROOT" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 && tx_git_info_exclude "$ROOT"; }
 BAKS=$(awk -F'\t' '$1=="BAK"{print "    - " $2 "  (previous kept as " $3 ")"}' "$STAGE/place.tsv")
 FROMS=$(awk -F'\t' '$1=="FROM"{print "    - " $2}' "$STAGE/place.tsv")
+A_SAME=$(grep -c '^ASAME' "$STAGE/place.tsv")
+A_OFF=$(awk -F'\t' '$1=="AMISS"{print "    - " $2 "  (missing here)"} $1=="ADIFF"{print "    - " $2 "  (differs here)"}' "$STAGE/place.tsv")
 
 # ------------------------------------------------------------------------------------------------
 # 6. Record, markers, single-use cleanup, checklist, launch
@@ -796,6 +876,8 @@ if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then
     [ "$GIT" = 1 ] && printf -- '- Git transport: %s bundle; %s\n' "$([ "$G_BUNDLE" = 1 ] && echo "a" || echo "no (every commit was already on origin)")" "$GIT_NOTE"
     [ -n "$BAKS" ] && printf -- '- Replaced files (previous versions kept):\n%s\n' "$BAKS"
     [ -n "$FROMS" ] && printf -- '- Memory conflicts or newer local files (this Mac kept its copy; incoming beside it):\n%s\n' "$FROMS"
+    [ "$ASSUMED_N" -gt 0 ] && printf -- '- Delta send: %s ride-along file(s) were not re-sent because the other Mac recorded that this Mac already had them; %s verified identical here.\n' "$ASSUMED_N" "$A_SAME"
+    [ -n "$A_OFF" ] && printf -- '- Not re-sent (the other Mac assumed you already had it) - differs/missing here; this Mac'"'"'s copy was left as it is (a `--full` send brings the sender'"'"'s version):\n%s\n' "$A_OFF"
     [ -n "$SECMOVED" ] && printf -- '- Secret-named files that travelled inside the encrypted bundle (FYI; nothing to reload):\n%s\n' "$(printf '%s' "$SECMOVED" | sed 's/^/    - /')"
     [ -n "$SCANHITS" ] && printf -- '- Secret-scan hits on the sending Mac (FYI; file and rule only, the files travelled as they were):\n%s\n' "$(printf '%s' "$SCANHITS" | sed 's/^/    - /')"
     [ "$SCANINC" = 1 ] && printf -- '- The sending Mac'"'"'s secret scan did not complete (FYI only).\n'
@@ -810,7 +892,22 @@ if [ "$TOOL" = claude ]; then
   chmod 600 "$HOME_P/.claude/progress/transfer-arrived-$SID"
 fi
 rm -f "$TX" "$SIDE"
-tx_log "resume ok locator=$LOC tool=$TOOL files=$FILES from=$SRC_HOST"
+# Only now, with everything restored: record what the SENDER held (every ride-along file it shipped
+# or assumed present, at the sender's sha256), so a send back from this Mac can leave those out.
+if [ -n "$ROOT" ]; then
+  if ! python3 - "$STAGE/x/manifest.json" "$STAGE/state-entries.json" <<'PYS' || ! tx_state_write "$ROOT" "$STAGE/state-entries.json" receive; then
+import json, sys
+m = json.load(open(sys.argv[1]))
+out = [{"abs": f["abs"], "sha256": f["sha256"], "size": f["size"], "mtime_ns": f["mtime_ns"]}
+       for f in m["files"] if f.get("class") == "abs" and f.get("kind") in ("untracked", "context")]
+out += [{"abs": a["path"], "sha256": a["sha256"], "size": a["size"]} for a in m.get("assumed_present") or []]
+json.dump(out, open(sys.argv[2], "w"))
+PYS
+    rm -f "$(tx_state_file "$ROOT")"
+    note "warning: could not record the delta state; the next send from this Mac will be a full one"
+  fi
+fi
+tx_log "resume ok locator=$LOC tool=$TOOL files=$FILES assumed_present=$ASSUMED_N from=$SRC_HOST"
 
 echo
 echo "=== Restored $TOOL chat $SID from $SRC_HOST ==="
@@ -825,6 +922,8 @@ echo "Also:"
 [ -n "$SECMOVED$SCANHITS" ] && echo "  - Secret-named files and secret-scan hits travelled inside the encrypted bundle (FYI list in TRANSFER.$SID.md)."
 [ -n "$BAKS" ] && { echo "  - Files replaced (previous versions kept):"; echo "$BAKS"; }
 [ -n "$FROMS" ] && { echo "  - Memory conflicts or newer local files - this Mac kept its copy, the incoming one is beside it:"; echo "$FROMS"; }
+[ "$ASSUMED_N" -gt 0 ] && echo "  - Delta send: $ASSUMED_N ride-along file(s) were not re-sent (this Mac already had them); $A_SAME verified identical."
+[ -n "$A_OFF" ] && { echo "  - Not re-sent (the other Mac assumed you already had it) - differs/missing here (left as they are; a --full send brings the sender's version):"; echo "$A_OFF"; }
 echo "  - prod-ledger is machine-local; check \`prod-ledger.py show\` on $SRC_HOST before any prod work."
 echo "  - Dependencies, containers and dev servers did not travel: follow the checklist (npm ci --legacy-peer-deps, prisma generate, ...)."
 [ "$GIT" = 1 ] && echo "  - Staged and unstaged edits arrived exactly as they were: nothing was flattened into the index."

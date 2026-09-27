@@ -22,8 +22,10 @@ uncommitted edits, unpushed commits, and every untracked or ignored file in the 
 **Talking to the owner:** plain words, no jargon. Say "your other Mac", "the code", "this chat".
 Never show the LOCATOR line, never paste a secret value.
 
-**Arguments:** text after `/transfer` or `$transfer`. Only `--dry-run` is understood: show what would
-be sent and stop (Step 3 with `--dry-run` in place of `--seal-after-exit`; skip Steps 2 and 4). To
+**Arguments:** text after `/transfer` or `$transfer`. Two are understood. `--dry-run`: show what would
+be sent and stop (Step 3 with `--dry-run` in place of `--seal-after-exit`; skip Steps 2 and 4).
+`--full`: add `--full` to the Step 3 send, so every untracked/ignored repo file travels again even if
+the other Mac already has it (normally a later send leaves those out). To
 move a DIFFERENT, already closed Codex chat, use `/transfer codex <id>` from a Claude window instead.
 
 ## Step 1 - Check where we are

@@ -19,6 +19,10 @@ if [ "${TRANSFER_TESTS_ALLOW_DEV:-}" != "true" ]; then
   exit 2
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# A git hook (pre-commit runs this suite) exports GIT_INDEX_FILE, GIT_PREFIX, GIT_AUTHOR_DATE...;
+# inherited, they point every sandbox `git` call at the committing repo's index. _common.sh clears
+# them too (a single test run by hand); clearing here keeps the whole run hermetic.
+for _gv in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_gv"; done
 
 # Bounded-run shim: GNU `timeout`, macOS `gtimeout`, else perl's alarm (macOS ships no timeout(1)).
 if command -v timeout >/dev/null 2>&1; then TO=(timeout 120)
@@ -45,6 +49,11 @@ TESTS=(
   "17-codex-seal-after-exit.sh"
   "18-newer-local-kept.sh"
   "19-codex-skill-and-no-mission.sh"
+  "20-delta-second-send.sh"
+  "21-assumed-present-report.sh"
+  "22-delta-full-and-corrupt-state.sh"
+  "23-delta-never-skips-chat-files.sh"
+  "24-icloud-nudge.sh"
 )
 
 # Counters + strings, NOT arrays: macOS bash 3.2's `${#arr[@]}` on an EMPTY array under `set -u`

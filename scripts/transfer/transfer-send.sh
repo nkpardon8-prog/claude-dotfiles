@@ -3,7 +3,7 @@
 # verbatim, on another Mac (the repo at the same absolute path there, natively or via a home alias).
 #
 # Usage:
-#   transfer-send.sh --tool claude|codex --sid <id> [--cwd <dir>] [--dry-run] [--force]
+#   transfer-send.sh --tool claude|codex --sid <id> [--cwd <dir>] [--dry-run] [--force] [--full]
 #                    [--seal-after-exit [--source-pid <pid>]] [--code <TX-...>]
 #   transfer-send.sh --tool codex <id>                      (a positional id is accepted too)
 #
@@ -16,6 +16,8 @@
 #   --force            lift the sanity caps: untracked + ignored repo files over 5 GB in total, and a
 #                      single such file over 1 GB (session transcripts and Codex rollouts never count
 #                      toward either: they are the point of a transfer).
+#   --full             ship every ride-along file even if the other Mac already has it (ignore the
+#                      delta state; see DELTA SENDS below).
 #   --seal-after-exit  validate (collect, plan, caps, disk space), print CODE/LOCATOR at once, then
 #                      hand off to a fully detached sealer that waits (max 30 min) for this chat to
 #                      close, snapshots the now-complete transcript/rollout and git state, and
@@ -61,6 +63,20 @@
 #           (that file is skipped and listed); --force lifts both. Transcripts are uncapped.
 # The chat's cwd (and so its repo) must be under $HOME or under a verified home alias of this
 # account (make-home-alias.sh); the manifest records both `home` (real) and `repo_home`.
+# DELTA SENDS (manifest format 4). "Move everything" stays the policy, but a ride-along file (kinds
+#   untracked/context: the untracked + ignored repo files) whose sha256 equals what
+#   ~/.claude/transfer-state/<root-hash>.json records for that path - i.e. what the other Mac held as
+#   of the last transfer between the two Macs, written by the last successful send (here) or
+#   resumework (there) - is left out of the bundle and listed under manifest.assumed_present
+#   (path, sha256, size). The chat's own files (transcript, session dirs, handoff, TRANSFER notes,
+#   MISSION, chains - anything whose path carries the sid) and git state are never left out. A full
+#   send happens with --full, on the first send from a repo root, when the state is missing, corrupt,
+#   unreadable or for another root, and when the send that wrote it was never collected (its bundle
+#   is still in the drop folder, or the expiry sweep removed it uncollected). The state is written
+#   only after the bundle is published (atomic replace, mode 600). resumework reports an
+#   assumed_present file that is missing or different on its Mac instead of failing; so a file
+#   deleted on the other Mac after the last transfer is not re-sent while it is unchanged here - it
+#   shows up in that report (a --full send, or any send from the other Mac back, heals it).
 # What never travels: machine-bound state (auto-compact sentinels, mission liveness, locks incl.
 #   tick.<sid>.lock and prod.lock, resumed-/transferred- markers, pid files, sockets, keychains,
 #   ~/.claude/.credentials*, the ~/.claude/sessions registry, Codex auth.json and thread locks) and
@@ -134,7 +150,7 @@ usage() { awk 'NR == 1 { next } { sub(/^# ?/, ""); print } /^Exit:/ { exit }' "$
 # ------------------------------------------------------------------------------------------------
 # Arguments
 # ------------------------------------------------------------------------------------------------
-TOOL=""; SID=""; CWD_ARG=""; DRY=0; FORCE=0; SEAL=0; CODE_ARG=""; SEAL_RUN=""; SOURCE_PID=""
+TOOL=""; SID=""; CWD_ARG=""; DRY=0; FORCE=0; FULL=0; SEAL=0; CODE_ARG=""; SEAL_RUN=""; SOURCE_PID=""
 SEALED_AT=""; ARGV_STR=""; WPID=""; WLSTART=""; WLOCK=0
 _need() { [ "$1" -ge 2 ] || { echo "$PROG: REFUSED: $2 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -149,6 +165,7 @@ while [ $# -gt 0 ]; do
     --code=*) CODE_ARG="${1#*=}"; shift ;;
     --dry-run) DRY=1; shift ;;
     --force) FORCE=1; shift ;;
+    --full) FULL=1; shift ;;
     --seal-after-exit) SEAL=1; shift ;;
     --source-pid) _need $# "$1"; SOURCE_PID="$2"; shift 2 ;;
     --source-pid=*) SOURCE_PID="${1#*=}"; shift ;;
@@ -170,7 +187,7 @@ if [ -n "$SEAL_RUN" ]; then
   [ -f "$SEALDIR/args" ] && [ -f "$SEALDIR/code" ] || { echo "$PROG: sealer handoff dir incomplete: $SEALDIR" >&2; exit 1; }
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      tool) TOOL="$_v" ;; sid) SID="$_v" ;; cwd) CWD_ARG="$_v" ;; force) FORCE="$_v" ;;
+      tool) TOOL="$_v" ;; sid) SID="$_v" ;; cwd) CWD_ARG="$_v" ;; force) FORCE="$_v" ;; full) FULL="$_v" ;;
       pid) WPID="$_v" ;; lstart) WLSTART="$_v" ;; argv) ARGV_STR="$_v" ;; waitlock) WLOCK="$_v" ;;
     esac
   done < "$SEALDIR/args"
@@ -694,16 +711,80 @@ collect_all() {
 }
 
 # ------------------------------------------------------------------------------------------------
+# Delta state (DELTA SENDS above). delta_prepare writes $WORK/delta.json = {abs: [sha256, size]} of
+# what the other Mac is recorded to hold ({} on a full send) and sets DELTA_REASON to why this is a
+# full send ("" = a delta send). Every doubt resolves toward sending MORE.
+# ------------------------------------------------------------------------------------------------
+DELTA_REASON=""
+delta_prepare() {
+  local sf drop
+  printf '{}' > "$WORK/delta.json"
+  if [ "$FULL" = 1 ]; then DELTA_REASON="--full"; return 0; fi
+  if [ -z "$ROOT" ]; then DELTA_REASON="no repo root"; return 0; fi
+  sf=$(tx_state_file "$ROOT")
+  drop=$(tx_drop_dir --no-create 2>/dev/null) || drop=""
+  DELTA_REASON=$(python3 - "$sf" "$ROOT" "$drop" "$WORK/delta.json" <<'PYD'
+import json, os, re, sys
+sf, root, drop, out = sys.argv[1:5]
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+def full(why):
+    print(why)
+    sys.exit(0)
+
+if not os.path.lexists(sf):
+    full("no record yet of what the other Mac has from this repo")
+try:
+    with open(sf) as fh:
+        st = json.load(fh)
+except Exception:
+    full("the delta state %s is unreadable or corrupt" % sf)
+if not isinstance(st, dict) or st.get("format") != 1 or st.get("root") != root \
+        or not isinstance(st.get("files"), dict) or st.get("role") not in ("send", "receive"):
+    full("the delta state %s is corrupt or belongs to another repo root" % sf)
+if st["role"] == "send":
+    loc = st.get("sent_locator")
+    if not (isinstance(loc, str) and re.match(r"^[0-9a-f]{16}$", loc)):
+        full("the delta state %s is corrupt (no sent_locator)" % sf)
+    # The send that wrote it was never collected (or its deletion has not reached this Mac yet):
+    # the other Mac may not have any of it.
+    if drop and any(os.path.lexists(os.path.join(drop, n)) for n in
+                    (loc + ".tx", loc + ".tx.sha256", "." + loc + ".tx.icloud")):
+        full("the previous send (%s) was never collected - its bundle is still in the drop folder" % loc)
+m = {}
+for ab, e in st["files"].items():
+    if not (isinstance(ab, str) and ab.startswith("/") and isinstance(e, dict)
+            and isinstance(e.get("sha256"), str) and HEX64.match(e["sha256"])
+            and isinstance(e.get("size"), int) and not isinstance(e.get("size"), bool)):
+        full("the delta state %s is corrupt (bad entry)" % sf)
+    m[ab] = [e["sha256"], e["size"]]
+with open(out, "w") as fo:
+    json.dump(m, fo)
+PYD
+) || { printf '{}' > "$WORK/delta.json"; DELTA_REASON="the delta state could not be read"; }
+  [ -n "$DELTA_REASON" ] || [ -s "$WORK/delta.json" ] || { printf '{}' > "$WORK/delta.json"; DELTA_REASON="the delta state could not be read"; }
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------------
 # plan / stage (python: sizes, per-file cap, copy with mtime+mode, hash the STAGED bytes)
 # ------------------------------------------------------------------------------------------------
-py_files() {  # py_files plan|stage <out> [<stage-payload-dir>]
+# py_files plan|stage <out> [<stage-payload-dir>] [<delta.json>]. With a delta map, a ride-along
+# file (CAPPED_KINDS) whose path carries no sid and whose size + sha256 equal the recorded ones goes
+# to "assumed" instead of being staged. count/bytes/capped_bytes always cover EVERY file (the caps are
+# about the repo, not the bundle); ship_count/ship_bytes cover what actually travels.
+py_files() {
   local fcap="$FILE_CAP"
   [ "$FORCE" = 1 ] && fcap=0
   python3 - "$1" "$LIST" "$SKIP" "$HOME_P/.claude" "$fcap" "$2" "${3:-}" "${CODEX_DIR:-}" \
-    "$ROOT" "$WT" "$CWD" <<'PY'
+    "$ROOT" "$WT" "$CWD" "${4:-}" "$SID" <<'PY'
 import hashlib, json, os, shutil, stat, sys
-mode, lst, skipf, claude_dir, cap, out, payload, codex_dir, root, wt, cwd = sys.argv[1:12]
+mode, lst, skipf, claude_dir, cap, out, payload, codex_dir, root, wt, cwd, delta_f, sid = sys.argv[1:14]
 cap = int(cap)   # 0 = no per-file cap (--force)
+delta = {}
+if delta_f:
+    with open(delta_f) as fh:
+        delta = json.load(fh)
 anchors = [a for a in (root, wt, cwd) if a]
 HOME_KINDS = {"session": ("claude", claude_dir), "memory": ("claude", claude_dir), "codex": ("codex", codex_dir)}
 CAPPED_KINDS = ("untracked", "context")   # session transcripts / rollouts never count toward the caps
@@ -769,12 +850,37 @@ for kind, ab, st, c in entries:
     if kind in CAPPED_KINDS:
         capped += st.st_size
 top = sorted(((st.st_size, ab) for _, ab, st, _ in entries), reverse=True)[:10]
+
+def sha_of(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f2:
+        for chunk in iter(lambda: f2.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+# DELTA SENDS: never the chat's own files (their kinds are not ride-along, and any ride-along path
+# carrying the sid - a codex chat's MISSION/TRANSFER files, say - is treated as the chat's own too).
+ship, assumed = [], []
+for ent in entries:
+    kind, ab, st, c = ent
+    rec = delta.get(ab)
+    if rec and kind in CAPPED_KINDS and sid not in ab and rec[1] == st.st_size:
+        try:
+            h = sha_of(ab)
+        except OSError:
+            h = None
+        if h == rec[0]:
+            assumed.append({"abs": ab, "kind": kind, "sha256": h, "size": st.st_size, "mtime_ns": st.st_mtime_ns})
+            continue
+    ship.append(ent)
 res = {"count": len(entries), "bytes": total, "capped_bytes": capped, "by_class": by_class,
        "by_kind": by_kind, "top10": top, "skipped": skipped,
-       "scan": [[c[0], ab] for _, ab, _, c in entries]}
+       "ship_count": len(ship), "ship_bytes": sum(st.st_size for _, _, st, _ in ship),
+       "assumed": assumed, "assumed_bytes": sum(a["size"] for a in assumed),
+       "scan": [[c[0], ab] for _, ab, _, c in ship]}
 if mode == "stage":
     files = []
-    for kind, ab, st, c in entries:
+    for kind, ab, st, c in ship:
         klass, base, where, ppath = c
         dst = os.path.join(payload, ppath)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -1036,7 +1142,10 @@ build_bundle() {
   check_space "$STAGE" "$total"
   mkdir -p "$STAGE/b/payload" "$STAGE/b/git"
   [ "$GIT" = 1 ] && stage_git "$STAGE/b/git"
-  py_files stage "$WORK/staged.json" "$STAGE/b/payload" || die "staging failed"
+  delta_prepare
+  py_files stage "$WORK/staged.json" "$STAGE/b/payload" "$WORK/delta.json" || die "staging failed"
+  delta_summary "$WORK/staged.json" > "$WORK/delta.summary"
+  note "$(cat "$WORK/delta.summary")"
 
   # secret scan (FYI) over exactly the bytes that will ship (+ the patch + the unpushed commits'
   # diffs), one list per placement class
@@ -1057,6 +1166,17 @@ build_bundle() {
     || die "tar failed"
 }
 
+delta_summary() {  # delta_summary <plan-or-staged.json> -> the one-line "what was left out" summary
+  local n b sn sb
+  n=$(jget "$1" 'len(d["assumed"])'); b=$(jget "$1" 'd["assumed_bytes"]')
+  sn=$(jget "$1" 'd["ship_count"]'); sb=$(jget "$1" 'd["ship_bytes"]')
+  if [ -n "$DELTA_REASON" ]; then
+    echo "full send ($DELTA_REASON): $sn file(s), $(human "$sb")"
+  else
+    echo "delta send: $sn file(s), $(human "$sb") travel; $n ride-along file(s), $(human "$b") already on the other Mac as of the last transfer were not re-sent (listed as assumed_present; --full sends everything)"
+  fi
+}
+
 write_manifest() {
   local out="$1" cver="" xver=""
   if [ "$TOOL" = claude ]; then
@@ -1075,6 +1195,7 @@ write_manifest() {
     printf 'git_worktree_sha256=%s\ngit_worktree_bytes=%s\n' "$G_WORKTREE_SHA" "$G_WORKTREE_BYTES"
     printf 'git_worktree_is_root=%s\n' "$([ -n "$WT" ] && [ "$WT" = "$ROOT" ] && echo 1 || echo 0)"
     printf 'secret_scan_status=%s\nsecret_scan_skipped_large=%s\n' "${SCAN_STATUS:-incomplete}" "${SCAN_SKIPPED_LARGE:-0}"
+    printf 'delta_reason=%s\n' "$DELTA_REASON"
   } > "$WORK/meta"
   python3 - "$WORK/meta" "$WORK/staged.json" "$SECR" "$SCAN_HITS_F" "$out" <<'PY' || die "manifest write failed"
 import json, os, sys
@@ -1086,7 +1207,9 @@ with open(meta_f, encoding="utf-8", errors="surrogateescape") as fh:
         m[k] = v
 st = json.load(open(staged_f))
 files = st.get("files", [])
-shipped = set(f["abs"] for f in files if "abs" in f)
+assumed = st.get("assumed", [])
+# An assumed_present secret-named file is on the other Mac already (resumework reports it if not).
+shipped = set(f["abs"] for f in files if "abs" in f) | set(a["abs"] for a in assumed)
 moved, not_moved = [], []
 if os.path.exists(secr_f):
     with open(secr_f, encoding="utf-8", errors="surrogateescape") as fh:
@@ -1103,7 +1226,7 @@ if os.path.exists(hits_f):
                 hits.append({"file": f, "rule": r})
 g = None
 if m["git"] == "1":
-    untracked = sum(1 for f in files if f["kind"] == "untracked")
+    untracked = sum(1 for f in files if f["kind"] == "untracked") + sum(1 for a in assumed if a["kind"] == "untracked")
     g = {"origin": m["git_origin"], "branch": m["git_branch"] or None, "detached": m["git_branch"] == "",
          "upstream": m["git_upstream"] or None, "head": m["git_head"],
          "bundle": "git/branch.bundle" if m["git_bundle"] == "1" else None, "bundle_ref": m["git_bundle_ref"],
@@ -1119,7 +1242,7 @@ if m["git"] == "1":
          "untracked_count": untracked,
          "worktree": m["worktree"], "worktree_is_root": m["git_worktree_is_root"] == "1"}
 manifest = {
-    "format": 3, "tool": m["tool"], "sid": m["sid"], "cwd": m["cwd"] or None, "root": m["root"] or None,
+    "format": 4, "tool": m["tool"], "sid": m["sid"], "cwd": m["cwd"] or None, "root": m["root"] or None,
     "user": m["user"], "home": m["home"], "repo_home": m["repo_home"] or None,
     "source_host": m["source_host"], "created_at": m["created_at"],
     "sealed_after_exit_at": m["sealed_after_exit_at"] or None, "argv": m["argv"] or None,
@@ -1134,6 +1257,13 @@ manifest = {
     "secret_scan_skipped_large": int(m["secret_scan_skipped_large"] or 0),
     "skipped": [{"reason": r, "path": p} for r, p in st.get("skipped", [])],
     "files": files,
+    # DELTA SENDS: ride-along files NOT in the bundle because the other Mac held exactly this content
+    # as of the last transfer between the two Macs. resumework verifies each one and reports any that
+    # is missing or different there; it never fails on them and never touches them.
+    "assumed_present": [{"path": a["abs"], "kind": a["kind"], "sha256": a["sha256"], "size": a["size"]}
+                        for a in assumed],
+    "delta": {"mode": "full" if m["delta_reason"] else "delta", "full_reason": m["delta_reason"] or None,
+              "assumed_count": len(assumed), "assumed_bytes": sum(a["size"] for a in assumed)},
 }
 with open(out, "w") as fo:
     json.dump(manifest, fo, indent=1, sort_keys=True)
@@ -1157,6 +1287,26 @@ publish() {  # encrypt straight into the drop dir under a dot-tmp name, then ato
   PUB_SIZE="$size"
 }
 
+# After the bundle is published (never before): the other Mac will hold every ride-along file this
+# send shipped or assumed present. A failed write removes the old state, so the next send is full.
+record_delta_state() {
+  [ -n "$ROOT" ] || return 0
+  python3 - "$WORK/staged.json" "$WORK/state-entries.json" <<'PYS' || { rm -f "$(tx_state_file "$ROOT")"; note "warning: could not record the delta state; the next send will be a full one"; return 0; }
+import json, sys
+st = json.load(open(sys.argv[1]))
+out = [{"abs": f["abs"], "sha256": f["sha256"], "size": f["size"], "mtime_ns": f["mtime_ns"]}
+       for f in st.get("files", []) if f.get("class") == "abs" and f.get("kind") in ("untracked", "context")]
+out += [{"abs": a["abs"], "sha256": a["sha256"], "size": a["size"], "mtime_ns": a["mtime_ns"]}
+        for a in st.get("assumed", [])]
+json.dump(out, open(sys.argv[2], "w"))
+PYS
+  if ! tx_state_write "$ROOT" "$WORK/state-entries.json" send "$LOC"; then
+    rm -f "$(tx_state_file "$ROOT")"
+    note "warning: could not record the delta state; the next send will be a full one"
+  fi
+  return 0
+}
+
 post_send() {
   local f="$HOME_P/.claude/progress/transferred-$SID"
   mkdir -p "$(dirname "$f")"
@@ -1165,7 +1315,8 @@ post_send() {
       "$SID" "$TOOL" "$LOC" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$WT" "$G_HEAD" "$G_PATCH_SHA" > "$f.tmp.$$" \
       && mv -f "$f.tmp.$$" "$f" )
   [ "$GIT" = 1 ] && tx_git_info_exclude "$ROOT"
-  tx_log "send ok locator=$LOC tool=$TOOL files=$(jget "$WORK/staged.json" 'len(d.get("files", []))') bytes=${PUB_SIZE:-0} sealed=${SEALED_AT:-no}"
+  record_delta_state
+  tx_log "send ok locator=$LOC tool=$TOOL files=$(jget "$WORK/staged.json" 'len(d.get("files", []))') assumed_present=$(jget "$WORK/staged.json" 'len(d.get("assumed", []))') bytes=${PUB_SIZE:-0} sealed=${SEALED_AT:-no}"
   tx_expire_sweep
 }
 
@@ -1174,7 +1325,8 @@ post_send() {
 # ------------------------------------------------------------------------------------------------
 if [ "$DRY" = 1 ]; then
   collect_all
-  py_files plan "$WORK/plan.json" || die "planning failed"
+  delta_prepare
+  py_files plan "$WORK/plan.json" "" "$WORK/delta.json" || die "planning failed"
   [ "$GIT" = 1 ] && git_facts
   total=$(jget "$WORK/plan.json" 'd["bytes"]')
   would_refuse=""
@@ -1190,6 +1342,7 @@ if [ "$DRY" = 1 ]; then
   echo "  root:     ${ROOT:-<none>}${REPO_HOME:+  (repo home: $REPO_HOME)}"
   [ "$GIT" = 1 ] && echo "  worktree: $WT"
   echo "  files:    $(jget "$WORK/plan.json" 'd["count"]') ($(human "$total"))  $(jget "$WORK/plan.json" '"  ".join("%s=%d" % (k, v[0]) for k, v in sorted(d["by_kind"].items()))')"
+  echo "  delta:    $(delta_summary "$WORK/plan.json")"
   echo "  placement: Claude/Codex state $(human "$(jget "$WORK/plan.json" 'd["by_class"]["home"]')") under the other Mac's own \$HOME; repo files $(human "$(jget "$WORK/plan.json" 'd["by_class"]["abs"]')") at the same absolute paths"
   echo "  capped:   untracked + ignored repo files $(human "$(jget "$WORK/plan.json" 'd["capped_bytes"]')") of $(human "$TOTAL_CAP")$([ "$FORCE" = 1 ] && echo ' (--force: caps lifted)') (session transcripts do not count)"
   if [ "$GIT" = 1 ]; then
@@ -1198,7 +1351,7 @@ if [ "$DRY" = 1 ]; then
   python3 - "$WORK/plan.json" "$SECR" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-shipped = set(p for _, p in d["scan"])
+shipped = set(p for _, p in d["scan"]) | set(a["abs"] for a in d["assumed"])
 moved, stay = [], []
 with open(sys.argv[2], encoding="utf-8", errors="surrogateescape") as fh:
     for line in fh:
@@ -1318,8 +1471,8 @@ if [ "$SEAL" = 1 ]; then
   tx_guard_path "$SEALDIR" || refuse "sealer dir would sit inside the public dotfiles repo"
   chmod 700 "$SEALDIR"
   ( umask 077
-    printf 'tool=%s\nsid=%s\ncwd=%s\nforce=%s\npid=%s\nlstart=%s\nwaitlock=%s\nargv=%s\n' \
-      "$TOOL" "$SID" "$CWD" "$FORCE" "$WPID" "$WLSTART" "$WLOCK" "$ARGV_STR" > "$SEALDIR/args"
+    printf 'tool=%s\nsid=%s\ncwd=%s\nforce=%s\nfull=%s\npid=%s\nlstart=%s\nwaitlock=%s\nargv=%s\n' \
+      "$TOOL" "$SID" "$CWD" "$FORCE" "$FULL" "$WPID" "$WLSTART" "$WLOCK" "$ARGV_STR" > "$SEALDIR/args"
     printf '%s' "$CODE_N" > "$SEALDIR/code" )
   mkdir -p "$HOME_P/.claude/logs" && chmod 700 "$HOME_P/.claude/logs" 2>/dev/null
   SEAL_LOG="$HOME_P/.claude/logs/transfer-sealer-$LOC.log"

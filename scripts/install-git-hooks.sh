@@ -102,6 +102,14 @@ install_hook() {
 # That code writes chat bundles and must never let one land in this PUBLIC repo, so its suite
 # guards the same class of silent, recurring failure. Editing this file changes GEN_FP below, so
 # every clone reinstalls its hooks on the next SessionStart or sync - no separate version bump.
+#
+# Both suites run with every GIT_* variable CLEARED (2026-09-27). git exports GIT_INDEX_FILE into
+# hooks - a relative ".git/index", or in a linked worktree the absolute path of that worktree's index
+# - and the suites' sandbox `git` calls inherited it: the transfer suite's separate-worktree tests
+# could not build their fixtures, so every commit printed "transfer suite could not run (exit 3)" and
+# the gate never actually ran (worse, a sandbox `git add` could have written into this repo's index).
+# The transfer suite also runs from the work tree being committed (TX_REPO), so a commit made in a
+# linked worktree tests the code it is committing, not the main checkout's.
 install_hook pre-commit <<'EOF'
 #!/bin/bash
 # 1) 20k-char re-injection-ceiling guard (staged files only).
@@ -113,7 +121,8 @@ install_hook pre-commit <<'EOF'
 if git diff --cached --name-only 2>/dev/null \
      | grep -qE '^scripts/(line-agent-communicator\.py|tests/line-agent-assumptions/)'; then
   _lac_out="$(mktemp "${TMPDIR:-/tmp}/lac-precommit.XXXXXX")"
-  LINE_AGENT_TESTS_ALLOW_DEV=true \
+  # shellcheck disable=SC2046  # word-split on purpose: one "-u NAME" pair per exported GIT_* var
+  env $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/-u \1/p') LINE_AGENT_TESTS_ALLOW_DEV=true \
     bash "$HOME/.claude-dotfiles/scripts/tests/line-agent-assumptions/run-all.sh" >"$_lac_out" 2>&1
   _lac_rc=$?
   if [ "$_lac_rc" = "1" ]; then
@@ -132,17 +141,25 @@ fi
 if git diff --cached --name-only 2>/dev/null \
      | grep -qE '^scripts/(transfer/|tests/transfer-assumptions/)'; then
   _tx_out="$(mktemp "${TMPDIR:-/tmp}/transfer-precommit.XXXXXX")"
-  TRANSFER_TESTS_ALLOW_DEV=true \
-    bash "$HOME/.claude-dotfiles/scripts/tests/transfer-assumptions/run-all.sh" >"$_tx_out" 2>&1
+  _tx_top="$(git rev-parse --show-toplevel 2>/dev/null)"
+  [ -n "$_tx_top" ] && [ -f "$_tx_top/scripts/tests/transfer-assumptions/run-all.sh" ] || _tx_top="$HOME/.claude-dotfiles"
+  # shellcheck disable=SC2046  # word-split on purpose: one "-u NAME" pair per exported GIT_* var
+  env $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/-u \1/p') TRANSFER_TESTS_ALLOW_DEV=true TX_REPO="$_tx_top" \
+    bash "$_tx_top/scripts/tests/transfer-assumptions/run-all.sh" >"$_tx_out" 2>&1
   _tx_rc=$?
   if [ "$_tx_rc" = "1" ]; then
     echo "BLOCKED: the transfer assumption suite FAILED - a /transfer defense regressed." >&2
     tail -25 "$_tx_out" >&2
-    echo "Reproduce: TRANSFER_TESTS_ALLOW_DEV=true bash ~/.claude-dotfiles/scripts/tests/transfer-assumptions/run-all.sh" >&2
+    echo "Reproduce: TRANSFER_TESTS_ALLOW_DEV=true TX_REPO=$_tx_top bash $_tx_top/scripts/tests/transfer-assumptions/run-all.sh" >&2
     rm -f "$_tx_out"
     exit 1
   fi
-  [ "$_tx_rc" = "0" ] || echo "NOTE: transfer suite could not run (exit ${_tx_rc}) - not blocking." >&2
+  if [ "$_tx_rc" = "0" ]; then
+    echo "transfer suite: $(grep -m1 '^PASS: [0-9][0-9]*/' "$_tx_out")" >&2
+  else
+    echo "NOTE: transfer suite could not run (exit ${_tx_rc}) - not blocking." >&2
+    grep -A8 '^NOT MEASURED' "$_tx_out" >&2
+  fi
   rm -f "$_tx_out"
 fi
 # 3) Block commit if any staged file contains a recognized secret pattern.

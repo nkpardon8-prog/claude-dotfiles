@@ -79,6 +79,16 @@ Mac. Machine-bound state and rebuildable heavy dirs never travel. `scripts/trans
 bridges the second case when the two Macs log in as different usernames. Full design:
 `commands/transfer.md`; what each script does: `docs/COMMANDS.md`.
 
+**Delta sends (bundle format 4):** every untracked and ignored repo file still counts as travelling,
+but after each successful send (sender) and each successful `resumework` (receiver), the Mac writes
+`~/.claude/transfer-state/<hash of repo root>.json` (mode 600, never in this repo): path -> sha256,
+size, mtime of every such file the OTHER Mac holds. A later send leaves out a file whose sha256 still
+matches and lists it under the manifest's `assumed_present`; `resumework` checks each one and reports,
+never fails on, one that is missing or different. The chat's own files and git state are always
+shipped. Missing/corrupt state, a never-collected previous send, or `--full` means a full send. While
+it waits for a bundle, `resumework` runs `brctl monitor com.apple.CloudDocs` in the background (iCloud
+drop folders only) so the iCloud daemon notices the new file promptly.
+
 ---
 
 ## Sync flow (multi-device)

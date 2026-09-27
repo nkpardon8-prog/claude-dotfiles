@@ -1,6 +1,6 @@
 ---
 description: "Move this chat to your other Mac. Prints a one-time code; run resumework <code> in Terminal there and the same chat reopens with its history, files and worktree."
-argument-hint: "[codex <session-id>] [--dry-run]"
+argument-hint: "[codex <session-id>] [--dry-run] [--full]"
 allowed-tools: Bash, Skill, Read, Write, Edit, CronList, CronDelete, TaskStop
 ---
 
@@ -27,6 +27,8 @@ runs as a Codex skill), use the words you were given in its place.
 - nothing: move THIS Claude chat.
 - `codex <session-id>`: move that Codex chat instead (see "Codex path").
 - `--dry-run`: show what would be sent; write, park and release nothing.
+- `--full`: re-send every untracked/ignored repo file, even ones the other Mac already has (normally
+  a later send leaves those out; see "Delta sends" in `docs/COMMANDS.md`).
 - `--sid <id>`: override the session id read from the environment.
 
 ## Step 1 - Preflight (every path)
@@ -34,12 +36,13 @@ runs as a Codex skill), use the words you were given in its place.
 ```bash
 set -uo pipefail
 set -f; set -- ${ARGUMENTS:-}; set +f
-MODE=claude; DRY=""; SID="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+MODE=claude; DRY=""; FULL=""; SID="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
 while [ $# -gt 0 ]; do
   case "$1" in
     codex)     MODE=codex; SID="${2:-}"; [ $# -gt 1 ] && shift ;;
     --sid)     SID="${2:-}"; [ $# -gt 1 ] && shift ;;
     --dry-run) DRY=--dry-run ;;
+    --full)    FULL=--full ;;
     *) echo "transfer: unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -60,12 +63,13 @@ for f in "$HOME"/.claude/sessions/*.json; do
   [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$SID" ] && { CWD="$(jq -r '.cwd // empty' "$f")"; break; }
 done
 [ -n "$CWD" ] || CWD="$PWD"
-echo "MODE=$MODE SID=$SID DRY=${DRY:-no} ROOT=$ROOT CWD=$CWD"
+echo "MODE=$MODE SID=$SID DRY=${DRY:-no} FULL=${FULL:-no} ROOT=$ROOT CWD=$CWD"
 "$HOME/.claude-dotfiles/scripts/transfer/transfer-doctor" --local; echo "doctor_rc=$?"
 ```
 
 - Carry the printed `SID`, `ROOT` and `CWD` values as literals into every later step (each Bash
-  call is a fresh shell).
+  call is a fresh shell). If it printed `FULL=--full`, add `--full` to the send command (Step 5 or
+  the Codex path).
 - If the block exits non-zero, `doctor_rc` is not 0, or any line says FAIL: STOP. Tell the owner, in
   one or two plain sentences per item, what is not ready and how to fix it. Change nothing.
 - No session id in `claude` mode (for example running as a Codex skill with no `codex <id>`): stop

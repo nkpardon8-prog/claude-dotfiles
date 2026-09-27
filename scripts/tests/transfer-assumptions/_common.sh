@@ -12,8 +12,16 @@
 # genuinely needs two different $HOME directories, since it is exactly about that mismatch.
 set -uo pipefail
 
+# Hermetic git: a git hook (the dotfiles pre-commit runs this suite) exports GIT_INDEX_FILE - a
+# RELATIVE ".git/index", or in a linked worktree the absolute path of THAT worktree's index - plus
+# GIT_PREFIX, GIT_AUTHOR_DATE, GIT_CONFIG_PARAMETERS... Inherited, they make every sandbox `git`
+# call below read (or write!) the committing repo's index; the separate-worktree tests then fail to
+# build their fixtures (exit 3). Clear every GIT_* variable before anything runs git.
+for _gv in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_gv"; done
+unset _gv
+
 TX_MARKER="tx-atest"
-TX_REPO="$HOME/.claude-dotfiles"
+TX_REPO="${TX_REPO:-$HOME/.claude-dotfiles}"
 TX_LIB="$TX_REPO/scripts/transfer/transfer-lib.sh"
 TX_SEND="$TX_REPO/scripts/transfer/transfer-send.sh"
 TX_RESUME="$TX_REPO/scripts/transfer/resumework"
@@ -164,5 +172,18 @@ tx_run_resume() {
   rm -f "$out" "$err"
   return "$rc"
 }
+
+# tx_open_bundle <code> <locator> <drop> <dir> - decrypt + unpack a bundle (read-only inspection).
+tx_open_bundle() {
+  mkdir -p "$4"
+  tx_decrypt "$3/$2.tx" "$4/inner.tgz" "$1" || return 1
+  ( cd "$4" && tar -xzf inner.tgz )
+}
+
+# tx_mget <manifest.json> <python expr over m> - prints the expression's value (str() of it).
+tx_mget() { python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"m": m}))' "$1" "$2"; }
+
+# tx_state_path <home> <root> - the delta state file the REAL lib would use for <root> under <home>.
+tx_state_path() { ( HOME="$1"; tx_state_file "$2" ); }
 
 tx_combined() { printf '%s\n%s\n' "$TX_LAST_OUT" "$TX_LAST_ERR"; }

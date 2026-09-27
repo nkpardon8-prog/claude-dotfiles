@@ -15,7 +15,8 @@
 #                                  (never argv, never a here-string). Decrypt failure removes <out>, rc 3.
 #   tx_guard_path <path>        -> rc 2 (with a reason on stderr) if the path resolves inside the PUBLIC
 #                                  dotfiles repo ($HOME/.claude-dotfiles or this script's own checkout)
-#   tx_drop_dir                 -> prints (and creates) the iCloud drop folder; TX_DROP_DIR overrides
+#   tx_drop_dir [--no-create]   -> prints (and, without --no-create, creates) the iCloud drop folder;
+#                                  TX_DROP_DIR overrides
 #   tx_log <msg>                -> appends to ~/.claude/logs/transfer.log (mode 600); codes are redacted
 #   tx_expire_sweep             -> deletes *.tx / *.tx.sha256 / *.tx.failed older than 7 days in the drop dir
 #   tx_is_secret_name <path>    -> rc 0 if the basename looks secret-bearing. REPORTING ONLY: such
@@ -46,6 +47,23 @@
 #                                  marker (make-home-alias.sh) whose alias_of= line names `id -un`,
 #                                  both owned by this account. TX_TEST_ALIAS_HOMES_BASE replaces
 #                                  the base, honored ONLY under TRANSFER_TESTS_ALLOW_DEV=true.
+#   TX_RIDE_ALONG_KINDS         -> "untracked context": the only kinds a delta send may leave out
+#   tx_state_file <root>        -> ~/.claude/transfer-state/<first 16 hex of sha256(root)>.json: the
+#                                  per-repo-root DELTA STATE (what the other Mac held as of the last
+#                                  transfer between the two Macs; see DELTA STATE below)
+#   tx_state_write <root> <entries.json> <send|receive> [locator]
+#                                  -> atomically replaces that file (dir 700, file 600); rc 1 on failure
+#                                  (the caller then removes the old state, so the next send is full)
+#   tx_state_forget_locator <loc> -> removes any state a send with that locator wrote (the expiry
+#                                  sweep calls it: an uncollected bundle never reached the other Mac)
+#
+# DELTA STATE (manifest format 4). After a successful send the sender records, per repo root, the
+# sha256/size/mtime of every ride-along file ("untracked"/"context" kinds) the other Mac now has
+# (shipped + assumed present); after a successful resumework the receiver records the same for every
+# ride-along file the sender had. A later send leaves out a ride-along file whose current sha256
+# equals the recorded one and lists it under manifest.assumed_present instead; resumework checks each
+# such entry and reports (never fails on, never touches) one that is missing or different here.
+# Two Macs only: the state says "the other Mac", not which one. It is never inside the dotfiles repo.
 #
 # PLACEMENT RULE (transfer-send.sh writes it, resumework enforces it): every payload file is one of
 #   "home" - Claude/Codex state ($HOME/.claude/..., $CODEX_HOME/...): stored relative to that state
@@ -231,9 +249,10 @@ tx_alias_homes() {  # verified home aliases of this account (see the header); ph
   return 0
 }
 
-tx_drop_dir() {
+tx_drop_dir() {  # tx_drop_dir [--no-create]
   local d="${TX_DROP_DIR:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/claude-transfers}"
   tx_guard_path "$d" || return 2
+  [ "${1:-}" = "--no-create" ] && { printf '%s\n' "$d"; return 0; }
   mkdir -p "$d" 2>/dev/null || { echo "transfer: cannot create drop folder $d" >&2; return 1; }
   printf '%s\n' "$d"
 }
@@ -267,6 +286,8 @@ tx_expire_sweep() {  # delete bundles nobody collected within 7 days (the code s
     if rm -f "$f" 2>/dev/null; then
       n=$((n + 1))
       tx_log "expire: removed $(basename "$f") (older than 7 days)"
+      # Nobody collected it, so the other Mac never got what that send recorded as delivered.
+      case "$f" in *.tx) tx_state_forget_locator "$(basename "$f" .tx)" ;; esac
     fi
   done <<EOF
 $(find "$d" -maxdepth 1 -type f \( -name '*.tx' -o -name '*.tx.sha256' -o -name '*.tx.failed' -o -name '.*.tmp.*' \) -mmin +10080 2>/dev/null)
@@ -356,6 +377,70 @@ tx_git_diff_worktree() {  # the UNSTAGED half only: worktree vs index (`git diff
   git -C "$1" -c core.quotePath=true -c diff.noprefix=false -c diff.mnemonicPrefix=false \
     -c diff.relative=false diff --no-color --no-ext-diff --no-textconv --no-renames \
     --full-index --binary
+}
+
+# ---------------------------------------------------------------------------------------------
+# Delta state (see DELTA STATE in the header)
+# ---------------------------------------------------------------------------------------------
+TX_RIDE_ALONG_KINDS="untracked context"
+
+tx_state_file() {  # tx_state_file <repo root> -> the state file path (may not exist)
+  local h
+  h=$(printf '%s' "$1" | shasum -a 256 | cut -c1-16)
+  printf '%s/.claude/transfer-state/%s.json\n' "$HOME" "$h"
+}
+
+# tx_state_write <root> <entries.json> <send|receive> [locator]. <entries.json> is a JSON list of
+# {"abs", "sha256", "size", "mtime_ns"}. Written to a temp file beside the target, fsynced, then
+# renamed over it, so a concurrent send/receive never reads a half-written state (last writer wins;
+# either writer's set is a true "the other Mac had this" record for the files it names).
+tx_state_write() {
+  local f
+  f=$(tx_state_file "$1")
+  tx_guard_path "$f" 2>/dev/null || return 1
+  python3 - "$f" "$1" "$2" "$3" "${4:-}" "$(hostname -s)" <<'PY' 2>/dev/null
+import json, os, re, sys, tempfile, time
+out, root, src, role, loc, host = sys.argv[1:7]
+entries = json.load(open(src))
+files = {}
+for e in entries:
+    ab, sha, size = e.get("abs"), e.get("sha256"), e.get("size")
+    if not (isinstance(ab, str) and ab.startswith("/") and isinstance(sha, str)
+            and re.match(r"^[0-9a-f]{64}$", sha) and isinstance(size, int)):
+        sys.exit(1)
+    files[ab] = {"sha256": sha, "size": size, "mtime_ns": e.get("mtime_ns") if isinstance(e.get("mtime_ns"), int) else None}
+state = {"format": 1, "root": root, "role": role, "host": host,
+         "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "files": files}
+if role == "send":
+    state["sent_locator"] = loc
+d = os.path.dirname(out)
+os.makedirs(d, mode=0o700, exist_ok=True)
+os.chmod(d, 0o700)
+fd, tmp = tempfile.mkstemp(prefix=".state.", dir=d)
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(state, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, out)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.exit(1)
+PY
+}
+
+tx_state_forget_locator() {  # tx_state_forget_locator <locator>
+  local f
+  case "${1:-}" in "" | *[!0-9a-f]*) return 0 ;; esac
+  for f in "$HOME/.claude/transfer-state"/*.json; do
+    [ -f "$f" ] || continue
+    grep -qF "\"sent_locator\": \"$1\"" "$f" 2>/dev/null && rm -f "$f"
+  done
+  return 0
 }
 
 tx_git_info_exclude() {  # keep sid-keyed handoff/transfer files out of `git status` (local, untracked)

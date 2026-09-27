@@ -2,6 +2,39 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-09-27 - `/transfer` delta sends, iCloud nudge, pre-commit transfer suite actually runs
+
+- **Delta sends (bundle format 4; update both Macs together).** "Move everything" stays, but a
+  later send no longer re-ships the untracked/ignored files the other Mac already has. After a
+  successful send, and after a successful `resumework`, each Mac writes
+  `~/.claude/transfer-state/<hash of repo root>.json` (mode 600, never in this repo): path ->
+  sha256, size, mtime of every ride-along file the OTHER Mac holds. The next send leaves out any such
+  file whose sha256 still matches and lists it under the manifest's `assumed_present`; `resumework`
+  checks each one, counts the identical ones, and lists any that is missing or different on its Mac
+  in the checklist and TRANSFER notes ("Not re-sent (the other Mac assumed you already had it) -
+  differs/missing here") - never a failure, never touched. The chat's own files (anything of a
+  non-ride-along kind, or whose path carries the sid) and git state always travel. Full send on
+  `--full` (new flag on `transfer-send.sh`, `/transfer` and the Codex `$transfer` skill), on a
+  missing / corrupt / unreadable / other-root state, and when the send that wrote the state was never
+  collected (bundle still in the drop folder, or removed uncollected by the expiry sweep, which now
+  forgets that state). The send summary reports files/bytes left out. Measured on a 3,170-file,
+  335 MB fixture with 24 files changed: bundle 280 MB -> 6.4 MB, send 360 s -> 19 s. Known,
+  documented limit: a file deleted on the receiver after the last transfer is not re-sent while
+  unchanged on the sender; it shows in the "missing here" list (`--full`, or a send back, heals it).
+- **iCloud nudge:** while `resumework` waits for a bundle in an iCloud drop folder, it runs
+  `brctl monitor com.apple.CloudDocs` in the background (output discarded) so the iCloud daemon
+  notices new files promptly; a perl watchdog stops it when the wait ends, on every exit path, and
+  even after a `kill -9` of `resumework`.
+- **Pre-commit gap fixed:** every dotfiles commit printed "transfer suite could not run (exit 3)"
+  because git exports `GIT_INDEX_FILE` (relative `.git/index`, or a linked worktree's absolute index
+  path) into hooks, and the suite's sandbox `git` calls inherited it - tests 13-15 could not build
+  their fixtures (and a sandbox `git add` could have written into the dotfiles index). The suite now
+  clears every `GIT_*` variable (`run-all.sh` + `_common.sh`), the hook clears them for both suites,
+  runs the transfer suite from the work tree being committed (`TX_REPO`), and prints its PASS line.
+  `_common.sh` honors `TX_REPO` to test another checkout.
+- Tests: `20-delta-second-send.sh` .. `24-icloud-nudge.sh` (each watched failing under targeted
+  mutations of a broken copy).
+
 ## 2026-09-26 - Move a live Codex chat from inside Codex; `/pre-compact no-mission`
 
 - **Codex `/transfer` skill** (`claude-command-transfer`, type `$transfer` in Codex): hand-written in
