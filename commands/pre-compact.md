@@ -41,6 +41,7 @@ Tokens are standalone (whitespace-fenced) or flag-form; everything else in `$ARG
 - `no-gitignore` (or "no gitignore") - skip Step 8 entirely.
 - `auto-confirm` (or `--auto-confirm`) - Step 5 proceeds without waiting for the user (the same happens after ~3 minutes of silence).
 - `no-document` (or `--no-document`) - skip Step 1 (`/document`) entirely. Used by `/transfer`, which needs a fast, fresh handoff and must not refresh project docs as a side effect.
+- `no-mission` (or `--no-mission`) - never start a mission: Step 3.B skips `mission-write.sh create` and does not set the manifest `mission_path` (an already-running mission is left as it is). Used by `/transfer`, whose handoff must not create a `MISSION.<sid>.md` on a chat that never started one.
 
 ### Map of the steps
 
@@ -48,7 +49,7 @@ Tokens are standalone (whitespace-fenced) or flag-form; everything else in `$ARG
 - Step 2: resolve `<project>` (session-established name, else `basename "$PWD"`).
 - Step 3: gather handoff context. 3.A then 3.B run sequentially; 3.C-3.F batch in parallel; 3.G after.
   - Step 3.A: pass pick. Quick floor 150 / ceiling 300; Deep 250/400; Chunked 400/500 (map-reduce over 3-4 chronological segments). Announce the pass + Phase 2 preview.
-  - Step 3.B: SID resolve + parent detect + chain-manifest read-or-init + mission create (link>=2). Contains the load-bearing bash block - Read the full file and run it as written.
+  - Step 3.B: SID resolve + parent detect + chain-manifest read-or-init + mission create (link>=2, skipped by `no-mission`). Contains the load-bearing bash block - Read the full file and run it as written.
   - Step 3.C: inline transcript mining. Core fields: active_task, what_we_tried (hypothesis -> change -> result -> kept|abandoned), decisions (source-tagged + confidence), work_in_progress, blockers, user_constraints (verbatim), tool_mcp_state, bookmarks, since_last_compact (3-8 bullets; null if seq 1). Decision-G fields: work_streams, live_hypotheses, footguns, pending_externals, pending_externals_background (Agent / background-Bash calls with no observed result), user_wishes. Decision-H fields: loop_ledger, deferred_for_human, loop_state.
   - Step 3.D: read `~/.claude/projects/<project>/memory/MEMORY.md` (task-relevant entries only).
   - Step 3.E: git branch / log / grep-decisions / status / diff --stat (skip outside a repo).
@@ -379,7 +380,7 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
 
        # Tier 1: $ARGUMENTS minus pass-flag tokens (incl. --auto-confirm).
        STRIPPED=$(printf '%s' "${ARGUMENTS:-}" | tr ' ' '\n' \
-         | grep -vE '^(quick|deep|chunked|no-auto-compact|no-gitignore|auto-confirm|no-document|pass=quick|pass=deep|pass=chunked|--quick|--deep|--chunked|--auto-confirm|--no-document)$' \
+         | grep -vE '^(quick|deep|chunked|no-auto-compact|no-gitignore|auto-confirm|no-document|no-mission|pass=quick|pass=deep|pass=chunked|--quick|--deep|--chunked|--auto-confirm|--no-document|--no-mission)$' \
          | tr '\n' ' ' | sed 's/  */ /g;s/^[[:space:]]*//;s/[[:space:]]*$//')
        NORTH_STAR=""; NS_SOURCE=""
        if [ -n "$STRIPPED" ]; then
@@ -442,12 +443,14 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
            status:$status, host:$host}' \
          | chain_manifest_write "$SID" || echo "WARN: chain manifest first-write failed; continuing" >&2
      else
+       # no-mission: keep mission_path as it is (empty stays empty), so no mission is implied.
+       _MP="$CANONICAL_ROOT/MISSION.${SID_RESOLVED}.md"; [ "$NO_MISSION" = 1 ] && _MP=""
        printf '%s' "$MANIFEST" | jq -c \
          --argjson seq "$NEW_SEQ" --arg hp "$CHAIN_HANDOFF_PATH" --arg hb "$NOW_ISO" --arg status "$CHAIN_STATUS" \
-         --arg mp "$CANONICAL_ROOT/MISSION.${SID_RESOLVED}.md" \
+         --arg mp "$_MP" \
          '.current_seq = $seq
           | .last_handoff_path = $hp | .last_heartbeat_at = $hb | .status = $status
-          | .mission_path = (if ((.mission_path // "") == "") then $mp else .mission_path end)' \
+          | .mission_path = (if ((.mission_path // "") == "" and $mp != "") then $mp else .mission_path end)' \
          | chain_manifest_write "$SID" || echo "WARN: chain manifest merge-write failed; continuing" >&2
      fi
 
@@ -457,7 +460,8 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
      # safe to call every multi-link run). MISSION_SEED is populated by the orchestrator from the
      # RICH source (see prose just below this block): the full brief body when NS_SOURCE=brief, the
      # /mission argument, or the accumulated plan â€” the 500-char NORTH_STAR is last-resort ONLY.
-     if [ "$IS_FIRST_RUN" = "0" ]; then
+     # The `no-mission` token (/transfer passes it) skips this: a handoff is not a mission.
+     if [ "$IS_FIRST_RUN" = "0" ] && [ "$NO_MISSION" = 0 ]; then
        bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh create "$SID_RESOLVED" "$CANONICAL_ROOT" "${MISSION_SEED:-$NORTH_STAR}" \
          || echo "WARN: mission create failed; continuing" >&2
      fi
