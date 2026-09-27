@@ -110,6 +110,7 @@ Written <local date and time> on <this Mac's name> by /transfer.
 
 ## Left behind on this Mac
 - Background tasks, scheduled wakes, Monitors: <each one, what it was for; or "none">
+- Subagents still running or unreported: <each one: what it was asked to do, how far it got (last progress, files it touched, whether its work is committed), and its brief in 2-4 lines so the new Mac can relaunch it; or "none">
 - Docker containers: <from docker ps; or "none">
 - Dev servers and ports: <from lsof; or "none">
 - Chrome on port 9222: <running or not>
@@ -124,6 +125,7 @@ Written <local date and time> on <this Mac's name> by /transfer.
 - [ ] Docker test database <if needed>; always remove with `docker rm -f -v`
 - [ ] Mission <if active>: answer its "transferred" question to unpark it, then re-schedule its wake
 - [ ] Re-open peer conversations: <who, about what>
+- [ ] Relaunch subagents: <each unfinished one from above, with its brief; check its files first - partial work may already be on disk>
 - [ ] Restart: <each server / container / background task above that is still needed>
 - [ ] prod-ledger is machine-local - check `prod-ledger.py show` on the old Mac before any prod work
 ```

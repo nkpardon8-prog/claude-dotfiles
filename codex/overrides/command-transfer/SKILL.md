@@ -68,6 +68,7 @@ Written <local date and time> on <this Mac's name> by the Codex /transfer skill.
 
 ## Left behind on this Mac
 - Background commands or long-running jobs started in this chat: <each one; or "none">
+- Sub-agents / delegated tasks still running or unreported: <each: what it was asked, how far it got, files touched, brief to relaunch it; or "none">
 - Docker containers: <from docker ps; or "none" / "could not check">
 - Dev servers and ports: <from lsof; or "none" / "could not check">
 - Anything else running: <or "none">
