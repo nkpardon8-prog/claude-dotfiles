@@ -13,6 +13,11 @@
 #      released (the leftover, unheld lock file does not block); the late line travels.
 #   C  refusals: no codex process above the shell and no --source-pid; --source-pid without
 #      --seal-after-exit.
+#   D  shared background server: the send runs under a fake `codex app-server` (a symlink named
+#      codex, so ps reports it as codex); no process is watched, only the chat lock: refused when
+#      the lock is not held, and with it held no bundle until it is released.
+# The post-close grace (Codex finishing its files, 60 s live) is 2 s here, so a sealer that stopped
+# waiting on the lock itself would refuse in B and D instead of packaging.
 set -uo pipefail
 [ "${TRANSFER_TESTS_ALLOW_DEV:-}" = "true" ] || { echo "REFUSED: set TRANSFER_TESTS_ALLOW_DEV=true to run" >&2; exit 2; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,7 +50,7 @@ launch() {  # launch <id> [extra args] -> $L_RC $L_OUT $L_ERR $L_CODE $L_LOC
   o=$(mktemp "${TMPDIR:-/tmp}/tx17-out.XXXXXX"); e=$(mktemp "${TMPDIR:-/tmp}/tx17-err.XXXXXX")
   local id="$1"; shift
   ( HOME="$HOME_T" TX_DROP_DIR="$DROP" TRANSFER_TESTS_ALLOW_DEV=true TX_TEST_SEAL_TIMEOUT=90 \
-      "$TX_SEND" --tool codex --sid "$id" --cwd "$CWD" "$@" >"$o" 2>"$e" )
+      TX_TEST_CLOSE_GRACE=2 "$TX_SEND" --tool codex --sid "$id" --cwd "$CWD" "$@" >"$o" 2>"$e" )
   L_RC=$?; L_OUT=$(cat "$o"); L_ERR=$(cat "$e"); rm -f "$o" "$e"
   L_CODE=$(printf '%s\n' "$L_OUT" | sed -n 's/^CODE=//p' | head -1)
   L_LOC=$(printf '%s\n' "$L_OUT" | sed -n 's/^LOCATOR=//p' | head -1)
@@ -155,4 +160,43 @@ ls "$DROP"/*.tx 2>/dev/null | grep -q . && fail "C: a bundle was written after a
 launch "$SID" --source-pid "$$"
 [ "$L_RC" -eq 2 ] || fail "C: --source-pid without --seal-after-exit should refuse (rc=$L_RC)"
 
-ok_report "17-codex-seal-after-exit" "codex --seal-after-exit prints the code at once, waits for the Codex process AND its chat lock, ships the final rollout (turns added after the send) plus TRANSFER notes; refuses with no codex ancestor and on a misused --source-pid"
+# ---------------------------------------------------------------- D: shared background server
+SID=$(tx_new_uuid)
+ROLL=$(new_rollout "$SID")
+printf '# Transfer notes - %s\nNOTES-PAPAYA\n' "$SID" > "$CWD/TRANSFER.$SID.md"
+mkdir -p "$HOME_T/bin"; ln -s /bin/bash "$HOME_T/bin/codex"
+server_launch() {  # the send as a child of `codex ... app-server` (a compound command, so bash forks)
+  local o e
+  o=$(mktemp "${TMPDIR:-/tmp}/tx17-out.XXXXXX"); e=$(mktemp "${TMPDIR:-/tmp}/tx17-err.XXXXXX")
+  HOME="$HOME_T" TX_DROP_DIR="$DROP" TRANSFER_TESTS_ALLOW_DEV=true TX_TEST_SEAL_TIMEOUT=90 TX_TEST_CLOSE_GRACE=2 \
+    "$HOME_T/bin/codex" -c '"$1" --tool codex --sid "$2" --cwd "$3" --seal-after-exit; rc=$?; exit $rc' \
+    app-server "$TX_SEND" "$SID" "$CWD" >"$o" 2>"$e"
+  L_RC=$?; L_OUT=$(cat "$o"); L_ERR=$(cat "$e"); rm -f "$o" "$e"
+  L_CODE=$(printf '%s\n' "$L_OUT" | sed -n 's/^CODE=//p' | head -1)
+  L_LOC=$(printf '%s\n' "$L_OUT" | sed -n 's/^LOCATOR=//p' | head -1)
+}
+server_launch
+[ "$L_RC" -eq 2 ] || fail "D: under the background server with no chat lock held the send should refuse (rc=$L_RC): $L_ERR"
+printf '%s' "$L_ERR" | grep -q "background server" || fail "D: the refusal does not name the background server: $L_ERR"
+
+LOCK="$CODEX_HOME/thread-writer-locks/$SID.lock"
+python3 -c 'import sys, time; f = open(sys.argv[1], "a"); time.sleep(120)' "$LOCK" & HOLDER=$!; PIDS="$PIDS $HOLDER"
+_end=$(( $(date +%s) + 10 ))
+while [ -z "$(lsof -t -- "$LOCK" 2>/dev/null)" ] && [ "$(date +%s)" -lt "$_end" ]; do sleep 0.2; done
+server_launch
+if [ "$L_RC" -ne 0 ] || [ -z "$L_CODE" ]; then
+  fail "D: the launcher under the background server failed (rc=$L_RC): $L_OUT $L_ERR"
+else
+  printf '%s' "$L_ERR" | grep -q "codex process" && fail "D: under the background server no process should be watched: $L_ERR"
+  sleep 5
+  [ -f "$DROP/$L_LOC.tx" ] && fail "D: the bundle appeared while the chat lock was still held"
+  append_turn "$ROLL" "late turn on the server: LYCHEE-5"
+  kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
+  if wait_bundle "$L_LOC" 30; then
+    restore_check D "$L_CODE" "$ROLL" "LYCHEE-5"
+  else
+    fail "D: no bundle within 30 s after the chat lock was released"
+  fi
+fi
+
+ok_report "17-codex-seal-after-exit" "codex --seal-after-exit prints the code at once, waits for the Codex window AND its chat lock (lock only under the background server), ships the final rollout (turns added after the send) plus TRANSFER notes; refuses with no codex ancestor and on a misused --source-pid"

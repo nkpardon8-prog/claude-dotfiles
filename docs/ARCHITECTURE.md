@@ -21,7 +21,7 @@ How `~/.claude-dotfiles` plugs into Claude Code, and what runs when.
 ├── rules/                                 ← global rule files
 ├── skills/                                ← non-command skill assets (_shared/, desktop/, ...)
 ├── templates/                             ← CLAUDE.md / AGENTS.md scaffolds for new projects
-├── codex/                                 ← generated Codex-CLI layer (codex/generated/)
+├── codex/                                 ← Codex-CLI layer: generated (codex/generated/) + hand-written overrides (codex/overrides/)
 ├── docs/                                  ← long-form docs (this folder)
 ├── archive/                               ← retired packs + write-ups, not loaded by Claude Code
 ├── scripts/

@@ -42,6 +42,8 @@ TESTS=(
   "14-git-backout.sh"
   "15-alias-reverse.sh"
   "16-install-app-marker.sh"
+  "17-codex-seal-after-exit.sh"
+  "19-codex-skill-and-no-mission.sh"
 )
 
 # Counters + strings, NOT arrays: macOS bash 3.2's `${#arr[@]}` on an EMPTY array under `set -u`

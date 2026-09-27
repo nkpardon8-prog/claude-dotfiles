@@ -2,7 +2,30 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
-## 2026-09-26 - Token usage: cheaper agents, smaller implement chunks, cache-aware mission wakes
+## 2026-09-26 - Move a live Codex chat from inside Codex; `/pre-compact no-mission`
+
+- **Codex `/transfer` skill** (`claude-command-transfer`, type `$transfer` in Codex): hand-written in
+  `codex/overrides/command-transfer/SKILL.md`, replacing the automatic port of the Claude command
+  (which told Codex to run `/pre-compact` and read Claude session files). It reads
+  `CODEX_THREAD_ID`, writes `TRANSFER.<id>.md` at the repo root, sends with `--seal-after-exit`
+  under escalated permissions, shows the code, and asks the owner to close the chat.
+- **`generate-codex-layer.py` overrides:** `codex/overrides/<dir>/` is copied whole in place of the
+  generated skill of the same dir name; an override with no matching command fails the generator.
+- **`transfer-send.sh --seal-after-exit` works for `--tool codex`** (plus `--source-pid <pid>` for
+  either tool). Verified on codex-cli 0.157.1: when Codex's shared background server
+  (`codex app-server --managed-daemon`) is running, a chat's shell commands are children of THAT
+  server, not of the Codex window, and it outlives every window. So the sealer walks the parent
+  chain to the nearest codex process and, for a window, waits for its pid + start time to change;
+  in every case it also waits until nobody holds `$CODEX_HOME/thread-writer-locks/<id>.lock` (Codex
+  holds it while the chat is loaded; the server lets go ~60 s after the last window closes). Then it
+  re-reads the final rollout and packs. No codex ancestor -> refused. The immediate Codex send now
+  refuses only on a HELD lock (a crash-leftover lock file no longer blocks forever).
+- **`/pre-compact no-mission`:** skips `mission-write.sh create` and leaves the manifest
+  `mission_path` alone, stripped from north-star text like `no-document`. `/transfer` passes it, so
+  moving a chat that already had a prior handoff no longer creates a `MISSION.<sid>.md`.
+- Tests: `17-codex-seal-after-exit.sh`, `19-codex-skill-and-no-mission.sh` (each watched failing
+  under targeted mutations).
+
 
 Cuts Claude token spend without lowering review quality. Measure before/after with the new
 `scripts/token-usage-report.py` (spend by component, agent type and model, big cache re-writes by

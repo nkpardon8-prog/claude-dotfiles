@@ -221,6 +221,10 @@ agent messaging (`ListAgents` / `SendMessage`).
    iCloud account: on this Mac run `transfer-doctor canary-write`, and on the other Mac run
    `transfer-doctor canary-read <name> <sha256>` with the values it printed.
 
+Codex chats move the same way from inside Codex (`$transfer` -> `claude-command-transfer`); that
+skill arrives with the Codex bridge (`scripts/install-codex.sh`, refreshed by `codex-sync.sh` on every
+`codex` launch), so no extra step here. See `codex/README.md`.
+
 Full command reference: `commands/transfer.md`. What each bound script does: `docs/COMMANDS.md`.
 
 ---

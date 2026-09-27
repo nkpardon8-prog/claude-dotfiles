@@ -103,6 +103,8 @@ SCAN_FILE_MAX=5242880                    # files over 5 MB are not content-scann
 HANDOFF_MAX_AGE=1800                     # the handoff must be under 30 minutes old
 SEAL_TIMEOUT=1800
 [ "$DEV_OK" = 1 ] && [ -n "${TX_TEST_SEAL_TIMEOUT:-}" ] && SEAL_TIMEOUT="$TX_TEST_SEAL_TIMEOUT"
+CLOSE_GRACE=60                           # codex sealer: seconds for Codex to finish closing its files
+[ "$DEV_OK" = 1 ] && [ -n "${TX_TEST_CLOSE_GRACE:-}" ] && CLOSE_GRACE="$TX_TEST_CLOSE_GRACE"
 
 WORK=""; STAGE=""; SEALDIR=""; IN_SEALER=0; LOC=""
 cleanup() {
@@ -1355,12 +1357,12 @@ if [ "$IN_SEALER" = 1 ]; then
     sleep 1
   done
   if [ "$TOOL" = codex ]; then
-    # Closed: pick up the FINAL rollout (and any parent it now names), then give Codex up to 60 s to
-    # finish closing its files before packaging.
+    # Closed: pick up the FINAL rollout (and any parent it now names), then give Codex up to
+    # CLOSE_GRACE (60 s) to finish closing its files before packaging.
     resolve_codex
     _gs=$(date +%s)
     while _op=$(codex_open_problem) && [ -n "$_op" ]; do
-      [ $(( $(date +%s) - _gs )) -ge 60 ] && refuse "$_op"
+      [ $(( $(date +%s) - _gs )) -ge "$CLOSE_GRACE" ] && refuse "$_op"
       sleep 2
     done
   fi

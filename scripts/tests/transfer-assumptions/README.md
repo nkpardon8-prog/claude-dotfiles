@@ -198,6 +198,27 @@ and the handoff/TRANSFER notes at the same absolute paths.
 leaves a foreign app of the same name byte-for-byte untouched (with a warning) - run against a
 sandbox `$HOME`.
 
+### 17-codex-seal-after-exit.sh
+`--seal-after-exit` for `--tool codex` (the Codex transfer skill's send), against a sandboxed
+`CODEX_HOME`. (A) `--source-pid` points at a throwaway `sleep`: the code prints at once, no bundle
+while it lives, and a turn appended to the rollout AFTER the send started is in the restored rollout
+with the TRANSFER notes. (B) a python process holding `thread-writer-locks/<id>.lock` open stands in
+for Codex's chat lock: an immediate send refuses; the sealer does not pack when the pid dies but the
+lock is held, and does once it is released (the leftover unheld lock file does not block). (C) no
+codex process above the shell (the send runs detached) and no `--source-pid` -> refused;
+`--source-pid` without `--seal-after-exit` -> refused. (D) the send runs under a fake
+`codex ... app-server` (a symlink named codex): refused when the lock is not held; with it held, no
+process is watched and the bundle waits for the lock. The post-close grace is 2 s here
+(`TX_TEST_CLOSE_GRACE`), so a sealer that stopped watching the lock fails B and D.
+
+### 19-codex-skill-and-no-mission.sh
+On a throwaway copy of the repo, `generate-codex-layer.py` emits `command-transfer/SKILL.md`
+byte-identical to `codex/overrides/command-transfer/SKILL.md` (other commands still ported; an
+override with no matching command fails the generator), and `install-codex.sh` delivers it to a
+sandboxed `$CODEX_HOME/skills/claude-dotfiles/`. Then `/pre-compact`'s `no-mission` token: documented,
+stripped from the north star (both forms), read by the `NO_MISSION` switch (not fooled by
+`no-missionary`), gating `mission-write.sh create`, and passed by `/transfer`.
+
 ### 99-resume-keeps-sid.sh (assumption A1, gated, NOT in run-all.sh)
 `claude --resume <sid>`, run against a copy of a real transcript placed under a fresh project dir,
 keeps the SAME session id and continues the transcript - for a cleanly-ended shape, one cut off at

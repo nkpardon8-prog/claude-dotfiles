@@ -197,7 +197,8 @@ After that line, run nothing else and write no mission state.
 3. Handle `send_rc` as in Step 5, then show the code block from Step 6. This window stays open;
    there is nothing to release here.
 
-If you ARE Codex running this as a skill: the chat being moved must be a different, already closed
-Codex chat, never the one running this. To move the chat you are in, the owner closes it and runs
-`~/.claude-dotfiles/scripts/transfer/transfer-send.sh --tool codex --sid <id>` in Terminal, or runs
-`/transfer codex <id>` from a Claude window.
+To move the Codex chat you are IN, use Codex's own transfer skill (`$transfer` in Codex ->
+`claude-command-transfer`, hand-written in `codex/overrides/command-transfer/SKILL.md`; the generator
+installs it in place of a port of this file). It sends with `--seal-after-exit`, which for Codex
+waits for the Codex window to exit and for Codex to release the chat's lock
+(`$CODEX_HOME/thread-writer-locks/<id>.lock`) before packing.
