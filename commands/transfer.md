@@ -78,7 +78,7 @@ refuse: no handoff ..." is expected here (a dry run skips Step 2) and is not a p
 
 ## Step 2 - Fresh handoff (Claude path)
 
-Invoke the Skill tool: `skill: pre-compact`, args `no-document no-auto-compact no-gitignore auto-confirm`.
+Invoke the Skill tool: `skill: pre-compact`, args `no-document no-mission no-auto-compact no-gitignore auto-confirm`.
 Let it run to completion. If it reports a FATAL, an unverified END-OF-HANDOFF marker, or no handoff
 written, STOP and tell the owner the chat was not moved.
 

@@ -725,8 +725,14 @@ for f in man["files"]:
             put(src, dst, f)
         print("NEW\t%s" % dst)
         continue
-    if f["kind"] == "memory":
-        # This Mac's memory wins; the incoming version sits beside it for the agent to reconcile.
+    # Files that merely ride along with the chat (ignored/untracked repo files) may have been edited
+    # HERE by another window since the sender last saw them - e.g. a plan another agent is working
+    # from. A newer local copy must never be rolled back to the sender's older one, so it is kept and
+    # the incoming version sits beside it, exactly like a memory conflict. The chat's own files
+    # (transcript, handoff, TRANSFER notes) are never in these kinds, so they still take the sender's.
+    newer_here = f["kind"] in ("context", "untracked") and os.stat(dst).st_mtime_ns > f["mtime_ns"]
+    if f["kind"] == "memory" or newer_here:
+        # This Mac's copy wins; the incoming version sits beside it for the agent to reconcile.
         alt = "%s.from-%s" % (dst, host)
         if os.path.lexists(alt) and not os.path.islink(alt) and os.path.isfile(alt) and sha(alt) == f["sha256"]:
             print("FROM\t%s" % alt)
@@ -750,7 +756,14 @@ if [ "$DRY" = 1 ]; then
   py_place dry > "$STAGE/place.tsv" || die "placement planning failed"
   echo "DRY-RUN resumework  tool=$TOOL  sid=$SID  from $SRC_HOST (sent $CREATED${SEALED:+, sealed after its chat exited at $SEALED})"
   echo "  files:  $FILES ($COUNTS)"
-  echo "  would place: $(grep -c '^NEW' "$STAGE/place.tsv") new, $(grep -c '^SAME' "$STAGE/place.tsv") identical, $(grep -c '^BAK' "$STAGE/place.tsv") backed up first, $(grep -c '^FROM' "$STAGE/place.tsv") memory conflicts kept beside"
+  echo "  would place: $(grep -c '^NEW' "$STAGE/place.tsv") new, $(grep -c '^SAME' "$STAGE/place.tsv") identical, $(grep -c '^BAK' "$STAGE/place.tsv") backed up first, $(grep -c '^FROM' "$STAGE/place.tsv") memory conflicts or newer local files kept beside"
+  # Name every file that would be replaced: a count alone cannot tell "my own chat's notes" from
+  # "a file another window is editing right now", and that is the whole reason to dry-run.
+  if grep -q '^BAK' "$STAGE/place.tsv"; then
+    echo "  would replace (old copy kept as .bak-<time>):"
+    awk -F'\t' '$1 == "BAK" { print "    " $2 }' "$STAGE/place.tsv" | head -40
+    [ "$(grep -c '^BAK' "$STAGE/place.tsv")" -gt 40 ] && echo "    ... and $(( $(grep -c '^BAK' "$STAGE/place.tsv") - 40 )) more"
+  fi
   [ "$GIT" = 1 ] && echo "  git:    $GIT_NOTE"
   echo "  then:   cd ${CWD:-$HOME_P} && $([ "$TOOL" = claude ] && echo "claude --resume $SID" || echo "codex resume $SID")"
   echo "Nothing was changed; the bundle is still in the drop folder."
@@ -782,7 +795,7 @@ if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then
     [ -n "$KEYSHAS" ] && printf -- '- Key files (sha256):\n%s' "$KEYSHAS"
     [ "$GIT" = 1 ] && printf -- '- Git transport: %s bundle; %s\n' "$([ "$G_BUNDLE" = 1 ] && echo "a" || echo "no (every commit was already on origin)")" "$GIT_NOTE"
     [ -n "$BAKS" ] && printf -- '- Replaced files (previous versions kept):\n%s\n' "$BAKS"
-    [ -n "$FROMS" ] && printf -- '- Memory conflicts (this Mac kept its file; incoming beside it):\n%s\n' "$FROMS"
+    [ -n "$FROMS" ] && printf -- '- Memory conflicts or newer local files (this Mac kept its copy; incoming beside it):\n%s\n' "$FROMS"
     [ -n "$SECMOVED" ] && printf -- '- Secret-named files that travelled inside the encrypted bundle (FYI; nothing to reload):\n%s\n' "$(printf '%s' "$SECMOVED" | sed 's/^/    - /')"
     [ -n "$SCANHITS" ] && printf -- '- Secret-scan hits on the sending Mac (FYI; file and rule only, the files travelled as they were):\n%s\n' "$(printf '%s' "$SCANHITS" | sed 's/^/    - /')"
     [ "$SCANINC" = 1 ] && printf -- '- The sending Mac'"'"'s secret scan did not complete (FYI only).\n'
@@ -811,7 +824,7 @@ echo "Also:"
 [ -n "$SECRETS" ] && { echo "  - These secret-named files did not travel. Reload them here (/load-creds):"; printf '%s' "$SECRETS" | sed 's/^/      /'; }
 [ -n "$SECMOVED$SCANHITS" ] && echo "  - Secret-named files and secret-scan hits travelled inside the encrypted bundle (FYI list in TRANSFER.$SID.md)."
 [ -n "$BAKS" ] && { echo "  - Files replaced (previous versions kept):"; echo "$BAKS"; }
-[ -n "$FROMS" ] && { echo "  - Memory conflicts - this Mac kept its file, the incoming one is beside it:"; echo "$FROMS"; }
+[ -n "$FROMS" ] && { echo "  - Memory conflicts or newer local files - this Mac kept its copy, the incoming one is beside it:"; echo "$FROMS"; }
 echo "  - prod-ledger is machine-local; check \`prod-ledger.py show\` on $SRC_HOST before any prod work."
 echo "  - Dependencies, containers and dev servers did not travel: follow the checklist (npm ci --legacy-peer-deps, prisma generate, ...)."
 [ "$GIT" = 1 ] && echo "  - Staged and unstaged edits arrived exactly as they were: nothing was flattened into the index."

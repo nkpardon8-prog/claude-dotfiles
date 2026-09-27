@@ -15,6 +15,10 @@ COMMANDS = REPO / "commands"
 NATIVE_SKILLS = REPO / "skills"
 OUT = REPO / "codex" / "generated"
 SKILLS_OUT = OUT / "skills" / "claude-dotfiles"
+# Hand-written replacements for a generated skill: codex/overrides/<output-dir-name>/ (e.g.
+# command-transfer/) is copied whole in place of the automatic port, for commands whose steps only
+# work inside Claude Code. The override keeps the port's skill name so the index and triggers match.
+OVERRIDES = REPO / "codex" / "overrides"
 
 MANAGED_BEGIN = "<!-- BEGIN CLAUDE-DOTFILES-CODEX -->"
 MANAGED_END = "<!-- END CLAUDE-DOTFILES-CODEX -->"
@@ -194,6 +198,25 @@ This is the Codex port of the Claude dotfiles native skill `{skill_dir}`.
     return name, content
 
 
+def override_dir(out_name: str) -> Path | None:
+    candidate = OVERRIDES / out_name
+    if not (candidate / "SKILL.md").is_file():
+        return None
+    meta, _ = strip_frontmatter((candidate / "SKILL.md").read_text(encoding="utf-8"))
+    if not meta.get("name") or not meta.get("description"):
+        raise SystemExit(f"override {candidate}/SKILL.md needs frontmatter name and description")
+    return candidate
+
+
+def emit_skill(out_name: str, content: str) -> None:
+    dest = SKILLS_OUT / out_name
+    src = override_dir(out_name)
+    if src is None:
+        write(dest / "SKILL.md", content)
+    else:
+        shutil.copytree(src, dest)
+
+
 def command_index(entries: list[tuple[str, list[str], str]]) -> str:
     lines = [
         "---",
@@ -270,19 +293,27 @@ def generate() -> None:
         name, content = command_skill(path)
         aliases = command_aliases(path)
         rel = source_ref(path)
-        write(SKILLS_OUT / ("command-" + slug(name.removeprefix("claude-command-"))) / "SKILL.md", content)
+        emit_skill("command-" + slug(name.removeprefix("claude-command-")), content)
         entries.append((name, aliases, rel))
         command_count += 1
 
     native_count = 0
     for path in sorted(NATIVE_SKILLS.glob("*/SKILL.md")):
         name, content = native_skill(path)
-        write(SKILLS_OUT / ("native-" + slug(path.parent.name)) / "SKILL.md", content)
+        emit_skill("native-" + slug(path.parent.name), content)
         native_count += 1
 
     write(SKILLS_OUT / "command-index" / "SKILL.md", command_index(entries))
     write(OUT / "instructions-block.md", instructions_block(command_count, native_count))
-    write(OUT / "SUMMARY", f"Generated {command_count} command skills and {native_count} native skills.\n")
+    overrides = sorted(p.parent.name for p in OVERRIDES.glob("*/SKILL.md")) if OVERRIDES.is_dir() else []
+    missing = [n for n in overrides if not (SKILLS_OUT / n).is_dir()]
+    if missing:
+        raise SystemExit(f"codex/overrides without a matching command or skill: {', '.join(missing)}")
+    write(
+        OUT / "SUMMARY",
+        f"Generated {command_count} command skills and {native_count} native skills"
+        f" ({len(overrides)} hand-written override(s): {', '.join(overrides) or 'none'}).\n",
+    )
 
 
 if __name__ == "__main__":

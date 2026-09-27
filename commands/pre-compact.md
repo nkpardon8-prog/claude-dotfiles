@@ -84,7 +84,7 @@ Tokens are standalone (whitespace-fenced) or flag-form; everything else in `$ARG
 6. **Template.** The handoff skeleton comes from Reading `$HOME/.claude-dotfiles/commands/pre-compact-template.md`. Never from memory.
 
 7. **Mission integration (every call fail-SOFT: `|| echo "WARN..."`, /pre-compact always continues).**
-   - Step 3.B, link>=2 only (`IS_FIRST_RUN=0`): `mission-write.sh create` seeds the durable MISSION file. `MISSION_SEED` comes from the RICH source in precedence order: the full brief body (when `NS_SOURCE=brief`) > the /mission argument > the accumulated plan; the 500-char `NORTH_STAR` is last resort only. `mission_create` is idempotent and no-clobbers an existing PLAN. Fail-SOFT here is caught loudly downstream: if `mission_path` is set but the file is absent, the next session's primer fail-LOUDs.
+   - Step 3.B, link>=2 only (`IS_FIRST_RUN=0`) and never under `no-mission`: `mission-write.sh create` seeds the durable MISSION file. `MISSION_SEED` comes from the RICH source in precedence order: the full brief body (when `NS_SOURCE=brief`) > the /mission argument > the accumulated plan; the 500-char `NORTH_STAR` is last resort only. `mission_create` is idempotent and no-clobbers an existing PLAN. Fail-SOFT here is caught loudly downstream: if `mission_path` is set but the file is absent, the next session's primer fail-LOUDs.
    - Step 6A (after the Phase 1 Write): `mission-write.sh log "[c#N] <next-action>"` then `mission-write.sh render-banner`, gated on a mission already existing (main file present OR manifest `mission_path` set) so a first run never spawns one. Surface REPEATED mission log/lock/backup WARNs in the Step 9.1 report.
    - Step 3.G priority 1: an existing `MISSION.<sid>.md` means /mission is the active skill and outranks every other signal.
    - Agents NEVER hand-edit the mission `## PLAN` zone; route via `mission-write.sh note` / `challenge` / `pending`.
@@ -358,6 +358,9 @@ parent and increments `seq` by 1. That seq inflation is cosmetic and accepted â€
        echo "WARN: no ledger for $SID; starting a NEW chain. Prior chain state is unrecoverable." >&2
        CMR_RC=1   # fall through to the genuine first-run derivation below
      fi
+     # `no-mission` token (/transfer passes it): never create a mission or point the manifest at one.
+     NO_MISSION=0
+     case " ${ARGUMENTS:-} " in *" no-mission "* | *" --no-mission "*) NO_MISSION=1 ;; esac
      if [ "${CHAIN_RESOLVED:-0}" = "1" ]; then
        : # the rc=2-with-ledger branch above already set every variable - do not re-derive
      elif [ "$CMR_RC" -eq 0 ]; then

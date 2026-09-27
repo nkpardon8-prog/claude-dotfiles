@@ -4,7 +4,7 @@
 #
 # Usage:
 #   transfer-send.sh --tool claude|codex --sid <id> [--cwd <dir>] [--dry-run] [--force]
-#                    [--seal-after-exit] [--code <TX-...>]
+#                    [--seal-after-exit [--source-pid <pid>]] [--code <TX-...>]
 #   transfer-send.sh --tool codex <id>                      (a positional id is accepted too)
 #
 #   --dry-run          list what would travel (counts, total size, the 10 largest items, secret-named
@@ -16,12 +16,25 @@
 #   --force            lift the sanity caps: untracked + ignored repo files over 5 GB in total, and a
 #                      single such file over 1 GB (session transcripts and Codex rollouts never count
 #                      toward either: they are the point of a transfer).
-#   --seal-after-exit  (claude only) validate (collect, plan, caps, disk space), print CODE/LOCATOR at
-#                      once, then hand off to a fully detached sealer that waits (max 30 min) for this
-#                      chat's claude process to exit, snapshots the now-complete transcript and git
-#                      state, and packages (copy, scan, encrypt - the slow part, so it never runs
-#                      inside the chat's own tool call). Without it, packaging happens immediately
-#                      (tests, the Codex path, a chat that is already closed).
+#   --seal-after-exit  validate (collect, plan, caps, disk space), print CODE/LOCATOR at once, then
+#                      hand off to a fully detached sealer that waits (max 30 min) for this chat to
+#                      close, snapshots the now-complete transcript/rollout and git state, and
+#                      packages (copy, scan, encrypt - the slow part, so it never runs inside the
+#                      chat's own tool call). Without it, packaging happens immediately (tests, a chat
+#                      that is already closed). "Closed" means:
+#                        claude  the chat's claude process (~/.claude/sessions registry) is gone.
+#                        codex   run from INSIDE the Codex chat (CODEX_THREAD_ID). The nearest codex
+#                                process above this shell is found by walking the parent chain. If it
+#                                is a Codex window, the sealer waits for it (pid + start time) to
+#                                exit. If it is Codex's shared background server (`codex app-server`,
+#                                which outlives every window), no process is watched. Either way the
+#                                sealer also waits for $CODEX_HOME/thread-writer-locks/<id>.lock to be
+#                                released: Codex holds that per-chat lock while the chat is loaded,
+#                                and the background server lets go of it about 60 s after the last
+#                                window on that chat closes. Needs `ps`, so inside Codex it must run
+#                                with escalated permissions (the sandbox blocks ps).
+#   --source-pid <pid> (with --seal-after-exit) watch this process instead of the one found
+#                      automatically (claude: the registry pid; codex: the parent-chain walk).
 #   --code <TX-...>    use this code instead of generating one (the code is visible in `ps` while
 #                      this runs; /transfer never passes it).
 #
@@ -119,8 +132,8 @@ usage() { awk 'NR == 1 { next } { sub(/^# ?/, ""); print } /^Exit:/ { exit }' "$
 # ------------------------------------------------------------------------------------------------
 # Arguments
 # ------------------------------------------------------------------------------------------------
-TOOL=""; SID=""; CWD_ARG=""; DRY=0; FORCE=0; SEAL=0; CODE_ARG=""; SEAL_RUN=""
-SEALED_AT=""; ARGV_STR=""; WPID=""; WLSTART=""
+TOOL=""; SID=""; CWD_ARG=""; DRY=0; FORCE=0; SEAL=0; CODE_ARG=""; SEAL_RUN=""; SOURCE_PID=""
+SEALED_AT=""; ARGV_STR=""; WPID=""; WLSTART=""; WLOCK=0
 _need() { [ "$1" -ge 2 ] || { echo "$PROG: REFUSED: $2 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -135,6 +148,8 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --force) FORCE=1; shift ;;
     --seal-after-exit) SEAL=1; shift ;;
+    --source-pid) _need $# "$1"; SOURCE_PID="$2"; shift 2 ;;
+    --source-pid=*) SOURCE_PID="${1#*=}"; shift ;;
     --_seal-run) _need $# "$1"; SEAL_RUN="$2"; shift 2 ;;
     -h | --help) usage; exit 0 ;;
     -*) echo "$PROG: REFUSED: unknown option $1 (see --help)" >&2; exit 2 ;;
@@ -154,7 +169,7 @@ if [ -n "$SEAL_RUN" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
       tool) TOOL="$_v" ;; sid) SID="$_v" ;; cwd) CWD_ARG="$_v" ;; force) FORCE="$_v" ;;
-      pid) WPID="$_v" ;; lstart) WLSTART="$_v" ;; argv) ARGV_STR="$_v" ;;
+      pid) WPID="$_v" ;; lstart) WLSTART="$_v" ;; argv) ARGV_STR="$_v" ;; waitlock) WLOCK="$_v" ;;
     esac
   done < "$SEALDIR/args"
   CODE_ARG=$(cat "$SEALDIR/code")
@@ -164,7 +179,10 @@ fi
 
 case "$TOOL" in claude | codex) ;; *) refuse "--tool must be claude or codex" ;; esac
 case "$SID" in "" | *[!A-Za-z0-9_-]*) refuse "--sid must be a session id (letters, digits, - and _)" ;; esac
-[ "$SEAL" = 1 ] && [ "$TOOL" != claude ] && refuse "--seal-after-exit is for --tool claude only (close the Codex chat first, then send)"
+if [ -n "$SOURCE_PID" ]; then
+  [ "$SEAL" = 1 ] || refuse "--source-pid only applies with --seal-after-exit"
+  case "$SOURCE_PID" in "" | *[!0-9]* | 0 | 1) refuse "--source-pid must be a process id" ;; esac
+fi
 [ "$SEAL" = 1 ] && [ "$DRY" = 1 ] && refuse "--seal-after-exit and --dry-run do not combine"
 command -v python3 >/dev/null 2>&1 || refuse "python3 is required"
 command -v git >/dev/null 2>&1 || refuse "git is required"
@@ -259,14 +277,41 @@ if [ "$TOOL" = claude ]; then
   [ -d "$CWD" ] || refuse "working directory $CWD does not exist"
   CWD=$(cd -P "$CWD" && pwd -P)
   TRANSCRIPT=$(find_transcript "$CWD")
-else
-  CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
-  [ -d "$CODEX_DIR" ] || refuse "no Codex home at $CODEX_DIR"
-  CODEX_DIR=$(cd -P "$CODEX_DIR" && pwd -P)
-  if [ -d "$CODEX_DIR/thread-writer-locks" ] && \
-     [ -n "$(find "$CODEX_DIR/thread-writer-locks" -maxdepth 2 -name "*$SID*" 2>/dev/null | head -1)" ]; then
-    refuse "Codex session $SID is still open (a thread-writer lock exists) - close that Codex chat first"
+fi
+
+# Codex holds $CODEX_HOME/thread-writer-locks/<thread id>.lock open (flock) for as long as a chat is
+# loaded - by the Codex window itself, or by the shared background server (`codex app-server`),
+# which releases it ~60 s after the last window on that chat closes - and deletes it on a clean
+# release. A lock file nobody holds open is a crash leftover and does not count.
+codex_lock_held() {  # rc 0 while some process holds this chat's thread-writer lock open
+  local d="$CODEX_DIR/thread-writer-locks" sid_lc f
+  [ -d "$d" ] || return 1
+  sid_lc=$(printf '%s' "$SID" | tr 'A-Z' 'a-z')
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    command -v lsof >/dev/null 2>&1 || return 0          # no lsof: an existing lock counts as held
+    [ -n "$(lsof -t -- "$f" 2>/dev/null)" ] && return 0
+  done <<EOF
+$(find "$d" -maxdepth 2 \( -name "$sid_lc.lock" -o -name "*$SID*" \) 2>/dev/null)
+EOF
+  return 1
+}
+
+codex_open_problem() {  # prints why the Codex chat still looks open, or nothing when it is closed
+  local f
+  if codex_lock_held; then
+    echo "Codex session $SID is still open (its thread-writer lock is held) - close that Codex chat first"
+    return
   fi
+  command -v lsof >/dev/null 2>&1 || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -n "$(lsof -t -- "$f" 2>/dev/null)" ] && { echo "a process still has $(basename "$f") open - close that Codex chat first"; return; }
+  done <<EOF
+$(sed -n 's/^FILE	//p' "$WORK/codex.tsv")
+EOF
+}
+
+resolve_codex() {  # rollout + parents -> $WORK/codex.tsv, and CWD. Rerun by the sealer after the wait.
   python3 - "$CODEX_DIR" "$SID" > "$WORK/codex.tsv" <<'PY'
 import json, os, re, sys
 home, sid = sys.argv[1], sys.argv[2]
@@ -333,17 +378,26 @@ PY
   sed -n 's/^WARN	//p' "$WORK/codex.tsv" | while IFS= read -r _w; do note "warning: $_w"; done
   CWD="$CWD_ARG"
   [ -z "$CWD" ] && CWD=$(sed -n 's/^CWD	//p' "$WORK/codex.tsv" | head -1)
-  if command -v lsof >/dev/null 2>&1; then
-    while IFS= read -r _f; do
-      [ -n "$(lsof -t -- "$_f" 2>/dev/null)" ] && refuse "a process still has $(basename "$_f") open - close that Codex chat first"
-    done <<EOF
-$(sed -n 's/^FILE	//p' "$WORK/codex.tsv")
-EOF
-  fi
   if [ -n "$CWD" ] && [ -d "$CWD" ]; then CWD=$(cd -P "$CWD" && pwd -P)
   else
     [ -n "$CWD" ] && note "warning: the Codex chat's cwd $CWD no longer exists; sending without git or context"
     CWD=""
+  fi
+}
+
+if [ "$TOOL" = codex ]; then
+  CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+  [ -d "$CODEX_DIR" ] || refuse "no Codex home at $CODEX_DIR"
+  CODEX_DIR=$(cd -P "$CODEX_DIR" && pwd -P)
+  resolve_codex
+  # The chat must be closed before an immediate send. The --seal-after-exit launcher runs INSIDE
+  # the open chat (the sealer checks again after it closes); a dry run only reports it.
+  if [ "$SEAL" = 0 ] && [ "$IN_SEALER" = 0 ]; then
+    _op=$(codex_open_problem)
+    if [ -n "$_op" ]; then
+      [ "$DRY" = 1 ] || refuse "$_op"
+      HANDOFF_INFO_CODEX="$_op (use --seal-after-exit from inside the chat, or close it first)"
+    fi
   fi
 fi
 
@@ -390,7 +444,7 @@ handoff_problem() {  # prints why the ROOT handoff is not usable, or nothing whe
   age=$(( $(date +%s) - $(stat -f %m "$h") ))
   [ "$age" -lt "$HANDOFF_MAX_AGE" ] || echo "the handoff is $((age / 60)) minutes old (limit 30) - re-run /pre-compact"
 }
-HANDOFF_INFO=""
+HANDOFF_INFO="${HANDOFF_INFO_CODEX:-}"
 if [ "$TOOL" = claude ] && [ "$IN_SEALER" = 0 ]; then
   _hp=$(handoff_problem)
   if [ -n "$_hp" ]; then
@@ -1123,7 +1177,13 @@ if [ "$DRY" = 1 ]; then
   total=$(jget "$WORK/plan.json" 'd["bytes"]')
   would_refuse=""
   echo "DRY-RUN transfer-send  tool=$TOOL  sid=$SID"
-  [ -n "$HANDOFF_INFO" ] && echo "  A real run would refuse: $HANDOFF_INFO (informational: /transfer writes a fresh handoff first)"
+  if [ -n "$HANDOFF_INFO" ]; then
+    if [ "$TOOL" = claude ]; then
+      echo "  A real run would refuse: $HANDOFF_INFO (informational: /transfer writes a fresh handoff first)"
+    else
+      echo "  A real run would refuse: $HANDOFF_INFO (informational)"
+    fi
+  fi
   echo "  cwd:      ${CWD:-<none>}"
   echo "  root:     ${ROOT:-<none>}${REPO_HOME:+  (repo home: $REPO_HOME)}"
   [ "$GIT" = 1 ] && echo "  worktree: $WT"
@@ -1183,12 +1243,72 @@ fi
 # ------------------------------------------------------------------------------------------------
 lstart_of() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'; }
 
+is_codex_proc() {  # is_codex_proc <comm basename> <args> - the native codex binary, or node running codex
+  case "$1" in
+    codex | codex-aarch64-apple-darwin | codex-x86_64-apple-darwin) return 0 ;;
+    node | nodejs)
+      set -f; set -- $2; set +f
+      [ $# -ge 2 ] || return 1
+      case "${2##*/}" in codex | codex.js) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+# find_codex_owner - walk the parent chain up from this script's parent to the first codex process.
+# Prints "<pid><TAB>window" (a Codex window or `codex exec`: it exits when the chat closes) or
+# "<pid><TAB>server" (the shared background server `codex app-server`, which outlives the chat).
+# rc 1 = no codex ancestor; rc 3 = ps is unusable here (Codex's sandbox blocks it).
+find_codex_owner() {
+  local p="$PPID" line pp comm args n=0
+  ps -o ppid= -p "$$" >/dev/null 2>&1 || return 3
+  while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && [ "$n" -lt 64 ]; do
+    n=$((n + 1))
+    line=$(ps -o ppid=,comm= -p "$p" 2>/dev/null) || return 1
+    pp=$(printf '%s' "$line" | awk '{ print $1; exit }')
+    comm=$(printf '%s' "$line" | sed 's/^ *[0-9][0-9]* *//')
+    args=$(ps -o args= -p "$p" 2>/dev/null)
+    if is_codex_proc "${comm##*/}" "$args"; then
+      case " $args " in
+        *" app-server "*) printf '%s\tserver\n' "$p" ;;
+        *) printf '%s\twindow\n' "$p" ;;
+      esac
+      return 0
+    fi
+    p="$pp"
+  done
+  return 1
+}
+
 if [ "$SEAL" = 1 ]; then
-  if [ "$DEV_OK" = 1 ] && [ -n "${TX_SEAL_PID:-}" ]; then WPID="$TX_SEAL_PID"; else WPID="$REG_PID"; fi
-  [ -n "$WPID" ] || refuse "cannot find this chat's claude process in ~/.claude/sessions (needed to seal after it exits)"
-  WLSTART=$(lstart_of "$WPID")
-  [ -n "$WLSTART" ] || refuse "the claude process ($WPID) is not running; send without --seal-after-exit instead"
-  ARGV_STR=$(ps -o args= -p "$WPID" 2>/dev/null | tr '\n\t' '  ')
+  if [ "$TOOL" = claude ]; then
+    if [ -n "$SOURCE_PID" ]; then WPID="$SOURCE_PID"
+    elif [ "$DEV_OK" = 1 ] && [ -n "${TX_SEAL_PID:-}" ]; then WPID="$TX_SEAL_PID"
+    else WPID="$REG_PID"; fi
+    [ -n "$WPID" ] || refuse "cannot find this chat's claude process in ~/.claude/sessions (needed to seal after it exits)"
+    WLSTART=$(lstart_of "$WPID")
+    [ -n "$WLSTART" ] || refuse "the claude process ($WPID) is not running; send without --seal-after-exit instead"
+    ARGV_STR=$(ps -o args= -p "$WPID" 2>/dev/null | tr '\n\t' '  ')
+  else
+    # Codex: the manifest's argv stays empty (resumework's launch flags are Claude flags).
+    _kind=window
+    if [ -n "$SOURCE_PID" ]; then
+      WPID="$SOURCE_PID"
+    else
+      _own=$(find_codex_owner); _orc=$?
+      [ "$_orc" = 3 ] && refuse "cannot look at running processes here (Codex's sandbox blocks ps) - run this send with escalated permissions"
+      [ "$_orc" = 0 ] && [ -n "$_own" ] || refuse "--seal-after-exit: no Codex process found above this shell, so there is no way to tell when the chat closes. Run it from inside the Codex chat (with escalated permissions), or close Codex and run the send without --seal-after-exit"
+      WPID="${_own%%	*}"; _kind="${_own#*	}"
+    fi
+    codex_lock_held && WLOCK=1
+    if [ "$_kind" = server ]; then
+      # The background server outlives every window, so only the chat's lock can say it closed.
+      [ "$WLOCK" = 1 ] || refuse "this chat runs on Codex's shared background server and its chat lock ($CODEX_DIR/thread-writer-locks/$SID.lock) is not held, so there is no way to tell when it closes - close Codex and run the send without --seal-after-exit"
+      WPID=""
+    else
+      WLSTART=$(lstart_of "$WPID")
+      [ -n "$WLSTART" ] || refuse "the Codex process ($WPID) is not running; send without --seal-after-exit instead"
+    fi
+  fi
   build_bundle validate             # every check that can refuse, NOW, while someone is watching
   [ -n "$CODE_N" ] || CODE_N=$(tx_normalize "$(tx_new_code)") || die "could not generate a code"
   LOC=$(tx_locator "$CODE_N")
@@ -1196,8 +1316,8 @@ if [ "$SEAL" = 1 ]; then
   tx_guard_path "$SEALDIR" || refuse "sealer dir would sit inside the public dotfiles repo"
   chmod 700 "$SEALDIR"
   ( umask 077
-    printf 'tool=%s\nsid=%s\ncwd=%s\nforce=%s\npid=%s\nlstart=%s\nargv=%s\n' \
-      "$TOOL" "$SID" "$CWD" "$FORCE" "$WPID" "$WLSTART" "$ARGV_STR" > "$SEALDIR/args"
+    printf 'tool=%s\nsid=%s\ncwd=%s\nforce=%s\npid=%s\nlstart=%s\nwaitlock=%s\nargv=%s\n' \
+      "$TOOL" "$SID" "$CWD" "$FORCE" "$WPID" "$WLSTART" "$WLOCK" "$ARGV_STR" > "$SEALDIR/args"
     printf '%s' "$CODE_N" > "$SEALDIR/code" )
   mkdir -p "$HOME_P/.claude/logs" && chmod 700 "$HOME_P/.claude/logs" 2>/dev/null
   SEAL_LOG="$HOME_P/.claude/logs/transfer-sealer-$LOC.log"
@@ -1205,27 +1325,47 @@ if [ "$SEAL" = 1 ]; then
   nohup perl -MPOSIX -e 'my $p = fork; exit 0 if $p; POSIX::setsid(); exec @ARGV or exit 127' \
     /bin/bash "$SELF" --_seal-run "$SEALDIR" </dev/null >>"$SEAL_LOG" 2>&1 &
   disown 2>/dev/null || true
-  tx_log "seal armed locator=$LOC sid=$SID pid=$WPID"
+  tx_log "seal armed locator=$LOC tool=$TOOL sid=$SID pid=${WPID:-none} waitlock=$WLOCK"
   echo "CODE=$(tx_format "$CODE_N")"
   echo "LOCATOR=$LOC"
-  note "sealer armed: the bundle is written after this chat's claude process ($WPID) exits (max $((SEAL_TIMEOUT / 60)) min). Log: $SEAL_LOG"
+  if [ "$TOOL" = claude ]; then
+    note "sealer armed: the bundle is written after this chat's claude process ($WPID) exits (max $((SEAL_TIMEOUT / 60)) min). Log: $SEAL_LOG"
+  else
+    note "sealer armed: the bundle is written once this Codex chat has closed$([ -n "$WPID" ] && echo " (codex process $WPID gone)")$([ "$WLOCK" = 1 ] && echo " and Codex has let go of its chat lock (about a minute after closing)") (max $((SEAL_TIMEOUT / 60)) min). Log: $SEAL_LOG"
+  fi
   exit 0
 fi
 
 # ------------------------------------------------------------------------------------------------
 # Package now (immediate mode, or the sealer after the chat exited)
 # ------------------------------------------------------------------------------------------------
+seal_pending() {  # rc 0 while the chat is still open
+  if [ -n "$WPID" ] && kill -0 "$WPID" 2>/dev/null && [ "$(lstart_of "$WPID")" = "$WLSTART" ]; then return 0; fi
+  [ "$TOOL" = codex ] && [ "$WLOCK" = 1 ] && codex_lock_held && return 0
+  return 1
+}
+
 if [ "$IN_SEALER" = 1 ]; then
-  echo "sealer: waiting for pid $WPID to exit"
+  echo "sealer: waiting for the chat to close (pid ${WPID:-none}, chat lock: $([ "$WLOCK" = 1 ] && echo watched || echo no))"
   _start=$(date +%s)
-  while kill -0 "$WPID" 2>/dev/null && [ "$(lstart_of "$WPID")" = "$WLSTART" ]; do
+  while seal_pending; do
     if [ $(( $(date +%s) - _start )) -ge "$SEAL_TIMEOUT" ]; then
-      refuse "the chat did not exit within $((SEAL_TIMEOUT / 60)) minutes; nothing was sent - run /transfer again"
+      refuse "the chat did not close within $((SEAL_TIMEOUT / 60)) minutes; nothing was sent - run the transfer again"
     fi
     sleep 1
   done
+  if [ "$TOOL" = codex ]; then
+    # Closed: pick up the FINAL rollout (and any parent it now names), then give Codex up to 60 s to
+    # finish closing its files before packaging.
+    resolve_codex
+    _gs=$(date +%s)
+    while _op=$(codex_open_problem) && [ -n "$_op" ]; do
+      [ $(( $(date +%s) - _gs )) -ge 60 ] && refuse "$_op"
+      sleep 2
+    done
+  fi
   SEALED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  echo "sealer: pid $WPID gone at $SEALED_AT; packaging"
+  echo "sealer: chat closed at $SEALED_AT; packaging"
 else
   if [ "$TOOL" = claude ] && [ -n "$REG_PID" ] && kill -0 "$REG_PID" 2>/dev/null; then
     ARGV_STR=$(ps -o args= -p "$REG_PID" 2>/dev/null | tr '\n\t' '  ')
