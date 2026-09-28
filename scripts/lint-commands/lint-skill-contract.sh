@@ -335,9 +335,9 @@ if [ -d "$_agents_dir" ]; then
         # must fail here rather than be silently dropped by the harness). Add new IDs by hand.
         case "$_am" in
             opus|sonnet|haiku|fable) ;;
-            claude-opus-5-5|claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5) ;;
+            claude-opus-5-5|claude-opus-4-8|claude-sonnet-5-5|claude-sonnet-5|claude-haiku-4-5) ;;
             "") echo "lint-skill-contract: FAIL agents/$_an.md has no 'model:' in frontmatter (it would inherit the session silently)" >&2; fail=1 ;;
-            *)  echo "lint-skill-contract: FAIL agents/$_an.md model '$_am' is not an allowed value (aliases: opus|sonnet|haiku|fable; full IDs: claude-opus-5-5|claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5)" >&2; fail=1 ;;
+            *)  echo "lint-skill-contract: FAIL agents/$_an.md model '$_am' is not an allowed value (aliases: opus|sonnet|haiku|fable; full IDs: claude-opus-5-5|claude-opus-4-8|claude-sonnet-5-5|claude-sonnet-5|claude-haiku-4-5)" >&2; fail=1 ;;
         esac
         case "$_ae" in
             low|medium|high|xhigh|max) ;;

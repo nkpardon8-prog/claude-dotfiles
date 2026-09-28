@@ -185,7 +185,7 @@ This log is instructed-per-path, so it is not self-verifying; `scripts/parallel-
 
 ### No serial condition fired ⇒ spawn PARALLELIZER
 
-ONE `Agent` call, `subagent_type: "parallelizer"`. It runs its definition (`claude-sonnet-5`, `effort: medium`) by design - scheduling is bounded work and its wave plans are machine-validated by `verify-parallel-wave.mjs`, so do not pass a model override here. It is ADVISORY: it reads the repo and returns a schedule. It never implements and never spawns. You remain the single scheduler.
+ONE `Agent` call, `subagent_type: "parallelizer"`. It runs its definition (`claude-sonnet-5-5`, `effort: medium`) by design - scheduling is bounded work and its wave plans are machine-validated by `verify-parallel-wave.mjs`, so do not pass a model override here. It is ADVISORY: it reads the repo and returns a schedule. It never implements and never spawns. You remain the single scheduler.
 
 Envelope, passed as JSON in the prompt:
 

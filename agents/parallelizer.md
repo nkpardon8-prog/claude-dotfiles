@@ -2,7 +2,7 @@
 name: parallelizer
 description: Advisory scheduling subagent - examines pending work items and returns a machine-checkable wave plan (FAN_OUT) or SERIAL_CORRECT. Never implements, never spawns agents.
 tools: Read, Grep, Glob, Bash
-model: claude-sonnet-5
+model: claude-sonnet-5-5
 effort: medium
 ---
 
