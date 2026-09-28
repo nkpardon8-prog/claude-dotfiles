@@ -37,7 +37,9 @@ then `return` the one call you need. Never use `innerHTML` (the CRD page enforce
   chrome-devtools MCP **32MB request limit and dies**.
 - **Bounded batches of ~10 targets.** Stop at the batch boundary and report; the parent continues
   you with `SendMessage` for the next batch (your context and the live CRD tab are preserved).
-- **Never steal the user's screen** - `select_page` with `bringToFront: false`.
+- **Work only on the CRD tab the parent already bound** - never re-select or bring forward any other
+  tab (above all, never the OTHER remote session's tab). Tab binding and focus are the parent
+  `/windows` / `/macmini` skill's job, not yours.
 - **Stuck is a REPORT, never an upgrade.** Still stuck on a target after ~2 attempts: STOP and return
   an **"inconclusive"** report. Never ask for, or suggest, a bigger model.
 
