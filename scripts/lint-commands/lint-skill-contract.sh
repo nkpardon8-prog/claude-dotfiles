@@ -250,10 +250,11 @@ req "$X" "NON-CODE TARGETS ONLY"
 # Pinned as the FULL phrase, not the bare model token: the bare token also appears on the
 # non-code branch, so a bare pin would stay satisfied by the OTHER line while this one drifted.
 req "$X" 'the Adversarial + FP-filter lens, passing **`model: "opus"`**'
-# Both workforce lanes keep sonnet on the CALL (they have no agent definition to carry it):
-# line 110 (code path, 2 Agent calls) and line 113 (non-code path). Floor of 2 = two separate
-# lines carry it, so dropping either one fails.
-req "$X" 'model: "sonnet"' 2
+# Both workforce lanes route through the review-lane-sonnet agent DEFINITION (Sonnet 5.5, effort
+# medium - the Agent call's model takes only an alias and has no effort param, so the definition is
+# the only place effort is enforced): line 110 (code path, 2 Agent calls) and line 113 (non-code
+# path). Floor of 2 = two separate lines carry it, so dropping either one fails.
+req "$X" 'subagent_type: "review-lane-sonnet"' 2
 # BOTH reviewer families must be COUNTED, not just launched (2026-08-17, owner ruling
 # "we cannot move on without reviewing"). The Claude half had no sidecar, no count and no
 # parser, so a lens that silently failed to spawn left `Codex-passes: 4/4` intact and the

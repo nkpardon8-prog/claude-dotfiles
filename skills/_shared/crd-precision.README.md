@@ -39,8 +39,8 @@ rects so the agent never does coordinate math by hand.
 A PNG-screenshotting loop over many targets hits the chrome-devtools MCP **32MB
 request limit and dies**. When running a precision loop, always
 `take_screenshot({ format: 'jpeg', quality: 50 })` and cap the loop at
-**~10 targets per batch**. The whole loop runs in ONE Sonnet-5 sub-agent (low/med
-effort) that owns it end-to-end; Opus only orchestrates/recovers.
+**~10 targets per batch**. The whole loop runs in ONE `crd-clicker` sub-agent (Sonnet 5.5,
+medium effort from `agents/crd-clicker.md`) that owns it end-to-end; Opus only orchestrates/recovers.
 
 ## How to re-embed into the .md files
 

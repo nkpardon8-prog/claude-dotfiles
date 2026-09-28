@@ -2,6 +2,24 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-09-28 - Sonnet 5.5 for every Sonnet lane; effort enforced by agent definitions
+
+- Every Sonnet pin moves to `claude-sonnet-5-5`: `criticer` and `parallelizer` (still medium).
+  The lint allowlist in `lint-skill-contract.sh` gains `claude-sonnet-5-5` (the old ID stays allowed).
+- Three new agent definitions, so effort is ENFORCED rather than hinted. The `Agent` tool's per-call
+  `model` accepts only aliases and has no effort parameter, so a "work at medium effort" line in a
+  prompt body was never binding:
+  - `devtools-worker` (Sonnet 5.5, high) - `/devtools` Step 4's ordinary browser delegation.
+  - `crd-clicker` (Sonnet 5.5, medium) - the whole CRD precision click loop for `/windows` and
+    `/macmini` (JPEG screenshots, batches of ~10, stuck = report).
+  - `review-lane-sonnet` (Sonnet 5.5, medium, read-only tools) - `/codex-review`'s Architecture and
+    Integration lanes. The lint pin moves from `model: "sonnet"` to
+    `subagent_type: "review-lane-sonnet"` (floor 2, one per path).
+  - `devtools-worker` and `crd-clicker` carry no `tools:` line so they inherit the chrome-devtools MCP tools.
+- Opus is untouched: every `claude-opus-5-5` agent and `/codex-review`'s Adversarial lane
+  `model: "opus"` stay exactly as they were.
+- New agent definitions load at session start: restart open windows before relying on them.
+
 ## 2026-09-27 - `/transfer` refuses half-merged files up front; subagents in the notes
 
 - A folder with unresolved merge conflicts (e.g. a `git stash pop` that conflicted, which leaves no

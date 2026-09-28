@@ -443,13 +443,14 @@ Match the request to its row; use the listed channel; don't improvise.
 
 > **Delegation posture — the browser work runs on SONNET, always (owner instruction,
 > 2026-08-17: put the work under a Sonnet sub-agent, "that's it").** The **precision
-> click loop runs in ONE Sonnet-5 sub-agent that owns the WHOLE loop** — coarse-locate
+> click loop runs in ONE `crd-clicker` sub-agent that owns the WHOLE loop** — coarse-locate
 > → loupe → crosshair-confirm → clear → `click_at` → verify. Delegating the entire loop
 > to one agent satisfies "never SPLIT a click→screenshot→verify loop" (it's wholly
 > delegated, not split); the main thread only orchestrates and recovers — it does NOT
-> drive the canvas itself. Spawn on `model: "claude-sonnet-5"` at low/med reasoning
-> effort. **There is no Opus escalation path**: a sub-agent that gets stuck returns an
-> "inconclusive" report after ~2 attempts, and that report goes to the USER — never
+> drive the canvas itself. Spawn with `subagent_type: "crd-clicker"` (Sonnet 5.5, medium
+> effort from `agents/crd-clicker.md`; no per-call model). **There is no Opus
+> escalation path**: a sub-agent that gets stuck returns an "inconclusive" report
+> after ~2 attempts, and that report goes to the USER — never
 > re-spawn the same task on a bigger model. To retry with more guidance, `SendMessage`
 > the SAME agent (its context and the live CRD tab are preserved). **Screenshots MUST be
 > JPEG-compressed** — `take_screenshot({format:'jpeg', quality:50})` — in **bounded

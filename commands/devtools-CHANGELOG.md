@@ -1,5 +1,18 @@
 # /devtools — changelog
 
+## 2026-09-28 - Sonnet 5.5 via agent definitions; effort enforced
+
+**Change:** Step 4 now spawns `subagent_type: "devtools-worker"` (`agents/devtools-worker.md`:
+`claude-sonnet-5-5`, **high** effort) for ordinary delegation, and `subagent_type: "crd-clicker"`
+(`agents/crd-clicker.md`: `claude-sonnet-5-5`, **medium** effort) for the CRD precision click loop
+(`/windows`, `/macmini`). No per-call `model`. The "tell it medium reasoning effort in the prompt"
+instruction is gone. Posture unchanged: Sonnet always, no Opus escalation, stuck = report.
+
+**Why:** the `Agent` tool's per-call `model` accepts only aliases and has no effort parameter, so
+the prompt-body effort line was a hint the model could ignore. An agent definition's `effort:` is
+enforced. Neither definition has a `tools:` line, so both inherit the chrome-devtools MCP tools.
+New definitions load at session start: restart open windows before relying on them.
+
 ## 2026-09-18 — Stop stealing the user's screen
 
 **Change:** new `PreToolUse` hook `scripts/hooks/devtools-no-focus-steal.py` forces
