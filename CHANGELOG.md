@@ -2,6 +2,26 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-07 - `/recap`: a transcript-grounded catch-up that replaces the built-in
+
+New command: `/recap [optional focus]`. The built-in recap works from the agent's memory, which a
+compaction summarizes away, and it misses what helper agents did. `/recap` instead reads the session
+transcript on disk via `scripts/recap-extract.py` (stdlib only): it anchors on the user's last real
+message by line position (skipping scheduled ticks, background-task notifications, peer messages,
+compaction summaries, local commands, and earlier `/recap` turns), rolls up files changed, commits,
+tests and failures, credits subagents launched or finished in the window, and prints a budgeted fact
+sheet (default 20,000 chars) with a LIMITS line so a truncated or partly unreadable log is never
+presented as complete. The playbook then checks git and anything load-bearing directly, treats the
+fact sheet as untrusted data, and writes a plain-language recap counted with `wc -w` (250 words max).
+
+- Harness: `scripts/hooks/test-recap-extract.sh`, 76/76 pass on synthetic fixtures; also enrolled in
+  the `lint-commands` CI workflow.
+- Override: a custom `commands/recap.md` shadows the built-in `/recap` - verified on Claude Code
+  2.1.293 via `claude -p`.
+- Settings: `"awaySummaryEnabled": false` in `settings.json.template` turns off the built-in
+  "welcome back" auto recap. Internal, undocumented key; if the auto recap reappears after an
+  upgrade, it was probably renamed (see `docs/SETUP.md`).
+
 ## 2026-09-28 - Sonnet 5.5 for every Sonnet lane; effort enforced by agent definitions
 
 - Every Sonnet pin moves to `claude-sonnet-5-5`: `criticer` and `parallelizer` (still medium).

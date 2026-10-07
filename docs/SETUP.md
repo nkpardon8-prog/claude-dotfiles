@@ -151,6 +151,11 @@ Read `~/.claude/settings.json` (create if missing) and merge:
   [`settings.json.template`](../settings.json.template) — copy from there rather than
   retyping, so the two never drift.
 
+The template also sets `"awaySummaryEnabled": false`. That turns off Claude Code's built-in
+"welcome back" recap so it doesn't overlap the custom `/recap` command. It is an internal,
+undocumented key, so a future Claude Code version may rename it - the symptom is the automatic
+recap reappearing when you return to a window. Merge it at the top level with the other plain keys.
+
 ## Step 5 — Plugins (optional)
 
 ```bash
