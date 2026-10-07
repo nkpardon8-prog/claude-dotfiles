@@ -46,6 +46,9 @@ run() { # run <arg...> -> $OUT, $RC, $ERR (cwd = $TMP/work, stdin closed)
 }
 runs() { run --session "$1" "${@:2}"; }
 
+RECAP_CWD_MANGLED=$(cd "$TMP/work" && python3 -c 'import os, re; print(re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))')
+export RECAP_CWD_MANGLED
+
 # ------------------------------------------------------------------ fixtures
 python3 - "$RECAP_PROJECTS_DIR/-Users-test-proj" <<'PYGEN'
 import json, os, sys
@@ -68,7 +71,7 @@ class F:
         self.sid, self.rows, self.folder = sid, [], folder
         self.pid = 0
     def raw(self, s): self.rows.append(s); return self
-    def add(self, d): self.rows.append(json.dumps(d)); return self
+    def add(self, d): self.rows.append(json.dumps(d, separators=(",", ":"))); return self
     def human(self, text, **kw):
         self.pid += 1
         return self.add(base(self.sid, "user", promptId="p%d" % self.pid, message={"role": "user", "content": text},
@@ -275,3 +278,150 @@ F("case-dup", D).human("WRONG_FOLDER_PROMPT").say("x").save()
 F("case-dup", cwd_folder).human("CWD_FOLDER_PROMPT").say("x").save()
 PYGEN
 [ $? -eq 0 ] || { echo "FATAL: fixture generator failed" >&2; exit 2; }
+
+# ------------------------------------------------------------------ cases
+# a) plain typed prompt
+runs case-a
+check "a: exit 0" 0 "$RC"
+has "a: anchor is the latest prompt" "opened this window: NEW_PROMPT_A"
+lacks "a: earlier prompt not in output" "OLD_PROMPT_A"
+has "a: malformed line counted" "malformed lines skipped: 1"
+has "a: LIMITS line present" "LIMITS: "
+has "a: final text" "DONE_A"
+lacks "a: thinking never printed" "SECRET_THINKING"
+
+# b) typed slash command
+runs case-b
+has "b: anchor is the command with args" "opened this window: /plan ARGS_B"
+lacks "b: expansion not printed" "EXPANSION_B"
+
+# c) /recap skipped; /recap absent (lag)
+runs case-c1
+has "c1: /recap skipped, previous prompt is anchor" "opened this window: PROMPT_C"
+lacks "c1: the recap's own call excluded" "RECAP_OWN_CALL"
+has "c1: earlier work shown" "make build"
+runs case-c2
+has "c2: no /recap yet (lag) - prompt is anchor" "opened this window: PROMPT_C"
+
+# d) compaction inside the window
+runs case-d
+has "d: anchor survives compaction" "opened this window: PROMPT_D"
+has "d: compaction event" "context compacted"
+has "d: compaction counted" "compactions 1"
+has "d: post-compaction work shown" "AFTER_COMPACT_D"
+lacks "d: summary text is not an event" "SUMMARY_TEXT"
+
+# e) non-human turn starters never the boundary
+runs case-e
+has "e: anchor is the human prompt" "opened this window: PROMPT_E"
+has "e: scheduled tick shown" "woke itself up (scheduled)"
+has "e: peer shown as unverified" "message from another window (unverified): peer-7: PEER_BODY_E"
+has "e: task notification shown" "background job finished: Agent E finished"
+has "e: auto-continuation shown" "auto-continued"
+has "e: work after hook-typed commands still in window" "e8"
+
+# f) queued mid-turn message
+runs case-f
+has "f: anchor not the queued message" "opened this window: PROMPT_F"
+has "f: queued message listed" "you also said: QUEUED_F"
+
+# g) Bash failure vs success
+runs case-g
+FAILED_G=$(section "Failed commands:")
+check "g: failed command listed" 1 "$(printf '%s\n' "$FAILED_G" | grep -c 'false_cmd_G')"
+check "g: successful command not in failed list" 0 "$(printf '%s\n' "$FAILED_G" | grep -c 'ok_cmd_G')"
+has "g: exit code reported" "Exit code 1"
+
+# h) Edit/Write rollup
+runs case-h
+has "h: created file in rollup" "/Users/test/proj/new_h.py (created, main)"
+has "h: edited file in rollup" "/Users/test/proj/edited_h.py (edited, main)"
+
+# i) subagents (R10)
+runs case-i
+has "i: window agent digested" "SUB_I_DESC [implementer]"
+has "i: subagent edit rolled up" "/Users/test/proj/sub_i.py (created, agent: SUB_I_DESC)"
+has "i: subagent final text" "result: SUB_I_FINAL"
+has "i: nested agent via parentAgentId" "NESTED_I_DESC [Explore] (nested)"
+has "i: nested agent edit rolled up" "nested_i.py"
+has "i: launched-earlier agent finishing in window" "EARLY_I_FINAL"
+lacks "i: unrelated earlier agent excluded" "EXCLUDED_I_FINAL"
+lacks "i: earlier prompt not anchor" "opened this window: OLD_PROMPT_I"
+
+# j) legacy entries without origin (R8 ticks)
+runs case-j
+has "j: legacy prompt detected as human" "opened this window: LEGACY_PROMPT_J"
+has "j: legacy ticks are events, not the boundary" "j4"
+
+# k) budget
+runs case-k
+check "k: exit 0" 0 "$RC"
+check "k: output within default budget" 1 "$([ ${#OUT} -le 20000 ] && echo 1 || echo 0)"
+has "k: rollup kept" "ROLLUP"
+has "k: final text kept" "FINAL_K_MARKER"
+has "k: drops reported" "events condensed/dropped for budget: "
+lacks "k: not zero dropped" "dropped for budget: 0 of"
+
+# R5) local command is not a boundary
+runs case-r5
+has "R5: local command before /recap skipped" "opened this window: PROMPT_R5"
+
+# R6) earlier /recap turn excluded
+runs case-r6
+has "R6: anchor" "opened this window: PROMPT_R6"
+has "R6: real work kept" "WORK_R6"
+lacks "R6: earlier recap text dropped" "OLD_RECAP_TEXT_R6"
+lacks "R6: earlier recap command dropped" "old_recap_cmd_R6"
+has "R6: work after the earlier recap kept" "AFTER_NOTIF_R6"
+
+# R7) sidechain entries in the main file
+runs case-r7
+has "R7: anchor is main prompt" "opened this window: PROMPT_R7"
+lacks "R7: sidechain file not counted" "SIDECHAIN_R7.py"
+lacks "R7: sidechain text not counted" "SIDECHAIN_SAID_R7"
+
+# R9) attachment-form notification + dedupe; attachment human prompt
+runs case-r9
+check "R9: notification shown once" 1 "$(printf '%s\n' "$OUT" | grep -c 'NOTIF_R9_SUMMARY')"
+has "R9: attachment human prompt is 'you also said'" "you also said: HUMAN_ATTACH_R9"
+lacks "R9: non-human attachment not 'you also said'" "NONHUMAN_ATTACH_R9"
+
+# R11) narrow test heuristic
+runs case-r11
+TESTS_R11=$(section "Tests run")
+check "R11: pytest counted" 1 "$(printf '%s\n' "$TESTS_R11" | grep -c 'PASS test: pytest')"
+check "R11: mission-write.sh not a test" 0 "$(printf '%s\n' "$TESTS_R11" | grep -c 'mission-write')"
+check "R11: reading run-all.sh is not running it" 0 "$(printf '%s\n' "$TESTS_R11" | grep -c 'sed -n')"
+check "R11: real push listed once" 1 "$(section "Commits" | grep -c 'push (ok)')"
+
+# R13) oversized rollup
+runs case-r13
+check "R13: default budget respected" 1 "$([ ${#OUT} -le 20000 ] && echo 1 || echo 0)"
+has "R13: rollup list capped" "+375 more"
+has "R13: final text kept" "FINAL_R13_MARKER"
+runs case-r13 --budget 3000
+check "R13: tight budget respected" 1 "$([ ${#OUT} -le 3000 ] && echo 1 || echo 0)"
+
+# focus via stdin
+OUT=$(cd "$TMP/work" && printf 'FOCUS_TEXT_Z' | python3 "$SCRIPT" --session case-a --focus-stdin 2>/dev/null)
+has "focus echoed in header" "focus: FOCUS_TEXT_Z"
+
+# --transcript override; cwd-matching folder preferred over others
+run --transcript "$RECAP_PROJECTS_DIR/-Users-test-proj/case-f.jsonl"
+has "transcript flag works" "opened this window: PROMPT_F"
+runs case-dup
+has "cwd-matching folder preferred" "CWD_FOLDER_PROMPT"
+
+# m) missing transcript / R2 no session id -> exit 2, one stderr line
+run --transcript "$TMP/nope.jsonl"
+check "m: missing transcript exit 2" 2 "$RC"
+check "m: one stderr line" 1 "$(printf '%s\n' "$ERR" | grep -c .)"
+runs no-such-session
+check "m: unknown session exit 2" 2 "$RC"
+run
+check "R2: no session id exit 2" 2 "$RC"
+check "R2: says why" 1 "$(printf '%s' "$ERR" | grep -c 'no session id')"
+check "R2: nothing on stdout" "" "$OUT"
+
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]
