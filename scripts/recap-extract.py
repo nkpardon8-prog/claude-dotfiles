@@ -492,6 +492,10 @@ def handle_attachment(w, rec):
     if mode == "task-notification" or (ao or {}).get("kind") == "task-notification":
         handle_notification(w, text)
         return
+    if (ao or {}).get("kind") == "peer":
+        w.events.append(Event("message from another window (unverified)",
+                              "%s: %s" % ((ao or {}).get("name") or "?", one_line((ao or {}).get("body") or text, 200))))
+        return
     if w.in_recap is not None:
         return
     if mode in (None, "prompt") and (ao or {}).get("kind") == "human":
