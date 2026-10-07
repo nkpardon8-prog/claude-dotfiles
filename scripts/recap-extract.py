@@ -386,9 +386,9 @@ def handle_notification(w, text):
     w.events.append(e)
 
 
-def parse_window(fh, start, w, sid_dir_names):
+def parse_window(fh, start, w, skip_anchor):
     fh.seek(start)
-    first = True
+    first = skip_anchor
     for raw in fh:
         if b'"isSidechain":true' in raw:
             continue
@@ -430,25 +430,34 @@ def handle_user(w, rec):
             if isinstance(b, dict) and b.get("type") == "tool_result":
                 handle_result(w, rec, b)
         return
-    if rec.get("isMeta") or rec.get("isCompactSummary"):
+    if rec.get("isCompactSummary"):
         return
     text = text_of(c)
     st = text.lstrip()
     o = origin_kind(rec)
     pid = rec.get("promptId")
+    # Peer messages, task notifications and scheduled prompts can carry isMeta:true, so
+    # they are classified by origin BEFORE the generic isMeta skip.
+    if o == "task-notification" or st.startswith("<task-notification"):
+        w.in_recap = None
+        handle_notification(w, text)
+        return
+    if o == "peer" or st.startswith("Another Claude session sent"):
+        w.in_recap = None
+        org = rec.get("origin") or {}
+        body = org.get("body") if isinstance(org.get("body"), str) else text
+        w.events.append(Event("message from another window (unverified)",
+                              "%s: %s" % (org.get("name") or "?", one_line(body, 200))))
+        return
+    scheduled = rec.get("scheduledTaskId") or rec.get("turnOrigin") == "scheduled" or st.startswith(
+        ("[pickup]", "[scheduled]", "Autonomous loop tick", "MISSION WAKE", "# Autonomous loop check"))
+    if rec.get("isMeta") and not scheduled:
+        return
     if w.in_recap is not None:
         if pid and pid == w.in_recap:
             return
         w.in_recap = None
-    if o == "task-notification" or st.startswith("<task-notification"):
-        handle_notification(w, text)
-        return
-    if o == "peer":
-        name = (rec.get("origin") or {}).get("name") or "?"
-        w.events.append(Event("message from another window (unverified)", "%s: %s" % (name, one_line(text, 200))))
-        return
-    if rec.get("scheduledTaskId") or rec.get("turnOrigin") == "scheduled" or st.startswith(
-            ("[pickup]", "[scheduled]", "Autonomous loop tick", "MISSION WAKE", "# Autonomous loop check")):
+    if scheduled:
         w.events.append(Event("woke itself up (scheduled)", one_line(text, 120)))
         return
     if o == "auto-continuation":
@@ -868,11 +877,10 @@ def main():
             if brec is None:
                 boff = 0
                 note = "no earlier human message found; covering the whole session"
-            parse_window(fh, boff, w, None)
+            parse_window(fh, boff, w, brec is not None)
         except OSError as e:
             die("transcript unreadable: %s (%s)" % (path, e.strerror or e))
     if brec is None:
-        # whole-session mode: the first parsed line was skipped as "anchor"; acceptable loss
         anchor, start_ts = "(none)", "(start of session)"
     else:
         anchor = clip(anchor_text(brec), ANCHOR_CHARS)
