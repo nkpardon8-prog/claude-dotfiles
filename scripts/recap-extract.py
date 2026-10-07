@@ -64,17 +64,17 @@ READ_TOOLS = ("Read", "Grep", "Glob", "LS", "NotebookRead")
 EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 AGENT_TOOLS = ("Agent", "Task")
 
-TEST_RE = re.compile(
-    r"(?:^|[\s;&|(/])(?:"
-    r"pytest|python3? -m pytest|jest|vitest|bats|go test|cargo test|make test|"
-    r"(?:npm|pnpm|yarn|bun) (?:run )?test(?::[\w:-]+)?|"
-    r"run-all\.sh|test-[\w.-]*\.sh|[\w.-]*_test\.sh"
-    r")(?=$|[\s;&|)])"
-)
-SYNTAX_RE = re.compile(r"\bpy_compile\b")
-COMMIT_RE = re.compile(r"\bgit\b[^;&|\n]*?\bcommit\b")
-PUSH_RE = re.compile(r"\bgit\b[^;&|\n]*?\bpush\b")
-PR_RE = re.compile(r"\bgh pr (create|merge|edit|close|ready)\b")
+TEST_BINS = ("pytest", "jest", "vitest", "bats", "run-all.sh")
+TEST_SCRIPT_RE = re.compile(r"^(?:test-[\w.-]*\.sh|[\w.-]*_test\.sh)$")
+PKG_MANAGERS = ("npm", "pnpm", "yarn", "bun")
+WRAPPERS = ("time", "env", "command", "exec", "nohup", "sudo", "npx", "bunx")
+SHELLS = ("bash", "sh", "zsh")
+PR_VERBS = ("create", "merge", "edit", "close", "ready")
+HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?[^\n]*\n.*?(?:\n\s*\1\s*(?:\n|$)|$)", re.S)
+SQ_RE = re.compile(r"'[^']*'")
+DQ_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+SEP_RE = re.compile(r"&&|\|\||[;|&\n()`{}]|\$\(")
+ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 COMMIT_OUT_RE = re.compile(r"^\[([^\]\s]+)(?: \([^)]*\))? ([0-9a-f]{7,40})\] (.+)$", re.M)
 EXIT_RE = re.compile(r"Exit code (\d+)")
 WF_RE = re.compile(r"\bwf_[A-Za-z0-9_-]+")
@@ -319,13 +319,51 @@ def summarize_tool(name, inp):
     return "used " + name, brief
 
 
+def command_segments(cmd):
+    """Leading-word token lists for each simple command in a Bash string. Heredoc bodies and
+    quoted strings are removed first, so `grep 'git push'` or a heredoc mentioning pytest is
+    never mistaken for running it (R11: only the command position counts)."""
+    t = HEREDOC_RE.sub("\n", cmd or "")
+    t = SQ_RE.sub("''", t)
+    t = DQ_RE.sub('""', t)
+    segs = []
+    for seg in SEP_RE.split(t):
+        toks = seg.split()
+        while toks and (ASSIGN_RE.match(toks[0]) or toks[0] in WRAPPERS):
+            toks = toks[1:]
+        if toks and toks[0] in SHELLS:
+            toks = [x for x in toks[1:] if not x.startswith("-")]
+        if toks:
+            segs.append(toks)
+    return segs
+
+
 def classify_command(cmd):
+    """Tags for a Bash command: test | syntax | commit | push | pr:<verb>."""
     tags = set()
-    if TEST_RE.search(cmd):
-        tags.add("test")
-    elif SYNTAX_RE.search(cmd):
-        tags.add("syntax")
-    if COMMIT_RE.search(cmd) or PUSH_RE.search(cmd) or PR_RE.search(cmd):
+    for toks in command_segments(cmd):
+        base = toks[0].rsplit("/", 1)[-1]
+        sub = toks[1] if len(toks) > 1 else ""
+        if base in ("python", "python3") and sub == "-m" and len(toks) > 2:
+            if toks[2] in ("pytest", "unittest"):
+                tags.add("test")
+            elif toks[2] == "py_compile":
+                tags.add("syntax")
+        elif base in TEST_BINS or TEST_SCRIPT_RE.match(base):
+            tags.add("test")
+        elif base in ("go", "cargo", "make") and sub == "test":
+            tags.add("test")
+        elif base in PKG_MANAGERS and (sub.startswith("test") or (sub == "run" and len(toks) > 2 and toks[2].startswith("test"))):
+            tags.add("test")
+        elif base == "git":
+            rest = toks[1:]
+            while rest and rest[0].startswith("-"):
+                rest = rest[2:] if rest[0] in ("-C", "-c") else rest[1:]
+            if rest and rest[0] in ("commit", "push"):
+                tags.add(rest[0])
+        elif base == "gh" and sub == "pr" and len(toks) > 2 and toks[2] in PR_VERBS:
+            tags.add("pr:" + toks[2])
+    if tags & {"commit", "push"} or any(x.startswith("pr:") for x in tags):
         tags.add("git")
     return tags
 
@@ -575,12 +613,12 @@ def handle_result(w, rec, block):
             for m in COMMIT_OUT_RE.finditer(out[:4000]):
                 w.commits.append("commit %s on %s: %s" % (m.group(2)[:9], m.group(1), one_line(m.group(3), 100)))
             st = "ok" if e.ok else "FAILED"
-            if PUSH_RE.search(e.cmd):
+            if "push" in e.tags:
                 w.commits.append("push (%s): %s" % (st, one_line(e.cmd, 140)))
-            if PR_RE.search(e.cmd):
+            for verb in sorted(x[3:] for x in e.tags if x.startswith("pr:")):
                 url = re.search(r"https://github\.com/\S+/pull/\d+", out)
-                w.commits.append("PR %s (%s)%s" % (PR_RE.search(e.cmd).group(1), st, (" " + url.group(0)) if url else ""))
-            if COMMIT_RE.search(e.cmd) and not e.ok:
+                w.commits.append("PR %s (%s)%s" % (verb, st, (" " + url.group(0)) if url else ""))
+            if "commit" in e.tags and not e.ok:
                 w.commits.append("commit FAILED: %s" % one_line(e.cmd, 140))
 
 
