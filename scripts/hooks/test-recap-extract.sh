@@ -271,6 +271,41 @@ for i in range(400):
     f.bash("b%d" % i, "false_r13_%d " % i + "z" * 150, ok=False, out="err " * 40)
 f.say("FINAL_R13_MARKER"); f.save()
 
+# fx1) long final text keeps head AND tail (closing question)
+f = F("case-fx1"); f.human("PROMPT_FX1")
+f.say("HEAD_FX1 " + "body text " * 300 + "Want me to catch the branch up? TAIL_QUESTION_FX1"); f.save()
+
+# fx3) shell keywords / for-loops in test detection
+f = F("case-fx3"); f.human("PROMPT_FX3")
+f.bash("x1", 'for g in scripts/*-assumptions/run-all.sh; do bash "$g"; done', out="all good")
+f.bash("x2", 'for f in a b; do echo "$f"; done', out="a b")
+f.bash("x3", "if true; then pytest -q; fi", out="ok"); f.say("done FX3"); f.save()
+
+# fx4) successful Bash output tails; test verdict line
+f = F("case-fx4"); f.human("PROMPT_FX4")
+f.bash("o1", "echo EARLY_CMD_FX4", out="EARLY_OUT_FX4")
+f.bash("o2", "bash scripts/hooks/test-thing.sh", out="case 1 ok\ncase 2 ok\nPASS: 7/7\n")
+f.bash("o3", "echo mid", out="MID_OUT_FX4")
+f.bash("o4", "git rev-list --left-right --count HEAD...@{upstream}", out="10\t1447\n")
+f.say("FINAL_FX4"); f.save()
+
+# fx5) subagent with no final text: still running vs finished
+f = F("case-fx5"); f.human("PROMPT_FX5")
+f.tool("toolu_R", "Agent", {"description": "RUNNING_FX5", "run_in_background": True})
+f.result("toolu_R", "launched", tur={"isAsync": True, "status": "async_launched", "agentId": "aR"})
+f.tool("toolu_D", "Agent", {"description": "DONE_FX5"})
+f.result("toolu_D", "", tur={"status": "completed"}); f.say("done FX5")
+for aid, d, tu in (("aR", "RUNNING_FX5", "toolu_R"), ("aD", "DONE_FX5", "toolu_D")):
+    with open(f.meta(aid, agentType="Explore", description=d, toolUseId=tu), "w") as fh:
+        fh.write("")
+f.save()
+
+# fx6) bare slash command anchor: topic line from expansion, else earlier typed message
+f = F("case-fx6a"); f.human("EARLIER_FX6A").say("ok")
+f.cmd("plan", "", "# Plan playbook\nintro\n## Topic: TOPIC_FX6A\nmore").say("planning"); f.save()
+f = F("case-fx6b"); f.human("EARLIER_FX6B").say("ok")
+f.cmd("discussion", "", "# Discussion playbook, no topic line").say("discussing"); f.save()
+
 # folder preference: same sid in two folders, cwd-matching folder wins
 cwd_folder = os.path.join(os.path.dirname(D), os.environ["RECAP_CWD_MANGLED"])
 os.makedirs(cwd_folder, exist_ok=True)
@@ -401,6 +436,37 @@ has "R13: rollup list capped" "+375 more"
 has "R13: final text kept" "FINAL_R13_MARKER"
 runs case-r13 --budget 3000
 check "R13: tight budget respected" 1 "$([ ${#OUT} -le 3000 ] && echo 1 || echo 0)"
+
+# fx1) head + tail of the final text
+runs case-fx1
+has "fx1: final keeps head" "HEAD_FX1"
+has "fx1: final keeps closing question" "TAIL_QUESTION_FX1"
+has "fx1: cut is marked" " … "
+
+# fx3) shell keywords / for-loops
+runs case-fx3
+TESTS_FX3=$(section "Tests run")
+check "fx3: for-loop over run-all.sh is a test" 1 "$(printf '%s\n' "$TESTS_FX3" | grep -c 'assumptions/run-all.sh')"
+check "fx3: for-loop over plain words is not" 0 "$(printf '%s\n' "$TESTS_FX3" | grep -c 'for f in a b')"
+check "fx3: if/then prefix stripped" 1 "$(printf '%s\n' "$TESTS_FX3" | grep -c 'pytest -q')"
+
+# fx4) output tails + test verdict
+runs case-fx4
+has "fx4: test labeled by last output line" "PASS test: bash scripts/hooks/test-thing.sh -> PASS: 7/7"
+has "fx4: last command output tail shown" "=> output ends: 10 1447"
+has "fx4: recent command output shown" "MID_OUT_FX4"
+lacks "fx4: older command output not shown" "EARLY_OUT_FX4"
+
+# fx5) subagent without final text
+runs case-fx5
+has "fx5: running agent" "(still running or no result yet)"
+check "fx5: finished agent" 1 "$(printf '%s\n' "$OUT" | grep -c 'result: (no final text)')"
+
+# fx6) bare slash command anchor context
+runs case-fx6a
+has "fx6a: topic line appended" "opened this window: /plan (Topic: TOPIC_FX6A)"
+runs case-fx6b
+has "fx6b: earlier message appended" "opened this window: /discussion (earlier message: EARLIER_FX6B)"
 
 # focus via stdin
 OUT=$(cd "$TMP/work" && printf 'FOCUS_TEXT_Z' | python3 "$SCRIPT" --session case-a --focus-stdin 2>/dev/null)

@@ -51,7 +51,10 @@ from pathlib import Path
 
 DEFAULT_BUDGET = 20000
 ANCHOR_CHARS = 800
-FINAL_CHARS = 1500
+FINAL_HEAD, FINAL_TAIL = 600, 900   # closing questions/asks live at the END of a message
+OUT_TAIL = 150                      # stdout tail kept for successful Bash commands
+KEEP_LAST_BASH = 3                  # commands before the final text shown uncollapsed
+CUT = " \u2026 "                      # marks a head+tail cut
 LIST_CAP = 25
 
 HOOK_TYPED = ("/post-compact-resume", "/rename", "/compact", "/recap")
@@ -68,6 +71,7 @@ TEST_BINS = ("pytest", "jest", "vitest", "bats", "run-all.sh")
 TEST_SCRIPT_RE = re.compile(r"^(?:test-[\w.-]*\.sh|[\w.-]*_test\.sh)$")
 PKG_MANAGERS = ("npm", "pnpm", "yarn", "bun")
 WRAPPERS = ("time", "env", "command", "exec", "nohup", "sudo", "npx", "bunx")
+SHELL_KEYWORDS = ("do", "then", "else", "elif", "if", "while", "until", "!")
 SHELLS = ("bash", "sh", "zsh")
 PR_VERBS = ("create", "merge", "edit", "close", "ready")
 HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?[^\n]*\n.*?(?:\n\s*\1\s*(?:\n|$)|$)", re.S)
@@ -83,6 +87,7 @@ TAG_RE = {
     for k in ("task-id", "tool-use-id", "status", "summary", "result", "command-name", "command-args")
 }
 SID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+TOPIC_RE = re.compile(r"^##\s*((?:Topic|Feature|Plan to Execute):[ \t]*\S.*)$", re.M)
 
 
 # ---------------------------------------------------------------- helpers
@@ -100,6 +105,30 @@ def one_line(s, n):
 def clip(s, n):
     s = str(s or "").strip()
     return s if len(s) <= n else s[: max(0, n - 3)] + "..."
+
+
+def ends(s, head, tail):
+    """Keep the head AND the tail (where a closing question or ask usually sits)."""
+    s = str(s or "").strip()
+    return s if len(s) <= head + tail + len(CUT) else s[:head].rstrip() + CUT + s[-tail:].lstrip()
+
+
+def one_line_ends(s, n):
+    """one_line, but a cut keeps ~40% head and ~60% tail instead of only the head."""
+    s = " ".join(str(s or "").split())
+    if len(s) <= n:
+        return s
+    room = max(0, n - len(CUT))
+    return ends(s, room * 2 // 5, room - room * 2 // 5)
+
+
+def last_line(text, n=80):
+    """Last non-empty line of command output, if it is short enough to be a verdict."""
+    for ln in reversed(str(text or "").splitlines()):
+        ln = ln.strip()
+        if ln:
+            return ln if len(ln) <= n else ""
+    return ""
 
 
 def content_of(rec):
@@ -263,7 +292,8 @@ def read_line_at(fh, off):
 
 
 def pick_boundary(fh, cands):
-    for off, answered in reversed(cands):
+    for idx in range(len(cands) - 1, -1, -1):
+        off, answered = cands[idx]
         if not answered:
             continue
         try:
@@ -271,14 +301,56 @@ def pick_boundary(fh, cands):
         except ValueError:
             continue
         if isinstance(rec, dict) and is_turn_start_human(rec):
-            return off, rec
-    return None, None
+            return off, rec, idx
+    return None, None, -1
+
+
+def anchor_context(fh, off, rec, cands, idx):
+    """A bare slash command says little on its own. Return the first '## Topic:' /
+    '## Feature:' / '## Plan to Execute:' line of its expansion (the isMeta companion
+    sharing its promptId, else the next isMeta user entry), or failing that the user's
+    previous typed message labeled 'earlier message'. '' when neither is found."""
+    fh.seek(off)
+    fh.readline()
+    pid = rec.get("promptId")
+    first = None
+    for _ in range(50):
+        raw = fh.readline()
+        if not raw or b'"type":"assistant"' in raw:
+            break
+        if b'"isMeta":true' not in raw or b'"type":"user"' not in raw:
+            continue
+        try:
+            r = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or r.get("type") != "user" or not r.get("isMeta"):
+            continue
+        if pid and r.get("promptId") == pid:
+            first = r
+            break
+        if first is None:
+            first = r
+    if first is not None:
+        m = TOPIC_RE.search(text_of(content_of(first)))
+        if m:
+            return one_line(m.group(1), 300)
+    for j in range(idx - 1, max(-1, idx - 51), -1):
+        try:
+            r = json.loads(read_line_at(fh, cands[j][0]))
+        except ValueError:
+            continue
+        if isinstance(r, dict) and is_turn_start_human(r):
+            t = text_of(content_of(r)).strip()
+            if not command_name(t):
+                return "earlier message: " + one_line(t, 300)
+    return ""
 
 
 # ---------------------------------------------------------------- pass 2
 
 class Event:
-    __slots__ = ("kind", "summary", "ok", "detail", "tags", "tool", "cmd", "id")
+    __slots__ = ("kind", "summary", "ok", "detail", "tags", "tool", "cmd", "id", "out")
 
     def __init__(self, kind, summary, tool=None, cmd=None, tid=None):
         self.kind = kind
@@ -289,6 +361,7 @@ class Event:
         self.tool = tool
         self.cmd = cmd
         self.id = tid
+        self.out = ""        # tail of stdout (successful Bash)
 
 
 def summarize_tool(name, inp):
@@ -329,7 +402,7 @@ def command_segments(cmd):
     segs = []
     for seg in SEP_RE.split(t):
         toks = seg.split()
-        while toks and (ASSIGN_RE.match(toks[0]) or toks[0] in WRAPPERS):
+        while toks and (ASSIGN_RE.match(toks[0]) or toks[0] in WRAPPERS or toks[0] in SHELL_KEYWORDS):
             toks = toks[1:]
         if toks and toks[0] in SHELLS:
             toks = [x for x in toks[1:] if not x.startswith("-")]
@@ -344,7 +417,12 @@ def classify_command(cmd):
     for toks in command_segments(cmd):
         base = toks[0].rsplit("/", 1)[-1]
         sub = toks[1] if len(toks) > 1 else ""
-        if base in ("python", "python3") and sub == "-m" and len(toks) > 2:
+        if base == "for":
+            # `for x in <list>`: a test if any list item is a known runner
+            items = toks[toks.index("in") + 1:] if "in" in toks else []
+            if any(i.rsplit("/", 1)[-1] in TEST_BINS or TEST_SCRIPT_RE.match(i.rsplit("/", 1)[-1]) for i in items):
+                tags.add("test")
+        elif base in ("python", "python3") and sub == "-m" and len(toks) > 2:
             if toks[2] in ("pytest", "unittest"):
                 tags.add("test")
             elif toks[2] == "py_compile":
@@ -384,6 +462,7 @@ class Window:
         self.tool_use_ids = set()
         self.notified_task_ids = set()
         self.notified_tool_ids = set()
+        self.agent_done_ids = set()   # foreground Agent calls whose result came back
         self.wf_ids = set()
         self.seen_notes = set()
         self.files = {}          # path -> "created" | "edited"
@@ -418,7 +497,7 @@ def handle_notification(w, text):
     res = tag("result", text)
     e = Event("background job finished", "%s%s%s" % (
         one_line(summ, 160), (" [%s]" % status) if status else "",
-        (" - result: " + one_line(res, 600)) if res else ""))
+        (" - result: " + one_line_ends(res, 600)) if res else ""))
     if status and status not in ("completed", "success"):
         e.tags.add("error")
     w.events.append(e)
@@ -516,7 +595,7 @@ def handle_user(w, rec):
     if o in (None, "human"):
         if tag("command-name", st):
             return   # a later command with no reply (local command) - not part of the work
-        w.events.append(Event("you also said", one_line(text, 400)))
+        w.events.append(Event("you also said", one_line_ends(text, 400)))
 
 
 def handle_attachment(w, rec):
@@ -539,7 +618,7 @@ def handle_attachment(w, rec):
     if mode in (None, "prompt") and (ao or {}).get("kind") == "human":
         if command_name(text) == "/recap":
             return
-        w.events.append(Event("you also said", one_line(text, 400)))
+        w.events.append(Event("you also said", one_line_ends(text, 400)))
 
 
 def handle_assistant(w, rec):
@@ -554,7 +633,7 @@ def handle_assistant(w, rec):
             txt = (b.get("text") or "").strip()
             if txt:
                 w.last_text = txt
-                w.events.append(Event("said", one_line(txt, 400)))
+                w.events.append(Event("said", one_line_ends(txt, 400)))
         elif bt == "tool_use":
             name = b.get("name") or "?"
             inp = b.get("input") or {}
@@ -594,6 +673,9 @@ def handle_result(w, rec, block):
         e.detail = error_detail(rtext)
         if e.tool == "Bash":
             w.failed.append("%s -> %s" % (one_line(e.cmd, 160), e.detail))
+    if e.tool in AGENT_TOOLS and not (isinstance(tur, dict) and (
+            tur.get("isAsync") or tur.get("status") == "async_launched")):
+        w.agent_done_ids.add(block.get("tool_use_id"))
     if e.tool in EDIT_TOOLS and not is_err:
         path = e.summary
         created = isinstance(tur, dict) and tur.get("type") == "create"
@@ -606,9 +688,13 @@ def handle_result(w, rec, block):
         if isinstance(tur, dict):
             out = str(tur.get("stdout") or "")
         out = out or rtext
+        if e.ok:
+            e.out = one_line(out[-OUT_TAIL * 2:], 10 ** 6)[-OUT_TAIL:]
         if "test" in e.tags or "syntax" in e.tags:
             label = "syntax check" if "syntax" in e.tags else "test"
-            w.tests.append("%s %s: %s" % ("PASS" if e.ok else "FAIL", label, one_line(e.cmd, 160)))
+            verdict = last_line(out)
+            w.tests.append("%s %s: %s%s" % ("PASS" if e.ok else "FAIL", label, one_line(e.cmd, 80),
+                                           (" -> " + verdict) if verdict else ""))
         if "git" in e.tags:
             for m in COMMIT_OUT_RE.finditer(out[:4000]):
                 w.commits.append("commit %s on %s: %s" % (m.group(2)[:9], m.group(1), one_line(m.group(3), 100)))
@@ -684,6 +770,8 @@ def digest_subagents(sid_dir, w):
         d["desc"] = m.get("description") or (wf and "workflow %s" % wf) or "?"
         d["type"] = m.get("agentType") or "?"
         d["parent"] = m.get("parentAgentId")
+        tu = m.get("toolUseId")
+        d["done"] = aid in w.notified_task_ids or tu in w.notified_tool_ids or tu in w.agent_done_ids
         out.append(d)
     return out, unreadable
 
@@ -766,7 +854,11 @@ def render_subagents(subs, result_chars):
             lines.append("    failed commands: %d" % len(s["failed"]))
         if s["tests"]:
             lines.append("    tests: " + "; ".join(one_line(t, 100) for t in capped(s["tests"], 4)))
-        lines.append("    result: " + one_line(s["final"] or "(no final text)", result_chars))
+        if s["final"]:
+            res = one_line_ends(s["final"], result_chars)
+        else:
+            res = "(no final text)" if s.get("done") else "(still running or no result yet)"
+        lines.append("    result: " + res)
     return "\n".join(lines)
 
 
@@ -805,7 +897,7 @@ def collapse_ok_bash(events):
     out = []
     run = 0
     for e in events:
-        if e.tool == "Bash" and e.ok is not False and not (e.tags & {"test", "syntax", "git", "error"}):
+        if e.tool == "Bash" and e.ok is not False and not (e.tags & {"test", "syntax", "git", "error", "keep"}):
             run += 1
             continue
         if run:
@@ -817,17 +909,35 @@ def collapse_ok_bash(events):
     return out
 
 
+def mark_last_bash(events):
+    """Tag the last few Bash commands before the final assistant text: they often carry
+    the result (an end-to-end check, a branch count), so they stay uncollapsed with output."""
+    said = [i for i, e in enumerate(events) if e.kind == "said"]
+    end = said[-1] if said else len(events)
+    n = 0
+    for e in reversed(events[:end]):
+        if n >= KEEP_LAST_BASH:
+            break
+        if e.tool == "Bash":
+            e.tags.add("keep")
+            n += 1
+
+
 def fmt_event(i, e, width):
     s = e.summary
     if e.ok is False:
         s = "%s -> FAILED: %s" % (s, e.detail)
     line = "[#%d] %s: %s" % (i, e.kind, s) if s else "[#%d] %s" % (i, e.kind)
-    return one_line(line, width) if width else line
+    line = one_line(line, width) if width else line
+    if "keep" in e.tags and e.out:
+        line += " => output ends: " + e.out
+    return line
 
 
 def render(header, w, subs, budget, limits_extra):
-    final = "FINAL ASSISTANT TEXT\n" + (clip(w.last_text, FINAL_CHARS) or "(none)")
+    final = "FINAL ASSISTANT TEXT\n" + (ends(w.last_text, FINAL_HEAD, FINAL_TAIL) or "(none)")
     events = list(w.events)
+    mark_last_bash(events)
     total_events = len(events)
     result_chars = 400
     stages = [
@@ -914,8 +1024,12 @@ def main():
     with fh:
         try:
             cands, size = scan_candidates(fh)
-            boff, brec = pick_boundary(fh, cands)
+            boff, brec, bidx = pick_boundary(fh, cands)
             note = ""
+            actx = ""
+            if brec is not None and command_name(text_of(content_of(brec))) \
+                    and not anchor_text(brec).split(None, 1)[1:]:
+                actx = anchor_context(fh, boff, brec, cands, bidx)
             if brec is None:
                 boff = 0
                 note = "no earlier human message found; covering the whole session"
@@ -926,6 +1040,8 @@ def main():
         anchor, start_ts = "(none)", "(start of session)"
     else:
         anchor = clip(anchor_text(brec), ANCHOR_CHARS)
+        if actx:
+            anchor = "%s (%s)" % (anchor, actx)
         start_ts = brec.get("timestamp") or "?"
     subs, unreadable = digest_subagents(path.parent / path.stem, w)
 
