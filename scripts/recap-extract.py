@@ -23,7 +23,8 @@ meta text, compaction summaries, scheduled ticks, background-task notifications,
 messages, auto-continuations, hook-typed commands (/post-compact-resume, /rename),
 /compact, /recap itself, and local commands that never got an assistant reply.
 Mid-turn messages the user queued while the agent was busy are listed as events
-("you also said"), not used as the anchor. Subagent work is credited from the
+("you also said"), not used as the anchor. A bare slash-command anchor gets context: its
+expansion's '## Topic:'-style line, else the user's earlier typed message. Subagent work is credited from the
 session's subagents/ directory (agents launched in the window, agents launched
 earlier that finished in the window, and their nested children).
 
