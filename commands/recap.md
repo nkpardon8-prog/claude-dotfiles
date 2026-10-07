@@ -58,7 +58,8 @@ No fixed template - whatever reads cleanest. The reader knows ONLY what they las
 
 - Open by briefly naming what they last asked, in plain words, so a wrong anchor is obvious.
 - Plain language, low jargon. No internal names, IDs, or file paths unless they genuinely help.
-  Mention helper agents only by what they did.
+  Mention helper agents only by what they did. Never pass through tool or model names (e.g.
+  Codex), IDs, or fact-sheet labels like "no final text" - say what happened in plain words.
 - Say what is verified and how, what failed or was skipped, what is left, and anything waiting on
   the user.
 - Say "tested" or "works" only when the fact sheet or your own check shows it ran and passed.
