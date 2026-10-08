@@ -24,15 +24,21 @@ messages, auto-continuations, hook-typed commands (/post-compact-resume, /rename
 /compact, /recap itself, and local commands that never got an assistant reply.
 Mid-turn messages the user queued while the agent was busy are listed as events
 ("you also said"), not used as the anchor. A bare slash-command anchor gets context: its
-expansion's '## Topic:'-style line, else the user's earlier typed message. Subagent work is credited from the
+expansion's '## Topic:'-style line, else the user's earlier typed message; any other anchor
+shorter than 40 chars ("yes go ahead") gets the earlier typed message. Only a reply-eligible
+typed line can be credited with the assistant reply that follows it, so a notification or peer
+message landing between a prompt and its reply never steals the credit. An earlier /recap turn
+is skipped until a typed prompt, or until its closing reply ends it. Subagent work is credited from the
 session's subagents/ directory (agents launched in the window, agents launched
 earlier that finished in the window, and their nested children).
 
 Env:
     RECAP_PROJECTS_DIR     directory holding <project>/<sid>.jsonl (default ~/.claude/projects)
     RECAP_SETTLE_SECONDS   if the transcript was written less than this many seconds ago,
-                           wait until it has been quiet that long (default 8; capped at
-                           that value + 4 seconds of total waiting; tests set 0)
+                           wait until it has been quiet that long (default 1.5; total wait
+                           capped at twice that, so 3 s by default; tests set 0). Skipped
+                           entirely when the transcript already ends at this /recap call
+                           (its command entry or its Bash tool_use) - the normal case
 
 stdout: plain-text fact sheet (never more than --budget chars), exit 0.
 stderr: one line, exit 2, when there is no session id, the transcript is not found,
@@ -52,6 +58,9 @@ from pathlib import Path
 
 DEFAULT_BUDGET = 20000
 ANCHOR_CHARS = 800
+SHORT_ANCHOR = 40                   # shorter anchors get the earlier typed message as context
+SETTLE_DEFAULT = 1.5
+TAIL_BYTES = 256 * 1024             # how much of the file end settle() inspects
 FINAL_HEAD, FINAL_TAIL = 600, 900   # closing questions/asks live at the END of a message
 OUT_TAIL = 150                      # stdout tail kept for successful Bash commands
 KEEP_LAST_BASH = 3                  # commands before the final text shown uncollapsed
@@ -239,33 +248,90 @@ def resolve_transcript(args):
     return Path(hits[0]), sid
 
 
-def settle(path):
-    """R14: let a just-written transcript go quiet so the latest steps are on disk."""
+def ends_at_recap(path):
+    """True when the last main-thread user/assistant entry on disk is this /recap call:
+    the /recap command entry (or its isMeta expansion) or the assistant's Bash tool_use
+    running recap-extract.py. Then everything before it is already written."""
     try:
-        quiet = float(os.environ.get("RECAP_SETTLE_SECONDS", "8"))
-    except ValueError:
-        quiet = 8.0
-    if quiet <= 0:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - TAIL_BYTES))
+            lines = fh.read().split(b"\n")
+    except OSError:
         return False
-    deadline = time.time() + quiet + 4
+    if size > TAIL_BYTES:
+        lines = lines[1:]   # first line is partial
+    meta_pid = None
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get("isSidechain") or rec.get("type") not in ("user", "assistant"):
+            continue
+        c = content_of(rec)
+        if rec.get("type") == "assistant":
+            if meta_pid is not None:
+                return False
+            return isinstance(c, list) and any(
+                isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "Bash"
+                and "recap-extract.py" in str((b.get("input") or {}).get("command") or "") for b in c)
+        if is_tool_result(c):
+            return False
+        if rec.get("isMeta") and meta_pid is None:
+            meta_pid = rec.get("promptId") or "?"
+            continue   # the expansion: look at the command entry before it
+        if command_name(text_of(c)) != "/recap":
+            return False
+        return meta_pid is None or meta_pid == "?" or meta_pid == rec.get("promptId")
+    return False
+
+
+def settle(path):
+    """R14: make sure the latest steps are on disk. Returns 'current' (the transcript
+    already ends at this /recap call - no wait), 'waited' (it was written moments ago, so
+    we waited for it to go quiet, at most twice the quiet period), or 'as-is'."""
+    try:
+        quiet = float(os.environ.get("RECAP_SETTLE_SECONDS", str(SETTLE_DEFAULT)))
+    except ValueError:
+        quiet = SETTLE_DEFAULT
+    if quiet <= 0:
+        return "as-is"
+    if ends_at_recap(path):
+        return "current"
+    deadline = time.time() + quiet * 2
     waited = False
     while True:
         try:
             age = time.time() - path.stat().st_mtime
         except OSError:
-            return waited
+            break
         if age >= quiet or time.time() >= deadline:
-            return waited
+            break
         waited = True
-        time.sleep(min(0.5, max(0.05, quiet - age)))
+        time.sleep(min(0.25, max(0.05, quiet - age)))
+    return "waited" if waited else "as-is"
 
 
 # ---------------------------------------------------------------- pass 1
 
+NOT_REPLY_ELIGIBLE = (
+    b'"type":"tool_result"', b'"isMeta":true', b'"isCompactSummary":true', b'"scheduledTaskId"',
+    b'"kind":"task-notification"', b'"kind":"peer"',
+    b'"content":"<task-notification', b'"content":"Another Claude session sent',
+)
+
+
 def scan_candidates(fh):
     """One binary pass. Returns (cands, size) where cands = [offset, answered] for every
     main-thread user line that could start a turn (cheap byte filters; verified later by
-    json-parsing from the end). `answered` = an assistant line follows before the next one."""
+    json-parsing from the end). `answered` = an assistant line follows before the next
+    candidate. Tool results, meta text, compaction summaries, scheduled ticks, task
+    notifications and peer messages are never candidates, so one landing between a typed
+    prompt and its first reply cannot take that reply's credit."""
     cands = []
     off = 0
     for raw in fh:
@@ -276,12 +342,7 @@ def scan_candidates(fh):
         if b'"type":"assistant"' in raw:
             if cands:
                 cands[-1][1] = True
-        elif (
-            b'"type":"user"' in raw
-            and b'"type":"tool_result"' not in raw
-            and b'"isMeta":true' not in raw
-            and b'"isCompactSummary":true' not in raw
-        ):
+        elif b'"type":"user"' in raw and not any(x in raw for x in NOT_REPLY_ELIGIBLE):
             cands.append([off, False])
         off += n
     return cands, off
@@ -306,11 +367,29 @@ def pick_boundary(fh, cands):
     return None, None, -1
 
 
-def anchor_context(fh, off, rec, cands, idx):
-    """A bare slash command says little on its own. Return the first '## Topic:' /
-    '## Feature:' / '## Plan to Execute:' line of its expansion (the isMeta companion
-    sharing its promptId, else the next isMeta user entry), or failing that the user's
-    previous typed message labeled 'earlier message'. '' when neither is found."""
+def anchor_context(fh, off, rec, cands, idx, topic=True):
+    """A bare slash command or a short reply ("yes go ahead") says little on its own.
+    With topic=True (bare slash command) return the first '## Topic:' / '## Feature:' /
+    '## Plan to Execute:' line of its expansion (the isMeta companion sharing its promptId,
+    else the next isMeta user entry). Otherwise, or failing that, return the user's previous
+    typed message labeled 'earlier message'. '' when neither is found."""
+    if topic:
+        t = _topic_line(fh, off, rec)
+        if t:
+            return t
+    for j in range(idx - 1, max(-1, idx - 51), -1):
+        try:
+            r = json.loads(read_line_at(fh, cands[j][0]))
+        except ValueError:
+            continue
+        if isinstance(r, dict) and is_turn_start_human(r):
+            t = text_of(content_of(r)).strip()
+            if not command_name(t):
+                return "earlier message: " + one_line(t, 300)
+    return ""
+
+
+def _topic_line(fh, off, rec):
     fh.seek(off)
     fh.readline()
     pid = rec.get("promptId")
@@ -336,15 +415,6 @@ def anchor_context(fh, off, rec, cands, idx):
         m = TOPIC_RE.search(text_of(content_of(first)))
         if m:
             return one_line(m.group(1), 300)
-    for j in range(idx - 1, max(-1, idx - 51), -1):
-        try:
-            r = json.loads(read_line_at(fh, cands[j][0]))
-        except ValueError:
-            continue
-        if isinstance(r, dict) and is_turn_start_human(r):
-            t = text_of(content_of(r)).strip()
-            if not command_name(t):
-                return "earlier message: " + one_line(t, 300)
     return ""
 
 
@@ -478,6 +548,7 @@ class Window:
         self.last_text = ""
         self.last_ts = ""
         self.in_recap = None     # promptId of an earlier /recap turn being skipped
+        self.recap_closed = False  # that turn's last assistant entry was its closing reply
 
 
 def handle_notification(w, text):
@@ -532,6 +603,8 @@ def parse_window(fh, start, w, skip_anchor):
         elif t == "assistant":
             if w.in_recap is None:
                 handle_assistant(w, rec)
+            else:
+                w.recap_closed = closes_turn(rec)
         elif t == "attachment":
             handle_attachment(w, rec)
         elif t == "system" and rec.get("subtype") == "compact_boundary":
@@ -539,6 +612,25 @@ def parse_window(fh, start, w, skip_anchor):
             e = Event("context compacted", "memory summarized; transcript intact")
             e.tags.add("compact")
             w.events.append(e)
+
+
+def closes_turn(rec):
+    """Is this assistant entry the closing reply of its turn? stop_reason says so when
+    present; legacy entries without it count when they hold text and no tool_use."""
+    m = rec.get("message") or {}
+    sr = m.get("stop_reason")
+    if sr:
+        return sr != "tool_use"
+    c = m.get("content")
+    return isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "text" for b in c) \
+        and not any(isinstance(b, dict) and b.get("type") == "tool_use" for b in c)
+
+
+def end_recap_skip_if_closed(w):
+    """A notification / peer / tick only starts new work once the skipped /recap turn
+    has closed; arriving inside that turn it must not end the skip."""
+    if w.in_recap is not None and w.recap_closed:
+        w.in_recap = None
 
 
 def handle_user(w, rec):
@@ -557,11 +649,11 @@ def handle_user(w, rec):
     # Peer messages, task notifications and scheduled prompts can carry isMeta:true, so
     # they are classified by origin BEFORE the generic isMeta skip.
     if o == "task-notification" or st.startswith("<task-notification"):
-        w.in_recap = None
+        end_recap_skip_if_closed(w)
         handle_notification(w, text)
         return
     if o == "peer" or st.startswith("Another Claude session sent"):
-        w.in_recap = None
+        end_recap_skip_if_closed(w)
         org = rec.get("origin") or {}
         body = org.get("body") if isinstance(org.get("body"), str) else text
         w.events.append(Event("message from another window (unverified)",
@@ -574,7 +666,10 @@ def handle_user(w, rec):
     if w.in_recap is not None:
         if pid and pid == w.in_recap:
             return
-        w.in_recap = None
+        if is_turn_start_human(rec) or w.recap_closed:
+            w.in_recap = None
+        else:
+            return   # e.g. an auto-continuation or tick inside the recap turn
     if scheduled:
         w.events.append(Event("woke itself up (scheduled)", one_line(text, 120)))
         return
@@ -590,6 +685,7 @@ def handle_user(w, rec):
     cmd = command_name(st)
     if cmd == "/recap":
         w.in_recap = pid or "?"
+        w.recap_closed = False
         return
     if cmd in HOOK_TYPED:
         return
@@ -1016,7 +1112,7 @@ def main():
             focus = ""
 
     path, sid = resolve_transcript(args)
-    waited = settle(path)
+    fresh_state = settle(path)
     try:
         fh = open(path, "rb")
     except OSError as e:
@@ -1028,9 +1124,11 @@ def main():
             boff, brec, bidx = pick_boundary(fh, cands)
             note = ""
             actx = ""
-            if brec is not None and command_name(text_of(content_of(brec))) \
-                    and not anchor_text(brec).split(None, 1)[1:]:
-                actx = anchor_context(fh, boff, brec, cands, bidx)
+            if brec is not None:
+                at = anchor_text(brec)
+                bare = bool(command_name(text_of(content_of(brec)))) and not at.split(None, 1)[1:]
+                if bare or len(at) < SHORT_ANCHOR:
+                    actx = anchor_context(fh, boff, brec, cands, bidx, topic=bare)
             if brec is None:
                 boff = 0
                 note = "no earlier human message found; covering the whole session"
@@ -1058,7 +1156,9 @@ def main():
     ]
     if note:
         header_lines.append("note: " + note)
-    fresh = "transcript waited to settle before reading" if waited else "transcript read as-is (may lag the last few seconds)"
+    fresh = {"current": "transcript already ends at this /recap call (current)",
+             "waited": "transcript waited to settle before reading"}.get(
+        fresh_state, "transcript read as-is (may lag the last few seconds)")
     out = render("HEADER\n" + "\n".join(header_lines), w, subs, budget,
                  {"unreadable": unreadable, "fresh": fresh})
     sys.stdout.write(out)

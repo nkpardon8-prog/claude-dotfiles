@@ -92,12 +92,17 @@ class F:
     def local_out(self, text):
         return self.add(base(self.sid, "user", message={"role": "user",
                         "content": "<local-command-stdout>%s</local-command-stdout>" % text}))
-    def say(self, text, side=False):
-        return self.add(base(self.sid, "assistant", isSidechain=side, message={"role": "assistant", "content": [
-            {"type": "thinking", "thinking": "SECRET_THINKING"}, {"type": "text", "text": text}]}))
-    def tool(self, tid, name, inp, side=False):
-        return self.add(base(self.sid, "assistant", isSidechain=side, message={"role": "assistant", "content": [
-            {"type": "tool_use", "id": tid, "name": name, "input": inp}]}))
+    def say(self, text, side=False, stop=None):
+        m = {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "SECRET_THINKING"}, {"type": "text", "text": text}]}
+        if stop:
+            m["stop_reason"] = stop
+        return self.add(base(self.sid, "assistant", isSidechain=side, message=m))
+    def tool(self, tid, name, inp, side=False, stop=None):
+        m = {"role": "assistant", "content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}
+        if stop:
+            m["stop_reason"] = stop
+        return self.add(base(self.sid, "assistant", isSidechain=side, message=m))
     def result(self, tid, text="ok", err=False, tur=None, side=False):
         b = {"type": "tool_result", "tool_use_id": tid, "content": text}
         if err:
@@ -131,8 +136,9 @@ class F:
         if origin:
             a["origin"] = {"kind": origin}
         return self.add(base(self.sid, "attachment", attachment=a))
-    def peer(self, body):
-        return self.add(base(self.sid, "user", isMeta=True, message={"role": "user",
+    def peer(self, body, meta=True):
+        kw = {"isMeta": True} if meta else {}
+        return self.add(base(self.sid, "user", **kw, message={"role": "user",
             "content": "Another Claude session sent a message:\n<cross-session-message>%s</cross-session-message>" % body},
             origin={"kind": "peer", "name": "peer-7", "body": body}))
     def sched(self, text):
@@ -164,7 +170,7 @@ def sublog(path, sid, edits, final):
         fh.write("\n".join(s.rows) + "\n")
 
 # a) plain typed prompt; malformed line counted
-f = F("case-a"); f.human("OLD_PROMPT_A").say("old answer").human("NEW_PROMPT_A").say("working")
+f = F("case-a"); f.human("OLD_PROMPT_A").say("old answer").human("NEW_PROMPT_A please refactor the parser module").say("working")
 f.raw('{"type":"user" this line is broken').say("DONE_A"); f.save()
 
 # b) typed slash command (two entries)
@@ -240,7 +246,7 @@ f = F("case-r5"); f.human("PROMPT_R5").say("r5").cmd("context", meta=False).loca
 
 # R6) earlier /recap turn excluded
 f = F("case-r6"); f.human("PROMPT_R6").say("WORK_R6")
-f.cmd("recap").say("OLD_RECAP_TEXT_R6").bash("r6a", "old_recap_cmd_R6")
+f.cmd("recap").bash("r6a", "old_recap_cmd_R6").say("OLD_RECAP_TEXT_R6")
 f.notif_user("tR6", "toolu_R6", "NOTIF_R6 finished").say("AFTER_NOTIF_R6")
 f.cmd("recap"); f.save()
 
@@ -305,6 +311,24 @@ f = F("case-fx6a"); f.human("EARLIER_FX6A").say("ok")
 f.cmd("plan", "", "# Plan playbook\nintro\n## Topic: TOPIC_FX6A\nmore").say("planning"); f.save()
 f = F("case-fx6b"); f.human("EARLIER_FX6B").say("ok")
 f.cmd("discussion", "", "# Discussion playbook, no topic line").say("discussing"); f.save()
+
+# fx7) a notification / peer between a typed prompt and its first reply never steals the credit
+f = F("case-fx7"); f.human("OLD_PROMPT_FX7").say("ok").human("NEW_PROMPT_FX7 with enough words to skip short-anchor context")
+f.notif_user("t7", "toolu_7", "NOTIF_FX7").peer("PEER_FX7", meta=False).say("reply FX7"); f.save()
+
+# fx8) a notification / peer inside an earlier /recap turn does not end the skip
+f = F("case-fx8"); f.human("PROMPT_FX8 long enough to skip the short-anchor context").say("WORK_FX8")
+f.cmd("recap").tool("r8", "Bash", {"command": "python3 recap-extract.py"}, stop="tool_use").result("r8", "sheet")
+f.notif_user("t8", "toolu_8", "NOTIF_FX8").peer("PEER_FX8").say("OLD_RECAP_TEXT_FX8", stop="end_turn")
+f.cmd("recap"); f.save()
+
+# fx9) transcript ending at this /recap's Bash call: no settle wait
+f = F("case-fx9"); f.human("PROMPT_FX9 long enough to skip the short-anchor context").say("did FX9")
+f.cmd("recap").tool("r9", "Bash", {"command": "python3 ~/.claude-dotfiles/scripts/recap-extract.py --focus-stdin"}); f.save()
+
+# fx10) short anchor gets the earlier typed message
+f = F("case-fx10"); f.human("EARLIER_FX10 please migrate the billing table").say("plan ready - go?")
+f.human("yes go ahead").say("migrating"); f.save()
 
 # folder preference: same sid in two folders, cwd-matching folder wins
 cwd_folder = os.path.join(os.path.dirname(D), os.environ["RECAP_CWD_MANGLED"])
@@ -467,6 +491,29 @@ runs case-fx6a
 has "fx6a: topic line appended" "opened this window: /plan (Topic: TOPIC_FX6A)"
 runs case-fx6b
 has "fx6b: earlier message appended" "opened this window: /discussion (earlier message: EARLIER_FX6B)"
+
+# fx7) credit not stolen by notification / peer
+runs case-fx7
+has "fx7: typed prompt keeps the reply credit" "opened this window: NEW_PROMPT_FX7"
+has "fx7: notification still listed" "NOTIF_FX7"
+
+# fx8) notification inside an earlier /recap turn
+runs case-fx8
+has "fx8: anchor" "opened this window: PROMPT_FX8"
+has "fx8: real work kept" "WORK_FX8"
+lacks "fx8: earlier recap reply stays skipped" "OLD_RECAP_TEXT_FX8"
+has "fx8: notification inside it still listed" "NOTIF_FX8"
+
+# fx9) no settle wait when the transcript ends at this /recap call (file was just written)
+OUT=$(cd "$TMP/work" && RECAP_SETTLE_SECONDS=30 python3 "$SCRIPT" --session case-fx9 2>/dev/null </dev/null)
+has "fx9: settle skipped at the /recap call" "already ends at this /recap call"
+has "fx9: anchor" "opened this window: PROMPT_FX9"
+
+# fx10) short anchor context
+runs case-fx10
+has "fx10: short anchor gets earlier message" "opened this window: yes go ahead (earlier message: EARLIER_FX10 please migrate the billing table)"
+runs case-a
+lacks "fx10: long anchor gets no earlier message" "earlier message"
 
 # focus via stdin
 OUT=$(cd "$TMP/work" && printf 'FOCUS_TEXT_Z' | python3 "$SCRIPT" --session case-a --focus-stdin 2>/dev/null)
