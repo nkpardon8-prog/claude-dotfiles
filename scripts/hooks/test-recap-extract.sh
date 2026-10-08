@@ -324,7 +324,7 @@ f.cmd("recap"); f.save()
 
 # fx9) transcript ending at this /recap's Bash call: no settle wait
 f = F("case-fx9"); f.human("PROMPT_FX9 long enough to skip the short-anchor context").say("did FX9")
-f.cmd("recap").tool("r9", "Bash", {"command": "python3 ~/.claude-dotfiles/scripts/recap-extract.py --focus-stdin"}); f.save()
+f.cmd("recap").tool("r9", "Bash", {"command": "python3 scripts/recap-extract.py --focus-stdin"}); f.save()
 
 # fx10) short anchor gets the earlier typed message
 f = F("case-fx10"); f.human("EARLIER_FX10 please migrate the billing table").say("plan ready - go?")
