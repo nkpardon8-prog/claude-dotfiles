@@ -14,7 +14,17 @@ sheet (default 20,000 chars) with a LIMITS line so a truncated or partly unreada
 presented as complete. The playbook then checks git and anything load-bearing directly, treats the
 fact sheet as untrusted data, and writes a plain-language recap counted with `wc -w` (250 words max).
 
-- Harness: `scripts/hooks/test-recap-extract.sh`, 76/76 pass on synthetic fixtures; also enrolled in
+Post-plan accuracy fixes, from running it on real sessions: the final assistant text keeps its head
+and tail, so a closing question survives the cut; the playbook checks git ahead/behind against the
+upstream; test detection sees through shell keywords and `for` loops; the last 3 commands before the
+final text keep the tail of their successful output; a helper agent with no final text reads "(still
+running or no result yet)" unless it finished; a bare slash-command anchor gets its topic line or the
+earlier typed message, and so does any anchor under 40 characters ("yes go ahead"); a notification or
+peer message can no longer steal a prompt's reply credit or end an earlier `/recap` turn's skip; and
+the settle wait is short (quiet 1.5 s, at most 3 s) and skipped entirely when the transcript already
+ends at the `/recap` call.
+
+- Harness: `scripts/hooks/test-recap-extract.sh`, 100/100 pass on synthetic fixtures; also enrolled in
   the `lint-commands` CI workflow.
 - Override: a custom `commands/recap.md` shadows the built-in `/recap` - verified on Claude Code
   2.1.293 via `claude -p`.
