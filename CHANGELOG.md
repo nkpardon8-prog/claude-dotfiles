@@ -2,6 +2,16 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-08 - `/worktree-cleanup`: free disk by clearing old worktrees safely
+
+- New command + `scripts/worktree-cleanup/`. Inventory -> ask live windows -> keep lists -> real
+  last-activity check -> plan -> node_modules-only step -> archive-then-remove step. Branches are
+  never deleted; each worktree is re-checked at the moment it is touched.
+- Encodes what bit the 2026-10-08 run: gitignored tmp/ notes exist nowhere else (archived first);
+  git index/reflog dates are not activity (any `git status` and a repo-wide gc rewrite them);
+  `du` over hundreds of worktrees ran a busy Mac out of memory (sizes reused, runs detached + nice);
+  freed space can hide behind Time Machine local snapshots and APFS clones.
+
 ## 2026-10-07 - `/recap`: a transcript-grounded catch-up that replaces the built-in
 
 New command: `/recap [optional focus]`. The built-in recap works from the agent's memory, which a

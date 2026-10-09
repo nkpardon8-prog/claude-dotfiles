@@ -19,7 +19,7 @@ Cheat sheet of the categories below:
 | [Research](#research) | `/research-web`, `/transcribe` |
 | [Credentials & setup](#credentials--setup) | `/load-creds` |
 | [Remote control & GUI](#remote-control--gui) | `/devtools`, `/desktop`, `/macmini`, `/windows` |
-| [Utilities](#utilities) | `/wispralt-update` |
+| [Utilities](#utilities) | `/wispralt-update`, `/worktree-cleanup` |
 
 ---
 
@@ -111,6 +111,7 @@ Pack subskills (invoked as `/<pack>:<name>`):
 | Command | What it does |
 |---|---|
 | `/wispralt-update` | Pulls the latest WisprAlt release and updates the installed app. Handles TCC reset if the code-signing cdhash changed. |
+| `/worktree-cleanup` | Frees disk by clearing old git worktrees without breaking anyone's work: read-only inventory (edits, merged-ness, real last activity, node_modules size, who has it open), asks every live agent window in the repo what it needs kept, writes keep lists, then deletes `node_modules` in idle kept worktrees and removes finished ones (clean and merged, or idle 7+ days) after archiving their untracked/ignored files to `<repo>/tmp/worktree-archive-<date>/`. Never deletes branches; re-checks each worktree at the moment it acts. Scripts: `scripts/worktree-cleanup/` (`inventory.py`, `deepcheck.py`, `classify.py`, `execute.py`, driven by `WT_ROOT`). |
 
 ## Agents and scripts the commands are bound to
 
