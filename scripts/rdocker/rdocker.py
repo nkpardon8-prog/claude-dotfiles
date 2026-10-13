@@ -30,6 +30,7 @@ HEALTH_PATH = os.path.join(STATE_DIR, "health.json")
 FORWARDS_PATH = os.path.join(STATE_DIR, "forwards.json")
 LOCK_PATH = os.path.join(STATE_DIR, "sync.lock")
 FWD_SOCK = os.path.join(STATE_DIR, "fwd.sock")
+MINI_SOCK = os.path.join(STATE_DIR, "mini-docker.sock")   # laptop end of the mini docker socket
 LOG_PATH = os.path.join(STATE_DIR, "daemon.log")
 ROUTE_LOG = os.path.join(STATE_DIR, "route.log")
 JANITOR_PATH = os.path.join(STATE_DIR, "janitor.json")
@@ -43,6 +44,7 @@ DEFAULTS = {
     "host": "macmini-docker",          # ssh Host alias (see ~/.ssh/config.d/rdocker)
     "host_ip": "",                     # tailnet IP, used for fast reachability checks
     "remote_context": "mini",
+    "remote_socket": "",               # mini docker socket, streamed over the SSH master
     "local_context": "desktop-linux",
     "local_socket": os.path.join(HOME, ".docker", "run", "docker.sock"),
     "mode": "auto",                    # auto | mini | local | off
@@ -55,6 +57,10 @@ DEFAULTS = {
     "exited_rm_hours": 24,             # stopped this long -> rm -v (anonymous volumes go too)
     "image_unused_days": 14,           # unused images older than this -> removed
     "disk_high_pct": 80,               # VM disk above this -> prune all unused images + cache
+    "disk_critical_pct": 90,           # ...above this also remove every stopped container now
+    "volume_unused_days": 30,          # named volume unused this long -> removed (rdocker.keep exempts)
+    "host_log_max_mb": 50,             # mini-side colima/lima log files are truncated past this
+    "host_min_free_gb": 8,             # mini macOS disk free below this -> aggressive prune + warning
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim
@@ -197,6 +203,7 @@ def probe_health(cfg, check_docker=True):
     rtt = tcp_rtt(cfg["host_ip"] or cfg["host"])
     h = {"ts": time.time(), "reachable": rtt is not None, "rtt_ms": rtt, "docker_ok": None}
     if rtt is not None and check_docker:
+        ensure_mini_socket(cfg)
         rc, out, _ = dk(cfg["remote_context"], "version", "--format", "{{.Server.Version}}",
                         timeout=12)
         h["docker_ok"] = rc == 0 and bool(out.strip())
@@ -431,21 +438,58 @@ def master_pid(cfg):
     return int(m.group(1)) if rc == 0 and m else None
 
 
-def ensure_master(cfg):
-    pid = master_pid(cfg)
-    if pid:
-        return pid
+def unix_alive(path):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(1)
     try:
-        os.unlink(FWD_SOCK)
+        s.connect(path)
+        return True
     except OSError:
-        pass
-    rc, _, err = run(["ssh", "-S", FWD_SOCK, "-M", "-N", "-f", "-o", "ControlPersist=yes",
-                      "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=no", cfg["host"]],
-                     timeout=20)
-    if rc != 0:
-        log("ssh master start failed: " + err.strip()[:200])
-        return None
-    return master_pid(cfg)
+        return False
+    finally:
+        s.close()
+
+
+def ensure_master(cfg):
+    """One SSH ControlMaster carries both the mini docker socket and every port mirror.
+
+    Docker traffic rides it as stream channels (not SSH sessions), so parallel agents never hit
+    sshd's MaxSessions, and no ssh process / remote `docker dial-stdio` is spawned per command."""
+    pid = master_pid(cfg)
+    if not pid:
+        for f in (FWD_SOCK, MINI_SOCK):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+        rc, _, err = run(["ssh", "-S", FWD_SOCK, "-M", "-N", "-f", "-o", "ControlPersist=yes",
+                          "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=no",
+                          "-o", "StreamLocalBindUnlink=yes", cfg["host"]], timeout=20)
+        if rc != 0:
+            log("ssh master start failed: " + err.strip()[:200])
+            return None
+        pid = master_pid(cfg)
+        log("ssh master up pid=%s" % pid)
+    if pid and cfg["remote_socket"] and not unix_alive(MINI_SOCK):
+        try:
+            os.unlink(MINI_SOCK)
+        except OSError:
+            pass
+        rc, _, err = ssh_ctl(cfg, "-O", "forward", "-L", MINI_SOCK + ":" + cfg["remote_socket"])
+        if rc != 0:
+            log("docker socket forward failed: " + err.strip()[:200])
+    return pid
+
+
+def ensure_mini_socket(cfg):
+    """Fast path for the shim: socket answers -> done; else (re)build the master under the lock."""
+    if unix_alive(MINI_SOCK):
+        return True
+    ensure_dirs()
+    with open(LOCK_PATH, "w") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        ensure_master(cfg)
+    return unix_alive(MINI_SOCK)
 
 
 def sync_forwards(cfg, verbose=False):
@@ -528,6 +572,8 @@ def shim(argv):
         sub, args = args[0], args[1:]
 
     target, why = resolve_target(cfg)
+    if target == "mini" and not ensure_mini_socket(cfg):
+        target, why = "local", "cannot open the SSH tunnel to the mini"
     local_reason = None
     compose_sub = None
     compose_project = None
@@ -654,8 +700,10 @@ def has_connections(cfg, cid):
     return False
 
 
-def janitor(cfg, dry=False):
-    """Reap what agents left behind on the mini. Never touches rdocker.keep=1 or named volumes."""
+def janitor(cfg, dry=False, only=None):
+    """Reap what agents left behind on the mini. Never touches rdocker.keep=1 containers/volumes.
+
+    `only` (tests): restrict container/volume rules to names with this prefix; skip global prunes."""
     ctx = cfg["remote_context"]
     acts = []
 
@@ -685,6 +733,8 @@ def janitor(cfg, dry=False):
             labels = (c.get("Config") or {}).get("Labels") or {}
             st = c.get("State") or {}
             seen.add(cid)
+            if only and not name.startswith(only):
+                continue
             if str(labels.get("rdocker.keep", "")).lower() in ("1", "true", "yes"):
                 continue
             ttl = parse_ttl(labels.get("rdocker.ttl"))
@@ -708,25 +758,104 @@ def janitor(cfg, dry=False):
                 if ended and now - ended > cfg["exited_rm_hours"] * 3600:
                     act("rm %s (stopped %dh)" % (name, (now - ended) // 3600), "rm", "-v", cid)
     idle = {k: v for k, v in idle.items() if k in seen}
+    # Named volumes: docker has no last-used time, so track "unused since" ourselves.
+    vunused = state.get("volume_unused_since", {})
+    rc, out, _ = dk(ctx, "volume", "ls", "--format", '{{.Name}}\t{{.Label "rdocker.keep"}}', timeout=20)
+    in_use = set()
+    rc2, out2, _ = dk(ctx, "ps", "-a", "--format", "{{.Mounts}}", timeout=20)
+    for line in out2.splitlines():
+        in_use.update(x.strip() for x in line.split(",") if x.strip())
+    vols_now = {}
+    for line in out.splitlines():
+        name, _, keep = line.partition("\t")
+        if not name or keep.lower() in ("1", "true", "yes") or (only and not name.startswith(only)):
+            continue
+        if name in in_use or any(name.startswith(u.rstrip("…")) for u in in_use if u.endswith("…")):
+            continue
+        vols_now[name] = vunused.get(name, now)
+        if now - vols_now[name] > cfg["volume_unused_days"] * 86400:
+            act("rm volume %s (unused %dd)" % (name, cfg["volume_unused_days"]), "volume", "rm", name)
+            vols_now.pop(name, None)
     if not dry:
-        save_json(JANITOR_PATH, {"idle_since": idle, "last_run": now})
+        st0 = load_json(JANITOR_PATH, {})
+        st0.update({"idle_since": idle, "volume_unused_since": vols_now, "last_run": now})
+        save_json(JANITOR_PATH, st0)
+    if only:
+        return acts
     act("prune anonymous volumes not used by any container", "volume", "prune", "-f")
     act("prune dangling images", "image", "prune", "-f")
     act("prune images unused for %dd" % cfg["image_unused_days"], "image", "prune", "-af",
         "--filter", "until=%dh" % (cfg["image_unused_days"] * 24))
     act("prune build cache older than 7d", "builder", "prune", "-f", "--filter", "until=168h")
-    rc, out, _ = run(["ssh", "-o", "BatchMode=yes", cfg["host"],
-                      "PATH=/opt/homebrew/bin:$PATH colima ssh -- df -P /var/lib/docker | tail -1"],
-                     timeout=30)
-    m = re.search(r"(\d+)%", out)
-    if m:
-        pct = int(m.group(1))
+    act("cap build cache at 5GB", "builder", "prune", "-f", "--keep-storage", "5gb")
+    # Mini host housekeeping in one ssh round-trip: VM disk %, host free GB, log caps, journald,
+    # fstrim (hands freed VM blocks back to macOS).
+    maxb = cfg["host_log_max_mb"] * 1024 * 1024
+    script = (
+        "export PATH=/opt/homebrew/bin:$PATH; "
+        "echo VMDISK $(colima ssh -- df -P /var/lib/docker | tail -1 | awk '{print $5}'); "
+        "echo HOSTFREE $(df -k / | tail -1 | awk '{print int($4/1048576)}'); "
+        + ("" if dry else
+           "for f in ~/.colima/_lima/colima/*.log /opt/homebrew/var/log/colima.log; do "
+           "[ -f \"$f\" ] && [ $(stat -f%z \"$f\") -gt " + str(maxb) + " ] && "
+           "tail -c 5000000 \"$f\" > \"$f.tmp\" && cat \"$f.tmp\" > \"$f\" && rm -f \"$f.tmp\" && echo TRUNC $f; done; "
+           "colima ssh -- sudo journalctl --vacuum-size=200M >/dev/null 2>&1; "
+           "colima ssh -- sudo fstrim -a >/dev/null 2>&1; true"))
+    rc, out, _ = run(["ssh", "-o", "BatchMode=yes", cfg["host"], script], timeout=180)
+    for t in re.findall(r"TRUNC (\S+)", out):
+        log("janitor: truncated %s to 5MB (cap %dMB)" % (t, cfg["host_log_max_mb"]))
+    m = re.search(r"VMDISK (\d+)%", out)
+    f = re.search(r"HOSTFREE (\d+)", out)
+    pct = int(m.group(1)) if m else None
+    free = int(f.group(1)) if f else None
+    if pct is not None:
         acts.append("VM disk %d%% used" % pct)
-        if pct >= cfg["disk_high_pct"]:
-            log("janitor: VM disk %d%% >= %d%% - aggressive prune" % (pct, cfg["disk_high_pct"]))
-            act("prune ALL unused images (disk high)", "image", "prune", "-af")
-            act("prune ALL build cache (disk high)", "builder", "prune", "-af")
+    if free is not None:
+        acts.append("mini disk %dGB free" % free)
+    high = (pct is not None and pct >= cfg["disk_high_pct"]) or (
+        free is not None and free < cfg["host_min_free_gb"])
+    if high:
+        log("janitor: WARNING disk pressure (VM %s%%, mini free %sGB) - aggressive prune" % (pct, free))
+        act("prune ALL unused images (disk high)", "image", "prune", "-af")
+        act("prune ALL build cache (disk high)", "builder", "prune", "-af")
+    if pct is not None and pct >= cfg["disk_critical_pct"]:
+        act("remove ALL stopped containers (disk critical)", "container", "prune", "-f")
+        act("prune anonymous volumes (disk critical)", "volume", "prune", "-f")
+    if not dry:
+        st0 = load_json(JANITOR_PATH, {})
+        st0.update({"vm_disk_pct": pct, "mini_free_gb": free})
+        save_json(JANITOR_PATH, st0)
     return acts
+
+
+def mini_engine_kick(cfg):
+    """Mini reachable but its engine is down (e.g. it rebooted; Colima's LaunchAgent waits for a GUI
+    login that never comes) -> start Colima over ssh. The VM keeps running after ssh exits."""
+    rc, out, err = run(["ssh", "-o", "BatchMode=yes", cfg["host"],
+                        "export PATH=/opt/homebrew/bin:$PATH; colima status >/dev/null 2>&1 || colima start"],
+                       timeout=240)
+    log("mini engine was down -> colima start (%s)" % ("ok" if rc == 0 else "FAILED: " + (err or out).strip()[-200:]))
+
+
+def apply_when_idle(cfg):
+    """Restart Colima to apply pending config (e.g. log caps) only when nothing runs on the mini."""
+    st = load_json(JANITOR_PATH, {})
+    if not st.get("restart_pending"):
+        return
+    rc, out, _ = dk(cfg["remote_context"], "ps", "-q", timeout=20)
+    if rc != 0 or out.strip():
+        return
+    log("applying pending mini config: colima restart (mini idle)")
+    rc, _, err = run(["ssh", "-o", "BatchMode=yes", cfg["host"],
+                      "export PATH=/opt/homebrew/bin:$PATH; brew services restart colima >/dev/null 2>&1; "
+                      "for i in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done; docker info >/dev/null"],
+                     timeout=240)
+    if rc == 0:
+        st["restart_pending"] = False
+        save_json(JANITOR_PATH, st)
+        log("pending mini config applied")
+    else:
+        log("colima restart failed: " + err.strip()[-200:])
 
 TS_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 
@@ -765,6 +894,7 @@ def daemon():
     next_tick = 0
     next_janitor = time.time() + 60
     next_ts_kick = 0
+    next_engine_kick = 0
     idle_since = None
     while True:
         cfg = load_cfg()
@@ -782,6 +912,11 @@ def daemon():
                     log("mini unreachable and laptop Tailscale was stopped -> started it")
                     h = probe_health(cfg, check_docker=True)
                     save_json(HEALTH_PATH, h)
+            if h["reachable"] and not h.get("docker_ok") and now >= next_engine_kick:
+                next_engine_kick = now + 600
+                mini_engine_kick(cfg)
+                h = probe_health(cfg, check_docker=True)
+                save_json(HEALTH_PATH, h)
             target, why = resolve_target(cfg)
             set_global_context(cfg, target)
             if h["reachable"] and h.get("docker_ok"):
@@ -790,6 +925,7 @@ def daemon():
                     next_janitor = now + cfg["janitor_interval_min"] * 60
                     try:
                         janitor(cfg)
+                        apply_when_idle(cfg)
                     except Exception as e:  # a janitor bug must never kill the forwarder
                         log("janitor error: %s" % e)
             # Quit an idle laptop engine (that's the RAM we came here to free).
@@ -880,13 +1016,18 @@ def link(src, dst):
 def install(cfg):
     ensure_dirs()
     real = real_docker()
-    # 1. docker context for the mini
-    if run([real, "context", "inspect", cfg["remote_context"]], timeout=10)[0] != 0:
-        rc, _, err = run([real, "context", "create", cfg["remote_context"], "--description",
-                          "Mac mini over Tailscale (rdocker)", "--docker",
-                          "host=ssh://" + cfg["host"]], timeout=15)
-        print(("created" if rc == 0 else "FAILED to create") + " docker context " +
-              cfg["remote_context"] + ("" if rc == 0 else ": " + err.strip()))
+    # 1. docker context for the mini = the mini's docker socket, streamed over the SSH master
+    if not cfg["remote_socket"]:
+        rc, out, _ = run(["ssh", "-o", "BatchMode=yes", cfg["host"], "echo $HOME"], timeout=20)
+        if rc == 0 and out.strip():
+            cfg["remote_socket"] = out.strip() + "/.colima/default/docker.sock"
+    verb = "update" if run([real, "context", "inspect", cfg["remote_context"]],
+                           timeout=10)[0] == 0 else "create"
+    rc, _, err = run([real, "context", verb, cfg["remote_context"], "--description",
+                      "Mac mini over Tailscale (rdocker)", "--docker",
+                      "host=unix://" + MINI_SOCK], timeout=15)
+    print(("%sd" % verb if rc == 0 else "FAILED to %s" % verb) + " docker context " +
+          cfg["remote_context"] + ("" if rc == 0 else ": " + err.strip()))
     # 2. tailnet IP for fast reachability checks
     if not cfg["host_ip"]:
         try:
@@ -1070,7 +1211,11 @@ def main(argv):
         path = ROUTE_LOG if "--route" in argv else LOG_PATH
         os.execvp("tail", ["tail", "-n", "60", path])
     if cmd == "clean":
-        for a in janitor(cfg, dry="--dry-run" in argv):
+        for k in ("idle_stop_hours", "exited_rm_hours", "volume_unused_days"):  # test overrides
+            if "--" + k in argv:
+                cfg[k] = float(argv[argv.index("--" + k) + 1])
+        only = argv[argv.index("--only") + 1] if "--only" in argv else None
+        for a in janitor(cfg, dry="--dry-run" in argv, only=only):
             print(("would: " if "--dry-run" in argv else "") + a)
         return 0
     if cmd == "install":
