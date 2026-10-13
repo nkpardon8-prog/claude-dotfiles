@@ -573,12 +573,13 @@ class Engines:
         return self._mini
 
     def slow(self):
-        """Reason string when the (usable) mini is slower than max_rtt_ms, else None. Consulted ONLY
-        for new throwaway containers (route_creating); every other command ignores RTT."""
+        """Reason string when the (usable) mini has been slower than max_rtt_ms on the last
+        RTT_SLOW_READINGS consecutive health readings, else None (one spike does not count).
+        Consulted ONLY for new throwaway containers (route_creating); every other command ignores RTT."""
         h = rd_tunnel.health(self.cfg)
-        rtt = h.get("rtt_ms") or 0
-        if self.cfg["max_rtt_ms"] and rtt > self.cfg["max_rtt_ms"]:
-            return "mini round-trip %sms > %sms" % (rtt, self.cfg["max_rtt_ms"])
+        if rd_tunnel.slow_streak(h, self.cfg["max_rtt_ms"]):
+            return "mini round-trip %sms > %sms on %d consecutive readings" % (
+                h.get("rtt_ms"), self.cfg["max_rtt_ms"], rd_tunnel.RTT_SLOW_READINGS)
         return None
 
     def laptop_up(self):
@@ -612,7 +613,9 @@ def locate(eng, names, probe, hinted, readonly, what):
 
     The mini is asked only over a usable tunnel. The laptop is asked when Docker Desktop is up; if it
     is down and a pin/fallback pin names a target, Desktop is started first. Otherwise a down laptop
-    engine counts as "not there". Pins are hints only: the actual location wins."""
+    engine counts as "not there". Pins are hints only: the actual location wins - except that a
+    pinned name found on the laptop routes there even when the mini cannot answer (unpinned laptop
+    finds stay refused for mutating commands: genuinely ambiguous)."""
     cfg = eng.cfg
     mini_ok, mini_why = eng.mini()
     laptop_known = True
@@ -629,9 +632,13 @@ def locate(eng, names, probe, hinted, readonly, what):
             owners[n] = "local" if n in hinted else "mini"
         elif m is True:
             owners[n] = "mini"
-        elif lap is True and m is False:
+        elif lap is True and (m is False or n in hinted):
+            # Found on the laptop and either the mini said "No such", or the mini could not answer
+            # but a pin (manual, compose, or a fallback pin recorded when the shim itself created it
+            # here) says it lives on the laptop: pinned laptop containers keep working while the mini
+            # is unreachable or slow.
             owners[n] = "local"
-        elif lap is True:       # mini could not answer: it may hold a same-named one
+        elif lap is True:       # mini could not answer, no pin: it may hold a same-named one
             if not readonly:
                 raise Refuse("cannot tell where %s %s lives (%s; found on the laptop, but the mini "
                              "may hold one with the same name) - refusing to guess"

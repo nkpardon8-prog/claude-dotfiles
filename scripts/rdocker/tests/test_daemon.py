@@ -65,7 +65,7 @@ class Schedule(unittest.TestCase):
         with mock.patch.object(rd_daemon, "time", ft), \
                 mock.patch.object(rd_common, "load_cfg", lambda: dict(cfg)), \
                 mock.patch.object(rd_common, "log", lambda *a, **k: None), \
-                mock.patch.object(rd_tunnel, "refresh_health", lambda c: healthy), \
+                mock.patch.object(rd_tunnel, "refresh_health", lambda c, **k: healthy), \
                 mock.patch.object(rd_tunnel, "resolve_target", lambda c: ("mini", "ok")), \
                 mock.patch.object(rd_tunnel, "sync_forwards", lambda c, **k: (True, None)), \
                 mock.patch.object(rd_daemon, "set_global_context", lambda c, t: None), \

@@ -23,6 +23,7 @@ HEALTH_PATH = os.path.join(STATE_DIR, "health.json")
 HEALTH_LOCK = os.path.join(STATE_DIR, "health.lock")   # one inline health probe at a time
 FORWARDS_PATH = os.path.join(STATE_DIR, "forwards.json")
 LOCK_PATH = os.path.join(STATE_DIR, "sync.lock")
+MASTER_LOCK = os.path.join(STATE_DIR, "master.lock")   # serializes ssh master (re)creation, all processes
 FWD_SOCK = os.path.join(STATE_DIR, "fwd.sock")
 MINI_SOCK = os.path.join(STATE_DIR, "mini-docker.sock")   # laptop end of the mini docker socket
 LOG_PATH = os.path.join(STATE_DIR, "daemon.log")

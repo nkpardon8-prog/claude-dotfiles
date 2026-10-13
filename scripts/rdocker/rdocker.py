@@ -8,7 +8,7 @@ The laptop's `docker` (via the shim in ~/.local/bin) is routed per call:
   * mini unreachable (mode=auto) -> only NEW throwaway containers (--rm, or no named volume and
     no rdocker.keep label) fall back to the laptop, with a one-line notice; anything that keeps
     data is refused (exit 1) rather than created on the wrong engine. A slow mini (round-trip
-    > max_rtt_ms) likewise sends only new throwaway containers to the laptop.
+    > max_rtt_ms on 2 consecutive readings) likewise sends only new throwaway containers to the laptop.
 Published ports of mini containers are mirrored onto the laptop's 127.0.0.1 through one SSH
 ControlMaster, so `localhost:<port>` keeps working (same port number on both sides).
 

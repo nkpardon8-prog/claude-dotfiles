@@ -2,6 +2,23 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-13 - rdocker live fixes
+
+- Fallback-pinned laptop containers kept working only while the mini answered: with the mini unreachable
+  or slow, every `exec` on a container the shim had just created on the laptop was refused ("cannot tell
+  where ... refusing to guess"). A name found on the laptop that is pinned (fallback pin, manual pin, or
+  pinned compose project) now routes to the laptop even when the mini cannot answer; unpinned laptop
+  finds stay refused for mutating commands.
+- SSH master: a busy master (e.g. carrying a 250 MB transfer) is no longer torn down after one failed
+  `ssh true`. Only the forwarder rebuilds a master `-O check` reports alive, after 3 consecutive failed
+  liveness checks spanning >= 45 s; a gone master is rebuilt at once; a `-O check` timeout on a live
+  control socket counts as busy. Master (re)creation is serialized across processes by
+  `~/.local/state/rdocker/master.lock` with a re-check after locking, so two masters can no longer start
+  at once (which killed every window's connections and port mirrors).
+- RTT gate: new throwaway containers move to the laptop only after 2 consecutive slow health readings
+  (`health.json` `rtt_hist` keeps the last 3); a single slow sample no longer starts Docker Desktop. An
+  engine that does not answer still falls back immediately.
+
 ## 2026-10-13 - rdocker Phase 2 review fixes
 
 - Mini engine restart (could kill every agent's live DB on a false alarm): a VM-up `colima restart` now

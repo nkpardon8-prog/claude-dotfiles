@@ -151,6 +151,35 @@ class RefuseUnknown(ShimCase):
         self.assertEqual(p.returncode, 1)
         self.assertEqual(self.calls("stop"), [])
 
+    def test_fallback_pinned_laptop_container_execs_while_mini_unknown(self):
+        # live 2026-10-13: a throwaway run fell back (slow mini) and every later `exec` was refused
+        pin = {"fallback": [{"name": "vit-db", "kind": "container", "ts": time.time()}]}
+        for i, health in enumerate(({"reachable": False, "docker_ok": False, "rtt_ms": None},
+                                    {"reachable": True, "docker_ok": False, "rtt_ms": None})):
+            with self.subTest(health=health):
+                if os.path.exists(self.log):
+                    os.unlink(self.log)
+                self.scenario(health=health, pins=pin, laptop={"containers": {"vit-db": {}}},
+                              tunnel=False, laptop_up=(i == 0))   # Desktop socket stays bound
+                p = self.shim("exec", "vit-db", "psql")
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual([c for c, _ in self.calls("exec")], ["desktop-linux"])
+
+    def test_manually_pinned_laptop_container_stops_while_mini_down(self):
+        self.scenario(health={"reachable": False, "docker_ok": False},
+                      pins={"containers": ["X"]}, laptop={"containers": {"X": {}}}, tunnel=False)
+        p = self.shim("stop", "X")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c for c, _ in self.calls("stop")], ["desktop-linux"])
+
+    def test_unpinned_laptop_container_exec_while_mini_unknown_refuses(self):
+        self.scenario(health={"reachable": True, "docker_ok": False},
+                      laptop={"containers": {"X": {}}}, tunnel=False)
+        p = self.shim("exec", "X", "ls")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("refusing to guess", p.stderr)
+        self.assertEqual(self.calls("exec"), [])
+
     def test_found_only_locally_while_mini_down_mutating_refuses(self):
         self.scenario(health={"reachable": False, "docker_ok": False},
                       laptop={"containers": {"X": {}}})
@@ -251,8 +280,11 @@ class FallbackPolicy(ShimCase):
 
 
 class SlowMiniOnlyMovesThrowaways(ShimCase):
-    """Auto mode, mini usable but rtt_ms > max_rtt_ms: only NEW throwaway containers go to the laptop."""
-    SLOW = {"rtt_ms": 500.0}
+    """Auto mode, mini usable but rtt_ms > max_rtt_ms on the last 2 consecutive health readings: only
+    NEW throwaway containers go to the laptop."""
+    NOW = time.time()
+    SLOW = {"rtt_ms": 500.0, "rtt_hist": [[NOW - 30, 20.0], [NOW - 15, 450.0], [NOW, 500.0]]}
+    SPIKE = {"rtt_ms": 827.4, "rtt_hist": [[NOW - 30, 20.0], [NOW - 15, 25.0], [NOW, 827.4]]}
 
     def test_ps_stays_on_mini(self):
         self.scenario(health=self.SLOW)
@@ -271,7 +303,22 @@ class SlowMiniOnlyMovesThrowaways(ShimCase):
         p = self.shim("run", "--rm", "alpine", "true")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual([c for c, _ in self.calls("run")], ["desktop-linux"])
-        self.assertIn("running on the laptop (mini round-trip 500.0ms > 300ms)", p.stderr)
+        self.assertIn("running on the laptop (mini round-trip 500.0ms > 300ms on 2 consecutive "
+                      "readings)", p.stderr)
+
+    def test_single_slow_reading_keeps_throwaway_on_mini(self):
+        # live 2026-10-13: one 827 ms sample sent a vitest db to the laptop (starting Docker Desktop)
+        self.scenario(health=self.SPIKE)
+        p = self.shim("run", "--rm", "alpine", "true")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c for c, _ in self.calls("run")], ["mini"])
+        self.assertNotIn("running on the laptop", p.stderr)
+
+    def test_engine_silent_still_falls_back_immediately(self):
+        self.scenario(health={"docker_ok": False, "rtt_ms": None, "rtt_hist": [[self.NOW, None]]})
+        p = self.shim("run", "--rm", "alpine", "true")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c for c, _ in self.calls("run")], ["desktop-linux"])
 
     def test_named_volume_run_stays_on_mini(self):
         self.scenario(health=self.SLOW)

@@ -160,6 +160,70 @@ class HealthFreshness(InHome):
         self.assertEqual(out, {"calls": 1, "docker_ok": False, "stored_ok": False, "again": False})
 
 
+class RttHistory(unittest.TestCase):
+    """health.json keeps the last 3 round-trips; only 2 consecutive slow readings count as slow."""
+
+    def setUp(self):
+        from rdmods import r
+        self.r = r
+
+    def reading(self, ts, rtt, ok=True):
+        return {"ts": ts, "reachable": True, "docker_ok": ok, "rtt_ms": rtt if ok else None}
+
+    def chain(self, *readings):
+        h = None
+        for rd in readings:
+            h = self.r.with_rtt_hist(rd, h)
+        return h
+
+    def test_history_capped_at_three_newest_last(self):
+        h = self.chain(*[self.reading(t, 10.0 * t) for t in range(1, 6)])
+        self.assertEqual(h["rtt_hist"], [[3, 30.0], [4, 40.0], [5, 50.0]])
+
+    def test_single_spike_is_not_slow(self):
+        h = self.chain(self.reading(0, 20.0), self.reading(15, 827.4))
+        self.assertFalse(self.r.slow_streak(h, 300))
+
+    def test_two_consecutive_slow_readings_are_slow(self):
+        h = self.chain(self.reading(0, 20.0), self.reading(15, 400.0), self.reading(30, 827.4))
+        self.assertTrue(self.r.slow_streak(h, 300))
+
+    def test_engine_silence_breaks_the_streak(self):
+        h = self.chain(self.reading(0, 400.0), self.reading(15, None, ok=False),
+                       self.reading(30, 500.0))
+        self.assertFalse(self.r.slow_streak(h, 300))
+
+    def test_readings_far_apart_are_not_consecutive(self):
+        h = self.chain(self.reading(0, 400.0), self.reading(3600, 500.0))
+        self.assertFalse(self.r.slow_streak(h, 300))
+
+    def test_engine_down_now_is_never_slow(self):
+        h = self.chain(self.reading(0, 400.0), self.reading(15, 500.0))
+        self.assertFalse(self.r.slow_streak(dict(h, docker_ok=False), 300))
+
+    def test_garbage_history_is_ignored(self):
+        h = self.r.with_rtt_hist(self.reading(5, 400.0), {"rtt_hist": "junk"})
+        self.assertEqual(h["rtt_hist"], [[5, 400.0]])
+        self.assertFalse(self.r.slow_streak({"docker_ok": True, "rtt_hist": [["x", 1]] * 2}, 0.5))
+
+
+class RefreshHealthKeepsHistory(InHome):
+    def test_refresh_appends_to_stored_history(self):
+        out = self.run_py("""
+            seq = iter([400.0, 20.0, 500.0, 600.0])
+            rd_tunnel.probe_health = lambda cfg: {"ts": time.time(), "reachable": True,
+                                                  "docker_ok": True, "rtt_ms": next(seq)}
+            cfg = r.load_cfg()
+            for _ in range(4):
+                r.refresh_health(cfg)
+            with open(r.HEALTH_PATH) as f:
+                h = json.load(f)
+            print(json.dumps({"rtts": [x[1] for x in h["rtt_hist"]],
+                              "slow": r.slow_streak(h, 300)}))
+        """)
+        self.assertEqual(out, {"rtts": [20.0, 500.0, 600.0], "slow": True})
+
+
 class ProbeFailureClassification(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -177,27 +241,171 @@ class ProbeFailureClassification(unittest.TestCase):
 
 
 class ProbeHealthBranches(InHome):
-    """probe_health with the ssh/docker edges stubbed: only a dead tunnel may reset the master."""
+    """probe_health with the ssh/docker edges stubbed: only the daemon (with a StaleMaster) may
+    rebuild a live master, and only after persistent liveness failures."""
     BODY = """
         resets = []
         rd_tunnel.docker_probe = lambda cfg: (False, "", 4000.0)
-        rd_tunnel.master_pid = lambda cfg: 4242
+        rd_tunnel.master_state = lambda cfg: ("up", 4242)
         rd_tunnel.tunnel_alive = lambda cfg: %s
-        rd_tunnel.reset_master = lambda cfg: resets.append(1)
-        h = r.probe_health(r.load_cfg())
+        rd_tunnel.reset_master = lambda cfg, pid: resets.append(pid)
+        h = r.probe_health(r.load_cfg(), %s)
         print(json.dumps({"resets": len(resets), "reachable": h["reachable"],
                           "docker_ok": h["docker_ok"], "failure": h["failure"]}))
     """
 
     def test_engine_down_keeps_master(self):
-        out = self.run_py(self.BODY % "True")
+        out = self.run_py(self.BODY % ("True", "rd_tunnel.StaleMaster()"))
         self.assertEqual(out, {"resets": 0, "reachable": True, "docker_ok": False,
                                "failure": "engine"})
 
-    def test_stale_tunnel_resets_and_retries(self):
-        out = self.run_py(self.BODY % "False")
-        self.assertEqual(out, {"resets": 1, "reachable": True, "docker_ok": False,
+    def test_shim_never_rebuilds_a_live_master(self):
+        out = self.run_py(self.BODY % ("False", "None"))
+        self.assertEqual(out, {"resets": 0, "reachable": True, "docker_ok": False,
                                "failure": "tunnel"})
+
+    def test_busy_master_not_rebuilt_before_three_fails_over_45s(self):
+        # live 2026-10-13: one failed `ssh true` during a 250 MB transfer rebuilt the master
+        out = self.run_py("""
+            resets = []
+            rd_tunnel.docker_probe = lambda cfg: (False, "", 4000.0)
+            rd_tunnel.master_state = lambda cfg: ("up", 4242)
+            rd_tunnel.tunnel_alive = lambda cfg: False
+            rd_tunnel.reset_master = lambda cfg, pid: resets.append(pid)
+            clock = {"t": 0.0}
+            stale = rd_tunnel.StaleMaster(clock=lambda: clock["t"])
+            seen = []
+            for t in (0, 15, 30, 45, 60):
+                clock["t"] = float(t)
+                r.probe_health(r.load_cfg(), stale)
+                seen.append(len(resets))
+            # three fails inside 45 s are not enough either; a success resets the count
+            resets2 = []
+            rd_tunnel.reset_master = lambda cfg, pid: resets2.append(pid)
+            s2 = rd_tunnel.StaleMaster(clock=lambda: clock["t"])
+            for t in (100, 110, 120):
+                clock["t"] = float(t)
+                r.probe_health(r.load_cfg(), s2)
+            rd_tunnel.tunnel_alive = lambda cfg: True
+            r.probe_health(r.load_cfg(), s2)            # engine-class reading: tunnel answered
+            rd_tunnel.tunnel_alive = lambda cfg: False
+            for t in (150, 200):
+                clock["t"] = float(t)
+                r.probe_health(r.load_cfg(), s2)
+            print(json.dumps({"seen": seen, "pids": resets, "resets2": len(resets2)}))
+        """)
+        self.assertEqual(out, {"seen": [0, 0, 0, 1, 1], "pids": [4242], "resets2": 0})
+
+    def test_busy_check_timeout_is_reachable_and_not_rebuilt(self):
+        out = self.run_py("""
+            resets = []
+            rd_tunnel.docker_probe = lambda cfg: (False, "", 4000.0)
+            rd_tunnel.master_state = lambda cfg: ("busy", None)
+            rd_tunnel.reset_master = lambda cfg, pid: resets.append(pid)
+            h = r.probe_health(r.load_cfg(), rd_tunnel.StaleMaster())
+            print(json.dumps({"resets": len(resets), "reachable": h["reachable"]}))
+        """)
+        self.assertEqual(out, {"resets": 0, "reachable": True})
+
+
+SSH_STUB = """
+    import threading
+    MASTER = os.path.join(r.STATE_DIR, "fake-master")
+    STARTS = os.path.join(r.STATE_DIR, "starts.log")
+    import rd_common
+
+    def fake_ctl(cfg, *args, timeout=10):
+        if args[:2] == ("-O", "check"):
+            if os.path.exists(MASTER):
+                with open(MASTER) as f:
+                    return 0, "", "Master running (pid=%s)\\n" % f.read().strip()
+            return 255, "", "Control socket connect: No such file or directory"
+        return 0, "", ""
+
+    real_run = rd_common.run
+    def fake_run(cmd, timeout=30, input_=None):
+        if cmd[:1] == ["ssh"] and "-M" in cmd:
+            time.sleep(0.3)                      # widen the race window
+            with open(STARTS, "a") as f:
+                f.write("%d\\n" % os.getpid())
+            with open(MASTER, "w") as f:
+                f.write(str(os.getpid()))
+            return 0, "", ""
+        return real_run(cmd, timeout, input_)
+
+    rd_tunnel.ssh_ctl = fake_ctl
+    rd_common.run = fake_run
+
+    def starts():
+        try:
+            with open(STARTS) as f:
+                return [l for l in f.read().split() if l]
+        except OSError:
+            return []
+"""
+
+
+class MasterCreation(InHome):
+    """ensure_master: a dead master is rebuilt at once; concurrent callers start exactly one."""
+
+    def test_dead_master_rebuilt_immediately(self):
+        out = self.run_py(textwrap.dedent(SSH_STUB) + textwrap.dedent("""
+            r.ensure_dirs()
+            pid = rd_tunnel.ensure_master(r.load_cfg())
+            print(json.dumps({"starts": len(starts()), "pid": pid == os.getpid()}))
+        """))
+        self.assertEqual(out, {"starts": 1, "pid": True})
+
+    def test_live_master_not_restarted(self):
+        out = self.run_py(textwrap.dedent(SSH_STUB) + textwrap.dedent("""
+            r.ensure_dirs()
+            with open(MASTER, "w") as f:
+                f.write("777")
+            pid = rd_tunnel.ensure_master(r.load_cfg())
+            print(json.dumps({"starts": len(starts()), "pid": pid}))
+        """))
+        self.assertEqual(out, {"starts": 0, "pid": 777})
+
+    def test_concurrent_processes_start_exactly_one_master(self):
+        out = self.run_py(textwrap.dedent(SSH_STUB) + textwrap.dedent("""
+            import multiprocessing as mp
+
+            def go(_):
+                rd_tunnel.ensure_master(r.load_cfg())
+
+            if __name__ == "__main__":
+                r.ensure_dirs()
+                procs = [mp.Process(target=go, args=(i,)) for i in range(4)]
+                for p in procs:
+                    p.start()
+                for p in procs:
+                    p.join()
+                print(json.dumps({"starts": len(starts()), "codes": [p.exitcode for p in procs]}))
+        """))
+        self.assertEqual(out, {"starts": 1, "codes": [0] * 4})
+
+    def test_concurrent_threads_start_exactly_one_master(self):
+        out = self.run_py(textwrap.dedent(SSH_STUB) + textwrap.dedent("""
+            r.ensure_dirs()
+            ts = [threading.Thread(target=rd_tunnel.ensure_master, args=(r.load_cfg(),))
+                  for _ in range(4)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            print(json.dumps({"starts": len(starts())}))
+        """))
+        self.assertEqual(out, {"starts": 1})
+
+    def test_reset_skips_when_another_process_already_replaced_it(self):
+        out = self.run_py(textwrap.dedent(SSH_STUB) + textwrap.dedent("""
+            r.ensure_dirs()
+            with open(MASTER, "w") as f:
+                f.write("999")                 # someone already replaced stale pid 4242
+            pid = rd_tunnel.reset_master(r.load_cfg(), 4242)
+            print(json.dumps({"starts": len(starts()), "pid": pid}))
+        """))
+        self.assertEqual(out, {"starts": 0, "pid": 999})
 
 
 class RawSocketProbe(unittest.TestCase):

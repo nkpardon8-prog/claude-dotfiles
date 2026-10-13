@@ -388,7 +388,7 @@ class DaemonCounting(unittest.TestCase):
             with mock.patch.object(rd_daemon, "time", ft), \
                     mock.patch.object(rd_common, "load_cfg", lambda: dict(cfg)), \
                     mock.patch.object(rd_common, "log", lambda *a, **k: None), \
-                    mock.patch.object(rd_daemon.rd_tunnel, "refresh_health", lambda c: next(seq)), \
+                    mock.patch.object(rd_daemon.rd_tunnel, "refresh_health", lambda c, **k: next(seq)), \
                     mock.patch.object(rd_daemon.rd_tunnel, "resolve_target", lambda c: ("local", "")), \
                     mock.patch.object(rd_daemon, "set_global_context", lambda c, t: None), \
                     mock.patch.object(rd_daemon, "idle_step", lambda *a: False), \
@@ -552,7 +552,7 @@ class DoctorEngine(unittest.TestCase):
         healths = iter([{"reachable": True, "docker_ok": False},
                         {"reachable": True, "docker_ok": True, "server_version": "28", "rtt_ms": 9}])
         cfg = rd_common.merge_cfg({})
-        with mock.patch.object(rd_setup.rd_tunnel, "refresh_health", lambda c: next(healths)), \
+        with mock.patch.object(rd_setup.rd_tunnel, "refresh_health", lambda c, **k: next(healths)), \
                 mock.patch.object(rd_janitor, "mini_engine_kick", return_value="started") as kick, \
                 mock.patch.object(rd_common, "run", return_value=(0, "", "")) as run_, \
                 mock.patch.object(rd_setup.rd_tunnel, "resolve_target", lambda c: ("mini", "ok")), \

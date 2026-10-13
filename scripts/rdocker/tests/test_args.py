@@ -187,7 +187,9 @@ class RealDockerSkipsShim(unittest.TestCase):
         import tempfile
         d = tempfile.mkdtemp()
         shim = os.path.join(d, "docker-shim")
-        open(shim, "w").write("#!/bin/sh\n"); os.chmod(shim, 0o755)
+        with open(shim, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(shim, 0o755)
         os.symlink(shim, os.path.join(d, "docker"))
         old = os.environ["PATH"]
         os.environ["PATH"] = d + ":" + old

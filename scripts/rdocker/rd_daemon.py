@@ -370,6 +370,7 @@ def daemon():
     rd_common.write_state(rd_common.DAEMON_PATH, {"pid": os.getpid(), "started": time.time(),
                                                   "code_mtime": code_mtime(st["mtimes"])})
     jobs = {}
+    stale = rd_tunnel.StaleMaster()     # only the daemon may rebuild a live-but-unresponsive master
     ev = {"p": None, "started": None, "next": start, "backoff": 5}
     last = {"tick": None, "ts_kick": None, "engine_kick": None, "flag_check": None,
             # first janitor JANITOR_FIRST_DELAY after start, whatever the interval
@@ -384,12 +385,12 @@ def daemon():
             if cfg["mode"] == "off":
                 time.sleep(rd_common.PERIODIC)
                 continue
-            h = rd_tunnel.refresh_health(cfg)
+            h = rd_tunnel.refresh_health(cfg, stale=stale)
             if not h["reachable"] and due(last["ts_kick"], TS_KICK_EVERY, now):
                 last["ts_kick"] = now
                 if tailscale_up():
                     rd_common.log("mini unreachable and laptop Tailscale was stopped -> started it")
-                    h = rd_tunnel.refresh_health(cfg)
+                    h = rd_tunnel.refresh_health(cfg, stale=stale)
             healthy = h["reachable"] and h.get("docker_ok")
             st["engine_fail_since"] = engine_fail_since(st["engine_fail_since"], h, now)
             if h["reachable"] and not h.get("docker_ok"):

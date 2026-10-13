@@ -122,12 +122,49 @@ def docker_probe(cfg):
     return True, ver, ms
 
 
-def reset_master(cfg):
-    """Drop a possibly-wedged SSH master (e.g. after a network change) and rebuild it."""
+def reset_master(cfg, stale_pid):
+    """Replace the master `stale_pid` (live per -O check, but its sessions stopped answering) with a
+    fresh one. Under MASTER_LOCK: if another process already replaced it, keep theirs."""
     rd_common.ensure_dirs()
-    with rd_common.file_lock(rd_common.LOCK_PATH):
-        ssh_ctl(cfg, "-O", "exit", timeout=5)
-        ensure_master(cfg)
+    with rd_common.file_lock(rd_common.LOCK_PATH), rd_common.file_lock(rd_common.MASTER_LOCK):
+        state, pid = master_state(cfg)
+        if state == "up" and pid != stale_pid:
+            rd_common.log("ssh master pid=%s already replaced by pid=%s - keeping it" % (stale_pid, pid))
+        else:
+            if state != "down":
+                ssh_ctl(cfg, "-O", "exit", timeout=5)
+            _start_master(cfg)
+    return ensure_master(cfg)       # finds the new master up; re-adds the docker socket forward
+
+
+STALE_FAILS = 3        # consecutive failed liveness checks of a live (-O check ok) master ...
+STALE_SPAN = 45        # ... spanning at least this many seconds before the daemon rebuilds it
+
+
+class StaleMaster:
+    """Daemon-only memory of liveness-check failures against a master that `-O check` reports alive.
+
+    A master busy carrying a big transfer can miss a 5 s `ssh ... true`; rebuilding it would kill
+    every window's docker connections and port mirrors. So a rebuild needs STALE_FAILS consecutive
+    failures spanning >= STALE_SPAN seconds (monotonic) against the same master pid."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.clear()
+
+    def clear(self):
+        self.pid, self.first, self.count = None, None, 0
+
+    def fail(self, pid):
+        """Record one failed liveness check of master `pid`; True when it is now due a rebuild."""
+        now = self.clock()
+        if pid != self.pid:
+            self.clear()
+            self.pid = pid
+        if self.first is None:
+            self.first = now
+        self.count += 1
+        return self.count >= STALE_FAILS and now - self.first >= STALE_SPAN
 
 
 def tunnel_alive(cfg):
@@ -147,26 +184,45 @@ def classify_probe_failure(docker_ok, ssh_ok):
     return "engine" if ssh_ok else "tunnel"
 
 
-def probe_health(cfg):
+def probe_health(cfg, stale=None):
     """Authenticated health reading - no raw TCP to the mini's sshd (OpenSSH PerSourcePenalties).
 
     docker_ok = the mini engine answered `GET /_ping` on the forwarded socket within PROBE_TIMEOUT;
     rtt_ms = that request's round-trip; reachable = engine answered or the ssh master is up and live.
     On failure with a master present, `ssh ... true` over the master decides: live -> engine
-    problem (slow/down docker), the master and every port mirror are left alone; dead/timeout ->
-    stale tunnel, so exit + rebuild the master and retry the probe once. With no master at all the
-    mini is simply unreachable (ensure_mini_socket already tried to connect) - no second attempt.
+    problem (slow/down docker), the master and every port mirror are left alone. Dead/timeout ->
+    maybe stale, maybe just busy: only the daemon (stale = its StaleMaster) rebuilds, and only once
+    StaleMaster says the failures are persistent; then it retries the probe once. A shim never
+    rebuilds a live master. A master that is gone (-O check fails) was already rebuilt on the spot by
+    ensure_mini_socket inside docker_probe.
     failure = 'engine' (live tunnel, engine silent: the daemon counts these toward a colima
     restart), 'tunnel' (anything else that failed) or None."""
     ok, ver, ms = docker_probe(cfg)
-    if not ok and master_pid(cfg):
-        if classify_probe_failure(ok, tunnel_alive(cfg)) == "engine":
+    state, pid = ("up", None) if ok else master_state(cfg)
+    if not ok and state != "down":
+        # busy (-O check timed out on a live control socket) = the master is too loaded for a session
+        # channel too: treated as a failed liveness check, same persistence rule
+        alive = state == "up" and tunnel_alive(cfg)
+        if classify_probe_failure(ok, alive) == "engine":
+            if stale is not None:
+                stale.clear()
             return {"ts": time.time(), "reachable": True, "docker_ok": False,
                     "rtt_ms": None, "server_version": "", "failure": "engine"}
-        rd_common.log("ssh master stale (liveness check failed) -> rebuilding")
-        reset_master(cfg)
+        if stale is None or not stale.fail(pid):
+            if stale is not None:
+                rd_common.log("ssh master pid=%s %s (%d/%d) - busy, not rebuilding"
+                              % (pid, "-O check timed out" if state == "busy" else
+                                 "liveness check failed", stale.count, STALE_FAILS))
+            return {"ts": time.time(), "reachable": True, "docker_ok": False,
+                    "rtt_ms": None, "server_version": "", "failure": "tunnel"}
+        rd_common.log("ssh master stale (liveness check failed %d times over %ds) -> rebuilding"
+                      % (stale.count, round(stale.clock() - stale.first)))
+        stale.clear()
+        reset_master(cfg, pid)
         ok, ver, ms = docker_probe(cfg)
-    reachable = ok or master_pid(cfg) is not None
+    elif stale is not None:
+        stale.clear()
+    reachable = ok or master_state(cfg)[0] != "down"
     return {"ts": time.time(), "reachable": reachable, "docker_ok": ok,
             "rtt_ms": ms if ok else None, "server_version": ver,
             "failure": None if ok else "tunnel"}
@@ -194,9 +250,41 @@ def _flock_wait(fh, wait):
             return False
 
 
-def refresh_health(cfg, reuse_fresh=False):
-    """Probe under HEALTH_LOCK and write health.json. If another process is already probing, wait
-    up to HEALTH_WAIT for it; with reuse_fresh, use its reading when it is fresh."""
+RTT_HIST_LEN = 3          # health.json keeps the last N readings' round-trips ([ts, rtt_ms|None])
+RTT_SLOW_READINGS = 2     # this many consecutive slow readings before new throwaways leave the mini
+RTT_HIST_GAP = 120        # seconds: readings further apart than this are not "consecutive"
+
+
+def with_rtt_hist(h, prev):
+    """-> h plus rtt_hist: prev's history (when it is a dict) + this reading, newest last, capped at
+    RTT_HIST_LEN. A reading whose engine did not answer records None, which breaks a slow streak."""
+    hist = prev.get("rtt_hist") if isinstance(prev, dict) else None
+    hist = [e for e in hist if isinstance(e, list) and len(e) == 2] if isinstance(hist, list) else []
+    rtt = h.get("rtt_ms") if h.get("docker_ok") else None
+    return dict(h, rtt_hist=(hist + [[h.get("ts"), rtt]])[-RTT_HIST_LEN:])
+
+
+def slow_streak(h, max_rtt):
+    """True iff the engine answered and the last RTT_SLOW_READINGS readings (each <= RTT_HIST_GAP
+    apart) were all slower than max_rtt: a single spike never flips routing."""
+    if not max_rtt or not isinstance(h, dict) or not h.get("docker_ok"):
+        return False
+    hist = h.get("rtt_hist")
+    if not isinstance(hist, list) or len(hist) < RTT_SLOW_READINGS:
+        return False
+    last = hist[-RTT_SLOW_READINGS:]
+    try:
+        if any(not isinstance(r, (int, float)) or r <= max_rtt for _, r in last):
+            return False
+        return all(0 <= b[0] - a[0] <= RTT_HIST_GAP for a, b in zip(last, last[1:]))
+    except (TypeError, ValueError):
+        return False
+
+
+def refresh_health(cfg, reuse_fresh=False, stale=None):
+    """Probe under HEALTH_LOCK and write health.json (with the RTT history). If another process is
+    already probing, wait up to HEALTH_WAIT for it; with reuse_fresh, use its reading when it is
+    fresh. stale = the daemon's StaleMaster tracker (only the daemon may rebuild a live master)."""
     fh = None
     try:
         rd_common.ensure_dirs()
@@ -210,7 +298,8 @@ def refresh_health(cfg, reuse_fresh=False):
             h = rd_common.load_json(rd_common.HEALTH_PATH, None)
             if health_fresh(h):
                 return h
-        h = probe_health(cfg)
+        h = probe_health(cfg, stale) if stale is not None else probe_health(cfg)
+        h = with_rtt_hist(h, rd_common.load_json(rd_common.HEALTH_PATH, None))
         rd_common.write_state(rd_common.HEALTH_PATH, h)
         return h
     finally:
@@ -561,10 +650,22 @@ def ssh_ctl(cfg, *args, timeout=10):
     return rd_common.run(["ssh", "-S", rd_common.FWD_SOCK] + list(args) + [cfg["host"]], timeout=timeout)
 
 
-def master_pid(cfg):
+def master_state(cfg):
+    """-> ('up', pid) | ('busy', None) | ('down', None) from `ssh -O check`. 'busy' = the check timed
+    out but the control socket still accepts connections: a master too loaded to answer quickly is
+    not a dead one, and must never be replaced (that orphans it and kills every connection)."""
     rc, _, err = ssh_ctl(cfg, "-O", "check", timeout=5)
     m = re.search(r"pid=(\d+)", err)
-    return int(m.group(1)) if rc == 0 and m else None
+    if rc == 0 and m:
+        return "up", int(m.group(1))
+    if rc == 124 and unix_alive(rd_common.FWD_SOCK):
+        return "busy", None
+    return "down", None
+
+
+def master_pid(cfg):
+    state, pid = master_state(cfg)
+    return pid if state == "up" else None
 
 
 def unix_alive(path):
@@ -579,26 +680,39 @@ def unix_alive(path):
         s.close()
 
 
+def _start_master(cfg):
+    """Start a master. Caller holds MASTER_LOCK and has just seen no live master."""
+    for f in (rd_common.FWD_SOCK, rd_common.MINI_SOCK):
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
+    rc, _, err = rd_common.run(["ssh", "-S", rd_common.FWD_SOCK, "-M", "-N", "-f", "-o", "ControlPersist=yes",
+                      "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ExitOnForwardFailure=no",
+                      "-o", "StreamLocalBindUnlink=yes", cfg["host"]], timeout=20)
+    if rc != 0:
+        rd_common.log("ssh master start failed: " + err.strip()[:200])
+        return None
+    pid = master_pid(cfg)
+    rd_common.log("ssh master up pid=%s" % pid)
+    return pid
+
+
 def ensure_master(cfg):
     """One SSH ControlMaster carries both the mini docker socket and every port mirror.
 
     Docker traffic rides it as stream channels (not SSH sessions), so parallel agents never hit
-    sshd's MaxSessions, and no ssh process / remote `docker dial-stdio` is spawned per command."""
-    pid = master_pid(cfg)
-    if not pid:
-        for f in (rd_common.FWD_SOCK, rd_common.MINI_SOCK):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
-        rc, _, err = rd_common.run(["ssh", "-S", rd_common.FWD_SOCK, "-M", "-N", "-f", "-o", "ControlPersist=yes",
-                          "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ExitOnForwardFailure=no",
-                          "-o", "StreamLocalBindUnlink=yes", cfg["host"]], timeout=20)
-        if rc != 0:
-            rd_common.log("ssh master start failed: " + err.strip()[:200])
-            return None
-        pid = master_pid(cfg)
-        rd_common.log("ssh master up pid=%s" % pid)
+    sshd's MaxSessions, and no ssh process / remote `docker dial-stdio` is spawned per command.
+    Creation is serialized across processes by MASTER_LOCK and re-checked after acquiring it, so two
+    callers that both saw "no master" start exactly one. A busy master (see master_state) is left
+    alone: returns None without starting a second one."""
+    state, pid = master_state(cfg)
+    if state == "down":
+        rd_common.ensure_dirs()
+        with rd_common.file_lock(rd_common.MASTER_LOCK):
+            state, pid = master_state(cfg)
+            if state == "down":
+                pid = _start_master(cfg)
     if pid and cfg["remote_socket"] and not unix_alive(rd_common.MINI_SOCK):
         try:
             os.unlink(rd_common.MINI_SOCK)

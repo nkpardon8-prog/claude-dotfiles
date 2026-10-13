@@ -97,10 +97,10 @@ wrong engine.
 | `compose up/run/create` whose rendered config has bind mounts or `network_mode: host`; `compose run -v <laptop path>` | laptop |
 | `run`/`create`, `compose run`, or compose global flags with a flag rdocker's tables don't know | **refused, exit 1** (`unrecognized flag <f> ... will not pick an engine`) — see Self-resolution |
 | compose whose `compose config` render fails | **exit 1**, compose's own error shown, nothing run |
-| containers / compose projects in the **pin list** (incl. fallback pins) | laptop (a pin is a hint; the real location wins) |
+| containers / compose projects in the **pin list** (incl. fallback pins) | laptop (a pin is a hint; the real location wins). A pinned name found on the laptop keeps working while the mini is unreachable, slow or its engine silent; an **unpinned** laptop container stays refused for mutating commands then (the mini may hold a same-named one) |
 | `ps` | both engines merged while the laptop engine runs (one header; exit non-zero if either failed) |
 | other commands (`ps`, `images`, `build`, `pull`, ...) when the mini is unreachable / engine down | laptop, with a notice |
-| any command except a **new throwaway** container, while the mini is reachable but slow (round-trip > 300 ms, `max_rtt_ms`) | mini — RTT never moves `ps`/`rm`/`inspect`/`build`/... to the laptop |
+| any command except a **new throwaway** container, while the mini is reachable but slow (round-trip > 300 ms, `max_rtt_ms`, on the last **2 consecutive** health readings) | mini — RTT never moves `ps`/`rm`/`inspect`/`build`/... to the laptop |
 | anything with `RDOCKER_MODE=mini` while the mini is unavailable | **refused, exit 1** — never falls back |
 | anything with `RDOCKER_MODE=local` | laptop |
 
@@ -109,9 +109,13 @@ unavailable: they fall back to the laptop **only if throwaway** — `--rm`, or n
 `rdocker.keep` label (compose: no named volumes, and the model must be readable). Otherwise exit 1 with
 the reason ("... not a throwaway container ..."); retry when the mini is back, add `--rm`, or force the
 laptop with `RDOCKER_MODE=local`. A slow (but reachable) mini still gets non-throwaway containers and
-every non-creating command; only new throwaway containers move to the laptop for speed. Containers / compose projects created by a fallback are
-recorded in `pins.fallback` (so later commands find them on the laptop) and removed from it when the shim
-removes them (`docker rm` / `compose down` on the laptop).
+every non-creating command; only new throwaway containers move to the laptop for speed, and only once the
+engine answered slower than `max_rtt_ms` on **2 consecutive** health readings (`health.json` keeps the last
+3 round-trips in `rtt_hist`) - one slow sample never starts Docker Desktop. An engine that does not answer
+at all still falls back at once. Containers / compose projects created by a fallback are
+recorded in `pins.fallback` (so later commands find them on the laptop - `exec`, `stop`, `rm` keep working
+while the mini is out or slow) and removed from it when the shim removes them (`docker rm` /
+`compose down` on the laptop).
 
 Compose routing reads the rendered model (`docker compose config`, client-side). `docker compose -f -`
 works: stdin is buffered once and replayed to both the render and the real command.
@@ -176,9 +180,15 @@ Health = raw HTTP `GET /_ping` (then `GET /version` for the server version) stra
 mini docker socket over the SSH tunnel - no docker CLI subprocess, whose start-up used to add ~250 ms
 (4 s timeout; the `/_ping` round-trip is the RTT),
 never a raw probe of the mini's `:22`. A reading is reused for 30 s. If the probe fails, `ssh true` over
-the existing master decides: tunnel alive → engine problem (tunnel and mirrors left alone); tunnel dead →
-the master is rebuilt and the probe retried once. Auto mode treats round-trips over **300 ms**
-(`max_rtt_ms`) as slow, which only sends new throwaway containers to the laptop.
+the existing master decides: tunnel alive → engine problem (tunnel and mirrors left alone); no answer →
+the master may just be busy (a big image transfer), so it is **kept**: only the forwarder rebuilds a master
+that `ssh -O check` still reports alive, and only after the liveness check failed on **3 consecutive**
+forwarder checks spanning **≥ 45 s** (then the probe is retried once). A master that is gone (`-O check`
+fails, socket dead) is rebuilt at once; a `-O check` that times out on a live control socket counts as
+busy, not gone. Master creation is serialized across every process by an exclusive lock
+(`~/.local/state/rdocker/master.lock`) and re-checked after the lock is taken, so concurrent shims and the
+forwarder start exactly one master. Auto mode treats round-trips over **300 ms** (`max_rtt_ms`) on 2
+consecutive readings as slow, which only sends new throwaway containers to the laptop.
 
 **Engine recovery (the forwarder, never a laptop guess alone).** VM down → started (only if the Colima
 profile exists). VM up but the engine silent → `colima restart` **only when all hold**: engine-probe
