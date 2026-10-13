@@ -72,7 +72,10 @@ localhost safety guards all keep working. Never add `--context`, set `DOCKER_HOS
 or swap `localhost` for the mini's hostname: each bypasses the routing. Laptop bind mounts,
 `--network host`, and pinned laptop containers run locally on their own. When docker errors, hangs,
 or a mirrored port won't connect, run `rdocker doctor` (details: `/docker`). Ask the user before moving
-a pinned container's data or deleting volumes on the mini.
+a pinned container's data or deleting volumes on the mini. A janitor reaps leftovers (idle 12 h -> stop,
+stopped 24 h -> removed, unused named volumes 30 d), so label intent when starting one: throwaway
+`--label rdocker.ttl=2h`, keep-with-data `--label rdocker.keep=1` + a named volume. Invoke `/docker`
+before starting databases — it holds the playbook (ports, readiness, seeding, lifetimes).
 
 ## Window naming + reaching other windows — `/line`
 `/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).

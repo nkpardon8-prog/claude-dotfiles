@@ -2,6 +2,20 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-13 - `/docker`: walk-away hardening (janitor, socket tunnel, self-heal, tests)
+
+- Docker socket now streams over the one SSH ControlMaster (context `mini` = local unix socket):
+  parallel agents no longer hit sshd MaxSessions ("Session open refused"), and no ssh/dial-stdio
+  process is spawned per command. 20 concurrent calls: 1.4 s, 0 failures.
+- Janitor every 10 min on the mini: `rdocker.ttl` lifetimes, idle 12 h -> stop, stopped 24 h -> rm -v,
+  named volumes unused 30 d -> rm, `rdocker.keep=1` exempt; image/build-cache prunes; container log cap
+  10 MB x 3; Colima/Lima log truncation at 50 MB; journald 200 MB; fstrim; disk 80 % / 90 % /
+  < 8 GB-free escalation. Config needing a Colima restart is applied only when the mini is idle.
+- Self-heal: tunnel rebuilt on demand by the shim; forwarder restarts laptop Tailscale and runs
+  `colima start` over SSH when the mini rebooted with nobody logged in. Tailscale added to login items.
+- Logging: per-command routing log (`rdocker logs --route`). Tests: `scripts/rdocker/tests/`
+  (13 unit, 16 live e2e). Database playbook for agents in `commands/docker.md`.
+
 ## 2026-10-12 - `/docker`: offload Docker to the Mac mini (rdocker)
 
 - New command + `scripts/rdocker/` (stdlib Python on /usr/bin/python3, plus a bash `docker` shim
