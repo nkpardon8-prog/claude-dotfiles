@@ -2,6 +2,22 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-12 - `/docker`: offload Docker to the Mac mini (rdocker)
+
+- New command + `scripts/rdocker/` (stdlib Python on /usr/bin/python3, plus a bash `docker` shim
+  symlinked into `~/.local/bin`). Container CPU/RAM moves to the mini (Colima, 6 CPU / 8 GB, Rosetta for
+  amd64 builds) over Tailscale; nothing is exposed to the internet or the mini's LAN.
+- Built from a scan of 7,663 real docker commands: ~90% are throwaway Postgres containers on dynamic
+  `127.0.0.1` ports that harnesses reach via `localhost` and guard on `localhost`. Hence: same-port
+  mirroring through one SSH ControlMaster, synchronous after `run -d`/`start`/`compose up`, and an
+  event-driven launchd agent (`com.rdocker.forwarder`) for everything else.
+- Routing exceptions run on the laptop: bind mounts of laptop paths, `--network host`, compose models
+  with either, containers/projects pinned because their data lives on the laptop; `ps` merges both
+  engines. Auto mode falls back to the laptop when the mini is unreachable or slower than 150 ms RTT.
+- Mini hardening: Docker publishes on the VM loopback, Lima port-forwards bind the mini 127.0.0.1, VM
+  DNS port not forwarded. Dedicated passphrase-less key `~/.ssh/rdocker_ed25519` (the main key has a
+  passphrase a background agent cannot use).
+
 ## 2026-10-08 - `/worktree-cleanup`: free disk by clearing old worktrees safely
 
 - New command + `scripts/worktree-cleanup/`. Inventory -> ask live windows -> keep lists -> real

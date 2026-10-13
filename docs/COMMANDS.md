@@ -19,7 +19,7 @@ Cheat sheet of the categories below:
 | [Research](#research) | `/research-web`, `/transcribe` |
 | [Credentials & setup](#credentials--setup) | `/load-creds` |
 | [Remote control & GUI](#remote-control--gui) | `/devtools`, `/desktop`, `/macmini`, `/windows` |
-| [Utilities](#utilities) | `/wispralt-update`, `/worktree-cleanup` |
+| [Utilities](#utilities) | `/docker`, `/wispralt-update`, `/worktree-cleanup` |
 
 ---
 
@@ -110,6 +110,7 @@ Pack subskills (invoked as `/<pack>:<name>`):
 
 | Command | What it does |
 |---|---|
+| `/docker` | Runs Docker on the always-on Mac mini instead of the laptop, transparently: a `docker` shim routes each call (normal work -> mini over Tailscale/SSH; laptop bind mounts, `--network host`, pinned laptop containers, or an unreachable/slow mini -> laptop Docker Desktop, started on demand), and a launchd forwarder mirrors every published mini port onto laptop `127.0.0.1` at the same number so `localhost` connections keep working. `rdocker status/doctor/use/where/pin`. Scripts: `scripts/rdocker/` (`rdocker.py`, `docker-shim`). |
 | `/wispralt-update` | Pulls the latest WisprAlt release and updates the installed app. Handles TCC reset if the code-signing cdhash changed. |
 | `/worktree-cleanup` | Frees disk by clearing old git worktrees without breaking anyone's work: read-only inventory (edits, merged-ness, real last activity, node_modules size, who has it open), asks every live agent window in the repo what it needs kept, writes keep lists, then deletes `node_modules` in idle kept worktrees and removes finished ones (clean and merged, or idle 7+ days) after archiving their untracked/ignored files to `<repo>/tmp/worktree-archive-<date>/`. Never deletes branches; re-checks each worktree at the moment it acts. Scripts: `scripts/worktree-cleanup/` (`inventory.py`, `deepcheck.py`, `classify.py`, `execute.py`, driven by `WT_ROOT`). |
 
