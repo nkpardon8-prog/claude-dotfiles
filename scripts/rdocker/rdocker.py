@@ -31,6 +31,8 @@ FORWARDS_PATH = os.path.join(STATE_DIR, "forwards.json")
 LOCK_PATH = os.path.join(STATE_DIR, "sync.lock")
 FWD_SOCK = os.path.join(STATE_DIR, "fwd.sock")
 LOG_PATH = os.path.join(STATE_DIR, "daemon.log")
+ROUTE_LOG = os.path.join(STATE_DIR, "route.log")
+JANITOR_PATH = os.path.join(STATE_DIR, "janitor.json")
 BIN_DIR = os.path.join(HOME, ".local", "bin")
 HERE = os.path.dirname(os.path.realpath(__file__))
 SHIM_SRC = os.path.join(HERE, "docker-shim")
@@ -47,6 +49,12 @@ DEFAULTS = {
     "max_rtt_ms": 150,                 # auto mode: slower than this -> run locally
     "local_idle_stop_min": 15,         # quit Docker Desktop after N idle minutes (0 = never)
     "pins": {"containers": [], "compose_projects": []},  # laptop-resident (sticky local)
+    # Janitor (mini only). Labels: rdocker.keep=1 exempts; rdocker.ttl=<30m|2h|1d> hard lifetime.
+    "janitor_interval_min": 10,
+    "idle_stop_hours": 12,             # running, zero TCP connections this long -> stop
+    "exited_rm_hours": 24,             # stopped this long -> rm -v (anonymous volumes go too)
+    "image_unused_days": 14,           # unused images older than this -> removed
+    "disk_high_pct": 80,               # VM disk above this -> prune all unused images + cache
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim
@@ -120,13 +128,13 @@ def say(msg):
     sys.stderr.write("rdocker: " + msg + "\n")
 
 
-def log(msg):
+def log(msg, path=LOG_PATH):
     ensure_dirs()
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n"
     try:
-        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 2_000_000:
-            os.replace(LOG_PATH, LOG_PATH + ".1")
-        with open(LOG_PATH, "a") as f:
+        if os.path.exists(path) and os.path.getsize(path) > 2_000_000:
+            os.replace(path, path + ".1")
+        with open(path, "a") as f:
             f.write(line)
     except OSError:
         pass
@@ -564,6 +572,7 @@ def shim(argv):
         say("running locally (%s)" % why)
 
     ctx = cfg["remote_context"] if target == "mini" else cfg["local_context"]
+    log("%-5s %-8s %s | %s" % (target, sub, (local_reason or why), os.getcwd()), ROUTE_LOG)
     if target == "local" and not ensure_local_running(cfg):
         sys.exit(1)
 
@@ -614,6 +623,132 @@ def positionals_index(args):
     return i
 
 
+
+# ---------------------------------------------------------------------------- janitor (mini)
+
+def parse_ts(s):
+    """Docker RFC3339 (nanoseconds, Z) -> epoch seconds; 0 for the zero time."""
+    if not s or s.startswith("0001-"):
+        return 0.0
+    import calendar
+    return float(calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")))
+
+
+def parse_ttl(v):
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", v or "")
+    if not m:
+        return None
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def has_connections(cfg, cid):
+    """True if the container has an ESTABLISHED TCP connection; None if it can't be read."""
+    rc, out, _ = dk(cfg["remote_context"], "exec", cid, "cat", "/proc/net/tcp", "/proc/net/tcp6",
+                    timeout=15)
+    if rc != 0 and not out:
+        return None
+    for line in out.splitlines()[1:]:
+        f = line.split()
+        if len(f) > 3 and f[3] == "01":
+            return True
+    return False
+
+
+def janitor(cfg, dry=False):
+    """Reap what agents left behind on the mini. Never touches rdocker.keep=1 or named volumes."""
+    ctx = cfg["remote_context"]
+    acts = []
+
+    def act(desc, *cmd):
+        acts.append(desc)
+        if dry:
+            return
+        rc, _, err = dk(ctx, *cmd, timeout=120)
+        log("janitor: %s%s" % (desc, "" if rc == 0 else " FAILED: " + err.strip()[:150]))
+
+    rc, out, _ = dk(ctx, "ps", "-aq", timeout=20)
+    if rc != 0:
+        return ["mini unreachable - skipped"]
+    ids = out.split()
+    state = load_json(JANITOR_PATH, {})
+    idle = state.get("idle_since", {})
+    now = time.time()
+    seen = set()
+    if ids:
+        rc, out, _ = dk(ctx, "inspect", *ids, timeout=30)
+        try:
+            infos = json.loads(out) if rc == 0 else []
+        except ValueError:
+            infos = []
+        for c in infos:
+            cid, name = c["Id"], c["Name"].lstrip("/")
+            labels = (c.get("Config") or {}).get("Labels") or {}
+            st = c.get("State") or {}
+            seen.add(cid)
+            if str(labels.get("rdocker.keep", "")).lower() in ("1", "true", "yes"):
+                continue
+            ttl = parse_ttl(labels.get("rdocker.ttl"))
+            started = parse_ts(st.get("StartedAt"))
+            if st.get("Running"):
+                if ttl and started and now - started > ttl:
+                    act("rm %s (ttl %s expired)" % (name, labels.get("rdocker.ttl")),
+                        "rm", "-f", "-v", cid)
+                    continue
+                conn = has_connections(cfg, cid)
+                if conn is False:
+                    idle.setdefault(cid, now)
+                    if now - idle[cid] > cfg["idle_stop_hours"] * 3600:
+                        act("stop %s (no connections for %sh)" % (name, cfg["idle_stop_hours"]),
+                            "stop", cid)
+                        idle.pop(cid, None)
+                else:
+                    idle.pop(cid, None)
+            else:
+                ended = parse_ts(st.get("FinishedAt")) or parse_ts(c.get("Created"))
+                if ended and now - ended > cfg["exited_rm_hours"] * 3600:
+                    act("rm %s (stopped %dh)" % (name, (now - ended) // 3600), "rm", "-v", cid)
+    idle = {k: v for k, v in idle.items() if k in seen}
+    if not dry:
+        save_json(JANITOR_PATH, {"idle_since": idle, "last_run": now})
+    act("prune anonymous volumes not used by any container", "volume", "prune", "-f")
+    act("prune dangling images", "image", "prune", "-f")
+    act("prune images unused for %dd" % cfg["image_unused_days"], "image", "prune", "-af",
+        "--filter", "until=%dh" % (cfg["image_unused_days"] * 24))
+    act("prune build cache older than 7d", "builder", "prune", "-f", "--filter", "until=168h")
+    rc, out, _ = run(["ssh", "-o", "BatchMode=yes", cfg["host"],
+                      "PATH=/opt/homebrew/bin:$PATH colima ssh -- df -P /var/lib/docker | tail -1"],
+                     timeout=30)
+    m = re.search(r"(\d+)%", out)
+    if m:
+        pct = int(m.group(1))
+        acts.append("VM disk %d%% used" % pct)
+        if pct >= cfg["disk_high_pct"]:
+            log("janitor: VM disk %d%% >= %d%% - aggressive prune" % (pct, cfg["disk_high_pct"]))
+            act("prune ALL unused images (disk high)", "image", "prune", "-af")
+            act("prune ALL build cache (disk high)", "builder", "prune", "-af")
+    return acts
+
+TS_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+
+
+def tailscale_running():
+    rc, out, _ = run([TS_CLI, "status", "--json"], timeout=8)
+    try:
+        return json.loads(out).get("BackendState") == "Running"
+    except ValueError:
+        return False
+
+
+def tailscale_up():
+    """Start laptop Tailscale if it is installed but stopped. True if we changed something."""
+    if not os.path.exists(TS_CLI) or tailscale_running():
+        return False
+    run(["open", "-ga", "Tailscale"], timeout=10)
+    time.sleep(3)
+    run([TS_CLI, "up"], timeout=20)
+    return tailscale_running()
+
+
 # ---------------------------------------------------------------------------- daemon
 
 def set_global_context(cfg, target):
@@ -628,6 +763,8 @@ def daemon():
     log("daemon start pid=%d" % os.getpid())
     events = None
     next_tick = 0
+    next_janitor = time.time() + 60
+    next_ts_kick = 0
     idle_since = None
     while True:
         cfg = load_cfg()
@@ -639,10 +776,22 @@ def daemon():
                 continue
             h = probe_health(cfg, check_docker=True)
             save_json(HEALTH_PATH, h)
+            if not h["reachable"] and now >= next_ts_kick:
+                next_ts_kick = now + 300
+                if tailscale_up():
+                    log("mini unreachable and laptop Tailscale was stopped -> started it")
+                    h = probe_health(cfg, check_docker=True)
+                    save_json(HEALTH_PATH, h)
             target, why = resolve_target(cfg)
             set_global_context(cfg, target)
             if h["reachable"] and h.get("docker_ok"):
                 sync_forwards(cfg)
+                if now >= next_janitor:
+                    next_janitor = now + cfg["janitor_interval_min"] * 60
+                    try:
+                        janitor(cfg)
+                    except Exception as e:  # a janitor bug must never kill the forwarder
+                        log("janitor error: %s" % e)
             # Quit an idle laptop engine (that's the RAM we came here to free).
             if cfg["local_idle_stop_min"] and target == "mini" and local_engine_up(cfg):
                 rc, out, _ = dk(cfg["local_context"], "ps", "-q", timeout=10)
@@ -805,19 +954,10 @@ def status(cfg, fix=False):
         rows.append(("OK " if ok else "-- ") + label + (": " + detail if detail else ""))
         return ok
 
-    ts = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    if os.path.exists(ts):
-        rc, out, _ = run([ts, "status", "--json"], timeout=8)
-        up = False
-        try:
-            up = json.loads(out).get("BackendState") == "Running"
-        except ValueError:
-            pass
-        if not up and fix:
-            run(["open", "-ga", "Tailscale"], timeout=10)
-            time.sleep(3)
-            run([ts, "up"], timeout=20)
-            up = '"Running"' in run([ts, "status", "--json"], timeout=8)[1]
+    if os.path.exists(TS_CLI):
+        if fix:
+            tailscale_up()
+        up = tailscale_running()
         row(up, "tailscale on laptop", "" if up else "stopped - run: rdocker doctor")
     h = probe_health(cfg, check_docker=True)
     save_json(HEALTH_PATH, h)
@@ -868,9 +1008,10 @@ USAGE = """usage: rdocker <command>
   where <container>      which engine holds a container
   pin|unpin <container|compose-project>   keep it on the laptop engine
   sync [--repeat N --interval S]   reconcile port mirrors now
-  logs                   tail the forwarder log
+  clean [--dry-run]      run the mini janitor now (auto every 10 min)
+  logs [--route]         tail the forwarder log (or the per-command routing log)
   install                laptop side: context, shims, launch agent, pins
-  setup-mini [cpu mem disk]   mini side over ssh: colima+docker (default 6 8 100)
+  setup-mini [cpu mem disk]   mini side over ssh: colima+docker (default 6 8 30)
   daemon                 (launchd) event-driven forwarder"""
 
 
@@ -926,12 +1067,17 @@ def main(argv):
                 time.sleep(interval)
         return 0 if ok else 1
     if cmd == "logs":
-        os.execvp("tail", ["tail", "-n", "60", LOG_PATH])
+        path = ROUTE_LOG if "--route" in argv else LOG_PATH
+        os.execvp("tail", ["tail", "-n", "60", path])
+    if cmd == "clean":
+        for a in janitor(cfg, dry="--dry-run" in argv):
+            print(("would: " if "--dry-run" in argv else "") + a)
+        return 0
     if cmd == "install":
         install(cfg)
         return 0
     if cmd == "setup-mini":
-        cpu, mem, disk = (argv[1:4] + ["6", "8", "100"][len(argv[1:4]):])
+        cpu, mem, disk = (argv[1:4] + ["6", "8", "30"][len(argv[1:4]):])
         return setup_mini(cfg, cpu, mem, disk)
     if cmd == "daemon":
         daemon()
