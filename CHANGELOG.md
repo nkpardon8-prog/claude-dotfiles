@@ -4,6 +4,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 
 ## 2026-10-13 - rdocker live fixes
 
+- Desktop-quit pin snapshot now skips names / compose projects that also exist on the mini (a moved
+  project's laptop backup still carried its compose label, so `docker compose` for it was pinned back
+  to the laptop); no snapshot (Desktop stays up) when the mini can't be listed. `rdocker unpin` now
+  also drops fallback pins of that name.
 - Fallback-pinned laptop containers kept working only while the mini answered: with the mini unreachable
   or slow, every `exec` on a container the shim had just created on the laptop was refused ("cannot tell
   where ... refusing to guess"). A name found on the laptop that is pinned (fallback pin, manual pin, or
