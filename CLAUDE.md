@@ -66,16 +66,20 @@ When you hit a GUI surface no CLI / MCP / native tool can reach (macOS permissio
 
 ## Docker runs on the Mac mini — `/docker`
 `docker` / `docker compose` on this laptop are routed by a shim to the always-on Mac mini over
-Tailscale; every published port is mirrored to laptop `localhost` at the same number. So use docker
+Tailscale; every published TCP port is mirrored to laptop `localhost` at the same number. So use docker
 **exactly as normal** — `-p 127.0.0.1::5432` + `docker port`, `localhost` connection strings and
-localhost safety guards all keep working. Never add `--context`, set `DOCKER_HOST`/`DOCKER_CONTEXT`,
-or swap `localhost` for the mini's hostname: each bypasses the routing. Laptop bind mounts,
-`--network host`, and pinned laptop containers run locally on their own. When docker errors, hangs,
-or a mirrored port won't connect, run `rdocker doctor` (details: `/docker`). Ask the user before moving
-a pinned container's data or deleting volumes on the mini. A janitor reaps leftovers (idle 12 h -> stop,
-stopped 24 h -> removed, unused named volumes 30 d), so label intent when starting one: throwaway
-`--label rdocker.ttl=2h`, keep-with-data `--label rdocker.keep=1` + a named volume. Invoke `/docker`
-before starting databases — it holds the playbook (ports, readiness, seeding, lifetimes).
+localhost safety guards all keep working (a fixed host port must be free on the laptop, else exit 125;
+UDP publishes are refused). Never add `--context`, set `DOCKER_HOST`/`DOCKER_CONTEXT`, or swap
+`localhost` for the mini's hostname: each bypasses the routing. Laptop bind mounts, `--network host`,
+and pinned laptop containers run locally on their own. If the mini is down, only throwaway containers
+(`--rm`, or no named volume and no `rdocker.keep`) fall back to the laptop; anything else, and any
+command on a container whose location can't be established, exits 1 instead of guessing. When docker
+errors, hangs, refuses, or a mirrored port won't connect, run `rdocker doctor` (details: `/docker`).
+Ask the user before moving a pinned container's data or deleting volumes on the mini. A janitor reaps
+leftovers (idle 12 h -> stop, stopped 24 h -> removed, unused named volumes 30 d, unused images 14 d),
+so label intent when starting one: throwaway `--label rdocker.ttl=2h`, keep-with-data
+`--label rdocker.keep=1` + a named volume. Invoke `/docker` before starting databases — it holds the
+playbook (ports, readiness, seeding, lifetimes).
 
 ## Window naming + reaching other windows — `/line`
 `/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).

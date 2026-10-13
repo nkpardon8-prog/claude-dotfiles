@@ -2,6 +2,40 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-13 - rdocker: health RTT measured on the socket; RTT only steers throwaways
+
+- Health probe speaks HTTP directly to the forwarded mini docker socket (`GET /_ping`, then `/version`)
+  instead of timing a `docker version` subprocess, whose CLI start-up inflated a ~75 ms link to 300-350 ms
+  and flapped auto mode to the laptop.
+- Auto mode: `max_rtt_ms` now only moves NEW throwaway containers to the laptop. `ps`, `rm`, `inspect`,
+  `logs`, `exec`, `build`, `images`, compose ps/down, non-throwaway creates and the global docker context
+  stay on the mini whenever it is reachable and its engine answers.
+- Tests: 92 (raw-socket probe vs a fake unix-socket HTTP server incl. a hung server; slow-mini routing).
+
+## 2026-10-13 - rdocker Phase 1: review fixes (safety)
+
+- Data safety: `rdocker.keep` (any value but `0`/`false`/`no`) is re-checked by a fresh inspect right
+  before every janitor removal; no `container prune`; volume prunes filter `label!=rdocker.keep`;
+  containers with a keep-labelled volume are removed without `-v`.
+- Routing: named containers / compose projects are located on both engines before routing; when that
+  can't be established the shim refuses (exit 1, "cannot tell where ... lives") instead of guessing.
+  `RDOCKER_MODE=mini` never falls back. Fallback for creating commands is throwaway-only (`--rm`, or no
+  named volume and no `rdocker.keep`; compose: no named volumes); fallback-created containers are
+  tracked in `pins.fallback`. Notices always on stderr.
+- Ports emulate local Docker: fixed host ports must be free on the laptop (else exit 125); ephemeral
+  ports picked from 20000-29999 under a cross-process reservation (parallel runs never collide); a
+  container whose mirror can't be set up is removed and the command exits 1; UDP publishes refused.
+- Execute-once: docker runs at most once per invocation, even if rdocker fails afterwards.
+- Health: authenticated `docker version` over the tunnel (no raw `:22` probes), 30 s freshness,
+  `max_rtt_ms` 150 -> 300, tunnel rebuilt only when it is actually dead.
+- Janitor: partial inspect keeps clocks; idle = no eth traffic and no established TCP, gap-capped, on the
+  mini's clock; failed actions keep clocks + record `last_error`; images removed after 14 d unused (last-use
+  ledger, `image rm` without `-f`), disk-high removes oldest-unused first; `rdocker clean --only/--force-critical`.
+- State: locked read-modify-write with unique temp files; config stores only non-default keys.
+- Tests: 83 unit tests on a fake docker (`tests/fake_docker.py`); e2e non-disruptive by default
+  (`E2E_DISRUPTIVE=1` for the tunnel kill). Docs: `commands/docker.md` adds port semantics, fallback
+  policy, honest LAN exposure (mini sshd `:22`, Lima DNS `:53`), one-laptop rule, SDK-bypass note.
+
 ## 2026-10-13 - `/docker`: walk-away hardening (janitor, socket tunnel, self-heal, tests)
 
 - Docker socket now streams over the one SSH ControlMaster (context `mini` = local unix socket):
