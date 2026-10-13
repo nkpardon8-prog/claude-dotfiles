@@ -453,6 +453,55 @@ def add_fallback_pins(entries):
     rd_common.update_cfg(apply)
 
 
+# A fallback pin younger than this survives a prune: the shim writes it BEFORE the laptop container
+# exists (an image pull can take minutes), so "absent from `ps -a`" does not yet mean "gone".
+FALLBACK_PIN_GRACE = 600
+
+
+def fallback_ts(pin):
+    ts = pin.get("ts")
+    return ts if isinstance(ts, (int, float)) and not isinstance(ts, bool) else 0
+
+
+def sync_fallback_pins(present, listed_at, replace):
+    """Reconcile fallback pins with `present` = {(name, kind)} on the laptop engine, as listed by a
+    `ps -a` started at `listed_at` (wall clock). Explicit pins are never touched.
+      replace=True  (Desktop-quit snapshot): fallback pins become exactly `present` minus names that
+                    are explicitly pinned; existing entries keep their ts.
+      replace=False (periodic prune): only drops pins absent from `present` and older than
+                    FALLBACK_PIN_GRACE; adds nothing.
+    Either way a pin written after the listing started is kept (it may postdate the listing).
+    -> (added, dropped) lists of (name, kind). Raises ConfigWriteError / OSError."""
+    out = {"added": [], "dropped": []}
+
+    def keep(p, now_present):
+        ts = fallback_ts(p)
+        return now_present or ts >= listed_at or (not replace and ts > listed_at - FALLBACK_PIN_GRACE)
+
+    def apply(cur):
+        pins = dict(cur["pins"])
+        explicit = {(n, "container") for n in pins.get("containers") or []} | \
+                   {(n, "compose") for n in pins.get("compose_projects") or []}
+        kept, dropped, seen = [], [], set()
+        for p in pins.get("fallback") or []:
+            if not (isinstance(p, dict) and p.get("name")):
+                continue
+            key = (p.get("name"), p.get("kind"))
+            if key in seen or (replace and key in explicit) or not keep(p, key in present):
+                dropped.append(key)
+            else:
+                kept.append(p)
+                seen.add(key)
+        added = []
+        if replace:
+            added = sorted(k for k in present if k[0] and k not in explicit and k not in seen)
+        out["added"], out["dropped"] = added, dropped
+        pins["fallback"] = kept + [{"name": n, "kind": k, "ts": listed_at} for n, k in added]
+        return {**cur, "pins": pins}
+    rd_common.update_cfg(apply)
+    return out["added"], out["dropped"]
+
+
 def add_fallback_pin(name, kind):
     try:
         add_fallback_pins([(name, kind)])

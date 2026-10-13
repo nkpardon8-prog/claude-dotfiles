@@ -153,31 +153,65 @@ def desktop_idle(running_local, markers_alive, last_route_wall, now_wall, quiet_
     return last_route_wall is None or now_wall - last_route_wall >= quiet_s
 
 
-def snapshot_local_pins(cfg):
-    """Fallback-pin every laptop container (and compose project) so that after Desktop quits, a
-    command naming one starts Desktop and runs there instead of "not found" on the mini.
-    -> True when the pins are saved (or there is nothing to pin)."""
+def list_local(cfg):
+    """-> (set of (name, kind) on the laptop engine - every container, kind "container", and every
+    compose project, kind "compose" - , wall time the listing started), or (None, t) on failure."""
+    t = time.time()
     rc, out, _ = rd_common.dk(cfg["local_context"], "ps", "-a", "--format",
                               '{{.Names}}\t{{.Label "com.docker.compose.project"}}', timeout=15)
     if rc != 0:
-        return False
-    have = {"container": rd_route.pin_names(cfg, "container"),
-            "compose": rd_route.pin_names(cfg, "compose")}
-    entries = []
+        return None, t
+    present = set()
     for line in out.splitlines():
         name, _, proj = line.strip().partition("\t")
-        for n, kind in ((name, "container"), (proj, "compose")):
-            if n and n not in have[kind] and (n, kind) not in entries:
-                entries.append((n, kind))
+        present |= {(n, kind) for n, kind in ((name, "container"), (proj, "compose")) if n}
+    return present, t
+
+
+def fmt_pins(entries):
+    return ", ".join("%s/%s" % (k, n) for n, k in entries)
+
+
+def snapshot_local_pins(cfg):
+    """Fallback pins become exactly the laptop's containers (and compose projects) as Desktop
+    quits, so a later command naming one starts Desktop and runs there instead of "not found" on
+    the mini - and pins for things that no longer exist anywhere go away instead of piling up.
+    -> True when the pins are saved."""
+    present, listed_at = list_local(cfg)
+    if present is None:
+        return False
     try:
-        rd_route.add_fallback_pins(entries)
+        added, dropped = rd_route.sync_fallback_pins(present, listed_at, replace=True)
     except (rd_common.ConfigWriteError, OSError) as e:
         rd_common.log("laptop pins snapshot not saved (%s) - keeping Docker Desktop up" % e)
         return False
-    if entries:
-        rd_common.log("pinned laptop containers before quitting Desktop: %s"
-                      % ", ".join("%s/%s" % (k, n) for n, k in entries))
+    if added:
+        rd_common.log("pinned laptop containers before quitting Desktop: %s" % fmt_pins(added))
+    if dropped:
+        rd_common.log("dropped stale fallback pins before quitting Desktop: %s" % fmt_pins(dropped))
     return True
+
+
+def prune_fallback_pins(cfg):
+    """Desktop is up: drop fallback pins whose container / compose project no longer exists on the
+    laptop. No docker call unless there are fallback pins, no config write unless one goes."""
+    if not cfg["pins"].get("fallback") or not rd_tunnel.local_engine_up(cfg):
+        return []
+    present, listed_at = list_local(cfg)
+    if present is None:
+        return []
+    cutoff = listed_at - rd_route.FALLBACK_PIN_GRACE
+    if not any((p.get("name"), p.get("kind")) not in present and rd_route.fallback_ts(p) <= cutoff
+               for p in cfg["pins"]["fallback"] if isinstance(p, dict)):
+        return []
+    try:
+        _, dropped = rd_route.sync_fallback_pins(present, listed_at, replace=False)
+    except (rd_common.ConfigWriteError, OSError) as e:
+        rd_common.log("stale fallback pins not dropped: %s" % e)
+        return []
+    if dropped:
+        rd_common.log("dropped fallback pins gone from the laptop: %s" % fmt_pins(dropped))
+    return dropped
 
 
 def idle_step(cfg, target, st, now_mono, now_wall):
@@ -334,6 +368,7 @@ def daemon():
                 if due(last["janitor"], cfg["janitor_interval_min"] * 60, now):
                     last["janitor"] = now
                     spawn_job("janitor-run", jobs)
+            prune_fallback_pins(cfg)
             idle_step(cfg, target, st, now, time.time())
             p = ev["p"]
             if p is not None and p.poll() is not None:     # watcher died: back off, then restart

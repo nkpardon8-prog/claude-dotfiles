@@ -25,6 +25,7 @@ STAGE = os.path.abspath(os.path.join(TESTS, ".."))
 RDOCKER = os.path.join(STAGE, "rdocker.py")
 FAKE = os.path.join(TESTS, "fake_docker.py")
 sys.path.insert(0, TESTS)
+import rdmods  # noqa: E402
 from rdmods import r  # noqa: E402,F401  (re-exported to the other test modules)
 
 
@@ -84,11 +85,8 @@ class ShimCase(unittest.TestCase):
             self.socks.append(listen(self.local_sock))
 
     def shim(self, *argv, env=None, cwd=None, input=None):
-        e = {k: v for k, v in os.environ.items()
-             if not k.startswith("RDOCKER_") and k not in ("DOCKER_HOST", "DOCKER_CONTEXT")}
-        e.update(HOME=self.home, PATH=self.bin + ":/usr/bin:/bin",
-                 FAKE_DOCKER_FIXTURE=self.fixture, FAKE_DOCKER_LOG=self.log,
-                 FAKE_DOCKER_STDIN_LOG=self.log + ".stdin")
+        e = rdmods.child_env(self.home, self.bin, FAKE_DOCKER_FIXTURE=self.fixture,
+                             FAKE_DOCKER_LOG=self.log, FAKE_DOCKER_STDIN_LOG=self.log + ".stdin")
         e.update(env or {})
         cmd = ["/usr/bin/python3", "-I", RDOCKER, "shim"] + list(argv)
         if cwd == "deleted":

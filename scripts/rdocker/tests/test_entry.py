@@ -8,10 +8,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, TESTS)
+import rdmods  # noqa: E402  (hermetic RDOCKER_HOME + fail-closed stubs)
 STAGE = os.path.abspath(os.path.join(TESTS, ".."))
 FAKE = os.path.join(TESTS, "fake_docker.py")
 
@@ -32,11 +35,8 @@ class ImportFallback(unittest.TestCase):
             json.dump({"default": {"containers": {}}}, f)
 
     def run_entry(self, *argv, env=None):
-        e = {k: v for k, v in os.environ.items()
-             if not k.startswith("RDOCKER_") and k not in ("DOCKER_HOST", "DOCKER_CONTEXT")}
-        e.update(HOME=self.home, PATH=self.bin + ":/usr/bin:/bin",
-                 FAKE_DOCKER_FIXTURE=self.fixture, FAKE_DOCKER_LOG=self.log)
-        e.update(env or {})
+        e = rdmods.child_env(self.home, self.bin, FAKE_DOCKER_FIXTURE=self.fixture,
+                             FAKE_DOCKER_LOG=self.log, **(env or {}))
         return subprocess.run(["/usr/bin/python3", "-I", os.path.join(self.lone, "rdocker.py")] + list(argv),
                               capture_output=True, text=True, env=e, timeout=60)
 
@@ -76,11 +76,11 @@ class EntryImports(unittest.TestCase):
         home = tempfile.mkdtemp(prefix="rdk-entry-")
         self.addCleanup(shutil.rmtree, home, True)
         p = subprocess.run(["/usr/bin/python3", "-I", os.path.join(STAGE, "rdocker.py"), "--help"],
-                           capture_output=True, text=True, env=dict(os.environ, HOME=home), timeout=60)
+                           capture_output=True, text=True, env=rdmods.child_env(home), timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)       # argparse --help
         self.assertTrue(p.stdout.startswith("usage: rdocker"))
         p = subprocess.run(["/usr/bin/python3", "-I", os.path.join(STAGE, "rdocker.py"), "bogus"],
-                           capture_output=True, text=True, env=dict(os.environ, HOME=home), timeout=60)
+                           capture_output=True, text=True, env=rdmods.child_env(home), timeout=60)
         self.assertEqual(p.returncode, 2)
         self.assertTrue(p.stderr.startswith("usage: rdocker"), p.stderr)
 

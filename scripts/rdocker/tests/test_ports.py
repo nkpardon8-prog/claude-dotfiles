@@ -21,6 +21,7 @@ import unittest
 import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rdmods  # noqa: E402
 from test_shim_safety import RDOCKER, ShimCase, r  # noqa: E402
 import rd_common  # noqa: E402
 import rd_tunnel  # noqa: E402
@@ -116,10 +117,8 @@ class Preflight(PortCase):
     def test_c_concurrent_ephemeral_runs_get_distinct_ports(self):
         self.master_up()
         self.go()
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith("RDOCKER_") and k not in ("DOCKER_HOST", "DOCKER_CONTEXT")}
-        env.update(HOME=self.home, PATH=self.bin + ":/usr/bin:/bin",
-                   FAKE_DOCKER_FIXTURE=self.fixture, FAKE_DOCKER_LOG=self.log)
+        env = rdmods.child_env(self.home, self.bin, FAKE_DOCKER_FIXTURE=self.fixture,
+                               FAKE_DOCKER_LOG=self.log)
         cmd = ["/usr/bin/python3", "-I", RDOCKER, "shim", "run", "-d", "-p", "127.0.0.1::5432",
                "postgres"]
         procs = [subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

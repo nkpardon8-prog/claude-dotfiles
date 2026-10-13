@@ -15,6 +15,7 @@ import time
 import unittest
 from unittest import mock
 
+import rdmods
 from rdmods import MODULES
 
 rd_common, rd_janitor, rd_daemon, rd_setup = (
@@ -80,7 +81,7 @@ class MiniCase(unittest.TestCase):
 
     def mini_sh(self, cfg, script, timeout=60):
         self.ssh_calls += 1
-        env = {"HOME": self.mhome, "PATH": self.bin + ":/usr/bin:/bin"}
+        env = {"HOME": self.mhome, "PATH": rdmods.safe_path(self.bin)}   # mini side: no RDOCKER_*
         p = subprocess.run(["/bin/sh", "-s"], input=script, capture_output=True, text=True,
                            env=env, timeout=timeout)
         return p.returncode, p.stdout, p.stderr

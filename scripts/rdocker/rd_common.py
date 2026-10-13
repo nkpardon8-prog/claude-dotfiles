@@ -12,7 +12,10 @@ import tempfile
 import time
 from contextlib import contextmanager
 
-HOME = os.path.expanduser("~")
+# Root of every laptop-side path below (config, state, ~/.local/bin, the LaunchAgent plist).
+# RDOCKER_HOME overrides it; the test harness (tests/rdmods.py) points it at a temp dir so no
+# test can write the real ~/.config/rdocker or ~/.local/state/rdocker.
+HOME = os.path.abspath(os.path.expanduser(os.environ.get("RDOCKER_HOME") or "~"))
 CFG_DIR = os.path.join(HOME, ".config", "rdocker")
 CFG_PATH = os.path.join(CFG_DIR, "config.json")
 STATE_DIR = os.path.join(HOME, ".local", "state", "rdocker")

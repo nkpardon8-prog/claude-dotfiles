@@ -4,6 +4,12 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 
 ## 2026-10-13 - rdocker Phase 2: review fixes (structure, routing precision, daemon, mini engine)
 
+- Fallback pins expire: when Docker Desktop is quit for idleness the fallback pins become exactly the
+  laptop's containers / compose projects at that moment (manual pins untouched), and while Desktop runs
+  the daemon drops fallback pins whose container/project is gone (10-minute grace for in-flight creates).
+- Tests are hermetic: `RDOCKER_HOME` (default `~`) roots every rdocker path; `tests/rdmods.py` points it at
+  a temp home and puts fail-closed `ssh`/`launchctl`/`osascript`/`open`/`docker`/Tailscale stubs first on
+  PATH; `tests/test_zz_hermetic.py` fails if a path constant or a spawned test process escapes it.
 - Structure: `rdocker.py` is now a thin entry over `rd_common`, `rd_args`, `rd_tunnel`, `rd_route`,
   `rd_janitor`, `rd_daemon`, `rd_setup`. If they fail to import, the shim still runs read-only commands
   unrouted and refuses container-targeting/creating ones (exit 1, "run `rdocker doctor`").

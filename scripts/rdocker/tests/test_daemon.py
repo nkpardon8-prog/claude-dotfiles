@@ -16,6 +16,7 @@ from unittest import mock
 
 from test_janitor import JanitorCase
 from test_shim_safety import RDOCKER, STAGE, ShimCase
+import rdmods
 from rdmods import r, MODULES
 
 rd_common, rd_route, rd_daemon, rd_tunnel = (
@@ -57,6 +58,7 @@ class Schedule(unittest.TestCase):
     def run_loop(self, jumps, max_sleeps=200):
         ft = FakeTime(max_sleeps, jumps)
         spawned = []
+        self.pruned = 0
         cfg = rd_common.merge_cfg({"mode": "auto"})
         healthy = {"reachable": True, "docker_ok": True}
         with mock.patch.object(rd_daemon, "time", ft), \
@@ -67,6 +69,7 @@ class Schedule(unittest.TestCase):
                 mock.patch.object(rd_tunnel, "sync_forwards", lambda c, **k: (True, None)), \
                 mock.patch.object(rd_daemon, "set_global_context", lambda c, t: None), \
                 mock.patch.object(rd_daemon, "idle_step", lambda *a: False), \
+                mock.patch.object(rd_daemon, "prune_fallback_pins", lambda c: self.count_prune()), \
                 mock.patch.object(rd_daemon, "reload_step", lambda *a, **k: False), \
                 mock.patch.object(rd_daemon, "reap_jobs", lambda j: None), \
                 mock.patch.object(rd_daemon, "start_events", lambda c: None), \
@@ -75,6 +78,13 @@ class Schedule(unittest.TestCase):
             with self.assertRaises(StopLoop):
                 rd_daemon.daemon()
         return [round(t - 1000) for n, t in spawned if n == "janitor-run"]
+
+    def count_prune(self):
+        self.pruned += 1
+
+    def test_loop_prunes_fallback_pins_every_tick(self):
+        self.run_loop({}, max_sleeps=4)
+        self.assertEqual(self.pruned, 5)
 
     def test_janitor_schedule_ignores_wall_clock_jumps(self):
         # 200 ticks of 15s = 3000s: janitor at +60, then every 600s.
@@ -111,9 +121,8 @@ class Jobs(unittest.TestCase):
 
 class JobLock(JanitorCase):
     def job(self, name):
-        e = {k: v for k, v in os.environ.items() if not k.startswith("RDOCKER_")}
-        e.update(HOME=self.home, PATH=self.bin + ":/usr/bin:/bin",
-                 FAKE_DOCKER_FIXTURE=self.fixture, FAKE_DOCKER_LOG=self.log)
+        e = rdmods.child_env(self.home, self.bin, FAKE_DOCKER_FIXTURE=self.fixture,
+                             FAKE_DOCKER_LOG=self.log)
         return subprocess.run(["/usr/bin/python3", "-I", RDOCKER, name],
                               capture_output=True, text=True, env=e, timeout=60)
 
@@ -224,6 +233,76 @@ class IdleQuit(unittest.TestCase):
         quit_, events = self.drive(ps_a=(1, "", "boom"))
         self.assertFalse(quit_)
         self.assertEqual(events, [])
+
+    def write_cfg(self, pins):
+        with open(self.cfgpath, "w") as f:
+            json.dump({"pins": pins}, f)
+
+    def pins(self):
+        with open(self.cfgpath) as f:
+            return json.load(f)["pins"]
+
+    def test_snapshot_replaces_fallback_pins_keeps_explicit(self):
+        self.write_cfg({"containers": ["solo", "manual-gone"], "compose_projects": ["mproj"],
+                        "fallback": [{"name": "rde2e-28656-a", "kind": "container", "ts": 5.0},
+                                     {"name": "web", "kind": "container", "ts": 7.0},
+                                     {"name": "oldproj", "kind": "compose", "ts": 5.0}]})
+        quit_, events = self.drive()
+        self.assertTrue(quit_)
+        pins = self.pins()
+        self.assertEqual(pins["containers"], ["solo", "manual-gone"])   # explicit pins untouched
+        self.assertEqual(pins["compose_projects"], ["mproj"])
+        fb = {(p["name"], p["kind"]): p["ts"] for p in pins["fallback"]}
+        # exactly what exists now, minus the explicitly pinned "solo"; web keeps its original ts
+        self.assertEqual(set(fb), {("web", "container"), ("proj", "compose")})
+        self.assertEqual(fb[("web", "container")], 7.0)
+
+    def test_snapshot_keeps_pin_written_after_listing(self):
+        self.write_cfg({"fallback": [{"name": "racing", "kind": "container", "ts": 1001.0},
+                                     {"name": "stale", "kind": "container", "ts": 999.0}]})
+        added, dropped = rd_route.sync_fallback_pins({("web", "container")}, 1000.0, replace=True)
+        self.assertEqual((added, dropped), ([("web", "container")], [("stale", "container")]))
+        self.assertEqual({p["name"] for p in self.pins()["fallback"]}, {"racing", "web"})
+
+    def prune(self, ps_a, up=True):
+        calls = []
+
+        def dk(ctx, *args, **kw):
+            calls.append(args)
+            return ps_a
+        with mock.patch.object(rd_tunnel, "local_engine_up", lambda c: up), \
+                mock.patch.object(rd_common, "dk", dk):
+            dropped = r.prune_fallback_pins(rd_common.load_cfg())
+        return dropped, calls
+
+    def test_prune_drops_absent_pins_past_grace(self):
+        now = r.time.time()
+        self.write_cfg({"containers": ["gone-manual"], "compose_projects": ["gone-mproj"],
+                        "fallback": [{"name": "gone", "kind": "container", "ts": now - 3600},
+                                     {"name": "web", "kind": "container", "ts": now - 3600},
+                                     {"name": "pulling", "kind": "container", "ts": now - 30},
+                                     {"name": "oldproj", "kind": "compose", "ts": now - 3600},
+                                     {"name": "proj", "kind": "compose", "ts": now - 3600}]})
+        dropped, _ = self.prune((0, "web\tproj\n", ""))
+        self.assertEqual(sorted(dropped), [("gone", "container"), ("oldproj", "compose")])
+        pins = self.pins()
+        self.assertEqual({p["name"] for p in pins["fallback"]}, {"web", "pulling", "proj"})
+        self.assertEqual((pins["containers"], pins["compose_projects"]), (["gone-manual"], ["gone-mproj"]))
+
+    def test_prune_writes_nothing_when_all_present(self):
+        self.write_cfg({"fallback": [{"name": "web", "kind": "container", "ts": 1.0}]})
+        before = os.stat(self.cfgpath).st_mtime_ns
+        with mock.patch.object(rd_common, "update_cfg", side_effect=AssertionError("wrote")):
+            self.assertEqual(self.prune((0, "web\t\n", ""))[0], [])
+        self.assertEqual(os.stat(self.cfgpath).st_mtime_ns, before)
+
+    def test_prune_needs_pins_desktop_and_a_listing(self):
+        self.write_cfg({})
+        self.assertEqual(self.prune((0, "", ""))[1], [])                 # no pins: no docker call
+        self.write_cfg({"fallback": [{"name": "gone", "kind": "container", "ts": 1.0}]})
+        self.assertEqual(self.prune((0, "", ""), up=False), ([], []))    # Desktop down
+        self.assertEqual(self.prune((1, "", "boom"))[0], [])             # ps -a failed
+        self.assertEqual([p["name"] for p in self.pins()["fallback"]], ["gone"])
 
     def test_live_marker_prevents_quit(self):
         self.marker(os.getpid())

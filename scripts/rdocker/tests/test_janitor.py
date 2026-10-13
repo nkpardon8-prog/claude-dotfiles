@@ -10,6 +10,7 @@ import os
 import subprocess
 import unittest
 
+import rdmods
 from test_shim_safety import RDOCKER, ShimCase, r
 
 SYSTIME = "2026-10-13T14:00:00.123456789+02:00"
@@ -49,9 +50,8 @@ class JanitorCase(ShimCase):
             return json.load(f)
 
     def clean(self, *argv):
-        e = {k: v for k, v in os.environ.items() if not k.startswith("RDOCKER_")}
-        e.update(HOME=self.home, PATH=self.bin + ":/usr/bin:/bin",
-                 FAKE_DOCKER_FIXTURE=self.fixture, FAKE_DOCKER_LOG=self.log)
+        e = rdmods.child_env(self.home, self.bin, FAKE_DOCKER_FIXTURE=self.fixture,
+                             FAKE_DOCKER_LOG=self.log)
         p = subprocess.run(["/usr/bin/python3", "-I", RDOCKER, "clean"] + list(argv),
                            capture_output=True, text=True, env=e, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)

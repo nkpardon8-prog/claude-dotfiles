@@ -15,6 +15,9 @@ import threading
 import time
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rdmods  # noqa: E402  (hermetic RDOCKER_HOME + fail-closed stubs)
+
 STAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 PRELUDE = textwrap.dedent("""
@@ -31,11 +34,11 @@ class InHome(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.home, True)
 
     def run_py(self, body):
-        """Run PRELUDE + body as a script under HOME=self.home; return its last stdout line as JSON."""
+        """Run PRELUDE + body as a script with self.home as its home; return its last stdout line as JSON."""
         script = os.path.join(self.home, "case.py")
         with open(script, "w") as f:
             f.write(PRELUDE + textwrap.dedent(body))
-        env = dict(os.environ, HOME=self.home)
+        env = rdmods.child_env(self.home)
         p = subprocess.run([sys.executable, "-I", script], capture_output=True, text=True,
                            env=env, timeout=120)
         self.assertEqual(p.returncode, 0, p.stderr)

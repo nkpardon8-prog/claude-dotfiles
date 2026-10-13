@@ -55,7 +55,8 @@ def fallback_split(argv):
     """-> (unrouted, sub): unrouted when a working rdocker would not route this call either
     (bypass, mode off, explicit context/host); sub is the docker subcommand or None."""
     try:
-        with open(os.path.expanduser("~/.config/rdocker/config.json")) as f:
+        home = os.path.expanduser(os.environ.get("RDOCKER_HOME") or "~")   # == rd_common.HOME
+        with open(os.path.join(home, ".config", "rdocker", "config.json")) as f:
             mode = json.load(f).get("mode")
     except (OSError, ValueError, AttributeError):
         mode = None
