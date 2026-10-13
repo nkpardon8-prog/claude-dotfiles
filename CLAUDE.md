@@ -64,6 +64,16 @@ When asked to summarize a session, dump context, or save state before compaction
 ## GUI Fallback (local Mac)
 When you hit a GUI surface no CLI / MCP / native tool can reach (macOS permission dialogs, app modals without CLI equivalents, apps with no scriptable surface), use `/desktop`. Don't ask the user to click — use the skill. It self-routes, applies safety classifiers, and confirms before destructive or ambiguous actions.
 
+## Docker runs on the Mac mini — `/docker`
+`docker` / `docker compose` on this laptop are routed by a shim to the always-on Mac mini over
+Tailscale; every published port is mirrored to laptop `localhost` at the same number. So use docker
+**exactly as normal** — `-p 127.0.0.1::5432` + `docker port`, `localhost` connection strings and
+localhost safety guards all keep working. Never add `--context`, set `DOCKER_HOST`/`DOCKER_CONTEXT`,
+or swap `localhost` for the mini's hostname: each bypasses the routing. Laptop bind mounts,
+`--network host`, and pinned laptop containers run locally on their own. When docker errors, hangs,
+or a mirrored port won't connect, run `rdocker doctor` (details: `/docker`). Ask the user before moving
+a pinned container's data or deleting volumes on the mini.
+
 ## Window naming + reaching other windows — `/line`
 `/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).
 Agents do NOT run it or write the caption automatically. It sets two things at once: the statusline
