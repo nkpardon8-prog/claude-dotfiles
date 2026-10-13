@@ -151,5 +151,19 @@ ssh macmini-docker "lsof -nP -iTCP -sTCP:LISTEN" > "$TMP/l" 2>/dev/null
 check "mini publishes container ports on loopback only" "! grep -E '^(ssh|limactl).*\\*:[0-9]+' $TMP/l | grep -v ':53 '"
 check "launchd forwarder loaded" "launchctl list com.rdocker.forwarder"
 
+# --- Lima override precedence: a container port published on all interfaces (-p 55999:80, no IP)
+# must still bind ONLY the mini's 127.0.0.1 (override.yaml hostIP), never *:55999 ---------------
+LIMA_PORT=55999
+LIMA="${PFX}lima"
+run_d --name "$LIMA" -p $LIMA_PORT:80 nginx:alpine >/dev/null
+for _ in $(seq 1 20); do
+  ssh macmini-docker "lsof -nP -iTCP:$LIMA_PORT -sTCP:LISTEN" > "$TMP/lima" 2>/dev/null
+  grep -q ":$LIMA_PORT" "$TMP/lima" && break; sleep 1
+done
+check "-p $LIMA_PORT:80 listens on the mini" "grep -q ':$LIMA_PORT' $TMP/lima"
+check "-p $LIMA_PORT:80 binds mini loopback only (Lima override wins)" \
+  "! grep -vE '(127\\.0\\.0\\.1|\\[::1\\]):$LIMA_PORT' $TMP/lima | grep -q ':$LIMA_PORT'"
+docker rm -f "$LIMA" >/dev/null 2>&1
+
 echo; echo "rdocker e2e: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

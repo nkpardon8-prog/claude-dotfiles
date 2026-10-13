@@ -7,6 +7,9 @@ Env:
                        "_compose_model": {...}  # what `docker compose ... config --format json` prints
                        }
   FAKE_DOCKER_LOG      every invocation's argv is appended here as one JSON line.
+  FAKE_DOCKER_STDIN_LOG  a `compose` call whose file is stdin (`-f -`, `--file=-`, `-f-`) reads all of
+                       stdin, like real compose, and appends {"argv", "len", "sha256"} here. When those
+                       bytes are JSON they ARE the model `compose config` prints.
 
 Behaviour (minimal): `--context X version|info|container inspect|inspect|ps|run|create|rm|<anything>`.
 A context marked "down" (or missing) fails every call with a daemon-connection error, which the
@@ -30,6 +33,7 @@ Janitor knobs (per context):
   "old_buildx": true        `builder prune --max-used-space` fails with "unknown flag"
 """
 import fcntl
+import hashlib
 import json
 import os
 import sys
@@ -169,11 +173,31 @@ def find(st, containers, n):
     return None
 
 
+def reads_stdin(argv):
+    if "compose" not in argv:
+        return False
+    a = argv[argv.index("compose") + 1:]
+    return any((x in ("-f", "--file") and a[i + 1:i + 2] == ["-"]) or x in ("--file=-", "-f-")
+               for i, x in enumerate(a))
+
+
 def main(argv):
     log = os.environ.get("FAKE_DOCKER_LOG")
     if log:
         with open(log, "a") as f:
             f.write(json.dumps(argv) + "\n")
+    stdin_model = None
+    if reads_stdin(argv):
+        data = sys.stdin.buffer.read()
+        slog = os.environ.get("FAKE_DOCKER_STDIN_LOG")
+        if slog:
+            with open(slog, "a") as f:
+                f.write(json.dumps({"argv": argv, "len": len(data),
+                                    "sha256": hashlib.sha256(data).hexdigest()}) + "\n")
+        try:
+            stdin_model = json.loads(data.decode("utf-8"))
+        except ValueError:
+            stdin_model = None
     try:
         with open(os.environ["FAKE_DOCKER_FIXTURE"]) as f:
             fixture = json.load(f)
@@ -186,7 +210,7 @@ def main(argv):
     if not argv:
         return 0
     if argv[0] == "compose" and "config" in argv:
-        model = fixture.get("_compose_model")
+        model = stdin_model if stdin_model is not None else fixture.get("_compose_model")
         if model is None:
             sys.stderr.write("no configuration file provided: not found\n")
             return 1

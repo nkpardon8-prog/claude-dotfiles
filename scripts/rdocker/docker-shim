@@ -1,4 +1,12 @@
 #!/bin/bash
 # rdocker docker shim: routes `docker` to the Mac mini (or the laptop) - see rdocker.py / commands/docker.md.
 # Escape hatch: RDOCKER_BYPASS=1 docker ...  (or `rdocker use off`).
-exec /usr/bin/python3 -I "$HOME/.claude-dotfiles/scripts/rdocker/rdocker.py" shim "$@"
+# Resolve our real directory (~/.local/bin/docker is a symlink to this file); bash 3.2, no readlink -f.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+dir="$(cd -P "$(dirname "$src")" && pwd)"
+exec /usr/bin/python3 -I "$dir/rdocker.py" shim "$@"

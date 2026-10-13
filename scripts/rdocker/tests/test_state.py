@@ -20,8 +20,9 @@ STAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 PRELUDE = textwrap.dedent("""
     import json, os, sys, time
     sys.path.insert(0, %r)
-    import rdocker as r
-""" % os.path.abspath(STAGE))
+    from rdmods import r
+    import rd_tunnel
+""" % os.path.dirname(os.path.abspath(__file__)))
 
 
 class InHome(unittest.TestCase):
@@ -145,7 +146,7 @@ class HealthFreshness(InHome):
                 calls.append(1)
                 return {"ts": time.time(), "reachable": False, "docker_ok": False,
                         "rtt_ms": None, "server_version": ""}
-            r.probe_health = fake_probe
+            rd_tunnel.probe_health = fake_probe
             h = r.health(r.load_cfg())
             again = r.health(r.load_cfg())       # now fresh -> served from the file
             with open(r.HEALTH_PATH) as f:
@@ -158,9 +159,9 @@ class HealthFreshness(InHome):
 
 class ProbeFailureClassification(unittest.TestCase):
     def setUp(self):
-        sys.path.insert(0, os.path.abspath(STAGE))
-        import rdocker
-        self.r = rdocker
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from rdmods import r
+        self.r = r
 
     def test_live_tunnel_means_engine_problem(self):
         self.assertEqual(self.r.classify_probe_failure(False, True), "engine")
@@ -176,31 +177,33 @@ class ProbeHealthBranches(InHome):
     """probe_health with the ssh/docker edges stubbed: only a dead tunnel may reset the master."""
     BODY = """
         resets = []
-        r.docker_probe = lambda cfg: (False, "", 4000.0)
-        r.master_pid = lambda cfg: 4242
-        r.tunnel_alive = lambda cfg: %s
-        r.reset_master = lambda cfg: resets.append(1)
+        rd_tunnel.docker_probe = lambda cfg: (False, "", 4000.0)
+        rd_tunnel.master_pid = lambda cfg: 4242
+        rd_tunnel.tunnel_alive = lambda cfg: %s
+        rd_tunnel.reset_master = lambda cfg: resets.append(1)
         h = r.probe_health(r.load_cfg())
         print(json.dumps({"resets": len(resets), "reachable": h["reachable"],
-                          "docker_ok": h["docker_ok"]}))
+                          "docker_ok": h["docker_ok"], "failure": h["failure"]}))
     """
 
     def test_engine_down_keeps_master(self):
         out = self.run_py(self.BODY % "True")
-        self.assertEqual(out, {"resets": 0, "reachable": True, "docker_ok": False})
+        self.assertEqual(out, {"resets": 0, "reachable": True, "docker_ok": False,
+                               "failure": "engine"})
 
     def test_stale_tunnel_resets_and_retries(self):
         out = self.run_py(self.BODY % "False")
-        self.assertEqual(out, {"resets": 1, "reachable": True, "docker_ok": False})
+        self.assertEqual(out, {"resets": 1, "reachable": True, "docker_ok": False,
+                               "failure": "tunnel"})
 
 
 class RawSocketProbe(unittest.TestCase):
     """http_unix / docker_probe against a fake docker API on a unix socket in a temp dir."""
 
     def setUp(self):
-        sys.path.insert(0, os.path.abspath(STAGE))
-        import rdocker
-        self.r = rdocker
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from rdmods import r
+        self.r = r
         d = tempfile.mkdtemp(prefix="rdp-", dir="/tmp")     # macOS caps unix paths at 104 bytes
         self.addCleanup(shutil.rmtree, d, True)
         self.path = os.path.join(d, "d.sock")
@@ -244,8 +247,10 @@ class RawSocketProbe(unittest.TestCase):
         return True
 
     def patch(self, name, value):
-        self.addCleanup(setattr, self.r, name, getattr(self.r, name))
-        setattr(self.r, name, value)
+        from rdmods import owner
+        mod = owner(name)          # the module that reads it; r itself refuses assignment
+        self.addCleanup(setattr, mod, name, getattr(mod, name))
+        setattr(mod, name, value)
 
     def probe(self):
         self.patch("MINI_SOCK", self.path)
@@ -277,6 +282,262 @@ class RawSocketProbe(unittest.TestCase):
     def test_no_listener_is_failure(self):
         os.unlink(self.path)
         self.assertFalse(self.probe()[0])
+
+
+class RouteLogRotation(InHome):
+    """route.log is written by many shim processes: rotation + append run under one flock, so the
+    single rotation in this run loses and duplicates nothing and no line is torn."""
+
+    def test_eight_writers_one_rotation_nothing_lost(self):
+        out = self.run_py("""
+            import multiprocessing as mp, re
+            import rd_common
+            rd_common.LOG_MAX = 60000          # 8 x 150 lines x ~75 B = ~90 KB -> exactly one rotation
+
+            def write(i):
+                for n in range(150):
+                    rd_common.log("worker %d line %04d %s" % (i, n, "x" * 30), rd_common.ROUTE_LOG)
+
+            if __name__ == "__main__":
+                r.ensure_dirs()
+                procs = [mp.Process(target=write, args=(i,)) for i in range(8)]
+                for p in procs:
+                    p.start()
+                for p in procs:
+                    p.join()
+                lines = []
+                for path in (r.ROUTE_LOG + ".1", r.ROUTE_LOG):
+                    with open(path) as f:
+                        lines += f.read().splitlines()
+                pat = re.compile(r"^\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d worker \\d line \\d{4} x{30}$")
+                print(json.dumps({"codes": [p.exitcode for p in procs], "n": len(lines),
+                                  "unique": len(set(l[20:] for l in lines)),
+                                  "torn": [l for l in lines if not pat.match(l)][:3],
+                                  "cur": os.path.getsize(r.ROUTE_LOG),
+                                  "old": os.path.getsize(r.ROUTE_LOG + ".1")}))
+        """)
+        self.assertEqual(out["codes"], [0] * 8)
+        self.assertEqual(out["torn"], [])
+        self.assertEqual((out["n"], out["unique"]), (1200, 1200))
+        self.assertGreater(out["old"], 60000)
+        self.assertLess(out["cur"], 60000)
+
+
+# ---------------------------------------------------------------------------- CLI (in-process)
+
+from unittest import mock  # noqa: E402
+import contextlib  # noqa: E402
+import io  # noqa: E402
+
+from rdmods import MODULES  # noqa: E402
+
+rd_common, rd_route, rd_daemon, rd_tunnel, rd_janitor, rd_setup = (
+    next(m for m in MODULES if m.__name__ == n)
+    for n in ("rd_common", "rd_route", "rd_daemon", "rd_tunnel", "rd_janitor", "rd_setup"))
+
+
+class CliParsing(unittest.TestCase):
+    def ns(self, *argv):
+        ns, rc = rd_setup.parse_args(list(argv))
+        self.assertIsNone(rc, argv)
+        return ns
+
+    def test_every_subcommand(self):
+        self.assertEqual((self.ns().cmd, self.ns().fix), ("status", False))
+        self.assertTrue(self.ns("status", "--fix").fix)
+        self.assertEqual(self.ns("doctor").cmd, "doctor")
+        for m in ("auto", "mini", "local", "off"):
+            self.assertEqual(self.ns("use", m).mode, m)
+        self.assertEqual(self.ns("where", "db").name, "db")
+        n = self.ns("pin", "proj", "--compose")
+        self.assertEqual((n.cmd, n.name, n.compose), ("pin", "proj", True))
+        self.assertEqual(self.ns("unpin", "db").name, "db")
+        n = self.ns("sync", "--repeat", "6", "--interval", "0.5")
+        self.assertEqual((n.repeat, n.interval), (6, 0.5))
+        self.assertEqual((self.ns("sync").repeat, self.ns("sync").interval), (1, 1.5))
+        self.assertTrue(self.ns("logs", "--route").route)
+        n = self.ns("clean", "--only", "e2e-", "--force-critical", "--exited_rm_hours", "0", "--dry-run")
+        self.assertEqual((n.only, n.force_critical, n.exited_rm_hours, n.dry_run, n.idle_stop_hours),
+                         ("e2e-", True, 0.0, True, None))
+        self.assertEqual(self.ns("install").cmd, "install")
+        n = self.ns("setup-mini")
+        self.assertEqual((n.cpu, n.mem, n.disk), ("6", "8", "30"))
+        n = self.ns("setup-mini", "4", "12")
+        self.assertEqual((n.cpu, n.mem, n.disk), ("4", "12", "30"))
+        self.assertEqual(self.ns("daemon").cmd, "daemon")
+        self.assertEqual(self.ns("janitor-run").cmd, "janitor-run")
+        self.assertTrue(self.ns("kick", "--restart-ok").restart_ok)
+
+    def test_bad_usage_is_2_and_help_is_0(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            for argv in (["bogus"], ["use"], ["use", "sideways"], ["where"], ["sync", "--repeat", "x"]):
+                self.assertEqual(rd_setup.command(argv), 2, argv)
+        self.assertIn("usage: rdocker", err.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(rd_setup.command(["status", "--help"]), 0)
+        self.assertIn("--fix", out.getvalue())
+
+    def test_help_hides_internal_jobs(self):
+        text = rd_setup.build_parser().format_help()
+        self.assertIn("setup-mini", text)
+        self.assertNotIn("janitor-run", text)
+        self.assertNotIn("kick", text)
+
+
+class CliDispatch(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rdk-cli-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.cfg = rd_common.merge_cfg({})
+        for target, name, val in (
+                (rd_common, "HEALTH_PATH", os.path.join(self.tmp, "health.json")),
+                (rd_common, "load_cfg", lambda: dict(self.cfg)),
+                (rd_common, "update_cfg", self.update_cfg)):
+            p = mock.patch.object(target, name, val)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def update_cfg(self, fn):
+        self.cfg = fn(self.cfg)
+        return self.cfg
+
+    def cmd(self, *argv):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return rd_setup.command(list(argv))
+
+    def test_use_off_points_global_context_at_laptop(self):
+        open(rd_common.HEALTH_PATH, "w").close()
+        with mock.patch.object(rd_daemon, "set_global_context") as sgc, \
+                mock.patch.object(rd_tunnel, "resolve_target") as rt:
+            self.assertEqual(self.cmd("use", "off"), 0)
+        self.assertEqual(self.cfg["mode"], "off")
+        sgc.assert_called_once_with(self.cfg, "local")
+        rt.assert_not_called()
+        self.assertFalse(os.path.exists(rd_common.HEALTH_PATH))
+
+    def test_use_auto_follows_resolved_target(self):
+        with mock.patch.object(rd_daemon, "set_global_context") as sgc, \
+                mock.patch.object(rd_tunnel, "resolve_target", return_value=("mini", "ok")):
+            self.assertEqual(self.cmd("use", "auto"), 0)
+        sgc.assert_called_once_with(self.cfg, "mini")
+
+    def test_clean_threshold_override(self):
+        with mock.patch.object(rd_janitor, "janitor", return_value=["rm x"]) as j:
+            self.assertEqual(self.cmd("clean", "--only", "e2e-", "--force-critical",
+                                      "--exited_rm_hours", "0"), 0)
+        cfg = j.call_args[0][0]
+        self.assertEqual(cfg["exited_rm_hours"], 0.0)
+        self.assertEqual(cfg["idle_stop_hours"], self.cfg["idle_stop_hours"])
+        self.assertEqual(j.call_args[1], {"dry": False, "only": "e2e-", "force_critical": True,
+                                          "lock_wait": rd_janitor.CLEAN_LOCK_WAIT})
+
+    def test_pin_unpin(self):
+        self.cmd("pin", "proj", "--compose")
+        self.cmd("pin", "db")
+        self.assertEqual((self.cfg["pins"]["compose_projects"], self.cfg["pins"]["containers"]),
+                         (["proj"], ["db"]))
+        self.cmd("unpin", "proj")
+        self.assertEqual(self.cfg["pins"]["compose_projects"], [])
+
+    def test_jobs_setup_sync(self):
+        with mock.patch.object(rd_setup, "run_job", return_value=0) as rj:
+            self.cmd("kick", "--restart-ok")
+            self.cmd("janitor-run")
+        self.assertEqual([c[0][2] for c in rj.call_args_list], [["--restart-ok"], []])
+        with mock.patch.object(rd_setup, "setup_mini", return_value=0) as sm:
+            self.cmd("setup-mini", "4")
+        self.assertEqual(sm.call_args[0][1:], ("4", "8", "30"))
+        with mock.patch.object(rd_tunnel, "sync_forwards", return_value=(False, [1], [])) as sf:
+            self.assertEqual(self.cmd("sync", "--repeat", "2", "--interval", "0"), 1)
+        self.assertEqual(sf.call_count, 2)
+
+
+class MergedPs(unittest.TestCase):
+    LOCAL = "CONTAINER ID   IMAGE   NAMES\nabc123   redis   cache\n"
+
+    def run_ps(self, args, rc1=0, rc2=0, out=LOCAL):
+        with mock.patch.object(rd_route, "call_docker", return_value=rc1) as cd, \
+                mock.patch.object(rd_common, "real_docker", return_value="/x/docker"), \
+                mock.patch.object(rd_common, "run", return_value=(rc2, out, "daemon boom\n")) as run, \
+                mock.patch.object(rd_common, "say") as say, \
+                contextlib.redirect_stdout(io.StringIO()) as so:
+            rc = rd_route.merged_ps(rd_common.merge_cfg({}), ["/x/docker", "--context", "mini"], [],
+                                    ["ps"] + args, args)
+        self.assertEqual(cd.call_args[0][0], ["/x/docker", "--context", "mini", "ps"] + args)
+        self.assertEqual(run.call_args[0][0], ["/x/docker", "--context", "desktop-linux", "ps"] + args)
+        return rc, so.getvalue(), [c[0][0] for c in say.call_args_list]
+
+    def test_table_header_printed_once(self):
+        rc, out, said = self.run_ps(["-a"])
+        self.assertEqual((rc, out, said), (0, "abc123   redis   cache\n", []))
+        self.assertEqual(self.run_ps(["--format", "table {{.Names}}"])[1], "abc123   redis   cache\n")
+
+    def test_non_table_output_kept_whole(self):
+        for args in (["-q"], ["-aq"], ["--quiet"], ["--format", "{{.Names}}"], ["--format=json"],
+                     ["--format", "json"]):
+            self.assertEqual(self.run_ps(args)[1], self.LOCAL, args)
+
+    def test_rc_from_either_engine(self):
+        rc, out, said = self.run_ps(["-a"], rc2=1, out="")
+        self.assertEqual(rc, 1)
+        self.assertIn("laptop engine failed (rc=1): daemon boom", " ".join(said).replace("ps on the ", ""))
+        rc, out, said = self.run_ps(["-a"], rc1=125)
+        self.assertEqual(rc, 125)
+        self.assertIn("mini failed", said[0])
+
+    def test_ps_tabular(self):
+        self.assertTrue(rd_route.ps_tabular(["-a", "-f", "name=q", "-n", "3"]))
+        self.assertFalse(rd_route.ps_tabular(["-qa"]))
+
+
+class StatusRows(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rdk-st-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for name in ("DAEMON_PATH", "JANITOR_PATH"):
+            p = mock.patch.object(rd_common, name, os.path.join(self.tmp, name.lower()))
+            p.start()
+            self.addCleanup(p.stop)
+
+    def write(self, path, data):
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+    def test_daemon_code_vs_running(self):
+        now = 10_000.0
+        self.assertFalse(rd_setup.daemon_rows(now)[0][0])                     # no daemon.json
+        self.write(rd_common.DAEMON_PATH, {"pid": os.getpid(), "started": now - 60, "code_mtime": 500})
+        with mock.patch.object(rd_daemon, "module_mtimes", return_value={"a": 400, "b": 500}):
+            ok, _, detail = rd_setup.daemon_rows(now)[0]
+        self.assertTrue(ok)
+        self.assertIn("pid %d, started 1m ago, running the code on disk" % os.getpid(), detail)
+        with mock.patch.object(rd_daemon, "module_mtimes", return_value={"a": now - 5}):
+            ok, _, detail = rd_setup.daemon_rows(now)[0]
+        self.assertTrue(ok)
+        self.assertIn("reload pending", detail)
+        with mock.patch.object(rd_daemon, "module_mtimes", return_value={"a": now - 600}):
+            ok, _, detail = rd_setup.daemon_rows(now)[0]
+        self.assertFalse(ok)
+        self.assertIn("NOT picked up", detail)
+        with mock.patch.object(rd_daemon, "pid_alive", return_value=False):
+            self.assertFalse(rd_setup.daemon_rows(now)[0][0])
+
+    def test_janitor_health_fallback(self):
+        now = 100_000.0
+        cfg = rd_common.merge_cfg({"pins": {"fallback": [{"name": "db", "kind": "container", "ts": 1}]}})
+        self.assertEqual(rd_setup.janitor_rows(cfg, now), [(True, "janitor last run", "never")])
+        self.write(rd_common.JANITOR_PATH, {
+            "last_run": now - 120, "vm_disk_pct": 41, "mini_free_gb": 80,
+            "last_error": {"ts": now - 300, "action": "prune dangling images", "err": "boom"}})
+        rows = {label: (ok, d) for ok, label, d in rd_setup.janitor_rows(cfg, now)}
+        self.assertEqual(rows["janitor last run"], (True, "2m ago"))
+        self.assertEqual(rows["janitor last error"], (False, "5m ago: prune dangling images: boom"))
+        self.assertEqual(rows["mini disk"], (True, "VM 41% used, mini 80 GB free"))
+        self.write(rd_common.JANITOR_PATH, {"last_error": {"ts": now - 86400, "action": "a", "err": "e"}})
+        self.assertTrue(rd_setup.janitor_rows(cfg, now)[1][0])                 # old error: informational
+        self.assertEqual(rd_setup.fallback_pins_row(cfg)[2], "db (container)")
+        self.assertIn("12s old", rd_setup.health_age_row({"ts": now - 12}, now)[2])
+        self.assertIn("none on file", rd_setup.health_age_row(None, now)[2])
 
 
 if __name__ == "__main__":

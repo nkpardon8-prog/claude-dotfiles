@@ -73,7 +73,8 @@ UDP publishes are refused). Never add `--context`, set `DOCKER_HOST`/`DOCKER_CON
 `localhost` for the mini's hostname: each bypasses the routing. Laptop bind mounts, `--network host`,
 and pinned laptop containers run locally on their own. If the mini is down, only throwaway containers
 (`--rm`, or no named volume and no `rdocker.keep`) fall back to the laptop; anything else, and any
-command on a container whose location can't be established, exits 1 instead of guessing. When docker
+command on a container whose location can't be established, exits 1 instead of guessing (so does
+`run`/`create`/compose with a flag rdocker doesn't know: force with `RDOCKER_MODE=local`). When docker
 errors, hangs, refuses, or a mirrored port won't connect, run `rdocker doctor` (details: `/docker`).
 Ask the user before moving a pinned container's data or deleting volumes on the mini. A janitor reaps
 leftovers (idle 12 h -> stop, stopped 24 h -> removed, unused named volumes 30 d, unused images 14 d),

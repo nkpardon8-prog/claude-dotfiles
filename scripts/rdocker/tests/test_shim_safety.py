@@ -24,8 +24,8 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 STAGE = os.path.abspath(os.path.join(TESTS, ".."))
 RDOCKER = os.path.join(STAGE, "rdocker.py")
 FAKE = os.path.join(TESTS, "fake_docker.py")
-sys.path.insert(0, STAGE)
-import rdocker as r  # noqa: E402
+sys.path.insert(0, TESTS)
+from rdmods import r  # noqa: E402,F401  (re-exported to the other test modules)
 
 
 def listen(path):
@@ -83,17 +83,20 @@ class ShimCase(unittest.TestCase):
         if laptop_up:
             self.socks.append(listen(self.local_sock))
 
-    def shim(self, *argv, env=None, cwd=None):
+    def shim(self, *argv, env=None, cwd=None, input=None):
         e = {k: v for k, v in os.environ.items()
              if not k.startswith("RDOCKER_") and k not in ("DOCKER_HOST", "DOCKER_CONTEXT")}
         e.update(HOME=self.home, PATH=self.bin + ":/usr/bin:/bin",
-                 FAKE_DOCKER_FIXTURE=self.fixture, FAKE_DOCKER_LOG=self.log)
+                 FAKE_DOCKER_FIXTURE=self.fixture, FAKE_DOCKER_LOG=self.log,
+                 FAKE_DOCKER_STDIN_LOG=self.log + ".stdin")
         e.update(env or {})
         cmd = ["/usr/bin/python3", "-I", RDOCKER, "shim"] + list(argv)
         if cwd == "deleted":
             d = os.path.join(self.home, "gone")
             os.makedirs(d)
             cmd = ["/bin/sh", "-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", d] + cmd
+        if input is not None:
+            return subprocess.run(cmd, capture_output=True, input=input, env=e, timeout=60)
         return subprocess.run(cmd, capture_output=True, text=True, env=e, timeout=60)
 
     def calls(self, verb=None):
@@ -294,39 +297,6 @@ def wait_bg_sync(limit=10.0):
         if p.returncode != 0:
             return
         time.sleep(0.1)
-
-
-class FlagParsing(unittest.TestCase):
-    def test_container_targets_with_value_flags(self):
-        self.assertEqual(r.container_targets("logs", ["-n", "5", "db"]), ["db"])
-        self.assertEqual(r.container_targets("logs", ["-n5", "-f", "db"]), ["db"])
-        self.assertEqual(r.container_targets("logs", ["--tail=5", "-ft", "db"]), ["db"])
-        self.assertEqual(r.container_targets("stop", ["-t", "0", "a", "b"]), ["a", "b"])
-        self.assertEqual(r.container_targets("kill", ["-s", "KILL", "a"]), ["a"])
-        self.assertEqual(r.container_targets("exec", ["-it", "-u", "0", "db", "sh"]), ["db"])
-        self.assertEqual(r.container_targets("inspect", ["-f", "{{.Id}}", "db"]), ["db"])
-        self.assertEqual(r.container_targets("top", ["db", "-o", "pid"]), ["db"])
-        self.assertEqual(r.container_targets("commit", ["-m", "msg", "db", "img"]), ["db"])
-
-    def test_run_detached_only_before_image(self):
-        self.assertTrue(r.is_detached(["-dit", "--rm", "alpine"]))
-        self.assertTrue(r.is_detached(["--name", "x", "-d", "alpine"]))
-        self.assertFalse(r.is_detached(["--rm", "alpine", "sh", "-d"]))
-        self.assertFalse(r.is_detached(["-e", "d=1", "alpine"]))
-        self.assertFalse(r.is_detached(["-a", "stdout", "alpine"]))
-
-    def test_run_short_values(self):
-        self.assertEqual(r.positionals_index(["-a", "stdout", "-p", "80", "img"]), 4)
-        self.assertEqual(r.positionals_index(["-itv/x:/y", "img"]), 1)
-
-    def test_throwaway(self):
-        self.assertIsNone(r.run_not_throwaway(["--rm", "-v", "data:/d", "pg"]))
-        self.assertIsNone(r.run_not_throwaway(["-d", "-v", "/var/run/docker.sock:/s", "x"]))
-        self.assertIsNone(r.run_not_throwaway(["-d", "-v", "/anon", "x"]))
-        self.assertTrue(r.run_not_throwaway(["-d", "-v", "data:/d", "pg"]))
-        self.assertTrue(r.run_not_throwaway(["-d", "--mount", "source=data,target=/d", "pg"]))
-        self.assertTrue(r.run_not_throwaway(["-d", "--label", "rdocker.keep=1", "pg"]))
-        self.assertIsNone(r.run_not_throwaway(["alpine", "-v", "data:/d"]))   # after the image
 
 
 if __name__ == "__main__":

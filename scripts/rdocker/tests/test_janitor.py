@@ -1,7 +1,7 @@
 """Janitor safety tests: run `rdocker.py clean ...` as a subprocess against tests/fake_docker.py.
 
 Same seams as test_shim_safety (temp HOME, fake docker on PATH); `ssh` is a stub that prints
-$HOME/ssh.out, which stands in for the mini's VMDISK/HOSTFREE report.
+$HOME/ssh.out, which stands in for the mini's VMDISK/HOSTFREE report and grants the mini lock.
 
 Run: /usr/bin/python3 -m unittest discover -s tests -v
 """
@@ -32,7 +32,8 @@ class JanitorCase(ShimCase):
 
     def disk(self, pct, free=100):
         with open(os.path.join(self.home, "ssh.out"), "w") as f:
-            f.write("VMDISK %d%%\nHOSTFREE %d\n" % (pct, free))
+            # RDLOCK ok: the same stub answers the mini-lock acquire/heartbeat/release scripts
+            f.write("RDLOCK ok\nVMDISK %d%%\nHOSTFREE %d\n" % (pct, free))
 
     def mini(self, containers=None, **knobs):
         eng = {"containers": containers or {}, "system_time": SYSTIME}
@@ -254,6 +255,17 @@ class Misc(JanitorCase):
     def test_system_time_offset_parsed(self):
         self.assertEqual(r.parse_ts("2026-10-13T14:00:00+02:00"), r.parse_ts("2026-10-13T12:00:00Z"))
         self.assertEqual(r.parse_ts("garbage"), 0)
+
+
+class TtlAndTimestamps(unittest.TestCase):
+    def test_ttl_and_timestamps(self):
+        self.assertEqual(r.parse_ttl("30m"), 1800)
+        self.assertEqual(r.parse_ttl("2h"), 7200)
+        self.assertEqual(r.parse_ttl("1d"), 86400)
+        self.assertEqual(r.parse_ttl("45"), 45)
+        self.assertIsNone(r.parse_ttl("soon"))
+        self.assertEqual(r.parse_ts("0001-01-01T00:00:00Z"), 0)
+        self.assertEqual(r.parse_ts("2026-10-13T00:00:00.123456789Z"), 1791849600.0)
 
 
 if __name__ == "__main__":

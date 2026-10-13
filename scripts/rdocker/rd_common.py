@@ -1,0 +1,311 @@
+"""rdocker rd_common: paths, DEFAULTS, config/state files + locks, logging, subprocess + docker helpers.
+
+Split out of rdocker.py; see rdocker.py for the overview.
+"""
+import copy
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from contextlib import contextmanager
+
+HOME = os.path.expanduser("~")
+CFG_DIR = os.path.join(HOME, ".config", "rdocker")
+CFG_PATH = os.path.join(CFG_DIR, "config.json")
+STATE_DIR = os.path.join(HOME, ".local", "state", "rdocker")
+HEALTH_PATH = os.path.join(STATE_DIR, "health.json")
+HEALTH_LOCK = os.path.join(STATE_DIR, "health.lock")   # one inline health probe at a time
+FORWARDS_PATH = os.path.join(STATE_DIR, "forwards.json")
+LOCK_PATH = os.path.join(STATE_DIR, "sync.lock")
+FWD_SOCK = os.path.join(STATE_DIR, "fwd.sock")
+MINI_SOCK = os.path.join(STATE_DIR, "mini-docker.sock")   # laptop end of the mini docker socket
+LOG_PATH = os.path.join(STATE_DIR, "daemon.log")
+ROUTE_LOG = os.path.join(STATE_DIR, "route.log")
+JANITOR_PATH = os.path.join(STATE_DIR, "janitor.json")
+DAEMON_PATH = os.path.join(STATE_DIR, "daemon.json")   # running daemon: pid, start time, code mtime
+# Laptop-engine activity (read by the daemon's Docker Desktop idle-quit): one file per shim process
+# that is running a docker command on the laptop engine (named by its pid), and a file whose mtime
+# is the last time the shim routed a command to the laptop.
+LOCAL_ACTIVE_DIR = os.path.join(STATE_DIR, "local-active")
+LOCAL_LAST_PATH = os.path.join(STATE_DIR, "local-last")
+BIN_DIR = os.path.join(HOME, ".local", "bin")
+HERE = os.path.dirname(os.path.realpath(__file__))
+SHIM_SRC = os.path.join(HERE, "docker-shim")
+ENTRY = os.path.join(HERE, "rdocker.py")   # the CLI entry point (launchd plist, ~/.local/bin/rdocker)
+PLIST_LABEL = "com.rdocker.forwarder"
+PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
+
+DEFAULTS = {
+    "host": "macmini-docker",          # ssh Host alias (see ~/.ssh/config.d/rdocker)
+    "host_ip": "",                     # tailnet IP (informational; health uses the ssh master)
+    "remote_context": "mini",
+    "remote_socket": "",               # mini docker socket, streamed over the SSH master
+    "local_context": "desktop-linux",
+    "local_socket": os.path.join(HOME, ".docker", "run", "docker.sock"),
+    "mode": "auto",                    # auto | mini | local | off
+    "max_rtt_ms": 300,                 # auto mode: /_ping round-trip slower -> new throwaways on laptop
+    "local_idle_stop_min": 15,         # quit Docker Desktop after N idle minutes (0 = never)
+    # laptop-resident (sticky local); fallback = [{"name", "kind": container|compose, "ts"}]
+    "pins": {"containers": [], "compose_projects": [], "fallback": []},
+    "ephemeral_port_range": [20000, 29999],   # host ports the shim picks for `-p <ctr-port>`
+    # Janitor (mini only). Labels: rdocker.keep=<anything but 0/false/no> exempts containers,
+    # volumes and images; rdocker.ttl=<30m|2h|1d> hard lifetime.
+    "janitor_interval_min": 10,
+    "idle_stop_hours": 12,             # running, no net traffic + no TCP connections this long -> stop
+    "exited_rm_hours": 24,             # stopped this long -> rm -v (plain rm if it mounts a kept volume)
+    "image_unused_days": 14,           # no container used the image for this long -> image rm
+    "disk_high_pct": 80,               # VM disk above this -> rm unused images oldest-use first + cache
+    "disk_critical_pct": 90,           # ...above this also remove every stopped container now
+    "volume_unused_days": 30,          # named volume unused this long -> removed (rdocker.keep exempts)
+    "host_log_max_mb": 50,             # mini-side colima/lima log files are truncated past this
+    "host_min_free_gb": 8,             # mini macOS disk free below this -> aggressive prune + warning
+}
+
+HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim
+PERIODIC = 15            # daemon full reconcile / health interval
+
+
+# ---------------------------------------------------------------------------- utilities
+
+def ensure_dirs():
+    for d in (CFG_DIR, STATE_DIR):
+        os.makedirs(d, exist_ok=True)
+
+
+class ConfigWriteError(RuntimeError):
+    """config.json could not be locked or written. Config writes fail closed (state writes don't)."""
+
+
+def load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def save_json(path, data):
+    """Atomic write: unique temp file in the same dir, fsync, rename. Never leaves a torn file."""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix="." + os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+@contextmanager
+def file_lock(lock_path, fail_closed=False):
+    """Exclusive advisory flock on `lock_path` for the duration of the block.
+
+    fail_closed=False (state files): if the lock cannot be taken, log and proceed unlocked - the
+    write itself is still atomic. fail_closed=True (config): raise ConfigWriteError instead."""
+    fh = None
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        fh = open(lock_path, "a+")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError as e:
+        if fh is not None:
+            fh.close()
+            fh = None
+        if fail_closed:
+            raise ConfigWriteError("cannot lock %s: %s" % (lock_path, e))
+        log("lock %s unavailable (%s); writing unlocked" % (lock_path, e))
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
+
+def update_json(path, fn, default=None, fail_closed=False):
+    """Read-modify-write `path` under its sidecar `<path>.lock`; fn(current) returns the new data."""
+    with file_lock(path + ".lock", fail_closed=fail_closed):
+        cur = load_json(path, default)
+        new = fn(copy.deepcopy(cur) if cur is not None else cur)
+        try:
+            save_json(path, new)
+        except OSError as e:
+            if fail_closed:
+                raise ConfigWriteError("cannot write %s: %s" % (path, e))
+            raise
+        return new
+
+
+def write_state(path, data):
+    """Whole-file state write (health/forwards) that never raises - a full disk must not kill the
+    daemon or break a docker call."""
+    try:
+        save_json(path, data)
+    except OSError as e:
+        log("state write %s failed: %s" % (os.path.basename(path), e))
+
+
+def update_state(path, fn):
+    """Fail-soft read-modify-write of a state file (janitor ledger). Returns the new data or None."""
+    try:
+        return update_json(path, lambda cur: fn(cur if isinstance(cur, dict) else {}), default={})
+    except OSError as e:
+        log("state update %s failed: %s" % (os.path.basename(path), e))
+        return None
+
+
+MIGRATIONS = ("rtt300",)   # recorded in config["migrated"] so each runs exactly once
+
+
+def migrate_cfg(user):
+    """-> (user', changed). rtt300: max_rtt_ms 150 measured raw TCP; the probe is now a docker
+    round-trip (~2 RTT), so a stored 150 becomes 300."""
+    done = set(user.get("migrated") or [])
+    out = dict(user)
+    changed = False
+    if "rtt300" not in done:
+        if out.get("max_rtt_ms") == 150:
+            out["max_rtt_ms"] = 300
+            changed = True
+        done.add("rtt300")
+    out["migrated"] = sorted(done)
+    return out, changed
+
+
+def merge_cfg(user):
+    """DEFAULTS deep-merged with the stored (non-default) keys, migrations applied."""
+    user, _ = migrate_cfg(user if isinstance(user, dict) else {})
+    cfg = copy.deepcopy(DEFAULTS)
+    cfg.update({k: copy.deepcopy(v) for k, v in user.items() if k != "pins"})
+    cfg["pins"].update(copy.deepcopy(user.get("pins") or {}))
+    return cfg
+
+
+def cfg_diff(cfg):
+    """Only the keys whose value differs from DEFAULTS, so later default changes take effect."""
+    out = {k: v for k, v in cfg.items() if k != "pins" and (k not in DEFAULTS or v != DEFAULTS[k])}
+    pins = {k: v for k, v in (cfg.get("pins") or {}).items() if DEFAULTS["pins"].get(k) != v}
+    if pins:
+        out["pins"] = pins
+    out["migrated"] = sorted(set(cfg.get("migrated") or []) | set(MIGRATIONS))
+    return out
+
+
+def update_cfg(fn):
+    """Locked read-modify-write of config.json (fail closed). fn(merged cfg) -> new merged cfg."""
+    def apply(stored):
+        return cfg_diff(fn(merge_cfg(stored if isinstance(stored, dict) else {})))
+    return merge_cfg(update_json(CFG_PATH, apply, default={}, fail_closed=True))
+
+
+def save_cfg(cfg):
+    """Replace the stored config with `cfg` (non-default keys only), under the config lock."""
+    return update_cfg(lambda _cur: cfg)
+
+
+def load_cfg():
+    user = load_json(CFG_PATH, {})
+    if not isinstance(user, dict):
+        user = {}
+    if migrate_cfg(user)[1]:
+        try:
+            update_cfg(lambda c: c)          # persist the migration once; memory is right anyway
+        except (ConfigWriteError, OSError) as e:
+            log("config migration not persisted: %s" % e)
+    return merge_cfg(user)
+
+
+def say(msg):
+    sys.stderr.write("rdocker: " + msg + "\n")
+
+
+LOG_MAX = 2_000_000      # bytes; a log past this is rotated to <log>.1 (one generation kept)
+
+
+def log(msg, path=LOG_PATH):
+    """Append one line to `path` (daemon.log / route.log). Many shim processes write route.log at
+    once, so the size check + rotation + append run under the sidecar flock `<path>.lock`: exactly
+    one writer rotates, and no line lands in a file that is being renamed away. The line goes out as
+    a single O_APPEND write. If the lock cannot be taken the line is still appended, unrotated.
+    Never raises (deliberately not file_lock(): that logs its own failures through here)."""
+    line = (time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n").encode("utf-8", "replace")
+    lk = None
+    try:
+        ensure_dirs()
+        try:
+            lk = os.open(path + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+            fcntl.flock(lk, fcntl.LOCK_EX)
+        except OSError:
+            if lk is not None:
+                os.close(lk)
+            lk = None
+        if lk is not None:
+            try:
+                if os.path.getsize(path) > LOG_MAX:
+                    os.replace(path, path + ".1")
+            except OSError:
+                pass
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+    finally:
+        if lk is not None:
+            os.close(lk)      # closing releases the flock
+
+
+def real_docker():
+    """The actual docker CLI: first `docker` on PATH (plus known spots) that is not our shim."""
+    shim = os.path.realpath(SHIM_SRC)
+    dirs = os.environ.get("PATH", "").split(":") + [
+        "/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"]
+    for d in dirs:
+        p = os.path.join(d, "docker")
+        if os.path.isfile(p) and os.access(p, os.X_OK) and os.path.realpath(p) != shim:
+            return p
+    raise SystemExit("rdocker: no real docker CLI found (install Docker Desktop or `brew install docker`)")
+
+
+def run(cmd, timeout=30, input_=None):
+    """Run a command quietly; return (rc, stdout, stderr). Never raises on failure. `input_` may be
+    bytes (replayed verbatim, e.g. a buffered `compose -f -` file); output is still returned as str."""
+    raw = isinstance(input_, bytes)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=not raw, timeout=timeout, input=input_)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 124, "", str(e)
+    if raw:
+        return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+    return p.returncode, p.stdout, p.stderr
+
+
+# The shim's stdin, read once when a command needs it replayed to more than one docker process
+# (`compose -f -`: the model render and the user's real command both read the compose file from
+# stdin). None until buffer_stdin() runs; afterwards every docker the shim starts gets these bytes.
+STDIN_REPLAY = {"data": None}
+
+
+def buffer_stdin():
+    if STDIN_REPLAY["data"] is None:
+        stream = getattr(sys.stdin, "buffer", None)
+        STDIN_REPLAY["data"] = stream.read() if stream is not None else b""
+    return STDIN_REPLAY["data"]
+
+
+def dk(ctx, *args, timeout=30):
+    return run([real_docker(), "--context", ctx] + list(args), timeout=timeout)

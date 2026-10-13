@@ -2,6 +2,37 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-13 - rdocker Phase 2: review fixes (structure, routing precision, daemon, mini engine)
+
+- Structure: `rdocker.py` is now a thin entry over `rd_common`, `rd_args`, `rd_tunnel`, `rd_route`,
+  `rd_janitor`, `rd_daemon`, `rd_setup`. If they fail to import, the shim still runs read-only commands
+  unrouted and refuses container-targeting/creating ones (exit 1, "run `rdocker doctor`").
+  `docker-shim` resolves its own real directory through the symlink.
+- Routing: exact per-subcommand flag tables; an unknown flag on `run`/`create`, `compose run` or a compose
+  global flag is refused (exit 1, names the flag, suggests `RDOCKER_MODE=local` or `--context`) instead of
+  guessed. `compose -f -` works (stdin buffered and replayed); a failing `compose config` exits 1 with
+  compose's error; `compose run -v <laptop path>` runs on the laptop. Merged `ps` prints one header and
+  returns non-zero if either engine failed. Laptop engine counts as up only once `docker info` answers
+  (cached 30 s).
+- Daemon: monotonic scheduling; janitor and engine kick run as detached, flock-guarded jobs; `docker
+  events` parsed as JSON; self-reload only when the new code imports cleanly (`daemon.json` records
+  pid/start/code mtime). Docker Desktop is quit only with no running laptop container, no live shim
+  marker and no laptop-routed command for `local_idle_stop_min` (15); laptop container names are
+  fallback-pinned first.
+- Mini engine: start only if the Colima profile exists; restart after 2 consecutive engine-probe
+  failures, at most once per 30 min, under the mini lock (`~/.rdocker/janitor.lock`, heartbeat, stale
+  after 10 min); start/restart via `launchctl kickstart` of `sh.brew.colima` when loaded, else `colima`.
+  `setup-mini` writes the colima.yaml docker block + Lima override idempotently and sets
+  `restart_pending`; the janitor restarts only when `docker ps` is empty under the lock.
+- CLI: argparse (`--help` exit 0, unknown command exit 2); `use off` also sets the global context to the
+  laptop; `rdocker clean` waits up to 90 s for the mini lock, else exit 1 (also exit 1 if the mini is
+  unreachable); `status` adds daemon pid/age/reload, health-reading age, janitor last run/error, mini
+  disk, restart pending, fallback pins. Log rotation happens under a lock.
+- Tests: 202 unit tests (`test_args`, `test_daemon`, `test_engine`, `test_entry`, `test_janitor`,
+  `test_ports`, `test_shim_safety`, `test_state`, `test_tunnel`); e2e adds the Lima loopback-only check.
+  Docs: `commands/docker.md` covers the unknown-flag refusal, new status rows, `use off`, `clean` and the
+  module map.
+
 ## 2026-10-13 - rdocker: health RTT measured on the socket; RTT only steers throwaways
 
 - Health probe speaks HTTP directly to the forwarded mini docker socket (`GET /_ping`, then `/version`)

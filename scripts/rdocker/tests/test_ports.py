@@ -22,6 +22,8 @@ import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_shim_safety import RDOCKER, ShimCase, r  # noqa: E402
+import rd_common  # noqa: E402
+import rd_tunnel  # noqa: E402
 
 SSH_UP = """#!/bin/sh
 echo "$*" >> "$HOME/ssh.log"
@@ -263,10 +265,10 @@ class LaptopFree(unittest.TestCase):
     def test_reservation_blocks_second_reserver(self):
         cfg = dict(r.DEFAULTS, ephemeral_port_range=[free_port(), 0])
         cfg["ephemeral_port_range"][1] = cfg["ephemeral_port_range"][0]
-        with unittest.mock.patch.object(r, "RESERVED_PATH", os.path.join(self.tmp, "res.json")), \
-                unittest.mock.patch.object(r, "PORTS_LOCK", os.path.join(self.tmp, "ports.lock")), \
-                unittest.mock.patch.object(r, "FORWARDS_PATH", os.path.join(self.tmp, "fw.json")), \
-                unittest.mock.patch.object(r, "ensure_dirs", lambda: None):
+        with unittest.mock.patch.object(rd_tunnel, "RESERVED_PATH", os.path.join(self.tmp, "res.json")), \
+                unittest.mock.patch.object(rd_tunnel, "PORTS_LOCK", os.path.join(self.tmp, "ports.lock")), \
+                unittest.mock.patch.object(rd_common, "FORWARDS_PATH", os.path.join(self.tmp, "fw.json")), \
+                unittest.mock.patch.object(rd_common, "ensure_dirs", lambda: None):
             spec = r.parse_publish("127.0.0.1::5432")
             out, mine = r.reserve_ports(cfg, [spec])
             self.assertEqual(mine, [cfg["ephemeral_port_range"][0]])
