@@ -232,7 +232,11 @@ def setup_mini(cfg, cpu, mem, disk):
 def setup_mini_result(cfg, rc, m):
     """Report setup-mini's config outcome; a change marks a Colima restart pending -> exit code."""
     if m[:1] == ["changed"]:
-        rd_common.update_state(rd_common.JANITOR_PATH, lambda st0: {**st0, "restart_pending": True})
+        now = time.time()
+        rd_common.update_state(rd_common.JANITOR_PATH, lambda st0: {
+            **st0, "restart_pending": True,
+            "restart_pending_since": st0.get("restart_pending_since") if st0.get("restart_pending")
+            and isinstance(st0.get("restart_pending_since"), (int, float)) else now})
         print("mini engine config changed -> Colima restart pending; the janitor applies it once no "
               "container runs on the mini (rdocker clean / within %d min)"
               % cfg["janitor_interval_min"])
@@ -264,8 +268,9 @@ def status(cfg, fix=False):
     row(h["reachable"], "mini reachable (%s)" % cfg["host"],
         "ssh control connection up" if h["reachable"] else "no ssh control connection")
     if h["reachable"] and not h.get("docker_ok") and fix:
-        rd_common.run(["ssh", "-o", "BatchMode=yes", cfg["host"],
-             "PATH=/opt/homebrew/bin:$PATH; colima status >/dev/null 2>&1 || colima start"], timeout=180)
+        # VM down -> start (profile-guarded, via the brew-services agent when loaded). Never a
+        # VM-up restart from here: that is the daemon's call, under its 10-min + mini-side checks.
+        rd_janitor.mini_engine_kick(cfg)
         h = rd_tunnel.refresh_health(cfg)
     row(bool(h.get("docker_ok")), "mini docker engine",
         "%s, %sms round-trip" % (h.get("server_version"), h.get("rtt_ms")) if h.get("docker_ok")
@@ -296,8 +301,23 @@ def status(cfg, fix=False):
     row(True, "laptop Docker Desktop", "running" if rd_tunnel.local_engine_up(cfg) else "stopped (starts on demand)")
     ctx = rd_common.run([real, "context", "show"], timeout=10)[1].strip()
     row(True, "global docker context", ctx)
+    if fix:
+        drift = rd_daemon.flag_drift_check()
+        row(True, "docker CLI flags vs rd_args.SPECS", "could not read --help" if drift is None
+            else "%d unknown" % len(drift) if drift else "all known")
+    rows.extend(attention_rows(now))
     print("\n".join(rows))
+    # rc: only `--` rows (real faults: mini/engine/daemon/shim down, recent janitor error, port
+    # conflicts) fail status; WARN rows are attention items for a human and keep rc 0.
     return all(not r.startswith("-- ") for r in rows)
+
+
+def attention_rows(now):
+    """attention.json items as `WARN` rows: things a human should look at. They never fail status
+    (only `--` rows do), so a walk-away condition is visible without breaking health checks."""
+    return ["WARN %s (since %s)" % (i["msg"], ago(i["since"] if isinstance(i.get("since"), (int, float))
+                                                  else now, now))
+            for i in rd_common.attention_items()]
 
 
 def ago(ts, now):
@@ -477,8 +497,26 @@ def parse_args(argv):
     return ns, None
 
 
+def routing_failed(args, exc):
+    """The shim's routing raised before docker ran. Running the command unrouted would send it to
+    whatever the global context says (maybe the wrong engine), so - as when the modules fail to
+    import (rdocker.py) - only the FALLBACK_SAFE commands run on the real docker; anything that
+    targets or creates a container is refused with exit 1. The traceback goes to route.log."""
+    import traceback
+    import rdocker
+    rd_common.log("shim routing error: %s" % traceback.format_exc().strip().replace("\n", " | "),
+                  path=rd_common.ROUTE_LOG)
+    unrouted, sub = rdocker.fallback_split(args)
+    if unrouted or sub is None or sub in rdocker.FALLBACK_SAFE:
+        rd_route.exec_real(args)
+        return 0
+    rd_common.say("internal error routing %s: %s (run rdocker doctor)" % (sub, exc))
+    return 1
+
+
 def main(argv):
     if argv and argv[0] == "shim":        # the hot path: no argparse, no CLI setup
+        rd_common.attention_notify()      # stderr only, at most hourly per item, never raises
         try:
             rd_route.shim(argv[1:])
         except SystemExit:
@@ -489,9 +527,7 @@ def main(argv):
                 rd_common.log("shim error after docker ran (rc=%s): %r" % (rd_route.INVOKED["rc"], e))
                 rd_common.say("internal error after docker ran (%s); see %s" % (e, rd_common.LOG_PATH))
                 return rd_route.INVOKED["rc"] if rd_route.INVOKED["rc"] is not None else 1
-            # routing failed before docker ran: never let a routing bug break docker
-            rd_common.say("internal error (%s); running docker unrouted" % e)
-            rd_route.exec_real(argv[1:])
+            return routing_failed(argv[1:], e)
         return 0
     try:
         return command(argv)
@@ -540,6 +576,9 @@ def clean(cfg, ns):
     except rd_janitor.MiniLockBusy as e:
         rd_common.say("clean not run: %s (waited %ds; the background janitor may be mid-pass - "
                       "retry shortly)" % (e, rd_janitor.CLEAN_LOCK_WAIT))
+        return 1
+    except rd_janitor.MiniEngineDown as e:
+        rd_common.say("clean not run: %s - see `rdocker status`" % e)
         return 1
     for a in acts:
         print(("would: " if ns.dry_run else "") + a)

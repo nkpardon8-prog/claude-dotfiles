@@ -279,7 +279,10 @@ def real_docker():
         "/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"]
     for d in dirs:
         p = os.path.join(d, "docker")
-        if os.path.isfile(p) and os.access(p, os.X_OK) and os.path.realpath(p) != shim:
+        rp = os.path.realpath(p)
+        # skip our shim wherever it lives (repo, staging copy, a backup) - exec-ing it would loop
+        if os.path.isfile(p) and os.access(p, os.X_OK) and rp != shim \
+                and os.path.basename(rp) != "docker-shim":
             return p
     raise SystemExit("rdocker: no real docker CLI found (install Docker Desktop or `brew install docker`)")
 
@@ -312,3 +315,88 @@ def buffer_stdin():
 
 def dk(ctx, *args, timeout=30):
     return run([real_docker(), "--context", ctx] + list(args), timeout=timeout)
+
+
+# ---------------------------------------------------------------------------- attention (walk-away)
+
+# Conditions a human must look at, kept while they hold: [{"key", "msg", "since"}] in attention.json
+# (read-modify-write under its sidecar lock; one entry per key). Producers set a key when the
+# condition appears and clear it when it resolves. `rdocker status` lists them as WARN rows; the
+# shim prints one stderr line per item at most once per ATTENTION_NOTIFY_EVERY (attention-shown.json).
+ATTENTION_PATH = os.path.join(STATE_DIR, "attention.json")
+ATTENTION_SHOWN_PATH = os.path.join(STATE_DIR, "attention-shown.json")   # {key: wall time shown}
+ATTENTION_NOTIFY_EVERY = 3600
+
+
+def attention_items():
+    """Current attention items (well-formed entries only)."""
+    cur = load_json(ATTENTION_PATH, [])
+    return [i for i in (cur if isinstance(cur, list) else [])
+            if isinstance(i, dict) and isinstance(i.get("key"), str) and i.get("msg")]
+
+
+def _attention_update(fn):
+    """Fail-soft locked update of attention.json; fn(list) -> list. Writes only when it changed."""
+    try:
+        with file_lock(ATTENTION_PATH + ".lock"):
+            cur = attention_items()
+            new = fn([dict(i) for i in cur])
+            if new != cur:
+                save_json(ATTENTION_PATH, new)
+            return new
+    except OSError as e:
+        log("attention update failed: %s" % e)
+        return None
+
+
+def attention_set(key, msg, now=None):
+    """Raise (or re-word) attention item `key`. `since` is kept while the key stays set."""
+    now = time.time() if now is None else now
+
+    def apply(items):
+        for i in items:
+            if i["key"] == key:
+                i["msg"] = msg
+                return items
+        return items + [{"key": key, "msg": msg, "since": now}]
+    if not any(i["key"] == key and i["msg"] == msg for i in attention_items()):
+        _attention_update(apply)
+
+
+def attention_clear(*keys):
+    """Drop the items whose key is in `keys` (no write when none of them is set)."""
+    if any(i["key"] in keys for i in attention_items()):
+        _attention_update(lambda items: [i for i in items if i["key"] not in keys])
+
+
+def attention_notify(now=None):
+    """Shim side: one stderr line per attention item not shown in the last ATTENTION_NOTIFY_EVERY
+    seconds (any shim on this laptop). Never stdout, never raises, never changes the exit code."""
+    try:
+        items = attention_items()
+        if not items:
+            return []
+        now = time.time() if now is None else now
+
+        def stale(shown, i):
+            t = shown.get(i["key"]) if isinstance(shown, dict) else None
+            return not isinstance(t, (int, float)) or not 0 <= now - t < ATTENTION_NOTIFY_EVERY
+
+        if not any(stale(load_json(ATTENTION_SHOWN_PATH, {}), i) for i in items):
+            return []
+        out = []
+
+        def apply(shown):
+            shown = {k: v for k, v in shown.items() if any(i["key"] == k for i in items)}
+            for i in items:
+                if stale(shown, i):        # re-checked under the lock: parallel shims print once
+                    out.append(i["msg"])
+                    shown[i["key"]] = now
+            return shown
+        update_state(ATTENTION_SHOWN_PATH, apply)
+        for msg in out:
+            say("needs attention: %s (run rdocker status)" % msg)
+        return out
+    except Exception as e:      # a notice must never break a docker call
+        log("attention notice failed: %r" % e, path=ROUTE_LOG)
+        return []

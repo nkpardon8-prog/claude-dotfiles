@@ -32,7 +32,7 @@ case "$1" in
 esac
 echo "colima $*" >> "$HOME/engine.log"
 [ -d "$HOME/.rdocker/janitor.lock" ] && echo locked >> "$HOME/engine.log"
-[ -f "$HOME/stays.down" ] || echo 0 > "$HOME/colima.status"
+[ -f "$HOME/stays.down" ] || { echo 0 > "$HOME/colima.status"; rm -f "$HOME/docker.info"; }
 exit 0
 """
 LAUNCHCTL = """#!/bin/sh
@@ -42,12 +42,19 @@ esac
 shift
 echo "kickstart $*" | sed "s/[0-9][0-9]*/UID/" >> "$HOME/engine.log"
 [ -d "$HOME/.rdocker/janitor.lock" ] && echo locked >> "$HOME/engine.log"
-[ -f "$HOME/stays.down" ] || echo 0 > "$HOME/colima.status"
+[ -f "$HOME/stays.down" ] || { echo 0 > "$HOME/colima.status"; rm -f "$HOME/docker.info"; }
 exit 0
 """
+# docker: `info` per $HOME/docker.info (absent = answers; "fail" = exit 1; "hang" = never returns),
+# `ps` per $HOME/docker.ps (listed ids) and $HOME/docker.ps.mode ("fail" / "hang"). A colima or
+# launchctl restart/start removes docker.info (the engine is back).
 DOCKER = """#!/bin/sh
 case "$1" in
-  ps) cat "$HOME/docker.ps" 2>/dev/null ;;
+  info) case "$(cat "$HOME/docker.info" 2>/dev/null)" in
+          fail) exit 1 ;; hang) exec sleep 30 ;; esac ;;
+  ps) case "$(cat "$HOME/docker.ps.mode" 2>/dev/null)" in
+        fail) exit 1 ;; hang) exec sleep 30 ;; esac
+      cat "$HOME/docker.ps" 2>/dev/null ;;
 esac
 exit 0
 """
@@ -73,6 +80,8 @@ class MiniCase(unittest.TestCase):
                 (rd_janitor, "BREW_PATH", self.bin),
                 (rd_janitor, "mini_sh", self.mini_sh),
                 (rd_common, "JANITOR_PATH", os.path.join(self.state, "janitor.json")),
+                (rd_common, "ATTENTION_PATH", os.path.join(self.state, "attention.json")),
+                (rd_common, "ATTENTION_SHOWN_PATH", os.path.join(self.state, "shown.json")),
                 (rd_common, "log", lambda msg, **k: self.logs.append(msg))):
             p = mock.patch.object(mod, name, val)
             p.start()
@@ -119,6 +128,9 @@ class MiniCase(unittest.TestCase):
 
     def jstate(self):
         return rd_common.load_json(rd_common.JANITOR_PATH, {})
+
+    def attention(self):
+        return {i["key"]: i["msg"] for i in rd_common.attention_items()}
 
 
 class Lock(MiniCase):
@@ -237,10 +249,12 @@ class Kick(MiniCase):
     PROFILE = ".colima/default/colima.yaml"
     KS = "kickstart gui/UID/sh.brew.colima"
 
-    def vm(self, up, launchd=False):
+    def vm(self, up, launchd=False, engine_dead=False):
         self.mini_file("colima.status", "0" if up else "1")
         if launchd:
             self.mini_file("launchd.loaded", "")
+        if engine_dead:
+            self.mini_file("docker.info", "fail")
 
     def test_vm_down_without_profile_does_not_start(self):
         self.vm(False, launchd=True)
@@ -276,24 +290,63 @@ class Kick(MiniCase):
         self.assertEqual(self.colima(), [])
 
     def test_vm_up_restart_via_launchd_under_lock_then_rate_limited(self):
-        self.vm(True, launchd=True)
+        self.vm(True, launchd=True, engine_dead=True)
         self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "ok")
         self.assertEqual(self.colima(), ["kickstart -k gui/UID/sh.brew.colima", "locked"])
         self.assertFalse(os.path.exists(self.lockdir))          # released
+        self.assertNotIn("engine", self.attention())
         last = self.jstate()["last_engine_restart"]
+        self.mini_file("docker.info", "fail")
         self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "rate-limited")
         self.assertEqual(len(self.colima()), 2)
+        self.assertIn("rate-limited", self.attention()["engine"])
         with mock.patch.object(rd_janitor.time, "time", lambda: last + rd_janitor.RESTART_MIN_GAP):
             self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "ok")
         self.assertEqual(len(self.colima()), 4)
+        self.assertNotIn("engine", self.attention())
 
     def test_vm_up_restart_without_gui_session_uses_colima_restart(self):
-        self.vm(True)
+        self.vm(True, engine_dead=True)
         self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "ok")
         self.assertEqual(self.colima(), ["colima restart", "locked"])
 
+    def test_slow_tunnel_engine_answering_on_mini_is_not_restarted(self):
+        self.vm(True, launchd=True)                   # docker info answers on the mini itself
+        self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "engine-ok")
+        self.assertEqual(self.colima(), [])
+        self.assertNotIn("last_engine_restart", self.jstate())   # no 30-min clock burned
+        self.assertFalse(os.path.exists(self.lockdir))
+        self.assertIn("not restarted", self.attention()["engine"])
+
+    def test_running_containers_listed_block_restart(self):
+        self.vm(True, launchd=True, engine_dead=True)
+        self.mini_file("docker.ps", "abc123\ndef456\n")
+        self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "busy")
+        self.assertEqual(self.colima(), [])
+        self.assertNotIn("last_engine_restart", self.jstate())
+        self.assertIn("2 container(s) run there", self.attention()["engine"])
+
+    def test_dead_engine_whose_ps_fails_or_hangs_is_restarted(self):
+        for mode in ("fail", "hang"):
+            self.setUp()
+            self.vm(True, launchd=True)
+            self.mini_file("docker.info", "hang")      # info times out on the mini too
+            self.mini_file("docker.ps", "abc123\n")    # never seen: ps itself fails / hangs
+            self.mini_file("docker.ps.mode", mode)
+            with mock.patch.object(rd_janitor, "ENGINE_CHECK_TIMEOUT", 1):
+                self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "ok", mode)
+            self.assertEqual(self.colima(), ["kickstart -k gui/UID/sh.brew.colima", "locked"])
+
+    def test_vm_down_problems_raise_attention_and_start_clears_it(self):
+        self.vm(False, launchd=True)
+        rd_janitor.mini_engine_kick(self.cfg)
+        self.assertIn("setup-mini", self.attention()["engine"])
+        self.mini_file(self.PROFILE, "cpu: 6\n")
+        self.assertEqual(rd_janitor.mini_engine_kick(self.cfg), "started")
+        self.assertEqual(self.attention(), {})
+
     def test_restart_deferred_when_lock_held(self):
-        self.vm(True, launchd=True)
+        self.vm(True, launchd=True, engine_dead=True)
         self.set_owner("otherhost:99", age=5)
         self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=True), "lock-busy")
         self.assertEqual(self.colima(), [])
@@ -305,22 +358,26 @@ class DaemonCounting(unittest.TestCase):
     TUNNEL = {"reachable": True, "docker_ok": False, "failure": "tunnel"}
     OK = {"reachable": True, "docker_ok": True, "failure": None}
 
-    def test_only_consecutive_engine_failures_count(self):
-        n, seen = 0, []
-        for h in (self.ENGINE, self.ENGINE, self.TUNNEL, self.ENGINE, self.OK, self.ENGINE):
-            n = rd_daemon.count_engine_failures(n, h)
-            seen.append(n)
-        self.assertEqual(seen, [1, 2, 0, 1, 0, 1])
+    def test_failure_run_is_continuous_engine_failures_only(self):
+        since, seen = None, []
+        for t, h in enumerate((self.ENGINE, self.ENGINE, self.TUNNEL, self.ENGINE, self.OK,
+                               self.ENGINE)):
+            since = rd_daemon.engine_fail_since(since, h, t * 15)
+            seen.append(since)
+        self.assertEqual(seen, [0, 0, None, 45, None, 75])
 
     def test_kick_args(self):
-        every = rd_daemon.ENGINE_KICK_EVERY
-        self.assertEqual(rd_daemon.kick_args(1, None, 0), [])               # start only
-        self.assertEqual(rd_daemon.kick_args(0, None, 0), [])               # tunnel-class failure
-        self.assertEqual(rd_daemon.kick_args(2, 0, 15), ["--restart-ok"])   # threshold: right away
-        self.assertIsNone(rd_daemon.kick_args(3, 0, 30))                    # then the usual cadence
-        self.assertEqual(rd_daemon.kick_args(3, 0, every), ["--restart-ok"])
+        every, after = rd_daemon.ENGINE_KICK_EVERY, rd_janitor.ENGINE_RESTART_AFTER_S
+        self.assertEqual(after, 600)
+        self.assertEqual(rd_daemon.kick_args(0, None, 0), [])               # first failure: start only
+        self.assertIsNone(rd_daemon.kick_args(0, 0, 60))                    # 2 failures in 1 min: nothing
+        self.assertIsNone(rd_daemon.kick_args(0, 0, after - 15))            # 9m45s: not yet
+        self.assertEqual(rd_daemon.kick_args(0, 0, after), ["--restart-ok"])     # 10 min continuous
+        self.assertIsNone(rd_daemon.kick_args(0, after, after + 15))             # then the cadence
+        self.assertEqual(rd_daemon.kick_args(0, after, after + every), ["--restart-ok"])
+        self.assertEqual(rd_daemon.kick_args(500, 0, every), [])            # run only 100 s old
 
-    def test_loop_spawns_restart_ok_only_after_two_engine_failures(self):
+    def test_loop_spawns_restart_ok_only_after_ten_minutes_of_failures(self):
         from test_daemon import FakeTime, StopLoop
 
         def run(healths):
@@ -338,13 +395,19 @@ class DaemonCounting(unittest.TestCase):
                     mock.patch.object(rd_daemon, "reload_step", lambda *a, **k: False), \
                     mock.patch.object(rd_daemon, "reap_jobs", lambda j: None), \
                     mock.patch.object(rd_daemon, "tailscale_up", lambda: False), \
+                    mock.patch.object(rd_daemon, "flag_drift_check", lambda: []), \
                     mock.patch.object(rd_daemon, "spawn_job",
                                       lambda name, jobs, extra=(): spawned.append((name, list(extra)))):
                 with self.assertRaises(StopLoop):
                     rd_daemon.daemon()
             return [e for n, e in spawned if n == "kick"]
 
-        self.assertEqual(run([self.ENGINE, self.ENGINE, self.ENGINE]), [[], ["--restart-ok"]])
+        ticks = rd_janitor.ENGINE_RESTART_AFTER_S // rd_common.PERIODIC     # 40 ticks of 15 s
+        self.assertEqual(run([self.ENGINE] * 3), [[]])                      # 30 s: start-only kick
+        self.assertEqual(run([self.ENGINE] * ticks), [[]])                  # 9m45s: still no restart
+        self.assertEqual(run([self.ENGINE] * (ticks + 1)), [[], ["--restart-ok"]])
+        # one success inside the window resets the clock
+        self.assertEqual(run([self.ENGINE] * 20 + [self.OK] + [self.ENGINE] * 30), [[], []])
         self.assertEqual(run([self.ENGINE, self.TUNNEL, self.ENGINE, self.TUNNEL]), [[]])
 
 
@@ -358,6 +421,21 @@ class ApplyWhenIdle(MiniCase):
 
     def pending(self):
         rd_common.save_json(rd_common.JANITOR_PATH, {"restart_pending": True})
+
+    def test_pending_over_a_day_raises_attention_cleared_when_applied(self):
+        self.pending()
+        self.local_ps = (0, "abc\n", "")                 # busy: stays pending
+        self.assertEqual(rd_janitor.apply_when_idle(self.cfg), "busy")
+        since = self.jstate()["restart_pending_since"]   # old flag without a start time: stamped
+        self.assertEqual(self.attention(), {})
+        with mock.patch.object(rd_janitor.time, "time",
+                               lambda: since + rd_janitor.PENDING_WARN_AFTER + 1):
+            self.assertEqual(rd_janitor.apply_when_idle(self.cfg), "busy")
+        self.assertIn("pending for 24h", self.attention()["restart-pending"])
+        self.local_ps = (0, "", "")
+        self.assertEqual(rd_janitor.apply_when_idle(self.cfg), "ok")
+        self.assertEqual(self.attention(), {})
+        self.assertNotIn("restart_pending_since", self.jstate())
 
     def test_nothing_pending_no_ssh(self):
         self.assertIsNone(rd_janitor.apply_when_idle(self.cfg))
@@ -465,6 +543,28 @@ class SetupMiniConfig(MiniCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DoctorEngine(unittest.TestCase):
+    def test_doctor_repairs_engine_via_kick_never_bare_colima_start(self):
+        """`rdocker doctor` with the engine down goes through mini_engine_kick (profile guard,
+        launchd path) without restart_ok - never a raw `colima start` over ssh."""
+        healths = iter([{"reachable": True, "docker_ok": False},
+                        {"reachable": True, "docker_ok": True, "server_version": "28", "rtt_ms": 9}])
+        cfg = rd_common.merge_cfg({})
+        with mock.patch.object(rd_setup.rd_tunnel, "refresh_health", lambda c: next(healths)), \
+                mock.patch.object(rd_janitor, "mini_engine_kick", return_value="started") as kick, \
+                mock.patch.object(rd_common, "run", return_value=(0, "", "")) as run_, \
+                mock.patch.object(rd_setup.rd_tunnel, "resolve_target", lambda c: ("mini", "ok")), \
+                mock.patch.object(rd_setup.rd_tunnel, "sync_forwards", lambda c, **k: (True, None)), \
+                mock.patch.object(rd_setup.rd_tunnel, "local_engine_up", lambda c: False), \
+                mock.patch.object(rd_setup, "daemon_loaded", lambda: True), \
+                mock.patch.object(rd_daemon, "flag_drift_check", lambda: []), \
+                mock.patch.object(rd_daemon, "TS_CLI", "/nonexistent"), \
+                mock.patch("builtins.print"):
+            rd_setup.status(cfg, fix=True)
+        kick.assert_called_once_with(cfg)
+        self.assertFalse([c for c in run_.call_args_list if "colima" in " ".join(map(str, c[0][0]))])
 
 
 class CleanCommand(unittest.TestCase):

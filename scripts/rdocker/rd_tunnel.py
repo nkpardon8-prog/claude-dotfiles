@@ -10,7 +10,9 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
+from contextlib import contextmanager
 
 import rd_common
 import rd_args
@@ -306,7 +308,12 @@ MIRROR_IPS = ("", "0.0.0.0", "127.0.0.1", "::")
 PORTS_LOCK = os.path.join(rd_common.STATE_DIR, "ports.lock")       # guards reserved.json
 RESERVED_PATH = os.path.join(rd_common.STATE_DIR, "reserved.json")  # {"<port>": expiry_epoch}
 CID_DIR = os.path.join(rd_common.STATE_DIR, "cid")
-RESERVE_TTL = 120        # seconds a laptop port stays reserved for a shim that is creating a container
+# A laptop port stays reserved for a shim that is creating a container until the shim releases it
+# (mirror up, or docker failed). RESERVE_TTL only bounds a shim that died without releasing; while
+# docker runs (a long image pull) hold_ports() re-extends the shim's live reservations every
+# RESERVE_REFRESH seconds, so a parallel shim can never pick the same port mid-pull.
+RESERVE_TTL = 900
+RESERVE_REFRESH = 60
 BIG_RANGE = 1000         # a single container publishing more ports than this is logged
 ALLOC_TEXT = "port is already allocated"
 
@@ -449,6 +456,46 @@ def release_ports(ports):
             rd_common.save_json(RESERVED_PATH, {str(p): t for p, t in sorted(res.items())})
     except OSError as e:
         rd_common.log("port reservation not released: %s" % e)
+
+
+def extend_ports(ports, now=None):
+    """Push the expiry of our still-reserved `ports` to now + RESERVE_TTL. A port already released
+    (or expired) is NOT re-reserved."""
+    if not ports:
+        return
+    try:
+        with rd_common.file_lock(PORTS_LOCK):
+            now = time.time() if now is None else now
+            res = _load_reserved(now)
+            live = [p for p in ports if p in res]
+            if not live:
+                return
+            for p in live:
+                res[p] = now + RESERVE_TTL
+            rd_common.save_json(RESERVED_PATH, {str(p): t for p, t in sorted(res.items())})
+    except OSError as e:
+        rd_common.log("port reservation not extended: %s" % e)
+
+
+@contextmanager
+def hold_ports(get_ports, every=None):
+    """While the block runs (the shim's docker child), re-extend get_ports() every RESERVE_REFRESH
+    seconds from a daemon thread. Release stays explicit (release_ports)."""
+    stop = threading.Event()
+    every = RESERVE_REFRESH if every is None else every
+
+    def loop():
+        while not stop.wait(every):
+            try:
+                extend_ports(list(get_ports() or []))
+            except Exception as e:          # never let the keeper break the docker call
+                rd_common.log("port reservation keeper: %r" % e, path=rd_common.ROUTE_LOG)
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def mirror_ports_of(netports):

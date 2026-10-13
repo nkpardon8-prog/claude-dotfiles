@@ -41,6 +41,17 @@ mirrors their published ports, but only after the fact (event-driven, not before
 
 ## Database playbook (for agents)
 
+> **Label every DB you need to outlive a pause.** The mini janitor **stops any running container with
+> no traffic and no open connection for 12 h** (then removes it 24 h after it stops). A dev/test DB you
+> come back to tomorrow, or one that sits quiet while you wait on a user, will be gone unless it carries
+> a lifetime label:
+> - `--label rdocker.keep=1` **plus a named volume** (label the volume too) — never idle-stopped, never
+>   removed by the janitor; for data you care about.
+> - `--label rdocker.ttl=<30m|6h|2d>` — lives exactly that long (the idle rule does not apply), then is
+>   removed even if running; for throwaways that must survive a quiet spell.
+>
+> No label = the 12 h idle stop applies. See step 4.
+
 1. **Publish on loopback, let Docker pick the port, read it back:**
    `docker run -d --name <proj>-<purpose>-<rand> -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 postgres:17`
    then `docker port <name> 5432` → connect to `127.0.0.1:<port>` / `localhost:<port>`. Fixed ports
@@ -53,11 +64,11 @@ mirrors their published ports, but only after the fact (event-driven, not before
    A bind mount (`-v ./init.sql:/docker-entrypoint-initdb.d/...`) forces the container onto the *laptop*.
 4. **Say how long it should live** (the janitor enforces it):
    - throwaway test DB → `--rm` and/or `--label rdocker.ttl=2h` (`30m`, `6h`, `1d`) — removed when
-     the TTL passes, even if still running.
+     the TTL passes, even if still running; never idle-stopped before that.
    - keep across days (dev/preview DB with data you care about) → `--label rdocker.keep=1` **and a
      named volume** `-v <proj>-pgdata:/var/lib/postgresql/data`. Label the volume too:
      `docker volume create --label rdocker.keep=1 <proj>-pgdata`.
-   - no label → normal lifecycle below.
+   - no label → normal lifecycle below: **stopped after 12 h quiet**, removed 24 h later.
    Throwaway shape also matters when the mini is down: only throwaway containers fall back to the laptop.
 5. **Clean up what you start:** `docker rm -f -v <name>` (the `-v` drops its anonymous volume). Then the
    mirror disappears within seconds.
@@ -116,7 +127,9 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
   message (`... (on the laptop - rdocker)`) and creates nothing.
 - **Ephemeral host port** (`-p 127.0.0.1::5432`, `-p 5432`): the shim picks a free laptop port from
   **20000-29999** (`ephemeral_port_range`) and writes it into the command explicitly. Ports are reserved
-  under a lock for the duration of the create, so **parallel runs never collide**. If the mini reports the
+  under a lock until the shim finishes (re-extended every minute while docker runs, so a long image
+  pull cannot let it lapse; a crashed shim's reservation expires after 15 min), so **parallel runs
+  never collide**. If the mini reports the
   picked port as allocated, the just-created container is removed and the run is retried once with
   another port. `docker port` afterwards returns the real port — the playbook above stays correct.
 - Compose: published ports from the rendered model get the same laptop preflight; entries without a host
@@ -135,23 +148,25 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | Thing | Rule |
 |---|---|
 | protection | `rdocker.keep` with **any value except `0`/`false`/`no`** (empty counts as keep) protects containers, volumes and images. The label is re-checked by a fresh inspect **immediately before every destructive call**. No `container prune` is ever issued; volume prunes carry `--filter label!=rdocker.keep` |
-| running container with `rdocker.ttl` | removed (`rm -f`, plus `-v` unless a volume is keep-labelled) once running longer than the TTL |
-| running container, idle | stopped after **12 h** idle. Idle = no eth traffic (`docker stats` NetIO unchanged) **and** no established TCP connection. Each sample adds at most 2 janitor intervals (sleep / outage never counts fully); unreadable samples hold the clock. Uses the mini's clock |
+| running container with `rdocker.ttl` | removed (`rm -f`, plus `-v` unless a volume is keep-labelled) once running longer than the TTL; the idle rule below does not apply to it |
+| running container, idle (no keep / ttl label) | stopped after **12 h** idle. Idle = no eth traffic (`docker stats` NetIO unchanged) **and** no established TCP connection. Each sample adds at most 2 janitor intervals (sleep / outage never counts fully); unreadable samples hold the clock. Uses the mini's clock |
 | stopped / exited container | removed after **24 h** with `rm -v` — or plain `rm` (volumes kept) if any of its volumes is keep-labelled |
 | named volume not used by any container | removed after **30 days** unused |
 | anonymous volumes not used by any container | pruned each run (keep-labelled exempt) |
-| image | removed (`image rm`, never `-f`, so in-use images are refused by docker) after **14 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Dangling images pruned |
+| image | removed after **14 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Removed tag by tag (`image rm <repo:tag>`; an image tagged in several repositories cannot be removed by id), then by id if an untagged remainder is left; never `-f`. Docker's refusals (in use, dependent child images, multi-repo) are skips, not errors. Dangling images pruned |
 | build cache | pruned when older than 7 d, and capped at **5 GB** |
 | container logs | capped per container: 10 MB × 3 files (json-file) |
 | mini Colima/Lima log files | truncated past 50 MB; VM journald capped at 200 MB |
 | VM disk ≥ 80 % or mini free < 8 GB | remove unused images **oldest-unused first** (never in-use ones) until below, prune all build cache, log a WARNING |
 | VM disk ≥ 90 % | also remove every stopped non-keep container (keep-checked) + prune anonymous volumes |
-| failed action | logged; clocks are kept (not reset) and `last_error` is written to `janitor.json` |
+| failed action | logged; clocks are kept (not reset); `last_error` is written to `janitor.json` and raised as an attention item. The next clean full pass clears both |
 | freed VM blocks | `fstrim` hands them back to macOS each run |
 
 Run it now: `rdocker clean [--dry-run] [--only PREFIX] [--force-critical]` (`--only` limits the
 container/volume rules to a name prefix and skips global prunes and image GC; `--force-critical` applies
-the disk-critical stopped-container removal now — keep-labelled still exempt).
+the disk-critical stopped-container removal now — keep-labelled still exempt). Exit codes: 0 = the pass
+ran; 1 = it did not run: mini lock still held after 90 s, mini unreachable over ssh, or the mini's
+docker engine not answering (also with `--dry-run`). The background janitor just skips such a pass.
 Hard ceilings: VM disk 30 GB, VM RAM 8 GB, VM CPU 6 — the mini itself can never be filled or starved.
 Laptop logs (`daemon.log`, `route.log`) rotate at 2 MB (one `.1` generation, under a lock). Containers on the laptop are not janitored.
 
@@ -164,6 +179,26 @@ never a raw probe of the mini's `:22`. A reading is reused for 30 s. If the prob
 the existing master decides: tunnel alive → engine problem (tunnel and mirrors left alone); tunnel dead →
 the master is rebuilt and the probe retried once. Auto mode treats round-trips over **300 ms**
 (`max_rtt_ms`) as slow, which only sends new throwaway containers to the laptop.
+
+**Engine recovery (the forwarder, never a laptop guess alone).** VM down → started (only if the Colima
+profile exists). VM up but the engine silent → `colima restart` **only when all hold**: engine-probe
+failures continuous for **10 min** (any success resets the clock; tunnel-class failures never count);
+then, on the mini under the mini lock, `docker info` fails there too (30 s timeout — a slow tunnel or
+laptop is not a dead engine) **and** `docker ps -q` lists no running container (or itself fails/hangs).
+Never while the engine still answers `ps` with running containers. At most one restart per 30 min.
+When it declines, it raises an attention item instead.
+
+**Attention items (walk-away).** Conditions a human must act on are kept in
+`~/.local/state/rdocker/attention.json` while they hold and cleared when they resolve: engine
+unresponsive but not restarted (and why), no Colima profile, start failed, restart rate-limited / lock
+lost / failed, `restart_pending` older than 24 h, janitor error, docker-CLI flag drift. `rdocker status`
+shows each as a `WARN` row; every `docker` call prints **one stderr line per item at most once per
+hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdout, exit code unchanged.
+
+**Flag-table drift.** rdocker parses `run`/`create`/`compose [run|up|create]` with explicit flag tables
+(`rd_args.SPECS`) and refuses flags it doesn't know. Once a day the forwarder (and every
+`rdocker doctor`) diffs the laptop docker CLI's `--help` against them; new flags raise
+`docker CLI has N flag(s) rdocker doesn't know: … - add them to rd_args.SPECS`.
 
 ## Exposure (honest)
 
@@ -178,9 +213,9 @@ the master is rebuilt and the probe retried once. Auto mode treats round-trips o
 
 | Command | Does |
 |---|---|
-| `rdocker status` | health + RTT, where commands go, mirrored ports, conflicts (exit 1 if any `--` row) |
-| `rdocker doctor` | status **+ repair** (Tailscale, mini engine, forwarder, mirrors) |
-| `rdocker clean [--dry-run\|--only P\|--force-critical]` | run the janitor now; waits ≤ 90 s for the mini lock (background janitor mid-pass), else exit 1; mini unreachable → exit 1 |
+| `rdocker status` | health + RTT, where commands go, mirrored ports, conflicts, attention items (exit 1 if any `--` row; `WARN` rows never fail it) |
+| `rdocker doctor` | status **+ repair** (Tailscale, mini engine start via the kick path — never a VM-up restart, forwarder, mirrors) + flag-drift check |
+| `rdocker clean [--dry-run\|--only P\|--force-critical]` | run the janitor now; exit 1 if it could not run: mini lock held after 90 s, mini unreachable, or mini engine not answering (`--dry-run` too) |
 | `rdocker use auto\|mini\|local\|off` | routing mode; also points the global docker context at the target (`off` = raw Docker Desktop behaviour, context → laptop) |
 | `rdocker where <container>` | which engine holds it (says which engine could not be asked) |
 | `rdocker pin\|unpin <name> [--compose]` | keep a container / compose project on the laptop |
@@ -192,12 +227,15 @@ the master is rebuilt and the probe retried once. Auto mode treats round-trips o
 daemon process (pid, age, running the code on disk / reload pending / reload NOT picked up) · health
 reading age · janitor last run · janitor last error (`--` only if from about the latest pass) · mini
 disk · mini engine config (Colima restart pending) · fallback pins · mirrored ports (IPv6 mirror
-pending) · port conflicts (busy on laptop) · laptop Docker Desktop · global docker context.
+pending) · port conflicts (busy on laptop) · laptop Docker Desktop · global docker context · (doctor)
+docker CLI flags vs `rd_args.SPECS` · one `WARN` row per attention item (with its age). Exit code: 1 only
+for `--` rows (real faults); `WARN` rows are for a human and keep it 0.
 `rdocker --help` exits 0; an unknown command prints usage and exits 2.
 
 Per call: `RDOCKER_MODE=local|mini`, `RDOCKER_BYPASS=1` (raw docker), `RDOCKER_VERBOSE=1` (say why local).
 Logs: `~/.local/state/rdocker/{daemon,route}.log`; state: `health.json`, `forwards.json`, `reserved.json`,
-`janitor.json`, `daemon.json` (running daemon pid/start/code mtime). Config: `~/.config/rdocker/config.json` (stores only keys that differ from the defaults;
+`janitor.json`, `daemon.json` (running daemon pid/start/code mtime), `attention.json` (+
+`attention-shown.json`, the shim notice's hourly rate state). Config: `~/.config/rdocker/config.json` (stores only keys that differ from the defaults;
 every threshold above is a key there).
 
 ## Self-resolution (when invoked)
@@ -209,15 +247,23 @@ every threshold above is a key there).
      back. Tell the user the mini is offline.
    - **mini engine not responding** → VM down: the forwarder starts it (only if the Colima profile
      exists — else run `rdocker setup-mini`), via `launchctl kickstart` of `sh.brew.colima` when that
-     agent is loaded, else `colima start` (works with no one logged in). VM up but docker silent for 2
-     consecutive probes: `colima restart`, at most once per 30 min, under the mini lock
-     (`~/.rdocker/janitor.lock` on the mini, heartbeat, stale after 10 min).
+     agent is loaded, else `colima start` (works with no one logged in). VM up but docker silent:
+     `colima restart` only after 10 min of continuous failures **and** a mini-side check that the
+     engine is really dead with nothing running (see "Engine recovery"), at most once per 30 min,
+     under the mini lock (`~/.rdocker/janitor.lock` on the mini, heartbeat, stale after 10 min).
+     Otherwise a `WARN` row says why it was not restarted — tell the user.
+   - **`WARN` rows / "rdocker: needs attention: …" on stderr** → read the message; it names the fix
+     (e.g. `rdocker setup-mini`, add flags to `rd_args.SPECS`, stop containers so a pending config
+     restart can run). Report it to the user; it clears itself once the condition resolves.
+   - **"internal error routing <cmd>"** (exit 1) → an rdocker bug hit before docker ran; read-only
+     commands still run, container commands refuse rather than guess an engine. Run `rdocker doctor`,
+     see `rdocker logs --route` (traceback), and report it.
    - **"unrecognized flag ... will not pick an engine"** (exit 1) → a newer docker flag rdocker can't
      parse, so it can't see whether the command mounts laptop paths. Use the spelling rdocker knows if
      there is one; otherwise force an engine: `RDOCKER_MODE=local docker ...` (laptop) or
      `docker --context mini ...` (explicit context = unrouted, no port mirroring). Tell the user so the
      flag gets added to `rd_args.SPECS`.
-   - **"modules failed to import"** → a broken rdocker install: read-only commands (`ps`, `images`,
+   - **"modules failed to import"** (any import-time exception) → a broken rdocker install: read-only commands (`ps`, `images`,
      `pull`, ...) still run unrouted, anything that targets/creates a container exits 1. Run
      `rdocker doctor` and report it.
    - **exit 125 "port is already allocated"** / **port conflict** → a laptop process holds that port;
@@ -229,8 +275,9 @@ every threshold above is a key there).
 
 ## Verify
 
-- Unit (202 tests, fake docker `tests/fake_docker.py`, no mini needed; files `test_args`, `test_daemon`,
-  `test_engine`, `test_entry`, `test_janitor`, `test_ports`, `test_shim_safety`, `test_state`, `test_tunnel`):
+- Unit (245 tests, fake docker `tests/fake_docker.py`, no mini needed, hermetic temp `RDOCKER_HOME` +
+  fail-closed stubs via `tests/rdmods.py`; files `test_args`, `test_daemon`, `test_engine`, `test_entry`,
+  `test_janitor`, `test_ports`, `test_shim_safety`, `test_state`, `test_tunnel`, `test_zz_hermetic`):
   `cd ~/.claude-dotfiles/scripts/rdocker && /usr/bin/python3 -m unittest discover -s tests`
 - Live end-to-end (self-cleaning, removes only the `rde2e-<pid>-*` containers it created, non-disruptive by default):
   `bash ~/.claude-dotfiles/scripts/rdocker/tests/e2e.sh` (incl. a check that `-p <port>:80` with no IP

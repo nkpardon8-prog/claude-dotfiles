@@ -297,5 +297,47 @@ def wait_bg_sync(limit=10.0):
         time.sleep(0.1)
 
 
+class RoutingError(ShimCase):
+    """Routing raised before docker ran: only FALLBACK_SAFE commands run (on the real docker);
+    anything that targets or creates a container exits 1. The traceback lands in route.log."""
+
+    def broken(self):
+        self.scenario(mini={"containers": {"db": {}}})
+        with open(os.path.join(self.cfgdir, "config.json"), "w") as f:
+            json.dump({"pins": "not-a-dict", "migrated": ["rtt300"]}, f)   # load_cfg raises
+
+    def test_safe_command_runs_real_docker(self):
+        self.broken()
+        p = self.shim("ps")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.calls(), [(None, ["ps"])])
+
+    def test_container_commands_refused_without_docker(self):
+        self.broken()
+        for argv, sub in ((["run", "-d", "redis"], "run"), (["stop", "db"], "stop"),
+                          (["compose", "up", "-d"], "compose")):
+            p = self.shim(*argv)
+            self.assertEqual(p.returncode, 1, argv)
+            self.assertIn("rdocker: internal error routing %s: " % sub, p.stderr)
+            self.assertIn("(run rdocker doctor)", p.stderr)
+        self.assertEqual(self.calls(), [])
+        with open(os.path.join(self.state, "route.log")) as f:
+            self.assertIn("Traceback", f.read())
+
+
+class AttentionNotice(ShimCase):
+    def test_one_stderr_line_per_hour_stdout_and_rc_untouched(self):
+        self.scenario(mini={"containers": {"db": {}}})
+        with open(os.path.join(self.state, "attention.json"), "w") as f:
+            json.dump([{"key": "engine", "msg": "mini engine needs a look", "since": 1}], f)
+        first = self.shim("ps", "-q")
+        quiet = self.shim("ps", "-q")
+        line = "rdocker: needs attention: mini engine needs a look (run rdocker status)\n"
+        self.assertEqual(first.stderr.count(line), 1, first.stderr)
+        self.assertNotIn("needs attention", quiet.stderr)
+        self.assertEqual((first.returncode, first.stdout), (quiet.returncode, quiet.stdout))
+        self.assertNotIn("attention", first.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

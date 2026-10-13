@@ -543,5 +543,51 @@ class StatusRows(unittest.TestCase):
         self.assertIn("none on file", rd_setup.health_age_row(None, now)[2])
 
 
+class Attention(unittest.TestCase):
+    """attention.json: set/clear by key, `since` kept; WARN rows; the shim's hourly stderr notice."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rdk-att-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for name in ("ATTENTION_PATH", "ATTENTION_SHOWN_PATH"):
+            p = mock.patch.object(rd_common, name, os.path.join(self.tmp, name.lower()))
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_set_dedups_keeps_since_and_clear_resolves(self):
+        rd_common.attention_set("engine", "down", now=100)
+        rd_common.attention_set("engine", "still down", now=200)
+        rd_common.attention_set("flag-drift", "new flags", now=300)
+        items = rd_common.attention_items()
+        self.assertEqual([(i["key"], i["msg"], i["since"]) for i in items],
+                         [("engine", "still down", 100), ("flag-drift", "new flags", 300)])
+        rd_common.attention_clear("engine", "nope")
+        self.assertEqual([i["key"] for i in rd_common.attention_items()], ["flag-drift"])
+
+    def test_status_rows_are_warn_and_never_faults(self):
+        rd_common.attention_set("restart-pending", "config pending for 30h", now=1000)
+        rows = rd_setup.attention_rows(1000 + 7200)
+        self.assertEqual(rows, ["WARN config pending for 30h (since 2h ago)"])
+        self.assertFalse(any(row.startswith("-- ") for row in rows))
+
+    def test_notify_once_per_hour_per_item_on_stderr(self):
+        rd_common.attention_set("a", "first thing", now=0)
+        with mock.patch.object(rd_common, "say") as say:
+            self.assertEqual(rd_common.attention_notify(now=1000), ["first thing"])
+            self.assertEqual(rd_common.attention_notify(now=1000 + 3599), [])
+            rd_common.attention_set("b", "second thing", now=2000)
+            self.assertEqual(rd_common.attention_notify(now=2100), ["second thing"])
+            self.assertEqual(rd_common.attention_notify(now=1000 + 3600), ["first thing"])
+        self.assertEqual(say.call_args_list[0][0][0],
+                         "needs attention: first thing (run rdocker status)")
+
+    def test_notify_never_raises(self):
+        with open(rd_common.ATTENTION_PATH, "w") as f:
+            f.write('[{"key": "k", "msg": "m"}]')
+        with mock.patch.object(rd_common, "update_state", side_effect=RuntimeError("boom")), \
+                mock.patch.object(rd_common, "log"):
+            self.assertEqual(rd_common.attention_notify(now=5), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -49,13 +49,20 @@ class JanitorCase(ShimCase):
         with open(self.jpath) as f:
             return json.load(f)
 
-    def clean(self, *argv):
+    def clean(self, *argv, rc=0):
         e = rdmods.child_env(self.home, self.bin, FAKE_DOCKER_FIXTURE=self.fixture,
                              FAKE_DOCKER_LOG=self.log)
         p = subprocess.run(["/usr/bin/python3", "-I", RDOCKER, "clean"] + list(argv),
                            capture_output=True, text=True, env=e, timeout=60)
-        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.returncode, rc, p.stderr)
         return p
+
+    def attention(self):
+        try:
+            with open(os.path.join(self.state, "attention.json")) as f:
+                return {i["key"]: i["msg"] for i in json.load(f)}
+        except OSError:
+            return {}
 
     def argvs(self):
         return [rest for _, rest in self.calls()]
@@ -182,6 +189,15 @@ class IdleClock(JanitorCase):
                           netio="1kB / 1kB", established=True)
         self.assertEqual(e["idle_s"], 0)
 
+    def test_ttl_label_replaces_idle_rule(self):
+        """A quiet DB with rdocker.ttl=2d is not idle-stopped at 12 h; it lives until its TTL."""
+        self.mini({"a": running("ida", netio="1kB / 1kB", Labels={"rdocker.ttl": "2d"})})
+        self.ledger({"idle": {"ida": {"idle_s": 13 * HOUR, "last_sample": NOW - INTERVAL,
+                                      "netio": "1kB / 1kB"}}})
+        self.clean()
+        self.assertNotIn(["stop", "ida"], self.argvs())
+        self.assertNotIn("ida", self.jstate()["idle"])
+
     def test_idle_past_limit_stops(self):
         self.mini({"a": running("ida", netio="1kB / 1kB")})
         self.ledger({"idle": {"ida": {"idle_s": 12 * HOUR, "last_sample": NOW - INTERVAL,
@@ -242,6 +258,82 @@ class ImageGC(JanitorCase):
         self.ledger({"image_last_used": {"sha256:k": NOW - 90 * DAY}})
         self.clean()
         self.assertFalse([a for a in self.argvs() if a[:2] == ["image", "rm"]])
+
+
+class ImageGCByTag(JanitorCase):
+    """An image tagged in several repositories cannot be removed by id without -f: the janitor
+    removes each tag (the image goes with the last) and treats docker's refusals as skips."""
+    OLD = NOW - 30 * DAY
+
+    def test_multi_tag_image_removed_tag_by_tag_without_error(self):
+        self.mini({}, images={"sha256:multi": {"RepoTags": ["a/x:1", "b/x:1"]}})
+        self.ledger({"image_last_used": {"sha256:multi": self.OLD}})
+        self.clean()
+        rms = [a[2] for a in self.argvs() if a[:2] == ["image", "rm"]]
+        self.assertEqual(rms, ["a/x:1", "b/x:1"])          # never `image rm <id>`, never -f
+        st = self.jstate()
+        self.assertNotIn("sha256:multi", st["image_last_used"])
+        self.assertNotIn("last_error", st)
+        self.assertNotIn("janitor-error", self.attention())
+
+    def test_untagged_remainder_removed_by_id(self):
+        self.mini({}, images={"sha256:u": {}})
+        self.ledger({"image_last_used": {"sha256:u": self.OLD}})
+        self.clean()
+        self.assertIn(["image", "rm", "sha256:u"], self.argvs())
+
+    def test_docker_refusals_are_skips_not_errors(self):
+        for err in ("Error response from daemon: conflict: unable to delete abc (cannot be forced) "
+                    "- image has dependent child images",
+                    "Error response from daemon: conflict: unable to remove repository reference "
+                    "\"a/x:1\" (must force) - container 123 is using its referenced image abc",
+                    "Error: image is being used by running container 123"):
+            self.setUp()
+            self.mini({}, images={"sha256:p": {"RepoTags": ["a/x:1"], "rm_err": err}})
+            self.ledger({"image_last_used": {"sha256:p": self.OLD}})
+            self.clean()
+            st = self.jstate()
+            self.assertNotIn("last_error", st, err)
+            self.assertIn("sha256:p", st["image_last_used"])   # still there, retried next pass
+
+    def test_real_failure_recorded_then_cleared_by_clean_pass(self):
+        self.mini({}, images={"sha256:f": {"RepoTags": ["a/x:1"], "rm_err": "Error: disk on fire"}})
+        self.ledger({"image_last_used": {"sha256:f": self.OLD}})
+        self.clean()
+        self.assertIn("disk on fire", self.jstate()["last_error"]["err"])
+        self.assertIn("janitor-error", self.attention())
+        self.mini({}, images={})
+        self.clean()
+        self.assertNotIn("last_error", self.jstate())
+        self.assertNotIn("janitor-error", self.attention())
+
+    def test_only_scoped_pass_keeps_last_error(self):
+        self.mini({})
+        self.ledger({"last_error": {"ts": NOW, "action": "x", "err": "y"}})
+        self.clean("--only", "zz-")
+        self.assertIn("last_error", self.jstate())
+
+
+class CleanExitCodes(JanitorCase):
+    def test_mini_engine_down_but_ssh_ok_exits_1(self):
+        self.mini({}, down=True)          # ssh stub grants the lock; docker on the mini fails
+        p = self.clean(rc=1)
+        self.assertIn("clean not run: mini docker engine not answering", p.stderr)
+        self.assertEqual(p.stdout, "")
+
+    def test_dry_run_with_mini_unreachable_exits_1(self):
+        self.mini({}, down=True)
+        p = self.clean("--dry-run", rc=1)
+        self.assertIn("clean not run", p.stderr)
+        self.assertFalse(self.destructive())
+
+    def test_daemon_janitor_pass_skips_quietly_when_engine_down(self):
+        self.mini({}, down=True)
+        e = rdmods.child_env(self.home, self.bin, FAKE_DOCKER_FIXTURE=self.fixture,
+                             FAKE_DOCKER_LOG=self.log)
+        p = subprocess.run(["/usr/bin/python3", "-I", RDOCKER, "janitor-run"],
+                           capture_output=True, text=True, env=e, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
 
 
 class Misc(JanitorCase):

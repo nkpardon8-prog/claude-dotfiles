@@ -81,13 +81,13 @@ _RUN_VALUES = """
 --ulimit -u/--user --userns --uts -v/--volume --volume-driver --volumes-from -w/--workdir
 """
 _CREATE_BOOLS = ("--disable-content-trust --help --init --no-healthcheck --oom-kill-disable "
-                 "--privileged -P/--publish-all -q/--quiet --read-only --rm -t/--tty --use-api-socket")
+                 "-i/--interactive --privileged -P/--publish-all -q/--quiet --read-only --rm -t/--tty --use-api-socket")
 # --net / --net-alias: docker's hidden legacy spellings of --network / --network-alias.
 _RUN_ALIASES = {"--net": "--network", "--net-alias": "--network-alias"}
 _STOP = "-s/--signal -t/--timeout"
 
 SPECS = {
-    "run": Spec(_RUN_VALUES, _CREATE_BOOLS + " -d/--detach -i/--interactive --sig-proxy",
+    "run": Spec(_RUN_VALUES, _CREATE_BOOLS + " -d/--detach --sig-proxy",
                 interspersed=False, aliases=_RUN_ALIASES),
     "create": Spec(_RUN_VALUES, _CREATE_BOOLS, interspersed=False, aliases=_RUN_ALIASES),
     "exec": Spec("--detach-keys -e/--env --env-file -u/--user -w/--workdir",
@@ -128,7 +128,7 @@ SPECS = {
                         "-P/--service-ports --use-aliases -h/--help", interspersed=False),
     "compose up": Spec("--attach --exit-code-from --no-attach --pull --scale -t/--timeout "
                        "--wait-timeout",
-                       "--abort-on-container-exit --abort-on-container-failure "
+                       "--abort-on-container-exit --abort-on-container-failure --attach-dependencies "
                        "--always-recreate-deps --build -d/--detach --force-recreate --menu "
                        "--no-build --no-color --no-deps --no-log-prefix --no-recreate --no-start "
                        "--quiet-build --quiet-pull --remove-orphans -V/--renew-anon-volumes "
@@ -514,3 +514,50 @@ def publish_slots(args, sub="run"):
     be rewritten in place as args[index] = prefix + new_value. Handles -p v, -pv, -dp v, -p=v,
     --publish v, --publish=v."""
     return [(o.index, o.prefix, o.value) for o in parse_sub(sub, args).opts if o.name == "--publish"]
+
+
+# ---------------------------------------------------------------------------- flag-table drift
+
+# The commands whose flags the shim parses, with the `--help` argv that lists them. The tables
+# above are explicit (an unknown flag is refused, never guessed), so a docker/compose upgrade that
+# adds a flag makes the shim refuse it: the daemon (daily) and `rdocker doctor` diff the installed
+# CLI's help against SPECS and raise an attention item.
+HELP_ARGV = {"run": ["run", "--help"], "create": ["create", "--help"],
+             "compose": ["compose", "--help"], "compose run": ["compose", "run", "--help"],
+             "compose up": ["compose", "up", "--help"], "compose create": ["compose", "create", "--help"]}
+# An option line of cobra help: 2-6 spaces, then `-x, --long ...`, `--long ...` or `-x ...`.
+_HELP_FLAG = re.compile(r"^ {2,6}(?:(-[A-Za-z0-9])(?:, |\s+))?(--[A-Za-z0-9][A-Za-z0-9-]*)?(?=[\s=]|$)")
+
+
+def help_flags(text):
+    """Flag names (long, and short ones without a long twin) listed in a docker `--help` text."""
+    out = set()
+    for line in (text or "").splitlines():
+        m = _HELP_FLAG.match(line)
+        if not m or not (m.group(1) or m.group(2)):
+            continue
+        out.add(m.group(2) or m.group(1))
+        if m.group(1) and m.group(2):
+            out.add(m.group(1))
+    return out
+
+
+def spec_flags(spec):
+    return spec.values | spec.bools | set(spec.alias)
+
+
+def flag_drift(helper):
+    """helper(argv) -> help text or None. -> sorted ["<cmd> <flag>", ...] of flags the CLI lists that
+    SPECS does not know (`--help`/`-h` excepted), or None when no help text could be read at all."""
+    missing, read = [], False
+    for cmd, argv in HELP_ARGV.items():
+        text = helper(argv)
+        flags = help_flags(text) if text else set()
+        if not flags:
+            continue
+        read = True
+        known = spec_flags(SPECS[cmd]) | {"--help", "-h"}
+        if cmd.startswith("compose "):       # compose's persistent globals show in sub help too
+            known |= spec_flags(SPECS["compose"])
+        missing.extend("%s %s" % (cmd, f) for f in flags - known)
+    return sorted(missing) if read else None

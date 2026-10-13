@@ -11,6 +11,7 @@ import sys
 import time
 
 import rd_common
+import rd_args
 import rd_tunnel
 import rd_route
 import rd_janitor
@@ -62,20 +63,55 @@ def due(last_mono, interval, now_mono):
     return last_mono is None or now_mono - last_mono >= interval
 
 
-def count_engine_failures(prev, h):
-    """Consecutive ENGINE probe failures (live tunnel, silent engine). A success or a tunnel-class
-    failure breaks the run: a flaky network must never restart the mini's Colima."""
-    return prev + 1 if not h.get("docker_ok") and h.get("failure") == "engine" else 0
+def engine_fail_since(prev_since, h, now):
+    """Monotonic start of the current run of ENGINE probe failures (live tunnel, silent engine), or
+    None. A success or a tunnel-class failure ends the run: a flaky network must never restart the
+    mini's Colima."""
+    if not h.get("docker_ok") and h.get("failure") == "engine":
+        return now if prev_since is None else prev_since
+    return None
 
 
-def kick_args(engine_fails, last_kick, now):
-    """-> argv extras for a kick job if one is due now, else None. Due every ENGINE_KICK_EVERY, and
-    once immediately when the failure run reaches ENGINE_RESTART_AFTER (restart without a 10-min
-    wait). `--restart-ok` lets the job restart a VM-up/docker-dead engine (rate-limited there)."""
-    threshold = rd_janitor.ENGINE_RESTART_AFTER
-    if not (due(last_kick, ENGINE_KICK_EVERY, now) or engine_fails == threshold):
+def kick_args(fail_since, last_kick, now):
+    """-> argv extras for a kick job if one is due now, else None. `fail_since` = monotonic start of
+    the engine-failure run. Due every ENGINE_KICK_EVERY, and once right when the run has lasted
+    ENGINE_RESTART_AFTER_S. `--restart-ok` (run >= ENGINE_RESTART_AFTER_S) lets the job consider a
+    VM-up restart; the job still requires the mini-side dead_check() to agree."""
+    crossed = fail_since + rd_janitor.ENGINE_RESTART_AFTER_S
+    long_enough = now >= crossed
+    just_crossed = long_enough and (last_kick is None or last_kick < crossed)
+    if not (due(last_kick, ENGINE_KICK_EVERY, now) or just_crossed):
         return None
-    return ["--restart-ok"] if engine_fails >= threshold else []
+    return ["--restart-ok"] if long_enough else []
+
+
+FLAG_CHECK_EVERY = 86400     # daemon: compare the docker CLI's flags with rd_args.SPECS daily
+FLAG_DRIFT_ATTENTION = "flag-drift"
+
+
+def flag_drift_check():
+    """Run the laptop docker CLI's `--help` for every command rd_args parses, diff the flags it
+    lists against rd_args.SPECS; new ones -> the `flag-drift` attention item (cleared when none).
+    -> sorted ["<cmd> <flag>", ...] or None when no help text could be read."""
+    try:
+        real = rd_common.real_docker()
+    except SystemExit:
+        return None
+
+    def helper(argv):
+        rc, out, err = rd_common.run([real] + argv, timeout=20)
+        return out if rc == 0 else None
+    drift = rd_args.flag_drift(helper)
+    if drift is None:
+        return None
+    if drift:
+        rd_common.attention_set(FLAG_DRIFT_ATTENTION, "docker CLI has %d flag(s) rdocker doesn't "
+                                "know: %s - add them to rd_args.SPECS"
+                                % (len(drift), ", ".join(drift[:8]) + (" ..." if len(drift) > 8 else "")))
+        rd_common.log("docker CLI flags missing from rd_args.SPECS: %s" % ", ".join(drift))
+    else:
+        rd_common.attention_clear(FLAG_DRIFT_ATTENTION)
+    return drift
 
 
 # ---------------------------------------------------------------------------- detached jobs
@@ -330,12 +366,12 @@ def daemon():
     rd_common.log("daemon start pid=%d" % os.getpid())
     start = time.monotonic()
     st = {"idle_since": None, "mtimes": module_mtimes(), "reload_failed": None,
-          "engine_fails": 0}
+          "engine_fail_since": None}
     rd_common.write_state(rd_common.DAEMON_PATH, {"pid": os.getpid(), "started": time.time(),
                                                   "code_mtime": code_mtime(st["mtimes"])})
     jobs = {}
     ev = {"p": None, "started": None, "next": start, "backoff": 5}
-    last = {"tick": None, "ts_kick": None, "engine_kick": None,
+    last = {"tick": None, "ts_kick": None, "engine_kick": None, "flag_check": None,
             # first janitor JANITOR_FIRST_DELAY after start, whatever the interval
             "janitor": start - rd_common.load_cfg()["janitor_interval_min"] * 60 + JANITOR_FIRST_DELAY}
     while True:
@@ -355,12 +391,22 @@ def daemon():
                     rd_common.log("mini unreachable and laptop Tailscale was stopped -> started it")
                     h = rd_tunnel.refresh_health(cfg)
             healthy = h["reachable"] and h.get("docker_ok")
-            st["engine_fails"] = count_engine_failures(st["engine_fails"], h)
+            st["engine_fail_since"] = engine_fail_since(st["engine_fail_since"], h, now)
             if h["reachable"] and not h.get("docker_ok"):
-                extra = kick_args(st["engine_fails"], last["engine_kick"], now)
+                # a tunnel-class failure (no engine run) still gets start-only kicks, never a restart
+                fs = st["engine_fail_since"]
+                extra = kick_args(now if fs is None else fs, last["engine_kick"], now)
                 if extra is not None:
                     last["engine_kick"] = now
                     spawn_job("kick", jobs, extra)
+            if healthy:
+                rd_common.attention_clear(rd_janitor.ENGINE_ATTENTION)
+            if due(last["flag_check"], FLAG_CHECK_EVERY, now):
+                last["flag_check"] = now
+                try:
+                    flag_drift_check()
+                except Exception as e:     # a help-text surprise must never stop the forwarder
+                    rd_common.log("flag drift check failed: %r" % e)
             target, why = rd_tunnel.resolve_target(cfg)
             set_global_context(cfg, target)
             if healthy:

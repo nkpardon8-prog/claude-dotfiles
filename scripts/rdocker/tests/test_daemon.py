@@ -59,6 +59,7 @@ class Schedule(unittest.TestCase):
         ft = FakeTime(max_sleeps, jumps)
         spawned = []
         self.pruned = 0
+        self.drift_checks = []
         cfg = rd_common.merge_cfg({"mode": "auto"})
         healthy = {"reachable": True, "docker_ok": True}
         with mock.patch.object(rd_daemon, "time", ft), \
@@ -73,6 +74,7 @@ class Schedule(unittest.TestCase):
                 mock.patch.object(rd_daemon, "reload_step", lambda *a, **k: False), \
                 mock.patch.object(rd_daemon, "reap_jobs", lambda j: None), \
                 mock.patch.object(rd_daemon, "start_events", lambda c: None), \
+                mock.patch.object(rd_daemon, "flag_drift_check", lambda: self.drift_checks.append(ft.mono)), \
                 mock.patch.object(rd_daemon, "spawn_job",
                                   lambda name, jobs: spawned.append((name, ft.mono))):
             with self.assertRaises(StopLoop):
@@ -85,6 +87,10 @@ class Schedule(unittest.TestCase):
     def test_loop_prunes_fallback_pins_every_tick(self):
         self.run_loop({}, max_sleeps=4)
         self.assertEqual(self.pruned, 5)
+
+    def test_flag_drift_checked_at_start_then_daily(self):
+        self.run_loop({}, max_sleeps=4)
+        self.assertEqual(self.drift_checks, [1000.0])          # first tick only (next in 24 h)
 
     def test_janitor_schedule_ignores_wall_clock_jumps(self):
         # 200 ticks of 15s = 3000s: janitor at +60, then every 600s.

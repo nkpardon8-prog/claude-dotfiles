@@ -2,6 +2,39 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-13 - rdocker Phase 2 review fixes
+
+- Mini engine restart (could kill every agent's live DB on a false alarm): a VM-up `colima restart` now
+  needs engine-probe failures continuous for 10 min (monotonic; any success resets), then - on the mini,
+  under the mini lock - `docker info` failing there too (30 s timeout) and `docker ps -q` empty or itself
+  failing/hanging. Never while the engine answers `ps` with running containers. Still at most once per
+  30 min. A declined restart raises an attention item. `rdocker doctor` starts a down VM through the
+  same kick path (profile guard, launchd) instead of a bare `colima start`, and never restarts.
+- Attention items: `~/.local/state/rdocker/attention.json` holds conditions a human must act on (engine
+  unresponsive but not restarted, no profile, start failed, restart rate-limited / lock lost / failed,
+  `restart_pending` > 24 h, janitor error, flag drift), set and cleared by their producers. `rdocker
+  status` shows them as `WARN` rows (exit code still only reflects `--` rows); the shim prints one stderr
+  line per item at most once per hour (`rdocker: needs attention: <msg> (run rdocker status)`), never on
+  stdout, exit code unchanged.
+- Flag-table drift: the daemon (daily) and `rdocker doctor` diff the laptop docker CLI's `--help` for
+  `run`, `create`, `compose`, `compose run|up|create` against `rd_args.SPECS`; unknown flags raise
+  "docker CLI has N flag(s) rdocker doesn't know: ... - add them to rd_args.SPECS".
+- Janitor: images are removed tag by tag (then by id if an untagged remainder is left), so multi-tag
+  images are collected; docker's refusals (multi-repo, dependent child images, in use) are skips, not
+  errors. A clean full pass clears `last_error` (and its attention item). A running container with a
+  valid `rdocker.ttl` is no longer idle-stopped at 12 h - its TTL is its lifetime.
+- `rdocker clean`: exit 1 when the mini's docker engine does not answer (ssh fine) and for `--dry-run`
+  with the mini unreachable; the background janitor still just skips the pass.
+- Shim: a routing exception before docker runs no longer runs the command unrouted on the global context:
+  read-only commands (the import-fallback `FALLBACK_SAFE` set) run on the real docker, anything else exits
+  1 with "rdocker: internal error routing <cmd>: ... (run rdocker doctor)"; the traceback goes to
+  `route.log`. The import fallback now catches any exception at module import (e.g. NameError).
+- Port reservations: TTL 15 min (was 120 s, which a long pull could outlive) and re-extended every
+  minute while the shim's docker runs; released explicitly when the shim finishes.
+- Tests: 245 unit tests (adds `test_zz_hermetic` to the list). Docs: lifetime-label guidance made
+  prominent (unlabelled quiet DBs are stopped after 12 h), restart policy, attention rows + stderr line,
+  flag drift, `clean` exit codes.
+
 ## 2026-10-13 - rdocker Phase 2: review fixes (structure, routing precision, daemon, mini engine)
 
 - Fallback pins expire: when Docker Desktop is quit for idleness the fallback pins become exactly the

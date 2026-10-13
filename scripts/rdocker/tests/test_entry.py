@@ -51,6 +51,16 @@ class ImportFallback(unittest.TestCase):
         self.assertIn("modules failed to import", p.stderr)
         self.assertEqual(self.docker_calls(), [["ps"]])
 
+    def test_any_exception_at_import_falls_back(self):
+        with open(os.path.join(self.lone, "rd_setup.py"), "w") as f:
+            f.write("undefined_name_at_import\n")           # NameError, not ImportError
+        p = self.run_entry("shim", "ps")
+        self.assertIn("modules failed to import (NameError", p.stderr)
+        self.assertEqual(self.docker_calls(), [["ps"]])
+        p = self.run_entry("shim", "run", "-d", "redis")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("refusing run", p.stderr)
+
     def test_container_creating_and_targeted_commands_are_refused(self):
         for argv in (["run", "-d", "redis"], ["-l", "debug", "stop", "db"], ["compose", "up", "-d"],
                      ["container", "rm", "x"], ["exec", "db", "sh"]):

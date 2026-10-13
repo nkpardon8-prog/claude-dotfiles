@@ -5,8 +5,10 @@ The laptop's `docker` (via the shim in ~/.local/bin) is routed per call:
   * normal work (test databases, builds, compose stacks) -> the mini over SSH/Tailscale;
   * commands that need the laptop's own files or network (bind mounts of laptop paths,
     --network host) and containers pinned as laptop-resident -> the local Docker Desktop;
-  * mini unreachable (mode=auto) -> local, with a one-line notice; a slow mini (round-trip >
-    max_rtt_ms) only sends NEW throwaway containers to the laptop.
+  * mini unreachable (mode=auto) -> only NEW throwaway containers (--rm, or no named volume and
+    no rdocker.keep label) fall back to the laptop, with a one-line notice; anything that keeps
+    data is refused (exit 1) rather than created on the wrong engine. A slow mini (round-trip
+    > max_rtt_ms) likewise sends only new throwaway containers to the laptop.
 Published ports of mini containers are mirrored onto the laptop's 127.0.0.1 through one SSH
 ControlMaster, so `localhost:<port>` keeps working (same port number on both sides).
 
@@ -21,8 +23,10 @@ here). The code lives beside it, in dependency order:
   rd_janitor janitor, mini lock, engine kick/restart, apply_when_idle
   rd_daemon  launchd forwarder loop, tailscale, global docker context
   rd_setup   install / setup-mini and the CLI (status, where, main, command)
-If those modules fail to import, a shim call still runs read-only docker commands unrouted and
-refuses anything that targets or creates a container (it could land on the wrong engine).
+If those modules fail to import (any exception, not only ImportError), a shim call still runs
+read-only docker commands unrouted and refuses anything that targets or creates a container (it
+could land on the wrong engine). rd_setup.routing_failed applies the same FALLBACK_SAFE rule when
+routing raises before docker runs.
 """
 import json
 import os
@@ -85,6 +89,6 @@ def import_failed(argv, err):
 if __name__ == "__main__":
     try:
         import rd_setup
-    except (ImportError, SyntaxError) as e:
+    except Exception as e:      # ImportError, SyntaxError, or a NameError/... at module import
         sys.exit(import_failed(sys.argv[1:], e))
     sys.exit(rd_setup.main(sys.argv[1:]))

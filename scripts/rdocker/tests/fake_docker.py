@@ -27,7 +27,10 @@ Janitor knobs (per context):
                      "FinishedAt", "Created", "netio" (docker stats NetIO), "established" (bool)
   "ghosts": [ids]           listed by `ps -a` but gone at inspect -> partial JSON + exit 1
   "inspect_garbage": true   bulk `container inspect` prints non-JSON and exits 1
-  "volumes": {name: {"Labels": {...}}}, "images": {id: {"Labels": {...}}}
+  "volumes": {name: {"Labels": {...}}}, "images": {id: {"Labels": {...}, "RepoTags": [...],
+                            "rm_err": "<stderr>"}}   `image rm <tag>` untags (the image goes with
+                            its last tag); `image rm <id>` of an image with >1 tag fails like docker
+                            ("referenced in multiple repositories"); rm_err makes every rm fail
   "system_time": "<RFC3339>"   `info --format {{.SystemTime}}`
   "fail": ["stop", "image rm", ...]   these subcommands exit 1 ("boom")
   "old_buildx": true        `builder prune --max-used-space` fails with "unknown flag"
@@ -173,6 +176,40 @@ def find(st, containers, n):
     return None
 
 
+def live_image(eng, st, ref):
+    """-> (id, current tags, fixture record) for an image id or tag still present, else None."""
+    gone, untagged = set(st.get("images_removed") or []), set(st.get("untagged") or [])
+    for iid, rec in (eng.get("images") or {}).items():
+        tags = [t for t in rec.get("RepoTags") or [] if t not in untagged]
+        if iid not in gone and (ref == iid or ref in tags):
+            return iid, tags, rec
+    return None
+
+
+def image_rm(eng, ref):
+    with state() as st:
+        img = live_image(eng, st, ref)
+        if img is None:
+            sys.stderr.write("Error response from daemon: No such image: %s\n" % ref)
+            return 1
+        iid, tags, rec = img
+        if rec.get("rm_err"):
+            sys.stderr.write(rec["rm_err"] + "\n")
+            return 1
+        if ref == iid and len(tags) > 1:
+            sys.stderr.write("Error response from daemon: conflict: unable to delete %s (must be "
+                             "forced) - image is referenced in multiple repositories\n" % iid[:12])
+            return 1
+        if ref != iid:
+            st["untagged"] = (st.get("untagged") or []) + [ref]
+            print("Untagged: %s" % ref)
+            if len(tags) > 1:
+                return 0
+        st["images_removed"] = (st.get("images_removed") or []) + [iid]
+        print("Deleted: %s" % iid)
+    return 0
+
+
 def reads_stdin(argv):
     if "compose" not in argv:
         return False
@@ -238,6 +275,19 @@ def main(argv):
     if argv[0] == "info":
         print(eng.get("system_time", "x") if "--format" in argv else "x")
         return 0
+    if argv[:2] == ["image", "rm"]:
+        return image_rm(eng, argv[2])
+    if argv[:2] == ["image", "inspect"]:
+        name = argv[2]
+        with state() as st:
+            img = live_image(eng, st, name)
+        if img is None:
+            print("[]")
+            sys.stderr.write("Error: No such image: %s\n" % name)
+            return 1
+        print(json.dumps([{"Id": img[0], "RepoTags": img[1],
+                           "Config": {"Labels": img[2].get("Labels") or {}}}]))
+        return 0
     if argv[:2] in (["volume", "inspect"], ["image", "inspect"]):
         pool = eng.get("volumes" if argv[0] == "volume" else "images") or {}
         name = argv[2]
@@ -254,7 +304,9 @@ def main(argv):
         print("\n".join(eng.get("volumes") or {}))
         return 0
     if argv[:2] in (["image", "ls"], ["images"]):
-        print("\n".join(eng.get("images") or {}))
+        with state() as st:
+            gone = set(st.get("images_removed") or [])
+        print("\n".join(i for i in eng.get("images") or {} if i not in gone))
         return 0
     if argv[0] == "stats":
         for k, c in containers.items():

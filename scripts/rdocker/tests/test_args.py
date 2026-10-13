@@ -14,6 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_shim_safety import ShimCase, r  # noqa: E402
+import rdmods  # noqa: E402
 
 # Q3: run value-taking flags (create: same), and run booleans (create lacks -d -i --sig-proxy).
 RUN_VALUES = """
@@ -41,7 +42,7 @@ RUN_VALUES = """
 RUN_BOOLS = ("-d/--detach --disable-content-trust --help --init -i/--interactive --no-healthcheck "
              "--oom-kill-disable --privileged -P/--publish-all -q/--quiet --read-only --rm --sig-proxy "
              "-t/--tty --use-api-socket").split()
-CREATE_ONLY_MISSING = {"-d", "--detach", "-i", "--interactive", "--sig-proxy"}
+CREATE_ONLY_MISSING = {"-d", "--detach", "--sig-proxy"}   # docker 28.5.1 `create --help` does list -i/--interactive
 
 # Q2: per container subcommand (value flags, boolean flags).
 Q2 = {
@@ -142,6 +143,105 @@ class RunCreateTables(unittest.TestCase):
         self.assertEqual(r.unknown_flags("run", ["-dZ", "img"]), ["-Z"])
         self.assertEqual(r.unknown_flags("run", ["--rm", "img", "--bogus"]), [])   # container's arg
         self.assertEqual(r.unknown_flags("create", ["-d", "img"]), ["-d"])
+
+
+RUN_HELP = """
+Usage:  docker container run [OPTIONS] IMAGE [COMMAND] [ARG...]
+
+Create and run a new container from an image
+
+Aliases:
+  docker container run, docker run
+
+Options:
+      --add-host list                    Add a custom host-to-IP mapping
+                                         (host:ip)
+  -a, --attach list                      Attach to STDIN, STDOUT or STDERR
+  -d, --detach                           Run container in background and
+                                         print container ID
+      --gpus gpu-request                 GPU devices to add to the container
+      --frobnicate string                A flag from a future docker
+  -Z                                     A short-only future flag
+"""
+COMPOSE_RUN_HELP = """
+Usage:  docker compose run [OPTIONS] SERVICE [COMMAND] [ARGS...]
+
+Options:
+      --build                       Build image before starting container
+  -d, --detach                      Run container in background
+  -h, --help                        Help for run
+      --dry-run                     Execute command in dry run mode (compose global)
+      --sparkle                     A future compose run flag
+"""
+
+
+class CreateInteractive(unittest.TestCase):
+    def test_create_accepts_interactive(self):
+        # found by the live flag-drift check against docker 28.5.1: `create -i` was missing
+        for argv in (["-i", "alpine"], ["--interactive", "alpine"], ["-it", "alpine", "sh"]):
+            self.assertEqual(r.unknown_flags("create", argv), [], argv)
+
+
+class RealDockerSkipsShim(unittest.TestCase):
+    def test_any_docker_shim_is_skipped(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        shim = os.path.join(d, "docker-shim")
+        open(shim, "w").write("#!/bin/sh\n"); os.chmod(shim, 0o755)
+        os.symlink(shim, os.path.join(d, "docker"))
+        old = os.environ["PATH"]
+        os.environ["PATH"] = d + ":" + old
+        try:
+            self.assertNotEqual(os.path.realpath(r.real_docker()), shim)
+        except SystemExit:
+            pass   # no other docker on PATH in the hermetic env is also fine: never the shim
+        finally:
+            os.environ["PATH"] = old
+
+
+class FlagDrift(unittest.TestCase):
+    """The daemon/doctor diff of the laptop CLI's --help flags against rd_args.SPECS."""
+
+    def test_help_flags_parses_long_short_and_skips_descriptions(self):
+        self.assertEqual(r.help_flags(RUN_HELP), {"--add-host", "-a", "--attach", "-d", "--detach",
+                                                  "--gpus", "--frobnicate", "-Z"})
+
+    def test_drift_lists_only_unknown_flags(self):
+        texts = {("run", "--help"): RUN_HELP, ("compose", "run", "--help"): COMPOSE_RUN_HELP}
+        drift = r.flag_drift(lambda argv: texts.get(tuple(argv)))
+        self.assertEqual(drift, ["compose run --sparkle", "run --frobnicate", "run -Z"])
+
+    def test_no_help_text_is_none_not_clean(self):
+        self.assertIsNone(r.flag_drift(lambda argv: None))
+        self.assertEqual(r.flag_drift(lambda argv: "Options:\n  -d, --detach  x\n"
+                                      if argv[0] == "run" else None), [])
+
+    def test_check_raises_and_clears_attention(self):
+        import tempfile
+        import shutil
+        from unittest import mock
+        rd_common, rd_daemon = rdmods.owner("ATTENTION_PATH"), rdmods.owner("flag_drift_check")
+        tmp = tempfile.mkdtemp(prefix="rdk-drift-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        texts = {"run": RUN_HELP}
+        with mock.patch.object(rd_common, "ATTENTION_PATH", os.path.join(tmp, "att.json")), \
+                mock.patch.object(rd_common, "log"), \
+                mock.patch.object(rd_common, "real_docker", lambda: "/x/docker"), \
+                mock.patch.object(rd_common, "run", lambda argv, timeout=30: (
+                    (0, texts[argv[1]], "") if argv[1] in texts and argv[2] == "--help"
+                    else (1, "", "no"))):
+            self.assertEqual(rd_daemon.flag_drift_check(), ["run --frobnicate", "run -Z"])
+            msg = rd_common.attention_items()[0]["msg"]
+            self.assertIn("docker CLI has 2 flag(s) rdocker doesn't know: run --frobnicate, run -Z",
+                          msg)
+            self.assertIn("add them to rd_args.SPECS", msg)
+            texts["run"] = "Options:\n  -d, --detach  x\n"
+            self.assertEqual(rd_daemon.flag_drift_check(), [])
+            self.assertEqual(rd_common.attention_items(), [])
+
+    def test_installed_tables_cover_their_own_names(self):
+        """Every SPECS key has a --help argv (a new table without one would never be checked)."""
+        self.assertTrue(set(r.HELP_ARGV) <= set(r.SPECS))
 
 
 class ContainerSubcommandTables(unittest.TestCase):

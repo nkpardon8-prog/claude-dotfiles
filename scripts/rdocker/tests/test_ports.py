@@ -276,6 +276,29 @@ class LaptopFree(unittest.TestCase):
             r.release_ports(mine)
             self.assertEqual(r.reserve_ports(cfg, [spec])[1], mine)
 
+    def test_reservation_outlives_a_long_pull_and_keeper_extends_only_live_ports(self):
+        self.assertGreaterEqual(r.RESERVE_TTL, 900)          # was 120 s: lapsed mid-pull
+        path = os.path.join(self.tmp, "res.json")
+        with unittest.mock.patch.object(rd_tunnel, "RESERVED_PATH", path), \
+                unittest.mock.patch.object(rd_tunnel, "PORTS_LOCK", os.path.join(self.tmp, "p.lock")):
+            rd_common.save_json(path, {"20001": 1000.0 + 60, "20002": 1000.0 + 60})
+            r.extend_ports([20001, 20003], now=1000.0)         # 20003 never reserved: not added
+            res = rd_common.load_json(path, {})
+            self.assertEqual(res, {"20001": 1000.0 + r.RESERVE_TTL, "20002": 1060.0})
+            r.release_ports([20001])
+            r.extend_ports([20001], now=1000.0)                # released: never resurrected
+            self.assertNotIn("20001", rd_common.load_json(path, {}))
+            calls = []
+            with unittest.mock.patch.object(rd_tunnel, "extend_ports", lambda p: calls.append(p)):
+                with r.hold_ports(lambda: [20002], every=0.05):
+                    import time as _t
+                    _t.sleep(0.3)
+                n = len(calls)
+                _t.sleep(0.15)
+            self.assertGreaterEqual(n, 2)
+            self.assertEqual(len(calls), n)                    # stopped with the block
+            self.assertEqual(calls[0], [20002])
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="rdkp-", dir="/tmp")
         self.addCleanup(shutil.rmtree, self.tmp, True)

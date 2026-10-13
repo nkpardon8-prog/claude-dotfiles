@@ -283,65 +283,66 @@ def mini_run(cfg, base, prefix, sub, args, detached):
         ours.append(path)
         return ["--cidfile", path] + a, path
 
-    try:
-        run_args, cidpath = with_cidfile(rewrite(args, new_specs))
-        if sub == "run" and not detached:
-            def watch(child):
-                cid = None
-                while child.poll() is None and not cid:
-                    cid = read_cid(cidpath)
-                    if not cid:
-                        time.sleep(0.2)
-                if not cid or not wait_running(cfg, child, cid):
-                    return True
-                ok = post_check(cfg, [cid], [cid])
-                rd_tunnel.release_ports(reserved)
-                return ok
-            sys.exit(run_watched(base + prefix + run_args, watch))
-        rc, err = call_docker_capture(base + prefix + run_args)
-        cid = read_cid(cidpath)
-        if rc == 125 and rd_tunnel.ALLOC_TEXT in err:
-            # Execute-once exception (documented): the mini refused the port, so the first attempt left
-            # only a Created container - removed here - and nothing running. One retry, ephemeral only.
-            if cid:
-                rm_created(cfg, [cid], "the mini reported its port as already allocated")
-            m = re.search(r":(\d+) failed: port is already allocated", err)
-            bad = int(m.group(1)) if m else None
-            eph = [s for o, s in zip(specs, new_specs) if o is not None and s != o]
-            eph_ports = {p for s in eph for p in range(s["host"][0], s["host"][1] + 1)}
-            if not eph or (bad is not None and bad not in eph_ports):
-                rd_tunnel.release_ports(reserved)
-                sys.exit(rc)
-            rd_tunnel.release_ports(reserved)
-            picked = eph_ports if bad is None else {bad}
-            if user_cid and read_cid(user_cid) == cid:
-                os.unlink(user_cid)
-            try:
-                new_specs, reserved = rd_tunnel.reserve_ports(cfg, specs, exclude=picked)
-            except rd_tunnel.PortRefuse as e:
-                port_refuse_exit(e)
+    with rd_tunnel.hold_ports(lambda: reserved):     # extends while docker runs (long pulls)
+        try:
             run_args, cidpath = with_cidfile(rewrite(args, new_specs))
-            rd_common.say("mini reported port %s as allocated - retrying once with another port"
-                % (bad if bad is not None else "?"))
+            if sub == "run" and not detached:
+                def watch(child):
+                    cid = None
+                    while child.poll() is None and not cid:
+                        cid = read_cid(cidpath)
+                        if not cid:
+                            time.sleep(0.2)
+                    if not cid or not wait_running(cfg, child, cid):
+                        return True
+                    ok = post_check(cfg, [cid], [cid])
+                    rd_tunnel.release_ports(reserved)
+                    return ok
+                sys.exit(run_watched(base + prefix + run_args, watch))
             rc, err = call_docker_capture(base + prefix + run_args)
             cid = read_cid(cidpath)
-            if rc == 125 and rd_tunnel.ALLOC_TEXT in err and cid:
-                rm_created(cfg, [cid], "the mini reported its port as already allocated")
-        if rc != 0 or sub == "create":
-            if rc != 0:
+            if rc == 125 and rd_tunnel.ALLOC_TEXT in err:
+                # Execute-once exception (documented): the mini refused the port, so the first attempt left
+                # only a Created container - removed here - and nothing running. One retry, ephemeral only.
+                if cid:
+                    rm_created(cfg, [cid], "the mini reported its port as already allocated")
+                m = re.search(r":(\d+) failed: port is already allocated", err)
+                bad = int(m.group(1)) if m else None
+                eph = [s for o, s in zip(specs, new_specs) if o is not None and s != o]
+                eph_ports = {p for s in eph for p in range(s["host"][0], s["host"][1] + 1)}
+                if not eph or (bad is not None and bad not in eph_ports):
+                    rd_tunnel.release_ports(reserved)
+                    sys.exit(rc)
                 rd_tunnel.release_ports(reserved)
-            sys.exit(rc)     # create: reservations simply expire (nothing is bound until start)
-        ok = post_check(cfg, [cid] if cid else [], [cid] if cid else [])
-        rd_tunnel.release_ports(reserved)
-        sys.exit(rc if ok else 1)
-    finally:
-        if sub == "run":            # create keeps its reservation until the TTL (bound at start)
+                picked = eph_ports if bad is None else {bad}
+                if user_cid and read_cid(user_cid) == cid:
+                    os.unlink(user_cid)
+                try:
+                    new_specs, reserved = rd_tunnel.reserve_ports(cfg, specs, exclude=picked)
+                except rd_tunnel.PortRefuse as e:
+                    port_refuse_exit(e)
+                run_args, cidpath = with_cidfile(rewrite(args, new_specs))
+                rd_common.say("mini reported port %s as allocated - retrying once with another port"
+                    % (bad if bad is not None else "?"))
+                rc, err = call_docker_capture(base + prefix + run_args)
+                cid = read_cid(cidpath)
+                if rc == 125 and rd_tunnel.ALLOC_TEXT in err and cid:
+                    rm_created(cfg, [cid], "the mini reported its port as already allocated")
+            if rc != 0 or sub == "create":
+                if rc != 0:
+                    rd_tunnel.release_ports(reserved)
+                sys.exit(rc)     # create: held until RESERVE_TTL (15 min; bound only at start)
+            ok = post_check(cfg, [cid] if cid else [], [cid] if cid else [])
             rd_tunnel.release_ports(reserved)
-        for path in ours:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+            sys.exit(rc if ok else 1)
+        finally:
+            if sub == "run":            # create keeps its reservation until the TTL (bound at start)
+                rd_tunnel.release_ports(reserved)
+            for path in ours:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
 
 def compose_port_specs(model, csub, crest):
@@ -393,6 +394,11 @@ def mini_compose(cfg, base, rest, compose_sub, crest, project, model, detached):
         except rd_tunnel.PortRefuse as e:
             port_refuse_exit(e)
     before = project_ids(cfg, project) if project else set()
+    with rd_tunnel.hold_ports(lambda: reserved):      # extends while docker runs (long pulls)
+        mini_compose_body(cfg, base, rest, compose_sub, project, detached, reserved, before)
+
+
+def mini_compose_body(cfg, base, rest, compose_sub, project, detached, reserved, before):
     try:
         if compose_sub in ("up", "run") and not detached:
             def watch(child):

@@ -77,10 +77,12 @@ command on a container whose location can't be established, exits 1 instead of g
 `run`/`create`/compose with a flag rdocker doesn't know: force with `RDOCKER_MODE=local`). When docker
 errors, hangs, refuses, or a mirrored port won't connect, run `rdocker doctor` (details: `/docker`).
 Ask the user before moving a pinned container's data or deleting volumes on the mini. A janitor reaps
-leftovers (idle 12 h -> stop, stopped 24 h -> removed, unused named volumes 30 d, unused images 14 d),
-so label intent when starting one: throwaway `--label rdocker.ttl=2h`, keep-with-data
-`--label rdocker.keep=1` + a named volume. Invoke `/docker` before starting databases — it holds the
-playbook (ports, readiness, seeding, lifetimes).
+leftovers (idle 12 h -> stop, stopped 24 h -> removed, unused named volumes 30 d, unused images 14 d).
+**Any DB you need to survive a quiet spell longer than 12 h MUST carry a lifetime label**:
+`--label rdocker.keep=1` + a named volume (kept), or `--label rdocker.ttl=2d` (lives exactly that long);
+an unlabelled quiet DB is stopped after 12 h. A `rdocker: needs attention: ...` line on stderr means the
+mini needs a human: run `rdocker status` and tell the user. Invoke `/docker` before starting databases
+— it holds the playbook (ports, readiness, seeding, lifetimes).
 
 ## Window naming + reaching other windows — `/line`
 `/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).

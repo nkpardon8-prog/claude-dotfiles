@@ -115,6 +115,15 @@ def volumes_of(info):
             if m.get("Type") == "volume" and m.get("Name")]
 
 
+# `image rm` refusals that mean "not collectable now", not a janitor fault.
+IMAGE_RM_SKIP = ("referenced in multiple repositories", "dependent child images",
+                 "image is being used", "is using its referenced image", "No such image")
+
+
+class MiniEngineDown(Exception):
+    """The janitor could not list the mini's containers (engine down or mini unreachable)."""
+
+
 class JanitorRun:
     """One janitor pass: the act log, failure bookkeeping and the keep-checked destructive calls."""
 
@@ -168,10 +177,34 @@ class JanitorRun:
         return self.act("stop %s (%s)" % (name, why), "stop", cid)[0]
 
     def rm_image(self, iid, why):
-        """`image rm` without -f: docker itself refuses images any container (even stopped) uses."""
-        if not self.destructive_ok("image", iid):
+        """Remove an unused image without -f: one `image rm <repo:tag>` per tag (a bare id is refused
+        for an image tagged in several repositories), then the id if it is still there (untagged).
+        Docker's own refusals - still used by a container, has child images, multi-repo - are skips,
+        not janitor errors: docker itself keeps images any container (even stopped) uses."""
+        info = self.fresh("image", iid)
+        if info is None:
             return False
-        return self.act("rm image %s (%s)" % (iid.split(":")[-1][:12], why), "image", "rm", iid)[0]
+        short = iid.split(":")[-1][:12]
+        desc = "rm image %s (%s)" % (short, why)
+        if self.dry:
+            return self.act(desc)[0]
+        tags = [t for t in info.get("RepoTags") or [] if t and "<none>" not in t]
+        for ref in tags + [iid]:
+            if ref == iid and tags and not self.image_exists(iid):
+                return True                 # removing the last tag removed the image
+            ok, err = self.act(desc + ("" if ref == iid else " tag " + ref),
+                               "image", "rm", ref, record=False)
+            if ok:
+                continue
+            if any(t in err for t in IMAGE_RM_SKIP):
+                rd_common.log("janitor: skip image %s (%s)" % (short, err.strip()[:120]))
+                return False
+            self.last_error = {"ts": time.time(), "action": desc, "err": err.strip()[:300]}
+            return False
+        return True
+
+    def image_exists(self, iid):
+        return rd_common.dk(self.ctx, "image", "inspect", iid, timeout=20)[0] == 0
 
     def rm_volume(self, name, why):
         if not self.destructive_ok("volume", name):
@@ -215,6 +248,9 @@ def janitor_containers(J, infos, complete, idle, now, only):
             if J.rm_container(cid, name, "ttl %s expired" % labels.get("rdocker.ttl"), force=True):
                 idle.pop(cid, None)
                 continue
+        if ttl:          # a declared lifetime replaces the idle rule: never idle-stopped before it
+            idle.pop(cid, None)
+            continue
         netio = stats.get(cid[:12]) if stats is not None else None
         conn = has_connections(cfg, cid)
         prev = idle.get(cid)
@@ -312,8 +348,9 @@ def janitor(cfg, dry=False, only=None, force_critical=False, lock_wait=None):
     prunes and image GC. `force_critical`: apply the disk-critical container path regardless of
     disk usage (to the `only` scope when given).
 
-    lock_wait=None (daemon janitor-run): lock held elsewhere -> skip this pass. A number (manual
-    `rdocker clean`): wait up to that many seconds for the lock, then raise MiniLockBusy."""
+    lock_wait=None (daemon janitor-run): lock held elsewhere or engine down -> skip this pass. A
+    number (manual `rdocker clean`): wait up to that many seconds for the lock, then raise
+    MiniLockBusy; an engine that does not answer raises MiniEngineDown (dry runs raise it too)."""
     if dry:
         return janitor_pass(JanitorRun(cfg, True), only, force_critical)
     try:
@@ -323,8 +360,10 @@ def janitor(cfg, dry=False, only=None, force_critical=False, lock_wait=None):
                 return janitor_pass(J, only, force_critical)
             except MiniLockLost as e:
                 rd_common.log("janitor: stopped - mini lock lost (%s)" % e)
+                rd_common.attention_set("janitor-error",
+                                        "mini janitor pass stopped: mini lock lost (%s)" % e)
                 return J.acts + ["stopped: mini lock lost (%s)" % e]
-    except MiniLockBusy as e:
+    except (MiniLockBusy, MiniEngineDown) as e:
         if lock_wait is not None:
             raise
         rd_common.log("janitor: skipped - %s" % e)
@@ -333,9 +372,10 @@ def janitor(cfg, dry=False, only=None, force_critical=False, lock_wait=None):
 
 def janitor_pass(J, only, force_critical):
     cfg, dry, ctx = J.cfg, J.dry, J.ctx
-    rc, out, _ = rd_common.dk(ctx, "ps", "-aq", "--no-trunc", timeout=20)
+    rc, out, err = rd_common.dk(ctx, "ps", "-aq", "--no-trunc", timeout=20)
     if rc != 0:
-        return ["mini unreachable - skipped"]
+        raise MiniEngineDown("mini docker engine not answering (%s)"
+                             % ((err or out).strip()[-160:] or "rc=%s" % rc))
     ids = out.split()
     now = vm_now(ctx)
     state = rd_common.load_json(rd_common.JANITOR_PATH, {})
@@ -363,13 +403,23 @@ def janitor_pass(J, only, force_critical):
                 unused.remove(iid)
                 updates["image_last_used"].pop(iid, None)
 
-    def save(extra):
+    def save(extra, final=False):
+        """Persist. The final save of a full (not --only) pass records the pass's outcome: an
+        error is kept as last_error + an attention item; a clean pass clears both."""
         if dry:
             return
+        drop = {"idle_since"}
         if J.last_error:
             extra = {**extra, "last_error": J.last_error}
+        elif final and not only:
+            drop.add("last_error")
         rd_common.update_state(rd_common.JANITOR_PATH, lambda st0: {
-            **{k: v for k, v in st0.items() if k != "idle_since"}, **extra})
+            **{k: v for k, v in st0.items() if k not in drop}, **extra})
+        if J.last_error:
+            rd_common.attention_set("janitor-error", "mini janitor: %s failed: %s" % (
+                J.last_error.get("action", "?"), str(J.last_error.get("err", ""))[:120]))
+        elif final and not only:
+            rd_common.attention_clear("janitor-error")
 
     save(updates)
     pct = free = None
@@ -416,7 +466,7 @@ def janitor_pass(J, only, force_critical):
     extra = {"vm_disk_pct": pct, "mini_free_gb": free} if not only else {}
     if "image_last_used" in updates:
         extra["image_last_used"] = updates["image_last_used"]
-    save(extra)
+    save(extra, final=True)
     return J.acts
 
 
@@ -435,7 +485,12 @@ CLEAN_LOCK_WAIT = 90        # manual `rdocker clean` waits this long for the loc
 HEARTBEAT_EVERY = 60        # refresh the heartbeat at most this often between destructive steps
 RESTART_MIN_GAP = 1800      # at most one colima restart per 30 min (wall clock, janitor.json)
 COLIMA_PROFILE = "$HOME/.colima/default/colima.yaml"
-ENGINE_RESTART_AFTER = 2    # consecutive ENGINE probe failures (VM up) before a colima restart
+# A VM-up restart kills every container on the mini (other agents' live databases), so it needs
+# all of: ENGINE probe failures continuous for ENGINE_RESTART_AFTER_S (daemon, monotonic), then -
+# on the mini, under the mini lock - `docker info` failing within ENGINE_CHECK_TIMEOUT (a slow
+# tunnel/laptop is not a dead engine) and `docker ps -q` empty or itself failing/hanging.
+ENGINE_RESTART_AFTER_S = 600
+ENGINE_CHECK_TIMEOUT = 30
 
 
 class MiniLockBusy(Exception):
@@ -598,11 +653,39 @@ if engine_wait; then echo "RDKICK started $HOW"; else echo "RDKICK start-failed 
 """ % COLIMA_PROFILE
 
 
-def restart_script(require_idle):
+# Bounded command on the mini (macOS has no `timeout`): stdout -> $T; rc 124 when killed.
+_TMO = """T=$(mktemp -t rdchk 2>/dev/null || echo "/tmp/rdchk.$$")
+tmo() {
+  s=$1; shift
+  "$@" > "$T" 2>/dev/null &
+  p=$!; i=0
+  while kill -0 $p 2>/dev/null; do
+    if [ $i -ge $s ]; then kill -9 $p 2>/dev/null; wait $p 2>/dev/null; return 124; fi
+    sleep 1; i=$((i+1))
+  done
+  wait $p
+}
+"""
+
+
+def dead_check():
+    """Mini-side gate of a non-idle restart: `RDRESTART engine-ok` when docker info answers there
+    (only the path to it is slow/broken), `RDRESTART busy <n>` when docker ps lists running
+    containers; falls through (restart) only when info fails and ps is empty, fails or hangs."""
+    return _TMO + """tmo %d docker info; INFO=$?
+if [ $INFO -eq 0 ]; then rm -f "$T"; echo "RDRESTART engine-ok"; exit 0; fi
+if tmo %d docker ps -q && [ -s "$T" ]; then
+  N=$(grep -c . "$T"); rm -f "$T"; echo "RDRESTART busy $N"; exit 0
+fi
+rm -f "$T"
+""" % (ENGINE_CHECK_TIMEOUT, ENGINE_CHECK_TIMEOUT)
+
+
+def restart_script(require_idle, require_dead=False):
     idle = ("""IDS=$(docker ps -q 2>/dev/null) || { echo "RDRESTART docker-error"; exit 0; }
 [ -z "$IDS" ] || { echo "RDRESTART busy"; exit 0; }
 """ if require_idle else "")
-    return _engine_prelude() + idle + """if [ "$HOW" = launchd ]; then
+    return _engine_prelude() + idle + (dead_check() if require_dead else "") + """if [ "$HOW" = launchd ]; then
   launchctl kickstart -k "$SVC" >/dev/null 2>&1 || { echo "RDRESTART failed $HOW"; exit 0; }
 else
   colima restart >/dev/null 2>&1 || { echo "RDRESTART failed $HOW"; exit 0; }
@@ -619,60 +702,98 @@ def restart_due(now=None):
     return not isinstance(last, (int, float)) or not 0 <= now - last < RESTART_MIN_GAP
 
 
-def colima_restart(cfg, lock, why, require_idle=False):
+def colima_restart(cfg, lock, why, require_idle=False, require_dead=False):
     """`colima restart` on the mini under `lock` (heartbeat first). require_idle: the remote script
-    re-checks `docker ps -q` is empty right before restarting. -> marker word (ok/busy/failed/...)."""
+    re-checks `docker ps -q` is empty right before restarting. require_dead: dead_check() first.
+    -> marker word (ok/busy/engine-ok/failed/...)."""
     lock.heartbeat(force=True)
-    rc, out, err = mini_sh(cfg, restart_script(require_idle), timeout=300)
+    rc, out, err = mini_sh(cfg, restart_script(require_idle, require_dead),
+                           timeout=300 + 2 * ENGINE_CHECK_TIMEOUT)
     m = marker(out, "RDRESTART") or ["no-answer"]
     res = m[0]
-    if res not in ("busy", "docker-error"):      # a restart was attempted: start the 30-min clock
+    if res not in ("busy", "docker-error", "engine-ok"):   # a restart was attempted: 30-min clock
         rd_common.update_state(rd_common.JANITOR_PATH,
                                lambda st0: {**st0, "last_engine_restart": time.time()})
     rd_common.log("colima restart (%s): %s" % (why, " ".join(m) if res != "no-answer"
                                                else "no answer: " + (err or out).strip()[-200:]))
-    return res
+    return res, m[1:]
 
 
-def locked_restart(cfg, why, require_idle=False):
+def locked_restart(cfg, why, require_idle=False, require_dead=False):
     """Rate-limited colima restart under the mini lock -> result word."""
+    return locked_restart_detail(cfg, why, require_idle, require_dead)[0]
+
+
+def locked_restart_detail(cfg, why, require_idle=False, require_dead=False):
+    """locked_restart -> (result word, extra marker words)."""
     if not restart_due():
         rd_common.log("colima restart (%s) deferred: last restart < %d min ago"
                       % (why, RESTART_MIN_GAP // 60))
-        return "rate-limited"
+        return "rate-limited", []
     try:
         with mini_lock(cfg, "colima restart") as lk:
-            return colima_restart(cfg, lk, why, require_idle)
+            return colima_restart(cfg, lk, why, require_idle, require_dead)
     except MiniLockBusy as e:
         rd_common.log("colima restart (%s) deferred: %s" % (why, e))
-        return "lock-busy"
+        return "lock-busy", []
     except MiniLockLost as e:
         rd_common.log("colima restart (%s) aborted: mini lock lost (%s)" % (why, e))
-        return "lock-lost"
+        return "lock-lost", []
+
+
+ENGINE_ATTENTION = "engine"      # one attention key for every mini-engine condition (re-worded)
+_DOWN_MIN = ENGINE_RESTART_AFTER_S // 60
+_RESTART_ATTENTION = {
+    "engine-ok": "mini docker engine answers on the mini but not through the tunnel for %d+ min - "
+                 "not restarted (check the ssh master / laptop network: rdocker doctor)" % _DOWN_MIN,
+    "busy": "mini docker engine not answering through the tunnel for %d+ min but %s container(s) "
+            "run there - not restarted (would kill them; check the mini)",
+    "rate-limited": "mini docker engine still not answering; restart rate-limited (last restart "
+                    "< %d min ago)" % (RESTART_MIN_GAP // 60),
+    "lock-lost": "mini engine restart aborted: mini lock lost",
+}
 
 
 def mini_engine_kick(cfg, restart_ok=False):
     """Mini reachable but its engine is not answering. VM down (e.g. the mini rebooted; Colima's
     LaunchAgent waits for a GUI login that never comes) -> `colima start`, only if the profile exists
-    (never invent a VM with default sizing). VM up -> `colima restart`, but only when the daemon saw
-    ENGINE_RESTART_AFTER consecutive engine failures (restart_ok), rate-limited, under the mini lock."""
+    (never invent a VM with default sizing). VM up -> `colima restart` only with restart_ok (the
+    daemon saw engine failures continuously for ENGINE_RESTART_AFTER_S) AND the mini-side
+    dead_check() agrees (info fails there, nothing running) - rate-limited, under the mini lock.
+    Anything that needs a human (no profile, failed start, a restart declined/failed) becomes the
+    `engine` attention item; a successful start/restart clears it."""
     rc, out, err = mini_sh(cfg, kick_script(), timeout=240)
     m = marker(out, "RDKICK") or ["no-answer"]
     res = m[0]
     if res == "started":
         rd_common.log("mini engine was down -> started via %s (ok)" % " ".join(m[1:]))
+        rd_common.attention_clear(ENGINE_ATTENTION)
     elif res == "no-profile":
         rd_common.log("mini engine down and no colima profile (~/.colima/default/colima.yaml) - "
                       "run: rdocker setup-mini")
+        rd_common.attention_set(ENGINE_ATTENTION, "mini engine down and no colima profile on the "
+                                "mini - run: rdocker setup-mini")
     elif res == "vm-up":
         if not restart_ok:
-            rd_common.log("mini VM up but docker not answering - restart after %d failed probes"
-                          % ENGINE_RESTART_AFTER)
+            rd_common.log("mini VM up but docker not answering - restart considered after %d min "
+                          "of continuous failures" % _DOWN_MIN)
             return res
-        return locked_restart(cfg, "docker unresponsive with VM up")
+        res, words = locked_restart_detail(cfg, "docker unresponsive with VM up", require_dead=True)
+        if res == "ok":
+            rd_common.attention_clear(ENGINE_ATTENTION)
+        elif res in _RESTART_ATTENTION:
+            msg = _RESTART_ATTENTION[res]
+            rd_common.attention_set(ENGINE_ATTENTION, msg % (_DOWN_MIN, (words or ["?"])[0])
+                                    if res == "busy" else msg)
+        elif res != "lock-busy":            # failed / no-docker / no-answer
+            rd_common.attention_set(ENGINE_ATTENTION, "mini engine restart did not bring docker "
+                                    "back (%s) - check the mini" % " ".join([res] + words))
+        return res
     else:
         rd_common.log("mini engine was down -> start FAILED: %s"
                       % (" ".join(m) if res != "no-answer" else (err or out).strip()[-200:]))
+        rd_common.attention_set(ENGINE_ATTENTION, "mini engine start failed (%s) - check the mini"
+                                % " ".join(m))
     return res
 
 
@@ -682,12 +803,38 @@ def apply_when_idle(cfg):
     re-checks `docker ps -q` is empty right before `colima restart`. Pending stays set otherwise."""
     st = rd_common.load_json(rd_common.JANITOR_PATH, {})
     if not isinstance(st, dict) or not st.get("restart_pending"):
+        rd_common.attention_clear(PENDING_ATTENTION)
         return None
+    pending_age_check(st)
     rc, out, _ = rd_common.dk(cfg["remote_context"], "ps", "-q", timeout=20)
     if rc != 0 or out.strip():
         return "busy"
     res = locked_restart(cfg, "apply pending mini config", require_idle=True)
     if res == "ok":
-        rd_common.update_state(rd_common.JANITOR_PATH, lambda st0: {**st0, "restart_pending": False})
+        rd_common.update_state(rd_common.JANITOR_PATH, lambda st0: {
+            **{k: v for k, v in st0.items() if k != "restart_pending_since"},
+            "restart_pending": False})
+        rd_common.attention_clear(PENDING_ATTENTION)
         rd_common.log("pending mini config applied")
     return res
+
+
+PENDING_ATTENTION = "restart-pending"
+PENDING_WARN_AFTER = 86400       # restart_pending this old -> attention (the mini is never idle)
+
+
+def pending_age_check(st, now=None):
+    """restart_pending older than PENDING_WARN_AFTER -> attention item. A pending flag without a
+    start time (set by an older rdocker) is stamped now."""
+    now = time.time() if now is None else now
+    since = st.get("restart_pending_since")
+    if not isinstance(since, (int, float)):
+        rd_common.update_state(rd_common.JANITOR_PATH,
+                               lambda st0: {**st0, "restart_pending_since": now})
+        return False
+    if now - since < PENDING_WARN_AFTER:
+        return False
+    rd_common.attention_set(PENDING_ATTENTION, "mini engine config change pending for %dh - Colima "
+                            "restarts only when no container runs on the mini; stop them or run "
+                            "`rdocker clean`" % ((now - since) // 3600))
+    return True
