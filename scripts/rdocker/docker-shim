@@ -1,0 +1,4 @@
+#!/bin/bash
+# rdocker docker shim: routes `docker` to the Mac mini (or the laptop) - see rdocker.py / commands/docker.md.
+# Escape hatch: RDOCKER_BYPASS=1 docker ...  (or `rdocker use off`).
+exec /usr/bin/python3 -I "$HOME/.claude-dotfiles/scripts/rdocker/rdocker.py" shim "$@"

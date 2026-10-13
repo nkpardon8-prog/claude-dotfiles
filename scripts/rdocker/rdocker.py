@@ -285,47 +285,41 @@ def positionals(args, value_flags=None):
     return out
 
 
-def flag_values(args, names, until_positional=True):
-    """Values of the given flags (supports `--x v`, `--x=v`, `-xv`) before the image/command."""
+def skip_flag(args, i):
+    """Index after the flag at args[i] (and its value, if it takes one)."""
+    a = args[i]
+    if a.startswith("--"):
+        return i + 1 if ("=" in a or a in BOOL_FLAGS) else i + 2
+    if a in BOOL_FLAGS or set(a[1:]) <= SHORT_BOOL_CHARS or len(a) > 2:
+        return i + 1
+    return i + 2
+
+
+def flag_values(args, names):
+    """Values of the given flags (`--x v`, `--x=v`, `-xv`) before the first positional (the image)."""
     vals, i = [], 0
     while i < len(args):
         a = args[i]
-        if a == "--":
+        if a == "--" or a == "-" or not a.startswith("-"):
             break
-        if not a.startswith("-") or a == "-":
-            if until_positional:
-                break
-            i += 1
-            continue
-        hit = False
-        for n in names:
-            if a == n and i + 1 < len(args):
+        if a in names:
+            if i + 1 < len(args):
                 vals.append(args[i + 1])
-                i += 2
-                hit = True
-                break
-            if n.startswith("--") and a.startswith(n + "="):
-                vals.append(a[len(n) + 1:])
-                hit = True
-                break
-            if not n.startswith("--") and a.startswith(n) and len(a) > len(n):
-                vals.append(a[len(n):])
-                hit = True
-                break
-        if hit:
-            if not (vals and i < len(args) and args[i - 2:i] and args[i - 2] in names):
-                pass
-            if a in names:
+            i += 2
+            continue
+        m = next((n for n in names if n.startswith("--") and a.startswith(n + "=")), None)
+        if m is None:
+            m = next((n for n in names if not n.startswith("--") and a.startswith(n)
+                      and len(a) > len(n)), None)
+            if m is not None:
+                vals.append(a[len(m):])
+                i += 1
                 continue
+        else:
+            vals.append(a[len(m) + 1:])
             i += 1
             continue
-        # skip non-matching flag (+ its value if it takes one)
-        if a.startswith("--"):
-            i += 1 if ("=" in a or a in BOOL_FLAGS) else 2
-        elif a in BOOL_FLAGS or set(a[1:]) <= SHORT_BOOL_CHARS or len(a) > 2:
-            i += 1
-        else:
-            i += 2
+        i = skip_flag(args, i)
     return vals
 
 
@@ -614,14 +608,9 @@ def positionals_index(args):
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--" or not a.startswith("-") or a == "-":
+        if a == "--" or a == "-" or not a.startswith("-"):
             return i
-        if a.startswith("--"):
-            i += 1 if ("=" in a or a in BOOL_FLAGS) else 2
-        elif a in BOOL_FLAGS or set(a[1:]) <= SHORT_BOOL_CHARS or len(a) > 2:
-            i += 1
-        else:
-            i += 2
+        i = skip_flag(args, i)
     return i
 
 
@@ -788,17 +777,17 @@ grep -q 'rdocker: homebrew' ~/.zshenv 2>/dev/null || {
     'export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH' >> ~/.zshenv; }
 for f in colima docker; do brew list --formula $f >/dev/null 2>&1 || brew install $f; done
 if ! colima status >/dev/null 2>&1; then
-  colima start --vm-type vz --vz-rosetta --cpu {cpu} --memory {mem} --disk {disk}
+  colima start --vm-type vz --vz-rosetta --cpu @CPU@ --memory @MEM@ --disk @DISK@
 fi
 brew services list | grep -q '^colima.*started' || brew services start colima
 docker context use colima >/dev/null 2>&1 || true
-docker version --format 'mini docker server {{{{.Server.Version}}}} ({{{{.Server.Arch}}}})'
+docker version --format 'mini docker server {{.Server.Version}} ({{.Server.Arch}})'
 colima list
 """
 
 
 def setup_mini(cfg, cpu, mem, disk):
-    script = MINI_SETUP.format(cpu=cpu, mem=mem, disk=disk)
+    script = MINI_SETUP.replace("@CPU@", cpu).replace("@MEM@", mem).replace("@DISK@", disk)
     print("configuring %s over ssh (brew colima+docker, VM %s cpu / %sGB / %sGB disk)..."
           % (cfg["host"], cpu, mem, disk))
     p = subprocess.run(["ssh", "-o", "BatchMode=yes", cfg["host"], "zsh -s"], input=script,
