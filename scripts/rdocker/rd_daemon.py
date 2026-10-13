@@ -189,11 +189,12 @@ def desktop_idle(running_local, markers_alive, last_route_wall, now_wall, quiet_
     return last_route_wall is None or now_wall - last_route_wall >= quiet_s
 
 
-def list_local(cfg):
+def list_local(cfg, ctx_key="local_context"):
     """-> (set of (name, kind) on the laptop engine - every container, kind "container", and every
-    compose project, kind "compose" - , wall time the listing started), or (None, t) on failure."""
+    compose project, kind "compose" - , wall time the listing started), or (None, t) on failure.
+    ctx_key="remote_context" lists the mini the same way."""
     t = time.time()
-    rc, out, _ = rd_common.dk(cfg["local_context"], "ps", "-a", "--format",
+    rc, out, _ = rd_common.dk(cfg[ctx_key], "ps", "-a", "--format",
                               '{{.Names}}\t{{.Label "com.docker.compose.project"}}', timeout=15)
     if rc != 0:
         return None, t
@@ -216,6 +217,14 @@ def snapshot_local_pins(cfg):
     present, listed_at = list_local(cfg)
     if present is None:
         return False
+    # A name / compose project that also exists on the mini must NOT be pinned to the laptop: the
+    # pin would send `docker compose up` for a project moved to the mini back to the laptop (a
+    # second copy on stale data). Mini not listable -> no snapshot, so Desktop stays up for now.
+    on_mini, _ = list_local(cfg, "remote_context")
+    if on_mini is None:
+        rd_common.log("laptop pins snapshot skipped: mini not listable - keeping Docker Desktop up")
+        return False
+    present = present - on_mini
     try:
         added, dropped = rd_route.sync_fallback_pins(present, listed_at, replace=True)
     except (rd_common.ConfigWriteError, OSError) as e:

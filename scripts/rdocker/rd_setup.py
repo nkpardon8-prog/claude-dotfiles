@@ -555,6 +555,9 @@ def set_pin(name, pin, compose=False):
         pins = dict(cur["pins"])
         for key in ("containers", "compose_projects"):
             pins[key] = [n for n in pins[key] if pin or n != name]
+        if not pin:          # unpin also drops automatic (fallback) pins of that name
+            pins["fallback"] = [p for p in pins.get("fallback") or []
+                                if not (isinstance(p, dict) and p.get("name") == name)]
         if pin:
             key = "compose_projects" if compose else "containers"
             if name not in pins[key]:

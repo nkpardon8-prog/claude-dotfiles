@@ -203,14 +203,15 @@ class IdleQuit(unittest.TestCase):
         self.assertFalse(r.desktop_idle(False, 0, now + 3600, now, 900))   # clock stepped back
         self.assertFalse(r.desktop_idle(True, 0, None, now, 900))         # running container
 
-    def drive(self, ps_a=(0, "web\tproj\nsolo\t\n", "")):
+    def drive(self, ps_a=(0, "web\tproj\nsolo\t\n", ""), mini_ps_a=(0, "", "")):
         events = []
+        mini_ctx = rd_common.merge_cfg({})["remote_context"]
 
         def dk(ctx, *args, **kw):
             if args[:2] == ("ps", "-q"):
                 return 0, "", ""
             if args[:2] == ("ps", "-a"):
-                return ps_a
+                return mini_ps_a if ctx == mini_ctx else ps_a
             raise AssertionError(args)
 
         def run(cmd, **kw):
@@ -232,6 +233,34 @@ class IdleQuit(unittest.TestCase):
         self.assertEqual(len(events), 1)
         pinned = {(p["name"], p["kind"]) for p in events[0][1]}
         self.assertEqual(pinned, {("web", "container"), ("solo", "container"), ("proj", "compose")})
+
+    def test_snapshot_skips_names_also_on_the_mini(self):
+        # a compose project moved to the mini whose laptop backup container still carries the
+        # project label must not be pinned to the laptop (live bug: `compose up` went to the laptop)
+        quit_, events = self.drive(mini_ps_a=(0, "web\tproj\nother\t\n", ""))
+        self.assertTrue(quit_)
+        pinned = {(p["name"], p["kind"]) for p in events[0][1]}
+        self.assertEqual(pinned, {("solo", "container")})
+
+    def test_no_quit_when_mini_not_listable(self):
+        with open(self.cfgpath, "w") as f:
+            f.write("{}")
+        quit_, events = self.drive(mini_ps_a=(1, "", "unreachable"))
+        self.assertFalse(quit_)
+        self.assertEqual(events, [])
+
+    def test_unpin_drops_fallback_pins(self):
+        self.write_cfg({"containers": ["x"], "compose_projects": [],
+                        "fallback": [{"name": "x", "kind": "container", "ts": 1.0},
+                                     {"name": "david", "kind": "compose", "ts": 1.0},
+                                     {"name": "keep", "kind": "container", "ts": 1.0}]})
+        import rd_setup
+        with mock.patch("builtins.print"):
+            rd_setup.set_pin("david", False)
+            rd_setup.set_pin("x", False)
+        pins = self.pins()
+        self.assertEqual(pins.get("containers", []), [])
+        self.assertEqual([p["name"] for p in pins["fallback"]], ["keep"])
 
     def test_no_quit_when_snapshot_fails(self):
         with open(self.cfgpath, "w") as f:
