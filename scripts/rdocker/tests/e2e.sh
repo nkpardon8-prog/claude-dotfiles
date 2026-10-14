@@ -3,7 +3,8 @@
 # rde2e-<pid>-* and the EXIT trap removes ONLY the IDs this run recorded (plus their volumes).
 # Run: bash ~/.claude-dotfiles/scripts/rdocker/tests/e2e.sh      (exit 0 = all pass)
 #      E2E_DISRUPTIVE=1 bash .../e2e.sh   also kills the SHARED ssh master (affects every window)
-# bash 3.2 compatible (macOS /bin/bash).
+# bash 3.2 compatible (macOS /bin/bash). Mini-placement checks force RDOCKER_MODE=mini so a slow
+# link (throwaways go to the laptop by design) cannot fail them.
 set -u
 PASS=0; FAIL=0
 PFX="rde2e-$$-"
@@ -30,7 +31,7 @@ BUSY_PID=""
 track(){ # record a container ID (from run -d output or a cidfile) for cleanup
   [ -n "$1" ] && echo "$1" >> "$IDS"; }
 run_d(){ # docker run -d ... ; records the ID, prints it
-  local cid; cid=$(docker run -d "$@" 2>"$TMP/run.err"); local rc=$?
+  local cid; cid=$(RDOCKER_MODE=mini docker run -d "$@" 2>"$TMP/run.err"); local rc=$?
   cid=$(printf '%s' "$cid" | tail -1); track "$cid"; printf '%s' "$cid"; return $rc; }
 cleanup(){
   [ -n "$BUSY_PID" ] && kill "$BUSY_PID" 2>/dev/null
@@ -84,7 +85,7 @@ check "--network host runs on the laptop" "RDOCKER_VERBOSE=1 docker run --rm --n
 
 # --- two parallel ephemeral runs get distinct ports ---------------------------------------------
 for i in 1 2; do
-  ( docker run -d --name "${PFX}eph$i" -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=postgres postgres:17 \
+  ( RDOCKER_MODE=mini docker run -d --name "${PFX}eph$i" -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=postgres postgres:17 \
       > "$TMP/eph$i.cid" 2>/dev/null ) &
 done; wait
 for i in 1 2; do track "$(tail -1 "$TMP/eph$i.cid" 2>/dev/null)"; done
@@ -94,7 +95,7 @@ check "parallel ephemeral ports are distinct" "[ -n '$E1' ] && [ '$E1' != '$E2' 
 
 # --- 3 parallel databases -----------------------------------------------------------------------
 for i in 1 2 3; do
-  ( docker run -d --name "${PFX}par$i" -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 postgres:17 \
+  ( RDOCKER_MODE=mini docker run -d --name "${PFX}par$i" -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 postgres:17 \
       > "$TMP/par$i.cid" 2>/dev/null ) &
 done; wait
 for i in 1 2 3; do track "$(tail -1 "$TMP/par$i.cid" 2>/dev/null)"; done
@@ -125,10 +126,10 @@ check "removed containers' mirrors cleaned up ($P, $FIXED_PORT)" "! fwd_has '$P'
 
 # --- rdocker.keep survives a forced-critical clean ----------------------------------------------
 KEEP="${PFX}keep"; NOKEEP="${PFX}nokeep"
-docker run --cidfile "$TMP/keep.cid" --name "$KEEP" --label rdocker.keep=1 \
+RDOCKER_MODE=mini docker run --cidfile "$TMP/keep.cid" --name "$KEEP" --label rdocker.keep=1 \
   -e POSTGRES_PASSWORD=postgres postgres:17 true >/dev/null 2>&1
 track "$(cat "$TMP/keep.cid" 2>/dev/null)"
-docker run --cidfile "$TMP/nokeep.cid" --name "$NOKEEP" \
+RDOCKER_MODE=mini docker run --cidfile "$TMP/nokeep.cid" --name "$NOKEEP" \
   -e POSTGRES_PASSWORD=postgres postgres:17 true >/dev/null 2>&1
 track "$(cat "$TMP/nokeep.cid" 2>/dev/null)"
 KVOL=$(docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$KEEP" 2>/dev/null | awk '{print $1}')
