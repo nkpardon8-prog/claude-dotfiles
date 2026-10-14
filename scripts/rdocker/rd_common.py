@@ -6,6 +6,7 @@ import copy
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,10 @@ MINI_SOCK = os.path.join(STATE_DIR, "mini-docker.sock")   # laptop end of the mi
 LOG_PATH = os.path.join(STATE_DIR, "daemon.log")
 ROUTE_LOG = os.path.join(STATE_DIR, "route.log")
 JANITOR_PATH = os.path.join(STATE_DIR, "janitor.json")
+LAPTOP_JANITOR_PATH = os.path.join(STATE_DIR, "laptop_janitor.json")   # laptop janitor state
+# Stamped by the shim on every throwaway-shaped container it creates on the laptop engine; the laptop
+# janitor only ever looks at containers carrying it.
+PLACED_LABEL = "rdocker.placed=laptop-throwaway"
 DAEMON_PATH = os.path.join(STATE_DIR, "daemon.json")   # running daemon: pid, start time, code mtime
 # Laptop-engine activity (read by the daemon's Docker Desktop idle-quit): one file per shim process
 # that is running a docker command on the laptop engine (named by its pid), and a file whose mtime
@@ -51,6 +56,7 @@ DEFAULTS = {
     "local_socket": os.path.join(HOME, ".docker", "run", "docker.sock"),
     "mode": "auto",                    # auto | mini | local | off
     "max_rtt_ms": 300,                 # auto mode: /_ping round-trip slower -> new throwaways on laptop
+    "blip_wait_s": 30,                 # mini state unknown -> wait this long for it before refusing
     "local_idle_stop_min": 15,         # quit Docker Desktop after N idle minutes (0 = never)
     # laptop-resident (sticky local); fallback = [{"name", "kind": container|compose, "ts"}]
     "pins": {"containers": [], "compose_projects": [], "fallback": []},
@@ -58,7 +64,7 @@ DEFAULTS = {
     # Janitor (mini only). Labels: rdocker.keep=<anything but 0/false/no> exempts containers,
     # volumes and images; rdocker.ttl=<30m|2h|1d> hard lifetime.
     "janitor_interval_min": 10,
-    "idle_stop_hours": 12,             # running, no net traffic + no TCP connections this long -> stop
+    "idle_stop_hours": 3,              # running, no net traffic + no TCP connections this long -> stop
     "exited_rm_hours": 24,             # stopped this long -> rm -v (plain rm if it mounts a kept volume)
     "image_unused_days": 14,           # no container used the image for this long -> image rm
     "disk_high_pct": 80,               # VM disk above this -> rm unused images oldest-use first + cache
@@ -159,6 +165,89 @@ def write_state(path, data):
         save_json(path, data)
     except OSError as e:
         log("state write %s failed: %s" % (os.path.basename(path), e))
+
+
+# ---------------------------------------------------------------------------- janitor stop record
+# Both janitors record the containers they idle-stopped: state file "stopped_by_janitor" =
+# {container id: {"name", "ts" (wall), "idle_h"}}. The shim auto-starts such a container before an
+# exec/cp/attach/top/port/logs -f at it; a user `stop`/`rm` of the name clears its entry, so a
+# container the USER stopped is never auto-started.
+STOPPED_KEY = "stopped_by_janitor"
+STOPPED_KEEP_S = 7 * 86400      # entries older than this are dropped (the janitor rm's at 24 h)
+
+
+def janitor_state_path(target):
+    """'mini' -> janitor.json, 'local' -> laptop_janitor.json."""
+    return JANITOR_PATH if target == "mini" else LAPTOP_JANITOR_PATH
+
+
+def record_janitor_stops(path, stops, now=None):
+    """Merge {cid: {"name", "ts", "idle_h"}} into the record at `path`, dropping old entries."""
+    if not stops:
+        return
+    now = time.time() if now is None else now
+
+    def apply(st):
+        cur = st.get(STOPPED_KEY) if isinstance(st.get(STOPPED_KEY), dict) else {}
+        cur = {k: v for k, v in cur.items() if isinstance(v, dict)
+               and isinstance(v.get("ts"), (int, float)) and now - v["ts"] < STOPPED_KEEP_S}
+        cur.update(stops)
+        return {**st, STOPPED_KEY: cur}
+    update_state(path, apply)
+
+
+def janitor_stops(path):
+    rec = (load_json(path, {}) or {})
+    rec = rec.get(STOPPED_KEY) if isinstance(rec, dict) else None
+    return {k: v for k, v in rec.items() if isinstance(v, dict)} if isinstance(rec, dict) else {}
+
+
+_ID_PREFIX = re.compile(r"^[0-9a-f]{12,64}$")
+
+
+def stop_matches(cid, rec, ref):
+    """Does a user reference name this recorded container? Exact name, or an id prefix of >= 12 hex
+    chars (a short name must never hit another container's record by id prefix)."""
+    ref = (ref or "").lstrip("/")
+    return bool(ref) and (rec.get("name") == ref
+                          or (bool(_ID_PREFIX.match(ref)) and cid.startswith(ref)))
+
+
+def find_janitor_stop(stops, ref):
+    """-> (cid, rec) for `ref` in a stopped_by_janitor map: an exact name match wins over an id-prefix
+    match; None when neither."""
+    ref = (ref or "").lstrip("/")
+    by_name = [(c, r) for c, r in stops.items() if r.get("name") == ref]
+    if by_name:
+        return max(by_name, key=lambda cr: cr[1].get("ts") or 0)
+    return next(((c, r) for c, r in stops.items() if stop_matches(c, r, ref)), None)
+
+
+def drop_janitor_stops_ids(path, ids):
+    """A janitor pass saw these containers running: they are no longer janitor-stopped."""
+    ids = set(ids)
+    if not ids or not ids & set(janitor_stops(path)):
+        return
+
+    def apply(st):
+        rec = st.get(STOPPED_KEY) if isinstance(st.get(STOPPED_KEY), dict) else {}
+        return {**st, STOPPED_KEY: {c: r for c, r in rec.items() if c not in ids}}
+    update_state(path, apply)
+
+
+def clear_janitor_stops(refs, paths=None):
+    """Drop record entries named by `refs` (from both state files unless `paths`). No write unless
+    something matches. Never raises."""
+    for path in paths or (JANITOR_PATH, LAPTOP_JANITOR_PATH):
+        cur = janitor_stops(path)
+        if not any(stop_matches(c, r, ref) for c, r in cur.items() for ref in refs):
+            continue
+
+        def apply(st):
+            rec = st.get(STOPPED_KEY) if isinstance(st.get(STOPPED_KEY), dict) else {}
+            return {**st, STOPPED_KEY: {c: r for c, r in rec.items() if not (
+                isinstance(r, dict) and any(stop_matches(c, r, ref) for ref in refs))}}
+        update_state(path, apply)
 
 
 def update_state(path, fn):

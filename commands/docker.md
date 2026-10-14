@@ -42,7 +42,7 @@ mirrors their published ports, but only after the fact (event-driven, not before
 ## Database playbook (for agents)
 
 > **Label every DB you need to outlive a pause.** The mini janitor **stops any running container with
-> no traffic and no open connection for 12 h** (then removes it 24 h after it stops). A dev/test DB you
+> no traffic and no open connection for 3 h** (then removes it 24 h after it stops). A dev/test DB you
 > come back to tomorrow, or one that sits quiet while you wait on a user, will be gone unless it carries
 > a lifetime label:
 > - `--label rdocker.keep=1` **plus a named volume** (label the volume too) — never idle-stopped, never
@@ -50,7 +50,17 @@ mirrors their published ports, but only after the fact (event-driven, not before
 > - `--label rdocker.ttl=<30m|6h|2d>` — lives exactly that long (the idle rule does not apply), then is
 >   removed even if running; for throwaways that must survive a quiet spell.
 >
-> No label = the 12 h idle stop applies. See step 4.
+> No label = the 3 h idle stop applies. See step 4. A janitor-stopped container is **started again
+> automatically** the next time you `exec`/`cp`/`attach`/`top`/`port`/`logs -f` it (one stderr line
+> `rdocker: restarted <name> (the janitor stopped it after 3 h idle)`) — but it is removed 24 h after the
+> stop, so label anything you need longer. A `--rm` container is **deleted** by its idle stop and cannot
+> be restarted.
+>
+> **On the laptop too:** a throwaway container the shim puts on laptop Docker Desktop (fallback, slow
+> mini, `RDOCKER_MODE=local`, bind mount, `--network host`) gets `rdocker.placed=laptop-throwaway` and
+> the laptop janitor applies the same idle/24 h/ttl rules to it. To keep a laptop DB, give it
+> `--label rdocker.keep=1` **and a named volume** (that also makes it non-throwaway, so it is never
+> stamped), or `rdocker pin` it.
 
 1. **Publish on loopback, let Docker pick the port, read it back:**
    `docker run -d --name <proj>-<purpose>-<rand> -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 postgres:17`
@@ -68,7 +78,7 @@ mirrors their published ports, but only after the fact (event-driven, not before
    - keep across days (dev/preview DB with data you care about) → `--label rdocker.keep=1` **and a
      named volume** `-v <proj>-pgdata:/var/lib/postgresql/data`. Label the volume too:
      `docker volume create --label rdocker.keep=1 <proj>-pgdata`.
-   - no label → normal lifecycle below: **stopped after 12 h quiet**, removed 24 h later.
+   - no label → normal lifecycle below: **stopped after 3 h quiet**, removed 24 h later.
    Throwaway shape also matters when the mini is down: only throwaway containers fall back to the laptop.
 5. **Clean up what you start:** `docker rm -f -v <name>` (the `-v` drops its anonymous volume). Then the
    mirror disappears within seconds.
@@ -89,6 +99,15 @@ Commands that name an existing container / compose project are **located first**
 engines), then routed to wherever it actually lives. If its location cannot be established, the shim
 **refuses** (exit 1, `cannot tell where <name> lives ... - refusing to guess`) rather than run on the
 wrong engine.
+
+**Blip wait:** when that refusal is only because the mini's side is unknown (unreachable, engine silent,
+or its `inspect` did not answer), the shim first prints `rdocker: mini not answering - waiting up to
+30s...` and retries the lookup every ~3 s (a forced health probe each time, not counted toward the slow-
+link readings) for up to `blip_wait_s` (default 30, counted from the first lookup). Mini back -> the
+command routes normally and runs once; not back -> the same refusal as before. No wait when the ssh
+master is alive but the tunnel fails (only the forwarder can rebuild it), for `RDOCKER_MODE=mini`
+refusals, for the "not a throwaway container" refusal, or on paths that already work without the mini
+(pinned laptop containers, throwaway fallback).
 
 | Command shape | Goes to |
 |---|---|
@@ -152,13 +171,13 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 - Only host IPs `127.0.0.1`, `0.0.0.0`, `::` or none are mirrored; `[::1]:<p>:<cp>` (or a specific
   other IP) runs on the mini with **no** laptop mirror.
 
-## Automatic lifecycle (janitor, mini only, every 10 min, logged)
+## Automatic lifecycle (janitor, mini every 10 min, logged; laptop: see below)
 
 | Thing | Rule |
 |---|---|
 | protection | `rdocker.keep` with **any value except `0`/`false`/`no`** (empty counts as keep) protects containers, volumes and images. The label is re-checked by a fresh inspect **immediately before every destructive call**. No `container prune` is ever issued; volume prunes carry `--filter label!=rdocker.keep` |
 | running container with `rdocker.ttl` | removed (`rm -f`, plus `-v` unless a volume is keep-labelled) once running longer than the TTL; the idle rule below does not apply to it |
-| running container, idle (no keep / ttl label) | stopped after **12 h** idle. Idle = no eth traffic (`docker stats` NetIO unchanged) **and** no established TCP connection. Each sample adds at most 2 janitor intervals (sleep / outage never counts fully); unreadable samples hold the clock. Uses the mini's clock |
+| running container, idle (no keep / ttl label) | stopped after **3 h** idle (`idle_stop_hours`; was 12 h before 2026-10-14). Idle = no eth traffic (`docker stats` NetIO unchanged) **and** no established TCP connection. Each sample adds at most 2 janitor intervals (sleep / outage never counts fully); unreadable samples hold the clock. Uses the mini's clock |
 | stopped / exited container | removed after **24 h** with `rm -v` — or plain `rm` (volumes kept) if any of its volumes is keep-labelled |
 | named volume not used by any container | removed after **30 days** unused |
 | anonymous volumes not used by any container | pruned each run (keep-labelled exempt) |
@@ -169,6 +188,7 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | VM disk ≥ 80 % or mini free < 8 GB | remove unused images **oldest-unused first** (never in-use ones) until below, prune all build cache, log a WARNING |
 | VM disk ≥ 90 % | also remove every stopped non-keep container (keep-checked) + prune anonymous volumes |
 | failed action | logged; clocks are kept (not reset); `last_error` is written to `janitor.json` and raised as an attention item. The next clean full pass clears both |
+| idle stop record | every idle stop is recorded (`stopped_by_janitor` in `janitor.json` / `laptop_janitor.json`). A later `exec`/`cp`/`attach`/`top`/`port`/`logs -f` at that container starts it first — only if it is still stopped **and has not run since** (`State.StartedAt` not after the stop) — waits up to 15 s for Running (mirrors its ports on the mini), prints `rdocker: restarted <name> (the janitor stopped it after <N> h idle)` (or `rdocker: tried to restart <name> but it did not come up`), then runs the command once. Names match exactly; an id must be >= 12 hex chars. A user `docker stop`/`rm` of the name clears the record, and a janitor pass that sees the container running drops it; a container the user stopped (or started and then stopped any way) is never auto-started. A `--rm` container is deleted by its idle stop and cannot be restarted. `rdocker status` lists the last 24 h of janitor stops |
 | freed VM blocks | `fstrim` hands them back to macOS each run |
 
 Run it now: `rdocker clean [--dry-run] [--only PREFIX] [--force-critical]` (`--only` limits the
@@ -177,7 +197,25 @@ the disk-critical stopped-container removal now — keep-labelled still exempt).
 ran; 1 = it did not run: mini lock still held after 90 s, mini unreachable over ssh, or the mini's
 docker engine not answering (also with `--dry-run`). The background janitor just skips such a pass.
 Hard ceilings: VM disk 30 GB, VM RAM 8 GB, VM CPU 6 — the mini itself can never be filled or starved.
-Laptop logs (`daemon.log`, `route.log`) rotate at 2 MB (one `.1` generation, under a lock). Containers on the laptop are not janitored.
+Laptop logs (`daemon.log`, `route.log`) rotate at 2 MB (one `.1` generation, under a lock).
+
+### Laptop janitor (Docker Desktop)
+
+Desktop has no janitor of its own, so throwaways the shim placed there used to pile up. Now:
+- **Stamp:** every throwaway-shaped `run`/`create` (`--rm`, or no named volume and no `rdocker.keep`) the
+  shim sends to the laptop gets `--label rdocker.placed=laptop-throwaway`, whatever the reason (fallback,
+  slow mini, `RDOCKER_MODE=local`, bind mount, `--network host`). Non-throwaway containers and **compose
+  services are never stamped** (so the laptop janitor never touches compose projects).
+- **Scope:** only stamped containers (`ps -a --filter label=rdocker.placed=laptop-throwaway`). Immediately
+  before each stop/rm it re-checks: a manual pin (`rdocker pin`, or the container's compose project
+  pinned) or `rdocker.keep` on the container or any of its volumes → skipped.
+- **Rules (the mini's):** idle `idle_stop_hours` (3 h: no NetIO change and no established connection,
+  checked on the laptop engine) → stop; stopped 24 h → `rm -v` (anonymous volumes only); `rdocker.ttl`
+  honoured. Containers only: no volume/image/prune work.
+- Daemon job `laptop-janitor-run`, every `janitor_interval_min`, only while Desktop is running (never
+  starts it), whatever the mini's health. State `laptop_janitor.json`; `daemon.log` lines start with
+  `laptop janitor:`; a failure raises the attention item `laptop-janitor-error`.
+- Opt out: `--label rdocker.keep=1` + a named volume, or `rdocker pin <name>`.
 
 ## Health
 
@@ -241,7 +279,8 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 (version, round-trip) · mode → where commands go · docker shim first on PATH · background forwarder ·
 daemon process (pid, age, running the code on disk / reload pending / reload NOT picked up) · health
 reading age · janitor last run · janitor last error (`--` only if from about the latest pass) · mini
-disk · mini engine config (Colima restart pending) · fallback pins · mirrored ports (IPv6 mirror
+disk · mini engine config (Colima restart pending) · janitor-stopped in the last 24 h (mini + laptop,
+auto-restarted on use) · fallback pins · mirrored ports (IPv6 mirror
 pending) · port conflicts (busy on laptop) · laptop Docker Desktop · global docker context · (doctor)
 docker CLI flags vs `rd_args.SPECS` · one `WARN` row per attention item (with its age). Exit code: 1 only
 for `--` rows (real faults); `WARN` rows are for a human and keep it 0.
@@ -283,8 +322,8 @@ every threshold above is a key there).
      `rdocker doctor` and report it.
    - **exit 125 "port is already allocated"** / **port conflict** → a laptop process holds that port;
      free it or use an ephemeral port (`-p 127.0.0.1::<cport>`).
-   - **"cannot tell where ... lives"** → wait for the mini (`rdocker doctor`); don't force the laptop for
-     a container that may live on the mini.
+   - **"cannot tell where ... lives"** → the shim already waited up to `blip_wait_s` (30 s) for the mini;
+     check `rdocker doctor`; don't force the laptop for a container that may live on the mini.
    - **shim not first on PATH** → `~/.local/bin` must precede `/usr/local/bin` (it does via `~/.zshrc`).
 3. Never move pinned data, delete `rdocker.keep` things, or resize the mini VM without the user.
 

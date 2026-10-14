@@ -105,6 +105,13 @@ class ConfigPersistence(InHome):
         self.assertEqual(out["range"], [20000, 29999])
         self.assertTrue(out["defaults_untouched"])
 
+    def test_idle_stop_default_is_3h_and_not_migrated(self):
+        r = rdmods.r
+        self.assertEqual(r.merge_cfg({})["idle_stop_hours"], 3)
+        # a stored value is a deliberate user setting (defaults are never persisted): kept as is
+        self.assertEqual(r.merge_cfg({"idle_stop_hours": 12})["idle_stop_hours"], 12)
+        self.assertNotIn("idle_stop_hours", r.cfg_diff(r.merge_cfg({})))
+
     def test_rtt_migration_150_to_300_runs_once(self):
         out = self.run_py("""
             os.makedirs(r.CFG_DIR)

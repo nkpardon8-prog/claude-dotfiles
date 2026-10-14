@@ -1,4 +1,5 @@
-"""rdocker rd_janitor: mini janitor (idle/exited containers, volumes, images, disk), engine kick, apply_when_idle.
+"""rdocker rd_janitor: mini janitor (idle/exited containers, volumes, images, disk), laptop janitor
+(shim-fallback containers only), engine kick, apply_when_idle.
 
 Split out of rdocker.py; see rdocker.py for the overview.
 """
@@ -11,6 +12,7 @@ import time
 from contextlib import contextmanager
 
 import rd_common
+import rd_tunnel
 
 
 
@@ -58,9 +60,10 @@ def has_keep(info):
     return keep_label(labels)
 
 
-def has_connections(cfg, cid):
-    """True if the container has an ESTABLISHED TCP connection; None if it can't be read."""
-    rc, out, _ = rd_common.dk(cfg["remote_context"], "exec", cid, "cat", "/proc/net/tcp", "/proc/net/tcp6",
+def has_connections(cfg, ctx, cid):
+    """True if the container has an ESTABLISHED TCP connection; None if it can't be read. ctx is the
+    engine that holds it (the laptop pass must never exec into the mini)."""
+    rc, out, _ = rd_common.dk(ctx, "exec", cid, "cat", "/proc/net/tcp", "/proc/net/tcp6",
                     timeout=15)
     if rc != 0 and not out:
         return None
@@ -71,12 +74,12 @@ def has_connections(cfg, cid):
     return False
 
 
-def vm_now(ctx):
-    """The mini engine's clock (container timestamps are VM time); laptop time if unreadable."""
+def vm_now(ctx, what="mini"):
+    """The engine's clock (container timestamps are VM time); laptop time if unreadable."""
     rc, out, err = rd_common.dk(ctx, "info", "--format", "{{.SystemTime}}", timeout=20)
     t = parse_ts(out.strip()) if rc == 0 else 0.0
     if not t:
-        rd_common.log("janitor: cannot read mini SystemTime (%s); using laptop clock"
+        rd_common.log("janitor: cannot read " + what + " SystemTime (%s); using laptop clock"
             % (out.strip() or err.strip())[:100])
         return time.time()
     return t
@@ -127,9 +130,11 @@ class MiniEngineDown(Exception):
 class JanitorRun:
     """One janitor pass: the act log, failure bookkeeping and the keep-checked destructive calls."""
 
-    def __init__(self, cfg, dry, lock=None):
-        self.cfg, self.ctx, self.dry, self.lock = cfg, cfg["remote_context"], dry, lock
+    def __init__(self, cfg, dry, lock=None, ctx=None, tag="janitor"):
+        self.cfg, self.ctx, self.dry, self.lock = cfg, ctx or cfg["remote_context"], dry, lock
+        self.tag = tag                      # daemon.log prefix ("laptop janitor" for the laptop pass)
         self.acts, self.last_error = [], None
+        self.stopped = {}                   # idle stops this pass -> state "stopped_by_janitor"
 
     def act(self, desc, *cmd, record=True):
         """-> (ok, stderr). A failure is logged and (record=True) kept as janitor.json last_error."""
@@ -139,7 +144,7 @@ class JanitorRun:
         if self.lock is not None:
             self.lock.heartbeat()          # raises MiniLockLost: stop before touching anything
         rc, _, err = rd_common.dk(self.ctx, *cmd, timeout=120)
-        rd_common.log("janitor: %s%s" % (desc, "" if rc == 0 else " FAILED: " + err.strip()[:150]))
+        rd_common.log("%s: %s%s" % (self.tag, desc, "" if rc == 0 else " FAILED: " + err.strip()[:150]))
         if rc != 0 and record:
             self.last_error = {"ts": time.time(), "action": desc, "err": err.strip()[:300]}
         return rc == 0, err
@@ -153,7 +158,7 @@ class JanitorRun:
             data = None
         info = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else None
         if info is None or has_keep(info):
-            rd_common.log("janitor: skip %s %s (%s)" % (kind, ident[:24], "kept" if info else "not found"))
+            rd_common.log("%s: skip %s %s (%s)" % (self.tag, kind, ident[:24], "kept" if info else "not found"))
             return None
         if kind == "container":
             # A container whose data volume is keep-labelled is kept too (compose-made DBs carry the
@@ -166,8 +171,8 @@ class JanitorRun:
                     vd = None
                 vinfo = vd[0] if isinstance(vd, list) and vd and isinstance(vd[0], dict) else None
                 if vinfo is None or has_keep(vinfo):
-                    rd_common.log("janitor: skip container %s (volume %s %s)"
-                                  % (ident[:24], v[:24], "kept" if vinfo else "unreadable"))
+                    rd_common.log("%s: skip container %s (volume %s %s)"
+                                  % (self.tag, ident[:24], v[:24], "kept" if vinfo else "unreadable"))
                     return None
         return info
 
@@ -185,10 +190,13 @@ class JanitorRun:
         return self.act("rm %s (%s)%s" % (name, why, "" if with_v or not vols else " keeping volumes"),
                         *cmd)[0]
 
-    def stop_container(self, cid, name, why):
+    def stop_container(self, cid, name, why, idle_h=None):
         if not self.destructive_ok("container", cid):
             return False
-        return self.act("stop %s (%s)" % (name, why), "stop", cid)[0]
+        ok = self.act("stop %s (%s)" % (name, why), "stop", cid)[0]
+        if ok and not self.dry and idle_h is not None:
+            self.stopped[cid] = {"name": name, "ts": time.time(), "idle_h": idle_h}
+        return ok
 
     def rm_image(self, iid, why):
         """Remove an unused image without -f: one `image rm <repo:tag>` per tag (a bare id is refused
@@ -224,6 +232,11 @@ class JanitorRun:
         if not self.destructive_ok("volume", name):
             return False
         return self.act("rm volume %s (%s)" % (name, why), "volume", "rm", name)[0]
+
+
+def running_ids(infos):
+    """Ids this pass saw running (inspected before any stop): their janitor-stop records are stale."""
+    return {c["Id"] for c in infos if (c.get("State") or {}).get("Running")}
 
 
 def janitor_containers(J, infos, complete, idle, now, only):
@@ -266,7 +279,7 @@ def janitor_containers(J, infos, complete, idle, now, only):
             idle.pop(cid, None)
             continue
         netio = stats.get(cid[:12]) if stats is not None else None
-        conn = has_connections(cfg, cid)
+        conn = has_connections(cfg, J.ctx, cid)
         prev = idle.get(cid)
         if prev is None:
             idle[cid] = {"idle_s": 0.0, "last_sample": now, "netio": netio}
@@ -284,7 +297,8 @@ def janitor_containers(J, infos, complete, idle, now, only):
         idle[cid] = {"idle_s": idle_s, "last_sample": now,
                      "netio": netio if netio is not None else prev.get("netio")}
         if idle_now and idle_s > limit:
-            if J.stop_container(cid, name, "no traffic for %sh" % cfg["idle_stop_hours"]):
+            if J.stop_container(cid, name, "no traffic for %sh" % cfg["idle_stop_hours"],
+                                idle_h=cfg["idle_stop_hours"]):
                 idle.pop(cid, None)
     if complete:
         idle = {k: v for k, v in idle.items() if k in seen}
@@ -404,6 +418,9 @@ def janitor_pass(J, only, force_critical):
     else:
         updates["idle"], stopped = janitor_containers(J, infos, complete, state.get("idle") or {},
                                                       now, only)
+        if not dry:
+            rd_common.drop_janitor_stops_ids(rd_common.JANITOR_PATH, running_ids(infos))
+            rd_common.record_janitor_stops(rd_common.JANITOR_PATH, J.stopped)
         if complete:   # volume/image use is only known when every container was inspected
             updates["volume_unused_since"] = janitor_volumes(
                 J, infos, state.get("volume_unused_since") or {}, now, only)
@@ -484,6 +501,85 @@ def janitor_pass(J, only, force_critical):
     return J.acts
 
 
+
+
+# ---------------------------------------------------------------------------- janitor (laptop)
+#
+# Docker Desktop has no janitor of its own, so throwaway containers the shim put there (fallback while
+# the mini was out or slow, RDOCKER_MODE=local, bind mounts, --network host) piled up and ate the
+# laptop RAM rdocker exists to save. Scope: ONLY containers carrying rd_common.PLACED_LABEL, which the
+# shim stamps on every throwaway-shaped run/create it sends to the laptop (compose is never stamped).
+# Rules = the mini's container rules (janitor_containers): idle_stop_hours of unchanged NetIO and no
+# ESTABLISHED TCP connection -> stop; stopped > exited_rm_hours -> rm -v (anonymous volumes only);
+# rdocker.ttl replaces the idle rule. Immediately before every stop/rm (LaptopJanitorRun.fresh): a
+# keep label on the container or any of its volumes, a manual pin (pins.containers) or a manually
+# pinned compose project (by its compose label), read from config.json at that moment -> skip.
+# Container-only: no volume/image/disk/prune work and no mini lock. Own state file
+# (laptop_janitor.json) and attention key; daemon.log lines start "laptop janitor:".
+
+LAPTOP_ATTENTION = "laptop-janitor-error"
+
+
+def manual_pin_reason(cfg, info):
+    """Why a container must not be touched because the user pinned it (or its compose project)."""
+    pins = cfg.get("pins") or {}
+    name = (info.get("Name") or "").lstrip("/")
+    if name and name in (pins.get("containers") or []):
+        return "pinned to the laptop"
+    proj = ((info.get("Config") or {}).get("Labels") or {}).get("com.docker.compose.project")
+    if proj and proj in (pins.get("compose_projects") or []):
+        return "compose project %s pinned to the laptop" % proj
+    return None
+
+
+class LaptopJanitorRun(JanitorRun):
+    """JanitorRun on the laptop engine; its fresh() also re-reads the manual pins."""
+
+    def __init__(self, cfg):
+        super().__init__(cfg, False, ctx=cfg["local_context"], tag="laptop janitor")
+
+    def fresh(self, kind, ident):
+        info = super().fresh(kind, ident)
+        if info is None or kind != "container":
+            return info
+        why = manual_pin_reason(rd_common.load_cfg(), info)     # a pin added mid-pass counts
+        if why:
+            rd_common.log("laptop janitor: skip container %s (%s)" % (ident[:24], why))
+            return None
+        return info
+
+
+def laptop_janitor(cfg):
+    """One laptop pass (daemon job `laptop-janitor-run`). Does nothing while Docker Desktop is down.
+    -> list of actions taken."""
+    if not rd_tunnel.local_engine_up(cfg):
+        return []
+    J = LaptopJanitorRun(cfg)
+    rc, out, err = rd_common.dk(J.ctx, "ps", "-aq", "--no-trunc", "--filter",
+                                "label=" + rd_common.PLACED_LABEL, timeout=20)
+    if rc != 0:
+        rd_common.log("laptop janitor: skipped - laptop engine not answering (%s)"
+                      % ((err or out).strip()[-160:] or "rc=%s" % rc))
+        return []
+    state = rd_common.load_json(rd_common.LAPTOP_JANITOR_PATH, {})
+    state = state if isinstance(state, dict) else {}
+    infos, complete = inspect_all(J.ctx, out.split())
+    if infos is None:
+        rd_common.log("laptop janitor: container inspect unreadable - skipped, clocks kept")
+        return []
+    now = vm_now(J.ctx, "laptop engine")
+    idle, _ = janitor_containers(J, infos, complete, state.get("idle") or {}, now, None)
+    rd_common.update_state(rd_common.LAPTOP_JANITOR_PATH, lambda st0: {
+        **{k: v for k, v in st0.items() if k != "last_error"}, "idle": idle, "last_run": now,
+        **({"last_error": J.last_error} if J.last_error else {})})
+    rd_common.drop_janitor_stops_ids(rd_common.LAPTOP_JANITOR_PATH, running_ids(infos))
+    rd_common.record_janitor_stops(rd_common.LAPTOP_JANITOR_PATH, J.stopped)
+    if J.last_error:
+        rd_common.attention_set(LAPTOP_ATTENTION, "laptop janitor: %s failed: %s" % (
+            J.last_error.get("action", "?"), str(J.last_error.get("err", ""))[:120]))
+    else:
+        rd_common.attention_clear(LAPTOP_ATTENTION)
+    return J.acts
 
 
 # ---------------------------------------------------------------------------- mini lock

@@ -33,6 +33,12 @@ Janitor knobs (per context):
                             ("referenced in multiple repositories"); rm_err makes every rm fail
   "system_time": "<RFC3339>"   `info --format {{.SystemTime}}`
   "fail": ["stop", "image rm", ...]   these subcommands exit 1 ("boom")
+  containers.<name>."running": false   a stopped container; `stop`/`kill`/`start` flip it (persisted;
+                            `start` also sets StartedAt to now)
+  containers.<name>."no_start": true    `start` exits 0 but the container never reports Running
+  `ps --filter label=k=v` filters fixture "Labels" and `run -l/--label` labels
+  "fail_once": ["container inspect", ...]   the FIRST such call per context fails like a dropped
+                            link (no "No such" -> "could not tell"); later calls behave normally
   "old_buildx": true        `builder prune --max-used-space` fails with "unknown flag"
 """
 import fcntl
@@ -125,8 +131,10 @@ def do_run(eng, sub, args):
         cid = "cid%04d" % st["n"]
         ports = net_ports(pubs, st)
         fail = sub == "run" and eng.get("alloc_fail_once") and not st.get("alloc_failed")
+        labels = dict(lv.partition("=")[::2] for lv in opts.get("-l", []) + opts.get("--label", []))
         st["containers"][cid] = {"Id": cid, "Name": "/" + (opts.get("--name") or [cid])[-1],
-                                 "running": sub == "run" and not fail, "ports": ports}
+                                 "running": sub == "run" and not fail, "ports": ports,
+                                 "labels": labels}
         if fail:
             st["alloc_failed"] = True
     for path in opts.get("--cidfile", []):
@@ -153,10 +161,17 @@ def do_run(eng, sub, args):
     return 0
 
 
+def fixture_running(st, k, c):
+    """A fixture container's running state: its "running" knob, overridden by a later stop/start."""
+    cid = c.get("Id", "id-" + k)
+    return (st.get("run_override") or {}).get(cid, c.get("running", True))
+
+
 def find(st, containers, n):
     for c in st["containers"].values():
         if n in (c["Id"], c["Name"].lstrip("/")):
             return {"Id": c["Id"], "Name": c["Name"],
+                    "Config": {"Labels": c.get("labels") or {}},
                     "State": {"Running": c["running"],
                               "Status": "running" if c["running"] else "created"},
                     "NetworkSettings": {"Ports": c["ports"]}}
@@ -168,9 +183,10 @@ def find(st, containers, n):
                 "Image": c.get("Image", "sha256:img-" + n),
                 "Config": {"Labels": c.get("Labels") or {}},
                 "Mounts": c.get("Mounts") or [],
-                "State": {"Running": c.get("running", True),
-                          "Status": "running" if c.get("running", True) else "exited",
-                          "StartedAt": c.get("StartedAt", "0001-01-01T00:00:00Z"),
+                "State": {"Running": fixture_running(st, n, c),
+                          "Status": "running" if fixture_running(st, n, c) else "exited",
+                          "StartedAt": (st.get("started_override") or {}).get(
+                              c.get("Id", "id-" + n), c.get("StartedAt", "0001-01-01T00:00:00Z")),
                           "FinishedAt": c.get("FinishedAt", "0001-01-01T00:00:00Z")},
                 "NetworkSettings": {"Ports": c.get("Ports") or {}}}
     return None
@@ -272,6 +288,17 @@ def main(argv):
     if argv[0] in fail or " ".join(argv[:2]) in fail:
         sys.stderr.write("Error response from daemon: boom\n")
         return 1
+    once = [k for k in eng.get("fail_once") or [] if k in (argv[0], " ".join(argv[:2]))]
+    if once:
+        with state() as st:
+            done = st.setdefault("failed_once", [])
+            key = "%s:%s" % (ctx, once[0])
+            first = key not in done
+            if first:
+                done.append(key)
+        if first:
+            sys.stderr.write("error during connect: context deadline exceeded\n")
+            return 1
     if argv[0] == "info":
         print(eng.get("system_time", "x") if "--format" in argv else "x")
         return 0
@@ -308,9 +335,26 @@ def main(argv):
             gone = set(st.get("images_removed") or [])
         print("\n".join(i for i in eng.get("images") or {} if i not in gone))
         return 0
+    if argv[0] in ("stop", "start", "kill"):
+        with state() as st:
+            ov = st.setdefault("run_override", {})
+            sov = st.setdefault("started_override", {})
+            for n in [a for a in argv[1:] if not a.startswith("-")]:
+                for k, c in containers.items():
+                    if n in (k, c.get("Id", "id-" + k)):
+                        ov[c.get("Id", "id-" + k)] = argv[0] == "start" and not c.get("no_start")
+                        if argv[0] == "start":
+                            sov[c.get("Id", "id-" + k)] = time.strftime("%Y-%m-%dT%H:%M:%S.5Z",
+                                                                         time.gmtime())
+                for c in st["containers"].values():
+                    if n in (c["Id"], c["Name"].lstrip("/")):
+                        c["running"] = argv[0] == "start"
+        return 0
     if argv[0] == "stats":
+        with state() as st:
+            live = {k for k, c in containers.items() if fixture_running(st, k, c)}
         for k, c in containers.items():
-            if c.get("running", True):
+            if k in live:
                 print("%s\t%s" % (c.get("Id", "id-" + k)[:12], c.get("netio", "0B / 0B")))
         return 0
     if argv[0] == "exec":
@@ -333,7 +377,7 @@ def main(argv):
         names, i, fmt = [], 0, False
         while i < len(rest):
             if rest[i] in ("--format", "-f", "--type"):
-                fmt = fmt or rest[i] != "--type"
+                fmt = fmt or (rest[i + 1] if rest[i] != "--type" else False)
                 i += 2
                 continue
             if not rest[i].startswith("-"):
@@ -346,6 +390,8 @@ def main(argv):
                 if d is None:
                     sys.stderr.write("Error: No such container: %s\n" % n)
                     rc = 1
+                elif fmt and "Running" in fmt:
+                    print("true" if d["State"]["Running"] else "false")
                 elif fmt:
                     print(d["Id"])
                 else:
@@ -362,15 +408,19 @@ def main(argv):
                     print(cid)
                 return 0
         all_ = bool({"-a", "-aq", "--all"} & set(argv))
-        for k, c in containers.items():
-            if c.get("running", True) or all_:
-                print(c.get("Id", "id-" + k))
-        if all_:
-            for g in eng.get("ghosts") or []:
-                print(g)
+        lab = [f.split("=", 1)[1].partition("=") for f in flt if f.startswith("label=")]
+
+        def labelled(labels):
+            return all(labels.get(k) == v for k, _, v in lab)
         with state() as st:
+            for k, c in containers.items():
+                if (fixture_running(st, k, c) or all_) and labelled(c.get("Labels") or {}):
+                    print(c.get("Id", "id-" + k))
+            if all_ and not lab:
+                for g in eng.get("ghosts") or []:
+                    print(g)
             for c in st["containers"].values():
-                if c["running"] or all_:
+                if (c["running"] or all_) and labelled(c.get("labels") or {}):
                     print(c["Id"])
         return 0
     if argv[0] in ("run", "create"):

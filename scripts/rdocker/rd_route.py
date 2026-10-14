@@ -2,6 +2,7 @@
 
 Split out of rdocker.py; see rdocker.py for the overview.
 """
+import json
 import os
 import re
 import signal
@@ -16,18 +17,22 @@ import rd_args
 import rd_tunnel
 
 
-def exists_on(cfg, ctx_key, name):
+LOCATE_TIMEOUT = 12      # seconds per engine lookup in locate()
+
+
+def exists_on(cfg, ctx_key, name, timeout=LOCATE_TIMEOUT):
     """Tri-state: True (exists), False (engine answered "No such ..."), None (could not tell)."""
-    rc, out, err = rd_common.dk(cfg[ctx_key], "container", "inspect", "--format", "{{.Id}}", name, timeout=12)
+    rc, out, err = rd_common.dk(cfg[ctx_key], "container", "inspect", "--format", "{{.Id}}", name,
+                                timeout=timeout)
     if rc == 0:
         return True
     return False if "no such" in (err + out).lower() else None
 
 
-def project_on(cfg, ctx_key, project):
+def project_on(cfg, ctx_key, project, timeout=LOCATE_TIMEOUT):
     """Tri-state: does compose project `project` have any container (any state) on this engine?"""
     rc, out, _ = rd_common.dk(cfg[ctx_key], "ps", "-a", "-q", "--filter",
-                    "label=com.docker.compose.project=" + project, timeout=12)
+                    "label=com.docker.compose.project=" + project, timeout=timeout)
     if rc != 0:
         return None
     return bool(out.strip())
@@ -44,6 +49,14 @@ INVOKED = {"invoked": False, "rc": None}
 
 class Refuse(Exception):
     """The shim cannot route safely; the message is printed and the shim exits 1 without docker."""
+
+
+class MiniUnknown(Refuse):
+    """locate() refused only because the mini's side is unknown (unreachable / engine silent / an
+    inspect that did not answer). route_targeted waits out a short blip (retry_locate) first."""
+
+
+BLIP_POLL = 3.0          # seconds between locate retries while waiting out a blip
 
 
 def exec_real(args):
@@ -608,12 +621,13 @@ class Engines:
         return "local", why
 
 
-def locate(eng, names, probe, hinted, readonly, what):
+def locate(eng, names, probe, hinted, readonly, what, deadline=None):
     """-> {name: 'mini'|'local'|'none'}; raises Refuse when any target's location is unknown.
 
     The mini is asked only over a usable tunnel. The laptop is asked when Docker Desktop is up; if it
     is down and a pin/fallback pin names a target, Desktop is started first. Otherwise a down laptop
-    engine counts as "not there". Pins are hints only: the actual location wins - except that a
+    engine counts as "not there". deadline (monotonic, blip-wait retries): each lookup's timeout is
+    capped by the time left (at least 1 s). Pins are hints only: the actual location wins - except that a
     pinned name found on the laptop routes there even when the mini cannot answer (unpinned laptop
     finds stay refused for mutating commands: genuinely ambiguous)."""
     cfg = eng.cfg
@@ -622,12 +636,17 @@ def locate(eng, names, probe, hinted, readonly, what):
     if not eng.laptop_up() and any(n in hinted for n in names):
         laptop_known = eng.start_laptop()
     owners = {}
+
+    def tmo():
+        if deadline is None:
+            return LOCATE_TIMEOUT
+        return max(1.0, min(LOCATE_TIMEOUT, deadline - time.monotonic()))
     for n in names:
-        m = probe(cfg, "remote_context", n) if mini_ok else None
+        m = probe(cfg, "remote_context", n, timeout=tmo()) if mini_ok else None
         if not laptop_known:
             lap = None
         else:
-            lap = probe(cfg, "local_context", n) if eng.laptop_up() else False
+            lap = probe(cfg, "local_context", n, timeout=tmo()) if eng.laptop_up() else False
         if m is True and lap is True:
             owners[n] = "local" if n in hinted else "mini"
         elif m is True:
@@ -640,9 +659,9 @@ def locate(eng, names, probe, hinted, readonly, what):
             owners[n] = "local"
         elif lap is True:       # mini could not answer, no pin: it may hold a same-named one
             if not readonly:
-                raise Refuse("cannot tell where %s %s lives (%s; found on the laptop, but the mini "
-                             "may hold one with the same name) - refusing to guess"
-                             % (what, n, mini_why if not mini_ok else "mini did not answer"))
+                raise MiniUnknown("cannot tell where %s %s lives (%s; found on the laptop, but the "
+                                  "mini may hold one with the same name) - refusing to guess"
+                                  % (what, n, mini_why if not mini_ok else "mini did not answer"))
             rd_common.say("%s %s found only on the laptop (%s) - showing the laptop's"
                 % (what, n, mini_why if not mini_ok else "mini did not answer"))
             owners[n] = "local"
@@ -651,8 +670,60 @@ def locate(eng, names, probe, hinted, readonly, what):
         else:
             why = (mini_why if not mini_ok else "mini did not answer") if m is None \
                 else "laptop engine did not answer"
-            raise Refuse("cannot tell where %s %s lives (%s) - refusing to guess" % (what, n, why))
+            raise (MiniUnknown if m is None else Refuse)(
+                "cannot tell where %s %s lives (%s) - refusing to guess" % (what, n, why))
     return owners
+
+
+def stuck_master(cfg, h):
+    """-> (stuck, pid): the failure is tunnel-class with a live (or busy) ssh master. The shim never
+    rebuilds a live master (only the daemon does, after >= 45 s of persistent failures), so waiting
+    a few seconds cannot help."""
+    if not isinstance(h, dict) or h.get("failure") != "tunnel":
+        return False, None
+    state, pid = rd_tunnel.master_state(cfg)
+    return state != "down", pid
+
+
+def retry_locate(eng, first, run, t0):
+    """Wait out a short blip: locate() raised MiniUnknown. Every BLIP_POLL s, drop the Engines
+    caches, force a health probe (not counted in rtt_hist) and re-run locate, until it no longer
+    raises or blip_wait_s - counted from t0, the first locate's start, so inspect timeouts count -
+    is spent; then re-raise the last refusal unchanged. No wait at all when blip_wait_s <= 0 or the
+    master is stuck (stuck_master). Runs before docker: the command still executes at most once."""
+    cfg = eng.cfg
+    wait = cfg.get("blip_wait_s") or 0
+    if isinstance(wait, bool) or not isinstance(wait, (int, float)) or wait <= 0:
+        raise first
+    stuck, start_pid = stuck_master(cfg, rd_common.load_json(rd_common.HEALTH_PATH, None))
+    if stuck:
+        raise first
+    deadline = t0 + wait
+    if deadline - time.monotonic() <= 0:
+        raise first
+    rd_common.say("mini not answering - waiting up to %ss..." % ("%g" % wait))
+    last = first
+    while True:
+        # a round = a sleep, a health probe (up to PROBE_TIMEOUT) and the lookups: not worth starting
+        # when less than one probe timeout would be left after the sleep
+        left = deadline - time.monotonic()
+        if left - min(BLIP_POLL, left) < rd_tunnel.PROBE_TIMEOUT:
+            raise last
+        time.sleep(BLIP_POLL)
+        eng._mini = eng._laptop = None
+        h = rd_tunnel.health(cfg, force=True, count_rtt=False)
+        stuck, pid = stuck_master(cfg, h)
+        if stuck and pid == start_pid:
+            raise last
+        if deadline - time.monotonic() <= 0:
+            raise last
+        try:
+            owners = run(deadline)
+        except MiniUnknown as e:
+            last = e
+            continue
+        rd_common.log("mini answered again after a blip - routing normally", rd_common.ROUTE_LOG)
+        return owners
 
 
 def route_targeted(eng, sub, names, hinted, readonly, what):
@@ -664,8 +735,13 @@ def route_targeted(eng, sub, names, hinted, readonly, what):
         if not ok:
             raise Refuse("RDOCKER_MODE=mini but %s - not falling back to the laptop" % why)
         return "mini", "mode=mini"
-    owners = locate(eng, names, exists_on if what == "container" else project_on,
-                    hinted, readonly, what)
+    probe = exists_on if what == "container" else project_on
+    t0 = time.monotonic()
+    try:
+        owners = locate(eng, names, probe, hinted, readonly, what)
+    except MiniUnknown as e:
+        owners = retry_locate(eng, e, lambda dl: locate(eng, names, probe, hinted, readonly, what,
+                                                        deadline=dl), t0)
     found = {o for o in owners.values() if o != "none"}
     if not found:
         return eng.default()            # nowhere: docker prints its normal "No such" error
@@ -726,6 +802,101 @@ def route_creating(eng, need_local, not_throwaway, hinted_local):
     return "local", why, True
 
 
+# Targeted commands that need the container RUNNING: one the janitor idle-stopped is started first.
+AUTO_START = {"exec", "cp", "attach", "top", "port"}      # + `logs -f/--follow`
+AUTO_START_WAIT = 15      # seconds to wait for an auto-started container to report Running
+
+
+def wants_running(sub, args):
+    if sub in AUTO_START:
+        return True
+    if sub == "logs":
+        p = rd_args.parse_sub("logs", args)
+        return bool(p and p.flag("--follow"))
+    return False
+
+
+def is_running(cfg, ctx_key, ref):
+    """True / False / None (could not tell)."""
+    rc, out, _ = rd_common.dk(cfg[ctx_key], "container", "inspect", "--format", "{{.State.Running}}",
+                              ref, timeout=12)
+    if rc != 0:
+        return None
+    return out.strip() == "true"
+
+
+def inspect_one(cfg, ctx_key, ref):
+    """-> the container's inspect record, or None (gone / unreadable)."""
+    rc, out, _ = rd_common.dk(cfg[ctx_key], "container", "inspect", ref, timeout=12)
+    try:
+        data = json.loads(out) if rc == 0 else None
+    except ValueError:
+        return None
+    return data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else None
+
+
+def restart_janitor_stopped(cfg, target, ref):
+    """`ref` (a name or id) is about to be exec'd/cp'd/... on `target`. Auto-start it first ONLY when
+    the janitor idle-stopped it (stopped_by_janitor record) AND it has not run since: not running, and
+    State.StartedAt not later than the record's ts. A container the user started after the janitor
+    stop and that then stopped any other way (kill, compose stop, Desktop UI, --context, exited by
+    itself) is the user's business and is never started; its stale record is dropped. Waits up to
+    AUTO_START_WAIT s for Running; prints `restarted ...` only when it got there, else `tried to
+    restart ... but it did not come up`. No docker call unless the record names `ref`. Runs before
+    the user's command, which still runs exactly once afterwards (also when this fails)."""
+    import rd_janitor               # lazily: only when a record names the target
+    path = rd_common.janitor_state_path(target)
+    hit = rd_common.find_janitor_stop(rd_common.janitor_stops(path), ref)
+    if hit is None:
+        return
+    cid, rec = hit
+    ctx_key = "remote_context" if target == "mini" else "local_context"
+    info = inspect_one(cfg, ctx_key, cid)
+    if info is None:
+        rd_common.drop_janitor_stops_ids(path, [cid])     # gone (a --rm one went with its stop)
+        return
+    state = info.get("State") or {}
+    started = rd_janitor.parse_ts(state.get("StartedAt"))
+    ts = rec.get("ts")
+    if state.get("Running") or not started or not isinstance(ts, (int, float)) or started > ts:
+        rd_common.drop_janitor_stops_ids(path, [cid])     # running, or has run since: not ours
+        return
+    name = rec.get("name") or ref
+    rd_common.drop_janitor_stops_ids(path, [cid])         # one attempt per janitor stop
+    rc, _, err = rd_common.dk(cfg[ctx_key], "start", cid, timeout=60)
+    if rc != 0:
+        rd_common.say("could not restart %s (the janitor stopped it): %s"
+                      % (name, (err.strip().splitlines() or ["rc=%s" % rc])[-1][:200]))
+        rd_common.log("auto-start %s on %s failed rc=%s" % (name, target, rc), rd_common.ROUTE_LOG)
+        return
+    deadline = time.monotonic() + AUTO_START_WAIT
+    up = is_running(cfg, ctx_key, cid)
+    while not up and time.monotonic() < deadline:
+        time.sleep(0.5)
+        up = is_running(cfg, ctx_key, cid)
+    if not up:
+        rd_common.say("tried to restart %s but it did not come up" % name)
+        rd_common.log("auto-start %s on %s: not running after %ds" % (name, target, AUTO_START_WAIT),
+                      rd_common.ROUTE_LOG)
+        return
+    if target == "mini":
+        post_check(cfg, [cid], [])      # mirror its published ports before the command uses them
+    idle_h = rec.get("idle_h")
+    rd_common.say("restarted %s (the janitor stopped it after %s h idle)"
+                  % (name, ("%g" % idle_h) if isinstance(idle_h, (int, float)) else "?"))
+    rd_common.log("auto-start %s on %s (janitor-stopped)" % (name, target), rd_common.ROUTE_LOG)
+
+
+def stamp_laptop_throwaway(rest, args, sub):
+    """-> rest with `--label rdocker.placed=laptop-throwaway` inserted after the run/create
+    subcommand, for a throwaway-shaped container (rd_args.run_not_throwaway is None) - the laptop
+    janitor's only scope. Kept / named-volume containers are never stamped."""
+    if rd_args.run_not_throwaway(args, sub):
+        return rest
+    prefix = rest[:len(rest) - len(args)]
+    return prefix + ["--label", rd_common.PLACED_LABEL] + list(args)
+
+
 def ps_tabular(args):
     """Does `docker ps <args>` print a table with a header line? Not with -q/--quiet (also inside a
     short cluster like -aq) nor with a --format other than `table ...` (json, Go templates)."""
@@ -782,6 +953,10 @@ def shim(argv):
     if container_cmd and sub == "inspect" and group is None:
         typ = rd_args.parse_sub("inspect", args).last("--type")
         container_cmd = typ is None or typ == "container"
+
+    if container_cmd and sub in ("stop", "rm"):
+        # an explicit user stop/rm: never auto-start these names later
+        rd_common.clear_janitor_stops(rd_args.container_targets(sub, args))
 
     eng = Engines(cfg, mode)
     compose_sub = compose_project = None
@@ -865,6 +1040,9 @@ def shim(argv):
     except rd_args.ComposeConfigError as e:
         compose_config_exit(e)
 
+    if target == "local" and container_cmd and sub in rd_args.RUN_LIKE:
+        rest = stamp_laptop_throwaway(rest, args, sub)
+
     if target == "local" and os.environ.get("RDOCKER_VERBOSE"):
         rd_common.say("running locally: " + why)
     ctx = cfg["remote_context"] if target == "mini" else cfg["local_context"]
@@ -873,6 +1051,12 @@ def shim(argv):
         if not rd_tunnel.ensure_local_running(cfg):
             sys.exit(1)
         mark_local_active()
+    if container_cmd and wants_running(sub, args):
+        for ref in rd_args.container_targets(sub, args)[:1]:
+            try:
+                restart_janitor_stopped(cfg, target, ref)
+            except Exception as e:      # a helper failure must never block the user's command
+                rd_common.log("auto-start check for %s failed: %r" % (ref, e), rd_common.ROUTE_LOG)
 
     base = [rd_common.real_docker(), "--context", ctx] + gflags
 

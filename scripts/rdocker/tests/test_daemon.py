@@ -55,19 +55,22 @@ class Schedule(unittest.TestCase):
         self.assertFalse(r.due(100, 600, 699))
         self.assertTrue(r.due(100, 600, 700))
 
-    def run_loop(self, jumps, max_sleeps=200):
+    def run_loop(self, jumps, max_sleeps=200, desktop_up=False, job="janitor-run", healthy_mini=True):
         ft = FakeTime(max_sleeps, jumps)
         spawned = []
         self.pruned = 0
         self.drift_checks = []
         cfg = rd_common.merge_cfg({"mode": "auto"})
-        healthy = {"reachable": True, "docker_ok": True}
+        healthy = {"reachable": True, "docker_ok": True} if healthy_mini else \
+            {"reachable": False, "docker_ok": False}
         with mock.patch.object(rd_daemon, "time", ft), \
                 mock.patch.object(rd_common, "load_cfg", lambda: dict(cfg)), \
                 mock.patch.object(rd_common, "log", lambda *a, **k: None), \
                 mock.patch.object(rd_tunnel, "refresh_health", lambda c, **k: healthy), \
                 mock.patch.object(rd_tunnel, "resolve_target", lambda c: ("mini", "ok")), \
                 mock.patch.object(rd_tunnel, "sync_forwards", lambda c, **k: (True, None)), \
+                mock.patch.object(rd_tunnel, "local_engine_up", lambda c: desktop_up), \
+                mock.patch.object(rd_daemon, "tailscale_up", lambda: False), \
                 mock.patch.object(rd_daemon, "set_global_context", lambda c, t: None), \
                 mock.patch.object(rd_daemon, "idle_step", lambda *a: False), \
                 mock.patch.object(rd_daemon, "prune_fallback_pins", lambda c: self.count_prune()), \
@@ -79,7 +82,7 @@ class Schedule(unittest.TestCase):
                                   lambda name, jobs: spawned.append((name, ft.mono))):
             with self.assertRaises(StopLoop):
                 rd_daemon.daemon()
-        return [round(t - 1000) for n, t in spawned if n == "janitor-run"]
+        return [round(t - 1000) for n, t in spawned if n == job]
 
     def count_prune(self):
         self.pruned += 1
@@ -87,6 +90,15 @@ class Schedule(unittest.TestCase):
     def test_loop_prunes_fallback_pins_every_tick(self):
         self.run_loop({}, max_sleeps=4)
         self.assertEqual(self.pruned, 5)
+
+    def test_laptop_janitor_spawned_only_while_desktop_up(self):
+        self.assertEqual(self.run_loop({}, job="laptop-janitor-run"), [])
+        up = self.run_loop({}, desktop_up=True, job="laptop-janitor-run")
+        self.assertEqual(up, [60, 660, 1260, 1860, 2460])      # same schedule as the mini janitor
+        # independent of the mini's health (spawned outside the healthy-only block)
+        self.assertEqual(self.run_loop({}, desktop_up=True, job="laptop-janitor-run",
+                                       healthy_mini=False), up)
+        self.assertEqual(self.run_loop({}, desktop_up=True, healthy_mini=False), [])
 
     def test_flag_drift_checked_at_start_then_daily(self):
         self.run_loop({}, max_sleeps=4)

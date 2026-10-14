@@ -287,7 +287,8 @@ def status(cfg, fix=False):
     row(loaded, "background forwarder (launchd %s)" % rd_common.PLIST_LABEL)
     now = time.time()
     for ok, label, detail in (daemon_rows(now) + [health_age_row(prior, now)]
-                              + janitor_rows(cfg, now) + [fallback_pins_row(cfg)]):
+                              + janitor_rows(cfg, now) + [janitor_stopped_row(now),
+                                                          fallback_pins_row(cfg)]):
         row(ok, label, detail)
     if fix and h.get("docker_ok"):
         rd_tunnel.sync_forwards(cfg, verbose=True)
@@ -388,6 +389,20 @@ def janitor_rows(cfg, now):
     return rows
 
 
+def janitor_stopped_row(now, window=86400):
+    """Containers either janitor idle-stopped in the last 24 h (auto-started again on exec/cp/...)."""
+    items = []
+    for target, where_ in (("mini", "mini"), ("local", "laptop")):
+        for cid, r in rd_common.janitor_stops(rd_common.janitor_state_path(target)).items():
+            ts = r.get("ts")
+            if isinstance(ts, (int, float)) and 0 <= now - ts < window:
+                items.append((ts, "%s (%s, %dh ago)" % (r.get("name") or cid[:12], where_,
+                                                         (now - ts) // 3600)))
+    return (True, "janitor-stopped in the last 24 h (restarted on exec/cp/attach/top/port/logs -f "
+                  "unless run since; --rm ones were deleted by the stop)",
+            ", ".join(t for _, t in sorted(items, reverse=True)) or "none")
+
+
 def fallback_pins_row(cfg):
     fb = [p for p in cfg["pins"].get("fallback") or [] if isinstance(p, dict) and p.get("name")]
     return (True, "fallback pins (made on the laptop while the mini was out)",
@@ -405,11 +420,12 @@ def where(cfg, name):
 
 # ---------------------------------------------------------------------------- daemon jobs
 
-JOB_LOCKS = {"janitor-run": "janitor.lock", "kick": "kick.lock"}
+JOB_LOCKS = {"janitor-run": "janitor.lock", "kick": "kick.lock",
+             "laptop-janitor-run": "laptop-janitor.lock"}
 
 
 def run_job(name, cfg, args=()):
-    """Daemon-spawned job (`rdocker janitor-run` / `rdocker kick`). Takes a NON-blocking flock on its
+    """Daemon-spawned job (`rdocker janitor-run` / `laptop-janitor-run` / `kick`). Takes a NON-blocking flock on its
     own lock file: if a previous run still holds it, exit 0 quietly instead of piling up."""
     rd_common.ensure_dirs()
     with open(os.path.join(rd_common.STATE_DIR, JOB_LOCKS[name]), "a+") as fh:
@@ -420,6 +436,8 @@ def run_job(name, cfg, args=()):
         try:
             if name == "kick":
                 rd_janitor.mini_engine_kick(cfg, restart_ok="--restart-ok" in args)
+            elif name == "laptop-janitor-run":
+                rd_janitor.laptop_janitor(cfg)
             else:
                 rd_janitor.janitor(cfg)
                 rd_janitor.apply_when_idle(cfg)
@@ -478,6 +496,7 @@ def build_parser():
     s.add_argument("disk", nargs="?", default="30", help="GB")
     sp.add_parser("daemon", help="(launchd) event-driven forwarder")
     sp.add_parser("janitor-run")                      # internal, spawned by the daemon
+    sp.add_parser("laptop-janitor-run")               # internal, spawned by the daemon
     s = sp.add_parser("kick")                         # internal, spawned by the daemon
     s.add_argument("--restart-ok", action="store_true")
     return p

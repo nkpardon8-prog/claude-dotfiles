@@ -384,6 +384,7 @@ def daemon():
     last = {"tick": None, "ts_kick": None, "engine_kick": None, "flag_check": None,
             # first janitor JANITOR_FIRST_DELAY after start, whatever the interval
             "janitor": start - rd_common.load_cfg()["janitor_interval_min"] * 60 + JANITOR_FIRST_DELAY}
+    last["laptop_janitor"] = last["janitor"]       # same schedule, own clock
     while True:
         cfg = rd_common.load_cfg()
         now = time.monotonic()
@@ -425,6 +426,12 @@ def daemon():
                     last["janitor"] = now
                     spawn_job("janitor-run", jobs)
             prune_fallback_pins(cfg)
+            # laptop janitor (stamped throwaways only): whatever the mini's health, only while
+            # Docker Desktop runs - never starts it
+            if due(last["laptop_janitor"], cfg["janitor_interval_min"] * 60, now) \
+                    and rd_tunnel.local_engine_up(cfg):
+                last["laptop_janitor"] = now
+                spawn_job("laptop-janitor-run", jobs)
             idle_step(cfg, target, st, now, time.time())
             p = ev["p"]
             if p is not None and p.poll() is not None:     # watcher died: back off, then restart

@@ -281,10 +281,12 @@ def slow_streak(h, max_rtt):
         return False
 
 
-def refresh_health(cfg, reuse_fresh=False, stale=None):
+def refresh_health(cfg, reuse_fresh=False, stale=None, count_rtt=True):
     """Probe under HEALTH_LOCK and write health.json (with the RTT history). If another process is
     already probing, wait up to HEALTH_WAIT for it; with reuse_fresh, use its reading when it is
-    fresh. stale = the daemon's StaleMaster tracker (only the daemon may rebuild a live master)."""
+    fresh. stale = the daemon's StaleMaster tracker (only the daemon may rebuild a live master).
+    count_rtt=False (the shim's blip-wait probes, seconds apart): the reading is saved but rtt_hist
+    is carried over unchanged, so rapid probes never make a "consecutive slow readings" streak."""
     fh = None
     try:
         rd_common.ensure_dirs()
@@ -299,7 +301,12 @@ def refresh_health(cfg, reuse_fresh=False, stale=None):
             if health_fresh(h):
                 return h
         h = probe_health(cfg, stale) if stale is not None else probe_health(cfg)
-        h = with_rtt_hist(h, rd_common.load_json(rd_common.HEALTH_PATH, None))
+        prev = rd_common.load_json(rd_common.HEALTH_PATH, None)
+        if count_rtt:
+            h = with_rtt_hist(h, prev)
+        else:
+            hist = prev.get("rtt_hist") if isinstance(prev, dict) else None
+            h = dict(h, rtt_hist=hist if isinstance(hist, list) else [])
         rd_common.write_state(rd_common.HEALTH_PATH, h)
         return h
     finally:
@@ -307,12 +314,12 @@ def refresh_health(cfg, reuse_fresh=False, stale=None):
             fh.close()      # closing releases the flock
 
 
-def health(cfg, force=False):
+def health(cfg, force=False, count_rtt=True):
     if not force:
         h = rd_common.load_json(rd_common.HEALTH_PATH, None)
         if health_fresh(h):
             return h
-    return refresh_health(cfg, reuse_fresh=not force)
+    return refresh_health(cfg, reuse_fresh=not force, count_rtt=count_rtt)
 
 
 def resolve_target(cfg):

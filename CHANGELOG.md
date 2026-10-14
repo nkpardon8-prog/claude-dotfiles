@@ -2,6 +2,37 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-14 - rdocker: blip wait, 3 h idle stop, laptop janitor, auto-restart
+
+- Blip wait: a targeted command (`exec`, `rm`, `stop`, compose `down`, ...) that would be refused with
+  "cannot tell where ... lives" only because the mini's side is unknown (unreachable, engine silent, or
+  an inspect that did not answer) now retries the lookup every ~3 s for up to `blip_wait_s` (new config,
+  default 30 s, counted from the first lookup), printing one stderr line `rdocker: mini not answering -
+  waiting up to 30s...`. Back in time -> routed normally, run once; not back -> the same refusal. No
+  wait when the ssh master is alive but the tunnel fails, for `RDOCKER_MODE=mini`, for the
+  non-throwaway create refusal, or on paths that already work. Blip probes do not enter `rtt_hist`.
+  Live trigger: four refusals during short link drops on 2026-10-14.
+- Laptop janitor: Docker Desktop had none, so throwaways the shim put there (11 running, one for 14 h)
+  piled up. The shim now stamps every throwaway-shaped `run`/`create` it sends to the laptop with
+  `rdocker.placed=laptop-throwaway` (compose is never stamped); a new daemon job `laptop-janitor-run`
+  (every 10 min, only while Desktop runs) applies the mini's container rules to stamped containers only:
+  idle 3 h -> stop, stopped 24 h -> `rm -v`, `rdocker.ttl` honoured. Manual pins, pinned compose projects,
+  and keep labels on the container or its volumes are re-checked right before every stop/rm. Own state
+  file `laptop_janitor.json`, attention key `laptop-janitor-error`, log prefix `laptop janitor:`.
+  `has_connections` now takes the engine context (it always exec'd into the mini).
+- Auto-restart: both janitors record their idle stops (`stopped_by_janitor`). An `exec`, `cp`, `attach`,
+  `top`, `port` or `logs -f` at such a container starts it first - only while it has not run since the
+  stop (`State.StartedAt` not after the record) - waits <= 15 s, prints `rdocker: restarted <name> (the
+  janitor stopped it after <N> h idle)` or `rdocker: tried to restart <name> but it did not come up`,
+  then runs the command once. Records match exact names or >= 12-hex-char ids. A user `stop`/`rm`, or a
+  janitor pass seeing the container running, clears the record; user-stopped containers are never
+  started. A `--rm` container is deleted by its idle stop and cannot be restarted. `rdocker status`
+  lists janitor stops from the last 24 h. The blip wait never starts a retry round with less than one
+  probe timeout (4 s) left, and caps each lookup's timeout at the time left.
+- Janitor: unlabelled idle containers on the mini are stopped after 3 h instead of 12 h
+  (`idle_stop_hours` default). A stored value is a deliberate user setting and is kept; keep labels,
+  keep-labelled volumes and `rdocker.ttl` behave as before; stopped -> removed after 24 h is unchanged.
+
 ## 2026-10-13 - rdocker live fixes
 
 - Janitor: a container whose data volume is keep-labelled is kept whole (never idle-stopped or removed); compose-made DBs carry the label on the volume, not the container.

@@ -73,7 +73,8 @@ class ShimCase(unittest.TestCase):
         h.update(health or {})
         with open(os.path.join(self.state, "health.json"), "w") as f:
             json.dump(h, f)
-        c = {"local_socket": self.local_sock, "migrated": ["rtt300"]}
+        # blip_wait_s 0: refusal tests must not sit out the 30 s blip wait (BlipWait sets its own)
+        c = {"local_socket": self.local_sock, "migrated": ["rtt300"], "blip_wait_s": 0}
         if pins:
             c["pins"] = pins
         c.update(cfg or {})
@@ -384,6 +385,149 @@ class AttentionNotice(ShimCase):
         self.assertNotIn("needs attention", quiet.stderr)
         self.assertEqual((first.returncode, first.stdout), (quiet.returncode, quiet.stdout))
         self.assertNotIn("attention", first.stdout)
+
+
+
+class PingServer:
+    """Stands in for the forwarded mini engine socket: answers `GET /_ping` with 200 OK (and
+    /version) when `answer` is true, else closes every connection at once (a fast probe failure).
+    Connections that send nothing (unix_alive checks) are just closed."""
+
+    def __init__(self, path, answer=True):
+        import threading
+        self.answer, self.pings = answer, 0
+        self.sock = listen(path)
+        self.sock.settimeout(0.2)
+        self.stop = False
+        self.t = threading.Thread(target=self.loop, daemon=True)
+        self.t.start()
+
+    def loop(self):
+        while not self.stop:
+            try:
+                c, _ = self.sock.accept()
+            except OSError:
+                continue
+            try:
+                c.settimeout(1.0)
+                try:
+                    req = c.recv(4096)
+                except OSError:
+                    req = b""
+                if req and self.answer:
+                    if b"/_ping" in req:
+                        self.pings += 1
+                        body = b"OK"
+                    else:
+                        body = b'{"Version": "28.5.1"}'
+                    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
+            finally:
+                c.close()
+
+    def close(self):
+        self.stop = True
+        self.t.join(2)
+        self.sock.close()
+
+
+class BlipWait(ShimCase):
+    """A targeted command refused only because the mini's side is unknown first waits out a short
+    blip: locate is retried (forced health probe each time) for up to blip_wait_s."""
+    UNREACHABLE = {"reachable": False, "docker_ok": False, "rtt_ms": None, "failure": "tunnel"}
+
+    def server(self, answer=True):
+        srv = PingServer(os.path.join(self.state, "mini-docker.sock"), answer)
+        self.addCleanup(srv.close)
+        return srv
+
+    def timed(self, *argv, **kw):
+        t = time.monotonic()
+        p = self.shim(*argv, **kw)
+        return p, time.monotonic() - t
+
+    def health_file(self):
+        with open(os.path.join(self.state, "health.json")) as f:
+            return json.load(f)
+
+    def test_inspect_unanswered_once_then_runs_on_mini_once(self):
+        # live 2026-10-14 14:22: `refuse exec cannot tell where container wlpg-... lives (mini did
+        # not answer)` during a short link drop
+        hist = [[time.time() - 15, 20.0], [time.time(), 21.0]]
+        self.scenario(mini={"containers": {"X": {}}, "fail_once": ["container inspect"]},
+                      health={"rtt_hist": hist}, cfg={"blip_wait_s": 30}, tunnel=False)
+        srv = self.server()
+        p, took = self.timed("exec", "X", "ls")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("rdocker: mini not answering - waiting up to 30s...", p.stderr)
+        self.assertEqual([c for c, _ in self.calls("exec")], ["mini"])     # exactly once
+        self.assertLess(took, 20)
+        self.assertGreaterEqual(srv.pings, 1)                             # a forced probe ran
+        self.assertEqual(self.health_file()["rtt_hist"], hist)            # blip probes not counted
+
+    def test_mini_comes_back_after_unreachable(self):
+        self.scenario(mini={"containers": {"X": {}}}, health=self.UNREACHABLE,
+                      cfg={"blip_wait_s": 30}, tunnel=False)
+        self.server()
+        p, took = self.timed("stop", "X")
+        self.addCleanup(wait_bg_sync)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.calls("stop"), [("mini", ["stop", "X"])])
+        self.assertLess(took, 20)
+
+    def test_never_back_refuses_by_the_deadline(self):
+        self.scenario(mini={"containers": {"X": {}}}, health=self.UNREACHABLE,
+                      cfg={"blip_wait_s": 8}, tunnel=False)
+        self.server(answer=False)
+        p, took = self.timed("rm", "-f", "X")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("waiting up to 8s", p.stderr)
+        self.assertIn("cannot tell where container X lives (mini unreachable)", p.stderr)
+        self.assertEqual(self.calls("rm"), [])
+        self.assertGreaterEqual(took, 3)          # one retry round ran
+        self.assertLess(took, 8 + 2)              # and nothing ran past the budget
+
+    def test_no_round_started_with_less_than_a_probe_timeout_left(self):
+        self.scenario(mini={"containers": {"X": {}}}, health=self.UNREACHABLE,
+                      cfg={"blip_wait_s": 2}, tunnel=False)
+        self.server(answer=False)
+        p, took = self.timed("rm", "-f", "X")
+        self.assertEqual(p.returncode, 1)
+        self.assertLess(took, 2)
+
+    def test_stuck_tunnel_class_does_not_wait(self):
+        # live master (`ssh -O check` answers) + tunnel-class failure: only the daemon can rebuild it
+        with open(os.path.join(self.bin, "ssh"), "w") as f:
+            f.write('#!/bin/sh\necho "Master running (pid=4242)" >&2\nexit 0\n')
+        self.scenario(mini={"containers": {"X": {}}},
+                      health={"reachable": True, "docker_ok": False, "rtt_ms": None,
+                              "failure": "tunnel"}, cfg={"blip_wait_s": 30})
+        p, took = self.timed("rm", "-f", "X")
+        self.assertEqual(p.returncode, 1)
+        self.assertNotIn("waiting", p.stderr)
+        self.assertIn("cannot tell where container X lives", p.stderr)
+        self.assertLess(took, 10)
+
+    def test_paths_that_do_not_need_the_mini_do_not_wait(self):
+        pin = {"fallback": [{"name": "vit-db", "kind": "container", "ts": time.time()}]}
+        cases = (
+            ("throwaway run falls back", None, ("run", "--rm", "alpine", "true"), 0),
+            ("fallback-pinned exec", pin, ("exec", "vit-db", "ls"), 0),
+            ("non-throwaway create refusal", None, ("run", "-d", "-v", "data:/d", "postgres"), 1),
+            ("mode=mini refusal", None, ("exec", "X", "ls"), 1),
+        )
+        for i, (label, pins, argv, rc) in enumerate(cases):
+            with self.subTest(label):
+                for f in (self.log, os.path.join(self.state, "health.json")):
+                    if os.path.exists(f):
+                        os.unlink(f)
+                self.scenario(laptop={"containers": {"vit-db": {}}}, health=self.UNREACHABLE,
+                              pins=pins, cfg={"blip_wait_s": 30}, tunnel=False,
+                              laptop_up=i == 0)      # the Desktop socket stays up across cases
+                env = {"RDOCKER_MODE": "mini"} if label.startswith("mode=mini") else None
+                p, took = self.timed(*argv, env=env)
+                self.assertEqual(p.returncode, rc, p.stderr)
+                self.assertNotIn("waiting", p.stderr)
+                self.assertLess(took, 10)
 
 
 if __name__ == "__main__":

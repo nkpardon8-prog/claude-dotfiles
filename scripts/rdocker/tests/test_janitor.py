@@ -197,7 +197,7 @@ class IdleClock(JanitorCase):
         self.assertEqual(e["idle_s"], 0)
 
     def test_ttl_label_replaces_idle_rule(self):
-        """A quiet DB with rdocker.ttl=2d is not idle-stopped at 12 h; it lives until its TTL."""
+        """A quiet DB with rdocker.ttl=2d is not idle-stopped at 3 h; it lives until its TTL."""
         self.mini({"a": running("ida", netio="1kB / 1kB", Labels={"rdocker.ttl": "2d"})})
         self.ledger({"idle": {"ida": {"idle_s": 13 * HOUR, "last_sample": NOW - INTERVAL,
                                       "netio": "1kB / 1kB"}}})
@@ -212,6 +212,20 @@ class IdleClock(JanitorCase):
         self.clean()
         self.assertIn(["stop", "ida"], self.argvs())
         self.assertNotIn("ida", self.jstate()["idle"])
+
+    def test_idle_just_past_3h_default_stops(self):
+        self.mini({"a": running("ida", netio="1kB / 1kB")})
+        self.ledger({"idle": {"ida": {"idle_s": 3 * HOUR - INTERVAL + 1,
+                                      "last_sample": NOW - INTERVAL, "netio": "1kB / 1kB"}}})
+        self.clean()
+        self.assertIn(["stop", "ida"], self.argvs())
+
+    def test_idle_under_3h_keeps_running(self):
+        self.mini({"a": running("ida", netio="1kB / 1kB")})
+        self.ledger({"idle": {"ida": {"idle_s": 2 * HOUR, "last_sample": NOW - INTERVAL,
+                                      "netio": "1kB / 1kB"}}})
+        self.clean()
+        self.assertNotIn(["stop", "ida"], self.argvs())
 
     def test_failed_stop_keeps_clock_and_records_error(self):
         self.mini({"a": running("ida", netio="1kB / 1kB")}, fail=["stop"])
