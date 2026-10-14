@@ -155,6 +155,20 @@ class JanitorRun:
         if info is None or has_keep(info):
             rd_common.log("janitor: skip %s %s (%s)" % (kind, ident[:24], "kept" if info else "not found"))
             return None
+        if kind == "container":
+            # A container whose data volume is keep-labelled is kept too (compose-made DBs carry the
+            # label on the volume, not the container). Unreadable volume -> kept (fail safe).
+            for v in volumes_of(info):
+                rc, out, _ = rd_common.dk(self.ctx, "volume", "inspect", v, timeout=20)
+                try:
+                    vd = json.loads(out) if rc == 0 else None
+                except ValueError:
+                    vd = None
+                vinfo = vd[0] if isinstance(vd, list) and vd and isinstance(vd[0], dict) else None
+                if vinfo is None or has_keep(vinfo):
+                    rd_common.log("janitor: skip container %s (volume %s %s)"
+                                  % (ident[:24], v[:24], "kept" if vinfo else "unreadable"))
+                    return None
         return info
 
     def destructive_ok(self, kind, ident):

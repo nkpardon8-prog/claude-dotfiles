@@ -102,9 +102,16 @@ class KeepProtection(JanitorCase):
                   volumes={"data": {"Labels": {"rdocker.keep": "yes"}}, "scratch": {}})
         self.clean("--only", "t-")
         d = self.destructive()
-        self.assertIn(["rm", "iduser"], d)
+        # a container whose data volume is keep-labelled is kept whole (compose DBs label the volume)
+        self.assertFalse([a for a in d if "iduser" in a], d)
         self.assertIn(["rm", "-v", "idother"], d)
-        self.assertNotIn(["rm", "-v", "iduser"], d)
+
+    def test_kept_volume_blocks_idle_stop(self):
+        self.mini({"t-db": running("iddb", Mounts=[{"Type": "volume", "Name": "dbdata"}])},
+                  volumes={"dbdata": {"Labels": {"rdocker.keep": "1"}}})
+        self.ledger({"containers": {"iddb": {"idle_s": 13 * HOUR, "last_sample": NOW - 60}}})
+        self.clean("--only", "t-")
+        self.assertFalse([a for a in self.destructive() if "iddb" in a], self.destructive())
 
     def test_keep_value_semantics(self):
         self.assertTrue(r.keep_label({"rdocker.keep": ""}))

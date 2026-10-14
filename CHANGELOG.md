@@ -4,6 +4,7 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 
 ## 2026-10-13 - rdocker live fixes
 
+- Janitor: a container whose data volume is keep-labelled is kept whole (never idle-stopped or removed); compose-made DBs carry the label on the volume, not the container.
 - Desktop-quit pin snapshot now skips names / compose projects that also exist on the mini (a moved
   project's laptop backup still carried its compose label, so `docker compose` for it was pinned back
   to the laptop); no snapshot (Desktop stays up) when the mini can't be listed. `rdocker unpin` now
