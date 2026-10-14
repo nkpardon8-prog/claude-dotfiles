@@ -75,6 +75,11 @@ mirrors their published ports, but only after the fact (event-driven, not before
 6. **Speed:** each query pays the laptop↔mini round-trip (~1-5 ms at home; ~75 ms measured away from
    home, 50 sequential queries = 3.6 s). Prefer one `exec -i ... < file` over many small round-trips; for a
    query-heavy suite away from home, run it with `RDOCKER_MODE=local`.
+   **Chatty write-heavy app backends** (a sync worker or ORM writing row-by-row, anything with a
+   statement/lease timeout) can time out against the mini away from home: 100 round-trips x ~0.2 s
+   = 20 s per batch. Start that DB on the laptop from the beginning:
+   `RDOCKER_MODE=local docker run -d --name <x> --label rdocker.ttl=2d -p 127.0.0.1::5432 ...`
+   (seen 2026-10-13: an OD sync worker lost its lease on a mini pg17; fine on the laptop).
 7. Other engines (MySQL, Redis, Mongo, MinIO, ClamAV, ...) behave the same. `docker build`
    (incl. `--platform linux/amd64`) runs on the mini.
 
