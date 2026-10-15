@@ -122,8 +122,11 @@ the connection).
   the repo root, the command's cwd and the deps (lockfile / `--prefix`) dirs - not at any other depth; one
   that resolves outside the worktree (e.g. a symlink to `~/secrets/.env`) is skipped with a
   `rrun: not copying ...` notice. Written 0600 and **deleted when the run ends** (leftovers of a killed run are deleted at the start of the next). Nothing else ignored travels:
-  `node_modules` is installed on the mini (`npm ci` when the lockfile / `package.json` / `.npmrc` / node
-  version changes; `prisma generate` when the schema changes) and kept between runs.
+  `node_modules` is installed on the mini, only in the nearest lockfile dir at or above the cwd plus any
+  `--prefix` dir (not the repo root unless the command runs there), and kept between runs: `npm ci` when
+  the lockfile / `package.json` / `.npmrc` / node version changes; on a schema change (`*.prisma` in
+  `./prisma` or the dir its postinstall's `--schema` names) the package's own postinstall reruns if it
+  runs `prisma generate`, else `npx prisma generate`; no schema found -> nothing to generate.
 - **Env:** laptop vars matching `rr_env_pass` (`CI`, `DEBUG`, `TEST_DB_*`, `VITEST_*`, `RR_NODE`) pass
   through; add more with `-e NAME=VALUE`, or `-e NAME` to forward that variable's value from rrun's own
   environment (keeps it out of argv; unset → skipped with a notice). Values travel on stdin, never in `ps`. The remote command sees

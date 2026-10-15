@@ -32,6 +32,7 @@ use Digest::SHA ();
 use Fcntl qw(:flock O_RDWR O_WRONLY O_CREAT O_EXCL O_NOFOLLOW);
 use File::Path qw(make_path remove_tree);
 use File::Find ();
+use File::Basename qw(dirname);
 use File::Temp ();
 use Cwd qw(realpath);
 
@@ -413,7 +414,9 @@ sub deps {
         # deps stamp: lockfile + package.json + .npmrc + node version + the exact npm args
         my @args = ('ci', '--no-audit', '--no-fund', @{ $h{stamps}{npm_args} }, (-e $legacy ? '--legacy-peer-deps' : ()));
         my $stamp = sha_files($lock, "$dir/package.json", "$dir/.npmrc") . " $nodev @args";
+        my $installed = 0;
         if (slurp("$dir/node_modules/.rr-deps-stamp") ne $stamp) {
+            $installed = 1;
             print STDERR "rrun: npm @args  (in ./$rel)\n";
             my $rc = npm($env, $dir, @args);
             if ($rc && !-e $legacy && slurp("$tmp/npm.log") =~ /ERESOLVE/) {
@@ -427,17 +430,34 @@ sub deps {
             deps_failed("npm @args", $rel, $rc) if $rc;
             write_file("$dir/node_modules/.rr-deps-stamp", $stamp);
         }
-        # schema stamp: prisma/**/*.prisma; a change means `prisma generate`, not a reinstall
+        # schema stamp: *.prisma in ./prisma and in the dir of a `--schema X` named by the package's own
+        # postinstall; a change means generate, not a reinstall. When postinstall runs prisma generate
+        # (it knows the schema path and generator), rerun it; else `npx prisma generate`. No schema
+        # found -> nothing to generate. Right after npm ci, postinstall has just run it.
         my $pkg = eval { JSON::PP->new->decode(slurp("$dir/package.json")) } || {};
         next unless grep { ref $pkg->{$_} eq 'HASH' && ($pkg->{$_}{prisma} || $pkg->{$_}{'@prisma/client'}) } qw(dependencies devDependencies);
-        my @schemas;
-        File::Find::find({ no_chdir => 1, wanted => sub { push @schemas, $_ if /\.prisma$/ && -f } }, "$dir/prisma") if -d "$dir/prisma";
+        my $post = ref $pkg->{scripts} eq 'HASH' ? ($pkg->{scripts}{postinstall} // '') : '';
+        my $post_gen = $post =~ /\bprisma\s+generate\b/;
+        my @sdirs = ("$dir/prisma");
+        if ($post_gen && $post =~ /--schema[=\s]+(\S+)/) {
+            my $sp = realpath("$dir/$1");
+            if (defined $sp && index($sp, "$rm/") == 0) { push @sdirs, -d $sp ? $sp : dirname($sp) }
+        }
+        my %seen; my @schemas;
+        for my $sd (grep { -d && !$seen{realpath($_) // $_}++ } @sdirs) {
+            File::Find::find({ no_chdir => 1, wanted => sub { push @schemas, $_ if /\.prisma$/ && -f } }, $sd);
+        }
+        next unless @schemas;
         my $sstamp = sha_files(sort @schemas);
-        next if slurp("$dir/node_modules/.rr-schema-stamp") eq $sstamp;
-        print STDERR "rrun: npx prisma generate  (in ./$rel)\n";
-        my $rc = npm($env, $dir, 'npx', 'prisma', 'generate');
-        return if $lost || $intr;
-        deps_failed("npx prisma generate", $rel, $rc) if $rc;
+        if (!$installed || !$post_gen) {
+            next if slurp("$dir/node_modules/.rr-schema-stamp") eq $sstamp;
+            my @gen = $post_gen ? ('run', 'postinstall') : ('npx', 'prisma', 'generate');
+            my $what = $post_gen ? 'npm run postinstall' : 'npx prisma generate';
+            print STDERR "rrun: $what  (in ./$rel)\n";
+            my $rc = npm($env, $dir, @gen);
+            return if $lost || $intr;
+            deps_failed($what, $rel, $rc) if $rc;
+        }
         mk("$dir/node_modules");
         write_file("$dir/node_modules/.rr-schema-stamp", $sstamp);
     }

@@ -349,6 +349,29 @@ class RunnerTest(unittest.TestCase):
         self.run_runner(["true"], tar=tar_of([("package-lock.json", b'{"v":2}')]))
         self.assertEqual(len(npm_ci()), 2)                              # lockfile => npm ci
 
+    def test_monorepo_postinstall_generate_and_no_schema_skip(self):
+        """dentall layout: server/ has its own lockfile and a postinstall that runs
+        `prisma generate --schema ../prisma/schema.prisma`; there is no server/prisma."""
+        post = lambda: [c for c in self.calls() if c == "npm run postinstall"]           # noqa: E731
+        gen = lambda: [c for c in self.calls() if c == "npx prisma generate"]           # noqa: E731
+        pkg = json.dumps({"dependencies": {"@prisma/client": "5"}, "scripts": {
+            "postinstall": "prisma generate --schema ../prisma/schema.prisma --generator client"}}).encode()
+        srv = [("server/package.json", pkg), ("server/package-lock.json", b"{}")]
+        kw = {"relcwd": "server", "stamps": {"dirs": ["server"]}}
+        r = self.run_runner(["true"], tar=tar_of(srv), **kw)
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual((post(), gen()), ([], []))      # npm ci just ran postinstall itself
+        self.assertEqual(self.run_runner(["true"], tar=tar_of(srv), **kw).rc, 0)
+        self.assertEqual((post(), gen()), ([], []))      # warm
+        self.run_runner(["true"], tar=tar_of(srv + [("prisma/schema.prisma", b"model C {}")]), **kw)
+        self.assertEqual((len(post()), gen()), (1, []))  # schema change -> the package's own generate
+        # a prisma package with no schema anywhere it can find: nothing to generate, not a failure
+        bare = [("server/package.json", json.dumps({"dependencies": {"@prisma/client": "5"}}).encode()),
+                ("server/package-lock.json", b'{"v":3}')]
+        r = self.run_runner(["true"], tar=tar_of(bare), **kw)
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(gen(), [])
+
     def test_eresolve_retries_with_legacy_peer_deps_and_remembers(self):
         r = self.run_runner(["true"], env={"FAKE_ERESOLVE": "1"})
         self.assertEqual(r.rc, 0, r.err)

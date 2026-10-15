@@ -14,7 +14,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   found in the repo root, the cwd or a deps dir (a symlink resolving outside the worktree is skipped),
   which are 0600 on the mini and deleted when the run ends. `-e NAME` forwards a variable's value from
   rrun's own environment (the hook emits `FOO=1 rrun -e FOO ...`, so values never sit in argv). The mirror `~/rr/w/<repo>-<wt12>` keeps
-  `node_modules`; `npm ci` / `prisma generate` run only when their stamp changes.
+  `node_modules`; `npm ci` / `prisma generate` run only when their stamp changes, only in the cwd's
+  nearest lockfile dir and `--prefix` dirs (a monorepo root's lockfile was out of sync in dentall), and
+  generate reuses the package's own postinstall when it runs `prisma generate --schema ...`. Live proof:
+  dentall `careHold.release.db.test.ts` 15/15 in 21 s via rrun (warm overhead ~2.7 s) vs 673 s split.
 - Nothing trusted is kept on the mini: `rr_runner.pl` and the run header (argv, env, `-e` values) are
   sent on ssh stdin with every run, never in argv; the per-run `docker` shim lives in a fresh temp dir;
   pushes neutralise receive hooks. Status lines carry a per-run nonce that the command never sees
