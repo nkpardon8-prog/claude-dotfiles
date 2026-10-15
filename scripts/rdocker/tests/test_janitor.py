@@ -370,6 +370,183 @@ class Misc(JanitorCase):
         self.assertEqual(r.parse_ts("garbage"), 0)
 
 
+class RrHousekeeping(unittest.TestCase):
+    """~/rr housekeeping: the real perl script runs locally (HOME = a temp dir) against a real bare
+    repo + git worktree mirrors, through the rr_housekeeping runner seam (no ssh)."""
+    SLUG = "app.0123abcd"
+    OLD, FRESH = "a" * 12, "b" * 12
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.home = tempfile.mkdtemp(prefix="rdk-rr-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, self.home, True)
+        self.R = os.path.join(self.home, "rr")
+        for d in ("w", "git", "slots"):
+            os.makedirs(os.path.join(self.R, d))
+        src = os.path.join(self.home, "src")
+        self.git("init", "-q", src)
+        with open(os.path.join(src, "a"), "w") as f:
+            f.write("a\n")
+        self.git("-C", src, "add", "a")
+        self.git("-C", src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a")
+        self.bare = os.path.join(self.R, "git", self.SLUG + ".git")
+        self.git("init", "-q", "--bare", self.bare)
+        for wt in (self.OLD, self.FRESH):
+            self.git("-C", src, "push", "-q", self.bare, "HEAD:refs/rrun/" + wt)
+            self.git("-C", self.bare, "worktree", "add", "-q", "-f", "--detach",
+                     self.mirror(wt), "refs/rrun/" + wt)
+        self.age(self.OLD, 8)
+        self.age(self.FRESH, 2)
+        self.cfg = dict(r.DEFAULTS)
+
+    def git(self, *a):
+        subprocess.run(["git"] + list(a), check=True, capture_output=True, env=self.env())
+
+    def env(self):
+        return rdmods.child_env(self.home, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+    def mirror(self, wt):
+        return os.path.join(self.R, "w", "%s-%s" % (self.SLUG, wt))
+
+    def age(self, wt, days):
+        t = r.time.time() - days * DAY
+        with open(os.path.join(self.mirror(wt), ".git")) as f:
+            admin = f.read().split("gitdir: ", 1)[1].strip()
+        for p in (self.mirror(wt), os.path.join(admin, "index"), os.path.join(admin, "HEAD")):
+            os.utime(p, (t, t))
+
+    def runner(self, args, script):
+        p = subprocess.run(["/usr/bin/perl", "-"] + args, input=script, capture_output=True,
+                           text=True, timeout=60, env=self.env())
+        return p.returncode, p.stdout, p.stderr
+
+    def run_hk(self, free=100, dry=False):
+        J = r.JanitorRun(self.cfg, dry)
+        r.rr_housekeeping(self.cfg, J, free, runner=self.runner)
+        return J
+
+    def refs(self):
+        out = subprocess.run(["git", "-C", self.bare, "for-each-ref", "--format=%(refname)"],
+                             capture_output=True, text=True, check=True).stdout
+        return sorted(out.split())
+
+    def hold_slot(self, i, who):
+        import fcntl
+        p = os.path.join(self.R, "slots", str(i))
+        fh = open(p, "a+")
+        self.addCleanup(fh.close)
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with open(p + ".who", "w") as f:
+            f.write(who)
+
+    def test_unused_7d_mirror_removed_with_its_ref_fresh_one_kept(self):
+        open(os.path.join(self.R, "w", ".%s-%s.envlist" % (self.SLUG, self.OLD)), "w").close()
+        J = self.run_hk()
+        self.assertFalse(os.path.exists(self.mirror(self.OLD)))
+        self.assertTrue(os.path.isdir(self.mirror(self.FRESH)))
+        self.assertEqual(self.refs(), ["refs/rrun/" + self.FRESH])
+        self.assertFalse(os.path.exists(os.path.join(self.R, "w", ".%s-%s.envlist"
+                                                     % (self.SLUG, self.OLD))))
+        self.assertEqual(os.listdir(os.path.join(self.bare, "worktrees")),
+                         [os.path.basename(self.mirror(self.FRESH))])
+        self.assertTrue(any(a.startswith("rm rrun mirror %s-%s (unused 7d" % (self.SLUG, self.OLD))
+                            for a in J.acts), J.acts)
+        self.assertIsNone(J.last_error)
+
+    def test_recent_checkout_counts_as_use(self):
+        # the mirror dir itself is old, but the runner's checkout rewrote the admin index today
+        with open(os.path.join(self.mirror(self.OLD), ".git")) as f:
+            admin = f.read().split("gitdir: ", 1)[1].strip()
+        os.utime(os.path.join(admin, "index"), None)
+        self.run_hk()
+        self.assertTrue(os.path.isdir(self.mirror(self.OLD)))
+
+    def test_dry_run_reports_without_removing(self):
+        J = self.run_hk(dry=True)
+        self.assertTrue(os.path.isdir(self.mirror(self.OLD)))
+        self.assertEqual(len(self.refs()), 2)
+        self.assertEqual(sum(a.startswith("rm rrun mirror") for a in J.acts), 1, J.acts)
+
+    def test_low_disk_removes_every_free_mirror(self):
+        J = self.run_hk(free=2)          # < host_min_free_gb (8)
+        self.assertEqual(os.listdir(os.path.join(self.R, "w")), [])
+        self.assertEqual(self.refs(), [])
+        self.assertTrue(any("disk low: 2GB free < 8GB" in a for a in J.acts), J.acts)
+
+    def test_locked_slot_protects_that_repos_mirrors_only(self):
+        other = os.path.join(self.R, "w", "other.11111111-" + "c" * 12)
+        os.makedirs(other)
+        t = r.time.time() - 30 * DAY
+        os.utime(other, (t, t))
+        self.hold_slot(0, "%s %d %d\n" % (self.SLUG, r.time.time(), os.getpid()))
+        J = self.run_hk(free=2)
+        self.assertTrue(os.path.isdir(self.mirror(self.OLD)))
+        self.assertTrue(os.path.isdir(self.mirror(self.FRESH)))
+        self.assertFalse(os.path.exists(other))
+        self.assertIn("rrun run in progress (%s): its mirrors kept" % self.SLUG, J.acts)
+
+    def test_stale_who_on_a_held_slot_protects_everything(self):
+        # the slot is held, but .who is a leftover of a run killed -9 (the new holder has not
+        # rewritten it yet): its pid is gone, or it is older than the lock file
+        for case in ("dead-pid", "older-than-lock", "no-pid"):
+            with self.subTest(case=case):
+                dead = subprocess.run(["/bin/sh", "-c", "echo $$"], capture_output=True, text=True).stdout.strip()
+                who = {"dead-pid": "other.1 1 %s\n" % dead, "no-pid": "other.1 1\n",
+                       "older-than-lock": "other.1 1 %d\n" % os.getpid()}[case]
+                import fcntl
+                with open(os.path.join(self.R, "slots", "0"), "a+") as fh:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with open(os.path.join(self.R, "slots", "0.who"), "w") as f:
+                        f.write(who)
+                    if case == "older-than-lock":
+                        t = r.time.time() - 60
+                        os.utime(os.path.join(self.R, "slots", "0.who"), (t, t))
+                    self.run_hk(free=2)
+                self.assertEqual(len(os.listdir(os.path.join(self.R, "w"))), 2, case)
+
+    def test_locked_slot_with_unreadable_owner_protects_everything(self):
+        self.hold_slot(0, "garbage")
+        self.run_hk(free=2)
+        self.assertEqual(len(os.listdir(os.path.join(self.R, "w"))), 2)
+
+    def test_free_slot_is_taken_and_released(self):
+        open(os.path.join(self.R, "slots", "0"), "w").close()
+        self.run_hk()
+        self.assertFalse(os.path.exists(self.mirror(self.OLD)))
+        import fcntl
+        with open(os.path.join(self.R, "slots", "0")) as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)    # not left held
+
+    def test_foreign_entries_and_symlinks_untouched(self):
+        target = os.path.join(self.home, "precious")
+        os.makedirs(target)
+        names = ("notamirror", "x-" + "d" * 12 + "-extra", "link-" + "e" * 12)
+        for n in names[:2]:
+            os.makedirs(os.path.join(self.R, "w", n))
+        os.symlink(target, os.path.join(self.R, "w", names[2]))
+        t = r.time.time() - 30 * DAY
+        for n in names:
+            os.utime(os.path.join(self.R, "w", n), (t, t), follow_symlinks=False)
+        self.run_hk(free=2)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.R, "w"))), sorted(names))
+        self.assertTrue(os.path.isdir(target))
+
+    def test_no_rr_tree_and_bad_root(self):
+        import shutil
+        shutil.rmtree(self.R)
+        J = self.run_hk()
+        self.assertIsNone(J.last_error)
+        self.cfg["rr_root"] = "../etc"
+        J = self.run_hk()
+        self.assertTrue(any("rr housekeeping skipped" in a for a in J.acts), J.acts)
+
+    def test_unreachable_mini_is_logged_not_an_error(self):
+        J = r.JanitorRun(self.cfg, False)
+        r.rr_housekeeping(self.cfg, J, 100, runner=lambda a, s: (255, "", "ssh: connect failed"))
+        self.assertIsNone(J.last_error)
+
+
 class TtlAndTimestamps(unittest.TestCase):
     def test_ttl_and_timestamps(self):
         self.assertEqual(r.parse_ttl("30m"), 1800)

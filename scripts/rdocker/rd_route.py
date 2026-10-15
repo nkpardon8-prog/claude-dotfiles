@@ -777,6 +777,33 @@ def compose_config_exit(e):
     sys.exit(1)
 
 
+def rrun_safety_net(cfg, mode):
+    """-> reason string when a container about to be created belongs to a heavy npm script that
+    should have run under `rrun` (npm exports npm_lifecycle_event / npm_lifecycle_script to its
+    children; matched against cfg rr_route_patterns), else None. Such a container goes to the LAPTOP
+    (as RDOCKER_MODE=local would): a laptop test runner talking to a DB on the mini pays the WAN
+    round-trip on every query (measured 673 s vs 16 s on the laptop) and times out. Only in auto
+    mode, and never inside an rrun job (RRUN_REMOTE set: runner and DB are both on the mini)."""
+    if mode != "auto" or os.environ.get("RRUN_REMOTE"):
+        return None
+    event = os.environ.get("npm_lifecycle_event") or ""
+    script = os.environ.get("npm_lifecycle_script") or ""
+    if not event and not script:
+        return None
+    for pat in cfg.get("rr_route_patterns") or []:
+        try:
+            if re.search(pat, event) or re.search(pat, script):
+                return "heavy test script npm run %s" % (event or "?")
+        except (re.error, TypeError) as e:
+            rd_common.log("bad rr_route_patterns entry %r: %s" % (pat, e), rd_common.ROUTE_LOG)
+    return None
+
+
+def rrun_hint(why):
+    rd_common.say("%s: its DB goes to the laptop; run it as `rrun <cmd>` so the tests and their DB "
+                  "both run on the Mac mini" % why)
+
+
 def route_creating(eng, need_local, not_throwaway, hinted_local):
     """Creating commands (run/create/compose up|run|create) -> (target, why, fell_back)."""
     if need_local:
@@ -1004,8 +1031,11 @@ def shim(argv):
             if unknown:
                 raise Refuse(unknown_flag_msg(sub, unknown, "whether it mounts laptop paths"))
             name = rd_args.parse_sub(sub, args).last("--name")
-            target, why, fell_back = route_creating(eng, rd_args.run_needs_local(args, sub),
+            heavy = rrun_safety_net(cfg, mode)
+            target, why, fell_back = route_creating(eng, heavy or rd_args.run_needs_local(args, sub),
                                                     rd_args.run_not_throwaway(args, sub), None)
+            if heavy:
+                rrun_hint(heavy)
             if fell_back and name:
                 add_fallback_pin(name, "container")
         elif sub == "compose" and compose_sub in rd_args.COMPOSE_CREATING:
@@ -1028,7 +1058,10 @@ def shim(argv):
                 blocker = "the compose model could not be read"
             else:
                 blocker = ("it uses named volume %s" % named[0]) if named else None
-            target, why, fell_back = route_creating(eng, need_local, blocker, hinted)
+            heavy = rrun_safety_net(cfg, mode)
+            target, why, fell_back = route_creating(eng, heavy or need_local, blocker, hinted)
+            if heavy:
+                rrun_hint(heavy)
             if fell_back and compose_project:
                 add_fallback_pin(compose_project, "compose")
         else:

@@ -361,6 +361,127 @@ def janitor_disk(cfg, housekeeping):
     return (int(m.group(1)) if m else None), (int(f.group(1)) if f else None)
 
 
+# ---------------------------------------------------------------------------- ~/rr housekeeping (mini)
+#
+# rrun leaves, per laptop worktree, a mirror ~/<rr_root>/w/<repo_slug>-<wt12> (a git worktree of the
+# bare repo ~/<rr_root>/git/<repo_slug>.git, with its own node_modules) and a ref refs/rrun/<wt12> in
+# that bare repo. Mirrors unused RR_MIRROR_UNUSED_DAYS are removed, then their worktree record and
+# ref (+ `git gc --auto`). df guard: mini free disk below host_min_free_gb (janitor_disk HOSTFREE)
+# -> every mirror not in use goes, whatever its age (a mirror is rebuilt by the next run: npm ci).
+# "In use": the runner holds a slot (~/<rr_root>/slots/<i>, flock) for a run's whole life and writes
+# `<i>.who` = "<repo_slug> <epoch> <pid>". The script takes every free slot non-blocking and keeps
+# them until it exits, so no run can start meanwhile; a slot it cannot take protects that repo's
+# mirrors (an unreadable or stale .who - older than the lock file, or its pid gone - protects every
+# mirror). Last use = newest mtime of the mirror dir and its worktree admin dir's index/HEAD (the
+# runner's `checkout -f` rewrites the index on every run).
+# rrun-labelled containers need no rule here: the normal idle/exited rules reap kept-on-failure DBs.
+# Perl (stock on macOS) because sh has no flock; script on stdin, args are validated, no secrets.
+RR_MIRROR_UNUSED_DAYS = 7
+_RR_HOUSEKEEPING = r"""
+use strict; use warnings;
+use Fcntl qw(:flock O_RDWR O_NOFOLLOW);
+use File::Path qw(remove_tree);
+use Cwd qw(realpath);
+my ($rel, $max_age, $dry) = @ARGV;
+$ENV{PATH} = '/opt/homebrew/bin:/usr/bin:/bin';
+my $R = "$ENV{HOME}/$rel";
+if (!-d "$R/w" || -l "$R/w") { print "RRHK none\n"; exit 0 }
+my $Rgit = (realpath($R) // $R) . '/git/';    # git records the admin dir by its real path
+my (%busy, @held);
+if (opendir(my $sd, "$R/slots")) {
+    for my $s (sort grep { /^\d+$/ } readdir $sd) {
+        sysopen(my $fh, "$R/slots/$s", O_RDWR | O_NOFOLLOW) or next;
+        if (flock($fh, LOCK_EX | LOCK_NB)) { push @held, $fh; next }
+        # .who names the holder only if it is not older than the lock (the runner bumps the lock
+        # mtime, then rewrites .who, right after its flock) and its pid is alive; a stale .who of
+        # a run killed -9 (or a missing/garbled one) protects every mirror.
+        my ($who, $slug, $pid) = ('');
+        if (open(my $w, '<', "$R/slots/$s.who")) { $who = <$w> // ''; close $w }
+        ($slug, $pid) = $who =~ /^([A-Za-z0-9._-]+) \d+ (\d+)$/;
+        my @wst = lstat "$R/slots/$s.who";
+        my @lst = stat $fh;
+        undef $slug unless defined $pid && @wst && @lst && $wst[9] >= $lst[9] && kill(0, $pid);
+        $busy{ defined $slug ? $slug : '*' } = 1;
+    }
+}
+print "RRHK busy $_\n" for sort keys %busy;
+sub mtime { my @s = lstat $_[0]; @s ? $s[9] : 0 }
+sub git { system('git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', @_) == 0 }
+my %touched;
+opendir(my $wd, "$R/w") or do { print "RRHK err cannot read $R/w: $!\n"; exit 0 };
+for my $name (sort readdir $wd) {
+    my ($slug, $wt12) = $name =~ /^(?!\.)([A-Za-z0-9._-]+)-([0-9a-f]{12})$/ or next;
+    my $m = "$R/w/$name";
+    next if -l $m || !-d _;
+    next if $busy{'*'} || $busy{$slug};
+    my $last = mtime($m);
+    if (open(my $g, '<', "$m/.git")) {
+        my ($admin) = (<$g> // '') =~ /^gitdir: (.+)$/;
+        close $g;
+        if (defined $admin && (index($admin, "$R/git/") == 0 || index($admin, $Rgit) == 0)) {
+            for ("$admin/index", "$admin/HEAD") { my $t = mtime($_); $last = $t if $t > $last }
+        }
+    }
+    my $age = time - $last;
+    next if $age < $max_age;
+    printf "RRHK evict %s %d\n", $name, $age / 3600;
+    next if $dry;
+    remove_tree($m, { safe => 1 });
+    if (-e $m) { print "RRHK err could not fully remove $name\n"; next }
+    unlink "$R/w/.$name.envlist";
+    my $bare = "$R/git/$slug.git";
+    next unless -d $bare && !-l $bare;
+    git('-C', $bare, 'worktree', 'prune');
+    git('-C', $bare, 'update-ref', '-d', "refs/rrun/$wt12") or print "RRHK err ref $slug $wt12\n";
+    $touched{$bare} = 1;
+}
+git('-C', $_, 'gc', '--auto', '--quiet') for sort keys %touched;
+print "RRHK done\n";
+"""
+
+
+def rr_housekeeping(cfg, J, free, runner=None):
+    """~/<rr_root> housekeeping on the mini (see above) -> appends to J.acts. `free` = mini free GB
+    from janitor_disk (None = unknown: age rule only). `runner(args, script)` -> (rc, out, err) is
+    the seam; default = the script on stdin of `ssh host /usr/bin/perl - <args>`."""
+    import rd_run
+    try:
+        root = rd_run.rr_root(cfg)
+    except rd_run.RunError as e:
+        J.acts.append("rr housekeeping skipped (%s)" % e)
+        return
+    pressure = free is not None and free < cfg["host_min_free_gb"]
+    max_age = 0 if pressure else RR_MIRROR_UNUSED_DAYS * 86400
+    args = [root, str(max_age), "1" if J.dry else "0"]
+    if runner is None:
+        def runner(a, script):
+            return rd_common.run(["ssh", "-o", "BatchMode=yes", cfg["host"], "/usr/bin/perl", "-"]
+                                 + [shlex.quote(x) for x in a], timeout=300, input_=script)
+    if J.lock is not None and not J.dry:
+        J.lock.heartbeat()                 # raises MiniLockLost: stop before touching anything
+    rc, out, err = runner(args, _RR_HOUSEKEEPING)
+    lines = [ln.split(None, 2)[1:] for ln in (out or "").splitlines() if ln.startswith("RRHK ")]
+    why = "disk low: %sGB free < %sGB" % (free, cfg["host_min_free_gb"]) if pressure \
+        else "unused %dd" % RR_MIRROR_UNUSED_DAYS
+    for kind, *rest in lines:
+        detail = rest[0] if rest else ""
+        if kind == "evict":
+            name, _, age_h = detail.partition(" ")
+            desc = "rm rrun mirror %s (%s, last used %sh ago)" % (name, why, age_h)
+            J.acts.append(desc)
+            if not J.dry:
+                rd_common.log("%s: %s" % (J.tag, desc))
+        elif kind == "busy":
+            J.acts.append("rrun run in progress (%s): its mirrors kept" % detail)
+        elif kind == "err":
+            rd_common.log("%s: rr housekeeping: %s" % (J.tag, detail))
+            J.last_error = {"ts": time.time(), "action": "rr housekeeping", "err": detail[:300]}
+    if not any(k in ("done", "none") for k, *_ in lines):
+        # mini unreachable / perl failed: like janitor_disk, logged only; the next pass retries
+        rd_common.log("%s: rr housekeeping did not finish: %s"
+                      % (J.tag, (err or out or "rc=%s" % rc).strip()[-200:]))
+
+
 def disk_high(cfg, pct, free):
     return (pct is not None and pct >= cfg["disk_high_pct"]) or (
         free is not None and free < cfg["host_min_free_gb"])
@@ -472,6 +593,7 @@ def janitor_pass(J, only, force_critical):
             J.acts.append("VM disk %d%% used" % pct)
         if free is not None:
             J.acts.append("mini disk %dGB free" % free)
+        rr_housekeeping(cfg, J, free)
         if disk_high(cfg, pct, free):
             rd_common.log("janitor: WARNING disk pressure (VM %s%%, mini free %sGB) - aggressive prune"
                 % (pct, free))

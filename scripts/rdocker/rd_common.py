@@ -34,6 +34,9 @@ LAPTOP_JANITOR_PATH = os.path.join(STATE_DIR, "laptop_janitor.json")   # laptop 
 # Stamped by the shim on every throwaway-shaped container it creates on the laptop engine; the laptop
 # janitor only ever looks at containers carrying it.
 PLACED_LABEL = "rdocker.placed=laptop-throwaway"
+# Stamped (=<run nonce>) by the mini-side rrun docker shim on every container an rrun job creates.
+# Those DBs are used on the mini only: the forwarder never mirrors their ports to the laptop.
+RRUN_LABEL = "rdocker.rrun"
 DAEMON_PATH = os.path.join(STATE_DIR, "daemon.json")   # running daemon: pid, start time, code mtime
 # Laptop-engine activity (read by the daemon's Docker Desktop idle-quit): one file per shim process
 # that is running a docker command on the laptop engine (named by its pid), and a file whose mtime
@@ -44,6 +47,10 @@ BIN_DIR = os.path.join(HOME, ".local", "bin")
 HERE = os.path.dirname(os.path.realpath(__file__))
 SHIM_SRC = os.path.join(HERE, "docker-shim")
 ENTRY = os.path.join(HERE, "rdocker.py")   # the CLI entry point (launchd plist, ~/.local/bin/rdocker)
+RRUN_SRC = os.path.join(HERE, "rrun")      # the `rrun` wrapper (~/.local/bin/rrun links here)
+RUNNER_SRC = os.path.join(HERE, "rr_runner.pl")   # the mini-side runner, sent with every rrun
+RRUN_STATE = os.path.join(STATE_DIR, "rrun.json")  # last rrun result + runs in flight (status row)
+# rrun-<wt12>.lock in STATE_DIR serialises rrun runs from one laptop worktree (rd_run.wt_lock_path)
 PLIST_LABEL = "com.rdocker.forwarder"
 PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
 
@@ -72,6 +79,21 @@ DEFAULTS = {
     "volume_unused_days": 30,          # named volume unused this long -> removed (rdocker.keep exempts)
     "host_log_max_mb": 50,             # mini-side colima/lima log files are truncated past this
     "host_min_free_gb": 8,             # mini macOS disk free below this -> aggressive prune + warning
+    # rrun: heavy jobs (test runner + its DB) run ON the mini (rd_run.py + rr_runner.pl).
+    "rr_root": "rr",                   # mini dir under ~ (git/, w/, slots/, ...)
+    "rr_slots": 1,                     # concurrent rrun commands on the mini
+    "rr_wait_min": 30,                 # give up waiting for a free mini slot after this
+    "rr_hb_timeout": 60,               # mini kills the run after this many s without a laptop heartbeat
+    # untracked/ignored env files copied for a run (basename globs), looked up ONLY in the repo
+    # root, the command's cwd and the deps (lockfile) dirs; a symlink resolving outside the
+    # worktree is skipped. 0600 on the mini and deleted when the run ends
+    "rr_env_allow": [".env", ".env.test*", ".env.local"],
+    # laptop env vars passed through to the remote command (fnmatch); `rrun -e K[=V]` adds more
+    "rr_env_pass": ["CI", "DEBUG", "TEST_DB_*", "VITEST_*", "RR_NODE"],
+    # heavy commands (re.search on a command line or an npm_lifecycle_event) that belong on the mini
+    "rr_route_patterns": [r"(^|\s)test:db(:rls)?(\s|$)",
+                          r"(^|\s)release:rehearse:migrations(\s|$)",
+                          r"(^|[\s/])test-with-db\.mjs(\s|$)"],
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim

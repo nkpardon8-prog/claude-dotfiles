@@ -162,6 +162,21 @@ class MirrorPortsOf(unittest.TestCase):
             self.assertEqual(rd_tunnel.remote_ports(CFG), {5432})
             self.assertEqual(rd_tunnel.published_ports(CFG, ["a", "b"]), {"a": {5432}})
 
+    def test_remote_ports_skips_rrun_containers(self):
+        # rrun job DBs live and are used on the mini only; mirroring them could collide on the laptop
+        data = [{"Id": "a", "State": {"Running": True}, "Config": {"Labels": {"x": "1"}},
+                 "NetworkSettings": {"Ports": {"5432/tcp": [{"HostIp": "", "HostPort": "5432"}]}}},
+                {"Id": "b", "State": {"Running": True},
+                 "Config": {"Labels": {"rdocker.rrun": "0123abcd"}},
+                 "NetworkSettings": {"Ports": {"5432/tcp": [{"HostIp": "", "HostPort": "25001"}]}}},
+                {"Id": "c", "State": {"Running": True}, "Config": {"Labels": None},
+                 "NetworkSettings": {"Ports": {"80/tcp": [{"HostIp": "", "HostPort": "8080"}]}}}]
+
+        def dk(ctx, *args, timeout=30):
+            return (0, "a\nb\nc\n", "") if args[0] == "ps" else (0, json.dumps(data), "")
+        with mock.patch.object(rd_common, "dk", dk):
+            self.assertEqual(rd_tunnel.remote_ports(CFG), {5432, 8080})
+
     def test_remote_ports_raises_when_unreadable(self):
         with mock.patch.object(rd_common, "dk", return_value=(1, "", "boom")):
             self.assertRaises(RuntimeError, rd_tunnel.remote_ports, CFG)

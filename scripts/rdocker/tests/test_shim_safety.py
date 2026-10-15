@@ -388,6 +388,72 @@ class AttentionNotice(ShimCase):
 
 
 
+class RrunSafetyNet(ShimCase):
+    """A container created from inside a heavy npm script (npm_lifecycle_event / _script matches
+    rr_route_patterns) that is not running under rrun goes to the laptop with a one-line hint."""
+    HINT = "run it as `rrun <cmd>`"
+
+    def test_test_db_script_run_goes_to_laptop_with_hint(self):
+        self.scenario()
+        p = self.shim("run", "-d", "-p", "5432", "postgres", env={"npm_lifecycle_event": "test:db"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c for c, _ in self.calls("run")], ["desktop-linux"])
+        self.assertEqual(p.stderr.count(self.HINT), 1, p.stderr)
+        self.assertIn("rdocker: heavy test script npm run test:db: its DB goes to the laptop",
+                      p.stderr)
+
+    def test_script_body_matches_too(self):
+        self.scenario()
+        p = self.shim("run", "--rm", "postgres", env={
+            "npm_lifecycle_event": "itest", "npm_lifecycle_script": "node scripts/test-with-db.mjs"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c for c, _ in self.calls("run")], ["desktop-linux"])
+        self.assertIn(self.HINT, p.stderr)
+
+    def test_compose_up_goes_to_laptop(self):
+        model = {"name": "proj", "services": {"db": {"image": "postgres"}}}
+        self.scenario(compose_model=model)
+        p = self.shim("compose", "up", "-d", env={"npm_lifecycle_event": "test:db:rls"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual({c for c, _ in self.calls("compose")[1:]}, {"desktop-linux"})
+        self.assertIn(self.HINT, p.stderr)
+
+    def test_under_rrun_or_other_scripts_or_non_auto_mode_stays_on_mini(self):
+        cases = (("rrun job", {"npm_lifecycle_event": "test:db", "RRUN_REMOTE": "1"}),
+                 ("other script", {"npm_lifecycle_event": "test"}),
+                 ("look-alike", {"npm_lifecycle_event": "test:dbx"}),
+                 ("forced mini", {"npm_lifecycle_event": "test:db", "RDOCKER_MODE": "mini"}),
+                 ("no npm", {}))
+        for label, env in cases:
+            with self.subTest(label):
+                if os.path.exists(self.log):
+                    os.unlink(self.log)
+                self.scenario(laptop_up=False)
+                p = self.shim("run", "-d", "postgres", env=env)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual([c for c, _ in self.calls("run")], ["mini"])
+                self.assertNotIn("rrun", p.stderr)
+                for s in self.socks:
+                    s.close()
+                self.socks.clear()
+
+    def test_user_patterns_override_defaults(self):
+        self.scenario(cfg={"rr_route_patterns": [r"^e2e:heavy$"]})
+        p = self.shim("run", "-d", "postgres", env={"npm_lifecycle_event": "e2e:heavy"})
+        self.assertEqual([c for c, _ in self.calls("run")], ["desktop-linux"])
+        self.assertIn(self.HINT, p.stderr)
+        os.unlink(self.log)
+        p = self.shim("run", "-d", "postgres", env={"npm_lifecycle_event": "test:db"})
+        self.assertEqual([c for c, _ in self.calls("run")], ["mini"])
+        self.assertNotIn("rrun", p.stderr)
+
+    def test_non_creating_commands_unaffected(self):
+        self.scenario(mini={"containers": {"X": {}}})
+        p = self.shim("exec", "X", "ls", env={"npm_lifecycle_event": "test:db"})
+        self.assertEqual([c for c, _ in self.calls("exec")], ["mini"])
+        self.assertNotIn("rrun", p.stderr)
+
+
 class PingServer:
     """Stands in for the forwarded mini engine socket: answers `GET /_ping` with 200 OK (and
     /version) when `answer` is true, else closes every connection at once (a fast probe failure).

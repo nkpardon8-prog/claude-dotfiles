@@ -20,8 +20,10 @@ import types
 # Guarded by tests/test_zz_hermetic.py.
 MARKER = ".rdocker-test-home"
 # Real binaries no test may reach: the ssh master / the mini, launchd, AppleScript, `open -a`,
-# Tailscale, and any real docker (~/.local/bin/docker is the LIVE shim -> the mini).
-GUARDED = ("ssh", "osascript", "launchctl", "open", "colima", "tailscale", "Tailscale", "docker")
+# Tailscale, any real docker (~/.local/bin/docker is the LIVE shim -> the mini), and tmutil (the
+# rrun runner excludes its root from Time Machine; a test must never touch the real TM settings).
+GUARDED = ("ssh", "osascript", "launchctl", "open", "colima", "tailscale", "Tailscale", "docker",
+           "tmutil")
 STUB_EXIT = 97
 
 
@@ -71,7 +73,7 @@ def child_env(home, *bins, **extra):
 
 STAGE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, STAGE)
-NAMES = ("rd_common", "rd_args", "rd_tunnel", "rd_route", "rd_janitor", "rd_daemon", "rd_setup")
+NAMES = ("rd_common", "rd_args", "rd_tunnel", "rd_route", "rd_janitor", "rd_daemon", "rd_run", "rd_setup")
 MODULES = [importlib.import_module(n) for n in NAMES]
 # Tailscale is invoked by absolute path, not via PATH: point it at the stub too.
 vars(MODULES[NAMES.index("rd_daemon")])["TS_CLI"] = os.path.join(STUB_BIN, "Tailscale")

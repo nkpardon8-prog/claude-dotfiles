@@ -14,14 +14,15 @@ ControlMaster, so `localhost:<port>` keeps working (same port number on both sid
 
 Stdlib only; runs on the system /usr/bin/python3 (3.9). See commands/docker.md for the playbook.
 
-This file is only the entry point (launchd plist, ~/.local/bin/rdocker and docker-shim all point
-here). The code lives beside it, in dependency order:
+This file is only the entry point (launchd plist, ~/.local/bin/rdocker, docker-shim and rrun all
+point here). The code lives beside it, in dependency order:
   rd_common  paths, DEFAULTS, config/state files + locks, logging, subprocess/docker helpers
   rd_args    docker argv parsing from explicit per-command flag tables (run/create, compose, publish)
   rd_tunnel  health probe, target resolution, laptop port reservation, SSH master, mirror sync
   rd_route   the shim's per-call routing (mini run/compose, pins, Engines)
   rd_janitor janitor, mini lock, engine kick/restart, apply_when_idle
   rd_daemon  launchd forwarder loop, tailscale, global docker context
+  rd_run     `rrun` / `rdocker run`: heavy jobs run ON the mini (sends rr_runner.pl each run)
   rd_setup   install / setup-mini and the CLI (status, where, main, command)
 If those modules fail to import (any exception, not only ImportError), a shim call still runs
 read-only docker commands unrouted and refuses anything that targets or creates a container (it

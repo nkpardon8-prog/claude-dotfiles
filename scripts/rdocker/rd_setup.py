@@ -15,6 +15,7 @@ import rd_tunnel
 import rd_route
 import rd_janitor
 import rd_daemon
+import rd_run
 
 
 # ---------------------------------------------------------------------------- install / setup
@@ -113,9 +114,11 @@ def install(cfg):
     os.chmod(rd_common.ENTRY, 0o755)
     link(rd_common.SHIM_SRC, os.path.join(rd_common.BIN_DIR, "docker"))
     link(rd_common.ENTRY, os.path.join(rd_common.BIN_DIR, "rdocker"))
+    os.chmod(rd_common.RRUN_SRC, 0o755)
+    link(rd_common.RRUN_SRC, os.path.join(rd_common.BIN_DIR, "rrun"))
     # 5. background forwarder
     ok = install_daemon()
-    print("installed: docker shim + rdocker in %s, launch agent %s (%s)"
+    print("installed: docker shim + rdocker + rrun in %s, launch agent %s (%s)"
           % (rd_common.BIN_DIR, rd_common.PLIST_LABEL, "loaded" if ok else "LOAD FAILED"))
     print("pinned to laptop: containers=%s compose=%s"
           % (cfg["pins"]["containers"], cfg["pins"]["compose_projects"]))
@@ -288,7 +291,8 @@ def status(cfg, fix=False):
     now = time.time()
     for ok, label, detail in (daemon_rows(now) + [health_age_row(prior, now)]
                               + janitor_rows(cfg, now) + [janitor_stopped_row(now),
-                                                          fallback_pins_row(cfg)]):
+                                                          fallback_pins_row(cfg),
+                                                          rd_run.status_row(now)]):
         row(ok, label, detail)
     if fix and h.get("docker_ok"):
         rd_tunnel.sync_forwards(cfg, verbose=True)
@@ -488,6 +492,16 @@ def build_parser():
     g = s.add_argument_group("threshold overrides (testing)")
     for k in CLEAN_OVERRIDES:
         g.add_argument("--" + k, type=float, metavar="N")
+    s = sp.add_parser("run", help="run a heavy job ON the Mac mini (same as `rrun`)",
+                      description="Run <command> on the Mac mini against a snapshot of this git "
+                      "worktree (HEAD + uncommitted/untracked files + allowlisted .env files); "
+                      "output streams back, the exit code is the command's. Mini unreachable "
+                      "before the command was released (GO) => runs on the laptop (RRUN_STRICT=1: "
+                      "exit 75 instead); mini lost after that => exit 75, never a second run.")
+    s.add_argument("-e", dest="env", action="append", default=[], metavar="NAME[=VALUE]",
+                   help="environment for the remote command (repeatable); a bare NAME forwards "
+                   "that variable's value from rrun's own environment (keeps it out of argv)")
+    s.add_argument("argv", nargs=argparse.REMAINDER, metavar="[--] command ...")
     sp.add_parser("install", help="laptop side: context, shims, launch agent, pins")
     s = sp.add_parser("setup-mini", help="mini side over ssh: colima+docker + engine config "
                                          "(Colima restart deferred until the mini is idle)")
@@ -612,6 +626,8 @@ def command(argv):
     if ns is None:
         return rc
     cmd = ns.cmd
+    if cmd == "run":
+        return rd_run.rrun(ns.argv, ns.env)
     cfg = rd_common.load_cfg()
     if cmd in ("status", "doctor"):
         return 0 if status(cfg, fix=cmd == "doctor" or ns.fix) else 1

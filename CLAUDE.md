@@ -82,8 +82,10 @@ leftovers (idle 3 h -> stop, stopped 24 h -> removed, unused named volumes 30 d,
 `--label rdocker.keep=1` + a named volume (kept), or `--label rdocker.ttl=2d` (lives exactly that long);
 an unlabelled quiet DB is stopped after 3 h (`exec`/`cp`/`logs -f` on it restarts it within 24 h; a `--rm` one is gone). Laptop
 throwaways (fallback / local) get the same janitor; to keep a laptop DB use `rdocker.keep=1` + a named volume. A `rdocker: needs attention: ...` line on stderr means the
-mini needs a human: run `rdocker status` and tell the user. Invoke `/docker` before starting databases
-— it holds the playbook (ports, readiness, seeding, lifetimes).
+mini needs a human: run `rdocker status` and tell the user. Heavy DB test commands (`npm run test:db`, ...)
+are auto-routed by a hook to `rrun`, which runs code + DB together on the mini: don't set
+`RDOCKER_MODE=local` for them; `RRUN=0` opts out. Invoke `/docker` before starting databases
+— it holds the playbook (ports, readiness, seeding, lifetimes, `rrun`).
 
 ## Window naming + reaching other windows — `/line`
 `/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).

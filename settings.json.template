@@ -216,6 +216,10 @@
           {
             "type": "command",
             "command": "python3 $HOME/.claude-dotfiles/scripts/hooks/no-detach-gate.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude-dotfiles/scripts/hooks/rrun-route.py"
           }
         ]
       },

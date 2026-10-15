@@ -55,7 +55,7 @@ JANITOR_FIRST_DELAY = 60     # first janitor run this long after daemon start
 EVENTS_BACKOFF_MAX = 300     # events watcher restart backoff cap (seconds)
 EVENTS_HEALTHY_AFTER = 60    # a watcher that lived this long resets the backoff
 SYNC_ACTIONS = ("start", "die", "destroy", "stop", "kill", "unpause", "restart")
-MODULES = ("rd_common", "rd_args", "rd_tunnel", "rd_route", "rd_janitor", "rd_daemon", "rd_setup")
+MODULES = ("rd_common", "rd_args", "rd_tunnel", "rd_route", "rd_janitor", "rd_daemon", "rd_run", "rd_setup")
 
 
 def due(last_mono, interval, now_mono):

@@ -1,0 +1,13 @@
+#!/bin/bash
+# rrun: run a heavy job (test runner + its DB) ON the Mac mini - see rd_run.py / commands/docker.md.
+#   rrun [-e NAME[=VALUE]]... [--] <command> [args...]   (RRUN=0 runs it on the laptop;
+#   a bare -e NAME forwards that variable from this environment, keeping the value out of argv)
+# Resolve our real directory (~/.local/bin/rrun is a symlink to this file); bash 3.2, no readlink -f.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+dir="$(cd -P "$(dirname "$src")" && pwd)"
+exec /usr/bin/python3 -I "$dir/rdocker.py" run "$@"

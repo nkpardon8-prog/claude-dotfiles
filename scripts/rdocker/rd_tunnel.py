@@ -633,7 +633,9 @@ def published_ports(cfg, ids):
 
 
 def remote_ports(cfg):
-    """Every laptop-mirrorable published TCP port of the mini's running containers."""
+    """Every laptop-mirrorable published TCP port of the mini's running containers. Containers of an
+    rrun job (rd_common.RRUN_LABEL) are skipped: their client runs on the mini too, so a laptop
+    mirror is pure overhead and their random host ports could collide with laptop listeners."""
     rc, out, err = rd_common.dk(cfg["remote_context"], "ps", "-q", "--no-trunc", timeout=20)
     if rc != 0:
         raise RuntimeError("docker ps on mini failed: " + err.strip()[:200])
@@ -644,6 +646,8 @@ def remote_ports(cfg):
     ports = set()
     for d in data:
         if not (d.get("State") or {}).get("Running", True):
+            continue
+        if rd_common.RRUN_LABEL in ((d.get("Config") or {}).get("Labels") or {}):
             continue
         mine = mirror_ports_of((d.get("NetworkSettings") or {}).get("Ports"))
         if len(mine) > BIG_RANGE:

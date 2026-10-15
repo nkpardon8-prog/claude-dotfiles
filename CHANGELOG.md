@@ -2,6 +2,42 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
+
+- New `rrun [-e NAME[=VALUE]]... [--] <cmd>` (also `rdocker run`; linked into `~/.local/bin` by
+  `rdocker install`) runs a heavy job - test runner + its DB - on the mini, so the test runner no longer
+  talks to a mini DB across the link (measured: 15-test DB file 673 s split, 2 timeouts -> 12 s on the
+  mini). Streams output, returns the command's exit code, forwards Ctrl-C (2nd = kill).
+- What travels: `HEAD` via `git push` to a per-repo bare repo `~/rr/git/<repo>.git` (one per git common
+  dir, so worktrees share objects), plus a tar of tracked files changed vs `HEAD`, untracked non-ignored
+  files, deleted files, and only the env files in `rr_env_allow` (`.env`, `.env.test*`, `.env.local`)
+  found in the repo root, the cwd or a deps dir (a symlink resolving outside the worktree is skipped),
+  which are 0600 on the mini and deleted when the run ends. `-e NAME` forwards a variable's value from
+  rrun's own environment (the hook emits `FOO=1 rrun -e FOO ...`, so values never sit in argv). The mirror `~/rr/w/<repo>-<wt12>` keeps
+  `node_modules`; `npm ci` / `prisma generate` run only when their stamp changes.
+- Nothing trusted is kept on the mini: `rr_runner.pl` and the run header (argv, env, `-e` values) are
+  sent on ssh stdin with every run, never in argv; the per-run `docker` shim lives in a fresh temp dir;
+  pushes neutralise receive hooks. Status lines carry a per-run nonce that the command never sees
+  (container labels use a separate token). `~/rr` is excluded from Time Machine and Spotlight.
+- Exactly once: the mini prepares, prints READY and starts the command only after the laptop answers
+  GO. Failure rules: mini lost before GO was sent (push fails, link drops during prepare, shallow clone /
+  fsck-rejected history - the notice says which) or not a git repo -> runs on the laptop with
+  `RDOCKER_MODE=local` and a notice (`RRUN_STRICT=1` -> exit 75 instead); mini lost once GO was sent ->
+  exit 75, never rerun automatically; slot busy past `rr_wait_min` (30) -> exit 73; `npm ci` /
+  `prisma generate` failed -> exit 78 (65/69/70 other runner errors). No laptop heartbeat for
+  `rr_hb_timeout` (60 s) -> the mini kills the run. Containers the run starts are labelled
+  `rdocker.rrun=<token>`: removed on success / interrupt, kept on failure (3 h idle rule reaps them).
+  `docker compose` containers inside a run are not labelled (not auto-removed, still mirrored).
+- Hook `scripts/hooks/rrun-route.py` (PreToolUse Bash) rewrites known heavy commands
+  (`rr_route_patterns`: `test:db[:rls]`, `release:rehearse:migrations`, `test-with-db.mjs`) to
+  `rrun <cmd>`; fails open (odd whitespace, non-plain assignment values, earlier `export`/`source`/
+  `set -a`/bare assignments -> unchanged), returns only `updatedInput`. `RRUN=0` opts out. Shim safety net: a heavy npm
+  script creating a container without `rrun` gets it on the laptop plus a hint; the forwarder does not
+  mirror `rdocker.rrun` containers; the mini janitor tidies `~/rr`.
+- New config keys `rr_root`, `rr_slots`, `rr_wait_min`, `rr_hb_timeout`, `rr_env_allow`, `rr_env_pass`,
+  `rr_route_patterns`; env `RRUN=0`, `RRUN_STRICT=1`, `RRUN_TIMING=1`; `rdocker status` row `rrun`.
+  Tests `test_run`, `test_runner`, `test_hook`.
+
 ## 2026-10-15 - dotfiles-sync: one run at a time
 
 - Live defect: every tool call in every window fires the async sync hook, and the pre-commit hook

@@ -1,5 +1,5 @@
 ---
-description: Remote Docker on the always-on Mac mini (rdocker). Plain `docker` / `docker compose` on this laptop already run on the mini over Tailscale, with published TCP ports mirrored to laptop localhost, and a janitor cleans up after agents — so use docker normally. Invoke this BEFORE starting test databases or other containers (it has the database playbook: ports, readiness, lifetime labels, keeping data), when docker errors / hangs / "cannot connect" / refuses with "cannot tell where … lives" or "not a throwaway container", when a container port on localhost is unreachable, to check where a container runs, to switch remote/local mode, or to set up / repair the mini Docker host.
+description: Remote Docker on the always-on Mac mini (rdocker). Plain `docker` / `docker compose` on this laptop already run on the mini over Tailscale, with published TCP ports mirrored to laptop localhost, and a janitor cleans up after agents — so use docker normally. Heavy DB test jobs (`npm run test:db` and similar) run code + DB together on the mini via `rrun <cmd>`, usually rewritten automatically by a hook. Invoke this BEFORE starting test databases or other containers (it has the database playbook: ports, readiness, lifetime labels, keeping data), when docker errors / hangs / "cannot connect" / refuses with "cannot tell where … lives" or "not a throwaway container", when a container port on localhost is unreachable, to check where a container runs, to switch remote/local mode, or to set up / repair the mini Docker host.
 ---
 
 # /docker — Docker on the Mac mini, transparently
@@ -9,8 +9,10 @@ description: Remote Docker on the always-on Mac mini (rdocker). Plain `docker` /
 ## The mental model
 
 The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (`macmini-docker` on
-Tailscale; Colima VM: 6 CPU / 8 GB RAM / 30 GB disk, amd64 via Rosetta). Agent/test-runner CPU stays
-on the laptop; only the containers move.
+Tailscale; Colima VM: 6 CPU / 8 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
+CPU stays on the laptop and only the containers move. **Heavy test jobs** (test runner + its DB) move
+whole: `rrun <cmd>` runs the command itself on the mini next to its DB, usually without asking (a hook
+rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
 
 - `docker` on PATH is a **shim** (`~/.local/bin/docker` → `scripts/rdocker/docker-shim`). Each call is
   routed: normal work → **mini**; laptop-only needs → **laptop Docker Desktop** (started on demand and
@@ -83,15 +85,83 @@ mirrors their published ports, but only after the fact (event-driven, not before
 5. **Clean up what you start:** `docker rm -f -v <name>` (the `-v` drops its anonymous volume). Then the
    mirror disappears within seconds.
 6. **Speed:** each query pays the laptop↔mini round-trip (~1-5 ms at home; ~75 ms measured away from
-   home, 50 sequential queries = 3.6 s). Prefer one `exec -i ... < file` over many small round-trips; for a
-   query-heavy suite away from home, run it with `RDOCKER_MODE=local`.
-   **Chatty write-heavy app backends** (a sync worker or ORM writing row-by-row, anything with a
-   statement/lease timeout) can time out against the mini away from home: 100 round-trips x ~0.2 s
-   = 20 s per batch. Start that DB on the laptop from the beginning:
-   `RDOCKER_MODE=local docker run -d --name <x> --label rdocker.ttl=2d -p 127.0.0.1::5432 ...`
-   (seen 2026-10-13: an OD sync worker lost its lease on a mini pg17; fine on the laptop).
+   home, 50 sequential queries = 3.6 s). Prefer one `exec -i ... < file` over many small round-trips.
+   A **query-heavy test suite** or a chatty write-heavy backend (row-by-row ORM writes, statement/lease
+   timeouts) should not talk to a mini DB across that link: run the whole job on the mini with
+   `rrun <cmd>` (next section; the known `test:db` commands are routed there automatically). Don't
+   reach for `RDOCKER_MODE=local` for those.
 7. Other engines (MySQL, Redis, Mongo, MinIO, ClamAV, ...) behave the same. `docker build`
    (incl. `--platform linux/amd64`) runs on the mini.
+
+## Heavy test jobs on the mini (`rrun`)
+
+`rrun [-e NAME[=VALUE]]... [--] <command> [args...]` (same as `rdocker run ...`) runs the command **on the
+mini**, in a mirror of the current git worktree, so the test runner and its DB sit on the same machine
+(measured: a 15-test DB file went from 673 s split across the link to ~12 s). Output streams back, the
+exit code is the command's own, Ctrl-C works (1st: interrupt the remote command; 2nd: kill it; 3rd: drop
+the connection).
+
+- **Automatic:** a `PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites known heavy commands
+  (`rr_route_patterns`: `npm [--prefix X] run test:db[:rls]`, `release:rehearse:migrations`,
+  `node .../test-with-db.mjs`) to `rrun <cmd>`. It leaves anything unsure alone (`$(`, backticks,
+  heredocs, pipes into it, non-`npm/node/npx/pnpm/yarn/bun` heads), and drops `RDOCKER_MODE=local`.
+  Leading `K=V` assignments stay an env prefix and each name gets `-e K` (`FOO=1 npm run test:db` →
+  `FOO=1 rrun -e FOO npm run test:db`), so values never enter rrun's argv; `RRUN_*`/`RDOCKER_*` only
+  configure the laptop side. It also leaves the command alone when an assignment value has anything
+  beyond `[A-Za-z0-9_./:@%+,=-]` (globs, `~`, `$`...), when it holds whitespace other than space/tab
+  (`\v`, NBSP, ...), or when an earlier segment sets shell state (`export`, `set -a`, `source`/`.`,
+  a bare `FOO=1;`) that would not reach the mini.
+- **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
+  skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
+- **Safety net:** if a heavy npm script starts a container without going through `rrun`, the shim puts
+  that container on the laptop (fast, instead of the slow split) and prints one hint to use `rrun`.
+- **What is copied:** git `HEAD` (pushed to `~/rr/git/<repo>.git` on the mini; the first push carries
+  history, later ones almost nothing) **plus** every tracked file changed vs `HEAD` (staged or not),
+  untracked non-ignored files, and deleted tracked files (removed on the mini). Of the gitignored files,
+  **only test env files** go: `rr_env_allow` = `.env`, `.env.test*`, `.env.local`, looked up **only** in
+  the repo root, the command's cwd and the deps (lockfile / `--prefix`) dirs - not at any other depth; one
+  that resolves outside the worktree (e.g. a symlink to `~/secrets/.env`) is skipped with a
+  `rrun: not copying ...` notice. Written 0600 and **deleted when the run ends** (leftovers of a killed run are deleted at the start of the next). Nothing else ignored travels:
+  `node_modules` is installed on the mini (`npm ci` when the lockfile / `package.json` / `.npmrc` / node
+  version changes; `prisma generate` when the schema changes) and kept between runs.
+- **Env:** laptop vars matching `rr_env_pass` (`CI`, `DEBUG`, `TEST_DB_*`, `VITEST_*`, `RR_NODE`) pass
+  through; add more with `-e NAME=VALUE`, or `-e NAME` to forward that variable's value from rrun's own
+  environment (keeps it out of argv; unset → skipped with a notice). Values travel on stdin, never in `ps`. The remote command sees
+  `RRUN_REMOTE=1`, and its `docker` talks to the mini engine directly.
+- **Containers it starts** with `docker run` / `docker create` carry `rdocker.rrun=<random per-run
+  token>`: removed when the run passes or is interrupted, **kept on failure** for inspection (`rrun: the
+  run failed; its containers stay ...`; `docker ps` / `logs` reach them; the 3 h idle rule reaps them).
+  **Compose is not labelled:** containers a run starts with `docker compose up/run` are *not* removed at
+  the end of the run and *are* mirrored to laptop localhost like any mini container; the normal janitor
+  rules (3 h idle stop, exited 24 h) reap them - `docker compose down` them yourself when done.
+- **One at a time:** one run per laptop worktree (a lock), and one run on the mini (`rr_slots` 1). A
+  second run waits with one line naming the holder, and gives up after `rr_wait_min` (30) → exit 73.
+- **Exactly once:** the mini prepares everything (checkout, overlay, `npm ci`, slot), then reports READY
+  and waits; the command starts **only** when the laptop answers GO. Mini lost before GO was sent (push
+  fails, or the link drops during prepare), not a git repo, or no commit yet → it runs **on the laptop**
+  with `RDOCKER_MODE=local` and a `rrun: ... - running on the laptop instead` notice. `RRUN_STRICT=1`
+  refuses that and exits 75. A shallow clone, or history the mini's `git fsck` rejects, also runs on
+  the laptop, with the reason in the notice (`cannot send this repo to the Mac mini: ...`).
+- **Mini lost once GO was sent** (even if it may never have arrived) → exit **75** (`rrun: lost the Mac
+  mini mid-run - not re-running ...`). It is **never rerun automatically** (it may have half-run);
+  rerun by hand once `rdocker status` is green. If the laptop vanishes, the mini stops waiting (before
+  GO: nothing ran) or kills the run after `rr_hb_timeout` (60 s) without a heartbeat.
+- **Exit codes of rrun itself** (only before the command started, so never confused with its own):
+  65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
+  on the mini, 70 runner error, 73 slot busy past `rr_wait_min`, 75 lost the mini / strict fallback,
+  **78 dependency install failed** (`npm ci` / `prisma generate`; its log is printed), 130 interrupted
+  before start.
+- **On the mini:** `~/rr` is 0700, excluded from Time Machine (`tmutil addexclusion`, once) and from
+  Spotlight (`.metadata_never_index`).
+- **Timing:** `RRUN_TIMING=1` prints per-stage times (push, overlay, remote prepare, command) on stderr.
+  `rdocker status` has an `rrun` row (last run, runs in flight).
+
+Troubleshooting: falls back to the laptop every time → `rdocker doctor` (the push over ssh is the
+reachability test). Exit 73 → another run holds the mini slot (the wait line names it). Exit 75 → the
+link dropped; check `rdocker status`, then rerun. Exit 78 → `npm ci` / `prisma generate` failed on the
+mini (log above it); fix the lockfile / schema, or `RRUN=0` to run locally. Works locally but fails on the mini with a missing
+file → it is gitignored and not an allowlisted env file: commit it, or generate it in the command. First
+run in a repo is slow (history push + `npm ci`); later runs add ~1-3 s.
 
 ## What runs where (automatic)
 
@@ -183,6 +253,7 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | anonymous volumes not used by any container | pruned each run (keep-labelled exempt) |
 | image | removed after **14 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Removed tag by tag (`image rm <repo:tag>`; an image tagged in several repositories cannot be removed by id), then by id if an untagged remainder is left; never `-f`. Docker's refusals (in use, dependent child images, multi-repo) are skips, not errors. Dangling images pruned |
 | build cache | pruned when older than 7 d, and capped at **5 GB** |
+| `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **7 d** unused (all unused ones when mini free < `host_min_free_gb`); a mirror whose repo slot is busy is skipped; bare repos in `~/rr/git` are kept, only the removed mirror's ref goes |
 | container logs | capped per container: 10 MB × 3 files (json-file) |
 | mini Colima/Lima log files | truncated past 50 MB; VM journald capped at 200 MB |
 | VM disk ≥ 80 % or mini free < 8 GB | remove unused images **oldest-unused first** (never in-use ones) until below, prune all build cache, log a WARNING |
@@ -274,6 +345,7 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 | `rdocker pin\|unpin <name> [--compose]` | keep a container / compose project on the laptop |
 | `rdocker logs [--route]` | forwarder + janitor log / per-command routing log (incl. refusals) |
 | `rdocker sync` | reconcile port mirrors now |
+| `rdocker run [-e K[=V]]... [--] <cmd>` / `rrun ...` | run a heavy job (test runner + its DB) on the mini — see "Heavy test jobs on the mini" |
 
 `rdocker status` rows: tailscale on laptop · mini reachable (ssh control connection) · mini docker engine
 (version, round-trip) · mode → where commands go · docker shim first on PATH · background forwarder ·
@@ -329,13 +401,18 @@ every threshold above is a key there).
 
 ## Verify
 
-- Unit (245 tests, fake docker `tests/fake_docker.py`, no mini needed, hermetic temp `RDOCKER_HOME` +
+- Unit (~370 tests, fake docker `tests/fake_docker.py`, no mini needed, hermetic temp `RDOCKER_HOME` +
   fail-closed stubs via `tests/rdmods.py`; files `test_args`, `test_daemon`, `test_engine`, `test_entry`,
-  `test_janitor`, `test_ports`, `test_shim_safety`, `test_state`, `test_tunnel`, `test_zz_hermetic`):
+  `test_janitor`, `test_laptop_janitor`, `test_ports`, `test_shim_safety`, `test_state`, `test_tunnel`,
+  `test_zz_hermetic`; rrun: `test_run` (laptop side end to end through a fake ssh), `test_runner`
+  (`rr_runner.pl`: READY/GO handshake, heartbeat kill, INT, env-file deletion, keep-on-failure,
+  symlink refusals, tmutil exclusion), `test_hook` (hook rewrite matrix incl. adversarial inputs)):
   `cd ~/.claude-dotfiles/scripts/rdocker && /usr/bin/python3 -m unittest discover -s tests`
 - Live end-to-end (self-cleaning, removes only the `rde2e-<pid>-*` containers it created, non-disruptive by default):
   `bash ~/.claude-dotfiles/scripts/rdocker/tests/e2e.sh` (incl. a check that `-p <port>:80` with no IP
-  still binds only the mini's loopback, i.e. the Lima override wins). `E2E_DISRUPTIVE=1` adds the tunnel-kill
+  still binds only the mini's loopback, i.e. the Lima override wins, and rrun cases on a throwaway repo:
+  exit-code passthrough, `RRUN=0` local, env file copied then deleted, label cleanup on success; skipped
+  when `~/.local/bin/rrun` is absent). `E2E_DISRUPTIVE=1` adds the tunnel-kill
   self-heal case (kills the shared SSH master — other windows' docker calls blip).
 
 ## Setup record (done 2026-10-12 — for a rebuild)

@@ -166,5 +166,46 @@ check "-p $LIMA_PORT:80 binds mini loopback only (Lima override wins)" \
   "! grep -vE '(127\\.0\\.0\\.1|\\[::1\\]):$LIMA_PORT' $TMP/lima | grep -q ':$LIMA_PORT'"
 docker rm -f "$LIMA" >/dev/null 2>&1
 
+# --- rrun: heavy jobs on the mini (skipped when rrun is not installed) ---------------------------
+RRUN_BIN="$HOME/.local/bin/rrun"
+RR_NAMES="exit passthrough (3), RRUN=0 runs locally, env file copied then deleted, label cleanup on success"
+if [ ! -x "$RRUN_BIN" ]; then
+  skip "rrun: $RR_NAMES (~/.local/bin/rrun absent)"
+else
+  RRW="$TMP/rrun-repo"; mkdir -p "$RRW"
+  ( cd "$RRW" && git init -q && printf '.env\n' > .gitignore \
+    && cat > db.sh <<'SH'
+#!/bin/sh
+# throwaway "test:db": start a postgres container through the rrun docker shim, report, exit $1
+set -e
+[ -f .env ] && echo "envfile=$(cat .env)"
+echo "host=$(hostname -s)"
+cid=$(docker run -d --name "$RR_E2E_NAME" -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 postgres:17)
+echo "label=$(docker inspect -f '{{index .Config.Labels "rdocker.rrun"}}' "$cid")"
+exit "${1:-0}"
+SH
+    chmod +x db.sh && git add -A \
+    && git -c user.name=e2e -c user.email=e2e@e2e -c commit.gpgsign=false commit -qm e2e ) >/dev/null 2>&1
+  printf 'RR_E2E_SECRET=1\n' > "$RRW/.env"
+  RRN="${PFX}rrun"
+  ( cd "$RRW" && RRUN_STRICT=1 RR_E2E_NAME="$RRN" "$RRUN_BIN" -e RR_E2E_NAME ./db.sh 0 ) > "$TMP/rr0.out" 2>"$TMP/rr0.err"
+  rrc=$?
+  check "rrun: success exits 0 (got $rrc)" "[ $rrc = 0 ]"
+  check "rrun: ran on the mini, not the laptop" "! grep -qx \"host=\$(hostname -s)\" $TMP/rr0.out && grep -q '^host=' $TMP/rr0.out"
+  check "rrun: allowlisted .env copied for the run" "grep -qx 'envfile=RR_E2E_SECRET=1' $TMP/rr0.out"
+  check "rrun: container got an rrun label token" "grep -Eq '^label=[0-9a-f]{32}$' $TMP/rr0.out"
+  check "rrun: labelled container removed on success" "[ -z \"\$(docker ps -aq --filter name=$RRN)\" ]"
+  RRMIRROR=$(ssh macmini-docker 'ls -d ~/rr/w/rrun-repo.*' 2>/dev/null | head -1)
+  check "rrun: env file deleted on the mini after the run" "[ -n '$RRMIRROR' ] && ssh macmini-docker \"test ! -e '$RRMIRROR/.env'\""
+  ( cd "$RRW" && RRUN_STRICT=1 RR_E2E_NAME="${RRN}3" "$RRUN_BIN" -e RR_E2E_NAME ./db.sh 3 ) > "$TMP/rr3.out" 2>"$TMP/rr3.err"
+  rrc=$?
+  check "rrun: exit code passes through (3, got $rrc)" "[ $rrc = 3 ]"
+  check "rrun: failed run keeps its container (KEPT notice)" "grep -q 'containers stay on the Mac mini' $TMP/rr3.err"
+  track "$(docker ps -aq --no-trunc --filter name=${RRN}3 2>/dev/null | head -1)"
+  docker rm -f -v "${RRN}3" >/dev/null 2>&1
+  ( cd "$RRW" && RRUN=0 "$RRUN_BIN" /bin/sh -c 'echo "host=$(hostname -s) mode=$RDOCKER_MODE"' ) > "$TMP/rrl.out" 2>&1
+  check "rrun: RRUN=0 runs on the laptop (RDOCKER_MODE=local)" "grep -qx \"host=\$(hostname -s) mode=local\" $TMP/rrl.out"
+fi
+
 echo; echo "rdocker e2e: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
