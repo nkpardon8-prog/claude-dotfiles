@@ -157,9 +157,17 @@ time deterministic. Shared setup: `_addrbook-fixture.sh` (sourced, never run).
 - **12-address-book-merge** - an awake Mac and an asleep Mac on another account: live vs
   "asleep/offline, last seen" sections, the account warning only for the mismatched Mac, `find` picks
   and labels the other Mac's window, `--json` host fields, this Mac's own file never shown as remote.
-- **13-address-book-placeholder** - a never-answering FIFO stands in for an iCloud placeholder: `list`
-  and `find` return within the alarm and show the cached copy marked "may be out of date"; same for an
-  `.icloud` stub and a mode-000 file; an uncached unreadable Mac is reported, never waited on.
+- **13-address-book-placeholder** - a never-answering FIFO stands in for an iCloud placeholder: with a
+  cached copy `list`/`find` never touch it; an uncached FIFO or `.icloud` stub is reported, never
+  waited on; the prefetch gives up at its timeout, keeps the cached copy, and the aged cache reads
+  "may be out of date".
+- **14-address-book-cache-isolation** - the 2026-10-15 leak: with a sandbox shared folder, no write path
+  (cache, stamp, log) resolves under the real home (pure query), an end-to-end run under a pretend
+  home leaves its cache untouched, and `LAC_CACHE_DIR` is honoured. The fixture also refuses to run
+  (exit 1) unless every write path is its own sandbox cache.
+- **15-address-book-prefetch** - `publish` copies other Macs' files into the cache; `list` reads only the
+  cache (a changed remote file appears only after the next publish); unchanged files are not rewritten;
+  live/asleep comes from the heartbeat inside the file; `--no-prefetch` leaves the cache alone.
 
 ## Why 04 and 05 were authored RED (historical - both now gate like everything else)
 
@@ -206,7 +214,9 @@ LINE_AGENT_TESTS_ALLOW_DEV=true LINE_AGENT_NEG_CONTROL=true bash <test>.sh
 | 10 | copies the script, deletes `main()`'s guard branches and makes `flaglike()` return `""` | observed RED, 13 assertions failing - including A3 renaming to `help`, the `/line --help` path |
 | 11 | copies the script, removes the unchanged-skip and publishes the full cwd | observed RED: P2, P3, P4, P5, P6 |
 | 12 | copies the script, makes the reader skip every other Mac and never compare accounts | observed RED: M1-M5, M8 |
-| 13 | copies the script so it reads the remote file directly (no child, no timeout) | observed RED: X1/X2/X5 hang and are killed by the alarm, X4 crashes |
+| 13 | copies the script so it reads the remote file directly (no child, no timeout) | observed RED: X3 and X5 hang and are killed by the alarm |
+| 14 | copies the script so the cache path ignores the shared-folder override (the original leak) | observed RED: G1 and G2 |
+| 15 | copies the script with the prefetch removed and the reader going to iCloud every time | observed RED: R1 and R3 |
 
 06-08 and 10 patch a **copy** of the real script rather than a flag inside it: a defense you can switch off
 at runtime is a defense an attacker can switch off. Each patch is anchored on an exact source line

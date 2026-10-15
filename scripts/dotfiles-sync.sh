@@ -19,6 +19,18 @@
 _MARKER="$HOME/.claude/.dotfiles-sync-paused"
 [ -f "$_MARKER" ] && exit 0
 
+# SINGLE-FLIGHT: every tool call in every window fires this hook, and the pre-commit hook can run
+# a multi-minute test suite, so overlapping runs once stacked 60 deep (load 300+, 2026-10-15).
+# A run that finds another in flight exits; the next tool call after it finishes syncs the rest.
+# A lock whose pid is dead is taken over, so a killed run cannot wedge sync.
+_SYNC_LOCK="$HOME/.claude/.dotfiles-sync.lock"
+if ! ( set -o noclobber; echo $$ > "$_SYNC_LOCK" ) 2>/dev/null; then
+  kill -0 "$(cat "$_SYNC_LOCK" 2>/dev/null)" 2>/dev/null && exit 0
+  /bin/rm -f "$_SYNC_LOCK"
+  ( set -o noclobber; echo $$ > "$_SYNC_LOCK" ) 2>/dev/null || exit 0
+fi
+trap '/bin/rm -f "$_SYNC_LOCK"' EXIT
+
 set -o pipefail
 # EXPORTED: the push classifier below reads English git stderr, and an unexported
 # LC_ALL does not reach the git child (clean-shell probed).

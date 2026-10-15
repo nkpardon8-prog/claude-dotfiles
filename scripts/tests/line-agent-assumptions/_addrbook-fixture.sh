@@ -83,11 +83,32 @@ run_lac() {
   OUT="$(HOME="$FAKE_HOME" CLAUDE_SESSION_ID="$SID" PATH="$ROOT/bin:$PATH" \
          LAC_WINDOWS_DIR="$WIN_DIR" LAC_HOST_ID="test-mac-a" LAC_HOST_LABEL="Test Mac A" \
          LAC_NO_AUTOPUBLISH="${LAC_NO_AUTOPUBLISH:-1}" LAC_REMOTE_READ_TIMEOUT="${LAC_REMOTE_READ_TIMEOUT:-1}" \
+         LAC_PREFETCH_TIMEOUT="${LAC_PREFETCH_TIMEOUT:-5}" \
          perl -e 'alarm shift; exec @ARGV' "$LAC_ALARM" python3 "$SCRIPT" "$@" 2>&1)"
   RC=$?
   t1=$(python3 -c 'import time;print(time.time())')
   ELAPSED=$(python3 -c "print(round($t1 - $t0, 2))")
 }
+
+# FAIL-CLOSED: every path the script will write (cache, stamp, log) must sit inside this sandbox
+# and outside the account's real home. A fixture once fed fake windows into the real cache; if the
+# paths ever resolve elsewhere again, refuse loudly (exit 1 - this is a defect, not an infra skip).
+CACHE_DIR_EXPECTED="$ROOT/icloud/.claude-windows-cache"
+REAL_HOME_DIR="$(python3 -c 'import os,pwd;print(pwd.getpwuid(os.getuid()).pw_dir)')"
+run_lac address-book-paths
+if ! printf '%s' "$OUT" | python3 -c '
+import json, os, sys
+root, real = os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])
+d = json.load(sys.stdin)
+for k in ("windows_dir", "cache_dir", "publish_stamp", "publish_log"):
+    p = os.path.realpath(d[k])
+    assert p.startswith(root + os.sep), (k, p)
+    assert not (p + os.sep).startswith(real + os.sep), (k, p)
+assert os.path.realpath(d["cache_dir"]) == os.path.realpath(sys.argv[3]), d["cache_dir"]
+' "$ROOT" "$REAL_HOME_DIR" "$CACHE_DIR_EXPECTED" 2>/dev/null; then
+  echo "REFUSED: an address-book path resolves outside the sandbox or under the real home: $OUT" >&2
+  exit 1
+fi
 
 # write_host <host-id> <label> <heartbeat-epoch> <account-hash> <json windows array>
 write_host() {

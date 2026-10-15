@@ -464,10 +464,12 @@ if not others:
 for o in others:
     if o.get('account_match') is False:
         rows.append(('FAIL', '%s is signed in to a DIFFERENT claude.ai account - cross-Mac messages will not arrive' % o.get('label')))
-    elif o.get('problem') and not o.get('from_cache'):
-        rows.append(('WARN', '%s: file unreadable (%s)' % (o.get('label'), o.get('problem'))))
+    elif o.get('heartbeat_age_sec') is None:
+        rows.append(('WARN', '%s: file not readable yet (%s)' % (o.get('label'), o.get('problem') or 'unknown')))
+    elif o.get('out_of_date'):
+        rows.append(('WARN', '%s: local copy not refreshed for %ss (%s) - is this Mac\'s LaunchAgent running?' % (o.get('label'), o.get('sync_age_sec'), o.get('problem') or 'no background sync yet')))
     elif not o.get('live'):
-        rows.append(('WARN', '%s: stale, heartbeat %ss old (asleep/offline?)%s' % (o.get('label'), o.get('heartbeat_age_sec'), ' [cached copy]' if o.get('from_cache') else '')))
+        rows.append(('WARN', '%s: stale, heartbeat %ss old (asleep/offline?)' % (o.get('label'), o.get('heartbeat_age_sec'))))
     else:
         rows.append(('PASS', '%s fresh, %s window(s), same account' % (o.get('label'), o.get('windows')) if o.get('account_match') else '%s fresh, %s window(s)' % (o.get('label'), o.get('windows'))))
 for st, msg in rows:

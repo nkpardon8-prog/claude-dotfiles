@@ -2,6 +2,25 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-15 - /line address book: always-synced reads, test data can no longer reach the real cache
+
+- Live defect 1: the MacBook's `list` showed fixture windows (`mini-billing`) as the Mac mini. A manual
+  run with a sandbox shared folder but the real HOME wrote them into `~/.claude/claude-windows-cache/`,
+  because the cache path came from HOME alone. The cache, publish stamp and publish log now follow the
+  shared folder: an overridden folder (`LAC_WINDOWS_DIR`) keeps them beside it; `LAC_CACHE_DIR` sets it
+  explicitly. The bogus cached entry on the MacBook was deleted. New `address-book-paths` (pure) lets
+  tests check every write path; the line-agent fixture refuses to run (exit 1) unless they sit in its
+  sandbox, and test 14 guards the derivation.
+- Live defect 2: the MacBook could not read the mini's real file ("still downloading from iCloud (no
+  answer in 2s)"). The LaunchAgent's `publish` now also prefetches every other Mac's file: a full
+  background read with a 60 s budget (which makes iCloud download it), validated, written to the local
+  cache only on change, sync times in `sync-state.json`. `list`/`find` read only the cache (instant),
+  with `synced N s ago` or "may be out of date" after 5 minutes without a refresh; iCloud is read
+  directly only for a Mac with no cached copy. Live vs asleep still comes from the heartbeat inside the
+  file. The background publish from `/line` and the session hook uses `--no-prefetch`.
+- Tests: 13 reworked for the cache-first reader; new 14 (cache isolation) and 15 (prefetch: cache only,
+  no rewrite when unchanged, heartbeat from content); each watched red against a broken copy.
+
 ## 2026-10-15 - /line: see the windows on your other Macs
 
 - `line-agent-communicator.py list` and `find` now show the windows running on your other Macs, by

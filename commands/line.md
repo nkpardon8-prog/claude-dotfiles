@@ -91,9 +91,13 @@ means the two Macs never write the same file, so iCloud never makes conflict cop
   which needs both Macs signed in to the same claude.ai account with `remoteControlAtStartup: true`
   (and `crossSessionInbound: "accept"` to receive). If the accounts differ, `list` and `find` print
   one warning line saying so - cross-Mac messages will not arrive until both are on one account.
-- **When iCloud is slow:** another Mac's file may still be downloading. Reads give up after 2
-  seconds and fall back to the last good copy kept in `~/.claude/claude-windows-cache/`, marked
-  "may be out of date" - `list` never hangs on iCloud.
+- **Always synced:** each LaunchAgent run also reads every other Mac's file fully in the background
+  (up to 60 seconds, which makes iCloud download it), checks it, and updates a local copy in
+  `~/.claude/claude-windows-cache/` only when it changed. `list` and `find` read that local copy, so
+  they answer instantly and never wait on iCloud; each Mac's line says `synced N s ago`. If the
+  background copy has not refreshed for 5 minutes the line says "may be out of date" and why. Live
+  vs asleep comes from the heartbeat the other Mac wrote inside its file, not from local file times.
+  Only a Mac never copied before is read straight from iCloud (2-second limit).
 - **Fallback:** `ListAgents` still shows other Macs' windows as Remote Control rows.
 - **Check it:** `transfer-doctor` reports whether the LaunchAgent is loaded, whether this Mac's file
   and the other Mac's file are fresh, and whether both are on the same account.

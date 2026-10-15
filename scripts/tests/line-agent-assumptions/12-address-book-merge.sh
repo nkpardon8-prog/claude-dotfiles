@@ -26,7 +26,7 @@ if [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ]; then
 import sys
 s = open(sys.argv[1]).read()
 for a, b in [
-    ("        if hid == mine or not HOST_ID_RE.match(hid):", "        if True:"),
+    ("    return sorted(h for h in hids if h != mine and HOST_ID_RE.match(h))", "    return []"),
     ("        match = None if not (my_hash and their_hash) else (my_hash == their_hash)", "        match = None"),
 ]:
     assert s.count(a) == 1, a
@@ -45,6 +45,7 @@ write_host test-mac-b "Test Mac B" "$NOW" "$SAME" \
   '[{"address":"mini-billing-desk","caption":"billing desk on the mini","label":"billing desk on the mini","owns":"Stripe invoices","session_id":"s-b1","cwd_label":"summit","started_at":"","can_receive":true,"named":true}]'
 write_host test-mac-c "Test Mac C" "$((NOW - 7200))" "$OTHER" \
   '[{"address":"old-reports","caption":"old reports","label":"old reports","owns":"","session_id":"s-c1","cwd_label":"reports","started_at":"","can_receive":true,"named":true}]'
+run_lac publish   # the background prefetch: copies B and C into this Mac's local cache
 
 # --- M1 / M2 / M3 / M6 ----------------------------------------------------------------------------
 run_lac list
@@ -80,6 +81,7 @@ case "$OUT" in *"SendMessage to: old-reports"*"asleep/offline"*) ;; *) fail "M8:
 
 # --- M7 -------------------------------------------------------------------------------------------
 write_host test-mac-c "Test Mac C" "$((NOW - 7200))" "$SAME" '[]'
+run_lac publish
 run_lac list
 case "$OUT" in *"DIFFERENT claude.ai account"*) fail "M7: warning still printed after the accounts match" ;; esac
 

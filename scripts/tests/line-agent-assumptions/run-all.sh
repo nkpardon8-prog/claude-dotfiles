@@ -59,6 +59,8 @@ TESTS=(
   "11-address-book-publish.sh"
   "12-address-book-merge.sh"
   "13-address-book-placeholder.sh"
+  "14-address-book-cache-isolation.sh"
+  "15-address-book-prefetch.sh"
 )
 # The two tests that are red until the fix ships. Empty this list as each one is fixed.
 # Emptied 2026-08-12: 04 and 05 were authored RED on purpose (they encoded the orphaned-socket and

@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# 13 - Another Mac's file that cannot be read right now must never hang `list` or `find`.
+# 13 - Another Mac's file that cannot be read right now must never hang `list`, `find` or `publish`.
 #
 # In iCloud Drive a file can be a placeholder whose content is still in the cloud; opening it can
-# block until the download finishes, and `list` runs from hooks and agents that cannot wait. A FIFO
-# with no writer is used as the stand-in because opening one blocks forever - the worst case.
+# block until the download finishes. `list`/`find` read only the local cache the background
+# prefetch keeps, and read iCloud directly (short timeout) only for a Mac with no cached copy yet.
+# A FIFO with no writer stands in for a placeholder because opening one blocks forever.
 #
-# X1  remote file is a never-answering FIFO: `list` returns within the alarm, shows the CACHED copy
-#     of that Mac's windows, and says "may be out of date"
-# X2  `find` in the same state also returns, and still finds the cached window
-# X3  only an iCloud stub (.<host>.json.icloud) exists: cached copy + "not downloaded from iCloud yet"
-# X4  remote file unreadable (mode 000): cached copy, no crash
-# X5  a Mac never seen before, whose file is a FIFO and has no cache: reported unreadable, no hang
+# X1  cached Mac whose file is now a FIFO: `list` shows the cached windows, no hang
+# X2  `find` in the same state finds the cached window
+# X3  a never-cached Mac whose file is a FIFO: reported unreadable within the alarm
+# X4  a never-cached Mac with only an iCloud stub (.<host>.json.icloud): "not downloaded from iCloud yet"
+# X5  the prefetch (`publish`) over a FIFO gives up at its timeout, keeps the cached copy, and the
+#     problem shows up as "may be out of date" once the cache ages
 #
-# NEGATIVE CONTROL (LINE_AGENT_NEG_CONTROL=true): a copy that reads the remote file directly
-# (no child process, no timeout). X1 must go red - as a hang caught by the alarm.
+# NEGATIVE CONTROL (LINE_AGENT_NEG_CONTROL=true): a copy that reads the file directly (no child
+# process, no timeout). X3 and X5 must go red - as hangs caught by the alarm.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAC_ALARM=20   # a real hang is forever; 20s only keeps a loaded machine from reading as one
@@ -32,60 +33,61 @@ PY
 fi
 
 NOW=$(python3 -c 'import time;print(int(time.time()))')
-run_lac publish
-write_host test-mac-b "Test Mac B" "$NOW" "$(our_hash)" \
+write_host test-mac-b "Test Mac B" "$NOW" "" \
   '[{"address":"mini-billing-desk","caption":"billing desk on the mini","owns":"","session_id":"s-b1","cwd_label":"summit","started_at":"","can_receive":true,"named":true}]'
-run_lac list   # prime the cache with a good copy
-case "$OUT" in *"mini-billing-desk"*) ;; *) echo "INFRA: priming list did not see Test Mac B: $OUT" >&2; exit 3 ;; esac
+run_lac publish   # prefetch seeds the cache with a good copy
+CACHED="$ROOT/icloud/.claude-windows-cache/test-mac-b.json"
+[ -f "$CACHED" ] || { echo "INFRA: the priming prefetch did not cache Test Mac B: $OUT" >&2; exit 3; }
+CACHED_SHA=$(shasum "$CACHED" | awk '{print $1}')
 
 B="$WIN_DIR/test-mac-b.json"
+rm -f "$B"; mkfifo "$B"
 
 # --- X1 -------------------------------------------------------------------------------------------
-rm -f "$B"; mkfifo "$B"
 run_lac list
-if [ "$RC" = 142 ]; then
-  fail "X1: list HUNG on a placeholder file (killed by the ${LAC_ALARM}s alarm)"
-else
-  case "$OUT" in *"mini-billing-desk"*) ;; *) fail "X1: the cached window was not shown" ;; esac
-  case "$OUT" in *"may be out of date"*) ;; *) fail "X1: did not say the list may be out of date" ;; esac
-fi
+if [ "$RC" = 142 ]; then fail "X1: list HUNG with a cached Mac whose file is a placeholder"
+else case "$OUT" in *"mini-billing-desk"*) ;; *) fail "X1: the cached window was not shown" ;; esac; fi
 
 # --- X2 -------------------------------------------------------------------------------------------
 run_lac find "billing desk"
-if [ "$RC" = 142 ]; then fail "X2: find HUNG on a placeholder file"
+if [ "$RC" = 142 ]; then fail "X2: find HUNG"
 else case "$OUT" in *"SendMessage to: mini-billing-desk"*) ;; *) fail "X2: find lost the cached window" ;; esac; fi
 
 # --- X3 -------------------------------------------------------------------------------------------
-rm -f "$B"; : > "$WIN_DIR/.test-mac-b.json.icloud"
-run_lac list
-case "$OUT" in *"not downloaded from iCloud yet"*"may be out of date"*) ;; *) fail "X3: an iCloud stub did not fall back to the cache with a note" ;; esac
-case "$OUT" in *"mini-billing-desk"*) ;; *) fail "X3: the cached window was not shown" ;; esac
-rm -f "$WIN_DIR/.test-mac-b.json.icloud"
-
-# --- X4 -------------------------------------------------------------------------------------------
-printf '{}' > "$B"; chmod 000 "$B"
-run_lac list
-[ "$RC" = 0 ] || fail "X4: list exited $RC on an unreadable file"
-case "$OUT" in *"mini-billing-desk"*"may be out of date"*|*"may be out of date"*"mini-billing-desk"*) ;; *) fail "X4: unreadable file did not fall back to the cache" ;; esac
-chmod 600 "$B"
-
-# --- X5 -------------------------------------------------------------------------------------------
 mkfifo "$WIN_DIR/test-mac-d.json"
 run_lac list
-if [ "$RC" = 142 ]; then fail "X5: list HUNG on a never-seen Mac's placeholder"
-else case "$OUT" in *"On test-mac-d"*"could not read its address book"*) ;; *) fail "X5: an uncached unreadable Mac was not reported" ;; esac; fi
+if [ "$RC" = 142 ]; then fail "X3: list HUNG on a never-cached Mac's placeholder"
+else case "$OUT" in *"On test-mac-d"*"could not read its address book"*) ;; *) fail "X3: an uncached unreadable Mac was not reported" ;; esac; fi
+rm -f "$WIN_DIR/test-mac-d.json"
+
+# --- X4 -------------------------------------------------------------------------------------------
+: > "$WIN_DIR/.test-mac-e.json.icloud"
+run_lac list
+case "$OUT" in *"On test-mac-e"*"not downloaded from iCloud yet"*) ;; *) fail "X4: an iCloud stub was not reported as not downloaded yet" ;; esac
+rm -f "$WIN_DIR/.test-mac-e.json.icloud"
+
+# --- X5 -------------------------------------------------------------------------------------------
+LAC_PREFETCH_TIMEOUT=1 run_lac publish
+if [ "$RC" = 142 ]; then
+  fail "X5: publish HUNG prefetching a placeholder"
+else
+  [ "$(shasum "$CACHED" | awk '{print $1}')" = "$CACHED_SHA" ] || fail "X5: a failed prefetch changed the cached copy"
+  export LAC_NOW=$((NOW + 600)); run_lac list; unset LAC_NOW
+  case "$OUT" in *"On Test Mac B"*"may be out of date"*) ;; *) fail "X5: an aged cache was not flagged as possibly out of date" ;; esac
+fi
 
 # --- verdict --------------------------------------------------------------------------------------
 if [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ]; then
-  case "$FAIL_MSGS" in
-    *"X1: list HUNG"*)
-      echo "NEG-CONTROL OK: reading the file directly hangs, and X1 caught it (${FAIL_N} failed)"
-      printf '%s' "$FAIL_MSGS"; exit 0 ;;
-  esac
-  echo "NEG-CONTROL BROKEN: X1 did not report a hang" >&2; printf '%s' "$FAIL_MSGS" >&2; exit 1
+  MISSING=""
+  for tag in X3 X5; do case "$FAIL_MSGS" in *"${tag}: "*"HUNG"*) ;; *) MISSING="${MISSING} ${tag}" ;; esac; done
+  if [ -z "$MISSING" ]; then
+    echo "NEG-CONTROL OK: reading the file directly hangs, and X3/X5 caught it (${FAIL_N} failed)"
+    printf '%s' "$FAIL_MSGS"; exit 0
+  fi
+  echo "NEG-CONTROL BROKEN: did not report a hang:${MISSING}" >&2; printf '%s' "$FAIL_MSGS" >&2; exit 1
 fi
 if [ "$FAIL_N" -gt 0 ]; then
   echo "FAIL: 13-address-book-placeholder" >&2; printf '%s' "$FAIL_MSGS" >&2; exit 1
 fi
-echo "PASS: 13-address-book-placeholder - 5 assertions (FIFO placeholder, find, iCloud stub, unreadable file, uncached Mac - never a hang, cached fallback says out of date)"
+echo "PASS: 13-address-book-placeholder - 5 assertions (cached Mac behind a placeholder, find, uncached placeholder, iCloud stub, prefetch timeout keeps the cache - never a hang)"
 exit 0

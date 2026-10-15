@@ -914,15 +914,21 @@ def collect_live_rows(me: str = "") -> tuple[list[dict], int]:
 # the two Macs are signed in to different claude.ai accounts).
 #
 # A file in iCloud may be a not-yet-downloaded placeholder, and reading one can block until the
-# download finishes. So every read of another Mac's file runs in a child process with a short
-# timeout, and the last good copy is cached under ~/.claude/ to fall back on.
+# download finishes - live, a 2 s foreground read of the other Mac's file never got an answer. So
+# reading is split: the LaunchAgent's `publish` PREFETCHES every other Mac's file in the background
+# (full read, generous timeout, which makes iCloud download it) into a local cache, and `list`/`find`
+# read only that cache - instant. Only a Mac with no cached copy yet is read directly (short timeout,
+# in a child process so it can be abandoned). The cache lives under ~/.claude/, or beside an
+# overridden shared folder (see cache_dir()) so a test folder can never reach the real cache.
 # --------------------------------------------------------------------------------------
 
 ADDRESS_BOOK_FORMAT = 1
 ICLOUD_BASE = HOME / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
-WINDOWS_CACHE_DIR = HOME / ".claude" / "claude-windows-cache"
-PUBLISH_STAMP = HOME / ".claude" / ".lac-publish-stamp"
-PUBLISH_LOG = HOME / ".claude" / "logs" / "windows-publish.log"
+# Background prefetch of another Mac's file (LaunchAgent only): generous, because the point is to
+# let iCloud finish downloading a placeholder that a 2 s foreground read would give up on.
+PREFETCH_TIMEOUT_SEC = 60.0
+# A cache not refreshed by the prefetcher for this long is called out as possibly out of date.
+SYNC_STALE_SEC = 300
 # Rewrite an unchanged file only this often, so readers can tell a sleeping Mac from a quiet one.
 HEARTBEAT_REFRESH_SEC = 600
 # A Mac whose heartbeat is older than this is reported as asleep/offline. Comfortably more than
@@ -934,6 +940,36 @@ REMOTE_MAX_BYTES = 512 * 1024
 ACCOUNT_HASH_SALT = "claude-dotfiles/claude-windows/v1"
 HOST_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 FIELD_MAX = 120
+
+
+def cache_dir() -> Path:
+    """
+    Where this Mac keeps its local copies of the other Macs' files (plus lock/stamp/log).
+
+    LAC_CACHE_DIR wins. Otherwise, when the shared folder is OVERRIDDEN (LAC_WINDOWS_DIR - only tests
+    and experiments do that), the cache lives BESIDE that override, never under ~/.claude: a sandbox
+    shared folder once fed fixture windows into the real cache because the two paths were derived
+    independently (a sandbox folder plus the real HOME). Tied together, an override can never reach
+    the real cache.
+    """
+    explicit = os.environ.get("LAC_CACHE_DIR")
+    if explicit:
+        return Path(explicit)
+    override = os.environ.get("LAC_WINDOWS_DIR")
+    if override:
+        p = Path(override)
+        return p.parent / f".{p.name or 'claude-windows'}-cache"
+    return HOME / ".claude" / "claude-windows-cache"
+
+
+def publish_stamp() -> Path:
+    return cache_dir() / ".publish-stamp"
+
+
+def publish_log() -> Path:
+    if os.environ.get("LAC_CACHE_DIR") or os.environ.get("LAC_WINDOWS_DIR"):
+        return cache_dir() / "windows-publish.log"
+    return HOME / ".claude" / "logs" / "windows-publish.log"
 
 
 def windows_dir() -> Path | None:
@@ -1011,11 +1047,11 @@ def clean_field(value, limit: int = FIELD_MAX) -> str:
 def _log_publish(msg: str) -> None:
     """One bounded log line. Publish runs every minute from a LaunchAgent, so the log must not grow."""
     try:
-        PUBLISH_LOG.parent.mkdir(parents=True, exist_ok=True)
-        if PUBLISH_LOG.exists() and PUBLISH_LOG.stat().st_size > 65536:
-            tail = PUBLISH_LOG.read_bytes()[-32768:]
-            PUBLISH_LOG.write_bytes(tail)
-        with open(PUBLISH_LOG, "a") as fh:
+        publish_log().parent.mkdir(parents=True, exist_ok=True)
+        if publish_log().exists() and publish_log().stat().st_size > 65536:
+            tail = publish_log().read_bytes()[-32768:]
+            publish_log().write_bytes(tail)
+        with open(publish_log(), "a") as fh:
             fh.write(f"{iso_utc(time.time())} {msg}\n")
     except Exception:
         pass
@@ -1123,7 +1159,7 @@ def _write_private_json(path: Path, data: dict, pretty: bool = True) -> None:
 
 
 def _cache_path(hid: str) -> Path:
-    return WINDOWS_CACHE_DIR / f"{hid}.json"
+    return cache_dir() / f"{hid}.json"
 
 
 def _read_cache(hid: str) -> dict | None:
@@ -1136,8 +1172,8 @@ def _read_cache(hid: str) -> dict | None:
 
 def _write_cache(hid: str, data: dict) -> None:
     try:
-        WINDOWS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        os.chmod(WINDOWS_CACHE_DIR, 0o700)
+        cache_dir().mkdir(parents=True, exist_ok=True)
+        os.chmod(cache_dir(), 0o700)
         _write_private_json(_cache_path(hid), data)
     except Exception:
         pass  # the cache is a fallback; failing to refresh it must never fail the caller
@@ -1147,10 +1183,11 @@ def _strip_times(d: dict) -> dict:
     return {k: v for k, v in d.items() if k not in ("updated_at", "heartbeat_at")}
 
 
-def cmd_publish(throttle: float = 0.0, verbose: bool = False) -> int:
+def cmd_publish(throttle: float = 0.0, verbose: bool = False, prefetch: bool = True) -> int:
     """
     Write this Mac's live windows to the shared folder - only when something changed, or when the
-    heartbeat is older than HEARTBEAT_REFRESH_SEC. Idempotent, local-disk only, no network.
+    heartbeat is older than HEARTBEAT_REFRESH_SEC - then (unless prefetch=False) refresh the local
+    cache of every other Mac's file. Idempotent, local-disk only, no network of its own.
     """
     d = windows_dir()
     if d is None:
@@ -1159,19 +1196,26 @@ def cmd_publish(throttle: float = 0.0, verbose: bool = False) -> int:
         return 0
     if throttle > 0:
         try:
-            if time.time() - PUBLISH_STAMP.stat().st_mtime < throttle:
+            if time.time() - publish_stamp().stat().st_mtime < throttle:
                 return 0
         except OSError:
             pass
     try:
-        WINDOWS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        with file_lock(WINDOWS_CACHE_DIR / "publish"):
-            return _publish_locked(d, verbose)
+        cache_dir().mkdir(parents=True, exist_ok=True)
+        with file_lock(cache_dir() / "publish"):
+            _publish_locked(d, verbose)
     except Exception as e:
         _log_publish(f"publish failed: {e.__class__.__name__}: {clean_field(e, 200)}")
         if verbose:
-            print(f"publish: FAILED ({e.__class__.__name__}) - see {PUBLISH_LOG}")
-        return 0
+            print(f"publish: FAILED ({e.__class__.__name__}) - see {publish_log()}")
+    if prefetch:
+        # Outside the publish lock: a prefetch can take up to a minute, and a rename's background
+        # publish must not queue behind it.
+        try:
+            prefetch_other_hosts(d, verbose)
+        except Exception as e:
+            _log_publish(f"prefetch failed: {e.__class__.__name__}: {clean_field(e, 200)}")
+    return 0
 
 
 def _publish_locked(d: Path, verbose: bool) -> int:
@@ -1229,8 +1273,8 @@ def _publish_locked(d: Path, verbose: bool) -> int:
 
 def _touch_stamp() -> None:
     try:
-        PUBLISH_STAMP.parent.mkdir(parents=True, exist_ok=True)
-        PUBLISH_STAMP.touch()
+        publish_stamp().parent.mkdir(parents=True, exist_ok=True)
+        publish_stamp().touch()
     except OSError:
         pass
 
@@ -1242,7 +1286,8 @@ def spawn_publish(delay: float = 0.0, throttle: float = 0.0) -> None:
     if os.environ.get("LAC_NO_AUTOPUBLISH") == "1" or windows_dir() is None:
         return
     try:
-        args = [sys.executable, os.path.abspath(__file__), "publish", "--throttle", str(throttle)]
+        args = [sys.executable, os.path.abspath(__file__), "publish", "--no-prefetch",
+                "--throttle", str(throttle)]
         if delay > 0:
             args += ["--delay", str(delay)]
         subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1251,19 +1296,8 @@ def spawn_publish(delay: float = 0.0, throttle: float = 0.0) -> None:
         pass
 
 
-def load_other_hosts() -> tuple[list[dict], str]:
-    """
-    Every OTHER Mac's address book, freshest copy we can get without blocking.
-
-    Returns (hosts, state). state is "no-icloud" when there is no shared folder at all, else "".
-    Each host: {host, host_label, heartbeat_at, last_seen_epoch, live, from_cache, problem,
-    account_match (True/False/None), windows:[... + host, host_label]}.
-    """
-    d = windows_dir()
-    if d is None:
-        return [], "no-icloud"
-    mine = host_id()
-    my_hash = account_hash()
+def _listed_hosts(d: Path) -> list[str]:
+    """Host ids with a file (or an iCloud stub of one) in the shared folder, minus this Mac."""
     try:
         names = os.listdir(d)
     except OSError:
@@ -1274,25 +1308,120 @@ def load_other_hosts() -> tuple[list[dict], str]:
             hids.add(n[:-5])
         elif n.startswith(".") and n.endswith(".json.icloud"):
             hids.add(n[1:-len(".json.icloud")])
+    mine = host_id()
+    return sorted(h for h in hids if h != mine and HOST_ID_RE.match(h))
+
+
+def _valid_book(data: dict | None, hid: str) -> bool:
+    return (isinstance(data, dict) and data.get("format") == ADDRESS_BOOK_FORMAT
+            and data.get("host") == hid and isinstance(data.get("windows"), list))
+
+
+def _sync_state_path() -> Path:
+    return cache_dir() / "sync-state.json"
+
+
+def _read_sync_state() -> dict:
+    try:
+        d = json.loads(_sync_state_path().read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_sync_state(state: dict) -> None:
+    try:
+        cache_dir().mkdir(parents=True, exist_ok=True)
+        _write_private_json(_sync_state_path(), state)
+    except Exception:
+        pass
+
+
+def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
+    """
+    Background half of "always synced": read every other Mac's file FULLY, with a generous timeout,
+    which makes iCloud download a placeholder; validate it; update the local cache only when the
+    content changed. `list`/`find` then read the cache and never wait on iCloud.
+
+    Runs from the LaunchAgent's `publish`. One prefetch at a time (non-blocking lock: a second one
+    simply skips). Records per host the last success, last try and last problem in sync-state.json.
+    """
+    try:
+        cache_dir().mkdir(parents=True, exist_ok=True)
+        lock = open(cache_dir() / "prefetch.lock", "a+")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return  # another prefetch is running (or no lock possible) - it will do the work
+    try:
+        try:
+            budget = float(os.environ.get("LAC_PREFETCH_TIMEOUT") or PREFETCH_TIMEOUT_SEC)
+        except ValueError:
+            budget = PREFETCH_TIMEOUT_SEC
+        deadline = time.monotonic() + budget
+        state = _read_sync_state()
+        now = now_epoch()
+        for hid in _listed_hosts(d):
+            remaining = max(1.0, deadline - time.monotonic())
+            data, why = read_json_timed(d / f"{hid}.json", timeout=remaining)
+            prev = state.get(hid) if isinstance(state.get(hid), dict) else {}
+            if _valid_book(data, hid):
+                changed = _read_cache(hid) != data
+                if changed:
+                    _write_cache(hid, data)
+                state[hid] = {"ok": now, "try": now, "problem": ""}
+                if verbose:
+                    print(f"prefetch: {hid} {'updated' if changed else 'unchanged'}")
+            else:
+                problem = why or "not a valid address book"
+                state[hid] = {"ok": prev.get("ok"), "try": now, "problem": problem}
+                if verbose:
+                    print(f"prefetch: {hid} not read ({problem}) - keeping the cached copy")
+        _write_sync_state(state)
+    finally:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
+        except OSError:
+            pass
+
+
+def load_other_hosts() -> tuple[list[dict], str]:
+    """
+    Every OTHER Mac's address book, from the LOCAL CACHE the prefetcher keeps current - instant,
+    never waits on iCloud. Only a Mac with no cached copy yet is read from iCloud directly (short
+    timeout), and a good read seeds the cache.
+
+    Returns (hosts, state). state is "no-icloud" when there is no shared folder at all, else "".
+    Each host: {host, host_label, heartbeat_at, last_seen_epoch, live, synced_epoch, out_of_date,
+    problem, account_match (True/False/None), windows:[... + host, host_label]}. `live` comes from
+    the heartbeat INSIDE the file (written by the other Mac), never from a local file time.
+    """
+    d = windows_dir()
+    if d is None:
+        return [], "no-icloud"
+    my_hash = account_hash()
+    state = _read_sync_state()
     now = now_epoch()
     hosts = []
-    for hid in sorted(hids):
-        if hid == mine or not HOST_ID_RE.match(hid):
-            continue
-        data, problem = read_json_timed(d / f"{hid}.json")
-        from_cache = False
-        if data is not None and isinstance(data.get("windows"), list):
-            _write_cache(hid, data)
-        else:
-            if data is not None:
-                problem = "not an address book"
-            data = _read_cache(hid)
-            from_cache = True
-            if data is None:
+    for hid in _listed_hosts(d):
+        st = state.get(hid) if isinstance(state.get(hid), dict) else {}
+        data = _read_cache(hid)
+        problem = str(st.get("problem") or "")
+        if not _valid_book(data, hid):
+            data, why = read_json_timed(d / f"{hid}.json")
+            if _valid_book(data, hid):
+                _write_cache(hid, data)
+                st = {"ok": now, "try": now, "problem": ""}
+                state[hid] = st
+                _write_sync_state(state)
+                problem = ""
+            else:
                 hosts.append({"host": hid, "host_label": hid, "heartbeat_at": "", "last_seen_epoch": None,
-                              "live": False, "from_cache": False, "problem": problem or "unreadable",
+                              "live": False, "synced_epoch": None, "out_of_date": True,
+                              "problem": why or "not a valid address book",
                               "account_match": None, "windows": []})
                 continue
+        synced = st.get("ok") if isinstance(st.get("ok"), (int, float)) else None
         label = clean_field(data.get("host_label")) or hid
         hb = parse_iso_utc(data.get("heartbeat_at"))
         their_hash = str(data.get("account_hash") or "")
@@ -1317,8 +1446,8 @@ def load_other_hosts() -> tuple[list[dict], str]:
         hosts.append({
             "host": hid, "host_label": label, "heartbeat_at": clean_field(data.get("heartbeat_at"), 30),
             "last_seen_epoch": hb, "live": hb is not None and now - hb < LIVE_HEARTBEAT_SEC,
-            "from_cache": from_cache, "problem": problem if from_cache else "",
-            "account_match": match, "windows": windows,
+            "synced_epoch": synced, "out_of_date": synced is None or now - synced > SYNC_STALE_SEC,
+            "problem": problem, "account_match": match, "windows": windows,
         })
     return hosts, ""
 
@@ -1329,13 +1458,30 @@ def _local_time(epoch: float | None) -> str:
     return datetime.datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M")
 
 
+def _ago(sec: float) -> str:
+    sec = max(0, int(sec))
+    if sec < 120:
+        return f"{sec} s"
+    if sec < 7200:
+        return f"{sec // 60} min"
+    if sec < 172800:
+        return f"{sec // 3600} h"
+    return f"{sec // 86400} d"
+
+
 def host_status_text(h: dict) -> str:
+    now = now_epoch()
     if h["live"]:
-        s = "live"
+        s = f"live (heartbeat {_ago(now - h['last_seen_epoch'])} ago)"
     else:
         s = f"Mac asleep/offline, last seen {_local_time(h['last_seen_epoch'])}"
-    if h["from_cache"]:
-        s += f" - could not read the latest copy ({h['problem']}), may be out of date"
+    if h["synced_epoch"] is None:
+        s += " - not synced by this Mac's background job yet, may be out of date"
+    elif h["out_of_date"]:
+        why = f": {h['problem']}" if h["problem"] else ""
+        s += f" - last synced {_ago(now - h['synced_epoch'])} ago{why}, may be out of date"
+    else:
+        s += f", synced {_ago(now - h['synced_epoch'])} ago"
     return s
 
 
@@ -1358,8 +1504,8 @@ def print_other_hosts(hosts: list[dict], state: str) -> None:
         if h["account_match"] is False:
             print("  " + ACCOUNT_MISMATCH_TEXT.format(label=h["host_label"]))
         if not h["windows"]:
-            print("  (no live windows)" if not h["problem"] or h["from_cache"]
-                  else f"  (could not read its address book: {h['problem']})")
+            print(f"  (could not read its address book: {h['problem']})" if h["synced_epoch"] is None
+                  and h["last_seen_epoch"] is None and h["problem"] else "  (no live windows)")
             continue
         wn = max(12, max(len(w["address"]) for w in h["windows"]))
         wl = max(10, min(38, max(len(w["label"]) for w in h["windows"])))
@@ -1377,6 +1523,14 @@ def print_other_hosts(hosts: list[dict], state: str) -> None:
     print("Message a window on another Mac with SendMessage to its ADDRESS - it travels over Remote Control.")
 
 
+def cmd_address_book_paths() -> int:
+    """Where the address book reads and writes, as JSON. Pure: touches nothing (guard tests use it)."""
+    d = windows_dir()
+    print(json.dumps({"windows_dir": str(d) if d else "", "cache_dir": str(cache_dir()),
+                      "publish_stamp": str(publish_stamp()), "publish_log": str(publish_log())}, indent=2))
+    return 0
+
+
 def cmd_address_book_status() -> int:
     """Machine-readable health of the address book, for transfer-doctor. Never prints identifiers."""
     d = windows_dir()
@@ -1391,8 +1545,10 @@ def cmd_address_book_status() -> int:
         hosts, _ = load_other_hosts()
         for h in hosts:
             age = None if h["last_seen_epoch"] is None else int(now_epoch() - h["last_seen_epoch"])
+            sync_age = None if h["synced_epoch"] is None else int(now_epoch() - h["synced_epoch"])
             out["others"].append({"host": h["host"], "label": h["host_label"], "heartbeat_age_sec": age,
-                                  "live": h["live"], "from_cache": h["from_cache"], "problem": h["problem"],
+                                  "live": h["live"], "out_of_date": h["out_of_date"],
+                                  "sync_age_sec": sync_age, "problem": h["problem"],
                                   "account_match": h["account_match"], "windows": len(h["windows"])})
     print(json.dumps(out, indent=2))
     return 0
@@ -1687,7 +1843,7 @@ def cmd_find(session_id: str, query: str) -> int:
                 st = "live" if w["can_receive"] else "live, cannot receive"
             else:
                 st = f"Mac asleep/offline, last seen {_local_time(h['last_seen_epoch'])}"
-            if h["from_cache"]:
+            if h["out_of_date"]:
                 st += " (may be out of date)"
             cands.append((sc, 1 if h["live"] else 2, {"address": w["address"], "label": w["label"],
                                                      "owns": w["owns"], "where": h["host_label"],
@@ -1736,7 +1892,7 @@ def cmd_find(session_id: str, query: str) -> int:
     print("Run `list` to see everything, or ask which window they mean.")
     if host_state == "no-icloud":
         print("This Mac has no shared address book (iCloud Drive not found), so other Macs were not searched.")
-    elif any(h["from_cache"] or not h["live"] for h in hosts):
+    elif any(h["out_of_date"] or not h["live"] for h in hosts):
         print("Some of your other Macs' lists may be out of date (asleep or not synced yet).")
     # Fallback: the harness's own view of Remote Control peers.
     print("Fallback: ListAgents shows windows on your other Macs as Remote Control rows.")
@@ -2714,10 +2870,12 @@ USAGE = """line-agent-communicator.py - name this window and reach the others.
   list [--json]              the directory: every window on this Mac AND your other Macs
                              (from the shared iCloud address book), its name, whether it can receive
   find "<words>"             resolve a human name (this Mac + other Macs, then last-seen) to an address
-  publish [-v] [--throttle S] [--delay S] [--background]
+  publish [-v] [--throttle S] [--delay S] [--background] [--no-prefetch]
                              write this Mac's windows to the shared address book (only on change,
-                             or to refresh a 10-minute heartbeat); the LaunchAgent runs it every 60s
+                             or to refresh a 10-minute heartbeat), then refresh the local cache of
+                             the other Macs' files; the LaunchAgent runs it every 60s
   address-book-status        (doctor use) JSON health of the address book
+  address-book-paths         (test use) JSON of the folder, cache and log paths; writes nothing
   card                       this window's identity header - paste it INTO what you send
   whois <pid> [--claims "<name>"] [--transport socket|bridge]
                              UNAUTHENTICATED registry lookup; never proof of who someone is.
@@ -2752,7 +2910,7 @@ VERBS = frozenset({
     "list", "ls", "directory", "clear", "find", "who", "resolve", "card", "me", "whoami",
     "whois", "verify", "reply", "answer", "replies", "inbox", "replies-count", "unread",
     "reap", "note", "notes", "set", "help", "usage", "sync-display-name",
-    "publish", "address-book-status",
+    "publish", "address-book-status", "address-book-paths",
 })
 
 
@@ -2837,6 +2995,8 @@ def main() -> int:
         return dispatch_publish(args[1:])
     if args[0] == "address-book-status":
         return cmd_address_book_status()
+    if args[0] == "address-book-paths":
+        return cmd_address_book_paths()
     if args[0] == "sync-display-name":
         return cmd_sync_display_name(sid)
 
@@ -2857,7 +3017,7 @@ def main() -> int:
 
 
 def dispatch_publish(args: list[str]) -> int:
-    """publish [-v|--verbose] [--throttle S] [--delay S] [--background]. Never exits nonzero."""
+    """publish [-v|--verbose] [--throttle S] [--delay S] [--background] [--no-prefetch]. Never exits nonzero."""
     def num(flag: str) -> float:
         if flag in args:
             i = args.index(flag)
@@ -2872,7 +3032,8 @@ def dispatch_publish(args: list[str]) -> int:
         return 0
     if delay:
         time.sleep(min(delay, 30.0))
-    return cmd_publish(throttle, verbose=("-v" in args or "--verbose" in args))
+    return cmd_publish(throttle, verbose=("-v" in args or "--verbose" in args),
+                       prefetch="--no-prefetch" not in args)
 
 
 if __name__ == "__main__":

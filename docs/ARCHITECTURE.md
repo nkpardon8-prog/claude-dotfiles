@@ -95,9 +95,14 @@ Mac, so iCloud never sees two writers on one file. `line-agent-communicator.py p
 from the same live-window rows `list` uses and writes atomically, only on change or for a 10-minute
 heartbeat; the LaunchAgent `com.claude-dotfiles.windows-publish` (installed by
 `install-transfer.sh`) runs it every 60 s, and `/line` plus the SessionStart identity hook trigger it
-immediately in the background. `list`/`find` read every other Mac's file in a child process with a
-2 s timeout (an iCloud placeholder can block while downloading) and fall back to the last good copy
-in `~/.claude/claude-windows-cache/`. A heartbeat older than 15 minutes reads as "asleep/offline". The
+immediately in the background. Each LaunchAgent run also prefetches every
+other Mac's file - a full background read with a 60 s budget, which makes iCloud download a
+placeholder - validates it and updates `~/.claude/claude-windows-cache/` only on change (sync times in
+`sync-state.json` there). `list`/`find` read only that cache (instant), reading iCloud directly (2 s
+limit, child process) only for a Mac with no cached copy. A heartbeat (inside the file) older than 15
+minutes reads as "asleep/offline"; a cache not refreshed for 5 minutes is flagged "may be out of
+date". When the shared folder is overridden (`LAC_WINDOWS_DIR`, tests) the cache moves beside it, so a
+test folder can never write the real cache. The
 file holds names only plus a salted hash of the claude.ai account id, compared across Macs to warn
 when Remote Control messages cannot arrive.
 
