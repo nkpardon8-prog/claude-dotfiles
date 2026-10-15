@@ -33,6 +33,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   Now routed to the mini too: `run-guard-tier.mjs`, `check:server-test-typecheck`, `tsc ... --noEmit`.
   rrun also pushes local `origin/dev|main|master` (`rr_base_branches`) so diff-based guards work there
   (a guard tier trial had failed: "could not resolve a diff base"). Guard tier on the mini: ~66 s.
+- Laptop Docker stays off: rdocker no longer opens Docker Desktop for a command (`local_autostart`
+  false; `RDOCKER_LOCAL_START=1` opts in). A fallback that would need it waits up to 30 s for the mini
+  instead (a starved laptop makes the mini look down), or refuses with how to fix the mini; a slow mini
+  is used. `RDOCKER_MODE=local` while the mini is healthy prints an hourly hint to drop it.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

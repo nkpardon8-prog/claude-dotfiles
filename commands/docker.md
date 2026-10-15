@@ -228,8 +228,15 @@ refusals, for the "not a throwaway container" refusal, or on paths that already 
 | anything with `RDOCKER_MODE=mini` while the mini is unavailable | **refused, exit 1** — never falls back |
 | anything with `RDOCKER_MODE=local` | laptop |
 
+**Laptop Docker stays off.** rdocker never opens Docker Desktop for a command (`local_autostart`
+false; `RDOCKER_LOCAL_START=1 <cmd>` opts in for that one command), and the daemon quits it after
+`local_idle_stop_min` (15) idle minutes. When auto mode would fall back to the laptop but Docker Desktop
+is not running, the command instead waits up to `blip_wait_s` (30) for the mini and runs there, or exits 1
+with "laptop Docker is off ... `rdocker doctor`"; a slow mini is used rather than booting the laptop.
+`RDOCKER_MODE=local` while the mini is healthy prints a once-an-hour (per folder) hint to drop it.
+
 **Fallback policy for creating commands** (`run`, `create`, compose `up/run/create`) when the mini is
-unavailable: they fall back to the laptop **only if throwaway** — `--rm`, or no named-volume mount and no
+unavailable and Docker Desktop is already running: they fall back to the laptop **only if throwaway** — `--rm`, or no named-volume mount and no
 `rdocker.keep` label (compose: no named volumes, and the model must be readable). Otherwise exit 1 with
 the reason ("... not a throwaway container ..."); retry when the mini is back, add `--rm`, or force the
 laptop with `RDOCKER_MODE=local`. A slow (but reachable) mini still gets non-throwaway containers and
