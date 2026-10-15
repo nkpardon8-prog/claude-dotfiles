@@ -13,7 +13,9 @@ Because nothing joined them, a window you called "summit admin hub" was addressa
 deriving a short handle from your sentence, so the name you type IS the address other agents use.
 
 `list` is the directory half — it enumerates every live window with its caption, its address, and
-whether it can actually receive a message, so an agent can find a peer on its own.
+whether it can actually receive a message, so an agent can find a peer on its own. It also merges
+in the windows on the owner's OTHER Macs from a shared iCloud Drive address book that `publish`
+keeps current (see the "address book" section).
 
 On writing .name directly
 -------------------------
@@ -853,6 +855,549 @@ def display_handle_for(sid: str, sessions: list[dict] | None = None) -> str:
     return unique_handle(slugify(caption), sid, sessions)
 
 
+def collect_live_rows(me: str = "") -> tuple[list[dict], int]:
+    """
+    Every live window on THIS Mac, as the rows `list`, `find` and `publish` all work from.
+
+    One implementation on purpose: the address book other Macs read must say exactly what `list`
+    says here, so it is built from the same liveness and reachability answers, never a second copy.
+    Returns (rows, skipped) - skipped counts malformed registry entries plus rows that raised.
+    """
+    rows = []
+    entries = load_sessions()
+    skipped = _LOAD_STATS["malformed"]  # rejected at the boundary, before we ever saw them
+    for d in entries:
+        # One unreadable row must never take the other 17 windows offline with it. Coercion in
+        # load_sessions is the primary defense; this is the belt to its braces, because the cost of
+        # being wrong here is the whole directory rather than one entry.
+        try:
+            state, state_why = identity_state(d)
+            if state == "dead":
+                continue
+            ok, why = reachable(d, (state, state_why))  # hand it in; do not pay for ps twice
+            rows.append({
+                "name": d.get("name", ""),
+                "label": label_for(d.get("sessionId", "")),
+                "owns": owns_for(d.get("sessionId", "")),
+                "identity": state,
+                "identityWhy": state_why,
+                "cwd": d.get("cwd", ""),
+                "folder": Path(d.get("cwd", "")).name,
+                "status": d.get("status", ""),
+                "version": d.get("version", ""),
+                "pid": entry_pid(d),
+                "sessionId": d.get("sessionId", ""),
+                "startedAt": d.get("startedAt", 0),
+                "named": d.get("nameSource") == "explicit",
+                "reachable": ok,
+                "why": why,
+                "self": d.get("sessionId") == me,
+            })
+        except Exception:
+            skipped += 1
+            continue
+    rows.sort(key=lambda r: (not r["reachable"], r["name"]))
+    return rows, skipped
+
+
+# --------------------------------------------------------------------------------------
+# address book - the windows on the owner's OTHER Macs
+#
+# Everything above reads THIS Mac's disk, so `list`/`find` could never see a window on the other
+# Mac even though Remote Control can message it. The bridge is a folder in iCloud Drive that both
+# Macs already share: each Mac writes ONE file, <host-id>.json, listing its live windows by name,
+# and reads every other Mac's file. One file per Mac means the two never write the same file, so
+# iCloud never makes conflict copies.
+#
+# Names only: address, caption, owns, folder basename, start time, can-receive. Never chat content,
+# never a full path, never the account email (only a salted hash of the account id, to warn when
+# the two Macs are signed in to different claude.ai accounts).
+#
+# A file in iCloud may be a not-yet-downloaded placeholder, and reading one can block until the
+# download finishes. So every read of another Mac's file runs in a child process with a short
+# timeout, and the last good copy is cached under ~/.claude/ to fall back on.
+# --------------------------------------------------------------------------------------
+
+ADDRESS_BOOK_FORMAT = 1
+ICLOUD_BASE = HOME / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+WINDOWS_CACHE_DIR = HOME / ".claude" / "claude-windows-cache"
+PUBLISH_STAMP = HOME / ".claude" / ".lac-publish-stamp"
+PUBLISH_LOG = HOME / ".claude" / "logs" / "windows-publish.log"
+# Rewrite an unchanged file only this often, so readers can tell a sleeping Mac from a quiet one.
+HEARTBEAT_REFRESH_SEC = 600
+# A Mac whose heartbeat is older than this is reported as asleep/offline. Comfortably more than
+# one refresh interval plus iCloud's usual propagation delay.
+LIVE_HEARTBEAT_SEC = 900
+REMOTE_READ_TIMEOUT_SEC = 2.0
+REMOTE_MAX_BYTES = 512 * 1024
+# Salt for the account hash. Constant on purpose: both Macs must compute the same value.
+ACCOUNT_HASH_SALT = "claude-dotfiles/claude-windows/v1"
+HOST_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+FIELD_MAX = 120
+
+
+def windows_dir() -> Path | None:
+    """The shared folder, or None when this Mac has no iCloud Drive (nothing to publish to)."""
+    override = os.environ.get("LAC_WINDOWS_DIR")
+    if override:
+        return Path(override)
+    if not ICLOUD_BASE.is_dir():
+        return None
+    return ICLOUD_BASE / "claude-windows"
+
+
+def now_epoch() -> float:
+    """Wall-clock now; LAC_NOW (epoch seconds) overrides it so tests can move time."""
+    raw = os.environ.get("LAC_NOW")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return time.time()
+
+
+def iso_utc(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso_utc(raw) -> float | None:
+    try:
+        return calendar.timegm(time.strptime(str(raw), "%Y-%m-%dT%H:%M:%SZ"))
+    except Exception:
+        return None
+
+
+def _scutil(key: str) -> str:
+    try:
+        out = subprocess.run(["scutil", "--get", key], capture_output=True, text=True, timeout=3)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def host_id() -> str:
+    """A stable slug naming this Mac: its LocalHostName (never the username)."""
+    raw = os.environ.get("LAC_HOST_ID") or _scutil("LocalHostName") or socket.gethostname().split(".")[0]
+    hid = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:64].strip("-")
+    return hid if HOST_ID_RE.match(hid) else "unknown-mac"
+
+
+def host_label() -> str:
+    raw = os.environ.get("LAC_HOST_LABEL") or _scutil("ComputerName") or host_id()
+    return clean_field(raw) or host_id()
+
+
+def account_hash() -> str:
+    """Salted sha256 of the signed-in claude.ai account id, read locally. Never the raw value."""
+    import hashlib
+    try:
+        d = json.loads((HOME / ".claude.json").read_text())
+        acct = d.get("oauthAccount") or {}
+        ident = str(acct.get("accountUuid") or "").strip() or str(acct.get("emailAddress") or "").strip().lower()
+    except Exception:
+        ident = ""
+    if not ident:
+        return ""
+    return hashlib.sha256(f"{ACCOUNT_HASH_SALT}:{ident}".encode()).hexdigest()
+
+
+def clean_field(value, limit: int = FIELD_MAX) -> str:
+    """Printable, single-line, bounded. Applied on write AND on read - the other Mac's file is input."""
+    s = "".join(ch if ch.isprintable() else " " for ch in str(value or ""))
+    return " ".join(s.split())[:limit]
+
+
+def _log_publish(msg: str) -> None:
+    """One bounded log line. Publish runs every minute from a LaunchAgent, so the log must not grow."""
+    try:
+        PUBLISH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        if PUBLISH_LOG.exists() and PUBLISH_LOG.stat().st_size > 65536:
+            tail = PUBLISH_LOG.read_bytes()[-32768:]
+            PUBLISH_LOG.write_bytes(tail)
+        with open(PUBLISH_LOG, "a") as fh:
+            fh.write(f"{iso_utc(time.time())} {msg}\n")
+    except Exception:
+        pass
+
+
+def address_book_entry(r: dict, label_of_host: str) -> dict:
+    """One window, reduced to names. The folder BASENAME only - a full path never leaves the Mac."""
+    folder = clean_field(Path(r.get("cwd") or "").name, 80)
+    caption = clean_field(r.get("label"))
+    ms = r.get("startedAt") or 0
+    return {
+        "address": clean_field(r.get("name"), 64),
+        "caption": caption,
+        # Unnamed windows still get a readable label. Nothing here names them: /line is user-run.
+        "label": caption or f"{folder or 'unknown folder'} ({label_of_host})",
+        "owns": clean_field(r.get("owns")),
+        "session_id": safe_sid(r.get("sessionId", "")),
+        "cwd_label": folder,
+        "started_at": iso_utc(ms / 1000.0) if isinstance(ms, (int, float)) and ms > 0 else "",
+        "can_receive": bool(r.get("reachable")),
+        "named": bool(r.get("named") or caption),
+    }
+
+
+def read_json_timed(path: Path, timeout: float | None = None) -> tuple[dict | None, str]:
+    """
+    Read a JSON file that may be an iCloud placeholder, without ever hanging the caller.
+
+    The read happens in a child `cat` so a placeholder that blocks while it downloads can be
+    abandoned at the timeout. Returns (data, "") or (None, reason).
+    """
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("LAC_REMOTE_READ_TIMEOUT") or REMOTE_READ_TIMEOUT_SEC)
+        except ValueError:
+            timeout = REMOTE_READ_TIMEOUT_SEC
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        stub = path.parent / f".{path.name}.icloud"
+        if stub.exists():
+            _nudge_download(path)
+            return None, "not downloaded from iCloud yet"
+        return None, "missing"
+    except OSError as e:
+        return None, f"unreadable ({e.__class__.__name__})"
+    if statmod.S_ISLNK(st.st_mode):
+        return None, "is a symlink - refused"
+    if getattr(st, "st_flags", 0) & 0x40000000:  # SF_DATALESS: content still in iCloud
+        _nudge_download(path)
+    try:
+        p = subprocess.Popen(["/bin/cat", "--", str(path)], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
+    except Exception as e:
+        return None, f"unreadable ({e.__class__.__name__})"
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            p.kill()
+        except Exception:
+            pass
+        # Deliberately no wait(): a child stuck in a filesystem read may not die promptly, and
+        # waiting on it would be the hang this function exists to avoid.
+        return None, f"still downloading from iCloud (no answer in {timeout:g}s)"
+    if p.returncode != 0:
+        return None, "unreadable"
+    if len(out) > REMOTE_MAX_BYTES:
+        return None, "too large"
+    try:
+        d = json.loads(out.decode("utf-8", "replace"))
+    except Exception:
+        return None, "not valid JSON (mid-sync?)"
+    return (d, "") if isinstance(d, dict) else (None, "not an address book")
+
+
+def _nudge_download(path: Path) -> None:
+    """Ask iCloud to fetch a placeholder in the background. Best-effort, never waited on."""
+    try:
+        subprocess.Popen(["brctl", "download", str(path)], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+
+
+def _write_private_json(path: Path, data: dict, pretty: bool = True) -> None:
+    """Atomic write (temp in the same directory + rename), mode 600 where the filesystem allows."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".lac-ab-", suffix=".tmp")
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2 if pretty else None)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def _cache_path(hid: str) -> Path:
+    return WINDOWS_CACHE_DIR / f"{hid}.json"
+
+
+def _read_cache(hid: str) -> dict | None:
+    try:
+        d = json.loads(_cache_path(hid).read_text())
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _write_cache(hid: str, data: dict) -> None:
+    try:
+        WINDOWS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(WINDOWS_CACHE_DIR, 0o700)
+        _write_private_json(_cache_path(hid), data)
+    except Exception:
+        pass  # the cache is a fallback; failing to refresh it must never fail the caller
+
+
+def _strip_times(d: dict) -> dict:
+    return {k: v for k, v in d.items() if k not in ("updated_at", "heartbeat_at")}
+
+
+def cmd_publish(throttle: float = 0.0, verbose: bool = False) -> int:
+    """
+    Write this Mac's live windows to the shared folder - only when something changed, or when the
+    heartbeat is older than HEARTBEAT_REFRESH_SEC. Idempotent, local-disk only, no network.
+    """
+    d = windows_dir()
+    if d is None:
+        if verbose:
+            print("publish: no iCloud Drive on this Mac - nothing to publish to.")
+        return 0
+    if throttle > 0:
+        try:
+            if time.time() - PUBLISH_STAMP.stat().st_mtime < throttle:
+                return 0
+        except OSError:
+            pass
+    try:
+        WINDOWS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with file_lock(WINDOWS_CACHE_DIR / "publish"):
+            return _publish_locked(d, verbose)
+    except Exception as e:
+        _log_publish(f"publish failed: {e.__class__.__name__}: {clean_field(e, 200)}")
+        if verbose:
+            print(f"publish: FAILED ({e.__class__.__name__}) - see {PUBLISH_LOG}")
+        return 0
+
+
+def _publish_locked(d: Path, verbose: bool) -> int:
+    rows, _skipped = collect_live_rows()
+    if ps_is_unusable():
+        # Liveness unknown: publishing now could tell the other Mac every window here closed.
+        _log_publish("publish skipped: ps never answered, liveness unknown")
+        if verbose:
+            print("publish: skipped - `ps` never answered, so window liveness is unknown.")
+        return 0
+    hid, label = host_id(), host_label()
+    windows = [address_book_entry(r, label) for r in rows if r.get("identity") != "mismatch"]
+    windows.sort(key=lambda w: (w["address"], w["session_id"]))
+    body = {
+        "format": ADDRESS_BOOK_FORMAT,
+        "host": hid,
+        "host_label": label,
+        "account_hash": account_hash(),
+        "windows": windows,
+    }
+    target = d / f"{hid}.json"
+    prev, _why = read_json_timed(target) if target.exists() else (None, "missing")
+    if prev is None:
+        prev = _read_cache(hid)
+    now = now_epoch()
+    if prev is not None and _strip_times(prev) == body:
+        hb = parse_iso_utc(prev.get("heartbeat_at"))
+        if hb is not None and now - hb < HEARTBEAT_REFRESH_SEC and target.exists():
+            _touch_stamp()
+            if verbose:
+                print(f"publish: unchanged ({len(windows)} window(s)) - {target}")
+            return 0
+        updated = prev.get("updated_at") or iso_utc(now)
+        what = "heartbeat refreshed"
+    else:
+        updated = iso_utc(now)
+        what = "written"
+    out = {
+        "format": body["format"], "host": hid, "host_label": label,
+        "updated_at": updated, "heartbeat_at": iso_utc(now),
+        "account_hash": body["account_hash"], "windows": windows,
+    }
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
+    _write_private_json(target, out)
+    _write_cache(hid, out)
+    _touch_stamp()
+    if verbose:
+        print(f"publish: {what} ({len(windows)} window(s)) - {target}")
+    return 0
+
+
+def _touch_stamp() -> None:
+    try:
+        PUBLISH_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        PUBLISH_STAMP.touch()
+    except OSError:
+        pass
+
+
+def spawn_publish(delay: float = 0.0, throttle: float = 0.0) -> None:
+    """Run `publish` in a detached child so a rename or a new window shows up on the other Mac now.
+
+    Never blocks and never fails the caller. LAC_NO_AUTOPUBLISH=1 turns it off (tests)."""
+    if os.environ.get("LAC_NO_AUTOPUBLISH") == "1" or windows_dir() is None:
+        return
+    try:
+        args = [sys.executable, os.path.abspath(__file__), "publish", "--throttle", str(throttle)]
+        if delay > 0:
+            args += ["--delay", str(delay)]
+        subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+
+
+def load_other_hosts() -> tuple[list[dict], str]:
+    """
+    Every OTHER Mac's address book, freshest copy we can get without blocking.
+
+    Returns (hosts, state). state is "no-icloud" when there is no shared folder at all, else "".
+    Each host: {host, host_label, heartbeat_at, last_seen_epoch, live, from_cache, problem,
+    account_match (True/False/None), windows:[... + host, host_label]}.
+    """
+    d = windows_dir()
+    if d is None:
+        return [], "no-icloud"
+    mine = host_id()
+    my_hash = account_hash()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        names = []
+    hids = set()
+    for n in names:
+        if n.endswith(".json") and not n.startswith("."):
+            hids.add(n[:-5])
+        elif n.startswith(".") and n.endswith(".json.icloud"):
+            hids.add(n[1:-len(".json.icloud")])
+    now = now_epoch()
+    hosts = []
+    for hid in sorted(hids):
+        if hid == mine or not HOST_ID_RE.match(hid):
+            continue
+        data, problem = read_json_timed(d / f"{hid}.json")
+        from_cache = False
+        if data is not None and isinstance(data.get("windows"), list):
+            _write_cache(hid, data)
+        else:
+            if data is not None:
+                problem = "not an address book"
+            data = _read_cache(hid)
+            from_cache = True
+            if data is None:
+                hosts.append({"host": hid, "host_label": hid, "heartbeat_at": "", "last_seen_epoch": None,
+                              "live": False, "from_cache": False, "problem": problem or "unreadable",
+                              "account_match": None, "windows": []})
+                continue
+        label = clean_field(data.get("host_label")) or hid
+        hb = parse_iso_utc(data.get("heartbeat_at"))
+        their_hash = str(data.get("account_hash") or "")
+        match = None if not (my_hash and their_hash) else (my_hash == their_hash)
+        windows = []
+        for w in data.get("windows") or []:
+            if not isinstance(w, dict):
+                continue
+            addr = clean_field(w.get("address"), 64)
+            if not addr:
+                continue
+            folder = clean_field(w.get("cwd_label"), 80)
+            caption = clean_field(w.get("caption"))
+            windows.append({
+                "address": addr, "caption": caption,
+                "label": caption or clean_field(w.get("label")) or f"{folder or 'unknown folder'} ({label})",
+                "owns": clean_field(w.get("owns")), "session_id": safe_sid(str(w.get("session_id") or "")),
+                "cwd_label": folder, "started_at": clean_field(w.get("started_at"), 30),
+                "can_receive": bool(w.get("can_receive")), "named": bool(w.get("named")),
+                "host": hid, "host_label": label,
+            })
+        hosts.append({
+            "host": hid, "host_label": label, "heartbeat_at": clean_field(data.get("heartbeat_at"), 30),
+            "last_seen_epoch": hb, "live": hb is not None and now - hb < LIVE_HEARTBEAT_SEC,
+            "from_cache": from_cache, "problem": problem if from_cache else "",
+            "account_match": match, "windows": windows,
+        })
+    return hosts, ""
+
+
+def _local_time(epoch: float | None) -> str:
+    if epoch is None:
+        return "unknown"
+    return datetime.datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M")
+
+
+def host_status_text(h: dict) -> str:
+    if h["live"]:
+        s = "live"
+    else:
+        s = f"Mac asleep/offline, last seen {_local_time(h['last_seen_epoch'])}"
+    if h["from_cache"]:
+        s += f" - could not read the latest copy ({h['problem']}), may be out of date"
+    return s
+
+
+ACCOUNT_MISMATCH_TEXT = ("WARNING: {label} is signed in to a DIFFERENT claude.ai account than this Mac, so "
+                         "cross-Mac messages won't arrive - sign both Macs into the same account.")
+
+
+def print_other_hosts(hosts: list[dict], state: str) -> None:
+    print()
+    if state == "no-icloud":
+        print("Other Macs: no shared address book here (iCloud Drive not found). "
+              "ListAgents still shows their Remote Control rows.")
+        return
+    if not hosts:
+        print("Other Macs: none has published its windows yet (run scripts/transfer/install-transfer.sh "
+              "on it). ListAgents still shows their Remote Control rows.")
+        return
+    for h in hosts:
+        print(f"On {h['host_label']} - {host_status_text(h)}:")
+        if h["account_match"] is False:
+            print("  " + ACCOUNT_MISMATCH_TEXT.format(label=h["host_label"]))
+        if not h["windows"]:
+            print("  (no live windows)" if not h["problem"] or h["from_cache"]
+                  else f"  (could not read its address book: {h['problem']})")
+            continue
+        wn = max(12, max(len(w["address"]) for w in h["windows"]))
+        wl = max(10, min(38, max(len(w["label"]) for w in h["windows"])))
+        wf = max(6, min(24, max(len(w["cwd_label"]) for w in h["windows"])))
+        print(f"  {'ADDRESS'.ljust(wn)}  {'WHAT IT IS'.ljust(wl)}  {'FOLDER'.ljust(wf)}  STATUS")
+        for w in h["windows"]:
+            if not h["live"]:
+                st = "offline"
+            else:
+                st = "live" if w["can_receive"] else "live, cannot receive"
+            print(f"  {w['address'].ljust(wn)}  {w['label'][:wl].ljust(wl)}  "
+                  f"{w['cwd_label'][:wf].ljust(wf)}  {st}")
+            if w["owns"]:
+                print(f"  {' ' * wn}  owns: {w['owns'][:96]}")
+    print("Message a window on another Mac with SendMessage to its ADDRESS - it travels over Remote Control.")
+
+
+def cmd_address_book_status() -> int:
+    """Machine-readable health of the address book, for transfer-doctor. Never prints identifiers."""
+    d = windows_dir()
+    out: dict = {"dir": str(d) if d else "", "dir_exists": bool(d and d.is_dir()), "host": host_id(),
+                 "account_known": bool(account_hash()), "self": {"present": False}, "others": []}
+    if d is not None:
+        mine, why = read_json_timed(d / f"{host_id()}.json")
+        hb = parse_iso_utc(mine.get("heartbeat_at")) if mine else None
+        age = None if hb is None else int(now_epoch() - hb)
+        out["self"] = {"present": mine is not None, "problem": why, "heartbeat_age_sec": age,
+                       "fresh": age is not None and age < LIVE_HEARTBEAT_SEC}
+        hosts, _ = load_other_hosts()
+        for h in hosts:
+            age = None if h["last_seen_epoch"] is None else int(now_epoch() - h["last_seen_epoch"])
+            out["others"].append({"host": h["host"], "label": h["host_label"], "heartbeat_age_sec": age,
+                                  "live": h["live"], "from_cache": h["from_cache"], "problem": h["problem"],
+                                  "account_match": h["account_match"], "windows": len(h["windows"])})
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 # --------------------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------------------
@@ -1007,40 +1552,7 @@ def cmd_sync_display_name(session_id: str) -> int:
 
 def cmd_list(session_id: str = "", json_out: bool = False) -> int:
     me = safe_sid(session_id)
-    rows = []
-    entries = load_sessions()
-    skipped = _LOAD_STATS["malformed"]  # rejected at the boundary, before we ever saw them
-    for d in entries:
-        # One unreadable row must never take the other 17 windows offline with it. Coercion in
-        # load_sessions is the primary defense; this is the belt to its braces, because the cost of
-        # being wrong here is the whole directory rather than one entry.
-        try:
-            state, state_why = identity_state(d)
-            if state == "dead":
-                continue
-            ok, why = reachable(d, (state, state_why))  # hand it in; do not pay for ps twice
-            rows.append({
-                "name": d.get("name", ""),
-                "label": label_for(d.get("sessionId", "")),
-                "owns": owns_for(d.get("sessionId", "")),
-                "identity": state,
-                "identityWhy": state_why,
-                "cwd": d.get("cwd", ""),
-                "folder": Path(d.get("cwd", "")).name,
-                "status": d.get("status", ""),
-                "version": d.get("version", ""),
-                "pid": entry_pid(d),
-                "sessionId": d.get("sessionId", ""),
-                "named": d.get("nameSource") == "explicit",
-                "reachable": ok,
-                "why": why,
-                "self": d.get("sessionId") == me,
-            })
-        except Exception:
-            skipped += 1
-            continue
-
-    rows.sort(key=lambda r: (not r["reachable"], r["name"]))
+    rows, skipped = collect_live_rows(me)
     sync_contacts(rows)
 
     # Two live windows answering to one address is not cosmetic: `reply` has to pick one, and it
@@ -1062,13 +1574,22 @@ def cmd_list(session_id: str = "", json_out: bool = False) -> int:
     ]
     offline.sort(key=lambda c: c.get("lastSeen", ""), reverse=True)
 
+    # The other Macs, from the shared iCloud address book. Read AFTER the local rows so a slow
+    # iCloud read can never delay or alter what this Mac reports about itself.
+    hosts, host_state = load_other_hosts()
+
     if json_out:
         print(json.dumps({
+            "host": host_id(),
+            "hostLabel": host_label(),
             "live": rows,
             "offline": offline,
             "duplicateAddresses": dupes,
             "skippedMalformedEntries": skipped,
             "livenessUnknown": ps_is_unusable(),
+            "otherMacs": hosts,
+            "otherMacsState": host_state,
+            "accountMismatch": any(h["account_match"] is False for h in hosts),
         }, indent=2))
         return 0
 
@@ -1079,10 +1600,12 @@ def cmd_list(session_id: str = "", json_out: bool = False) -> int:
         print("  Entries below (if any) are UNVERIFIED - they may be closed windows.")
         print()
 
+    print(f"On this Mac ({host_label()}):")
     if not rows:
         print("No live Claude Code windows found.")
         if skipped:
             print(f"({skipped} registry entr(y/ies) were malformed and skipped.)")
+        print_other_hosts(hosts, host_state)
         return 0
 
     wn = max(12, max(len(r["name"]) for r in rows))
@@ -1116,6 +1639,8 @@ def cmd_list(session_id: str = "", json_out: bool = False) -> int:
     if unnamed:
         print(f"{unnamed} still carry an auto-generated address - run /line in those windows to name them.")
 
+    print_other_hosts(hosts, host_state)
+
     if offline:
         print()
         print(f"Known but not running ({len(offline)}) - reopen the window to reach it:")
@@ -1138,40 +1663,53 @@ def cmd_find(session_id: str, query: str) -> int:
     if not query.strip():
         return cmd_list(session_id)
 
-    rows = []
-    for d in load_sessions():
-        try:  # one malformed row must not sink the search - same reasoning as cmd_list
-            st = identity_state(d)
-            if st[0] == "dead":
-                continue
-            ok, why = reachable(d, st)  # hand it in; do not pay for ps twice
-            rows.append({
-                "name": d.get("name", ""), "label": label_for(d.get("sessionId", "")),
-                "owns": owns_for(d.get("sessionId", "")),
-                "cwd": d.get("cwd", ""), "sessionId": d.get("sessionId", ""),
-                "reachable": ok, "why": why,
-            })
-        except Exception:
-            continue
+    rows, _skipped = collect_live_rows(safe_sid(session_id))
     sync_contacts(rows)
 
-    hits = sorted(
+    # Local and other-Mac windows are ranked TOGETHER with the same scoring, so the owner's words
+    # find a window wherever it runs. Ties go to this Mac, then to a Mac that is awake.
+    hosts, host_state = load_other_hosts()
+    cands = []
+    for r in rows:
         # `owns` is searched too: it is the only field that distinguishes two windows the folder
         # name alone cannot tell apart.
-        ((score_match(query, r["label"], r["name"], r["owns"], Path(r["cwd"]).name), r) for r in rows),
-        key=lambda t: -t[0],
-    )
-    hits = [(s, r) for s, r in hits if s > 0]
+        sc = score_match(query, r["label"], r["name"], r["owns"], Path(r["cwd"]).name)
+        if sc > 0:
+            st = "reachable" if r["reachable"] else f"NOT reachable - {r['why']}"
+            cands.append((sc, 0, {"address": r["name"], "label": r["label"] or "(unnamed)",
+                                  "owns": r["owns"], "where": "this Mac", "state": st}))
+    for h in hosts:
+        for w in h["windows"]:
+            sc = score_match(query, w["caption"], w["address"], w["owns"], w["cwd_label"], w["label"])
+            if sc <= 0:
+                continue
+            if h["live"]:
+                st = "live" if w["can_receive"] else "live, cannot receive"
+            else:
+                st = f"Mac asleep/offline, last seen {_local_time(h['last_seen_epoch'])}"
+            if h["from_cache"]:
+                st += " (may be out of date)"
+            cands.append((sc, 1 if h["live"] else 2, {"address": w["address"], "label": w["label"],
+                                                     "owns": w["owns"], "where": h["host_label"],
+                                                     "state": st}))
+    cands.sort(key=lambda t: (-t[0], t[1]))
 
-    if hits:
-        print(f"Live matches for \"{query}\":")
-        for s, r in hits[:5]:
-            state = "reachable" if r["reachable"] else f"NOT reachable - {r['why']}"
-            print(f"  {r['name']:<28}  {r['label'] or '(unnamed)':<36}  {state}")
-            if r["owns"]:
-                print(f"  {'':<28}  owns: {r['owns'][:88]}")
+    if cands:
+        print(f"Matches for \"{query}\":")
+        for _sc, _tier, c in cands[:6]:
+            print(f"  {c['address']:<28}  {c['label'][:36]:<36}  [{c['where']}]  {c['state']}")
+            if c["owns"]:
+                print(f"  {'':<28}  owns: {c['owns'][:88]}")
+        for h in hosts:
+            if h["account_match"] is False:
+                print("  " + ACCOUNT_MISMATCH_TEXT.format(label=h["host_label"]))
         print()
-        print(f"SendMessage to: {hits[0][1]['name']}")
+        top_tier, top = cands[0][1], cands[0][2]
+        print(f"SendMessage to: {top['address']}")
+        if top_tier == 1:
+            print(f"  (on {top['where']} - it travels over Remote Control)")
+        elif top_tier == 2:
+            print(f"  (on {top['where']}, which looks asleep/offline - the message may not arrive until it wakes)")
         return 0
 
     live_sids = {r["sessionId"] for r in rows}
@@ -1193,13 +1731,15 @@ def cmd_find(session_id: str, query: str) -> int:
         print("It is not running. Reopen that window (and run /line in it) to make it reachable.")
         return 0
 
-    print(f"Nothing matches \"{query}\" - not running, and never seen named.")
+    print(f"Nothing matches \"{query}\" - not on this Mac, not in your other Macs' address book, "
+          "and never seen named.")
     print("Run `list` to see everything, or ask which window they mean.")
-    # Remote Control peers (windows on the owner's other Macs) exist only inside the harness's
-    # ListAgents view - nothing on this disk lists them - so this script cannot search them. Point
-    # there instead of letting "nothing matches" read as "that window does not exist".
-    print("No local window matches. Windows on your other Macs appear in ListAgents as Remote "
-          "Control rows - message them by that name.")
+    if host_state == "no-icloud":
+        print("This Mac has no shared address book (iCloud Drive not found), so other Macs were not searched.")
+    elif any(h["from_cache"] or not h["live"] for h in hosts):
+        print("Some of your other Macs' lists may be out of date (asleep or not synced yet).")
+    # Fallback: the harness's own view of Remote Control peers.
+    print("Fallback: ListAgents shows windows on your other Macs as Remote Control rows.")
     return 0
 
 
@@ -2171,8 +2711,13 @@ def dispatch_set(sid: str, args: list[str]) -> int:
 
 USAGE = """line-agent-communicator.py - name this window and reach the others.
 
-  list [--json]              the directory: every window, its name, whether it can receive
-  find "<words>"             resolve a human name (live first, then last-seen) to an address
+  list [--json]              the directory: every window on this Mac AND your other Macs
+                             (from the shared iCloud address book), its name, whether it can receive
+  find "<words>"             resolve a human name (this Mac + other Macs, then last-seen) to an address
+  publish [-v] [--throttle S] [--delay S] [--background]
+                             write this Mac's windows to the shared address book (only on change,
+                             or to refresh a 10-minute heartbeat); the LaunchAgent runs it every 60s
+  address-book-status        (doctor use) JSON health of the address book
   card                       this window's identity header - paste it INTO what you send
   whois <pid> [--claims "<name>"] [--transport socket|bridge]
                              UNAUTHENTICATED registry lookup; never proof of who someone is.
@@ -2207,6 +2752,7 @@ VERBS = frozenset({
     "list", "ls", "directory", "clear", "find", "who", "resolve", "card", "me", "whoami",
     "whois", "verify", "reply", "answer", "replies", "inbox", "replies-count", "unread",
     "reap", "note", "notes", "set", "help", "usage", "sync-display-name",
+    "publish", "address-book-status",
 })
 
 
@@ -2284,7 +2830,13 @@ def main() -> int:
     if args[0] == "notes":
         return cmd_notes(sid)
     if args[0] == "set":
-        return dispatch_set(sid, args[1:])
+        rc = dispatch_set(sid, args[1:])
+        spawn_publish()  # a rename shows up on the other Mac now, not at the next 60s tick
+        return rc
+    if args[0] == "publish":
+        return dispatch_publish(args[1:])
+    if args[0] == "address-book-status":
+        return cmd_address_book_status()
     if args[0] == "sync-display-name":
         return cmd_sync_display_name(sid)
 
@@ -2299,7 +2851,28 @@ def main() -> int:
               f"as the name: set -- \"{args[0]}\"\n", file=sys.stderr)
         return _usage(sys.stderr, 2)
 
-    return dispatch_set(sid, args)
+    rc = dispatch_set(sid, args)
+    spawn_publish()
+    return rc
+
+
+def dispatch_publish(args: list[str]) -> int:
+    """publish [-v|--verbose] [--throttle S] [--delay S] [--background]. Never exits nonzero."""
+    def num(flag: str) -> float:
+        if flag in args:
+            i = args.index(flag)
+            try:
+                return max(0.0, float(args[i + 1]))
+            except (IndexError, ValueError):
+                return 0.0
+        return 0.0
+    throttle, delay = num("--throttle"), num("--delay")
+    if "--background" in args:
+        spawn_publish(delay, throttle)
+        return 0
+    if delay:
+        time.sleep(min(delay, 30.0))
+    return cmd_publish(throttle, verbose=("-v" in args or "--verbose" in args))
 
 
 if __name__ == "__main__":

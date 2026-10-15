@@ -2,6 +2,33 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-15 - /line: see the windows on your other Macs
+
+- `line-agent-communicator.py list` and `find` now show the windows running on your other Macs, by
+  their `/line` name, including windows nobody named. Before, both read only this Mac's disk, so a
+  window on the other Mac was invisible to them even though Remote Control could message it.
+- How: each Mac writes its own file, `<mac-name>.json`, to a shared iCloud Drive folder,
+  `~/Library/Mobile Documents/com~apple~CloudDocs/claude-windows/`, and reads the others. Names only
+  (address, caption, owns, folder name, start time, can-receive) plus a salted hash of the claude.ai
+  account id; never chat content, full paths, secrets or the email.
+- New verb `publish`: writes only when something changed, plus a heartbeat every 10 minutes. A new
+  LaunchAgent, `com.claude-dotfiles.windows-publish`, runs it every 60 s at low priority;
+  `install-transfer.sh` installs and loads it (only ever replacing a plist it made, and never driving
+  `launchctl` from a non-real HOME). `/line` and the SessionStart identity hook also publish right away
+  in the background.
+- `list` adds a section per other Mac: live, or "Mac asleep/offline, last seen <time>" after 15 minutes
+  without a heartbeat. `find` ranks other-Mac windows with the same scoring and labels them with their
+  Mac. `--json` adds `otherMacs` and `accountMismatch`. A different claude.ai account on the other Mac
+  prints one warning line. Unnamed windows show as `<folder> (<Mac name>)`; nothing renames them.
+- iCloud placeholders never hang `list`/`find`: reads time out after 2 s and fall back to the last good
+  copy in `~/.claude/claude-windows-cache/`, marked "may be out of date".
+- `transfer-doctor` checks the LaunchAgent, this Mac's and the other Mac's file freshness, and the
+  account match (FAIL on mismatch). New hidden verb `address-book-status` feeds it.
+- Tests: line-agent suite 11 (publish once / skip / heartbeat / names only), 12 (merge, live vs asleep,
+  account warning), 13 (FIFO placeholder, iCloud stub, unreadable file - no hang); transfer suite 26
+  (LaunchAgent plist, launchctl stubbed, foreign plist untouched). Each was watched red against a
+  deliberately broken copy.
+
 ## 2026-10-14 - rdocker: blip wait, 3 h idle stop, laptop janitor, auto-restart
 
 - Blip wait: a targeted command (`exec`, `rm`, `stop`, compose `down`, ...) that would be refused with

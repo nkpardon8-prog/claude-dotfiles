@@ -275,6 +275,15 @@ refused at SEND time, naming the file, with no bundle published - a patch cannot
 conflict stages, and live on 2026-09-27 the receiving Mac backed out only after a full upload.
 Negative control: resolved (git add), the same chat sends. Red with the check disabled.
 
+### 26-install-launchagent.sh
+The real installer against a sandbox HOME, with `launchctl` replaced by a PATH stub that records its
+argv. Without opt-in, a sandbox HOME gets a valid, marked plist (`com.claude-dotfiles.windows-publish`,
+`publish` every 60 s, background priority) and launchctl is never called; the installer also publishes
+this Mac's address-book file. With the dev-only opt-in it boots out + bootstraps when not loaded, does
+nothing when unchanged and loaded, replaces and reloads its own stale plist, and leaves a foreign plist
+of the same name byte-identical (warning, no bootstrap). Negative control (`TX_NEG_CONTROL=true`): with
+the marker check and the real-HOME guard removed, L1 and L5 go red.
+
 ### 99-resume-keeps-sid.sh (assumption A1, gated, NOT in run-all.sh)
 `claude --resume <sid>`, run against a copy of a real transcript placed under a fresh project dir,
 keeps the SAME session id and continues the transcript - for a cleanly-ended shape, one cut off at
@@ -293,6 +302,9 @@ a human. If this ever fails: stop and re-plan - the whole design rests on it.
   more targeted tests.
 - `TX_TEST_ALIAS_HOMES_BASE=<dir>` - `tx_alias_homes` (transfer-lib.sh) looks for verified home
   aliases in `<dir>/*` instead of `/Users`, for tests 07 and 15 (tests cannot write `/Users`).
+
+- `LAC_LAUNCHCTL_ALLOW_SANDBOX=1` - `install-transfer.sh` drives `launchctl` even though `$HOME` is
+  not the account's real home, for test 26 (whose `launchctl` is a PATH stub).
 
 None of these are reachable without the dev gate, so a stray environment variable can never make a
 real transfer carry machine-bound state or heavy dirs, change its caps, seal against the wrong

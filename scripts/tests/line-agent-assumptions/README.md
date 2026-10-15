@@ -143,6 +143,24 @@ below corresponds to a bypass that was demonstrated live.
 cannot be distinguished from someone naming a window "lst". What is fenced is flag-shaped input on
 every path, plus the wrong-case-verb case.
 
+### 11-13 - the cross-Mac window address book
+
+`list`/`find` also read every other Mac's file in the shared iCloud folder (`claude-windows/`). All
+three run against a sandbox HOME (one fake live window, a fake `.claude.json`) and a fake shared
+folder via `LAC_WINDOWS_DIR`, with `LAC_HOST_ID`, `LAC_NOW` and `LAC_NO_AUTOPUBLISH` making host and
+time deterministic. Shared setup: `_addrbook-fixture.sh` (sourced, never run).
+
+- **11-address-book-publish** - publish writes once; an unchanged publish leaves bytes and mtime alone
+  (also 5 min later); after 11 min only the heartbeat moves; an unnamed window is labelled
+  `<folder> (<Mac name>)`; no full path, home dir, raw email or raw account id in the file; a caption
+  change rewrites it; mode 600; `set` republishes in the background (positive control).
+- **12-address-book-merge** - an awake Mac and an asleep Mac on another account: live vs
+  "asleep/offline, last seen" sections, the account warning only for the mismatched Mac, `find` picks
+  and labels the other Mac's window, `--json` host fields, this Mac's own file never shown as remote.
+- **13-address-book-placeholder** - a never-answering FIFO stands in for an iCloud placeholder: `list`
+  and `find` return within the alarm and show the cached copy marked "may be out of date"; same for an
+  `.icloud` stub and a mode-000 file; an uncached unreadable Mac is reported, never waited on.
+
 ## Why 04 and 05 were authored RED (historical - both now gate like everything else)
 
 They were written before the fix, and each encoded a defect that was live at the time. `EXPECTED_RED`
@@ -186,6 +204,9 @@ LINE_AGENT_TESTS_ALLOW_DEV=true LINE_AGENT_NEG_CONTROL=true bash <test>.sh
 | 08 | copies the script, drops `O_NOFOLLOW` and lets the listing classify a symlink as a file | observed RED: A1 (target printed) and A3 (`_capped()` followed the link) |
 | 09 | seeds read/unread replies at controlled ages and dry-runs the reaper first; A5 requires the dry run and the real reap to agree | the retention rule is being evaluated, not a fixed answer |
 | 10 | copies the script, deletes `main()`'s guard branches and makes `flaglike()` return `""` | observed RED, 13 assertions failing - including A3 renaming to `help`, the `/line --help` path |
+| 11 | copies the script, removes the unchanged-skip and publishes the full cwd | observed RED: P2, P3, P4, P5, P6 |
+| 12 | copies the script, makes the reader skip every other Mac and never compare accounts | observed RED: M1-M5, M8 |
+| 13 | copies the script so it reads the remote file directly (no child, no timeout) | observed RED: X1/X2/X5 hang and are killed by the alarm, X4 crashes |
 
 06-08 and 10 patch a **copy** of the real script rather than a flag inside it: a defense you can switch off
 at runtime is a defense an attacker can switch off. Each patch is anchored on an exact source line

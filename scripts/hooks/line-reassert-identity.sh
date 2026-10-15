@@ -5,6 +5,8 @@
 # On a real open (startup|resume) it also restores the DISPLAY NAME (what Remote Control shows on
 # the other Macs, = the peer handle) when the transcript's last custom-title record no longer matches: the
 # record is re-appended and a /rename request is left for the Stop hook line-apply-rename.sh.
+# Every run (named window or not) also kicks off a background `publish`, so the shared iCloud
+# address book shows this window on the owner's other Macs within seconds.
 #
 # Why it exists: the two names a window carries are keyed differently. The caption lives at
 # ~/.claude/session-status/<sessionId>.txt and SURVIVES a resume; the peer address lives in
@@ -62,6 +64,12 @@ sid=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9_-' | head -c 128)
 [ -f "$LAC" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
+
+# Shared address book (windows on the owner's other Macs): publish this window there now, named or
+# not, instead of waiting for the LaunchAgent's next 60s tick. Detached child (returns at once),
+# delayed so the harness has written this window's registry entry first, and throttled so a burst
+# of windows opening costs one write. A no-op on a Mac without iCloud Drive; never fails the hook.
+python3 "$LAC" publish --background --delay 5 --throttle 3 >/dev/null 2>&1 || true
 
 caption=$(head -n 1 "$STATUS_DIR/$sid.txt" 2>/dev/null)
 caption=$(printf '%s' "$caption" | tr -d '\r')

@@ -63,11 +63,40 @@ and the receiving socket is bound at startup, so a window running an older build
 until it is **closed and reopened** — upgrading alone is not enough. The listing says which windows
 are in that state and why, so you never send into a void.
 
-**Windows on your other Macs.** A window running on another Mac signed in to the same claude.ai
-account, with Remote Control on (`remoteControlAtStartup: true`, plus `crossSessionInbound: "accept"`
-to receive), shows up in `ListAgents` as a Remote Control row and is messaged by that name with
-`SendMessage`, exactly like a local one. `find` and `list` cannot see those windows - nothing on this
-Mac's disk lists them - so when `find` has no local match it says so and points you at `ListAgents`.
+## Windows on your other Macs
+
+`list` and `find` also show the windows running on your other Macs, including windows nobody ran
+`/line` in. Each Mac writes its own list of live windows to a shared folder in iCloud Drive,
+`~/Library/Mobile Documents/com~apple~CloudDocs/claude-windows/`, one file per Mac
+(`<mac-name>.json`, e.g. `macbookair-m4.json`), and reads every other Mac's file. One file per Mac
+means the two Macs never write the same file, so iCloud never makes conflict copies.
+
+- **What is in the file:** names only - each window's address, caption, `--owns` line, folder name
+  (never the full path), start time, and whether it can receive. Never chat content, never secrets,
+  never your email; the claude.ai account appears only as a salted hash, used to warn when the two
+  Macs are signed in to different accounts.
+- **Keeping it fresh:** `python3 "$LAC" publish` writes this Mac's file, but only when something
+  changed, plus a heartbeat every 10 minutes so the other Mac can tell "asleep" from "quiet". A
+  LaunchAgent (`com.claude-dotfiles.windows-publish`, installed by
+  `scripts/transfer/install-transfer.sh`) runs it every 60 seconds at low priority; `/line` and the
+  session-start hook also run it right away, in the background, so a rename or a new window shows up
+  within seconds. Errors go to `~/.claude/logs/windows-publish.log` (size-capped).
+- **What `list` shows:** after this Mac's windows, a section per other Mac - `On <Mac name> - live`
+  or `On <Mac name> - Mac asleep/offline, last seen <time>` (no heartbeat for 15 minutes) - with
+  each window's address, what it is, folder, and status. An unnamed window shows as
+  `<folder> (<Mac name>)`; nothing renames it for you (`/line` stays user-run). `find` ranks those
+  windows with the same scoring as local ones and labels each match with its Mac. `--json` adds
+  `otherMacs` (each window carries a `host` field) and `accountMismatch`.
+- **Messaging:** the address shown is what you pass to `SendMessage`; it travels over Remote Control,
+  which needs both Macs signed in to the same claude.ai account with `remoteControlAtStartup: true`
+  (and `crossSessionInbound: "accept"` to receive). If the accounts differ, `list` and `find` print
+  one warning line saying so - cross-Mac messages will not arrive until both are on one account.
+- **When iCloud is slow:** another Mac's file may still be downloading. Reads give up after 2
+  seconds and fall back to the last good copy kept in `~/.claude/claude-windows-cache/`, marked
+  "may be out of date" - `list` never hangs on iCloud.
+- **Fallback:** `ListAgents` still shows other Macs' windows as Remote Control rows.
+- **Check it:** `transfer-doctor` reports whether the LaunchAgent is loaded, whether this Mac's file
+  and the other Mac's file are fresh, and whether both are on the same account.
 
 `set` also takes `--owns "<one line>"`, the window's own description of the domain it covers
 (`/line "billing" --owns "Stripe webhooks + invoice reconciliation"`). It shows in `list` and `find`

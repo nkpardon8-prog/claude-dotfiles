@@ -213,8 +213,11 @@ agent messaging (`ListAgents` / `SendMessage`).
    line running `scripts/hooks/line-apply-rename.sh` (it types the live `/rename` into this window's
    own Terminal tab when `/line` sets a display name).
 4. **Run the installer**: `bash ~/.claude-dotfiles/scripts/transfer/install-transfer.sh` —
-   idempotently symlinks `resumework` and `transfer-doctor` onto `~/.local/bin` and creates the
-   iCloud `claude-transfers/` drop dir.
+   idempotently symlinks `resumework` and `transfer-doctor` onto `~/.local/bin`, creates the
+   iCloud `claude-transfers/` drop dir, and sets up the shared window address book: the iCloud
+   `claude-windows/` folder plus a LaunchAgent (`com.claude-dotfiles.windows-publish`) that writes
+   this Mac's window list there every 60 seconds. After it has run on both Macs, `list`/`find`
+   (`scripts/line-agent-communicator.py`) on either Mac show the other Mac's windows by name.
 5. **Different username on this Mac?** A transfer restores repo files (handoff, worktree, TRANSFER
    notes) at the SAME absolute path as the sending Mac, so if this Mac logs in as a different
    account, run once: `sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh <the-other-Macs-username>`.
@@ -225,7 +228,9 @@ agent messaging (`ListAgents` / `SendMessage`).
    does not know (format 4 since 2026-09-27, when delta sends arrived) and says to update both.
    Nothing to set up for delta sends: each Mac keeps its own record in `~/.claude/transfer-state/`.
 7. **Log in**: `claude` (the claude.ai account Remote Control needs) and `codex login`.
-8. **Verify.** Run `transfer-doctor` — every line should read PASS. Then prove both Macs share one
+8. **Verify.** Run `transfer-doctor` — every line should read PASS (the `addrbook` lines turn PASS
+   once the installer has run on BOTH Macs; a FAIL there means the two Macs are signed in to
+   different claude.ai accounts). Then prove both Macs share one
    iCloud account: on this Mac run `transfer-doctor canary-write`, and on the other Mac run
    `transfer-doctor canary-read <name> <sha256>` with the values it printed.
 

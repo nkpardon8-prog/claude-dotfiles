@@ -55,6 +55,7 @@ TESTS=(
   "23-delta-never-skips-chat-files.sh"
   "24-icloud-nudge.sh"
   "25-unmerged-refused-early.sh"
+  "26-install-launchagent.sh"
 )
 
 # Counters + strings, NOT arrays: macOS bash 3.2's `${#arr[@]}` on an EMPTY array under `set -u`

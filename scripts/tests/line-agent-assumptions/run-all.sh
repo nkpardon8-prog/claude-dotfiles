@@ -29,6 +29,8 @@
 # 09 is a DATA-LOSS gate: retention may only ever delete a reply that is already-read AND old, and
 # it exists because a reaper on a guaranteed-delivery mailbox destroys undelivered answers silently
 # if that AND ever degrades to an OR. Same shape as 06-08 - a re-reddening means the guard is gone.
+# 11-13 gate the cross-Mac address book (iCloud Drive/claude-windows/): publish writes once and
+# heartbeats every 10 min, names only; list/find merge other Macs; an unreadable placeholder never hangs.
 set -uo pipefail
 if [ "${LINE_AGENT_TESTS_ALLOW_DEV:-}" != "true" ]; then
   echo "REFUSED: set LINE_AGENT_TESTS_ALLOW_DEV=true to run assumption tests" >&2
@@ -54,6 +56,9 @@ TESTS=(
   "08-dropbox-symlink.sh"
   "09-reply-retention.sh"
   "10-verb-fallthrough-rename.sh"
+  "11-address-book-publish.sh"
+  "12-address-book-merge.sh"
+  "13-address-book-placeholder.sh"
 )
 # The two tests that are red until the fix ships. Empty this list as each one is fixed.
 # Emptied 2026-08-12: 04 and 05 were authored RED on purpose (they encoded the orphaned-socket and

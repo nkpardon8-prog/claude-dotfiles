@@ -89,6 +89,18 @@ shipped. Missing/corrupt state, a never-collected previous send, or `--full` mea
 it waits for a bundle, `resumework` runs `brctl monitor com.apple.CloudDocs` in the background (iCloud
 drop folders only) so the iCloud daemon notices the new file promptly.
 
+**Window address book (cross-Mac `list`/`find`):** each Mac publishes the names of its live windows
+to `~/Library/Mobile Documents/com~apple~CloudDocs/claude-windows/<mac-name>.json` - one file per
+Mac, so iCloud never sees two writers on one file. `line-agent-communicator.py publish` builds it
+from the same live-window rows `list` uses and writes atomically, only on change or for a 10-minute
+heartbeat; the LaunchAgent `com.claude-dotfiles.windows-publish` (installed by
+`install-transfer.sh`) runs it every 60 s, and `/line` plus the SessionStart identity hook trigger it
+immediately in the background. `list`/`find` read every other Mac's file in a child process with a
+2 s timeout (an iCloud placeholder can block while downloading) and fall back to the last good copy
+in `~/.claude/claude-windows-cache/`. A heartbeat older than 15 minutes reads as "asleep/offline". The
+file holds names only plus a salted hash of the claude.ai account id, compared across Macs to warn
+when Remote Control messages cannot arrive.
+
 ---
 
 ## Sync flow (multi-device)

@@ -415,6 +415,74 @@ check_icloud() {
 }
 
 # ---------------------------------------------------------------------------
+# window address book (iCloud Drive/claude-windows/, kept fresh by a LaunchAgent)
+# ---------------------------------------------------------------------------
+LA_LABEL="com.claude-dotfiles.windows-publish"
+LA_PLIST="$HOME/Library/LaunchAgents/$LA_LABEL.plist"
+LAC="$DOTFILES_DIR/scripts/line-agent-communicator.py"
+
+check_launchagent() {
+    if [ ! -f "$LA_PLIST" ]; then
+        record WARN launchagnt "$LA_LABEL not installed (run install-transfer.sh) - other Macs will not see this Mac's windows"
+        return
+    fi
+    if launchctl print "gui/$(id -u)/$LA_LABEL" >/dev/null 2>&1; then
+        record PASS launchagnt "$LA_LABEL loaded (publishes every 60s)"
+    else
+        record WARN launchagnt "$LA_LABEL installed but not loaded (re-run install-transfer.sh)"
+    fi
+}
+
+# Freshness, other Macs, and the account check all come from the script's own status verb, so the
+# doctor never re-implements what "fresh" means.
+check_addressbook() {
+    if ! have_python3 || [ ! -f "$LAC" ]; then
+        record WARN addrbook "cannot check (python3 or $LAC missing)"
+        return
+    fi
+    local status_json summary
+    status_json=$(python3 "$LAC" address-book-status 2>/dev/null)
+    summary=$(printf '%s' "$status_json" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('WARN\tcould not read address-book status'); sys.exit(0)
+if not d.get('dir'):
+    print('WARN\tno iCloud Drive - no shared address book'); sys.exit(0)
+rows = []
+me = d.get('self') or {}
+if not me.get('present'):
+    rows.append(('WARN', 'this Mac (%s) has no file yet - run install-transfer.sh' % d.get('host')))
+elif not me.get('fresh'):
+    rows.append(('WARN', 'this Mac\'s file is stale (heartbeat %ss old) - is the LaunchAgent running?' % me.get('heartbeat_age_sec')))
+else:
+    rows.append(('PASS', 'this Mac (%s) fresh, heartbeat %ss old' % (d.get('host'), me.get('heartbeat_age_sec'))))
+others = d.get('others') or []
+if not others:
+    rows.append(('WARN', 'no other Mac has published yet (run install-transfer.sh there)'))
+for o in others:
+    if o.get('account_match') is False:
+        rows.append(('FAIL', '%s is signed in to a DIFFERENT claude.ai account - cross-Mac messages will not arrive' % o.get('label')))
+    elif o.get('problem') and not o.get('from_cache'):
+        rows.append(('WARN', '%s: file unreadable (%s)' % (o.get('label'), o.get('problem'))))
+    elif not o.get('live'):
+        rows.append(('WARN', '%s: stale, heartbeat %ss old (asleep/offline?)%s' % (o.get('label'), o.get('heartbeat_age_sec'), ' [cached copy]' if o.get('from_cache') else '')))
+    else:
+        rows.append(('PASS', '%s fresh, %s window(s), same account' % (o.get('label'), o.get('windows')) if o.get('account_match') else '%s fresh, %s window(s)' % (o.get('label'), o.get('windows'))))
+for st, msg in rows:
+    print('%s\t%s' % (st, msg))
+" 2>/dev/null)
+    [ -n "$summary" ] || { record WARN addrbook "could not read address-book status"; return; }
+    while IFS=$'\t' read -r st msg; do
+        [ -n "$st" ] || continue
+        record "$st" addrbook "$msg"
+    done <<EOF
+$summary
+EOF
+}
+
+# ---------------------------------------------------------------------------
 # repo
 # ---------------------------------------------------------------------------
 # The repo may live under this account's own $HOME, or - on a Mac whose username
@@ -610,6 +678,8 @@ main() {
     check_openssl
     check_tools
     check_icloud
+    check_launchagent
+    check_addressbook
     check_repo
     check_jq
     check_path
