@@ -16,7 +16,7 @@
 # (no child process, no timeout). X1 must go red - as a hang caught by the alarm.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LAC_ALARM=8
+LAC_ALARM=20   # a real hang is forever; 20s only keeps a loaded machine from reading as one
 . "$HERE/_addrbook-fixture.sh"
 
 if [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ]; then

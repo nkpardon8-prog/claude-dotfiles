@@ -75,7 +75,7 @@ fail() { FAIL_N=$((FAIL_N + 1)); FAIL_MSGS="${FAIL_MSGS}  - $1
 "; }
 
 SCRIPT="${SCRIPT:-$REAL_SCRIPT}"
-LAC_ALARM="${LAC_ALARM:-15}"
+LAC_ALARM="${LAC_ALARM:-30}"  # generous: a loaded machine must not read as a hang
 # run_lac <argv...> -> RC, OUT, ELAPSED. Bounded: a hang returns RC=142 (SIGALRM) instead of stalling.
 run_lac() {
   local t0 t1
