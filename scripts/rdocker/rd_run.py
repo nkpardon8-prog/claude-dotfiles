@@ -173,7 +173,7 @@ def push(cfg, wt):
                GIT_TERMINAL_PROMPT="0")
     p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "push.recurseSubmodules=no",
                         "push", "--no-verify", "-q", "-f", "--receive-pack=" + recv, url,
-                        "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])],
+                        "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])] + base_refspecs(cfg, wt["top"]),
                        cwd=wt["top"], env=env, stdin=subprocess.DEVNULL, capture_output=True)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip()
@@ -181,6 +181,19 @@ def push(cfg, wt):
         if why:
             raise PushRefused(why)
         raise RunError("git push to the mini failed: %s" % err.replace("\n", " | ")[-300:])
+
+
+def base_refspecs(cfg, top):
+    """Also mirror the shared base branches (origin/dev, origin/main, ...) that exist locally, so
+    `git diff origin/dev...HEAD` / merge-base guards work on the mini too (2026-10-15: a guard tier
+    failed there with "could not resolve a diff base"). After the first push they cost ~nothing."""
+    out = []
+    for name in cfg.get("rr_base_branches") or ():
+        ref = "refs/remotes/origin/%s" % name
+        if NAME_RE.search(name) is None and git_out(["rev-parse", "-q", "--verify", ref + "^{commit}"],
+                                                     top, check=False).strip():
+            out.append("+%s:%s" % (ref, ref))
+    return out
 
 
 def push_refused_why(top, err):

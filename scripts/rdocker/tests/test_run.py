@@ -113,6 +113,9 @@ class RunTest(unittest.TestCase):
         self.git("-C", self.wt, "commit", "-qm", "init")
 
     def tearDown(self):
+        # a test that fails mid-run must not leave its rrun / fake runner / command looping (one
+        # did, for 10 h, on 2026-10-15): every process of ours names self.d on its command line
+        subprocess.run(["pkill", "-KILL", "-f", self.d], capture_output=True)
         shutil.rmtree(self.d, True)
 
     @staticmethod
@@ -301,6 +304,18 @@ class RunTest(unittest.TestCase):
         st = json.loads(self.read(rd_common.RRUN_STATE.replace(rdmods.TEST_HOME, self.home)))
         self.assertEqual(st["active"], {})                     # no stale "mini slot busy"
         self.assertEqual(st["last"]["target"], "local")
+
+    def test_origin_base_branches_reach_the_mini(self):
+        """`origin/dev` resolves inside rrun (guards diff against it); a missing base is skipped."""
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.wt, capture_output=True,
+                             text=True, env=self.env()).stdout.strip()
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/dev", sha], cwd=self.wt, check=True,
+                       env=self.env())
+        r = self.rrun("git", "rev-parse", "origin/dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), sha)
+        r = self.rrun("git", "rev-parse", "-q", "--verify", "origin/main")
+        self.assertEqual(r.returncode, 1)                       # not present locally: not invented
 
     def test_stopped_before_ready_never_falls_back(self):
         """A tool timeout TERMs rrun while the mini is still preparing; the link then drops.
