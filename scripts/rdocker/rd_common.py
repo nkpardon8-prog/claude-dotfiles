@@ -102,7 +102,14 @@ DEFAULTS = {
                           r"(^|\s)check:server-test-typecheck(\s|$)",
                           r"(^|[\s/])tsc(\s+\S+)*\s+--noEmit(\s|$)",   # whole-project typechecks
                           # a WHOLE vitest suite (flags only, no file/dir args); one or two files stay local
-                          r"(^|[\s/])vitest\s+run(\s+(-\S+|[0-9]*>>?\s*&?\S+))*\s*$"],
+                          r"(^|[\s/])vitest\s+run(\s+(-\S+|[0-9]*>>?\s*&?\S+))*\s*$",
+                          # BY CATEGORY, so new job names need no new rule: every check / lint / typecheck /
+                          # verify script and every test:* script, except browser/e2e/watch ones (laptop)
+                          r"(^|\s)(check|lint|typecheck|type-check|verify)"
+                          r"(?![\w:.-]*(e2e|playwright|browser|watch|:ui\b))(:[\w:.-]*)?(\s|$)",
+                          r"(^|\s)test:(?![\w:.-]*(e2e|playwright|browser|watch|ui\b))[\w:.-]+(\s|$)",
+                          r"(^|[\s/])jest(\s+(-\S+|[0-9]*>>?\s*&?\S+))*\s*$",   # a whole jest suite
+                          r"(^|[\s/])eslint(\s+\S+)*\s+\.(\s|$)"],              # eslint over the whole tree
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim

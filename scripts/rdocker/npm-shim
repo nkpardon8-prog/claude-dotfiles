@@ -32,7 +32,12 @@ if [ "${RRUN:-}" != "0" ] && [ -z "${RRUN_REMOTE:-}" ] && command -v rrun >/dev/
     test|t|tst) [ "${#pos[@]}" -eq 1 ] && [ "$extra" = 0 ] && want=1 ;;
     run|run-script|rum|urn)
       [ "${pos[1]:-}" = test ] && [ "${#pos[@]}" -eq 2 ] && [ "$extra" = 0 ] && want=1
-      case "${pos[1]:-}" in test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck) want=1 ;; esac ;;
+      case "${pos[1]:-}" in test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck) want=1 ;; esac
+      # by category (mirrors rr_route_patterns): check / lint / typecheck / verify and test:* scripts,
+      # never browser / e2e / watch ones (those need the laptop)
+      s1="${pos[1]:-}"
+      if [[ "$s1" =~ ^(check|lint|typecheck|type-check|verify)(:.*)?$ || "$s1" =~ ^test:.+ ]] \
+         && ! [[ "$s1" =~ (e2e|playwright|browser|watch|:ui$|:ui:) ]]; then want=1; fi ;;
   esac
   [ "$want" = 1 ] && exec rrun npm "$@"      # mini resolves its own npm; a laptop fallback re-enters here with RRUN=0
 fi

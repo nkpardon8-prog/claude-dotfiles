@@ -466,7 +466,7 @@ class RrunSafetyNet(ShimCase):
     def test_under_rrun_or_other_scripts_or_non_auto_mode_stays_on_mini(self):
         cases = (("rrun job", {"npm_lifecycle_event": "test:db", "RRUN_REMOTE": "1"}),
                  ("other script", {"npm_lifecycle_event": "test"}),
-                 ("look-alike", {"npm_lifecycle_event": "test:dbx"}),
+                 ("look-alike", {"npm_lifecycle_event": "test-dbx"}),
                  ("forced mini", {"npm_lifecycle_event": "test:db", "RDOCKER_MODE": "mini"}),
                  ("no npm", {}))
         for label, env in cases:

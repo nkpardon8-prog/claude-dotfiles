@@ -110,7 +110,10 @@ the connection).
   (`rr_route_patterns`: `npm [--prefix X] run test:db[:rls]`, `release:rehearse:migrations`,
   `node .../test-with-db.mjs`, `check:db-all`, `node .../run-guard-tier.mjs`,
   `check:server-test-typecheck`, `tsc ... --noEmit`, a WHOLE `vitest run` suite - flags only, no file
-  args; `vitest run a.test.ts` stays on the laptop) to `rrun <cmd>`. Heads may also be
+  args; `vitest run a.test.ts` stays on the laptop) to `rrun <cmd>`. **By category**, so new script names
+  need no new rule: every `check*` / `lint*` / `typecheck` / `verify*` and `test:*` npm script, a whole
+  `jest`, and `eslint .` - except names with `e2e` / `playwright` / `browser` / `watch` / `:ui` (they need
+  the laptop's browser or terminal). Dev servers (`dev`, `start`) and `build` stay local. Heads may also be
   `./node_modules/.bin/tsc|vitest`. The push also mirrors the local
   `origin/dev|main|master` (`rr_base_branches`), so diff-based guards resolve their base on the mini. It leaves anything unsure alone (`$(`, backticks,
   heredocs, pipes into it, non-`npm/node/npx/pnpm/yarn/bun` heads), and drops `RDOCKER_MODE=local`.

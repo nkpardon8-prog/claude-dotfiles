@@ -43,9 +43,10 @@ import sys
 import unicodedata
 
 PREFILTER = ("test:db", "rehearse:migrations", "test-with-db", "check:db-all", "run-guard-tier",
-             "check:server-test-typecheck", "--noEmit", "vitest")
+             "check:server-test-typecheck", "--noEmit", "vitest", "check", "lint", "typecheck",
+             "type-check", "verify", "test:", "jest", "eslint")
 SKIP_MARKERS = ("rrun", "RRUN=0", "real-od/", "doctor-drive", "--approve=browser")
-HEADS = {"npm", "node", "npx", "pnpm", "yarn", "bun", "tsc", "vitest"}   # also ./node_modules/.bin/<x>
+HEADS = {"npm", "node", "npx", "pnpm", "yarn", "bun", "tsc", "vitest", "jest", "eslint"}   # also ./node_modules/.bin/<x>
 ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 VALUE_RE = re.compile(r"[A-Za-z0-9_./:@%+,=-]*")   # fullmatch
 UNSAFE_IN_SEGMENT = re.compile(r"\$\(|`|[(){}<]")

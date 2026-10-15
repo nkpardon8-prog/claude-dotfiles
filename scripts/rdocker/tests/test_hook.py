@@ -36,6 +36,10 @@ POSITIVE = [
     ("cd server && npx vitest run", "cd server && rrun npx vitest run"),
     ("npx vitest run --reporter=dot 2>&1 | tail -20", "rrun npx vitest run --reporter=dot 2>&1 | tail -20"),
     ("npx vitest run > out.log 2>&1", "rrun npx vitest run > out.log 2>&1"),
+    ("npm run lint 2>&1 | tail", "rrun npm run lint 2>&1 | tail"),
+    ("npm run check:enqueue-trace", "rrun npm run check:enqueue-trace"),
+    ("cd client && npm run typecheck", "cd client && rrun npm run typecheck"),
+    ("npx eslint . --ext ts,tsx", "rrun npx eslint . --ext ts,tsx"),
     ("node scripts/test-with-db.mjs src/a.db.test.ts", "rrun node scripts/test-with-db.mjs src/a.db.test.ts"),
     ("node ../../scripts/test-with-db.mjs", "rrun node ../../scripts/test-with-db.mjs"),
     ("cd server && npm run test:db", "cd server && rrun npm run test:db"),
@@ -78,6 +82,10 @@ NEGATIVE = [
     "npx vitest run src/a.test.ts",                  # one file: small, stays on the laptop
     "npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail",
     "npx vitest",                                    # watch mode: interactive
+    "npm run test:e2e",                              # browser tests need the laptop
+    "npm run dev",
+    "npm run build",
+    "npx eslint src/a.ts",
     "cat tsconfig.json",
     "timeout npm run test:db",                       # timeout with no duration: not understood
     "bash -c 'echo test:db'",
@@ -89,7 +97,6 @@ NEGATIVE = [
     "git commit -m 'rehearse release:rehearse:migrations'",
     "echo test:db",
     "npm run test",
-    "npm run test:dbx",
     "npm run lint && echo test:db",                 # a matching segment we don't understand
     'sh -c "cd server && npm run test:db"',
     "ssh mini npm run test:db",

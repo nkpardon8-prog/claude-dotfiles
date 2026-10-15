@@ -41,6 +41,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   `npm run test` with none (npm shim); one or two files stay local. `./node_modules/.bin/tsc|vitest`
   heads are recognised. Laptop load was ~200 at 16:15 from whole suites (one 29 min) and tsc.
   The safety net no longer forces a laptop DB when Docker Desktop is off.
+- Routing by category instead of by name (new heavy jobs kept appearing one at a time): every
+  check/lint/typecheck/verify and test:* script, whole jest, `eslint .` go to the mini; e2e /
+  playwright / browser / watch / :ui, dev servers and build stay on the laptop.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 
