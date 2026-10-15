@@ -28,6 +28,10 @@ POSITIVE = [
     ("npm --prefix server run test:db -- careHold", "rrun npm --prefix server run test:db -- careHold"),
     ("npm run release:rehearse:migrations", "rrun npm run release:rehearse:migrations"),
     ("npm run check:db-all 2>&1 | tail -20", "rrun npm run check:db-all 2>&1 | tail -20"),
+    ("heavy-slot.sh node scripts/run-guard-tier.mjs needs-install", "rrun node scripts/run-guard-tier.mjs needs-install"),
+    ("npm run check:server-test-typecheck", "rrun npm run check:server-test-typecheck"),
+    ("cd server && npx tsc --noEmit -p tsconfig.json 2>&1 | head", "cd server && rrun npx tsc --noEmit -p tsconfig.json 2>&1 | head"),
+    ("npx tsc -p tsconfig.vitest.json --noEmit", "rrun npx tsc -p tsconfig.vitest.json --noEmit"),
     ("node scripts/test-with-db.mjs src/a.db.test.ts", "rrun node scripts/test-with-db.mjs src/a.db.test.ts"),
     ("node ../../scripts/test-with-db.mjs", "rrun node ../../scripts/test-with-db.mjs"),
     ("cd server && npm run test:db", "cd server && rrun npm run test:db"),
@@ -66,6 +70,8 @@ POSITIVE = [
 ]
 
 NEGATIVE = [
+    "npx tsc -p tsconfig.json",                      # an emitting build: not a check
+    "cat tsconfig.json",
     "timeout npm run test:db",                       # timeout with no duration: not understood
     "bash -c 'echo test:db'",
     "bash -c 'FOO=$X npm run test:db'",

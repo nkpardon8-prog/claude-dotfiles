@@ -108,7 +108,9 @@ the connection).
 
 - **Automatic:** a `PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites known heavy commands
   (`rr_route_patterns`: `npm [--prefix X] run test:db[:rls]`, `release:rehearse:migrations`,
-  `node .../test-with-db.mjs`, `check:db-all`) to `rrun <cmd>`. It leaves anything unsure alone (`$(`, backticks,
+  `node .../test-with-db.mjs`, `check:db-all`, `node .../run-guard-tier.mjs`,
+  `check:server-test-typecheck`, `tsc ... --noEmit`) to `rrun <cmd>`. The push also mirrors the local
+  `origin/dev|main|master` (`rr_base_branches`), so diff-based guards resolve their base on the mini. It leaves anything unsure alone (`$(`, backticks,
   heredocs, pipes into it, non-`npm/node/npx/pnpm/yarn/bun` heads), and drops `RDOCKER_MODE=local`.
   Leading `K=V` assignments stay an env prefix and each name gets `-e K` (`FOO=1 npm run test:db` →
   `FOO=1 rrun -e FOO npm run test:db`), so values never enter rrun's argv; `RRUN_*`/`RDOCKER_*` only
@@ -119,7 +121,7 @@ the connection).
 - **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
   skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
 - **npm shim (catches scripts):** `rdocker install` also links `~/.local/bin/npm` (first on PATH) to
-  `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations|check:db-all ...` from
+  `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck ...` from
   ANYWHERE - a script, `bash -c "..."`, a subagent, a Makefile - becomes `rrun npm ...`, even with
   `RDOCKER_MODE=local` set. Every other npm call execs the real npm untouched. Skipped for `RRUN=0`, the
   hook's skip markers, on the mini, and inside rrun's own laptop fallback (it sets `RRUN=0`).

@@ -96,7 +96,10 @@ DEFAULTS = {
     "rr_route_patterns": [r"(^|\s)test:db(:rls)?(\s|$)",
                           r"(^|\s)release:rehearse:migrations(\s|$)",
                           r"(^|[\s/])test-with-db\.mjs(\s|$)",
-                          r"(^|\s)check:db-all(\s|$)"],   # dentall's 90-link guard sweep: pure CPU
+                          r"(^|\s)check:db-all(\s|$)",   # dentall's 90-link guard sweep: pure CPU
+                          r"(^|[\s/])run-guard-tier\.mjs(\s|$)",   # guard tiers (git diff vs origin/dev)
+                          r"(^|\s)check:server-test-typecheck(\s|$)",
+                          r"(^|[\s/])tsc(\s+\S+)*\s+--noEmit(\s|$)"],   # whole-project typechecks
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim

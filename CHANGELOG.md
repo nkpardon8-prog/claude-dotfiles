@@ -29,6 +29,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 - rrun deps: a repo-root command also installs each first-level subproject with a lockfile that is
   installed on the laptop. Reported by dso-ui-ref: `release:rehearse:migrations` (a root script that
   loads server/ packages) only worked with a dummy `--prefix=server`.
+- Laptop load 216 at 15:22 (guard tiers, tsc, vitest in ~6 worktrees) made rdocker see the mini as down.
+  Now routed to the mini too: `run-guard-tier.mjs`, `check:server-test-typecheck`, `tsc ... --noEmit`.
+  rrun also pushes local `origin/dev|main|master` (`rr_base_branches`) so diff-based guards work there
+  (a guard tier trial had failed: "could not resolve a diff base"). Guard tier on the mini: ~66 s.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

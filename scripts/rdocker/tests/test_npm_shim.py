@@ -41,7 +41,7 @@ class NpmShim(unittest.TestCase):
 
     def test_heavy_scripts_go_through_rrun(self):
         for args in (["run", "test:db"], ["run", "test:db", "--", "a.test.ts"], ["run-script", "test:db:rls"],
-                     ["--prefix", "server", "run", "test:db"], ["-s", "run", "release:rehearse:migrations"], ["run", "check:db-all"],
+                     ["--prefix", "server", "run", "test:db"], ["-s", "run", "release:rehearse:migrations"], ["run", "check:db-all"], ["run", "check:server-test-typecheck"],
                      ["run", "--silent", "test:db"]):
             with self.subTest(args=args):
                 self.assertEqual(self.npm(*args), "RRUN npm %s (RRUN=)" % " ".join(args))
