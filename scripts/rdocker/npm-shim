@@ -1,0 +1,35 @@
+#!/bin/bash
+# rdocker npm shim (~/.local/bin/npm): `npm run <heavy test script>` -> `rrun npm run ...` so the test
+# runner and its DB run together on the Mac mini, whoever starts it (an agent, a script, bash -c ...).
+# The script names mirror rr_route_patterns (rd_common) for npm. Everything else, and RRUN=0 / already-under-rrun / on the mini, execs the real npm untouched.
+# rrun's own laptop fallback sets RRUN=0, so a down mini cannot loop back here.
+self="${BASH_SOURCE[0]}"
+real=""
+IFS=: read -r -a dirs <<< "${PATH:-}"
+for d in "${dirs[@]}"; do
+  [ -n "$d" ] && [ -x "$d/npm" ] && [ ! "$d/npm" -ef "$self" ] && { real="$d/npm"; break; }
+done
+[ -n "$real" ] || { echo "rdocker npm shim: no real npm on PATH" >&2; exit 127; }
+if [ "${RRUN:-}" != "0" ] && [ -z "${RRUN_REMOTE:-}" ] && command -v rrun >/dev/null 2>&1; then
+  # first two positional args (flags and the values of --prefix / -w / --workspace / -C skipped)
+  pos=(); skip=0
+  for a in "$@"; do
+    [ "$a" = "--" ] && break
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in
+      --prefix|-w|--workspace|-C) skip=1 ;;
+      -*) ;;
+      *) pos+=("$a"); [ "${#pos[@]}" -ge 2 ] && break ;;
+    esac
+  done
+  want=0
+  for a in "$@"; do      # the hook's skip markers: these runs need the laptop
+    case "$a" in *real-od/*|*doctor-drive*|--approve=browser) pos=(); break ;; esac
+  done
+  case "${pos[0]:-}" in
+    run|run-script|rum|urn)
+      case "${pos[1]:-}" in test:db|test:db:rls|release:rehearse:migrations) want=1 ;; esac ;;
+  esac
+  [ "$want" = 1 ] && exec rrun npm "$@"      # mini resolves its own npm; a laptop fallback re-enters here with RRUN=0
+fi
+exec "$real" "$@"

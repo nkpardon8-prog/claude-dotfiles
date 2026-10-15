@@ -48,6 +48,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 SHIM_SRC = os.path.join(HERE, "docker-shim")
 ENTRY = os.path.join(HERE, "rdocker.py")   # the CLI entry point (launchd plist, ~/.local/bin/rdocker)
 RRUN_SRC = os.path.join(HERE, "rrun")      # the `rrun` wrapper (~/.local/bin/rrun links here)
+NPM_SHIM_SRC = os.path.join(HERE, "npm-shim")  # ~/.local/bin/npm: heavy `npm run` scripts -> rrun
 RUNNER_SRC = os.path.join(HERE, "rr_runner.pl")   # the mini-side runner, sent with every rrun
 RRUN_STATE = os.path.join(STATE_DIR, "rrun.json")  # last rrun result + runs in flight (status row)
 # rrun-<wt12>.lock in STATE_DIR serialises rrun runs from one laptop worktree (rd_run.wt_lock_path)

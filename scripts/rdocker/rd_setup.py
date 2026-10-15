@@ -116,9 +116,11 @@ def install(cfg):
     link(rd_common.ENTRY, os.path.join(rd_common.BIN_DIR, "rdocker"))
     os.chmod(rd_common.RRUN_SRC, 0o755)
     link(rd_common.RRUN_SRC, os.path.join(rd_common.BIN_DIR, "rrun"))
+    os.chmod(rd_common.NPM_SHIM_SRC, 0o755)
+    link(rd_common.NPM_SHIM_SRC, os.path.join(rd_common.BIN_DIR, "npm"))
     # 5. background forwarder
     ok = install_daemon()
-    print("installed: docker shim + rdocker + rrun in %s, launch agent %s (%s)"
+    print("installed: docker shim + rdocker + rrun + npm shim in %s, launch agent %s (%s)"
           % (rd_common.BIN_DIR, rd_common.PLIST_LABEL, "loaded" if ok else "LOAD FAILED"))
     print("pinned to laptop: containers=%s compose=%s"
           % (cfg["pins"]["containers"], cfg["pins"]["compose_projects"]))

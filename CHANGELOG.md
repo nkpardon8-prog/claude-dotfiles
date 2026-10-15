@@ -2,6 +2,19 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-15 - rrun hook: wrappers, `bash -c`, two mini slots
+
+- Live: agents' heavy runs still landed on the laptop because the hook skipped
+  `~/.local/bin/heavy-slot.sh npm run test:db ...`, `timeout 600 npm ...` and
+  `heavy-slot.sh bash -c '... RDOCKER_MODE=local npm run test:db ...'`. The hook now drops the
+  laptop gate `heavy-slot.sh`, keeps `timeout`/`time`/`nice`/`caffeinate` outside `rrun`, and routes
+  the script of a single-quoted `bash -c` by the same rules. `rr_slots` 1 -> 2 so a dozen agents
+  do not queue behind one run.
+- New npm shim (`~/.local/bin/npm` -> `scripts/rdocker/npm-shim`, linked by `rdocker install`): heavy
+  `npm run` scripts started from scripts / double-quoted `bash -c` / anything the hook cannot see go
+  through `rrun` too. rrun's laptop fallback now sets `RRUN=0` so it cannot loop. Live: a plain
+  `npm run test:db` inside `bash -c "..."` ran on the mini, 15/15 in 17 s.
+
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 
 - New `rrun [-e NAME[=VALUE]]... [--] <cmd>` (also `rdocker run`; linked into `~/.local/bin` by

@@ -563,7 +563,7 @@ def run_local(argv, env_pairs, why=None):
     """exec the command on the laptop (RDOCKER_MODE=local: its containers stay on the laptop too)."""
     if why:
         note("%s - running on the laptop instead (RDOCKER_MODE=local)" % why)
-    env = dict(os.environ, RDOCKER_MODE="local")
+    env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")   # RRUN=0: the npm shim must not re-route
     env.update(env_pairs)
     sys.stdout.flush()
     sys.stderr.flush()

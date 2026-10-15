@@ -118,6 +118,15 @@ the connection).
   a bare `FOO=1;`) that would not reach the mini.
 - **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
   skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
+- **npm shim (catches scripts):** `rdocker install` also links `~/.local/bin/npm` (first on PATH) to
+  `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations ...` from
+  ANYWHERE - a script, `bash -c "..."`, a subagent, a Makefile - becomes `rrun npm ...`, even with
+  `RDOCKER_MODE=local` set. Every other npm call execs the real npm untouched. Skipped for `RRUN=0`, the
+  hook's skip markers, on the mini, and inside rrun's own laptop fallback (it sets `RRUN=0`).
+- **Wrappers:** `heavy-slot.sh <cmd>` (a laptop-only queue) is dropped - the job runs on the mini, which
+  has its own slots. `timeout N` / `time` / `nice` / `caffeinate` stay outside: `timeout 600 rrun npm ...`.
+  A `bash -c '<script>'` (single-quoted, only output redirects after it) has its script routed by the
+  same rules, `RDOCKER_MODE=local` inside it included; a double-quoted script is left alone.
 - **Safety net:** if a heavy npm script starts a container without going through `rrun`, the shim puts
   that container on the laptop (fast, instead of the slow split) and prints one hint to use `rrun`.
 - **What is copied:** git `HEAD` (pushed to `~/rr/git/<repo>.git` on the mini; the first push carries
@@ -142,8 +151,8 @@ the connection).
   **Compose is not labelled:** containers a run starts with `docker compose up/run` are *not* removed at
   the end of the run and *are* mirrored to laptop localhost like any mini container; the normal janitor
   rules (3 h idle stop, exited 24 h) reap them - `docker compose down` them yourself when done.
-- **One at a time:** one run per laptop worktree (a lock), and one run on the mini (`rr_slots` 1). A
-  second run waits with one line naming the holder, and gives up after `rr_wait_min` (30) → exit 73.
+- **Two at a time:** one run per laptop worktree (a lock), and two runs on the mini (`rr_slots` 2). A
+  further run waits with one line naming the holder, and gives up after `rr_wait_min` (30) → exit 73.
 - **Exactly once:** the mini prepares everything (checkout, overlay, `npm ci`, slot), then reports READY
   and waits; the command starts **only** when the laptop answers GO. Mini lost before GO was sent (push
   fails, or the link drops during prepare), not a git repo, or no commit yet → it runs **on the laptop**
