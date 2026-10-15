@@ -17,6 +17,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 - Fix: rrun stopped (Ctrl-C / a tool timeout's TERM) while the mini was still preparing, then losing
   the link, no longer falls back to a laptop run - it exits 128+signal. Live: a 10-min tool timeout
   during a mini slot wait had turned into a full local run.
+- Engine health: a single "engine did not answer" reading right after a good one (<= 2 min) is
+  re-probed once before routing believes it. Tonight ~10 such lone timeouts, all during laptop load
+  100-360, had sent throwaway containers to the laptop.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

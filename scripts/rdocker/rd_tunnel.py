@@ -318,8 +318,32 @@ def health(cfg, force=False, count_rtt=True):
     if not force:
         h = rd_common.load_json(rd_common.HEALTH_PATH, None)
         if health_fresh(h):
-            return h
-    return refresh_health(cfg, reuse_fresh=not force, count_rtt=count_rtt)
+            return confirm_engine_down(cfg, h)
+    return confirm_engine_down(cfg, refresh_health(cfg, reuse_fresh=not force, count_rtt=count_rtt))
+
+
+def lone_engine_failure(h):
+    """True when this reading says the engine did not answer but the one before it (<= RTT_HIST_GAP
+    earlier) did: most likely a starved laptop (load 100+ made one probe time out), not a dead
+    engine."""
+    if not isinstance(h, dict) or not h.get("reachable") or h.get("docker_ok") is not False:
+        return False
+    hist = h.get("rtt_hist")
+    if not isinstance(hist, list) or len(hist) < 2:
+        return False
+    try:
+        (t0, r0), (t1, _) = hist[-2], hist[-1]
+        return isinstance(r0, (int, float)) and 0 <= t1 - t0 <= RTT_HIST_GAP
+    except (TypeError, ValueError):
+        return False
+
+
+def confirm_engine_down(cfg, h):
+    """One failed probe right after a good one is re-probed once before anything is routed to the
+    laptop for it (2026-10-15: single timeouts under laptop load 100-360 sent throwaways local)."""
+    if not lone_engine_failure(h):
+        return h
+    return refresh_health(cfg, count_rtt=False)
 
 
 def resolve_target(cfg):

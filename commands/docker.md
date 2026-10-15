@@ -188,6 +188,10 @@ engines), then routed to wherever it actually lives. If its location cannot be e
 **refuses** (exit 1, `cannot tell where <name> lives ... - refusing to guess`) rather than run on the
 wrong engine.
 
+**Lone engine timeout:** a health reading saying the engine did not answer, right after (<= 2 min) a reading
+where it did, is re-probed once before anything routes on it - a starved laptop (load 100+) makes single
+probes time out, and that alone must not send throwaways to the laptop.
+
 **Blip wait:** when that refusal is only because the mini's side is unknown (unreachable, engine silent,
 or its `inspect` did not answer), the shim first prints `rdocker: mini not answering - waiting up to
 30s...` and retries the lookup every ~3 s (a forced health probe each time, not counted toward the slow-

@@ -231,6 +231,54 @@ class RefreshHealthKeepsHistory(InHome):
         self.assertEqual(out, {"rtts": [20.0, 500.0, 600.0], "slow": True})
 
 
+class LoneEngineFailure(InHome):
+    """One engine timeout right after a good reading is re-probed before routing trusts it."""
+
+    def test_lone_failure_is_reprobed_and_recovery_wins(self):
+        out = self.run_py("""
+            seq = iter([(True, 20.0), (False, None), (True, 25.0)])
+            def probe(cfg):
+                ok, rtt = next(seq)
+                return {"ts": time.time(), "reachable": True, "docker_ok": ok, "rtt_ms": rtt}
+            rd_tunnel.probe_health = probe
+            cfg = r.load_cfg()
+            r.refresh_health(cfg)                       # good
+            h = r.health(cfg, force=True)               # fails once -> re-probed -> good
+            print(json.dumps({"ok": h["docker_ok"], "left": len(list(seq))}))
+        """)
+        self.assertEqual(out, {"ok": True, "left": 0})
+
+    def test_repeated_failure_is_believed(self):
+        out = self.run_py("""
+            seq = iter([(False, None), (False, None), (False, None)])
+            calls = []
+            def probe(cfg):
+                calls.append(1)
+                ok, rtt = next(seq)
+                return {"ts": time.time(), "reachable": True, "docker_ok": ok, "rtt_ms": rtt}
+            rd_tunnel.probe_health = probe
+            cfg = r.load_cfg()
+            r.refresh_health(cfg)                       # down
+            h = r.health(cfg, force=True)               # down again: no extra probe
+            print(json.dumps({"ok": h["docker_ok"], "calls": len(calls)}))
+        """)
+        self.assertEqual(out, {"ok": False, "calls": 2})
+
+    def test_classifier(self):
+        out = self.run_py("""
+            good = [[100, 20.0], [110, None]]
+            print(json.dumps({
+                "lone": r.lone_engine_failure({"reachable": True, "docker_ok": False, "rtt_hist": good}),
+                "far": r.lone_engine_failure({"reachable": True, "docker_ok": False,
+                                              "rtt_hist": [[0, 20.0], [500, None]]}),
+                "unreachable": r.lone_engine_failure({"reachable": False, "docker_ok": False, "rtt_hist": good}),
+                "ok": r.lone_engine_failure({"reachable": True, "docker_ok": True, "rtt_hist": good}),
+                "junk": r.lone_engine_failure({"reachable": True, "docker_ok": False, "rtt_hist": "x"}),
+            }))
+        """)
+        self.assertEqual(out, {"lone": True, "far": False, "unreachable": False, "ok": False, "junk": False})
+
+
 class ProbeFailureClassification(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
