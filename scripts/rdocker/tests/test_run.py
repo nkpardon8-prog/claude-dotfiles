@@ -42,6 +42,14 @@ if os.environ.get("FAKE_SSH_DOWN"):
 if os.environ.get("FAKE_SSH_DROP") and "perl" in cmd:
     subprocess.run(["/bin/sh", "-c", cmd])
     sys.exit(255)
+if os.environ.get("FAKE_SSH_HANG_DIR") and "perl" in cmd:
+    import time
+    d = os.environ["FAKE_SSH_HANG_DIR"]
+    os.read(0, 4096)                       # pushed; the mini is "preparing" (e.g. waiting for a slot)
+    open(os.path.join(d, "up"), "w").close()
+    while not os.path.exists(os.path.join(d, "drop")):
+        time.sleep(0.05)
+    sys.exit(255)                          # then the link dies
 if os.environ.get("FAKE_SSH_EARLY_DROP") and "perl" in cmd:
     os.read(0, 4096)                       # the push worked; the session dies before READY
     sys.exit(255)
@@ -289,6 +297,27 @@ class RunTest(unittest.TestCase):
         st = json.loads(self.read(rd_common.RRUN_STATE.replace(rdmods.TEST_HOME, self.home)))
         self.assertEqual(st["active"], {})                     # no stale "mini slot busy"
         self.assertEqual(st["last"]["target"], "local")
+
+    def test_stopped_before_ready_never_falls_back(self):
+        """A tool timeout TERMs rrun while the mini is still preparing; the link then drops.
+        That must end the run, not start it on the laptop."""
+        marker = os.path.join(self.d, "ran")
+        hang = os.path.join(self.d, "hang")
+        os.makedirs(hang)
+        e = self.env(FAKE_SSH_HANG_DIR=hang)
+        p = subprocess.Popen([RRUN, "/bin/sh", "-c", "echo x >> %s" % marker], cwd=self.wt, env=e,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        end = time.time() + 30
+        while not os.path.exists(os.path.join(hang, "up")):
+            self.assertLess(time.time(), end, "fake ssh never came up")
+            time.sleep(0.05)
+        p.send_signal(signal.SIGTERM)
+        time.sleep(0.3)
+        open(os.path.join(hang, "drop"), "w").close()
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 128 + signal.SIGTERM, err)
+        self.assertIn(b"not running it anywhere", err)
+        self.assertFalse(os.path.exists(marker))              # not run on the laptop either
 
     def test_connection_lost_after_go_is_75_and_never_reruns(self):
         marker = os.path.join(self.d, "ran")

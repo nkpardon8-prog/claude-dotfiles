@@ -156,7 +156,8 @@ the connection).
 - **Exactly once:** the mini prepares everything (checkout, overlay, `npm ci`, slot), then reports READY
   and waits; the command starts **only** when the laptop answers GO. Mini lost before GO was sent (push
   fails, or the link drops during prepare), not a git repo, or no commit yet → it runs **on the laptop**
-  with `RDOCKER_MODE=local` and a `rrun: ... - running on the laptop instead` notice. `RRUN_STRICT=1`
+  with `RDOCKER_MODE=local` and a `rrun: ... - running on the laptop instead` notice - unless rrun was
+  already stopped (Ctrl-C, or a tool timeout's TERM): then it exits 128+signal and runs nowhere. `RRUN_STRICT=1`
   refuses that and exits 75. A shallow clone, or history the mini's `git fsck` rejects, also runs on
   the laptop, with the reason in the notice (`cannot send this repo to the Mac mini: ...`).
 - **Mini lost once GO was sent** (even if it may never have arrived) → exit **75** (`rrun: lost the Mac

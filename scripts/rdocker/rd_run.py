@@ -374,6 +374,7 @@ class Session:
         self.started = None                  # monotonic time "<nonce> STARTED" arrived
         self.ready = False                   # "<nonce> READY" arrived: the runner waits for GO
         self.go_sent = False
+        self.first_sig = 0                   # the first INT/TERM/HUP we got (0 = none)
         self.go_lock = threading.Lock()      # orders go_sent against `done` (the ssh exited)
         self.ints = 0
         self.wake = threading.Event()
@@ -402,6 +403,7 @@ class Session:
                  "(docker ps / docker logs reach them; the janitor reaps them after 3 h idle)" % rest)
 
     def on_signal(self, signum, _frame):
+        self.first_sig = self.first_sig or signum
         self.ints += 1 if signum != signal.SIGHUP else 2
         if self.ints >= 3 and self.proc.poll() is None:
             self.proc.kill()
@@ -673,6 +675,12 @@ def rrun(argv, env_args=()):
         # safe when the connection dropped; any other rc is the runner's own (73, 78, ...).
         record("mini", argv, rc, secs)     # clears the in-flight entry before a local exec
         timing.report()
+        if sess.first_sig:
+            # stopped (Ctrl-C, or a tool's timeout sent TERM) while the mini was still preparing:
+            # the caller wants it to end - never start it here instead (2026-10-15: a 10-min tool
+            # timeout during a slot wait turned into a full local run)
+            note("stopped before the command started on the Mac mini - not running it anywhere")
+            return 128 + sess.first_sig
         if rc == 255:
             return fallback(argv, env_pairs, "lost the Mac mini before the command started", t0)
         if rc in INFRA_EXIT:

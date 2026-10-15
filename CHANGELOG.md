@@ -14,6 +14,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   `npm run` scripts started from scripts / double-quoted `bash -c` / anything the hook cannot see go
   through `rrun` too. rrun's laptop fallback now sets `RRUN=0` so it cannot loop. Live: a plain
   `npm run test:db` inside `bash -c "..."` ran on the mini, 15/15 in 17 s.
+- Fix: rrun stopped (Ctrl-C / a tool timeout's TERM) while the mini was still preparing, then losing
+  the link, no longer falls back to a laptop run - it exits 128+signal. Live: a 10-min tool timeout
+  during a mini slot wait had turned into a full local run.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 
