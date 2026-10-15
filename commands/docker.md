@@ -6,6 +6,11 @@ description: Remote Docker on the always-on Mac mini (rdocker). Plain `docker` /
 
 **Arguments:** `$ARGUMENTS` (optional: `status`, `doctor`, `clean`, `use <mode>`, `where <name>`, or plain English).
 
+**Running ON the Mac mini?** (`~/.local/bin/docker` missing, `docker context show` = `colima`.) Then docker is
+the mini's own local engine and nothing here routes it: no shim, no port mirrors, no `rrun`, no `rdocker`
+command. Use docker normally. The laptop's janitor still sweeps this engine, so a DB that must survive
+3 h of quiet needs `--label rdocker.keep=1` + a named volume (or `rdocker.ttl=...`), as below.
+
 ## The mental model
 
 The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (`macmini-docker` on
