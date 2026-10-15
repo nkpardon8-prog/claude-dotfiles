@@ -279,7 +279,9 @@ def idle_step(cfg, target, st, now_mono, now_wall):
     if not snapshot_local_pins(cfg):
         return False
     rd_common.log("local engine idle %d min -> quitting Docker Desktop" % cfg["local_idle_stop_min"])
-    rd_common.run(["osascript", "-e", 'quit app "Docker Desktop"'], timeout=20)
+    # the app's AppleScript name is "Docker": `quit app "Docker Desktop"` silently did nothing, so
+    # Docker Desktop never quit and kept ~1.5 GB (found 2026-10-15)
+    rd_common.run(["osascript", "-e", 'quit app "Docker"'], timeout=20)
     return True
 
 

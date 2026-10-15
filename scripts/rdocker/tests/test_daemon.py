@@ -227,6 +227,7 @@ class IdleQuit(unittest.TestCase):
             raise AssertionError(args)
 
         def run(cmd, **kw):
+            self.quit_cmd = cmd
             with open(self.cfgpath) as f:
                 events.append(("quit", json.load(f).get("pins", {}).get("fallback", [])))
             return 0, "", ""
@@ -242,6 +243,8 @@ class IdleQuit(unittest.TestCase):
     def test_pins_snapshot_written_before_quit(self):
         quit_, events = self.drive()
         self.assertTrue(quit_)
+        # the AppleScript app name is "Docker"; "Docker Desktop" silently quit nothing (2026-10-15)
+        self.assertEqual(self.quit_cmd, ["osascript", "-e", 'quit app "Docker"'])
         self.assertEqual(len(events), 1)
         pinned = {(p["name"], p["kind"]) for p in events[0][1]}
         self.assertEqual(pinned, {("web", "container"), ("solo", "container"), ("proj", "compose")})
