@@ -23,6 +23,12 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 - rrun: a lockfile out of sync with package.json (`npm ci` EUSAGE - dentall's repo root) now falls
   back to `npm install` on the mirror instead of failing with exit 78. Live: `release:rehearse:migrations`
   had failed in 1.4 s and been rerun on the laptop (~1,380 docker execs on a laptop DB).
+- `check:db-all` (dentall's 90-link guard sweep, pure CPU, pushed laptop load to 50+) joins
+  `rr_route_patterns`, the hook prefilter and the npm shim. Trial on the mini: 90 links, only the
+  registered KNOWN_RED failing (same as the laptop), 144 s.
+- rrun deps: a repo-root command also installs each first-level subproject with a lockfile that is
+  installed on the laptop. Reported by dso-ui-ref: `release:rehearse:migrations` (a root script that
+  loads server/ packages) only worked with a dummy `--prefix=server`.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

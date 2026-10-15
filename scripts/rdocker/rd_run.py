@@ -288,6 +288,19 @@ def deps_dirs(top, relcwd, argv):
     `--prefix X` in argv (relative to cwd). Not the repo root by default: a monorepo root's lockfile
     can be out of sync (npm ci refuses) and the command never loads its packages (2026-10-15)."""
     out = []
+    if not relcwd:
+        # a repo-root command (`release:rehearse:migrations` -> a node script) can load a subproject's
+        # packages without naming it: keep every first-level subdir that has a lockfile AND is
+        # installed on the laptop (node_modules there = this checkout uses it) - dso-ui-ref, 2026-10-15
+        try:
+            subs = sorted(os.listdir(top))
+        except OSError:
+            subs = []
+        for d in subs:
+            p = os.path.join(top, d)
+            if not d.startswith(".") and d != "node_modules" and not os.path.islink(p) \
+                    and has_lock(p) and os.path.isdir(os.path.join(p, "node_modules")):
+                out.append(d)
     parts = relcwd.split("/") if relcwd else []
     for i in range(len(parts), -1, -1):
         rel = "/".join(parts[:i])

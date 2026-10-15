@@ -213,7 +213,11 @@ class RunTest(unittest.TestCase):
         wfile(os.path.join(top, "client", "package-lock.json"), "{}")
         self.assertEqual(rd_run.deps_dirs(top, "server/src/x", ["npm", "test"]), ["server"])
         self.assertEqual(rd_run.deps_dirs(top, "docs", ["npm", "test"]), [""])
-        self.assertEqual(rd_run.deps_dirs(top, "", ["npm", "--prefix", "client", "run", "t"]), ["", "client"])
+        # repo root: also every first-level subproject installed on the laptop (node_modules present)
+        os.makedirs(os.path.join(top, "server", "node_modules"))
+        self.assertEqual(rd_run.deps_dirs(top, "", ["npm", "run", "x"]), ["server", ""])
+        self.assertEqual(rd_run.deps_dirs(top, "client", ["npm", "test"]), ["client"])
+        self.assertEqual(rd_run.deps_dirs(top, "", ["npm", "--prefix", "client", "run", "t"]), ["server", "", "client"])
         self.assertEqual(rd_run.deps_dirs(top, "server", ["npm", "--prefix=../client", "--prefix", "/etc"]),
                          ["server", "client"])
 

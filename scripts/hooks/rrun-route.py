@@ -42,7 +42,7 @@ import re
 import sys
 import unicodedata
 
-PREFILTER = ("test:db", "rehearse:migrations", "test-with-db")
+PREFILTER = ("test:db", "rehearse:migrations", "test-with-db", "check:db-all")
 SKIP_MARKERS = ("rrun", "RRUN=0", "real-od/", "doctor-drive", "--approve=browser")
 HEADS = {"npm", "node", "npx", "pnpm", "yarn", "bun"}
 ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)

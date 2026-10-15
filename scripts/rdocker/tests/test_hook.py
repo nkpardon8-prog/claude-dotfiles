@@ -27,6 +27,7 @@ POSITIVE = [
     ("npm run test:db:rls", "rrun npm run test:db:rls"),
     ("npm --prefix server run test:db -- careHold", "rrun npm --prefix server run test:db -- careHold"),
     ("npm run release:rehearse:migrations", "rrun npm run release:rehearse:migrations"),
+    ("npm run check:db-all 2>&1 | tail -20", "rrun npm run check:db-all 2>&1 | tail -20"),
     ("node scripts/test-with-db.mjs src/a.db.test.ts", "rrun node scripts/test-with-db.mjs src/a.db.test.ts"),
     ("node ../../scripts/test-with-db.mjs", "rrun node ../../scripts/test-with-db.mjs"),
     ("cd server && npm run test:db", "cd server && rrun npm run test:db"),

@@ -108,7 +108,7 @@ the connection).
 
 - **Automatic:** a `PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites known heavy commands
   (`rr_route_patterns`: `npm [--prefix X] run test:db[:rls]`, `release:rehearse:migrations`,
-  `node .../test-with-db.mjs`) to `rrun <cmd>`. It leaves anything unsure alone (`$(`, backticks,
+  `node .../test-with-db.mjs`, `check:db-all`) to `rrun <cmd>`. It leaves anything unsure alone (`$(`, backticks,
   heredocs, pipes into it, non-`npm/node/npx/pnpm/yarn/bun` heads), and drops `RDOCKER_MODE=local`.
   Leading `K=V` assignments stay an env prefix and each name gets `-e K` (`FOO=1 npm run test:db` →
   `FOO=1 rrun -e FOO npm run test:db`), so values never enter rrun's argv; `RRUN_*`/`RDOCKER_*` only
@@ -119,7 +119,7 @@ the connection).
 - **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
   skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
 - **npm shim (catches scripts):** `rdocker install` also links `~/.local/bin/npm` (first on PATH) to
-  `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations ...` from
+  `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations|check:db-all ...` from
   ANYWHERE - a script, `bash -c "..."`, a subagent, a Makefile - becomes `rrun npm ...`, even with
   `RDOCKER_MODE=local` set. Every other npm call execs the real npm untouched. Skipped for `RRUN=0`, the
   hook's skip markers, on the mini, and inside rrun's own laptop fallback (it sets `RRUN=0`).
@@ -129,6 +129,9 @@ the connection).
   same rules, `RDOCKER_MODE=local` inside it included; a double-quoted script is left alone.
 - **Safety net:** if a heavy npm script starts a container without going through `rrun`, the shim puts
   that container on the laptop (fast, instead of the slow split) and prints one hint to use `rrun`.
+- **Git state on the mini:** `git rev-parse HEAD` is the laptop's HEAD SHA; the checkout is detached
+  (`--abbrev-ref HEAD` prints `HEAD`, not the branch); the working tree equals the laptop's (dirty files
+  included), but the index is plain HEAD, so staged changes show as unstaged. Clean laptop -> clean mini.
 - **What is copied:** git `HEAD` (pushed to `~/rr/git/<repo>.git` on the mini; the first push carries
   history, later ones almost nothing) **plus** every tracked file changed vs `HEAD` (staged or not),
   untracked non-ignored files, and deleted tracked files (removed on the mini). Of the gitignored files,
@@ -137,7 +140,9 @@ the connection).
   that resolves outside the worktree (e.g. a symlink to `~/secrets/.env`) is skipped with a
   `rrun: not copying ...` notice. Written 0600 and **deleted when the run ends** (leftovers of a killed run are deleted at the start of the next). Nothing else ignored travels:
   `node_modules` is installed on the mini, only in the nearest lockfile dir at or above the cwd plus any
-  `--prefix` dir (not the repo root unless the command runs there), and kept between runs: `npm ci` when
+  `--prefix` dir (not the repo root unless the command runs there; a command run AT the repo root also
+  gets every first-level subproject that has a lockfile and is installed on the laptop - its scripts
+  may load `server/` packages without naming them), and kept between runs: `npm ci` when
   the lockfile / `package.json` / `.npmrc` / node version changes (a lockfile out of sync with
   `package.json`, which `npm ci` refuses, gets `npm install` on the mirror instead); on a schema change (`*.prisma` in
   `./prisma` or the dir its postinstall's `--schema` names) the package's own postinstall reruns if it

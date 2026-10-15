@@ -28,7 +28,7 @@ if [ "${RRUN:-}" != "0" ] && [ -z "${RRUN_REMOTE:-}" ] && command -v rrun >/dev/
   done
   case "${pos[0]:-}" in
     run|run-script|rum|urn)
-      case "${pos[1]:-}" in test:db|test:db:rls|release:rehearse:migrations) want=1 ;; esac ;;
+      case "${pos[1]:-}" in test:db|test:db:rls|release:rehearse:migrations|check:db-all) want=1 ;; esac ;;
   esac
   [ "$want" = 1 ] && exec rrun npm "$@"      # mini resolves its own npm; a laptop fallback re-enters here with RRUN=0
 fi

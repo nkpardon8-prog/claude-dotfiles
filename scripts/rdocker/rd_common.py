@@ -94,7 +94,8 @@ DEFAULTS = {
     # heavy commands (re.search on a command line or an npm_lifecycle_event) that belong on the mini
     "rr_route_patterns": [r"(^|\s)test:db(:rls)?(\s|$)",
                           r"(^|\s)release:rehearse:migrations(\s|$)",
-                          r"(^|[\s/])test-with-db\.mjs(\s|$)"],
+                          r"(^|[\s/])test-with-db\.mjs(\s|$)",
+                          r"(^|\s)check:db-all(\s|$)"],   # dentall's 90-link guard sweep: pure CPU
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim
