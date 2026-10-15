@@ -51,6 +51,15 @@ UNSAFE_IN_SEGMENT = re.compile(r"\$\(|`|[(){}<]")
 WORD_RE = re.compile(r"[^ \t]+")                 # the only separators we accept: space, tab
 STATE_WORDS = {"export", "declare", "typeset", "source"}
 KEYWORDS = {"then", "do", "else", "elif", "!", "{", "("}
+# Wrappers between the assignments and the node runner. heavy-slot.sh (a LAPTOP concurrency gate)
+# is dropped: the job no longer runs on the laptop and the mini has its own slots. The others stay
+# in front of rrun, which then runs under them: `timeout 600 npm ...` -> `timeout 600 rrun npm ...`.
+DROP_WRAPPERS = {"heavy-slot.sh"}
+KEEP_WRAPPERS = {"timeout": 1, "gtimeout": 1, "time": 0, "nice": 0, "caffeinate": 0}
+WRAP_ARG_RE = re.compile(r"-[A-Za-z]+|[0-9]+(\.[0-9]+)?[smhd]?")      # flags / durations only
+SHELLS = {"bash", "sh", "zsh"}
+SIMPLE_FILE_RE = re.compile(r"[A-Za-z0-9_./~@%+,=-]+")
+REDIR_RE = re.compile(r"[0-9]?(>>?|>&)([0-9]|[A-Za-z0-9_./~@%+,=-]+)")
 
 
 def home():
@@ -135,32 +144,97 @@ def scan(cmd):
     return segs, "".join(masked), "".join(shape)
 
 
-def rewrite_segment(cmd, shape, s, e, op):
+def shell_c(cmd, shape, toks, k):
+    """toks[k:] is `bash|sh|zsh -c '<script>'` (one single-quoted script, then only output
+    redirects like `2>&1` / `> file`) -> (script_start, script_end) inside the quotes, else None."""
+    if len(toks) - k < 3:
+        return None
+    rest = [cmd[a:b] for a, b in toks[k + 3:]]
+    while rest:
+        if rest[0] in (">", ">>", "2>", "2>>") and len(rest) > 1 and SIMPLE_FILE_RE.fullmatch(rest[1]):
+            rest = rest[2:]
+        elif REDIR_RE.fullmatch(rest[0]):
+            rest = rest[1:]
+        else:
+            return None
+    (hs, he), (fs, fe), (qs, qe) = toks[k:k + 3]
+    if os.path.basename(cmd[hs:he]) not in SHELLS or cmd[fs:fe] != "-c":
+        return None
+    if cmd[qs] != "'" or cmd[qe - 1] != "'" or qe - qs < 2 or "'" in cmd[qs + 1:qe - 1]:
+        return None
+    return qs + 1, qe - 1
+
+
+def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0):
     """-> replacement text for cmd[s:e], or None when the segment is not fully understood."""
-    if op in ("|", "|&") or UNSAFE_IN_SEGMENT.search(cmd[s:e]):
+    if op in ("|", "|&"):
         return None
     toks = [(m.start() + s, m.end() + s) for m in WORD_RE.finditer(shape[s:e])]
-    front, names, head = [], [], None
-    for ts, te in toks:
+    front, names, head, wraps = [], [], None, []
+    k = 0
+    while k < len(toks):
+        ts, te = toks[k]
         word = cmd[ts:te]
         if shape[ts:te] != word:                              # quoting in env/head: not simple
+            if head is None and wraps is not None:
+                break                                         # maybe `bash -c '...'`: checked below
             return None
-        m = ASSIGN_RE.match(word)
-        if not m:
+        m = ASSIGN_RE.match(word) if not wraps else None
+        if m and not wraps:
+            pass
+        else:
+            base = os.path.basename(word)
+            if base in DROP_WRAPPERS:
+                wraps.append((False, word))
+                k += 1
+                continue
+            if base in KEEP_WRAPPERS:
+                j = k + 1
+                while j < len(toks) and WRAP_ARG_RE.fullmatch(cmd[toks[j][0]:toks[j][1]]):
+                    j += 1
+                if j - k - 1 < KEEP_WRAPPERS[base]:
+                    return None                               # e.g. `timeout` with no duration
+                wraps.append((True, cmd[ts:toks[j - 1][1]]))
+                k = j
+                continue
             head = (ts, word)
             break
         if not VALUE_RE.fullmatch(m.group(2)):
             return None                                       # glob, ~, $, ... : not simple
+        k += 1
         if word == "RDOCKER_MODE=local":
             continue
         front.append(word)
         if not m.group(1).startswith(("RRUN_", "RDOCKER_")):
             names.append(m.group(1))
-    if head is None or os.path.basename(head[1]) not in HEADS:
+    if not toks:
         return None
     lead = cmd[s:toks[0][0]]
+    env = "".join(w + " " for w in front)
+    kept = "".join(w + " " for keep, w in wraps if keep)
+    sc = shell_c(cmd, shape, toks, k) if depth == 0 and patterns is not None else None
+    if sc:                                                    # bash -c '<script>': rewrite inside
+        inner = route(cmd[sc[0]:sc[1]], patterns, depth + 1)
+        if inner is None:
+            return None
+        allw = "".join(w + " " for _, w in wraps)            # heavy-slot still gates the laptop part
+        return lead + env + allw + cmd[toks[k][0]:sc[0]] + inner + cmd[sc[1]:e]
+    if head is None or os.path.basename(head[1]) not in HEADS:
+        return None
+    if UNSAFE_IN_SEGMENT.search(cmd[s:e]):
+        return None
     flags = "".join("-e %s " % n for n in dict.fromkeys(names))
-    return lead + "".join(w + " " for w in front) + "rrun " + flags + cmd[head[0]:e]
+    return lead + env + kept + "rrun " + flags + cmd[head[0]:e]
+
+
+def shell_c_script(cmd, shape, s, e):
+    """The script text when the segment runs `bash|sh|zsh -c '<script>'`, else ""."""
+    toks = [(m.start() + s, m.end() + s) for m in WORD_RE.finditer(shape[s:e])]
+    for k in range(len(toks)):
+        sc = shell_c(cmd, shape, toks, k)
+        if sc:
+            return cmd[sc[0]:sc[1]]
+    return ""
 
 
 def sets_state(masked, s, e):
@@ -179,7 +253,7 @@ def sets_state(masked, s, e):
     return all(ASSIGN_RE.match(w) for w in words)
 
 
-def route(cmd, patterns):
+def route(cmd, patterns, depth=0):
     """-> rewritten command, or None to leave it unchanged."""
     if "$(" in cmd or "`" in cmd:
         return None                                           # a substitution can hide segments
@@ -191,14 +265,15 @@ def route(cmd, patterns):
         return None
     segs, masked, shape = scanned
     regs = [re.compile(p) for p in patterns]
-    hits = [(s, e, op) for s, e, op in segs if any(r.search(masked[s:e]) for r in regs)]
+    hits = [(s, e, op) for s, e, op in segs if any(r.search(masked[s:e]) for r in regs)
+            or (depth == 0 and any(r.search(shell_c_script(cmd, shape, s, e)) for r in regs))]
     if not hits:
         return None
     if any(sets_state(masked, s, e) for s, e, _ in segs if s < hits[-1][0]):
         return None                                           # earlier state would not reach the mini
     out = cmd
     for s, e, op in reversed(hits):
-        new = rewrite_segment(cmd, shape, s, e, op)
+        new = rewrite_segment(cmd, shape, s, e, op, patterns, depth)
         if new is None:
             return None                                       # unsure about one -> touch none
         out = out[:s] + new + out[e:]

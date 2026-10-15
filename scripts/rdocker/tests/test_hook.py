@@ -50,20 +50,36 @@ POSITIVE = [
     ("npm run test:db  # db suite", "rrun npm run test:db  # db suite"),
     ("  npm run test:db", "  rrun npm run test:db"),
     ("npm run build\nnpm run test:db", "npm run build\nrrun npm run test:db"),
+    # wrappers: the laptop gate heavy-slot.sh is dropped; timeout/time/nice/caffeinate stay outside rrun
+    ("~/.local/bin/heavy-slot.sh npm run test:db -- a.ts", "rrun npm run test:db -- a.ts"),
+    ("FOO=1 heavy-slot.sh npm run test:db", "FOO=1 rrun -e FOO npm run test:db"),
+    ("timeout 600 npm run test:db", "timeout 600 rrun npm run test:db"),
+    ("time nice -n 5 npm run test:db", "time nice -n 5 rrun npm run test:db"),
+    ("caffeinate -i npm run test:db 2>&1 | tail", "caffeinate -i rrun npm run test:db 2>&1 | tail"),
+    # bash -c '<script>': the script is routed by the same rules; heavy-slot keeps gating the laptop part
+    ("heavy-slot.sh bash -c 'npm run build | tail -4; RDOCKER_MODE=local npm run test:db -- x.ts' 2>&1 | tail",
+     "heavy-slot.sh bash -c 'npm run build | tail -4; rrun npm run test:db -- x.ts' 2>&1 | tail"),
+    ("bash -c 'npm run test:db'", "bash -c 'rrun npm run test:db'"),
+    ("bash -c 'cd server && npm run test:db' > o.log 2>&1",
+     "bash -c 'cd server && rrun npm run test:db' > o.log 2>&1"),
 ]
 
 NEGATIVE = [
+    "timeout npm run test:db",                       # timeout with no duration: not understood
+    "bash -c 'echo test:db'",
+    "bash -c 'FOO=$X npm run test:db'",
+    "bash -c 'npm run test:db' extra-arg",
+    "bash -c \"npm run test:db\"",                   # double-quoted script: $ expansion unclear
+    "sh -c 'bash -c \"npm run test:db\"'",
     'git commit -m "fix test:db flake"',
     "git commit -m 'rehearse release:rehearse:migrations'",
     "echo test:db",
     "npm run test",
     "npm run test:dbx",
     "npm run lint && echo test:db",                 # a matching segment we don't understand
-    "bash -c 'npm run test:db'",
     'sh -c "cd server && npm run test:db"',
     "ssh mini npm run test:db",
     "xargs npm run test:db",
-    "time npm run test:db",
     "cat <<EOF\nnpm run test:db\nEOF",
     "cat x | npm run test:db",
     "(cd server && npm run test:db)",

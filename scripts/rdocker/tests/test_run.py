@@ -334,6 +334,10 @@ class RunTest(unittest.TestCase):
         ready = os.path.join(self.d, "ready")
         slots = os.path.join(self.home, "rr", "slots")
         os.makedirs(slots)
+        cfgd = os.path.join(self.home, ".config", "rdocker")
+        os.makedirs(cfgd, exist_ok=True)
+        with open(os.path.join(cfgd, "config.json"), "w") as f:
+            json.dump({"rr_slots": 1}, f)                    # one slot, so holding it makes rrun wait
         with open(os.path.join(slots, "0.who"), "w") as f:
             f.write("other.repo %d\n" % int(time.time() - 42))
         fd = os.open(os.path.join(slots, "0"), os.O_RDWR | os.O_CREAT, 0o600)

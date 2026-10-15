@@ -81,7 +81,7 @@ DEFAULTS = {
     "host_min_free_gb": 8,             # mini macOS disk free below this -> aggressive prune + warning
     # rrun: heavy jobs (test runner + its DB) run ON the mini (rd_run.py + rr_runner.pl).
     "rr_root": "rr",                   # mini dir under ~ (git/, w/, slots/, ...)
-    "rr_slots": 1,                     # concurrent rrun commands on the mini
+    "rr_slots": 2,                     # concurrent rrun commands on the mini (10 CPU / 16 GB)
     "rr_wait_min": 30,                 # give up waiting for a free mini slot after this
     "rr_hb_timeout": 60,               # mini kills the run after this many s without a laptop heartbeat
     # untracked/ignored env files copied for a run (basename globs), looked up ONLY in the repo
