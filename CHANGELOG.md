@@ -20,6 +20,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 - Engine health: a single "engine did not answer" reading right after a good one (<= 2 min) is
   re-probed once before routing believes it. Tonight ~10 such lone timeouts, all during laptop load
   100-360, had sent throwaway containers to the laptop.
+- rrun: a lockfile out of sync with package.json (`npm ci` EUSAGE - dentall's repo root) now falls
+  back to `npm install` on the mirror instead of failing with exit 78. Live: `release:rehearse:migrations`
+  had failed in 1.4 s and been rerun on the laptop (~1,380 docker execs on a laptop DB).
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

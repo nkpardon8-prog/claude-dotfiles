@@ -30,10 +30,16 @@ printf '%%s\n' "$(basename "$0") $*" >> '%(log)s'
 case "$(basename "$0") $1" in "npm ci"|"npx prisma") [ -n "$FAKE_NPM_FAIL" ] && { echo "npm ERR! boom" >&2; exit 3; } ;; esac
 case "$(basename "$0") $1" in
   "npm ci")
+    if [ -n "$FAKE_EUSAGE" ]; then
+      echo "npm error code EUSAGE" >&2
+      echo "npm error \`npm ci\` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync." >&2
+      exit 1
+    fi
     if [ -n "$FAKE_ERESOLVE" ]; then
       case " $* " in *" --legacy-peer-deps "*) ;; *) echo "npm ERR! code ERESOLVE" >&2; exit 1 ;; esac
     fi
     rm -rf node_modules && mkdir node_modules ;;
+  "npm install") rm -rf node_modules && mkdir node_modules ;;
   "node -v") echo v20.0.0 ;;
   "docker ps") cat '%(dir)s/ps.out' 2>/dev/null ;;
   "docker port") cat '%(dir)s/port.out' 2>/dev/null ;;
@@ -371,6 +377,15 @@ class RunnerTest(unittest.TestCase):
         r = self.run_runner(["true"], tar=tar_of(bare), **kw)
         self.assertEqual(r.rc, 0, r.err)
         self.assertEqual(gen(), [])
+
+    def test_out_of_sync_lockfile_falls_back_to_npm_install(self):
+        r = self.run_runner(["true"], env={"FAKE_EUSAGE": "1"})
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertIn("out of sync", r.err)
+        npm = [c for c in self.calls() if c.startswith(("npm ci", "npm install"))]
+        self.assertEqual(npm, ["npm ci --no-audit --no-fund", "npm install --no-audit --no-fund"])
+        self.assertEqual(self.run_runner(["true"], env={"FAKE_EUSAGE": "1"}).rc, 0)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("npm ")]), 2)   # warm: no reinstall
 
     def test_eresolve_retries_with_legacy_peer_deps_and_remembers(self):
         r = self.run_runner(["true"], env={"FAKE_ERESOLVE": "1"})

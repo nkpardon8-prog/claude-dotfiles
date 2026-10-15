@@ -426,8 +426,20 @@ sub deps {
                 $stamp = sha_files($lock, "$dir/package.json", "$dir/.npmrc") . " $nodev @args";
                 $rc = npm($env, $dir, @args);
             }
+            my $what = "npm @args";
+            if ($rc && !$lost && !$intr && slurp("$tmp/npm.log") =~
+                    /can only install packages when your package\.json and package-lock\.json|code EUSAGE/) {
+                # an out-of-sync lockfile (dentall's repo root, 2026-10-15): the laptop got its
+                # node_modules from `npm install`, so do the same - it rewrites only the mirror's copy
+                # of the lockfile, which the next checkout resets (the stamp stays the committed one's)
+                my @inst = ('install', grep { $_ ne 'ci' } @args);
+                print STDERR "rrun: package-lock.json is out of sync with package.json in ./$rel"
+                           . " (npm ci refuses) - using npm @inst on the mirror\n";
+                $rc = npm($env, $dir, @inst);
+                $what = "npm @inst";
+            }
             return if $lost || $intr;    # main() reports it
-            deps_failed("npm @args", $rel, $rc) if $rc;
+            deps_failed($what, $rel, $rc) if $rc;
             write_file("$dir/node_modules/.rr-deps-stamp", $stamp);
         }
         # schema stamp: *.prisma in ./prisma and in the dir of a `--schema X` named by the package's own

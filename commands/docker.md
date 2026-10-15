@@ -138,7 +138,8 @@ the connection).
   `rrun: not copying ...` notice. Written 0600 and **deleted when the run ends** (leftovers of a killed run are deleted at the start of the next). Nothing else ignored travels:
   `node_modules` is installed on the mini, only in the nearest lockfile dir at or above the cwd plus any
   `--prefix` dir (not the repo root unless the command runs there), and kept between runs: `npm ci` when
-  the lockfile / `package.json` / `.npmrc` / node version changes; on a schema change (`*.prisma` in
+  the lockfile / `package.json` / `.npmrc` / node version changes (a lockfile out of sync with
+  `package.json`, which `npm ci` refuses, gets `npm install` on the mirror instead); on a schema change (`*.prisma` in
   `./prisma` or the dir its postinstall's `--schema` names) the package's own postinstall reruns if it
   runs `prisma generate`, else `npx prisma generate`; no schema found -> nothing to generate.
 - **Env:** laptop vars matching `rr_env_pass` (`CI`, `DEBUG`, `TEST_DB_*`, `VITEST_*`, `RR_NODE`) pass
