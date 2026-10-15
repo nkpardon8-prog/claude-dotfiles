@@ -66,6 +66,7 @@ DEFAULTS = {
     "max_rtt_ms": 300,                 # auto mode: /_ping round-trip slower -> new throwaways on laptop
     "blip_wait_s": 30,                 # mini state unknown -> wait this long for it before refusing
     "local_idle_stop_min": 15,         # quit Docker Desktop after N idle minutes (0 = never)
+    "local_autostart": False,          # never open Docker Desktop for a command (RDOCKER_LOCAL_START=1 does)
     # laptop-resident (sticky local); fallback = [{"name", "kind": container|compose, "ts"}]
     "pins": {"containers": [], "compose_projects": [], "fallback": []},
     "ephemeral_port_range": [20000, 29999],   # host ports the shim picks for `-p <ctr-port>`

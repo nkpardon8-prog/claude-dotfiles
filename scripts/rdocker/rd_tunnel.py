@@ -403,11 +403,23 @@ def local_engine_ready(cfg):
     return True
 
 
+LOCAL_OFF_MSG = ("laptop Docker is off, and rdocker does not start it (Docker Desktop costs GBs of RAM; "
+                 "the Mac mini is the default). Fix the mini: `rdocker doctor`. Only if this really "
+                 "must run on the laptop: RDOCKER_LOCAL_START=1 <command>")
+
+
+def local_start_allowed(cfg):
+    return os.environ.get("RDOCKER_LOCAL_START") == "1" or cfg.get("local_autostart") is True
+
+
 def ensure_local_running(cfg):
     if local_engine_ready(cfg):
         return True
     if local_engine_up(cfg):
         rd_common.say("waiting for local Docker Desktop to finish starting...")
+    elif not local_start_allowed(cfg):
+        rd_common.say(LOCAL_OFF_MSG)
+        return False
     else:
         rd_common.say("starting local Docker Desktop (needed for this command)...")
         rd_common.run(["open", "-ga", "Docker"], timeout=10)

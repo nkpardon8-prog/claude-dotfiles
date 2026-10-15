@@ -617,8 +617,67 @@ class Engines:
             return "mini", "mode=mini"
         if ok:
             return "mini", "ok"
+        if laptop_off(self):
+            mini_or_wait(self, why)
+            return "mini", "ok"
         rd_common.say("running on the laptop (%s)" % why)
         return "local", why
+
+
+LOCAL_HINT_PATH = os.path.join(rd_common.STATE_DIR, "local-hint.json")
+LOCAL_HINT_EVERY = 3600
+
+
+def local_mode_hint(cfg):
+    """RDOCKER_MODE=local while the mini is healthy and fast: say so (once an hour per cwd) - the
+    laptop is a fallback, and an agent that forced it during an outage should come back. Reads the
+    cached health only; never probes, never blocks, never fails the command."""
+    try:
+        h = rd_common.load_json(rd_common.HEALTH_PATH, None)
+        if not (rd_tunnel.health_fresh(h) and h.get("docker_ok")):
+            return
+        rtt = h.get("rtt_ms")
+        if isinstance(rtt, (int, float)) and rtt > (cfg.get("max_rtt_ms") or 300):
+            return
+        here, now = cwd(), time.time()
+        seen = rd_common.load_json(LOCAL_HINT_PATH, {}) or {}
+        if not isinstance(seen, dict) or now - (seen.get(here) or 0) < LOCAL_HINT_EVERY:
+            return
+        seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and now - v < 86400}
+        seen[here] = now
+        rd_common.write_state(LOCAL_HINT_PATH, seen)
+        rd_common.say("RDOCKER_MODE=local, but the Mac mini is healthy%s - drop it so new containers "
+                      "land on the mini (the laptop is only a fallback)"
+                      % (" (%dms)" % rtt if isinstance(rtt, (int, float)) else ""))
+    except Exception as e:      # a hint must never break the command
+        rd_common.log("local-mode hint failed: %r" % e, rd_common.ROUTE_LOG)
+
+
+def laptop_off(eng):
+    """Laptop Docker is not running and rdocker may not start it (local_autostart / RDOCKER_LOCAL_START)."""
+    return not eng.laptop_up() and not rd_tunnel.local_start_allowed(eng.cfg)
+
+
+def mini_or_wait(eng, why):
+    """Auto mode would fall back to the laptop, but laptop Docker is off and stays off: wait up to
+    blip_wait_s for the mini (a starved laptop makes it look down - 2026-10-15), then return so the
+    caller routes there, or Refuse. Runs before docker: the command still executes at most once."""
+    wait = eng.cfg.get("blip_wait_s") or 0
+    if isinstance(wait, bool) or not isinstance(wait, (int, float)):
+        wait = 0
+    deadline = time.monotonic() + wait
+    if wait > 0:
+        rd_common.say("mini not answering (%s) - waiting up to %gs; laptop Docker stays off..." % (why, wait))
+    while time.monotonic() + BLIP_POLL <= deadline:
+        time.sleep(BLIP_POLL)
+        eng._mini = None
+        rd_tunnel.health(eng.cfg, force=True, count_rtt=False)
+        ok, why2 = eng.mini()
+        if ok:
+            rd_common.log("mini answered again - routing there (laptop Docker is off)", rd_common.ROUTE_LOG)
+            return
+        why = why2
+    raise Refuse("%s; %s" % (why, rd_tunnel.LOCAL_OFF_MSG))
 
 
 def locate(eng, names, probe, hinted, readonly, what, deadline=None):
@@ -825,6 +884,10 @@ def route_creating(eng, need_local, not_throwaway, hinted_local):
         raise Refuse("%s, and this is not a throwaway container (%s), so it will not be created on "
                      "the laptop. Retry when the mini is back, add --rm, or force the laptop with "
                      "RDOCKER_MODE=local" % (why, not_throwaway))
+    if laptop_off(eng):            # never boot Docker Desktop for a throwaway: a slow mini wins,
+        if not ok:                 # a silent one gets the blip wait
+            mini_or_wait(eng, why)
+        return "mini", "ok", False
     rd_common.say("running on the laptop (%s)" % why)
     return "local", why, True
 
@@ -1080,6 +1143,8 @@ def shim(argv):
         rd_common.say("running locally: " + why)
     ctx = cfg["remote_context"] if target == "mini" else cfg["local_context"]
     rd_common.log("%-5s %-8s %s | %s" % (target, sub, why, cwd()), rd_common.ROUTE_LOG)
+    if target == "local" and why == "mode=local":
+        local_mode_hint(cfg)
     if target == "local":
         if not rd_tunnel.ensure_local_running(cfg):
             sys.exit(1)

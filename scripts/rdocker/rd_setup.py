@@ -305,7 +305,7 @@ def status(cfg, fix=False):
         + (" (IPv6 mirror pending: %s)" % ", ".join(map(str, no6)) if no6 else ""))
     if st.get("conflicts"):
         row(False, "port conflicts (busy on laptop)", ", ".join(map(str, st["conflicts"])))
-    row(True, "laptop Docker Desktop", "running" if rd_tunnel.local_engine_up(cfg) else "stopped (starts on demand)")
+    row(True, "laptop Docker Desktop", "running" if rd_tunnel.local_engine_up(cfg) else "stopped (rdocker never starts it; RDOCKER_LOCAL_START=1 does)")
     ctx = rd_common.run([real, "context", "show"], timeout=10)[1].strip()
     row(True, "global docker context", ctx)
     if fix:

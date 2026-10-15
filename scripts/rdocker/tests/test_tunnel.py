@@ -247,10 +247,18 @@ class EnsureLocalRunning(unittest.TestCase):
         self.assertFalse(os.path.exists(stamp))
 
     def test_socket_down_opens_desktop_and_gives_up(self):
-        ok, info, runs = self.run_case(False, [])
+        with mock.patch.object(rd_tunnel, "local_start_allowed", lambda cfg: True):
+            ok, info, runs = self.run_case(False, [])
         self.assertFalse(ok)
         self.assertEqual(info, [])          # never asks info while the socket is closed
         self.assertEqual(runs[0][0][0], ["open", "-ga", "Docker"])
+
+    def test_socket_down_never_opens_desktop_by_default(self):
+        self.assertFalse(rd_tunnel.local_start_allowed({"local_autostart": False}))
+        with mock.patch.object(rd_tunnel, "local_start_allowed", lambda cfg: False):
+            ok, info, runs = self.run_case(False, [])
+        self.assertFalse(ok)
+        self.assertEqual(runs, [])          # Docker Desktop is never launched for a command
 
 
 if __name__ == "__main__":

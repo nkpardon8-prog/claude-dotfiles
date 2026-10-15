@@ -280,6 +280,42 @@ class FallbackPolicy(ShimCase):
         self.assertEqual(self.calls("compose")[1:], [])   # only the client-side config render
 
 
+class LaptopStaysOff(ShimCase):
+    """Docker Desktop is never booted for a command (local_autostart off): a throwaway whose mini
+    is down waits for the mini (blip_wait_s) and then refuses; a slow mini is used; RDOCKER_MODE=local
+    while the mini is healthy prints an hourly hint."""
+    DOWN = {"reachable": False, "docker_ok": False, "rtt_ms": None}
+
+    def test_mini_down_and_laptop_off_refuses_without_booting_desktop(self):
+        self.scenario(health=self.DOWN, laptop_up=False)
+        p = self.shim("run", "--rm", "alpine", "true")
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("laptop Docker is off", p.stderr)
+        self.assertEqual(self.calls("run"), [])
+        self.assertNotIn("starting local Docker Desktop", p.stderr)
+
+    def test_slow_mini_beats_booting_desktop(self):
+        now = time.time()
+        self.scenario(health={"rtt_ms": 500.0, "rtt_hist": [[now - 30, 500.0], [now, 500.0]]},
+                      laptop_up=False)
+        p = self.shim("run", "--rm", "alpine", "true")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c for c, _ in self.calls("run")], ["mini"])
+
+    def test_mode_local_hint_when_mini_healthy_once_per_hour(self):
+        self.scenario()
+        p = self.shim("ps", env={"RDOCKER_MODE": "local"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("RDOCKER_MODE=local, but the Mac mini is healthy", p.stderr)
+        p = self.shim("ps", env={"RDOCKER_MODE": "local"})
+        self.assertNotIn("Mac mini is healthy", p.stderr)              # rate-limited per cwd
+
+    def test_no_hint_when_mini_down(self):
+        self.scenario(health=self.DOWN)
+        p = self.shim("ps", env={"RDOCKER_MODE": "local"})
+        self.assertNotIn("Mac mini is healthy", p.stderr)
+
+
 class SlowMiniOnlyMovesThrowaways(ShimCase):
     """Auto mode, mini usable but rtt_ms > max_rtt_ms on the last 2 consecutive health readings: only
     NEW throwaway containers go to the laptop."""
