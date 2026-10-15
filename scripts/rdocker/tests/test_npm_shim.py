@@ -35,7 +35,7 @@ class NpmShim(unittest.TestCase):
 
     def npm(self, *args, **env):
         e = rdmods.child_env(self.home, self.shim_dir, self.real_dir, **env)
-        r = subprocess.run([os.path.join(self.shim_dir, "npm")] + list(args), env=e,
+        r = subprocess.run(["/bin/sh", "-c", '"$@"; exit $?', "sh", os.path.join(self.shim_dir, "npm")] + list(args), env=e,
                            capture_output=True, text=True, timeout=30)
         return r.stdout.strip()
 
@@ -63,6 +63,15 @@ class NpmShim(unittest.TestCase):
             self.assertEqual(self.npm("run", "test:db", "--", marker), "REAL npm run test:db -- " + marker)
         os.remove(os.path.join(self.shim_dir, "rrun"))           # rrun not installed
         self.assertEqual(self.npm("run", "test:db"), "REAL npm run test:db")
+
+    def test_npm_spawned_by_a_program_or_npm_script_stays_local(self):
+        # a node runner / git hook firing many `npm run check:x`: the parent is the routed unit
+        e = rdmods.child_env(self.home, self.shim_dir, self.real_dir)
+        r = subprocess.run(["/usr/bin/python3", "-c", "import subprocess,sys; subprocess.run(sys.argv[1:])",
+                            os.path.join(self.shim_dir, "npm"), "run", "check:x"],
+                           env=e, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.stdout.strip(), "REAL npm run check:x")
+        self.assertEqual(self.npm("run", "test:db", npm_lifecycle_event="check:all"), "REAL npm run test:db")
 
     def test_shim_twice_on_path_still_finds_real_npm(self):
         e = rdmods.child_env(self.home, self.shim_dir, self.shim_dir, self.real_dir, RRUN="0")

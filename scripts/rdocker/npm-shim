@@ -10,7 +10,14 @@ for d in "${dirs[@]}"; do
   [ -n "$d" ] && [ -x "$d/npm" ] && [ ! "$d/npm" -ef "$self" ] && { real="$d/npm"; break; }
 done
 [ -n "$real" ] || { echo "rdocker npm shim: no real npm on PATH" >&2; exit 127; }
-if [ "${RRUN:-}" != "0" ] && [ -z "${RRUN_REMOTE:-}" ] && command -v rrun >/dev/null 2>&1; then
+# Only a TOP-LEVEL npm (started from a shell) is routed. npm spawned by another program - a node runner
+# or git hook firing 150 `npm run --silent check:x` (2026-10-15) - or inside another npm script stays
+# here: the parent job is the unit that gets routed, and one round trip per tiny step costs more than
+# it saves.
+parent=$(ps -o comm= -p "$PPID" 2>/dev/null); parent=${parent##*/}; parent=${parent#-}
+case "$parent" in zsh|bash|sh|dash|fish|rrun) top=1 ;; *) top=0 ;; esac
+[ -n "${npm_lifecycle_event:-}" ] && top=0
+if [ "$top" = 1 ] && [ "${RRUN:-}" != "0" ] && [ -z "${RRUN_REMOTE:-}" ] && command -v rrun >/dev/null 2>&1; then
   # first two positional args (flags and the values of --prefix / -w / --workspace / -C skipped)
   pos=(); skip=0; extra=0; dd=0
   for a in "$@"; do

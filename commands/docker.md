@@ -125,7 +125,9 @@ the connection).
   a bare `FOO=1;`) that would not reach the mini.
 - **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
   skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
-- **npm shim (catches scripts):** `rdocker install` also links `~/.local/bin/npm` (first on PATH) to
+- **npm shim (catches scripts):** only a TOP-LEVEL npm (parent is a shell) is routed - npm spawned by a
+  node runner / git hook / another npm script stays local (the parent job is the routed unit; 150 tiny
+  `check:x` round trips cost more than they save). `rdocker install` also links `~/.local/bin/npm` (first on PATH) to
   `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck ...`,
   and a whole `npm test` / `npm run test` (no file args after `--`; with files it stays local) from
   ANYWHERE - a script, `bash -c "..."`, a subagent, a Makefile - becomes `rrun npm ...`, even with

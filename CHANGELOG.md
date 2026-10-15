@@ -47,6 +47,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 - Fix: the Docker Desktop idle-quit sent `quit app "Docker Desktop"`, which macOS ignores (the app's
   AppleScript name is "Docker"), so laptop Docker never quit and held ~1.5 GB. Now `quit app "Docker"`,
   with a test on the exact command; idle-quit set to 5 min in this laptop's config.
+- npm shim routes only a top-level npm (parent is a shell, no npm_lifecycle_event): a laptop runner
+  firing 151 `npm run --silent check:x` had sent each one to the mini separately.
+- Mini reboot: keep-labelled containers (and david_db) set to `restart unless-stopped` on the mini;
+  they had all been `no`, so a Colima/mini restart would have left every DB stopped.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 
