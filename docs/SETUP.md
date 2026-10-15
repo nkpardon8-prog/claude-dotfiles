@@ -215,9 +215,11 @@ agent messaging (`ListAgents` / `SendMessage`).
 4. **Run the installer**: `bash ~/.claude-dotfiles/scripts/transfer/install-transfer.sh` —
    idempotently symlinks `resumework` and `transfer-doctor` onto `~/.local/bin`, creates the
    iCloud `claude-transfers/` drop dir, and sets up the shared window address book: the iCloud
-   `claude-windows/` folder plus a LaunchAgent (`com.claude-dotfiles.windows-publish`) that writes
-   this Mac's window list there every 60 seconds. After it has run on both Macs, `list`/`find`
-   (`scripts/line-agent-communicator.py`) on either Mac show the other Mac's windows by name.
+   `claude-windows/` folder plus a `SessionEnd` hook. Open Claude Code windows then keep this Mac's
+   window list there current (the statusline triggers a background publish at most once a minute).
+   It also removes the retired `com.claude-dotfiles.windows-publish` LaunchAgent if an older install
+   left it. After it has run on both Macs, `list`/`find` (`scripts/line-agent-communicator.py`) on
+   either Mac show the other Mac's windows by name.
 5. **Different username on this Mac?** A transfer restores repo files (handoff, worktree, TRANSFER
    notes) at the SAME absolute path as the sending Mac, so if this Mac logs in as a different
    account, run once: `sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh <the-other-Macs-username>`.

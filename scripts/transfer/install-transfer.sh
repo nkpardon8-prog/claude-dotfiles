@@ -9,10 +9,11 @@
 # Refuses (does not overwrite) if a non-symlink file already sits at either
 # target path. Safe to re-run.
 #
-# Also installs the shared window address book: iCloud Drive/claude-windows/ plus the LaunchAgent
-# com.claude-dotfiles.windows-publish (~/Library/LaunchAgents), which runs
-# `line-agent-communicator.py publish` every 60s so the other Mac's `list`/`find` can see this
-# Mac's windows. Only a plist this script made is ever replaced.
+# Also sets up the shared window address book: creates iCloud Drive/claude-windows/ and adds a
+# SessionEnd hook to settings.json. Publishing itself is driven from Claude Code (statusline trigger,
+# SessionStart, /line, SessionEnd), which can write iCloud Drive. An earlier LaunchAgent
+# (com.claude-dotfiles.windows-publish) could not keep the file current, so this script now REMOVES
+# it - only a plist carrying this script's marker.
 
 set -euo pipefail
 
@@ -109,6 +110,12 @@ if not any(h.get("command") == cmd for h in hooks):
     idx = next((i + 1 for i, h in enumerate(hooks) if "auto-compact-after-pre-compact" in h.get("command", "")), len(hooks))
     hooks.insert(idx, {"type": "command", "command": cmd, "timeout": 10})
     changed.append("Stop hook line-apply-rename.sh")
+# SessionEnd: republish a moment after a window closes, so it drops out of the other Mac's list.
+se_cmd = "python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py publish --background --delay 3"
+se = d["hooks"].setdefault("SessionEnd", [])
+if not any(h.get("command") == se_cmd for blk in se for h in blk.get("hooks", [])):
+    se.append({"hooks": [{"type": "command", "command": se_cmd, "timeout": 5}]})
+    changed.append("SessionEnd hook (address-book publish)")
 tmp = p + ".tmp"
 json.dump(d, open(tmp, "w"), indent=2)
 os.replace(tmp, p)
@@ -120,26 +127,19 @@ fi
 
 # Shared window address book: every Mac writes its live windows to iCloud Drive/claude-windows/
 # (one file per Mac) so `line-agent-communicator.py list`/`find` on the OTHER Mac can see them.
-# A LaunchAgent keeps this Mac's file fresh (publish every 60s, at low priority). Like the app
-# above, only a plist carrying THIS script's marker is ever replaced. launchctl is only driven when
-# $HOME is this account's real home - a test's sandbox HOME must never load a job into the real
-# login session (LAC_LAUNCHCTL_ALLOW_SANDBOX=1 lets a test with a stubbed launchctl opt in, and only
-# under the transfer suite's TRANSFER_TESTS_ALLOW_DEV=true gate).
+# Publishing runs from Claude Code itself (scripts/line-publish-trigger.sh via the statusline, at most
+# once a minute; SessionStart; /line; SessionEnd) because it can write iCloud Drive.
 WIN_DIR="$ICLOUD_BASE/claude-windows"
 mkdir -p "$WIN_DIR" && echo "  shared window address book: $WIN_DIR"
-LA_LABEL="com.claude-dotfiles.windows-publish"
-LA_DIR="$HOME/Library/LaunchAgents"
-LA_PLIST="$LA_DIR/$LA_LABEL.plist"
-LA_MARKER="built-by: scripts/transfer/install-transfer.sh"
 LAC="$REPO/scripts/line-agent-communicator.py"
-# The LaunchAgent runs with launchd's bare PATH, so record an absolute interpreter. /usr/bin/python3
-# first (always present with the Command Line Tools), else whatever python3 this shell finds.
-LA_PY=""
-for _py in /usr/bin/python3 "$(command -v python3 2>/dev/null || true)"; do
-    if [ -n "$_py" ] && [ -x "$_py" ] && "$_py" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
-        LA_PY="$_py"; break
-    fi
-done
+
+# Remove the retired LaunchAgent (2026-10-15): a launchd job could not keep this Mac's file current.
+# Only a plist carrying this script's marker is removed; launchctl is only driven when $HOME is this
+# account's real home (LAC_LAUNCHCTL_ALLOW_SANDBOX=1 lets a test with a stubbed launchctl opt in, and
+# only under the transfer suite's TRANSFER_TESTS_ALLOW_DEV=true gate).
+LA_LABEL="com.claude-dotfiles.windows-publish"
+LA_PLIST="$HOME/Library/LaunchAgents/$LA_LABEL.plist"
+LA_MARKER="built-by: scripts/transfer/install-transfer.sh"
 REAL_HOME=$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)
 LA_CAN_LOAD=0
 if [ "$HOME" = "$REAL_HOME" ]; then
@@ -147,59 +147,18 @@ if [ "$HOME" = "$REAL_HOME" ]; then
 elif [ "${LAC_LAUNCHCTL_ALLOW_SANDBOX:-}" = "1" ] && [ "${TRANSFER_TESTS_ALLOW_DEV:-}" = "true" ]; then
     LA_CAN_LOAD=1   # dev-only test hook: a sandbox run whose launchctl is a PATH stub
 fi
-
-if [ -z "$LA_PY" ]; then
-    echo "WARNING: no python3 >= 3.9 found - the address-book LaunchAgent was not installed." >&2
-elif [ -e "$LA_PLIST" ] && ! grep -qF "$LA_MARKER" "$LA_PLIST" 2>/dev/null; then
-    echo "WARNING: $LA_PLIST exists and was not made by this script (no '$LA_MARKER' inside) - left untouched." >&2
-else
-    mkdir -p "$LA_DIR" "$HOME/.claude/logs"
-    LA_TMP=$(mktemp "$LA_DIR/.$LA_LABEL.XXXXXX")
-    python3 - "$LA_TMP" "$LA_LABEL" "$LA_PY" "$LAC" "$HOME/.claude/logs/windows-publish.launchd.log" "$LA_MARKER" <<'PY'
-import plistlib, sys
-out, label, py, lac, log, marker = sys.argv[1:7]
-body = plistlib.dumps({
-    "Label": label,
-    "ProgramArguments": [py, lac, "publish"],
-    "RunAtLoad": True,
-    "StartInterval": 60,
-    "Nice": 10,
-    "ProcessType": "Background",
-    "LowPriorityIO": True,
-    "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-    "StandardOutPath": log,
-    "StandardErrorPath": log,
-}).decode()
-# The ownership marker is an XML comment: launchd ignores it, and grep finds it.
-body = body.replace("<plist ", "<!-- %s -->\n<plist " % marker, 1)
-open(out, "w").write(body)
-PY
-    LA_CHANGED=1
-    if [ -f "$LA_PLIST" ] && cmp -s "$LA_TMP" "$LA_PLIST"; then
-        LA_CHANGED=0
-        rm -f "$LA_TMP"
-    else
-        chmod 644 "$LA_TMP"
-        mv -f "$LA_TMP" "$LA_PLIST"
-        echo "  wrote LaunchAgent $LA_PLIST"
-    fi
-    if [ "$LA_CAN_LOAD" -ne 1 ]; then
-        echo "  LaunchAgent not loaded: HOME is not this account's real home (sandbox run)."
-    else
-        LA_DOMAIN="gui/$(id -u)"
-        if [ "$LA_CHANGED" -eq 0 ] && launchctl print "$LA_DOMAIN/$LA_LABEL" >/dev/null 2>&1; then
-            echo "  LaunchAgent $LA_LABEL already loaded"
-        else
-            launchctl bootout "$LA_DOMAIN/$LA_LABEL" >/dev/null 2>&1 || true
-            if launchctl bootstrap "$LA_DOMAIN" "$LA_PLIST"; then
-                echo "  loaded LaunchAgent $LA_LABEL (publishes every 60s)"
-            else
-                echo "WARNING: launchctl bootstrap failed for $LA_PLIST - the address book will not refresh on its own." >&2
-            fi
+if [ -e "$LA_PLIST" ]; then
+    if grep -qF "$LA_MARKER" "$LA_PLIST" 2>/dev/null; then
+        if [ "$LA_CAN_LOAD" -eq 1 ]; then
+            launchctl bootout "gui/$(id -u)/$LA_LABEL" >/dev/null 2>&1 || true
         fi
+        rm -f "$LA_PLIST" && echo "  removed the retired address-book LaunchAgent ($LA_LABEL)"
+    else
+        echo "WARNING: $LA_PLIST exists and was not made by this script - left untouched." >&2
     fi
 fi
-# Publish once now, so this Mac appears in the address book without waiting for the first tick.
+
+# Publish once now (with the prefetch of the other Macs' files), so this Mac appears right away.
 python3 "$LAC" publish -v || echo "WARNING: publish failed - see ~/.claude/logs/windows-publish.log" >&2
 
 case ":$PATH:" in

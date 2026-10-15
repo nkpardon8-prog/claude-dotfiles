@@ -93,10 +93,14 @@ drop folders only) so the iCloud daemon notices the new file promptly.
 to `~/Library/Mobile Documents/com~apple~CloudDocs/claude-windows/<mac-name>.json` - one file per
 Mac, so iCloud never sees two writers on one file. `line-agent-communicator.py publish` builds it
 from the same live-window rows `list` uses and writes atomically, only on change or for a 10-minute
-heartbeat; the LaunchAgent `com.claude-dotfiles.windows-publish` (installed by
-`install-transfer.sh`) runs it every 60 s, and `/line` plus the SessionStart identity hook trigger it
-immediately in the background. Each LaunchAgent run also prefetches every
-other Mac's file - a full background read with a 60 s budget, which makes iCloud download a
+heartbeat (the account hash is part of the content, so a login change republishes). It runs from
+Claude Code, which can write iCloud Drive: `scripts/statusline.sh` calls
+`scripts/line-publish-trigger.sh` on every render, which starts a detached `publish --throttle 60`
+at most once a minute per Mac (a cheap stamp check in bash, then an atomic claim in Python) and never
+waits; `/line`, SessionStart and SessionEnd publish immediately in the background. A launchd
+LaunchAgent was tried first and could not keep the file current, so the installer removes it. A
+failed publish is recorded in the cache dir and shown by `list` and `transfer-doctor`. Each
+throttled publish also prefetches every other Mac's file - a full background read with a 60 s budget, which makes iCloud download a
 placeholder - validates it and updates `~/.claude/claude-windows-cache/` only on change (sync times in
 `sync-state.json` there). `list`/`find` read only that cache (instant), reading iCloud directly (2 s
 limit, child process) only for a Mac with no cached copy. A heartbeat (inside the file) older than 15

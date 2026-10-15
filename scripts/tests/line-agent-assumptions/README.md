@@ -168,6 +168,11 @@ time deterministic. Shared setup: `_addrbook-fixture.sh` (sourced, never run).
 - **15-address-book-prefetch** - `publish` copies other Macs' files into the cache; `list` reads only the
   cache (a changed remote file appears only after the next publish); unchanged files are not rewritten;
   live/asleep comes from the heartbeat inside the file; `--no-prefetch` leaves the cache alone.
+- **17-address-book-trigger** - five simultaneous `publish --throttle 60` -> one real run (the atomic
+  claim); `scripts/line-publish-trigger.sh` and the real `statusline.sh` return at once while the
+  detached publish is blocked on an iCloud placeholder; a trigger after the interval publishes again;
+  a publish refused by the filesystem (`chflags uchg`) is reported in `list`, with the permission
+  explanation, and clears after a good publish.
 
 ## Why 04 and 05 were authored RED (historical - both now gate like everything else)
 
@@ -217,6 +222,7 @@ LINE_AGENT_TESTS_ALLOW_DEV=true LINE_AGENT_NEG_CONTROL=true bash <test>.sh
 | 13 | copies the script so it reads the remote file directly (no child, no timeout) | observed RED: X3 and X5 hang and are killed by the alarm |
 | 14 | copies the script so the cache path ignores the shared-folder override (the original leak) | observed RED: G1 and G2 |
 | 15 | copies the script with the prefetch removed and the reader going to iCloud every time | observed RED: R1 and R3 |
+| 17 | removes the Python claim and makes the trigger run publish in the foreground | observed RED: T1 (5 runs), T2 and T3 (the trigger and the statusline wait ~8 s); T6 observed red against the pre-fix script |
 
 06-08 and 10 patch a **copy** of the real script rather than a flag inside it: a defense you can switch off
 at runtime is a defense an attacker can switch off. Each patch is anchored on an exact source line

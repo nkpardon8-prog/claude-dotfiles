@@ -2,7 +2,15 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
-## 2026-10-15 - /line address book: always-synced reads, test data can no longer reach the real cache
+## 2026-10-15 - dotfiles-sync: one run at a time
+
+- Live defect: every tool call in every window fires the async sync hook, and the pre-commit hook
+  runs the transfer assumption suite whenever transfer files are staged, so ~60 syncs stacked
+  (laptop load 250-360; rdocker saw the mini as "not responding"). `dotfiles-sync.sh` now takes a
+  pid lock (`~/.claude/.dotfiles-sync.lock`, noclobber; a dead holder's lock is taken over) and a
+  run that finds one in flight exits 0; the next tool call syncs whatever it missed.
+
+## 2026-10-15 - /line address book: published from Claude Code, always-synced reads, no fixture leaks
 
 - Live defect 1: the MacBook's `list` showed fixture windows (`mini-billing`) as the Mac mini. A manual
   run with a sandbox shared folder but the real HOME wrote them into `~/.claude/claude-windows-cache/`,
@@ -11,15 +19,30 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   explicitly. The bogus cached entry on the MacBook was deleted. New `address-book-paths` (pure) lets
   tests check every write path; the line-agent fixture refuses to run (exit 1) unless they sit in its
   sandbox, and test 14 guards the derivation.
+- Live defect 3 (most important): the LaunchAgent publisher failed every minute ("Operation not
+  permitted" writing `claude-windows/`) while exiting 0, so this Mac's file went stale - it still carried
+  the old claude.ai account an hour after a login change. Probed: a launchd job may replace only iCloud
+  files it created itself, and ours had been written from Terminal. Publishing now runs from Claude Code
+  (Terminal), which can write iCloud Drive: the statusline calls new `scripts/line-publish-trigger.sh`,
+  which starts a detached `publish --throttle 60` at most once a minute per Mac (a bash stamp check, then
+  an atomic claim in Python) and never waits; SessionStart and `/line` stay; a new SessionEnd hook
+  republishes 3 s after a window closes. The installer removes the LaunchAgent (only its own marked
+  plist) and adds the SessionEnd hook. A failed publish is recorded and shown in `list` ("this Mac's
+  entry could not be updated: ...", with a plain explanation for permission errors) and in
+  `transfer-doctor`, which now checks when this Mac's file was last written and whether it carries the
+  current account instead of checking a LaunchAgent. The account hash is part of change detection.
 - Live defect 2: the MacBook could not read the mini's real file ("still downloading from iCloud (no
-  answer in 2s)"). The LaunchAgent's `publish` now also prefetches every other Mac's file: a full
+  answer in 2s)"). The throttled `publish` now also prefetches every other Mac's file: a full
   background read with a 60 s budget (which makes iCloud download it), validated, written to the local
   cache only on change, sync times in `sync-state.json`. `list`/`find` read only the cache (instant),
   with `synced N s ago` or "may be out of date" after 5 minutes without a refresh; iCloud is read
   directly only for a Mac with no cached copy. Live vs asleep still comes from the heartbeat inside the
   file. The background publish from `/line` and the session hook uses `--no-prefetch`.
-- Tests: 13 reworked for the cache-first reader; new 14 (cache isolation) and 15 (prefetch: cache only,
-  no rewrite when unchanged, heartbeat from content); each watched red against a broken copy.
+- Tests: 13 reworked for the cache-first reader; new 14 (cache isolation), 15 (prefetch: cache only, no
+  rewrite when unchanged, heartbeat from content), 17 (trigger: five simultaneous publishes -> one,
+  trigger and the real statusline return at once while iCloud blocks, failure loud in `list`); transfer
+  26 rewritten for the LaunchAgent removal + SessionEnd hook. Each watched red against a broken copy.
+  The earlier entry below describes the first (LaunchAgent) design, now replaced.
 
 ## 2026-10-15 - /line: see the windows on your other Macs
 

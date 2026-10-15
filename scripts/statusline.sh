@@ -420,4 +420,11 @@ if [ -n "$SAFE_SID" ]; then
   esac
 fi
 
+# ── 9. Shared window address book (windows on your other Macs) ───────────────────
+# At most once a minute per Mac, starts a detached `publish` (this Mac's windows to iCloud Drive,
+# plus a refresh of the other Macs' copies). The trigger only stats a stamp file and returns; it
+# never prints and never waits on iCloud. Side-effect only - all output discarded.
+LINE_TRIGGER="$HOME/.claude-dotfiles/scripts/line-publish-trigger.sh"
+[ -f "$LINE_TRIGGER" ] && bash "$LINE_TRIGGER" </dev/null >/dev/null 2>&1 || true
+
 exit 0

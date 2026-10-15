@@ -66,7 +66,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
 # Shared address book (windows on the owner's other Macs): publish this window there now, named or
-# not, instead of waiting for the LaunchAgent's next 60s tick. Detached child (returns at once),
+# not, instead of waiting for the next statusline-triggered publish. Detached child (returns at once),
 # delayed so the harness has written this window's registry entry first, and throttled so a burst
 # of windows opening costs one write. A no-op on a Mac without iCloud Drive; never fails the hook.
 python3 "$LAC" publish --background --delay 5 --throttle 3 >/dev/null 2>&1 || true

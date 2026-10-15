@@ -415,21 +415,16 @@ check_icloud() {
 }
 
 # ---------------------------------------------------------------------------
-# window address book (iCloud Drive/claude-windows/, kept fresh by a LaunchAgent)
+# window address book (iCloud Drive/claude-windows/, published from Claude Code windows)
 # ---------------------------------------------------------------------------
 LA_LABEL="com.claude-dotfiles.windows-publish"
 LA_PLIST="$HOME/Library/LaunchAgents/$LA_LABEL.plist"
 LAC="$DOTFILES_DIR/scripts/line-agent-communicator.py"
 
-check_launchagent() {
-    if [ ! -f "$LA_PLIST" ]; then
-        record WARN launchagnt "$LA_LABEL not installed (run install-transfer.sh) - other Macs will not see this Mac's windows"
-        return
-    fi
-    if launchctl print "gui/$(id -u)/$LA_LABEL" >/dev/null 2>&1; then
-        record PASS launchagnt "$LA_LABEL loaded (publishes every 60s)"
-    else
-        record WARN launchagnt "$LA_LABEL installed but not loaded (re-run install-transfer.sh)"
+# The LaunchAgent publisher was retired (it could not keep the file current); flag a leftover.
+check_legacy_launchagent() {
+    if [ -f "$LA_PLIST" ]; then
+        record WARN addrbook "the retired LaunchAgent $LA_LABEL is still installed - re-run install-transfer.sh to remove it"
     fi
 }
 
@@ -452,12 +447,18 @@ if not d.get('dir'):
     print('WARN\tno iCloud Drive - no shared address book'); sys.exit(0)
 rows = []
 me = d.get('self') or {}
+err = d.get('last_error') or {}
+if err:
+    help_txt = ' macOS blocked the write to iCloud Drive; publishing runs from Claude Code windows (Terminal) - check Privacy & Security > Files and Folders / Full Disk Access for your terminal app.' if err.get('permission') else ''
+    rows.append(('WARN', 'the last publish of this Mac\'s windows FAILED at %s: %s.%s' % (err.get('at'), err.get('reason'), help_txt)))
 if not me.get('present'):
-    rows.append(('WARN', 'this Mac (%s) has no file yet - run install-transfer.sh' % d.get('host')))
+    rows.append(('WARN', 'this Mac (%s) has no file yet - open a Claude Code window (it publishes within a minute) or run install-transfer.sh' % d.get('host')))
 elif not me.get('fresh'):
-    rows.append(('WARN', 'this Mac\'s file is stale (heartbeat %ss old) - is the LaunchAgent running?' % me.get('heartbeat_age_sec')))
+    rows.append(('WARN', 'this Mac\'s file was last written %ss ago (more than 15 min) - no Claude Code window open, or publishing is failing' % me.get('heartbeat_age_sec')))
+elif not me.get('account_current'):
+    rows.append(('WARN', 'this Mac\'s file carries an older claude.ai account - it updates on the next publish (within a minute of any window rendering)'))
 else:
-    rows.append(('PASS', 'this Mac (%s) fresh, heartbeat %ss old' % (d.get('host'), me.get('heartbeat_age_sec'))))
+    rows.append(('PASS', 'this Mac (%s) written %ss ago, current account' % (d.get('host'), me.get('heartbeat_age_sec'))))
 others = d.get('others') or []
 if not others:
     rows.append(('WARN', 'no other Mac has published yet (run install-transfer.sh there)'))
@@ -467,7 +468,7 @@ for o in others:
     elif o.get('heartbeat_age_sec') is None:
         rows.append(('WARN', '%s: file not readable yet (%s)' % (o.get('label'), o.get('problem') or 'unknown')))
     elif o.get('out_of_date'):
-        rows.append(('WARN', '%s: local copy not refreshed for %ss (%s) - is this Mac\'s LaunchAgent running?' % (o.get('label'), o.get('sync_age_sec'), o.get('problem') or 'no background sync yet')))
+        rows.append(('WARN', '%s: local copy not refreshed for %ss (%s) - is a Claude Code window open on this Mac?' % (o.get('label'), o.get('sync_age_sec'), o.get('problem') or 'no background sync yet')))
     elif not o.get('live'):
         rows.append(('WARN', '%s: stale, heartbeat %ss old (asleep/offline?)' % (o.get('label'), o.get('heartbeat_age_sec'))))
     else:
@@ -680,7 +681,7 @@ main() {
     check_openssl
     check_tools
     check_icloud
-    check_launchagent
+    check_legacy_launchagent
     check_addressbook
     check_repo
     check_jq

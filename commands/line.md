@@ -76,11 +76,14 @@ means the two Macs never write the same file, so iCloud never makes conflict cop
   never your email; the claude.ai account appears only as a salted hash, used to warn when the two
   Macs are signed in to different accounts.
 - **Keeping it fresh:** `python3 "$LAC" publish` writes this Mac's file, but only when something
-  changed, plus a heartbeat every 10 minutes so the other Mac can tell "asleep" from "quiet". A
-  LaunchAgent (`com.claude-dotfiles.windows-publish`, installed by
-  `scripts/transfer/install-transfer.sh`) runs it every 60 seconds at low priority; `/line` and the
-  session-start hook also run it right away, in the background, so a rename or a new window shows up
-  within seconds. Errors go to `~/.claude/logs/windows-publish.log` (size-capped).
+  changed (including a change of claude.ai login), plus a heartbeat every 10 minutes so the other Mac
+  can tell "asleep" from "quiet". It runs from Claude Code itself, which can write iCloud Drive: the
+  statusline calls `scripts/line-publish-trigger.sh` on every render, which starts a detached
+  `publish` at most once a minute per Mac (a stamp plus a lock, so many windows still mean one
+  publish) and never makes the statusline wait. `/line`, session start and session end (so a closed
+  window drops out) also publish right away in the background. A failed publish is shown in `list`
+  ("this Mac's entry could not be updated: ...") and logged to `~/.claude/logs/windows-publish.log`.
+  (A LaunchAgent did this at first; it could not keep the file current and the installer removes it.)
 - **What `list` shows:** after this Mac's windows, a section per other Mac - `On <Mac name> - live`
   or `On <Mac name> - Mac asleep/offline, last seen <time>` (no heartbeat for 15 minutes) - with
   each window's address, what it is, folder, and status. An unnamed window shows as
@@ -91,16 +94,17 @@ means the two Macs never write the same file, so iCloud never makes conflict cop
   which needs both Macs signed in to the same claude.ai account with `remoteControlAtStartup: true`
   (and `crossSessionInbound: "accept"` to receive). If the accounts differ, `list` and `find` print
   one warning line saying so - cross-Mac messages will not arrive until both are on one account.
-- **Always synced:** each LaunchAgent run also reads every other Mac's file fully in the background
-  (up to 60 seconds, which makes iCloud download it), checks it, and updates a local copy in
+- **Always synced:** each of those once-a-minute publishes also reads every other Mac's file fully in
+  the background (up to 60 seconds, which makes iCloud download it), checks it, and updates a local copy in
   `~/.claude/claude-windows-cache/` only when it changed. `list` and `find` read that local copy, so
   they answer instantly and never wait on iCloud; each Mac's line says `synced N s ago`. If the
   background copy has not refreshed for 5 minutes the line says "may be out of date" and why. Live
   vs asleep comes from the heartbeat the other Mac wrote inside its file, not from local file times.
   Only a Mac never copied before is read straight from iCloud (2-second limit).
 - **Fallback:** `ListAgents` still shows other Macs' windows as Remote Control rows.
-- **Check it:** `transfer-doctor` reports whether the LaunchAgent is loaded, whether this Mac's file
-  and the other Mac's file are fresh, and whether both are on the same account.
+- **Check it:** `transfer-doctor` reports when this Mac's file was last written (and on which account),
+  the last publish error in plain words, whether the other Mac's copy is fresh, and whether both Macs
+  are on the same account.
 
 `set` also takes `--owns "<one line>"`, the window's own description of the domain it covers
 (`/line "billing" --owns "Stripe webhooks + invoice reconciliation"`). It shows in `list` and `find`

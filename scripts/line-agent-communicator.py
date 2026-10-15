@@ -915,7 +915,7 @@ def collect_live_rows(me: str = "") -> tuple[list[dict], int]:
 #
 # A file in iCloud may be a not-yet-downloaded placeholder, and reading one can block until the
 # download finishes - live, a 2 s foreground read of the other Mac's file never got an answer. So
-# reading is split: the LaunchAgent's `publish` PREFETCHES every other Mac's file in the background
+# reading is split: the throttled `publish` (statusline trigger, once a minute per Mac) PREFETCHES every other Mac's file in the background
 # (full read, generous timeout, which makes iCloud download it) into a local cache, and `list`/`find`
 # read only that cache - instant. Only a Mac with no cached copy yet is read directly (short timeout,
 # in a child process so it can be abandoned). The cache lives under ~/.claude/, or beside an
@@ -924,7 +924,7 @@ def collect_live_rows(me: str = "") -> tuple[list[dict], int]:
 
 ADDRESS_BOOK_FORMAT = 1
 ICLOUD_BASE = HOME / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
-# Background prefetch of another Mac's file (LaunchAgent only): generous, because the point is to
+# Background prefetch of another Mac's file (throttled publish only): generous, because the point is to
 # let iCloud finish downloading a placeholder that a 2 s foreground read would give up on.
 PREFETCH_TIMEOUT_SEC = 60.0
 # A cache not refreshed by the prefetcher for this long is called out as possibly out of date.
@@ -1045,7 +1045,7 @@ def clean_field(value, limit: int = FIELD_MAX) -> str:
 
 
 def _log_publish(msg: str) -> None:
-    """One bounded log line. Publish runs every minute from a LaunchAgent, so the log must not grow."""
+    """One bounded log line. Publish runs about once a minute, so the log must not grow."""
     try:
         publish_log().parent.mkdir(parents=True, exist_ok=True)
         if publish_log().exists() and publish_log().stat().st_size > 65536:
@@ -1194,18 +1194,22 @@ def cmd_publish(throttle: float = 0.0, verbose: bool = False, prefetch: bool = T
         if verbose:
             print("publish: no iCloud Drive on this Mac - nothing to publish to.")
         return 0
-    if throttle > 0:
+    if throttle > 0 and not _claim_publish_slot(throttle):
+        return 0  # another window published (or is publishing) within the throttle window
+    trace = os.environ.get("LAC_PUBLISH_TRACE")  # test hook: one line per publish that really ran
+    if trace:
         try:
-            if time.time() - publish_stamp().stat().st_mtime < throttle:
-                return 0
+            with open(trace, "a") as fh:
+                fh.write(f"{os.getpid()}\n")
         except OSError:
             pass
     try:
         cache_dir().mkdir(parents=True, exist_ok=True)
         with file_lock(cache_dir() / "publish"):
             _publish_locked(d, verbose)
+        _clear_publish_error()
     except Exception as e:
-        _log_publish(f"publish failed: {e.__class__.__name__}: {clean_field(e, 200)}")
+        _record_publish_error(e)
         if verbose:
             print(f"publish: FAILED ({e.__class__.__name__}) - see {publish_log()}")
     if prefetch:
@@ -1269,6 +1273,75 @@ def _publish_locked(d: Path, verbose: bool) -> int:
     if verbose:
         print(f"publish: {what} ({len(windows)} window(s)) - {target}")
     return 0
+
+
+def _claim_publish_slot(throttle: float) -> bool:
+    """
+    Atomically claim this minute's publish for the whole Mac. The statusline fires in every window,
+    so many triggers can arrive at once: a non-blocking lock lets one through, and the stamp is
+    touched at CLAIM time so the rest see a fresh stamp and stand down. False = someone else has it.
+    """
+    try:
+        cache_dir().mkdir(parents=True, exist_ok=True)
+        fh = open(cache_dir() / "publish-claim.lock", "a+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False
+    try:
+        try:
+            if time.time() - publish_stamp().stat().st_mtime < throttle:
+                return False
+        except OSError:
+            pass
+        _touch_stamp()
+        return True
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+        except OSError:
+            pass
+
+
+def _error_path() -> Path:
+    return cache_dir() / "last-publish-error.json"
+
+
+def _record_publish_error(e: Exception) -> None:
+    """Log it AND keep it where `list` and transfer-doctor will show it - a log nobody reads hid a
+    failing publisher for an hour."""
+    permission = isinstance(e, PermissionError)
+    reason = clean_field(f"{e.__class__.__name__}: {e}", 240)
+    _log_publish(f"publish failed: {reason}")
+    try:
+        _write_private_json(_error_path(), {"at": iso_utc(time.time()), "reason": reason,
+                                            "permission": permission})
+    except Exception:
+        pass
+
+
+def _clear_publish_error() -> None:
+    try:
+        _error_path().unlink()
+    except OSError:
+        pass
+
+
+def last_publish_error() -> dict | None:
+    try:
+        d = json.loads(_error_path().read_text())
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+PERMISSION_HELP = ("macOS did not allow writing to iCloud Drive from this process. Publishing runs from "
+                   "Claude Code windows (Terminal), which have access; if this persists, check System "
+                   "Settings > Privacy & Security > Files and Folders / Full Disk Access for your terminal app.")
 
 
 def _touch_stamp() -> None:
@@ -1343,7 +1416,7 @@ def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
     which makes iCloud download a placeholder; validate it; update the local cache only when the
     content changed. `list`/`find` then read the cache and never wait on iCloud.
 
-    Runs from the LaunchAgent's `publish`. One prefetch at a time (non-blocking lock: a second one
+    Runs from the throttled `publish` (scripts/line-publish-trigger.sh). One prefetch at a time (non-blocking lock: a second one
     simply skips). Records per host the last success, last try and last problem in sync-state.json.
     """
     try:
@@ -1491,6 +1564,12 @@ ACCOUNT_MISMATCH_TEXT = ("WARNING: {label} is signed in to a DIFFERENT claude.ai
 
 def print_other_hosts(hosts: list[dict], state: str) -> None:
     print()
+    err = last_publish_error()
+    if err:
+        print(f"WARNING: this Mac's entry could not be updated: {clean_field(err.get('reason'), 200)} "
+              f"(at {clean_field(err.get('at'), 30)}) - your other Macs see an old copy.")
+        if err.get("permission"):
+            print("  " + PERMISSION_HELP)
     if state == "no-icloud":
         print("Other Macs: no shared address book here (iCloud Drive not found). "
               "ListAgents still shows their Remote Control rows.")
@@ -1535,13 +1614,15 @@ def cmd_address_book_status() -> int:
     """Machine-readable health of the address book, for transfer-doctor. Never prints identifiers."""
     d = windows_dir()
     out: dict = {"dir": str(d) if d else "", "dir_exists": bool(d and d.is_dir()), "host": host_id(),
-                 "account_known": bool(account_hash()), "self": {"present": False}, "others": []}
+                 "account_known": bool(account_hash()), "self": {"present": False}, "others": [],
+                 "last_error": last_publish_error()}
     if d is not None:
         mine, why = read_json_timed(d / f"{host_id()}.json")
         hb = parse_iso_utc(mine.get("heartbeat_at")) if mine else None
         age = None if hb is None else int(now_epoch() - hb)
         out["self"] = {"present": mine is not None, "problem": why, "heartbeat_age_sec": age,
-                       "fresh": age is not None and age < LIVE_HEARTBEAT_SEC}
+                       "fresh": age is not None and age < LIVE_HEARTBEAT_SEC,
+                       "account_current": bool(mine) and mine.get("account_hash") == account_hash()}
         hosts, _ = load_other_hosts()
         for h in hosts:
             age = None if h["last_seen_epoch"] is None else int(now_epoch() - h["last_seen_epoch"])
@@ -2873,7 +2954,8 @@ USAGE = """line-agent-communicator.py - name this window and reach the others.
   publish [-v] [--throttle S] [--delay S] [--background] [--no-prefetch]
                              write this Mac's windows to the shared address book (only on change,
                              or to refresh a 10-minute heartbeat), then refresh the local cache of
-                             the other Macs' files; the LaunchAgent runs it every 60s
+                             the other Macs' files; the statusline triggers it (detached,
+                             --throttle 60) via scripts/line-publish-trigger.sh
   address-book-status        (doctor use) JSON health of the address book
   address-book-paths         (test use) JSON of the folder, cache and log paths; writes nothing
   card                       this window's identity header - paste it INTO what you send

@@ -118,6 +118,9 @@ Paste this into a fresh Claude Code session on a machine where Claude Code is al
 
 - [`scripts/statusline.sh`](../scripts/statusline.sh) — the statusLine command
 - [`scripts/refresh-ratelimit.sh`](../scripts/refresh-ratelimit.sh) — background refresher
+- [`scripts/line-publish-trigger.sh`](../scripts/line-publish-trigger.sh) — side effect only: at most
+  once a minute per Mac, starts a detached publish of this Mac's windows to the shared iCloud address
+  book (see `commands/line.md`, "Windows on your other Macs"); never prints, never waits
 - Cache lives at `~/.claude/ratelimit.json` (not in dotfiles — local only)
 
 ## Troubleshooting
