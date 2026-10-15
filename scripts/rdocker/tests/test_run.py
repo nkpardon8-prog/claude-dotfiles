@@ -203,10 +203,11 @@ class RunTest(unittest.TestCase):
         wfile(os.path.join(top, "package-lock.json"), "{}")
         wfile(os.path.join(top, "server", "package-lock.json"), "{}")
         wfile(os.path.join(top, "client", "package-lock.json"), "{}")
-        self.assertEqual(rd_run.deps_dirs(top, "server/src/x", ["npm", "test"]), ["", "server"])
+        self.assertEqual(rd_run.deps_dirs(top, "server/src/x", ["npm", "test"]), ["server"])
+        self.assertEqual(rd_run.deps_dirs(top, "docs", ["npm", "test"]), [""])
         self.assertEqual(rd_run.deps_dirs(top, "", ["npm", "--prefix", "client", "run", "t"]), ["", "client"])
         self.assertEqual(rd_run.deps_dirs(top, "server", ["npm", "--prefix=../client", "--prefix", "/etc"]),
-                         ["", "server", "client"])
+                         ["server", "client"])
 
     def test_overlay_and_deleted(self):
         self.dirty()

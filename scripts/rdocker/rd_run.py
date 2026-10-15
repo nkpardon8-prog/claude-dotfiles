@@ -284,13 +284,12 @@ def has_lock(d):
 
 
 def deps_dirs(top, relcwd, argv):
-    """Lockfile dirs the runner keeps installed: the repo root (if it has a lockfile), the nearest
-    lockfile dir at or above relcwd, and any `--prefix X` in argv (relative to cwd)."""
+    """Lockfile dirs the runner keeps installed: the nearest lockfile dir at or above relcwd and any
+    `--prefix X` in argv (relative to cwd). Not the repo root by default: a monorepo root's lockfile
+    can be out of sync (npm ci refuses) and the command never loads its packages (2026-10-15)."""
     out = []
-    if has_lock(top):
-        out.append("")
     parts = relcwd.split("/") if relcwd else []
-    for i in range(len(parts), 0, -1):
+    for i in range(len(parts), -1, -1):
         rel = "/".join(parts[:i])
         if has_lock(os.path.join(top, rel)):
             out.append(rel)
