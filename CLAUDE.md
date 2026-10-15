@@ -83,7 +83,9 @@ leftovers (idle 3 h -> stop, stopped 24 h -> removed, unused named volumes 30 d,
 `--label rdocker.keep=1` + a named volume (kept), or `--label rdocker.ttl=2d` (lives exactly that long);
 an unlabelled quiet DB is stopped after 3 h (`exec`/`cp`/`logs -f` on it restarts it within 24 h; a `--rm` one is gone). Laptop
 throwaways (fallback / local) get the same janitor; to keep a laptop DB use `rdocker.keep=1` + a named volume. A `rdocker: needs attention: ...` line on stderr means the
-mini needs a human: run `rdocker status` and tell the user. Heavy DB test commands (`npm run test:db`, ...)
+mini needs a human: run `rdocker status` and tell the user. **The mini is the default, always:** laptop Docker is a temporary fallback - when the mini is healthy
+again (`rdocker status` shows the engine OK), drop any `RDOCKER_MODE=local` / `RRUN=0` you added and
+start new containers normally so they land on the mini. Heavy DB test commands (`npm run test:db`, ...)
 are auto-routed by a hook to `rrun`, which runs code + DB together on the mini: don't set
 `RDOCKER_MODE=local` for them; `RRUN=0` opts out. Invoke `/docker` before starting databases
 — it holds the playbook (ports, readiness, seeding, lifetimes, `rrun`).
