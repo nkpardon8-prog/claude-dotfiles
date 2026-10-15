@@ -109,7 +109,9 @@ the connection).
 - **Automatic:** a `PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites known heavy commands
   (`rr_route_patterns`: `npm [--prefix X] run test:db[:rls]`, `release:rehearse:migrations`,
   `node .../test-with-db.mjs`, `check:db-all`, `node .../run-guard-tier.mjs`,
-  `check:server-test-typecheck`, `tsc ... --noEmit`) to `rrun <cmd>`. The push also mirrors the local
+  `check:server-test-typecheck`, `tsc ... --noEmit`, a WHOLE `vitest run` suite - flags only, no file
+  args; `vitest run a.test.ts` stays on the laptop) to `rrun <cmd>`. Heads may also be
+  `./node_modules/.bin/tsc|vitest`. The push also mirrors the local
   `origin/dev|main|master` (`rr_base_branches`), so diff-based guards resolve their base on the mini. It leaves anything unsure alone (`$(`, backticks,
   heredocs, pipes into it, non-`npm/node/npx/pnpm/yarn/bun` heads), and drops `RDOCKER_MODE=local`.
   Leading `K=V` assignments stay an env prefix and each name gets `-e K` (`FOO=1 npm run test:db` →
@@ -121,7 +123,8 @@ the connection).
 - **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
   skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
 - **npm shim (catches scripts):** `rdocker install` also links `~/.local/bin/npm` (first on PATH) to
-  `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck ...` from
+  `scripts/rdocker/npm-shim`: `npm [flags] run test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck ...`,
+  and a whole `npm test` / `npm run test` (no file args after `--`; with files it stays local) from
   ANYWHERE - a script, `bash -c "..."`, a subagent, a Makefile - becomes `rrun npm ...`, even with
   `RDOCKER_MODE=local` set. Every other npm call execs the real npm untouched. Skipped for `RRUN=0`, the
   hook's skip markers, on the mini, and inside rrun's own laptop fallback (it sets `RRUN=0`).
@@ -233,7 +236,8 @@ false; `RDOCKER_LOCAL_START=1 <cmd>` opts in for that one command), and the daem
 `local_idle_stop_min` (15) idle minutes. When auto mode would fall back to the laptop but Docker Desktop
 is not running, the command instead waits up to `blip_wait_s` (30) for the mini and runs there, or exits 1
 with "laptop Docker is off ... `rdocker doctor`"; a slow mini is used rather than booting the laptop.
-`RDOCKER_MODE=local` while the mini is healthy prints a once-an-hour (per folder) hint to drop it.
+`RDOCKER_MODE=local` while the mini is healthy prints a once-an-hour (per folder) hint to drop it. The
+heavy-script safety net (laptop placement) also yields: with Docker Desktop off the DB goes to the mini.
 
 **Fallback policy for creating commands** (`run`, `create`, compose `up/run/create`) when the mini is
 unavailable and Docker Desktop is already running: they fall back to the laptop **only if throwaway** — `--rm`, or no named-volume mount and no

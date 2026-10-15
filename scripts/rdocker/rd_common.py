@@ -100,7 +100,9 @@ DEFAULTS = {
                           r"(^|\s)check:db-all(\s|$)",   # dentall's 90-link guard sweep: pure CPU
                           r"(^|[\s/])run-guard-tier\.mjs(\s|$)",   # guard tiers (git diff vs origin/dev)
                           r"(^|\s)check:server-test-typecheck(\s|$)",
-                          r"(^|[\s/])tsc(\s+\S+)*\s+--noEmit(\s|$)"],   # whole-project typechecks
+                          r"(^|[\s/])tsc(\s+\S+)*\s+--noEmit(\s|$)",   # whole-project typechecks
+                          # a WHOLE vitest suite (flags only, no file/dir args); one or two files stay local
+                          r"(^|[\s/])vitest\s+run(\s+(-\S+|[0-9]*>>?\s*&?\S+))*\s*$"],
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim

@@ -12,22 +12,26 @@ done
 [ -n "$real" ] || { echo "rdocker npm shim: no real npm on PATH" >&2; exit 127; }
 if [ "${RRUN:-}" != "0" ] && [ -z "${RRUN_REMOTE:-}" ] && command -v rrun >/dev/null 2>&1; then
   # first two positional args (flags and the values of --prefix / -w / --workspace / -C skipped)
-  pos=(); skip=0
+  pos=(); skip=0; extra=0; dd=0
   for a in "$@"; do
-    [ "$a" = "--" ] && break
+    if [ "$dd" = 1 ]; then case "$a" in -*) ;; *) extra=1 ;; esac; continue; fi
+    [ "$a" = "--" ] && { dd=1; continue; }
     if [ "$skip" = 1 ]; then skip=0; continue; fi
     case "$a" in
       --prefix|-w|--workspace|-C) skip=1 ;;
       -*) ;;
-      *) pos+=("$a"); [ "${#pos[@]}" -ge 2 ] && break ;;
+      *) pos+=("$a") ;;
     esac
   done
   want=0
   for a in "$@"; do      # the hook's skip markers: these runs need the laptop
     case "$a" in *real-od/*|*doctor-drive*|--approve=browser) pos=(); break ;; esac
   done
+  # a WHOLE test suite (`npm test`, `npm run test`, no file args) is heavy; one or two files stay local
   case "${pos[0]:-}" in
+    test|t|tst) [ "${#pos[@]}" -eq 1 ] && [ "$extra" = 0 ] && want=1 ;;
     run|run-script|rum|urn)
+      [ "${pos[1]:-}" = test ] && [ "${#pos[@]}" -eq 2 ] && [ "$extra" = 0 ] && want=1
       case "${pos[1]:-}" in test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck) want=1 ;; esac ;;
   esac
   [ "$want" = 1 ] && exec rrun npm "$@"      # mini resolves its own npm; a laptop fallback re-enters here with RRUN=0

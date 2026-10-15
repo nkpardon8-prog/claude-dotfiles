@@ -37,6 +37,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   false; `RDOCKER_LOCAL_START=1` opts in). A fallback that would need it waits up to 30 s for the mini
   instead (a starved laptop makes the mini look down), or refuses with how to fix the mini; a slow mini
   is used. `RDOCKER_MODE=local` while the mini is healthy prints an hourly hint to drop it.
+- Whole test suites go to the mini too: `vitest run` with no file args (hook) and `npm test` /
+  `npm run test` with none (npm shim); one or two files stay local. `./node_modules/.bin/tsc|vitest`
+  heads are recognised. Laptop load was ~200 at 16:15 from whole suites (one 29 min) and tsc.
+  The safety net no longer forces a laptop DB when Docker Desktop is off.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

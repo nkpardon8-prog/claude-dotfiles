@@ -316,6 +316,15 @@ class LaptopStaysOff(ShimCase):
         self.assertNotIn("Mac mini is healthy", p.stderr)
 
 
+class SafetyNetWithLaptopOff(ShimCase):
+    def test_heavy_script_db_goes_to_mini_when_laptop_docker_is_off(self):
+        self.scenario(laptop_up=False)
+        p = self.shim("run", "-d", "postgres", env={"npm_lifecycle_event": "test:db"})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c for c, _ in self.calls("run")], ["mini"])
+        self.assertIn("laptop Docker is off", p.stderr)
+
+
 class SlowMiniOnlyMovesThrowaways(ShimCase):
     """Auto mode, mini usable but rtt_ms > max_rtt_ms on the last 2 consecutive health readings: only
     NEW throwaway containers go to the laptop."""

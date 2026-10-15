@@ -32,6 +32,10 @@ POSITIVE = [
     ("npm run check:server-test-typecheck", "rrun npm run check:server-test-typecheck"),
     ("cd server && npx tsc --noEmit -p tsconfig.json 2>&1 | head", "cd server && rrun npx tsc --noEmit -p tsconfig.json 2>&1 | head"),
     ("npx tsc -p tsconfig.vitest.json --noEmit", "rrun npx tsc -p tsconfig.vitest.json --noEmit"),
+    ("./node_modules/.bin/tsc -p tsconfig.vitest.json --noEmit", "rrun ./node_modules/.bin/tsc -p tsconfig.vitest.json --noEmit"),
+    ("cd server && npx vitest run", "cd server && rrun npx vitest run"),
+    ("npx vitest run --reporter=dot 2>&1 | tail -20", "rrun npx vitest run --reporter=dot 2>&1 | tail -20"),
+    ("npx vitest run > out.log 2>&1", "rrun npx vitest run > out.log 2>&1"),
     ("node scripts/test-with-db.mjs src/a.db.test.ts", "rrun node scripts/test-with-db.mjs src/a.db.test.ts"),
     ("node ../../scripts/test-with-db.mjs", "rrun node ../../scripts/test-with-db.mjs"),
     ("cd server && npm run test:db", "cd server && rrun npm run test:db"),
@@ -71,6 +75,9 @@ POSITIVE = [
 
 NEGATIVE = [
     "npx tsc -p tsconfig.json",                      # an emitting build: not a check
+    "npx vitest run src/a.test.ts",                  # one file: small, stays on the laptop
+    "npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail",
+    "npx vitest",                                    # watch mode: interactive
     "cat tsconfig.json",
     "timeout npm run test:db",                       # timeout with no duration: not understood
     "bash -c 'echo test:db'",

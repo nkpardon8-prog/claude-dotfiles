@@ -653,6 +653,16 @@ def local_mode_hint(cfg):
         rd_common.log("local-mode hint failed: %r" % e, rd_common.ROUTE_LOG)
 
 
+def laptop_ok_for(eng, heavy):
+    """The safety net's laptop placement, unless laptop Docker is off: then the DB goes to the mini
+    (slow across the link, but rdocker never boots Docker Desktop for it)."""
+    if heavy and laptop_off(eng):
+        rd_common.say("%s, but laptop Docker is off - its DB goes to the Mac mini (slow across the "
+                      "link: run the job with rrun)" % heavy)
+        return None
+    return heavy
+
+
 def laptop_off(eng):
     """Laptop Docker is not running and rdocker may not start it (local_autostart / RDOCKER_LOCAL_START)."""
     return not eng.laptop_up() and not rd_tunnel.local_start_allowed(eng.cfg)
@@ -1094,7 +1104,7 @@ def shim(argv):
             if unknown:
                 raise Refuse(unknown_flag_msg(sub, unknown, "whether it mounts laptop paths"))
             name = rd_args.parse_sub(sub, args).last("--name")
-            heavy = rrun_safety_net(cfg, mode)
+            heavy = laptop_ok_for(eng, rrun_safety_net(cfg, mode))
             target, why, fell_back = route_creating(eng, heavy or rd_args.run_needs_local(args, sub),
                                                     rd_args.run_not_throwaway(args, sub), None)
             if heavy:
@@ -1121,7 +1131,7 @@ def shim(argv):
                 blocker = "the compose model could not be read"
             else:
                 blocker = ("it uses named volume %s" % named[0]) if named else None
-            heavy = rrun_safety_net(cfg, mode)
+            heavy = laptop_ok_for(eng, rrun_safety_net(cfg, mode))
             target, why, fell_back = route_creating(eng, heavy or need_local, blocker, hinted)
             if heavy:
                 rrun_hint(heavy)
