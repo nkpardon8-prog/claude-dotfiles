@@ -18,13 +18,15 @@ window captioned "summit admin hub" was addressable only as `dentall-ae`, so ask
 "message my summit admin hub agent" could not work — the caption was cosmetic and nothing could
 translate it. One `/line` now sets both, so the name you type IS the address.
 
-`/line` also sets the **display name** - the name Remote Control shows for this chat on your other
-Macs - to that same short handle (`patient-retention`), so the name you see everywhere is the name
-agents message; your full sentence stays the statusline caption. It is saved in the chat itself (the
-same record `/rename` writes), so it survives a restart, a resume, and a transfer, and it goes live
-as soon as the reply finishes: a Stop hook (`scripts/hooks/line-apply-rename.sh`) types
-`/rename <handle>` into this window's own Terminal tab. Outside Terminal.app (iTerm, tmux) nothing is
-typed and `/line` prints the `/rename` to type yourself.
+`/line` also sets the **display name** - the Remote Control title your other Macs see - to that
+same short handle (`patient-retention`); your full sentence stays the statusline caption. It is set by
+a hook, not by `/line`'s own script: `line-agent-communicator.py session-title` runs on every prompt
+(UserPromptSubmit) and every open (SessionStart) and hands Claude Code a `sessionTitle`, which it
+applies exactly like `/rename`, in any terminal (Pane, Terminal, iTerm, tmux). On a `/line` prompt it
+predicts the handle `/line` is about to write, so the name is live before the reply even starts, and
+it puts the name back after a reopen. Unnamed windows get their registry address as the title too.
+`/line` says `Display name: NOT SET` if this Mac's settings lack that hook; `line-ensure-settings.py`
+adds it (and runs on its own at every session start). Log: `~/.claude/logs/line-title.log`.
 
 With no argument it clears the caption. The peer address is deliberately left alone: clearing a
 caption should never make a window unreachable while someone is mid-conversation with it.
@@ -90,10 +92,21 @@ means the two Macs never write the same file, so iCloud never makes conflict cop
   `<folder> (<Mac name>)`; nothing renames it for you (`/line` stays user-run). `find` ranks those
   windows with the same scoring as local ones and labels each match with its Mac. `--json` adds
   `otherMacs` (each window carries a `host` field) and `accountMismatch`.
-- **Messaging:** the address shown is what you pass to `SendMessage`; it travels over Remote Control,
-  which needs both Macs signed in to the same claude.ai account with `remoteControlAtStartup: true`
-  (and `crossSessionInbound: "accept"` to receive). If the accounts differ, `list` and `find` print
-  one warning line saying so - cross-Mac messages will not arrive until both are on one account.
+- **Messaging:** for a window on another Mac, pass `SendMessage` the `send to` address `list` and
+  `find` print - `bridge:session_...`, that window's Remote Control session id. It reaches the
+  window whatever its Remote Control TITLE says, and the title is not dependable: windows Pane
+  reopened (resumed) kept their auto titles (`macbookair-m4-local-...`) through `/rename` and the
+  title hook alike (2026-10-16), so `SendMessage("patients-tab")` failed while the bridge address
+  delivered. The human name is how you LOOK a window up; the bridge address is how you SEND. Both
+  Macs must be on the same claude.ai account with `remoteControlAtStartup: true` (and
+  `crossSessionInbound: "accept"` to receive); if the accounts differ, `list` and `find` say so.
+- **Two routes for the address book:** iCloud Drive (above), and a **Tailscale relay**: on the MacBook,
+  each publish also runs one ssh round trip to the mini over rdocker's `macmini-docker` login (its own
+  connection socket, no tty, all port forwards cleared, so rdocker's tunnels are never touched), sending
+  this Mac's book and bringing the mini's back (`relay-exchange` on the mini). It exists because iCloud
+  stopped delivering the MacBook's file to the mini on 2026-10-16. While the relay has delivered in the
+  last 5 minutes, iCloud's copy is ignored; otherwise iCloud works as before. Only the MacBook starts it (the mini has no key for the MacBook); `LAC_RELAY_HOST`
+  overrides the alias, `LAC_RELAY_HOST=off` disables it. Failures land in `windows-publish.log`.
 - **Always synced:** each of those once-a-minute publishes also reads every other Mac's file fully in
   the background (up to 60 seconds, which makes iCloud download it), checks it, and updates a local copy in
   `~/.claude/claude-windows-cache/` only when it changed. `list` and `find` read that local copy, so
@@ -221,9 +234,9 @@ deliberately timid:
 - Handles are lowercased and hyphenated, trimmed to 40 chars on a word boundary. If another live
   window already holds that handle a numeric suffix is added, because two windows sharing a name is
   what forces callers back to opaque refs.
-- Setting the peer address writes the session registry directly. The supported ways to name a
-  session are `claude -n <name>` at startup and `/rename` typed by a human — neither can be driven
-  from a slash command, so this writes the file itself, defensively: it finds its own entry by
+- Setting the peer address writes the session registry directly (the session-title hook then sets
+  the same name through Claude Code's own `sessionTitle`, which also updates the registry). `/line`'s
+  Bash cannot drive `/rename` itself, so it writes the file, defensively: it finds its own entry by
   `sessionId`, preserves every field it does not own, and writes atomically. Verified on 2.1.227 and
   2.1.228 that the harness re-saves the file on each status change and preserves a name marked
   `nameSource: "explicit"`.

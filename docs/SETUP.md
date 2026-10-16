@@ -209,9 +209,11 @@ agent messaging (`ListAgents` / `SendMessage`).
 1. **Pull the dotfiles.** Clone or `git pull` at `~/.claude-dotfiles` (Step 1 above).
 2. **Symlink into `~/.claude`** (Step 3 above).
 3. **Merge these settings** from `settings.json.template` into `~/.claude/settings.json` (Step 4
-   above): `"remoteControlAtStartup": true`, `"crossSessionInbound": "accept"`, and the `Stop` hook
-   line running `scripts/hooks/line-apply-rename.sh` (it types the live `/rename` into this window's
-   own Terminal tab when `/line` sets a display name).
+   above), or just run `python3 ~/.claude-dotfiles/scripts/line-ensure-settings.py`, which adds
+   exactly the messaging pieces: `"remoteControlAtStartup": true`, `"crossSessionInbound": "accept"`,
+   the `session-title` hook (UserPromptSubmit + SessionStart; sets each window's Remote Control
+   title to its peer address), the identity re-assert, and the address-book publish on SessionEnd.
+   After the first run the re-assert hook re-runs it on every session start, so the Mac keeps them.
 4. **Run the installer**: `bash ~/.claude-dotfiles/scripts/transfer/install-transfer.sh` —
    idempotently symlinks `resumework` and `transfer-doctor` onto `~/.local/bin`, creates the
    iCloud `claude-transfers/` drop dir, and sets up the shared window address book: the iCloud

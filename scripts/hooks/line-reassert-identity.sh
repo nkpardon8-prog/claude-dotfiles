@@ -2,9 +2,8 @@
 # line-reassert-identity.sh — async SessionStart hook (startup|resume|clear|compact).
 #
 # Re-applies this window's PEER ADDRESS from its `/line` caption after a restart.
-# On a real open (startup|resume) it also restores the DISPLAY NAME (what Remote Control shows on
-# the other Macs, = the peer handle) when the transcript's last custom-title record no longer matches: the
-# record is re-appended and a /rename request is left for the Stop hook line-apply-rename.sh.
+# The DISPLAY NAME (Remote Control title) is not this hook's job: the session-title hook
+# (line-agent-communicator.py session-title, SessionStart + UserPromptSubmit) re-asserts it.
 # Every run (named window or not) also kicks off a background `publish`, so the shared iCloud
 # address book shows this window on the owner's other Macs within seconds, and runs
 # line-ensure-settings.py so this Mac's settings.json keeps the naming hooks.
@@ -125,33 +124,12 @@ done
 if [ -n "$name_source" ] && [ "$name_source" != "explicit" ]; then
   # Re-derive the address from the caption through the SAME code path /line uses, so handle
   # slugging and live-collision suffixing stay in one place rather than being reimplemented here.
-  # `set` also re-writes the display name (= the handle). LINE_RENAME_QUEUE=if-changed: it queues a
-  # live /rename only when the record actually changed - a record that already matched was read back
-  # at startup, so the live name is right and typing /rename again would be noise.
-  CLAUDE_SESSION_ID="$sid" LINE_RENAME_QUEUE=if-changed python3 "$LAC" set "$caption" >/dev/null 2>&1
+  CLAUDE_SESSION_ID="$sid" python3 "$LAC" set "$caption" >/dev/null 2>&1
   rc=$?
 
   # The proof this hook ran. Logged AFTER the work, with the outcome, so the line means "a re-assert
   # was attempted for this session" and not merely "the hook was invoked".
   log_line "reassert sid=${sid} nameSource=${name_source} caption=$(printf '%s' "$caption" | head -c 60) rc=${rc}"
 fi
-
-# Display name (what Remote Control shows on the owner's other Macs) = this window's peer HANDLE.
-# It lives in the transcript as the LAST custom-title record, which a reopen by any route
-# (claude --resume, the /resume picker, resumework on the other Mac) reads back. If that record is
-# missing or no longer matches the handle, `sync-display-name` appends it. Either way (record
-# matched already, or was just written) it ALSO leaves a one-shot request so the Stop hook
-# line-apply-rename.sh types /rename live when this session's first turn ends: the LIVE name Remote
-# Control shows reverts to an auto-derived handle on every reopen regardless of the transcript
-# record (the record only controls what the NEXT reopen reads back, not what this window is
-# showing right now), so a bare record-match must still re-fire /rename once, live. Runs AFTER the
-# address step, so it compares against the handle that step settled on. Only on a real open:
-# `clear` and `compact` keep the same live process and name.
-case "$source" in
-  startup|resume)
-    dn=$(CLAUDE_SESSION_ID="$sid" python3 "$LAC" sync-display-name 2>/dev/null | head -n 1 | tr -cd 'a-z-')
-    [ "$dn" = "match" ] || log_line "display-name sid=${sid} source=${source} result=${dn:-error}"
-    ;;
-esac
 
 exit 0

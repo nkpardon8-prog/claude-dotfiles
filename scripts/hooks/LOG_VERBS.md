@@ -133,26 +133,32 @@ Used by `ctx-gate-on-prompt-submit.sh`, `ctx-gate-precompact-safety.sh`, `post-c
 | `arg-not-my-session` | post-compact-resume-step2.sh | R9 HIGH-1 (wrong-load guard): session_id arg != this session's own id (CLAUDE_CODE_SESSION_ID) — command mis-delivered/mis-pasted; refuse to load another session's handoff. self= and arg= logged |
 | `self-unverifiable` | post-compact-resume-step2.sh | R9-Round2 (fail-closed): this session's own id is unreadable (CLAUDE_CODE_SESSION_ID + CLAUDE_SESSION_ID both empty) so arg-vs-self cannot run — REFUSE rather than degrade to content-only (degrading is a wrong-load path in a shared repo-root). arg= logged. Never fires on supported Claude Code (env var always set) |
 
-## line-rename.log (line-apply-rename.sh `lr_log`) and line-reassert.log (line-reassert-identity.sh `log_line`)
+## line-title.log, line-settings.log and line-reassert.log (the /line naming chain)
 
 Own loggers, not ac_log/ctx_gate_log/handoff_log, so the G5 drift scan does not cover them; listed
 here as bullets (not table rows) so the G5 reverse scan does not look for ac_log emit sites.
 
-`~/.claude/logs/line-rename.log` - the Stop hook that types `/rename <name>` for a `/line` request:
+`~/.claude/logs/line-title.log` - `line-agent-communicator.py session-title` (UserPromptSubmit +
+SessionStart hook that sets the Remote Control title to the window's peer address):
 
-- `fired` - `/rename` delivered into this session's own Terminal tab; `tty=` + `name=` logged; request removed.
-- `defer` - an auto-compact sentinel for this session is armed or mid-claim; request kept untouched for a later Stop.
-- `abort` - a verification or the osascript failed before anything was typed; `reason=` (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire, osascript-failed/...) and whether the request was kept for its one retry.
-- `give-up` - the request already had its retry; dropped (the name stays saved in the chat and applies on the next restart).
-- `stale` - request older than 1 hour (or dated in the future); deleted without typing.
-- `drop` - request rejected: `reason=symlink`, `oversized`, or `malformed` (bad JSON, or a name that is not a peer handle: `[a-z0-9-]{1,60}`, no leading hyphen).
-- `unsupported-terminal` - not a plain Terminal.app tab (iTerm, tmux, screen); request deleted, nothing typed.
-- `test-seam-ignored` - `LINE_RENAME_OSASCRIPT` was set with the real HOME; the override was refused.
+- `title` - a sessionTitle was emitted; `sid=`, `event=`, and `<previous title or -> -> <new title>`.
+  No line when the title already matched (UserPromptSubmit) - silence there means "nothing to do".
+- `error` - the hook raised; `<ExceptionClass>: <message>`. The prompt still went through (fail-open).
+
+`~/.claude/logs/line-settings.log` - `scripts/line-ensure-settings.py` (settings self-heal):
+
+- `updated:` - what it added or removed, plus `backup=<file>` beside settings.json.
+- `refused unparseable settings` - settings.json is not valid JSON; nothing was changed.
+- `error` - the write failed (`<ExceptionClass>: <message>`).
+
+`~/.claude/logs/windows-publish.log` also carries the Tailscale relay (`relay_exchange`):
+
+- `relay via <alias> failed: ...` - the MacBook's ssh round trip to the mini failed; iCloud remains the route.
+- `relay-exchange: refused an invalid address book` - the responder (mini) got a book it would not store.
 
 `~/.claude/logs/line-reassert.log` - the SessionStart identity re-assert:
 
 - `reassert` - the peer address was re-derived from the caption; `nameSource=` + `rc=` logged.
-- `display-name` - on startup/resume the transcript's last title did not match the window's peer handle; `result=` is `written` (record + /rename request), `written-no-request` (non-Terminal.app), `no-transcript`, `no-handle` (caption has no letters or digits), or `error`.
 
 ## MISSION.<sid>.log (mission-write.sh)
 

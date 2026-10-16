@@ -706,140 +706,11 @@ def score_match(query: str, *fields: str) -> int:
     return sum(4 if w in hay.split() else (2 if w in hay else 0) for w in words)
 
 
-def write_display_name(sid: str, title: str) -> bool:
-    """Append a custom-title record (the exact shape /rename writes) to this session's transcript.
-
-    Shape observed from a real /rename on Claude Code 2.1.283:
-      {"type":"custom-title","customTitle":"<title>","sessionId":"<sid>"}
-    One short line written with O_APPEND in a single write, so it cannot interleave with the
-    harness's own appends. Best-effort: returns False (and changes nothing) if no transcript is found.
-    """
-    projects = HOME / ".claude" / "projects"
-    try:
-        paths = sorted(projects.glob(f"*/{sid}.jsonl"))
-    except OSError:
-        return False
-    if not paths:
-        return False
-    line = (json.dumps({"type": "custom-title", "customTitle": title, "sessionId": sid},
-                       ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-    wrote = False
-    for p in paths:
-        try:
-            fd = os.open(p, os.O_WRONLY | os.O_APPEND)
-            try:
-                os.write(fd, line)
-                wrote = True
-            finally:
-                os.close(fd)
-        except OSError:
-            continue
-    return wrote
-
-
 # The display name IS the peer handle ("mac-mini-setup", suffix included) - never the free-text
-# sentence, which stays the statusline caption only. Reason: the built-in /rename that makes the name
-# live ALSO sets the session registry name to its raw argument (nameSource "user"). Typing the handle
-# means that side effect writes exactly the address /line chose, so address == display name
-# everywhere and nothing needs restoring afterwards.
-#
-# The name is also TYPED into the window's own Terminal tab by the Stop hook
-# scripts/hooks/line-apply-rename.sh, so it is checked against the handle shape here, at the boundary
-# that feeds a keystroke path, and again by the hook. slugify() already guarantees it; this is the
-# fail-closed backstop, not a sanitizer.
+# sentence, which stays the statusline caption only. Claude Code applies the session-title hook's
+# sessionTitle like /rename, which ALSO sets the session registry name to it, so using the handle keeps
+# address == display name everywhere. slugify() already guarantees the shape; this is the backstop.
 TYPEABLE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,59}$")
-RENAME_REQUEST_DIR = HOME / ".claude" / "progress"
-
-
-def live_rename_supported() -> bool:
-    """Can the Stop hook type /rename into this window? Only in a plain macOS Terminal.app tab: the
-    hook finds the tab through Terminal's AppleScript dictionary by tty, which iTerm, tmux, and screen
-    do not expose. Read from the environment the harness passes to its children (tool calls and hooks
-    alike), so it describes THIS window, not whichever app happens to be frontmost."""
-    return (sys.platform == "darwin"
-            and os.environ.get("TERM_PROGRAM") == "Apple_Terminal"
-            and not os.environ.get("TMUX")
-            and not os.environ.get("STY"))
-
-
-def rename_request_path(sid: str) -> Path:
-    return RENAME_REQUEST_DIR / f"line-rename-{safe_sid(sid)}.json"
-
-
-def write_rename_request(sid: str, name: str) -> bool:
-    """One-shot request for the Stop hook to type `/rename <name>` when this turn ends.
-
-    Atomic (temp + rename in the same directory) and mode 600. Best-effort: False on any failure.
-    """
-    sid = safe_sid(sid)
-    if not sid or not TYPEABLE_NAME.match(name or ""):
-        return False
-    try:
-        RENAME_REQUEST_DIR.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(RENAME_REQUEST_DIR), prefix=".line-rename-", suffix=".tmp")
-    except OSError:
-        return False
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            json.dump({"name": name, "at": int(time.time())}, fh, separators=(",", ":"))
-        os.replace(tmp, rename_request_path(sid))
-        return True
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return False
-
-
-def last_display_name(sid: str) -> str | None:
-    """The customTitle of the LAST custom-title record in this session's transcript (last-wins, the
-    same rule Claude Code applies on resume). None when there is no transcript or no such record."""
-    projects = HOME / ".claude" / "projects"
-    try:
-        paths = sorted(projects.glob(f"*/{safe_sid(sid)}.jsonl"), key=lambda p: p.stat().st_mtime)
-    except OSError:
-        return None
-    if not paths:
-        return None
-    last = None
-    try:
-        with open(paths[-1], "rb") as fh:
-            for raw in fh:
-                if b'"custom-title"' not in raw:
-                    continue   # cheap prefilter; a transcript can be many MB
-                try:
-                    rec = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(rec, dict) and rec.get("type") == "custom-title" \
-                        and isinstance(rec.get("customTitle"), str):
-                    last = rec["customTitle"]
-    except OSError:
-        return None
-    return last
-
-
-def apply_display_name(sid: str, name: str, queue: str = "always") -> tuple[str, bool]:
-    """Make the chat's display name `name`: the transcript record, plus a live /rename request.
-
-    The record is appended only when the transcript does not already end on `name` (no duplicate
-    lines) - that part is unconditional on `changed` no matter what `queue` says. `queue` decides
-    the live /rename request instead: "always" (an interactive /line, or a resume/startup reassert
-    - either way a record already on disk may never have gone live in THIS process, so the Stop hook
-    should type it regardless of whether the transcript record itself just changed), or "if-changed"
-    (only queue the request when the record changed - used where a match truly means nothing to do).
-    Returns (outcome, queued); outcome is "invalid", "no-transcript", "written", or "match".
-    """
-    if not TYPEABLE_NAME.match(name or ""):
-        return "invalid", False
-    changed = last_display_name(sid) != name
-    if changed and not write_display_name(sid, name):
-        return "no-transcript", False
-    want = queue == "always" or (queue == "if-changed" and changed)
-    queued = bool(want and live_rename_supported() and write_rename_request(sid, name))
-    return ("written" if changed else "match"), queued
 
 
 def display_handle_for(sid: str, sessions: list[dict] | None = None) -> str:
@@ -879,6 +750,16 @@ TITLE_MAX = 120
 
 def title_log() -> Path:
     return HOME / ".claude" / "logs" / "line-title.log"
+
+
+def title_hook_installed() -> bool:
+    """Does this Mac's settings.json run `session-title` on UserPromptSubmit? (/line reports it.)"""
+    try:
+        d = json.loads((HOME / ".claude" / "settings.json").read_text())
+        return any("line-agent-communicator.py session-title" in str(h.get("command", ""))
+                   for b in d.get("hooks", {}).get("UserPromptSubmit", []) for h in b.get("hooks", []))
+    except Exception:
+        return False
 
 
 def line_prompt_sentence(prompt: str) -> str:
@@ -974,6 +855,7 @@ def collect_live_rows(me: str = "") -> tuple[list[dict], int]:
                 "pid": entry_pid(d),
                 "sessionId": d.get("sessionId", ""),
                 "startedAt": d.get("startedAt", 0),
+                "bridgeSessionId": d.get("bridgeSessionId") or "",
                 "named": d.get("nameSource") == "explicit",
                 "reachable": ok,
                 "why": why,
@@ -1163,7 +1045,27 @@ def address_book_entry(r: dict, label_of_host: str) -> dict:
         "started_at": iso_utc(ms / 1000.0) if isinstance(ms, (int, float)) and ms > 0 else "",
         "can_receive": bool(r.get("reachable")),
         "named": bool(r.get("named") or caption),
+        "bridge": bridge_id(r.get("bridgeSessionId")),
     }
+
+
+# The window's Remote Control session id. `SendMessage` to "bridge:<id>" reaches that window from any
+# Mac on the account, whatever its Remote Control TITLE says - and the title is not dependable: a
+# reopened (resumed) window kept its auto title through /rename and the sessionTitle hook alike
+# (observed 2026-10-16 for every MacBook window Pane restored). So the address book carries the id and
+# `find`/`list` hand it out for windows on another Mac; the human name stays how you look one up.
+BRIDGE_ID_RE = re.compile(r"^session_[A-Za-z0-9]{8,64}$")
+
+
+def bridge_id(raw) -> str:
+    s = str(raw or "")
+    return s if BRIDGE_ID_RE.match(s) else ""
+
+
+def send_address(w: dict) -> str:
+    """What to pass to SendMessage for a window on ANOTHER Mac: its bridge address when known."""
+    b = bridge_id(w.get("bridge"))
+    return f"bridge:{b}" if b else w.get("address", "")
 
 
 def read_json_timed(path: Path, timeout: float | None = None) -> tuple[dict | None, str]:
@@ -1309,6 +1211,8 @@ def cmd_publish(throttle: float = 0.0, verbose: bool = False, prefetch: bool = T
             prefetch_other_hosts(d, verbose)
         except Exception as e:
             _log_publish(f"prefetch failed: {e.__class__.__name__}: {clean_field(e, 200)}")
+    # Also for the --no-prefetch publish a rename spawns, so a new name crosses Macs in seconds.
+    relay_exchange(verbose)
     return 0
 
 
@@ -1475,9 +1379,33 @@ def _listed_hosts(d: Path) -> list[str]:
     return sorted(h for h in hids if h != mine and HOST_ID_RE.match(h))
 
 
+def _cached_hosts() -> list[str]:
+    """Other Macs with a local copy - including ones delivered by the Tailscale relay, which never
+    pass through iCloud, so they are listed even when iCloud lost (or never had) their file."""
+    try:
+        names = os.listdir(cache_dir())
+    except OSError:
+        return []
+    mine = host_id()
+    # The cache folder also holds sync-state.json and last-publish-error.json, whose names pass
+    # HOST_ID_RE - only a file that IS that host's address book counts.
+    return sorted(h for h in (n[:-5] for n in names if n.endswith(".json"))
+                  if HOST_ID_RE.match(h) and h != mine and _valid_book(_read_cache(h), h))
+
+
 def _valid_book(data: dict | None, hid: str) -> bool:
     return (isinstance(data, dict) and data.get("format") == ADDRESS_BOOK_FORMAT
             and data.get("host") == hid and isinstance(data.get("windows"), list))
+
+
+def _relay_fresh(st: dict | None, now: float) -> bool:
+    """Did the Tailscale relay deliver this host's book recently? While it has, the relayed copy is
+    authoritative and iCloud's is ignored. Decided by OUR clock and the relay's own delivery time,
+    never by comparing heartbeats the other Mac wrote: a clock that once ran ahead there would
+    otherwise freeze every later update out."""
+    st = st if isinstance(st, dict) else {}
+    ok = st.get("ok")
+    return st.get("via") == "tailscale" and isinstance(ok, (int, float)) and now - ok < SYNC_STALE_SEC
 
 
 def _sync_state_path() -> Path:
@@ -1527,7 +1455,11 @@ def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
             remaining = max(1.0, deadline - time.monotonic())
             data, why = read_json_timed(d / f"{hid}.json", timeout=remaining)
             prev = state.get(hid) if isinstance(state.get(hid), dict) else {}
-            if _valid_book(data, hid):
+            if _valid_book(data, hid) and _relay_fresh(prev, now):
+                # The Tailscale relay delivered this Mac's book straight from it within the last few
+                # minutes; iCloud's copy can only be the same or older (it lagged hours on 2026-10-16).
+                state[hid] = {**prev, "try": now}
+            elif _valid_book(data, hid):
                 changed = _read_cache(hid) != data
                 if changed:
                     _write_cache(hid, data)
@@ -1539,6 +1471,12 @@ def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
                 state[hid] = {"ok": prev.get("ok"), "try": now, "problem": problem}
                 if verbose:
                     print(f"prefetch: {hid} not read ({problem}) - keeping the cached copy")
+        # A prefetch can run a minute; a relay delivery during it recorded a newer "ok". Keep that.
+        fresh = _read_sync_state()
+        for hid, st in list(state.items()):
+            f = fresh.get(hid) if isinstance(fresh.get(hid), dict) else {}
+            if isinstance(st, dict) and (f.get("ok") or 0) > (st.get("ok") or 0):
+                state[hid] = {**st, "ok": f["ok"], "via": f.get("via", "")}
         _write_sync_state(state)
     finally:
         try:
@@ -1546,6 +1484,97 @@ def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
             lock.close()
         except OSError:
             pass
+
+
+# --------------------------------------------------------------------------------------
+# Tailscale relay - the address book without iCloud
+#
+# iCloud Drive stopped delivering the MacBook's file to the Mac mini on 2026-10-16 (the mini held a
+# dataless 13:57 placeholder that `brctl download` called nonexistent), so `find` there answered from
+# a two-hour-old copy. The two Macs already share a dependable link: the MacBook's rdocker logs in to
+# the mini over Tailscale with a key. So the MacBook's throttled publish also runs ONE ssh round trip:
+# its own book goes in on stdin, the mini's comes back on stdout (`relay-exchange` on the mini). Only
+# the MacBook initiates - the mini has no key for the MacBook and needs none. iCloud stays as the
+# second route; while the relay delivered within SYNC_STALE_SEC, iCloud's copy is ignored (_relay_fresh).
+# --------------------------------------------------------------------------------------
+
+RELAY_TIMEOUT_SEC = 15
+RELAY_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+RELAY_REMOTE_CMD = ('PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; '
+                    'exec python3 "$HOME/.claude-dotfiles/scripts/line-agent-communicator.py" relay-exchange')
+
+
+def relay_target() -> str:
+    """The ssh Host alias of the Mac to exchange with, or "" for none. LAC_RELAY_HOST overrides
+    ("off" disables); otherwise rdocker's mini alias, present only on a Mac that uses the mini.
+    Never from a sandboxed shared folder (tests), so a test can never reach the real network."""
+    env = os.environ.get("LAC_RELAY_HOST")
+    if env is not None:
+        return env if env != "off" and RELAY_HOST_RE.match(env) else ""
+    if os.environ.get("LAC_WINDOWS_DIR") or os.environ.get("LAC_CACHE_DIR"):
+        return ""
+    try:
+        host = json.loads((HOME / ".config" / "rdocker" / "config.json").read_text()).get("host") or ""
+    except Exception:
+        host = "macmini-docker" if (HOME / ".ssh" / "config.d" / "rdocker").exists() else ""
+    return host if RELAY_HOST_RE.match(str(host)) else ""
+
+
+def _accept_relayed_book(book) -> str:
+    """Store another Mac's book that arrived over the relay. Returns its host id, or "" if refused."""
+    hid = str((book or {}).get("host") or "") if isinstance(book, dict) else ""
+    if not (HOST_ID_RE.match(hid) and hid != host_id() and _valid_book(book, hid)):
+        return ""
+    _write_cache(hid, book)   # straight from the Mac that wrote it: always the current copy
+    state = _read_sync_state()
+    now = now_epoch()
+    state[hid] = {"ok": now, "try": now, "problem": "", "via": "tailscale"}
+    _write_sync_state(state)
+    return hid
+
+
+def relay_exchange(verbose: bool = False) -> None:
+    """Initiator side: one ssh round trip that swaps address books with relay_target(). Never raises."""
+    target = relay_target()
+    if not target:
+        return
+    mine = _read_cache(host_id())
+    if not _valid_book(mine, host_id()):
+        return
+    # Must never disturb rdocker, which owns this alias: its own ControlPath (rdocker's master is
+    # FWD_SOCK, rrun's is rr-%C), no tty, and ClearAllForwardings so this connection can never try
+    # to bind one of the docker port mirrors even if the alias someday gains a LocalForward.
+    cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ClearAllForwardings=yes",
+           "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/lac-%C", "-o", "ControlPersist=10m",
+           target, RELAY_REMOTE_CMD]
+    try:
+        p = subprocess.run(cmd, input=json.dumps(mine), capture_output=True, text=True,
+                           timeout=RELAY_TIMEOUT_SEC, start_new_session=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"ssh exit {p.returncode}: {clean_field(p.stderr, 160)}")
+        reply = json.loads(p.stdout or "{}")
+        hid = _accept_relayed_book(reply.get("book") if isinstance(reply, dict) else None)
+        if not hid:
+            raise RuntimeError("the other Mac sent no valid address book")
+        if verbose:
+            print(f"relay: exchanged with {hid} via {target}")
+    except Exception as e:
+        _log_publish(f"relay via {target} failed: {e.__class__.__name__}: {clean_field(e, 200)}")
+        if verbose:
+            print(f"relay: FAILED via {target} ({e.__class__.__name__}) - see {publish_log()}")
+
+
+def cmd_relay_exchange() -> int:
+    """Responder side (run over ssh by the other Mac): store its book from stdin, print ours."""
+    try:
+        book = json.loads(sys.stdin.read(REMOTE_MAX_BYTES + 1)[:REMOTE_MAX_BYTES] or "{}")
+    except ValueError:
+        book = None
+    got = _accept_relayed_book(book)
+    if not got:
+        _log_publish("relay-exchange: refused an invalid address book")
+    print(json.dumps({"ok": bool(got), "book": _read_cache(host_id())}))
+    return 0
 
 
 def load_other_hosts() -> tuple[list[dict], str]:
@@ -1560,18 +1589,19 @@ def load_other_hosts() -> tuple[list[dict], str]:
     the heartbeat INSIDE the file (written by the other Mac), never from a local file time.
     """
     d = windows_dir()
-    if d is None:
+    hids = sorted(set(_listed_hosts(d) if d is not None else []) | set(_cached_hosts()))
+    if d is None and not hids:
         return [], "no-icloud"
     my_hash = account_hash()
     state = _read_sync_state()
     now = now_epoch()
     hosts = []
-    for hid in _listed_hosts(d):
+    for hid in hids:
         st = state.get(hid) if isinstance(state.get(hid), dict) else {}
         data = _read_cache(hid)
         problem = str(st.get("problem") or "")
         if not _valid_book(data, hid):
-            data, why = read_json_timed(d / f"{hid}.json")
+            data, why = read_json_timed(d / f"{hid}.json") if d is not None else (None, "missing")
             if _valid_book(data, hid):
                 _write_cache(hid, data)
                 st = {"ok": now, "try": now, "problem": ""}
@@ -1604,6 +1634,7 @@ def load_other_hosts() -> tuple[list[dict], str]:
                 "owns": clean_field(w.get("owns")), "session_id": safe_sid(str(w.get("session_id") or "")),
                 "cwd_label": folder, "started_at": clean_field(w.get("started_at"), 30),
                 "can_receive": bool(w.get("can_receive")), "named": bool(w.get("named")),
+                "bridge": bridge_id(w.get("bridge")),
                 "host": hid, "host_label": label,
             })
         hosts.append({
@@ -1687,9 +1718,12 @@ def print_other_hosts(hosts: list[dict], state: str) -> None:
                 st = "live" if w["can_receive"] else "live, cannot receive"
             print(f"  {w['address'].ljust(wn)}  {w['label'][:wl].ljust(wl)}  "
                   f"{w['cwd_label'][:wf].ljust(wf)}  {st}")
+            if w["bridge"]:
+                print(f"  {' ' * wn}  send to: {send_address(w)}")
             if w["owns"]:
                 print(f"  {' ' * wn}  owns: {w['owns'][:96]}")
-    print("Message a window on another Mac with SendMessage to its ADDRESS - it travels over Remote Control.")
+    print("Message a window on another Mac with SendMessage to its `send to` address (else its ADDRESS) -\n"
+          "it travels over Remote Control. `find \"<name>\"` prints the one to use.")
 
 
 def cmd_address_book_paths() -> int:
@@ -1751,25 +1785,18 @@ def cmd_set(session_id: str, sentence: str, owns: str = "") -> int:
     os.chmod(STATUS_DIR, 0o700)
     (STATUS_DIR / f"{sid}.txt").write_text(sentence + "\n")
 
-    # 3) display name - the name Remote Control shows on the owner's OTHER Macs. It is the HANDLE
-    # (see TYPEABLE_NAME), saved as the same custom-title record /rename appends to the chat's own
-    # transcript, so it survives a restart, a resume, and a /transfer; a running window only picks it
-    # up live via /rename, so a one-shot request is left for the Stop hook line-apply-rename.sh.
-    # LINE_RENAME_QUEUE=if-changed is set only by line-reassert-identity.sh after a reopen.
-    queue = "if-changed" if os.environ.get("LINE_RENAME_QUEUE") == "if-changed" else "always"
-
+    # 3) display name - the Remote Control title. Nothing is written here: the session-title hook
+    # (UserPromptSubmit) already set it from this very /line prompt, before this Bash ran, and it
+    # re-asserts it on every later prompt and reopen. This only REPORTS, and says so loudly when this
+    # Mac's settings lack the hook, because then nothing sets the title at all.
     def show_display(name: str) -> None:
-        outcome, queued = apply_display_name(sid, name, queue)
-        if outcome == "invalid":
+        if not TYPEABLE_NAME.match(name or ""):
             print("Display name: UNCHANGED - that sentence has no letters or digits to build a name from.")
-        elif outcome == "no-transcript":
-            print("Display name: could not be saved to this chat (no transcript found for this window).")
-        elif queued:
-            print(f"Display name: {name}")
-            print("  Your other Macs will show this name as soon as this reply finishes.")
+        elif title_hook_installed():
+            print(f"Display name: {name} (set as you sent this /line; it is restored after every reopen).")
         else:
-            print(f"Display name: {name} (saved to this chat; your other Macs see it after a restart).")
-            print(f"  To show it on your other Macs right now, also type: /rename {name}")
+            print(f"Display name: NOT SET - this Mac's ~/.claude/settings.json lacks the session-title hook.")
+            print("  Run: python3 ~/.claude-dotfiles/scripts/line-ensure-settings.py   (then send any message)")
 
     # 2) peer address
     sessions = load_sessions()
@@ -1842,38 +1869,6 @@ def cmd_clear(session_id: str) -> int:
         pass
     print(f"Cleared caption for window {sid} - line 2 reverts to the folder name on next render.")
     print("Peer address left as-is (clearing a caption should not make a window unreachable mid-conversation).")
-    return 0
-
-
-def cmd_sync_display_name(session_id: str) -> int:
-    """Hook-facing: make the chat's display name match this window's handle again after a reopen.
-
-    Called by line-reassert-identity.sh on SessionStart (startup/resume), AFTER its address step. The
-    target is display_handle_for(): the explicit registry name /line wrote, else the handle derived
-    from the caption. The transcript record is appended only when the LAST custom-title record does
-    not already equal it (no duplicate records). The live /rename request is queued unconditionally
-    ("always") whenever a caption exists, even when the record already matched: a live Remote Control
-    name reverts to an auto-derived handle on every reopen independent of the transcript record (the
-    record only fixes what a FUTURE resume reads back, not what THIS window is showing right now), so
-    a bare "match" must still make the Stop hook type /rename once at the end of the first turn.
-    Prints exactly one outcome token on stdout (the hook logs it): no-sid, no-caption, no-handle,
-    match, written, written-no-request, no-transcript.
-    """
-    sid = safe_sid(session_id)
-    if not sid:
-        print("no-sid")
-        return 0
-    if not label_for(sid):
-        print("no-caption")
-        return 0
-    want = display_handle_for(sid)
-    outcome, queued = apply_display_name(sid, want, "always")
-    if outcome == "invalid":
-        print("no-handle")
-    elif outcome == "written" and not queued:
-        print("written-no-request")
-    else:
-        print(outcome)
     return 0
 
 
@@ -2018,7 +2013,7 @@ def cmd_find(session_id: str, query: str) -> int:
                 st += " (may be out of date)"
             cands.append((sc, 1 if h["live"] else 2, {"address": w["address"], "label": w["label"],
                                                      "owns": w["owns"], "where": h["host_label"],
-                                                     "state": st}))
+                                                     "state": st, "send": send_address(w)}))
     cands.sort(key=lambda t: (-t[0], t[1]))
 
     if cands:
@@ -2032,8 +2027,12 @@ def cmd_find(session_id: str, query: str) -> int:
                 print("  " + ACCOUNT_MISMATCH_TEXT.format(label=h["host_label"]))
         print()
         top_tier, top = cands[0][1], cands[0][2]
-        print(f"SendMessage to: {top['address']}")
-        if top_tier == 1:
+        send = top.get("send") or top["address"]
+        print(f"SendMessage to: {send}")
+        if top_tier == 1 and send != top["address"]:
+            print(f"  ({top['address']} on {top['where']} - use this bridge address, not the name: "
+                  "a window's Remote Control title can lag its name, the bridge address never does)")
+        elif top_tier == 1:
             print(f"  (on {top['where']} - it travels over Remote Control)")
         elif top_tier == 2:
             print(f"  (on {top['where']}, which looks asleep/offline - the message may not arrive until it wakes)")
@@ -3065,9 +3064,10 @@ USAGE = """line-agent-communicator.py - name this window and reach the others.
                              name this window: caption AND the peer address others reach it by
   set -- "<sentence>"        same, for a caption that really starts with a dash
   clear                      drop the caption (the peer address is kept)
-  sync-display-name          (hook use) restore the display name from the caption after a reopen
   session-title              (hook use) UserPromptSubmit/SessionStart: set the Remote Control title
                              to this window's address (hook JSON on stdin)
+  relay-exchange             (ssh use) store the other Mac's address book from stdin, print ours -
+                             the Tailscale route `publish` drives from the MacBook
   reap [--dry-run] [--sockets]
   help                       this text
 
@@ -3089,7 +3089,7 @@ def _usage(stream, rc: int) -> int:
 VERBS = frozenset({
     "list", "ls", "directory", "clear", "find", "who", "resolve", "card", "me", "whoami",
     "whois", "verify", "reply", "answer", "replies", "inbox", "replies-count", "unread",
-    "reap", "note", "notes", "set", "help", "usage", "sync-display-name", "session-title",
+    "reap", "note", "notes", "set", "help", "usage", "session-title", "relay-exchange",
     "publish", "address-book-status", "address-book-paths",
 })
 
@@ -3177,10 +3177,10 @@ def main() -> int:
         return cmd_address_book_status()
     if args[0] == "address-book-paths":
         return cmd_address_book_paths()
-    if args[0] == "sync-display-name":
-        return cmd_sync_display_name(sid)
     if args[0] == "session-title":
         return cmd_session_title()
+    if args[0] == "relay-exchange":
+        return cmd_relay_exchange()
 
     # Bare-sentence shorthand. A caption is arbitrary words, so an unknown WORD cannot be told from
     # a name in general - `lst` is indistinguishable from someone naming a window "lst". The one

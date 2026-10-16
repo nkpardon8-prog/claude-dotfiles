@@ -48,7 +48,11 @@ REQUIRED = [
 ]
 REQUIRED_KEYS = {"remoteControlAtStartup": True, "crossSessionInbound": "accept"}
 # Commands whose hook entries are removed wherever they appear.
-RETIRED = []
+RETIRED = [
+    # Typed /rename into a Terminal.app tab; never ran in Pane/iTerm/tmux. Replaced 2026-10-16 by
+    # the session-title hook (an official sessionTitle output, every terminal).
+    "$HOME/.claude-dotfiles/scripts/hooks/line-apply-rename.sh",
+]
 
 
 def log(msg: str) -> None:
