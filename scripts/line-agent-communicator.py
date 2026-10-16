@@ -3140,6 +3140,8 @@ USAGE = """line-agent-communicator.py - name this window and reach the others.
                              to this window's address (hook JSON on stdin)
   relay-exchange             (ssh use) store the other Mac's address book from stdin, print ours -
                              the Tailscale route `publish` drives from the MacBook
+  route-send                 (hook use) PreToolUse on SendMessage: a name that matches one live
+                             window on another Mac is sent to its bridge address instead
   reap [--dry-run] [--sockets]
   help                       this text
 
@@ -3161,7 +3163,7 @@ def _usage(stream, rc: int) -> int:
 VERBS = frozenset({
     "list", "ls", "directory", "clear", "find", "who", "resolve", "card", "me", "whoami",
     "whois", "verify", "reply", "answer", "replies", "inbox", "replies-count", "unread",
-    "reap", "note", "notes", "set", "help", "usage", "session-title", "relay-exchange",
+    "reap", "note", "notes", "set", "help", "usage", "session-title", "relay-exchange", "route-send",
     "publish", "address-book-status", "address-book-paths",
 })
 
@@ -3253,6 +3255,8 @@ def main() -> int:
         return cmd_session_title()
     if args[0] == "relay-exchange":
         return cmd_relay_exchange()
+    if args[0] == "route-send":
+        return cmd_route_send()
 
     # Bare-sentence shorthand. A caption is arbitrary words, so an unknown WORD cannot be told from
     # a name in general - `lst` is indistinguishable from someone naming a window "lst". The one

@@ -15,6 +15,8 @@ What it ensures (adds what is missing, never reorders or touches anything else):
   - SessionStart: line-reassert-identity.sh                       (address restored after a reopen,
                                                                    and this script re-run from it)
   - SessionEnd: address-book publish                              (a closed window leaves the list)
+  - PreToolUse(SendMessage): line-agent-communicator.py route-send (a name on the other Mac is sent to
+                                       its bridge address, so agents just use names)
 and REMOVES the hook entries listed in RETIRED.
 
 Safety: refuses a symlinked or unparseable settings file (prints why, changes nothing); takes a lock
@@ -37,6 +39,7 @@ LAC = "python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py"
 TITLE_CMD = f"{LAC} session-title"
 REASSERT_CMD = "bash $HOME/.claude-dotfiles/scripts/hooks/line-reassert-identity.sh"
 PUBLISH_CMD = f"{LAC} publish --background --delay 3"
+ROUTE_CMD = f"{LAC} route-send"
 
 # (event, matcher or None, hook entry). Identity is the command string.
 REQUIRED = [
@@ -45,6 +48,7 @@ REQUIRED = [
     ("SessionStart", "startup|resume|clear|compact",
      {"type": "command", "command": REASSERT_CMD, "timeout": 10, "async": True}),
     ("SessionEnd", None, {"type": "command", "command": PUBLISH_CMD, "timeout": 5}),
+    ("PreToolUse", "SendMessage", {"type": "command", "command": ROUTE_CMD, "timeout": 5}),
 ]
 REQUIRED_KEYS = {"remoteControlAtStartup": True, "crossSessionInbound": "accept"}
 # Commands whose hook entries are removed wherever they appear.
