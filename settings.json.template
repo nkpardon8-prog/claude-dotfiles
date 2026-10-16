@@ -256,6 +256,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py route-send",
+            "timeout": 5
+          }
+        ]
       }
     ]
   },

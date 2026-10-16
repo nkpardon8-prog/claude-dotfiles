@@ -97,7 +97,11 @@ means the two Macs never write the same file, so iCloud never makes conflict cop
   window whatever its Remote Control TITLE says, and the title is not dependable: windows Pane
   reopened (resumed) kept their auto titles (`macbookair-m4-local-...`) through `/rename` and the
   title hook alike (2026-10-16), so `SendMessage("patients-tab")` failed while the bridge address
-  delivered. The human name is how you LOOK a window up; the bridge address is how you SEND. Both
+  delivered. The human name is how you LOOK a window up; the bridge address is how you SEND.
+  You rarely need to do that by hand: a PreToolUse hook on SendMessage (`route-send`) swaps a name
+  that matches exactly one live window on another Mac for its bridge address, so `SendMessage("patients-tab")`
+  just works. It never touches a name a window on this Mac holds, an explicit address, or an ambiguous
+  name, and logs every swap to `~/.claude/logs/line-route.log`. Both
   Macs must be on the same claude.ai account with `remoteControlAtStartup: true` (and
   `crossSessionInbound: "accept"` to receive); if the accounts differ, `list` and `find` say so.
 - **Two routes for the address book:** iCloud Drive (above), and a **Tailscale relay**: on the MacBook,

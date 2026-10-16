@@ -156,6 +156,11 @@ SessionStart hook that sets the Remote Control title to the window's peer addres
 - `relay via <alias> failed: ...` - the MacBook's ssh round trip to the mini failed; iCloud remains the route.
 - `relay-exchange: refused an invalid address book` - the responder (mini) got a book it would not store.
 
+`~/.claude/logs/line-route.log` - `line-agent-communicator.py route-send` (PreToolUse on SendMessage):
+
+- `route` - `<name> -> bridge:<id> (<Mac>)`: a name matching one live window on another Mac was rerouted.
+- `error` - the hook raised; the send went out unchanged (fail-open).
+
 `~/.claude/logs/line-reassert.log` - the SessionStart identity re-assert:
 
 - `reassert` - the peer address was re-derived from the caption; `nameSource=` + `rc=` logged.
