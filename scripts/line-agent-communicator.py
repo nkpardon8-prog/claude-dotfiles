@@ -1589,6 +1589,66 @@ def cmd_relay_exchange() -> int:
     return 0
 
 
+# --------------------------------------------------------------------------------------
+# route-send - SendMessage("<name>") just works for a window on the other Mac
+#
+# Agents send by name, as the owner does. Across Macs a name only resolves through the window's
+# Remote Control title, which is unreliable (see bridge_id), so this PreToolUse hook on SendMessage
+# swaps a name that matches EXACTLY ONE live window on another Mac for that window's bridge address.
+# Claude Code applies `updatedInput` without any permission change (probed 2026-10-16). It never
+# touches a name a window on THIS Mac holds, an explicit address, or an ambiguous name.
+# --------------------------------------------------------------------------------------
+
+EXPLICIT_TO = re.compile(r"^(bridge:|uds:|main$|a[0-9a-f]{8,}$)|\[")
+
+
+def route_log() -> Path:
+    return HOME / ".claude" / "logs" / "line-route.log"
+
+
+def other_mac_match(to: str) -> dict | None:
+    """The one live window on another Mac that `to` names (address, or caption via its handle form)."""
+    want = (to or "").strip().lower()
+    slug = slugify(want)
+    if not want:
+        return None
+    hits = []
+    hosts, _state = load_other_hosts()
+    for h in hosts:
+        if not h["live"]:
+            continue
+        for w in h["windows"]:
+            names = {w["address"].lower(), slugify(w["caption"])} - {""}
+            if want in names or slug in names:
+                hits.append(w)
+    return hits[0] if len(hits) == 1 else None
+
+
+def cmd_route_send() -> int:
+    """Hook-facing (PreToolUse, matcher SendMessage). Prints an updatedInput only when it reroutes."""
+    try:
+        payload = json.loads(sys.stdin.read(1 << 20) or "{}")
+        ti = payload.get("tool_input") if isinstance(payload, dict) else None
+        if not isinstance(ti, dict) or not isinstance(ti.get("to"), str):
+            return 0
+        to = ti["to"].strip()
+        if not to or EXPLICIT_TO.search(to):
+            return 0
+        # A window on THIS Mac answering to the name: local delivery works, leave it alone.
+        if any((d.get("name") or "").lower() == to.lower() for d in load_sessions()):
+            return 0
+        w = other_mac_match(to)
+        if not w or not w.get("bridge"):
+            return 0
+        new = {k: ti[k] for k in ("to", "message", "summary", "notify_when_idle") if k in ti}
+        new["to"] = send_address(w)
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": new}}))
+        _log_bounded(route_log(), f"route {clean_field(to, 64)} -> {new['to']} ({w['host_label']})")
+    except Exception as e:
+        _log_bounded(route_log(), f"error {e.__class__.__name__}: {clean_field(e, 160)}")
+    return 0
+
+
 def load_other_hosts() -> tuple[list[dict], str]:
     """
     Every OTHER Mac's address book, from the LOCAL CACHE the prefetcher keeps current - instant,
