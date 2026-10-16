@@ -1468,7 +1468,8 @@ def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
                     print(f"prefetch: {hid} {'updated' if changed else 'unchanged'}")
             else:
                 problem = why or "not a valid address book"
-                state[hid] = {"ok": prev.get("ok"), "try": now, "problem": problem}
+                # Keep "via": dropping it here made a fresh relay delivery look iCloud-sourced.
+                state[hid] = {"ok": prev.get("ok"), "try": now, "problem": problem, "via": prev.get("via", "")}
                 if verbose:
                     print(f"prefetch: {hid} not read ({problem}) - keeping the cached copy")
         # A prefetch can run a minute; a relay delivery during it recorded a newer "ok". Keep that.
