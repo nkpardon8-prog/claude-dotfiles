@@ -820,6 +820,7 @@ def sync_forwards(cfg, verbose=False, want=()):
                 conflicts.discard(p)
                 rd_common.log("forward +%d" % p)
             else:
+                rd_common.log("forward %d failed rc=%d: %s" % (p, rc, (err or "").strip()[:300]))
                 if p not in conflicts:
                     msg = ("port %d is busy on the laptop; mini container on %d is not mirrored "
                            "(free the laptop port or reach it via %s:%d)" % (p, p, cfg["host"], p))
