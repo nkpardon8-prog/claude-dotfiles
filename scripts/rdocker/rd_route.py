@@ -296,6 +296,7 @@ def mini_run(cfg, base, prefix, sub, args, detached):
         ours.append(path)
         return ["--cidfile", path] + a, path
 
+    rd_tunnel.premirror(cfg, reserved)                # own the laptop port before the mini listens
     with rd_tunnel.hold_ports(lambda: reserved):     # extends while docker runs (long pulls)
         try:
             run_args, cidpath = with_cidfile(rewrite(args, new_specs))
@@ -335,6 +336,7 @@ def mini_run(cfg, base, prefix, sub, args, detached):
                 except rd_tunnel.PortRefuse as e:
                     port_refuse_exit(e)
                 run_args, cidpath = with_cidfile(rewrite(args, new_specs))
+                rd_tunnel.premirror(cfg, reserved)
                 rd_common.say("mini reported port %s as allocated - retrying once with another port"
                     % (bad if bad is not None else "?"))
                 rc, err = call_docker_capture(base + prefix + run_args)
@@ -407,6 +409,7 @@ def mini_compose(cfg, base, rest, compose_sub, crest, project, model, detached):
         except rd_tunnel.PortRefuse as e:
             port_refuse_exit(e)
     before = project_ids(cfg, project) if project else set()
+    rd_tunnel.premirror(cfg, reserved)                # own the laptop ports before the mini listens
     with rd_tunnel.hold_ports(lambda: reserved):      # extends while docker runs (long pulls)
         mini_compose_body(cfg, base, rest, compose_sub, project, detached, reserved, before)
 

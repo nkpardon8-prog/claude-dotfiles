@@ -577,6 +577,36 @@ def reserve_ports(cfg, specs, exclude=()):
     return out, mine
 
 
+def reserved_ports():
+    """Laptop ports live-reserved by shims that are creating containers (see reserve_ports)."""
+    return set(_load_reserved(time.time()))
+
+
+def port_holder(p):
+    """'<command> pid <n>' of the process listening on laptop port p, or '' if unknown."""
+    rc, out, _ = rd_common.run(["lsof", "-nP", "-iTCP:%d" % p, "-sTCP:LISTEN", "-Fpc"], timeout=5)
+    if rc != 0:
+        return ""
+    pid = cmd = ""
+    for line in out.splitlines():
+        if line.startswith("p") and not pid:
+            pid = line[1:]
+        elif line.startswith("c") and not cmd:
+            cmd = line[1:]
+    return ("%s pid %s" % (cmd, pid)) if pid else ""
+
+
+def premirror(cfg, ports):
+    """Bind the laptop side of just-reserved `ports` before the container starts (best effort: a
+    failure here is re-tried, and reported, by the post-start check)."""
+    if not ports:
+        return
+    try:
+        sync_forwards(cfg, want=set(ports))
+    except Exception as e:                  # never let the pre-bind break the docker call
+        rd_common.log("pre-mirror of %s failed: %r" % (sorted(ports), e))
+
+
 def release_ports(ports):
     if not ports:
         return
@@ -807,7 +837,11 @@ def sync_forwards(cfg, verbose=False, want=()):
         cur6 = set(state.get("tcp6", legacy) or []) if same else set()
         conflicts = set(state.get("conflicts") or []) if same else set()
         try:
-            desired = remote_ports(cfg)
+            # A port a shim has reserved for a container it is about to create is mirrored NOW, before
+            # the container listens on the mini: whoever binds the laptop port first owns it, and Pane's
+            # remote "Forwarded ports" grabs every port that starts listening on the mini (same number
+            # when free, the next free one otherwise). Binding first keeps rdocker's same-number promise.
+            desired = remote_ports(cfg) | reserved_ports()
         except RuntimeError as e:
             rd_common.log(str(e))
             if verbose:
@@ -820,10 +854,12 @@ def sync_forwards(cfg, verbose=False, want=()):
                 conflicts.discard(p)
                 rd_common.log("forward +%d" % p)
             else:
-                rd_common.log("forward %d failed rc=%d: %s" % (p, rc, (err or "").strip()[:300]))
+                rd_common.log("forward %d failed rc=%d: %s" % (p, rc, " ".join((err or "").split())[:300]))
                 if p not in conflicts:
-                    msg = ("port %d is busy on the laptop; mini container on %d is not mirrored "
-                           "(free the laptop port or reach it via %s:%d)" % (p, p, cfg["host"], p))
+                    who = port_holder(p)
+                    msg = ("port %d is busy on the laptop%s; mini container on %d is not mirrored "
+                           "(free the laptop port or reach it via %s:%d)"
+                           % (p, " (held by %s)" % who if who else "", p, cfg["host"], p))
                     rd_common.log(msg)
                     if verbose:
                         rd_common.say(msg)
