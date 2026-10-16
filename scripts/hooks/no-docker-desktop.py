@@ -34,6 +34,16 @@ def main():
         return 0
     if not LAUNCH.search(cmd):
         return 0
+    try:    # who tried, for later debugging: ~/.local/state/rdocker/blocked-desktop.log
+        import os
+        import time
+        d_ = os.path.expanduser("~/.local/state/rdocker")
+        os.makedirs(d_, exist_ok=True)
+        with open(os.path.join(d_, "blocked-desktop.log"), "a") as f:
+            f.write("%s session=%s cwd=%s cmd=%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                    d.get("session_id", "?"), d.get("cwd", "?"), " ".join(cmd.split())[:200]))
+    except Exception:
+        pass
     print("NO-DOCKER-DESKTOP: don't start laptop Docker Desktop - it costs GBs of RAM and Docker runs "
           "on the Mac mini. If docker fails or is slow, run `rdocker doctor` (and `rdocker status`), "
           "then retry; plain `docker ...` already goes to the mini. Only if the user wants the laptop "

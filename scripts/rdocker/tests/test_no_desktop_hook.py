@@ -1,11 +1,14 @@
 """no-docker-desktop.py: agents may not launch laptop Docker Desktop by hand (RDOCKER_LOCAL_START=1 opts in)."""
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rdmods  # noqa: E402
 from rdmods import STAGE  # noqa: E402
 
 HOOK = next((p for p in (os.path.join(STAGE, "_hooks_stage", "no-docker-desktop.py"),
@@ -20,10 +23,16 @@ ALLOW = ["RDOCKER_LOCAL_START=1 open -a Docker", "open -a Safari", "open README.
 
 
 class NoDockerDesktop(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="rdk-nodesk-")
+        self.addCleanup(shutil.rmtree, self.home, True)
+
     def rc(self, cmd, tool="Bash"):
         p = subprocess.run(["/usr/bin/python3", "-I", HOOK],
-                           input=json.dumps({"tool_name": tool, "tool_input": {"command": cmd}}),
-                           capture_output=True, text=True, timeout=30)
+                           input=json.dumps({"tool_name": tool, "tool_input": {"command": cmd},
+                                             "session_id": "t"}),
+                           capture_output=True, text=True, timeout=30,
+                           env=rdmods.child_env(self.home))
         return p.returncode, p.stderr
 
     def test_launches_blocked(self):
@@ -32,6 +41,8 @@ class NoDockerDesktop(unittest.TestCase):
                 rc, err = self.rc(c)
                 self.assertEqual(rc, 2)
                 self.assertIn("rdocker doctor", err)
+        with open(os.path.join(self.home, ".local", "state", "rdocker", "blocked-desktop.log")) as f:
+            self.assertEqual(len(f.read().splitlines()), len(BLOCK))   # each block logged, in OUR home
 
     def test_everything_else_allowed(self):
         for c in ALLOW:
@@ -40,7 +51,7 @@ class NoDockerDesktop(unittest.TestCase):
 
     def test_fails_open(self):
         p = subprocess.run(["/usr/bin/python3", "-I", HOOK], input="not json", capture_output=True,
-                           text=True, timeout=30)
+                           text=True, timeout=30, env=rdmods.child_env(self.home))
         self.assertEqual(p.returncode, 0)
         self.assertEqual(self.rc("open -a Docker", tool="Read")[0], 0)
 

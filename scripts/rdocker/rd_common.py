@@ -109,7 +109,11 @@ DEFAULTS = {
                           r"(?![\w:.-]*(e2e|playwright|browser|watch|:ui\b))(:[\w:.-]*)?(\s|$)",
                           r"(^|\s)test:(?![\w:.-]*(e2e|playwright|browser|watch|ui\b))[\w:.-]+(\s|$)",
                           r"(^|[\s/])jest(\s+(-\S+|[0-9]*>>?\s*&?\S+))*\s*$",   # a whole jest suite
-                          r"(^|[\s/])eslint(\s+\S+)*\s+\.(\s|$)"],              # eslint over the whole tree
+                          r"(^|[\s/])eslint(\s+\S+)*\s+\.(\s|$)",               # eslint over the whole tree
+                          # a node script that asks for a big heap is heavy by its own admission
+                          r"(^|[\s/])node\s+(\S+\s+)*--max-old-space-size=[0-9]{4,}",
+                          # vitest over a DIRECTORY (an argument with no file extension) = many files
+                          r"(^|[\s/])vitest\s+run\s+(\S+\s+)*[A-Za-z0-9_][\w-]*(/[\w-]+)+/?(\s|$)"],
 }
 
 HEALTH_TTL = 30          # seconds a health reading stays fresh for the shim
@@ -362,7 +366,7 @@ def say(msg):
     sys.stderr.write("rdocker: " + msg + "\n")
 
 
-LOG_MAX = 2_000_000      # bytes; a log past this is rotated to <log>.1 (one generation kept)
+LOG_MAX = 10_000_000     # bytes; a log past this is rotated to <log>.1 (one generation kept; route.log ~2 MB/day -> ~1 week)
 
 
 def log(msg, path=LOG_PATH):

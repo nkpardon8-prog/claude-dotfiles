@@ -40,6 +40,10 @@ POSITIVE = [
     ("npm run check:enqueue-trace", "rrun npm run check:enqueue-trace"),
     ("cd client && npm run typecheck", "cd client && rrun npm run typecheck"),
     ("npx eslint . --ext ts,tsx", "rrun npx eslint . --ext ts,tsx"),
+    ("node --max-old-space-size=4096 scripts/check-tenant-context-coverage.mjs",
+     "rrun node --max-old-space-size=4096 scripts/check-tenant-context-coverage.mjs"),
+    ("cd server && npx vitest run src/lib/dashboard src/__tests__/lib/reports 2>&1 | tail",
+     "cd server && rrun npx vitest run src/lib/dashboard src/__tests__/lib/reports 2>&1 | tail"),
     ("node scripts/test-with-db.mjs src/a.db.test.ts", "rrun node scripts/test-with-db.mjs src/a.db.test.ts"),
     ("node ../../scripts/test-with-db.mjs", "rrun node ../../scripts/test-with-db.mjs"),
     ("cd server && npm run test:db", "cd server && rrun npm run test:db"),
@@ -80,6 +84,7 @@ POSITIVE = [
 NEGATIVE = [
     "npx tsc -p tsconfig.json",                      # an emitting build: not a check
     "npx vitest run src/a.test.ts",                  # one file: small, stays on the laptop
+    "node scripts/check-small.mjs",                  # a plain small node script
     "npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail",
     "npx vitest",                                    # watch mode: interactive
     "npm run test:e2e",                              # browser tests need the laptop
