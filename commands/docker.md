@@ -243,7 +243,10 @@ refusals, for the "not a throwaway container" refusal, or on paths that already 
 **Laptop Docker stays off.** Agents may not start it either: the `no-docker-desktop.py` hook blocks
 `open -a Docker` / `open .../Docker.app` / AppleScript activate / `docker desktop start` (four sessions had
 the habit, 2026-10-15) unless the command carries `RDOCKER_LOCAL_START=1`. Each block is logged with the
-session id to `~/.local/state/rdocker/blocked-desktop.log`. rdocker never opens Docker Desktop for a command (`local_autostart`
+session id to `~/.local/state/rdocker/blocked-desktop.log`. The same hook blocks container sweeps by
+pattern (`docker rm $(docker ps ... --filter name=...)`, `... | xargs docker rm`, `docker container|system
+prune`): every agent shares the mini's engine, so a name-prefix sweep deletes other agents' containers
+(twice on 2026-10-15). Remove only your own, by exact name; `RDOCKER_ALLOW_SWEEP=1` if the user asked. rdocker never opens Docker Desktop for a command (`local_autostart`
 false; `RDOCKER_LOCAL_START=1 <cmd>` opts in for that one command), and the daemon quits it after
 `local_idle_stop_min` (15) idle minutes. When auto mode would fall back to the laptop but Docker Desktop
 is not running, the command instead waits up to `blip_wait_s` (30) for the mini and runs there, or exits 1

@@ -59,6 +59,8 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 - Mini janitor sets `restart unless-stopped` on keep-labelled containers (kept DBs survive a reboot).
 - rrun writes one line per run to `~/rr/log/runs.log` on the mini (no env values; 5 MB rotation).
 - Laptop logs rotate at 10 MB (~1 week of route.log).
+- The guard hook also blocks container sweeps by pattern (`docker rm $(docker ps --filter name=..)`,
+  `| xargs docker rm`, prune): helper agents twice removed every `p7p3-vitest-db-*` on the shared mini.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

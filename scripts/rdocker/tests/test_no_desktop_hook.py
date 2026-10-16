@@ -18,7 +18,12 @@ HOOK = next((p for p in (os.path.join(STAGE, "_hooks_stage", "no-docker-desktop.
 BLOCK = ["open -a Docker", "open -ga Docker", "open -a 'Docker Desktop'", "open /Applications/Docker.app",
          "docker info >/dev/null 2>&1 || { open -a Docker; sleep 3; }",
          "osascript -e 'tell application \"Docker\" to activate'", "docker desktop start"]
-ALLOW = ["RDOCKER_LOCAL_START=1 open -a Docker", "open -a Safari", "open README.md", "docker ps",
+SWEEP = ["docker rm -f $(docker ps -aq --filter name=p7p3-vitest-db)",
+         "docker ps -a --format '{{.Names}}' | grep p7p3 | xargs docker rm -f",
+         "docker container prune -f", "docker system prune -af"]
+ALLOW = ["docker rm -f -v p7p3-vitest-db-1a2b3c4d", "RDOCKER_ALLOW_SWEEP=1 docker container prune -f",
+         "docker ps -a --filter name=p7p3 --format '{{.Names}}'",
+"RDOCKER_LOCAL_START=1 open -a Docker", "open -a Safari", "open README.md", "docker ps",
          'grep -n "open -a Docker" notes.md', "osascript -e 'quit app \"Docker\"'", "rdocker doctor"]
 
 
@@ -43,6 +48,13 @@ class NoDockerDesktop(unittest.TestCase):
                 self.assertIn("rdocker doctor", err)
         with open(os.path.join(self.home, ".local", "state", "rdocker", "blocked-desktop.log")) as f:
             self.assertEqual(len(f.read().splitlines()), len(BLOCK))   # each block logged, in OUR home
+
+    def test_pattern_sweeps_blocked(self):
+        for c in SWEEP:
+            with self.subTest(c=c):
+                rc, err = self.rc(c)
+                self.assertEqual(rc, 2)
+                self.assertIn("exact name", err)
 
     def test_everything_else_allowed(self):
         for c in ALLOW:

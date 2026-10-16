@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PreToolUse gate (Bash) - block launching laptop Docker Desktop by hand.
+PreToolUse gate (Bash) - block launching laptop Docker Desktop by hand, and pattern sweeps of containers.
 
 Why: Docker runs on the Mac mini (rdocker); laptop Docker Desktop costs GBs of RAM on a 16 GB laptop
 that a dozen agents share. rdocker never starts it, but agents had a habit of `open -a Docker` whenever
@@ -24,26 +24,49 @@ LAUNCH = re.compile(
     re.I)
 
 
+# Bulk removal by pattern: `docker rm $(docker ps ... --filter name=X)`, `docker ps ... | grep X | xargs
+# docker rm`, prune. All agents share ONE mini engine, so a sweep by name prefix deletes other agents'
+# live containers (twice on 2026-10-15: p7p3-vitest-db-*). Remove only your own, by exact name/id.
+SWEEP = re.compile(
+    r"docker\s+(container\s+)?(rm|stop|kill)\b[^;&|\n]*\$\(\s*docker\s+(container\s+)?ps\b"
+    r"|docker\s+(container\s+)?ps\b[^;&\n]*\|[^;&\n]*xargs\b[^;&|\n]*docker\s+(container\s+)?(rm|stop|kill)\b"
+    r"|docker\s+(container\s+)?prune\b|docker\s+system\s+prune\b",
+    re.I)
+
+
+def log_block(d, cmd, kind):
+    """Who tried, for later debugging: ~/.local/state/rdocker/blocked-desktop.log (never raises)."""
+    try:
+        import os
+        import time
+        d_ = os.path.expanduser("~/.local/state/rdocker")
+        os.makedirs(d_, exist_ok=True)
+        with open(os.path.join(d_, "blocked-desktop.log"), "a") as f:
+            f.write("%s %s session=%s cwd=%s cmd=%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), kind,
+                    d.get("session_id", "?"), d.get("cwd", "?"), " ".join(cmd.split())[:200]))
+    except Exception:
+        pass
+
+
 def main():
     try:
         d = json.loads(sys.stdin.read() or "{}")
         cmd = (d.get("tool_input") or {}).get("command") or ""
     except Exception:
         return 0
-    if d.get("tool_name") != "Bash" or not cmd or "RDOCKER_LOCAL_START=1" in cmd:
+    if d.get("tool_name") != "Bash" or not cmd:
         return 0
-    if not LAUNCH.search(cmd):
+    if SWEEP.search(cmd) and "RDOCKER_ALLOW_SWEEP=1" not in cmd:
+        log_block(d, cmd, "sweep")
+        print("NO-DOCKER-SWEEP: don't remove/stop containers by pattern - every agent shares the Mac "
+              "mini's Docker, so a name-prefix sweep deletes OTHER agents' containers. Remove only "
+              "the containers you created, by exact name or id (`docker rm -f -v <name>`); the rdocker "
+              "janitor reaps leftovers. (Only if the user asked for a sweep: RDOCKER_ALLOW_SWEEP=1.)",
+              file=sys.stderr)
+        return 2
+    if "RDOCKER_LOCAL_START=1" in cmd or not LAUNCH.search(cmd):
         return 0
-    try:    # who tried, for later debugging: ~/.local/state/rdocker/blocked-desktop.log
-        import os
-        import time
-        d_ = os.path.expanduser("~/.local/state/rdocker")
-        os.makedirs(d_, exist_ok=True)
-        with open(os.path.join(d_, "blocked-desktop.log"), "a") as f:
-            f.write("%s session=%s cwd=%s cmd=%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"),
-                    d.get("session_id", "?"), d.get("cwd", "?"), " ".join(cmd.split())[:200]))
-    except Exception:
-        pass
+    log_block(d, cmd, "desktop")
     print("NO-DOCKER-DESKTOP: don't start laptop Docker Desktop - it costs GBs of RAM and Docker runs "
           "on the Mac mini. If docker fails or is slow, run `rdocker doctor` (and `rdocker status`), "
           "then retry; plain `docker ...` already goes to the mini. Only if the user wants the laptop "
