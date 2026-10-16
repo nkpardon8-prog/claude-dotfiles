@@ -2,6 +2,14 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-16 - Mac mini moved to the Tailscale app (`macminim4`)
+
+- The mini now runs the Tailscale app instead of the Homebrew `tailscaled` daemon (stopped, still
+  installed for rollback). Machine renamed `macminim4`, same IP 100.73.250.43, key expiry off. The
+  laptop ssh block keeps the alias `macmini-docker` (so rdocker config is unchanged) with
+  `HostName macminim4` + `HostKeyAlias macmini-docker`. Verified: container run, mirrored DB port,
+  `rrun` on the mini, `rdocker status` all green.
+
 ## 2026-10-15 - rdocker: global docker context stays on the mini after a laptop boot
 
 - Live: after a laptop reboot Tailscale was not up yet, so the forwarder pointed the global docker

@@ -13,8 +13,8 @@ command. Use docker normally. The laptop's janitor still sweeps this engine, so 
 
 ## The mental model
 
-The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (`macmini-docker` on
-Tailscale; Colima VM: 6 CPU / 8 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
+The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (ssh alias `macmini-docker` ->
+Tailscale name `macminim4`; Colima VM: 6 CPU / 8 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
 CPU stays on the laptop and only the containers move. **Heavy test jobs** (test runner + its DB) move
 whole: `rrun <cmd>` runs the command itself on the mini next to its DB, usually without asking (a hook
 rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
@@ -474,7 +474,10 @@ every threshold above is a key there).
 
 ## Setup record (done 2026-10-12 — for a rebuild)
 
-Mini: Tailscale as a system daemon (`sudo brew services start tailscale`, hostname `macmini-docker`),
+Mini: the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16; the old Homebrew
+daemon is stopped but still installed), machine name `macminim4`, IP 100.73.250.43, key expiry off;
+the laptop's `~/.ssh/config.d/rdocker` maps alias `macmini-docker` -> `HostName macminim4` with
+`HostKeyAlias macmini-docker`,
 Remote Login on, laptop keys in `~/.ssh/authorized_keys`. Laptop: `~/.ssh/config` → `Include
 ~/.ssh/config.d/*` (`rdocker` block); `rdocker setup-mini 6 8 30`; `rdocker install` (context `mini` =
 `unix://~/.local/state/rdocker/mini-docker.sock`, shims, launch agent, pins). Mini Colima config:
@@ -484,7 +487,8 @@ Remote Login on, laptop keys in `~/.ssh/authorized_keys`. Laptop: `~/.ssh/config
 `restart_pending` in `janitor.json`, and the janitor restarts Colima only when `docker ps` on the mini
 is empty, re-checked under the mini lock right before the restart.
 
-**Known limits:** Homebrew owns the mini's tailscale paths as root (upgrading it there needs `sudo`).
+**Known limits:** the Tailscale app starts at login, so after a mini reboot the network comes up only
+once someone logs in (FileVault needs that login anyway).
 `host.docker.internal` inside a mini container is the mini, not the laptop.
 
 Source: `scripts/rdocker/` (stdlib, /usr/bin/python3 3.9). `rdocker.py` is a thin entry (launchd,
