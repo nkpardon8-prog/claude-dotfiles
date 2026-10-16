@@ -474,8 +474,8 @@ every threshold above is a key there).
 
 ## Setup record (done 2026-10-12 — for a rebuild)
 
-Mini: the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16; the old Homebrew
-daemon is stopped but still installed), machine name `macminim4`, IP 100.73.250.43, key expiry off;
+Mini: the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16, opens at login; the
+Homebrew formula was removed and `/opt/homebrew/bin/tailscale` is a wrapper for the app's CLI), machine name `macminim4`, IP 100.73.250.43, key expiry off;
 the laptop's `~/.ssh/config.d/rdocker` maps alias `macmini-docker` -> `HostName macminim4` with
 `HostKeyAlias macmini-docker`,
 Remote Login on, laptop keys in `~/.ssh/authorized_keys`. Laptop: `~/.ssh/config` → `Include
