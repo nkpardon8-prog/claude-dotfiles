@@ -1499,6 +1499,7 @@ def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
 # --------------------------------------------------------------------------------------
 
 RELAY_TIMEOUT_SEC = 15
+RDOCKER_DEFAULT_HOST = "macmini-docker"   # = scripts/rdocker/rd_common.py DEFAULTS["host"]
 RELAY_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 RELAY_REMOTE_CMD = ('PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; '
                     'exec python3 "$HOME/.claude-dotfiles/scripts/line-agent-communicator.py" relay-exchange')
@@ -1543,9 +1544,13 @@ def relay_exchange(verbose: bool = False) -> None:
     """Initiator side: one ssh round trip that swaps address books with relay_target(). Never raises."""
     target = relay_target()
     if not target:
+        if verbose:
+            print("relay: off on this Mac (no rdocker login to another Mac; only the MacBook starts it)")
         return
     mine = _read_cache(host_id())
     if not _valid_book(mine, host_id()):
+        if verbose:
+            print("relay: skipped - this Mac's own address book is not written yet")
         return
     # Must never disturb rdocker, which owns this alias: its own ControlPath (rdocker's master is
     # FWD_SOCK, rrun's is rr-%C), no tty, and ClearAllForwardings so this connection can never try

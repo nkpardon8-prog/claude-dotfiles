@@ -15,6 +15,7 @@
 # R5  `relay-exchange` refuses a book claiming to be B itself (cache untouched, ok:false)
 # R6  in a sandbox with no LAC_RELAY_HOST, publish never runs ssh at all
 # R7  ssh failing: publish still exits 0, and the failure is logged, not silent
+# R8  the MacBook starts the relay even when its rdocker config has no "host" key; the mini never does
 #
 # NEGATIVE CONTROL (LINE_AGENT_NEG_CONTROL=true): make send_address() ignore the bridge. R3 must go red.
 set -uo pipefail
@@ -162,6 +163,24 @@ RC=$?
 grep -q "relay via stub-mini failed" "$ROOT/laptop/cache/windows-publish.log" 2>/dev/null \
   || fail "R7: the ssh failure was not logged"
 
+# R8: which Mac starts the relay. rdocker's config.json holds only OVERRIDES, so a MacBook whose
+# config has no "host" key still uses rdocker's default alias - reading that as "no relay" made the
+# real MacBook skip silently (2026-10-16). A Mac with no rdocker login at all (the mini) stays off.
+target_for() {  # target_for <home> -> relay_target() under that HOME, sandbox variables unset
+  env -u LAC_WINDOWS_DIR -u LAC_CACHE_DIR -u LAC_RELAY_HOST HOME="$1" python3 - "$SCRIPT" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("lac", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(m.relay_target())
+PY
+}
+mkdir -p "$ROOT/r8-laptop/.config/rdocker" "$ROOT/r8-mini"
+printf '{"mode": "auto"}\n' > "$ROOT/r8-laptop/.config/rdocker/config.json"
+[ "$(target_for "$ROOT/r8-laptop")" = "macmini-docker" ] \
+  || fail "R8: an rdocker config without a host key did not fall back to macmini-docker (got '$(target_for "$ROOT/r8-laptop")')"
+[ -z "$(target_for "$ROOT/r8-mini")" ] || fail "R8: a Mac with no rdocker login would start the relay"
+
 if [ "${LINE_AGENT_NEG_CONTROL:-}" = "true" ]; then
   case "$FAIL_MSGS" in
     *"R3: mini's find did not hand out the bridge address"*)
@@ -177,5 +196,5 @@ if [ "$FAIL_N" -gt 0 ]; then
   printf '%s' "$FAIL_MSGS" >&2
   exit 1
 fi
-echo "PASS: 19-tailscale-relay - 7 assertions (R1-R2 round trip, R3 bridge address, R4 newer wins, R5 self-claim refused, R6 sandbox no-ssh, R7 failure logged)"
+echo "PASS: 19-tailscale-relay - 8 assertions (R1-R2 round trip, R3 bridge address, R4 relay copy kept, R5 self-claim refused, R6 sandbox no-ssh, R7 failure logged, R8 who starts it)"
 exit 0
