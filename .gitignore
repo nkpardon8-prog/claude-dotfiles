@@ -122,3 +122,4 @@ TRANSFER.*.md
 *.tx
 *.tx.sha256
 *.tx.failed
+MISSION.*.banner
