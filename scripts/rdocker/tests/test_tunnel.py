@@ -114,6 +114,48 @@ class SyncForwards(unittest.TestCase):
         self.assertIn(("cancel", "[::1]:5432:127.0.0.1:5432"), ssh.calls)
         self.assertEqual((self.state()["tcp4"], self.state()["conflicts"]), ([6379], []))
 
+    def _reserve(self, *ports):
+        path = os.path.join(self.tmp, "reserved.json")
+        p = mock.patch.object(rd_tunnel, "RESERVED_PATH", path)
+        p.start()
+        self.addCleanup(p.stop)
+        with open(path, "w") as f:
+            json.dump({str(q): 9e12 for q in ports}, f)
+        return path
+
+    def test_reserved_port_mirrored_before_container_listens(self):
+        # Pane (or any laptop forwarder that follows the mini's listening ports) binds a port the moment
+        # the container starts listening; rdocker must own it first, so a reservation alone is enough.
+        self._reserve(20016)
+        self.desired = set()
+        ssh = FakeSsh()
+        self.assertEqual(self.sync(ssh, want={20016}), (True, [], []))
+        self.assertIn(("forward", "127.0.0.1:20016:127.0.0.1:20016"), ssh.calls)
+        self.assertEqual(self.state()["tcp4"], [20016])
+        # a later sync (the daemon) while the container is still starting keeps it
+        ssh = FakeSsh()
+        self.sync(ssh)
+        self.assertNotIn(("cancel", "127.0.0.1:20016:127.0.0.1:20016"), ssh.calls)
+
+    def test_released_reservation_without_container_is_cancelled(self):
+        path = self._reserve(20016)
+        self.sync(FakeSsh(), want={20016})
+        with open(path, "w") as f:
+            json.dump({}, f)
+        ssh = FakeSsh()
+        self.sync(ssh)
+        self.assertIn(("cancel", "127.0.0.1:20016:127.0.0.1:20016"), ssh.calls)
+        self.assertEqual(self.state()["tcp4"], [])
+
+    def test_failed_forward_logs_ssh_error_and_holder(self):
+        self.desired = {8080}
+        logged = []
+        with mock.patch.object(rd_common, "log", lambda m, **k: logged.append(m)), \
+                mock.patch.object(rd_tunnel, "port_holder", lambda p: "Pane pid 47648"):
+            self.sync(FakeSsh(busy={8080}), want={8080})
+        self.assertTrue(any("rc=255" in m and "Address already in use" in m for m in logged), logged)
+        self.assertTrue(any("held by Pane pid 47648" in m for m in logged), logged)
+
     def test_new_master_forgets_old_mirrors(self):
         self.desired = {5432}
         self.sync(FakeSsh())
