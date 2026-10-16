@@ -1513,11 +1513,17 @@ def relay_target() -> str:
         return env if env != "off" and RELAY_HOST_RE.match(env) else ""
     if os.environ.get("LAC_WINDOWS_DIR") or os.environ.get("LAC_CACHE_DIR"):
         return ""
+    cfg = HOME / ".config" / "rdocker" / "config.json"
+    host = ""
     try:
-        host = json.loads((HOME / ".config" / "rdocker" / "config.json").read_text()).get("host") or ""
+        host = str(json.loads(cfg.read_text()).get("host") or "")
     except Exception:
-        host = "macmini-docker" if (HOME / ".ssh" / "config.d" / "rdocker").exists() else ""
-    return host if RELAY_HOST_RE.match(str(host)) else ""
+        pass
+    # rdocker's config holds only overrides; without a "host" key rdocker itself uses its default
+    # alias (rd_common.DEFAULTS["host"]). Missing that made the relay skip silently on 2026-10-16.
+    if not host and (cfg.exists() or (HOME / ".ssh" / "config.d" / "rdocker").exists()):
+        host = RDOCKER_DEFAULT_HOST
+    return host if RELAY_HOST_RE.match(host) else ""
 
 
 def _accept_relayed_book(book) -> str:
