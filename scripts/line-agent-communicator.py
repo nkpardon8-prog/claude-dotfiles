@@ -855,6 +855,92 @@ def display_handle_for(sid: str, sessions: list[dict] | None = None) -> str:
     return unique_handle(slugify(caption), sid, sessions)
 
 
+# --------------------------------------------------------------------------------------
+# session title - the name Remote Control shows on the owner's OTHER Macs
+#
+# SendMessage on another Mac resolves a window by its Remote Control title, so a window is reachable
+# there by name only when that title equals its peer address. Claude Code sets the title through a
+# hook: `hookSpecificOutput.sessionTitle` on UserPromptSubmit (any prompt) and on SessionStart
+# (startup|resume|fork) has the same effect as typing `/rename`, in every terminal. `session-title`
+# is that hook. It reconciles the title to the window's address on every prompt and on every open,
+# so nothing has to be typed into a tab and a reopen (which resets the Remote Control title) heals
+# itself.
+#
+# Which name: a `/line <sentence>` prompt -> the handle that very /line is about to write (so the name
+# is live before /line's own Bash even runs); else a captioned window -> display_handle_for(); else
+# (owner, 2026-10-16: EVERY window, not only /line'd ones) the registry name the harness gave it.
+# --------------------------------------------------------------------------------------
+
+LINE_PROMPT = re.compile(r"^\s*/line(?:\s+(.*?))?\s*$", re.S)
+RENAME_PROMPT = re.compile(r"^\s*/rename\b")
+TITLE_SOURCES = frozenset({"startup", "resume", "fork"})   # where SessionStart may set a title
+TITLE_MAX = 120
+
+
+def title_log() -> Path:
+    return HOME / ".claude" / "logs" / "line-title.log"
+
+
+def line_prompt_sentence(prompt: str) -> str:
+    """The caption a `/line <args>` prompt is about to set, parsed exactly as dispatch_set parses the
+    one-argument form /line sends. "" when the prompt is not /line, or is a /line that renames
+    nothing (bare /line clears the caption; `--owns` alone keeps it; a flag-shaped name is refused)."""
+    m = LINE_PROMPT.match(prompt or "")
+    if not m or not m.group(1):
+        return ""
+    sentence, _owns, refused = split_set_args([m.group(1)])
+    return "" if refused else " ".join(sentence.split()).strip()
+
+
+def wanted_session_title(sid: str, prompt: str = "") -> str:
+    """The Remote Control title this window should carry right now. "" when there is nothing to set."""
+    sessions = load_sessions()
+    sentence = line_prompt_sentence(prompt)
+    if sentence:
+        handle = unique_handle(slugify(sentence), sid, sessions)   # the same call cmd_set makes
+        if handle:
+            return handle
+    if label_for(sid):
+        return display_handle_for(sid, sessions)
+    mine = next((d for d in sessions if d.get("sessionId") == sid), None)
+    return clean_field((mine or {}).get("name"), TITLE_MAX)
+
+
+def cmd_session_title() -> int:
+    """Hook-facing (UserPromptSubmit + SessionStart). Reads the hook payload on stdin and prints the
+    sessionTitle output when the title should change, nothing otherwise. Fail-open: a naming problem
+    must never block a prompt or a session start, so every failure exits 0 silently on stdout - but
+    each title it sets, and each error, is one bounded line in ~/.claude/logs/line-title.log."""
+    try:
+        payload = json.loads(sys.stdin.read(1 << 20) or "{}")
+        if not isinstance(payload, dict):
+            return 0
+        sid = safe_sid(str(payload.get("session_id") or ""))
+        event = payload.get("hook_event_name")
+        prompt = payload.get("prompt") if isinstance(payload.get("prompt"), str) else ""
+        current = payload.get("session_title") if isinstance(payload.get("session_title"), str) else ""
+        if not sid:
+            return 0
+        if event == "SessionStart":
+            if payload.get("source") not in TITLE_SOURCES:
+                return 0
+        elif event == "UserPromptSubmit":
+            if RENAME_PROMPT.match(prompt):
+                return 0   # the owner is naming it by hand this turn; reconcile on the next prompt
+        else:
+            return 0
+        want = wanted_session_title(sid, prompt)
+        # A reopen resets the Remote Control title whatever the transcript says, so SessionStart
+        # always sets it; a prompt only does when it differs (no record written per prompt).
+        if not want or (event == "UserPromptSubmit" and want == current):
+            return 0
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "sessionTitle": want}}))
+        _log_bounded(title_log(), f"title sid={sid} event={event} {current or '-'} -> {want}")
+    except Exception as e:
+        _log_bounded(title_log(), f"error {e.__class__.__name__}: {clean_field(e, 160)}")
+    return 0
+
+
 def collect_live_rows(me: str = "") -> tuple[list[dict], int]:
     """
     Every live window on THIS Mac, as the rows `list`, `find` and `publish` all work from.
