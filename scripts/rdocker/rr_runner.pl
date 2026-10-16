@@ -8,7 +8,7 @@
 #   "<len>\n" + <len> bytes of UTF-8 JSON header
 #       {nonce, repo_slug, wt12, sha, relcwd, argv[], env{}, deleted[], tar_len,
 #        stamps{dirs[], npm_args[]}, slots, wait_min, keep_containers_on_fail,
-#        optional env_files[], hb_timeout}
+#        optional env_files[], hb_timeout, slots_base, spare_min_free_pct, spare_max_load}
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
 #   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start.
 # Exactly-once handshake: after checkout, overlay, deps and the slot, the runner prints
@@ -272,13 +272,30 @@ sub pump {
     $inbuf = substr($inbuf, -8) if length $inbuf > 8;    # no valid line is longer
 }
 
+# Slots 0..slots_base-1 are always usable; the extra ones up to `slots` only while the mini has room:
+# free memory (kern.memorystatus_level, the % memory_pressure prints) >= spare_min_free_pct and the
+# 1-min load per CPU <= spare_max_load. An unreadable reading counts as "no room" (fail safe).
+sub sysctl_n { my $v = `/usr/sbin/sysctl -n $_[0] 2>/dev/null`; defined $v ? $v : '' }
+sub spare_room {
+    my $min = $h{spare_min_free_pct} // 25;
+    my $max = $h{spare_max_load} // 1.5;
+    my ($free) = sysctl_n('kern.memorystatus_level') =~ /^(\d+)/;
+    my ($load) = sysctl_n('vm.loadavg') =~ /([\d.]+)/;
+    my ($ncpu) = sysctl_n('hw.ncpu') =~ /^(\d+)/;
+    return 0 unless defined $free && defined $load && $ncpu;
+    return $free >= $min && $load / $ncpu <= $max;
+}
+
 sub take_slot {
     my $dir = mk("$ROOT/slots");
     my $n = $h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1;
+    my $base = defined $h{slots_base} && $h{slots_base} =~ /^\d+$/ && $h{slots_base} >= 1
+        && $h{slots_base} < $n ? $h{slots_base} : $n;
     my $deadline = time + 60 * ($h{wait_min} // 30);
     my $said;
     while (1) {
-        for my $i (0 .. $n - 1) {
+        my $spare = $base < $n && spare_room();
+        for my $i (0 .. ($spare ? $n : $base) - 1) {
             # flock(2) == the lock `/usr/bin/lockf -k` takes; it dies with this process (even -9).
             my $fh = open_nofollow("$dir/$i", O_RDWR);
             if (flock($fh, LOCK_EX | LOCK_NB)) {

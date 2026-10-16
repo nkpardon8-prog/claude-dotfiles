@@ -415,6 +415,20 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self.calls(), [])                          # nothing ran
         self.assertEqual(self.run_runner(["true"]).rc, 0)           # lock released => runs
 
+    def test_spare_slot_only_when_the_mini_has_room(self):
+        """slots_base always; the extra slots only while memory/load allow (here: forced via limits)."""
+        os.makedirs(os.path.join(self.root, "slots"))
+        with open(os.path.join(self.root, "slots", "0.who"), "w") as f:
+            f.write("other-repo %d\n" % time.time())
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            r = self.run_runner(["true"], wait_min=0.02, slots=2, slots_base=1,
+                                spare_min_free_pct=101)                 # never "room"
+            self.assertEqual(r.rc, 73, r.err)
+            r = self.run_runner(["true"], wait_min=0.02, slots=2, slots_base=1,
+                                spare_min_free_pct=0, spare_max_load=1000)
+            self.assertEqual(r.rc, 0, r.err)        # slot 0 is held: it ran in spare slot 1
+
     # ------------------------------------------------------------------------ containers
     def test_containers_removed_on_success_kept_on_failure(self):
         wfile(os.path.join(self.d, "ps.out"), "pg1\n")

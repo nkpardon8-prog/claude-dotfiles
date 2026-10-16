@@ -171,13 +171,19 @@ the connection).
   **Compose is not labelled:** containers a run starts with `docker compose up/run` are *not* removed at
   the end of the run and *are* mirrored to laptop localhost like any mini container; the normal janitor
   rules (3 h idle stop, exited 24 h) reap them - `docker compose down` them yourself when done.
-- **Two at a time:** one run per laptop worktree (a lock), and two runs on the mini (`rr_slots` 2). A
-  further run waits with one line naming the holder, and gives up after `rr_wait_min` (30) → exit 73.
+- **How many at once:** one run per laptop worktree (a lock); on the mini always `rr_slots_base` (2)
+  runs, and up to `rr_slots` (6) while the mini has room (free memory % >= `rr_spare_min_free_pct` 25
+  and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). A further run waits with
+  one line naming the holder, and gives up after `rr_wait_min` (30) → exit 73.
 - **Exactly once:** the mini prepares everything (checkout, overlay, `npm ci`, slot), then reports READY
   and waits; the command starts **only** when the laptop answers GO. Mini lost before GO was sent (push
-  fails, or the link drops during prepare), not a git repo, or no commit yet → it runs **on the laptop**
+  fails, or the link drops during prepare) → one immediate retry if the mini answers; if it does not
+  answer, rrun **waits up to `rr_reconnect_wait_min` (10) for it to come back** and retries there (up
+  to 3 tries; `RRUN_RECONNECT_WAIT=<s>` overrides) - only then, or for a repo it cannot send at all
+  (not a git repo, no commit yet), it runs **on the laptop**
   with `RDOCKER_MODE=local` and a `rrun: ... - running on the laptop instead` notice - unless rrun was
-  already stopped (Ctrl-C, or a tool timeout's TERM): then it exits 128+signal and runs nowhere. `RRUN_STRICT=1`
+  already stopped (Ctrl-C, or a tool timeout's TERM, also while waiting for the mini): then it exits
+  128+signal and runs nowhere. `RRUN_STRICT=1`
   refuses that and exits 75. A shallow clone, or history the mini's `git fsck` rejects, also runs on
   the laptop, with the reason in the notice (`cannot send this repo to the Mac mini: ...`).
 - **Mini lost once GO was sent** (even if it may never have arrived) → exit **75** (`rrun: lost the Mac

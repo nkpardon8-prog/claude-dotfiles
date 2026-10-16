@@ -36,7 +36,7 @@ i = 0
 while i < len(args) and args[i].startswith("-"):
     i += 2 if len(args[i]) == 2 and args[i][1] in "bcDEeFIiJLlmOopQRSWw" else 1
 cmd = " ".join(args[i + 1:])
-if os.environ.get("FAKE_SSH_DOWN"):
+if os.environ.get("FAKE_SSH_DOWN") or os.path.exists(os.environ.get("FAKE_SSH_DOWN_FILE") or "/nonexistent"):
     sys.stderr.write("ssh: connect to host %s port 22: Operation timed out\n" % args[i])
     sys.exit(255)
 if os.environ.get("FAKE_SSH_DROP") and "perl" in cmd:
@@ -281,11 +281,13 @@ class RunTest(unittest.TestCase):
 
     # ---------------------------------------------------------------------------- fallback
     def test_unreachable_falls_back_locally_or_75_strict(self):
-        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"; exit 4', FAKE_SSH_DOWN="1")
+        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"; exit 4', FAKE_SSH_DOWN="1",
+                      RRUN_RECONNECT_WAIT="0")
         self.assertEqual(r.returncode, 4, r.stderr)
         self.assertEqual(r.stdout, "mode=local\n")
         self.assertIn("running on the laptop instead", r.stderr)
-        r = self.rrun("/bin/sh", "-c", "echo ran", FAKE_SSH_DOWN="1", RRUN_STRICT="1")
+        r = self.rrun("/bin/sh", "-c", "echo ran", FAKE_SSH_DOWN="1", RRUN_STRICT="1",
+                      RRUN_RECONNECT_WAIT="0")
         self.assertEqual(r.returncode, 75)
         self.assertEqual(r.stdout, "")
         # a push to a missing repo (mini fine, push broken) is the same "before anything started"
@@ -293,6 +295,44 @@ class RunTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, "ran\n"), r.stderr)
         self.assertIn("git push to the mini failed", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.home, "rr", "w")))
+
+    def test_unreachable_waits_for_the_mini_then_runs_there(self):
+        """A short outage before the command started: rrun waits and runs it on the mini, not here."""
+        down = os.path.join(self.d, "down")
+        open(down, "w").close()
+        p = subprocess.Popen([RRUN, "/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"'], cwd=self.wt,
+                             env=self.env(FAKE_SSH_DOWN_FILE=down, RRUN_RECONNECT_WAIT="30",
+                                          RRUN_RECONNECT_POLL="0.2"),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1.5)
+        os.unlink(down)                                        # the mini comes back
+        out, err = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out), (0, "mode=\n"), err)    # ran remotely, not local
+        self.assertIn("waiting up to 30 s for it to come back", err)
+        self.assertIn("the Mac mini is back - trying there again", err)
+        self.assertNotIn("running on the laptop", err)
+
+    def test_unreachable_too_long_falls_back_after_the_wait(self):
+        t0 = time.time()
+        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"', FAKE_SSH_DOWN="1",
+                      RRUN_RECONNECT_WAIT="1", RRUN_RECONNECT_POLL="0.2")
+        self.assertEqual((r.returncode, r.stdout), (0, "mode=local\n"), r.stderr)
+        self.assertGreaterEqual(time.time() - t0, 1.0)
+        self.assertIn("did not come back within 1 s - running on the laptop instead", r.stderr)
+
+    def test_stopped_while_waiting_for_the_mini_runs_nowhere(self):
+        marker = os.path.join(self.d, "ran")
+        p = subprocess.Popen([RRUN, "/bin/sh", "-c", "echo x >> %s" % marker], cwd=self.wt,
+                             env=self.env(FAKE_SSH_DOWN="1", RRUN_RECONNECT_WAIT="60",
+                                          RRUN_RECONNECT_POLL="0.2"),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(2.5)
+        p.send_signal(signal.SIGTERM)
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 128 + signal.SIGTERM, err)
+        self.assertIn(b"waiting up to 60 s", err)
+        self.assertIn(b"not running it anywhere", err)
+        self.assertFalse(os.path.exists(marker))
 
     def test_255_before_ready_falls_back_once(self):
         marker = os.path.join(self.d, "ran")

@@ -632,6 +632,69 @@ def parse_env(pairs, environ=None):
     return out
 
 
+# ---------------------------------------------------------------------------- reconnect
+
+RECONNECT_TRIES = 3      # attempts on the mini after the first one lost it before GO
+
+
+class _Stopped(Exception):
+    def __init__(self, signum):
+        Exception.__init__(self, signum)
+        self.signum = signum
+
+
+def _stop(signum, _frame):
+    raise _Stopped(signum)
+
+
+def reconnect_wait_s(cfg):
+    """Seconds to wait for an unreachable mini; RRUN_RECONNECT_WAIT (seconds) overrides the config."""
+    v = os.environ.get("RRUN_RECONNECT_WAIT")
+    try:
+        return max(0.0, float(v if v is not None else 60 * float(cfg.get("rr_reconnect_wait_min", 10))))
+    except (TypeError, ValueError):
+        return 600.0
+
+
+def fmt_wait(secs):
+    return "%d min" % round(secs / 60.0) if secs >= 90 else "%d s" % round(secs)
+
+
+def mini_answers(cfg):
+    """One quick ssh round trip on rrun's own master: True when the mini answers right now."""
+    try:
+        p = subprocess.run(["ssh"] + ssh_opts() + [cfg["host"], "true"], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return p.returncode == 0
+
+
+def wait_for_mini(cfg, why):
+    """Poll until the mini answers (-> True) or the reconnect wait runs out (-> False). INT/TERM/HUP
+    while waiting raise _Stopped: the caller ends the run without starting it anywhere."""
+    limit = reconnect_wait_s(cfg)
+    if limit <= 0:
+        return False
+    poll = float(os.environ.get("RRUN_RECONNECT_POLL") or 10)
+    note("%s - waiting up to %s for it to come back (nothing has run yet; Ctrl-C stops)"
+         % (why, fmt_wait(limit)))
+    old = {s: signal.signal(s, _stop) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    try:
+        deadline = time.monotonic() + limit
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(poll, left))
+            if mini_answers(cfg):
+                note("the Mac mini is back - trying there again")
+                return True
+    finally:
+        for sig, h in old.items():
+            signal.signal(sig, h)
+
+
 # Exit codes the runner uses when the command was never started (GO not sent), with what they mean.
 INFRA_EXIT = {
     65: "the Mac mini runner refused the request (bad input or an unsafe path; see above)",
@@ -661,19 +724,47 @@ def rrun(argv, env_args=()):
     timing.mark("resolve")
     take_wt_lock(wt["wt12"])     # fd stays open (and locked) until we exit or exec
     timing.mark("worktree lock")
+    tries = 0
+    while True:
+        kind, val = attempt(cfg, wt, argv, env_pairs, timing, t0)
+        if kind == "done":
+            return val
+        if kind == "local" or tries >= RECONNECT_TRIES:
+            return fallback(argv, env_pairs, val, t0)
+        tries += 1
+        # Nothing has started anywhere yet. A mini that answers right away (a blip, or a failure
+        # that is not about reachability) gets one immediate retry; one that does not answer is
+        # waited for (rr_reconnect_wait_min), so a short outage never moves a heavy run here.
+        if mini_answers(cfg):
+            if tries > 1:
+                return fallback(argv, env_pairs, val, t0)
+            continue
+        try:
+            back = wait_for_mini(cfg, val)
+        except _Stopped as e:
+            note("stopped while waiting for the Mac mini - not running it anywhere")
+            return 128 + e.signum
+        if not back:
+            return fallback(argv, env_pairs, "%s, and it did not come back within %s"
+                            % (val, fmt_wait(reconnect_wait_s(cfg))), t0)
+
+
+def attempt(cfg, wt, argv, env_pairs, timing, t0):
+    """One try on the mini -> ("done", rc) | ("lost", why: the mini dropped before the command
+    started) | ("local", why: run it on the laptop now, waiting would not help)."""
     try:
         push(cfg, wt)
     except PushRefused as e:
-        return fallback(argv, env_pairs, "cannot send this repo to the Mac mini: %s" % e, t0)
+        return "local", "cannot send this repo to the Mac mini: %s" % e
     except RunError as e:
-        return fallback(argv, env_pairs, "Mac mini unreachable (%s)" % e, t0)
+        return "lost", "Mac mini unreachable (%s)" % e
     timing.mark("push")
     deps = deps_dirs(wt["top"], wt["relcwd"], argv)
     env_dirs = list(dict.fromkeys([""] + ([wt["relcwd"]] if wt["relcwd"] else []) + deps))
     try:
         tar, files, envs, deleted = build_overlay(cfg, wt["top"], env_dirs)
     except RunError as e:
-        return fallback(argv, env_pairs, "could not list the worktree (%s)" % e, t0)
+        return "local", "could not list the worktree (%s)" % e
     if len(tar) > OVERLAY_WARN_BYTES:
         note("sending %.1f MB of uncommitted/untracked files" % (len(tar) / 1048576.0))
     timing.mark("overlay (%d files, %d env, %d deleted, %d bytes)" % (len(files), len(envs),
@@ -687,6 +778,9 @@ def rrun(argv, env_args=()):
               "tar_len": len(tar), "env_files": envs,
               "stamps": {"dirs": deps, "npm_args": []},
               "slots": cfg.get("rr_slots", 1), "wait_min": cfg.get("rr_wait_min", 30),
+              "slots_base": cfg.get("rr_slots_base", cfg.get("rr_slots", 1)),
+              "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
+              "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
               "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True}
     with open(rd_common.RUNNER_SRC, "rb") as f:
         script = f.read()
@@ -706,16 +800,16 @@ def rrun(argv, env_args=()):
             # the caller wants it to end - never start it here instead (2026-10-15: a 10-min tool
             # timeout during a slot wait turned into a full local run)
             note("stopped before the command started on the Mac mini - not running it anywhere")
-            return 128 + sess.first_sig
+            return "done", 128 + sess.first_sig
         if rc == 255:
-            return fallback(argv, env_pairs, "lost the Mac mini before the command started", t0)
+            return "lost", "lost the Mac mini before the command started"
         if rc in INFRA_EXIT:
             note("%s - exit %d; the command did not run" % (INFRA_EXIT[rc], rc))
-        return rc
+        return "done", rc
     timing.mark("command")
     if rc == 255:
         sys.stderr.write(LOST_MSG + "\n")
         rc = EXIT_LOST
     record("mini", argv, rc, secs)
     timing.report()
-    return rc
+    return "done", rc

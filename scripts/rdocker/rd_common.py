@@ -84,7 +84,12 @@ DEFAULTS = {
     # rrun: heavy jobs (test runner + its DB) run ON the mini (rd_run.py + rr_runner.pl).
     "rr_root": "rr",                   # mini dir under ~ (git/, w/, slots/, ...)
     "rr_base_branches": ["dev", "main", "master"],   # origin/<b> mirrored to the mini when present
-    "rr_slots": 2,                     # concurrent rrun commands on the mini (10 CPU / 16 GB)
+    "rr_slots": 6,                     # max concurrent rrun commands on the mini (10 CPU / 16 GB)...
+    "rr_slots_base": 2,                # ...this many always; the rest only while the mini has room:
+    "rr_spare_min_free_pct": 25,       #    free memory % (kern.memorystatus_level) at least this
+    "rr_spare_max_load": 1.5,          #    and 1-min load per CPU at most this
+    "rr_reconnect_wait_min": 10,       # mini unreachable before the command started: wait this long
+                                       # for it to come back before running on the laptop instead
     "rr_wait_min": 30,                 # give up waiting for a free mini slot after this
     "rr_hb_timeout": 60,               # mini kills the run after this many s without a laptop heartbeat
     # untracked/ignored env files copied for a run (basename globs), looked up ONLY in the repo

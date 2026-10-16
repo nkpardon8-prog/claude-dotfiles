@@ -2,6 +2,16 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-16 - rrun: more mini slots when there is room; wait out short mini outages
+
+- Measured: mini runs averaged 42 s of work but 155 s end to end (queueing on 2 slots ~75% busy).
+  The mini now always runs `rr_slots_base` 2 and up to `rr_slots` 6 while free memory >= 25% and
+  load/CPU <= 1.5 (checked by the runner each pass; unreadable readings = no extra slot).
+- Live: a 5-min network drop (2026-10-16 09:55) sent 19 queued heavy runs to the laptop (6-14 min
+  each). Before GO, an unreachable mini is now waited for (`rr_reconnect_wait_min` 10, polled every
+  10 s, up to 3 tries) and the run retried there; the laptop is the backup after that. A signal while
+  waiting ends the run without running it anywhere.
+
 ## 2026-10-16 - Mac mini moved to the Tailscale app (`macminim4`)
 
 - The mini now runs the Tailscale app instead of the Homebrew `tailscaled` daemon (stopped, still
