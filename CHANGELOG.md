@@ -2,6 +2,13 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-15 - rdocker: global docker context stays on the mini after a laptop boot
+
+- Live: after a laptop reboot Tailscale was not up yet, so the forwarder pointed the global docker
+  context at the stopped laptop Docker Desktop for 8 minutes (tools that skip the shim would then
+  aim at the laptop). In auto mode a mini outage now moves the context to the laptop only when
+  laptop Docker is actually running or `RDOCKER_LOCAL_START=1`/`local_autostart` allows starting it.
+
 ## 2026-10-15 - rrun hook: wrappers, `bash -c`, two mini slots
 
 - Live: agents' heavy runs still landed on the laptop because the hook skipped
