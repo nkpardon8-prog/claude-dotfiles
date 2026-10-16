@@ -80,8 +80,14 @@ kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null; BUSY_PID=""
 
 # --- local-only routes --------------------------------------------------------------------------
 echo hi > "$TMP/f"
-check "bind mount runs on the laptop" "docker run --rm -v $TMP:/w alpine cat /w/f | grep -q hi"
-check "--network host runs on the laptop" "RDOCKER_VERBOSE=1 docker run --rm --network host alpine true 2>&1 | grep -q 'running locally'"
+# laptop Docker stays off unless something else started it: then these must refuse, never boot it
+if /usr/local/bin/docker --context desktop-linux info >/dev/null 2>&1; then
+  check "bind mount runs on the laptop" "docker run --rm -v $TMP:/w alpine cat /w/f | grep -q hi"
+  check "--network host runs on the laptop" "RDOCKER_VERBOSE=1 docker run --rm --network host alpine true 2>&1 | grep -q 'running locally'"
+else
+  check "bind mount refused while laptop Docker is off (never boots it)" "! docker run --rm -v $TMP:/w alpine true 2>/tmp/rde2e-bm.err && grep -q 'laptop Docker is off' /tmp/rde2e-bm.err"
+  check "laptop Docker still off afterwards" "! pgrep -f com.docker.virtualization >/dev/null"
+fi
 
 # --- two parallel ephemeral runs get distinct ports ---------------------------------------------
 for i in 1 2; do
