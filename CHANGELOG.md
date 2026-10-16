@@ -13,6 +13,12 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   compaction has finished (new `compact_boundary` in the transcript, or the primer retiring the
   sentinel), then submits `/post-compact-resume <sid>`. Same claim + retain/attempts (max 3) rules.
 - Tests: `test-auto-compact-pane.sh` (sandboxed, stub runpane). `test-auto-compact.sh` unchanged.
+- Live fix (same day): the first live run sat `busy` for 180s and typed nothing. Two Pane facts:
+  `panels screen` activityStatus is raw output recency (the ticking status line keeps it `active`),
+  and Pane only finds Claude's prompt when the rule above `❯` is bare `─` - a named session draws
+  `──── name ─`, so Pane says no composer and `panels submit` refuses (`composer-unknown`). The helper
+  now reads Pane's `agentState` from `workspace state`, parses the prompt itself, falls back to
+  `panels input` + a separate Enter, and confirms the resume in the transcript.
 
 ## 2026-10-16 - rrun: more mini slots when there is room; wait out short mini outages
 

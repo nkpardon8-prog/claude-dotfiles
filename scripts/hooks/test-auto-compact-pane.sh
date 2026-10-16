@@ -39,25 +39,48 @@ TRANSCRIPT="$FAKEHOME/.claude/projects/proj/session.jsonl"
 STUB="$PANEDIR/bin/runpane"
 STUB_LOG="$T/stub-calls.log"
 
-# Stub runpane: records argv, answers screen with an idle empty composer, answers submit with a
-# verified "taken" delivery. On `/compact` it simulates the compaction finishing by appending a
-# compact_boundary line to the transcript (STUB_WRITE_BOUNDARY=1) and/or deleting the sentinel
-# like post-compact-primer.sh does (STUB_RETIRE_SENTINEL=<path>).
+# Stub runpane: records argv and answers with canned JSON.
+#   workspace state → the panel with agentState=$STUB_AGENT_STATE (default idle)
+#   panels screen   → an idle empty composer. STUB_CAPTION=1 imitates a NAMED Claude session:
+#                     Pane reports isPresent:false and the text shows `──── name ─` / `❯\u00a0`.
+#                     STUB_HELD=<text> puts text in that composer.
+#   panels submit   → verified "taken"; with STUB_CAPTION=1 → blocked composer-unknown (nothing typed)
+#   panels input    → ok
+# Effects: delivering `/compact` (submit, or input --text) appends a compact_boundary line to the
+# transcript (STUB_WRITE_BOUNDARY=1) and/or deletes the sentinel like the primer does
+# (STUB_RETIRE_SENTINEL=<path>); delivering `/post-compact-resume` appends a transcript line.
 cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
-case "$1 $2" in
-  "panels screen")
-    echo '{"ok":true,"state":{"activityStatus":"idle"},"composer":{"isPresent":true,"hasUndeliveredText":false}}' ;;
-  "panels submit")
-    text=""; while [ $# -gt 0 ]; do [ "$1" = "--text" ] && { text="$2"; shift; }; shift; done
-    if [ "$text" = "/compact" ]; then
-      if [ "${STUB_WRITE_BOUNDARY:-0}" = "1" ]; then
-        ( sleep 0.5; echo '{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual"}}' >> "$STUB_TRANSCRIPT" ) &
-      fi
-      if [ -n "${STUB_RETIRE_SENTINEL:-}" ]; then ( sleep 0.5; rm -f "$STUB_RETIRE_SENTINEL" ) & fi
+text=""; args=("$@"); for ((i=0;i<${#args[@]};i++)); do [ "${args[$i]}" = "--text" ] && text="${args[$((i+1))]}"; done
+effects() {
+  if [ "$text" = "/compact" ]; then
+    if [ "${STUB_WRITE_BOUNDARY:-0}" = "1" ]; then
+      ( sleep 0.5; echo '{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual"}}' >> "$STUB_TRANSCRIPT" ) &
     fi
-    echo '{"ok":true,"verifiedSubmitted":true,"delivery":{"state":"taken","evidence":"screen"}}' ;;
+    if [ -n "${STUB_RETIRE_SENTINEL:-}" ]; then ( sleep 0.5; rm -f "$STUB_RETIRE_SENTINEL" ) & fi
+  fi
+  case "$text" in "/post-compact-resume "*) echo '{"type":"user","message":{"content":"<command-name>/post-compact-resume</command-name>"}}' >> "$STUB_TRANSCRIPT" ;; esac
+}
+case "$1 $2" in
+  "workspace state")
+    printf '{"ok":true,"panes":[{"panels":[{"panelId":"test-panel_1","agentType":"claude","agentState":"%s","running":true}]}]}\n' "${STUB_AGENT_STATE:-idle}" ;;
+  "panels screen")
+    if [ "${STUB_CAPTION:-0}" = "1" ]; then
+      python3 -c 'import json,os; print(json.dumps({"ok":True,"state":{"activityStatus":"active"},"composer":{"isPresent":False,"hasUndeliveredText":False},"text":"output\n\u2500\u2500\u2500\u2500\u2500 my-session \u2500\n\u276f\u00a0"+os.environ.get("STUB_HELD","")+"\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  ctx 9%"}))'
+    else
+      echo '{"ok":true,"state":{"activityStatus":"idle"},"composer":{"isPresent":true,"hasUndeliveredText":false}}'
+    fi ;;
+  "panels submit")
+    if [ "${STUB_CAPTION:-0}" = "1" ]; then
+      echo '{"ok":false,"verifiedSubmitted":false,"inputBytes":0,"blocked":{"kind":"composer-unknown"}}'
+    else
+      effects
+      echo '{"ok":true,"verifiedSubmitted":true,"delivery":{"state":"taken","evidence":"screen"}}'
+    fi ;;
+  "panels input")
+    effects
+    echo '{"ok":true}' ;;
   *) echo '{"ok":false}' ;;
 esac
 STUBEOF
@@ -161,10 +184,37 @@ expect "exactly two submits" "$([ "$(printf '%s\n' "$SUBMITS" | grep -c .)" = "2
 expect "1st submit is /compact to the panel" "$(printf '%s\n' "$SUBMITS" | sed -n 1p | grep -q -- '--panel test-panel_1 --text /compact --yes' && echo 1)"
 expect "2nd submit is /post-compact-resume <sid>" "$(printf '%s\n' "$SUBMITS" | sed -n 2p | grep -q -- "--text /post-compact-resume $SID --yes" && echo 1)"
 expect "every runpane call carries --pane-dir" "$([ "$(grep -vc -- "--pane-dir $PANEDIR" "$STUB_LOG")" = "0" ] && echo 1)"
-expect "screen polled before /compact" "$(sed -n 1p "$STUB_LOG" | grep -q '^panels screen' && echo 1)"
+expect "readiness read before /compact (workspace state + screen)" "$(sed -n 1,2p "$STUB_LOG" | grep -q '^workspace state' && sed -n 1,2p "$STUB_LOG" | grep -q '^panels screen' && echo 1)"
+expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 expect "compaction confirmed via transcript boundary" "$(grep -q "pane-compact-confirmed sid=$SID .*signal=transcript-compact-boundary" "$LOG" && echo 1)"
 expect "helper released its lock" "$([ ! -f "${SP}.pane-helper" ] && echo 1)"
 expect "no osascript-path line for this sid" "$(grep -q "stop sid=$SID\|test-no-fire sid=$SID tty=" "$LOG" && echo 0 || echo 1)"
+
+echo "== hook: NAMED Claude session (Pane composer-unknown) → panels input fallback =="
+reset; write_pane_sentinel
+STUB_CAPTION=1 STUB_WRITE_BOUNDARY=1 hook "test-panel_1"
+wait_helper
+expect "submit tried first for /compact" "$(grep -q -- '^panels submit --panel test-panel_1 --text /compact' "$STUB_LOG" && echo 1)"
+expect "fallback typed /compact via panels input" "$(grep -q -- '^panels input --panel test-panel_1 --text /compact --yes' "$STUB_LOG" && echo 1)"
+expect "Enter sent as a separate key press" "$(grep -q -- '^panels input --panel test-panel_1 --keys enter --yes' "$STUB_LOG" && echo 1)"
+expect "logged pane-submit-fallback" "$(grep -q "pane-submit-fallback sid=$SID .*step=compact" "$LOG" && echo 1)"
+expect "resume typed via panels input after confirmed compaction" "$(grep -q -- "^panels input --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && echo 1)"
+expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+expect "our parser saw the named composer as ready" "$(grep -q "wait=pre-compact screen=ready agent/composer=idle/empty" "$LOG" && echo 1)"
+
+echo "== hook: agent still working → nothing typed =="
+reset; write_pane_sentinel
+STUB_AGENT_STATE=working AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
+wait_helper
+expect "no submit/input while working" "$(grep -qE '^panels (submit|input)' "$STUB_LOG" && echo 0 || echo 1)"
+expect "logged composer-not-ready-pre-compact" "$(grep -q "reason=composer-not-ready-pre-compact" "$LOG" && echo 1)"
+
+echo "== hook: text already in a named composer → nothing typed =="
+reset; write_pane_sentinel
+STUB_CAPTION=1 STUB_HELD="half-typed thought" AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
+wait_helper
+expect "user's draft is never appended to" "$(grep -qE '^panels (submit|input)' "$STUB_LOG" && echo 0 || echo 1)"
+expect "logged idle/text" "$(grep -q "agent/composer=idle/text" "$LOG" && echo 1)"
 
 echo "== hook: no confirmed compaction → resume NOT sent =="
 reset; write_pane_sentinel

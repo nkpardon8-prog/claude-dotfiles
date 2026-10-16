@@ -25,8 +25,11 @@ Pane-path lines carry `delivery=pane` and `panel=<id>`; Terminal-path lines are 
 | `retain-FAILED` | auto-compact-after-pre-compact.sh | The retain-after-fire `mv` back to the sentinel path failed; native auto-compact is the remaining backstop. `attempt=<N>` logged |
 | `pane-dispatched` | auto-compact-after-pre-compact.sh | Pane branch: claim + retain bookkeeping done, detached delivery helper started; `helper_pid=` + `attempt=` logged |
 | `pane-skip` | auto-compact-after-pre-compact.sh | Pane branch: a delivery helper from an earlier Stop is still alive (`reason=helper-in-flight`); nothing claimed, no attempt counted |
-| `pane-helper` | auto-compact-pane-deliver.sh | Helper progress: `start`, `wait=<pre-compact\|post-compact> screen=<ready\|busy\|error>` transitions, or `abort reason=` (bad-args, bad-tunable, composer-not-ready-pre-compact, composer-not-ready-post-compact) |
-| `pane-submitted` | auto-compact-pane-deliver.sh | `runpane panels submit` verified the text (`step=compact\|resume`, `delivery=taken\|queued`) |
+| `pane-helper` | auto-compact-pane-deliver.sh | Helper progress: `start`, `wait=<pre-compact\|post-compact> screen=<ready\|busy> agent/composer=<agentState>/<empty\|text\|absent\|error>` transitions, or `abort reason=` (bad-args, bad-tunable, composer-not-ready-pre-compact, composer-not-ready-post-compact) |
+| `pane-submitted` | auto-compact-pane-deliver.sh | Text handed to Claude: `via=submit` (`runpane panels submit` verified, `delivery=taken\|queued`) or `via=input` (fallback; `composer_after=` + `enter_presses=`); `step=compact\|resume` |
+| `pane-submit-fallback` | auto-compact-pane-deliver.sh | `panels submit` answered `composer-unknown` (Pane cannot see the prompt of a NAMED Claude session, whose top rule reads `──── name ─`), so the helper types with `panels input` + a separate Enter |
+| `pane-resume-confirmed` | auto-compact-pane-deliver.sh | The `/post-compact-resume` command appeared in the session transcript (`after=<N>s`) |
+| `pane-resume-unconfirmed` | auto-compact-pane-deliver.sh | Resume typed but not seen in the transcript within the confirm window; check the panel |
 | `pane-submit-failed` | auto-compact-pane-deliver.sh | `runpane panels submit` did not verify; ok/verified/delivery/blocked logged; helper stops (sentinel retained → next Stop retries) |
 | `pane-compact-confirmed` | auto-compact-pane-deliver.sh | Compaction finished: `signal=transcript-compact-boundary` (new compact_boundary entry in the transcript) or `signal=sentinel-retired` (primer retired it) |
 | `pane-compact-unconfirmed` | auto-compact-pane-deliver.sh | No confirmed compaction within the timeout; the resume is NOT sent |
