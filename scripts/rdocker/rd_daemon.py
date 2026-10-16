@@ -47,6 +47,18 @@ def set_global_context(cfg, target):
         rd_common.log("global docker context -> " + want)
 
 
+def context_target(cfg, resolved=None):
+    """Engine the GLOBAL docker context should follow (tools that skip the shim read it). In auto mode
+    a mini outage (e.g. the minutes after a laptop boot, before Tailscale is up) points it at the laptop
+    only when laptop Docker is actually running or may be started; aiming it at a stopped Docker
+    Desktop just invites some tool to launch it."""
+    target, why = resolved or rd_tunnel.resolve_target(cfg)
+    if target == "local" and not why.startswith("mode=") and not rd_tunnel.local_engine_up(cfg) \
+            and not rd_tunnel.local_start_allowed(cfg):
+        return "mini"
+    return target
+
+
 # Scheduling uses time.monotonic(): a wall-clock jump (NTP step, manual change) must neither fire
 # every job at once nor starve them. Wall-clock time is only for persisted timestamps (local-last).
 TS_KICK_EVERY = 300          # seconds between laptop Tailscale start attempts
@@ -421,7 +433,7 @@ def daemon():
                 except Exception as e:     # a help-text surprise must never stop the forwarder
                     rd_common.log("flag drift check failed: %r" % e)
             target, why = rd_tunnel.resolve_target(cfg)
-            set_global_context(cfg, target)
+            set_global_context(cfg, context_target(cfg, (target, why)))
             if healthy:
                 rd_tunnel.sync_forwards(cfg)
                 if due(last["janitor"], cfg["janitor_interval_min"] * 60, now):

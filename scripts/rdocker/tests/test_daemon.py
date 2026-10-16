@@ -445,5 +445,31 @@ class ShimMarksLocal(ShimCase):
         self.assertFalse(os.path.exists(os.path.join(self.state, "local-active")))
 
 
+
+class ContextTarget(unittest.TestCase):
+    """The global docker context never follows a mini outage onto a stopped laptop Docker Desktop."""
+    cfg = {"mode": "auto"}
+
+    def target(self, resolved, local_up=False, start_ok=False):
+        with mock.patch.object(rd_daemon.rd_tunnel, "local_engine_up", return_value=local_up), \
+                mock.patch.object(rd_daemon.rd_tunnel, "local_start_allowed", return_value=start_ok):
+            return rd_daemon.context_target(self.cfg, resolved)
+
+    def test_outage_with_desktop_off_stays_on_mini(self):
+        self.assertEqual(self.target(("local", "mini unreachable")), "mini")
+
+    def test_outage_with_desktop_running_follows_laptop(self):
+        self.assertEqual(self.target(("local", "mini unreachable"), local_up=True), "local")
+
+    def test_outage_with_local_start_opt_in_follows_laptop(self):
+        self.assertEqual(self.target(("local", "mini docker engine not responding"), start_ok=True), "local")
+
+    def test_explicit_local_mode_is_honoured(self):
+        self.assertEqual(self.target(("local", "mode=local")), "local")
+
+    def test_healthy_mini(self):
+        self.assertEqual(self.target(("mini", "ok")), "mini")
+
+
 if __name__ == "__main__":
     unittest.main()
