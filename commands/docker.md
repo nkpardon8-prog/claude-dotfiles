@@ -236,7 +236,9 @@ refusals, for the "not a throwaway container" refusal, or on paths that already 
 | anything with `RDOCKER_MODE=mini` while the mini is unavailable | **refused, exit 1** — never falls back |
 | anything with `RDOCKER_MODE=local` | laptop |
 
-**Laptop Docker stays off.** rdocker never opens Docker Desktop for a command (`local_autostart`
+**Laptop Docker stays off.** Agents may not start it either: the `no-docker-desktop.py` hook blocks
+`open -a Docker` / `open .../Docker.app` / AppleScript activate / `docker desktop start` (four sessions had
+the habit, 2026-10-15) unless the command carries `RDOCKER_LOCAL_START=1`. rdocker never opens Docker Desktop for a command (`local_autostart`
 false; `RDOCKER_LOCAL_START=1 <cmd>` opts in for that one command), and the daemon quits it after
 `local_idle_stop_min` (15) idle minutes. When auto mode would fall back to the laptop but Docker Desktop
 is not running, the command instead waits up to `blip_wait_s` (30) for the mini and runs there, or exits 1

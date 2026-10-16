@@ -72,7 +72,7 @@ Tailscale; every published TCP port is mirrored to laptop `localhost` at the sam
 localhost safety guards all keep working (a fixed host port must be free on the laptop, else exit 125;
 UDP publishes are refused). Never add `--context`, set `DOCKER_HOST`/`DOCKER_CONTEXT`, or swap
 `localhost` for the mini's hostname: each bypasses the routing. Laptop bind mounts, `--network host`,
-and pinned laptop containers run locally on their own. rdocker **never starts laptop Docker Desktop**
+and pinned laptop containers run locally on their own. rdocker **never starts laptop Docker Desktop, and neither may you** (`open -a Docker` is blocked by a hook; if docker fails or is slow, run `rdocker doctor`)
 (GBs of RAM; `RDOCKER_LOCAL_START=1` does, on purpose) - if it is already running and the mini is down, only
 throwaway containers (`--rm`, or no named volume and no `rdocker.keep`) fall back to it, else they wait up to 30 s for the mini; anything else, and any
 command on a container whose location can't be established waits up to 30 s for the mini, then exits 1 instead of guessing (so does

@@ -51,6 +51,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   firing 151 `npm run --silent check:x` had sent each one to the mini separately.
 - Mini reboot: keep-labelled containers (and david_db) set to `restart unless-stopped` on the mini;
   they had all been `no`, so a Colima/mini restart would have left every DB stopped.
+- New hook `scripts/hooks/no-docker-desktop.py` (PreToolUse Bash): agents launching laptop Docker
+  Desktop by hand (`open -a Docker` when `docker info` failed - 4 sessions, one at 16:59 took GBs the
+  user needed) is blocked with "run `rdocker doctor`"; `RDOCKER_LOCAL_START=1` opts in.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 
