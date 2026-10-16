@@ -53,7 +53,12 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   they had all been `no`, so a Colima/mini restart would have left every DB stopped.
 - New hook `scripts/hooks/no-docker-desktop.py` (PreToolUse Bash): agents launching laptop Docker
   Desktop by hand (`open -a Docker` when `docker info` failed - 4 sessions, one at 16:59 took GBs the
-  user needed) is blocked with "run `rdocker doctor`"; `RDOCKER_LOCAL_START=1` opts in.
+  user needed) is blocked with "run `rdocker doctor`"; `RDOCKER_LOCAL_START=1` opts in. Blocks are logged
+  to `~/.local/state/rdocker/blocked-desktop.log` with the session id.
+- Also routed: `node --max-old-space-size=NNNN ...` (big heap = heavy) and `vitest run <dir>...`.
+- Mini janitor sets `restart unless-stopped` on keep-labelled containers (kept DBs survive a reboot).
+- rrun writes one line per run to `~/rr/log/runs.log` on the mini (no env values; 5 MB rotation).
+- Laptop logs rotate at 10 MB (~1 week of route.log).
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 

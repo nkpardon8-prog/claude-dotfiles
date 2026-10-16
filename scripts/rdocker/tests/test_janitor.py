@@ -113,6 +113,29 @@ class KeepProtection(JanitorCase):
         self.clean("--only", "t-")
         self.assertFalse([a for a in self.destructive() if "iddb" in a], self.destructive())
 
+    def test_keep_containers_get_restart_unless_stopped(self):
+        # a mini/Colima reboot left every kept DB down (restart=no): the janitor upgrades the policy
+        self.mini({"t-keep": running("idkeep", Labels={"rdocker.keep": "1"}),
+                   "t-kept2": stopped("idk2", Labels={"rdocker.keep": "1"}, RestartPolicy=""),
+                   "t-already": running("idal", Labels={"rdocker.keep": "1"},
+                                        RestartPolicy="always"),
+                   "t-rm": running("idrm", Labels={"rdocker.keep": "1"}, AutoRemove=True),
+                   "t-plain": running("idplain"),
+                   "t-off": running("idoff", Labels={"rdocker.keep": "0"})})
+        self.clean("--only", "t-")
+        ups = [a for a in self.argvs() if a[:1] == ["update"]]
+        self.assertEqual(sorted(ups), [["update", "--restart", "unless-stopped", "idk2"],
+                                       ["update", "--restart", "unless-stopped", "idkeep"]])
+        self.assertEqual(self.destructive(), [])
+        with open(os.path.join(self.state, "daemon.log")) as f:
+            self.assertIn("restart unless-stopped t-keep", f.read())
+
+    def test_keep_restart_dry_run_changes_nothing(self):
+        self.mini({"t-keep": running("idkeep", Labels={"rdocker.keep": "1"})})
+        p = self.clean("--only", "t-", "--dry-run")
+        self.assertFalse([a for a in self.argvs() if a[:1] == ["update"]])
+        self.assertIn("restart unless-stopped t-keep", p.stdout)
+
     def test_keep_value_semantics(self):
         self.assertTrue(r.keep_label({"rdocker.keep": ""}))
         self.assertTrue(r.keep_label({"rdocker.keep": "TRUE"}))

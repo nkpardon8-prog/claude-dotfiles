@@ -129,6 +129,7 @@ class MiniEngineDown(Exception):
 
 class JanitorRun:
     """One janitor pass: the act log, failure bookkeeping and the keep-checked destructive calls."""
+    keep_restart = True                 # ensure_restart: keep containers get restart unless-stopped
 
     def __init__(self, cfg, dry, lock=None, ctx=None, tag="janitor"):
         self.cfg, self.ctx, self.dry, self.lock = cfg, ctx or cfg["remote_context"], dry, lock
@@ -239,6 +240,20 @@ def running_ids(infos):
     return {c["Id"] for c in infos if (c.get("State") or {}).get("Running")}
 
 
+def ensure_restart(J, info, cid, name):
+    """A keep-labelled container with restart policy "no"/empty gets `unless-stopped`, so a mini /
+    Colima reboot brings it back (before this every kept DB stayed down after one). The policy comes
+    from the inspect record this pass already has (no extra round trip). --rm containers cannot carry
+    a restart policy (docker refuses), so they are left alone. Not destructive; a failure is logged
+    only (it would fail the same way every pass), never a janitor last_error."""
+    hc = info.get("HostConfig") or {}
+    policy = (hc.get("RestartPolicy") or {}).get("Name") or "no"
+    if not J.keep_restart or hc.get("AutoRemove") or policy != "no":
+        return
+    J.act("restart unless-stopped %s (rdocker.keep: survive a mini reboot)" % name,
+          "update", "--restart", "unless-stopped", cid, record=False)
+
+
 def janitor_containers(J, infos, complete, idle, now, only):
     """Container rules. Returns (new idle map, [(cid, name)] of in-scope stopped non-keep containers
     still present). Idle entries of ids not seen are dropped only when inspect fully succeeded."""
@@ -260,6 +275,7 @@ def janitor_containers(J, infos, complete, idle, now, only):
             continue
         if keep_label(labels):
             idle.pop(cid, None)
+            ensure_restart(J, c, cid, name)
             continue
         if not st.get("Running"):
             idle.pop(cid, None)
@@ -656,6 +672,7 @@ def manual_pin_reason(cfg, info):
 
 class LaptopJanitorRun(JanitorRun):
     """JanitorRun on the laptop engine; its fresh() also re-reads the manual pins."""
+    keep_restart = False                # restart-policy upgrade is for the always-on mini only
 
     def __init__(self, cfg):
         super().__init__(cfg, False, ctx=cfg["local_context"], tag="laptop janitor")

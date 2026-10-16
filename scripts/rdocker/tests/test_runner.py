@@ -517,6 +517,65 @@ class RunnerTest(unittest.TestCase):
         self.assertNotIn(self.nonce + " READY", r.err)
         self.assertFalse(os.path.exists(marker))
 
+    # ------------------------------------------------------------------------ run log
+    def runs_log(self):
+        with open(os.path.join(self.root, "log", "runs.log")) as f:
+            return f.read().splitlines()
+
+    def test_run_log_one_line_per_run_no_secrets(self):
+        r = self.run_runner(["/bin/sh", "-c", "exit 3", "-e", "PGPASSWORD=hunter2", "--env=TOK=sek",
+                             "-eK=v2", "SECRET=s3", "--db-password=pw"], env={"API_KEY": "envsek"})
+        self.assertEqual(r.rc, 3, r.err)
+        os.unlink(os.path.join(self.mirror, "node_modules", ".rr-deps-stamp"))   # force npm ci
+        self.run_runner(["true"], env={"FAKE_NPM_FAIL": "1"})
+        self.run_runner(["true"], repo_slug="nope")
+        self.run_runner(["true"], go=False, hb_timeout=1, timeout=20)
+        lines = self.runs_log()
+        self.assertEqual(len(lines), 4, lines)
+        self.assertRegex(lines[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d{4} repo=%s wt=%s "
+                         r"sha=%s outcome=rc=3 prepare_s=\d+\.\d cmd_s=\d+\.\d argv=/bin/sh -c exit 3 "
+                         % (SLUG.replace(".", r"\."), WT, self.sha[:12]))
+        for secret in ("hunter2", "sek", "v2", "s3", "pw", "envsek", "API_KEY"):
+            self.assertNotIn(secret, "\n".join(lines))
+        self.assertIn("-e <redacted> --env=<redacted> -e<redacted> SECRET=<redacted> "
+                      "--db-password=<redacted>", lines[0])
+        self.assertIn("outcome=deps-failed", lines[1])
+        self.assertIn("cmd_s=-", lines[1])
+        self.assertIn("outcome=refused rc=69", lines[2])
+        self.assertIn("outcome=lost", lines[3])
+        st = os.stat(os.path.join(self.root, "log"))
+        self.assertEqual(st.st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(os.path.join(self.root, "log", "runs.log")).st_mode & 0o777, 0o600)
+        # long argv is cut at 120 chars
+        self.run_runner(["true", "x" * 500])
+        self.assertLess(len(self.runs_log()[-1].split(" argv=", 1)[1]), 130)
+
+    def test_run_log_rotates_and_never_writes_through_links(self):
+        logdir = os.path.join(self.root, "log")
+        os.makedirs(logdir)
+        big = os.path.join(logdir, "runs.log")
+        with open(big, "w") as f:
+            f.write("old\n" * 1_300_000)               # > 5 MB
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+        with open(big + ".1") as f:
+            self.assertTrue(f.read().startswith("old\n"))
+        self.assertEqual(len(self.runs_log()), 1)
+        victim = os.path.join(self.d, "victim")
+        wfile(victim, "precious\n")
+        os.unlink(big)
+        os.symlink(victim, big)
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+        os.unlink(big)
+        os.link(victim, big)
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "precious\n")
+        self.assertEqual(len(self.runs_log()), 1)
+        # an unwritable log never fails the run
+        shutil.rmtree(logdir)
+        wfile(logdir, "not a dir")
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+
     # ------------------------------------------------------------------ ~/rr hardening
     def test_root_excluded_from_time_machine_once_and_spotlight(self):
         self.assertEqual(self.run_runner(["true"]).rc, 0)

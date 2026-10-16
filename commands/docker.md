@@ -139,6 +139,10 @@ the connection).
   same rules, `RDOCKER_MODE=local` inside it included; a double-quoted script is left alone.
 - **Safety net:** if a heavy npm script starts a container without going through `rrun`, the shim puts
   that container on the laptop (fast, instead of the slow split) and prints one hint to use `rrun`.
+- **Logs:** laptop `~/.local/state/rdocker/route.log` (one line per decision, rrun lines with rc and
+  seconds; rotated at 10 MB, ~1 week) and `daemon.log`; mini `~/rr/log/runs.log` (one line per run: time,
+  repo, worktree, sha, argv head with env values redacted, outcome, prepare/command seconds; 0600,
+  rotated at 5 MB).
 - **Git state on the mini:** `git rev-parse HEAD` is the laptop's HEAD SHA; the checkout is detached
   (`--abbrev-ref HEAD` prints `HEAD`, not the branch); the working tree equals the laptop's (dirty files
   included), but the index is plain HEAD, so staged changes show as unstaged. Clean laptop -> clean mini.
@@ -302,6 +306,7 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | anonymous volumes not used by any container | pruned each run (keep-labelled exempt) |
 | image | removed after **14 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Removed tag by tag (`image rm <repo:tag>`; an image tagged in several repositories cannot be removed by id), then by id if an untagged remainder is left; never `-f`. Docker's refusals (in use, dependent child images, multi-repo) are skips, not errors. Dangling images pruned |
 | build cache | pruned when older than 7 d, and capped at **5 GB** |
+| keep-labelled container on the mini with restart policy `no` | `update --restart unless-stopped`, so kept DBs come back after a mini / Colima reboot (`--rm` ones skipped) |
 | `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **7 d** unused (all unused ones when mini free < `host_min_free_gb`); a mirror whose repo slot is busy is skipped; bare repos in `~/rr/git` are kept, only the removed mirror's ref goes |
 | container logs | capped per container: 10 MB × 3 files (json-file) |
 | mini Colima/Lima log files | truncated past 50 MB; VM journald capped at 200 MB |

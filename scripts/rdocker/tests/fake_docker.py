@@ -183,6 +183,8 @@ def find(st, containers, n):
                 "Image": c.get("Image", "sha256:img-" + n),
                 "Config": {"Labels": c.get("Labels") or {}},
                 "Mounts": c.get("Mounts") or [],
+                "HostConfig": {"RestartPolicy": {"Name": c.get("RestartPolicy", "no")},
+                               "AutoRemove": bool(c.get("AutoRemove"))},
                 "State": {"Running": fixture_running(st, n, c),
                           "Status": "running" if fixture_running(st, n, c) else "exited",
                           "StartedAt": (st.get("started_override") or {}).get(

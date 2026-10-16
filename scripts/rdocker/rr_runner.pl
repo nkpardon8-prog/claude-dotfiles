@@ -20,6 +20,7 @@
 # separate random label token), so it cannot forge them. Exit = the command's rc (or 128+sig);
 # 65 bad header/overlay/unsafe path, 69 missing bare repo, 70 runner error, 73 no free slot,
 # 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started.
+# Every run appends one line to $ROOT/log/runs.log (see run_log; no env values, never fails a run).
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
 # RR_REAL_DOCKER (default /opt/homebrew/bin/docker).
 use strict;
@@ -29,7 +30,7 @@ use JSON::PP ();
 use IO::Select;
 use Time::HiRes qw(time sleep);
 use Digest::SHA ();
-use Fcntl qw(:flock O_RDWR O_WRONLY O_CREAT O_EXCL O_NOFOLLOW);
+use Fcntl qw(:flock O_RDWR O_WRONLY O_CREAT O_EXCL O_NOFOLLOW O_APPEND);
 use File::Path qw(make_path remove_tree);
 use File::Find ();
 use File::Basename qw(dirname);
@@ -49,6 +50,7 @@ my $EX_DEPS = 78;    # EX_CONFIG: npm ci / prisma generate failed (never the com
 our $supervising = 0;
 our $QUIET = 0;    # run_cmd: also send the tool's stderr to /dev/null
 my %reaped;
+my ($t_slot, $t_ready, $t_spawn);    # run log timings: slot taken, READY (prepare done), command spawned
 
 sub status { print STDERR "$nonce $_[0]\n" }
 sub fail { my ($msg, $code) = @_; print STDERR "rrun-runner: $msg\n" if defined $msg; die { code => $code // 70 } }
@@ -72,6 +74,7 @@ sub main {
     read_header();
     $label = rand_hex();    # container label token: never the nonce (the command can read labels)
     take_slot();
+    $t_slot = time;
     $tmp = File::Temp::tempdir("run-XXXXXXXX", DIR => mk("$ROOT/tmp"));
     write_shim("$tmp/docker");
     my $path = "$tmp:" . ($ENV{RR_PATH} // join ':', grep { defined } node_dir(), '/opt/homebrew/bin', '/usr/bin', '/bin');
@@ -85,8 +88,10 @@ sub main {
     deps(\%env);
     return 128 + 15 if $lost;
     fail("interrupted before the command started", 130) if $intr;
+    $t_ready = time;
     await_go();
     $started = 1;
+    $t_spawn = time;
     my $pid = spawn($h{argv}, \%env, $cwd);
     status('STARTED');
     return supervise($pid);
@@ -542,6 +547,60 @@ sub finish {
     eval { containers($rc) } if $started;
     if ($who) { unlink $who; close $lock_fh }
     remove_tree($tmp) if $tmp;
+    eval { run_log($rc) };    # bookkeeping only: never changes the run's outcome
+}
+
+# One line per run in $ROOT/log/runs.log (0600; dir 0700; one rotated generation, runs.log.1, past
+# 5 MB): time, repo, worktree, commit, outcome, prepare/command seconds, then the first 120 chars
+# of the argv with env-looking values redacted (-e X=.., --env=.., NAME=..). The header env is
+# never logged. Tested code can write ~/rr: a planted symlink/hardlink at the log is replaced,
+# never written through.
+sub run_outcome {
+    my ($rc) = @_;
+    if ($started) { return $lost ? "lost rc=$rc" : $intr ? "interrupted rc=$rc" : "rc=$rc" }
+    return 'deps-failed' if $rc == $EX_DEPS;
+    return 'busy' if $rc == 73;
+    return "refused rc=$rc" if $rc == 65 || $rc == 69;
+    return $intr ? 'interrupted' : 'lost' if $rc == 130 || $lost;
+    "error rc=$rc";
+}
+
+sub redact_argv {
+    my @out;
+    my $val = 0;
+    for my $a (@{ $h{argv} // [] }) {
+        if ($val) { push @out, '<redacted>'; $val = 0; next }
+        if ($a eq '-e' || $a eq '--env') { push @out, $a; $val = 1; next }
+        if ($a =~ /^(--env=|-e)(?=.*=)/s) { push @out, "$1<redacted>"; next }
+        if ($a =~ /^(-*[A-Za-z_][A-Za-z0-9_-]*=)/) { push @out, "$1<redacted>"; next }
+        push @out, $a;
+    }
+    (my $s = join ' ', @out) =~ s/[\x00-\x1f\x7f]/ /g;
+    length $s > 120 ? substr($s, 0, 120) . '...' : $s;
+}
+
+sub run_log {
+    my ($rc) = @_;
+    my $now = time;
+    my $dir = "$ROOT/log";
+    return if -l $dir;
+    mkdir $dir, 0700 unless -d $dir;
+    chmod 0700, $dir;
+    my $f = "$dir/runs.log";
+    my @st = lstat $f;
+    rename $f, "$f.1" if @st && -f _ && $st[7] > 5_000_000;
+    @st = lstat $f;
+    unlink $f if @st && (!-f _ || $st[3] != 1);    # symlink, hardlink or other: replace it
+    sysopen(my $fh, $f, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600) or return;
+    my $id = sub { my ($v, $re) = @_; defined $v && !ref $v && $v =~ $re ? $v : '?' };
+    my $secs = sub { defined $_[0] && defined $_[1] ? sprintf('%.1f', $_[1] - $_[0]) : '-' };
+    printf {$fh} "%s repo=%s wt=%s sha=%s outcome=%s prepare_s=%s cmd_s=%s argv=%s\n",
+        POSIX::strftime('%Y-%m-%dT%H:%M:%S%z', localtime $now),
+        $id->($h{repo_slug}, $SLUG), $id->($h{wt12}, $SLUG),
+        substr($id->($h{sha}, qr/^[0-9a-f]{40}$/), 0, 12), run_outcome($rc),
+        $secs->($t_slot, $t_ready // $now), $secs->($t_spawn, $t_spawn && $now),
+        redact_argv();
+    close $fh;
 }
 
 sub containers {
