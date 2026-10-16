@@ -295,6 +295,13 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 - Compose: published ports from the rendered model get the same laptop preflight; entries without a host
   port are left to the mini and checked after start. `-P` (publish all) ports are chosen by the mini's
   Docker and mirrored after start.
+- **Mirror first:** the laptop side of every reserved port is bound (SSH mirror) right after the
+  reservation, BEFORE `docker run` / `compose up` starts the container, and kept while the reservation
+  lives. Reason: the Pane desktop app, when connected to the Pane daemon on the mini, mirrors every port
+  that starts listening on the mini to laptop `127.0.0.1`/`::1` at the same number - it used to win the
+  race and every new mirror failed as "laptop port N is busy" (2026-10-16). Pane steps to the next free
+  number when the port is taken, so binding first keeps rdocker's same-number promise. A failed forward
+  now logs ssh's own error and names the holding process (`held by <cmd> pid <n>`).
 - **Mirror required:** if a mirror cannot be established after start (laptop port taken meanwhile, tunnel
   failure), the container **this command created** is removed (`rm -f`) and the command exits 1; a
   container that already existed (`docker start`) is left running. Foreground `run` / `compose up` are
