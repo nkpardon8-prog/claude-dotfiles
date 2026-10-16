@@ -5,24 +5,32 @@ stability: do not rename a verb without updating every log consumer + this file.
 
 ## auto-compact.log (ac_log — via `lib/auto-compact-sentinel.sh:ac_log`)
 
-Used by `arm-auto-compact.sh` and `auto-compact-after-pre-compact.sh`.
+Used by `arm-auto-compact.sh`, `auto-compact-after-pre-compact.sh` and `auto-compact-pane-deliver.sh`.
+Pane-path lines carry `delivery=pane` and `panel=<id>`; Terminal-path lines are unchanged.
 
 | Verb | Script | Meaning |
 |---|---|---|
-| `armed` | arm-auto-compact.sh | Sentinel written successfully; target TTY + nonce prefix logged |
-| `arm-failed` | arm-auto-compact.sh | Sentinel write failed (disk full or permission error) |
+| `armed` | arm-auto-compact.sh | Sentinel written successfully; target TTY + nonce prefix logged (Pane mode: `delivery=pane panel=<id>`) |
+| `arm-failed` | arm-auto-compact.sh | Sentinel write failed (disk full or permission error); Pane mode also logs `reason=pane-panel-id-invalid`, `pane-runpane-unavailable` or `pane-dir-missing` |
 | `FATAL` | arm-auto-compact.sh | Fatal error in arm script; nonce generation failed; reason appended |
 | `disarmed` | arm-auto-compact.sh | Sentinel deleted per user opt-out request |
 | `dry-run` | arm-auto-compact.sh | Dry-run mode; sentinel NOT written; would-arm details logged |
 | `warn` | arm-auto-compact.sh | Non-fatal warning (e.g., automation-probe-failed-or-timed-out) |
 | `stop` | auto-compact-after-pre-compact.sh | Stop hook fired; logs osa_exit + result |
-| `abort` | auto-compact-after-pre-compact.sh | Stop hook aborted before firing; `reason=` appended (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire) — own-ancestry session-correlation verification failed; sentinel left intact for next-Stop retry |
+| `abort` | auto-compact-after-pre-compact.sh | Stop hook aborted before firing; `reason=` appended (own-claude-unresolved, starttime-empty, argv-mismatch, tty-unresolved, not-foreground-leader, identity-churned-pre-fire) — own-ancestry session-correlation verification failed; sentinel left intact for next-Stop retry. Pane branch reasons: `pane-fields-invalid`, `pane-panel-mismatch` (sentinel's panel id ≠ this session's `PANE_PANEL_ID`), `pane-runpane-missing` |
 | `restore` | auto-compact-after-pre-compact.sh | Sentinel restored after a post-claim abort or a non-fire osascript result (no-matching-tab etc.) so the next Stop retries; `reason=` + `result=` appended |
 | `restore-FAILED` | auto-compact-after-pre-compact.sh | The post-claim sentinel restore `mv` itself failed (rare); the pending-handoff primer is the remaining recovery |
 | `fired-unconfirmed` | auto-compact-after-pre-compact.sh | `/compact` was DELIVERED but a compaction is not yet proven, so the sentinel is retained and `attempt=<N>` counted; post-compact-primer.sh retires it on a confirmed source=compact start. Firing is delivery, not effect |
 | `give-up` | auto-compact-after-pre-compact.sh | `/compact` typed 3 times with no confirmed compaction; the sentinel is consumed to stop retrying and native auto-compact remains the backstop. `attempts=<N>` logged |
 | `retain-FAILED` | auto-compact-after-pre-compact.sh | The retain-after-fire `mv` back to the sentinel path failed; native auto-compact is the remaining backstop. `attempt=<N>` logged |
-| `test-no-fire` | auto-compact-after-pre-compact.sh | AUTO_COMPACT_TEST_NO_FIRE was set; full resolve→verify→claim path ran but the osascript fire was skipped (no keystrokes) — test seam, never set by real Stop hooks |
+| `pane-dispatched` | auto-compact-after-pre-compact.sh | Pane branch: claim + retain bookkeeping done, detached delivery helper started; `helper_pid=` + `attempt=` logged |
+| `pane-skip` | auto-compact-after-pre-compact.sh | Pane branch: a delivery helper from an earlier Stop is still alive (`reason=helper-in-flight`); nothing claimed, no attempt counted |
+| `pane-helper` | auto-compact-pane-deliver.sh | Helper progress: `start`, `wait=<pre-compact\|post-compact> screen=<ready\|busy\|error>` transitions, or `abort reason=` (bad-args, bad-tunable, composer-not-ready-pre-compact, composer-not-ready-post-compact) |
+| `pane-submitted` | auto-compact-pane-deliver.sh | `runpane panels submit` verified the text (`step=compact\|resume`, `delivery=taken\|queued`) |
+| `pane-submit-failed` | auto-compact-pane-deliver.sh | `runpane panels submit` did not verify; ok/verified/delivery/blocked logged; helper stops (sentinel retained → next Stop retries) |
+| `pane-compact-confirmed` | auto-compact-pane-deliver.sh | Compaction finished: `signal=transcript-compact-boundary` (new compact_boundary entry in the transcript) or `signal=sentinel-retired` (primer retired it) |
+| `pane-compact-unconfirmed` | auto-compact-pane-deliver.sh | No confirmed compaction within the timeout; the resume is NOT sent |
+| `test-no-fire` | auto-compact-after-pre-compact.sh | AUTO_COMPACT_TEST_NO_FIRE was set; full resolve→verify→claim path ran but the osascript fire was skipped (no keystrokes) — test seam, never set by real Stop hooks. Pane branch: `delivery=pane`, logged when no AUTO_COMPACT_TEST_RUNPANE stub is given (helper not spawned) |
 | `ac_write_sentinel` | lib/auto-compact-sentinel.sh | Sentinel write skipped in ac_write_sentinel; reason= appended (e.g., oversize) |
 | `invalid` | lib/auto-compact-sentinel.sh | Invalid TTY target detected during sentinel validation; raw value logged |
 | `test` | test-auto-compact.sh | Test harness log entry (not emitted by production scripts) |
@@ -48,7 +56,7 @@ documented here to satisfy the G5 drift checker.
 | Verb | Script | Meaning |
 |---|---|---|
 | `handoff:sentinel_armed` | arm-auto-compact.sh | Arm success; SID8 + TTY + CWD logged |
-| `handoff:compact_chained` | auto-compact-after-pre-compact.sh | Stop hook delivered /compact + /post-compact-resume |
+| `handoff:compact_chained` | auto-compact-after-pre-compact.sh, auto-compact-pane-deliver.sh | Stop hook delivered /compact + /post-compact-resume (Pane: helper sent the resume after a confirmed compaction) |
 | `handoff:session_started` | post-compact-primer.sh | Primer fired; SID + source logged |
 | `handoff:ctx_broker_invalidated` | post-compact-primer.sh | Stale-broker guard: ctx-<sid>.txt sidecar deleted at a compact/clear boundary so the first post-event UserPromptSubmit doesn't read a stale-high ctx%; SID + source logged |
 | `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD (R4 D6: logged AFTER resolver sets HANDOFF_PATH); SID8 + file + sentinel_present logged |

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Stop hook — fires /compact into the originating Terminal.app tab when /pre-compact armed it.
+# Stop hook — fires /compact into the originating Terminal.app tab when /pre-compact armed it,
+# or — for a sentinel armed inside a Pane panel (delivery:"pane") — hands delivery to the
+# detached auto-compact-pane-deliver.sh helper, which drives the panel through `runpane`.
 #
 # Execution context: this is a Claude Code Stop hook script.
 # It runs as a direct subprocess of Claude Code, NOT through the orchestrator Bash tool.
@@ -29,8 +31,9 @@
 #   - Sentinel: symlink-rejected, size-bounded (4KB), schema-validated.
 #   - Foreground-process check: `do script` only fires if the matched tab is running `claude`.
 #
-# Platform: macOS Terminal.app only. The arming step refuses to write a sentinel for
-# non-Darwin / non-Terminal.app / tmux / screen, so this hook is naturally inert there.
+# Platform: macOS Terminal.app, plus Pane panels via the separate Pane branch below. The arming
+# step refuses to write a sentinel for non-Darwin / other terminal hosts / tmux / screen, so
+# this hook is naturally inert there.
 #
 # Uninstall: run `~/.claude-dotfiles/scripts/hooks/uninstall-auto-compact.sh`.
 # Diagnostics: `~/.claude/logs/auto-compact.log` (bounded ring, last ~64KB).
@@ -101,6 +104,107 @@ find "$HOME/.claude/progress" -maxdepth 1 -type f \
   -mmin +1440 -delete 2>/dev/null || true
 
 [ -f "$SENTINEL" ] || exit 0
+
+# ---------------------------------------------------------------------------
+# PANE DELIVERY BRANCH (2026-10-16). A sentinel armed inside a Pane panel carries
+# delivery:"pane" + the panel id. Pane runs Claude in its own pty, which no Terminal.app tab
+# owns, so the osascript path below can only ever return no-matching-tab there. This branch
+# replaces it for Pane sentinels ONLY and always exits; Terminal sentinels (no `delivery`
+# field) fall through to the unchanged code below.
+#
+# Same anti-loop contract as the Terminal path: atomic mv claim, then RETAIN with an
+# incremented `.attempts` counter (give-up at 3); post-compact-primer.sh retires the sentinel
+# on a confirmed compaction. Delivery itself runs in a DETACHED helper (new session via
+# setsid) so this hook returns and Claude goes idle — the helper waits for an idle empty
+# composer, submits /compact, waits for a confirmed compaction, then submits the resume.
+# ---------------------------------------------------------------------------
+if [ "$(ac_read_sentinel_delivery "$SENTINEL" 2>/dev/null)" = "pane" ]; then
+  PANE_FIELDS=$(ac_read_sentinel_pane "$SENTINEL") || {
+    ac_log "abort sid=$REAL_SID reason=pane-fields-invalid delivery=pane"
+    exit 0
+  }
+  IFS=$'\t' read -r PANE_PANEL PANE_RUNPANE PANE_DIR <<EOF
+$PANE_FIELDS
+EOF
+  # Own-panel binding (Pane's analogue of the own-claude-pid check below): this hook inherits
+  # its own session's environment, so a PANE_PANEL_ID that disagrees with the sentinel means
+  # the sentinel is not for this panel — never type into another one.
+  if [ -n "${PANE_PANEL_ID:-}" ] && [ "$PANE_PANEL_ID" != "$PANE_PANEL" ]; then
+    ac_log "abort sid=$REAL_SID reason=pane-panel-mismatch delivery=pane sentinel_panel=$PANE_PANEL env_panel=$PANE_PANEL_ID"
+    exit 0
+  fi
+  # TEST NO-FIRE SEAM: under AUTO_COMPACT_TEST_NO_FIRE the real runpane is never invoked. A
+  # harness may point AUTO_COMPACT_TEST_RUNPANE at a stub to exercise the helper; without one
+  # the helper is not spawned at all.
+  PANE_SPAWN=1
+  if [ -n "${AUTO_COMPACT_TEST_NO_FIRE:-}" ]; then
+    if [ -n "${AUTO_COMPACT_TEST_RUNPANE:-}" ]; then
+      PANE_RUNPANE="$AUTO_COMPACT_TEST_RUNPANE"
+    else
+      PANE_SPAWN=0
+    fi
+  fi
+  if [ "$PANE_SPAWN" = "1" ] && { [ ! -f "$PANE_RUNPANE" ] || [ ! -x "$PANE_RUNPANE" ]; }; then
+    ac_log "abort sid=$REAL_SID reason=pane-runpane-missing delivery=pane bin=$PANE_RUNPANE"
+    exit 0
+  fi
+  # In-flight guard: a helper from an earlier Stop may still be waiting on this panel. A second
+  # one would type a second /compact, so skip (no claim, no attempt counted) while it lives.
+  PANE_LOCK="${SENTINEL}.pane-helper"
+  if [ -f "$PANE_LOCK" ]; then
+    _lp=$(cat "$PANE_LOCK" 2>/dev/null)
+    case "$_lp" in ''|*[!0-9]*) _lp="" ;; esac
+    if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null \
+       && ps -ww -o args= -p "$_lp" 2>/dev/null | grep -q 'auto-compact'; then
+      ac_log "pane-skip sid=$REAL_SID reason=helper-in-flight pid=$_lp"
+      exit 0
+    fi
+    rm -f "$PANE_LOCK" 2>/dev/null
+  fi
+
+  PANE_CLAIM="${SENTINEL}.claim.$$"
+  if ! mv "$SENTINEL" "$PANE_CLAIM" 2>/dev/null; then
+    exit 0
+  fi
+  trap 'rm -f "$PANE_CLAIM"' EXIT
+  # Lock BEFORE the sentinel goes back, so a concurrent Stop sees the guard.
+  ( umask 077; printf '%s\n' "$$" > "$PANE_LOCK" ) 2>/dev/null || true
+
+  # Retain/attempts bookkeeping — same meaning as the Terminal `fired*` branch. Done BEFORE the
+  # helper starts so the helper sees the final sentinel state.
+  _att_file="${SENTINEL}.attempts"
+  _att=$(cat "$_att_file" 2>/dev/null || printf '0')
+  case "$_att" in ''|*[!0-9]*) _att=0 ;; esac
+  _att=$((_att + 1))
+  if [ "$_att" -ge 3 ]; then
+    rm -f "$_att_file" 2>/dev/null || true
+    ac_log "give-up sid=$REAL_SID delivery=pane panel=$PANE_PANEL attempts=$_att (dispatched /compact $_att times with no confirmed compaction; sentinel consumed to stop retrying - native auto-compact remains the backstop)"
+  elif mv -f "$PANE_CLAIM" "$SENTINEL" 2>/dev/null; then
+    printf '%s\n' "$_att" > "$_att_file" 2>/dev/null || true
+    trap - EXIT
+    ac_log "fired-unconfirmed sid=$REAL_SID delivery=pane panel=$PANE_PANEL attempt=$_att (sentinel retained; primer consumes it once a compaction is confirmed)"
+  else
+    ac_log "retain-FAILED sid=$REAL_SID delivery=pane panel=$PANE_PANEL attempt=$_att (claim could not be moved back; native auto-compact is the remaining backstop)"
+  fi
+
+  if [ "$PANE_SPAWN" = "0" ]; then
+    rm -f "$PANE_LOCK" 2>/dev/null
+    ac_log "test-no-fire sid=$REAL_SID delivery=pane panel=$PANE_PANEL (AUTO_COMPACT_TEST_NO_FIRE set, no AUTO_COMPACT_TEST_RUNPANE — helper not spawned, no keystrokes sent)"
+    handoff_log "compact_chained sid=$REAL_SID delivery=pane panel=$PANE_PANEL result=fired+test-no-fire"
+    exit 0
+  fi
+
+  PANE_TRANSCRIPT=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null | tr -d '[:cntrl:]')
+  # Detached: own session (setsid), all fds off the hook's pipes, so Claude Code does not wait.
+  perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' \
+    "$ROOT/auto-compact-pane-deliver.sh" "$REAL_SID" "$PANE_PANEL" "$PANE_RUNPANE" "$PANE_DIR" \
+    "$SENTINEL" "$PANE_LOCK" "$PANE_TRANSCRIPT" </dev/null >/dev/null 2>&1 &
+  _hpid=$!
+  ( umask 077; printf '%s\n' "$_hpid" > "$PANE_LOCK" ) 2>/dev/null || true
+  ac_log "pane-dispatched sid=$REAL_SID panel=$PANE_PANEL helper_pid=$_hpid attempt=$_att"
+  exit 0
+fi
+
 OSA_STDERR_TMP=""
 
 # ---------------------------------------------------------------------------

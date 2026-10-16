@@ -22,6 +22,11 @@ _AC_LIB_LOADED=1
 #   ac_read_sentinel_tty <path>               → echoes target_tty from sentinel (schema v1+)
 #   ac_read_sentinel_cwd <path>               → echoes cwd from sentinel (schema v2+; empty for v1)
 #   ac_read_sentinel_nonce <path>             → echoes marker_nonce from sentinel (schema v3+; empty for v1/v2)
+#   ac_resolve_runpane_bin                    → echoes a runnable runpane (PANE_RUNPANE_BIN, else PATH); rc 1 if none
+#   ac_validate_pane_panel_id <id>            → returns 0 if matches ^[A-Za-z0-9_-]{1,128}$
+#   ac_write_sentinel_pane <sid> <tty|""> <cwd> <nonce> <panel> <runpane> <pane_dir> → Pane-delivery sentinel
+#   ac_read_sentinel_delivery <path>          → echoes "pane" or "terminal" (absent field = terminal)
+#   ac_read_sentinel_pane <path>              → echoes "<panel>\t<runpane>\t<pane_dir>" after validation
 #   ac_read_breadcrumb_sid <path>             → echoes sid from breadcrumb (schema_version 1 only)
 #   ac_read_breadcrumb_cwd <path>             → echoes cwd from breadcrumb (schema_version 1 only)
 #   ac_read_breadcrumb_nonce <path>           → echoes nonce from breadcrumb (schema_version 1 only)
@@ -35,6 +40,12 @@ _AC_LIB_LOADED=1
 #
 # Schema (v3 — R2 plan: adds marker_nonce for /post-compact-resume validation):
 #   {"schema_version":3,...,"cwd":"/path/to/workspace","marker_nonce":"<uuid>"}
+#
+# Pane delivery (2026-10-16, still schema v3 — additive optional fields, every older reader
+# picks fields by name so it ignores them):
+#   {...v3 fields...,"delivery":"pane","pane_panel_id":"<id>","runpane_bin":"/abs/runpane","pane_dir":"/abs/.pane"}
+#   target_tty is kept when resolvable and is "" otherwise. A sentinel WITHOUT `delivery` is a
+#   Terminal.app sentinel, exactly as before.
 
 readonly AC_SCHEMA_VERSION=3
 readonly AC_MAX_SENTINEL_BYTES=4096
@@ -421,3 +432,103 @@ ac_read_sentinel_nonce() {
 # which could never fire, creating a phantom log verb in LOG_VERBS.md that G5 reverse
 # scan would flag. Deleted here; step2.sh's inline jq is the canonical implementation.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# PANE DELIVERY (2026-10-16). Inside the Pane app the Claude pty is not a Terminal.app tab, so
+# AppleScript `do script` finds no matching tab. A Pane panel is addressed by its panel id through
+# the `runpane` CLI instead. These helpers are used ONLY on the Pane branch; the Terminal.app
+# path never calls them.
+# ---------------------------------------------------------------------------
+
+ac_validate_pane_panel_id() {
+  [[ "$1" =~ ^[A-Za-z0-9_-]{1,128}$ ]]
+}
+
+# Absolute path, no control bytes, bounded length. Used for runpane_bin / pane_dir.
+_ac_validate_abs_path() {
+  local p="$1"
+  [ -n "$p" ] && [ "${#p}" -le 1024 ] || return 1
+  case "$p" in /*) ;; *) return 1 ;; esac
+  [[ "$p" =~ [[:cntrl:]] ]] && return 1
+  return 0
+}
+
+# Echoes a runnable runpane binary: PANE_RUNPANE_BIN when it is an executable file, else
+# `runpane` on PATH (resolved to an absolute path). rc 1 when neither exists.
+ac_resolve_runpane_bin() {
+  local b="${PANE_RUNPANE_BIN:-}"
+  if [ -n "$b" ] && [ -f "$b" ] && [ -x "$b" ] && _ac_validate_abs_path "$b"; then
+    printf '%s' "$b"; return 0
+  fi
+  b=$(command -v runpane 2>/dev/null) || b=""
+  if [ -n "$b" ] && [ -f "$b" ] && [ -x "$b" ] && _ac_validate_abs_path "$b"; then
+    printf '%s' "$b"; return 0
+  fi
+  return 1
+}
+
+# Args: <sid> <tty-or-empty> <cwd> <nonce> <panel_id> <runpane_bin> <pane_dir>
+# Same atomic tmp+rename, mode 600 and size cap as ac_write_sentinel (kept separate so the
+# Terminal.app writer is untouched).
+ac_write_sentinel_pane() {
+  local sid="$1" tty="$2" cwd="${3:-}" nonce="${4:-}" panel="$5" rp="$6" pdir="$7"
+  local path
+  path=$(ac_sentinel_path "$sid")
+  ac_validate_tty "$tty" || tty=""
+  ac_validate_pane_panel_id "$panel" || return 1
+  _ac_validate_abs_path "$rp" || return 1
+  _ac_validate_abs_path "$pdir" || return 1
+  mkdir -p "$(dirname "$path")" 2>/dev/null
+  chmod 700 "$(dirname "$path")" 2>/dev/null
+  local json
+  json=$(jq -c -n \
+    --argjson sv "$AC_SCHEMA_VERSION" \
+    --arg tty "$tty" \
+    --arg cwd "$cwd" \
+    --arg nonce "$nonce" \
+    --arg panel "$panel" \
+    --arg rp "$rp" \
+    --arg pdir "$pdir" \
+    '{schema_version:$sv,target_tty:$tty,originating_command:"pre-compact",cwd:$cwd,marker_nonce:$nonce,delivery:"pane",pane_panel_id:$panel,runpane_bin:$rp,pane_dir:$pdir}') || return 1
+  if [ "${#json}" -gt "${AC_MAX_SENTINEL_BYTES:-4096}" ]; then
+    ac_log "ac_write_sentinel skip reason=oversize size=${#json} limit=${AC_MAX_SENTINEL_BYTES:-4096} delivery=pane"
+    return 1
+  fi
+  local tmp="${path}.tmp.$$"
+  ( umask 077; printf '%s\n' "$json" > "$tmp" ) 2>/dev/null || return 1
+  mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+}
+
+# Echoes "pane" when the sentinel asks for Pane delivery, "terminal" otherwise (including a
+# missing/unknown `delivery` field — every pre-Pane sentinel is a Terminal.app sentinel).
+ac_read_sentinel_delivery() {
+  local path="$1" d
+  _ac_validate_sentinel_path "$path" || return 1
+  d=$(jq -r 'if type == "object" and (.delivery // "") == "pane" then "pane" else "terminal" end' < "$path" 2>/dev/null) || d="terminal"
+  [ "$d" = "pane" ] && printf 'pane' || printf 'terminal'
+}
+
+# Echoes "<panel_id>\t<runpane_bin>\t<pane_dir>" for a schema-valid Pane sentinel; rc 1 (and a
+# log line) when any field fails validation.
+ac_read_sentinel_pane() {
+  local path="$1" raw panel rp pdir
+  _ac_validate_sentinel_path "$path" || return 1
+  raw=$(jq -r --argjson v "$AC_SCHEMA_VERSION" '
+    if type == "object"
+       and ((.schema_version | type) == "number")
+       and (.schema_version >= 1 and .schema_version <= $v)
+       and (.originating_command // "") == "pre-compact"
+       and (.delivery // "") == "pane"
+       and ((.pane_panel_id | type) == "string")
+       and ((.runpane_bin | type) == "string")
+       and ((.pane_dir | type) == "string")
+    then [.pane_panel_id, .runpane_bin, .pane_dir] | @tsv else empty end' < "$path" 2>/dev/null)
+  IFS=$'\t' read -r panel rp pdir <<EOF
+$raw
+EOF
+  if ! ac_validate_pane_panel_id "$panel" || ! _ac_validate_abs_path "$rp" || ! _ac_validate_abs_path "$pdir"; then
+    ac_log "skip-sentinel reason=pane-fields-invalid path=$path"
+    return 1
+  fi
+  printf '%s\t%s\t%s' "$panel" "$rp" "$pdir"
+}

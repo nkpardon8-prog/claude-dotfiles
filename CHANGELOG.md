@@ -2,6 +2,18 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-16 - Auto-compact works inside Pane
+
+- Live: `/pre-compact` armed inside a Pane panel, but the Stop hook logged `no-matching-tab` - Pane
+  leaves `TERM_PROGRAM` unset, so the Terminal.app guard passed, and the Pane pty is not a Terminal tab.
+- New Pane path, Terminal path unchanged: with `PANE_PANEL_ID` set and `TERM_PROGRAM` unset the arm
+  script writes a `delivery:"pane"` sentinel (panel id, runpane path, Pane data dir; still schema 3).
+  The Stop hook sends such a sentinel to a detached helper (`auto-compact-pane-deliver.sh`) that waits
+  for an idle empty composer, submits `/compact` via `runpane panels submit`, waits until the
+  compaction has finished (new `compact_boundary` in the transcript, or the primer retiring the
+  sentinel), then submits `/post-compact-resume <sid>`. Same claim + retain/attempts (max 3) rules.
+- Tests: `test-auto-compact-pane.sh` (sandboxed, stub runpane). `test-auto-compact.sh` unchanged.
+
 ## 2026-10-16 - rrun: more mini slots when there is room; wait out short mini outages
 
 - Measured: mini runs averaged 42 s of work but 155 s end to end (queueing on 2 slots ~75% busy).

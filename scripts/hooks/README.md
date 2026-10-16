@@ -15,7 +15,7 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 
 | Script | Hook event | Purpose |
 |---|---|---|
-| `auto-compact-after-pre-compact.sh` | `Stop` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed a sentinel. |
+| `auto-compact-after-pre-compact.sh` | `Stop` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed a sentinel; for a Pane sentinel it starts `auto-compact-pane-deliver.sh` instead. |
 | `mission-liveness.sh` | `Stop` | Blocks (exit 2) a `/mission` turn that ended with work owed and no `ScheduleWakeup` in it, so a naked yield cannot freeze the run. Inert unless the session armed it (`~/.claude/progress/mission-liveness-<sid>.json`); yields to an in-flight auto-compact; blocks a given `prompt_id` at most once. Decisions logged to `~/.claude/logs/mission-liveness.log`. |
 | `post-compact-primer.sh` | `SessionStart` (`compact\|resume\|startup\|clear`) | Source-routing primer: resolves the pending SID-tagged handoff and emits session-start navigation. |
 | `stale-handoff-guard.sh` | `SessionStart` (after the primer) | Quarantines an un-tagged `CLAUDE.local.md` so a months-old handoff cannot be silently re-ingested. |
@@ -39,6 +39,7 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 | Script | Called by | Purpose |
 |---|---|---|
 | `arm-auto-compact.sh` | `/pre-compact` Step 9.0 | Writes the auto-compact sentinel. |
+| `auto-compact-pane-deliver.sh` | `auto-compact-after-pre-compact.sh` (Pane sentinels), detached | Delivers `/compact` then `/post-compact-resume` into a Pane panel via `runpane`. |
 | `mission-write.sh` | `/pre-compact`, `/mission` | The ONLY mutator of the on-disk `MISSION.<sid>.*` artifacts; dispatches into `lib/mission-bridge.sh`. Verbs incl. `await` (open/update the durable AWAIT "work in flight" marker) and the read-only `await-state` (bare-token: newest outstanding AWAIT, or `none`) consumed by the `/mission` wake routine. |
 | `mission-drift-check.sh` | operator, by hand | Read-only report of per-part working-tree drift since each convergence snapshot. Reports; never enforces. |
 | `../codex-build-chunk.sh` | `/mission` §6.5 | The ONLY sanctioned way to let Codex WRITE code (`-s workspace-write`); everywhere else Codex is `-s read-only`. REFUSES unless the target is a LINKED git worktree - in a main tree `.git/` is inside the writable root and the mission bridge sits beside it, whereas a linked worktree's real gitdir is outside, so the sandbox boundary enforces "Codex never writes the bridge" rather than a prompt. Also refuses a non-toplevel dir, an unregistered worktree, a dirty start, any post-run HEAD/ref/index movement (Codex must edit files only - instructed AND verified), any `MISSION.*` path in the diff, and **zero changed files, which is a failure and never an `ok`**. `status=ok` means Codex ran and touched nothing forbidden; it is NOT a verdict that the change is correct - Claude runs the tests before it counts. Proof: `test-codex-build-chunk.sh`. |
@@ -58,7 +59,7 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 - `mission-bridge-assumptions/` and `session-correlation-assumptions/` - hermetic assumption
   suites (each `bash <dir>/run-all.sh`, with per-assumption `.fingerprint.json` files that pin
   the behavior each test depends on).
-- `test-*.sh` - per-subsystem harnesses (`test-auto-compact.sh`, `test-ctx-gate.sh`,
+- `test-*.sh` - per-subsystem harnesses (`test-auto-compact.sh`, `test-auto-compact-pane.sh`, `test-ctx-gate.sh`,
   `test-chain-primitives.sh`, `test-mission-bridge.sh`, `test-mission-drift-check.sh`,
   `test-stale-handoff-guard.sh`, `test-handoff-smoke-check.sh`, `test-secret-scan.sh`,
   `test-engine-header.sh`, `test-lint-skill-size.sh`), plus `verify-test-integrity.sh`, which
@@ -75,11 +76,13 @@ requirement, only Terminal Automation permission).
 
 | File | Role |
 |---|---|
-| `auto-compact-after-pre-compact.sh` | Stop hook (registered in `~/.claude/settings.json`). Consumes a sentinel, verifies `claude` is in the foreground process group on the target TTY, fires `/compact` via AppleScript. |
-| `arm-auto-compact.sh` | Invoked by `/pre-compact` Step 9.0. Walks the process tree to find the controlling TTY, sanity-checks the host (Mac/Terminal.app/no tmux), checks the Stop hook is registered in `settings.json` (via `jq`, not `grep`), proactively probes Automation permission with a 2-second alarm, writes a JSON sentinel. Supports `--dry-run` (resolve everything, don't write) and `no-auto-compact` / `--no-auto-compact` / `no auto compact` (skip + disarm prior). |
+| `auto-compact-after-pre-compact.sh` | Stop hook (registered in `~/.claude/settings.json`). Consumes a sentinel, verifies `claude` is in the foreground process group on the target TTY, fires `/compact` via AppleScript. A `delivery:"pane"` sentinel takes a separate branch: checks the panel id against this session's `PANE_PANEL_ID`, skips while an earlier helper is still running, does the same claim + retain/attempts (max 3) bookkeeping, and starts the detached Pane helper. |
+| `auto-compact-pane-deliver.sh` | Pane delivery helper, started detached by the Stop hook. Waits for an idle, empty composer (`runpane panels screen`), submits `/compact` (`runpane panels submit`), waits for a confirmed compaction (new `compact_boundary` line in the transcript, or the sentinel retired by the primer; 900s cap), waits for the composer again, then submits `/post-compact-resume <sid>`. Every step is logged to `auto-compact.log`. |
+| `arm-auto-compact.sh` | Invoked by `/pre-compact` Step 9.0. Walks the process tree to find the controlling TTY, sanity-checks the host (Mac/Terminal.app/no tmux; a Pane panel — `PANE_PANEL_ID` set, `TERM_PROGRAM` unset — arms a `delivery:"pane"` sentinel with the panel id, runpane path and Pane data dir, and skips the Automation probe), checks the Stop hook is registered in `settings.json` (via `jq`, not `grep`), proactively probes Automation permission with a 2-second alarm, writes a JSON sentinel. Supports `--dry-run` (resolve everything, don't write) and `no-auto-compact` / `--no-auto-compact` / `no auto compact` (skip + disarm prior). |
 | `lib/auto-compact-sentinel.sh` | Shared helpers: paths, schema (v1: `schema_version`, `target_tty`, `originating_command` — `armed_at` removed in round 4, mtime is canonical), validation (anchored TTY regex, symlink reject, size guard, schema/originating_command check), bounded log ring at `~/.claude/logs/auto-compact.log` (mode 600). Source-guarded to be safe under double-sourcing. |
 | `uninstall-auto-compact.sh` | Removes the Stop hook entry from `settings.json` (via `jq`) and cleans runtime state (sentinels, claim files, log). Soft — leaves source scripts. Re-running `/pre-compact` after uninstall is harmless: arm-script's registration check refuses to write an orphan sentinel. |
 | `test-auto-compact.sh` | 37-assertion harness covering: TTY validation, sentinel write/read, symlink/oversized/schema/originating_command/malformed-JSON rejection, AppleScript injection payload, jq-precedence regression, ERE-grep regression, opt-out matcher variants, tmux/non-Apple_Terminal refusal, hook end-to-end with synthetic TTY, concurrent-claim race, idempotent lib source guard, log file mode 600, multi-word `comm` regression (ucomm), `armed_at` removal, `--dry-run` path, skill-prose invocation contract. Run after any change to the lib, hook, or `/pre-compact` Step 9.0. |
+| `test-auto-compact-pane.sh` | Pane-path harness, fully sandboxed (throwaway HOME, stub `runpane`; never touches a live panel): pane sentinel fields + old-reader compatibility, `--dry-run`, runpane missing / invalid panel id / TERM_PROGRAM set, hook → helper submits `/compact` then the resume only after a confirmed compaction, no resume without one, sentinel-retired fallback, panel mismatch, helper-in-flight guard, give-up at 3, Terminal sentinel still on the osascript path. |
 
 ### Data layout
 
@@ -91,6 +94,7 @@ requirement, only Terminal Automation permission).
 
 ```sh
 ~/.claude-dotfiles/scripts/hooks/test-auto-compact.sh
+~/.claude-dotfiles/scripts/hooks/test-auto-compact-pane.sh
 ```
 
 All assertions must pass before committing changes to anything in this directory. The

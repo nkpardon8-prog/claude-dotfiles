@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Arm auto-compact: write a per-session sentinel that the Stop hook will consume to
-# fire `/compact` into the originating Terminal.app tab. Invoked from /pre-compact's
+# fire `/compact` into the originating Terminal.app tab — or, when running inside a Pane
+# panel, into that panel via `runpane` (delivery:"pane"). Invoked from /pre-compact's
 # Step 9.0; can also be invoked directly for testing.
 #
 # Execution context: this is a Claude Code hook script (invoked from /pre-compact via
@@ -59,6 +60,38 @@ if [ -n "${TMUX:-}" ] || [ -n "${STY:-}" ]; then
   echo "NOT armed — running inside tmux/screen; auto-compact requires direct Terminal.app"
   exit 0
 fi
+# PANE MODE (2026-10-16): the Pane app runs Claude in its own pty and leaves TERM_PROGRAM
+# unset, so the Terminal.app guard below used to pass and arm a sentinel the Stop hook could
+# never deliver (no Terminal tab owns that tty). Pane mode = PANE_PANEL_ID set AND TERM_PROGRAM
+# unset; any host that names itself in TERM_PROGRAM takes the unchanged Terminal.app path.
+PANE_MODE=0
+PANE_RUNPANE=""
+PANE_DIR=""
+if [ -n "${PANE_PANEL_ID:-}" ] && [ -z "${TERM_PROGRAM:-}" ]; then
+  PANE_MODE=1
+  if ! ac_validate_pane_panel_id "$PANE_PANEL_ID"; then
+    ac_log "arm-failed reason=pane-panel-id-invalid"
+    echo "NOT armed — Pane detected but PANE_PANEL_ID is not a valid panel id; run /compact manually"
+    exit 0
+  fi
+  PANE_RUNPANE=$(ac_resolve_runpane_bin) || PANE_RUNPANE=""
+  if [ -z "$PANE_RUNPANE" ]; then
+    ac_log "arm-failed reason=pane-runpane-unavailable panel=$PANE_PANEL_ID"
+    echo "NOT armed — Pane detected but runpane unavailable; run /compact manually"
+    exit 0
+  fi
+  # Pane data dir = the parent of runpane's bin/ dir (~/.pane/bin/runpane → ~/.pane) when it
+  # looks like one; otherwise the default ~/.pane.
+  PANE_DIR=$(dirname "$(dirname "$PANE_RUNPANE")")
+  if [ ! -f "$PANE_DIR/config.json" ] && [ ! -d "$PANE_DIR/sockets" ]; then
+    PANE_DIR="$HOME/.pane"
+  fi
+  if [ ! -d "$PANE_DIR" ]; then
+    ac_log "arm-failed reason=pane-dir-missing panel=$PANE_PANEL_ID"
+    echo "NOT armed — Pane detected but its data dir could not be found; run /compact manually"
+    exit 0
+  fi
+fi
 if [ -n "${TERM_PROGRAM:-}" ] && [ "${TERM_PROGRAM:-}" != "Apple_Terminal" ]; then
   echo "NOT armed — host is '${TERM_PROGRAM}'; auto-compact requires Terminal.app"
   exit 0
@@ -80,8 +113,11 @@ fi
 # user has walked away, the prompt blocks indefinitely. Wrap in a perl-based
 # 2-second alarm (macOS doesn't ship coreutils `timeout(1)`). Non-fatal: if the
 # probe fails or times out we still arm — the user may pass on the actual fire.
+# Pane mode never uses AppleScript, so it skips the probe.
+if [ "$PANE_MODE" = "0" ]; then
 if ! perl -e 'alarm 2; exec @ARGV' /usr/bin/osascript -e 'tell application "Terminal" to get name' >/dev/null 2>&1; then
   ac_log "warn automation-probe-failed-or-timed-out"
+fi
 fi
 
 # Walk up the process tree until we find an ancestor with a controlling TTY.
@@ -105,7 +141,9 @@ if [ -n "$ORIG_TTY" ] && ! ac_validate_tty "$ORIG_TTY"; then
   ORIG_TTY=""
 fi
 
-if [ -z "$ORIG_TTY" ]; then
+# Pane mode addresses the panel by id, so a missing tty is not fatal there (target_tty is
+# recorded as "" in that case).
+if [ -z "$ORIG_TTY" ] && [ "$PANE_MODE" = "0" ]; then
   echo "NOT armed — could not resolve controlling tty in ancestry; run /compact manually"
   exit 0
 fi
@@ -137,6 +175,23 @@ if [ -z "$MARKER_NONCE" ]; then
 fi
 # Also normalize externally-passed nonces to lowercase for canonical comparison
 MARKER_NONCE=$(printf '%s' "$MARKER_NONCE" | tr 'A-F' 'a-f')
+
+if [ "$PANE_MODE" = "1" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    ac_log "dry-run sid=$SID delivery=pane panel=$PANE_PANEL_ID tty=${ORIG_TTY:-none} cwd=$CWD_CANON nonce=${MARKER_NONCE:0:8}"
+    echo "DRY-RUN — would arm (pane panel $PANE_PANEL_ID via $PANE_RUNPANE, sid=$SID tty=${ORIG_TTY:-none} cwd=$CWD_CANON nonce_prefix=${MARKER_NONCE:0:8}); no sentinel written"
+    exit 0
+  fi
+  if ac_write_sentinel_pane "$SID" "$ORIG_TTY" "$CWD_CANON" "$MARKER_NONCE" "$PANE_PANEL_ID" "$PANE_RUNPANE" "$PANE_DIR"; then
+    ac_log "armed sid=$SID delivery=pane panel=$PANE_PANEL_ID tty=${ORIG_TTY:-none} cwd=$CWD_CANON nonce=${MARKER_NONCE:0:8}..."
+    handoff_log "sentinel_armed sid=$(ac_compute_sid8 "$SID") delivery=pane panel=$PANE_PANEL_ID cwd=$CWD_CANON"
+    echo "armed (pane panel ${PANE_PANEL_ID}, sentinel auto-compact-${SID}.json, nonce_prefix=${MARKER_NONCE:0:8})"
+  else
+    ac_log "arm-failed sid=$SID delivery=pane panel=$PANE_PANEL_ID"
+    echo "NOT armed — sentinel write failed (disk full or permission?); run /compact manually"
+  fi
+  exit 0
+fi
 
 if [ "$DRY_RUN" = "1" ]; then
   ac_log "dry-run sid=$SID tty=$ORIG_TTY cwd=$CWD_CANON nonce=${MARKER_NONCE:0:8}"
