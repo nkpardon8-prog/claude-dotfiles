@@ -87,43 +87,9 @@ else
     rm -rf "$APP_TMP"
 fi
 
-# Settings this machine needs for cross-Mac messaging and /line display names. Idempotent:
-# backs the file up once per run, only adds what is missing, never removes or reorders anything.
-SETTINGS="$HOME/.claude/settings.json"
-if [ -f "$SETTINGS" ] && [ ! -L "$SETTINGS" ]; then
-    cp -p "$SETTINGS" "$SETTINGS.bak-transfer-$(date -u +%Y%m%dT%H%M%S)"
-    python3 - "$SETTINGS" <<'PY'
-import json, os, sys
-p = sys.argv[1]
-d = json.load(open(p))
-changed = []
-if d.get("remoteControlAtStartup") is not True:
-    d["remoteControlAtStartup"] = True; changed.append("remoteControlAtStartup")
-if d.get("crossSessionInbound") != "accept":
-    d["crossSessionInbound"] = "accept"; changed.append("crossSessionInbound")
-cmd = "$HOME/.claude-dotfiles/scripts/hooks/line-apply-rename.sh"
-stop = d.setdefault("hooks", {}).setdefault("Stop", [])
-if not stop:
-    stop.append({"hooks": []})
-hooks = stop[0].setdefault("hooks", [])
-if not any(h.get("command") == cmd for h in hooks):
-    idx = next((i + 1 for i, h in enumerate(hooks) if "auto-compact-after-pre-compact" in h.get("command", "")), len(hooks))
-    hooks.insert(idx, {"type": "command", "command": cmd, "timeout": 10})
-    changed.append("Stop hook line-apply-rename.sh")
-# SessionEnd: republish a moment after a window closes, so it drops out of the other Mac's list.
-se_cmd = "python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py publish --background --delay 3"
-se = d["hooks"].setdefault("SessionEnd", [])
-if not any(h.get("command") == se_cmd for blk in se for h in blk.get("hooks", [])):
-    se.append({"hooks": [{"type": "command", "command": se_cmd, "timeout": 5}]})
-    changed.append("SessionEnd hook (address-book publish)")
-tmp = p + ".tmp"
-json.dump(d, open(tmp, "w"), indent=2)
-os.replace(tmp, p)
-print("  settings: " + (", ".join(changed) + " added" if changed else "already configured"))
-PY
-else
-    echo "WARNING: $SETTINGS missing or a symlink - copy settings.json.template there first (docs/SETUP.md)." >&2
-fi
+# Settings this machine needs for cross-Mac messaging and /line names: one implementation, shared
+# with the SessionStart self-heal in line-reassert-identity.sh. Idempotent, backs up before a change.
+python3 "$REPO/scripts/line-ensure-settings.py" | sed 's/^line-ensure-settings: /  settings: /'
 
 # Shared window address book: every Mac writes its live windows to iCloud Drive/claude-windows/
 # (one file per Mac) so `line-agent-communicator.py list`/`find` on the OTHER Mac can see them.

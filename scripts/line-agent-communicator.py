@@ -1130,17 +1130,21 @@ def clean_field(value, limit: int = FIELD_MAX) -> str:
     return " ".join(s.split())[:limit]
 
 
-def _log_publish(msg: str) -> None:
-    """One bounded log line. Publish runs about once a minute, so the log must not grow."""
+def _log_bounded(path: Path, msg: str) -> None:
+    """One log line in a file that never grows past 64 KB. Never raises."""
     try:
-        publish_log().parent.mkdir(parents=True, exist_ok=True)
-        if publish_log().exists() and publish_log().stat().st_size > 65536:
-            tail = publish_log().read_bytes()[-32768:]
-            publish_log().write_bytes(tail)
-        with open(publish_log(), "a") as fh:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 65536:
+            path.write_bytes(path.read_bytes()[-32768:])
+        with open(path, "a") as fh:
             fh.write(f"{iso_utc(time.time())} {msg}\n")
     except Exception:
         pass
+
+
+def _log_publish(msg: str) -> None:
+    """Publish runs about once a minute, so its log is bounded."""
+    _log_bounded(publish_log(), msg)
 
 
 def address_book_entry(r: dict, label_of_host: str) -> dict:
@@ -2997,6 +3001,26 @@ def flaglike(sentence: str) -> str:
     return ""
 
 
+def split_set_args(args: list[str]) -> tuple[str, str, str]:
+    """(sentence, owns, refused) for `set` arguments. `refused` is the flag-shaped text that must not
+    become a name, else "". One parser on purpose: dispatch_set acts on it and session-title predicts
+    from it, so the Remote Control title can never disagree with the address /line writes."""
+    rest, owns = take_owns(args)
+
+    # POSIX end-of-options: everything after `--` is caption text, dashes and all. Without this
+    # there is no way to set a dash-leading caption once the flag guard exists.
+    if rest and rest[0] == "--":
+        sentence = " ".join(rest[1:])
+        if not owns:
+            sentence, owns = take_inline_owns(sentence)
+        return sentence, owns, ""
+
+    sentence = " ".join(rest)
+    if not owns:
+        sentence, owns = take_inline_owns(sentence)
+    return sentence, owns, flaglike(sentence)
+
+
 def dispatch_set(sid: str, args: list[str]) -> int:
     """
     argv-level `--owns` first; fall back to the one-argument text form `/line` produces.
@@ -3006,21 +3030,7 @@ def dispatch_set(sid: str, args: list[str]) -> int:
     arrives as ["set", "--help"], sails past main() entirely, and renames the window to `help`.
     Every rename funnels through here, so a refusal here covers both paths and any future caller.
     """
-    rest, owns = take_owns(args)
-
-    # POSIX end-of-options: everything after `--` is caption text, dashes and all. Without this
-    # there is no way to set a dash-leading caption once the guard below exists.
-    if rest and rest[0] == "--":
-        sentence = " ".join(rest[1:])
-        if not owns:
-            sentence, owns = take_inline_owns(sentence)
-        return cmd_set(sid, sentence, owns)
-
-    sentence = " ".join(rest)
-    if not owns:
-        sentence, owns = take_inline_owns(sentence)
-
-    bad = flaglike(sentence)
+    sentence, owns, bad = split_set_args(args)
     if bad:
         print(f"line-agent-communicator: refusing to use {bad!r} as this window's name.",
               file=sys.stderr)
@@ -3056,6 +3066,8 @@ USAGE = """line-agent-communicator.py - name this window and reach the others.
   set -- "<sentence>"        same, for a caption that really starts with a dash
   clear                      drop the caption (the peer address is kept)
   sync-display-name          (hook use) restore the display name from the caption after a reopen
+  session-title              (hook use) UserPromptSubmit/SessionStart: set the Remote Control title
+                             to this window's address (hook JSON on stdin)
   reap [--dry-run] [--sockets]
   help                       this text
 
@@ -3077,7 +3089,7 @@ def _usage(stream, rc: int) -> int:
 VERBS = frozenset({
     "list", "ls", "directory", "clear", "find", "who", "resolve", "card", "me", "whoami",
     "whois", "verify", "reply", "answer", "replies", "inbox", "replies-count", "unread",
-    "reap", "note", "notes", "set", "help", "usage", "sync-display-name",
+    "reap", "note", "notes", "set", "help", "usage", "sync-display-name", "session-title",
     "publish", "address-book-status", "address-book-paths",
 })
 
@@ -3167,6 +3179,8 @@ def main() -> int:
         return cmd_address_book_paths()
     if args[0] == "sync-display-name":
         return cmd_sync_display_name(sid)
+    if args[0] == "session-title":
+        return cmd_session_title()
 
     # Bare-sentence shorthand. A caption is arbitrary words, so an unknown WORD cannot be told from
     # a name in general - `lst` is indistinguishable from someone naming a window "lst". The one
