@@ -1070,6 +1070,9 @@ def low_disk_housekeeping(cfg):
                 rr_housekeeping(cfg, J, free)
             except MiniLockLost as e:
                 rd_common.log("kick: mirror housekeeping stopped - mini lock lost (%s)" % e)
+                return J.acts
+            rd_common.log("kick: mirror housekeeping done before the colima start (%d mirror(s) "
+                          "removed)" % sum(a.startswith("rm rrun mirror") for a in J.acts))
             return J.acts
     except MiniLockBusy as e:
         rd_common.log("kick: mirror housekeeping skipped - %s" % e)

@@ -87,6 +87,16 @@ class MiniCase(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.cfg = rd_common.merge_cfg({})
+        self.fake_df(100)        # host `df -k /` of the fake mini: plenty free unless a test says so
+
+    def fake_df(self, free_gb):
+        # BREW_PATH (= self.bin) is first on the PATH of every generated script, so this shadows df
+        self.mini_file("df.out", "Filesystem 1024-blocks Used Available\n/dev/disk3s1 1 1 %d\n"
+                       % (free_gb * 1048576))
+        path = os.path.join(self.bin, "df")
+        with open(path, "w") as f:
+            f.write('#!/bin/sh\ncat "$HOME/df.out"\n')
+        os.chmod(path, 0o755)
 
     def mini_sh(self, cfg, script, timeout=60):
         self.ssh_calls += 1
@@ -283,15 +293,6 @@ class Kick(MiniCase):
         with mock.patch.object(rd_janitor, "ENGINE_WAIT_S", 2):    # one bounded wait round
             self.assertEqual(rd_janitor.mini_engine_kick(self.cfg), "start-failed")
         self.assertTrue(any("FAILED: start-failed launchd" in m for m in self.logs))
-
-    def fake_df(self, free_gb):
-        # host `df -k /` on the fake mini (BREW_PATH = self.bin is first on the script's PATH)
-        self.mini_file("df.out", "Filesystem 1024-blocks Used Available\n/dev/disk3s1 1 1 %d\n"
-                       % (free_gb * 1048576))
-        path = os.path.join(self.bin, "df")
-        with open(path, "w") as f:
-            f.write('#!/bin/sh\ncat "$HOME/df.out"\n')
-        os.chmod(path, 0o755)
 
     def hk_spy(self):
         seen = []

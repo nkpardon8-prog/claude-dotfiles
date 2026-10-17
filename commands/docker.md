@@ -323,7 +323,7 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | image | removed after **14 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Removed tag by tag (`image rm <repo:tag>`; an image tagged in several repositories cannot be removed by id), then by id if an untagged remainder is left; never `-f`. Docker's refusals (in use, dependent child images, multi-repo) are skips, not errors. Dangling images pruned |
 | build cache | pruned when older than 7 d, and capped at **5 GB** |
 | keep-labelled container on the mini with restart policy `no` | `update --restart unless-stopped`, so kept DBs come back after a mini / Colima reboot (`--rm` ones skipped) |
-| `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **7 d** unused (all unused ones when mini free < `host_min_free_gb`); a mirror whose repo slot is busy is skipped; bare repos in `~/rr/git` are kept, only the removed mirror's ref goes |
+| `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **7 d** unused (every mirror not in use when mini free < `host_min_free_gb`, except one whose index/HEAD changed in the last 10 min); a mirror a running `rrun` is using is skipped (its slot's `.who` names it; an old-format `.who` without the mirror protects the whole repo, a stale or garbled one protects everything); bare repos in `~/rr/git` are kept, only the removed mirror's ref goes. Needs only ssh + perl, so it also runs while the mini engine is down |
 | container logs | capped per container: 10 MB × 3 files (json-file) |
 | mini Colima/Lima log files | truncated past 50 MB; VM journald capped at 200 MB |
 | VM disk ≥ 80 % or mini free < 8 GB | remove unused images **oldest-unused first** (never in-use ones) until below, prune all build cache, log a WARNING |
@@ -335,8 +335,14 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 Run it now: `rdocker clean [--dry-run] [--only PREFIX] [--force-critical]` (`--only` limits the
 container/volume rules to a name prefix and skips global prunes and image GC; `--force-critical` applies
 the disk-critical stopped-container removal now — keep-labelled still exempt). Exit codes: 0 = the pass
-ran; 1 = it did not run: mini lock still held after 90 s, mini unreachable over ssh, or the mini's
-docker engine not answering (also with `--dry-run`). The background janitor just skips such a pass.
+ran; 1 = it did not run in full: mini lock still held after 90 s, mini unreachable over ssh, or the mini's
+docker engine not answering (also with `--dry-run`). With the engine down but ssh fine, the mini disk
+check and the `rrun` mirror housekeeping still run (their lines are printed) and only the
+container/volume/image steps are skipped; the background janitor does the same every interval while the
+mini is reachable. When the engine is down and mini free disk is below `host_min_free_gb`, the daemon's
+engine kick runs the mirror housekeeping (under the mini lock) **before** it starts Colima, and logs it
+(`kick: ... mirror housekeeping before the colima start`): a full disk is what kills the engine, and a
+start on a full disk times out.
 Hard ceilings: VM disk 30 GB, VM RAM 8 GB, VM CPU 6 — the mini itself can never be filled or starved.
 Laptop logs (`daemon.log`, `route.log`) rotate at 2 MB (one `.1` generation, under a lock).
 
@@ -409,7 +415,7 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 |---|---|
 | `rdocker status` | health + RTT, where commands go, mirrored ports, conflicts, attention items (exit 1 if any `--` row; `WARN` rows never fail it) |
 | `rdocker doctor` | status **+ repair** (Tailscale, mini engine start via the kick path — never a VM-up restart, forwarder, mirrors) + flag-drift check |
-| `rdocker clean [--dry-run\|--only P\|--force-critical]` | run the janitor now; exit 1 if it could not run: mini lock held after 90 s, mini unreachable, or mini engine not answering (`--dry-run` too) |
+| `rdocker clean [--dry-run\|--only P\|--force-critical]` | run the janitor now; exit 1 if it could not run in full: mini lock held after 90 s, mini unreachable, or mini engine not answering (`--dry-run` too; the disk check + `rrun` mirror housekeeping still run then) |
 | `rdocker use auto\|mini\|local\|off` | routing mode; also points the global docker context at the target (`off` = raw Docker Desktop behaviour, context → laptop) |
 | `rdocker where <container>` | which engine holds it (says which engine could not be asked) |
 | `rdocker pin\|unpin <name> [--compose]` | keep a container / compose project on the laptop |

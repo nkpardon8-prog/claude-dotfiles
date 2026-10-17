@@ -2,6 +2,24 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-17 - rdocker janitor: free rrun mirrors per mirror, and even with the engine down
+
+- Live: the mini's host disk filled (~01:00) and killed the Colima engine. 33 `rrun` mirrors in
+  `~/rr/w` (~1.9 GB each, 53 GB) were never evicted: a busy slot protected EVERY mirror of its repo,
+  and with many parallel dentall worktrees some run was always in progress; and the janitor refused
+  to run at all with the engine down, though mirror housekeeping needs only ssh + perl.
+- The runner's slot `.who` now names its mirror (`<slug> <epoch> <pid> <wt12>`); a busy slot protects
+  only that mirror. Old-format `.who` (slug only) keeps the repo-wide protection; a stale or garbled
+  one still protects everything (an older janitor reads the new format as garbled: fail closed).
+  Under disk pressure every mirror not in use goes, except one whose index/HEAD changed in the last
+  10 min (`RR_PRESSURE_FLOOR_S`).
+- Engine down, mini reachable: `rdocker clean` / the janitor pass still run the host disk check and
+  mirror housekeeping (no `colima ssh`), skipping only container/volume/image steps; the daemon now
+  schedules the pass whenever the mini is reachable. The engine kick runs mirror housekeeping first
+  when mini free < `host_min_free_gb`, then starts Colima, and logs it.
+- Tests: per-mirror protection, new-format stale/garbled `.who`, the 10-min floor, the engine-down
+  clean, the kick ordering (housekeeping under the lock before any kickstart), the daemon schedule.
+
 ## 2026-10-16 - Auto-compact works inside Pane
 
 - Live: `/pre-compact` armed inside a Pane panel, but the Stop hook logged `no-matching-tab` - Pane
