@@ -19,6 +19,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   `──── name ─`, so Pane says no composer and `panels submit` refuses (`composer-unknown`). The helper
   now reads Pane's `agentState` from `workspace state`, parses the prompt itself, falls back to
   `panels input` + a separate Enter, and confirms the resume in the transcript.
+- Live fix 2: the second run typed `/compact` and the compaction ran, but `panels submit` answered
+  `ok:true` with `verifiedSubmitted:false`; the helper called that a failure and never sent the resume.
+  An unverified ok is now `pane-submitted via=submit-unverified` (no retype); the transcript
+  `compact_boundary` check decides, as before.
 
 ## 2026-10-16 - rrun: more mini slots when there is room; wait out short mini outages
 

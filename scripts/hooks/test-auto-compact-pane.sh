@@ -44,7 +44,8 @@ STUB_LOG="$T/stub-calls.log"
 #   panels screen   → an idle empty composer. STUB_CAPTION=1 imitates a NAMED Claude session:
 #                     Pane reports isPresent:false and the text shows `──── name ─` / `❯\u00a0`.
 #                     STUB_HELD=<text> puts text in that composer.
-#   panels submit   → verified "taken"; with STUB_CAPTION=1 → blocked composer-unknown (nothing typed)
+#   panels submit   → verified "taken"; with STUB_CAPTION=1 → blocked composer-unknown (nothing typed);
+#                     STUB_UNVERIFIED=1 → typed but ok:true/verifiedSubmitted:false (seen live)
 #   panels input    → ok
 # Effects: delivering `/compact` (submit, or input --text) appends a compact_boundary line to the
 # transcript (STUB_WRITE_BOUNDARY=1) and/or deletes the sentinel like the primer does
@@ -72,7 +73,10 @@ case "$1 $2" in
       echo '{"ok":true,"state":{"activityStatus":"idle"},"composer":{"isPresent":true,"hasUndeliveredText":false}}'
     fi ;;
   "panels submit")
-    if [ "${STUB_CAPTION:-0}" = "1" ]; then
+    if [ "${STUB_UNVERIFIED:-0}" = "1" ]; then
+      effects
+      echo '{"ok":true,"verifiedSubmitted":false}'
+    elif [ "${STUB_CAPTION:-0}" = "1" ]; then
       echo '{"ok":false,"verifiedSubmitted":false,"inputBytes":0,"blocked":{"kind":"composer-unknown"}}'
     else
       effects
@@ -201,6 +205,17 @@ expect "logged pane-submit-fallback" "$(grep -q "pane-submit-fallback sid=$SID .
 expect "resume typed via panels input after confirmed compaction" "$(grep -q -- "^panels input --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && echo 1)"
 expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 expect "our parser saw the named composer as ready" "$(grep -q "wait=pre-compact screen=ready agent/composer=idle/empty" "$LOG" && echo 1)"
+
+echo "== hook: submit ok but UNVERIFIED (seen live) → no retype, resume after confirmed compaction =="
+reset; write_pane_sentinel
+STUB_CAPTION=1 STUB_UNVERIFIED=1 STUB_WRITE_BOUNDARY=1 hook "test-panel_1"
+wait_helper
+expect "logged submit-unverified for /compact" "$(grep -q "pane-submitted sid=$SID .*step=compact via=submit-unverified" "$LOG" && echo 1)"
+expect "/compact NOT retyped via panels input" "$(grep -q -- '^panels input --panel test-panel_1 --text /compact' "$STUB_LOG" && echo 0 || echo 1)"
+expect "exactly one /compact delivery" "$([ "$(grep -c -- '--text /compact ' "$STUB_LOG")" = "1" ] && echo 1)"
+expect "resume submitted after confirmed compaction" "$(grep -q -- "^panels submit --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && echo 1)"
+expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+expect "no pane-submit-failed" "$(grep -q "pane-submit-failed sid=$SID" "$LOG" && echo 0 || echo 1)"
 
 echo "== hook: agent still working → nothing typed =="
 reset; write_pane_sentinel

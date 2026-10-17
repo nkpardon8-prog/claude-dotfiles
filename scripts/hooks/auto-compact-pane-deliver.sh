@@ -152,7 +152,8 @@ composer_now() {
 }
 
 # submit <text> <label> → rc 0 iff the text was handed to Claude.
-#   path 1: `panels submit` reports ok + verifiedSubmitted (taken or queued).
+#   path 1: `panels submit` reports ok + verifiedSubmitted (taken or queued), or ok without
+#           verification (typed, unproven: no retype, the transcript check decides).
 #   path 2: Pane answered composer-unknown (nothing typed) → type it with `panels input`, press
 #           Enter as a separate write, and confirm the composer no longer holds text.
 submit() {
@@ -164,6 +165,13 @@ submit() {
   blocked=$(printf '%s' "$out" | jq -r '.blocked.kind // "none"' 2>/dev/null)
   if [ "$ok" = "true" ] && [ "$verified" = "true" ]; then
     ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=submit delivery=$state"
+    return 0
+  fi
+  # ok without verification: Pane typed and submitted but could not prove it from the screen (seen
+  # live on a named session). Do NOT retype (that would double-submit); the caller's transcript
+  # check (compact_boundary / resume line) is the real proof either way.
+  if [ "$ok" = "true" ] && [ "$blocked" = "none" ]; then
+    ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=submit-unverified delivery=$state (transcript check decides)"
     return 0
   fi
   if [ "$blocked" != "composer-unknown" ]; then
