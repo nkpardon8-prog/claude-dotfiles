@@ -124,7 +124,9 @@ IMAGE_RM_SKIP = ("referenced in multiple repositories", "dependent child images"
 
 
 class MiniEngineDown(Exception):
-    """The janitor could not list the mini's containers (engine down or mini unreachable)."""
+    """The janitor could not list the mini's containers (engine down or mini unreachable). `acts`
+    = what the engine-free steps (janitor_host_only) did before it was raised."""
+    acts = ()
 
 
 class JanitorRun:
@@ -356,20 +358,26 @@ def janitor_image_ledger(J, infos, ledger, now):
     return new, unused
 
 
-def janitor_disk(cfg, housekeeping):
-    """VM disk % and mini free GB in one ssh round-trip (plus log caps/journald/fstrim if asked)."""
+def janitor_disk(cfg, housekeeping, vm=True):
+    """VM disk % and mini free GB in one ssh round-trip (plus log caps/journald/fstrim if asked).
+    vm=False (engine down): host-side only - no `colima ssh`, which can hang on a wedged VM; the
+    VM disk % is then None and only the host log caps run."""
     maxb = cfg["host_log_max_mb"] * 1024 * 1024
+    in_vm = vm and housekeeping
     script = (
-        "export PATH=/opt/homebrew/bin:$PATH; "
-        "echo VMDISK $(colima ssh -- df -P /var/lib/docker | tail -1 | awk '{print $5}'); "
-        "echo HOSTFREE $(df -k / | tail -1 | awk '{print int($4/1048576)}'); "
+        "export PATH=" + BREW_PATH + ":$PATH; "
+        + ("echo VMDISK $(colima ssh -- df -P /var/lib/docker | tail -1 | awk '{print $5}'); "
+           if vm else "")
+        + "echo HOSTFREE $(df -k / | tail -1 | awk '{print int($4/1048576)}'); "
         + ("" if not housekeeping else
            "for f in ~/.colima/_lima/colima/*.log /opt/homebrew/var/log/colima.log; do "
            "[ -f \"$f\" ] && [ $(stat -f%z \"$f\") -gt " + str(maxb) + " ] && "
-           "tail -c 5000000 \"$f\" > \"$f.tmp\" && cat \"$f.tmp\" > \"$f\" && rm -f \"$f.tmp\" && echo TRUNC $f; done; "
+           "tail -c 5000000 \"$f\" > \"$f.tmp\" && cat \"$f.tmp\" > \"$f\" && rm -f \"$f.tmp\" && echo TRUNC $f; done; ")
+        + ("" if not in_vm else
            "colima ssh -- sudo journalctl --vacuum-size=200M >/dev/null 2>&1; "
-           "colima ssh -- sudo fstrim -a >/dev/null 2>&1; true"))
-    rc, out, _ = rd_common.run(["ssh", "-o", "BatchMode=yes", cfg["host"], script], timeout=180)
+           "colima ssh -- sudo fstrim -a >/dev/null 2>&1; ")
+        + "true")
+    rc, out, _ = mini_sh(cfg, script, timeout=180)
     for t in re.findall(r"TRUNC (\S+)", out):
         rd_common.log("janitor: truncated %s to 5MB (cap %dMB)" % (t, cfg["host_log_max_mb"]))
     m = re.search(r"VMDISK (\d+)%", out)
@@ -383,16 +391,25 @@ def janitor_disk(cfg, housekeeping):
 # bare repo ~/<rr_root>/git/<repo_slug>.git, with its own node_modules) and a ref refs/rrun/<wt12> in
 # that bare repo. Mirrors unused RR_MIRROR_UNUSED_DAYS are removed, then their worktree record and
 # ref (+ `git gc --auto`). df guard: mini free disk below host_min_free_gb (janitor_disk HOSTFREE)
-# -> every mirror not in use goes, whatever its age (a mirror is rebuilt by the next run: npm ci).
-# "In use": the runner holds a slot (~/<rr_root>/slots/<i>, flock) for a run's whole life and writes
-# `<i>.who` = "<repo_slug> <epoch> <pid>". The script takes every free slot non-blocking and keeps
-# them until it exits, so no run can start meanwhile; a slot it cannot take protects that repo's
-# mirrors (an unreadable or stale .who - older than the lock file, or its pid gone - protects every
-# mirror). Last use = newest mtime of the mirror dir and its worktree admin dir's index/HEAD (the
+# -> every mirror not in use goes, whatever its age (a mirror is rebuilt by the next run: npm ci),
+# except one used in the last RR_PRESSURE_FLOOR_S (a safety floor for a run whose slot does not name
+# it yet). "In use": the runner holds a slot (~/<rr_root>/slots/<i>, flock) for a run's whole life
+# and writes `<i>.who` = "<repo_slug> <epoch> <pid> <wt12>". The script takes every free slot
+# non-blocking and keeps them until it exits, so no run can start meanwhile; a slot it cannot take
+# protects the one mirror its .who names. An old-format .who ("<repo_slug> <epoch> <pid>", a runner
+# from before 2026-10-17) protects every mirror of that repo; an unreadable, garbled or stale .who -
+# older than the lock file, or its pid gone - protects every mirror (fail closed; an older janitor
+# reads a new-format .who as garbled, so mixed laptop versions fail closed too). Per-mirror, not
+# per-repo: with many worktrees of one repo some run always holds a slot, and a repo-wide rule let
+# 33 mirrors (53 GB) fill the mini disk on 2026-10-17. Evicting a sibling while a run uses the same
+# bare repo is safe: worktree prune only drops records of missing dirs, the ref deleted is the
+# evicted mirror's own, and gc --auto keeps every worktree's HEAD/index (and recent unreachable
+# objects). Last use = newest mtime of the mirror dir and its worktree admin dir's index/HEAD (the
 # runner's `checkout -f` rewrites the index on every run).
 # rrun-labelled containers need no rule here: the normal idle/exited rules reap kept-on-failure DBs.
 # Perl (stock on macOS) because sh has no flock; script on stdin, args are validated, no secrets.
 RR_MIRROR_UNUSED_DAYS = 7
+RR_PRESSURE_FLOOR_S = 600        # disk pressure: a mirror used this recently is still never evicted
 _RR_HOUSEKEEPING = r"""
 use strict; use warnings;
 use Fcntl qw(:flock O_RDWR O_NOFOLLOW);
@@ -403,24 +420,28 @@ $ENV{PATH} = '/opt/homebrew/bin:/usr/bin:/bin';
 my $R = "$ENV{HOME}/$rel";
 if (!-d "$R/w" || -l "$R/w") { print "RRHK none\n"; exit 0 }
 my $Rgit = (realpath($R) // $R) . '/git/';    # git records the admin dir by its real path
-my (%busy, @held);
+my (%busy, %inuse, @held);
 if (opendir(my $sd, "$R/slots")) {
     for my $s (sort grep { /^\d+$/ } readdir $sd) {
         sysopen(my $fh, "$R/slots/$s", O_RDWR | O_NOFOLLOW) or next;
         if (flock($fh, LOCK_EX | LOCK_NB)) { push @held, $fh; next }
         # .who names the holder only if it is not older than the lock (the runner bumps the lock
         # mtime, then rewrites .who, right after its flock) and its pid is alive; a stale .who of
-        # a run killed -9 (or a missing/garbled one) protects every mirror.
-        my ($who, $slug, $pid) = ('');
+        # a run killed -9 (or a missing/garbled one) protects every mirror. With a 4th field it
+        # names the run's mirror (protect that one); without one (old runner) the whole repo.
+        my ($who, $slug, $pid, $wt) = ('');
         if (open(my $w, '<', "$R/slots/$s.who")) { $who = <$w> // ''; close $w }
-        ($slug, $pid) = $who =~ /^([A-Za-z0-9._-]+) \d+ (\d+)$/;
+        ($slug, $pid, $wt) = $who =~ /^([A-Za-z0-9._-]+) \d+ (\d+)(?: ([A-Za-z0-9._-]+))?$/;
         my @wst = lstat "$R/slots/$s.who";
         my @lst = stat $fh;
         undef $slug unless defined $pid && @wst && @lst && $wst[9] >= $lst[9] && kill(0, $pid);
-        $busy{ defined $slug ? $slug : '*' } = 1;
+        if (!defined $slug) { $busy{'*'} = 1 }
+        elsif (defined $wt)  { $inuse{"$slug-$wt"} = 1 }
+        else                 { $busy{$slug} = 1 }
     }
 }
 print "RRHK busy $_\n" for sort keys %busy;
+print "RRHK inuse $_\n" for sort keys %inuse;
 sub mtime { my @s = lstat $_[0]; @s ? $s[9] : 0 }
 sub git { system('git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', @_) == 0 }
 my %touched;
@@ -429,7 +450,7 @@ for my $name (sort readdir $wd) {
     my ($slug, $wt12) = $name =~ /^(?!\.)([A-Za-z0-9._-]+)-([0-9a-f]{12})$/ or next;
     my $m = "$R/w/$name";
     next if -l $m || !-d _;
-    next if $busy{'*'} || $busy{$slug};
+    next if $busy{'*'} || $busy{$slug} || $inuse{$name};
     my $last = mtime($m);
     if (open(my $g, '<', "$m/.git")) {
         my ($admin) = (<$g> // '') =~ /^gitdir: (.+)$/;
@@ -467,7 +488,7 @@ def rr_housekeeping(cfg, J, free, runner=None):
         J.acts.append("rr housekeeping skipped (%s)" % e)
         return
     pressure = free is not None and free < cfg["host_min_free_gb"]
-    max_age = 0 if pressure else RR_MIRROR_UNUSED_DAYS * 86400
+    max_age = RR_PRESSURE_FLOOR_S if pressure else RR_MIRROR_UNUSED_DAYS * 86400
     args = [root, str(max_age), "1" if J.dry else "0"]
     if runner is None:
         def runner(a, script):
@@ -489,6 +510,8 @@ def rr_housekeeping(cfg, J, free, runner=None):
                 rd_common.log("%s: %s" % (J.tag, desc))
         elif kind == "busy":
             J.acts.append("rrun run in progress (%s): its mirrors kept" % detail)
+        elif kind == "inuse":
+            J.acts.append("rrun mirror %s in use: kept" % detail)
         elif kind == "err":
             rd_common.log("%s: rr housekeeping: %s" % (J.tag, detail))
             J.last_error = {"ts": time.time(), "action": "rr housekeeping", "err": detail[:300]}
@@ -513,9 +536,13 @@ def janitor(cfg, dry=False, only=None, force_critical=False, lock_wait=None):
     prunes and image GC. `force_critical`: apply the disk-critical container path regardless of
     disk usage (to the `only` scope when given).
 
-    lock_wait=None (daemon janitor-run): lock held elsewhere or engine down -> skip this pass. A
-    number (manual `rdocker clean`): wait up to that many seconds for the lock, then raise
-    MiniLockBusy; an engine that does not answer raises MiniEngineDown (dry runs raise it too)."""
+    An engine that does not answer still gets the engine-free steps (janitor_host_only: disk check
+    + rrun mirror housekeeping, ssh only); only the container/volume/image steps are skipped.
+
+    lock_wait=None (daemon janitor-run): lock held elsewhere -> skip this pass; engine down -> the
+    engine-free steps only. A number (manual `rdocker clean`): wait up to that many seconds for the
+    lock, then raise MiniLockBusy; an engine that does not answer raises MiniEngineDown after the
+    engine-free steps, carrying their acts (dry runs too)."""
     if dry:
         return janitor_pass(JanitorRun(cfg, True), only, force_critical)
     try:
@@ -531,16 +558,39 @@ def janitor(cfg, dry=False, only=None, force_critical=False, lock_wait=None):
     except (MiniLockBusy, MiniEngineDown) as e:
         if lock_wait is not None:
             raise
-        rd_common.log("janitor: skipped - %s" % e)
-        return ["skipped: %s" % e]
+        acts = list(getattr(e, "acts", ()))
+        if isinstance(e, MiniEngineDown):
+            rd_common.log("janitor: engine down - ran the disk check + rrun mirror housekeeping "
+                          "only; container/volume/image steps skipped - %s" % e)
+        else:
+            rd_common.log("janitor: skipped - %s" % e)
+        return acts + ["skipped: %s" % e]
+
+
+def janitor_host_only(J):
+    """The engine-free part of a pass: mini disk check + ~/rr mirror housekeeping need only ssh +
+    perl, and they are what a full mini disk needs most - it is what kills the engine (2026-10-17:
+    53 GB of rrun mirrors filled the disk, colima died, and the engine-gated pass never ran)."""
+    pct, free = janitor_disk(J.cfg, housekeeping=not J.dry, vm=False)
+    if free is not None:
+        J.acts.append("mini disk %dGB free" % free)
+        if not J.dry:
+            rd_common.update_state(rd_common.JANITOR_PATH,
+                                   lambda st0: {**st0, "mini_free_gb": free})
+    rr_housekeeping(J.cfg, J, free)
+    return free
 
 
 def janitor_pass(J, only, force_critical):
     cfg, dry, ctx = J.cfg, J.dry, J.ctx
     rc, out, err = rd_common.dk(ctx, "ps", "-aq", "--no-trunc", timeout=20)
     if rc != 0:
-        raise MiniEngineDown("mini docker engine not answering (%s)"
-                             % ((err or out).strip()[-160:] or "rc=%s" % rc))
+        down = MiniEngineDown("mini docker engine not answering (%s)"
+                              % ((err or out).strip()[-160:] or "rc=%s" % rc))
+        if not only:
+            janitor_host_only(J)
+        down.acts = list(J.acts)
+        raise down
     ids = out.split()
     now = vm_now(ctx)
     state = rd_common.load_json(rd_common.JANITOR_PATH, {})
@@ -1003,6 +1053,29 @@ _RESTART_ATTENTION = {
 }
 
 
+def low_disk_housekeeping(cfg):
+    """Engine down and the mini host disk below host_min_free_gb -> rrun mirror housekeeping (under
+    the mini lock) BEFORE any colima start/restart: a full disk is what killed the engine, and a
+    start on a full disk times out (2026-10-17). Needs ssh + perl only. Lock held elsewhere (a
+    janitor pass, likely doing the same) -> skipped; the start goes ahead either way."""
+    _, free = janitor_disk(cfg, housekeeping=False, vm=False)
+    if free is None or free >= cfg["host_min_free_gb"]:
+        return None
+    rd_common.log("kick: mini engine down and mini disk low (%dGB free < %dGB) -> rrun mirror "
+                  "housekeeping before the colima start" % (free, cfg["host_min_free_gb"]))
+    try:
+        with mini_lock(cfg, "kick: low-disk mirror housekeeping") as lk:
+            J = JanitorRun(cfg, False, lk, tag="kick")
+            try:
+                rr_housekeeping(cfg, J, free)
+            except MiniLockLost as e:
+                rd_common.log("kick: mirror housekeeping stopped - mini lock lost (%s)" % e)
+            return J.acts
+    except MiniLockBusy as e:
+        rd_common.log("kick: mirror housekeeping skipped - %s" % e)
+        return None
+
+
 def mini_engine_kick(cfg, restart_ok=False):
     """Mini reachable but its engine is not answering. VM down (e.g. the mini rebooted; Colima's
     LaunchAgent waits for a GUI login that never comes) -> `colima start`, only if the profile exists
@@ -1011,6 +1084,7 @@ def mini_engine_kick(cfg, restart_ok=False):
     dead_check() agrees (info fails there, nothing running) - rate-limited, under the mini lock.
     Anything that needs a human (no profile, failed start, a restart declined/failed) becomes the
     `engine` attention item; a successful start/restart clears it."""
+    low_disk_housekeeping(cfg)
     rc, out, err = mini_sh(cfg, kick_script(), timeout=240)
     m = marker(out, "RDKICK") or ["no-answer"]
     res = m[0]

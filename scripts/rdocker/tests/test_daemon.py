@@ -61,8 +61,9 @@ class Schedule(unittest.TestCase):
         self.pruned = 0
         self.drift_checks = []
         cfg = rd_common.merge_cfg({"mode": "auto"})
-        healthy = {"reachable": True, "docker_ok": True} if healthy_mini else \
-            {"reachable": False, "docker_ok": False}
+        healthy = {"reachable": True, "docker_ok": True} if healthy_mini is True else \
+            {"reachable": True, "docker_ok": False, "failure": "engine"} \
+            if healthy_mini == "engine-down" else {"reachable": False, "docker_ok": False}
         with mock.patch.object(rd_daemon, "time", ft), \
                 mock.patch.object(rd_common, "load_cfg", lambda: dict(cfg)), \
                 mock.patch.object(rd_common, "log", lambda *a, **k: None), \
@@ -79,7 +80,7 @@ class Schedule(unittest.TestCase):
                 mock.patch.object(rd_daemon, "start_events", lambda c: None), \
                 mock.patch.object(rd_daemon, "flag_drift_check", lambda: self.drift_checks.append(ft.mono)), \
                 mock.patch.object(rd_daemon, "spawn_job",
-                                  lambda name, jobs: spawned.append((name, ft.mono))):
+                                  lambda name, jobs, extra=(): spawned.append((name, ft.mono))):
             with self.assertRaises(StopLoop):
                 rd_daemon.daemon()
         return [round(t - 1000) for n, t in spawned if n == job]
@@ -99,6 +100,11 @@ class Schedule(unittest.TestCase):
         self.assertEqual(self.run_loop({}, desktop_up=True, job="laptop-janitor-run",
                                        healthy_mini=False), up)
         self.assertEqual(self.run_loop({}, desktop_up=True, healthy_mini=False), [])
+
+    def test_janitor_runs_while_engine_down_but_mini_reachable(self):
+        # its disk check + rrun mirror housekeeping need only ssh (2026-10-17 disk-full outage)
+        self.assertEqual(self.run_loop({}, healthy_mini="engine-down"), [60, 660, 1260, 1860, 2460])
+        self.assertEqual(self.run_loop({}, healthy_mini=False), [])     # unreachable: nothing
 
     def test_flag_drift_checked_at_start_then_daily(self):
         self.run_loop({}, max_sleeps=4)

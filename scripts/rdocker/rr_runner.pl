@@ -302,10 +302,12 @@ sub take_slot {
                 # Before anything else: bump the lock's mtime, then rewrite .who (with our pid).
                 # The janitor trusts a held slot's .who only when it is not older than the lock
                 # and its pid is alive, so a stale .who left by a run killed -9 never names the
-                # wrong repo in the moment between our flock and this rewrite.
+                # wrong repo in the moment between our flock and this rewrite. The 4th field
+                # names our mirror (<repo_slug>-<wt12>): the janitor's disk-pressure eviction then
+                # spares that mirror only, not every mirror of the repo (format: rd_janitor ~/rr).
                 utime(undef, undef, $fh);
                 ($lock_fh, $who) = ($fh, "$dir/$i.who");
-                write_file($who, "$h{repo_slug} " . int(time) . " $$\n");
+                write_file($who, "$h{repo_slug} " . int(time) . " $$ $h{wt12}\n");
                 return;
             }
         }

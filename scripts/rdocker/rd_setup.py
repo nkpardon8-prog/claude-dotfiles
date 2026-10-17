@@ -616,7 +616,9 @@ def clean(cfg, ns):
                       "retry shortly)" % (e, rd_janitor.CLEAN_LOCK_WAIT))
         return 1
     except rd_janitor.MiniEngineDown as e:
-        rd_common.say("clean not run: %s - see `rdocker status`" % e)
+        for a in e.acts:              # the engine-free steps (disk check, rrun mirrors) still ran
+            print(("would: " if ns.dry_run else "") + a)
+        rd_common.say("clean: container/volume/image steps not run: %s - see `rdocker status`" % e)
         return 1
     for a in acts:
         print(("would: " if ns.dry_run else "") + a)

@@ -284,6 +284,61 @@ class Kick(MiniCase):
             self.assertEqual(rd_janitor.mini_engine_kick(self.cfg), "start-failed")
         self.assertTrue(any("FAILED: start-failed launchd" in m for m in self.logs))
 
+    def fake_df(self, free_gb):
+        # host `df -k /` on the fake mini (BREW_PATH = self.bin is first on the script's PATH)
+        self.mini_file("df.out", "Filesystem 1024-blocks Used Available\n/dev/disk3s1 1 1 %d\n"
+                       % (free_gb * 1048576))
+        path = os.path.join(self.bin, "df")
+        with open(path, "w") as f:
+            f.write('#!/bin/sh\ncat "$HOME/df.out"\n')
+        os.chmod(path, 0o755)
+
+    def hk_spy(self):
+        seen = []
+
+        def spy(cfg, J, free, runner=None):
+            seen.append({"free": free, "engine_log": list(self.colima()),
+                         "locked": os.path.isdir(self.lockdir), "tag": J.tag})
+        p = mock.patch.object(rd_janitor, "rr_housekeeping", spy)
+        p.start()
+        self.addCleanup(p.stop)
+        return seen
+
+    def test_low_host_disk_runs_mirror_housekeeping_before_the_start(self):
+        # 2026-10-17: the mini disk filled, colima died, and the start attempt timed out on the full
+        # disk; rrun mirrors (53 GB) are freed with ssh + perl alone, so do that first
+        self.vm(False, launchd=True)
+        self.mini_file(self.PROFILE, "cpu: 6\n")
+        self.fake_df(3)
+        seen = self.hk_spy()
+        self.assertEqual(rd_janitor.mini_engine_kick(self.cfg), "started")
+        self.assertEqual(len(seen), 1, seen)
+        self.assertEqual(seen[0]["free"], 3)
+        self.assertEqual(seen[0]["engine_log"], [])        # before any kickstart / colima start
+        self.assertTrue(seen[0]["locked"])                 # under the mini lock
+        self.assertEqual(self.colima(), [self.KS])
+        self.assertFalse(os.path.exists(self.lockdir))     # released before the start
+        self.assertTrue(any("mirror housekeeping before the colima start" in m for m in self.logs),
+                        self.logs)
+
+    def test_enough_host_disk_skips_housekeeping(self):
+        self.vm(False, launchd=True)
+        self.mini_file(self.PROFILE, "cpu: 6\n")
+        self.fake_df(50)
+        seen = self.hk_spy()
+        self.assertEqual(rd_janitor.mini_engine_kick(self.cfg), "started")
+        self.assertEqual(seen, [])
+
+    def test_low_disk_lock_held_elsewhere_still_starts(self):
+        self.vm(False, launchd=True)
+        self.mini_file(self.PROFILE, "cpu: 6\n")
+        self.fake_df(3)
+        self.set_owner("other:1", 5)
+        seen = self.hk_spy()
+        self.assertEqual(rd_janitor.mini_engine_kick(self.cfg), "started")
+        self.assertEqual(seen, [])
+        self.assertTrue(any("mirror housekeeping skipped" in m for m in self.logs), self.logs)
+
     def test_vm_up_first_failure_does_not_restart(self):
         self.vm(True, launchd=True)
         self.assertEqual(rd_janitor.mini_engine_kick(self.cfg, restart_ok=False), "vm-up")

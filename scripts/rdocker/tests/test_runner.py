@@ -7,6 +7,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -650,7 +651,8 @@ class RunnerTest(unittest.TestCase):
             seen["who_m"] = os.stat(os.path.join(self.root, "slots", "0.who")).st_mtime
             p.stdin.close()
         self.run_runner(["true"], action=act, go=False)
-        self.assertRegex(seen["who"], r"^%s \d+ \d+\n$" % SLUG.replace(".", "\\."))
+        # 4th field = the mirror's wt12: the janitor protects that mirror only (rd_janitor ~/rr)
+        self.assertRegex(seen["who"], r"^%s \d+ \d+ %s\n$" % (re.escape(SLUG), WT))
         self.assertGreater(seen["lock"], old + 60)           # lock mtime bumped
         self.assertGreaterEqual(int(seen["who_m"]), int(seen["lock"]))
 

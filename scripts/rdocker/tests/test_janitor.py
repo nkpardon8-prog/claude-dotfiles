@@ -27,7 +27,7 @@ class JanitorCase(ShimCase):
     def setUp(self):
         super().setUp()
         with open(os.path.join(self.bin, "ssh"), "w") as f:
-            f.write('#!/bin/sh\ncat "$HOME/ssh.out" 2>/dev/null\nexit 0\n')
+            f.write('#!/bin/sh\necho "$*" >> "$HOME/ssh.args"\ncat "$HOME/ssh.out" 2>/dev/null\nexit 0\n')
         self.disk(50)
         self.jpath = os.path.join(self.state, "janitor.json")
 
@@ -359,16 +359,32 @@ class ImageGCByTag(JanitorCase):
 
 
 class CleanExitCodes(JanitorCase):
-    def test_mini_engine_down_but_ssh_ok_exits_1(self):
-        self.mini({}, down=True)          # ssh stub grants the lock; docker on the mini fails
-        p = self.clean(rc=1)
-        self.assertIn("clean not run: mini docker engine not answering", p.stderr)
-        self.assertEqual(p.stdout, "")
+    def ssh_args(self):
+        try:
+            with open(os.path.join(self.home, "ssh.args")) as f:
+                return f.read().splitlines()
+        except OSError:
+            return []
 
-    def test_dry_run_with_mini_unreachable_exits_1(self):
+    def test_mini_engine_down_but_ssh_ok_exits_1(self):
+        # engine down, ssh fine (2026-10-17: the mini disk filled and killed colima): the disk check
+        # and the rrun mirror housekeeping still run - they need only ssh + perl - and the
+        # container/volume/image steps are reported as not run
+        self.mini({}, down=True)          # ssh stub grants the lock; docker on the mini fails
+        self.disk(50, free=3)
+        p = self.clean(rc=1)
+        self.assertIn("container/volume/image steps not run: mini docker engine not answering",
+                      p.stderr)
+        self.assertIn("mini disk 3GB free", p.stdout)
+        self.assertTrue(any("/usr/bin/perl" in a for a in self.ssh_args()), self.ssh_args())
+        self.assertFalse(any("colima ssh" in a for a in self.ssh_args()), self.ssh_args())
+        self.assertFalse(self.destructive())
+        self.assertEqual(self.jstate().get("mini_free_gb"), 3)
+
+    def test_dry_run_with_mini_engine_down_exits_1(self):
         self.mini({}, down=True)
         p = self.clean("--dry-run", rc=1)
-        self.assertIn("clean not run", p.stderr)
+        self.assertIn("not run", p.stderr)
         self.assertFalse(self.destructive())
 
     def test_daemon_janitor_pass_skips_quietly_when_engine_down(self):
@@ -529,9 +545,45 @@ class RrHousekeeping(unittest.TestCase):
                 self.assertEqual(len(os.listdir(os.path.join(self.R, "w"))), 2, case)
 
     def test_locked_slot_with_unreadable_owner_protects_everything(self):
-        self.hold_slot(0, "garbage")
+        for who in ("garbage", "%s %d %d %s extra\n" % (self.SLUG, 1, os.getpid(), self.OLD),
+                    "%s %d %d ../%s\n" % (self.SLUG, 1, os.getpid(), self.OLD)):
+            with self.subTest(who=who):
+                import fcntl
+                with open(os.path.join(self.R, "slots", "0"), "a+") as fh:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with open(os.path.join(self.R, "slots", "0.who"), "w") as f:
+                        f.write(who)
+                    self.run_hk(free=2)
+                self.assertEqual(len(os.listdir(os.path.join(self.R, "w"))), 2, who)
+
+    def test_held_slot_naming_its_mirror_protects_only_that_mirror(self):
+        # 2026-10-17: many worktrees of one repo -> some run always holds a slot; a slug-wide
+        # protection meant nothing was ever evicted while the disk filled. A .who that names the
+        # mirror (new format: "<slug> <epoch> <pid> <wt12>") protects that mirror alone.
+        self.hold_slot(0, "%s %d %d %s\n" % (self.SLUG, r.time.time(), os.getpid(), self.OLD))
+        J = self.run_hk(free=2)
+        self.assertTrue(os.path.isdir(self.mirror(self.OLD)))
+        self.assertFalse(os.path.exists(self.mirror(self.FRESH)))
+        self.assertEqual(self.refs(), ["refs/rrun/" + self.OLD])
+        self.assertIn("rrun mirror %s-%s in use: kept" % (self.SLUG, self.OLD), J.acts)
+
+    def test_stale_new_format_who_protects_everything(self):
+        dead = subprocess.run(["/bin/sh", "-c", "echo $$"], capture_output=True, text=True).stdout.strip()
+        self.hold_slot(0, "%s 1 %s %s\n" % (self.SLUG, dead, self.OLD))
         self.run_hk(free=2)
         self.assertEqual(len(os.listdir(os.path.join(self.R, "w"))), 2)
+
+    def test_low_disk_still_spares_a_mirror_used_minutes_ago(self):
+        # safety floor: a run between `checkout` and its slot write (or an old runner) has no .who
+        # naming it yet; a mirror whose index/HEAD changed < RR_PRESSURE_FLOOR_S ago is never evicted
+        self.assertEqual(r.RR_PRESSURE_FLOOR_S, 600)
+        self.age(self.FRESH, 2 / 1440.0)            # 2 minutes
+        J = self.run_hk(free=2)
+        self.assertTrue(os.path.isdir(self.mirror(self.FRESH)))
+        self.assertFalse(os.path.exists(self.mirror(self.OLD)))
+        self.age(self.FRESH, 11 / 1440.0)           # 11 minutes: past the floor
+        self.run_hk(free=2)
+        self.assertFalse(os.path.exists(self.mirror(self.FRESH)))
 
     def test_free_slot_is_taken_and_released(self):
         open(os.path.join(self.R, "slots", "0"), "w").close()

@@ -436,9 +436,11 @@ def daemon():
             set_global_context(cfg, context_target(cfg, (target, why)))
             if healthy:
                 rd_tunnel.sync_forwards(cfg)
-                if due(last["janitor"], cfg["janitor_interval_min"] * 60, now):
-                    last["janitor"] = now
-                    spawn_job("janitor-run", jobs)
+            # mini reachable is enough: with the engine down the pass still runs its disk check +
+            # rrun mirror housekeeping (ssh only) - a full disk is what kills the engine
+            if h["reachable"] and due(last["janitor"], cfg["janitor_interval_min"] * 60, now):
+                last["janitor"] = now
+                spawn_job("janitor-run", jobs)
             prune_fallback_pins(cfg)
             # laptop janitor (stamped throwaways only): whatever the mini's health, only while
             # Docker Desktop runs - never starts it
