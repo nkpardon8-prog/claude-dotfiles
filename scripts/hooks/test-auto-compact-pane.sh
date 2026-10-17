@@ -45,7 +45,9 @@ STUB_LOG="$T/stub-calls.log"
 #                     Pane reports isPresent:false and the text shows `──── name ─` / `❯\u00a0`.
 #                     STUB_HELD=<text> puts text in that composer.
 #   panels submit   → verified "taken"; with STUB_CAPTION=1 → blocked composer-unknown (nothing typed);
-#                     STUB_UNVERIFIED=1 → typed but ok:true/verifiedSubmitted:false (seen live)
+#                     STUB_UNVERIFIED=1 → typed but ok:true/verifiedSubmitted:false (seen live);
+#                     STUB_STUCK=1 → same reply but the Enter did not land: the text sits in the
+#                     composer until a separate `input --keys enter` (seen live, 2nd run)
 #   panels input    → ok
 # Effects: delivering `/compact` (submit, or input --text) appends a compact_boundary line to the
 # transcript (STUB_WRITE_BOUNDARY=1) and/or deletes the sentinel like the primer does
@@ -68,12 +70,15 @@ case "$1 $2" in
     printf '{"ok":true,"panes":[{"panels":[{"panelId":"test-panel_1","agentType":"claude","agentState":"%s","running":true}]}]}\n' "${STUB_AGENT_STATE:-idle}" ;;
   "panels screen")
     if [ "${STUB_CAPTION:-0}" = "1" ]; then
-      python3 -c 'import json,os; print(json.dumps({"ok":True,"state":{"activityStatus":"active"},"composer":{"isPresent":False,"hasUndeliveredText":False},"text":"output\n\u2500\u2500\u2500\u2500\u2500 my-session \u2500\n\u276f\u00a0"+os.environ.get("STUB_HELD","")+"\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  ctx 9%"}))'
+      python3 -c 'import json,os; print(json.dumps({"ok":True,"state":{"activityStatus":"active"},"composer":{"isPresent":False,"hasUndeliveredText":False},"text":"output\n\u2500\u2500\u2500\u2500\u2500 my-session \u2500\n\u276f\u00a0"+(open(os.environ["STUB_HELD_FILE"]).read() if os.path.isfile(os.environ["STUB_HELD_FILE"]) else os.environ.get("STUB_HELD",""))+"\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  ctx 9%"}))'
     else
       echo '{"ok":true,"state":{"activityStatus":"idle"},"composer":{"isPresent":true,"hasUndeliveredText":false}}'
     fi ;;
   "panels submit")
-    if [ "${STUB_UNVERIFIED:-0}" = "1" ]; then
+    if [ "${STUB_STUCK:-0}" = "1" ]; then
+      printf '%s' "$text" > "$STUB_HELD_FILE"
+      echo '{"ok":true,"verifiedSubmitted":false}'
+    elif [ "${STUB_UNVERIFIED:-0}" = "1" ]; then
       effects
       echo '{"ok":true,"verifiedSubmitted":false}'
     elif [ "${STUB_CAPTION:-0}" = "1" ]; then
@@ -83,13 +88,14 @@ case "$1 $2" in
       echo '{"ok":true,"verifiedSubmitted":true,"delivery":{"state":"taken","evidence":"screen"}}'
     fi ;;
   "panels input")
+    if [ -z "$text" ] && [ -s "$STUB_HELD_FILE" ]; then text=$(cat "$STUB_HELD_FILE"); rm -f "$STUB_HELD_FILE"; fi
     effects
     echo '{"ok":true}' ;;
   *) echo '{"ok":false}' ;;
 esac
 STUBEOF
 chmod +x "$STUB"
-export STUB_LOG STUB_TRANSCRIPT="$TRANSCRIPT"
+export STUB_LOG STUB_TRANSCRIPT="$TRANSCRIPT" STUB_HELD_FILE="$T/stub-held.txt"
 
 # Clean runner env: no inherited Pane/Terminal identity from the shell running this test.
 run_env() {
@@ -171,7 +177,7 @@ wait_helper() {  # wait until the helper releases its lock (or 15s)
   local i=0
   while [ -f "${SP}.pane-helper" ] && [ "$i" -lt 75 ]; do sleep 0.2; i=$((i+1)); done
 }
-reset() { rm -f "$SP" "${SP}.attempts" "${SP}.pane-helper" "$STUB_LOG"; : > "$TRANSCRIPT"; : > "$LOG"; }
+reset() { rm -f "$SP" "${SP}.attempts" "${SP}.pane-helper" "$STUB_LOG" "$STUB_HELD_FILE"; : > "$TRANSCRIPT"; : > "$LOG"; }
 
 echo "== hook: Pane sentinel → helper submits /compact, then resume after confirmed compaction =="
 reset; write_pane_sentinel
@@ -216,6 +222,17 @@ expect "exactly one /compact delivery" "$([ "$(grep -c -- '--text /compact ' "$S
 expect "resume submitted after confirmed compaction" "$(grep -q -- "^panels submit --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && echo 1)"
 expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 expect "no pane-submit-failed" "$(grep -q "pane-submit-failed sid=$SID" "$LOG" && echo 0 || echo 1)"
+
+echo "== hook: submit ok, UNVERIFIED, text left in composer (seen live) → Enter pressed, not retyped =="
+reset; write_pane_sentinel
+STUB_CAPTION=1 STUB_STUCK=1 STUB_WRITE_BOUNDARY=1 hook "test-panel_1"
+wait_helper
+expect "logged pane-submit-unverified composer_after=text" "$(grep -q "pane-submit-unverified sid=$SID .*step=compact composer_after=text" "$LOG" && echo 1)"
+expect "Enter pressed as its own key" "$(grep -q -- '^panels input --panel test-panel_1 --keys enter --yes' "$STUB_LOG" && echo 1)"
+expect "/compact typed exactly once" "$([ "$(grep -c -- '--text /compact ' "$STUB_LOG")" = "1" ] && echo 1)"
+expect "logged pane-submitted via=submit-enter" "$(grep -q "pane-submitted sid=$SID .*step=compact via=submit-enter" "$LOG" && echo 1)"
+expect "compaction confirmed" "$(grep -q "pane-compact-confirmed sid=$SID" "$LOG" && echo 1)"
+expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 
 echo "== hook: agent still working → nothing typed =="
 reset; write_pane_sentinel

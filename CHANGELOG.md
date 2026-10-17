@@ -41,6 +41,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   `ok:true` with `verifiedSubmitted:false`; the helper called that a failure and never sent the resume.
   An unverified ok is now `pane-submitted via=submit-unverified` (no retype); the transcript
   `compact_boundary` check decides, as before.
+- Live fix 3: the third run's `panels submit` typed `/compact` but its Enter did not land (text left
+  in the prompt, same unverified reply). After an unverified ok the helper now reads the prompt and,
+  if the text is still there, presses Enter as its own key (at most twice; never retypes).
 
 ## 2026-10-16 - rrun: more mini slots when there is room; wait out short mini outages
 

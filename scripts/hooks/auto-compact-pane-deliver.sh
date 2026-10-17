@@ -153,7 +153,7 @@ composer_now() {
 
 # submit <text> <label> → rc 0 iff the text was handed to Claude.
 #   path 1: `panels submit` reports ok + verifiedSubmitted (taken or queued), or ok without
-#           verification (typed, unproven: no retype, the transcript check decides).
+#           verification: never retyped; if our text still sits in the composer, Enter is pressed.
 #   path 2: Pane answered composer-unknown (nothing typed) → type it with `panels input`, press
 #           Enter as a separate write, and confirm the composer no longer holds text.
 submit() {
@@ -170,8 +170,17 @@ submit() {
   # ok without verification: Pane typed and submitted but could not prove it from the screen (seen
   # live on a named session). Do NOT retype (that would double-submit); the caller's transcript
   # check (compact_boundary / resume line) is the real proof either way.
+  # Live (2nd run): the text landed but the Enter did not, leaving `/compact` in the composer. So
+  # look: still holding text → press Enter ourselves; empty → it was taken.
   if [ "$ok" = "true" ] && [ "$blocked" = "none" ]; then
-    ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=submit-unverified delivery=$state (transcript check decides)"
+    sleep "$KEY_GAP"
+    comp=$(composer_now)
+    if [ "$comp" = "text" ]; then
+      ac_log "pane-submit-unverified sid=$SID panel=$PANEL step=$label composer_after=text → pressing Enter"
+      enter_until_taken "$label" submit-enter
+      return
+    fi
+    ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=submit-unverified composer_after=$comp delivery=$state (transcript check decides)"
     return 0
   fi
   if [ "$blocked" != "composer-unknown" ]; then
@@ -188,20 +197,27 @@ submit() {
     return 1
   fi
   sleep "$KEY_GAP"
+  enter_until_taken "$label" input
+}
+
+# enter_until_taken <label> <via> → press Enter (its own write) until the composer no longer holds
+# text, at most twice. Only called right after WE typed into a composer we saw empty.
+enter_until_taken() {
+  local label="$1" via="$2" out comp i
   for i in 1 2; do
     out=$(rp panels input --panel "$PANEL" --keys enter --yes)
     if [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
-      ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=input-enter"
+      ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=$via-enter"
       return 1
     fi
     sleep "$KEY_GAP"
     comp=$(composer_now)
     if [ "$comp" != "text" ]; then
-      ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=input composer_after=$comp enter_presses=$i"
+      ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=$via composer_after=$comp enter_presses=$i"
       return 0
     fi
   done
-  ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=input reason=text-still-in-composer (left for the user; not retried)"
+  ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=$via reason=text-still-in-composer (left for the user; not retried)"
   return 1
 }
 
