@@ -25,15 +25,15 @@ Pane-path lines carry `delivery=pane` and `panel=<id>`; Terminal-path lines are 
 | `retain-FAILED` | auto-compact-after-pre-compact.sh | The retain-after-fire `mv` back to the sentinel path failed; native auto-compact is the remaining backstop. `attempt=<N>` logged |
 | `pane-dispatched` | auto-compact-after-pre-compact.sh | Pane branch: claim + retain bookkeeping done, detached delivery helper started; `helper_pid=` + `attempt=` logged |
 | `pane-skip` | auto-compact-after-pre-compact.sh | Pane branch: a delivery helper from an earlier Stop is still alive (`reason=helper-in-flight`); nothing claimed, no attempt counted |
-| `pane-helper` | auto-compact-pane-deliver.sh | Helper progress: `start`, `wait=<pre-compact\|post-compact> screen=<ready\|busy> agent/composer=<agentState>/<empty\|text\|absent\|error>` transitions, or `abort reason=` (bad-args, bad-tunable, composer-not-ready-pre-compact, composer-not-ready-post-compact) |
+| `pane-helper` | auto-compact-pane-deliver.sh | Helper progress: `start`, `wait=pre-compact screen=<ready\|busy> agent/composer=<agentState>/<empty\|text\|absent\|error>` transitions, or `abort reason=` (bad-args, bad-tunable, composer-not-ready-pre-compact) |
 | `pane-submitted` | auto-compact-pane-deliver.sh | Text handed to Claude: `via=submit` (`runpane panels submit` verified, `delivery=taken\|queued`), `via=submit-unverified` (submit said ok but could not verify, composer empty after; the transcript check decides), `via=submit-enter` (unverified submit left the text in the composer; Enter pressed separately, `enter_presses=`) or `via=input` (fallback; `composer_after=` + `enter_presses=`); `step=compact\|resume` |
 | `pane-submit-unverified` | auto-compact-pane-deliver.sh | `panels submit` said ok without verification and our text is still in the composer (`composer_after=text`); Enter is pressed next, never a retype |
 | `pane-submit-fallback` | auto-compact-pane-deliver.sh | `panels submit` answered `composer-unknown` (Pane cannot see the prompt of a NAMED Claude session, whose top rule reads `──── name ─`), so the helper types with `panels input` + a separate Enter |
-| `pane-resume-confirmed` | auto-compact-pane-deliver.sh | The `/post-compact-resume` command appeared in the session transcript (`after=<N>s`) |
+| `pane-resume-confirmed` | auto-compact-pane-deliver.sh | The `/post-compact-resume` command appeared in the session transcript after the `compact_boundary` (`after=<N>s`) |
 | `pane-resume-unconfirmed` | auto-compact-pane-deliver.sh | Resume typed but not seen in the transcript within the confirm window; check the panel |
 | `pane-submit-failed` | auto-compact-pane-deliver.sh | `runpane panels submit` did not verify; ok/verified/delivery/blocked logged; helper stops (sentinel retained → next Stop retries) |
 | `pane-compact-confirmed` | auto-compact-pane-deliver.sh | Compaction finished: `signal=transcript-compact-boundary` (new compact_boundary entry in the transcript) or `signal=sentinel-retired` (primer retired it) |
-| `pane-compact-unconfirmed` | auto-compact-pane-deliver.sh | No confirmed compaction within the timeout; the resume is NOT sent |
+| `pane-compact-unconfirmed` | auto-compact-pane-deliver.sh | No confirmed compaction within the timeout (`resume_queued=<0\|1>`: the resume was already queued behind /compact, as on Terminal) |
 | `test-no-fire` | auto-compact-after-pre-compact.sh | AUTO_COMPACT_TEST_NO_FIRE was set; full resolve→verify→claim path ran but the osascript fire was skipped (no keystrokes) — test seam, never set by real Stop hooks. Pane branch: `delivery=pane`, logged when no AUTO_COMPACT_TEST_RUNPANE stub is given (helper not spawned) |
 | `ac_write_sentinel` | lib/auto-compact-sentinel.sh | Sentinel write skipped in ac_write_sentinel; reason= appended (e.g., oversize) |
 | `invalid` | lib/auto-compact-sentinel.sh | Invalid TTY target detected during sentinel validation; raw value logged |
@@ -60,7 +60,7 @@ documented here to satisfy the G5 drift checker.
 | Verb | Script | Meaning |
 |---|---|---|
 | `handoff:sentinel_armed` | arm-auto-compact.sh | Arm success; SID8 + TTY + CWD logged |
-| `handoff:compact_chained` | auto-compact-after-pre-compact.sh, auto-compact-pane-deliver.sh | Stop hook delivered /compact + /post-compact-resume (Pane: helper sent the resume after a confirmed compaction) |
+| `handoff:compact_chained` | auto-compact-after-pre-compact.sh, auto-compact-pane-deliver.sh | Stop hook delivered /compact + /post-compact-resume (Pane: helper queued the resume right behind /compact, `result=fired+resume-queued`) |
 | `handoff:session_started` | post-compact-primer.sh | Primer fired; SID + source logged |
 | `handoff:ctx_broker_invalidated` | post-compact-primer.sh | Stale-broker guard: ctx-<sid>.txt sidecar deleted at a compact/clear boundary so the first post-event UserPromptSubmit doesn't read a stale-high ctx%; SID + source logged |
 | `handoff:handoff_detected` | post-compact-primer.sh | Sentinel matched CWD (R4 D6: logged AFTER resolver sets HANDOFF_PATH); SID8 + file + sentinel_present logged |

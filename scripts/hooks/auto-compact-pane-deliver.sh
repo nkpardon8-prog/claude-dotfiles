@@ -18,14 +18,15 @@
 #      composer-unknown (same named-rule blind spot — it sent nothing), fall back to
 #      `panels input --text` then a separate `panels input --keys enter` (Claude treats an Enter
 #      that arrives with the text as a newline), then confirm the composer emptied.
-#   3. wait until compaction has FINISHED, then until the panel is ready again:
+#   3. wait until compaction has FINISHED:
 #        finished = a new `compact_boundary` entry in the session transcript after dispatch
 #                   (Claude Code writes it when a compaction completes), OR — when no usable
 #                   transcript was given — the sentinel was retired by post-compact-primer.sh
 #                   (it does that only on a confirmed source=compact start).
-#      Bounded by COMPACT_TIMEOUT. On timeout the resume is NOT sent (a resume typed into a
-#      session that never compacted would be a plain prompt).
-#   4. deliver /post-compact-resume <sid> the same way, then confirm it reached the transcript.
+#      Bounded by COMPACT_TIMEOUT.
+#   (between 2 and 3) queue /post-compact-resume <sid> right behind /compact, as the Terminal path
+#      does; Claude runs it the moment compaction ends. Confirmed by a resume line AFTER the
+#      compact_boundary in the transcript.
 #
 # The Stop hook has already done the retain/attempts bookkeeping before spawning this, so any
 # failure here just leaves the sentinel for the next Stop to retry (bounded at 3 attempts).
@@ -251,6 +252,18 @@ if ! submit "/compact" compact; then
   exit 0
 fi
 
+# Queue the resume right behind /compact, the way the Terminal path does (it types both lines
+# 0.3s apart): Claude holds a line submitted mid-compaction and runs it the moment compaction
+# ends. Live 2026-10-18: waiting for the panel to go idle AFTER compaction instead left the resume
+# unsent for minutes — the post-compact panel kept reading busy. The composer was just seen empty
+# by submit(), so this never appends to a draft of the user's.
+sleep 1
+RESUMED=0
+if submit "/post-compact-resume $SID" resume; then
+  RESUMED=1
+  handoff_log "compact_chained sid=$SID delivery=pane panel=$PANEL result=fired+resume-queued"
+fi
+
 compaction_confirmed() {
   if [ -n "$TRANSCRIPT" ]; then
     tail -c +$((T_OFFSET + 1)) "$TRANSCRIPT" 2>/dev/null | grep -q '"subtype":"compact_boundary"' && return 0
@@ -265,6 +278,13 @@ compaction_confirmed() {
   return 1
 }
 
+# Resume ran = a post-compact-resume line AFTER the compact_boundary (a queued line can be
+# recorded before compaction finishes; only one after the boundary proves it ran).
+resume_ran() {
+  tail -c +$((T_OFFSET + 1)) "$TRANSCRIPT" 2>/dev/null |
+    awk '/"subtype":"compact_boundary"/{b=1; next} b && /post-compact-resume/{f=1} END{exit !f}'
+}
+
 START=$(date +%s)
 SIGNAL="none"
 while :; do
@@ -273,34 +293,24 @@ while :; do
     break
   fi
   if [ $(( $(date +%s) - START )) -ge "$COMPACT_TIMEOUT" ]; then
-    ac_log "pane-compact-unconfirmed sid=$SID panel=$PANEL timeout=${COMPACT_TIMEOUT}s (resume NOT sent; sentinel left for primer/next Stop)"
+    ac_log "pane-compact-unconfirmed sid=$SID panel=$PANEL timeout=${COMPACT_TIMEOUT}s resume_queued=$RESUMED (sentinel left for primer/next Stop)"
     exit 0
   fi
   sleep "$POLL"
 done
 ac_log "pane-compact-confirmed sid=$SID panel=$PANEL signal=$SIGNAL after=$(( $(date +%s) - START ))s"
 
-REMAIN=$(( COMPACT_TIMEOUT - ( $(date +%s) - START ) ))
-[ "$REMAIN" -lt "$READY_TIMEOUT" ] && REMAIN="$READY_TIMEOUT"
-if ! wait_ready "$REMAIN" post-compact; then
-  ac_log "pane-helper abort sid=$SID panel=$PANEL reason=composer-not-ready-post-compact (compacted; run /post-compact-resume $SID manually)"
-  exit 0
-fi
-
-R_OFFSET=$(transcript_size)
-if submit "/post-compact-resume $SID" resume; then
-  handoff_log "compact_chained sid=$SID delivery=pane panel=$PANEL result=fired+resume-after-confirmed-compaction"
-  # Effect, not delivery: the resume command must show up in the session transcript.
-  if [ -n "$TRANSCRIPT" ]; then
-    _t=0
-    while [ "$_t" -lt "$CONFIRM" ]; do
-      if tail -c +$((R_OFFSET + 1)) "$TRANSCRIPT" 2>/dev/null | grep -q 'post-compact-resume'; then
-        ac_log "pane-resume-confirmed sid=$SID panel=$PANEL signal=transcript after=${_t}s"
-        exit 0
-      fi
-      sleep 1; _t=$((_t + 1))
-    done
-    ac_log "pane-resume-unconfirmed sid=$SID panel=$PANEL (resume typed but not seen in the transcript within ${CONFIRM}s; check the panel)"
-  fi
+[ "$RESUMED" = "1" ] || exit 0
+# Effect, not delivery: the resume command must show up in the session transcript.
+if [ -n "$TRANSCRIPT" ]; then
+  _t=0
+  while [ "$_t" -lt "$CONFIRM" ]; do
+    if resume_ran; then
+      ac_log "pane-resume-confirmed sid=$SID panel=$PANEL signal=transcript after=${_t}s"
+      exit 0
+    fi
+    sleep 1; _t=$((_t + 1))
+  done
+  ac_log "pane-resume-unconfirmed sid=$SID panel=$PANEL (resume queued but not seen after compaction within ${CONFIRM}s; check the panel)"
 fi
 exit 0

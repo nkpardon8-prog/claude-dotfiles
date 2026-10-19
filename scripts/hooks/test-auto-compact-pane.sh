@@ -11,8 +11,9 @@
 #     readers still accept; --dry-run reports Pane mode
 #   - runpane missing → NOT armed; invalid panel id → NOT armed; TERM_PROGRAM set → Terminal path
 #   - Stop hook routes a Pane sentinel to the helper: submit /compact, then — only after a
-#     confirmed compaction — /post-compact-resume <sid>; sentinel retained with attempts=1
-#   - no resume when compaction is never confirmed; sentinel-retired fallback signal works
+#     /compact — /post-compact-resume <sid> queued right behind it (as Terminal does), confirmed only
+#     after the compact_boundary; sentinel retained with attempts=1
+#   - compaction never confirmed → no resume-confirmed; sentinel-retired fallback signal works
 #   - panel mismatch / helper in flight → no claim; give-up at attempt 3
 #   - a Terminal sentinel still takes the osascript path (no pane verbs)
 #
@@ -51,7 +52,8 @@ STUB_LOG="$T/stub-calls.log"
 #   panels input    → ok
 # Effects: delivering `/compact` (submit, or input --text) appends a compact_boundary line to the
 # transcript (STUB_WRITE_BOUNDARY=1) and/or deletes the sentinel like the primer does
-# (STUB_RETIRE_SENTINEL=<path>); delivering `/post-compact-resume` appends a transcript line.
+# (STUB_RETIRE_SENTINEL=<path>); delivering `/post-compact-resume` appends a queue line at once
+# and the command line 1.5s later (after the boundary).
 cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
@@ -63,7 +65,11 @@ effects() {
     fi
     if [ -n "${STUB_RETIRE_SENTINEL:-}" ]; then ( sleep 0.5; rm -f "$STUB_RETIRE_SENTINEL" ) & fi
   fi
-  case "$text" in "/post-compact-resume "*) echo '{"type":"user","message":{"content":"<command-name>/post-compact-resume</command-name>"}}' >> "$STUB_TRANSCRIPT" ;; esac
+  # Queued mid-compaction: Claude records it early, then runs it after the boundary.
+  case "$text" in "/post-compact-resume "*)
+    echo '{"type":"queue-operation","operation":"enqueue","content":"/post-compact-resume"}' >> "$STUB_TRANSCRIPT"
+    ( sleep 1.5; echo '{"type":"user","message":{"content":"<command-name>/post-compact-resume</command-name>"}}' >> "$STUB_TRANSCRIPT" ) & ;;
+  esac
 }
 case "$1 $2" in
   "workspace state")
@@ -197,6 +203,8 @@ expect "every runpane call carries --pane-dir" "$([ "$(grep -vc -- "--pane-dir $
 expect "readiness read before /compact (workspace state + screen)" "$(sed -n 1,2p "$STUB_LOG" | grep -q '^workspace state' && sed -n 1,2p "$STUB_LOG" | grep -q '^panels screen' && echo 1)"
 expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 expect "compaction confirmed via transcript boundary" "$(grep -q "pane-compact-confirmed sid=$SID .*signal=transcript-compact-boundary" "$LOG" && echo 1)"
+expect "resume queued right behind /compact (no post-compact idle wait)" "$(grep -q "wait=post-compact" "$LOG" && echo 0 || echo 1)"
+expect "resume queued before compaction confirmed" "$(awk -v s="$SID" '$0~"step=resume" && $0~s{r=NR} $0~"pane-compact-confirmed sid="s{c=NR} END{exit !(r && c && r<c)}' "$LOG" && echo 1)"
 expect "helper released its lock" "$([ ! -f "${SP}.pane-helper" ] && echo 1)"
 expect "no osascript-path line for this sid" "$(grep -q "stop sid=$SID\|test-no-fire sid=$SID tty=" "$LOG" && echo 0 || echo 1)"
 
@@ -248,13 +256,14 @@ wait_helper
 expect "user's draft is never appended to" "$(grep -qE '^panels (submit|input)' "$STUB_LOG" && echo 0 || echo 1)"
 expect "logged idle/text" "$(grep -q "agent/composer=idle/text" "$LOG" && echo 1)"
 
-echo "== hook: no confirmed compaction → resume NOT sent =="
+echo "== hook: no confirmed compaction → resume queued, never confirmed =="
 reset; write_pane_sentinel
 AUTO_COMPACT_PANE_COMPACT_TIMEOUT_SEC=2 hook "test-panel_1"
 wait_helper
 expect "/compact submitted" "$(grep -q -- '--text /compact' "$STUB_LOG" && echo 1)"
-expect "resume NOT submitted" "$(grep -q 'post-compact-resume' "$STUB_LOG" && echo 0 || echo 1)"
-expect "logged pane-compact-unconfirmed" "$(grep -q "pane-compact-unconfirmed sid=$SID" "$LOG" && echo 1)"
+expect "resume queued once (as Terminal does)" "$([ "$(grep -c 'post-compact-resume' "$STUB_LOG")" = "1" ] && echo 1)"
+expect "logged pane-compact-unconfirmed resume_queued=1" "$(grep -q "pane-compact-unconfirmed sid=$SID .*resume_queued=1" "$LOG" && echo 1)"
+expect "no resume-confirmed without a boundary" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 0 || echo 1)"
 expect "sentinel still retained" "$([ -f "$SP" ] && echo 1)"
 
 echo "== hook: fallback signal (no transcript) = sentinel retired by primer =="

@@ -2,6 +2,13 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-18 - Pane auto-compact: resume queued right behind /compact
+
+- Live: `/compact` landed, but the helper then waited for the panel to go idle before sending
+  `/post-compact-resume`, and the post-compact panel kept reading busy, so the resume never arrived.
+- The helper now queues `/post-compact-resume <sid>` one second after `/compact` is taken, exactly as
+  the Terminal path types it during compaction; Claude runs it the moment compaction ends. It counts
+  the resume as confirmed only from a transcript line after the `compact_boundary`.
 ## 2026-10-17 - rdocker janitor: free rrun mirrors per mirror, and even with the engine down
 
 - Live: the mini's host disk filled (~01:00) and killed the Colima engine. 33 `rrun` mirrors in
