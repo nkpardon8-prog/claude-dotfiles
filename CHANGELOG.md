@@ -2,6 +2,13 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-18 - Pane auto-compact: resume goes in 5s after /compact
+
+- Live run 7 worked end to end, but the resume went in 18s after `/compact`: mid-compaction,
+  `panels submit` sat ~15s before answering `composer-unknown`. The resume is now typed directly
+  (`panels input` + Enter) with its Enter landing 5s after `/compact`
+  (`AUTO_COMPACT_PANE_RESUME_DELAY_SEC`, default 5). Tests updated.
+
 ## 2026-10-18 - Pane auto-compact: a queued resume is not a failure
 
 - Live run 6 worked (the resume ran straight after compaction), but the helper logged

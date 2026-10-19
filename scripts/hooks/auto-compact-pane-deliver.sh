@@ -34,7 +34,8 @@
 # Tunables (seconds): AUTO_COMPACT_PANE_POLL_SEC (2), AUTO_COMPACT_PANE_READY_TIMEOUT_SEC (180),
 # AUTO_COMPACT_PANE_COMPACT_TIMEOUT_SEC (900), AUTO_COMPACT_PANE_STABLE_POLLS (2),
 # AUTO_COMPACT_PANE_CALL_TIMEOUT_SEC (60, per runpane call), AUTO_COMPACT_PANE_KEY_GAP_SEC (0.8,
-# text→Enter gap on the input fallback), AUTO_COMPACT_PANE_CONFIRM_SEC (30, resume confirmation).
+# text→Enter gap on the input fallback), AUTO_COMPACT_PANE_CONFIRM_SEC (30, resume confirmation),
+# AUTO_COMPACT_PANE_RESUME_DELAY_SEC (5, /compact sent → resume's Enter lands).
 
 [ -z "${HOME:-}" ] && exit 0
 set -u
@@ -52,12 +53,14 @@ COMPACT_TIMEOUT="${AUTO_COMPACT_PANE_COMPACT_TIMEOUT_SEC:-900}"
 STABLE="${AUTO_COMPACT_PANE_STABLE_POLLS:-2}"
 CALL_TIMEOUT="${AUTO_COMPACT_PANE_CALL_TIMEOUT_SEC:-60}"
 KEY_GAP="${AUTO_COMPACT_PANE_KEY_GAP_SEC:-0.8}"
+RESUME_DELAY="${AUTO_COMPACT_PANE_RESUME_DELAY_SEC:-5}"
 CONFIRM="${AUTO_COMPACT_PANE_CONFIRM_SEC:-30}"
 for _v in "$READY_TIMEOUT" "$COMPACT_TIMEOUT" "$STABLE" "$CALL_TIMEOUT" "$CONFIRM"; do
   case "$_v" in ''|*[!0-9]*) ac_log "pane-helper abort sid=$SID reason=bad-tunable value=$_v"; exit 0 ;; esac
 done
 case "$POLL" in ''|*[!0-9.]*) POLL=2 ;; esac
 case "$KEY_GAP" in ''|*[!0-9.]*) KEY_GAP=0.8 ;; esac
+case "$RESUME_DELAY" in ''|*[!0-9.]*) RESUME_DELAY=5 ;; esac
 
 # Release the in-flight lock on any exit, but only if it is still ours.
 cleanup() {
@@ -192,6 +195,13 @@ submit() {
   # composer-unknown: Pane typed nothing. Our own parser already saw an empty composer (we only
   # get here after wait_ready), so typing into it is safe.
   ac_log "pane-submit-fallback sid=$SID panel=$PANEL step=$label reason=composer-unknown (named prompt rule) → panels input"
+  type_line "$text" "$label"
+}
+
+# type_line <text> <label> → type with `panels input`, then Enter as its own write. Only for a
+# composer we saw empty (after wait_ready, or right behind our own /compact).
+type_line() {
+  local text="$1" label="$2" out
   out=$(rp panels input --panel "$PANEL" --text "$text" --yes)
   if [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
     ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=input-text"
@@ -265,9 +275,13 @@ fi
 # ends. Live 2026-10-18: waiting for the panel to go idle AFTER compaction instead left the resume
 # unsent for minutes — the post-compact panel kept reading busy. The composer was just seen empty
 # by submit(), so this never appends to a draft of the user's.
-sleep 1
+# Typed directly, not via `panels submit`: live 2026-10-18 that call sat ~15s mid-compaction before
+# answering composer-unknown, so the resume went in 18s after /compact. Timed so its Enter lands
+# RESUME_DELAY after /compact was sent (the user asked for 5s).
+_wait=$(awk -v d="$RESUME_DELAY" -v g="$KEY_GAP" 'BEGIN{w=d-g; if (w<0) w=0; print w}')
+sleep "$_wait"
 RESUMED=0
-if submit "/post-compact-resume $SID" resume; then
+if type_line "/post-compact-resume $SID" resume; then
   RESUMED=1
   handoff_log "compact_chained sid=$SID delivery=pane panel=$PANEL result=fired+resume-queued"
 fi

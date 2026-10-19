@@ -177,6 +177,7 @@ case "$OUT" in *"pane panel"*) bad "Apple_Terminal went to Pane mode (got '$OUT'
 export AUTO_COMPACT_TEST_NO_FIRE=1
 export AUTO_COMPACT_PANE_POLL_SEC=0.2 AUTO_COMPACT_PANE_STABLE_POLLS=2
 export AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=5 AUTO_COMPACT_PANE_COMPACT_TIMEOUT_SEC=5
+export AUTO_COMPACT_PANE_RESUME_DELAY_SEC=0.2
 
 write_pane_sentinel() {
   HOME="$FAKEHOME" ac_write_sentinel_pane "$SID" "" "/tmp" "n-$$" "test-panel_1" "$STUB" "$PANEDIR"
@@ -203,9 +204,9 @@ expect "attempts=1" "$([ "$(cat "${SP}.attempts" 2>/dev/null)" = "1" ] && echo 1
 expect "logged pane-dispatched" "$(grep -q "pane-dispatched sid=$SID" "$LOG" && echo 1)"
 wait_helper
 SUBMITS=$(grep '^panels submit' "$STUB_LOG" 2>/dev/null)
-expect "exactly two submits" "$([ "$(printf '%s\n' "$SUBMITS" | grep -c .)" = "2" ] && echo 1)"
+expect "exactly one submit (only /compact)" "$([ "$(printf '%s\n' "$SUBMITS" | grep -c .)" = "1" ] && echo 1)"
 expect "1st submit is /compact to the panel" "$(printf '%s\n' "$SUBMITS" | sed -n 1p | grep -q -- '--panel test-panel_1 --text /compact --yes' && echo 1)"
-expect "2nd submit is /post-compact-resume <sid>" "$(printf '%s\n' "$SUBMITS" | sed -n 2p | grep -q -- "--text /post-compact-resume $SID --yes" && echo 1)"
+expect "resume typed directly, never via the slow submit" "$(grep -q -- "^panels input --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && ! grep -q -- "^panels submit .*post-compact-resume" "$STUB_LOG" && echo 1)"
 expect "every runpane call carries --pane-dir" "$([ "$(grep -vc -- "--pane-dir $PANEDIR" "$STUB_LOG")" = "0" ] && echo 1)"
 expect "readiness read before /compact (workspace state + screen)" "$(sed -n 1,2p "$STUB_LOG" | grep -q '^workspace state' && sed -n 1,2p "$STUB_LOG" | grep -q '^panels screen' && echo 1)"
 expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
@@ -243,7 +244,7 @@ wait_helper
 expect "logged submit-unverified for /compact" "$(grep -q "pane-submitted sid=$SID .*step=compact via=submit-unverified" "$LOG" && echo 1)"
 expect "/compact NOT retyped via panels input" "$(grep -q -- '^panels input --panel test-panel_1 --text /compact' "$STUB_LOG" && echo 0 || echo 1)"
 expect "exactly one /compact delivery" "$([ "$(grep -c -- '--text /compact ' "$STUB_LOG")" = "1" ] && echo 1)"
-expect "resume submitted after confirmed compaction" "$(grep -q -- "^panels submit --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && echo 1)"
+expect "resume typed right behind /compact" "$(grep -q -- "^panels input --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && echo 1)"
 expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 expect "no pane-submit-failed" "$(grep -q "pane-submit-failed sid=$SID" "$LOG" && echo 0 || echo 1)"
 
