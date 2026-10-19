@@ -115,9 +115,32 @@ print("absent")
 ' 2>/dev/null || printf 'error'
 }
 
+# Claude's own busy signal from a `panels screen` JSON on stdin: idle | busy | unknown.
+# While a turn runs Claude draws a spinner row above its prompt box with an ellipsis and a live
+# timer (`✻ Sautéing… (26s · ↓ 2.6k tokens)`); a finished turn leaves `✻ Worked for 27s · done`.
+# unknown = no Claude prompt box on screen (rule row above a `❯` row).
+claude_screen_state() {
+  python3 -I -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("unknown"); sys.exit()
+rows = [r.strip() for r in str(d.get("text") or "").split("\n")]
+for i in range(len(rows) - 1, 0, -1):
+    if rows[i].startswith("\u276f") and rows[i - 1].startswith("\u2500\u2500\u2500"):
+        above = rows[max(0, i - 10):i - 1]
+        busy = any(re.search("\u2026\\s*\\(\\d", r) or "esc to interrupt" in r for r in above)
+        print("busy" if busy else "idle"); sys.exit()
+print("unknown")
+' 2>/dev/null || printf 'unknown'
+}
+
 # Echoes "<agent>/<composer>" plus a final ready|busy verdict on its own line.
-# ready = agentState idle AND composer empty. When Pane lists no agent state for the panel
-# (older Pane), fall back to the screen's activityStatus.
+# ready = agentState idle AND composer empty. When Pane lists no agent state for the panel (older
+# Pane, or a panel in another repo's Pane, which `workspace state` omits: live 2026-10-19), fall
+# back to the screen's activityStatus, then to Claude's own spinner row (activityStatus stayed
+# "active" on an idle tab, its statusline keeps redrawing).
 panel_status() {
   local agent scr comp act
   agent=$(agent_state)
@@ -125,10 +148,14 @@ panel_status() {
   comp=$(printf '%s' "$scr" | pane_composer)
   if [ "$agent" = "none" ] || [ "$agent" = "unknown" ]; then
     act=$(printf '%s' "$scr" | jq -r '.state.activityStatus // "none"' 2>/dev/null)
-    [ "$act" = "idle" ] && agent="idle(activity)"
+    if [ "$act" = "idle" ]; then
+      agent="idle(activity)"
+    elif [ "$(printf '%s' "$scr" | claude_screen_state)" = "idle" ]; then
+      agent="idle(screen)"
+    fi
   fi
   printf '%s/%s\n' "$agent" "$comp"
-  case "$agent" in idle|"idle(activity)") [ "$comp" = "empty" ] && { printf 'ready'; return; } ;; esac
+  case "$agent" in idle|"idle(activity)"|"idle(screen)") [ "$comp" = "empty" ] && { printf 'ready'; return; } ;; esac
   printf 'busy'
 }
 

@@ -2,6 +2,14 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-19 - Pane auto-compact: read idle from Claude's screen when Pane can't say
+
+- Reported by another tab: `runpane workspace state` omits panels in another repo's Pane, so
+  agent state read `none` and the helper fell back to the screen's activity status, which stays
+  `active` on an idle Claude tab (its statusline keeps redrawing). The helper polled `busy` for
+  ~2 minutes before firing. It now also reads Claude's spinner row above the prompt box (an ellipsis
+  plus live timer = busy; anything else = idle, logged `idle(screen)`). Tests added (stub `STUB_ABOVE`).
+
 ## 2026-10-19 - rdocker: mini Docker VM capped at 5 GB RAM; shared package store; tighter storage caps
 
 - Measured: the Colima VM's macOS footprint was 8.2 GB (its whole allowance) while the guest used

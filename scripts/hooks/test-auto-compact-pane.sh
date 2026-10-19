@@ -44,7 +44,8 @@ STUB_LOG="$T/stub-calls.log"
 #   workspace state → the panel with agentState=$STUB_AGENT_STATE (default idle)
 #   panels screen   → an idle empty composer. STUB_CAPTION=1 imitates a NAMED Claude session:
 #                     Pane reports isPresent:false and the text shows `──── name ─` / `❯\u00a0`.
-#                     STUB_HELD=<text> puts text in that composer.
+#                     STUB_HELD=<text> puts text in that composer; STUB_ABOVE=<row> is drawn just
+#                     above the prompt box (Claude's spinner / "Worked for" row).
 #   panels submit   → verified "taken"; with STUB_CAPTION=1 → blocked composer-unknown (nothing typed);
 #                     STUB_UNVERIFIED=1 → typed but ok:true/verifiedSubmitted:false (seen live);
 #                     STUB_STUCK=1 → same reply but the Enter did not land: the text sits in the
@@ -76,7 +77,7 @@ case "$1 $2" in
     printf '{"ok":true,"panes":[{"panels":[{"panelId":"test-panel_1","agentType":"claude","agentState":"%s","running":true}]}]}\n' "${STUB_AGENT_STATE:-idle}" ;;
   "panels screen")
     if [ "${STUB_CAPTION:-0}" = "1" ]; then
-      python3 -c 'import json,os; print(json.dumps({"ok":True,"state":{"activityStatus":"active"},"composer":{"isPresent":False,"hasUndeliveredText":False},"text":"output\n\u2500\u2500\u2500\u2500\u2500 my-session \u2500\n\u276f\u00a0"+(open(os.environ["STUB_HELD_FILE"]).read() if os.path.isfile(os.environ["STUB_HELD_FILE"]) else os.environ.get("STUB_HELD",""))+"\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  ctx 9%"}))'
+      python3 -c 'import json,os; print(json.dumps({"ok":True,"state":{"activityStatus":"active"},"composer":{"isPresent":False,"hasUndeliveredText":False},"text":"output\n"+os.environ.get("STUB_ABOVE","")+"\n\u2500\u2500\u2500\u2500\u2500 my-session \u2500\n\u276f\u00a0"+(open(os.environ["STUB_HELD_FILE"]).read() if os.path.isfile(os.environ["STUB_HELD_FILE"]) else os.environ.get("STUB_HELD",""))+"\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  ctx 9%"}))'
     else
       echo '{"ok":true,"state":{"activityStatus":"idle"},"composer":{"isPresent":true,"hasUndeliveredText":false}}'
     fi ;;
@@ -258,6 +259,21 @@ expect "/compact typed exactly once" "$([ "$(grep -c -- '--text /compact ' "$STU
 expect "logged pane-submitted via=submit-enter" "$(grep -q "pane-submitted sid=$SID .*step=compact via=submit-enter" "$LOG" && echo 1)"
 expect "compaction confirmed" "$(grep -q "pane-compact-confirmed sid=$SID" "$LOG" && echo 1)"
 expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+
+echo "== hook: Pane lists no agent state (other repo's panel, seen live) + finished turn → idle from the screen =="
+reset; write_pane_sentinel
+STUB_AGENT_STATE=none STUB_CAPTION=1 STUB_ABOVE="✻ Worked for 27s · done 5:00 PM" STUB_WRITE_BOUNDARY=1 hook "test-panel_1"
+wait_helper
+expect "ready read from Claude's own screen" "$(grep -q "wait=pre-compact screen=ready agent/composer=idle(screen)/empty" "$LOG" && echo 1)"
+expect "/compact delivered" "$(grep -q -- '--text /compact ' "$STUB_LOG" && echo 1)"
+expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
+
+echo "== hook: Pane lists no agent state + spinner running → nothing typed =="
+reset; write_pane_sentinel
+STUB_AGENT_STATE=none STUB_CAPTION=1 STUB_ABOVE="✻ Sautéing… (26s · ↓ 2.6k tokens · thought for 5s)" AUTO_COMPACT_PANE_READY_TIMEOUT_SEC=2 hook "test-panel_1"
+wait_helper
+expect "no submit/input while the spinner runs" "$(grep -qE '^panels (submit|input)' "$STUB_LOG" && echo 0 || echo 1)"
+expect "logged none/empty busy" "$(grep -q "screen=busy agent/composer=none/empty" "$LOG" && echo 1)"
 
 echo "== hook: agent still working → nothing typed =="
 reset; write_pane_sentinel
