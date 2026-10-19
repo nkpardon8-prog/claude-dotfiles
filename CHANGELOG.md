@@ -2,6 +2,13 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-18 - Pane auto-compact: a queued resume is not a failure
+
+- Live run 6 worked (the resume ran straight after compaction), but the helper logged
+  `pane-submit-failed reason=text-still-in-composer`: a line queued while Claude compacts stays
+  visible in the composer. The resume now counts as queued after one Enter (never pressed twice),
+  and the transcript check (`pane-resume-confirmed`) decides. Test added (stub `STUB_RESUME_HELD`).
+
 ## 2026-10-18 - Pane auto-compact: resume queued right behind /compact
 
 - Live: `/compact` landed, but the helper then waited for the panel to go idle before sending

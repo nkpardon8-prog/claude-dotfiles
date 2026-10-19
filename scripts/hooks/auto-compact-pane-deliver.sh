@@ -217,6 +217,14 @@ enter_until_taken() {
       ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=$via composer_after=$comp enter_presses=$i"
       return 0
     fi
+    # The resume goes in while Claude is compacting, and a line queued then stays visible in the
+    # composer (live 2026-10-18: it ran right after compaction although the text never cleared).
+    # So text left after one Enter is "queued": never press again (that could queue it twice);
+    # resume_ran() is the proof.
+    if [ "$label" = "resume" ]; then
+      ac_log "pane-submitted sid=$SID panel=$PANEL step=$label via=$via composer_after=text enter_presses=$i (queued behind compaction; transcript check decides)"
+      return 0
+    fi
   done
   ac_log "pane-submit-failed sid=$SID panel=$PANEL step=$label via=$via reason=text-still-in-composer (left for the user; not retried)"
   return 1

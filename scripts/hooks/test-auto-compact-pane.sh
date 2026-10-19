@@ -94,6 +94,13 @@ case "$1 $2" in
       echo '{"ok":true,"verifiedSubmitted":true,"delivery":{"state":"taken","evidence":"screen"}}'
     fi ;;
   "panels input")
+    # STUB_RESUME_HELD=1: a resume typed mid-compaction stays visible after Enter (queued, seen live)
+    if [ "${STUB_RESUME_HELD:-0}" = "1" ]; then
+      case "$text" in "/post-compact-resume "*) printf '%s' "$text" > "$STUB_HELD_FILE"; echo '{"ok":true}'; exit 0 ;; esac
+      if [ -z "$text" ] && grep -q '^/post-compact-resume ' "$STUB_HELD_FILE" 2>/dev/null; then
+        text=$(cat "$STUB_HELD_FILE"); effects; echo '{"ok":true}'; exit 0
+      fi
+    fi
     if [ -z "$text" ] && [ -s "$STUB_HELD_FILE" ]; then text=$(cat "$STUB_HELD_FILE"); rm -f "$STUB_HELD_FILE"; fi
     effects
     echo '{"ok":true}' ;;
@@ -219,6 +226,15 @@ expect "logged pane-submit-fallback" "$(grep -q "pane-submit-fallback sid=$SID .
 expect "resume typed via panels input after confirmed compaction" "$(grep -q -- "^panels input --panel test-panel_1 --text /post-compact-resume $SID --yes" "$STUB_LOG" && echo 1)"
 expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 expect "our parser saw the named composer as ready" "$(grep -q "wait=pre-compact screen=ready agent/composer=idle/empty" "$LOG" && echo 1)"
+
+echo "== hook: queued resume stays visible in the composer (seen live) → counted as queued =="
+reset; write_pane_sentinel
+STUB_CAPTION=1 STUB_RESUME_HELD=1 STUB_WRITE_BOUNDARY=1 hook "test-panel_1"
+wait_helper
+expect "resume logged as queued, not failed" "$(grep -q "pane-submitted sid=$SID .*step=resume .*queued behind compaction" "$LOG" && echo 1)"
+expect "no pane-submit-failed for the resume" "$(grep -q "pane-submit-failed sid=$SID .*step=resume" "$LOG" && echo 0 || echo 1)"
+expect "Enter pressed once for the resume (never queued twice)" "$([ "$(grep -c -- '--keys enter' "$STUB_LOG")" = "2" ] && echo 1)"
+expect "resume confirmed in the transcript" "$(grep -q "pane-resume-confirmed sid=$SID" "$LOG" && echo 1)"
 
 echo "== hook: submit ok but UNVERIFIED (seen live) → no retype, resume after confirmed compaction =="
 reset; write_pane_sentinel
