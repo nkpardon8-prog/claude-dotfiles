@@ -75,7 +75,7 @@ DEFAULTS = {
     "janitor_interval_min": 10,
     "idle_stop_hours": 3,              # running, no net traffic + no TCP connections this long -> stop
     "exited_rm_hours": 24,             # stopped this long -> rm -v (plain rm if it mounts a kept volume)
-    "image_unused_days": 14,           # no container used the image for this long -> image rm
+    "image_unused_days": 3,            # no container used the image for this long -> image rm
     "disk_high_pct": 80,               # VM disk above this -> rm unused images oldest-use first + cache
     "disk_critical_pct": 90,           # ...above this also remove every stopped container now
     "volume_unused_days": 30,          # named volume unused this long -> removed (rdocker.keep exempts)

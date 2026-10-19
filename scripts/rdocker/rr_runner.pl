@@ -418,11 +418,69 @@ sub delete_env_files {
 }
 
 # ----------------------------------------------------------------------------------- deps
-sub sha_files { my $d = Digest::SHA->new(256); for (@_) { $d->add("$_\0"); $d->addfile($_) if -f $_ } $d->hexdigest }
+# Names are hashed relative to the mirror, so the same files give the same stamp in every mirror of a
+# repo (the shared package store keys on it). Changed 2026-10-19: older absolute-path stamps simply
+# no longer match, which costs each mirror one npm ci.
+sub sha_files {
+    my $d = Digest::SHA->new(256);
+    my @pre = grep { defined && length } map { $_ ? "$_/" : undef } $mirror, ($mirror ? realpath($mirror) : undef);
+    for (@_) {
+        my $n = $_;
+        for my $p (@pre) { last if $n =~ s/^\Q$p\E// }
+        $d->add("$n\0");
+        $d->addfile($_) if -f $_;
+    }
+    $d->hexdigest;
+}
 sub slurp { open(my $fh, '<', $_[0]) or return ''; local $/; <$fh> // '' }
+
+# Shared package store: $ROOT/deps/<key>/node_modules, key = repo + deps dir + deps stamp. An entry is
+# written whole into a temp dir and renamed into place, and never changed after, so a mirror can
+# clone it (APFS clonefile, `cp -c`: shared blocks, near-zero disk, no npm ci) without ever seeing a
+# half-written install. The janitor removes entries unused for a few days. Any failure (no APFS, a
+# tampered or missing entry) just means a normal npm ci.
+sub deps_key { substr(Digest::SHA::sha256_hex("$h{repo_slug}\0$_[0]\0$_[1]"), 0, 32) }
+
+sub store_clone {    # -> 1 when $dir/node_modules is now a clone of the store entry for $stamp
+    my ($rel, $dir, $stamp) = @_;
+    my $entry = "$ROOT/deps/" . deps_key($rel, $stamp);
+    return 0 if -l $entry || !-d "$entry/node_modules" || -l "$entry/node_modules";
+    return 0 unless slurp("$entry/node_modules/.rr-deps-stamp") eq $stamp;
+    utime(undef, undef, $entry);                          # used now (the janitor's LRU clock)
+    local $QUIET = 1;                                     # cp's own complaints: we fall back quietly
+    my $t = "$dir/.rr-nm-clone.$$";
+    remove_tree($t) if -e $t || -l $t;
+    if (run_cmd('/dev/null', '/bin/cp', '-cR', "$entry/node_modules", $t) != 0
+            || slurp("$t/.rr-deps-stamp") ne $stamp) {
+        remove_tree($t);
+        return 0;
+    }
+    my $nm = "$dir/node_modules";
+    if (-l $nm) { unlink $nm } elsif (-e $nm) { remove_tree($nm) }
+    return 1 if rename($t, $nm);
+    remove_tree($t);
+    return 0;
+}
+
+sub store_save {     # after a real install: publish $dir/node_modules (incl. its stamps) to the store
+    my ($rel, $dir, $stamp) = @_;
+    my $deps = mk("$ROOT/deps");
+    my $entry = "$deps/" . deps_key($rel, $stamp);
+    return if -e $entry || -l $entry || slurp("$dir/node_modules/.rr-deps-stamp") ne $stamp;
+    my $t = "$deps/.tmp-" . deps_key($rel, $stamp) . ".$$";
+    remove_tree($t) if -e $t || -l $t;
+    mk($t);
+    local $QUIET = 1;
+    if (run_cmd('/dev/null', '/bin/cp', '-cR', "$dir/node_modules", "$t/node_modules") == 0) {
+        utime(undef, undef, $t);
+        return if rename($t, $entry);                    # fails if another run saved it first
+    }
+    remove_tree($t);
+}
 
 sub deps {
     my ($env) = @_;
+    my @saves;
     my $legacy = mk("$ROOT/state") . "/$h{repo_slug}.legacy-peer-deps";
     my $nodev = `node -v 2>/dev/null` // '';
     my $rm = realpath($mirror);
@@ -439,7 +497,9 @@ sub deps {
         my @args = ('ci', '--no-audit', '--no-fund', @{ $h{stamps}{npm_args} }, (-e $legacy ? '--legacy-peer-deps' : ()));
         my $stamp = sha_files($lock, "$dir/package.json", "$dir/.npmrc") . " $nodev @args";
         my $installed = 0;
-        if (slurp("$dir/node_modules/.rr-deps-stamp") ne $stamp) {
+        if (slurp("$dir/node_modules/.rr-deps-stamp") ne $stamp && store_clone($rel, $dir, $stamp)) {
+            print STDERR "rrun: packages for ./$rel reused from the mini's shared store (no npm ci)\n";
+        } elsif (slurp("$dir/node_modules/.rr-deps-stamp") ne $stamp) {
             $installed = 1;
             print STDERR "rrun: npm @args  (in ./$rel)\n";
             my $rc = npm($env, $dir, @args);
@@ -465,6 +525,7 @@ sub deps {
             return if $lost || $intr;    # main() reports it
             deps_failed($what, $rel, $rc) if $rc;
             write_file("$dir/node_modules/.rr-deps-stamp", $stamp);
+            push @saves, [$rel, $dir, $stamp];
         }
         # schema stamp: *.prisma in ./prisma and in the dir of a `--schema X` named by the package's own
         # postinstall; a change means generate, not a reinstall. When postinstall runs prisma generate
@@ -497,6 +558,7 @@ sub deps {
         mk("$dir/node_modules");
         write_file("$dir/node_modules/.rr-schema-stamp", $sstamp);
     }
+    store_save(@$_) for @saves;    # after the schema stamps, so a clone needs no prisma generate
 }
 
 # Dependency setup failed: show its log, exit $EX_DEPS (never the tool's own rc, which the laptop

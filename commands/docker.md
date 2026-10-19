@@ -14,7 +14,7 @@ command. Use docker normally. The laptop's janitor still sweeps this engine, so 
 ## The mental model
 
 The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (ssh alias `macmini-docker` ->
-Tailscale name `macminim4`; Colima VM: 6 CPU / 8 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
+Tailscale name `macminim4`; Colima VM: 6 CPU / 5 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
 CPU stays on the laptop and only the containers move. **Heavy test jobs** (test runner + its DB) move
 whole: `rrun <cmd>` runs the command itself on the mini next to its DB, usually without asking (a hook
 rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
@@ -320,12 +320,14 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | stopped / exited container | removed after **24 h** with `rm -v` — or plain `rm` (volumes kept) if any of its volumes is keep-labelled |
 | named volume not used by any container | removed after **30 days** unused |
 | anonymous volumes not used by any container | pruned each run (keep-labelled exempt) |
-| image | removed after **14 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Removed tag by tag (`image rm <repo:tag>`; an image tagged in several repositories cannot be removed by id), then by id if an untagged remainder is left; never `-f`. Docker's refusals (in use, dependent child images, multi-repo) are skips, not errors. Dangling images pruned |
-| build cache | pruned when older than 7 d, and capped at **5 GB** |
+| image | removed after **3 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Removed tag by tag (`image rm <repo:tag>`; an image tagged in several repositories cannot be removed by id), then by id if an untagged remainder is left; never `-f`. Docker's refusals (in use, dependent child images, multi-repo) are skips, not errors. Dangling images pruned |
+| build cache | pruned when older than 7 d, and capped at **1 GB** |
 | keep-labelled container on the mini with restart policy `no` | `update --restart unless-stopped`, so kept DBs come back after a mini / Colima reboot (`--rm` ones skipped) |
-| `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **7 d** unused (every mirror not in use when mini free < `host_min_free_gb`, except one whose index/HEAD changed in the last 10 min); a mirror a running `rrun` is using is skipped (its slot's `.who` names it; an old-format `.who` without the mirror protects the whole repo, a stale or garbled one protects everything); bare repos in `~/rr/git` are kept, only the removed mirror's ref goes. Needs only ssh + perl, so it also runs while the mini engine is down |
+| `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **2 d** unused (every mirror not in use when mini free < `host_min_free_gb`, except one whose index/HEAD changed in the last 10 min); a mirror a running `rrun` is using is skipped (its slot's `.who` names it; an old-format `.who` without the mirror protects the whole repo, a stale or garbled one protects everything); bare repos in `~/rr/git` are kept, only the removed mirror's ref goes. Needs only ssh + perl, so it also runs while the mini engine is down |
 | container logs | capped per container: 10 MB × 3 files (json-file) |
 | mini Colima/Lima log files | truncated past 50 MB; VM journald capped at 200 MB |
+| `rrun` shared package store (`~/rr/deps/<key>/node_modules`) | an entry is published after a real `npm ci` (written whole, then renamed in; never changed after) and **cloned** (APFS `cp -c`, shared blocks) into any mirror of the same repo whose lockfile/package.json/.npmrc/node/npm args match - no `npm ci`; removed after **2 d** unused (10 min under disk pressure) |
+| npm cache on the mini (`~/.npm/_cacache`) | cleared above **1 GB**, only while no `rrun` run holds a slot |
 | VM disk ≥ 80 % or mini free < 8 GB | remove unused images **oldest-unused first** (never in-use ones) until below, prune all build cache, log a WARNING |
 | VM disk ≥ 90 % | also remove every stopped non-keep container (keep-checked) + prune anonymous volumes |
 | failed action | logged; clocks are kept (not reset); `last_error` is written to `janitor.json` and raised as an attention item. The next clean full pass clears both |
@@ -343,7 +345,7 @@ mini is reachable. When the engine is down and mini free disk is below `host_min
 engine kick runs the mirror housekeeping (under the mini lock) **before** it starts Colima, and logs it
 (`kick: ... mirror housekeeping before the colima start`): a full disk is what kills the engine, and a
 start on a full disk times out.
-Hard ceilings: VM disk 30 GB, VM RAM 8 GB, VM CPU 6 — the mini itself can never be filled or starved.
+Hard ceilings: VM disk 30 GB, VM RAM 5 GB (the VM keeps whatever RAM it has touched, so this cap IS its footprint), VM CPU 6 — the mini itself can never be filled or starved.
 Laptop logs (`daemon.log`, `route.log`) rotate at 2 MB (one `.1` generation, under a lock).
 
 ### Laptop janitor (Docker Desktop)
@@ -500,7 +502,7 @@ the laptop's `~/.ssh/config.d/rdocker` maps alias `macmini-docker` -> `HostName 
 Remote Login on, laptop keys in `~/.ssh/authorized_keys`. Laptop: `~/.ssh/config` → `Include
 ~/.ssh/config.d/*` (`rdocker` block); `rdocker setup-mini 6 8 30`; `rdocker install` (context `mini` =
 `unix://~/.local/state/rdocker/mini-docker.sock`, shims, launch agent, pins). Mini Colima config:
-`~/.colima/default/colima.yaml` `docker:` ip 127.0.0.1, log caps, BuildKit GC 5 GB;
+`~/.colima/default/colima.yaml` `docker:` ip 127.0.0.1, log caps, BuildKit GC 1 GB;
 `~/.colima/_lima/_config/override.yaml` port-forwards → 127.0.0.1, guest port 53 ignored.
 `rdocker setup-mini` rewrites both idempotently and never restarts Colima itself: it sets
 `restart_pending` in `janitor.json`, and the janitor restarts Colima only when `docker ps` on the mini

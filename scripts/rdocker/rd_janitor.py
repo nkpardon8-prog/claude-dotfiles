@@ -374,7 +374,7 @@ def janitor_disk(cfg, housekeeping, vm=True):
            "[ -f \"$f\" ] && [ $(stat -f%z \"$f\") -gt " + str(maxb) + " ] && "
            "tail -c 5000000 \"$f\" > \"$f.tmp\" && cat \"$f.tmp\" > \"$f\" && rm -f \"$f.tmp\" && echo TRUNC $f; done; ")
         + ("" if not in_vm else
-           "colima ssh -- sudo journalctl --vacuum-size=200M >/dev/null 2>&1; "
+           "colima ssh -- sudo journalctl --vacuum-size=50M >/dev/null 2>&1; "
            "colima ssh -- sudo fstrim -a >/dev/null 2>&1; ")
         + "true")
     rc, out, _ = mini_sh(cfg, script, timeout=180)
@@ -408,14 +408,16 @@ def janitor_disk(cfg, housekeeping, vm=True):
 # runner's `checkout -f` rewrites the index on every run).
 # rrun-labelled containers need no rule here: the normal idle/exited rules reap kept-on-failure DBs.
 # Perl (stock on macOS) because sh has no flock; script on stdin, args are validated, no secrets.
-RR_MIRROR_UNUSED_DAYS = 7
+RR_MIRROR_UNUSED_DAYS = 2        # cheap to rebuild: a new mirror clones its packages from the store
+RR_STORE_UNUSED_DAYS = 2         # shared package store entries (~/rr/deps) unused this long go
+RR_NPM_CACHE_MAX_MB = 1024       # ~/.npm/_cacache above this is cleared (only while no rrun runs)
 RR_PRESSURE_FLOOR_S = 600        # disk pressure: a mirror used this recently is still never evicted
 _RR_HOUSEKEEPING = r"""
 use strict; use warnings;
 use Fcntl qw(:flock O_RDWR O_NOFOLLOW);
 use File::Path qw(remove_tree);
 use Cwd qw(realpath);
-my ($rel, $max_age, $dry) = @ARGV;
+my ($rel, $max_age, $dry, $store_age, $npm_max_mb) = @ARGV;
 $ENV{PATH} = '/opt/homebrew/bin:/usr/bin:/bin';
 my $R = "$ENV{HOME}/$rel";
 if (!-d "$R/w" || -l "$R/w") { print "RRHK none\n"; exit 0 }
@@ -473,6 +475,30 @@ for my $name (sort readdir $wd) {
     $touched{$bare} = 1;
 }
 git('-C', $_, 'gc', '--auto', '--quiet') for sort keys %touched;
+# Shared package store: an entry unused $store_age goes (a clone or save bumps its mtime first, so
+# one being cloned right now is never old); an interrupted save's .tmp-* after an hour. Entries share
+# blocks with the mirrors cloned from them, so this frees only what no mirror still holds.
+if (defined $store_age && opendir(my $dd, "$R/deps")) {
+    for my $e (sort readdir $dd) {
+        my $p = "$R/deps/$e";
+        next if -l $p || !-d _;
+        my $age = time - mtime($p);
+        if    ($e =~ /^[0-9a-f]{32}$/)          { next if $age < $store_age }
+        elsif ($e =~ /^\.tmp-[0-9a-f]{32}\.\d+$/) { next if $age < 3600 }
+        else                                    { next }
+        printf "RRHK store %s %d\n", $e, $age / 3600;
+        remove_tree($p, { safe => 1 }) unless $dry;
+    }
+}
+# npm's download cache: cleared above $npm_max_mb, and only while no rrun run is in progress (we
+# hold every free slot, and none is busy), so no npm ci of ours is reading it.
+if ($npm_max_mb && !%busy && !%inuse && -d "$ENV{HOME}/.npm/_cacache" && !-l "$ENV{HOME}/.npm/_cacache") {
+    my ($kb) = (`du -sk "$ENV{HOME}/.npm/_cacache" 2>/dev/null` // '') =~ /^(\d+)/;
+    if (defined $kb && $kb / 1024 > $npm_max_mb) {
+        printf "RRHK npmcache %d\n", $kb / 1024;
+        remove_tree("$ENV{HOME}/.npm/_cacache", { safe => 1 }) unless $dry;
+    }
+}
 print "RRHK done\n";
 """
 
@@ -489,7 +515,8 @@ def rr_housekeeping(cfg, J, free, runner=None):
         return
     pressure = free is not None and free < cfg["host_min_free_gb"]
     max_age = RR_PRESSURE_FLOOR_S if pressure else RR_MIRROR_UNUSED_DAYS * 86400
-    args = [root, str(max_age), "1" if J.dry else "0"]
+    store_age = RR_PRESSURE_FLOOR_S if pressure else RR_STORE_UNUSED_DAYS * 86400
+    args = [root, str(max_age), "1" if J.dry else "0", str(store_age), str(RR_NPM_CACHE_MAX_MB)]
     if runner is None:
         def runner(a, script):
             return rd_common.run(["ssh", "-o", "BatchMode=yes", cfg["host"], "/usr/bin/perl", "-"]
@@ -505,6 +532,17 @@ def rr_housekeeping(cfg, J, free, runner=None):
         if kind == "evict":
             name, _, age_h = detail.partition(" ")
             desc = "rm rrun mirror %s (%s, last used %sh ago)" % (name, why, age_h)
+            J.acts.append(desc)
+            if not J.dry:
+                rd_common.log("%s: %s" % (J.tag, desc))
+        elif kind == "store":
+            name, _, age_h = detail.partition(" ")
+            desc = "rm shared package store entry %s (%s, last used %sh ago)" % (name, why, age_h)
+            J.acts.append(desc)
+            if not J.dry:
+                rd_common.log("%s: %s" % (J.tag, desc))
+        elif kind == "npmcache":
+            desc = "clear npm cache on the mini (%s MB > %d MB)" % (detail, RR_NPM_CACHE_MAX_MB)
             J.acts.append(desc)
             if not J.dry:
                 rd_common.log("%s: %s" % (J.tag, desc))
@@ -646,13 +684,13 @@ def janitor_pass(J, only, force_critical):
               "volume", "prune", "-f", "--filter", "label!=" + KEEP_LABEL)
         J.act("prune dangling images", "image", "prune", "-f")
         J.act("prune build cache older than 7d", "builder", "prune", "-f", "--filter", "until=168h")
-        ok, err = J.act("cap build cache at 5GB", "builder", "prune", "-f", "--max-used-space", "5gb",
+        ok, err = J.act("cap build cache at 1GB", "builder", "prune", "-f", "--max-used-space", "1gb",
                         record=False)
         if not ok and "unknown flag" in err:
             J.acts.pop()
-            J.act("cap build cache at 5GB", "builder", "prune", "-f", "--keep-storage", "5gb")
+            J.act("cap build cache at 1GB", "builder", "prune", "-f", "--keep-storage", "1gb")
         elif not ok:
-            J.last_error = {"ts": time.time(), "action": "cap build cache at 5GB",
+            J.last_error = {"ts": time.time(), "action": "cap build cache at 1GB",
                             "err": err.strip()[:300]}
         pct, free = janitor_disk(cfg, housekeeping=not dry)
         if pct is not None:

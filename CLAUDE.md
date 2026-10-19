@@ -79,7 +79,7 @@ command on a container whose location can't be established waits up to 30 s for 
 `run`/`create`/compose with a flag rdocker doesn't know: force with `RDOCKER_MODE=local`). When docker
 errors, hangs, refuses, or a mirrored port won't connect, run `rdocker doctor` (details: `/docker`).
 Ask the user before moving a pinned container's data or deleting volumes on the mini. A janitor reaps
-leftovers (idle 3 h -> stop, stopped 24 h -> removed, unused named volumes 30 d, unused images 14 d).
+leftovers (idle 3 h -> stop, stopped 24 h -> removed, unused named volumes 30 d, unused images 3 d).
 **Any DB you need to survive a quiet spell longer than 3 h MUST carry a lifetime label**:
 `--label rdocker.keep=1` + a named volume (kept), or `--label rdocker.ttl=2d` (lives exactly that long);
 an unlabelled quiet DB is stopped after 3 h (`exec`/`cp`/`logs -f` on it restarts it within 24 h; a `--rm` one is gone). Laptop

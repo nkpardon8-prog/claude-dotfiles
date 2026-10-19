@@ -356,6 +356,34 @@ class RunnerTest(unittest.TestCase):
         self.run_runner(["true"], tar=tar_of([("package-lock.json", b'{"v":2}')]))
         self.assertEqual(len(npm_ci()), 2)                              # lockfile => npm ci
 
+    def test_shared_store_clones_packages_into_a_new_mirror(self):
+        """A second laptop worktree with the same lockfile gets node_modules as an APFS clone of the
+        store entry the first install published - no npm ci, no prisma generate; a tampered entry is
+        ignored (normal npm ci)."""
+        npm_ci = lambda: [c for c in self.calls() if c.startswith("npm ci")]          # noqa: E731
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+        self.assertEqual(len(npm_ci()), 1)
+        store = os.path.join(self.root, "deps")
+        entries = [e for e in os.listdir(store) if not e.startswith(".")]
+        self.assertEqual(len(entries), 1, os.listdir(store))
+        nm = os.path.join(store, entries[0], "node_modules")
+        self.assertTrue(os.path.isfile(os.path.join(nm, ".rr-deps-stamp")))
+        self.assertTrue(os.path.isfile(os.path.join(nm, ".rr-schema-stamp")))   # saved after generate
+        installs = lambda: [c for c in self.calls() if c.startswith(("npm", "npx"))]  # noqa: E731
+        calls0 = len(installs())
+        r = self.run_runner(["/bin/sh", "-c", "test -f node_modules/.rr-schema-stamp && echo cloned"],
+                            wt12="fedcba987654")
+        self.assertEqual((r.rc, r.out), (0, "cloned\n"), r.err)
+        self.assertIn("reused from the mini's shared store (no npm ci)", r.err)
+        self.assertEqual(len(installs()), calls0)                       # neither npm ci nor generate
+        with open(os.path.join(nm, ".rr-deps-stamp"), "w") as f:      # tampered / foreign entry
+            f.write("bogus")
+        r = self.run_runner(["true"], wt12="00000000beef")
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(len(npm_ci()), 2)
+        self.assertNotIn("shared store", r.err)
+        self.assertFalse([e for e in os.listdir(store) if e.startswith(".tmp-")])
+
     def test_monorepo_postinstall_generate_and_no_schema_skip(self):
         """dentall layout: server/ has its own lockfile and a postinstall that runs
         `prisma generate --schema ../prisma/schema.prisma`; there is no server/prisma."""
@@ -542,6 +570,7 @@ class RunnerTest(unittest.TestCase):
                              "-eK=v2", "SECRET=s3", "--db-password=pw"], env={"API_KEY": "envsek"})
         self.assertEqual(r.rc, 3, r.err)
         os.unlink(os.path.join(self.mirror, "node_modules", ".rr-deps-stamp"))   # force npm ci
+        shutil.rmtree(os.path.join(self.root, "deps"))                          # (not the store)
         self.run_runner(["true"], env={"FAKE_NPM_FAIL": "1"})
         self.run_runner(["true"], repo_slug="nope")
         self.run_runner(["true"], go=False, hb_timeout=1, timeout=20)

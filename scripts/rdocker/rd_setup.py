@@ -138,7 +138,7 @@ COLIMA_DOCKER_BLOCK = """docker:
   builder:
     gc:
       enabled: true
-      defaultKeepStorage: 5GB
+      defaultKeepStorage: 1GB
 """
 LIMA_OVERRIDE = """# rdocker: Lima port forwards bind the mini's loopback only (written whole by rdocker setup-mini)
 portForwards:

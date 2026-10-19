@@ -8,7 +8,9 @@ Run: /usr/bin/python3 -m unittest discover -s tests -v
 import json
 import os
 import subprocess
+import fcntl
 import unittest
+from unittest import mock
 
 import rdmods
 from test_shim_safety import RDOCKER, ShimCase, r
@@ -400,7 +402,7 @@ class Misc(JanitorCase):
     def test_builder_cap_falls_back_to_keep_storage(self):
         self.mini({}, old_buildx=True)
         self.clean()
-        caps = [a for a in self.argvs() if a[:2] == ["builder", "prune"] and "5gb" in a]
+        caps = [a for a in self.argvs() if a[:2] == ["builder", "prune"] and "1gb" in a]
         self.assertEqual([a[3] for a in caps], ["--max-used-space", "--keep-storage"])
         self.assertNotIn("last_error", self.jstate())
 
@@ -436,7 +438,7 @@ class RrHousekeeping(unittest.TestCase):
             self.git("-C", self.bare, "worktree", "add", "-q", "-f", "--detach",
                      self.mirror(wt), "refs/rrun/" + wt)
         self.age(self.OLD, 8)
-        self.age(self.FRESH, 2)
+        self.age(self.FRESH, 1)
         self.cfg = dict(r.DEFAULTS)
 
     def git(self, *a):
@@ -465,6 +467,43 @@ class RrHousekeeping(unittest.TestCase):
         r.rr_housekeeping(self.cfg, J, free, runner=self.runner)
         return J
 
+    def test_store_entries_and_npm_cache_trimmed(self):
+        store = os.path.join(self.R, "deps")
+        old, new, tmp_old, other = "1" * 32, "2" * 32, ".tmp-%s.123" % ("3" * 32), "keepme"
+        for e in (old, new, tmp_old, other):
+            os.makedirs(os.path.join(store, e, "node_modules"))
+        t3d, t2h = r.time.time() - 3 * DAY, r.time.time() - 7200
+        os.utime(os.path.join(store, old), (t3d, t3d))
+        os.utime(os.path.join(store, tmp_old), (t2h, t2h))
+        os.utime(os.path.join(store, other), (t3d, t3d))
+        cache = os.path.join(self.home, ".npm", "_cacache")
+        os.makedirs(cache)
+        with open(os.path.join(cache, "blob"), "wb") as f:
+            f.write(b"\0" * (2 * 1024 * 1024))
+        J = self.run_hk(dry=True)
+        self.assertTrue(any("rm shared package store entry " + old in a for a in J.acts), J.acts)
+        self.assertTrue(os.path.isdir(os.path.join(store, old)))          # dry: nothing removed
+        with mock.patch.object(rdmods.owner("RR_NPM_CACHE_MAX_MB"), "RR_NPM_CACHE_MAX_MB", 1):
+            J = self.run_hk()                                             # 2 MB cache > 1 MB cap
+        self.assertEqual(sorted(os.listdir(store)), sorted([new, other]))  # old + stale tmp gone
+        self.assertFalse(os.path.exists(cache))
+        self.assertTrue(any("clear npm cache on the mini" in a for a in J.acts), J.acts)
+
+    def test_npm_cache_kept_while_a_run_holds_a_slot(self):
+        cache = os.path.join(self.home, ".npm", "_cacache")
+        os.makedirs(cache)
+        with open(os.path.join(cache, "blob"), "wb") as f:
+            f.write(b"\0" * (2 * 1024 * 1024))
+        with open(os.path.join(self.R, "slots", "0.who"), "w") as f:
+            f.write("%s %d %d %s\n" % (self.SLUG, r.time.time(), os.getpid(), self.FRESH))
+        with mock.patch.object(rdmods.owner("RR_NPM_CACHE_MAX_MB"), "RR_NPM_CACHE_MAX_MB", 1), \
+                open(os.path.join(self.R, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            os.utime(os.path.join(self.R, "slots", "0"), None)
+            os.utime(os.path.join(self.R, "slots", "0.who"), None)
+            self.run_hk()
+        self.assertTrue(os.path.exists(cache))
+
     def refs(self):
         out = subprocess.run(["git", "-C", self.bare, "for-each-ref", "--format=%(refname)"],
                              capture_output=True, text=True, check=True).stdout
@@ -489,7 +528,7 @@ class RrHousekeeping(unittest.TestCase):
                                                      % (self.SLUG, self.OLD))))
         self.assertEqual(os.listdir(os.path.join(self.bare, "worktrees")),
                          [os.path.basename(self.mirror(self.FRESH))])
-        self.assertTrue(any(a.startswith("rm rrun mirror %s-%s (unused 7d" % (self.SLUG, self.OLD))
+        self.assertTrue(any(a.startswith("rm rrun mirror %s-%s (unused 2d" % (self.SLUG, self.OLD))
                             for a in J.acts), J.acts)
         self.assertIsNone(J.last_error)
 

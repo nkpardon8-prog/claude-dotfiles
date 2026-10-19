@@ -2,6 +2,20 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-19 - rdocker: mini Docker VM capped at 5 GB RAM; shared package store; tighter storage caps
+
+- Measured: the Colima VM's macOS footprint was 8.2 GB (its whole allowance) while the guest used
+  2.4 GB - a VZ VM keeps every page it has touched (guest `drop_caches` gave nothing back, tested).
+  VM restarted at `--memory 5` (all 17 running containers restarted after); footprint 2.9 GB, max 5.
+- `rrun`: a shared package store `~/rr/deps/<key>/node_modules` (key = repo + deps dir + deps stamp,
+  written whole then renamed in, never changed after). A mirror whose stamp matches gets an APFS
+  clone (`cp -c`: shared blocks, no `npm ci`); any failure means a normal `npm ci`. Deps/schema stamps
+  now hash paths relative to the mirror (same files = same stamp in every mirror; one npm ci per
+  mirror after this change). 11 dentall mirrors were ~1.9 GB each, 1.7 GB of it node_modules.
+- Janitor: mirrors unused 2 d (was 7), store entries unused 2 d, npm cache cleared above 1 GB while no
+  run holds a slot, build cache cap 1 GB (was 5), unused images 3 d (was 14), VM journald 50 MB
+  (was 200). One-off: idle mirrors removed now (mini free 11 -> 19 GB).
+
 ## 2026-10-18 - Pane auto-compact: resume goes in 5s after /compact
 
 - Live run 7 worked end to end, but the resume went in 18s after `/compact`: mid-compaction,
