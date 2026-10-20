@@ -3,8 +3,11 @@
 Split out of rdocker.py; see rdocker.py for the overview.
 """
 import fcntl
+import base64
 import json
 import os
+import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -39,13 +42,46 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 </dict></plist>
 """
 
+SYSTEMD = """[Unit]
+Description=rdocker forwarder
+
+[Service]
+ExecStart=/usr/bin/python3 -I {script} daemon
+Environment=PATH={home}/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:{log}
+StandardError=append:{log}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+
 
 def daemon_loaded():
+    if rd_common.IS_LINUX:
+        return rd_common.run(["systemctl", "--user", "is-active", rd_common.SYSTEMD_UNIT], timeout=5)[0] == 0
+    if not rd_common.IS_MAC:
+        return False
     rc, out, _ = rd_common.run(["launchctl", "list", rd_common.PLIST_LABEL], timeout=5)
     return rc == 0
 
 
 def install_daemon():
+    if rd_common.IS_LINUX:
+        was_active = daemon_loaded()
+        os.makedirs(os.path.dirname(rd_common.SYSTEMD_PATH), exist_ok=True)
+        with open(rd_common.SYSTEMD_PATH, "w") as f:
+            f.write(SYSTEMD.format(script=rd_common.ENTRY, home=rd_common.HOME, log=rd_common.LOG_PATH))
+        if rd_common.run(["systemctl", "--user", "daemon-reload"], timeout=10)[0] != 0:
+            return False
+        if rd_common.run(["systemctl", "--user", "enable", "--now", rd_common.SYSTEMD_UNIT], timeout=20)[0] != 0:
+            return False
+        if was_active:
+            return rd_common.run(["systemctl", "--user", "restart", rd_common.SYSTEMD_UNIT], timeout=20)[0] == 0
+        return daemon_loaded()
+    if not rd_common.IS_MAC:
+        return False
     os.makedirs(os.path.dirname(rd_common.PLIST_PATH), exist_ok=True)
     with open(rd_common.PLIST_PATH, "w") as f:
         f.write(PLIST.format(label=rd_common.PLIST_LABEL, script=rd_common.ENTRY, log=rd_common.LOG_PATH))
@@ -66,8 +102,115 @@ def link(src, dst):
     return True
 
 
+def ssh_bootstrap(cfg):
+    """Create a dedicated client identity and host alias without replacing existing SSH settings."""
+    ssh_dir = os.path.join(rd_common.HOME, ".ssh")
+    blocks = os.path.join(ssh_dir, "config.d")
+    key = os.path.join(ssh_dir, "rdocker_ed25519")
+    pub = key + ".pub"
+    os.makedirs(blocks, mode=0o700, exist_ok=True)
+    os.chmod(ssh_dir, 0o700)
+    if not os.path.exists(key):
+        if os.path.exists(pub):
+            raise SystemExit("rdocker: public key exists without private key: " + pub)
+        rc, _, err = rd_common.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key], timeout=20)
+        if rc != 0:
+            raise SystemExit("rdocker: could not create SSH key: " + err.strip())
+    os.chmod(key, 0o600)
+    if not os.path.exists(pub):
+        rc, out, err = rd_common.run(["ssh-keygen", "-y", "-f", key], timeout=10)
+        if rc != 0:
+            raise SystemExit("rdocker: could not read SSH public key: " + err.strip())
+        with open(pub, "w") as f:
+            f.write(out.strip() + "\n")
+    block = os.path.join(blocks, "rdocker")
+    if not os.path.exists(block):
+        with open(block, "w") as f:
+            f.write("Host {host}\n  HostName {hostname}\n  HostKeyAlias {host}\n"
+                    "  User {user}\n  IdentityFile ~/.ssh/rdocker_ed25519\n"
+                    "  IdentitiesOnly yes\n  ControlMaster auto\n"
+                    "  ControlPath ~/.ssh/rdocker-%C\n  ControlPersist 30m\n"
+                    "  ServerAliveInterval 15\n  ServerAliveCountMax 3\n"
+                    "  ConnectTimeout 5\n  StrictHostKeyChecking accept-new\n".format(
+                        host=cfg["host"], hostname=cfg["ssh_hostname"], user=cfg["ssh_user"]))
+        os.chmod(block, 0o600)
+    config = os.path.join(ssh_dir, "config")
+    include = "Include ~/.ssh/config.d/*\n"
+    old = ""
+    if os.path.exists(config):
+        with open(config) as f:
+            old = f.read()
+    if not has_config_d_include(old):
+        if os.path.exists(config):
+            backup = config + ".bak-rdocker"
+            if not os.path.exists(backup):
+                shutil.copy2(config, backup)
+        with open(config, "w") as f:
+            f.write(include + old)
+        os.chmod(config, 0o600)
+    return pub
+
+
+def has_config_d_include(text):
+    """True when an `Include ~/.ssh/config.d/*` (or an equivalent path) comes before the first Host /
+    Match block - an Include inside a block only applies to that block."""
+    for ln in text.splitlines():
+        s = ln.strip()
+        if re.match(r"(?i)(host|match)\b", s):
+            return False
+        if re.match(r"(?i)include\s+.*(~|\$HOME|%d)?/?\.ssh/config\.d/\*", s):
+            return True
+    return False
+
+
+def validate_public_key(line):
+    if not isinstance(line, str) or "\n" in line or "\r" in line:
+        raise ValueError("expected one SSH public key line")
+    match = re.fullmatch(r"(ssh-ed25519|ssh-rsa|ecdsa-sha2-[A-Za-z0-9-]+) ([A-Za-z0-9+/]+={0,2})(?: ([^\x00-\x1f]+))?", line)
+    if not match:
+        raise ValueError("expected an ssh-ed25519, ssh-rsa, or ecdsa-sha2 public key")
+    try:
+        if not base64.b64decode(match.group(2), validate=True):
+            raise ValueError("empty SSH public key")
+    except (ValueError, base64.binascii.Error) as e:
+        raise ValueError("invalid SSH public key base64") from e
+    return line
+
+
+def authorize_client(cfg, line):
+    try:
+        line = validate_public_key(line)
+    except ValueError as e:
+        rd_common.say(str(e))
+        return 2
+    code = ("import os,sys; p=os.path.expanduser('~/.ssh'); os.makedirs(p,mode=0o700,exist_ok=True); "
+            "os.chmod(p,0o700); f=os.path.join(p,'authorized_keys'); "
+            "open(f,'a').close(); os.chmod(f,0o600); key=sys.stdin.readline().strip(); "
+            "parts=key.split(); contents=open(f).read(); existing=contents.splitlines(); "
+            "seen=any(x.split()[:2]==parts[:2] for x in existing); "
+            "open(f,'a').write(('\\n' if contents and not contents.endswith('\\n') else '')+key+'\\n') "
+            "if not seen else None")
+    rc, _, err = rd_common.run(["ssh", "-o", "BatchMode=yes", cfg["host"],
+                                "/usr/bin/python3 -c " + shlex.quote(code)], timeout=20, input_=line + "\n")
+    if rc:
+        rd_common.say("could not authorize client on mini: " + err.strip())
+        return 2
+    print("client key authorized on " + cfg["host"])
+    return 0
+
+
 def install(cfg):
     rd_common.ensure_dirs()
+    pub = ssh_bootstrap(cfg)
+    rc, _, err = rd_common.run(["ssh", "-o", "BatchMode=yes", cfg["host"], "true"], timeout=15)
+    if rc != 0 and re.search(r"Permission denied|publickey|Host key verification failed", err):
+        with open(pub) as f:
+            key_line = f.read().strip()
+        print("Authorize this public key from a client that can already reach the mini:\n" + key_line)
+        print("rdocker authorize-client " + shlex.quote(key_line))
+        raise SystemExit(2)
+    if rc != 0:      # reachable-later is fine: everything below works offline or retries
+        print("note: the mini did not answer ssh just now (%s); continuing" % err.strip()[-120:])
     real = rd_common.real_docker()
     # 1. docker context for the mini = the mini's docker socket, streamed over the SSH master
     if not cfg["remote_socket"]:
@@ -120,8 +263,12 @@ def install(cfg):
     link(rd_common.NPM_SHIM_SRC, os.path.join(rd_common.BIN_DIR, "npm"))
     # 5. background forwarder
     ok = install_daemon()
-    print("installed: docker shim + rdocker + rrun + npm shim in %s, launch agent %s (%s)"
-          % (rd_common.BIN_DIR, rd_common.PLIST_LABEL, "loaded" if ok else "LOAD FAILED"))
+    service = ("systemd user unit " + rd_common.SYSTEMD_UNIT if rd_common.IS_LINUX
+               else "launch agent " + rd_common.PLIST_LABEL)
+    print("installed: docker shim + rdocker + rrun + npm shim in %s, %s (%s)"
+          % (rd_common.BIN_DIR, service, "loaded" if ok else "LOAD FAILED"))
+    if rd_common.IS_LINUX:
+        print("To keep the forwarder running while logged out, run once: sudo loginctl enable-linger $USER")
     print("pinned to laptop: containers=%s compose=%s"
           % (cfg["pins"]["containers"], cfg["pins"]["compose_projects"]))
 
@@ -263,11 +410,12 @@ def status(cfg, fix=False):
         rows.append(("OK " if ok else "-- ") + label + (": " + detail if detail else ""))
         return ok
 
-    if os.path.exists(rd_daemon.TS_CLI):
+    if rd_common.IS_LINUX or os.path.exists(rd_daemon.TS_CLI):
         if fix:
             rd_daemon.tailscale_up()
         up = rd_daemon.tailscale_running()
-        row(up, "tailscale on laptop", "" if up else "stopped - run: rdocker doctor")
+        row(up, "tailscale on laptop", "" if up else
+            ("stopped - run: sudo tailscale up" if rd_common.IS_LINUX else "stopped - run: rdocker doctor"))
     prior = rd_common.load_json(rd_common.HEALTH_PATH, None)   # what shims were using until now
     h = rd_tunnel.refresh_health(cfg)
     row(h["reachable"], "mini reachable (%s)" % cfg["host"],
@@ -289,7 +437,8 @@ def status(cfg, fix=False):
     loaded = daemon_loaded()
     if not loaded and fix:
         loaded = install_daemon()
-    row(loaded, "background forwarder (launchd %s)" % rd_common.PLIST_LABEL)
+    row(loaded, ("background forwarder (systemd user %s)" % rd_common.SYSTEMD_UNIT if rd_common.IS_LINUX
+                 else "background forwarder (launchd %s)" % rd_common.PLIST_LABEL))
     now = time.time()
     for ok, label, detail in (daemon_rows(now) + [health_age_row(prior, now)]
                               + janitor_rows(cfg, now) + [janitor_stopped_row(now),
@@ -305,7 +454,11 @@ def status(cfg, fix=False):
         + (" (IPv6 mirror pending: %s)" % ", ".join(map(str, no6)) if no6 else ""))
     if st.get("conflicts"):
         row(False, "port conflicts (busy on laptop)", ", ".join(map(str, st["conflicts"])))
-    row(True, "laptop Docker Desktop", "running" if rd_tunnel.local_engine_up(cfg) else "stopped (rdocker never starts it; RDOCKER_LOCAL_START=1 does)")
+    if rd_common.IS_LINUX:
+        row(True, "local docker engine", "running" if rd_tunnel.local_engine_up(cfg)
+            else "stopped (rdocker never starts it)")
+    else:
+        row(True, "laptop Docker Desktop", "running" if rd_tunnel.local_engine_up(cfg) else "stopped (rdocker never starts it; RDOCKER_LOCAL_START=1 does)")
     ctx = rd_common.run([real, "context", "show"], timeout=10)[1].strip()
     row(True, "global docker context", ctx)
     if fix:
@@ -504,7 +657,9 @@ def build_parser():
                    help="environment for the remote command (repeatable); a bare NAME forwards "
                    "that variable's value from rrun's own environment (keeps it out of argv)")
     s.add_argument("argv", nargs=argparse.REMAINDER, metavar="[--] command ...")
-    sp.add_parser("install", help="laptop side: context, shims, launch agent, pins")
+    sp.add_parser("install", help="client side: SSH identity, context, shims, forwarder, pins")
+    s = sp.add_parser("authorize-client", help="add a client SSH public key to the mini")
+    s.add_argument("public_key", metavar="PUBLIC_KEY")
     s = sp.add_parser("setup-mini", help="mini side over ssh: colima+docker + engine config "
                                          "(Colima restart deferred until the mini is idle)")
     s.add_argument("cpu", nargs="?", default="6")
@@ -633,6 +788,8 @@ def command(argv):
     if cmd == "run":
         return rd_run.rrun(ns.argv, ns.env)
     cfg = rd_common.load_cfg()
+    if cmd == "authorize-client":
+        return authorize_client(cfg, ns.public_key)
     if cmd in ("status", "doctor"):
         return 0 if status(cfg, fix=cmd == "doctor" or ns.fix) else 1
     if cmd == "use":

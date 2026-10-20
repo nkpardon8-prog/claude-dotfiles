@@ -32,14 +32,37 @@ rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
   detached, flock-guarded `rdocker janitor-run` / `kick` job, so a hung job never stalls it). It
   re-execs itself when the code on disk changes, but only if the new code imports cleanly.
 - Tailscale carries only traffic to the user's own devices (no exit node), so the laptop's normal
-  internet is unchanged. Nothing to switch on: Tailscale launches at login, and the forwarder restarts
-  it if it is ever stopped.
+  internet is unchanged. On macOS, Tailscale launches at login, and the forwarder restarts it if it
+  is ever stopped. On Linux, bring it up with `sudo tailscale up`.
 
 **Use `docker` exactly as normal.** Never add `--context`, set `DOCKER_HOST`/`DOCKER_CONTEXT`, or swap
 `localhost` for the mini's hostname — each deliberately bypasses routing.
 
 **One laptop only.** Install rdocker on exactly one laptop: a second install would janitor and mirror
 the first one's containers on the same mini.
+
+## Linux client (Linux Mint / Ubuntu)
+
+Mint 21/22 and Ubuntu 22.04/24.04 can run the client role. Install Tailscale and bring it up on the
+same tailnet as the mini, then install the client tools:
+
+```sh
+sudo apt install docker.io git openssh-client python3
+```
+
+The local Docker engine may stay off. Clone these dotfiles and run
+`/usr/bin/python3 /path/to/dotfiles/scripts/rdocker/rdocker.py install`. Install creates a dedicated
+`~/.ssh/rdocker_ed25519` key, the `~/.ssh/config.d/rdocker` host alias, and a first-line
+`Include ~/.ssh/config.d/*` in `~/.ssh/config` (backing up an existing config first). If the new
+key cannot yet reach the mini, install prints the public key and stops. On an existing client that
+can reach the mini, run the printed `rdocker authorize-client '<public key line>'`, then rerun
+`rdocker install` on Linux. The authorization command safely adds the key to the mini's
+`~/.ssh/authorized_keys` once. Ensure `~/.local/bin` is first on PATH so `docker` uses the shim.
+
+The forwarder runs as a systemd user unit, `rdocker-forwarder.service`, instead of a launchd agent.
+To keep it active while logged out, optionally run `sudo loginctl enable-linger $USER` once. Linux
+has no Docker Desktop, and rdocker never starts or stops the local engine. If a command truly needs
+the local engine, start it yourself with `sudo systemctl start docker`.
 
 **SDK callers bypass the shim.** dockerode, docker-py, testcontainers and anything that talks to a Docker
 socket or calls docker by absolute path (not via PATH) get no routing: they use whatever the global
@@ -416,14 +439,16 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 | Command | Does |
 |---|---|
 | `rdocker status` | health + RTT, where commands go, mirrored ports, conflicts, attention items (exit 1 if any `--` row; `WARN` rows never fail it) |
-| `rdocker doctor` | status **+ repair** (Tailscale, mini engine start via the kick path — never a VM-up restart, forwarder, mirrors) + flag-drift check |
+| `rdocker doctor` | status **+ repair** (Tailscale on macOS, mini engine start via the kick path — never a VM-up restart, forwarder, mirrors) + flag-drift check |
 | `rdocker clean [--dry-run\|--only P\|--force-critical]` | run the janitor now; exit 1 if it could not run in full: mini lock held after 90 s, mini unreachable, or mini engine not answering (`--dry-run` too; the disk check + `rrun` mirror housekeeping still run then) |
-| `rdocker use auto\|mini\|local\|off` | routing mode; also points the global docker context at the target (`off` = raw Docker Desktop behaviour, context → laptop) |
+| `rdocker use auto\|mini\|local\|off` | routing mode; also points the global docker context at the target (`off` = raw local Docker context) |
 | `rdocker where <container>` | which engine holds it (says which engine could not be asked) |
 | `rdocker pin\|unpin <name> [--compose]` | keep a container / compose project on the laptop |
 | `rdocker logs [--route]` | forwarder + janitor log / per-command routing log (incl. refusals) |
 | `rdocker sync` | reconcile port mirrors now |
 | `rdocker run [-e K[=V]]... [--] <cmd>` / `rrun ...` | run a heavy job (test runner + its DB) on the mini — see "Heavy test jobs on the mini" |
+| `rdocker install` | create the SSH key and host alias if missing, verify mini access, then install the Docker context, shims, and background forwarder (launchd on macOS, systemd user unit on Linux) |
+| `rdocker authorize-client '<public key line>'` | on an existing client, add a new client's validated SSH key to the mini once |
 
 `rdocker status` rows: tailscale on laptop · mini reachable (ssh control connection) · mini docker engine
 (version, round-trip) · mode → where commands go · docker shim first on PATH · background forwarder ·
@@ -431,7 +456,7 @@ daemon process (pid, age, running the code on disk / reload pending / reload NOT
 reading age · janitor last run · janitor last error (`--` only if from about the latest pass) · mini
 disk · mini engine config (Colima restart pending) · janitor-stopped in the last 24 h (mini + laptop,
 auto-restarted on use) · fallback pins · mirrored ports (IPv6 mirror
-pending) · port conflicts (busy on laptop) · laptop Docker Desktop · global docker context · (doctor)
+pending) · port conflicts (busy on laptop) · laptop Docker Desktop (local docker engine on Linux) · global docker context · (doctor)
 docker CLI flags vs `rd_args.SPECS` · one `WARN` row per attention item (with its age). Exit code: 1 only
 for `--` rows (real faults); `WARN` rows are for a human and keep it 0.
 `rdocker --help` exits 0; an unknown command prints usage and exits 2.
@@ -498,7 +523,10 @@ every threshold above is a key there).
 Mini: the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16, opens at login; the
 Homebrew formula was removed and `/opt/homebrew/bin/tailscale` is a wrapper for the app's CLI), machine name `macminim4`, IP 100.73.250.43, key expiry off;
 the laptop's `~/.ssh/config.d/rdocker` maps alias `macmini-docker` -> `HostName macminim4` with
-`HostKeyAlias macmini-docker`,
+`HostKeyAlias macmini-docker`, `User omidsmacmini`, `IdentityFile ~/.ssh/rdocker_ed25519`,
+`ControlMaster auto`, `ControlPath ~/.ssh/rdocker-%C`, `ControlPersist 30m`,
+`ServerAliveInterval 15`, `ServerAliveCountMax 3`, `ConnectTimeout 5`, and
+`StrictHostKeyChecking accept-new`,
 Remote Login on, laptop keys in `~/.ssh/authorized_keys`. Laptop: `~/.ssh/config` → `Include
 ~/.ssh/config.d/*` (`rdocker` block); `rdocker setup-mini 6 8 30`; `rdocker install` (context `mini` =
 `unix://~/.local/state/rdocker/mini-docker.sock`, shims, launch agent, pins). Mini Colima config:

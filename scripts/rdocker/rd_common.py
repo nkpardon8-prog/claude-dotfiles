@@ -13,6 +13,9 @@ import tempfile
 import time
 from contextlib import contextmanager
 
+IS_MAC = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
+
 # Root of every laptop-side path below (config, state, ~/.local/bin, the LaunchAgent plist).
 # RDOCKER_HOME overrides it; the test harness (tests/rdmods.py) points it at a temp dir so no
 # test can write the real ~/.config/rdocker or ~/.local/state/rdocker.
@@ -54,14 +57,24 @@ RRUN_STATE = os.path.join(STATE_DIR, "rrun.json")  # last rrun result + runs in 
 # rrun-<wt12>.lock in STATE_DIR serialises rrun runs from one laptop worktree (rd_run.wt_lock_path)
 PLIST_LABEL = "com.rdocker.forwarder"
 PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
+SYSTEMD_UNIT = "rdocker-forwarder.service"
+SYSTEMD_PATH = os.path.join(HOME, ".config", "systemd", "user", SYSTEMD_UNIT)
+
+
+def default_local_socket():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    rootless = os.path.join(runtime, "docker.sock") if runtime else ""
+    return rootless if rootless and os.path.exists(rootless) else "/var/run/docker.sock"
 
 DEFAULTS = {
     "host": "macmini-docker",          # ssh Host alias (see ~/.ssh/config.d/rdocker)
+    "ssh_hostname": "macminim4",
+    "ssh_user": "omidsmacmini",
     "host_ip": "",                     # tailnet IP (informational; health uses the ssh master)
     "remote_context": "mini",
     "remote_socket": "",               # mini docker socket, streamed over the SSH master
-    "local_context": "desktop-linux",
-    "local_socket": os.path.join(HOME, ".docker", "run", "docker.sock"),
+    "local_context": "default" if IS_LINUX else "desktop-linux",
+    "local_socket": default_local_socket() if IS_LINUX else os.path.join(HOME, ".docker", "run", "docker.sock"),
     "mode": "auto",                    # auto | mini | local | off
     "max_rtt_ms": 300,                 # auto mode: /_ping round-trip slower -> new throwaways on laptop
     "blip_wait_s": 30,                 # mini state unknown -> wait this long for it before refusing
@@ -328,6 +341,9 @@ def merge_cfg(user):
     """DEFAULTS deep-merged with the stored (non-default) keys, migrations applied."""
     user, _ = migrate_cfg(user if isinstance(user, dict) else {})
     cfg = copy.deepcopy(DEFAULTS)
+    if IS_LINUX:
+        cfg["local_context"] = "default"
+        cfg["local_socket"] = default_local_socket()
     cfg.update({k: copy.deepcopy(v) for k, v in user.items() if k != "pins"})
     cfg["pins"].update(copy.deepcopy(user.get("pins") or {}))
     return cfg
@@ -335,7 +351,10 @@ def merge_cfg(user):
 
 def cfg_diff(cfg):
     """Only the keys whose value differs from DEFAULTS, so later default changes take effect."""
-    out = {k: v for k, v in cfg.items() if k != "pins" and (k not in DEFAULTS or v != DEFAULTS[k])}
+    defaults = dict(DEFAULTS)
+    if IS_LINUX:
+        defaults.update(local_context="default", local_socket=default_local_socket())
+    out = {k: v for k, v in cfg.items() if k != "pins" and (k not in defaults or v != defaults[k])}
     pins = {k: v for k, v in (cfg.get("pins") or {}).items() if DEFAULTS["pins"].get(k) != v}
     if pins:
         out["pins"] = pins
@@ -412,8 +431,13 @@ def log(msg, path=LOG_PATH):
 def real_docker():
     """The actual docker CLI: first `docker` on PATH (plus known spots) that is not our shim."""
     shim = os.path.realpath(SHIM_SRC)
-    dirs = os.environ.get("PATH", "").split(":") + [
-        "/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"]
+    if IS_LINUX:
+        dirs = [d for d in os.environ.get("PATH", "").split(":")
+                if os.path.realpath(d) != os.path.realpath(BIN_DIR)] + [
+                    "/usr/bin", "/usr/local/bin", "/snap/bin"]
+    else:
+        dirs = os.environ.get("PATH", "").split(":") + [
+            "/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"]
     for d in dirs:
         p = os.path.join(d, "docker")
         rp = os.path.realpath(p)
@@ -421,6 +445,8 @@ def real_docker():
         if os.path.isfile(p) and os.access(p, os.X_OK) and rp != shim \
                 and os.path.basename(rp) != "docker-shim":
             return p
+    if IS_LINUX:
+        raise SystemExit("rdocker: install the docker CLI: sudo apt install docker.io (the engine may stay off)")
     raise SystemExit("rdocker: no real docker CLI found (install Docker Desktop or `brew install docker`)")
 
 

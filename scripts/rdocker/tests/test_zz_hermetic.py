@@ -58,7 +58,8 @@ class Hermetic(unittest.TestCase):
                 for s in strings(val):
                     if not s.startswith("/"):
                         continue
-                    if not (under(s, TEST_HOME) or under(s, STAGE)):
+                    if not (under(s, TEST_HOME) or under(s, STAGE) or
+                            (rd_common.IS_LINUX and s == "/var/run/docker.sock")):
                         bad.append("%s.%s = %r" % (m.__name__, name, s))
         self.assertEqual(bad, [], "path constants outside the temp RDOCKER_HOME")
 

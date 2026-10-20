@@ -241,7 +241,7 @@ class RunTest(unittest.TestCase):
             self.assertEqual(mem["run.sh"].mode, 0o700)
         self.assertEqual(rd_run.build_overlay(cfg, self.wt)[2], [".env"])     # root only
         # ... and on the "mini": the mirror has them, deleted/ignored/node_modules/symlinks do not
-        r = self.rrun("/bin/sh", "-c", "cd .. && find . -path ./.git -prune -o -type f -print | sort; "
+        r = self.rrun("/bin/sh", "-c", "cd .. && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort; "
                       "cat mod.txt staged.txt", cwd=os.path.join(self.wt, "sub"))   # cwd sub => sub/.env*
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("not copying sub/.env.local: it resolves outside this worktree", r.stderr)

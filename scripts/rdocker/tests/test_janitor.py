@@ -420,7 +420,7 @@ class RrHousekeeping(unittest.TestCase):
     def setUp(self):
         import shutil
         import tempfile
-        self.home = tempfile.mkdtemp(prefix="rdk-rr-", dir="/tmp")
+        self.home = tempfile.mkdtemp(prefix="j", dir="/tmp")
         self.addCleanup(shutil.rmtree, self.home, True)
         self.R = os.path.join(self.home, "rr")
         for d in ("w", "git", "slots"):

@@ -74,7 +74,8 @@ class ShimCase(unittest.TestCase):
         with open(os.path.join(self.state, "health.json"), "w") as f:
             json.dump(h, f)
         # blip_wait_s 0: refusal tests must not sit out the 30 s blip wait (BlipWait sets its own)
-        c = {"local_socket": self.local_sock, "migrated": ["rtt300"], "blip_wait_s": 0}
+        c = {"local_context": "desktop-linux", "local_socket": self.local_sock,
+             "migrated": ["rtt300"], "blip_wait_s": 0}
         if pins:
             c["pins"] = pins
         c.update(cfg or {})
@@ -290,7 +291,8 @@ class LaptopStaysOff(ShimCase):
         self.scenario(health=self.DOWN, laptop_up=False)
         p = self.shim("run", "--rm", "alpine", "true")
         self.assertEqual(p.returncode, 1, p.stderr)
-        self.assertIn("laptop Docker is off", p.stderr)
+        self.assertIn("local docker engine is not running" if sys.platform.startswith("linux")
+                      else "laptop Docker is off", p.stderr)
         self.assertEqual(self.calls("run"), [])
         self.assertNotIn("starting local Docker Desktop", p.stderr)
 
@@ -322,7 +324,8 @@ class SafetyNetWithLaptopOff(ShimCase):
         p = self.shim("run", "-d", "postgres", env={"npm_lifecycle_event": "test:db"})
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual([c for c, _ in self.calls("run")], ["mini"])
-        self.assertIn("laptop Docker is off", p.stderr)
+        self.assertIn("local docker engine is not running" if sys.platform.startswith("linux")
+                      else "laptop Docker is off", p.stderr)
 
 
 class SlowMiniOnlyMovesThrowaways(ShimCase):

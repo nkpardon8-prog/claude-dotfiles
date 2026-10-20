@@ -15,15 +15,31 @@ HOOK = next((p for p in (os.path.join(STAGE, "_hooks_stage", "no-docker-desktop.
                          os.path.join(os.path.dirname(STAGE), "hooks", "no-docker-desktop.py"))
              if os.path.isfile(p)), "no-docker-desktop.py not found")
 
-BLOCK = ["open -a Docker", "open -ga Docker", "open -a 'Docker Desktop'", "open /Applications/Docker.app",
+BLOCK = [
+    'sudo systemctl restart docker',
+    'sudo systemctl enable --now docker.service',
+    'FOO=1 /usr/bin/dockerd &',
+    'cd /tmp && sudo -E dockerd --debug',
+"open -a Docker", "open -ga Docker", "open -a 'Docker Desktop'", "open /Applications/Docker.app",
          "docker info >/dev/null 2>&1 || { open -a Docker; sleep 3; }",
-         "osascript -e 'tell application \"Docker\" to activate'", "docker desktop start"]
+         "osascript -e 'tell application \"Docker\" to activate'", "docker desktop start",
+         "systemctl start docker", "sudo systemctl start docker.service",
+         "systemctl --user start docker.socket", "sudo service docker start", "dockerd --debug",
+         "sudo ./dockerd --host=unix:///tmp/docker.sock"]
 SWEEP = ["docker rm -f $(docker ps -aq --filter name=p7p3-vitest-db)",
          "docker ps -a --format '{{.Names}}' | grep p7p3 | xargs docker rm -f",
          "docker container prune -f", "docker system prune -af"]
-ALLOW = ["docker rm -f -v p7p3-vitest-db-1a2b3c4d", "RDOCKER_ALLOW_SWEEP=1 docker container prune -f",
+ALLOW = [
+    'ps aux | grep dockerd',
+    'which dockerd',
+    'man dockerd',
+    'echo systemctl start docker',
+    'systemctl status docker',
+    'journalctl -u docker --since today',
+"docker rm -f -v p7p3-vitest-db-1a2b3c4d", "RDOCKER_ALLOW_SWEEP=1 docker container prune -f",
          "docker ps -a --filter name=p7p3 --format '{{.Names}}'",
-"RDOCKER_LOCAL_START=1 open -a Docker", "open -a Safari", "open README.md", "docker ps",
+"RDOCKER_LOCAL_START=1 open -a Docker", "RDOCKER_LOCAL_START=1 sudo systemctl start docker",
+         "open -a Safari", "open README.md", "docker ps",
          'grep -n "open -a Docker" notes.md', "osascript -e 'quit app \"Docker\"'", "rdocker doctor"]
 
 
