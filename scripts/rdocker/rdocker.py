@@ -47,12 +47,19 @@ FALLBACK_GLOBAL_VALUE_FLAGS = {"--config", "-c", "--context", "-H", "--host", "-
 def fallback_real_docker():
     """Inline copy of rd_common.real_docker(): first `docker` on PATH that is not our shim."""
     shim = os.path.realpath(os.path.join(HERE, "docker-shim"))
-    dirs = os.environ.get("PATH", "").split(":") + [
-        "/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"]
+    if sys.platform.startswith("linux"):
+        dirs = [d for d in os.environ.get("PATH", "").split(":")
+                if os.path.realpath(d) != os.path.realpath(os.path.expanduser("~/.local/bin"))] + [
+                    "/usr/bin", "/usr/local/bin", "/snap/bin"]
+    else:
+        dirs = os.environ.get("PATH", "").split(":") + [
+            "/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"]
     for d in dirs:
         p = os.path.join(d, "docker")
         if os.path.isfile(p) and os.access(p, os.X_OK) and os.path.realpath(p) != shim:
             return p
+    if sys.platform.startswith("linux"):
+        raise SystemExit("rdocker: install the docker CLI: sudo apt install docker.io (the engine may stay off)")
     raise SystemExit("rdocker: no real docker CLI found (install Docker Desktop or `brew install docker`)")
 
 

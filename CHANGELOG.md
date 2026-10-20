@@ -2,6 +2,22 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-19 - rdocker Linux client support
+
+- The laptop client now runs on Linux Mint / Ubuntu with a systemd user forwarder and the apt Docker
+  CLI; it never starts or stops a local engine. Status and Tailscale checks use Linux commands.
+- `rdocker install` bootstraps an SSH identity and host alias, and `rdocker authorize-client` adds a
+  new client's public key to the mini. The Docker start hook also guards local Linux engines.
+- Added Linux branch and hook tests; made the runner's file-mode test portable.
+- New `/dockersetup` command: joins any macOS or Linux Mint / Ubuntu machine as a client (checks,
+  `rdocker install`, key authorization hand-off, PATH/hooks, verify). Windows later.
+- Install stops for key authorization only when the mini refuses the key (an unreachable mini just
+  warns); the `Include ~/.ssh/config.d/*` check accepts it anywhere before the first Host block; the
+  Linux engine-start block is anchored to the start of a command (`grep dockerd` stays allowed) and
+  also covers `restart` / `enable --now`. Linux messages name the local engine, not Docker Desktop.
+- Verified: 430 unit tests on macOS; the suite on Ubuntu 24.04 (Mint 22's base) and an emulated
+  Mint 22 amd64 container (its only failures were random emulation crashes that pass on re-run).
+
 ## 2026-10-19 - rdocker: mini Docker VM capped at 5 GB RAM; shared package store; tighter storage caps
 
 - Measured: the Colima VM's macOS footprint was 8.2 GB (its whole allowance) while the guest used

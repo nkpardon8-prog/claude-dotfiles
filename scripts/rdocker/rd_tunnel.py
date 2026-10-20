@@ -408,17 +408,33 @@ LOCAL_OFF_MSG = ("laptop Docker is off, and rdocker does not start it (Docker De
                  "must run on the laptop: RDOCKER_LOCAL_START=1 <command>")
 
 
+LOCAL_OFF_MSG_LINUX = ("the local docker engine is not running, and rdocker does not start it (the "
+                       "remote host is the default). Fix the remote host: `rdocker doctor`; or start the "
+                       "local engine yourself: sudo systemctl start docker")
+
+
+def local_off_msg():
+    """The 'local engine is off' text for this platform (read at call time, like IS_MAC/IS_LINUX)."""
+    return LOCAL_OFF_MSG_LINUX if rd_common.IS_LINUX else LOCAL_OFF_MSG
+
+
 def local_start_allowed(cfg):
-    return os.environ.get("RDOCKER_LOCAL_START") == "1" or cfg.get("local_autostart") is True
+    return rd_common.IS_MAC and (os.environ.get("RDOCKER_LOCAL_START") == "1" or
+                                 cfg.get("local_autostart") is True)
 
 
 def ensure_local_running(cfg):
     if local_engine_ready(cfg):
         return True
+    if rd_common.IS_LINUX:
+        rd_common.say("local docker engine is not running; start it yourself: sudo systemctl start docker")
+        return False
+    if not rd_common.IS_MAC:
+        return False
     if local_engine_up(cfg):
         rd_common.say("waiting for local Docker Desktop to finish starting...")
     elif not local_start_allowed(cfg):
-        rd_common.say(LOCAL_OFF_MSG)
+        rd_common.say(local_off_msg())
         return False
     else:
         rd_common.say("starting local Docker Desktop (needed for this command)...")

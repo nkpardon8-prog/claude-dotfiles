@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PreToolUse gate (Bash) - block launching laptop Docker Desktop by hand, and pattern sweeps of containers.
+PreToolUse gate (Bash) - block launching a local Docker engine and pattern sweeps of containers.
 
 Why: Docker runs on the Mac mini (rdocker); laptop Docker Desktop costs GBs of RAM on a 16 GB laptop
 that a dozen agents share. rdocker never starts it, but agents had a habit of `open -a Docker` whenever
@@ -8,7 +8,8 @@ that a dozen agents share. rdocker never starts it, but agents had a habit of `o
 A failing docker means "fix the mini" (`rdocker doctor`), not "boot a second engine here".
 
 Blocks (exit 2, message on stderr): `open [-flags] -a Docker`, `open .../Docker.app`, AppleScript
-activate/launch/run of application "Docker", `docker desktop start`. Allowed when the command carries
+activate/launch/run of application "Docker", `docker desktop start`, Linux `systemctl start docker`,
+`service docker start`, and `dockerd`. Allowed when the command carries
 RDOCKER_LOCAL_START=1 (the deliberate opt-in rdocker itself honours). FAILS OPEN on any parse error.
 """
 import json
@@ -21,6 +22,16 @@ LAUNCH = re.compile(
     r"|application\s+\\?[\"']Docker( Desktop)?\\?[\"']\s+to\s+(activate|launch|run|open)"
     r"|(tell\s+application\s+\\?[\"']Docker( Desktop)?\\?[\"'])[^\n]*\b(activate|launch|run)\b"
     r"|(^|[\s;&|(])docker\s+desktop\s+(start|restart)\b",
+    re.I)
+
+# Linux: starting the local engine. Anchored to the start of a command segment (start of line, or after
+# ; & | ( or `$(`, optionally behind sudo/nohup/env assignments), so `grep dockerd`, `which dockerd`,
+# `man dockerd` or `echo systemctl start docker` are not blocked.
+_SEG = r"(?:^|[;&|(]|\$\()\s*(?:(?:sudo|nohup|exec)(?:\s+-\S+)*\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+LINUX_LAUNCH = re.compile(
+    _SEG + r"systemctl\s+(?:--user\s+)?(?:start|restart|enable\s+--now)\s+docker(?:\.(?:service|socket))?(?=\s|$|[;&|)])"
+    r"|" + _SEG + r"service\s+docker\s+(?:start|restart)(?=\s|$|[;&|)])"
+    r"|" + _SEG + r"(?:[^\s;&|]*/)?dockerd(?=\s|$|[;&|)])",
     re.I)
 
 
@@ -64,13 +75,18 @@ def main():
               "janitor reaps leftovers. (Only if the user asked for a sweep: RDOCKER_ALLOW_SWEEP=1.)",
               file=sys.stderr)
         return 2
-    if "RDOCKER_LOCAL_START=1" in cmd or not LAUNCH.search(cmd):
+    if "RDOCKER_LOCAL_START=1" in cmd or not (LAUNCH.search(cmd) or LINUX_LAUNCH.search(cmd)):
         return 0
     log_block(d, cmd, "desktop")
-    print("NO-DOCKER-DESKTOP: don't start laptop Docker Desktop - it costs GBs of RAM and Docker runs "
-          "on the Mac mini. If docker fails or is slow, run `rdocker doctor` (and `rdocker status`), "
-          "then retry; plain `docker ...` already goes to the mini. Only if the user wants the laptop "
-          "engine: prefix the command with RDOCKER_LOCAL_START=1.", file=sys.stderr)
+    if LINUX_LAUNCH.search(cmd):
+        print("NO-DOCKER-DESKTOP: don't start the local docker engine; Docker runs on the Mac mini. "
+              "Run `rdocker doctor` and retry. Only if the user wants the laptop engine: prefix the "
+              "command with RDOCKER_LOCAL_START=1.", file=sys.stderr)
+    else:
+        print("NO-DOCKER-DESKTOP: don't start laptop Docker Desktop - it costs GBs of RAM and Docker runs "
+              "on the Mac mini. If docker fails or is slow, run `rdocker doctor` (and `rdocker status`), "
+              "then retry; plain `docker ...` already goes to the mini. Only if the user wants the laptop "
+              "engine: prefix the command with RDOCKER_LOCAL_START=1.", file=sys.stderr)
     return 2
 
 

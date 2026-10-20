@@ -6,6 +6,7 @@ import glob
 import json
 import os
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -20,7 +21,8 @@ TS_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 
 
 def tailscale_running():
-    rc, out, _ = rd_common.run([TS_CLI, "status", "--json"], timeout=8)
+    cli = (shutil.which("tailscale") or "/usr/bin/tailscale") if rd_common.IS_LINUX else TS_CLI
+    rc, out, _ = rd_common.run([cli, "status", "--json"], timeout=8)
     try:
         return json.loads(out).get("BackendState") == "Running"
     except ValueError:
@@ -29,6 +31,8 @@ def tailscale_running():
 
 def tailscale_up():
     """Start laptop Tailscale if it is installed but stopped. True if we changed something."""
+    if not rd_common.IS_MAC:
+        return False
     if not os.path.exists(TS_CLI) or tailscale_running():
         return False
     rd_common.run(["open", "-ga", "Tailscale"], timeout=10)
@@ -274,6 +278,9 @@ def prune_fallback_pins(cfg):
 def idle_step(cfg, target, st, now_mono, now_wall):
     """Quit an idle laptop engine (that's the RAM we came here to free). st["idle_since"] is the
     monotonic time the idle condition started holding."""
+    if not rd_common.IS_MAC:
+        st["idle_since"] = None
+        return False
     quiet = cfg["local_idle_stop_min"] * 60
     if not (quiet and target == "mini" and rd_tunnel.local_engine_up(cfg)):
         st["idle_since"] = None

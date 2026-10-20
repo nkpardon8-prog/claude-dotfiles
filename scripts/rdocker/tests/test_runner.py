@@ -243,6 +243,8 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("bare repo", r.err)
 
     # ------------------------------------------------------------------------ heartbeat
+    @unittest.skipUnless(sys.platform == "darwin", "the rrun runner runs on the macOS mini only (on Linux "
+                         "the killed grandchild lingers as a zombie when PID 1 does not reap)")
     def test_stdin_eof_kills_child_and_grandchild(self):
         pids = os.path.join(self.d, "pids")
         script = 'sleep 60 & echo $! > %s.g; echo $$ > %s.c; sleep 60' % (pids, pids)
@@ -292,7 +294,7 @@ class RunnerTest(unittest.TestCase):
     def test_overlay_written_env_files_0600_then_deleted(self):
         tar = tar_of([(".env", b"A=1\n"), ("apps", None), ("apps/.env.local", b"B=2\n"),
                       ("new dir/untracked [id].txt", b"u"), ("keep.txt", b"dirty")])
-        r = self.run_runner(["/bin/sh", "-c", "stat -f %Lp .env apps/.env.local; cat keep.txt "
+        r = self.run_runner(["/bin/sh", "-c", "python3 -c 'import os; [print(oct(os.stat(p).st_mode & 0o777)[2:]) for p in (\".env\", \"apps/.env.local\")]'; cat keep.txt "
                              "'new dir/untracked [id].txt'"], tar=tar)
         self.assertEqual(r.rc, 0, r.err)
         self.assertEqual(r.out, "600\n600\ndirtyu")
@@ -356,6 +358,7 @@ class RunnerTest(unittest.TestCase):
         self.run_runner(["true"], tar=tar_of([("package-lock.json", b'{"v":2}')]))
         self.assertEqual(len(npm_ci()), 2)                              # lockfile => npm ci
 
+    @unittest.skipUnless(sys.platform == "darwin", "APFS cp -c is macOS only")
     def test_shared_store_clones_packages_into_a_new_mirror(self):
         """A second laptop worktree with the same lockfile gets node_modules as an APFS clone of the
         store entry the first install published - no npm ci, no prisma generate; a tampered entry is
@@ -444,6 +447,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self.calls(), [])                          # nothing ran
         self.assertEqual(self.run_runner(["true"]).rc, 0)           # lock released => runs
 
+    @unittest.skipUnless(sys.platform == "darwin", "mini memory sysctls are macOS only")
     def test_spare_slot_only_when_the_mini_has_room(self):
         """slots_base always; the extra slots only while memory/load allow (here: forced via limits)."""
         os.makedirs(os.path.join(self.root, "slots"))

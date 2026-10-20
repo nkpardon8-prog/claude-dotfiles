@@ -727,7 +727,8 @@ class MergedPs(unittest.TestCase):
                 mock.patch.object(rd_common, "run", return_value=(rc2, out, "daemon boom\n")) as run, \
                 mock.patch.object(rd_common, "say") as say, \
                 contextlib.redirect_stdout(io.StringIO()) as so:
-            rc = rd_route.merged_ps(rd_common.merge_cfg({}), ["/x/docker", "--context", "mini"], [],
+            rc = rd_route.merged_ps(dict(rd_common.merge_cfg({}), local_context="desktop-linux"),
+                                    ["/x/docker", "--context", "mini"], [],
                                     ["ps"] + args, args)
         self.assertEqual(cd.call_args[0][0], ["/x/docker", "--context", "mini", "ps"] + args)
         self.assertEqual(run.call_args[0][0], ["/x/docker", "--context", "desktop-linux", "ps"] + args)

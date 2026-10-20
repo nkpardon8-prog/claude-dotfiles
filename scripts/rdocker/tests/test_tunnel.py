@@ -7,6 +7,7 @@ Run: /usr/bin/python3 -m unittest discover -s tests -v
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -257,6 +258,7 @@ class EnsureLocalRunning(unittest.TestCase):
         self.assertEqual(info, [("desktop-linux", "info", "--format", "x")])
         self.assertEqual(runs, [])
 
+    @unittest.skipUnless(sys.platform == "darwin", "Docker Desktop start wait is macOS only")
     def test_socket_up_but_booting_waits_for_info(self):
         ok, info, runs = self.run_case(True, [1, 1, 0])
         self.assertTrue(ok)
@@ -277,6 +279,7 @@ class EnsureLocalRunning(unittest.TestCase):
         self.assertFalse(os.path.exists(stamp))
         self.assertEqual(len(self.run_case(True, [0])[1]), 1)
 
+    @unittest.skipUnless(sys.platform == "darwin", "Docker Desktop start wait is macOS only")
     def test_failed_info_drops_stamp(self):
         self.run_case(True, [0])
         stamp = os.path.join(self.tmp, "local-info.ok")
@@ -288,6 +291,7 @@ class EnsureLocalRunning(unittest.TestCase):
         self.assertFalse(self.run_case(True, [])[0])             # info keeps failing
         self.assertFalse(os.path.exists(stamp))
 
+    @unittest.skipUnless(sys.platform == "darwin", "Docker Desktop launch is macOS only")
     def test_socket_down_opens_desktop_and_gives_up(self):
         with mock.patch.object(rd_tunnel, "local_start_allowed", lambda cfg: True):
             ok, info, runs = self.run_case(False, [])

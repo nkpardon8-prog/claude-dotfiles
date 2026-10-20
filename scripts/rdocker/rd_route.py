@@ -660,8 +660,9 @@ def laptop_ok_for(eng, heavy):
     """The safety net's laptop placement, unless laptop Docker is off: then the DB goes to the mini
     (slow across the link, but rdocker never boots Docker Desktop for it)."""
     if heavy and laptop_off(eng):
-        rd_common.say("%s, but laptop Docker is off - its DB goes to the Mac mini (slow across the "
-                      "link: run the job with rrun)" % heavy)
+        off = ("the local docker engine is not running" if rd_common.IS_LINUX else "laptop Docker is off")
+        rd_common.say("%s, but %s - its DB goes to the Mac mini (slow across the "
+                      "link: run the job with rrun)" % (heavy, off))
         return None
     return heavy
 
@@ -690,7 +691,7 @@ def mini_or_wait(eng, why):
             rd_common.log("mini answered again - routing there (laptop Docker is off)", rd_common.ROUTE_LOG)
             return
         why = why2
-    raise Refuse("%s; %s" % (why, rd_tunnel.LOCAL_OFF_MSG))
+    raise Refuse("%s; %s" % (why, rd_tunnel.local_off_msg()))
 
 
 def locate(eng, names, probe, hinted, readonly, what, deadline=None):

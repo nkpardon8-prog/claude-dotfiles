@@ -246,6 +246,7 @@ class IdleQuit(unittest.TestCase):
             quit_ = r.idle_step(cfg, "mini", st, 100.0 + 901, 2e9)
         return quit_, events
 
+    @unittest.skipUnless(sys.platform == "darwin", "Docker Desktop idle quit is macOS only")
     def test_pins_snapshot_written_before_quit(self):
         quit_, events = self.drive()
         self.assertTrue(quit_)
@@ -255,6 +256,7 @@ class IdleQuit(unittest.TestCase):
         pinned = {(p["name"], p["kind"]) for p in events[0][1]}
         self.assertEqual(pinned, {("web", "container"), ("solo", "container"), ("proj", "compose")})
 
+    @unittest.skipUnless(sys.platform == "darwin", "Docker Desktop idle quit is macOS only")
     def test_snapshot_skips_names_also_on_the_mini(self):
         # a compose project moved to the mini whose laptop backup container still carries the
         # project label must not be pinned to the laptop (live bug: `compose up` went to the laptop)
@@ -298,6 +300,7 @@ class IdleQuit(unittest.TestCase):
         with open(self.cfgpath) as f:
             return json.load(f)["pins"]
 
+    @unittest.skipUnless(sys.platform == "darwin", "Docker Desktop idle quit is macOS only")
     def test_snapshot_replaces_fallback_pins_keeps_explicit(self):
         self.write_cfg({"containers": ["solo", "manual-gone"], "compose_projects": ["mproj"],
                         "fallback": [{"name": "rde2e-28656-a", "kind": "container", "ts": 5.0},
