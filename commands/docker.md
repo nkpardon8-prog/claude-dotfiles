@@ -14,7 +14,7 @@ command. Use docker normally. The laptop's janitor still sweeps this engine, so 
 ## The mental model
 
 The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (ssh alias `macmini-docker` ->
-Tailscale name `macminim4`; Colima VM: 6 CPU / 5 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
+Tailscale `nicholass-mac-mini`, 100.112.247.23 - Nick's Mac mini since 2026-10-22; before that Omid's `macminim4`; Colima VM: 6 CPU / 5 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
 CPU stays on the laptop and only the containers move. **Heavy test jobs** (test runner + its DB) move
 whole: `rrun <cmd>` runs the command itself on the mini next to its DB, usually without asking (a hook
 rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
@@ -520,7 +520,19 @@ every threshold above is a key there).
 
 ## Setup record (done 2026-10-12 — for a rebuild)
 
-Mini: the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16, opens at login; the
+**Host since 2026-10-22: Nick's Mac mini** (`nicholass-mac-mini`, Tailscale 100.112.247.23, user
+`nicholaspardon`, macOS 15.6, 16 GB). Set up over ssh with the `setup-mini` script (Homebrew colima +
+docker as Nick's user only, VM 6 CPU / 5 GB / 30 GB, `brew services` at login, the same docker block +
+Lima override; one PATH line in `~/.zshenv`; Nick's `~/.claude` and `~/dotfiles` untouched). The
+laptop's `Host macmini-docker` block now says `HostName 100.112.247.23`, `HostKeyAlias
+nickmini-docker`, `User nicholaspardon` (config `remote_socket`
+`/Users/nicholaspardon/.colima/default/docker.sock`). The 11 long-lived DBs were copied volume by
+volume and verified (database list + table counts); the originals stay **stopped, restart=no** on the
+old mini (`ssh oldmini-docker`) as a backup. FileVault is on there too: after a reboot someone logs in
+once. Keep ssh backups OUT of `~/.ssh/config.d/` (everything in it is Included; a stale backup block
+there supplied a wrong `HostKeyAlias` during the switch) - they live in `~/.ssh/rdocker-backups/`.
+
+Previous mini (Omid's, until 2026-10-22): the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16, opens at login; the
 Homebrew formula was removed and `/opt/homebrew/bin/tailscale` is a wrapper for the app's CLI), machine name `macminim4`, IP 100.73.250.43, key expiry off;
 the laptop's `~/.ssh/config.d/rdocker` maps alias `macmini-docker` -> `HostName macminim4` with
 `HostKeyAlias macmini-docker`, `User omidsmacmini`, `IdentityFile ~/.ssh/rdocker_ed25519`,

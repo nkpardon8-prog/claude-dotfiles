@@ -132,7 +132,8 @@ class LinuxClient(unittest.TestCase):
             with open(config) as f:
                 first = f.read()
             self.assertEqual(first.splitlines()[0], "Include ~/.ssh/config.d/*")
-            self.assertIn("HostName macminim4", block)
+            self.assertIn("HostName 100.112.247.23", block)
+            self.assertIn("User nicholaspardon", block)
             self.assertIn("HostKeyAlias macmini-docker", block)
             self.assertEqual(os.stat(pub[:-4]).st_mode & 0o777, 0o600)
             with open(config + ".bak-rdocker") as f:

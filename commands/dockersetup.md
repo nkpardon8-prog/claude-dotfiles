@@ -6,7 +6,7 @@ description: Set up THIS machine (macOS or Linux Mint / Ubuntu) as a client of t
 
 **Arguments:** `$ARGUMENTS` (optional: `check` = report only, change nothing).
 
-The mini (`macmini-docker` -> Tailscale name `macminim4`) runs every container; this machine only runs
+The mini (`macmini-docker` -> Nick's Mac mini, Tailscale `nicholass-mac-mini` 100.112.247.23) runs every container; this machine only runs
 a `docker` shim, a background forwarder and the `rrun` client. Full reference: `/docker` (read its
 "Linux client" and "Setup record" sections if anything below is unclear). Work through the steps in
 order, report each result in one line, and stop at the first step that needs the user.
@@ -19,7 +19,7 @@ supported yet.
 ## 2. Prerequisites (check; install only with the user's OK - these need their password)
 | Need | Check | macOS | Linux |
 |---|---|---|---|
-| Tailscale up, same tailnet | `tailscale status` lists `macminim4` | Tailscale app, signed in | `sudo tailscale up` |
+| Tailscale up, same tailnet | `tailscale status` lists `nicholass-mac-mini` | Tailscale app, signed in | `sudo tailscale up` |
 | docker CLI (engine may stay off) | `command -v docker` (not `~/.local/bin/docker`) | Docker Desktop's CLI or `brew install docker` | `sudo apt install docker.io` |
 | git, ssh, python3 | `git --version; ssh -V; /usr/bin/python3 --version` (>= 3.9) | built in | `sudo apt install git openssh-client python3` |
 | the dotfiles | `~/.claude-dotfiles/scripts/rdocker/rdocker.py` exists | see the dotfiles README | same |

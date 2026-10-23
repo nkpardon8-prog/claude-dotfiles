@@ -68,8 +68,8 @@ def default_local_socket():
 
 DEFAULTS = {
     "host": "macmini-docker",          # ssh Host alias (see ~/.ssh/config.d/rdocker)
-    "ssh_hostname": "macminim4",
-    "ssh_user": "omidsmacmini",
+    "ssh_hostname": "100.112.247.23",  # Nick's Mac mini (Tailscale) - the Docker host since 2026-10-22
+    "ssh_user": "nicholaspardon",
     "host_ip": "",                     # tailnet IP (informational; health uses the ssh master)
     "remote_context": "mini",
     "remote_socket": "",               # mini docker socket, streamed over the SSH master

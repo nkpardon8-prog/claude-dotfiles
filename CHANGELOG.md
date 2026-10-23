@@ -2,6 +2,20 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-22 - rdocker: Docker host moved to Nick's Mac mini
+
+- New host `nicholass-mac-mini` (Tailscale 100.112.247.23, user `nicholaspardon`, 16 GB): set up over
+  ssh with the setup-mini script (VM 6 CPU / 5 GB / 30 GB, colima under `brew services`, loopback-only
+  ports, log + 1 GB build-cache caps). Its owner allowed up to 10 GB; kept at 5 GB because a VZ VM
+  keeps every page it touches (the cap is its footprint), idle 1.4 GB.
+- 11 long-lived DBs copied volume by volume with a stop/copy/recreate/verify script (same image, env
+  minus image defaults, ports, labels, restart, network + aliases, healthcheck); each verified by
+  database list + per-database table counts. Originals stopped with restart=no on the old mini.
+- Laptop: `Host macmini-docker` repointed (HostName 100.112.247.23, HostKeyAlias nickmini-docker,
+  User nicholaspardon), `remote_socket` updated; new-client defaults (`ssh_hostname`/`ssh_user`) too.
+  Switch outage ~5 min. Lesson: ssh backups inside `~/.ssh/config.d/` are Included and can supply
+  options (a stale `HostKeyAlias` broke the switch) - backups now live in `~/.ssh/rdocker-backups/`.
+
 ## 2026-10-19 - rdocker Linux client support
 
 - The laptop client now runs on Linux Mint / Ubuntu with a systemd user forwarder and the apt Docker
