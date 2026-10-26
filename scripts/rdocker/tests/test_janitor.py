@@ -30,7 +30,7 @@ class JanitorCase(ShimCase):
         super().setUp()
         with open(os.path.join(self.bin, "ssh"), "w") as f:
             f.write('#!/bin/sh\necho "$*" >> "$HOME/ssh.args"\ncat "$HOME/ssh.out" 2>/dev/null\nexit 0\n')
-        self.disk(50)
+        self.disk(30)               # below disk_high_pct (50)
         self.jpath = os.path.join(self.state, "janitor.json")
 
     def disk(self, pct, free=100):
@@ -292,7 +292,7 @@ class ImageGC(JanitorCase):
         self.assertFalse([a for a in self.argvs() if a[:2] == ["image", "rm"]])
 
     def test_disk_high_never_removes_in_use(self):
-        self.disk(85)
+        self.disk(55)               # high (>= 50) but not critical (< 60)
         self.setup_images()
         self.clean()
         imgrm = [a[2] for a in self.argvs() if a[:2] == ["image", "rm"]]
@@ -373,7 +373,7 @@ class CleanExitCodes(JanitorCase):
         # and the rrun mirror housekeeping still run - they need only ssh + perl - and the
         # container/volume/image steps are reported as not run
         self.mini({}, down=True)          # ssh stub grants the lock; docker on the mini fails
-        self.disk(50, free=3)
+        self.disk(30, free=3)
         p = self.clean(rc=1)
         self.assertIn("container/volume/image steps not run: mini docker engine not answering",
                       p.stderr)

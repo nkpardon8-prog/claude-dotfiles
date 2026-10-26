@@ -530,9 +530,13 @@ _HELP_FLAG = re.compile(r"^ {2,6}(?:(-[A-Za-z0-9])(?:, |\s+))?(--[A-Za-z0-9][A-Z
 
 
 def help_flags(text):
-    """Flag names (long, and short ones without a long twin) listed in a docker `--help` text."""
+    """Flag names (long, and short ones without a long twin) listed in a docker `--help` text. Stops
+    at a "Global Options:" section: newer docker CLIs (29.x) print the top-level `docker` flags
+    (--context, --host, -c, -H, ...) under every compose subcommand's help - not compose flags."""
     out = set()
     for line in (text or "").splitlines():
+        if line.strip().lower() == "global options:":
+            break
         m = _HELP_FLAG.match(line)
         if not m or not (m.group(1) or m.group(2)):
             continue

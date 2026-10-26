@@ -65,7 +65,7 @@ When asked to summarize a session, dump context, or save state before compaction
 When you hit a GUI surface no CLI / MCP / native tool can reach (macOS permission dialogs, app modals without CLI equivalents, apps with no scriptable surface), use `/desktop`. Don't ask the user to click — use the skill. It self-routes, applies safety classifiers, and confirms before destructive or ambiguous actions.
 
 ## Docker runs on the Mac mini — `/docker`
-(On the Mac mini itself — no `~/.local/bin/docker` shim — docker is plain local Colima: ignore this section; only the janitor rules below still apply.)
+(On the Docker server itself — Nick's Mac mini, no `~/.local/bin/docker` shim — docker is plain local Colima: ignore this section; only the janitor rules below still apply.)
 `docker` / `docker compose` on this laptop are routed by a shim to the always-on Mac mini over
 Tailscale; every published TCP port is mirrored to laptop `localhost` at the same number. So use docker
 **exactly as normal** — `-p 127.0.0.1::5432` + `docker port`, `localhost` connection strings and

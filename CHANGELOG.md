@@ -2,6 +2,19 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-10-26 - rdocker: Nick's Mac mini is the only Docker engine (11 GB); storage + clock caps
+
+- Nick's mini Docker VM 10 -> 11 GB (Omid's call; colima.yaml `memory:` + `brew services` stop/start,
+  running containers restored). Omid's mini (`macminim4`) is now a CLIENT: `rdocker install` there
+  (its own key, authorized with `rdocker authorize-client`), its Colima stopped + removed from login
+  (its disk, incl. the 10/22 DB backups, kept). Every machine now sends Docker to Nick's mini.
+- Storage: `disk_high_pct` 80 -> 50 and `disk_critical_pct` 90 -> 60 of the 30 GB VM disk (Docker data
+  kept under ~15-18 GB: unused images oldest-first + all build cache, then stopped containers).
+- VM clock: the janitor writes a timesyncd drop-in (poll 16-64 s) - after host sleep the VM drifted
+  (prod-orchastrator's enqueue.db saw the DB ~85 ms ahead). Nick's host clock itself was ~76 ms slow.
+- Flag drift: `help_flags` stops at "Global Options:" - docker 29.x prints the top-level docker
+  flags under every compose subcommand, which raised a false 62-flag attention item on Omid's mini.
+
 ## 2026-10-22 - rdocker: Docker host moved to Nick's Mac mini
 
 - New host `nicholass-mac-mini` (Tailscale 100.112.247.23, user `nicholaspardon`, 16 GB): set up over

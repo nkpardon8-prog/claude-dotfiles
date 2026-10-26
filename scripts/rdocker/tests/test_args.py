@@ -204,6 +204,13 @@ class RealDockerSkipsShim(unittest.TestCase):
 class FlagDrift(unittest.TestCase):
     """The daemon/doctor diff of the laptop CLI's --help flags against rd_args.SPECS."""
 
+    def test_help_flags_ignore_global_options_section(self):
+        text = ("Usage:  docker compose up [OPTIONS]\n\nOptions:\n"
+                "  -d, --detach        Detached mode\n      --wait          Wait\n\n"
+                "Global Options:\n  -c, --context string   Name of the context\n"
+                "  -H, --host string      Daemon socket\n      --tls          Use TLS\n")
+        self.assertEqual(r.help_flags(text), {"-d", "--detach", "--wait"})
+
     def test_help_flags_parses_long_short_and_skips_descriptions(self):
         self.assertEqual(r.help_flags(RUN_HELP), {"--add-host", "-a", "--attach", "-d", "--detach",
                                                   "--gpus", "--frobnicate", "-Z"})

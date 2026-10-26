@@ -6,7 +6,7 @@ description: Remote Docker on the always-on Mac mini (rdocker). Plain `docker` /
 
 **Arguments:** `$ARGUMENTS` (optional: `status`, `doctor`, `clean`, `use <mode>`, `where <name>`, or plain English).
 
-**Running ON the Mac mini?** (`~/.local/bin/docker` missing, `docker context show` = `colima`.) Then docker is
+**Running ON the Docker server (Nick's Mac mini)?** (`~/.local/bin/docker` missing, `docker context show` = `colima`.) Then docker is
 the mini's own local engine and nothing here routes it: no shim, no port mirrors, no `rrun`, no `rdocker`
 command. Use docker normally. The laptop's janitor still sweeps this engine, so a DB that must survive
 3 h of quiet needs `--label rdocker.keep=1` + a named volume (or `rdocker.ttl=...`), as below.
@@ -14,7 +14,7 @@ command. Use docker normally. The laptop's janitor still sweeps this engine, so 
 ## The mental model
 
 The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (ssh alias `macmini-docker` ->
-Tailscale `nicholass-mac-mini`, 100.112.247.23 - Nick's Mac mini since 2026-10-22; before that Omid's `macminim4`; Colima VM: 6 CPU / 5 GB RAM / 30 GB disk, amd64 via Rosetta). Normally agent/test-runner
+Tailscale `nicholass-mac-mini`, 100.112.247.23 - Nick's Mac mini since 2026-10-22; before that Omid's `macminim4`; Colima VM: 6 CPU / 11 GB RAM / 30 GB disk (data kept under ~15-18 GB by the janitor); it is the ONLY Docker engine - the laptop AND Omid's mini (`macminim4`, a client since 2026-10-26, its own Colima stopped) send everything there, amd64 via Rosetta). Normally agent/test-runner
 CPU stays on the laptop and only the containers move. **Heavy test jobs** (test runner + its DB) move
 whole: `rrun <cmd>` runs the command itself on the mini next to its DB, usually without asking (a hook
 rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
@@ -351,8 +351,8 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | mini Colima/Lima log files | truncated past 50 MB; VM journald capped at 200 MB |
 | `rrun` shared package store (`~/rr/deps/<key>/node_modules`) | an entry is published after a real `npm ci` (written whole, then renamed in; never changed after) and **cloned** (APFS `cp -c`, shared blocks) into any mirror of the same repo whose lockfile/package.json/.npmrc/node/npm args match - no `npm ci`; removed after **2 d** unused (10 min under disk pressure) |
 | npm cache on the mini (`~/.npm/_cacache`) | cleared above **1 GB**, only while no `rrun` run holds a slot |
-| VM disk ≥ 80 % or mini free < 8 GB | remove unused images **oldest-unused first** (never in-use ones) until below, prune all build cache, log a WARNING |
-| VM disk ≥ 90 % | also remove every stopped non-keep container (keep-checked) + prune anonymous volumes |
+| VM disk ≥ 50 % (~15 GB of 30) or mini free < 8 GB | remove unused images **oldest-unused first** (never in-use ones) until below, prune all build cache, log a WARNING |
+| VM disk ≥ 60 % (~18 GB) | also remove every stopped non-keep container (keep-checked) + prune anonymous volumes |
 | failed action | logged; clocks are kept (not reset); `last_error` is written to `janitor.json` and raised as an attention item. The next clean full pass clears both |
 | idle stop record | every idle stop is recorded (`stopped_by_janitor` in `janitor.json` / `laptop_janitor.json`). A later `exec`/`cp`/`attach`/`top`/`port`/`logs -f` at that container starts it first — only if it is still stopped **and has not run since** (`State.StartedAt` not after the stop) — waits up to 15 s for Running (mirrors its ports on the mini), prints `rdocker: restarted <name> (the janitor stopped it after <N> h idle)` (or `rdocker: tried to restart <name> but it did not come up`), then runs the command once. Names match exactly; an id must be >= 12 hex chars. A user `docker stop`/`rm` of the name clears the record, and a janitor pass that sees the container running drops it; a container the user stopped (or started and then stopped any way) is never auto-started. A `--rm` container is deleted by its idle stop and cannot be restarted. `rdocker status` lists the last 24 h of janitor stops |
 | freed VM blocks | `fstrim` hands them back to macOS each run |
@@ -368,7 +368,7 @@ mini is reachable. When the engine is down and mini free disk is below `host_min
 engine kick runs the mirror housekeeping (under the mini lock) **before** it starts Colima, and logs it
 (`kick: ... mirror housekeeping before the colima start`): a full disk is what kills the engine, and a
 start on a full disk times out.
-Hard ceilings: VM disk 30 GB, VM RAM 5 GB (the VM keeps whatever RAM it has touched, so this cap IS its footprint), VM CPU 6 — the mini itself can never be filled or starved.
+Hard ceilings: VM disk 30 GB, VM RAM 11 GB (the VM keeps whatever RAM it has touched, so this cap IS its footprint), VM CPU 6 — the mini itself can never be filled or starved.
 Laptop logs (`daemon.log`, `route.log`) rotate at 2 MB (one `.1` generation, under a lock).
 
 ### Laptop janitor (Docker Desktop)
@@ -522,14 +522,14 @@ every threshold above is a key there).
 
 **Host since 2026-10-22: Nick's Mac mini** (`nicholass-mac-mini`, Tailscale 100.112.247.23, user
 `nicholaspardon`, macOS 15.6, 16 GB). Set up over ssh with the `setup-mini` script (Homebrew colima +
-docker as Nick's user only, VM 6 CPU / 5 GB / 30 GB, `brew services` at login, the same docker block +
+docker as Nick's user only, VM 6 CPU / 5 GB / 30 GB (raised to 11 GB on 2026-10-26 by editing `memory:` in colima.yaml + `brew services` stop/start; restore running containers after), `brew services` at login, the same docker block +
 Lima override; one PATH line in `~/.zshenv`; Nick's `~/.claude` and `~/dotfiles` untouched). The
 laptop's `Host macmini-docker` block now says `HostName 100.112.247.23`, `HostKeyAlias
 nickmini-docker`, `User nicholaspardon` (config `remote_socket`
 `/Users/nicholaspardon/.colima/default/docker.sock`). The 11 long-lived DBs were copied volume by
 volume and verified (database list + table counts); the originals stay **stopped, restart=no** on the
 old mini (`ssh oldmini-docker`) as a backup. FileVault is on there too: after a reboot someone logs in
-once. Keep ssh backups OUT of `~/.ssh/config.d/` (everything in it is Included; a stale backup block
+once. The VM clock polls NTP every 16-64 s (the janitor writes `/etc/systemd/timesyncd.conf.d/rdocker.conf`): DB tests compare the DB's now() with the host clock, and the VM drifted after the host slept. The host's own clock must be right too (`sntp time.apple.com`). Keep ssh backups OUT of `~/.ssh/config.d/` (everything in it is Included; a stale backup block
 there supplied a wrong `HostKeyAlias` during the switch) - they live in `~/.ssh/rdocker-backups/`.
 
 Previous mini (Omid's, until 2026-10-22): the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16, opens at login; the

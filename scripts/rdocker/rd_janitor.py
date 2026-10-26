@@ -375,6 +375,12 @@ def janitor_disk(cfg, housekeeping, vm=True):
            "tail -c 5000000 \"$f\" > \"$f.tmp\" && cat \"$f.tmp\" > \"$f\" && rm -f \"$f.tmp\" && echo TRUNC $f; done; ")
         + ("" if not in_vm else
            "colima ssh -- sudo journalctl --vacuum-size=50M >/dev/null 2>&1; "
+           # VM clock: poll NTP every 16-64 s (default ~34 min) so it is right again minutes after
+           # the host slept - DB tests compare the DB's now() with the host's clock
+           "colima ssh -- sudo sh -c '[ -f /etc/systemd/timesyncd.conf.d/rdocker.conf ] || { "
+           "mkdir -p /etc/systemd/timesyncd.conf.d && printf \"[Time]\\nPollIntervalMinSec=16\\n"
+           "PollIntervalMaxSec=64\\n\" > /etc/systemd/timesyncd.conf.d/rdocker.conf && "
+           "systemctl restart systemd-timesyncd; }' >/dev/null 2>&1; "
            "colima ssh -- sudo fstrim -a >/dev/null 2>&1; ")
         + "true")
     rc, out, _ = mini_sh(cfg, script, timeout=180)
