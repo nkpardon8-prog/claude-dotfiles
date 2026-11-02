@@ -17,6 +17,13 @@
 #      folder is missing on the destination.
 #   G8 rule 7: a file changed under a landed root on the destination refuses the next final; a
 #      landed chat asked a question (Read only) does not; one that ran a Bash call does.
+#   G5b a destination path reached through a symlink refuses final; nothing lands behind the link.
+#   G8b final stays re-runnable after a landing: the fleet's own re-sync of a landed root does not
+#      trip rule 7 on the next run.
+#   G10 dest-setup: without --apply nothing changes and the diff shows the moved-aside dirs and the
+#      dropped hook; a source missing a required setting refuses --apply; --apply makes commands,
+#      agents, rules, patterns, statusline.sh symlinks (real dirs kept as .bak-<ts>), rewrites this
+#      Mac's home to the destination's, never touches CLAUDE.md or ~/.claude-dotfiles.
 #   G9 rule 15: rollback refuses while the destination transcript differs from the landed one and
 #      succeeds (removing transferred-<sid> here) once it matches.
 set -uo pipefail
@@ -145,6 +152,14 @@ fleet final --only aaaaaaaa-1
 [ "$FRC" -eq 2 ] && has "(pid $PS) is using files inside $ROOT" || fail "G5: a process working inside the root was not refused (rc=$FRC)"
 kill "$PS" 2>/dev/null; wait "$PS" 2>/dev/null
 
+# --- G5b --------------------------------------------------------------------------------------------
+mkdir -p "$DPRE$ALIAS" "$SANDBOX/elsewhere"
+ln -s "$SANDBOX/elsewhere" "$DPRE$ALIAS/Developer"
+fleet final --only aaaaaaaa-1
+[ "$FRC" -eq 2 ] && has "is a symlink" || fail "G5b: a destination symlink on the path was not refused (rc=$FRC): $(printf '%s' "$FO" | tail -3 | tr '\n' '|')"
+[ -z "$(ls -A "$SANDBOX/elsewhere")" ] || fail "G5b: files were written through the destination symlink"
+rm -f "$DPRE$ALIAS/Developer"
+
 # --- G7 ---------------------------------------------------------------------------------------------
 fleet final --only aaaaaaaa-1
 [ "$FRC" -eq 0 ] || { fail "G7: pilot final failed: $(printf '%s' "$FO" | tail -5 | tr '\n' '|')"; ok_report 29-fleet-gates -; }
@@ -170,6 +185,12 @@ fleet final --only aaaaaaaa-1
 [ "$FRC" -eq 2 ] && has "changed on THIS Mac since it landed" || fail "G8: a changed landed root was not refused (rc=$FRC)"
 [ "$(tail -1 "$DPRE$ROOT/README.md")" = "edited on the destination" ] || fail "G8: the destination edit was overwritten"
 cp -p "$SANDBOX/landed-readme" "$DPRE$ROOT/README.md"
+printf 'new on the source\n' > "$ROOT/added-after-landing.txt"
+fleet final --only aaaaaaaa-1
+[ "$FRC" -eq 0 ] || fail "G8b: re-syncing a landed root failed: $(printf '%s' "$FO" | grep REFUSE | head -2)"
+[ -f "$DPRE$ROOT/added-after-landing.txt" ] || fail "G8b: the new source file did not reach the landed root"
+fleet final --only aaaaaaaa-1
+[ "$FRC" -eq 0 ] || fail "G8b: the fleet's own re-sync tripped rule 7 on the next final: $(printf '%s' "$FO" | grep REFUSE | head -2)"
 DT="$DHOME/.claude/projects/$SLUG/$A.jsonl"
 cp -p "$DT" "$SANDBOX/landed-transcript"
 append_tool "$DT" Read "$ROOT/README.md"
@@ -189,5 +210,59 @@ fleet rollback aaaaaaaa-1
 [ -f "$SRC/.claude/progress/transferred-$A" ] && fail "G9: rollback left transferred-<sid> on this Mac"
 grep -q "via=fleet-rollback" "$DHOME/.claude/progress/transferred-$A" 2>/dev/null || fail "G9: the destination copy is not marked as moved away"
 grep -q "$A" "$DHOME/.claude/logs/fleet/landed.json" && fail "G9: landed.json still records the rolled-back chat"
+
+# --- G10 --------------------------------------------------------------------------------------------
+DF="$DHOME/dotfiles/claude"; DC="$DHOME/.claude"
+mkdir -p "$DF/commands" "$DF/agents" "$DF/rules" "$DF/patterns" "$DF/scripts" "$DC/commands" "$DC/agents"
+printf 'dest claude md\n' > "$DF/CLAUDE.md"; printf 'sl\n' > "$DF/scripts/statusline.sh"
+ln -s "$DF" "$DHOME/.claude-dotfiles"; ln -s "$DF/CLAUDE.md" "$DC/CLAUDE.md"
+printf 'old\n' > "$DC/commands/old.md"
+python3 - "$DC/settings.json" <<'PY2'
+import json, sys
+json.dump({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "cp -r $HOME/dotfiles/claude/commands/* $HOME/.claude/commands/"}]}]}}, open(sys.argv[1], "w"))
+PY2
+SC="$SRC/.claude"
+for n in commands agents rules patterns; do ln -s "$SRC/.claude-dotfiles/$n" "$SC/$n"; done
+ln -s "$SRC/.claude-dotfiles/scripts/statusline.sh" "$SC/statusline.sh"
+printf '[user]\n\tname = tx owner\n\temail = owner@example.invalid\n' > "$SRC/.gitconfig"
+settings() {  # settings <crossSessionInbound value>
+  python3 - "$SC/settings.json" "$1" "$SRC" <<'PY2'
+import json, sys
+f, inbound, src = sys.argv[1:4]
+def h(c): return [{"hooks": [{"type": "command", "command": c}]}]
+d = {"statusLine": {"type": "command", "command": "~/.claude/statusline.sh"}, "remoteControlAtStartup": True,
+     "crossSessionInbound": inbound, "extra": src + "/tools/x",
+     "hooks": {"SessionStart": h("python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py session-title") + h("bash $HOME/.claude-dotfiles/scripts/hooks/line-reassert-identity.sh"),
+               "UserPromptSubmit": h("python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py session-title"),
+               "PreToolUse": h("python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py route-send"),
+               "SessionEnd": h("python3 $HOME/.claude-dotfiles/scripts/line-agent-communicator.py publish --background --delay 3"),
+               "PostToolUse": h("$HOME/.claude-dotfiles/scripts/dotfiles-sync.sh")}}
+json.dump(d, open(f, "w"))
+PY2
+}
+export FLEET_TEST_SKIP_INSTALLS=1
+SET_BEFORE=$(tx_sha "$DC/settings.json")
+settings "off"
+fleet dest-setup --apply
+[ "$FRC" -eq 2 ] && has "would lack: crossSessionInbound=accept" || fail "G10: a missing required setting did not refuse --apply (rc=$FRC): $FO"
+[ "$(tx_sha "$DC/settings.json")" = "$SET_BEFORE" ] && [ ! -L "$DC/commands" ] || fail "G10: a refused --apply changed something"
+settings "accept"
+fleet dest-setup
+[ "$FRC" -eq 0 ] || fail "G10: dest-setup diff failed: $FO"
+has "real dir moved aside" && has "hook dropped by the full match" && has "all present" || fail "G10: the diff does not show the layout change and dropped hook: $FO"
+[ "$(tx_sha "$DC/settings.json")" = "$SET_BEFORE" ] && [ ! -L "$DC/commands" ] || fail "G10: a diff-only run changed something"
+fleet dest-setup --apply
+[ "$FRC" -eq 0 ] || fail "G10: dest-setup --apply failed: $FO"
+for n in commands agents rules patterns; do
+  [ "$(readlink "$DC/$n")" = "$DHOME/.claude-dotfiles/$n" ] || fail "G10: $n is not a symlink into the destination's dotfiles"
+done
+[ "$(readlink "$DC/statusline.sh")" = "$DHOME/.claude-dotfiles/scripts/statusline.sh" ] || fail "G10: statusline.sh link wrong"
+[ "$(cat "$DC"/commands.bak-*/old.md 2>/dev/null)" = "old" ] || fail "G10: the real commands dir was not kept as commands.bak-<ts>"
+[ "$(readlink "$DC/CLAUDE.md")" = "$DF/CLAUDE.md" ] && [ "$(cat "$DF/CLAUDE.md")" = "dest claude md" ] || fail "G10: CLAUDE.md was touched"
+[ "$(readlink "$DHOME/.claude-dotfiles")" = "$DF" ] || fail "G10: ~/.claude-dotfiles was touched"
+grep -q "$DHOME/tools/x" "$DC/settings.json" || fail "G10: this Mac's home was not rewritten to the destination's"
+grep -q "$SRC" "$DC/settings.json" && fail "G10: this Mac's home is still in the destination settings"
+ls "$DC"/settings.json.bak-* >/dev/null 2>&1 || fail "G10: settings.json was not backed up"
+[ "$(HOME="$DHOME" git config --global user.email)" = "owner@example.invalid" ] || fail "G10: git identity was not copied"
 
 ok_report "29-fleet-gates" "FLEET_DEST required; Docker flag, unpacked, open, duplicate, still-working and in-use gates refuse; --only prefixes resolve or refuse; pilot lands with fork-guard markers; landed roots/chats edited on the destination block final (reads do not); rollback only while unchanged"

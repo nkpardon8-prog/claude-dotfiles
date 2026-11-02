@@ -35,6 +35,9 @@ Destination-side commands
   write-receipt --name N       stdin -> ~/.claude/logs/fleet/receipts/N (mode 600)
   npm-ci                       stdin dir list -> npm ci --legacy-peer-deps where node_modules is absent
 
+Bookkeeping (source): apply-gate, land-request, land-local, receipt, resume-list, rollback-local,
+npm-dirs. (destination): cwd-check, landed-refresh.
+
 Exit codes: 0 ok | 2 refused (reason on stderr) | 1 error.
 
 Dev-only hooks, honored ONLY under TRANSFER_TESTS_ALLOW_DEV=true (tests cannot write /Users or
@@ -42,6 +45,7 @@ Dev-only hooks, honored ONLY under TRANSFER_TESTS_ALLOW_DEV=true (tests cannot w
   FLEET_TEST_DEST_PREFIX   destination-side absolute paths (roots, scratchpads) live under it
   FLEET_TEST_SCRATCH_BASE  replaces /private/tmp/claude-<uid> on both sides
   TX_TEST_ALIAS_HOMES_BASE replaces /Users in alias_homes() (same knob as transfer-lib.sh)
+  FLEET_TEST_SKIP_INSTALLS=1 dest-setup --apply skips its npm installs
 """
 import argparse
 import calendar
@@ -1099,13 +1103,13 @@ def cmd_resolve_only(a):
 def lsof_findings(roots):
     """pid -> {"comm", "cwd": [roots], "files": [roots]} for processes using anything inside roots."""
     try:
-        r = subprocess.run(["lsof", "-nP", "-w", "-Fpcfn"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                           timeout=180)
+        proc = subprocess.Popen(["lsof", "-nP", "-w", "-Fpcfn"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        out, _ = proc.communicate(timeout=180)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise Refused("cannot run lsof to prove nothing is using the folders (%s)" % e.__class__.__name__)
     found, pid, comm, fd = {}, None, "", ""
     pref = [(rt, rt.rstrip("/") + "/") for rt in roots]
-    for line in r.stdout.decode("utf-8", "surrogateescape").splitlines():
+    for line in out.decode("utf-8", "surrogateescape").splitlines():
         if not line:
             continue
         k, v = line[0], line[1:]
@@ -1125,10 +1129,11 @@ def lsof_findings(roots):
                     f = found.setdefault(pid, {"comm": comm, "cwd": set(), "files": set()})
                     (f["cwd"] if fd == "cwd" else f["files"]).add(rt)
                     break
+    found.pop(proc.pid, None)               # lsof inherits the operator's working folder
     return found
 
 
-def compute_roots_for(cwds_by_sid, homes, aliases, with_extra):
+def compute_roots_for(cwds_by_sid, homes, aliases, with_extra, inv_roots=()):
     owner, notes, refused, skipped = {}, [], [], []
     for sid, cwd in sorted(cwds_by_sid.items()):
         if not cwd or not os.path.isdir(cwd):
@@ -1139,7 +1144,7 @@ def compute_roots_for(cwds_by_sid, homes, aliases, with_extra):
         for r in roots:
             owner.setdefault(r, set()).add(sid)
     if with_extra:
-        for r in extra_roots():
+        for r in extra_roots() + [x for x in inv_roots if os.path.isdir(x)]:
             owner.setdefault(r, set())
     ok = []
     for r in sorted(owner):
@@ -1215,7 +1220,8 @@ def cmd_plan(a):
         for sid in operator_sids:
             if sid in sids:
                 refusals.append("this command is running inside chat %s, which is being moved: run it from a plain Terminal" % sid[:8])
-    owners, notes, refused, skipped = compute_roots_for(cwds, homes, aliases, with_extra=not only)
+    owners, notes, refused, skipped = compute_roots_for(cwds, homes, aliases, with_extra=not only,
+                                                       inv_roots=[r["path"] for r in inv.get("roots", [])])
     warnings.extend(notes)
     for r in refused:
         refusals.append("root %s %s" % (r["path"], r["reason"]))
@@ -1479,6 +1485,8 @@ def _place(dst, staged, ent):
     if "link" in ent:
         os.symlink(ent["link"], dst)
         return
+    os.chmod(staged, ent["mode"] & 0o7777)
+    os.utime(staged, (ent["mtime"], ent["mtime"]))
     try:
         os.rename(staged, dst)
     except OSError:
@@ -1774,22 +1782,14 @@ def cmd_dest_gate(a):
     if plan.get("lib_sha") != sha_file(SELF):
         refusals.append("this Mac's fleet_lib.py differs from the source Mac's: pull the dotfiles here first")
     aliases = alias_homes()
-    pre = os.environ.get("FLEET_TEST_DEST_PREFIX", "") if DEV else ""
     for r in plan.get("roots", []):
         root = r["path"]
-        p = pre or "/"
-        for comp in [c for c in root.split("/") if c]:
-            p = os.path.join(p, comp)
-            if os.path.islink(p):
-                refusals.append("on this Mac %s is a symlink; copying %s through it is refused" % (p[len(pre):] or p, root))
-                break
-            if not os.path.lexists(p):
-                break
-        under = [h for h in aliases if inside(root, h) and root != h]
-        if not under:
-            refusals.append("%s is not inside a verified home alias on this Mac: run "
-                            "sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh %s"
-                            % (root, root.split("/")[2] if root.startswith("/Users/") and len(root.split("/")) > 2 else "<name>"))
+        why = dest_path_problem(root, aliases)
+        if why:
+            hint = ""
+            if "alias" in why and root.startswith("/Users/") and len(root.split("/")) > 2:
+                hint = ": run sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh %s" % root.split("/")[2]
+            refusals.append("cannot copy %s: %s%s" % (root, why, hint))
     for c in launch_cwds(plan):
         why = dest_path_problem(c, aliases)
         if why:
@@ -1826,7 +1826,7 @@ def cmd_dest_gate(a):
 
 def cmd_land_dest(a):
     req = read_stdin_json()
-    ld = logdir()
+    ld = logdir(create=not a.dry_run)
     landed = load_json(landed_path(), None) or {"format": 1, "sids": {}, "roots": {}}
     prog = os.path.join(claude_dir(), "progress")
     out = {"sids": {}, "roots": {}}
@@ -1864,6 +1864,20 @@ def cmd_land_dest(a):
     if not a.dry_run:
         write_json_atomic(landed_path(), landed)
     json.dump(out, sys.stdout, indent=1, sort_keys=True)
+
+
+def cmd_landed_refresh(a):
+    """After final's rsync: landed roots it just re-synced get their new fingerprint and exclude list."""
+    plan = read_stdin_json()
+    landed = load_json(landed_path(), None)
+    if not isinstance(landed, dict):
+        return
+    ld = logdir()
+    for r in plan.get("roots", []):
+        if r["path"] in (landed.get("roots") or {}):
+            landed["roots"][r["path"]]["fp"] = fingerprint(r["path"], r["excludes"])
+            write_json_atomic(os.path.join(ld, "landed-excludes", _root_key(r["path"]) + ".json"), r["excludes"])
+    write_json_atomic(landed_path(), landed)
 
 
 def cmd_rollback_dest(a):
@@ -2240,6 +2254,8 @@ def cmd_dest_setup(a):
         print("  (no change)")
     path = tool_path()
     inst = [p for t, p in (("codex", "@openai/codex"), ("runpane", "runpane")) if not shutil.which(t, path=path)]
+    if DEV and os.environ.get("FLEET_TEST_SKIP_INSTALLS") == "1":
+        inst = []                           # a sandbox --apply must never reach the real npm
     print("== installs == %s" % (" ".join("npm i -g " + p for p in inst) or "(none needed)"))
     if not a.apply:
         print("Dry run: nothing written. Re-run with --apply after the owner approves this diff.")
@@ -2515,6 +2531,7 @@ def main():
     p.add_argument("dest_report")
     p.add_argument("--fleet-json", required=True)
     sp("dest-gate", cmd_dest_gate)
+    sp("landed-refresh", cmd_landed_refresh)
     sp("land-dest", cmd_land_dest).add_argument("--dry-run", action="store_true")
     p = sp("rollback-dest", cmd_rollback_dest)
     p.add_argument("--sid", required=True)

@@ -44,8 +44,10 @@
 #
 # rsync: macOS ships openrsync (protocol 29). `-a` there includes -D, so the flags are spelled out
 # as -rlptgo (sockets/fifos never travel) plus -H (hard links), -E (xattrs/ACLs; never with -n),
-# --numeric-ids, -R with --no-implied-dirs (missing parents are created, existing parents such as
-# the alias home are never re-permissioned) and anchored, literal exclude rules from fleet_lib.py.
+# --numeric-ids, -R with --no-implied-dirs on real runs only (missing parents are created, existing
+# parents such as the alias home are never re-permissioned; it also writes THROUGH a destination
+# symlink, which is why dest-gate refuses any symlink on a root's path) and anchored, literal exclude
+# rules from fleet_lib.py.
 #
 # Destination preflight (every subcommand that touches the destination, dest-check first of all):
 # FLEET_DEST must be set, and the host it reaches must answer `uname -s` = Darwin with a $HOME under
@@ -65,6 +67,7 @@ SELF_DIR="$(cd -P "$(dirname "$_self")" && pwd -P)"
 # shellcheck source=transfer-lib.sh
 . "$SELF_DIR/transfer-lib.sh" || { echo "fleet-move: cannot load transfer-lib.sh" >&2; exit 1; }
 
+umask 077                                # plans, logs and receipts on this Mac are owner-only
 PROG="fleet-move"
 LIB="$SELF_DIR/fleet_lib.py"
 PY="${FLEET_PYTHON:-python3}"
@@ -194,9 +197,11 @@ roots_args() {  # sets ROOTS_N from the run's roots.txt
 }
 
 run_rsync_roots() {  # run_rsync_roots <seed|final>
-  local flags=(-rlptgoH --numeric-ids -R --no-implied-dirs --itemize-changes "--exclude-from=$RUN/excludes.rsync")
+  local flags=(-rlptgoH --numeric-ids -R --itemize-changes "--exclude-from=$RUN/excludes.rsync")
   local r roots=() rc
-  [ "$DRY" = 1 ] && flags+=(-n) || flags+=(-E)
+  # openrsync -n WITH --no-implied-dirs creates the missing parent folders on the destination
+  # (measured 2026-11-02), so a dry run must leave that flag out. Test 28 M6 holds this down.
+  if [ "$DRY" = 1 ]; then flags+=(-n); else flags+=(-E --no-implied-dirs); fi
   [ "$1" = final ] && flags+=(--checksum --delete)
   [ "$LOCAL_DEST" = 1 ] || flags+=(-e "ssh -o BatchMode=yes")
   while IFS= read -r r; do [ -n "$r" ] && roots+=("$r"); done < "$RUN/roots.txt"
@@ -340,6 +345,9 @@ do_final() {
   fi
   roots_args
   run_rsync_roots final || die "final rsync failed; re-run final once the cause is fixed (it is re-runnable)"
+  # The re-sync just changed any landed root on purpose: re-record its fingerprint, so rule 7 keeps
+  # detecting only changes made ON the destination and final stays re-runnable.
+  [ "$DRY" = 1 ] || rlib landed-refresh < "$RUN/plan.json" > /dev/null || die "could not refresh the landed fingerprints on the destination"
   note "chat state for $(json_get "$RUN/plan.json" 'len([s for s in d["sids"] if s["state"]])') chat(s)$([ "$DRY" = 1 ] && echo ' (dry run: checked, not placed)')"
   if [ "$DRY" = 1 ]; then
     lib pack-state < "$RUN/plan.json" | rlib place-state --ts "$TS" --host "$HOST_S" --dry-run > "$RUN/state.json"

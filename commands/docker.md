@@ -1,20 +1,24 @@
 ---
-description: Remote Docker on the always-on Mac mini (rdocker). Plain `docker` / `docker compose` on this laptop already run on the mini over Tailscale, with published TCP ports mirrored to laptop localhost, and a janitor cleans up after agents — so use docker normally. Heavy DB test jobs (`npm run test:db` and similar) run code + DB together on the mini via `rrun <cmd>`, usually rewritten automatically by a hook. Invoke this BEFORE starting test databases or other containers (it has the database playbook: ports, readiness, lifetime labels, keeping data), when docker errors / hangs / "cannot connect" / refuses with "cannot tell where … lives" or "not a throwaway container", when a container port on localhost is unreachable, to check where a container runs, to switch remote/local mode, or to set up / repair the mini Docker host.
+description: Remote Docker on the always-on OpenDental Windows laptop, still called "the mini" throughout (rdocker). Plain `docker` / `docker compose` on this laptop already run on the mini over Tailscale, with published TCP ports mirrored to laptop localhost, and a janitor cleans up after agents — so use docker normally. Heavy DB test jobs (`npm run test:db` and similar) run code + DB together on the mini via `rrun <cmd>`, usually rewritten automatically by a hook. Invoke this BEFORE starting test databases or other containers (it has the database playbook: ports, readiness, lifetime labels, keeping data), when docker errors / hangs / "cannot connect" / refuses with "cannot tell where … lives" or "not a throwaway container", when a container port on localhost is unreachable, to check where a container runs, to switch remote/local mode, or to set up / repair the mini Docker host.
 ---
 
-# /docker — Docker on the Mac mini, transparently
+# /docker — Docker on the Windows host, transparently
 
 **Arguments:** `$ARGUMENTS` (optional: `status`, `doctor`, `clean`, `use <mode>`, `where <name>`, or plain English).
 
-**Running ON the Docker server (Nick's Mac mini)?** (`~/.local/bin/docker` missing, `docker context show` = `colima`.) Then docker is
-the mini's own local engine and nothing here routes it: no shim, no port mirrors, no `rrun`, no `rdocker`
-command. Use docker normally. The laptop's janitor still sweeps this engine, so a DB that must survive
+**Naming:** since 2026-11-01 the Docker server is the OpenDental Windows laptop (Ubuntu in WSL2). This
+file and `rdocker` output still call it "the mini", and "the laptop" means the Mac you are on. Every Mac,
+Nick's Mac mini included, is a client.
+
+**Running ON the Docker server (inside WSL on that Windows laptop)?** (`~/.local/bin/docker` missing.) Then docker is
+its own local engine and nothing here routes it: no shim, no port mirrors, no `rrun`, no `rdocker`
+command. Use docker normally. The Macs' janitor still sweeps this engine, so a DB that must survive
 3 h of quiet needs `--label rdocker.keep=1` + a named volume (or `rdocker.ttl=...`), as below.
 
 ## The mental model
 
-The laptop (16 GB) offloads container CPU+RAM to the always-on **Mac mini** (ssh alias `macmini-docker` ->
-Tailscale `nicholass-mac-mini`, 100.112.247.23 - Nick's Mac mini since 2026-10-22; before that Omid's `macminim4`; Colima VM: 6 CPU / 11 GB RAM / 30 GB disk (data kept under ~15-18 GB by the janitor); it is the ONLY Docker engine - the laptop AND Omid's mini (`macminim4`, a client since 2026-10-26, its own Colima stopped) send everything there, amd64 via Rosetta). Normally agent/test-runner
+The laptop (16 GB) offloads container CPU+RAM to the always-on **Docker host** (ssh alias `macmini-docker`, a name kept from when it was a Mac ->
+the OpenDental Windows laptop since 2026-11-01, Ubuntu 24.04 in WSL2, x86_64, 6 CPU / about 8 GB RAM; before that Nick's Mac mini, then Omid's `macminim4`, both now clients with Colima stopped). It is the ONLY Docker engine; images run natively as linux/amd64, so an arm64-only image will not run. Normally agent/test-runner
 CPU stays on the laptop and only the containers move. **Heavy test jobs** (test runner + its DB) move
 whole: `rrun <cmd>` runs the command itself on the mini next to its DB, usually without asking (a hook
 rewrites known heavy commands) — see "Heavy test jobs on the mini" below.

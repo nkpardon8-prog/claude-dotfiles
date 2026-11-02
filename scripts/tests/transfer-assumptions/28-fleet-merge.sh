@@ -59,6 +59,7 @@ with open(path, "w") as fh:
     for r in recs:
         fh.write(json.dumps(r) + "\n")
 PY
+chmod 600 "$P/$SID.jsonl"
 printf 'sub\n' > "$P/$SID/subagents/a.jsonl"
 printf 'v1\n' > "$SRC/.claude/file-history/$SID/f@v1"
 printf 'atest 28\n' > "$SRC/.claude/session-status/$SID.txt"
@@ -106,7 +107,11 @@ mkdir -p "$OWN"; printf 'destination memory\n' > "$OWN/MEMORY.md"
 OWN_SUM=$(cd "$OWN" && ls -la; shasum -a 256 MEMORY.md)
 
 fleet() { FO=$(HOME="$SRC" "$FLEET" "$@" 2>&1); FRC=$?; }
-tree_sum() { ( cd "$1" && find . \( -type f -o -type l \) ! -path './.claude/logs/fleet/*' -print0 | sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 ); }
+# Names of EVERYTHING (directories too: openrsync -n --no-implied-dirs creates parent folders) + file contents.
+tree_sum() {
+  ( cd "$1" && { find . ! -path './.claude/logs/fleet*' ! -path './.claude/logs' | LC_ALL=C sort
+    find . -type f ! -path './.claude/logs/fleet/*' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null; } | shasum -a 256 )
+}
 
 fleet inventory
 [ "$FRC" -eq 0 ] || { echo "INFRA: inventory failed: $FO" >&2; exit 3; }
@@ -167,6 +172,8 @@ for f in "projects/$SLUG/$SID.jsonl" "projects/$SLUG/$SID/subagents/a.jsonl" "fi
          "session-status/$SID.txt" "chains/$SID.json"; do
   [ "$(tx_sha "$DHOME/.claude/$f")" = "$(tx_sha "$SRC/.claude/$f")" ] || fail "M3: $f did not land byte-identical"
 done
+[ "$(stat -f %Lp "$DHOME/.claude/projects/$SLUG/$SID.jsonl")" = 600 ] || fail "M3: the transcript lost its mode"
+[ "$(stat -f %m "$DHOME/.claude/projects/$SLUG/$SID.jsonl")" = "$(stat -f %m "$P/$SID.jsonl")" ] || fail "M3: the transcript lost its mtime"
 [ "$(cat "$DPRE$SCR/$SLUG/$SID/note.txt" 2>/dev/null)" = "scratch" ] || fail "M3: the scratchpad did not land"
 [ -n "$(ls -A "$DHOME/.claude/fleet-staging" 2>/dev/null)" ] && fail "M3: a staging folder was left behind"
 [ -f "$SRC/.claude/progress/fleet-ready-$SID" ] && [ -f "$P/$SID.jsonl" ] || fail "M3: a source file was removed"

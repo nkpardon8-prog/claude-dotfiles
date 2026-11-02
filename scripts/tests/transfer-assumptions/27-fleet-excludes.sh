@@ -13,6 +13,10 @@
 #   E4 negative control: a tracked file edited on the destination makes verify exit 1, and the
 #      mismatch line names the root and a path HASH, never the filename.
 #   E5 rule 2: an alias home itself, and /, as an extra root are refused by inventory (exit 2).
+#   E6 backup: ~/fleet-backup-<ts>/roots.tar holds tracked files and leaves out the same excludes;
+#      .../claude holds ~/.claude minus the session registry and login files; the source is untouched.
+#   E7 rule 18: npm-dirs finds a launch folder with node_modules + package-lock.json, and npm-ci
+#      --dry-run names it without installing.
 set -uo pipefail
 [ "${TRANSFER_TESTS_ALLOW_DEV:-}" = "true" ] || { echo "REFUSED: set TRANSFER_TESTS_ALLOW_DEV=true to run" >&2; exit 2; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +65,11 @@ fleet() {  # fleet <args...> -> FO (stdout+stderr), FRC
   FO=$(HOME="$SRC" FLEET_EXTRA_ROOTS="${EXTRA:-$ROOT}" "$FLEET" "$@" 2>&1); FRC=$?
 }
 
+printf '{"lockfileVersion": 3}\n' > "$ROOT/package-lock.json"
+mkdir -p "$SRC/.claude/sessions" "$SRC/.claude/projects/p"
+printf '{}\n' > "$SRC/.claude/sessions/1.json"; printf 'cred\n' > "$SRC/.claude/.credentials.json"
+printf 'keep\n' > "$SRC/.claude/projects/p/keep.jsonl"
+
 # --- inventory + seed + verify ------------------------------------------------------------------
 fleet inventory
 [ "$FRC" -eq 0 ] || { echo "INFRA: inventory failed: $FO" >&2; exit 3; }
@@ -100,5 +109,30 @@ EXTRA="$ALIAS" fleet inventory
 case "$FO" in *"REFUSED $ALIAS"*"home folder"*) ;; *) fail "E5: refusal did not name the alias home: $FO" ;; esac
 EXTRA="/" fleet inventory
 [ "$FRC" -eq 2 ] || fail "E5: / as a root was not refused (rc=$FRC)"
+
+# --- E6 ---------------------------------------------------------------------------------------------
+fleet inventory
+SRC_BEFORE=$(cd "$ROOT" && find . -type f ! -path './.git/*' | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)
+fleet backup
+[ "$FRC" -eq 0 ] || fail "E6: backup failed: $(printf '%s' "$FO" | tail -4 | tr '\n' '|')"
+BK=$(ls -d "$DHOME"/fleet-backup-* 2>/dev/null | head -1)
+if [ -z "$BK" ]; then
+  fail "E6: no backup folder on the destination"
+else
+  LIST=$(tar -tf "$BK/roots.tar" 2>/dev/null)
+  case "$LIST" in *"proj/dist/app.js"*) ;; *) fail "E6: roots.tar lacks a tracked file" ;; esac
+  case "$LIST" in *"proj/node_modules"*|*"foo.lock"*) fail "E6: roots.tar holds an excluded path" ;; esac
+  [ -f "$BK/claude/projects/p/keep.jsonl" ] || fail "E6: ~/.claude content missing from the backup"
+  [ -e "$BK/claude/sessions" ] && fail "E6: the session registry was backed up"
+  [ -e "$BK/claude/.credentials.json" ] && fail "E6: a login file was backed up"
+fi
+[ "$(cd "$ROOT" && find . -type f ! -path './.git/*' | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$SRC_BEFORE" ] || fail "E6: backup changed the source root"
+
+# --- E7 ---------------------------------------------------------------------------------------------
+printf '{"sids": [{"sid": "s", "cwd": "%s"}]}' "$ROOT" > "$SANDBOX/npm-plan.json"
+LIBPY="$TX_REPO/scripts/transfer/fleet_lib.py"
+NO=$(HOME="$SRC" python3 "$LIBPY" npm-dirs --plan "$SANDBOX/npm-plan.json" | HOME="$DHOME" python3 "$LIBPY" npm-ci --dry-run 2>&1)
+case "$NO" in *"npm ci --legacy-peer-deps in $ROOT"*|*"NPM MISSING: npm ci --legacy-peer-deps in $ROOT"*) ;; *) fail "E7: npm-ci --dry-run did not name the launch folder: $NO" ;; esac
+[ -e "$DPRE$ROOT/node_modules" ] && fail "E7: a dry run created node_modules"
 
 ok_report "27-fleet-excludes" "tracked dist/deno.lock/never-named files, branch resumed-x, .env, yarn.lock and symlinks travel; untracked node_modules, ignored dist files, foo.lock, resumed-*, sockets and .git/index.lock stay; verify is 0 on the copy and 1 (path hash only) after a destination edit; home roots are refused"

@@ -64,9 +64,9 @@ When asked to summarize a session, dump context, or save state before compaction
 ## GUI Fallback (local Mac)
 When you hit a GUI surface no CLI / MCP / native tool can reach (macOS permission dialogs, app modals without CLI equivalents, apps with no scriptable surface), use `/desktop`. Don't ask the user to click — use the skill. It self-routes, applies safety classifiers, and confirms before destructive or ambiguous actions.
 
-## Docker runs on the Mac mini — `/docker`
-(On the Docker server itself — Nick's Mac mini, no `~/.local/bin/docker` shim — docker is plain local Colima: ignore this section; only the janitor rules below still apply.)
-`docker` / `docker compose` on this laptop are routed by a shim to the always-on Mac mini over
+## Docker runs on the OpenDental Windows laptop — `/docker`
+(Since 2026-11-01 the ONLY Docker engine is the always-on OpenDental Windows laptop: Ubuntu in WSL2, x86_64, about 8 GB RAM. In this section and in `rdocker` output, "the mini" still means that host, and "this laptop" means whichever Mac you are on. Every Mac, Nick's Mac mini included, is a client: never start Colima or Docker Desktop to get around it. Images must support linux/amd64.)
+`docker` / `docker compose` on this laptop are routed by a shim to that always-on host over
 Tailscale; every published TCP port is mirrored to laptop `localhost` at the same number. So use docker
 **exactly as normal** — `-p 127.0.0.1::5432` + `docker port`, `localhost` connection strings and
 localhost safety guards all keep working (a fixed host port must be free on the laptop, else exit 125;
