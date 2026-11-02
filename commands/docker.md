@@ -32,37 +32,14 @@ rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
   detached, flock-guarded `rdocker janitor-run` / `kick` job, so a hung job never stalls it). It
   re-execs itself when the code on disk changes, but only if the new code imports cleanly.
 - Tailscale carries only traffic to the user's own devices (no exit node), so the laptop's normal
-  internet is unchanged. On macOS, Tailscale launches at login, and the forwarder restarts it if it
-  is ever stopped. On Linux, bring it up with `sudo tailscale up`.
+  internet is unchanged. Nothing to switch on: Tailscale launches at login, and the forwarder restarts
+  it if it is ever stopped.
 
 **Use `docker` exactly as normal.** Never add `--context`, set `DOCKER_HOST`/`DOCKER_CONTEXT`, or swap
 `localhost` for the mini's hostname — each deliberately bypasses routing.
 
 **One laptop only.** Install rdocker on exactly one laptop: a second install would janitor and mirror
 the first one's containers on the same mini.
-
-## Linux client (Linux Mint / Ubuntu)
-
-Mint 21/22 and Ubuntu 22.04/24.04 can run the client role. Install Tailscale and bring it up on the
-same tailnet as the mini, then install the client tools:
-
-```sh
-sudo apt install docker.io git openssh-client python3
-```
-
-The local Docker engine may stay off. Clone these dotfiles and run
-`/usr/bin/python3 /path/to/dotfiles/scripts/rdocker/rdocker.py install`. Install creates a dedicated
-`~/.ssh/rdocker_ed25519` key, the `~/.ssh/config.d/rdocker` host alias, and a first-line
-`Include ~/.ssh/config.d/*` in `~/.ssh/config` (backing up an existing config first). If the new
-key cannot yet reach the mini, install prints the public key and stops. On an existing client that
-can reach the mini, run the printed `rdocker authorize-client '<public key line>'`, then rerun
-`rdocker install` on Linux. The authorization command safely adds the key to the mini's
-`~/.ssh/authorized_keys` once. Ensure `~/.local/bin` is first on PATH so `docker` uses the shim.
-
-The forwarder runs as a systemd user unit, `rdocker-forwarder.service`, instead of a launchd agent.
-To keep it active while logged out, optionally run `sudo loginctl enable-linger $USER` once. Linux
-has no Docker Desktop, and rdocker never starts or stops the local engine. If a command truly needs
-the local engine, start it yourself with `sudo systemctl start docker`.
 
 **SDK callers bypass the shim.** dockerode, docker-py, testcontainers and anything that talks to a Docker
 socket or calls docker by absolute path (not via PATH) get no routing: they use whatever the global
@@ -318,13 +295,6 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 - Compose: published ports from the rendered model get the same laptop preflight; entries without a host
   port are left to the mini and checked after start. `-P` (publish all) ports are chosen by the mini's
   Docker and mirrored after start.
-- **Mirror first:** the laptop side of every reserved port is bound (SSH mirror) right after the
-  reservation, BEFORE `docker run` / `compose up` starts the container, and kept while the reservation
-  lives. Reason: the Pane desktop app, when connected to the Pane daemon on the mini, mirrors every port
-  that starts listening on the mini to laptop `127.0.0.1`/`::1` at the same number - it used to win the
-  race and every new mirror failed as "laptop port N is busy" (2026-10-16). Pane steps to the next free
-  number when the port is taken, so binding first keeps rdocker's same-number promise. A failed forward
-  now logs ssh's own error and names the holding process (`held by <cmd> pid <n>`).
 - **Mirror required:** if a mirror cannot be established after start (laptop port taken meanwhile, tunnel
   failure), the container **this command created** is removed (`rm -f`) and the command exits 1; a
   container that already existed (`docker start`) is left running. Foreground `run` / `compose up` are
@@ -346,7 +316,7 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 | image | removed after **3 days** unused by any container (running or stopped) — tracked in a last-use ledger, first seen = now. Removed tag by tag (`image rm <repo:tag>`; an image tagged in several repositories cannot be removed by id), then by id if an untagged remainder is left; never `-f`. Docker's refusals (in use, dependent child images, multi-repo) are skips, not errors. Dangling images pruned |
 | build cache | pruned when older than 7 d, and capped at **1 GB** |
 | keep-labelled container on the mini with restart policy `no` | `update --restart unless-stopped`, so kept DBs come back after a mini / Colima reboot (`--rm` ones skipped) |
-| `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **2 d** unused (every mirror not in use when mini free < `host_min_free_gb`, except one whose index/HEAD changed in the last 10 min); a mirror a running `rrun` is using is skipped (its slot's `.who` names it; an old-format `.who` without the mirror protects the whole repo, a stale or garbled one protects everything); bare repos in `~/rr/git` are kept, only the removed mirror's ref goes. Needs only ssh + perl, so it also runs while the mini engine is down |
+| `rrun` mirror on the mini (`~/rr/w/<repo>-<wt>`) | removed after **2 d** unused (all unused ones when mini free < `host_min_free_gb`); a mirror whose repo slot is busy is skipped; bare repos in `~/rr/git` are kept, only the removed mirror's ref goes |
 | container logs | capped per container: 10 MB × 3 files (json-file) |
 | mini Colima/Lima log files | truncated past 50 MB; VM journald capped at 200 MB |
 | `rrun` shared package store (`~/rr/deps/<key>/node_modules`) | an entry is published after a real `npm ci` (written whole, then renamed in; never changed after) and **cloned** (APFS `cp -c`, shared blocks) into any mirror of the same repo whose lockfile/package.json/.npmrc/node/npm args match - no `npm ci`; removed after **2 d** unused (10 min under disk pressure) |
@@ -360,14 +330,8 @@ migration — **ask the user first**, copy the volume, then `rdocker unpin <name
 Run it now: `rdocker clean [--dry-run] [--only PREFIX] [--force-critical]` (`--only` limits the
 container/volume rules to a name prefix and skips global prunes and image GC; `--force-critical` applies
 the disk-critical stopped-container removal now — keep-labelled still exempt). Exit codes: 0 = the pass
-ran; 1 = it did not run in full: mini lock still held after 90 s, mini unreachable over ssh, or the mini's
-docker engine not answering (also with `--dry-run`). With the engine down but ssh fine, the mini disk
-check and the `rrun` mirror housekeeping still run (their lines are printed) and only the
-container/volume/image steps are skipped; the background janitor does the same every interval while the
-mini is reachable. When the engine is down and mini free disk is below `host_min_free_gb`, the daemon's
-engine kick runs the mirror housekeeping (under the mini lock) **before** it starts Colima, and logs it
-(`kick: ... mirror housekeeping before the colima start`): a full disk is what kills the engine, and a
-start on a full disk times out.
+ran; 1 = it did not run: mini lock still held after 90 s, mini unreachable over ssh, or the mini's
+docker engine not answering (also with `--dry-run`). The background janitor just skips such a pass.
 Hard ceilings: VM disk 30 GB, VM RAM 11 GB (the VM keeps whatever RAM it has touched, so this cap IS its footprint), VM CPU 6 — the mini itself can never be filled or starved.
 Laptop logs (`daemon.log`, `route.log`) rotate at 2 MB (one `.1` generation, under a lock).
 
@@ -439,16 +403,14 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 | Command | Does |
 |---|---|
 | `rdocker status` | health + RTT, where commands go, mirrored ports, conflicts, attention items (exit 1 if any `--` row; `WARN` rows never fail it) |
-| `rdocker doctor` | status **+ repair** (Tailscale on macOS, mini engine start via the kick path — never a VM-up restart, forwarder, mirrors) + flag-drift check |
-| `rdocker clean [--dry-run\|--only P\|--force-critical]` | run the janitor now; exit 1 if it could not run in full: mini lock held after 90 s, mini unreachable, or mini engine not answering (`--dry-run` too; the disk check + `rrun` mirror housekeeping still run then) |
-| `rdocker use auto\|mini\|local\|off` | routing mode; also points the global docker context at the target (`off` = raw local Docker context) |
+| `rdocker doctor` | status **+ repair** (Tailscale, mini engine start via the kick path — never a VM-up restart, forwarder, mirrors) + flag-drift check |
+| `rdocker clean [--dry-run\|--only P\|--force-critical]` | run the janitor now; exit 1 if it could not run: mini lock held after 90 s, mini unreachable, or mini engine not answering (`--dry-run` too) |
+| `rdocker use auto\|mini\|local\|off` | routing mode; also points the global docker context at the target (`off` = raw Docker Desktop behaviour, context → laptop) |
 | `rdocker where <container>` | which engine holds it (says which engine could not be asked) |
 | `rdocker pin\|unpin <name> [--compose]` | keep a container / compose project on the laptop |
 | `rdocker logs [--route]` | forwarder + janitor log / per-command routing log (incl. refusals) |
 | `rdocker sync` | reconcile port mirrors now |
 | `rdocker run [-e K[=V]]... [--] <cmd>` / `rrun ...` | run a heavy job (test runner + its DB) on the mini — see "Heavy test jobs on the mini" |
-| `rdocker install` | create the SSH key and host alias if missing, verify mini access, then install the Docker context, shims, and background forwarder (launchd on macOS, systemd user unit on Linux) |
-| `rdocker authorize-client '<public key line>'` | on an existing client, add a new client's validated SSH key to the mini once |
 
 `rdocker status` rows: tailscale on laptop · mini reachable (ssh control connection) · mini docker engine
 (version, round-trip) · mode → where commands go · docker shim first on PATH · background forwarder ·
@@ -456,7 +418,7 @@ daemon process (pid, age, running the code on disk / reload pending / reload NOT
 reading age · janitor last run · janitor last error (`--` only if from about the latest pass) · mini
 disk · mini engine config (Colima restart pending) · janitor-stopped in the last 24 h (mini + laptop,
 auto-restarted on use) · fallback pins · mirrored ports (IPv6 mirror
-pending) · port conflicts (busy on laptop) · laptop Docker Desktop (local docker engine on Linux) · global docker context · (doctor)
+pending) · port conflicts (busy on laptop) · laptop Docker Desktop · global docker context · (doctor)
 docker CLI flags vs `rd_args.SPECS` · one `WARN` row per attention item (with its age). Exit code: 1 only
 for `--` rows (real faults); `WARN` rows are for a human and keep it 0.
 `rdocker --help` exits 0; an unknown command prints usage and exits 2.
@@ -535,10 +497,7 @@ there supplied a wrong `HostKeyAlias` during the switch) - they live in `~/.ssh/
 Previous mini (Omid's, until 2026-10-22): the Tailscale app (`brew install --cask tailscale-app`, since 2026-10-16, opens at login; the
 Homebrew formula was removed and `/opt/homebrew/bin/tailscale` is a wrapper for the app's CLI), machine name `macminim4`, IP 100.73.250.43, key expiry off;
 the laptop's `~/.ssh/config.d/rdocker` maps alias `macmini-docker` -> `HostName macminim4` with
-`HostKeyAlias macmini-docker`, `User omidsmacmini`, `IdentityFile ~/.ssh/rdocker_ed25519`,
-`ControlMaster auto`, `ControlPath ~/.ssh/rdocker-%C`, `ControlPersist 30m`,
-`ServerAliveInterval 15`, `ServerAliveCountMax 3`, `ConnectTimeout 5`, and
-`StrictHostKeyChecking accept-new`,
+`HostKeyAlias macmini-docker`,
 Remote Login on, laptop keys in `~/.ssh/authorized_keys`. Laptop: `~/.ssh/config` → `Include
 ~/.ssh/config.d/*` (`rdocker` block); `rdocker setup-mini 6 8 30`; `rdocker install` (context `mini` =
 `unix://~/.local/state/rdocker/mini-docker.sock`, shims, launch agent, pins). Mini Colima config:
@@ -559,3 +518,16 @@ tables) → `rd_tunnel` (health, SSH master, port mirrors) → `rd_route` (shim 
 (janitor, mini lock, engine kick/restart) → `rd_daemon` (forwarder loop) → `rd_setup` (install,
 setup-mini, CLI). Docker CLI flag research: `docs/docker-cli-semantics.md`. Brief:
 `random/tools/online docker/tmp/briefs/2026-10-12-remote-docker-on-mac-mini.md`.
+
+**Linux server (`server_os=linux`)**: set config `server_os` to `linux` (default `mac` = Colima/launchd,
+unchanged) when the Docker host is Linux (e.g. Ubuntu 24.04 in WSL2, systemd dockerd, user in the
+`docker` group). dockerd is the host's own systemd unit, so there is no VM: the disk % is
+`df -P /var/lib/docker`, the engine kick is `sudo -n systemctl start docker` (restart is the same with
+`restart`; status via `systemctl is-active docker`), housekeeping is `sudo -n journalctl --vacuum-size=50M`
++ `sudo -n fstrim -a`, and the Colima log trim / timesyncd drop-in are skipped. `remote_socket` defaults
+to `/var/run/docker.sock` (`setup-mini` itself is mac-only; configure the Linux host by hand).
+`server_docker_bin` (default `/usr/bin/docker` on linux) names the server's docker CLI. rr_runner.pl
+falls back to `/usr/bin/docker`, reads memory/load from `/proc`, and clones the deps store with
+`cp -a --reflink=auto`. Never prompts: only `sudo -n`. sudoers (`visudo -f /etc/sudoers.d/rdocker`):
+
+    <user> ALL=(root) NOPASSWD: /usr/bin/systemctl start docker, /usr/bin/systemctl restart docker, /usr/bin/journalctl --vacuum-size=*, /usr/sbin/fstrim -a

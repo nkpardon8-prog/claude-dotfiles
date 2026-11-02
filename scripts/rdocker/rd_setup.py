@@ -126,13 +126,14 @@ def ssh_bootstrap(cfg):
     block = os.path.join(blocks, "rdocker")
     if not os.path.exists(block):
         with open(block, "w") as f:
-            f.write("Host {host}\n  HostName {hostname}\n  HostKeyAlias {host}\n"
+            f.write("Host {host}\n  HostName {hostname}\n  Port {port}\n  HostKeyAlias {host}\n"
                     "  User {user}\n  IdentityFile ~/.ssh/rdocker_ed25519\n"
                     "  IdentitiesOnly yes\n  ControlMaster auto\n"
                     "  ControlPath ~/.ssh/rdocker-%C\n  ControlPersist 30m\n"
                     "  ServerAliveInterval 15\n  ServerAliveCountMax 3\n"
                     "  ConnectTimeout 5\n  StrictHostKeyChecking accept-new\n".format(
-                        host=cfg["host"], hostname=cfg["ssh_hostname"], user=cfg["ssh_user"]))
+                        host=cfg["host"], hostname=cfg["ssh_hostname"], port=cfg.get("ssh_port") or 22,
+                        user=cfg["ssh_user"]))
         os.chmod(block, 0o600)
     config = os.path.join(ssh_dir, "config")
     include = "Include ~/.ssh/config.d/*\n"
@@ -213,6 +214,8 @@ def install(cfg):
         print("note: the mini did not answer ssh just now (%s); continuing" % err.strip()[-120:])
     real = rd_common.real_docker()
     # 1. docker context for the mini = the mini's docker socket, streamed over the SSH master
+    if not cfg["remote_socket"] and rd_common.server_linux(cfg):
+        cfg["remote_socket"] = "/var/run/docker.sock"
     if not cfg["remote_socket"]:
         rc, out, _ = rd_common.run(["ssh", "-o", "BatchMode=yes", cfg["host"], "echo $HOME"], timeout=20)
         if rc == 0 and out.strip():
@@ -544,7 +547,7 @@ def janitor_rows(cfg, now):
         rows.append((True, "mini disk", "VM %s%% used%s" % (
             pct, ", mini %s GB free" % free if isinstance(free, (int, float)) else "")))
     if j.get("restart_pending"):
-        rows.append((True, "mini engine config", "Colima restart pending (applied when idle)"))
+        rows.append((True, "mini engine config", ("dockerd" if rd_common.server_linux(cfg) else "Colima") + " restart pending (applied when idle)"))
     return rows
 
 

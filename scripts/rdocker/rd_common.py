@@ -66,13 +66,24 @@ def default_local_socket():
     rootless = os.path.join(runtime, "docker.sock") if runtime else ""
     return rootless if rootless and os.path.exists(rootless) else "/var/run/docker.sock"
 
+def server_linux(cfg):
+    return (cfg.get("server_os") or "mac") == "linux"
+
+
+def server_docker_bin(cfg):
+    return cfg.get("server_docker_bin") or ("/usr/bin/docker" if server_linux(cfg) else "/opt/homebrew/bin/docker")
+
+
 DEFAULTS = {
     "host": "macmini-docker",          # ssh Host alias (see ~/.ssh/config.d/rdocker)
-    "ssh_hostname": "100.112.247.23",  # Nick's Mac mini (Tailscale) - the Docker host since 2026-10-22
-    "ssh_user": "nicholaspardon",
+    "ssh_hostname": "100.108.78.60",   # OpenDental Windows laptop, WSL2 Ubuntu (Tailscale) - the Docker host since 2026-11-01
+    "ssh_user": "rd",
+    "ssh_port": 2222,                  # sshd inside WSL (Windows' own sshd has 22)
     "host_ip": "",                     # tailnet IP (informational; health uses the ssh master)
     "remote_context": "mini",
     "remote_socket": "",               # mini docker socket, streamed over the SSH master
+    "server_os": "linux",              # mac (Colima/launchd/brew) | linux (systemd dockerd, sudo -n)
+    "server_docker_bin": "",           # real docker CLI on the server; "" = per server_os
     "local_context": "default" if IS_LINUX else "desktop-linux",
     "local_socket": default_local_socket() if IS_LINUX else os.path.join(HOME, ".docker", "run", "docker.sock"),
     "mode": "auto",                    # auto | mini | local | off

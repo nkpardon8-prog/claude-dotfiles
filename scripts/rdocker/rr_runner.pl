@@ -22,7 +22,7 @@
 # 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started.
 # Every run appends one line to $ROOT/log/runs.log (see run_log; no env values, never fails a run).
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
-# RR_REAL_DOCKER (default /opt/homebrew/bin/docker).
+# RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server).
 use strict;
 use warnings;
 use POSIX qw(setsid WNOHANG _exit);
@@ -39,7 +39,8 @@ use Cwd qw(realpath);
 
 umask 077;    # everything the runner creates is owner-only (~/rr is 0700)
 my $ROOT = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
-my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || '/opt/homebrew/bin/docker';
+my $OS = $ENV{RR_OS} || $^O;                # RR_OS: tests only
+my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || (-x '/opt/homebrew/bin/docker' || $^O ne 'linux' ? '/opt/homebrew/bin/docker' : '/usr/bin/docker');
 my $SLUG = qr/^(?!\.\.?$)[A-Za-z0-9._-]+$/;    # one path component; never "." or ".."
 
 my (%h, $nonce, $label, $tmp, $mirror, $envlist, $lock_fh, $who, $started);
@@ -77,7 +78,7 @@ sub main {
     $t_slot = time;
     $tmp = File::Temp::tempdir("run-XXXXXXXX", DIR => mk("$ROOT/tmp"));
     write_shim("$tmp/docker");
-    my $path = "$tmp:" . ($ENV{RR_PATH} // join ':', grep { defined } node_dir(), '/opt/homebrew/bin', '/usr/bin', '/bin');
+    my $path = "$tmp:" . ($ENV{RR_PATH} // join ':', grep { defined } node_dir(), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin');
     $ENV{PATH} = $path;    # git/node/npm below resolve the same way the command will
     $ENV{GIT_TERMINAL_PROMPT} = '0';
     exclude_root();
@@ -276,12 +277,27 @@ sub pump {
 # free memory (kern.memorystatus_level, the % memory_pressure prints) >= spare_min_free_pct and the
 # 1-min load per CPU <= spare_max_load. An unreadable reading counts as "no room" (fail safe).
 sub sysctl_n { my $v = `/usr/sbin/sysctl -n $_[0] 2>/dev/null`; defined $v ? $v : '' }
+# Linux: same three readings from /proc ($RR_PROC overrides the dir, for tests); free level =
+# MemAvailable/MemTotal*100 (the kern.memorystatus_level analogue).
+sub proc_readings {
+    my $p = $ENV{RR_PROC} // '/proc';
+    my $mi = slurp("$p/meminfo");
+    my ($av) = $mi =~ /^MemAvailable:\s*(\d+)/m;
+    my ($tot) = $mi =~ /^MemTotal:\s*(\d+)/m;
+    my ($load) = slurp("$p/loadavg") =~ /^([\d.]+)/;
+    my $ncpu = () = slurp("$p/cpuinfo") =~ /^processor\s*:/mg;
+    return (($tot && defined $av) ? int($av * 100 / $tot) : undef, $load, $ncpu);
+}
 sub spare_room {
     my $min = $h{spare_min_free_pct} // 25;
     my $max = $h{spare_max_load} // 1.5;
-    my ($free) = sysctl_n('kern.memorystatus_level') =~ /^(\d+)/;
-    my ($load) = sysctl_n('vm.loadavg') =~ /([\d.]+)/;
-    my ($ncpu) = sysctl_n('hw.ncpu') =~ /^(\d+)/;
+    my ($free, $load, $ncpu);
+    if ($OS eq 'linux') { ($free, $load, $ncpu) = proc_readings() }
+    else {
+        ($free) = sysctl_n('kern.memorystatus_level') =~ /^(\d+)/;
+        ($load) = sysctl_n('vm.loadavg') =~ /([\d.]+)/;
+        ($ncpu) = sysctl_n('hw.ncpu') =~ /^(\d+)/;
+    }
     return 0 unless defined $free && defined $load && $ncpu;
     return $free >= $min && $load / $ncpu <= $max;
 }
@@ -441,6 +457,9 @@ sub slurp { open(my $fh, '<', $_[0]) or return ''; local $/; <$fh> // '' }
 # tampered or missing entry) just means a normal npm ci.
 sub deps_key { substr(Digest::SHA::sha256_hex("$h{repo_slug}\0$_[0]\0$_[1]"), 0, 32) }
 
+# Clone argv: APFS clonefile on macOS; Linux `cp -a --reflink=auto` (reflink where the fs has it, else a copy).
+sub clone_cmd { $OS eq 'linux' ? ('/bin/cp', '-a', '--reflink=auto') : ('/bin/cp', '-cR') }
+
 sub store_clone {    # -> 1 when $dir/node_modules is now a clone of the store entry for $stamp
     my ($rel, $dir, $stamp) = @_;
     my $entry = "$ROOT/deps/" . deps_key($rel, $stamp);
@@ -450,7 +469,7 @@ sub store_clone {    # -> 1 when $dir/node_modules is now a clone of the store e
     local $QUIET = 1;                                     # cp's own complaints: we fall back quietly
     my $t = "$dir/.rr-nm-clone.$$";
     remove_tree($t) if -e $t || -l $t;
-    if (run_cmd('/dev/null', '/bin/cp', '-cR', "$entry/node_modules", $t) != 0
+    if (run_cmd('/dev/null', clone_cmd(), "$entry/node_modules", $t) != 0
             || slurp("$t/.rr-deps-stamp") ne $stamp) {
         remove_tree($t);
         return 0;
@@ -471,7 +490,7 @@ sub store_save {     # after a real install: publish $dir/node_modules (incl. it
     remove_tree($t) if -e $t || -l $t;
     mk($t);
     local $QUIET = 1;
-    if (run_cmd('/dev/null', '/bin/cp', '-cR', "$dir/node_modules", "$t/node_modules") == 0) {
+    if (run_cmd('/dev/null', clone_cmd(), "$dir/node_modules", "$t/node_modules") == 0) {
         utime(undef, undef, $t);
         return if rename($t, $entry);                    # fails if another run saved it first
     }
@@ -743,7 +762,7 @@ SH
 sub node_dir {    # $RR_NODE (from the header env) = a mise node version; else brew's node
     my $v = $h{env}{RR_NODE} // $ENV{RR_NODE};
     if (defined $v && $v =~ /^[A-Za-z0-9._-]+$/) {
-        my ($mise) = grep { -x } '/opt/homebrew/bin/mise', "$ENV{HOME}/.local/bin/mise";
+        my ($mise) = grep { -x } '/opt/homebrew/bin/mise', "$ENV{HOME}/.local/bin/mise", '/usr/local/bin/mise', '/usr/bin/mise';
         if ($mise && open(my $ph, '-|', $mise, 'which', 'node', '--tool', "node\@$v")) {
             my $p = <$ph> // '';
             close $ph;
@@ -751,5 +770,12 @@ sub node_dir {    # $RR_NODE (from the header env) = a mise node version; else b
         }
         print STDERR "rrun-runner: RR_NODE=$v not found via mise; using brew node\n";
     }
-    -d '/opt/homebrew/opt/node/bin' ? '/opt/homebrew/opt/node/bin' : undef;
+    return '/opt/homebrew/opt/node/bin' if -d '/opt/homebrew/opt/node/bin';
+    my ($mise) = grep { -x } "$ENV{HOME}/.local/bin/mise", '/usr/local/bin/mise', '/usr/bin/mise';    # Linux server: mise's global node
+    if ($mise && open(my $ph, '-|', $mise, 'which', 'node')) {
+        my $p = <$ph> // '';
+        close $ph;
+        return $1 if $p =~ m{^(/.*)/node\s*$};
+    }
+    undef;
 }

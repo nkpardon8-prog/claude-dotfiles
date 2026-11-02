@@ -136,14 +136,14 @@ class RunnerTest(unittest.TestCase):
         h.update(kw)
         return h
 
-    def run_runner(self, argv, tar=b"", action=None, timeout=30, go=True, **kw):
+    def run_runner(self, argv, tar=b"", action=None, timeout=30, go=True, env_extra=None, **kw):
         """Feed header + tar like the laptop; when `go`, answer "<nonce> READY" with "GO\\n" (the
         exactly-once handshake). `action(p)` runs after the frames are written."""
         h = self.header(argv, tar_len=len(tar), **kw)
         self.nonce = h["nonce"]
         js = json.dumps(h).encode()
         p = subprocess.Popen(["/usr/bin/perl", RUNNER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, env=self.env())
+                             stderr=subprocess.PIPE, env=self.env(**(env_extra or {})))
         outs, err = {}, []
         self.err_so_far = err
         ready = threading.Event()
@@ -461,6 +461,42 @@ class RunnerTest(unittest.TestCase):
             r = self.run_runner(["true"], wait_min=0.02, slots=2, slots_base=1,
                                 spare_min_free_pct=0, spare_max_load=1000)
             self.assertEqual(r.rc, 0, r.err)        # slot 0 is held: it ran in spare slot 1
+
+    def test_spare_slot_linux_proc_readings(self):
+        """Linux server: free level = MemAvailable/MemTotal*100, load from loadavg, ncpu from cpuinfo
+        (fake /proc via RR_PROC; RR_OS=linux selects the branch on any host)."""
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc)
+        wfile(os.path.join(proc, "meminfo"), "MemTotal:       16000000 kB\nMemFree: 1 kB\nMemAvailable:   8000000 kB\n")
+        wfile(os.path.join(proc, "loadavg"), "2.00 1.00 1.00 1/100 1\n")
+        wfile(os.path.join(proc, "cpuinfo"), "processor\t: 0\nmodel: x\n\nprocessor\t: 1\nmodel: x\n")
+        os.makedirs(os.path.join(self.root, "slots"))
+        with open(os.path.join(self.root, "slots", "0.who"), "w") as f:
+            f.write("other-repo %d\n" % time.time())
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            kw = dict(RR_OS="linux", RR_PROC=proc)
+            # free 50%, load 2.0/2 cpu = 1.0
+            r = self.run_runner(["true"], wait_min=0.02, slots=2, slots_base=1,
+                                spare_min_free_pct=51, spare_max_load=1.5, env_extra=kw)
+            self.assertEqual(r.rc, 73, r.err)
+            r = self.run_runner(["true"], wait_min=0.02, slots=2, slots_base=1,
+                                spare_min_free_pct=50, spare_max_load=0.9, env_extra=kw)
+            self.assertEqual(r.rc, 73, r.err)
+            r = self.run_runner(["true"], wait_min=0.02, slots=2, slots_base=1,
+                                spare_min_free_pct=50, spare_max_load=1.0, env_extra=kw)
+            self.assertEqual(r.rc, 0, r.err)
+
+    def test_linux_store_clone_uses_reflink_cp(self):
+        """RR_OS=linux -> `cp -a --reflink=auto`: reused on a real Linux host; on BSD cp the flag is
+        rejected, which must fall back quietly to npm ci (the mac path is untouched)."""
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+        r = self.run_runner(["true"], wt12="fedcba987654", env_extra={"RR_OS": "linux"})
+        self.assertEqual(r.rc, 0, r.err)
+        if sys.platform.startswith("linux"):
+            self.assertIn("reused from the mini's shared store (no npm ci)", r.err)
+        else:
+            self.assertNotIn("shared store", r.err)
 
     # ------------------------------------------------------------------------ containers
     def test_containers_removed_on_success_kept_on_failure(self):

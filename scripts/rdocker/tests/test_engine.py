@@ -86,7 +86,7 @@ class MiniCase(unittest.TestCase):
             p = mock.patch.object(mod, name, val)
             p.start()
             self.addCleanup(p.stop)
-        self.cfg = rd_common.merge_cfg({})
+        self.cfg = rd_common.merge_cfg({"server_os": "mac"})   # these fakes model the Colima/launchd server
         self.fake_df(100)        # host `df -k /` of the fake mini: plenty free unless a test says so
 
     def fake_df(self, free_gb):

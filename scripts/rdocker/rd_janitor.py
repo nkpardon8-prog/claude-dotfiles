@@ -364,6 +364,18 @@ def janitor_disk(cfg, housekeeping, vm=True):
     VM disk % is then None and only the host log caps run."""
     maxb = cfg["host_log_max_mb"] * 1024 * 1024
     in_vm = vm and housekeeping
+    if rd_common.server_linux(cfg):    # dockerd runs on the host itself: no VM, no colima/brew logs
+        script = (
+            "export PATH=" + LINUX_PATH + ":$PATH; "
+            + ("echo VMDISK $(df -P /var/lib/docker | tail -1 | awk '{print $5}'); " if vm else "")
+            + "echo HOSTFREE $(df -k / | tail -1 | awk '{print int($4/1048576)}'); "
+            + ("sudo -n journalctl --vacuum-size=50M >/dev/null 2>&1; "
+               "sudo -n fstrim -a >/dev/null 2>&1; " if in_vm else "")
+            + "true")
+        rc, out, _ = mini_sh(cfg, script, timeout=180)
+        m = re.search(r"VMDISK (\d+)%", out)
+        f = re.search(r"HOSTFREE (\d+)", out)
+        return (int(m.group(1)) if m else None), (int(f.group(1)) if f else None)
     script = (
         "export PATH=" + BREW_PATH + ":$PATH; "
         + ("echo VMDISK $(colima ssh -- df -P /var/lib/docker | tail -1 | awk '{print $5}'); "
@@ -424,7 +436,7 @@ use Fcntl qw(:flock O_RDWR O_NOFOLLOW);
 use File::Path qw(remove_tree);
 use Cwd qw(realpath);
 my ($rel, $max_age, $dry, $store_age, $npm_max_mb) = @ARGV;
-$ENV{PATH} = '/opt/homebrew/bin:/usr/bin:/bin';
+$ENV{PATH} = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
 my $R = "$ENV{HOME}/$rel";
 if (!-d "$R/w" || -l "$R/w") { print "RRHK none\n"; exit 0 }
 my $Rgit = (realpath($R) // $R) . '/git/';    # git records the admin dir by its real path
@@ -821,6 +833,7 @@ def laptop_janitor(cfg):
 # tests replace): no python/yq on the mini, no zsh quoting. Scripts answer with a marker line
 # (`RDLOCK ...`, `RDKICK ...`, `RDRESTART ...`) so a stray login banner never reads as success.
 BREW_PATH = "/opt/homebrew/bin:/opt/homebrew/sbin"   # mini Homebrew (colima, docker)
+LINUX_PATH = "/usr/local/bin:/usr/bin:/usr/sbin:/bin"   # Linux server (server_os=linux)
 MINI_LOCK_DIR = "$HOME/.rdocker/janitor.lock"        # mkdir-atomic; holds `owner` = "<id> <epoch>"
 MINI_LOCK_STALE = 600       # a lock whose heartbeat is older than this (mini clock) may be stolen
 LOCK_POLL = 5               # seconds between acquire attempts while waiting for a held lock
@@ -988,7 +1001,31 @@ def _engine_prelude():
     return _ENGINE_PRELUDE % (BREW_PATH, ENGINE_WAIT_S // 2)
 
 
-def kick_script():
+# Linux server: dockerd is a systemd unit; the only privileged verbs are the sudoers-listed
+# `sudo -n systemctl start|restart docker` (never prompts). Same RDKICK/RDRESTART markers; HOW=systemd.
+_LINUX_PRELUDE = """export PATH=%s:$PATH
+HOW=systemd
+engine_wait() {
+  i=0
+  while [ $i -lt %d ]; do
+    systemctl is-active docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && return 0
+    i=$((i+1)); sleep 2
+  done
+  return 1
+}
+"""
+
+
+def _linux_prelude():
+    return _LINUX_PRELUDE % (LINUX_PATH, ENGINE_WAIT_S // 2)
+
+
+def kick_script(linux=False):
+    if linux:
+        return _linux_prelude() + """if systemctl is-active docker >/dev/null 2>&1; then echo "RDKICK vm-up"; exit 0; fi
+sudo -n systemctl start docker >/dev/null 2>&1
+if engine_wait; then echo "RDKICK started $HOW"; else echo "RDKICK start-failed $HOW"; fi
+"""
     return _engine_prelude() + """if colima status >/dev/null 2>&1; then echo "RDKICK vm-up"; exit 0; fi
 if [ ! -f "%s" ]; then echo "RDKICK no-profile"; exit 0; fi
 if [ "$HOW" = launchd ]; then launchctl kickstart "$SVC" >/dev/null 2>&1; else colima start >/dev/null 2>&1; fi
@@ -1024,10 +1061,14 @@ rm -f "$T"
 """ % (ENGINE_CHECK_TIMEOUT, ENGINE_CHECK_TIMEOUT)
 
 
-def restart_script(require_idle, require_dead=False):
+def restart_script(require_idle, require_dead=False, linux=False):
     idle = ("""IDS=$(docker ps -q 2>/dev/null) || { echo "RDRESTART docker-error"; exit 0; }
 [ -z "$IDS" ] || { echo "RDRESTART busy"; exit 0; }
 """ if require_idle else "")
+    if linux:
+        return _linux_prelude() + idle + (dead_check() if require_dead else "") + """sudo -n systemctl restart docker >/dev/null 2>&1 || { echo "RDRESTART failed $HOW"; exit 0; }
+if engine_wait; then echo "RDRESTART ok $HOW"; else echo "RDRESTART no-docker $HOW"; fi
+"""
     return _engine_prelude() + idle + (dead_check() if require_dead else "") + """if [ "$HOW" = launchd ]; then
   launchctl kickstart -k "$SVC" >/dev/null 2>&1 || { echo "RDRESTART failed $HOW"; exit 0; }
 else
@@ -1050,7 +1091,7 @@ def colima_restart(cfg, lock, why, require_idle=False, require_dead=False):
     re-checks `docker ps -q` is empty right before restarting. require_dead: dead_check() first.
     -> marker word (ok/busy/engine-ok/failed/...)."""
     lock.heartbeat(force=True)
-    rc, out, err = mini_sh(cfg, restart_script(require_idle, require_dead),
+    rc, out, err = mini_sh(cfg, restart_script(require_idle, require_dead, rd_common.server_linux(cfg)),
                            timeout=300 + 2 * ENGINE_CHECK_TIMEOUT)
     m = marker(out, "RDRESTART") or ["no-answer"]
     res = m[0]
@@ -1132,7 +1173,7 @@ def mini_engine_kick(cfg, restart_ok=False):
     Anything that needs a human (no profile, failed start, a restart declined/failed) becomes the
     `engine` attention item; a successful start/restart clears it."""
     low_disk_housekeeping(cfg)
-    rc, out, err = mini_sh(cfg, kick_script(), timeout=240)
+    rc, out, err = mini_sh(cfg, kick_script(rd_common.server_linux(cfg)), timeout=240)
     m = marker(out, "RDKICK") or ["no-answer"]
     res = m[0]
     if res == "started":

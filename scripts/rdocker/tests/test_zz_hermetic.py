@@ -22,7 +22,7 @@ from rdmods import MODULES, STAGE, STUB_BIN, TEST_HOME  # noqa: E402
 TESTS = os.path.dirname(os.path.abspath(__file__))
 REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir      # what ~ means to ssh/launchd, whatever $HOME says
 # Absolute strings that name something outside our home on purpose (not a file rdocker writes).
-NOT_PATHS = {("rd_janitor", "BREW_PATH"), ("rd_args", "DOCKER_SOCKETS")}
+NOT_PATHS = {("rd_janitor", "BREW_PATH"), ("rd_janitor", "LINUX_PATH"), ("rd_args", "DOCKER_SOCKETS")}
 rd_common = next(m for m in MODULES if m.__name__ == "rd_common")
 
 

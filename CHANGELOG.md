@@ -2,6 +2,13 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-11-01 - rdocker: Docker host moves to the OpenDental Windows laptop (WSL2 Ubuntu)
+- New `server_os` ("linux" default now, "mac" still supported): janitor disk/journald/fstrim via plain `df` + `sudo -n`, engine kick via `systemctl`, runner memory gate from /proc, store copies with `cp -a --reflink=auto`, node via mise's global node.
+- Defaults: host 100.108.78.60, user `rd`, `ssh_port` 2222 (sshd inside WSL; Windows' own sshd keeps 22); the ssh block setup writes now carries `Port`.
+- Server layout: Docker data on its own 30G ext4 image (/var/lib/docker) so the 50/60% caps mean ~15/18 GB; containerd snapshotter off (overlay2); published ports default to 127.0.0.1; sshd listens on the Tailscale IP + loopback only; WSL capped at 8 GB with autoMemoryReclaim; a Windows S4U task keeps WSL up from boot with nobody logged in.
+- 10 kept containers moved from Nick's mini with per-database table checks; Nick's Colima stopped, volumes kept as fallback.
+- Switching a client: repoint the `macmini-docker` ssh block, set config.json `remote_socket=/var/run/docker.sock`, and close the old forward master (`ssh -S ~/.local/state/rdocker/fwd.sock -O exit macmini-docker`) - restarting the forwarder alone keeps the old tunnel.
+
 ## 2026-10-26 - rdocker: Nick's Mac mini is the only Docker engine (11 GB); storage + clock caps
 
 - Nick's mini Docker VM 10 -> 11 GB (Omid's call; colima.yaml `memory:` + `brew services` stop/start,
