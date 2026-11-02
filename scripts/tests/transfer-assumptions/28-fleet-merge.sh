@@ -20,6 +20,9 @@
 #   M8 a chat launched in a NON-git folder: the folder is created on the destination, only its tmp/
 #      travels as a root, plus that chat's own CLAUDE.local/TRANSFER/MISSION files there - never
 #      another chat's. A chat launched in a home alias ITSELF (a cwd of ~ on the source) is not refused.
+#   M9 a destination already seeded (older file, extra file, its own node_modules): final brings it in
+#      line, deletes the extra inside the root only, keeps the excluded node_modules and anything
+#      beside the root.
 #   M7 the merge touches only project folders named by this Mac's inventory: the destination's own
 #      project memory is untouched by final, and a state stream naming a project under the
 #      destination's real home is refused by place-state with nothing placed.
@@ -138,6 +141,16 @@ case "$FO" in *"1 would be placed"*|*" would be placed"*) ;; *) fail "M6: the dr
 [ "$(tree_sum "$ROOT")" = "$R_BEFORE" ] || fail "M6: the dry run changed the source root"
 [ -d "$DHOME/.claude/fleet-staging" ] && fail "M6: the dry run created a staging folder"
 
+# --- pre-seeded destination -------------------------------------------------------------------------
+printf 'node_modules/\n' > "$ROOT/.gitignore"; git -C "$ROOT" add .gitignore; git -C "$ROOT" commit -q -m ignore
+mkdir -p "$ROOT/node_modules/x"; printf 'src module\n' > "$ROOT/node_modules/x/i.js"
+cp -Rp "$ROOT" "$SANDBOX/seed-copy"; mkdir -p "$(dirname "$DPRE$ROOT")"; mv "$SANDBOX/seed-copy" "$DPRE$ROOT"
+printf 'old readme\n' > "$DPRE$ROOT/README.md"
+printf 'stray\n' > "$DPRE$ROOT/extra-on-dest.txt"
+printf 'dest module\n' > "$DPRE$ROOT/node_modules/x/i.js"
+printf 'neighbour\n' > "$(dirname "$DPRE$ROOT")/beside-the-root.txt"
+fleet inventory
+
 # --- real final ---------------------------------------------------------------------------------------
 fleet final
 [ "$FRC" -eq 0 ] || { fail "final failed: $(printf '%s' "$FO" | tail -6 | tr '\n' '|')"; # --- M7 ---------------------------------------------------------------------------------------------
@@ -188,6 +201,12 @@ done
 [ "$(cat "$DPRE$SCR/$SLUG/$SID/note.txt" 2>/dev/null)" = "scratch" ] || fail "M3: the scratchpad did not land"
 [ -n "$(ls -A "$DHOME/.claude/fleet-staging" 2>/dev/null)" ] && fail "M3: a staging folder was left behind"
 [ -f "$SRC/.claude/progress/fleet-ready-$SID" ] && [ -f "$P/$SID.jsonl" ] || fail "M3: a source file was removed"
+
+# --- M9 ---------------------------------------------------------------------------------------------
+[ "$(tx_sha "$DPRE$ROOT/README.md")" = "$(tx_sha "$ROOT/README.md")" ] || fail "M9: an older seeded file was not brought in line"
+[ -e "$DPRE$ROOT/extra-on-dest.txt" ] && fail "M9: an extra file inside the root was not deleted"
+[ "$(cat "$DPRE$ROOT/node_modules/x/i.js" 2>/dev/null)" = "dest module" ] || fail "M9: final touched the excluded node_modules on the destination"
+[ -f "$(dirname "$DPRE$ROOT")/beside-the-root.txt" ] || fail "M9: final deleted something beside the root"
 
 # --- M8 ---------------------------------------------------------------------------------------------
 DNG="$DPRE$NG"

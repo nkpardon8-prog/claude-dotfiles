@@ -36,7 +36,7 @@ Destination-side commands
   npm-ci                       stdin dir list -> npm ci --legacy-peer-deps where node_modules is absent
 
 Bookkeeping (source): apply-gate, land-request, land-local, receipt, resume-list, rollback-local,
-npm-dirs. (destination): cwd-check, landed-refresh.
+npm-dirs. (destination): cwd-check, mkdir-roots, landed-refresh.
 
 Exit codes: 0 ok | 2 refused (reason on stderr) | 1 error.
 
@@ -751,14 +751,15 @@ def rsync_escape(p):
     return re.sub(r"([*?\[])", r"\\\1", p)
 
 
-def rsync_rules(excl):
+def rsync_rules(excl, root):
+    """Rules for `rsync <root>/ dest:<root>/`: anchored at the transfer root, so relative to <root>."""
     lines, bad = [], 0
     for p, is_dir in excl:
-        e = rsync_escape(p)
+        e = rsync_escape(os.path.relpath(p, root))
         if e is None:
             bad += 1
             continue
-        lines.append("- %s%s" % (e, "/" if is_dir else ""))
+        lines.append("- /%s%s" % (e, "/" if is_dir else ""))
     return lines, bad
 
 
@@ -845,8 +846,16 @@ def manifest_root(root, scan, excl):
         else:
             continue                        # sockets, fifos, devices never travel
         files[phash(root, rel)] = d
+    # .git/index.lock is on the exclude list, so the walk above never reaches it, and an excluded
+    # destination file is protected from --delete: a stale lock (from an earlier seed, say) has to be
+    # looked for directly, or git on the destination stays locked with verify green.
+    for p, _d in excl:
+        if os.path.basename(p) == "index.lock":
+            rel = os.path.relpath(p, root)
+            if os.path.lexists(os.path.join(scan, rel)):
+                locks.append(phash(root, rel))
     hard = sorted(sorted(v) for v in inodes.values() if len(v) > 1)
-    return files, hard, worktrees, locks
+    return files, hard, worktrees, sorted(set(locks))
 
 
 def excluded_path(ab, excl_all):
@@ -1260,12 +1269,15 @@ def cmd_plan(a):
                 refusals.append("process %s (pid %d) is using files inside %s: stop it first" % (comm, pid, where))
     if mode == "final" and os.environ.get("FLEET_DOCKER_OK") != "1" and not a.dry_run:
         refusals.append("set FLEET_DOCKER_OK=1 once the owner confirms Docker has moved off the destination")
-    rules = []
     bad = 0
-    for r in roots:
-        lines, b = rsync_rules(r["excludes"])
-        rules.extend(lines)
+    d = a.run_dir
+    guard_write(d)
+    os.makedirs(os.path.join(d, "excludes"), mode=0o700, exist_ok=True)
+    for i, r in enumerate(roots):           # one rule file per root, in roots.txt order
+        lines, b = rsync_rules(r["excludes"], r["path"])
         bad += b
+        with open(os.path.join(d, "excludes", "%d.rsync" % i), "w") as fh:
+            fh.write("\n".join(lines) + ("\n" if lines else ""))
     if bad:
         warnings.append("%d excluded path(s) contain a newline or backslash and cannot be expressed to rsync" % bad)
     plan = {"format": 1, "mode": mode, "created_at": now_iso(), "host": socket.gethostname().split(".")[0],
@@ -1274,13 +1286,7 @@ def cmd_plan(a):
                       "state": s in state_sids} for s in sids],
             "roots": roots, "refusals": refusals, "warnings": warnings,
             "scratch_base": scratch_base()}
-    d = a.run_dir
-    guard_write(d)
-    os.makedirs(d, mode=0o700, exist_ok=True)
     write_json_atomic(os.path.join(d, "plan.json"), plan)
-    with open(os.path.join(d, "excludes.rsync"), "w") as fh:
-        fh.write("\n".join(rules) + ("\n" if rules else ""))
-    os.chmod(os.path.join(d, "excludes.rsync"), 0o600)
     with open(os.path.join(d, "roots.txt"), "w") as fh:
         fh.write("".join(r["path"] + "\n" for r in roots))
     for w in warnings:
@@ -1292,7 +1298,7 @@ def cmd_plan(a):
 
 def cmd_excludes(a):
     root = os.path.realpath(a.root)
-    lines, _ = rsync_rules(exclude_list(root, source_alias_homes()))
+    lines, _ = rsync_rules(exclude_list(root, source_alias_homes()), root)
     print("\n".join(lines))
 
 
@@ -1625,7 +1631,7 @@ def cmd_place_state(a):
     cwds = manifest.get("cwds") or []
     aliases = alias_homes()
     for c in cwds:
-        why = dest_path_problem(c, aliases)
+        why = dest_path_problem(c, aliases, allow_home=True)
         if why:
             if not a.dry_run:
                 shutil.rmtree(stage, ignore_errors=True)
@@ -1760,9 +1766,11 @@ def _root_key(root):
     return hashlib.sha256(root.encode()).hexdigest()[:16]
 
 
-def dest_path_problem(path, aliases):
+def dest_path_problem(path, aliases, allow_home=False):
     """'' when <path> (a destination absolute path) sits strictly inside a verified home alias and is
-    reached through no symlink; else the reason."""
+    reached through no symlink; else the reason. allow_home: a chat launched in plain ~ has the alias
+    home itself as its launch folder (only folders are made and its own sid files placed there; a
+    ROOT may never be a home)."""
     pre = os.environ.get("FLEET_TEST_DEST_PREFIX", "") if DEV else ""
     p = pre or "/"
     for comp in [c for c in path.split("/") if c]:
@@ -1771,7 +1779,7 @@ def dest_path_problem(path, aliases):
             return "on this Mac %s is a symlink" % (p[len(pre):] or p)
         if not os.path.lexists(p):
             break
-    if not any(inside(path, h) and path != h for h in aliases):
+    if not any(inside(path, h) and (allow_home or path != h) for h in aliases):
         return "%s is not inside a verified home alias on this Mac" % path
     return ""
 
@@ -1791,7 +1799,7 @@ def cmd_dest_gate(a):
                 hint = ": run sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh %s" % root.split("/")[2]
             refusals.append("cannot copy %s: %s%s" % (root, why, hint))
     for c in launch_cwds(plan):
-        why = dest_path_problem(c, aliases)
+        why = dest_path_problem(c, aliases, allow_home=True)
         if why:
             refusals.append("a moving chat's launch folder cannot be created there: %s" % why)
     landed = load_json(landed_path(), None)
@@ -1864,6 +1872,16 @@ def cmd_land_dest(a):
     if not a.dry_run:
         write_json_atomic(landed_path(), landed)
     json.dump(out, sys.stdout, indent=1, sort_keys=True)
+
+
+def cmd_mkdir_roots(a):
+    """Before `rsync <root>/ dest:<root>/`: make each root (rsync creates only its last component)."""
+    aliases = alias_homes()
+    for r in read_stdin_json().get("roots", []):
+        why = dest_path_problem(r["path"], aliases)
+        if why:
+            raise Refused("cannot create %s: %s" % (r["path"], why))
+        os.makedirs(dpath(r["path"]), exist_ok=True)
 
 
 def cmd_landed_refresh(a):
@@ -2531,6 +2549,7 @@ def main():
     p.add_argument("dest_report")
     p.add_argument("--fleet-json", required=True)
     sp("dest-gate", cmd_dest_gate)
+    sp("mkdir-roots", cmd_mkdir_roots)
     sp("landed-refresh", cmd_landed_refresh)
     sp("land-dest", cmd_land_dest).add_argument("--dry-run", action="store_true")
     p = sp("rollback-dest", cmd_rollback_dest)

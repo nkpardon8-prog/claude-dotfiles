@@ -42,12 +42,12 @@
 #     (tx_guard_path + fleet_lib.py guard-path).
 #   - Receipts and mismatch lines name the top-level root and a path HASH, never a filename.
 #
-# rsync: macOS ships openrsync (protocol 29). `-a` there includes -D, so the flags are spelled out
-# as -rlptgo (sockets/fifos never travel) plus -H (hard links), -E (xattrs/ACLs; never with -n),
-# --numeric-ids, -R with --no-implied-dirs on real runs only (missing parents are created, existing
-# parents such as the alias home are never re-permissioned; it also writes THROUGH a destination
-# symlink, which is why dest-gate refuses any symlink on a root's path) and anchored, literal exclude
-# rules from fleet_lib.py.
+# rsync: macOS ships openrsync (protocol 29). `-a` there includes -D, so the flags are spelled out as
+# -rlptgo (sockets/fifos never travel) plus -H, -E (xattrs/ACLs; never with -n) and --numeric-ids. One
+# rsync per root: the destination makes the root, then `rsync <root>/ dest:<root>/` with exclude rules
+# anchored at that root. A destination symlink on a root's path would be written through, which is
+# why dest-gate refuses one. rc 23/24 are failures unless every error line is explained.
+# The destination may already hold an earlier seed: final is an incremental --checksum pass.
 #
 # Destination preflight (every subcommand that touches the destination, dest-check first of all):
 # FLEET_DEST must be set, and the host it reaches must answer `uname -s` = Darwin with a $HOME under
@@ -68,6 +68,7 @@ SELF_DIR="$(cd -P "$(dirname "$_self")" && pwd -P)"
 . "$SELF_DIR/transfer-lib.sh" || { echo "fleet-move: cannot load transfer-lib.sh" >&2; exit 1; }
 
 umask 077                                # plans, logs and receipts on this Mac are owner-only
+export PYTHONDONTWRITEBYTECODE=1         # no bytecode caches: this Mac writes only markers and fleet logs
 PROG="fleet-move"
 LIB="$SELF_DIR/fleet_lib.py"
 PY="${FLEET_PYTHON:-python3}"
@@ -135,7 +136,9 @@ case "$ONLY" in *[!A-Za-z0-9_,-]*) refuse "--only takes session ids separated by
 # ------------------------------------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------------------------------------
-lib() { "$PY" "$LIB" "$@"; }
+# -B: Apple's system python otherwise writes a bytecode cache under ~/Library/Caches on every run,
+# which on the destination would make even a dry run a write.
+lib() { "$PY" -B "$LIB" "$@"; }
 
 rlib() {  # rlib <cmd> [args]: fleet_lib.py on the destination; stdin/stdout pass through
   local a
@@ -143,11 +146,11 @@ rlib() {  # rlib <cmd> [args]: fleet_lib.py on the destination; stdin/stdout pas
     case "$a" in "" | *[!A-Za-z0-9_.,=:/+-]*) die "internal: unsafe remote argument" ;; esac
   done
   if [ "$LOCAL_DEST" = 1 ]; then
-    env -u FLEET_ALIAS_HOMES HOME="$FLEET_TEST_DEST_HOME" "$PY" "$LIB" "$@"
+    env -u FLEET_ALIAS_HOMES HOME="$FLEET_TEST_DEST_HOME" "$PY" -B "$LIB" "$@"
   else
     # The tilde is meant to expand on the destination, not here.
     # shellcheck disable=SC2088
-    ssh -o BatchMode=yes -o ConnectTimeout=20 "$FLEET_DEST" python3 '~/.claude-dotfiles/scripts/transfer/fleet_lib.py' "$@"
+    ssh -o BatchMode=yes -o ConnectTimeout=20 "$FLEET_DEST" python3 -B '~/.claude-dotfiles/scripts/transfer/fleet_lib.py' "$@"
   fi
 }
 
@@ -196,26 +199,53 @@ roots_args() {  # sets ROOTS_N from the run's roots.txt
   ROOTS_N=$(grep -c . "$RUN/roots.txt" 2>/dev/null | tr -d ' ')
 }
 
-run_rsync_roots() {  # run_rsync_roots <seed|final>
-  local flags=(-rlptgoH --numeric-ids -R --itemize-changes "--exclude-from=$RUN/excludes.rsync")
-  local r roots=() rc
-  # openrsync -n WITH --no-implied-dirs creates the missing parent folders on the destination
-  # (measured 2026-11-02), so a dry run must leave that flag out. Test 28 M6 holds this down.
-  if [ "$DRY" = 1 ]; then flags+=(-n); else flags+=(-E --no-implied-dirs); fi
+# rsync_explained <rc> <stderr file> <seed|final> -> rc 0 only if the run may count as good. rc 23/24
+# ("some files could not be transferred / vanished") are failures unless every error line is explained:
+# a skipped socket always is; a vanished file only while windows are still working (seed, backup).
+rsync_explained() {
+  local left
+  [ "$1" = 0 ] && return 0
+  case "$1" in 23 | 24) ;; *) return 1 ;; esac
+  left=$(grep -v -e 'skipping non-regular file' -e '^rsync error: some files' -e '^$' "$2")
+  [ "$3" = final ] || left=$(printf '%s\n' "$left" | grep -v -e 'vanished' -e '^$')
+  [ -z "$left" ]
+}
+
+run_rsync_roots() {  # run_rsync_roots <seed|final>: one rsync per root, <root>/ -> dest:<root>/
+  local flags=(-rlptgoH --numeric-ids --itemize-changes)
+  local r rc i=0 n=0 target
+  # No -R: from / it tries to set attributes on implied parents such as /Users, which fails on a real
+  # Mac (rc 23, and with -E an abort; measured 2026-11-02). -rlptgo is -a minus -D (no sockets/fifos).
+  if [ "$DRY" = 1 ]; then flags+=(-n); else flags+=(-E); fi
   [ "$1" = final ] && flags+=(--checksum --delete)
   [ "$LOCAL_DEST" = 1 ] || flags+=(-e "ssh -o BatchMode=yes")
-  while IFS= read -r r; do [ -n "$r" ] && roots+=("$r"); done < "$RUN/roots.txt"
-  [ "${#roots[@]}" -gt 0 ] || { note "no roots to copy"; return 0; }
-  note "rsync ($1$([ "$DRY" = 1 ] && echo ', dry run')): ${#roots[@]} root(s) -> $([ "$LOCAL_DEST" = 1 ] && echo 'local test destination' || echo "$FLEET_DEST")"
-  rsync "${flags[@]}" "${roots[@]}" "$(dest_root_spec)" > "$RUN/rsync.log" 2> "$RUN/rsync.err"
-  rc=$?
-  chmod 600 "$RUN/rsync.log" "$RUN/rsync.err" 2>/dev/null
-  # Counts only: the itemized log holds filenames and stays in the mode-700 run folder.
-  note "rsync: $(grep -c '^[<>]f' "$RUN/rsync.log" | tr -d ' ') file(s) $([ "$DRY" = 1 ] && echo 'would be ')sent, $(grep -c '^cd' "$RUN/rsync.log" | tr -d ' ') new folder(s), $(grep -c '^\*deleting' "$RUN/rsync.log" | tr -d ' ') deletion(s); rc=$rc (itemized: $RUN/rsync.log)"
-  if [ "$rc" -ne 0 ]; then
-    grep -v 'skipping non-regular file' "$RUN/rsync.err" | head -5 | sed 's/^/  /' >&2
-    return "$rc"
+  n=$(grep -c . "$RUN/roots.txt" 2>/dev/null | tr -d ' ')
+  [ "$n" -gt 0 ] || { note "no roots to copy"; return 0; }
+  note "rsync ($1$([ "$DRY" = 1 ] && echo ', dry run')): $n root(s) -> $([ "$LOCAL_DEST" = 1 ] && echo 'local test destination' || echo "$FLEET_DEST")"
+  : > "$RUN/rsync.log"; : > "$RUN/rsync.err"
+  if [ "$DRY" = 0 ]; then
+    rlib mkdir-roots < "$RUN/plan.json" || die "could not create the root folders on the destination"
   fi
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    # A remote rsync path goes through the destination's shell; never hand it anything to interpret.
+    case "$r" in *[!A-Za-z0-9_./@+=,:-]*) refuse "root '$r' has a character that is not safe in a remote rsync path: rename it or leave it out" ;; esac
+    target="$FLEET_DEST:$r/"
+    [ "$LOCAL_DEST" = 1 ] && target="$FLEET_TEST_DEST_PREFIX$r/"
+    rsync "${flags[@]}" "--exclude-from=$RUN/excludes/$i.rsync" "$r/" "$target" >> "$RUN/rsync.log" 2> "$RUN/rsync.one.err"
+    rc=$?
+    cat "$RUN/rsync.one.err" >> "$RUN/rsync.err"
+    if ! rsync_explained "$rc" "$RUN/rsync.one.err" "$1"; then
+      note "rsync failed on root $r (rc=$rc):"
+      grep -v 'skipping non-regular file' "$RUN/rsync.one.err" | head -5 | sed 's/^/  /' >&2
+      return 1
+    fi
+    [ "$rc" = 0 ] || note "rsync rc=$rc on root $r: every error line is explained (skipped sockets or vanished files)"
+    i=$((i + 1))
+  done < "$RUN/roots.txt"
+  rm -f "$RUN/rsync.one.err"
+  # Counts only: the itemized log holds filenames and stays in the mode-700 run folder.
+  note "rsync: $(grep -c '^[<>]f' "$RUN/rsync.log" | tr -d ' ') file(s) $([ "$DRY" = 1 ] && echo 'would be ')sent, $(grep -c '^cd' "$RUN/rsync.log" | tr -d ' ') new folder(s), $(grep -c '^\*deleting' "$RUN/rsync.log" | tr -d ' ') deletion(s) (itemized: $RUN/rsync.log)"
   return 0
 }
 
@@ -290,7 +320,7 @@ do_backup() {
   note "roots.tar stored: ${lsha%% *} bytes, sha256 matches"
   rsync "${cflags[@]}" -E "$HOME/.claude/" "$(dest_home_spec "$dir/claude/")" > "$RUN/claude-rsync.log" 2> "$RUN/claude-rsync.err"
   rc=$?
-  [ "$rc" = 0 ] || die "copying ~/.claude to the backup failed (rc=$rc; see $RUN/claude-rsync.err)"
+  rsync_explained "$rc" "$RUN/claude-rsync.err" seed || die "copying ~/.claude to the backup failed (rc=$rc; see $RUN/claude-rsync.err)"
   note "backup complete: ~/$dir on the destination (never restored automatically)"
   flog "backup ok dir=$dir roots=$ROOTS_N"
 }

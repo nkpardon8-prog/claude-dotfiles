@@ -16,6 +16,9 @@
 #   E5 rule 2: an alias home itself, and /, as an extra root are refused by inventory (exit 2).
 #   E6 backup: ~/fleet-backup-<ts>/roots.tar holds tracked files and leaves out the same excludes;
 #      .../claude holds ~/.claude minus the session registry and login files; the source is untouched.
+#   E8 a stale .git/index.lock on the destination (excluded, so --delete keeps it) fails verify.
+#   E9 rsync rc 23: failure when an unexplained error line exists (the /Users utimensat shape); passes
+#      when the only lines are skipped sockets. rc 24 (vanished) passes for seed. PATH stub for rsync.
 #   E7 rule 18: npm-dirs finds a launch folder with node_modules + package-lock.json, and npm-ci
 #      --dry-run names it without installing.
 set -uo pipefail
@@ -134,6 +137,30 @@ else
   [ -e "$BK/claude/.credentials.json" ] && fail "E6: a login file was backed up"
 fi
 [ "$(cd "$ROOT" && find . -type f ! -path './.git/*' | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$SRC_BEFORE" ] || fail "E6: backup changed the source root"
+
+# --- E8 ---------------------------------------------------------------------------------------------
+cp -p "$ROOT/notes/transferred-log.md" "$D/notes/transferred-log.md"
+fleet verify
+[ "$FRC" -eq 0 ] || fail "E8: precondition: verify is not clean after restoring: $(printf '%s' "$FO" | tail -3 | tr '\n' '|')"
+printf 'stale\n' > "$D/.git/index.lock"
+fleet verify
+[ "$FRC" -eq 1 ] && case "$FO" in *"stray-git-lock-on-dest"*) true ;; *) false ;; esac || fail "E8: a stale lock on the destination did not fail verify (rc=$FRC)"
+rm -f "$D/.git/index.lock"
+
+# --- E9 ---------------------------------------------------------------------------------------------
+STUB="$SANDBOX/stubbin"; mkdir -p "$STUB"
+stub() { printf '#!/bin/sh\nprintf "%%s\\n" "%s" >&2\nexit %s\n' "$1" "$2" > "$STUB/rsync"; chmod +x "$STUB/rsync"; }
+sfleet() { FO=$(PATH="$STUB:$PATH" HOME="$SRC" FLEET_EXTRA_ROOTS="$ROOT" "$FLEET" "$@" 2>&1); FRC=$?; }
+stub 'rsync: error: Users: utimensat (2): Operation not permitted' 23
+sfleet seed --no-npm
+[ "$FRC" -eq 1 ] || fail "E9: rc 23 with an unexplained error did not fail seed (rc=$FRC): $FO"
+stub 'skipping non-regular file x.sock' 23
+sfleet seed --no-npm
+[ "$FRC" -eq 0 ] || fail "E9: rc 23 with only skipped sockets failed seed (rc=$FRC): $FO"
+stub 'file has vanished: y' 24
+sfleet seed --no-npm
+[ "$FRC" -eq 0 ] || fail "E9: rc 24 vanished failed seed (rc=$FRC): $FO"
+rm -f "$STUB/rsync"
 
 # --- E7 ---------------------------------------------------------------------------------------------
 printf '{"sids": [{"sid": "s", "cwd": "%s"}]}' "$ROOT" > "$SANDBOX/npm-plan.json"
