@@ -10,7 +10,8 @@
 #   G3 rule 4: growth after the marker with a tool call refuses; growth that is only text plus the
 #      pack step's own marker-writing Bash call passes.
 #   G4 rule 5: another open chat refuses a full final; one chat open in two windows refuses.
-#   G5 rule 5: a non-shell process with its working folder inside a root refuses even a pilot.
+#   G5 rule 5: a non-shell process with its working folder inside a root refuses a full final and only
+#      warns for a pilot (which copies a live snapshot); git file watchers never refuse.
 #   G6 --only: shorter than 8 characters and ambiguous prefixes refuse; a unique prefix works.
 #   G7 pilot: final --only + verify + land write transferred-<sid> here, transfer-arrived-<sid> and
 #      landed.json there; resume-list prints the resume command, and NOT READY when the launch
@@ -150,8 +151,18 @@ fleet final --dry-run --only aaaaaaaa-1
 ( cd "$ROOT" && exec sleep 600 ) &
 PS=$!; PIDS="$PIDS $PS"
 sleep 1
-fleet final --only aaaaaaaa-1
-[ "$FRC" -eq 2 ] && has "(pid $PS) is using files inside $ROOT" || fail "G5: a process working inside the root was not refused (rc=$FRC)"
+fleet final
+[ "$FRC" -eq 2 ] && has "(pid $PS) is using files inside $ROOT: stop it first" || fail "G5: a full final did not refuse a process working inside the root (rc=$FRC)"
+fleet final --dry-run --only aaaaaaaa-1
+has "process sleep (pid $PS) is using files inside $ROOT - copied as a live snapshot" || fail "G5: a pilot did not warn about a process working inside the root: $FO"
+has "(pid $PS) is using files inside $ROOT: stop it first" && fail "G5: a pilot refused a process outside the moving chats"
+kill "$PS" 2>/dev/null; wait "$PS" 2>/dev/null
+( cd "$ROOT" && exec -a "git fsmonitor--daemon run --detach" sleep 600 ) &
+PS=$!; PIDS="$PIDS $PS"
+sleep 1
+fleet final
+has "(pid $PS) is using files" && fail "G5: a full final refused a git file watcher"
+has "background helper" || fail "G5: the git file watcher was not reported as a helper: $FO"
 kill "$PS" 2>/dev/null; wait "$PS" 2>/dev/null
 
 # --- G5b --------------------------------------------------------------------------------------------

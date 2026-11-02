@@ -91,6 +91,8 @@ READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "TodoW
 START_TIME_TOLERANCE_SEC = 120.0
 SHELLS = ("zsh", "-zsh", "bash", "-bash", "sh", "-sh", "fish", "tcsh", "login")
 INDEXERS = ("mds", "mds_stores", "mdworker", "mdworker_shared", "fseventsd", "revisiond")
+# Background helpers that hold a folder open but write nothing a copy cares about.
+HELPER_COMMANDS = ("fsmonitor--daemon", "/Pane.app/")
 
 
 class Refused(Exception):
@@ -499,6 +501,17 @@ def live_sessions():
     for sid in by:
         by[sid].sort(key=lambda x: -x["_mtime"])
     return by, stale
+
+
+def is_helper_process(pid):
+    """True for a git file watcher, an ssh connection master or a Pane helper (see HELPER_COMMANDS)."""
+    try:
+        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, universal_newlines=True, timeout=10)
+    except Exception:
+        return False
+    cmd = r.stdout.strip()
+    return any(h in cmd for h in HELPER_COMMANDS) or (cmd.startswith("ssh: ") and cmd.endswith("[mux]"))
 
 
 def ps_table():
@@ -1254,6 +1267,7 @@ def cmd_plan(a):
                 refusals.append(msg + ": pack and close every window first")
         live_pids = set(e["pid"] for ents in other_live.values() for e in ents) if only else set()
         allowed = descendants_of(table, live_pids) | live_pids
+        helpers = 0
         for pid, f in sorted(lsof_findings([r["path"] for r in roots]).items()):
             if pid in me:
                 continue
@@ -1265,8 +1279,18 @@ def cmd_plan(a):
                 warnings.append("system indexer %s (pid %d) is reading inside %s" % (comm, pid, where))
             elif not f["files"] and comm in SHELLS:
                 warnings.append("an idle %s (pid %d) has its working folder inside %s" % (comm, pid, where))
+            elif is_helper_process(pid):
+                helpers += 1
+            elif only:
+                # A pilot copies a live snapshot and verify reports these roots as drift; the full final re-syncs them.
+                warnings.append("process %s (pid %d) is using files inside %s - copied as a live snapshot; the full final re-syncs them" % (comm, pid, where))
+                for r in roots:
+                    if r["path"] in f["cwd"] | f["files"]:
+                        r["live_other_sids"].append("pid:%d" % pid)
             else:
                 refusals.append("process %s (pid %d) is using files inside %s: stop it first" % (comm, pid, where))
+        if helpers:
+            warnings.append("%d background helper(s) (git file watchers, ssh connections, Pane) hold folders open; they do not block the copy" % helpers)
     if mode == "final" and os.environ.get("FLEET_DOCKER_OK") != "1" and not a.dry_run:
         refusals.append("set FLEET_DOCKER_OK=1 once the owner confirms Docker has moved off the destination")
     bad = 0
