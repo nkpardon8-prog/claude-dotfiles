@@ -961,6 +961,13 @@ def cmd_compare(a):
     src, dst = load_gz(a.source), load_gz(a.dest_manifest)
     plan = load_json(a.plan, {}) if a.plan else {}
     live_shared = set(r["path"] for r in plan.get("roots", []) if r.get("live_other_sids"))
+    if plan.get("only"):
+        # A pilot: one commit by a chat that keeps working changes the git database every worktree of
+        # that repo shares, so all of them only report drift. A full final has no open chats.
+        common = dict((r["path"], git_out(r["path"], "rev-parse", "--path-format=absolute", "--git-common-dir"))
+                      for r in plan.get("roots", []) if os.path.isdir(r["path"]))
+        busy = set(common[r] for r in live_shared if common.get(r))
+        live_shared |= set(r for r, c in common.items() if c and c in busy)
     mism, drift = [], []
     for root, s in sorted(src["roots"].items()):
         d = dst["roots"].get(root, {"missing": True})
@@ -1729,14 +1736,14 @@ def cmd_state_digest(a):
         else:
             e["sha"] = sha_file(path)
         out.append(e)
-    json.dump({"format": 1, "host": socket.gethostname().split(".")[0], "members": out,
+    json.dump({"format": 1, "host": socket.gethostname().split(".")[0], "members": out, "pilot": bool(plan.get("only")),
                "cwds": launch_cwds(plan)}, sys.stdout)
 
 
 def cmd_state_check(a):
     d = read_stdin_json()
     host = re.sub(r"[^A-Za-z0-9._-]", "-", d.get("host") or "") or "other-mac"
-    mism, ok = [], 0
+    mism, drift, ok = [], [], 0
     for e in d["members"]:
         t = state_target(e["arc"])
         if e["kind"] == "append":
@@ -1746,7 +1753,9 @@ def cmd_state_check(a):
                     have = set(sha_bytes(l)[:20] for l in fh.read().split(b"\n") if l)
             missing = [x for x in e["lines"] if x not in have]
             if missing:
-                mism.append({"root": "state", "kind": "lines-missing(%d)" % len(missing), "path": phash("state", e["arc"])})
+                # During a pilot the chats still open here keep adding to these shared logs.
+                (drift if d.get("pilot") else mism).append(
+                    {"root": "state", "kind": "lines-missing(%d)" % len(missing), "path": phash("state", e["arc"])})
             else:
                 ok += 1
             continue
@@ -1764,7 +1773,7 @@ def cmd_state_check(a):
             ok += 1
         else:
             mism.append({"root": "state", "kind": "launch-folder-missing", "path": phash("cwd", c)})
-    json.dump({"format": 1, "kind": "verify-state", "at": now_iso(), "ok": ok, "mismatches": mism}, sys.stdout,
+    json.dump({"format": 1, "kind": "verify-state", "at": now_iso(), "ok": ok, "mismatches": mism, "drift": drift}, sys.stdout,
               indent=1, sort_keys=True)
 
 
@@ -2466,7 +2475,7 @@ def cmd_receipt(a):
     st = load_json(os.path.join(a.run_dir, "verify-state.json"), {}) or {}
     plan = load_json(os.path.join(a.run_dir, "plan.json"), {}) or {}
     mism = list(files.get("mismatches", [])) + list(st.get("mismatches", []))
-    drift = files.get("drift", [])
+    drift = list(files.get("drift", [])) + list(st.get("drift", []))
     rec = {"format": 1, "kind": "verify", "at": now_iso(), "run": os.path.basename(a.run_dir.rstrip("/")),
            "mode": plan.get("mode"), "only": plan.get("only", []), "roots": files.get("roots", 0),
            "files": files.get("files", 0), "state_ok": st.get("ok", 0), "mismatches": mism,

@@ -19,6 +19,7 @@
 #   G8 rule 7: a file changed under a landed root on the destination refuses the next final; a
 #      landed chat asked a question (Read only) does not; one that ran a Bash call does.
 #   G12 a git call runs with the file watcher off and times out instead of waiting forever.
+#   G13 a pilot reports differences in a repo other chats still use as drift; other repos stay strict.
 #   G5b a destination path reached through a symlink refuses final; nothing lands behind the link.
 #   G8b final stays re-runnable after a landing: the fleet's own re-sync of a landed root does not
 #      trip rule 7 on the next run.
@@ -183,6 +184,35 @@ f.GIT_TIMEOUT = 1
 print(f.git('$SANDBOX', 'status')[0])" 2>/dev/null)
 [ "$G12" = "124" ] || fail "G12: a hung git call did not time out with 124: $G12"
 grep -q "core.fsmonitor=false" "$SANDBOX/fakegit/args" 2>/dev/null || fail "G12: git ran without core.fsmonitor=false"
+
+# --- G13 --------------------------------------------------------------------------------------------
+# A pilot: every root sharing a git database with a chat that keeps working only reports drift, because
+# one commit anywhere changes that shared database. An unrelated repo stays strict, and so does a full final.
+G13="$SANDBOX/g13"; mkdir -p "$G13"
+git -c init.defaultBranch=main init -q "$G13/main" && git -C "$G13/main" -c user.name=t -c user.email=t@t commit -q --allow-empty -m x \
+  && git -C "$G13/main" worktree add -q "$G13/wt" -b g13 && git -c init.defaultBranch=main init -q "$G13/solo" || { echo "INFRA: G13 repos" >&2; exit 3; }
+G13_OUT=$(python3 -B - "$G13" "$HOME/.claude-dotfiles/scripts/transfer/fleet_lib.py" <<'PYE'
+import gzip, json, os, subprocess, sys
+g, lib = sys.argv[1:3]
+g = os.path.realpath(g)
+main, wt, solo = g + "/main", g + "/wt", g + "/solo"
+def man(name, val):
+    roots = dict((r, {"files": {"p": "f:" + val}, "hard": [], "git": {}, "locks": []}) for r in (main, wt, solo))
+    with open(os.path.join(g, name), "wb") as fh:
+        fh.write(gzip.compress(json.dumps({"roots": roots}).encode()))
+man("s.gz", "a"); man("d.gz", "b")
+for label, only in (("pilot", ["x"]), ("full", [])):
+    plan = {"only": only, "roots": [{"path": main, "live_other_sids": ["y"]}, {"path": wt, "live_other_sids": []},
+                                    {"path": solo, "live_other_sids": []}]}
+    with open(os.path.join(g, "p.json"), "w") as fh:
+        json.dump(plan, fh)
+    r = json.loads(subprocess.check_output(["python3", "-B", lib, "compare", g + "/s.gz", g + "/d.gz", "--plan", g + "/p.json"]))
+    print(label, "mism=" + ",".join(sorted(os.path.basename(m["root"]) for m in r["mismatches"])),
+          "drift=" + ",".join(sorted(os.path.basename(m["root"]) for m in r["drift"])))
+PYE
+)
+printf '%s' "$G13_OUT" | grep -q "pilot mism=solo drift=main,wt" || fail "G13: a pilot did not separate shared-repo drift from a strict repo: $G13_OUT"
+printf '%s' "$G13_OUT" | grep -q "full mism=solo,wt drift=main" || fail "G13: a plan with no pilot widened the drift: $G13_OUT"
 
 # --- G5b --------------------------------------------------------------------------------------------
 mkdir -p "$DPRE$ALIAS" "$SANDBOX/elsewhere"
