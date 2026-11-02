@@ -78,7 +78,7 @@ _RUN_VALUES = """
 --mac-address -m/--memory --memory-reservation --memory-swap --memory-swappiness --mount --name
 --network --network-alias --oom-score-adj --pid --pids-limit --platform -p/--publish --pull --restart
 --runtime --security-opt --shm-size --stop-signal --stop-timeout --storage-opt --sysctl --tmpfs
---ulimit -u/--user --userns --uts -v/--volume --volume-driver --volumes-from -w/--workdir
+--ulimit --umask -u/--user --userns --uts -v/--volume --volume-driver --volumes-from -w/--workdir
 """
 _CREATE_BOOLS = ("--disable-content-trust --help --init --no-healthcheck --oom-kill-disable "
                  "-i/--interactive --privileged -P/--publish-all -q/--quiet --read-only --rm -t/--tty --use-api-socket")
