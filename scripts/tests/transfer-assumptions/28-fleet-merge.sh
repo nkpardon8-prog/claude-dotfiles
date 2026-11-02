@@ -19,7 +19,7 @@
 #      ~/.claude/logs/fleet.
 #   M8 a chat launched in a NON-git folder: the folder is created on the destination, only its tmp/
 #      travels as a root, plus that chat's own CLAUDE.local/TRANSFER/MISSION files there - never
-#      another chat's.
+#      another chat's. A chat launched in a home alias ITSELF (a cwd of ~ on the source) is not refused.
 #   M7 the merge touches only project folders named by this Mac's inventory: the destination's own
 #      project memory is untouched by final, and a state stream naming a project under the
 #      destination's real home is refused by place-state with nothing placed.
@@ -87,6 +87,17 @@ path, sid, cwd, mf = sys.argv[1:5]
 with open(path, "w") as fh:
     fh.write(json.dumps({"type": "user", "uuid": "n-1", "sessionId": sid, "cwd": cwd, "message": {"role": "user", "content": "x"}}) + "\n")
 json.dump({"sid": sid, "transcript_bytes": os.path.getsize(path), "last_uuid": "n-1", "ts": "t", "cwd": cwd, "transcript": path}, open(mf, "w"))
+PY2
+
+# A third packed chat launched in the alias home itself (a chat started in plain ~).
+SID3=$(tx_new_uuid); HSLUG=$(tx_slug "$ALIAS")
+mkdir -p "$SRC/.claude/projects/$HSLUG"
+python3 - "$SRC/.claude/projects/$HSLUG/$SID3.jsonl" "$SID3" "$ALIAS" "$SRC/.claude/progress/fleet-ready-$SID3" <<'PY2'
+import json, os, sys
+path, sid, cwd, mf = sys.argv[1:5]
+with open(path, "w") as fh:
+    fh.write(json.dumps({"type": "user", "uuid": "h-1", "sessionId": sid, "cwd": cwd, "message": {"role": "user", "content": "x"}}) + "\n")
+json.dump({"sid": sid, "transcript_bytes": os.path.getsize(path), "last_uuid": "h-1", "ts": "t", "cwd": cwd, "transcript": path}, open(mf, "w"))
 PY2
 
 # Destination before the move: its own memory + history, and one file the fleet wrote earlier.
@@ -185,6 +196,8 @@ DNG="$DPRE$NG"
 for f in "CLAUDE.local.$SID2.md" "TRANSFER.$SID2.md" "MISSION.$SID2.md"; do
   [ "$(tx_sha "$DNG/$f")" = "$(tx_sha "$NG/$f")" ] || fail "M8: $f did not travel"
 done
+[ -d "$DPRE$ALIAS" ] || fail "M8: the home-alias launch folder is missing on the destination"
+[ -f "$DHOME/.claude/projects/$HSLUG/$SID3.jsonl" ] || fail "M8: the chat launched in the home alias did not land"
 [ -e "$DNG/not-copied.bin" ] && fail "M8: a non-tmp file of the non-git folder travelled"
 [ -e "$DNG/CLAUDE.local.someone-else.md" ] && fail "M8: another chat's handoff travelled"
 
