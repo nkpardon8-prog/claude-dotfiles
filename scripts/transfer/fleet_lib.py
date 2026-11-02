@@ -781,9 +781,6 @@ class Walk(object):
         self.dirs = set(p for p, d in excl if d)
         self.excl_all = self.files | self.dirs
 
-    def excluded(self, abs_root_path, is_dir):
-        return abs_root_path in self.excl_all
-
     def entries(self):
         """yield (rel, full_scan_path, lstat) for every kept entry, root first."""
         try:
@@ -848,6 +845,18 @@ def manifest_root(root, scan, excl):
     return files, hard, worktrees, locks
 
 
+def excluded_path(ab, excl_all):
+    """True when ab or any folder above it is in the exclude set."""
+    p = ab
+    while True:
+        if p in excl_all:
+            return True
+        q = os.path.dirname(p)
+        if q == p:
+            return False
+        p = q
+
+
 def git_fingerprint(root, rel, scan_wt, excl_all):
     """Rule 12 per worktree: HEAD, branch, porcelain v2, staged/worktree diff shas, untracked list,
     stash list, for-each-ref sha. Untracked entries the copy leaves out are filtered on both Macs."""
@@ -874,8 +883,7 @@ def git_fingerprint(root, rel, scan_wt, excl_all):
         if not e:
             continue
         r = os.fsdecode(e)
-        ab = os.path.join(base, r)
-        if ab in excl_all or any(inside(ab, x) for x in excl_all if inside(x, base) and x != ab and ab.startswith(x + "/")):
+        if excluded_path(os.path.join(base, r), excl_all):
             continue
         if r.rsplit("/", 1)[-1] == ".DS_Store":
             continue
@@ -1180,7 +1188,7 @@ def cmd_plan(a):
     elif only:
         sids = only
     else:
-        sids = sorted((set(inv_cwd) | set(mk)) - landed) if mode == "final" else sorted(set(inv_cwd) | set(mk) | landed)
+        sids = sorted((set(inv_cwd) | set(mk)) - landed)
     cwds, trs = {}, {}
     for sid in sids:
         cwd = inv_cwd.get(sid) or (mk.get(sid) or {}).get("cwd") or (live.get(sid, [{}])[0].get("cwd") or "")
@@ -1190,7 +1198,7 @@ def cmd_plan(a):
         if not tr or not os.path.isfile(tr):
             tr = find_transcript(sid, cwd)
         trs[sid] = tr
-        if mode in ("final", "verify", "land") and not tr:
+        if mode == "final" and not tr:
             refusals.append("chat %s: no transcript under ~/.claude/projects/*/" % sid[:8])
     state_sids = [s for s in sids if s not in landed] if mode == "final" else list(sids)
     if mode == "final":
@@ -1286,13 +1294,19 @@ def cmd_excludes(a):
 # Per-sid state (rules 8, 9, 10, 17)
 # ---------------------------------------------------------------------------------------------
 def _tree(base):
+    """Every file and symlink under base (symlinked dirs are listed, never entered)."""
     out = []
     if os.path.isdir(base) and not os.path.islink(base):
         for dp, dn, fn in os.walk(base):
-            dn[:] = [n for n in dn if not os.path.islink(os.path.join(dp, n))] + \
-                [n for n in dn if os.path.islink(os.path.join(dp, n)) and out.append(os.path.join(dp, n))]
-            for n in fn:
-                out.append(os.path.join(dp, n))
+            keep = []
+            for n in dn:
+                full = os.path.join(dp, n)
+                if os.path.islink(full):
+                    out.append(full)
+                else:
+                    keep.append(n)
+            dn[:] = keep
+            out.extend(os.path.join(dp, n) for n in fn)
     return sorted(out)
 
 
@@ -2150,6 +2164,128 @@ def cmd_npm_dirs(a):
     json.dump(sorted(out), sys.stdout)
 
 
+# ---------------------------------------------------------------------------------------------
+# Source-side bookkeeping between steps (keeps fleet-move.sh thin)
+# ---------------------------------------------------------------------------------------------
+def cmd_apply_gate(a):
+    """Fold the destination's dest-gate answer into the run's plan: its refusals become the run's,
+    and a sid the destination already holds as landed never has its state copied again (rule 6)."""
+    pf = os.path.join(a.run_dir, "plan.json")
+    plan, gate = load_json(pf), load_json(os.path.join(a.run_dir, "gate.json"))
+    if not isinstance(plan, dict) or not isinstance(gate, dict):
+        die("plan.json or gate.json is missing or unreadable in %s" % a.run_dir)
+    landed = set(gate.get("landed_sids", []))
+    for s in plan["sids"]:
+        if s["state"] and s["sid"] in landed:
+            s["state"] = False
+            plan["warnings"].append("chat %s is already landed on the destination; its state is not copied again" % s["sid"][:8])
+    plan["refusals"].extend(gate.get("refusals", []))
+    plan["warnings"].extend(gate.get("warnings", []))
+    plan["dest_free_bytes"] = gate.get("free_bytes", -1)
+    write_json_atomic(pf, plan)
+    for w in gate.get("warnings", []):
+        sys.stderr.write("fleet: WARN: %s\n" % w)
+    for r in gate.get("refusals", []):
+        sys.stderr.write("fleet: REFUSE: %s\n" % r)
+    sys.exit(2 if plan["refusals"] else 0)
+
+
+def cmd_land_request(a):
+    plan = load_json(os.path.join(a.run_dir, "plan.json"))
+    cd = claude_dir()
+    sids = []
+    for s in plan["sids"]:
+        if s["state"] and s.get("transcript"):
+            sids.append({"sid": s["sid"], "transcript_rel": os.path.relpath(s["transcript"], cd)})
+    json.dump({"run": os.path.basename(a.run_dir.rstrip("/")), "sids": sids,
+               "roots": [{"path": r["path"], "excludes": r["excludes"]} for r in plan["roots"]]}, sys.stdout)
+
+
+def cmd_land_local(a):
+    """Rule 15: transferred-<sid> on THIS Mac (post-compact-primer.sh warns before a fork) and the
+    local landing record resume-list / rollback read."""
+    plan = load_json(os.path.join(a.run_dir, "plan.json"))
+    dest = load_json(os.path.join(a.run_dir, "land.json"))
+    rec = load_json(os.path.join(logdir(), "landed-local.json"), None) or {"format": 1, "sids": {}}
+    prog = os.path.join(claude_dir(), "progress")
+    os.makedirs(prog, exist_ok=True)
+    for s in plan["sids"]:
+        info = (dest.get("sids") or {}).get(s["sid"])
+        if not info:
+            continue
+        f = os.path.join(prog, "transferred-" + s["sid"])
+        tmp = "%s.tmp.%d" % (f, os.getpid())
+        with open(tmp, "w") as fh:
+            fh.write("sid=%s\ntool=claude\nvia=fleet\ndest=%s\nsent_at=%s\nrun=%s\ntranscript_sha256=%s\n"
+                     % (s["sid"], a.dest, now_iso(), os.path.basename(a.run_dir.rstrip("/")), info["sha"]))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, f)
+        rec["sids"][s["sid"]] = {"cwd": s["cwd"], "name": s.get("name", ""), "transcript_sha": info["sha"],
+                                 "landed_at": info["landed_at"], "run": os.path.basename(a.run_dir.rstrip("/"))}
+        print("landed %s  %s" % (s["sid"][:8], s.get("name") or ""))
+    write_json_atomic(os.path.join(logdir(), "landed-local.json"), rec)
+
+
+def cmd_receipt(a):
+    """Combine the file and state comparisons into the run's verify receipt (rule 12/13)."""
+    files = load_json(os.path.join(a.run_dir, "verify-files.json"), {}) or {}
+    st = load_json(os.path.join(a.run_dir, "verify-state.json"), {}) or {}
+    plan = load_json(os.path.join(a.run_dir, "plan.json"), {}) or {}
+    mism = list(files.get("mismatches", [])) + list(st.get("mismatches", []))
+    drift = files.get("drift", [])
+    rec = {"format": 1, "kind": "verify", "at": now_iso(), "run": os.path.basename(a.run_dir.rstrip("/")),
+           "mode": plan.get("mode"), "only": plan.get("only", []), "roots": files.get("roots", 0),
+           "files": files.get("files", 0), "state_ok": st.get("ok", 0), "mismatches": mism,
+           "drift_in_roots_still_live_here": drift, "ok": not mism}
+    write_json_atomic(os.path.join(a.run_dir, "verify.json"), rec)
+    kinds = {}
+    for m in mism:
+        kinds[m["kind"]] = kinds.get(m["kind"], 0) + 1
+    print("verify: %d roots, %d files, %d chat-state files checked: %d mismatch(es)%s"
+          % (rec["roots"], rec["files"], rec["state_ok"] + len(st.get("mismatches", [])), len(mism),
+             (" (" + ", ".join("%s %d" % kv for kv in sorted(kinds.items())) + ")") if kinds else ""))
+    for m in mism[:a.limit]:
+        print("  MISMATCH %-24s root=%s path=%s" % (m["kind"], m["root"], m["path"]))
+    if len(mism) > a.limit:
+        print("  ... %d more in %s" % (len(mism) - a.limit, os.path.join(a.run_dir, "verify.json")))
+    if drift:
+        print("  (%d difference(s) in folders other open chats still use here: expected for a pilot; "
+              "the full final re-syncs them)" % len(drift))
+    sys.exit(0 if rec["ok"] else 1)
+
+
+def cmd_resume_list(a):
+    rec = load_json(os.path.join(logdir(create=False), "landed-local.json"), {}) or {}
+    sids = rec.get("sids") or {}
+    if not sids:
+        print("No chat has landed yet.")
+        return
+    for sid, info in sorted(sids.items(), key=lambda kv: kv[1].get("landed_at", "")):
+        print("cd %s && claude --resume %s    # %s" % (shell_quote(info["cwd"]), sid, info.get("name") or ""))
+
+
+def shell_quote(s):
+    return s if re.match(r"^[A-Za-z0-9_./=-]+$", s) else "'" + s.replace("'", "'\\''") + "'"
+
+
+def cmd_rollback_local(a):
+    p = os.path.join(logdir(), "landed-local.json")
+    rec = load_json(p, None) or {"format": 1, "sids": {}}
+    if a.expect_only:
+        info = (rec.get("sids") or {}).get(a.sid)
+        if not info:
+            raise Refused("chat %s is not recorded as landed from this Mac" % a.sid[:8])
+        print(info["transcript_sha"])
+        return
+    rec.get("sids", {}).pop(a.sid, None)
+    write_json_atomic(p, rec)
+    try:
+        os.unlink(os.path.join(claude_dir(), "progress", "transferred-" + a.sid))
+    except OSError:
+        pass
+    print("rolled back %s: it can be resumed on this Mac again" % a.sid[:8])
+
+
 def cmd_guard_path(a):
     guard_write(a.path)
 
@@ -2170,7 +2306,7 @@ def main():
     sp("guard-path", cmd_guard_path).add_argument("path")
     sp("inventory", cmd_inventory).add_argument("--out")
     p = sp("plan", cmd_plan)
-    p.add_argument("--mode", required=True, choices=("seed", "backup", "final", "verify", "land"))
+    p.add_argument("--mode", required=True, choices=("seed", "backup", "final"))
     p.add_argument("--run-dir", required=True)
     p.add_argument("--fleet-json", required=True)
     p.add_argument("--only", default="")
@@ -2211,6 +2347,18 @@ def main():
     p.add_argument("--ts", required=True)
     sp("npm-ci", cmd_npm_ci).add_argument("--dry-run", action="store_true")
     sp("npm-dirs", cmd_npm_dirs).add_argument("--plan", required=True)
+    sp("apply-gate", cmd_apply_gate).add_argument("--run-dir", required=True)
+    sp("land-request", cmd_land_request).add_argument("--run-dir", required=True)
+    p = sp("land-local", cmd_land_local)
+    p.add_argument("--run-dir", required=True)
+    p.add_argument("--dest", required=True)
+    p = sp("receipt", cmd_receipt)
+    p.add_argument("--run-dir", required=True)
+    p.add_argument("--limit", type=int, default=40)
+    sp("resume-list", cmd_resume_list)
+    p = sp("rollback-local", cmd_rollback_local)
+    p.add_argument("--sid", required=True)
+    p.add_argument("--expect-only", action="store_true")
     p = sp("resolve-only", cmd_resolve_only)
     p.add_argument("tokens")
     p.add_argument("--fleet-json", required=True)
