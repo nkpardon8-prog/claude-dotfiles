@@ -18,6 +18,7 @@
 #      folder is missing on the destination.
 #   G8 rule 7: a file changed under a landed root on the destination refuses the next final; a
 #      landed chat asked a question (Read only) does not; one that ran a Bash call does.
+#   G12 a git call runs with the file watcher off and times out instead of waiting forever.
 #   G5b a destination path reached through a symlink refuses final; nothing lands behind the link.
 #   G8b final stays re-runnable after a landing: the fleet's own re-sync of a landed root does not
 #      trip rule 7 on the next run.
@@ -164,6 +165,24 @@ fleet final
 has "(pid $PS) is using files" && fail "G5: a full final refused a git file watcher"
 has "background helper" || fail "G5: the git file watcher was not reported as a helper: $FO"
 kill "$PS" 2>/dev/null; wait "$PS" 2>/dev/null
+
+# --- G12 --------------------------------------------------------------------------------------------
+# A git call must not depend on the file watcher and must not wait forever (a hung watcher stalled a
+# real verify for 87 minutes with no error).
+mkdir -p "$SANDBOX/fakegit"
+cat > "$SANDBOX/fakegit/git" <<EOS
+#!/bin/sh
+echo "\$*" >> "$SANDBOX/fakegit/args"
+exec sleep 30
+EOS
+chmod +x "$SANDBOX/fakegit/git"
+G12=$(PATH="$SANDBOX/fakegit:$PATH" python3 -B -c "
+import sys; sys.path.insert(0, '$HOME/.claude-dotfiles/scripts/transfer')
+import fleet_lib as f
+f.GIT_TIMEOUT = 1
+print(f.git('$SANDBOX', 'status')[0])" 2>/dev/null)
+[ "$G12" = "124" ] || fail "G12: a hung git call did not time out with 124: $G12"
+grep -q "core.fsmonitor=false" "$SANDBOX/fakegit/args" 2>/dev/null || fail "G12: git ran without core.fsmonitor=false"
 
 # --- G5b --------------------------------------------------------------------------------------------
 mkdir -p "$DPRE$ALIAS" "$SANDBOX/elsewhere"

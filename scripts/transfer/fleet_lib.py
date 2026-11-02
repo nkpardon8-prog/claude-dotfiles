@@ -304,10 +304,16 @@ def git_env():
     return env
 
 
+GIT_TIMEOUT = 900   # seconds; a repo's own core.fsmonitor=true once hung `git status` forever on a stuck daemon
+
+
 def git(cwd, *args):
     try:
-        r = subprocess.run(["git", "-C", cwd, "-c", "core.quotePath=true"] + list(args),
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_env())
+        r = subprocess.run(["git", "-C", cwd, "-c", "core.quotePath=true", "-c", "core.fsmonitor=false"] + list(args),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_env(), timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sys.stderr.write("fleet: git %s timed out after %ds in %s\n" % (args[0] if args else "", GIT_TIMEOUT, cwd))
+        return 124, b""
     except OSError:
         return 127, b""
     return r.returncode, r.stdout
