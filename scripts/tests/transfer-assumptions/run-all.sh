@@ -56,6 +56,9 @@ TESTS=(
   "24-icloud-nudge.sh"
   "25-unmerged-refused-early.sh"
   "26-install-launchagent.sh"
+  "27-fleet-excludes.sh"
+  "28-fleet-merge.sh"
+  "29-fleet-gates.sh"
 )
 
 # Counters + strings, NOT arrays: macOS bash 3.2's `${#arr[@]}` on an EMPTY array under `set -u`

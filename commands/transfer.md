@@ -1,6 +1,6 @@
 ---
-description: "Move this chat to your other Mac. Prints a one-time code; run resumework <code> in Terminal there and the same chat reopens with its history, files and worktree."
-argument-hint: "[codex <session-id>] [--dry-run] [--full]"
+description: "Move this chat to your other Mac. Prints a one-time code; run resumework <code> in Terminal there and the same chat reopens with its history, files and worktree. `pack` only readies this window for a fleet move."
+argument-hint: "[pack | codex <session-id>] [--dry-run] [--full]"
 allowed-tools: Bash, Skill, Read, Write, Edit, CronList, CronDelete, TaskStop
 ---
 
@@ -30,15 +30,19 @@ runs as a Codex skill), use the words you were given in its place.
 - `--full`: re-send every untracked/ignored repo file, even ones the other Mac already has (normally
   a later send leaves those out; see "Delta sends" in `docs/COMMANDS.md`).
 - `--sid <id>`: override the session id read from the environment.
+- `pack`: ready THIS Claude chat for a fleet move (`scripts/transfer/fleet-move.sh` copies it later):
+  Steps 1-4, then the "Pack step" below. No code, nothing sent. Combines with neither `codex`,
+  `--dry-run` nor `--full`.
 
 ## Step 1 - Preflight (every path)
 
 ```bash
 set -uo pipefail
 set -f; set -- ${ARGUMENTS:-}; set +f
-MODE=claude; DRY=""; FULL=""; SID="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+MODE=claude; DRY=""; FULL=""; PACK=""; SID="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
 while [ $# -gt 0 ]; do
   case "$1" in
+    pack)      PACK=pack ;;
     codex)     MODE=codex; SID="${2:-}"; [ $# -gt 1 ] && shift ;;
     --sid)     SID="${2:-}"; [ $# -gt 1 ] && shift ;;
     --dry-run) DRY=--dry-run ;;
@@ -47,6 +51,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+[ -n "$PACK" ] && { [ "$MODE" = codex ] || [ -n "$DRY" ] || [ -n "$FULL" ]; } && { echo "transfer: pack combines with neither codex, --dry-run nor --full" >&2; exit 2; }
 case "$SID" in ''|*[!A-Za-z0-9_-]*) echo "transfer: no usable session id (got '${SID}')" >&2; exit 2 ;; esac
 [ "${#SID}" -le 128 ] || { echo "transfer: session id too long" >&2; exit 2; }
 . "$HOME/.claude-dotfiles/scripts/hooks/lib/handoff-locate.sh"
@@ -63,7 +68,7 @@ for f in "$HOME"/.claude/sessions/*.json; do
   [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$SID" ] && { CWD="$(jq -r '.cwd // empty' "$f")"; break; }
 done
 [ -n "$CWD" ] || CWD="$PWD"
-echo "MODE=$MODE SID=$SID DRY=${DRY:-no} FULL=${FULL:-no} ROOT=$ROOT CWD=$CWD"
+echo "MODE=$MODE PACK=${PACK:-no} SID=$SID DRY=${DRY:-no} FULL=${FULL:-no} ROOT=$ROOT CWD=$CWD"
 "$HOME/.claude-dotfiles/scripts/transfer/transfer-doctor" --local; echo "doctor_rc=$?"
 ```
 
@@ -72,6 +77,8 @@ echo "MODE=$MODE SID=$SID DRY=${DRY:-no} FULL=${FULL:-no} ROOT=$ROOT CWD=$CWD"
   the Codex path).
 - If the block exits non-zero, `doctor_rc` is not 0, or any line says FAIL: STOP. Tell the owner, in
   one or two plain sentences per item, what is not ready and how to fix it. Change nothing.
+- If it printed `PACK=pack`: a FAIL about only the iCloud drop folder, the iCloud canary or the window
+  address book does not stop a pack (nothing travels through iCloud). Any other FAIL still stops it.
 - No session id in `claude` mode (for example running as a Codex skill with no `codex <id>`): stop
   and explain that a Codex chat is moved with `/transfer codex <id>` (see below).
 
@@ -154,6 +161,50 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-s
 
   If it refuses (for example a decision is already waiting), leave it: the mission is already
   stopped. Add one line about it under "Left behind" in the notes.
+
+  **If this is `pack`, go to "Pack step" next; never run Step 5 or Step 6.**
+
+## Pack step (`/transfer pack` only)
+
+As the LAST command of this chat, with `<SID>` and `<CWD>` filled in as literals (keep the literal
+`fleet-ready-<SID>` path in the command: the mover recognises this one call by it, and refuses any
+other tool call it finds after the marker):
+
+```bash
+python3 - "$HOME/.claude/progress/fleet-ready-<SID>" "<SID>" "<CWD>" <<'PY'
+import glob, json, os, re, sys, time
+marker, sid, cwd = sys.argv[1:4]
+hits = sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/%s.jsonl" % sid)))
+want = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+tr = next((h for h in hits if os.path.basename(os.path.dirname(h)) == want), hits[0] if hits else "")
+if not tr:
+    sys.exit("transfer: no transcript for this chat; the window is NOT packed")
+with open(tr, "rb") as fh:
+    data = fh.read()
+n = data.rfind(b"\n") + 1
+last = None
+for line in data[:n].split(b"\n"):
+    try:
+        j = json.loads(line) if line.strip() else None
+    except ValueError:
+        continue
+    if isinstance(j, dict) and isinstance(j.get("uuid"), str):
+        last = j["uuid"]
+if not last:
+    sys.exit("transfer: the transcript has no records yet; the window is NOT packed")
+tmp = marker + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump({"sid": sid, "transcript_bytes": n, "last_uuid": last, "cwd": cwd, "transcript": tr,
+               "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, fh)
+os.chmod(tmp, 0o600)
+os.replace(tmp, marker)
+PY
+pack_rc=$?; [ "$pack_rc" = 0 ] && rm -f "$HOME/.claude/progress/mission-liveness-<SID>.json"; echo "pack_rc=$pack_rc"
+```
+
+On a non-zero `pack_rc`, tell the owner plainly that this window is not packed and why. Otherwise tell
+them exactly: "This window is packed. Type /exit now." After that line, run nothing else and write no
+mission state: a tool call after the marker makes the mover refuse this chat.
 
 ## Step 5 - Send (Claude path)
 

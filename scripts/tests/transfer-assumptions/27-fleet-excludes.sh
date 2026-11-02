@@ -4,6 +4,7 @@
 # Drives the REAL fleet-move.sh (inventory -> seed -> verify) with the destination side run locally
 # (FLEET_TEST_DEST_HOME + FLEET_TEST_DEST_PREFIX, dev gate only) and the REAL openrsync.
 #
+#   E0 seed --dry-run and backup --dry-run create nothing on the destination.
 #   E1 travels: tracked dist/app.js, tracked deno.lock (a *.lock never-name, but tracked), a tracked
 #      transferred-log.md, branch resumed-x (a resumed-* never-name inside .git), ignored .env,
 #      untracked yarn.lock (lockfile allowlist), untracked tmp/notes.md, an untracked symlink.
@@ -73,6 +74,12 @@ printf 'keep\n' > "$SRC/.claude/projects/p/keep.jsonl"
 # --- inventory + seed + verify ------------------------------------------------------------------
 fleet inventory
 [ "$FRC" -eq 0 ] || { echo "INFRA: inventory failed: $FO" >&2; exit 3; }
+fleet seed --no-npm --dry-run
+[ "$FRC" -eq 0 ] || fail "E0: seed --dry-run failed: $(printf '%s' "$FO" | tail -3 | tr '\n' '|')"
+[ -z "$(ls -A "$DPRE")" ] || fail "E0: seed --dry-run created something on the destination"
+fleet backup --dry-run
+[ "$FRC" -eq 0 ] || fail "E0: backup --dry-run failed: $(printf '%s' "$FO" | tail -3 | tr '\n' '|')"
+[ -z "$(ls -d "$DHOME"/fleet-backup-* 2>/dev/null)" ] || fail "E0: backup --dry-run created a folder on the destination"
 fleet seed --no-npm
 [ "$FRC" -eq 0 ] || { echo "INFRA: seed failed: $FO" >&2; exit 3; }
 D="$DPRE$ROOT"

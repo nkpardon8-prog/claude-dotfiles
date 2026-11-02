@@ -20,6 +20,8 @@
 #   G5b a destination path reached through a symlink refuses final; nothing lands behind the link.
 #   G8b final stays re-runnable after a landing: the fleet's own re-sync of a landed root does not
 #      trip rule 7 on the next run.
+#   G11 the REAL marker block from commands/transfer.md (Pack step) satisfies the gate, also after the
+#      growth a pack really leaves behind; it removes mission liveness.
 #   G10 dest-setup: without --apply nothing changes and the diff shows the moved-aside dirs and the
 #      dropped hook; a source missing a required setting refuses --apply; --apply makes commands,
 #      agents, rules, patterns, statusline.sh symlinks (real dirs kept as .bak-<ts>), rewrites this
@@ -210,6 +212,24 @@ fleet rollback aaaaaaaa-1
 [ -f "$SRC/.claude/progress/transferred-$A" ] && fail "G9: rollback left transferred-<sid> on this Mac"
 grep -q "via=fleet-rollback" "$DHOME/.claude/progress/transferred-$A" 2>/dev/null || fail "G9: the destination copy is not marked as moved away"
 grep -q "$A" "$DHOME/.claude/logs/fleet/landed.json" && fail "G9: landed.json still records the rolled-back chat"
+
+# --- G11 --------------------------------------------------------------------------------------------
+TM="$TX_REPO/commands/transfer.md"
+[ -f "$TM" ] || { echo "INFRA: $TM missing" >&2; exit 3; }
+D="dddddddd-4444-4444-8444-444444444444"
+transcript "$D"
+printf '{}\n' > "$SRC/.claude/progress/mission-liveness-$D.json"
+awk '/^## Pack step/{p=1} p&&/^```bash$/{b=1;next} b&&/^```$/{exit} b{print}' "$TM" \
+  | sed -e "s/<SID>/$D/g" -e "s|<CWD>|$ROOT|g" > "$SANDBOX/pack.sh"
+[ -s "$SANDBOX/pack.sh" ] || fail "G11: could not find the marker block in transfer.md"
+PO=$(HOME="$SRC" bash "$SANDBOX/pack.sh" 2>&1)
+case "$PO" in *"pack_rc=0"*) ;; *) fail "G11: the marker block failed: $PO" ;; esac
+[ -e "$SRC/.claude/progress/mission-liveness-$D.json" ] && fail "G11: the marker block left mission liveness behind"
+[ "$(stat -f %Lp "$SRC/.claude/progress/fleet-ready-$D")" = 600 ] || fail "G11: the marker is not mode 600"
+append_tool "$P/$D.jsonl" Bash "$(cat "$SANDBOX/pack.sh")"
+fleet final --dry-run --only dddddddd
+[ "$FRC" -eq 0 ] || fail "G11: the gate refused a chat packed by the real block: $(printf '%s' "$FO" | grep REFUSE | head -3)"
+rm -f "$SRC/.claude/progress/fleet-ready-$D"
 
 # --- G10 --------------------------------------------------------------------------------------------
 DF="$DHOME/dotfiles/claude"; DC="$DHOME/.claude"
