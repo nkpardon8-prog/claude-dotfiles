@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# fleet-move.sh - ONE-TIME move of every live Claude chat on this Mac to another Mac (default ssh
-# host `macmini-docker`, override with FLEET_DEST), at the SAME absolute paths, so each chat
+# fleet-move.sh - ONE-TIME move of every live Claude chat on this Mac to another Mac (the ssh host
+# named by FLEET_DEST=<your-alias>, REQUIRED, no default), at the SAME absolute paths, so each chat
 # continues there with plain `claude --resume <sid>` (or /resume from its folder). This Mac keeps
 # every file: it only gains markers and logs under ~/.claude/progress and ~/.claude/logs/fleet.
 #
@@ -47,6 +47,10 @@
 # --numeric-ids, -R with --no-implied-dirs (missing parents are created, existing parents such as
 # the alias home are never re-permissioned) and anchored, literal exclude rules from fleet_lib.py.
 #
+# Destination preflight (every subcommand that touches the destination, dest-check first of all):
+# FLEET_DEST must be set, and the host it reaches must answer `uname -s` = Darwin with a $HOME under
+# /Users - an ssh alias that was repointed at some other machine is refused before anything runs.
+#
 # Exit: 0 ok | 2 refused (reasons on stderr) | 1 error.
 # Dev-only (TRANSFER_TESTS_ALLOW_DEV=true): FLEET_TEST_DEST_HOME + FLEET_TEST_DEST_PREFIX run the
 # destination side locally (tests); see fleet_lib.py for the rest.
@@ -65,8 +69,21 @@ PROG="fleet-move"
 LIB="$SELF_DIR/fleet_lib.py"
 PY="${FLEET_PYTHON:-python3}"
 note() { echo "$PROG: $*" >&2; }
-refuse() { echo "$PROG: REFUSED: $*" >&2; tx_log "fleet refused: $*"; exit 2; }
-die() { echo "$PROG: ERROR: $*" >&2; tx_log "fleet error: $*"; exit 1; }
+# flog: tx_log's format and size ring, but in ~/.claude/logs/fleet/fleet.log. tx_log itself is not
+# used because it writes ~/.claude/logs/transfer.log, and this move writes nothing on this Mac
+# outside ~/.claude/progress and ~/.claude/logs/fleet.
+flog() {
+  local log="$HOME/.claude/logs/fleet/fleet.log" size
+  [ -d "${log%/*}" ] || return 0
+  ( umask 077 && printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(printf '%s' "$*" | tr '\n' ' ')" >> "$log" ) 2>/dev/null || return 0
+  size=$(wc -c < "$log" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$size" ] && [ "$size" -gt 262144 ]; then
+    ( umask 077 && tail -c 131072 "$log" > "$log.tmp.$$" ) 2>/dev/null && mv "$log.tmp.$$" "$log" 2>/dev/null
+  fi
+  return 0
+}
+refuse() { echo "$PROG: REFUSED: $*" >&2; flog "refused: $*"; exit 2; }
+die() { echo "$PROG: ERROR: $*" >&2; flog "error: $*"; exit 1; }
 
 DEV_OK=0
 [ "${TRANSFER_TESTS_ALLOW_DEV:-}" = "true" ] && DEV_OK=1
@@ -75,8 +92,7 @@ if [ "$DEV_OK" = 1 ] && [ -n "${FLEET_TEST_DEST_HOME:-}" ]; then
   [ -n "${FLEET_TEST_DEST_PREFIX:-}" ] || die "FLEET_TEST_DEST_HOME needs FLEET_TEST_DEST_PREFIX"
   LOCAL_DEST=1
 fi
-FLEET_DEST="${FLEET_DEST:-macmini-docker}"
-case "$FLEET_DEST" in "" | -* | *[!A-Za-z0-9@._-]*) refuse "FLEET_DEST must be an ssh host name" ;; esac
+FLEET_DEST="${FLEET_DEST:-}"
 LOGDIR="$HOME/.claude/logs/fleet"
 TS=$(date -u '+%Y%m%dT%H%M%SZ')
 HOST_S=$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9._-\n' '-')
@@ -134,6 +150,26 @@ rlib() {  # rlib <cmd> [args]: fleet_lib.py on the destination; stdin/stdout pas
 
 dest_root_spec() { if [ "$LOCAL_DEST" = 1 ]; then printf '%s/' "$FLEET_TEST_DEST_PREFIX"; else printf '%s:/' "$FLEET_DEST"; fi; }
 dest_home_spec() { if [ "$LOCAL_DEST" = 1 ]; then printf '%s/%s' "$FLEET_TEST_DEST_HOME" "$1"; else printf '%s:%s' "$FLEET_DEST" "$1"; fi; }
+
+need_dest() {  # FLEET_DEST set + the destination is a Mac whose user home is under /Users
+  local out os dhome
+  [ -n "$FLEET_DEST" ] || refuse "FLEET_DEST is not set: export FLEET_DEST=<ssh alias of the destination Mac> (there is no default)"
+  case "$FLEET_DEST" in -* | *[!A-Za-z0-9@._-]*) refuse "FLEET_DEST must be an ssh host name" ;; esac
+  [ -n "${DEST_OK:-}" ] && return 0
+  if [ "$LOCAL_DEST" = 1 ]; then
+    os=$(uname -s); dhome="$FLEET_TEST_DEST_HOME"
+    [ -d "$dhome" ] || refuse "test destination home $dhome does not exist"
+  else
+    # shellcheck disable=SC2016  # $HOME must expand on the destination
+    out=$(ssh -o BatchMode=yes -o ConnectTimeout=20 "$FLEET_DEST" 'uname -s; printf "%s\n" "$HOME"' 2>/dev/null) \
+      || refuse "cannot reach $FLEET_DEST over ssh (BatchMode): check the alias and keys"
+    os=$(printf '%s\n' "$out" | sed -n 1p); dhome=$(printf '%s\n' "$out" | sed -n 2p)
+    [ "$os" = Darwin ] || refuse "$FLEET_DEST is not a Mac (uname -s says '${os:-?}'): FLEET_DEST must name the destination Mac"
+    case "$dhome" in /Users/?*) ;; *) refuse "$FLEET_DEST is not a Mac user account: its home is '${dhome:-?}', expected /Users/<name>" ;; esac
+  fi
+  [ "$os" = Darwin ] || refuse "$FLEET_DEST is not a Mac (uname -s says '${os:-?}'): FLEET_DEST must name the destination Mac"
+  DEST_OK=1
+}
 
 ensure_logdir() {
   tx_guard_path "$LOGDIR" || refuse "the fleet log folder would sit inside the public dotfiles repo"
@@ -193,20 +229,22 @@ do_inventory() {
   lib inventory --out "$LOGDIR/fleet.json"
   rc=$?
   note "saved $LOGDIR/fleet.json"
-  tx_log "fleet inventory rc=$rc"
+  flog "inventory rc=$rc"
   return "$rc"
 }
 
 do_dest_check() {
+  need_dest
   ensure_logdir; need_inventory
   ( umask 077
     rlib dest-check > "$LOGDIR/dest-check-$TS.json" ) || die "cannot run fleet_lib.py on $FLEET_DEST (ssh, or its dotfiles lack fleet_lib.py)"
   ( umask 077; lib dest-check --local > "$LOGDIR/source-check-$TS.json" ) || die "local tool report failed"
   lib dest-compare "$LOGDIR/source-check-$TS.json" "$LOGDIR/dest-check-$TS.json" --fleet-json "$LOGDIR/fleet.json"
-  tx_log "fleet dest-check dest=$FLEET_DEST"
+  flog "dest-check dest=$FLEET_DEST"
 }
 
 do_dest_setup() {
+  need_dest
   local rc
   ensure_logdir; need_inventory
   if [ "$APPLY" = 1 ]; then
@@ -215,11 +253,12 @@ do_dest_setup() {
     lib setup-payload --fleet-json "$LOGDIR/fleet.json" | rlib dest-setup --ts "$TS"
   fi
   rc=$?
-  tx_log "fleet dest-setup apply=$APPLY rc=$rc"
+  flog "dest-setup apply=$APPLY rc=$rc"
   return "$rc"
 }
 
 do_backup() {
+  need_dest
   local rc dir="fleet-backup-$TS" lsha rsha
   local cflags=(-rlptgoH --numeric-ids --itemize-changes --exclude=/sessions/ "--exclude=/.credentials*" --exclude=/fleet-staging/)
   ensure_logdir; need_inventory; new_run backup
@@ -248,10 +287,11 @@ do_backup() {
   rc=$?
   [ "$rc" = 0 ] || die "copying ~/.claude to the backup failed (rc=$rc; see $RUN/claude-rsync.err)"
   note "backup complete: ~/$dir on the destination (never restored automatically)"
-  tx_log "fleet backup ok dir=$dir roots=$ROOTS_N"
+  flog "backup ok dir=$dir roots=$ROOTS_N"
 }
 
 do_seed() {
+  need_dest
   local rc grc
   ensure_logdir; need_inventory; new_run seed
   lib plan --mode seed --run-dir "$RUN" --fleet-json "$LOGDIR/fleet.json"
@@ -272,7 +312,7 @@ do_seed() {
       lib npm-dirs --plan "$RUN/plan.json" | rlib npm-ci
     fi
   fi
-  tx_log "fleet seed dry=$DRY roots=$ROOTS_N"
+  flog "seed dry=$DRY roots=$ROOTS_N"
   [ "$DRY" = 1 ] && { [ "$rc" = 2 ] || [ "$grc" != 0 ]; } && return 2
   return 0
 }
@@ -282,6 +322,7 @@ do_final() {
   if [ "$DRY" = 0 ] && [ "${FLEET_DOCKER_OK:-}" != 1 ]; then
     refuse "final needs FLEET_DOCKER_OK=1: set it only after the owner confirms Docker has moved off the destination"
   fi
+  need_dest
   ensure_logdir; need_inventory; new_run final
   if [ "$DRY" = 1 ]; then
     lib plan --mode final --run-dir "$RUN" --fleet-json "$LOGDIR/fleet.json" --only "$ONLY" --dry-run
@@ -313,12 +354,12 @@ do_final() {
   [ "$src" = 2 ] && refuse "a chat file already exists on the destination with different content; nothing of the state was placed (see $RUN/state.json)"
   [ "$src" = 0 ] || die "placing the chat state failed (rc=$src)"
   if [ "$DRY" = 1 ]; then
-    tx_log "fleet final dry run refused=$refused"
+    flog "final dry run refused=$refused"
     [ "$refused" = 1 ] && return 2
     return 0
   fi
   printf '%s\n' "$RUN" > "$LOGDIR/last-final.txt"
-  tx_log "fleet final ok run=$(basename "$RUN") only=${ONLY:-all}"
+  flog "final ok run=$(basename "$RUN") only=${ONLY:-all}"
   note "final done. Next: $PROG verify"
 }
 
@@ -331,6 +372,7 @@ last_run() {  # last_run -> prints the run folder verify/land work on
 }
 
 do_verify() {
+  need_dest
   local rc
   ensure_logdir
   RUN=$(last_run) || refuse "nothing to verify yet: run seed or final first"
@@ -347,11 +389,12 @@ do_verify() {
     cp "$RUN/verify.json" "$LOGDIR/receipts/$(basename "$RUN")-verify.json" && chmod 600 "$LOGDIR/receipts/$(basename "$RUN")-verify.json"
     rlib write-receipt --name "$(basename "$RUN")-verify.json" < "$RUN/verify.json" > /dev/null || note "could not store the receipt on the destination"
   fi
-  tx_log "fleet verify run=$(basename "$RUN") rc=$rc"
+  flog "verify run=$(basename "$RUN") rc=$rc"
   return "$rc"
 }
 
 do_land() {
+  need_dest
   ensure_logdir
   [ -f "$LOGDIR/last-final.txt" ] || refuse "nothing to land: run final first"
   RUN=$(cat "$LOGDIR/last-final.txt")
@@ -364,13 +407,14 @@ do_land() {
   fi
   ( umask 077; lib land-request --run-dir "$RUN" | rlib land-dest > "$RUN/land.json" ) || die "landing on the destination failed"
   lib land-local --run-dir "$RUN" --dest "$FLEET_DEST" || die "recording the landing here failed"
-  tx_log "fleet land run=$(basename "$RUN")"
+  flog "land run=$(basename "$RUN")"
   note "landed. Next: $PROG resume-list"
 }
 
 do_resume_list() { lib resume-list; }
 
 do_rollback() {
+  need_dest
   local sid expect
   ensure_logdir
   [ -n "$ARG_SID" ] || refuse "rollback needs a session id"
@@ -383,7 +427,7 @@ do_rollback() {
   fi
   rlib rollback-dest --sid "$sid" --expect "$expect" > /dev/null || exit $?
   lib rollback-local --sid "$sid"
-  tx_log "fleet rollback sid=$sid"
+  flog "rollback sid=$sid"
 }
 
 case "$CMD" in

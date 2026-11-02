@@ -31,6 +31,7 @@ DHOME="$SANDBOX/dest-home"; DPRE="$SANDBOX/dest-root"
 mkdir -p "$ALIAS/Developer" "$SRC/.claude" "$DHOME/.claude" "$DPRE"
 printf 'alias_of=%s\n' "$(id -un)" > "$ALIAS/.home-alias-of"
 export TX_TEST_ALIAS_HOMES_BASE="$USERS" FLEET_TEST_DEST_HOME="$DHOME" FLEET_TEST_DEST_PREFIX="$DPRE"
+export FLEET_DEST="sandbox-dest"     # required (no default); unused in local-destination mode
 
 ROOT="$ALIAS/Developer/proj"
 tx_init_origin "$SANDBOX/origin.git" "$ROOT" >/dev/null
