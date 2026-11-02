@@ -258,9 +258,12 @@ cp -p "$DT" "$SANDBOX/landed-transcript"
 append_tool "$DT" Read "$ROOT/README.md"
 fleet final --dry-run --only aaaaaaaa-1
 [ "$FRC" -eq 0 ] || fail "G8: a landed chat that only read files blocked final: $(printf '%s' "$FO" | grep REFUSE | head -2)"
-append_tool "$DT" Bash "rm -rf build"
+append_tool "$DT" Bash "date"
 fleet final --dry-run --only aaaaaaaa-1
-[ "$FRC" -eq 2 ] && has "used for more than questions" || fail "G8: a landed chat that ran Bash was not refused (rc=$FRC)"
+[ "$FRC" -eq 0 ] || fail "G8: a landed chat's shell command that changed no file blocked final: $(printf '%s' "$FO" | grep REFUSE | head -2)"
+append_tool "$DT" Edit "$ROOT/README.md"
+fleet final --dry-run --only aaaaaaaa-1
+[ "$FRC" -eq 2 ] && has "used for more than questions" || fail "G8: a landed chat that edited a file was not refused (rc=$FRC)"
 
 # --- G9 ---------------------------------------------------------------------------------------------
 fleet rollback aaaaaaaa-1

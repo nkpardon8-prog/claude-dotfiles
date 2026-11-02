@@ -86,7 +86,9 @@ GIT_DIR_NEVER = ("index.lock", "fsmonitor--daemon.ipc")
 ALIAS_MARKER = ".home-alias-of"
 ALIAS_LINKS = (".claude", ".claude-dotfiles", ".codex", ".config")
 # Tools a landed (look-only) chat may use on the destination without counting as an edit (rule 7).
-READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "TodoWrite", "ToolSearch")
+# Bash is allowed: every resumed chat runs a shell command to read the clock, and a command that changes
+# a file inside a root is caught by the landed-root fingerprint check (rule 7).
+READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "TodoWrite", "ToolSearch", "Bash")
 # Ported from line-agent-communicator.py START_TIME_TOLERANCE_SEC (registry write lag + skew).
 START_TIME_TOLERANCE_SEC = 120.0
 SHELLS = ("zsh", "-zsh", "bash", "-bash", "sh", "-sh", "fish", "tcsh", "login")
