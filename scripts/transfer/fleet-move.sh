@@ -411,7 +411,12 @@ do_land() {
   note "landed. Next: $PROG resume-list"
 }
 
-do_resume_list() { lib resume-list; }
+do_resume_list() {  # NOT READY marks a chat whose launch folder is missing on the destination
+  need_dest; ensure_logdir
+  lib resume-list --cwds-json | rlib cwd-check > "$LOGDIR/present-$TS.json" || die "cannot check the launch folders on $FLEET_DEST"
+  lib resume-list --present "$LOGDIR/present-$TS.json"
+  rm -f "$LOGDIR/present-$TS.json"
+}
 
 do_rollback() {
   need_dest

@@ -1326,7 +1326,7 @@ def collect_state(plan):
         if arc in seen:
             return
         rel = arc.split("/", 1)[1]
-        if is_never_name(rel) or rel.startswith("sessions/") or rel.startswith(".credentials"):
+        if kind != "cwdfile" and (is_never_name(rel) or rel.startswith("sessions/") or rel.startswith(".credentials")):
             return
         seen.add(arc)
         items.append((kind, arc, path, sid))
@@ -1371,6 +1371,16 @@ def collect_state(plan):
                         hsh = v.get("contentHash") if isinstance(v, dict) else None
                         if isinstance(hsh, str) and re.match(r"^[0-9a-f]{8,64}$", hsh):
                             add("merge", os.path.join(cd, "paste-cache", hsh + ".txt"), sid)
+        if cwd and os.path.isdir(cwd) and not git_out(cwd, "rev-parse", "--show-toplevel"):
+            # A non-git launch folder: only <cwd>/tmp travels as a root, so this chat's own
+            # handoff / TRANSFER / MISSION files in the folder itself travel here (same names
+            # transfer-send.sh collect_root takes).
+            for f in [os.path.join(cwd, "CLAUDE.local.%s.md" % sid), os.path.join(cwd, "CLAUDE.local.%s.md.prev" % sid),
+                      os.path.join(cwd, "TRANSFER.%s.md" % sid)] + sorted(glob.glob(os.path.join(glob.escape(cwd), "MISSION.%s.*" % sid))):
+                add("cwdfile", f, sid, "abs" + f)
+            for e in sorted(glob.glob(os.path.join(glob.escape(cwd), ".mission-backups", "*%s*" % sid))):
+                for f in (_tree(e) if os.path.isdir(e) and not os.path.islink(e) else [e]):
+                    add("cwdfile", f, sid, "abs" + f)
         sb = scratch_base()
         for d in sorted(glob.glob(os.path.join(sb, "*", sid))):
             for f in _tree(d):
@@ -1382,7 +1392,12 @@ def collect_state(plan):
         add("append", hist, "")
         for f in sorted(glob.glob(os.path.join(cd, "prod-ledger", "*.jsonl"))):
             add("append", f, "")
-    return items
+    return items, sorted(os.path.basename(p) for p in slugs)
+
+
+def launch_cwds(plan):
+    """Every moving chat's launch folder: it must exist on the destination before land."""
+    return sorted(set(s["cwd"] for s in plan.get("sids", []) if s.get("state") and s.get("cwd")))
 
 
 class HashReader(object):
@@ -1397,7 +1412,7 @@ class HashReader(object):
 
 def cmd_pack_state(a):
     plan = read_stdin_json()
-    items = collect_state(plan)
+    items, slugs = collect_state(plan)
     man = []
     tf = tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.PAX_FORMAT)
     for kind, arc, path, sid in items:
@@ -1417,7 +1432,7 @@ def cmd_pack_state(a):
             continue
         man.append(ent)
     body = json.dumps({"format": 1, "host": plan.get("host") or socket.gethostname().split(".")[0],
-                       "members": man}).encode()
+                       "slugs": slugs, "cwds": launch_cwds(plan), "members": man}).encode()
     ti = tarfile.TarInfo("__fleet__/manifest.json")
     ti.size, ti.mode, ti.mtime = len(body), 0o600, int(time.time())
     tf.addfile(ti, io.BytesIO(body))
@@ -1430,12 +1445,14 @@ def state_target(arc):
         return os.path.join(claude_dir(), rel)
     if kind == "scratch":
         return os.path.join(dpath(scratch_base()), rel)
+    if kind == "abs":
+        return dpath("/" + rel)
     raise Refused("unexpected member %s" % arc)
 
 
 def _safe_arc(name):
     parts = name.split("/")
-    if name.startswith("/") or ".." in parts or "" in parts or parts[0] not in ("claude", "scratch", "__fleet__"):
+    if name.startswith("/") or ".." in parts or "" in parts or parts[0] not in ("claude", "scratch", "abs", "__fleet__"):
         raise Refused("unsafe member name in the state stream: %r" % name)
     return name
 
@@ -1576,6 +1593,19 @@ def cmd_place_state(a):
     if manifest is None:
         raise Refused("state stream has no manifest (truncated?)")
     ents = manifest["members"]
+    # Owner requirement: the merge only ever touches project dirs whose slug came from the source
+    # Mac's inventory (the moving chats' transcript dirs and working folders) - never an existing
+    # project of this Mac's own, and never one under this Mac's real home.
+    allowed = set(manifest.get("slugs") or [])
+    own = slug(home())
+    for e in ents:
+        parts = e["arc"].split("/")
+        if len(parts) > 2 and parts[0] == "claude" and parts[1] == "projects":
+            if parts[2] not in allowed or parts[2] == own or parts[2].startswith(own + "-"):
+                if not a.dry_run:
+                    shutil.rmtree(stage, ignore_errors=True)
+                raise Refused("the state stream names a project folder that is not one of the moving chats' "
+                              "(%s); nothing was placed" % phash("state", parts[2]))
     for e in ents:
         g = got.get(e["arc"])
         if g is None or ("link" in e) != ("link" in g) or g.get("sha") != e.get("sha") or g.get("link") != e.get("link"):
@@ -1584,8 +1614,23 @@ def cmd_place_state(a):
             raise Refused("state member failed its checksum or is missing: %s" % phash("state", e["arc"]))
     # Rule 10: decide everything before touching anything.
     conflicts, place, skip = [], [], 0
+    cwds = manifest.get("cwds") or []
+    aliases = alias_homes()
+    for c in cwds:
+        why = dest_path_problem(c, aliases)
+        if why:
+            if not a.dry_run:
+                shutil.rmtree(stage, ignore_errors=True)
+            raise Refused("launch folder refused: %s; nothing was placed" % why)
     for e in ents:
-        if e["kind"] not in ("state", "scratch"):
+        if e["kind"] == "cwdfile":
+            ab = "/" + e["arc"].split("/", 1)[1]
+            if e["arc"].split("/", 1)[0] != "abs" or not any(os.path.dirname(ab) == c or inside(ab, os.path.join(c, ".mission-backups")) for c in cwds):
+                if not a.dry_run:
+                    shutil.rmtree(stage, ignore_errors=True)
+                raise Refused("a launch-folder file is outside every moving chat's launch folder; nothing was placed")
+    for e in ents:
+        if e["kind"] not in ("state", "scratch", "cwdfile"):
             continue
         t = state_target(e["arc"])
         s = _same(t, e)
@@ -1614,7 +1659,10 @@ def cmd_place_state(a):
             if a.dry_run:
                 continue
             summary["appended_lines"] += merge_lines(state_target(e["arc"]), os.path.join(stage, e["arc"]), False)
+    summary["cwds_missing"] = sum(1 for c in cwds if not os.path.isdir(dpath(c)))
     if not a.dry_run:
+        for c in cwds:
+            os.makedirs(dpath(c), exist_ok=True)
         for e, t in place:
             _place(t, os.path.join(stage, e["arc"]), e)
             summary["placed"] += 1
@@ -1627,7 +1675,7 @@ def cmd_place_state(a):
 def cmd_state_digest(a):
     plan = read_stdin_json()
     out = []
-    for kind, arc, path, sid in collect_state(plan):
+    for kind, arc, path, sid in collect_state(plan)[0]:
         e = {"arc": arc, "kind": kind, "sid": sid}
         if os.path.islink(path):
             e["link"] = os.readlink(path)
@@ -1637,7 +1685,8 @@ def cmd_state_digest(a):
         else:
             e["sha"] = sha_file(path)
         out.append(e)
-    json.dump({"format": 1, "host": socket.gethostname().split(".")[0], "members": out}, sys.stdout)
+    json.dump({"format": 1, "host": socket.gethostname().split(".")[0], "members": out,
+               "cwds": launch_cwds(plan)}, sys.stdout)
 
 
 def cmd_state_check(a):
@@ -1666,6 +1715,11 @@ def cmd_state_check(a):
         else:
             mism.append({"root": "state", "kind": "state-" + ("missing" if s is None else "different"),
                          "path": phash("state", e["arc"]), "sid": e.get("sid", "")[:8]})
+    for c in d.get("cwds", []):
+        if os.path.isdir(dpath(c)):
+            ok += 1
+        else:
+            mism.append({"root": "state", "kind": "launch-folder-missing", "path": phash("cwd", c)})
     json.dump({"format": 1, "kind": "verify-state", "at": now_iso(), "ok": ok, "mismatches": mism}, sys.stdout,
               indent=1, sort_keys=True)
 
@@ -1698,6 +1752,22 @@ def _root_key(root):
     return hashlib.sha256(root.encode()).hexdigest()[:16]
 
 
+def dest_path_problem(path, aliases):
+    """'' when <path> (a destination absolute path) sits strictly inside a verified home alias and is
+    reached through no symlink; else the reason."""
+    pre = os.environ.get("FLEET_TEST_DEST_PREFIX", "") if DEV else ""
+    p = pre or "/"
+    for comp in [c for c in path.split("/") if c]:
+        p = os.path.join(p, comp)
+        if os.path.islink(p):
+            return "on this Mac %s is a symlink" % (p[len(pre):] or p)
+        if not os.path.lexists(p):
+            break
+    if not any(inside(path, h) and path != h for h in aliases):
+        return "%s is not inside a verified home alias on this Mac" % path
+    return ""
+
+
 def cmd_dest_gate(a):
     plan = read_stdin_json()
     refusals, warnings = [], []
@@ -1720,6 +1790,10 @@ def cmd_dest_gate(a):
             refusals.append("%s is not inside a verified home alias on this Mac: run "
                             "sudo ~/.claude-dotfiles/scripts/transfer/make-home-alias.sh %s"
                             % (root, root.split("/")[2] if root.startswith("/Users/") and len(root.split("/")) > 2 else "<name>"))
+    for c in launch_cwds(plan):
+        why = dest_path_problem(c, aliases)
+        if why:
+            refusals.append("a moving chat's launch folder cannot be created there: %s" % why)
     landed = load_json(landed_path(), None)
     landed_sids, landed_roots = [], []
     if isinstance(landed, dict):
@@ -1756,6 +1830,9 @@ def cmd_land_dest(a):
     landed = load_json(landed_path(), None) or {"format": 1, "sids": {}, "roots": {}}
     prog = os.path.join(claude_dir(), "progress")
     out = {"sids": {}, "roots": {}}
+    for c in req.get("cwds", []):
+        if not os.path.isdir(dpath(c)):
+            raise Refused("a moving chat's launch folder is missing on this Mac (%s): run final again" % phash("cwd", c))
     for s in req.get("sids", []):
         rel = s["transcript_rel"]
         p = os.path.join(claude_dir(), rel)
@@ -2030,12 +2107,75 @@ def cmd_setup_payload(a):
     for k, v in (cj.get("projects") or {}).items():
         if k in paths and isinstance(v, dict):
             projects[k] = dict((x, v[x]) for x in PROJECT_KEYS if x in v)
+    links = {}
+    for n in LINK_NAMES:
+        q = os.path.join(claude_dir(), n)
+        links[n] = os.readlink(q) if os.path.islink(q) else None
     json.dump({"format": 1, "src_home": home(), "settings": settings, "mcpServers": cj.get("mcpServers") or {},
+               "links": links,
                "projects": projects, "git_user_name": git_out(home(), "config", "--global", "user.name"),
                "git_user_email": git_out(home(), "config", "--global", "user.email")}, sys.stdout)
 
 
 SECRETISH = re.compile(r"(token|secret|password|api[_-]?key|auth)", re.I)
+# ~/.claude entries that are symlinks into the dotfiles on the source Mac; dest-setup makes the
+# destination match (moving a real dir or a different link aside to <name>.bak-<ts> first).
+# ~/.claude/CLAUDE.md and ~/.claude-dotfiles itself are NEVER touched (on the destination they are
+# symlinks into its own dotfiles checkout).
+LINK_NAMES = ("commands", "agents", "rules", "patterns", "statusline.sh")
+
+
+def _hook_cmds(settings):
+    out = []
+    for ev, groups in ((settings.get("hooks") or {}).items()):
+        for g in groups or []:
+            for h in (g.get("hooks") or []) if isinstance(g, dict) else []:
+                if isinstance(h, dict) and isinstance(h.get("command"), str):
+                    out.append((ev, h["command"]))
+    return out
+
+
+def required_settings_missing(settings):
+    """Owner requirement for the full settings match: these must survive into the rendered file."""
+    cmds = _hook_cmds(settings)
+
+    def hook(ev, needle):
+        return any(e == ev and needle in c for e, c in cmds)
+    checks = [
+        ("statusLine", bool(settings.get("statusLine"))),
+        ("remoteControlAtStartup", settings.get("remoteControlAtStartup") is True),
+        ("crossSessionInbound=accept", settings.get("crossSessionInbound") == "accept"),
+        ("SessionStart line-agent-communicator session-title hook", hook("SessionStart", "line-agent-communicator.py session-title")),
+        ("SessionStart line-reassert-identity hook", hook("SessionStart", "line-reassert-identity.sh")),
+        ("UserPromptSubmit line-agent-communicator session-title hook", hook("UserPromptSubmit", "line-agent-communicator.py session-title")),
+        ("PreToolUse line-agent-communicator route-send hook", hook("PreToolUse", "line-agent-communicator.py route-send")),
+        ("SessionEnd line-agent-communicator publish hook", hook("SessionEnd", "line-agent-communicator.py publish")),
+        ("PostToolUse dotfiles-sync.sh auto-sync hook", hook("PostToolUse", "dotfiles-sync.sh")),
+    ]
+    return [label for label, ok in checks if not ok]
+
+
+def link_plan(pay, src_home, dst_home):
+    """-> [(name, path, want_target, action)] action: ok | create | replace | skip:<why>"""
+    cd = claude_dir()
+    if any(inside(os.path.realpath(cd), d) for d in dotfiles_dirs()):
+        raise Refused("~/.claude resolves into the dotfiles checkout; not changing its layout")
+    out = []
+    for n in LINK_NAMES:
+        t = (pay.get("links") or {}).get(n)
+        if not t:
+            continue
+        want = re.sub(re.escape(src_home) + r"(?=/|$)", dst_home, t)
+        q = os.path.join(cd, n)
+        if os.path.islink(q) and os.readlink(q) == want:
+            out.append((n, q, want, "ok"))
+        elif not os.path.exists(want):
+            out.append((n, q, want, "skip:target %s does not exist on this Mac" % want))
+        elif os.path.lexists(q):
+            out.append((n, q, want, "replace"))
+        else:
+            out.append((n, q, want, "create"))
+    return out
 
 
 def cmd_dest_setup(a):
@@ -2045,13 +2185,36 @@ def cmd_dest_setup(a):
     sp = os.path.join(claude_dir(), "settings.json")
     cur = open(sp).read() if os.path.isfile(sp) else ""
     new = re.sub(re.escape(src_home) + r"(?=/|\"|$)", dst_home, pay["settings"])
-    json.loads(new)
+    new_j = json.loads(new)
+    missing = required_settings_missing(new_j)
+    cur_j = {}
+    try:
+        cur_j = json.loads(cur) if cur else {}
+    except ValueError:
+        pass
     print("== settings.json (%s -> %s rewritten; other paths kept literally) ==" % (src_home, dst_home))
     diff = list(difflib.unified_diff(cur.splitlines(), new.splitlines(), "settings.json (now)", "settings.json (new)", lineterm=""))
     for line in diff:
         print(line if not SECRETISH.search(line) else line.split(":", 1)[0] + ": <redacted>")
     if not diff:
         print("(no change)")
+    kept_cmds = set(c for _e, c in _hook_cmds(new_j))
+    dropped = [(e, c) for e, c in _hook_cmds(cur_j) if c not in kept_cmds]
+    for e, c in dropped:
+        print("  hook dropped by the full match: %s: %s" % (e, c[:110]))
+    print("  required settings: %s" % ("all present" if not missing else "MISSING " + "; ".join(missing)))
+    print("== ~/.claude layout (match the source Mac's symlinks; CLAUDE.md and ~/.claude-dotfiles untouched) ==")
+    links = link_plan(pay, src_home, dst_home)
+    for n, q, want, act in links:
+        if act == "ok":
+            print("  %-14s already -> %s" % (n, want))
+        elif act == "create":
+            print("  %-14s create symlink -> %s" % (n, want))
+        elif act == "replace":
+            kind = "symlink -> " + os.readlink(q) if os.path.islink(q) else ("real dir" if os.path.isdir(q) else "file")
+            print("  %-14s %s moved aside to %s.bak-%s, then symlink -> %s" % (n, kind, n, ts, want))
+        else:
+            print("  %-14s SKIPPED: %s" % (n, act[5:]))
     cjp = os.path.join(home(), ".claude.json")
     cj = load_json(cjp, {}) or {}
     have = cj.get("mcpServers") or {}
@@ -2081,6 +2244,8 @@ def cmd_dest_setup(a):
     if not a.apply:
         print("Dry run: nothing written. Re-run with --apply after the owner approves this diff.")
         return
+    if missing:
+        raise Refused("the rendered settings.json would lack: %s; nothing was written" % "; ".join(missing))
     for p in (sp, cjp):
         if os.path.islink(p):
             raise Refused("%s is a symlink; not writing through it" % p)
@@ -2111,6 +2276,11 @@ def cmd_dest_setup(a):
             json.dump(cj, fh, indent=2)
         os.chmod(tmp, mode)
         os.replace(tmp, cjp)
+    for n, q, want, act in links:
+        if act in ("create", "replace"):
+            if act == "replace":
+                os.rename(q, "%s.bak-%s" % (q, ts))      # lstat-level: moves the dir or link, never its target
+            os.symlink(want, q)
     for key, val in gi:
         subprocess.run(["git", "config", "--global", key, val], env=git_env())
     npm = shutil.which("npm", path=path)
@@ -2197,7 +2367,7 @@ def cmd_land_request(a):
     for s in plan["sids"]:
         if s["state"] and s.get("transcript"):
             sids.append({"sid": s["sid"], "transcript_rel": os.path.relpath(s["transcript"], cd)})
-    json.dump({"run": os.path.basename(a.run_dir.rstrip("/")), "sids": sids,
+    json.dump({"run": os.path.basename(a.run_dir.rstrip("/")), "sids": sids, "cwds": launch_cwds(plan),
                "roots": [{"path": r["path"], "excludes": r["excludes"]} for r in plan["roots"]]}, sys.stdout)
 
 
@@ -2257,11 +2427,22 @@ def cmd_receipt(a):
 def cmd_resume_list(a):
     rec = load_json(os.path.join(logdir(create=False), "landed-local.json"), {}) or {}
     sids = rec.get("sids") or {}
+    if a.cwds_json:
+        json.dump(sorted(set(i["cwd"] for i in sids.values() if i.get("cwd"))), sys.stdout)
+        return
+    present = set(load_json(a.present, []) or []) if a.present else None
     if not sids:
         print("No chat has landed yet.")
         return
     for sid, info in sorted(sids.items(), key=lambda kv: kv[1].get("landed_at", "")):
-        print("cd %s && claude --resume %s    # %s" % (shell_quote(info["cwd"]), sid, info.get("name") or ""))
+        ready = present is None or info["cwd"] in present
+        print("%scd %s && claude --resume %s    # %s" % ("" if ready else "NOT READY (folder missing there): ",
+              shell_quote(info["cwd"]), sid, info.get("name") or ""))
+
+
+def cmd_cwd_check(a):
+    """destination: which of the stdin folders exist here."""
+    json.dump([c for c in read_stdin_json() if os.path.isdir(dpath(c))], sys.stdout)
 
 
 def shell_quote(s):
@@ -2355,7 +2536,10 @@ def main():
     p = sp("receipt", cmd_receipt)
     p.add_argument("--run-dir", required=True)
     p.add_argument("--limit", type=int, default=40)
-    sp("resume-list", cmd_resume_list)
+    p = sp("resume-list", cmd_resume_list)
+    p.add_argument("--cwds-json", action="store_true")
+    p.add_argument("--present")
+    sp("cwd-check", cmd_cwd_check)
     p = sp("rollback-local", cmd_rollback_local)
     p.add_argument("--sid", required=True)
     p.add_argument("--expect-only", action="store_true")

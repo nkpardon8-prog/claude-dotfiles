@@ -13,7 +13,8 @@
 #   G5 rule 5: a non-shell process with its working folder inside a root refuses even a pilot.
 #   G6 --only: shorter than 8 characters and ambiguous prefixes refuse; a unique prefix works.
 #   G7 pilot: final --only + verify + land write transferred-<sid> here, transfer-arrived-<sid> and
-#      landed.json there; resume-list prints the resume command.
+#      landed.json there; resume-list prints the resume command, and NOT READY when the launch
+#      folder is missing on the destination.
 #   G8 rule 7: a file changed under a landed root on the destination refuses the next final; a
 #      landed chat asked a question (Read only) does not; one that ran a Bash call does.
 #   G9 rule 15: rollback refuses while the destination transcript differs from the landed one and
@@ -156,13 +157,19 @@ grep -q "via=fleet" "$SRC/.claude/progress/transferred-$A" 2>/dev/null || fail "
 grep -q "$A" "$DHOME/.claude/logs/fleet/landed.json" 2>/dev/null || fail "G7: landed.json does not record the chat"
 fleet resume-list
 has "cd $ROOT && claude --resume $A" || fail "G7: resume-list did not print the resume command: $FO"
+has "NOT READY" && fail "G7: resume-list flagged a chat whose folder exists"
+mv "$DPRE$ROOT" "$DPRE$ROOT.away"
+fleet resume-list
+has "NOT READY (folder missing there): cd $ROOT" || fail "G7: resume-list did not flag a missing launch folder: $FO"
+mv "$DPRE$ROOT.away" "$DPRE$ROOT"
 
 # --- G8 ---------------------------------------------------------------------------------------------
+cp -p "$DPRE$ROOT/README.md" "$SANDBOX/landed-readme"     # rsync set whole-second mtimes there
 printf 'edited on the destination\n' >> "$DPRE$ROOT/README.md"
 fleet final --only aaaaaaaa-1
 [ "$FRC" -eq 2 ] && has "changed on THIS Mac since it landed" || fail "G8: a changed landed root was not refused (rc=$FRC)"
 [ "$(tail -1 "$DPRE$ROOT/README.md")" = "edited on the destination" ] || fail "G8: the destination edit was overwritten"
-cp -p "$ROOT/README.md" "$DPRE$ROOT/README.md"
+cp -p "$SANDBOX/landed-readme" "$DPRE$ROOT/README.md"
 DT="$DHOME/.claude/projects/$SLUG/$A.jsonl"
 cp -p "$DT" "$SANDBOX/landed-transcript"
 append_tool "$DT" Read "$ROOT/README.md"

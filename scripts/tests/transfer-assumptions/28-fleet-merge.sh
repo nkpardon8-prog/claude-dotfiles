@@ -17,6 +17,12 @@
 #      places NOTHING - not even a new, conflict-free file of the same chat.
 #   M6 --dry-run final writes nothing on the destination and nothing on this Mac outside
 #      ~/.claude/logs/fleet.
+#   M8 a chat launched in a NON-git folder: the folder is created on the destination, only its tmp/
+#      travels as a root, plus that chat's own CLAUDE.local/TRANSFER/MISSION files there - never
+#      another chat's.
+#   M7 the merge touches only project folders named by this Mac's inventory: the destination's own
+#      project memory is untouched by final, and a state stream naming a project under the
+#      destination's real home is refused by place-state with nothing placed.
 set -uo pipefail
 [ "${TRANSFER_TESTS_ALLOW_DEV:-}" = "true" ] || { echo "REFUSED: set TRANSFER_TESTS_ALLOW_DEV=true to run" >&2; exit 2; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,6 +74,20 @@ json.dump({"sid": sid, "transcript_bytes": os.path.getsize(tr), "last_uuid": "u-
            "cwd": cwd, "transcript": tr}, open(f, "w"))
 PY
 
+# A second packed chat launched in a non-git folder (like ~/.pane/sessions/legacy-pane-chat).
+NG="$ALIAS/.pane/sessions/legacy-pane-chat"; SID2=$(tx_new_uuid); NSLUG=$(tx_slug "$NG")
+mkdir -p "$NG/tmp" "$SRC/.claude/projects/$NSLUG"
+printf 'ng tmp\n' > "$NG/tmp/x.md"; printf 'big\n' > "$NG/not-copied.bin"
+printf 'handoff\n' > "$NG/CLAUDE.local.$SID2.md"; printf 'notes\n' > "$NG/TRANSFER.$SID2.md"
+printf 'mission\n' > "$NG/MISSION.$SID2.md"; printf 'other chat\n' > "$NG/CLAUDE.local.someone-else.md"
+python3 - "$SRC/.claude/projects/$NSLUG/$SID2.jsonl" "$SID2" "$NG" "$SRC/.claude/progress/fleet-ready-$SID2" <<'PY2'
+import json, os, sys
+path, sid, cwd, mf = sys.argv[1:5]
+with open(path, "w") as fh:
+    fh.write(json.dumps({"type": "user", "uuid": "n-1", "sessionId": sid, "cwd": cwd, "message": {"role": "user", "content": "x"}}) + "\n")
+json.dump({"sid": sid, "transcript_bytes": os.path.getsize(path), "last_uuid": "n-1", "ts": "t", "cwd": cwd, "transcript": path}, open(mf, "w"))
+PY2
+
 # Destination before the move: its own memory + history, and one file the fleet wrote earlier.
 mkdir -p "$DP/memory" "$DHOME/.claude/logs/fleet"
 printf 'source same\n' > "$DP/memory/same.md"
@@ -81,6 +101,9 @@ json.dump({sys.argv[2]: hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest
 PY
 printf '{"line":"A"}\n{"line":"N"}\n' > "$DHOME/.claude/history.jsonl"
 SAME_MT=$(tx_mtime "$DP/memory/same.md")
+OWN="$DHOME/.claude/projects/$(tx_slug "$DHOME/.pane/sessions/legacy-pane-chat")/memory"
+mkdir -p "$OWN"; printf 'destination memory\n' > "$OWN/MEMORY.md"
+OWN_SUM=$(cd "$OWN" && ls -la; shasum -a 256 MEMORY.md)
 
 fleet() { FO=$(HOME="$SRC" "$FLEET" "$@" 2>&1); FRC=$?; }
 tree_sum() { ( cd "$1" && find . \( -type f -o -type l \) ! -path './.claude/logs/fleet/*' -print0 | sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 ); }
@@ -101,7 +124,25 @@ case "$FO" in *"1 would be placed"*|*" would be placed"*) ;; *) fail "M6: the dr
 
 # --- real final ---------------------------------------------------------------------------------------
 fleet final
-[ "$FRC" -eq 0 ] || { fail "final failed: $(printf '%s' "$FO" | tail -6 | tr '\n' '|')"; ok_report "28-fleet-merge" "-"; }
+[ "$FRC" -eq 0 ] || { fail "final failed: $(printf '%s' "$FO" | tail -6 | tr '\n' '|')"; # --- M7 ---------------------------------------------------------------------------------------------
+[ "$(cd "$OWN" && ls -la; shasum -a 256 MEMORY.md)" = "$OWN_SUM" ] || fail "M7: final wrote into a destination project folder that is not the moving chat's"
+EVIL=$(tx_slug "$DHOME/.pane/sessions/legacy-pane-chat")
+python3 - "$SANDBOX/evil.tar" "$EVIL" <<'PY2'
+import hashlib, io, json, sys, tarfile
+out, sl = sys.argv[1:3]
+body = b"overwrite\n"
+arc = "claude/projects/%s/memory/MEMORY.md" % sl
+man = {"format": 1, "host": "x", "slugs": [sl], "members": [{"arc": arc, "kind": "merge", "sid": "", "mode": 420,
+       "mtime": 0, "sha": hashlib.sha256(body).hexdigest(), "size": len(body)}]}
+with tarfile.open(out, "w") as tf:
+    for name, data in ((arc, body), ("__fleet__/manifest.json", json.dumps(man).encode())):
+        ti = tarfile.TarInfo(name); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+PY2
+FO=$(HOME="$DHOME" python3 "$TX_REPO/scripts/transfer/fleet_lib.py" place-state --ts 20260101T000000Z --host x < "$SANDBOX/evil.tar" 2>&1); FRC=$?
+[ "$FRC" -eq 2 ] || fail "M7: place-state accepted a project folder under the destination's own home (rc=$FRC)"
+[ "$(cat "$OWN/MEMORY.md")" = "destination memory" ] || fail "M7: the destination's own memory was overwritten"
+
+ok_report "28-fleet-merge" "-"; }
 
 # --- M1 ---------------------------------------------------------------------------------------------
 [ "$(cat "$DP/memory/new.md" 2>/dev/null)" = "source new" ] || fail "M1: absent memory file was not copied"
@@ -130,6 +171,16 @@ done
 [ -n "$(ls -A "$DHOME/.claude/fleet-staging" 2>/dev/null)" ] && fail "M3: a staging folder was left behind"
 [ -f "$SRC/.claude/progress/fleet-ready-$SID" ] && [ -f "$P/$SID.jsonl" ] || fail "M3: a source file was removed"
 
+# --- M8 ---------------------------------------------------------------------------------------------
+DNG="$DPRE$NG"
+[ -d "$DNG" ] || fail "M8: the non-git launch folder was not created on the destination"
+[ "$(cat "$DNG/tmp/x.md" 2>/dev/null)" = "ng tmp" ] || fail "M8: its tmp/ did not travel"
+for f in "CLAUDE.local.$SID2.md" "TRANSFER.$SID2.md" "MISSION.$SID2.md"; do
+  [ "$(tx_sha "$DNG/$f")" = "$(tx_sha "$NG/$f")" ] || fail "M8: $f did not travel"
+done
+[ -e "$DNG/not-copied.bin" ] && fail "M8: a non-tmp file of the non-git folder travelled"
+[ -e "$DNG/CLAUDE.local.someone-else.md" ] && fail "M8: another chat's handoff travelled"
+
 # --- M4 ---------------------------------------------------------------------------------------------
 fleet verify
 [ "$FRC" -eq 0 ] || fail "M4: verify after final exited $FRC: $(printf '%s' "$FO" | tail -4 | tr '\n' '|')"
@@ -147,5 +198,23 @@ fleet final
 [ -e "$DHOME/.claude/file-history/$SID/f@v2" ] && fail "M5: a conflict-free file was placed despite the refusal"
 [ "$(cat "$DHOME/.claude/session-status/$SID.txt")" = "nick touched the caption" ] || fail "M5: the conflicting destination file was changed"
 case "$FO" in *session-status*) fail "M5: the refusal printed a file name (rule 13)" ;; esac
+
+# --- M7 ---------------------------------------------------------------------------------------------
+[ "$(cd "$OWN" && ls -la; shasum -a 256 MEMORY.md)" = "$OWN_SUM" ] || fail "M7: final wrote into a destination project folder that is not the moving chat's"
+EVIL=$(tx_slug "$DHOME/.pane/sessions/legacy-pane-chat")
+python3 - "$SANDBOX/evil.tar" "$EVIL" <<'PY2'
+import hashlib, io, json, sys, tarfile
+out, sl = sys.argv[1:3]
+body = b"overwrite\n"
+arc = "claude/projects/%s/memory/MEMORY.md" % sl
+man = {"format": 1, "host": "x", "slugs": [sl], "members": [{"arc": arc, "kind": "merge", "sid": "", "mode": 420,
+       "mtime": 0, "sha": hashlib.sha256(body).hexdigest(), "size": len(body)}]}
+with tarfile.open(out, "w") as tf:
+    for name, data in ((arc, body), ("__fleet__/manifest.json", json.dumps(man).encode())):
+        ti = tarfile.TarInfo(name); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+PY2
+FO=$(HOME="$DHOME" python3 "$TX_REPO/scripts/transfer/fleet_lib.py" place-state --ts 20260101T000000Z --host x < "$SANDBOX/evil.tar" 2>&1); FRC=$?
+[ "$FRC" -eq 2 ] || fail "M7: place-state accepted a project folder under the destination's own home (rc=$FRC)"
+[ "$(cat "$OWN/MEMORY.md")" = "destination memory" ] || fail "M7: the destination's own memory was overwritten"
 
 ok_report "28-fleet-merge" "memory merges copy/skip/update/keep-beside (.from-<host>, then -<ts>); history is append-only and idempotent; per-chat state and scratchpad land byte-identical; verify 0; a conflicting chat file refuses and places nothing; a dry run writes nothing"
