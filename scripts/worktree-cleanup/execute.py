@@ -79,6 +79,7 @@ for line in open(os.path.join(HERE, "plan.tsv")).read().splitlines()[1:]:
     if action not in ("NM_ONLY", "REMOVE") or (ONLY and action != ONLY): continue
     r = inv[name]; path = r["path"]
     if not os.path.isdir(path): L(f"SKIP {name}: folder gone"); continue
+    if os.path.exists(os.path.join(path, "KEEP")): L(f"SKIP {name}: has a KEEP file"); continue
     u = in_use(path, cwds)
     if u: L(f"SKIP {name}: in use now ({u[0]})"); continue
     if recently_edited(path): L(f"SKIP {name}: a file changed in the last 3 days"); continue

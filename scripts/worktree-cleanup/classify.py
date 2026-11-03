@@ -24,6 +24,8 @@ for r in rows:
     nm, tot = r["node_modules_gb"], r["total_gb"]
     if match(n, KEEP):
         out.append((n, "KEEP", "on a keep list", 0)); continue
+    if os.path.exists(os.path.join(r["path"], "KEEP")):
+        out.append((n, "KEEP", "has a KEEP file", 0)); continue
     if r["users"]:
         out.append((n, "KEEP", "in use now: " + ",".join(r["users"])[:60], 0)); continue
     if r["touched_days"] < 3:
