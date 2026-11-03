@@ -72,6 +72,21 @@ uncommitted tracked edits. A worktree that became active after the inventory is 
 
 ## Gotchas found the hard way
 
+- **`KEEP` file.** An empty file named `KEEP` in a worktree's top folder makes both `classify.py` and
+  `execute.py` skip it, whatever the lists say. Agents use it to mark "I'm coming back to this".
+- **Protect /line-named chats by NAME, including their helper agents.** The owner's rule is: never
+  remove a worktree any `/line`-named chat (open or closed) has worked in. Match worktree names
+  (not only full paths) in each named session's transcript AND its subagent transcripts
+  (`~/.claude/projects/*/<sessionId>/**/*.jsonl`), counting only cwd and tool inputs. A full-path-only
+  check on 2026-10-23 missed 74 such worktrees. Extract candidate tokens with one simple regex and look
+  them up in a set: one giant alternation regex over GBs of transcripts took 35+ minutes and never finished.
+- **"Finished" is the owner's call.** Ask each open window to list the worktrees it made that have landed
+  and that it won't return to; that frees real space. Hold any released worktree that a CLOSED named chat
+  used in the last 2 weeks, and resolve every owner conflict toward keeping.
+- **Freed space appears hours later.** Deleting many APFS-cloned `node_modules` folders is reclaimed in the
+  background: on 2026-11-02, `df` showed ~16 GB right after the runs and ~90 GB a few hours later.
+  Re-measure later before deciding a cleanup failed.
+
 - **Untracked `tmp/` files exist nowhere else.** Agents keep plans, run records, release evidence
   and PatNum manifests in gitignored `tmp/`. `git worktree remove` deletes them for good, which is
   why REMOVE archives first and why owners can mark a worktree keep-but-clear-node_modules.
