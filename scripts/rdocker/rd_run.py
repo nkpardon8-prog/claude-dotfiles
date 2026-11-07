@@ -700,7 +700,7 @@ INFRA_EXIT = {
     65: "the Mac mini runner refused the request (bad input or an unsafe path; see above)",
     69: "the repo is missing on the Mac mini (the push should have created it); retry",
     70: "the Mac mini runner failed (see above)",
-    78: "installing dependencies on the Mac mini failed (npm ci / prisma generate, see above)",
+    78: "installing dependencies on the Mac mini failed (npm ci / prisma generate / local package build, see above)",
 }
 
 

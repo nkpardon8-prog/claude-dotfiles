@@ -19,7 +19,7 @@
 # random bits the tested code never sees (not in its env, shim or container labels; those use a
 # separate random label token), so it cannot forge them. Exit = the command's rc (or 128+sig);
 # 65 bad header/overlay/unsafe path, 69 missing bare repo, 70 runner error, 73 no free slot,
-# 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started.
+# 78 dependency install (npm ci / prisma generate / local package rebuild) failed, 130 gave up before the command started.
 # Every run appends one line to $ROOT/log/runs.log (see run_log; no env values, never fails a run).
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
 # RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server).
@@ -47,7 +47,7 @@ my (%h, $nonce, $label, $tmp, $mirror, $envlist, $lock_fh, $who, $started);
 my (@env_written, @overlay);
 my ($stdin_open, $inbuf, $last_hb, $go) = (1, '', time, 0);
 my ($lost, $intr, $intr_done) = (0, 0, 0);    # lost: laptop gone / runner signalled; intr: Ctrl-C count
-my $EX_DEPS = 78;    # EX_CONFIG: npm ci / prisma generate failed (never the command's own rc)
+my $EX_DEPS = 78;    # EX_CONFIG: npm ci / prisma generate / local rebuild failed (never the command's own rc)
 our $supervising = 0;
 our $QUIET = 0;    # run_cmd: also send the tool's stderr to /dev/null
 my %reaped;
@@ -476,9 +476,70 @@ sub store_clone {    # -> 1 when $dir/node_modules is now a clone of the store e
     }
     my $nm = "$dir/node_modules";
     if (-l $nm) { unlink $nm } elsif (-e $nm) { remove_tree($nm) }
-    return 1 if rename($t, $nm);
+    # the store holds node_modules only: this mirror's ignored local-package builds (dist/) were not
+    # made by that install, so drop the copied local stamp and let deps() rebuild them
+    if (rename($t, $nm)) { unlink "$nm/.rr-local-stamp"; return 1 }
     remove_tree($t);
     return 0;
+}
+
+# Local packages: `file:` / `link:` dependencies that are directories inside the mirror (found from
+# package.json, transitively through their own dependencies; dependencies first). npm links them, so
+# their build output (an ignored dist/) lives in the mirror, outside node_modules and outside the
+# lockfile stamp: a source change with an unchanged lockfile skips npm ci and would leave the old
+# build in place (2026-11-06: dentall server's @summit/staff-signin-core, "... is not a function").
+# Outside the mirror, registry specs and tarballs are not ours to build and are skipped.
+sub local_deps {
+    my ($dir, $rm, $seen, $out, $top) = @_;
+    my $pkg = eval { JSON::PP->new->decode(slurp("$dir/package.json")) } || {};
+    for my $sect ($top ? qw(dependencies devDependencies optionalDependencies) : qw(dependencies optionalDependencies)) {
+        my $d = $pkg->{$sect};
+        next unless ref $d eq 'HASH';
+        for my $name (sort keys %$d) {
+            my $spec = $d->{$name};
+            next unless defined $spec && !ref $spec && $spec =~ m{^(?:file|link):(?!//)(.+)$};
+            my $p = $1;
+            my $t = realpath($p =~ m{^/} ? $p : "$dir/$p");
+            next unless defined $t && -d $t && -f "$t/package.json" && index($t, "$rm/") == 0;
+            next if $seen->{$t}++;
+            local_deps($t, $rm, $seen, $out, 0);
+            push @$out, $t;
+        }
+    }
+    $out;
+}
+
+sub rel_of { my ($p, $rm) = @_; $p eq $rm ? '' : substr($p, length($rm) + 1) }
+
+# A local package's source = its tracked + untracked-not-ignored files (so the overlay's dirty and
+# new files count, and its ignored build output and node_modules do not), hashed by sha_files.
+sub source_hash {
+    my ($rel) = @_;
+    my $list = "$tmp/ls-files";
+    run_cmd($list, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', $mirror,
+            'ls-files', '-z', '-co', '--exclude-standard', '--', $rel, ':(exclude,glob)**/node_modules/**') == 0
+        or fail("git ls-files ./$rel failed", $EX_DEPS);
+    sha_files(sort grep { -f } map { "$mirror/$_" } grep { length } split /\0/, slurp($list));
+}
+
+# npm ci runs a linked package's own preinstall/install/postinstall/prepare and then the depending
+# package's; a rebuild runs the same scripts in the same order. -> 1 when $dir's postinstall ran.
+sub rebuild_local {
+    my ($env, $dir, $rm, @local) = @_;
+    my $post_ran = 0;
+    for my $t (@local, $dir) {
+        my $pkg = eval { JSON::PP->new->decode(slurp("$t/package.json")) } || {};
+        my $sc = ref $pkg->{scripts} eq 'HASH' ? $pkg->{scripts} : {};
+        my $tr = rel_of(realpath($t) // $t, $rm);
+        for my $s (grep { defined $sc->{$_} && !ref $sc->{$_} && length $sc->{$_} } qw(preinstall install postinstall prepare)) {
+            print STDERR "rrun: npm run $s  (in ./$tr)\n";
+            my $rc = npm($env, $t, 'run', $s);
+            return -1 if $lost || $intr;
+            deps_failed("npm run $s", $tr, $rc) if $rc;
+            $post_ran = 1 if $t eq $dir && $s eq 'postinstall';
+        }
+    }
+    $post_ran;
 }
 
 sub store_save {     # after a real install: publish $dir/node_modules (incl. its stamps) to the store
@@ -546,6 +607,28 @@ sub deps {
             write_file("$dir/node_modules/.rr-deps-stamp", $stamp);
             push @saves, [$rel, $dir, $stamp];
         }
+        # local stamp: the source of every local file:/link: package + node version. npm ci has just
+        # built them from this source; otherwise a mismatch (or no stamp: a fresh or store-cloned
+        # node_modules) reruns their lifecycle scripts. A failed rebuild exits $EX_DEPS before the
+        # stamp is written, so a stale build is never used and the next run retries.
+        my $post_ran = 0;
+        my @local = @{ local_deps($rd, $rm, { $rd => 1 }, [], 1) };
+        if (@local) {
+            my $lstamp = join('', map { my $r = rel_of($_, $rm); "$r " . source_hash($r) . "\n" } @local) . $nodev;
+            my $lfile = "$dir/node_modules/.rr-local-stamp";
+            my $have = slurp($lfile);
+            if (!$installed && $have ne $lstamp) {
+                print STDERR "rrun: local package source changed (" . join(', ', map { './' . rel_of($_, $rm) } @local)
+                           . ") - rebuilding  (in ./$rel)\n";
+                $post_ran = rebuild_local($env, $dir, $rm, @local);
+                return if $post_ran < 0;    # main() reports it
+            }
+            if ($have ne $lstamp) {
+                mk("$dir/node_modules");
+                unlink $lfile;
+                write_file($lfile, $lstamp);
+            }
+        }
         # schema stamp: *.prisma in ./prisma and in the dir of a `--schema X` named by the package's own
         # postinstall; a change means generate, not a reinstall. When postinstall runs prisma generate
         # (it knows the schema path and generator), rerun it; else `npx prisma generate`. No schema
@@ -565,7 +648,7 @@ sub deps {
         }
         next unless @schemas;
         my $sstamp = sha_files(sort @schemas);
-        if (!$installed || !$post_gen) {
+        if (!($installed || $post_ran) || !$post_gen) {
             next if slurp("$dir/node_modules/.rr-schema-stamp") eq $sstamp;
             my @gen = $post_gen ? ('run', 'postinstall') : ('npx', 'prisma', 'generate');
             my $what = $post_gen ? 'npm run postinstall' : 'npx prisma generate';

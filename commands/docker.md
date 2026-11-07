@@ -165,6 +165,15 @@ the connection).
   `package.json`, which `npm ci` refuses, gets `npm install` on the mirror instead); on a schema change (`*.prisma` in
   `./prisma` or the dir its postinstall's `--schema` names) the package's own postinstall reruns if it
   runs `prisma generate`, else `npx prisma generate`; no schema found -> nothing to generate.
+  **Local packages** (`file:` / `link:` dependencies that are directories inside the repo, found in
+  that dir's `package.json` and, transitively, in theirs) are linked, not installed, so their build
+  output (an ignored `dist/`) lives outside `node_modules` and outside the lockfile. rrun hashes each
+  one's source (tracked + untracked-not-ignored files, so dirty edits count; ignored files and
+  `node_modules` do not) and, when it changed without an `npm ci` (or `node_modules` came from the
+  shared store), reruns what `npm ci` would: each local package's own `preinstall` / `install` /
+  `postinstall` / `prepare`, dependencies first, then the depending package's (`rrun: local package
+  source changed (...) - rebuilding`). A failed rebuild is exit 78; the command never runs on a stale
+  build. Before 2026-11-07 it did (dentall `server` -> `@summit/staff-signin-core`: `... is not a function`).
 - **Env:** laptop vars matching `rr_env_pass` (`CI`, `DEBUG`, `TEST_DB_*`, `VITEST_*`, `RR_NODE`) pass
   through; add more with `-e NAME=VALUE`, or `-e NAME` to forward that variable's value from rrun's own
   environment (keeps it out of argv; unset → skipped with a notice). Values travel on stdin, never in `ps`. The remote command sees
@@ -197,7 +206,7 @@ the connection).
 - **Exit codes of rrun itself** (only before the command started, so never confused with its own):
   65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
   on the mini, 70 runner error, 73 slot busy past `rr_wait_min`, 75 lost the mini / strict fallback,
-  **78 dependency install failed** (`npm ci` / `prisma generate`; its log is printed), 130 interrupted
+  **78 dependency install failed** (`npm ci` / `prisma generate` / a local package rebuild; its log is printed), 130 interrupted
   before start.
 - **On the mini:** `~/rr` is 0700, excluded from Time Machine (`tmutil addexclusion`, once) and from
   Spotlight (`.metadata_never_index`).
@@ -206,8 +215,9 @@ the connection).
 
 Troubleshooting: falls back to the laptop every time → `rdocker doctor` (the push over ssh is the
 reachability test). Exit 73 → another run holds the mini slot (the wait line names it). Exit 75 → the
-link dropped; check `rdocker status`, then rerun. Exit 78 → `npm ci` / `prisma generate` failed on the
-mini (log above it); fix the lockfile / schema, or `RRUN=0` to run locally. Works locally but fails on the mini with a missing
+link dropped; check `rdocker status`, then rerun. Exit 78 → `npm ci` / `prisma generate` / a local
+package rebuild (`npm run <script>  (in ./<pkg>)` above it) failed on the mini (log above it); fix the
+lockfile / schema / build, or `RRUN=0` to run locally. Works locally but fails on the mini with a missing
 file → it is gitignored and not an allowlisted env file: commit it, or generate it in the command. First
 run in a repo is slow (history push + `npm ci`); later runs add ~1-3 s.
 
