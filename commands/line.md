@@ -46,6 +46,7 @@ python3 "$LAC" list                               # every window, this Mac + oth
 ## Talking to a peer
 
 ```bash
+LAC="$HOME/.claude-dotfiles/scripts/line-agent-communicator.py"
 python3 "$LAC" card                                    # who I am + how to reply - paste into messages
 python3 "$LAC" whois <pid> --claims "<claimed name>"   # look up a sender (never proof of identity)
 python3 "$LAC" reply <address> "<answer text>"         # answer a window that cannot receive
