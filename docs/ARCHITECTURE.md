@@ -110,6 +110,56 @@ test folder can never write the real cache. The
 file holds names only plus a salted hash of the claude.ai account id, compared across Macs to warn
 when Remote Control messages cannot arrive.
 
+**Peer messaging internals (`/line`, `line-agent-communicator.py`):** the agent-facing usage lives in
+`commands/line.md` and `rules/agent-peer-messaging.md`; this is the why behind the machinery.
+- *Two names, one command.* A window has a statusline caption (keyed by `sessionId`, survives a
+  resume) and a peer address (the session-registry `name` under its `pid`, re-derived by the harness).
+  They used to be unrelated, so a window captioned "summit admin hub" was only reachable as
+  `dentall-ae`. `set` writes both: it finds its own registry entry by `sessionId`, preserves every
+  field it does not own, writes atomically, and marks the name `nameSource: "explicit"` (verified on
+  2.1.227/2.1.228 that the harness preserves an explicit name). If a future version stops honouring
+  that, `/line` degrades to caption-only and says so. Handles are lowercased, hyphenated, cut to 40
+  chars on a word boundary, and get a numeric suffix if another live window holds the name.
+- *Display name.* The `session-title` verb runs on UserPromptSubmit and SessionStart and returns a
+  `sessionTitle` (applied like `/rename`) equal to the handle, predicting it on a `/line` prompt.
+  `line-ensure-settings.py` adds that hook at every session start; log `~/.claude/logs/line-title.log`.
+- *Naming is destructive and has no undo,* so flag-shaped input (`/line --help`, a mistyped `--own`)
+  exits 2 instead of becoming the name - both once silently renamed windows. `--owns` is re-split
+  inside the script because the command's Bash passes `$ARGUMENTS` as one word (the alternative was
+  `eval` on user prose); so a caption containing the literal text `--owns` cannot be set via `/line`,
+  and unbalanced quotes fall through as a plain caption. `set -- "<caption>"` allows a leading dash.
+  No-argument `/line` clears only the caption; the address is kept so nobody mid-conversation loses it.
+- *Receiving.* Cross-session messaging arrived in Claude Code 2.1.224 and the socket binds at
+  startup, so a window older than that cannot receive until closed and reopened; `list` shows this.
+- *Other Macs.* Sending needs the `bridge:session_...` Remote Control id, because Remote Control
+  titles are not dependable (Pane-resumed windows kept auto titles, 2026-10-16). The `route-send`
+  PreToolUse hook on SendMessage swaps a name matching exactly one live window on another Mac for its
+  bridge address, never touching local names, explicit addresses or ambiguous names; log
+  `~/.claude/logs/line-route.log`. Both Macs need the same claude.ai account,
+  `remoteControlAtStartup: true` and `crossSessionInbound: "accept"`.
+- *Tailscale relay.* iCloud stopped delivering the MacBook's address book to the mini on 2026-10-16,
+  so each MacBook publish also does one ssh round trip over rdocker's `macmini-docker` login (own
+  control socket, no tty, port forwards cleared) running `relay-exchange` on the mini. A relay copy
+  under 5 minutes old wins over iCloud's. Only the MacBook starts it; `LAC_RELAY_HOST` overrides the
+  alias, `off` disables it; failures go to `windows-publish.log`.
+- *Identity.* `card` checks the window's own reachability first and, if it cannot receive, routes
+  replies to the `~/claude-agent-replies/` dropbox instead of advertising a dead address. `whois`
+  prints `UNAUTHENTICATED LOOKUP` / `registry CLAIMS:` on every call, `MISMATCH` against `--claims`,
+  and `STALE` for a dead or recycled pid - it reads a file any local process can write and never asks
+  the kernel, so it vouches for nobody.
+- *Dropbox.* `reply` and `replies` generate the filenames on both ends (a hand-typed name fails
+  silently). The dropbox was once write-only in practice - a peer filed an answer, believed it had
+  communicated, and nothing ever read it - so `line-replies-notice.sh` (SessionStart) prints the
+  unread count, never content, and is silent at zero. `replies`/`notes` print peer text behind an
+  untrusted-data banner.
+- *Retention* (at most daily, piggybacked on `list`/`replies`, deliberately timid): a reply is
+  deleted only when already displayed AND over 30 days old - never an unread one at any age, and only
+  the newest 20 per window are ever eligible, with a floor on the oldest displayed mtime (it once
+  deleted the 5 it had just said it was not showing). Gate: `09-reply-retention.sh`. Contacts drop
+  after 180 days unseen. Orphaned sockets in the shared `/tmp/cc-socks` are only reported; `reap
+  --sockets` unlinks one only if it is ours, its pid is gone, nothing names or accepts on it, and it
+  is over 7 days old.
+
 ---
 
 ## Sync flow (multi-device)
