@@ -119,8 +119,15 @@ class Fleet(unittest.TestCase):
         self.bad(lambda d: d["machines"][1].update(heavy_slots=9), "heavy_slots")
         self.bad(lambda d: d["machines"][1].update(api_token="x"), "no secrets")
         self.bad(lambda d: d["machines"][1].update(port="22"), "wrong type")
+        self.bad(lambda d: d["machines"][1].update(shards="no"), "wrong type")
         self.bad(lambda d: d["machines"][4].update(roles=["agent", "worker"]), "agent cannot")
         self.bad(lambda d: d.update(client_keys=["not a key"]), "client_keys")
+
+    def test_shards_flag_is_an_optional_bool(self):
+        d = copy.deepcopy(self.doc)
+        d["machines"][1]["shards"] = False
+        self.assertEqual(rd_fleet.problems(d), [])
+        self.assertIn("shards", rd_fleet.FIELDS)
 
     def test_load_missing_or_broken_raises(self):
         with self.assertRaises(rd_fleet.FleetError):

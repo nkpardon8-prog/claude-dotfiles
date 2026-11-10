@@ -233,3 +233,16 @@ test('hookState: auto-offload hook wired or not', () => {
   assert.equal(r.hookState('{"hooks":{}}'), 'missing');
   assert.equal(r.hookState(null), 'missing');
 });
+
+test('pingTargets: every online peer with an ip, phones included, capped at 16', async () => {
+  const { pingTargets } = await import('../rd-reporter.mjs');
+  const peers = [
+    { host: 'phone', ip: '100.1.1.1', os: 'iOS', online: true },
+    { host: 'tab', ip: '100.1.1.2', os: 'android', online: true },
+    { host: 'off', ip: '100.1.1.3', os: 'linux', online: false },
+    { host: 'noip', ip: '', os: 'linux', online: true },
+  ];
+  assert.deepEqual(pingTargets(peers).map((p) => p.host), ['phone', 'tab']);
+  const many = Array.from({ length: 20 }, (_, i) => ({ host: 'h' + i, ip: '100.2.0.' + i, os: 'linux', online: true }));
+  assert.equal(pingTargets(many).length, 16);
+});

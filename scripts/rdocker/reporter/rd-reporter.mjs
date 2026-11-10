@@ -269,6 +269,11 @@ export function parseTailscale(json) {
   };
 }
 
+/** Online peers to ping (phones and tablets included: one 1-packet ping a minute, only while viewed). */
+export function pingTargets(peers) {
+  return peers.filter((p) => p.online && p.ip).slice(0, 16);
+}
+
 /** `tailscale ping -c 1` output -> {rttMs, via} or null */
 export function parseTsPing(text) {
   const m = /pong from .* via (.+?) in ([\d.]+)ms/.exec(text);
@@ -680,7 +685,7 @@ export class Collector {
   }
 
   async pingPeers(peers) {
-    const targets = peers.filter((p) => p.online && p.ip && !/^(ios|android)$/i.test(p.os)).slice(0, 8);
+    const targets = pingTargets(peers);
     const res = await Promise.all(targets.map((p) => sh(this.tailscaleBin, ['ping', '-c', '1', '--timeout', '2s', p.ip], 4000)));
     const map = new Map();
     targets.forEach((p, i) => {

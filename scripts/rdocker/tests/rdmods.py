@@ -77,7 +77,7 @@ def child_env(home, *bins, **extra):
 
 STAGE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, STAGE)
-NAMES = ("rd_common", "rd_args", "rd_tunnel", "rd_route", "rd_janitor", "rd_daemon", "rd_run", "rd_setup")
+NAMES = ("rd_common", "rd_args", "rd_tunnel", "rd_route", "rd_janitor", "rd_daemon", "rd_cache", "rd_run", "rd_setup")
 MODULES = [importlib.import_module(n) for n in NAMES]
 # Tailscale is invoked by absolute path, not via PATH: point it at the stub too.
 vars(MODULES[NAMES.index("rd_daemon")])["TS_CLI"] = os.path.join(STUB_BIN, "Tailscale")

@@ -177,6 +177,17 @@ class Selection(unittest.TestCase):
         self.assertEqual(self.did("lock"), ["free", "nofield"])
         self.assertEqual(self.did("unlock"), ["free", "nofield"])     # always released
 
+    def test_no_shards_worker_is_never_warmed(self):
+        """fleet.json "shards": false (the slow minis): not probed, pushed, prepared or pinged."""
+        W, P = test_pool.worker, test_pool.probe
+        up = self.run_pass([W("fast"), dict(W("slow"), shards=False)],
+                           {"fast": P(warm_git=0, warm_deps=0), "slow": P(warm_git=0, warm_deps=0)})
+        self.assertEqual((self.did("probe"), self.did("prepare")), (["fast"], ["fast"]))
+        self.assertNotIn("slow", up)
+        h = rd_pool.host_for({}, dict(W("slow"), shards=False))
+        self.assertFalse(rd_warm.warmable(h))
+        self.assertTrue(rd_warm.warmable(rd_pool.host_for({}, W("fast"))))
+
     def test_behind_mirror_is_pushed_without_reinstall(self):
         self.run_pass([test_pool.worker("w")], {"w": test_pool.probe()}, mirror={"w": "0" * 40})
         self.assertEqual((self.did("push"), self.did("prepare")), (["w"], []))

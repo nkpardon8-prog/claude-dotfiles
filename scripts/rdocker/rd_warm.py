@@ -18,6 +18,8 @@ is the real rrun path:
             it exits 130 having started nothing. The packages land in the worktree's mirror and in
             the worker's shared store (~/rr/deps).
 
+Slow workers: one with "shards": false in fleet.json (the 2011/2012 minis: 27-211 s prepares, warm
+sessions often lost after ~30 s) is never warmed; it still takes whole jobs, cold.
 Politeness: workers are warmed one at a time (a pass is sequential, and a ~/rr/state/warm.lock dir
 on the worker keeps two clients from warming it together); only a worker with a free slot and
 load1/ncpu below rr_warm_max_load; never queued for a slot (wait_min 0: busy => 73 => skip); never
@@ -154,6 +156,12 @@ def worker_hosts(cfg):
 def fleet_off(h):
     """The fleet entry's share field says off (a missing field = on)."""
     return str(rd_pool._f(h.entry, "share", "on")).strip().lower() == "off"
+
+
+def warmable(h):
+    """Workers the warmer visits: not shared off in fleet.json, and not a "shards": false worker
+    (too slow to prepare; warming it mostly ended `lost` and only loaded it)."""
+    return not fleet_off(h) and rd_pool.takes_shards(h)
 
 
 def probe(h, repo, cfg):
@@ -382,7 +390,7 @@ def run_pass(cfg, repo_path=None):
         wlog("pass skipped: another warm pass is running on this machine")
         return {}
     try:
-        hosts = [h for h in worker_hosts(cfg) if not fleet_off(h)]
+        hosts = [h for h in worker_hosts(cfg) if warmable(h)]
         if not hosts:
             return {}
         repos = [repo_at(repo_path)] if repo_path else \
@@ -438,7 +446,7 @@ def loop(once=False, repo_path=None, sleep=time.sleep, clock=time.monotonic, max
             if clock() >= deadline:
                 break
             try:
-                cur = reachable([h for h in worker_hosts(cfg) if not fleet_off(h)])
+                cur = reachable([h for h in worker_hosts(cfg) if warmable(h)])
             except Exception as e:
                 wlog("reachability check error: %s: %s" % (type(e).__name__, str(e)[:200]))
                 continue

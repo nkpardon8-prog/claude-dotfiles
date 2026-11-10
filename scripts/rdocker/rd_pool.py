@@ -15,6 +15,8 @@ completion time (score(); lower is better):
                pool's, else JOB_COST_S / rr_job_cost_s; speed = ~/rr/speed, else fleet.json's
     free = free slots (heavy jobs: min with free heavy slots); capped by ~/rr/slots.cap and the
            owner's share switch (some = half; off = state "off", no eta, tried last)
+    overload: load1 / ncpu >= rr_overload_ratio (1.5) at probe time => "busy" even with a free
+           slot, and run x= load1 / ncpu (a worker already oversubscribed is held off, not piled on)
 
 A worker with less memory than the job needs is "low-mem" (no eta). Order: free workers by eta, then
 busy ones by eta (the first is the "wait host" when nothing is free), then low-mem, down, off. A busy
@@ -22,7 +24,8 @@ worker whose eta is <= PROMOTE_RATIO x the best free one goes first, with a slot
 the best free worker would have finished. Free candidates get a short slot wait so a lost race moves
 on quickly; the wait host gets the full rr_wait_min. Nothing is cached between plan() calls: every
 job sees workers that just went away or came back. shardable() / shard_assign() split a `vitest run`
-across the free workers (rd_run.run_shards runs them).
+across the free workers (rd_run.run_shards runs them); a worker with "shards": false in fleet.json
+(a slow machine whose long prepare would straggle the run) never gets a shard, only whole jobs.
 
 Job classes (classify): db (test:db & friends: never re-run after GO, never local in a pool),
 heavy (tsc / typecheck: ~6 GB, never local in a pool), build (declared outputs, copied back),
@@ -56,6 +59,10 @@ HOLDER_COST_S = 60.0         # a slot holder's run at speed 1.0 when the worker 
 # low on purpose - a quick job should spread to an idle machine; this is for "free" workers that
 # would be many times slower (hp swapping on a tsc: 26 min vs 77 s on nickmbp)
 PROMOTE_RATIO = 0.25
+# a worker whose 1-min load per CPU thread is at least this at probe time counts as busy (its free
+# slot notwithstanding) and its run estimate grows by load/ncpu (rr_overload_ratio; 0 = off).
+# 2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still being sent jobs
+OVERLOAD_RATIO = 1.5
 _SHARD_ARG_RE = re.compile(r"(?:^|\s)--shard[= ]?(\d+)/(\d+)(?:\s|$)")
 # rr_outputs: {"<repo name or slug>": {"<package dir relative to the repo>": ["dist", ...]}}
 # Builds are only sent to the pool for a mapped package dir; outputs are copied back.
@@ -197,6 +204,7 @@ class Host:
         self.name, self.cfg, self.entry = name, cfg, entry
         self.probe, self.state, self.short = None, "-", False
         self.eta = self.run_s = self.cold_s = self.queue_s = self.eff = None   # set by score()
+        self.overloaded = False                                                  # set by score()
 
     @property
     def speed(self):
@@ -205,6 +213,11 @@ class Host:
             return float(p.get("speed")) if p.get("speed") not in (None, "") else float(_f(self.entry, "speed", 1.0))
         except (TypeError, ValueError):
             return 1.0
+
+
+def takes_shards(h):
+    """False for a worker whose fleet entry says "shards": false (whole jobs only)."""
+    return _f(h.entry, "shards", True) is not False
 
 
 def host_for(cfg, entry):
@@ -432,10 +445,12 @@ def score(host, job, cfg=None, pooled=None):
         eta = cold + queue + run + rtt;  run = job_cost / eff;  eff = speed * cpu_share * mem_factor
         cold  = COLD_GIT_S without the bare repo + COLD_DEPS_S without the packages
         queue = 0 with a free slot, else when the first holder should finish (busy: still ranked)
+        overloaded (load1 / ncpu >= rr_overload_ratio): busy with queue 0, run x= load1 / ncpu
     """
     cfg = cfg or {}
     p = host.probe
     host.eta = host.run_s = host.cold_s = host.queue_s = host.eff = None
+    host.overloaded = False
     if p is None:
         host.state = "down"
         return None, 0
@@ -454,7 +469,15 @@ def score(host, job, cfg=None, pooled=None):
     host.eff = max(0.01, host.speed * cpu_share(load, ncpu, job["cls"]) * mem_factor(mem, job["need_gb"]))
     host.run_s = job_cost(cfg, job["cls"], own.get(job["cls"]), (pooled or {}).get(job["cls"])) / host.eff
     host.cold_s = (0.0 if p.get("warm_git") else COLD_GIT_S) + (0.0 if p.get("warm_deps") else COLD_DEPS_S)
-    if free > 0:
+    per_cpu = load / ncpu
+    over = _num(cfg.get("rr_overload_ratio"), OVERLOAD_RATIO)
+    if free > 0 and over > 0 and per_cpu >= over:
+        # oversubscribed: held off like a busy worker (ranked after the free ones), its compute
+        # slower in proportion to the overload, so it only gets a job when it still finishes first
+        host.overloaded = True
+        host.run_s *= per_cpu
+        host.state, host.queue_s = "busy", 0.0
+    elif free > 0:
         host.state, host.queue_s = "free", 0.0
     else:
         # the holders' typical run here (any class: they are not ours to know), minus how long they
@@ -651,15 +674,18 @@ def shard_assign(cfg, plan, job, n=None):
     not help. Auto: every free worker that can start before the best one would have FINISHED the
     whole job alone takes round(eff / lower-median eff) shards (>= 1, <= its free slots): faster machines
     get more (e.g. eff 3 / 1.2 / 0.45 -> 3 + 1 + 1). Forced n: one per worker by eta, the rest to
-    whichever would then finish its share soonest."""
+    whichever would then finish its share soonest. A "shards": false worker never gets one."""
     if not plan.pool:
         return None
-    free = [h for h in plan.hosts if h.state == "free" and h.eta is not None]
+    cands = [h for h in plan.hosts if takes_shards(h)]   # never a "shards": false worker
+    free = [h for h in cands if h.state == "free" and h.eta is not None]
     free.sort(key=lambda h: h.eta)
     if not free:
         if not n:
             return None
-        free = [h for h in plan.hosts if h.eta is not None][:1] or plan.hosts[:1]
+        free = [h for h in cands if h.eta is not None][:1] or cands[:1]
+        if not free:
+            return None
     best = free[0].eta if free[0].eta is not None else 0
     elig = [h for h in free if h is free[0] or (h.cold_s or 0) + min(h.rtt or 0, RTT_CAP_S) < best]
     eff = lambda h: h.eff or h.speed or 1.0                                     # noqa: E731
@@ -742,7 +768,8 @@ def where_report(cfg, job, p, shards=None):
         lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %6.2f %7s %5s%s" % (
             h.name[:10], str(h.cfg.get("host"))[:16], h.state, free, load, mem, yn("warm_git"),
             yn("warm_deps"), h.speed, fmt_s(h.eta), str(pr.get("share") or "-")[:5],
-            "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
+            "  (overloaded: held off)" if h.overloaded
+            else "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
     if isinstance(shards, list):
         cnt = {}
         for h in shards:

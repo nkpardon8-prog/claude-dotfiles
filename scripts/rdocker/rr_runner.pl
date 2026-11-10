@@ -21,7 +21,8 @@
 # "<nonce> READY" and waits. It spawns the command ONLY after reading "GO\n" (then prints
 # "<nonce> STARTED"); EOF / INT / heartbeat timeout before GO => exit without running anything.
 # So a laptop that never wrote GO knows the command never ran (=> safe to run it locally).
-# Status lines go to STDERR as "<nonce> READY|STARTED|WAIT ...|BUSY|KEPT ...". The nonce is 128
+# Status lines go to STDERR as "<nonce> READY|STARTED|WAIT ...|BUSY|KEPT ...|DOCKER|EXIT <rc>"
+# (DOCKER, just before EXIT: the command called docker through the shim - rrun never caches it). The nonce is 128
 # random bits the tested code never sees (not in its env, shim or container labels; those use a
 # separate random label token), so it cannot forge them. Exit = the command's rc (or 128+sig);
 # 65 bad header/overlay/unsafe path, 69 missing bare repo, 70 runner error, 73 no free slot,
@@ -115,6 +116,8 @@ sub main {
     my $pid = spawn($h{argv}, \%env, $cwd);
     status('STARTED');
     my $rc = supervise($pid);
+    # the command called docker (the shim left its marker): the laptop never caches such a result
+    status('DOCKER') if !$lost && -e "$tmp/docker.used";
     # the command's own exit code, the moment it ends (before cleanup): a link that dies after this
     # is not "lost mid-run" - the laptop has the real result and never re-runs it
     status("EXIT $rc") unless $lost;
@@ -864,6 +867,7 @@ sub write_shim {
 REAL='@REAL@'
 LABEL='rdocker.rrun=@LABEL@'
 UP='@UP@'
+: > '@USED@' 2>/dev/null
 if [ -n "$UP" ] && [ ! -f "$UP.ok" ]; then "$UP" || exit 73; fi
 state=global sub= first=1 detach=0
 for a do
@@ -897,6 +901,8 @@ SH
     my $up = -f "$tmp/docker-up" ? "$tmp/docker-up" : '';
     fail("tmp path must not contain a quote", 65) if $up =~ /'/;
     $sh =~ s/\@UP\@/$up/;
+    fail("tmp path must not contain a quote", 65) if $tmp =~ /'/;
+    $sh =~ s/\@USED\@/$tmp\/docker.used/;
     write_file($path, $sh);
     chmod 0700, $path;
 }

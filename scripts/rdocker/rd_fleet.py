@@ -24,7 +24,8 @@ ROLES = ("home", "worker", "agent")
 OSES = ("linux", "mac")
 FIELDS = {"name": str, "alias": str, "ip": str, "port": int, "user": str, "os": str, "wsl": bool,
           "roles": list, "speed": (int, float), "max_slots": int, "heavy_slots": int, "mem_gb": (int, float),
-          "enabled": bool, "ts_key_expiry": str}   # ts_key_expiry: YYYY-MM-DD, or "none" (key expiry disabled)
+          "enabled": bool, "ts_key_expiry": str,   # ts_key_expiry: YYYY-MM-DD, or "none" (key expiry disabled)
+          "shards": bool}   # shards: false = a worker that never gets a vitest shard (and is not pre-warmed)
 REQUIRED = ("name", "roles", "enabled")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
@@ -135,7 +136,8 @@ def entry(m):
 
 def load(cfg=None):
     """FROZEN API: the fleet as list[dict], each with name, alias, ip, port, user, os, roles, speed,
-    max_slots, heavy_slots, mem_gb, enabled, wsl (bool). `cfg` may carry 'fleet_path' (tests)."""
+    max_slots, heavy_slots, mem_gb, enabled, wsl (bool); optional keys (ts_key_expiry, shards) only
+    when set. `cfg` may carry 'fleet_path' (tests)."""
     return [entry(m) for m in load_doc((cfg or {}).get("fleet_path"))["machines"]]
 
 

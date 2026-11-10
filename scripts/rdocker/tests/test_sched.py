@@ -106,6 +106,31 @@ class Eta(unittest.TestCase):
         h.probe = {"hist": [[20, "npx vitest run --shard=1/5"], [10, "npm run lint"], ["bad", "x"], [1]]}
         self.assertEqual(rd_pool.history_costs(h), {"normal": [200.0], "light": [20.0]})
 
+    def test_an_overloaded_worker_is_held_off_not_piled_on(self):
+        """2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still taking jobs.
+        load1 / ncpu >= 1.5 => busy (after every free worker), its run estimate x load/ncpu."""
+        lap = probe(slots_cap=4, mem_mb=7000, ncpu=8, load=19.0)
+        hp = probe(slots_cap=4, mem_mb=7000, ncpu=4, load=1.0)
+        p, _ = self.plan([worker("laptop", 2.0), worker("hp", 0.5)], {"laptop": lap, "hp": hp}, job=VITEST)
+        self.assertEqual(self.names(p), ["hp", "laptop"])
+        a = p.hosts[1]
+        self.assertTrue(a.overloaded)
+        self.assertEqual((a.state, a.queue_s), ("busy", 0.0))
+        base = 60.0 / (2.0 * rd_pool.cpu_share(19.0, 8, "normal"))
+        self.assertAlmostEqual(a.run_s, base * 19.0 / 8)                 # compute grows with the overload
+        self.assertIn("(overloaded: held off)", "\n".join(rd_pool.where_report(self.cfg, VITEST, p)))
+        # just under the line: still free; the ratio is configurable, 0 = off
+        p, _ = self.plan([worker("laptop", 2.0), worker("hp", 0.5)],
+                         {"laptop": dict(lap, load1=11.9), "hp": hp}, job=VITEST)
+        self.assertEqual((p.hosts[0].name, p.hosts[0].state, p.hosts[0].overloaded), ("laptop", "free", False))
+        self.cfg["rr_overload_ratio"] = 0
+        p, _ = self.plan([worker("laptop", 2.0), worker("hp", 0.5)], {"laptop": lap, "hp": hp}, job=VITEST)
+        self.assertEqual(p.hosts[0].name, "laptop")
+        # the only worker left: an overloaded one still takes the job (it queues there, never local)
+        self.cfg["rr_overload_ratio"] = 1.5
+        p, _ = self.plan([worker("laptop", 2.0), worker("hp", 0.5)], {"laptop": lap}, job=TSC)
+        self.assertEqual((p.hosts[0].name, p.hosts[0].state), ("laptop", "busy"))
+
     def test_membership_is_fresh_every_plan(self):
         ms = [worker("a", 1.0), worker("b", 2.0)]
         p, _ = self.plan(ms, {"a": probe()})                              # b vanished (mid-probe)
@@ -232,6 +257,20 @@ class Shards(unittest.TestCase):
         self.assertEqual([x.name for x in rd_pool.shard_assign({}, self.plan(n, busy), VITEST, 3)],
                          ["nickmbp"] * 3)
 
+    def test_shards_false_worker_never_gets_a_shard(self):
+        n, h, mini = fake_host("nickmbp", 3.0, 40), fake_host("hp", 1.19, 90), fake_host("mini-a", 2.0, 30)
+        mini.entry = {"speed": 2.0, "shards": False}
+        self.assertFalse(rd_pool.takes_shards(mini))
+        self.assertTrue(rd_pool.takes_shards(n))                          # no field = takes shards
+        got = rd_pool.shard_assign({}, self.plan(mini, n, h), VITEST)
+        self.assertNotIn("mini-a", [x.name for x in got])
+        self.assertEqual([x.name for x in rd_pool.shard_assign({}, self.plan(mini, n, h), VITEST, 4)],
+                         ["nickmbp"] * 3 + ["hp"])
+        # only the no-shards worker and one other free: no auto split; forced n stays off it
+        self.assertIsNone(rd_pool.shard_assign({}, self.plan(mini, n), VITEST))
+        self.assertEqual({x.name for x in rd_pool.shard_assign({}, self.plan(mini, n), VITEST, 2)}, {"nickmbp"})
+        self.assertIsNone(rd_pool.shard_assign({}, self.plan(mini), VITEST, 2))
+
     def test_summary_merge(self):
         a = "x\n Test Files  2 passed (2)\n      Tests  4 passed | 1 skipped (5)\n   Duration  1s\n"
         b = ("\x1b[31m Test Files  \x1b[1m1 failed\x1b[22m | 1 passed (2)\x1b[39m\n"
@@ -330,7 +369,9 @@ class SchedE2E(test_run.RunBase):
 
     def env(self, **extra):
         homes = ",".join("%s=%s" % kv for kv in sorted(getattr(self, "whome", {}).items()))
-        base = {"FAKE_SSH_HOMES": homes, "RRUN_RECONNECT_WAIT": "0"}
+        # RRUN_CACHE=0: these tests rerun identical commands to watch the scheduler (test_cache /
+        # test_sharded_run_is_cached_as_one_unit cover the cache)
+        base = {"FAKE_SSH_HOMES": homes, "RRUN_RECONNECT_WAIT": "0", "RRUN_CACHE": "0"}
         if getattr(self, "proc", None):
             base.update(RR_OS="linux", RR_PROC=self.proc)
         return test_run.RunBase.env(self, **dict(base, **extra))
@@ -390,6 +431,44 @@ class SchedE2E(test_run.RunBase):
                 self.assertNotIn("splitting", r.stderr)
                 self.assertNotIn("[shard", r.stdout)
         r = self.rrun("--host", "w2", "vitest", "run")                   # a forced worker: one run
+        self.assertEqual(r.stdout.splitlines()[0], "fake vitest shard none on home-w2", r.stderr)
+
+    def test_sharded_run_is_cached_as_one_unit(self):
+        """Keyed on the unsharded command, saved once every shard ended on a worker; a repeat
+        replays the shards' prefixed output and the merged summary, with the highest rc."""
+        r1 = self.rrun("vitest", "run", RRUN_CACHE="1")
+        self.assertEqual(r1.returncode, 0, r1.stderr)
+        self.assertIn("splitting `vitest run` into 3 shards", r1.stderr)
+        r2 = self.rrun("vitest", "run", RRUN_CACHE="1")
+        self.assertEqual((r2.returncode, r2.stdout), (0, r1.stdout))
+        self.assertNotIn("splitting", r2.stderr)
+        self.assertRegex(r2.stderr, r"rrun: cached result \(same code \+ command, \d+s ago on w[12], w[12]\)")
+        self.assertTrue(r2.stdout.endswith("      Tests  12 passed (12)\n"))
+        r3 = self.rrun("-e", "FAIL_SHARD=2", "vitest", "run", RRUN_CACHE="1")
+        r4 = self.rrun("-e", "FAIL_SHARD=2", "vitest", "run", RRUN_CACHE="1")
+        self.assertEqual((r3.returncode, r4.returncode), (1, 1))
+        self.assertIn("splitting", r3.stderr)
+        self.assertIn("cached result", r4.stderr)
+        # a shard that had to run on this machine: never saved
+        test_run.wfile(os.path.join(self.wt, "new.txt"), "changed\n")
+        for _ in range(2):
+            r = self.rrun("vitest", "run", RRUN_CACHE="1", RRUN_SHARD="2", FAKE_SSH_RUNDOWN_HOSTS="w1,w2")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("running this shard on this machine", r.stderr)
+            self.assertNotIn("cached result", r.stderr)
+
+    def test_no_shards_worker_gets_whole_jobs_only(self):
+        """fleet.json "shards": false: never a shard (nor a shard's failover), whole jobs still."""
+        write_fleet(self.fleet, [worker("w1", 1.0, max_slots=2), dict(worker("w2", 3.0, max_slots=2), shards=False)])
+        self.write_cfg(fleet_path=self.fleet)
+        r = self.rrun("vitest", "run", RRUN_SHARD="2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("into 2 shards: w1 2", r.stderr)
+        self.assertNotIn("w2]", r.stdout)
+        r = self.rrun("vitest", "run", RRUN_SHARD="2", FAKE_SSH_RUNDOWN_HOSTS="w1")
+        self.assertNotIn("trying w2", r.stderr)                          # its failover skips w2 too
+        self.assertNotIn("w2]", r.stdout)
+        r = self.rrun("vitest", "run", RRUN_SHARD="0")                    # one whole run: the fast w2
         self.assertEqual(r.stdout.splitlines()[0], "fake vitest shard none on home-w2", r.stderr)
 
     def test_a_shard_whose_worker_is_gone_runs_elsewhere(self):

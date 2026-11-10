@@ -37,6 +37,10 @@ Config: rr_* keys in rd_common.DEFAULTS. Env: RRUN_STRICT=1, RRUN_TIMING=1, RRUN
 RRUN_GIT_URL (tests only: push URL override). Flags (the `rrun` wrapper turns them into env):
 --where (RRUN_WHERE=1: print the placement, run nothing), --bench (RRUN_BENCH=1), --host NAME
 (RRUN_HOST: only that worker), --outputs a,b (RRUN_OUTPUTS: build outputs, relative to the cwd).
+Cache (rd_cache): a one-shot tsc / eslint / vitest / jest run or a known test / typecheck / lint npm
+script whose shipped code + command match a recent run replays that run's output and exit code
+(passes 24 h, failures 20 min); RRUN_CACHE=0 always runs (and saves the fresh result). Looked up
+under the worktree lock, so a second identical run waiting on the first gets its result.
 """
 import fnmatch
 import hashlib
@@ -53,6 +57,7 @@ import tarfile
 import threading
 import time
 
+import rd_cache
 import rd_common
 import rd_pool
 
@@ -189,7 +194,8 @@ def take_wt_lock(wt12):
 def push(cfg, wt):
     """Force-push HEAD to refs/rrun/<wt12> of the per-repo bare repo on the mini. The remote
     receive-pack command first creates the bare repo if it is missing (same round trip), and runs
-    with hooks disabled, so a tampered bare-repo config cannot run code. RunError on failure."""
+    with hooks disabled, so a tampered bare-repo config cannot run code. RunError on failure.
+    -> the base-branch refspecs pushed ("+<sha>:<ref>", part of the result cache's content id)."""
     root = rr_root(cfg)
     bare = "~/%s/git/%s.git" % (root, wt["slug"])
     recv = ("umask 077; mkdir -p ~/{root}/git && {{ [ -d {bare} ] || {{ git init --bare -q {bare} && "
@@ -199,9 +205,10 @@ def push(cfg, wt):
     url = os.environ.get("RRUN_GIT_URL") or "ssh://%s/%s" % (cfg["host"], bare)
     env = dict(os.environ, GIT_SSH_COMMAND=" ".join(shlex.quote(a) for a in ["ssh"] + ssh_opts()),
                GIT_TERMINAL_PROMPT="0")
+    base = base_refspecs(cfg, wt["top"])
     p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "push.recurseSubmodules=no",
                         "push", "--no-verify", "-q", "-f", "--receive-pack=" + recv, url,
-                        "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])] + base_refspecs(cfg, wt["top"]),
+                        "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])] + base,
                        cwd=wt["top"], env=env, stdin=subprocess.DEVNULL, capture_output=True)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip()
@@ -209,18 +216,23 @@ def push(cfg, wt):
         if why:
             raise PushRefused(why)
         raise RunError("git push to the mini failed: %s" % err.replace("\n", " | ")[-300:])
+    return base
 
 
 def base_refspecs(cfg, top):
     """Also mirror the shared base branches (origin/dev, origin/main, ...) that exist locally, so
     `git diff origin/dev...HEAD` / merge-base guards work on the mini too (2026-10-15: a guard tier
-    failed there with "could not resolve a diff base"). After the first push they cost ~nothing."""
+    failed there with "could not resolve a diff base"). After the first push they cost ~nothing.
+    Each is pushed as the commit it resolves to now ("+<sha>:<ref>"), so what reaches the worker is
+    exactly what the result cache keyed on."""
     out = []
     for name in cfg.get("rr_base_branches") or ():
         ref = "refs/remotes/origin/%s" % name
-        if NAME_RE.search(name) is None and git_out(["rev-parse", "-q", "--verify", ref + "^{commit}"],
-                                                     top, check=False).strip():
-            out.append("+%s:%s" % (ref, ref))
+        if NAME_RE.search(name) is not None:
+            continue
+        sha = git_out(["rev-parse", "-q", "--verify", ref + "^{commit}"], top, check=False).strip()
+        if re.match(rb"^[0-9a-f]{40}$", sha):
+            out.append("+%s:%s" % (sha.decode(), ref))
     return out
 
 
@@ -316,6 +328,56 @@ def build_overlay(cfg, top, env_dirs=("",)):
             t.addfile(ti, io.BytesIO(data))
             (shipped_env if is_env else shipped).append(rel)
     return (buf.getvalue() if shipped or shipped_env else b""), shipped, shipped_env, deleted
+
+
+def env_dirs_for(wt, deps):
+    """Where env files are picked up for a run: the repo root, the cwd and the deps dirs."""
+    return list(dict.fromkeys([""] + ([wt["relcwd"]] if wt["relcwd"] else []) + list(deps)))
+
+
+def ship_env(cfg, env_pairs):
+    """The env dict a runner header carries: rr_env_pass matches from our env, then -e pairs."""
+    env = {k: v for k, v in os.environ.items()
+           if any(fnmatch.fnmatchcase(k, g) for g in cfg.get("rr_env_pass") or [])}
+    env.update(env_pairs)
+    return env
+
+
+def shipped_reader(wt, tar, deleted):
+    """-> read(rel): a file's bytes exactly as the worker will have it (the overlay's copy, else
+    the pushed commit's; None when deleted / absent)."""
+    over = {n: d for n, _m, d in rd_cache.tar_members(tar)}
+    gone = set(deleted)
+
+    def read(rel):
+        if rel in over:
+            return over[rel]
+        if rel in gone:
+            return None
+        p = subprocess.run(["git", "cat-file", "blob", "%s:%s" % (wt["sha"], rel)], cwd=wt["top"],
+                           capture_output=True)
+        return p.stdout if p.returncode == 0 else None
+    return read
+
+
+def cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs):
+    """-> (rd_cache.Run, None) for a cacheable run (its key = what would ship + the command), else
+    (None, why not). Builds the same overlay and env attempt() ships."""
+    env = ship_env(cfg, env_pairs)
+    why = rd_cache.why_not_static(argv, job, outputs, env)
+    if why:
+        return None, why
+    try:
+        base = base_refspecs(cfg, wt["top"])
+        tar, _files, envs, deleted = build_overlay(cfg, wt["top"], env_dirs_for(wt, deps))
+    except (RunError, OSError) as e:
+        return None, "could not list the worktree (%s)" % e
+    why = rd_cache.env_files_why(tar, envs) or \
+        rd_cache.why_not_script(argv, wt["relcwd"], shipped_reader(wt, tar, deleted))
+    if why:
+        return None, why
+    cid = rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps)
+    return rd_cache.Run(rd_cache.key(cid, argv, wt["relcwd"], job["cls"]), cid), None
 
 
 # ---------------------------------------------------------------------------- deps dirs
@@ -550,15 +612,21 @@ class Session:
         self.said_wait = False
         self.unavail = None                  # "<nonce> UNAVAIL <why>": the worker refused (share off / no docker)
         self.exit_rc = None                  # "<nonce> EXIT <rc>": the command's own exit code
+        self.used_docker = False             # "<nonce> DOCKER": the command called docker (cache: never saved)
+        self.on_ready = None                 # called on READY, before GO (cache: drop the prepare's output)
 
     def on_status(self, line):
         word, _, rest = line.partition(" ")
         if word == "READY":
             self.timing.mark("remote prepare (checkout, overlay, deps, slot)")
+            if self.on_ready is not None:
+                self.on_ready()
             self.ready = True
             self.wake.set()
         elif word == "STARTED":
             self.started = time.monotonic()
+        elif word == "DOCKER":
+            self.used_docker = True
         elif word == "EXIT":
             try:
                 self.exit_rc = int(rest.strip())  # the command ended with this; a later drop is no loss
@@ -936,6 +1004,7 @@ class Opts:
         self.host = environ.pop("RRUN_HOST", "") or None
         raw = environ.pop("RRUN_OUTPUTS", "")
         self.outputs = [o.strip() for o in raw.split(",") if o.strip()]
+        self.cache = environ.pop("RRUN_CACHE", "").strip() != "0"   # 0: run even with a cached result
 
 
 def resolve_outputs(cfg, wt, argv, opts):
@@ -995,6 +1064,15 @@ def rrun(argv, env_args=()):
         return run_local(argv, env_pairs)
     job = rd_pool.classify(argv, outputs)
     deps = deps_dirs(wt["top"], wt["relcwd"], argv) if wt else []
+    if not opts.where:
+        timing.mark("resolve")
+        take_wt_lock(wt["wt12"])     # fd stays open (and locked) until we exit or exec
+        timing.mark("worktree lock")
+    crun, cache_why = cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs) if wt \
+        else (None, "not in a git worktree")
+    hit = rd_cache.lookup(crun.key) if crun is not None and opts.cache and not opts.host else None
+    if hit is not None and not opts.where:
+        return replay_hit(hit, argv, t0)
     try:
         plan = rd_pool.plan(cfg, job, wt["slug"] if wt else "",
                             rd_pool.deps_shas(wt["top"], deps) if wt else [],
@@ -1011,26 +1089,60 @@ def rrun(argv, env_args=()):
             why_not = "fewer than 2 free workers would help"
         shards = shards if shards and len(shards) >= 2 else None
     if opts.where:
-        print("\n".join(rd_pool.where_report(cfg, job, plan, shards or why_not)))
+        print("\n".join([cache_where(crun, cache_why, hit, opts)]
+                        + rd_pool.where_report(cfg, job, plan, shards or why_not)))
         return 0
-    timing.mark("resolve")
-    take_wt_lock(wt["wt12"])     # fd stays open (and locked) until we exit or exec
-    timing.mark("worktree lock")
-    ctx = Ctx(cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps)
+    ctx = Ctx(cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps, crun)
     if shards:
-        return run_shards(ctx, shards, argv)
-    kind, val = host_loop(ctx, plan.hosts, argv, give_up=plan.local_after_s)
+        return cache_save(ctx, run_shards(ctx, shards, argv), argv)
+    out = err = None
+    if crun is not None:         # the output is recorded (and still printed live) for the cache
+        out = Sink(rd_cache.Tee(std_stream("stdout"), crun.rec, 1))
+        err = Sink(rd_cache.Tee(std_stream("stderr"), crun.rec, 2))
+    kind, val = host_loop(ctx, plan.hosts, argv, give_up=plan.local_after_s, out=out, err=err)
     if kind == "local":
         return fallback(argv, env_pairs, val, t0, job, plan.pool)
-    return val
+    return cache_save(ctx, val, argv)
+
+
+def replay_hit(hit, argv, t0):
+    """A cached result: its output in the original order, one stderr line, its exit code."""
+    meta, frames = hit
+    sys.stdout.flush()
+    rd_cache.replay(frames, std_stream("stdout"), std_stream("stderr"))
+    note(rd_cache.hit_line(meta))
+    record("cache", argv, meta["rc"], time.monotonic() - t0)
+    return meta["rc"]
+
+
+def cache_save(ctx, rc, argv):
+    """Store the finished run's result when it may be replayed (rd_cache.Run.save decides)."""
+    if ctx.cache is not None:
+        ctx.cache.save(rc, time.monotonic() - ctx.t0, short_argv(argv))
+    return rc
+
+
+def cache_where(crun, why, hit, opts):
+    """`rrun --where`: would the result come from the cache?"""
+    if crun is None:
+        return "cache: not cached (%s)" % why
+    if not opts.cache:
+        return "cache: off (RRUN_CACHE=0): runs, then saves the fresh result"
+    if opts.host:
+        return "cache: not used with --host (runs there, then saves the result)"
+    if hit is not None:
+        return "cache: hit - replays the result from %s ago on %s (exit %d); RRUN_CACHE=0 runs it again" % (
+            rd_cache.fmt_age(time.time() - hit[0]["ts"]), hit[0].get("worker") or "a worker", hit[0]["rc"])
+    return "cache: miss - runs, then saves the result (a pass for 24 h, a failure for 20 min)"
 
 
 class Ctx:
     """Everything one rrun invocation's attempts share."""
 
-    def __init__(self, cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps):
+    def __init__(self, cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps, cache=None):
         self.cfg, self.wt, self.env_pairs, self.timing, self.t0 = cfg, wt, env_pairs, timing, t0
         self.job, self.plan, self.outputs, self.deps = job, plan, outputs, deps
+        self.cache = cache           # rd_cache.Run for a cacheable run, else None
 
 
 def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False, tag="", frac=1.0,
@@ -1064,6 +1176,8 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
             if (job["retry_ok"] or job["db"]) and not retried and nxt is not None:
                 note("%s%s went away mid-run (lost connection); re-running once on %s"
                      % (tag, h.name, hosts[nxt].name))
+                if threaded and ctx.cache is not None:   # the lost part's output is mixed in
+                    ctx.cache.taint("a shard re-ran after a lost worker")
                 retried, i = True, nxt
                 continue
             sys.stderr.write(tag + LOST_MSG + "\n")
@@ -1108,7 +1222,7 @@ def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0)
         if hedge:
             hedge.start()
         kind, val = attempt(h, ctx.wt, argv, ctx.env_pairs, ctx.timing, ctx.t0, ctx.job, ctx.plan.pool,
-                            ctx.outputs, ctx.deps, give_up, lane)
+                            ctx.outputs, ctx.deps, give_up, lane, cache=ctx.cache)
     finally:
         drop_lane(key, n)
     if hedge:
@@ -1201,6 +1315,8 @@ class Hedge:
                 return               # the original finished while we probed
             n = take_lane(key)
             self.dup = c.name
+            if ctx.cache is not None:    # two runs' output on one screen: not replayable
+                ctx.cache.taint("a hedged duplicate ran")
             self.dup_lane = Lane(out, err, None if n == 0 else short_hash("%s:lane%d" % (ctx.wt["wt12"], n), 12))
         try:
             kind, val = attempt(c, ctx.wt, self.argv, ctx.env_pairs, Timing(False), ctx.t0, ctx.job,
@@ -1303,23 +1419,30 @@ def run_shards(ctx, assign, argv):
     note("splitting `vitest run` into %d shards: %s (RRUN_SHARD=0: one run)"
          % (n, ", ".join("%s %d" % kv for kv in cnt.items())))
     rcs, outs, errs = [None] * n, [], []
+    so, se = std_stream("stdout"), std_stream("stderr")
+    if ctx.cache is not None:        # one cache entry for the whole sharded run
+        ctx.cache.sharded, ctx.cache.expect = True, n
+        so, se = rd_cache.Tee(so, ctx.cache.rec, 1), rd_cache.Tee(se, ctx.cache.rec, 2)
 
     def one(i, home):
-        out = Sink(std_stream("stdout"), "[shard %d/%d %s] " % (i + 1, n, home.name))
-        err = Sink(std_stream("stderr"), out.prefix)
+        out = Sink(so, "[shard %d/%d %s] " % (i + 1, n, home.name))
+        err = Sink(se, out.prefix)
         outs.append(out)
         errs.append(err)
         tag = "[shard %d/%d] " % (i + 1, n)
 
         def on_host(h):
             out.prefix = err.prefix = "[shard %d/%d %s] " % (i + 1, n, h.name)
-        hosts = [home] + [h for h in plan.hosts if h is not home]
+        # failover: never a worker that takes no shards (fleet.json "shards": false)
+        hosts = [home] + [h for h in plan.hosts if h is not home and rd_pool.takes_shards(h)]
         sargv = shard_argv(argv, i + 1, n)
         try:
             kind, val = host_loop(ctx, hosts, sargv, out=out, err=err, threaded=True, tag=tag,
                                   frac=1.0 / n, on_host=on_host)
             if kind == "local":
                 out.prefix = err.prefix = "[shard %d/%d local] " % (i + 1, n)
+                if ctx.cache is not None:
+                    ctx.cache.taint("a shard ran on this machine")
                 val = run_local_shard(ctx, sargv, out, err, tag + val)
         except Exception as e:       # one shard's bug must not hang the others
             note("%sfailed: %s" % (tag, e))
@@ -1355,7 +1478,7 @@ def run_shards(ctx, assign, argv):
                                                             for i, r in enumerate(rcs))))
     if summary:
         with OUT_LOCK:
-            out = std_stream("stdout")
+            out = so
             out.write(("\n".join(["", " rrun: merged summary of %d shards" % n] + summary) + "\n").encode())
             out.flush()
     return rc
@@ -1391,38 +1514,40 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
 
 
 def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None, give_up_s=None,
-            lane=None):
+            lane=None, cache=None):
     """One try on host h -> ("done", rc) | ("lost", why: dropped before the command started) |
     ("busy", why: a race-wait host had no slot after all) | ("lost_go", why: dropped after GO -
     the command may have run) | ("local", why: run it on the laptop now, waiting would not help).
-    lane (shards, hedges): output sinks + a per-lane mirror id; lane.session is set once it runs."""
+    lane (shards, hedges): output sinks + a per-lane mirror id; lane.session is set once it runs.
+    cache (rd_cache.Run): told what this attempt shipped and how its command ended."""
     cfg = h.cfg
     if lane is not None and lane.wt12:
         wt = dict(wt, wt12=lane.wt12)
     try:
         with host_lock(cfg["host"]):
-            push(cfg, wt)
+            base = push(cfg, wt) or []
     except PushRefused as e:
         return "local", "cannot send this repo to %s: %s" % (label(h), e)
     except RunError as e:
         return "lost", "%s unreachable (%s)" % ("Mac mini" if h.name == "mini" else h.name, e)
     timing.mark("push")
     deps = deps_dirs(wt["top"], wt["relcwd"], argv) if deps is None else deps
-    env_dirs = list(dict.fromkeys([""] + ([wt["relcwd"]] if wt["relcwd"] else []) + deps))
     try:
-        tar, files, envs, deleted = build_overlay(cfg, wt["top"], env_dirs)
+        tar, files, envs, deleted = build_overlay(cfg, wt["top"], env_dirs_for(wt, deps))
     except RunError as e:
         return "local", "could not list the worktree (%s)" % e
     if len(tar) > OVERLAY_WARN_BYTES:
         note("sending %.1f MB of uncommitted/untracked files" % (len(tar) / 1048576.0))
     timing.mark("overlay (%d files, %d env, %d deleted, %d bytes)" % (len(files), len(envs),
                                                                      len(deleted), len(tar)))
-    env = {k: v for k, v in os.environ.items()
-           if any(fnmatch.fnmatchcase(k, g) for g in cfg.get("rr_env_pass") or [])}
-    env.update(env_pairs)
+    env = ship_env(cfg, env_pairs)
+    if cache is not None:            # what this attempt really sends must be what the key hashed
+        cache.shipped(rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps))
     frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs)
     record(h.name, argv, None, 0, wt12=wt["wt12"], start=True)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
+    if cache is not None and not cache.sharded:
+        sess.on_ready = cache.rec.reset      # keep only the command's own output (+ this attempt's)
     if lane is not None:
         sess.stdout_out, sess.stderr_out = lane.out, lane.err
         if not lane.bind(sess):
@@ -1459,6 +1584,8 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             note("the link to %s dropped after the command finished there (exit %d); that is the result"
                  % (label(h), sess.exit_rc))
         rc = sess.exit_rc
+        if cache is not None:
+            cache.attempt_done(h.name, rc, sess.used_docker, bool(sess.ints or sess.first_sig))
     elif rc == 255:
         return "lost_go", "lost %s mid-run" % label(h)
     if rc == 0 and outputs:
