@@ -83,14 +83,11 @@ POSITIVE = [
 
 NEGATIVE = [
     "npx tsc -p tsconfig.json",                      # an emitting build: not a check
-    "npx vitest run src/a.test.ts",                  # one file: small, stays on the laptop
     "node scripts/check-small.mjs",                  # a plain small node script
-    "npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail",
     "npx vitest",                                    # watch mode: interactive
     "npm run test:e2e",                              # browser tests need the laptop
     "npm run dev",
     "npm run build",
-    "npx eslint src/a.ts",
     "cat tsconfig.json",
     "timeout npm run test:db",                       # timeout with no duration: not understood
     "bash -c 'echo test:db'",
@@ -101,7 +98,6 @@ NEGATIVE = [
     'git commit -m "fix test:db flake"',
     "git commit -m 'rehearse release:rehearse:migrations'",
     "echo test:db",
-    "npm run test",
     "npm run lint && echo test:db",                 # a matching segment we don't understand
     'sh -c "cd server && npm run test:db"',
     "ssh mini npm run test:db",
@@ -165,6 +161,96 @@ OPT_OUT = [
 ]
 
 
+SCRIPTS = {
+    "test": "vitest run", "test:unit": "vitest run src", "test:watch": "vitest",
+    "test:sneaky": "vitest --watch", "test:e2e": "playwright test", "test:cov": "vitest run --coverage",
+    "typecheck": "tsc --noEmit", "typecheck:server": "tsc --noEmit -p server",
+    "lint": "eslint .", "lint:fix": "eslint . --fix", "lint:ci": "eslint . --fix",
+    "dev": "vite", "start": "node server.js", "build": "vite build", "build:prod": "vite build",
+}
+
+
+def project(root, name, git=True, lock="package-lock.json", scripts=None):
+    """A package dir (`.git` marker, package.json scripts, a lockfile, two tsconfigs) + client/."""
+    d = os.path.join(root, name)
+    os.makedirs(os.path.join(d, "client"))
+    if git:
+        os.makedirs(os.path.join(d, ".git"))
+    for sub in (d, os.path.join(d, "client")):
+        with open(os.path.join(sub, "package.json"), "w") as f:
+            json.dump({"scripts": scripts or SCRIPTS}, f)
+    if lock:
+        with open(os.path.join(d, lock), "w") as f:
+            f.write("{}")
+    with open(os.path.join(d, "tsconfig.json"), "w") as f:
+        f.write('{"compilerOptions": {"outDir": "dist"}}')        # emits: not a check
+    with open(os.path.join(d, "tsconfig.check.json"), "w") as f:
+        f.write('{\n  "extends": "./tsconfig.json",\n  "compilerOptions": {"noEmit": true}\n}')
+    return d
+
+
+# One-shot dev commands routed by structure (run in the default project)
+ONESHOT = [
+    ("npx tsc -p tsconfig.check.json", "rrun npx tsc -p tsconfig.check.json"),
+    ("npx tsc -b tsconfig.check.json", "rrun npx tsc -b tsconfig.check.json"),
+    ("npx --prefix client tsc --noEmit -p tsconfig.json", "rrun npx --prefix client tsc --noEmit -p tsconfig.json"),
+    ("npx vitest run src/a.test.ts", "rrun npx vitest run src/a.test.ts"),
+    ("npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail", "rrun npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail"),
+    ("npx --prefix client vitest run src/x.test.ts", "rrun npx --prefix client vitest run src/x.test.ts"),
+    ("FOO=1 npx vitest run a", "FOO=1 rrun -e FOO npx vitest run a"),
+    ("timeout 300 npx vitest run src/a.test.ts", "timeout 300 rrun npx vitest run src/a.test.ts"),
+    ("./node_modules/.bin/vitest run src/a.test.ts", "rrun ./node_modules/.bin/vitest run src/a.test.ts"),
+    ("npx jest src/a.test.ts", "rrun npx jest src/a.test.ts"),
+    ("npx jest --ci 2>&1 | tail -20", "rrun npx jest --ci 2>&1 | tail -20"),
+    ("npx eslint src/a.ts", "rrun npx eslint src/a.ts"),
+    ("npx eslint src --ext .ts > lint.log 2>&1", "rrun npx eslint src --ext .ts > lint.log 2>&1"),
+    ("npm test", "rrun npm test"),
+    ("npm t", "rrun npm t"),
+    ("npm test -- src/a.test.ts", "rrun npm test -- src/a.test.ts"),
+    ("npm run test", "rrun npm run test"),
+    ("npm run test:unit -- src/a", "rrun npm run test:unit -- src/a"),
+    ("npm run typecheck", "rrun npm run typecheck"),
+    ("npm run typecheck:server", "rrun npm run typecheck:server"),
+    ("npm run lint -- src/a.ts 2>&1 | tail", "rrun npm run lint -- src/a.ts 2>&1 | tail"),
+    ("npm --prefix client run test", "rrun npm --prefix client run test"),
+    ("cd client && npx tsc --noEmit && npx vitest run", "cd client && rrun npx tsc --noEmit && rrun npx vitest run"),
+    ("npx tsc -p tsconfig.check.json; npx eslint src", "rrun npx tsc -p tsconfig.check.json; rrun npx eslint src"),
+    ("git status && npx vitest run src/a.test.ts | tail -20", "git status && rrun npx vitest run src/a.test.ts | tail -20"),
+    ("npx vitest run a && npx vitest --watch", "rrun npx vitest run a && npx vitest --watch"),   # watch half stays
+]
+
+# Never offloaded (run in the default project, so only the rule itself keeps them here)
+NEVER = [
+    # watch / interactive
+    "npx vitest", "npx vitest watch", "npx vitest -w", "npx vitest run --watch", "npx vitest run -w",
+    "npx vitest run --ui", "npx vitest --ui", "npx vitest bench", "npx jest --watch", "npx jest --watchAll",
+    "npx tsc -w -p tsconfig.check.json", "npx tsc --noEmit --watch", "npx tsc --noEmit -w",
+    "npm run test:watch", "npm run test:sneaky", "npm run test -- --watch",
+    # dev servers
+    "npm run dev", "npm start", "npm run start", "npx vite", "npx vite preview", "npx next dev",
+    # builds rrun would not copy back
+    "vite build", "npx vite build", "pnpm build", "npm run build", "npm run build:prod",
+    # installs
+    "npm install", "npm ci", "npm i -D vitest", "npm add eslint", "pnpm add -D vitest",
+    # writes files the agent then reads here
+    "npx vitest run --coverage", "npx vitest run -u", "npx vitest run --outputFile=r.json",
+    "npx jest -u", "npx jest --coverage", "npx eslint . --fix", "npx eslint src -o report.txt",
+    "npm run lint:fix", "npm run lint:ci", "npm run test:cov", "npx tsc -p tsconfig.json",
+    "npx tsc", "npx tsc -p tsconfig.json --outDir out",
+    # bare tools (a worker's PATH has no node_modules/.bin) and non-npm runners
+    "tsc -p tsconfig.check.json", "vitest run src/a.test.ts", "eslint src", "jest src",
+    "yarn test", "pnpm test", "pnpm typecheck", "bun run test",
+    # unclear / remote / container / heredoc / substitution / pipe target
+    "cat <<EOF\nnpx vitest run a\nEOF", "ssh hp npx vitest run a", "docker run node npx vitest run a",
+    "docker compose run app npm test", "npx vitest run $(git diff --name-only)",
+    "npx tsc --noEmit -p $(pwd)", "echo x | npx vitest run a", "cd $D && npx vitest run a",
+    "cd /tmp && npx vitest run a", "npm run test:nope && echo $(date)",
+    "npx -p typescript -c 'tsc -p tsconfig.check.json'", "bash -c \"npx vitest run a\"",
+    # opt-outs
+    "RRUN=0 npx vitest run a", "rrun npx vitest run a", "RRUN=0 npm test",
+]
+
+
 class HookBase(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="hook-", dir=TEST_HOME)
@@ -172,11 +258,13 @@ class HookBase(unittest.TestCase):
         self.bin = os.path.join(self.home, ".local", "bin")
         os.makedirs(self.bin)
         os.symlink(os.path.join(STAGE, "rrun"), os.path.join(self.bin, "rrun"))
+        # the default cwd: a git project with an npm lockfile (rrun needs a repo; workers `npm ci`)
+        self.proj = project(self.home, "proj")
 
     def hook(self, payload, *bins, **extra):
         env = rdmods.child_env(self.home, *(bins or (self.bin,)), **extra)
         raw = payload if isinstance(payload, str) else json.dumps(payload)
-        p = subprocess.run(["/usr/bin/python3", "-I", HOOK], input=raw, env=env, cwd=self.home,
+        p = subprocess.run(["/usr/bin/python3", "-I", HOOK], input=raw, env=env, cwd=self.proj,
                            capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stderr, "")
@@ -212,6 +300,53 @@ class RewriteMatrix(HookBase):
         for cmd in OPT_OUT:
             with self.subTest(cmd=cmd):
                 self.assertIsNone(self.rewritten(cmd))
+
+    def test_oneshot(self):
+        for cmd, want in ONESHOT:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.rewritten(cmd), want)
+
+    def test_never(self):
+        for cmd in NEVER:
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.rewritten(cmd))
+
+    def test_project_kinds(self):
+        """No git repo -> nothing; pnpm/yarn lockfile -> nothing; no lockfile -> only the patterns."""
+        pn = project(self.home, "pn", lock="pnpm-lock.yaml")
+        yn = project(self.home, "yn", lock="yarn.lock")
+        bare = project(self.home, "nolock", lock=None)
+        loose = project(self.home, "loose", git=False)
+        for cmd, cwd, want in (
+                ("npx vitest run a", pn, None), ("npm run lint", pn, None), ("pnpm typecheck", pn, None),
+                ("npm run test:db", yn, None), ("npx tsc --noEmit", yn, None),
+                ("npx vitest run a", bare, None), ("npm test", bare, None),
+                ("npm run test:db", bare, "rrun npm run test:db"),          # a pattern: as before
+                ("npm run test:db", loose, None), ("npx vitest run a", loose, None),
+                ("cd client && npx vitest run a", loose, None),
+                ("cd ../proj && npx vitest run a", loose, "cd ../proj && rrun npx vitest run a"),
+                ("npx vitest run a", os.path.join(self.proj, "client"), "rrun npx vitest run a")):
+            with self.subTest(cmd=cmd, cwd=cwd):
+                out = self.hook(dict(self.bash(cmd), cwd=cwd))
+                self.assertEqual(out and out["hookSpecificOutput"]["updatedInput"]["command"], want)
+
+    def test_fast(self):
+        """The routing decision itself stays far below the 50 ms budget (interpreter start aside)."""
+        import time
+        env = rdmods.child_env(self.home, self.bin)
+        code = ("import importlib.util,json,sys,time;"
+                "s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);"
+                "s.loader.exec_module(h);t=time.perf_counter();"
+                "[h.route(c,[],cwd=sys.argv[2]) for c in json.loads(sys.argv[3])];"
+                "print((time.perf_counter()-t)/len(json.loads(sys.argv[3])))")
+        cmds = [c for c, _ in ONESHOT] + NEVER
+        p = subprocess.run(["/usr/bin/python3", "-I", "-c", code, HOOK, self.proj, json.dumps(cmds)],
+                           env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertLess(float(p.stdout), 0.005)
+        t = time.perf_counter()
+        self.rewritten("npx vitest run src/a.test.ts")
+        self.assertLess(time.perf_counter() - t, 1.0)    # the whole subprocess, generous for CI noise
 
     def test_tool_input_preserved(self):
         out = self.hook(self.bash("npm run test:db", description="db tests", timeout=600000,
@@ -314,7 +449,7 @@ class ConfigPatterns(HookBase):
     def test_custom_patterns_bypass_the_prefilter(self):
         self.write_cfg({"rr_route_patterns": [r"(^|\s)test:integration(\s|$)"]})
         self.assertEqual(self.rewritten("npm run test:integration"), "rrun npm run test:integration")
-        self.assertIsNone(self.rewritten("npm run test:db"))     # the override replaces the list
+        self.assertIsNone(self.rewritten("node scripts/test-with-db.mjs"))   # the override replaces the list
 
     def test_custom_rr_root_marks_the_mini(self):
         self.write_cfg({"rr_root": "rr-alt"})

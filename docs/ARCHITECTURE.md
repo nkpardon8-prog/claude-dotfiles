@@ -110,56 +110,6 @@ test folder can never write the real cache. The
 file holds names only plus a salted hash of the claude.ai account id, compared across Macs to warn
 when Remote Control messages cannot arrive.
 
-**Peer messaging internals (`/line`, `line-agent-communicator.py`):** the agent-facing usage lives in
-`commands/line.md` and `rules/agent-peer-messaging.md`; this is the why behind the machinery.
-- *Two names, one command.* A window has a statusline caption (keyed by `sessionId`, survives a
-  resume) and a peer address (the session-registry `name` under its `pid`, re-derived by the harness).
-  They used to be unrelated, so a window captioned "summit admin hub" was only reachable as
-  `dentall-ae`. `set` writes both: it finds its own registry entry by `sessionId`, preserves every
-  field it does not own, writes atomically, and marks the name `nameSource: "explicit"` (verified on
-  2.1.227/2.1.228 that the harness preserves an explicit name). If a future version stops honouring
-  that, `/line` degrades to caption-only and says so. Handles are lowercased, hyphenated, cut to 40
-  chars on a word boundary, and get a numeric suffix if another live window holds the name.
-- *Display name.* The `session-title` verb runs on UserPromptSubmit and SessionStart and returns a
-  `sessionTitle` (applied like `/rename`) equal to the handle, predicting it on a `/line` prompt.
-  `line-ensure-settings.py` adds that hook at every session start; log `~/.claude/logs/line-title.log`.
-- *Naming is destructive and has no undo,* so flag-shaped input (`/line --help`, a mistyped `--own`)
-  exits 2 instead of becoming the name - both once silently renamed windows. `--owns` is re-split
-  inside the script because the command's Bash passes `$ARGUMENTS` as one word (the alternative was
-  `eval` on user prose); so a caption containing the literal text `--owns` cannot be set via `/line`,
-  and unbalanced quotes fall through as a plain caption. `set -- "<caption>"` allows a leading dash.
-  No-argument `/line` clears only the caption; the address is kept so nobody mid-conversation loses it.
-- *Receiving.* Cross-session messaging arrived in Claude Code 2.1.224 and the socket binds at
-  startup, so a window older than that cannot receive until closed and reopened; `list` shows this.
-- *Other Macs.* Sending needs the `bridge:session_...` Remote Control id, because Remote Control
-  titles are not dependable (Pane-resumed windows kept auto titles, 2026-10-16). The `route-send`
-  PreToolUse hook on SendMessage swaps a name matching exactly one live window on another Mac for its
-  bridge address, never touching local names, explicit addresses or ambiguous names; log
-  `~/.claude/logs/line-route.log`. Both Macs need the same claude.ai account,
-  `remoteControlAtStartup: true` and `crossSessionInbound: "accept"`.
-- *Tailscale relay.* iCloud stopped delivering the MacBook's address book to the mini on 2026-10-16,
-  so each MacBook publish also does one ssh round trip over rdocker's `macmini-docker` login (own
-  control socket, no tty, port forwards cleared) running `relay-exchange` on the mini. A relay copy
-  under 5 minutes old wins over iCloud's. Only the MacBook starts it; `LAC_RELAY_HOST` overrides the
-  alias, `off` disables it; failures go to `windows-publish.log`.
-- *Identity.* `card` checks the window's own reachability first and, if it cannot receive, routes
-  replies to the `~/claude-agent-replies/` dropbox instead of advertising a dead address. `whois`
-  prints `UNAUTHENTICATED LOOKUP` / `registry CLAIMS:` on every call, `MISMATCH` against `--claims`,
-  and `STALE` for a dead or recycled pid - it reads a file any local process can write and never asks
-  the kernel, so it vouches for nobody.
-- *Dropbox.* `reply` and `replies` generate the filenames on both ends (a hand-typed name fails
-  silently). The dropbox was once write-only in practice - a peer filed an answer, believed it had
-  communicated, and nothing ever read it - so `line-replies-notice.sh` (SessionStart) prints the
-  unread count, never content, and is silent at zero. `replies`/`notes` print peer text behind an
-  untrusted-data banner.
-- *Retention* (at most daily, piggybacked on `list`/`replies`, deliberately timid): a reply is
-  deleted only when already displayed AND over 30 days old - never an unread one at any age, and only
-  the newest 20 per window are ever eligible, with a floor on the oldest displayed mtime (it once
-  deleted the 5 it had just said it was not showing). Gate: `09-reply-retention.sh`. Contacts drop
-  after 180 days unseen. Orphaned sockets in the shared `/tmp/cc-socks` are only reported; `reap
-  --sockets` unlinks one only if it is ours, its pid is gone, nothing names or accepts on it, and it
-  is over 7 days old.
-
 ---
 
 ## Sync flow (multi-device)
@@ -200,7 +150,7 @@ copy of the actual registration. The load-bearing ones:
 
 | Hook | Script | Purpose |
 |---|---|---|
-| `Stop` | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app, plus Pane panels via `runpane` (detached `auto-compact-pane-deliver.sh`). Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
+| `Stop` | `scripts/hooks/auto-compact-after-pre-compact.sh` | Fires `/compact` into the originating Terminal tab when `/pre-compact` armed it (per-session JSON sentinel under `~/.claude/progress/`). Mac/Terminal.app only. Triggered by `/pre-compact` — see [COMMANDS.md](COMMANDS.md) and `scripts/hooks/README.md`. |
 | `SessionStart` (cleanup entry) | `scripts/progress/on-session-start-cleanup.sh` | Prunes stale progress files, stale auto-compact / pre-compact sentinels (>12h), and `codex-review.*` run dirs under `$TMPDIR` (>24h - they now outlive the skill so `/mission` can read `report-final.md`). Also sweeps abandoned parallelizer waves (>7d): dead wave-state files, plus orphaned `~/.claude/wave-worktrees/` dirs that no state file references - removing the tree, then `git worktree prune` + `branch -D` in the repo named by that dir's `.repo-root` breadcrumb. Finally runs `scripts/parallel-stats.py --replay` at most weekly (completion-marker throttled, 45s `pt_run` cap, 10 newest transcripts, tmp->mv) into `~/.claude/parallel-waves/replay-latest.txt`. `rework.log` and replay outputs are never swept. Every step is fail-open. |
 | `SessionStart` (primer) | `scripts/hooks/post-compact-primer.sh` | Source-routing primer for `compact`/`resume`/`startup`/`clear`: resolves the pending SID-tagged handoff and emits session-start navigation. Followed by `stale-handoff-guard.sh`, which quarantines an un-tagged `CLAUDE.local.md` so an old handoff cannot be silently re-ingested. |
 | `SessionStart` (peer address) | `scripts/hooks/line-reassert-identity.sh` | Re-applies this window's peer address from its `/line` caption on `startup\|resume\|clear\|compact`. The two names a window carries are keyed differently - the caption by `sessionId` (survives a resume), the address under the window's `pid` (re-derived by the harness) - so a resumed window silently reverted to an auto-generated handle. Async, fail-open, no-op when the address is already `nameSource: explicit`. Resolves its session id from the hook's **stdin JSON** like its siblings; each re-assert appends one line to `~/.claude/logs/line-reassert.log` so "it ran and had nothing to do" is distinguishable from "it never ran". |
@@ -209,7 +159,7 @@ copy of the actual registration. The load-bearing ones:
 | `SessionStart` (peer replies) | `scripts/hooks/line-replies-notice.sh` | Says how many unread peer replies are waiting in `~/claude-agent-replies/` and how to read them. It exists because the dropbox was write-only in practice - `reply` prints "they have to look" and nothing ever looked, so a filed answer was never read and the sender believed it had communicated. Silent at zero (a hook that speaks every session becomes noise and gets ignored, which is what keeps the sync-pause notice credible). Never prints the reply's content, sender, or filename: hook stdout is injected raw, and peer-authored text may only enter a context through the framed `replies` output. Counts via the `replies-count` verb, which shares one `unread` definition with `replies` so the notice and the inbox cannot disagree. |
 | `PreToolUse` | `scripts/hooks/prod-coordination-gate.py` | Serializes prod-mutating ops across parallel Claude instances via `~/.claude/prod.lock`. |
 | `PreToolUse` (`Bash`) | `scripts/hooks/no-docker-desktop.py` | Blocks agents launching laptop Docker Desktop by hand (`open -a Docker` etc.); points them at `rdocker doctor`. `RDOCKER_LOCAL_START=1` opts in. |
-| `PreToolUse` (`Bash`) | `scripts/hooks/rrun-route.py` | Rewrites known heavy DB test commands (rdocker's `rr_route_patterns`) to `rrun <cmd>` so they run on the Mac mini next to their Postgres. Returns only `updatedInput` (permission prompts still apply), rewrites only simple segments it fully understands, and fails open. See `scripts/hooks/README.md` and `commands/docker.md`. |
+| `PreToolUse` (`Bash`) | `scripts/hooks/rrun-route.py` | Rewrites every heavy one-shot dev command (tsc checks, vitest run, jest, eslint, npm test/typecheck/lint scripts, mapped builds, and rdocker's `rr_route_patterns` DB jobs) to `rrun <cmd>` so it runs on the compute pool; watch / dev-server / install / write-back runs stay local. Returns only `updatedInput` (permission prompts still apply), rewrites only simple segments it fully understands, and fails open. See `scripts/hooks/README.md` and `commands/docker.md`. |
 | `PreToolUse` (`Write\|Edit`) | `scripts/hooks/shared-path-overwrite-guard.sh` | Copies a file to `<name>.bak-<UTC minute>` before an agent overwrites it in `~/Downloads`, `~/Desktop`, or `~/Documents`. It is the machine behind `rules/destructive-actions.md`: an agent overwrote another agent's `~/Downloads` draft after two unanswered offers, and the original survived only because the acting agent still held the text in context - silent, and able to recur, which is the bar `rules/verify-by-mechanism.md` sets for machine-enforcing a rule. **Never blocks** - it makes the destruction reversible rather than policing intent, because it sits in front of every `Write` on a machine running ~18 windows. Exempts anything inside a git working tree (version control already keeps the prior version, and guarding there would litter `.bak` files through ordinary repo work), skips `.bak-*` targets so chains cannot form, and fails open on every error. Kill switch: `SHARED_PATH_GUARD_DISABLED=1`. Does NOT cover `Bash` destruction (`rm`, `mv`, `>` redirects) - that needs a different classifier and does not exist. |
 | `SessionStart` + `PostToolUse` | `scripts/hooks/prod-ledger.py` (`inject` / `record`) | Shared ledger of prod-facing actions (push / deploy / migrate) so parallel agents know what is already live. |
 
