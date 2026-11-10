@@ -42,6 +42,22 @@
       "ts_key_expiry": "2027-05-09"
     },
     {
+      "name": "nickmbp",
+      "alias": "rd-nickmbp",
+      "ip": "100.125.118.77",
+      "port": 2222,
+      "user": "rd",
+      "os": "mac",
+      "roles": [
+        "worker"
+      ],
+      "speed": 3.0,
+      "max_slots": 8,
+      "heavy_slots": 6,
+      "mem_gb": 64,
+      "enabled": true
+    },
+    {
       "name": "mini-a",
       "alias": "rd-mini-a",
       "ip": "100.78.43.6",

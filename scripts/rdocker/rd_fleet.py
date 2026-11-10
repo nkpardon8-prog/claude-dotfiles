@@ -92,8 +92,10 @@ def problems(fl):
             homes.append(m.get("name"))
         serves = any(r in roles for r in ("home", "worker"))
         if serves:
-            if e["os"] != "linux":
-                bad.append("%s: home/worker machines must be linux" % who)
+            if "home" in roles and e["os"] != "linux":
+                bad.append("%s: the home machine must be linux" % who)
+            elif e["os"] not in ("linux", "mac"):
+                bad.append("%s: worker machines must be linux or mac" % who)
             if not USER_RE.match(e["user"]):
                 bad.append("%s: bad ssh user" % who)
             if not e["alias"]:
