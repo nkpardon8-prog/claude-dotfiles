@@ -131,7 +131,7 @@ class Resilience(unittest.TestCase):
     def test_macmini_gets_setpci_unit_other_hardware_gets_a_note(self):
         out = self.apply(product="Macmini5,1")
         u = self.f("/etc/systemd/system/rd-ac-poweron.service")
-        self.assertIn("ExecStart=/usr/bin/setpci -s 00:1f.0 0xa4.b=0", u)
+        self.assertIn("ExecStart=/usr/bin/setpci -s 00:1f.0 0xa4.b=0:1", u)
         self.assertIn("Type=oneshot", u)
         self.assertIn("enable rd-ac-poweron.service", self.f("systemctl.log"))
         self.assertNotIn("After Power Loss", out)
@@ -141,6 +141,12 @@ class Resilience(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "etc/systemd/system/rd-ac-poweron.service")))
         self.assertIn("After Power Loss = On", out)
         self.assertIn("F10 -> Advanced -> Power-On Options", out)
+
+    def test_macmini_2012_gets_setpci_unit_too(self):
+        self.apply(product="Macmini6,1")
+        u = self.f("/etc/systemd/system/rd-ac-poweron.service")
+        self.assertIn("ExecStart=/usr/bin/setpci -s 00:1f.0 0xa4.b=0:1", u)
+        self.assertIn("enable rd-ac-poweron.service", self.f("systemctl.log"))
 
     def test_unattended_security_only_with_0430_reboot(self):
         self.apply()

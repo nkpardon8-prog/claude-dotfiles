@@ -88,15 +88,15 @@ CONF
   [ -n "$R" ] || sysctl -q --system >/dev/null 2>&1 || true
   PRODUCT="${RD_DMI_PRODUCT:-$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)}"
   case "$PRODUCT" in
-    Macmini5,*)   # 2011 Mac mini: clear the southbridge "stay off after power loss" bit at every boot
+    Macmini5,*|Macmini6,*)   # 2011/2012 Mac mini: clear the southbridge AFTERG3 "stay off after power loss" bit (GEN_PMCON_3 bit 0) at every boot
       [ -n "$R" ] || { command -v setpci >/dev/null 2>&1 || apt-get install -y -qq pciutils; }
       put /etc/systemd/system/rd-ac-poweron.service 644 <<'CONF'
 [Unit]
-Description=Power on automatically after AC loss (Mac mini 2011)
+Description=Power on automatically after AC loss (Mac mini 2011/2012)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/setpci -s 00:1f.0 0xa4.b=0
+ExecStart=/usr/bin/setpci -s 00:1f.0 0xa4.b=0:1
 
 [Install]
 WantedBy=multi-user.target

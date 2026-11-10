@@ -33,7 +33,7 @@ else
   [ "$(sysctl -n kernel.panic 2>/dev/null)" = 10 ] && [ "$(sysctl -n kernel.panic_on_oops 2>/dev/null)" = 1 ] \
     && res PASS panic-sysctl || res FAIL panic-sysctl
   case "$(cat /sys/class/dmi/id/product_name 2>/dev/null)" in
-    Macmini5,*) [ "$(systemctl is-enabled rd-ac-poweron.service 2>/dev/null)" = enabled ] \
+    Macmini5,*|Macmini6,*) [ "$(systemctl is-enabled rd-ac-poweron.service 2>/dev/null)" = enabled ] \
                   && res PASS ac-power "setpci unit" || res FAIL ac-power "rd-ac-poweron.service missing" ;;
     *) res SKIP ac-power "set BIOS 'After Power Loss = On' by hand (HP ProDesk: F10 > Advanced > Power-On Options)" ;;
   esac
