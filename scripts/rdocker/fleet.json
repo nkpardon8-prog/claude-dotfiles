@@ -15,7 +15,6 @@
       "os": "linux",
       "wsl": true,
       "roles": [
-        "home",
         "worker"
       ],
       "speed": 0.45,
@@ -32,9 +31,10 @@
       "user": "rd",
       "os": "linux",
       "roles": [
+        "home",
         "worker"
       ],
-      "speed": 1.24,
+      "speed": 1.19,
       "max_slots": 4,
       "heavy_slots": 1,
       "mem_gb": 8,
