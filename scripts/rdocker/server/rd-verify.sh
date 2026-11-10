@@ -103,6 +103,15 @@ exposed=$(echo "$SS" | awk -v ts="$TSIP" '
 RS="$(getent passwd "$RD_USER" | cut -d: -f6)/.config/rdocker/reporter.json"; [ -n "${RD_REPORTER_FILE:-}" ] && RS=$RD_REPORTER_FILE
 st=$(stat -c '%a %U' "$RS" 2>/dev/null)
 [ "$st" = "600 $RD_USER" ] && res PASS reporter-secret-0600 || res FAIL reporter-secret-0600 "${st:-missing}"
+# power bar: the sampler runs where RAPL exists (never on WSL)
+if [ "$WSL" = 1 ] || [ ! -e /sys/class/powercap/intel-rapl:0/energy_uj ]; then res SKIP power-sampler "no RAPL here"
+elif [ "$(systemctl is-active rd-power.service 2>/dev/null)" = active ]; then res PASS power-sampler
+else res FAIL power-sampler "rd-power.service not running: dashboard power shows n/a"; fi
+# reporter must come back after a reboot: the user unit's wants symlink (what `systemctl --user enable` writes)
+RU="$(getent passwd "$RD_USER" | cut -d: -f6)/.config/systemd/user"; [ -n "${RD_REPORTER_UNITS:-}" ] && RU=$RD_REPORTER_UNITS
+if [ ! -f "$RU/rd-reporter.service" ]; then res SKIP reporter-boot "reporter not installed"
+elif [ -e "$RU/default.target.wants/rd-reporter.service" ]; then res PASS reporter-boot
+else res FAIL reporter-boot "rd-reporter not enabled: it will not start after a reboot"; fi
 if [ "$WSL" = 1 ]; then res SKIP unattended-timer "WSL"
 elif [ "$(systemctl is-enabled apt-daily-upgrade.timer 2>/dev/null)" = enabled ]; then res PASS unattended-timer; else res FAIL unattended-timer; fi
 [ "$bad" = 0 ]

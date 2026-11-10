@@ -118,6 +118,37 @@ class Resilience(unittest.TestCase):
         d = self.f("/home/rd/.config/systemd/user/rd-reporter.service.d/10-rdocker-restart.conf")
         self.assertIn("Restart=always", d)
         self.assertIn("systemctl --user enable rd-reporter.service", self.f("systemctl.log"))
+        w = os.path.join(self.root, "home/rd/.config/systemd/user/default.target.wants/rd-reporter.service")
+        self.assertEqual(os.readlink(w), "../rd-reporter.service")   # enabled offline too, no running manager needed
+
+    def test_power_sampler_installed_and_enabled_not_on_wsl(self):
+        self.apply()
+        self.assertIn("ExecStart=/usr/local/bin/rd-power", self.f("/etc/systemd/system/rd-power.service"))
+        self.assertTrue(os.access(os.path.join(self.root, "usr/local/bin/rd-power"), os.X_OK))
+        self.assertIn("enable rd-power.service", self.f("systemctl.log"))
+
+    def test_power_sampler_publishes_coarse_watts(self):
+        d = tempfile.mkdtemp()
+        cap = os.path.join(d, "rapl"); os.makedirs(cap)
+        with open(os.path.join(cap, "max_energy_range_uj"), "w") as f: f.write("262143328850\n")
+        with open(os.path.join(cap, "energy_uj"), "w") as f: f.write("1000000\n")
+        out = os.path.join(d, "run", "power")
+        env = rdmods.child_env(rdmods.TEST_HOME, RD_POWERCAP=cap, RD_POWER_OUT=out, RD_POWER_INTERVAL="1", RD_POWER_ONCE="1")
+        p = subprocess.Popen(["/bin/bash", os.path.join(SERVER, "rd-power.sh")], env=env)
+        time.sleep(0.3)
+        with open(os.path.join(cap, "energy_uj"), "w") as f: f.write("31000000\n")   # +30 J
+        self.assertEqual(p.wait(timeout=10), 0)
+        w, ts = open(out).read().split()
+        self.assertTrue(15 <= float(w) <= 40, w)                                   # ~30 J over ~1 s
+        self.assertLess(abs(int(ts) - time.time()), 5)
+        self.assertEqual(oct(os.stat(out).st_mode & 0o777), "0o644")
+        shutil.rmtree(d)
+
+    def test_power_sampler_exits_quietly_without_rapl(self):
+        env = rdmods.child_env(rdmods.TEST_HOME, RD_POWERCAP="/nonexistent/rapl")
+        r = subprocess.run(["/bin/bash", os.path.join(SERVER, "rd-power.sh")], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("no RAPL", r.stdout)
 
     def test_watchdog_and_panic(self):
         self.apply()
@@ -165,7 +196,7 @@ class Resilience(unittest.TestCase):
     def test_wsl_skips_hardware_pieces(self):
         self.apply("--wsl", "1")
         for rel in ("etc/systemd/system.conf.d/50-rdocker-watchdog.conf", "etc/sysctl.d/91-rdocker-panic.conf",
-                    "etc/apt/apt.conf.d/52rdocker-unattended"):
+                    "etc/apt/apt.conf.d/52rdocker-unattended", "etc/systemd/system/rd-power.service"):
             self.assertFalse(os.path.exists(os.path.join(self.root, rel)), rel)
         self.assertIn("mask sleep.target", self.f("systemctl.log"))      # sleep is still masked
 
@@ -445,7 +476,8 @@ class Verify(unittest.TestCase):
     def test_every_resilience_piece_has_a_check(self):
         s = read(VERIFY)
         for name in ("mask-$t", "logind-ignore-lid-idle", "boot-$u", "restart-$u", "timer-$t", "watchdog",
-                     "panic-sysctl", "ac-power", "unattended-upgrades", "tailscale-auto-update", "docker-live-restore"):
+                     "panic-sysctl", "ac-power", "unattended-upgrades", "tailscale-auto-update", "docker-live-restore",
+                     "reporter-boot", "power-sampler"):
             self.assertIn(name, s)
 
     def test_prints_only_status_lines_and_fails_loudly_without_systemd(self):

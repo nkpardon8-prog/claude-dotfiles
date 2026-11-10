@@ -53,9 +53,14 @@ for u in ssh tailscaled docker chrony; do restart_dropin "$u"; done
 put /usr/local/bin/rd-netcheck 755 < "$SRC/rd-netcheck.sh"
 put /etc/systemd/system/rd-netcheck.service 644 < "$SRC/rd-netcheck.service"
 put /etc/systemd/system/rd-netcheck.timer 644 < "$SRC/rd-netcheck.timer"
+if [ "$IS_WSL" != 1 ]; then   # power bar: root averages RAPL for the reporter (WSL has no RAPL)
+  put /usr/local/bin/rd-power 755 < "$SRC/rd-power.sh"
+  put /etc/systemd/system/rd-power.service 644 < "$SRC/rd-power.service"
+fi
 [ -n "$R" ] || systemctl daemon-reload
 sc enable ssh tailscaled docker chrony rd-tune.timer rd-netcheck.timer
 sc start rd-netcheck.timer
+if [ "$IS_WSL" != 1 ]; then sc enable rd-power.service; [ -n "$R" ] || systemctl restart rd-power.service || true; fi
 if [ -f "$SRC/reporter/units/rd-reporter.service" ]; then    # user unit (lane C): boot via linger, never gives up
   UDIR="${R}/home/$RD_USER/.config/systemd/user"
   [ -n "$R" ] || UDIR="$(getent passwd "$RD_USER" | cut -d: -f6)/.config/systemd/user"
@@ -70,6 +75,12 @@ if [ -f "$SRC/reporter/units/rd-reporter.service" ]; then    # user unit (lane C
     loginctl enable-linger "$RD_USER"
     runuser -u "$RD_USER" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$RD_USER")" systemctl --user enable rd-reporter.service || true
   else echo "systemctl --user enable rd-reporter.service" >> "$R/systemctl.log"; fi
+  # `systemctl --user enable` fails silently when the user manager linger just started is not up yet (seen on
+  # mini-a 2026-11-10: reporter ran but never came back after a reboot). Enable offline too: the wants symlink is
+  # all `enable` writes, and it needs no running manager.
+  mkdir -p "$UDIR/default.target.wants"
+  ln -sfn ../rd-reporter.service "$UDIR/default.target.wants/rd-reporter.service"
+  [ -n "$R" ] || chown -h "$RD_USER": "$UDIR/default.target.wants" "$UDIR/default.target.wants/rd-reporter.service" 2>/dev/null || true
 else
   say "note reporter units not shipped yet: reporter boot-enable skipped"
 fi

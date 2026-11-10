@@ -160,3 +160,14 @@ test('Collector on a fake rr root: jobs + incremental runs.log', () => {
   assert.deepEqual(c.newRuns().map((x) => x.argv), ['eslint .']);
   fs.rmSync(root, { recursive: true });
 });
+
+test('parsePower: fresh averaged watts from rd-power, null when stale or garbled', () => {
+  const now = 1_800_000_000_000;
+  assert.equal(r.parsePower('47.3 1800000000\n', now), 47.3);
+  assert.equal(r.parsePower('12 1799999990', now), 12);
+  assert.equal(r.parsePower('47.3 1799999900', now), null); // 100 s old: sampler stopped
+  assert.equal(r.parsePower('', now), null);
+  assert.equal(r.parsePower(null, now), null);
+  assert.equal(r.parsePower('hot 1800000000', now), null);
+  assert.equal(r.parsePower('99999 1800000000', now), null);
+});

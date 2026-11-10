@@ -160,6 +160,15 @@ export function pickTemp(readings) {
   return pool.length ? Math.round(Math.max(...pool.map((r) => r.value)) * 10) / 10 : null;
 }
 
+/** /run/rdocker/power ("<watts> <epoch s>", written by root's rd-power) -> watts, null when missing or stale. */
+export function parsePower(text, nowMs, maxAgeS = 30) {
+  const m = /^\s*(\d+(?:\.\d+)?)\s+(\d+)\s*$/.exec(text ?? '');
+  if (!m) return null;
+  const w = Number(m[1]);
+  const age = nowMs / 1000 - Number(m[2]);
+  return Number.isFinite(w) && w >= 0 && w < 5000 && age >= -60 && age <= maxAgeS ? w : null;
+}
+
 /** `tailscale status --json` -> self + peers (relayed = online peer without a direct CurAddr). */
 export function parseTailscale(json) {
   const s = typeof json === 'string' ? JSON.parse(json) : json;
@@ -653,11 +662,13 @@ export class Collector {
     let mem;
     let swap;
     let temp = null;
+    let watts = null;
     let pressure = null;
     const disks = [];
     if (this.linux) {
       ({ mem, swap } = parseMeminfo(read('/proc/meminfo') ?? ''));
       temp = pickTemp(hwmonReadings());
+      watts = parsePower(read(process.env.RD_POWER_FILE || '/run/rdocker/power'), now);
       const root = diskOf('/');
       if (root) disks.push(root);
       const mounts = read('/proc/mounts') ?? '';
@@ -670,6 +681,7 @@ export class Collector {
       mem = macMem(parseVmStat(vm ?? ''), st.memsize || os.totalmem());
       swap = parseSwapusage(sw ?? '');
       pressure = pr;
+      watts = parsePower(read(process.env.RD_POWER_FILE || '/Users/Shared/rdocker/power'), now); // com.rdocker.power (optional)
       const d = diskOf('/System/Volumes/Data') ?? diskOf('/');
       if (d) disks.push(d);
     } else {
@@ -702,6 +714,7 @@ export class Collector {
       swap,
       disks,
       temp,
+      watts,
       uptime: Math.round(uptime),
       hist,
       jobs: jobs.map(({ pid: _pid, ...j }) => j),

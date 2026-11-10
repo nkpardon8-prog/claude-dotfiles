@@ -1,0 +1,10 @@
+[Unit]
+Description=rdocker: averaged CPU package power for the fleet reporter
+
+[Service]
+ExecStart=/usr/local/bin/rd-power
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
