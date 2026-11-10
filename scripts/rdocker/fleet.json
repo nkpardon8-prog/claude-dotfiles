@@ -5,23 +5,104 @@
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOcxNODXJ9Yd7tQ0S7LHwy7BHjB5QXYQPpQmzOHk0vLJ nicholaspardon@Nicholass-Mac-mini.local"
   ],
   "machines": [
-    {"name": "laptop", "alias": "odwin-docker", "ip": "100.108.78.60", "port": 2222, "user": "rd",
-     "os": "linux", "wsl": true, "roles": ["home", "worker"], "speed": 0.45,
-     "max_slots": 2, "heavy_slots": 1, "mem_gb": 8, "enabled": true},
-    {"name": "hp", "alias": "rd-hp", "ip": "", "port": 22, "user": "rd",
-     "os": "linux", "roles": ["worker"], "speed": 1.0,
-     "max_slots": 4, "heavy_slots": 2, "mem_gb": 32, "enabled": false},
-    {"name": "mini-a", "alias": "rd-mini-a", "ip": "100.78.43.6", "port": 22, "user": "rd",
-     "os": "linux", "roles": ["worker"], "speed": 0.2,
-     "max_slots": 1, "heavy_slots": 1, "mem_gb": 8, "enabled": false},
-    {"name": "mini-b", "alias": "rd-mini-b", "ip": "", "port": 22, "user": "rd",
-     "os": "linux", "roles": ["worker"], "speed": 0.2,
-     "max_slots": 1, "heavy_slots": 1, "mem_gb": 8, "enabled": false},
-    {"name": "nick", "alias": "", "ip": "100.112.247.23", "port": 22, "user": "",
-     "os": "mac", "roles": ["agent"], "speed": 1.0,
-     "max_slots": 0, "heavy_slots": 0, "mem_gb": 16, "enabled": true},
-    {"name": "air", "alias": "", "ip": "100.100.204.127", "port": 22, "user": "",
-     "os": "mac", "roles": ["agent"], "speed": 1.0,
-     "max_slots": 0, "heavy_slots": 0, "mem_gb": 16, "enabled": true}
+    {
+      "name": "laptop",
+      "alias": "odwin-docker",
+      "ip": "100.108.78.60",
+      "port": 2222,
+      "user": "rd",
+      "os": "linux",
+      "wsl": true,
+      "roles": [
+        "home",
+        "worker"
+      ],
+      "speed": 0.45,
+      "max_slots": 2,
+      "heavy_slots": 1,
+      "mem_gb": 8,
+      "enabled": true
+    },
+    {
+      "name": "hp",
+      "alias": "rd-hp",
+      "ip": "100.81.129.31",
+      "port": 22,
+      "user": "rd",
+      "os": "linux",
+      "roles": [
+        "worker"
+      ],
+      "speed": 1.24,
+      "max_slots": 4,
+      "heavy_slots": 2,
+      "mem_gb": 32,
+      "enabled": true,
+      "ts_key_expiry": "2027-05-09"
+    },
+    {
+      "name": "mini-a",
+      "alias": "rd-mini-a",
+      "ip": "100.78.43.6",
+      "port": 22,
+      "user": "rd",
+      "os": "linux",
+      "roles": [
+        "worker"
+      ],
+      "speed": 0.2,
+      "max_slots": 1,
+      "heavy_slots": 1,
+      "mem_gb": 8,
+      "enabled": false
+    },
+    {
+      "name": "mini-b",
+      "alias": "rd-mini-b",
+      "ip": "",
+      "port": 22,
+      "user": "rd",
+      "os": "linux",
+      "roles": [
+        "worker"
+      ],
+      "speed": 0.2,
+      "max_slots": 1,
+      "heavy_slots": 1,
+      "mem_gb": 8,
+      "enabled": false
+    },
+    {
+      "name": "nick",
+      "alias": "",
+      "ip": "100.112.247.23",
+      "port": 22,
+      "user": "",
+      "os": "mac",
+      "roles": [
+        "agent"
+      ],
+      "speed": 1.0,
+      "max_slots": 0,
+      "heavy_slots": 0,
+      "mem_gb": 16,
+      "enabled": true
+    },
+    {
+      "name": "air",
+      "alias": "",
+      "ip": "100.100.204.127",
+      "port": 22,
+      "user": "",
+      "os": "mac",
+      "roles": [
+        "agent"
+      ],
+      "speed": 1.0,
+      "max_slots": 0,
+      "heavy_slots": 0,
+      "mem_gb": 16,
+      "enabled": true
+    }
   ]
 }
