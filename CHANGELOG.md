@@ -2,225 +2,25 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
-## 2026-11-01 - rdocker: Docker host moves to the OpenDental Windows laptop (WSL2 Ubuntu)
-- New `server_os` ("linux" default now, "mac" still supported): janitor disk/journald/fstrim via plain `df` + `sudo -n`, engine kick via `systemctl`, runner memory gate from /proc, store copies with `cp -a --reflink=auto`, node via mise's global node.
-- Defaults: host 100.108.78.60, user `rd`, `ssh_port` 2222 (sshd inside WSL; Windows' own sshd keeps 22); the ssh block setup writes now carries `Port`.
-- Server layout: Docker data on its own 30G ext4 image (/var/lib/docker) so the 50/60% caps mean ~15/18 GB; containerd snapshotter off (overlay2); published ports default to 127.0.0.1; sshd listens on the Tailscale IP + loopback only; WSL capped at 8 GB with autoMemoryReclaim; a Windows S4U task keeps WSL up from boot with nobody logged in.
-- 10 kept containers moved from Nick's mini with per-database table checks; Nick's Colima stopped, volumes kept as fallback.
-- Switching a client: repoint the `macmini-docker` ssh block, set config.json `remote_socket=/var/run/docker.sock`, and close the old forward master (`ssh -S ~/.local/state/rdocker/fwd.sock -O exit macmini-docker`) - restarting the forwarder alone keeps the old tunnel.
+## 2026-11-09 - rdocker: every heavy one-shot dev command goes to the pool automatically
 
-## 2026-10-26 - rdocker: Nick's Mac mini is the only Docker engine (11 GB); storage + clock caps
+- The `rrun-route.py` hook now also rewrites `npx tsc` checks (`--noEmit`, or `-p`/`-b` configs with
+  `"noEmit": true`), `npx vitest run` (any files), `npx jest`, `npx eslint`, and `npm test` /
+  `npm run test*` / `typecheck*` / `lint*` scripts, in a git repo with an npm lockfile. Agents type the
+  normal command; rrun picks the worker. Never: watch / UI / dev servers / installs, write-back runs
+  (`--coverage`, `--fix`, `-u`, `--outputFile`, emitting `tsc`, script bodies that watch or write),
+  pnpm / yarn / bun, bare tool names, unknown cwd or no repo. Pattern hits get the same vetoes (a
+  `lint:fix` or `vitest run --watch` was routed before).
 
-- Nick's mini Docker VM 10 -> 11 GB (Omid's call; colima.yaml `memory:` + `brew services` stop/start,
-  running containers restored). Omid's mini (`macminim4`) is now a CLIENT: `rdocker install` there
-  (its own key, authorized with `rdocker authorize-client`), its Colima stopped + removed from login
-  (its disk, incl. the 10/22 DB backups, kept). Every machine now sends Docker to Nick's mini.
-- Storage: `disk_high_pct` 80 -> 50 and `disk_critical_pct` 90 -> 60 of the 30 GB VM disk (Docker data
-  kept under ~15-18 GB: unused images oldest-first + all build cache, then stopped containers).
-- VM clock: the janitor writes a timesyncd drop-in (poll 16-64 s) - after host sleep the VM drifted
-  (prod-orchastrator's enqueue.db saw the DB ~85 ms ahead). Nick's host clock itself was ~76 ms slow.
-- Flag drift: `help_flags` stops at "Global Options:" - docker 29.x prints the top-level docker
-  flags under every compose subcommand, which raised a false 62-flag attention item on Omid's mini.
+## 2026-11-09 - rdocker: rentable Mac workers (share switch off / some / max)
 
-## 2026-10-22 - rdocker: Docker host moved to Nick's Mac mini
-
-- New host `nicholass-mac-mini` (Tailscale 100.112.247.23, user `nicholaspardon`, 16 GB): set up over
-  ssh with the setup-mini script (VM 6 CPU / 5 GB / 30 GB, colima under `brew services`, loopback-only
-  ports, log + 1 GB build-cache caps). Its owner allowed up to 10 GB; kept at 5 GB because a VZ VM
-  keeps every page it touches (the cap is its footprint), idle 1.4 GB.
-- 11 long-lived DBs copied volume by volume with a stop/copy/recreate/verify script (same image, env
-  minus image defaults, ports, labels, restart, network + aliases, healthcheck); each verified by
-  database list + per-database table counts. Originals stopped with restart=no on the old mini.
-- Laptop: `Host macmini-docker` repointed (HostName 100.112.247.23, HostKeyAlias nickmini-docker,
-  User nicholaspardon), `remote_socket` updated; new-client defaults (`ssh_hostname`/`ssh_user`) too.
-  Switch outage ~5 min. Lesson: ssh backups inside `~/.ssh/config.d/` are Included and can supply
-  options (a stale `HostKeyAlias` broke the switch) - backups now live in `~/.ssh/rdocker-backups/`.
-
-## 2026-10-19 - rdocker Linux client support
-
-- The laptop client now runs on Linux Mint / Ubuntu with a systemd user forwarder and the apt Docker
-  CLI; it never starts or stops a local engine. Status and Tailscale checks use Linux commands.
-- `rdocker install` bootstraps an SSH identity and host alias, and `rdocker authorize-client` adds a
-  new client's public key to the mini. The Docker start hook also guards local Linux engines.
-- Added Linux branch and hook tests; made the runner's file-mode test portable.
-- New `/dockersetup` command: joins any macOS or Linux Mint / Ubuntu machine as a client (checks,
-  `rdocker install`, key authorization hand-off, PATH/hooks, verify). Windows later.
-- Install stops for key authorization only when the mini refuses the key (an unreachable mini just
-  warns); the `Include ~/.ssh/config.d/*` check accepts it anywhere before the first Host block; the
-  Linux engine-start block is anchored to the start of a command (`grep dockerd` stays allowed) and
-  also covers `restart` / `enable --now`. Linux messages name the local engine, not Docker Desktop.
-- Verified: 430 unit tests on macOS; the suite on Ubuntu 24.04 (Mint 22's base) and an emulated
-  Mint 22 amd64 container (its only failures were random emulation crashes that pass on re-run).
-## 2026-10-19 - Pane auto-compact: read idle from Claude's screen when Pane can't say
-
-- Reported by another tab: `runpane workspace state` omits panels in another repo's Pane, so
-  agent state read `none` and the helper fell back to the screen's activity status, which stays
-  `active` on an idle Claude tab (its statusline keeps redrawing). The helper polled `busy` for
-  ~2 minutes before firing. It now also reads Claude's spinner row above the prompt box (an ellipsis
-  plus live timer = busy; anything else = idle, logged `idle(screen)`). Tests added (stub `STUB_ABOVE`).
-
-## 2026-10-19 - rdocker: mini Docker VM capped at 5 GB RAM; shared package store; tighter storage caps
-
-- Measured: the Colima VM's macOS footprint was 8.2 GB (its whole allowance) while the guest used
-  2.4 GB - a VZ VM keeps every page it has touched (guest `drop_caches` gave nothing back, tested).
-  VM restarted at `--memory 5` (all 17 running containers restarted after); footprint 2.9 GB, max 5.
-- `rrun`: a shared package store `~/rr/deps/<key>/node_modules` (key = repo + deps dir + deps stamp,
-  written whole then renamed in, never changed after). A mirror whose stamp matches gets an APFS
-  clone (`cp -c`: shared blocks, no `npm ci`); any failure means a normal `npm ci`. Deps/schema stamps
-  now hash paths relative to the mirror (same files = same stamp in every mirror; one npm ci per
-  mirror after this change). 11 dentall mirrors were ~1.9 GB each, 1.7 GB of it node_modules.
-- Janitor: mirrors unused 2 d (was 7), store entries unused 2 d, npm cache cleared above 1 GB while no
-  run holds a slot, build cache cap 1 GB (was 5), unused images 3 d (was 14), VM journald 50 MB
-  (was 200). One-off: idle mirrors removed now (mini free 11 -> 19 GB).
-
-## 2026-10-18 - Pane auto-compact: resume goes in 5s after /compact
-
-- Live run 7 worked end to end, but the resume went in 18s after `/compact`: mid-compaction,
-  `panels submit` sat ~15s before answering `composer-unknown`. The resume is now typed directly
-  (`panels input` + Enter) with its Enter landing 5s after `/compact`
-  (`AUTO_COMPACT_PANE_RESUME_DELAY_SEC`, default 5). Tests updated.
-
-## 2026-10-18 - Pane auto-compact: a queued resume is not a failure
-
-- Live run 6 worked (the resume ran straight after compaction), but the helper logged
-  `pane-submit-failed reason=text-still-in-composer`: a line queued while Claude compacts stays
-  visible in the composer. The resume now counts as queued after one Enter (never pressed twice),
-  and the transcript check (`pane-resume-confirmed`) decides. Test added (stub `STUB_RESUME_HELD`).
-
-## 2026-10-18 - Pane auto-compact: resume queued right behind /compact
-
-- Live: `/compact` landed, but the helper then waited for the panel to go idle before sending
-  `/post-compact-resume`, and the post-compact panel kept reading busy, so the resume never arrived.
-- The helper now queues `/post-compact-resume <sid>` one second after `/compact` is taken, exactly as
-  the Terminal path types it during compaction; Claude runs it the moment compaction ends. It counts
-  the resume as confirmed only from a transcript line after the `compact_boundary`.
-## 2026-10-17 - rdocker janitor: free rrun mirrors per mirror, and even with the engine down
-
-- Live: the mini's host disk filled (~01:00) and killed the Colima engine. 33 `rrun` mirrors in
-  `~/rr/w` (~1.9 GB each, 53 GB) were never evicted: a busy slot protected EVERY mirror of its repo,
-  and with many parallel dentall worktrees some run was always in progress; and the janitor refused
-  to run at all with the engine down, though mirror housekeeping needs only ssh + perl.
-- The runner's slot `.who` now names its mirror (`<slug> <epoch> <pid> <wt12>`); a busy slot protects
-  only that mirror. Old-format `.who` (slug only) keeps the repo-wide protection; a stale or garbled
-  one still protects everything (an older janitor reads the new format as garbled: fail closed).
-  Under disk pressure every mirror not in use goes, except one whose index/HEAD changed in the last
-  10 min (`RR_PRESSURE_FLOOR_S`).
-- Engine down, mini reachable: `rdocker clean` / the janitor pass still run the host disk check and
-  mirror housekeeping (no `colima ssh`), skipping only container/volume/image steps; the daemon now
-  schedules the pass whenever the mini is reachable. The engine kick runs mirror housekeeping first
-  when mini free < `host_min_free_gb`, then starts Colima, and logs it.
-- Tests: per-mirror protection, new-format stale/garbled `.who`, the 10-min floor, the engine-down
-  clean, the kick ordering (housekeeping under the lock before any kickstart), the daemon schedule.
-
-## 2026-10-16 - Auto-compact works inside Pane
-
-- Live: `/pre-compact` armed inside a Pane panel, but the Stop hook logged `no-matching-tab` - Pane
-  leaves `TERM_PROGRAM` unset, so the Terminal.app guard passed, and the Pane pty is not a Terminal tab.
-- New Pane path, Terminal path unchanged: with `PANE_PANEL_ID` set and `TERM_PROGRAM` unset the arm
-  script writes a `delivery:"pane"` sentinel (panel id, runpane path, Pane data dir; still schema 3).
-  The Stop hook sends such a sentinel to a detached helper (`auto-compact-pane-deliver.sh`) that waits
-  for an idle empty composer, submits `/compact` via `runpane panels submit`, waits until the
-  compaction has finished (new `compact_boundary` in the transcript, or the primer retiring the
-  sentinel), then submits `/post-compact-resume <sid>`. Same claim + retain/attempts (max 3) rules.
-- Tests: `test-auto-compact-pane.sh` (sandboxed, stub runpane). `test-auto-compact.sh` unchanged.
-- Live fix (same day): the first live run sat `busy` for 180s and typed nothing. Two Pane facts:
-  `panels screen` activityStatus is raw output recency (the ticking status line keeps it `active`),
-  and Pane only finds Claude's prompt when the rule above `❯` is bare `─` - a named session draws
-  `──── name ─`, so Pane says no composer and `panels submit` refuses (`composer-unknown`). The helper
-  now reads Pane's `agentState` from `workspace state`, parses the prompt itself, falls back to
-  `panels input` + a separate Enter, and confirms the resume in the transcript.
-- Live fix 2: the second run typed `/compact` and the compaction ran, but `panels submit` answered
-  `ok:true` with `verifiedSubmitted:false`; the helper called that a failure and never sent the resume.
-  An unverified ok is now `pane-submitted via=submit-unverified` (no retype); the transcript
-  `compact_boundary` check decides, as before.
-- Live fix 3: the third run's `panels submit` typed `/compact` but its Enter did not land (text left
-  in the prompt, same unverified reply). After an unverified ok the helper now reads the prompt and,
-  if the text is still there, presses Enter as its own key (at most twice; never retypes).
-
-## 2026-10-16 - rrun: more mini slots when there is room; wait out short mini outages
-
-- Measured: mini runs averaged 42 s of work but 155 s end to end (queueing on 2 slots ~75% busy).
-  The mini now always runs `rr_slots_base` 2 and up to `rr_slots` 6 while free memory >= 25% and
-  load/CPU <= 1.5 (checked by the runner each pass; unreadable readings = no extra slot).
-- Live: a 5-min network drop (2026-10-16 09:55) sent 19 queued heavy runs to the laptop (6-14 min
-  each). Before GO, an unreachable mini is now waited for (`rr_reconnect_wait_min` 10, polled every
-  10 s, up to 3 tries) and the run retried there; the laptop is the backup after that. A signal while
-  waiting ends the run without running it anywhere.
-
-## 2026-10-16 - Mac mini moved to the Tailscale app (`macminim4`)
-
-- The mini now runs the Tailscale app instead of the Homebrew `tailscaled` daemon (stopped, still
-  installed for rollback). Machine renamed `macminim4`, same IP 100.73.250.43, key expiry off. The
-  laptop ssh block keeps the alias `macmini-docker` (so rdocker config is unchanged) with
-  `HostName macminim4` + `HostKeyAlias macmini-docker`. Verified: container run, mirrored DB port,
-  `rrun` on the mini, `rdocker status` all green.
-
-## 2026-10-15 - rdocker: global docker context stays on the mini after a laptop boot
-
-- Live: after a laptop reboot Tailscale was not up yet, so the forwarder pointed the global docker
-  context at the stopped laptop Docker Desktop for 8 minutes (tools that skip the shim would then
-  aim at the laptop). In auto mode a mini outage now moves the context to the laptop only when
-  laptop Docker is actually running or `RDOCKER_LOCAL_START=1`/`local_autostart` allows starting it.
-
-## 2026-10-15 - rrun hook: wrappers, `bash -c`, two mini slots
-
-- Live: agents' heavy runs still landed on the laptop because the hook skipped
-  `~/.local/bin/heavy-slot.sh npm run test:db ...`, `timeout 600 npm ...` and
-  `heavy-slot.sh bash -c '... RDOCKER_MODE=local npm run test:db ...'`. The hook now drops the
-  laptop gate `heavy-slot.sh`, keeps `timeout`/`time`/`nice`/`caffeinate` outside `rrun`, and routes
-  the script of a single-quoted `bash -c` by the same rules. `rr_slots` 1 -> 2 so a dozen agents
-  do not queue behind one run.
-- New npm shim (`~/.local/bin/npm` -> `scripts/rdocker/npm-shim`, linked by `rdocker install`): heavy
-  `npm run` scripts started from scripts / double-quoted `bash -c` / anything the hook cannot see go
-  through `rrun` too. rrun's laptop fallback now sets `RRUN=0` so it cannot loop. Live: a plain
-  `npm run test:db` inside `bash -c "..."` ran on the mini, 15/15 in 17 s.
-- Fix: rrun stopped (Ctrl-C / a tool timeout's TERM) while the mini was still preparing, then losing
-  the link, no longer falls back to a laptop run - it exits 128+signal. Live: a 10-min tool timeout
-  during a mini slot wait had turned into a full local run.
-- Engine health: a single "engine did not answer" reading right after a good one (<= 2 min) is
-  re-probed once before routing believes it. Tonight ~10 such lone timeouts, all during laptop load
-  100-360, had sent throwaway containers to the laptop.
-- rrun: a lockfile out of sync with package.json (`npm ci` EUSAGE - dentall's repo root) now falls
-  back to `npm install` on the mirror instead of failing with exit 78. Live: `release:rehearse:migrations`
-  had failed in 1.4 s and been rerun on the laptop (~1,380 docker execs on a laptop DB).
-- `check:db-all` (dentall's 90-link guard sweep, pure CPU, pushed laptop load to 50+) joins
-  `rr_route_patterns`, the hook prefilter and the npm shim. Trial on the mini: 90 links, only the
-  registered KNOWN_RED failing (same as the laptop), 144 s.
-- rrun deps: a repo-root command also installs each first-level subproject with a lockfile that is
-  installed on the laptop. Reported by dso-ui-ref: `release:rehearse:migrations` (a root script that
-  loads server/ packages) only worked with a dummy `--prefix=server`.
-- Laptop load 216 at 15:22 (guard tiers, tsc, vitest in ~6 worktrees) made rdocker see the mini as down.
-  Now routed to the mini too: `run-guard-tier.mjs`, `check:server-test-typecheck`, `tsc ... --noEmit`.
-  rrun also pushes local `origin/dev|main|master` (`rr_base_branches`) so diff-based guards work there
-  (a guard tier trial had failed: "could not resolve a diff base"). Guard tier on the mini: ~66 s.
-- Laptop Docker stays off: rdocker no longer opens Docker Desktop for a command (`local_autostart`
-  false; `RDOCKER_LOCAL_START=1` opts in). A fallback that would need it waits up to 30 s for the mini
-  instead (a starved laptop makes the mini look down), or refuses with how to fix the mini; a slow mini
-  is used. `RDOCKER_MODE=local` while the mini is healthy prints an hourly hint to drop it.
-- Whole test suites go to the mini too: `vitest run` with no file args (hook) and `npm test` /
-  `npm run test` with none (npm shim); one or two files stay local. `./node_modules/.bin/tsc|vitest`
-  heads are recognised. Laptop load was ~200 at 16:15 from whole suites (one 29 min) and tsc.
-  The safety net no longer forces a laptop DB when Docker Desktop is off.
-- Routing by category instead of by name (new heavy jobs kept appearing one at a time): every
-  check/lint/typecheck/verify and test:* script, whole jest, `eslint .` go to the mini; e2e /
-  playwright / browser / watch / :ui, dev servers and build stay on the laptop.
-- Fix: the Docker Desktop idle-quit sent `quit app "Docker Desktop"`, which macOS ignores (the app's
-  AppleScript name is "Docker"), so laptop Docker never quit and held ~1.5 GB. Now `quit app "Docker"`,
-  with a test on the exact command; idle-quit set to 5 min in this laptop's config.
-- npm shim routes only a top-level npm (parent is a shell, no npm_lifecycle_event): a laptop runner
-  firing 151 `npm run --silent check:x` had sent each one to the mini separately.
-- Mini reboot: keep-labelled containers (and david_db) set to `restart unless-stopped` on the mini;
-  they had all been `no`, so a Colima/mini restart would have left every DB stopped.
-- New hook `scripts/hooks/no-docker-desktop.py` (PreToolUse Bash): agents launching laptop Docker
-  Desktop by hand (`open -a Docker` when `docker info` failed - 4 sessions, one at 16:59 took GBs the
-  user needed) is blocked with "run `rdocker doctor`"; `RDOCKER_LOCAL_START=1` opts in. Blocks are logged
-  to `~/.local/state/rdocker/blocked-desktop.log` with the session id.
-- Also routed: `node --max-old-space-size=NNNN ...` (big heap = heavy) and `vitest run <dir>...`.
-- Mini janitor sets `restart unless-stopped` on keep-labelled containers (kept DBs survive a reboot).
-- rrun writes one line per run to `~/rr/log/runs.log` on the mini (no env values; 5 MB rotation).
-- Laptop logs rotate at 10 MB (~1 week of route.log).
-- The guard hook also blocks container sweeps by pattern (`docker rm $(docker ps --filter name=..)`,
-  `| xargs docker rm`, prune): helper agents twice removed every `p7p3-vitest-db-*` on the shared mini.
+- A Mac can be a pool worker (`os: "mac"`, never the home); fleet.json gains `nickmbp` (`rd-nickmbp`,
+  port 2222, user `rd`). Its owner sets `rdocker-share off|some|max` (`share/`, plus an optional
+  SwiftBar menu); the probe and the runner read it live before every job. No share file = max, so
+  Linux workers are unchanged. Off = state `off`, tried last, runner exits 73 `UNAVAIL` and rrun moves on.
+- On a Mac worker the runner starts Colima (vz + Rosetta, sized by the level) before db jobs or on
+  the first docker call, exit 73 when it is not up in 120 s; it stops Colima in the background once
+  sharing is off and no slot is busy. `rdocker bench-worker <name>` benchmarks a Linux or Mac worker.
 
 ## 2026-10-15 - rdocker: `rrun`, heavy test jobs run on the Mac mini
 
@@ -234,10 +34,7 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   found in the repo root, the cwd or a deps dir (a symlink resolving outside the worktree is skipped),
   which are 0600 on the mini and deleted when the run ends. `-e NAME` forwards a variable's value from
   rrun's own environment (the hook emits `FOO=1 rrun -e FOO ...`, so values never sit in argv). The mirror `~/rr/w/<repo>-<wt12>` keeps
-  `node_modules`; `npm ci` / `prisma generate` run only when their stamp changes, only in the cwd's
-  nearest lockfile dir and `--prefix` dirs (a monorepo root's lockfile was out of sync in dentall), and
-  generate reuses the package's own postinstall when it runs `prisma generate --schema ...`. Live proof:
-  dentall `careHold.release.db.test.ts` 15/15 in 21 s via rrun (warm overhead ~2.7 s) vs 673 s split.
+  `node_modules`; `npm ci` / `prisma generate` run only when their stamp changes.
 - Nothing trusted is kept on the mini: `rr_runner.pl` and the run header (argv, env, `-e` values) are
   sent on ssh stdin with every run, never in argv; the per-run `docker` shim lives in a fresh temp dir;
   pushes neutralise receive hooks. Status lines carry a per-run nonce that the command never sees
@@ -260,75 +57,6 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
 - New config keys `rr_root`, `rr_slots`, `rr_wait_min`, `rr_hb_timeout`, `rr_env_allow`, `rr_env_pass`,
   `rr_route_patterns`; env `RRUN=0`, `RRUN_STRICT=1`, `RRUN_TIMING=1`; `rdocker status` row `rrun`.
   Tests `test_run`, `test_runner`, `test_hook`.
-
-## 2026-10-15 - dotfiles-sync: one run at a time
-
-- Live defect: every tool call in every window fires the async sync hook, and the pre-commit hook
-  runs the transfer assumption suite whenever transfer files are staged, so ~60 syncs stacked
-  (laptop load 250-360; rdocker saw the mini as "not responding"). `dotfiles-sync.sh` now takes a
-  pid lock (`~/.claude/.dotfiles-sync.lock`, noclobber; a dead holder's lock is taken over) and a
-  run that finds one in flight exits 0; the next tool call syncs whatever it missed.
-
-## 2026-10-15 - /line address book: published from Claude Code, always-synced reads, no fixture leaks
-
-- Live defect 1: the MacBook's `list` showed fixture windows (`mini-billing`) as the Mac mini. A manual
-  run with a sandbox shared folder but the real HOME wrote them into `~/.claude/claude-windows-cache/`,
-  because the cache path came from HOME alone. The cache, publish stamp and publish log now follow the
-  shared folder: an overridden folder (`LAC_WINDOWS_DIR`) keeps them beside it; `LAC_CACHE_DIR` sets it
-  explicitly. The bogus cached entry on the MacBook was deleted. New `address-book-paths` (pure) lets
-  tests check every write path; the line-agent fixture refuses to run (exit 1) unless they sit in its
-  sandbox, and test 14 guards the derivation.
-- Live defect 3 (most important): the LaunchAgent publisher failed every minute ("Operation not
-  permitted" writing `claude-windows/`) while exiting 0, so this Mac's file went stale - it still carried
-  the old claude.ai account an hour after a login change. Probed: a launchd job may replace only iCloud
-  files it created itself, and ours had been written from Terminal. Publishing now runs from Claude Code
-  (Terminal), which can write iCloud Drive: the statusline calls new `scripts/line-publish-trigger.sh`,
-  which starts a detached `publish --throttle 60` at most once a minute per Mac (a bash stamp check, then
-  an atomic claim in Python) and never waits; SessionStart and `/line` stay; a new SessionEnd hook
-  republishes 3 s after a window closes. The installer removes the LaunchAgent (only its own marked
-  plist) and adds the SessionEnd hook. A failed publish is recorded and shown in `list` ("this Mac's
-  entry could not be updated: ...", with a plain explanation for permission errors) and in
-  `transfer-doctor`, which now checks when this Mac's file was last written and whether it carries the
-  current account instead of checking a LaunchAgent. The account hash is part of change detection.
-- Live defect 2: the MacBook could not read the mini's real file ("still downloading from iCloud (no
-  answer in 2s)"). The throttled `publish` now also prefetches every other Mac's file: a full
-  background read with a 60 s budget (which makes iCloud download it), validated, written to the local
-  cache only on change, sync times in `sync-state.json`. `list`/`find` read only the cache (instant),
-  with `synced N s ago` or "may be out of date" after 5 minutes without a refresh; iCloud is read
-  directly only for a Mac with no cached copy. Live vs asleep still comes from the heartbeat inside the
-  file. The background publish from `/line` and the session hook uses `--no-prefetch`.
-- Tests: 13 reworked for the cache-first reader; new 14 (cache isolation), 15 (prefetch: cache only, no
-  rewrite when unchanged, heartbeat from content), 17 (trigger: five simultaneous publishes -> one,
-  trigger and the real statusline return at once while iCloud blocks, failure loud in `list`); transfer
-  26 rewritten for the LaunchAgent removal + SessionEnd hook. Each watched red against a broken copy.
-  The earlier entry below describes the first (LaunchAgent) design, now replaced.
-
-## 2026-10-15 - /line: see the windows on your other Macs
-
-- `line-agent-communicator.py list` and `find` now show the windows running on your other Macs, by
-  their `/line` name, including windows nobody named. Before, both read only this Mac's disk, so a
-  window on the other Mac was invisible to them even though Remote Control could message it.
-- How: each Mac writes its own file, `<mac-name>.json`, to a shared iCloud Drive folder,
-  `~/Library/Mobile Documents/com~apple~CloudDocs/claude-windows/`, and reads the others. Names only
-  (address, caption, owns, folder name, start time, can-receive) plus a salted hash of the claude.ai
-  account id; never chat content, full paths, secrets or the email.
-- New verb `publish`: writes only when something changed, plus a heartbeat every 10 minutes. A new
-  LaunchAgent, `com.claude-dotfiles.windows-publish`, runs it every 60 s at low priority;
-  `install-transfer.sh` installs and loads it (only ever replacing a plist it made, and never driving
-  `launchctl` from a non-real HOME). `/line` and the SessionStart identity hook also publish right away
-  in the background.
-- `list` adds a section per other Mac: live, or "Mac asleep/offline, last seen <time>" after 15 minutes
-  without a heartbeat. `find` ranks other-Mac windows with the same scoring and labels them with their
-  Mac. `--json` adds `otherMacs` and `accountMismatch`. A different claude.ai account on the other Mac
-  prints one warning line. Unnamed windows show as `<folder> (<Mac name>)`; nothing renames them.
-- iCloud placeholders never hang `list`/`find`: reads time out after 2 s and fall back to the last good
-  copy in `~/.claude/claude-windows-cache/`, marked "may be out of date".
-- `transfer-doctor` checks the LaunchAgent, this Mac's and the other Mac's file freshness, and the
-  account match (FAIL on mismatch). New hidden verb `address-book-status` feeds it.
-- Tests: line-agent suite 11 (publish once / skip / heartbeat / names only), 12 (merge, live vs asleep,
-  account warning), 13 (FIFO placeholder, iCloud stub, unreadable file - no hang); transfer suite 26
-  (LaunchAgent plist, launchctl stubbed, foreign plist untouched). Each was watched red against a
-  deliberately broken copy.
 
 ## 2026-10-14 - rdocker: blip wait, 3 h idle stop, laptop janitor, auto-restart
 

@@ -12,7 +12,7 @@ SENDS with every run (nothing trusted is kept on the mini). One run:
     that no longer exist
   5 ssh -T host /usr/bin/perl -e <loader>; stdin = runner script frame, header frame, tar, then a
     heartbeat byte every 15 s ("INT\\n" on Ctrl-C; a second Ctrl-C closes stdin = kill)
-  6 relay output; "<nonce> STATUS" lines on stderr are ours (WAIT/BUSY/READY/STARTED/KEPT);
+  6 relay output; "<nonce> STATUS" lines on stderr are ours (WAIT/BUSY/UNAVAIL/READY/STARTED/KEPT);
     on READY we write "GO\\n" and only then does the runner start the command
   7 rc = ssh's exit status; GO never written => the command never ran: 255 => local fallback,
     other rc = the runner's (73 busy, 78 deps, ...); GO written => 255 = exit 75 (never run twice).
@@ -422,6 +422,7 @@ class Session:
         self.wake = threading.Event()
         self.done = threading.Event()
         self.said_wait = False
+        self.unavail = None                  # "<nonce> UNAVAIL <why>": the worker refused (share off / no docker)
 
     def on_status(self, line):
         word, _, rest = line.partition(" ")
@@ -440,6 +441,8 @@ class Session:
                 note("waiting for a Mac mini slot (held by %s for %ss; gives up after %s min)..."
                      % (kv.get("holder", "?"), kv.get("age", "?"), self.cfg.get("rr_wait_min")))
                 self.said_wait = True
+        elif word == "UNAVAIL":
+            self.unavail = rest.strip() or "unavailable"
         elif word == "BUSY":
             note("the Mac mini slot stayed busy for %s min; giving up (exit 73)"
                  % self.cfg.get("rr_wait_min"))
@@ -509,8 +512,11 @@ class Session:
             except (BrokenPipeError, OSError):
                 pass
 
+    stderr_out = None    # where the remote stderr goes (None = our stderr; rd_warm keeps a tail)
+
     def relay(self):
-        filt = StatusFilter(self.nonce, getattr(sys.stderr, "buffer", sys.stderr), self.on_status)
+        filt = StatusFilter(self.nonce, self.stderr_out or getattr(sys.stderr, "buffer", sys.stderr),
+                            self.on_status)
         fd = self.proc.stderr.fileno()
         while True:
             try:
@@ -852,6 +858,8 @@ def rrun(argv, env_args=()):
             i = nxt
             continue
         if kind == "busy":
+            if "not taking jobs" in val:
+                note(val)
             note("no worker had a free slot; giving up (exit 73)")
             return 73
         if tries >= RECONNECT_TRIES:
@@ -873,6 +881,35 @@ def rrun(argv, env_args=()):
         if not back:
             return fallback(argv, env_pairs, "%s, and it did not come back within %s"
                             % (val, fmt_wait(reconnect_wait_s(h.cfg))), t0, job, plan.pool)
+
+
+def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs=(), **extra):
+    """-> (stdin frames for the loader: runner script, JSON header, overlay tar; the nonce). The one
+    place a runner header is built (rrun's attempt and rd_warm's prepare-only session); `extra`
+    overrides header keys (rd_warm: wait_min=0, never queue for a slot)."""
+    cfg = h.cfg
+    nonce = secrets.token_hex(16)
+    header = {"nonce": nonce, "repo_slug": wt["slug"], "wt12": wt["wt12"], "sha": wt["sha"],
+              "relcwd": wt["relcwd"], "argv": argv, "env": env, "deleted": deleted,
+              "tar_len": len(tar), "env_files": envs,
+              "stamps": {"dirs": deps, "npm_args": []},
+              "slots": cfg.get("rr_slots", 1), "wait_min": cfg.get("rr_wait_min", 30),
+              "slots_base": cfg.get("rr_slots_base", cfg.get("rr_slots", 1)),
+              "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
+              "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
+              "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True}
+    if outputs:
+        header["outputs"] = list(outputs)
+    if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
+        header.update(cls=job["cls"], need_gb=job["need_gb"])
+        hs = rd_pool._f(h.entry, "heavy_slots") if h.entry is not None else None
+        if isinstance(hs, int) and hs >= 0:
+            header["heavy_slots"] = hs
+    header.update(extra)
+    with open(rd_common.RUNNER_SRC, "rb") as f:
+        script = f.read()
+    hjs = json.dumps(header).encode("utf-8")
+    return [b"%d\n" % len(script), script, b"%d\n" % len(hjs), hjs, tar], nonce
 
 
 def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None, give_up_s=None):
@@ -900,27 +937,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     env = {k: v for k, v in os.environ.items()
            if any(fnmatch.fnmatchcase(k, g) for g in cfg.get("rr_env_pass") or [])}
     env.update(env_pairs)
-    nonce = secrets.token_hex(16)
-    header = {"nonce": nonce, "repo_slug": wt["slug"], "wt12": wt["wt12"], "sha": wt["sha"],
-              "relcwd": wt["relcwd"], "argv": argv, "env": env, "deleted": deleted,
-              "tar_len": len(tar), "env_files": envs,
-              "stamps": {"dirs": deps, "npm_args": []},
-              "slots": cfg.get("rr_slots", 1), "wait_min": cfg.get("rr_wait_min", 30),
-              "slots_base": cfg.get("rr_slots_base", cfg.get("rr_slots", 1)),
-              "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
-              "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
-              "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True}
-    if outputs:
-        header["outputs"] = list(outputs)
-    if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
-        header.update(cls=job["cls"], need_gb=job["need_gb"])
-        hs = rd_pool._f(h.entry, "heavy_slots") if h.entry is not None else None
-        if isinstance(hs, int) and hs >= 0:
-            header["heavy_slots"] = hs
-    with open(rd_common.RUNNER_SRC, "rb") as f:
-        script = f.read()
-    hjs = json.dumps(header).encode("utf-8")
-    frames = [b"%d\n" % len(script), script, b"%d\n" % len(hjs), hjs, tar]
+    frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs)
     record(h.name, argv, None, 0, wt12=wt["wt12"], start=True)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
     rc = sess.run()
@@ -940,6 +957,10 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             return "local", "every worker stayed busy for %d s" % round(give_up_s)
         if rc == 255:
             return "lost", "lost %s before the command started" % label(h)
+        if rc == 73 and sess.unavail:      # refused before anything ran: always safe to move on
+            why = {"share=off": "its owner turned sharing off",
+                   "docker": "its Docker engine did not start"}.get(sess.unavail, sess.unavail)
+            return "busy", "%s is not taking jobs (%s)" % (h.name, why)
         if rc == 73 and h.short:
             return "busy", "%s had no free slot after all" % h.name
         if rc in INFRA_EXIT:

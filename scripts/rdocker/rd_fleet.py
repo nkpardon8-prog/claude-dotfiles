@@ -2,7 +2,8 @@
 
 fleet.json lives in the dotfiles (synced between machines), so it never holds secrets: only public
 client keys and per-machine facts. Roles: home (docker routing target, kept DBs; at most one),
-worker (rrun target), agent (never gets jobs). Disabled/placeholder entries (ip "") are allowed.
+worker (rrun target; linux, or a mac "rented" via its share switch - see rr_runner.pl), agent (never
+gets jobs). Disabled/placeholder entries (ip "") are allowed.
 """
 import copy
 import json
@@ -379,6 +380,46 @@ def commit_push(name, push):
     return "committed" + (" and pushed" if push else "")
 
 
+def bench_cmd(m):
+    """-> (ssh argv, stdin text or None) running the worker benchmark (rd-tune bench: writes ~/rr/speed,
+    prints the speed). A Linux worker has rd-tune installed; a Mac worker gets the same script piped in
+    (`bash -s bench`: nothing installed there)."""
+    base = ["ssh", "-o", "BatchMode=yes", m["alias"]]
+    if m.get("os") == "mac":
+        with open(os.path.join(SERVER_DIR, "rd-tune.sh")) as f:
+            return base + ["/bin/bash -s bench"], f.read()
+    return base + ["/usr/local/bin/rd-tune bench"], None
+
+
+def parse_speed(out):
+    try:
+        return float(out.strip().splitlines()[-1]) if out.strip() else None
+    except ValueError:
+        return None
+
+
+def bench_worker(cfg, name):
+    """`rdocker bench-worker <name>`: run the benchmark on one worker (linux or mac) over ssh. It stores
+    ~/rr/speed there, which the scheduler's probe prefers over fleet.json's speed - so no fleet edit is
+    needed; put the printed value in fleet.json by hand to make it the default. -> exit code."""
+    try:
+        m = get(load(cfg), name)
+    except FleetError as e:
+        rd_common.say(str(e))
+        return 2
+    if not m or not m["alias"] or not any(r in m["roles"] for r in ("home", "worker")):
+        rd_common.say("no home/worker named %r in fleet.json" % name)
+        return 2
+    cmd, stdin = bench_cmd(m)
+    rc, out, err = rd_common.run(cmd, timeout=300, input_=stdin)
+    speed = parse_speed(out) if rc == 0 else None
+    if speed is None:
+        rd_common.say("benchmark on %s failed (exit %d): %s" % (name, rc, (err.strip().splitlines() or ["no output"])[-1][:200]))
+        return 1
+    print("%s: speed %.2f (stored in ~/rr/speed there; fleet.json says %s)" % (name, speed, m["speed"]))
+    return 0
+
+
 def add_server(cfg, ns):
     """`rdocker add-server <name> <ip>`: provision a Linux box over ssh and add it to the fleet.
     ns: name, ip, role, user, admin_user, port, alias, speed, max_slots, heavy_slots, no_push, dry_run."""
@@ -441,12 +482,8 @@ def add_server(cfg, ns):
         rd_common.say("%s provisioned but ssh as %s@%s:%d failed - left DISABLED in fleet.json; fix and re-run"
                       % (ns.name, m["user"], m["ip"], m["port"]))
         return 1
-    rc, out, _ = sh(["ssh", "-o", "BatchMode=yes", m["alias"], "/usr/local/bin/rd-tune bench"], "benchmark", timeout=180)
-    speed = None
-    try:
-        speed = float(out.strip().splitlines()[-1]) if out.strip() else None
-    except ValueError:
-        pass
+    rc, out, _ = sh(bench_cmd(m)[0], "benchmark", timeout=180)
+    speed = parse_speed(out)
     final = {"enabled": True, "roles": roles, **({"speed": speed} if speed and not ns.speed else {})}
     try:
         url = ingest_url(load_doc((cfg or {}).get("fleet_path")))

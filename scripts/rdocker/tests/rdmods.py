@@ -67,6 +67,10 @@ def child_env(home, *bins, **extra):
          if not k.startswith("RDOCKER_") and k not in ("DOCKER_HOST", "DOCKER_CONTEXT")}
     open(os.path.join(home, MARKER), "a").close()   # a child that imports rdmods keeps `home`
     e.update(HOME=home, RDOCKER_HOME=home, PATH=safe_path(*bins))
+    # rr_runner.pl / the pool PROBE read the owner's share switch (/Users/Shared/rdocker/share on a
+    # Mac) and manage a real /opt/homebrew/bin/colima: a test sees neither unless it asks for them.
+    e.update(RR_SHARE_FILE=os.path.join(TEST_HOME, "no-share-file"),
+             RR_COLIMA=os.path.join(TEST_HOME, "no-colima"))
     e.update(extra)
     return e
 

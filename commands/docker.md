@@ -110,23 +110,46 @@ mini**, in a mirror of the current git worktree, so the test runner and its DB s
 exit code is the command's own, Ctrl-C works (1st: interrupt the remote command; 2nd: kill it; 3rd: drop
 the connection).
 
-- **Automatic:** a `PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites known heavy commands
-  (`rr_route_patterns`: `npm [--prefix X] run test:db[:rls]`, `release:rehearse:migrations`,
-  `node .../test-with-db.mjs`, `check:db-all`, `node .../run-guard-tier.mjs`,
-  `check:server-test-typecheck`, `tsc ... --noEmit`, a WHOLE `vitest run` suite - flags only, no file
-  args; `vitest run a.test.ts` stays on the laptop) to `rrun <cmd>`. **By category**, so new script names
-  need no new rule: every `check*` / `lint*` / `typecheck` / `verify*` and `test:*` npm script, a whole
-  `jest`, and `eslint .` - except names with `e2e` / `playwright` / `browser` / `watch` / `:ui` (they need
-  the laptop's browser or terminal). Dev servers (`dev`, `start`) and `build` stay local. Heads may also be
-  `./node_modules/.bin/tsc|vitest`. The push also mirrors the local
-  `origin/dev|main|master` (`rr_base_branches`), so diff-based guards resolve their base on the mini. It leaves anything unsure alone (`$(`, backticks,
-  heredocs, pipes into it, non-`npm/node/npx/pnpm/yarn/bun` heads), and drops `RDOCKER_MODE=local`.
-  Leading `K=V` assignments stay an env prefix and each name gets `-e K` (`FOO=1 npm run test:db` →
-  `FOO=1 rrun -e FOO npm run test:db`), so values never enter rrun's argv; `RRUN_*`/`RDOCKER_*` only
-  configure the laptop side. It also leaves the command alone when an assignment value has anything
-  beyond `[A-Za-z0-9_./:@%+,=-]` (globs, `~`, `$`...), when it holds whitespace other than space/tab
-  (`\v`, NBSP, ...), or when an earlier segment sets shell state (`export`, `set -a`, `source`/`.`,
-  a bare `FOO=1;`) that would not reach the mini.
+**Heavy dev work runs on the compute pool automatically - just type the normal command.** A
+`PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites every heavy one-shot dev command an agent
+types into `rrun <cmd>`, and rrun picks the best worker in the pool (`fleet.json`: Nick's MacBook M5 Max,
+then the HP, then the Windows laptop) and falls back by itself. Do not prefix `rrun` yourself, and do
+not look for another way to get compute. `rrun --where <cmd>` shows which worker it would pick and why.
+
+- **Automatic (what is rewritten):** one-shot type-checks, tests, lint and DB jobs, in a git repo:
+  - `npx [--prefix X] tsc` with `--noEmit`, or with `-p`/`-b` configs that all set `"noEmit": true`
+    (an emitting `tsc` stays here: its output would land on the worker);
+  - `npx vitest run ...` (any files), `npx jest ...`, `npx eslint ...`, and the same through
+    `./node_modules/.bin/<tool>`;
+  - `npm test` / `npm t` / `npm run test*` / `typecheck*` / `type-check*` / `lint*`, when package.json
+    defines the script and its body does not watch, serve, fix or write files;
+  - `npm run build` in a package dir `rr_outputs` maps (rrun copies the output back), and everything in
+    `rr_route_patterns`: `npm [--prefix X] run test:db[:rls]`, `release:rehearse:migrations`,
+    `node .../test-with-db.mjs`, `check:db-all`, `node .../run-guard-tier.mjs`,
+    `check:server-test-typecheck`, `tsc ... --noEmit`, a whole `vitest run` / `jest` suite, `eslint .`,
+    `node --max-old-space-size=NNNN`, and **by category** every `check*` / `lint*` / `typecheck` /
+    `verify*` and `test:*` npm script.
+  - Prefixes and plumbing are kept: `cd x && npx tsc --noEmit` -> `cd x && rrun npx tsc --noEmit`;
+    `FOO=1 npx vitest run a` -> `FOO=1 rrun -e FOO npx vitest run a` (values stay an env prefix, never in
+    rrun's argv; `RRUN_*`/`RDOCKER_*` only configure this side; `RDOCKER_MODE=local` is dropped); pipes
+    and redirects after the command (`| tail -20`, `> log 2>&1`) still run here on the streamed output;
+    each heavy segment of a `&&` / `;` chain is rewritten on its own; `timeout N` / `time` / `nice` /
+    `caffeinate` stay outside rrun; `bash -c '<script>'` (single-quoted) has its script routed by the
+    same rules.
+- **Never rewritten (they run here, as typed):** watch / interactive runs (bare `vitest`, `--watch*`,
+  `-w`, `jest --watch`, `tsc -w`, `--ui`); dev servers (`npm run dev`, `npm start`, `vite`,
+  `vite preview`, `next dev`, scripts named `dev` / `start` / `serve` / `preview` / `watch`); installs
+  (`npm install` / `ci` / `add`); browser / e2e scripts (`e2e`, `playwright`, `browser`, `:ui`);
+  runs that write files you then read here (`--coverage`, `--fix`, `-u` / `--update`, `--outputFile`,
+  `eslint -o`, `--outDir`, an emitting `tsc`, `lint:fix` / `format` / `coverage` scripts); builds rrun
+  would not copy back (`vite build`, `pnpm build`, `npm run build:*`, an unmapped package dir);
+  `pnpm` / `yarn` / `bun` and pnpm / yarn / bun projects (workers install with `npm ci`); bare
+  `tsc` / `vitest` / `eslint` / `jest` (a worker's PATH has no `node_modules/.bin`; use `npx`);
+  `ssh ...`, `docker ...`, heredocs, `$(...)` / backticks, a command fed by a pipe, an unknown cwd
+  (`cd $D`) or no git repo; an earlier segment that sets shell state (`export`, `set -a`,
+  `source`/`.`, a bare `FOO=1;`); an assignment value beyond `[A-Za-z0-9_./:@%+,=-]`; whitespace other
+  than space/tab. When the hook is unsure it leaves the whole command alone, and it never breaks a
+  command: any internal error passes it through unchanged.
 - **Opt out:** `RRUN=0 <cmd>` (the hook skips it, and `rrun` itself then runs locally). The hook also
   skips commands containing `real-od/`, `doctor-drive` or `--approve=browser`.
 - **npm shim (catches scripts):** only a TOP-LEVEL npm (parent is a shell) is routed - npm spawned by a
@@ -205,7 +228,8 @@ the connection).
   GO: nothing ran) or kills the run after `rr_hb_timeout` (60 s) without a heartbeat.
 - **Exit codes of rrun itself** (only before the command started, so never confused with its own):
   65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
-  on the mini, 70 runner error, 73 slot busy past `rr_wait_min`, 75 lost the mini / strict fallback,
+  on the mini, 70 runner error, 73 slot busy past `rr_wait_min` (or the worker refused: share off / its Docker did
+  not start - then rrun tries the next worker), 75 lost the mini / strict fallback,
   **78 dependency install failed** (`npm ci` / `prisma generate` / a local package rebuild; its log is printed), 130 interrupted
   before start.
 - **On the mini:** `~/rr` is 0700, excluded from Time Machine (`tmutil addexclusion`, once) and from
@@ -220,6 +244,35 @@ package rebuild (`npm run <script>  (in ./<pkg>)` above it) failed on the mini (
 lockfile / schema / build, or `RRUN=0` to run locally. Works locally but fails on the mini with a missing
 file → it is gitignored and not an allowlisted env file: commit it, or generate it in the command. First
 run in a repo is slow (history push + `npm ci`); later runs add ~1-3 s.
+
+## Rentable Mac workers / share switch
+
+A Mac can be a pool **worker** (never the home): fleet.json `os: "mac"`, role `worker`, e.g. `nickmbp`
+(Nick's M5 Max, `rd-nickmbp`, port 2222). Jobs run as a hidden non-admin `rd` user with its own sshd
+(key-only, Tailscale-only); nothing touches the owner's account. It stays `enabled: true`: whether it
+takes jobs is the **owner's live switch**, read on the worker before every job (no fleet.json push).
+
+- **Switch:** the owner runs `rdocker-share off|some|max|status` (`share/rdocker-share.sh`; optional
+  SwiftBar/xbar menu `share/rdocker-share.1m.sh`; install note `share/README.md`). It writes
+  `/Users/Shared/rdocker/share` (one word; on Linux `~/rr/share`; `RR_SHARE_FILE` overrides).
+  **No file = max**, so Linux workers behave as before. A file with anything else = off.
+- **What each level means:** `off` = no new jobs (running ones finish): the probe reports state `off`
+  (`rrun --where` shows it, plus a `share` column), it is tried last, and its runner refuses at once
+  (exit 73 + `UNAVAIL share=off`, also when switched off while a job waits for a slot), so rrun moves to
+  the next worker. `some` = half the slots and heavy slots (floor, min 1). `max` = all.
+- **Docker on a Mac worker = Colima as `rd`, on purpose.** This is the scoped exception to "never start
+  Colima" (that rule is for CLIENT Macs). Before a db job, or on a job's first docker call through the
+  rrun shim, the runner checks `docker info`; if the engine is not answering it runs `colima start
+  --vm-type vz --vz-rosetta` (linux/amd64 images work) sized by the level (max 12 CPU / 24 GB, some
+  6 / 12; disk 120 GB) under the `~/rr/colima.lock` mkdir lock. No engine within 120 s
+  (`RR_COLIMA_TIMEOUT`) = exit 73 + `UNAVAIL docker`, and the job moves on; the start keeps going in
+  the background (a cold start is about 90 s), so the next job finds it up. An already-running Colima
+  (also one started by hand) is used as is; a level change resizes it only on its next start.
+  With the share **off and no slot held**, the probe (and a job's end) runs `colima stop` in the
+  background. No root, no LaunchAgent (`rd` has no GUI session). Log: `~/rr/log/colima.log` there.
+- **Speed:** `rdocker bench-worker <name>` runs the same benchmark as Linux's `rd-tune bench` over ssh
+  (on a Mac the script is piped in, nothing installed) and stores `~/rr/speed` there, which the probe
+  prefers over fleet.json's placeholder. `rrun --bench` also creates a missing `~/rr` (0700) now.
 
 ## What runs where (automatic)
 
@@ -426,6 +479,7 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 | `rdocker sync` | reconcile port mirrors now |
 | `rdocker run [-e K[=V]]... [--] <cmd>` / `rrun ...` | run a heavy job (test runner + its DB) on the mini — see "Heavy test jobs on the mini" |
 | `rdocker add-server <name> <tailscale-ip> [--role home,worker] [--admin-user U] [--dry-run]` | provision a Linux box over ssh (`server/provision-linux.sh`) and add it to `fleet.json`; see `/dockersetup server` |
+| `rdocker bench-worker <name>` | benchmark one worker (Linux or Mac) over ssh; stores `~/rr/speed` there (the probe prefers it over fleet.json) |
 | `rdocker sync-fleet [--pull]` | validate `fleet.json`, rewrite `~/.ssh/config.d/rdocker` from it (that file is rdocker-owned; old copies in `~/.ssh/rdocker-backups/`) |
 
 `rdocker status` rows: tailscale on laptop · mini reachable (ssh control connection) · mini docker engine

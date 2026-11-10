@@ -532,8 +532,32 @@ class Tune(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout.strip()), (0, "0.50"), r.stderr)
         self.assertEqual(read(os.path.join(self.tmp, "rr", "speed")).strip(), "0.50")
 
+    def test_bench_piped_over_ssh_finds_mise_node_and_keeps_rr_private(self):
+        """A Mac worker: `ssh <alias> /bin/bash -s bench < rd-tune.sh` (rd_fleet.bench_cmd), no getent,
+        node only via `mise which node`. The fake node drains stdin first: had it inherited the piped
+        script, the rest of rd-tune.sh would vanish and nothing would be written."""
+        tools = os.path.join(self.tmp, "mise-node")
+        os.makedirs(tools)
+        node = os.path.join(tools, "node")
+        with open(node, "w") as f:
+            f.write("#!/bin/sh\ncat >/dev/null\necho '1.0 1200000'\n")
+        mise = os.path.join(self.bin, "mise")
+        with open(mise, "w") as f:
+            f.write("#!/bin/sh\n[ \"$1 $2\" = 'which node' ] && echo %s\n" % node)
+        for p in (node, mise):
+            os.chmod(p, 0o755)
+        home = os.path.join(self.tmp, "mac-rd-home")        # a fresh worker: no ~/rr yet
+        os.makedirs(home)
+        env = rdmods.child_env(home, self.bin, RD_BENCH_REF="1200000", RD_CONF="/nonexistent", RD_MISE=mise)
+        with open(TUNE) as f:
+            r = subprocess.run(["/bin/bash", "-s", "bench"], stdin=f, capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "1.00"), r.stderr)
+        self.assertNotIn("getent", r.stderr)
+        self.assertEqual(read(os.path.join(home, "rr", "speed")).strip(), "1.00")
+        self.assertEqual(os.stat(os.path.join(home, "rr")).st_mode & 0o777, 0o700)
+
     def test_bench_without_node_fails_loudly(self):
-        r = self.tune("bench")
+        r = self.tune("bench", RD_MISE="/nonexistent")       # never this Mac's own mise
         self.assertEqual(r.returncode, 1)
         self.assertIn("node not found", r.stderr)
 

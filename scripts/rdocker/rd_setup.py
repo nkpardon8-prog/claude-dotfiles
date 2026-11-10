@@ -92,6 +92,23 @@ def install_daemon():
     return rc == 0 or "already" in err
 
 
+def install_warm():
+    """Mac clients: the com.rdocker.warm launch agent (`rdocker warm`, rd_warm), from the template
+    units/com.rdocker.warm.plist, installed exactly as install_daemon installs the forwarder.
+    -> True loaded / False failed / None (not a Mac: no warm agent; clients are Macs)."""
+    if not rd_common.IS_MAC:
+        return None
+    with open(os.path.join(rd_common.UNITS_DIR, rd_common.WARM_LABEL + ".plist")) as f:
+        template = f.read()
+    os.makedirs(os.path.dirname(rd_common.WARM_PLIST_PATH), exist_ok=True)
+    with open(rd_common.WARM_PLIST_PATH, "w") as f:
+        f.write(template.format(label=rd_common.WARM_LABEL, script=rd_common.ENTRY, log=rd_common.WARM_LOG))
+    uid = str(os.getuid())
+    rd_common.run(["launchctl", "bootout", "gui/" + uid + "/" + rd_common.WARM_LABEL], timeout=10)
+    rc, _, err = rd_common.run(["launchctl", "bootstrap", "gui/" + uid, rd_common.WARM_PLIST_PATH], timeout=10)
+    return rc == 0 or "already" in err
+
+
 def link(src, dst):
     if os.path.islink(dst) and os.path.realpath(dst) == os.path.realpath(src):
         return False
@@ -264,6 +281,11 @@ def install(cfg):
                else "launch agent " + rd_common.PLIST_LABEL)
     print("installed: docker shim + rdocker + rrun + npm shim in %s, %s (%s)"
           % (rd_common.BIN_DIR, service, "loaded" if ok else "LOAD FAILED"))
+    # 6. worker pre-warmer (Mac clients)
+    warm = install_warm()
+    if warm is not None:
+        print("installed: launch agent %s (%s; log %s)"
+              % (rd_common.WARM_LABEL, "loaded" if warm else "LOAD FAILED", rd_common.WARM_LOG))
     if rd_common.IS_LINUX:
         print("To keep the forwarder running while logged out, run once: sudo loginctl enable-linger $USER")
     print("pinned to laptop: containers=%s compose=%s"
@@ -681,6 +703,8 @@ def build_parser():
     s.add_argument("--heavy-slots", type=int)
     s.add_argument("--no-push", action="store_true", help="commit fleet.json but do not push the dotfiles")
     s.add_argument("--dry-run", action="store_true", help="print the commands, change nothing")
+    s = sp.add_parser("bench-worker", help="benchmark one fleet worker (linux or mac) over ssh; stores ~/rr/speed there")
+    s.add_argument("name")
     s = sp.add_parser("sync-fleet", help="validate fleet.json and rewrite ~/.ssh/config.d/rdocker from it")
     s.add_argument("--pull", action="store_true", help="git pull --ff-only the dotfiles first")
     sp.add_parser("install", help="client side: SSH identity, context, shims, forwarder, pins")
@@ -691,6 +715,13 @@ def build_parser():
     s.add_argument("cpu", nargs="?", default="6")
     s.add_argument("mem", nargs="?", default="8", help="GB")
     s.add_argument("disk", nargs="?", default="30", help="GB")
+    s = sp.add_parser("warm", help="pre-warm the rrun workers (push + deps) for repos used here lately",
+                      description="Pre-warm every enabled fleet worker for the repos this machine "
+                      "ran rrun in during the last rr_warm_window_h (route.log): push the mirror, "
+                      "install deps through the runner's own prepare, run nothing. Loops (a pass "
+                      "every rr_warm_interval_s, sooner when a worker comes online); log: warm.log.")
+    s.add_argument("--once", action="store_true", help="one pass, then exit")
+    s.add_argument("--repo", metavar="PATH", help="warm this worktree only (instead of route.log)")
     sp.add_parser("daemon", help="(launchd) event-driven forwarder")
     sp.add_parser("janitor-run")                      # internal, spawned by the daemon
     sp.add_parser("laptop-janitor-run")               # internal, spawned by the daemon
@@ -813,9 +844,14 @@ def command(argv):
     cmd = ns.cmd
     if cmd == "run":
         return rd_run.rrun(ns.argv, ns.env)
+    if cmd == "warm":
+        import rd_warm               # not on the shim's import path
+        return rd_warm.main(once=ns.once, repo=ns.repo)
     cfg = rd_common.load_cfg()
     if cmd == "add-server":
         return rd_fleet.add_server(cfg, ns)
+    if cmd == "bench-worker":
+        return rd_fleet.bench_worker(cfg, ns.name)
     if cmd == "sync-fleet":
         return rd_fleet.sync(cfg, pull=ns.pull)
     if cmd == "authorize-client":

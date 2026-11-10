@@ -28,7 +28,15 @@
 # 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started.
 # Every run appends one line to $ROOT/log/runs.log (see run_log; no env values, never fails a run).
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
-# RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server).
+# RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server),
+# RR_SHARE_FILE, RR_COLIMA (default /opt/homebrew/bin/colima), RR_COLIMA_TIMEOUT (default 120 s).
+#
+# Share switch (a worker's owner rents it in or out; see share_level): off = take no new job (exit 73
+# with "<nonce> UNAVAIL share=off", the client moves on); some = half the slots and heavy slots;
+# max (or no share file: every Linux worker) = full. On a Mac worker with Colima, a db job (and any
+# docker call through the shim) first makes sure the engine answers, starting Colima sized by the
+# level (exit 73 + "UNAVAIL docker" when it does not come up in time); with the share off and no slot
+# busy, the Colima this runner started is stopped in the background when a job ends.
 use strict;
 use warnings;
 use POSIX qw(setsid WNOHANG _exit);
@@ -47,6 +55,8 @@ umask 077;    # everything the runner creates is owner-only (~/rr is 0700)
 my $ROOT = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
 my $OS = $ENV{RR_OS} || $^O;                # RR_OS: tests only
 my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || (-x '/opt/homebrew/bin/docker' || $^O ne 'linux' ? '/opt/homebrew/bin/docker' : '/usr/bin/docker');
+my $COLIMA = $ENV{RR_COLIMA} || '/opt/homebrew/bin/colima';
+my %VM = (max => [12, 24, 120], some => [6, 12, 120]);    # colima --cpu / --memory GB / --disk GB per share level
 my $SLUG = qr/^(?!\.\.?$)[A-Za-z0-9._-]+$/;    # one path component; never "." or ".."
 
 my (%h, $nonce, $label, $tmp, $mirror, $envlist, $lock_fh, $who, $started, $heavy_fh);
@@ -83,6 +93,7 @@ sub main {
     take_slot();
     $t_slot = time;
     $tmp = File::Temp::tempdir("run-XXXXXXXX", DIR => mk("$ROOT/tmp"));
+    write_docker_up("$tmp/docker-up") if colima_managed();
     write_shim("$tmp/docker");
     my $path = "$tmp:" . ($ENV{RR_PATH} // join ':', grep { defined } node_dir(), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin');
     $ENV{PATH} = $path;    # git/node/npm below resolve the same way the command will
@@ -91,6 +102,7 @@ sub main {
     my %env = map { defined $ENV{$_} ? ($_ => $ENV{$_}) : () } qw(HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM);
     %env = (%env, %{ $h{env} }, PATH => $path, RRUN_REMOTE => '1');
     node_heap(\%env);
+    docker_up(\%env) if ($h{cls} // '') eq 'db' && colima_managed();
 
     my $cwd = prepare_mirror();
     deps(\%env);
@@ -359,6 +371,23 @@ sub slots_cap {
     my ($c) = slurp($f) =~ /^\s*(\d+)/;
     $c;
 }
+# The owner's share switch: one word, off | some | max. RR_SHARE_FILE, else /Users/Shared/rdocker/share
+# on macOS (the owner writes it with `rdocker share`), else $ROOT/share. No file = max (so a worker
+# without one behaves exactly as before); a file that exists but is unreadable or says anything else
+# = off (the owner's intent wins). Same rule as rd_pool's PROBE.
+sub share_file { $ENV{RR_SHARE_FILE} || ($OS eq 'darwin' ? '/Users/Shared/rdocker/share' : "$ROOT/share") }
+sub share_level {
+    my $f = share_file();
+    return 'max' unless -e $f || -l $f;
+    my ($v) = slurp($f) =~ /^\s*(off|some|max)\s*$/;
+    $v // 'off';
+}
+sub share_cap { my ($n, $lvl) = @_; $lvl eq 'some' && $n > 0 ? (int($n / 2) || 1) : $n }
+sub share_off {
+    status('UNAVAIL share=off');
+    fail("this worker's owner has turned sharing off; not taking new jobs", 73);
+}
+
 # A heavy job (cls=heavy with heavy_slots in the header) also holds one heavy-<i> flock.
 sub take_heavy {
     my ($dir) = @_;
@@ -373,7 +402,10 @@ sub take_heavy {
 
 sub take_slot {
     my $dir = mk("$ROOT/slots");
-    my $n = $h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1;
+    my $share = share_level();
+    share_off() if $share eq 'off';
+    my $n = share_cap($h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1, $share);
+    $h{heavy_slots} = share_cap($h{heavy_slots}, $share) if defined $h{heavy_slots};
     my $cap = slots_cap();
     $n = $cap if defined $cap && $cap < $n;    # 0 = drained: wait (then 73) like a full mini
     my $base = defined $h{slots_base} && $h{slots_base} =~ /^\d+$/ && $h{slots_base} >= 1
@@ -381,6 +413,7 @@ sub take_slot {
     my $deadline = time + 60 * ($h{wait_min} // 30);
     my $said;
     while (1) {
+        share_off() if share_level() eq 'off';    # switched off while we waited: move on now
         my $spare = $base < $n && spare_room();
         my $gate = take_heavy($dir) && mem_ok();
         if (!$gate && $heavy_fh) { close $heavy_fh; undef $heavy_fh }
@@ -728,6 +761,7 @@ sub finish {
     if ($who) { unlink $who; close $lock_fh }
     close $heavy_fh if $heavy_fh;
     remove_tree($tmp) if $tmp;
+    eval { colima_stop_if_off() };
     eval { run_log($rc) };    # bookkeeping only: never changes the run's outcome
 }
 
@@ -807,6 +841,8 @@ sub write_shim {
 # rrun per-run docker shim (generated; deleted when the run ends)
 REAL='@REAL@'
 LABEL='rdocker.rrun=@LABEL@'
+UP='@UP@'
+if [ -n "$UP" ] && [ ! -f "$UP.ok" ]; then "$UP" || exit 73; fi
 state=global sub= first=1 detach=0
 for a do
   if [ $first = 1 ]; then set --; first=0; fi
@@ -836,8 +872,110 @@ exit 0
 SH
     $sh =~ s/\@REAL\@/$REAL_DOCKER/;
     $sh =~ s/\@LABEL\@/$label/;
+    my $up = -f "$tmp/docker-up" ? "$tmp/docker-up" : '';
+    fail("tmp path must not contain a quote", 65) if $up =~ /'/;
+    $sh =~ s/\@UP\@/$up/;
     write_file($path, $sh);
     chmod 0700, $path;
+}
+
+# ------------------------------------------------------------------------ Mac worker Docker VM
+# A Mac worker has no Docker until Colima runs (as the rd user: no root, no GUI session needed).
+# Managed only on macOS and only when colima is installed; Linux workers never get here.
+sub colima_managed { $OS ne 'linux' && -x $COLIMA }
+# Colima's docker socket: present while it runs, also when someone started it by hand.
+sub colima_sock { -S ($ENV{RR_COLIMA_SOCK} || "$ENV{HOME}/.colima/default/docker.sock") }
+sub colima_timeout { ($ENV{RR_COLIMA_TIMEOUT} // '') =~ /^(\d+)$/ ? $1 : 120 }
+
+# $tmp/docker-up: exit 0 once `docker info` answers; else start Colima under the $ROOT/colima.lock
+# mkdir lock (one start at a time across runs; a lock older than 15 min is stale) and wait for the
+# engine up to RR_COLIMA_TIMEOUT s, else exit 73. The start itself runs in its own session, so a run
+# that gives up (or is lost) never kills a half-done first start (about 90 s cold); the next run
+# finds it up. Used before a db job (below) and by the docker shim on its first call.
+sub write_docker_up {
+    my ($path) = @_;
+    my ($cpu, $mem, $disk) = @{ $VM{ share_level() } || $VM{max} };
+    for ($REAL_DOCKER, $COLIMA, $ROOT) { fail("docker-up: path must not contain a quote", 65) if /'/ }
+    my $sh = <<'SH';
+#!/bin/sh
+# rrun: make sure this Mac worker's Docker engine answers (generated; deleted when the run ends)
+PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; export PATH
+REAL='@REAL@' COLIMA='@COLIMA@' ROOT='@ROOT@' OK='@OK@'
+LOCK="$ROOT/colima.lock" MARK="$ROOT/state/colima.started"
+up() { "$REAL" info >/dev/null 2>&1; }
+[ -f "$OK" ] && exit 0
+up && { : > "$OK"; exit 0; }
+end=$(( $(date +%s) + @TIMEOUT@ ))
+echo "rrun: Docker is not running on this worker - starting Colima (@CPU@ CPU, @MEM@ GB; a cold start takes 1-2 min)" >&2
+mine=0
+while :; do
+  up && { : > "$OK"; exit 0; }
+  [ "$(date +%s)" -ge "$end" ] && break
+  if [ $mine = 0 ]; then
+    [ -n "$(find "$LOCK" -maxdepth 0 -mmin +15 2>/dev/null)" ] && rmdir "$LOCK" 2>/dev/null
+    if mkdir "$LOCK" 2>/dev/null; then
+      mine=1
+      mkdir -p "$ROOT/log" "$ROOT/state" && : > "$MARK"
+      /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); $SIG{HUP} = "IGNORE"; exec @ARGV' /bin/sh -c         '"$1" start --cpu "$2" --memory "$3" --disk "$4" --vm-type vz --vz-rosetta; rmdir "$5"'         sh "$COLIMA" @CPU@ @MEM@ @DISK@ "$LOCK" </dev/null >>"$ROOT/log/colima.log" 2>&1 &
+    fi
+  elif [ ! -d "$LOCK" ]; then
+    up && { : > "$OK"; exit 0; }
+    echo "rrun: colima start failed (see ~/rr/log/colima.log on the worker)" >&2
+    exit 73
+  fi
+  sleep 1
+done
+echo "rrun: Docker did not come up within @TIMEOUT@ s (see ~/rr/log/colima.log on the worker)" >&2
+exit 73
+SH
+    my %v = (REAL => $REAL_DOCKER, COLIMA => $COLIMA, ROOT => $ROOT, OK => "$path.ok",
+             TIMEOUT => colima_timeout(), CPU => $cpu, MEM => $mem, DISK => $disk);
+    $sh =~ s/\@([A-Z]+)\@/$v{$1}/g;
+    write_file($path, $sh);
+    chmod 0700, $path;
+}
+
+# Before a db job: the engine must answer, else 73 (nothing ran: the client tries the next worker).
+# Runs under supervise(), so heartbeats are read while Colima boots and a lost laptop stops the wait.
+sub docker_up {
+    my ($env) = @_;
+    # its notes (stderr only; it never writes stdout) reach the laptop live during a cold boot
+    my $rc = supervise(spawn(['/bin/sh', "$tmp/docker-up"], $env, $tmp));
+    return if $rc == 0;
+    return if $lost || $intr;    # main() reports it
+    status('UNAVAIL docker');
+    fail("the Docker engine on this worker did not start; not running the db job here", 73);
+}
+
+# Share off and no slot held (ours is released by now): stop Colima (one a run started, or one that
+# is running anyway: its socket is there), in its own
+# session so this run's exit does not wait for it. The same lock as the start keeps them apart.
+sub colima_stop_if_off {
+    return unless colima_managed() && share_level() eq 'off';
+    my $mark = "$ROOT/state/colima.started";
+    return unless (-f $mark && !-l $mark) || colima_sock();
+    for my $f (grep { !/\.who$/ } glob("$ROOT/slots/*")) {
+        sysopen(my $fh, $f, O_RDWR | O_NOFOLLOW) or next;
+        return unless flock($fh, LOCK_SH | LOCK_NB);    # someone holds a slot: not now
+        close $fh;
+    }
+    mkdir "$ROOT/colima.lock" or return;
+    my $pid = fork;
+    if (!defined $pid) { rmdir "$ROOT/colima.lock"; return }
+    return if $pid;
+    eval {    # the child never returns into the runner's own cleanup, whatever happens here
+        setsid();
+        $SIG{$_} = 'IGNORE' for qw(HUP INT TERM);
+        open STDIN, '<', '/dev/null';
+        mkdir "$ROOT/log", 0700;
+        open(STDOUT, '>>', "$ROOT/log/colima.log") or open(STDOUT, '>', '/dev/null');
+        open STDERR, '>&', \*STDOUT;
+        $ENV{PATH} = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+        system($COLIMA, 'stop');
+        unlink $mark;
+    };
+    rmdir "$ROOT/colima.lock";
+    _exit(0);
 }
 
 sub node_dir {    # $RR_NODE (from the header env) = a mise node version; else brew's node
@@ -852,7 +990,8 @@ sub node_dir {    # $RR_NODE (from the header env) = a mise node version; else b
         print STDERR "rrun-runner: RR_NODE=$v not found via mise; using brew node\n";
     }
     return '/opt/homebrew/opt/node/bin' if -d '/opt/homebrew/opt/node/bin';
-    my ($mise) = grep { -x } "$ENV{HOME}/.local/bin/mise", '/usr/local/bin/mise', '/usr/bin/mise';    # Linux server: mise's global node
+    # Linux server / a Mac worker's rd user without brew node: mise's global node
+    my ($mise) = grep { -x } "$ENV{HOME}/.local/bin/mise", '/opt/homebrew/bin/mise', '/usr/local/bin/mise', '/usr/bin/mise';
     if ($mise && open(my $ph, '-|', $mise, 'which', 'node')) {
         my $p = <$ph> // '';
         close $ph;

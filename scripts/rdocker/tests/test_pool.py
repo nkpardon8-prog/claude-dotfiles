@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -36,10 +37,10 @@ def write_fleet(path, machines):
 
 
 def probe(slots_cap=2, slots_busy=0, heavy_cap=1, heavy_busy=0, mem_mb=16000, load=0.0, ncpu=4,
-          warm_git=1, warm_deps=1, speed=None):
+          warm_git=1, warm_deps=1, speed=None, share="max"):
     p = {"slots_cap": slots_cap, "slots_busy": slots_busy, "heavy_cap": heavy_cap,
          "heavy_busy": heavy_busy, "mem_avail_mb": mem_mb, "load1": load, "ncpu": ncpu,
-         "warm_git": warm_git, "warm_deps": warm_deps}
+         "warm_git": warm_git, "warm_deps": warm_deps, "share": share}
     if speed is not None:
         p["speed"] = speed
     return p
@@ -191,6 +192,21 @@ class PlanUnit(unittest.TestCase):
         self.assertEqual(self.names(p), ["mini"])
         self.assertIn("fleet.json unusable", err.getvalue())
 
+    def test_share_off_worker_is_off_and_tried_last(self):
+        p, _ = self.plan([worker("big", 3.0, max_slots=8), worker("a", 1.0), worker("b", 0.5)],
+                         {"big": probe(slots_cap=8, share="off"), "a": probe(slots_cap=1, slots_busy=1)})
+        self.assertEqual(self.names(p), ["a", "b", "big"])            # busy, down, then off
+        self.assertEqual({h.name: h.state for h in p.hosts}, {"big": "off", "a": "busy", "b": "down"})
+        self.assertIsNone(p.hosts[2].score)
+        lines = rd_pool.where_report(self.cfg, rd_pool.classify(["npx", "vitest", "run"]), p)
+        self.assertRegex("\n".join(lines), r"\nbig +big +off .* off\n")
+        p, _ = self.plan([worker("big", 3.0, max_slots=8), worker("a", 1.0)],
+                         {"big": probe(slots_cap=8), "a": probe()})
+        self.assertEqual(self.names(p), ["big", "a"])                 # sharing again: first
+        p, _ = self.plan([worker("big"), worker("a")], {"big": probe(share="off"), "a": probe(share="off")})
+        lines = rd_pool.where_report(self.cfg, rd_pool.classify(["true"]), p)
+        self.assertIn("owner turned sharing off", lines[-1])
+
     def test_force_host(self):
         p, m = self.plan([worker("a"), worker("b")], {}, force="b")
         self.assertEqual((self.names(p), m.call_count, p.pool), (["b"], 0, False))
@@ -262,6 +278,75 @@ class ProbeSnippet(unittest.TestCase):
         test_run.wfile(os.path.join(mnm, ".rr-deps-stamp"), "%s v22" % shas[0][1])
         self.assertEqual(self.run_probe(req)["warm_deps"], 1)
         self.assertEqual(self.run_probe(dict(req, slug="../x"))["warm_git"], 0)   # never a path
+
+
+class ProbeShareSwitch(unittest.TestCase):
+    """The PROBE's share switch: RR_SHARE_FILE / ~/rr/share; Colima stop on a Mac worker."""
+    setUp, run_probe = ProbeSnippet.setUp, ProbeSnippet.run_probe     # same fake ~/rr + /proc
+
+    def test_levels_halve_slots_and_missing_file_is_max(self):
+        req = {"slots": 8, "heavy_slots": 6, "slug": "", "deps": []}
+        o = self.run_probe(req)
+        self.assertEqual((o["share"], int(o["slots_cap"]), int(o["heavy_cap"])), ("max", 8, 6))
+        share = os.path.join(self.d, "share-file")
+        self.env["RR_SHARE_FILE"] = share
+        for text, want in (("some\n", ("some", 4, 3)), ("max", ("max", 8, 6)), ("off\n", ("off", 8, 6)),
+                           ("bogus", ("off", 8, 6))):
+            test_run.wfile(share, text)
+            o = self.run_probe(req)
+            self.assertEqual((o["share"], int(o["slots_cap"]), int(o["heavy_cap"])), want, text)
+        test_run.wfile(share, "some")
+        o = self.run_probe({"slots": 1, "heavy_slots": 1})
+        self.assertEqual((int(o["slots_cap"]), int(o["heavy_cap"])), (1, 1))         # floor, min 1
+        # no RR_SHARE_FILE on Linux: ~/rr/share
+        del self.env["RR_SHARE_FILE"]
+        test_run.wfile(os.path.join(self.root, "share"), "off")
+        self.assertEqual(self.run_probe(req)["share"], "off")
+
+    def fake_colima(self):
+        log = os.path.join(self.d, "colima.log")
+        c = os.path.join(self.d, "fakecolima")
+        test_run.wfile(c, '#!/bin/sh\necho "colima $*" >> %s\n' % log)
+        os.chmod(c, 0o755)
+        os.makedirs(os.path.join(self.root, "state"))
+        test_run.wfile(os.path.join(self.root, "state", "colima.started"), "")
+        self.env.update(RR_COLIMA=c, RR_SHARE_FILE=os.path.join(self.d, "share-file"),
+                        RR_COLIMA_SOCK=os.path.join(self.d, "no-sock"))
+        test_run.wfile(self.env["RR_SHARE_FILE"], "off")
+        return log
+
+    def wait_gone(self, path):
+        end = time.time() + 10
+        while os.path.exists(path) and time.time() < end:
+            time.sleep(0.05)
+        self.assertFalse(os.path.exists(path), path)
+
+    def test_share_off_idle_mac_stops_colima_in_the_background(self):
+        log = self.fake_colima()
+        mark = os.path.join(self.root, "state", "colima.started")
+        self.run_probe({"slots": 2})                                   # RR_OS=linux: never
+        time.sleep(0.3)
+        self.assertFalse(os.path.exists(log))
+        self.env["RR_OS"] = "darwin"
+        held = open(os.path.join(self.root, "slots", "5"), "a")        # any held slot counts
+        fcntl.flock(held, fcntl.LOCK_EX)
+        self.run_probe({"slots": 2})
+        time.sleep(0.3)
+        self.assertFalse(os.path.exists(log))
+        held.close()
+        test_run.wfile(self.env["RR_SHARE_FILE"], "some")
+        self.run_probe({"slots": 2})                                   # sharing: keep it
+        time.sleep(0.3)
+        self.assertFalse(os.path.exists(log))
+        test_run.wfile(self.env["RR_SHARE_FILE"], "off")
+        o = self.run_probe({"slots": 2})
+        self.assertEqual(o.get("docker"), "stopping")
+        self.wait_gone(mark)
+        self.wait_gone(os.path.join(self.root, "colima.lock"))
+        with open(log) as f:
+            self.assertEqual(f.read(), "colima stop\n")
+        o = self.run_probe({"slots": 2})                               # stopped: nothing more to do
+        self.assertNotIn("docker", o)
 
 
 class PoolE2E(test_run.RunBase):
@@ -392,6 +477,25 @@ class PoolE2E(test_run.RunBase):
         self.assertEqual(self.target(), "w1")
         self.assertNotIn("slots_busy", self.read(self.sshlog))
 
+    def test_share_off_worker_is_skipped_and_a_forced_one_says_why(self):
+        os.makedirs(os.path.join(self.whome["w1"], "rr"))
+        test_run.wfile(os.path.join(self.whome["w1"], "rr", "share"), "off\n")
+        kw = {"RR_SHARE_FILE": ""}                                      # Linux default: ~/rr/share
+        r = self.rrun("/bin/sh", "-c", "echo hi", **kw)
+        self.assertEqual((r.returncode, r.stdout), (0, "hi\n"), r.stderr)
+        self.assertEqual(self.target(), "w2")
+        r = self.rrun("--where", "true", **kw)
+        self.assertRegex(r.stdout, r"\nw1 +w1 +off ")
+        r = self.rrun("--host", "w1", "/bin/sh", "-c", "echo hi", **kw)
+        self.assertEqual((r.returncode, r.stdout), (73, ""), r.stderr)
+        self.assertIn("w1 is not taking jobs (its owner turned sharing off)", r.stderr)
+        # the probe saw w1 sharing, then the owner switched off: its runner refuses, the job moves on
+        empty = os.path.join(self.d, "probe-home")
+        os.makedirs(empty)
+        r = self.rrun("/bin/sh", "-c", "echo hi", FAKE_SSH_PROBE_HOMES="w1=" + empty, **kw)
+        self.assertEqual((r.returncode, r.stdout), (0, "hi\n"), r.stderr)
+        self.assertIn("w1 is not taking jobs (its owner turned sharing off) - trying w2", r.stderr)
+
     def test_bench_writes_speed_on_each_worker(self):
         self.set_fleet(rr_bench_iters=2000)
         for n in self.whome:
@@ -401,6 +505,11 @@ class PoolE2E(test_run.RunBase):
         self.assertRegex(r.stdout, r"w1 +[0-9.]+s  speed [0-9.]+\nw2 ")
         for n in self.whome:
             self.assertRegex(self.read(os.path.join(self.whome[n], "rr", "speed")), r"^[0-9.]+\n$")
+        # a fresh worker (a new Mac) has no ~/rr yet: the bench makes it (private) and stores the speed
+        shutil.rmtree(os.path.join(self.whome["w2"], "rr"))
+        self.assertEqual(self.rrun("--bench", "--host", "w2").returncode, 0)
+        self.assertRegex(self.read(os.path.join(self.whome["w2"], "rr", "speed")), r"^[0-9.]+\n$")
+        self.assertEqual(os.stat(os.path.join(self.whome["w2"], "rr")).st_mode & 0o777, 0o700)
         r = self.rrun("--bench", FAKE_SSH_DOWN_HOSTS="w2")
         self.assertEqual(r.returncode, 1)
         self.assertIn("w2         unreachable", r.stdout)

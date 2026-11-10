@@ -8,6 +8,8 @@ small `perl -e` snippet (PROBE; nothing is installed on the worker) and scored:
 
     score = speed * free / (1 + load1 / ncpu) * warm - rtt_s
     free  = free slots (heavy jobs: min(free slots, free heavy slots)); slots capped by ~/rr/slots.cap
+            and by the owner's share switch (some = half the slots and heavy slots; off = state "off",
+            no score, tried last; no share file = max - see rr_runner.pl share_level)
     warm  = 0.6 when the repo's bare git mirror is missing  x  0.5 when its packages are not there
     speed = ~/rr/speed on the worker (written by `rrun --bench`), else the fleet entry's speed
 
@@ -205,7 +207,7 @@ def host_for(cfg, entry):
 # Read-only snapshot of a worker, one JSON line. stdin: {"slots", "heavy_slots", "slug",
 # "deps": [[rel, sha], ...]}. RR_ROOT / RR_PROC / RR_SYS: same overrides as the runner (tests).
 PROBE = r'''
-use strict; use warnings; use JSON::PP; use Fcntl qw(:flock O_RDONLY O_NOFOLLOW);
+use strict; use warnings; use JSON::PP; use POSIX (); use Fcntl qw(:flock O_RDONLY O_RDWR O_NOFOLLOW);
 my $R = $ENV{RR_ROOT} || "$ENV{HOME}/rr";
 my $q = eval { local $/; JSON::PP->new->decode(<STDIN> // "{}") } || {};
 sub slurp { open(my $f, "<", $_[0]) or return ""; local $/; <$f> // "" }
@@ -229,12 +231,45 @@ if ($o{os} eq "linux") {
 }
 sub busy { my ($f) = @_; sysopen(my $h, $f, O_RDONLY | O_NOFOLLOW) or return 0;
     return 0 if flock($h, LOCK_SH | LOCK_NB); 1 }
-my $n = ($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1;
+# the owner's share switch (same rule as rr_runner.pl share_level): no file = max; off/some/max; else off
+my $shf = $ENV{RR_SHARE_FILE} || ($o{os} eq "darwin" ? "/Users/Shared/rdocker/share" : "$R/share");
+my $share = "max";
+if (-e $shf || -l $shf) { ($share) = slurp($shf) =~ /^\s*(off|some|max)\s*$/; $share //= "off" }
+$o{share} = $share;
+sub half { my ($v) = @_; $share eq "some" && $v > 0 ? (int($v / 2) || 1) : $v }
+my $n = half(($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1);
 my ($cap) = -l "$R/slots.cap" ? () : slurp("$R/slots.cap") =~ /^\s*(\d+)/;
 $n = $cap if defined $cap && $cap < $n;
 $o{slots_cap} = $n; $o{slots_busy} = 0; $o{slots_busy} += busy("$R/slots/$_") for 0 .. $n - 1;
 if (($q->{heavy_slots} // "") =~ /^(\d+)$/) {
-    $o{heavy_cap} = $1; $o{heavy_busy} = 0; $o{heavy_busy} += busy("$R/slots/heavy-$_") for 0 .. $1 - 1 }
+    my $hc = half($1);
+    $o{heavy_cap} = $hc; $o{heavy_busy} = 0; $o{heavy_busy} += busy("$R/slots/heavy-$_") for 0 .. $hc - 1 }
+# Mac worker, share off, no slot held at all: stop its Colima in the background (rr_runner.pl's
+# colima_stop_if_off does the same at job end). Never on Linux, never without colima installed.
+my $col = $ENV{RR_COLIMA} || "/opt/homebrew/bin/colima";
+my $mark = "$R/state/colima.started";
+if ($share eq "off" && $o{os} ne "linux" && -x $col
+        && ((-f $mark && !-l $mark) || -S ($ENV{RR_COLIMA_SOCK} || "$ENV{HOME}/.colima/default/docker.sock"))
+        && !grep { busy($_) } grep { !/\.who$/ } glob("$R/slots/*")) {
+    my $L = "$R/colima.lock";
+    rmdir $L if -d $L && time - (stat $L)[9] > 900;
+    if (mkdir $L) {
+        my $pid = fork;
+        if (!defined $pid) { rmdir $L }
+        elsif (!$pid) {
+            eval {
+                POSIX::setsid(); $SIG{$_} = "IGNORE" for qw(HUP INT TERM);
+                open STDIN, "<", "/dev/null"; mkdir "$R/log", 0700;
+                open(STDOUT, ">>", "$R/log/colima.log") or open(STDOUT, ">", "/dev/null");
+                open STDERR, ">&", \*STDOUT;
+                $ENV{PATH} = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+                system($col, "stop"); unlink $mark;
+            };
+            rmdir $L; POSIX::_exit(0);
+        }
+        $o{docker} = "stopping" if $pid;
+    }
+}
 my ($sp) = -l "$R/speed" ? () : slurp("$R/speed") =~ /^\s*(\d+(?:\.\d+)?)\s*$/;
 $o{speed} = $sp + 0 if defined $sp;
 my $slug = $q->{slug} // ""; $slug = "" unless $slug =~ /^(?!\.)[A-Za-z0-9._-]+$/;
@@ -309,6 +344,9 @@ def score(host, job):
     p = host.probe
     if p is None:
         host.state = "down"
+        return None, 0
+    if p.get("share") == "off":          # the owner paused this worker: no new jobs
+        host.state = "off"
         return None, 0
     free = int(_num(p.get("slots_cap"), 1) - _num(p.get("slots_busy"), 0))
     if job["cls"] == "heavy" and p.get("heavy_cap") is not None:
@@ -404,15 +442,16 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
             r["heavy_slots"] = hs
         return r
     probe_all(hosts, req_for, float(cfg.get("rr_probe_timeout_s", PROBE_TIMEOUT_S)))
-    free, busy, down = [], [], []
+    free, busy, down, off = [], [], [], []
     for h in hosts:
         h.score, _ = score(h, job)
-        (free if h.score is not None else down if h.probe is None else busy).append(h)
+        (free if h.score is not None else down if h.probe is None else off if h.state == "off"
+         else busy).append(h)
     free.sort(key=lambda h: (-h.score, h.rtt or 0))
     cap = lambda h: _num((h.probe or {}).get("slots_cap"), h.cfg.get("rr_slots", 1)) * h.speed  # noqa: E731
     busy.sort(key=lambda h: -cap(h))
     down.sort(key=lambda h: -(h.cfg.get("rr_slots", 1) * h.speed))
-    order = free + busy + down
+    order = free + busy + down + off      # off last: its runner refuses at once (73 UNAVAIL) anyway
     if pool:
         for h in order[:-1]:
             if h in free:
@@ -431,8 +470,8 @@ def where_report(cfg, job, p):
     lines = ["job class: %s (needs %s GB%s%s)" % (job["cls"], job["need_gb"],
                                                   ", safe to repeat" if job["retry_ok"] else "",
                                                   ", never local" if job["never_local"] else "")]
-    lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %6s %7s" % (
-        "worker", "ssh", "state", "free", "load/cpu", "mem GB", "git", "deps", "speed", "score"))
+    lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %6s %7s %5s" % (
+        "worker", "ssh", "state", "free", "load/cpu", "mem GB", "git", "deps", "speed", "score", "share"))
     for h in p.hosts:
         pr = h.probe or {}
         free = "-" if not pr else "%d/%d" % (_num(pr.get("slots_cap"), 0) - _num(pr.get("slots_busy"), 0),
@@ -440,16 +479,19 @@ def where_report(cfg, job, p):
         load = "-" if not pr else "%.2f" % (_num(pr.get("load1"), 0) / (_num(pr.get("ncpu"), 1) or 1))
         mem = "-" if pr.get("mem_avail_mb") is None else "%.1f" % (_num(pr["mem_avail_mb"]) / 1024)
         yn = lambda k: "-" if not pr else ("warm" if pr.get(k) else "cold")  # noqa: E731
-        lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %6.2f %7s%s" % (
+        lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %6.2f %7s %5s%s" % (
             h.name[:10], str(h.cfg.get("host"))[:16], h.state, free, load, mem, yn("warm_git"),
             yn("warm_deps"), h.speed, "-" if h.score is None else "%.2f" % h.score,
+            str(pr.get("share") or "-")[:5],
             "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
     first = p.hosts[0]
     if p.local_after_s is not None:
         lines.append("pick: %s (all busy: queues there; runs on this machine after %d s of waiting)"
                      % (first.name, p.local_after_s))
     else:
-        lines.append("pick: %s%s" % (first.name, "" if p.pool or first.probe is None or first.state == "free"
+        lines.append("pick: %s%s" % (first.name, " (its owner turned sharing off: nothing runs there now)"
+                                     if first.state == "off"
+                                     else "" if p.pool or first.probe is None or first.state == "free"
                                      else " (only host: queues there)" if first.state != "down"
                                      else " (only host)"))
     return lines
@@ -466,6 +508,7 @@ my $t = time; my $x = "rrun-bench" x 100; my %h;
 for my $i (1 .. $iters) { $x = sha256($x . $i); $h{$i % 4096} = substr($x, 0, 8); if ($i % 20000 == 0) { my @s = sort keys %h } }
 my $s = time - $t;
 my $speed = sprintf("%.3f", $ref / ($s || 0.001));
+mkdir $R, 0700 unless -e $R || -l $R;    # a fresh worker (a new Mac) has no ~/rr until its first run
 if (-d $R && !-l $R) { my $tmp = "$R/.speed.$$"; if (open(my $f, ">", $tmp)) { print $f "$speed\n"; close $f; rename $tmp, "$R/speed" } }
 printf "%.3f %s\n", $s, $speed;
 '''

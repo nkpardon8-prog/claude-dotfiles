@@ -8,6 +8,8 @@
 #    2 days, npm cache over 1 GB, and - on non-home workers only - stopped containers (> 24 h) and
 #    images (unused > 72 h), never anything labelled rdocker.keep (the home host's janitor owns those);
 #  * `rd-tune bench` (any user, e.g. over ssh): fixed CPU fixture -> ~/rr/speed (float, i7-6700 = 1.0).
+#    A Mac worker has no rd-tune installed: `rdocker bench-worker <name>` pipes this file over ssh
+#    (`bash -s bench`), so bench must never read stdin and must find mise's node without shims.
 # Test hooks (env): RD_MEMINFO, RD_TEMP_FILES, RD_CAP_FILE, RD_CONF, RD_RR_ROOT, RD_STATE_DIR,
 # RD_NO_SERVICES=1, RD_WSL=0|1, RD_BENCH_N, RD_BENCH_REF. `rd-tune --source` only defines the functions.
 set -u
@@ -19,7 +21,7 @@ RD_USER=rd MAX_SLOTS=2 HEAVY_SLOTS=1 IS_HOME=0
 # sha256 chain steps/s (4 threads) of the i7-6700 reference. UNCALIBRATED until measured on the HP.
 BENCH_REF=${RD_BENCH_REF:-1200000}
 MEMINFO="${RD_MEMINFO:-/proc/meminfo}"
-CAP_FILE="${RD_CAP_FILE:-$(getent passwd "$RD_USER" | cut -d: -f6)/rr/slots.cap}"
+CAP_FILE="${RD_CAP_FILE:-$(getent passwd "$RD_USER" 2>/dev/null | cut -d: -f6)/rr/slots.cap}"   # no getent on macOS
 STATE="${RD_STATE_DIR:-/run/rdocker-tune}"
 
 meminfo_kb() { awk -v k="$1:" '$1 == k { print $2 }' "$MEMINFO"; }
@@ -100,6 +102,12 @@ prune() {
 bench() {   # prints the speed (1.0 = i7-6700) and stores it in ~/rr/speed
   local js out speed
   export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
+  if ! command -v node >/dev/null 2>&1; then   # mise without shims (the Mac rd user); RD_MISE: tests
+    local m n
+    for m in ${RD_MISE:-$(command -v mise) /opt/homebrew/bin/mise}; do
+      [ -x "$m" ] && n=$("$m" which node 2>/dev/null </dev/null) && [ -x "$n" ] && { PATH="$(dirname "$n"):$PATH"; break; }
+    done
+  fi
   command -v node >/dev/null 2>&1 || { echo "rd-tune: node not found" >&2; return 1; }
   js=$(mktemp "${TMPDIR:-/tmp}/rd-bench.XXXXXX") || return 1
   cat > "$js" <<'JS'
@@ -114,10 +122,10 @@ if (isMainThread) {
 } else { let h = Buffer.alloc(32); for (let i = 0; i < N; i++) h = c.createHash('sha256').update(h).digest(); }
 JS
   mv "$js" "$js.js"; js="$js.js"
-  out=$(node "$js") || { rm -f "$js"; return 1; }
+  out=$(node "$js" </dev/null) || { rm -f "$js"; return 1; }   # stdin may be this script (bash -s)
   rm -f "$js"
   speed=$(awk -v o="$out" -v ref="$BENCH_REF" 'BEGIN { split(o, a, " "); printf "%.2f", (a[2] / a[1]) / ref }')
-  mkdir -p "$HOME/rr" && echo "$speed" > "$HOME/rr/speed"
+  (umask 077; mkdir -p "$HOME/rr") && echo "$speed" > "$HOME/rr/speed"
   echo "$speed"
 }
 

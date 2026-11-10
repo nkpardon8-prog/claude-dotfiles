@@ -114,9 +114,10 @@ class RunnerTest(unittest.TestCase):
         shutil.rmtree(self.d, True)
 
     def env(self, **extra):
-        return rdmods.child_env(self.home, self.bin, RR_ROOT=self.root,
-                                RR_PATH=rdmods.safe_path(self.bin),
-                                RR_REAL_DOCKER=os.path.join(self.bin, "docker"), **extra)
+        kw = dict(RR_ROOT=self.root, RR_PATH=rdmods.safe_path(self.bin),
+                  RR_REAL_DOCKER=os.path.join(self.bin, "docker"))
+        kw.update(extra)
+        return rdmods.child_env(self.home, self.bin, **kw)
 
     def git(self, *args):
         return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
@@ -800,6 +801,167 @@ class RunnerTest(unittest.TestCase):
         self.assertGreater(seen["lock"], old + 60)           # lock mtime bumped
         self.assertGreaterEqual(int(seen["who_m"]), int(seen["lock"]))
 
+
+    # ------------------------------------------------------------------ share switch (rented workers)
+    def share(self, level):
+        """Point RR_SHARE_FILE at a file in the test dir with `level` (None = no file) -> env_extra."""
+        f = os.path.join(self.d, "share")
+        if level is None:
+            if os.path.exists(f):
+                os.unlink(f)
+        else:
+            wfile(f, level + "\n")
+        return {"RR_SHARE_FILE": f}
+
+    def test_share_switch_off_refuses_at_once_some_halves_slots_max_or_none_full(self):
+        os.makedirs(os.path.join(self.root, "slots"))
+        kw = self.share("off")
+        t0 = time.time()
+        r = self.run_runner(["true"], wait_min=1, env_extra=kw)
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertLess(time.time() - t0, 10)                       # no slot wait
+        self.assertIn("%s UNAVAIL share=off" % self.nonce, r.err)
+        self.assertEqual(self.calls(), [])                          # nothing prepared or run
+        self.assertFalse(os.path.exists(os.path.join(self.root, "w")))
+        for junk in ("maybe", ""):                                  # a file that says nothing clear = off
+            self.assertEqual(self.run_runner(["true"], env_extra=self.share(junk)).rc, 73, junk)
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            for level, rc in ((None, 0), ("max", 0), (" MAX ", 73), ("some", 73)):
+                r = self.run_runner(["true"], slots=2, wait_min=0.02, env_extra=self.share(level))
+                self.assertEqual(r.rc, rc, (level, r.err))          # some: 2 slots -> 1 (held)
+            r = self.run_runner(["true"], slots=4, wait_min=0.02, env_extra=self.share("some"))
+            self.assertEqual(r.rc, 0, r.err)                        # 4 -> 2: slot 1 is free
+        with open(os.path.join(self.root, "slots", "heavy-0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            hv = dict(slots=4, heavy_slots=2, cls="heavy", wait_min=0.02)
+            self.assertEqual(self.run_runner(["true"], env_extra=self.share("max"), **hv).rc, 0)
+            r = self.run_runner(["true"], env_extra=self.share("some"), **hv)
+            self.assertEqual(r.rc, 73, r.err)                       # heavy 2 -> 1 (held)
+            hv["heavy_slots"] = 1
+            self.assertEqual(self.run_runner(["true"], env_extra=self.share("some"), **hv).rc, 73)   # min 1, held
+
+    def test_share_switched_off_while_waiting_for_a_slot_moves_on(self):
+        os.makedirs(os.path.join(self.root, "slots"))
+        kw = self.share("max")
+
+        def act(p):
+            end = time.time() + 10
+            while b" WAIT " not in b"".join(self.err_so_far) and time.time() < end:
+                time.sleep(0.05)
+            self.share("off")
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            t0 = time.time()
+            r = self.run_runner(["true"], wait_min=5, action=act, env_extra=kw)
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertLess(time.time() - t0, 20)
+        self.assertIn("%s UNAVAIL share=off" % self.nonce, r.err)
+
+    def mac_docker(self):
+        """Fake Mac worker: docker `info` answers only while $d/engine-up exists; colima start creates
+        it (unless $d/colima-fail; sleeps $d/colima-sleep s first), colima stop removes it."""
+        log = os.path.join(self.d, "mac.log")
+        docker, colima = os.path.join(self.bin, "macdocker"), os.path.join(self.bin, "fakecolima")
+        wfile(docker, '#!/bin/sh\necho "docker $*" >> %s\ncase "$1" in info) [ -f %s/engine-up ] || exit 1 ;; esac\nexit 0\n'
+              % (log, self.d))
+        wfile(colima, '#!/bin/sh\necho "colima $*" >> {l}\ncase "$1" in\n'
+              '  start) [ -f {d}/colima-sleep ] && sleep "$(cat {d}/colima-sleep)"\n'
+              '         [ -f {d}/colima-fail ] && {{ echo "boom: rosetta" >&2; exit 1; }}\n'
+              '         touch {d}/engine-up ;;\n'
+              '  stop) rm -f {d}/engine-up ;;\nesac\nexit 0\n'.format(l=log, d=self.d))
+        os.chmod(docker, 0o755)
+        os.chmod(colima, 0o755)
+        self.maclog = log
+        return dict(RR_OS="darwin", RR_REAL_DOCKER=docker, RR_COLIMA=colima,
+                    RR_COLIMA_SOCK=os.path.join(self.d, "no-sock"))
+
+    def mac_calls(self, prefix):
+        if not os.path.exists(self.maclog):
+            return []
+        with open(self.maclog) as f:
+            return [ln for ln in f.read().splitlines() if ln.startswith(prefix)]
+
+    def test_mac_db_job_starts_colima_sized_by_the_share_level(self):
+        kw = dict(self.mac_docker(), **self.share("some"))
+        marker = os.path.join(self.d, "ran")
+        r = self.run_runner(["/bin/sh", "-c", "touch %s" % marker], cls="db", env_extra=kw)
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertTrue(os.path.exists(marker))
+        self.assertEqual(self.mac_calls("colima"),
+                         ["colima start --cpu 6 --memory 12 --disk 120 --vm-type vz --vz-rosetta"])
+        self.assertIn("starting Colima (6 CPU, 12 GB", r.err)
+        self.assertTrue(os.path.exists(os.path.join(self.root, "state", "colima.started")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "colima.lock")))
+        # already running (also: started by hand): nothing to do
+        r = self.run_runner(["true"], cls="db", env_extra=dict(kw, **self.share("max")))
+        self.assertEqual((r.rc, len(self.mac_calls("colima"))), (0, 1), r.err)
+        os.unlink(os.path.join(self.d, "engine-up"))
+        r = self.run_runner(["true"], cls="db", env_extra=dict(kw, **self.share(None)))
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(self.mac_calls("colima")[-1],
+                         "colima start --cpu 12 --memory 24 --disk 120 --vm-type vz --vz-rosetta")
+
+    def test_mac_colima_failure_or_timeout_is_73_before_anything_runs(self):
+        kw = self.mac_docker()
+        marker = os.path.join(self.d, "ran")
+        wfile(os.path.join(self.d, "colima-fail"), "")
+        r = self.run_runner(["/bin/sh", "-c", "touch %s" % marker], cls="db", env_extra=kw)
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertIn("%s UNAVAIL docker" % self.nonce, r.err)
+        self.assertIn("colima start failed", r.err)
+        self.assertNotIn("%s READY" % self.nonce, r.err)
+        self.assertFalse(os.path.exists(marker))
+        os.unlink(os.path.join(self.d, "colima-fail"))
+        wfile(os.path.join(self.d, "colima-sleep"), "4")
+        t0 = time.time()
+        r = self.run_runner(["true"], cls="db", env_extra=dict(kw, RR_COLIMA_TIMEOUT="1"))
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertLess(time.time() - t0, 4)                        # gave up; the start carries on
+        self.assertIn("did not come up within 1 s", r.err)
+        self.wait_for(os.path.join(self.d, "engine-up"))            # ... and finished in its own session
+        self.assertEqual(self.run_runner(["true"], cls="db", env_extra=kw).rc, 0)
+
+    def test_colima_only_on_a_mac_and_lazily_through_the_shim(self):
+        kw = self.mac_docker()
+        r = self.run_runner(["true"], cls="db", env_extra=dict(kw, RR_OS="linux"))
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(self.mac_calls("colima"), [])              # Linux worker: never
+        r = self.run_runner(["true"], cls="db", env_extra=dict(kw, RR_COLIMA=os.path.join(self.d, "none")))
+        self.assertEqual((r.rc, self.mac_calls("colima")), (0, []))  # no colima installed: as before
+        r = self.run_runner(["true"], env_extra=kw)                 # normal job, no docker use
+        self.assertEqual((r.rc, self.mac_calls("colima")), (0, []), r.err)
+        r = self.run_runner(["/bin/sh", "-c", "docker ps; docker ps"], env_extra=kw)
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(len(self.mac_calls("colima start")), 1)    # first docker call started it
+        self.assertEqual([c for c in self.mac_calls("docker ps") if c == "docker ps"], ["docker ps", "docker ps"])
+
+    def test_share_off_and_idle_stops_colima_at_job_end(self):
+        kw = self.mac_docker()
+        os.makedirs(os.path.join(self.root, "state"))
+        wfile(os.path.join(self.root, "state", "colima.started"), "")
+        wfile(os.path.join(self.d, "engine-up"), "")
+        r = self.run_runner(["true"], env_extra=dict(kw, **self.share("max")))
+        self.assertEqual((r.rc, self.mac_calls("colima")), (0, []), r.err)   # sharing: keep it
+        os.makedirs(os.path.join(self.root, "slots"), exist_ok=True)
+        with open(os.path.join(self.root, "slots", "3"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            self.assertEqual(self.run_runner(["true"], env_extra=dict(kw, **self.share("off"))).rc, 73)
+            time.sleep(0.5)
+            self.assertEqual(self.mac_calls("colima"), [])           # a slot is busy: not now
+        self.assertEqual(self.run_runner(["true"], env_extra=dict(kw, **self.share("off"))).rc, 73)
+        end = time.time() + 10
+        while os.path.exists(os.path.join(self.root, "state", "colima.started")) and time.time() < end:
+            time.sleep(0.05)
+        self.assertEqual(self.mac_calls("colima"), ["colima stop"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, "engine-up")))
+        self.wait_for_gone(os.path.join(self.root, "colima.lock"))
+
+    def wait_for_gone(self, path, secs=10):
+        end = time.time() + secs
+        while os.path.exists(path):
+            self.assertLess(time.time(), end, "timed out waiting for removal of " + path)
+            time.sleep(0.05)
 
 if __name__ == "__main__":
     unittest.main()

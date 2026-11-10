@@ -40,6 +40,54 @@ class Fleet(unittest.TestCase):
         with open(os.path.join(rd_common.HERE, "fleet.json")) as f:
             self.assertEqual(rd_fleet.problems(json.load(f)), [])
 
+    def test_live_mac_worker_renders_a_working_host_block(self):
+        with open(os.path.join(rd_common.HERE, "fleet.json")) as f:
+            fl = [rd_fleet.entry(m) for m in json.load(f)["machines"]]
+        nick = rd_fleet.get(fl, "nickmbp")
+        self.assertEqual((nick["os"], nick["roles"], nick["enabled"], nick["user"]), ("mac", ["worker"], True, "rd"))
+        self.assertIn("nickmbp", [m["name"] for m in rd_fleet.workers(fl)])
+        text = rd_fleet.render_ssh_blocks(fl, rd_common.merge_cfg({}))
+        block = text[text.index("Host rd-nickmbp\n"):].split("\n\n")[0]
+        for line in ("HostName 100.125.118.77", "Port 2222", "User rd", "HostKeyAlias rd-nickmbp",
+                     "ControlPath ~/.ssh/rr-%C", "IdentityFile ~/.ssh/rdocker_ed25519"):
+            self.assertIn("  " + line + "\n", block)
+
+    def test_a_mac_may_be_a_worker_but_never_the_home(self):
+        mac = {"name": "mbp", "alias": "rd-mbp", "ip": "100.1.1.9", "port": 2222, "user": "rd", "os": "mac",
+               "roles": ["worker"], "max_slots": 8, "heavy_slots": 6, "enabled": True}
+        d = copy.deepcopy(self.doc)
+        d["machines"].append(mac)
+        self.assertEqual(rd_fleet.problems(d), [])
+        self.bad(lambda d: d["machines"].append(dict(mac, roles=["home", "worker"])) or
+                 [d["machines"][0].update(roles=["worker"])], "home machine must be linux")
+        self.bad(lambda d: d["machines"].append(dict(mac, os="windows")), "os must be one of")
+
+    def test_bench_worker_linux_runs_rd_tune_mac_gets_it_piped(self):
+        lin = rd_fleet.entry({"name": "hp", "alias": "rd-hp", "os": "linux", "roles": ["worker"], "enabled": True})
+        self.assertEqual(rd_fleet.bench_cmd(lin), (["ssh", "-o", "BatchMode=yes", "rd-hp", "/usr/local/bin/rd-tune bench"], None))
+        mac = dict(lin, name="mbp", alias="rd-mbp", os="mac")
+        cmd, stdin = rd_fleet.bench_cmd(mac)
+        self.assertEqual(cmd, ["ssh", "-o", "BatchMode=yes", "rd-mbp", "/bin/bash -s bench"])
+        self.assertIn("bench() {", stdin)
+        fleet = os.path.join(self.tmp, "fleet.json")
+        d = copy.deepcopy(self.doc)
+        d["machines"].append({"name": "mbp", "alias": "rd-mbp", "ip": "100.1.1.9", "port": 2222, "user": "rd",
+                              "os": "mac", "roles": ["worker"], "max_slots": 8, "heavy_slots": 6, "enabled": True})
+        with open(fleet, "w") as f:
+            json.dump(d, f)
+        seen = []
+        with mock.patch.object(rd_common, "run", side_effect=lambda c, timeout=30, input_=None:
+                               seen.append((c, input_)) or (0, "2.71\n", "")), \
+                mock.patch("sys.stdout") as out:
+            self.assertEqual(rd_fleet.bench_worker({"fleet_path": fleet}, "mbp"), 0)
+        self.assertEqual(seen[0][0][-1], "/bin/bash -s bench")
+        self.assertIn("speed 2.71", "".join(c.args[0] for c in out.write.call_args_list))
+        with mock.patch.object(rd_common, "run", return_value=(255, "", "ssh: connect refused")), \
+                mock.patch.object(rd_common, "say") as say:
+            self.assertEqual(rd_fleet.bench_worker({"fleet_path": fleet}, "mbp"), 1)
+        self.assertIn("connect refused", say.call_args[0][0])
+        self.assertEqual(rd_fleet.bench_worker({"fleet_path": fleet}, "nick"), 2)     # an agent: not a worker
+
     def test_shipped_fleet_is_valid_and_matches_the_plan(self):
         self.assertEqual(rd_fleet.problems(REAL), [])
         fl = rd_fleet.load()
@@ -130,7 +178,7 @@ class AddServer(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="rdk-addsrv-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.fleet = os.path.join(self.tmp, "fleet.json")
-        shutil.copy(rd_common.FLEET_PATH, self.fleet)
+        shutil.copy(FIXTURE, self.fleet)       # frozen: the live registry changes with every add-server
         self.cmds, self.inter = [], []
         patches = [mock.patch.object(rd_common, "FLEET_PATH", self.fleet),
                    mock.patch.object(rd_common, "FLEET_SSH_PATH", os.path.join(self.tmp, "ssh-rdocker")),
