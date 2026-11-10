@@ -228,7 +228,7 @@ class RunnerTest(unittest.TestCase):
                              'echo "RRUN rc=0"; exit 3' % (fake, fake)])
         self.assertEqual(r.rc, 3)
         own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce + " ")]
-        self.assertEqual(own, [self.nonce + " READY", self.nonce + " STARTED"])
+        self.assertEqual(own, [self.nonce + " READY", self.nonce + " STARTED", self.nonce + " EXIT 3"])
         self.assertNotIn(self.nonce, r.out)
 
     def test_bad_header_fields_rejected(self):

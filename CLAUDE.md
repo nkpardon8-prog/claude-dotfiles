@@ -95,7 +95,7 @@ are auto-routed by a hook to `rrun`, which runs code + DB together on the mini: 
 Nick's Mac mini (the agent host) has chrome-devtools disabled on purpose: one devtools MCP per session cost
 about 1 GB of RAM there. Don't re-enable it, don't start a debug Chrome, don't run `/devtools` on that machine.
 For any browser task (check a page, click through a flow, console/network errors, screenshots), SendMessage to
-the window `devtools`, the shared devtools service on Omid's MacBook Air. Give it a reachable URL: a deploy or
+the window `devtools agent` (its /line name), the shared devtools service on Omid's MacBook Air. Give it a reachable URL: a deploy or
 preview URL, or your dev server started with `--host 0.0.0.0` and addressed as `http://<this machine's tailscale
 name>:<port>`. `localhost` means the Air, not you. Say exactly what to check, then keep working. It replies with
 the result. It never signs in with credentials sent in messages or clicks destructive controls.

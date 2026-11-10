@@ -114,7 +114,11 @@ sub main {
     $t_spawn = time;
     my $pid = spawn($h{argv}, \%env, $cwd);
     status('STARTED');
-    return supervise($pid);
+    my $rc = supervise($pid);
+    # the command's own exit code, the moment it ends (before cleanup): a link that dies after this
+    # is not "lost mid-run" - the laptop has the real result and never re-runs it
+    status("EXIT $rc") unless $lost;
+    return $rc;
 }
 
 # The exactly-once handshake: announce READY, then spawn nothing until the laptop writes GO.
@@ -141,10 +145,28 @@ sub exclude_root {
     my $marker = "$ROOT/.rr-tm-excluded";
     if (!(-f $marker && !-l $marker)) {
         { local $QUIET = 1; run_cmd('/dev/null', 'tmutil', 'addexclusion', $ROOT) }
-        write_file($marker, "1\n");
+        write_once($marker, "1\n");
     }
     my $ni = "$ROOT/.metadata_never_index";
-    write_file($ni, '') unless -f $ni && !-l $ni;
+    write_once($ni, '') unless -f $ni && !-l $ni;
+}
+
+# A marker file that two runners starting at once on a fresh worker (shards of one rrun, two
+# laptops) may both create: whoever loses the O_EXCL race finds the winner's regular file and is
+# done. A symlink / non-file planted there is still replaced, never written through.
+sub write_once {
+    my ($path, $data) = @_;
+    for (1 .. 2) {
+        return if -f $path && !-l $path;
+        unlink $path if -l $path || -e _;
+        if (sysopen(my $fh, $path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)) {
+            print {$fh} $data;
+            close $fh or fail("write $path: $!");
+            return;
+        }
+    }
+    return if -f $path && !-l $path;
+    fail("create $path: $!");
 }
 
 # ------------------------------------------------------------------------------ header + checks

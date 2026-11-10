@@ -157,7 +157,16 @@ class PlanUnit(unittest.TestCase):
         ms = [worker("a", 1.0, max_slots=1), worker("b", 0.5, max_slots=4)]
         with mock.patch.object(rd_pool, "local_free_gb", return_value=10.0):
             p, _ = self.plan(ms, busy)                           # normal: queue, never local
-            self.assertEqual(self.names(p), ["b", "a"])             # 4*0.5 > 1*1.0
+            # wait host = the soonest finish: a (1 slot, T 60 s: ~30 s queue + 60) beats b (4 slots
+            # at speed 0.5, T 120 s: ~24 s queue + 120)
+            self.assertEqual(self.names(p), ["a", "b"])
+            # the holders' ages count: a's holder just started (59 s left), b's is nearly done
+            same = [worker("a", 1.0, max_slots=1), worker("b", 1.0, max_slots=1)]
+            one = probe(slots_cap=1, slots_busy=1)
+            p, _ = self.plan(same, {"a": dict(one, ages=[1]), "b": dict(one, ages=[55])})
+            self.assertEqual(self.names(p), ["b", "a"])
+            self.assertEqual([h.state for h in p.hosts], ["busy", "busy"])
+            self.assertAlmostEqual(p.hosts[0].queue_s, 12.0)          # floor: 0.2 x 60 s
             self.assertIsNone(p.local_after_s)
             self.assertFalse(any(h.short for h in p.hosts))
             p, _ = self.plan(ms, busy, job=rd_pool.classify(["npm", "run", "lint"]))
@@ -197,7 +206,7 @@ class PlanUnit(unittest.TestCase):
                          {"big": probe(slots_cap=8, share="off"), "a": probe(slots_cap=1, slots_busy=1)})
         self.assertEqual(self.names(p), ["a", "b", "big"])            # busy, down, then off
         self.assertEqual({h.name: h.state for h in p.hosts}, {"big": "off", "a": "busy", "b": "down"})
-        self.assertIsNone(p.hosts[2].score)
+        self.assertIsNone(p.hosts[2].eta)
         lines = rd_pool.where_report(self.cfg, rd_pool.classify(["npx", "vitest", "run"]), p)
         self.assertRegex("\n".join(lines), r"\nbig +big +off .* off\n")
         p, _ = self.plan([worker("big", 3.0, max_slots=8), worker("a", 1.0)],
@@ -419,17 +428,36 @@ class PoolE2E(test_run.RunBase):
         marker = os.path.join(self.d, "ran")
         r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, "vitest", FAKE_SSH_DROP_HOSTS="w1")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("lost w1 mid-run; a normal job is safe to repeat - running it once more on w2", r.stderr)
+        self.assertIn("rrun: w1 went away mid-run (lost connection); re-running once on w2", r.stderr)
         self.assertEqual(self.read(marker), "x\nx\n")
         self.assertEqual(self.target(), "w2")
 
-    def test_lost_after_go_db_job_is_75_and_never_reruns(self):
+    def test_db_job_reruns_once_only_when_the_worker_went_away(self):
+        """Each rrun DB job gets its own throwaway database on the worker, so a lost connection (the
+        exit code never arrived) re-runs it once elsewhere; a real exit code never re-runs."""
         marker = os.path.join(self.d, "ran")
         r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, "test:db", FAKE_SSH_DROP_HOSTS="w1")
-        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("rrun: w1 went away mid-run (lost connection); re-running once on w2", r.stderr)
+        self.assertEqual(self.read(marker), "x\nx\n")
+        self.assertEqual(self.target(), "w2")
+        # a failing DB test is a failure, not a retry
+        os.unlink(marker)
+        r = self.rrun("/bin/sh", "-c", "echo x >> %s; exit 3" % marker, "test:db")
+        self.assertEqual((r.returncode, self.read(marker)), (3, "x\n"), r.stderr)
+        self.assertNotIn("re-running", r.stderr)
+        # ... also when the link drops right after the exit code got through (during cleanup)
+        os.unlink(marker)
+        r = self.rrun("/bin/sh", "-c", "echo x >> %s; exit 3" % marker, "test:db",
+                      FAKE_SSH_DROP_HOSTS="w1", FAKE_SSH_KEEP_EXIT="1")
+        self.assertEqual((r.returncode, self.read(marker)), (3, "x\n"), r.stderr)
+        self.assertIn("dropped after the command finished there (exit 3)", r.stderr)
+        # lost twice: once more only, then 75
+        os.unlink(marker)
+        r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, "test:db", FAKE_SSH_DROP_HOSTS="w1,w2")
+        self.assertEqual((r.returncode, self.read(marker)), (75, "x\nx\n"), r.stderr)
         self.assertIn("not re-running", r.stderr)
-        self.assertEqual(self.read(marker), "x\n")              # exactly one run
-        # ... and so does a job that is not known to be repeatable
+        # a job not known to be repeatable (an arbitrary script) still never re-runs
         os.unlink(marker)
         r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, FAKE_SSH_DROP_HOSTS="w1")
         self.assertEqual((r.returncode, self.read(marker)), (75, "x\n"), r.stderr)

@@ -23,6 +23,13 @@ all (73 from a short race wait), moves the job to the next one. After GO a lost 
 tests), which run once more on the next worker. In a pool, heavy and DB jobs never fall back to
 this machine (exit 75 instead); light jobs (lint, check scripts) run here when every worker stayed
 busy for rr_local_after_s. No fleet / one worker: one host, exactly as before.
+Shards (run_shards): a `vitest run` rd_pool.shardable() accepts, with 2+ free workers, runs as
+vitest --shard=i/n on several workers at once (threads; signals forwarded from the main thread to
+every LIVE session), each with its own failover list, output prefixed "[shard i/n host]", rc = the
+highest, a merged summary at the end; RRUN_SHARD=0 off, =n forced. Hedge (default off, RRUN_HEDGE=1):
+a tsc/lint/vitest run past 2x its expected time gets one duplicate on a free worker with a 3x better
+eta; the first to finish wins, the other is stopped. A second concurrent run of ours on one worker
+uses its own lane mirror (Lane), so runs never share a checkout.
 Builds (`npm run build` in a package dir mapped by rr_outputs) copy their outputs back: after a
 successful run a second ssh streams `tar` of the outputs from the worker's mirror, extracted into
 the worktree (staged, then renamed into place) while the worktree lock is still held.
@@ -50,12 +57,20 @@ import rd_common
 import rd_pool
 
 HEARTBEAT_S = 15
+# rr ssh keepalives (all rrun ssh share one rr-%C master, so these are the master's): a worker that
+# vanishes (lid closed, Wi-Fi gone) is noticed after ~15-20 s instead of ~45. sshd answers them from
+# its own process, so a worker busy at 100% CPU still answers; a relayed (DERP) link adds ~0.3 s.
+ALIVE_INTERVAL_S, ALIVE_COUNT = 5, 3
+CONNECT_TIMEOUT_S = 6          # a cold master over a DERP relay connects in ~1.5-2.5 s
 OVERLAY_WARN_BYTES = 5 * 1024 * 1024
 EXIT_LOST = 75                 # EX_TEMPFAIL: lost the mini mid-run / strict mode and the mini is out
 NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HELD_LOCKS = []                # worktree lock fds: made inheritable only for a local-fallback exec
-LOST_MSG = "rrun: lost the Mac mini mid-run - not re-running on the laptop (could run twice); retry"
+LIVE, LIVE_LOCK = set(), threading.Lock()   # running Sessions (shard mode forwards signals to them)
+STOP_SIG = [0]                 # shard mode: the first INT/TERM/HUP (later sessions start stopped)
+ABORT_KILL_S = 15              # an aborted session's ssh is killed if still there after this
+LOST_MSG ="rrun: lost the Mac mini mid-run - not re-running on the laptop (could run twice); retry"
 
 # The mini-side loader (perl -e): read our own script frame ("<len>\n" + runner source) with
 # sysread - never buffered reads, the runner sysreads the header that follows - then eval it.
@@ -119,8 +134,8 @@ def ssh_opts():
     """Options for every rrun ssh (runner session AND git, via GIT_SSH_COMMAND): our own rr-%C
     master, never rdocker's fwd.sock (a bulk push would starve its liveness checks)."""
     return ["-o", "ControlPath=~/.ssh/rr-%C", "-o", "ControlMaster=auto", "-o", "ControlPersist=30m",
-            "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3"]
+            "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT_S,
+            "-o", "ServerAliveInterval=%d" % ALIVE_INTERVAL_S, "-o", "ServerAliveCountMax=%d" % ALIVE_COUNT]
 
 
 def rr_root(cfg):
@@ -346,6 +361,117 @@ def deps_dirs(top, relcwd, argv):
     return list(dict.fromkeys(out))
 
 
+# ---------------------------------------------------------------------------- sinks / lanes
+
+OUT_LOCK = threading.Lock()    # one writer at a time on our stdout/stderr (shards interleave lines)
+TAIL_BYTES = 65536
+
+
+class Sink:
+    """A byte stream for one run's stdout or stderr when several share the terminal: whole lines go
+    out with `prefix` ("[shard 2/5 hp] "), or are held (a hedge: printed only if it wins). Keeps
+    the last TAIL_BYTES (the vitest summary is parsed from it)."""
+
+    def __init__(self, stream, prefix="", hold=False):
+        self.stream, self.prefix, self.hold = stream, prefix, hold
+        self.buf, self.kept, self.tail = b"", [], b""
+
+    def _out(self, data):
+        if not self.prefix:
+            with OUT_LOCK:
+                self.stream.write(data)
+                self.stream.flush()
+            return
+        self.buf += data
+        lines = self.buf.split(b"\n")
+        self.buf = lines.pop()
+        if lines:
+            pre = self.prefix.encode("utf-8", "replace")
+            with OUT_LOCK:
+                self.stream.write(b"".join(pre + ln + b"\n" for ln in lines))
+                self.stream.flush()
+
+    def write(self, data):
+        self.tail = (self.tail + data)[-TAIL_BYTES:]
+        if self.hold:
+            self.kept.append(data)
+        else:
+            self._out(data)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        """End a last line that had no newline."""
+        if self.buf:
+            self._out(b"\n")
+
+    def release(self):
+        """A held sink's output, now (the hedge won)."""
+        self.hold = False
+        data, self.kept = b"".join(self.kept), []
+        if data:
+            self._out(data)
+        self.close()
+
+
+def std_stream(name):
+    s = getattr(sys, name)
+    return getattr(s, "buffer", s)
+
+
+class Lane:
+    """Where one attempt's output goes and which worker mirror it uses. Lane 0 on a worker is the
+    worktree's own mirror (<slug>-<wt12>); a second run of ours on the same worker at the same time
+    (another shard, a hedge) gets lane 1, 2, ...: its own mirror <slug>-<sha(wt12:laneN)[:12]> (the
+    shape the janitor reaps), packages cloned from the worker's store. out/err None = our own."""
+
+    def __init__(self, out=None, err=None, wt12=None):
+        self.out, self.err, self.wt12 = out, err, wt12
+        self.session, self.cancelled = None, False
+        self.lock = threading.Lock()
+
+    def bind(self, sess):
+        """attempt(): the session about to run -> False when the lane was cancelled first."""
+        with self.lock:
+            if self.cancelled:
+                return False
+            self.session = sess
+            return True
+
+    def cancel(self):
+        """Never start a session on this lane; abort the one running. -> True when one was."""
+        with self.lock:
+            self.cancelled = True
+            sess = self.session
+        if sess is not None:
+            sess.abort()
+        return sess is not None
+
+
+_LANES, _LANES_LOCK = {}, threading.Lock()
+_HOST_LOCKS = {}
+
+
+def take_lane(host_key):
+    with _LANES_LOCK:
+        used = _LANES.setdefault(host_key, set())
+        n = next(k for k in range(len(used) + 1) if k not in used)
+        used.add(n)
+        return n
+
+
+def drop_lane(host_key, n):
+    with _LANES_LOCK:
+        _LANES.get(host_key, set()).discard(n)
+
+
+def host_lock(host_key):
+    """One push at a time per worker (parallel pushes of the same refs would fail on ref locks)."""
+    with _LANES_LOCK:
+        return _HOST_LOCKS.setdefault(host_key, threading.Lock())
+
+
 # ---------------------------------------------------------------------------- remote session
 
 class StatusFilter:
@@ -423,6 +549,7 @@ class Session:
         self.done = threading.Event()
         self.said_wait = False
         self.unavail = None                  # "<nonce> UNAVAIL <why>": the worker refused (share off / no docker)
+        self.exit_rc = None                  # "<nonce> EXIT <rc>": the command's own exit code
 
     def on_status(self, line):
         word, _, rest = line.partition(" ")
@@ -432,6 +559,11 @@ class Session:
             self.wake.set()
         elif word == "STARTED":
             self.started = time.monotonic()
+        elif word == "EXIT":
+            try:
+                self.exit_rc = int(rest.strip())  # the command ended with this; a later drop is no loss
+            except ValueError:
+                pass
         elif word == "WAIT":
             if self.wait_since is None:
                 self.wait_since = time.monotonic()
@@ -456,6 +588,21 @@ class Session:
         if self.ints >= 3 and self.proc.poll() is None:
             self.proc.kill()
         self.wake.set()
+
+    aborted = False
+
+    def abort(self):
+        """Stop this run from our side (a hedge's other copy won): no GO if not yet sent; after GO
+        the writer closes stdin, and the runner kills the command group. ssh is killed if it is
+        still there after ABORT_KILL_S."""
+        self.aborted = True
+        self.ints = max(self.ints, 2)
+        self.wake.set()
+        proc = getattr(self, "proc", None)
+        if proc is not None:
+            t = threading.Timer(ABORT_KILL_S, lambda: proc.poll() is None and proc.kill())
+            t.daemon = True
+            t.start()
 
     def claim_go(self):
         """-> True when GO may be written now (and records that it was), False otherwise."""
@@ -513,6 +660,19 @@ class Session:
                 pass
 
     stderr_out = None    # where the remote stderr goes (None = our stderr; rd_warm keeps a tail)
+    stdout_out = None    # where the remote stdout goes (None = straight to our stdout; shards: a Sink)
+
+    def relay_stdout(self):
+        fd = self.proc.stdout.fileno()
+        while True:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            self.stdout_out.write(data)
+        self.stdout_out.flush()
 
     def relay(self):
         filt = StatusFilter(self.nonce, self.stderr_out or getattr(sys.stderr, "buffer", sys.stderr),
@@ -532,12 +692,24 @@ class Session:
         cmd = ["ssh", "-T"] + ssh_opts() + [self.cfg["host"], remote_command(self.cfg)]
         sys.stdout.flush()
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     stdout=subprocess.PIPE if self.stdout_out is not None else None,
                                      start_new_session=True)
-        old = {s: signal.signal(s, self.on_signal) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        # signal handlers can only be set from the main thread: a session in a worker thread (a
+        # shard, a hedge) gets its signals forwarded from LIVE by whoever owns the main thread
+        main = threading.current_thread() is threading.main_thread()
+        old = {s: signal.signal(s, self.on_signal) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)} \
+            if main else {}
+        with LIVE_LOCK:
+            LIVE.add(self)
+        if STOP_SIG[0]:
+            self.on_signal(STOP_SIG[0], None)    # stopped while this one was still being set up
         tw = threading.Thread(target=self.writer, daemon=True)
         tr = threading.Thread(target=self.relay, daemon=True)
+        to = threading.Thread(target=self.relay_stdout, daemon=True) if self.stdout_out is not None else None
         tw.start()
         tr.start()
+        if to:
+            to.start()
         try:
             rc = self.proc.wait()
         finally:
@@ -546,7 +718,11 @@ class Session:
             self.wake.set()
             for s, h in old.items():
                 signal.signal(s, h)
+            with LIVE_LOCK:
+                LIVE.discard(self)
         tr.join(5)       # a persisting ssh master could hold the pipe; never hang on it
+        if to:
+            to.join(5)
         tw.join(1)
         return rc
 
@@ -826,44 +1002,84 @@ def rrun(argv, env_args=()):
     except ValueError as e:
         note(str(e))
         return 2
+    smode = rd_pool.shard_mode(cfg)
+    shards, why_not = None, None
+    if smode and plan.pool and not opts.host:
+        ok, why_not = rd_pool.shardable(argv, job, os.getcwd(), forced=smode != "auto")
+        shards = rd_pool.shard_assign(cfg, plan, job, None if smode == "auto" else smode) if ok else None
+        if ok and not shards:
+            why_not = "fewer than 2 free workers would help"
+        shards = shards if shards and len(shards) >= 2 else None
     if opts.where:
-        print("\n".join(rd_pool.where_report(cfg, job, plan)))
+        print("\n".join(rd_pool.where_report(cfg, job, plan, shards or why_not)))
         return 0
     timing.mark("resolve")
     take_wt_lock(wt["wt12"])     # fd stays open (and locked) until we exit or exec
     timing.mark("worktree lock")
-    hosts = plan.hosts
+    ctx = Ctx(cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps)
+    if shards:
+        return run_shards(ctx, shards, argv)
+    kind, val = host_loop(ctx, plan.hosts, argv, give_up=plan.local_after_s)
+    if kind == "local":
+        return fallback(argv, env_pairs, val, t0, job, plan.pool)
+    return val
+
+
+class Ctx:
+    """Everything one rrun invocation's attempts share."""
+
+    def __init__(self, cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps):
+        self.cfg, self.wt, self.env_pairs, self.timing, self.t0 = cfg, wt, env_pairs, timing, t0
+        self.job, self.plan, self.outputs, self.deps = job, plan, outputs, deps
+
+
+def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False, tag="", frac=1.0,
+              on_host=None):
+    """Try `hosts` in order -> ("done", rc) | ("local", why: run it on this machine). Lost before
+    GO / no slot after a race wait -> the next host; lost after GO -> once more on the next host
+    for a job that is safe to repeat, else exit 75. threaded (a shard): no reconnect wait (it
+    needs the main thread's signals) - "local" once every host failed. frac: the share of the
+    whole job this run is (a shard: 1/n), for the hedge's expected time."""
+    job, t0 = ctx.job, ctx.t0
     i, tries, retried, failed = 0, 0, False, set()
     while True:
+        if threaded and STOP_SIG[0]:
+            return "done", 128 + STOP_SIG[0]
         h = hosts[i]
-        give_up = plan.local_after_s if i == 0 else None    # set only when all were busy: hosts[0] = wait host
-        kind, val = attempt(h, wt, argv, env_pairs, timing, t0, job, plan.pool, outputs, deps, give_up)
+        if on_host:
+            on_host(h)
+        g = give_up if i == 0 else None    # set only when all were busy: hosts[0] = wait host
+        kind, val = attempt_on(ctx, h, argv, g, out, err, tag, frac)
         if kind == "done":
-            return val
+            return "done", val
         if kind == "local":
-            return fallback(argv, env_pairs, val, t0, job, plan.pool)
+            return "local", val
         failed.add(i)
         nxt = next_host(hosts, failed)
         if kind == "lost_go":
-            if job["retry_ok"] and not retried and nxt is not None:
-                note("lost %s mid-run; a %s job is safe to repeat - running it once more on %s"
-                     % (h.name, job["cls"], hosts[nxt].name))
+            # lost_go = the connection died before the command's exit code arrived (the worker went
+            # away: ssh died, no keepalive answer, host down). A command that exited with a real code
+            # is "done", never retried. DB jobs may repeat too: each run gets its own throwaway
+            # database on the worker (the runner's docker shim, labelled and removed per run).
+            if (job["retry_ok"] or job["db"]) and not retried and nxt is not None:
+                note("%s%s went away mid-run (lost connection); re-running once on %s"
+                     % (tag, h.name, hosts[nxt].name))
                 retried, i = True, nxt
                 continue
-            sys.stderr.write(LOST_MSG + "\n")
+            sys.stderr.write(tag + LOST_MSG + "\n")
             record(h.name, argv, EXIT_LOST, time.monotonic() - t0)
-            return EXIT_LOST
+            return "done", EXIT_LOST
         if nxt is not None:
-            note("%s - trying %s" % (val, hosts[nxt].name))
+            note("%s%s - trying %s" % (tag, val, hosts[nxt].name))
             i = nxt
             continue
         if kind == "busy":
             if "not taking jobs" in val:
-                note(val)
-            note("no worker had a free slot; giving up (exit 73)")
-            return 73
-        if tries >= RECONNECT_TRIES:
-            return fallback(argv, env_pairs, val, t0, job, plan.pool)
+                note(tag + val)
+            note("%sno worker had a free slot; giving up (exit 73)" % tag)
+            return "done", 73
+        if threaded or tries >= RECONNECT_TRIES:
+            return "local", val
         tries += 1
         i, failed, h = 0, set(), hosts[0]
         # Nothing has started anywhere yet. A mini that answers right away (a blip, or a failure
@@ -871,16 +1087,278 @@ def rrun(argv, env_args=()):
         # waited for (rr_reconnect_wait_min), so a short outage never moves a heavy run here.
         if mini_answers(h.cfg):
             if tries > 1:
-                return fallback(argv, env_pairs, val, t0, job, plan.pool)
+                return "local", val
             continue
         try:
             back = wait_for_mini(h.cfg, val)
         except _Stopped as e:
             note("stopped while waiting for the Mac mini - not running it anywhere")
-            return 128 + e.signum
+            return "done", 128 + e.signum
         if not back:
-            return fallback(argv, env_pairs, "%s, and it did not come back within %s"
-                            % (val, fmt_wait(reconnect_wait_s(h.cfg))), t0, job, plan.pool)
+            return "local", "%s, and it did not come back within %s" % (val, fmt_wait(reconnect_wait_s(h.cfg)))
+
+
+def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0):
+    """attempt() on a free lane of h, with a hedge watching it when hedging is on for this job."""
+    key = h.cfg["host"]
+    n = take_lane(key)
+    lane = Lane(out, err, None if n == 0 else short_hash("%s:lane%d" % (ctx.wt["wt12"], n), 12))
+    hedge = Hedge(ctx, h, argv, lane, tag, frac, out, err) if hedge_on(ctx) else None
+    try:
+        if hedge:
+            hedge.start()
+        kind, val = attempt(h, ctx.wt, argv, ctx.env_pairs, ctx.timing, ctx.t0, ctx.job, ctx.plan.pool,
+                            ctx.outputs, ctx.deps, give_up, lane)
+    finally:
+        drop_lane(key, n)
+    if hedge:
+        won = hedge.finish(primary_lost=kind == "lost_go")
+        if won is not None:
+            return "done", won
+    return kind, val
+
+
+# ---------------------------------------------------------------------------- hedge
+
+HEDGE_FACTOR = 2.0       # a run past this many x its expected time is a straggler...
+HEDGE_GAIN = 3.0         # ...worth a duplicate on a free worker whose eta is at least this many x better
+HEDGE_POLL_S = 15.0      # how often a straggler looks for such a worker (one probe round each time)
+
+
+def hedge_on(ctx, environ=None):
+    """RRUN_HEDGE=1 / rr_hedge (default off) - and only in a pool, only for jobs safe to run twice
+    at once: tsc, lint, vitest/jest (never DB tests, never builds: they copy outputs back)."""
+    v = (os.environ if environ is None else environ).get("RRUN_HEDGE")
+    on = (v.strip() not in ("", "0")) if v is not None else bool(ctx.cfg.get("rr_hedge", False))
+    job = ctx.job
+    return bool(on and ctx.plan.pool and job["retry_ok"] and not job["db"] and job["cls"] != "build")
+
+
+class Hedge:
+    """Watches one attempt; once it has run HEDGE_FACTOR x its expected time and a probe finds a
+    free worker HEDGE_GAIN x better, starts ONE duplicate there (output held). The first to finish
+    wins: the duplicate's win stops the original (its output so far stays on screen; the
+    duplicate's follows, marked); the original's win stops the duplicate (its output is dropped)."""
+
+    def __init__(self, ctx, h, argv, lane, tag, frac, out, err):
+        self.ctx, self.h, self.argv, self.lane, self.tag = ctx, h, argv, lane, tag
+        cost = h.run_s if h.run_s is not None else rd_pool.job_cost(ctx.cfg, ctx.job["cls"]) / max(0.01, h.speed)
+        self.expect = cost * frac
+        self.frac = frac
+        self.ref = (h.cold_s or 0.0) + min(h.rtt or 0.0, rd_pool.RTT_CAP_S) + self.expect
+        self.out_stream = out.stream if out is not None else std_stream("stdout")
+        self.err_stream = err.stream if err is not None else std_stream("stderr")
+        self.prefix = out.prefix if out is not None else ""
+        self.poll = float(ctx.cfg.get("rr_hedge_poll_s", HEDGE_POLL_S))
+        self.primary_done = threading.Event()
+        self.lock = threading.Lock()
+        self.decided, self.rc, self.dup, self.dup_lane, self.thread = False, None, None, None, None
+
+    def start(self):
+        self.thread = threading.Thread(target=self.watch, daemon=True)
+        self.thread.start()
+
+    def eta(self, c):
+        return (c.cold_s or 0.0) + min(c.rtt or 0.0, rd_pool.RTT_CAP_S) + (c.run_s or 0.0) * self.frac
+
+    def candidate(self):
+        ctx = self.ctx
+        try:
+            p = rd_pool.plan(ctx.cfg, ctx.job, ctx.wt["slug"], rd_pool.deps_shas(ctx.wt["top"], ctx.deps),
+                             probe=True)
+        except Exception:            # a fleet that changed under us: no hedge, the run goes on
+            return None
+        for c in p.hosts:            # fresh: a worker that just came online counts
+            if c.state == "free" and c.name != self.h.name and c.run_s is not None \
+                    and HEDGE_GAIN * self.eta(c) <= self.ref:
+                return c
+        return None
+
+    def watch(self):
+        while not self.primary_done.wait(self.poll):
+            s = self.lane.session
+            if s is None or s.started is None or s.aborted:
+                continue
+            ran = time.monotonic() - s.started
+            if ran < HEDGE_FACTOR * self.expect:
+                continue
+            c = self.candidate()
+            if c is None or self.primary_done.is_set():
+                continue
+            note("%s%s has run %s, over %gx the %s expected there; starting a duplicate on %s (eta %s) - "
+                 "the first to finish wins" % (self.tag, self.h.name, rd_pool.fmt_s(ran), HEDGE_FACTOR,
+                                               rd_pool.fmt_s(self.expect), c.name, rd_pool.fmt_s(self.eta(c))))
+            self.run_dup(c)
+            return
+
+    def run_dup(self, c):
+        ctx = self.ctx
+        key = c.cfg["host"]
+        out = Sink(self.out_stream, "", hold=True)
+        err = Sink(self.err_stream, "", hold=True)
+        with self.lock:
+            if self.decided:
+                return               # the original finished while we probed
+            n = take_lane(key)
+            self.dup = c.name
+            self.dup_lane = Lane(out, err, None if n == 0 else short_hash("%s:lane%d" % (ctx.wt["wt12"], n), 12))
+        try:
+            kind, val = attempt(c, ctx.wt, self.argv, ctx.env_pairs, Timing(False), ctx.t0, ctx.job,
+                                ctx.plan.pool, ctx.outputs, ctx.deps, None, self.dup_lane)
+        finally:
+            drop_lane(key, n)
+        s = self.dup_lane.session
+        with self.lock:
+            if self.decided or kind != "done" or s is None or not s.go_sent or s.aborted:
+                return               # the original finished first, or the duplicate never really ran
+            self.decided, self.rc = True, val
+        prim = self.lane.session
+        if prim is not None:
+            prim.abort()
+
+    def finish(self, primary_lost=False):
+        """The original attempt returned -> the duplicate's rc when it won (its held output is
+        printed now), else None (the duplicate, if any, is stopped). An original lost after GO
+        waits for a running duplicate instead of re-running the job."""
+        self.primary_done.set()
+        with self.lock:
+            dup_lane = self.dup_lane
+        if primary_lost and dup_lane is not None and self.thread.is_alive():
+            note("%slost %s mid-run; the duplicate on %s is still running - waiting for it"
+                 % (self.tag, self.h.name, self.dup))
+            self.thread.join()
+        with self.lock:
+            won = self.rc is not None
+            self.decided = True
+            dup_lane = self.dup_lane
+        if not won:
+            if dup_lane is not None and dup_lane.cancel():
+                note("%s%s finished first; stopped the duplicate on %s" % (self.tag, self.h.name, self.dup))
+            if self.thread is not None:
+                self.thread.join(ABORT_KILL_S + 5)
+            return None
+        note("%sthe duplicate on %s finished first (rc=%s); stopped the run on %s - the duplicate's "
+             "output follows" % (self.tag, self.dup, self.rc, self.h.name))
+        for s in (self.dup_lane.out, self.dup_lane.err):
+            if self.prefix:
+                s.prefix = self.prefix.replace(self.h.name + "]", self.dup + " hedge]")
+            s.release()
+        return self.rc
+
+
+# ---------------------------------------------------------------------------- shards
+
+def shard_argv(argv, i, n):
+    """argv with --shard=i/n right after `vitest run` (never after a `--`)."""
+    k = next(j for j, a in enumerate(argv[:-1]) if os.path.basename(a) == "vitest" and argv[j + 1] == "run")
+    return argv[:k + 2] + ["--shard=%d/%d" % (i, n)] + argv[k + 2:]
+
+
+def run_local_shard(ctx, argv, out, err, why):
+    """A shard no worker could take: on this machine (subprocess, output prefixed like the rest),
+    unless RRUN_STRICT=1 / a never-local job in the pool (exit 75)."""
+    if os.environ.get("RRUN_STRICT") == "1" or ctx.job.get("never_local"):
+        note("%s - not running this shard on this machine (exit 75)" % why)
+        return EXIT_LOST
+    note("%s - running this shard on this machine (RDOCKER_MODE=local)" % why)
+    env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")
+    env.update(ctx.env_pairs)
+    try:
+        p = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+    except OSError as e:
+        note("%s: %s" % (argv[0], e))
+        return 127
+    with LIVE_LOCK:
+        LOCAL_PROCS.add(p)
+
+    def pump(src, sink):
+        for chunk in iter(lambda: os.read(src.fileno(), 65536), b""):
+            sink.write(chunk)
+    ts = [threading.Thread(target=pump, args=(p.stdout, out), daemon=True),
+          threading.Thread(target=pump, args=(p.stderr, err), daemon=True)]
+    for t in ts:
+        t.start()
+    rc = p.wait()
+    for t in ts:
+        t.join(5)
+    with LIVE_LOCK:
+        LOCAL_PROCS.discard(p)
+    record("local", argv, rc, time.monotonic() - ctx.t0)
+    return rc if rc >= 0 else 128 - rc
+
+
+LOCAL_PROCS = set()
+
+
+def run_shards(ctx, assign, argv):
+    """Split a `vitest run` into len(assign) shards (vitest --shard=i/n), shard i on assign[i-1]
+    first and the rest of the plan as its failover, all at once. Output lines are prefixed
+    "[shard i/n host] "; exit code = the highest shard rc; a merged vitest summary at the end."""
+    n = len(assign)
+    plan = ctx.plan
+    cnt = {}
+    for h in assign:
+        cnt[h.name] = cnt.get(h.name, 0) + 1
+    note("splitting `vitest run` into %d shards: %s (RRUN_SHARD=0: one run)"
+         % (n, ", ".join("%s %d" % kv for kv in cnt.items())))
+    rcs, outs, errs = [None] * n, [], []
+
+    def one(i, home):
+        out = Sink(std_stream("stdout"), "[shard %d/%d %s] " % (i + 1, n, home.name))
+        err = Sink(std_stream("stderr"), out.prefix)
+        outs.append(out)
+        errs.append(err)
+        tag = "[shard %d/%d] " % (i + 1, n)
+
+        def on_host(h):
+            out.prefix = err.prefix = "[shard %d/%d %s] " % (i + 1, n, h.name)
+        hosts = [home] + [h for h in plan.hosts if h is not home]
+        sargv = shard_argv(argv, i + 1, n)
+        try:
+            kind, val = host_loop(ctx, hosts, sargv, out=out, err=err, threaded=True, tag=tag,
+                                  frac=1.0 / n, on_host=on_host)
+            if kind == "local":
+                out.prefix = err.prefix = "[shard %d/%d local] " % (i + 1, n)
+                val = run_local_shard(ctx, sargv, out, err, tag + val)
+        except Exception as e:       # one shard's bug must not hang the others
+            note("%sfailed: %s" % (tag, e))
+            val = 70
+        finally:
+            out.close()
+            err.close()
+        rcs[i] = val
+
+    def forward(signum, frame):
+        STOP_SIG[0] = STOP_SIG[0] or signum
+        with LIVE_LOCK:
+            live, local = list(LIVE), list(LOCAL_PROCS)
+        for s in live:
+            s.on_signal(signum, frame)
+        for p in local:
+            if p.poll() is None:
+                p.send_signal(signum)
+    old = {s: signal.signal(s, forward) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    try:
+        ts = [threading.Thread(target=one, args=(i, h), daemon=True) for i, h in enumerate(assign)]
+        for t in ts:
+            t.start()
+        while any(t.is_alive() for t in ts):
+            for t in ts:
+                t.join(0.2)
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+    rc = max(r if isinstance(r, int) else 70 for r in rcs)
+    summary = rd_pool.shard_summary([o.tail.decode("utf-8", "replace") for o in outs])
+    note("%d shards done: exit %d (%s)" % (n, rc, ", ".join("%d/%d rc=%s" % (i + 1, n, r)
+                                                            for i, r in enumerate(rcs))))
+    if summary:
+        with OUT_LOCK:
+            out = std_stream("stdout")
+            out.write(("\n".join(["", " rrun: merged summary of %d shards" % n] + summary) + "\n").encode())
+            out.flush()
+    return rc
 
 
 def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs=(), **extra):
@@ -912,13 +1390,18 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
     return [b"%d\n" % len(script), script, b"%d\n" % len(hjs), hjs, tar], nonce
 
 
-def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None, give_up_s=None):
+def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None, give_up_s=None,
+            lane=None):
     """One try on host h -> ("done", rc) | ("lost", why: dropped before the command started) |
     ("busy", why: a race-wait host had no slot after all) | ("lost_go", why: dropped after GO -
-    the command may have run) | ("local", why: run it on the laptop now, waiting would not help)."""
+    the command may have run) | ("local", why: run it on the laptop now, waiting would not help).
+    lane (shards, hedges): output sinks + a per-lane mirror id; lane.session is set once it runs."""
     cfg = h.cfg
+    if lane is not None and lane.wt12:
+        wt = dict(wt, wt12=lane.wt12)
     try:
-        push(cfg, wt)
+        with host_lock(cfg["host"]):
+            push(cfg, wt)
     except PushRefused as e:
         return "local", "cannot send this repo to %s: %s" % (label(h), e)
     except RunError as e:
@@ -940,6 +1423,10 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs)
     record(h.name, argv, None, 0, wt12=wt["wt12"], start=True)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
+    if lane is not None:
+        sess.stdout_out, sess.stderr_out = lane.out, lane.err
+        if not lane.bind(sess):
+            return "busy", "%s: cancelled before it started" % h.name
     rc = sess.run()
     secs = time.monotonic() - t0
     if not sess.go_sent:
@@ -967,7 +1454,12 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             note("%s - exit %d; the command did not run" % (INFRA_EXIT[rc], rc))
         return "done", rc
     timing.mark("command")
-    if rc == 255:
+    if sess.exit_rc is not None:
+        if rc != sess.exit_rc and rc == 255:
+            note("the link to %s dropped after the command finished there (exit %d); that is the result"
+                 % (label(h), sess.exit_rc))
+        rc = sess.exit_rc
+    elif rc == 255:
         return "lost_go", "lost %s mid-run" % label(h)
     if rc == 0 and outputs:
         why = copy_back(cfg, wt, outputs)

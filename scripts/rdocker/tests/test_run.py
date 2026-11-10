@@ -41,6 +41,17 @@ host = args[i]
 # FAKE_SSH_PROBE_HOMES overrides it for the pool probe only; *_HOSTS lists name affected workers
 def hosts(name):
     return [h for h in os.environ.get(name, "").split(",") if h]
+def run_then_drop(cmd):
+    # the remote command runs, then the link dies BEFORE the runner's "<nonce> EXIT <rc>" status
+    # gets through (a real mid-run loss: the laptop never learns the result); FAKE_SSH_KEEP_EXIT=1
+    # lets it through first (the link died during cleanup: the result is known)
+    import re
+    p = subprocess.Popen(["/bin/sh", "-c", cmd], stderr=subprocess.PIPE)
+    for line in iter(p.stderr.readline, b""):
+        if os.environ.get("FAKE_SSH_KEEP_EXIT") or not re.match(rb"^[0-9a-f]{32} EXIT ", line):
+            os.write(2, line)
+    p.wait()
+    sys.exit(255)
 homes = dict(x.split("=", 1) for x in os.environ.get("FAKE_SSH_HOMES", "").split(",") if "=" in x)
 is_probe = "slots_busy" in cmd
 if is_probe:
@@ -51,14 +62,12 @@ if host in hosts("FAKE_SSH_DOWN_HOSTS") or (host in hosts("FAKE_SSH_RUNDOWN_HOST
     sys.stderr.write("ssh: connect to host %s port 22: Operation timed out\n" % host)
     sys.exit(255)
 if host in hosts("FAKE_SSH_DROP_HOSTS") and "rrun-runner" in cmd:
-    subprocess.run(["/bin/sh", "-c", cmd])
-    sys.exit(255)
+    run_then_drop(cmd)
 if os.environ.get("FAKE_SSH_DOWN") or os.path.exists(os.environ.get("FAKE_SSH_DOWN_FILE") or "/nonexistent"):
     sys.stderr.write("ssh: connect to host %s port 22: Operation timed out\n" % args[i])
     sys.exit(255)
 if os.environ.get("FAKE_SSH_DROP") and "perl" in cmd:
-    subprocess.run(["/bin/sh", "-c", cmd])
-    sys.exit(255)
+    run_then_drop(cmd)
 if os.environ.get("FAKE_SSH_HANG_DIR") and "perl" in cmd:
     import time
     d = os.environ["FAKE_SSH_HANG_DIR"]
@@ -413,6 +422,20 @@ class RunTest(RunBase):
         self.assertIn("not re-running on the laptop", r.stderr)
         self.assertFalse(os.path.exists(marker))              # GO never arrived: not run anywhere
         self.assertIn("command was not started", r.stderr)    # the runner gave up cleanly
+
+    def test_a_command_exiting_255_itself_is_its_result_not_a_lost_link(self):
+        r = self.rrun("/bin/sh", "-c", "echo out; exit 255")
+        self.assertEqual((r.returncode, r.stdout), (255, "out\n"), r.stderr)
+        self.assertNotIn("lost", r.stderr)
+        r = self.rrun("/bin/sh", "-c", "exit 4", FAKE_SSH_DROP="1", FAKE_SSH_KEEP_EXIT="1")
+        self.assertEqual(r.returncode, 4, r.stderr)                 # the link died during cleanup
+        self.assertIn("dropped after the command finished there (exit 4)", r.stderr)
+
+    def test_drop_detection_keepalives(self):
+        o = rd_run.ssh_opts()
+        self.assertIn("ServerAliveInterval=5", o)
+        self.assertIn("ServerAliveCountMax=3", o)
+        self.assertIn("ConnectTimeout=6", o)
 
     def test_255_after_started_is_75_and_never_reruns(self):
         marker = os.path.join(self.d, "ran")

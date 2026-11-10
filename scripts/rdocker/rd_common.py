@@ -57,6 +57,10 @@ RRUN_STATE = os.path.join(STATE_DIR, "rrun.json")  # last rrun result + runs in 
 # rrun-<wt12>.lock in STATE_DIR serialises rrun runs from one laptop worktree (rd_run.wt_lock_path)
 PLIST_LABEL = "com.rdocker.forwarder"
 PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
+UNITS_DIR = os.path.join(HERE, "units")          # launch agent templates installed by rd_setup
+WARM_LABEL = "com.rdocker.warm"                  # `rdocker warm` loop (rd_warm), Mac clients
+WARM_PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", WARM_LABEL + ".plist")
+WARM_LOG = os.path.join(STATE_DIR, "warm.log")   # one line per warm action
 FLEET_PATH = os.path.join(HERE, "fleet.json")   # the machine registry (dotfiles, synced; no secrets)
 FLEET_SSH_PATH = os.path.join(HOME, ".ssh", "config.d", "rdocker")   # the ssh Host blocks; rd_fleet owns + rewrites it
 SYSTEMD_UNIT = "rdocker-forwarder.service"
@@ -118,6 +122,13 @@ DEFAULTS = {
                                        # for it to come back before running on the laptop instead
     "rr_wait_min": 30,                 # give up waiting for a free mini slot after this
     "rr_hb_timeout": 60,               # mini kills the run after this many s without a laptop heartbeat
+    # `rdocker warm` (rd_warm, the client launch agent com.rdocker.warm): pre-warm each worker with
+    # the repos this client ran rrun in lately (push the mirror, install deps), politely
+    "rr_warm_interval_s": 300,         # between warm passes
+    "rr_warm_tick_s": 60,              # reachability check between passes: a worker back online => pass now
+    "rr_warm_window_h": 48,            # repos with an rrun line in route.log this recent
+    "rr_warm_max_repos": 2,            # at most this many repos per pass (most recently used first)
+    "rr_warm_max_load": 0.7,           # warm a worker only while its load1 / ncpu is below this
     # untracked/ignored env files copied for a run (basename globs), looked up ONLY in the repo
     # root, the command's cwd and the deps (lockfile) dirs; a symlink resolving outside the
     # worktree is skipped. 0600 on the mini and deleted when the run ends

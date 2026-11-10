@@ -4,20 +4,25 @@ rd_run asks `plan()` for an ordered list of hosts to try. With no fleet (or no r
 the list is cfg["host"] alone and nothing is probed: the single-host rrun of before. With exactly
 one enabled worker it is that worker alone, also unprobed (same behaviour as before, on its
 alias). With two or more, every worker is probed in parallel over its own rr-%C ssh master with a
-small `perl -e` snippet (PROBE; nothing is installed on the worker) and scored:
+small `perl -e` snippet (PROBE; nothing is installed on the worker) and given an estimated
+completion time (score(); lower is better):
 
-    score = speed * free / (1 + load1 / ncpu) * warm - rtt_s
-    free  = free slots (heavy jobs: min(free slots, free heavy slots)); slots capped by ~/rr/slots.cap
-            and by the owner's share switch (some = half the slots and heavy slots; off = state "off",
-            no score, tried last; no share file = max - see rr_runner.pl share_level)
-    warm  = 0.6 when the repo's bare git mirror is missing  x  0.5 when its packages are not there
-    speed = ~/rr/speed on the worker (written by `rrun --bench`), else the fleet entry's speed
+    eta  = cold + queue + job_cost / eff + rtt          (rtt capped at RTT_CAP_S)
+    eff  = speed * cpu_share * mem_factor               (mem_factor: 0.1 at need_gb .. 1.0 from 1.5x)
+    cold = COLD_GIT_S without the bare git mirror + COLD_DEPS_S without the packages
+    queue = 0 with a free slot, else when the first slot holder should be done (holders' ages)
+    job_cost = median of this worker's last runs of the class (runs.log tail, >= HIST_MIN), else the
+               pool's, else JOB_COST_S / rr_job_cost_s; speed = ~/rr/speed, else fleet.json's
+    free = free slots (heavy jobs: min with free heavy slots); capped by ~/rr/slots.cap and the
+           owner's share switch (some = half; off = state "off", no eta, tried last)
 
-A worker is skipped when it has no free slot or less available memory than the job needs. The
-order is: free workers by score (ties: lower rtt), then busy ones by slots*speed (the first one
-is the "wait host": the job queues there), then the ones that did not answer. Free candidates get
-a short slot wait so a lost race (another client took the slot) moves on quickly; the wait host
-gets the full rr_wait_min.
+A worker with less memory than the job needs is "low-mem" (no eta). Order: free workers by eta, then
+busy ones by eta (the first is the "wait host" when nothing is free), then low-mem, down, off. A busy
+worker whose eta is <= PROMOTE_RATIO x the best free one goes first, with a slot wait that ends when
+the best free worker would have finished. Free candidates get a short slot wait so a lost race moves
+on quickly; the wait host gets the full rr_wait_min. Nothing is cached between plan() calls: every
+job sees workers that just went away or came back. shardable() / shard_assign() split a `vitest run`
+across the free workers (rd_run.run_shards runs them).
 
 Job classes (classify): db (test:db & friends: never re-run after GO, never local in a pool),
 heavy (tsc / typecheck: ~6 GB, never local in a pool), build (declared outputs, copied back),
@@ -40,8 +45,18 @@ PROBE_TIMEOUT_S = 4.0   # covers a cold ssh master over a DERP relay (~1.5-2.5 s
 RACE_WAIT_MIN = 0.5          # slot wait on a worker the probe saw free (a lost race moves on)
 LOCAL_AFTER_S = 20           # light jobs: run locally after waiting this long for any worker
 LOCAL_MIN_FREE_GB = 4
-COLD_GIT, COLD_DEPS = 0.6, 0.5
+COLD_GIT_S, COLD_DEPS_S = 30.0, 90.0   # eta: no bare git mirror yet / packages not installed there
 NEED_GB = {"heavy": 6, "build": 3, "normal": 2, "light": 1, "db": 2}
+# seconds a job class takes at speed 1.0 until the workers' runs.log teaches better (rr_job_cost_s)
+JOB_COST_S = {"heavy": 60.0, "normal": 60.0, "db": 120.0, "light": 30.0, "build": 90.0}
+JOB_CPUS = {"heavy": 2, "normal": 4, "db": 2, "light": 1, "build": 2}   # cores a job keeps busy
+HIST_MIN = 3                 # runs of a class before its median replaces the default cost
+HOLDER_COST_S = 60.0         # a slot holder's run at speed 1.0 when the worker has no history (queue wait)
+# a busy worker goes first when its eta (queue included) <= this x the best free one (0 = never):
+# low on purpose - a quick job should spread to an idle machine; this is for "free" workers that
+# would be many times slower (hp swapping on a tsc: 26 min vs 77 s on nickmbp)
+PROMOTE_RATIO = 0.25
+_SHARD_ARG_RE = re.compile(r"(?:^|\s)--shard[= ]?(\d+)/(\d+)(?:\s|$)")
 # rr_outputs: {"<repo name or slug>": {"<package dir relative to the repo>": ["dist", ...]}}
 # Builds are only sent to the pool for a mapped package dir; outputs are copied back.
 DEFAULT_OUTPUTS = {"dentall": {"server": ["dist"], "client": ["dist"], "admin-client": ["dist"]}}
@@ -180,7 +195,8 @@ class Host:
 
     def __init__(self, name, cfg, entry=None):
         self.name, self.cfg, self.entry = name, cfg, entry
-        self.probe, self.score, self.state, self.short = None, None, "-", False
+        self.probe, self.state, self.short = None, "-", False
+        self.eta = self.run_s = self.cold_s = self.queue_s = self.eff = None   # set by score()
 
     @property
     def speed(self):
@@ -240,7 +256,26 @@ sub half { my ($v) = @_; $share eq "some" && $v > 0 ? (int($v / 2) || 1) : $v }
 my $n = half(($q->{slots} // 1) =~ /^(\d+)$/ ? $1 : 1);
 my ($cap) = -l "$R/slots.cap" ? () : slurp("$R/slots.cap") =~ /^\s*(\d+)/;
 $n = $cap if defined $cap && $cap < $n;
-$o{slots_cap} = $n; $o{slots_busy} = 0; $o{slots_busy} += busy("$R/slots/$_") for 0 .. $n - 1;
+$o{slots_cap} = $n; $o{slots_busy} = 0; my @ages;
+for my $i (0 .. $n - 1) {
+    next unless busy("$R/slots/$i");
+    $o{slots_busy}++;
+    # how long each holder has run (<i>.who = "<slug> <epoch> <pid> <wt12>"): rd_pool's queue wait
+    my (undef, $t) = split ' ', slurp("$R/slots/$i.who");
+    push @ages, time - $t if defined $t && $t =~ /^\d+$/ && $t <= time;
+}
+$o{ages} = \@ages;
+# the last finished commands (runs.log tail, 24 KB at most): [cmd_s, argv] for rd_pool's job cost
+my @hist;
+if (sysopen(my $lf, "$R/log/runs.log", O_RDONLY | O_NOFOLLOW)) {
+    my $sz = -s $lf || 0;
+    seek($lf, $sz > 24576 ? $sz - 24576 : 0, 0);
+    my @l = do { local $/ = "\n"; <$lf> };
+    shift @l if $sz > 24576;
+    for (@l) { push @hist, [$1 + 0, $2] if /\soutcome=rc=\d+ prepare_s=\S+ cmd_s=(\d+(?:\.\d+)?) argv=(.*?)\n?$/ }
+    splice(@hist, 0, @hist - 40) if @hist > 40;
+}
+$o{hist} = \@hist;
 if (($q->{heavy_slots} // "") =~ /^(\d+)$/) {
     my $hc = half($1);
     $o{heavy_cap} = $hc; $o{heavy_busy} = 0; $o{heavy_busy} += busy("$R/slots/heavy-$_") for 0 .. $hc - 1 }
@@ -339,9 +374,68 @@ def _num(v, default=None):
         return default
 
 
-def score(host, job):
-    """-> (score or None when the host cannot take the job now, free slots). Sets host.state."""
+def _median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return None if not n else xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
+
+
+def history_costs(host):
+    """The worker's recent finished commands (probe "hist": [[cmd_s, argv], ...]) -> {cls: [cost in
+    seconds at speed 1.0]}. A shard's time counts as the whole job's (x n), so sharded and whole
+    runs teach the same number."""
+    out = {}
+    for row in (host.probe or {}).get("hist") or []:
+        if not isinstance(row, list) or len(row) != 2 or not isinstance(row[1], str):
+            continue
+        secs, words = _num(row[0]), row[1].split()
+        if secs is None or secs < 0:
+            continue
+        m = _SHARD_ARG_RE.search(row[1])
+        n = int(m.group(2)) if m and int(m.group(2)) >= 1 else 1
+        cls = "build" if is_build(words) else classify(words)["cls"]
+        out.setdefault(cls, []).append(secs * n * host.speed)
+    return out
+
+
+def job_cost(cfg, cls, own=None, pooled=None):
+    """Seconds the job class takes at speed 1.0: this worker's own history (median of its last runs,
+    >= HIST_MIN of them), else the whole pool's, else the per-class default (rr_job_cost_s)."""
+    for xs in (own, pooled):
+        if xs and len(xs) >= HIST_MIN:
+            return _median(xs)
+    table = cfg.get("rr_job_cost_s") if isinstance(cfg.get("rr_job_cost_s"), dict) else {}
+    return float(_num(table.get(cls), JOB_COST_S.get(cls, 60)))
+
+
+def mem_factor(avail_mb, need_gb):
+    """1.0 with >= 1.5x the job's memory free; falls steeply (to 0.1 at exactly need) below that,
+    because a worker that starts swapping is many times slower (hp: tsc 26 min vs 77 s)."""
+    if avail_mb is None or not need_gb:
+        return 1.0
+    r = max(0.0, min(1.0, (avail_mb / 1024.0 - need_gb) / (0.5 * need_gb)))
+    return 0.1 + 0.9 * r * r
+
+
+def cpu_share(load, ncpu, cls):
+    """Fraction of the cores the job wants (JOB_CPUS) it would get: all of them when that many are
+    idle, else its processor-sharing slice of the machine."""
+    want = JOB_CPUS.get(cls, 2)
+    idle = max(0.0, ncpu - load)
+    return min(1.0, max(idle, ncpu * want / (load + want)) / want)
+
+
+def score(host, job, cfg=None, pooled=None):
+    """-> (eta seconds or None when the host cannot take the job at all now, free slots). Lower is
+    better. Sets host.state (down/off/busy/low-mem/free) and, with an eta, host.eta and its parts:
+
+        eta = cold + queue + run + rtt;  run = job_cost / eff;  eff = speed * cpu_share * mem_factor
+        cold  = COLD_GIT_S without the bare repo + COLD_DEPS_S without the packages
+        queue = 0 with a free slot, else when the first holder should finish (busy: still ranked)
+    """
+    cfg = cfg or {}
     p = host.probe
+    host.eta = host.run_s = host.cold_s = host.queue_s = host.eff = None
     if p is None:
         host.state = "down"
         return None, 0
@@ -352,17 +446,28 @@ def score(host, job):
     if job["cls"] == "heavy" and p.get("heavy_cap") is not None:
         free = min(free, int(_num(p.get("heavy_cap"), 0) - _num(p.get("heavy_busy"), 0)))
     mem = _num(p.get("mem_avail_mb"))
-    if free <= 0:
-        host.state = "busy"
-        return None, free
     if mem is not None and mem < job["need_gb"] * 1024:
-        host.state = "low-mem"
+        host.state = "low-mem" if free > 0 else "busy"
         return None, free
     load, ncpu = _num(p.get("load1"), 0.0), _num(p.get("ncpu"), 1.0) or 1.0
-    warm = (1.0 if p.get("warm_git") else COLD_GIT) * (1.0 if p.get("warm_deps") else COLD_DEPS)
-    host.state = "free"
-    # rtt penalty capped: a cold ssh master's one-off handshake (~2 s over a relay) is not the link's latency
-    return host.speed * free / (1.0 + load / ncpu) * warm - min(host.rtt or 0.0, RTT_CAP_S), free
+    own = history_costs(host)
+    host.eff = max(0.01, host.speed * cpu_share(load, ncpu, job["cls"]) * mem_factor(mem, job["need_gb"]))
+    host.run_s = job_cost(cfg, job["cls"], own.get(job["cls"]), (pooled or {}).get(job["cls"])) / host.eff
+    host.cold_s = (0.0 if p.get("warm_git") else COLD_GIT_S) + (0.0 if p.get("warm_deps") else COLD_DEPS_S)
+    if free > 0:
+        host.state, host.queue_s = "free", 0.0
+    else:
+        # the holders' typical run here (any class: they are not ours to know), minus how long they
+        # have run; without ages, the first of k busy slots frees after about T / (k + 1)
+        allc = [c for cs in own.values() for c in cs]
+        typ = (_median(allc) if len(allc) >= HIST_MIN else HOLDER_COST_S) / max(0.01, host.speed)
+        ages = [a for a in (_num(x) for x in p.get("ages") or []) if a is not None]
+        busy = max(1, int(_num(p.get("slots_busy"), 1)))
+        host.state = "busy"
+        host.queue_s = (min(max(0.2 * typ, typ - a) for a in ages) if ages else typ / (busy + 1))
+    # rtt capped: a cold ssh master's one-off handshake (~2 s over a relay) is not the link's latency
+    host.eta = host.cold_s + host.queue_s + host.run_s + min(host.rtt or 0.0, RTT_CAP_S)
+    return host.eta, free
 
 
 # ---------------------------------------------------------------------------- deps stamps
@@ -410,6 +515,7 @@ def local_free_gb():
 class Plan:
     def __init__(self, hosts, pool, local_after_s=None):
         self.hosts, self.pool, self.local_after_s = hosts, pool, local_after_s
+        self.promoted = None         # a busy worker put first (its eta beat every free one)
 
 
 def pick_hosts(cfg, force=None):
@@ -442,16 +548,31 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
             r["heavy_slots"] = hs
         return r
     probe_all(hosts, req_for, float(cfg.get("rr_probe_timeout_s", PROBE_TIMEOUT_S)))
-    free, busy, down, off = [], [], [], []
+    # what the whole pool has learned per class (a worker with no history of its own uses this)
+    pooled = {}
     for h in hosts:
-        h.score, _ = score(h, job)
-        (free if h.score is not None else down if h.probe is None else off if h.state == "off"
-         else busy).append(h)
-    free.sort(key=lambda h: (-h.score, h.rtt or 0))
+        for cls, xs in history_costs(h).items():
+            pooled.setdefault(cls, []).extend(xs)
+    for h in hosts:
+        score(h, job, cfg, pooled)
+    by_eta = lambda h: (h.eta, h.rtt or 0)                                     # noqa: E731
+    free = sorted((h for h in hosts if h.state == "free"), key=by_eta)
+    queued = sorted((h for h in hosts if h.state == "busy" and h.eta is not None), key=by_eta)
     cap = lambda h: _num((h.probe or {}).get("slots_cap"), h.cfg.get("rr_slots", 1)) * h.speed  # noqa: E731
-    busy.sort(key=lambda h: -cap(h))
-    down.sort(key=lambda h: -(h.cfg.get("rr_slots", 1) * h.speed))
-    order = free + busy + down + off      # off last: its runner refuses at once (73 UNAVAIL) anyway
+    full = sorted((h for h in hosts if h.state in ("busy", "low-mem") and h.eta is None), key=lambda h: -cap(h))
+    down = sorted((h for h in hosts if h.state == "down"), key=lambda h: -(h.cfg.get("rr_slots", 1) * h.speed))
+    off = [h for h in hosts if h.state == "off"]
+    # finish time, not just "free first": a busy worker whose eta (its queue wait included) is far
+    # better than every free one goes first, but waits for its slot only while that still pays off
+    # (until the best free worker would have finished), then the job moves on to the free ones
+    promoted = None
+    ratio = float(cfg.get("rr_queue_promote_ratio", PROMOTE_RATIO))
+    if pool and free and queued and ratio > 0 and queued[0].eta <= ratio * free[0].eta:
+        promoted = queued.pop(0)
+        budget = max(RACE_WAIT_MIN * 60, free[0].eta - (promoted.eta - promoted.queue_s))
+        promoted.short = True
+        promoted.cfg = dict(promoted.cfg, rr_wait_min=min(float(cfg.get("rr_wait_min", 30)), budget / 60.0))
+    order = ([promoted] if promoted else []) + free + queued + full + down + off   # off last: refuses (73)
     if pool:
         for h in order[:-1]:
             if h in free:
@@ -462,16 +583,155 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
         lf = local_free_gb()
         if lf is not None and lf > float(cfg.get("rr_local_min_free_gb", LOCAL_MIN_FREE_GB)):
             local_after = float(cfg.get("rr_local_after_s", LOCAL_AFTER_S))
-    return Plan(order, pool, local_after)
+    p = Plan(order, pool, local_after)
+    p.promoted = promoted
+    p.req = req
+    return p
 
 
-def where_report(cfg, job, p):
-    """Lines for `rrun --where`."""
+# ---------------------------------------------------------------------------- shards
+
+SHARD_MAX = 8                # at most this many vitest shards per run (rr_shard_max)
+# vitest flags that take a separate value (`--project x`): the value is not a file filter
+_VITEST_VALUE_FLAGS = {"-c", "--config", "-r", "--root", "--dir", "-t", "--testNamePattern", "--project",
+                       "--environment", "--pool", "--mode", "--exclude", "--maxWorkers", "--minWorkers",
+                       "--retry", "--bail", "--testTimeout", "--hookTimeout", "--reporter",
+                       "--sequence.seed"}
+
+
+def shard_mode(cfg, environ=None):
+    """RRUN_SHARD: "0" = never, n >= 2 = force n shards, unset/other = auto (rr_shard, default on)."""
+    environ = os.environ if environ is None else environ
+    v = (environ.get("RRUN_SHARD") or "").strip()
+    if v.isdigit():
+        return 0 if int(v) <= 1 else int(v)
+    return "auto" if cfg.get("rr_shard", True) else 0
+
+
+def shardable(argv, job, cwd=None, forced=False):
+    """-> (True, "") when `argv` is a `vitest run` that vitest's own --shard=i/n can split, else
+    (False, why). Never: db jobs, --watch, --ui, --coverage, --shard already, a json/junit reporter or
+    --outputFile (machine-read output). Auto (not forced) also needs no file arguments, or only
+    dirs / globs: a run of named files is small, not worth n checkouts."""
+    if job.get("db") or job.get("cls") == "db":
+        return False, "a DB job"
+    i = next((k for k, a in enumerate(argv[:-1]) if os.path.basename(a) == "vitest" and argv[k + 1] == "run"), None)
+    if i is None:
+        return False, "not a `vitest run`"
+    rest, files, flags_done, k = argv[i + 2:], [], False, 0
+    while k < len(rest):
+        a = rest[k]
+        k += 1
+        if a == "--" and not flags_done:
+            flags_done = True
+            continue
+        if not a.startswith("-") or flags_done:
+            files.append(a)
+            continue
+        name, eq, val = a.partition("=")
+        if name in ("-w", "--watch", "--ui", "--outputFile", "--merge-reports", "--standalone") \
+                or name.startswith(("--coverage", "--shard", "--outputFile.")):
+            return False, "%s is set" % name
+        if name in _VITEST_VALUE_FLAGS and not eq and k < len(rest):
+            val, k = rest[k], k + 1                       # `--project x`: x is no file filter
+        if name == "--reporter" and re.search(r"json|junit|blob", val):
+            return False, "a machine-read reporter"
+    if forced:
+        return True, ""
+    for f in files:
+        glob = any(c in f for c in "*?[{")
+        isdir = f.endswith("/") or (cwd is not None and os.path.isdir(os.path.join(cwd, f)))
+        if not (glob or isdir):
+            return False, "names files / filters (%s)" % f
+    return True, ""
+
+
+def shard_assign(cfg, plan, job, n=None):
+    """Free workers -> [host per shard] (shard i/n runs on result[i-1]), or None when sharding would
+    not help. Auto: every free worker that can start before the best one would have FINISHED the
+    whole job alone takes round(eff / lower-median eff) shards (>= 1, <= its free slots): faster machines
+    get more (e.g. eff 3 / 1.2 / 0.45 -> 3 + 1 + 1). Forced n: one per worker by eta, the rest to
+    whichever would then finish its share soonest."""
+    if not plan.pool:
+        return None
+    free = [h for h in plan.hosts if h.state == "free" and h.eta is not None]
+    free.sort(key=lambda h: h.eta)
+    if not free:
+        if not n:
+            return None
+        free = [h for h in plan.hosts if h.eta is not None][:1] or plan.hosts[:1]
+    best = free[0].eta if free[0].eta is not None else 0
+    elig = [h for h in free if h is free[0] or (h.cold_s or 0) + min(h.rtt or 0, RTT_CAP_S) < best]
+    eff = lambda h: h.eff or h.speed or 1.0                                     # noqa: E731
+    slots = lambda h: max(1, int(_num((h.probe or {}).get("slots_cap"), 1)      # noqa: E731
+                                 - _num((h.probe or {}).get("slots_busy"), 0)))
+    if n:
+        k = {h.name: 0 for h in elig[:n]}
+        hs = elig[:n]
+        for h in hs:
+            k[h.name] = 1
+        for _ in range(n - len(hs)):
+            h = min(hs, key=lambda x: (k[x.name] + 1) / eff(x))
+            k[h.name] += 1
+    else:
+        if len(elig) < 2:
+            return None
+        med = sorted(eff(h) for h in elig)[(len(elig) - 1) // 2]   # lower median: 2 hosts -> the slower
+        hs = elig
+        k = {h.name: max(1, min(slots(h), int(eff(h) / med + 0.5))) for h in hs}
+        mx = int(cfg.get("rr_shard_max", SHARD_MAX))
+        while sum(k.values()) > max(2, mx):
+            h = max((x for x in hs if k[x.name] > 1), key=lambda x: (k[x.name], -eff(x)), default=None)
+            if h is None:
+                hs = hs[:-1]
+                k = {x.name: k[x.name] for x in hs}
+                continue
+            k[h.name] -= 1
+        if len(hs) < 2:
+            return None
+    return [h for h in hs for _ in range(k[h.name])]
+
+
+def shard_summary(texts):
+    """vitest summaries ("Test Files  1 failed | 3 passed (4)", "Tests  ...") of each shard's
+    output -> merged lines in the same shape ([] when no shard printed one)."""
+    tot = {}
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    for t in texts:
+        seen = set()
+        for line in reversed(ansi.sub("", t).splitlines()):    # the last summary of each shard
+            m = re.match(r"^\s*(Test Files|Tests)\s+(.*?)\s*\((\d+)\)\s*$", line)
+            if not m or m.group(1) in seen:
+                continue
+            seen.add(m.group(1))
+            d = tot.setdefault(m.group(1), {"total": 0})
+            d["total"] += int(m.group(3))
+            for cnt, word in re.findall(r"(\d+)\s+([a-z]+)", m.group(2)):
+                d[word] = d.get(word, 0) + int(cnt)
+    out = []
+    for key, pad in (("Test Files", " "), ("Tests", "      ")):
+        d = tot.get(key)
+        if d:
+            parts = ["%d %s" % (d[w], w) for w in ("failed", "passed", "skipped", "todo") if d.get(w)]
+            parts += ["%d %s" % (v, w) for w, v in sorted(d.items())
+                      if w not in ("failed", "passed", "skipped", "todo", "total")]
+            out.append("%s%s  %s (%d)" % (pad, key, " | ".join(parts), d["total"]))
+    return out
+
+
+def fmt_s(s):
+    if s is None:
+        return "-"
+    return "%ds" % round(s) if s < 600 else "%dm" % round(s / 60.0)
+
+
+def where_report(cfg, job, p, shards=None):
+    """Lines for `rrun --where` (shards: shard_assign()'s list, or a why-not string, or None)."""
     lines = ["job class: %s (needs %s GB%s%s)" % (job["cls"], job["need_gb"],
                                                   ", safe to repeat" if job["retry_ok"] else "",
                                                   ", never local" if job["never_local"] else "")]
     lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %6s %7s %5s" % (
-        "worker", "ssh", "state", "free", "load/cpu", "mem GB", "git", "deps", "speed", "score", "share"))
+        "worker", "ssh", "state", "free", "load/cpu", "mem GB", "git", "deps", "speed", "eta", "share"))
     for h in p.hosts:
         pr = h.probe or {}
         free = "-" if not pr else "%d/%d" % (_num(pr.get("slots_cap"), 0) - _num(pr.get("slots_busy"), 0),
@@ -481,11 +741,20 @@ def where_report(cfg, job, p):
         yn = lambda k: "-" if not pr else ("warm" if pr.get(k) else "cold")  # noqa: E731
         lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %6.2f %7s %5s%s" % (
             h.name[:10], str(h.cfg.get("host"))[:16], h.state, free, load, mem, yn("warm_git"),
-            yn("warm_deps"), h.speed, "-" if h.score is None else "%.2f" % h.score,
-            str(pr.get("share") or "-")[:5],
+            yn("warm_deps"), h.speed, fmt_s(h.eta), str(pr.get("share") or "-")[:5],
             "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
+    if isinstance(shards, list):
+        cnt = {}
+        for h in shards:
+            cnt[h.name] = cnt.get(h.name, 0) + 1
+        lines.append("shards: %d (%s)" % (len(shards), ", ".join("%s %d" % kv for kv in cnt.items())))
+    elif shards:
+        lines.append("shards: no (%s)" % shards)
     first = p.hosts[0]
-    if p.local_after_s is not None:
+    if p.promoted is first:
+        lines.append("pick: %s (busy, but its eta beats every free worker: waits for a slot up to %s, "
+                     "then moves on)" % (first.name, fmt_s(60 * first.cfg["rr_wait_min"])))
+    elif p.local_after_s is not None:
         lines.append("pick: %s (all busy: queues there; runs on this machine after %d s of waiting)"
                      % (first.name, p.local_after_s))
     else:

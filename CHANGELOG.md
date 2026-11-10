@@ -2,6 +2,17 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-11-09 - rdocker: `rdocker warm` pre-warms the worker pool
+
+- New launch agent `com.rdocker.warm` on client Macs (`rdocker install`; template
+  `units/com.rdocker.warm.plist`) runs `rdocker warm` (`rd_warm.py`): for the repos this Mac ran rrun in
+  over the last 48 h (at most 2 per pass), every enabled worker that is up, shared, has a free slot and
+  load/CPU < 0.7 gets the repo pushed (rrun's push) and its deps installed through the runner's own
+  prepare, stopped at READY so nothing runs. A pass every 5 min, and at once when a worker comes back
+  online (60 s `ssh true` check). Idempotent; never Docker. Log: `warm.log`. `--once`, `--repo PATH`.
+- rd_run: `runner_frames()` (the runner header + frames, now shared by rrun and the warmer) and
+  `Session.stderr_out` split out of `attempt()` / `relay()`; no behaviour change.
+
 ## 2026-11-09 - rdocker: every heavy one-shot dev command goes to the pool automatically
 
 - The `rrun-route.py` hook now also rewrites `npx tsc` checks (`--noEmit`, or `-p`/`-b` configs with

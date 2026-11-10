@@ -24,6 +24,7 @@ point here). The code lives beside it, in dependency order:
   rd_daemon  launchd forwarder loop, tailscale, global docker context
   rd_fleet   fleet.json registry, ssh Host blocks (config.d/rdocker), add-server, sync-fleet
   rd_run     `rrun` / `rdocker run`: heavy jobs run ON the mini (sends rr_runner.pl each run)
+  rd_warm    `rdocker warm`: pre-warm the pool workers (push + deps) for repos used here lately
   rd_setup   install / setup-mini and the CLI (status, where, main, command)
 If those modules fail to import (any exception, not only ImportError), a shim call still runs
 read-only docker commands unrouted and refuses anything that targets or creates a container (it

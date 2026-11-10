@@ -245,6 +245,40 @@ lockfile / schema / build, or `RRUN=0` to run locally. Works locally but fails o
 file → it is gitignored and not an allowlisted env file: commit it, or generate it in the command. First
 run in a repo is slow (history push + `npm ci`); later runs add ~1-3 s.
 
+## Pool scheduler: finish time, shards, hedges
+
+Every job is re-planned from a fresh probe of every enabled worker (one ssh each, in parallel; nothing
+about "down" is remembered between jobs), so a worker that sleeps or drops out is skipped on the next
+job and one that comes back (or is added to fleet.json) is used at once.
+
+- **Placement = earliest estimated finish.** `eta = cold + queue + job_cost / eff + rtt`;
+  `eff = speed x cpu share x memory factor`. cold = 30 s without the repo's git mirror + 90 s without its
+  packages; queue = 0 with a free slot, else when the first slot holder should finish (from the
+  holders' ages); the memory factor falls to 0.1 when free memory is barely the job's need (full speed
+  only from 1.5x). job_cost (s at speed 1.0) defaults: tsc 60, vitest 60, db 120, lint 30, build 90
+  (`rr_job_cost_s`), replaced by the median of the worker's own last runs of that class (from its
+  `runs.log` tail, 3+ runs; else the whole pool's). Order tried: free workers by eta, then busy ones by
+  eta, then low-memory, down, off. A busy worker goes FIRST only when its eta is at most 0.25x the best
+  free one (`rr_queue_promote_ratio`, 0 = never; e.g. a tsc queued on nickmbp instead of 26 min on a
+  swapping HP), and then waits for its slot only until the free one would have finished. `rrun --where`
+  shows an `eta` column.
+- **Vitest shards (default on).** `vitest run` with no file arguments (or only dirs / globs) and 2+
+  free workers is split with vitest's own `--shard=i/n`: each free worker takes round(eff / median eff)
+  shards (>= 1, <= its free slots, 8 in all; e.g. nickmbp 3, hp 1, laptop 1), all at once. A second shard
+  on the same worker gets its own "lane" mirror (`<repo>-<12 hex>`, reaped like any mirror). Output lines
+  are prefixed `[shard i/n host]`; exit code = the highest shard's; a merged `Test Files` / `Tests`
+  summary is printed last. A shard whose worker is lost before GO moves to the next worker (lost after
+  GO: rerun once, as for any vitest job); if no worker takes it, it runs on this machine.
+  Never sharded: DB jobs, `--watch`, `--ui`, `--coverage*`, `--shard` already, json/junit/blob
+  reporters, `--outputFile`, named test files, `--host`. `RRUN_SHARD=0` = never, `RRUN_SHARD=n` = force
+  n shards (`rr_shard: false` turns auto off).
+- **Hedged duplicates (default OFF: `RRUN_HEDGE=1` or `rr_hedge: true`).** For tsc / lint / vitest /
+  jest only (never DB, never builds): once a run has taken 2x its expected time and a free worker with
+  a 3x better eta shows up (re-probed every 15 s, `rr_hedge_poll_s`), one duplicate starts there with
+  its output held. The first to finish wins and the other is stopped. If the duplicate wins, the
+  original's partial output is already on screen and the duplicate's follows after a marker note.
+  That is why it is off by default.
+
 ## Rentable Mac workers / share switch
 
 A Mac can be a pool **worker** (never the home): fleet.json `os: "mac"`, role `worker`, e.g. `nickmbp`
@@ -273,6 +307,30 @@ takes jobs is the **owner's live switch**, read on the worker before every job (
 - **Speed:** `rdocker bench-worker <name>` runs the same benchmark as Linux's `rd-tune bench` over ssh
   (on a Mac the script is piped in, nothing installed) and stores `~/rr/speed` there, which the probe
   prefers over fleet.json's placeholder. `rrun --bench` also creates a missing `~/rr` (0700) now.
+
+## Pre-warmed workers (`rdocker warm`)
+
+A cold worker spends 90-140 s on a repo's first job (the git history, `npm ci`, `prisma generate`).
+On every client Mac the launch agent `com.rdocker.warm` (installed by `rdocker install`, template
+`units/com.rdocker.warm.plist`) runs `rdocker warm`, which does that work before a job needs it, for the
+repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per pass, newest first.
+
+- **Per enabled fleet worker:** probe it (the same probe rrun uses); if its mirror lacks this HEAD,
+  push (rrun's own push); if the current lockfile's packages are not there, run the runner's real
+  prepare (slot, checkout, overlay, `npm ci` or a store clone, prisma) and stop at READY - GO is never
+  sent, so **no command runs** and the runner exits 130. Warm twice = nothing the second time.
+- **Polite:** one worker at a time (a `~/rr/state/warm.lock` dir on the worker keeps two clients
+  apart), only with a free slot and load/CPU below 0.7, never queued for a slot, never a worker whose
+  share is off (fleet.json `share` or the owner's switch), never Docker (the warm is not a db job, so
+  the runner starts no engine on the home machine or anywhere), no allowlisted env files, no
+  `route.log` line. A worktree with an rrun in flight is skipped this pass.
+- **When:** a pass every 5 min; between passes an `ssh true` per worker every 60 s, and a worker that
+  comes back online (Nick's MacBook waking up) starts a pass at once.
+- `rdocker warm --once [--repo PATH]` runs one pass by hand. Log: `~/.local/state/rdocker/warm.log`, one
+  line per push / prepare / skip (a repeated skip is logged when its reason changes). Keys:
+  `rr_warm_interval_s`, `rr_warm_tick_s`, `rr_warm_window_h`, `rr_warm_max_repos`, `rr_warm_max_load`.
+- On the worker, `~/rr/log/runs.log` shows a warm as `outcome=lost ... cmd_s=- argv=true` (stopped
+  before GO; the command never started).
 
 ## What runs where (automatic)
 
@@ -480,6 +538,7 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 | `rdocker run [-e K[=V]]... [--] <cmd>` / `rrun ...` | run a heavy job (test runner + its DB) on the mini — see "Heavy test jobs on the mini" |
 | `rdocker add-server <name> <tailscale-ip> [--role home,worker] [--admin-user U] [--dry-run]` | provision a Linux box over ssh (`server/provision-linux.sh`) and add it to `fleet.json`; see `/dockersetup server` |
 | `rdocker bench-worker <name>` | benchmark one worker (Linux or Mac) over ssh; stores `~/rr/speed` there (the probe prefers it over fleet.json) |
+| `rdocker warm [--once] [--repo PATH]` | pre-warm the pool workers for repos used here lately (the `com.rdocker.warm` agent runs it in a loop) — see "Pre-warmed workers" |
 | `rdocker sync-fleet [--pull]` | validate `fleet.json`, rewrite `~/.ssh/config.d/rdocker` from it (that file is rdocker-owned; old copies in `~/.ssh/rdocker-backups/`) |
 
 `rdocker status` rows: tailscale on laptop · mini reachable (ssh control connection) · mini docker engine
@@ -494,7 +553,7 @@ for `--` rows (real faults); `WARN` rows are for a human and keep it 0.
 `rdocker --help` exits 0; an unknown command prints usage and exits 2.
 
 Per call: `RDOCKER_MODE=local|mini`, `RDOCKER_BYPASS=1` (raw docker), `RDOCKER_VERBOSE=1` (say why local).
-Logs: `~/.local/state/rdocker/{daemon,route}.log`; state: `health.json`, `forwards.json`, `reserved.json`,
+Logs: `~/.local/state/rdocker/{daemon,route,warm}.log`; state: `health.json`, `forwards.json`, `reserved.json`,
 `janitor.json`, `daemon.json` (running daemon pid/start/code mtime), `attention.json` (+
 `attention-shown.json`, the shim notice's hourly rate state). Config: `~/.config/rdocker/config.json` (stores only keys that differ from the defaults;
 every threshold above is a key there).
@@ -539,7 +598,8 @@ every threshold above is a key there).
 - Unit (~370 tests, fake docker `tests/fake_docker.py`, no mini needed, hermetic temp `RDOCKER_HOME` +
   fail-closed stubs via `tests/rdmods.py`; files `test_args`, `test_daemon`, `test_engine`, `test_entry`,
   `test_janitor`, `test_laptop_janitor`, `test_ports`, `test_shim_safety`, `test_state`, `test_tunnel`,
-  `test_zz_hermetic`; rrun: `test_run` (laptop side end to end through a fake ssh), `test_runner`
+  `test_zz_hermetic`; rrun: `test_run` (laptop side end to end through a fake ssh), `test_pool` /
+  `test_sched` (placement eta, shards, hedges, membership), `test_runner`
   (`rr_runner.pl`: READY/GO handshake, heartbeat kill, INT, env-file deletion, keep-on-failure,
   symlink refusals, tmutil exclusion), `test_hook` (hook rewrite matrix incl. adversarial inputs)):
   `cd ~/.claude-dotfiles/scripts/rdocker && /usr/bin/python3 -m unittest discover -s tests`

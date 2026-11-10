@@ -76,16 +76,24 @@ class ShareScript(unittest.TestCase):
         plugin = os.path.join(bindir, "rdocker-share.1m.sh")
         shutil.copy(PLUGIN, plugin)
         r = self.share(cmd=plugin)
-        self.assertIn("rdocker-share not found", r.stdout)             # never guesses
+        self.assertIn("rdocker-share not installed", r.stdout)         # never guesses
         shutil.copy(SHARE, os.path.join(bindir, "rdocker-share.sh"))
         os.chmod(os.path.join(bindir, "rdocker-share.sh"), 0o755)
         self.share("some")
         out = self.share(cmd=plugin).stdout.splitlines()
-        self.assertEqual(out[0], "rd some")
-        items = [l for l in out if l.startswith("Share: ")]
+        self.assertEqual(out[0], "rd | sfimage=bolt.fill sfcolor=#F5C26B")      # amber bolt = some, no jobs
+        self.assertIn("Sharing: SOME (half this Mac) | color=#F5C26B", out)
+        toggle = [l for l in out if l.startswith("Turn sharing ")]
+        self.assertEqual(len(toggle), 1)                                      # one-click toggle
+        self.assertRegex(toggle[0], r'^Turn sharing OFF \| bash="[^"]+rdocker-share\.sh" param1=off terminal=false refresh=true')
+        items = [l for l in out if l.startswith(("Off:", "Some:", "Max:"))]
         self.assertEqual(len(items), 3)
-        self.assertIn("Share: Some  (now) | bash=", items[1])
-        self.assertRegex(items[0], r'bash="[^"]+rdocker-share\.sh" param1=off terminal=false refresh=true$')
+        self.assertTrue(items[1].startswith("Some: half the cores | bash=") and items[1].endswith("checked=true"))
+        self.assertRegex(items[0], r'param1=off terminal=false refresh=true$')
+        self.share("off")
+        out = self.share(cmd=plugin).stdout.splitlines()
+        self.assertEqual(out[0], "rd off | sfimage=bolt.slash sfcolor=#8a8a8a")
+        self.assertTrue(any(l.startswith("Turn sharing ON (Max) |") and "param1=max" in l for l in out))
 
 
 if __name__ == "__main__":
