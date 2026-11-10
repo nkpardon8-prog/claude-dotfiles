@@ -161,7 +161,7 @@ class Resilience(unittest.TestCase):
         calls = os.path.join(d, "calls")
         fake = os.path.join(d, "curl")
         with open(fake, "w") as f:
-            f.write('#!/bin/sh\nfor a; do last=$a; done\necho "$last" >> %s\nprintf \'{"day":"x"}\'\n' % calls)
+            f.write('#!/bin/sh\nfor a; do last=$a; done\necho "$last" >> %s\nprintf \'{"day":"x","buckets":[{"ts":1}]}\'\n' % calls)
         os.chmod(fake, 0o755)
         out = os.path.join(d, "arch")
         env = rdmods.child_env(rdmods.TEST_HOME, RD_ARCHIVE_CFG=cfg, RD_ARCHIVE_DIR=out, RD_ARCHIVE_CURL=fake, RD_ARCHIVE_DAYS="3")
@@ -176,6 +176,11 @@ class Resilience(unittest.TestCase):
         self.assertTrue(all(f.endswith(".json.gz") for f in files))
         subprocess.run(["/bin/bash", script], env=env, capture_output=True, timeout=30)   # second run: all saved
         self.assertEqual(len(open(calls).read().split()), 3)
+        # an empty day (pruned before it was fetched) is retried, not frozen
+        import gzip
+        with gzip.open(files[0], "wt") as g: g.write('{"day":"x","buckets":[]}')
+        subprocess.run(["/bin/bash", script], env=env, capture_output=True, timeout=30)
+        self.assertEqual(len(open(calls).read().split()), 4)
         shutil.rmtree(d)
 
     def test_archive_without_token_is_a_quiet_noop(self):

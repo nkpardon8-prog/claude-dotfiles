@@ -18,7 +18,8 @@ fail=0
 for n in $(seq 1 "$DAYS"); do
   day=$(date -u -d "-$n day" +%F 2>/dev/null || date -u -v-"$n"d +%F)
   dest="$OUT/${day%%-*}/$day.json.gz"
-  [ -s "$dest" ] && continue
+  # saved and has history: done. An empty day (no 1-min buckets) is fetched again while it is in the window.
+  [ -s "$dest" ] && ! gzip -dc "$dest" 2>/dev/null | grep -q '"buckets":\[\]' && continue
   mkdir -p "$(dirname "$dest")"
   tmp="$dest.part"
   if "$CURL" -fsS --max-time 120 -H "Authorization: Bearer $(cat "$TOKEN_FILE")" "$BASE/api/archive?day=$day" | gzip -9 > "$tmp" \
