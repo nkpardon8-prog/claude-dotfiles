@@ -91,6 +91,15 @@ are auto-routed by a hook to `rrun`, which runs code + DB together on the mini: 
 `RDOCKER_MODE=local` for them; `RRUN=0` opts out. Invoke `/docker` before starting databases
 — it holds the playbook (ports, readiness, seeding, lifetimes, `rrun`).
 
+## Browser work goes to the `devtools` agent — never run devtools on Nick's Mac mini
+Nick's Mac mini (the agent host) has chrome-devtools disabled on purpose: one devtools MCP per session cost
+about 1 GB of RAM there. Don't re-enable it, don't start a debug Chrome, don't run `/devtools` on that machine.
+For any browser task (check a page, click through a flow, console/network errors, screenshots), SendMessage to
+the window `devtools`, the shared devtools service on Omid's MacBook Air. Give it a reachable URL: a deploy or
+preview URL, or your dev server started with `--host 0.0.0.0` and addressed as `http://<this machine's tailscale
+name>:<port>`. `localhost` means the Air, not you. Say exactly what to check, then keep working. It replies with
+the result. It never signs in with credentials sent in messages or clicks destructive controls.
+
 ## Heavy dev work runs on the compute pool, not on your Mac — `rrun`
 Type-checks, unit tests, lint, builds and DB tests run on the worker pool (`fleet.json` in
 `~/.claude-dotfiles/scripts/rdocker/`: Nick's MacBook M5 Max when he shares it, the HP ProDesk, the
