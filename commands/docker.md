@@ -236,6 +236,24 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   Spotlight (`.metadata_never_index`).
 - **Timing:** `RRUN_TIMING=1` prints per-stage times (push, overlay, remote prepare, command) on stderr.
   `rdocker status` has an `rrun` row (last run, runs in flight).
+- **Result cache (on the agent Mac, `~/.local/state/rdocker/cache/`, about 200 MB, least recently used out).**
+  When the code rrun would ship AND the command match a recent run, rrun replays that run's output and
+  exits with its code instead of running it again, with one stderr line: `rrun: cached result (same code +
+  command, 3m ago on hp); RRUN_CACHE=0 to run again`. Passes are kept 24 h, failures 20 min (flakes).
+  **`RRUN_CACHE=0` always runs** (and saves the fresh result); `rrun --where <cmd>` has a `cache:` line
+  (hit / miss / not cached and why). The key is a hash of exactly what the worker gets: the HEAD commit,
+  the base branches pushed (as commits), every uncommitted / untracked / env file rrun sends (path, exec
+  bit, bytes), the deleted files, the env passed (`rr_env_pass` + `-e`, values included), the deps dirs
+  and the runner script, plus the argv, the cwd and the job class. Ignored files that never travel do
+  not count. Each attempt re-hashes what it really sent; if a file changed in between, nothing is saved.
+  Cached: one-shot tsc / vue-tsc / eslint (no `--fix`) / `vitest run` / jest (no watch), directly, via
+  npx or `node [--max-old-space-size=N] <their bin>`, and `npm test` / `npm run test|typecheck|lint[:x]`
+  whose script (pre/post included, read from the package.json rrun ships) is only those tools joined by
+  `&&`. **Never cached:** DB jobs, a DB-looking variable in the env sent or in a shipped env file, a
+  script that sets env vars or runs anything else, builds, `--host` runs (they run, then save), local
+  runs, a run that called `docker` on the worker, an interrupted or hedged run, a sharded run with a lost
+  or local shard, and exit codes 65/69/70/73/75/78 or from a signal. A sharded run is one entry (keyed on
+  the unsharded command), saved after every shard ended. Hits show as target `cache` in `route.log`.
 
 Troubleshooting: falls back to the laptop every time → `rdocker doctor` (the push over ssh is the
 reachability test). Exit 73 → another run holds the mini slot (the wait line names it). Exit 75 → the
@@ -262,6 +280,10 @@ job and one that comes back (or is added to fleet.json) is used at once.
   free one (`rr_queue_promote_ratio`, 0 = never; e.g. a tsc queued on nickmbp instead of 26 min on a
   swapping HP), and then waits for its slot only until the free one would have finished. `rrun --where`
   shows an `eta` column.
+- **Overloaded workers are held off.** A worker whose 1-min load per CPU thread is at least 1.5 at probe
+  time (`rr_overload_ratio`, 0 = off) counts as busy even with a free slot, and its compute estimate is
+  multiplied by load/threads: it gets a job only when it would still finish first (2026-11-10: the WSL
+  laptop, 8 threads, reached load 19). `rrun --where` marks it `(overloaded: held off)`.
 - **Vitest shards (default on).** `vitest run` with no file arguments (or only dirs / globs) and 2+
   free workers is split with vitest's own `--shard=i/n`: each free worker takes round(eff / median eff)
   shards (>= 1, <= its free slots, 8 in all; e.g. nickmbp 3, hp 1, laptop 1), all at once. A second shard
@@ -271,7 +293,9 @@ job and one that comes back (or is added to fleet.json) is used at once.
   GO: rerun once, as for any vitest job); if no worker takes it, it runs on this machine.
   Never sharded: DB jobs, `--watch`, `--ui`, `--coverage*`, `--shard` already, json/junit/blob
   reporters, `--outputFile`, named test files, `--host`. `RRUN_SHARD=0` = never, `RRUN_SHARD=n` = force
-  n shards (`rr_shard: false` turns auto off).
+  n shards (`rr_shard: false` turns auto off). A worker with `"shards": false` in fleet.json (the old
+  Mac minis: 27-211 s prepares made their shards straggle and end `lost`) never gets a shard, nor a
+  shard's failover; it still takes whole jobs.
 - **Hedged duplicates (default OFF: `RRUN_HEDGE=1` or `rr_hedge: true`).** For tsc / lint / vitest /
   jest only (never DB, never builds): once a run has taken 2x its expected time and a free worker with
   a 3x better eta shows up (re-probed every 15 s, `rr_hedge_poll_s`), one duplicate starts there with
@@ -324,6 +348,8 @@ repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per p
   share is off (fleet.json `share` or the owner's switch), never Docker (the warm is not a db job, so
   the runner starts no engine on the home machine or anywhere), no allowlisted env files, no
   `route.log` line. A worktree with an rrun in flight is skipped this pass.
+- **Not warmed:** workers with `"shards": false` in fleet.json (the old minis: their warm sessions mostly
+  ended `lost` after ~30 s of prepare). They still take whole jobs, starting cold.
 - **When:** a pass every 5 min; between passes an `ssh true` per worker every 60 s, and a worker that
   comes back online (Nick's MacBook waking up) starts a pass at once.
 - `rdocker warm --once [--repo PATH]` runs one pass by hand. Log: `~/.local/state/rdocker/warm.log`, one

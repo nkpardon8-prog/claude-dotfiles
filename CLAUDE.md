@@ -109,6 +109,8 @@ test*|typecheck*|lint*`, `npm run test:db` and `npm run build` to `rrun <cmd>`, 
 worker and falls back by itself when one sleeps or goes offline. Watch modes, dev servers, `--fix`/coverage
 runs, bare tool names and pnpm/yarn stay local; for anything else heavy, prefix `rrun` yourself.
 `rrun --where <cmd>` shows which worker it would pick and why.
+The same check on the same code within 24 h (a failure: 20 min) replays the saved result (`rrun: cached
+result ...`); `RRUN_CACHE=0` runs it again.
 Heavy and DB jobs never fall back to this Mac: exit 75 means no worker could take it, so run
 `rdocker status` and tell the user instead of retrying in a loop. `RRUN=0` opts out, only for something
 that must run here (a GUI, a local file watcher).
