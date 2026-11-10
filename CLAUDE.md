@@ -91,6 +91,17 @@ are auto-routed by a hook to `rrun`, which runs code + DB together on the mini: 
 `RDOCKER_MODE=local` for them; `RRUN=0` opts out. Invoke `/docker` before starting databases
 — it holds the playbook (ports, readiness, seeding, lifetimes, `rrun`).
 
+## Heavy dev work runs on the compute pool, not on your Mac — `rrun`
+Type-checks, unit tests, lint, builds and DB tests run on the worker pool (`fleet.json` in
+`~/.claude-dotfiles/scripts/rdocker/`: the HP ProDesk first, the OpenDental laptop as backup) so the Macs
+running agents stay responsive. Prefix the command with `rrun`: `rrun npx tsc --noEmit -p server`,
+`rrun npx vitest run src/x`, `rrun npm run lint`, `rrun npm run build` (build output is copied back).
+`npm run test:db` / `build` / similar are rewritten to `rrun` automatically; a direct `npx tsc`, `vitest` or
+`eslint` is NOT yet, so prefix those yourself. `rrun --where <cmd>` shows which worker it would pick and why.
+Heavy and DB jobs never fall back to this Mac: exit 75 means no worker could take it, so run
+`rdocker status` and tell the user instead of retrying in a loop. `RRUN=0` opts out, only for something
+that must run here (a GUI, a local file watcher).
+
 ## Window naming + reaching other windows — `/line`
 `/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).
 Agents do NOT run it or write the caption automatically. It sets two things at once: the statusline
