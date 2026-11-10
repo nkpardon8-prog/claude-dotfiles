@@ -277,20 +277,30 @@ def interactive(cmd):
     return subprocess.call(cmd)
 
 
-def reporter_secret_cmd(name):
-    """Remote command (stdin-free) that creates ~/.config/rdocker/reporter.json (0600) with a random
-    32-byte secret unless one exists. Never prints the secret."""
+def reporter_secret_cmd(name, url="", role=""):
+    """Remote command (stdin-free) that writes ~/.config/rdocker/reporter.json (0600) in the reporter's
+    format {name, url, key, role, rrRoot}: a random 32-byte key is minted once and kept on re-runs (an
+    older {machine, secret} file is converted, keeping its secret). Never prints the key."""
     code = ("import json,os,secrets; d=os.path.expanduser('~/.config/rdocker'); os.makedirs(d,mode=0o700,exist_ok=True); "
-            "p=d+'/reporter.json'; "
-            "os.path.exists(p) or (lambda f: (f.write(json.dumps({'machine':%r,'secret':secrets.token_hex(32)})), f.close()))"
-            "(os.fdopen(os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'w'))" % name)
+            "p=d+'/reporter.json'; old={}\n"
+            "try: old=json.load(open(p))\nexcept Exception: pass\n"
+            "k=old.get('key') or old.get('secret') or secrets.token_hex(32); "
+            "c={'name':%r,'url':(%r or old.get('url','')),'key':k,'role':(%r or old.get('role','worker')),'rrRoot':'~/rr'}; "
+            "t=p+'.tmp'; fd=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600); os.write(fd,json.dumps(c,indent=1).encode()); "
+            "os.close(fd); os.replace(t,p)" % (name, url, role))
     return "/usr/bin/python3 -c " + shlex.quote(code)
 
 
+def ingest_url(doc):
+    """fleet.json `dashboard` origin -> the reporter's wss://.../ingest URL ('' when unset)."""
+    o = (doc.get("dashboard") or "").strip().rstrip("/") if isinstance(doc, dict) else ""
+    return (re.sub(r"^http", "ws", o) + "/ingest") if o.startswith("http") else ""
+
+
 def secret_put_hint(name, alias):
-    """The owner's command: pipes the secret from the machine into wrangler (never shown, never stored)."""
+    """The owner's command: pipes the key from the machine into wrangler (never shown, never stored)."""
     var = "MACHINE_KEY_" + re.sub(r"[^A-Za-z0-9]", "_", name).upper()
-    read = "import json,os;print(json.load(open(os.path.expanduser('~/.config/rdocker/reporter.json')))['secret'])"
+    read = "import json,os;print(json.load(open(os.path.expanduser('~/.config/rdocker/reporter.json')))['key'],end='')"
     return "ssh %s %s | wrangler secret put %s" % (alias, shlex.quote("/usr/bin/python3 -c " + shlex.quote(read)), var)
 
 
@@ -436,8 +446,14 @@ def add_server(cfg, ns):
     except ValueError:
         pass
     final = {"enabled": True, "roles": roles, **({"speed": speed} if speed and not ns.speed else {})}
-    sh(["ssh", "-o", "BatchMode=yes", m["alias"], reporter_secret_cmd(ns.name)], "reporter secret")
-    sh(["ssh", "-o", "BatchMode=yes", m["alias"], "systemctl --user restart rd-reporter 2>/dev/null; true"], "start reporter (if shipped)")
+    try:
+        url = ingest_url(load_doc((cfg or {}).get("fleet_path")))
+    except FleetError:
+        url = ""
+    sh(["ssh", "-o", "BatchMode=yes", m["alias"], reporter_secret_cmd(ns.name, url, ",".join(roles))], "reporter config")
+    sh(["ssh", "-o", "BatchMode=yes", m["alias"],
+        "export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user daemon-reload 2>/dev/null; "
+        "systemctl --user restart rd-reporter 2>/dev/null; true"], "start reporter")
     expiry = parse_key_expiry(sh(["ssh", "-o", "BatchMode=yes", m["alias"], "tailscale status --json"], "tailscale key expiry")[1])
     if expiry:
         final["ts_key_expiry"] = expiry

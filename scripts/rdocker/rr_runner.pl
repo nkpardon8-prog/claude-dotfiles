@@ -90,6 +90,7 @@ sub main {
     exclude_root();
     my %env = map { defined $ENV{$_} ? ($_ => $ENV{$_}) : () } qw(HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM);
     %env = (%env, %{ $h{env} }, PATH => $path, RRUN_REMOTE => '1');
+    node_heap(\%env);
 
     my $cwd = prepare_mirror();
     deps(\%env);
@@ -323,6 +324,29 @@ sub mem_avail_mb {
     my ($tot) = sysctl_n('hw.memsize') =~ /^(\d+)/;
     return defined $lvl && $tot ? int($tot / 1048576 * $lvl / 100) : undef;
 }
+# V8 sizes its default heap from RAM: ~2 GB on an 8 GB worker, so a full `tsc -p server` that passes on
+# a 16 GB Mac (4 GB default) dies with "JavaScript heap out of memory" here. Give node 70% of RAM,
+# capped at 6 GB and never below 2 GB, unless the caller's NODE_OPTIONS already sets the heap size.
+sub mem_total_mb {
+    if ($OS eq 'linux') {
+        my ($kb) = slurp(($ENV{RR_PROC} // '/proc') . "/meminfo") =~ /^MemTotal:\s*(\d+)/m;
+        return defined $kb ? int($kb / 1024) : undef;
+    }
+    my $b = `/usr/sbin/sysctl -n hw.memsize 2>/dev/null`;
+    return $b =~ /^(\d+)/ ? int($1 / 1048576) : undef;
+}
+
+sub node_heap {
+    my ($env) = @_;
+    my $opts = $env->{NODE_OPTIONS} // '';
+    return if $opts =~ /--max-old-space-size/;
+    my $tot = mem_total_mb() // return;
+    my $mb = int($tot * 0.7);
+    $mb = 6144 if $mb > 6144;
+    $mb = 2048 if $mb < 2048;
+    $env->{NODE_OPTIONS} = join ' ', grep { length } $opts, "--max-old-space-size=$mb";
+}
+
 sub mem_ok {
     my $need = $h{need_gb} or return 1;
     my $mb = mem_avail_mb();

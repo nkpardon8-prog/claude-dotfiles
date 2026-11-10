@@ -66,7 +66,7 @@ export DEBIAN_FRONTEND=noninteractive
 # 1. packages ---------------------------------------------------------------------------------------
 say packages
 run apt-get update -qq
-run apt-get install -y -qq ca-certificates curl gnupg openssh-server chrony git perl python3 rsync tar e2fsprogs util-linux sudo
+run apt-get install -y -qq ca-certificates curl gnupg openssh-server chrony git perl python3 rsync tar e2fsprogs util-linux sudo libatomic1 build-essential   # node >= 25 links libatomic; native npm addons need a compiler
 
 # 2. user + client keys -----------------------------------------------------------------------------
 say user

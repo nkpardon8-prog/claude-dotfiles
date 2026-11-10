@@ -111,7 +111,10 @@ class Resilience(unittest.TestCase):
         os.makedirs(os.path.join(src, "reporter", "units"))
         with open(os.path.join(src, "reporter", "units", "rd-reporter.service"), "w") as f:
             f.write("[Service]\nExecStart=/bin/true\n")
+        with open(os.path.join(src, "reporter", "rd-reporter.mjs"), "w") as f:
+            f.write("// reporter\n")
         self.apply(src=src)
+        self.assertEqual(self.f("/home/rd/.local/share/rdocker/reporter/rd-reporter.mjs"), "// reporter\n")  # the unit's ExecStart
         d = self.f("/home/rd/.config/systemd/user/rd-reporter.service.d/10-rdocker-restart.conf")
         self.assertIn("Restart=always", d)
         self.assertIn("systemctl --user enable rd-reporter.service", self.f("systemctl.log"))

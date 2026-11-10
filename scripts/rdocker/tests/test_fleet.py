@@ -13,7 +13,10 @@ import rd_common
 import rd_fleet
 import rd_setup
 
-with open(rd_common.FLEET_PATH) as _f:
+# A frozen snapshot of the planned fleet (before any machine joined): the live fleet.json changes on
+# every `add-server`, so shape tests pin this fixture; test_live_registry_is_valid checks the real one.
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "fleet.json")
+with open(FIXTURE) as _f:
     REAL = json.load(_f)
 
 
@@ -29,6 +32,13 @@ class Fleet(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="rdk-fleet-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.doc = copy.deepcopy(REAL)
+        p = mock.patch.object(rd_common, "FLEET_PATH", FIXTURE)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_live_registry_is_valid(self):
+        with open(os.path.join(rd_common.HERE, "fleet.json")) as f:
+            self.assertEqual(rd_fleet.problems(json.load(f)), [])
 
     def test_shipped_fleet_is_valid_and_matches_the_plan(self):
         self.assertEqual(rd_fleet.problems(REAL), [])
@@ -178,7 +188,8 @@ class AddServer(unittest.TestCase):
         self.assertTrue(any("ssh-keygen -R macmini-docker" == c for c in flat))
         self.assertTrue(any(c.endswith("rd-tune bench") and "rd-hp" in c for c in flat))
         sec = next(c for c in flat if "reporter.json" in c and "secrets.token_hex" in c)
-        self.assertIn("O_EXCL", sec)                                                  # never rotates an existing secret
+        self.assertIn("old.get('key') or old.get('secret')", sec.replace("'\"'\"'", "'"))  # never rotates an existing key
+        self.assertIn("0o600", sec)
         self.assertTrue(any(c[0] == "git" and "commit" in c for c in self.cmds))
         self.assertFalse(any(c[0] == "git" and "push" in c for c in self.cmds))        # --no-push
         fl = rd_fleet.load()

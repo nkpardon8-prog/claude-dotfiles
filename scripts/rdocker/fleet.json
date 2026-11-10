@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "dashboard": "https://spine-fleet.zomid777.workers.dev",
   "client_keys": [
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMfsnnvUSjDFvrdiCqyxmCSA6eS7V5W+PMm162+cmLKW rdocker@macbookair-m4",
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOcxNODXJ9Yd7tQ0S7LHwy7BHjB5QXYQPpQmzOHk0vLJ nicholaspardon@Nicholass-Mac-mini.local"
@@ -35,8 +36,8 @@
       ],
       "speed": 1.24,
       "max_slots": 4,
-      "heavy_slots": 2,
-      "mem_gb": 32,
+      "heavy_slots": 1,
+      "mem_gb": 8,
       "enabled": true,
       "ts_key_expiry": "2027-05-09"
     },

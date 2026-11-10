@@ -61,6 +61,9 @@ if [ -f "$SRC/reporter/units/rd-reporter.service" ]; then    # user unit (lane C
   [ -n "$R" ] || UDIR="$(getent passwd "$RD_USER" | cut -d: -f6)/.config/systemd/user"
   mkdir -p "$UDIR/rd-reporter.service.d"
   install -m 644 "$SRC/reporter/units/rd-reporter.service" "$UDIR/rd-reporter.service"
+  RDIR="${UDIR%/.config/systemd/user}/.local/share/rdocker/reporter"   # the unit's ExecStart target
+  mkdir -p "$RDIR" && install -m 644 "$SRC/reporter/rd-reporter.mjs" "$RDIR/rd-reporter.mjs"
+  [ -n "$R" ] || chown -R "$RD_USER": "${UDIR%/.config/systemd/user}/.local/share/rdocker" 2>/dev/null || true
   printf '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestart=always\nRestartSec=5\n' > "$UDIR/rd-reporter.service.d/10-rdocker-restart.conf"
   if [ -z "$R" ]; then
     chown -R "$RD_USER": "$(dirname "$UDIR")/.." 2>/dev/null || true

@@ -523,6 +523,23 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.rc, 73, r.err)
         self.assertEqual(self.run_runner(["true"], need_gb=2, env_extra=kw).rc, 0)
 
+    def test_node_heap_follows_worker_ram_unless_set(self):
+        """V8's ~2 GB default on an 8 GB worker OOMs `tsc -p server`: the runner sizes the heap (70% of
+        RAM, 2-6 GB) and never overrides a caller's own --max-old-space-size."""
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc)
+        show = ["/bin/sh", "-c", 'printf "%s" "$NODE_OPTIONS"']
+        for total_kb, want in ((8000000, "--max-old-space-size=5468"), (32000000, "--max-old-space-size=6144"),
+                               (2000000, "--max-old-space-size=2048")):
+            wfile(os.path.join(proc, "meminfo"), "MemTotal: %d kB\nMemAvailable: %d kB\n" % (total_kb, total_kb // 2))
+            r = self.run_runner(show, env_extra=dict(RR_OS="linux", RR_PROC=proc))
+            self.assertEqual(r.out, want, r.err)
+        r = self.run_runner(show, env={"NODE_OPTIONS": "--max-old-space-size=1024 --trace-warnings"},
+                            env_extra=dict(RR_OS="linux", RR_PROC=proc))
+        self.assertEqual(r.out, "--max-old-space-size=1024 --trace-warnings")
+        r = self.run_runner(show, env={"NODE_OPTIONS": "--trace-warnings"}, env_extra=dict(RR_OS="linux", RR_PROC=proc))
+        self.assertEqual(r.out, "--trace-warnings --max-old-space-size=2048")
+
     def test_declared_outputs_are_removed_from_the_mirror_first(self):
         wfile(os.path.join(self.src, ".gitignore"), "node_modules\n.env*\ndist\n")
         self.git("-C", self.src, "commit", "-qam", "ignore dist")

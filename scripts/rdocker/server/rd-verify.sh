@@ -94,8 +94,9 @@ TSIP=$(tailscale ip -4 2>/dev/null | head -1)
 if [ -n "${RD_SS_FILE:-}" ]; then SS=$(cat "$RD_SS_FILE"); else SS=$(ss -H -tlnup 2>/dev/null); fi
 exposed=$(echo "$SS" | awk -v ts="$TSIP" '
   { addr = $5; proc = $0; sub(/:[0-9]+$/, "", addr); gsub(/[\[\]]/, "", addr)
-    if (addr ~ /^127\./ || addr == "::1" || addr == "lo" || (ts != "" && addr == ts) || addr ~ /%lo$/ || addr ~ /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./) next   # 100.64/10 = Tailscale
+    if (addr ~ /^127\./ || addr == "::1" || addr == "lo" || (ts != "" && addr == ts) || addr ~ /%lo$/ || addr ~ /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./ || addr ~ /^fd7a:115c:a1e0:/ || addr ~ /%tailscale0$/) next   # 100.64/10 + fd7a:115c:a1e0::/48 = Tailscale
     if (proc ~ /"(tailscaled|chronyd|dhclient|NetworkManager|systemd-network)"/) next
+    if ($1 == "udp" && $5 ~ /:(68|546|41641)$/) next   # DHCPv4/v6 client + WireGuard: process names are hidden without root
     print $1 " " $5 }')
 [ -z "$exposed" ] && res PASS no-exposed-listeners || res FAIL no-exposed-listeners "$(echo "$exposed" | head -3 | tr '\n' ';')"
 # reporter: 0600, owned by the service user, never listens (outbound only; covered by the listener check)
