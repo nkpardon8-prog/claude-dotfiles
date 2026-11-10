@@ -93,11 +93,13 @@ are auto-routed by a hook to `rrun`, which runs code + DB together on the mini: 
 
 ## Heavy dev work runs on the compute pool, not on your Mac — `rrun`
 Type-checks, unit tests, lint, builds and DB tests run on the worker pool (`fleet.json` in
-`~/.claude-dotfiles/scripts/rdocker/`: the HP ProDesk first, the OpenDental laptop as backup) so the Macs
-running agents stay responsive. Prefix the command with `rrun`: `rrun npx tsc --noEmit -p server`,
-`rrun npx vitest run src/x`, `rrun npm run lint`, `rrun npm run build` (build output is copied back).
-`npm run test:db` / `build` / similar are rewritten to `rrun` automatically; a direct `npx tsc`, `vitest` or
-`eslint` is NOT yet, so prefix those yourself. `rrun --where <cmd>` shows which worker it would pick and why.
+`~/.claude-dotfiles/scripts/rdocker/`: Nick's MacBook M5 Max when he shares it, the HP ProDesk, the
+OpenDental laptop) so the Macs running agents stay responsive. **Just type the normal command**: a hook
+rewrites one-shot `npx tsc --noEmit`, `npx vitest run ...`, `npx eslint ...`, `npm test` / `npm run
+test*|typecheck*|lint*`, `npm run test:db` and `npm run build` to `rrun <cmd>`, which picks the best free
+worker and falls back by itself when one sleeps or goes offline. Watch modes, dev servers, `--fix`/coverage
+runs, bare tool names and pnpm/yarn stay local; for anything else heavy, prefix `rrun` yourself.
+`rrun --where <cmd>` shows which worker it would pick and why.
 Heavy and DB jobs never fall back to this Mac: exit 75 means no worker could take it, so run
 `rdocker status` and tell the user instead of retrying in a loop. `RRUN=0` opts out, only for something
 that must run here (a GUI, a local file watcher).
