@@ -102,9 +102,9 @@ the result. It never signs in with credentials sent in messages or clicks destru
 
 ## Heavy dev work runs on the compute pool, not on your Mac — `rrun`
 Type-checks, unit tests, lint, builds and DB tests run on the worker pool (`fleet.json` in
-`~/.claude-dotfiles/scripts/rdocker/`: Nick's MacBook M5 Max when he shares it, the HP ProDesk, the
-OpenDental laptop) so the Macs running agents stay responsive. **Just type the normal command**: a hook
-rewrites one-shot `npx tsc --noEmit`, `npx vitest run ...`, `npx eslint ...`, `npm test` / `npm run
+`~/.claude-dotfiles/scripts/rdocker/`: Nick's MacBook M5 Max when he shares it, the HP ProDesk, two old
+Mac minis on Linux, the OpenDental laptop) so the Macs running agents stay responsive. **Just type the normal command**: a hook
+rewrites one-shot `npx tsc --noEmit`, `npx vitest run ...`, `npx eslint ...` (also as `npm exec ...`), `npm test` / `npm run
 test*|typecheck*|lint*`, `npm run test:db` and `npm run build` to `rrun <cmd>`, which picks the best free
 worker and falls back by itself when one sleeps or goes offline. Watch modes, dev servers, `--fix`/coverage
 runs, bare tool names and pnpm/yarn stay local; for anything else heavy, prefix `rrun` yourself.
@@ -112,6 +112,9 @@ runs, bare tool names and pnpm/yarn stay local; for anything else heavy, prefix 
 Heavy and DB jobs never fall back to this Mac: exit 75 means no worker could take it, so run
 `rdocker status` and tell the user instead of retrying in a loop. `RRUN=0` opts out, only for something
 that must run here (a GUI, a local file watcher).
+Heavy dev work that runs on an agent Mac anyway (a test, type-check, build or script burning CPU there) is
+logged as a **leak** on the fleet dashboard's offload panel, with the command, so the routing can learn it:
+when you start one the hook did not catch, prefix `rrun`.
 
 ## Window naming + reaching other windows — `/line`
 `/line <sentence>` is the **user-run** command that names a window (no argument clears the caption).
