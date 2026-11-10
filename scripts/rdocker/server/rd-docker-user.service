@@ -1,0 +1,12 @@
+[Unit]
+Description=rdocker DOCKER-USER firewall chain (no LAN/physical-interface traffic into containers)
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/rd-docker-user
+
+[Install]
+WantedBy=multi-user.target docker.service

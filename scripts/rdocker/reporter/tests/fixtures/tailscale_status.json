@@ -1,0 +1,9 @@
+{
+  "Version": "1.90.0",
+  "Self": { "HostName": "hp-prodesk", "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"], "Online": true },
+  "Peer": {
+    "nodekey:a": { "HostName": "odwin", "TailscaleIPs": ["100.64.0.2"], "OS": "linux", "Online": true, "CurAddr": "192.168.1.20:41641", "Relay": "lax" },
+    "nodekey:b": { "HostName": "macbook-air", "TailscaleIPs": ["100.64.0.3"], "OS": "macOS", "Online": true, "CurAddr": "", "Relay": "ord" },
+    "nodekey:c": { "HostName": "openclaw-macmini", "TailscaleIPs": ["100.78.43.6"], "OS": "linux", "Online": false, "CurAddr": "", "Relay": "lax" }
+  }
+}

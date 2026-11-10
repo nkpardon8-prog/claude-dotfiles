@@ -19,6 +19,7 @@ import rd_route
 import rd_janitor
 import rd_daemon
 import rd_run
+import rd_fleet
 
 
 # ---------------------------------------------------------------------------- install / setup
@@ -126,14 +127,7 @@ def ssh_bootstrap(cfg):
     block = os.path.join(blocks, "rdocker")
     if not os.path.exists(block):
         with open(block, "w") as f:
-            f.write("Host {host}\n  HostName {hostname}\n  Port {port}\n  HostKeyAlias {host}\n"
-                    "  User {user}\n  IdentityFile ~/.ssh/rdocker_ed25519\n"
-                    "  IdentitiesOnly yes\n  ControlMaster auto\n"
-                    "  ControlPath ~/.ssh/rdocker-%C\n  ControlPersist 30m\n"
-                    "  ServerAliveInterval 15\n  ServerAliveCountMax 3\n"
-                    "  ConnectTimeout 5\n  StrictHostKeyChecking accept-new\n".format(
-                        host=cfg["host"], hostname=cfg["ssh_hostname"], port=cfg.get("ssh_port") or 22,
-                        user=cfg["ssh_user"]))
+            f.write(rd_fleet.host_block(cfg["host"], cfg["ssh_hostname"], cfg.get("ssh_port") or 22, cfg["ssh_user"]))
         os.chmod(block, 0o600)
     config = os.path.join(ssh_dir, "config")
     include = "Include ~/.ssh/config.d/*\n"
@@ -446,7 +440,7 @@ def status(cfg, fix=False):
     for ok, label, detail in (daemon_rows(now) + [health_age_row(prior, now)]
                               + janitor_rows(cfg, now) + [janitor_stopped_row(now),
                                                           fallback_pins_row(cfg),
-                                                          rd_run.status_row(now)]):
+                                                          rd_run.status_row(now), fleet_row()]):
         row(ok, label, detail)
     if fix and h.get("docker_ok"):
         rd_tunnel.sync_forwards(cfg, verbose=True)
@@ -473,6 +467,18 @@ def status(cfg, fix=False):
     # rc: only `--` rows (real faults: mini/engine/daemon/shim down, recent janitor error, port
     # conflicts) fail status; WARN rows are attention items for a human and keep rc 0.
     return all(not r.startswith("-- ") for r in rows)
+
+
+def fleet_row():
+    try:
+        fleet = rd_fleet.load()
+    except rd_fleet.FleetError as e:
+        return (False, "fleet", str(e)[:200])
+    h = rd_fleet.home(fleet)
+    on = rd_fleet.workers(fleet)
+    return (True, "fleet", "%d machines; home=%s; workers=%s (%d of %d worker entries enabled)" % (
+        len(fleet), h["name"] if h else "none", ",".join(m["name"] for m in on) or "none", len(on),
+        sum("worker" in m["roles"] for m in fleet)))
 
 
 def attention_rows(now):
@@ -660,6 +666,23 @@ def build_parser():
                    help="environment for the remote command (repeatable); a bare NAME forwards "
                    "that variable's value from rrun's own environment (keeps it out of argv)")
     s.add_argument("argv", nargs=argparse.REMAINDER, metavar="[--] command ...")
+    s = sp.add_parser("add-server", help="provision a Linux box over ssh (docker, sshd, tuning) and add it "
+                      "to the fleet (fleet.json)")
+    s.add_argument("name")
+    s.add_argument("ip", metavar="tailscale-ip")
+    s.add_argument("--role", default="worker", help="comma list of home,worker (default worker)")
+    s.add_argument("--user", default="rd", help="the service user the box gets (default rd)")
+    s.add_argument("--admin-user", metavar="U", help="existing sudo-capable login for the first connection "
+                   "(default: --user)")
+    s.add_argument("--port", type=int, default=22, help="sshd port (and the port used to connect)")
+    s.add_argument("--alias", help="ssh Host alias (default rd-<name>)")
+    s.add_argument("--speed", type=float, help="set speed by hand instead of the benchmark")
+    s.add_argument("--max-slots", type=int)
+    s.add_argument("--heavy-slots", type=int)
+    s.add_argument("--no-push", action="store_true", help="commit fleet.json but do not push the dotfiles")
+    s.add_argument("--dry-run", action="store_true", help="print the commands, change nothing")
+    s = sp.add_parser("sync-fleet", help="validate fleet.json and rewrite ~/.ssh/config.d/rdocker from it")
+    s.add_argument("--pull", action="store_true", help="git pull --ff-only the dotfiles first")
     sp.add_parser("install", help="client side: SSH identity, context, shims, forwarder, pins")
     s = sp.add_parser("authorize-client", help="add a client SSH public key to the mini")
     s.add_argument("public_key", metavar="PUBLIC_KEY")
@@ -791,6 +814,10 @@ def command(argv):
     if cmd == "run":
         return rd_run.rrun(ns.argv, ns.env)
     cfg = rd_common.load_cfg()
+    if cmd == "add-server":
+        return rd_fleet.add_server(cfg, ns)
+    if cmd == "sync-fleet":
+        return rd_fleet.sync(cfg, pull=ns.pull)
     if cmd == "authorize-client":
         return authorize_client(cfg, ns.public_key)
     if cmd in ("status", "doctor"):

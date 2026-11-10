@@ -8,7 +8,13 @@
 #   "<len>\n" + <len> bytes of UTF-8 JSON header
 #       {nonce, repo_slug, wt12, sha, relcwd, argv[], env{}, deleted[], tar_len,
 #        stamps{dirs[], npm_args[]}, slots, wait_min, keep_containers_on_fail,
-#        optional env_files[], hb_timeout, slots_base, spare_min_free_pct, spare_max_load}
+#        optional env_files[], hb_timeout, slots_base, spare_min_free_pct, spare_max_load,
+#        cls, need_gb, heavy_slots, outputs[]}
+#   cls=heavy + heavy_slots: a heavy job also holds one of $ROOT/slots/heavy-<i> (flock);
+#   need_gb: a slot is only taken while at least that much memory is available (re-checked here,
+#   the client's probe can race another client); outputs: repo-relative build output paths,
+#   deleted from the mirror before the command runs (git clean keeps ignored files) so a stale
+#   dist never copies back. $ROOT/slots.cap (written by rd-tune) caps `slots`.
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
 #   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start.
 # Exactly-once handshake: after checkout, overlay, deps and the slot, the runner prints
@@ -19,7 +25,7 @@
 # random bits the tested code never sees (not in its env, shim or container labels; those use a
 # separate random label token), so it cannot forge them. Exit = the command's rc (or 128+sig);
 # 65 bad header/overlay/unsafe path, 69 missing bare repo, 70 runner error, 73 no free slot,
-# 78 dependency install (npm ci / prisma generate / local package rebuild) failed, 130 gave up before the command started.
+# 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started.
 # Every run appends one line to $ROOT/log/runs.log (see run_log; no env values, never fails a run).
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
 # RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server).
@@ -43,11 +49,11 @@ my $OS = $ENV{RR_OS} || $^O;                # RR_OS: tests only
 my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || (-x '/opt/homebrew/bin/docker' || $^O ne 'linux' ? '/opt/homebrew/bin/docker' : '/usr/bin/docker');
 my $SLUG = qr/^(?!\.\.?$)[A-Za-z0-9._-]+$/;    # one path component; never "." or ".."
 
-my (%h, $nonce, $label, $tmp, $mirror, $envlist, $lock_fh, $who, $started);
+my (%h, $nonce, $label, $tmp, $mirror, $envlist, $lock_fh, $who, $started, $heavy_fh);
 my (@env_written, @overlay);
 my ($stdin_open, $inbuf, $last_hb, $go) = (1, '', time, 0);
 my ($lost, $intr, $intr_done) = (0, 0, 0);    # lost: laptop gone / runner signalled; intr: Ctrl-C count
-my $EX_DEPS = 78;    # EX_CONFIG: npm ci / prisma generate / local rebuild failed (never the command's own rc)
+my $EX_DEPS = 78;    # EX_CONFIG: npm ci / prisma generate failed (never the command's own rc)
 our $supervising = 0;
 our $QUIET = 0;    # run_cmd: also send the tool's stderr to /dev/null
 my %reaped;
@@ -190,6 +196,10 @@ sub read_header {
     my $npm_args = $h{stamps}{npm_args} // [];
     fail("bad npm_args", 65) if grep { ref || /\0/ } @$npm_args;
     $h{stamps}{npm_args} = $npm_args;
+    $h{outputs} = [ map { check_rel('output path', $_) } @{ ref $h{outputs} eq 'ARRAY' ? $h{outputs} : [] } ];
+    fail("bad cls", 65) if defined $h{cls} && $h{cls} !~ /^[a-z]+$/;
+    fail("bad need_gb", 65) if defined $h{need_gb} && $h{need_gb} !~ /^\d+(\.\d+)?$/;
+    fail("bad heavy_slots", 65) if defined $h{heavy_slots} && $h{heavy_slots} !~ /^\d+$/;
     $h{tar_len} //= 0;
     fail("bad tar_len", 65) unless $h{tar_len} =~ /^\d+$/;
     @overlay = parse_tar(read_exact($h{tar_len}));    # validated before anything is written
@@ -302,16 +312,55 @@ sub spare_room {
     return $free >= $min && $load / $ncpu <= $max;
 }
 
+# Available memory in MB (Linux MemAvailable; macOS memorystatus_level % of hw.memsize), undef
+# when unreadable (then the need_gb gate does not block: the run would otherwise never start).
+sub mem_avail_mb {
+    if ($OS eq 'linux') {
+        my ($av) = slurp(($ENV{RR_PROC} // '/proc') . "/meminfo") =~ /^MemAvailable:\s*(\d+)/m;
+        return defined $av ? int($av / 1024) : undef;
+    }
+    my ($lvl) = sysctl_n('kern.memorystatus_level') =~ /^(\d+)/;
+    my ($tot) = sysctl_n('hw.memsize') =~ /^(\d+)/;
+    return defined $lvl && $tot ? int($tot / 1048576 * $lvl / 100) : undef;
+}
+sub mem_ok {
+    my $need = $h{need_gb} or return 1;
+    my $mb = mem_avail_mb();
+    return !defined $mb || $mb >= $need * 1024;
+}
+# rd-tune's live cap on concurrent runs ($ROOT/slots.cap: a number); undef = no cap file.
+sub slots_cap {
+    my $f = "$ROOT/slots.cap";
+    return undef if -l $f;
+    my ($c) = slurp($f) =~ /^\s*(\d+)/;
+    $c;
+}
+# A heavy job (cls=heavy with heavy_slots in the header) also holds one heavy-<i> flock.
+sub take_heavy {
+    my ($dir) = @_;
+    return 1 unless ($h{cls} // '') eq 'heavy' && defined $h{heavy_slots};
+    for my $i (0 .. $h{heavy_slots} - 1) {
+        my $fh = open_nofollow("$dir/heavy-$i", O_RDWR);
+        if (flock($fh, LOCK_EX | LOCK_NB)) { $heavy_fh = $fh; return 1 }
+        close $fh;
+    }
+    0;
+}
+
 sub take_slot {
     my $dir = mk("$ROOT/slots");
     my $n = $h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1;
+    my $cap = slots_cap();
+    $n = $cap if defined $cap && $cap < $n;    # 0 = drained: wait (then 73) like a full mini
     my $base = defined $h{slots_base} && $h{slots_base} =~ /^\d+$/ && $h{slots_base} >= 1
         && $h{slots_base} < $n ? $h{slots_base} : $n;
     my $deadline = time + 60 * ($h{wait_min} // 30);
     my $said;
     while (1) {
         my $spare = $base < $n && spare_room();
-        for my $i (0 .. ($spare ? $n : $base) - 1) {
+        my $gate = take_heavy($dir) && mem_ok();
+        if (!$gate && $heavy_fh) { close $heavy_fh; undef $heavy_fh }
+        for my $i ($gate ? (0 .. ($spare ? $n : $base) - 1) : ()) {
             # flock(2) == the lock `/usr/bin/lockf -k` takes; it dies with this process (even -9).
             my $fh = open_nofollow("$dir/$i", O_RDWR);
             if (flock($fh, LOCK_EX | LOCK_NB)) {
@@ -326,7 +375,9 @@ sub take_slot {
                 write_file($who, "$h{repo_slug} " . int(time) . " $$ $h{wt12}\n");
                 return;
             }
+            close $fh;
         }
+        if ($heavy_fh) { close $heavy_fh; undef $heavy_fh }
         if (!$said++) {
             my ($slug, $t) = split ' ', slurp("$dir/0.who");
             status(sprintf "WAIT holder=%s age=%d", $slug // '?', time - ($t // time));
@@ -393,6 +444,11 @@ sub prepare_mirror {
         unless defined $rw && defined $rm && !-l $mirror && index($rm, "$rw/") == 0;
     git('-C', $mirror, 'checkout', '-q', '-f', '--detach', $h{sha});
     git('-C', $mirror, 'clean', '-fdq');    # not -x: ignored files (node_modules) survive
+    for my $rel (@{ $h{outputs} }) {        # stale build outputs (ignored, so clean kept them)
+        next unless safe_parent($rel, 0);
+        my $p = "$mirror/$rel";
+        if (-l $p || -f _) { unlink $p } elsif (-d _) { remove_tree($p) }
+    }
     $envlist = "$ROOT/w/.$h{repo_slug}-$h{wt12}.envlist";
     delete_env_files(1);                    # leftovers of a run that was killed -9
     for my $rel (@{ $h{deleted} }) {
@@ -476,70 +532,9 @@ sub store_clone {    # -> 1 when $dir/node_modules is now a clone of the store e
     }
     my $nm = "$dir/node_modules";
     if (-l $nm) { unlink $nm } elsif (-e $nm) { remove_tree($nm) }
-    # the store holds node_modules only: this mirror's ignored local-package builds (dist/) were not
-    # made by that install, so drop the copied local stamp and let deps() rebuild them
-    if (rename($t, $nm)) { unlink "$nm/.rr-local-stamp"; return 1 }
+    return 1 if rename($t, $nm);
     remove_tree($t);
     return 0;
-}
-
-# Local packages: `file:` / `link:` dependencies that are directories inside the mirror (found from
-# package.json, transitively through their own dependencies; dependencies first). npm links them, so
-# their build output (an ignored dist/) lives in the mirror, outside node_modules and outside the
-# lockfile stamp: a source change with an unchanged lockfile skips npm ci and would leave the old
-# build in place (2026-11-06: dentall server's @summit/staff-signin-core, "... is not a function").
-# Outside the mirror, registry specs and tarballs are not ours to build and are skipped.
-sub local_deps {
-    my ($dir, $rm, $seen, $out, $top) = @_;
-    my $pkg = eval { JSON::PP->new->decode(slurp("$dir/package.json")) } || {};
-    for my $sect ($top ? qw(dependencies devDependencies optionalDependencies) : qw(dependencies optionalDependencies)) {
-        my $d = $pkg->{$sect};
-        next unless ref $d eq 'HASH';
-        for my $name (sort keys %$d) {
-            my $spec = $d->{$name};
-            next unless defined $spec && !ref $spec && $spec =~ m{^(?:file|link):(?!//)(.+)$};
-            my $p = $1;
-            my $t = realpath($p =~ m{^/} ? $p : "$dir/$p");
-            next unless defined $t && -d $t && -f "$t/package.json" && index($t, "$rm/") == 0;
-            next if $seen->{$t}++;
-            local_deps($t, $rm, $seen, $out, 0);
-            push @$out, $t;
-        }
-    }
-    $out;
-}
-
-sub rel_of { my ($p, $rm) = @_; $p eq $rm ? '' : substr($p, length($rm) + 1) }
-
-# A local package's source = its tracked + untracked-not-ignored files (so the overlay's dirty and
-# new files count, and its ignored build output and node_modules do not), hashed by sha_files.
-sub source_hash {
-    my ($rel) = @_;
-    my $list = "$tmp/ls-files";
-    run_cmd($list, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', $mirror,
-            'ls-files', '-z', '-co', '--exclude-standard', '--', $rel, ':(exclude,glob)**/node_modules/**') == 0
-        or fail("git ls-files ./$rel failed", $EX_DEPS);
-    sha_files(sort grep { -f } map { "$mirror/$_" } grep { length } split /\0/, slurp($list));
-}
-
-# npm ci runs a linked package's own preinstall/install/postinstall/prepare and then the depending
-# package's; a rebuild runs the same scripts in the same order. -> 1 when $dir's postinstall ran.
-sub rebuild_local {
-    my ($env, $dir, $rm, @local) = @_;
-    my $post_ran = 0;
-    for my $t (@local, $dir) {
-        my $pkg = eval { JSON::PP->new->decode(slurp("$t/package.json")) } || {};
-        my $sc = ref $pkg->{scripts} eq 'HASH' ? $pkg->{scripts} : {};
-        my $tr = rel_of(realpath($t) // $t, $rm);
-        for my $s (grep { defined $sc->{$_} && !ref $sc->{$_} && length $sc->{$_} } qw(preinstall install postinstall prepare)) {
-            print STDERR "rrun: npm run $s  (in ./$tr)\n";
-            my $rc = npm($env, $t, 'run', $s);
-            return -1 if $lost || $intr;
-            deps_failed("npm run $s", $tr, $rc) if $rc;
-            $post_ran = 1 if $t eq $dir && $s eq 'postinstall';
-        }
-    }
-    $post_ran;
 }
 
 sub store_save {     # after a real install: publish $dir/node_modules (incl. its stamps) to the store
@@ -607,28 +602,6 @@ sub deps {
             write_file("$dir/node_modules/.rr-deps-stamp", $stamp);
             push @saves, [$rel, $dir, $stamp];
         }
-        # local stamp: the source of every local file:/link: package + node version. npm ci has just
-        # built them from this source; otherwise a mismatch (or no stamp: a fresh or store-cloned
-        # node_modules) reruns their lifecycle scripts. A failed rebuild exits $EX_DEPS before the
-        # stamp is written, so a stale build is never used and the next run retries.
-        my $post_ran = 0;
-        my @local = @{ local_deps($rd, $rm, { $rd => 1 }, [], 1) };
-        if (@local) {
-            my $lstamp = join('', map { my $r = rel_of($_, $rm); "$r " . source_hash($r) . "\n" } @local) . $nodev;
-            my $lfile = "$dir/node_modules/.rr-local-stamp";
-            my $have = slurp($lfile);
-            if (!$installed && $have ne $lstamp) {
-                print STDERR "rrun: local package source changed (" . join(', ', map { './' . rel_of($_, $rm) } @local)
-                           . ") - rebuilding  (in ./$rel)\n";
-                $post_ran = rebuild_local($env, $dir, $rm, @local);
-                return if $post_ran < 0;    # main() reports it
-            }
-            if ($have ne $lstamp) {
-                mk("$dir/node_modules");
-                unlink $lfile;
-                write_file($lfile, $lstamp);
-            }
-        }
         # schema stamp: *.prisma in ./prisma and in the dir of a `--schema X` named by the package's own
         # postinstall; a change means generate, not a reinstall. When postinstall runs prisma generate
         # (it knows the schema path and generator), rerun it; else `npx prisma generate`. No schema
@@ -648,7 +621,7 @@ sub deps {
         }
         next unless @schemas;
         my $sstamp = sha_files(sort @schemas);
-        if (!($installed || $post_ran) || !$post_gen) {
+        if (!$installed || !$post_gen) {
             next if slurp("$dir/node_modules/.rr-schema-stamp") eq $sstamp;
             my @gen = $post_gen ? ('run', 'postinstall') : ('npx', 'prisma', 'generate');
             my $what = $post_gen ? 'npm run postinstall' : 'npx prisma generate';
@@ -729,6 +702,7 @@ sub finish {
     eval { delete_env_files(0) };
     eval { containers($rc) } if $started;
     if ($who) { unlink $who; close $lock_fh }
+    close $heavy_fh if $heavy_fh;
     remove_tree($tmp) if $tmp;
     eval { run_log($rc) };    # bookkeeping only: never changes the run's outcome
 }

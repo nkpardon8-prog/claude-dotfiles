@@ -1,0 +1,6 @@
+[Unit]
+Description=rdocker network check (restart tailscaled when it stays down)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rd-netcheck

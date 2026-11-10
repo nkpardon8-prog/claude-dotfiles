@@ -1,0 +1,7 @@
+[Unit]
+Description=rdocker worker optimizer (slot cap, reclaim, service health)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rd-tune
+Nice=10

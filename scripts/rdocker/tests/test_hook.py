@@ -256,6 +256,54 @@ class NoOps(HookBase):
         self.assertIsNone(self.rewritten("npm run test:db"))
 
 
+class Builds(HookBase):
+    """`npm run build` is routed only in a package dir rr_outputs maps (default: dentall's server,
+    client and admin-client -> dist), judged from the hook's cwd, `cd X &&` and --prefix."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = os.path.join(self.home, "code", "dentall")
+        for d in ("server", "client", "admin-client", "docs"):
+            os.makedirs(os.path.join(self.repo, d))
+            with open(os.path.join(self.repo, d, "package.json"), "w") as f:
+                f.write("{}")
+        env = rdmods.child_env(self.home, self.bin)
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                      "commit", "-qm", "init"]):
+            subprocess.run(["git"] + args, cwd=self.repo, env=env, check=True, capture_output=True)
+
+    def at(self, command, cwd):
+        out = self.hook(dict(self.bash(command), cwd=cwd))
+        return out and out["hookSpecificOutput"]["updatedInput"]["command"]
+
+    def test_mapped_builds_route_unmapped_stay(self):
+        root, admin = self.repo, os.path.join(self.repo, "admin-client")
+        for cmd, cwd, want in (
+                ("cd server && npm run build", root, "cd server && rrun npm run build"),
+                ("npm --prefix client run build 2>&1 | tail", root, "rrun npm --prefix client run build 2>&1 | tail"),
+                ("npm run build", admin, "rrun npm run build"),
+                ("cd ../server; npm run build", admin, "cd ../server; rrun npm run build"),
+                ("cd server && npm run build && npm run test:db", root,
+                 "cd server && rrun npm run build && rrun npm run test:db"),
+                ("npm run build", root, None),                   # the repo root is not mapped
+                ("cd docs && npm run build", root, None),
+                ("cd $D && npm run build", root, None),          # dir unknown
+                ("npx tsc -p tsconfig.json", admin, None),       # only the `npm run build` shape
+                ("npm run build:prod", admin, None),
+                ("npm run build", self.home, None)):             # not a git repo
+            with self.subTest(cmd=cmd, cwd=cwd):
+                self.assertEqual(self.at(cmd, cwd), want)
+
+    def test_rr_outputs_config_replaces_the_map(self):
+        d = os.path.join(self.home, ".config", "rdocker")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "config.json"), "w") as f:
+            json.dump({"rr_outputs": {"dentall": {"docs": ["out"]}}}, f)
+        self.assertIsNone(self.at("cd server && npm run build", self.repo))
+        self.assertEqual(self.at("cd docs && npm run build", self.repo), "cd docs && rrun npm run build")
+
+
 class ConfigPatterns(HookBase):
     def write_cfg(self, cfg):
         d = os.path.join(self.home, ".config", "rdocker")

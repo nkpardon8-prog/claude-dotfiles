@@ -1,0 +1,22 @@
+# systemd --user unit (Linux workers + home). Install:
+#   install -Dm644 rd-reporter.service ~/.config/systemd/user/rd-reporter.service
+#   systemctl --user daemon-reload && systemctl --user enable --now rd-reporter
+#   sudo loginctl enable-linger "$USER"   # keep it running without a login session
+[Unit]
+Description=rdocker fleet stats reporter (dashboard ingest)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node %h/.local/share/rdocker/reporter/rd-reporter.mjs
+Restart=always
+RestartSec=15
+Nice=10
+MemoryMax=128M
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

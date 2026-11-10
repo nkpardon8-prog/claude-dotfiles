@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd agent (macOS agent machines). Install (replace __HOME__ with $HOME, __NODE__ with
+     `command -v node`):
+       sed -e "s#__HOME__#$HOME#g" -e "s#__NODE__#$(command -v node)#g" com.rdocker.reporter.plist \
+         > ~/Library/LaunchAgents/com.rdocker.reporter.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rdocker.reporter.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.rdocker.reporter</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__HOME__/.local/share/rdocker/reporter/rd-reporter.mjs</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>15</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/rd-reporter.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/rd-reporter.log</string>
+</dict>
+</plist>

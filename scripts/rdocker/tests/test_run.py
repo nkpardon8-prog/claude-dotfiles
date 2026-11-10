@@ -36,6 +36,23 @@ i = 0
 while i < len(args) and args[i].startswith("-"):
     i += 2 if len(args[i]) == 2 and args[i][1] in "bcDEeFIiJLlmOopQRSWw" else 1
 cmd = " ".join(args[i + 1:])
+host = args[i]
+# per-host fakes (pool tests): FAKE_SSH_HOMES="w1=/a,w2=/b" gives each worker its own HOME;
+# FAKE_SSH_PROBE_HOMES overrides it for the pool probe only; *_HOSTS lists name affected workers
+def hosts(name):
+    return [h for h in os.environ.get(name, "").split(",") if h]
+homes = dict(x.split("=", 1) for x in os.environ.get("FAKE_SSH_HOMES", "").split(",") if "=" in x)
+is_probe = "slots_busy" in cmd
+if is_probe:
+    homes.update(x.split("=", 1) for x in os.environ.get("FAKE_SSH_PROBE_HOMES", "").split(",") if "=" in x)
+if host in homes:
+    os.environ["HOME"] = homes[host]
+if host in hosts("FAKE_SSH_DOWN_HOSTS") or (host in hosts("FAKE_SSH_RUNDOWN_HOSTS") and not is_probe):
+    sys.stderr.write("ssh: connect to host %s port 22: Operation timed out\n" % host)
+    sys.exit(255)
+if host in hosts("FAKE_SSH_DROP_HOSTS") and "rrun-runner" in cmd:
+    subprocess.run(["/bin/sh", "-c", cmd])
+    sys.exit(255)
 if os.environ.get("FAKE_SSH_DOWN") or os.path.exists(os.environ.get("FAKE_SSH_DOWN_FILE") or "/nonexistent"):
     sys.stderr.write("ssh: connect to host %s port 22: Operation timed out\n" % args[i])
     sys.exit(255)
@@ -94,7 +111,9 @@ def wfile(path, text, mode=None):
         os.chmod(path, mode)
 
 
-class RunTest(unittest.TestCase):
+class RunBase(unittest.TestCase):
+    """Fixture: a temp HOME, a git worktree, fake ssh/docker; no tests of its own."""
+
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="rrun-", dir=rdmods.TEST_HOME)
         self.home = os.path.join(self.d, "home")
@@ -108,6 +127,7 @@ class RunTest(unittest.TestCase):
                  "mod.txt": "old\n", "del.txt": "bye\n", "staged.txt": "s0\n", "sub/keep.txt": "k\n"}
         for n, c in files.items():
             wfile(os.path.join(self.wt, n), c)
+        self.write_cfg()                    # no fleet: the single configured host (pool tests: test_pool)
         self.git("init", "-q", self.wt)
         self.git("-C", self.wt, "add", "-A")
         self.git("-C", self.wt, "commit", "-qm", "init")
@@ -117,6 +137,12 @@ class RunTest(unittest.TestCase):
         # did, for 10 h, on 2026-10-15): every process of ours names self.d on its command line
         subprocess.run(["pkill", "-KILL", "-f", self.d], capture_output=True)
         shutil.rmtree(self.d, True)
+
+    def write_cfg(self, **kw):
+        cfgd = os.path.join(self.home, ".config", "rdocker")
+        os.makedirs(cfgd, exist_ok=True)
+        with open(os.path.join(cfgd, "config.json"), "w") as f:
+            json.dump(dict({"fleet_path": os.path.join(self.d, "no-fleet.json")}, **kw), f)
 
     @staticmethod
     def read(path):
@@ -169,6 +195,8 @@ class RunTest(unittest.TestCase):
         wfile(os.path.join(wt, "deep", "x", ".env"), "DEEP=1\n")     # not a root/cwd/deps dir
         os.symlink("a.txt", os.path.join(wt, "link.txt"))            # plain symlink: never sent
 
+
+class RunTest(RunBase):
     # ---------------------------------------------------------------------------- end to end
     def test_happy_path_rc_and_argv(self):
         r = self.rrun("/bin/sh", "-c", "echo out; echo err >&2; exit 7")
@@ -422,10 +450,7 @@ class RunTest(unittest.TestCase):
         ready = os.path.join(self.d, "ready")
         slots = os.path.join(self.home, "rr", "slots")
         os.makedirs(slots)
-        cfgd = os.path.join(self.home, ".config", "rdocker")
-        os.makedirs(cfgd, exist_ok=True)
-        with open(os.path.join(cfgd, "config.json"), "w") as f:
-            json.dump({"rr_slots": 1}, f)                    # one slot, so holding it makes rrun wait
+        self.write_cfg(rr_slots=1)                           # one slot, so holding it makes rrun wait
         with open(os.path.join(slots, "0.who"), "w") as f:
             f.write("other.repo %d\n" % int(time.time() - 42))
         fd = os.open(os.path.join(slots, "0"), os.O_RDWR | os.O_CREAT, 0o600)

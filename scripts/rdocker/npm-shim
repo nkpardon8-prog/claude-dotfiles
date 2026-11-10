@@ -42,6 +42,9 @@ if [ "$top" = 1 ] && [ "${RRUN:-}" != "0" ] && [ -z "${RRUN_REMOTE:-}" ] && comm
       case "${pos[1]:-}" in test:db|test:db:rls|release:rehearse:migrations|check:db-all|check:server-test-typecheck) want=1 ;; esac
       # by category (mirrors rr_route_patterns): check / lint / typecheck / verify and test:* scripts,
       # never browser / e2e / watch ones (those need the laptop)
+      # a build: rrun sends it to the pool only when rr_outputs maps this package dir (so the
+      # outputs can be copied back); any other build rrun just runs here, untouched
+      [ "${pos[1]:-}" = build ] && [ "${#pos[@]}" -eq 2 ] && want=1
       s1="${pos[1]:-}"
       if [[ "$s1" =~ ^(check|lint|typecheck|type-check|verify)(:.*)?$ || "$s1" =~ ^test:.+ ]] \
          && ! [[ "$s1" =~ (e2e|playwright|browser|watch|:ui$|:ui:) ]]; then want=1; fi ;;

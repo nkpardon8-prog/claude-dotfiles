@@ -57,6 +57,8 @@ RRUN_STATE = os.path.join(STATE_DIR, "rrun.json")  # last rrun result + runs in 
 # rrun-<wt12>.lock in STATE_DIR serialises rrun runs from one laptop worktree (rd_run.wt_lock_path)
 PLIST_LABEL = "com.rdocker.forwarder"
 PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
+FLEET_PATH = os.path.join(HERE, "fleet.json")   # the machine registry (dotfiles, synced; no secrets)
+FLEET_SSH_PATH = os.path.join(HOME, ".ssh", "config.d", "rdocker")   # the ssh Host blocks; rd_fleet owns + rewrites it
 SYSTEMD_UNIT = "rdocker-forwarder.service"
 SYSTEMD_PATH = os.path.join(HOME, ".config", "systemd", "user", SYSTEMD_UNIT)
 

@@ -2,6 +2,10 @@
 # rrun: run a heavy job (test runner + its DB) ON the Mac mini - see rd_run.py / commands/docker.md.
 #   rrun [-e NAME[=VALUE]]... [--] <command> [args...]   (RRUN=0 runs it on the laptop;
 #   a bare -e NAME forwards that variable from this environment, keeping the value out of argv)
+#   rrun --where [cmd]       where the job would run now (probes the pool, runs nothing)
+#   rrun --bench             CPU benchmark on every worker (writes ~/rr/speed there)
+#   rrun --host NAME ...     only that worker;  rrun --outputs dist,x ... build outputs to copy back
+# rrun's own flags (before the command) travel to rd_run as RRUN_WHERE/RRUN_BENCH/RRUN_HOST/RRUN_OUTPUTS.
 # Resolve our real directory (~/.local/bin/rrun is a symlink to this file); bash 3.2, no readlink -f.
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
@@ -10,4 +14,19 @@ while [ -L "$src" ]; do
   case "$src" in /*) ;; *) src="$dir/$src" ;; esac
 done
 dir="$(cd -P "$(dirname "$src")" && pwd)"
-exec /usr/bin/python3 -I "$dir/rdocker.py" run "$@"
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --where) export RRUN_WHERE=1; shift ;;
+    --bench) export RRUN_BENCH=1; shift ;;
+    --host|--outputs)
+      [ $# -ge 2 ] || { echo "rrun: $1 needs a value" >&2; exit 2; }
+      if [ "$1" = --host ]; then export RRUN_HOST="$2"; else export RRUN_OUTPUTS="$2"; fi; shift 2 ;;
+    --host=*) export RRUN_HOST="${1#--host=}"; shift ;;
+    --outputs=*) export RRUN_OUTPUTS="${1#--outputs=}"; shift ;;
+    -e) [ $# -ge 2 ] || break; args+=("$1" "$2"); shift 2 ;;
+    -e?*) args+=("$1"); shift ;;
+    *) break ;;
+  esac
+done
+exec /usr/bin/python3 -I "$dir/rdocker.py" run ${args[@]+"${args[@]}"} "$@"

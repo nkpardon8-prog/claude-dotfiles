@@ -16,8 +16,20 @@ SENDS with every run (nothing trusted is kept on the mini). One run:
     on READY we write "GO\\n" and only then does the runner start the command
   7 rc = ssh's exit status; GO never written => the command never ran: 255 => local fallback,
     other rc = the runner's (73 busy, 78 deps, ...); GO written => 255 = exit 75 (never run twice).
+Pool (rd_pool): with 2+ enabled fleet workers, each job is placed on the best worker right now
+and the hosts are tried in that order: a worker lost before GO, or one that had no free slot after
+all (73 from a short race wait), moves the job to the next one. After GO a lost worker means exit 75
+- except for jobs that are safe to repeat (tsc/typecheck, lint, vitest/jest, builds; never DB
+tests), which run once more on the next worker. In a pool, heavy and DB jobs never fall back to
+this machine (exit 75 instead); light jobs (lint, check scripts) run here when every worker stayed
+busy for rr_local_after_s. No fleet / one worker: one host, exactly as before.
+Builds (`npm run build` in a package dir mapped by rr_outputs) copy their outputs back: after a
+successful run a second ssh streams `tar` of the outputs from the worker's mirror, extracted into
+the worktree (staged, then renamed into place) while the worktree lock is still held.
 Config: rr_* keys in rd_common.DEFAULTS. Env: RRUN_STRICT=1, RRUN_TIMING=1, RRUN=0 (run locally),
-RRUN_GIT_URL (tests only: push URL override).
+RRUN_GIT_URL (tests only: push URL override). Flags (the `rrun` wrapper turns them into env):
+--where (RRUN_WHERE=1: print the placement, run nothing), --bench (RRUN_BENCH=1), --host NAME
+(RRUN_HOST: only that worker), --outputs a,b (RRUN_OUTPUTS: build outputs, relative to the cwd).
 """
 import fnmatch
 import hashlib
@@ -35,6 +47,7 @@ import threading
 import time
 
 import rd_common
+import rd_pool
 
 HEARTBEAT_S = 15
 OVERLAY_WARN_BYTES = 5 * 1024 * 1024
@@ -395,8 +408,11 @@ class Session:
     loss it is True whenever the command might have started: False => it certainly did not run
     (safe to run it on the laptop), True => never run it again (exit 75)."""
 
-    def __init__(self, cfg, frames, nonce, timing):
+    def __init__(self, cfg, frames, nonce, timing, give_up_s=None):
         self.cfg, self.frames, self.nonce, self.timing = cfg, frames, nonce, timing
+        self.give_up_s = give_up_s           # stop waiting for a slot after this (=> run locally)
+        self.wait_since = None               # monotonic time the runner first reported WAIT
+        self.gave_up = False
         self.started = None                  # monotonic time "<nonce> STARTED" arrived
         self.ready = False                   # "<nonce> READY" arrived: the runner waits for GO
         self.go_sent = False
@@ -416,6 +432,9 @@ class Session:
         elif word == "STARTED":
             self.started = time.monotonic()
         elif word == "WAIT":
+            if self.wait_since is None:
+                self.wait_since = time.monotonic()
+                self.wake.set()
             if not self.said_wait:
                 kv = dict(x.split("=", 1) for x in rest.split() if "=" in x)
                 note("waiting for a Mac mini slot (held by %s for %ss; gives up after %s min)..."
@@ -438,10 +457,23 @@ class Session:
     def claim_go(self):
         """-> True when GO may be written now (and records that it was), False otherwise."""
         with self.go_lock:
-            if self.done.is_set() or not self.ready or self.go_sent or self.ints:
+            if self.done.is_set() or not self.ready or self.go_sent or self.ints or self.gave_up:
                 return False
             self.go_sent = True              # from here on, any loss is ambiguous => 75
             return True
+
+    def give_up_left(self):
+        """Seconds until we stop waiting for a slot (None = never); 0 marks gave_up (no GO after)."""
+        if self.give_up_s is None or self.wait_since is None:
+            return None
+        with self.go_lock:
+            if self.ready or self.go_sent:
+                return None
+            left = self.give_up_s - (time.monotonic() - self.wait_since)
+            if left <= 0:
+                self.gave_up = True
+                return 0
+            return left
 
     def writer(self):
         """Owns ssh's stdin: the frames, then a heartbeat every HEARTBEAT_S, "GO\n" once the
@@ -457,6 +489,9 @@ class Session:
                 self.wake.clear()            # before reading the flags: a later set() is never lost
                 if self.ints >= 2:
                     break
+                left = self.give_up_left()
+                if left == 0:
+                    break                    # closing stdin: the runner gives up its slot wait
                 if self.ints > sent_int:
                     w.write(b"INT\n")
                     sent_int = self.ints
@@ -465,7 +500,7 @@ class Session:
                 else:
                     w.write(b".")
                 w.flush()
-                self.wake.wait(HEARTBEAT_S)
+                self.wake.wait(HEARTBEAT_S if left is None else min(HEARTBEAT_S, left))
         except (BrokenPipeError, OSError, ValueError):
             pass
         finally:
@@ -604,10 +639,15 @@ def run_local(argv, env_pairs, why=None):
         return 127
 
 
-def fallback(argv, env_pairs, why, t0):
+def fallback(argv, env_pairs, why, t0, job=None, pool=False):
     if os.environ.get("RRUN_STRICT") == "1":
         note("%s (RRUN_STRICT=1: not running on the laptop)" % why)
         record("mini", argv, EXIT_LOST, time.monotonic() - t0)
+        return EXIT_LOST
+    if pool and job and job.get("never_local"):
+        note("%s - not running a %s job on this machine (it is what the worker pool keeps off "
+             "agent machines); retry when a worker is back (exit 75)" % (why, job["cls"]))
+        record("none", argv, EXIT_LOST, time.monotonic() - t0)
         return EXIT_LOST
     record("local", argv, "exec", time.monotonic() - t0)
     return run_local(argv, env_pairs, why)
@@ -700,66 +740,154 @@ INFRA_EXIT = {
     65: "the Mac mini runner refused the request (bad input or an unsafe path; see above)",
     69: "the repo is missing on the Mac mini (the push should have created it); retry",
     70: "the Mac mini runner failed (see above)",
-    78: "installing dependencies on the Mac mini failed (npm ci / prisma generate / local package build, see above)",
+    78: "installing dependencies on the Mac mini failed (npm ci / prisma generate, see above)",
 }
+
+
+class Opts:
+    """rrun's own flags, handed over by the `rrun` wrapper as env (popped: never reach the command)."""
+
+    def __init__(self, environ=None):
+        environ = os.environ if environ is None else environ
+        self.where = environ.pop("RRUN_WHERE", "") == "1"
+        self.bench = environ.pop("RRUN_BENCH", "") == "1"
+        self.host = environ.pop("RRUN_HOST", "") or None
+        raw = environ.pop("RRUN_OUTPUTS", "")
+        self.outputs = [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def resolve_outputs(cfg, wt, argv, opts):
+    """-> repo-relative build outputs: --outputs (relative to the cwd), else rr_outputs for a
+    `npm run build` in a mapped package dir, else []. SystemExit on an unsafe --outputs path."""
+    if not wt:
+        return []
+    if opts.outputs:
+        out = []
+        for o in opts.outputs:
+            rel = os.path.normpath(os.path.join(wt["relcwd"], o)).replace(os.sep, "/")
+            if os.path.isabs(o) or not sane_rel(rel) or rel == ".":
+                raise SystemExit("rrun: --outputs %r is not a path inside this worktree" % o)
+            out.append(rel)
+        return list(dict.fromkeys(out))
+    if rd_pool.is_build(argv):
+        return rd_pool.outputs_for(cfg, wt["slug"], rd_pool.build_pkg_dir(wt["relcwd"], argv))
+    return []
+
+
+def label(h):
+    return "the Mac mini" if h.name == "mini" else h.name
+
+
+def next_host(hosts, skip):
+    return next((k for k in range(len(hosts)) if k not in skip), None)
 
 
 def rrun(argv, env_args=()):
     """`rrun [-e NAME[=VALUE]]... [--] <cmd...>` -> exit code (the remote command's, or 75/73/...)."""
+    opts = Opts()
     if argv and argv[0] == "--":
         argv = argv[1:]
-    if not argv:
-        sys.stderr.write("usage: rrun [-e NAME[=VALUE]]... [--] <command> [args...]\n")
+    if opts.bench:
+        return rd_pool.bench(rd_common.load_cfg(), opts.host)
+    if not argv and not opts.where:
+        sys.stderr.write("usage: rrun [-e NAME[=VALUE]]... [--where] [--host NAME] [--outputs a,b] "
+                         "[--] <command> [args...]\n       rrun --bench [--host NAME]\n")
         return 2
     env_pairs = parse_env(env_args)
     t0 = time.monotonic()
-    if os.environ.get("RRUN_REMOTE") or os.environ.get("RRUN") == "0":
+    if not opts.where and (os.environ.get("RRUN_REMOTE") or os.environ.get("RRUN") == "0"):
         return run_local(argv, env_pairs)        # already on the mini / opted out: plain run
     cfg = rd_common.load_cfg()
     timing = Timing(os.environ.get("RRUN_TIMING") == "1")
     try:
         wt = resolve_worktree(os.getcwd())
     except (RunError, OSError) as e:
-        return fallback(argv, env_pairs, "cannot use the Mac mini here (%s)" % str(e).strip(), t0)
+        if opts.where:
+            wt = None
+        else:
+            return fallback(argv, env_pairs, "cannot use the Mac mini here (%s)" % str(e).strip(), t0)
+    outputs = resolve_outputs(cfg, wt, argv, opts)
+    if not opts.where and rd_pool.is_build(argv) and not outputs:
+        # builds go to the pool only with known outputs (rr_outputs): any other build (the npm
+        # shim sends every top-level `npm run build` here) runs on this machine, silently
+        return run_local(argv, env_pairs)
+    job = rd_pool.classify(argv, outputs)
+    deps = deps_dirs(wt["top"], wt["relcwd"], argv) if wt else []
+    try:
+        plan = rd_pool.plan(cfg, job, wt["slug"] if wt else "",
+                            rd_pool.deps_shas(wt["top"], deps) if wt else [],
+                            force=opts.host, probe=opts.where)
+    except ValueError as e:
+        note(str(e))
+        return 2
+    if opts.where:
+        print("\n".join(rd_pool.where_report(cfg, job, plan)))
+        return 0
     timing.mark("resolve")
     take_wt_lock(wt["wt12"])     # fd stays open (and locked) until we exit or exec
     timing.mark("worktree lock")
-    tries = 0
+    hosts = plan.hosts
+    i, tries, retried, failed = 0, 0, False, set()
     while True:
-        kind, val = attempt(cfg, wt, argv, env_pairs, timing, t0)
+        h = hosts[i]
+        give_up = plan.local_after_s if i == 0 else None    # set only when all were busy: hosts[0] = wait host
+        kind, val = attempt(h, wt, argv, env_pairs, timing, t0, job, plan.pool, outputs, deps, give_up)
         if kind == "done":
             return val
-        if kind == "local" or tries >= RECONNECT_TRIES:
-            return fallback(argv, env_pairs, val, t0)
+        if kind == "local":
+            return fallback(argv, env_pairs, val, t0, job, plan.pool)
+        failed.add(i)
+        nxt = next_host(hosts, failed)
+        if kind == "lost_go":
+            if job["retry_ok"] and not retried and nxt is not None:
+                note("lost %s mid-run; a %s job is safe to repeat - running it once more on %s"
+                     % (h.name, job["cls"], hosts[nxt].name))
+                retried, i = True, nxt
+                continue
+            sys.stderr.write(LOST_MSG + "\n")
+            record(h.name, argv, EXIT_LOST, time.monotonic() - t0)
+            return EXIT_LOST
+        if nxt is not None:
+            note("%s - trying %s" % (val, hosts[nxt].name))
+            i = nxt
+            continue
+        if kind == "busy":
+            note("no worker had a free slot; giving up (exit 73)")
+            return 73
+        if tries >= RECONNECT_TRIES:
+            return fallback(argv, env_pairs, val, t0, job, plan.pool)
         tries += 1
+        i, failed, h = 0, set(), hosts[0]
         # Nothing has started anywhere yet. A mini that answers right away (a blip, or a failure
         # that is not about reachability) gets one immediate retry; one that does not answer is
         # waited for (rr_reconnect_wait_min), so a short outage never moves a heavy run here.
-        if mini_answers(cfg):
+        if mini_answers(h.cfg):
             if tries > 1:
-                return fallback(argv, env_pairs, val, t0)
+                return fallback(argv, env_pairs, val, t0, job, plan.pool)
             continue
         try:
-            back = wait_for_mini(cfg, val)
+            back = wait_for_mini(h.cfg, val)
         except _Stopped as e:
             note("stopped while waiting for the Mac mini - not running it anywhere")
             return 128 + e.signum
         if not back:
             return fallback(argv, env_pairs, "%s, and it did not come back within %s"
-                            % (val, fmt_wait(reconnect_wait_s(cfg))), t0)
+                            % (val, fmt_wait(reconnect_wait_s(h.cfg))), t0, job, plan.pool)
 
 
-def attempt(cfg, wt, argv, env_pairs, timing, t0):
-    """One try on the mini -> ("done", rc) | ("lost", why: the mini dropped before the command
-    started) | ("local", why: run it on the laptop now, waiting would not help)."""
+def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None, give_up_s=None):
+    """One try on host h -> ("done", rc) | ("lost", why: dropped before the command started) |
+    ("busy", why: a race-wait host had no slot after all) | ("lost_go", why: dropped after GO -
+    the command may have run) | ("local", why: run it on the laptop now, waiting would not help)."""
+    cfg = h.cfg
     try:
         push(cfg, wt)
     except PushRefused as e:
-        return "local", "cannot send this repo to the Mac mini: %s" % e
+        return "local", "cannot send this repo to %s: %s" % (label(h), e)
     except RunError as e:
-        return "lost", "Mac mini unreachable (%s)" % e
+        return "lost", "%s unreachable (%s)" % ("Mac mini" if h.name == "mini" else h.name, e)
     timing.mark("push")
-    deps = deps_dirs(wt["top"], wt["relcwd"], argv)
+    deps = deps_dirs(wt["top"], wt["relcwd"], argv) if deps is None else deps
     env_dirs = list(dict.fromkeys([""] + ([wt["relcwd"]] if wt["relcwd"] else []) + deps))
     try:
         tar, files, envs, deleted = build_overlay(cfg, wt["top"], env_dirs)
@@ -782,18 +910,25 @@ def attempt(cfg, wt, argv, env_pairs, timing, t0):
               "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
               "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
               "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True}
+    if outputs:
+        header["outputs"] = list(outputs)
+    if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
+        header.update(cls=job["cls"], need_gb=job["need_gb"])
+        hs = rd_pool._f(h.entry, "heavy_slots") if h.entry is not None else None
+        if isinstance(hs, int) and hs >= 0:
+            header["heavy_slots"] = hs
     with open(rd_common.RUNNER_SRC, "rb") as f:
         script = f.read()
     hjs = json.dumps(header).encode("utf-8")
     frames = [b"%d\n" % len(script), script, b"%d\n" % len(hjs), hjs, tar]
-    record("mini", argv, None, 0, wt12=wt["wt12"], start=True)
-    sess = Session(cfg, frames, nonce, timing)
+    record(h.name, argv, None, 0, wt12=wt["wt12"], start=True)
+    sess = Session(cfg, frames, nonce, timing, give_up_s)
     rc = sess.run()
     secs = time.monotonic() - t0
     if not sess.go_sent:
         # GO was never written, so the runner never started the command: running it here is
         # safe when the connection dropped; any other rc is the runner's own (73, 78, ...).
-        record("mini", argv, rc, secs)     # clears the in-flight entry before a local exec
+        record(h.name, argv, rc, secs)     # clears the in-flight entry before a local exec
         timing.report()
         if sess.first_sig:
             # stopped (Ctrl-C, or a tool's timeout sent TERM) while the mini was still preparing:
@@ -801,15 +936,101 @@ def attempt(cfg, wt, argv, env_pairs, timing, t0):
             # timeout during a slot wait turned into a full local run)
             note("stopped before the command started on the Mac mini - not running it anywhere")
             return "done", 128 + sess.first_sig
+        if sess.gave_up:
+            return "local", "every worker stayed busy for %d s" % round(give_up_s)
         if rc == 255:
-            return "lost", "lost the Mac mini before the command started"
+            return "lost", "lost %s before the command started" % label(h)
+        if rc == 73 and h.short:
+            return "busy", "%s had no free slot after all" % h.name
         if rc in INFRA_EXIT:
             note("%s - exit %d; the command did not run" % (INFRA_EXIT[rc], rc))
         return "done", rc
     timing.mark("command")
     if rc == 255:
-        sys.stderr.write(LOST_MSG + "\n")
-        rc = EXIT_LOST
-    record("mini", argv, rc, secs)
+        return "lost_go", "lost %s mid-run" % label(h)
+    if rc == 0 and outputs:
+        why = copy_back(cfg, wt, outputs)
+        timing.mark("copy-back")
+        if why:
+            note("the build ran on %s but its outputs could not be copied back (%s); run it again "
+                 "(exit 75)" % (h.name, why))
+            rc = EXIT_LOST
+    record(h.name, argv, rc, secs)
     timing.report()
     return "done", rc
+
+
+# ---------------------------------------------------------------------------- copy-back
+
+COPY_BACK_TIMEOUT_S = 600
+
+
+def copy_back(cfg, wt, outputs):
+    """Fetch the build outputs from the worker's mirror (a second ssh: tar on stdout) and swap
+    them into the worktree. -> None on success, else why it failed (the worktree is untouched).
+    COPYFILE_DISABLE: a macOS worker's bsdtar would add AppleDouble ._ members (GNU tar ignores it)."""
+    mirror = "%s/w/%s-%s" % (rr_root(cfg), wt["slug"], wt["wt12"])
+    script = ('cd "$HOME"/%s || exit 66; set --; for p in %s; do '
+              '[ -e "$p" ] && [ ! -L "$p" ] && set -- "$@" "$p"; done; '
+              '[ $# -gt 0 ] || exit 67; COPYFILE_DISABLE=1 exec tar -cf - -- "$@"'
+              % (shlex.quote(mirror), " ".join(shlex.quote(o) for o in outputs)))
+    try:
+        p = subprocess.run(["ssh", "-T"] + ssh_opts() + [cfg["host"], script], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=COPY_BACK_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    if p.returncode == 67:
+        note("the build produced none of %s; nothing copied back" % ", ".join(outputs))
+        return None
+    if p.returncode != 0:
+        return p.stderr.decode("utf-8", "replace").strip()[-200:] or "exit %d" % p.returncode
+    try:
+        n = extract_outputs(wt["top"], p.stdout, outputs)
+    except (RunError, OSError, tarfile.TarError) as e:
+        return str(e)
+    note("copied back %s (%d files)" % (", ".join(outputs), n))
+    return None
+
+
+def extract_outputs(top, data, outputs):
+    """Unpack a tar of `outputs` into a staging dir inside the worktree, then rename each output
+    into place (the old one is moved aside first and deleted). Only regular files and dirs under a
+    declared output are accepted; anything else refuses the whole copy. -> files written."""
+    import shutil
+    import tempfile
+    rtop = os.path.realpath(top)
+    for o in outputs:            # the destination's parents must be real dirs inside the worktree
+        parent = os.path.realpath(os.path.join(top, os.path.dirname(o)))
+        if not inside(parent, rtop):
+            raise RunError("output %s resolves outside this worktree" % o)
+    stage = tempfile.mkdtemp(prefix=".rrun-out-", dir=top)
+    n = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as t:
+            for m in t:
+                name = m.name[2:] if m.name.startswith("./") else m.name
+                name = name.rstrip("/")
+                if not sane_rel(name) or not any(name == o or name.startswith(o + "/") for o in outputs):
+                    raise RunError("unexpected path in the outputs: %r" % m.name)
+                dest = os.path.join(stage, name)
+                if m.isdir():
+                    os.makedirs(dest, exist_ok=True)
+                elif m.isreg():
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with open(dest, "wb") as f:
+                        shutil.copyfileobj(t.extractfile(m), f)
+                    os.chmod(dest, 0o755 if m.mode & 0o100 else 0o644)
+                    n += 1
+                else:
+                    raise RunError("refusing %s in the outputs (only files and dirs)" % m.name)
+        for k, o in enumerate(outputs):
+            new, dst = os.path.join(stage, o), os.path.join(top, o)
+            if not os.path.lexists(new):
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.lexists(dst):
+                os.rename(dst, os.path.join(stage, ".old-%d" % k))
+            os.rename(new, dst)
+    finally:
+        shutil.rmtree(stage, True)
+    return n

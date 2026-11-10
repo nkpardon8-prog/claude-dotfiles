@@ -32,6 +32,10 @@ Behavior:
     NBSP, U+2000.., U+200B, ...) leaves the command alone. So does shell state set by an EARLIER
     segment that would not reach the mini: export, declare/typeset, set -a / allexport,
     source / `.`, or a bare assignment (`FOO=1; npm run test:db`).
+  * Builds: a `npm run build` segment (rd_pool.BUILD_RE) is routed only when its package dir is
+    mapped in rr_outputs (rd_pool.outputs_for: repo name -> package dir -> output dirs), so rrun
+    can copy the outputs back. The dir = the hook's cwd, moved by earlier plain `cd <dir>`
+    segments, plus `--prefix X`; the repo comes from git there. Unmapped builds stay untouched.
   * Returns ONLY updatedInput (never a permission decision), so normal permission prompts still
     apply to the rewritten command. Every other tool_input key is preserved.
   * FAILS OPEN: any parse error or unexpected input -> exit 0 with no output (call unchanged).
@@ -44,7 +48,7 @@ import unicodedata
 
 PREFILTER = ("test:db", "rehearse:migrations", "test-with-db", "check:db-all", "run-guard-tier",
              "check:server-test-typecheck", "--noEmit", "vitest", "check", "lint", "typecheck",
-             "type-check", "verify", "test:", "jest", "eslint", "max-old-space-size")
+             "type-check", "verify", "test:", "jest", "eslint", "max-old-space-size", "build")
 SKIP_MARKERS = ("rrun", "RRUN=0", "real-od/", "doctor-drive", "--approve=browser")
 HEADS = {"npm", "node", "npx", "pnpm", "yarn", "bun", "tsc", "vitest", "jest", "eslint"}   # also ./node_modules/.bin/<x>
 ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
@@ -167,7 +171,7 @@ def shell_c(cmd, shape, toks, k):
     return qs + 1, qe - 1
 
 
-def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0):
+def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0, builds=None, cwd=None):
     """-> replacement text for cmd[s:e], or None when the segment is not fully understood."""
     if op in ("|", "|&"):
         return None
@@ -216,7 +220,7 @@ def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0):
     kept = "".join(w + " " for keep, w in wraps if keep)
     sc = shell_c(cmd, shape, toks, k) if depth == 0 and patterns is not None else None
     if sc:                                                    # bash -c '<script>': rewrite inside
-        inner = route(cmd[sc[0]:sc[1]], patterns, depth + 1)
+        inner = route(cmd[sc[0]:sc[1]], patterns, depth + 1, builds, cwd)
         if inner is None:
             return None
         allw = "".join(w + " " for _, w in wraps)            # heavy-slot still gates the laptop part
@@ -255,7 +259,38 @@ def sets_state(masked, s, e):
     return all(ASSIGN_RE.match(w) for w in words)
 
 
-def route(cmd, patterns, depth=0):
+class Builds:
+    """Decides whether a `npm run build` segment run in a given dir has mapped outputs."""
+
+    def __init__(self, cfg, cwd):
+        self.cfg, self.cwd = cfg, cwd
+
+    def mapped(self, words, cwd):
+        import rd_pool
+        import rd_run
+        try:
+            wt = rd_run.resolve_worktree(cwd)
+        except Exception:
+            return False
+        return bool(rd_pool.outputs_for(self.cfg, wt["slug"], rd_pool.build_pkg_dir(wt["relcwd"], words)))
+
+
+def seg_cwds(cmd, segs, masked, start):
+    """cwd of each segment: `start`, moved by plain `cd <simple path>` segments (None = unknown)."""
+    out, cur = [], start
+    for s, e, _ in segs:
+        out.append(cur)
+        words = WORD_RE.findall(masked[s:e])
+        if words and words[0] == "cd":
+            raw = cmd[s:e].split()
+            if cur and len(words) == 2 and len(raw) == 2 and SIMPLE_FILE_RE.fullmatch(raw[1]):
+                cur = os.path.normpath(os.path.join(cur, os.path.expanduser(raw[1])))
+            else:
+                cur = None
+    return out
+
+
+def route(cmd, patterns, depth=0, builds=None, cwd=None):
     """-> rewritten command, or None to leave it unchanged."""
     if "$(" in cmd or "`" in cmd:
         return None                                           # a substitution can hide segments
@@ -269,13 +304,22 @@ def route(cmd, patterns, depth=0):
     regs = [re.compile(p) for p in patterns]
     hits = [(s, e, op) for s, e, op in segs if any(r.search(masked[s:e]) for r in regs)
             or (depth == 0 and any(r.search(shell_c_script(cmd, shape, s, e)) for r in regs))]
+    if builds is not None and "build" in cmd:
+        import rd_pool
+        cwds = seg_cwds(cmd, segs, masked, cwd)
+        seen = {(s, e) for s, e, _ in hits}
+        for (s, e, op), c in zip(segs, cwds):
+            if (s, e) not in seen and c and rd_pool.BUILD_RE.search(masked[s:e]) \
+                    and builds.mapped(WORD_RE.findall(masked[s:e]), c):
+                hits.append((s, e, op))
+        hits.sort()
     if not hits:
         return None
     if any(sets_state(masked, s, e) for s, e, _ in segs if s < hits[-1][0]):
         return None                                           # earlier state would not reach the mini
     out = cmd
     for s, e, op in reversed(hits):
-        new = rewrite_segment(cmd, shape, s, e, op, patterns, depth)
+        new = rewrite_segment(cmd, shape, s, e, op, patterns, depth, builds, cwd)
         if new is None:
             return None                                       # unsure about one -> touch none
         out = out[:s] + new + out[e:]
@@ -305,7 +349,8 @@ def main():
     cfg = load_cfg(rrun_real, user_cfg(h) if user is None else user)
     if os.path.isdir(os.path.join(h, cfg.get("rr_root") or "rr", "git")):
         return                                                # this is the mini
-    new = route(cmd, cfg.get("rr_route_patterns") or [])
+    cwd = data.get("cwd") if isinstance(data.get("cwd"), str) and data.get("cwd") else os.getcwd()
+    new = route(cmd, cfg.get("rr_route_patterns") or [], builds=Builds(cfg, cwd), cwd=cwd)
     if not new or new == cmd:
         return
     print(json.dumps({

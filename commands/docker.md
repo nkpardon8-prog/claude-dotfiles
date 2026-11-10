@@ -425,6 +425,8 @@ hour**: `rdocker: needs attention: <msg> (run rdocker status)` — never on stdo
 | `rdocker logs [--route]` | forwarder + janitor log / per-command routing log (incl. refusals) |
 | `rdocker sync` | reconcile port mirrors now |
 | `rdocker run [-e K[=V]]... [--] <cmd>` / `rrun ...` | run a heavy job (test runner + its DB) on the mini — see "Heavy test jobs on the mini" |
+| `rdocker add-server <name> <tailscale-ip> [--role home,worker] [--admin-user U] [--dry-run]` | provision a Linux box over ssh (`server/provision-linux.sh`) and add it to `fleet.json`; see `/dockersetup server` |
+| `rdocker sync-fleet [--pull]` | validate `fleet.json`, rewrite `~/.ssh/config.d/rdocker` from it (that file is rdocker-owned; old copies in `~/.ssh/rdocker-backups/`) |
 
 `rdocker status` rows: tailscale on laptop · mini reachable (ssh control connection) · mini docker engine
 (version, round-trip) · mode → where commands go · docker shim first on PATH · background forwarder ·

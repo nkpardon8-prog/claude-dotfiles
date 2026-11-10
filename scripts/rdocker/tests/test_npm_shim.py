@@ -44,15 +44,16 @@ class NpmShim(unittest.TestCase):
                      ["--prefix", "server", "run", "test:db"], ["-s", "run", "release:rehearse:migrations"], ["run", "check:db-all"], ["run", "check:server-test-typecheck"],
                      ["test"], ["run", "test"], ["test", "--", "--reporter=dot"], ["--prefix", "server", "test"],
                      ["run", "lint"], ["run", "check:enqueue-trace"], ["run", "typecheck"], ["run", "test:unit"],
-                     ["run", "--silent", "test:db"]):
+                     ["run", "--silent", "test:db"], ["run", "build"], ["--prefix", "server", "run", "build"],
+                     ["run", "build", "--", "--mode", "x"]):
             with self.subTest(args=args):
                 self.assertEqual(self.npm(*args), "RRUN npm %s (RRUN=)" % " ".join(args))
 
     def test_everything_else_is_the_real_npm(self):
         for args in (["ci"], ["test", "--", "src/a.test.ts"],
-                     ["run", "test", "--", "src/a.test.ts", "src/b.test.ts"], ["run", "build", "--", "test:db"],
-                     ["run", "test:e2e"], ["run", "lint:watch"], ["run", "dev"], ["run", "build"], ["run", "checkout"],
-                     ["--prefix", "test:db", "run", "build"], ["exec", "test:db"]):
+                     ["run", "test", "--", "src/a.test.ts", "src/b.test.ts"],
+                     ["run", "test:e2e"], ["run", "lint:watch"], ["run", "dev"], ["run", "build:prod"], ["run", "checkout"],
+                     ["--prefix", "test:db", "run", "dev"], ["exec", "test:db"]):
             with self.subTest(args=args):
                 self.assertEqual(self.npm(*args), "REAL npm %s" % " ".join(args))
 

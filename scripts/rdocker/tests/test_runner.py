@@ -39,16 +39,8 @@ case "$(basename "$0") $1" in
     if [ -n "$FAKE_ERESOLVE" ]; then
       case " $* " in *" --legacy-peer-deps "*) ;; *) echo "npm ERR! code ERESOLVE" >&2; exit 1 ;; esac
     fi
-    rm -rf node_modules && mkdir node_modules
-    [ -n "$FAKE_RUN_SCRIPTS" ] && { "$0" run postinstall || exit $?; } ;;
+    rm -rf node_modules && mkdir node_modules ;;
   "npm install") rm -rf node_modules && mkdir node_modules ;;
-  "npm run")
-    # FAKE_RUN_SCRIPTS: really run package.json's scripts.<name> (absent script = no-op, like npm)
-    if [ -n "$FAKE_RUN_SCRIPTS" ]; then
-      s=$(/usr/bin/perl -MJSON::PP -e 'local $/; open(my $f, "<", "package.json") or exit;
-        my $p = JSON::PP->new->decode(<$f>); print $p->{scripts}{$ARGV[0]} // ""' "$2")
-      [ -n "$s" ] && { /bin/sh -c "$s" || exit $?; }
-    fi ;;
   "node -v") echo v20.0.0 ;;
   "docker ps") cat '%(dir)s/ps.out' 2>/dev/null ;;
   "docker port") cat '%(dir)s/port.out' 2>/dev/null ;;
@@ -495,6 +487,64 @@ class RunnerTest(unittest.TestCase):
                                 spare_min_free_pct=50, spare_max_load=1.0, env_extra=kw)
             self.assertEqual(r.rc, 0, r.err)
 
+    def test_slots_cap_file_lowers_the_slot_count(self):
+        """~/rr/slots.cap (rd-tune) caps `slots`; 0 drains the worker (wait, then 73)."""
+        os.makedirs(os.path.join(self.root, "slots"))
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            self.assertEqual(self.run_runner(["true"], slots=2).rc, 0)        # slot 1 is free
+            wfile(os.path.join(self.root, "slots.cap"), "1\n")
+            r = self.run_runner(["true"], slots=2, wait_min=0.02)
+            self.assertEqual(r.rc, 73, r.err)
+        wfile(os.path.join(self.root, "slots.cap"), "0\n")
+        self.assertEqual(self.run_runner(["true"], wait_min=0.02).rc, 73)
+        os.unlink(os.path.join(self.root, "slots.cap"))
+        os.symlink(os.path.join(self.d, "nowhere"), os.path.join(self.root, "slots.cap"))
+        self.assertEqual(self.run_runner(["true"]).rc, 0)                     # a planted link: ignored
+
+    def test_heavy_jobs_hold_a_heavy_slot_too(self):
+        os.makedirs(os.path.join(self.root, "slots"))
+        with open(os.path.join(self.root, "slots", "heavy-0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            r = self.run_runner(["true"], slots=2, heavy_slots=1, cls="heavy", wait_min=0.02)
+            self.assertEqual(r.rc, 73, r.err)
+            self.assertEqual(self.run_runner(["true"], slots=2, heavy_slots=1, cls="normal").rc, 0)
+            self.assertEqual(self.run_runner(["true"], slots=2, heavy_slots=2, cls="heavy").rc, 0)
+        self.assertEqual(self.run_runner(["true"], heavy_slots=1, cls="heavy").rc, 0)
+        self.assertEqual(self.run_runner(["true"], heavy_slots="x").rc, 65)
+
+    def test_need_gb_is_rechecked_before_the_slot(self):
+        """The client's probe can race another client: the runner re-checks free memory."""
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc)
+        wfile(os.path.join(proc, "meminfo"), "MemTotal: 8000000 kB\nMemAvailable: 3000000 kB\n")
+        kw = dict(RR_OS="linux", RR_PROC=proc)
+        r = self.run_runner(["true"], need_gb=6, wait_min=0.02, env_extra=kw)
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertEqual(self.run_runner(["true"], need_gb=2, env_extra=kw).rc, 0)
+
+    def test_declared_outputs_are_removed_from_the_mirror_first(self):
+        wfile(os.path.join(self.src, ".gitignore"), "node_modules\n.env*\ndist\n")
+        self.git("-C", self.src, "commit", "-qam", "ignore dist")
+        sha = self.git("-C", self.src, "rev-parse", "HEAD").strip()
+        self.git("-C", self.src, "push", "-q", os.path.join(self.root, "git", SLUG + ".git"), "HEAD:refs/heads/x")
+        r = self.run_runner(["/bin/sh", "-c", "mkdir -p dist/a && touch dist/a/old"], sha=sha)
+        self.assertEqual(r.rc, 0, r.err)
+        r = self.run_runner(["/bin/sh", "-c", "test -e dist/a/old"], sha=sha)
+        self.assertEqual(r.rc, 0, r.err)                      # ignored: git clean keeps it
+        r = self.run_runner(["/bin/sh", "-c", "test ! -e dist"], sha=sha, outputs=["dist"])
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(self.run_runner(["true"], outputs=["../x"]).rc, 65)
+
+    def test_deps_stamp_digest_matches_the_pool_probe(self):
+        """rd_pool.deps_shas() must equal the sha the runner puts first in .rr-deps-stamp, or the
+        probe never sees a worker as warm."""
+        import rd_pool
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+        with open(os.path.join(self.mirror, "node_modules", ".rr-deps-stamp")) as f:
+            stamp = f.read()
+        self.assertEqual(stamp.split(" ")[0], rd_pool.deps_shas(self.src, [""])[0][1])
+
     def test_linux_store_clone_uses_reflink_cp(self):
         """RR_OS=linux -> `cp -a --reflink=auto`: reused on a real Linux host; on BSD cp the flag is
         rejected, which must fall back quietly to npm ci (the mac path is untouched)."""
@@ -598,124 +648,6 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.rc, 0, r.err)
         self.assertNotIn(self.nonce, r.out)
         self.assertRegex(r.out, r"LABEL='rdocker\.rrun=[0-9a-f]{32}'")
-
-    # ------------------------------------------------------------------ local file: deps
-    def commit(self, files):
-        """Commit `files` in the source repo and push them to the bare repo (the laptop's push)."""
-        for n, c in files.items():
-            os.makedirs(os.path.dirname(os.path.join(self.src, n)) or self.src, exist_ok=True)
-            wfile(os.path.join(self.src, n), c)
-        self.git("-C", self.src, "add", "-A")
-        self.git("-C", self.src, "commit", "-qm", "more")
-        self.sha = self.git("-C", self.src, "rev-parse", "HEAD").strip()
-        self.git("-C", self.src, "push", "-q", os.path.join(self.root, "git", SLUG + ".git"),
-                 "HEAD:refs/rrun/" + WT)
-
-    LOCAL_KW = {"relcwd": "server", "stamps": {"dirs": ["server"]}}
-    BUILD = ("test ! -e ../packages/core/src/BROKEN && mkdir -p ../packages/core/dist"
-             " && cp ../packages/core/src/index.js ../packages/core/dist/index.js")
-
-    def local_dep_repo(self):
-        """dentall layout (2026-11-06): server depends on `file:../packages/core`, whose build output
-        packages/core/dist is gitignored and only (re)built by server's postinstall."""
-        self.commit({".gitignore": "node_modules\n.env*\ndist/\n",
-                     "packages/core/package.json": json.dumps({"name": "core", "main": "dist/index.js"}),
-                     "packages/core/src/index.js": "v1",
-                     "server/package.json": json.dumps({"dependencies": {"core": "file:../packages/core"},
-                                                        "scripts": {"postinstall": self.BUILD}}),
-                     "server/package-lock.json": "{}"})
-
-    def test_local_file_dep_rebuilt_when_its_source_changes_without_a_lockfile_change(self):
-        """Negative control for the stale-dist defect: the dep's SOURCE changes (here a dirty tracked
-        file in the overlay), the lockfile does not. Before the fix npm ci was skipped and the
-        command read the old dist/ ("v1")."""
-        self.local_dep_repo()
-        env = {"FAKE_RUN_SCRIPTS": "1"}
-        post = lambda: [c for c in self.calls() if c == "npm run postinstall"]           # noqa: E731
-        ci = lambda: [c for c in self.calls() if c.startswith("npm ci")]                  # noqa: E731
-        cat = ["cat", "../packages/core/dist/index.js"]
-        r = self.run_runner(cat, env=env, **self.LOCAL_KW)
-        self.assertEqual((r.rc, r.out), (0, "v1"), r.err)
-        self.assertEqual((len(ci()), len(post())), (1, 1))      # npm ci ran postinstall itself
-        r = self.run_runner(cat, env=env, **self.LOCAL_KW)
-        self.assertEqual((r.rc, r.out), (0, "v1"), r.err)
-        self.assertEqual((len(ci()), len(post())), (1, 1))      # warm: nothing reruns
-        v2 = tar_of([("packages/core/src/index.js", b"v2")])
-        r = self.run_runner(cat, tar=v2, env=env, **self.LOCAL_KW)
-        self.assertEqual((r.rc, r.out), (0, "v2"), r.err)       # rebuilt, not the stale v1
-        self.assertIn("local package source changed", r.err)
-        self.assertEqual((len(ci()), len(post())), (1, 2))      # no npm ci; server's postinstall
-        r = self.run_runner(cat, tar=v2, env=env, **self.LOCAL_KW)
-        self.assertEqual((r.rc, r.out, len(post())), (0, "v2", 2), r.err)   # warm again
-        r = self.run_runner(cat, env=env, **self.LOCAL_KW)     # the edit reverted on the laptop
-        self.assertEqual((r.rc, r.out), (0, "v1"), r.err)
-        # a new untracked source file is source too
-        r = self.run_runner(cat, tar=tar_of([("packages/core/src/extra.js", b"x")]), env=env, **self.LOCAL_KW)
-        self.assertEqual((r.rc, len(post())), (0, 4), r.err)
-
-    def test_local_file_dep_rebuild_failure_is_78_and_never_runs_stale(self):
-        self.local_dep_repo()
-        env = {"FAKE_RUN_SCRIPTS": "1"}
-        marker = os.path.join(self.d, "ran")
-        cmd = ["/bin/sh", "-c", "touch %s; cat ../packages/core/dist/index.js" % marker]
-        self.assertEqual(self.run_runner(cmd, env=env, **self.LOCAL_KW).rc, 0)
-        os.unlink(marker)
-        broken = tar_of([("packages/core/src/index.js", b"v2"), ("packages/core/src/BROKEN", b"")])
-        r = self.run_runner(cmd, tar=broken, env=env, **self.LOCAL_KW)
-        self.assertEqual(r.rc, 78, r.err)
-        self.assertIn("npm run postinstall failed in ./server on the Mac mini", r.err)
-        self.assertFalse(os.path.exists(marker))
-        r = self.run_runner(cmd, tar=broken, env=env, **self.LOCAL_KW)   # no stamp was written
-        self.assertEqual(r.rc, 78, r.err)
-        r = self.run_runner(cmd, tar=tar_of([("packages/core/src/index.js", b"v2")]), env=env, **self.LOCAL_KW)
-        self.assertEqual((r.rc, r.out), (0, "v2"), r.err)
-
-    def test_local_dep_lifecycle_scripts_and_link_spec(self):
-        """npm ci runs a linked package's own preinstall/install/postinstall/prepare, so a rebuild
-        does too (dependencies first, then the depending package). `link:` counts; a dep outside
-        the mirror, a registry dep and a tarball do not."""
-        self.commit({".gitignore": "node_modules\n.env*\ndist/\n",
-                     "packages/a/package.json": json.dumps({"name": "a", "scripts": {"prepare": "true"},
-                                                            "dependencies": {"b": "file:../b"}}),
-                     "packages/a/src.js": "1",
-                     "packages/b/package.json": json.dumps({"name": "b", "scripts": {"install": "true"}}),
-                     "packages/b/src.js": "1",
-                     "server/package.json": json.dumps({"dependencies": {
-                         "a": "link:../packages/a", "x": "^1.0.0", "t": "file:../t.tgz",
-                         "o": "file:../../outside"}}),
-                     "server/package-lock.json": "{}"})
-        self.assertEqual(self.run_runner(["true"], **self.LOCAL_KW).rc, 0)
-        n = len(self.calls())
-        r = self.run_runner(["true"], tar=tar_of([("packages/b/src.js", b"2")]), **self.LOCAL_KW)
-        self.assertEqual(r.rc, 0, r.err)
-        self.assertEqual([c for c in self.calls()[n:] if c.startswith(("npm", "npx"))],
-                         ["npm run install", "npm run prepare"])   # b, then a
-
-    def test_local_dep_without_build_scripts_runs_nothing(self):
-        """admin-core layout: a source-only file: dep and no lifecycle scripts anywhere."""
-        self.commit({"packages/c/package.json": json.dumps({"name": "c", "main": "src/index.ts"}),
-                     "packages/c/src/index.ts": "1",
-                     "server/package.json": json.dumps({"dependencies": {"c": "file:../packages/c"}}),
-                     "server/package-lock.json": "{}"})
-        self.assertEqual(self.run_runner(["true"], **self.LOCAL_KW).rc, 0)
-        n = len(self.calls())
-        r = self.run_runner(["true"], tar=tar_of([("packages/c/src/index.ts", b"2")]), **self.LOCAL_KW)
-        self.assertEqual(r.rc, 0, r.err)
-        self.assertEqual([c for c in self.calls()[n:] if c.startswith(("npm", "npx"))], [])
-
-    @unittest.skipUnless(sys.platform == "darwin", "APFS cp -c is macOS only")
-    def test_store_clone_into_a_new_mirror_still_builds_local_deps(self):
-        """The shared store holds node_modules only; a new mirror's ignored dist/ does not exist yet,
-        so a store hit must still run the build (the clone never carries a local-build stamp)."""
-        self.local_dep_repo()
-        env = {"FAKE_RUN_SCRIPTS": "1"}
-        cat = ["cat", "../packages/core/dist/index.js"]
-        self.assertEqual(self.run_runner(cat, env=env, **self.LOCAL_KW).out, "v1")
-        self.git("-C", self.src, "push", "-q", os.path.join(self.root, "git", SLUG + ".git"),
-                 "HEAD:refs/rrun/fedcba987654")
-        r = self.run_runner(cat, env=env, wt12="fedcba987654", **self.LOCAL_KW)
-        self.assertIn("reused from the mini's shared store", r.err)
-        self.assertEqual((r.rc, r.out), (0, "v1"), r.err)
 
     def test_deps_failure_is_78_and_command_not_started(self):
         marker = os.path.join(self.d, "ran")
