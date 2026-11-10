@@ -171,3 +171,65 @@ test('parsePower: fresh averaged watts from rd-power, null when stale or garbled
   assert.equal(r.parsePower('hot 1800000000', now), null);
   assert.equal(r.parsePower('99999 1800000000', now), null);
 });
+
+test('leak detection: ps time, classification, redaction', () => {
+  assert.equal(r.psTimeS('12:34.56'), 754.56); // mac m:ss.ss
+  assert.equal(r.psTimeS('01:02:03'), 3723); // linux hh:mm:ss
+  assert.equal(r.psTimeS('1-00:00:01'), 86401);
+  assert.equal(r.psTimeS('junk'), null);
+  // heavy dev work that skipped the pool
+  assert.equal(r.leakKind('npm exec vitest run src/a.test.ts'), 'vitest');
+  assert.equal(r.leakKind('node /x/node_modules/.bin/tsc --noEmit -p .'), 'tsc');
+  assert.equal(r.leakKind('node /x/node_modules/.bin/next build'), 'build');
+  assert.equal(r.leakKind('node /x/node_modules/.bin/eslint client/src'), 'eslint');
+  assert.equal(r.leakKind('/usr/bin/python3 -m pytest tests'), 'python');
+  // allowed locally / not dev work
+  for (const a of [
+    'node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+    'claude --resume',
+    'node /x/node_modules/.bin/vite --config vite.connect.config.ts',
+    'node /x/node_modules/.bin/vite --strictPort --host 127.0.0.1 --port 5261',
+    'python3 -m uvicorn api.main:app --host 0.0.0.0 --port 8000',
+    'python3 -m celery -A api.jobs worker --loglevel=info',
+    'node /x/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot',
+    'node /x/node_modules/.bin/vitest --watch',
+    'npx chrome-devtools-mcp@latest',
+    '/usr/bin/python3 /Users/x/.claude-dotfiles/scripts/rdocker/rd_run.py npx tsc',
+    '/sbin/launchd',
+  ])
+    assert.equal(r.leakKind(a), null, a);
+  assert.equal(r.leakKind('node /x/node_modules/.bin/vite build'), 'build');
+  const red = r.redactArgs('node /Users/o/Developer/CODEBASES/integrateAPI/projects/dentall/run.mjs --token=abc123 KEY:zzz ' + 'A'.repeat(40));
+  assert.match(red, /\/Users\/o\/Developer\/CODEBASES\/integrateAPI\/projects\/dentall\/run\.mjs/); // paths stay readable
+  assert.match(red, /--token=\*\*\*/);
+  assert.match(red, /KEY:\*\*\*/);
+  assert.doesNotMatch(red, /AAAA/);
+});
+
+test('leak detection: scanLeaks baseline, window, threshold, new pids', () => {
+  const st = {};
+  const ps = (rows) => rows.map(([pid, t, a]) => `${pid} ${t} ${a}`).join('\n');
+  const T = 1_800_000_000_000;
+  // first scan = baseline only, even for a busy process
+  assert.deepEqual(r.scanLeaks(ps([[10, '5:00.00', 'node x/tsc --noEmit']]), st, T), []);
+  // +20 cpu-s within the window -> one leak, then the counter resets
+  let out = r.scanLeaks(ps([[10, '5:20.00', 'node x/tsc --noEmit']]), st, T + 60_000);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].kind, 'tsc');
+  assert.equal(out[0].cpuS, 20);
+  assert.deepEqual(r.scanLeaks(ps([[10, '5:25.00', 'node x/tsc --noEmit']]), st, T + 120_000), []); // 5 s < 15
+  // a slow trickle never adds up: 10 s, then the window expires before the next 10 s
+  const slow = {};
+  r.scanLeaks(ps([[20, '0:00.00', 'node x/eslint .']]), slow, T);
+  assert.deepEqual(r.scanLeaks(ps([[20, '0:10.00', 'node x/eslint .']]), slow, T + 60_000), []);
+  assert.deepEqual(r.scanLeaks(ps([[20, '0:20.00', 'node x/eslint .']]), slow, T + 300_000), []);
+  // a pid first seen after the baseline started since: all its CPU counts
+  out = r.scanLeaks(ps([[10, '5:25.00', 'node x/tsc --noEmit'], [30, '0:40.00', 'npm exec vitest run a.test.ts'], [31, '9:00.00', 'claude']]), st, T + 180_000);
+  assert.deepEqual(out.map((l) => [l.pid, l.kind, l.cpuS]), [[30, 'vitest', 40]]);
+});
+
+test('hookState: auto-offload hook wired or not', () => {
+  assert.equal(r.hookState('{"hooks":{"PreToolUse":[{"hooks":[{"command":"python3 ~/.claude-dotfiles/scripts/hooks/rrun-route.py"}]}]}}'), 'ok');
+  assert.equal(r.hookState('{"hooks":{}}'), 'missing');
+  assert.equal(r.hookState(null), 'missing');
+});

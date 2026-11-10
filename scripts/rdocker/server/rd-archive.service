@@ -1,0 +1,11 @@
+[Unit]
+Description=rdocker: archive the fleet dashboard's data to this machine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rd
+ExecStart=/usr/local/bin/rd-archive
+Nice=15
+IOSchedulingClass=idle

@@ -103,6 +103,10 @@ exposed=$(echo "$SS" | awk -v ts="$TSIP" '
 RS="$(getent passwd "$RD_USER" | cut -d: -f6)/.config/rdocker/reporter.json"; [ -n "${RD_REPORTER_FILE:-}" ] && RS=$RD_REPORTER_FILE
 st=$(stat -c '%a %U' "$RS" 2>/dev/null)
 [ "$st" = "600 $RD_USER" ] && res PASS reporter-secret-0600 || res FAIL reporter-secret-0600 "${st:-missing}"
+# home: the dashboard archive timer (data kept on this disk)
+if [ "${IS_HOME:-0}" = 1 ]; then
+  [ "$(systemctl is-enabled rd-archive.timer 2>/dev/null)" = enabled ] && res PASS archive-timer || res FAIL archive-timer "rd-archive.timer not enabled"
+else res SKIP archive-timer "not the home machine"; fi
 # power bar: the sampler runs where RAPL exists (never on WSL)
 if [ "$WSL" = 1 ] || [ ! -e /sys/class/powercap/intel-rapl:0/energy_uj ]; then res SKIP power-sampler "no RAPL here"
 elif [ "$(systemctl is-active rd-power.service 2>/dev/null)" = active ]; then res PASS power-sampler

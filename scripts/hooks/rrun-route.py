@@ -18,7 +18,7 @@ Behavior:
     the mini (RRUN_REMOTE set, or ~/<rr_root>/git exists); the command already mentions rrun;
     a skip marker is present: RRUN=0, real-od/, doctor-drive, --approve=browser.
   * One-shot dev commands (judge(), on top of the patterns): `npx [--prefix X] tsc` with --noEmit
-    or -p/-b configs that all set "noEmit": true; `npx vitest run ...`; `npx jest ...`;
+    or -p/-b configs that all set "noEmit": true; `npx vitest run ...` (also `npm exec ...`); `npx jest ...`;
     `npx eslint ...`; `./node_modules/.bin/<tool>` the same; `npm test` / `npm run test*` /
     `typecheck*` / `type-check*` / `lint*` when package.json defines the script. Only when the
     segment's cwd is in a git repo and the nearest lockfile is npm's (workers run `npm ci`; no
@@ -403,6 +403,13 @@ def parse_job(words):
     if i >= len(words):
         return None
     sub, name = words[i], None
+    if base == "npm" and sub in ("exec", "x"):              # `npm exec vitest run` == `npx vitest run`
+        j = i + 1
+        if j < len(words) and words[j] == "--":
+            j += 1
+        if j < len(words) and words[j] in TOOLS:
+            return {"tool": words[j], "args": words[j + 1:], "prefix": prefix, "bare": False}
+        return None
     if base == "npm" and sub in ("test", "t", "tst"):
         name, i = "test", i + 1
     elif sub in NPM_RUN or (base != "npm" and sub == "run"):

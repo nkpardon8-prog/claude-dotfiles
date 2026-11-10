@@ -195,6 +195,9 @@ ONESHOT = [
     ("npx tsc -b tsconfig.check.json", "rrun npx tsc -b tsconfig.check.json"),
     ("npx --prefix client tsc --noEmit -p tsconfig.json", "rrun npx --prefix client tsc --noEmit -p tsconfig.json"),
     ("npx vitest run src/a.test.ts", "rrun npx vitest run src/a.test.ts"),
+    ("npm exec vitest run src/a.test.ts", "rrun npm exec vitest run src/a.test.ts"),   # seen leaking on Nick's mini
+    ("npm exec -- vitest run src/a.test.ts", "rrun npm exec -- vitest run src/a.test.ts"),
+    ("npm x eslint client/src", "rrun npm x eslint client/src"),
     ("npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail", "rrun npx vitest run src/a.test.ts src/b.test.ts 2>&1 | tail"),
     ("npx --prefix client vitest run src/x.test.ts", "rrun npx --prefix client vitest run src/x.test.ts"),
     ("FOO=1 npx vitest run a", "FOO=1 rrun -e FOO npx vitest run a"),
@@ -222,6 +225,7 @@ ONESHOT = [
 # Never offloaded (run in the default project, so only the rule itself keeps them here)
 NEVER = [
     # watch / interactive
+    "npm exec vitest", "npm exec vitest watch", "npm exec vitest run --watch",
     "npx vitest", "npx vitest watch", "npx vitest -w", "npx vitest run --watch", "npx vitest run -w",
     "npx vitest run --ui", "npx vitest --ui", "npx vitest bench", "npx jest --watch", "npx jest --watchAll",
     "npx tsc -w -p tsconfig.check.json", "npx tsc --noEmit --watch", "npx tsc --noEmit -w",

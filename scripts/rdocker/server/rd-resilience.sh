@@ -6,11 +6,11 @@
 # --root DIR = test mode: every file lands under DIR, systemctl calls are only logged to DIR/systemctl.log,
 # and nothing else touches the machine (no apt, tailscale, loginctl). Test hook: RD_DMI_PRODUCT.
 set -euo pipefail
-RD_USER=rd IS_WSL=0 DISTRO=ubuntu CODENAME=noble R="" SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RD_USER=rd IS_WSL=0 IS_HOME=0 DISTRO=ubuntu CODENAME=noble R="" SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 while [ $# -gt 0 ]; do
   case "$1" in
     --user) RD_USER=${2:?}; shift 2 ;;
-    --home) shift ;;     # accepted for symmetry with provision-linux.sh; nothing here differs for home
+    --home) IS_HOME=1; shift ;;     # home also keeps the dashboard archive (rd-archive.timer)
     --wsl) IS_WSL=${2:?}; shift 2 ;;
     --distro) DISTRO=${2:?}; shift 2 ;;
     --codename) CODENAME=${2:?}; shift 2 ;;
@@ -61,6 +61,14 @@ fi
 sc enable ssh tailscaled docker chrony rd-tune.timer rd-netcheck.timer
 sc start rd-netcheck.timer
 if [ "$IS_WSL" != 1 ]; then sc enable rd-power.service; [ -n "$R" ] || systemctl restart rd-power.service || true; fi
+if [ "$IS_HOME" = 1 ]; then   # the dashboard's data, archived daily onto the home disk and kept forever
+  put /usr/local/bin/rd-archive 755 < "$SRC/rd-archive.sh"
+  put /etc/systemd/system/rd-archive.service 644 < "$SRC/rd-archive.service"
+  put /etc/systemd/system/rd-archive.timer 644 < "$SRC/rd-archive.timer"
+  [ -n "$R" ] || systemctl daemon-reload
+  sc enable rd-archive.timer
+  sc start rd-archive.timer
+fi
 if [ -f "$SRC/reporter/units/rd-reporter.service" ]; then    # user unit (lane C): boot via linger, never gives up
   UDIR="${R}/home/$RD_USER/.config/systemd/user"
   [ -n "$R" ] || UDIR="$(getent passwd "$RD_USER" | cut -d: -f6)/.config/systemd/user"

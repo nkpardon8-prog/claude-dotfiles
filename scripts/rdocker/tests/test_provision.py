@@ -144,6 +144,48 @@ class Resilience(unittest.TestCase):
         self.assertEqual(oct(os.stat(out).st_mode & 0o777), "0o644")
         shutil.rmtree(d)
 
+    def test_archive_timer_only_on_home(self):
+        self.apply()
+        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/systemd/system/rd-archive.timer")))
+        shutil.rmtree(self.root); os.makedirs(self.root)
+        self.apply("--home")
+        self.assertIn("OnCalendar=*-*-* 00:20:00 UTC", self.f("/etc/systemd/system/rd-archive.timer"))
+        self.assertIn("User=rd", self.f("/etc/systemd/system/rd-archive.service"))
+        self.assertIn("enable rd-archive.timer", self.f("systemctl.log"))
+
+    def test_archive_fetches_missing_days_and_skips_saved_ones(self):
+        d = tempfile.mkdtemp()
+        cfg = os.path.join(d, "cfg"); os.makedirs(cfg)
+        with open(os.path.join(cfg, "archive-token"), "w") as f: f.write("tok\n")
+        with open(os.path.join(cfg, "reporter.json"), "w") as f: f.write('{"url": "wss://fleet.example.dev/ingest"}')
+        calls = os.path.join(d, "calls")
+        fake = os.path.join(d, "curl")
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\nfor a; do last=$a; done\necho "$last" >> %s\nprintf \'{"day":"x"}\'\n' % calls)
+        os.chmod(fake, 0o755)
+        out = os.path.join(d, "arch")
+        env = rdmods.child_env(rdmods.TEST_HOME, RD_ARCHIVE_CFG=cfg, RD_ARCHIVE_DIR=out, RD_ARCHIVE_CURL=fake, RD_ARCHIVE_DAYS="3")
+        script = os.path.join(SERVER, "rd-archive.sh")
+        r = subprocess.run(["/bin/bash", script], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        urls = open(calls).read().split()
+        self.assertEqual(len(urls), 3)
+        self.assertTrue(all(u.startswith("https://fleet.example.dev/api/archive?day=") for u in urls), urls)
+        files = [os.path.join(dp, n) for dp, _, ns in os.walk(out) for n in ns]
+        self.assertEqual(len(files), 3)
+        self.assertTrue(all(f.endswith(".json.gz") for f in files))
+        subprocess.run(["/bin/bash", script], env=env, capture_output=True, timeout=30)   # second run: all saved
+        self.assertEqual(len(open(calls).read().split()), 3)
+        shutil.rmtree(d)
+
+    def test_archive_without_token_is_a_quiet_noop(self):
+        d = tempfile.mkdtemp()
+        env = rdmods.child_env(rdmods.TEST_HOME, RD_ARCHIVE_CFG=d, RD_ARCHIVE_DIR=os.path.join(d, "a"))
+        r = subprocess.run(["/bin/bash", os.path.join(SERVER, "rd-archive.sh")], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("no ", r.stdout)
+        shutil.rmtree(d)
+
     def test_power_sampler_exits_quietly_without_rapl(self):
         env = rdmods.child_env(rdmods.TEST_HOME, RD_POWERCAP="/nonexistent/rapl")
         r = subprocess.run(["/bin/bash", os.path.join(SERVER, "rd-power.sh")], env=env, capture_output=True, text=True, timeout=10)
@@ -477,7 +519,7 @@ class Verify(unittest.TestCase):
         s = read(VERIFY)
         for name in ("mask-$t", "logind-ignore-lid-idle", "boot-$u", "restart-$u", "timer-$t", "watchdog",
                      "panic-sysctl", "ac-power", "unattended-upgrades", "tailscale-auto-update", "docker-live-restore",
-                     "reporter-boot", "power-sampler"):
+                     "reporter-boot", "power-sampler", "archive-timer"):
             self.assertIn(name, s)
 
     def test_prints_only_status_lines_and_fails_loudly_without_systemd(self):

@@ -160,6 +160,87 @@ export function pickTemp(readings) {
   return pool.length ? Math.round(Math.max(...pool.map((r) => r.value)) * 10) / 10 : null;
 }
 
+// ---------------------------------------------------------------------------- leak detection
+// Agent hosts (role without "worker") should not run heavy dev work: the routing hook sends it to the
+// pool. A "leak" is a dev-tool process burning local CPU anyway. One `ps` per frame; nothing else.
+export const LEAK_MIN_CPU_S = 15;
+/** ...burned within this window: a slow trickle (an idle server at 1 %) never adds up to a leak. */
+export const LEAK_WINDOW_MS = 120_000;
+const LEAK_MAX = 10;
+const NOT_A_LEAK = /claude|anthropic|codex|runpane|pane\.app|\bmcp\b|-mcp\b|chrome-devtools|google chrome|chromium|safari|firefox|electron|visual studio code|code helper|cursor\.app|tsserver|typingsinstaller|rd-reporter|\brrun\b|rd_run|rd_pool|\bssh\b|rsync|\bgit\b|caffeinate|spotlight|mdworker/i;
+// dev servers, app servers and watch modes are allowed to run locally (the user's own tabs need them)
+const LOCAL_BY_DESIGN = /(^|\s)(dev|serve|preview|start)(\s|$)|--watch\b|(^|\s)watch(\s|$)|(^|\s)-w(\s|$)|--port\b|--host\b|\b(uvicorn|gunicorn|celery|hypercorn|daphne|runserver|http\.server|serve-static|nodemon|tsx watch)\b|\bflask run\b|\bvite\b(?!.*\b(build|optimize)\b)(?!st)/i;
+
+/** `ps` cumulative CPU time ([DD-][HH:]MM:SS[.ss]) -> seconds. */
+export function psTimeS(t) {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/.exec(String(t ?? '').trim());
+  if (!m) return null;
+  return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3]) * 60 + Number(m[4]);
+}
+
+/** argv -> leak kind, or null when it is not heavy dev work (or is local by design). */
+export function leakKind(args) {
+  const a = String(args ?? '');
+  if (!a || NOT_A_LEAK.test(a) || LOCAL_BY_DESIGN.test(a)) return null;
+  if (/\bvitest\b/.test(a)) return 'vitest';
+  if (/\bjest\b/.test(a)) return 'jest';
+  if (/(^|[/\s])tsc(\s|$)|typescript\/bin\/tsc|\bvue-tsc\b/.test(a)) return 'tsc';
+  if (/\beslint\b|\bbiome\b|\boxlint\b/.test(a)) return 'eslint';
+  if (/\bplaywright\b|\bcypress\b/.test(a)) return 'playwright';
+  if (/\b(next|vite|webpack|rollup|esbuild|turbo|tsup|rspack|parcel|nx)\b.*\bbuild\b|(^|\s)build(\s|$)/.test(a)) return 'build';
+  if (/(^|\/)(cargo|rustc)(\s|$)/.test(a)) return 'cargo';
+  if (/(^|\/)go(\s+(build|test|vet|run))/.test(a)) return 'go';
+  if (/(^|\/)python[\d.]*(\s|$)|\bpytest\b/.test(a)) return 'python';
+  if (/(^|\/)(node|bun|deno)(\s|$)/.test(a)) return 'node';
+  if (/(^|\/)(java|gradle|mvn|swift|xcodebuild|ruby)(\s|$)/.test(a)) return 'other';
+  return null;
+}
+
+/** Secrets out of argv before it leaves the machine. */
+export function redactArgs(args) {
+  return String(args ?? '')
+    .replace(/((?:token|key|secret|password|passwd|auth)\w*)([=: ])\S+/gi, '$1$2***')
+    .replace(/[A-Za-z0-9+_-]{32,}={0,2}/g, '***') // tokens; paths keep their '/' so they stay readable
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+}
+
+/**
+ * One scan: `ps -eo pid=,time=,args=` text + state -> leaks to report now. Per pid, CPU burned since
+ * the last scan accumulates until it reaches LEAK_MIN_CPU_S, then it is reported and reset (works at
+ * any frame cadence). The first scan only sets the baseline. A pid seen for the first time after that
+ * started since the last scan, so all its CPU counts.
+ */
+export function scanLeaks(psText, state, nowMs, minCpuS = LEAK_MIN_CPU_S) {
+  const seen = new Map();
+  const first = !state.prev;
+  const out = [];
+  for (const line of String(psText ?? '').split('\n')) {
+    const m = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const cpu = psTimeS(m[2]);
+    if (cpu === null) continue;
+    const kind = leakKind(m[3]);
+    if (!kind) continue;
+    const old = state.prev?.get(pid);
+    const delta = first ? 0 : old ? Math.max(0, cpu - old.cpu) : cpu;
+    const fresh = !old || nowMs - old.since > LEAK_WINDOW_MS; // window expired below the bar: start over
+    const acc = (fresh ? 0 : old.acc) + delta;
+    const since = fresh ? nowMs : old.since;
+    if (acc >= minCpuS) {
+      out.push({ ts: nowMs, pid, kind, cmd: redactArgs(m[3]), cpuS: Math.round(acc * 10) / 10 });
+      seen.set(pid, { cpu, acc: 0, since: nowMs });
+    } else seen.set(pid, { cpu, acc, since });
+  }
+  state.prev = seen;
+  return out.sort((a, b) => b.cpuS - a.cpuS).slice(0, LEAK_MAX);
+}
+
+/** ~/.claude/settings.json text -> is the auto-offload hook wired? */
+export const hookState = (settingsText) => (settingsText == null ? 'missing' : /rrun-route/.test(settingsText) ? 'ok' : 'missing');
+
 /** /run/rdocker/power ("<watts> <epoch s>", written by root's rd-power) -> watts, null when missing or stale. */
 export function parsePower(text, nowMs, maxAgeS = 30) {
   const m = /^\s*(\d+(?:\.\d+)?)\s+(\d+)\s*$/.exec(text ?? '');
@@ -513,6 +594,9 @@ function runnerQueue(busyPids, uptimeS) {
 export class Collector {
   constructor(cfg, platform = process.platform) {
     this.cfg = cfg;
+    // agent hosts (Nick's mini, the Air) are watched for heavy work that skipped the pool
+    this.agentHost = !/worker/i.test(String(cfg.role ?? '')) && cfg.leaks !== false;
+    this.leakState = {};
     this.linux = platform === 'linux';
     this.mac = platform === 'darwin';
     this.rrRoot = expandHome(cfg.rrRoot ?? '~/rr');
@@ -581,6 +665,7 @@ export class Collector {
       speed: Number.isFinite(this.cfg.speed) ? this.cfg.speed : Number.isFinite(fleet?.speed) ? fleet.speed : 1,
       tsIps: this.selfIps,
       reporter: VERSION,
+      hook: this.agentHost ? hookState(read(expandHome(this.cfg.claudeSettings ?? '~/.claude/settings.json'))) : null,
     };
   }
 
@@ -700,6 +785,7 @@ export class Collector {
       links = links.map((p) => ({ ...p, rttMs: rtt?.get(p.ip) ?? null }));
     }
 
+    const leaks = this.agentHost ? scanLeaks(await sh('ps', ['-eo', 'pid=,time=,args='], 3000), this.leakState, now) : [];
     const jobs = this.jobs();
     const q = this.linux ? runnerQueue(new Set(jobs.map((j) => j.pid).filter(Boolean)), uptime) : { queued: 0, waitS: null };
     const hist = this.hist;
@@ -724,6 +810,7 @@ export class Collector {
       links,
       hostMem: await this.hostMem(),
       pressure,
+      ...(leaks.length ? { leaks } : {}),
     };
     if (withInfo) frame.info = this.info();
     return frame;
