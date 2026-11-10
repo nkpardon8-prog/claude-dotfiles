@@ -18,7 +18,7 @@
         "worker"
       ],
       "speed": 0.45,
-      "max_slots": 2,
+      "max_slots": 4,
       "heavy_slots": 1,
       "mem_gb": 8,
       "enabled": true
