@@ -77,18 +77,19 @@
     {
       "name": "mini-b",
       "alias": "rd-mini-b",
-      "ip": "",
+      "ip": "100.93.41.57",
       "port": 22,
       "user": "rd",
       "os": "linux",
       "roles": [
         "worker"
       ],
-      "speed": 0.2,
-      "max_slots": 1,
+      "speed": 0.31,
+      "max_slots": 2,
       "heavy_slots": 1,
       "mem_gb": 8,
-      "enabled": false
+      "enabled": true,
+      "ts_key_expiry": "2027-05-09"
     },
     {
       "name": "nick",
