@@ -67,11 +67,12 @@
       "roles": [
         "worker"
       ],
-      "speed": 0.2,
-      "max_slots": 1,
+      "speed": 0.42,
+      "max_slots": 2,
       "heavy_slots": 1,
       "mem_gb": 8,
-      "enabled": false
+      "enabled": true,
+      "ts_key_expiry": "2027-04-16"
     },
     {
       "name": "mini-b",
