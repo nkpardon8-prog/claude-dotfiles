@@ -61,6 +61,10 @@ POSITIVE = [
     ("find . -name x; npm run test:db", "find . -name x; rrun npm run test:db"),
     ('echo "export"; npm run test:db', 'echo "export"; rrun npm run test:db'),
     ("npm run test:db; export X=1", "rrun npm run test:db; export X=1"),   # state set AFTER
+    # a bare assignment to a name not already exported is shell-local: no child sees it, here or remote
+    ("FOO=1; npm run test:db", "FOO=1; rrun npm run test:db"),
+    ("FOO=1 BAR='x y'; npm run test:db", "FOO=1 BAR='x y'; rrun npm run test:db"),
+    ("cd server && FOO=1 && npm run test:db", "cd server && FOO=1 && rrun npm run test:db"),
     ('npm run test:db -- -t "care hold release"', 'rrun npm run test:db -- -t "care hold release"'),
     ("git commit -m 'wip' && npm run test:db", "git commit -m 'wip' && rrun npm run test:db"),
     ("npm run test:db && npm run test:db:rls", "rrun npm run test:db && rrun npm run test:db:rls"),
@@ -145,10 +149,17 @@ NEGATIVE = [
     "set -o allexport; npm run test:db",
     "source .env && npm run test:db",
     ". ./env.sh; npm run test:db",
-    "FOO=1; npm run test:db",
-    "FOO=1 BAR='x y'; npm run test:db",
     "if true; then export X=1; fi; npm run test:db",
-    "cd server && FOO=1 && npm run test:db",
+    # bare assignments that DO reach a child: an exported name (PATH/HOME are in the hook's env),
+    # zsh's tied path array, shell-special names, array assignments, zsh allexport
+    "PATH=/x; npm run test:db",
+    "path=(/x $path); npm run test:db",
+    "IFS=,; npm run test:db",
+    "CDPATH=/x; cd server && npm run test:db",
+    "arr=(a b); npm run test:db",
+    "PATH+=:/x; npm run test:db",
+    "setopt allexport; FOO=1; npm run test:db",
+    "setopt ALL_EXPORT; npm run test:db",
 ]
 
 OPT_OUT = [
@@ -165,6 +176,7 @@ SCRIPTS = {
     "test": "vitest run", "test:unit": "vitest run src", "test:watch": "vitest",
     "test:sneaky": "vitest --watch", "test:e2e": "playwright test", "test:cov": "vitest run --coverage",
     "typecheck": "tsc --noEmit", "typecheck:server": "tsc --noEmit -p server",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .", "lint:fix": "eslint . --fix", "lint:ci": "eslint . --fix",
     "dev": "vite", "start": "node server.js", "build": "vite build", "build:prod": "vite build",
 }
@@ -358,6 +370,77 @@ class RewriteMatrix(HookBase):
         self.assertEqual(out["hookSpecificOutput"]["updatedInput"],
                          {"command": "rrun npm run test:db", "description": "db tests",
                           "timeout": 600000, "run_in_background": True})
+
+
+class LeakedOnTheMini(HookBase):
+    """Commands agents really ran that stayed local before: a bare scratch assignment and a heredoc."""
+
+    def at(self, command, **extra):
+        out = self.hook(dict(self.bash(command), cwd=self.proj), **extra)
+        return out and out["hookSpecificOutput"]["updatedInput"]["command"]
+
+    def test_bare_scratch_assignment_no_longer_blocks(self):
+        client = os.path.join(self.proj, "client")
+        cmd = ("cd %s && SP=/private/tmp/claude-501/x/scratchpad && npx tsc --noEmit -p . ; echo tsc=$?; "
+               "npm run typecheck:test >/dev/null 2>&1; echo tct=$?; "
+               "RRUN_CACHE=0 npx vitest run src/pages/__tests__/X.test.tsx src/pages/__tests__/Y.test.tsx" % client)
+        want = ("cd %s && SP=/private/tmp/claude-501/x/scratchpad && rrun npx tsc --noEmit -p . ; echo tsc=$?; "
+                "rrun npm run typecheck:test >/dev/null 2>&1; echo tct=$?; "
+                "RRUN_CACHE=0 rrun npx vitest run src/pages/__tests__/X.test.tsx src/pages/__tests__/Y.test.tsx" % client)
+        self.assertEqual(self.at(cmd), want)
+
+    def test_assignment_to_an_exported_name_still_blocks(self):
+        self.assertEqual(self.at("FOO=2; npm test"), "FOO=2; rrun npm test")
+        self.assertIsNone(self.at("FOO=2; npm test", FOO="1"))
+        self.assertIsNone(self.at("BAR=x FOO=2; npm test", FOO="1"))
+        self.assertIsNone(self.at("foo=2; npm test", FOO="1"))           # zsh ties lower/upper pairs
+        self.assertEqual(self.at("FOO=2 npm test", FOO="1"), "FOO=2 rrun -e FOO npm test")   # a prefix: forwarded
+
+    def test_heredoc_then_cd_then_vitest(self):
+        os.makedirs(os.path.join(self.proj, "server", "src"))
+        body = ("import pathlib\np = pathlib.Path('a.ts')\n"
+                "p.write_text(p.read_text().replace('npx vitest run x', 'y'))\n")
+        cmd = ("cd %s/server/src && python3 - <<'EOF'\n%sEOF\n cd .. && "
+               "npx vitest run src/__tests__/a.test.ts src/__tests__/b.test.ts" % (self.proj, body))
+        want = ("cd %s/server/src && python3 - <<'EOF'\n%sEOF\n cd .. && "
+                "rrun npx vitest run src/__tests__/a.test.ts src/__tests__/b.test.ts" % (self.proj, body))
+        self.assertEqual(self.at(cmd), want)
+
+    def test_heredoc_forms_route_later_segments(self):
+        for cmd, want in (
+                ("cat <<EOF > notes.txt\nhello\nEOF\nnpm test", "cat <<EOF > notes.txt\nhello\nEOF\nrrun npm test"),
+                ('cat <<"EOF"\nhi\nEOF\nnpm test', 'cat <<"EOF"\nhi\nEOF\nrrun npm test'),
+                ("cat << EOF\nhi\nEOF\nnpm test", "cat << EOF\nhi\nEOF\nrrun npm test"),
+                ("cat <<-EOF >x\n\tbody\n\tEOF\nnpm test", "cat <<-EOF >x\n\tbody\n\tEOF\nrrun npm test"),
+                ("cat <<A\na\nA\ncat <<B\nb\nB\nnpm test", "cat <<A\na\nA\ncat <<B\nb\nB\nrrun npm test"),
+                ("cat <<'EOF' > plan.md\nnpx vitest run src/a.test.ts\nEOF\nnpm test",
+                 "cat <<'EOF' > plan.md\nnpx vitest run src/a.test.ts\nEOF\nrrun npm test")):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.at(cmd), want)
+
+    def test_heredoc_fail_safes(self):
+        for cmd in (
+                "cat <<'EOF' > plan.md\nnpx vitest run src/a.test.ts\nEOF",   # body text is never routed
+                "cat <<EOF > plan.md\nnpm run test:db\nEOF",
+                "cat <<EOF > notes.txt\nnpm test\nEOF\necho done",          # nothing heavy after it
+                "cat <<EOF\nhello\nnpm test",                                 # no terminator line
+                "cat <<EOF\nEOF \nnpm test",                                  # `EOF ` is not the terminator
+                "cat <<EOF",
+                "cat <<< hi; npm test",                                        # here-string
+                "cat <<<hi\nnpm test",
+                "cat <<A <<B\na\nA\nb\nB\nnpm test",                          # two on one line
+                "cat <<A; cat <<B\na\nA\nb\nB\nnpm test",
+                "cat <<EOF && npm test\nbody\nEOF",                            # operator before the body
+                "cat <<EOF 'a\nb'\nEOF\nnpm test",                             # quote spans the body
+                "cat <<$X\nbody\n$X\nnpm test",                                # $ in the delimiter
+                "cat <<E\"OF\"\nbody\nEOF\nnpm test",                           # partly quoted
+                "cat <<\\EOF\nbody\nEOF\nnpm test",
+                "cat <<EOF\n$(date)\nEOF\nnpm test",                            # substitution in the body
+                "cat <<EOF\n`date`\nEOF\nnpm test",
+                "npx vitest run a <<EOF\nx\nEOF",                               # the owner itself: `<`
+                "npx vitest run a <<EOF\nx\nEOF\nnpm test"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
 
 
 class NoOps(HookBase):

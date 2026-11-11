@@ -33,8 +33,14 @@ Behavior:
     scanner. A matching segment is rewritten only when the match is in unquoted text, its head is
     a node package runner (npm/node/npx/pnpm/yarn/bun) after plain NAME=value assignments, it is
     not a pipe target, and it has no parens / braces / input redirect. Any $( / backtick (a
-    substitution can hide its own segments), heredoc or unbalanced quote, or ANY matching segment
-    that is not safe, leaves the whole command alone.
+    substitution can hide its own segments, also inside an unquoted heredoc body), unbalanced
+    quote, or ANY matching segment that is not safe, leaves the whole command alone.
+  * Heredocs (`<<W`, `<<'W'`, `<<"W"`, `<<-W`): the body, through its terminator line, is opaque
+    text owned by its segment (never rewritten: `<` is an input redirect), so `npx vitest run` in
+    a body is never routed; later segments are judged as usual and a `cd` before still moves them.
+    Not certain -> the whole command is left alone: `<<<`, a delimiter with $ / backtick / partial
+    quoting, no terminator line, two heredocs on one line, or another operator, a multi-line quote
+    or a line continuation between `<<W` and the body.
   * Leading NAME=value assignments stay where they are (an env prefix, so values never enter
     rrun's argv) and each non-RRUN_/RDOCKER_ name gets `rrun -e NAME`, which forwards the value
     from rrun's own environment: `FOO=1 npm run test:db` -> `FOO=1 rrun -e FOO npm run test:db`.
@@ -42,8 +48,12 @@ Behavior:
     must match [A-Za-z0-9_./:@%+,=-]* (no globs, ~, $, quotes...), else the command is left alone.
   * Words split only on space/tab: any other whitespace or invisible format char (\\v \\f \\r,
     NBSP, U+2000.., U+200B, ...) leaves the command alone. So does shell state set by an EARLIER
-    segment that would not reach the mini: export, declare/typeset, set -a / allexport,
-    source / `.`, or a bare assignment (`FOO=1; npm run test:db`).
+    segment that would not reach the mini: export, declare/typeset, set -a / allexport /
+    setopt allexport, source / `.`, an array assignment (`a=(...)`), or a bare assignment to a
+    name that is already exported (in the hook's own environment, any case) or shell-special
+    (IFS, CDPATH, zsh's path/fpath...): `PATH=/x; npm test`. A bare assignment to any other name
+    is shell-local - no child sees it, here or through rrun, and `$NAME` expands locally before
+    rrun runs - so `SP=/tmp/x && npx vitest run a` routes the vitest part.
   * Builds: a `npm run build` segment (rd_pool.BUILD_RE) is routed only when its package dir is
     mapped in rr_outputs (rd_pool.outputs_for: repo name -> package dir -> output dirs), so rrun
     can copy the outputs back. The dir = the hook's cwd, moved by earlier plain `cd <dir>`
@@ -79,6 +89,14 @@ WRAP_ARG_RE = re.compile(r"-[A-Za-z]+|[0-9]+(\.[0-9]+)?[smhd]?")      # flags / 
 SHELLS = {"bash", "sh", "zsh"}
 SIMPLE_FILE_RE = re.compile(r"[A-Za-z0-9_./~@%+,=-]+")
 REDIR_RE = re.compile(r"[0-9]?(>>?|>&)([0-9]|[A-Za-z0-9_./~@%+,=-]+)")
+# a heredoc we fully understand: <<W / <<'W' / <<"W" / <<-W, W plain, then a word end
+HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(?:'([A-Za-z0-9_.-]+)'|\"([A-Za-z0-9_.-]+)\"|([A-Za-z0-9_.-]+))"
+                        r"(?=[ \t\n>]|$)")
+# NAME=, NAME+=, NAME[i]= : any assignment form, for the earlier-shell-state check
+ASSIGNISH_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?\+?=(.*)$", re.S)
+# names whose plain (unexported) assignment still changes how the local shell runs later words:
+# word splitting, `cd` lookup, zsh's tied arrays (path=(...) rewrites the exported PATH)
+SHELL_SPECIAL = {"IFS", "CDPATH", "cdpath", "path", "fpath", "manpath", "module_path"}
 
 # ---- one-shot dev commands (structural, on top of rr_route_patterns) ----------------------------
 # The jobs rd_pool.classify() places well: tsc (heavy), vitest / jest / test scripts (normal),
@@ -148,16 +166,31 @@ def load_cfg(rrun_real, user):
 
 
 def scan(cmd):
-    """-> (segments, masked) or None when the quoting is unbalanced or a heredoc is present.
-    segments: [(start, end, op_before)]; masked: cmd with quoted/escaped text and comments
-    blanked; shape: the same but quoted/escaped text kept as non-space, so words split where the
-    shell splits them. Both have cmd's length, so indexes line up with the original."""
+    """-> (segments, masked) or None when the quoting is unbalanced or a heredoc is not certain.
+    segments: [(start, end, op_before)]; masked: cmd with quoted/escaped text, comments and
+    heredoc bodies blanked; shape: the same but quoted/escaped text kept as non-space, so words
+    split where the shell splits them. Both have cmd's length, so indexes line up with the original.
+    A heredoc (`<<W`, `<<'W'`, `<<"W"`, `<<-W`) is opaque: its body, through the terminator line,
+    stays in the segment that owns it (whose `<` already vetoes a rewrite). Unsure -> None: `<<<`,
+    an odd delimiter ($, backtick, partly quoted...), no terminator line, a second heredoc or
+    another operator / multi-line quote / line continuation before the body starts."""
     segs, masked, shape = [], list(cmd), list(cmd)
     i, n, start, op = 0, len(cmd), 0, ""
     word_start = True
+    pending = None                                            # (delimiter, strip_tabs) awaiting its body
     while i < n:
         c = cmd[i]
+        if c == "\n" and pending:
+            end = heredoc_end(cmd, i + 1, *pending)
+            if end is None:
+                return None                                   # no terminator line: unsure
+            for k in range(i, end):
+                masked[k], shape[k] = " ", " "
+            i, pending, word_start = end, None, True          # cmd[end] is the newline after it
+            continue
         if c == "\\":
+            if pending and cmd[i + 1:i + 2] == "\n":
+                return None                                   # continuation before the body
             for k in range(i, min(i + 2, n)):
                 masked[k], shape[k] = " ", "Q"
             i += 2
@@ -167,8 +200,8 @@ def scan(cmd):
             j = i + 1
             while j < n and cmd[j] != c:
                 j += 2 if (c == '"' and cmd[j] == "\\") else 1
-            if j >= n:
-                return None                                   # unbalanced quote
+            if j >= n or (pending and "\n" in cmd[i:j]):
+                return None                                   # unbalanced / spans the body
             for k in range(i, j + 1):
                 masked[k], shape[k] = " ", "Q"
             i = j + 1
@@ -182,8 +215,17 @@ def scan(cmd):
             i = j
             continue
         if c == "<" and cmd.startswith("<<", i):
-            return None                                       # heredoc / herestring
+            m = HEREDOC_RE.match(cmd, i)
+            if pending or not m:
+                return None                                   # <<<, two heredocs, odd delimiter
+            pending = (m.group(2) or m.group(3) or m.group(4), m.group(1) == "-")
+            for k in range(m.end(1), m.end()):
+                masked[k], shape[k] = (" ", " ") if cmd[k] in " \t" else (" ", "Q")
+            i, word_start = m.end(), False
+            continue
         two = cmd[i:i + 2]
+        if pending and (two in ("&&", "||", "|&") or c in ";|&"):
+            return None                                       # another command before the body
         if two in ("&&", "||", "|&"):
             segs.append((start, i, op))
             op, i, start, word_start = two, i + 2, i + 2, True
@@ -194,8 +236,23 @@ def scan(cmd):
             continue
         word_start = c in " \t"
         i += 1
+    if pending:
+        return None                                           # heredoc with no body at all
     segs.append((start, n, op))
     return segs, "".join(masked), "".join(shape)
+
+
+def heredoc_end(cmd, pos, delim, strip_tabs):
+    """Index just past the terminator line of a heredoc body starting at pos, else None."""
+    n = len(cmd)
+    while pos < n:
+        eol = cmd.find("\n", pos)
+        eol = n if eol == -1 else eol
+        line = cmd[pos:eol]
+        if (line.lstrip("\t") if strip_tabs else line) == delim:
+            return eol
+        pos = eol + 1
+    return None
 
 
 def shell_c(cmd, shape, toks, k):
@@ -291,10 +348,21 @@ def shell_c_script(cmd, shape, s, e):
     return ""
 
 
+def exported(name):
+    """True when a bare `name=value` could change what a child process (local or via rrun) sees,
+    or how the local shell reads later words: name is already exported (in the hook's own
+    environment, inherited from the same parent as the Bash tool's shell; any case, for zsh's
+    tied path/PATH pairs) or is a shell-special name."""
+    return name in os.environ or name.upper() in os.environ or name in SHELL_SPECIAL
+
+
 def sets_state(masked, s, e):
     """True when segment masked[s:e] may change shell state a later `rrun` (a child process on
-    another machine) would not inherit: export/declare/typeset/source, `.`, set -a/allexport,
-    or a bare assignment. Quoted text is blanked in `masked`, so `echo "export"` is fine."""
+    another machine) would not inherit: export/declare/typeset/source, `.`, set -a/allexport
+    (also zsh's setopt allexport / all_export), or a bare assignment to an already-exported or
+    shell-special name. A bare assignment to any other name is shell-local: no child sees it,
+    here or through rrun, and `$NAME` expands in the local shell before rrun runs. Quoted text
+    is blanked in `masked`, so `echo "export"` is fine."""
     words = WORD_RE.findall(masked[s:e])
     while words and words[0] in KEYWORDS:
         words = words[1:]
@@ -304,7 +372,14 @@ def sets_state(masked, s, e):
         return True
     if "set" in words and any(w == "allexport" or re.match(r"^[-+][A-Za-z]*a", w) for w in words):
         return True
-    return all(ASSIGN_RE.match(w) for w in words)
+    if "setopt" in words and any(w.lower().replace("_", "") in ("allexport", "a") for w in words):
+        return True
+    first = ASSIGNISH_RE.match(words[0])
+    if first and first.group(3).startswith("("):
+        return True                                           # array assignment: not judged
+    if all(ASSIGNISH_RE.match(w) for w in words):
+        return any(exported(ASSIGNISH_RE.match(w).group(1)) for w in words)
+    return False
 
 
 class Builds:
