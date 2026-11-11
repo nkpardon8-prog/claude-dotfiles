@@ -246,3 +246,46 @@ test('pingTargets: every online peer with an ip, phones included, capped at 16',
   const many = Array.from({ length: 20 }, (_, i) => ({ host: 'h' + i, ip: '100.2.0.' + i, os: 'linux', online: true }));
   assert.equal(pingTargets(many).length, 16);
 });
+
+test('parseSmartBattery: AC = SystemPowerIn (fixture from an M4 MacBook Air), battery = V x I', () => {
+  const ac = fx('ioreg_smartbattery_ac.txt');
+  assert.deepEqual(r.parseSmartBattery(ac), { watts: 6.4, source: 'system' }); // SystemLoad: own draw, not battery charging
+  const noLoad = ac.replace(/"SystemLoad"=\d+,?/, '');
+  assert.deepEqual(r.parseSmartBattery(noLoad), { watts: 32.7, source: 'adapter' }); // fallback: SystemPowerIn=32690 mW
+  // Same machine unplugged (edited copy): SystemPowerIn reads 0, current is negative and may be uint64-wrapped.
+  const bat = noLoad // fallback path: no SystemLoad reading
+    .replace('"ExternalConnected" = Yes', '"ExternalConnected" = No')
+    .replace(/"SystemPowerIn"=\d+/, '"SystemPowerIn"=0')
+    .replace(/^([\s|]*"Voltage" = )\d+/m, (_, k) => `${k}12000`)
+    .replace(/^([\s|]*"InstantAmperage" = )\d+/m, (_, k) => `${k}18446744073709551116`); // -500 mA as uint64
+  assert.deepEqual(r.parseSmartBattery(bat), { watts: 6, source: 'battery' });
+  assert.deepEqual(r.parseSmartBattery(bat.replace('18446744073709551116', '-750')), { watts: 9, source: 'battery' });
+  assert.equal(r.parseSmartBattery(bat.replace('18446744073709551116', '1200')), null); // positive current off AC: no draw figure
+  assert.equal(r.parseSmartBattery(noLoad.replace(/"SystemPowerIn"=\d+/, '"SystemPowerIn"=0')), null); // AC but no telemetry
+  assert.equal(r.parseSmartBattery(noLoad.replace(/"SystemPowerIn"=\d+/, '"SystemPowerIn"=900000')), null); // 900 W: implausible
+  assert.equal(r.parseSmartBattery(''), null); // desktop Mac: no AppleSmartBattery
+  assert.equal(r.parseSmartBattery(null), null);
+  assert.doesNotMatch(ac, /HHY3|F8YH/); // serials redacted
+});
+
+test('shouldReconnect: silence, stalled sends, undrained buffer, send errors', () => {
+  const t0 = 1_800_000_000_000;
+  const base = { now: t0, open: true, lastInboundAt: t0, lastSendOkAt: t0, intervalMs: 60_000, bufferedHistory: [0, 0, 0] };
+  assert.equal(r.shouldReconnect(base), null);
+  assert.equal(r.silenceLimitMs(5_000), 180_000); // floor 3 min
+  assert.equal(r.silenceLimitMs(120_000), 360_000); // 3 x interval
+  assert.equal(r.silenceLimitMs(3600_000), 600_000); // cap 10 min
+  // idle reporter (60 s frames, pong each frame): 2.9 min of silence is fine, 3.1 min is not
+  assert.equal(r.shouldReconnect({ ...base, now: t0 + 174_000, lastSendOkAt: t0 + 170_000 }), null);
+  assert.match(r.shouldReconnect({ ...base, now: t0 + 186_000, lastSendOkAt: t0 + 180_000 }), /no reply for 186s/);
+  assert.match(r.shouldReconnect({ ...base, now: t0 + 186_000, lastInboundAt: t0 + 180_000 }), /nothing sent/);
+  // never reached OPEN within the limit
+  assert.equal(r.shouldReconnect({ ...base, open: false, now: t0 + 60_000 }), null);
+  assert.equal(r.shouldReconnect({ ...base, open: false, now: t0 + 200_000 }), 'stuck connecting');
+  // leftover before each send: growing 3 frames in a row = not draining; a single blip is not
+  assert.match(r.shouldReconnect({ ...base, bufferedHistory: [900, 1900, 2800] }), /not draining \(2800 bytes\)/);
+  assert.equal(r.shouldReconnect({ ...base, bufferedHistory: [0, 1900, 2800] }), null);
+  assert.equal(r.shouldReconnect({ ...base, bufferedHistory: [900, 1900, 1900] }), null);
+  assert.equal(r.shouldReconnect({ ...base, bufferedHistory: [900, 1900] }), null);
+  assert.equal(r.shouldReconnect({ ...base, sendFailed: true }), 'send failed');
+});

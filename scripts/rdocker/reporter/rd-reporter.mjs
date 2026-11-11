@@ -14,10 +14,13 @@
 //   <- {t:'mode', ms}                           60000 when nobody watches, 5000 while a browser is open
 //   -> {t:'f', ...frame}                        on wall-clock-aligned ticks of `ms`
 //   <- {t:'alert', events:[{kind, alert}]}      notify:true only; once per fire / resolve (see notify below)
+//   -> "ping"  <- "pong"                       after every frame; the DO's auto-response, feeds the watchdog
 // CPU is sampled every 5 s locally; each frame carries the samples since the previous one (hist).
 //
 // Linux: /proc, /sys/class/hwmon, statfs; WSL: + Windows host RAM via powershell.exe (optional).
 // macOS: vm_stat, sysctl, memory_pressure; temperature needs root there, so it is reported as null.
+//   watts: the root rd-power sampler if present, else on laptops whole-system draw from ioreg
+//   AppleSmartBattery (adapter input on AC, incl. charging; battery discharge otherwise).
 // rrun: running jobs from <rrRoot>/slots/*.who, finished runs from <rrRoot>/log/runs.log.
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
@@ -250,6 +253,42 @@ export function parsePower(text, nowMs, maxAgeS = 30) {
   return Number.isFinite(w) && w >= 0 && w < 5000 && age >= -60 && age <= maxAgeS ? w : null;
 }
 
+/**
+ * `ioreg -rn AppleSmartBattery` (Apple laptops, no root) -> whole-machine power draw.
+ * Preferred: PowerTelemetryData.SystemLoad (mW), the machine's own draw excluding battery charging.
+ * Fallback on AC: PowerTelemetryData.SystemPowerIn (mW) = power drawn from the adapter by the whole laptop,
+ * which includes battery charging. On battery: Voltage (mV) x InstantAmperage (mA, negative while
+ * discharging; ioreg may print it as a wrapped unsigned 64-bit value). Null when absent or implausible.
+ */
+export function parseSmartBattery(text) {
+  if (!text || !/AppleSmartBattery/.test(text)) return null;
+  const top = (k) => new RegExp(`^[\\s|]*"${k}" = (\\S+)`, 'm').exec(text)?.[1];
+  const signed = (s) => {
+    if (!/^-?\d+$/.test(s ?? '')) return null;
+    let b = BigInt(s);
+    if (b >= 1n << 63n) b -= 1n << 64n;
+    return Number(b);
+  };
+  const ok = (w) => Number.isFinite(w) && w >= 1 && w <= 300;
+  // SystemLoad (mW): what the machine itself draws, on AC or battery, excluding battery charging.
+  const load = signed(/"SystemLoad"=(\d+)/.exec(text)?.[1]);
+  if (load != null && ok(load / 1000)) return { watts: Math.round(load / 100) / 10, source: 'system' };
+  const ext = top('ExternalConnected');
+  if (ext !== 'No') {
+    const mw = signed(/"SystemPowerIn"=(\d+)/.exec(text)?.[1]);
+    if (mw != null && ok(mw / 1000)) return { watts: Math.round(mw / 100) / 10, source: 'adapter' };
+  }
+  if (ext !== 'Yes') {
+    const mv = signed(top('Voltage'));
+    const ma = signed(top('InstantAmperage'));
+    if (mv != null && ma != null && ma < 0) {
+      const w = (mv * -ma) / 1e6;
+      if (ok(w)) return { watts: Math.round(w * 10) / 10, source: 'battery' };
+    }
+  }
+  return null;
+}
+
 /** `tailscale status --json` -> self + peers (relayed = online peer without a direct CurAddr). */
 export function parseTailscale(json) {
   const s = typeof json === 'string' ? JSON.parse(json) : json;
@@ -360,6 +399,29 @@ export function signHello(name, key, tsS = Math.floor(Date.now() / 1000), nonce 
 export function untilTick(now, interval) {
   const r = interval - (now % interval);
   return r < 50 ? r + interval : r;
+}
+
+/** Inbound-silence limit for an OPEN socket: 3 frame intervals, clamped to [3 min, 10 min]. */
+export const silenceLimitMs = (intervalMs) => Math.min(10 * 60_000, Math.max(3 * 60_000, 3 * intervalMs));
+
+/**
+ * Watchdog decision (pure). The Worker only talks on hello / viewer change, so liveness comes from
+ * the "ping" the reporter sends with every frame: the Durable Object answers it with "pong" via its
+ * WebSocket auto-response (no wake). Returns a reason string when the socket should be dropped, else null.
+ *   lastInboundAt  last message of any kind from the Worker (or the connect time)
+ *   lastSendOkAt   last successful ws.send (or the connect time)
+ *   bufferedHistory ws.bufferedAmount just BEFORE each recent frame, oldest first: what the previous
+ *                   frame left unsent a whole interval later (0 on a healthy link)
+ */
+export function shouldReconnect({ now, open, lastInboundAt, lastSendOkAt, intervalMs, bufferedHistory = [], sendFailed = false }) {
+  if (sendFailed) return 'send failed';
+  const limit = silenceLimitMs(intervalMs);
+  if (!open) return now - lastInboundAt > limit ? 'stuck connecting' : null;
+  if (now - lastInboundAt > limit) return `no reply for ${Math.round((now - lastInboundAt) / 1000)}s`;
+  if (now - lastSendOkAt > limit) return `nothing sent for ${Math.round((now - lastSendOkAt) / 1000)}s`;
+  const h = bufferedHistory.slice(-3);
+  if (h.length === 3 && h[0] > 0 && h[1] > h[0] && h[2] > h[1]) return `send buffer not draining (${h[2]} bytes)`;
+  return null;
 }
 
 export function validateConfig(c) {
@@ -617,6 +679,14 @@ export class Collector {
     this.hostMem = cached(() => this.readHostMem(), SLOW_CACHE_MS);
     this.pressure = cached(async () => parsePressure((await sh('memory_pressure', ['-Q'])) ?? ''), SLOW_CACHE_MS / 2);
     this.macStatic = cached(async () => ({ memsize: Number((await sh('sysctl', ['-n', 'hw.memsize'])) ?? 0) }), 3600_000);
+    // Apple laptops: whole-machine draw without root. At most one ioreg per frame; a Mac with no
+    // battery (mini, Studio) prints nothing and is not asked again.
+    this.noBattery = false;
+    this.battery = cached(async () => {
+      const out = await sh('ioreg', ['-rn', 'AppleSmartBattery']);
+      if (out === '') this.noBattery = true;
+      return parseSmartBattery(out);
+    }, SAMPLE_MS - 1000);
   }
 
   cpuSnapshot() {
@@ -772,6 +842,8 @@ export class Collector {
       swap = parseSwapusage(sw ?? '');
       pressure = pr;
       watts = parsePower(read(process.env.RD_POWER_FILE || '/Users/Shared/rdocker/power'), now); // com.rdocker.power (optional)
+      // No root sampler: laptops report whole-system draw (adapter input on AC, battery discharge otherwise).
+      if (watts == null && !this.noBattery) watts = (await this.battery())?.watts ?? null;
       const d = diskOf('/System/Volumes/Data') ?? diskOf('/');
       if (d) disks.push(d);
     } else {
@@ -857,18 +929,38 @@ function run(cfg) {
   };
   setTimeout(sampleLoop, untilTick(Date.now(), SAMPLE_MS));
 
+  // Watchdog state for the current socket (see shouldReconnect).
+  let lastInboundAt = 0;
+  let lastSendOkAt = 0;
+  let buffered = [];
+
   const send = async () => {
     if (!ws || ws.readyState !== WebSocket.OPEN || sending) return;
     sending = true;
     try {
       const withInfo = Date.now() - infoAt > 10 * 60_000;
-      const f = await col.frame({ withInfo, fast: interval < SLOW_MS });
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(f));
+      let f;
+      try {
+        f = await col.frame({ withInfo, fast: interval < SLOW_MS });
+      } catch (e) {
+        log('frame failed:', e?.message ?? e);
+        return;
+      }
+      const sock = ws;
+      if (sock && sock.readyState === WebSocket.OPEN) {
+        buffered = [...buffered.slice(-2), sock.bufferedAmount]; // leftover from the previous frame
+        try {
+          sock.send(JSON.stringify(f));
+          // Keep-alive: the Worker auto-answers "ping" with "pong" without waking, so an idle
+          // reporter still hears back once per frame and the watchdog can tell the link is alive.
+          sock.send('ping');
+        } catch (e) {
+          drop(sock, `send failed: ${e?.message ?? e}`);
+          return;
+        }
+        lastSendOkAt = Date.now();
         if (withInfo) infoAt = Date.now();
       }
-    } catch (e) {
-      log('frame failed:', e?.message ?? e);
     } finally {
       sending = false;
     }
@@ -882,13 +974,46 @@ function run(cfg) {
     }, untilTick(Date.now(), interval) + 300);
   };
 
+  const retry = (code, reason) => {
+    // 4401 = hello refused (wrong key / clock): no point hammering the Worker.
+    const wait = code === 4401 ? 5 * 60_000 : backoff + Math.random() * 1000;
+    if (code === 4401) log(`hello refused (${reason}); check key, name and clock (chrony)`);
+    else log(`disconnected (${code}${reason ? ` ${reason}` : ''}); retry in ${Math.round(wait / 1000)}s`);
+    backoff = Math.min(60_000, backoff * 2);
+    setTimeout(connect, wait);
+  };
+  // Abandon a socket that looks dead and reconnect now. A half-open TCP link may never deliver
+  // the close event, so we do not wait for it: the old socket is marked and its events ignored.
+  const drop = (sock, reason) => {
+    if (sock.rdDropped) return;
+    sock.rdDropped = true;
+    if (ws === sock) ws = null;
+    clearTimeout(frameTimer);
+    try {
+      sock.close(4000, reason.slice(0, 100));
+    } catch {
+      /* already closing */
+    }
+    retry(4000, `watchdog: ${reason}`);
+  };
+
   const connect = () => {
     log(`connecting ${cfg.url} as ${cfg.name}`);
     const sock = new WebSocket(cfg.url);
     ws = sock;
+    lastInboundAt = lastSendOkAt = Date.now();
+    buffered = [];
     let helloOk = false;
-    sock.addEventListener('open', () => sock.send(JSON.stringify({ ...signHello(cfg.name, cfg.key), ...(notify ? { notify: true } : {}) })));
+    sock.addEventListener('open', () => {
+      try {
+        sock.send(JSON.stringify({ ...signHello(cfg.name, cfg.key), ...(notify ? { notify: true } : {}) }));
+      } catch (e) {
+        drop(sock, `hello send failed: ${e?.message ?? e}`);
+      }
+    });
     sock.addEventListener('message', (ev) => {
+      if (sock.rdDropped) return;
+      lastInboundAt = Date.now(); // any message counts, "pong" included
       let m;
       try {
         m = JSON.parse(String(ev.data));
@@ -914,19 +1039,29 @@ function run(cfg) {
       }
     });
     sock.addEventListener('close', (ev) => {
+      if (sock.rdDropped) return; // the watchdog already scheduled the reconnect
+      sock.rdDropped = true;
       if (ws === sock) ws = null;
       clearTimeout(frameTimer);
-      // 4401 = hello refused (wrong key / clock): no point hammering the Worker.
-      const wait = ev.code === 4401 ? 5 * 60_000 : backoff + Math.random() * 1000;
-      if (ev.code === 4401) log(`hello refused (${ev.reason}); check key, name and clock (chrony)`);
-      else log(`disconnected (${ev.code}${ev.reason ? ` ${ev.reason}` : ''}); retry in ${Math.round(wait / 1000)}s`);
-      backoff = Math.min(60_000, backoff * 2);
-      setTimeout(connect, wait);
+      retry(ev.code, ev.reason);
     });
     sock.addEventListener('error', () => {
       /* close follows */
     });
   };
+  setInterval(() => {
+    const sock = ws;
+    if (!sock || sock.rdDropped) return;
+    const reason = shouldReconnect({
+      now: Date.now(),
+      open: sock.readyState === WebSocket.OPEN,
+      lastInboundAt,
+      lastSendOkAt,
+      intervalMs: interval,
+      bufferedHistory: buffered,
+    });
+    if (reason) drop(sock, reason);
+  }, 15_000);
   connect();
 }
 
