@@ -46,6 +46,8 @@ case "$(basename "$0") $1" in
   "docker port") cat '%(dir)s/port.out' 2>/dev/null ;;
 esac
 case "$(basename "$0") $*" in "docker "*" run "*" -d "*) echo cid123 ;; esac
+case "$(basename "$0") $1" in "npm test"|"npm run"|"npm -s"|"npm --prefix")
+  echo "cpu-env=${VITEST_MAX_WORKERS-}/${VITEST_MAX_THREADS-}/${VITEST_MAX_FORKS-}" ;; esac
 exit 0
 """
 
@@ -540,6 +542,127 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.out, "--max-old-space-size=1024 --trace-warnings")
         r = self.run_runner(show, env={"NODE_OPTIONS": "--trace-warnings"}, env_extra=dict(RR_OS="linux", RR_PROC=proc))
         self.assertEqual(r.out, "--trace-warnings --max-old-space-size=2048")
+
+    # ------------------------------------------------------------------------ cpu share
+    def cpus(self, n):
+        """A fake Linux /proc with n logical CPUs (RR_OS=linux reads it on any host)."""
+        proc = os.path.join(self.d, "proc")
+        os.makedirs(proc, exist_ok=True)
+        wfile(os.path.join(proc, "cpuinfo"), "".join("processor\t: %d\nmodel: x\n\n" % i for i in range(n)))
+        wfile(os.path.join(proc, "meminfo"), "MemTotal: 16000000 kB\nMemAvailable: 8000000 kB\n")
+        return dict(RR_OS="linux", RR_PROC=proc)
+
+    def ran(self, argv, threads=16, files=None, **kw):
+        """Run argv on a `threads`-CPU worker (overlay `files`) -> (the argv the fake npx/npm got,
+        the stdout, the runs.log line)."""
+        tar = tar_of([(n, c.encode()) for n, c in (files or {}).items()])
+        open(self.log, "w").close()
+        r = self.run_runner(argv, tar=tar, env_extra=self.cpus(threads), **kw)
+        self.assertEqual(r.rc, 0, r.err)
+        tool = os.path.basename(argv[0])
+        got = [c for c in self.calls() if c.startswith(tool + " ") and not re.match(r"(npm (ci|install)|npx prisma)\b", c)]
+        return got[-1] if got else None, r.out, self.runs_log()[-1]
+
+    def test_cpu_share_is_threads_over_effective_slots(self):
+        """share = max(1, floor(threads / min(header slots, slots.cap))); one slot (share = all
+        threads) leaves the command alone."""
+        for threads, slots, cap, want in ((18, 8, None, 2), (18, 8, 3, 6), (8, 8, None, 1), (8, 20, None, 1),
+                                          (18, 8, 0, 2), (18, 1, None, None), (18, 4, 1, None)):
+            if cap is None:
+                if os.path.exists(os.path.join(self.root, "slots.cap")):
+                    os.unlink(os.path.join(self.root, "slots.cap"))
+            else:
+                wfile(os.path.join(self.root, "slots.cap"), "%d\n" % cap)
+            if cap == 0:      # drained: the job never runs (covered by the slots.cap test); only the math
+                continue
+            cmd, _, line = self.ran(["npx", "vitest", "run"], threads=threads, slots=slots)
+            self.assertEqual(cmd, "npx vitest run" + (" --maxWorkers=%d" % want if want else ""),
+                             (threads, slots, cap))
+            self.assertEqual(line.endswith(" [cpu_share=%s --maxWorkers]" % want), bool(want), line)
+
+    def test_vitest_gets_max_workers_after_run_unless_the_caller_chose(self):
+        cmd, _, line = self.ran(["npx", "vitest", "run", "src", "--bail", "--", "x"], slots=8)
+        self.assertEqual(cmd, "npx vitest run --maxWorkers=2 src --bail -- x")
+        self.assertIn(" argv=npx vitest run src --bail -- x [cpu_share=2 --maxWorkers]", line)  # requested argv
+        for own in (["--maxWorkers=4"], ["--max-workers", "4"], ["--minWorkers=1"],
+                    ["--poolOptions.threads.maxThreads=2"], ["--no-file-parallelism"],
+                    ["--fileParallelism=false"], ["--pool=forks"], ["--pool", "threads"],
+                    ["--inspect-brk"], ["--browser.enabled"]):
+            cmd, _, line = self.ran(["npx", "vitest", "run"] + own, slots=8)
+            self.assertEqual(cmd, " ".join(["npx", "vitest", "run"] + own), own)
+            self.assertNotIn("cpu_share", line)
+        cmd, _, _ = self.ran(["npx", "vitest", "run"], slots=8, env={"VITEST_MAX_WORKERS": "3"})
+        self.assertEqual(cmd, "npx vitest run")
+        cmd, _, _ = self.ran(["npx", "vitest"], slots=8)              # not `vitest run`: untouched
+        self.assertEqual(cmd, "npx vitest")
+        cmd, _, _ = self.ran(["npx", "--", "vitest", "run"], slots=8)  # after a `--`: not ours to edit
+        self.assertEqual(cmd, "npx -- vitest run")
+
+    def test_a_config_limit_wins_over_the_cap(self):
+        """The CLI value would override a deliberate config limit (sequential DB tests), so a config
+        that names one - in the cwd, or via --config / --root - means no cap."""
+        seq = "export default { test: { fileParallelism: false } }\n"
+        for files, extra in (({"vitest.config.ts": seq}, []), ({"vite.config.mts": "test:{maxWorkers:1}"}, []),
+                             ({"vitest.workspace.ts": "export default ['a']"}, []),
+                             ({"cfg/x.ts": "poolOptions:{threads:{singleThread:true}}"}, ["--config", "cfg/x.ts"]),
+                             ({"cfg/x.ts": "maxWorkers: 1"}, ["-c=cfg/x.ts"]),
+                             ({"sub/vitest.config.js": seq}, ["--root", "sub"])):
+            cmd, _, _ = self.ran(["npx", "vitest", "run"] + extra, slots=8, files=files)
+            self.assertEqual(cmd, " ".join(["npx", "vitest", "run"] + extra), files)
+        cmd, _, _ = self.ran(["npx", "vitest", "run"], slots=8,
+                             files={"vitest.config.ts": "export default { test: { environment: 'node' } }"})
+        self.assertEqual(cmd, "npx vitest run --maxWorkers=2")       # a config with no limit: capped
+
+    def test_jest_gets_max_workers_unless_set(self):
+        cmd, _, line = self.ran(["npx", "jest", "--ci"], slots=8)
+        self.assertEqual(cmd, "npx jest --maxWorkers=2 --ci")
+        self.assertTrue(line.endswith(" [cpu_share=2 --maxWorkers]"), line)
+        for own in (["-i"], ["--runInBand"], ["-w", "4"], ["-w4"], ["--maxWorkers=50%"], ["--max-workers=3"]):
+            cmd, _, _ = self.ran(["npx", "jest"] + own, slots=8)
+            self.assertEqual(cmd, " ".join(["npx", "jest"] + own), own)
+        cmd, _, _ = self.ran(["npx", "jest"], slots=8, files={"jest.config.js": "module.exports={maxWorkers:1}"})
+        self.assertEqual(cmd, "npx jest")
+        pj = json.dumps({"dependencies": {"@prisma/client": "5"}, "jest": {"maxWorkers": 2}})
+        cmd, _, _ = self.ran(["npx", "jest"], slots=8, files={"package.json": pj})
+        self.assertEqual(cmd, "npx jest")
+
+    def test_npm_script_running_plain_vitest_gets_the_env_knobs(self):
+        """argv injection cannot reach inside `npm test`: a script that is one plain vitest command
+        gets VITEST_MAX_WORKERS (vitest 4+) and VITEST_MAX_THREADS / _FORKS (vitest 3) instead."""
+        scripts = {"test": "vitest run", "test:int": 'A=1 DB="postgresql://x?y=5" vitest run src/it/',
+                   "test:seq": "vitest run --no-file-parallelism", "test:chain": "vitest run && echo ok",
+                   "test:jest": "jest", "lint": "eslint ."}
+        pj = json.dumps({"dependencies": {"@prisma/client": "5"}, "scripts": scripts})
+        for argv, want in ((["npm", "test"], "2/2/2"), (["npm", "-s", "run", "test:int"], "2/2/2"),
+                           (["npm", "run", "test:seq"], "//"), (["npm", "run", "test:chain"], "//"),
+                           (["npm", "run", "test:jest"], "//"), (["npm", "run", "lint"], "//"),
+                           (["npm", "test", "--", "--maxWorkers=1"], "//"),
+                           (["npm", "--prefix", "x", "test"], "//")):
+            cmd, out, line = self.ran(argv, slots=8, files={"package.json": pj})
+            self.assertEqual(cmd, " ".join(argv))                    # the argv itself never changes
+            self.assertIn("cpu-env=%s\n" % want, out, argv)
+            self.assertEqual(line.endswith(" [cpu_share=2 env]"), want != "//", line)
+        _, out, _ = self.ran(["npm", "test"], slots=8,
+                             files={"package.json": pj, "vitest.config.ts": "fileParallelism: false"})
+        self.assertIn("cpu-env=//\n", out)
+
+    def test_non_test_commands_are_untouched(self):
+        for argv in (["npx", "tsc", "--noEmit"], ["npx", "eslint", "."], ["npm", "run", "build"]):
+            cmd, out, line = self.ran(argv, slots=8)
+            self.assertEqual(cmd, " ".join(argv))
+            self.assertNotIn("cpu_share", line)
+        r = self.run_runner(["/bin/sh", "-c", 'printf "%s" "${VITEST_MAX_WORKERS-unset}"'],
+                            slots=8, env_extra=self.cpus(16))
+        self.assertEqual(r.out, "unset")
+
+    def test_each_shard_gets_the_same_per_job_cap(self):
+        """A sharded run sends vitest run --shard=i/n to each worker (rd_run.shard_argv): every shard
+        is capped by its own worker's share, after `run` like the shard flag."""
+        import rd_run
+        for i in (1, 2, 3):
+            sargv = rd_run.shard_argv(["npx", "vitest", "run", "src"], i, 3)
+            cmd, _, _ = self.ran(sargv, slots=8)
+            self.assertEqual(cmd, "npx vitest run --maxWorkers=2 --shard=%d/3 src" % i)
 
     def test_declared_outputs_are_removed_from_the_mirror_first(self):
         wfile(os.path.join(self.src, ".gitignore"), "node_modules\n.env*\ndist\n")

@@ -14,7 +14,8 @@
 #   need_gb: a slot is only taken while at least that much memory is available (re-checked here,
 #   the client's probe can race another client); outputs: repo-relative build output paths,
 #   deleted from the mirror before the command runs (git clean keeps ignored files) so a stale
-#   dist never copies back. $ROOT/slots.cap (written by rd-tune) caps `slots`.
+#   dist never copies back. $ROOT/slots.cap (written by rd-tune) caps `slots`; a vitest/jest job gets
+#   max(1, threads / slots) workers (fair_share).
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
 #   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start.
 # Exactly-once handshake: after checkout, overlay, deps and the slot, the runner prints
@@ -59,6 +60,10 @@ my $REAL_DOCKER = $ENV{RR_REAL_DOCKER} || (-x '/opt/homebrew/bin/docker' || $^O 
 my $COLIMA = $ENV{RR_COLIMA} || '/opt/homebrew/bin/colima';
 my %VM = (max => [12, 24, 120], some => [6, 12, 120]);    # colima --cpu / --memory GB / --disk GB per share level
 my $SLUG = qr/^(?!\.\.?$)[A-Za-z0-9._-]+$/;    # one path component; never "." or ".."
+# fair_share: the env vars vitest 3-5 read for its worker count; config words that mean "a limit is set"
+my @VITEST_ENV = qw(VITEST_MAX_WORKERS VITEST_MAX_THREADS VITEST_MAX_FORKS);
+my $LIMIT_RE = qr/\b(?:maxWorkers|minWorkers|maxThreads|minThreads|maxForks|minForks|singleThread|singleFork|fileParallelism|runInBand|projects|workspace)\b/;
+my $cpu_note;    # run log: the cpu share fair_share applied, if any
 
 my (%h, $nonce, $label, $tmp, $mirror, $envlist, $lock_fh, $who, $started, $heavy_fh);
 my (@env_written, @overlay);
@@ -109,11 +114,12 @@ sub main {
     deps(\%env);
     return 128 + 15 if $lost;
     fail("interrupted before the command started", 130) if $intr;
+    my $argv = fair_share($h{argv}, \%env, $cwd);    # the spawned argv; $h{argv} stays as requested
     $t_ready = time;
     await_go();
     $started = 1;
     $t_spawn = time;
-    my $pid = spawn($h{argv}, \%env, $cwd);
+    my $pid = spawn($argv, \%env, $cwd);
     status('STARTED');
     my $rc = supervise($pid);
     # the command called docker (the shim left its marker): the laptop never caches such a result
@@ -382,6 +388,153 @@ sub node_heap {
     $mb = 6144 if $mb > 6144;
     $mb = 2048 if $mb < 2048;
     $env->{NODE_OPTIONS} = join ' ', grep { length } $opts, "--max-old-space-size=$mb";
+}
+
+# ----------------------------------------------------------------------------- cpu share
+# vitest and jest start about one worker per logical CPU, so N jobs on one worker run ~N x threads
+# workers (nickmbp: load 44 with 3 jobs), and the pool's overload hold-off then parks the worker.
+# Each test job gets share = max(1, floor(threads / slots)); slots = the header's `slots` (fleet
+# max_slots) lowered by slots.cap. The share switch's halving is left out on purpose: half the jobs
+# x threads/slots = half the machine, which is what "some" means. Applied to the argv the runner
+# spawns, never the header's: the laptop's cache key and shard split use the requested argv.
+#   `vitest run ...`  -> --maxWorkers=<share> right after `run` (vitest 3-5; the CLI value still
+#                        yields to fileParallelism:false / poolOptions limits in the config)
+#   `jest ...`        -> --maxWorkers=<share> right after `jest`
+#   `npm test` / `npm run <s>` whose script is ONE plain vitest command -> env VITEST_MAX_WORKERS
+#                        (vitest 4+) + VITEST_MAX_THREADS / VITEST_MAX_FORKS (vitest 3)
+# Never when the caller chose already (a worker/pool flag, one of those env vars), when a vitest/jest
+# config in the cwd names a worker limit (the env vars override even fileParallelism:false, and a
+# raised deliberate limit - sequential DB tests - is worse than oversubscribing), or when
+# share >= threads (one slot: the default already fits). Jest has no env knob: an npm script that
+# runs jest stays uncapped.
+
+sub logical_cpus {
+    if ($OS eq 'linux') {
+        my $n = () = slurp(($ENV{RR_PROC} // '/proc') . "/cpuinfo") =~ /^processor\s*:/mg;
+        return $n || undef;
+    }
+    my ($n) = sysctl_n('hw.logicalcpu') =~ /^(\d+)/;
+    ($n) = sysctl_n('hw.ncpu') =~ /^(\d+)/ unless $n;
+    $n || undef;
+}
+
+# -> the per-job worker count, or undef when there is nothing to cap
+sub cpu_share {
+    my $threads = logical_cpus() // return undef;
+    my $n = $h{slots} && $h{slots} =~ /^\d+$/ ? $h{slots} : 1;
+    my $cap = slots_cap();
+    $n = $cap if defined $cap && $cap >= 1 && $cap < $n;
+    my $share = int($threads / $n) || 1;
+    $share < $threads ? $share : undef;
+}
+
+# A flag (before any `--`) by which the caller picked the parallelism: vitest/jest worker counts,
+# vitest pool / file parallelism / inspect / browser, jest -w / -i / --runInBand.
+sub chose_workers {
+    for (@_) {
+        last if $_ eq '--';
+        return 1 if $_ eq '-w' || $_ eq '-i' || /^-w\d/;
+        next unless /^--/;
+        (my $n = lc((split /=/, $_, 2)[0])) =~ s/-//g;
+        return 1 if $n =~ /^(?:maxworkers|minworkers|(?:no)?fileparallelism|pool|runinband|inspect|inspectbrk)$/
+            || $n =~ /^(?:pooloptions|browser)/;
+    }
+    0;
+}
+
+# A config file's text (regular files only: a planted fifo/device must not hang the runner);
+# undef = unreadable or too big to be a config.
+sub small_text {
+    my ($p) = @_;
+    return undef unless -f $p && (-s _ // 0) < 1_000_000;
+    open(my $fh, '<', $p) or return undef;
+    local $/;
+    <$fh> // '';
+}
+
+# Does a config the tool will load name a worker limit? (vitest/vite config or workspace in the cwd,
+# or --root/--dir, plus --config; jest.config.* or package.json "jest"). Unreadable or a vitest
+# workspace file = yes (no cap).
+sub config_limits {
+    my ($cwd, $tool, @args) = @_;
+    my @files;
+    my @dirs = ($cwd);
+    for my $i (0 .. $#args) {
+        last if $args[$i] eq '--';
+        my ($n, $eq, $v) = $args[$i] =~ /^(--?[\w-]+)(=?)(.*)$/s or next;
+        $v = $args[$i + 1] // '' unless $eq;
+        my $p = $v =~ m{^/} ? $v : "$cwd/$v";
+        if ($n eq '--config' || $n eq '-c') { push @files, $p }
+        elsif ($tool eq 'vitest' && ($n eq '--root' || $n eq '--dir' || $n eq '-r')) { push @dirs, $p }
+    }
+    my $re = $tool eq 'jest' ? qr/^jest\.config\.[cm]?[jt]s(?:on)?$/
+                             : qr/^(?:vitest|vite)\.(?:config|workspace)(?:\.[\w-]+)?\.[cm]?[jt]s(?:on)?$/;
+    for my $d (@dirs) {
+        opendir(my $dh, $d) or next;
+        push @files, map { "$d/$_" } grep { $_ =~ $re } readdir $dh;
+    }
+    for my $f (@files) {
+        return 1 if $f =~ m{(?:^|/)vitest\.workspace\.[^/]*$};    # each project's config may set its own
+        my $t = small_text($f);
+        return 1 if !defined $t || $t =~ $LIMIT_RE;
+    }
+    if ($tool eq 'jest' && -e "$cwd/package.json") {
+        my $pj = eval { JSON::PP->new->decode(small_text("$cwd/package.json") // '') };
+        return 1 if ref $pj ne 'HASH';
+        return 1 if defined $pj->{jest} && (ref $pj->{jest} ne 'HASH' || JSON::PP->new->encode($pj->{jest}) =~ $LIMIT_RE);
+    }
+    0;
+}
+
+# `npm [-s] test|t|tst [-- args]` / `npm [-s] run|run-script <name> [-- args]` whose package.json
+# script is one plain vitest command (optional VAR=value prefixes, optional npx, no shell operators)
+# -> (vitest args from the script, args after --). Anything else (npm flags such as --prefix / -w,
+# chained or wrapped scripts) -> () : the cwd or the command is not what we can see.
+sub npm_vitest {
+    my ($cwd, @a) = @_;
+    shift @a while @a && $a[0] =~ /^(?:-s|--silent|-q|--quiet)$/;
+    my $sub = shift @a // return;
+    my $name = $sub =~ /^(?:test|t|tst)$/ ? 'test' : $sub =~ /^(?:run|run-script)$/ ? shift @a : undef;
+    return unless defined $name && $name !~ /^-/;
+    return if @a && $a[0] ne '--';
+    shift @a;
+    my $pj = eval { JSON::PP->new->decode(small_text("$cwd/package.json") // '') };
+    my $s = ref $pj eq 'HASH' && ref $pj->{scripts} eq 'HASH' ? $pj->{scripts}{$name} : undef;
+    return unless defined $s && !ref $s;
+    return unless $s =~ /^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|[^\s"';&|<>`\$]*)\s+)*(?:npx\s+)?vitest((?:\s+[^\s;&|<>`\$()"']+)*)\s*$/;
+    return ([ split ' ', $1 ], \@a);
+}
+
+# -> the argv to spawn (a new array; $argv is the header's and stays as requested); may set $env vars.
+sub fair_share {
+    my ($argv, $env, $cwd) = @_;
+    return $argv if grep { defined $env->{$_} } @VITEST_ENV;
+    my $share = cpu_share() // return $argv;
+    my @a = @$argv;
+    my ($end) = grep { $a[$_] eq '--' } 0 .. $#a;
+    $end //= scalar @a;
+    my ($v) = grep { $a[$_] =~ m{(?:^|/)vitest$} && ($a[$_ + 1] // '') eq 'run' } 0 .. $end - 2;
+    if (defined $v) {
+        my @rest = @a[$v + 2 .. $#a];
+        return $argv if chose_workers(@rest) || config_limits($cwd, 'vitest', @rest);
+        $cpu_note = "cpu_share=$share --maxWorkers";
+        return [ @a[0 .. $v + 1], "--maxWorkers=$share", @rest ];
+    }
+    my ($j) = grep { $a[$_] =~ m{(?:^|/)jest(?:\.js)?$} } 0 .. $end - 1;
+    if (defined $j) {
+        my @rest = @a[$j + 1 .. $#a];
+        return $argv if chose_workers(@rest) || config_limits($cwd, 'jest', @rest);
+        $cpu_note = "cpu_share=$share --maxWorkers";
+        return [ @a[0 .. $j], "--maxWorkers=$share", @rest ];
+    }
+    if ($a[0] =~ m{(?:^|/)npm$}) {
+        my ($script, $extra) = npm_vitest($cwd, @a[1 .. $#a]) or return $argv;
+        return $argv if chose_workers(@$script) || chose_workers(@$extra)
+            || config_limits($cwd, 'vitest', @$script, @$extra);
+        $env->{$_} = $share for @VITEST_ENV;
+        $cpu_note = "cpu_share=$share env";
+    }
+    $argv;
 }
 
 sub mem_ok {
@@ -793,8 +946,9 @@ sub finish {
 # One line per run in $ROOT/log/runs.log (0600; dir 0700; one rotated generation, runs.log.1, past
 # 5 MB): time, repo, worktree, commit, outcome, prepare/command seconds, then the first 120 chars
 # of the argv with env-looking values redacted (-e X=.., --env=.., NAME=..). The header env is
-# never logged. Tested code can write ~/rr: a planted symlink/hardlink at the log is replaced,
-# never written through.
+# never logged. A test job fair_share capped ends with " [cpu_share=N --maxWorkers|env]" (after argv,
+# so rd_pool's and the reporter's line parsers still match). Tested code can write ~/rr: a planted
+# symlink/hardlink at the log is replaced, never written through.
 sub run_outcome {
     my ($rc) = @_;
     if ($started) { return $lost ? "lost rc=$rc" : $intr ? "interrupted rc=$rc" : "rc=$rc" }
@@ -839,7 +993,7 @@ sub run_log {
         $id->($h{repo_slug}, $SLUG), $id->($h{wt12}, $SLUG),
         substr($id->($h{sha}, qr/^[0-9a-f]{40}$/), 0, 12), run_outcome($rc),
         $secs->($t_slot, $t_ready // $now), $secs->($t_spawn, $t_spawn && $now),
-        redact_argv();
+        redact_argv() . ($cpu_note && $started ? " [$cpu_note]" : '');
     close $fh;
 }
 
