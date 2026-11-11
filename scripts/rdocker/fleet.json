@@ -15,6 +15,7 @@
       "os": "linux",
       "wsl": true,
       "roles": [
+        "home",
         "worker"
       ],
       "speed": 0.45,
@@ -31,7 +32,6 @@
       "user": "rd",
       "os": "linux",
       "roles": [
-        "home",
         "worker"
       ],
       "speed": 1.19,
