@@ -284,6 +284,7 @@ job and one that comes back (or is added to fleet.json) is used at once.
   time (`rr_overload_ratio`, 0 = off) counts as busy even with a free slot, and its compute estimate is
   multiplied by load/threads: it gets a job only when it would still finish first (2026-11-10: the WSL
   laptop, 8 threads, reached load 19). `rrun --where` marks it `(overloaded: held off)`.
+- **Test jobs get a fair CPU share.** The runner caps each vitest/jest job (each shard too) at max(1, threads / slots) workers, using `--maxWorkers=N` for `vitest run` / `jest`, or `VITEST_MAX_WORKERS/_THREADS/_FORKS` for an `npm test`/`npm run` script that is one plain vitest command. It skips the cap when you set a worker/pool flag or those env vars yourself, or when a vitest/jest config in the cwd names a limit (e.g. `fileParallelism: false`), and for an npm script running jest. Capped runs end with `[cpu_share=N ...]` in `runs.log`, and the cache key is unchanged.
 - **Vitest shards (default on).** `vitest run` with no file arguments (or only dirs / globs) and 2+
   free workers is split with vitest's own `--shard=i/n`: each free worker takes round(eff / median eff)
   shards (>= 1, <= its free slots, 8 in all; e.g. nickmbp 3, hp 1, laptop 1), all at once. A second shard
