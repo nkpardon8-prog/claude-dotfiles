@@ -36,8 +36,8 @@
       ],
       "speed": 1.19,
       "max_slots": 4,
-      "heavy_slots": 2,
-      "mem_gb": 16,
+      "heavy_slots": 3,
+      "mem_gb": 24,
       "enabled": true,
       "ts_key_expiry": "2027-05-09"
     },
