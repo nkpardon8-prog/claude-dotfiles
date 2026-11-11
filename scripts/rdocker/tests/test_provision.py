@@ -560,14 +560,14 @@ class Tune(unittest.TestCase):
                                                                 "IS_HOME": 0, **kv}.items())))
         return p
 
-    def tune(self, *args, mem=(1000, 900), temp=None, **extra):
+    def tune(self, *args, mem=(1000, 900), temp=None, conf=None, **extra):
         files = []
         if temp is not None:
             t = os.path.join(self.tmp, "temp1_input")
             with open(t, "w") as f:
                 f.write(str(temp * 1000))
             files = [t]
-        env = rdmods.child_env(self.tmp, self.bin, RD_CONF=self.conf(), RD_MEMINFO=self.meminfo(*mem),
+        env = rdmods.child_env(self.tmp, self.bin, RD_CONF=self.conf(**(conf or {})), RD_MEMINFO=self.meminfo(*mem),
                                RD_CAP_FILE=self.cap, RD_RR_ROOT=self.rr, RD_STATE_DIR=os.path.join(self.tmp, "st"),
                                RD_NO_SERVICES="1", RD_TEMP_FILES=" ".join(files) or "/nonexistent", **extra)
         return subprocess.run(["/bin/bash", TUNE] + list(args), capture_output=True, text=True, env=env, timeout=60)
@@ -580,33 +580,197 @@ class Tune(unittest.TestCase):
             self.assertEqual(read(self.cap).strip(), want, (mem, temp))
             self.assertIn("cap=" + want, r.stdout)
 
-    def test_prune_removes_only_old_mirrors_and_deps_when_idle(self):
-        old, new = os.path.join(self.rr, "w", "old"), os.path.join(self.rr, "w", "new")
-        dold, dnew = os.path.join(self.rr, "deps", "a"), os.path.join(self.rr, "deps", "b")
-        for d in (old, new, dold, dnew):
-            os.makedirs(d)
-        past = time.time() - 4 * 86400
-        for d in (old, dold):
-            os.utime(d, (past, past))
-        self.tune()
-        self.assertEqual((os.path.exists(old), os.path.exists(new), os.path.exists(dold), os.path.exists(dnew)),
-                         (False, True, False, True))
+    # --- ~/rr prune. Mirrors are <slug>-<wt12>, store entries 32 hex chars (the runner's names).
+    WT = ("a" * 12, "b" * 12, "c" * 12, "d" * 12, "e" * 12)
 
-    def test_prune_skips_while_a_slot_is_held(self):
-        old = os.path.join(self.rr, "w", "old")
-        os.makedirs(old)
-        past = time.time() - 4 * 86400
-        os.utime(old, (past, past))
-        slot = os.path.join(self.rr, "slots", "0")
-        open(slot, "w").close()
-        flock = shutil.which("flock")
-        if not flock:
-            self.skipTest("flock (util-linux) not installed")
-        holder = subprocess.Popen([flock, slot, "sleep", "20"])
-        self.addCleanup(holder.kill)
-        time.sleep(0.5)
-        self.tune()
+    def fake_df(self, base_gb, total_gb=100, mirror_gb=10, dep_gb=5):
+        """RD_DF_CMD: free space follows what is left in w/ and deps/, so eviction moves it."""
+        p = os.path.join(self.bin, "fake-df")
+        with open(p, "w") as f:
+            f.write("#!/bin/sh\nn=$(/bin/ls \"$1/w\" | /usr/bin/wc -l); d=$(/bin/ls \"$1/deps\" | /usr/bin/wc -l)\n"
+                    "t=$(( %d * 1048576 )); u=$(( (%d + n * %d + d * %d) * 1048576 ))\n"
+                    "echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'\n"
+                    "echo \"fake $t $u $(( t - u )) 0%% /\"\n" % (total_gb, base_gb, mirror_gb, dep_gb))
+        os.chmod(p, 0o755)
+        return p
+
+    def entry(self, kind, name, age_s):
+        p = os.path.join(self.rr, kind, name)
+        os.makedirs(os.path.join(p, "node_modules"))
+        t = time.time() - age_s
+        os.utime(p, (t, t))
+        return p
+
+    def mirror(self, i, age_s, slug="repo"):
+        return self.entry("w", "%s-%s" % (slug, self.WT[i]), age_s)
+
+    def dep(self, i, age_s):
+        return self.entry("deps", ("%x" % i) * 32, age_s)
+
+    def who(self, slot, pid, wt="", slug="repo"):
+        lock = os.path.join(self.rr, "slots", str(slot))
+        open(lock, "a").close()
+        with open(lock + ".who", "w") as f:
+            f.write("%s %d %d%s\n" % (slug, time.time(), pid, (" " + wt) if wt else ""))
+        return lock
+
+    def sleeper(self):
+        p = subprocess.Popen(["/bin/sleep", "30"])
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        return p.pid
+
+    def hold(self, lock):
+        """Hold the slot flock like the runner (perl flock(2): no util-linux flock on macOS) -> pid."""
+        ready = lock + ".ready"
+        p = subprocess.Popen(["/usr/bin/perl", "-e", 'use Fcntl ":flock"; open(my $f, "+<", $ARGV[0]) or die;'
+                              ' flock($f, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close $r; sleep 30',
+                              lock, ready])
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        for _ in range(100):
+            if os.path.exists(ready):
+                break
+            time.sleep(0.05)
+        os.utime(lock)   # the runner bumps the lock, then writes .who (not older than the lock)
+        return p.pid
+
+    def prune(self, base_gb=0, conf=None, **extra):
+        r = self.tune(RD_DF_CMD=self.fake_df(base_gb), conf=conf, **extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def exists(self, *paths):
+        return tuple(os.path.exists(p) for p in paths)
+
+    def test_prune_removes_only_old_mirrors_and_deps(self):
+        old, new = self.mirror(0, 4 * 86400), self.mirror(1, 0)
+        dold, dnew = self.dep(1, 4 * 86400), self.dep(2, 0)
+        r = self.prune()
+        self.assertEqual(self.exists(old, new, dold, dnew), (False, True, False, True))
+        self.assertIn("rd-tune: prune rm mirror repo-%s (unused 2d" % self.WT[0], r.stdout)
+        self.assertIn("rd-tune: prune rm store entry %s (unused 2d" % ("1" * 32), r.stdout)
+        self.assertEqual(os.listdir(os.path.join(self.rr, ".trash")), [])
+
+    def test_age_rule_runs_every_30_min_only(self):
+        self.prune()
+        old = self.mirror(0, 4 * 86400)
+        self.prune()                       # cooldown: not again within 30 min, and the disk is fine
         self.assertTrue(os.path.exists(old))
+
+    def test_busy_slot_no_longer_blocks_age_pruning_but_its_mirror_is_kept(self):
+        used, idle = self.mirror(0, 4 * 86400), self.mirror(1, 4 * 86400)
+        dold = self.dep(1, 4 * 86400)
+        lock = os.path.join(self.rr, "slots", "0")
+        open(lock, "a").close()
+        pid = self.hold(lock)
+        self.who(0, pid, self.WT[0])
+        self.prune()
+        self.assertEqual(self.exists(used, idle, dold), (True, False, False))
+
+    def test_live_pid_protects_its_mirror_even_on_a_free_slot(self):
+        used, idle = self.mirror(0, 4 * 86400), self.mirror(1, 4 * 86400)
+        self.who(3, self.sleeper(), self.WT[0])
+        self.prune(base_gb=75)             # disk pressure too: still never the used one
+        self.assertEqual(self.exists(used, idle), (True, False))
+
+    def test_old_format_who_protects_the_whole_repo(self):
+        a, b, other = self.mirror(0, 4 * 86400), self.mirror(1, 4 * 86400), self.mirror(2, 4 * 86400, slug="x")
+        self.who(0, self.sleeper())
+        self.prune()
+        self.assertEqual(self.exists(a, b, other), (True, True, False))
+
+    def test_held_slot_with_garbled_who_protects_every_mirror(self):
+        a = self.mirror(0, 4 * 86400)
+        lock = os.path.join(self.rr, "slots", "0")
+        open(lock, "a").close()
+        self.hold(lock)
+        with open(lock + ".who", "w") as f:
+            f.write("garbage\n")
+        self.prune(base_gb=85)
+        self.assertTrue(os.path.exists(a))
+
+    def test_stale_who_with_dead_pid_does_not_protect(self):
+        dead = subprocess.Popen(["/usr/bin/true"])
+        dead.wait()
+        m = self.mirror(0, 4 * 86400)
+        self.who(0, dead.pid, self.WT[0])
+        self.prune()
+        self.assertFalse(os.path.exists(m))
+
+    def test_recent_guard_keeps_entries_used_in_the_last_30_min(self):
+        recent, d_recent = self.mirror(0, 10 * 60), self.dep(1, 10 * 60)
+        saving = self.entry("deps", ".tmp-%s.123" % ("2" * 32), 40 * 60)        # a store save: 1 h
+        stale_save = self.entry("deps", ".tmp-%s.124" % ("3" * 32), 2 * 3600)
+        r = self.prune(base_gb=70)        # 5 GB free: everything eligible would go
+        self.assertEqual(self.exists(recent, d_recent, saving, stale_save), (True, True, True, False), r.stdout)
+
+    def test_disk_pressure_removes_lru_mirrors_until_target(self):
+        # 100 GB disk, 30 base + 5 mirrors x 10 + 2 deps x 5 = 90 used: 10% free. The target (25% and
+        # 30 GB) is reached after the two least recently used mirrors; the rest and the store stay.
+        ms = [self.mirror(i, (i + 1) * 3600) for i in range(5)]      # ms[4] = least recently used
+        ds = [self.dep(i + 1, 10 * 3600) for i in range(2)]
+        r = self.prune(base_gb=30)
+        self.assertEqual(self.exists(*ms), (True, True, True, False, False), r.stdout)
+        self.assertEqual(self.exists(*ds), (True, True))
+        self.assertIn("rd-tune: prune rm mirror repo-%s (disk low: 10%% / 10 GB free" % self.WT[4], r.stdout)
+
+    def test_disk_pressure_also_when_only_gb_is_low(self):
+        # 80 GB (80%) free: low only by the GB rule here; one mirror (the older) brings it to 90 GB
+        ms = [self.mirror(i, (i + 1) * 3600) for i in range(2)]
+        r = self.prune(base_gb=0, PRUNE_MIN_FREE_PCT="1", PRUNE_TARGET_FREE_PCT="1",
+                       PRUNE_MIN_FREE_GB="81", PRUNE_TARGET_FREE_GB="85")   # 80 GB free < 81 GB
+        self.assertEqual(self.exists(*ms), (True, False), r.stdout)
+
+    def test_disk_pressure_prunes_deps_after_mirrors(self):
+        # 45 base + 3 mirrors + 4 deps = 95 used. The active and the recent mirror stay; the old one
+        # goes first, then store entries LRU until 30 GB / 30% are free (the newest entry survives).
+        active, recent, old = self.mirror(0, 9 * 3600), self.mirror(1, 60), self.mirror(2, 5 * 3600)
+        self.who(0, self.sleeper(), self.WT[0])
+        ds = [self.dep(i + 1, (i + 1) * 3600) for i in range(4)]
+        r = self.prune(base_gb=45)
+        self.assertEqual(self.exists(active, recent, old), (True, True, False), r.stdout)
+        self.assertEqual(self.exists(*ds), (True, False, False, False), r.stdout)
+        lines = [ln for ln in r.stdout.splitlines() if ln.startswith("rd-tune: prune rm")]
+        self.assertEqual([ln.split()[3] for ln in lines], ["mirror", "store", "store", "store"])
+        self.assertEqual(lines[1].split()[5], "4" * 32)
+
+    def test_disk_fine_leaves_young_entries_alone(self):
+        ms = [self.mirror(i, 3600) for i in range(2)]
+        self.prune(base_gb=0)
+        self.assertEqual(self.exists(*ms), (True, True))
+
+    def test_real_worktree_mirror_last_use_and_git_cleanup(self):
+        """A real mirror: last use includes its worktree index (the runner's checkout rewrites it), and
+        an evicted one leaves no worktree record and no refs/rrun/<wt12> behind."""
+        git = ["/usr/bin/git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "init.defaultBranch=main"]
+        src, bare = os.path.join(self.tmp, "src"), os.path.join(self.rr, "git", "repo.git")
+        subprocess.run(git + ["init", "-q", src], check=True)
+        subprocess.run(git + ["-C", src, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        subprocess.run(git + ["clone", "-q", "--bare", src, bare], check=True)
+        names = ["repo-" + self.WT[i] for i in (0, 1)]
+        for i, n in enumerate(names):
+            subprocess.run(git + ["-C", bare, "update-ref", "refs/rrun/" + self.WT[i], "HEAD"], check=True)
+            subprocess.run(git + ["-C", bare, "worktree", "add", "-q", "--detach", os.path.join(self.rr, "w", n)],
+                           check=True)
+        past = time.time() - 4 * 86400
+        for n in names:
+            os.utime(os.path.join(self.rr, "w", n), (past, past))
+        for root, dirs, files in os.walk(os.path.join(bare, "worktrees", names[0])):
+            for f in files:                      # mirror 0: dir and worktree files all old = unused
+                os.utime(os.path.join(root, f), (past, past))
+        self.prune()
+        self.assertEqual(self.exists(*[os.path.join(self.rr, "w", n) for n in names]), (False, True))
+        wl = subprocess.run(git + ["-C", bare, "worktree", "list"], capture_output=True, text=True).stdout
+        refs = subprocess.run(git + ["-C", bare, "for-each-ref", "refs/rrun"], capture_output=True, text=True).stdout
+        self.assertNotIn(names[0], wl)
+        self.assertIn(names[1], wl)
+        self.assertEqual((self.WT[0] in refs, self.WT[1] in refs), (False, True))
+
+    def test_tune_conf_sets_the_thresholds(self):
+        m = self.mirror(0, 3600)
+        r = self.prune(base_gb=0, conf={"PRUNE_MIN_FREE_GB": 95, "PRUNE_TARGET_FREE_GB": 95})   # 90 GB free = low
+        self.assertFalse(os.path.exists(m), r.stdout)
 
     def test_bench_writes_speed_relative_to_reference(self):
         node = os.path.join(self.bin, "node")

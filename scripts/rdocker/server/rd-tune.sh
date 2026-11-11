@@ -4,18 +4,25 @@
 #    free memory and temperature (never above MAX_SLOTS from /etc/rdocker/tune.conf);
 #  * WSL only: drop the page cache when memory runs low (the Windows host does not reclaim it);
 #  * restart docker / sshd when they are down (at most once per 5 min each);
-#  * prune (every 30 min, only while no rrun slot is held): ~/rr/w mirrors and ~/rr/deps entries unused
-#    2 days, npm cache over 1 GB, and - on non-home workers only - stopped containers (> 24 h) and
-#    images (unused > 72 h), never anything labelled rdocker.keep (the home host's janitor owns those);
+#  * prune ~/rr, also while runs are in progress (never a mirror a run uses, nothing used in the last
+#    30 min): every 30 min, ~/rr/w mirrors and ~/rr/deps entries unused 2 days; on every tick, while the
+#    ~/rr filesystem is low on space, least-recently-used mirrors, then store entries (see prune()).
+#    Every 30 min and only while no rrun slot is held: npm cache over 1 GB, and - on non-home workers
+#    only - stopped containers (> 24 h) and images (unused > 72 h), never anything labelled
+#    rdocker.keep (the home host's janitor owns those);
 #  * `rd-tune bench` (any user, e.g. over ssh): fixed CPU fixture -> ~/rr/speed (float, i7-6700 = 1.0).
 #    A Mac worker has no rd-tune installed: `rdocker bench-worker <name>` pipes this file over ssh
 #    (`bash -s bench`), so bench must never read stdin and must find mise's node without shims.
 # Test hooks (env): RD_MEMINFO, RD_TEMP_FILES, RD_CAP_FILE, RD_CONF, RD_RR_ROOT, RD_STATE_DIR,
-# RD_NO_SERVICES=1, RD_WSL=0|1, RD_BENCH_N, RD_BENCH_REF. `rd-tune --source` only defines the functions.
+# RD_NO_SERVICES=1, RD_WSL=0|1, RD_BENCH_N, RD_BENCH_REF, RD_DF_CMD (prints what `df -Pk <path>` does). `rd-tune --source` only defines the functions.
 set -u
 CONF="${RD_CONF:-/etc/rdocker/tune.conf}"
 # shellcheck disable=SC2034  # HEAVY_SLOTS: read by the runner's probe via tune.conf
 RD_USER=rd MAX_SLOTS=2 HEAVY_SLOTS=1 IS_HOME=0
+# ~/rr disk-pressure thresholds and the recent-use guard (env, or tune.conf, which wins): see prune()
+PRUNE_MIN_FREE_PCT=${PRUNE_MIN_FREE_PCT:-20} PRUNE_TARGET_FREE_PCT=${PRUNE_TARGET_FREE_PCT:-25}
+PRUNE_MIN_FREE_GB=${PRUNE_MIN_FREE_GB:-25} PRUNE_TARGET_FREE_GB=${PRUNE_TARGET_FREE_GB:-30}
+PRUNE_RECENT_S=${PRUNE_RECENT_S:-1800}
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
 # sha256 chain steps/s (4 threads) of the i7-6700 reference. UNCALIBRATED until measured on the HP.
@@ -85,13 +92,161 @@ slots_idle() {   # true when no rrun slot is flocked (a run in progress could be
   done
 }
 
+# ~/rr pruning. A busy pool always holds some slot, so pruning no longer waits for an idle worker
+# (2026-11-11: the HP reached 92% used, 133 GB of mirrors + 53 GB of store, because it did). Instead:
+#  * age rule (every 30 min): mirrors ~/rr/w/<slug>-<wt12> and store entries ~/rr/deps/<key> unused 2 days;
+#  * disk-pressure rule (every tick; just one df unless low): below PRUNE_MIN_FREE_PCT % or
+#    PRUNE_MIN_FREE_GB free on the ~/rr filesystem, least-recently-used mirrors go first, then store
+#    entries, one at a time, until PRUNE_TARGET_FREE_PCT % and PRUNE_TARGET_FREE_GB are free or nothing
+#    more is eligible.
+# Never evicted: a mirror a run uses, and anything used in the last PRUNE_RECENT_S (a run may be preparing
+# it). "Uses": the runner flocks slots/<i> for the run's whole life, BEFORE it touches its mirror or the
+# store, and writes <i>.who = "<repo_slug> <epoch> <pid> <wt12>". PRUNE_PL takes every free slot (so no
+# run can start while it picks), protects the mirror a held slot's .who names (an old 3-field .who: the
+# whole repo; a held slot with a garbled/stale .who: every mirror, fail closed) and the mirror a .who
+# with a live pid names even when its slot is free; a dead pid on a free slot protects nothing (the same
+# rules as rd_janitor's ~/rr housekeeping). A picked entry is renamed into ~/rr/.trash (atomic: a
+# concurrent `cp` of a store entry then fails loudly and the runner falls back to npm ci, it never gets
+# half a tree) and deleted at low priority after the slots are released.
+# Store entries are copied into a mirror (store_clone: cp -a --reflink=auto), never linked, so deleting
+# one never touches a mirror; store_clone bumps the entry's mtime right before its cp, and store_save
+# writes a .tmp-<key>.<pid> (kept 1 h) then renames it, so the recent guard covers a prepare in progress.
+# shellcheck disable=SC2016  # Perl, expanded by perl
+PRUNE_PL='
+use strict; use warnings;
+use Fcntl qw(:flock O_RDWR O_NOFOLLOW);
+my ($R, $kind, $max_age, $recent, $limit, $trash) = @ARGV;
+$ENV{PATH} = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin";
+sub mtime { my @s = lstat $_[0]; @s ? $s[9] : 0 }
+sub git { system("git", "-c", "core.hooksPath=/dev/null", @_) == 0 }
+my (%busy, %inuse, @held);
+if ($kind eq "w" && opendir(my $sd, "$R/slots")) {
+    for my $s (sort grep { /^\d+$/ } readdir $sd) {
+        sysopen(my $fh, "$R/slots/$s", O_RDWR | O_NOFOLLOW) or next;
+        my $free = flock($fh, LOCK_EX | LOCK_NB);
+        my ($who, $slug, $pid, $wt) = ("");
+        if (open(my $w, "<", "$R/slots/$s.who")) { $who = <$w> // ""; close $w }
+        chomp $who;
+        ($slug, $pid, $wt) = $who =~ /^([A-Za-z0-9._-]+) \d+ (\d+)(?: ([A-Za-z0-9._-]+))?$/;
+        my $alive = defined $pid && $pid > 0 && kill(0, $pid);
+        if ($free) {
+            push @held, $fh;                      # held until we exit: no run starts in this slot
+            next unless $alive;                   # stale .who (dead pid) protects nothing
+        } else {
+            my @wst = lstat "$R/slots/$s.who";
+            my @lst = stat $fh;
+            undef $slug unless $alive && @wst && @lst && $wst[9] >= $lst[9];
+        }
+        if    (!defined $slug) { $busy{"*"} = 1 }
+        elsif (defined $wt)    { $inuse{"$slug-$wt"} = 1 }
+        else                   { $busy{$slug} = 1 }
+    }
+}
+sub last_use {                                    # newest of the dir and (mirror) its worktree index/HEAD
+    my ($p) = @_;
+    my $last = mtime($p);
+    if ($kind eq "w" && open(my $g, "<", "$p/.git")) {
+        my ($admin) = (<$g> // "") =~ /^gitdir: (.+)$/;
+        close $g;
+        if (defined $admin) {
+            for ("$admin/index", "$admin/HEAD") { my $t = mtime($_); $last = $t if $t > $last }
+        }
+    }
+    $last;
+}
+my $dir = "$R/$kind";
+opendir(my $dh, $dir) or exit 0;
+my @cand;
+for my $e (readdir $dh) {
+    my $p = "$dir/$e";
+    next if -l $p || !-d _;
+    my $floor = $recent;
+    if ($kind eq "w") {
+        my ($slug) = $e =~ /^(?!\.)([A-Za-z0-9._-]+)-[0-9a-f]{12}$/ or next;
+        next if $busy{"*"} || $busy{$slug} || $inuse{$e};
+    } elsif ($e =~ /^\.tmp-[0-9a-f]{32}\.\d+$/) { $floor = 3600 if $floor < 3600 }   # a save in progress
+    elsif ($e !~ /^[0-9a-f]{32}$/) { next }
+    my $age = time - last_use($p);
+    next if $age < $floor || $age < $max_age;
+    push @cand, [$age, $e];
+}
+my $n = 0;
+for (sort { $b->[0] <=> $a->[0] || $a->[1] cmp $b->[1] } @cand) {   # least recently used first
+    last if $limit && $n >= $limit;
+    my ($age, $e) = @$_;
+    my $p = "$dir/$e";
+    next if time - last_use($p) < $recent;       # used since we listed it
+    rename($p, "$trash/$kind-$e.$$.$n") or next;
+    $n++;
+    printf "TRASH %s %s %d\n", $kind, $e, $age / 3600;
+    next unless $kind eq "w";
+    unlink "$dir/.$e.envlist";
+    my ($slug, $wt12) = $e =~ /^(.+)-([0-9a-f]{12})$/;
+    my $bare = "$R/git/$slug.git";
+    if (-d $bare && !-l $bare) {
+        git("-C", $bare, "worktree", "prune");
+        git("-C", $bare, "update-ref", "-d", "refs/rrun/$wt12");
+    }
+}
+'
+
+# Free space of the ~/rr filesystem -> "<free %> <free GB>"; empty when unknown.
+# RD_DF_CMD: test hook, a command printing what `df -Pk <path>` prints.
+disk_free() {
+  ${RD_DF_CMD:-df -Pk} "$1" 2>/dev/null | awk 'NR == 2 && $2 > 0 { printf "%d %d\n", $4 * 100 / $2, $4 / 1048576 }'
+}
+
+disk_low() {   # $1 = rr: true below the minimum free (% or GB); unknown = not low
+  local f; f=$(disk_free "$1"); [ -n "$f" ] || return 1
+  # shellcheck disable=SC2086
+  set -- $f
+  [ "$1" -lt "$PRUNE_MIN_FREE_PCT" ] || [ "$2" -lt "$PRUNE_MIN_FREE_GB" ]
+}
+
+disk_ok() {    # $1 = rr: true once the target free (% and GB) is reached; unknown = done
+  local f; f=$(disk_free "$1"); [ -n "$f" ] || return 0
+  # shellcheck disable=SC2086
+  set -- $f
+  [ "$1" -ge "$PRUNE_TARGET_FREE_PCT" ] && [ "$2" -ge "$PRUNE_TARGET_FREE_GB" ]
+}
+
+empty_trash() {   # $1 = rr; low priority, so a big delete does not starve the runs
+  local t="$1/.trash" io=""
+  [ -d "$t" ] && [ ! -L "$t" ] || return 0
+  command -v ionice >/dev/null 2>&1 && io="ionice -c3"
+  # shellcheck disable=SC2086
+  find "$t" -mindepth 1 -maxdepth 1 -exec nice -n 19 $io rm -rf {} + 2>/dev/null
+}
+
+evict() {   # $1 rr, $2 w|deps, $3 max age s, $4 limit (0 = all), $5 why; logs what went; 0 when anything did
+  local rr=$1 kind=$2 why=$5 out line what
+  mkdir -p "$rr/.trash" 2>/dev/null
+  [ -d "$rr/.trash" ] && [ ! -L "$rr/.trash" ] || return 1
+  out=$(perl -e "$PRUNE_PL" "$rr" "$kind" "$3" "$PRUNE_RECENT_S" "$4" "$rr/.trash" 2>/dev/null)
+  empty_trash "$rr"
+  [ -n "$out" ] || return 1
+  what=mirror; [ "$kind" = deps ] && what="store entry"
+  while read -r line; do
+    # shellcheck disable=SC2086
+    set -- $line
+    echo "rd-tune: prune rm $what $3 ($why, last used $4h ago)"
+  done <<< "$out"
+}
+
 prune() {
-  local rr home_dir g; rr=$(rr_root); home_dir=$(dirname "$rr")
+  local rr home_dir g kind; rr=$(rr_root); home_dir=$(dirname "$rr")
+  [ -d "$rr" ] || return 0
+  empty_trash "$rr"                                   # leftovers of a prune that was killed
+  if disk_low "$rr"; then                             # LRU first, one entry per df; mirrors, then the store
+    for kind in w deps; do
+      while ! disk_ok "$rr" && evict "$rr" "$kind" 0 1 "disk low: $(disk_free "$rr" | awk '{ print $1 "% / " $2 " GB free" }')"; do :; done
+    done
+  fi
   cooldown_ok prune 1800 || return 0
-  slots_idle || return 0
-  find "$rr/w" -mindepth 1 -maxdepth 1 -type d -mtime +2 -exec rm -rf {} + 2>/dev/null
+  evict "$rr" w $(( 2 * 86400 )) 0 "unused 2d"
   for g in "$rr"/git/*.git; do [ -d "$g" ] && git --git-dir="$g" worktree prune 2>/dev/null; done
-  find "$rr/deps" -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf {} + 2>/dev/null
+  evict "$rr" deps $(( 2 * 86400 )) 0 "unused 2d"
+  slots_idle || return 0                              # npm cache / docker: no per-run owner to check
   if [ "$(du -sm "$home_dir/.npm/_cacache" 2>/dev/null | cut -f1)" -gt 1024 ] 2>/dev/null; then rm -rf "$home_dir/.npm/_cacache"; fi
   if [ "$IS_HOME" != 1 ] && [ -z "${RD_NO_SERVICES:-}" ] && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
     docker container prune -f --filter until=24h --filter "label!=rdocker.keep" >/dev/null 2>&1
