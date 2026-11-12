@@ -10,7 +10,9 @@ unchanged).
 Finished, review-clean work that has not landed is the top priority. Do not start new scope while
 you hold any. Ask for the push (rule 2) and keep the item moving until it lands. New asks from peers,
 device runs or parity checks go on your list and wait, unless they are a real bug in work you are
-about to land.
+about to land. "New scope" means work nobody already approved: the next part of an approved roadmap
+or /mission keeps going overnight while the finished part waits on the push list (build it on top of
+the finished part); only unplanned additions wait.
 
 ## 2. One push-approval list
 When work is review-clean and checks pass, add one line to `~/.claude/push-queue.md`:
