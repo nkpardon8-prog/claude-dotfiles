@@ -64,6 +64,12 @@ class Cooldown(unittest.TestCase):
         self.assertEqual(st.cooldown(20), 86400)
 
 
+class Remote(unittest.TestCase):
+    def test_hour_cutoff_uses_worker_local_time_like_runs_log(self):
+        line = [l for l in st.REMOTE.splitlines() if l.startswith("since=")][0]
+        self.assertNotIn("date -u", line)
+
+
 class Runbook(unittest.TestCase):
     def test_runbook_forbids_destructive_actions(self):
         for must in ("NEVER", "delete volumes", "git push", "passwords", "reboot", "Needs a human"):

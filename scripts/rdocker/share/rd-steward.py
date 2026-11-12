@@ -46,7 +46,8 @@ THRESH = {
 REMOTE = r"""
 now=$(date +%s)
 st=$(cat /run/rdocker/doctor 2>/dev/null || cat ~/rr/state/doctor.json 2>/dev/null || echo null)
-since=$(date -u -d @$((now-3600)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -r $((now-3600)) +%Y-%m-%dT%H:%M:%S)
+# runs.log stamps are the worker's LOCAL time (+offset), so the cutoff must be local too
+since=$(date -d @$((now-3600)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -r $((now-3600)) +%Y-%m-%dT%H:%M:%S)
 printf 'NOW %s\nDOCTOR %s\n' "$now" "$st"
 tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$since" 'substr($1,1,19) >= s' | grep -o 'outcome=[^ ]*' | sort | uniq -c | sed 's/^/OUT /'
 """
