@@ -213,14 +213,17 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   `$RRUN_DOCKER_LABEL`): removed when the run passes or is interrupted, **kept on failure** for
   inspection (`rrun: the run failed; its containers stay ...`; `docker ps` / `logs` reach them; the 3 h
   idle rule reaps them). A container the job labels `rdocker.keep` is never removed by run cleanup.
-  **Compose:** each run gets its own project, `COMPOSE_PROJECT_NAME=rr<12 hex>` (unless the job sets
-  `COMPOSE_PROJECT_NAME` or `-p` itself); what that project leaves is removed with the run's containers.
-- **Docker scope on the shared worker engine (2026-11-11):** a job may only `rm` / `stop` / `kill` /
-  `restart` containers, `network rm` / `volume rm`, and `compose down|rm|stop|kill|restart` what it
-  created itself (its label, its compose project, or a project it brought up with `-p X up`). Anything
-  else is **refused by name and the command exits 1**: ``rrun: refused `docker rm -f pg-other`:
-  container pg-other is not this run's ...`` (its own targets in the same command still go; a target that
-  does not exist is passed to docker, which says so). `docker container|network|volume prune` is refused
+  **Compose:** every compose call of a run is namespaced: the project name it gives (`-p`,
+  `--project-name`, `COMPOSE_PROJECT_NAME`, or none = `default`) becomes `rr<run12>-<name>`, so a job
+  can never address another run's stack; every `rr<run12>-*` project is removed with the run's
+  containers.
+- **Docker scope on the shared worker engine (2026-11-11):** a job may only `rm` / `remove` / `stop` /
+  `kill` / `restart` containers and `rm` / `remove` networks and volumes it created itself (its label,
+  or its compose namespace). Every target is checked with `docker inspect` and only the object's
+  immutable id is passed on. Another run's object is **refused by name and the command exits 1**:
+  ``rrun: refused `docker rm -f pg-other`: container pg-other is not this run's ...`` (its own targets
+  in the same command still go). A target that does not exist is dropped (silently with `-f`, like
+  docker); an inspect that fails for any other reason refuses the whole command. `docker container|network|volume prune` is refused
   unless scoped with `--filter label=$RRUN_DOCKER_LABEL`; `docker system prune` is always refused. This
   is what ended "my test DB vanished mid-run": another run's harness cleanup can no longer reach it, so
   `TEST_DB_KEEP_CONTAINERS=1` is no longer needed for that. A harness whose cleanup lists every matching
@@ -283,16 +286,22 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   `rr-%C` master, whose death took every session down at once), up to `rr_reattach_tries` (3) within
   `rr_reattach_window_s` (120 s; waits `rr_reattach_backoff_s` 0 / 10 / 30 s first), then `rrun:
   reconnected to <worker>; the output goes on from where it broke off` - the rest of the output (no
-  byte twice) and the command's **real exit code**. If GO never arrived there, the reconnect says so
-  and it counts as lost *before* the start (safe to run elsewhere). Only when every reconnect fails
-  do the old rules apply: exit **75** (`rrun: lost the Mac mini mid-run - not re-running ...`), or one
+  byte twice) and the command's **real exit code**. If GO never arrived there, the runner's own signed
+  record says so and it counts as lost *before* the start (safe to run elsewhere). If the worker has
+  no proof either way (its spool is gone), rrun says `the run's result is lost there ... not re-running
+  it (exit 75)` - never a re-run. A Ctrl-C / TERM during the reconnect ends it (128+signal), never a
+  re-run. Only when every reconnect fails do the old rules apply: exit **75** (`rrun: lost the Mac mini mid-run - not re-running ...`), or one
   re-run on another worker for a job that is safe to repeat (tsc, lint, vitest/jest, builds, DB jobs in
   a pool). The worker side: before GO a lost laptop means nothing runs (`rr_hb_timeout`, 60 s); once
   the command runs it lives on **180 s** without any client (`rr_detach_hb_s`), then it is cancelled
   (process group TERM, KILL 10 s later; `outcome=lost`). A deliberate stop (second Ctrl-C, a hedge's
   loser) is sent as an explicit KILL and cancels at once (`outcome=interrupted`). Spool files go 10
   min after their run ended (or 1 h after their last change once no run holds them; a running job
-  touches its own every 5 min), so anything in `~/rr/spool` older than 1 h is safe to delete.
+  touches its own every 5 min), swept when a detached run ends and by rd-tune's prune pass (Linux
+  workers), so anything in `~/rr/spool` older than 1 h is safe to delete. While such a run still
+  works in the worktree's mirror on the worker, the next run of that worktree there waits for it (up
+  to its slot wait, `rrun-runner: an earlier run of this worktree still runs here ...`), then answers
+  busy and rrun re-plans.
 - **Exit codes of rrun itself** (only before the command started, so never confused with its own):
   65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
   on the mini, 70 runner error, 73 slot busy past `rr_wait_min` (or the worker refused: share off / its Docker did
