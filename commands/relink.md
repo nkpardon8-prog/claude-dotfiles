@@ -6,7 +6,10 @@ allowed-tools: Bash, SendMessage
 
 # /relink - put every window on Remote Control under its /line name
 
-Run once after switching Claude accounts, or whenever the Claude app shows windows under wrong names.
+Run it after switching Claude accounts, after opening or renaming windows with /line, or whenever the
+Claude app shows wrong names. Safe to run any time: it remembers the Remote Control session it made for
+each window (~/.claude/relink-state.json) and skips windows already linked under their current name, so
+only new, renamed, or re-connected windows are touched (`--force` redoes all). One run per Mac at a time.
 
 ## Why it works this way
 The Claude app shows a Remote Control session under the name it was CONNECTED with. `/rename` does not

@@ -24,6 +24,7 @@ import sys
 import time
 from pathlib import Path
 
+STATE = Path(os.environ.get("RELINK_STATE", Path.home() / ".claude" / "relink-state.json"))
 SESS = Path(os.environ.get("RELINK_SESSIONS_DIR", Path.home() / ".claude" / "sessions"))
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 POLL = 3.0
@@ -46,6 +47,23 @@ def read_sessions():
             continue
         rows.append(d)
     return rows
+
+
+def load_state():
+    """{sessionId: {"name", "bridge"}} for windows this script already linked. Never raises."""
+    try:
+        d = json.loads(STATE.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_linked(sid, name, bridge):
+    st = load_state()
+    st[sid] = {"name": name, "bridge": bridge, "at": int(time.time())}
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, indent=1))
+    os.replace(tmp, STATE)
 
 
 def session(pid):
@@ -132,8 +150,9 @@ def type_into(w, text):
     return p.stdout.strip() == "typed"
 
 
-def plan(rows, tabs, only):
+def plan(rows, tabs, only, force=False):
     todo, skipped = [], []
+    linked = {} if force else load_state()
     for d in rows:
         name = d.get("name") or ""
         if only and name not in only:
@@ -144,6 +163,10 @@ def plan(rows, tabs, only):
         if not NAME_RE.match(name):
             skipped.append((name, "name has characters /rc cannot take"))
             continue
+        prev = linked.get(d.get("sessionId") or "")
+        if prev and prev.get("name") == name and d.get("bridgeSessionId") and prev.get("bridge") == d.get("bridgeSessionId"):
+            skipped.append((name, "already linked under this name"))
+            continue
         panel = pane_panel(d["pid"]) if runpane_bin() else ""
         tty = "" if panel else tty_of(d["pid"])
         if not panel and (tabs is None or tty not in tabs):
@@ -151,7 +174,7 @@ def plan(rows, tabs, only):
                 "not a Pane panel, and Terminal cannot be scripted from here"
             skipped.append((name, why))
             continue
-        todo.append({"pid": d["pid"], "name": name, "tty": tty, "panel": panel, "state": "start", "t": 0.0,
+        todo.append({"sid": d.get("sessionId") or "", "pid": d["pid"], "name": name, "tty": tty, "panel": panel, "state": "start", "t": 0.0,
                      "old": d.get("bridgeSessionId"), "result": ""})
     return todo, skipped
 
@@ -190,6 +213,8 @@ def step(w, now):
     elif w["state"] == "connecting":
         if bridge and bridge != w["old"]:
             w["state"], w["result"] = "done", f"relinked ({bridge})"
+            if w["sid"]:
+                save_linked(w["sid"], w["name"], bridge)
         elif now - w["t"] > STEP_TIMEOUT:
             w["state"], w["result"] = "done", "FAILED: no new Remote Control session (check the tab)"
 
@@ -198,10 +223,11 @@ def main():
     ap = argparse.ArgumentParser(description="Reconnect Remote Control under each window's /line name.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--only", action="append", default=[])
+    ap.add_argument("--force", action="store_true", help="relink even windows already linked under their name")
     ap.add_argument("--timeout-min", type=float, default=45.0, help="how long to wait for busy windows")
     a = ap.parse_args()
     tabs = terminal_ttys()
-    todo, skipped = plan(read_sessions(), tabs, set(a.only))
+    todo, skipped = plan(read_sessions(), tabs, set(a.only), a.force)
     host = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True).stdout.strip()
     if a.dry_run:
         for w in todo:
@@ -211,6 +237,28 @@ def main():
         for n, why in skipped:
             print(f"{host} | {n} | skip: {why}")
         return 0
+    lock = STATE.with_name("relink.lock")
+    try:
+        other = int(lock.read_text().strip() or 0)
+        os.kill(other, 0)
+        print(f"relink: another relink is already running (pid {other}); it will finish these windows.")
+        return 0
+    except (FileNotFoundError, ValueError, ProcessLookupError):
+        pass
+    except PermissionError:
+        return 0
+    lock.write_text(str(os.getpid()))
+    try:
+        return run(todo, skipped, host, a)
+    finally:
+        try:
+            if lock.read_text().strip() == str(os.getpid()):
+                lock.unlink()
+        except Exception:
+            pass
+
+
+def run(todo, skipped, host, a):
     deadline = time.time() + a.timeout_min * 60
     while any(w["state"] != "done" for w in todo) and time.time() < deadline:
         for w in todo:
@@ -226,6 +274,8 @@ def main():
         print(f"  {w['name']:<40} {w['result']}")
     for n, why in skipped:
         print(f"  {n:<40} skipped: {why}")
+    if not todo:
+        print("  nothing to do: every named window is already linked under its name")
     return 0 if all(w["result"].startswith("relinked") for w in todo) else 1
 
 
