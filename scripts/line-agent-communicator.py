@@ -67,6 +67,7 @@ import stat as statmod
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -556,6 +557,40 @@ def unique_handle(base: str, my_session_id: str, sessions: list[dict]) -> str:
 # --------------------------------------------------------------------------------------
 
 CONTACTS = HOME / ".claude" / "agent-contacts.json"
+
+
+@contextmanager
+def file_lock_timed(path: Path, wait: float):
+    """Like file_lock, but gives up after `wait` seconds and yields False instead of blocking forever.
+    A publish stuck in the kernel on a stalled iCloud write held the plain lock for hours on Nick's
+    mini (2026-11-11) and 111 later publishes queued behind it, one a minute. Yields True when held."""
+    fh = None
+    held = False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(str(path) + ".lock", "a+")
+        end = time.time() + wait
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+                break
+            except BlockingIOError:
+                if time.time() >= end:
+                    break
+                time.sleep(0.25)
+    except Exception:
+        held = False
+    try:
+        yield held
+    finally:
+        if fh is not None:
+            try:
+                if held:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+            except Exception:
+                pass
 
 
 @contextmanager
@@ -1197,7 +1232,12 @@ def cmd_publish(throttle: float = 0.0, verbose: bool = False, prefetch: bool = T
             pass
     try:
         cache_dir().mkdir(parents=True, exist_ok=True)
-        with file_lock(cache_dir() / "publish"):
+        with file_lock_timed(cache_dir() / "publish", PUBLISH_LOCK_WAIT_SEC) as held:
+            if not held:
+                _log_publish(f"publish skipped: another publish held the lock over {PUBLISH_LOCK_WAIT_SEC:.0f}s")
+                if verbose:
+                    print("publish: skipped - another publish is stuck holding the lock (see the log).")
+                return 0
             _publish_locked(d, verbose)
         _clear_publish_error()
     except Exception as e:
@@ -1216,7 +1256,28 @@ def cmd_publish(throttle: float = 0.0, verbose: bool = False, prefetch: bool = T
     return 0
 
 
-def _publish_locked(d: Path, verbose: bool) -> int:
+def _icloud_bounded(fn, what: str) -> None:
+    """Run an iCloud Drive filesystem call with a deadline. A stalled File Provider can block a
+    chmod/stat/rename in the kernel for hours; the call is left behind in a daemon thread (it ends
+    with the process) and this raises so the publish lock is released and the stall is reported."""
+    box = {}
+
+    def run():
+        try:
+            box["v"] = fn()
+        except BaseException as e:  # surfaced below
+            box["e"] = e
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(ICLOUD_OP_TIMEOUT_SEC)
+    if t.is_alive():
+        raise TimeoutError(f"iCloud Drive stalled on {what} for over {ICLOUD_OP_TIMEOUT_SEC:.0f}s")
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+def _publish_locked(d: Path, verbose: bool, icloud: bool = True) -> int:
     rows, _skipped = collect_live_rows()
     if ps_is_unusable():
         # Liveness unknown: publishing now could tell the other Mac every window here closed.
@@ -1235,13 +1296,17 @@ def _publish_locked(d: Path, verbose: bool) -> int:
         "windows": windows,
     }
     target = d / f"{hid}.json"
-    prev, _why = read_json_timed(target) if target.exists() else (None, "missing")
+    prev = None
+    target_exists = False
+    if icloud:
+        target_exists = bool(_icloud_bounded(target.exists, "stat"))
+        prev, _why = read_json_timed(target) if target_exists else (None, "missing")
     if prev is None:
         prev = _read_cache(hid)
     now = now_epoch()
     if prev is not None and _strip_times(prev) == body:
         hb = parse_iso_utc(prev.get("heartbeat_at"))
-        if hb is not None and now - hb < HEARTBEAT_REFRESH_SEC and target.exists():
+        if hb is not None and now - hb < HEARTBEAT_REFRESH_SEC and (target_exists or not icloud):
             _touch_stamp()
             if verbose:
                 print(f"publish: unchanged ({len(windows)} window(s)) - {target}")
@@ -1256,13 +1321,21 @@ def _publish_locked(d: Path, verbose: bool) -> int:
         "updated_at": updated, "heartbeat_at": iso_utc(now),
         "account_hash": body["account_hash"], "windows": windows,
     }
-    d.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(d, 0o700)
-    except OSError:
-        pass
-    _write_private_json(target, out)
+    # Local cache FIRST: it is what the ssh relay hands the other Mac, so this Mac stays reachable
+    # even while its iCloud Drive is stalled.
     _write_cache(hid, out)
+    if icloud:
+        def put():
+            stall = os.environ.get("LAC_TEST_ICLOUD_STALL")  # test hook: simulate a stalled File Provider
+            if stall:
+                time.sleep(float(stall))
+            d.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(d, 0o700)
+            except OSError:
+                pass
+            _write_private_json(target, out)
+        _icloud_bounded(put, "writing this Mac's entry")
     _touch_stamp()
     if verbose:
         print(f"publish: {what} ({len(windows)} window(s)) - {target}")
@@ -1502,6 +1575,9 @@ def prefetch_other_hosts(d: Path, verbose: bool = False) -> None:
 RELAY_TIMEOUT_SEC = 15
 RDOCKER_DEFAULT_HOST = "macmini-docker"   # = scripts/rdocker/rd_common.py DEFAULTS["host"]
 RELAY_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+PUBLISH_LOCK_WAIT_SEC = float(os.environ.get("LAC_PUBLISH_LOCK_WAIT") or 30.0)
+ICLOUD_OP_TIMEOUT_SEC = float(os.environ.get("LAC_ICLOUD_OP_TIMEOUT") or 20.0)
+
 RELAY_REMOTE_CMD = ('PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; '
                     'exec python3 "$HOME/.claude-dotfiles/scripts/line-agent-communicator.py" relay-exchange')
 
@@ -1598,6 +1674,14 @@ def cmd_relay_exchange() -> int:
     got = _accept_relayed_book(book)
     if not got:
         _log_publish("relay-exchange: refused an invalid address book")
+    # Hand back a FRESH book built from the live windows (local cache only, never iCloud), so the
+    # other Mac sees this one as live even when this Mac's iCloud publish is stalled.
+    try:
+        with file_lock_timed(cache_dir() / "publish", 10) as held:
+            if held:
+                _publish_locked(windows_dir() or cache_dir(), False, icloud=False)
+    except Exception as e:
+        _log_publish(f"relay-exchange: fresh book failed: {e.__class__.__name__}: {clean_field(e, 200)}")
     print(json.dumps({"ok": bool(got), "book": _read_cache(host_id())}))
     return 0
 
