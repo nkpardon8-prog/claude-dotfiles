@@ -71,7 +71,10 @@ After the rework lands, PART-START without `proto=2` is refused; proto=2 parts n
 `phase=plan`, use only the new evidence shapes, and pass every recipe, plan-gate, close and budget
 check. Parts open at cutover are grandfathered on the old fold (2 consecutive dry `phase=review`
 rounds, `live-verify part=N round=K`, SNAPSHOT fingerprint v1). A legacy part satisfies `needs=` by
-PART-DONE; its anchor is the `ANCHOR` line.
+PART-DONE; its anchor is the `ANCHOR` line. An open legacy part is driven by the frozen pre-rework playbook
+`docs/mission/legacy-playbook.md` (byte-identical to `commands/mission.md` at 509fe27b, its own
+§12 wake routine and decision table) until its PART-DONE/PART-RETIRED; its next PART-START is
+refused with the reload text, which brings the conductor back to `commands/mission.md` and proto=2.
 
 ## Full-suite report and known-reds baseline (FULL-SUITE `report=`)
 
@@ -153,37 +156,3 @@ The stale-lock clear is not ABA-proof: two wakes can both judge a lock stale. Id
 step-5 cursor recompute absorb a double LOG transition; a double EXTERNAL dispatch is narrowed by the
 step-6 `await-state` re-read and by persisting lane results before their bits. A run-id lease that
 would close it fully is not wired; do not claim it.
-
-## Legacy part loop (proto=1, grandfathered)
-
-A part whose PART-START has no `proto=2` (`part-state` says `proto=1`) was open at cutover and
-finishes on the old fold. The wake routes EVERY state of such a part here (wake.md legacy row), so
-it never reaches a proto=2 operation: no RECIPE, `bank-review` (any scope), `budget-state` gate,
-FULL-SUITE, SWEEP, `known-reds`, close legs, join, park FAIL or `needs=` admission. Round lines are
-plain `log` lines, `[mission] part=<N> name=<slug> phase=<p> round=<K> dry=<D>[ findings=<b>]`,
-idtag `m<N>-<p>-r<K>-d<D>`, no `open=`, no `at=`. Per state:
-- **research** (or no round yet): explore, log `phase=research round=<K> dry=0`, then plan.
-- **plan**: `skill: plan <part plan file>` (NOT `--mission`; no recipe cap, no `bank-review plan`); log
-  each round `phase=plan round=<K> dry=0`; plan settled -> implement.
-- **implement**: `skill: implement --no-review <plan>`; log `phase=implement round=<K> dry=0`.
-- **review**: open the review barrier (`await ... kind=job op=review-barrier`), both lanes as usual
-  (`codex-review` WITHOUT `--ledger`/`--base`). At `ready=1` bank by hand ("Legacy review evidence"
-  below). Clean round -> `dry=` previous+1 (1, then 2); blocking -> `dry=0 findings=<b>`.
-- **fix**: `phase=fix round=<K> dry=0 findings=<b>`, fix, commit, then a fresh review round K+1.
-  After `dry=1` the window is FROZEN: any code change means a fix line and a fresh round.
-- **VOID**: re-run the round fresh.
-- **converged** (`dry=2`, two consecutive clean rounds): `log "[mission] live-verify part=<N>
-  round=<K> status=ok evidence=<token>"` (or `status=n/a reason=<slug>`), idtag
-  `m<N>-live-verify-r<K>`; then PART-DONE (legacy fingerprint check; `convergence-stale` -> fresh
-  round); then PART-RETIRED. The writer records the part's ANCHOR at its PART-DONE.
-- **watchdog** `action=stop` twice: a FAIL line and the next attempt (a legacy part cannot park;
-  five FAILs for one part+phase is the STOP LOUD).
-- Human AWAITs, STOP LOUD and the stop list are the same for both protocols.
-
-### Legacy review evidence
-
-VOID unless `parse-codex-header` = `4/4` and
-`parse-claude-header` = `3/3` on the stat-verified `Report-file`, then
-`[mission] REVIEW-EVIDENCE part=$N round=$K codex=$passes claude=$lenses report=$rf` with idtag
-`m$N-review-evidence-r$K`, then the `phase=review ... findings=<blocking>` line. Three consecutive
-VOIDs -> `FAIL ... reason=panel-unavailable-3x attempt=3` (idtag `m<N>-fail-panel3x-r<K>`), STOP LOUD.

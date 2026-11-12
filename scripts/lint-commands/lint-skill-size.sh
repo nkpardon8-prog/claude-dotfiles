@@ -243,6 +243,8 @@ done
 # ceiling. Over a cap means cut (delete rationale - git history keeps it), never raise the number.
 # Any of the four staged -> all four are measured (the aggregate needs them all; --staged reads
 # each from the index).
+# docs/mission/legacy-playbook.md is deliberately NOT capped: it is a frozen, byte-identical copy of the
+# pre-rework playbook (509fe27b) used only by grandfathered proto=1 parts, and is deleted once none is open.
 MISSION_CAPS="commands/mission.md:40960 docs/mission/wake.md:15360 docs/mission/reference.md:20480 docs/mission/planted-bugs.md:2048"
 MISSION_AGG=78848
 _m_any=0

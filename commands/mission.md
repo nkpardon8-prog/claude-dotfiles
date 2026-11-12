@@ -116,7 +116,7 @@ every RECIPE (v1 and v2) repeats its PART-START `needs=` verbatim (the writer re
 ### G. Per-part loop
 
 proto=2 parts only. A grandfathered part (`part-state` says `proto=1`) never runs this loop, §H2, §I
-or §J and never calls a proto=2 verb: it finishes on reference.md "Legacy part loop".
+or §J: it finishes under the frozen pre-rework playbook `docs/mission/legacy-playbook.md`.
 1. PART-START `proto=2` in the part's linked worktree, `base=` the last finished part's freeze SHA
    (land-first stacking); the writer refuses it while another part is open, unless every `needs` part
    is PART-DONE with its anchor in the base, or if the base holds any commit of an isolated range.

@@ -330,7 +330,7 @@ print('order=ok' if ok else 'order=bad')
 PY
 )
 has "order=ok" "$ROWS" "G0 wake.md: legacy dispatch and drift + dry=2 finalize rows precede the dry=1 close row"
-has "proto=1 closed=0" "$(grep -F '| `ps` proto=1' "$WAKE")" "G0b one legacy dispatch row routes an open proto=1 part (reference.md legacy loop)"
+has "docs/mission/legacy-playbook.md" "$(grep -F '| `ps` proto=1 closed=0' "$WAKE")" "G0b one legacy dispatch row routes an open proto=1 part to the frozen legacy playbook"
 
 # G1 legacy part in flight across cutover: ready=1 and dry=1/dry=2
 mk g1
@@ -486,10 +486,12 @@ hasnt "kind=converged" "$(logf)" "IA3 nothing was banked"
 has "dry=2" "$(join 1 6)" "IA4 the retry once the log is writable succeeds"
 has "log ok" "$(done_ 1)" "IA5 PART-DONE"
 
-# IB the legacy class: ONE legacy row, right after the human-AWAIT rows, sends a proto=1 part to the
-# reference.md legacy loop; every later row is proto=2-only, so no proto=2 verb is reachable for proto=1.
-ROWS2=$(python3 - "$WAKE" "$HERE/../../docs/mission/reference.md" <<'PY'
-import sys,re
+# IB the legacy class: ONE legacy row, right after the human-AWAIT rows, sends an open proto=1 part to
+# the frozen pre-rework playbook (byte-identical to 509fe27b's commands/mission.md); every later row
+# is proto=2-only, so no proto=2 verb is reachable for proto=1, and nothing legacy is re-derived by hand.
+LP="$HERE/../../docs/mission/legacy-playbook.md"
+ROWS2=$(python3 - "$WAKE" <<'PY'
+import sys
 s=open(sys.argv[1],encoding='utf-8').read(); s=s[s.index('## Decision table'):s.index('## §12.3')]
 rows=[l for l in s.splitlines() if l.startswith('| ') and not l.startswith('| State') and not l.startswith('|---')]
 state=lambda l: l.split(' | ')[0]
@@ -497,19 +499,19 @@ leg=[i for i,l in enumerate(rows) if 'proto=1' in state(l)]
 human=[i for i,l in enumerate(rows) if 'kind=human' in state(l)]
 first_other=min(i for i,l in enumerate(rows) if i not in human and i not in leg)
 later_p1=[i for i,l in enumerate(rows) if i not in leg and 'proto=1' in l]
-ref=open(sys.argv[2],encoding='utf-8').read()
-sec=ref[ref.index('## Legacy part loop'):]
-sec=sec[:sec.find('\n## ',5)] if sec.find('\n## ',5)>0 else sec
-need=['**research**','**plan**','**implement**','**review**','**fix**','**converged**','live-verify part=<N>','PART-DONE','PART-RETIRED','NOT `--mission`']
-miss=[k for k in need if k not in sec]
-# the legacy loop must not instruct a proto=2 operation (it may only name them in its "never" list)
-body=sec.split('Per state:',1)[1]
-p2=[k for k in ['bank-review ','RECIPE','FULL-SUITE','SWEEP','join','budget-state','known-reds'] if re.search(r'(?<![`/])\b'+re.escape(k.strip())+r'\b', body.replace('no `bank-review plan`','').replace('(no recipe cap','('))]
-print('legacy-rows=%d first=%s later-p1=%d missing=%s p2-in-loop=%s' % (len(leg), 'ok' if leg and leg[0]<first_other else 'bad', len(later_p1), ','.join(miss) or '-', ','.join(p2) or '-'))
+pts=bool(leg) and all('docs/mission/legacy-playbook.md' in rows[i] for i in leg)
+print('legacy-rows=%d first=%s later-p1=%d points=%s' % (len(leg), 'ok' if leg and leg[0]<first_other else 'bad', len(later_p1), 'ok' if pts else 'bad'))
 PY
 )
-has "legacy-rows=1 first=ok later-p1=0 missing=- p2-in-loop=-" "$ROWS2" "IB1 one legacy row before every proto=2 row; the legacy loop covers every phase and calls no proto=2 verb"
-has "proto=2 parts only" "$(sed -n '/### G. Per-part loop/,/### H2/p' "$HERE/../../commands/mission.md")" "IB2 mission.md's part loop is declared proto=2-only and points legacy parts at the legacy loop"
+has "legacy-rows=1 first=ok later-p1=0 points=ok" "$ROWS2" "IB1 exactly one legacy row, ahead of every proto=2 row, pointing at legacy-playbook.md"
+has "proto=2 parts only" "$(sed -n '/### G. Per-part loop/,/### H2/p' "$HERE/../../commands/mission.md")" "IB2 mission.md's part loop is declared proto=2-only and points legacy parts at the frozen playbook"
+has "legacy-playbook.md" "$(sed -n '/### G. Per-part loop/,/### H2/p' "$HERE/../../commands/mission.md")" "IB2b ... by name"
+if [ -r "$LP" ] && ( cd "$HERE/../.." && git cat-file -e 509fe27b:commands/mission.md 2>/dev/null ); then
+  tail -n +4 "$LP" | cmp -s - <(cd "$HERE/../.." && git show 509fe27b:commands/mission.md) \
+    && ok "IB3 legacy-playbook.md below its 3-line header is byte-identical to 509fe27b:commands/mission.md" \
+    || bad "IB3 legacy-playbook.md drifted from the frozen pre-rework playbook"
+else bad "IB3 legacy-playbook.md or commit 509fe27b missing"; fi
+hasnt "Legacy part loop" "$(cat "$HERE/../../docs/mission/reference.md")" "IB4 no hand-written legacy loop remains in reference.md"
 
 # IC invalidating a freeze keeps the pause time already earned (210 active + 100 paused, budget 300)
 mk ic
@@ -531,42 +533,67 @@ eq ok "$(mw budget-state "$S" "$R")" "IC3 the 100 paused minutes already earned 
 has "log ok" "$(lg "[mission] part=1 name=p1 phase=fix round=4 dry=0 findings=1" m1-fix-r4-d0)" "IC4 an identical fix retry dedups (keeps its original at=)"
 
 # ═════════════════════════════════════════════════════════════════════════════════════════════════
-echo "== J legacy (proto=1) part through every phase, reloaded at each =="
+echo "== J legacy part replayed with the frozen playbook's own line shapes and verbs, end to end =="
+# Every line below is a shape docs/mission/legacy-playbook.md tells a conductor to write (its §7
+# grammar, §5 VOID/FAIL block, §6 live-verify, PART-DONE/RETIRED, the human STOP close order, the
+# read verbs). Outputs go to a FILE: a variable assigned inside $(...) would vanish in the subshell.
 mk j
-JOUT=""
-jl() { _o=$(lg "$1" "$2"); JOUT="$JOUT
-$_o"; printf '%s' "$_o"; }
+JLOG="$ENVD/j-outputs.txt"; : > "$JLOG"
+jl()  { _o=$(lg "$1" "$2"); printf '%s\n' "$_o" >> "$JLOG"; printf '%s' "$_o"; }
+jmw() { _o=$(mw "$@"); printf '%s\n' "$_o" >> "$JLOG"; printf '%s' "$_o"; }
+LPF="$HERE/../../docs/mission/legacy-playbook.md"
+for shape in '[mission] test-trust part=<N>=' '[mission] criticer part=<N> findings=' '[mission] VOID part=<N> phase=review round=<K> reason=' '[mission] live-verify part=<N> round=<K> status=ok evidence=' '[mission] PART-DONE part=<N> (converged)' '[mission] PART-RETIRED part=<N>' 'mission-write.sh pending-stop'; do
+  grep -a -q -F -- "$shape" "$LPF" && ok "J0 the frozen playbook emits: $shape" || bad "J0 frozen playbook lacks: $shape"
+done
 fab "[mission] PART-START part=1 name=legacy" m1-part-start       # opened before cutover
 has "part=1 proto=1 dry=0 closed=0" "$(mw part-state "$S" "$R")" "J1 reload: part-state routes to the legacy row"
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=research round=1 dry=0" m1-research-r1-d0)" "J2 research round (plain log line)"
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=plan round=2 dry=0" m1-plan-r2-d0)" "J3 plan round (old shape, no open=, no bank-review)"
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=plan round=3 dry=0" m1-plan-r3-d0)" "J4 second plan round after a reload mid-plan"
+jmw timing-resume "$S" "$R" >/dev/null; jmw render-banner "$S" "$R" >/dev/null
+has "log ok" "$(jl "[mission] part=1 name=legacy phase=research round=1 dry=0" m1-research-r1-d0)" "J2 research round"
+has "log ok" "$(jl "[mission] part=1 name=legacy phase=plan round=2 dry=0" m1-plan-r2-d0)" "J3 plan round (legacy shape)"
+has "log ok" "$(jl "[mission] criticer part=1 findings=2 tighten the error path" m1-criticer-r2)" "J4 criticer headline"
+has "log ok" "$(jl "[mission] test-trust part=1=ok" m1-test-trust)" "J5 test-trust before the first implement"
 JH=$(commit "$R" legacy-impl)
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=implement round=4 dry=0" m1-implement-r4-d0)" "J5 implement"
-mw await "$S" "$R" "part=1 phase=review round=5 kind=job op=review-barrier attempt=1 need=3 got=0" >/dev/null
-mw await "$S" "$R" "part=1 phase=review round=5 kind=job op=review-barrier attempt=1 need=3 got=1" >/dev/null
-mw await "$S" "$R" "part=1 phase=review round=5 kind=job op=review-barrier attempt=1 need=3 got=2" >/dev/null
-has "ready=1" "$(mw await-state "$S" "$R")" "J6 review barrier ready (legacy row handles AWAITs too)"
-J5R=$(code_report "$R" "$B" "$JH" delta 1)
-has "4/4" "$(mw parse-codex-header "$J5R")" "J7 legacy evidence check: parse-codex-header 4/4"
-has "log ok" "$(jl "[mission] REVIEW-EVIDENCE part=1 round=5 codex=4/4 claude=3/3 report=$J5R" m1-review-evidence-r5)" "J8 legacy evidence banked by hand"
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=review round=5 dry=0 findings=1" m1-review-r5-d0)" "J9 blocking review round"
-eq none "$(mw await-state "$S" "$R")" "J10 barrier superseded"
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=fix round=5 dry=0 findings=1" m1-fix-r5-d0)" "J11 fix"
+has "log ok" "$(jl "[mission] part=1 name=legacy phase=implement round=3 dry=0" m1-implement-r3-d0)" "J6 implement"
+has "ok" "$(jmw await "$S" "$R" "part=1 phase=review round=4 kind=job op=review-barrier attempt=1 need=3 got=0")" "J7 review barrier"
+J4R=$(code_report "$R" "$B" "$JH" delta 2)
+has "log ok" "$(jl "[mission] VOID part=1 phase=review round=4 reason=codex-passes-3of4" "m1-void-r4-run1h$(printf '%s' "$J4R" | shasum -a 256 | cut -c1-8)")" "J8 VOID (old shell-block shape)"
+eq 1 "$(mw void-count "$S" "$R" 1 4)" "J9 void-count reads it"
+jmw await "$S" "$R" "part=1 phase=review round=4 kind=job op=review-barrier attempt=2 need=3 got=0" >/dev/null
+jmw await "$S" "$R" "part=1 phase=review round=4 kind=job op=review-barrier attempt=2 need=3 got=1" >/dev/null
+jmw await "$S" "$R" "part=1 phase=review round=4 kind=job op=review-barrier attempt=2 need=3 got=2" >/dev/null
+has "ready=1" "$(mw await-state "$S" "$R")" "J10 retry attempt ready"
+eq 4/4 "$(mw parse-codex-header "$J4R")" "J11 parse-codex-header"
+eq 3/3 "$(mw parse-claude-header "$J4R")" "J12 parse-claude-header"
+has "log ok" "$(jl "[mission] REVIEW-EVIDENCE part=1 round=4 codex=4/4 claude=3/3 report=$J4R" m1-review-evidence-r4)" "J13 legacy REVIEW-EVIDENCE"
+has "log ok" "$(jl "[mission] part=1 name=legacy phase=review round=4 dry=0 findings=2" m1-review-r4-d0)" "J14 blocking review round"
+eq none "$(mw await-state "$S" "$R")" "J15 barrier superseded"
+OUT=$(mw pending-stop "$S" "$R" spend-brake 1 4 2 review "Keep going past the old budget?"); printf '%s\n' "$OUT" >> "$JLOG"
+has "pending-stop ok id=pd:" "$OUT" "J16 old spend-brake human STOP opens"
+PD=$(printf '%s' "$OUT" | sed -n 's/^mission-write: pending-stop ok id=\(pd:[0-9]*-[a-z0-9-]*\).*$/\1/p'); SEQ=${PD#pd:}; SEQ=${SEQ%%-*}
+has "log ok" "$(jl "[mission] DECISION op=$SEQ-spend-brake outcome=approve" "pd-$SEQ-decision-spend-brake")" "J17 DECISION"
+has "ok" "$(jmw await "$S" "$R" "part=1 phase=review round=4 kind=human op=$SEQ-spend-brake attempt=2 need=1 got=1")" "J18 human barrier closes"
+has "ok" "$(jmw resolve "$S" "$R" "$PD" approved)" "J19 resolve"
+eq none "$(mw await-state "$S" "$R")" "J19b nothing outstanding"
+has "log ok" "$(jl "[mission] part=1 name=legacy phase=fix round=4 dry=0 findings=2" m1-fix-r4-d0)" "J20 fix"
 JH2=$(commit "$R" legacy-fix)
-J6R=$(code_report "$R" "$JH" "$JH2" delta 0)
-jl "[mission] REVIEW-EVIDENCE part=1 round=6 codex=4/4 claude=3/3 report=$J6R" m1-review-evidence-r6 >/dev/null
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=review round=6 dry=1 findings=0" m1-review-r6-d1)" "J12 first clean round dry=1"
-has "proto=1 dry=1 closed=0" "$(mw part-state "$S" "$R")" "J13 reload at dry=1: still the legacy row (no close join)"
-J7R=$(code_report "$R" "$JH2" "$JH2" delta 0)
-jl "[mission] REVIEW-EVIDENCE part=1 round=7 codex=4/4 claude=3/3 report=$J7R" m1-review-evidence-r7 >/dev/null
-has "log ok" "$(jl "[mission] part=1 name=legacy phase=review round=7 dry=2 findings=0" m1-review-r7-d2)" "J14 second clean round dry=2 (converged)"
-has "proto=1 dry=2 closed=0" "$(mw part-state "$S" "$R")" "J15 reload at dry=2: legacy finalize"
-has "log ok" "$(jl "[mission] live-verify part=1 round=7 status=n/a reason=tooling" m1-live-verify-r7)" "J16 legacy live-verify"
-has "log ok" "$(jl "[mission] PART-DONE part=1 (converged)" m1-part-done)" "J17 PART-DONE (legacy fold + fingerprint)"
-has "log ok" "$(jl "[mission] PART-RETIRED part=1" m1-part-retired)" "J18 PART-RETIRED"
-hasnt "rc=4" "$JOUT" "J19 no rc=4 refusal anywhere in the legacy walk"
-hasnt "FAILED" "$JOUT" "J20 no refusal of any kind"
+for k in 5 6; do
+  d=$((k-4)); JR=$(code_report "$R" "$JH" "$JH2" delta 0)
+  jl "[mission] REVIEW-EVIDENCE part=1 round=$k codex=4/4 claude=3/3 report=$JR" "m1-review-evidence-r$k" >/dev/null
+  has "log ok" "$(jl "[mission] part=1 name=legacy phase=review round=$k dry=$d findings=0" "m1-review-r$k-d$d")" "J21 clean round $k dry=$d"
+done
+has "proto=1 dry=2 closed=0" "$(mw part-state "$S" "$R")" "J22 converged legacy part"
+# evidence lives outside the root: the legacy fingerprint covers untracked root files
+EV="$ENVD/j-live-evidence.txt"; echo shot > "$EV"
+has "log ok" "$(jl "[mission] live-verify part=1 round=6 status=ok evidence=$EV" m1-live-verify-r6)" "J23 legacy live-verify (stat-verified evidence path)"
+has "log ok" "$(jl "[mission] PART-DONE part=1 (converged)" m1-part-done)" "J24 PART-DONE (old fold + fingerprint)"
+has "log ok" "$(jl "[mission] PART-RETIRED part=1" m1-part-retired)" "J25 PART-RETIRED"
+[ "$(grep -c . "$JLOG")" -ge 20 ] && ok "J26 the output log captured the walk ($(grep -c . "$JLOG") lines)" || bad "J26 output log has $(grep -c . "$JLOG") lines (capture broken)"
+hasnt "FAILED" "$(cat "$JLOG")" "J27 no refusal anywhere in the legacy part's walk"
+hasnt "COLLISION" "$(cat "$JLOG")" "J28 no collision"
+# The frozen playbook's NEXT step is a legacy PART-START for the next part: refused with the reload
+# text, which sends the conductor back to commands/mission.md (new parts are proto=2).
+OUT=$(lg "[mission] PART-START part=2 name=next" m2-part-start)
+has "re-read commands/mission.md" "$OUT" "J29 the handoff: the next legacy PART-START is refused with the reload text"
 
 printf '\nPASS: %s  FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
