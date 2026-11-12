@@ -37,7 +37,13 @@ else
   bad "fenced block carries the template line (got: $(printf '%s' "$FENCED" | head -3))"
   echo "PASS: $PASS  FAIL: $FAIL"; exit 1
 fi
-case "$HEADER_TPL" in *GPT*) bad "template is model-agnostic (found a model ID)";; *) ok "template is model-agnostic";; esac
+# The Codex model is PINNED (gpt-6.1-sol) and named in the header, BEFORE Codex-passes, so the
+# `^Engine:.*Codex-passes: [0-9]+/4.*Verified:` anchor is untouched. Terra must never appear here.
+case "$HEADER_TPL" in
+  *"| Model: gpt-6.1-sol | Codex-passes: N/4"*) ok "template names the pinned model before Codex-passes" ;;
+  *) bad "template names the pinned model before Codex-passes (got: $HEADER_TPL)" ;;
+esac
+case "$HEADER_TPL" in *[Tt]erra*) bad "template never names a Terra model";; *) ok "template never names a Terra model";; esac
 
 mkreport() {  # mkreport <outfile> <N-token> [claude-N, default 3] — from the REAL fenced literal
   {
@@ -133,6 +139,17 @@ out=$(bash "$MW" parse-claude-header "$T/clegacy.md"); rc=$?
 out=$(bash "$MW" parse-claude-header "$T/cspoof.md")
 [ "$out" = "1/3" ] && ok "anti-spoof: first canonical header binds, body cannot upgrade 1/3 to 3/3" \
   || bad "anti-spoof claude (got '$out')"
+
+# Step 0b / 6e tokens ride the SAME line AFTER Verified:. They must not disturb either parser.
+{ echo "# Codex Review: mission delta"
+  printf '%s\n' "$HEADER_TPL" \
+    | sed "s|Codex-passes: N/4|Codex-passes: 4/4|; s|Claude-lenses: N/3|Claude-lenses: 3/3|; s|Verified: \[Y/N\]|Verified: Y \| Scope: delta base=0123456789ab \| Verify: ok tagged=2 blocking=2 \| Ledger: new=1 repeat=1 \| Areas-new: server/src/ai|"
+} > "$T/rmission.md"
+if [ "$(bash "$MW" parse-codex-header "$T/rmission.md")" = "4/4" ] && [ "$(bash "$MW" parse-claude-header "$T/rmission.md")" = "3/3" ]; then
+  ok "Scope/Verify/Ledger tokens after Verified: leave both parsers intact"
+else
+  bad "Scope/Verify/Ledger tokens broke a parser ($(sed -n 2p "$T/rmission.md"))"
+fi
 
 echo
 echo "PASS: $PASS  FAIL: $FAIL"

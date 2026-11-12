@@ -307,8 +307,25 @@ req "commands/prepare-pr.md" "CODEX_EFFORT=high bash "
 # plan.md's meta-reviewer also runs Codex at xhigh, and a generic pin would let that line satisfy
 # this check even if the executability lane were deleted or dropped to another effort.
 req "$L" 'CODEX_EFFORT=xhigh bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A"'
-# The three DIRECT `codex exec` sites (codex-review.md :244/:248/:560) deliberately do NOT take
-# this prefix - they never read the variable. Do not "fix" them by adding one.
+# The DIRECT `codex exec` sites in codex-review.md (4 file/describe lenses + the Step 6 verify)
+# deliberately do NOT take this prefix - they never read the variable. Do not "fix" them by adding one.
+
+# --- codex-review MODEL is pinned to gpt-6.1-sol on every Codex call (mission rework, 2026-11-11) ---
+# An unpinned lane runs whatever ~/.codex/config.toml names, and a weaker model returns a weaker
+# review, not an error - the same silent shape as the effort pins above. Diff lanes take the env
+# prefix (same-line, so it still applies to the command); direct sites take `exec -m`. Terra is a
+# product model, never a code-review model: its absence is pinned in both casings.
+req "$X" "CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high CODEX_TIMEOUT_SECS=3600 bash " 4
+req "$X" "exec -m gpt-6.1-sol -o " 5
+req "$X" "| Model: gpt-6.1-sol | Codex-passes: N/4 | Claude-lenses: N/3 | Verified: [Y/N]"
+absent "$X" "terra"
+absent "$X" "Terra"
+# Delta/ledger contract /mission parses (Step 0b + 6e). Dropping any leg silently turns a mission
+# round into one that can never prove `tagged == blocking`.
+req "$X" "Scope: <delta|full> base=<sha12>"
+req "$X" "TAG | <TYPE-KEY> | new|repeat | <area> | <one line>"
+req "$X" "Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new:"
+req "$X" "Verify: failed"
 
 # --- agents/*.md frontmatter: model + effort must be values the harness ACTUALLY honors ---
 # PROVEN by live probe 2026-08-17, not assumed: frontmatter `model:` and `effort:` are both
