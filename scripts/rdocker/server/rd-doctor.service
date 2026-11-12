@@ -1,0 +1,8 @@
+[Unit]
+Description=rdocker worker doctor (self-healing rules: orphan slots/containers, hung jobs, reporter, drain)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rd-doctor
+Nice=5
+TimeoutStartSec=120

@@ -53,6 +53,11 @@ for u in ssh tailscaled docker chrony; do restart_dropin "$u"; done
 put /usr/local/bin/rd-netcheck 755 < "$SRC/rd-netcheck.sh"
 put /etc/systemd/system/rd-netcheck.service 644 < "$SRC/rd-netcheck.service"
 put /etc/systemd/system/rd-netcheck.timer 644 < "$SRC/rd-netcheck.timer"
+# rd-doctor: self-healing rules every 30 s (orphan slots/containers, hung jobs, reporter, drain; see the script).
+# Kill switch: DOCTOR_DISABLE=1 in /etc/rdocker/doctor.conf (owner-written, never put here).
+put /usr/local/bin/rd-doctor 755 < "$SRC/rd-doctor.sh"
+put /etc/systemd/system/rd-doctor.service 644 < "$SRC/rd-doctor.service"
+put /etc/systemd/system/rd-doctor.timer 644 < "$SRC/rd-doctor.timer"
 if [ "$IS_WSL" != 1 ]; then   # power bar: root averages RAPL for the reporter (WSL has no RAPL)
   put /usr/local/bin/rd-power 755 < "$SRC/rd-power.sh"
   put /etc/systemd/system/rd-power.service 644 < "$SRC/rd-power.service"
@@ -60,6 +65,8 @@ fi
 [ -n "$R" ] || systemctl daemon-reload
 sc enable ssh tailscaled docker chrony rd-tune.timer rd-netcheck.timer
 sc start rd-netcheck.timer
+sc enable rd-doctor.timer
+sc start rd-doctor.timer
 if [ "$IS_WSL" != 1 ]; then sc enable rd-power.service; [ -n "$R" ] || systemctl restart rd-power.service || true; fi
 if [ "$IS_HOME" = 1 ]; then   # the dashboard's data, archived daily onto the home disk and kept forever
   put /usr/local/bin/rd-archive 755 < "$SRC/rd-archive.sh"

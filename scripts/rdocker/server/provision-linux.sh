@@ -63,6 +63,25 @@ IS_WSL=0; grep -qi microsoft /proc/version 2>/dev/null && IS_WSL=1
 say "distro=$ID/$CODENAME wsl=$IS_WSL user=$RD_USER ts-ip=$TS_IP port=$PORT"
 export DEBIAN_FRONTEND=noninteractive
 
+# 0. WSL isolation (B8): pool jobs must never reach the Windows drive or launch Windows programs.
+#    The OpenDental laptop keeps patient data on C:. Interop also lets any WSL user run
+#    `wsl.exe -u root`, i.e. passwordless root. Applied live and in /etc/wsl.conf.
+if [ "$IS_WSL" = 1 ]; then
+  say "wsl isolation (no C: automount, no interop)"
+  if [ "$DRY" != 1 ]; then
+    python3 - <<'PY'
+import configparser
+p = "/etc/wsl.conf"; c = configparser.ConfigParser(); c.optionxform = str; c.read(p)
+for s, k, v in [("automount", "enabled", "false"), ("automount", "mountFsTab", "true"),
+                ("interop", "enabled", "false"), ("interop", "appendWindowsPath", "false")]:
+    c.has_section(s) or c.add_section(s); c.set(s, k, v)
+with open(p, "w") as f: c.write(f)
+PY
+    for m in /mnt/[a-z]; do mountpoint -q "$m" && { umount "$m" 2>/dev/null || umount -l "$m"; }; done
+    [ -w /proc/sys/fs/binfmt_misc/WSLInterop ] && echo 0 > /proc/sys/fs/binfmt_misc/WSLInterop || true
+  fi
+fi
+
 # 1. packages ---------------------------------------------------------------------------------------
 say packages
 run apt-get update -qq

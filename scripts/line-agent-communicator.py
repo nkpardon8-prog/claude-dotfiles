@@ -1515,6 +1515,19 @@ def relay_target() -> str:
         return env if env != "off" and RELAY_HOST_RE.match(env) else ""
     if os.environ.get("LAC_WINDOWS_DIR") or os.environ.get("LAC_CACHE_DIR"):
         return ""
+    # The relay partner is NAMED per Mac in line-relay-peers.json (synced with the dotfiles). Since
+    # 2026-11-01 rdocker's host is a Linux box, not the other Mac, so the old guess below sent every
+    # exchange to a machine without this script and both Macs saw a 10-day-old copy of each other.
+    try:
+        peers_file = os.environ.get("LAC_RELAY_PEERS") or str(Path(__file__).resolve().parent / "line-relay-peers.json")
+        peers = json.loads(Path(peers_file).read_text())
+        mine = peers.get(host_id()) if isinstance(peers, dict) else None
+        if isinstance(mine, str):
+            return mine if mine != "off" and RELAY_HOST_RE.match(mine) else ""
+        if isinstance(peers, dict) and peers.get("_default") == "off":
+            return ""
+    except Exception:
+        pass
     cfg = HOME / ".config" / "rdocker" / "config.json"
     host = ""
     try:
@@ -1691,6 +1704,14 @@ def load_other_hosts() -> tuple[list[dict], str]:
         hb = parse_iso_utc(data.get("heartbeat_at"))
         their_hash = str(data.get("account_hash") or "")
         match = None if not (my_hash and their_hash) else (my_hash == their_hash)
+        # A hash read from a copy we have not synced recently describes the account that Mac had THEN,
+        # so a mismatch on a stale copy proves nothing (2026-11-11: a 10-day-old copy claimed "different
+        # account" for two Macs on the same account). Unknown, not False, until a fresh copy arrives.
+        # Same for a Mac that has not published for a day: its file can be freshly SYNCED (same iCloud)
+        # yet carry a hash from a sign-in weeks ago (plan2bid-minim4, offline 26 days, 2026-11-11).
+        if match is False and (synced is None or now - synced > SYNC_STALE_SEC
+                               or hb is None or now - hb > 86400):
+            match = None
         windows = []
         for w in data.get("windows") or []:
             if not isinstance(w, dict):

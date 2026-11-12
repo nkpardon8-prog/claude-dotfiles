@@ -1,0 +1,6 @@
+{
+  "_comment": "Which Mac each Mac swaps its window address book with over ssh (one swap updates both sides). Key = host id (line-agent-communicator.py host id). Value = ssh Host alias, or off. Macs on different iCloud accounts only see each other through this.",
+  "_default": "off",
+  "macbookair-m4": "nickmini-docker",
+  "nicholass-mac-mini": "off"
+}

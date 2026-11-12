@@ -67,6 +67,7 @@ Behavior:
 import json
 import os
 import re
+import subprocess
 import sys
 import unicodedata
 
@@ -692,6 +693,25 @@ def route(cmd, patterns, depth=0, builds=None, cwd=None):
     return out
 
 
+AUTOPULL_PLIST = "Library/LaunchAgents/com.claude.dotfiles-autopull.plist"
+
+
+def ensure_autopull(h):
+    """Every Mac that uses the pool keeps its dotfiles current: install the 2-minute fast-forward
+    pull (scripts/dotfiles-autopull.sh) the first time it is missing. One stat per call; the install
+    runs detached so the hook never waits on it."""
+    if sys.platform != "darwin" or os.path.exists(os.path.join(h, AUTOPULL_PLIST)):
+        return
+    script = os.path.join(h, ".claude-dotfiles", "scripts", "dotfiles-autopull.sh")
+    if not os.path.isfile(script):
+        return
+    try:
+        subprocess.Popen(["/bin/bash", script, "--ensure"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -707,6 +727,7 @@ def main():
     rrun_real = rrun_installed(h)
     if not rrun_real:
         return
+    ensure_autopull(h)
     user = None
     if not any(t in cmd for t in PREFILTER):
         user = user_cfg(h)

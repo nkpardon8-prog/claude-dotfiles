@@ -25,6 +25,10 @@ for t in rd-tune rd-netcheck; do
   [ "$(systemctl is-enabled "$t.timer" 2>/dev/null)" = enabled ] && systemctl is-active --quiet "$t.timer" \
     && res PASS "timer-$t" || res FAIL "timer-$t"
 done
+# rd-doctor (self-healing): its timer runs, and its kill switch is not thrown
+if grep -qs '^DOCTOR_DISABLE=1' "$R/etc/rdocker/doctor.conf"; then res FAIL doctor-timer "disabled: DOCTOR_DISABLE=1 in /etc/rdocker/doctor.conf"
+elif [ "$(systemctl is-enabled rd-doctor.timer 2>/dev/null)" = enabled ] && systemctl is-active --quiet rd-doctor.timer; then res PASS doctor-timer
+else res FAIL doctor-timer "rd-doctor.timer not enabled and running (re-run rd-resilience.sh)"; fi
 if [ "$WSL" = 1 ]; then
   for c in watchdog panic-sysctl ac-power unattended-upgrades; do res SKIP "$c" "WSL: the Windows host owns this"; done
 else

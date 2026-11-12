@@ -13,7 +13,12 @@ Windows without a /line name (nameSource != "explicit"), or in neither Pane nor 
 Another Mac: `ssh <host> python3 ~/.claude-dotfiles/scripts/relink.py` (Pane windows only; macOS blocks
 AppleScript control of Terminal from an ssh login).
 
-Usage: relink.py [--dry-run] [--only NAME ...] [--timeout-min N]
+Self-heal: `relink.py --heal` is a Stop hook (installed on every Mac by line-ensure-settings.py). When a
+window finishes a turn it checks itself in milliseconds; if it is /line-named but not linked under that
+name (new window, /line rename, /resume, Pane restore, account switch), it starts a detached relink of
+itself, which types once the window is idle. Retries at most every HEAL_BACKOFF seconds per window.
+
+Usage: relink.py [--dry-run] [--only NAME ...] [--timeout-min N] [--force] | --heal (hook, JSON on stdin)
 """
 import argparse
 import json
@@ -24,9 +29,12 @@ import sys
 import time
 from pathlib import Path
 
+STATE = Path(os.environ.get("RELINK_STATE", Path.home() / ".claude" / "relink-state.json"))
 SESS = Path(os.environ.get("RELINK_SESSIONS_DIR", Path.home() / ".claude" / "sessions"))
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 POLL = 3.0
+HEAL_BACKOFF = 300
+HEAL_LOG = Path.home() / ".claude" / "logs" / "relink-heal.log"
 STEP_TIMEOUT = 90.0
 
 
@@ -46,6 +54,23 @@ def read_sessions():
             continue
         rows.append(d)
     return rows
+
+
+def load_state():
+    """{sessionId: {"name", "bridge"}} for windows this script already linked. Never raises."""
+    try:
+        d = json.loads(STATE.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_linked(sid, name, bridge):
+    st = load_state()
+    st[sid] = {"name": name, "bridge": bridge, "at": int(time.time())}
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, indent=1))
+    os.replace(tmp, STATE)
 
 
 def session(pid):
@@ -132,8 +157,9 @@ def type_into(w, text):
     return p.stdout.strip() == "typed"
 
 
-def plan(rows, tabs, only):
+def plan(rows, tabs, only, force=False):
     todo, skipped = [], []
+    linked = {} if force else load_state()
     for d in rows:
         name = d.get("name") or ""
         if only and name not in only:
@@ -144,6 +170,10 @@ def plan(rows, tabs, only):
         if not NAME_RE.match(name):
             skipped.append((name, "name has characters /rc cannot take"))
             continue
+        prev = linked.get(d.get("sessionId") or "")
+        if prev and prev.get("name") == name and d.get("bridgeSessionId") and prev.get("bridge") == d.get("bridgeSessionId"):
+            skipped.append((name, "already linked under this name"))
+            continue
         panel = pane_panel(d["pid"]) if runpane_bin() else ""
         tty = "" if panel else tty_of(d["pid"])
         if not panel and (tabs is None or tty not in tabs):
@@ -151,7 +181,7 @@ def plan(rows, tabs, only):
                 "not a Pane panel, and Terminal cannot be scripted from here"
             skipped.append((name, why))
             continue
-        todo.append({"pid": d["pid"], "name": name, "tty": tty, "panel": panel, "state": "start", "t": 0.0,
+        todo.append({"sid": d.get("sessionId") or "", "pid": d["pid"], "name": name, "tty": tty, "panel": panel, "state": "start", "t": 0.0,
                      "old": d.get("bridgeSessionId"), "result": ""})
     return todo, skipped
 
@@ -190,18 +220,56 @@ def step(w, now):
     elif w["state"] == "connecting":
         if bridge and bridge != w["old"]:
             w["state"], w["result"] = "done", f"relinked ({bridge})"
+            if w["sid"]:
+                save_linked(w["sid"], w["name"], bridge)
         elif now - w["t"] > STEP_TIMEOUT:
             w["state"], w["result"] = "done", "FAILED: no new Remote Control session (check the tab)"
 
 
+def heal():
+    """Stop-hook entry. Must be fast and must never fail the hook: always exits 0."""
+    try:
+        sid = str(json.loads(sys.stdin.read() or "{}").get("session_id") or "")
+        if not sid or os.environ.get("RELINK_CHILD"):
+            return 0
+        me = next((d for d in read_sessions() if d.get("sessionId") == sid), None)
+        if not me or me.get("nameSource") != "explicit" or not NAME_RE.match(me.get("name") or ""):
+            return 0
+        st = load_state()
+        prev = st.get(sid) or {}
+        bridge = me.get("bridgeSessionId")
+        if bridge and prev.get("name") == me["name"] and prev.get("bridge") == bridge:
+            return 0
+        if time.time() - float(prev.get("tried") or 0) < HEAL_BACKOFF:
+            return 0
+        prev = dict(prev, tried=int(time.time()))
+        st[sid] = prev
+        tmp = STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(st, indent=1))
+        os.replace(tmp, STATE)
+        HEAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        log = open(HEAL_LOG, "a")
+        log.write(time.strftime("%Y-%m-%d %H:%M:%S ") + f"heal {me['name']} pid {me['pid']}\n")
+        log.flush()
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--only", me["name"], "--timeout-min", "10"],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                         env=dict(os.environ, RELINK_CHILD="1"))
+    except Exception:
+        pass
+    return 0
+
+
 def main():
+    if "--heal" in sys.argv[1:]:
+        return heal()
     ap = argparse.ArgumentParser(description="Reconnect Remote Control under each window's /line name.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--only", action="append", default=[])
+    ap.add_argument("--force", action="store_true", help="relink even windows already linked under their name")
     ap.add_argument("--timeout-min", type=float, default=45.0, help="how long to wait for busy windows")
     a = ap.parse_args()
     tabs = terminal_ttys()
-    todo, skipped = plan(read_sessions(), tabs, set(a.only))
+    todo, skipped = plan(read_sessions(), tabs, set(a.only), a.force)
     host = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True).stdout.strip()
     if a.dry_run:
         for w in todo:
@@ -211,6 +279,43 @@ def main():
         for n, why in skipped:
             print(f"{host} | {n} | skip: {why}")
         return 0
+    # One lock PER WINDOW: two relinks never type into the same window, but a heal of one window never
+    # blocks a heal (or a full run) of another.
+    lockdir = STATE.with_name("relink-locks")
+    lockdir.mkdir(parents=True, exist_ok=True)
+    mine = []
+    for w in list(todo):
+        lk = lockdir / f"{w['name']}.pid"
+        try:
+            fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                other = int(lk.read_text().strip() or 0)
+                os.kill(other, 0)
+                todo.remove(w)
+                skipped.append((w["name"], f"another relink (pid {other}) is handling it"))
+                continue
+            except (ValueError, ProcessLookupError):
+                lk.unlink(missing_ok=True)
+                fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except PermissionError:
+                todo.remove(w)
+                continue
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        mine.append(lk)
+    try:
+        return run(todo, skipped, host, a)
+    finally:
+        for lk in mine:
+            try:
+                if lk.read_text().strip() == str(os.getpid()):
+                    lk.unlink()
+            except Exception:
+                pass
+
+
+def run(todo, skipped, host, a):
     deadline = time.time() + a.timeout_min * 60
     while any(w["state"] != "done" for w in todo) and time.time() < deadline:
         for w in todo:
@@ -226,6 +331,8 @@ def main():
         print(f"  {w['name']:<40} {w['result']}")
     for n, why in skipped:
         print(f"  {n:<40} skipped: {why}")
+    if not todo:
+        print("  nothing to relink")
     return 0 if all(w["result"].startswith("relinked") for w in todo) else 1
 
 

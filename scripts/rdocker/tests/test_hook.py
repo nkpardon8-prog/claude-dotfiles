@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import tempfile
 import unittest
 
@@ -599,3 +600,37 @@ class ConfigPatterns(HookBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(sys.platform == "darwin", "the autopull LaunchAgent is macOS-only")
+class AutopullEnsure(HookBase):
+    """Every Mac that uses the pool self-installs the 2-minute dotfiles fast-forward pull."""
+
+    def fake_autopull(self):
+        d = os.path.join(self.home, ".claude-dotfiles", "scripts")
+        os.makedirs(d)
+        marker = os.path.join(self.home, "ensured")
+        with open(os.path.join(d, "dotfiles-autopull.sh"), "w") as f:
+            f.write(f'echo "$1" >> "{marker}"\n')
+        return marker
+
+    def wait_for(self, path, secs=5):
+        end = time.time() + secs
+        while time.time() < end and not os.path.exists(path):
+            time.sleep(0.05)
+        return os.path.exists(path)
+
+    def test_missing_plist_triggers_ensure_without_changing_output(self):
+        marker = self.fake_autopull()
+        self.assertIsNone(self.hook(self.bash("ls")))
+        self.assertTrue(self.wait_for(marker))
+        self.assertEqual(open(marker).read().strip(), "--ensure")
+
+    def test_present_plist_is_left_alone(self):
+        marker = self.fake_autopull()
+        la = os.path.join(self.home, "Library", "LaunchAgents")
+        os.makedirs(la)
+        open(os.path.join(la, "com.claude.dotfiles-autopull.plist"), "w").close()
+        self.hook(self.bash("ls"))
+        time.sleep(0.5)
+        self.assertFalse(os.path.exists(marker))
