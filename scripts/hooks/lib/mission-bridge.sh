@@ -369,6 +369,37 @@ _mission_tree_fingerprint() {
   printf '%s' "$_tf_out"
 }
 
+# _mission_tree_fingerprint_v2 <worktree> -> stdout `v2:<tree16>` = the first 16 hex of the tree of the
+# worktree's HEAD, valid ONLY when the worktree is clean (tracked changes AND untracked non-ignored files,
+# mission bookkeeping excluded). A dirty worktree prints `dirty` (never equal to a stamped tree, so a
+# compare fails closed). Same sentinels as v1 (`nogit`, `nohead`). Why a tree and not v1's working-state
+# hash: v1 hashed whatever root it was handed, which for /mission was the MAIN checkout, not the part
+# worktree - so a part's edits were invisible and a main-checkout edit falsely staled the part. A tree id
+# is also stable across a commit that changes nothing (commit-after-converge does not stale).
+_mission_tree_fingerprint_v2() {
+  _tf2_wt="$1"
+  git -C "$_tf2_wt" rev-parse --git-dir >/dev/null 2>&1 || { printf 'nogit'; return 0; }
+  git -C "$_tf2_wt" rev-parse --verify -q HEAD >/dev/null 2>&1 || { printf 'nohead'; return 0; }
+  _tf2_dirty=$(git -C "$_tf2_wt" -c core.quotepath=false status --porcelain --untracked-files=all -- \
+      ':(exclude,glob)MISSION.*' ':(exclude,glob).mission-backups/**' ':(exclude,glob).mission-archive/**' \
+      ':(exclude,glob)CLAUDE.local.*' ':(exclude,glob).mission-known-reds/**' 2>/dev/null)
+  [ -z "$_tf2_dirty" ] || { printf 'dirty'; return 0; }
+  _tf2_tree=$(git -C "$_tf2_wt" rev-parse 'HEAD^{tree}' 2>/dev/null | cut -c1-16)
+  [ -n "$_tf2_tree" ] || { printf 'nohead'; return 0; }
+  printf 'v2:%s' "$_tf2_tree"
+}
+
+# mission_part_worktree <stream> <part> <root> -> stdout the part worktree named on part N's proto=2
+# PART-START (`worktree=<abs>`), else <root> (legacy parts fingerprint the mission root, v1). <stream> is
+# a gen-sliced log stream (idtag TAB body); the PART-START is double-anchored on idtag + body.
+mission_part_worktree() {
+  _pw=$(printf '%s\n' "$1" | awk -F'\t' -v pn="$2" '
+    $1 ~ ("^(g[0-9]+-)?m" pn "-part-start$") && $2 ~ ("^\\[mission\\] PART-START part=" pn " .* proto=2 ") {
+      n=split($2,a," "); for(i=1;i<=n;i++) if (a[i] ~ /^worktree=/) w=substr(a[i],10) }
+    END { print w }')
+  [ -n "$_pw" ] && printf '%s' "$_pw" || printf '%s' "$3"
+}
+
 # _mission_goal_hash <sid> -> stdout first-16-hex sha256 of the FROZEN chain north_star (the immutable
 # goal). Recorded on the SNAPSHOT stamp for the report/future goal-drift work; not compared in v1.
 # Reads the manifest JSON directly (no handoff-chain.sh source dependency). `nogoal` when absent.
@@ -2317,6 +2348,12 @@ mission_await_state() {
     }
     # PART-DONE (idtag m<N>-part-done) supersedes ALL rounds/kinds of that part.
     (idt ~ /^(g[0-9]+-)?m[0-9]+-part-done$/) && (body ~ /^\[mission\] PART-DONE part=/) {
+      pd = fval(body,"part")+0; if (NR > pdnr[pd]) pdnr[pd] = NR; next
+    }
+    # PART-RETIRED (idtag m<N>-part-retired) closes the part JOB barriers exactly like PART-DONE (rework
+    # plan 5.4): a parked part outstanding job AWAIT must never gate the wake. Human STOPs are untouched
+    # (the END block only lets pdnr supersede kind=job).
+    (idt ~ /^(g[0-9]+-)?m[0-9]+-part-retired$/) && (body ~ /^\[mission\] PART-RETIRED part=[0-9]+$/) {
       pd = fval(body,"part")+0; if (NR > pdnr[pd]) pdnr[pd] = NR; next
     }
     # R8r4-C9 (KEYSTONE) - DECISION lines: record the NEWEST NR per op of a DOUBLE-ANCHORED, idtag<->body-

@@ -19,7 +19,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/_common.sh"
 atest_init "10-fail-idtag-attempt-scoped"
 
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh" 2>/dev/null \
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/mission-bridge.sh" 2>/dev/null \
   || atest_infra "cannot source mission-bridge.sh"
 
 SID="atest10"

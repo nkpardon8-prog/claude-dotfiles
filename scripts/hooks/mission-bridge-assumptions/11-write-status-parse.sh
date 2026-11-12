@@ -16,9 +16,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/_common.sh"
 atest_init "11-write-status-parse"
 
-MW="$HOME/.claude-dotfiles/scripts/hooks/mission-write.sh"
+MW="$(cd "$(dirname "$0")/.." && pwd)/mission-write.sh"
 [ -f "$MW" ] || atest_infra "mission-write.sh not found at $MW"
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh" 2>/dev/null \
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/mission-bridge.sh" 2>/dev/null \
   || atest_infra "cannot source mission-bridge.sh"
 
 # the parse idiom the conductor (mission.md) will use on every mission-write.sh status line:

@@ -61,6 +61,31 @@ def _prompt_text(rec):
     return ""
 
 
+def _is_task_notification(rec):
+    """True for a background-completion prompt (the harness injects these; no human typed them)."""
+    origin = rec.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") == "task-notification":
+        return True
+    return _prompt_text(rec).lstrip().startswith("<task-notification>")
+
+
+def _origin_prompt(rows, boundary):
+    """The prompt whose author decides this turn's origin.
+
+    A background-completion prompt never carries the sid, so judged on its own text every wake that a
+    finished helper started looked human and was never checked. It has no author of its own: it
+    inherits the origin of the nearest earlier prompt that is not itself a completion. Inside a wake
+    chain that is the tick prompt (carries the sid -> autonomous); inside a human conversation it is
+    the human's message (no sid -> human, still never blocked).
+    """
+    i = boundary
+    while i >= 0:
+        if _is_prompt(rows[i]) and not _is_task_notification(rows[i]):
+            return rows[i]
+        i -= 1
+    return rows[boundary]
+
+
 def decide(rows, sid=None):
     # Subagent (sidechain) records interleave into the same file. A subagent's turn is not this
     # session's turn, and its tool calls are not ours to credit or blame.
@@ -82,10 +107,10 @@ def decide(rows, sid=None):
     # The discriminator is evidence we already hold: a wake turn is started by the self-contained tick
     # prompt that /mission itself authored (mission.md section 12.2), and that prompt carries the sid.
     # A human does not type the sid. So: no sid in the boundary prompt => not a wake turn => never
-    # block. Deliberately STRICT - a wake source whose prompt omits the sid (e.g. a background-job
-    # completion) is treated as human and skipped, costing at most one missed catch, which the
-    # mandatory fallback heartbeat already covers. Missing a catch is cheap; blocking a human is not.
-    if sid and sid not in _prompt_text(rows[boundary]):
+    # block. A background-job completion carries no sid of its own, so it inherits the origin of the
+    # nearest earlier non-completion prompt (_origin_prompt). Missing a catch is cheap; blocking a human
+    # is not, so a completion inside a human conversation still reads human.
+    if sid and sid not in _prompt_text(_origin_prompt(rows, boundary)):
         return "human"
 
     window = rows[boundary + 1:]
