@@ -47,6 +47,7 @@
 #                    types=..] [redesign=<area>]` | `bank-review VOID reason= void-count=N` | FAILED rc=N)
 #     budget-state  <sid> <root>                 (read-only, bare: ok | paused live=<min> |
 #                                                 over part=N minutes=M replan=<0|1>)
+#     mission-proto <sid> <root>                 (read-only, bare: legacy | proto2 | new; per generation)
 #     part-state    <sid> <root>                 (read-only, bare: none | part=N proto=<1|2> dry= closed=<0|1>
 #                                                 freeze= head= tree=<clean|dirty|-> drift=<0|1>)
 #     known-reds    <sid> <root> key|diff|record <suite-report>  (key: bare FULL-SUITE env= hash;
@@ -669,6 +670,12 @@ _p2_done()    { [ -n "$(_p2_lines "m$1-part-done\$" "PART-DONE part=$1 ")" ]; }
 _p2_retired() { [ -n "$(_p2_lines "m$1-part-retired\$" "PART-RETIRED part=$1")" ]; }
 _p2_park()    { _p2_lines "m$1-fail-park\$" "FAIL part=$1 park=" | tail -1; }
 _p2_cutover() { printf '%s\n' "$P2S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-part-start$/ && $2 ~ / proto=2 / {f=1} END{exit f?0:1}'; }
+# Cutover is PER MISSION GENERATION (land-r6): a generation with any legacy PART-START (no proto=) is a
+# legacy mission and runs end to end on docs/mission/legacy-playbook.md; one without is proto=2 end to
+# end. Protocols never mix inside a generation; MISSION-REBASELINED starts a new one.
+_p2_legacy_gen() { printf '%s\n' "$P2S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-part-start$/ && $2 ~ /^\[mission\] PART-START / && $2 !~ / proto=/ {f=1} END{exit f?0:1}'; }
+_p2_mission_proto() { if _p2_legacy_gen; then echo legacy; elif _p2_cutover; then echo proto2; else echo new; fi; }
+P2_LEGACY_MSG="this generation is a legacy mission: finish it on docs/mission/legacy-playbook.md, or rebaseline to start a proto=2 generation"
 _p2_recipe()  { _r2=$(_p2_lines "m$1-recipe-v2\$" "RECIPE part=$1 v=2 " | tail -1)
                 [ -n "$_r2" ] && printf '%s' "$_r2" || _p2_lines "m$1-recipe-v1\$" "RECIPE part=$1 v=1 " | tail -1; }
 _p2_rounds()  { _p2_lines "m$1-[a-z]+-r[0-9]+-d[0-2]\$" "part=$1 name="; }
@@ -849,10 +856,8 @@ _p2_check_ps() {
     for _c_n in $(printf '%s' "$_c_needs" | tr ',' ' '); do
       _p2_done "$_c_n" || _mw_emit_refuse log 4 "REFUSED: needs part $_c_n, which has no PART-DONE (deferred)"
       _c_a=$(_p2_fv "$(_p2_lines "m$_c_n-anchor\$" "ANCHOR part=$_c_n " | tail -1)" sha)
-      if [ -z "$_c_a" ] && [ "$(_p2_proto "$_c_n")" != 2 ]; then   # legacy part: anchor = root head at cutover
-        _c_a=$(_p2_head12 "$4")
-        [ -n "$_c_a" ] && mission_log_append "$3" "$4" "[mission] ANCHOR part=$_c_n sha=$_c_a" "m$_c_n-anchor" >/dev/null 2>&1
-      fi
+      # needs= can only name proto=2 parts of this generation (no legacy part exists in a proto=2 gen);
+      # their anchor is always the freeze SHA written at their PART-DONE.
       [ -n "$_c_a" ] && _p2_isanc "$_c_wt" "$_c_a" "$_c_b" \
         || _mw_emit_refuse log 4 "REFUSED: needs part $_c_n but its anchor ${_c_a:-?} is not in base=$_c_b"
     done
@@ -885,24 +890,20 @@ _p2_check() {
   [ "$(_p2_proto "$_n")" = 2 ] && case "$_pl" in "PART-DONE "*|part=*) _stamp=1 ;; esac
   if [ "$_stamp" = 1 ]; then _p2_stamp "$3" "$4" "$_e" "$_t" && return 0
   else _p2_is_banked "$3" "$4" "$_e" "$_t" && return 0; fi       # dedup-first: a retry is never refused
-  _p2_retired "$_n" && _mw_emit_refuse log 4 "REFUSED: part-retired - part $_n is retired; a late write for it is an expected drop (no FAIL, no tally)"
   P2_PROTO=$(_p2_proto "$_n")
+  # proto=2 only: a legacy generation keeps the pre-rework writer behaviour unchanged.
+  [ "$P2_PROTO" = 2 ] && _p2_retired "$_n" && _mw_emit_refuse log 4 "REFUSED: part-retired - part $_n is retired; a late write for it is an expected drop (no FAIL, no tally)"
   case "$_pl" in
     "PART-START "*)
-      case "$_pl" in *" proto=2 "*) : ;; *) _mw_emit_refuse log 4 "REFUSED: PART-START without proto=2 - $P2_RELOAD" ;; esac
-      _p2_check_ps "$_e" "$_n" "$3" "$4"; return 0 ;;
-    "FAIL part="*" park="*)
-      # Legacy compatibility (reference.md "Legacy compatibility overrides"): a grandfathered proto=1
-      # part parks with the SAME record instead of its frozen playbook's pending-stop + disposition FAIL
-      # (that FAIL shape is refused, and a human STOP would halt the overnight run). Its range lives in
-      # the root checkout (legacy parts build there); an isolated range then blocks later bases as usual.
-      if [ "$P2_PROTO" = 1 ]; then
-        _rg=$(_p2_fv "$_e" range)
-        _p2_isanc "$4" "${_rg%%..*}" "${_rg##*..}" || _mw_emit_refuse log 1 "REFUSED: legacy park range ${_rg} is not base..head in the mission root"
-        return 0
-      fi
-      [ "$P2_PROTO" = 2 ] || _mw_emit_refuse log 4 "REFUSED: ${_pl%% *} needs a PART-START for part $_n first - $P2_RELOAD" ;;
-    RECIPE*|FULL-SUITE*|SWEEP*|"live-verify part="*" sha="*)
+      case "$_pl" in
+        *" proto=2 "*)
+          _p2_legacy_gen && _mw_emit_refuse log 4 "REFUSED: proto=2 PART-START in a legacy generation - $P2_LEGACY_MSG"
+          _p2_check_ps "$_e" "$_n" "$3" "$4"; return 0 ;;
+        *)  # a legacy PART-START continues a legacy generation only (the frozen playbook's next part)
+          _p2_legacy_gen || _mw_emit_refuse log 4 "REFUSED: PART-START without proto=2 - $P2_RELOAD"
+          return 0 ;;
+      esac ;;
+    RECIPE*|FULL-SUITE*|SWEEP*|"live-verify part="*" sha="*|"FAIL part="*" park="*)
       [ "$P2_PROTO" = 2 ] || _mw_emit_refuse log 4 "REFUSED: ${_pl%% *} needs a proto=2 PART-START for part $_n first - $P2_RELOAD" ;;
   esac
   if [ "$P2_PROTO" != 2 ]; then
@@ -994,13 +995,12 @@ _p2_partdone() {
 }
 
 # _p2_anchor_after_done <sid> <root> <N> — record the part's anchor once PART-DONE is banked: the freeze
-# SHA for proto=2, the root branch head for a legacy part. Writer-only line (log refuses ANCHOR).
+# SHA, proto=2 parts only (a legacy mission never uses needs=/ANCHOR). Writer-only line (log refuses it).
 _p2_anchor_after_done() {
   _p2_load "$1" "$2" log
-  if [ "$(_p2_proto "$3")" = 2 ]; then
-    _ad=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$3" '$1 ~ ("^(g[0-9]+-)?snap-p" pn "-conv-") && $2 ~ / ver=2$/ {l=$2} END{print l}')
-    _ad=$(_p2_fv "$_ad" sha)
-  else _ad=$(_p2_head12 "$2"); fi
+  [ "$(_p2_proto "$3")" = 2 ] || return 0
+  _ad=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$3" '$1 ~ ("^(g[0-9]+-)?snap-p" pn "-conv-") && $2 ~ / ver=2$/ {l=$2} END{print l}')
+  _ad=$(_p2_fv "$_ad" sha)
   [ -n "$_ad" ] && mission_log_append "$1" "$2" "[mission] ANCHOR part=$3 sha=$_ad" "m$3-anchor" >/dev/null 2>&1
   return 0
 }
@@ -1130,7 +1130,7 @@ _p2_bank_review() {
 # exit 0. The normal absolute-path case (no `..`) is unaffected. Only enforced for verbs that
 # actually take a <root> arg (i.e. not the help/usage paths, which have no root).
 case "$verb" in
-  create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|part-state|known-reds)
+  create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|part-state|mission-proto|known-reds)
     case "$root" in
       ""|*..*)
         # I2: emit the parseable failure shape (FAILED rc=N), not a bare REFUSED line — the
@@ -1447,7 +1447,7 @@ case "$verb" in
         # string-normalize (never $(( )): bash 3.2 reads 08/09 as bad octal and aborts before any status line)
         case "$_aw_p" in *[!0-9]*) _mw_emit_refuse await 1 "REFUSED: part=$_aw_p is not a number" ;; esac
         _aw_pn=$(printf '%s' "$_aw_p" | sed 's/^0*//'); [ -n "$_aw_pn" ] || _aw_pn=0
-        _p2_retired "$_aw_pn" && _mw_emit_refuse await 4 "REFUSED: part-retired - part $_aw_p is retired; a late completion is an expected drop (no FAIL, no tally)"
+        [ "$(_p2_proto "$_aw_pn")" = 2 ] && _p2_retired "$_aw_pn" && _mw_emit_refuse await 4 "REFUSED: part-retired - part $_aw_p is retired; a late completion is an expected drop (no FAIL, no tally)"
       fi
     fi
     mission_await_append "$sid" "$root" "$4"
@@ -1458,6 +1458,13 @@ case "$verb" in
   bank-review)
     # bank-review <sid> <root> <N> <K> <plan|delta|close|join> [report] [impl-reviewer-output]
     _p2_bank_review "$sid" "$root" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"
+    ;;
+
+  mission-proto)
+    # read-only; bare token: legacy | proto2 | new. The wake routine reads it BEFORE the tick lock:
+    # `legacy` -> the whole wake runs on docs/mission/legacy-playbook.md (its own §12).
+    _p2_load "$sid" "$root" mission-proto
+    _p2_mission_proto
     ;;
 
   part-state)
@@ -1513,7 +1520,7 @@ case "$verb" in
     ;;
 
   *)
-    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|part-state|known-reds|await-state|cursor-hash)"
+    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|part-state|mission-proto|known-reds|await-state|cursor-hash)"
     ;;
 esac
 

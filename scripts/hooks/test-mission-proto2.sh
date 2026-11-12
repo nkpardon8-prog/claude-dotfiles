@@ -128,19 +128,18 @@ lg "[mission] part=1 name=x phase=review round=2 dry=1 findings=0" m1-review-r2-
 lg "[mission] part=1 name=x phase=review round=3 dry=2 findings=0" m1-review-r3-d2 >/dev/null
 lg "[mission] live-verify part=1 round=3 status=n/a reason=tooling" m1-live-verify-r3 >/dev/null
 has "log ok" "$(lg "[mission] PART-DONE part=1 (converged)" m1-part-done)" "2c grandfathered open part passes on the old fold"
-grep -aq 'ANCHOR part=1 sha=' "$R/MISSION.$S.log" && ok "2d legacy PART-DONE after cutover writes its ANCHOR" || bad "2d ANCHOR missing"
-A1=$(grep -a 'ANCHOR part=1' "$R/MISSION.$S.log" | sed -n 's/.*sha=\([0-9a-f]*\).*/\1/p')
-has "FAILED" "$(lg "[mission] ANCHOR part=1 sha=$A1" m1-anchor)" "2e ANCHOR is writer-only (log refuses it)"
-# proto=2 part 2 needs legacy part 1: base WITHOUT the anchor refused; base containing it admitted
-OLD=$(git -C "$R" rev-list --max-parents=0 HEAD | cut -c1-12)
-commit "$R" "after-anchor" >/dev/null
-has "log ok" "$(ps2 2 "$W" "$B" 1)" "2f proto=2 part needing legacy part 1 admitted when the ANCHOR is in its base"
+# Cutover is per mission generation (land-r6): a legacy generation never mixes in proto=2 parts, so a
+# legacy part gets no ANCHOR and a proto=2 PART-START is refused until a rebaseline.
+grep -aq 'ANCHOR part=1 sha=' "$R/MISSION.$S.log" && bad "2d a legacy PART-DONE wrote an ANCHOR" || ok "2d legacy PART-DONE writes no ANCHOR (needs=/ANCHOR are proto=2 only)"
+has "FAILED" "$(lg "[mission] ANCHOR part=1 sha=$B" m1-anchor)" "2e ANCHOR is writer-only (log refuses it)"
+commit "$R" "after-legacy" >/dev/null
+has "legacy generation" "$(ps2 2 "$W" "$B" 1)" "2f a proto=2 PART-START in a legacy generation is refused (finish it or rebaseline)"
 mk cut2
 fab "[mission] PART-START part=1 name=x" m1-part-start
 fab "[mission] PART-DONE part=1 (converged)" m1-part-done
 NEWROOT=$(commit "$R" "root-moves")
 fab "[mission] ANCHOR part=1 sha=$NEWROOT" m1-anchor
-has "rc=4" "$(ps2 2 "$W" "$B" 1)" "2g base lacking the legacy ANCHOR refused"
+has "rc=4" "$(ps2 2 "$W" "$B" 1)" "2g a forged ANCHOR in a legacy generation admits nothing (proto=2 refused)"
 mk cut3
 start_part 1
 has "FAILED" "$(lg "[mission] REVIEW-EVIDENCE part=1 round=3 codex=4/4 claude=3/3 report=$W/code.txt" m1-review-evidence-r3)" "2i legacy REVIEW-EVIDENCE on a proto=2 part refused"

@@ -10,9 +10,9 @@ an env prefix). Rare paths live in `docs/mission/reference.md`.
 
 0. **Arm the liveness guard** (idempotent; the writer also arms on every bridge write):
    `mkdir -p "$HOME/.claude/progress"; printf '{"sid":"%s","root":"%s"}' "<sid>" "<root>" > "$HOME/.claude/progress/mission-liveness-<sid>.json"`
-   **Protocol first, BEFORE the lock:** `ps=$(<MW> part-state "$sid" "$root")` (read-only). `proto=1
-   closed=0` -> do NOT take the lock: run `docs/mission/legacy-playbook.md` §12.1 from its step 1 (it
-   owns the lock), with reference.md "Legacy compatibility overrides" winning over its text. Else go on.
+   **Mission protocol, BEFORE the lock:** `mp=$(<MW> mission-proto "$sid" "$root")` (read-only).
+   `legacy` -> this whole wake belongs to `docs/mission/legacy-playbook.md` §12: run its §12.1 from step
+   1 (it owns the lock; never take this file's) with `<PLAYBOOK>` = that file's absolute path. Else on.
 1. **Tick lock** `tick_dir="$root/.mission-backups/tick.$sid.lock"`; `mkdir "$tick_dir"` succeeds ->
    `i_own_lock=1`. Held and FRESH (<15 min) -> ScheduleWakeup 60 s and return WITHOUT touching it.
    STALE (>15 min) -> `rm -rf` and retry the mkdir ONCE; retry lost -> reschedule 60 s and return. A
@@ -35,7 +35,7 @@ an env prefix). Rare paths live in `docs/mission/reference.md`.
    `aw`: `none` | `corrupt` | `await kind=<job|human> op=.. part=<N> round=<K> attempt=<A> phase=<P>
    need=<M> got=<G> ready=<0|1> started_at=<E>`. `bs`: `ok` | `paused live=<min>` |
    `over part=<N> minutes=<M> replan=<0|1>`. `ps`: `none` | `part=<N> proto=<1|2> dry= closed=<0|1> freeze= head=
-   tree= drift=<0|1>` (proto=1 legacy). Watchdog status files (one line each, `state=` and `action=`):
+   tree= drift=<0|1>`. Watchdog status files (one line each, `state=` and `action=`):
    `~/.claude/progress/mission-liveness/<sid>.watchdog.<label>`. `corrupt` -> STOP LOUD.
 5. **Recompute the cursor right before banking.** Changed -> another wake advanced the mission:
    discard this decision, release, re-enter at step 1 (`reenter_count` per wake, at most 2; the 3rd
@@ -123,7 +123,6 @@ PLAN -> ACTIVE). **Active iff** the latest `mission_state` line is not `MISSION-
 |---|---|
 | `await kind=human ready=0` and THIS is a real user turn answering it | Consume UNDER the lock, in order: (a) `log "[mission] DECISION op=<seq>-<slug> outcome=<approve\|deny>" "pd-<seq>-decision-<slug>"` with the user's actual answer; (b) approve -> run the idempotent gated action, deny -> abort it; (c) `await` the same barrier (same op/part/phase/round/attempt) `need=1 got=1` (refused until the DECISION exists); (d) `resolve <full pd:id>`. Never close then defer the action. That is the transition: go to step 7. |
 | `await kind=human ready=0` on a wake | `last_decision` NON-EMPTY -> consume it now (action, then got=1, then resolve; each a no-op if done), never re-ask. EMPTY -> STOP, no reschedule, wait for the user. ORPHAN (no `- [pd:<op>]` line, no DECISION) -> reference.md "Orphan human barrier". |
-| `ps` proto=1 closed=0 (legacy part) | Step 0 routes it; if seen here, release this tick's lock (once), then `docs/mission/legacy-playbook.md` §12.1 plus the overrides. New parts start proto=2; rows below are proto=2. |
 | `bs` = `over ... replan=1` | Re-plan once: stop the part's helpers, run the strategist (`/plan --roadmap`) for this part, bank RECIPE v2, continue. |
 | `bs` = `over ... replan=0` | Park (playbook §J): stop helpers, park FAIL, PushNotification, PART-RETIRED, strategist, next PART-START. Never an AWAIT, never a STOP. |
 | a watchdog status file says `action=stop` (`state=stall`, or `state=deadline` for a non-test helper) | TaskStop it (yours, exact id), `note`, delete the status file, relaunch once; a second stop parks the part. `action=note` (suite `state=overdue`): note + PushNotification only, never a kill. |

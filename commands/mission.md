@@ -18,6 +18,12 @@ reads), `docs/mission/reference.md` (verb detail, line grammar, rare paths),
 Self-sufficient for a post-compaction agent; the detail below the marker and in the reference files
 must be read on a live invocation.
 
+**Legacy missions first.** Before anything else for an existing mission, run
+`bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh mission-proto <sid> <root>`. `legacy` (its generation
+has a PART-START without `proto=`) -> stop reading this file: the mission runs end to end on
+`docs/mission/legacy-playbook.md` (its own §12 wake routine; `<PLAYBOOK>` = that file's absolute path)
+until it clears or is rebaselined. `proto2` or `new` -> this file.
+
 ### A. CONTINUATION-OWNER INVARIANT
 
 A `/mission` turn ends ONLY (a) right after a SUCCESSFUL `ScheduleWakeup` (delay up to 3300 s,
@@ -115,9 +121,8 @@ every RECIPE (v1 and v2) repeats its PART-START `needs=` verbatim (the writer re
 
 ### G. Per-part loop
 
-proto=2 parts only. A grandfathered part (`part-state` says `proto=1`) never runs this loop, §H2, §I
-or §J: it finishes under the frozen pre-rework playbook `docs/mission/legacy-playbook.md`, with
-reference.md "Legacy compatibility overrides" winning over its text (lock entry, park).
+proto=2 missions only. A LEGACY mission (`mission-proto` = `legacy`: its generation has a PART-START
+without `proto=`) runs end to end on `docs/mission/legacy-playbook.md`; this file does not apply to it.
 1. PART-START `proto=2` in the part's linked worktree, `base=` the last finished part's freeze SHA
    (land-first stacking); the writer refuses it while another part is open, unless every `needs` part
    is PART-DONE with its anchor in the base, or if the base holds any commit of an isolated range.

@@ -11,7 +11,8 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   needs=`, RECIPE v1/v2 repeating `needs=`, SWEEP, FULL-SUITE with a keyed known-reds baseline,
   `live-verify sha= attempt=`, park FAIL with `range=`, writer-only ANCHOR); new verbs `bank-review`
   (sole writer of review evidence and every `dry=` raise), `budget-state`, `known-reds key|diff|record`;
-  a legacy PART-START, and any line for an un-started part, is refused after the first proto=2 part.
+  cutover is PER MISSION GENERATION (`mission-proto`: legacy | proto2 | new): protocols never mix in
+  one generation (each direction refused), and a rebaseline starts a proto=2 generation.
   The writer now rewrites `tmp/mission/MORNING.md` after PART-DONE, PART-RETIRED, MISSION-CLEARED,
   any FAIL and an opened human STOP.
 - Pre-land review fixes: read-only `part-state` (protocol, dry, freeze/head/tree drift) drives the
@@ -23,21 +24,18 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   Round 2: the log appender reports `failed` unless a write lands and join checks rc and outcome of
   each append; legacy wake rows apply to review states only; proto=2 round lines carry `at=` so an
   invalidated freeze closes its live-wait pause there and keeps the minutes already earned.
-  Rounds 3-4: legacy (proto=1) parts are driven by `docs/mission/legacy-playbook.md`, a frozen
-  byte-identical copy of the pre-rework playbook (509fe27b) with its own wake routine; one wake.md
-  row routes an open proto=1 part there, every row below it and mission.md's part loop are
-  proto=2-only. The file is uncapped and is deleted once no proto=1 part is open.
-  Round 5 (handoff seam): wake.md reads `part-state` BEFORE the tick lock and hands a proto=1 part
-  to the frozen §12.1, which owns the lock (taken once per tick); reference.md "Legacy compatibility
-  overrides" win over the frozen text: a legacy park writes the park FAIL record (now accepted for
-  proto=1, range checked in the root) with no pending-stop, retires, and the next part is proto=2.
+  Rounds 3-6: a LEGACY mission (its generation has a PART-START without `proto=`) runs end to end,
+  unmodified, on `docs/mission/legacy-playbook.md`, a frozen byte-identical copy of the pre-rework
+  playbook (509fe27b; uncapped; delete once no legacy mission is open). wake.md step 0 and
+  mission.md's contract core read `mission-proto` before anything else (before the tick lock) and
+  send a legacy mission there; no legacy rows, overrides or cross-protocol anchors remain.
 - New `mission-watchdog.sh` (helper stall detection) and `lib/mission-status.sh` (status lines,
   tokens by tag, morning report; deferred parts read from the strategist's `tmp/mission/recipes.md`).
 - `codex-review.md` (`--base`, `--scope full`, `--ledger`, `--verify`; Sol pinned), `plan.md`
   (`--roadmap`, `--mission`), `implement.md` Step 3 wording, `codex-build-chunk.sh` header table.
 - Tests: `test-mission-proto2.sh`, `test-mission-lifecycle.sh` (end-to-end traces: clean close,
-  failed close and same-SHA retry, repeat type and sweep, park and transitive deferral, legacy
-  cutover with ANCHOR, compaction mid-close), `test-mission-status.sh`, `test-mission-watchdog.sh`;
+  failed close and same-SHA retry, repeat type and sweep, park and transitive deferral, per-
+  generation cutover, compaction mid-close, legacy mission replay and multi-wake ticks), `test-mission-status.sh`, `test-mission-watchdog.sh`;
   `test-mission-doc-drift.sh` now pins the playbook's line shapes to the writer's.
 
 ## 2026-11-09 - rdocker: `rdocker warm` pre-warms the worker pool

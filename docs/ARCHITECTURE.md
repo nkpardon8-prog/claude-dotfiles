@@ -342,8 +342,9 @@ by three legs (full-part close review, full suite against a keyed known-reds bas
 or a non-blocking park; a parked part's isolated range can never enter a later base, and parts that
 need it are deferred transitively. `mission-watchdog.sh` detects stalled helpers;
 `lib/mission-status.sh` derives status lines and `MORNING.md`, which the writer refreshes on every
-part end and stop. Parts open at cutover finish on the old fold; ANCHOR lines link them to proto=2
-successors. End-to-end proof: `scripts/hooks/test-mission-lifecycle.sh`.
+part end and stop. Cutover is per mission generation: a mission already running on the old playbook
+finishes end to end on the frozen copy `docs/mission/legacy-playbook.md`; a rebaseline or a new
+mission is proto=2; the writer refuses mixing in either direction. End-to-end proof: `scripts/hooks/test-mission-lifecycle.sh`.
 
 ---
 
