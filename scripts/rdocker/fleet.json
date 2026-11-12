@@ -19,7 +19,7 @@
       ],
       "speed": 0.45,
       "max_slots": 3,
-      "heavy_slots": 1,
+      "heavy_slots": 0,
       "mem_gb": 8,
       "enabled": true
     },
