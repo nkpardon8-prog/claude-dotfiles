@@ -33,7 +33,16 @@ uses its own lane mirror (Lane), so runs never share a checkout.
 Builds (`npm run build` in a package dir mapped by rr_outputs) copy their outputs back: after a
 successful run a second ssh streams `tar` of the outputs from the worker's mirror, extracted into
 the worktree (staged, then renamed into place) while the worktree lock is still held.
+Hangs / waits (2026-11-11): the runner relays the command's output through its own pipes, so when the
+main process exits the leftovers get rr_exit_grace_s, then the group is TERMed / KILLed and the run
+ends with the main's rc. A hard cap per job class (rr_timeout_min; RRUN_TIMEOUT=<min|0>) ends a run
+with exit 124; silence only prints "no output for N min" (rr_silent_min; RRUN_SILENT_MIN). A slot
+wait on one worker lasts rr_slot_wait_s, then host_loop re-plans (rr_wait_min in all -> 73); the
+worktree lock waits at most the job's cap (-> 72). Slot / lock waits print a line every
+rr_status_every_s. Every job carries owner_info() (session id / parent pid, /line caption, host):
+`rrun --jobs` / `--mine` list them from every worker's slots/<i>.own.
 Config: rr_* keys in rd_common.DEFAULTS. Env: RRUN_STRICT=1, RRUN_TIMING=1, RRUN=0 (run locally),
+RRUN_TIMEOUT=<minutes|0>, RRUN_SILENT_MIN=<minutes|0>,
 RRUN_GIT_URL (tests only: push URL override). Flags (the `rrun` wrapper turns them into env):
 --where (RRUN_WHERE=1: print the placement, run nothing), --bench (RRUN_BENCH=1), --host NAME
 (RRUN_HOST: only that worker), --outputs a,b (RRUN_OUTPUTS: build outputs, relative to the cwd).
@@ -51,6 +60,7 @@ import re
 import secrets
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import tarfile
@@ -69,6 +79,15 @@ ALIVE_INTERVAL_S, ALIVE_COUNT = 5, 3
 CONNECT_TIMEOUT_S = 6          # a cold master over a DERP relay connects in ~1.5-2.5 s
 OVERLAY_WARN_BYTES = 5 * 1024 * 1024
 EXIT_LOST = 75                 # EX_TEMPFAIL: lost the mini mid-run / strict mode and the mini is out
+PUSH_TIMEOUT_S = 300            # rr_push_timeout_s: a git push that hangs longer = that worker is out
+EXIT_WT_BUSY = 72              # another rrun from this worktree held its lock past our wait
+EXIT_TIMEOUT = 124             # like timeout(1): the command ran past its wall-clock cap and was killed
+# the runner's own cap is what ends a run; this side only steps in (kills ssh, exit 124) when the
+# worker has said nothing about it this long after the cap, e.g. a wedged runner
+TIMEOUT_MARGIN_S = 90
+# the runner prints "<nonce> EXIT <rc>" only after the command's leftovers are gone (rr_exit_grace_s,
+# then TERM/KILL of its group); if ssh is still open this long after that, we stop waiting for it
+EXIT_BACKSTOP_S = 45
 NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HELD_LOCKS = []                # worktree lock fds: made inheritable only for a local-fallback exec
@@ -174,17 +193,40 @@ def wt_lock_path(wt12):
     return os.path.join(rd_common.STATE_DIR, "rrun-%s.lock" % wt12)
 
 
-def take_wt_lock(wt12):
+class WorktreeBusy(Exception):
+    """Another rrun from this worktree kept the worktree lock past our wait (exit EXIT_WT_BUSY)."""
+
+
+def take_wt_lock(wt12, wait_s=None, cfg=None):
     """flock rrun-<wt12>.lock for the whole run. The fd is not inheritable, so the ssh master that
-    git's ssh may fork (ControlPersist) never holds it; run_local makes it inheritable for exec."""
+    git's ssh may fork (ControlPersist) never holds it; run_local makes it inheritable for exec.
+    Waits at most wait_s (None = forever), saying who holds it every rr_status_every_s; then raises
+    WorktreeBusy. The lock file is never unlinked (a waiter would lock a deleted inode)."""
     import fcntl
     rd_common.ensure_dirs()
     fd = os.open(wt_lock_path(wt12), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        note("another rrun from this worktree is running; waiting for it to finish...")
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        note("another rrun from this worktree is running%s; waiting for it to finish%s..."
+             % (wt_holder(wt12), " (at most %s)" % fmt_wait(wait_s) if wait_s else ""))
+        every = float((cfg or rd_common.load_cfg()).get("rr_status_every_s", 60) or 60)
+        t0 = last = time.monotonic()
+        while True:
+            time.sleep(0.25)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                pass
+            if wait_s is not None and time.monotonic() - t0 >= wait_s:
+                os.close(fd)
+                raise WorktreeBusy("another rrun from this worktree still holds its lock after %s%s"
+                                   % (fmt_wait(wait_s), wt_holder(wt12)))
+            if time.monotonic() - last >= every:
+                last = time.monotonic()
+                note("still waiting for the other rrun from this worktree (%s so far)%s"
+                     % (fmt_wait(last - t0), wt_holder(wt12)))
     HELD_LOCKS.append(fd)
     return fd
 
@@ -206,10 +248,16 @@ def push(cfg, wt):
     env = dict(os.environ, GIT_SSH_COMMAND=" ".join(shlex.quote(a) for a in ["ssh"] + ssh_opts()),
                GIT_TERMINAL_PROMPT="0")
     base = base_refspecs(cfg, wt["top"])
-    p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "push.recurseSubmodules=no",
-                        "push", "--no-verify", "-q", "-f", "--receive-pack=" + recv, url,
-                        "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])] + base,
-                       cwd=wt["top"], env=env, stdin=subprocess.DEVNULL, capture_output=True)
+    limit = float(cfg.get("rr_push_timeout_s", PUSH_TIMEOUT_S) or PUSH_TIMEOUT_S)
+    try:
+        p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "push.recurseSubmodules=no",
+                            "push", "--no-verify", "-q", "-f", "--receive-pack=" + recv, url,
+                            "%s:refs/rrun/%s" % (wt["sha"], wt["wt12"])] + base,
+                           cwd=wt["top"], env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                           timeout=limit)
+    except subprocess.TimeoutExpired:
+        # nothing ran there yet: the job moves on to the next worker like any unreachable one
+        raise RunError("git push did not finish in %d s" % limit)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip()
         why = push_refused_why(wt["top"], err)
@@ -491,6 +539,7 @@ class Lane:
     def __init__(self, out=None, err=None, wt12=None):
         self.out, self.err, self.wt12 = out, err, wt12
         self.session, self.cancelled = None, False
+        self.tag = ""                    # message prefix of its session ("[shard 2/5 hp] ")
         self.lock = threading.Lock()
 
     def bind(self, sess):
@@ -542,9 +591,9 @@ class StatusFilter:
     bits the tested code never sees, so it cannot be forged or hit by chance). Only a tail that
     could still be the start of the tag is held back, so progress output streams."""
 
-    def __init__(self, nonce, out, on_status):
+    def __init__(self, nonce, out, on_status, on_data=None):
         self.tag = (nonce + " ").encode()
-        self.out, self.on_status = out, on_status
+        self.out, self.on_status, self.on_data = out, on_status, on_data
         self.buf, self.mid_line = b"", False
 
     def _emit(self, data):
@@ -552,6 +601,8 @@ class StatusFilter:
             self.out.write(data)
             self.out.flush()
             self.mid_line = not data.endswith(b"\n")
+            if self.on_data is not None:
+                self.on_data()
 
     def feed(self, data):
         self.buf += data
@@ -609,11 +660,76 @@ class Session:
         self.ints = 0
         self.wake = threading.Event()
         self.done = threading.Event()
-        self.said_wait = False
         self.unavail = None                  # "<nonce> UNAVAIL <why>": the worker refused (share off / no docker)
         self.exit_rc = None                  # "<nonce> EXIT <rc>": the command's own exit code
         self.used_docker = False             # "<nonce> DOCKER": the command called docker (cache: never saved)
         self.on_ready = None                 # called on READY, before GO (cache: drop the prepare's output)
+        self.waits = 0                       # WAIT lines seen (the runner repeats one every rr_status_every_s)
+        self.timed_out = False               # "<nonce> TIMEOUT <s>" (or our own backstop): exit 124
+        self.exit_at = None                  # monotonic time "<nonce> EXIT" arrived
+        self.last_out = None                 # monotonic time of the command's last output
+        self.silent_said = 0                 # "no output" lines printed for the current silence
+
+    host_name = None     # the worker's name, for messages
+    tag = ""             # shards: "[shard i/n host] "
+    wait_eta_s = None    # the scheduler's expected slot wait on this worker (s) when it was planned
+    timeout_s = 0.0      # the command's wall-clock cap (the runner enforces it; we back it up)
+    silent_s = 0.0       # "no output for N min" after this many s of silence (0 = off)
+
+    def where(self):
+        return "the Mac mini" if self.host_name in (None, "mini") else self.host_name
+
+    def wait_note(self, rest):
+        """One line per runner WAIT: what the slot wait is for, how long it should take."""
+        kv = dict(x.split("=", 1) for x in rest.split() if "=" in x)
+        waited = time.monotonic() - self.wait_since
+        parts = []
+        if kv.get("busy") and kv.get("slots"):
+            parts.append("%s of %s slots busy" % (kv["busy"], kv["slots"]))
+        gate = {"heavy": "every heavy-job slot is taken", "mem": "not enough free memory for this job"}
+        if kv.get("gate") in gate:
+            parts.append(gate[kv["gate"]])
+        if kv.get("holder", "?") != "?":
+            parts.append("held longest by %s%s for %ss" % (kv["holder"], " (%s)" % kv["howner"]
+                                                           if kv.get("howner") else "", kv.get("age", "?")))
+        try:
+            ahead = int(kv.get("ahead", 0))
+        except ValueError:
+            ahead = 0
+        parts.append("%d other run%s waiting ahead of this one" % (ahead, "" if ahead == 1 else "s")
+                     if ahead else "next in line")
+        if self.wait_eta_s is not None:
+            left = self.wait_eta_s - waited
+            parts.append("expected wait ~%s" % fmt_wait(left) if left >= 1
+                         else "a slot is due any moment (past the scheduler's estimate)")
+        lead = ("waiting for a slot on %s" % self.where() if self.waits == 1 else
+                "still waiting for a slot on %s (%s so far)" % (self.where(), fmt_wait(waited)))
+        note("%s%s: %s; tries elsewhere after %s" % (self.tag, lead, "; ".join(parts),
+                                                     fmt_wait(slot_wait_min(self.cfg) * 60)))
+
+    def saw_output(self):
+        self.last_out = time.monotonic()
+        self.silent_said = 0
+
+    def watchdog(self, now):
+        """A silent command gets a stderr line (never killed for it); a command past its cap
+        that the worker has not reported on (TIMEOUT_MARGIN_S later) is stopped from here."""
+        if self.started is None or self.exit_rc is not None:
+            return
+        ran = now - self.started
+        if self.silent_s:
+            quiet = now - max(self.last_out or self.started, self.started)
+            # first line after silent_s, then every 5 x silent_s (1 min, 6 min, 11 min, ...)
+            k = 0 if quiet < self.silent_s else 1 + int((quiet - self.silent_s) // (5 * self.silent_s))
+            if k > self.silent_said:
+                self.silent_said = k
+                note("%sno output for %s (worker %s, running %s)"
+                     % (self.tag, fmt_min(quiet), self.host_name or "mini", fmt_min(ran)))
+        if self.timeout_s and not self.timed_out and ran > self.timeout_s + TIMEOUT_MARGIN_S:
+            self.timed_out = True
+            note("%s%s did not stop the command at its %s cap; closing the session (exit %d)"
+                 % (self.tag, self.where(), fmt_min(self.timeout_s), EXIT_TIMEOUT))
+            self.abort()
 
     def on_status(self, line):
         word, _, rest = line.partition(" ")
@@ -630,22 +746,24 @@ class Session:
         elif word == "EXIT":
             try:
                 self.exit_rc = int(rest.strip())  # the command ended with this; a later drop is no loss
+                self.exit_at = time.monotonic()
             except ValueError:
                 pass
+        elif word == "TIMEOUT":
+            self.timed_out = True
+            note("%sthe command ran past its %s wall-clock cap on %s; killed it and everything it started "
+                 "(exit %d). RRUN_TIMEOUT=<minutes> sets another cap for one run, 0 = no cap"
+                 % (self.tag, fmt_min(self.timeout_s or float(rest.strip() or 0)), self.where(), EXIT_TIMEOUT))
         elif word == "WAIT":
             if self.wait_since is None:
                 self.wait_since = time.monotonic()
                 self.wake.set()
-            if not self.said_wait:
-                kv = dict(x.split("=", 1) for x in rest.split() if "=" in x)
-                note("waiting for a Mac mini slot (held by %s for %ss; gives up after %s min)..."
-                     % (kv.get("holder", "?"), kv.get("age", "?"), self.cfg.get("rr_wait_min")))
-                self.said_wait = True
+            self.waits += 1
+            self.wait_note(rest)
         elif word == "UNAVAIL":
             self.unavail = rest.strip() or "unavailable"
         elif word == "BUSY":
-            note("the Mac mini slot stayed busy for %s min; giving up (exit 73)"
-                 % self.cfg.get("rr_wait_min"))
+            note("%sno slot on %s within %s" % (self.tag, self.where(), fmt_wait(slot_wait_min(self.cfg) * 60)))
         elif word == "KEPT":
             note("the run failed; its containers stay on the Mac mini for inspection: %s "
                  "(docker ps / docker logs reach them; the janitor reaps them after 3 h idle)" % rest)
@@ -740,11 +858,12 @@ class Session:
             if not data:
                 break
             self.stdout_out.write(data)
+            self.saw_output()
         self.stdout_out.flush()
 
     def relay(self):
         filt = StatusFilter(self.nonce, self.stderr_out or getattr(sys.stderr, "buffer", sys.stderr),
-                            self.on_status)
+                            self.on_status, self.saw_output)
         fd = self.proc.stderr.fileno()
         while True:
             try:
@@ -756,12 +875,29 @@ class Session:
             filt.feed(data)
         filt.close()
 
+    def wait_proc(self):
+        """ssh's exit status. Normally ssh ends right after the runner; if it stays open long after
+        the command's exit code arrived (EXIT_BACKSTOP_S), it is killed - the result is known."""
+        while True:
+            try:
+                return self.proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+            now = time.monotonic()
+            if self.exit_at is not None and now - self.exit_at > EXIT_BACKSTOP_S:
+                note("%sthe command ended there (exit %d) but the session stayed open %ds; closing it"
+                     % (self.tag, self.exit_rc, EXIT_BACKSTOP_S))
+                self.proc.kill()
+                return self.proc.wait()
+            self.watchdog(now)
+
     def run(self):
         cmd = ["ssh", "-T"] + ssh_opts() + [self.cfg["host"], remote_command(self.cfg)]
         sys.stdout.flush()
+        if self.stdout_out is None:          # relayed too, so the silence watchdog sees stdout
+            self.stdout_out = std_stream("stdout")
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     stdout=subprocess.PIPE if self.stdout_out is not None else None,
-                                     start_new_session=True)
+                                     stdout=subprocess.PIPE, start_new_session=True)
         # signal handlers can only be set from the main thread: a session in a worker thread (a
         # shard, a hedge) gets its signals forwarded from LIVE by whoever owns the main thread
         main = threading.current_thread() is threading.main_thread()
@@ -773,13 +909,13 @@ class Session:
             self.on_signal(STOP_SIG[0], None)    # stopped while this one was still being set up
         tw = threading.Thread(target=self.writer, daemon=True)
         tr = threading.Thread(target=self.relay, daemon=True)
-        to = threading.Thread(target=self.relay_stdout, daemon=True) if self.stdout_out is not None else None
+        to = threading.Thread(target=self.relay_stdout, daemon=True)
         tw.start()
         tr.start()
         if to:
             to.start()
         try:
-            rc = self.proc.wait()
+            rc = self.wait_proc()
         finally:
             with self.go_lock:
                 self.done.set()              # no GO after this point
@@ -816,15 +952,18 @@ def short_argv(argv):
     return s if len(s) <= 120 else s[:117] + "..."
 
 
-def record(target, argv, rc, secs, wt12=None, start=False):
-    """route.log line + rrun.json (last result, runs in flight) for `rdocker status`."""
+def record(target, argv, rc, secs, wt12=None, start=False, cap=None):
+    """route.log line + rrun.json (last result, runs in flight: argv, worker, owner, start, cap) for
+    `rdocker status` and the worktree-lock wait line."""
     pid = str(os.getpid())
 
     def apply(cur):
         cur = cur if isinstance(cur, dict) else {}
         active = {k: v for k, v in (cur.get("active") or {}).items() if k != pid and alive_pid(k)}
         if start:
-            active[pid] = {"ts": time.time(), "argv": short_argv(argv), "wt12": wt12}
+            o = owner_info()
+            active[pid] = {"ts": time.time(), "argv": short_argv(argv), "wt12": wt12, "host": target,
+                           "owner": o["id"], "name": o["name"], "cap_s": cap, "cwd": os.getcwd()}
         else:
             cur["last"] = {"ts": time.time(), "rc": rc, "target": target, "secs": round(secs, 1),
                            "argv": short_argv(argv)}
@@ -860,6 +999,50 @@ def status_row(now):
                                                    for a in active) if active
                            else "free as far as this laptop knows")
     return True, "rrun", d
+
+
+def active_runs(now=None):
+    """This machine's rrun runs in flight (rrun.json, live pids only) -> [(pid, entry)], oldest first."""
+    st = rd_common.load_json(rd_common.RRUN_STATE, {})
+    act = (st.get("active") if isinstance(st, dict) else None) or {}
+    out = [(k, v) for k, v in act.items() if isinstance(v, dict) and alive_pid(k)]
+    return sorted(out, key=lambda kv: kv[1].get("ts") or 0)
+
+
+def owner_label(entry):
+    """'window name (session:abcd1234)' / 'pid:123' for a job entry (rrun.json or a worker .own)."""
+    oid = str(entry.get("owner") or entry.get("id") or "?")
+    short = oid[:16] if oid.startswith("session:") else oid
+    return "%s (%s)" % (entry["name"], short) if entry.get("name") else short
+
+
+def job_rows(now):
+    """`rdocker status` rows: one per rrun of this machine in flight - worker, owner, start, command."""
+    mine = owner_info()["id"]
+    rows = []
+    for pid, a in active_runs(now):
+        ts = a.get("ts") if isinstance(a.get("ts"), (int, float)) else now
+        rows.append((True, "rrun job", "%s on %s, started %s (%s), owner %s%s, pid %s: %s" % (
+            "running", a.get("host") or "?", time.strftime("%H:%M", time.localtime(ts)), _ago(ts, now),
+            owner_label(a), " = you" if a.get("owner") == mine else "", pid, a.get("argv"))))
+    if rows:
+        rows.append((True, "rrun jobs", "this machine's only; `rrun --jobs` lists every worker's "
+                     "(`rrun --mine`: just yours)"))
+    return rows
+
+
+def wt_holder(wt12, now=None):
+    """' (<argv> on <worker>, running 4 min, owner X, capped at 30 min)' for the run of ours that
+    holds this worktree's lock, '' when rrun.json does not say."""
+    now = time.time() if now is None else now
+    for _pid, a in active_runs(now):
+        if a.get("wt12") == wt12:
+            ts = a.get("ts") if isinstance(a.get("ts"), (int, float)) else now
+            cap = a.get("cap_s")
+            return " (%s on %s, running %s, owner %s%s)" % (
+                a.get("argv"), a.get("host") or "?", fmt_min(max(0, now - ts)), owner_label(a),
+                ", its cap ends it within %s" % fmt_min(max(0, cap - (now - ts))) if cap else "")
+    return ""
 
 
 def _ago(ts, now):
@@ -920,6 +1103,93 @@ def parse_env(pairs, environ=None):
         else:
             note("-e %s: not set here, not passed" % k)
     return out
+
+
+# ---------------------------------------------------------------------------- owner / limits
+
+_OWNER_RE = re.compile(r"[^A-Za-z0-9 ._:@/+-]")
+
+
+def _clean(v, n):
+    return _OWNER_RE.sub("", v or "").strip()[:n]
+
+
+def owner_info(environ=None):
+    """Who is asking -> {"id", "name", "client"}: id = "session:<CLAUDE_CODE_SESSION_ID>" when set,
+    else "pid:<parent pid>" (the shell that ran rrun); name = that session's /line window caption
+    (the first line of ~/.claude/session-status/<id>.txt, the file `line-agent-communicator.py card`
+    reads; one small file read, no subprocess); client = this machine's short host name. Every job
+    carries it (the runner's slots/<i>.own, its process title, RRUN_OWNER in the command's env), so
+    `rrun --jobs` / `rdocker status` tell one agent's runs from another's."""
+    env = os.environ if environ is None else environ
+    sid = re.sub(r"[^A-Za-z0-9-]", "", env.get("CLAUDE_CODE_SESSION_ID") or "")[:64]
+    name = ""
+    if sid:
+        try:
+            with open(os.path.join(rd_common.HOME, ".claude", "session-status", sid + ".txt"), "rb") as f:
+                name = f.read(512).decode("utf-8", "replace").splitlines()[0]
+        except (OSError, IndexError):
+            name = ""
+    return {"id": "session:" + sid if sid else "pid:%d" % os.getppid(), "name": _clean(name, 48),
+            "client": _clean(socket.gethostname().split(".")[0], 48)}
+
+
+TIMEOUT_MIN = {"light": 30, "normal": 30, "heavy": 60, "db": 90, "build": 60}
+
+
+def timeout_s(cfg, cls, environ=None):
+    """The command's wall-clock cap in seconds (0 = none): RRUN_TIMEOUT=<minutes> for this run, else
+    rr_timeout_min[cls] (light/normal 30, heavy 60, db 90, build 60)."""
+    v = (os.environ if environ is None else environ).get("RRUN_TIMEOUT")
+    if v is not None and v.strip():
+        try:
+            return max(0.0, float(v) * 60.0)
+        except ValueError:
+            note("RRUN_TIMEOUT=%r is not a number of minutes; using the default cap" % v)
+    table = cfg.get("rr_timeout_min") if isinstance(cfg.get("rr_timeout_min"), dict) else {}
+    try:
+        return max(0.0, float(table.get(cls, TIMEOUT_MIN.get(cls, 30))) * 60.0)
+    except (TypeError, ValueError):
+        return TIMEOUT_MIN.get(cls, 30) * 60.0
+
+
+def slot_wait_min(cfg):
+    """Minutes one runner waits for a slot before answering busy (73): rr_slot_wait_s (120 s), never
+    more than rr_wait_min. A busy answer re-plans (host_loop), so a job never sits 30 min on one
+    worker while another frees up; rr_wait_min bounds the whole search."""
+    try:
+        return min(float(cfg.get("rr_wait_min", 30)), float(cfg.get("rr_slot_wait_s", 120)) / 60.0)
+    except (TypeError, ValueError):
+        return 2.0
+
+
+def wt_wait_s(cfg, job, environ=None):
+    """How long a run waits for its worktree's lock: rr_wt_wait_min, else the job's own cap (the
+    holder is capped too), else 90 min."""
+    v = cfg.get("rr_wt_wait_min")
+    try:
+        if v is not None:
+            return max(1.0, float(v) * 60.0)
+    except (TypeError, ValueError):
+        pass
+    return timeout_s(cfg, job["cls"], environ) or 90 * 60.0
+
+
+def silent_s(cfg, environ=None):
+    """Seconds without output before the first "no output for N min" line (0 = never; later lines
+    every 5x that): RRUN_SILENT_MIN, else rr_silent_min (1). Silence never kills: only the cap does."""
+    v = (os.environ if environ is None else environ).get("RRUN_SILENT_MIN")
+    for x in (v, cfg.get("rr_silent_min", 1)):
+        try:
+            if x is not None and str(x).strip():
+                return max(0.0, float(x) * 60.0)
+        except ValueError:
+            continue
+    return 60.0
+
+
+def fmt_min(secs):
+    return "%d min" % (secs // 60) if secs >= 60 else "%d s" % secs
 
 
 # ---------------------------------------------------------------------------- reconnect
@@ -1005,6 +1275,7 @@ class Opts:
         raw = environ.pop("RRUN_OUTPUTS", "")
         self.outputs = [o.strip() for o in raw.split(",") if o.strip()]
         self.cache = environ.pop("RRUN_CACHE", "").strip() != "0"   # 0: run even with a cached result
+        self.jobs = environ.pop("RRUN_JOBS", "")                    # "all" (--jobs) / "mine" (--mine)
 
 
 def resolve_outputs(cfg, wt, argv, opts):
@@ -1040,9 +1311,12 @@ def rrun(argv, env_args=()):
         argv = argv[1:]
     if opts.bench:
         return rd_pool.bench(rd_common.load_cfg(), opts.host)
+    if opts.jobs:
+        return list_jobs(opts.jobs == "mine", opts.host)
     if not argv and not opts.where:
         sys.stderr.write("usage: rrun [-e NAME[=VALUE]]... [--where] [--host NAME] [--outputs a,b] "
-                         "[--] <command> [args...]\n       rrun --bench [--host NAME]\n")
+                         "[--] <command> [args...]\n       rrun --bench [--host NAME]\n"
+                         "       rrun --jobs | --mine [--host NAME]\n")
         return 2
     env_pairs = parse_env(env_args)
     t0 = time.monotonic()
@@ -1066,7 +1340,12 @@ def rrun(argv, env_args=()):
     deps = deps_dirs(wt["top"], wt["relcwd"], argv) if wt else []
     if not opts.where:
         timing.mark("resolve")
-        take_wt_lock(wt["wt12"])     # fd stays open (and locked) until we exit or exec
+        try:                         # fd stays open (and locked) until we exit or exec
+            take_wt_lock(wt["wt12"], wt_wait_s(cfg, job), cfg)
+        except WorktreeBusy as e:
+            note("%s; not running it (exit %d). Check `rrun --mine`; rerun when it is done"
+                 % (e, EXIT_WT_BUSY))
+            return EXIT_WT_BUSY
         timing.mark("worktree lock")
     crun, cache_why = cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs) if wt \
         else (None, "not in a git worktree")
@@ -1093,6 +1372,7 @@ def rrun(argv, env_args=()):
                         + rd_pool.where_report(cfg, job, plan, shards or why_not)))
         return 0
     ctx = Ctx(cfg, wt, env_pairs, timing, t0, job, plan, outputs, deps, crun)
+    ctx.force = opts.host
     if shards:
         return cache_save(ctx, run_shards(ctx, shards, argv), argv)
     out = err = None
@@ -1103,6 +1383,47 @@ def rrun(argv, env_args=()):
     if kind == "local":
         return fallback(argv, env_pairs, val, t0, job, plan.pool)
     return cache_save(ctx, val, argv)
+
+
+def list_jobs(mine_only, force=None, out=None):
+    """`rrun --jobs` (every running rrun job on every worker) / `rrun --mine` (only the caller's:
+    same CLAUDE_CODE_SESSION_ID, else same parent pid). One probe round; reads each worker's
+    slots/<i>.own. -> 0, or 1 when no worker answered."""
+    out = out or sys.stdout
+    cfg = rd_common.load_cfg()
+    me = owner_info()["id"]
+    try:
+        p = rd_pool.plan(cfg, rd_pool.classify(["true"]), force=force, probe=True)
+    except ValueError as e:
+        note(str(e))
+        return 2
+    now = time.time()
+    rows, down = [], []
+    for h in p.hosts:
+        if h.probe is None:
+            down.append(h.name)
+            continue
+        for j in h.probe.get("jobs") or []:
+            if not isinstance(j, dict) or (mine_only and j.get("id") != me):
+                continue
+            st = j.get("start") if isinstance(j.get("start"), (int, float)) else None
+            rows.append((st or 0, h.name, time.strftime("%H:%M", time.localtime(st)) if st else "?",
+                         fmt_min(now - st) if st else "?",
+                         owner_label(j) + (" = you" if j.get("id") == me else ""),
+                         j.get("client") or "?", j.get("cmd") or "?"))
+    rows.sort()
+    if rows:
+        out.write("%-10s %-6s %-8s %-40s %-14s %s\n" % ("WORKER", "START", "RUNNING", "OWNER", "FROM", "COMMAND"))
+        for _, *r in rows:
+            out.write("%-10s %-6s %-8s %-40s %-14s %s\n" % tuple(r))
+    else:
+        out.write("no %srrun jobs running on %s\n" % ("of your " if mine_only else "",
+                                                     ", ".join(h.name for h in p.hosts if h.probe) or "any worker"))
+    if down:
+        out.write("not answering (their jobs are not listed): %s\n" % ", ".join(down))
+    if mine_only:
+        out.write("you = %s\n" % me)
+    return 0 if len(down) < len(p.hosts) else 1
 
 
 def replay_hit(hit, argv, t0):
@@ -1143,6 +1464,7 @@ class Ctx:
         self.cfg, self.wt, self.env_pairs, self.timing, self.t0 = cfg, wt, env_pairs, timing, t0
         self.job, self.plan, self.outputs, self.deps = job, plan, outputs, deps
         self.cache = cache           # rd_cache.Run for a cacheable run, else None
+        self.force = None            # --host NAME: re-plans keep to that worker
 
 
 def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False, tag="", frac=1.0,
@@ -1154,6 +1476,9 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
     whole job this run is (a shard: 1/n), for the hedge's expected time."""
     job, t0 = ctx.job, ctx.t0
     i, tries, retried, failed = 0, 0, False, set()
+    busy_t0 = round_t0 = time.monotonic()
+    slot_busy = False
+    total = 60.0 * float(ctx.cfg.get("rr_wait_min", 30))
     while True:
         if threaded and STOP_SIG[0]:
             return "done", 128 + STOP_SIG[0]
@@ -1168,6 +1493,8 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
             return "local", val
         failed.add(i)
         nxt = next_host(hosts, failed)
+        if kind == "busy" and "not taking jobs" not in val:
+            slot_busy = True                    # a real slot wait (not a refusal): worth a re-plan
         if kind == "lost_go":
             # lost_go = the connection died before the command's exit code arrived (the worker went
             # away: ssh died, no keepalive answer, host down). A command that exited with a real code
@@ -1190,7 +1517,22 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
         if kind == "busy":
             if "not taking jobs" in val:
                 note(tag + val)
-            note("%sno worker had a free slot; giving up (exit 73)" % tag)
+            waited = time.monotonic() - busy_t0
+            if slot_busy and waited < total and not (threaded and STOP_SIG[0]):
+                # every worker said busy: probe again (one may have freed up, or come online) and
+                # go round once more, until rr_wait_min in all
+                try:
+                    if time.monotonic() - round_t0 < 20:          # they refused at once: do not spin
+                        time.sleep(min(30.0, total - waited))
+                except KeyboardInterrupt:
+                    return "done", 130
+                note("%severy worker is busy (%s waited so far, gives up after %s); re-planning"
+                     % (tag, fmt_wait(time.monotonic() - busy_t0), fmt_wait(total)))
+                hosts = replan(ctx, hosts) if not threaded else hosts
+                i, failed, round_t0, slot_busy = 0, set(), time.monotonic(), False
+                continue
+            note("%sno worker had a free slot%s; giving up (exit 73)"
+                 % (tag, " for %s" % fmt_wait(total) if slot_busy else ""))
             return "done", 73
         if threaded or tries >= RECONNECT_TRIES:
             return "local", val
@@ -1212,11 +1554,23 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
             return "local", "%s, and it did not come back within %s" % (val, fmt_wait(reconnect_wait_s(h.cfg)))
 
 
+def replan(ctx, hosts):
+    """A fresh plan's host order (the probe sees who freed up); the old list if planning fails."""
+    try:
+        p = rd_pool.plan(ctx.cfg, ctx.job, ctx.wt["slug"], rd_pool.deps_shas(ctx.wt["top"], ctx.deps),
+                         force=ctx.force)
+    except Exception:            # a fleet that changed under us: keep trying the old list
+        return hosts
+    ctx.plan = p
+    return p.hosts or hosts
+
+
 def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0):
     """attempt() on a free lane of h, with a hedge watching it when hedging is on for this job."""
     key = h.cfg["host"]
     n = take_lane(key)
     lane = Lane(out, err, None if n == 0 else short_hash("%s:lane%d" % (ctx.wt["wt12"], n), 12))
+    lane.tag = tag
     hedge = Hedge(ctx, h, argv, lane, tag, frac, out, err) if hedge_on(ctx) else None
     try:
         if hedge:
@@ -1494,11 +1848,14 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
               "relcwd": wt["relcwd"], "argv": argv, "env": env, "deleted": deleted,
               "tar_len": len(tar), "env_files": envs,
               "stamps": {"dirs": deps, "npm_args": []},
-              "slots": cfg.get("rr_slots", 1), "wait_min": cfg.get("rr_wait_min", 30),
+              "slots": cfg.get("rr_slots", 1), "wait_min": slot_wait_min(cfg),
               "slots_base": cfg.get("rr_slots_base", cfg.get("rr_slots", 1)),
               "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
               "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
-              "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True}
+              "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True,
+              "owner": owner_info(), "timeout_s": int(timeout_s(cfg, job["cls"])),
+              "exit_grace": cfg.get("rr_exit_grace_s", 10),
+              "wait_every": cfg.get("rr_status_every_s", 60)}
     if outputs:
         header["outputs"] = list(outputs)
     if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
@@ -1544,8 +1901,13 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     if cache is not None:            # what this attempt really sends must be what the key hashed
         cache.shipped(rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps))
     frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs)
-    record(h.name, argv, None, 0, wt12=wt["wt12"], start=True)
+    cap = timeout_s(cfg, job["cls"])
+    record(h.name, argv, None, 0, wt12=wt["wt12"], start=True, cap=cap)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
+    sess.host_name, sess.timeout_s, sess.silent_s = h.name, cap, silent_s(cfg)
+    sess.tag = lane.tag if lane is not None else ""
+    if h.queue_s is not None and h.state == "busy":
+        sess.wait_eta_s = h.queue_s      # the scheduler's estimate of this worker's slot wait
     if cache is not None and not cache.sharded:
         sess.on_ready = cache.rec.reset      # keep only the command's own output (+ this attempt's)
     if lane is not None:
@@ -1573,12 +1935,14 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             why = {"share=off": "its owner turned sharing off",
                    "docker": "its Docker engine did not start"}.get(sess.unavail, sess.unavail)
             return "busy", "%s is not taking jobs (%s)" % (h.name, why)
-        if rc == 73 and h.short:
-            return "busy", "%s had no free slot after all" % h.name
+        if rc == 73:                       # no slot within the runner's wait: re-plan (host_loop)
+            return "busy", "%s had no free slot after %s" % (h.name, fmt_wait(slot_wait_min(cfg) * 60))
         if rc in INFRA_EXIT:
             note("%s - exit %d; the command did not run" % (INFRA_EXIT[rc], rc))
         return "done", rc
     timing.mark("command")
+    if sess.timed_out and sess.exit_rc is None:
+        rc = sess.exit_rc = EXIT_TIMEOUT     # our backstop closed it: the cap was hit, never re-run
     if sess.exit_rc is not None:
         if rc != sess.exit_rc and rc == 255:
             note("the link to %s dropped after the command finished there (exit %d); that is the result"

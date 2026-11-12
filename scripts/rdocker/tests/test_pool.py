@@ -50,6 +50,10 @@ class Classify(unittest.TestCase):
     def test_job_classes(self):
         table = [
             (["npm", "run", "test:db"], "db", False, False, True),
+            (["npm", "run", "test:db:migrated", "--", "--testTimeout=1"], "db", False, False, True),   # 2026-11-11
+            (["npm", "--prefix", "server", "run", "test:db:rls"], "db", False, False, True),
+            (["sh", "-c", "cd server && npm run test:db:x.y-z"], "db", False, False, True),
+            (["npm", "run", "test:dbx"], "normal", False, False, False),
             (["node", "scripts/test-with-db.mjs", "a.ts"], "db", False, False, True),
             (["npx", "tsc", "--noEmit", "-p", "tsconfig.json"], "heavy", True, False, True),
             (["npm", "run", "check:server-test-typecheck"], "heavy", True, False, True),
@@ -421,7 +425,7 @@ class PoolE2E(test_run.RunBase):
         os.makedirs(empty)
         r = self.rrun("/bin/sh", "-c", "echo hi", FAKE_SSH_PROBE_HOMES="w1=" + empty)
         self.assertEqual((r.returncode, r.stdout), (0, "hi\n"), r.stderr)
-        self.assertIn("w1 had no free slot after all - trying w2", r.stderr)
+        self.assertRegex(r.stderr, r"w1 had no free slot after \d+ s - trying w2")
         self.assertEqual(self.target(), "w2")
 
     def test_lost_after_go_repeatable_job_runs_once_more_elsewhere(self):

@@ -462,7 +462,8 @@ def status(cfg, fix=False):
     for ok, label, detail in (daemon_rows(now) + [health_age_row(prior, now)]
                               + janitor_rows(cfg, now) + [janitor_stopped_row(now),
                                                           fallback_pins_row(cfg),
-                                                          rd_run.status_row(now), fleet_row()]):
+                                                          rd_run.status_row(now)] + rd_run.job_rows(now)
+                              + [fleet_row()]):
         row(ok, label, detail)
     if fix and h.get("docker_ok"):
         rd_tunnel.sync_forwards(cfg, verbose=True)

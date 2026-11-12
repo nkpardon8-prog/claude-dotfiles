@@ -12,7 +12,11 @@ completion time (score(); lower is better):
     cold = COLD_GIT_S without the bare git mirror + COLD_DEPS_S without the packages
     queue = 0 with a free slot, else when the first slot holder should be done (holders' ages)
     job_cost = median of this worker's last runs of the class (runs.log tail, >= HIST_MIN), else the
-               pool's, else JOB_COST_S / rr_job_cost_s; speed = ~/rr/speed, else fleet.json's
+               pool's, else JOB_COST_S / rr_job_cost_s - raised to the median of earlier runs of the
+               SAME command (runs.log argv; this worker's, else the pool's) when those took longer;
+               speed = ~/rr/speed, else fleet.json's
+    queue (busy) = when its first holder should end: from that holder's own command (slots/<i>.own)
+               when it ran before, else the worker's median run
     free = free slots (heavy jobs: min with free heavy slots); capped by ~/rr/slots.cap and the
            owner's share switch (some = half; off = state "off", no eta, tried last)
     overload: load1 / ncpu >= rr_overload_ratio (1.5) at probe time => "busy" even with a free
@@ -20,7 +24,8 @@ completion time (score(); lower is better):
 
 A worker with less memory than the job needs is "low-mem" (no eta). Order: free workers by eta, then
 busy ones by eta (the first is the "wait host" when nothing is free), then low-mem, down, off. A busy
-worker whose eta is <= PROMOTE_RATIO x the best free one goes first, with a slot wait that ends when
+worker whose eta is <= PROMOTE_RATIO (0.5) x the best free one, and at least PROMOTE_MIN_GAIN_S
+(120 s) sooner, goes first, with a slot wait that ends when
 the best free worker would have finished. Free candidates get a short slot wait so a lost race moves
 on quickly; the wait host gets the full rr_wait_min. Nothing is cached between plan() calls: every
 job sees workers that just went away or came back. shardable() / shard_assign() split a `vitest run`
@@ -53,12 +58,17 @@ NEED_GB = {"heavy": 6, "build": 3, "normal": 2, "light": 1, "db": 2}
 # seconds a job class takes at speed 1.0 until the workers' runs.log teaches better (rr_job_cost_s)
 JOB_COST_S = {"heavy": 60.0, "normal": 60.0, "db": 120.0, "light": 30.0, "build": 90.0}
 JOB_CPUS = {"heavy": 2, "normal": 4, "db": 2, "light": 1, "build": 2}   # cores a job keeps busy
+MIN_RUN_S = 1.0              # a finished run's cost is never below this (ssh + spawn alone take that)
 HIST_MIN = 3                 # runs of a class before its median replaces the default cost
 HOLDER_COST_S = 60.0         # a slot holder's run at speed 1.0 when the worker has no history (queue wait)
 # a busy worker goes first when its eta (queue included) <= this x the best free one (0 = never):
-# low on purpose - a quick job should spread to an idle machine; this is for "free" workers that
-# would be many times slower (hp swapping on a tsc: 26 min vs 77 s on nickmbp)
-PROMOTE_RATIO = 0.25
+# a quick job still spreads to an idle machine; this is for "free" workers that would be about 2x
+# or more slower (hp swapping on a tsc: 26 min vs 77 s on nickmbp; 2026-11-11 a whole vitest suite
+# ran 66-80 min on the free rd-mini-a while faster workers would have freed up sooner). Was 0.25.
+PROMOTE_RATIO = 0.5
+# ...and only when that saves at least this much (rr_queue_promote_min_gain_s): a quick job's queue
+# estimate is too rough to make it wait on a busy worker for a few seconds' gain
+PROMOTE_MIN_GAIN_S = 120.0
 # a worker whose 1-min load per CPU thread is at least this at probe time counts as busy (its free
 # slot notwithstanding) and its run estimate grows by load/ncpu (rr_overload_ratio; 0 = off).
 # 2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still being sent jobs
@@ -69,7 +79,9 @@ _SHARD_ARG_RE = re.compile(r"(?:^|\s)--shard[= ]?(\d+)/(\d+)(?:\s|$)")
 DEFAULT_OUTPUTS = {"dentall": {"server": ["dist"], "client": ["dist"], "admin-client": ["dist"]}}
 BENCH_REF_S = 4.0            # bench seconds that score speed 1.0 (rr_bench_ref_s overrides)
 
-_DB_RE = re.compile(r"(^|\s)(test:db(:rls)?|release:rehearse:migrations|check:db-all)(\s|$)"
+# test:db and every test:db:<x> variant (test:db:rls, test:db:migrated: 30 runs on 2026-11-11 were
+# classed "normal" - no DB placement, a 30-min cap instead of 90)
+_DB_RE = re.compile(r"(^|\s)(test:db(:[\w.-]+)*|release:rehearse:migrations|check:db-all)(\s|$)"
                     r"|(^|[\s/])(test-with-db|run-guard-tier)\.mjs(\s|$)")
 _TYPECHECK_RE = re.compile(r"(^|[\s/])tsc(\s|$)|(^|\s)(typecheck|type-check)(:[\w:.-]*)?(\s|$)"
                            r"|(^|\s)check:server-test-typecheck(\s|$)")
@@ -107,7 +119,32 @@ def classify(argv, outputs=None):
     retry_ok = not db and (cls == "build" or bool(_TYPECHECK_RE.search(s) or _LINT_RE.search(s)
                                                    or _SUITE_RE.search(s)))
     return {"cls": cls, "db": db, "need_gb": NEED_GB[cls], "retry_ok": retry_ok,
-            "local_ok": cls == "light", "never_local": cls in ("db", "heavy")}
+            "local_ok": cls == "light", "never_local": cls in ("db", "heavy"), "sig": run_sig(argv)}
+
+
+_CPU_NOTE_RE = re.compile(r" \[cpu_share=[^\]]*\]$")
+
+
+def run_sig(argv):
+    """The argv as the runner's runs.log writes it (rr_runner.pl redact_argv: env-looking values
+    redacted, control chars -> space, cut at 120 chars + "..."), so a job can be matched to earlier
+    runs of the SAME command in the workers' history, not just of its class."""
+    out, val = [], False
+    for a in argv:
+        if val:
+            out.append("<redacted>")
+            val = False
+        elif a in ("-e", "--env"):
+            out.append(a)
+            val = True
+        elif re.match(r"^(--env=|-e)(?=.*=)", a, re.S):
+            out.append(re.match(r"^(--env=|-e)", a).group(1) + "<redacted>")
+        elif re.match(r"^(-*[A-Za-z_][A-Za-z0-9_-]*=)", a):
+            out.append(re.match(r"^(-*[A-Za-z_][A-Za-z0-9_-]*=)", a).group(1) + "<redacted>")
+        else:
+            out.append(a)
+    s = re.sub(r"[\x00-\x1f\x7f]", " ", " ".join(out))
+    return s[:120] + "..." if len(s) > 120 else s
 
 
 def is_build(argv):
@@ -278,6 +315,20 @@ for my $i (0 .. $n - 1) {
     push @ages, time - $t if defined $t && $t =~ /^\d+$/ && $t <= time;
 }
 $o{ages} = \@ages;
+# who runs what (<i>.own = tab-separated id= name= client= start= pid= cmd=, written by the runner
+# beside <i>.who): only for a held slot whose .who names the same pid (never a leftover's)
+my @jobs;
+for my $f (glob("$R/slots/*.own")) {
+    my ($i) = $f =~ m{/(\d+)\.own$} or next;
+    next if -l $f || !busy("$R/slots/$i");
+    my %j = map { /^([a-z]+)=(.*)$/ ? ($1 => $2) : () } split /\t/, ((slurp($f) =~ /^([^\n]*)/)[0] // "");
+    my (undef, undef, $wpid) = split ' ', slurp("$R/slots/$i.who");
+    next unless defined $j{pid} && defined $wpid && $j{pid} eq $wpid;
+    $j{slot} = $i + 0;
+    $j{start} = ($j{start} // "") =~ /^\d+$/ ? $j{start} + 0 : undef;
+    push @jobs, \%j;
+}
+$o{jobs} = \@jobs;
 # the last finished commands (runs.log tail, 24 KB at most): [cmd_s, argv] for rd_pool's job cost
 my @hist;
 if (sysopen(my $lf, "$R/log/runs.log", O_RDONLY | O_NOFOLLOW)) {
@@ -285,7 +336,8 @@ if (sysopen(my $lf, "$R/log/runs.log", O_RDONLY | O_NOFOLLOW)) {
     seek($lf, $sz > 24576 ? $sz - 24576 : 0, 0);
     my @l = do { local $/ = "\n"; <$lf> };
     shift @l if $sz > 24576;
-    for (@l) { push @hist, [$1 + 0, $2] if /\soutcome=rc=\d+ prepare_s=\S+ cmd_s=(\d+(?:\.\d+)?) argv=(.*?)\n?$/ }
+    # a run killed at its wall-clock cap ("timeout rc=124") counts too: it took at least that long
+    for (@l) { push @hist, [$1 + 0, $2] if /\soutcome=(?:timeout )?rc=\d+ prepare_s=\S+ cmd_s=(\d+(?:\.\d+)?) argv=(.*?)\n?$/ }
     splice(@hist, 0, @hist - 40) if @hist > 40;
 }
 $o{hist} = \@hist;
@@ -407,18 +459,48 @@ def history_costs(host):
         m = _SHARD_ARG_RE.search(row[1])
         n = int(m.group(2)) if m and int(m.group(2)) >= 1 else 1
         cls = "build" if is_build(words) else classify(words)["cls"]
-        out.setdefault(cls, []).append(secs * n * host.speed)
+        # never under MIN_RUN_S: a sub-second fake/no-op run must not make a job look free
+        out.setdefault(cls, []).append(max(MIN_RUN_S, secs) * n * host.speed)
     return out
 
 
-def job_cost(cfg, cls, own=None, pooled=None):
-    """Seconds the job class takes at speed 1.0: this worker's own history (median of its last runs,
-    >= HIST_MIN of them), else the whole pool's, else the per-class default (rr_job_cost_s)."""
+def history_sig_costs(host):
+    """The worker's recent finished commands -> {run_sig: [cost in seconds at speed 1.0]}: the same
+    command (as runs.log writes it) run before. Shard rows keep their own "--shard=<redacted>" sig,
+    so they never stand in for a whole run."""
+    out = {}
+    for row in (host.probe or {}).get("hist") or []:
+        if not isinstance(row, list) or len(row) != 2 or not isinstance(row[1], str):
+            continue
+        secs = _num(row[0])
+        if secs is None or secs < 0:
+            continue
+        out.setdefault(_CPU_NOTE_RE.sub("", row[1]), []).append(max(MIN_RUN_S, secs) * host.speed)
+    return out
+
+
+def job_cost(cfg, cls, own=None, pooled=None, own_sig=None, pooled_sig=None):
+    """Seconds the job takes at speed 1.0: this worker's history of the class (median of its last
+    runs, >= HIST_MIN of them), else the whole pool's, else the per-class default (rr_job_cost_s) -
+    raised to the median of earlier runs of the SAME command (this worker's, else the pool's; one
+    is enough) when those took longer.
+    The command comes first because a class median mixes a 30 s one-file vitest with a 20-min whole
+    suite: 2026-11-11 a whole `npx vitest run` was costed like the one-file runs, the slow free
+    rd-mini-a (speed 0.42) won the placement and it ran 66-80 min there."""
+    base = None
     for xs in (own, pooled):
         if xs and len(xs) >= HIST_MIN:
-            return _median(xs)
-    table = cfg.get("rr_job_cost_s") if isinstance(cfg.get("rr_job_cost_s"), dict) else {}
-    return float(_num(table.get(cls), JOB_COST_S.get(cls, 60)))
+            base = _median(xs)
+            break
+    if base is None:
+        table = cfg.get("rr_job_cost_s") if isinstance(cfg.get("rr_job_cost_s"), dict) else {}
+        base = float(_num(table.get(cls), JOB_COST_S.get(cls, 60)))
+    for xs in (own_sig, pooled_sig):
+        if xs:
+            # only ever raises the estimate: one quick (e.g. instantly failing) earlier run must not
+            # make a long command look cheap
+            return max(base, _median(xs))
+    return base
 
 
 def mem_factor(avail_mb, need_gb):
@@ -466,8 +548,12 @@ def score(host, job, cfg=None, pooled=None):
         return None, free
     load, ncpu = _num(p.get("load1"), 0.0), _num(p.get("ncpu"), 1.0) or 1.0
     own = history_costs(host)
+    sig = job.get("sig")
+    own_sig = history_sig_costs(host).get(sig) if sig else None
+    pooled_sig = (pooled or {}).get(("sig", sig)) if sig else None
     host.eff = max(0.01, host.speed * cpu_share(load, ncpu, job["cls"]) * mem_factor(mem, job["need_gb"]))
-    host.run_s = job_cost(cfg, job["cls"], own.get(job["cls"]), (pooled or {}).get(job["cls"])) / host.eff
+    host.run_s = job_cost(cfg, job["cls"], own.get(job["cls"]), (pooled or {}).get(job["cls"]),
+                          own_sig, pooled_sig) / host.eff
     host.cold_s = (0.0 if p.get("warm_git") else COLD_GIT_S) + (0.0 if p.get("warm_deps") else COLD_DEPS_S)
     per_cpu = load / ncpu
     over = _num(cfg.get("rr_overload_ratio"), OVERLOAD_RATIO)
@@ -488,6 +574,16 @@ def score(host, job, cfg=None, pooled=None):
         busy = max(1, int(_num(p.get("slots_busy"), 1)))
         host.state = "busy"
         host.queue_s = (min(max(0.2 * typ, typ - a) for a in ages) if ages else typ / (busy + 1))
+        # holders whose command ran here before (slots/<i>.own): their own expected end, not the median
+        sigs, now, known = history_sig_costs(host), time.time(), []
+        for j in p.get("jobs") or []:
+            xs = sigs.get(j.get("cmd")) or (pooled or {}).get(("sig", j.get("cmd"))) if isinstance(j, dict) else None
+            st = _num(j.get("start")) if isinstance(j, dict) else None
+            if xs and st is not None:
+                c = _median(xs) / max(0.01, host.speed)
+                known.append(max(0.2 * c, c - max(0.0, now - st)))
+        if known and len(known) >= busy:
+            host.queue_s = min(known)
     # rtt capped: a cold ssh master's one-off handshake (~2 s over a relay) is not the link's latency
     host.eta = host.cold_s + host.queue_s + host.run_s + min(host.rtt or 0.0, RTT_CAP_S)
     return host.eta, free
@@ -576,6 +672,8 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
     for h in hosts:
         for cls, xs in history_costs(h).items():
             pooled.setdefault(cls, []).extend(xs)
+        for sig, xs in history_sig_costs(h).items():
+            pooled.setdefault(("sig", sig), []).extend(xs)
     for h in hosts:
         score(h, job, cfg, pooled)
     by_eta = lambda h: (h.eta, h.rtt or 0)                                     # noqa: E731
@@ -590,7 +688,9 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
     # (until the best free worker would have finished), then the job moves on to the free ones
     promoted = None
     ratio = float(cfg.get("rr_queue_promote_ratio", PROMOTE_RATIO))
-    if pool and free and queued and ratio > 0 and queued[0].eta <= ratio * free[0].eta:
+    gain = float(cfg.get("rr_queue_promote_min_gain_s", PROMOTE_MIN_GAIN_S))
+    if pool and free and queued and ratio > 0 and queued[0].eta <= ratio * free[0].eta \
+            and free[0].eta - queued[0].eta >= gain:
         promoted = queued.pop(0)
         budget = max(RACE_WAIT_MIN * 60, free[0].eta - (promoted.eta - promoted.queue_s))
         promoted.short = True

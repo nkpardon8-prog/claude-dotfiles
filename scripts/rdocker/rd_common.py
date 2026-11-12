@@ -122,6 +122,17 @@ DEFAULTS = {
                                        # for it to come back before running on the laptop instead
     "rr_wait_min": 30,                 # give up waiting for a free mini slot after this
     "rr_hb_timeout": 60,               # mini kills the run after this many s without a laptop heartbeat
+    # hard wall-clock cap on the command per job class (minutes; RRUN_TIMEOUT=<min|0> overrides for
+    # one run, 0 = no cap): past it the worker kills the command's process group -> exit 124
+    "rr_timeout_min": {"light": 30, "normal": 30, "heavy": 60, "db": 90, "build": 60},
+    "rr_exit_grace_s": 10,             # after the command's main process exits, its leftovers get this long
+    "rr_silent_min": 1,                # "no output for N min" on stderr after this, then every 5x it;
+                                       # never kills (RRUN_SILENT_MIN; 0 = off)
+    "rr_status_every_s": 60,           # a run waiting for a slot / the worktree lock says so this often
+    "rr_slot_wait_s": 120,             # wait this long for a slot on one worker, then re-plan (all of it
+                                       # bounded by rr_wait_min, then exit 73)
+    "rr_push_timeout_s": 300,          # a git push to a worker that takes longer = that worker is out
+    # "rr_wt_wait_min": N              # wait for this worktree's lock at most N min (default: the job's cap)
     # `rdocker warm` (rd_warm, the client launch agent com.rdocker.warm): pre-warm each worker with
     # the repos this client ran rrun in lately (push the mirror, install deps), politely
     "rr_warm_interval_s": 300,         # between warm passes

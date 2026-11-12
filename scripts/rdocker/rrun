@@ -5,7 +5,8 @@
 #   rrun --where [cmd]       where the job would run now (probes the pool, runs nothing)
 #   rrun --bench             CPU benchmark on every worker (writes ~/rr/speed there)
 #   rrun --host NAME ...     only that worker;  rrun --outputs dist,x ... build outputs to copy back
-# rrun's own flags (before the command) travel to rd_run as RRUN_WHERE/RRUN_BENCH/RRUN_HOST/RRUN_OUTPUTS.
+#   rrun --jobs / --mine     running jobs on every worker (owner, worker, start, command) / only yours
+# rrun's own flags (before the command) travel to rd_run as RRUN_WHERE/RRUN_BENCH/RRUN_HOST/RRUN_OUTPUTS/RRUN_JOBS.
 # Resolve our real directory (~/.local/bin/rrun is a symlink to this file); bash 3.2, no readlink -f.
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
@@ -19,6 +20,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --where) export RRUN_WHERE=1; shift ;;
     --bench) export RRUN_BENCH=1; shift ;;
+    --jobs) export RRUN_JOBS=all; shift ;;
+    --mine) export RRUN_JOBS=mine; shift ;;
     --host|--outputs)
       [ $# -ge 2 ] || { echo "rrun: $1 needs a value" >&2; exit 2; }
       if [ "$1" = --host ]; then export RRUN_HOST="$2"; else export RRUN_OUTPUTS="$2"; fi; shift 2 ;;

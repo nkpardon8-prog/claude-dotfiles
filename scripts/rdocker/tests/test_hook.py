@@ -372,6 +372,55 @@ class RewriteMatrix(HookBase):
                           "timeout": 600000, "run_in_background": True})
 
 
+class AbsoluteBinPaths(HookBase):
+    """2026-11-11: agents typed `/abs/repo/node_modules/.bin/<tool>`. Such a path is routed only
+    inside the worktree and only for a node_modules rrun installs on the worker, rewritten relative
+    to the cwd (the laptop path does not exist there); anything else stays here, as typed."""
+
+    def at(self, command, cwd=None):
+        out = self.hook(dict(self.bash(command), cwd=cwd or self.proj))
+        return out and out["hookSpecificOutput"]["updatedInput"]["command"]
+
+    def test_inside_the_worktree_becomes_relative(self):
+        p = self.proj
+        for cmd, want in (
+                (p + "/node_modules/.bin/tsc --noEmit -p tsconfig.check.json",
+                 "rrun ./node_modules/.bin/tsc --noEmit -p tsconfig.check.json"),
+                (p + "/node_modules/.bin/vitest run src/a.test.ts 2>&1 | tail",
+                 "rrun ./node_modules/.bin/vitest run src/a.test.ts 2>&1 | tail"),
+                (p + "/node_modules/.bin/eslint src", "rrun ./node_modules/.bin/eslint src"),
+                (os.path.realpath(p) + "/node_modules/.bin/jest src/a.test.ts",   # /private/tmp form
+                 "rrun ./node_modules/.bin/jest src/a.test.ts"),
+                ("FOO=1 %s/node_modules/.bin/vitest run a" % p, "FOO=1 rrun -e FOO ./node_modules/.bin/vitest run a"),
+                ("cd client && %s/node_modules/.bin/vitest run a" % p,      # client has no lockfile: root's deps
+                 "cd client && rrun ../node_modules/.bin/vitest run a")):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.at(cmd), want)
+
+    def test_a_lockfile_subpackage_from_the_root_only(self):
+        with open(os.path.join(self.proj, "client", "package-lock.json"), "w") as f:
+            f.write("{}")
+        sub = self.proj + "/client/node_modules/.bin/vitest run a"
+        self.assertEqual(self.at(sub), "rrun ./client/node_modules/.bin/vitest run a")
+        self.assertEqual(self.at(self.proj + "/client/node_modules/.bin/vitest run a",
+                                 os.path.join(self.proj, "client")), "rrun ./node_modules/.bin/vitest run a")
+
+    def test_same_safety_rules_as_relative_paths(self):
+        p = self.proj
+        other = project(self.home, "other")
+        for cmd in (p + "/client/node_modules/.bin/vitest run a",    # no lockfile there: not installed
+                    other + "/node_modules/.bin/vitest run a",         # another repo
+                    "/usr/local/bin/vitest run a", "/tmp/x/node_modules/.bin/vitest run a",
+                    p + "/node_modules/.bin/vitest", p + "/node_modules/.bin/vitest run --watch",
+                    p + "/node_modules/.bin/eslint src --fix", p + "/node_modules/.bin/tsc -p tsconfig.json",
+                    p + "/node_modules/.bin/vite build", p + "/node_modules/.bin/prettier --check .",
+                    "RRUN=0 " + p + "/node_modules/.bin/vitest run a"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd))
+        pn = project(self.home, "pn", lock="pnpm-lock.yaml")
+        self.assertIsNone(self.at(pn + "/node_modules/.bin/vitest run a", pn))
+
+
 class LeakedOnTheMini(HookBase):
     """Commands agents really ran that stayed local before: a bare scratch assignment and a heredoc."""
 

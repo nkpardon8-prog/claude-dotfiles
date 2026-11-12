@@ -445,7 +445,7 @@ class RunnerTest(unittest.TestCase):
         self.assertGreaterEqual(time.time() - t0, 1.0)
         lines = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
         self.assertEqual(len(lines), 2, r.err)
-        self.assertRegex(lines[0], r" WAIT holder=other-repo age=4[2-4]$")
+        self.assertRegex(lines[0], r" WAIT holder=other-repo age=4[2-4] busy=1 slots=1 ahead=0$")
         self.assertEqual(lines[1], self.nonce + " BUSY")
         self.assertEqual(self.calls(), [])                          # nothing ran
         self.assertEqual(self.run_runner(["true"]).rc, 0)           # lock released => runs
@@ -803,6 +803,122 @@ class RunnerTest(unittest.TestCase):
     def runs_log(self):
         with open(os.path.join(self.root, "log", "runs.log")) as f:
             return f.read().splitlines()
+
+    # ------------------------------------------------- 2026-11-11: hung jobs, owners, queue lines
+    def alive(self, pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def test_main_exit_returns_promptly_despite_a_leftover_holding_stdout(self):
+        """The command's main process exits while a child it left behind keeps stdout open: the run
+        ends after exit_grace (the group is TERMed), with the main's rc, the slot released."""
+        pidf = os.path.join(self.d, "leftover")
+        t0 = time.time()
+        r = self.run_runner(["/bin/sh", "-c", "(sleep 60; echo late) & echo $! > %s; echo main-done; exit 4"
+                             % pidf], exit_grace=1, timeout=30)
+        self.assertEqual(r.rc, 4, r.err)
+        self.assertLess(time.time() - t0, 10)
+        self.assertIn("main-done", r.out)
+        self.assertNotIn("late", r.out)
+        self.assertIn("%s EXIT 4" % self.nonce, r.err)
+        with open(pidf) as f:
+            pid = int(f.read())
+        end = time.time() + 5
+        while self.alive(pid) and time.time() < end:
+            time.sleep(0.05)
+        self.assertFalse(self.alive(pid), "the leftover child was not killed")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "slots", "0.who")))
+        with open(os.path.join(self.root, "slots", "0"), "a") as lk:     # the slot lock is free
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_a_leftover_that_left_the_group_cannot_hold_the_session(self):
+        """A child that setsid()s out of the group (no group kill reaches it) still only holds our
+        relay pipe: we stop reading it a few seconds after the grace, and exit."""
+        pidf = os.path.join(self.d, "escaped")
+        script = ("/usr/bin/python3 -c 'import os,time,sys; os.setsid(); open(sys.argv[1],\"w\").write(str(os.getpid())); "
+                  "time.sleep(60)' %s & sleep 0.5; echo done" % pidf)
+        t0 = time.time()
+        r = self.run_runner(["/bin/sh", "-c", script], exit_grace=1, timeout=30)
+        took = time.time() - t0
+        try:
+            self.assertEqual(r.rc, 0, r.err)
+            self.assertIn("done", r.out)
+            self.assertLess(took, 20)                                   # grace 1 + TERM, KILL 10 s later
+        finally:
+            with open(pidf) as f:
+                os.kill(int(f.read()), 9)
+
+    def test_no_grace_wait_when_nothing_is_left(self):
+        t0 = time.time()
+        r = self.run_runner(["/bin/sh", "-c", "echo hi"], exit_grace=30)
+        self.assertEqual((r.rc, r.out), (0, "hi\n"))
+        self.assertLess(time.time() - t0, 10)
+
+    def test_wall_clock_cap_kills_the_group_and_exits_124(self):
+        pidf = os.path.join(self.d, "child")
+        t0 = time.time()
+        r = self.run_runner(["/bin/sh", "-c", "sleep 60 & echo $! > %s; echo started; sleep 60" % pidf],
+                            timeout_s=1, timeout=30)
+        self.assertEqual(r.rc, 124, r.err)
+        self.assertLess(time.time() - t0, 15)
+        own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce + " ")]
+        self.assertIn(self.nonce + " TIMEOUT 1", own)
+        self.assertEqual(own[-1], self.nonce + " EXIT 124")
+        with open(pidf) as f:
+            pid = int(f.read())
+        end = time.time() + 5
+        while self.alive(pid) and time.time() < end:
+            time.sleep(0.05)
+        self.assertFalse(self.alive(pid))
+        self.assertIn("outcome=timeout rc=124", self.runs_log()[-1])
+        self.assertEqual(self.run_runner(["true"], timeout_s=0).rc, 0)       # 0 = no cap
+
+    def test_owner_tag_in_own_file_title_and_env(self):
+        own = os.path.join(self.root, "slots", "0.own")
+        seen = {}
+
+        def act(p):
+            self.wait_for(own)
+            with open(own) as f:
+                seen["own"] = f.read()
+            with open(os.path.join(self.root, "slots", "0.who")) as f:
+                seen["who"] = f.read()
+            seen["ps"] = subprocess.run(["ps", "-o", "command=", "-p", str(p.pid)],
+                                        capture_output=True, text=True).stdout
+        owner = {"id": "session:abc-123", "name": "billing; rm -rf / $(x)", "client": "macbook"}
+        r = self.run_runner(["/bin/sh", "-c", 'echo "o=$RRUN_OWNER"; sleep 2'], action=act, owner=owner)
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertIn("o=session:abc-123\n", r.out)
+        f = dict(x.split("=", 1) for x in seen["own"].rstrip("\n").split("\t"))
+        self.assertEqual((f["id"], f["name"], f["client"]), ("session:abc-123", "billing rm -rf / x", "macbook"))
+        self.assertEqual(f["pid"], seen["who"].split()[2])
+        self.assertTrue(f["cmd"].startswith("/bin/sh -c echo"))
+        self.assertRegex(seen["who"], r"^%s \d+ \d+ %s\n$" % (re.escape(SLUG), WT))   # .who keeps 4 fields
+        # the title is cut to the runner's original argv length here (`perl rr_runner.pl`; the real
+        # loader's `perl -e <loader>` leaves plenty of room)
+        self.assertIn("rrun-runner owner=session:abc-123 window=billing_rm_-rf_/_x", seen["ps"])
+        self.assertFalse(os.path.exists(own))                                # removed with the slot
+
+    def test_slot_wait_repeats_with_position_and_holder_owner(self):
+        slots = os.path.join(self.root, "slots")
+        os.makedirs(slots)
+        wfile(os.path.join(slots, "0.who"), "other-repo %d 1 aaaaaaaaaaaa\n" % (time.time() - 42))
+        wfile(os.path.join(slots, "0.own"), "id=session:x\tname=ops window\tclient=m\tstart=1\tpid=1\tcmd=x\n")
+        os.makedirs(os.path.join(self.root, "wait"))
+        wfile(os.path.join(self.root, "wait", str(os.getpid())), "%.3f\n" % (time.time() - 5))   # ahead of us
+        wfile(os.path.join(self.root, "wait", "999999"), "1.0\n")                              # dead: dropped
+        with open(os.path.join(slots, "0"), "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            r = self.run_runner(["true"], wait_min=0.04, wait_every=0.5)
+        self.assertEqual(r.rc, 73)
+        waits = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce + " WAIT")]
+        self.assertGreaterEqual(len(waits), 3, r.err)
+        self.assertRegex(waits[0], r" WAIT holder=other-repo age=4\d busy=1 slots=1 ahead=1 howner=ops_window$")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "wait", "999999")))
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "wait"))), [str(os.getpid())])   # ours gone
 
     def test_run_log_one_line_per_run_no_secrets(self):
         r = self.run_runner(["/bin/sh", "-c", "exit 3", "-e", "PGPASSWORD=hunter2", "--env=TOK=sek",

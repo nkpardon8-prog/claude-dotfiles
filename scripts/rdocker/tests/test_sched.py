@@ -106,6 +106,58 @@ class Eta(unittest.TestCase):
         h.probe = {"hist": [[20, "npx vitest run --shard=1/5"], [10, "npm run lint"], ["bad", "x"], [1]]}
         self.assertEqual(rd_pool.history_costs(h), {"normal": [200.0], "light": [20.0]})
 
+    def test_same_command_history_beats_the_class_median(self):
+        """2026-11-11: a whole `npx vitest run` ran 66-80 min on the free, slow rd-mini-a (speed 0.42)
+        because it was costed like the one-file vitest runs that fill the class median. Earlier runs
+        of the SAME command now set the cost, so the slow free worker loses to a faster busy one
+        whose holder ends sooner (wait for it: promote when its eta <= 0.5x)."""
+        small = [[30, "npx vitest run src/a.test.ts"]] * 6
+        whole = [[1200, "npx vitest run [cpu_share=2 --maxWorkers]"]]       # once, on the fast one
+        fast = dict(probe(slots_cap=1, slots_busy=1, ncpu=8), ages=[100],
+                    jobs=[{"cmd": "npx tsc --noEmit", "start": time.time() - 100}])
+        p, _ = self.plan([worker("mini-a", 0.42), worker("fast", 2.0)],
+                         {"mini-a": dict(probe(ncpu=4), hist=small), "fast": dict(fast, hist=small + whole)},
+                         job=VITEST)
+        a = next(h for h in p.hosts if h.name == "mini-a")
+        f = next(h for h in p.hosts if h.name == "fast")
+        self.assertAlmostEqual(a.run_s * a.eff, 1200 * 2.0)              # the pool's same-command cost
+        self.assertEqual(self.names(p)[0], "fast")
+        self.assertIs(p.promoted, f)
+        self.assertLessEqual(f.eta, rd_pool.PROMOTE_RATIO * a.eta)
+        # a one-file run still goes to the free worker: the busy one is not 2x better
+        p, _ = self.plan([worker("mini-a", 0.42), worker("fast", 2.0)],
+                         {"mini-a": dict(probe(ncpu=4), hist=small), "fast": dict(fast, hist=small + whole)},
+                         job=rd_pool.classify(["npx", "vitest", "run", "src/a.test.ts"]))
+        self.assertEqual(self.names(p)[0], "mini-a")
+        self.assertIsNone(p.promoted)
+        self.assertEqual(rd_pool.run_sig(["env", "TOK=s", "npx", "-e", "x", "a\tb"]),
+                         "env TOK=<redacted> npx -e <redacted> a b")
+
+    def test_holder_with_known_command_sets_the_queue(self):
+        """A busy worker's queue = when its holder's own command (slots/<i>.own) should end."""
+        hist = [[1000, "npx vitest run"]] * 3 + [[10, "npm run lint"]] * 5
+        busy = dict(probe(slots_cap=1, slots_busy=1, ncpu=8), ages=[100], hist=hist,
+                    jobs=[{"cmd": "npx vitest run", "start": time.time() - 100}])
+        p, _ = self.plan([worker("a", 1.0), worker("b", 1.0)], {"a": busy}, job=LINT)
+        a = next(h for h in p.hosts if h.name == "a")
+        self.assertAlmostEqual(a.queue_s, 900, delta=5)
+
+    def test_wait_lines_carry_position_and_eta(self):
+        sess = rd_run.Session({"rr_wait_min": 30}, [], "0" * 32, rd_run.Timing(False))
+        sess.host_name, sess.wait_eta_s = "hp", 300
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err):
+            sess.on_status("WAIT holder=dentall.1 age=120 busy=4 slots=4 ahead=2 howner=billing")
+            sess.wait_since -= 120
+            sess.on_status("WAIT holder=dentall.1 age=240 busy=4 slots=4 ahead=0 gate=heavy")
+        a, b = err.getvalue().splitlines()
+        self.assertEqual(a, "rrun: waiting for a slot on hp: 4 of 4 slots busy; held longest by dentall.1 "
+                            "(billing) for 120s; 2 other runs waiting ahead of this one; expected wait ~5 min; "
+                            "tries elsewhere after 2 min")
+        self.assertIn("still waiting for a slot on hp (2 min so far)", b)
+        self.assertIn("every heavy-job slot is taken", b)
+        self.assertIn("next in line; expected wait ~3 min", b)
+
     def test_an_overloaded_worker_is_held_off_not_piled_on(self):
         """2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still taking jobs.
         load1 / ncpu >= 1.5 => busy (after every free worker), its run estimate x load/ncpu."""
@@ -153,6 +205,21 @@ class Eta(unittest.TestCase):
 
 class ProbeExtras(unittest.TestCase):
     setUp, run_probe = test_pool.ProbeSnippet.setUp, test_pool.ProbeSnippet.run_probe
+
+    def test_jobs_from_own_files_of_held_slots_only(self):
+        fh = open(os.path.join(self.root, "slots", "1"), "a")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        self.addCleanup(fh.close)
+        sl = os.path.join(self.root, "slots")
+        test_run.wfile(os.path.join(sl, "1.who"), "app.1 100 4242 abcdef012345\n")
+        test_run.wfile(os.path.join(sl, "1.own"), "id=session:s1\tname=win a\tclient=mac\tstart=100\tpid=4242\tcmd=npx tsc\n")
+        test_run.wfile(os.path.join(sl, "0.who"), "app.1 100 7 abcdef012345\n")              # not held
+        test_run.wfile(os.path.join(sl, "0.own"), "id=session:old\tstart=1\tpid=7\tcmd=x\n")
+        o = self.run_probe({"slots": 2})
+        self.assertEqual(o["jobs"], [{"id": "session:s1", "name": "win a", "client": "mac", "start": 100,
+                                      "pid": "4242", "cmd": "npx tsc", "slot": 1}])
+        test_run.wfile(os.path.join(sl, "1.who"), "app.1 100 5555 abcdef012345\n")           # a new holder
+        self.assertEqual(self.run_probe({"slots": 2})["jobs"], [])
 
     def test_holder_ages_and_runs_log_tail(self):
         fh = open(os.path.join(self.root, "slots", "1"), "a")

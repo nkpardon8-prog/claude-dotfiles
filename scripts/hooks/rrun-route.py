@@ -19,7 +19,9 @@ Behavior:
     a skip marker is present: RRUN=0, real-od/, doctor-drive, --approve=browser.
   * One-shot dev commands (judge(), on top of the patterns): `npx [--prefix X] tsc` with --noEmit
     or -p/-b configs that all set "noEmit": true; `npx vitest run ...` (also `npm exec ...`); `npx jest ...`;
-    `npx eslint ...`; `./node_modules/.bin/<tool>` the same; `npm test` / `npm run test*` /
+    `npx eslint ...`; `./node_modules/.bin/<tool>` the same, and an absolute
+    `/.../node_modules/.bin/<tool>` inside the worktree (rewritten relative to the cwd: the laptop path
+    does not exist on the worker; only for a node_modules rrun installs there - worker_tool_path); `npm test` / `npm run test*` /
     `typecheck*` / `type-check*` / `lint*` when package.json defines the script. Only when the
     segment's cwd is in a git repo and the nearest lockfile is npm's (workers run `npm ci`; no
     pnpm / yarn / bun, and no bare `tsc` - a worker's PATH has no node_modules/.bin).
@@ -276,7 +278,7 @@ def shell_c(cmd, shape, toks, k):
     return qs + 1, qe - 1
 
 
-def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0, builds=None, cwd=None):
+def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0, builds=None, cwd=None, seg_cwd=None):
     """-> replacement text for cmd[s:e], or None when the segment is not fully understood."""
     if op in ("|", "|&"):
         return None
@@ -335,7 +337,14 @@ def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0, builds=None, c
     if UNSAFE_IN_SEGMENT.search(cmd[s:e]):
         return None
     flags = "".join("-e %s " % n for n in dict.fromkeys(names))
-    return lead + env + kept + "rrun " + flags + cmd[head[0]:e]
+    tail = cmd[head[0]:e]
+    if os.path.isabs(head[1]):                                # /abs/.../node_modules/.bin/<tool>
+        top = git_top(seg_cwd) if seg_cwd else None
+        tool = worker_tool_path(head[1], seg_cwd, top) if top else None
+        if tool is None:
+            return None
+        tail = tool + cmd[head[0] + len(head[1]):e]
+    return lead + env + kept + "rrun " + flags + tail
 
 
 def shell_c_script(cmd, shape, s, e):
@@ -524,6 +533,34 @@ def nearest(start, top, names):
         d = os.path.dirname(d)
 
 
+BIN_PATH_RE = re.compile(r"^(?:.*/)?node_modules/\.bin/[^/]+$")
+
+
+def worker_tool_path(word, cwd, top):
+    """A tool given by path (`./node_modules/.bin/tsc`, `/abs/repo/node_modules/.bin/vitest`) -> the
+    word to use on the worker, or None to leave the command here. Allowed only for
+    `<dir>/node_modules/.bin/<tool>` where <dir> is inside this git worktree AND is a dir whose
+    packages rrun installs on the worker: the nearest npm lockfile dir at or above the cwd, or, for
+    a command run at the repo root, a first-level package with its own npm lockfile. An absolute
+    path becomes relative to the cwd (the worker runs it in its mirror; the laptop path does not
+    exist there): /abs/repo/node_modules/.bin/tsc -> ./node_modules/.bin/tsc."""
+    if not BIN_PATH_RE.match(word) or "~" in word:
+        return None
+    path = os.path.realpath(os.path.join(cwd, word))                  # /tmp vs /private/tmp alike
+    pkg = os.path.dirname(os.path.dirname(os.path.dirname(path)))     # the dir holding node_modules
+    rtop, rcwd = os.path.realpath(top), os.path.realpath(cwd)
+    if pkg != rtop and not pkg.startswith(rtop + os.sep):
+        return None
+    lock = nearest(rcwd, rtop, NPM_LOCKS)
+    own_lock = any(os.path.isfile(os.path.join(pkg, n)) for n in NPM_LOCKS)
+    if not ((lock and lock[0] == pkg) or (rcwd == rtop and os.path.dirname(pkg) == rtop and own_lock)):
+        return None
+    if not os.path.isabs(word):
+        return word
+    rel = os.path.relpath(path, rcwd)
+    return rel if rel.startswith("../") else "./" + rel
+
+
 def script_body(pkg_dir, top, name):
     """The package.json script `name` npm would run from pkg_dir, or None when not found."""
     found = nearest(pkg_dir, top, ("package.json",))
@@ -581,6 +618,8 @@ def judge(words, cwd, pattern_hit):
     job = parse_job(core)
     if job is None:
         return pattern_hit and not any(w in ("-w", "-u") for w in core)
+    if job.get("tool") and "/" in core[0] and worker_tool_path(core[0], cwd, top) is None:
+        return False                                          # a path the worker cannot run
     kind = job.get("tool") or "script"
     if any(w in SHORT_VETO[kind] for w in job["args"]):
         return False
@@ -624,8 +663,9 @@ def route(cmd, patterns, depth=0, builds=None, cwd=None):
     segs, masked, shape = scanned
     regs = [re.compile(p) for p in patterns]
     cwds = seg_cwds(cmd, segs, masked, cwd) if cwd else [None] * len(segs)
-    hits = []
+    hits, hit_cwd = [], {}
     for (s, e, op), c in zip(segs, cwds):
+        hit_cwd[s] = c
         text = masked[s:e]
         words = WORD_RE.findall(text)
         if depth == 0 and any(r.search(shell_c_script(cmd, shape, s, e)) for r in regs):
@@ -645,7 +685,7 @@ def route(cmd, patterns, depth=0, builds=None, cwd=None):
         return None                                           # earlier state would not reach the mini
     out = cmd
     for s, e, op in reversed(hits):
-        new = rewrite_segment(cmd, shape, s, e, op, patterns, depth, builds, cwd)
+        new = rewrite_segment(cmd, shape, s, e, op, patterns, depth, builds, cwd, hit_cwd.get(s))
         if new is None:
             return None                                       # unsure about one -> touch none
         out = out[:s] + new + out[e:]

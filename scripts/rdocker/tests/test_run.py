@@ -483,10 +483,10 @@ class RunTest(RunBase):
             p = subprocess.Popen([RRUN, "/bin/sh", "-c", "trap '' INT; touch %s; while :; do sleep 0.1; done"
                                   % ready], cwd=self.wt, env=self.env(), stdout=subprocess.DEVNULL, stderr=ef)
         end = time.time() + 30
-        while "waiting for a Mac mini slot" not in self.read(errf):
+        while "waiting for a slot on the Mac mini" not in self.read(errf):
             self.assertLess(time.time(), end, self.read(errf))
             time.sleep(0.05)
-        self.assertIn("held by other.repo for 4", self.read(errf))
+        self.assertIn("held longest by other.repo for 4", self.read(errf))
         os.close(fd)
         while not os.path.exists(ready):
             self.assertLess(time.time(), end, "remote command never started")
@@ -496,7 +496,7 @@ class RunTest(RunBase):
         self.assertIsNone(p.poll())
         p.send_signal(signal.SIGINT)                         # second: stdin closed -> group TERM
         self.assertEqual(p.wait(30), 128 + signal.SIGTERM)
-        self.assertEqual(self.read(errf).count("waiting for a Mac mini slot"), 1)
+        self.assertEqual(self.read(errf).count("waiting for a slot on the Mac mini"), 1)
 
     def test_worktree_lock_serialises(self):
         rr = rd_run.resolve_worktree(self.wt)
@@ -540,6 +540,150 @@ class RunTest(RunBase):
         r = self.rrun("/bin/sh", "-c", 'echo "$RDOCKER_MODE"', RRUN="0")
         self.assertEqual(r.stdout, "local\n")
         self.assertFalse(os.path.exists(self.sshlog))
+
+
+class HangsAndOwners(RunBase):
+    """2026-11-11: a finished test:db held its worktree lock ~4 h; an eslint sat 1 h 38 m silent; an
+    agent killed another session's job it could not tell apart from its own."""
+
+    def wt_lock_free(self):
+        rr = rd_run.resolve_worktree(self.wt)
+        lock = os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.lock" % rr["wt12"])
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+
+    def test_leftover_child_does_not_keep_rrun_or_the_lock(self):
+        self.write_cfg(rr_exit_grace_s=1)
+        t0 = time.time()
+        r = self.rrun("/bin/sh", "-c", "(sleep 60; echo late) & echo main-done; exit 3", timeout=40)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertLess(time.time() - t0, 20)
+        self.assertEqual(r.stdout, "main-done\n")
+        self.assertTrue(self.wt_lock_free())
+
+    def test_silent_job_gets_a_watchdog_line(self):
+        r = self.rrun("/bin/sh", "-c", "sleep 3; echo done", RRUN_SILENT_MIN="0.02")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stderr, r"rrun: no output for \d+ s \(worker mini, running \d+ s\)")
+        r = self.rrun("/bin/sh", "-c", "sleep 2; echo done", RRUN_SILENT_MIN="0")
+        self.assertNotIn("no output", r.stderr)
+
+    def test_wall_clock_cap_exits_124_and_frees_the_lock(self):
+        t0 = time.time()
+        r = self.rrun("/bin/sh", "-c", "echo started; sleep 60", RRUN_TIMEOUT="0.02", timeout=40)
+        self.assertEqual(r.returncode, 124, r.stderr)
+        self.assertLess(time.time() - t0, 25)
+        self.assertIn("wall-clock cap", r.stderr)
+        self.assertIn("RRUN_TIMEOUT", r.stderr)
+        self.assertTrue(self.wt_lock_free())
+        self.assertEqual(rd_run.timeout_s({}, "db", {}), 90 * 60)
+        self.assertEqual(rd_run.timeout_s({}, "light", {}), 30 * 60)
+        self.assertEqual(rd_run.timeout_s({}, "heavy", {"RRUN_TIMEOUT": "0"}), 0)
+        self.assertEqual(rd_run.timeout_s({"rr_timeout_min": {"build": 5}}, "build", {}), 300)
+
+    def test_owner_tag_status_and_mine(self):
+        os.makedirs(os.path.join(self.home, ".claude", "session-status"))
+        wfile(os.path.join(self.home, ".claude", "session-status", "sess-1.txt"), "billing window\nx\n")
+        ready = os.path.join(self.d, "ready")
+        p = self.popen("/bin/sh", "-c", "touch %s; sleep 4" % ready, CLAUDE_CODE_SESSION_ID="sess-1")
+        end = time.time() + 30
+        while not os.path.exists(ready):
+            self.assertLess(time.time(), end, "never started")
+            time.sleep(0.05)
+        mine = self.rrun("--mine", CLAUDE_CODE_SESSION_ID="sess-1")
+        self.assertEqual(mine.returncode, 0, mine.stderr)
+        self.assertIn("billing window (session:sess-1) = you", mine.stdout)
+        self.assertRegex(mine.stdout, r"mini +\d\d:\d\d +\d+ s ")
+        self.assertIn("/bin/sh -c touch", mine.stdout)
+        other = self.rrun("--mine", CLAUDE_CODE_SESSION_ID="sess-2")
+        self.assertIn("no of your rrun jobs running", other.stdout)
+        every = self.rrun("--jobs", CLAUDE_CODE_SESSION_ID="sess-2")
+        self.assertIn("billing window (session:sess-1)", every.stdout)
+        self.assertNotIn("= you", every.stdout)
+        st = json.loads(self.read(rd_common.RRUN_STATE.replace(rdmods.TEST_HOME, self.home)))
+        (a,) = st["active"].values()
+        self.assertEqual((a["owner"], a["name"], a["host"]), ("session:sess-1", "billing window", "mini"))
+        self.assertEqual(a["cap_s"], 30 * 60)
+        p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 0)
+        o = rd_run.owner_info({})
+        self.assertRegex(o["id"], r"^pid:\d+$")                     # no session: the parent pid
+
+    def test_worktree_lock_wait_is_bounded_exit_72(self):
+        self.write_cfg(rr_wt_wait_min=0.03, rr_status_every_s=0.5)
+        rr = rd_run.resolve_worktree(self.wt)
+        lock = os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.lock" % rr["wt12"])
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            t0 = time.time()
+            r = self.rrun("/bin/sh", "-c", "echo ran")
+            self.assertEqual(r.returncode, 72, r.stderr)
+            self.assertLess(time.time() - t0, 20)
+            self.assertNotIn("ran", r.stdout)
+            self.assertIn("still holds its lock after 2 s", r.stderr)
+            self.assertIn("exit 72", r.stderr)
+            self.assertTrue(os.path.exists(lock))                     # never unlinked
+        finally:
+            os.close(fd)
+        self.assertEqual(rd_run.wt_wait_s({}, {"cls": "db"}, {}), 90 * 60)  # default: the job's own cap
+
+    def test_busy_worker_re_plans_instead_of_sitting_30_min(self):
+        self.write_cfg(rr_slots=1, rr_slot_wait_s=1, rr_wait_min=0.1)
+        slots = os.path.join(self.home, "rr", "slots")
+        os.makedirs(slots)
+        fd = os.open(os.path.join(slots, "0"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            t0 = time.time()
+            r = self.rrun("/bin/sh", "-c", "echo ran", timeout=90)
+            self.assertEqual(r.returncode, 73, r.stderr)
+            self.assertLess(time.time() - t0, 60)
+            self.assertIn("re-planning", r.stderr)
+            self.assertIn("no worker had a free slot for 6 s; giving up (exit 73)", r.stderr)
+            # freed while it re-plans: it runs
+            threading_timer = __import__("threading").Timer(2.5, lambda: os.close(fd))
+            threading_timer.start()
+            r = self.rrun("/bin/sh", "-c", "echo ran", timeout=90)
+            threading_timer.join()
+            fd = None
+            self.assertEqual((r.returncode, r.stdout), (0, "ran\n"), r.stderr)
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def test_push_has_a_timeout(self):
+        wt = rd_run.resolve_worktree(self.wt)
+        from unittest import mock
+        with mock.patch.object(rd_run.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired(["git"], 300)):
+            with self.assertRaises(rd_run.RunError) as cm:
+                rd_run.push({"host": "mini", "rr_push_timeout_s": 300}, wt)
+        self.assertIn("did not finish in 300 s", str(cm.exception))
+
+    def test_worktree_lock_wait_repeats_with_the_holder(self):
+        self.write_cfg(rr_status_every_s=0.5)
+        rr = rd_run.resolve_worktree(self.wt)
+        lock = os.path.join(self.home, ".local", "state", "rdocker", "rrun-%s.lock" % rr["wt12"])
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        errf = os.path.join(self.d, "err")
+        with open(errf, "w") as ef:
+            p = subprocess.Popen([RRUN, "true"], cwd=self.wt, env=self.env(), stdout=subprocess.DEVNULL, stderr=ef)
+        end = time.time() + 30
+        while "still waiting for the other rrun from this worktree" not in self.read(errf):
+            self.assertLess(time.time(), end, self.read(errf))
+            time.sleep(0.05)
+        os.close(fd)
+        self.assertEqual(p.wait(30), 0)
 
 
 if __name__ == "__main__":

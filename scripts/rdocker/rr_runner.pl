@@ -9,25 +9,37 @@
 #       {nonce, repo_slug, wt12, sha, relcwd, argv[], env{}, deleted[], tar_len,
 #        stamps{dirs[], npm_args[]}, slots, wait_min, keep_containers_on_fail,
 #        optional env_files[], hb_timeout, slots_base, spare_min_free_pct, spare_max_load,
-#        cls, need_gb, heavy_slots, outputs[]}
+#        cls, need_gb, heavy_slots, outputs[], owner{id, name, client}, timeout_s, exit_grace,
+#        wait_every}
 #   cls=heavy + heavy_slots: a heavy job also holds one of $ROOT/slots/heavy-<i> (flock);
 #   need_gb: a slot is only taken while at least that much memory is available (re-checked here,
 #   the client's probe can race another client); outputs: repo-relative build output paths,
 #   deleted from the mirror before the command runs (git clean keeps ignored files) so a stale
 #   dist never copies back. $ROOT/slots.cap (written by rd-tune) caps `slots`; a vitest/jest job gets
 #   max(1, threads / slots) workers (fair_share).
+#   owner: who asked (the client's agent session id or parent pid, its /line window name, its host):
+#   written to $ROOT/slots/<i>.own beside <i>.who (a separate file, so the 4-field .who parsers in
+#   rd_janitor / rd-tune / the reporter stay as they are), shown in our process title and given to
+#   the command as RRUN_OWNER. timeout_s: hard wall-clock cap on the command (0 = none); past it the
+#   command's process group is killed, "<nonce> TIMEOUT <s>" is printed and the run ends with 124.
+#   exit_grace (10 s): when the command's main process exits, leftover children (a DB, a vitest
+#   worker, a dev server) get this long to finish and close the output pipes, then the whole
+#   process group is killed. The command's stdout/stderr are pipes WE relay, never the ssh channel
+#   itself, so a leftover that escaped the group cannot keep the laptop's ssh open either.
+#   wait_every (60 s): a slot wait repeats its "<nonce> WAIT ..." line this often.
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
 #   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start.
 # Exactly-once handshake: after checkout, overlay, deps and the slot, the runner prints
 # "<nonce> READY" and waits. It spawns the command ONLY after reading "GO\n" (then prints
 # "<nonce> STARTED"); EOF / INT / heartbeat timeout before GO => exit without running anything.
 # So a laptop that never wrote GO knows the command never ran (=> safe to run it locally).
-# Status lines go to STDERR as "<nonce> READY|STARTED|WAIT ...|BUSY|KEPT ...|DOCKER|EXIT <rc>"
+# Status lines go to STDERR as "<nonce> READY|STARTED|WAIT ...|BUSY|KEPT ...|DOCKER|TIMEOUT <s>|EXIT <rc>"
 # (DOCKER, just before EXIT: the command called docker through the shim - rrun never caches it). The nonce is 128
 # random bits the tested code never sees (not in its env, shim or container labels; those use a
 # separate random label token), so it cannot forge them. Exit = the command's rc (or 128+sig);
 # 65 bad header/overlay/unsafe path, 69 missing bare repo, 70 runner error, 73 no free slot,
-# 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started.
+# 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started,
+# 124 the command ran past timeout_s and was killed.
 # Every run appends one line to $ROOT/log/runs.log (see run_log; no env values, never fails a run).
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
 # RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server),
@@ -69,6 +81,9 @@ my (%h, $nonce, $label, $tmp, $mirror, $envlist, $lock_fh, $who, $started, $heav
 my (@env_written, @overlay);
 my ($stdin_open, $inbuf, $last_hb, $go) = (1, '', time, 0);
 my ($lost, $intr, $intr_done) = (0, 0, 0);    # lost: laptop gone / runner signalled; intr: Ctrl-C count
+my $timed_out = 0;    # the command hit timeout_s (rc 124)
+my $EX_TIMEOUT = 124; # like timeout(1)
+my ($own, $waitf, $owner_id, $owner_name);    # slots/<i>.own, wait/<pid>, sanitized owner fields
 my $EX_DEPS = 78;    # EX_CONFIG: npm ci / prisma generate failed (never the command's own rc)
 our $supervising = 0;
 our $QUIET = 0;    # run_cmd: also send the tool's stderr to /dev/null
@@ -95,6 +110,7 @@ exit $rc;
 # ------------------------------------------------------------------------------------- main
 sub main {
     read_header();
+    set_owner();
     $label = rand_hex();    # container label token: never the nonce (the command can read labels)
     take_slot();
     $t_slot = time;
@@ -107,6 +123,7 @@ sub main {
     exclude_root();
     my %env = map { defined $ENV{$_} ? ($_ => $ENV{$_}) : () } qw(HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM);
     %env = (%env, %{ $h{env} }, PATH => $path, RRUN_REMOTE => '1');
+    $env{RRUN_OWNER} = $owner_id if defined $owner_id;
     node_heap(\%env);
     docker_up(\%env) if ($h{cls} // '') eq 'db' && colima_managed();
 
@@ -119,9 +136,10 @@ sub main {
     await_go();
     $started = 1;
     $t_spawn = time;
-    my $pid = spawn($argv, \%env, $cwd);
+    my ($pid, $o_r, $e_r) = spawn($argv, \%env, $cwd, 'RELAY');
     status('STARTED');
-    my $rc = supervise($pid);
+    my $rc = supervise($pid, relay => [[$o_r, \*STDOUT], [$e_r, \*STDERR]],
+                       grace => num_or($h{exit_grace}, 10), timeout => num_or($h{timeout_s}, 0));
     # the command called docker (the shim left its marker): the laptop never caches such a result
     status('DOCKER') if !$lost && -e "$tmp/docker.used";
     # the command's own exit code, the moment it ends (before cleanup): a link that dies after this
@@ -316,6 +334,10 @@ sub pump {
     my ($secs) = @_;
     return sleep $secs unless $stdin_open;
     return unless IO::Select->new(\*STDIN)->can_read($secs);
+    read_stdin();
+}
+
+sub read_stdin {
     my $n = sysread(STDIN, my $buf, 4096);
     if (!$n) { $stdin_open = 0; return }
     $last_hb = time;
@@ -578,6 +600,72 @@ sub take_heavy {
     0;
 }
 
+# Who asked for this run (header "owner"): only plain characters survive, so the fields can go
+# into a status line, a tab-separated file and our process title as they are.
+sub clean_field {
+    my ($v, $n) = @_;
+    return undef if !defined $v || ref $v;
+    $v =~ s{[^A-Za-z0-9 ._:@/+-]}{}g;
+    $v =~ s/^\s+|\s+$//g;
+    $v = substr($v, 0, $n);
+    length $v ? $v : undef;
+}
+sub set_owner {
+    my $o = ref $h{owner} eq 'HASH' ? $h{owner} : {};
+    ($owner_id, $owner_name) = (clean_field($o->{id}, 64), clean_field($o->{name}, 48));
+    $h{owner_client} = clean_field($o->{client}, 48);
+    (my $w = $owner_name // '') =~ tr/ /_/;
+    $0 = join ' ', 'rrun-runner', ($owner_id ? "owner=$owner_id" : ()), ($w ne '' ? "window=$w" : ()),
+        ($h{owner_client} ? "from=$h{owner_client}" : ());
+}
+
+# Runs waiting for a slot register as $ROOT/wait/<pid> ("<epoch>"), so a waiter can say how many
+# wait ahead of it. Best effort: a planted symlink or an unwritable dir just means "ahead=0".
+sub join_waiters {
+    my $d = "$ROOT/wait";
+    return '' if -l $d;
+    mkdir $d, 0700 unless -d $d;
+    my $f = "$d/$$";
+    eval { write_file($f, sprintf("%.3f\n", time)) } or return '';
+    $f;
+}
+sub leave_waiters { unlink $waitf if $waitf; $waitf = '' }
+sub waiters_ahead {
+    return 0 unless $waitf;
+    my ($mine) = slurp($waitf) =~ /^(\d+(?:\.\d+)?)/ or return 0;
+    opendir(my $dh, "$ROOT/wait") or return 0;
+    my $n = 0;
+    for my $f (readdir $dh) {
+        next unless $f =~ /^(\d+)$/ && $1 != $$;
+        my $pid = $1;
+        if (!kill(0, $pid)) { unlink "$ROOT/wait/$f"; next }    # its run is gone
+        my ($t) = slurp("$ROOT/wait/$f") =~ /^(\d+(?:\.\d+)?)/;
+        $n++ if defined $t && ($t < $mine || ($t == $mine && $pid < $$));
+    }
+    $n;
+}
+# "WAIT holder=<slug> age=<s> busy=<k> slots=<n> ahead=<a> [gate=heavy|mem] [howner=<who>]": the
+# longest-running holder of the slots we just found locked (its .who; the one expected to finish
+# first), how many slots are held and how many runs wait before us.
+sub wait_line {
+    my ($dir, $n, $gate, $held) = @_;
+    my $old;
+    for my $i (@$held) {
+        my ($slug, $t) = split ' ', slurp("$dir/$i.who");
+        next unless ($t // '') =~ /^\d+$/ && $t <= time;
+        $old = [$i, $slug, $t] if !$old || $t < $old->[2];
+    }
+    my $line = sprintf 'WAIT holder=%s age=%d busy=%d slots=%d ahead=%d',
+        $old ? $old->[1] // '?' : '?', $old ? time - $old->[2] : 0, scalar @$held, $n, waiters_ahead();
+    $line .= " gate=$gate" if $gate;
+    if ($old) {
+        my %f = map { /^([a-z]+)=(.*)$/ ? ($1 => $2) : () } split /\t/, (slurp("$dir/$old->[0].own") =~ /^([^\n]*)/)[0] // '';
+        (my $hw = $f{name} || $f{id} || '') =~ s/[^A-Za-z0-9._:@\/+-]/_/g;
+        $line .= " howner=$hw" if $hw ne '';
+    }
+    $line;
+}
+
 sub take_slot {
     my $dir = mk("$ROOT/slots");
     my $share = share_level();
@@ -589,13 +677,17 @@ sub take_slot {
     my $base = defined $h{slots_base} && $h{slots_base} =~ /^\d+$/ && $h{slots_base} >= 1
         && $h{slots_base} < $n ? $h{slots_base} : $n;
     my $deadline = time + 60 * ($h{wait_min} // 30);
-    my $said;
+    my $every = num_or($h{wait_every}, 60) || 60;
+    my ($said, @held);
     while (1) {
         share_off() if share_level() eq 'off';    # switched off while we waited: move on now
         my $spare = $base < $n && spare_room();
-        my $gate = take_heavy($dir) && mem_ok();
+        my $heavy_ok = take_heavy($dir);
+        my $gate = $heavy_ok && mem_ok();
         if (!$gate && $heavy_fh) { close $heavy_fh; undef $heavy_fh }
-        for my $i ($gate ? (0 .. ($spare ? $n : $base) - 1) : ()) {
+        my @try = $gate ? (0 .. ($spare ? $n : $base) - 1) : ();
+        @held = () if @try;
+        for my $i (@try) {
             # flock(2) == the lock `/usr/bin/lockf -k` takes; it dies with this process (even -9).
             my $fh = open_nofollow("$dir/$i", O_RDWR);
             if (flock($fh, LOCK_EX | LOCK_NB)) {
@@ -608,18 +700,28 @@ sub take_slot {
                 utime(undef, undef, $fh);
                 ($lock_fh, $who) = ($fh, "$dir/$i.who");
                 write_file($who, "$h{repo_slug} " . int(time) . " $$ $h{wt12}\n");
+                # who asked, for `rrun --jobs` / the probe (a separate file: .who keeps its 4 fields)
+                $own = "$dir/$i.own";
+                eval { write_file($own, join("\t", "id=" . ($owner_id // '?'), "name=" . ($owner_name // ''),
+                    "client=" . ($h{owner_client} // ''), "start=" . int(time), "pid=$$",
+                    "cmd=" . redact_argv()) . "\n") };
+                leave_waiters();
                 return;
             }
+            push @held, $i;
             close $fh;
         }
         if ($heavy_fh) { close $heavy_fh; undef $heavy_fh }
-        if (!$said++) {
-            my ($slug, $t) = split ' ', slurp("$dir/0.who");
-            status(sprintf "WAIT holder=%s age=%d", $slug // '?', time - ($t // time));
+        $waitf //= join_waiters();
+        if (!defined $said || time - $said >= $every) {
+            $said = time;
+            status(wait_line($dir, $n, $gate ? '' : $heavy_ok ? 'mem' : 'heavy', \@held));
         }
         my $left = $deadline - time;
         if ($left <= 0) { status('BUSY'); fail(undef, 73) }
-        pump($left < 5 ? $left : 5);    # EOF or Ctrl-C while we wait = the user gave up
+        my $nap = $left < 5 ? $left : 5;
+        $nap = $every if $every < $nap;
+        pump($nap);    # EOF or Ctrl-C while we wait = the user gave up
         fail("laptop went away while waiting", 130) if !$stdin_open || $intr;
     }
 }
@@ -886,14 +988,28 @@ sub npm {    # npm/npx under the same heartbeat supervision as the command (a de
 }
 
 # ------------------------------------------------------------------------------- process
+# $out: undef = inherit our stdout/stderr; a path = both into that file; 'RELAY' = two fresh pipes
+# whose read ends are returned (pid, stdout_r, stderr_r) for supervise() to relay. The command never
+# gets the ssh channel itself: a leftover child (even one that left our process group) can then
+# hold only our pipe, which we stop reading, never the laptop's ssh session.
 sub spawn {
     my ($argv, $env, $cwd, $out) = @_;
+    my $relay = defined $out && $out eq 'RELAY';
+    my ($or, $ow, $er, $ew);
+    if ($relay) { pipe($or, $ow) && pipe($er, $ew) or fail("pipe: $!") }
     my $pid = fork // fail("fork: $!");
-    return $pid if $pid;
+    if ($pid) {
+        return $pid unless $relay;
+        close $ow; close $ew;
+        return ($pid, $or, $er);
+    }
     $SIG{$_} = 'DEFAULT' for qw(INT TERM HUP PIPE);    # ignored signals would survive exec
     setsid();                                          # own session + group: the only group we signal
     open STDIN, '<', '/dev/null';
-    if ($out) { open STDOUT, '>', $out; open STDERR, '>&', \*STDOUT }
+    if ($relay) {
+        close $or; close $er;
+        open STDOUT, '>&', $ow; open STDERR, '>&', $ew; close $ow; close $ew;
+    } elsif ($out) { open STDOUT, '>', $out; open STDERR, '>&', \*STDOUT }
     chdir $cwd or do { print STDERR "rrun-runner: chdir $cwd: $!\n"; _exit(127) };
     %ENV = %$env;
     { no warnings "exec"; exec { $argv->[0] } @$argv }
@@ -913,19 +1029,84 @@ sub alive {
 }
 
 sub signal_group { my ($pid, $sig) = @_; kill($sig, -$pid) || kill($sig, $pid) if alive($pid) }
+# After the leader is reaped its group id stays reserved while any member lives (a pid is never
+# reused as long as a process group of that id exists), so signalling -$pid then is safe.
+sub group_alive { kill(0, -$_[0]) }
+sub num_or { my ($v, $d) = @_; defined $v && !ref $v && $v =~ /^\d+(\.\d+)?$/ ? $v + 0 : $d }
 
+# Copy everything readable from the relay pipes to our stdout/stderr (whole writes: a short write to
+# a slow ssh is finished, never dropped). A pipe at EOF is closed and forgotten.
+sub write_all {
+    my ($fh, $data) = @_;
+    while (length $data) {
+        my $n = syswrite($fh, $data);
+        return unless defined $n;    # the laptop is gone (EPIPE): stdin EOF ends the run
+        substr($data, 0, $n, '');
+    }
+}
+sub io_wait {
+    my ($secs, $pipes) = @_;
+    my $sel = IO::Select->new;
+    $sel->add(\*STDIN) if $stdin_open;
+    $sel->add($_->[0]) for values %$pipes;
+    return sleep $secs unless $sel->count;
+    for my $fh ($sel->can_read($secs)) {
+        if (fileno($fh) == fileno(STDIN)) { read_stdin(); next }
+        my $fd = fileno $fh;
+        my $n = sysread($fh, my $buf, 65536);
+        if ($n) { write_all($pipes->{$fd}[1], $buf); next }
+        close $fh;
+        delete $pipes->{$fd};
+    }
+}
+
+# Wait for the command (or an npm step) while pumping the laptop stream: Ctrl-C lines go to its
+# group, a lost laptop TERMs it (KILL 10 s later). With `relay` (the command): its output is copied
+# through, `timeout` caps its wall-clock time (TIMEOUT status, rc 124), and once the main process has
+# exited, leftover members of its group get `grace` seconds to close the pipes and go away before the
+# group is TERMed, KILLed 10 s later, and checked empty; then we stop reading, whatever still holds a
+# pipe. Silence never kills: only the cap (timeout), a lost laptop, Ctrl-C or the main's exit do.
 sub supervise {
-    my ($pid) = @_;
+    my ($pid, %o) = @_;
     local $supervising = 1;
     my $hb = hb_timeout();
-    my $term_at;
-    while (alive($pid)) {
-        pump(0.1);
-        while ($intr > $intr_done) { $intr_done++; signal_group($pid, 'INT') }
-        $lost = 1 if !$stdin_open || time - $last_hb > $hb;
-        if ($lost && !$term_at) { signal_group($pid, 'TERM'); $term_at = time }
-        signal_group($pid, 'KILL') if $term_at && time - $term_at > 10;    # skipped once reaped
+    my %pipes = map { (fileno($_->[0]) => $_) } @{ $o{relay} || [] };
+    my $relay = %pipes ? 1 : 0;
+    my ($term_at, $exit_at, $gterm_at, $gkill_at);
+    my $t0 = time;
+    while (1) {
+        my $up = alive($pid);
+        if ($up) {
+            while ($intr > $intr_done) { $intr_done++; signal_group($pid, 'INT') }
+            $lost = 1 if !$stdin_open || time - $last_hb > $hb;
+            if ($o{timeout} && !$timed_out && time - $t0 > $o{timeout}) {
+                $timed_out = 1;
+                status(sprintf 'TIMEOUT %d', $o{timeout});
+            }
+            if (($lost || $timed_out) && !$term_at) { signal_group($pid, 'TERM'); $term_at = time }
+            signal_group($pid, 'KILL') if $term_at && time - $term_at > 10;    # skipped once reaped
+        } else {
+            last unless $relay;
+            $exit_at //= time;
+            my $gone = !$stdin_open || time - $last_hb > $hb;    # nobody to relay to any more
+            my $grace = $gone || $lost || $timed_out || $intr > $intr_done ? 0 : $o{grace} // 10;
+            my $grp = group_alive($pid);
+            last if !%pipes && !$grp;
+            if (time - $exit_at >= $grace) {
+                # TERM the group (already done when the cap / a lost laptop stopped the main), KILL
+                # what is left 10 s later, then make sure the group is gone before the slot is freed
+                if (!$gterm_at) { kill('TERM', -$pid) if $grp && !$term_at; $gterm_at = $term_at // time }
+                elsif (!$gkill_at && time - $gterm_at >= 10) { kill('KILL', -$pid) if $grp; $gkill_at = time }
+                if ($gkill_at && (!$grp || time - $gkill_at > 5)) {
+                    print STDERR "rrun-runner: process group $pid survived SIGKILL; leaving it\n" if $grp;
+                    last;    # whatever still holds a pipe (it left the group): stop reading
+                }
+            }
+        }
+        $relay ? io_wait(0.1, \%pipes) : pump(0.1);
     }
+    close $_->[0] for values %pipes;
+    return $EX_TIMEOUT if $timed_out && $relay;
     my $s = $reaped{$pid};
     $s & 127 ? 128 + ($s & 127) : $s >> 8;
 }
@@ -936,6 +1117,8 @@ sub finish {
     local $SIG{$_} = 'IGNORE' for qw(INT TERM HUP);    # cleanup must not be cut short
     eval { delete_env_files(0) };
     eval { containers($rc) } if $started;
+    leave_waiters();
+    unlink $own if $own;
     if ($who) { unlink $who; close $lock_fh }
     close $heavy_fh if $heavy_fh;
     remove_tree($tmp) if $tmp;
@@ -951,7 +1134,7 @@ sub finish {
 # symlink/hardlink at the log is replaced, never written through.
 sub run_outcome {
     my ($rc) = @_;
-    if ($started) { return $lost ? "lost rc=$rc" : $intr ? "interrupted rc=$rc" : "rc=$rc" }
+    if ($started) { return $timed_out ? "timeout rc=$rc" : $lost ? "lost rc=$rc" : $intr ? "interrupted rc=$rc" : "rc=$rc" }
     return 'deps-failed' if $rc == $EX_DEPS;
     return 'busy' if $rc == 73;
     return "refused rc=$rc" if $rc == 65 || $rc == 69;
