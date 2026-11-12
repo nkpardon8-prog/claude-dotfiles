@@ -44,6 +44,10 @@ never count it as a pass or as a known failure.
   set it aside with a short note and move to the next independent part.
 - Never wait on something that is not running. Probe it.
 
-## 6. Spend fewer tokens on talk
+## 6. Right model for the job
+Codex `gpt-6.1-terra` for cheap research and fact lookups. Codex `gpt-6.1-sol` at high effort for
+every plan review, code review and verify pass. Never use Terra for review.
+
+## 7. Spend fewer tokens on talk
 Peer FYIs need no reply unless they ask a question; log them. Owner updates are short and come at
 milestones. While waiting on a job, schedule long wakeups (25 minutes or more), not short polls.
