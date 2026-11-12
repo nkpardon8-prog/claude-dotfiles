@@ -1,5 +1,5 @@
 ---
-description: "Autonomous long-build conductor (playbook, not an engine). Opt-in and HEAVY — per part it runs research + a full /plan reviewer loop (≈4-6 rounds) and a 4 Codex + 3 Claude cross-model code-review panel (≈3-6 rounds), across many parts and many compactions. Lays out a big multi-part roadmap WITH you once, then executes each part on its own through research → /plan(+reviewers) → /implement → /codex-review to honest 2-dry convergence, riding the mission-bridge + /pre-compact so it never loses the thread. For genuinely large builds only; overkill for small work."
+description: "Autonomous long-build conductor (playbook, not an engine). Opt-in and HEAVY: sets a multi-part roadmap WITH you once, then runs each part through research -> /plan -> /implement -> /codex-review with budgeted reviews, landing as it goes. Large builds only."
 argument-hint: "[roadmap/goal | resume | clear [reason] | status | (blank=status)]"
 ---
 
@@ -8,15 +8,13 @@ argument-hint: "[roadmap/goal | resume | clear [reason] | status | (blank=status
 `/mission` is a loose, judgment-driven PLAYBOOK - prose you follow, NOT an engine. It conducts
 four skills - codebase-research -> `/plan`(+reviewers) -> `/implement` -> `/codex-review` - over
 the durable mission-bridge, riding `/pre-compact`, looping implement<->review to honest
-convergence, per part, across many compactions. DO NOT over-engineer or over-constrain: the
-four-skill sequence is the SPINE, not a cage; you stay free to invoke any other skill. Most LOG lines
-are a best-effort boundary checkpoint - observational, never a gate; a missed phase-line degrades resume
-granularity, not work. EXCEPTION: the wake-routine control state (the `AWAIT` marker + the
+convergence, per part, across many compactions. DO NOT over-engineer: the four-skill
+sequence is the SPINE, not a cage; invoke any other skill freely. Most LOG lines
+are best-effort checkpoints, never gates (a missed one degrades resume granularity, not work). EXCEPTION: the wake-routine control state (the `AWAIT` marker + the
 `cursor-hash`/`await-state` reads, §7/§12) IS load-bearing: an `await`/bank `FAILED` → retry then §10
 STOP-LOUD; a `COLLISION` → re-read + reconcile; a `corrupt` cursor/await → §10 STOP-LOUD. Never proceed
-as if succeeded. Opt-in and HEAVY (per part: 4-6 plan-review rounds + a
-4 Codex + 3 Claude code-review panel over 3-6 rounds) - use it ONLY for genuinely large
-multi-part builds; never for a typo, a one-liner, or a single bug fix.
+as if succeeded. Opt-in and HEAVY (§F) - ONLY for genuinely large multi-part builds, never a typo or a
+single bug fix.
 
 ## CONTRACT CORE
 
@@ -41,7 +39,7 @@ post-compact resume) funnels through it, ONE transition.
 ### A. Resolve sid + root + mission file FIRST (§1)
 
 - `sid` = the platform session UUID, STRICTLY `$CLAUDE_SESSION_ID` then `$CLAUDE_CODE_SESSION_ID`.
-  Both empty -> STOP loud. NEVER guess by transcript mtime (that is how two instances collide).
+  Both empty -> STOP loud. NEVER guess by transcript mtime.
 - `root`: `. "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"` then
   `root=$(handoff_canonical_root)`.
 - `mfile=$(mission_resolve_path "$sid" "$root")` - manifest pointer -> deterministic
@@ -49,16 +47,15 @@ post-compact resume) funnels through it, ONE transition.
   newest file". Non-zero rc = hard error -> STOP. Your mission is always owned by your own sid.
 - Before doing mission WORK (not status/clear/stats), stamp the timing entry once:
   `mission-write.sh timing-resume <sid> <root>` (advisory). `MISSION-START` and the first
-  `WORK-START` are LIB-ONLY emissions stamped at create - never log them by hand (the validator
-  REFUSES them through the `log` verb).
+  `WORK-START` are LIB-ONLY emissions stamped at create - never log them by hand (`log` REFUSES them).
 
 ### B. Dispatch modes (§2, §2b)
 
 - blank / `status` -> read-only: run the §H resume read, print mode/part/phase/round/dry + the
   active PLAN directive + PENDING DECISIONS. No mutation.
 - `clear [reason]` -> log `[mission] MISSION-CLEARED status=cleared reason=<slug>` with an EMPTY
-  idtag (lifecycle lines ALWAYS append; a non-empty idtag would dedup-suppress a re-clear after a
-  rebaseline), then `archive-close`.
+  idtag (a non-empty idtag would dedup-suppress a re-clear after a rebaseline), then
+  `archive-close`.
 - `stats` -> read-only `mission_stats_render` (machine-wide lifetime ledger).
 - `tidy` -> `mission_archive_sweep` over this root (reserved keyword, never a new mission).
 - `resume` -> explicit picker: `mission_list`, user picks, `mission_fork` CLONES the pick into
@@ -73,7 +70,7 @@ post-compact resume) funnels through it, ONE transition.
 `MISSION.<sid>.md` holds the four-zone artifact set, each fenced by MZONE markers
 (`<!-- MZONE:<name> n=<nonce8> -->` ... `<!-- /MZONE:<name> ... -->`): **PLAN**, **DURABLE
 NOTES**, **PLAN CHALLENGES**, **PENDING DECISIONS**; the trailing marker line carries sid, nonce,
-plan_hash (sha over the PLAN zone) and gen. Beside it live the LOG sidecar `MISSION.<sid>.log`
+plan_hash and gen. Beside it live the LOG sidecar `MISSION.<sid>.log`
 and rotated archives under `.mission-backups/`.
 
 - **PLAN is write-once/verbatim**: seeded ONCE by `create` (line-1 is the sole machine token
@@ -86,11 +83,9 @@ and rotated archives under `.mission-backups/`.
   either says so. The only `create` REFUSED rc=1 is the root-guard; fails-verify = corrupt (§10).
 - `note` = verbose findings / forced assumptions (DURABLE NOTES); `pending`/`resolve` = the
   batched human-decision queue.
-- Intent precedence on resume when sources disagree: the PLAN zone outranks the handoff chain's
-  north_star, which outranks any ledger/summary line. PLAN wins.
-- UNTRUSTED content (roadmap, objective, reviewer output, captured text) must NEVER be inlined in
-  a shell arg - a DOUBLE-quoted literal executes `$(...)`; a SINGLE-quoted one breaks on an
-  apostrophe. CAPTURE into a var (quoted heredoc/file), pass `"$VAR"`, or file/stdin (§7).
+- Intent precedence on resume: PLAN > handoff north_star > any ledger/summary line.
+- UNTRUSTED content (roadmap, objective, reviewer output, captured text) is NEVER inlined in a
+  shell arg (double quotes execute `$(...)`). CAPTURE into a var (quoted heredoc/file), pass `"$VAR"`, or file/stdin (§7).
 
 ### D. Bridge-write contract (§7)
 
@@ -101,8 +96,7 @@ prefix, no `~` (the permission allowlist byte-matches this exact prefix):
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <sid> <root> [args]
 ```
 
-Every verb + its full signature: the **Verb signatures** table at the end of this core (§I) - the
-single listing, so the two can never drift. **Codex NEVER writes the bridge** - absolute. Code hand-off: §6.5.
+Every verb + signature: the **Verb signatures** table (§I), the single listing. **Codex NEVER writes the bridge** - absolute. Code hand-off: §6.5.
 
 The script ALWAYS exits 0: parse its one stdout status line. `ok` is the ONLY success token.
 The `log` verb emits exactly four leading tokens and each demands a reaction:
@@ -121,9 +115,8 @@ non-zero rc = the STOP did NOT open -> do NOT proceed/auto-advance (S1 naked-yie
 
 ### E. LOG-line grammar (§7 - resume greps read back EXACTLY these shapes)
 
-On-disk line = `<idtag>\t<entry>`. Keep round lines TERSE: the 480B reroute budget covers
-idtag + TAB + entry + newline, and a rerouted line lands in DURABLE NOTES where resume cannot
-grep it. Verbose findings go in a separate `note`, written BEFORE the terse round line.
+On-disk line = `<idtag>\t<entry>`. Keep round lines TERSE (480B budget incl. idtag + TAB + newline; a
+rerouted line lands in DURABLE NOTES, invisible to resume). Verbose findings go in a separate `note`, written BEFORE the terse round line.
 
 - Round: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K>
   dry=<D>[ findings=<COUNT>]`, idtag `m<N>-<phase>-r<K>-d<D>` (d<D> REQUIRED). `findings=` is a bare
@@ -150,7 +143,7 @@ grep it. Verbose findings go in a separate `note`, written BEFORE the terse roun
   pass the bare `m<N>-...` form (a wrong prefix is REFUSED rc=5). Convergence, VOID count and the
   FAIL tally read only the CURRENT generation slice.
 
-Example emission (the exact invocation form):
+Example:
 
 ```
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] part=2 name=auth phase=review round=3 dry=1 findings=2" "m2-review-r3-d1"
@@ -160,44 +153,51 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid>
 
 Per part: **research -> plan -> implement -> review barrier -> convergence loop**. Every fan-out
 is parallel-INDEPENDENT: self-contained prompts, no reviewer sees another's output.
-Never chain reviewers.
+Never chain reviewers. Codex model routing: use gpt-6.1-terra by default for any cheap work
+(research, fact lookups, finding call sites, reading/summarizing logs and test output, mechanical
+edits, drafting docs, first-pass triage) - hand it off rather than spending the conductor's context.
+Use gpt-6.1-sol at high effort for every plan and code review lane, the verify pass, and genuinely
+hard reasoning. Never Terra for review.
 
-1. RESEARCH: Claude explorer subagent + Codex read-only fact pass (prompt via file/stdin, never
-   inlined; check the `.status` sidecar) in parallel; reconcile; contradictions -> `pending` +
+1. RESEARCH: Claude explorer subagent + Codex read-only fact pass (`codex exec -m gpt-6.1-terra`;
+   prompt via file/stdin, never inlined; check the `.status` sidecar) in parallel; reconcile; contradictions -> `pending` +
    `note`, proceed loudly on the more-evidenced branch.
 2. PLAN: `skill: plan` (its built-in Codex pass IS the cross-model lane - do not add a second).
-   REQUIRED before the first implement round: log
-   `test-trust part=<N>=<ok|added|n/a>`; absent on resume = unresolved -> re-assess.
-   Surface a one-line criticer headline if `/plan`'s Criticer Notes have findings (advisory,
-   never gates).
+   Stop after 2 rounds in a row with no NEW design finding; fix design problems by simplifying.
+   REQUIRED before the first implement round: log `test-trust part=<N>=<ok|added|n/a>`; absent on
+   resume = unresolved -> re-assess. Criticer Notes findings -> one-line `criticer` LOG headline
+   (advisory).
 3. IMPLEMENT: `skill: implement --no-review <explicit-per-part-plan-path>` - always the explicit
-   path; `--no-review` makes /mission own the review barrier and the plan lifecycle.
+   path (`--no-review`: /mission owns the barrier + plan lifecycle).
 4. REVIEW BARRIER (parallel, independent): implementation-reviewer subagent + `skill:
-   codex-review --effort high` (raise to xhigh only for genuinely critical parts). A round is
-   VALID only if EVERY reviewer verdict is present: the report file's Engine header must show
-   `Codex-passes: 4/4`, parsed via the `parse-codex-header` verb on `report-final.md` (never grep
-   the body). After `/codex-review` returns, materialize its final text into
-   `review_output` yourself (Write a temp file, read it back); sid/root/N/K/review_output must ALL
-   be non-empty before the VOID block runs (BINDING CONTRACT: §5). N<4, a dead/empty/timed-out
-   reviewer, or legacy `Codex unavailable` -> round is **VOID**: log the VOID line (require `ok`
-   first), run `void-count`; 3 consecutive VOIDs -> `FAIL ... reason=panel-unavailable-3x` +
-   **STOP LOUD immediately** (never wait for the 5-FAIL tally). `void-count` -1 -> STOP (§10).
-   A VOID is re-run fresh, never banked.
-5. Round write order: verbose per-reviewer findings `note` FIRST, THEN the terse round line
-   (resume keys on the round line; the reverse order strands a banked round with no findings).
+   codex-review --effort high` (round 1 = whole part; later rounds add
+   `--base <last reviewed SHA>` = fix diff only). A round is VALID only if EVERY reviewer verdict
+   is present: the report file's Engine header must show `Codex-passes: 4/4`, parsed via the
+   `parse-codex-header` verb on `report-final.md` (never grep the body). After `/codex-review`
+   returns, materialize its final text into `review_output` yourself; sid/root/N/K/review_output must ALL be non-empty before the VOID block runs (BINDING
+   CONTRACT: §5). N<4, a dead/empty/timed-out reviewer, or legacy `Codex unavailable` -> round is
+   **VOID**: log the VOID line (require `ok` first), run `void-count`; 3 consecutive VOIDs ->
+   `FAIL ... reason=panel-unavailable-3x` + **STOP LOUD immediately**. `void-count` -1 -> STOP (§10). A VOID is re-run fresh, never banked.
+5. Round write order: verbose per-reviewer findings `note` FIRST, THEN the terse round line.
    Actionable findings -> log `phase=fix` for the SAME round, fix, re-run the barrier as round
    K+1. Never re-run an idtag round you already banked.
 
-CONVERGENCE rules: stop at **2 consecutive non-void DRY rounds** - "dry" = the independent
-reviewers returned zero new actionable findings, logged verbatim.
-An ACTIONABLE round **RESETS dry -> 0** (including an actionable re-run of a VOIDed round - a
-dry=2 streak can never span a code change); a VOID alone never advances dry. Soft targets: plan
-reviews 4-6, codex reviews 3-6. `findings=` on a round line counts BLOCKING findings ONLY (§6.0); non-blocking ones are recorded
-verbatim and NEVER fixed in-part. CAP: <=6 BLOCKING-producing rounds, dry pair EXEMPT; cap hit -> PARK
-the part, never a STOP (§6.1). Once dry=1 banks the window is FROZEN: no code change, no
-phase=fix/implement until dry=2 + live-verify + PART-DONE land (§6.2).
-Convergence is computed ONLY from `phase=review` (or VOID)
-lines - never from fix/plan/implement/research lines.
+CONVERGENCE: stop at **2 consecutive non-void DRY rounds** (dry = zero new BLOCKING findings).
+An ACTIONABLE round **RESETS dry -> 0** (incl. an actionable re-run of a VOIDed round - a dry=2
+streak never spans a code change); a VOID never advances dry. `findings=` counts BLOCKING ONLY
+(correctness, security, PHI, money, data loss - §6.0); the rest is recorded verbatim, NEVER fixed
+in-part. Same kind of problem twice -> fix the class or simplify. CAP: <=3 BLOCKING-producing rounds,
+dry pair EXEMPT; then re-plan the part once smaller; hit again -> PARK (note it, next independent
+part), never a STOP (§6.1). Once dry=1 banks the window is FROZEN: no code change, no
+phase=fix/implement until dry=2 + live-verify + PART-DONE land (§6.2). Convergence is computed ONLY
+from `phase=review` (or VOID) lines.
+
+THROUGHPUT (rules/build-throughput.md): LAND FIRST - at PART-DONE add the exact SHA to
+`~/.claude/push-queue.md` (line format: rules §2, §6.6), build the next APPROVED part on top; no unplanned scope while work is unlanded. KNOWN REDS (also failing
+on origin/dev): record once (command + failure), never re-prove. Targeted tests in-part, full suite
+once at close; infra-broken run = invalid, rerun. STUCK: job silent 20 min -> check; past 2x normal
+-> stop (own, exact id), rerun once, report. Part past 2x planned time -> re-plan smaller once, then
+PARK. Waiting on a job: heartbeat 1500-3300s, not short polls.
 
 ### G. PART-DONE gate (§5 tail)
 
@@ -221,8 +221,7 @@ Used by status, resume, and every post-compaction re-entry:
   **THEN the live `MISSION.<sid>.log`**. `tail -n 40` and newest-archive-only are BANNED (both
   miss lines past rotation).
 - Derive four values: `cur_part` (last PART-START|PART-DONE part=; empty -> 1); `mission_state`
-  (last `MISSION-(CLEARED|REBASELINED)` line - the GLOBAL active-iff gate; transient progress
-  lines NEVER gate it); `last_review` (part-scoped last `phase=review` round OR VOID - the ONLY
+  (last `MISSION-(CLEARED|REBASELINED)` line - the GLOBAL active-iff gate); `last_review` (part-scoped last `phase=review` round OR VOID - the ONLY
   input to convergence: you need `2 - dry` more dry rounds); `last_round`/`last_progress`
   (positioning only).
 - Active-iff: latest lifecycle = CLEARED -> INACTIVE; latest = REBASELINED status=active ->
@@ -240,8 +239,7 @@ Used by status, resume, and every post-compaction re-entry:
   the in-flight fix, then barrier as K+1; `phase=review findings>0` -> fix of the SAME round K;
   `phase=review findings=0` -> next fresh round K+1; latest line for K is VOID -> re-run K fresh;
   `phase=research|plan|implement` -> continue that phase, then the barrier.
-- `test-trust` recovered = honored; absent = unresolved. Intent precedence: PLAN > north_star >
-  ledger (§C).
+- `test-trust` recovered = honored; absent = unresolved. Intent precedence: §C.
 
 ### I. Hard rules + loud stops (§9, §10, §11)
 
@@ -458,8 +456,9 @@ MISSION MODE: build
 <the multi-part roadmap: parts, sequence, intended outcome>
 
 Standing directive: route substantial work through research → /plan(+reviewers) → /implement →
-/codex-review, looping to 2 honest dry rounds (independent reviewers judge dryness); soft targets
-plan 4-6 / codex 3-6, cap per §6.1; /pre-compact freely interleaved; active until a
+/codex-review, looping to 2 honest dry rounds (independent reviewers judge dryness); review budgets
+per §6 (plan: stop after 2 rounds with no new design finding; code: cap <=3 blocking rounds per
+§6.1); land each finished part first (push queue, §6.6); /pre-compact freely interleaved; active until a
 [mission] MISSION-CLEARED line appears in the LOG.
 EOF
 )
@@ -586,7 +585,8 @@ spots. Never chain reviewers "to save work."
 Spawn in parallel, blind to each other:
 - a **Claude explorer subagent** (primary: architecture / scope / risk) — spawned normally; its model
   and effort come from `agents/codebase-explorer.md`, so pass NO per-call override;
-- a **Codex read-only fact pass** proving deps / build & test commands / runtime. The scope-prove
+- a **Codex read-only fact pass** on **gpt-6.1-terra** (cheap research model; the wrapper runs
+  `codex exec -m gpt-6.1-terra` from `CODEX_MODEL`) proving deps / build & test commands / runtime. The scope-prove
   prompt carries mission-DERIVED scope (untrusted), so it must **NEVER** be inlined into a double-quoted
   command arg — a `$(...)`/backtick in the derived scope would EXECUTE in your shell before
   `codex -s read-only` ever starts (§7 injection rule). Write the prompt to a file and feed it via
@@ -596,7 +596,7 @@ Spawn in parallel, blind to each other:
   # the house wrapper — it always feeds stdin from the file (`- < promptfile`), inherits the config's
   # effort — pinned to `high` by the explicit CODEX_EFFORT prefix — and writes a machine-readable `.status`
   # sidecar; no untrusted text ever reaches the shell:
-  CODEX_EFFORT=high bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh /tmp/mission-scope-prompt.$$ /tmp/mission-scope-out.$$ <root>
+  CODEX_MODEL=gpt-6.1-terra CODEX_EFFORT=high bash /Users/omidzahrai/.claude-dotfiles/scripts/codex-exec.sh /tmp/mission-scope-prompt.$$ /tmp/mission-scope-out.$$ <root>
   # CHECK THE .status sidecar — codex-exec writes ok|timeout|unavailable|nonzero-N. On anything but
   # `ok` the scope pass did NOT run (Codex down / timed out); do NOT treat an empty/partial
   # /tmp/mission-scope-out.$$ as "no facts found" — note the degrade and lean on the Claude fact pass:
@@ -637,7 +637,9 @@ Parse the returned status line (Section 7). This is a **durable resume marker**:
 via the grep-over-FULL-log idiom (Section 8 — it must survive log rotation). **Absence = unresolved**
 → re-assess test-trust before any implement round; **presence = honored** → trust the recorded verdict
 and proceed. Merge/dedupe reviewer findings (overlap = confidence, divergence = signal); iterate; log
-each plan round (Section 7 round-line schema).
+each plan round (Section 7 round-line schema). **Plan review budget:** stop after **2 rounds in a row
+with no NEW design finding**. Fix a design problem by simplifying the design, not by adding machinery;
+the plan stays design-level - code detail is the code review's job.
 
 ### Phase 3 — IMPLEMENT  ∥  Phase 4 — REVIEW BARRIER (the parallelism win)
 Invoke the Skill tool with `skill: implement --no-review <explicit-per-part-plan-path>` — **always
@@ -666,11 +668,12 @@ Then run the **REVIEW BARRIER** — both IN PARALLEL, independent, neither sees 
   judgment on whether the build matches the plan, and a cheaper model reviewing its own tier's work
   is how a bad build gets waved through;
 - Invoke the Skill tool with `skill: codex-review --effort high`. Continue once it returns. (The
-  `--effort high` arg pins its Codex passes at high → the full 4 Codex + 3 Claude cross-model panel + verify.
-  High is the right floor for this convergence LOOP: it re-runs to 2-dry and finds everything across rounds,
-  so no single pass needs xhigh. For a part you judge genuinely critical — auth, payments, data migrations,
-  deletions / irreversible ops, prod config, untrusted-input parsing — you MAY raise that part's barrier to
-  `skill: codex-review --effort xhigh` instead. Rare by design; the loop default stays `--effort high`.)
+  `--effort high` arg pins its Codex passes at gpt-6.1-sol high (never Terra for review) → the full 4 Codex + 3 Claude cross-model panel +
+  verify. ALWAYS high: this convergence LOOP re-runs to 2-dry, so no single pass needs more. **Round 1
+  reviews the whole part; every later round passes `--base <last reviewed SHA>`** (the HEAD the previous
+  round reviewed), so it reviews only the fix diff:
+  `skill: codex-review --effort high --base <last reviewed SHA>`. Record each round's reviewed HEAD in its
+  findings `note` so the next round's base survives a compaction.)
 
 **AWAIT got-bit protocol (Task C — the join that makes a lost barrier-completion wake self-heal).** As
 EACH lane returns AND its usable result is persisted to DURABLE NOTES (the impl-reviewer subagent's
@@ -941,8 +944,9 @@ release may follow) UNLESS you are at a §9 point-of-contact / stop. Schedule EV
 `run_in_background` job is pending (D1: the completion is the fast
 wake, the heartbeat the backstop).
 
-**Push guidance (if you push a converged part's work).** Pushing is not part of the per-part loop, but
-when you do surface completed work upstream, NEVER overwrite another agent's work: `git fetch` the base
+**Push guidance (if you push a converged part's work).** Pushing is not part of the per-part loop:
+queue the converged part's exact SHA on `~/.claude/push-queue.md` (§6.6) and keep building. When you
+do surface completed work upstream, NEVER overwrite another agent's work: `git fetch` the base
 first and check for divergence; on any UNEXPECTED divergence **STOP** (rebase, never force). The bridge
 artifacts live at the canonical root, never inside a per-part worktree, so a push of the code worktree
 never touches the mission LOG.
@@ -951,13 +955,16 @@ never touches the mission LOG.
 
 ## 6. Convergence rules (restated crisply)
 
-- **Soft targets:** plan reviews typically **4-6** (4 is the usual floor); codex reviews typically
-  **3-6**. These are *guidance, not gates*.
+- **Review budgets (rules/build-throughput.md §3):** a plan review stops after **2 rounds in a row with
+  no NEW design finding** (fix design problems by simplifying). A code review's round 1 covers the whole
+  part; later rounds review only the fix diff (`--base <last reviewed SHA>`). The same kind of problem
+  found twice -> fix the whole class or simplify the design, never one instance per round. The hard
+  limit is the §6.1 cap.
 
 #### 6.0 What counts as a finding — the severity floor (canonical definition)
 
 > A finding is **BLOCKING** if and only if it is: wrong behaviour reaching a user or a record; data
-> loss or corruption; a security or tenant-isolation breach; PHI exposure; a broken operator or
+> loss or corruption; a security or tenant-isolation breach; PHI exposure; a money error; a broken operator or
 > recovery path; or a test that can pass while the thing it guards is broken. **Everything else is
 > NON-BLOCKING.** Classify by which list it belongs to, **not by how confident or how large the
 > finding is.**
@@ -992,17 +999,20 @@ what is *written down*. That note is already the crash-safe record (§7).
 
 #### 6.1 The cap — what it actually does
 
-- **At most 6 rounds that produce BLOCKING findings**, per part. Rounds that produce only
+- **At most 3 rounds that produce BLOCKING findings**, per part. Rounds that produce only
   non-blocking findings, and VOID rounds, do **not** count against it.
 - **The `dry=1 → dry=2` pair is EXEMPT** and always runs to completion.
 
-Both clauses are load-bearing. Counting *all* rounds against a cap of 6 makes a part whose first
-clean round is round 6 permanently unclosable — the fold needs **two adjacent** clean rounds, so it
-would need a round 7 the cap forbids. Counting only blocking-producing rounds, with the dry pair
+Both clauses are load-bearing. Counting *all* rounds against a cap of 3 makes a part whose first
+clean round is round 3 permanently unclosable — the fold needs **two adjacent** clean rounds, so it
+would need a round 4 the cap forbids. Counting only blocking-producing rounds, with the dry pair
 exempt, removes that trap.
 
-**Cap exhausted → PARK the part, do not STOP the mission.** A STOP-LOUD here would freeze every
-remaining part over one stubborn one:
+**Cap exhausted the first time → re-plan the part ONCE, smaller** (a blocking finding that survives 3
+rounds means the design is wrong, not the patch): `note` why, re-run `/plan` for a reduced scope, and
+the reworked part starts a fresh cap of 3. **Cap exhausted again → PARK the part, do not STOP the
+mission** - non-blocking: note it and move to the next independent part. A STOP-LOUD here would freeze
+every remaining part over one stubborn one:
 
 ```
 pending-stop  ->  PushNotification  ->  FAIL ... reason=cap-exhausted-blocking
@@ -1030,11 +1040,14 @@ or `phase=implement` line ordered after the `dry=1` line sets `act`, and the fol
 
 #### 6.3 Fix hygiene and proportionality
 
-- After each `phase=fix` round, run the **affected** suites. Run the **full** suite once before any
-  barrier that could reach `dry=1`. Scoped deliberately: a full DB-dependent suite after each of 27
+- After each `phase=fix` round, run the **affected** (targeted) suites. Run the **full** suite once,
+  at the part's close (before the barrier that could reach `dry=1`). Scoped deliberately: a full DB-dependent suite after each of 27
   fix rounds is what made one overnight run worse, not safer.
 - Tag each new finding `regression` (this part's fixes caused it) or `pre-existing`. **Two
   regressions traced to one fix ⇒ revert and re-approach.** Do not patch the patch.
+- **Known reds:** a check that also fails on the current origin/dev is recorded ONCE (`note`: command +
+  failure text) and not re-proven each round. A run that broke for infrastructure reasons (missing DB,
+  lost worker) is INVALID: rerun it; never count it as a pass or as a known red.
 - **Proportionality, one sentence, measured off something you already have:** when
   `git diff --stat` since `PART-START` shows test/proof lines exceeding source lines by a wide
   margin, record a one-line reason in the round note. No ratio, no per-round arithmetic.
@@ -1126,6 +1139,24 @@ binary so the misbehaviours can be driven on demand, every refusal paired with a
 reaches `ok`). It earned its place immediately - the bridge-write check was anchored on `^MISSION\.`,
 which never matches a `git status --porcelain` line because of the leading status field, so a forged
 `MISSION.*.md` passed straight through until fixture 8 went red.
+
+#### 6.6 Throughput (rules/build-throughput.md) - land first, notice when stuck
+
+- **Land first.** When a part converges (PART-DONE), append one line with its exact SHA to
+  `~/.claude/push-queue.md`: `<date> | <window> | <repo> <branch> | <exact SHA> | <one-line what> | waiting`
+  (mark it `landed <SHA>` when it lands). Then continue to the next APPROVED part, built on top of the
+  finished one. Never start unplanned scope while finished work is unlanded.
+- **Stuck detection.** A helper or test with no new output for 20 minutes: check it. Past 2x its
+  normal duration: stop it (only your own job, by exact id), rerun once, report. A part past 2x its
+  planned time: re-plan it once smaller (as in §6.1); if it still overruns, park it
+  (`reason=part-over-budget`, §12.1 step 4b) and move to the next independent part. Never wait on
+  something that is not running - probe it.
+- **Model routing (rules §6).** Codex `gpt-6.1-terra` is the default for cheap work (research, fact
+  lookups, call-site finding, log/test-output summaries, mechanical edits, doc drafts, first-pass
+  triage). Codex `gpt-6.1-sol` at high effort for every plan and code review lane, the verify pass and
+  genuinely hard reasoning. Never Terra for review.
+- **Wakeups.** While waiting on tracked jobs, schedule long heartbeats (**1500-3300 s**), not short
+  polls; the job's completion is the fast wake.
 
 ---
 
