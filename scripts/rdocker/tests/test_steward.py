@@ -70,6 +70,27 @@ class Remote(unittest.TestCase):
         self.assertNotIn("date -u", line)
 
 
+class Drift(unittest.TestCase):
+    def test_outdated_server_script_is_a_finding(self):
+        want = st.REPO_SHA["rd-doctor"]
+        self.assertEqual(keys(res(sha={"rd-doctor": want})), [])
+        self.assertEqual(keys(res(sha={"rd-doctor": "0" * 16})), ["hp:outdated-rd-doctor"])
+
+    def test_self_autopull_rules(self):
+        import json, tempfile
+        d = tempfile.mkdtemp()
+        st.AUTOPULL = os.path.join(d, "a.json")
+        self.assertEqual([k for k, _ in st.self_rules(NOW)], ["self:no-autopull"])
+        def put(**kw):
+            json.dump(dict({"ts": NOW - 60, "behind": 0, "state": "current", "why": ""}, **kw), open(st.AUTOPULL, "w"))
+        put()
+        self.assertEqual(st.self_rules(NOW), [])
+        put(ts=NOW - 3600)
+        self.assertEqual([k for k, _ in st.self_rules(NOW)], ["self:autopull-stale"])
+        put(state="skipped", behind=3, why="ff blocked")
+        self.assertEqual([k for k, _ in st.self_rules(NOW)], ["self:behind"])
+
+
 class Runbook(unittest.TestCase):
     def test_runbook_forbids_destructive_actions(self):
         for must in ("NEVER", "delete volumes", "git push", "passwords", "reboot", "Needs a human"):

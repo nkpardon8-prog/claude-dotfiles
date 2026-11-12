@@ -71,8 +71,8 @@ done
 [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = main ] || { status skipped "not on main"; exit 0; }
 # Bounded fetch: an unreachable remote must not pile up runs.
 git fetch -q origin main 2>/dev/null & FP=$!
-( sleep 60; kill $FP 2>/dev/null ) & KP=$!
-wait $FP; RC=$?; kill $KP 2>/dev/null
+( sleep 60; kill $FP 2>/dev/null ) 2>/dev/null & KP=$!
+wait $FP; RC=$?; kill $KP 2>/dev/null; wait $KP 2>/dev/null
 [ $RC = 0 ] || { status offline "fetch failed rc=$RC"; exit 0; }
 if git merge-base --is-ancestor origin/main HEAD; then status current ""; exit 0; fi
 if ! git merge-base --is-ancestor HEAD origin/main; then status skipped "local commits not yet pushed (sync hook pushes them)"; exit 0; fi

@@ -49,6 +49,7 @@ st=$(cat /run/rdocker/doctor 2>/dev/null || cat ~/rr/state/doctor.json 2>/dev/nu
 # runs.log stamps are the worker's LOCAL time (+offset), so the cutoff must be local too
 since=$(date -d @$((now-3600)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -r $((now-3600)) +%Y-%m-%dT%H:%M:%S)
 printf 'NOW %s\nDOCTOR %s\n' "$now" "$st"
+for f in rd-doctor rd-tune rd-verify; do p=/usr/local/bin/$f; [ -f "$p" ] || p=/usr/local/libexec/$f; [ -f "$p" ] && printf 'SHA %s %s\n' "$f" "$( (sha256sum "$p" 2>/dev/null || shasum -a 256 "$p") | cut -c1-16)"; done
 tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$since" 'substr($1,1,19) >= s' | grep -o 'outcome=[^ ]*' | sort | uniq -c | sed 's/^/OUT /'
 """
 
@@ -89,6 +90,10 @@ def probe(m):
                 r["doctor"] = json.loads(line[7:])
             except ValueError:
                 r["doctor"] = None
+        elif line.startswith("SHA "):
+            parts = line.split()
+            if len(parts) == 3:
+                r.setdefault("sha", {})[parts[1]] = parts[2]
         elif line.startswith("OUT "):
             mm = re.match(r"OUT\s+(\d+)\s+outcome=(\S+)", line)
             if mm:
@@ -118,12 +123,49 @@ def rules(r, m):
             out.append((f"{n}:disk", f"{n} disk {d.get('disk_free_pct')}% free"))
         if (d.get("mem_free_pct") or 100) < THRESH["mem_free_pct"]:
             out.append((f"{n}:mem", f"{n} memory {d.get('mem_free_pct')}% free"))
+    for name, have in sorted((r.get("sha") or {}).items()):
+        want = REPO_SHA.get(name)
+        if want and have != want:
+            out.append((f"{n}:outdated-{name}", f"{n} runs an outdated {name} (installed {have}, repo {want}): "
+                                               "re-run the server installer (needs sudo)"))
     total = sum(r["outcomes"].values())
     infra = sum(c for o, c in r["outcomes"].items() if INFRA.match(o))
     if total and infra >= THRESH["infra_min"] and infra / total > THRESH["infra_rate"]:
         kinds = ", ".join(f"{o}x{c}" for o, c in sorted(r["outcomes"].items()) if INFRA.match(o))
         out.append((f"{n}:infra", f"{n} {infra}/{total} jobs in the last hour failed for infra reasons ({kinds})"))
     return out
+
+
+def repo_sha():
+    """sha256[:16] of the server scripts in this checkout, keyed by installed name."""
+    import hashlib
+    out = {}
+    for name, rel in (("rd-doctor", "server/rd-doctor.sh"), ("rd-tune", "server/rd-tune.sh"),
+                      ("rd-verify", "server/rd-verify.sh")):
+        try:
+            with open(os.path.join(HERE, "..", rel), "rb") as f:
+                out[name] = hashlib.sha256(f.read()).hexdigest()[:16]
+        except OSError:
+            pass
+    return out
+
+
+REPO_SHA = repo_sha()
+AUTOPULL = os.path.expanduser("~/.claude/.dotfiles-autopull.json")
+
+
+def self_rules(now=None):
+    """This Mac (the always-on agent host) must track origin/main: autopull alive and not behind."""
+    now = now or time.time()
+    try:
+        a = json.load(open(AUTOPULL))
+    except (OSError, ValueError):
+        return [("self:no-autopull", "this Mac has no dotfiles autopull status (run scripts/dotfiles-autopull.sh --install)")]
+    if now - int(a.get("ts") or 0) > 15 * 60:
+        return [("self:autopull-stale", f"dotfiles autopull has not run for {int((now - a.get('ts', 0)) // 60)} min")]
+    if a.get("state") == "skipped" and int(a.get("behind") or 0) > 0:
+        return [("self:behind", f"dotfiles {a.get('behind')} commit(s) behind origin and not updating: {a.get('why')}")]
+    return []
 
 
 RUNBOOK = """You are the rdocker compute-pool steward, running unattended on Nick's Mac mini.
@@ -170,6 +212,7 @@ def main():
         r = probe(m)
         results.append(r)
         findings += rules(r, m)
+    findings += self_rules()
     sig = hashlib.sha256("\n".join(sorted(k for k, _ in findings)).encode()).hexdigest()[:12]
     state_p = os.path.join(STATE, "state.json")
     try:
