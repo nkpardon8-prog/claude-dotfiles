@@ -322,10 +322,36 @@ absent "$X" "terra"
 absent "$X" "Terra"
 # Delta/ledger contract /mission parses (Step 0b + 6e). Dropping any leg silently turns a mission
 # round into one that can never prove `tagged == blocking`.
-req "$X" "Scope: <delta|full> base=<sha12>"
-req "$X" "TAG | <TYPE-KEY> | new|repeat | <area> | <one line>"
+req "$X" "Scope: <delta|full> base=<sha12> head=<sha12>"
+req "$X" "TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>"
 req "$X" "Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new:"
 req "$X" "Verify: failed"
+req "$X" "Verify: deferred"
+# A /mission round (--ledger or --verify) runs at high, final: no xhigh, no self-escalation (mission
+# rework 2026-11-11). Without the pin, Step 0's one-shot escalation would quietly fire inside a loop.
+req_before "$X" 'a /mission round: `EFFORT="high"`, final'
+# Panel completeness per scope (plan 4.2): the code-round panel is 4 Codex + 3 Claude + the outer
+# implementation-reviewer (the --with file) + verify. Plan rounds are /plan --mission's contract.
+req "$X" "A mission code round is complete only with"
+
+# --- /plan --mission and --roadmap (mission rework 2026-11-11, plan 3.1 + 4.3) ---
+# bank-review scope=plan parses this round report; each literal below is a field it reads or a
+# rule a silent drift would remove (a missing lane token reads as a complete panel).
+req "$L" "--mission"
+req "$L" "--roadmap"
+req "$L" "Plan-review: round=<K> | Model: gpt-6.1-sol | Plan-lanes: N/4"
+req "$L" "TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>"
+req "$L" "Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new:"
+req "$L" "Design-new: <n> | Open-design: <n>"
+req "$L" "## Builder notes"
+req "$L" "[mission] RECIPE part=<N> v=<1|2> tier=<low|normal|high>"
+absent "$L" "gpt-6-sol"
+absent "$L" "terra"
+
+# --- implement.md Step 3 (mission rework 5.1): NO_REVIEW skips only the WAVE GATE, never the
+# same-tree chunk-parallel register, so /mission's parallel chunks still spawn in one message.
+req_before "$I" "skip the WAVE GATE; Step 4's same-tree parallel register still applies"
+absent "$I" "otherwise proceed serial"
 
 # --- agents/*.md frontmatter: model + effort must be values the harness ACTUALLY honors ---
 # PROVEN by live probe 2026-08-17, not assumed: frontmatter `model:` and `effort:` are both

@@ -162,5 +162,31 @@ if grep -q 'Do NOT run git' "$CAP" 2>/dev/null && grep -q 'MISSION' "$CAP" 2>/de
   pass "the hard constraints AND the caller's prompt both reach the model"
 else fail "prompt preamble" "captured=$(head -c 120 "$CAP" 2>/dev/null)"; fi
 
+# ── 14. The header CHECKS table names every status token the script can write ────────────────
+# mission.md 6.5 shrank to five lines that point at this header (mission rework 2026-11-11), so the
+# header table is now the only description of what each refusal means. A token the code writes but
+# the table omits is a status an operator reads with no explanation.
+table_gaps() {  # table_gaps <script> -> prints "rows=<n> toks=<n> missing=<list>"
+  local hdr body toks miss="" t
+  hdr=$(awk '/^set -u/{exit} {print}' "$1" | grep -E '^# \| ')
+  body=$(awk 'f{print} /^set -u/{f=1}' "$1")
+  toks=$( { printf '%s\n' "$body" | grep -E '_refuse ' | grep -oE '"[a-z][a-z-]*"( ;;)?$' | tr -d '"; ' | sed 's/^/refused-/';
+            printf '%s\n' "$body" | grep -oE '_status "?[a-z][a-z-]*' | sed -E 's/_status "?//'; } | grep -v -- '-$' | sort -u)
+  for t in $toks; do printf '%s\n' "$hdr" | grep -qF -- "| $t" || miss="$miss $t"; done
+  printf 'rows=%s toks=%s missing=%s' "$(printf '%s\n' "$hdr" | grep -c .)" "$(printf '%s\n' "$toks" | grep -c .)" "${miss# }"
+}
+G=$(table_gaps "$SUT")
+case "$G" in
+  rows=0\ *) fail "header CHECKS table" "$G" ;;
+  *"missing=") pass "header CHECKS table names every status token the code writes ($G)" ;;
+  *) fail "header CHECKS table" "$G" ;;
+esac
+# Negative control: delete one row from a copy of the header; the same check must name that token.
+NEG="$WORK/sut-neg.sh"; awk '/^set -u/{b=1} b || !/^# \| refused-git-moved/' "$SUT" > "$NEG"
+case "$(table_gaps "$NEG")" in
+  *"missing=refused-git-moved") pass "negative control: a row dropped from the table is named as missing" ;;
+  *) fail "negative control" "$(table_gaps "$NEG")" ;;
+esac
+
 printf '\nPASS: %s  FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

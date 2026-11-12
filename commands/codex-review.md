@@ -23,28 +23,29 @@ You are a review orchestrator. You coordinate 4 backgrounded Codex review passes
 
 codex-review runs Codex at `high` reasoning effort by default — the enforced floor; it never runs below high. It has exactly one lever above that: `xhigh` ("extra high"), reserved for genuinely critical reviews. Resolve `EFFORT` in this priority order, then strip any `--effort <value>` token from `$ARGUMENTS` before Step 1 classifies the target (so the flag never leaks into the file path / description / question):
 
+**0. Mission rounds.** `--ledger` or `--verify` in `$ARGUMENTS` makes this a /mission round: `EFFORT="high"`, final - drop any `--effort` value and skip points 1-2. The loop converges across rounds; xhigh inside it is waste.
+
 **1. Explicit caller flag wins — skip self-assessment.**
 - `--effort xhigh` → `EFFORT="xhigh"`.
 - `--effort high` → `EFFORT="high"`.
 - A caller that pins the effort has decided deliberately. In particular, a convergence **LOOP** pins `--effort high` on purpose: it re-runs and finds everything across rounds, so no single pass needs xhigh. Honor the pin verbatim and do NOT self-escalate.
-- When driven as a convergence loop, /codex-review converges in 3–5 rounds to diminishing returns (the default cadence for multi-round use).
 - Any value below high (`medium` / `low` / malformed) is ignored → `EFFORT="high"`.
 
 **2. No explicit flag → default `high`, then self-assess for one-shot escalation.**
 Set `EFFORT="high"`, then judge whether THIS review is critical enough to justify `xhigh`. Escalate to `EFFORT="xhigh"` only when the target trips a criticality signal AND this is a one-shot review (not one iteration of a loop that will re-run):
-- **Escalate to `xhigh` when the target touches:** authentication / authorization, secrets or credential handling, payments / billing / money movement, PII / PHI or other regulated data, database migrations or destructive schema changes, deletion or other irreversible operations, production deploy / config, or security-sensitive parsing of untrusted input — OR the user/caller explicitly called it critical, high-stakes, or "one shot, no retries."
-- **Stay at `high` (do NOT escalate) when:** it's a routine diff, a plan / idea / bug discussion, a low-blast-radius change, or one pass inside a review loop. Loops converge — xhigh on every iteration is wasted; a `high` floor across rounds finds everything.
-- **When genuinely unsure, stay at `high`.** `xhigh` is the rare exception, not the norm — expect it on only a small minority of reviews.
+- **Escalate to `xhigh` when the target touches:** auth, secrets, money movement, PII / PHI, migrations or destructive schema changes, irreversible operations, production deploy / config, or security-sensitive parsing of untrusted input - OR the caller called it critical or "one shot, no retries."
+- **Otherwise, or when unsure, stay at `high`:** routine diffs, plans, ideas, low-blast-radius changes, any pass inside a loop. `xhigh` is the rare exception.
 
 **3. Where effort and model land.** Every Codex call is pinned to model `gpt-6.1-sol` - `CODEX_MODEL=gpt-6.1-sol` on the four `codex-exec.sh` diff lanes, `exec -m gpt-6.1-sol` on the direct file/describe and verify calls - so no lane inherits whatever the config names. The four diff lanes are also pinned to `CODEX_EFFORT=high`; `$EFFORT` feeds only the file/describe passes and the Step 6 verify. State the resolved `EFFORT` in the Step 7 report header; if you self-escalated to `xhigh`, add one line naming the trigger.
 
 ## Step 0b: Delta, scope and ledger flags (used by `/mission`; absent = behaviour unchanged)
 
 Strip these from `$ARGUMENTS` along with `--effort`, holding their values as `BASE_REF`, `SCOPE`, `LEDGER`:
-- **`--base <ref>`** - MODE="branch"; Step 3b-i diffs `<ref>..HEAD` with no base ladder and no merge-base. `SCOPE=delta`, or `SCOPE=full` with **`--scope full`** (a full-part review). Every lens prompt, Codex and Claude, lists the touched files (`$RUN_DIR/touched.txt`) and tells the lens to read each one IN FULL at `RUN_SHA`, not only its hunks. Header token `Scope: <delta|full> base=<sha12>`.
+- **`--base <ref>`** - MODE="branch"; Step 3b-i diffs `<ref>..HEAD` with no base ladder and no merge-base. `SCOPE=delta`, or `SCOPE=full` with **`--scope full`** (a full-part review). Every lens prompt, Codex and Claude, lists the touched files (`$RUN_DIR/touched.txt`) and tells the lens to read each one IN FULL at `RUN_SHA`, not only its hunks. Header token `Scope: <delta|full> base=<sha12> head=<sha12>` (`BASE_SHA` / `HEAD_SHA` from `meta.env`: the exact range reviewed).
 - **`--ledger <file>`** - Steps 1-5 and 7 run as usual, but Step 6 is DEFERRED so the verify can tag the findings of BOTH barrier lanes: persist the Step 5 findings and the ledger (Step 6 "Ledger mode"), and the header carries `Verify: deferred`.
 - **`--verify <run-dir> --with <file>`** - the re-entry after the barrier join. Skip Steps 1-5; reuse `<run-dir>` as `$RUN_DIR`; add the findings in `<file>` (the outer implementation-reviewer's output) to the persisted draft; run Step 6 in ledger mode; rebuild the report and print the trailer per 7f.
-- Under `--ledger` a verify that fails is REPORTED (`Verify: failed`), never skipped - the caller VOIDs that round. A round is valid only on `Verify: ok` with `tagged == blocking`.
+- Under `--ledger` the Sol verify is MANDATORY: `--ledger` without `--base` (no code diff to verify), a missing `--with` file, or a verify that fails is REPORTED as `Verify: failed`, never skipped or downgraded to unverified findings.
+- A mission code round is complete only with `Codex-passes: 4/4`, `Claude-lenses: 3/3`, the outer implementation-reviewer's findings passed through `--with`, and `Verify: ok` with `tagged == blocking`; anything else VOIDs the round (the caller's writer decides, never this skill). A `Verify: deferred` report is never bankable - only the re-entry's is. Plan rounds are `/plan --mission`'s own panel.
 
 ---
 
@@ -128,7 +129,7 @@ CRITICAL - EXACTLY 1 Agent call: the Adversarial + FP-filter lens, passing **`mo
 **Step 3c-claude - EVERY Claude lens must PROVE it ran (sidecar), exactly as each Codex pass does.**
 Append this line verbatim to the prompt of EVERY Claude lens Agent call (all three: architecture, integration, adversarial):
 `As your FINAL action, run: printf 'ok\n' > "<dir>/claude-<slug>.usable"  (<slug> = architecture|integration|adversarial). Do this LAST, after your findings are written - it is the only proof you ran.`
-Then `Claude-lenses: N/3` = the count of `claude-*.usable` files reading `ok` in `<dir>`, **counted off disk at Step 7f**, never from memory. WHY A SIDECAR AND NOT THE ORCHESTRATOR'S OWN RECOLLECTION: a lens that fails to spawn returns nothing, and "nothing" is indistinguishable from "I did not look" in a context window - it is precisely the failure that stayed invisible here. A file on disk is the only version of this claim that can be checked by someone other than the claimant. An Agent call that returns an error, returns empty, or leaves no sidecar is NOT usable and MUST lower `N` - and per the owner ruling of 2026-08-17 (`we cannot move on without reviewing`) a short count VOIDs the round downstream rather than degrading it silently.
+Then `Claude-lenses: N/3` = the count of `claude-*.usable` files reading `ok` in `<dir>`, **counted off disk at Step 7f**, never from memory. Why a sidecar: a lens that fails to spawn returns nothing, which in a context window looks the same as "I did not look"; a file on disk can be checked by someone other than the claimant. An Agent call that returns an error, returns empty, or leaves no sidecar is NOT usable and MUST lower `N` - and per the owner ruling of 2026-08-17 (`we cannot move on without reviewing`) a short count VOIDs the round downstream rather than degrading it silently.
 
 Consequence recorded, not hidden: the two 4a lenses launch BEFORE any Codex output exists, so they
 never see it. Their prompts must therefore contain no reference to Codex findings; the merged output
@@ -169,7 +170,7 @@ for **branch mode only** (it pins the commit the diff was cut from, so the agent
 the diff); in uncommitted mode there is no meaningful SHA — `diff.txt` is itself the frozen artifact
 and the working tree may move under the agent.
 
-`$RUN_DIR` persists for the rest of this skill AND beyond it — Steps 3b, 3c, 6, and the report written in 7f all reference it, and it is deliberately NOT deleted at skill end (7f leaves `report-final.md` in place for downstream consumers such as `/mission`). Hold onto the exact path returned here and substitute it into every later `"$RUN_DIR"` reference, always double-quoted. (No stale-file cleanup is needed at start since the directory is fresh per run; old run dirs are TTL-swept — `>24h` — by `on-session-start-cleanup.sh`.)
+`$RUN_DIR` persists for the rest of this skill AND beyond it (7e: never deleted here, TTL-swept after 24h). Hold onto the exact path returned here and substitute it into every later `"$RUN_DIR"` reference, always double-quoted.
 
 Embed that CONTEXT into each lens prompt below, then append the lens aim. The four shared output-contract rules (append to EVERY lens prompt):
 
@@ -205,10 +206,11 @@ MB=$(git -C "$WORKDIR" rev-parse --verify --quiet "$BASE_REF^{commit}") \
 ```
 Both paths then cut the diff, the touched-file list and the run metadata:
 ```bash
-git -C "$WORKDIR" diff "$MB"..HEAD > "$RUN_DIR/diff.txt.tmp" && mv -f "$RUN_DIR/diff.txt.tmp" "$RUN_DIR/diff.txt"
-[ -s "$RUN_DIR/diff.txt" ] || { echo "codex-review: FAILED — empty diff for $MB..HEAD (bases tried:$TRIED)" >&2; exit 1; }
-git -C "$WORKDIR" diff --name-only "$MB"..HEAD > "$RUN_DIR/touched.txt"
-printf 'BASE_SHA=%s\n' "$(printf '%.12s' "$MB")" >> "$RUN_DIR/meta.env"
+H=$(git -C "$WORKDIR" rev-parse HEAD)   # one resolved head: the diff, touched.txt and head= all bind to it
+git -C "$WORKDIR" diff "$MB".."$H" > "$RUN_DIR/diff.txt.tmp" && mv -f "$RUN_DIR/diff.txt.tmp" "$RUN_DIR/diff.txt"
+[ -s "$RUN_DIR/diff.txt" ] || { echo "codex-review: FAILED — empty diff for $MB..$H (bases tried:$TRIED)" >&2; exit 1; }
+git -C "$WORKDIR" diff --name-only "$MB".."$H" > "$RUN_DIR/touched.txt"
+printf 'BASE_SHA=%s\nHEAD_SHA=%s\n' "$(printf '%.12s' "$MB")" "$(printf '%.12s' "$H")" >> "$RUN_DIR/meta.env"
 ```
 The base ladder is `origin/dev → dev → origin/HEAD → main → master` (first that resolves wins). If no base resolves, the merge-base is missing, or the diff is empty, FAIL LOUD naming every base tried - never silently review nothing.
 
@@ -614,8 +616,8 @@ Output, one line each:
 F<n> | CONFIRMED|FALSE_POSITIVE|UNCERTAIN | BLOCKING|NONBLOCKING | <severity correction or ->
 N<n> | CONFIRMED | BLOCKING|NONBLOCKING | <CRITICAL|IMPORTANT|MINOR> <CATEGORY> <file:line> <text>   (final-sweep findings)
 For EVERY row that is CONFIRMED and BLOCKING, add exactly one tag row:
-TAG | <TYPE-KEY> | new|repeat | <area> | <one line>
-TYPE-KEY is an UPPER-KEBAB name for the bug class: reuse the ledger's key when the class matches (repeat), otherwise coin one (new). <area> is the module or directory the bug lives in.
+TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>
+TYPE-KEY is an UPPER-KEBAB name for the bug class: reuse the ledger's key when the class matches (repeat), otherwise coin one (new). DESIGN = the approach itself is wrong; IMPL = the code misses a sound design; PROOF = a test can pass while the thing it guards is broken. <area> is the module or directory the bug lives in.
 End with one line: Verdict: ship  or  Verdict: needs-fixes
 ----- BEGIN LEDGER -----
 [ledger.txt]
@@ -624,9 +626,10 @@ End with one line: Verdict: ship  or  Verdict: needs-fixes
 The verify **succeeded** only if codex exited 0, `codex-verify.txt` has a `Verdict:` line, and it has an `F<n> |` row for every draft finding. Then count off the file, never from memory:
 ```bash
 V="$RUN_DIR/codex-verify.txt"; T='^TAG \| [A-Z0-9_-]+ \| '
-blocking=$(grep -cE '^[FN][0-9]+ \| CONFIRMED \| BLOCKING' "$V"); tagged=$(grep -cE "$T(new|repeat) \\| " "$V")
-new=$(grep -cE "${T}new \\| " "$V"); repeat=$(grep -cE "${T}repeat \\| " "$V")
-areas=$(grep -E "${T}new \\| " "$V" | awk -F' [|] ' '{print $4}' | sort -u | paste -sd, -)
+C=' \| (DESIGN|IMPL|PROOF) \| '
+blocking=$(grep -cE '^[FN][0-9]+ \| CONFIRMED \| BLOCKING' "$V"); tagged=$(grep -cE "$T(new|repeat)$C" "$V")
+new=$(grep -cE "${T}new$C" "$V"); repeat=$(grep -cE "${T}repeat$C" "$V")
+areas=$(grep -E "${T}new$C" "$V" | awk -F' [|] ' '{print $5}' | sort -u | paste -sd, -)
 ```
 Header tokens: `Verify: ok tagged=<tagged> blocking=<blocking> | Ledger: new=<new> repeat=<repeat> | Areas-new: <areas, or ->`; on failure only `Verify: failed`. Apply 6c to the `F`/`N` rows, rebuild Step 7 from the draft (recount `Codex-passes`/`Claude-lenses` off this run dir's sidecars), add a final `## Verify tags` section with the TAG rows verbatim, overwrite `report-final.md`, and print the 7f trailer.
 
@@ -733,8 +736,8 @@ echo "Run-id: $(basename "$RUN_DIR")"                                           
 
 **Rules:**
 - **`Codex-passes: N/4` is a mandatory, always-present token in the `Engine:` header line** — it is a stable machine-readable contract that other skills (e.g. `/mission`, which greps the report to decide whether to VOID a review round when not every independent reviewer reported) parse. `N` = the `CODEX_PASSES` count from Step 3c (usable passes, 0-4) — for branch/uncommitted the count of lenses whose `<out>.usable == ok`, for file/describe the `REVIEW_RE`-usable count; the SAME predicate Step 5 uses (no split-brain). Always render it, including the all-good case → `Codex-passes: 4/4`. When `N < 4`, append the missing lens(es) in parentheses, e.g. `Codex-passes: 3/4 (codex-2 unavailable)` or `Codex-passes: 2/4 (codex-1, codex-4 unavailable)`. When all four failed, the token reads `Codex-passes: 0/4` AND the existing `Codex unavailable, using Claude agents only` note (Step 3c) is still emitted — keep both.
-- **`Claude-lenses: N/3` is equally mandatory and always present.** `N` = the number of Claude lenses that wrote a `<dir>/claude-<slug>.usable` sidecar reading `ok` (Step 3c-claude). Render it always, including `Claude-lenses: 3/3`; when `N < 3`, name the missing lens(es), e.g. `Claude-lenses: 2/3 (adversarial unavailable)`. **Count the sidecars on disk — never render this from memory.** A lens that silently failed to spawn leaves no sidecar and MUST lower the count; if you write `3/3` because you *intended* to launch three, the token is a lie and the guard it feeds is dead. This existed as prose for months with no count at all, which is exactly how a dead Claude lens rode through a `Codex-passes: 4/4` report and banked the round as converged.
-- **Token order is load-bearing.** `Model: gpt-6.1-sol` (the pinned Codex model, Step 0) sits BEFORE `Codex-passes:`, and `Claude-lenses:` BETWEEN `Codex-passes:` and `Verified:`, so the anchor `^Engine:.*Codex-passes: [0-9]+/4.*Verified:` keeps matching. Step 0b tokens go on the SAME line AFTER `Verified:`, in this order: ` | Scope: <delta|full> base=<sha12>` (with `--base`), then ` | Verify: deferred` (`--ledger` first pass) or ` | Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new: <csv or ->` / ` | Verify: failed` (re-entry, 6e). Without the flags, none of them appear.
+- **`Claude-lenses: N/3` is equally mandatory and always present.** `N` = the number of Claude lenses that wrote a `<dir>/claude-<slug>.usable` sidecar reading `ok` (Step 3c-claude). Render it always, including `Claude-lenses: 3/3`; when `N < 3`, name the missing lens(es), e.g. `Claude-lenses: 2/3 (adversarial unavailable)`. **Count the sidecars on disk — never render this from memory.** A lens that silently failed to spawn leaves no sidecar and MUST lower the count; if you write `3/3` because you *intended* to launch three, the token is a lie and the guard it feeds is dead.
+- **Token order is load-bearing.** `Model: gpt-6.1-sol` (the pinned Codex model, Step 0) sits BEFORE `Codex-passes:`, and `Claude-lenses:` BETWEEN `Codex-passes:` and `Verified:`, so the anchor `^Engine:.*Codex-passes: [0-9]+/4.*Verified:` keeps matching. Step 0b tokens go on the SAME line AFTER `Verified:`, in this order: ` | Scope: <delta|full> base=<sha12> head=<sha12>` (with `--base`), then ` | Verify: deferred` (`--ledger` first pass) or ` | Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new: <csv or ->` / ` | Verify: failed` (re-entry, 6e). Without the flags, none of them appear.
 - Omit any section that has zero findings
 - Within each section, sort by specificity (findings with file:line references first, then cross-model findings, then single-source findings)
 - Verified findings should be marked with "(verified)" suffix

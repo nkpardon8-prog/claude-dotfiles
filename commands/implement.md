@@ -51,7 +51,7 @@ chunk-id | phase | parallel|sequential | task files
 
 `chunk-id` must match `^[a-z0-9][a-z0-9-]{0,31}$` (lowercase alphanumerics and hyphens, 1-32 chars, never leading with a hyphen). It becomes a git branch name and a worktree directory name downstream, so anything outside that set is a shell/filesystem hazard. The `task files` column is the chunk's **declared** file set - the Step 4 post-batch overlap check is evaluated against exactly these declarations, so a vague or omitted declaration is a chunk that cannot be run in parallel.
 
-If >= 2 chunks are pending and NO_REVIEW is not set, consult the WAVE GATE section below the contract-core marker; otherwise proceed serial. These two serial branches log their decision HERE, on the serial branch - NOT in the WAVE GATE, which is never reached on either path (it is entered only when >= 2 chunks AND NOT NO_REVIEW, exactly when these two tokens cannot occur). Before the serial path continues, emit exactly one decision event with the same absolute call the gate uses:
+If >= 2 chunks are pending and NO_REVIEW is not set, consult the WAVE GATE section below the contract-core marker; otherwise skip the WAVE GATE; Step 4's same-tree parallel register still applies. These two serial branches log their decision HERE, on the serial branch - NOT in the WAVE GATE, which is never reached on either path (it is entered only when >= 2 chunks AND NOT NO_REVIEW, exactly when these two tokens cannot occur). Before the serial path continues, emit exactly one decision event with the same absolute call the gate uses:
 
 ```bash
 node ~/.claude-dotfiles/scripts/verify-parallel-wave.mjs --log-decision serial --reason <token> --repo-root <repo_root>
