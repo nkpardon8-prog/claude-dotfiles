@@ -6,9 +6,12 @@ not reach it, and `/rc NAME` while already connected is a no-op. A disconnect (`
 connected) followed by `/rc NAME` makes a fresh RC session with the right name (proven 2026-11-11).
 
 How: reads ~/.claude/sessions/<pid>.json for each live window (name, nameSource, status, bridgeSessionId),
-finds its Terminal tab by TTY, and types the commands ONLY while the window is idle (never mid-task, never
+finds where it runs - a Pane panel (PANE_PANEL_ID in its environment; typed via `runpane panels input`,
+which also works over ssh) or a Terminal.app tab (by TTY; typed via AppleScript) - and types the commands ONLY while the window is idle (never mid-task, never
 over a permission prompt). Each step is confirmed by watching bridgeSessionId in the session file.
-Windows without a /line name (nameSource != "explicit"), or not in Terminal.app, are skipped and listed.
+Windows without a /line name (nameSource != "explicit"), or in neither Pane nor Terminal, are skipped and listed.
+Another Mac: `ssh <host> python3 ~/.claude-dotfiles/scripts/relink.py` (Pane windows only; macOS blocks
+AppleScript control of Terminal from an ssh login).
 
 Usage: relink.py [--dry-run] [--only NAME ...] [--timeout-min N]
 """
@@ -58,9 +61,32 @@ def tty_of(pid):
     return f"/dev/{t}" if t and t not in ("?", "??") else ""
 
 
+def pane_panel(pid):
+    """The Pane panel a window runs in, from its process environment, or ""."""
+    p = subprocess.run(["ps", "eww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True)
+    m = re.search(r"(?:^|\s)PANE_PANEL_ID=([0-9a-f-]{8,})", p.stdout)
+    return m.group(1) if m else ""
+
+
+def runpane_bin():
+    for c in (os.environ.get("PANE_RUNPANE_BIN"), "/opt/homebrew/bin/runpane", "/usr/local/bin/runpane",
+              str(Path.home() / ".pane" / "bin" / "runpane")):
+        if c and os.access(c, os.X_OK):
+            return c
+    return ""
+
+
 def terminal_ttys():
+    """TTYs of Terminal.app tabs, or None when Terminal cannot be scripted (not running, Automation
+    permission pending, or an ssh login). Never raises."""
+    ps = subprocess.run(["ps", "-axo", "comm="], capture_output=True, text=True).stdout
+    if "/Terminal.app/Contents/MacOS/Terminal" not in ps:   # never let osascript LAUNCH Terminal
+        return None
     script = 'tell application "Terminal" to get tty of every tab of every window'
-    p = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, timeout=20)
+    try:
+        p = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return None
     if p.returncode != 0:
         return None
     return {t.strip() for t in p.stdout.replace("\n", ",").split(",") if t.strip()}
@@ -85,9 +111,24 @@ TYPE_SCRIPT = '''on run argv
 end run'''
 
 
-def type_into(tty, text):
-    p = subprocess.run(["/usr/bin/osascript", "-", tty, text], input=TYPE_SCRIPT,
+def type_into(w, text):
+    if w["panel"]:
+        rp = runpane_bin()
+        try:
+            a = subprocess.run([rp, "panels", "input", "--panel", w["panel"], "--text", text, "--yes"],
+                               capture_output=True, text=True, timeout=20)
+            time.sleep(0.5)
+            b = subprocess.run([rp, "panels", "input", "--panel", w["panel"], "--keys", "enter", "--yes"],
+                               capture_output=True, text=True, timeout=20)
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return a.returncode == 0 and b.returncode == 0
+    tty = w["tty"]
+    try:
+        p = subprocess.run(["/usr/bin/osascript", "-", tty, text], input=TYPE_SCRIPT,
                        capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return False
     return p.stdout.strip() == "typed"
 
 
@@ -103,11 +144,14 @@ def plan(rows, tabs, only):
         if not NAME_RE.match(name):
             skipped.append((name, "name has characters /rc cannot take"))
             continue
-        tty = tty_of(d["pid"])
-        if tabs is not None and tty not in tabs:
-            skipped.append((name, "not a Terminal.app tab (Pane or other app)"))
+        panel = pane_panel(d["pid"]) if runpane_bin() else ""
+        tty = "" if panel else tty_of(d["pid"])
+        if not panel and (tabs is None or tty not in tabs):
+            why = "not a Pane panel or Terminal tab" if tabs is not None else \
+                "not a Pane panel, and Terminal cannot be scripted from here"
+            skipped.append((name, why))
             continue
-        todo.append({"pid": d["pid"], "name": name, "tty": tty, "state": "start", "t": 0.0,
+        todo.append({"pid": d["pid"], "name": name, "tty": tty, "panel": panel, "state": "start", "t": 0.0,
                      "old": d.get("bridgeSessionId"), "result": ""})
     return todo, skipped
 
@@ -126,18 +170,18 @@ def step(w, now):
         if not idle(d):
             return
         if bridge:
-            if type_into(w["tty"], "/remote-control"):
+            if type_into(w, "/remote-control"):
                 w["state"], w["t"], w["old"] = "disconnecting", now, bridge
             else:
                 w["state"], w["result"] = "done", "FAILED: could not type into its tab"
         else:
-            if type_into(w["tty"], "/rc " + w["name"]):
+            if type_into(w, "/rc " + w["name"]):
                 w["state"], w["t"] = "connecting", now
             else:
                 w["state"], w["result"] = "done", "FAILED: could not type into its tab"
     elif w["state"] == "disconnecting":
         if not bridge and idle(d):
-            if type_into(w["tty"], "/rc " + w["name"]):
+            if type_into(w, "/rc " + w["name"]):
                 w["state"], w["t"] = "connecting", now
             else:
                 w["state"], w["result"] = "done", "FAILED: could not type the reconnect"
@@ -157,15 +201,13 @@ def main():
     ap.add_argument("--timeout-min", type=float, default=45.0, help="how long to wait for busy windows")
     a = ap.parse_args()
     tabs = terminal_ttys()
-    if tabs is None:
-        print("relink: cannot read Terminal tabs (Automation permission?); nothing typed.", file=sys.stderr)
-        return 2
     todo, skipped = plan(read_sessions(), tabs, set(a.only))
     host = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True).stdout.strip()
     if a.dry_run:
         for w in todo:
             act = "disconnect, then /rc " if w["old"] else "/rc "
-            print(f"{host} | {w['name']} | {act}{w['name']} (when idle)")
+            via = "Pane" if w["panel"] else "Terminal"
+            print(f"{host} | {w['name']} | {act}{w['name']} via {via} (when idle)")
         for n, why in skipped:
             print(f"{host} | {n} | skip: {why}")
         return 0

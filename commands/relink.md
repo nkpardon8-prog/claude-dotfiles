@@ -22,9 +22,12 @@ set by hand in the app (proven 2026-11-11 on the MacBook Air).
    It types only into IDLE windows (never mid-task, never over a permission prompt), waits up to 45 min
    for busy ones, and confirms each reconnect from the window's session file. This window is relinked
    too, once this turn ends and it goes idle.
-3. Other Mac (skip with `--here-only`): typing into another Mac's Terminal over ssh is blocked by macOS,
-   so the script must run THERE. Send one message to a named window on the other Mac (find one with
-   `python3 ~/.claude-dotfiles/scripts/line-agent-communicator.py list`), asking it to run steps 1-2 and
-   reply with its result table. If `list` says the other Mac is on a DIFFERENT claude.ai account, say so:
-   its windows will show in that account's app, not this one, until it signs into the same account.
+3. Other Mac (skip with `--here-only`): run the same script there over ssh, also in the background:
+   `ssh <host> 'PATH=/opt/homebrew/bin:$PATH; python3 ~/.claude-dotfiles/scripts/relink.py'`
+   (`git -C ~/.claude-dotfiles pull --rebase -q` there first if it lacks the script). Hosts: Nick's Mac
+   mini = `nickmini-docker`. Over ssh only Pane windows can be typed into (`runpane panels input`); macOS
+   blocks AppleScript control of Terminal from an ssh login, so Terminal windows there are listed as
+   skipped - ask a window on that Mac to run this command for those. If `line-agent-communicator.py list`
+   says that Mac is on a DIFFERENT claude.ai account, tell the user: its windows show in that account's
+   app until it signs into the same account.
 4. When the background run finishes, show the user its table: each window, relinked or why not.
