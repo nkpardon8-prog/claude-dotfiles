@@ -86,6 +86,6 @@ For a **new** coach (not David), these parts are not automated yet - plan time f
 ## Learnings (update every run)
 
 - 2026-11-12: skill created with `docs/COACH-SETUP.md` (branch `coach-setup-kit`). Local rehearsal on main
-  15dcaaef passed (55 + 30 + 4 + 50 tests; full CLI chain on fake data). Found: no carrier-forwarding
+  15dcaaef passed (55 + 30 + 5 + 50 tests; full CLI chain on fake data). Found: no carrier-forwarding
   support (loop risk, documented, not built); Blast cannot reach an imported parent with no linked player;
   `HANDOVER.md` still pointed at the removed `apps/web/config/tenant.ts`.
