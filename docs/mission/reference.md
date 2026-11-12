@@ -154,9 +154,35 @@ step-5 cursor recompute absorb a double LOG transition; a double EXTERNAL dispat
 step-6 `await-state` re-read and by persisting lane results before their bits. A run-id lease that
 would close it fully is not wired; do not claim it.
 
-## Pre-cutover review evidence (legacy parts only)
+## Legacy part loop (proto=1, grandfathered)
 
-A grandfathered part banks its round by hand: VOID unless `parse-codex-header` = `4/4` and
+A part whose PART-START has no `proto=2` (`part-state` says `proto=1`) was open at cutover and
+finishes on the old fold. The wake routes EVERY state of such a part here (wake.md legacy row), so
+it never reaches a proto=2 operation: no RECIPE, `bank-review` (any scope), `budget-state` gate,
+FULL-SUITE, SWEEP, `known-reds`, close legs, join, park FAIL or `needs=` admission. Round lines are
+plain `log` lines, `[mission] part=<N> name=<slug> phase=<p> round=<K> dry=<D>[ findings=<b>]`,
+idtag `m<N>-<p>-r<K>-d<D>`, no `open=`, no `at=`. Per state:
+- **research** (or no round yet): explore, log `phase=research round=<K> dry=0`, then plan.
+- **plan**: `skill: plan <part plan file>` (NOT `--mission`; no recipe cap, no `bank-review plan`); log
+  each round `phase=plan round=<K> dry=0`; plan settled -> implement.
+- **implement**: `skill: implement --no-review <plan>`; log `phase=implement round=<K> dry=0`.
+- **review**: open the review barrier (`await ... kind=job op=review-barrier`), both lanes as usual
+  (`codex-review` WITHOUT `--ledger`/`--base`). At `ready=1` bank by hand ("Legacy review evidence"
+  below). Clean round -> `dry=` previous+1 (1, then 2); blocking -> `dry=0 findings=<b>`.
+- **fix**: `phase=fix round=<K> dry=0 findings=<b>`, fix, commit, then a fresh review round K+1.
+  After `dry=1` the window is FROZEN: any code change means a fix line and a fresh round.
+- **VOID**: re-run the round fresh.
+- **converged** (`dry=2`, two consecutive clean rounds): `log "[mission] live-verify part=<N>
+  round=<K> status=ok evidence=<token>"` (or `status=n/a reason=<slug>`), idtag
+  `m<N>-live-verify-r<K>`; then PART-DONE (legacy fingerprint check; `convergence-stale` -> fresh
+  round); then PART-RETIRED. The writer records the part's ANCHOR at its PART-DONE.
+- **watchdog** `action=stop` twice: a FAIL line and the next attempt (a legacy part cannot park;
+  five FAILs for one part+phase is the STOP LOUD).
+- Human AWAITs, STOP LOUD and the stop list are the same for both protocols.
+
+### Legacy review evidence
+
+VOID unless `parse-codex-header` = `4/4` and
 `parse-claude-header` = `3/3` on the stat-verified `Report-file`, then
 `[mission] REVIEW-EVIDENCE part=$N round=$K codex=$passes claude=$lenses report=$rf` with idtag
 `m$N-review-evidence-r$K`, then the `phase=review ... findings=<blocking>` line. Three consecutive

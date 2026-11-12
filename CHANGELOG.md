@@ -23,6 +23,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   Round 2: the log appender reports `failed` unless a write lands and join checks rc and outcome of
   each append; legacy wake rows apply to review states only; proto=2 round lines carry `at=` so an
   invalidated freeze closes its live-wait pause there and keeps the minutes already earned.
+  Round 3: the legacy class fixed once: one wake.md row sends every open proto=1 part to
+  reference.md "Legacy part loop" (research, old /plan, implement, hand-banked review, fix,
+  live-verify, PART-DONE); every row below it and mission.md's part loop are proto=2-only.
 - New `mission-watchdog.sh` (helper stall detection) and `lib/mission-status.sh` (status lines,
   tokens by tag, morning report; deferred parts read from the strategist's `tmp/mission/recipes.md`).
 - `codex-review.md` (`--base`, `--scope full`, `--ledger`, `--verify`; Sol pinned), `plan.md`

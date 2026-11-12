@@ -122,14 +122,14 @@ PLAN -> ACTIVE). **Active iff** the latest `mission_state` line is not `MISSION-
 |---|---|
 | `await kind=human ready=0` and THIS is a real user turn answering it | Consume UNDER the lock, in order: (a) `log "[mission] DECISION op=<seq>-<slug> outcome=<approve\|deny>" "pd-<seq>-decision-<slug>"` with the user's actual answer; (b) approve -> run the idempotent gated action, deny -> abort it; (c) `await` the same barrier (same op/part/phase/round/attempt) `need=1 got=1` (refused until the DECISION exists); (d) `resolve <full pd:id>`. Never close then defer the action. That is the transition: go to step 7. |
 | `await kind=human ready=0` on a wake | `last_decision` NON-EMPTY -> consume it now (action, then got=1, then resolve; each a no-op if done), never re-ask. EMPTY -> STOP, no reschedule, wait for the user. ORPHAN (no `- [pd:<op>]` line, no DECISION) -> reference.md "Orphan human barrier". |
+| `ps` proto=1 closed=0 (legacy part) | Follow reference.md "Legacy part loop" for every state, AWAITs included; no row below applies (all are proto=2). |
 | `bs` = `over ... replan=1` | Re-plan once: stop the part's helpers, run the strategist (`/plan --roadmap`) for this part, bank RECIPE v2, continue. |
 | `bs` = `over ... replan=0` | Park (playbook §J): stop helpers, park FAIL, PushNotification, PART-RETIRED, strategist, next PART-START. Never an AWAIT, never a STOP. |
 | a watchdog status file says `action=stop` (`state=stall`, or `state=deadline` for a non-test helper) | TaskStop it (yours, exact id), `note`, delete the status file, relaunch once; a second stop parks the part. `action=note` (suite `state=overdue`): note + PushNotification only, never a kill. |
 | `await kind=job ready=0`, tracked job still running | Launch nothing. Step 7 with a 1500-3300 s heartbeat. |
 | `await kind=job ready=0`, no tracked job | Younger than the lane's watchdog deadline -> heartbeat. Older -> relaunch ONLY the missing lane, same attempt; a genuine timeout -> FAIL line, attempt A+1. |
-| `await kind=job ready=1` | `ps` proto=2: `codex-review --verify <run-dir> --with <impl-reviewer-output>`, then `bank-review` (plan/delta/close per the round). `ps` proto=1: never `bank-review`; bank by hand (reference.md "Pre-cutover review evidence"). The banked line supersedes the AWAIT. |
+| `await kind=job ready=1` | `codex-review --verify <run-dir> --with <impl-reviewer-output>`, then `bank-review` (plan/delta/close per the round). Its line supersedes the AWAIT. |
 | latest progress `PART-DONE` or `PART-RETIRED` | Part complete. PART-DONE without PART-RETIRED -> retire first. Then the strategist boundary pass and the next PART-START (writer checks `needs=`). |
-| `ps` proto=1, last round `phase=review` | Old fold (never `bank-review`/close legs): `dry=2` -> `live-verify part=N round=K`, PART-DONE (legacy fingerprint check; stale -> fresh round); `findings>0` -> fix; else next fresh round. |
 | `ps` drift=1 (HEAD moved/dirty since the freeze) | Repair first: commit or discard, log `phase=fix dry=0` (resets dry), delta round from the freeze, new freeze, new close. |
 | `ps` proto=2 dry=2 closed=0 (joined) | Log PART-DONE (rc=4 names the gap). Never re-review. |
 | `PART-START` with no RECIPE (proto=2) | Bank RECIPE v1 from the strategist's boundary pass. |
@@ -137,7 +137,7 @@ PLAN -> ACTIVE). **Active iff** the latest `mission_state` line is not `MISSION-
 | last round `phase=research\|implement` | Continue that phase, then the next step of the part loop. |
 | last round `phase=plan` | Continue `/plan --mission`; `open=0` -> implement; still open at the cap -> descope (recorded in the plan) or park. |
 | last review `phase=review findings>0` | Fix the SAME round K (`phase=fix`), then a sweep if `repeat>0` (a second dirty sweep on the same types -> redesign, playbook §H2), then delta round K+1. |
-| last round `phase=fix` | Finish the fix (check the tree), then delta round K+1 (legacy: fresh round). |
+| last round `phase=fix` | Finish the fix (check the tree), then delta round K+1. |
 | last review `dry=1`, no `dry=2` | Close join: for the freeze SHA relaunch ONLY missing legs (close review, FULL-SUITE, live proof); all three banked -> `bank-review ... join`. |
 | close result `blocking` | Repair: fix, delta round, new freeze, new close (dry reset). Infra-only suite/live failure at an unmoved HEAD -> same-SHA rerun as `attempt+1`. |
 | latest line for round K is `VOID` | Re-run round K fresh. |
