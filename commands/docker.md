@@ -216,20 +216,28 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). A further run waits and
   says so **every `rr_status_every_s` (60 s)**: `rrun: waiting for a slot on hp: 4 of 4 slots busy; held
   longest by <repo> (<owner>) for 120s; 2 other runs waiting ahead of this one; expected wait ~5 min;
-  gives up after 30 min` (the expected wait is the scheduler's queue estimate for that worker), and
-  gives up after `rr_wait_min` (30) → exit 73. A run waiting for the **worktree lock** says so the same
-  way, naming the run that holds it (command, worker, how long, owner, and when its cap ends it).
+  tries elsewhere after 2 min` (the expected wait is the scheduler's queue estimate for that worker).
+  **One worker's slot wait is short:** after `rr_slot_wait_s` (120 s) its runner answers busy and rrun
+  re-plans from a fresh probe (another worker may have freed up), round after round, until
+  `rr_wait_min` (30) in all → exit 73. A worker that refuses (share off, no Docker) is skipped, never
+  waited for. A run waiting for the **worktree lock** says so the same way, naming the run that holds
+  it (command, worker, how long, owner, and when its cap ends it), and waits at most the job's own cap
+  (`rr_wt_wait_min` overrides) → exit **72**. The lock file is never deleted.
 - **Hung and silent jobs (2026-11-11).** The command's stdout/stderr are pipes the runner relays, never
   the ssh session itself. When the command's **main process exits**, whatever it left behind (a DB,
   a vitest worker, a dev server) gets `rr_exit_grace_s` (10 s) to finish, then the job's process group
-  is TERMed (KILLed 3 s later) and rrun returns the main process's exit code, releasing the slot and
-  the worktree lock; a leftover that left the group can hold only the runner's pipe, which it stops
-  reading. If ssh still stays open 45 s after the exit code arrived, rrun closes it itself.
-  **Silence:** after `rr_silent_min` (10) minutes without output rrun prints `rrun: no output for 10 min
-  (worker hp, running 25 min)` on stderr, again every further 10 min (`RRUN_SILENT_MIN=<min>`, 0 = off).
+  is TERMed, KILLed 10 s later and checked empty before the slot is freed; rrun returns the main
+  process's exit code and releases the worktree lock. A leftover that left the group can hold only the
+  runner's pipe, which it stops reading. If ssh still stays open 45 s after the exit code arrived,
+  rrun closes it itself. `git push` to a worker is capped at `rr_push_timeout_s` (300 s; then that
+  worker counts as unreachable and the job moves on).
+  **Silence never kills, it only tells:** after `rr_silent_min` (1) minute without output rrun prints
+  `rrun: no output for 1 min (worker hp, running 25 min)` on stderr, then every 5 min more
+  (`RRUN_SILENT_MIN=<min>`, 0 = off).
   **Hard cap per job class:** light / normal 30 min, heavy 60, db 90, build 60 (`rr_timeout_min`);
-  `RRUN_TIMEOUT=<minutes>` sets another cap for one run, `RRUN_TIMEOUT=0` none. At the cap the worker
-  kills the command's process group, frees the slot, logs `outcome=timeout rc=124` in `runs.log`, and
+  `RRUN_TIMEOUT=<minutes>` sets another cap for one run, `RRUN_TIMEOUT=0` none. Every `test:db:<x>`
+  script (`test:db:migrated`, `test:db:rls`, ...) is a db job. At the cap the worker TERMs the
+  command's process group (KILL 10 s later, then checks it is empty), frees the slot, logs `outcome=timeout rc=124` in `runs.log`, and
   rrun exits **124** (like `timeout(1)`) with `rrun: the command ran past its 30 min wall-clock cap on
   hp; killed it ...`. Never re-run, never cached. (If the worker never reports it, rrun closes the
   session itself 90 s past the cap, also exit 124.)
@@ -260,7 +268,8 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
   on the mini, 70 runner error, 73 slot busy past `rr_wait_min` (or the worker refused: share off / its Docker did
   not start - then rrun tries the next worker), 75 lost the mini / strict fallback,
-  **124 the command hit its wall-clock cap and was killed** (the one code here that comes after the
+  **72 another rrun from this worktree held the worktree lock past the wait** (nothing ran; `rrun
+  --mine` shows it), **124 the command hit its wall-clock cap and was killed** (the one code here that comes after the
   command started; `timeout(1)`'s convention, so a command's own `timeout` 124 looks the same - the
   `rrun: ... wall-clock cap` line tells them apart), **78 dependency install failed** (`npm ci` / `prisma generate` / a local package rebuild; its log is printed), 130 interrupted
   before start.
@@ -287,8 +296,10 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   or local shard, and exit codes 65/69/70/73/75/78 or from a signal. A sharded run is one entry (keyed on
   the unsharded command), saved after every shard ended. Hits show as target `cache` in `route.log`.
 
-Troubleshooting: falls back to the laptop every time → `rdocker doctor` (the push over ssh is the
-reachability test). Exit 73 → another run holds the mini slot (the wait line names it). Exit 75 → the
+Troubleshooting: exit 72 → another rrun of this worktree is still running (`rrun --mine`); exit 124 →
+the command hit its cap (a hung test runner, e.g. vitest kept alive by open DB handles: fix the
+teardown, or `RRUN_TIMEOUT=<min>` if it is really that long). Falls back to the laptop every time → `rdocker doctor` (the push over ssh is the
+reachability test). Exit 73 → every worker stayed busy for `rr_wait_min` (the wait lines name the holders). Exit 75 → the
 link dropped; check `rdocker status`, then rerun. Exit 78 → `npm ci` / `prisma generate` / a local
 package rebuild (`npm run <script>  (in ./<pkg>)` above it) failed on the mini (log above it); fix the
 lockfile / schema / build, or `RRUN=0` to run locally. Works locally but fails on the mini with a missing
