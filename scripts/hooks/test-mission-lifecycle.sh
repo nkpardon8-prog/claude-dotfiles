@@ -22,6 +22,13 @@
 #      for un-started parts and legacy PART-STARTs refused after cutover
 #   F  compaction mid-close: a cold reader runs wake.md's verbatim §8 resume read, the decision table
 #      row, and the writer names the one missing leg; only that leg is relaunched
+#   G  cutover safety (pre-land review land-r1-p2): a legacy part's wake at ready=1 and dry=1/dry=2
+#      never reaches proto=2-only verbs; a human AWAIT on a retired part still closes; clean close
+#      evidence supersedes its review AWAIT; a cold wake after join finalizes instead of restarting
+#      review; frozen-tree drift at dry=1 is routed to repair before the close row
+#   H  correctness (pre-land review land-r1-p1): join repairs a partial bank; PART-START binds base to
+#      the worktree HEAD; stale live attempts stop pausing the clock and overlapping pauses merge;
+#      known-red signatures keep long numeric/hex assertion values; part=08 never trips bash octal
 #
 # Real throwaway git repos and the real writer; history that must look OLD (a budget clock, a legacy
 # part) is fabricated through the lib's raw appender, as test-mission-proto2.sh does. Hermetic: every
@@ -305,6 +312,162 @@ eq 1 "$(grep -ac 'REVIEW-EVIDENCE part=1 round=5 scope=close' "$R/MISSION.$S.log
 eq 1 "$(grep -ac 'FULL-SUITE part=1 ' "$R/MISSION.$S.log")" "F10 the suite was not re-run"
 has "dry=2" "$(join 1 6)" "F11 join after the relaunched leg"
 has "log ok" "$(done_ 1)" "F12 PART-DONE after a compaction mid-close"
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════════
+echo "== G cutover safety: protocol dispatch, retired human barrier, close supersedes, finalize, drift =="
+# wake.md rows are the conductor's routing. These checks pin the ORDER of the rows that matter (first
+# match wins) and drive the writer through each state the row names, reading `part-state` as the wake does.
+ROWS=$(python3 - "$WAKE" <<'PY'
+import sys
+s=open(sys.argv[1],encoding='utf-8').read(); s=s[s.index('## Decision table'):s.index('## §12.3')]
+def at(k):
+    i=s.find(k); return i
+keys={'drift':'`ps` drift=1','fin2':'`ps` proto=2 dry=2','dry1':'last review `dry=1`, no `dry=2`','legacy':'`ps` proto=1','ready1':'`await kind=job ready=1`'}
+pos={k:at(v) for k,v in keys.items()}
+print(' '.join('%s=%d'%(k,v) for k,v in sorted(pos.items())))
+ok = all(v>=0 for v in pos.values()) and pos['drift']<pos['fin2']<pos['dry1'] and pos['legacy']<pos['dry1']
+print('order=ok' if ok else 'order=bad')
+PY
+)
+has "order=ok" "$ROWS" "G0 wake.md: legacy dispatch and drift + dry=2 finalize rows precede the dry=1 close row"
+has "proto=1" "$(grep -F '| `await kind=job ready=1`' "$WAKE")" "G0b the ready=1 row dispatches by part protocol (legacy banks by hand)"
+
+# G1 legacy part in flight across cutover: ready=1 and dry=1/dry=2
+mk g1
+fab "[mission] PART-START part=1 name=legacy" m1-part-start
+lg "[mission] part=1 name=legacy phase=implement round=1 dry=0" m1-implement-r1-d0 >/dev/null
+G1H=$(commit "$R" legacy-g1)
+mw await "$S" "$R" "part=1 phase=review round=2 kind=job op=review-barrier attempt=1 need=3 got=0" >/dev/null
+mw await "$S" "$R" "part=1 phase=review round=2 kind=job op=review-barrier attempt=1 need=3 got=1" >/dev/null
+mw await "$S" "$R" "part=1 phase=review round=2 kind=job op=review-barrier attempt=1 need=3 got=2" >/dev/null
+has "ready=1" "$(mw await-state "$S" "$R")" "G1a legacy review barrier is join-ready"
+has "part=1 proto=1 " "$(mw part-state "$S" "$R")" "G1b part-state names the legacy protocol"
+has "bank-review is for proto=2 parts" "$(mw bank-review "$S" "$R" 1 2 delta "$(code_report "$R" "$B" "$G1H" delta 0)" "$(IMPL)")" "G1c bank-review refuses a legacy part (why the row must dispatch first)"
+LR=$(code_report "$R" "$B" "$G1H" delta 0)
+has "log ok" "$(lg "[mission] REVIEW-EVIDENCE part=1 round=2 codex=4/4 claude=3/3 report=$LR" m1-review-evidence-r2)" "G1d legacy evidence banked by hand (reference.md pre-cutover path)"
+has "log ok" "$(lg "[mission] part=1 name=legacy phase=review round=2 dry=1 findings=0" m1-review-r2-d1)" "G1e legacy round line at dry=1"
+eq none "$(mw await-state "$S" "$R")" "G1f the legacy round line supersedes the barrier"
+has "proto=1 dry=1 " "$(mw part-state "$S" "$R")" "G1g part-state: legacy dry=1 (row: next fresh round, two-dry fold)"
+LR3=$(code_report "$R" "$G1H" "$G1H" delta 0)
+lg "[mission] REVIEW-EVIDENCE part=1 round=3 codex=4/4 claude=3/3 report=$LR3" m1-review-evidence-r3 >/dev/null
+has "log ok" "$(lg "[mission] part=1 name=legacy phase=review round=3 dry=2 findings=0" m1-review-r3-d2)" "G1h legacy dry=2 (converged v1 SNAPSHOT)"
+has "kind=converged" "$(logf)" "G1i a grandfathered converged SNAPSHOT exists"
+has "proto=1 dry=2 closed=0" "$(mw part-state "$S" "$R")" "G1j cold wake: part-state legacy dry=2, not closed (row: finalize, never a fresh round)"
+lg "[mission] live-verify part=1 round=3 status=n/a reason=tooling" m1-live-verify-r3 >/dev/null
+has "log ok" "$(done_ 1)" "G1k legacy finalize: live-verify then PART-DONE (legacy fingerprint check)"
+has "closed=1" "$(mw part-state "$S" "$R")" "G1l part-state closed after PART-DONE"
+
+# G2 a human AWAIT opened before the part was retired still closes through its validated path
+mk g2
+RL=$(rline 1 normal 5 8 300 yes none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null; to_impl 1 >/dev/null
+fab "[mission] AWAIT part=1 phase=review round=4 kind=human op=1-spend-brake attempt=1 need=1 got=0 started_at=$NOW" m1-await-1-spend-brake-r4-a1-g0
+fab "[mission] FAIL part=1 park=over-budget disposition=isolated range=$B..$B" m1-fail-park
+fab "[mission] PART-RETIRED part=1" m1-part-retired
+has "kind=human" "$(mw await-state "$S" "$R")" "G2a the human barrier survives retirement"
+has "log ok" "$(lg "[mission] DECISION op=1-spend-brake outcome=deny" pd-1-decision-spend-brake)" "G2b the owner's decision is logged"
+has "await ok" "$(mw await "$S" "$R" "part=1 phase=review round=4 kind=human op=1-spend-brake attempt=1 need=1 got=1")" "G2c the human barrier closes on a retired part (validated: DECISION first)"
+eq none "$(mw await-state "$S" "$R")" "G2d nothing gates the wake any more"
+has "part-retired" "$(mw await "$S" "$R" "part=1 phase=review round=5 kind=job op=review-barrier attempt=1 need=3 got=1")" "G2e a JOB completion for the retired part is still an expected drop"
+
+# G3 clean close evidence supersedes the close-round review barrier
+mk g3
+RL=$(rline 1 normal 5 8 300 yes none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null; to_impl 1 >/dev/null
+G3H=$(commit "$W" g3-work); delta 1 4 "$W" "$B" 0 >/dev/null
+mw await "$S" "$R" "part=1 phase=review round=5 kind=job op=review-barrier attempt=1 need=3 got=0" >/dev/null
+mw await "$S" "$R" "part=1 phase=review round=5 kind=job op=review-barrier attempt=1 need=3 got=1" >/dev/null
+mw await "$S" "$R" "part=1 phase=review round=5 kind=job op=review-barrier attempt=1 need=3 got=2" >/dev/null
+has "ready=1" "$(mw await-state "$S" "$R")" "G3a close-round barrier join-ready"
+has "result=clean" "$(closer 1 5 "$W" "$B" 0)" "G3b clean close banked (no round line by design)"
+eq none "$(mw await-state "$S" "$R")" "G3c the close evidence supersedes the barrier (no re-bank loop)"
+
+# G4 cold wake after join, before PART-DONE: finalize, do not restart review
+suite 1 "$G3H" 1 "$B" >/dev/null; live 1 "$G3H" 1 sent >/dev/null; live 1 "$G3H" 1 "ok evidence=dt-g4" >/dev/null
+join 1 6 >/dev/null
+has "proto=2 dry=2 closed=0" "$(mw part-state "$S" "$R")" "G4a cold wake: part-state proto=2 dry=2 not closed (row: finalize)"
+has "drift=0" "$(mw part-state "$S" "$R")" "G4b no drift at the freeze"
+has "log ok" "$(done_ 1)" "G4c gated PART-DONE finalizes"
+
+# G5 frozen-tree drift at dry=1 goes to repair before the close row
+mk g5
+RL=$(rline 1 normal 5 8 300 yes none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null; to_impl 1 >/dev/null
+G5F=$(commit "$W" g5-work); delta 1 4 "$W" "$B" 0 >/dev/null
+has "dry=1 closed=0 freeze=$G5F head=$G5F tree=clean drift=0" "$(mw part-state "$S" "$R")" "G5a at the freeze: no drift"
+G5X=$(commit "$W" g5-after-freeze)
+has "drift=1" "$(mw part-state "$S" "$R")" "G5b a commit after the freeze is drift"
+printf 'x\n' >> "$W/code.txt"; has "tree=dirty drift=1" "$(mw part-state "$S" "$R")" "G5c an uncommitted edit is drift too"
+( cd "$W" && git checkout -q code.txt )
+has "REFUSED: close report must be" "$(closer 1 5 "$W" "$B" 0)" "G5d the close at the moved HEAD is refused (the dry=1 row would loop)"
+has "log ok" "$(lg "[mission] part=1 name=p1 phase=fix round=5 dry=0 findings=0" m1-fix-r5-d0)" "G5e repair: a fix line resets dry"
+has "dry=0 " "$(mw part-state "$S" "$R")" "G5f part-state dry=0 after the reset"
+has "dry=1" "$(delta 1 6 "$W" "$G5F" 0)" "G5g delta round over the drift -> new freeze"
+has "freeze=$G5X head=$G5X tree=clean drift=0" "$(mw part-state "$S" "$R")" "G5h new freeze at the moved HEAD"
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════════
+echo "== H correctness: partial join, PART-START binding, stale live pause, known-red signatures, octal =="
+# H6 join persists the snapshot before dry=2, and a retry after a partial bank repairs it
+mk h6
+RL=$(rline 1 normal 5 8 300 no none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null; to_impl 1 >/dev/null
+H6=$(commit "$W" h6-work); delta 1 4 "$W" "$B" 0 >/dev/null; closer 1 5 "$W" "$B" 0 >/dev/null
+suite 1 "$H6" 1 "$B" >/dev/null; live 1 "$H6" 1 "n/a reason=no-ui" >/dev/null
+fab "[mission] part=1 name=p1 phase=review round=6 dry=2 findings=0" m1-review-r6-d2     # crash: dry=2 landed, snapshot lost
+hasnt "kind=converged" "$(logf)" "H6a partial bank: dry=2 without its convergence snapshot"
+has "dry=2" "$(join 1 6)" "H6b a join retry repairs the partial bank instead of refusing"
+has "kind=converged tree=v2:" "$(logf)" "H6c the convergence snapshot is now persisted"
+has "log ok" "$(done_ 1)" "H6d PART-DONE after the repaired join"
+mk h6b
+RL=$(rline 1 normal 5 8 300 no none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null; to_impl 1 >/dev/null
+H6B=$(commit "$W" h6b-work); delta 1 4 "$W" "$B" 0 >/dev/null; closer 1 5 "$W" "$B" 0 >/dev/null
+suite 1 "$H6B" 1 "$B" >/dev/null; live 1 "$H6B" 1 "n/a reason=no-ui" >/dev/null; join 1 6 >/dev/null
+SN=$(grep -an 'SNAPSHOT part=1 kind=converged' "$R/MISSION.$S.log" | cut -d: -f1); D2=$(grep -an 'm1-review-r6-d2' "$R/MISSION.$S.log" | cut -d: -f1)
+[ -n "$SN" ] && [ -n "$D2" ] && [ "$SN" -lt "$D2" ] && ok "H6e a normal join writes the snapshot BEFORE the dry=2 line" || bad "H6e snapshot (line ${SN:-?}) not before dry=2 (line ${D2:-?})"
+has "dry=2" "$(join 1 6)" "H6f an exact join retry is idempotent"
+
+# H7 PART-START binds base= to the worktree's actual HEAD
+mk h7
+RL=$(rline 1 normal 5 8 300 no none); plan_recipes "$RL"
+H7X=$(commit "$W" h7-parked-work)
+has "is not the declared base" "$(start 1 "$W" "$B" none "$RL")" "H7a a worktree whose HEAD is not base= is refused (parked commits cannot ride in)"
+W7="${R}-wt7"; wt "$W7" 7 "$B"
+has "log ok" "$(start 1 "$W7" "$B" none "$RL")" "H7b HEAD == base is admitted"
+
+# H8 an invalidated freeze ends its live pause; overlapping pauses are merged
+mk h8
+RL=$(rline 1 normal 5 8 300 yes none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null; to_impl 1 >/dev/null
+H8=$(commit "$W" h8-work); delta 1 4 "$W" "$B" 0 >/dev/null
+NOW=$(date +%s)   # fresh: minute-granular assertions below must not drift with suite runtime
+CE=$(grep -a 'REVIEW-EVIDENCE part=1 round=4 scope=delta' "$R/MISSION.$S.log" | cut -f2 | sed "s/ scope=delta / scope=close /; s/ round=4 / round=5 /; s/ at=[0-9]*\$//")
+fab "$CE at=$((NOW - 200*60))" m1-review-evidence-close-r5
+fab "[mission] FULL-SUITE part=1 sha=$H8 attempt=1 base=$B env=0123456789abcdef completed=yes new-reds=0 report=/x at=$((NOW - 200*60))" "m1-suite-$H8-a1"
+fab "[mission] live-verify part=1 sha=$H8 attempt=1 status=sent at=$((NOW - 50*60))" "m1-live-$H8-a1-sent"
+fab "[mission] live-verify part=1 sha=$H8 attempt=2 status=sent at=$((NOW - 40*60))" "m1-live-$H8-a2-sent"
+has "paused live=50" "$(mw budget-state "$S" "$R")" "H8a two open attempts on the freeze: overlapping pauses merge (50, not 90)"
+fab "[mission] live-verify part=1 sha=$H8 attempt=3 status=sent at=$((NOW - 100*60))" "m1-live-$H8-a3-sent"
+has "paused live=100" "$(mw budget-state "$S" "$R")" "H8b a third open attempt: union is 100 paused minutes"
+has "log ok" "$(lg "[mission] part=1 name=p1 phase=fix round=5 dry=0 findings=1" m1-fix-r5-d0)" "H8c repair starts (dry reset invalidates the freeze)"
+eq ok "$(mw budget-state "$S" "$R")" "H8d the stale unanswered attempts stop pausing (they would otherwise run on toward the live cap)"
+
+# H9 known-red signatures keep deterministic assertion values
+mk h9
+mkdir -p "$R/.mission-known-reds"
+kr() { _f="$R/tmp/mission/kr-$1.txt"; shift
+  { echo "sha=$B"; echo "base=$B"; echo "command=npm test"; echo "env=w1"; echo "completed=yes"; echo "infra=0"; echo "--"; for x in "$@"; do echo "$x"; done; } > "$_f"; printf '%s' "$_f"; }
+mw known-reds "$S" "$R" record "$(kr base 't1 | expected 5 received 1000000000000000' 't2 | expected hash deadbeefdeadbeefdeadbeef' 't3 | requestId=aaaa1111bbbb2222cccc failed at 2026-11-11T10:00:00Z after 12ms')" >/dev/null
+eq 1 "$(mw known-reds "$S" "$R" diff "$(kr a 't1 | expected 5 received 2000000000000000')")" "H9a a changed long numeric assertion value is a NEW red"
+eq 1 "$(mw known-reds "$S" "$R" diff "$(kr b 't2 | expected hash cafebabecafebabecafebabe')")" "H9b a changed hex assertion value is a NEW red"
+eq 0 "$(mw known-reds "$S" "$R" diff "$(kr c 't3 | requestId=ffff9999eeee8888dddd failed at 2026-11-12T11:22:33Z after 97ms')")" "H9c only id-labelled fields, timestamps and durations are normalized (known red)"
+eq 0 "$(mw known-reds "$S" "$R" diff "$(kr d 't1 | expected 5 received 1000000000000000')")" "H9d an identical red is known"
+
+# H10 leading-zero part numbers never reach bash arithmetic (bash 3.2 octal abort)
+mk h10
+OUT=$(bash "$MW" await "$S" "$R" "part=08 phase=review round=09 kind=job op=review-barrier attempt=1 need=3 got=0" 2>&1)
+hasnt "value too great" "$OUT" "H10a part=08 does not abort bash"
+has "mission-write: await" "$OUT" "H10b ... and still prints its status line"
 
 printf '\nPASS: %s  FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -14,6 +14,12 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   a legacy PART-START, and any line for an un-started part, is refused after the first proto=2 part.
   The writer now rewrites `tmp/mission/MORNING.md` after PART-DONE, PART-RETIRED, MISSION-CLEARED,
   any FAIL and an opened human STOP.
+- Pre-land review fixes: read-only `part-state` (protocol, dry, freeze/head/tree drift) drives the
+  wake's dispatch (legacy parts never reach `bank-review`; drift repairs before the close row; a
+  joined part finalizes); bank-review evidence supersedes its round's job AWAIT; a retired part's human
+  AWAIT still closes; join writes the snapshot before dry=2 and repairs a partial bank; PART-START
+  needs worktree HEAD == base; stale live attempts stop pausing the clock and pauses merge;
+  known-red signatures keep numeric/hex values; no shell arithmetic on log-derived part numbers.
 - New `mission-watchdog.sh` (helper stall detection) and `lib/mission-status.sh` (status lines,
   tokens by tag, morning report; deferred parts read from the strategist's `tmp/mission/recipes.md`).
 - `codex-review.md` (`--base`, `--scope full`, `--ledger`, `--verify`; Sol pinned), `plan.md`

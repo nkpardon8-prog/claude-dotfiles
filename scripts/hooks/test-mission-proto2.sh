@@ -167,6 +167,10 @@ mk pause
 H=$(git -C "$W" rev-parse HEAD | cut -c1-12)
 fab "[mission] PART-START part=1 name=p1 proto=2 worktree=$W base=$B needs=none at=$((NOW - 320*60))" m1-part-start
 fab "[mission] RECIPE part=1 v=1 tier=normal floor=none plan=5 review=8 budget=300 live=yes overlap=none needs=none at=$((NOW - 319*60))" m1-recipe-v1
+# H is the current freeze (a clean delta round at dry=1): an unanswered live attempt pauses the clock
+# only while its SHA is the current freeze (integration fix, land-r1-p1 item 8).
+fab "[mission] REVIEW-EVIDENCE part=1 round=3 scope=delta base=$B head=$H codex=4/4 claude=3/3 tagged=0 blocking=0 new=0 repeat=0 rkeys=- result=clean report=/x at=$((NOW - 70*60))" m1-review-evidence-delta-r3
+fab "[mission] part=1 name=p1 phase=review round=3 dry=1 findings=0" m1-review-r3-d1
 fab "[mission] FULL-SUITE part=1 sha=$H attempt=1 base=$B env=e completed=yes new-reds=0 report=/x at=$((NOW - 60*60))" "m1-suite-$H-a1"
 fab "[mission] live-verify part=1 sha=$H attempt=1 status=sent at=$((NOW - 60*60))" "m1-live-$H-a1-sent"
 has "over part=1" "$(mw budget-state "$S" "$R")" "3i clock keeps running after status=sent while the close review is unfinished"

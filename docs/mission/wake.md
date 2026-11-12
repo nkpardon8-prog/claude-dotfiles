@@ -28,10 +28,12 @@ an env prefix). Rare paths (orphan recovery, the lock race note) live in `docs/m
    ```bash
    aw=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh await-state "$sid" "$root")
    bs=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh budget-state "$sid" "$root")
+   ps=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh part-state "$sid" "$root")
    ```
    `aw`: `none` | `corrupt` | `await kind=<job|human> op=.. part=<N> round=<K> attempt=<A> phase=<P>
    need=<M> got=<G> ready=<0|1> started_at=<E>`. `bs`: `ok` | `paused live=<min>` |
-   `over part=<N> minutes=<M> replan=<0|1>`. Watchdog status files (one line each, `state=` and `action=`):
+   `over part=<N> minutes=<M> replan=<0|1>`. `ps`: `none` | `part=<N> proto=<1|2> dry= closed=<0|1> freeze= head=
+   tree= drift=<0|1>` (proto=1 legacy). Watchdog status files (one line each, `state=` and `action=`):
    `~/.claude/progress/mission-liveness/<sid>.watchdog.<label>`. `corrupt` -> STOP LOUD.
 5. **Recompute the cursor right before banking.** Changed -> another wake advanced the mission:
    discard this decision, release, re-enter at step 1 (`reenter_count` per wake, at most 2; the 3rd
@@ -122,11 +124,14 @@ PLAN -> ACTIVE). **Active iff** the latest `mission_state` line is not `MISSION-
 | `await kind=human ready=0` on a wake | `last_decision` NON-EMPTY -> consume it now (action, then got=1, then resolve; each a no-op if done), never re-ask. EMPTY -> STOP, no reschedule, wait for the user. ORPHAN (no `- [pd:<op>]` line, no DECISION) -> reference.md "Orphan human barrier". |
 | `bs` = `over ... replan=1` | Re-plan once: stop the part's helpers, run the strategist (`/plan --roadmap`) for this part, bank RECIPE v2, continue. |
 | `bs` = `over ... replan=0` | Park (playbook §J): stop helpers, park FAIL, PushNotification, PART-RETIRED, strategist, next PART-START. Never an AWAIT, never a STOP. |
-| a watchdog status file says `action=stop` (`state=stall`, or `state=deadline` for a non-test helper) | TaskStop that helper (yours, exact id), `note` it, delete the status file, relaunch once with a new watchdog; a second stop parks the part. `action=note` (a suite `state=overdue`): note + PushNotification only; a test run still growing is never killed. |
+| a watchdog status file says `action=stop` (`state=stall`, or `state=deadline` for a non-test helper) | TaskStop it (yours, exact id), `note`, delete the status file, relaunch once; a second stop parks the part. `action=note` (suite `state=overdue`): note + PushNotification only, never a kill. |
 | `await kind=job ready=0`, tracked job still running | Launch nothing. Step 7 with a 1500-3300 s heartbeat. |
-| `await kind=job ready=0`, no tracked job | Barrier younger than the lane's watchdog deadline -> heartbeat. Older -> relaunch ONLY the missing lane on the same attempt; a genuine timeout -> FAIL line and attempt A+1. |
-| `await kind=job ready=1` | Join: `codex-review --verify <run-dir> --with <impl-reviewer-output>`, then `bank-review` (plan/delta/close per the round). Its line supersedes the AWAIT. |
+| `await kind=job ready=0`, no tracked job | Younger than the lane's watchdog deadline -> heartbeat. Older -> relaunch ONLY the missing lane, same attempt; a genuine timeout -> FAIL line, attempt A+1. |
+| `await kind=job ready=1` | `ps` proto=2: `codex-review --verify <run-dir> --with <impl-reviewer-output>`, then `bank-review` (plan/delta/close per the round). `ps` proto=1: never `bank-review`; bank by hand (reference.md "Pre-cutover review evidence"). The banked line supersedes the AWAIT. |
 | latest progress `PART-DONE` or `PART-RETIRED` | Part complete. PART-DONE without PART-RETIRED -> retire first. Then the strategist boundary pass and the next PART-START (writer checks `needs=`). |
+| `ps` proto=1 (legacy part, open) | Old fold only (never `bank-review`/close legs): `dry=2` -> `live-verify part=N round=K`, then PART-DONE (legacy fingerprint check; stale -> fresh round); `findings>0` -> fix, fresh round; else the next fresh round. |
+| `ps` drift=1 (HEAD moved/dirty since the freeze) | Repair first: commit or discard, log `phase=fix dry=0` (resets dry), delta round from the freeze, new freeze, new close. |
+| `ps` proto=2 dry=2 closed=0 (joined) | Log PART-DONE (rc=4 names the gap). Never re-review. |
 | `PART-START` with no RECIPE (proto=2) | Bank RECIPE v1 from the strategist's boundary pass. |
 | `PART-START`, RECIPE, no round yet | Begin research. |
 | last round `phase=research\|implement` | Continue that phase, then the next step of the part loop. |
@@ -134,11 +139,10 @@ PLAN -> ACTIVE). **Active iff** the latest `mission_state` line is not `MISSION-
 | last review `phase=review findings>0` | Fix the SAME round K (`phase=fix`), then a sweep if `repeat>0` (a second dirty sweep on the same types -> redesign, playbook §H2), then delta round K+1. |
 | last round `phase=fix` | Finish the fix (check the tree), then delta round K+1. |
 | last review `dry=1`, no `dry=2` | Close join: for the freeze SHA relaunch ONLY missing legs (close review, FULL-SUITE, live proof); all three banked -> `bank-review ... join`. |
-| close result `blocking`, or a code change after the freeze | Repair: fix, delta round, new freeze, new close (dry reset). Infra-only suite/live failure at an unmoved HEAD -> same-SHA rerun as `attempt+1`. |
+| close result `blocking` | Repair: fix, delta round, new freeze, new close (dry reset). Infra-only suite/live failure at an unmoved HEAD -> same-SHA rerun as `attempt+1`. |
 | latest line for round K is `VOID` | Re-run round K fresh. |
-| legacy part (no `proto=2`), `phase=review findings=0` | Next fresh round under the old 2-dry fold. |
 
-Never re-run an idtag round already banked. Retired parts' job AWAITs are ignored by `await-state`.
+Never re-run a banked idtag round. Retired parts' job AWAITs are ignored by `await-state`.
 
 ## §12.3 Stop conditions (closed list - nothing else stops a wake)
 
@@ -161,6 +165,5 @@ entry. Announcing an action never substitutes for taking it.
 
 ## §12.4 Post-compact resume
 
-Just another wake source: keep the `(sid,nonce)` resume marker, then enter §12.1. The tick lock
-serializes it against a restored scheduled wake; the second wake reads the advanced state and picks
-the NEXT step. Never hand-resume the last round line.
+Just another wake source: keep the `(sid,nonce)` resume marker, enter §12.1 (the tick lock serializes
+it). Never hand-resume the last round line.

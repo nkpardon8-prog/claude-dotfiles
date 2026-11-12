@@ -47,6 +47,8 @@
 #                    types=..] [redesign=<area>]` | `bank-review VOID reason= void-count=N` | FAILED rc=N)
 #     budget-state  <sid> <root>                 (read-only, bare: ok | paused live=<min> |
 #                                                 over part=N minutes=M replan=<0|1>)
+#     part-state    <sid> <root>                 (read-only, bare: none | part=N proto=<1|2> dry= closed=<0|1>
+#                                                 freeze= head= tree=<clean|dirty|-> drift=<0|1>)
 #     known-reds    <sid> <root> key|diff|record <suite-report>  (key: bare FULL-SUITE env= hash;
 #                                                 diff: bare new-red count, -1 = invalid run)
 #
@@ -702,7 +704,8 @@ _p2_budget() {
   _bv2=$(_p2_lines "m$_bn-recipe-v2\$" "RECIPE part=$_bn v=2 " | tail -1)
   _bst=$(_p2_fv "$(_p2_ps "$_bn")" at); [ -n "$_bv2" ] && _bst=$(_p2_fv "$_bv2" at)
   _bbud=$(_p2_fv "$_brc" budget)
-  printf '%s\n' "$P2S" | awk -F'\t' -v pn="$_bn" -v now="$(_p2_now)" -v st="${_bst:-0}" -v bud="${_bbud:-0}" -v v2="${_bv2:+1}" '
+  _bfzc=$(_p2_freeze "$_bn")
+  printf '%s\n' "$P2S" | awk -F'\t' -v pn="$_bn" -v now="$(_p2_now)" -v st="${_bst:-0}" -v bud="${_bbud:-0}" -v v2="${_bv2:+1}" -v fz="$_bfzc" '
     function f(s,k,  i,r,a){ i=index(s," " k "="); if(!i) return ""; r=substr(s,i+length(k)+2); split(r,a," "); return a[1] }
     index($2,"[mission] REVIEW-EVIDENCE part=" pn " ")==1 && $1 ~ /review-evidence-close-r/ && f($2,"result")=="clean" {
       h=f($2,"head"); t=f($2,"at")+0; if(!(h in cl) || t<cl[h]) cl[h]=t }
@@ -712,15 +715,25 @@ _p2_budget() {
       k=f($2,"sha") SUBSEP f($2,"attempt"); t=f($2,"at")+0
       if (f($2,"status")=="sent") { sent[k]=t; sh[k]=f($2,"sha") } else res[k]=t }
     END {
-      tot=0; aft=0; paused=0
+      # Intervals: a FINISHED attempt (it has a result) paused from max(sent, close, suite) to its result.
+      # An UNANSWERED attempt pauses only while its SHA is still the current freeze (dry>=1); once the
+      # freeze is invalidated (dry reset, repair) a stale attempt never accrues paused time. Overlapping
+      # intervals are merged so two open attempts on one freeze are not counted twice.
+      n=0; paused=0
       for (k in sent) {
         h=sh[k]; if(!(h in cl) || !(h in su)) continue
         ps=sent[k]; if(cl[h]>ps) ps=cl[h]; if(su[h]>ps) ps=su[h]
-        op=0; if (k in res) pe=res[k]; else { pe=now; op=1 }
+        if (k in res) pe=res[k]; else { if (h!=fz) continue; pe=now; paused=1 }
         if (pe>now) pe=now
-        if (op) paused=1
         if (pe<=ps) continue
-        tot+=pe-ps; a=ps; if(a<st) a=st; if(pe>a) aft+=pe-a
+        n++; is[n]=ps; ie[n]=pe
+      }
+      for (i=2;i<=n;i++) { a=is[i]; b=ie[i]; j=i-1; while (j>=1 && is[j]>a) { is[j+1]=is[j]; ie[j+1]=ie[j]; j-- } is[j+1]=a; ie[j+1]=b }
+      tot=0; aft=0; cs=-1; ce=-1
+      for (i=1;i<=n+1;i++) {
+        if (i<=n && cs>=0 && is[i]<=ce) { if (ie[i]>ce) ce=ie[i]; continue }
+        if (cs>=0) { tot+=ce-cs; a=cs; if(a<st) a=st; if(ce>a) aft+=ce-a }
+        if (i<=n) { cs=is[i]; ce=ie[i] }
       }
       el=int((now-st-aft)/60); lc=int(tot/60)
       if (lc>120) { printf "over %d 0\n", el; exit }
@@ -738,13 +751,15 @@ _p2_over_guard() {   # <status-verb> <N>
 # `<test id> | <failure signature>` line per assertion failure. Baseline key = base SHA + command + env.
 _p2_kr_hdr() { sed -n "1,/^--\$/s/^$2=//p" "$1" | head -1; }
 _p2_kr_key() { printf '%s\n%s' "$(_p2_kr_hdr "$1" command)" "$(_p2_kr_hdr "$1" env)" | _mission_hash_stream; }
-# normalize ONLY named nondeterministic fields; assertion values are kept (a numeric change is a new red).
+# normalize ONLY named nondeterministic fields: timestamps, temp paths, uuids, ports, durations and the
+# value of an explicitly id-LABELLED field (`id=`, `request_id:`, `requestId=`, `ID:`). Ordinary numbers
+# and hex values are assertion values and are kept: a numeric or hash change is a new red.
 _p2_kr_norm() {
   sed -E -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?/<ts>/g' \
          -e 's#(/private)?(/var/folders|/tmp|/private/tmp)/[^ ]*#<tmp>#g' \
          -e 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<uuid>/g' \
          -e 's/(localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]+/\1:<port>/g' \
-         -e 's/[0-9a-f]{16,}/<id>/g' \
+         -e 's/(^|[^A-Za-z0-9])(id|[A-Za-z0-9]*_id|[A-Za-z0-9]*[a-z0-9]Id|[A-Za-z0-9]*ID)(["'"'"']?[=:] ?["'"'"']?)[A-Za-z0-9_-]+/\1\2\3<id>/g' \
          -e 's/(^|[^A-Za-z0-9.])[0-9]+(\.[0-9]+)? ?(ms|s)([^A-Za-z0-9]|$)/\1<dur>\4/g'
 }
 _p2_kr_body() { sed -n '/^--$/,$p' "$1" | sed '1d' | grep ' | ' | _p2_kr_norm | LC_ALL=C sort -u; }
@@ -813,6 +828,10 @@ _p2_check_ps() {
   _c_cd2=$(git -C "$4" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
   [ -n "$_c_cd1" ] && [ "$_c_cd1" = "$_c_cd2" ] || _mw_emit_refuse log 4 "REFUSED: worktree= does not share the mission root's git common dir"
   git -C "$_c_wt" rev-parse --verify -q "${_c_b}^{commit}" >/dev/null 2>&1 || _mw_emit_refuse log 4 "REFUSED: base=$_c_b is not a commit"
+  # base= must BE the worktree's HEAD at admission: the needs/isolation checks below test base=, so a
+  # reused worktree carrying parked commits on top of a clean declared base would otherwise ride in.
+  _c_h=$(_p2_head12 "$_c_wt")
+  [ "$_c_h" = "$_c_b" ] || _mw_emit_refuse log 4 "REFUSED: worktree HEAD ${_c_h:-?} is not the declared base base=$_c_b (start the part on a fresh worktree at its base)"
   for _c_o in $(_p2_open_parts); do
     [ "$_c_o" = "$2" ] || _mw_emit_refuse log 4 "REFUSED: part $_c_o is still open (neither PART-DONE nor PART-RETIRED)"
   done
@@ -988,13 +1007,23 @@ _p2_bank_review() {
   _bwt=$(mission_part_worktree "$P2S" "$_bn" "$_br"); _bps=$(_p2_ps "$_bn"); _bname=$(_p2_fv "$_bps" name); _bbase=$(_p2_fv "$_bps" base)
   _brc=$(_p2_recipe "$_bn")
   if [ "$_bsc" = join ]; then
-    [ "$(_p2_lastdry "$_bn")" = 1 ] || _mw_emit_refuse bank-review 4 "REFUSED: join needs the part at dry=1 (a clean delta round) with no reset since"
+    # dry=1 is the normal entry. dry=2 is a RETRY (idempotent) or the repair of a partial bank (a crash
+    # after an old-order dry=2 line, before its snapshot): every check re-runs and the missing line is
+    # appended, never refused for "already dry=2".
+    _bld=$(_p2_lastdry "$_bn")
+    { [ "$_bld" = 1 ] || [ "$_bld" = 2 ]; } || _mw_emit_refuse bank-review 4 "REFUSED: join needs the part at dry=1 (a clean delta round) with no reset since"
     _bfz=$(_p2_freeze "$_bn"); _bmiss=$(_p2_legs "$_bn" "$_bfz")
     [ -z "$_bmiss" ] || _mw_emit_refuse bank-review 4 "REFUSED: join refused - leg $_bmiss not passing at freeze $_bfz"
     [ "$(_p2_head12 "$_bwt")" = "$_bfz" ] && _p2_clean "$_bwt" || _mw_emit_refuse bank-review 4 "REFUSED: join needs the part worktree clean at the freeze SHA $_bfz"
-    mission_log_append "$_bs" "$_br" "[mission] part=$_bn name=$_bname phase=review round=$_bk dry=2 findings=0" "m$_bn-review-r$_bk-d2" >/dev/null 2>&1
     _btr=$(_mission_tree_fingerprint_v2 "$_bwt"); _bg=$(_mission_goal_hash "$_bs" 2>/dev/null)
+    case "$_btr" in v2:*) : ;; *) _mw_emit_refuse bank-review 4 "REFUSED: join cannot fingerprint the part worktree ($_btr)" ;; esac
+    # SNAPSHOT FIRST: PART-DONE needs it, and a dry=2 line without it is the unrecoverable half-state.
     mission_log_append "$_bs" "$_br" "[mission] SNAPSHOT part=$_bn kind=converged tree=$_btr sha=$_bfz goal=${_bg:-nogoal} files=0 ver=2" "snap-p$_bn-conv-${_btr#v2:}" >/dev/null 2>&1
+    case "${_MLA_OUTCOME:-}" in appended|dedup-idempotent) : ;; *) _mw_emit_refuse bank-review 1 "join snapshot write ${_MLA_OUTCOME:-failed} ${_MLA_REASON:-} - retry the join" ;; esac
+    if [ "$_bld" = 1 ]; then
+      mission_log_append "$_bs" "$_br" "[mission] part=$_bn name=$_bname phase=review round=$_bk dry=2 findings=0" "m$_bn-review-r$_bk-d2" >/dev/null 2>&1
+      case "${_MLA_OUTCOME:-}" in appended|dedup-idempotent) : ;; *) _mw_emit_refuse bank-review 1 "join dry=2 write ${_MLA_OUTCOME:-failed} ${_MLA_REASON:-} - retry the join" ;; esac
+    fi
     _mw_arm_liveness "$_bs" "$_br"
     echo "mission-write: bank-review ok scope=join dry=2 freeze=$_bfz"; exit 0
   fi
@@ -1071,7 +1100,7 @@ _p2_bank_review() {
 # exit 0. The normal absolute-path case (no `..`) is unaffected. Only enforced for verbs that
 # actually take a <root> arg (i.e. not the help/usage paths, which have no root).
 case "$verb" in
-  create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|known-reds)
+  create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|part-state|known-reds)
     case "$root" in
       ""|*..*)
         # I2: emit the parseable failure shape (FAILED rc=N), not a bare REFUSED line — the
@@ -1381,7 +1410,15 @@ case "$verb" in
     _aw_p=$(_mission_await_field "$4" part)
     if [ -n "$_aw_p" ]; then
       _p2_load "$sid" "$root" await
-      _p2_retired "$((_aw_p + 0))" && _mw_emit_refuse await 4 "REFUSED: part-retired - part $_aw_p is retired; a late completion is an expected drop (no FAIL, no tally)"
+      # JOB barriers only: a late lane completion for a retired part is an expected drop. A HUMAN barrier
+      # opened before retirement (e.g. a pre-cutover spend-brake pending-stop) must still close through
+      # its validated path (DECISION first, then got=1); refusing it would wedge resolve/clear/rebaseline.
+      if [ "$(_mission_await_field "$4" kind)" != human ]; then
+        # string-normalize (never $(( )): bash 3.2 reads 08/09 as bad octal and aborts before any status line)
+        case "$_aw_p" in *[!0-9]*) _mw_emit_refuse await 1 "REFUSED: part=$_aw_p is not a number" ;; esac
+        _aw_pn=$(printf '%s' "$_aw_p" | sed 's/^0*//'); [ -n "$_aw_pn" ] || _aw_pn=0
+        _p2_retired "$_aw_pn" && _mw_emit_refuse await 4 "REFUSED: part-retired - part $_aw_p is retired; a late completion is an expected drop (no FAIL, no tally)"
+      fi
     fi
     mission_await_append "$sid" "$root" "$4"
     rc=$?
@@ -1391,6 +1428,31 @@ case "$verb" in
   bank-review)
     # bank-review <sid> <root> <N> <K> <plan|delta|close|join> [report] [impl-reviewer-output]
     _p2_bank_review "$sid" "$root" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"
+    ;;
+
+  part-state)
+    # read-only; bare token for the wake's protocol dispatch (wake.md decision table):
+    #   none | part=<N> proto=<1|2> dry=<0|1|2> closed=<0|1> freeze=<sha12|-> head=<sha12|-> tree=<clean|dirty|-> drift=<0|1>
+    # Part = the open part (PART-START, no PART-DONE/RETIRED), else the newest started part. proto=1 is a
+    # grandfathered legacy part (manual evidence banking, two-dry fold; never bank-review). drift=1 = a
+    # proto=2 part at dry>=1 whose worktree HEAD moved off the freeze or is dirty: route to repair.
+    _p2_load "$sid" "$root" part-state
+    _psn=$(_p2_open_parts | sort -n | tail -1)
+    [ -n "$_psn" ] || _psn=$(printf '%s\n' "$P2S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-part-start$/ && $2 ~ /^\[mission\] PART-START part=[0-9]+ / {l=$2} END{print l}' | sed -n 's/^\[mission\] PART-START part=\([0-9]*\) .*/\1/p')
+    if [ -z "$_psn" ]; then echo none; exit 0; fi
+    _psp=$(_p2_proto "$_psn"); _psd=$(_p2_lastdry "$_psn"); _psc=0
+    { _p2_done "$_psn" || _p2_retired "$_psn"; } && _psc=1
+    _psf=-; _psh=-; _pst=-; _psx=0
+    if [ "$_psp" = 2 ]; then
+      _psw=$(mission_part_worktree "$P2S" "$_psn" "$root")
+      _psf=$(_p2_freeze "$_psn"); [ -n "$_psf" ] || _psf=-
+      _psh=$(_p2_head12 "$_psw"); [ -n "$_psh" ] || _psh=-
+      if _p2_clean "$_psw"; then _pst=clean; else _pst=dirty; fi
+      if [ "$_psc" = 0 ] && [ "$_psd" != 0 ] && [ "$_psf" != - ] && { [ "$_psh" != "$_psf" ] || [ "$_pst" = dirty ]; }; then _psx=1; fi
+    else
+      _psh=$(_p2_head12 "$root"); [ -n "$_psh" ] || _psh=-
+    fi
+    echo "part=$_psn proto=$_psp dry=$_psd closed=$_psc freeze=$_psf head=$_psh tree=$_pst drift=$_psx"
     ;;
 
   budget-state)
@@ -1421,7 +1483,7 @@ case "$verb" in
     ;;
 
   *)
-    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|known-reds|await-state|cursor-hash)"
+    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|part-state|known-reds|await-state|cursor-hash)"
     ;;
 esac
 

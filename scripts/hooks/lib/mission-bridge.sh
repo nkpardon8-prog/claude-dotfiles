@@ -2346,6 +2346,13 @@ mission_await_state() {
     (idt ~ /^(g[0-9]+-)?m[0-9]+-void-r/) && (body ~ /^\[mission\] VOID part=/) {
       key = (fval(body,"part")+0) SUBSEP (fval(body,"round")+0); if (NR > supnr[key]) supnr[key] = NR; next
     }
+    # proto=2 bank-review evidence (idtag m<N>-review-evidence-<plan|delta|close>-r<K>, written ONLY by
+    # bank-review; `log` refuses proto=2 REVIEW-EVIDENCE) supersedes that round JOB barrier. A plan or a
+    # CLEAN close round writes no phase=review round line, so without this its barrier stayed ready=1
+    # and every wake re-banked the same close instead of reaching the three-leg join.
+    (idt ~ /^(g[0-9]+-)?m[0-9]+-review-evidence-(plan|delta|close)-r[0-9]+$/) && (body ~ /^\[mission\] REVIEW-EVIDENCE part=[0-9]+ round=[0-9]+ scope=(plan|delta|close) /) {
+      key = (fval(body,"part")+0) SUBSEP (fval(body,"round")+0); if (NR > supnr[key]) supnr[key] = NR; next
+    }
     # PART-DONE (idtag m<N>-part-done) supersedes ALL rounds/kinds of that part.
     (idt ~ /^(g[0-9]+-)?m[0-9]+-part-done$/) && (body ~ /^\[mission\] PART-DONE part=/) {
       pd = fval(body,"part")+0; if (NR > pdnr[pd]) pdnr[pd] = NR; next

@@ -62,7 +62,7 @@ bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh <verb> <s
 Verbs: `create` `log` `await` `note` `challenge` `pending` `pending-stop` `resolve` `rebaseline`
 `render-banner` `timing-resume|contact|close` `archive-close` `bank-review` (sole writer of proto=2
 review evidence and of every `dry=` raise). Bare-token read verbs (no status line): `await-state`,
-`cursor-hash`, `budget-state`, `void-count <sid> <root> <N> <K>` (`-1` = STOP), `parse-codex-header`.
+`cursor-hash`, `budget-state`, `part-state`, `void-count <sid> <root> <N> <K>` (`-1` = STOP), `parse-codex-header`.
 Codex NEVER writes the bridge. Untrusted text (roadmap, reviewer output, questions) is never inlined
 in a shell arg: capture it via a quoted heredoc or file and pass `"$VAR"`.
 
@@ -232,7 +232,8 @@ shown as deferred. A real re-scope uses `rebaseline`. Small work runs as a low-t
 
 ## §4 Part-loop detail
 
-**Part start.** Create the part worktree (`git worktree add`), then:
+**Part start.** Create a fresh part worktree at its base (`git worktree add <path> <base>`; the writer
+refuses a worktree whose HEAD is not `base=`), then:
 
 ```bash
 bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-START part=<N> name=<slug> proto=2 worktree=<abs path> base=<sha12> needs=<none|N[,N...]>" "m<N>-part-start"
@@ -318,8 +319,8 @@ it is neither red nor pass.
 **Known reds.** Baseline key = base SHA + exact command + environment id (worker, DB role, config
 hash): `<root>/.mission-known-reds/<base-sha12>-<key-hash>.txt`, header naming all three plus
 `completed=yes`, body one line per assertion failure `<test id> | <failure signature>` (first
-assertion message line, values kept; only timestamps, durations, temp paths, ids, uuids and ports
-normalized). Written atomically; infra failures never enter it. A red is known only when id AND
+assertion message line, values kept; only timestamps, durations, temp paths, uuids, ports and the
+values of id-labelled fields normalized). Written atomically; infra failures never enter it. A red is known only when id AND
 signature match a baseline with the same key; no matching baseline = every red is new. New reds
 rerun once for flakes; a remaining one is fixed, or cleared only by reproducing it on the base SHA
 under the same key. A finished part's full-suite result is the next baseline when the key matches.
