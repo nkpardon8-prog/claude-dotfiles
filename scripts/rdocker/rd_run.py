@@ -1261,6 +1261,8 @@ def run_local(argv, env_pairs, why=None):
         note("%s - running on the laptop instead (RDOCKER_MODE=local)" % why)
     env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")   # RRUN=0: the npm shim must not re-route
     env.update(env_pairs)
+    for line in version_lines():   # exec replaces this process: say it now, not at the end
+        note(line[len("rrun: "):] if line.startswith("rrun: ") else line)
     sys.stdout.flush()
     sys.stderr.flush()
     for fd in HELD_LOCKS:          # the local run keeps holding the worktree lock
@@ -1696,9 +1698,20 @@ def trigger_warm(cfg, plan, wt, dshas, job=None):
             os.unlink(pending)           # a waiter that died long ago
         except OSError:
             pass
-        fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as f:     # the queued request: where to warm (rd_warm.queued)
-            f.write(os.getcwd() + "\n")
+        # the queued request (where to warm; rd_warm.queued) appears complete or not at all: written
+        # to a private temp file, then hard-linked into place (fails if a request is already queued),
+        # so a concurrent scan never sees - and deletes - a half-written marker
+        tmp = "%s.%d.tmp" % (pending, os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(os.getcwd() + "\n")
+            os.link(tmp, pending)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     except OSError:
         return False                     # another rrun just queued one
     try:

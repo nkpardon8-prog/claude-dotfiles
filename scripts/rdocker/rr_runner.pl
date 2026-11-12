@@ -471,7 +471,9 @@ sub mem_avail_mb {
 }
 # V8 sizes its default heap from RAM: ~2 GB on an 8 GB worker, so a full `tsc -p server` that passes on
 # a 16 GB Mac (4 GB default) dies with "JavaScript heap out of memory" here. Give node 70% of RAM,
-# capped at 6 GB and never below 2 GB, unless the caller's NODE_OPTIONS already sets the heap size.
+# capped at 6 GB (12 GB on a worker with 30 GB+: a full tsc hit the 6 GB cap on the 64 GB MacBook,
+# 2026-11-11, and 4 heavy slots x 12 GB still fit) and never below 2 GB, unless the caller's
+# NODE_OPTIONS already sets the heap size.
 sub mem_total_mb {
     if ($OS eq 'linux') {
         my ($kb) = slurp(($ENV{RR_PROC} // '/proc') . "/meminfo") =~ /^MemTotal:\s*(\d+)/m;
@@ -487,7 +489,8 @@ sub node_heap {
     return if $opts =~ /--max-old-space-size/;
     my $tot = mem_total_mb() // return;
     my $mb = int($tot * 0.7);
-    $mb = 6144 if $mb > 6144;
+    my $cap = $tot >= 30720 ? 12288 : 6144;
+    $mb = $cap if $mb > $cap;
     $mb = 2048 if $mb < 2048;
     $env->{NODE_OPTIONS} = join ' ', grep { length } $opts, "--max-old-space-size=$mb";
 }
@@ -1580,7 +1583,9 @@ sub raise_pool_version {
     my $lfh;
     eval { mk($ROOT) };
     unless (!-l $lk && sysopen($lfh, $lk, O_RDWR | O_CREAT | O_NOFOLLOW, 0644) && flock($lfh, LOCK_EX)) {
-        return $read->();                 # cannot raise it now: report what is there (or unknown)
+        # cannot raise it now: report a real number only; a missing file here is unknown, not 0
+        my ($v) = slurp($f) =~ /^\s*(\d+)\s*$/;
+        return defined $v ? $v + 0 : undef;
     }
     my $have = $read->();
     if (defined $have && defined $want && $want > $have) {

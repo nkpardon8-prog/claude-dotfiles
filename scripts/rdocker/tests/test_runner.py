@@ -529,11 +529,12 @@ class RunnerTest(unittest.TestCase):
 
     def test_node_heap_follows_worker_ram_unless_set(self):
         """V8's ~2 GB default on an 8 GB worker OOMs `tsc -p server`: the runner sizes the heap (70% of
-        RAM, 2-6 GB) and never overrides a caller's own --max-old-space-size."""
+        RAM, 2-6 GB; 12 GB cap from 30 GB of RAM) and never overrides a caller's own --max-old-space-size."""
         proc = os.path.join(self.d, "proc")
         os.makedirs(proc)
         show = ["/bin/sh", "-c", 'printf "%s" "$NODE_OPTIONS"']
-        for total_kb, want in ((8000000, "--max-old-space-size=5468"), (32000000, "--max-old-space-size=6144"),
+        for total_kb, want in ((8000000, "--max-old-space-size=5468"), (24000000, "--max-old-space-size=6144"),
+                               (32000000, "--max-old-space-size=12288"), (65000000, "--max-old-space-size=12288"),
                                (2000000, "--max-old-space-size=2048")):
             wfile(os.path.join(proc, "meminfo"), "MemTotal: %d kB\nMemAvailable: %d kB\n" % (total_kb, total_kb // 2))
             r = self.run_runner(show, env_extra=dict(RR_OS="linux", RR_PROC=proc))
