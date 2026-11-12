@@ -1,0 +1,3 @@
+{"type": "user", "message": {"role": "user", "content": "go"}}
+{"type": "assistant", "message": {"id": "xagent-h2", "role": "assistant", "content": [{"type": "text", "text": "x"}], "usage": {"input_tokens": 2000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 99999, "output_tokens": 0}}, "isSidechain": true}
+{"type": "assistant", "message": {"id": "xagent-h2", "role": "assistant", "content": [{"type": "text", "text": "x"}], "usage": {"input_tokens": 2000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 99999, "output_tokens": 0}}, "isSidechain": true}

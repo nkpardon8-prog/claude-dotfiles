@@ -1,0 +1,32 @@
+g2-m1-close-r2	[mission] REVIEW-EVIDENCE part=1 round=2 scope=close base=000011112222 head=aaaa1111bbbb result=clean sha=aaaa1111bbbb at=1762795500
+g2-m1-suite-aaaa1111bbbb-a1	[mission] FULL-SUITE part=1 sha=aaaa1111bbbb attempt=1 base=000011112222 env=k1 completed=yes new-reds=0 report=/r/s1 at=1762795800
+g2-m1-live-aaaa1111bbbb-a1-sent	[mission] live-verify part=1 status=sent sha=aaaa1111bbbb attempt=1 at=1762795200
+g2-m1-live-aaaa1111bbbb-a1-result	[mission] live-verify part=1 status=ok sha=aaaa1111bbbb attempt=1 evidence=dt-1 at=1762796100
+g2-m1-part-done	[mission] PART-DONE part=1 (converged) at=1762796400
+g2-m1-part-retired	[mission] PART-RETIRED part=1 at=1762796460
+g2-m2-part-start	[mission] PART-START part=2 name=budget-clock proto=2 worktree=/w/p2 base=aaaa1111bbbb at=1762797000
+g2-m2-recipe-v1	[mission] RECIPE part=2 v=1 tier=high floor=money plan=7 review=15 budget=480 live=no overlap=plan-next needs=1 at=1762797000
+g2-m2-plan-r1-d0	[mission] part=2 name=budget-clock phase=plan round=1 dry=0 open=0
+g2-m2-review-r1	[mission] REVIEW-EVIDENCE part=2 round=1 scope=delta base=aaaa1111bbbb head=bbbb0000aaaa new=2 repeat=1 codex=4 claude=3 report=/r/2 at=1762801200
+g2-m2-sweep-r1-s1	[mission] SWEEP part=2 round=1 types=OFF-BY-ONE sha=bbbb0000aaaa instances=3 report=/r/sw1
+g2-m2-sweep-r1-s2	[mission] SWEEP part=2 round=1 types=OFF-BY-ONE sha=bbbb0000cccc instances=0 report=/r/sw2
+g2-m2-review-r2	[mission] REVIEW-EVIDENCE part=2 round=2 scope=delta base=bbbb0000aaaa head=cccc2222dddd new=0 repeat=0 codex=4 claude=3 report=/r/3 at=1762803600
+g2-m2-close-r3	[mission] REVIEW-EVIDENCE part=2 round=3 scope=close base=aaaa1111bbbb head=cccc2222dddd result=clean sha=cccc2222dddd at=1762804200
+g2-m2-suite-cccc2222dddd-a1	[mission] FULL-SUITE part=2 sha=cccc2222dddd attempt=1 base=aaaa1111bbbb env=k1 completed=yes new-reds=0 report=/r/s2 at=1762804800
+g2-m2-live-cccc2222dddd-a1-result	[mission] live-verify part=2 status=n/a sha=cccc2222dddd attempt=1 at=1762804800
+g2-m2-part-done	[mission] PART-DONE part=2 (converged) at=1762805400
+g2-m2-part-retired	[mission] PART-RETIRED part=2 at=1762805460
+g2-m3-part-start	[mission] PART-START part=3 name=park-flow proto=2 worktree=/w/p3 base=cccc2222dddd at=1762806000
+g2-m3-recipe-v1	[mission] RECIPE part=3 v=1 tier=normal floor=none plan=5 review=8 budget=300 live=yes overlap=none needs=2 at=1762806000
+g2-m3-plan-r1-d0	[mission] part=3 name=park-flow phase=plan round=1 dry=0 open=0
+g2-m3-review-r1	[mission] REVIEW-EVIDENCE part=3 round=1 scope=delta base=cccc2222dddd head=eeee3333ffff new=3 repeat=0 codex=4 claude=3 report=/r/4 at=1762813200
+g2-m3-fail-park	[mission] FAIL part=3 phase=review reason=part-over-budget attempt=1 park=over-budget disposition=isolated range=cccc2222dddd..eeee3333ffff at=1762814400
+g2-m3-part-retired	[mission] PART-RETIRED part=3 at=1762814460
+g2-m4-research-r1-d0	[mission] part=4 name=stack-next phase=research round=1 dry=0
+g2-m5-part-start	[mission] PART-START part=5 name=status-lines proto=2 worktree=/w/p5 base=cccc2222dddd at=1762815000
+g2-m5-recipe-v1	[mission] RECIPE part=5 v=1 tier=normal floor=none plan=5 review=8 budget=300 live=yes overlap=none needs=2 at=1762815000
+g2-m5-plan-r1-d0	[mission] part=5 name=status-lines phase=plan round=1 dry=0 open=0
+g2-m5-review-r1	[mission] REVIEW-EVIDENCE part=5 round=1 scope=delta base=cccc2222dddd head=1234abcd5678 new=1 repeat=0 codex=4 claude=3 report=/r/5 at=1762820400
+g2-m5-review-r2-d1	[mission] REVIEW-EVIDENCE part=5 round=2 scope=delta base=1234abcd5678 head=9999aaaa0000 new=0 repeat=0 codex=4 claude=3 report=/r/6 at=1762824000
+g2-m5-live-9999aaaa0000-a1-sent	[mission] live-verify part=5 status=sent sha=9999aaaa0000 attempt=1 at=1762825200
+	free text line without the prefix
