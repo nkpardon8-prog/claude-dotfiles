@@ -36,3 +36,16 @@ It clears stale slot files of dead jobs, stops a job past its hard cap, removes 
 repeated lost jobs) and moves `~rd/rr` to `~rd/rr.noindex` (a symlink stays) while no job runs, so Spotlight
 skips it. Log: `~rd/rr/log/doctor.log`; status: `~rd/rr/state/doctor.json`. Off switch: `DOCTOR_DISABLE=1` in
 `/etc/rdocker/doctor.conf`. It never touches your share switch.
+
+## Pool steward (rd-steward, on the always-on agent Mac only)
+`rd-steward.py` is the pool's supervisor; it runs on Nick's Mac mini, not on workers. Every 30 min it
+reads each enabled worker's rd-doctor status and last-hour job outcomes over ssh, applies fixed rules
+(unreachable, doctor missing or stale, drained over 15 min, disk under 10 %, memory under 8 %,
+infra failures over 10 % of the hour: `lost`/`busy`/`refused`/caps/OOM, never test failures or
+`interrupted`), and writes `~/.local/state/rd-steward/reports/`. When there are findings it starts one
+headless Claude agent with a strict runbook (safe, reversible fixes only; "Needs a human" for anything
+else). The same finding set is handed off again after 3 h, then 6, 12, max 24 h.
+
+    python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-steward.py --install     # user LaunchAgent, no sudo
+    python3 .../rd-steward.py --once        # run now (RD_STEWARD_AGENT=0: report only)
+    python3 .../rd-steward.py --uninstall
