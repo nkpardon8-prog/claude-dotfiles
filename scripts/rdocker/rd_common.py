@@ -122,6 +122,12 @@ DEFAULTS = {
                                        # for it to come back before running on the laptop instead
     "rr_wait_min": 30,                 # give up waiting for a free mini slot after this
     "rr_hb_timeout": 60,               # mini kills the run after this many s without a laptop heartbeat
+                                       # (before the command starts; once it runs, rr_detach_hb_s)
+    "rr_detach_hb_s": 180,             # a started command survives this long without its client (link
+                                       # lost: it runs on detached, output spooled), then is cancelled
+    "rr_reattach_tries": 3,            # link lost after GO: reconnect (fresh ssh, no shared master) this
+    "rr_reattach_window_s": 120,       # many times within this window, resuming the spooled output,
+    "rr_reattach_backoff_s": [0, 10, 30],   # waiting this long before each try
     # hard wall-clock cap on the command per job class (minutes; RRUN_TIMEOUT=<min|0> overrides for
     # one run, 0 = no cap): past it the worker kills the command's process group -> exit 124
     "rr_timeout_min": {"light": 30, "normal": 30, "heavy": 60, "db": 90, "build": 60},

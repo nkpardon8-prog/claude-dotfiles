@@ -125,7 +125,7 @@ $ENV{PATH} = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin";
 sub mtime { my @s = lstat $_[0]; @s ? $s[9] : 0 }
 sub git { system("git", "-c", "core.hooksPath=/dev/null", @_) == 0 }
 my (%busy, %inuse, @held);
-if ($kind eq "w" && opendir(my $sd, "$R/slots")) {
+if ($kind =~ /^w2?$/ && opendir(my $sd, "$R/slots")) {
     for my $s (sort grep { /^\d+$/ } readdir $sd) {
         sysopen(my $fh, "$R/slots/$s", O_RDWR | O_NOFOLLOW) or next;
         my $free = flock($fh, LOCK_EX | LOCK_NB);
@@ -150,7 +150,7 @@ if ($kind eq "w" && opendir(my $sd, "$R/slots")) {
 sub last_use {                                    # newest of the dir and (mirror) its worktree index/HEAD
     my ($p) = @_;
     my $last = mtime($p);
-    if ($kind eq "w" && open(my $g, "<", "$p/.git")) {
+    if ($kind =~ /^w2?$/ && open(my $g, "<", "$p/.git")) {
         my ($admin) = (<$g> // "") =~ /^gitdir: (.+)$/;
         close $g;
         if (defined $admin) {
@@ -166,7 +166,7 @@ for my $e (readdir $dh) {
     my $p = "$dir/$e";
     next if -l $p || !-d _;
     my $floor = $recent;
-    if ($kind eq "w") {
+    if ($kind =~ /^w2?$/) {
         my ($slug) = $e =~ /^(?!\.)([A-Za-z0-9._-]+)-[0-9a-f]{12}$/ or next;
         next if $busy{"*"} || $busy{$slug} || $inuse{$e};
     } elsif ($e =~ /^\.tmp-[0-9a-f]{32}\.\d+$/) { $floor = 3600 if $floor < 3600 }   # a save in progress
@@ -184,7 +184,7 @@ for (sort { $b->[0] <=> $a->[0] || $a->[1] cmp $b->[1] } @cand) {   # least rece
     rename($p, "$trash/$kind-$e.$$.$n") or next;
     $n++;
     printf "TRASH %s %s %d\n", $kind, $e, $age / 3600;
-    next unless $kind eq "w";
+    next unless $kind =~ /^w2?$/;
     unlink "$dir/.$e.envlist";
     my ($slug, $wt12) = $e =~ /^(.+)-([0-9a-f]{12})$/;
     my $bare = "$R/git/$slug.git";
@@ -223,7 +223,7 @@ empty_trash() {   # $1 = rr; low priority, so a big delete does not starve the r
   find "$t" -mindepth 1 -maxdepth 1 -exec nice -n 19 $io rm -rf {} + 2>/dev/null
 }
 
-evict() {   # $1 rr, $2 w|deps, $3 max age s, $4 limit (0 = all), $5 why; logs what went; 0 when anything did
+evict() {   # $1 rr, $2 w|w2|deps, $3 max age s, $4 limit (0 = all), $5 why; logs what went; 0 when anything did
   local rr=$1 kind=$2 why=$5 out line what
   mkdir -p "$rr/.trash" 2>/dev/null
   [ -d "$rr/.trash" ] && [ ! -L "$rr/.trash" ] || return 1
@@ -238,19 +238,38 @@ evict() {   # $1 rr, $2 w|deps, $3 max age s, $4 limit (0 = all), $5 why; logs w
   done <<< "$out"
 }
 
+# ~/rr/spool (rr_runner.pl detached runs): a run's files 10 min after its result (.rc / .norun), or 1 h
+# after their last change - never while a keeper holds <id>.lock (a live keeper also touches its files
+# every 5 min). The same rule as rr_runner.pl spool_sweep, which runs only when a detached run ends.
+sweep_spool() {
+  perl -MFcntl=:flock,O_RDONLY,O_NOFOLLOW -e '
+    my $d = "$ARGV[0]/spool"; exit 0 if -l $d || !opendir(my $dh, $d);
+    my %g; for (readdir $dh) { push @{ $g{$1} }, $_ if /^([0-9a-f-]{36})\.(?:out|err|hb|ctl|rc|end|lock|norun|rc\.tmp|end\.tmp)$/ }
+    for my $id (keys %g) {
+      my $lk = "$d/$id.lock";
+      if (!-l $lk && sysopen(my $fh, $lk, O_RDONLY | O_NOFOLLOW)) { my $free = flock($fh, LOCK_SH | LOCK_NB); close $fh; next unless $free }
+      my ($new) = sort { $b <=> $a } map { (lstat "$d/$_")[9] // 0 } @{ $g{$id} };
+      my $end = (lstat "$d/$id.rc")[9] // (lstat "$d/$id.norun")[9];
+      next unless (defined $end && time - $end > 600) || time - $new > 3600;
+      unlink map { "$d/$_" } @{ $g{$id} };
+    }' "$1" 2>/dev/null
+}
+
 prune() {
   local rr home_dir g kind; rr=$(rr_root); home_dir=$(dirname "$rr")
   [ -d "$rr" ] || return 0
   empty_trash "$rr"                                   # leftovers of a prune that was killed
   if disk_low "$rr"; then                             # LRU first, one entry per df; mirrors, then the store
-    for kind in w deps; do
+    for kind in w w2 deps; do
       while ! disk_ok "$rr" && evict "$rr" "$kind" 0 1 "disk low: $(disk_free "$rr" | awk '{ print $1 "% / " $2 " GB free" }')"; do :; done
     done
   fi
   cooldown_ok prune 1800 || return 0
   evict "$rr" w $(( 2 * 86400 )) 0 "unused 2d"
+  evict "$rr" w2 $(( 2 * 86400 )) 0 "unused 2d"   # mirrors of runners since 2026-11-11
   for g in "$rr"/git/*.git; do [ -d "$g" ] && git --git-dir="$g" worktree prune 2>/dev/null; done
   evict "$rr" deps $(( 2 * 86400 )) 0 "unused 2d"
+  sweep_spool "$rr"
   slots_idle || return 0                              # npm cache / docker: no per-run owner to check
   if [ "$(du -sm "$home_dir/.npm/_cacache" 2>/dev/null | cut -f1)" -gt 1024 ] 2>/dev/null; then rm -rf "$home_dir/.npm/_cacache"; fi
   if [ "$IS_HOME" != 1 ] && [ -z "${RD_NO_SERVICES:-}" ] && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then

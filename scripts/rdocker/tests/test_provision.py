@@ -825,5 +825,36 @@ class Tune(unittest.TestCase):
         self.assertIn("ExecStart=/usr/local/bin/rd-tune", read(os.path.join(SERVER, "rd-tune.service")))
 
 
+    def test_prune_evicts_old_w2_mirrors_like_w(self):
+        old = self.mirror(0, 4 * 86400)
+        w2 = os.path.join(self.rr, "w2", os.path.basename(old))
+        os.makedirs(os.path.dirname(w2))
+        os.rename(old, w2)
+        os.utime(w2, (time.time() - 4 * 86400,) * 2)
+        new = self.entry("w2", "repo-" + self.WT[1], 0)
+        self.prune()
+        self.assertEqual(self.exists(w2, new), (False, True))
+
+    def test_prune_sweeps_detached_run_spools_never_a_live_one(self):
+        """rr_runner.pl's spool (detached runs): 10 min after a result, 1 h after the last change,
+        never while a keeper holds <id>.lock - also when no run ends to sweep it (2026-11-11)."""
+        import fcntl
+        import uuid
+        d = os.path.join(self.rr, "spool")
+        os.makedirs(d)
+        now = time.time()
+        ids = {k: str(uuid.uuid4()) for k in ("old", "ended", "fresh", "live")}
+        for k, rid in ids.items():
+            for ext in ("out", "err", "lock") + (("rc",) if k in ("ended", "fresh") else ()):
+                path = os.path.join(d, "%s.%s" % (rid, ext))
+                open(path, "w").close()
+                age = {"old": 7200, "ended": 900, "fresh": 60, "live": 7200}[k]
+                os.utime(path, (now - age, now - age))
+        lk = open(os.path.join(d, ids["live"] + ".lock"))
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        self.addCleanup(lk.close)
+        self.prune()
+        self.assertEqual(set(n.split(".")[0] for n in os.listdir(d)), {ids["fresh"], ids["live"]})
+
 if __name__ == "__main__":
     unittest.main()

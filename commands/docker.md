@@ -213,17 +213,17 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   `$RRUN_DOCKER_LABEL`): removed when the run passes or is interrupted, **kept on failure** for
   inspection (`rrun: the run failed; its containers stay ...`; `docker ps` / `logs` reach them; the 3 h
   idle rule reaps them). A container the job labels `rdocker.keep` is never removed by run cleanup.
-  **Compose:** every compose call of a run is namespaced: the project name it gives (`-p`,
-  `--project-name`, `COMPOSE_PROJECT_NAME`, or none = `default`) becomes `rr<run12>-<name>`, so a job
-  can never address another run's stack; every `rr<run12>-*` project is removed with the run's
-  containers.
+  **Compose is not available inside `rrun` pool jobs:** `docker compose ...` there exits 1 with
+  `rrun: docker compose is not available in rrun pool jobs (use docker run; see /docker)`. A compose
+  project is the one handle that can reach another run's stack, and no argv check held up under review.
+  Start test databases with `docker run` (this playbook). Compose on your own Mac is unaffected.
 - **Docker scope on the shared worker engine (2026-11-11):** a job may only `rm` / `remove` / `stop` /
-  `kill` / `restart` containers and `rm` / `remove` networks and volumes it created itself (its label,
-  or its compose namespace). Every target is checked with `docker inspect` and only the object's
-  immutable id is passed on. Another run's object is **refused by name and the command exits 1**:
+  `kill` / `restart` containers and `rm` / `remove` networks and volumes it created itself (its label). Every target is checked with `docker inspect` and only the object's
+  immutable id (full 64 hex) is passed on. Another run's object is **refused by name and the command exits 1**:
   ``rrun: refused `docker rm -f pg-other`: container pg-other is not this run's ...`` (its own targets
   in the same command still go). A target that does not exist is dropped (silently with `-f`, like
-  docker); an inspect that fails for any other reason refuses the whole command. `docker container|network|volume prune` is refused
+  docker); an inspect that fails for any other reason refuses the whole command; a command with no
+  targets at all goes to docker as it is (its own usage error). `docker container|network|volume prune` is refused
   unless scoped with `--filter label=$RRUN_DOCKER_LABEL`; `docker system prune` is always refused. This
   is what ended "my test DB vanished mid-run": another run's harness cleanup can no longer reach it, so
   `TEST_DB_KEEP_CONTAINERS=1` is no longer needed for that. A harness whose cleanup lists every matching
@@ -301,7 +301,9 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   workers), so anything in `~/rr/spool` older than 1 h is safe to delete. While such a run still
   works in the worktree's mirror on the worker, the next run of that worktree there waits for it (up
   to its slot wait, `rrun-runner: an earlier run of this worktree still runs here ...`), then answers
-  busy and rrun re-plans.
+  busy and rrun re-plans. Mirrors of these runners live in `~/rr/w2/` (older runners: `~/rr/w/`, which
+  they keep using), so an old client's run can never check out under a new detached one; the janitor
+  and rd-tune prune both.
 - **Exit codes of rrun itself** (only before the command started, so never confused with its own):
   65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
   on the mini, 70 runner error, 73 slot busy past `rr_wait_min` (or the worker refused: share off / its Docker did

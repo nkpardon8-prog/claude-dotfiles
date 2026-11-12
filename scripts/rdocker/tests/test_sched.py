@@ -458,7 +458,7 @@ class SchedE2E(test_run.RunBase):
         test_run.wfile(os.path.join(self.bin, "vitest"), FAKE_VITEST, 0o755)
 
     def mirrors(self, w):
-        d = os.path.join(self.whome[w], "rr", "w")
+        d = os.path.join(self.whome[w], "rr", "w2")
         return sorted(n for n in os.listdir(d) if not n.startswith(".")) if os.path.isdir(d) else []
 
     def test_vitest_run_is_sharded_across_the_free_workers(self):

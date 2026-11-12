@@ -19,7 +19,8 @@ is the real rrun path:
             the worker's shared store (~/rr/deps).
 
 Slow workers: one with "shards": false in fleet.json (the 2011/2012 minis: 27-211 s prepares, warm
-sessions often lost after ~30 s) is never warmed; it still takes whole jobs, cold.
+sessions often lost after ~30 s) is never warmed; it still takes whole jobs, cold - unless it says
+"cold_ok": false (never warmed either: it only takes jobs whose packages it already has).
 Politeness: workers are warmed one at a time (a pass is sequential, and a ~/rr/state/warm.lock dir
 on the worker keeps two clients from warming it together); only a worker with a free slot and
 load1/ncpu below rr_warm_max_load; never queued for a slot (wait_min 0: busy => 73 => skip); never
@@ -159,9 +160,11 @@ def fleet_off(h):
 
 
 def warmable(h):
-    """Workers the warmer visits: not shared off in fleet.json, and not a "shards": false worker
-    (too slow to prepare; warming it mostly ended `lost` and only loaded it)."""
-    return not fleet_off(h) and rd_pool.takes_shards(h)
+    """Workers the warmer visits: not shared off in fleet.json, not a "shards": false worker (too
+    slow to prepare; warming it mostly ended `lost` and only loaded it), and not a "cold_ok": false
+    one (rd_pool.eligibility: a warm IS the cold prepare such a worker refuses; its job class does
+    not matter, a warm runs no command)."""
+    return not fleet_off(h) and rd_pool.takes_shards(h) and rd_pool._f(h.entry, "cold_ok", True) is not False
 
 
 def probe(h, repo, cfg):

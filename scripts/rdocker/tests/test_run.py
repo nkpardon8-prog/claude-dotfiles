@@ -107,6 +107,43 @@ if os.environ.get("FAKE_SSH_CUT_AFTER_GO") and "perl" in cmd:
     p.stdin.close()
     p.wait()
     sys.exit(255)
+once = os.environ.get("FAKE_SSH_DROP_ONCE_AT")
+if once and "perl" in cmd and not os.path.exists(os.environ["FAKE_SSH_DROP_FLAG"]):
+    # relay both ways until the command's stdout shows FAKE_SSH_DROP_ONCE_AT, then the link dies
+    # (we exit 255; the remote side is left running with broken pipes, like sshd after a lost link).
+    # Only once: the reconnect after it goes through.
+    import threading
+    open(os.environ["FAKE_SSH_DROP_FLAG"], "w").close()
+    p = subprocess.Popen(["/bin/sh", "-c", cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
+    def pump(src, dst):
+        while True:
+            b = os.read(src, 65536)
+            if not b:
+                break
+            os.write(dst, b)
+    threading.Thread(target=pump, args=(p.stderr.fileno(), 2), daemon=True).start()
+    def feed():
+        try:
+            pump(0, p.stdin.fileno())
+        except OSError:
+            pass
+    threading.Thread(target=feed, daemon=True).start()
+    seen = b""
+    while True:
+        b = os.read(p.stdout.fileno(), 65536)
+        if not b:
+            break
+        seen += b
+        k = seen.find(once.encode())
+        if k >= 0:
+            os.write(1, b[:len(b) - (len(seen) - k - len(once))])   # up to the marker, then gone
+            wipe = os.environ.get("FAKE_SSH_WIPE")        # ...and the worker's spool with it
+            for n in (os.listdir(wipe) if wipe and os.path.isdir(wipe) else []):
+                os.unlink(os.path.join(wipe, n))
+            os._exit(255)
+        os.write(1, b)
+    sys.exit(p.wait())
 os.execv("/bin/sh", ["/bin/sh", "-c", cmd])
 '''
 FAKE_DOCKER = "#!/bin/sh\nexit 0\n"
@@ -177,7 +214,7 @@ class RunBase(unittest.TestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def mirror(self):
-        w = os.path.join(self.home, "rr", "w")
+        w = os.path.join(self.home, "rr", "w2")
         names = [n for n in os.listdir(w) if not n.startswith(".")]
         self.assertEqual(len(names), 1, names)
         return os.path.join(w, names[0])
@@ -331,7 +368,7 @@ class RunTest(RunBase):
         r = self.rrun("/bin/sh", "-c", "echo ran", RRUN_GIT_URL=os.path.join(self.d, "nope", "x.git"))
         self.assertEqual((r.returncode, r.stdout), (0, "ran\n"), r.stderr)
         self.assertIn("git push to the mini failed", r.stderr)
-        self.assertFalse(os.path.exists(os.path.join(self.home, "rr", "w")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "rr", "w2")))
 
     def test_unreachable_waits_for_the_mini_then_runs_there(self):
         """A short outage before the command started: rrun waits and runs it on the mini, not here."""
@@ -415,13 +452,19 @@ class RunTest(RunBase):
         self.assertIn(b"not running it anywhere", err)
         self.assertFalse(os.path.exists(marker))              # not run on the laptop either
 
-    def test_connection_lost_after_go_is_75_and_never_reruns(self):
+    def test_connection_lost_after_go_but_go_never_arrived_is_known_and_safe(self):
+        """GO was written, then the link died before it arrived. The reconnect finds the run never
+        started there (NORUN), so it is a loss BEFORE the start: today's rule for that (here: one
+        retry, then the laptop) applies - exactly one run in all, never a guess. (Before
+        2026-11-11 this was exit 75: the laptop could not know.)"""
+        self.write_cfg(rr_reattach_backoff_s=[0, 0, 0])
         marker = os.path.join(self.d, "ran")
-        r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, FAKE_SSH_CUT_AFTER_GO="1")
-        self.assertEqual(r.returncode, 75, r.stderr)
-        self.assertIn("not re-running on the laptop", r.stderr)
-        self.assertFalse(os.path.exists(marker))              # GO never arrived: not run anywhere
+        r = self.rrun("/bin/sh", "-c", 'echo "$RDOCKER_MODE" >> %s' % marker, FAKE_SSH_CUT_AFTER_GO="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("command was not started", r.stderr)    # the runner gave up cleanly
+        self.assertIn("reconnecting (1 of 3)", r.stderr)
+        self.assertIn("before the command started (it never ran there)", r.stderr)
+        self.assertEqual(self.read(marker), "local\n")        # exactly one run, on the laptop
 
     def test_a_command_exiting_255_itself_is_its_result_not_a_lost_link(self):
         r = self.rrun("/bin/sh", "-c", "echo out; exit 255")
@@ -438,11 +481,54 @@ class RunTest(RunBase):
         self.assertIn("ConnectTimeout=6", o)
 
     def test_255_after_started_is_75_and_never_reruns(self):
+        """The link drops after the start and every reconnect drops too: the lost-worker rule (75)."""
+        self.write_cfg(rr_reattach_backoff_s=[0, 0, 0])
         marker = os.path.join(self.d, "ran")
         r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, FAKE_SSH_DROP="1")
         self.assertEqual(r.returncode, 75, r.stderr)
         self.assertIn("lost the Mac mini mid-run - not re-running on the laptop", r.stderr)
+        self.assertIn("reconnecting (3 of 3)", r.stderr)      # tried to reattach first
         self.assertEqual(self.read(marker), "x\n")            # exactly one run (the remote one)
+
+    def test_lost_link_mid_run_reattaches_and_returns_the_real_result(self):
+        """2026-11-11 (Phase B): the link dies mid-run; the worker's keeper runs on and spools the
+        output; rrun reconnects with a fresh ssh (no shared master), resumes the output exactly where
+        it broke off and returns the command's own exit code. The command ran once."""
+        self.write_cfg(rr_reattach_backoff_s=[0, 0, 0])
+        marker = os.path.join(self.d, "ran")
+        flag = os.path.join(self.d, "dropped")
+        r = self.rrun("/bin/sh", "-c", "echo x >> %s; printf part1; echo e1 >&2; sleep 1; printf part2; "
+                      "echo e2 >&2; exit 6" % marker, FAKE_SSH_DROP_ONCE_AT="part1", FAKE_SSH_DROP_FLAG=flag)
+        self.assertEqual((r.returncode, r.stdout), (6, "part1part2"), r.stderr)
+        self.assertTrue(os.path.exists(flag))
+        self.assertEqual(self.read(marker), "x\n")                      # once
+        self.assertIn("reconnecting (1 of 3)", r.stderr)
+        self.assertIn("reconnected to the Mac mini", r.stderr)
+        self.assertEqual(r.stderr.count("e2\n"), 1, r.stderr)           # nothing twice
+        self.assertNotIn("lost the Mac mini mid-run", r.stderr)
+        att = [ln for ln in self.read(self.sshlog).splitlines() if "ControlPath=none" in ln]
+        self.assertEqual(len(att), 1)                                   # the reattach: its own connection
+        self.assertIn("ControlMaster=no", att[0])
+        runs = self.read(os.path.join(self.home, "rr", "log", "runs.log")).splitlines()
+        self.assertRegex(runs[-1], r"outcome=rc=6 .*\trun=[0-9a-f-]{36} owner=\S+ cls=normal "
+                                   r"wait_s=\d+\.\d exit_reason=fail$")
+
+    def test_runner_header_carries_a_uuid4_run_id_and_the_180s_tolerance(self):
+        class H:
+            cfg = dict(rd_common.DEFAULTS, host="x")
+            entry = None
+        wt = {"slug": "s", "wt12": "w", "sha": "0" * 40, "relcwd": ""}
+        job = {"cls": "normal", "need_gb": 2}
+        hs = []
+        for _ in range(2):
+            frames, nonce = rd_run.runner_frames(H, wt, ["true"], {}, [], b"", [], [], job, False)
+            hs.append(json.loads(frames[3]))
+        for h in hs:
+            self.assertRegex(h["run_id"], r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+            self.assertEqual((h["detach_hb_s"], h["job_cls"]), (180, "normal"))
+        self.assertNotEqual(hs[0]["run_id"], hs[1]["run_id"])
+        self.assertIn("ControlMaster=no", rd_run.ssh_opts(mux=False))
+        self.assertNotIn("ControlMaster=auto", rd_run.ssh_opts(mux=False))
 
     def test_shallow_clone_push_refused_says_why(self):
         shallow = os.path.join(self.d, "shallow")
@@ -684,6 +770,116 @@ class HangsAndOwners(RunBase):
             time.sleep(0.05)
         os.close(fd)
         self.assertEqual(p.wait(30), 0)
+
+
+class ReattachStates(RunBase):
+    """Phase B round 2 (2026-11-11): what a reattach may conclude, and what it may never do."""
+
+    def test_result_gone_is_75_and_never_re_run(self):
+        """The link drops and the worker's spool is gone when we reconnect: the run may have happened,
+        so it is exit 75 - not NORUN, not a re-run (the command here is `vitest`-like: safe to repeat)."""
+        self.write_cfg(rr_reattach_backoff_s=[0, 0, 0])
+        marker = os.path.join(self.d, "ran")
+        r = self.rrun("/bin/sh", "-c", "echo x >> %s; printf part1; sleep 1; exit 0; vitest" % marker,
+                      FAKE_SSH_DROP_ONCE_AT="part1", FAKE_SSH_DROP_FLAG=os.path.join(self.d, "dropped"),
+                      FAKE_SSH_WIPE=os.path.join(self.home, "rr", "spool"))
+        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertIn("the run's result is lost there", r.stderr)
+        self.assertIn("not re-running it (exit 75)", r.stderr)
+        self.assertNotIn("never ran", r.stderr)
+        time.sleep(1.5)
+        self.assertEqual(self.read(marker), "x\n")                     # once, never again
+
+    def session(self, run_id="r"):
+        s = rd_run.Session({"host": "x"}, [], "ab" * 16, rd_run.Timing(False))
+        s.run_id = run_id
+        return s
+
+    def test_stderr_cursor_counts_command_bytes_only(self):
+        nonce = "ab" * 16
+        counted, out = [], io.BytesIO()
+        f = rd_run.StatusFilter(nonce, out, lambda line: None, on_bytes=counted.append)
+        f.resumable = True
+        f.feed(b"abc" + (nonce + " EX").encode())       # a status line cut by the lost link
+        f.close()
+        self.assertEqual((out.getvalue(), sum(counted)), (b"abc", 3))
+        counted[:], out = [], io.BytesIO()
+        f = rd_run.StatusFilter(nonce, out, lambda line: None, on_bytes=counted.append)
+        f.resumable = True
+        f.feed(b"abc" + nonce[:3].encode())              # could be output or a cut tag: the spool has it
+        f.close()
+        self.assertEqual((out.getvalue(), sum(counted)), (b"abc", 3))
+        counted[:], out = [], io.BytesIO()
+        f = rd_run.StatusFilter(nonce, out, lambda line: None, on_bytes=counted.append)
+        f.feed(b"abc" + nonce[:3].encode())              # not resumable (attached run): shown as before
+        f.close()
+        self.assertEqual(out.getvalue(), b"abc" + nonce[:3].encode())
+
+    def test_attached_marks_the_run_started(self):
+        s = self.session()
+        s.on_status("ATTACHED")                          # the first link died before STARTED arrived
+        self.assertIsNotNone(s.started)
+        s.count_err(5)
+        self.assertEqual(s.err_off, 5)
+
+    def test_a_cancel_while_reattached_is_a_stop_never_a_retry(self):
+        from unittest import mock
+        sess = self.session("0f0f0f0f-0000-4000-8000-000000000000")
+        sess.go_sent = True
+
+        class H:
+            name = "w"
+            cfg = dict(rd_common.DEFAULTS, host="x", rr_reattach_backoff_s=[0, 0, 0])
+
+        def cancelled(self):
+            self.first_sig = signal.SIGINT
+            return 255
+        with mock.patch.object(rd_run.Session, "run", cancelled):
+            self.assertIsNone(rd_run.reattach(H, sess))
+        self.assertTrue(sess.reattach_stopped)
+        self.assertEqual(sess.first_sig, signal.SIGINT)
+
+    def test_a_cancel_beats_a_norun_answer(self):
+        """GO was lost, the reconnect stopped the runner before the start (NORUN) - and the user
+        cancelled meanwhile: a stop, never another attempt."""
+        from unittest import mock
+        sess = self.session("0f0f0f0f-0000-4000-8000-000000000000")
+        sess.go_sent = True
+
+        class H:
+            name = "w"
+            cfg = dict(rd_common.DEFAULTS, host="x", rr_reattach_backoff_s=[0, 0, 0])
+
+        def cancelled_norun(self):
+            self.first_sig, self.norun = signal.SIGTERM, True
+            return 0
+        with mock.patch.object(rd_run.Session, "run", cancelled_norun):
+            self.assertIsNone(rd_run.reattach(H, sess))
+        self.assertTrue(sess.reattach_stopped)
+        self.assertEqual(sess.first_sig, signal.SIGTERM)
+
+    def test_an_empty_replan_is_75_never_the_stale_hosts(self):
+        from unittest import mock
+        rd_pool = rd_run.rd_pool
+
+        class H:
+            name = "w"
+            cfg = {"host": "w"}
+        job = rd_pool.classify(["npx", "tsc", "--noEmit"])
+        ctx = rd_run.Ctx(dict(rd_common.DEFAULTS, rr_wait_min=5), {"slug": "s", "top": self.wt, "wt12": "w"},
+                         {}, rd_run.Timing(False), time.monotonic(), job, rd_pool.Plan([H], True), [], [])
+        h = H()
+        empty = rd_pool.Plan([], True, ineligible=[(h, "takes only light jobs (this is heavy)")])
+        tried = []
+
+        def busy(ctx_, host, *a, **k):
+            tried.append(host)
+            return "busy", "w had no free slot after 2 min"
+        with mock.patch.object(rd_run, "attempt_on", busy), mock.patch.object(rd_pool, "plan", return_value=empty), \
+                mock.patch.object(rd_run.time, "sleep"):
+            kind, val = rd_run.host_loop(ctx, [H], ["npx", "tsc", "--noEmit"])
+        self.assertEqual((kind, val), ("done", 75))
+        self.assertEqual(len(tried), 1)                                 # never the stale list again
 
 
 if __name__ == "__main__":

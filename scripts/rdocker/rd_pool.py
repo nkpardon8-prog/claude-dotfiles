@@ -22,6 +22,12 @@ completion time (score(); lower is better):
     overload: load1 / ncpu >= rr_overload_ratio (1.5) at probe time => "busy" even with a free
            slot, and run x= load1 / ncpu (a worker already oversubscribed is held off, not piled on)
 
+Eligibility (eligibility(); fleet.json per worker, a missing field = no limit) is decided BEFORE any
+of that and is hard: a worker whose `classes` leave out the job's class, whose `max_cost_s` is below the
+job's expected command time there (expected_cost: job_cost / speed, no momentary load factor), or that
+says `cold_ok: false` while it lacks the packages for this lockfile, is no candidate at all - not
+ranked, not a wait host, no shard, no hedge, no warm. Unprobed plans (one worker, --host) check the
+class only. Nothing eligible at all: plan.hosts is empty and plan.ineligible says why (rd_run: exit 75).
 A worker with less memory than the job needs is "low-mem" (no eta). Order: free workers by eta, then
 busy ones by eta (the first is the "wait host" when nothing is free), then low-mem, down, off. A busy
 worker whose eta is <= PROMOTE_RATIO (0.5) x the best free one, and at least PROMOTE_MIN_GAIN_S
@@ -337,7 +343,8 @@ if (sysopen(my $lf, "$R/log/runs.log", O_RDONLY | O_NOFOLLOW)) {
     my @l = do { local $/ = "\n"; <$lf> };
     shift @l if $sz > 24576;
     # a run killed at its wall-clock cap ("timeout rc=124") counts too: it took at least that long
-    for (@l) { push @hist, [$1 + 0, $2] if /\soutcome=(?:timeout )?rc=\d+ prepare_s=\S+ cmd_s=(\d+(?:\.\d+)?) argv=(.*?)\n?$/ }
+    # runs.log v2 appends "\t<run= owner= cls= wait_s= exit_reason=>" after argv: not part of the command
+    for (@l) { s/\t[^\n]*//; push @hist, [$1 + 0, $2] if /\soutcome=(?:timeout )?rc=\d+ prepare_s=\S+ cmd_s=(\d+(?:\.\d+)?) argv=(.*?)\n?$/ }
     splice(@hist, 0, @hist - 40) if @hist > 40;
 }
 $o{hist} = \@hist;
@@ -379,7 +386,7 @@ my @stamps = map { slurp($_) } glob("$R/deps/*/node_modules/.rr-deps-stamp");
 my $warm = 1;
 for my $d (@deps) {
     my ($rel, $sha) = @$d; my $sub = $rel eq "" ? "" : "/$rel";
-    my @mine = $slug eq "" ? () : map { slurp($_) } glob("$R/w/$slug-*$sub/node_modules/.rr-deps-stamp");
+    my @mine = $slug eq "" ? () : map { slurp($_) } glob("$R/w{,2}/$slug-*$sub/node_modules/.rr-deps-stamp");
     $warm = 0 unless grep { index($_, "$sha ") == 0 } @stamps, @mine;
 }
 $o{warm_deps} = $warm;
@@ -501,6 +508,53 @@ def job_cost(cfg, cls, own=None, pooled=None, own_sig=None, pooled_sig=None):
             # make a long command look cheap
             return max(base, _median(xs))
     return base
+
+
+def expected_cost(cfg, host, job, pooled=None):
+    """Seconds the job's command should take on this worker at its own speed (eligibility's
+    max_cost_s). The same command's history (this worker's, else the pool's) when it ran at least
+    twice, or when it says longer than the class figure; else job_cost() (the class median /
+    default). Unlike job_cost (placement), the command's own record may LOWER the estimate here: a
+    class median that mixes 20-min suites with 20-s files must not shut a slow worker out of the
+    short ones. No load or memory factor: eligibility must not flap with a momentary load spike."""
+    sig = job.get("sig")
+    xs = (history_sig_costs(host).get(sig) or (pooled or {}).get(("sig", sig))) if sig else None
+    base = job_cost(cfg, job["cls"], history_costs(host).get(job["cls"]), (pooled or {}).get(job["cls"]))
+    if xs and (len(xs) >= 2 or _median(xs) > base):
+        base = _median(xs)
+    return base / max(0.01, host.speed)
+
+
+def eligibility(host, job, cost_s=None, probed=False):
+    """-> None when the worker may take this job, else why not. Hard rules from its fleet entry (a
+    missing field = no limit, i.e. today's behaviour):
+      classes     the job classes it takes (light / normal / heavy / db / build)
+      max_cost_s  the longest expected command it takes, in seconds on this worker (cost_s)
+      cold_ok     false = only jobs whose packages it already has (probe warm_deps): a cold npm ci
+                  never holds one of its slots
+    cost / cold need a probe (probed=True); an unprobed plan (one worker, --host) checks the class only.
+    A worker that did not answer the probe is judged on its class and cost (cold unknown)."""
+    classes = _f(host.entry, "classes")
+    if isinstance(classes, list) and job["cls"] not in classes:
+        return "takes only %s jobs (this is %s)" % ("/".join(classes), job["cls"])
+    if not probed:
+        return None
+    mc = _num(_f(host.entry, "max_cost_s"))
+    if mc is not None and cost_s is not None and cost_s > mc:
+        return "expected ~%s there, over its max_cost_s %s" % (fmt_s(cost_s), fmt_s(mc))
+    if _f(host.entry, "cold_ok", True) is False and host.probe is not None and not host.probe.get("warm_deps"):
+        return "its packages for this lockfile are not prepared yet (cold_ok: false)"
+    return None
+
+
+def no_eligible_msg(job, ineligible):
+    """Why no worker may take the job (plan.hosts empty): rd_run prints it and exits 75."""
+    what = "class " + job["cls"]
+    costs = [h.cost_s * h.speed for h, _ in ineligible if getattr(h, "cost_s", None) is not None]
+    if costs:
+        what += ", expected ~%s at speed 1.0" % fmt_s(min(costs))
+    return ("no eligible worker for this job (%s): %s - each worker's classes / max_cost_s / cold_ok are "
+            "set in fleet.json" % (what, "; ".join("%s %s" % (h.name, why) for h, why in ineligible)))
 
 
 def mem_factor(avail_mb, need_gb):
@@ -632,9 +686,10 @@ def local_free_gb():
 # ---------------------------------------------------------------------------- plan
 
 class Plan:
-    def __init__(self, hosts, pool, local_after_s=None):
+    def __init__(self, hosts, pool, local_after_s=None, ineligible=()):
         self.hosts, self.pool, self.local_after_s = hosts, pool, local_after_s
         self.promoted = None         # a busy worker put first (its eta beat every free one)
+        self.ineligible = list(ineligible)   # [(Host, why)]: never tried (eligibility())
 
 
 def pick_hosts(cfg, force=None):
@@ -657,7 +712,8 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
     probe=True, for `rrun --where`)."""
     hosts, pool = pick_hosts(cfg, force)
     if not (pool or probe):
-        return Plan(hosts, False)
+        bad = [(h, why) for h, why in ((h, eligibility(h, job)) for h in hosts) if why]
+        return Plan([h for h in hosts if h not in dict(bad)], False, ineligible=bad)
     req = {"slug": slug, "deps": [list(d) for d in deps]}
 
     def req_for(h):
@@ -674,8 +730,14 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
             pooled.setdefault(cls, []).extend(xs)
         for sig, xs in history_sig_costs(h).items():
             pooled.setdefault(("sig", sig), []).extend(xs)
+    bad = []
     for h in hosts:
         score(h, job, cfg, pooled)
+        h.cost_s = expected_cost(cfg, h, job, pooled)
+        why = eligibility(h, job, h.cost_s, probed=True)
+        if why:
+            bad.append((h, why))
+    hosts = [h for h in hosts if h not in dict(bad)]   # never a candidate: not ranked, not a wait host
     by_eta = lambda h: (h.eta, h.rtt or 0)                                     # noqa: E731
     free = sorted((h for h in hosts if h.state == "free"), key=by_eta)
     queued = sorted((h for h in hosts if h.state == "busy" and h.eta is not None), key=by_eta)
@@ -702,11 +764,11 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None):
                 h.short = True
                 h.cfg = dict(h.cfg, rr_wait_min=float(cfg.get("rr_race_wait_min", RACE_WAIT_MIN)))
     local_after = None
-    if pool and not free and job.get("local_ok"):
+    if pool and order and not free and job.get("local_ok"):
         lf = local_free_gb()
         if lf is not None and lf > float(cfg.get("rr_local_min_free_gb", LOCAL_MIN_FREE_GB)):
             local_after = float(cfg.get("rr_local_after_s", LOCAL_AFTER_S))
-    p = Plan(order, pool, local_after)
+    p = Plan(order, pool, local_after, bad)
     p.promoted = promoted
     p.req = req
     return p
@@ -870,6 +932,11 @@ def where_report(cfg, job, p, shards=None):
             yn("warm_deps"), h.speed, fmt_s(h.eta), str(pr.get("share") or "-")[:5],
             "  (overloaded: held off)" if h.overloaded
             else "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
+    for h, why in p.ineligible:
+        lines.append("%-10s %-16s %-7s  %s" % (h.name[:10], str(h.cfg.get("host"))[:16], "never", why))
+    if not p.hosts:
+        lines.append("pick: none - " + no_eligible_msg(job, p.ineligible) + " (rrun exits 75)")
+        return lines
     if isinstance(shards, list):
         cnt = {}
         for h in shards:

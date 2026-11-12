@@ -438,7 +438,9 @@ use Cwd qw(realpath);
 my ($rel, $max_age, $dry, $store_age, $npm_max_mb) = @ARGV;
 $ENV{PATH} = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
 my $R = "$ENV{HOME}/$rel";
-if (!-d "$R/w" || -l "$R/w") { print "RRHK none\n"; exit 0 }
+# mirrors: w (runners before 2026-11-11) and w2 (since: detached runs, the mirror lock)
+my @WD = grep { -d $_ && !-l $_ } "$R/w", "$R/w2";
+if (!@WD) { print "RRHK none\n"; exit 0 }
 my $Rgit = (realpath($R) // $R) . '/git/';    # git records the admin dir by its real path
 my (%busy, %inuse, @held);
 if (opendir(my $sd, "$R/slots")) {
@@ -465,10 +467,11 @@ print "RRHK inuse $_\n" for sort keys %inuse;
 sub mtime { my @s = lstat $_[0]; @s ? $s[9] : 0 }
 sub git { system('git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', @_) == 0 }
 my %touched;
-opendir(my $wd, "$R/w") or do { print "RRHK err cannot read $R/w: $!\n"; exit 0 };
+for my $W (@WD) {
+opendir(my $wd, $W) or do { print "RRHK err cannot read $W: $!\n"; next };
 for my $name (sort readdir $wd) {
     my ($slug, $wt12) = $name =~ /^(?!\.)([A-Za-z0-9._-]+)-([0-9a-f]{12})$/ or next;
-    my $m = "$R/w/$name";
+    my $m = "$W/$name";
     next if -l $m || !-d _;
     next if $busy{'*'} || $busy{$slug} || $inuse{$name};
     my $last = mtime($m);
@@ -485,12 +488,13 @@ for my $name (sort readdir $wd) {
     next if $dry;
     remove_tree($m, { safe => 1 });
     if (-e $m) { print "RRHK err could not fully remove $name\n"; next }
-    unlink "$R/w/.$name.envlist";
+    unlink "$W/.$name.envlist";
     my $bare = "$R/git/$slug.git";
     next unless -d $bare && !-l $bare;
     git('-C', $bare, 'worktree', 'prune');
     git('-C', $bare, 'update-ref', '-d', "refs/rrun/$wt12") or print "RRHK err ref $slug $wt12\n";
     $touched{$bare} = 1;
+}
 }
 git('-C', $_, 'gc', '--auto', '--quiet') for sort keys %touched;
 # Shared package store: an entry unused $store_age goes (a clone or save bumps its mtime first, so

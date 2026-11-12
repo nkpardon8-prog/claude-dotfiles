@@ -1,7 +1,11 @@
 """share/rd-steward.py: the rules (what counts as a problem) and the hand-off cooldown."""
 import importlib.util
 import os
+import sys
 import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rdmods  # noqa: E402,F401  (hermetic test home before anything else)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("rd_steward", os.path.join(HERE, "..", "share", "rd-steward.py"))

@@ -15,7 +15,13 @@ SENDS with every run (nothing trusted is kept on the mini). One run:
   6 relay output; "<nonce> STATUS" lines on stderr are ours (WAIT/BUSY/UNAVAIL/READY/STARTED/KEPT);
     on READY we write "GO\\n" and only then does the runner start the command
   7 rc = ssh's exit status; GO never written => the command never ran: 255 => local fallback,
-    other rc = the runner's (73 busy, 78 deps, ...); GO written => 255 = exit 75 (never run twice).
+    other rc = the runner's (73 busy, 78 deps, ...); GO written => 255 = the link was lost: the
+    worker runs the command on detached (header run_id, a uuid4; rr_detach_hb_s 180 without us), so
+    reattach() reconnects (fresh ssh, no shared master; rr_reattach_tries in rr_reattach_window_s),
+    resumes the spooled output at the bytes we have and returns the real rc; NORUN there = it never
+    started (a loss before the start). Every reconnect failed => exit 75 (never run twice).
+Eligibility (rd_pool.eligibility, fleet.json classes / max_cost_s / cold_ok): a worker that may not
+take the job is never tried; none may => exit 75 at once, naming each worker's reason.
 Pool (rd_pool): with 2+ enabled fleet workers, each job is placed on the best worker right now
 and the hosts are tried in that order: a worker lost before GO, or one that had no free slot after
 all (73 from a short race wait), moves the job to the next one. After GO a lost worker means exit 75
@@ -66,6 +72,7 @@ import sys
 import tarfile
 import threading
 import time
+import uuid
 
 import rd_cache
 import rd_common
@@ -154,11 +161,14 @@ def sane_rel(p):
         and not any(c in ("..", ".git") for c in parts)
 
 
-def ssh_opts():
+def ssh_opts(mux=True):
     """Options for every rrun ssh (runner session AND git, via GIT_SSH_COMMAND): our own rr-%C
-    master, never rdocker's fwd.sock (a bulk push would starve its liveness checks)."""
-    return ["-o", "ControlPath=~/.ssh/rr-%C", "-o", "ControlMaster=auto", "-o", "ControlPersist=30m",
-            "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT_S,
+    master, never rdocker's fwd.sock (a bulk push would starve its liveness checks). mux=False (a
+    reattach after a lost link): a connection of its own - the shared master is what just died, and
+    it takes every session on it down together."""
+    share = ["-o", "ControlPath=~/.ssh/rr-%C", "-o", "ControlMaster=auto", "-o", "ControlPersist=30m"] if mux \
+        else ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
+    return share + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT_S,
             "-o", "ServerAliveInterval=%d" % ALIVE_INTERVAL_S, "-o", "ServerAliveCountMax=%d" % ALIVE_COUNT]
 
 
@@ -591,16 +601,20 @@ class StatusFilter:
     bits the tested code never sees, so it cannot be forged or hit by chance). Only a tail that
     could still be the start of the tag is held back, so progress output streams."""
 
-    def __init__(self, nonce, out, on_status, on_data=None):
+    def __init__(self, nonce, out, on_status, on_data=None, on_bytes=None):
         self.tag = (nonce + " ").encode()
-        self.out, self.on_status, self.on_data = out, on_status, on_data
+        self.out, self.on_status, self.on_data, self.on_bytes = out, on_status, on_data, on_bytes
         self.buf, self.mid_line = b"", False
 
-    def _emit(self, data):
+    def _emit(self, data, own=True):
+        """own: bytes the remote side sent (counted: a reattach resumes the spool after them);
+        False for the newline we add to end a line a status was glued to."""
         if data:
             self.out.write(data)
             self.out.flush()
             self.mid_line = not data.endswith(b"\n")
+            if own and self.on_bytes is not None:
+                self.on_bytes(len(data))
             if self.on_data is not None:
                 self.on_data()
 
@@ -621,14 +635,22 @@ class StatusFilter:
                 self.buf = self.buf[i:]                # wait for the rest of the status line
                 return
             if self.mid_line:
-                self._emit(b"\n")                     # end the line the status was glued to
+                self._emit(b"\n", own=False)          # end the line the status was glued to
             line = self.buf[i + len(self.tag):nl].decode("utf-8", "replace")
             self.buf = self.buf[nl + 1:]
             self.on_status(line)
 
+    resumable = False    # a detached run's stream: a reattach re-sends from the spool what we did not count
+
     def close(self):
-        self._emit(self.buf)
-        self.buf = b""
+        """The stream ended. A held tail that starts with our tag is a status line cut by the lost
+        link: protocol, never output, never counted. A shorter held tail (it matched the start of
+        the tag) cannot be told from output: for a resumable stream it is neither shown nor counted
+        - the spool still has it and a reattach sends it again from the counted offset."""
+        buf, self.buf = self.buf, b""
+        if buf.startswith(self.tag) or (self.resumable and self.tag.startswith(buf)):
+            return
+        self._emit(buf)
 
 
 def remote_command(cfg):
@@ -669,6 +691,12 @@ class Session:
         self.exit_at = None                  # monotonic time "<nonce> EXIT" arrived
         self.last_out = None                 # monotonic time of the command's last output
         self.silent_said = 0                 # "no output" lines printed for the current silence
+        self.run_id = None                   # header run_id: the run survives a lost link (reattach())
+        self.out_off = self.err_off = 0      # bytes of the command's stdout / stderr received so far
+        self.norun = False                   # (reattach) "<nonce> NORUN": the command never started
+        self.gone = None                     # (reattach) "<nonce> GONE <why>": its result is lost
+        self.attached = False                # (reattach) "<nonce> ATTACHED"
+        self.mux = True                      # False: an ssh connection of its own (no shared master)
 
     host_name = None     # the worker's name, for messages
     tag = ""             # shards: "[shard i/n host] "
@@ -762,6 +790,15 @@ class Session:
             self.wait_note(rest)
         elif word == "UNAVAIL":
             self.unavail = rest.strip() or "unavailable"
+        elif word == "ATTACHED":
+            self.attached = True
+            if self.started is None:         # the first link died before STARTED: it runs, so count from here
+                self.started = time.monotonic()
+            note("%sreconnected to %s; the output goes on from where it broke off" % (self.tag, self.where()))
+        elif word == "NORUN":
+            self.norun = True
+        elif word == "GONE":
+            self.gone = rest.strip() or "its result is lost"
         elif word == "BUSY":
             note("%sno slot on %s within %s" % (self.tag, self.where(), fmt_wait(slot_wait_min(self.cfg) * 60)))
         elif word == "KEPT":
@@ -824,6 +861,9 @@ class Session:
             while not self.done.is_set():
                 self.wake.clear()            # before reading the flags: a later set() is never lost
                 if self.ints >= 2:
+                    if self.go_sent:         # a detached run outlives our stdin: say it is a stop
+                        w.write(b"KILL\n")
+                        w.flush()
                     break
                 left = self.give_up_left()
                 if left == 0:
@@ -858,12 +898,14 @@ class Session:
             if not data:
                 break
             self.stdout_out.write(data)
+            self.out_off += len(data)        # (the runner writes nothing but the command's on stdout)
             self.saw_output()
         self.stdout_out.flush()
 
     def relay(self):
         filt = StatusFilter(self.nonce, self.stderr_out or getattr(sys.stderr, "buffer", sys.stderr),
-                            self.on_status, self.saw_output)
+                            self.on_status, self.saw_output, self.count_err)
+        filt.resumable = self.run_id is not None
         fd = self.proc.stderr.fileno()
         while True:
             try:
@@ -874,6 +916,11 @@ class Session:
                 break
             filt.feed(data)
         filt.close()
+
+    def count_err(self, n):
+        """The command's stderr bytes (after STARTED; before it, the runner's own prepare notes)."""
+        if self.started is not None:
+            self.err_off += n
 
     def wait_proc(self):
         """ssh's exit status. Normally ssh ends right after the runner; if it stays open long after
@@ -892,7 +939,7 @@ class Session:
             self.watchdog(now)
 
     def run(self):
-        cmd = ["ssh", "-T"] + ssh_opts() + [self.cfg["host"], remote_command(self.cfg)]
+        cmd = ["ssh", "-T"] + ssh_opts(self.mux) + [self.cfg["host"], remote_command(self.cfg)]
         sys.stdout.flush()
         if self.stdout_out is None:          # relayed too, so the silence watchdog sees stdout
             self.stdout_out = std_stream("stdout")
@@ -1359,6 +1406,12 @@ def rrun(argv, env_args=()):
     except ValueError as e:
         note(str(e))
         return 2
+    if not plan.hosts and not opts.where:
+        # fleet.json's classes / max_cost_s / cold_ok leave no worker for this job: say so now
+        # (waiting would not change it) - never a slot wait, never this machine
+        note("%s; not running it (exit %d)" % (rd_pool.no_eligible_msg(job, plan.ineligible), EXIT_LOST))
+        record("none", argv, EXIT_LOST, time.monotonic() - t0)
+        return EXIT_LOST
     smode = rd_pool.shard_mode(cfg)
     shards, why_not = None, None
     if smode and plan.pool and not opts.host:
@@ -1399,7 +1452,8 @@ def list_jobs(mine_only, force=None, out=None):
         return 2
     now = time.time()
     rows, down = [], []
-    for h in p.hosts:
+    hosts = p.hosts + [h for h, _ in p.ineligible]    # a worker that would not take `true` runs jobs too
+    for h in hosts:
         if h.probe is None:
             down.append(h.name)
             continue
@@ -1418,12 +1472,12 @@ def list_jobs(mine_only, force=None, out=None):
             out.write("%-10s %-6s %-8s %-40s %-14s %s\n" % tuple(r))
     else:
         out.write("no %srrun jobs running on %s\n" % ("of your " if mine_only else "",
-                                                     ", ".join(h.name for h in p.hosts if h.probe) or "any worker"))
+                                                     ", ".join(h.name for h in hosts if h.probe) or "any worker"))
     if down:
         out.write("not answering (their jobs are not listed): %s\n" % ", ".join(down))
     if mine_only:
         out.write("you = %s\n" % me)
-    return 0 if len(down) < len(p.hosts) else 1
+    return 0 if len(down) < len(hosts) else 1
 
 
 def replay_hit(hit, argv, t0):
@@ -1529,6 +1583,11 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
                 note("%severy worker is busy (%s waited so far, gives up after %s); re-planning"
                      % (tag, fmt_wait(time.monotonic() - busy_t0), fmt_wait(total)))
                 hosts = replan(ctx, hosts) if not threaded else hosts
+                if not hosts:
+                    note("%s%s; not running it (exit %d)"
+                         % (tag, rd_pool.no_eligible_msg(job, ctx.plan.ineligible), EXIT_LOST))
+                    record("none", argv, EXIT_LOST, time.monotonic() - t0)
+                    return "done", EXIT_LOST
                 i, failed, round_t0, slot_busy = 0, set(), time.monotonic(), False
                 continue
             note("%sno worker had a free slot%s; giving up (exit 73)"
@@ -1555,14 +1614,16 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
 
 
 def replan(ctx, hosts):
-    """A fresh plan's host order (the probe sees who freed up); the old list if planning fails."""
+    """A fresh plan's host order (the probe sees who freed up); the old list if planning fails. A
+    plan that worked but left no eligible worker (fleet.json changed, packages gone) -> [] (the
+    caller ends with exit 75 and plan.ineligible's reasons): never the stale list."""
     try:
         p = rd_pool.plan(ctx.cfg, ctx.job, ctx.wt["slug"], rd_pool.deps_shas(ctx.wt["top"], ctx.deps),
                          force=ctx.force)
     except Exception:            # a fleet that changed under us: keep trying the old list
         return hosts
     ctx.plan = p
-    return p.hosts or hosts
+    return p.hosts
 
 
 def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0):
@@ -1855,7 +1916,10 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
               "hb_timeout": cfg.get("rr_hb_timeout", 60), "keep_containers_on_fail": True,
               "owner": owner_info(), "timeout_s": int(timeout_s(cfg, job["cls"])),
               "exit_grace": cfg.get("rr_exit_grace_s", 10),
-              "wait_every": cfg.get("rr_status_every_s", 60)}
+              "wait_every": cfg.get("rr_status_every_s", 60),
+              # detached run: survives a lost link (reattach()); uuid4 = unguessable
+              "run_id": str(uuid.uuid4()), "detach_hb_s": cfg.get("rr_detach_hb_s", 180),
+              "job_cls": job["cls"]}
     if outputs:
         header["outputs"] = list(outputs)
     if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
@@ -1900,11 +1964,14 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     env = ship_env(cfg, env_pairs)
     if cache is not None:            # what this attempt really sends must be what the key hashed
         cache.shipped(rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps))
-    frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs)
+    run_id = str(uuid.uuid4())
+    frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs,
+                                  run_id=run_id, waited_s=round(time.monotonic() - t0, 1))
     cap = timeout_s(cfg, job["cls"])
     record(h.name, argv, None, 0, wt12=wt["wt12"], start=True, cap=cap)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
     sess.host_name, sess.timeout_s, sess.silent_s = h.name, cap, silent_s(cfg)
+    sess.run_id = run_id
     sess.tag = lane.tag if lane is not None else ""
     if h.queue_s is not None and h.state == "busy":
         sess.wait_eta_s = h.queue_s      # the scheduler's estimate of this worker's slot wait
@@ -1915,6 +1982,21 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         if not lane.bind(sess):
             return "busy", "%s: cancelled before it started" % h.name
     rc = sess.run()
+    if sess.go_sent and sess.exit_rc is None and rc == 255 and not sess.timed_out:
+        att = reattach(h, sess, lane)
+        if (att is None or att.exit_rc is None) and (getattr(sess, "reattach_stopped", False) or sess.first_sig):
+            # the caller signalled (Ctrl-C, a tool's TERM) and no result came back: it wanted the run
+            # to end - never re-run it anywhere
+            record(h.name, argv, 128 + sess.first_sig, time.monotonic() - t0)
+            return "done", 128 + sess.first_sig      # the caller wants it to end: never re-run it
+        if att is not None and att.norun:
+            record(h.name, argv, rc, time.monotonic() - t0)
+            timing.report()
+            return "lost", "lost %s before the command started (it never ran there)" % label(h)
+        if att is not None:
+            rc = att.final_rc
+            for k in ("exit_rc", "exit_at", "used_docker", "timed_out", "gone"):
+                setattr(sess, k, getattr(att, k))
     secs = time.monotonic() - t0
     if not sess.go_sent:
         # GO was never written, so the runner never started the command: running it here is
@@ -1950,6 +2032,14 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         rc = sess.exit_rc
         if cache is not None:
             cache.attempt_done(h.name, rc, sess.used_docker, bool(sess.ints or sess.first_sig))
+    elif sess.gone:
+        # the worker says the run's result is lost and cannot prove it never ran: it may have run,
+        # so it is never re-run (not even a job safe to repeat)
+        note("%s: the run's result is lost there (%s); not re-running it (exit %d)"
+             % (label(h), sess.gone, EXIT_LOST))
+        record(h.name, argv, EXIT_LOST, secs)
+        timing.report()
+        return "done", EXIT_LOST
     elif rc == 255:
         return "lost_go", "lost %s mid-run" % label(h)
     if rc == 0 and outputs:
@@ -1964,6 +2054,91 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     return "done", rc
 
 
+# ---------------------------------------------------------------------------- reattach
+
+def attach_frames(run_id, nonce, out_off, err_off):
+    """Loader frames for a session that follows a running detached run from these offsets."""
+    with open(rd_common.RUNNER_SRC, "rb") as f:
+        script = f.read()
+    hjs = json.dumps({"nonce": nonce, "attach": run_id, "out_off": out_off, "err_off": err_off}).encode()
+    return [b"%d\n" % len(script), script, b"%d\n" % len(hjs), hjs]
+
+
+def _cfg_list(v, default):
+    try:
+        return [max(0.0, float(x)) for x in v] if isinstance(v, (list, tuple)) and v else default
+    except (TypeError, ValueError):
+        return default
+
+
+REATTACH_MAX = 10       # reconnects per run in all (each one that made progress opens a new window)
+
+
+def reattach(h, sess, lane=None):
+    """The link to h died after GO and before the command's exit code arrived. The worker runs a
+    detached command on for rr_detach_hb_s without us (output spooled), so connect again - a fresh
+    ssh each time, never the shared master that just failed - and follow it from the bytes we have:
+    up to rr_reattach_tries tries within rr_reattach_window_s (a reattach that moved the output on
+    and dropped again starts a new window; REATTACH_MAX in all), waiting rr_reattach_backoff_s
+    before each.
+    -> the attach Session that saw the end (exit_rc, or norun: the command never started there;
+    gone: its result is lost; final_rc: that ssh's status), or None when reattaching is not possible
+    or failed - the caller then applies the lost-worker rules (re-run once if safe to repeat, else 75)."""
+    cfg = h.cfg
+    if not sess.run_id or sess.aborted or sess.ints >= 2 or (lane is not None and lane.cancelled):
+        return None
+    try:
+        tries = int(cfg.get("rr_reattach_tries", 3))
+        window = float(cfg.get("rr_reattach_window_s", 120))
+    except (TypeError, ValueError):
+        tries, window = 3, 120.0
+    backoff = _cfg_list(cfg.get("rr_reattach_backoff_s"), [0.0, 10.0, 30.0])
+    prev, n, total, deadline = sess, 0, 0, time.monotonic() + window
+    while n < tries and time.monotonic() < deadline:
+        pause = min(backoff[min(n, len(backoff) - 1)], max(0.0, deadline - time.monotonic()))
+        end = time.monotonic() + pause
+        main = threading.current_thread() is threading.main_thread()
+        old = {g: signal.signal(g, _stop) for g in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)} if main else {}
+        try:
+            while time.monotonic() < end:
+                if STOP_SIG[0] or (lane is not None and lane.cancelled):
+                    return None
+                time.sleep(min(0.2, end - time.monotonic()))
+        except _Stopped as e:
+            sess.first_sig, sess.reattach_stopped = sess.first_sig or e.signum, True
+            note("%sstopped while reconnecting to %s; the command there is cancelled within %s"
+                 % (sess.tag, label(h), fmt_wait(float(cfg.get("rr_detach_hb_s", 180)))))
+            return None
+        finally:
+            for g, hd in old.items():
+                signal.signal(g, hd)
+        n += 1
+        note("%slost the link to %s mid-run; reconnecting (%d of %d) - the command keeps running there"
+             % (sess.tag, label(h), n, tries))
+        a = Session(cfg, attach_frames(sess.run_id, sess.nonce, prev.out_off, prev.err_off), sess.nonce,
+                    sess.timing)
+        for k in ("host_name", "tag", "timeout_s", "silent_s", "stdout_out", "stderr_out", "run_id",
+                  "out_off", "err_off", "started", "last_out"):
+            setattr(a, k, getattr(prev, k))
+        a.ready = a.go_sent = True           # GO went long ago: never again
+        a.mux = False
+        if lane is not None and not lane.bind(a):
+            return None
+        a.final_rc = a.run()
+        if a.first_sig and a.exit_rc is None:   # cancelled while attached (checked before NORUN):
+            sess.first_sig, sess.reattach_stopped = sess.first_sig or a.first_sig, True   # a stop
+            return None
+        if a.exit_rc is not None or a.norun or a.gone or a.timed_out:
+            return a
+        if a.aborted:
+            return None
+        total += 1
+        if a.attached and a.out_off + a.err_off > prev.out_off + prev.err_off and total < REATTACH_MAX:
+            n, deadline = 0, time.monotonic() + window   # it moved the output on, then dropped again
+        prev = a
+    return None
+
+
 # ---------------------------------------------------------------------------- copy-back
 
 COPY_BACK_TIMEOUT_S = 600
@@ -1973,7 +2148,7 @@ def copy_back(cfg, wt, outputs):
     """Fetch the build outputs from the worker's mirror (a second ssh: tar on stdout) and swap
     them into the worktree. -> None on success, else why it failed (the worktree is untouched).
     COPYFILE_DISABLE: a macOS worker's bsdtar would add AppleDouble ._ members (GNU tar ignores it)."""
-    mirror = "%s/w/%s-%s" % (rr_root(cfg), wt["slug"], wt["wt12"])
+    mirror = "%s/w2/%s-%s" % (rr_root(cfg), wt["slug"], wt["wt12"])   # rr_runner.pl prepare_mirror
     script = ('cd "$HOME"/%s || exit 66; set --; for p in %s; do '
               '[ -e "$p" ] && [ ! -L "$p" ] && set -- "$@" "$p"; done; '
               '[ $# -gt 0 ] || exit 67; COPYFILE_DISABLE=1 exec tar -cf - -- "$@"'

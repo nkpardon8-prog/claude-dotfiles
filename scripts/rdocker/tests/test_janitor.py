@@ -532,6 +532,23 @@ class RrHousekeeping(unittest.TestCase):
                             for a in J.acts), J.acts)
         self.assertIsNone(J.last_error)
 
+    def test_w2_mirrors_are_housekept_like_w(self):
+        """Runners since 2026-11-11 keep their mirrors in ~/rr/w2 (detached runs, the mirror lock)."""
+        wt = "c" * 12
+        m2 = os.path.join(self.R, "w2", "%s-%s" % (self.SLUG, wt))
+        os.makedirs(os.path.dirname(m2))
+        self.git("-C", self.bare, "update-ref", "refs/rrun/" + wt, "refs/rrun/" + self.OLD)
+        self.git("-C", self.bare, "worktree", "add", "-q", "-f", "--detach", m2, "refs/rrun/" + wt)
+        t = r.time.time() - 8 * DAY
+        with open(os.path.join(m2, ".git")) as f:
+            admin = f.read().split("gitdir: ", 1)[1].strip()
+        for p in (m2, os.path.join(admin, "index"), os.path.join(admin, "HEAD")):
+            os.utime(p, (t, t))
+        self.run_hk()
+        self.assertFalse(os.path.exists(m2))
+        self.assertFalse(os.path.exists(self.mirror(self.OLD)))
+        self.assertTrue(os.path.exists(self.mirror(self.FRESH)))
+
     def test_recent_checkout_counts_as_use(self):
         # the mirror dir itself is old, but the runner's checkout rewrote the admin index today
         with open(os.path.join(self.mirror(self.OLD), ".git")) as f:

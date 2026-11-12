@@ -27,8 +27,26 @@
 #   process group is killed. The command's stdout/stderr are pipes WE relay, never the ssh channel
 #   itself, so a leftover that escaped the group cannot keep the laptop's ssh open either.
 #   wait_every (60 s): a slot wait repeats its "<nonce> WAIT ..." line this often.
+#   run_id (uuid4, optional): the run survives a lost link (see "Detached runs" below);
+#   detach_hb_s (180): how long a started command lives on without any client. waited_s: seconds the
+#   client spent before this attempt (worktree lock, other workers); job_cls: the job class (runs.log).
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
-#   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start.
+#   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start;
+#   "KILL\n" = stop it now (the client's deliberate cancel: second Ctrl-C, a hedge's loser).
+# Detached runs (header run_id): at READY the runner creates $ROOT/spool/<id>.lock (held, flock) and
+# <id>.ctl. On GO it forks a KEEPER (setsid; no ssh fd at all) that owns the slot, spawns the
+# command, appends its stdout/stderr to <id>.out / <id>.err, and writes <id>.rc ("rc=N timeout=S
+# docker=0|1 mac=<hmac-sha256 by the nonce>": the command can read and write ~/rr, never the nonce,
+# so it cannot forge a result). The ssh-side process becomes a FOLLOWER: it relays the spool from a
+# byte offset, turns client heartbeats into the mtime of <id>.hb and INT / KILL into lines of <id>.ctl,
+# and prints STARTED / TIMEOUT / DOCKER / EXIT / KEPT. A lost link ends only the follower: the keeper
+# runs on, and cancels the command only after detach_hb_s without a heartbeat (or on KILL). A later
+# session with header {nonce, attach: <id>, out_off, err_off} follows the same run from those offsets
+# (ATTACHED, then the rest, then EXIT); before GO it stops the runner (KILL). NORUN (never started) only
+# from the runner's own nonce-signed <id>.norun record; anything unproven (spool gone, no record) is
+# GONE <why>, which the client never re-runs. Spool files are deleted 10 min
+# after their run ended, or 1 h after their last change once no keeper holds <id>.lock (a live keeper
+# touches its files every 5 min, so anything older than 1 h is safe for any pruner to delete).
 # Exactly-once handshake: after checkout, overlay, deps and the slot, the runner prints
 # "<nonce> READY" and waits. It spawns the command ONLY after reading "GO\n" (then prints
 # "<nonce> STARTED"); EOF / INT / heartbeat timeout before GO => exit without running anything.
@@ -41,6 +59,10 @@
 # 78 dependency install (npm ci / prisma generate) failed, 130 gave up before the command started,
 # 124 the command ran past timeout_s and was killed.
 # Every run appends one line to $ROOT/log/runs.log (see run_log; no env values, never fails a run).
+# Docker scope (write_shim): a job may only rm / stop / kill / restart / prune containers, networks
+# and volumes it created itself (its rdocker.rrun label, or its one compose project rr<run12>-default:
+# a compose call naming any project is refused); anything else, and any target it cannot check, is
+# refused (exit 1); only full immutable ids reach docker.
 # Test-only overrides: RR_ROOT (default ~/rr), RR_PATH (command PATH after the shim dir),
 # RR_REAL_DOCKER (default /opt/homebrew/bin/docker, else /usr/bin/docker on a Linux server),
 # RR_SHARE_FILE, RR_COLIMA (default /opt/homebrew/bin/colima), RR_COLIMA_TIMEOUT (default 120 s).
@@ -53,12 +75,12 @@
 # busy, the Colima this runner started is stopped in the background when a job ends.
 use strict;
 use warnings;
-use POSIX qw(setsid WNOHANG _exit);
+use POSIX qw(setsid WNOHANG _exit SIGINT SIGTERM SIGHUP SIG_BLOCK SIG_SETMASK);
 use JSON::PP ();
 use IO::Select;
 use Time::HiRes qw(time sleep);
 use Digest::SHA ();
-use Fcntl qw(:flock O_RDWR O_WRONLY O_CREAT O_EXCL O_NOFOLLOW O_APPEND);
+use Fcntl qw(:flock O_RDONLY O_RDWR O_WRONLY O_CREAT O_EXCL O_NOFOLLOW O_APPEND O_NONBLOCK F_GETFL F_SETFL);
 use File::Path qw(make_path remove_tree);
 use File::Find ();
 use File::Basename qw(dirname);
@@ -89,8 +111,23 @@ our $supervising = 0;
 our $QUIET = 0;    # run_cmd: also send the tool's stderr to /dev/null
 my %reaped;
 my ($t_slot, $t_ready, $t_spawn);    # run log timings: slot taken, READY (prepare done), command spawned
+my $t_wait0;                          # run log: when the slot wait began (wait_s)
+my $unavail = 0;                      # we answered UNAVAIL (share off / no docker): refused, not busy
+# Detached runs (header run_id; see the top): runner = before GO, or a run without run_id (attached,
+# as before); keeper = the forked owner of a started command; follower = relays a run's spool
+our $role = 'runner';
+my $UUID = qr/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+my ($run_id, $spool_fh, @kstat);      # spool lock (held by runner, then keeper); keeper's status lines
+my ($ctl_off, $killed, $touched) = (0, 0, 0);
+my $mirror_fh;                        # w/.<mirror>.lock: held while this run may touch the mirror   # <id>.ctl bytes read; KILL seen; last spool touch
+my $FOLLOW_STALL_S = 600;             # a follower whose client reads nothing this long gives up
 
-sub status { print STDERR "$nonce $_[0]\n" }
+sub status {
+    # the keeper has no channel; and never puts the nonce in a file the command could read
+    if ($role eq 'keeper') { push @kstat, $_[0]; return }
+    $unavail = 1 if $_[0] =~ /^UNAVAIL/;
+    print STDERR "$nonce $_[0]\n";
+}
 sub fail { my ($msg, $code) = @_; print STDERR "rrun-runner: $msg\n" if defined $msg; die { code => $code // 70 } }
 
 # A signal to the runner itself (sshd hangup, kill): stop the command and still clean up.
@@ -110,6 +147,7 @@ exit $rc;
 # ------------------------------------------------------------------------------------- main
 sub main {
     read_header();
+    return attach() if defined $h{attach};
     set_owner();
     $label = rand_hex();    # container label token: never the nonce (the command can read labels)
     take_slot();
@@ -124,6 +162,10 @@ sub main {
     my %env = map { defined $ENV{$_} ? ($_ => $ENV{$_}) : () } qw(HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM);
     %env = (%env, %{ $h{env} }, PATH => $path, RRUN_REMOTE => '1');
     $env{RRUN_OWNER} = $owner_id if defined $owner_id;
+    # docker scope: a compose project of this run's own (unless the job named one), and the label
+    # its containers carry, for a harness that wants to clean up exactly its own
+    $env{COMPOSE_PROJECT_NAME} = compose_project();    # never the job's own (see compose_project)
+    $env{RRUN_DOCKER_LABEL} = "rdocker.rrun=$label";
     node_heap(\%env);
     docker_up(\%env) if ($h{cls} // '') eq 'db' && colima_managed();
 
@@ -136,6 +178,7 @@ sub main {
     await_go();
     $started = 1;
     $t_spawn = time;
+    return detach($argv, \%env, $cwd) if defined $run_id;
     my ($pid, $o_r, $e_r) = spawn($argv, \%env, $cwd, 'RELAY');
     status('STARTED');
     my $rc = supervise($pid, relay => [[$o_r, \*STDOUT], [$e_r, \*STDERR]],
@@ -151,11 +194,14 @@ sub main {
 # The exactly-once handshake: announce READY, then spawn nothing until the laptop writes GO.
 sub await_go {
     my $hb = hb_timeout();
+    spool_begin() if defined $run_id;    # <id>.lock held + <id>.ctl: a reattach can stop us here
     status('READY');
     until ($go) {
         fail("interrupted before the command started", 130) if $intr;
         fail("laptop went away before GO; the command was not started", 130)
             if !$stdin_open || time - $last_hb > $hb;
+        ctl_read() if defined $run_id;
+        fail("the client reconnected before GO arrived; the command was not started", 130) if $killed;
         pump(0.5);
     }
 }
@@ -243,6 +289,14 @@ sub read_header {
     # Every name that becomes a path component must be a plain slug; the commit must be a full sha.
     $nonce = $h{nonce} // '';
     fail("bad nonce", 65) unless $nonce =~ /^[0-9a-f]{32}$/;
+    if (defined $h{attach}) {    # a reattach: follow run <attach> from the offsets the client has
+        fail("bad run id", 65) unless $h{attach} =~ $UUID;
+        ($h{$_} // '') =~ /^\d{1,15}$/ or fail("bad $_", 65) for qw(out_off err_off);
+        $run_id = $h{attach};
+        return;
+    }
+    if (defined $h{run_id}) { fail("bad run_id", 65) unless $h{run_id} =~ $UUID; $run_id = $h{run_id} }
+    fail("bad job_cls", 65) if defined $h{job_cls} && $h{job_cls} !~ /^[a-z]+$/;
     defined $h{$_} && $h{$_} =~ $SLUG or fail("bad $_", 65) for qw(repo_slug wt12);
     fail("bad sha", 65) unless ($h{sha} // '') =~ /^[0-9a-f]{40}$/;
     $h{relcwd} = check_rel('relcwd', $h{relcwd} // '', 1);
@@ -326,6 +380,13 @@ sub create_fresh {
 sub write_file { my $fh = create_fresh($_[0]); print {$fh} $_[1]; close $fh or fail("write $_[0]: $!") }
 
 sub hb_timeout { $h{hb_timeout} // $ENV{RR_HB_TIMEOUT} // 60 }
+sub detach_hb { num_or($h{detach_hb_s}, 180) }
+# Is the client gone (=> stop the command)? Attached: stdin EOF or no heartbeat for hb_timeout. A
+# keeper has no stdin: KILL in <id>.ctl, or no heartbeat (<id>.hb mtime) for detach_hb_s.
+sub client_lost {
+    return $killed || time - $last_hb > detach_hb() if $role eq 'keeper';
+    $killed || !$stdin_open || time - $last_hb > hb_timeout();
+}
 
 # Read what the laptop sent, waiting up to $secs: "." heartbeats (dropped; the writer never puts
 # one inside a line), "INT" lines (counted in $intr) and the "GO" line ($go). Unknown lines are
@@ -343,8 +404,9 @@ sub read_stdin {
     $last_hb = time;
     ($inbuf .= $buf) =~ tr/.//d;
     while ($inbuf =~ s/^([^\n]*)\n//) {
-        if    ($1 eq 'INT') { $intr++ }
-        elsif ($1 eq 'GO')  { $go = 1 }
+        if    ($1 eq 'INT')  { $intr++ }
+        elsif ($1 eq 'GO')   { $go = 1 }
+        elsif ($1 eq 'KILL') { $killed = 1; $intr++ }    # a deliberate stop: before GO = interrupted
     }
     $inbuf = substr($inbuf, -8) if length $inbuf > 8;    # no valid line is longer
 }
@@ -666,6 +728,18 @@ sub wait_line {
     $line;
 }
 
+# <i>.who ("<slug> <start> <pid> <wt12>") and <i>.own (who asked, for `rrun --jobs` / the probe; a
+# separate file: .who keeps its 4 fields). The pid is the slot holder's: rewritten by a keeper, which
+# holds the slot from GO on (the runner it forked from becomes a follower that a lost link ends; the
+# janitor, rd-doctor and the probe all trust a held slot's .who / .own only while that pid lives).
+my $slot_t;
+sub write_slot_files {
+    write_file($who, "$h{repo_slug} $slot_t $$ $h{wt12}\n");
+    $own = $who =~ s/\.who$/.own/r;
+    eval { write_file($own, join("\t", "id=" . ($owner_id // '?'), "name=" . ($owner_name // ''),
+        "client=" . ($h{owner_client} // ''), "start=$slot_t", "pid=$$", "cmd=" . redact_argv()) . "\n") };
+}
+
 sub take_slot {
     my $dir = mk("$ROOT/slots");
     my $share = share_level();
@@ -676,6 +750,7 @@ sub take_slot {
     $n = $cap if defined $cap && $cap < $n;    # 0 = drained: wait (then 73) like a full mini
     my $base = defined $h{slots_base} && $h{slots_base} =~ /^\d+$/ && $h{slots_base} >= 1
         && $h{slots_base} < $n ? $h{slots_base} : $n;
+    $t_wait0 = time;
     my $deadline = time + 60 * ($h{wait_min} // 30);
     my $every = num_or($h{wait_every}, 60) || 60;
     my ($said, @held);
@@ -698,13 +773,8 @@ sub take_slot {
                 # names our mirror (<repo_slug>-<wt12>): the janitor's disk-pressure eviction then
                 # spares that mirror only, not every mirror of the repo (format: rd_janitor ~/rr).
                 utime(undef, undef, $fh);
-                ($lock_fh, $who) = ($fh, "$dir/$i.who");
-                write_file($who, "$h{repo_slug} " . int(time) . " $$ $h{wt12}\n");
-                # who asked, for `rrun --jobs` / the probe (a separate file: .who keeps its 4 fields)
-                $own = "$dir/$i.own";
-                eval { write_file($own, join("\t", "id=" . ($owner_id // '?'), "name=" . ($owner_name // ''),
-                    "client=" . ($h{owner_client} // ''), "start=" . int(time), "pid=$$",
-                    "cmd=" . redact_argv()) . "\n") };
+                ($lock_fh, $who, $slot_t) = ($fh, "$dir/$i.who", int(time));
+                write_slot_files();
                 leave_waiters();
                 return;
             }
@@ -762,15 +832,38 @@ sub safe_parent {
     1;
 }
 
+# One run per mirror at a time on the worker: w/.<slug>-<wt12>.lock (flock), taken before the checkout
+# and held until the run is over - by a keeper too, which outlives a lost link while its client may
+# already have started the next run of the same worktree. That run waits here (pumping heartbeats) up
+# to its slot-wait budget, then answers busy (73: the client re-plans). Runners from before
+# 2026-11-11 do not know this lock - and never meet it: they use w/, new runners w2/.
+sub lock_mirror {
+    my ($wdir) = @_;
+    $mirror_fh = open_nofollow("$wdir/.$h{repo_slug}-$h{wt12}.lock", O_RDWR);
+    return if flock($mirror_fh, LOCK_EX | LOCK_NB);
+    my $budget = 60 * ($h{wait_min} // 30);
+    print STDERR "rrun-runner: an earlier run of this worktree still runs here (its link was lost); "
+        . "waiting up to ${budget} s for it\n";
+    my $end = time + $budget;
+    until (flock($mirror_fh, LOCK_EX | LOCK_NB)) {
+        fail("laptop went away while waiting", 130) if !$stdin_open || $intr;
+        if (time >= $end) { status('BUSY'); fail("the mirror stayed in use by an earlier run", 73) }
+        pump(1);
+    }
+}
+
 sub prepare_mirror {
     my $bare = "$ROOT/git/$h{repo_slug}.git";
     fail("bare repo $bare is missing (the laptop pushes it before each run)", 69) unless -d $bare;
-    my $wdir = mk("$ROOT/w");
+    # w2 (2026-11-11), not w: runners from before keep using w and do not know the mirror lock, so an
+    # old client's run can never check out under a new keeper's command (one checkout per worktree)
+    my $wdir = mk("$ROOT/w2");
     fail("$wdir is a symlink; refusing (remove it)", 65) if -l $wdir;
     $mirror = "$wdir/$h{repo_slug}-$h{wt12}";
     # Tested code can write ~/rr: a mirror swapped for a symlink would point checkout/clean/overlay
     # writes at any directory, so refuse it (the janitor never follows one either).
     fail("mirror $mirror is a symlink; refusing (remove it)", 65) if -l $mirror;
+    lock_mirror($wdir);
     if (!-e "$mirror/.git") {    # first run for this laptop worktree: make the mirror once
         remove_tree($mirror) if -e $mirror;
         git('-C', $bare, 'worktree', 'prune');
@@ -786,7 +879,7 @@ sub prepare_mirror {
         my $p = "$mirror/$rel";
         if (-l $p || -f _) { unlink $p } elsif (-d _) { remove_tree($p) }
     }
-    $envlist = "$ROOT/w/.$h{repo_slug}-$h{wt12}.envlist";
+    $envlist = "$wdir/.$h{repo_slug}-$h{wt12}.envlist";
     delete_env_files(1);                    # leftovers of a run that was killed -9
     for my $rel (@{ $h{deleted} }) {
         next unless safe_parent($rel, 0);
@@ -1069,16 +1162,16 @@ sub io_wait {
 sub supervise {
     my ($pid, %o) = @_;
     local $supervising = 1;
-    my $hb = hb_timeout();
     my %pipes = map { (fileno($_->[0]) => $_) } @{ $o{relay} || [] };
     my $relay = %pipes ? 1 : 0;
     my ($term_at, $exit_at, $gterm_at, $gkill_at);
     my $t0 = time;
     while (1) {
+        keeper_poll() if $role eq 'keeper';
         my $up = alive($pid);
         if ($up) {
             while ($intr > $intr_done) { $intr_done++; signal_group($pid, 'INT') }
-            $lost = 1 if !$stdin_open || time - $last_hb > $hb;
+            $lost = 1 if client_lost();
             if ($o{timeout} && !$timed_out && time - $t0 > $o{timeout}) {
                 $timed_out = 1;
                 status(sprintf 'TIMEOUT %d', $o{timeout});
@@ -1088,7 +1181,8 @@ sub supervise {
         } else {
             last unless $relay;
             $exit_at //= time;
-            my $gone = !$stdin_open || time - $last_hb > $hb;    # nobody to relay to any more
+            # nobody to relay to any more (a keeper relays into the spool: never "gone" by itself)
+            my $gone = $role eq 'keeper' ? 0 : client_lost();
             my $grace = $gone || $lost || $timed_out || $intr > $intr_done ? 0 : $o{grace} // 10;
             my $grp = group_alive($pid);
             last if !%pipes && !$grp;
@@ -1111,9 +1205,266 @@ sub supervise {
     $s & 127 ? 128 + ($s & 127) : $s >> 8;
 }
 
+# ------------------------------------------------------------------------- detached runs
+# (protocol at the top). Every spool file is created O_EXCL | O_NOFOLLOW: tested code can write ~/rr
+# and could plant a symlink there; a run id that is already in use is refused, never reused.
+sub spool_dir {
+    my $d = "$ROOT/spool";
+    fail("$d is a symlink; refusing (remove it)", 65) if -l $d;
+    mkdir $d, 0700 unless -d $d;
+    -d $d or fail("mkdir $d: $!");
+    $d;
+}
+sub sp { "$ROOT/spool/$run_id.$_[0]" }
+sub spool_new {
+    my ($ext, $flags) = @_;
+    sysopen(my $fh, sp($ext), ($flags // O_WRONLY) | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)
+        or fail("run $run_id: spool $ext: $!", 65);
+    $fh;
+}
+
+# At READY: the lock (held from here until the keeper is done) and the control file.
+sub spool_begin {
+    spool_dir();
+    $spool_fh = spool_new('lock', O_RDWR);
+    flock($spool_fh, LOCK_EX | LOCK_NB) or fail("run $run_id: lock: $!");
+    close spool_new('ctl');
+}
+
+# New INT / KILL lines in <id>.ctl (appended by a follower) -> $intr / $killed.
+sub ctl_read {
+    my $f = sp('ctl');
+    return if -l $f || (-s $f // 0) <= $ctl_off;
+    sysopen(my $fh, $f, O_RDONLY | O_NOFOLLOW) or return;
+    sysseek($fh, $ctl_off, 0);
+    sysread($fh, my $buf, 4096);
+    while ($buf =~ s/^([^\n]*)\n//) {
+        $ctl_off += length($1) + 1;
+        $intr++ if $1 eq 'INT';
+        $killed = 1 if $1 eq 'KILL';
+    }
+}
+sub ctl_append {
+    my $f = sp('ctl');
+    return if -l $f;
+    sysopen(my $fh, $f, O_WRONLY | O_APPEND | O_NOFOLLOW) or return;
+    syswrite($fh, $_[0]);
+}
+
+# The keeper, each supervise tick: client lines, the heartbeat file, and a touch of its own spool files
+# every 5 min (a live run's spool never looks older than 1 h to a pruner).
+sub keeper_poll {
+    ctl_read();
+    my $hb = sp('hb');
+    my $m = -l $hb ? undef : (Time::HiRes::stat($hb))[9];    # sub-second: the client's last heartbeat
+    $last_hb = $m if defined $m && $m > $last_hb;
+    if (time - $touched > 300) {
+        $touched = time;
+        utime(undef, undef, grep { !-l } map { sp($_) } qw(lock out err));
+    }
+}
+
+# Does a keeper (or the runner before GO) still hold <id>.lock?
+sub keeper_alive {
+    my $f = sp('lock');
+    return 0 if -l $f;
+    sysopen(my $fh, $f, O_RDONLY | O_NOFOLLOW) or return 0;
+    my $free = flock($fh, LOCK_SH | LOCK_NB);
+    close $fh;
+    !$free;
+}
+
+sub rc_mac { Digest::SHA::hmac_sha256_hex($_[0], $nonce) }
+sub write_rc {
+    my ($rc) = @_;
+    my $body = sprintf 'rc=%d timeout=%d docker=%d', $rc, $timed_out ? num_or($h{timeout_s}, 0) : 0,
+        -e "$tmp/docker.used" ? 1 : 0;
+    my $t = sp('rc.tmp');
+    unlink $t if -l $t || -e _;
+    my $fh = spool_new('rc.tmp');
+    print {$fh} "$body mac=" . rc_mac("$run_id $body") . "\n";
+    close $fh or fail("write rc: $!");
+    rename $t, sp('rc') or fail("rename rc: $!");
+}
+# -> {rc, timeout, docker} once the keeper wrote a genuine result, else undef
+sub read_rc {
+    my $f = sp('rc');
+    return undef if -l $f;
+    return undef unless slurp($f) =~ /^(rc=(\d+) timeout=(\d+) docker=([01])) mac=([0-9a-f]{64})\n?\z/;
+    my ($body, $rc, $to, $dk, $mac) = ($1, $2, $3, $4, $5);
+    return $mac eq rc_mac("$run_id $body") ? { rc => $rc, timeout => $to, docker => $dk } : undef;
+}
+
+# After GO (run_id): fork the keeper, which owns everything from here on; we follow its spool.
+sub detach {
+    my ($argv, $env, $cwd) = @_;
+    my %sp = map { ($_ => spool_new($_, O_WRONLY | O_APPEND)) } qw(out err hb);
+    close delete $sp{hb};
+    # hand-off: no INT / TERM / HUP may run finish() as an owner in either process until each one
+    # knows its role (the parent must never clean up under the keeper)
+    my ($block, $old) = (POSIX::SigSet->new(SIGINT, SIGTERM, SIGHUP), POSIX::SigSet->new);
+    POSIX::sigprocmask(SIG_BLOCK, $block, $old) or fail("sigprocmask: $!");
+    my $kpid = fork;
+    if (!defined $kpid) { POSIX::sigprocmask(SIG_SETMASK, $old); fail("fork: $!") }
+    if (!$kpid) {
+        $role = 'keeper';
+        POSIX::sigprocmask(SIG_SETMASK, $old);
+        setsid();                         # no session of the ssh login: a lost link never reaches it
+        open STDIN, '<', '/dev/null';
+        open STDOUT, '>', '/dev/null';
+        open STDERR, '>&', $sp{err};      # our own notes ("rrun-runner: ...") go out with its stderr
+        ($stdin_open, $last_hb, $touched) = (0, time, time);
+        write_slot_files() if $who;      # the slot's pid is ours now
+        my ($pid, $o_r, $e_r) = spawn($argv, $env, $cwd, 'RELAY');
+        my $rc = supervise($pid, relay => [[$o_r, $sp{out}], [$e_r, $sp{err}]],
+                           grace => num_or($h{exit_grace}, 10), timeout => num_or($h{timeout_s}, 0));
+        open STDERR, '>', '/dev/null';    # the spool is final: nothing after the result
+        close $_ for values %sp;
+        write_rc($rc);
+        return $rc;
+    }
+    $role = 'follower';
+    POSIX::sigprocmask(SIG_SETMASK, $old);
+    close $_ for values %sp;
+    # the keeper holds the spool lock, the slot and the mirror now (the same open files: closing ours
+    # keeps them locked)
+    close $spool_fh;
+    close $mirror_fh if $mirror_fh;
+    close $lock_fh if $lock_fh;
+    close $heavy_fh if $heavy_fh;
+    status('STARTED');
+    return follow(0, 0);
+}
+
+# A new session for a known run id: follow it, or say what became of it. NORUN ("it never started:
+# safe to run it again") only from the runner's own signed record (<id>.norun, written when it gave up
+# before GO); a missing spool, a lost record, anything unproven is GONE (the client: exit 75, no re-run).
+sub norun_valid {
+    my $f = sp('norun');
+    return 0 if -l $f;
+    my ($mac) = slurp($f) =~ /^norun mac=([0-9a-f]{64})\n?\z/ or return 0;
+    $mac eq rc_mac("$run_id norun");
+}
+sub attach {
+    $role = 'follower';
+    spool_dir();
+    my ($end, $asked) = (time + 15, 0);
+    while (1) {
+        if (-e sp('out')) {               # it started (still running, or its result is there)
+            status('ATTACHED');
+            return follow($h{out_off}, $h{err_off});
+        }
+        if (norun_valid()) { status('NORUN'); return 0 }
+        if (keeper_alive()) {             # the runner is still before GO: it must not start now
+            ctl_append("KILL\n") unless $asked++;
+            return gone("its runner did not answer before GO") if time > $end;
+            sleep 0.2;
+            next;
+        }
+        # no holder: one last look (the runner writes its record before it lets the lock go)
+        next if -e sp('out') || norun_valid();
+        return gone("no record of this run here (it may have run; its spool is gone)");
+    }
+}
+sub gone { status("GONE $_[0]"); 70 }
+
+sub set_nonblock { my $fl = fcntl($_[0], F_GETFL, 0) // 0; fcntl($_[0], F_SETFL, $_[1] ? $fl | O_NONBLOCK : $fl & ~O_NONBLOCK) }
+
+# Relay <id>.out / <id>.err from byte offsets to our stdout / stderr until the keeper's result is in
+# and every byte before it went out; meanwhile client heartbeats touch <id>.hb, INT / KILL go to
+# <id>.ctl. Writes never block us (the client keeps being heard while its link is slow). -> the rc.
+sub follow {
+    my ($oo, $eo) = @_;
+    my (%in, %pend);
+    for (['out', $oo, \*STDOUT], ['err', $eo, \*STDERR]) {
+        my ($k, $off, $dst) = @$_;
+        my $fh;
+        return gone("its output spool is missing") if -l sp($k) || !sysopen($fh, sp($k), O_RDONLY | O_NOFOLLOW);
+        return gone("its output spool is shorter than what was already received") if (-s $fh // 0) < $off;
+        sysseek($fh, $off, 0);
+        ($in{$k}, $pend{$k}) = ([$fh, $dst], '');
+    }
+    set_nonblock($_, 1) for \*STDOUT, \*STDERR;
+    my ($res, $stall) = (undef, time);
+    while (1) {
+        my $got = 0;
+        for my $k (qw(out err)) {
+            next if length $pend{$k} >= 262144;    # backpressure: the client reads slowly
+            my $n = sysread($in{$k}[0], my $buf, 65536);
+            if ($n) { $pend{$k} .= $buf; $got = 1 }
+        }
+        for my $k (qw(out err)) {
+            next unless length $pend{$k};
+            my $n = syswrite($in{$k}[1], $pend{$k});
+            if ($n) { substr($pend{$k}, 0, $n, ''); $stall = time }
+            elsif (!defined $n && !$!{EAGAIN} && !$!{EWOULDBLOCK}) { return 141 }    # the link is gone
+        }
+        my $pending = length($pend{out}) + length($pend{err});
+        return 141 if $pending && time - $stall > $FOLLOW_STALL_S;
+        if (!$got && !$pending) {
+            last if $res;                  # the result, and every byte written before it
+            $res = read_rc();
+            next if $res;                  # one more pass for what was spooled just before it
+            if (!keeper_alive()) {
+                $res = read_rc() or return gone("its keeper ended without a result");
+                next;
+            }
+        }
+        my $r = IO::Select->new;
+        $r->add(\*STDIN) if $stdin_open;
+        my $w = IO::Select->new;
+        $w->add($in{$_}[1]) for grep { length $pend{$_} } qw(out err);
+        my ($rd) = IO::Select->select($r, $w, undef, $got ? 0 : 0.2);
+        follow_stdin() if $rd && @$rd;
+    }
+    set_nonblock($_, 0) for \*STDOUT, \*STDERR;
+    status(sprintf 'TIMEOUT %d', $res->{timeout}) if $res->{timeout};
+    status('DOCKER') if $res->{docker};
+    status("EXIT $res->{rc}");
+    # the keeper still cleans up (env files, containers, the slot): the client's next run in this
+    # worktree must not race it, so wait for it (<= 40 s; the client's backstop is 45 s)
+    my $end = time + 40;
+    sleep 0.2 while keeper_alive() && time < $end;
+    status($_) for grep { /^KEPT [A-Za-z0-9._ -]+$/ } split /\n/, -l sp('end') ? '' : slurp(sp('end'));
+    $res->{rc};
+}
+sub follow_stdin {
+    my $n = sysread(STDIN, my $buf, 4096);
+    if (!$n) { $stdin_open = 0; return }    # the link (or the client) went: the keeper decides
+    my $hb = sp('hb');
+    utime(undef, undef, $hb) unless -l $hb;
+    ($inbuf .= $buf) =~ tr/.//d;
+    while ($inbuf =~ s/^([^\n]*)\n//) {
+        ctl_append("$1\n") if $1 eq 'INT' || $1 eq 'KILL';
+    }
+    $inbuf = substr($inbuf, -8) if length $inbuf > 8;
+}
+
+# Spool files of runs that ended 10 min ago, or untouched for 1 h with no keeper (keepers touch theirs).
+sub spool_sweep {
+    my $d = "$ROOT/spool";
+    return if -l $d || !opendir(my $dh, $d);
+    my %g;
+    for (readdir $dh) { push @{ $g{$1} }, $_ if /^([0-9a-f-]{36})\.(?:out|err|hb|ctl|rc|end|lock|norun|rc\.tmp|end\.tmp)$/ }
+    my $now = time;
+    for my $id (keys %g) {
+        my $lk = "$d/$id.lock";
+        if (!-l $lk && sysopen(my $fh, $lk, O_RDONLY | O_NOFOLLOW)) {
+            my $free = flock($fh, LOCK_SH | LOCK_NB);
+            close $fh;
+            next unless $free;
+        }
+        my ($newest) = sort { $b <=> $a } map { (lstat "$d/$_")[9] // 0 } @{ $g{$id} };
+        my $rcm = (lstat "$d/$id.rc")[9] // (lstat "$d/$id.norun")[9];
+        next unless (defined $rcm && $now - $rcm > 600) || $now - $newest > 3600;
+        unlink map { "$d/$_" } @{ $g{$id} };
+    }
+}
+
 # ------------------------------------------------------------------------------------ end
 sub finish {
     my ($rc) = @_;
+    return if $role eq 'follower';    # it owns nothing: the keeper (or nobody, on a reattach) cleans up
     local $SIG{$_} = 'IGNORE' for qw(INT TERM HUP);    # cleanup must not be cut short
     eval { delete_env_files(0) };
     eval { containers($rc) } if $started;
@@ -1122,24 +1473,59 @@ sub finish {
     if ($who) { unlink $who; close $lock_fh }
     close $heavy_fh if $heavy_fh;
     remove_tree($tmp) if $tmp;
+    close $mirror_fh if $mirror_fh;    # the mirror is free (before any forked helper could inherit it)
+    if ($spool_fh) {
+        if ($role eq 'keeper') {      # what it kept, for the follower; then the lock goes (= done)
+            eval { my $fh = spool_new('end'); print {$fh} map { "$_\n" } grep { /^KEPT / } @kstat; close $fh };
+        } else {                      # never started (no GO): say so, signed, for a reattach
+            eval { my $fh = spool_new('norun'); print {$fh} "norun mac=" . rc_mac("$run_id norun") . "\n"; close $fh };
+            unlink sp('ctl'), sp('lock');
+        }
+        close $spool_fh;
+    }
     eval { colima_stop_if_off() };
     eval { run_log($rc) };    # bookkeeping only: never changes the run's outcome
+    eval { spool_sweep() } if defined $run_id && $role eq 'keeper';
 }
 
 # One line per run in $ROOT/log/runs.log (0600; dir 0700; one rotated generation, runs.log.1, past
 # 5 MB): time, repo, worktree, commit, outcome, prepare/command seconds, then the first 120 chars
 # of the argv with env-looking values redacted (-e X=.., --env=.., NAME=..). The header env is
 # never logged. A test job fair_share capped ends with " [cpu_share=N --maxWorkers|env]" (after argv,
-# so rd_pool's and the reporter's line parsers still match). Tested code can write ~/rr: a planted
-# symlink/hardlink at the log is replaced, never written through.
+# so rd_pool's and the reporter's line parsers still match). Then (v2, 2026-11-11) a TAB and
+# "run=<id|-> owner=<id|-> cls=<class|-> wait_s=<s> exit_reason=pass|fail|cap|stalled|lost|busy|refused".
+# Every parser anchors each field to the next one (the reporter: `^time repo= wt= sha= outcome=
+# prepare_s= cmd_s= argv=(.*)$`; rd_pool's probe: `outcome=... cmd_s= argv=(.*)$`), so the only place
+# new fields cannot break one is the end; the tab (never inside argv: redact_argv turns control
+# characters into spaces) lets a parser cut them off exactly. wait_s = waited_s from the client
+# (worktree lock, other workers) + this runner's slot wait. "stalled" is reserved (no stall kill yet).
+# Tested code can write ~/rr: a planted symlink/hardlink at the log is replaced, never written through.
 sub run_outcome {
     my ($rc) = @_;
-    if ($started) { return $timed_out ? "timeout rc=$rc" : $lost ? "lost rc=$rc" : $intr ? "interrupted rc=$rc" : "rc=$rc" }
+    if ($started) {
+        return $timed_out ? "timeout rc=$rc" : $killed ? "interrupted rc=$rc" : $lost ? "lost rc=$rc"
+             : $intr ? "interrupted rc=$rc" : "rc=$rc";
+    }
     return 'deps-failed' if $rc == $EX_DEPS;
     return 'busy' if $rc == 73;
     return "refused rc=$rc" if $rc == 65 || $rc == 69;
     return $intr ? 'interrupted' : 'lost' if $rc == 130 || $lost;
     "error rc=$rc";
+}
+sub exit_reason {
+    my ($rc) = @_;
+    return $timed_out ? 'cap' : $lost && !$killed ? 'lost' : $rc == 0 ? 'pass' : 'fail' if $started;
+    return $unavail ? 'refused' : 'busy' if $rc == 73;
+    return 'refused' if $rc == 65 || $rc == 69;
+    return 'lost' if ($rc == 130 || $lost) && !$intr;
+    'fail';    # deps-failed, interrupted before the start, runner error
+}
+sub log_fields {
+    my ($rc, $now) = @_;
+    my $slot_wait = defined $t_wait0 ? ($t_slot // $now) - $t_wait0 : 0;
+    (my $owner = $owner_id // '-') =~ tr/ \t/__/;
+    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s", $run_id // '-', $owner,
+        $h{job_cls} // $h{cls} // '-', num_or($h{waited_s}, 0) + $slot_wait, exit_reason($rc);
 }
 
 sub redact_argv {
@@ -1176,70 +1562,236 @@ sub run_log {
         $id->($h{repo_slug}, $SLUG), $id->($h{wt12}, $SLUG),
         substr($id->($h{sha}, qr/^[0-9a-f]{40}$/), 0, 12), run_outcome($rc),
         $secs->($t_slot, $t_ready // $now), $secs->($t_spawn, $t_spawn && $now),
-        redact_argv() . ($cpu_note && $started ? " [$cpu_note]" : '');
+        redact_argv() . ($cpu_note && $started ? " [$cpu_note]" : '') . log_fields($rc, $now);
     close $fh;
+}
+
+# This run's ONE compose project: rr<run12>-default, exported as COMPOSE_PROJECT_NAME (a job's own
+# value is dropped) and enforced by the shim, which refuses any compose call that names a project
+# (-p / --project-name in any form, anywhere in its argv). No argv parsing to get wrong: a job can
+# never address another run's stack, and cleanup has exactly one project to find.
+sub compose_project { 'rr' . substr($label, 0, 12) . '-default' }
+
+# -> [id, rdocker.keep] of every container / network / volume that is this run's: its rdocker.rrun
+# label, or its compose project. Full ids only (--no-trunc; a short id could match another object's
+# NAME, which docker resolves first); a volume's identity is its name.
+sub run_listing {
+    my ($kind, $objs) = @_;
+    my $L = $kind eq 'volume' ? '{{.Name}}' : '{{.ID}}';
+    my @ls = $kind eq 'container' ? ('ps', '-a', '--no-trunc') : $kind eq 'network' ? ('network', 'ls', '--no-trunc') : ('volume', 'ls');
+    my $ok = $kind eq 'volume' ? qr/^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+        : $kind eq 'network' ? qr/^(?:[0-9a-f]{64}|[0-9a-z]{25})$/ : qr/^[0-9a-f]{64}$/;
+    my (@out, %seen);
+    for my $f ("label=rdocker.rrun=$label", $objs->{compose} ? 'label=com.docker.compose.project=' . compose_project() : ()) {
+        open(my $ph, '-|', $REAL_DOCKER, @ls, '--filter', $f, '--format', "$L\t{{.Label \"rdocker.keep\"}}") or next;
+        for (<$ph>) {
+            chomp;
+            my ($id, $keep) = split /\t/, $_, 2;
+            push @out, [$id, $keep // ''] if defined $id && $id =~ $ok && !$seen{$id}++;
+        }
+        close $ph;
+    }
+    @out;
 }
 
 sub containers {
     my ($rc) = @_;
     return unless -x $REAL_DOCKER;
-    open(my $ph, '-|', $REAL_DOCKER, 'ps', '-a', '--filter', "label=rdocker.rrun=$label", '--format', '{{.Names}}') or return;
-    my @names = grep { /^[A-Za-z0-9._-]+$/ } map { chomp; $_ } <$ph>;
-    close $ph;
-    return unless @names;
+    my %objs = map { $_ => 1 } split /\n/, slurp("$tmp/docker.objs");    # what the shim saw this run make
+    # never an rdocker.keep container: the job marked it to outlive the run
+    my @names = map { $_->[0] } grep { !length $_->[1] } run_listing('container', \%objs);
     my $keep = $h{keep_containers_on_fail} // 1;
-    if ($rc == 0 || $lost || $intr || !$keep) { run_cmd('/dev/null', $REAL_DOCKER, 'rm', '-f', '-v', @names) }
-    else { status("KEPT @names") }    # failed DBs stay for inspection; the janitor's idle rule reaps them
+    if ($rc == 0 || $lost || $intr || $killed || !$keep) {
+        run_cmd('/dev/null', $REAL_DOCKER, 'rm', '-f', '-v', @names) if @names;
+        for my $kind (grep { $objs{$_ eq 'network' ? 'net' : 'vol'} || $objs{compose} } qw(network volume)) {
+            my @ids = map { $_->[0] } run_listing($kind, \%objs);
+            run_cmd('/dev/null', $REAL_DOCKER, $kind, 'rm', @ids) if @ids;
+        }
+    }
+    elsif (@names) { status('KEPT ' . join ' ', map { substr($_, 0, 12) } @names) }    # failed DBs stay for inspection; the janitor's idle rule reaps them
 }
 
-# The per-run docker shim: labels every container the run creates so `containers` can find them,
-# and after `run -d` waits (<=5 s per port) until each published port answers. Calls the real
-# docker by absolute path; everything that is not run/create is a plain exec.
+# The per-run docker shim (perl: core modules only, like this runner). Fail-closed ownership:
+#   * labels what the run creates: `run` / `create` containers and `network|volume create` get
+#     --label rdocker.rrun=<label> (the command has it as $RRUN_DOCKER_LABEL);
+#   * every compose call runs as the run's one project (COMPOSE_PROJECT_NAME=rr<run12>-default, the
+#     job's own value dropped); one that names a project (-p / --project-name, any form, anywhere in
+#     its argv - fail closed, even a `-p` inside an exec'd command) is refused;
+#   * every destructive spelling is normalised first - rm / container rm|remove / kill / stop /
+#     restart, network rm|remove, volume rm|remove - and each target is resolved with inspect: only
+#     the IMMUTABLE id of an object that is this run's (its label, or its compose project) is passed
+#     to docker (a full 64-hex id; a volume's name). Another run's object is refused by name; an inspect
+#     that fails for any reason but a clean "no such object" refuses the whole command; a missing object
+#     is dropped (with -f silently, like docker); no targets at all goes to docker as it is (its own
+#     usage error). Anything refused => exit 1; a docker killed by a signal => 128+signal, never 0;
+#   * `container|network|volume prune` only with --filter label=<this run's label>; `system prune` never;
+#   * after `run -d` waits (<= 5 s per port) until each published port answers;
+#   * records what it saw ($tmp/docker.used: never cached; $tmp/docker.objs: net / vol / compose,
+#     so the end-of-run cleanup looks for those too).
+# Everything else is a plain exec of the real docker (absolute path). Paths go in hex-encoded.
+# A job that runs the real docker by path, or a standalone docker-compose binary, is outside the shim
+# (docker-compose still gets the run's COMPOSE_PROJECT_NAME).
 sub write_shim {
     my ($path) = @_;
-    fail("RR_REAL_DOCKER must not contain a quote", 65) if $REAL_DOCKER =~ /'/;
-    my $sh = <<'SH';
-#!/bin/sh
-# rrun per-run docker shim (generated; deleted when the run ends)
-REAL='@REAL@'
-LABEL='rdocker.rrun=@LABEL@'
-UP='@UP@'
-: > '@USED@' 2>/dev/null
-if [ -n "$UP" ] && [ ! -f "$UP.ok" ]; then "$UP" || exit 73; fi
-state=global sub= first=1 detach=0
-for a do
-  if [ $first = 1 ]; then set --; first=0; fi
-  set -- "$@" "$a"
-  case $state in
-    global) case $a in
-        -c|--context|-H|--host|--config|-l|--log-level|--tlscacert|--tlscert|--tlskey) state=gval ;;
-        -*) ;;
-        container) state=sub ;;
-        run|create) sub=$a; set -- "$@" --label "$LABEL"; state=args ;;
-        *) state=pass ;;
-      esac ;;
-    gval) state=global ;;
-    sub) case $a in run|create) sub=$a; set -- "$@" --label "$LABEL"; state=args ;; *) state=pass ;; esac ;;
-    args) case $a in -d|--detach|--detach=true|-d[it]|-d[it][it]|-[it]d|-[it]d[it]|-[it][it]d) detach=1 ;; esac ;;
-  esac
-done
-if [ "$sub" != run ] || [ $detach != 1 ]; then exec "$REAL" "$@"; fi
-out=$("$REAL" "$@") || { rc=$?; [ -n "$out" ] && printf '%s\n' "$out"; exit $rc; }
-printf '%s\n' "$out"
-id=$(printf '%s\n' "$out" | tail -n 1)
-for p in $("$REAL" port "$id" 2>/dev/null | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | sort -u); do
-  i=0
-  while [ $i -lt 50 ] && ! nc -z 127.0.0.1 "$p" >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
-done
-exit 0
-SH
-    $sh =~ s/\@REAL\@/$REAL_DOCKER/;
-    $sh =~ s/\@LABEL\@/$label/;
-    my $up = -f "$tmp/docker-up" ? "$tmp/docker-up" : '';
-    fail("tmp path must not contain a quote", 65) if $up =~ /'/;
-    $sh =~ s/\@UP\@/$up/;
-    fail("tmp path must not contain a quote", 65) if $tmp =~ /'/;
-    $sh =~ s/\@USED\@/$tmp\/docker.used/;
+    my $sh = <<'SHIM';
+#!/usr/bin/perl
+# rrun per-run docker shim (generated; deleted when the run ends). See rr_runner.pl write_shim.
+use strict; use warnings; use IO::Socket::INET; use IO::Select; use Time::HiRes qw(sleep);
+my $REAL = pack 'H*', '@REAL@';
+my $UP = pack 'H*', '@UP@';
+my $TMP = pack 'H*', '@TMP@';
+my $LABEL = '@LABEL@';
+my $PROJ = '@PROJ@';
+my ($LK, $LV) = split /=/, $LABEL, 2;
+sub add { my ($f, $line) = @_; open(my $fh, '>>', "$TMP/$f") or return; print {$fh} defined $line ? "$line\n" : ''; close $fh }
+add('docker.used');
+if ($UP ne '' && !-f "$UP.ok") { system($UP) == 0 or exit 73 }
+my @a = @ARGV;
+my %GV = map { $_ => 1 } qw(-c --context -H --host --config -l --log-level --tlscacert --tlscert --tlskey);
+my $i = 0;
+$i += $GV{$a[$i]} ? 2 : 1 while $i < @a && $a[$i] =~ /^-/;
+my @g = @a[0 .. ($i > @a ? @a : $i) - 1];
+my $obj = $a[$i] // '';
+my $vi = $i;                      # index of the verb
+if ($obj =~ /^(?:container|network|volume|system|image|builder)$/) { $vi = $i + 1 } else { $obj = 'container' }
+my $verb = $a[$vi] // '';
+# one spelling per destructive verb
+my %NORM = (container => { rm => 'rm', remove => 'rm', kill => 'kill', stop => 'stop', restart => 'restart' },
+            network => { rm => 'rm', remove => 'rm' }, volume => { rm => 'rm', remove => 'rm' });
+my $op = $NORM{$obj} ? $NORM{$obj}{$verb} : undef;
+sub real { { no warnings "exec"; exec { $REAL } $REAL, @_ } print STDERR "rrun docker shim: $REAL: $!\n"; exit 127 }
+sub refuse {
+    print STDERR "rrun: refused `" . join(' ', 'docker', @a) . "`: $_[0]. A job on a shared worker may only "
+        . "remove, stop or kill what it created itself (label $LABEL); "
+        . "other runs' databases live on this engine too.\n";
+}
+sub st { my ($s) = @_; $s == -1 ? 127 : $s & 127 ? 128 + ($s & 127) : $s >> 8 }    # a signal death is never 0
+sub capture {    # -> (rc, stdout, stderr) of the real docker; both streams through pipes, no file
+    pipe(my $or, my $ow) && pipe(my $er, my $ew) or return (127, '', "pipe: $!");
+    my $pid = fork // return (127, '', "fork: $!");
+    if (!$pid) {
+        close $or; close $er;
+        open STDOUT, '>&', $ow; open STDERR, '>&', $ew;
+        exec { $REAL } $REAL, @g, @_;
+        exit 127;
+    }
+    close $ow; close $ew;
+    my %buf = (fileno($or) => '', fileno($er) => '');
+    my $sel = IO::Select->new($or, $er);
+    while ($sel->count) {
+        for my $fh ($sel->can_read) {
+            my $n = sysread($fh, my $b, 65536);
+            if ($n) { $buf{fileno $fh} .= $b } else { $sel->remove($fh); }
+        }
+    }
+    my ($out, $err) = ($buf{fileno $or}, $buf{fileno $er});
+    close $or; close $er;
+    waitpid($pid, 0);
+    (st($?), $out, $err);
+}
+# -> ('ours', id) | ('foreign') | ('missing') | ('unknown', why)
+sub resolve {
+    my ($kind, $t) = @_;
+    my $L = $kind eq 'container' ? '.Config.Labels' : '.Labels';
+    my $id = $kind eq 'volume' ? '{{.Name}}' : '{{.Id}}';
+    my ($rc, $out, $err) = capture($kind eq 'container' ? ('inspect', '--type', 'container') : ($kind, 'inspect'),
+        '--format', "$id|{{index $L \"$LK\"}}|{{index $L \"com.docker.compose.project\"}}", $t);
+    if ($rc != 0) {
+        return ('missing') if $out eq '' && $err =~ /\b(?:no such (?:container|object|network|volume)|not found)\b/i;
+        (my $why = $err) =~ s/\s+/ /g;
+        return ('unknown', $why || "inspect exit $rc");
+    }
+    my @l = split /\n/, $out;
+    return ('unknown', 'inspect answered ' . scalar(@l) . ' objects') if @l != 1;
+    my ($oid, $lv, $pj) = map { $_ eq '<no value>' ? '' : $_ } split /\|/, $l[0], 3;
+    my $ok = $kind eq 'volume' ? qr/^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+        : $kind eq 'network' ? qr/^(?:[0-9a-f]{64}|[0-9a-z]{25})$/ : qr/^[0-9a-f]{64}$/;    # full ids only (25 = swarm network)
+    return ('unknown', 'inspect gave no full id') unless defined $oid && $oid =~ $ok;
+    return ('ours', $oid) if ($lv // '') eq $LV || ($pj // '') eq $PROJ;
+    ('foreign');
+}
+# <op> <targets>: resolve each; forward only our objects' ids
+sub scoped {
+    my ($kind, @vals) = @_;
+    my %val = map { $_ => 1 } @vals;
+    my (@keep, @ids, @foreign, @missing, $unknown, $targets);
+    my $k = $vi + 1;
+    push @keep, @a[0 .. $vi];
+    my $force = 0;
+    while ($k < @a) {
+        my $x = $a[$k++];
+        if ($x =~ /^-/) {
+            $force = 1 if $x =~ /^(?:-f|--force|-[a-z]*f[a-z]*)$/ && $x !~ /^--(?!force)/;
+            push @keep, $x;
+            push @keep, $a[$k++] if $val{$x} && $k < @a;
+            next;
+        }
+        $targets++;
+        my ($st, $v) = resolve($kind, $x);
+        if ($st eq 'ours') { push @ids, $v }
+        elsif ($st eq 'foreign') { push @foreign, $x }
+        elsif ($st eq 'missing') { push @missing, $x }
+        else { $unknown = "could not check $kind $x ($v)" }
+    }
+    real(@a) unless $targets;             # no targets at all: docker's own usage error and exit code
+    if ($unknown) { refuse($unknown); exit 1 }
+    refuse(sprintf "%s %s %s not this run's", $kind, join(', ', @foreign), @foreign == 1 ? 'is' : 'are') if @foreign;
+    print STDERR "Error response from daemon: No such $kind: $_\n" for $force ? () : @missing;
+    my $rc = 0;
+    if (@ids) { system { $REAL } $REAL, @keep, @ids; $rc = st($?) }
+    exit(@foreign || (@missing && !$force) ? 1 : $rc);
+}
+sub label_filtered { for my $k (0 .. $#a - 1) { return 1 if $a[$k] eq '--filter' && $a[$k + 1] eq "label=$LABEL" } grep({ $_ eq "--filter=label=$LABEL" } @a) ? 1 : 0 }
+
+if ($obj eq 'container' && $verb eq 'compose') { compose() }
+if ($obj eq 'container' && ($verb eq 'run' || $verb eq 'create')) {
+    splice @a, $vi + 1, 0, '--label', $LABEL;
+    my $detach = $verb eq 'run' && grep { /^(?:-d|--detach|--detach=true|-[it]{0,2}d[it]{0,2})$/ } @a[$vi + 3 .. $#a];
+    real(@a) unless $detach;
+    my ($rc, $out) = (0, '');
+    {
+        my $pid = open(my $ph, '-|') // exit 70;
+        if (!$pid) { exec { $REAL } $REAL, @a; exit 127 }
+        local $/;
+        $out = <$ph> // '';
+        close $ph;
+        $rc = st($?);
+    }
+    print $out;
+    exit $rc if $rc;
+    my ($id) = (split /\n/, $out)[-1] // '';
+    my (undef, $ports) = capture('port', $id);
+    my %p = map { $_ => 1 } $ports =~ /:(\d+)$/mg;
+    for my $port (sort keys %p) {
+        for (1 .. 50) { last if IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $port, Timeout => 0.2); sleep 0.1 }
+    }
+    exit 0;
+}
+if (($obj eq 'network' || $obj eq 'volume') && $verb eq 'create') {
+    add('docker.objs', $obj eq 'network' ? 'net' : 'vol');
+    splice @a, $vi + 1, 0, '--label', $LABEL;
+    real(@a);
+}
+scoped($obj, $obj eq 'container' ? qw(-t --time --timeout -s --signal) : ()) if defined $op;
+if ($verb eq 'prune' && $obj eq 'system') { refuse("a system prune removes every run's stopped containers, networks and volumes"); exit 1 }
+if ($verb eq 'prune' && $obj =~ /^(?:container|network|volume)$/ && !label_filtered()) {
+    refuse("a $obj prune would remove other runs' ${obj}s too (scope it: --filter label=\$RRUN_DOCKER_LABEL)");
+    exit 1;
+}
+real(@a);
+
+# docker [global] compose ...: not available in pool jobs. Three review rounds showed that any argv
+# check can be dodged (option values, -p=, clustered short flags like -vpX), and a compose project is
+# the one way a job could address another run's stack. No pool job uses compose (DB tests use
+# `docker run`), so refusing it outright is the smallest design that cannot leak.
+sub compose {
+    print STDERR "rrun: docker compose is not available in rrun pool jobs (use docker run; see /docker)\n";
+    exit 1;
+}
+SHIM
+    my %v = (REAL => unpack('H*', $REAL_DOCKER), UP => unpack('H*', -f "$tmp/docker-up" ? "$tmp/docker-up" : ''),
+             TMP => unpack('H*', $tmp), LABEL => "rdocker.rrun=$label", PROJ => compose_project());
+    $sh =~ s/\@([A-Z]+)\@/$v{$1}/g;
     write_file($path, $sh);
     chmod 0700, $path;
 }

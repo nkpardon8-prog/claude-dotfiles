@@ -24,6 +24,7 @@ import rdmods  # noqa: E402
 
 RUNNER = os.path.join(rdmods.STAGE, "rr_runner.pl")
 SLUG = "demo-repo.ab12"
+PG1 = "a" * 64          # a full container id (cleanup forwards only full ids)
 WT = "0123456789ab"
 
 FAKE = r"""#!/bin/sh
@@ -110,7 +111,7 @@ class RunnerTest(unittest.TestCase):
         self.sha = self.git("-C", self.src, "rev-parse", "HEAD").strip()
         os.makedirs(os.path.join(self.root, "git"))
         self.git("clone", "-q", "--bare", self.src, os.path.join(self.root, "git", SLUG + ".git"))
-        self.mirror = os.path.join(self.root, "w", "%s-%s" % (SLUG, WT))
+        self.mirror = os.path.join(self.root, "w2", "%s-%s" % (SLUG, WT))
 
     def tearDown(self):
         shutil.rmtree(self.d, True)
@@ -238,7 +239,7 @@ class RunnerTest(unittest.TestCase):
                    {"argv": []}, {"argv": ["a\0b"]}, {"env": {"A B": "1"}}):
             argv = kw.pop("argv", ["true"])
             self.assertEqual(self.run_runner(argv, **kw).rc, 65, kw)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "w")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "w2")))
 
     def test_missing_bare_repo_is_a_clear_error(self):
         r = self.run_runner(["true"], repo_slug="nope")
@@ -282,7 +283,7 @@ class RunnerTest(unittest.TestCase):
     def test_int_line_forwards_sigint(self):
         ready = os.path.join(self.d, "ready")
         script = "trap 'echo GOT-INT; exit 9' INT; touch %s; sleep 30" % ready
-        wfile(os.path.join(self.d, "ps.out"), "pg1\n")
+        wfile(os.path.join(self.d, "ps.out"), "%s\n" % PG1)
 
         def act(p):
             self.wait_for(ready)
@@ -291,7 +292,7 @@ class RunnerTest(unittest.TestCase):
         r = self.run_runner(["/bin/sh", "-c", script], action=act)
         self.assertEqual(r.rc, 9)
         self.assertIn("GOT-INT", r.out)
-        self.assertIn("docker rm -f -v pg1", self.calls())   # interrupted => removed
+        self.assertIn("docker rm -f -v " + PG1, self.calls())   # interrupted => removed
 
     # -------------------------------------------------------------------------- overlay
     def test_overlay_written_env_files_0600_then_deleted(self):
@@ -317,7 +318,7 @@ class RunnerTest(unittest.TestCase):
             self.assertFalse(os.path.lexists(os.path.join(self.mirror, "good.txt")), bad)
             self.assertFalse(os.path.lexists(os.path.join(self.mirror, "link")))
         self.assertFalse(os.path.exists(outside))
-        self.assertFalse(os.path.exists(os.path.join(self.root, "w", "escape.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "w2", "escape.txt")))
         self.assertFalse(os.path.exists(os.path.join(self.root, "escape.txt")))
 
     def test_overlay_through_symlinked_dir_refused(self):
@@ -561,7 +562,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r.rc, 0, r.err)
         tool = os.path.basename(argv[0])
         got = [c for c in self.calls() if c.startswith(tool + " ") and not re.match(r"(npm (ci|install)|npx prisma)\b", c)]
-        return got[-1] if got else None, r.out, self.runs_log()[-1]
+        return got[-1] if got else None, r.out, self.runs_log()[-1].split("\t")[0]   # v1 part
 
     def test_cpu_share_is_threads_over_effective_slots(self):
         """share = max(1, floor(threads / min(header slots, slots.cap))); one slot (share = all
@@ -699,17 +700,18 @@ class RunnerTest(unittest.TestCase):
 
     # ------------------------------------------------------------------------ containers
     def test_containers_removed_on_success_kept_on_failure(self):
-        wfile(os.path.join(self.d, "ps.out"), "pg1\n")
+        wfile(os.path.join(self.d, "ps.out"), "%s\n" % PG1)
         self.assertEqual(self.run_runner(["true"]).rc, 0)
-        ps = [c for c in self.calls() if c.startswith("docker ps -a --filter label=rdocker.rrun=")]
-        self.assertRegex(ps[0], r"^docker ps -a --filter label=rdocker\.rrun=[0-9a-f]{32} --format \{\{\.Names\}\}$")
+        ps = [c for c in self.calls() if c.startswith("docker ps -a --no-trunc --filter label=rdocker.rrun=")]
+        self.assertRegex(ps[0], r"^docker ps -a --no-trunc --filter label=rdocker\.rrun=[0-9a-f]{32} "
+                                r"--format \{\{\.ID\}\}\t\{\{\.Label \"rdocker\.keep\"\}\}$")
         self.assertNotIn(self.nonce, ps[0])                         # label token != status nonce
-        self.assertIn("docker rm -f -v pg1", self.calls())
+        self.assertIn("docker rm -f -v " + PG1, self.calls())
         os.remove(self.log)
         r = self.run_runner(["/bin/sh", "-c", "exit 7"])
         self.assertEqual(r.rc, 7)
         self.assertFalse([c for c in self.calls() if c.startswith("docker rm")])
-        self.assertIn("%s KEPT pg1" % self.nonce, r.err)
+        self.assertIn("%s KEPT %s" % (self.nonce, PG1[:12]), r.err)
 
     def test_docker_shim_labels_and_passes_through(self):
         srv = socket.socket()
@@ -724,12 +726,12 @@ class RunnerTest(unittest.TestCase):
         srv.close()
         self.assertEqual(r.rc, 0, r.err)
         self.assertLess(time.time() - t0, 10)
-        calls = [c for c in self.calls() if c.startswith("docker ") and " ps -a --filter" not in c]
+        calls = [c for c in self.calls() if c.startswith("docker ") and " --filter label=rdocker.rrun=" not in c]
         lab = "--label " + calls[0].split()[3]
         self.assertRegex(lab, r"^--label rdocker\.rrun=[0-9a-f]{32}$")
         self.assertNotIn(self.nonce, lab)
         self.assertEqual(calls, ["docker run %s img a" % lab, "docker --context x run %s -d img" % lab,
-                                 "docker port cid123", "docker container create %s img" % lab,
+                                 "docker --context x port cid123", "docker container create %s img" % lab,
                                  "docker ps -a", "docker exec c ls -l a"])
         self.assertIn("cid123", r.out)
         shim = r.out.strip().splitlines()[-1]
@@ -788,7 +790,7 @@ class RunnerTest(unittest.TestCase):
         r = self.run_runner(["/bin/sh", "-c", "env; cat \"$(command -v docker)\""])
         self.assertEqual(r.rc, 0, r.err)
         self.assertNotIn(self.nonce, r.out)
-        self.assertRegex(r.out, r"LABEL='rdocker\.rrun=[0-9a-f]{32}'")
+        self.assertRegex(r.out, r"\$LABEL = 'rdocker\.rrun=[0-9a-f]{32}'")
 
     def test_deps_failure_is_78_and_command_not_started(self):
         marker = os.path.join(self.d, "ran")
@@ -947,7 +949,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(os.stat(os.path.join(self.root, "log", "runs.log")).st_mode & 0o777, 0o600)
         # long argv is cut at 120 chars
         self.run_runner(["true", "x" * 500])
-        self.assertLess(len(self.runs_log()[-1].split(" argv=", 1)[1]), 130)
+        self.assertLess(len(self.runs_log()[-1].split("\t")[0].split(" argv=", 1)[1]), 130)
 
     def test_run_log_rotates_and_never_writes_through_links(self):
         logdir = os.path.join(self.root, "log")
@@ -992,7 +994,7 @@ class RunnerTest(unittest.TestCase):
     def test_symlinked_mirror_or_deps_dir_refused(self):
         outside = os.path.join(self.d, "outside")
         os.makedirs(outside)
-        os.makedirs(os.path.join(self.root, "w"))
+        os.makedirs(os.path.join(self.root, "w2"))
         os.symlink(outside, self.mirror)
         r = self.run_runner(["true"])
         self.assertEqual(r.rc, 65, r.err)
@@ -1061,7 +1063,7 @@ class RunnerTest(unittest.TestCase):
         self.assertLess(time.time() - t0, 10)                       # no slot wait
         self.assertIn("%s UNAVAIL share=off" % self.nonce, r.err)
         self.assertEqual(self.calls(), [])                          # nothing prepared or run
-        self.assertFalse(os.path.exists(os.path.join(self.root, "w")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "w2")))
         for junk in ("maybe", ""):                                  # a file that says nothing clear = off
             self.assertEqual(self.run_runner(["true"], env_extra=self.share(junk)).rc, 73, junk)
         with open(os.path.join(self.root, "slots", "0"), "a") as lk:
@@ -1201,6 +1203,386 @@ class RunnerTest(unittest.TestCase):
         while os.path.exists(path):
             self.assertLess(time.time(), end, "timed out waiting for removal of " + path)
             time.sleep(0.05)
+
+
+FAKE_D = r"""#!/bin/sh
+printf '%%s\n' "docker $*" >> '%(log)s'
+[ "$1" = compose ] && printf 'COMPOSE=%%s\n' "$COMPOSE_PROJECT_NAME" >> '%(log)s'
+last=""; for a do last=$a; done
+for a do
+  if [ "$a" = inspect ]; then
+    [ "$last" = flaky ] && { echo "Error response from daemon: i/o timeout" >&2; exit 1; }
+    [ -f '%(objs)s'/"$last" ] || { echo "Error: No such object: $last" >&2; exit 1; }
+    cat '%(objs)s'/"$last"; exit 0
+  fi
+done
+[ "$1" = rm ] && [ $# -eq 1 ] && { echo '"docker rm" requires at least 1 argument.' >&2; exit 1; }
+[ "$1" = stop ] && kill -TERM $$
+case "$*" in
+  "ps "*"label=rdocker.rrun="*) cat '%(dir)s/ps.out' 2>/dev/null ;;
+  "ps "*"label=com.docker.compose.project="*) cat '%(dir)s/ps-compose.out' 2>/dev/null ;;
+  "network ls "*"label=rdocker.rrun="*) printf '%(net)s\t\n' ;;
+esac
+exit 0
+"""
+
+ID_MINE, ID_OTHER, ID_CM, ID_V, ID_C1, ID_CK, ID_CC = ("%x" % k * 64 for k in range(1, 8))
+
+SCOPE_SCRIPT = r'''
+O=%(objs)s
+echo "%(mine)s|${RRUN_DOCKER_LABEL#*=}|" > $O/mine
+echo "%(other)s|0123456789abcdef0123456789abcdef|" > $O/other
+echo "%(cm)s||$COMPOSE_PROJECT_NAME" > $O/cmine
+echo "%(v)s||victim" > $O/victim
+echo "abc123||$COMPOSE_PROJECT_NAME" > $O/shortid
+printf '%(cc)s\t\n' > %(dir)s/ps-compose.out
+docker rm -f mine other; echo "rc1=$?"
+docker container remove -f -v other; echo "rc2=$?"
+docker stop -t 5 gone; echo "rc3=$?"
+docker rm -f gone; echo "rc4=$?"
+docker rm -f flaky mine; echo "rc5=$?"
+docker container prune -f; echo "rc6=$?"
+docker container prune -f --filter "label=$RRUN_DOCKER_LABEL"; echo "rc7=$?"
+docker system prune -af; echo "rc8=$?"
+docker compose up -d; echo "rc9=$?"
+docker compose -p victim down -v; echo "rc10=$?"
+docker compose --workdir / -p victim down -v; echo "rc11=$?"
+docker compose --project-name=x up; echo "rc12=$?"
+docker compose -p=x up; echo "rc13=$?"
+docker compose -vpvictim down -v; echo "rc13b=$?"
+docker network create n1; echo "rc14=$?"
+docker volume remove other; echo "rc15=$?"
+docker kill cmine victim; echo "rc16=$?"
+docker rm -f shortid; echo "rc17=$?"
+docker rm; echo "rc18=$?"
+docker stop mine; echo "rc19=$?"
+echo "proj=$COMPOSE_PROJECT_NAME"
+'''
+
+class DetachedRuns(RunnerTest):
+    """Phase B (2026-11-11): a header run_id makes the run survive a lost link - a keeper owns the
+    command and spools its output, a follower relays it, a later session reattaches."""
+
+    def sp(self, rid, ext):
+        return os.path.join(self.root, "spool", "%s.%s" % (rid, ext))
+
+    def start(self, argv, go=True, **kw):
+        rid = str(uuid.uuid4())
+        h = self.header(argv, tar_len=0, run_id=rid, **kw)
+        self.nonce = h["nonce"]
+        js = json.dumps(h).encode()
+        p = subprocess.Popen(["/usr/bin/perl", RUNNER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=self.env())
+        st = {"out": b"", "err": b"", "go": False}
+        lock = threading.Lock()
+
+        def rd(name, f):
+            while True:
+                b = os.read(f.fileno(), 65536)
+                if not b:
+                    break
+                st[name] += b
+                if go and not st["go"] and (self.nonce + " READY\n").encode() in st["err"]:
+                    st["go"] = True
+                    try:
+                        with lock:
+                            p.stdin.write(b"GO\n")
+                            p.stdin.flush()
+                    except (OSError, ValueError):
+                        pass
+        with lock:
+            p.stdin.write(b"%d\n" % len(js) + js)
+            p.stdin.flush()
+        ts = [threading.Thread(target=rd, args=(n, f), daemon=True) for n, f in (("out", p.stdout), ("err", p.stderr))]
+        for t in ts:
+            t.start()
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        return p, rid, st, ts
+
+    def attach(self, rid, out_off=0, err_off=0, nonce=None):
+        js = json.dumps({"nonce": nonce or self.nonce, "attach": rid, "out_off": out_off,
+                         "err_off": err_off}).encode()
+        r = subprocess.run(["/usr/bin/perl", RUNNER], input=b"%d\n" % len(js) + js, capture_output=True,
+                           env=self.env(), timeout=60)
+        return Result(r.returncode, r.stdout.decode(), r.stderr.decode())
+
+    def until(self, cond, secs=15, what="condition"):
+        end = time.time() + secs
+        while not cond():
+            self.assertLess(time.time(), end, "timed out waiting for " + what)
+            time.sleep(0.05)
+
+    def started_err(self, st):
+        """The command's stderr as a client counts it: after our STARTED line, minus status lines."""
+        tag = (self.nonce + " STARTED\n").encode()
+        rest = st["err"].split(tag, 1)[1] if tag in st["err"] else b""
+        return b"".join(ln for ln in rest.splitlines(True) if not ln.startswith(self.nonce.encode()))
+
+    def test_mirrors_live_in_w2_and_never_touch_an_old_runners_w(self):
+        """An old client's runner uses ~/rr/w and knows no mirror lock: new runners keep out of it."""
+        old = os.path.join(self.root, "w", "%s-%s" % (SLUG, WT))
+        os.makedirs(old)
+        wfile(os.path.join(old, "untouched"), "x")
+        self.assertEqual(self.run_runner(["true"]).rc, 0)
+        self.assertTrue(os.path.isdir(os.path.join(self.mirror, ".git")) or os.path.isfile(os.path.join(self.mirror, ".git")))
+        self.assertTrue(self.mirror.startswith(os.path.join(self.root, "w2") + os.sep))
+        self.assertEqual(os.listdir(old), ["untouched"])
+        self.assertTrue(os.path.exists(os.path.join(self.root, "w2", ".%s-%s.lock" % (SLUG, WT))))
+
+    def test_lost_link_keeper_runs_on_and_a_reattach_gets_the_rest_and_the_rc(self):
+        ready, go2 = os.path.join(self.d, "ready"), os.path.join(self.d, "go2")
+        script = ("printf part1; echo e1 >&2; touch %s; while [ ! -e %s ]; do sleep 0.05; done; "
+                  "printf part2; echo e2 >&2; exit 5" % (ready, go2))
+        p, rid, st, ts = self.start(["/bin/sh", "-c", script])
+        self.until(lambda: st["out"] == b"part1" and self.started_err(st) == b"e1\n", what="part1")
+        p.kill()                                   # the link is gone: only the follower dies with it
+        p.wait()
+        self.assertTrue(os.path.exists(self.sp(rid, "lock")))
+        # the slot names its live holder (the keeper), never the dead follower: the janitor, rd-doctor
+        # and the probe trust a held slot's .who / .own only while that pid lives
+        with open(os.path.join(self.root, "slots", "0.who")) as f:
+            kpid = int(f.read().split()[2])
+        with open(os.path.join(self.root, "slots", "0.own")) as f:
+            self.assertIn("\tpid=%d\t" % kpid, f.read())
+        self.assertNotEqual(kpid, p.pid)
+        self.assertTrue(self.alive(kpid))
+        open(go2, "w").close()
+        r = self.attach(rid, out_off=len(st["out"]), err_off=len(self.started_err(st)))
+        self.assertEqual(r.rc, 5, r.err)
+        self.assertEqual(st["out"].decode() + r.out, "part1part2")              # every byte, once
+        self.assertEqual([ln for ln in r.err.splitlines() if not ln.startswith(self.nonce)], ["e2"])
+        own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
+        self.assertEqual(own, [self.nonce + " ATTACHED", self.nonce + " EXIT 5"])
+        line = self.runs_log()[-1]
+        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail$" % rid)
+        with open(os.path.join(self.root, "slots", "0")) as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)                      # slot released
+        # the same run again after its end (another reattach): the rest from those offsets, then EXIT
+        r2 = self.attach(rid, out_off=5, err_off=3)
+        self.assertEqual((r2.rc, r2.out), (5, "part2"))
+
+    def test_keeper_tolerates_detach_hb_s_without_a_client_then_cancels(self):
+        pidf = os.path.join(self.d, "pid")
+        p, rid, st, ts = self.start(["/bin/sh", "-c", "echo $$ > %s; exec sleep 60" % pidf], detach_hb_s=2)
+        self.wait_for(pidf)
+        time.sleep(0.2)
+        with open(pidf) as f:
+            pid = int(f.read())
+        p.kill()
+        p.wait()
+        # a follower relaying heartbeats (here: the .hb mtime it touches) keeps it going past 2 s
+        end = time.time() + 4
+        while time.time() < end:
+            os.utime(self.sp(rid, "hb"))
+            time.sleep(0.3)
+        self.assertTrue(self.alive(pid), "cancelled while heartbeats still came")
+        t0 = time.time()                            # now nobody: cancelled after ~2 s, not before
+        time.sleep(1.0)
+        self.assertTrue(self.alive(pid), "cancelled before detach_hb_s")
+        self.until(lambda: not self.alive(pid), 20, "the cancel")
+        self.assertGreater(time.time() - t0, 1.5)
+        self.until(lambda: os.path.exists(self.sp(rid, "end")), 20, "the keeper's end")
+        self.until(lambda: "outcome=lost rc=" in (self.runs_log() or [""])[-1], 10, "the run log")
+        self.assertTrue(self.runs_log()[-1].endswith("exit_reason=lost"))
+
+    def test_kill_line_cancels_at_once_as_interrupted(self):
+        ready = os.path.join(self.d, "ready")
+        p, rid, st, ts = self.start(["/bin/sh", "-c", "touch %s; exec sleep 60" % ready])
+        self.wait_for(ready)
+        t0 = time.time()
+        p.stdin.write(b"..KILL\n")
+        p.stdin.flush()
+        p.stdin.close()                             # a deliberate stop also closes stdin
+        self.assertEqual(p.wait(30), 143)
+        for t in ts:
+            t.join(5)
+        self.assertLess(time.time() - t0, 20)
+        self.assertIn((self.nonce + " EXIT 143").encode(), st["err"])
+        self.until(lambda: "outcome=interrupted rc=143" in (self.runs_log() or [""])[-1], 10, "the run log")
+
+    def test_reattach_before_go_stops_the_runner_and_says_norun(self):
+        marker = os.path.join(self.d, "ran")
+        p, rid, st, ts = self.start(["/bin/sh", "-c", "touch %s" % marker], go=False)
+        self.until(lambda: (self.nonce + " READY").encode() in st["err"], what="READY")
+        r = self.attach(rid)
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertIn(self.nonce + " NORUN", r.err)
+        self.assertEqual(p.wait(20), 130)
+        self.assertFalse(os.path.exists(marker))                 # never started
+        self.assertFalse(os.path.exists(self.sp(rid, "lock")))   # nothing left to follow
+        self.assertTrue(os.path.exists(self.sp(rid, "norun")))      # the runner's own signed record
+        self.assertEqual(self.attach("not-a-uuid").rc, 65)
+
+    def test_a_forged_result_file_is_ignored(self):
+        ready, go2 = os.path.join(self.d, "ready"), os.path.join(self.d, "go2")
+        script = "touch %s; while [ ! -e %s ]; do sleep 0.05; done; exit 3" % (ready, go2)
+        p, rid, st, ts = self.start(["/bin/sh", "-c", script])
+        self.wait_for(ready)
+        wfile(self.sp(rid, "rc"), "rc=0 timeout=0 docker=0 mac=%s\n" % ("0" * 64))   # the command could
+        time.sleep(0.6)
+        self.assertIsNone(p.poll())                               # not taken for a result
+        open(go2, "w").close()
+        self.assertEqual(p.wait(20), 3)
+        for t in ts:
+            t.join(5)
+        self.assertIn((self.nonce + " EXIT 3").encode(), st["err"])
+        self.assertNotIn((self.nonce + " EXIT 0").encode(), st["err"])
+
+    def test_spool_is_swept_10_min_after_the_end_or_1_h_untouched_never_a_live_one(self):
+        d = os.path.join(self.root, "spool")
+        os.makedirs(d)
+        now = time.time()
+        ids = {k: str(uuid.uuid4()) for k in ("old", "ended", "fresh", "live")}
+        for k, rid in ids.items():
+            for ext in ("out", "err", "hb", "ctl", "lock") + (("rc",) if k in ("ended", "fresh") else ()):
+                path = os.path.join(d, "%s.%s" % (rid, ext))
+                wfile(path, "")
+                age = {"old": 7200, "ended": 900, "fresh": 60, "live": 7200}[k]
+                os.utime(path, (now - age, now - age))
+        lk = open(os.path.join(d, ids["live"] + ".lock"))
+        fcntl.flock(lk, fcntl.LOCK_EX)              # a keeper still holds it
+        self.addCleanup(lk.close)
+        p, rid, st, ts = self.start(["true"])
+        self.assertEqual(p.wait(30), 0)
+        self.until(lambda: not os.path.exists(os.path.join(d, ids["old"] + ".out")), 10, "the sweep")
+        left = set(n.split(".")[0] for n in os.listdir(d))
+        self.assertEqual(left, {ids["fresh"], ids["live"], rid})
+
+    def test_docker_scope_only_this_runs_objects(self):
+        objs = os.path.join(self.d, "objs")
+        os.makedirs(objs)
+        docker = os.path.join(self.d, "dbin", "docker")
+        os.makedirs(os.path.dirname(docker))
+        net = "e" * 64
+        wfile(docker, FAKE_D % {"log": self.log, "objs": objs, "dir": self.d, "net": net})
+        os.chmod(docker, 0o755)
+        wfile(os.path.join(self.d, "ps.out"), "%s\t\n%s\t1\nshort\t\n" % (ID_C1, ID_CK))
+        script = SCOPE_SCRIPT % {"objs": objs, "dir": self.d, "mine": ID_MINE, "other": ID_OTHER,
+                                 "cm": ID_CM, "v": ID_V, "cc": ID_CC}
+        r = self.run_runner(["/bin/sh", "-c", script], env={"COMPOSE_PROJECT_NAME": "Mine"},
+                            env_extra={"RR_REAL_DOCKER": docker})
+        self.assertEqual(r.rc, 0, r.err)
+        rcs = dict(ln.split("=", 1) for ln in r.out.splitlines() if ln.startswith("rc"))
+        self.assertEqual(rcs, {"rc1": "1", "rc2": "1", "rc3": "1", "rc4": "0", "rc5": "1", "rc6": "1",
+                               "rc7": "0", "rc8": "1", "rc9": "1", "rc10": "1", "rc11": "1", "rc12": "1",
+                               "rc13": "1", "rc13b": "1", "rc14": "0", "rc15": "1", "rc16": "1", "rc17": "1", "rc18": "1",
+                               "rc19": "143"}, r.err)
+        proj = re.search(r"proj=(rr[0-9a-f]{12}-default)\n", r.out).group(1)   # the job's "Mine" dropped
+        log = self.calls()
+        calls = [c for c in log if " inspect " not in c and not c.startswith(("docker ps", "COMPOSE="))
+                 and " ls " not in c]
+        lab = re.search(r"rdocker\.rrun=[0-9a-f]{32}", "\n".join(log)).group(0)
+        # only full ids of its own objects ever reach docker
+        self.assertIn("docker rm -f " + ID_MINE, calls)
+        self.assertEqual([c for c in calls if ID_MINE in c], ["docker rm -f " + ID_MINE, "docker stop " + ID_MINE])
+        for never in ("other", ID_OTHER, ID_V, "gone", "flaky", "abc123", "shortid", "victim", "-p", "project-name"):
+            self.assertFalse([c for c in calls if c.startswith("docker ") and never in c], (never, calls))   # temp paths are random
+        self.assertIn("docker rm", calls)                         # no targets at all: docker's own usage error
+        self.assertIn('"docker rm" requires at least 1 argument.', r.err)
+        self.assertNotIn("docker container prune -f", calls)
+        self.assertIn("docker container prune -f --filter label=%s" % lab, calls)
+        self.assertFalse([c for c in calls if "system prune" in c])
+        # compose: not available in pool jobs at all (argv checks were dodgeable: -p=, --workdir, -vpX)
+        self.assertFalse([c for c in calls if c.startswith("docker compose")], calls)
+        self.assertEqual([c for c in log if c.startswith("COMPOSE=")], [])
+        self.assertEqual(r.err.count("rrun: docker compose is not available in rrun pool jobs"), 6)
+        self.assertIn("docker network create --label %s n1" % lab, calls)
+        self.assertIn("docker kill " + ID_CM, calls)              # its compose project's container
+        for what in ("container other is not this run's", "could not check container flaky",
+                     "could not check container shortid", "a container prune", "a system prune",
+                     "volume other is not", "container victim is not", "No such container: gone"):
+            self.assertIn(what, r.err)
+        self.assertNotIn(".shim-err", "\n".join(os.listdir(self.root)))   # no temp file to plant a link at
+        # end of run: full ids of its labelled containers (never an rdocker.keep one, never a short
+        # id) and its networks; no compose listing, since compose never ran
+        rm = [c for c in calls if c.startswith("docker rm -f -v ")]
+        self.assertEqual(rm, ["docker rm -f -v %s" % ID_C1], calls)
+        self.assertIn("docker network rm " + net, calls)
+        self.assertFalse([l for l in log if "--filter label=com.docker.compose.project=" in l], log)
+
+    def test_runs_log_v2_fields_and_every_parser_still_reads_it(self):
+        p, rid, st, ts = self.start(["/bin/sh", "-c", "exit 0"], job_cls="heavy", waited_s=2.5,
+                                    owner={"id": "session:abc-1", "name": "w", "client": "c"})
+        self.assertEqual(p.wait(30), 0)
+        self.until(lambda: self.runs_log() and rid in self.runs_log()[-1], 10, "the run log")
+        line = self.runs_log()[-1]
+        self.assertRegex(line, r"^\S+ repo=\S+ wt=\S+ sha=\S+ outcome=rc=0 prepare_s=\S+ cmd_s=\S+ "
+                               r"argv=/bin/sh -c exit 0\trun=%s owner=session:abc-1 cls=heavy "
+                               r"wait_s=(\d+\.\d) exit_reason=pass$" % rid)
+        self.assertGreaterEqual(float(re.search(r"wait_s=(\S+)", line).group(1)), 2.5)
+        # rd_pool's probe (perl, as on a worker): the command's history without the v2 fields
+        import rd_pool
+        pr = subprocess.run(["/usr/bin/perl", "-e", rd_pool.PROBE], input=b"{}", capture_output=True,
+                            env=self.env(), timeout=30)
+        hist = json.loads(pr.stdout.decode().strip().splitlines()[-1])["hist"]
+        self.assertEqual(hist[-1][1], "/bin/sh -c exit 0")
+        # the dashboard reporter's own parseRunsLog (node; the reporter itself is not changed)
+        node = shutil.which("node")
+        if node:
+            js = ("import {parseRunsLog} from %s; import fs from 'fs';"
+                  "process.stdout.write(JSON.stringify(parseRunsLog(fs.readFileSync(0, 'utf8'))))"
+                  % json.dumps("file://" + os.path.join(rdmods.STAGE, "reporter", "rd-reporter.mjs")))
+            rr = subprocess.run([node, "--input-type=module", "-e", js], input=(line + "\n").encode(),
+                                capture_output=True, timeout=60,
+                                env=rdmods.child_env(self.home, os.path.dirname(node)))
+            self.assertEqual(rr.returncode, 0, rr.stderr)
+            runs = json.loads(rr.stdout)
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0]["outcome"], "rc=0")
+            self.assertTrue(runs[0]["argv"].startswith("/bin/sh -c exit 0"), runs[0])
+
+    def test_norun_only_from_the_runners_signed_record_else_gone(self):
+        # no record of the run at all (never here, or its spool was swept): it may have run -> GONE
+        self.nonce = uuid.uuid4().hex
+        r = self.attach(str(uuid.uuid4()))
+        self.assertEqual(r.rc, 70, r.err)
+        self.assertIn(self.nonce + " GONE no record of this run here", r.err)
+        self.assertNotIn("NORUN", r.err)
+        # a .norun the command could have planted (no valid signature) proves nothing
+        rid = str(uuid.uuid4())
+        os.makedirs(os.path.join(self.root, "spool"), exist_ok=True)
+        wfile(self.sp(rid, "norun"), "norun mac=%s\n" % ("0" * 64))
+        self.assertIn(" GONE ", self.attach(rid).err)
+        # a run that finished and whose spool was then deleted: GONE, never NORUN
+        p, rid, st, ts = self.start(["/bin/sh", "-c", "exit 0"])
+        self.assertEqual(p.wait(30), 0)
+        self.until(lambda: not os.path.exists(self.sp(rid, "lock")) or not self.keeper_holds(rid), 20, "the end")
+        for n in os.listdir(os.path.join(self.root, "spool")):
+            if n.startswith(rid):
+                os.unlink(os.path.join(self.root, "spool", n))
+        r = self.attach(rid)
+        self.assertIn(" GONE ", r.err)
+        self.assertNotIn("NORUN", r.err)
+
+    def keeper_holds(self, rid):
+        try:
+            with open(self.sp(rid, "lock")) as f:
+                fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                return False
+        except OSError:
+            return True
+
+    def test_a_kept_mirror_waits_for_its_detached_run_then_busy(self):
+        """A lost link: the keeper still runs in the worktree's mirror; the client's next run of the
+        same worktree must not check out under it - it waits (its slot-wait budget), then 73."""
+        pidf, go2 = os.path.join(self.d, "pid"), os.path.join(self.d, "go2")
+        p, rid, st, ts = self.start(["/bin/sh", "-c", "echo $$ > %s; while [ ! -e %s ]; do sleep 0.05; done"
+                                     % (pidf, go2)], slots=2)
+        self.wait_for(pidf)
+        p.kill()
+        p.wait()
+        t0 = time.time()
+        r = self.run_runner(["true"], slots=2, wait_min=0.03)          # ~2 s budget
+        self.assertEqual(r.rc, 73, r.err)
+        self.assertIn("an earlier run of this worktree still runs here", r.err)
+        self.assertGreater(time.time() - t0, 1.5)
+        open(go2, "w").close()                                          # the detached run ends
+        self.until(lambda: not self.keeper_holds(rid), 20, "the keeper's end")
+        self.assertEqual(self.run_runner(["true"], slots=2).rc, 0)       # the mirror is free again
+
+for _n in [n for n in vars(RunnerTest) if n.startswith("test")]:
+    setattr(DetachedRuns, _n, None)    # it reuses RunnerTest's fixture, not its tests
+
 
 if __name__ == "__main__":
     unittest.main()

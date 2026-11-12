@@ -25,7 +25,12 @@ OSES = ("linux", "mac")
 FIELDS = {"name": str, "alias": str, "ip": str, "port": int, "user": str, "os": str, "wsl": bool,
           "roles": list, "speed": (int, float), "max_slots": int, "heavy_slots": int, "mem_gb": (int, float),
           "enabled": bool, "ts_key_expiry": str,   # ts_key_expiry: YYYY-MM-DD, or "none" (key expiry disabled)
-          "shards": bool}   # shards: false = a worker that never gets a vitest shard (and is not pre-warmed)
+          "shards": bool,   # shards: false = a worker that never gets a vitest shard (and is not pre-warmed)
+          # eligibility (rd_pool.eligibility; a missing field = no limit): classes = the job classes it
+          # takes; max_cost_s = the longest expected command (s, on this worker) it takes; cold_ok: false
+          # = never a job whose packages are not prepared there yet (no npm ci in one of its slots)
+          "classes": list, "max_cost_s": (int, float), "cold_ok": bool}
+JOB_CLASSES = ("light", "normal", "heavy", "db", "build")    # rd_pool.classify's classes
 REQUIRED = ("name", "roles", "enabled")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
@@ -112,6 +117,13 @@ def problems(fl):
             bad.append("%s: need 0 <= heavy_slots <= max_slots" % who)
         if "worker" in roles and m.get("enabled") and e["max_slots"] < 1:
             bad.append("%s: an enabled worker needs max_slots >= 1" % who)
+        if "classes" in m and (not m["classes"] or any(not isinstance(c, str) or c not in JOB_CLASSES
+                                                       for c in m["classes"])
+                               or len(set(m["classes"])) != len(m["classes"])):
+            bad.append("%s: classes must be a non-empty list of distinct job classes from %s"
+                       % (who, "/".join(JOB_CLASSES)))
+        if "max_cost_s" in m and not m["max_cost_s"] > 0:
+            bad.append("%s: max_cost_s must be > 0 (seconds)" % who)
     if len(homes) > 1:
         bad.append("more than one home: %s" % ", ".join(map(str, homes)))
     return bad
@@ -136,8 +148,8 @@ def entry(m):
 
 def load(cfg=None):
     """FROZEN API: the fleet as list[dict], each with name, alias, ip, port, user, os, roles, speed,
-    max_slots, heavy_slots, mem_gb, enabled, wsl (bool); optional keys (ts_key_expiry, shards) only
-    when set. `cfg` may carry 'fleet_path' (tests)."""
+    max_slots, heavy_slots, mem_gb, enabled, wsl (bool); optional keys (ts_key_expiry, shards,
+    classes, max_cost_s, cold_ok) only when set. `cfg` may carry 'fleet_path' (tests)."""
     return [entry(m) for m in load_doc((cfg or {}).get("fleet_path"))["machines"]]
 
 

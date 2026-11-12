@@ -373,7 +373,7 @@ class WarmE2E(test_run.RunBase):
             ref = subprocess.run(["git", "--git-dir", os.path.join(rr, "git", wt["slug"] + ".git"), "rev-parse",
                                   "refs/rrun/" + wt["wt12"]], capture_output=True, text=True).stdout.strip()
             self.assertEqual(ref, wt["sha"], n)
-            stamp = os.path.join(rr, "w", "%s-%s" % (wt["slug"], wt["wt12"]), "node_modules", ".rr-deps-stamp")
+            stamp = os.path.join(rr, "w2", "%s-%s" % (wt["slug"], wt["wt12"]), "node_modules", ".rr-deps-stamp")
             self.assertTrue(os.path.isfile(stamp), n)
             runs = self.read(os.path.join(rr, "log", "runs.log"))
             self.assertIn("outcome=lost prepare_s=", runs)     # stopped at READY...
