@@ -39,7 +39,9 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 | Script | Called by | Purpose |
 |---|---|---|
 | `arm-auto-compact.sh` | `/pre-compact` Step 9.0 | Writes the auto-compact sentinel. |
-| `mission-write.sh` | `/pre-compact`, `/mission` | The ONLY mutator of the on-disk `MISSION.<sid>.*` artifacts; dispatches into `lib/mission-bridge.sh`. Verbs incl. `await` (open/update the durable AWAIT "work in flight" marker) and the read-only `await-state` (bare-token: newest outstanding AWAIT, or `none`) consumed by the `/mission` wake routine. |
+| `mission-write.sh` | `/pre-compact`, `/mission` | The ONLY mutator of the on-disk `MISSION.<sid>.*` artifacts; dispatches into `lib/mission-bridge.sh`. Verbs incl. `await` (open/update the durable AWAIT "work in flight" marker) and the read-only `await-state` (bare-token: newest outstanding AWAIT, or `none`) consumed by the `/mission` wake routine. proto=2 (mission rework, 2026-11-11): `bank-review` (sole writer of review evidence and every `dry=` raise), read-only `budget-state` and `known-reds key\|diff\|record`, the RECIPE/SWEEP/FULL-SUITE/park/ANCHOR shapes and their refusals; rewrites `<root>/tmp/mission/MORNING.md` (via `lib/mission-status.sh`) after PART-DONE, PART-RETIRED, MISSION-CLEARED, any FAIL and an opened human STOP. Grammar: `docs/mission/reference.md`. Proofs: `test-mission-proto2.sh`, `test-mission-lifecycle.sh`. |
+| `mission-watchdog.sh` | `/mission`, beside each long helper (`run_in_background`) | Detection only: watches ONE helper's own output paths; exit 0 on its done-marker, 3 `STALL` after 20 idle minutes (`MISSION_WATCHDOG_MIN`), 4 at the class deadline (a test run past its deadline is marked overdue, never stopped). Writes `~/.claude/progress/mission-liveness/<sid>.watchdog.<label>`; never kills, never owns continuation. Proof: `test-mission-watchdog.sh`. |
+| `lib/mission-status.sh` | `/mission status`, the writer's morning refresh | Read-only status lines per part (wall and live-wait minutes, tokens by tag, rounds, sweeps, escapes, outcome incl. deferred parts from the strategist's `tmp/mission/recipes.md`) and `MORNING.md`. Proof: `test-mission-status.sh`. |
 | `mission-drift-check.sh` | operator, by hand | Read-only report of per-part working-tree drift since each convergence snapshot. Reports; never enforces. |
 | `../codex-build-chunk.sh` | `/mission` §6.5 | The ONLY sanctioned way to let Codex WRITE code (`-s workspace-write`); everywhere else Codex is `-s read-only`. REFUSES unless the target is a LINKED git worktree - in a main tree `.git/` is inside the writable root and the mission bridge sits beside it, whereas a linked worktree's real gitdir is outside, so the sandbox boundary enforces "Codex never writes the bridge" rather than a prompt. Also refuses a non-toplevel dir, an unregistered worktree, a dirty start, any post-run HEAD/ref/index movement (Codex must edit files only - instructed AND verified), any `MISSION.*` path in the diff, and **zero changed files, which is a failure and never an `ok`**. `status=ok` means Codex ran and touched nothing forbidden; it is NOT a verdict that the change is correct - Claude runs the tests before it counts. Proof: `test-codex-build-chunk.sh`. |
 | `post-compact-resume-step2.sh` | `/post-compact-resume` | Identity-via-arg reader; takes the session id threaded verbatim from the Stop hook. |
@@ -61,7 +63,9 @@ first; the rest arrived alongside `/pre-compact`, `/mission`, and the prod-coord
 - `test-*.sh` - per-subsystem harnesses (`test-auto-compact.sh`, `test-ctx-gate.sh`,
   `test-chain-primitives.sh`, `test-mission-bridge.sh`, `test-mission-drift-check.sh`,
   `test-stale-handoff-guard.sh`, `test-handoff-smoke-check.sh`, `test-secret-scan.sh`,
-  `test-engine-header.sh`, `test-lint-skill-size.sh`), plus `verify-test-integrity.sh`, which
+  `test-engine-header.sh`, `test-lint-skill-size.sh`, the mission rework's `test-mission-proto2.sh`,
+  `test-mission-lifecycle.sh` (end-to-end lifecycle traces), `test-mission-status.sh`,
+  `test-mission-watchdog.sh`), plus `verify-test-integrity.sh`, which
   checks that each adversarial defense's test actually fails when the defense is removed.
 
 ## Auto-compact

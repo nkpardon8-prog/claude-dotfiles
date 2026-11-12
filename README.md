@@ -95,7 +95,8 @@ come back to a cleaner codebase.
 
 **`/mission`** — The conductor for genuinely large, multi-part builds. For *each* part it runs
 research → `/plan` (with the full reviewer loop) → `/implement` → a 4-Codex + 3-Claude code-review
-panel, driving each part to honest convergence before moving on — across many parts and many
+panel, with rigor and time budgets set per part by risk tier, closing each part on one frozen SHA
+(close review, full suite, live proof) or parking it without stopping the run — across many parts and many
 compactions, riding `/pre-compact` so it never loses the thread. Opt-in and heavy; overkill for
 small work, unbeatable for big ones.
 

@@ -234,6 +234,14 @@ jobs:
       # exclusion is a re-enrollment that never happens, so it is recorded here as MEASURED, with
       # the platform named - "green" with no platform attached is what hid this for months.
       #
+      # MISSION REWORK HARNESSES (2026-11-11), recorded rather than silently omitted:
+      #   test-mission-proto2.sh, test-mission-lifecycle.sh, test-mission-status.sh,
+      #   test-mission-watchdog.sh - green on macOS (117/0, lifecycle and status/watchdog per the
+      #   integration report); NOT yet run under the four-point runner bar below (Linux, non-root,
+      #   relocated checkout, runner tools). proto2 and lifecycle drive mission-write.sh and the
+      #   lib, which carry the GNU/BSD `stat -f` hazard described above, so expect the same Linux
+      #   red until that fix lands. Enroll each only after proving it on the runner.
+      #
       # NOT YET PORTABLE - these five were in the first version of this job and are the reason
       # it was red 16/16. Each is a REAL coverage gap, recorded here so it stays visible rather
       # than quietly forgotten. Every one needs the same treatment test-lint-skill-size.sh got:

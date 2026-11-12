@@ -2,6 +2,27 @@
 
 All notable changes to this Claude Code dotfiles repo. Most recent first.
 
+## 2026-11-11 - /mission rework (proto=2): budgets by risk tier, rules as writer refusals
+
+- `commands/mission.md` rewritten (178 KB -> ~26 KB) with `docs/mission/wake.md` (the only file a
+  tick reads), `docs/mission/reference.md` (line grammar, verbs, suite-report layout, rare paths) and
+  `docs/mission/planted-bugs.md`; `lint-skill-size.sh` caps each file and the 77 KB total.
+- `mission-write.sh` / `lib/mission-bridge.sh`: proto=2 parts (`PART-START ... proto=2 worktree= base=
+  needs=`, RECIPE v1/v2 repeating `needs=`, SWEEP, FULL-SUITE with a keyed known-reds baseline,
+  `live-verify sha= attempt=`, park FAIL with `range=`, writer-only ANCHOR); new verbs `bank-review`
+  (sole writer of review evidence and every `dry=` raise), `budget-state`, `known-reds key|diff|record`;
+  a legacy PART-START, and any line for an un-started part, is refused after the first proto=2 part.
+  The writer now rewrites `tmp/mission/MORNING.md` after PART-DONE, PART-RETIRED, MISSION-CLEARED,
+  any FAIL and an opened human STOP.
+- New `mission-watchdog.sh` (helper stall detection) and `lib/mission-status.sh` (status lines,
+  tokens by tag, morning report; deferred parts read from the strategist's `tmp/mission/recipes.md`).
+- `codex-review.md` (`--base`, `--scope full`, `--ledger`, `--verify`; Sol pinned), `plan.md`
+  (`--roadmap`, `--mission`), `implement.md` Step 3 wording, `codex-build-chunk.sh` header table.
+- Tests: `test-mission-proto2.sh`, `test-mission-lifecycle.sh` (end-to-end traces: clean close,
+  failed close and same-SHA retry, repeat type and sweep, park and transitive deferral, legacy
+  cutover with ANCHOR, compaction mid-close), `test-mission-status.sh`, `test-mission-watchdog.sh`;
+  `test-mission-doc-drift.sh` now pins the playbook's line shapes to the writer's.
+
 ## 2026-11-09 - rdocker: `rdocker warm` pre-warms the worker pool
 
 - New launch agent `com.rdocker.warm` on client Macs (`rdocker install`; template

@@ -329,6 +329,22 @@ recovery read rather than adding parallel machinery. The runtime contracts are p
 hermetic `scripts/hooks/mission-continuity-assumptions/` suite. See `commands/mission.md` for the
 full loop.
 
+### Mission rework (proto=2, 2026-11-11): rules as refusals, rigor by risk tier
+
+The playbook shrank from 178 KB to a ~26 KB `commands/mission.md` plus three reference files under
+`docs/mission/` (`wake.md`, the only file a tick reads; `reference.md`, the line grammar and rare
+paths; `planted-bugs.md`), all capped by `lint-skill-size.sh` (77 KB together). Rules that matter
+moved out of prose into refusals in `mission-write.sh`: every part started after the rework is
+`proto=2` (its PART-START names a linked part worktree, its base and its `needs=`), carries a RECIPE
+whose tier bounds plan rounds, review rounds and a wall-clock budget, and is closed on one frozen SHA
+by three legs (full-part close review, full suite against a keyed known-reds baseline, live proof).
+`bank-review` is the only writer of review evidence and convergence; `budget-state` drives re-plan
+or a non-blocking park; a parked part's isolated range can never enter a later base, and parts that
+need it are deferred transitively. `mission-watchdog.sh` detects stalled helpers;
+`lib/mission-status.sh` derives status lines and `MORNING.md`, which the writer refreshes on every
+part end and stop. Parts open at cutover finish on the old fold; ANCHOR lines link them to proto=2
+successors. End-to-end proof: `scripts/hooks/test-mission-lifecycle.sh`.
+
 ---
 
 ## Adding things
