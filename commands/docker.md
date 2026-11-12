@@ -306,7 +306,7 @@ job and one that comes back (or is added to fleet.json) is used at once.
   packages; queue = 0 with a free slot, else when the first slot holder should finish (from the
   holders' ages); the memory factor falls to 0.1 when free memory is barely the job's need (full speed
   only from 1.5x). job_cost (s at speed 1.0) defaults: tsc 60, vitest 60, db 120, lint 30, build 90
-  (`rr_job_cost_s`), replaced by earlier runs of the **same command** (the argv as `runs.log` writes it;
+  (`rr_job_cost_s`), raised to earlier runs of the **same command** when those took longer (the argv as `runs.log` writes it;
   this worker's, else any worker's, scaled by speed; one run is enough), else by the median of the
   worker's own last runs of that class (3+ runs; else the whole pool's). A busy worker's queue is when
   its first holder should end: from that holder's own command (`slots/<i>.own`) when it ran before.
