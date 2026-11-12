@@ -54,6 +54,11 @@ RRUN_SRC = os.path.join(HERE, "rrun")      # the `rrun` wrapper (~/.local/bin/rr
 NPM_SHIM_SRC = os.path.join(HERE, "npm-shim")  # ~/.local/bin/npm: heavy `npm run` scripts -> rrun
 RUNNER_SRC = os.path.join(HERE, "rr_runner.pl")   # the mini-side runner, sent with every rrun
 RRUN_STATE = os.path.join(STATE_DIR, "rrun.json")  # last rrun result + runs in flight (status row)
+# Version guarantee, layer 2: bump ONLY for a change every client must adopt (a protocol or label
+# change the workers' other clients must not keep writing). A job's runner raises the worker's
+# ~/rr/pool_version to this; a client that finds a higher one there (PROBE) updates its dotfiles
+# (git pull --ff-only) and re-executes itself once before running anything (rd_run.check_version).
+POOL_VERSION = 1
 # rrun-<wt12>.lock in STATE_DIR serialises rrun runs from one laptop worktree (rd_run.wt_lock_path)
 PLIST_LABEL = "com.rdocker.forwarder"
 PLIST_PATH = os.path.join(HOME, "Library", "LaunchAgents", PLIST_LABEL + ".plist")
@@ -146,6 +151,12 @@ DEFAULTS = {
     "rr_warm_window_h": 48,            # repos with an rrun line in route.log this recent
     "rr_warm_max_repos": 2,            # at most this many repos per pass (most recently used first)
     "rr_warm_max_load": 0.7,           # warm a worker only while its load1 / ncpu is below this
+    "rr_warm_trigger": True,           # rrun starts a background `rdocker warm --once --repo` when a worker is cold for it
+    "rr_warm_trigger_every_s": 600,    # ...at most once per repo + lockfiles in this long
+    # evidence-based placement (rd_pool.Model; each worker's runs.log)
+    "rr_cold_budget_s": 60,            # a worker whose measured cold-setup p75 is above this takes warm jobs only
+    "rr_history_days": 14,             # evidence window (fleet.json history_since cuts it further per worker)
+    "rr_history_rows": 300,            # rates (infra, setup) over the last this many runs of it
     # untracked/ignored env files copied for a run (basename globs), looked up ONLY in the repo
     # root, the command's cwd and the deps (lockfile) dirs; a symlink resolving outside the
     # worktree is skipped. 0600 on the mini and deleted when the run ends

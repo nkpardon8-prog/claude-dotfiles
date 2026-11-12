@@ -6,7 +6,7 @@ SENDS with every run (nothing trusted is kept on the mini). One run:
   2 flock STATE_DIR/rrun-<wt12>.lock      (one run at a time per laptop worktree)
   3 git push HEAD -> ~/<rr_root>/git/<slug>.git refs/rrun/<wt12> over the rr-%C ssh master; the
     remote receive-pack creates the bare repo the first time. Push fails => the mini is out =>
-    run locally (RDOCKER_MODE=local), unless RRUN_STRICT=1 (exit 75)
+    run locally (RDOCKER_MODE=local), unless RRUN_STRICT=1 (exit 75: infra, never ran)
   4 overlay tar = tracked files changed vs HEAD + untracked (not ignored) + allowlisted env files
     from the repo root, the cwd and the deps dirs only; deleted = tracked files changed vs HEAD
     that no longer exist
@@ -19,20 +19,24 @@ SENDS with every run (nothing trusted is kept on the mini). One run:
     worker runs the command on detached (header run_id, a uuid4; rr_detach_hb_s 180 without us), so
     reattach() reconnects (fresh ssh, no shared master; rr_reattach_tries in rr_reattach_window_s),
     resumes the spooled output at the bytes we have and returns the real rc; NORUN there = it never
-    started (a loss before the start). Every reconnect failed => exit 75 (never run twice).
+    started (a loss before the start). Every reconnect failed => exit 76 (may have run; never run twice).
+Result contract (2026-11-11): every job's result is one class - pass / fail / infra / needs-human -
+named by ONE `rrun:` line after the command's output (rrun() / result_line); rrun's own codes are
+EXIT_CODES (72 / 73 / 75 never ran, 76 may have run, 77 config, 124 cap, the runner's 65 / 69 / 70 /
+78). A run whose output shows a missing test DB is infra (75), not a test failure.
 Eligibility (rd_pool.eligibility, fleet.json classes / max_cost_s / cold_ok): a worker that may not
-take the job is never tried; none may => exit 75 at once, naming each worker's reason.
+take the job is never tried; none may => exit 77 at once, naming each worker's reason.
 Pool (rd_pool): with 2+ enabled fleet workers, each job is placed on the best worker right now
 and the hosts are tried in that order: a worker lost before GO, or one that had no free slot after
-all (73 from a short race wait), moves the job to the next one. After GO a lost worker means exit 75
+all (73 from a short race wait), moves the job to the next one. After GO a lost worker means exit 76
 - except for jobs that are safe to repeat (tsc/typecheck, lint, vitest/jest, builds; never DB
 tests), which run once more on the next worker. In a pool, heavy and DB jobs never fall back to
 this machine (exit 75 instead); light jobs (lint, check scripts) run here when every worker stayed
 busy for rr_local_after_s. No fleet / one worker: one host, exactly as before.
 Shards (run_shards): a `vitest run` rd_pool.shardable() accepts, with 2+ free workers, runs as
 vitest --shard=i/n on several workers at once (threads; signals forwarded from the main thread to
-every LIVE session), each with its own failover list, output prefixed "[shard i/n host]", rc = the
-highest, a merged summary at the end; RRUN_SHARD=0 off, =n forced. Hedge (default off, RRUN_HEDGE=1):
+every LIVE session), each with its own failover list, output prefixed "[shard i/n host]", rc =
+shards_rc() (the test result when every shard ran), a merged summary at the end; RRUN_SHARD=0 off, =n forced. Hedge (default off, RRUN_HEDGE=1):
 a tsc/lint/vitest run past 2x its expected time gets one duplicate on a free worker with a 3x better
 eta; the first to finish wins, the other is stopped. A second concurrent run of ours on one worker
 uses its own lane mirror (Lane), so runs never share a checkout.
@@ -42,11 +46,17 @@ the worktree (staged, then renamed into place) while the worktree lock is still 
 Hangs / waits (2026-11-11): the runner relays the command's output through its own pipes, so when the
 main process exits the leftovers get rr_exit_grace_s, then the group is TERMed / KILLed and the run
 ends with the main's rc. A hard cap per job class (rr_timeout_min; RRUN_TIMEOUT=<min|0>) ends a run
-with exit 124; silence only prints "no output for N min" (rr_silent_min; RRUN_SILENT_MIN). A slot
+with exit 124; silence only prints "no output for N min" with the last test file the output named
+(rr_silent_min; RRUN_SILENT_MIN). A slot
 wait on one worker lasts rr_slot_wait_s, then host_loop re-plans (rr_wait_min in all -> 73); the
 worktree lock waits at most the job's cap (-> 72). Slot / lock waits print a line every
 rr_status_every_s. Every job carries owner_info() (session id / parent pid, /line caption, host):
 `rrun --jobs` / `--mine` list them from every worker's slots/<i>.own.
+Fast start: route.log gets every job's client stage timings (Timing / STAGES: cache plan push overlay
+remote start), pred_s and the client sha; a worker cold for the job triggers one background warm
+(trigger_warm). Version (VERSION / version_seen): the runner's first status, before any prepare, is the
+worker's pool_version (PV, "?" = unknown); newer or unknown never blocks the job: it runs and ends with
+one line saying this Mac is behind (the 2-minute dotfiles autopull updates it).
 Config: rr_* keys in rd_common.DEFAULTS. Env: RRUN_STRICT=1, RRUN_TIMING=1, RRUN=0 (run locally),
 RRUN_TIMEOUT=<minutes|0>, RRUN_SILENT_MIN=<minutes|0>,
 RRUN_GIT_URL (tests only: push URL override). Flags (the `rrun` wrapper turns them into env):
@@ -85,10 +95,71 @@ HEARTBEAT_S = 15
 ALIVE_INTERVAL_S, ALIVE_COUNT = 5, 3
 CONNECT_TIMEOUT_S = 6          # a cold master over a DERP relay connects in ~1.5-2.5 s
 OVERLAY_WARN_BYTES = 5 * 1024 * 1024
-EXIT_LOST = 75                 # EX_TEMPFAIL: lost the mini mid-run / strict mode and the mini is out
+# ---- the agent contract (2026-11-11): every rrun result is exactly one class, named by the first
+# `rrun:` line after the command's output: pass / fail (the command's own result: fix the code) /
+# infra (rerun, never debug) / needs-human (who and why). rrun's own exit codes (EXIT_CODES below;
+# docs: commands/docker.md "Exit codes", tests/test_contract.py checks both ways):
+EXIT_NEVER_RAN = 75            # infra: the command never started anywhere (no worker, lost before GO, strict)
+EXIT_MAY_HAVE_RUN = 76         # infra: it started, then its result was lost (link, spool, copy-back)
+EXIT_CONFIG = 77               # needs-human: no worker may take it (fleet.json)
+EXIT_BUSY = 73                 # infra: every worker stayed busy (never ran)
 PUSH_TIMEOUT_S = 300            # rr_push_timeout_s: a git push that hangs longer = that worker is out
 EXIT_WT_BUSY = 72              # another rrun from this worktree held its lock past our wait
 EXIT_TIMEOUT = 124             # like timeout(1): the command ran past its wall-clock cap and was killed
+EXIT_CODES = {                 # code -> (class, meaning): the one table the docs and the test follow
+    EXIT_WT_BUSY: ("infra", "another rrun from this worktree held its lock past the wait; never ran"),
+    EXIT_BUSY: ("infra", "every worker stayed busy; never ran"),
+    EXIT_NEVER_RAN: ("infra", "never ran: no worker reachable / lost before the start / RRUN_STRICT"),
+    EXIT_MAY_HAVE_RUN: ("infra", "may have run: the link or the result was lost after the start"),
+    EXIT_CONFIG: ("needs-human", "no worker may take this job (fleet.json)"),
+    EXIT_TIMEOUT: ("infra", "hit its wall-clock cap (RRUN_TIMEOUT) and was killed"),
+    65: ("needs-human", "the worker refused the request (bad input or an unsafe path)"),
+    69: ("infra", "the repo was missing on the worker; never ran"),
+    70: ("infra", "the worker's runner failed; never ran"),
+    78: ("infra", "installing dependencies on the worker failed; never ran"),
+}
+NEXT = {"pass": "", "fail": "the command's own result: fix the code",
+        "infra": "rerun it; never debug it", "needs-human": "tell the owner; rerunning will not help"}
+
+
+class Rc(int):
+    """An exit code rrun decided itself (not the command's), with its contract class and why."""
+
+    def __new__(cls, code, klass=None, why="", nxt=None):
+        o = int.__new__(cls, code)
+        o.klass = klass or EXIT_CODES.get(code, ("infra", ""))[0]
+        o.why = why or EXIT_CODES.get(code, ("", ""))[1]
+        o.next = nxt if nxt is not None else NEXT[o.klass]
+        return o
+
+
+def infra(code, why, nxt=None):
+    return Rc(code, "infra", why, nxt)
+
+
+def stopped(sig):
+    return Rc(128 + sig, "infra", "stopped by signal %d before it finished" % sig,
+              "rerun it if you still need the result")
+
+
+RESULT = {"job": False, "host": None, "secs": None, "after": []}   # for result_line()
+
+
+def result_class(rc):
+    """-> (class, why, next) of a finished rrun: Rc carries its own; a plain int is the command's."""
+    if isinstance(rc, Rc):
+        return rc.klass, rc.why, rc.next
+    return ("pass" if rc == 0 else "fail"), "", NEXT["pass" if rc == 0 else "fail"]
+
+
+def result_line(rc):
+    """The one line that classifies the result (printed first after the command's output)."""
+    klass, why, nxt = result_class(rc)
+    where = (" from the cache" if RESULT.get("host") == "cache" else
+             " on %s" % RESULT["host"] if RESULT.get("host") not in (None, "none") else "")
+    secs = ", %.0fs" % RESULT["secs"] if isinstance(RESULT.get("secs"), (int, float)) else ""
+    head = "rrun: %s (exit %d%s%s%s)" % (klass, int(rc), where, secs, "; " + why if why else "")
+    return head + (" - " + nxt if nxt else "")
 # the runner's own cap is what ends a run; this side only steps in (kills ssh, exit 124) when the
 # worker has said nothing about it this long after the cap, e.g. a wedged runner
 TIMEOUT_MARGIN_S = 90
@@ -101,7 +172,6 @@ HELD_LOCKS = []                # worktree lock fds: made inheritable only for a 
 LIVE, LIVE_LOCK = set(), threading.Lock()   # running Sessions (shard mode forwards signals to them)
 STOP_SIG = [0]                 # shard mode: the first INT/TERM/HUP (later sessions start stopped)
 ABORT_KILL_S = 15              # an aborted session's ssh is killed if still there after this
-LOST_MSG ="rrun: lost the Mac mini mid-run - not re-running on the laptop (could run twice); retry"
 
 # The mini-side loader (perl -e): read our own script frame ("<len>\n" + runner source) with
 # sysread - never buffered reads, the runner sysreads the header that follows - then eval it.
@@ -595,11 +665,24 @@ def host_lock(host_key):
 
 # ---------------------------------------------------------------------------- remote session
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# a test file the output names (vitest / jest per-file lines and any *.test.* / *.spec.* path)
+TEST_FILE_RE = re.compile(r"(?:^|[\s(])((?:[\w@.-]+/)*[\w@.-]+\.(?:test|spec)\.[cm]?[jt]sx?)\b", re.M)
+# the run had no test database (2026-11-11: a sharded server vitest run on workers without one -
+# 2,500 of 2,868 "failures" were this): Prisma's / a setup's missing DATABASE_URL, or a refused
+# connection to a Postgres / MySQL port
+NO_DB_RE = re.compile(r"Environment variable not found: (?:TEST_)?DATABASE_URL|(?:TEST_)?DATABASE_URL (?:is )?"
+                      r"not (?:found|set|defined)|ECONNREFUSED (?:127\.0\.0\.1|::1|\[::1\]|localhost|0\.0\.0\.0)"
+                      r":(?:5432|54\d\d|55\d\d\d|3306)\b")
+
+
 class StatusFilter:
     """Remote stderr -> our stderr, minus our own "<nonce> STATUS" lines. The tag is recognised
     anywhere, also glued to the end of a stderr line that had no newline (the nonce is 128 secret
     bits the tested code never sees, so it cannot be forged or hit by chance). Only a tail that
     could still be the start of the tag is held back, so progress output streams."""
+
+    on_text = None       # the command's own bytes, for Session.scan (set after construction)
 
     def __init__(self, nonce, out, on_status, on_data=None, on_bytes=None):
         self.tag = (nonce + " ").encode()
@@ -615,6 +698,8 @@ class StatusFilter:
             self.mid_line = not data.endswith(b"\n")
             if own and self.on_bytes is not None:
                 self.on_bytes(len(data))
+            if own and self.on_text is not None:
+                self.on_text(data)
             if self.on_data is not None:
                 self.on_data()
 
@@ -697,6 +782,12 @@ class Session:
         self.gone = None                     # (reattach) "<nonce> GONE <why>": its result is lost
         self.attached = False                # (reattach) "<nonce> ATTACHED"
         self.mux = True                      # False: an ssh connection of its own (no shared master)
+        self.last_file = None                # the last test file the output named (silence line)
+        self.last_file_at = None             # monotonic time it was named
+        self.scan_tail = {}                  # per stream: a line cut by a read boundary
+        self.no_db_n = 0                     # lines of the command's output with the missing-test-DB signature
+        self.worker_pv = None                # "<nonce> PV <n>": the worker's pool_version (before any prepare)
+        self.outdated = None                 # that version, when it is newer than ours: never GO
 
     host_name = None     # the worker's name, for messages
     tag = ""             # shards: "[shard i/n host] "
@@ -730,14 +821,40 @@ class Session:
             left = self.wait_eta_s - waited
             parts.append("expected wait ~%s" % fmt_wait(left) if left >= 1
                          else "a slot is due any moment (past the scheduler's estimate)")
-        lead = ("waiting for a slot on %s" % self.where() if self.waits == 1 else
-                "still waiting for a slot on %s (%s so far)" % (self.where(), fmt_wait(waited)))
-        note("%s%s: %s; tries elsewhere after %s" % (self.tag, lead, "; ".join(parts),
-                                                     fmt_wait(slot_wait_min(self.cfg) * 60)))
+        if self.waits > 1:                  # one short line a minute after the first: no repeated banner
+            short = [x for x in parts if x.startswith(("next in line", "expected wait", "a slot is due"))
+                     or " waiting ahead" in x]
+            note("%sstill waiting for a slot on %s (%s so far; %s)" % (self.tag, self.where(), fmt_wait(waited),
+                                                                     "; ".join(short)))
+            return
+        note("%swaiting for a slot on %s: %s; tries elsewhere after %s" % (self.tag, self.where(), "; ".join(parts),
+                                                                          fmt_wait(slot_wait_min(self.cfg) * 60)))
 
     def saw_output(self):
         self.last_out = time.monotonic()
         self.silent_said = 0
+
+    def scan(self, data, key="out", final=False):
+        """The command's output -> the last test file it named (vitest/jest per-file lines: "✓ path",
+        "❯ path", "× path", "RUN path", "PASS path", "FAIL path", or any *.test.* / *.spec.* path) and
+        how many lines carry the missing-test-DB signature (an advisory hint at the end, never a
+        verdict). stdout is only ever the command's (the runner writes nothing there), so it is
+        scanned from its first byte, whatever order STARTED arrives in on stderr; stderr only after
+        STARTED (before it: the runner's own prepare notes - same stream, so in order). final: the
+        stream ended - its last line, even without a newline, counts too."""
+        if key == "err" and self.started is None:
+            return
+        text = (self.scan_tail.get(key, b"") + (data or b""))[-65536:]
+        cut = len(text) - 1 if final else text.rfind(b"\n")
+        self.scan_tail[key] = b"" if final else (text[cut + 1:][-4096:] if cut >= 0 else text[-4096:])
+        chunk = text[:cut + 1] if cut >= 0 else b""
+        if not chunk:
+            return
+        s = _ANSI_RE.sub("", chunk.decode("utf-8", "replace"))
+        files = TEST_FILE_RE.findall(s)
+        if files:
+            self.last_file, self.last_file_at = files[-1], time.monotonic()
+        self.no_db_n += sum(1 for ln in s.splitlines() if NO_DB_RE.search(ln))
 
     def watchdog(self, now):
         """A silent command gets a stderr line (never killed for it); a command past its cap
@@ -751,8 +868,10 @@ class Session:
             k = 0 if quiet < self.silent_s else 1 + int((quiet - self.silent_s) // (5 * self.silent_s))
             if k > self.silent_said:
                 self.silent_said = k
-                note("%sno output for %s (worker %s, running %s)"
-                     % (self.tag, fmt_min(quiet), self.host_name or "mini", fmt_min(ran)))
+                last = (("; last test file %s, named %s ago" % (self.last_file, fmt_min(now - self.last_file_at)))
+                        if self.last_file else "")
+                note("%sno output for %s (worker %s, running %s%s)"
+                     % (self.tag, fmt_min(quiet), self.host_name or "mini", fmt_min(ran), last))
         if self.timeout_s and not self.timed_out and ran > self.timeout_s + TIMEOUT_MARGIN_S:
             self.timed_out = True
             note("%s%s did not stop the command at its %s cap; closing the session (exit %d)"
@@ -762,13 +881,14 @@ class Session:
     def on_status(self, line):
         word, _, rest = line.partition(" ")
         if word == "READY":
-            self.timing.mark("remote prepare (checkout, overlay, deps, slot)")
+            self.timing.mark("remote prepare (checkout, overlay, deps, slot)", "remote_s")
             if self.on_ready is not None:
                 self.on_ready()
             self.ready = True
             self.wake.set()
         elif word == "STARTED":
             self.started = time.monotonic()
+            self.timing.started()
         elif word == "DOCKER":
             self.used_docker = True
         elif word == "EXIT":
@@ -790,6 +910,13 @@ class Session:
             self.wait_note(rest)
         elif word == "UNAVAIL":
             self.unavail = rest.strip() or "unavailable"
+        elif word == "PV":
+            v = rest.strip()
+            self.worker_pv = int(v) if v.isdigit() else None       # "?" = unknown: proceed, warn at the end
+            if version_seen(self.worker_pv):
+                with self.go_lock:
+                    self.outdated = self.worker_pv                 # claim_go refuses: the invocation restarts
+                self.wake.set()
         elif word == "ATTACHED":
             self.attached = True
             if self.started is None:         # the first link died before STARTED: it runs, so count from here
@@ -830,9 +957,11 @@ class Session:
     def claim_go(self):
         """-> True when GO may be written now (and records that it was), False otherwise."""
         with self.go_lock:
-            if self.done.is_set() or not self.ready or self.go_sent or self.ints or self.gave_up:
+            if self.done.is_set() or not self.ready or self.go_sent or self.ints or self.gave_up \
+                    or self.outdated is not None:
                 return False
             self.go_sent = True              # from here on, any loss is ambiguous => 75
+            mark_started()
             return True
 
     def give_up_left(self):
@@ -864,9 +993,16 @@ class Session:
                     if self.go_sent:         # a detached run outlives our stdin: say it is a stop
                         w.write(b"KILL\n")
                         w.flush()
+                    elif self.aborted:       # our own decision (a hedge / shard went elsewhere): runs.log "moved"
+                        w.write(b"MOVE\n")
+                        w.flush()
                     break
+                if self.outdated is not None and not self.go_sent:
+                    break                    # closing stdin before GO: the runner starts nothing
                 left = self.give_up_left()
                 if left == 0:
+                    w.write(b"MOVE\n")      # re-planned (another worker / this machine): "moved", not abandoned
+                    w.flush()
                     break                    # closing stdin: the runner gives up its slot wait
                 if self.ints > sent_int:
                     w.write(b"INT\n")
@@ -900,11 +1036,14 @@ class Session:
             self.stdout_out.write(data)
             self.out_off += len(data)        # (the runner writes nothing but the command's on stdout)
             self.saw_output()
+            self.scan(data)
+        self.scan(b"", "out", final=True)
         self.stdout_out.flush()
 
     def relay(self):
         filt = StatusFilter(self.nonce, self.stderr_out or getattr(sys.stderr, "buffer", sys.stderr),
                             self.on_status, self.saw_output, self.count_err)
+        filt.on_text = lambda d: self.scan(d, "err")
         filt.resumable = self.run_id is not None
         fd = self.proc.stderr.fileno()
         while True:
@@ -916,6 +1055,7 @@ class Session:
                 break
             filt.feed(data)
         filt.close()
+        self.scan(b"", "err", final=True)
 
     def count_err(self, n):
         """The command's stderr bytes (after STARTED; before it, the runner's own prepare notes)."""
@@ -980,14 +1120,24 @@ class Session:
 
 # ---------------------------------------------------------------------------- timing / state
 
+STAGES = {}      # client-side start timings of this rrun (route.log, always): cache_s plan_s push_s overlay_s remote_s start_s
+ROUTE_EXTRA = {}  # more route.log fields of this rrun: pred_s (the placement's run estimate), client (code sha)
+
+
 class Timing:
     def __init__(self, on):
         self.on, self.t0, self.last, self.parts = on, time.monotonic(), time.monotonic(), []
 
-    def mark(self, label):
+    def mark(self, label, key=None):
         now = time.monotonic()
         self.parts.append("%s %.2fs" % (label, now - self.last))
+        if key:
+            STAGES[key] = round(STAGES.get(key, 0.0) + now - self.last, 2)
         self.last = now
+
+    def started(self):
+        """The command started on the worker: rrun's whole time-to-start (the SLO's number)."""
+        STAGES.setdefault("start_s", round(time.monotonic() - self.t0, 2))
 
     def report(self):
         if self.on:
@@ -1021,8 +1171,10 @@ def record(target, argv, rc, secs, wt12=None, start=False, cap=None):
     except OSError:
         pass
     if not start:
-        rd_common.log("%-5s %-8s %s rc=%s %.1fs | %s" % (target, "rrun", short_argv(argv), rc, secs,
-                                                       os.getcwd()), rd_common.ROUTE_LOG)
+        RESULT["host"], RESULT["secs"] = target, secs
+        extra = " ".join("%s=%s" % kv for kv in list(STAGES.items()) + list(ROUTE_EXTRA.items()))
+        rd_common.log("%-5s %-8s %s rc=%s %.1fs | %s%s" % (target, "rrun", short_argv(argv), int(rc) if isinstance(
+            rc, int) else rc, secs, os.getcwd(), "\t" + extra if extra else ""), rd_common.ROUTE_LOG)
 
 
 def alive_pid(pid):
@@ -1104,6 +1256,7 @@ def _ago(ts, now):
 
 def run_local(argv, env_pairs, why=None):
     """exec the command on the laptop (RDOCKER_MODE=local: its containers stay on the laptop too)."""
+    mark_started()
     if why:
         note("%s - running on the laptop instead (RDOCKER_MODE=local)" % why)
     env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")   # RRUN=0: the npm shim must not re-route
@@ -1121,14 +1274,12 @@ def run_local(argv, env_pairs, why=None):
 
 def fallback(argv, env_pairs, why, t0, job=None, pool=False):
     if os.environ.get("RRUN_STRICT") == "1":
-        note("%s (RRUN_STRICT=1: not running on the laptop)" % why)
-        record("mini", argv, EXIT_LOST, time.monotonic() - t0)
-        return EXIT_LOST
+        record("mini", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
+        return infra(EXIT_NEVER_RAN, "%s; RRUN_STRICT=1: not running it on this machine" % why)
     if pool and job and job.get("never_local"):
-        note("%s - not running a %s job on this machine (it is what the worker pool keeps off "
-             "agent machines); retry when a worker is back (exit 75)" % (why, job["cls"]))
-        record("none", argv, EXIT_LOST, time.monotonic() - t0)
-        return EXIT_LOST
+        record("none", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
+        return infra(EXIT_NEVER_RAN, "%s; a %s job never runs on this machine (the pool keeps it off "
+                     "agent machines)" % (why, job["cls"]), "rerun it when a worker is back")
     record("local", argv, "exec", time.monotonic() - t0)
     return run_local(argv, env_pairs, why)
 
@@ -1302,13 +1453,6 @@ def wait_for_mini(cfg, why):
             signal.signal(sig, h)
 
 
-# Exit codes the runner uses when the command was never started (GO not sent), with what they mean.
-INFRA_EXIT = {
-    65: "the Mac mini runner refused the request (bad input or an unsafe path; see above)",
-    69: "the repo is missing on the Mac mini (the push should have created it); retry",
-    70: "the Mac mini runner failed (see above)",
-    78: "installing dependencies on the Mac mini failed (npm ci / prisma generate, see above)",
-}
 
 
 class Opts:
@@ -1352,7 +1496,21 @@ def next_host(hosts, skip):
 
 
 def rrun(argv, env_args=()):
-    """`rrun [-e NAME[=VALUE]]... [--] <cmd...>` -> exit code (the remote command's, or 75/73/...)."""
+    """`rrun [-e NAME[=VALUE]]... [--] <cmd...>` -> exit code (the command's own, or one of
+    EXIT_CODES). A job's result ends with ONE class line (result_line: pass / fail / infra /
+    needs-human, its why and the next action), then any detail lines (RESULT["after"])."""
+    environ0 = dict(os.environ)          # before Opts pops rrun's own flags: a re-exec needs them back
+    ENVIRON0.clear()
+    ENVIRON0.update(environ0)
+    rc = _rrun(argv, env_args, environ0)
+    if RESULT["job"]:
+        sys.stdout.flush()
+        sys.stderr.write("\n".join([result_line(rc)] + RESULT["after"] + version_lines()) + "\n")
+        sys.stderr.flush()
+    return int(rc)
+
+
+def _rrun(argv, env_args, environ0):
     opts = Opts()
     if argv and argv[0] == "--":
         argv = argv[1:]
@@ -1369,6 +1527,7 @@ def rrun(argv, env_args=()):
     t0 = time.monotonic()
     if not opts.where and (os.environ.get("RRUN_REMOTE") or os.environ.get("RRUN") == "0"):
         return run_local(argv, env_pairs)        # already on the mini / opted out: plain run
+    RESULT["job"] = not opts.where
     cfg = rd_common.load_cfg()
     timing = Timing(os.environ.get("RRUN_TIMING") == "1")
     try:
@@ -1383,35 +1542,38 @@ def rrun(argv, env_args=()):
         # builds go to the pool only with known outputs (rr_outputs): any other build (the npm
         # shim sends every top-level `npm run build` here) runs on this machine, silently
         return run_local(argv, env_pairs)
-    job = rd_pool.classify(argv, outputs)
+    job = rd_pool.classify(argv, outputs, os.getcwd())
     deps = deps_dirs(wt["top"], wt["relcwd"], argv) if wt else []
     if not opts.where:
         timing.mark("resolve")
         try:                         # fd stays open (and locked) until we exit or exec
             take_wt_lock(wt["wt12"], wt_wait_s(cfg, job), cfg)
         except WorktreeBusy as e:
-            note("%s; not running it (exit %d). Check `rrun --mine`; rerun when it is done"
-                 % (e, EXIT_WT_BUSY))
-            return EXIT_WT_BUSY
+            return infra(EXIT_WT_BUSY, "%s; never ran" % e, "check `rrun --mine`; rerun when it is done")
         timing.mark("worktree lock")
     crun, cache_why = cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs) if wt \
         else (None, "not in a git worktree")
     hit = rd_cache.lookup(crun.key) if crun is not None and opts.cache and not opts.host else None
+    timing.mark("cache", "cache_s")
     if hit is not None and not opts.where:
         return replay_hit(hit, argv, t0)
+    dshas = rd_pool.deps_shas(wt["top"], deps) if wt else []
     try:
-        plan = rd_pool.plan(cfg, job, wt["slug"] if wt else "",
-                            rd_pool.deps_shas(wt["top"], deps) if wt else [],
-                            force=opts.host, probe=opts.where)
+        plan = rd_pool.plan(cfg, job, wt["slug"] if wt else "", dshas, force=opts.host, probe=opts.where)
     except ValueError as e:
         note(str(e))
+        RESULT["job"] = False
         return 2
+    timing.mark("plan", "plan_s")
+    ROUTE_EXTRA["client"] = client_sha() or "-"
+    if not opts.where:
+        trigger_warm(cfg, plan, wt, dshas, job)
     if not plan.hosts and not opts.where:
         # fleet.json's classes / max_cost_s / cold_ok leave no worker for this job: say so now
         # (waiting would not change it) - never a slot wait, never this machine
-        note("%s; not running it (exit %d)" % (rd_pool.no_eligible_msg(job, plan.ineligible), EXIT_LOST))
-        record("none", argv, EXIT_LOST, time.monotonic() - t0)
-        return EXIT_LOST
+        record("none", argv, EXIT_CONFIG, time.monotonic() - t0)
+        return Rc(EXIT_CONFIG, "needs-human", rd_pool.no_eligible_msg(job, plan.ineligible) + "; not run",
+                  "tell the owner (fleet.json); rerunning will not help")
     smode = rd_pool.shard_mode(cfg)
     shards, why_not = None, None
     if smode and plan.pool and not opts.host:
@@ -1436,6 +1598,122 @@ def rrun(argv, env_args=()):
     if kind == "local":
         return fallback(argv, env_pairs, val, t0, job, plan.pool)
     return cache_save(ctx, val, argv)
+
+
+_SHA = []
+
+
+def client_sha():
+    """This client's code version (the dotfiles commit rd_run runs from), or None outside a git
+    checkout. Once per process; logged per job (route.log client=, runs.log client=)."""
+    if not _SHA:
+        try:
+            p = subprocess.run(["git", "-C", rd_common.HERE, "rev-parse", "--short=12", "HEAD"],
+                               capture_output=True, text=True, timeout=3)
+            v = p.stdout.strip()
+            _SHA.append(v if p.returncode == 0 and re.match(r"^[0-9a-f]{7,40}$", v) else None)
+        except (OSError, subprocess.TimeoutExpired):
+            _SHA.append(None)
+    return _SHA[0]
+
+
+ENVIRON0 = {}                    # rrun's environment before Opts popped its flags
+# Version check, layer 2: warning only. Layer 1 (the 2-min dotfiles autopull) keeps Macs current and
+# the owner's rule is that agents are never blocked, so a newer or unknown worker version never stops
+# or restarts a job; the invocation ends with one line saying so (version_lines).
+VERSION = {"started": False, "tried": False, "behind": 0, "why": None, "unknown": False}
+_VERSION_LOCK = threading.Lock()
+
+
+def mark_started():
+    """Something of this invocation started (GO sent, or a local run): never re-exec from now on."""
+    with _VERSION_LOCK:
+        VERSION["started"] = True
+
+
+def version_seen(pv):
+    """A runner's PV status -> True when THIS session must not send GO because the invocation will
+    update itself and start again (see VERSION); False = go on (noting a newer or unknown version)."""
+    with _VERSION_LOCK:
+        if pv is None:
+            VERSION["unknown"] = True
+            return False
+        if pv <= rd_common.POOL_VERSION:
+            return False
+        VERSION["behind"] = max(VERSION["behind"], pv)
+        # warning only (owner policy: never block or restart an agent's job). The 2-minute dotfiles
+        # autopull is what updates this Mac; a self-update + re-exec here was dropped after review:
+        # every safe trigger point raced shards/hedges or never fired.
+        return False
+
+
+def version_lines():
+    """The end-of-invocation lines about versions (none when all was current)."""
+    out = []
+    if VERSION["behind"] > rd_common.POOL_VERSION:
+        out.append("rrun: this Mac's pool code is behind (v%d < v%d); it updates itself within 2 min%s"
+                   % (rd_common.POOL_VERSION, VERSION["behind"],
+                      ""))
+    if VERSION["unknown"]:
+        out.append("rrun: a worker could not report its pool version; ran anyway")
+    return out
+
+
+def warm_trigger_paths(key):
+    """(stamp, pending) for one repo + lockfiles: stamp's mtime = when a triggered warm last STARTED
+    (the throttle); pending = a triggered warm is waiting for the worktree lock."""
+    base = os.path.join(rd_common.STATE_DIR, "warm-trigger-%s" % key)
+    return base, base + ".pending"
+
+
+def trigger_warm(cfg, plan, wt, dshas, job=None):
+    """Fast start: a worker that may take this job but lacks its packages (probe warm_deps 0) gets
+    them in the background - one detached `rdocker warm --once --repo <cwd> --after-lock S --trigger K`
+    (rd_warm: idle priority, only on workers running no job). It waits for THIS rrun's worktree lock
+    (at most the job's cap + a minute), so it starts once the foreground job is done, never skipping
+    the repo; the throttle (rr_warm_trigger_every_s) starts only when a warm really starts. -> True
+    when a waiting warm was spawned."""
+    if not (plan.pool and wt and dshas and cfg.get("rr_warm_trigger", True)):
+        return False
+    cold = [h for h in plan.hosts + [h for h, _ in plan.ineligible]
+            if h.probe is not None and not h.probe.get("warm_deps")]
+    if not cold:
+        return False
+    key = hashlib.sha256(("%s %s" % (wt["slug"], dshas)).encode()).hexdigest()[:16]
+    stamp, pending = warm_trigger_paths(key)
+    wait_s = int((timeout_s(cfg, job["cls"]) if job else 3600) or 3600) + 60
+    now = time.time()
+    try:
+        if now - os.path.getmtime(stamp) < float(cfg.get("rr_warm_trigger_every_s", 600)):
+            return False                 # a triggered warm started lately
+    except OSError:
+        pass
+    try:
+        rd_common.ensure_dirs()
+        try:
+            if now - os.path.getmtime(pending) < wait_s:
+                return False             # one is already waiting for the lock
+            os.unlink(pending)           # a waiter that died long ago
+        except OSError:
+            pass
+        fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:     # the queued request: where to warm (rd_warm.queued)
+            f.write(os.getcwd() + "\n")
+    except OSError:
+        return False                     # another rrun just queued one
+    try:
+        with open(os.devnull, "rb") as dn_in, open(os.devnull, "wb") as dn_out:
+            subprocess.Popen([sys.executable, "-I", rd_common.ENTRY, "warm", "--once", "--repo", os.getcwd(),
+                              "--after-lock", str(wait_s), "--trigger", key],
+                             stdin=dn_in, stdout=dn_out, stderr=dn_out, start_new_session=True,
+                             env=dict(os.environ, RRUN="0"), preexec_fn=lambda: os.nice(10))
+    except OSError:
+        try:
+            os.unlink(pending)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def list_jobs(mine_only, force=None, out=None):
@@ -1485,7 +1763,7 @@ def replay_hit(hit, argv, t0):
     meta, frames = hit
     sys.stdout.flush()
     rd_cache.replay(frames, std_stream("stdout"), std_stream("stderr"))
-    note(rd_cache.hit_line(meta))
+    RESULT["after"].append("rrun: " + rd_cache.hit_line(meta))
     record("cache", argv, meta["rc"], time.monotonic() - t0)
     return meta["rc"]
 
@@ -1535,7 +1813,7 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
     total = 60.0 * float(ctx.cfg.get("rr_wait_min", 30))
     while True:
         if threaded and STOP_SIG[0]:
-            return "done", 128 + STOP_SIG[0]
+            return "done", stopped(STOP_SIG[0])
         h = hosts[i]
         if on_host:
             on_host(h)
@@ -1561,9 +1839,10 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
                     ctx.cache.taint("a shard re-ran after a lost worker")
                 retried, i = True, nxt
                 continue
-            sys.stderr.write(tag + LOST_MSG + "\n")
-            record(h.name, argv, EXIT_LOST, time.monotonic() - t0)
-            return "done", EXIT_LOST
+            record(h.name, argv, EXIT_MAY_HAVE_RUN, time.monotonic() - t0)
+            return "done", infra(EXIT_MAY_HAVE_RUN, "%slost %s mid-run and could not reconnect; it may have "
+                                 "run there, so it is not re-run automatically" % (tag, h.name),
+                                 "rerun it (a DB job: check its side effects first)")
         if nxt is not None:
             note("%s%s - trying %s" % (tag, val, hosts[nxt].name))
             i = nxt
@@ -1579,20 +1858,18 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
                     if time.monotonic() - round_t0 < 20:          # they refused at once: do not spin
                         time.sleep(min(30.0, total - waited))
                 except KeyboardInterrupt:
-                    return "done", 130
+                    return "done", stopped(2)
                 note("%severy worker is busy (%s waited so far, gives up after %s); re-planning"
                      % (tag, fmt_wait(time.monotonic() - busy_t0), fmt_wait(total)))
                 hosts = replan(ctx, hosts) if not threaded else hosts
                 if not hosts:
-                    note("%s%s; not running it (exit %d)"
-                         % (tag, rd_pool.no_eligible_msg(job, ctx.plan.ineligible), EXIT_LOST))
-                    record("none", argv, EXIT_LOST, time.monotonic() - t0)
-                    return "done", EXIT_LOST
+                    record("none", argv, EXIT_CONFIG, time.monotonic() - t0)
+                    return "done", Rc(EXIT_CONFIG, "needs-human", tag + rd_pool.no_eligible_msg(job, ctx.plan.ineligible),
+                                      "tell the owner (fleet.json); rerunning will not help")
                 i, failed, round_t0, slot_busy = 0, set(), time.monotonic(), False
                 continue
-            note("%sno worker had a free slot%s; giving up (exit 73)"
-                 % (tag, " for %s" % fmt_wait(total) if slot_busy else ""))
-            return "done", 73
+            return "done", infra(EXIT_BUSY, "%sno worker had a free slot%s; never ran"
+                                 % (tag, " for %s" % fmt_wait(total) if slot_busy else ""))
         if threaded or tries >= RECONNECT_TRIES:
             return "local", val
         tries += 1
@@ -1607,8 +1884,8 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
         try:
             back = wait_for_mini(h.cfg, val)
         except _Stopped as e:
-            note("stopped while waiting for the Mac mini - not running it anywhere")
-            return "done", 128 + e.signum
+            return "done", Rc(128 + e.signum, "infra", "stopped while waiting for a worker; not running it "
+                              "anywhere", "rerun it if you still need the result")
         if not back:
             return "local", "%s, and it did not come back within %s" % (val, fmt_wait(reconnect_wait_s(h.cfg)))
 
@@ -1671,10 +1948,10 @@ class Hedge:
 
     def __init__(self, ctx, h, argv, lane, tag, frac, out, err):
         self.ctx, self.h, self.argv, self.lane, self.tag = ctx, h, argv, lane, tag
-        cost = h.run_s if h.run_s is not None else rd_pool.job_cost(ctx.cfg, ctx.job["cls"]) / max(0.01, h.speed)
+        cost = h.run_s if h.run_s is not None else rd_pool.default_cost(ctx.cfg, ctx.job["cls"]) / max(0.01, h.speed)
         self.expect = cost * frac
         self.frac = frac
-        self.ref = (h.cold_s or 0.0) + min(h.rtt or 0.0, rd_pool.RTT_CAP_S) + self.expect
+        self.ref = (h.setup_s or 0.0) + min(h.rtt or 0.0, rd_pool.RTT_CAP_S) + self.expect
         self.out_stream = out.stream if out is not None else std_stream("stdout")
         self.err_stream = err.stream if err is not None else std_stream("stderr")
         self.prefix = out.prefix if out is not None else ""
@@ -1688,7 +1965,7 @@ class Hedge:
         self.thread.start()
 
     def eta(self, c):
-        return (c.cold_s or 0.0) + min(c.rtt or 0.0, rd_pool.RTT_CAP_S) + (c.run_s or 0.0) * self.frac
+        return (c.setup_s or 0.0) + min(c.rtt or 0.0, rd_pool.RTT_CAP_S) + (c.run_s or 0.0) * self.frac
 
     def candidate(self):
         ctx = self.ctx
@@ -1789,8 +2066,8 @@ def run_local_shard(ctx, argv, out, err, why):
     """A shard no worker could take: on this machine (subprocess, output prefixed like the rest),
     unless RRUN_STRICT=1 / a never-local job in the pool (exit 75)."""
     if os.environ.get("RRUN_STRICT") == "1" or ctx.job.get("never_local"):
-        note("%s - not running this shard on this machine (exit 75)" % why)
-        return EXIT_LOST
+        return infra(EXIT_NEVER_RAN, "%s - not running this shard on this machine" % why)
+    mark_started()
     note("%s - running this shard on this machine (RDOCKER_MODE=local)" % why)
     env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")
     env.update(ctx.env_pairs)
@@ -1825,7 +2102,7 @@ LOCAL_PROCS = set()
 def run_shards(ctx, assign, argv):
     """Split a `vitest run` into len(assign) shards (vitest --shard=i/n), shard i on assign[i-1]
     first and the rest of the plan as its failover, all at once. Output lines are prefixed
-    "[shard i/n host] "; exit code = the highest shard rc; a merged vitest summary at the end."""
+    "[shard i/n host] "; exit code = shards_rc(); a merged vitest summary at the end."""
     n = len(assign)
     plan = ctx.plan
     cnt = {}
@@ -1860,8 +2137,7 @@ def run_shards(ctx, assign, argv):
                     ctx.cache.taint("a shard ran on this machine")
                 val = run_local_shard(ctx, sargv, out, err, tag + val)
         except Exception as e:       # one shard's bug must not hang the others
-            note("%sfailed: %s" % (tag, e))
-            val = 70
+            val = infra(EXIT_MAY_HAVE_RUN, "%srrun failed: %s" % (tag, e))
         finally:
             out.close()
             err.close()
@@ -1887,16 +2163,36 @@ def run_shards(ctx, assign, argv):
     finally:
         for s, h in old.items():
             signal.signal(s, h)
-    rc = max(r if isinstance(r, int) else 70 for r in rcs)
+    rc = shards_rc(rcs)
     summary = rd_pool.shard_summary([o.tail.decode("utf-8", "replace") for o in outs])
-    note("%d shards done: exit %d (%s)" % (n, rc, ", ".join("%d/%d rc=%s" % (i + 1, n, r)
-                                                            for i, r in enumerate(rcs))))
+    RESULT["after"].append("rrun: %d shards: %s" % (n, ", ".join(
+        "%d/%d %s" % (i + 1, n, ("rc=%d" % r) if not isinstance(r, Rc) else "%s %d" % (r.klass, r))
+        for i, r in enumerate(rcs))))
     if summary:
         with OUT_LOCK:
             out = so
             out.write(("\n".join(["", " rrun: merged summary of %d shards" % n] + summary) + "\n").encode())
             out.flush()
     return rc
+
+
+def shards_rc(rcs):
+    """One result for a sharded run. A shard whose command ran gives a real test result (a plain
+    int); one that rrun ended (Rc: lost, never ran, cap) gives none. Any real failure IS the result
+    (fail: the code is broken whatever the other shards did); every shard ran and passed -> 0; else
+    the run is incomplete -> infra (may-have-run when any shard may have, else never-ran / its code)."""
+    ran = [r for r in rcs if isinstance(r, int) and not isinstance(r, Rc)]
+    lost = [r for r in rcs if isinstance(r, Rc)] + [infra(EXIT_MAY_HAVE_RUN, "a shard gave no result")
+                                                   for r in rcs if not isinstance(r, int)]
+    fails = [r for r in ran if r != 0]
+    if fails:
+        return max(fails)
+    if not lost:
+        return 0
+    worst = next((r for r in lost if r.klass == "needs-human"), None) or \
+        next((r for r in lost if int(r) == EXIT_MAY_HAVE_RUN), None) or lost[0]
+    return Rc(int(worst), worst.klass, "%d of %d shards gave no test result (%s)%s"
+              % (len(lost), len(rcs), worst.why, "; the others passed" if ran else ""), worst.next)
 
 
 def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs=(), **extra):
@@ -1919,7 +2215,9 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
               "wait_every": cfg.get("rr_status_every_s", 60),
               # detached run: survives a lost link (reattach()); uuid4 = unguessable
               "run_id": str(uuid.uuid4()), "detach_hb_s": cfg.get("rr_detach_hb_s", 180),
-              "job_cls": job["cls"]}
+              "job_cls": job["cls"], "pool_version": rd_common.POOL_VERSION}
+    if client_sha():
+        header["client"] = client_sha()
     if outputs:
         header["outputs"] = list(outputs)
     if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
@@ -1951,7 +2249,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         return "local", "cannot send this repo to %s: %s" % (label(h), e)
     except RunError as e:
         return "lost", "%s unreachable (%s)" % ("Mac mini" if h.name == "mini" else h.name, e)
-    timing.mark("push")
+    timing.mark("push", "push_s")
     deps = deps_dirs(wt["top"], wt["relcwd"], argv) if deps is None else deps
     try:
         tar, files, envs, deleted = build_overlay(cfg, wt["top"], env_dirs_for(wt, deps))
@@ -1960,13 +2258,16 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     if len(tar) > OVERLAY_WARN_BYTES:
         note("sending %.1f MB of uncommitted/untracked files" % (len(tar) / 1048576.0))
     timing.mark("overlay (%d files, %d env, %d deleted, %d bytes)" % (len(files), len(envs),
-                                                                     len(deleted), len(tar)))
+                                                                     len(deleted), len(tar)), "overlay_s")
     env = ship_env(cfg, env_pairs)
     if cache is not None:            # what this attempt really sends must be what the key hashed
         cache.shipped(rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps))
     run_id = str(uuid.uuid4())
+    pred = round(h.run_s, 1) if isinstance(h.run_s, (int, float)) else None
+    if pred is not None:
+        ROUTE_EXTRA["pred_s"] = pred
     frames, nonce = runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs,
-                                  run_id=run_id, waited_s=round(time.monotonic() - t0, 1))
+                                  run_id=run_id, waited_s=round(time.monotonic() - t0, 1), pred_s=pred)
     cap = timeout_s(cfg, job["cls"])
     record(h.name, argv, None, 0, wt12=wt["wt12"], start=True, cap=cap)
     sess = Session(cfg, frames, nonce, timing, give_up_s)
@@ -1982,20 +2283,22 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         if not lane.bind(sess):
             return "busy", "%s: cancelled before it started" % h.name
     rc = sess.run()
-    if sess.go_sent and sess.exit_rc is None and rc == 255 and not sess.timed_out:
+    # after GO only an authenticated "<nonce> EXIT" is the command's verdict: any other end (the link,
+    # or the runner dying after GO - a full disk while it made the spool) is followed up by a reattach
+    if sess.go_sent and sess.exit_rc is None and not sess.timed_out:
         att = reattach(h, sess, lane)
         if (att is None or att.exit_rc is None) and (getattr(sess, "reattach_stopped", False) or sess.first_sig):
             # the caller signalled (Ctrl-C, a tool's TERM) and no result came back: it wanted the run
             # to end - never re-run it anywhere
             record(h.name, argv, 128 + sess.first_sig, time.monotonic() - t0)
-            return "done", 128 + sess.first_sig      # the caller wants it to end: never re-run it
+            return "done", stopped(sess.first_sig)   # the caller wants it to end: never re-run it
         if att is not None and att.norun:
             record(h.name, argv, rc, time.monotonic() - t0)
             timing.report()
             return "lost", "lost %s before the command started (it never ran there)" % label(h)
         if att is not None:
             rc = att.final_rc
-            for k in ("exit_rc", "exit_at", "used_docker", "timed_out", "gone"):
+            for k in ("exit_rc", "exit_at", "used_docker", "timed_out", "gone", "no_db_n"):
                 setattr(sess, k, getattr(att, k))
     secs = time.monotonic() - t0
     if not sess.go_sent:
@@ -2007,8 +2310,8 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             # stopped (Ctrl-C, or a tool's timeout sent TERM) while the mini was still preparing:
             # the caller wants it to end - never start it here instead (2026-10-15: a 10-min tool
             # timeout during a slot wait turned into a full local run)
-            note("stopped before the command started on the Mac mini - not running it anywhere")
-            return "done", 128 + sess.first_sig
+            return "done", Rc(128 + sess.first_sig, "infra", "stopped by signal %d before the command started; "
+                              "not running it anywhere" % sess.first_sig, "rerun it if you still need the result")
         if sess.gave_up:
             return "local", "every worker stayed busy for %d s" % round(give_up_s)
         if rc == 255:
@@ -2019,9 +2322,10 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             return "busy", "%s is not taking jobs (%s)" % (h.name, why)
         if rc == 73:                       # no slot within the runner's wait: re-plan (host_loop)
             return "busy", "%s had no free slot after %s" % (h.name, fmt_wait(slot_wait_min(cfg) * 60))
-        if rc in INFRA_EXIT:
-            note("%s - exit %d; the command did not run" % (INFRA_EXIT[rc], rc))
-        return "done", rc
+        if rc in EXIT_CODES:             # the runner's own code (65 / 69 / 70 / 78): the command never ran
+            return "done", Rc(rc, None, "%s on %s" % (EXIT_CODES[rc][1], h.name))
+        return "done", infra(rc if 0 < rc < 256 else EXIT_NEVER_RAN,
+                             "the runner on %s ended with %s before the command started" % (h.name, rc))
     timing.mark("command")
     if sess.timed_out and sess.exit_rc is None:
         rc = sess.exit_rc = EXIT_TIMEOUT     # our backstop closed it: the cap was hit, never re-run
@@ -2032,23 +2336,46 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         rc = sess.exit_rc
         if cache is not None:
             cache.attempt_done(h.name, rc, sess.used_docker, bool(sess.ints or sess.first_sig))
+        if sess.timed_out and rc == EXIT_TIMEOUT:
+            rc = infra(EXIT_TIMEOUT, "hit its %s wall-clock cap on %s and was killed with everything it started"
+                       % (fmt_min(sess.timeout_s), h.name),
+                       "rerun it (RRUN_TIMEOUT=<minutes> for a longer cap); a hang that repeats is a code bug")
+        elif rc != 0 and (sess.first_sig or sess.ints):
+            rc = Rc(rc, "infra", "stopped by signal %d while it ran on %s" % (sess.first_sig or 2, h.name),
+                    "rerun it if you still need the result")
+        if rc != 0 and sess.no_db_n:
+            # advisory only (the exit and its class stay the command's: a real failure must never be
+            # hidden behind a DB message); the fix is placement - a DB-needing suite is a db job
+            if cache is not None:
+                cache.taint("its output mentions a missing test DB")
+            one = sess.no_db_n == 1
+            RESULT["after"].append("rrun: %s%d failure%s mention%s DATABASE_URL - likely no test DB on %s; rerun "
+                                   "with npm run test:db" % (sess.tag, sess.no_db_n, "" if one else "s",
+                                                             "s" if one else "", h.name))
     elif sess.gone:
         # the worker says the run's result is lost and cannot prove it never ran: it may have run,
         # so it is never re-run (not even a job safe to repeat)
-        note("%s: the run's result is lost there (%s); not re-running it (exit %d)"
-             % (label(h), sess.gone, EXIT_LOST))
-        record(h.name, argv, EXIT_LOST, secs)
+        record(h.name, argv, EXIT_MAY_HAVE_RUN, secs)
         timing.report()
-        return "done", EXIT_LOST
+        return "done", infra(EXIT_MAY_HAVE_RUN, "%s: the run's result is lost there (%s); it may have run, "
+                             "so it is not re-run automatically" % (label(h), sess.gone),
+                             "rerun it (a DB job: check its side effects first)")
     elif rc == 255:
         return "lost_go", "lost %s mid-run" % label(h)
+    elif sess.exit_rc is None:
+        # the runner ended after GO with its own code and no EXIT status, and no reattach found the
+        # result: the command may have run - never a test verdict, never re-run automatically
+        record(h.name, argv, EXIT_MAY_HAVE_RUN, secs)
+        timing.report()
+        return "done", infra(EXIT_MAY_HAVE_RUN, "the runner on %s ended (exit %s) after the start without the "
+                             "command's result; it may have run" % (label(h), rc),
+                             "rerun it (a DB job: check its side effects first)")
     if rc == 0 and outputs:
         why = copy_back(cfg, wt, outputs)
         timing.mark("copy-back")
         if why:
-            note("the build ran on %s but its outputs could not be copied back (%s); run it again "
-                 "(exit 75)" % (h.name, why))
-            rc = EXIT_LOST
+            rc = infra(EXIT_MAY_HAVE_RUN, "the build ran on %s but its outputs could not be copied back (%s)"
+                       % (h.name, why))
     record(h.name, argv, rc, secs)
     timing.report()
     return "done", rc
@@ -2118,7 +2445,7 @@ def reattach(h, sess, lane=None):
         a = Session(cfg, attach_frames(sess.run_id, sess.nonce, prev.out_off, prev.err_off), sess.nonce,
                     sess.timing)
         for k in ("host_name", "tag", "timeout_s", "silent_s", "stdout_out", "stderr_out", "run_id",
-                  "out_off", "err_off", "started", "last_out"):
+                  "out_off", "err_off", "started", "last_out", "last_file", "last_file_at", "no_db_n"):
             setattr(a, k, getattr(prev, k))
         a.ready = a.go_sent = True           # GO went long ago: never again
         a.mux = False

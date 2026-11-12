@@ -101,6 +101,14 @@ test('runs.log lines (rr_runner.pl run_log format)', () => {
   assert.deepEqual([runs[2].outcome, runs[2].prepS, runs[2].cmdS, runs[2].argv], ['busy', null, null, 'npx vitest run src/a b c']);
 });
 
+test('runs.log truthful labels (2026-11-11) and the v2 tail parse', () => {
+  const line = (o, p, c) => `2026-11-11T18:00:00-0700 repo=dentall wt=w sha=s outcome=${o} prepare_s=${p} cmd_s=${c} argv=npm test\trun=x owner=- cls=normal wait_s=0.0 exit_reason=x setup=cold pred_s=12.5 client=abc1234 pv=1`;
+  const runs = r.parseRunsLog(['abandoned-setup', 'moved', 'warm', 'lost rc=255'].map((o) => line(o, '9.5', '-')).join('\n'));
+  assert.deepEqual(runs.map((x) => x.outcome), ['abandoned-setup', 'moved', 'warm', 'lost rc=255']);
+  assert.equal(runs[0].prepS, 9.5);
+  assert.equal(runs[0].ts, Date.parse('2026-11-12T01:00:00Z'));
+});
+
 test('.who slots and argv redaction', () => {
   assert.deepEqual(r.parseWho('dentall 1800000000 4242 abc123def456\n', 1), { slot: 1, repo: 'dentall', since: 1800000000000, pid: 4242, cmd: null });
   assert.equal(r.parseWho('', 0), null);

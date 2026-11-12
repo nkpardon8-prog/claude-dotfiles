@@ -188,7 +188,8 @@ class RunBase(unittest.TestCase):
         cfgd = os.path.join(self.home, ".config", "rdocker")
         os.makedirs(cfgd, exist_ok=True)
         with open(os.path.join(cfgd, "config.json"), "w") as f:
-            json.dump(dict({"fleet_path": os.path.join(self.d, "no-fleet.json")}, **kw), f)
+            # rr_warm_trigger off: a job never starts a background `rdocker warm` in these tests
+            json.dump(dict({"fleet_path": os.path.join(self.d, "no-fleet.json"), "rr_warm_trigger": False}, **kw), f)
 
     @staticmethod
     def read(path):
@@ -480,13 +481,14 @@ class RunTest(RunBase):
         self.assertIn("ServerAliveCountMax=3", o)
         self.assertIn("ConnectTimeout=6", o)
 
-    def test_255_after_started_is_75_and_never_reruns(self):
-        """The link drops after the start and every reconnect drops too: the lost-worker rule (75)."""
+    def test_255_after_started_is_76_and_never_reruns(self):
+        """The link drops after the start and every reconnect drops too: may have run (76), no rerun."""
         self.write_cfg(rr_reattach_backoff_s=[0, 0, 0])
         marker = os.path.join(self.d, "ran")
         r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, FAKE_SSH_DROP="1")
-        self.assertEqual(r.returncode, 75, r.stderr)
-        self.assertIn("lost the Mac mini mid-run - not re-running on the laptop", r.stderr)
+        self.assertEqual(r.returncode, 76, r.stderr)
+        self.assertIn("rrun: infra (exit 76", r.stderr)
+        self.assertIn("lost mini mid-run and could not reconnect; it may have run there", r.stderr)
         self.assertIn("reconnecting (3 of 3)", r.stderr)      # tried to reattach first
         self.assertEqual(self.read(marker), "x\n")            # exactly one run (the remote one)
 
@@ -511,7 +513,7 @@ class RunTest(RunBase):
         self.assertIn("ControlMaster=no", att[0])
         runs = self.read(os.path.join(self.home, "rr", "log", "runs.log")).splitlines()
         self.assertRegex(runs[-1], r"outcome=rc=6 .*\trun=[0-9a-f-]{36} owner=\S+ cls=normal "
-                                   r"wait_s=\d+\.\d exit_reason=fail$")
+                                   r"wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+$")
 
     def test_runner_header_carries_a_uuid4_run_id_and_the_180s_tolerance(self):
         class H:
@@ -733,7 +735,8 @@ class HangsAndOwners(RunBase):
             self.assertEqual(r.returncode, 73, r.stderr)
             self.assertLess(time.time() - t0, 60)
             self.assertIn("re-planning", r.stderr)
-            self.assertIn("no worker had a free slot for 6 s; giving up (exit 73)", r.stderr)
+            self.assertIn("rrun: infra (exit 73", r.stderr)
+            self.assertIn("no worker had a free slot for 6 s; never ran", r.stderr)
             # freed while it re-plans: it runs
             threading_timer = __import__("threading").Timer(2.5, lambda: os.close(fd))
             threading_timer.start()
@@ -775,17 +778,17 @@ class HangsAndOwners(RunBase):
 class ReattachStates(RunBase):
     """Phase B round 2 (2026-11-11): what a reattach may conclude, and what it may never do."""
 
-    def test_result_gone_is_75_and_never_re_run(self):
+    def test_result_gone_is_76_and_never_re_run(self):
         """The link drops and the worker's spool is gone when we reconnect: the run may have happened,
-        so it is exit 75 - not NORUN, not a re-run (the command here is `vitest`-like: safe to repeat)."""
+        so it is exit 76 - not NORUN, not a re-run (the command here is `vitest`-like: safe to repeat)."""
         self.write_cfg(rr_reattach_backoff_s=[0, 0, 0])
         marker = os.path.join(self.d, "ran")
         r = self.rrun("/bin/sh", "-c", "echo x >> %s; printf part1; sleep 1; exit 0; vitest" % marker,
                       FAKE_SSH_DROP_ONCE_AT="part1", FAKE_SSH_DROP_FLAG=os.path.join(self.d, "dropped"),
                       FAKE_SSH_WIPE=os.path.join(self.home, "rr", "spool"))
-        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertEqual(r.returncode, 76, r.stderr)
         self.assertIn("the run's result is lost there", r.stderr)
-        self.assertIn("not re-running it (exit 75)", r.stderr)
+        self.assertIn("so it is not re-run automatically", r.stderr)
         self.assertNotIn("never ran", r.stderr)
         time.sleep(1.5)
         self.assertEqual(self.read(marker), "x\n")                     # once, never again
@@ -878,7 +881,8 @@ class ReattachStates(RunBase):
         with mock.patch.object(rd_run, "attempt_on", busy), mock.patch.object(rd_pool, "plan", return_value=empty), \
                 mock.patch.object(rd_run.time, "sleep"):
             kind, val = rd_run.host_loop(ctx, [H], ["npx", "tsc", "--noEmit"])
-        self.assertEqual((kind, val), ("done", 75))
+        self.assertEqual((kind, val), ("done", 77))                     # needs-human: fleet.json
+        self.assertEqual(val.klass, "needs-human")
         self.assertEqual(len(tried), 1)                                 # never the stale list again
 
 

@@ -458,15 +458,16 @@ class PoolE2E(test_run.RunBase):
                       FAKE_SSH_DROP_HOSTS="w1", FAKE_SSH_KEEP_EXIT="1")
         self.assertEqual((r.returncode, self.read(marker)), (3, "x\n"), r.stderr)
         self.assertIn("dropped after the command finished there (exit 3)", r.stderr)
-        # lost twice: once more only, then 75
+        # lost twice: once more only, then 76 (infra: it may have run)
         os.unlink(marker)
         r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, "test:db", FAKE_SSH_DROP_HOSTS="w1,w2")
-        self.assertEqual((r.returncode, self.read(marker)), (75, "x\nx\n"), r.stderr)
-        self.assertIn("not re-running", r.stderr)
+        self.assertEqual((r.returncode, self.read(marker)), (76, "x\nx\n"), r.stderr)
+        self.assertIn("rrun: infra (exit 76", r.stderr)
+        self.assertIn("it may have run there, so it is not re-run automatically", r.stderr)
         # a job not known to be repeatable (an arbitrary script) still never re-runs
         os.unlink(marker)
         r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, FAKE_SSH_DROP_HOSTS="w1")
-        self.assertEqual((r.returncode, self.read(marker)), (75, "x\n"), r.stderr)
+        self.assertEqual((r.returncode, self.read(marker)), (76, "x\n"), r.stderr)
 
     def test_heavy_and_db_jobs_never_fall_back_to_this_machine_in_a_pool(self):
         marker = os.path.join(self.d, "ran")
@@ -474,7 +475,8 @@ class PoolE2E(test_run.RunBase):
             with self.subTest(job=name):
                 r = self.rrun("/bin/sh", "-c", "echo x >> %s" % marker, name, FAKE_SSH_DOWN_HOSTS="w1,w2")
                 self.assertEqual(r.returncode, 75, r.stderr)
-                self.assertIn("not running a", r.stderr)
+                self.assertIn("rrun: infra (exit 75", r.stderr)
+                self.assertIn("job never runs on this machine", r.stderr)
                 self.assertFalse(os.path.exists(marker))
         r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"', FAKE_SSH_DOWN_HOSTS="w1,w2")
         self.assertEqual((r.returncode, r.stdout), (0, "mode=local\n"), r.stderr)   # normal job: local
@@ -526,7 +528,8 @@ class PoolE2E(test_run.RunBase):
         # the probe saw w1 sharing, then the owner switched off: its runner refuses, the job moves on
         empty = os.path.join(self.d, "probe-home")
         os.makedirs(empty)
-        r = self.rrun("/bin/sh", "-c", "echo hi", FAKE_SSH_PROBE_HOMES="w1=" + empty, **kw)
+        # (a command w2 never ran: no evidence makes the faster bench speed, w1, the first try)
+        r = self.rrun("/bin/sh", "-c", "echo hi", "fresh", FAKE_SSH_PROBE_HOMES="w1=" + empty, **kw)
         self.assertEqual((r.returncode, r.stdout), (0, "hi\n"), r.stderr)
         self.assertIn("w1 is not taking jobs (its owner turned sharing off) - trying w2", r.stderr)
 
@@ -554,8 +557,8 @@ class Eligibility(PlanUnit):
     """Phase B (2026-11-11): fleet.json classes / max_cost_s / cold_ok are hard - an ineligible
     worker is no candidate at all (not ranked, not a wait host, no shard, no hedge, no warm)."""
 
-    def hist(self, cmd_s, argv, n=3):
-        return [[cmd_s, argv]] * n
+    def ev(self, secs, n=3):
+        return {"ev": {"sig": [secs] * n, "kind": [0, None], "pk": {}, "rows": []}}
 
     def test_class_not_taken_is_never_a_candidate_not_even_the_wait_host(self):
         tsc = rd_pool.classify(["npx", "tsc", "--noEmit"])
@@ -577,13 +580,13 @@ class Eligibility(PlanUnit):
         full = rd_pool.classify(["npx", "vitest", "run"])
         named = rd_pool.classify(["npx", "vitest", "run", "src/a.test.ts"])
         mini = dict(worker("mini", 0.42), max_cost_s=120)
-        hist = self.hist(1500.0, "npx vitest run") + self.hist(20.0, "npx vitest run src/a.test.ts")
-        ans = {"mini": dict(probe(), hist=hist), "hp": dict(probe(slots_busy=2), hist=hist)}
+        ans = {"mini": dict(probe(), **self.ev(1500.0)), "hp": dict(probe(slots_busy=2), **self.ev(1500.0))}
         p, _ = self.plan([mini, worker("hp", 1.5)], ans, job=full)
         self.assertEqual(self.names(p), ["hp"])
         (h, why), = p.ineligible
         self.assertEqual(h.name, "mini")
         self.assertRegex(why, r"^expected ~\d+m there, over its max_cost_s 120s$")
+        ans = {"mini": dict(probe(), **self.ev(20.0)), "hp": dict(probe(slots_busy=2), **self.ev(20.0))}
         p, _ = self.plan([mini, worker("hp", 1.5)], ans, job=named)
         self.assertEqual(self.names(p)[0], "mini")                 # 20 s there: fine
 
@@ -601,7 +604,7 @@ class Eligibility(PlanUnit):
         p, _ = self.plan(ms, {"a": probe(), "b": probe()}, job=tsc)
         self.assertEqual(p.hosts, [])
         msg = rd_pool.no_eligible_msg(tsc, p.ineligible)
-        self.assertIn("no eligible worker for this job (class heavy, expected ~", msg)
+        self.assertIn("no eligible worker for this job (class heavy, predicted ~", msg)
         self.assertIn("a takes only light jobs (this is heavy); b takes only db/normal jobs", msg)
         lines = rd_pool.where_report(self.cfg, tsc, p)
         self.assertTrue(lines[-1].startswith("pick: none - no eligible worker"), lines)
@@ -622,37 +625,46 @@ class Eligibility(PlanUnit):
     def test_fleet_fields_validated(self):
         import rd_fleet
         self.assertEqual(set(rd_fleet.JOB_CLASSES), set(rd_pool.NEED_GB))
-        good = dict(worker("w", 1.0), classes=["light", "normal"], max_cost_s=120, cold_ok=False)
+        good = dict(worker("w", 1.0), classes=["light", "normal"], max_cost_s=120, cold_ok=False,
+                    history_since=1762800000)
         doc = {"version": 1, "client_keys": [], "machines": [good]}
         self.assertEqual(rd_fleet.problems(doc), [])
         for bad, want in (({"classes": []}, "classes must be"), ({"classes": ["fast"]}, "classes must be"),
                           ({"classes": ["light", "light"]}, "classes must be"), ({"classes": [1]}, "classes must be"),
                           ({"classes": "light"}, "wrong type"), ({"max_cost_s": 0}, "max_cost_s must be"),
-                          ({"max_cost_s": "120"}, "wrong type"), ({"cold_ok": "no"}, "wrong type")):
+                          ({"max_cost_s": "120"}, "wrong type"), ({"cold_ok": "no"}, "wrong type"),
+                          ({"history_since": "1762800000"}, "wrong type"), ({"history_since": 12}, "history_since must be"),
+                          ({"history_since": 9999999999}, "history_since must be")):
             with self.subTest(bad=bad):
                 doc = {"version": 1, "client_keys": [], "machines": [dict(worker("w", 1.0), **bad)]}
                 self.assertTrue([x for x in rd_fleet.problems(doc) if want in x], rd_fleet.problems(doc))
 
-    def test_warm_never_visits_a_cold_ok_false_worker(self):
+    def test_warm_visits_warm_only_and_slow_workers_too(self):
+        """2026-11-11: a warm-only worker (cold_ok false / measured slow cold setup) gets jobs only
+        once its packages are there, so the warmer visits it; only a fleet share: off is skipped."""
         import rd_warm
         hs = [rd_pool.host_for(self.cfg, dict(worker("a", 1.0), cold_ok=False)),
-              rd_pool.host_for(self.cfg, worker("b", 1.0))]
-        self.assertEqual([h.name for h in hs if rd_warm.warmable(h)], ["b"])
+              rd_pool.host_for(self.cfg, dict(worker("b", 1.0), shards=False)),
+              rd_pool.host_for(self.cfg, dict(worker("c", 1.0)))]
+        self.assertEqual([h.name for h in hs if rd_warm.warmable(h)], ["a", "b", "c"])
+        hs[2].entry = dict(hs[2].entry, share="off")
+        self.assertFalse(rd_warm.warmable(hs[2]))
 
 
 class EligibilityE2E(test_run.RunBase):
-    def test_no_eligible_worker_exits_75_at_once_and_runs_nothing(self):
+    def test_no_eligible_worker_exits_77_at_once_and_runs_nothing(self):
         fleet = os.path.join(self.d, "fleet.json")
         write_fleet(fleet, [dict(worker("w1", 1.0), classes=["light"]), dict(worker("w2", 0.5), classes=["db"])])
         self.write_cfg(fleet_path=fleet)
         marker = os.path.join(self.d, "ran")
         t0 = time.time()
         r = self.rrun("/bin/sh", "-c", "echo x > %s; tsc" % marker, RRUN_RECONNECT_WAIT="0")
-        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertEqual(r.returncode, 77, r.stderr)
         self.assertLess(time.time() - t0, 30)
+        self.assertIn("rrun: needs-human (exit 77", r.stderr)
         self.assertIn("no eligible worker for this job (class heavy", r.stderr)
         self.assertIn("w1 takes only light jobs (this is heavy); w2 takes only db jobs", r.stderr)
-        self.assertIn("not running it (exit 75)", r.stderr)
+        self.assertIn("tell the owner (fleet.json); rerunning will not help", r.stderr)
         self.assertFalse(os.path.exists(marker))
         self.assertNotIn("rrun-runner", self.read(self.sshlog))      # probes only, no runner session
 

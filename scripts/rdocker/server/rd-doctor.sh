@@ -19,7 +19,7 @@
 #                    label or without the run label. "Gone" = no live run owns the token (see CT_PL).
 #  reporter          rd-reporter not active -> restart (Linux user unit; macOS launchctl kickstart when the
 #                    com.rdocker.reporter label is loaded). At most once per 5 min.
-#  drain             >= DOCTOR_INFRA_N infrastructure failures (outcome=lost | deps-failed | rc=134) in the
+#  drain             >= DOCTOR_INFRA_N infrastructure failures (outcome=lost rc=N | deps-failed | rc=134) in the
 #                    last DOCTOR_INFRA_WINDOW_S of runs.log, or memory / disk critical -> drain: write the
 #                    drain marker and slots.cap = 0 (the runner and the pool probe then admit nothing; jobs
 #                    already running are untouched). Re-open after DOCTOR_REOPEN_OK healthy ticks in a
@@ -434,7 +434,9 @@ while (my $l = <$fh>) {
     my ($y, $mo, $d, $h, $mi, $s, $sg, $oh, $om) = $l =~ /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)([+-])(\d\d):?(\d\d)\s/ or next;
     my $t = timegm($s, $mi, $h, $d, $mo - 1, $y) - ($sg eq "-" ? -1 : 1) * ($oh * 3600 + $om * 60);
     next if $now - $t > $win || $t - $now > 60;
-    $n++ if $l =~ /\s(?:outcome|reason)=(?:lost|deps-failed)\b/ || $l =~ /\soutcome=(?:[a-z]+ )?rc=134\b/;
+    # truthful labels (2026-11-11): only a STARTED run lost for good is "lost rc=N"; a bare "lost" is the
+    # old label of a client that left before the start (now abandoned-setup / moved): not a worker fault
+    $n++ if $l =~ /\soutcome=(?:lost rc=\d+|deps-failed)\s/ || $l =~ /\soutcome=(?:[a-z]+ )?rc=134\b/;
 }
 print "$n\n";
 '

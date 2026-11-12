@@ -682,9 +682,10 @@ def build_parser():
     s = sp.add_parser("run", help="run a heavy job ON the Mac mini (same as `rrun`)",
                       description="Run <command> on the Mac mini against a snapshot of this git "
                       "worktree (HEAD + uncommitted/untracked files + allowlisted .env files); "
-                      "output streams back, the exit code is the command's. Mini unreachable "
-                      "before the command was released (GO) => runs on the laptop (RRUN_STRICT=1: "
-                      "exit 75 instead); mini lost after that => exit 75, never a second run.")
+                      "output streams back, the exit code is the command's unless rrun decided the result: "
+                      "the line `rrun: pass|fail|infra|needs-human (exit N ...)` after the output "
+                      "says which (72 / 73 / 75 never ran, 76 may have run, 77 needs a human, 124 "
+                      "its cap; see commands/docker.md 'Exit codes and result classes').")
     s.add_argument("-e", dest="env", action="append", default=[], metavar="NAME[=VALUE]",
                    help="environment for the remote command (repeatable); a bare NAME forwards "
                    "that variable's value from rrun's own environment (keeps it out of argv)")
@@ -723,6 +724,9 @@ def build_parser():
                       "every rr_warm_interval_s, sooner when a worker comes online); log: warm.log.")
     s.add_argument("--once", action="store_true", help="one pass, then exit")
     s.add_argument("--repo", metavar="PATH", help="warm this worktree only (instead of route.log)")
+    s.add_argument("--after-lock", dest="after_lock", type=float, metavar="S",
+                   help="(rrun's background trigger) wait up to S s for the worktree's rrun lock first")
+    s.add_argument("--trigger", metavar="KEY", help=argparse.SUPPRESS)
     sp.add_parser("daemon", help="(launchd) event-driven forwarder")
     sp.add_parser("janitor-run")                      # internal, spawned by the daemon
     sp.add_parser("laptop-janitor-run")               # internal, spawned by the daemon
@@ -847,7 +851,7 @@ def command(argv):
         return rd_run.rrun(ns.argv, ns.env)
     if cmd == "warm":
         import rd_warm               # not on the shim's import path
-        return rd_warm.main(once=ns.once, repo=ns.repo)
+        return rd_warm.main(once=ns.once, repo=ns.repo, after_lock=ns.after_lock, trigger=ns.trigger)
     cfg = rd_common.load_cfg()
     if cmd == "add-server":
         return rd_fleet.add_server(cfg, ns)

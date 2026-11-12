@@ -177,16 +177,16 @@ class Selection(unittest.TestCase):
         self.assertEqual(self.did("lock"), ["free", "nofield"])
         self.assertEqual(self.did("unlock"), ["free", "nofield"])     # always released
 
-    def test_no_shards_worker_is_never_warmed(self):
-        """fleet.json "shards": false (the slow minis): not probed, pushed, prepared or pinged."""
+    def test_slow_and_warm_only_workers_are_warmed_too(self):
+        """2026-11-11: a "shards": false / cold_ok: false worker (the HDD minis) takes only warm jobs, so
+        it is warmed like any other - but only while it runs no job at all."""
         W, P = test_pool.worker, test_pool.probe
-        up = self.run_pass([W("fast"), dict(W("slow"), shards=False)],
+        up = self.run_pass([W("fast"), dict(W("slow"), shards=False, cold_ok=False)],
                            {"fast": P(warm_git=0, warm_deps=0), "slow": P(warm_git=0, warm_deps=0)})
-        self.assertEqual((self.did("probe"), self.did("prepare")), (["fast"], ["fast"]))
-        self.assertNotIn("slow", up)
-        h = rd_pool.host_for({}, dict(W("slow"), shards=False))
-        self.assertFalse(rd_warm.warmable(h))
-        self.assertTrue(rd_warm.warmable(rd_pool.host_for({}, W("fast"))))
+        self.assertEqual((self.did("probe"), self.did("prepare")), (["fast", "slow"], ["fast", "slow"]))
+        self.assertIn("slow", up)
+        self.run_pass([W("fast")], {"fast": P(warm_git=0, warm_deps=0, slots_busy=1)})
+        self.assertIn("running a job (warms only an idle worker)", "\n".join(self.logs()))
 
     def test_behind_mirror_is_pushed_without_reinstall(self):
         self.run_pass([test_pool.worker("w")], {"w": test_pool.probe()}, mirror={"w": "0" * 40})
@@ -376,7 +376,8 @@ class WarmE2E(test_run.RunBase):
             stamp = os.path.join(rr, "w2", "%s-%s" % (wt["slug"], wt["wt12"]), "node_modules", ".rr-deps-stamp")
             self.assertTrue(os.path.isfile(stamp), n)
             runs = self.read(os.path.join(rr, "log", "runs.log"))
-            self.assertIn("outcome=lost prepare_s=", runs)     # stopped at READY...
+            self.assertIn("outcome=warm prepare_s=", runs)     # stopped at READY (its own label)...
+            self.assertIn("exit_reason=warm setup=cold", runs)  # ...after a real npm ci
             self.assertIn("cmd_s=- argv=true", runs)            # ...the command was never spawned
             self.assertFalse(os.path.exists(os.path.join(rr, "state", "warm.lock")), n)   # released
         self.assertEqual(self.count(self.npmlog, "npm ci"), 2)

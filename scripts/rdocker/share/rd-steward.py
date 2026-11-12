@@ -32,8 +32,13 @@ AGENT = os.environ.get("RD_STEWARD_AGENT", "1") == "1"
 SSH_TIMEOUT = 20
 
 # Infrastructure outcomes: the job did not get a fair run. rc=124 = hard cap, 134/137 = OOM/killed.
-# "interrupted" is the calling agent cancelling its own job: not a pool fault, so not counted.
-INFRA = re.compile(r"^(lost|busy|refused|rc=(124|134|137|72|73|75))$")
+# Truthful labels (rr_runner.pl, 2026-11-11): only a STARTED run whose client never came back is
+# "lost rc=N"; a client that left during the prepare is "abandoned-setup", a re-plan "moved", a
+# background prepare "warm" - none is the worker's fault. A bare "lost" / "interrupted" (no rc) is
+# the pre-2026-11-11 label of those same pre-start cases: never counted either.
+INFRA = re.compile(r"^(lost rc=\d+|busy|deps-failed|(error|refused) rc=\d+|(timeout )?rc=(124|134|137)|rc=(72|73|75|76|77))$")
+# the client left before the command started (or a background prepare): not a run, so not in the rate
+NOT_A_RUN = re.compile(r"^(abandoned-setup|moved|warm|lost|interrupted)$")
 THRESH = {
     "doctor_stale_s": 300,      # rd-doctor writes every 30 s
     "infra_rate": 0.10,         # > 10 % of last-hour jobs failed for infra reasons ...
@@ -50,7 +55,7 @@ st=$(cat /run/rdocker/doctor 2>/dev/null || cat ~/rr/state/doctor.json 2>/dev/nu
 since=$(date -d @$((now-3600)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -r $((now-3600)) +%Y-%m-%dT%H:%M:%S)
 printf 'NOW %s\nDOCTOR %s\n' "$now" "$st"
 for f in rd-doctor rd-tune rd-verify; do p=/usr/local/bin/$f; [ -f "$p" ] || p=/usr/local/libexec/$f; [ -f "$p" ] && printf 'SHA %s %s\n' "$f" "$( (sha256sum "$p" 2>/dev/null || shasum -a 256 "$p") | cut -c1-16)"; done
-tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$since" 'substr($1,1,19) >= s' | grep -o 'outcome=[^ ]*' | sort | uniq -c | sed 's/^/OUT /'
+tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$since" 'substr($1,1,19) >= s' | grep -oE 'outcome=([a-z-]+ rc=[0-9]+|[^ ]+)' | sort | uniq -c | sed 's/^/OUT /'
 """
 
 
@@ -95,7 +100,7 @@ def probe(m):
             if len(parts) == 3:
                 r.setdefault("sha", {})[parts[1]] = parts[2]
         elif line.startswith("OUT "):
-            mm = re.match(r"OUT\s+(\d+)\s+outcome=(\S+)", line)
+            mm = re.match(r"OUT\s+(\d+)\s+outcome=(\S+(?: rc=\d+)?)\s*$", line)
             if mm:
                 r["outcomes"][mm.group(2)] = int(mm.group(1))
     return r
@@ -128,7 +133,7 @@ def rules(r, m):
         if want and have != want:
             out.append((f"{n}:outdated-{name}", f"{n} runs an outdated {name} (installed {have}, repo {want}): "
                                                "re-run the server installer (needs sudo)"))
-    total = sum(r["outcomes"].values())
+    total = sum(c for o, c in r["outcomes"].items() if not NOT_A_RUN.match(o))
     infra = sum(c for o, c in r["outcomes"].items() if INFRA.match(o))
     if total and infra >= THRESH["infra_min"] and infra / total > THRESH["infra_rate"]:
         kinds = ", ".join(f"{o}x{c}" for o, c in sorted(r["outcomes"].items()) if INFRA.match(o))

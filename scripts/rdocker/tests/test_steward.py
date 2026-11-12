@@ -51,9 +51,33 @@ class Rules(unittest.TestCase):
         self.assertNotIn("hp:drained", keys(r))
 
     def test_infra_rate_needs_both_rate_and_count(self):
-        self.assertEqual(keys(res(outcomes={"rc=0": 10, "lost": 3, "rc=124": 2})), ["hp:infra"])
-        self.assertEqual(keys(res(outcomes={"rc=0": 100, "lost": 5})), [])      # 5 % rate
-        self.assertEqual(keys(res(outcomes={"rc=0": 2, "lost": 3})), [])        # only 3 jobs
+        self.assertEqual(keys(res(outcomes={"rc=0": 10, "lost rc=255": 3, "rc=124": 2})), ["hp:infra"])
+        self.assertEqual(keys(res(outcomes={"rc=0": 100, "lost rc=255": 5})), [])      # 5 % rate
+        self.assertEqual(keys(res(outcomes={"rc=0": 2, "lost rc=255": 3})), [])        # only 3 jobs
+
+    def test_remote_outcome_tokens_keep_the_rc(self):
+        import subprocess
+        from unittest import mock
+        log = "".join("2026-11-11T10:00:00+0000 repo=a wt=b sha=c outcome=%s prepare_s=1 cmd_s=- argv=x\n" % o
+                      for o in ("lost rc=255", "lost rc=255", "abandoned-setup", "rc=0", "timeout rc=124"))
+        cmd = [x for x in st.REMOTE.splitlines() if "uniq -c" in x][0]
+        cmd = "cat | " + cmd.split("|", 2)[2]                # the grep | sort | uniq part, on our sample
+        out = subprocess.run(["sh", "-c", cmd], input=log, capture_output=True, text=True).stdout
+        fake = mock.Mock(returncode=0, stdout="NOW 1\n" + out, stderr="")
+        with mock.patch.object(st.subprocess, "run", return_value=fake):
+            r = st.probe({"name": "hp", "alias": "rd-hp"})
+        self.assertEqual(r["outcomes"], {"lost rc=255": 2, "abandoned-setup": 1, "rc=0": 1, "timeout rc=124": 1})
+
+    def test_truthful_labels_never_count_against_a_worker(self):
+        """2026-11-11: pre-start departures (abandoned-setup / moved / warm, and the bare "lost" older
+        runners wrote for them) are not worker faults; a started run lost for good is."""
+        quiet = {"rc=0": 5, "abandoned-setup": 20, "moved": 10, "warm": 5, "lost": 20, "interrupted": 3}
+        self.assertEqual(keys(res(outcomes=quiet)), [])
+        self.assertEqual(keys(res(outcomes=dict(quiet, **{"lost rc=255": 4, "timeout rc=124": 2}))), ["hp:infra"])
+        for o in ("lost rc=255", "deps-failed", "timeout rc=124", "rc=134", "error rc=70"):
+            self.assertTrue(st.INFRA.match(o), o)
+        for o in ("lost", "abandoned-setup", "moved", "warm", "rc=1", "interrupted rc=130"):
+            self.assertFalse(st.INFRA.match(o), o)
 
     def test_interrupted_and_test_failures_are_not_infra(self):
         self.assertEqual(keys(res(outcomes={"rc=0": 5, "rc=1": 30, "interrupted": 20})), [])

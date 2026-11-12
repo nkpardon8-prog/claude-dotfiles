@@ -29,7 +29,12 @@ FIELDS = {"name": str, "alias": str, "ip": str, "port": int, "user": str, "os": 
           # eligibility (rd_pool.eligibility; a missing field = no limit): classes = the job classes it
           # takes; max_cost_s = the longest expected command (s, on this worker) it takes; cold_ok: false
           # = never a job whose packages are not prepared there yet (no npm ci in one of its slots)
-          "classes": list, "max_cost_s": (int, float), "cold_ok": bool}
+          "classes": list, "max_cost_s": (int, float), "cold_ok": bool,
+          # evidence (rd_pool.Model): runs.log rows before this epoch are ignored - set it at a hardware
+          # or config change (an SSD, a CPU swap, new eligibility) so old timings never count.
+          # ROLLOUT: rd_fleet before 2026-11-11 rejects unknown fields (the whole fleet.json, so every
+          # client falls back to one host): add it only after every client runs this code (Phase B rule)
+          "history_since": int}
 JOB_CLASSES = ("light", "normal", "heavy", "db", "build")    # rd_pool.classify's classes
 REQUIRED = ("name", "roles", "enabled")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
@@ -124,6 +129,8 @@ def problems(fl):
                        % (who, "/".join(JOB_CLASSES)))
         if "max_cost_s" in m and not m["max_cost_s"] > 0:
             bad.append("%s: max_cost_s must be > 0 (seconds)" % who)
+        if "history_since" in m and not 1600000000 <= m["history_since"] <= time.time() + 86400:
+            bad.append("%s: history_since must be a unix epoch (seconds) in the past" % who)
     if len(homes) > 1:
         bad.append("more than one home: %s" % ", ".join(map(str, homes)))
     return bad
@@ -149,7 +156,7 @@ def entry(m):
 def load(cfg=None):
     """FROZEN API: the fleet as list[dict], each with name, alias, ip, port, user, os, roles, speed,
     max_slots, heavy_slots, mem_gb, enabled, wsl (bool); optional keys (ts_key_expiry, shards,
-    classes, max_cost_s, cold_ok) only when set. `cfg` may carry 'fleet_path' (tests)."""
+    classes, max_cost_s, cold_ok, history_since) only when set. `cfg` may carry 'fleet_path' (tests)."""
     return [entry(m) for m in load_doc((cfg or {}).get("fleet_path"))["machines"]]
 
 

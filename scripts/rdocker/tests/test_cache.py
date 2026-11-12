@@ -321,7 +321,8 @@ class CacheE2E(test_run.RunBase):
         self.assertEqual((r2.returncode, self.runs()), (0, 1), r2.stderr)
         self.assertEqual(r2.stdout, r1.stdout)
         self.assertEqual(r2.stdout, "vitest out 1\nvitest out 2\n")
-        self.assertRegex(r2.stderr, r"^vitest err\nrrun: cached result \(same code \+ command, \d+s ago on mini\); "
+        self.assertRegex(r2.stderr, r"^vitest err\nrrun: pass \(exit 0 from the cache, \d+s\)\n"
+                                    r"rrun: cached result \(same code \+ command, \d+s ago on mini\); "
                                     r"RRUN_CACHE=0 to run again\n$")
         route = self.read(os.path.join(self.home, ".local", "state", "rdocker", "route.log"))
         self.assertRegex(route, r"cache +rrun +vitest run rc=0 ")

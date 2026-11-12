@@ -106,16 +106,16 @@ class CopyBackE2E(test_run.RunBase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("is not a path inside this worktree", r.stderr)
 
-    def test_copy_back_lost_is_75(self):
+    def test_copy_back_lost_is_76(self):
         r = self.rrun("--outputs", "dist", "/bin/sh", "-c", "mkdir -p dist && echo x > dist/a.txt")
         self.assertEqual(r.returncode, 0, r.stderr)                     # baseline: works
-        # the second ssh (tar) fails: the build ran, its outputs are not here -> 75, never a rerun
+        # the second ssh (tar) fails: the build ran, its outputs are not here -> 76 (may have run), no rerun
         fake = os.path.join(self.bin, "ssh")
         real = self.read(fake)
         wfile(fake, real.replace('cmd = " ".join(args[i + 1:])',
                                  'cmd = " ".join(args[i + 1:])\nif "tar -cf" in cmd:\n    sys.exit(255)'), 0o755)
         r = self.rrun("--outputs", "dist", "/bin/sh", "-c", "mkdir -p dist && echo y > dist/a.txt")
-        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertEqual(r.returncode, 76, r.stderr)
         self.assertIn("outputs could not be copied back", r.stderr)
         self.assertEqual(self.read(os.path.join(self.wt, "dist", "a.txt")), "x\n")
 

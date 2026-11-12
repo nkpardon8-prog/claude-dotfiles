@@ -479,7 +479,10 @@ class Drain(DoctorBase):
         self.assertIn("drain undrain worker healthy 3 checks in a row (slots.cap -> 4)", self.log())
 
     def test_old_or_command_failures_do_not_drain(self):
-        self.runs((400, "lost rc=255"), (500, "lost"), (10, "rc=1"), (20, "timeout rc=124"), (30, "lost"), (40, "rc=2"))
+        # bare "lost" (pre-2026-11-11 label of a client that left before the start), abandoned-setup,
+        # moved and warm are not worker faults; only "lost rc=N" (started, never reattached) is
+        self.runs((400, "lost rc=255"), (500, "lost"), (10, "rc=1"), (20, "timeout rc=124"), (30, "lost"), (40, "rc=2"),
+                  (41, "abandoned-setup"), (42, "moved"), (43, "warm"), (44, "lost rc=255"))
         self.doctor()
         self.assertFalse(os.path.exists(self.drain))
         self.assertEqual(self.status_json()["infra_recent"], 1)

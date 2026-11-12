@@ -30,9 +30,13 @@
 #   run_id (uuid4, optional): the run survives a lost link (see "Detached runs" below);
 #   detach_hb_s (180): how long a started command lives on without any client. waited_s: seconds the
 #   client spent before this attempt (worktree lock, other workers); job_cls: the job class (runs.log).
+#   pred_s / client / pool_version (optional, runs.log; pool_version also raises $ROOT/pool_version):
+#   the client's predicted command seconds, its code sha, its pool version. warm: a background
+#   prepare (rd_warm) that never sends GO: nice 19 + idle I/O class, runs.log outcome `warm`.
 #   then tar_len bytes of an overlay tar (dirty/untracked/env files)
 #   then the laptop stream: "." = heartbeat (alive); "INT\n" = forward SIGINT; "GO\n" = start;
 #   "KILL\n" = stop it now (the client's deliberate cancel: second Ctrl-C, a hedge's loser).
+#   "MOVE\n" (before GO) = the client is leaving to re-plan elsewhere (runs.log `moved`, not abandoned-setup).
 # Detached runs (header run_id): at READY the runner creates $ROOT/spool/<id>.lock (held, flock) and
 # <id>.ctl. On GO it forks a KEEPER (setsid; no ssh fd at all) that owns the slot, spawns the
 # command, appends its stdout/stderr to <id>.out / <id>.err, and writes <id>.rc ("rc=N timeout=S
@@ -52,6 +56,8 @@
 # "<nonce> STARTED"); EOF / INT / heartbeat timeout before GO => exit without running anything.
 # So a laptop that never wrote GO knows the command never ran (=> safe to run it locally).
 # Status lines go to STDERR as "<nonce> READY|STARTED|WAIT ...|BUSY|KEPT ...|DOCKER|TIMEOUT <s>|EXIT <rc>"
+# (and "PV <n>" first, when the header has pool_version: the worker's pool version, before any prepare;
+# "PV ?" when it is unknown)
 # (DOCKER, just before EXIT: the command called docker through the shim - rrun never caches it). The nonce is 128
 # random bits the tested code never sees (not in its env, shim or container labels; those use a
 # separate random label token), so it cannot forge them. Exit = the command's rc (or 128+sig);
@@ -113,6 +119,8 @@ my %reaped;
 my ($t_slot, $t_ready, $t_spawn);    # run log timings: slot taken, READY (prepare done), command spawned
 my $t_wait0;                          # run log: when the slot wait began (wait_s)
 my $unavail = 0;                      # we answered UNAVAIL (share off / no docker): refused, not busy
+my $moved = 0;                        # the client sent MOVE before GO: it re-planned elsewhere (runs.log "moved")
+my $setup_kind;                       # runs.log setup=: warm (packages there) / clone (from the store) / cold (npm install ran)
 # Detached runs (header run_id; see the top): runner = before GO, or a run without run_id (attached,
 # as before); keeper = the forked owner of a started command; follower = relays a run's spool
 our $role = 'runner';
@@ -148,6 +156,11 @@ exit $rc;
 sub main {
     read_header();
     return attach() if defined $h{attach};
+    # version guarantee: the worker's pool_version (raised to ours first) goes to the client BEFORE any
+    # prepare, so a client with older code stops here (no GO) on every path: probed, --host, one worker
+    my $pv = eval { raise_pool_version() };
+    status("PV " . ($pv // '?')) if defined $h{pool_version};    # ? = unknown (a bookkeeping error): never a number
+    idle_priority() if $h{warm};
     set_owner();
     $label = rand_hex();    # container label token: never the nonce (the command can read labels)
     take_slot();
@@ -316,6 +329,10 @@ sub read_header {
     fail("bad cls", 65) if defined $h{cls} && $h{cls} !~ /^[a-z]+$/;
     fail("bad need_gb", 65) if defined $h{need_gb} && $h{need_gb} !~ /^\d+(\.\d+)?$/;
     fail("bad heavy_slots", 65) if defined $h{heavy_slots} && $h{heavy_slots} !~ /^\d+$/;
+    # runs.log v2 extras (2026-11-11): the client's predicted command seconds, its code sha and pool version
+    delete $h{pred_s} if defined $h{pred_s} && $h{pred_s} !~ /^\d{1,7}(\.\d+)?$/;
+    delete $h{client} if defined $h{client} && $h{client} !~ /^[0-9a-f]{7,40}$/;
+    delete $h{pool_version} if defined $h{pool_version} && $h{pool_version} !~ /^\d{1,6}$/;
     $h{tar_len} //= 0;
     fail("bad tar_len", 65) unless $h{tar_len} =~ /^\d+$/;
     @overlay = parse_tar(read_exact($h{tar_len}));    # validated before anything is written
@@ -407,6 +424,7 @@ sub read_stdin {
         if    ($1 eq 'INT')  { $intr++ }
         elsif ($1 eq 'GO')   { $go = 1 }
         elsif ($1 eq 'KILL') { $killed = 1; $intr++ }    # a deliberate stop: before GO = interrupted
+        elsif ($1 eq 'MOVE') { $moved = 1 }              # the client leaves before GO to re-plan elsewhere
     }
     $inbuf = substr($inbuf, -8) if length $inbuf > 8;    # no valid line is longer
 }
@@ -1004,8 +1022,10 @@ sub deps {
         my $installed = 0;
         if (slurp("$dir/node_modules/.rr-deps-stamp") ne $stamp && store_clone($rel, $dir, $stamp)) {
             print STDERR "rrun: packages for ./$rel reused from the mini's shared store (no npm ci)\n";
+            $setup_kind = 'clone' unless ($setup_kind // '') eq 'cold';
         } elsif (slurp("$dir/node_modules/.rr-deps-stamp") ne $stamp) {
             $installed = 1;
+            $setup_kind = 'cold';
             print STDERR "rrun: npm @args  (in ./$rel)\n";
             my $rc = npm($env, $dir, @args);
             if ($rc && !-e $legacy && slurp("$tmp/npm.log") =~ /ERESOLVE/) {
@@ -1066,11 +1086,15 @@ sub deps {
     store_save(@$_) for @saves;    # after the schema stamps, so a clone needs no prisma generate
 }
 
-# Dependency setup failed: show its log, exit $EX_DEPS (never the tool's own rc, which the laptop
-# would otherwise take for the command's). The command was not started.
+# Dependency setup failed: show the last DEPS_TAIL lines of its log (the whole npm.log buried the
+# error under thousands of lines an agent then read), exit $EX_DEPS (never the tool's own rc, which
+# the laptop would otherwise take for the command's). The command was not started.
 sub deps_failed {
     my ($what, $rel, $rc) = @_;
-    print STDERR slurp("$tmp/npm.log");
+    my $DEPS_TAIL = 25;    # (inside: a file-scope `my` below main() is never assigned when main runs)
+    my @l = split /\n/, slurp("$tmp/npm.log");
+    print STDERR "rrun: ... (npm log: last $DEPS_TAIL of " . scalar(@l) . " lines)\n" if @l > $DEPS_TAIL;
+    print STDERR map { "$_\n" } @l > $DEPS_TAIL ? @l[-$DEPS_TAIL .. -1] : @l;
     fail(sprintf("%s failed in ./%s on the Mac mini (exit %d); the command was not started", $what, $rel, $rc), $EX_DEPS);
 }
 
@@ -1493,7 +1517,16 @@ sub finish {
 # of the argv with env-looking values redacted (-e X=.., --env=.., NAME=..). The header env is
 # never logged. A test job fair_share capped ends with " [cpu_share=N --maxWorkers|env]" (after argv,
 # so rd_pool's and the reporter's line parsers still match). Then (v2, 2026-11-11) a TAB and
-# "run=<id|-> owner=<id|-> cls=<class|-> wait_s=<s> exit_reason=pass|fail|cap|stalled|lost|busy|refused".
+# "run=<id|-> owner=<id|-> cls=<class|-> wait_s=<s> exit_reason=pass|fail|cap|stalled|lost|busy|refused|
+# abandoned-setup|moved|warm", then (2026-11-11, same tab section, each field optional to readers)
+# "setup=warm|clone|cold|- pred_s=<s|-> client=<sha|-> pv=<pool_version|->".
+# Truthful labels (2026-11-11; every reader - rd_pool's PROBE, rd-doctor, rd-steward, the reporter -
+# accepts them): before GO, a client that left is `abandoned-setup` (it gave up or was killed during
+# the prepare or the slot wait), or `moved` when it said MOVE first (a deliberate re-plan elsewhere);
+# `lost rc=N` is only a started command whose client never came back (a detached keeper that
+# outlived detach_hb_s without a heartbeat or a reattach). Rows written before this used bare `lost`
+# (and `interrupted`) for the pre-GO cases: readers treat a bare `lost` / `interrupted` (no rc) as
+# abandoned-setup, never as a lost job.
 # Every parser anchors each field to the next one (the reporter: `^time repo= wt= sha= outcome=
 # prepare_s= cmd_s= argv=(.*)$`; rd_pool's probe: `outcome=... cmd_s= argv=(.*)$`), so the only place
 # new fields cannot break one is the end; the tab (never inside argv: redact_argv turns control
@@ -1507,25 +1540,70 @@ sub run_outcome {
              : $intr ? "interrupted rc=$rc" : "rc=$rc";
     }
     return 'deps-failed' if $rc == $EX_DEPS;
-    return 'busy' if $rc == 73;
+    return $moved ? 'moved' : 'busy' if $rc == 73;
     return "refused rc=$rc" if $rc == 65 || $rc == 69;
-    return $intr ? 'interrupted' : 'lost' if $rc == 130 || $lost;
+    return 'warm' if $h{warm} && defined $t_ready && ($rc == 130 || $lost);    # rd_warm stops at READY
+    return $moved ? 'moved' : 'abandoned-setup' if $rc == 130 || $lost || $intr;
     "error rc=$rc";
 }
 sub exit_reason {
     my ($rc) = @_;
     return $timed_out ? 'cap' : $lost && !$killed ? 'lost' : $rc == 0 ? 'pass' : 'fail' if $started;
-    return $unavail ? 'refused' : 'busy' if $rc == 73;
+    return $unavail ? 'refused' : $moved ? 'moved' : 'busy' if $rc == 73;
     return 'refused' if $rc == 65 || $rc == 69;
-    return 'lost' if ($rc == 130 || $lost) && !$intr;
-    'fail';    # deps-failed, interrupted before the start, runner error
+    return 'warm' if $h{warm} && defined $t_ready && ($rc == 130 || $lost);
+    return $moved ? 'moved' : 'abandoned-setup' if $rc == 130 || $lost || $intr;
+    'fail';    # deps-failed, runner error
 }
 sub log_fields {
     my ($rc, $now) = @_;
     my $slot_wait = defined $t_wait0 ? ($t_slot // $now) - $t_wait0 : 0;
     (my $owner = $owner_id // '-') =~ tr/ \t/__/;
-    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s", $run_id // '-', $owner,
-        $h{job_cls} // $h{cls} // '-', num_or($h{waited_s}, 0) + $slot_wait, exit_reason($rc);
+    my $setup = $setup_kind // (defined $t_ready ? 'warm' : '-');
+    sprintf "\trun=%s owner=%s cls=%s wait_s=%.1f exit_reason=%s setup=%s pred_s=%s client=%s pv=%s",
+        $run_id // '-', $owner, $h{job_cls} // $h{cls} // '-', num_or($h{waited_s}, 0) + $slot_wait,
+        exit_reason($rc), $setup, $h{pred_s} // '-', $h{client} // '-', $h{pool_version} // '-';
+}
+
+# Version guarantee (layer 2): $ROOT/pool_version holds the highest pool_version any client that ran
+# a job here declared. The read-max-replace runs under a flock on the stable $ROOT/pool_version.lock,
+# so two such clients declaring 2 and 3 at once never leave 2 behind (a pre-2026-11-11 writer ignores
+# the lock: an accepted rollout gap, closed by autopull). -> the value there now, or undef when it is
+# unknown (a symlink, an unreadable file, a lock that cannot be taken and no readable value): the
+# client then proceeds with a warning (fail open). Never through a symlink.
+sub raise_pool_version {
+    my $want = $h{pool_version};
+    my $f = "$ROOT/pool_version";
+    return undef if -l $f || -l $ROOT;
+    my $read = sub { my ($v) = slurp($f) =~ /^\s*(\d+)\s*$/; defined $v ? $v + 0 : (-e $f ? undef : 0) };
+    my $lk = "$f.lock";
+    my $lfh;
+    eval { mk($ROOT) };
+    unless (!-l $lk && sysopen($lfh, $lk, O_RDWR | O_CREAT | O_NOFOLLOW, 0644) && flock($lfh, LOCK_EX)) {
+        return $read->();                 # cannot raise it now: report what is there (or unknown)
+    }
+    my $have = $read->();
+    if (defined $have && defined $want && $want > $have) {
+        my $t = "$f.$$.tmp";
+        unlink $t;
+        if (sysopen(my $fh, $t, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644)) {
+            print {$fh} "$want\n";
+            close $fh;
+            if (rename $t, $f) { $have = $want } else { unlink $t }
+        }
+    }
+    close $lfh;    # releases the lock
+    $have;
+}
+
+# A background prepare (rd_warm, header warm): nice 19 and, on Linux, the idle I/O class, inherited by
+# the git checkout and npm install below - a warm never competes with a job for CPU or the disk.
+sub idle_priority {
+    eval { setpriority(0, 0, 19) };
+    if ($OS eq 'linux') {
+        my ($io) = grep { -x } qw(/usr/bin/ionice /bin/ionice);
+        system($io, '-c', '3', '-p', $$) if $io;
+    }
 }
 
 sub redact_argv {

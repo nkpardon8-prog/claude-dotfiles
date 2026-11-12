@@ -943,7 +943,7 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("outcome=deps-failed", lines[1])
         self.assertIn("cmd_s=-", lines[1])
         self.assertIn("outcome=refused rc=69", lines[2])
-        self.assertIn("outcome=lost", lines[3])
+        self.assertIn("outcome=abandoned-setup", lines[3])     # the client left before GO (was "lost")
         st = os.stat(os.path.join(self.root, "log"))
         self.assertEqual(st.st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(os.path.join(self.root, "log", "runs.log")).st_mode & 0o777, 0o600)
@@ -1354,7 +1354,7 @@ class DetachedRuns(RunnerTest):
         own = [ln for ln in r.err.splitlines() if ln.startswith(self.nonce)]
         self.assertEqual(own, [self.nonce + " ATTACHED", self.nonce + " EXIT 5"])
         line = self.runs_log()[-1]
-        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail$" % rid)
+        self.assertRegex(line, r"outcome=rc=5 .*\trun=%s owner=- cls=- wait_s=\d+\.\d exit_reason=fail setup=\S+ pred_s=\S+ client=\S+ pv=\S+$" % rid)
         with open(os.path.join(self.root, "slots", "0")) as lk:
             fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)                      # slot released
         # the same run again after its end (another reattach): the rest from those offsets, then EXIT
@@ -1383,7 +1383,7 @@ class DetachedRuns(RunnerTest):
         self.assertGreater(time.time() - t0, 1.5)
         self.until(lambda: os.path.exists(self.sp(rid, "end")), 20, "the keeper's end")
         self.until(lambda: "outcome=lost rc=" in (self.runs_log() or [""])[-1], 10, "the run log")
-        self.assertTrue(self.runs_log()[-1].endswith("exit_reason=lost"))
+        self.assertIn("exit_reason=lost setup=", self.runs_log()[-1])
 
     def test_kill_line_cancels_at_once_as_interrupted(self):
         ready = os.path.join(self.d, "ready")
@@ -1508,14 +1508,16 @@ class DetachedRuns(RunnerTest):
         line = self.runs_log()[-1]
         self.assertRegex(line, r"^\S+ repo=\S+ wt=\S+ sha=\S+ outcome=rc=0 prepare_s=\S+ cmd_s=\S+ "
                                r"argv=/bin/sh -c exit 0\trun=%s owner=session:abc-1 cls=heavy "
-                               r"wait_s=(\d+\.\d) exit_reason=pass$" % rid)
+                               r"wait_s=(\d+\.\d) exit_reason=pass setup=(warm|cold) pred_s=- client=- pv=-$" % rid)
         self.assertGreaterEqual(float(re.search(r"wait_s=(\S+)", line).group(1)), 2.5)
-        # rd_pool's probe (perl, as on a worker): the command's history without the v2 fields
+        # rd_pool's probe (perl, as on a worker): the command's evidence without the v2 fields
         import rd_pool
-        pr = subprocess.run(["/usr/bin/perl", "-e", rd_pool.PROBE], input=b"{}", capture_output=True,
-                            env=self.env(), timeout=30)
-        hist = json.loads(pr.stdout.decode().strip().splitlines()[-1])["hist"]
-        self.assertEqual(hist[-1][1], "/bin/sh -c exit 0")
+        req = {"sig": "/bin/sh -c exit 0", "kind": "other", "kinds": [list(k) for k in rd_pool.KINDS]}
+        pr = subprocess.run(["/usr/bin/perl", "-e", rd_pool.PROBE], input=json.dumps(req).encode(),
+                            capture_output=True, env=self.env(), timeout=30)
+        ev = json.loads(pr.stdout.decode().strip().splitlines()[-1])["ev"]
+        self.assertEqual(len(ev["sig"]), 1)
+        self.assertEqual(ev["rows"][-1][0], "pass")
         # the dashboard reporter's own parseRunsLog (node; the reporter itself is not changed)
         node = shutil.which("node")
         if node:

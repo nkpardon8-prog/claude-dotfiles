@@ -18,12 +18,15 @@ is the real rrun path:
             it exits 130 having started nothing. The packages land in the worktree's mirror and in
             the worker's shared store (~/rr/deps).
 
-Slow workers: one with "shards": false in fleet.json (the 2011/2012 minis: 27-211 s prepares, warm
-sessions often lost after ~30 s) is never warmed; it still takes whole jobs, cold - unless it says
-"cold_ok": false (never warmed either: it only takes jobs whose packages it already has).
+Slow workers (2026-11-11): warmed too - they need it most. A warm-only worker (cold_ok: false, or a
+measured cold-setup p75 over rr_cold_budget_s: the 5400 rpm minis) takes only jobs whose packages
+it already has, so background warming is what lets it take work at all; a detached prepare now
+survives a long npm ci. The runner runs a warm (header warm) at nice 19 and the idle I/O class.
+Triggers: this loop (com.rdocker.warm), and rrun itself (rd_run.trigger_warm: `rdocker warm --once
+--repo <worktree>` in the background when a worker is cold for the job it just placed).
 Politeness: workers are warmed one at a time (a pass is sequential, and a ~/rr/state/warm.lock dir
-on the worker keeps two clients from warming it together); only a worker with a free slot and
-load1/ncpu below rr_warm_max_load; never queued for a slot (wait_min 0: busy => 73 => skip); never
+on the worker keeps two clients from warming it together); only a worker running NO job (every slot
+free) with load1/ncpu below rr_warm_max_load; never queued for a slot (wait_min 0: busy => 73 => skip); never
 a worker whose fleet entry (share) or share switch says off; never a db job class, so the runner
 never starts Docker (not on the home machine, not anywhere) and no command ever runs; none of the
 allowlisted env files (rr_env_allow) rrun would add - the overlay is only what git shows as changed
@@ -56,7 +59,8 @@ TAIL_BYTES = 4096                    # remote stderr kept for the log when a pre
 PASS_LOCK = os.path.join(rd_common.STATE_DIR, "warm-pass.lock")   # one pass at a time on this client
 
 # route.log rrun line (rd_run.record): "<date> <time> <target> rrun <argv> rc=<rc> <secs>s | <cwd>"
-_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) +\S+ +rrun +(.*) rc=\S* [0-9.]+s \| (.+)$")
+# (since 2026-11-11 followed by a tab and the client's stage timings: not part of the cwd)
+_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) +\S+ +rrun +(.*) rc=\S* [0-9.]+s \| ([^\t]+)(?:\t.*)?$")
 
 _last_skip = {}                      # (worker, slug) -> reason last logged (repeats are not)
 
@@ -160,11 +164,10 @@ def fleet_off(h):
 
 
 def warmable(h):
-    """Workers the warmer visits: not shared off in fleet.json, not a "shards": false worker (too
-    slow to prepare; warming it mostly ended `lost` and only loaded it), and not a "cold_ok": false
-    one (rd_pool.eligibility: a warm IS the cold prepare such a worker refuses; its job class does
-    not matter, a warm runs no command)."""
-    return not fleet_off(h) and rd_pool.takes_shards(h) and rd_pool._f(h.entry, "cold_ok", True) is not False
+    """Workers the warmer visits: every one not shared off in fleet.json - slow and warm-only ones
+    included (a warm is how a warm-only worker gets jobs at all; its job class does not matter, a
+    warm runs no command)."""
+    return not fleet_off(h)
 
 
 def probe(h, repo, cfg):
@@ -191,6 +194,8 @@ def refusal(h, cfg):
     if h.state != "free":
         return "no free slot" if h.state == "busy" else h.state
     p = h.probe
+    if rd_pool._num(p.get("slots_busy"), 0) > 0:
+        return "running a job (warms only an idle worker)"
     per_cpu = rd_pool._num(p.get("load1"), 0.0) / (rd_pool._num(p.get("ncpu"), 1.0) or 1.0)
     limit = _cfg_num(cfg, "rr_warm_max_load", 0.7)
     if per_cpu >= limit:
@@ -304,7 +309,7 @@ def prepare(h, repo):
     except rd_run.RunError as e:
         return "error", "could not list the worktree (%s)" % e
     frames, nonce = rd_run.runner_frames(h, repo, WARM_ARGV, {}, repo["deps"], tar, envs, deleted,
-                                         WARM_JOB, True, wait_min=0)
+                                         WARM_JOB, True, wait_min=0, warm=1)
     sess = PrepareSession(h.cfg, frames, nonce)
     rc = sess.run()
     if sess.first_sig:
@@ -386,36 +391,119 @@ def take_flock(path):
     return fd
 
 
-def run_pass(cfg, repo_path=None):
-    """One warm pass -> {worker name: answered} (the down->up trigger's baseline)."""
+def wait_flock(path, timeout, sleep=time.sleep, clock=time.monotonic):
+    """take_flock, retried every second for up to `timeout` s -> fd, or None."""
+    end = clock() + max(0.0, timeout)
+    while True:
+        fd = take_flock(path)
+        if fd is not None or clock() >= end:
+            return fd
+        sleep(min(1.0, max(0.0, end - clock())))
+
+
+def queued(cfg):
+    """Repos rrun queued (rd_run.trigger_warm: a pending marker holding the cwd) that are still to warm:
+    [(repo, stamp, pending)], oldest first. A marker whose path is gone is dropped."""
+    out = []
+    d = rd_common.STATE_DIR
+    names = sorted(n for n in (os.listdir(d) if os.path.isdir(d) else [])
+                   if n.startswith("warm-trigger-") and n.endswith(".pending"))
+    for n in names:
+        pending = os.path.join(d, n)
+        stamp = pending[:-len(".pending")]
+        try:
+            with open(pending) as f:
+                path = f.read().strip()
+        except OSError:
+            continue
+        wt = worktree(path) if path else None
+        if wt is None:
+            _unlink(pending)
+            continue
+        out.append((dict(wt, ts=time.time(), deps=rd_run.deps_dirs(wt["top"], wt["relcwd"], []), relcwd=""),
+                    stamp, pending))
+    return out
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def run_pass(cfg, repo_path=None, after_lock=None, trigger=None):
+    """One warm pass -> {worker name: answered} (the down->up trigger's baseline).
+    trigger (rrun's background request, rd_run.trigger_warm; key of its stamp + pending marker): wait
+    up to after_lock s for the repo's worktree lock FIRST - the triggering job holds it until it ends -
+    and only then take the machine's pass lock, so a long job never stalls other repos' warming. Pass
+    lock busy -> the request stays queued (its marker is kept) and the next pass warms it. The stamp
+    (the trigger's throttle) is set only when its warm really starts. A plain pass also warms every
+    queued request, first."""
+    if not trigger:
+        return _run_pass(cfg, repo_path)
+    stamp, pending = rd_run.warm_trigger_paths(trigger)
+    repo = repo_at(repo_path)
+    wl = wait_flock(rd_run.wt_lock_path(repo["wt12"]), after_lock or 0)
+    if wl is None:
+        wlog("trigger %s: its worktree stayed busy for %ds; dropped (scheduled passes still warm it)"
+             % (repo["slug"], after_lock or 0))
+        _unlink(pending)
+        return {}
+    try:
+        return _run_pass(cfg, None, [(repo, stamp, pending)], {repo["wt12"]: wl}, queue_only=True)
+    finally:
+        os.close(wl)
+
+
+def _run_pass(cfg, repo_path, items=None, held=None, queue_only=False):
+    """items: [(repo, stamp, pending)] to warm first (queued requests); held: {wt12: fd} worktree locks
+    the caller already holds. queue_only: warm just the items (a trigger)."""
     lk = take_flock(PASS_LOCK)
     if lk is None:
-        wlog("pass skipped: another warm pass is running on this machine")
+        wlog("pass skipped: another warm pass is running on this machine%s"
+             % ("; the request stays queued for the next pass" if queue_only else ""))
         return {}
+    held = held or {}
     try:
         hosts = [h for h in worker_hosts(cfg) if warmable(h)]
         if not hosts:
             return {}
-        repos = [repo_at(repo_path)] if repo_path else \
-            discover(cfg)[:max(0, int(_cfg_num(cfg, "rr_warm_max_repos", 2)))]
-        if not repos:
+        if items is None:
+            items = queued(cfg)
+        work = list(items)
+        if not queue_only:
+            plain = [repo_at(repo_path)] if repo_path else \
+                discover(cfg)[:max(0, int(_cfg_num(cfg, "rr_warm_max_repos", 2)))]
+            have = set(r["slug"] for r, _s, _p in work)
+            work += [(r, None, None) for r in plain if r["slug"] not in have]
+        if not work:
             return reachable(hosts)
         up, counts = {}, {}
-        for repo in repos:
-            wl = take_flock(rd_run.wt_lock_path(repo["wt12"]))
+        for repo, stamp, pending in work:
+            wl = held.get(repo["wt12"])
+            own = wl is None
+            if own:
+                wl = take_flock(rd_run.wt_lock_path(repo["wt12"]))
             if wl is None:
                 wlog("skip %s: an rrun from %s is in flight" % (repo["slug"], repo["top"]))
                 continue
+            if stamp:
+                with open(stamp, "w"):  # a triggered warm really starts: its throttle starts now
+                    pass
             try:
                 for h in hosts:
                     res = warm_one(h, repo, cfg)
                     counts[res] = counts.get(res, 0) + 1
                     up[h.name] = up.get(h.name, False) or h.probe is not None
             finally:
-                os.close(wl)
+                if own:
+                    os.close(wl)
+                if pending:
+                    _unlink(pending)
         acted = {k: v for k, v in counts.items() if k not in ("warm", "skipped")}
         if acted:
-            wlog("pass: %s x %s: %s" % (",".join(r["slug"] for r in repos), ",".join(h.name for h in hosts),
+            wlog("pass: %s x %s: %s" % (",".join(r["slug"] for r, _s, _p in work), ",".join(h.name for h in hosts),
                                         ", ".join("%s %d" % kv for kv in sorted(counts.items()))))
         return up
     finally:
@@ -460,5 +548,7 @@ def loop(once=False, repo_path=None, sleep=time.sleep, clock=time.monotonic, max
                 break
 
 
-def main(once=False, repo=None):
+def main(once=False, repo=None, after_lock=None, trigger=None):
+    if after_lock is not None or trigger:
+        return 0 if run_pass(rd_common.load_cfg(), repo, after_lock, trigger) is not None else 1
     return loop(once=once, repo_path=repo)
