@@ -322,11 +322,13 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   busy and rrun re-plans. Mirrors of these runners live in `~/rr/w2/` (older runners: `~/rr/w/`, which
   they keep using), so an old client's run can never check out under a new detached one; the janitor
   and rd-tune prune both.
-- **Current code everywhere (version guarantee, layer 2).** Every job's runner raises the worker's
-  `~/rr/pool_version` to its client's `POOL_VERSION` (rd_common; bumped only for a change every client
-  must adopt). The probe returns it, so a client with older code runs `git pull --ff-only` in its
-  dotfiles and starts itself again once before anything runs; if that cannot bring it up to date, exit
-  77 (`rrun outdated ...`, needs-human). Layer 1 is the 2-min autopull.
+- **Current code everywhere (version guarantee, layer 2: a backstop; agents are never blocked).** Every
+  job's runner raises the worker's `~/rr/pool_version` to its client's `POOL_VERSION` (rd_common; bumped
+  only for a change every client must adopt), under a flock on `~/rr/pool_version.lock` so it never goes
+  down, and reports it as its first status, before any prepare (`PV ?` when it cannot tell). A newer
+  or unknown worker version never blocks or restarts a job: it runs, and rrun ends with one line:
+  `rrun: this Mac's pool code is behind (vN < vM); it updates itself within 2 min` (or `a worker could
+  not report its pool version; ran anyway`). Updating is layer 1's job: the 2-min dotfiles autopull.
 - **On the mini:** `~/rr` is 0700, excluded from Time Machine (`tmutil addexclusion`, once) and from
   Spotlight (`.metadata_never_index`).
 - **Timing:** every job's `route.log` line ends with a tab and its client-side start timings:
@@ -362,8 +364,8 @@ classes, so an agent never has to guess:
 
 - `pass` - exit 0.
 - `fail` - the command's own non-zero exit: the code is broken. Fix the code.
-- `infra` - the pool, not the code: rerun it, never debug it (a missing test DB says to rerun through
-  `npm run test:db`; 76 says it may have run, so check a DB job's side effects first).
+- `infra` - the pool, not the code: rerun it, never debug it (76 says it may have run, so check a DB
+  job's side effects first).
 - `needs-human` - rerunning will not help: tell the owner (who and why are on the line).
 
 rrun's own codes (`rd_run.EXIT_CODES`; `tests/test_contract.py` checks this table against the code
@@ -373,9 +375,9 @@ and runs a scenario that emits each one):
 |------|-------------|---------|
 | 72   | infra       | another rrun from this worktree held its lock past the wait; never ran (`rrun --mine`) |
 | 73   | infra       | every worker stayed busy past `rr_wait_min`; never ran |
-| 75   | infra       | never ran: no worker reachable, lost before the start, `RRUN_STRICT=1`, a heavy/DB job with no worker, or the output showed a missing test DB (`Environment variable not found: DATABASE_URL`, `ECONNREFUSED` to a DB port) |
-| 76   | infra       | may have run: the link (every reconnect) or the worker's record of the result was lost after the start, or a build's outputs could not be copied back |
-| 77   | needs-human | no worker may take this job (fleet.json `classes` / `max_cost_s` / `cold_ok`), or rrun is outdated and `git pull --ff-only` cannot update it |
+| 75   | infra       | never ran: no worker reachable, lost before the start, `RRUN_STRICT=1`, a heavy/DB job with no worker |
+| 76   | infra       | may have run: the link (every reconnect) or the worker's record of the result was lost after the start, the runner ended after the start without the command's exit status, or a build's outputs could not be copied back |
+| 77   | needs-human | no worker may take this job (fleet.json `classes` / `max_cost_s` / `cold_ok`) |
 | 124  | infra       | hit its wall-clock cap (`RRUN_TIMEOUT`) and was killed |
 | 65   | needs-human | the worker refused the request (bad input or an unsafe path, e.g. a symlinked mirror) |
 | 69   | infra       | the repo was missing on the worker; never ran |
@@ -383,19 +385,26 @@ and runs a scenario that emits each one):
 | 78   | infra       | installing dependencies on the worker failed (`npm ci` / `prisma generate`); never ran - the last 25 lines of its npm log are shown, not the whole log |
 
 128+N: stopped by signal N (Ctrl-C, a tool's TERM) - `infra`, rerun if you still need it. Any other
-code is the command's own (`fail`). A sharded run is the test result when every shard ran (any real
-shard failure is the result), `infra` when a shard gave none.
+code is the command's own (`fail`): after the start only the worker's authenticated EXIT status is
+the command's result. A sharded run is the test result when every shard ran (any real shard failure is
+the result), `infra` when a shard gave none.
+A failing run whose output mentions a missing test DB (`Environment variable not found:
+DATABASE_URL`, `ECONNREFUSED` to a DB port) keeps its exit and class and gets one more line, `rrun: N
+failures mention DATABASE_URL - likely no test DB on <worker>; rerun with npm run test:db`: a hint,
+never a verdict (a real failure must not hide behind it). The fix is placement: a suite that needs a
+DB is a db job.
 
 Troubleshooting: exit 72 → another rrun of this worktree is still running (`rrun --mine`); exit 124 →
 the command hit its cap (a hung test runner, e.g. vitest kept alive by open DB handles: the silence line
 names the last test file; fix the teardown, or `RRUN_TIMEOUT=<min>` if it is really that long). Falls
 back to the laptop every time → `rdocker doctor` (the push over ssh is the reachability test). Exit 73 →
 every worker stayed busy for `rr_wait_min` (the wait lines name the holders). Exit 75 → no worker could
-start it (check `rdocker status`, then rerun), or a missing test DB (rerun through `npm run test:db`).
+start it (check `rdocker status`, then rerun). A `... mention DATABASE_URL` line → rerun through `npm
+run test:db`, which provisions the DB.
 Exit 76 → the link or the result was lost after the start (rerun; a DB job: check its side effects).
 Exit 77 → `rrun: needs-human (exit 77, 0s; no eligible worker for this job (class heavy, predicted ~15m):
 laptop takes only light/normal/db jobs (this is heavy); ...` - every worker's fleet.json eligibility
-rules it out (tell the owner), or `rrun outdated` (the dotfiles cannot fast-forward on this machine).
+rules it out (tell the owner).
 A docker command refused with exit 1 inside a job → it targeted another run's container / network /
 volume, or an unscoped prune (see Docker scope above). Exit 78 → `npm ci` / `prisma generate` / a local
 package rebuild (`npm run <script>  (in ./<pkg>)` above it) failed on the worker (log tail above it);
@@ -525,9 +534,13 @@ repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per p
   survives a long `npm ci`.
 - **When:** a pass every 5 min; between passes an `ssh true` per worker every 60 s, and a worker that
   comes back online (Nick's MacBook waking up) starts a pass at once. And event-driven: a job that
-  finds an eligible worker cold for its lockfile starts one background `rdocker warm --once --repo
-  <cwd>` (at most once per repo + lockfiles per `rr_warm_trigger_every_s`, 600 s; `rr_warm_trigger:
-  false` turns it off), so the next job finds that worker warm.
+  finds a worker cold for its lockfile queues one background `rdocker warm --once --repo <cwd>
+  --after-lock S`, which waits (at most the job's cap + 1 min) for the job's worktree lock BEFORE it
+  takes this Mac's warm-pass lock (so other repos keep warming meanwhile), and warms right after the
+  job. If a pass is running then, the request stays queued (`warm-trigger-<key>.pending` in the state
+  dir) and the next pass warms it first. One waits per repo + lockfiles at a time; the throttle
+  (`rr_warm_trigger_every_s`, 600 s) starts only when a warm really starts; `rr_warm_trigger: false`
+  turns it off.
 - `rdocker warm --once [--repo PATH]` runs one pass by hand. Log: `~/.local/state/rdocker/warm.log`, one
   line per push / prepare / skip (a repeated skip is logged when its reason changes). Keys:
   `rr_warm_interval_s`, `rr_warm_tick_s`, `rr_warm_window_h`, `rr_warm_max_repos`, `rr_warm_max_load`.
