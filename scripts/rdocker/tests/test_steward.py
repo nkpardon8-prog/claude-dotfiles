@@ -119,6 +119,20 @@ class Drift(unittest.TestCase):
         self.assertEqual([k for k, _ in st.self_rules(NOW)], ["self:behind"])
 
 
+class Prediction(unittest.TestCase):
+    def test_pred_error_median_ignores_tiny_jobs(self):
+        self.assertIsNone(st.pred_error([]))
+        self.assertIsNone(st.pred_error([(5, 1.0)]))                       # sub-2 s: noise, ignored
+        e = st.pred_error([(10, 10), (12, 10), (30, 10)])                  # 0 %, 20 %, 200 %
+        self.assertEqual(e, (20.0, 3))
+
+    def test_drift_flagged_only_with_enough_jobs(self):
+        bad = [(30.0, 10.0)] * st.PRED_MIN_N                               # 200 % off
+        self.assertIn("hp:pred-drift", keys(res(pred=bad)))
+        self.assertNotIn("hp:pred-drift", keys(res(pred=bad[:-1])))        # n below the minimum
+        self.assertNotIn("hp:pred-drift", keys(res(pred=[(11.0, 10.0)] * 40)))   # 10 %: fine
+
+
 class Runbook(unittest.TestCase):
     def test_runbook_forbids_destructive_actions(self):
         for must in ("NEVER", "delete volumes", "git push", "passwords", "reboot", "Needs a human"):

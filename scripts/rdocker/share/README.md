@@ -48,6 +48,9 @@ else). The same finding set is handed off again after 3 h, then 6, 12, max 24 h.
 It also checks versions: a worker whose installed rd-doctor/rd-tune/rd-verify differs from the repo, and
 this Mac's dotfiles autopull (`scripts/dotfiles-autopull.sh`: a 2-minute fast-forward-only pull that the
 rrun-route hook self-installs on every Mac that uses the pool) being stale or stuck behind origin.
+Routing accuracy: every report line shows each worker's median prediction error over the last 24 h
+(`pred_s` the router logged vs the real `cmd_s`, jobs of 2 s or more); over 50 % across 30+ jobs is a
+`pred-drift` finding.
 
     python3 ~/.claude-dotfiles/scripts/rdocker/share/rd-steward.py --install     # user LaunchAgent, no sudo
     python3 .../rd-steward.py --once        # run now (RD_STEWARD_AGENT=0: report only)

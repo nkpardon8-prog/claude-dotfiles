@@ -56,6 +56,11 @@ since=$(date -d @$((now-3600)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -r $((now-
 printf 'NOW %s\nDOCTOR %s\n' "$now" "$st"
 for f in rd-doctor rd-tune rd-verify; do p=/usr/local/bin/$f; [ -f "$p" ] || p=/usr/local/libexec/$f; [ -f "$p" ] && printf 'SHA %s %s\n' "$f" "$( (sha256sum "$p" 2>/dev/null || shasum -a 256 "$p") | cut -c1-16)"; done
 tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$since" 'substr($1,1,19) >= s' | grep -oE 'outcome=([a-z-]+ rc=[0-9]+|[^ ]+)' | sort | uniq -c | sed 's/^/OUT /'
+# prediction accuracy, last 24 h: "PRED <pred_s> <cmd_s>" for completed runs that logged a prediction
+day=$(date -d @$((now-86400)) +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -r $((now-86400)) +%Y-%m-%dT%H:%M:%S)
+tail -n 3000 ~/rr/log/runs.log 2>/dev/null | awk -v s="$day" 'substr($1,1,19) >= s && /outcome=rc=[01][ \t]/ && /pred_s=/ {
+  c=""; p=""; for (i=1;i<=NF;i++) { if ($i ~ /^cmd_s=[0-9]/) c=substr($i,7); if ($i ~ /^pred_s=[0-9]/) p=substr($i,8) }
+  if (c != "" && p != "") print "PRED " p " " c }'
 """
 
 
@@ -99,11 +104,30 @@ def probe(m):
             parts = line.split()
             if len(parts) == 3:
                 r.setdefault("sha", {})[parts[1]] = parts[2]
+        elif line.startswith("PRED "):
+            parts = line.split()
+            try:
+                r.setdefault("pred", []).append((float(parts[1]), float(parts[2])))
+            except (IndexError, ValueError):
+                pass
         elif line.startswith("OUT "):
             mm = re.match(r"OUT\s+(\d+)\s+outcome=(\S+(?: rc=\d+)?)\s*$", line)
             if mm:
                 r["outcomes"][mm.group(2)] = int(mm.group(1))
     return r
+
+
+PRED_MIN_N = 30          # jobs in 24 h before the prediction error counts
+PRED_MAX_ERR = 50.0      # median absolute % error above which the model is flagged
+PRED_FLOOR_S = 2.0       # sub-2 s commands: % error is noise there
+
+
+def pred_error(pairs):
+    """[(pred_s, cmd_s)] -> (median abs % error, n) over jobs of at least PRED_FLOOR_S, or None."""
+    errs = sorted(abs(p - c) / c * 100 for p, c in (pairs or []) if c >= PRED_FLOOR_S)
+    if not errs:
+        return None
+    return errs[len(errs) // 2], len(errs)
 
 
 def rules(r, m):
@@ -133,6 +157,10 @@ def rules(r, m):
         if want and have != want:
             out.append((f"{n}:outdated-{name}", f"{n} runs an outdated {name} (installed {have}, repo {want}): "
                                                "re-run the server installer (needs sudo)"))
+    err = pred_error(r.get("pred"))
+    if err is not None and err[1] >= PRED_MIN_N and err[0] > PRED_MAX_ERR:
+        out.append((f"{n}:pred-drift", f"{n} placement predictions are off by a median {err[0]:.0f}% over "
+                                       f"{err[1]} jobs in 24 h (pred_s vs cmd_s): the routing model needs a look"))
     total = sum(c for o, c in r["outcomes"].items() if not NOT_A_RUN.match(o))
     infra = sum(c for o, c in r["outcomes"].items() if INFRA.match(o))
     if total and infra >= THRESH["infra_min"] and infra / total > THRESH["infra_rate"]:
@@ -230,7 +258,8 @@ def main():
         oc = " ".join(f"{o}x{c}" for o, c in sorted(r["outcomes"].items())) or "no jobs"
         lines.append(f"- **{r['name']}** {'up' if r['reachable'] else 'DOWN'}"
                      f" doctor={'-' if not d else ('drained' if d.get('drained') else 'ok')}"
-                     f" disk={d.get('disk_free_pct', '?')}% mem={d.get('mem_free_pct', '?')}% | 1h: {oc}")
+                     f" disk={d.get('disk_free_pct', '?')}% mem={d.get('mem_free_pct', '?')}% | 1h: {oc}"
+                     + (lambda e: f" | pred err 24h: {e[0]:.0f}% (n={e[1]})" if e else "")(pred_error(r.get("pred"))))
     lines += ["", "## Findings", ""] + ([f"- {t}" for _, t in findings] or ["- none: pool healthy"])
     report = os.path.join(STATE, "reports", dt.datetime.now().strftime("%Y-%m-%d-%H%M") + ".md")
     action = "healthy"
