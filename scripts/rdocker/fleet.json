@@ -21,7 +21,13 @@
       "max_slots": 3,
       "heavy_slots": 0,
       "mem_gb": 8,
-      "enabled": true
+      "enabled": true,
+      "classes": [
+        "light",
+        "normal",
+        "db"
+      ],
+      "max_cost_s": 600
     },
     {
       "name": "hp",
@@ -71,9 +77,15 @@
       "max_slots": 2,
       "heavy_slots": 1,
       "mem_gb": 8,
-      "enabled": false,
+      "enabled": true,
       "ts_key_expiry": "2027-04-16",
-      "shards": false
+      "shards": false,
+      "classes": [
+        "light",
+        "normal"
+      ],
+      "max_cost_s": 120,
+      "cold_ok": false
     },
     {
       "name": "mini-b",
@@ -89,9 +101,15 @@
       "max_slots": 2,
       "heavy_slots": 1,
       "mem_gb": 8,
-      "enabled": false,
+      "enabled": true,
       "ts_key_expiry": "2027-05-09",
-      "shards": false
+      "shards": false,
+      "classes": [
+        "light",
+        "normal"
+      ],
+      "max_cost_s": 120,
+      "cold_ok": false
     },
     {
       "name": "nick",
