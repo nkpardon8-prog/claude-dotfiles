@@ -711,19 +711,29 @@ _p2_budget() {
       h=f($2,"head"); t=f($2,"at")+0; if(!(h in cl) || t<cl[h]) cl[h]=t }
     index($2,"[mission] FULL-SUITE part=" pn " ")==1 && f($2,"new-reds")=="0" && f($2,"completed")=="yes" {
       h=f($2,"sha"); t=f($2,"at")+0; if(!(h in su) || t<su[h]) su[h]=t }
+    index($2,"[mission] REVIEW-EVIDENCE part=" pn " ")==1 && $1 ~ /review-evidence-delta-r/ && f($2,"result")=="clean" {
+      fzn[f($2,"head")]=NR }
+    index($2,"[mission] part=" pn " name=")==1 && $1 ~ ("^(g[0-9]+-)?m" pn "-[a-z]+-r[0-9]+-d0$") && f($2,"at")!="" {
+      nr0++; r0nr[nr0]=NR; r0at[nr0]=f($2,"at")+0 }
     index($2,"[mission] live-verify part=" pn " sha=")==1 {
       k=f($2,"sha") SUBSEP f($2,"attempt"); t=f($2,"at")+0
       if (f($2,"status")=="sent") { sent[k]=t; sh[k]=f($2,"sha") } else res[k]=t }
     END {
-      # Intervals: a FINISHED attempt (it has a result) paused from max(sent, close, suite) to its result.
-      # An UNANSWERED attempt pauses only while its SHA is still the current freeze (dry>=1); once the
-      # freeze is invalidated (dry reset, repair) a stale attempt never accrues paused time. Overlapping
-      # intervals are merged so two open attempts on one freeze are not counted twice.
+      # Intervals: a pause runs from max(sent, close, suite) to the attempt result, and never past the
+      # moment its freeze was INVALIDATED (the first stamped dry=0 round line after the clean delta that
+      # set that freeze). An unanswered attempt on the current freeze is still open (pe=now); one whose
+      # freeze was invalidated is closed there and keeps the minutes it earned; with no known
+      # invalidation time it earns none. Overlapping intervals are merged (counted once).
       n=0; paused=0
       for (k in sent) {
         h=sh[k]; if(!(h in cl) || !(h in su)) continue
         ps=sent[k]; if(cl[h]>ps) ps=cl[h]; if(su[h]>ps) ps=su[h]
-        if (k in res) pe=res[k]; else { if (h!=fz) continue; pe=now; paused=1 }
+        iv=-1; for (r=1;r<=nr0;r++) if (r0nr[r]>fzn[h] && (iv<0 || r0at[r]<iv)) iv=r0at[r]
+        if (h==fz) iv=-1
+        if (k in res) { pe=res[k]; if (iv>=0 && iv<pe) pe=iv }
+        else if (h==fz) { pe=now; paused=1 }
+        else if (iv>=0) pe=iv
+        else continue
         if (pe>now) pe=now
         if (pe<=ps) continue
         n++; is[n]=ps; ie[n]=pe
@@ -870,7 +880,9 @@ _p2_check() {
   case "$_pl" in
     "PART-START "*" proto=2 "*|RECIPE*|FULL-SUITE*|SWEEP*|"live-verify part="*" sha="*|"FAIL part="*" park="*) _stamp=1 ;;
   esac
-  [ "$(_p2_proto "$_n")" = 2 ] && case "$_pl" in "PART-DONE "*) _stamp=1 ;; esac
+  # proto=2 round lines are stamped too: a dry reset (a fix/implement/plan line at dry=0) is the moment a
+  # freeze is invalidated, and budget-state needs that time to close an open live-wait pause there.
+  [ "$(_p2_proto "$_n")" = 2 ] && case "$_pl" in "PART-DONE "*|part=*) _stamp=1 ;; esac
   if [ "$_stamp" = 1 ]; then _p2_stamp "$3" "$4" "$_e" "$_t" && return 0
   else _p2_is_banked "$3" "$4" "$_e" "$_t" && return 0; fi       # dedup-first: a retry is never refused
   _p2_retired "$_n" && _mw_emit_refuse log 4 "REFUSED: part-retired - part $_n is retired; a late write for it is an expected drop (no FAIL, no tally)"
@@ -1018,11 +1030,16 @@ _p2_bank_review() {
     _btr=$(_mission_tree_fingerprint_v2 "$_bwt"); _bg=$(_mission_goal_hash "$_bs" 2>/dev/null)
     case "$_btr" in v2:*) : ;; *) _mw_emit_refuse bank-review 4 "REFUSED: join cannot fingerprint the part worktree ($_btr)" ;; esac
     # SNAPSHOT FIRST: PART-DONE needs it, and a dry=2 line without it is the unrecoverable half-state.
+    # Each append must return rc=0 AND report appended/dedup-idempotent (the appender starts at `failed`).
     mission_log_append "$_bs" "$_br" "[mission] SNAPSHOT part=$_bn kind=converged tree=$_btr sha=$_bfz goal=${_bg:-nogoal} files=0 ver=2" "snap-p$_bn-conv-${_btr#v2:}" >/dev/null 2>&1
-    case "${_MLA_OUTCOME:-}" in appended|dedup-idempotent) : ;; *) _mw_emit_refuse bank-review 1 "join snapshot write ${_MLA_OUTCOME:-failed} ${_MLA_REASON:-} - retry the join" ;; esac
+    _bja=$?
+    { [ "$_bja" = 0 ] && case "${_MLA_OUTCOME:-}" in appended|dedup-idempotent) true ;; *) false ;; esac; } \
+      || _mw_emit_refuse bank-review 1 "join snapshot write failed (rc=$_bja outcome=${_MLA_OUTCOME:-none}) ${_MLA_REASON:-} - retry the join"
     if [ "$_bld" = 1 ]; then
       mission_log_append "$_bs" "$_br" "[mission] part=$_bn name=$_bname phase=review round=$_bk dry=2 findings=0" "m$_bn-review-r$_bk-d2" >/dev/null 2>&1
-      case "${_MLA_OUTCOME:-}" in appended|dedup-idempotent) : ;; *) _mw_emit_refuse bank-review 1 "join dry=2 write ${_MLA_OUTCOME:-failed} ${_MLA_REASON:-} - retry the join" ;; esac
+      _bja=$?
+      { [ "$_bja" = 0 ] && case "${_MLA_OUTCOME:-}" in appended|dedup-idempotent) true ;; *) false ;; esac; } \
+        || _mw_emit_refuse bank-review 1 "join dry=2 write failed (rc=$_bja outcome=${_MLA_OUTCOME:-none}) ${_MLA_REASON:-} - retry the join"
     fi
     _mw_arm_liveness "$_bs" "$_br"
     echo "mission-write: bank-review ok scope=join dry=2 freeze=$_bfz"; exit 0
@@ -1080,7 +1097,9 @@ _p2_bank_review() {
   _p2_append "$_bs" "$_br" "[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brk result=$_bres report=$_brep" "m$_bn-review-evidence-$_bsc-r$_bk"
   case "$_MLA_OUTCOME" in appended|dedup-idempotent) : ;; *) _mw_emit_refuse bank-review 1 "evidence write ${_MLA_OUTCOME:-failed} ${_MLA_REASON:-}" ;; esac
   if [ "$_bsc" = delta ] || { [ "$_bsc" = close ] && [ "$_bres" = blocking ]; }; then
-    mission_log_append "$_bs" "$_br" "[mission] part=$_bn name=$_bname phase=review round=$_bk dry=$_bdry findings=$_bbl" "m$_bn-review-r$_bk-d$_bdry" >/dev/null 2>&1
+    # stamped with the evidence's own at= (deterministic across retries: the evidence dedup keeps it)
+    _bat=$(_p2_fv "$P2_FINAL_ENTRY" at)
+    mission_log_append "$_bs" "$_br" "[mission] part=$_bn name=$_bname phase=review round=$_bk dry=$_bdry findings=$_bbl${_bat:+ at=$_bat}" "m$_bn-review-r$_bk-d$_bdry" >/dev/null 2>&1
   fi
   _bx=""
   [ "$_brk" != - ] && _bx=" sweep=required types=$_brk"

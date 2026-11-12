@@ -39,7 +39,7 @@ question; 14 orphan barrier (see below). Capture the id anchored to the status l
 
 | Leading token | Entry | idtag |
 |---|---|---|
-| round | `part=N name=<slug> phase=(research\|plan\|implement\|review\|fix) round=K dry=[0-2]( findings=C)?( open=C)?` | `m<N>-<phase>-r<K>-d<D>` |
+| round | `part=N name=<slug> phase=(research\|plan\|implement\|review\|fix) round=K dry=[0-2]( findings=C)?( open=C)?` (proto=2: `at=` stamped) | `m<N>-<phase>-r<K>-d<D>` |
 | `PART-START` | `part=N name=<slug> proto=2 worktree=<abs> base=<sha12> needs=<none\|N[,N]>`; the worktree HEAD must equal `base=` (legacy: no proto; refused after cutover) | `m<N>-part-start` |
 | `RECIPE` | `part=N v=<1\|2> tier= floor= plan= review= budget= live= overlap= needs=` (`at=` stamped; `needs=` must equal the PART-START's) | `m<N>-recipe-v<V>` |
 | `REVIEW-EVIDENCE` | `part=N round=K scope=<plan\|delta\|close> base= head= codex= claude= tagged= blocking= new= repeat= rkeys=<csv\|-> result=<clean\|blocking> report=` (bank-review only; `at=` stamped) | `m<N>-review-evidence-<scope>-r<K>` |

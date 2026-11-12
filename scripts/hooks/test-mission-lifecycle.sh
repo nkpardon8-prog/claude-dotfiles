@@ -469,5 +469,62 @@ OUT=$(bash "$MW" await "$S" "$R" "part=08 phase=review round=09 kind=job op=revi
 hasnt "value too great" "$OUT" "H10a part=08 does not abort bash"
 has "mission-write: await" "$OUT" "H10b ... and still prints its status line"
 
+# ═════════════════════════════════════════════════════════════════════════════════════════════════
+echo "== I round 2: failed join writes, legacy rows scoped to review states, earned pause kept =="
+# IA join must not report ok when its log appends fail
+mk ia
+RL=$(rline 1 normal 5 8 300 no none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null; to_impl 1 >/dev/null
+IAH=$(commit "$W" ia-work); delta 1 4 "$W" "$B" 0 >/dev/null; closer 1 5 "$W" "$B" 0 >/dev/null
+suite 1 "$IAH" 1 "$B" >/dev/null; live 1 "$IAH" 1 "n/a reason=no-ui" >/dev/null
+chmod a-w "$R/MISSION.$S.log"
+OUT=$(join 1 6)
+chmod u+w "$R/MISSION.$S.log"
+hasnt "bank-review ok" "$OUT" "IA1 join does not report ok when its appends fail"
+has "FAILED" "$OUT" "IA2 ... it reports FAILED"
+hasnt "kind=converged" "$(logf)" "IA3 nothing was banked"
+has "dry=2" "$(join 1 6)" "IA4 the retry once the log is writable succeeds"
+has "log ok" "$(done_ 1)" "IA5 PART-DONE"
+
+# IB legacy convergence rows are scoped to review states; phase continuation stays reachable
+ROWS2=$(python3 - "$WAKE" <<'PY'
+import sys
+s=open(sys.argv[1],encoding='utf-8').read(); s=s[s.index('## Decision table'):s.index('## §12.3')]
+rows=[l for l in s.splitlines() if l.startswith('| ')]
+state=lambda l: l.split(' | ')[0]
+leg=[l for l in rows if '`ps` proto=1' in state(l)]
+bad=[state(l) for l in leg if 'review' not in state(l)]
+def idx(k):
+    for i,l in enumerate(rows):
+        if k in state(l): return i
+    return -1
+li=min([rows.index(l) for l in leg] or [-1])
+cont=[idx('`phase=research\\|implement`'), idx('last round `phase=plan`'), idx('last round `phase=fix`')]
+shadow=[c for c in cont if c<0]
+print('legacy=%d unscoped=%d missing-cont=%d' % (len(leg), len(bad), len(shadow)))
+PY
+)
+has "unscoped=0 missing-cont=0" "$ROWS2" "IB1 every legacy (proto=1) row is scoped to a review state; research/plan/implement/fix rows exist for both protocols"
+hasnt "legacy=0 " "$ROWS2" "IB2 the legacy dispatch rows still exist"
+
+# IC invalidating a freeze keeps the pause time already earned (210 active + 100 paused, budget 300)
+mk ic
+RL=$(rline 1 normal 5 8 300 yes none); plan_recipes "$RL"
+NOW=$(date +%s)
+fab "[mission] PART-START part=1 name=p1 proto=2 worktree=$W base=$B needs=none at=$((NOW - 310*60))" m1-part-start
+fab "$RL at=$((NOW - 310*60))" m1-recipe-v1
+fab "[mission] part=1 name=p1 phase=plan round=1 dry=0 open=0" m1-plan-r1-d0
+fab "[mission] part=1 name=p1 phase=implement round=2 dry=0" m1-implement-r2-d0
+ICH=$(commit "$W" ic-work)
+fab "[mission] REVIEW-EVIDENCE part=1 round=3 scope=delta base=$B head=$ICH codex=4/4 claude=3/3 tagged=0 blocking=0 new=0 repeat=0 rkeys=- result=clean report=/x at=$((NOW - 105*60))" m1-review-evidence-delta-r3
+fab "[mission] part=1 name=p1 phase=review round=3 dry=1 findings=0" m1-review-r3-d1
+fab "[mission] REVIEW-EVIDENCE part=1 round=4 scope=close base=$B head=$ICH codex=4/4 claude=3/3 tagged=0 blocking=0 new=0 repeat=0 rkeys=- result=clean report=/x at=$((NOW - 101*60))" m1-review-evidence-close-r4
+fab "[mission] FULL-SUITE part=1 sha=$ICH attempt=1 base=$B env=0123456789abcdef completed=yes new-reds=0 report=/x at=$((NOW - 101*60))" "m1-suite-$ICH-a1"
+fab "[mission] live-verify part=1 sha=$ICH attempt=1 status=sent at=$((NOW - 100*60))" "m1-live-$ICH-a1-sent"
+has "paused live=100" "$(mw budget-state "$S" "$R")" "IC1 210 active + 100 paused: paused, inside the 300 budget"
+has "log ok" "$(lg "[mission] part=1 name=p1 phase=fix round=4 dry=0 findings=1" m1-fix-r4-d0)" "IC2 a repair resets dry (invalidates the freeze)"
+eq ok "$(mw budget-state "$S" "$R")" "IC3 the 100 paused minutes already earned are kept (not over 310)"
+has "log ok" "$(lg "[mission] part=1 name=p1 phase=fix round=4 dry=0 findings=1" m1-fix-r4-d0)" "IC4 an identical fix retry dedups (keeps its original at=)"
+
 printf '\nPASS: %s  FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

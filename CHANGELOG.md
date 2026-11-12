@@ -20,6 +20,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   AWAIT still closes; join writes the snapshot before dry=2 and repairs a partial bank; PART-START
   needs worktree HEAD == base; stale live attempts stop pausing the clock and pauses merge;
   known-red signatures keep numeric/hex values; no shell arithmetic on log-derived part numbers.
+  Round 2: the log appender reports `failed` unless a write lands and join checks rc and outcome of
+  each append; legacy wake rows apply to review states only; proto=2 round lines carry `at=` so an
+  invalidated freeze closes its live-wait pause there and keeps the minutes already earned.
 - New `mission-watchdog.sh` (helper stall detection) and `lib/mission-status.sh` (status lines,
   tokens by tag, morning report; deferred parts read from the strategist's `tmp/mission/recipes.md`).
 - `codex-review.md` (`--base`, `--scope full`, `--ledger`, `--verify`; Sol pinned), `plan.md`

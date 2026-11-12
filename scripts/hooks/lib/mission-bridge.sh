@@ -1245,7 +1245,7 @@ mission_ensure() {
 #   idtag — optional idempotency tag; a duplicate <!-- mid:<idtag> --> short-circuits to 0.
 mission_mutate() {
   sid=$(_mission_sanitize_sid "$1"); root="$2"; verb="$3"; entry="$4"; idtag="${5:-}"
-  _MLA_OUTCOME=appended; _MLA_REASON=""     # outcome hygiene: cleared at entry, set before every return
+  _MLA_OUTCOME=failed; _MLA_REASON=""       # outcome hygiene: `failed` at entry, set before every successful return
   [ -n "$sid" ] || { echo "mission: mutate: invalid sid" >&2; return 1; }
   [ -n "$root" ] || { echo "mission: mutate: missing root" >&2; return 1; }
   f="${root}/MISSION.${sid}.md"
@@ -1905,7 +1905,7 @@ _mission_lockheld_gen_recover() {
 #   ~6 internal callers). Outcomes: appended | dedup-idempotent | collision | rerouted | wrong-gen.
 mission_log_append() {
   sid=$(_mission_sanitize_sid "$1"); root="$2"; _la_entry="$3"; _la_idtag="$4"
-  _MLA_OUTCOME=appended; _MLA_REASON=""     # outcome hygiene: clear at entry, set before every return
+  _MLA_OUTCOME=failed; _MLA_REASON=""       # outcome hygiene: `failed` at entry (a failed write never reads as appended), set before every return
   [ -n "$sid" ] || { echo "mission: log: invalid sid" >&2; return 1; }
   [ -n "$root" ] || { echo "mission: log: missing root" >&2; return 1; }
   f="${root}/MISSION.${sid}.log"
@@ -2750,7 +2750,7 @@ mission_rebaseline() {
 #   rc=4 for the open-human-barrier refusal (surfaced by mission-write as a parseable FAILED line).
 mission_clear_append() {
   _ca_sid=$(_mission_sanitize_sid "$1"); _ca_root="$2"; _ca_entry="$3"; _ca_idtag="${4:-}"
-  _MLA_OUTCOME=appended; _MLA_REASON=""
+  _MLA_OUTCOME=failed; _MLA_REASON=""
   [ -n "$_ca_sid" ]  || { echo "mission: clear: invalid sid" >&2; return 1; }
   [ -n "$_ca_root" ] || { echo "mission: clear: missing root" >&2; return 1; }
   _ca_f="${_ca_root}/MISSION.${_ca_sid}.md"
@@ -2791,7 +2791,7 @@ mission_clear_append() {
 #   mission_log_append plus rc=4 for the open-human-barrier refusal (surfaced by mission-write as FAILED).
 mission_partdone_append() {
   _pa_sid=$(_mission_sanitize_sid "$1"); _pa_root="$2"; _pa_entry="$3"; _pa_idtag="${4:-}"
-  _MLA_OUTCOME=appended; _MLA_REASON=""
+  _MLA_OUTCOME=failed; _MLA_REASON=""
   [ -n "$_pa_sid" ]  || { echo "mission: part-done: invalid sid" >&2; return 1; }
   [ -n "$_pa_root" ] || { echo "mission: part-done: missing root" >&2; return 1; }
   _pa_f="${_pa_root}/MISSION.${_pa_sid}.md"
@@ -2851,7 +2851,7 @@ mission_partdone_append() {
 #   NOT read this serialization as a freshness guarantee it does not provide. rc mirrors mission_log_append.
 mission_decision_append() {
   _de_sid=$(_mission_sanitize_sid "$1"); _de_root="$2"; _de_entry="$3"; _de_idtag="${4:-}"
-  _MLA_OUTCOME=appended; _MLA_REASON=""
+  _MLA_OUTCOME=failed; _MLA_REASON=""
   [ -n "$_de_sid" ]  || { echo "mission: decision: invalid sid" >&2; return 1; }
   [ -n "$_de_root" ] || { echo "mission: decision: missing root" >&2; return 1; }
   _de_f="${_de_root}/MISSION.${_de_sid}.md"
