@@ -16,7 +16,7 @@ authoritative grammar; this file documents it. Every call uses the byte-locked p
 | `pending-stop` | `<slug> <part> <round> <attempt> <phase> "$Q"` | BLOCKING: one lock opens `AWAIT kind=human op=<seq>-<slug> need=1 got=0` AND mints the pd. Rc list below. |
 | `resolve` | `<pd:seq-slug>` | Drains a pending (bare `<seq>-<slug>` accepted). Refused while the same-op human STOP is open. |
 | `rebaseline` | `"$PLAN"` | The only PLAN rewrite; bumps gen and appends `MISSION-REBASELINED status=active`. |
-| `bank-review` | `<N> <K> <plan\|delta\|close\|join> <report> [<impl-reviewer output>]` | Sole writer of proto=2 REVIEW-EVIDENCE, the review round line or VOID, the close result and every `dry=` raise. Checks per-scope panel completeness (plan: Claude breadth, criticer, Codex executability, Codex value, verify; delta/close: 4 Codex lanes, 3 Claude lenses, the outer implementation-reviewer, verify), `Verify: ok` with `tagged == blocking`, the report identity (stat-verified `Report-file`), base/head binding, a clean tree with HEAD == report head before `dry=1`, VOID and void-count, `panel-unavailable-3x`. `close` banks `scope=close sha=<freeze> result=clean\|blocking` on its own; `join` banks `dry=2` only when a clean close, a passing FULL-SUITE and the live result (or `n/a` for `live=no`) exist for the freeze SHA. Reports `repeat=` and `redesign=<area>` (same area new blocking types 3 rounds running). |
+| `bank-review` | `<N> <K> <plan\|delta\|close\|join> <report> [<impl-reviewer output>]` | Sole writer of proto=2 REVIEW-EVIDENCE, the review round line or VOID, the close result and every `dry=` raise. Checks per-scope panel completeness (plan: Claude breadth, criticer, Codex executability, Codex value, verify; delta/close: 4 Codex lanes, 3 Claude lenses, the outer implementation-reviewer, verify), `Verify: ok` with `tagged == blocking`, the report identity (stat-verified `Report-file`), base/head binding, a clean tree with HEAD == report head before `dry=1`, VOID and void-count, `panel-unavailable-3x`. `close` banks `REVIEW-EVIDENCE ... scope=close base=<base> head=<freeze> ... result=clean\|blocking` on its own; `join` banks `dry=2` only when a clean close, a passing FULL-SUITE and the live result (or `n/a` for `live=no`) exist for the freeze SHA. Reports `repeat=` and `redesign=<area>` (same area new blocking types 3 rounds running). |
 | `render-banner`, `timing-resume`, `timing-contact <ask\|fail5\|corrupt>`, `timing-close <status>`, `archive-close` | | Advisory. |
 
 Bare-token read verbs (stdout is the token, no status line): `await-state` (`none` | `corrupt` |
@@ -36,15 +36,16 @@ question; 14 orphan barrier (see below). Capture the id anchored to the status l
 | Leading token | Entry | idtag |
 |---|---|---|
 | round | `part=N name=<slug> phase=(research\|plan\|implement\|review\|fix) round=K dry=[0-2]( findings=C)?( open=C)?` | `m<N>-<phase>-r<K>-d<D>` |
-| `PART-START` | `part=N name=<slug> proto=2 worktree=<abs> base=<sha12>` (legacy: no proto) | `m<N>-part-start` |
-| `RECIPE` | `part=N v=<1\|2> tier= floor= plan= review= budget= live= overlap= needs=` (`at=` stamped) | `m<N>-recipe-v<V>` |
-| `REVIEW-EVIDENCE` | `part=N round=K scope=<plan\|delta\|close> base= head= new= repeat= codex= claude= report=` (bank-review only) | `m<N>-review-evidence-r<K>` |
+| `PART-START` | `part=N name=<slug> proto=2 worktree=<abs> base=<sha12> needs=<none\|N[,N]>` (legacy: no proto; refused after cutover) | `m<N>-part-start` |
+| `RECIPE` | `part=N v=<1\|2> tier= floor= plan= review= budget= live= overlap= needs=` (`at=` stamped; `needs=` must equal the PART-START's) | `m<N>-recipe-v<V>` |
+| `REVIEW-EVIDENCE` | `part=N round=K scope=<plan\|delta\|close> base= head= codex= claude= tagged= blocking= new= repeat= rkeys=<csv\|-> result=<clean\|blocking> report=` (bank-review only; `at=` stamped) | `m<N>-review-evidence-<scope>-r<K>` |
 | `VOID` | `part=N phase=review round=K reason=<slug>` | `m<N>-void-r<K>-<runid6>h<sha8\|nofile>` |
 | `SWEEP` | `part=N round=K types=<csv> sha=<sha12> instances=<n> report=<path>` | `m<N>-sweep-r<K>-s<S>` |
 | `FULL-SUITE` | `part=N sha=<sha12> attempt=<a> base=<sha12> env=<hash> completed=yes new-reds=<n> report=<path>` | `m<N>-suite-<sha12>-a<a>` |
 | `live-verify` | `part=N sha=<sha12> attempt=<a> status=(sent\|ok evidence=<tok>\|fail reason=<slug>\|n/a reason=<slug>)` | `m<N>-live-<sha12>-a<a>-(sent\|result)` |
-| `FAIL` | `part=N phase=<p> reason=<slug> attempt=A[ park=<reason> disposition=<d> range=<b12>..<h12>]` | `m<N>-fail-<reason>-<A>` / `m<N>-fail-panel3x-r<K>` |
-| `ANCHOR` | `part=N sha=<sha12>` (legacy parts, once) | `m<N>-anchor` |
+| `FAIL` | `part=N phase=<p> reason=<slug> attempt=A` | `m<N>-fail-<reason>-<A>` / `m<N>-fail-panel3x-r<K>` |
+| `FAIL` (park) | `part=N park=<reason> disposition=<reverted\|isolated\|left-with-recorded-risk> range=<b12>..<h12>` (`at=` stamped) | `m<N>-fail-park` |
+| `ANCHOR` | `part=N sha=<sha12>`; `ANCHOR` is written only by the writer (legacy: root head when a proto=2 PART-START first needs it, or at its PART-DONE; proto=2: the freeze SHA at PART-DONE) | `m<N>-anchor` |
 | `PART-DONE` / `PART-RETIRED` | `part=N (converged)` / `part=N` | `m<N>-part-done` / `m<N>-part-retired` |
 | `test-trust` | `part=N=(ok\|added\|n/a)` | `m<N>-test-trust` |
 | `SNAPSHOT` | lib-written at convergence; `fp=v2` for proto=2 (clean worktree HEAD tree) | lib |
@@ -67,6 +68,36 @@ After the rework lands, PART-START without `proto=2` is refused; proto=2 parts n
 check. Parts open at cutover are grandfathered on the old fold (2 consecutive dry `phase=review`
 rounds, `live-verify part=N round=K`, SNAPSHOT fingerprint v1). A legacy part satisfies `needs=` by
 PART-DONE; its anchor is the `ANCHOR` line.
+
+## Full-suite report and known-reds baseline (FULL-SUITE `report=`)
+
+The suite report the conductor writes and `FULL-SUITE report=` names (absolute path), one header line
+per key, then a `--` line, then the body:
+
+```
+sha=<freeze sha12>
+base=<PART-START base sha12>
+command=<exact suite command>
+env=<environment id: worker, DB role, config hash>
+completed=yes
+infra=0
+--
+<test id> | <failure signature>
+```
+
+Header keys: `sha= base= command= env= completed= infra=`. Body: one `<test id> | <failure signature>`
+line per assertion failure (first assertion message line, values kept). The writer refuses the
+FULL-SUITE line unless the report exists, `completed=yes`, `infra=0`, its `sha`/`base` equal the
+line's, the line's `env=` equals the 16-hex key hash of `command` + `env`, and `new-reds=` equals its
+own recount. Recount: body lines normalized (timestamps, temp paths, uuids, ports, 16+ hex ids,
+durations only), then those not in `<root>/.mission-known-reds/<base>-<key>.txt` (same base, same
+key; no file = every red is new). A run with `infra` above 0 or not completed is invalid: rerun it.
+Baseline files use the same layout (header `base= command= env= completed=yes`, `--`, body) and are
+written atomically. Read verbs (bare tokens): `known-reds <sid> <root> key <report>` prints the `env=`
+value for the FULL-SUITE line; `known-reds <sid> <root> diff <report>` prints the `new-reds=` count
+(`-1` = invalid run). `known-reds <sid> <root> record <report>` merges a completed run into the
+baseline keyed by the report's `sha` (run it on a passing close suite so the next part, based on this
+freeze, reuses it; or on a base-SHA run that reproduces a red, which is the only way to clear one).
 
 ## `§2b` Resume picker (explicit clone into this session)
 

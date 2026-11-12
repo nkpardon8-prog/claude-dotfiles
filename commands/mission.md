@@ -81,15 +81,18 @@ On disk `<idtag>\t<entry>`, under 480 B; verbose detail goes in a `note` FIRST, 
 gen>=2 idtags are auto-prefixed `g<G>-` (pass the bare form). `at=` is writer-stamped: omit it.
 - Round: `[mission] part=<N> name=<slug> phase=<research|plan|implement|review|fix> round=<K>
   dry=<D>[ findings=<n>][ open=<n>]`, idtag `m<N>-<phase>-r<K>-d<D>`. Plan lines carry `open=`.
-- `[mission] PART-START part=<N> name=<slug> proto=2 worktree=<abs path> base=<sha12>` (`m<N>-part-start`).
+- `[mission] PART-START part=<N> name=<slug> proto=2 worktree=<abs path> base=<sha12> needs=<none|N[,N...]>` (`m<N>-part-start`).
 - `[mission] RECIPE part=<N> v=<1|2> tier=<low|normal|high> floor=<none|money|phi|auth|odwrite|migration>[,...] plan=<cap> review=<budget> budget=<min> live=<yes|no> overlap=<none|plan-next> needs=<none|N[,N...]>` (`m<N>-recipe-v<V>`).
 - `[mission] SWEEP part=<N> round=<K> types=<KEY,...> sha=<sha12> instances=<n> report=<path>` (`m<N>-sweep-r<K>-s<S>`).
 - `[mission] FULL-SUITE part=<N> sha=<sha12> attempt=<a> base=<sha12> env=<key-hash> completed=yes new-reds=<n> report=<path>` (`m<N>-suite-<sha12>-a<a>`).
 - `[mission] live-verify part=<N> sha=<sha12> attempt=<a> status=<sent|ok|fail|n/a> [evidence=<token>|reason=<slug>]` (`m<N>-live-<sha12>-a<a>-sent` / `-result`).
-- `[mission] FAIL part=<N> phase=<P> reason=<slug> attempt=<A>` (`m<N>-fail-<reason>-<A>`); a park adds `park=<reason> disposition=<d> range=<base12>..<head12>`.
-- `[mission] ANCHOR part=<N> sha=<sha12>` (legacy parts only, written once at cutover).
-- Written by `bank-review` only: REVIEW-EVIDENCE (`scope=<plan|delta|close> base= head= new= repeat=`),
-  the `phase=review` round line or `[mission] VOID`, the close result, the dry raise.
+- `[mission] FAIL part=<N> phase=<P> reason=<slug> attempt=<A>` (`m<N>-fail-<reason>-<A>`).
+- Park: `[mission] FAIL part=<N> park=<reason> disposition=<reverted|isolated|left-with-recorded-risk> range=<base12>..<head12>` (`m<N>-fail-park`).
+- `[mission] ANCHOR part=<N> sha=<sha12>` (`m<N>-anchor`): `ANCHOR` is written only by the writer (at PART-DONE, or when a
+  proto=2 PART-START first needs a legacy part); `log` refuses it.
+- Written by `bank-review` only: REVIEW-EVIDENCE (`scope=<plan|delta|close> base= head= ... new= repeat=
+  rkeys= result=`, `m<N>-review-evidence-<scope>-r<K>`), the `phase=review` round line or `[mission] VOID`,
+  the close result, the dry raise.
 - Lifecycle: `[mission] PART-DONE part=<N> (converged)`, `[mission] PART-RETIRED part=<N>`,
   `[mission] test-trust part=<N>=<ok|added|n/a>`, `[mission] SNAPSHOT` (lib), `[mission] AWAIT`
   (via `await` only), `[mission] DECISION op=<seq>-<slug> outcome=<approve|deny>`,
@@ -107,7 +110,8 @@ boundary re-runs proceed (`challenge` if a tier changes). Tiers: low (config/doc
 120 min; normal (features) 5, 8, 300 min; high (money, PHI, auth, OD writes, migrations) 7, 15, 480
 min; live-wait cap 120 min cumulative per part. Unsure = high; a `floor!=none` needs `tier=high`;
 escapes raise tiers. Bank RECIPE v1 right after PART-START; v2 only for a real overrun; v3 refused.
-`needs=` lists the parts this one builds on (unsure = the previous part).
+`needs=` lists the parts this one builds on (unsure = the previous part); PART-START carries it and
+every RECIPE (v1 and v2) repeats its PART-START `needs=` verbatim (the writer refuses a mismatch).
 
 ### G. Per-part loop
 
@@ -157,8 +161,8 @@ plan retirement (`PART-RETIRED`), strategist, next PART-START.
 `budget-state` every wake. The clock is minutes since PART-START; it pauses only while live proof is
 the sole open leg. Over budget, every part-N work write is refused rc=4 `part-over-budget`. Exits:
 one re-plan (strategist, RECIPE v2, clock resets once), or park. Park is non-blocking, never a STOP,
-and it never opens a human AWAIT: stop the part's helpers, log the FAIL with
-`park=<reason> disposition=<d> range=<base12>..<head12>`, PushNotification, PART-RETIRED, strategist,
+and it never opens a human AWAIT: stop the part's helpers, log the park FAIL (§E,
+`park=<reason> disposition=<d> range=<base12>..<head12>`), PushNotification, PART-RETIRED, strategist,
 next PART-START. Disposition: `reverted | isolated | left-with-recorded-risk` (default `isolated`
 for confirmed blocking defects). After PART-RETIRED, part-N writes are refused `part-retired` (a
 late completion is an expected drop: no FAIL) and its job AWAITs stop gating the wake.
@@ -231,7 +235,7 @@ shown as deferred. A real re-scope uses `rebaseline`. Small work runs as a low-t
 **Part start.** Create the part worktree (`git worktree add`), then:
 
 ```bash
-bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-START part=<N> name=<slug> proto=2 worktree=<abs path> base=<sha12>" "m<N>-part-start"
+bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] PART-START part=<N> name=<slug> proto=2 worktree=<abs path> base=<sha12> needs=<none|N[,N...]>" "m<N>-part-start"
 ```
 
 **Research.** Fan out in ONE message: a Claude `codebase-explorer` (its definition's model) and a
@@ -288,7 +292,7 @@ At `dry=1`, launch the three legs in ONE message on the freeze SHA, each with a 
 1. `skill: codex-review --effort high --ledger <file> --base <PART-START base> --scope full` plus the
    implementation-reviewer; at its join `--verify`, then
    `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh bank-review <sid> <root> <N> <K> close <report-final.md> <impl findings>`
-   (banks `scope=close sha=<freeze> result=clean|blocking` on its own).
+   (banks `REVIEW-EVIDENCE ... scope=close base=<base> head=<freeze> ... result=clean|blocking` on its own).
 2. The full suite once (`rrun`), compared to the known-reds baseline (§5), then
    `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh log <sid> <root> "[mission] FULL-SUITE part=<N> sha=<sha12> attempt=<a> base=<sha12> env=<key-hash> completed=yes new-reds=<n> report=<path>" "m<N>-suite-<sha12>-a<a>"`.
 3. Live proof: write `tmp/mission/p<N>/e2e-for-devtools.md`, send it to the owner's devtools agent on
@@ -319,6 +323,9 @@ normalized). Written atomically; infra failures never enter it. A red is known o
 signature match a baseline with the same key; no matching baseline = every red is new. New reds
 rerun once for flakes; a remaining one is fixed, or cleared only by reproducing it on the base SHA
 under the same key. A finished part's full-suite result is the next baseline when the key matches.
+Report layout (`sha= base= command= env= completed= infra=`, `--`, body) and the bare-token
+`known-reds <sid> <root> key|diff|record <report>` verbs (the FULL-SUITE `env=` and `new-reds=` values;
+`record` after a passing close suite): reference.md.
 
 **Watchdog.** Beside each long helper, `run_in_background`:
 `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-watchdog.sh [--done=<path>] <sid> <label> <class> <path>...`
@@ -344,9 +351,10 @@ enter the `§12.1 wake routine` in wake.md (resume read in its §8), never hand-
 - **Planted-bug test** (`docs/mission/planted-bugs.md`): at mission start, in the background, when
   the last run is over 7 days old or `codex-review.md` changed (`~/.claude/mission-planted.jsonl`).
   A miss is a plain-words notification and a log `note`; it never blocks.
-- **Morning report**: at every PART-DONE, PART-RETIRED and sanctioned stop run
-  `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/lib/mission-status.sh morning <sid> <root>`
-  (rewrites `<root>/tmp/mission/MORNING.md`) and send its one-line summary as the PushNotification.
+- **Morning report**: on every PART-DONE, PART-RETIRED, MISSION-CLEARED, FAIL (park or STOP LOUD) and
+  opened human STOP, the writer rewrites `<root>/tmp/mission/MORNING.md` itself (via
+  `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/lib/mission-status.sh morning <sid> <root>`, which you may also run by
+  hand). Send its summary line (`sed -n 3p`) as that moment's PushNotification.
 
 ## §10 Owner conventions (rules/build-throughput.md)
 

@@ -88,13 +88,11 @@ if grep -a -q 'convergence-not-machine-clean' "$MW"; then pass "CODE refuses PAR
 else fail "CODE refuses PART-DONE with convergence-not-machine-clean" "refusal path missing"; fi
 
 # ── 5. DOC <-> CODE (proto=2): every writer verb, shape and refusal the playbook relies on exists ──
-# The writer (chunk A of the mission rework) is built in parallel with this playbook. Default is STRICT:
-# a doc that names a verb the writer lacks is exactly the drift this file exists to catch.
-# MISSION_DOC_DRIFT_WRITER_PENDING=1 downgrades ONLY this block to SKIP, for a branch that carries the
-# playbook but not yet the writer. It is never set in CI.
+# STRICT: a doc that names a verb, shape or refusal the writer lacks is exactly the drift this file
+# exists to catch. (The chunk-D-era MISSION_DOC_DRIFT_WRITER_PENDING skip is gone: writer and playbook
+# land together, so there is no state in which a missing writer feature is acceptable.)
 proto2() {  # proto2 <label> <file> <literal>
   if grep -a -q -F -- "$3" "$2" 2>/dev/null; then pass "$1"
-  elif [ "${MISSION_DOC_DRIFT_WRITER_PENDING:-}" = 1 ]; then printf '  SKIP  %s (writer pending)\n' "$1"
   else fail "$1" "'$3' not found in $2"; fi
 }
 for verb in bank-review budget-state; do
@@ -171,6 +169,35 @@ if [ "${CORE:-0}" -gt 0 ] && [ "${CORE:-0}" -le 19500 ]; then
 else
   fail "contract core fits the 19500-char injection budget" "measured ${CORE}"
 fi
+
+# ── 9. DOC <-> CODE: line shapes the playbook teaches are the shapes the writer accepts ──────────
+# Each pair: the doc literal AND the writer literal that enforces it. Integration found the playbook
+# and the writer disagreeing on these (built in parallel against the plan, not each other).
+both() {  # both <label> <doc-literal> <writer-literal>
+  N=$(agrep "$2")
+  if [ "${N:-0}" -ge 1 ] && grep -a -q -F -- "$3" "$MW"; then pass "$1"
+  elif [ "${N:-0}" -lt 1 ]; then fail "$1" "doc lacks: $2"
+  else fail "$1" "writer lacks: $3"; fi
+}
+both "PART-START carries needs=" 'proto=2 worktree=<abs path> base=<sha12> needs=<none|N[,N...]>' 'base=[0-9a-f]{12} needs=(none|'
+both "RECIPE repeats the PART-START needs=" 'repeats its PART-START `needs=`' 'recipe needs= differs from the PART-START needs='
+both "park FAIL shape + idtag" '[mission] FAIL part=<N> park=<reason> disposition=<reverted|isolated|left-with-recorded-risk> range=<base12>..<head12>` (`m<N>-fail-park`)' '-fail-park" ] || _mw_emit_refuse log 1 "REFUSED: bad-park-idtag'
+both "close result is REVIEW-EVIDENCE scope=close head=<freeze>" 'scope=close base=<base> head=<freeze> ... result=clean|blocking' 'review-evidence-$_bsc-r$_bk'
+both "REVIEW-EVIDENCE idtag carries the scope" 'm<N>-review-evidence-<scope>-r<K>' '"m$_bn-review-evidence-$_bsc-r$_bk"'
+both "ANCHOR is writer-only" 'ANCHOR` is written only by the writer' 'is written only by the writer itself'
+both "suite report header + body documented" 'sha= base= command= env= completed= infra=' '_p2_kr_hdr "$1" infra'
+both "suite report body line documented" '`<test id> | <failure signature>`' "grep ' | '"
+both "budget-state over token" 'over part=<N> minutes=<M> replan=<0|1>' 'echo "over part=$_bsn minutes=$2 replan=$3"'
+both "writer refreshes the morning report" 'the writer rewrites `<root>/tmp/mission/MORNING.md`' 'mission-status.sh" morning'
+for k in 'mission-status.sh' 'MORNING.md'; do
+  if grep -a -q -F -- "$k" "$WAKE"; then pass "wake.md stop path names $k"; else fail "wake.md stop path names $k" "missing"; fi
+done
+for gone in 'scope=close sha=<freeze>' 'm<N>-review-evidence-r<K>' 'written once at cutover'; do
+  N=$(agrep "$gone")
+  if [ "${N:-0}" = 0 ]; then pass "stale shape absent: $gone"; else fail "stale shape absent: $gone" "$N occurrence(s)"; fi
+done
+if grep -a -q -F 'second dirty sweep' "$WAKE"; then pass "wake.md: a second dirty sweep on the same types -> redesign"
+else fail "wake.md: second dirty sweep -> redesign" "missing (a resumed tick would sweep forever)"; fi
 
 printf '\nPASS: %s  FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

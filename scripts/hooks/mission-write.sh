@@ -47,7 +47,8 @@
 #                    types=..] [redesign=<area>]` | `bank-review VOID reason= void-count=N` | FAILED rc=N)
 #     budget-state  <sid> <root>                 (read-only, bare: ok | paused live=<min> |
 #                                                 over part=N minutes=M replan=<0|1>)
-#     known-reds    <sid> <root> diff|record <suite-report>  (diff: bare new-red count, -1 = invalid run)
+#     known-reds    <sid> <root> key|diff|record <suite-report>  (key: bare FULL-SUITE env= hash;
+#                                                 diff: bare new-red count, -1 = invalid run)
 #
 #   FOUR DOCUMENTED ARGV EXCEPTIONS (read-only verbs — different argv shape; bare-token stdout; NO
 #   `mission-write: <verb> …` status line; handled BEFORE the root-guard):
@@ -95,6 +96,7 @@ fi
 unset _MISSION_INTERNAL_HUMAN_OPEN
 
 verb="${1:-}"; sid="${2:-}"; root="${3:-}"
+_MW_SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
 
 # ── DOCUMENTED PRE-ROOT-GUARD ARGV EXCEPTIONS (read-only verbs) ─────────────────────────────
 # FOUR verbs break the `<verb> <sid> <root>` dispatcher shape because they are READ-ONLY and their
@@ -970,6 +972,7 @@ _p2_br_void() {   # <sid> <root> <N> <K> <reason> <report>
   _bv_x=""
   if [ "${_bv_c:-0}" -ge 3 ] 2>/dev/null; then
     mission_log_append "$1" "$2" "[mission] FAIL part=$3 phase=review reason=panel-unavailable-3x attempt=1" "m$3-fail-panel3x-r$4" >/dev/null 2>&1
+    _mw_morning "$1" "$2"     # a STOP LOUD: the owner's report must be current
     _bv_x=" panel-unavailable-3x"
   fi
   echo "mission-write: bank-review VOID reason=$5 void-count=${_bv_c:-?}${_bv_x}"; exit 0
@@ -1080,6 +1083,17 @@ case "$verb" in
     ;;
 esac
 
+# MORNING REPORT (rework plan 9): rewrite <root>/tmp/mission/MORNING.md after every line that ends a
+# part or a stretch of autonomy - PART-DONE, PART-RETIRED, MISSION-CLEARED, any FAIL (a park record,
+# or the line behind a STOP LOUD) and an opened human STOP (pending-stop). Done HERE, not in playbook
+# prose, because a stale morning report is a silent failure: nothing goes red, the owner just reads
+# yesterday. Best-effort and silent: never touches rc or stdout. MISSION_MORNING=0 turns it off.
+_mw_morning() {
+  [ "${MISSION_MORNING:-1}" = 0 ] && return 0
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -f "${_MW_SELF_DIR:-}/lib/mission-status.sh" ] || return 0
+  bash "$_MW_SELF_DIR/lib/mission-status.sh" morning "$1" "$2" >/dev/null 2>&1 || true
+}
+
 # ARM THE LIVENESS GUARD on any mission-bridge mutation (best-effort, silent, idempotent).
 #
 # WHY HERE and not only at the wake routine's step 0. Arming at step 0 alone covers only missions
@@ -1183,6 +1197,10 @@ case "$verb" in
         _MLA_OUTCOME="$_mw_log_outcome"; _MLA_REASON="$_mw_log_reason"
         ;;
     esac
+    if [ "$rc" -eq 0 ] && [ "${_MLA_OUTCOME:-}" = appended ]; then
+      case "$4" in "[mission] PART-DONE "*|"[mission] PART-RETIRED "*|"[mission] MISSION-CLEARED "*|"[mission] FAIL "*)
+        _mw_mo="$_MLA_OUTCOME"; _mw_morning "$sid" "$root"; _MLA_OUTCOME="$_mw_mo" ;; esac
+    fi
     _mw_outcome_status log "$rc"
     ;;
 
@@ -1246,6 +1264,7 @@ case "$verb" in
     _mw_psid=$(mission_pending_stop_mint "$sid" "$root" "$_mw_psslug" "$_mw_pspart" "$_mw_psround" "$_mw_psattempt" "$_mw_psphase" "$_mw_psquestion")
     rc=$?
     if [ "$rc" -eq 0 ]; then
+      _mw_morning "$sid" "$root"
       echo "mission-write: pending-stop ok id=${_mw_psid}"
     else
       # Surface the lib fn's fail-closed non-zero returns as a clear, parseable FAILED line (the mint
@@ -1385,13 +1404,15 @@ case "$verb" in
     ;;
 
   known-reds)
+    # known-reds <sid> <root> key <report>    -> bare 16-hex key (the FULL-SUITE env= value)
     # known-reds <sid> <root> diff <report>   -> bare count of new reds (-1 = invalid run)
     # known-reds <sid> <root> record <report> -> write/merge the baseline keyed by sha + command + env
     case "${4:-}" in
+      key) [ -f "${5:-}" ] && _p2_kr_key "$5" ;;
       diff) _p2_kr_diff "$root" "${5:-}" ;;
       record) if _p2_kr_record "$root" "${5:-}"; then echo "mission-write: known-reds ok"
               else _mw_emit_refuse known-reds 1 "REFUSED: not a completed run without infra failures (never baselined)"; fi ;;
-      *) echo "mission-write: usage: known-reds <sid> <root> <diff|record> <report>" ;;
+      *) echo "mission-write: usage: known-reds <sid> <root> <key|diff|record> <report>" ;;
     esac
     ;;
 

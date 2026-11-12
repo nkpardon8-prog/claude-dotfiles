@@ -131,7 +131,7 @@ PLAN -> ACTIVE). **Active iff** the latest `mission_state` line is not `MISSION-
 | `PART-START`, RECIPE, no round yet | Begin research. |
 | last round `phase=research\|implement` | Continue that phase, then the next step of the part loop. |
 | last round `phase=plan` | Continue `/plan --mission`; `open=0` -> implement; still open at the cap -> descope (recorded in the plan) or park. |
-| last review `phase=review findings>0` | Fix the SAME round K (`phase=fix`), then a sweep if `repeat>0`, then delta round K+1. |
+| last review `phase=review findings>0` | Fix the SAME round K (`phase=fix`), then a sweep if `repeat>0` (a second dirty sweep on the same types -> redesign, playbook §H2), then delta round K+1. |
 | last round `phase=fix` | Finish the fix (check the tree), then delta round K+1. |
 | last review `dry=1`, no `dry=2` | Close join: for the freeze SHA relaunch ONLY missing legs (close review, FULL-SUITE, live proof); all three banked -> `bank-review ... join`. |
 | close result `blocking`, or a code change after the freeze | Repair: fix, delta round, new freeze, new close (dry reset). Infra-only suite/live failure at an unmoved HEAD -> same-SHA rerun as `attempt+1`. |
@@ -146,7 +146,8 @@ Return WITHOUT rescheduling (release the lock first) only when:
 - `MISSION-CLEARED` is the latest lifecycle line (close order: `timing-close` -> `MISSION-CLEARED`
   -> `archive-close` -> disarm the liveness file).
 - A named STOP LOUD: 5 FAILs for one part+phase (gen-sliced), `panel-unavailable-3x`, `void-count`
-  `-1`, a corrupt bridge. PushNotification first.
+  `-1`, a corrupt bridge. PushNotification first, with the summary line of `<root>/tmp/mission/MORNING.md`
+  (the writer refreshed it on the FAIL; otherwise run `lib/mission-status.sh morning <sid> <root>`).
 - A mandatory human decision, opened with ONE call:
   `out=$(bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh pending-stop <sid> <root> <slug> <part> <round> <attempt> <phase> "$q" 2>&1)`
   (`q` captured from a quoted heredoc or file, never inlined). Its ONLY proceed-able outcome is the

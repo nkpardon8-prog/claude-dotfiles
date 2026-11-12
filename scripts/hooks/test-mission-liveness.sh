@@ -105,9 +105,17 @@ run_hook() {  # run_hook <sid> <prompt_id> <transcript> -> sets RC / OUT
 }
 
 # A mission with work owed: created, a PART-START banked, no lifecycle close, no human barrier.
+# The PART-START is the proto=2 shape (rework plan 5.6): the root is a real git repo and the part
+# builds in its own linked worktree. A legacy `PART-START part=1 name=x` is REFUSED after the rework,
+# so the old fixture silently banked nothing; assert the line landed so that can never recur.
 mk_live_mission() {  # mk_live_mission <sid> <root>
+  ( cd "$2" && git init -q && git config user.email t@t && git config user.name t \
+    && printf 'v1\n' > code.txt && git add code.txt && git commit -qm init ) >/dev/null 2>&1
+  _lw="$2-wt"; git -C "$2" worktree add -q -b "p1-$(basename "$2")" "$_lw" >/dev/null 2>&1
+  _lb=$(git -C "$_lw" rev-parse HEAD 2>/dev/null | cut -c1-12)
   bash "$MWSH" create "$1" "$2" "MISSION MODE: build — liveness harness" >/dev/null 2>&1
-  bash "$MWSH" log "$1" "$2" "[mission] PART-START part=1 name=x" "m1-part-start" >/dev/null 2>&1
+  _lo=$(bash "$MWSH" log "$1" "$2" "[mission] PART-START part=1 name=x proto=2 worktree=$_lw base=$_lb needs=none" "m1-part-start" 2>&1)
+  case "$_lo" in *"log ok"*) : ;; *) fail "fixture: proto=2 PART-START banks" "$_lo" ;; esac
 }
 
 printf '\n== mission-liveness: naked-yield guard ==\n\n'

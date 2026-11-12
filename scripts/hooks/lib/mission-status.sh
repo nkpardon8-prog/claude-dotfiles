@@ -22,6 +22,10 @@
 #             sent|ok|fail|n/a, sha=, attempt=, at=), FAIL with park= disposition= range=,
 #             PART-DONE, PART-RETIRED, MISSION-CLEARED (status= reason=). A terminal line without
 #             at= ends the part at the latest at= on any of its lines.
+#   RECIPES   <root>/tmp/mission/recipes.md (the strategist's file): every `[mission] RECIPE part=N ...
+#             needs=` line names a planned part. A planned part with no PART-START is "deferred" when
+#             a part it needs parked, retired unfinished or is itself deferred (transitive), else
+#             "queued". (The writer logs nothing for a part before its PART-START.)
 #   ESCAPES   <root>/.mission-escaped.md, `date | part | found-by | TYPE-KEY | area | ...`.
 #   TOKENS    by tag, never by time window. Counted = input + cache-write + output tokens
 #             (cache reads are left out: every turn re-reads its whole context).
@@ -186,9 +190,27 @@ def parse(entries):
             p.retired = True
             if p.end_at is None:
                 p.end_at = at
+    # Planned parts that never started: the strategist's recipes file names them with their needs=.
+    # Under proto=2 the writer refuses EVERY line of a part before its PART-START (and refuses the
+    # PART-START while a needed part is not PART-DONE), so a deferred part leaves no log line at all;
+    # without this file it would be invisible in status and in the morning report.
+    planned = {}
+    for line in (read_text(os.path.join(root, "tmp", "mission", "recipes.md")) or "").splitlines():
+        i = line.find("[mission] RECIPE ")
+        if i < 0:
+            continue
+        d = kv(line[i + len("[mission] "):].split("`", 1)[0])   # the line may sit in a markdown code span
+        n = num(d.get("part"))
+        if n is not None:
+            planned[n] = d
+    for n, d in planned.items():
+        p = parts.setdefault(n, Part(n))
+        if not p.recipe:
+            p.recipe = d
     started = [n for n, p in parts.items() if p.started]
     top = max(started) if started else 0
-    for p in parts.values():
+    for n in sorted(parts):
+        p = parts[n]
         p.freeze = (p.freeze or p.suite_sha)[:12]
         if p.done:
             p.outcome = "done"
@@ -198,6 +220,12 @@ def parse(entries):
             p.outcome = "retired"
         elif p.started:
             p.outcome = "open"
+        elif n in planned:
+            # transitive: a needed part that parked, retired unfinished or is itself deferred
+            needs = [num(x) for x in (planned[n].get("needs") or "none").split(",") if num(x) is not None]
+            blocked = any(parts.get(m) is not None and getattr(parts[m], "outcome", "") in ("parked", "retired", "deferred")
+                          for m in needs if m < n)
+            p.outcome = "deferred" if blocked else "queued"
         elif p.n < top:
             p.outcome = "deferred"
         else:
