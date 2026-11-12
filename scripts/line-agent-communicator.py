@@ -1707,7 +1707,10 @@ def load_other_hosts() -> tuple[list[dict], str]:
         # A hash read from a copy we have not synced recently describes the account that Mac had THEN,
         # so a mismatch on a stale copy proves nothing (2026-11-11: a 10-day-old copy claimed "different
         # account" for two Macs on the same account). Unknown, not False, until a fresh copy arrives.
-        if match is False and (synced is None or now - synced > SYNC_STALE_SEC):
+        # Same for a Mac that has not published for a day: its file can be freshly SYNCED (same iCloud)
+        # yet carry a hash from a sign-in weeks ago (plan2bid-minim4, offline 26 days, 2026-11-11).
+        if match is False and (synced is None or now - synced > SYNC_STALE_SEC
+                               or hb is None or now - hb > 86400):
             match = None
         windows = []
         for w in data.get("windows") or []:
