@@ -45,8 +45,11 @@ never count it as a pass or as a known failure.
 - Never wait on something that is not running. Probe it.
 
 ## 6. Right model for the job
-Codex `gpt-6.1-terra` for cheap research and fact lookups. Codex `gpt-6.1-sol` at high effort for
-every plan review, code review and verify pass. Never use Terra for review.
+Use Codex `gpt-6.1-terra` by default for any cheap work: research, fact lookups, finding call
+sites, reading and summarizing logs or test output, mechanical edits, drafting docs, first-pass
+triage. Hand it off instead of spending your own context on it. Use Codex `gpt-6.1-sol` at high
+effort for every plan review, code review and verify pass, and for genuinely hard reasoning. Never
+use Terra for review.
 
 ## 7. Spend fewer tokens on talk
 Peer FYIs need no reply unless they ask a question; log them. Owner updates are short and come at
