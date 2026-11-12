@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""relink - reconnect Remote Control in every /line-named Claude window on THIS Mac, under its /line name.
+
+Why: the Claude app shows a Remote Control session under the name it was connected with. /rename does
+not reach it, and `/rc NAME` while already connected is a no-op. A disconnect (`/remote-control` while
+connected) followed by `/rc NAME` makes a fresh RC session with the right name (proven 2026-11-11).
+
+How: reads ~/.claude/sessions/<pid>.json for each live window (name, nameSource, status, bridgeSessionId),
+finds its Terminal tab by TTY, and types the commands ONLY while the window is idle (never mid-task, never
+over a permission prompt). Each step is confirmed by watching bridgeSessionId in the session file.
+Windows without a /line name (nameSource != "explicit"), or not in Terminal.app, are skipped and listed.
+
+Usage: relink.py [--dry-run] [--only NAME ...] [--timeout-min N]
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+SESS = Path(os.environ.get("RELINK_SESSIONS_DIR", Path.home() / ".claude" / "sessions"))
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+POLL = 3.0
+STEP_TIMEOUT = 90.0
+
+
+def read_sessions():
+    rows = []
+    for f in sorted(SESS.glob("*.json")):
+        try:
+            d = json.loads(f.read_text())
+            pid = int(d["pid"])
+        except Exception:
+            continue
+        if d.get("kind") not in (None, "interactive"):
+            continue
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            continue
+        rows.append(d)
+    return rows
+
+
+def session(pid):
+    try:
+        return json.loads((SESS / f"{pid}.json").read_text())
+    except Exception:
+        return {}
+
+
+def tty_of(pid):
+    p = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True, text=True)
+    t = p.stdout.strip()
+    return f"/dev/{t}" if t and t not in ("?", "??") else ""
+
+
+def terminal_ttys():
+    script = 'tell application "Terminal" to get tty of every tab of every window'
+    p = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, timeout=20)
+    if p.returncode != 0:
+        return None
+    return {t.strip() for t in p.stdout.replace("\n", ",").split(",") if t.strip()}
+
+
+TYPE_SCRIPT = '''on run argv
+  set targetTTY to item 1 of argv
+  set txt to item 2 of argv
+  tell application "Terminal"
+    repeat with w in windows
+      repeat with t in tabs of w
+        try
+          if (tty of t) is targetTTY then
+            do script txt in t
+            return "typed"
+          end if
+        end try
+      end repeat
+    end repeat
+  end tell
+  return "no-tab"
+end run'''
+
+
+def type_into(tty, text):
+    p = subprocess.run(["/usr/bin/osascript", "-", tty, text], input=TYPE_SCRIPT,
+                       capture_output=True, text=True, timeout=20)
+    return p.stdout.strip() == "typed"
+
+
+def plan(rows, tabs, only):
+    todo, skipped = [], []
+    for d in rows:
+        name = d.get("name") or ""
+        if only and name not in only:
+            continue
+        if d.get("nameSource") != "explicit":
+            skipped.append((name or f"pid {d['pid']}", "no /line name"))
+            continue
+        if not NAME_RE.match(name):
+            skipped.append((name, "name has characters /rc cannot take"))
+            continue
+        tty = tty_of(d["pid"])
+        if tabs is not None and tty not in tabs:
+            skipped.append((name, "not a Terminal.app tab (Pane or other app)"))
+            continue
+        todo.append({"pid": d["pid"], "name": name, "tty": tty, "state": "start", "t": 0.0,
+                     "old": d.get("bridgeSessionId"), "result": ""})
+    return todo, skipped
+
+
+def idle(d):
+    return d.get("status") == "idle"
+
+
+def step(w, now):
+    d = session(w["pid"])
+    if not d:
+        w["state"], w["result"] = "done", "FAILED: window closed"
+        return
+    bridge = d.get("bridgeSessionId")
+    if w["state"] == "start":
+        if not idle(d):
+            return
+        if bridge:
+            if type_into(w["tty"], "/remote-control"):
+                w["state"], w["t"], w["old"] = "disconnecting", now, bridge
+            else:
+                w["state"], w["result"] = "done", "FAILED: could not type into its tab"
+        else:
+            if type_into(w["tty"], "/rc " + w["name"]):
+                w["state"], w["t"] = "connecting", now
+            else:
+                w["state"], w["result"] = "done", "FAILED: could not type into its tab"
+    elif w["state"] == "disconnecting":
+        if not bridge and idle(d):
+            if type_into(w["tty"], "/rc " + w["name"]):
+                w["state"], w["t"] = "connecting", now
+            else:
+                w["state"], w["result"] = "done", "FAILED: could not type the reconnect"
+        elif now - w["t"] > STEP_TIMEOUT:
+            w["state"], w["result"] = "done", "FAILED: did not disconnect (check the tab)"
+    elif w["state"] == "connecting":
+        if bridge and bridge != w["old"]:
+            w["state"], w["result"] = "done", f"relinked ({bridge})"
+        elif now - w["t"] > STEP_TIMEOUT:
+            w["state"], w["result"] = "done", "FAILED: no new Remote Control session (check the tab)"
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Reconnect Remote Control under each window's /line name.")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--only", action="append", default=[])
+    ap.add_argument("--timeout-min", type=float, default=45.0, help="how long to wait for busy windows")
+    a = ap.parse_args()
+    tabs = terminal_ttys()
+    if tabs is None:
+        print("relink: cannot read Terminal tabs (Automation permission?); nothing typed.", file=sys.stderr)
+        return 2
+    todo, skipped = plan(read_sessions(), tabs, set(a.only))
+    host = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True).stdout.strip()
+    if a.dry_run:
+        for w in todo:
+            act = "disconnect, then /rc " if w["old"] else "/rc "
+            print(f"{host} | {w['name']} | {act}{w['name']} (when idle)")
+        for n, why in skipped:
+            print(f"{host} | {n} | skip: {why}")
+        return 0
+    deadline = time.time() + a.timeout_min * 60
+    while any(w["state"] != "done" for w in todo) and time.time() < deadline:
+        for w in todo:
+            if w["state"] != "done":
+                step(w, time.time())
+        time.sleep(POLL)
+    for w in todo:
+        if w["state"] != "done":
+            w["result"] = "NOT DONE: stayed busy past the timeout" if w["state"] == "start" else \
+                f"NOT DONE: stuck at {w['state']}"
+    print(f"relink on {host}")
+    for w in todo:
+        print(f"  {w['name']:<40} {w['result']}")
+    for n, why in skipped:
+        print(f"  {n:<40} skipped: {why}")
+    return 0 if all(w["result"].startswith("relinked") for w in todo) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
