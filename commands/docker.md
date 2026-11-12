@@ -172,8 +172,11 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   that container on the laptop (fast, instead of the slow split) and prints one hint to use `rrun`.
 - **Logs:** laptop `~/.local/state/rdocker/route.log` (one line per decision, rrun lines with rc and
   seconds; rotated at 10 MB, ~1 week) and `daemon.log`; mini `~/rr/log/runs.log` (one line per run: time,
-  repo, worktree, sha, argv head with env values redacted, outcome, prepare/command seconds; 0600,
-  rotated at 5 MB).
+  repo, worktree, sha, outcome, prepare/command seconds, argv head with env values redacted; then, since
+  2026-11-11, a TAB and `run=<uuid> owner=<session:...|pid:...> cls=<class> wait_s=<s before the slot:
+  client waits + slot wait> exit_reason=pass|fail|cap|stalled|lost|busy|refused`; `stalled` is reserved.
+  The new fields come after argv because every existing parser anchors each field to the next one; the
+  dashboard reporter shows them at the end of its argv column. 0600, rotated at 5 MB).
 - **Git state on the mini:** `git rev-parse HEAD` is the laptop's HEAD SHA; the checkout is detached
   (`--abbrev-ref HEAD` prints `HEAD`, not the branch); the working tree equals the laptop's (dirty files
   included), but the index is plain HEAD, so staged changes show as unstaged. Clean laptop -> clean mini.
@@ -205,12 +208,24 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   through; add more with `-e NAME=VALUE`, or `-e NAME` to forward that variable's value from rrun's own
   environment (keeps it out of argv; unset → skipped with a notice). Values travel on stdin, never in `ps`. The remote command sees
   `RRUN_REMOTE=1`, and its `docker` talks to the mini engine directly.
-- **Containers it starts** with `docker run` / `docker create` carry `rdocker.rrun=<random per-run
-  token>`: removed when the run passes or is interrupted, **kept on failure** for inspection (`rrun: the
-  run failed; its containers stay ...`; `docker ps` / `logs` reach them; the 3 h idle rule reaps them).
-  **Compose is not labelled:** containers a run starts with `docker compose up/run` are *not* removed at
-  the end of the run and *are* mirrored to laptop localhost like any mini container; the normal janitor
-  rules (3 h idle stop, exited 24 h) reap them - `docker compose down` them yourself when done.
+- **Containers it starts** with `docker run` / `docker create` (and networks / volumes from `docker
+  network|volume create`) carry `rdocker.rrun=<random per-run token>` (the command has it as
+  `$RRUN_DOCKER_LABEL`): removed when the run passes or is interrupted, **kept on failure** for
+  inspection (`rrun: the run failed; its containers stay ...`; `docker ps` / `logs` reach them; the 3 h
+  idle rule reaps them). A container the job labels `rdocker.keep` is never removed by run cleanup.
+  **Compose:** each run gets its own project, `COMPOSE_PROJECT_NAME=rr<12 hex>` (unless the job sets
+  `COMPOSE_PROJECT_NAME` or `-p` itself); what that project leaves is removed with the run's containers.
+- **Docker scope on the shared worker engine (2026-11-11):** a job may only `rm` / `stop` / `kill` /
+  `restart` containers, `network rm` / `volume rm`, and `compose down|rm|stop|kill|restart` what it
+  created itself (its label, its compose project, or a project it brought up with `-p X up`). Anything
+  else is **refused by name and the command exits 1**: ``rrun: refused `docker rm -f pg-other`:
+  container pg-other is not this run's ...`` (its own targets in the same command still go; a target that
+  does not exist is passed to docker, which says so). `docker container|network|volume prune` is refused
+  unless scoped with `--filter label=$RRUN_DOCKER_LABEL`; `docker system prune` is always refused. This
+  is what ended "my test DB vanished mid-run": another run's harness cleanup can no longer reach it, so
+  `TEST_DB_KEEP_CONTAINERS=1` is no longer needed for that. A harness whose cleanup lists every matching
+  container (`docker ps -aq --filter name=...`) now gets exit 1 for the others' - scope it with
+  `--filter label=$RRUN_DOCKER_LABEL`.
 - **How many at once:** one run per laptop worktree (a lock); on the mini always `rr_slots_base` (2)
   runs, and up to `rr_slots` (6) while the mini has room (free memory % >= `rr_spare_min_free_pct` 25
   and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). A further run waits and
@@ -260,14 +275,30 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   128+signal and runs nowhere. `RRUN_STRICT=1`
   refuses that and exits 75. A shallow clone, or history the mini's `git fsck` rejects, also runs on
   the laptop, with the reason in the notice (`cannot send this repo to the Mac mini: ...`).
-- **Mini lost once GO was sent** (even if it may never have arrived) → exit **75** (`rrun: lost the Mac
-  mini mid-run - not re-running ...`). It is **never rerun automatically** (it may have half-run);
-  rerun by hand once `rdocker status` is green. If the laptop vanishes, the mini stops waiting (before
-  GO: nothing ran) or kills the run after `rr_hb_timeout` (60 s) without a heartbeat.
+- **Link lost once GO was sent → rrun reattaches (2026-11-11).** The started command does not depend
+  on the ssh session: on the worker it runs detached (its own session), its output spooled to
+  `~/rr/spool/<run-id>.out/.err` and its exit code to `<run-id>.rc` (run id: a uuid4 from the client).
+  When the link drops, rrun prints `rrun: lost the link to <worker> mid-run; reconnecting (1 of 3) - the
+  command keeps running there`, connects again with a **fresh ssh of its own** (never the shared
+  `rr-%C` master, whose death took every session down at once), up to `rr_reattach_tries` (3) within
+  `rr_reattach_window_s` (120 s; waits `rr_reattach_backoff_s` 0 / 10 / 30 s first), then `rrun:
+  reconnected to <worker>; the output goes on from where it broke off` - the rest of the output (no
+  byte twice) and the command's **real exit code**. If GO never arrived there, the reconnect says so
+  and it counts as lost *before* the start (safe to run elsewhere). Only when every reconnect fails
+  do the old rules apply: exit **75** (`rrun: lost the Mac mini mid-run - not re-running ...`), or one
+  re-run on another worker for a job that is safe to repeat (tsc, lint, vitest/jest, builds, DB jobs in
+  a pool). The worker side: before GO a lost laptop means nothing runs (`rr_hb_timeout`, 60 s); once
+  the command runs it lives on **180 s** without any client (`rr_detach_hb_s`), then it is cancelled
+  (process group TERM, KILL 10 s later; `outcome=lost`). A deliberate stop (second Ctrl-C, a hedge's
+  loser) is sent as an explicit KILL and cancels at once (`outcome=interrupted`). Spool files go 10
+  min after their run ended (or 1 h after their last change once no run holds them; a running job
+  touches its own every 5 min), so anything in `~/rr/spool` older than 1 h is safe to delete.
 - **Exit codes of rrun itself** (only before the command started, so never confused with its own):
   65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
   on the mini, 70 runner error, 73 slot busy past `rr_wait_min` (or the worker refused: share off / its Docker did
-  not start - then rrun tries the next worker), 75 lost the mini / strict fallback,
+  not start - then rrun tries the next worker), 75 lost the mini (every reconnect failed) / strict
+  fallback / **no eligible worker for this job** (fleet.json `classes` / `max_cost_s` / `cold_ok`, see
+  the scheduler; printed at once, nothing waits),
   **72 another rrun from this worktree held the worktree lock past the wait** (nothing ran; `rrun
   --mine` shows it), **124 the command hit its wall-clock cap and was killed** (the one code here that comes after the
   command started; `timeout(1)`'s convention, so a command's own `timeout` 124 looks the same - the
@@ -300,7 +331,11 @@ Troubleshooting: exit 72 → another rrun of this worktree is still running (`rr
 the command hit its cap (a hung test runner, e.g. vitest kept alive by open DB handles: fix the
 teardown, or `RRUN_TIMEOUT=<min>` if it is really that long). Falls back to the laptop every time → `rdocker doctor` (the push over ssh is the
 reachability test). Exit 73 → every worker stayed busy for `rr_wait_min` (the wait lines name the holders). Exit 75 → the
-link dropped; check `rdocker status`, then rerun. Exit 78 → `npm ci` / `prisma generate` / a local
+link dropped and no reconnect got through (check `rdocker status`, then rerun), or `rrun: no eligible
+worker for this job (class heavy, expected ~15m at speed 1.0): laptop takes only light/normal/db jobs
+(this is heavy); ...` - every worker's fleet.json eligibility rules it out (narrow the job, or shard it).
+A docker command refused with exit 1 inside a job → it targeted another run's container / network /
+volume, or an unscoped prune (see Docker scope above). Exit 78 → `npm ci` / `prisma generate` / a local
 package rebuild (`npm run <script>  (in ./<pkg>)` above it) failed on the mini (log above it); fix the
 lockfile / schema / build, or `RRUN=0` to run locally. Works locally but fails on the mini with a missing
 file → it is gitignored and not an allowlisted env file: commit it, or generate it in the command. First
@@ -312,6 +347,16 @@ Every job is re-planned from a fresh probe of every enabled worker (one ssh each
 about "down" is remembered between jobs), so a worker that sleeps or drops out is skipped on the next
 job and one that comes back (or is added to fleet.json) is used at once.
 
+- **Eligibility first, and hard (2026-11-11).** Optional fleet.json fields per worker: `classes` (the
+  job classes it takes: `light` / `normal` / `heavy` / `db` / `build`), `max_cost_s` (the longest
+  expected command it takes, in seconds on that worker: the same command's own history when it ran
+  twice or more, else the class median / default, divided by the worker's speed; no momentary load
+  factor) and `cold_ok: false` (never a job whose packages are not prepared there yet). No field = no
+  limit (the old behaviour). A worker that fails one is **not a candidate at all** for that job: not
+  ranked, not the wait host, no shard, no hedge, and a `cold_ok: false` worker is never warmed. `rrun
+  --where` lists it as `never <why>`. Nothing eligible → exit 75 at once with the reasons. A plan without
+  a probe (`--host`, a one-worker fleet) checks the class only. New fields need the matching code on
+  every client: an older rd_fleet rejects unknown fields and would ignore the whole fleet.
 - **Placement = earliest estimated finish.** `eta = cold + queue + job_cost / eff + rtt`;
   `eff = speed x cpu share x memory factor`. cold = 30 s without the repo's git mirror + 90 s without its
   packages; queue = 0 with a free slot, else when the first slot holder should finish (from the
@@ -398,7 +443,8 @@ repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per p
   the runner starts no engine on the home machine or anywhere), no allowlisted env files, no
   `route.log` line. A worktree with an rrun in flight is skipped this pass.
 - **Not warmed:** workers with `"shards": false` in fleet.json (the old minis: their warm sessions mostly
-  ended `lost` after ~30 s of prepare). They still take whole jobs, starting cold.
+  ended `lost` after ~30 s of prepare). They still take whole jobs, starting cold - unless they also say
+  `"cold_ok": false`: then never warmed either, and only jobs whose packages they already have.
 - **When:** a pass every 5 min; between passes an `ssh true` per worker every 60 s, and a worker that
   comes back online (Nick's MacBook waking up) starts a pass at once.
 - `rdocker warm --once [--repo PATH]` runs one pass by hand. Log: `~/.local/state/rdocker/warm.log`, one
