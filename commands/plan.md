@@ -87,7 +87,7 @@ Save as: `./tmp/ready-plans/YYYY-MM-DD-description.md`
 
 After saving the plan, enter an iterative review cycle. **Do not skip this step.** Repeat until the user confirms the plan is ready.
 
-**Review-round defaults:** substantial plans default to 4-6 total review rounds to diminishing returns. Each round runs FOUR lanes in parallel, each attacking a different failure class: one Claude breadth reviewer, one Claude `criticer` (value), one Codex executability pass at xhigh, one Codex value-critic pass at high (both via codex-exec.sh; graceful degrade when codex is unavailable or refuses — mark the degrade in the presented review, never drop it silently). When two or more lanes return, an anonymized meta-review runs as a Codex pass (`gpt-6-sol` at xhigh, backgrounded; skipped silently on failure).
+**Review-round defaults:** stop after 2 rounds in a row that find no NEW design problem (usually 2-3 rounds); fix design problems by simplifying, not by adding machinery, and keep the plan design-level (code review catches code detail). Each round runs FOUR lanes in parallel, each attacking a different failure class: one Claude breadth reviewer, one Claude `criticer` (value), one Codex executability pass and one Codex value-critic pass, both `gpt-6.1-sol` at high (both via codex-exec.sh; graceful degrade when codex is unavailable or refuses — mark the degrade in the presented review, never drop it silently). When two or more lanes return, an anonymized meta-review runs as a Codex pass (`gpt-6.1-sol` at high, backgrounded; skipped silently on failure).
 
 ### Loop:
 
@@ -121,7 +121,7 @@ Agent tool (call 2, sent in the SAME message as call 1) - VALUE lane, Claude:
 
    **TWO Codex plan lanes (per round, in the same batch as the Agent calls).** They exist to
    attack DIFFERENT failure classes and their prompts must stay materially different - near-identical
-   prompts are the failure this whole design prevents. Lane A runs at `xhigh` because executability
+   prompts are the failure this whole design prevents. Lane A runs on Sol at `high` because executability
    review is where a missed dependency costs a whole implementation round; lane B runs at `high`.
 
 ```bash
@@ -150,8 +150,8 @@ finding on its own line with a severity (CRITICAL/IMPORTANT/MINOR) and a categor
 EOF
 cat [path] >> "$PROMPT_B"
 
-CODEX_EFFORT=xhigh bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A" "$OUT_A" "$(pwd)"
-CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_B" "$OUT_B" "$(pwd)"
+CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A" "$OUT_A" "$(pwd)"
+CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_B" "$OUT_B" "$(pwd)"
 ```
 
    When the batch returns, read each `"$OUT_*"` and its `.status`:
@@ -188,7 +188,7 @@ CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_B" "$OU
      `($(date +%s) % 2) == 0` keep source order, else reverse it. The meta-agent never learns which
      letter was Claude and which was Codex, so it cannot defer to a model instead of to an argument.
 
-   - Run ONE meta-reviewer as a **Codex pass** (`gpt-6-sol` at `xhigh`). This lane judges other
+   - Run ONE meta-reviewer as a **Codex pass** (`gpt-6.1-sol` at `high`). This lane judges other
      reviewers' judgment, which is the hardest read in the loop, and a model outside the Claude
      lanes it is judging is the least likely to share their blind spots. Write the prompt to a temp
      file, then launch `codex-exec.sh` in the FOREGROUND of a Bash call made with
@@ -222,7 +222,7 @@ Review C (omit this block entirely if only two lanes returned):
 EOF
 
 # Bash tool call with run_in_background: true - this line runs in its FOREGROUND:
-CODEX_MODEL=gpt-6-sol CODEX_EFFORT=xhigh bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_M" "$OUT_M" "$(pwd)"
+CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_M" "$OUT_M" "$(pwd)"
 ```
 
    The `[path]` placeholder uses the same literal-placeholder convention as the two parallel reviewer prompts above — the orchestrator substitutes the actual saved-plan path at runtime.

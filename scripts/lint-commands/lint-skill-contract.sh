@@ -303,10 +303,10 @@ req "commands/prepare-pr.md" "CODEX_EFFORT=high bash "
 # dependency there costs a whole implementation round), value-critic at high. Pinning both is what
 # stops the pair collapsing back into one lane, or into two lanes with the same prompt and effort -
 # which is what it was before 2026-08-17 (two reviewers, byte-identical prompts, called independent).
-# Pinned to lane A's exact invocation (incl. "$PROMPT_A"), NOT a bare `CODEX_EFFORT=xhigh bash `:
+# Pinned to lane A's exact invocation (incl. "$PROMPT_A"), Sol high (owner 2026-11-11), NOT a bare effort prefix:
 # plan.md's meta-reviewer also runs Codex at xhigh, and a generic pin would let that line satisfy
 # this check even if the executability lane were deleted or dropped to another effort.
-req "$L" 'CODEX_EFFORT=xhigh bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A"'
+req "$L" 'CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high bash ~/.claude-dotfiles/scripts/codex-exec.sh "$PROMPT_A"'
 # The DIRECT `codex exec` sites in codex-review.md (4 file/describe lenses + the Step 6 verify)
 # deliberately do NOT take this prefix - they never read the variable. Do not "fix" them by adding one.
 
