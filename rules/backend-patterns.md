@@ -16,4 +16,4 @@ Use typed/specific errors, not generic catch-all. Let errors propagate with cont
 Create new objects rather than mutating existing ones. Use spread operators, `Object.assign`, or immutable update patterns. Never mutate function parameters.
 
 ## Input Validation
-Validate at system boundaries (API endpoints, form submissions, external data). Use schema validation (Zod, Joi, etc.) not manual checks. Trust internal function calls — don't re-validate data that was already validated upstream.
+Validate at system boundaries (API endpoints, form submissions, external data). Use schema validation (Zod, Joi, etc.) not manual checks. Trust internal function calls - don't re-validate data that was already validated upstream.

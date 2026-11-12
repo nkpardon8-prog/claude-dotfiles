@@ -1,37 +1,20 @@
 # Destructive Actions
 
 ## Silence is not approval
-An offer that got no answer is an offer that was **not accepted**. When you propose a destructive
-action — overwrite, delete, move, truncate, force-push, drop — and no answer comes back, that is a
-**no**, and asking twice does not convert it into a yes. Repetition is not consent; it only moves the
-count of unanswered questions. Do the non-destructive part, say plainly what you did not do and what
-you would need in order to do it, and leave the destructive half undone until someone actually says
-yes. The asymmetry is the whole reason: waiting costs a round trip, and being wrong costs work that
-no longer exists.
+An offer that got no answer was **not accepted**. When you propose a destructive action (overwrite,
+delete, move, truncate, force-push, drop) and no answer comes back, that is a **no**, and asking twice
+does not turn it into a yes. Do the non-destructive part, say plainly what you did not do and what you
+need in order to do it, and leave the destructive half undone until someone actually says yes.
 
 ## Never destroy a prior version in a shared or human-owned path
-`~/Downloads`, `~/Desktop`, `~/Documents`, a scratch directory another agent is working in — these
-hold files with no version history and, often, no other copy. **Never overwrite another agent's
-work.** Before writing over anything you did not create in one of these paths: write to a NEW
-filename, or copy the original to `<name>.bak` first, and say which you did. The failure this
-prevents already happened here — an agent found errors in a relay prompt authored by a different
-window, offered twice to fix it, got no reply, and overwrote it in place with no backup; the original
-was recoverable only because the acting agent still happened to hold the text in its context. That is
-luck, not a procedure.
+`~/Downloads`, `~/Desktop`, `~/Documents`, or a scratch directory another agent works in hold files with
+no version history and often no other copy. **Never overwrite another agent's work.** Before writing
+over anything you did not create there: write to a NEW filename, or copy the original to `<name>.bak`
+first, and say which you did.
 
-(SCOPE: paths with no undo. This is NOT a rule against ordinary in-repo edits — a tracked file under
-version control has `git` as its backup, and adding `.bak` files beside it is clutter, not safety.
-The line is whether a prior version still exists somewhere after you write.)
+A `PreToolUse` hook (`scripts/hooks/shared-path-overwrite-guard.sh`) backs up `Write`/`Edit` targets
+in those paths to `<name>.bak-<UTC minute>`. It is a net, not a licence: it does not cover `Bash`
+(`rm`, `mv`, `>`) or symlinks, and may be off. Behave as though it is not there.
 
-**A machine now backs the second rule, and it is a net, not a licence.** A `PreToolUse` hook
-(`scripts/hooks/shared-path-overwrite-guard.sh`) copies the prior contents to `<name>.bak-<UTC minute>`
-before a `Write`/`Edit` lands on an existing file in those paths. It exists because a rule that lives
-only in a context window enforces nothing, and this failure is both silent and able to recur — the two
-conditions `verify-by-mechanism.md` sets before a rule earns a guard. It deliberately does NOT block:
-it makes the destruction reversible, it does not decide whether you were right to destroy. So it
-changes nothing about your obligation — still write a new filename, still say what you overwrote and
-where the backup is. And it does not cover `Bash` (`rm`, `mv`, `>`), a **symlink** target (following
-one copied the link's target into the shared directory as a new plaintext file, so it now skips them
-outright — a symlink has no prior contents of its own to preserve), a window that has not restarted
-since the hook was added, or a machine where it is disabled. Its own backups age out after 14 days.
-Behave as though it is not there.
+(SCOPE: paths with no undo. A tracked file in a git repo has git as its backup; `.bak` files beside it
+are clutter, not safety.)
