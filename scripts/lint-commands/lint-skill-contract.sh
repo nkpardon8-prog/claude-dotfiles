@@ -157,33 +157,62 @@ req_before() { # req_before <file> <fixed-string>
 }
 
 M="commands/mission.md"
-# The permission allowlist byte-matches this invocation prefix. Pre-edit the file
-# carries 25 true invocation lines with the full literal prefix (9 further lines
-# mention mission-write.sh in prose - those are fine without it).
-req "$M" "bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh" 25
-# tilde/$HOME variants of the invocation would MISS the allowlist byte-match and
-# permission-prompt an autonomous run - forbid them outright.
-if staged_has "$M"; then
-    mf="$(resolve_content "$M")"
+MW_WAKE="docs/mission/wake.md"
+MW_REF="docs/mission/reference.md"
+# --- /mission playbook pins (mission rework proto=2, 2026-11-11) ---------------------------------------
+# The permission allowlist byte-matches this invocation prefix. The rework cut the playbook from 178 KB
+# to about 26 KB: 17 true invocation lines in mission.md, 5 in wake.md (the file every tick reads).
+req "$M" "bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh" 15
+req "$MW_WAKE" "bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh" 4
+# tilde/$HOME variants of the invocation would MISS the allowlist byte-match and permission-prompt an
+# autonomous run - forbid them in the playbook AND both reference files an agent executes from.
+for _mf_rel in "$M" "$MW_WAKE" "$MW_REF"; do
+    staged_has "$_mf_rel" || continue
+    mf="$(resolve_content "$_mf_rel")"
     if [ -z "$mf" ]; then
-        echo "lint-skill-contract: FAIL $M is missing/deleted (cannot check mission-write.sh invocation shape)" >&2
+        echo "lint-skill-contract: FAIL $_mf_rel is missing/deleted (cannot check mission-write.sh invocation shape)" >&2
         fail=1
     else
         bad=$(grep -nE '(~|\$HOME)/\.claude-dotfiles/scripts/hooks/mission-write\.sh' "$mf" || true)
         if [ -n "$bad" ]; then
-            echo "lint-skill-contract: FAIL $M has ~/\$HOME mission-write.sh invocation variant(s) (allowlist requires the absolute literal path):" >&2
+            echo "lint-skill-contract: FAIL $_mf_rel has ~/\$HOME mission-write.sh invocation variant(s) (allowlist requires the absolute literal path):" >&2
             echo "$bad" >&2
             fail=1
         fi
     fi
-fi
-for tok in "[mission] criticer" "[mission] FAIL" "[mission] live-verify" \
+done
+# LOG shapes and lifecycle tokens the resume read and the writer key on.
+for tok in "[mission] FAIL" "[mission] live-verify" \
            "[mission] MISSION-CLEARED" "[mission] MISSION-REBASELINED" "[mission] MISSION-START" \
            "[mission] PART-DONE" "[mission] PART-RETIRED" "[mission] PART-START" \
            "[mission] SNAPSHOT" "[mission] test-trust" "[mission] VOID" \
-           "panel-unavailable-3x"; do
+           "panel-unavailable-3x" \
+           "[mission] RECIPE part=" "[mission] SWEEP part=" "[mission] FULL-SUITE part=" \
+           "[mission] ANCHOR part=" "proto=2 worktree=" "park=<reason>" \
+           "budget-state" "part-over-budget" "part-retired"; do
     req "$M" "$tok"
 done
+# bank-review is the ONLY writer of proto=2 review evidence and of every dry= raise. Its instruction
+# must survive in the re-injected core: a conductor that forgets it hand-logs evidence the writer refuses.
+req "$M" "bank-review" 3
+req_before "$M" "bank-review"
+req_before "$M" "budget-state"
+# The short tick: a cold wake reads wake.md, never the whole playbook (about 46k tokens per tick).
+req "$M" "docs/mission/wake.md"
+req "$M" "Read <WAKE> and run its §12.1 wake routine"
+req "$M" "§12.1 wake routine"
+absent "$M" "Read the PLAYBOOK"
+# Retired fixed-count review rules (replaced by recipe budgets and the wall clock).
+absent "$M" "BLOCKING-producing rounds"
+absent "$M" "dry pair EXEMPT"
+absent "$M" "MISSION_PART_MAX_TICKS"
+# wake.md: the routine, its exit gate, the verbatim resume-read awk (09 extracts it), the budget read.
+req "$MW_WAKE" "## §12.1 The wake routine"
+req "$MW_WAKE" "EXIT GATE"
+req "$MW_WAKE" 'last_decision=$(awk -F'
+req "$MW_WAKE" 'mission_state=$(awk -F'
+req "$MW_WAKE" "budget-state"
+# ------------------------------------------------------------------------------------------------------
 
 P="commands/post-compact-resume.md"
 for tok in "no-handoff" "arg-not-my-session" "self-unverifiable" "oversize" \
@@ -263,13 +292,12 @@ req "$X" 'subagent_type: "review-lane-sonnet"' 2
 # parse - so removing any one of them goes red instead of quietly restoring the false green.
 req "$X" "Claude-lenses: N/3"
 req "$X" "claude-<slug>.usable"
-req "commands/mission.md" "parse-claude-header"
 # Item 7: the round line proves ARITHMETIC, not that a review happened. REVIEW-EVIDENCE binds a
 # clean round to the report that produced it, and _mw_partdone_check refuses convergence unless both
 # folding rounds read codex=4/4 claude=3/3. The gate is only reachable if the playbook still tells the
 # agent to EMIT the line - that emission is the one half no machine can force, so pin the instruction.
-req "commands/mission.md" "REVIEW-EVIDENCE part="
-req "commands/mission.md" "m\$N-review-evidence-r\$K"
+# (Mission rework 2026-11-11: for proto=2 parts the writer verb bank-review parses both headers and
+# writes REVIEW-EVIDENCE itself, so the mission.md pins moved to the bank-review pins in the M block.)
 # The counts and the non-code scoping are what an agent reads BEFORE it launches, and
 # Step 4 is entered by both target classes - a count that drifts below the marker is a
 # count nobody applies.
@@ -322,10 +350,36 @@ absent "$X" "terra"
 absent "$X" "Terra"
 # Delta/ledger contract /mission parses (Step 0b + 6e). Dropping any leg silently turns a mission
 # round into one that can never prove `tagged == blocking`.
-req "$X" "Scope: <delta|full> base=<sha12>"
-req "$X" "TAG | <TYPE-KEY> | new|repeat | <area> | <one line>"
+req "$X" "Scope: <delta|full> base=<sha12> head=<sha12>"
+req "$X" "TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>"
 req "$X" "Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new:"
 req "$X" "Verify: failed"
+req "$X" "Verify: deferred"
+# A /mission round (--ledger or --verify) runs at high, final: no xhigh, no self-escalation (mission
+# rework 2026-11-11). Without the pin, Step 0's one-shot escalation would quietly fire inside a loop.
+req_before "$X" 'a /mission round: `EFFORT="high"`, final'
+# Panel completeness per scope (plan 4.2): the code-round panel is 4 Codex + 3 Claude + the outer
+# implementation-reviewer (the --with file) + verify. Plan rounds are /plan --mission's contract.
+req "$X" "A mission code round is complete only with"
+
+# --- /plan --mission and --roadmap (mission rework 2026-11-11, plan 3.1 + 4.3) ---
+# bank-review scope=plan parses this round report; each literal below is a field it reads or a
+# rule a silent drift would remove (a missing lane token reads as a complete panel).
+req "$L" "--mission"
+req "$L" "--roadmap"
+req "$L" "Plan-review: round=<K> | Model: gpt-6.1-sol | Plan-lanes: N/4"
+req "$L" "TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>"
+req "$L" "Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new:"
+req "$L" "Design-new: <n> | Open-design: <n>"
+req "$L" "## Builder notes"
+req "$L" "[mission] RECIPE part=<N> v=<1|2> tier=<low|normal|high>"
+absent "$L" "gpt-6-sol"
+absent "$L" "terra"
+
+# --- implement.md Step 3 (mission rework 5.1): NO_REVIEW skips only the WAVE GATE, never the
+# same-tree chunk-parallel register, so /mission's parallel chunks still spawn in one message.
+req_before "$I" "skip the WAVE GATE; Step 4's same-tree parallel register still applies"
+absent "$I" "otherwise proceed serial"
 
 # --- agents/*.md frontmatter: model + effort must be values the harness ACTUALLY honors ---
 # PROVEN by live probe 2026-08-17, not assumed: frontmatter `model:` and `effort:` are both

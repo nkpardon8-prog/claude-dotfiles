@@ -13,9 +13,9 @@
 # Real throwaway git repos + the real mission-write.sh verbs. macOS bash 3.2 compatible.
 
 set -u
-MW="$HOME/.claude-dotfiles/scripts/hooks/mission-write.sh"
-DC="$HOME/.claude-dotfiles/scripts/hooks/mission-drift-check.sh"
-LIB="$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh"
+MW="$(cd "$(dirname "$0")" && pwd)/mission-write.sh"
+DC="$(cd "$(dirname "$0")" && pwd)/mission-drift-check.sh"
+LIB="$(cd "$(dirname "$0")" && pwd)/lib/mission-bridge.sh"
 . "$LIB" || { echo "FATAL: cannot source $LIB"; exit 2; }
 
 PASS=0; FAIL=0; TMPS=""

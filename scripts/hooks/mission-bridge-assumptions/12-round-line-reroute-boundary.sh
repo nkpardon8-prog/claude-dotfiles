@@ -17,7 +17,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/_common.sh"
 atest_init "12-round-line-reroute-boundary"
 
-. "$HOME/.claude-dotfiles/scripts/hooks/lib/mission-bridge.sh" 2>/dev/null \
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/mission-bridge.sh" 2>/dev/null \
   || atest_infra "cannot source mission-bridge.sh"
 MWSH="$(cd "$HERE/.." && pwd)/mission-write.sh"
 [ -f "$MWSH" ] || atest_infra "mission-write.sh not found at $MWSH"

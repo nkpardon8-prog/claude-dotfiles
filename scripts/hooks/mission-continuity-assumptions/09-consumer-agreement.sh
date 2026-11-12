@@ -33,8 +33,9 @@ DIR0="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 mc_gate
 mc_setup "09-consumer-agreement"
 
-MISSION_MD="${HOOKS}/../../commands/mission.md"
-[ -f "$MISSION_MD" ] || { echo "INFRA: missing commands/mission.md" >&2; exit 3; }
+# The wake's resume-read awk lives in docs/mission/wake.md since the mission rework (the only file a tick reads).
+MISSION_MD="${HOOKS}/../../docs/mission/wake.md"
+[ -f "$MISSION_MD" ] || { echo "INFRA: missing docs/mission/wake.md" >&2; exit 3; }
 
 # --- EXTRACT the wake's last_decision awk program verbatim from mission.md (§12.1) ------------------
 # Grab from the `last_decision=$(awk -F...` line through the closing `' /tmp/mission-resume.$$` line,

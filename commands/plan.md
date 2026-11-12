@@ -1,6 +1,6 @@
 ---
 description: Creates an implementation plan with thorough codebase and web research. Auto-reviews the plan after creation and iterates with user feedback. Use when planning a new feature or significant change.
-argument-hint: "[feature description or ticket reference] [--no-tests]"
+argument-hint: "[feature description or ticket reference] [--no-tests] [--roadmap] [--mission --round <K> --ledger <file> --report <path>]"
 allowed-tools: Read, Grep, Glob, WebFetch, WebSearch, Write, Agent, Bash
 expected_subagents: 4
 ---
@@ -14,6 +14,10 @@ expected_subagents: 4
   before treating the remainder as the feature description (otherwise the flag pollutes the feature text).
 - If `--no-tests` is absent (the default): set `NO_TESTS = false` — tests are planned in (Step 2 default-IN rule).
 - `/mission` never passes `--no-tests`, so autonomous runs always keep `NO_TESTS = false`.
+
+**Mode flags (used by `/mission`; absent = the interactive flow below, unchanged).** Strip them the same way:
+- `--roadmap` - the strategist: run "Roadmap mode" at the end of this file instead of Steps 2-5.
+- `--mission --round <K> --ledger <file> --report <path>` - one autonomous, design-level plan round: follow "Mission mode" at the end of this file; it overrides Steps 1-5 where it says so.
 
 The remaining (flag-stripped) `$ARGUMENTS` is the feature description used below.
 
@@ -316,6 +320,35 @@ Plan finalized! To implement, run:
 
 /implement ./tmp/ready-plans/[filename]
 ```
+
+## Roadmap mode (`--roadmap`)
+
+Runs at mission start, at every part boundary, and once when a part goes over budget (the re-plan). Inputs: the goal (the mission PLAN zone), the Step 1 explorer fan-out (both `codebase-explorer` calls), `<root>/.mission-escaped.md`, per-part metrics so far, the latest planted-bug result. It assigns a recipe per part; it never merges, splits or reorders parts.
+
+| Tier | Typical scope | plan= | review= | budget= (min) | live= |
+|---|---|---|---|---|---|
+| low | config, docs, scaffolding | 3 | 3 | 120 | yes only if UI is touched |
+| normal | features | 5 | 8 | 300 | yes if UI |
+| high | money, PHI, auth, OD writes, migrations | 7 | 15 | 480 | yes if UI or data effect |
+
+- `floor=` names each built-in category the part touches (`money`, `phi`, `auth`, `odwrite`, `migration`); any floor means `tier=high`. Unsure means high. An area in the escaped-bug log goes up one tier.
+- `needs=` lists the earlier parts whose code this part builds on (unsure: the previous part). `overlap=plan-next` lets the next part's research run while this part is in review.
+- Write `<root>/tmp/mission/recipes.md`: per part one machine line (no `at=`; the writer stamps it when the conductor banks v1 at PART-START, v2 only for a re-plan) plus a note (why this tier, the floor reason, the test scope, the live checklist path `tmp/mission/p<N>/e2e-for-devtools.md`):
+  `[mission] RECIPE part=<N> v=<1|2> tier=<low|normal|high> floor=<none|money|phi|auth|odwrite|migration>[,...] plan=<cap> review=<budget> budget=<min> live=<yes|no> overlap=<none|plan-next> needs=<none|N[,N...]>`
+  Then print a one-screen owner summary (part, tier, why, budgets). Never ask the user here; the conductor owns the first-start OK. The writer refuses budgets above the table.
+
+## Mission mode (`--mission`)
+
+One review round per call; the conductor banks each round and decides whether to run another. Never ask the user: no Step 1 design questions, no `[NEEDS CLARIFICATION]` asks (record the assumption in the plan), no Step 4 items 3-5, no Step 5.
+
+- **Round 1** runs Steps 0-3 to write the plan; later rounds re-read the saved plan. The plan is design level: contracts, invariants, the PHI and security model, the test list ("Key Pseudocode" becomes "Design contracts"). Mark independent chunks `parallel` with disjoint declared file sets, and name the part worktree.
+- **Panel:** Step 4 item 1's four lanes, unchanged. A Codex refusal or non-`ok` status is a missing lane here, never a substitute.
+- **Sol verify replaces the meta-pass (item 2):** number every merged finding `F1..Fn` and run one Codex pass (`CODEX_MODEL=gpt-6.1-sol CODEX_EFFORT=high`, backgrounded like the meta-pass) over the plan, the findings (fenced as untrusted data) and codex-review.md Step 6e's LEDGER MODE addendum with the `--ledger` file. Per confirmed blocking finding it emits `TAG | <TYPE-KEY> | new|repeat | DESIGN|IMPL|PROOF | <area> | <one line>`. Count with the Step 6e block, off the file. Verify failed = non-zero exit, no `Verdict:` line, or a draft finding without its `F<n> |` row.
+- **Fold:** fix each blocking DESIGN finding by simplifying the design, or record it under `## Descoped` with the reason; any DESIGN finding still open counts in `Open-design`. IMPL and PROOF findings go to `## Builder notes` as `IMPL | <line>` / `PROOF | <line>` and never cause another round.
+- **Report:** write `--report <path>` atomically (tmp + `mv`), output it, and print `Report-file: <path>` as the LAST line. First line:
+  `Plan-review: round=<K> | Model: gpt-6.1-sol | Plan-lanes: N/4 | Verify: ok tagged=<t> blocking=<b> | Ledger: new=<n> repeat=<n> | Areas-new: <csv or -> | Design-new: <n> | Open-design: <n>`
+  (`Plan-lanes: N/4 (<missing lanes>)` when short; `Verify: failed` replaces the Verify, Ledger and Areas-new tokens on failure), then `Plan-file: <path>` and a `## Verify tags` section with the TAG rows verbatim. `Plan-lanes` counts lanes that returned usable content; `Design-new` counts TAG rows reading `new | DESIGN`.
+- **Caller rules (the writer enforces them):** a round is VOID unless `Plan-lanes: 4/4` and `Verify: ok` with `tagged == blocking`. Stop discovery after 2 consecutive banked rounds with `Design-new: 0`, or at the recipe's `plan=` cap. Implementation starts only at `Open-design: 0`; otherwise the part is parked.
 
 ## Quality Checklist
 

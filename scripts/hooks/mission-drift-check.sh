@@ -47,13 +47,18 @@ if [ -z "$parts" ]; then
   echo "drift-check: no convergence snapshots yet (nothing to check)"; exit 0
 fi
 
-current=$(_mission_tree_fingerprint "$root" 2>/dev/null)
 drift=0; checked=0
 for p in $parts; do
   # S2 (round-4): double-anchored ($1 snapshot idtag column + $2 body prefix), mirroring mission-write.sh's
   # _mw_partdone_check reader so a forged free-text SNAPSHOT line cannot be picked as the stamp.
   snapline=$(printf '%s\n' "$stream" | awk -F'\t' -v pn="$p" '$1 ~ /^(g[0-9]+-)?snap-p[0-9]+-conv-/ && $2 ~ ("^\\[mission\\] SNAPSHOT part=" pn "[^0-9]") && $2 ~ "kind=converged"' | tail -1)
   stamped=$(printf '%s' "$snapline" | sed -n "s/.*tree=\\([A-Za-z0-9_.:-]*\\).*/\\1/p")
+  # VERSION-AWARE (rework plan 5.6): a ver=2 snapshot is the clean-HEAD tree of the part worktree named
+  # on its proto=2 PART-START; a v1 snapshot (legacy part) is still compared with the v1 root algorithm.
+  case "$snapline" in
+    *" ver=2") current=$(_mission_tree_fingerprint_v2 "$(mission_part_worktree "$stream" "$p" "$root")" 2>/dev/null) ;;
+    *)         current=$(_mission_tree_fingerprint "$root" 2>/dev/null) ;;
+  esac
   checked=$((checked + 1))
   case "$current" in
     ''|nogit|nohead|nohash)

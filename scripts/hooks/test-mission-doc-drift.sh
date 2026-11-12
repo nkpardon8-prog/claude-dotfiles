@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test-mission-doc-drift.sh — pins commands/mission.md against silent drift.
+# test-mission-doc-drift.sh — pins commands/mission.md (+ docs/mission/wake.md, reference.md) against silent drift.
+# Rewritten for the mission rework (proto=2, 2026-11-11): budgets by recipe, rubric once, fixed caps gone.
 #
 # WHY. mission.md is a CONTRACT the model executes, and its two recurring failure modes are both
 # silent: (a) a rule stated three times in three places, so a fix lands in one and the other two keep
@@ -39,90 +40,104 @@ printf 'test-mission-doc-drift\n  doc: %s\n  code: %s\n' "$DOC" "$MW"
 # share a line read as one - a mutant that duplicated the rubric inline passed against the -c version.
 dgrep() { grep -a -o -F "$1" "$DOC" 2>/dev/null | wc -l | tr -d ' '; }
 
-# ── 1. The undefined "hard cap 6" is gone from EVERY site ───────────────────────────────────────
-# It was stated three times with no behaviour attached, which left dry=2 as the only real exit.
-N=$(dgrep 'hard cap 6'); M=$(grep -a -ci 'hard cap 6' "$DOC" | tr -d ' ')
-if [ "${M:-0}" = 0 ]; then pass "the behaviourless 'hard cap 6' is absent everywhere"
-else fail "the behaviourless 'hard cap 6' is absent everywhere" "$M occurrence(s) remain"; fi
+WAKE="${3:-$HERE/../../docs/mission/wake.md}"
+REF="${4:-$HERE/../../docs/mission/reference.md}"
+[ -r "$WAKE" ] || { printf 'FATAL: cannot read %s\n' "$WAKE"; exit 2; }
+[ -r "$REF"  ] || { printf 'FATAL: cannot read %s\n' "$REF";  exit 2; }
+# All three mission docs, for "stated exactly once" checks: a rule restated in a sibling file drifts too.
+agrep() { cat "$DOC" "$WAKE" "$REF" | grep -a -o -F "$1" 2>/dev/null | wc -l | tr -d ' '; }
 
-# ── 2. The cap is DEFINED exactly once, and by what it does ─────────────────────────────────────
-N=$(dgrep 'BLOCKING-producing rounds')
-if [ "${N:-0}" -ge 1 ]; then pass "the cap is stated in terms of BLOCKING-producing rounds"
-else fail "the cap is stated in terms of BLOCKING-producing rounds" "no such statement found"; fi
-
-N=$(dgrep 'dry pair EXEMPT'); N2=$(dgrep 'pair is EXEMPT')
-if [ "${N:-0}" -ge 1 ] || [ "${N2:-0}" -ge 1 ]; then pass "the dry pair is stated EXEMPT from the cap"
-else fail "the dry pair is stated EXEMPT from the cap" "the unclosable-part trap is unguarded"; fi
-
-# ── 3. The canonical BLOCKING rubric exists, and is defined by ENUMERATION not confidence ───────
-N=$(dgrep 'Classify by which list it belongs to')
-if [ "${N:-0}" = 1 ]; then pass "the BLOCKING rubric is stated exactly once (canonical)"
-else fail "the BLOCKING rubric is stated exactly once" "found $N — 0 means deleted, >1 means it can drift"; fi
-
-N=$(dgrep 'not by how confident')
-if [ "${N:-0}" -ge 1 ]; then pass "the rubric explicitly rejects confidence as the tie-break"
-else fail "the rubric explicitly rejects confidence as the tie-break" "the everything-is-blocking regression is unguarded"; fi
-
-# ── 4. Both park paths exist and BOTH carry the required disposition field ──────────────────────
-for slug in cap-exhausted-blocking part-over-budget; do
-  N=$(dgrep "reason=$slug")
-  if [ "${N:-0}" -ge 1 ]; then pass "park path reason=$slug is documented"
-  else fail "park path reason=$slug is documented" "missing"; fi
+# ── 1. Fixed round counts are gone; budgets come from the recipe ────────────────────────────────
+# The fixed counts ("hard cap 6", the 3-blocking-round cap with an exempt dry pair, the 4-6 / 3-6 soft
+# targets) drove the 11-, 17- and 33-round loops. proto=2 budgets come from the RECIPE and the wall clock.
+for gone in 'hard cap 6' 'BLOCKING-producing rounds' 'dry pair EXEMPT' 'MISSION_PART_MAX_TICKS' 'MISSION_PART_MAX_MINUTES' '4-6 rounds' '3-6 rounds'; do
+  N=$(agrep "$gone")
+  if [ "${N:-0}" = 0 ]; then pass "retired fixed-count rule absent: $gone"
+  else fail "retired fixed-count rule absent: $gone" "$N occurrence(s) remain"; fi
 done
-N=$(dgrep 'disposition=')
-if [ "${N:-0}" -ge 1 ]; then pass "the park path requires a disposition= for the code left in the tree"
-else fail "the park path requires a disposition=" "later parts would build on an undeclared tree"; fi
+for k in '[mission] RECIPE part=' 'review=<budget>' 'budget=<min>' 'budget-state'; do
+  N=$(agrep "$k")
+  if [ "${N:-0}" -ge 1 ]; then pass "budget by recipe: doc names $k"
+  else fail "budget by recipe: doc names $k" "missing"; fi
+done
 
-# ── 5. A park must NEVER be a STOP (a STOP freezes every remaining part) ────────────────────────
-N=$(dgrep 'never a STOP')
-if [ "${N:-0}" -ge 1 ]; then pass "the park is explicitly distinguished from a STOP"
-else fail "the park is explicitly distinguished from a STOP" "missing"; fi
+# ── 2. The BLOCKING rubric is stated exactly ONCE across the playbook and its reference files ─────
+N=$(agrep 'a test that can pass while the thing it guards is broken')
+if [ "${N:-0}" = 1 ]; then pass "the BLOCKING rubric is stated exactly once (canonical)"
+else fail "the BLOCKING rubric is stated exactly once" "found $N - 0 means deleted, >1 means it can drift"; fi
+N=$(agrep 'not by how confident')
+if [ "${N:-0}" -ge 1 ]; then pass "the rubric rejects confidence as the tie-break"
+else fail "the rubric rejects confidence as the tie-break" "the everything-is-blocking regression is unguarded"; fi
 
-# ── 6. DOC <-> CODE: the frozen-window claim is actually enforced by mission-write.sh ───────────
-# §6.2 tells the conductor a phase=fix after the dry=1 bank is REFUSED. That is only true because
-# the PART-DONE fold tracks `act` (any fix/implement/VOID/findings>0 line) and requires it to be
-# ordered BEFORE the dry=1 line. Delete that and the doc becomes a wish.
+# ── 3. Park: non-blocking, never a STOP, never an AWAIT, carries disposition + range ────────────
+for k in 'park=<reason>' 'disposition=' 'reverted | isolated | left-with-recorded-risk' 'range=<base12>..<head12>' 'never a STOP' 'never opens a human AWAIT'; do
+  N=$(agrep "$k")
+  if [ "${N:-0}" -ge 1 ]; then pass "park contract names: $k"
+  else fail "park contract names: $k" "missing"; fi
+done
+
+# ── 4. DOC <-> CODE (legacy fold): the FROZEN window after dry=1 is still machine-enforced ────────
 if grep -a -q 'FROZEN' "$DOC"; then pass "doc states the post-dry=1 window is FROZEN"
 else fail "doc states the post-dry=1 window is FROZEN" "missing"; fi
-
 if grep -a -q '!(act>rl\[a\])' "$MW"; then
-  pass "CODE actually enforces it (PART-DONE fold rejects an actionable event after dry=1)"
+  pass "CODE enforces it (PART-DONE fold rejects an actionable event after dry=1)"
 else
-  fail "CODE actually enforces it" "the '!(act>rl[a])' guard is gone from mission-write.sh — the doc's FROZEN claim is now false"
+  fail "CODE enforces it" "the '!(act>rl[a])' guard is gone from mission-write.sh - the doc's FROZEN claim is now false"
 fi
+if grep -a -q 'convergence-not-machine-clean' "$MW"; then pass "CODE refuses PART-DONE with convergence-not-machine-clean"
+else fail "CODE refuses PART-DONE with convergence-not-machine-clean" "refusal path missing"; fi
 
-if grep -a -q 'phase=fix' "$MW" && grep -a -q 'convergence-not-machine-clean' "$MW"; then
-  pass "CODE refuses PART-DONE with convergence-not-machine-clean"
-else
-  fail "CODE refuses PART-DONE with convergence-not-machine-clean" "refusal path missing"
-fi
-
-# ── 7. DOC <-> CODE: the spend brake's settings are named in the doc AND the stall marker the ───
-#      wake routine reads is the one the liveness hook actually writes.
-for k in MISSION_PART_MAX_TICKS MISSION_PART_MAX_MINUTES; do
-  N=$(dgrep "$k")
-  if [ "${N:-0}" -ge 1 ]; then pass "spend-brake setting $k is named in the doc"
-  else fail "spend-brake setting $k is named in the doc" "missing"; fi
+# ── 5. DOC <-> CODE (proto=2): every writer verb, shape and refusal the playbook relies on exists ──
+# The writer (chunk A of the mission rework) is built in parallel with this playbook. Default is STRICT:
+# a doc that names a verb the writer lacks is exactly the drift this file exists to catch.
+# MISSION_DOC_DRIFT_WRITER_PENDING=1 downgrades ONLY this block to SKIP, for a branch that carries the
+# playbook but not yet the writer. It is never set in CI.
+proto2() {  # proto2 <label> <file> <literal>
+  if grep -a -q -F -- "$3" "$2" 2>/dev/null; then pass "$1"
+  elif [ "${MISSION_DOC_DRIFT_WRITER_PENDING:-}" = 1 ]; then printf '  SKIP  %s (writer pending)\n' "$1"
+  else fail "$1" "'$3' not found in $2"; fi
+}
+for verb in bank-review budget-state; do
+  N=$(agrep "$verb")
+  if [ "${N:-0}" -ge 1 ]; then pass "doc names verb $verb"; else fail "doc names verb $verb" "missing"; fi
+  proto2 "CODE: mission-write.sh implements $verb" "$MW" "$verb"
 done
+for shape in RECIPE SWEEP FULL-SUITE ANCHOR; do
+  N=$(agrep "[mission] $shape part=")
+  if [ "${N:-0}" -ge 1 ]; then pass "doc defines the $shape line"; else fail "doc defines the $shape line" "missing"; fi
+  proto2 "CODE: mission-write.sh validates the $shape shape" "$MW" "$shape"
+done
+for refusal in part-over-budget part-retired; do
+  N=$(agrep "$refusal")
+  if [ "${N:-0}" -ge 1 ]; then pass "doc names refusal $refusal"; else fail "doc names refusal $refusal" "missing"; fi
+  proto2 "CODE: mission-write.sh refuses with $refusal" "$MW" "$refusal"
+done
+proto2 "CODE: cutover refusal tells a running conductor to reload the playbook" "$MW" "re-read commands/mission.md"
+WD="$HERE/mission-watchdog.sh"
+N=$(agrep 'mission-watchdog.sh')
+if [ "${N:-0}" -ge 1 ]; then pass "doc launches the helper watchdog"; else fail "doc launches the helper watchdog" "missing"; fi
+proto2 "CODE: the watchdog exists and reports STALL" "$WD" "STALL"
 
-LIVENESS="$HERE/mission-liveness.sh"
-if [ -r "$LIVENESS" ]; then
-  if grep -a -q 'stall-alert' "$DOC" && grep -a -q 'stall-alert' "$LIVENESS"; then
-    pass "the stall-alert filename matches between the doc and the hook that writes it"
-  else
-    fail "the stall-alert filename matches between doc and hook" \
-         "doc=$(grep -a -c 'stall-alert' "$DOC" | tr -d ' ') hook=$(grep -a -c 'stall-alert' "$LIVENESS" | tr -d ' ') — the conductor would read a file nobody writes"
-  fi
-fi
+# ── 6. The wake reads wake.md, not the playbook; wake.md holds the decision rows the plan moved ───
+for k in 'budget-state' 'watchdog' 'Close join' 'Repair'; do
+  if grep -a -q -F -- "$k" "$WAKE"; then pass "wake.md decision table carries: $k"
+  else fail "wake.md decision table carries: $k" "missing"; fi
+done
+# Budget and watchdog rows must come BEFORE the job-AWAIT rows, so a pending job's heartbeat exit
+# can never skip an over-budget part or a stalled helper (plan 5.5).
+ORD=$(python3 -c "
+import sys
+s=open(sys.argv[1],encoding='utf-8').read()
+t=s.find('## Decision table'); s=s[t:]
+a=s.find('over ... replan=1'); w=s.find('watchdog status file'); j=s.find('await kind=job ready=0')
+print('ok' if -1 not in (a,w,j) and a<j and w<j else 'bad')" "$WAKE")
+if [ "$ORD" = ok ]; then pass "budget + watchdog rows precede the job-AWAIT rows"
+else fail "budget + watchdog rows precede the job-AWAIT rows" "order broken or row missing"; fi
 
-# ── 7b. DOC <-> CODE: the Codex-may-write split (6.5) is backed by the guarded wrapper ──────────
-# 6.5 tells the conductor Codex may write code THROUGH ONE WRAPPER, and that the wrapper refuses a
-# main working tree. If the wrapper loses that refusal the doc is licensing an unguarded writable
-# Codex pointed at the tree holding the mission bridge.
+# ── 7. DOC <-> CODE: the Codex-may-write split (6.5) is backed by the guarded wrapper ───────────
 CBC="$HERE/../codex-build-chunk.sh"
 if grep -a -q 'codex-build-chunk' "$DOC"; then pass "doc routes Codex code-writing through the wrapper"
 else fail "doc routes Codex code-writing through the wrapper" "missing"; fi
-
 if [ -r "$CBC" ]; then
   if grep -a -q 'refused-main-worktree\|main-worktree' "$CBC" && grep -a -q 'workspace-write' "$CBC"; then
     pass "CODE: the wrapper refuses a main working tree (the sandbox-boundary property)"
@@ -132,8 +147,17 @@ if [ -r "$CBC" ]; then
   if grep -a -q 'no-changes' "$CBC"; then pass "CODE: zero changed files is a failure, not an ok"
   else fail "CODE: zero changed files is a failure" "the no-op guard is gone"; fi
 else
-  fail "codex-build-chunk.sh exists" "not found at $CBC — 6.5 names a wrapper that is not there"
+  fail "codex-build-chunk.sh exists" "not found at $CBC - 6.5 names a wrapper that is not there"
 fi
+
+# ── 7b. Model routing: Terra for cheap work only, Sol for every review and verify ───────────────
+for k in 'gpt-6.1-terra' 'gpt-6.1-sol'; do
+  if grep -a -q -F -- "$k" "$DOC"; then pass "model routing names $k"; else fail "model routing names $k" "missing"; fi
+done
+if grep -a -i 'terra' "$DOC" "$WAKE" "$REF" | grep -a -i -q 'review lane\|verify lane\|for review'; then
+  if grep -a -q 'Never Terra for review' "$DOC"; then pass "Terra is never a review model"
+  else fail "Terra is never a review model" "a Terra line mentions review without the ban"; fi
+else pass "Terra is never a review model"; fi
 
 # ── 8. The contract core still fits its injection budget ────────────────────────────────────────
 CORE=$(python3 -c "

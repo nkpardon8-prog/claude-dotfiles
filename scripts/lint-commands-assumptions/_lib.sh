@@ -68,6 +68,11 @@ lc_setup() {  # lc_setup <case-name>
   FIX="${BASE}/repo"
   mkdir -p "${FIX}/commands" "${FIX}/scripts/lint-commands" || { echo "INFRA: cannot build fixture" >&2; exit 3; }
   cp "${REPO_SRC}/commands/"*.md "${FIX}/commands/" 2>/dev/null || { echo "INFRA: cannot copy commands/*.md" >&2; exit 3; }
+  # The mission playbook's reference files (docs/mission/*.md, mission rework 2026-11-11) are linted too.
+  if [ -d "${REPO_SRC}/docs/mission" ]; then
+    mkdir -p "${FIX}/docs/mission" && cp "${REPO_SRC}/docs/mission/"*.md "${FIX}/docs/mission/" 2>/dev/null \
+      || { echo "INFRA: cannot copy docs/mission/*.md" >&2; exit 3; }
+  fi
 
   # NEGATIVE CONTROL (documented, repeatable): LINTCMD_NEGATIVE_CONTROL=head populates the
   # fixture with the lint scripts as of git HEAD instead of the working copy. Every case is

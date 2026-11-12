@@ -24,9 +24,32 @@
 # Usage: codex-build-chunk.sh <promptfile> <outfile> <worktree-dir>
 #   Env: CODEX_EFFORT, CODEX_TIMEOUT_SECS  - same contract as codex-exec.sh.
 #        CODEX_BUILD_CHUNK_CMD  - test seam ONLY: the command run in place of `codex`.
+#   Callers pin CODEX_EFFORT explicitly (`CODEX_EFFORT=high bash scripts/codex-build-chunk.sh ...`):
+#   high is the floor for a lane that WRITES code; unset means whatever ~/.codex/config.toml says.
+#   One worktree per chunk: two builders in one directory is two writers in one directory.
 #
 # Writes: <outfile> (model output), <outfile>.status  (ok | refused-<reason> | timeout |
 #         unavailable | no-changes | nonzero-<rc>)
+#
+# CHECKS - one row per token this script writes to <outfile>.status. mission.md 6.5 points here
+# instead of repeating it; test-codex-build-chunk.sh check 14 fails if a token has no row.
+# | status token                  | exit | check                              | why it exists
+# | refused-no-prompt             | 3    | prompt file exists                 | nothing to run
+# | refused-no-worktree           | 3    | worktree dir exists                | nothing to run in
+# | refused-bad-path              | 3    | no '..', path resolves             | a relative escape widens the writable root
+# | refused-not-git               | 3    | inside a git working tree          | the before/after audit needs git
+# | refused-not-toplevel          | 3    | toplevel == the passed dir         | a subdir leaves the rest of the tree writable and unaudited
+# | refused-main-worktree         | 3    | gitdir OUTSIDE the writable root   | a main tree hands Codex .git/ and the mission bridge
+# | refused-unregistered-worktree | 3    | listed in `git worktree list`      | a hand-made lookalike directory is not a worktree
+# | refused-dirty-worktree        | 3    | worktree CLEAN before the run      | a dirty start makes the before/after diff a lie both ways
+# | refused-no-temp               | 3    | temp prompt file created           | cannot add the hard-constraint preamble
+# | unavailable                   | 127  | codex CLI on PATH                  | no model to run
+# | timeout                       | 124  | finished within CODEX_TIMEOUT_SECS | a hung run must not block the caller
+# | nonzero-<rc>                  | rc   | codex exited 0                     | a crashed run is not a build
+# | refused-touched-bridge        | 4    | no MISSION.* / .mission-backups/   | the absolute half: Codex NEVER writes the bridge
+# | refused-git-moved             | 5    | HEAD, branch ref, index unchanged  | Codex must EDIT FILES ONLY; the prompt says so AND this verifies it
+# | no-changes                    | 6    | at least one changed file          | a silent no-op that reports success is a build nobody built
+# | ok                            | 0    | all of the above                   | ran and touched nothing forbidden; NOT a verdict - run the tests
 #
 # Exit 0 ONLY when Codex ran, git state is untouched, the bridge is untouched, and the worktree
 # actually changed. ZERO changed files is a FAILURE, not an ok - a silent no-op that reads as

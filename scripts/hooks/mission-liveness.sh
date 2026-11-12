@@ -28,7 +28,7 @@
 # SAFETY POSTURE - fail SILENT everywhere it is not certain:
 #   unarmed session, auto-compact in flight, repeat on the same prompt_id, unreadable/lagging
 #   transcript, unreadable mission state, any sanctioned stop => exit 0 and say nothing. The ONLY
-#   loud paths are the block itself and the stall alert. A false block interrupts a human; a missed
+#   loud paths are the block itself and the STALL log line. A false block interrupts a human; a missed
 #   block costs one wake. We bias to the latter.
 
 set -uo pipefail   # no -e: partial failures must fall through to a silent exit, never abort loudly
@@ -159,16 +159,11 @@ if [ -n "$ML_CUR" ]; then
     printf '%s' "$ML_N" > "$STATE_DIR/$SID.stall" 2>/dev/null
     if [ "$ML_N" -ge "${MISSION_LIVENESS_STALL_TICKS:-12}" ]; then
       ml_log "sid=$SID STALL ticks=$ML_N cursor=$ML_CUR"
-      # Drop a marker the CONDUCTOR reads at §12.1, because the log alone reaches nobody. A stalled
-      # mission books a wake every tick, so this file's own hook exits "yes" at step 5 and stays
-      # silent forever - exactly the 11-hour shape. A Stop hook cannot reach the model without
-      # exit 2, and blocking would be wrong for an advisory, so the signal is handed over as state:
-      # §12.1 step 4b reads it, fires PushNotification, and deletes it (re-armed while still stalled).
-      printf 'ticks=%s cursor=%s\n' "$ML_N" "$ML_CUR" > "$STATE_DIR/$SID.stall-alert" 2>/dev/null
+      # Log only. The conductor-side stall alert (.stall-alert, read by the old §12.1 step 4b) was
+      # replaced by the helper watchdog and the writer-enforced wall clock (rework plan 5.3, 5.4).
     fi
   else
     printf '0' > "$STATE_DIR/$SID.stall" 2>/dev/null
-    rm -f "$STATE_DIR/$SID.stall-alert" 2>/dev/null
   fi
   printf '%s' "$ML_CUR" > "$ML_CURFILE" 2>/dev/null
 fi
@@ -224,6 +219,9 @@ ML_LIVE_LOG="${MPATH%.md}.log"
 if [ -r "$ML_LIVE_LOG" ]; then
   ML_LAST=$(grep -a '\[mission\] ' "$ML_LIVE_LOG" 2>/dev/null | tail -1)
   case "$ML_LAST" in
+    # A park record (`FAIL part=N park=...`, rework plan 5.4) is NOT a stop: parking retires the part and
+    # the mission continues with the next one, so a turn that ends right after it still owes a wake.
+    *"[mission] FAIL part="*" park="*) : ;;
     *"[mission] FAIL"*) ml_log "sid=$SID stop-loud-fail action=silent"; exit 0 ;;
   esac
 fi

@@ -41,6 +41,13 @@
 #     await         <sid> <root> <fields>        (open/update the durable AWAIT marker; <fields> = the
 #                                                 space-separated part/phase/round/kind/op/attempt/need/got
 #                                                 [/started_at] pairs — reassembled in canonical order)
+#     bank-review   <sid> <root> <N> <K> <plan|delta|close|join> [report] [impl-reviewer-output]
+#                   (proto=2: the ONLY writer of review evidence, review round lines, VOIDs and dry= raises;
+#                    status `bank-review ok scope= dry= blocking= new= repeat= result= [sweep=required
+#                    types=..] [redesign=<area>]` | `bank-review VOID reason= void-count=N` | FAILED rc=N)
+#     budget-state  <sid> <root>                 (read-only, bare: ok | paused live=<min> |
+#                                                 over part=N minutes=M replan=<0|1>)
+#     known-reds    <sid> <root> diff|record <suite-report>  (diff: bare new-red count, -1 = invalid run)
 #
 #   FOUR DOCUMENTED ARGV EXCEPTIONS (read-only verbs — different argv shape; bare-token stdout; NO
 #   `mission-write: <verb> …` status line; handled BEFORE the root-guard):
@@ -248,8 +255,9 @@ _mw_validate_log() {
   _vl_pl=${_vl_entry#"[mission] "}
   case "$_vl_pl" in
     part=*)
-      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] part=[0-9]+ name=[A-Za-z0-9_.:-]+ phase=(research|plan|implement|review|fix) round=[0-9]+ dry=[0-2]( findings=[0-9]+)?$' \
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] part=[0-9]+ name=[A-Za-z0-9_.:-]+ phase=(research|plan|implement|review|fix) round=[0-9]+ dry=[0-2]( findings=[0-9]+| open=[0-9]+)?$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-round-shape"
+      case "$_vl_entry" in *" open="*) case "$_vl_entry" in *" phase=plan "*) : ;; *) _mw_emit_refuse log 1 "REFUSED: open= is only for phase=plan" ;; esac ;; esac
       printf '%s' "$_vl_bare" | grep -qE '^m[0-9]+-(research|plan|implement|review|fix)-r[0-9]+-d[0-2]$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-round-idtag"
       _en=$(_mw_efield "$_vl_entry" part); _ep=$(_mw_efield "$_vl_entry" phase); _er=$(_mw_efield "$_vl_entry" round)
@@ -269,6 +277,12 @@ _mw_validate_log() {
       _ir=$(printf '%s' "$_vl_bare" | sed -n 's/^m[0-9]*-void-r\([0-9]*\)-.*/\1/p')
       { [ "$_en" = "$_in" ] && [ "$_er" = "$_ir" ]; } \
         || _mw_emit_refuse log 1 "REFUSED: idtag-entry-field-mismatch (void)"
+      ;;
+    "FAIL part="*" park="*)
+      # proto=2 park record (plan 5.4): reason, code disposition, rejected range (base12..head12).
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] FAIL part=[0-9]+ park=[a-z0-9-]+ disposition=(reverted|isolated|left-with-recorded-risk) range=[0-9a-f]{12}\.\.[0-9a-f]{12}$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-park-shape"
+      [ "$_vl_bare" = "m$(_mw_efield "$_vl_entry" part)-fail-park" ] || _mw_emit_refuse log 1 "REFUSED: bad-park-idtag (want m<N>-fail-park)"
       ;;
     "FAIL "*)
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] FAIL part=[0-9]+ phase=[a-z-]+ reason=[a-z0-9-]+ attempt=[0-9]+$' \
@@ -302,6 +316,16 @@ _mw_validate_log() {
         /*) [ -e "$_rep" ] || _mw_emit_refuse log 1 "REFUSED: review-evidence-report-missing ($_rep)" ;;
       esac
       ;;
+    "live-verify part="*" sha="*)
+      # proto=2 close leg: bound to the freeze SHA + attempt; sent and result records get distinct idtags.
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] live-verify part=[0-9]+ sha=[0-9a-f]{12} attempt=[0-9]+ status=(sent|ok evidence=[^ ]+|fail reason=[a-z0-9-]+|n/a reason=[a-z0-9-]+)$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-live-verify-shape"
+      _lsfx=result; case "$_vl_entry" in *" status=sent") _lsfx=sent ;; esac
+      [ "$_vl_bare" = "m$(_mw_efield "$_vl_entry" part)-live-$(_mw_efield "$_vl_entry" sha)-a$(_mw_efield "$_vl_entry" attempt)-$_lsfx" ] \
+        || _mw_emit_refuse log 1 "REFUSED: bad-live-verify-idtag (want m<N>-live-<sha12>-a<A>-$_lsfx)"
+      _ev=$(printf '%s' "$_vl_entry" | sed -n 's/.* status=ok evidence=\([^ ]*\).*/\1/p')
+      case "$_ev" in /*) [ -e "$_ev" ] || _mw_emit_refuse log 1 "REFUSED: live-verify-evidence-path-missing ($_ev)" ;; esac
+      ;;
     "live-verify "*)
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] live-verify part=[0-9]+ round=[0-9]+ status=(ok evidence=[^ ]+|n/a reason=[a-z0-9-]+)$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-live-verify-shape"
@@ -321,6 +345,29 @@ _mw_validate_log() {
       case "$_ev" in
         /*) [ -e "$_ev" ] || _mw_emit_refuse log 1 "REFUSED: live-verify-evidence-path-missing ($_ev)" ;;
       esac
+      ;;
+    "PART-START "*" proto="*)
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] PART-START part=[0-9]+ name=[A-Za-z0-9_.:-]+ proto=2 worktree=/[^ ]+ base=[0-9a-f]{12} needs=(none|[0-9]+(,[0-9]+)*)$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-part-start-shape (proto=2 worktree=<abs> base=<sha12> needs=<none|N,..>)"
+      [ "$_vl_bare" = "m$(_mw_efield "$_vl_entry" part)-part-start" ] || _mw_emit_refuse log 1 "REFUSED: bad-part-start-idtag"
+      ;;
+    "RECIPE "*)
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] RECIPE part=[0-9]+ v=[12] tier=(low|normal|high) floor=(none|(money|phi|auth|odwrite|migration)(,(money|phi|auth|odwrite|migration))*) plan=[0-9]+ review=[0-9]+ budget=[0-9]+ live=(yes|no) overlap=(none|plan-next) needs=(none|[0-9]+(,[0-9]+)*)$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-recipe-shape (v1 or v2 only; at= is writer-stamped)"
+      [ "$_vl_bare" = "m$(_mw_efield "$_vl_entry" part)-recipe-v$(_mw_efield "$_vl_entry" v)" ] || _mw_emit_refuse log 1 "REFUSED: bad-recipe-idtag"
+      ;;
+    "FULL-SUITE "*)
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] FULL-SUITE part=[0-9]+ sha=[0-9a-f]{12} attempt=[0-9]+ base=[0-9a-f]{12} env=[0-9a-f]{16} completed=yes new-reds=[0-9]+ report=/[^ ]+$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-full-suite-shape (completed=yes only; an incomplete run is invalid, rerun it)"
+      [ "$_vl_bare" = "m$(_mw_efield "$_vl_entry" part)-suite-$(_mw_efield "$_vl_entry" sha)-a$(_mw_efield "$_vl_entry" attempt)" ] || _mw_emit_refuse log 1 "REFUSED: bad-full-suite-idtag"
+      ;;
+    "SWEEP "*)
+      printf '%s' "$_vl_entry" | grep -qE '^\[mission\] SWEEP part=[0-9]+ round=[0-9]+ types=[A-Z0-9_-]+(,[A-Z0-9_-]+)* sha=[0-9a-f]{12} instances=[0-9]+ report=/[^ ]+$' \
+        || _mw_emit_refuse log 1 "REFUSED: bad-sweep-shape"
+      printf '%s' "$_vl_bare" | grep -qE "^m$(_mw_efield "$_vl_entry" part)-sweep-r$(_mw_efield "$_vl_entry" round)-s[0-9]+\$" || _mw_emit_refuse log 1 "REFUSED: bad-sweep-idtag"
+      ;;
+    "ANCHOR "*|"SNAPSHOT "*)
+      _mw_emit_refuse log 1 "REFUSED: ${_vl_pl%% *} is written only by the writer itself"
       ;;
     "PART-START "*)
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] PART-START part=[0-9]+ name=[A-Za-z0-9_.:-]+$' \
@@ -437,6 +484,7 @@ _mw_partdone_check() {
   # advance the mission past an OPEN human STOP. Placed AFTER the dedup-first return so an idempotent
   # re-emit is never blocked (mirrors this function's dedup-first ordering). Fails closed on ambiguity.
   _mw_human_barrier_guard log "advancing this part (PART-DONE)" "$_pc_sid" "$_pc_root"
+  [ "${P2_PROTO:-}" = 2 ] && return 0   # proto=2 PART-DONE is checked by _p2_partdone (close legs at the freeze)
   # gen-sliced archive-inclusive stream (REFUSE loud on gen-boundary-mismatch → rc=4 blocks advance).
   _pc_stream=$(_gen_sliced_stream "$_pc_sid" "$_pc_root") \
     || _mw_emit_refuse log 4 "REFUSED gen-boundary-mismatch"
@@ -577,12 +625,450 @@ _mw_human_barrier_guard() {
   return 0
 }
 
+# ══ PROTO=2 (rework plan v5) ════════════════════════════════════════════════════════════════
+# Every part started after the rework is `proto=2`: its PART-START names the part worktree and base,
+# a RECIPE bounds its budgets, `bank-review` is the ONLY writer of its review evidence and of any `dry=`
+# raise, and PART-DONE checks the close legs at the freeze SHA instead of the old fold. Parts opened
+# before the rework (a PART-START without proto) are grandfathered on the old fold. All checks below run
+# after the dedup-first return, so an idempotent retry is never refused. Shapes (writer stamps `at=`):
+#   PART-START part=N name=X proto=2 worktree=<abs> base=<sha12> needs=<none|N[,N]>
+#   RECIPE part=N v=<1|2> tier= floor= plan= review= budget= live= overlap= needs=
+#   FULL-SUITE part=N sha= attempt= base= env=<keyhash16> completed=yes new-reds= report=
+#   SWEEP part=N round=K types=<KEY,..> sha= instances= report=
+#   live-verify part=N sha= attempt= status=<sent|ok evidence=|fail reason=|n/a reason=>
+#   FAIL part=N park=<slug> disposition=<reverted|isolated|left-with-recorded-risk> range=<b12>..<h12>
+#   REVIEW-EVIDENCE part=N round=K scope=<plan|delta|close> base= head= codex= claude= tagged= blocking=
+#       new= repeat= rkeys=<csv|-> result=<clean|blocking> report=   (bank-review only)
+#   ANCHOR part=N sha=<sha12>   (writer only: root head for a legacy part, freeze SHA for proto=2)
+#   SNAPSHOT part=N kind=converged tree=v2:<tree16> sha=<freeze12> goal= files=0 ver=2   (join only)
+P2_RELOAD="playbook changed; re-read commands/mission.md before starting another part"
+P2_FINAL_ENTRY=""; P2_PROTO=""; P2S=""
+
+# token-bound field read: value = the run of non-space chars after ` <key>=`.
+_p2_fv() { printf ' %s' "$1" | sed -n "s/.* $2=\\([^ ]*\\).*/\\1/p" | head -1; }
+# A crashed rebaseline (marker gen bumped, boundary append lost) reads as a gen-boundary mismatch; heal it
+# under the lock exactly like _mw_human_barrier_guard does (bounded, idempotent), then re-read once.
+_p2_load() {
+  P2S=$(_gen_sliced_stream "$1" "$2" 2>/dev/null) && return 0
+  _pl_lb=$(_mission_lockbase "$2")
+  if _mission_lock "$_pl_lb" "$1" 2>/dev/null; then _mission_lockheld_gen_recover "$1" "$2"; _mission_unlock; fi
+  P2S=$(_gen_sliced_stream "$1" "$2" 2>/dev/null) || _mw_emit_refuse "$3" 4 "REFUSED gen-boundary-mismatch"
+}
+# _p2_lines <idtag-regex (no gen prefix)> <body-prefix after "[mission] "> -> matching bodies, in order
+_p2_lines() {
+  printf '%s\n' "$P2S" | awk -F'\t' -v t="$1" -v b="$2" \
+    '$1 ~ ("^(g[0-9]+-)?" t) && index($2, "[mission] " b) == 1 { print $2 }'
+}
+_p2_ps()      { _p2_lines "m$1-part-start\$" "PART-START part=$1 " | tail -1; }
+_p2_proto()   { _pp=$(_p2_ps "$1"); case "$_pp" in "") echo 0 ;; *" proto=2 "*) echo 2 ;; *) echo 1 ;; esac; }
+_p2_done()    { [ -n "$(_p2_lines "m$1-part-done\$" "PART-DONE part=$1 ")" ]; }
+_p2_retired() { [ -n "$(_p2_lines "m$1-part-retired\$" "PART-RETIRED part=$1")" ]; }
+_p2_park()    { _p2_lines "m$1-fail-park\$" "FAIL part=$1 park=" | tail -1; }
+_p2_cutover() { printf '%s\n' "$P2S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-part-start$/ && $2 ~ / proto=2 / {f=1} END{exit f?0:1}'; }
+_p2_recipe()  { _r2=$(_p2_lines "m$1-recipe-v2\$" "RECIPE part=$1 v=2 " | tail -1)
+                [ -n "$_r2" ] && printf '%s' "$_r2" || _p2_lines "m$1-recipe-v1\$" "RECIPE part=$1 v=1 " | tail -1; }
+_p2_rounds()  { _p2_lines "m$1-[a-z]+-r[0-9]+-d[0-2]\$" "part=$1 name="; }
+_p2_lastdry() { _ld=$(_p2_rounds "$1" | tail -1); _ld=$(_p2_fv "$_ld" dry); printf '%s' "${_ld:-0}"; }
+_p2_evid()    { _p2_lines "m$1-review-evidence-$2-r[0-9]+\$" "REVIEW-EVIDENCE part=$1 "; }
+# freeze = head of the latest clean delta evidence, valid only while the part's dry is >=1.
+_p2_freeze()  { [ "$(_p2_lastdry "$1")" -ge 1 ] 2>/dev/null || return 0
+                _p2_fv "$(_p2_evid "$1" delta | grep ' result=clean ' | tail -1)" head; }
+_p2_open_parts() {   # parts with a PART-START and neither PART-DONE nor PART-RETIRED
+  printf '%s\n' "$P2S" | awk -F'\t' '
+    function pn(s){ sub(/^.*part=/,"",s); sub(/[^0-9].*$/,"",s); return s }
+    $1 ~ /^(g[0-9]+-)?m[0-9]+-part-start$/ && $2 ~ /^\[mission\] PART-START / { st[pn($2)]=1 }
+    $1 ~ /^(g[0-9]+-)?m[0-9]+-part-(done|retired)$/ && $2 ~ /^\[mission\] PART-(DONE|RETIRED) / { cl[pn($2)]=1 }
+    END { for (p in st) if (!cl[p]) print p }'
+}
+_p2_now() { date +%s; }
+_p2_head12() { git -C "$1" rev-parse HEAD 2>/dev/null | cut -c1-12; }
+_p2_clean()  { [ "$(_mission_tree_fingerprint_v2 "$1")" != dirty ]; }
+_p2_isanc()  { git -C "$1" merge-base --is-ancestor "$2" "$3" >/dev/null 2>&1; }
+
+# _p2_tier_ok <tier> <plan> <review> <budget> — budgets bounded by the tier table (plan 3.2).
+_p2_tier_ok() {
+  case "$1" in low) _tp=3 _tr=3 _tb=120 ;; normal) _tp=5 _tr=8 _tb=300 ;; high) _tp=7 _tr=15 _tb=480 ;; *) return 1 ;; esac
+  [ "$2" -ge 1 ] && [ "$2" -le "$_tp" ] && [ "$3" -ge 1 ] && [ "$3" -le "$_tr" ] && [ "$4" -ge 1 ] && [ "$4" -le "$_tb" ]
+}
+
+# _p2_budget <N> -> `ok` | `paused <livecum-min>` | `over <minutes> <replan>` (plan 5.4). The clock runs
+# from PART-START at= (or the RECIPE v2 at=, reset once); it pauses only while live proof is the ONLY
+# open leg: a clean close result AND a passing FULL-SUITE exist for the sha and a `sent` attempt has no
+# result. Paused minutes add up across all close attempts; past 120 the part is over (park only).
+_p2_budget() {
+  _bn=$1; _brc=$(_p2_recipe "$_bn"); [ -n "$_brc" ] || { echo ok; return 0; }
+  _bv2=$(_p2_lines "m$_bn-recipe-v2\$" "RECIPE part=$_bn v=2 " | tail -1)
+  _bst=$(_p2_fv "$(_p2_ps "$_bn")" at); [ -n "$_bv2" ] && _bst=$(_p2_fv "$_bv2" at)
+  _bbud=$(_p2_fv "$_brc" budget)
+  printf '%s\n' "$P2S" | awk -F'\t' -v pn="$_bn" -v now="$(_p2_now)" -v st="${_bst:-0}" -v bud="${_bbud:-0}" -v v2="${_bv2:+1}" '
+    function f(s,k,  i,r,a){ i=index(s," " k "="); if(!i) return ""; r=substr(s,i+length(k)+2); split(r,a," "); return a[1] }
+    index($2,"[mission] REVIEW-EVIDENCE part=" pn " ")==1 && $1 ~ /review-evidence-close-r/ && f($2,"result")=="clean" {
+      h=f($2,"head"); t=f($2,"at")+0; if(!(h in cl) || t<cl[h]) cl[h]=t }
+    index($2,"[mission] FULL-SUITE part=" pn " ")==1 && f($2,"new-reds")=="0" && f($2,"completed")=="yes" {
+      h=f($2,"sha"); t=f($2,"at")+0; if(!(h in su) || t<su[h]) su[h]=t }
+    index($2,"[mission] live-verify part=" pn " sha=")==1 {
+      k=f($2,"sha") SUBSEP f($2,"attempt"); t=f($2,"at")+0
+      if (f($2,"status")=="sent") { sent[k]=t; sh[k]=f($2,"sha") } else res[k]=t }
+    END {
+      tot=0; aft=0; paused=0
+      for (k in sent) {
+        h=sh[k]; if(!(h in cl) || !(h in su)) continue
+        ps=sent[k]; if(cl[h]>ps) ps=cl[h]; if(su[h]>ps) ps=su[h]
+        op=0; if (k in res) pe=res[k]; else { pe=now; op=1 }
+        if (pe>now) pe=now
+        if (op) paused=1
+        if (pe<=ps) continue
+        tot+=pe-ps; a=ps; if(a<st) a=st; if(pe>a) aft+=pe-a
+      }
+      el=int((now-st-aft)/60); lc=int(tot/60)
+      if (lc>120) { printf "over %d 0\n", el; exit }
+      if (bud>0 && el>bud) { printf "over %d %d\n", el, (v2==""?1:0); exit }
+      if (paused) { printf "paused %d\n", lc; exit }
+      print "ok" }'
+}
+_p2_over_guard() {   # <status-verb> <N>
+  _og=$(_p2_budget "$2")
+  case "$_og" in over*) _mw_emit_refuse "$1" 4 "REFUSED: part-over-budget part=$2 minutes=$(echo "$_og" | cut -d' ' -f2) - re-plan (RECIPE v2) once, else park" ;; esac
+}
+
+# ── known reds (plan 5.2) ────────────────────────────────────────────────────────────────────
+# Suite report file: header lines sha= base= command= env= completed= infra=, a `--` line, then one
+# `<test id> | <failure signature>` line per assertion failure. Baseline key = base SHA + command + env.
+_p2_kr_hdr() { sed -n "1,/^--\$/s/^$2=//p" "$1" | head -1; }
+_p2_kr_key() { printf '%s\n%s' "$(_p2_kr_hdr "$1" command)" "$(_p2_kr_hdr "$1" env)" | _mission_hash_stream; }
+# normalize ONLY named nondeterministic fields; assertion values are kept (a numeric change is a new red).
+_p2_kr_norm() {
+  sed -E -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?/<ts>/g' \
+         -e 's#(/private)?(/var/folders|/tmp|/private/tmp)/[^ ]*#<tmp>#g' \
+         -e 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/<uuid>/g' \
+         -e 's/(localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]+/\1:<port>/g' \
+         -e 's/[0-9a-f]{16,}/<id>/g' \
+         -e 's/(^|[^A-Za-z0-9.])[0-9]+(\.[0-9]+)? ?(ms|s)([^A-Za-z0-9]|$)/\1<dur>\4/g'
+}
+_p2_kr_body() { sed -n '/^--$/,$p' "$1" | sed '1d' | grep ' | ' | _p2_kr_norm | LC_ALL=C sort -u; }
+_p2_kr_valid() { [ -f "$1" ] && [ "$(_p2_kr_hdr "$1" completed)" = yes ] && [ "$(_p2_kr_hdr "$1" infra)" = 0 ] \
+                 && [ -n "$(_p2_kr_hdr "$1" sha)" ] && [ -n "$(_p2_kr_hdr "$1" command)" ] && [ -n "$(_p2_kr_hdr "$1" env)" ]; }
+# _p2_kr_diff <root> <report> -> count of reds not matching (id AND signature) a same-key baseline; -1 = invalid run
+_p2_kr_diff() {
+  _p2_kr_valid "$2" || { echo -1; return 0; }
+  _kf="$1/.mission-known-reds/$(_p2_kr_hdr "$2" base)-$(_p2_kr_key "$2").txt"
+  if [ -f "$_kf" ]; then
+    _p2_kr_body "$2" | LC_ALL=C comm -23 - <(sed '1,/^--$/d' "$_kf" | LC_ALL=C sort -u) | grep -c .
+  else _p2_kr_body "$2" | grep -c .; fi
+}
+_p2_kr_record() {   # <root> <report> -> rc 0 written, 1 refused
+  _p2_kr_valid "$2" || return 1
+  _kd="$1/.mission-known-reds"; mkdir -p "$_kd" 2>/dev/null || return 1
+  _ks=$(_p2_kr_hdr "$2" sha); _kf="$_kd/${_ks}-$(_p2_kr_key "$2").txt"
+  { printf 'base=%s\ncommand=%s\nenv=%s\ncompleted=yes\n--\n' "$_ks" "$(_p2_kr_hdr "$2" command)" "$(_p2_kr_hdr "$2" env)"
+    { [ -f "$_kf" ] && sed '1,/^--$/d' "$_kf"; _p2_kr_body "$2"; } | LC_ALL=C sort -u; } > "$_kf.tmp.$$" \
+    && mv -f "$_kf.tmp.$$" "$_kf"
+}
+
+# _p2_legs <N> <freeze> -> empty when the three close legs pass at <freeze>, else the missing leg's name.
+_p2_legs() {
+  _lc=$(_p2_evid "$1" close | awk -v h="$2" 'index($0," head=" h " ")' | tail -1)
+  [ "$(_p2_fv "$_lc" result)" = clean ] || { echo close-review; return 0; }
+  _ls=$(_p2_lines "m$1-suite-$2-a[0-9]+\$" "FULL-SUITE part=$1 sha=$2 " | awk '{for(i=1;i<=NF;i++) if($i ~ /^attempt=/){a=substr($i,9)+0}; if(a>=m){m=a;l=$0}} END{print l}')
+  { [ "$(_p2_fv "$_ls" completed)" = yes ] && [ "$(_p2_fv "$_ls" new-reds)" = 0 ]; } || { echo full-suite; return 0; }
+  _ll=$(_p2_lines "m$1-live-$2-a[0-9]+-(sent|result)\$" "live-verify part=$1 sha=$2 " | awk '
+    {for(i=1;i<=NF;i++) if($i ~ /^attempt=/) a=substr($i,9)+0
+     if (a>m) { m=a; r="" } if (a==m && $0 !~ / status=sent/) r=$0 } END{print r}')
+  case "$(_p2_fv "$_ll" status)" in
+    ok) : ;;
+    n/a) [ "$(_p2_fv "$(_p2_recipe "$1")" live)" = no ] || { echo live-proof; return 0; } ;;
+    *) echo live-proof; return 0 ;;
+  esac
+}
+
+# _p2_stamp <sid> <root> <entry> <idtag> -> sets P2_FINAL_ENTRY: the banked line when this exact entry
+# (ignoring at=) is already banked under the idtag (a retry keeps its ORIGINAL at=), else entry + at=now.
+# Returns 0 when it is a dedup (the caller skips every check: dedup-first).
+_p2_stamp() {
+  _st_g=$(_mission_gen_tag "${2}/MISSION.$(_mission_sanitize_sid "$1").md" "$4" 2>/dev/null)
+  _st_prev=$(printf '%s\n' "$P2S" | awk -F'\t' -v t="$_st_g" '$1==t {print $2; exit}')
+  if [ -n "$_st_prev" ] && [ "${_st_prev% at=*}" = "$3" ]; then P2_FINAL_ENTRY="$_st_prev"; return 0; fi
+  P2_FINAL_ENTRY="$3 at=$(_p2_now)"; return 1
+}
+_p2_is_banked() {   # <sid> <root> <entry> <idtag> -> exact (unstamped) line already banked
+  _ib_g=$(_mission_gen_tag "${2}/MISSION.$(_mission_sanitize_sid "$1").md" "$4" 2>/dev/null)
+  printf '%s\n' "$P2S" | awk -F'\t' -v t="$_ib_g" -v e="$3" '$1==t && $2==e {f=1} END{exit f?0:1}'
+}
+_p2_append() {      # <sid> <root> <entry-without-at> <idtag> : stamped, at-preserving append
+  _p2_stamp "$1" "$2" "$3" "$4"
+  mission_log_append "$1" "$2" "$P2_FINAL_ENTRY" "$4" >/dev/null 2>&1
+}
+
+# _p2_check_ps <entry> <N> <sid> <root> — proto=2 PART-START admission (plan 3.3, 5.4, 5.6).
+_p2_check_ps() {
+  _c_wt=$(_p2_fv "$1" worktree); _c_b=$(_p2_fv "$1" base); _c_needs=$(_p2_fv "$1" needs)
+  [ -d "$_c_wt" ] || _mw_emit_refuse log 4 "REFUSED: part worktree does not exist ($_c_wt)"
+  _c_top=$(cd "$_c_wt" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
+  _c_real=$(cd "$_c_wt" && pwd -P)
+  [ -n "$_c_top" ] && [ "$(cd "$_c_top" && pwd -P)" = "$_c_real" ] || _mw_emit_refuse log 4 "REFUSED: worktree= is not the top of a git worktree"
+  [ "$_c_real" != "$(cd "$4" 2>/dev/null && pwd -P)" ] || _mw_emit_refuse log 4 "REFUSED: worktree= is the mission root; a part builds in its own linked worktree"
+  _c_cd1=$(git -C "$_c_wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  _c_cd2=$(git -C "$4" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  [ -n "$_c_cd1" ] && [ "$_c_cd1" = "$_c_cd2" ] || _mw_emit_refuse log 4 "REFUSED: worktree= does not share the mission root's git common dir"
+  git -C "$_c_wt" rev-parse --verify -q "${_c_b}^{commit}" >/dev/null 2>&1 || _mw_emit_refuse log 4 "REFUSED: base=$_c_b is not a commit"
+  for _c_o in $(_p2_open_parts); do
+    [ "$_c_o" = "$2" ] || _mw_emit_refuse log 4 "REFUSED: part $_c_o is still open (neither PART-DONE nor PART-RETIRED)"
+  done
+  if [ "$_c_needs" != none ]; then
+    for _c_n in $(printf '%s' "$_c_needs" | tr ',' ' '); do
+      _p2_done "$_c_n" || _mw_emit_refuse log 4 "REFUSED: needs part $_c_n, which has no PART-DONE (deferred)"
+      _c_a=$(_p2_fv "$(_p2_lines "m$_c_n-anchor\$" "ANCHOR part=$_c_n " | tail -1)" sha)
+      if [ -z "$_c_a" ] && [ "$(_p2_proto "$_c_n")" != 2 ]; then   # legacy part: anchor = root head at cutover
+        _c_a=$(_p2_head12 "$4")
+        [ -n "$_c_a" ] && mission_log_append "$3" "$4" "[mission] ANCHOR part=$_c_n sha=$_c_a" "m$_c_n-anchor" >/dev/null 2>&1
+      fi
+      [ -n "$_c_a" ] && _p2_isanc "$_c_wt" "$_c_a" "$_c_b" \
+        || _mw_emit_refuse log 4 "REFUSED: needs part $_c_n but its anchor ${_c_a:-?} is not in base=$_c_b"
+    done
+  fi
+  # isolation: no commit of an isolated park range may be in the new base (an empty range blocks nothing)
+  printf '%s\n' "$P2S" | awk -F'\t' '$1 ~ /^(g[0-9]+-)?m[0-9]+-fail-park$/ && $2 ~ / disposition=isolated / { print $2 }' \
+  | while IFS= read -r _c_pk; do
+      _c_rg=$(_p2_fv "$_c_pk" range)
+      for _c_c in $(git -C "$_c_wt" rev-list "$_c_rg" 2>/dev/null); do
+        _p2_isanc "$_c_wt" "$_c_c" "$_c_b" && { echo x; break; }
+      done
+    done | grep -q x && _mw_emit_refuse log 4 "REFUSED: base=$_c_b contains a commit from an isolated (parked) range"
+  return 0
+}
+
+# _p2_check <entry> <idtag> <sid> <root> — the proto=2 semantic layer for the `log` verb (runs after the
+# shape validator). Sets P2_PROTO for _mw_partdone_check and P2_FINAL_ENTRY for the stamped append.
+_p2_check() {
+  _e="$1"; _t="$2"; P2_FINAL_ENTRY=""; P2_PROTO=""
+  case "$_e" in "[mission] "*) : ;; *) return 0 ;; esac
+  _n=$(_p2_fv "$_e" part); case "$_n" in ''|*[!0-9]*) return 0 ;; esac
+  _p2_load "$3" "$4" log
+  _pl=${_e#"[mission] "}
+  _stamp=0
+  case "$_pl" in
+    "PART-START "*" proto=2 "*|RECIPE*|FULL-SUITE*|SWEEP*|"live-verify part="*" sha="*|"FAIL part="*" park="*) _stamp=1 ;;
+  esac
+  [ "$(_p2_proto "$_n")" = 2 ] && case "$_pl" in "PART-DONE "*) _stamp=1 ;; esac
+  if [ "$_stamp" = 1 ]; then _p2_stamp "$3" "$4" "$_e" "$_t" && return 0
+  else _p2_is_banked "$3" "$4" "$_e" "$_t" && return 0; fi       # dedup-first: a retry is never refused
+  _p2_retired "$_n" && _mw_emit_refuse log 4 "REFUSED: part-retired - part $_n is retired; a late write for it is an expected drop (no FAIL, no tally)"
+  P2_PROTO=$(_p2_proto "$_n")
+  case "$_pl" in
+    "PART-START "*)
+      case "$_pl" in *" proto=2 "*) : ;; *) _mw_emit_refuse log 4 "REFUSED: PART-START without proto=2 - $P2_RELOAD" ;; esac
+      _p2_check_ps "$_e" "$_n" "$3" "$4"; return 0 ;;
+    RECIPE*|FULL-SUITE*|SWEEP*|"live-verify part="*" sha="*|"FAIL part="*" park="*)
+      [ "$P2_PROTO" = 2 ] || _mw_emit_refuse log 4 "REFUSED: ${_pl%% *} needs a proto=2 PART-START for part $_n first - $P2_RELOAD" ;;
+  esac
+  if [ "$P2_PROTO" != 2 ]; then
+    # legacy (grandfathered) part, or a pre-rework mission with no PART-START at all: the old fold. In a
+    # mission that has cut over, a part-N line with no PART-START is refused (no bypass of the new gates).
+    [ "$P2_PROTO" = 0 ] && _p2_cutover && _mw_emit_refuse log 4 "REFUSED: no PART-START for part $_n - $P2_RELOAD"
+    return 0
+  fi
+  _rc=$(_p2_recipe "$_n")
+  case "$_pl" in
+    "REVIEW-EVIDENCE "*) _mw_emit_refuse log 1 "REFUSED: proto=2 review evidence is written only by bank-review - $P2_RELOAD" ;;
+    "live-verify part="*" round="*) _mw_emit_refuse log 1 "REFUSED: legacy live-verify shape on a proto=2 part (use sha= attempt=) - $P2_RELOAD" ;;
+    RECIPE*)
+      _v=$(_p2_fv "$_e" v)
+      [ "$(_p2_fv "$_e" tier)" = high ] || [ "$(_p2_fv "$_e" floor)" = none ] || _mw_emit_refuse log 1 "REFUSED: recipe floor=$(_p2_fv "$_e" floor) requires tier=high"
+      _p2_tier_ok "$(_p2_fv "$_e" tier)" "$(_p2_fv "$_e" plan)" "$(_p2_fv "$_e" review)" "$(_p2_fv "$_e" budget)" \
+        || _mw_emit_refuse log 1 "REFUSED: recipe budgets exceed the tier table"
+      [ "$(_p2_fv "$_e" needs)" = "$(_p2_fv "$(_p2_ps "$_n")" needs)" ] || _mw_emit_refuse log 1 "REFUSED: recipe needs= differs from the PART-START needs="
+      if [ "$_v" = 2 ]; then
+        [ -n "$_rc" ] || _mw_emit_refuse log 4 "REFUSED: RECIPE v2 before v1"
+        case "$(_p2_budget "$_n")" in "over "*" 1") : ;; *) _mw_emit_refuse log 4 "REFUSED: RECIPE v2 is only for a real overrun (budget-state over ... replan=1)" ;; esac
+      fi
+      return 0 ;;
+    "FAIL part="*" park="*)
+      _rg=$(_p2_fv "$_e" range); _wt=$(mission_part_worktree "$P2S" "$_n" "$4")
+      [ "${_rg%%..*}" = "$(_p2_fv "$(_p2_ps "$_n")" base)" ] || _mw_emit_refuse log 1 "REFUSED: park range must start at the PART-START base"
+      _p2_isanc "$_wt" "${_rg%%..*}" "${_rg##*..}" || _mw_emit_refuse log 1 "REFUSED: park range head is not a descendant of the base"
+      return 0 ;;
+    "PART-RETIRED "*)
+      { _p2_done "$_n" || [ -n "$(_p2_park "$_n")" ]; } \
+        || _mw_emit_refuse log 4 "REFUSED: PART-RETIRED for part $_n needs PART-DONE or a park FAIL (park= disposition= range=)"
+      return 0 ;;
+  esac
+  _p2_over_guard log "$_n"
+  case "$_pl" in
+    part=*)
+      _ph=$(_p2_fv "$_e" phase); _d=$(_p2_fv "$_e" dry)
+      [ "$_ph" = review ] && _mw_emit_refuse log 1 "REFUSED: proto=2 review rounds are banked only by bank-review - $P2_RELOAD"
+      [ "$_d" = 0 ] || [ "$_d" -le "$(_p2_lastdry "$_n")" ] || _mw_emit_refuse log 1 "REFUSED: a dry= raise is banked only by bank-review"
+      case "$_ph" in
+        plan) [ -n "$_rc" ] || _mw_emit_refuse log 1 "REFUSED: phase=plan before the part's RECIPE"
+              [ -n "$(_p2_fv "$_e" open)" ] || _mw_emit_refuse log 1 "REFUSED: proto=2 phase=plan needs open=<n>" ;;
+        implement)
+              _lp=$(_p2_rounds "$_n" | grep ' phase=plan ' | tail -1)
+              [ "$(_p2_fv "$_lp" open)" = 0 ] || _mw_emit_refuse log 1 "REFUSED: phase=implement needs the last plan line at open=0 (resolve, descope or park open DESIGN findings)" ;;
+      esac ;;
+    "FULL-SUITE "*)
+      _r=$(_p2_fv "$_e" report)
+      _p2_kr_valid "$_r" || _mw_emit_refuse log 1 "REFUSED: FULL-SUITE report missing, not completed=yes, or has infra failures (an invalid run: rerun it)"
+      { [ "$(_p2_kr_hdr "$_r" sha)" = "$(_p2_fv "$_e" sha)" ] && [ "$(_p2_kr_hdr "$_r" base)" = "$(_p2_fv "$_e" base)" ] \
+        && [ "$(_p2_kr_key "$_r")" = "$(_p2_fv "$_e" env)" ]; } || _mw_emit_refuse log 1 "REFUSED: FULL-SUITE sha/base/env do not match its report"
+      [ "$(_p2_kr_diff "$4" "$_r")" = "$(_p2_fv "$_e" new-reds)" ] || _mw_emit_refuse log 1 "REFUSED: FULL-SUITE new-reds=$(_p2_fv "$_e" new-reds) disagrees with the known-reds recount ($(_p2_kr_diff "$4" "$_r"))" ;;
+    "SWEEP "*)
+      [ -e "$(_p2_fv "$_e" report)" ] || _mw_emit_refuse log 1 "REFUSED: sweep report missing"
+      [ "$(_p2_fv "$_e" sha)" = "$(_p2_head12 "$(mission_part_worktree "$P2S" "$_n" "$4")")" ] || _mw_emit_refuse log 1 "REFUSED: sweep sha is not the part worktree HEAD" ;;
+    "live-verify "*)
+      _fz=$(_p2_freeze "$_n")
+      [ -n "$_fz" ] && [ "$(_p2_fv "$_e" sha)" = "$_fz" ] || _mw_emit_refuse log 1 "REFUSED: live-verify sha is not the part's current freeze SHA (${_fz:-none})"
+      case "$_pl" in *" status=n/a "*|*" status=n/a") [ "$(_p2_fv "$_rc" live)" = no ] || _mw_emit_refuse log 1 "REFUSED: live-verify n/a while the recipe says live=yes" ;; esac ;;
+    "PART-DONE "*) _p2_partdone "$_n" "$4" ;;
+  esac
+  return 0
+}
+
+# _p2_partdone <N> <root> — PART-DONE for a proto=2 part (plan 4.6).
+_p2_partdone() {
+  [ -n "$(_p2_recipe "$1")" ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE without a RECIPE"
+  _pd_last=$(_p2_rounds "$1" | tail -1)
+  case "$_pd_last" in *" phase=review "*" dry=2 "*) : ;; *) _mw_emit_refuse log 4 "REFUSED: PART-DONE needs the join (bank-review join -> dry=2) as the part's last round" ;; esac
+  _pd_snap=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$1" '$1 ~ ("^(g[0-9]+-)?snap-p" pn "-conv-") && index($2,"[mission] SNAPSHOT part=" pn " ")==1 && $2 ~ / ver=2$/ {l=$2} END{print l}')
+  _pd_fz=$(_p2_fv "$_pd_snap" sha); [ -n "$_pd_fz" ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE without a v2 convergence snapshot"
+  _pd_miss=$(_p2_legs "$1" "$_pd_fz"); [ -z "$_pd_miss" ] || _mw_emit_refuse log 4 "REFUSED: close leg $_pd_miss not passing at freeze $_pd_fz"
+  # sweep coverage: every repeat key raised in the part, by a clean sweep logged after the last fix line.
+  _pd_keys=$(_p2_evid "$1" '(delta|close)' | sed -n 's/.* rkeys=\([^ ]*\).*/\1/p' | tr ',' '\n' | grep -v '^-$' | grep . | sort -u)
+  if [ -n "$_pd_keys" ]; then
+    _pd_ok=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$1" -v keys="$(printf '%s' "$_pd_keys" | tr '\n' ',')" '
+      index($2,"[mission] part=" pn " name=")==1 && $2 ~ / phase=fix / { lf=NR }
+      index($2,"[mission] SWEEP part=" pn " ")==1 && $2 ~ / instances=0 / && $1 ~ ("^(g[0-9]+-)?m" pn "-sweep-r") {
+        t=$2; sub(/.* types=/,"",t); sub(/ .*/,"",t); n=split(keys,k,","); c=1
+        for(i=1;i<=n;i++) if (k[i]!="" && index("," t ",", "," k[i] ",")==0) c=0
+        if (c) ls=NR }
+      END { print (ls>lf) ? "yes" : "no" }')
+    [ "$_pd_ok" = yes ] || _mw_emit_refuse log 4 "REFUSED: PART-DONE needs a clean SWEEP covering repeat types [$(printf '%s' "$_pd_keys" | tr '\n' ' ')] logged after the last fix"
+  fi
+  _pd_cur=$(_mission_tree_fingerprint_v2 "$(mission_part_worktree "$P2S" "$1" "$2")")
+  [ "$_pd_cur" = "$(_p2_fv "$_pd_snap" tree)" ] \
+    || _mw_emit_refuse log 4 "REFUSED: convergence-stale - part worktree ($_pd_cur) is not the freeze tree ($(_p2_fv "$_pd_snap" tree)); re-review, then re-log PART-DONE"
+  return 0
+}
+
+# _p2_anchor_after_done <sid> <root> <N> — record the part's anchor once PART-DONE is banked: the freeze
+# SHA for proto=2, the root branch head for a legacy part. Writer-only line (log refuses ANCHOR).
+_p2_anchor_after_done() {
+  _p2_load "$1" "$2" log
+  if [ "$(_p2_proto "$3")" = 2 ]; then
+    _ad=$(printf '%s\n' "$P2S" | awk -F'\t' -v pn="$3" '$1 ~ ("^(g[0-9]+-)?snap-p" pn "-conv-") && $2 ~ / ver=2$/ {l=$2} END{print l}')
+    _ad=$(_p2_fv "$_ad" sha)
+  else _ad=$(_p2_head12 "$2"); fi
+  [ -n "$_ad" ] && mission_log_append "$1" "$2" "[mission] ANCHOR part=$3 sha=$_ad" "m$3-anchor" >/dev/null 2>&1
+  return 0
+}
+
+# ── bank-review (plan 4.2-4.6): the ONLY writer of proto=2 review evidence and of any dry= raise ──
+_p2_br_void() {   # <sid> <root> <N> <K> <reason> <report>
+  _bv_h=$(printf '%s' "$6" | _mission_hash_stream | cut -c1-8); [ -n "$_bv_h" ] || _bv_h=nofile
+  _bv_id=$(basename "$(dirname "${6:-x}")" | tr -cd 'A-Za-z0-9'); [ -n "$_bv_id" ] || _bv_id=run
+  mission_log_append "$1" "$2" "[mission] VOID part=$3 phase=review round=$4 reason=$5" "m$3-void-r$4-${_bv_id}h${_bv_h}" >/dev/null 2>&1
+  _bv_c=$(_void_consecutive_count "$1" "$2" "$3" "$4" 2>/dev/null)
+  _bv_x=""
+  if [ "${_bv_c:-0}" -ge 3 ] 2>/dev/null; then
+    mission_log_append "$1" "$2" "[mission] FAIL part=$3 phase=review reason=panel-unavailable-3x attempt=1" "m$3-fail-panel3x-r$4" >/dev/null 2>&1
+    _bv_x=" panel-unavailable-3x"
+  fi
+  echo "mission-write: bank-review VOID reason=$5 void-count=${_bv_c:-?}${_bv_x}"; exit 0
+}
+_p2_bank_review() {
+  _bs="$1"; _br="$2"; _bn="$3"; _bk="$4"; _bsc="$5"; _brep="${6:-}"; _bimp="${7:-}"
+  case "$_bn$_bk" in ''|*[!0-9]*) _mw_emit_refuse bank-review 1 "usage: bank-review <sid> <root> <N> <K> <plan|delta|close|join> [report] [impl-reviewer-output]" ;; esac
+  case "$_bsc" in plan|delta|close|join) : ;; *) _mw_emit_refuse bank-review 1 "scope must be plan|delta|close|join" ;; esac
+  _p2_load "$_bs" "$_br" bank-review
+  [ "$(_p2_proto "$_bn")" = 2 ] || _mw_emit_refuse bank-review 4 "REFUSED: bank-review is for proto=2 parts (part $_bn has no proto=2 PART-START)"
+  _p2_retired "$_bn" && _mw_emit_refuse bank-review 4 "REFUSED: part-retired - expected drop"
+  _p2_over_guard bank-review "$_bn"
+  _bwt=$(mission_part_worktree "$P2S" "$_bn" "$_br"); _bps=$(_p2_ps "$_bn"); _bname=$(_p2_fv "$_bps" name); _bbase=$(_p2_fv "$_bps" base)
+  _brc=$(_p2_recipe "$_bn")
+  if [ "$_bsc" = join ]; then
+    [ "$(_p2_lastdry "$_bn")" = 1 ] || _mw_emit_refuse bank-review 4 "REFUSED: join needs the part at dry=1 (a clean delta round) with no reset since"
+    _bfz=$(_p2_freeze "$_bn"); _bmiss=$(_p2_legs "$_bn" "$_bfz")
+    [ -z "$_bmiss" ] || _mw_emit_refuse bank-review 4 "REFUSED: join refused - leg $_bmiss not passing at freeze $_bfz"
+    [ "$(_p2_head12 "$_bwt")" = "$_bfz" ] && _p2_clean "$_bwt" || _mw_emit_refuse bank-review 4 "REFUSED: join needs the part worktree clean at the freeze SHA $_bfz"
+    mission_log_append "$_bs" "$_br" "[mission] part=$_bn name=$_bname phase=review round=$_bk dry=2 findings=0" "m$_bn-review-r$_bk-d2" >/dev/null 2>&1
+    _btr=$(_mission_tree_fingerprint_v2 "$_bwt"); _bg=$(_mission_goal_hash "$_bs" 2>/dev/null)
+    mission_log_append "$_bs" "$_br" "[mission] SNAPSHOT part=$_bn kind=converged tree=$_btr sha=$_bfz goal=${_bg:-nogoal} files=0 ver=2" "snap-p$_bn-conv-${_btr#v2:}" >/dev/null 2>&1
+    _mw_arm_liveness "$_bs" "$_br"
+    echo "mission-write: bank-review ok scope=join dry=2 freeze=$_bfz"; exit 0
+  fi
+  [ -f "$_brep" ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" report-missing "$_brep"
+  if [ "$_bsc" = plan ]; then
+    _bh=$(head -n 5 "$_brep" | grep -E '^Plan-review: round=[0-9]+ ' | head -1)
+    [ -n "$_bh" ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" header-missing "$_brep"
+    [ "$(printf '%s' "$_bh" | sed -n 's/^Plan-review: round=\([0-9]*\).*/\1/p')" = "$_bk" ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" round-mismatch "$_brep"
+    [ "$(printf '%s' "$_bh" | grep -oE 'Plan-lanes: [0-9]+/4' | sed 's/Plan-lanes: //')" = 4/4 ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" panel-incomplete "$_brep"
+    _bcx=4/4; _bcl=-; _bb=-; _bhd=-
+  else
+    case "$_brep" in */codex-review.*/report-final.md) : ;; *) _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" forged-report "$_brep" ;; esac
+    _brun=$(dirname "$_brep"); [ -f "$_brun/meta.env" ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" forged-report "$_brep"
+    _bh=$(head -n 5 "$_brep" | grep -E '^Engine:.*Codex-passes: [0-9]+/4.*Verified:' | head -1)
+    _bcx=$(mission_parse_codex_header "$_brep" 2>/dev/null); _bcl=$(mission_parse_claude_header "$_brep" 2>/dev/null)
+    [ "$_bcx" = 4/4 ] && [ "$_bcl" = 3/3 ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" panel-incomplete "$_brep"
+    [ -s "$_bimp" ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" impl-reviewer-missing "$_brep"
+    _bscope=$(printf '%s' "$_bh" | sed -n 's/.*Scope: \([a-z]*\) base=\([0-9a-f]*\) head=\([0-9a-f]*\).*/\1 \2 \3/p')
+    [ -n "$_bscope" ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" scope-missing "$_brep"
+    set -- $_bscope; _bsk=$1; _bb=$2; _bhd=$3
+    _brs=$(sed -n 's/^RUN_SHA=//p' "$_brun/meta.env" | head -1)
+    case "$_brs" in "$_bhd"*) : ;; *) _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" head-mismatch "$_brep" ;; esac
+  fi
+  _bvt=$(printf '%s' "$_bh" | grep -oE 'Verify: ok tagged=[0-9]+ blocking=[0-9]+' | head -1)
+  [ -n "$_bvt" ] || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" verify-failed "$_brep"
+  _btg=$(printf '%s' "$_bvt" | sed 's/.*tagged=\([0-9]*\).*/\1/'); _bbl=$(printf '%s' "$_bvt" | sed 's/.*blocking=//')
+  _btags=$(grep -E '^TAG \| [A-Z0-9_-]+ \| (new|repeat) \| ' "$_brep")
+  _btn=$(printf '%s' "$_btags" | grep -c .)
+  { [ "$_btg" = "$_bbl" ] && [ "$_btn" = "$_btg" ]; } || _p2_br_void "$_bs" "$_br" "$_bn" "$_bk" untagged-blocking "$_brep"
+  _bnew=$(printf '%s\n' "$_btags" | grep -c ' | new | '); _brp=$(printf '%s\n' "$_btags" | grep -c ' | repeat | ')
+  _brk=$(printf '%s\n' "$_btags" | awk -F' [|] ' '$3=="repeat"{print $2}' | sort -u | paste -sd, -); [ -n "$_brk" ] || _brk=-
+  # budgets and base/head binding per scope
+  case "$_bsc" in
+    plan)
+      [ "$(_p2_evid "$_bn" plan | grep -c .)" -lt "$(_p2_fv "$_brc" plan)" ] || _mw_emit_refuse bank-review 4 "REFUSED: plan-round cap reached - park or descope" ;;
+    delta)
+      _blast=$(_p2_fv "$(_p2_evid "$_bn" delta | tail -1)" head)
+      { [ "$_bb" = "$_bbase" ] || [ "$_bb" = "$_blast" ]; } || _mw_emit_refuse bank-review 4 "REFUSED: delta base=$_bb is neither the PART-START base nor the last reviewed head"
+      [ "$(_p2_evid "$_bn" delta | grep -c .)" -lt "$(_p2_fv "$_brc" review)" ] || _mw_emit_refuse bank-review 4 "REFUSED: review-budget-exhausted - park the part" ;;
+    close)
+      _bfz=$(_p2_freeze "$_bn")
+      [ -n "$_bfz" ] || _mw_emit_refuse bank-review 4 "REFUSED: close needs a current freeze (a clean delta round at dry=1)"
+      { [ "$_bsk" = full ] && [ "$_bb" = "$_bbase" ] && [ "$_bhd" = "$_bfz" ]; } \
+        || _mw_emit_refuse bank-review 4 "REFUSED: close report must be Scope: full base=$_bbase head=$_bfz" ;;
+  esac
+  _bres=clean; [ "$_bbl" = 0 ] || _bres=blocking
+  _bdry=0
+  if [ "$_bsc" = delta ] && [ "$_bbl" = 0 ]; then
+    [ "$(_p2_head12 "$_bwt")" = "$_bhd" ] && _p2_clean "$_bwt" \
+      || _mw_emit_refuse bank-review 4 "REFUSED: dry=1 needs the part worktree clean with HEAD == report head $_bhd"
+    _bdry=1
+  fi
+  [ "$_bsc" = close ] && [ "$_bres" = clean ] && _bdry=1
+  _p2_append "$_bs" "$_br" "[mission] REVIEW-EVIDENCE part=$_bn round=$_bk scope=$_bsc base=$_bb head=$_bhd codex=$_bcx claude=$_bcl tagged=$_btg blocking=$_bbl new=$_bnew repeat=$_brp rkeys=$_brk result=$_bres report=$_brep" "m$_bn-review-evidence-$_bsc-r$_bk"
+  case "$_MLA_OUTCOME" in appended|dedup-idempotent) : ;; *) _mw_emit_refuse bank-review 1 "evidence write ${_MLA_OUTCOME:-failed} ${_MLA_REASON:-}" ;; esac
+  if [ "$_bsc" = delta ] || { [ "$_bsc" = close ] && [ "$_bres" = blocking ]; }; then
+    mission_log_append "$_bs" "$_br" "[mission] part=$_bn name=$_bname phase=review round=$_bk dry=$_bdry findings=$_bbl" "m$_bn-review-r$_bk-d$_bdry" >/dev/null 2>&1
+  fi
+  _bx=""
+  [ "$_brk" != - ] && _bx=" sweep=required types=$_brk"
+  if [ "$_bsc" = delta ] && [ "$_bnew" -gt 0 ]; then   # redesign: one area with new types 3 rounds running
+    _bar=$(_p2_evid "$_bn" delta | tail -3 | sed -n 's/.* report=\([^ ]*\).*/\1/p' | while IFS= read -r _f; do
+             grep -E '^TAG \| [A-Z0-9_-]+ \| new \| ' "$_f" 2>/dev/null | awk -F' [|] ' '{print $(NF-1)}' | sort -u; done \
+           | sort | uniq -c | awk '$1>=3 {print $2; exit}')
+    [ "$(_p2_evid "$_bn" delta | grep -c .)" -ge 3 ] && [ -n "$_bar" ] && _bx="$_bx redesign=$_bar"
+  fi
+  _mw_arm_liveness "$_bs" "$_br"
+  echo "mission-write: bank-review ok scope=$_bsc dry=$_bdry blocking=$_bbl new=$_bnew repeat=$_brp result=$_bres$_bx"
+  exit 0
+}
+
 # I6: light root-escape guard (defense-in-depth; root is trusted-caller-supplied). Refuse an
 # empty root or one containing `..` traversal. NEVER abort the caller — print a status line and
 # exit 0. The normal absolute-path case (no `..`) is unaffected. Only enforced for verbs that
 # actually take a <root> arg (i.e. not the help/usage paths, which have no root).
 case "$verb" in
-  create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await)
+  create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|known-reds)
     case "$root" in
       ""|*..*)
         # I2: emit the parseable failure shape (FAILED rc=N), not a bare REFUSED line — the
@@ -651,7 +1137,13 @@ case "$verb" in
     # per-shape grammar/control-char/length validation (prints + exits on refusal), then the
     # PART-DONE preconditions (dedup-first, gen-sliced, freshness-ordered, dry-count fold, tree-drift).
     _mw_validate_log "$4" "${5:-}" "$sid" "$root"
+    _p2_check "$4" "${5:-}" "$sid" "$root"          # proto=2 layer (sets P2_PROTO, P2_FINAL_ENTRY)
     _mw_partdone_check "$4" "${5:-}" "$sid" "$root"
+    _mw_entry="${P2_FINAL_ENTRY:-$4}"
+    if [ -n "$P2_FINAL_ENTRY" ] && [ "$(printf '%s\t%s\n' "${5:-}xxxxx" "$_mw_entry" | LC_ALL=C wc -c | tr -d ' ')" -ge 480 ]; then
+      _mw_emit_refuse log 1 "REFUSED: line-too-long"
+    fi
+    set -- "$1" "$2" "$3" "$_mw_entry" "${5:-}"
     case "$4" in
       "[mission] MISSION-CLEARED "*)
         # C4 — route the clear through the UNDER-LOCK guard (mission_clear_append re-checks await-state
@@ -668,6 +1160,7 @@ case "$verb" in
         # not a converged dry=2 review line, so it never needs the _mw_emit_snapshot stamp path.
         mission_partdone_append "$sid" "$root" "$4" "${5:-}"
         rc=$?
+        [ "$rc" -eq 0 ] && [ "${_MLA_OUTCOME:-}" = appended ] && { _pd_o="$_MLA_OUTCOME"; _p2_anchor_after_done "$sid" "$root" "$(_mw_efield "$4" part)"; _MLA_OUTCOME="$_pd_o"; }
         ;;
       "[mission] DECISION "*)
         # R8r3-R4 - route the DECISION through the UNDER-LOCK wrapper so its anchored-idtag dedup + append is
@@ -866,17 +1359,48 @@ case "$verb" in
     # mission_await_append → mission_log_append (which BYPASSES _mw_validate_log, exactly like
     # _mw_emit_snapshot / WORK-START). Reuses the anchored-idempotent log path, so a re-append of the
     # same got is a quiet dedup no-op; a same-idtag different-content append surfaces COLLISION.
+    _aw_p=$(_mission_await_field "$4" part)
+    if [ -n "$_aw_p" ]; then
+      _p2_load "$sid" "$root" await
+      _p2_retired "$((_aw_p + 0))" && _mw_emit_refuse await 4 "REFUSED: part-retired - part $_aw_p is retired; a late completion is an expected drop (no FAIL, no tally)"
+    fi
     mission_await_append "$sid" "$root" "$4"
     rc=$?
     _mw_outcome_status await "$rc"
     ;;
 
+  bank-review)
+    # bank-review <sid> <root> <N> <K> <plan|delta|close|join> [report] [impl-reviewer-output]
+    _p2_bank_review "$sid" "$root" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"
+    ;;
+
+  budget-state)
+    # read-only; bare token: ok | paused live=<min> | over part=N minutes=M replan=<0|1>
+    _p2_load "$sid" "$root" budget-state
+    _bsn=$(_p2_open_parts | while read -r _p; do [ "$(_p2_proto "$_p")" = 2 ] && echo "$_p"; done | sort -n | tail -1)
+    if [ -z "$_bsn" ]; then echo ok; else
+      set -- $(_p2_budget "$_bsn")
+      case "$1" in over) echo "over part=$_bsn minutes=$2 replan=$3" ;; paused) echo "paused live=$2" ;; *) echo ok ;; esac
+    fi
+    ;;
+
+  known-reds)
+    # known-reds <sid> <root> diff <report>   -> bare count of new reds (-1 = invalid run)
+    # known-reds <sid> <root> record <report> -> write/merge the baseline keyed by sha + command + env
+    case "${4:-}" in
+      diff) _p2_kr_diff "$root" "${5:-}" ;;
+      record) if _p2_kr_record "$root" "${5:-}"; then echo "mission-write: known-reds ok"
+              else _mw_emit_refuse known-reds 1 "REFUSED: not a completed run without infra failures (never baselined)"; fi ;;
+      *) echo "mission-write: usage: known-reds <sid> <root> <diff|record> <report>" ;;
+    esac
+    ;;
+
   ""|help|-h|--help)
-    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash> <sid> <root> [args...]"
+    echo "mission-write: usage: mission-write.sh <create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|known-reds|await-state|cursor-hash> <sid> <root> [args...]"
     ;;
 
   *)
-    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|await-state|cursor-hash)"
+    echo "mission-write: usage: unknown verb '$verb' (want create|log|note|challenge|pending|pending-stop|resolve|rebaseline|render-banner|timing-resume|timing-contact|timing-close|archive-close|await|bank-review|budget-state|known-reds|await-state|cursor-hash)"
     ;;
 esac
 
