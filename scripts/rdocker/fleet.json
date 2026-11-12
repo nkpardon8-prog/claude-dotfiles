@@ -71,7 +71,7 @@
       "max_slots": 2,
       "heavy_slots": 1,
       "mem_gb": 8,
-      "enabled": true,
+      "enabled": false,
       "ts_key_expiry": "2027-04-16",
       "shards": false
     },
@@ -89,7 +89,7 @@
       "max_slots": 2,
       "heavy_slots": 1,
       "mem_gb": 8,
-      "enabled": true,
+      "enabled": false,
       "ts_key_expiry": "2027-05-09",
       "shards": false
     },
