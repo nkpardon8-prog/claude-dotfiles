@@ -107,14 +107,16 @@ mirrors their published ports, but only after the fact (event-driven, not before
 `rrun [-e NAME[=VALUE]]... [--] <command> [args...]` (same as `rdocker run ...`) runs the command **on the
 mini**, in a mirror of the current git worktree, so the test runner and its DB sit on the same machine
 (measured: a 15-test DB file went from 673 s split across the link to ~12 s). Output streams back, the
-exit code is the command's own, Ctrl-C works (1st: interrupt the remote command; 2nd: kill it; 3rd: drop
-the connection).
+exit code is the command's own unless rrun itself decided the result (see **Exit codes and result
+classes** below: the line `rrun: <class> (...)` right after the output always says which), Ctrl-C works
+(1st: interrupt the remote command; 2nd: kill it; 3rd: drop the connection).
 
 **Heavy dev work runs on the compute pool automatically - just type the normal command.** A
 `PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites every heavy one-shot dev command an agent
 types into `rrun <cmd>`, and rrun picks the best worker in the pool (`fleet.json`: Nick's MacBook M5 Max,
-then the HP, then the Windows laptop) and falls back by itself. Do not prefix `rrun` yourself, and do
-not look for another way to get compute. `rrun --where <cmd>` shows which worker it would pick and why.
+then the HP, then the Windows laptop) and falls back by itself. The hook covers the common commands
+listed below; for any other heavy command, prefix `rrun` yourself (`rrun <cmd>`). Do not look for
+another way to get compute. `rrun --where <cmd>` shows which worker it would pick and why.
 
 - **Automatic (what is rewritten):** one-shot type-checks, tests, lint and DB jobs, in a git repo:
   - `npx [--prefix X] tsc` with `--noEmit`, or with `-p`/`-b` configs that all set `"noEmit": true`
@@ -174,9 +176,17 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   seconds; rotated at 10 MB, ~1 week) and `daemon.log`; mini `~/rr/log/runs.log` (one line per run: time,
   repo, worktree, sha, outcome, prepare/command seconds, argv head with env values redacted; then, since
   2026-11-11, a TAB and `run=<uuid> owner=<session:...|pid:...> cls=<class> wait_s=<s before the slot:
-  client waits + slot wait> exit_reason=pass|fail|cap|stalled|lost|busy|refused`; `stalled` is reserved.
+  client waits + slot wait> exit_reason=pass|fail|cap|stalled|lost|busy|refused|abandoned-setup|moved|warm
+  setup=warm|clone|cold pred_s=<s> client=<sha> pv=<pool version>`; `stalled` is reserved.
+  **Truthful outcomes:** `lost rc=N` = a started command whose client never came back (no reattach);
+  `abandoned-setup` = the client left during the prepare or slot wait; `moved` = it left to re-plan
+  elsewhere; `warm` = a background prepare (`rdocker warm`). Rows before 2026-11-11 wrote a bare `lost`
+  (or `interrupted`) for the pre-start cases: every reader (the scheduler, rd-doctor, the steward)
+  counts those as abandoned, never against the worker. Times carry their offset: workers keep
+  different time zones, so compare parsed times, never raw strings.
   The new fields come after argv because every existing parser anchors each field to the next one; the
-  dashboard reporter shows them at the end of its argv column. 0600, rotated at 5 MB).
+  dashboard reporter shows them at the end of its argv column. 0600, rotated at 5 MB). Each `route.log`
+  rrun line ends with a TAB and the client's stage timings (see Timing below).
 - **Git state on the mini:** `git rev-parse HEAD` is the laptop's HEAD SHA; the checkout is detached
   (`--abbrev-ref HEAD` prints `HEAD`, not the branch); the working tree equals the laptop's (dirty files
   included), but the index is plain HEAD, so staged changes show as unstaged. Clean laptop -> clean mini.
@@ -250,14 +260,18 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   rrun closes it itself. `git push` to a worker is capped at `rr_push_timeout_s` (300 s; then that
   worker counts as unreachable and the job moves on).
   **Silence never kills, it only tells:** after `rr_silent_min` (1) minute without output rrun prints
-  `rrun: no output for 1 min (worker hp, running 25 min)` on stderr, then every 5 min more
-  (`RRUN_SILENT_MIN=<min>`, 0 = off).
+  `rrun: no output for 1 min (worker hp, running 25 min; last test file src/a.db.test.ts, named 1 min
+  ago)` on stderr, then every 5 min more (`RRUN_SILENT_MIN=<min>`, 0 = off). The last test file is the
+  last `*.test.*` / `*.spec.*` path the output named (vitest / jest per-file lines), so a hang after a
+  file says where it is. A slot wait prints one full line, then one short line a minute
+  (`rrun: still waiting for a slot on hp (3 min so far; next in line; expected wait ~2 min)`).
   **Hard cap per job class:** light / normal 30 min, heavy 60, db 90, build 60 (`rr_timeout_min`);
   `RRUN_TIMEOUT=<minutes>` sets another cap for one run, `RRUN_TIMEOUT=0` none. Every `test:db:<x>`
   script (`test:db:migrated`, `test:db:rls`, ...) is a db job. At the cap the worker TERMs the
   command's process group (KILL 10 s later, then checks it is empty), frees the slot, logs `outcome=timeout rc=124` in `runs.log`, and
-  rrun exits **124** (like `timeout(1)`) with `rrun: the command ran past its 30 min wall-clock cap on
-  hp; killed it ...`. Never re-run, never cached. (If the worker never reports it, rrun closes the
+  rrun exits **124** (like `timeout(1)`) with `rrun: infra (exit 124 ...; hit its 30 min wall-clock cap
+  on hp ...)`. A command's own `timeout` that exits 124 is reported `fail`, never `infra`: the class
+  line tells them apart. Never re-run, never cached. (If the worker never reports it, rrun closes the
   session itself 90 s past the cap, also exit 124.)
 - **Who owns a job.** Every job carries its caller: `session:<CLAUDE_CODE_SESSION_ID>` (else
   `pid:<parent pid>`), the window's `/line` caption (`~/.claude/session-status/<id>.txt`, one file
@@ -275,8 +289,11 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   (not a git repo, no commit yet), it runs **on the laptop**
   with `RDOCKER_MODE=local` and a `rrun: ... - running on the laptop instead` notice - unless rrun was
   already stopped (Ctrl-C, or a tool timeout's TERM, also while waiting for the mini): then it exits
-  128+signal and runs nowhere. `RRUN_STRICT=1`
-  refuses that and exits 75. A shallow clone, or history the mini's `git fsck` rejects, also runs on
+  128+signal and runs nowhere. In a pool (2+ workers) heavy and DB jobs never run on this machine
+  (exit 75 instead); light jobs run here only when every worker stayed busy `rr_local_after_s`; a
+  normal job runs here only when every worker is unreachable. `RRUN_STRICT=1`
+  refuses any local run and exits 75. A local run is the plain command (`exec`): its exit code is the
+  command's own and no class line follows it. A shallow clone, or history the mini's `git fsck` rejects, also runs on
   the laptop, with the reason in the notice (`cannot send this repo to the Mac mini: ...`).
 - **Link lost once GO was sent → rrun reattaches (2026-11-11).** The started command does not depend
   on the ssh session: on the worker it runs detached (its own session), its output spooled to
@@ -288,14 +305,15 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   reconnected to <worker>; the output goes on from where it broke off` - the rest of the output (no
   byte twice) and the command's **real exit code**. If GO never arrived there, the runner's own signed
   record says so and it counts as lost *before* the start (safe to run elsewhere). If the worker has
-  no proof either way (its spool is gone), rrun says `the run's result is lost there ... not re-running
-  it (exit 75)` - never a re-run. A Ctrl-C / TERM during the reconnect ends it (128+signal), never a
-  re-run. Only when every reconnect fails do the old rules apply: exit **75** (`rrun: lost the Mac mini mid-run - not re-running ...`), or one
+  no proof either way (its spool is gone), rrun says `the run's result is lost there ...; it may have
+  run, so it is not re-run automatically` - exit **76**, never a re-run. A Ctrl-C / TERM during the
+  reconnect ends it (128+signal), never a re-run. Only when every reconnect fails do the old rules
+  apply: exit **76** (`lost hp mid-run and could not reconnect; it may have run there ...`), or one
   re-run on another worker for a job that is safe to repeat (tsc, lint, vitest/jest, builds, DB jobs in
   a pool). The worker side: before GO a lost laptop means nothing runs (`rr_hb_timeout`, 60 s); once
   the command runs it lives on **180 s** without any client (`rr_detach_hb_s`), then it is cancelled
-  (process group TERM, KILL 10 s later; `outcome=lost`). A deliberate stop (second Ctrl-C, a hedge's
-  loser) is sent as an explicit KILL and cancels at once (`outcome=interrupted`). Spool files go 10
+  (process group TERM, KILL 10 s later; `outcome=lost rc=N`). A deliberate stop (second Ctrl-C, a
+  hedge's loser) is sent as an explicit KILL and cancels at once (`outcome=interrupted rc=N`). Spool files go 10
   min after their run ended (or 1 h after their last change once no run holds them; a running job
   touches its own every 5 min), swept when a detached run ends and by rd-tune's prune pass (Linux
   workers), so anything in `~/rr/spool` older than 1 h is safe to delete. While such a run still
@@ -304,20 +322,18 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   busy and rrun re-plans. Mirrors of these runners live in `~/rr/w2/` (older runners: `~/rr/w/`, which
   they keep using), so an old client's run can never check out under a new detached one; the janitor
   and rd-tune prune both.
-- **Exit codes of rrun itself** (only before the command started, so never confused with its own):
-  65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
-  on the mini, 70 runner error, 73 slot busy past `rr_wait_min` (or the worker refused: share off / its Docker did
-  not start - then rrun tries the next worker), 75 lost the mini (every reconnect failed) / strict
-  fallback / **no eligible worker for this job** (fleet.json `classes` / `max_cost_s` / `cold_ok`, see
-  the scheduler; printed at once, nothing waits),
-  **72 another rrun from this worktree held the worktree lock past the wait** (nothing ran; `rrun
-  --mine` shows it), **124 the command hit its wall-clock cap and was killed** (the one code here that comes after the
-  command started; `timeout(1)`'s convention, so a command's own `timeout` 124 looks the same - the
-  `rrun: ... wall-clock cap` line tells them apart), **78 dependency install failed** (`npm ci` / `prisma generate` / a local package rebuild; its log is printed), 130 interrupted
-  before start.
+- **Current code everywhere (version guarantee, layer 2).** Every job's runner raises the worker's
+  `~/rr/pool_version` to its client's `POOL_VERSION` (rd_common; bumped only for a change every client
+  must adopt). The probe returns it, so a client with older code runs `git pull --ff-only` in its
+  dotfiles and starts itself again once before anything runs; if that cannot bring it up to date, exit
+  77 (`rrun outdated ...`, needs-human). Layer 1 is the 2-min autopull.
 - **On the mini:** `~/rr` is 0700, excluded from Time Machine (`tmutil addexclusion`, once) and from
   Spotlight (`.metadata_never_index`).
-- **Timing:** `RRUN_TIMING=1` prints per-stage times (push, overlay, remote prepare, command) on stderr.
+- **Timing:** every job's `route.log` line ends with a tab and its client-side start timings:
+  `cache_s plan_s push_s overlay_s remote_s` (remote = the worker's prepare + slot) and `start_s`
+  (command start, from rrun's own start: the time-to-start SLO), plus `pred_s` (the placement's
+  predicted command seconds) and `client` (the dotfiles commit). `RRUN_TIMING=1` also prints the stages
+  on stderr.
   `rdocker status` has an `rrun` row (last run, runs in flight) and an `rrun job` row per run in flight.
 - **Result cache (on the agent Mac, `~/.local/state/rdocker/cache/`, about 200 MB, least recently used out).**
   When the code rrun would ship AND the command match a recent run, rrun replays that run's output and
@@ -335,22 +351,57 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   `&&`. **Never cached:** DB jobs, a DB-looking variable in the env sent or in a shipped env file, a
   script that sets env vars or runs anything else, builds, `--host` runs (they run, then save), local
   runs, a run that called `docker` on the worker, an interrupted or hedged run, a sharded run with a lost
-  or local shard, and exit codes 65/69/70/73/75/78 or from a signal. A sharded run is one entry (keyed on
+  or local shard, a missing-test-DB run, and exit codes 65/69/70/72/73/75/76/77/78/124 or from a signal. A sharded run is one entry (keyed on
   the unsharded command), saved after every shard ended. Hits show as target `cache` in `route.log`.
 
+### Exit codes and result classes
+
+Every rrun job ends with ONE line right after the command's output, `rrun: <class> (exit N[ on <worker>,
+<secs>][; why]) - <next action>`, then any detail lines (a shard table, a cached-result note). Four
+classes, so an agent never has to guess:
+
+- `pass` - exit 0.
+- `fail` - the command's own non-zero exit: the code is broken. Fix the code.
+- `infra` - the pool, not the code: rerun it, never debug it (a missing test DB says to rerun through
+  `npm run test:db`; 76 says it may have run, so check a DB job's side effects first).
+- `needs-human` - rerunning will not help: tell the owner (who and why are on the line).
+
+rrun's own codes (`rd_run.EXIT_CODES`; `tests/test_contract.py` checks this table against the code
+and runs a scenario that emits each one):
+
+| code | class       | meaning |
+|------|-------------|---------|
+| 72   | infra       | another rrun from this worktree held its lock past the wait; never ran (`rrun --mine`) |
+| 73   | infra       | every worker stayed busy past `rr_wait_min`; never ran |
+| 75   | infra       | never ran: no worker reachable, lost before the start, `RRUN_STRICT=1`, a heavy/DB job with no worker, or the output showed a missing test DB (`Environment variable not found: DATABASE_URL`, `ECONNREFUSED` to a DB port) |
+| 76   | infra       | may have run: the link (every reconnect) or the worker's record of the result was lost after the start, or a build's outputs could not be copied back |
+| 77   | needs-human | no worker may take this job (fleet.json `classes` / `max_cost_s` / `cold_ok`), or rrun is outdated and `git pull --ff-only` cannot update it |
+| 124  | infra       | hit its wall-clock cap (`RRUN_TIMEOUT`) and was killed |
+| 65   | needs-human | the worker refused the request (bad input or an unsafe path, e.g. a symlinked mirror) |
+| 69   | infra       | the repo was missing on the worker; never ran |
+| 70   | infra       | the worker's runner failed; never ran |
+| 78   | infra       | installing dependencies on the worker failed (`npm ci` / `prisma generate`); never ran - the last 25 lines of its npm log are shown, not the whole log |
+
+128+N: stopped by signal N (Ctrl-C, a tool's TERM) - `infra`, rerun if you still need it. Any other
+code is the command's own (`fail`). A sharded run is the test result when every shard ran (any real
+shard failure is the result), `infra` when a shard gave none.
+
 Troubleshooting: exit 72 → another rrun of this worktree is still running (`rrun --mine`); exit 124 →
-the command hit its cap (a hung test runner, e.g. vitest kept alive by open DB handles: fix the
-teardown, or `RRUN_TIMEOUT=<min>` if it is really that long). Falls back to the laptop every time → `rdocker doctor` (the push over ssh is the
-reachability test). Exit 73 → every worker stayed busy for `rr_wait_min` (the wait lines name the holders). Exit 75 → the
-link dropped and no reconnect got through (check `rdocker status`, then rerun), or `rrun: no eligible
-worker for this job (class heavy, expected ~15m at speed 1.0): laptop takes only light/normal/db jobs
-(this is heavy); ...` - every worker's fleet.json eligibility rules it out (narrow the job, or shard it).
+the command hit its cap (a hung test runner, e.g. vitest kept alive by open DB handles: the silence line
+names the last test file; fix the teardown, or `RRUN_TIMEOUT=<min>` if it is really that long). Falls
+back to the laptop every time → `rdocker doctor` (the push over ssh is the reachability test). Exit 73 →
+every worker stayed busy for `rr_wait_min` (the wait lines name the holders). Exit 75 → no worker could
+start it (check `rdocker status`, then rerun), or a missing test DB (rerun through `npm run test:db`).
+Exit 76 → the link or the result was lost after the start (rerun; a DB job: check its side effects).
+Exit 77 → `rrun: needs-human (exit 77, 0s; no eligible worker for this job (class heavy, predicted ~15m):
+laptop takes only light/normal/db jobs (this is heavy); ...` - every worker's fleet.json eligibility
+rules it out (tell the owner), or `rrun outdated` (the dotfiles cannot fast-forward on this machine).
 A docker command refused with exit 1 inside a job → it targeted another run's container / network /
 volume, or an unscoped prune (see Docker scope above). Exit 78 → `npm ci` / `prisma generate` / a local
-package rebuild (`npm run <script>  (in ./<pkg>)` above it) failed on the mini (log above it); fix the
-lockfile / schema / build, or `RRUN=0` to run locally. Works locally but fails on the mini with a missing
-file → it is gitignored and not an allowlisted env file: commit it, or generate it in the command. First
-run in a repo is slow (history push + `npm ci`); later runs add ~1-3 s.
+package rebuild (`npm run <script>  (in ./<pkg>)` above it) failed on the worker (log tail above it);
+fix the lockfile / schema / build, or `RRUN=0` to run locally. Works locally but fails on the worker
+with a missing file → it is gitignored and not an allowlisted env file: commit it, or generate it in the
+command. First run in a repo is slow (history push + `npm ci`); later runs add ~1-3 s.
 
 ## Pool scheduler: finish time, shards, hedges
 
@@ -360,47 +411,61 @@ job and one that comes back (or is added to fleet.json) is used at once.
 
 - **Eligibility first, and hard (2026-11-11).** Optional fleet.json fields per worker: `classes` (the
   job classes it takes: `light` / `normal` / `heavy` / `db` / `build`), `max_cost_s` (the longest
-  expected command it takes, in seconds on that worker: the same command's own history when it ran
-  twice or more, else the class median / default, divided by the worker's speed; no momentary load
-  factor) and `cold_ok: false` (never a job whose packages are not prepared there yet). No field = no
-  limit (the old behaviour). A worker that fails one is **not a candidate at all** for that job: not
-  ranked, not the wait host, no shard, no hedge, and a `cold_ok: false` worker is never warmed. `rrun
-  --where` lists it as `never <why>`. Nothing eligible → exit 75 at once with the reasons. A plan without
-  a probe (`--host`, a one-worker fleet) checks the class only. New fields need the matching code on
-  every client: an older rd_fleet rejects unknown fields and would ignore the whole fleet.
-- **Placement = earliest estimated finish.** `eta = cold + queue + job_cost / eff + rtt`;
-  `eff = speed x cpu share x memory factor`. cold = 30 s without the repo's git mirror + 90 s without its
-  packages; queue = 0 with a free slot, else when the first slot holder should finish (from the
-  holders' ages); the memory factor falls to 0.1 when free memory is barely the job's need (full speed
-  only from 1.5x). job_cost (s at speed 1.0) defaults: tsc 60, vitest 60, db 120, lint 30, build 90
-  (`rr_job_cost_s`), raised to earlier runs of the **same command** when those took longer (the argv as `runs.log` writes it;
-  this worker's, else any worker's, scaled by speed; one run is enough), else by the median of the
-  worker's own last runs of that class (3+ runs; else the whole pool's). A busy worker's queue is when
-  its first holder should end: from that holder's own command (`slots/<i>.own`) when it ran before.
+  predicted command it takes, in seconds on that worker: the evidence prediction below, no momentary
+  load factor) and `cold_ok` (a manual override for a job whose packages are not prepared there yet:
+  `false` = never, `true` = always). Without `cold_ok`, cold eligibility is **measured**: a worker whose
+  cold-setup p75 (its own `runs.log` prepares that ran an install) is over `rr_cold_budget_s` (60 s)
+  takes warm jobs only, and qualifies again by itself once it measures faster (an SSD) - no fleet
+  change. If that rule alone would leave a job nowhere to go, the worker with the fastest measured cold
+  setup takes it. No field = no limit. A worker that fails one is **not a candidate at all** for that
+  job: not ranked, not the wait host, no shard, no hedge. `rrun --where` lists it as `never <why>`.
+  Nothing eligible → exit 77 at once with the reasons. A plan without a probe (`--host`, a one-worker
+  fleet) checks the class only. `history_since` (a unix epoch, per worker): its `runs.log` rows before
+  it are ignored - set it at a hardware or config change. New fields need the matching code on every
+  client first: an older rd_fleet rejects unknown fields and would ignore the whole fleet.
+- **Placement = earliest predicted finish, from evidence (2026-11-11).** Every number comes from the
+  workers' own `runs.log` (read on the worker by the probe, offsets honoured, rows since `history_since`
+  and in the last `rr_history_days` (14); rates over the last `rr_history_rows` (300) of them; timing
+  from completed runs only, rc 0/1). `eta = setup + queue + run + rtt + risk`:
+  - **run**: this worker's median of the **exact command** (3+ runs); else the pool's median of it,
+    scaled by this worker's per-kind ratio learned from commands both it and others ran (3+ pairs;
+    without pairs its bench `speed`, calibrated on the workers that have a ratio); else its own 1-2
+    runs; else its median for the command's kind (tsc, vitest files / dirs / suite / shard, test:db,
+    lint, build, check), then the pool's; the class default (`rr_job_cost_s`) / bench speed is the last
+    resort. Then divided by the CPU share and memory factor seen now (the memory factor falls to 0.1
+    when free memory is barely the job's need).
+  - **setup**: the p75 of its measured warm or cold prepares (as the probe sees the packages), else 2 s
+    warm / 90 s cold; + 30 s without the repo's git mirror.
+  - **queue**: 0 with a free slot, else when the first holder should end (its own command's median
+    there, minus how long it has run).
+  - **risk**: p_infra (infra outcomes / fairly started runs, a 3 % prior over 30 runs) x (setup + half
+    the run lost + a rerun on the best other worker). An unreliable worker loses only when that costs.
+  Each job logs its prediction (`pred_s=` in `runs.log` and `route.log`) next to the real `cmd_s`.
   Order tried: free workers by eta, then busy ones by eta, then low-memory, down, off. A busy worker
-  goes FIRST when its eta is at most 0.5x the best free one (`rr_queue_promote_ratio`, 0 = never; was
-  0.25) and at least 120 s sooner (`rr_queue_promote_min_gain_s`; e.g. a tsc queued on nickmbp instead
-  of 26 min on a swapping HP), and then waits for its slot only until the free one would have finished.
-  Why (2026-11-11): a whole `npx vitest run` was costed like the one-file vitest runs that fill the
-  class median, so the free 0.42-speed rd-mini-a won it and ran it 66-80 min. `rrun --where`
-  shows an `eta` column.
+  goes FIRST when its eta is at most 0.5x the best free one (`rr_queue_promote_ratio`, 0 = never) and at
+  least 120 s sooner (`rr_queue_promote_min_gain_s`), and then waits for its slot only until the free
+  one would have finished. `rrun --where` shows `run (from)`, `setup`, `infra` and `eta` per worker.
 - **Overloaded workers are held off.** A worker whose 1-min load per CPU thread is at least 1.5 at probe
   time (`rr_overload_ratio`, 0 = off) counts as busy even with a free slot, and its compute estimate is
   multiplied by load/threads: it gets a job only when it would still finish first (2026-11-10: the WSL
   laptop, 8 threads, reached load 19). `rrun --where` marks it `(overloaded: held off)`.
 - **Test jobs get a fair CPU share.** The runner caps each vitest/jest job (each shard too) at max(1, threads / slots) workers, using `--maxWorkers=N` for `vitest run` / `jest`, or `VITEST_MAX_WORKERS/_THREADS/_FORKS` for an `npm test`/`npm run` script that is one plain vitest command. It skips the cap when you set a worker/pool flag or those env vars yourself, or when a vitest/jest config in the cwd names a limit (e.g. `fileParallelism: false`), and for an npm script running jest. Capped runs end with `[cpu_share=N ...]` in `runs.log`, and the cache key is unchanged.
 - **Vitest shards (default on).** `vitest run` with no file arguments (or only dirs / globs) and 2+
-  free workers is split with vitest's own `--shard=i/n`: each free worker takes round(eff / median eff)
-  shards (>= 1, <= its free slots, 8 in all; e.g. nickmbp 3, hp 1, laptop 1), all at once. A second shard
-  on the same worker gets its own "lane" mirror (`<repo>-<12 hex>`, reaped like any mirror). Output lines
-  are prefixed `[shard i/n host]`; exit code = the highest shard's; a merged `Test Files` / `Tests`
-  summary is printed last. A shard whose worker is lost before GO moves to the next worker (lost after
-  GO: rerun once, as for any vitest job); if no worker takes it, it runs on this machine.
-  Never sharded: DB jobs, `--watch`, `--ui`, `--coverage*`, `--shard` already, json/junit/blob
-  reporters, `--outputFile`, named test files, `--host`. `RRUN_SHARD=0` = never, `RRUN_SHARD=n` = force
-  n shards (`rr_shard: false` turns auto off). A worker with `"shards": false` in fleet.json (the old
-  Mac minis: 27-211 s prepares made their shards straggle and end `lost`) never gets a shard, nor a
-  shard's failover; it still takes whole jobs.
+  free workers is split with vitest's own `--shard=i/n`, in shares proportional to each worker's
+  **predicted rate** for this job (1 / its predicted run): shards go one at a time to the worker that
+  would then finish its share soonest (<= its free slots, 8 in all). A worker whose single shard would
+  take over 2x the fastest worker's gets none (2026-11-11: a laptop shard hit the 30-min cap). A second
+  shard on the same worker gets its own "lane" mirror (`<repo>-<12 hex>`, reaped like any mirror). Output
+  lines are prefixed `[shard i/n host]`; a merged `Test Files` / `Tests` summary is printed last; the
+  result is the test result when every shard ran (see the exit-code section). A shard whose worker is
+  lost before GO moves to the next worker (lost after GO: rerun once, as for any vitest job); if no
+  worker takes it, it runs on this machine. Never sharded: DB jobs (also a `vitest run` whose suite
+  needs a test DB: the package has a `test:db*` script, its vitest setup files read
+  `process.env.DATABASE_URL`, or a `*.db.test.*` file is in scope - then the whole run is a db job),
+  `--watch`, `--ui`, `--coverage*`, `--shard` already, json/junit/blob reporters, `--outputFile`, named
+  test files, `--host`. `RRUN_SHARD=0` = never, `RRUN_SHARD=n` = force n shards (`rr_shard: false`
+  turns auto off). A worker with `"shards": false` in fleet.json never gets a shard, nor a shard's
+  failover; it still takes whole jobs.
 - **Hedged duplicates (default OFF: `RRUN_HEDGE=1` or `rr_hedge: true`).** For tsc / lint / vitest /
   jest only (never DB, never builds): once a run has taken 2x its expected time and a free worker with
   a 3x better eta shows up (re-probed every 15 s, `rr_hedge_poll_s`), one duplicate starts there with
@@ -449,20 +514,25 @@ repos this Mac ran `rrun` in during the last 48 h (`route.log`), at most 2 per p
   prepare (slot, checkout, overlay, `npm ci` or a store clone, prisma) and stop at READY - GO is never
   sent, so **no command runs** and the runner exits 130. Warm twice = nothing the second time.
 - **Polite:** one worker at a time (a `~/rr/state/warm.lock` dir on the worker keeps two clients
-  apart), only with a free slot and load/CPU below 0.7, never queued for a slot, never a worker whose
+  apart), only on a worker running **no job** and with load/CPU below 0.7, at idle priority there (nice
+  19, Linux idle I/O class), never queued for a slot, never a worker whose
   share is off (fleet.json `share` or the owner's switch), never Docker (the warm is not a db job, so
   the runner starts no engine on the home machine or anywhere), no allowlisted env files, no
   `route.log` line. A worktree with an rrun in flight is skipped this pass.
-- **Not warmed:** workers with `"shards": false` in fleet.json (the old minis: their warm sessions mostly
-  ended `lost` after ~30 s of prepare). They still take whole jobs, starting cold - unless they also say
-  `"cold_ok": false`: then never warmed either, and only jobs whose packages they already have.
+- **Every worker is warmed (2026-11-11)**, slow-disk and warm-only ones included: a warm-only worker
+  (`cold_ok: false`, or a measured cold setup over `rr_cold_budget_s`, like the HDD minis) takes only
+  jobs whose packages it already has, so warming is how it gets work at all. A detached prepare
+  survives a long `npm ci`.
 - **When:** a pass every 5 min; between passes an `ssh true` per worker every 60 s, and a worker that
-  comes back online (Nick's MacBook waking up) starts a pass at once.
+  comes back online (Nick's MacBook waking up) starts a pass at once. And event-driven: a job that
+  finds an eligible worker cold for its lockfile starts one background `rdocker warm --once --repo
+  <cwd>` (at most once per repo + lockfiles per `rr_warm_trigger_every_s`, 600 s; `rr_warm_trigger:
+  false` turns it off), so the next job finds that worker warm.
 - `rdocker warm --once [--repo PATH]` runs one pass by hand. Log: `~/.local/state/rdocker/warm.log`, one
   line per push / prepare / skip (a repeated skip is logged when its reason changes). Keys:
   `rr_warm_interval_s`, `rr_warm_tick_s`, `rr_warm_window_h`, `rr_warm_max_repos`, `rr_warm_max_load`.
-- On the worker, `~/rr/log/runs.log` shows a warm as `outcome=lost ... cmd_s=- argv=true` (stopped
-  before GO; the command never started).
+- On the worker, `~/rr/log/runs.log` shows a warm as `outcome=warm ... cmd_s=- argv=true` (stopped at
+  READY; nothing ran). Its prepare time is real setup evidence for the scheduler.
 
 ## What runs where (automatic)
 
