@@ -11,6 +11,12 @@ Claude app shows wrong names. Safe to run any time: it remembers the Remote Cont
 each window (~/.claude/relink-state.json) and skips windows already linked under their current name, so
 only new, renamed, or re-connected windows are touched (`--force` redoes all). One run per Mac at a time.
 
+## Usually you do not need it
+Every Mac carries a Stop hook (`relink.py --heal`, installed by line-ensure-settings.py at session
+start): when a /line-named window finishes a turn and is not on Remote Control under its name - a new
+window after /line, a rename, a /resume, a Pane restore, an account switch - it relinks itself once it
+is idle. /relink is the manual sweep for everything at once, or for a window that never finishes a turn.
+
 ## Why it works this way
 The Claude app shows a Remote Control session under the name it was CONNECTED with. `/rename` does not
 reach it, and `/rc NAME` while already connected does nothing. A disconnect (`/remote-control` while

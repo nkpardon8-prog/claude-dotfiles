@@ -13,7 +13,12 @@ Windows without a /line name (nameSource != "explicit"), or in neither Pane nor 
 Another Mac: `ssh <host> python3 ~/.claude-dotfiles/scripts/relink.py` (Pane windows only; macOS blocks
 AppleScript control of Terminal from an ssh login).
 
-Usage: relink.py [--dry-run] [--only NAME ...] [--timeout-min N]
+Self-heal: `relink.py --heal` is a Stop hook (installed on every Mac by line-ensure-settings.py). When a
+window finishes a turn it checks itself in milliseconds; if it is /line-named but not linked under that
+name (new window, /line rename, /resume, Pane restore, account switch), it starts a detached relink of
+itself, which types once the window is idle. Retries at most every HEAL_BACKOFF seconds per window.
+
+Usage: relink.py [--dry-run] [--only NAME ...] [--timeout-min N] [--force] | --heal (hook, JSON on stdin)
 """
 import argparse
 import json
@@ -28,6 +33,8 @@ STATE = Path(os.environ.get("RELINK_STATE", Path.home() / ".claude" / "relink-st
 SESS = Path(os.environ.get("RELINK_SESSIONS_DIR", Path.home() / ".claude" / "sessions"))
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 POLL = 3.0
+HEAL_BACKOFF = 300
+HEAL_LOG = Path.home() / ".claude" / "logs" / "relink-heal.log"
 STEP_TIMEOUT = 90.0
 
 
@@ -219,7 +226,42 @@ def step(w, now):
             w["state"], w["result"] = "done", "FAILED: no new Remote Control session (check the tab)"
 
 
+def heal():
+    """Stop-hook entry. Must be fast and must never fail the hook: always exits 0."""
+    try:
+        sid = str(json.loads(sys.stdin.read() or "{}").get("session_id") or "")
+        if not sid or os.environ.get("RELINK_CHILD"):
+            return 0
+        me = next((d for d in read_sessions() if d.get("sessionId") == sid), None)
+        if not me or me.get("nameSource") != "explicit" or not NAME_RE.match(me.get("name") or ""):
+            return 0
+        st = load_state()
+        prev = st.get(sid) or {}
+        bridge = me.get("bridgeSessionId")
+        if bridge and prev.get("name") == me["name"] and prev.get("bridge") == bridge:
+            return 0
+        if time.time() - float(prev.get("tried") or 0) < HEAL_BACKOFF:
+            return 0
+        prev = dict(prev, tried=int(time.time()))
+        st[sid] = prev
+        tmp = STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(st, indent=1))
+        os.replace(tmp, STATE)
+        HEAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        log = open(HEAL_LOG, "a")
+        log.write(time.strftime("%Y-%m-%d %H:%M:%S ") + f"heal {me['name']} pid {me['pid']}\n")
+        log.flush()
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--only", me["name"], "--timeout-min", "10"],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                         env=dict(os.environ, RELINK_CHILD="1"))
+    except Exception:
+        pass
+    return 0
+
+
 def main():
+    if "--heal" in sys.argv[1:]:
+        return heal()
     ap = argparse.ArgumentParser(description="Reconnect Remote Control under each window's /line name.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--only", action="append", default=[])
@@ -275,7 +317,7 @@ def run(todo, skipped, host, a):
     for n, why in skipped:
         print(f"  {n:<40} skipped: {why}")
     if not todo:
-        print("  nothing to do: every named window is already linked under its name")
+        print("  nothing to relink")
     return 0 if all(w["result"].startswith("relinked") for w in todo) else 1
 
 

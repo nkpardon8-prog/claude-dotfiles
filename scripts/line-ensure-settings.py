@@ -17,6 +17,8 @@ What it ensures (adds what is missing, never reorders or touches anything else):
   - SessionEnd: address-book publish                              (a closed window leaves the list)
   - PreToolUse(SendMessage): line-agent-communicator.py route-send (a name on the other Mac is sent to
                                        its bridge address, so agents just use names)
+  - Stop: relink.py --heal               (a /line-named window not on Remote Control under its name -
+                                       new, renamed, resumed, Pane-restored - relinks itself when idle)
 and REMOVES the hook entries listed in RETIRED.
 
 Safety: refuses a symlinked or unparseable settings file (prints why, changes nothing); takes a lock
@@ -40,6 +42,7 @@ TITLE_CMD = f"{LAC} session-title"
 REASSERT_CMD = "bash $HOME/.claude-dotfiles/scripts/hooks/line-reassert-identity.sh"
 PUBLISH_CMD = f"{LAC} publish --background --delay 3"
 ROUTE_CMD = f"{LAC} route-send"
+HEAL_CMD = "python3 $HOME/.claude-dotfiles/scripts/relink.py --heal"
 
 # (event, matcher or None, hook entry). Identity is the command string.
 REQUIRED = [
@@ -49,6 +52,7 @@ REQUIRED = [
      {"type": "command", "command": REASSERT_CMD, "timeout": 10, "async": True}),
     ("SessionEnd", None, {"type": "command", "command": PUBLISH_CMD, "timeout": 5}),
     ("PreToolUse", "SendMessage", {"type": "command", "command": ROUTE_CMD, "timeout": 5}),
+    ("Stop", None, {"type": "command", "command": HEAL_CMD, "timeout": 5}),
 ]
 REQUIRED_KEYS = {"remoteControlAtStartup": True, "crossSessionInbound": "accept"}
 # Commands whose hook entries are removed wherever they appear.
