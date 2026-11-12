@@ -54,7 +54,7 @@ For a **new** coach (not David), these parts are not automated yet - plan time f
 
 0. **Rehearse locally (Claude, 5 min).** Start a throwaway Postgres (`/docker` playbook, `--rm`, a TTL
    label, `-p 127.0.0.1::5432`), then run the hammer suites `iphone-migration`, `iphone-migration-db`,
-   `text-history-extract`, `message-import`, `client-list-to-vcard` and `blast` with that
+   `text-history-extract`, `message-import`, `client-list-to-vcard`, `client-list-import-db` and `blast` with that
    `DATABASE_URL`, plus `apps/admin` `app/clients/import`. All green or stop and report.
 1. **Tenant and login (new coach only, owner).** Hub "New client", then the seed above. The coach signs in
    on their iPhone and adds Face ID (Settings > Security).
@@ -66,10 +66,11 @@ For a **new** coach (not David), these parts are not automated yet - plan time f
 4. **Retell agent (owner).** `pnpm --filter @david/admin exec tsx scripts/provision-voice-agent.ts <slug>
    --dry-run`, review the diff with the owner, then the owner runs it for real. Check
    `tenant_voice_agent.retell_agent_id` (pre-flight P3). For David this is done; only verify.
-5. **Clients and old texts.** If the coach brought a PDF list: `pnpm --filter @david/db
-   client-list:to-vcard --source <pdf> --vcf <new.vcf> --review <new.csv>`, read the CSV with the owner,
-   upload the vCard at `/clients/import`. Then run the `iphone-message-import` skill for the phone export,
-   cable backup, history import and announcement list.
+5. **Clients and old texts.** If the coach brought a PDF list: follow `COACH-SETUP.md` "Import day"
+   (`client-list:to-vcard --review` makes a spreadsheet, the owner checks it next to the PDF,
+   `client-list:import` dry run on the live tenant, then `--apply --receipt`; it links kids as players and
+   has an undo). Then run the `iphone-message-import` skill for the phone export, cable backup, history
+   import and announcement list.
 6. **Announcement (prepare only).** Show the two drafts in `COACH-SETUP.md` section 7, get the coach's
    pick, make the recipient list with `text-history:announce-list`, print the per-person preview with the
    `while read` loop there. Sending is the coach's, later, by Shortcut (or Blast for linked families),
