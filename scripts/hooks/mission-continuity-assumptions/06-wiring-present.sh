@@ -6,7 +6,7 @@
 # it vanishes, means the fix regressed - a reword that trips this test is a prompt to re-verify, not
 # a nuisance. The tokens chosen are the stable structural ones (verb names / section refs), not prose.
 #
-# NEGATIVE CONTROL: delete the `<PLAYBOOK>`/`<MW>` substitution from the §12.2 tick prompt (C13) or
+# NEGATIVE CONTROL: delete the `<WAKE>`/`<MW>` substitution from the §12 tick prompt (C13) or
 # the `§12.1 wake routine` routing from post-compact-resume.md's mission-mode section (C14) and the
 # matching assertion goes RED.
 set -uo pipefail
@@ -23,12 +23,17 @@ PCR_MD="${CMDS}/post-compact-resume.md"
 
 grepc() { grep -qF -- "$1" "$2"; }  # fixed-string presence
 
-# C13 - the cold-start tick prompt must carry the PLAYBOOK path AND the mission-write.sh CLI path, so
-# a wake with no memory can find the numbered sections (they live in the PLAYBOOK, NOT the <MFILE>
-# four-zone artifact) and run every bridge verb.
-if grepc "full playbook <PLAYBOOK>" "$MISSION_MD"; then mc_ok "C13 tick prompt names <PLAYBOOK>"; else mc_fail "C13 tick prompt lost <PLAYBOOK> path"; fi
+# C13 - the cold-start tick prompt (mission rework, proto=2): a SHORT prompt that carries the sid, the root,
+# the WAKE file path and the mission-write.sh CLI path, and sends the wake to docs/mission/wake.md (the only
+# file a tick reads) instead of the 178 KB playbook (about 46k tokens per tick). The old "Read the PLAYBOOK"
+# instruction must be GONE, or every tick re-reads the whole playbook again.
+WAKE_MD="$(cd "${HOOKS}/../.." && pwd -P)/docs/mission/wake.md"
+if grepc "/mission tick sid=<SID> root=<ROOT>" "$MISSION_MD"; then mc_ok "C13 tick prompt carries sid + root"; else mc_fail "C13 tick prompt lost sid/root"; fi
+if grepc "Read <WAKE> and run its §12.1 wake routine" "$MISSION_MD"; then mc_ok "C13 tick prompt reads <WAKE> for the routine"; else mc_fail "C13 tick prompt does not point at <WAKE>"; fi
 if grepc "bridge CLI <MW>" "$MISSION_MD"; then mc_ok "C13 tick prompt names <MW> (mission-write.sh)"; else mc_fail "C13 tick prompt lost <MW> path"; fi
-if grepc "Read the PLAYBOOK <PLAYBOOK>" "$MISSION_MD"; then mc_ok "C13 tick prompt reads the PLAYBOOK, not <MFILE>, for sections"; else mc_fail "C13 tick prompt does not point at the PLAYBOOK for sections"; fi
+if grepc "docs/mission/wake.md" "$MISSION_MD"; then mc_ok "C13 <WAKE> resolves to docs/mission/wake.md"; else mc_fail "C13 <WAKE> path not defined"; fi
+if grepc "Read the PLAYBOOK" "$MISSION_MD"; then mc_fail "C13 the old full-playbook read is back in the tick"; else mc_ok "C13 the tick no longer reads the full playbook"; fi
+if [ -f "$WAKE_MD" ] && grepc "## §12.1 The wake routine" "$WAKE_MD"; then mc_ok "C13 wake.md carries the §12.1 routine"; else mc_fail "C13 wake.md missing or lost its §12.1 routine"; fi
 
 # C14 - post-compact resume must ROUTE a mid-mission resume into the §12.1 wake routine, not do the
 # old last-round hand-resume (which re-drives the whole barrier or skips a human stop mid-barrier).
@@ -36,5 +41,5 @@ if grepc "§12.1 wake routine" "$PCR_MD"; then mc_ok "C14 post-compact routes in
 if grepc "JUST ANOTHER WAKE SOURCE" "$PCR_MD"; then mc_ok "C14 post-compact framed as a wake source (§12.4 composition)"; else mc_fail "C14 §12.4 composition framing missing"; fi
 if grepc "do NOT hand-resume the last round line" "$PCR_MD"; then mc_ok "C14 old last-round resume explicitly forbidden"; else mc_fail "C14 does not forbid the old last-round resume"; fi
 
-mc_finish '{"c13_playbook":"present","c13_mw":"present","c13_reads_playbook":"present","c14_routes_wake":"present","c14_wake_source":"present","c14_forbids_last_round":"present"}' \
-  "6 assertions (C13 cold-start prompt completeness + C14 post-compact wake-routine routing are wired)"
+mc_finish '{"c13_sid_root":"present","c13_reads_wake":"present","c13_mw":"present","c13_wake_path":"present","c13_no_playbook_read":"absent","c13_wake_routine":"present","c14_routes_wake":"present","c14_wake_source":"present","c14_forbids_last_round":"present"}' \
+  "9 assertions (C13 short cold-start tick reads wake.md + C14 post-compact wake-routine routing are wired)"

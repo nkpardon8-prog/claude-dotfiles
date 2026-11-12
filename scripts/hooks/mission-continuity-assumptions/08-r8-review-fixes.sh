@@ -417,7 +417,7 @@ LOGe1="$(mc_log_file "$SUBe1" "$SIDe1")"
 } >> "$LOGe1"
 mc_has "await kind=human" "$(mc_state "$SUBe1" "$SIDe1")" "R8r6-W1 a PRE-opener DECISION does NOT resolve the barrier (decnr<openernr -> stays LIVE)"
 mc_has "ready=0" "$(mc_state "$SUBe1" "$SIDe1")" "R8r6-W1 the pre-opener-DECISION barrier reports ready=0 (fail-closed)"
-E1SRC="$(cat "${HOOKS}/../../commands/mission.md" 2>/dev/null)"
+E1SRC="$(cat "${HOOKS}/../../docs/mission/wake.md" 2>/dev/null)"   # the wake awk moved to wake.md (mission rework)
 mc_has "dnr>opnr && !conflict && (g1nr<=opnr || dnr<g1nr)" "$E1SRC" "R8r6-W1 the wake's last_decision awk carries the FULL reader resolved-predicate (after-opener + no-conflict + before-got=1)"
 
 # ── R8r5-E2 - C10 fallback must NOT reuse an occupied low op; ignore only out-of-range history ──────────

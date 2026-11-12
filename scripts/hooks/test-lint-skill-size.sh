@@ -59,6 +59,12 @@ open(sys.argv[1],'w').write(s[:n] if not marker else s)
 # targets was quietly proving less than its case names claimed.
 mk "$ROOT/commands/codex-review.md" 5000 1 1000
 mk "$ROOT/commands/implement.md"    5000 1 1000
+# The three mission reference files are guarded too (mission rework, 2026-11-11): whole-file caps
+# plus the 77 KB aggregate. Small and valid here; the cap cases at the end resize them.
+mkdir -p "$ROOT/docs/mission"
+mk "$ROOT/docs/mission/wake.md"         5000 0 0
+mk "$ROOT/docs/mission/reference.md"    5000 0 0
+mk "$ROOT/docs/mission/planted-bugs.md" 1000 0 0
 
 # Fixture 1: post-compact-resume over the ceiling -> FAIL
 mk "$ROOT/commands/post-compact-resume.md" 20500 0 0
@@ -251,6 +257,58 @@ _lout=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
 check "a hardcoded-list file that LOSES its marker still fails (derived set is a union, not a replacement)" \
       "1" "$(printf '%s' "$_lout" | grep -c "commands/mission\.md lacks the")"
 mk "$ROOT/commands/mission.md" 5000 1 1000
+
+
+# --- Test 13 (mission rework, 2026-11-11): whole-file caps for the four mission files and their
+# 77 KB aggregate. The plan's size budget is only real if it is a lint failure: 40 KB holds only if
+# rationale is deleted rather than moved, and a cap nobody enforces drifts back to 178 KB.
+# Each case asserts the REASON and a non-zero exit, from a CLEAN baseline.
+_reset_mission() {
+    mk "$ROOT/commands/post-compact-resume.md" 19000 0 0
+    for _g in mission pre-compact codex-review implement; do mk "$ROOT/commands/$_g.md" 5000 1 1000; done
+    mk "$ROOT/docs/mission/wake.md" 5000 0 0
+    mk "$ROOT/docs/mission/reference.md" 5000 0 0
+    mk "$ROOT/docs/mission/planted-bugs.md" 1000 0 0
+}
+_cap_case() { # _cap_case <desc> <grep-pattern>
+    local out rc
+    out=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all 2>&1 >/dev/null)
+    rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+    check "$1" "reason=1 rc=nonzero" \
+          "reason=$(printf '%s' "$out" | grep -c -- "$2" | tr -d ' ' | sed 's/^[2-9].*/1/') rc=$([ "$rc" -ne 0 ] && echo nonzero || echo zero)"
+}
+_reset_mission
+_b3=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+check "fixture baseline is CLEAN before the mission cap cases" 0 "$_b3"
+
+# Each file just over its cap fails for that reason; the same file AT its cap passes.
+mk "$ROOT/commands/mission.md" 40961 1 1000
+_cap_case "mission.md over its 40960-byte cap fails" "commands/mission.md is 40961 bytes"
+mk "$ROOT/commands/mission.md" 40960 1 1000
+rc=$(HOME="$FAKE_HOME" bash "$LINT_COPY" --all >/dev/null 2>&1; echo $?)
+check "mission.md exactly at its cap passes" 0 "$rc"
+_reset_mission
+mk "$ROOT/docs/mission/wake.md" 15361 0 0
+_cap_case "wake.md over its 15360-byte cap fails" "docs/mission/wake.md is 15361 bytes"
+_reset_mission
+mk "$ROOT/docs/mission/reference.md" 20481 0 0
+_cap_case "reference.md over its 20480-byte cap fails" "docs/mission/reference.md is 20481 bytes"
+_reset_mission
+mk "$ROOT/docs/mission/planted-bugs.md" 2049 0 0
+_cap_case "planted-bugs.md over its 2048-byte cap fails" "docs/mission/planted-bugs.md is 2049 bytes"
+
+# Aggregate: the four together over 77 KB (78848 bytes) fail with the aggregate reason.
+_reset_mission
+mk "$ROOT/commands/mission.md" 45000 1 1000
+mk "$ROOT/docs/mission/wake.md" 15000 0 0
+mk "$ROOT/docs/mission/reference.md" 20000 0 0
+_cap_case "the four mission files over the 77 KB aggregate fail" "mission files total 81000 bytes"
+
+# A missing reference file is an unenforced cap, not a satisfied one.
+_reset_mission
+rm -f "$ROOT/docs/mission/reference.md"
+_cap_case "a missing mission reference file fails closed" "guarded file(s) absent.*docs/mission/reference\.md"
+_reset_mission
 
 echo "test-lint-skill-size: $pass passed, $fail failed"
 exit $([ $fail -eq 0 ] && echo 0 || echo 1)

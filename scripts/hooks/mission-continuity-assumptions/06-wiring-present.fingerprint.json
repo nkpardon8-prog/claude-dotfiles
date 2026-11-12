@@ -1,1 +1,1 @@
-{"c13_playbook":"present","c13_mw":"present","c13_reads_playbook":"present","c14_routes_wake":"present","c14_wake_source":"present","c14_forbids_last_round":"present"}
+{"c13_sid_root":"present","c13_reads_wake":"present","c13_mw":"present","c13_wake_path":"present","c13_no_playbook_read":"absent","c13_wake_routine":"present","c14_routes_wake":"present","c14_wake_source":"present","c14_forbids_last_round":"present"}

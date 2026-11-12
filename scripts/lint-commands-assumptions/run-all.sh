@@ -36,6 +36,7 @@ TESTS=(
   "05-absent-banned-literal.sh"
   "06-linked-worktree-staged-set.sh"
   "07-staged-blob-not-worktree.sh"
+  "08-mission-rework-pins.sh"
 )
 PASS=0; START=$(date +%s)
 for t in "${TESTS[@]}"; do

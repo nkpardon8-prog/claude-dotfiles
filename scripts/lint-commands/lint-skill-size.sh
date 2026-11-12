@@ -10,6 +10,10 @@
 #   commands/pre-compact.md                present at char index <= 19500
 #   commands/codex-review.md
 #   commands/implement.md
+#   mission playbook + reference files     whole-file byte caps (mission rework, 2026-11-11):
+#     commands/mission.md 40960, docs/mission/wake.md 15360,
+#     docs/mission/reference.md 20480, docs/mission/planted-bugs.md 2048,
+#     and the four together <= 78848 (77 KB)
 # WARN (never fails): any other staged commands/*.md over 30000 chars.
 #
 # Modes:
@@ -90,6 +94,9 @@ if [ "$MODE" = "--all" ]; then
     _missing=""
     for _g in post-compact-resume.md mission.md pre-compact.md codex-review.md implement.md; do
         [ -f "$ROOT/commands/$_g" ] || _missing="$_missing commands/$_g"
+    done
+    for _g in wake.md reference.md planted-bugs.md; do
+        [ -f "$ROOT/docs/mission/$_g" ] || _missing="$_missing docs/mission/$_g"
     done
     if [ -n "$_missing" ]; then
         echo "lint-skill-size: FAIL - guarded file(s) absent:$_missing" >&2
@@ -229,6 +236,39 @@ for F in $(_rule2_targets | sort -u); do
         fi
     fi
 done
+
+# Rule 3 (mission rework, 2026-11-11): whole-file byte caps for the /mission playbook and its three
+# reference files, plus their aggregate. The rework's whole point was 178 KB -> 40 KB; a cap that is
+# only a target drifts back. Bytes (wc -c), not chars: these are size budgets, not the re-injection
+# ceiling. Over a cap means cut (delete rationale - git history keeps it), never raise the number.
+# Any of the four staged -> all four are measured (the aggregate needs them all; --staged reads
+# each from the index).
+MISSION_CAPS="commands/mission.md:40960 docs/mission/wake.md:15360 docs/mission/reference.md:20480 docs/mission/planted-bugs.md:2048"
+MISSION_AGG=78848
+_m_any=0
+for _mc in $MISSION_CAPS; do staged_has "${_mc%%:*}" && _m_any=1; done
+if [ "$_m_any" = 1 ]; then
+    _m_total=0
+    for _mc in $MISSION_CAPS; do
+        F="${_mc%%:*}"; cap="${_mc##*:}"
+        cf="$(resolve_content "$F")"
+        if [ -z "$cf" ]; then
+            [ "$MODE" = "--staged" ] && continue   # a staged deletion is caught by the --all presence guard
+            echo "lint-skill-size: FAIL $F is missing (its cap cannot be checked)." >&2; fail=1; continue
+        fi
+        b=$(wc -c < "$cf" 2>/dev/null | tr -d ' ')
+        case "$b" in ''|*[!0-9]*) echo "lint-skill-size: FAIL $F byte size unreadable (cap unchecked)." >&2; fail=1; continue ;; esac
+        if [ "$b" -gt "$cap" ]; then
+            echo "lint-skill-size: FAIL $F is $b bytes (cap $cap). Cut it; never raise the cap." >&2
+            fail=1
+        fi
+        _m_total=$((_m_total + b))
+    done
+    if [ "$_m_total" -gt "$MISSION_AGG" ]; then
+        echo "lint-skill-size: FAIL the four mission files total $_m_total bytes (aggregate cap $MISSION_AGG = 77 KB)." >&2
+        fail=1
+    fi
+fi
 
 # WARN: other staged command files over 30k chars
 if [ "$MODE" = "--staged" ]; then
