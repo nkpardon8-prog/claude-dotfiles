@@ -22,6 +22,8 @@
 //   watts: the root rd-power sampler if present, else on laptops whole-system draw from ioreg
 //   AppleSmartBattery (adapter input on AC, incl. charging; battery discharge otherwise).
 // rrun: running jobs from <rrRoot>/slots/*.who, finished runs from <rrRoot>/log/runs.log.
+// Pool health (about once a minute): rd-doctor's status file (/run/rdocker/doctor, macOS <rrRoot>/state/
+//   doctor.json, or "doctorFile" in the config), last-hour runs.log outcomes, 24 h prediction error.
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
 // (systemd --user, Linux) or units/com.rdocker.reporter.plist (launchd, macOS).
 // Flags: --once (print one frame as JSON, no network), --config <path>, --version.
@@ -326,17 +328,171 @@ export function parseLogTime(s) {
   return Number.isFinite(t) ? t : 0;
 }
 
-/** rr runs.log lines -> runs (format: rr_runner.pl run_log). */
+/**
+ * rr runs.log lines -> runs (format: rr_runner.pl run_log). The v2 tail after the TAB (run= owner= cls=
+ * wait_s= exit_reason= setup= pred_s= client= pv=) is cut off argv; its pred_s comes back as `predS`
+ * (only on lines that have the tail; Collector.newRuns drops it before a frame).
+ */
 export function parseRunsLog(text) {
   const out = [];
   const re = /^(\S+) repo=(\S+) wt=\S+ sha=\S+ outcome=(.+?) prepare_s=(\S+) cmd_s=(\S+) argv=(.*)$/;
+  const n = (x) => (x === '-' || x === undefined || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
   for (const line of text.split('\n')) {
     const m = re.exec(line);
     if (!m) continue;
-    const n = (x) => (x === '-' ? null : Number(x));
-    out.push({ ts: parseLogTime(m[1]), repo: m[2], outcome: m[3], prepS: n(m[4]), cmdS: n(m[5]), argv: m[6].slice(0, 160) });
+    const tab = m[6].indexOf('\t');
+    const run = { ts: parseLogTime(m[1]), repo: m[2], outcome: m[3], prepS: n(m[4]), cmdS: n(m[5]), argv: (tab < 0 ? m[6] : m[6].slice(0, tab)).slice(0, 160) };
+    if (tab >= 0) run.predS = n(/(?:^|\s)pred_s=(\S+)/.exec(m[6].slice(tab + 1))?.[1]);
+    out.push(run);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------- pool health
+// Workers ship pool health about once a minute (dashboard/shared/protocol.ts PoolHealth): the rd-doctor
+// status file, last-hour runs.log outcome counts and the 24 h runtime-prediction error. The dashboard
+// derives the pool alerts from it. Absent on machines with neither a doctor nor a runs.log.
+
+export const HEALTH_EVERY_MS = 60_000;
+const HOUR_MS = 3600_000;
+const DAY_MS = 24 * HOUR_MS;
+/** Most distinct outcome labels per health (the rest are summed into "other"). */
+const OUTCOMES_MAX = 24;
+/** runs.log bytes read per health (runs.log, then runs.log.1 when runs.log does not reach back 24 h). */
+const HEALTH_READ_MAX = 3 << 20;
+/** The doctor's status is one small JSON object; anything bigger is not it. */
+export const DOCTOR_READ_MAX = 16 << 10;
+
+/**
+ * What a runs.log outcome means for pool health. MIRROR of dashboard/shared/pool-health.ts
+ * outcomeClass (same rules, same test vectors in tests/health.test.mjs and the dashboard's
+ * tests/pool-health.test.ts): ok | fail (the command's own result) | infra (the pool failed it) |
+ * left (the client went away: not a run) | warm (a pre-warm: not a job).
+ */
+export const INFRA_RC = new Set([124, 134, 137, 72, 73, 75, 76]);
+export function outcomeClass(outcome) {
+  const o = String(outcome).trim();
+  const m = /^(?:([a-z-]+) )?rc=(\d+)$/.exec(o);
+  if (m) {
+    const kind = m[1] ?? '';
+    const rc = Number(m[2]);
+    if (kind === 'lost' || kind === 'refused') return 'infra';
+    if (kind === 'interrupted') return 'left';
+    if (kind === 'timeout') return 'fail';
+    if (INFRA_RC.has(rc)) return 'infra';
+    return rc === 0 && kind === '' ? 'ok' : 'fail';
+  }
+  const word = o.split(/\s+/)[0] ?? '';
+  if (word === 'busy' || word === 'refused') return 'infra';
+  if (word === 'warm') return 'warm';
+  if (word === 'abandoned-setup' || word === 'moved' || word === 'lost' || word === 'interrupted') return 'left';
+  return 'fail';
+}
+
+/** rd-doctor status JSON -> the trimmed DoctorStatus, or null (missing / garbled / no ts). */
+export function parseDoctor(text) {
+  if (!text) return null;
+  let o;
+  try {
+    o = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!o || typeof o !== 'object' || typeof o.ts !== 'number' || !Number.isFinite(o.ts)) return null;
+  const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+  return {
+    ts: o.ts,
+    disabled: o.disabled === true,
+    dry: o.dry === true,
+    drained: o.drained === true,
+    drainSince: num(o.drain_since),
+    drainReason: String(o.drain_reason ?? '').slice(0, 80),
+    infraRecent: num(o.infra_recent),
+    memFreePct: num(o.mem_free_pct),
+    diskFreePct: num(o.disk_free_pct),
+    actions1h: num(o.actions_1h) ?? 0,
+    lastAction: String(o.last_action ?? '').slice(0, 160),
+  };
+}
+
+/** runs (parseRunsLog) + doctor -> PoolHealth at `now`. */
+export function poolHealth(runs, doctor, now) {
+  const counts = new Map();
+  const cls1h = { ok: 0, fail: 0, infra: 0, left: 0, warm: 0 };
+  const errs = [];
+  for (const r of runs) {
+    if (!r.ts || r.ts > now + 60_000) continue;
+    if (r.ts > now - HOUR_MS) {
+      counts.set(r.outcome, (counts.get(r.outcome) ?? 0) + 1);
+      cls1h[outcomeClass(r.outcome)]++; // complete totals: the label list below is truncated
+    }
+    if (r.ts > now - DAY_MS && (r.outcome === 'rc=0' || r.outcome === 'rc=1') && r.cmdS !== null && r.cmdS >= 2 && r.predS != null && r.predS >= 0) {
+      errs.push(Math.abs(r.predS - r.cmdS) / r.cmdS);
+    }
+  }
+  const sorted = [...counts].sort((a, b) => b[1] - a[1]);
+  const out1h = Object.fromEntries(sorted.slice(0, OUTCOMES_MAX));
+  const rest = sorted.slice(OUTCOMES_MAX).reduce((a, [, c]) => a + c, 0);
+  if (rest) out1h.other = (out1h.other ?? 0) + rest;
+  return { at: now, doctor, out1h, cls1h, pred: errs.length ? { err: Math.round(median(errs) * 1000) / 1000, n: errs.length } : null };
+}
+
+function median(xs) {
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** Open a regular file (never through a symlink at the last component) -> fd, or null. */
+function openRegular(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  } catch {
+    return null; // missing, unreadable, or a symlink (ELOOP)
+  }
+  try {
+    if (fs.fstatSync(fd).isFile()) return fd;
+  } catch {
+    /* fall through */
+  }
+  fs.closeSync(fd);
+  return null; // a FIFO, device or directory
+}
+
+/** A whole small regular file, or null when it is missing, not a regular file, or over `max` bytes. */
+export function readBounded(file, max) {
+  const fd = openRegular(file);
+  if (fd === null) return null;
+  try {
+    if (fs.fstatSync(fd).size > max) return null;
+    const buf = Buffer.alloc(max + 1);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    return n > max ? null : buf.subarray(0, n).toString('utf8'); // grew while reading: refuse
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** The last `max` bytes of a regular file from a whole line on, or null when it cannot be read. */
+export function readTail(file, max) {
+  if (max <= 0) return null;
+  const fd = openRegular(file);
+  if (fd === null) return null;
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - max);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString('utf8');
+    return start > 0 ? text.slice(text.indexOf('\n') + 1) : text;
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /** <slot>.who: "<repo_slug> <epoch> <pid> <wt12>" */
@@ -670,6 +826,10 @@ export class Collector {
     this.prevCpu = null;
     this.hist = [];
     this.runsPos = null; // {ino, size}
+    // rd-doctor's status file (written by root on Linux, by the user's launchd job on macOS)
+    this.doctorFile = expandHome(cfg.doctorFile ?? process.env.RD_DOCTOR_STATUS ?? (this.linux ? '/run/rdocker/doctor' : path.join(this.rrRoot, 'state', 'doctor.json')));
+    this.healthC = cached(async () => this.health(), HEALTH_EVERY_MS - 1000);
+    this.healthSent = null;
     this.peers = [];
     this.selfIps = [];
     this.wsl = this.linux && /microsoft/i.test(read('/proc/sys/kernel/osrelease') ?? '');
@@ -809,11 +969,25 @@ export class Collector {
       fs.readSync(fd, buf, 0, buf.length, start);
       let text = buf.toString('utf8');
       if (start > 0 && first) text = text.slice(text.indexOf('\n') + 1);
-      const runs = parseRunsLog(text);
+      const runs = parseRunsLog(text).map(({ predS: _p, ...r }) => r);
       return first ? runs.slice(-15) : runs.slice(-50);
     } finally {
       fs.closeSync(fd);
     }
+  }
+
+  /** PoolHealth now, or null on a machine with neither a doctor nor a runs.log. */
+  health(now = Date.now()) {
+    const doctor = parseDoctor(readBounded(this.doctorFile, DOCTOR_READ_MAX));
+    const log = path.join(this.rrRoot, 'log', 'runs.log');
+    const text = readTail(log, HEALTH_READ_MAX);
+    if (text === null && !doctor) return null;
+    let runs = parseRunsLog(text ?? '');
+    if (!runs.length || runs[0].ts > now - DAY_MS) {
+      const older = readTail(`${log}.1`, HEALTH_READ_MAX - (text?.length ?? 0));
+      if (older) runs = [...parseRunsLog(older), ...runs];
+    }
+    return poolHealth(runs, doctor, now);
   }
 
   async frame({ withInfo = false, fast = false } = {}) {
@@ -890,6 +1064,12 @@ export class Collector {
       ...(leaks.length ? { leaks } : {}),
     };
     if (withInfo) frame.info = this.info();
+    // Pool health: only when recomputed (about once a minute) or with info (a new connection).
+    const health = await this.healthC();
+    if (health && (withInfo || health !== this.healthSent)) {
+      frame.health = health;
+      this.healthSent = health;
+    }
     return frame;
   }
 }
