@@ -43,6 +43,16 @@ class Static(unittest.TestCase):
                        "fstrim", "NOPASSWD", "PermitRootLogin no", "ssh.socket", "rd-tune.timer"):
             self.assertIn(needle, s)
 
+    def test_wsl_isolation_cuts_windows_drive_and_interop(self):
+        # B8: on the OpenDental laptop C: holds patient data, and interop gives `wsl.exe -u root`.
+        s = read(PROV)
+        i = s.index('if [ "$IS_WSL" = 1 ]; then\n  say "wsl isolation')
+        block = s[i:s.index("\nfi\n", i)]
+        for need in ('("automount", "enabled", "false")', '("interop", "enabled", "false")',
+                     "umount", "WSLInterop"):
+            self.assertIn(need, block)
+        self.assertLess(i, s.index("# 1. packages"))
+
     def test_idempotent_and_non_destructive(self):
         s = read(PROV)
         self.assertIn("set -euo pipefail", s)
