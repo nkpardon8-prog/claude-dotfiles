@@ -360,16 +360,27 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   already sends to hp, so a miss costs no extra round trip. A hit replays the output and exit code with
   the usual class line (`rrun: pass (exit 0 from the pool cache, 0s)`) and one line naming who made it:
   `rrun: cached result from the pool cache (same code + command, 3m ago on nickmbp by <agent>); RRUN_CACHE=0
-  to run again`. It is also copied into this Mac's cache. Same key, same rules and same lifetimes (pass 24 h,
-  failure 20 min) as above. One more rule: a pool result is replayed only when every worker that answered
-  reports the node major it was made with (the runner writes it to `~/rr/state/node`). A mixed or unknown
-  pool means no pool hits. Entries over 1 MB are not shared.
+  to run again`. A pool hit is never copied into this Mac's cache (that cache has no node check), so each
+  repeat asks hp again. Same key, same rules and same lifetimes (pass 24 h, failure 20 min) as above.
+  Node rule: a pool result is replayed only when every worker that answered the probe resolves the same
+  node major the result was made with. The probe resolves the node the runner would use, by path (brew's
+  `opt/node`, else mise's global node, or the `RR_NODE` pin), without starting anything. The maker tags the
+  result with the node its runner really ran (`node -v`). Unknown or mixed = no pool hits.
+  Entries over 1 MB are not shared.
+  **Signed entries.** Every pool entry carries an HMAC made on the agent Mac with
+  `~/.config/rdocker/pool-cache.key` (0600). That secret exists only on agent Macs: never on a worker, never
+  in git. It binds the cache key, all metadata (exit code, node, time, who) and the exact output, so a job
+  running on hp cannot forge a verdict. Unsigned or wrong entries are misses. **No key file = this Mac uses
+  its own cache only.** `rdocker pool-cache-key init` creates the key if missing;
+  `rdocker pool-cache-key show-fingerprint` prints a hash of it (never the key). Every agent Mac must hold
+  the same key: copy it over ssh, then compare fingerprints.
   **Identical runs at the same time run once.** The first run takes a lease on hp. A second identical run
   (another Mac or agent) prints `rrun: identical run in flight by <agent> on <mac>; waiting for its result`,
   polls hp every few seconds (a status line each minute) and replays the result when it lands. It runs
   the job itself when the lease ends without a result: the first run ended with nothing to share (for
   example an infra exit or it used docker), its owner was killed (no lease refresh for 90 s), or the lease
-  expired (the job's cap + 10 min). Ctrl-C on a waiter just exits (130). After printing its result the
+  expired (the job's cap + 10 min). A waiter also never waits longer than its OWN job's cap (one deadline,
+  whoever holds the lease meanwhile); then it runs the job itself. Ctrl-C on a waiter just exits (130). After printing its result the
   owner uploads in one detached ssh and never waits for it; a failed upload only loses the share.
   `RRUN_CACHE=0` skips both tiers (no lookup, no wait, no upload; this Mac's tier still saves). If hp is
   unreachable, only this Mac's tier is used. `rrun --where` adds a `pool cache (hp):` line (hit / in flight /
@@ -377,8 +388,7 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   `pcache=hit|miss|inflight|waited-hit|waited-miss` (+ `pwait_s`). rd-tune prunes the store every 30 min:
   expired entries and dead leases, then least recently used over 512 MB (`RCACHE_MAX_MB`). Config:
   `rr_pool_cache` (false = off), `rr_pool_cache_stale_s` 90, `rr_pool_cache_refresh_s` 30,
-  `rr_pool_cache_poll_s` 5. Trust: entries are data (printed, never run), but any job running on hp as
-  `rd` could write one.
+  `rr_pool_cache_poll_s` 5. Entries are data: printed, never run.
 
 ### Exit codes and result classes
 
