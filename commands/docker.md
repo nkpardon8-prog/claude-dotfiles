@@ -120,7 +120,11 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   - `npx [--prefix X] tsc` with `--noEmit`, or with `-p`/`-b` configs that all set `"noEmit": true`
     (an emitting `tsc` stays here: its output would land on the worker);
   - `npx vitest run ...` (any files), `npx jest ...`, `npx eslint ...`, and the same through
-    `./node_modules/.bin/<tool>`;
+    `./node_modules/.bin/<tool>` or an absolute `/.../node_modules/.bin/<tool>` inside the worktree
+    (rewritten relative to the cwd, e.g. `rrun ./node_modules/.bin/tsc ...`: the laptop path does not
+    exist on the worker). Only for a `node_modules` rrun installs there (the nearest npm lockfile dir
+    at or above the cwd, or from the repo root a first-level package with its own npm lockfile); any
+    other path (`/usr/local/bin/vitest`, another repo, a dir with no lockfile) stays here;
   - `npm test` / `npm t` / `npm run test*` / `typecheck*` / `type-check*` / `lint*`, when package.json
     defines the script and its body does not watch, serve, fix or write files;
   - `npm run build` in a package dir `rr_outputs` maps (rrun copies the output back), and everything in
@@ -209,8 +213,34 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   rules (3 h idle stop, exited 24 h) reap them - `docker compose down` them yourself when done.
 - **How many at once:** one run per laptop worktree (a lock); on the mini always `rr_slots_base` (2)
   runs, and up to `rr_slots` (6) while the mini has room (free memory % >= `rr_spare_min_free_pct` 25
-  and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). A further run waits with
-  one line naming the holder, and gives up after `rr_wait_min` (30) → exit 73.
+  and 1-min load per CPU <= `rr_spare_max_load` 1.5, re-checked every 5 s). A further run waits and
+  says so **every `rr_status_every_s` (60 s)**: `rrun: waiting for a slot on hp: 4 of 4 slots busy; held
+  longest by <repo> (<owner>) for 120s; 2 other runs waiting ahead of this one; expected wait ~5 min;
+  gives up after 30 min` (the expected wait is the scheduler's queue estimate for that worker), and
+  gives up after `rr_wait_min` (30) → exit 73. A run waiting for the **worktree lock** says so the same
+  way, naming the run that holds it (command, worker, how long, owner, and when its cap ends it).
+- **Hung and silent jobs (2026-11-11).** The command's stdout/stderr are pipes the runner relays, never
+  the ssh session itself. When the command's **main process exits**, whatever it left behind (a DB,
+  a vitest worker, a dev server) gets `rr_exit_grace_s` (10 s) to finish, then the job's process group
+  is TERMed (KILLed 3 s later) and rrun returns the main process's exit code, releasing the slot and
+  the worktree lock; a leftover that left the group can hold only the runner's pipe, which it stops
+  reading. If ssh still stays open 45 s after the exit code arrived, rrun closes it itself.
+  **Silence:** after `rr_silent_min` (10) minutes without output rrun prints `rrun: no output for 10 min
+  (worker hp, running 25 min)` on stderr, again every further 10 min (`RRUN_SILENT_MIN=<min>`, 0 = off).
+  **Hard cap per job class:** light / normal 30 min, heavy 60, db 90, build 60 (`rr_timeout_min`);
+  `RRUN_TIMEOUT=<minutes>` sets another cap for one run, `RRUN_TIMEOUT=0` none. At the cap the worker
+  kills the command's process group, frees the slot, logs `outcome=timeout rc=124` in `runs.log`, and
+  rrun exits **124** (like `timeout(1)`) with `rrun: the command ran past its 30 min wall-clock cap on
+  hp; killed it ...`. Never re-run, never cached. (If the worker never reports it, rrun closes the
+  session itself 90 s past the cap, also exit 124.)
+- **Who owns a job.** Every job carries its caller: `session:<CLAUDE_CODE_SESSION_ID>` (else
+  `pid:<parent pid>`), the window's `/line` caption (`~/.claude/session-status/<id>.txt`, one file
+  read) and this machine's name. On the worker it is in `~/rr/slots/<i>.own` (beside `<i>.who`, which
+  keeps its 4 fields), the runner's process title (`rrun-runner owner=session:... window=... from=...`)
+  and the command's env (`RRUN_OWNER`). **`rrun --jobs`** lists every running job on every worker
+  (worker, start, running, owner, from, command); **`rrun --mine`** only yours. `rdocker status` has an
+  `rrun job` row per run of this machine (worker, start, owner, pid, command). **Never kill a job that
+  is not yours**: check the owner first.
 - **Exactly once:** the mini prepares everything (checkout, overlay, `npm ci`, slot), then reports READY
   and waits; the command starts **only** when the laptop answers GO. Mini lost before GO was sent (push
   fails, or the link drops during prepare) → one immediate retry if the mini answers; if it does not
@@ -230,12 +260,14 @@ not look for another way to get compute. `rrun --where <cmd>` shows which worker
   65 the runner refused the request (bad input, unsafe path such as a symlinked mirror), 69 repo missing
   on the mini, 70 runner error, 73 slot busy past `rr_wait_min` (or the worker refused: share off / its Docker did
   not start - then rrun tries the next worker), 75 lost the mini / strict fallback,
-  **78 dependency install failed** (`npm ci` / `prisma generate` / a local package rebuild; its log is printed), 130 interrupted
+  **124 the command hit its wall-clock cap and was killed** (the one code here that comes after the
+  command started; `timeout(1)`'s convention, so a command's own `timeout` 124 looks the same - the
+  `rrun: ... wall-clock cap` line tells them apart), **78 dependency install failed** (`npm ci` / `prisma generate` / a local package rebuild; its log is printed), 130 interrupted
   before start.
 - **On the mini:** `~/rr` is 0700, excluded from Time Machine (`tmutil addexclusion`, once) and from
   Spotlight (`.metadata_never_index`).
 - **Timing:** `RRUN_TIMING=1` prints per-stage times (push, overlay, remote prepare, command) on stderr.
-  `rdocker status` has an `rrun` row (last run, runs in flight).
+  `rdocker status` has an `rrun` row (last run, runs in flight) and an `rrun job` row per run in flight.
 - **Result cache (on the agent Mac, `~/.local/state/rdocker/cache/`, about 200 MB, least recently used out).**
   When the code rrun would ship AND the command match a recent run, rrun replays that run's output and
   exits with its code instead of running it again, with one stderr line: `rrun: cached result (same code +
@@ -274,11 +306,16 @@ job and one that comes back (or is added to fleet.json) is used at once.
   packages; queue = 0 with a free slot, else when the first slot holder should finish (from the
   holders' ages); the memory factor falls to 0.1 when free memory is barely the job's need (full speed
   only from 1.5x). job_cost (s at speed 1.0) defaults: tsc 60, vitest 60, db 120, lint 30, build 90
-  (`rr_job_cost_s`), replaced by the median of the worker's own last runs of that class (from its
-  `runs.log` tail, 3+ runs; else the whole pool's). Order tried: free workers by eta, then busy ones by
-  eta, then low-memory, down, off. A busy worker goes FIRST only when its eta is at most 0.25x the best
-  free one (`rr_queue_promote_ratio`, 0 = never; e.g. a tsc queued on nickmbp instead of 26 min on a
-  swapping HP), and then waits for its slot only until the free one would have finished. `rrun --where`
+  (`rr_job_cost_s`), replaced by earlier runs of the **same command** (the argv as `runs.log` writes it;
+  this worker's, else any worker's, scaled by speed; one run is enough), else by the median of the
+  worker's own last runs of that class (3+ runs; else the whole pool's). A busy worker's queue is when
+  its first holder should end: from that holder's own command (`slots/<i>.own`) when it ran before.
+  Order tried: free workers by eta, then busy ones by eta, then low-memory, down, off. A busy worker
+  goes FIRST when its eta is at most 0.5x the best free one (`rr_queue_promote_ratio`, 0 = never; was
+  0.25) and at least 120 s sooner (`rr_queue_promote_min_gain_s`; e.g. a tsc queued on nickmbp instead
+  of 26 min on a swapping HP), and then waits for its slot only until the free one would have finished.
+  Why (2026-11-11): a whole `npx vitest run` was costed like the one-file vitest runs that fill the
+  class median, so the free 0.42-speed rd-mini-a won it and ran it 66-80 min. `rrun --where`
   shows an `eta` column.
 - **Overloaded workers are held off.** A worker whose 1-min load per CPU thread is at least 1.5 at probe
   time (`rr_overload_ratio`, 0 = off) counts as busy even with a free slot, and its compute estimate is
