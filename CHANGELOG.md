@@ -29,6 +29,9 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   playbook (509fe27b; uncapped; delete once no legacy mission is open). wake.md step 0 and
   mission.md's contract core read `mission-proto` before anything else (before the tick lock) and
   send a legacy mission there; no legacy rows, overrides or cross-protocol anchors remain.
+  Round 7: legacy generations accept the frozen park record `FAIL ... reason=<cap-exhausted-blocking|
+  part-over-budget> attempt=A disposition=<d>` (refused by every earlier writer, main included), so the
+  frozen brake paths complete: pending-stop, FAIL, PART-RETIRED, next part, and the STOP still closes.
 - New `mission-watchdog.sh` (helper stall detection) and `lib/mission-status.sh` (status lines,
   tokens by tag, morning report; deferred parts read from the strategist's `tmp/mission/recipes.md`).
 - `codex-review.md` (`--base`, `--scope full`, `--ledger`, `--verify`; Sol pinned), `plan.md`

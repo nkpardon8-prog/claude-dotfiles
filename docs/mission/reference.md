@@ -71,7 +71,9 @@ Protocols never mix inside one mission generation (`mission-proto`: `legacy` | `
 generation with any PART-START lacking `proto=` is a LEGACY mission: it runs end to end on the frozen
 pre-rework playbook `docs/mission/legacy-playbook.md` (byte-identical to `commands/mission.md` at
 509fe27b: its own wake routine, tick prompt, spend brake and pending-stop), and the writer keeps the
-old fold for it. Every other generation (a new mission, or any mission after `MISSION-REBASELINED`) is
+old fold for it, plus the one shape its park path needs and no writer ever accepted:
+`FAIL part=N phase=<p> reason=<cap-exhausted-blocking|part-over-budget> attempt=A
+disposition=<reverted|isolated|left-with-recorded-risk>` (legacy generations only). Every other generation (a new mission, or any mission after `MISSION-REBASELINED`) is
 proto=2 end to end. The writer refuses a proto=2 PART-START in a legacy generation ("finish it on
 legacy-playbook.md, or rebaseline") and a legacy PART-START in any other ("re-read
 commands/mission.md"). `needs=` names proto=2 parts of the same generation only; their anchor is the

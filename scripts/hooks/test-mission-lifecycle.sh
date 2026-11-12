@@ -35,6 +35,9 @@
 #   J  a legacy part replayed end to end with the frozen playbook's own shapes and verbs, no overrides
 #   K  a legacy mission over several wakes (cold tick included): mission-proto read BEFORE the lock,
 #      the frozen §12.1 owns the lock (taken once per tick), stays legacy
+#   L  both frozen brake paths (cap-exhausted-blocking, part-over-budget) replayed end to end in a
+#      legacy generation: pending-stop, FAIL with disposition=, PART-RETIRED, next legacy PART-START,
+#      then the human STOP closes (DECISION, got=1, resolve); proto=2 FAIL validation unchanged
 #
 # Real throwaway git repos and the real writer; history that must look OLD (a budget clock, a legacy
 # part) is fabricated through the lib's raw appender, as test-mission-proto2.sh does. Hermetic: every
@@ -639,6 +642,45 @@ mkdir -p "$TICK"
 OUT=$(tick_dir="$TICK" bash -c ". '$LOCKBLK'; echo i_own_lock=\$i_own_lock" 2>&1)
 has "i_own_lock=0" "$OUT" "K4 (control) a lock taken BEFORE the handoff would self-contend"
 rmdir "$TICK"
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════════
+echo "== L frozen brake paths in a legacy generation: park, retire, next part, STOP closes =="
+LPF="$HERE/../../docs/mission/legacy-playbook.md"
+for k in 'pending-stop  ->  PushNotification  ->  FAIL ... reason=cap-exhausted-blocking' 'pending-stop -> PushNotification -> FAIL ... reason=part-over-budget' 'REQUIRED disposition field' '`disposition=reverted` | `isolated` | `left-with-recorded-risk`'; do
+  grep -a -q -F -- "$k" "$LPF" && ok "L0 the frozen playbook prescribes: $k" || bad "L0 frozen playbook lacks: $k"
+done
+brake() { # brake <name> <reason> <phase> <disposition>
+  mk "$1"; LL="$ENVD/l-$1.txt"; : > "$LL"
+  ll() { _o=$(lg "$1" "$2"); printf '%s\n' "$_o" >> "$LL"; printf '%s' "$_o"; }
+  fab "[mission] PART-START part=1 name=legacy" m1-part-start
+  commit "$R" "l-$1" >/dev/null
+  ll "[mission] part=1 name=legacy phase=implement round=1 dry=0" m1-implement-r1-d0 >/dev/null
+  OUT=$(mw pending-stop "$S" "$R" "$2" 1 2 1 "$3" "Part 1 hit the $2 brake. Park it?"); printf '%s\n' "$OUT" >> "$LL"
+  has "pending-stop ok id=pd:" "$OUT" "L1 [$2] the frozen brake opens its human STOP"
+  PD=$(printf '%s' "$OUT" | sed -n 's/^mission-write: pending-stop ok id=\(pd:[0-9]*-[a-z0-9-]*\).*$/\1/p'); SEQ=${PD#pd:}; SEQ=${SEQ%%-*}
+  has "log ok" "$(ll "[mission] FAIL part=1 phase=$3 reason=$2 attempt=1 disposition=$4" "m1-fail-$2-1")" "L2 [$2] FAIL ... disposition=$4 (frozen park record) accepted"
+  has "log ok" "$(ll "[mission] PART-RETIRED part=1" m1-part-retired)" "L3 [$2] PART-RETIRED"
+  has "log ok" "$(ll "[mission] PART-START part=2 name=next" m2-part-start)" "L4 [$2] the next legacy PART-START"
+  eq legacy "$(mw mission-proto "$S" "$R")" "L5 [$2] still a legacy mission"
+  has "log ok" "$(ll "[mission] DECISION op=$SEQ-$2 outcome=approve" "pd-$SEQ-decision-$2")" "L6 [$2] the owner's DECISION"
+  O=$(mw await "$S" "$R" "part=1 phase=$3 round=2 kind=human op=$SEQ-$2 attempt=1 need=1 got=1"); printf '%s\n' "$O" >> "$LL"
+  has "ok" "$O" "L7 [$2] the human STOP closes on the retired legacy part"
+  O=$(mw resolve "$S" "$R" "$PD" approved); printf '%s\n' "$O" >> "$LL"
+  has "ok" "$O" "L8 [$2] resolve"
+  eq none "$(mw await-state "$S" "$R")" "L9 [$2] nothing outstanding"
+  has "log ok" "$(ll "[mission] part=2 name=next phase=research round=1 dry=0" m2-research-r1-d0)" "L10 [$2] the next part makes progress"
+  hasnt "FAILED" "$(cat "$LL")" "L11 [$2] no refusal anywhere on the frozen brake path"
+  hasnt "COLLISION" "$(cat "$LL")" "L12 [$2] no collision"
+}
+brake lcap cap-exhausted-blocking review isolated
+brake lbud part-over-budget implement left-with-recorded-risk
+has "bad-fail-shape" "$(lg "[mission] FAIL part=2 phase=review reason=other attempt=1 disposition=isolated" m2-fail-other-1)" "L15 even in a legacy generation, disposition= is accepted only with the two park reasons"
+# proto=2 FAIL validation unchanged: the disposition= FAIL shape is refused outside a legacy generation
+mk lp2
+RL=$(rline 1 normal 5 8 300 no none); plan_recipes "$RL"
+start 1 "$W" "$B" none "$RL" >/dev/null
+has "bad-fail-shape" "$(lg "[mission] FAIL part=1 phase=review reason=cap-exhausted-blocking attempt=1 disposition=isolated" m1-fail-cap-exhausted-blocking-1)" "L13 a proto=2 generation still refuses the legacy FAIL disposition= shape"
+has "log ok" "$(lg "[mission] FAIL part=1 phase=review reason=lane-timeout attempt=1" m1-fail-lane-timeout-1)" "L14 ... and still accepts the plain FAIL shape"
 
 printf '\nPASS: %s  FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

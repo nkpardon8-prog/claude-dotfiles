@@ -290,8 +290,17 @@ _mw_validate_log() {
       [ "$_vl_bare" = "m$(_mw_efield "$_vl_entry" part)-fail-park" ] || _mw_emit_refuse log 1 "REFUSED: bad-park-idtag (want m<N>-fail-park)"
       ;;
     "FAIL "*)
+      # LEGACY generations only (land-r7): the frozen playbook's park path (its §6.1 cap-exhausted and
+      # §12.1 spend-brake steps) writes the FAIL with its REQUIRED disposition field appended. That shape
+      # was never accepted (pre-existing on main too); accept exactly it, and only where the frozen
+      # playbook runs. proto=2 FAIL validation is unchanged.
+      if printf '%s' "$_vl_entry" | grep -qE '^\[mission\] FAIL part=[0-9]+ phase=[a-z-]+ reason=(cap-exhausted-blocking|part-over-budget) attempt=[0-9]+ disposition=(reverted|isolated|left-with-recorded-risk)$'; then
+        _p2_load "$_vl_sid" "$_vl_root" log
+        _p2_legacy_gen || _mw_emit_refuse log 1 "REFUSED: bad-fail-shape (a FAIL with disposition= is the legacy park record; legacy generations only - proto=2 parks use FAIL part=N park= disposition= range=)"
+      else
       printf '%s' "$_vl_entry" | grep -qE '^\[mission\] FAIL part=[0-9]+ phase=[a-z-]+ reason=[a-z0-9-]+ attempt=[0-9]+$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-fail-shape"
+      fi
       printf '%s' "$_vl_bare" | grep -qE '^m[0-9]+-fail-([a-z0-9-]+-[0-9]+|panel3x-r[0-9]+)$' \
         || _mw_emit_refuse log 1 "REFUSED: bad-fail-idtag"
       _en=$(_mw_efield "$_vl_entry" part); _in=$(printf '%s' "$_vl_bare" | sed -n 's/^m\([0-9]*\)-fail-.*/\1/p')
