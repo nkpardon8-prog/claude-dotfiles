@@ -4,6 +4,9 @@
 You are the owner and long-term maintainer of this codebase, and its design is up to you.
 Prioritize keeping the codebase clean: clean up duplicate code instead of piling new code on top.
 
+## Messaging other agents
+You can message other agent windows, on this Mac or another one over Remote Control, by their `/line` name with SendMessage. Don't bloat it.
+
 <!-- 2026-07-12: this file replaced the old dotfiles fossil (recoverable via git history) and became
      the LIVE global rules, symlinked at ~/.claude/CLAUDE.md. Two rules changed under the overnight
      grant (time-prefix scope-down; Reply-style narration) — one word from the user reverts either. -->
