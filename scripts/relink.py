@@ -186,8 +186,43 @@ def plan(rows, tabs, only, force=False):
     return todo, skipped
 
 
+# "shell" = the turn is over and only background jobs run; the prompt takes input like "idle".
+# Never "busy" (mid-answer) or "waiting" (a question or permission prompt is on screen).
+TYPABLE = {"idle", "shell"}
+
+
 def idle(d):
-    return d.get("status") == "idle"
+    return d.get("status") in TYPABLE
+
+
+def screen_text(w):
+    """The last lines on the window's screen, or "" if unreadable."""
+    try:
+        if w["panel"]:
+            p = subprocess.run([runpane_bin(), "panels", "screen", "--panel", w["panel"], "--limit", "20"],
+                               capture_output=True, text=True, timeout=20)
+            return p.stdout
+        script = ('on run argv\n tell application "Terminal"\n repeat with w in windows\n repeat with t in tabs of w\n'
+                  ' if (tty of t) is (item 1 of argv) then return history of t\n end repeat\n end repeat\n'
+                  ' end tell\n return ""\nend run')
+        p = subprocess.run(["/usr/bin/osascript", "-", w["tty"]], input=script, capture_output=True,
+                           text=True, timeout=20)
+        return "\n".join(p.stdout.splitlines()[-20:])
+    except Exception:
+        return ""
+
+
+def pick_disconnect(w):
+    """`/remote-control` on a connected window sometimes opens a menu (Disconnect this session / Show QR
+    code / Continue, cursor on Continue) instead of disconnecting. Choose Disconnect - but ONLY when the
+    menu is verifiably on screen: Up arrows at a normal prompt would recall and resend an old message."""
+    if "Disconnect this session" not in screen_text(w) or "Enter to select" not in screen_text(w):
+        return False
+    if w["panel"]:
+        p = subprocess.run([runpane_bin(), "panels", "input", "--panel", w["panel"], "--keys", "up,up,enter", "--yes"],
+                           capture_output=True, text=True, timeout=20)
+        return p.returncode == 0
+    return type_into(w, "\x1b[A\x1b[A")   # Terminal's do script adds the Enter
 
 
 def step(w, now):
@@ -210,6 +245,9 @@ def step(w, now):
             else:
                 w["state"], w["result"] = "done", "FAILED: could not type into its tab"
     elif w["state"] == "disconnecting":
+        if bridge and not w.get("menu") and now - w["t"] > 3:
+            w["menu"] = True   # try the menu once
+            pick_disconnect(w)
         if not bridge and idle(d):
             if type_into(w, "/rc " + w["name"]):
                 w["state"], w["t"] = "connecting", now
@@ -251,7 +289,7 @@ def heal():
         log = open(HEAL_LOG, "a")
         log.write(time.strftime("%Y-%m-%d %H:%M:%S ") + f"heal {me['name']} pid {me['pid']}\n")
         log.flush()
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--only", me["name"], "--timeout-min", "10"],
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--only", me["name"], "--timeout-min", "30"],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, RELINK_CHILD="1"))
     except Exception:
