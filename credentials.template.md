@@ -7,46 +7,40 @@
 
 ---
 
-Index of API keys available via 1Password CLI for use by `/load-creds`. References only — **never paste real secret values here**.
+Index of API keys you use, for `/load-creds`. Env var **names** and where each value comes from — **never paste real secret values here**. No password manager or CLI is involved: values live in each project's own `.env` (or an env file you point `/load-creds` at).
 
 ## How Claude should use this file
 1. Read the user's catalog at `~/.config/claude/credentials.md` (NOT this template).
 2. Use the env var names below in `.env.example` so `/load-creds` can match them.
-3. To populate a real `.env`: write `.env.op` with `op://` references, then run `op inject -i .env.op -o .env` (with `--account` if multi-account).
-4. Quote any `op://` reference that contains spaces when emitting `.env.op` lines: `OPENAI_API_KEY="op://My Vault/OpenAI/credential"`.
-5. Never echo resolved secret values — reference by env var name only.
-
-## Vault placeholder
-
-The examples below use `<VAULT>` as a placeholder. Replace with your actual 1Password vault name (commonly `Personal`, `Private`, or a team vault). Discover yours with `op vault list`.
+3. To populate a real `.env`: run `/load-creds`. It copies values from the project's `.env`, an env file you name (`--from`), or the shell environment; anything it cannot find is left as an empty `KEY=` line for you to paste into `.env` yourself.
+4. Never echo secret values — reference by env var name only.
 
 ## Format
-| Env Var | op:// Reference | Used For |
+| Env Var | Where it comes from | Used For |
 
 ## LLM / AI
 
-| Env Var              | op:// Reference                          | Used For                           |
-|----------------------|------------------------------------------|------------------------------------|
-| OPENAI_API_KEY       | op://<VAULT>/OpenAI/credential           | OpenAI API (gpt-*, embeddings)     |
-| ANTHROPIC_API_KEY    | op://<VAULT>/Anthropic/credential        | Claude API                         |
-| OPENROUTER_API_KEY   | op://<VAULT>/OpenRouter/credential       | OpenRouter (multi-model gateway)   |
-| GOOGLE_API_KEY       | op://<VAULT>/Google AI/credential        | Gemini, Google AI Studio (quote on emit — has space) |
+| Env Var              | Where it comes from                              | Used For                           |
+|----------------------|--------------------------------------------------|------------------------------------|
+| OPENAI_API_KEY       | platform.openai.com > API keys                   | OpenAI API (gpt-*, embeddings)     |
+| ANTHROPIC_API_KEY    | console.anthropic.com > API keys                 | Claude API                         |
+| OPENROUTER_API_KEY   | openrouter.ai > Keys                             | OpenRouter (multi-model gateway)   |
+| GOOGLE_API_KEY       | aistudio.google.com > Get API key                | Gemini, Google AI Studio           |
 
 ## Supabase
 
-| Env Var                       | op:// Reference                                      | Used For              |
-|-------------------------------|------------------------------------------------------|-----------------------|
-| SUPABASE_URL                  | op://<VAULT>/Supabase Default/url                    | Project URL           |
-| SUPABASE_ANON_KEY             | op://<VAULT>/Supabase Default/anon key               | Public client key     |
-| SUPABASE_SERVICE_ROLE_KEY     | op://<VAULT>/Supabase Default/service role key       | Server-side admin key |
+| Env Var                       | Where it comes from                              | Used For              |
+|-------------------------------|--------------------------------------------------|-----------------------|
+| SUPABASE_URL                  | Supabase dashboard > Project Settings > API      | Project URL           |
+| SUPABASE_ANON_KEY             | Supabase dashboard > Project Settings > API      | Public client key     |
+| SUPABASE_SERVICE_ROLE_KEY     | Supabase dashboard > Project Settings > API      | Server-side admin key |
 
 ## Mac mini remote (CRD skill)
 
-> CRD_PIN is set when you create the CRD device on the Mac mini. CRD_DEVICE_NAME is the aria-label shown on the device tile at https://remotedesktop.google.com/access (typically the Mac mini's macOS hostname or a user-set name).
+> CRD_DEVICE_NAME is the aria-label shown on the device tile at https://remotedesktop.google.com/access (typically the Mac mini's macOS hostname or a user-set name). The CRD PIN is never stored anywhere; you type it when the page comes up.
 
-| Env Var               | op:// Reference                          | Used For                                                                                                                                                                  |
-|-----------------------|------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| CRD_PIN               | op://<VAULT>/Mac mini CRD/PIN            | 6-digit Chrome Remote Desktop connection PIN                                                                                                                              |
-| CRD_DEVICE_NAME       | op://<VAULT>/Mac mini CRD/Device Name    | CRD device-tile aria-label — the name on remotedesktop.google.com/access. Often the macOS hostname; check by visiting that URL.                                           |
+| Env Var               | Where it comes from                                         | Used For                                                                                                                        |
+|-----------------------|-------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------|
+| CRD_DEVICE_NAME       | the device tile name on remotedesktop.google.com/access     | CRD device-tile aria-label. Often the macOS hostname; check by visiting that URL.                                               |
 
 ## (extend as you add services — DB URLs, OAuth secrets, webhook secrets, signing keys, etc.)

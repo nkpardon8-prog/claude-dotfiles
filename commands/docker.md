@@ -1,24 +1,24 @@
 ---
-description: Remote Docker on the always-on OpenDental Windows laptop, still called "the mini" throughout (rdocker). Plain `docker` / `docker compose` on this laptop already run on the mini over Tailscale, with published TCP ports mirrored to laptop localhost, and a janitor cleans up after agents — so use docker normally. Heavy DB test jobs (`npm run test:db` and similar) run code + DB together on the mini via `rrun <cmd>`, usually rewritten automatically by a hook. Invoke this BEFORE starting test databases or other containers (it has the database playbook: ports, readiness, lifetime labels, keeping data), when docker errors / hangs / "cannot connect" / refuses with "cannot tell where … lives" or "not a throwaway container", when a container port on localhost is unreachable, to check where a container runs, to switch remote/local mode, or to set up / repair the mini Docker host.
+description: Remote Docker on the fleet's always-on Docker host (the `home` machine in scripts/rdocker/fleet.json), still called "the mini" throughout (rdocker). Plain `docker` / `docker compose` on this laptop already run on the mini over Tailscale, with published TCP ports mirrored to laptop localhost, and a janitor cleans up after agents — so use docker normally. Heavy DB test jobs (`npm run test:db` and similar) run code + DB together on the mini via `rrun <cmd>`, usually rewritten automatically by a hook. Invoke this BEFORE starting test databases or other containers (it has the database playbook: ports, readiness, lifetime labels, keeping data), when docker errors / hangs / "cannot connect" / refuses with "cannot tell where … lives" or "not a throwaway container", when a container port on localhost is unreachable, to check where a container runs, to switch remote/local mode, or to set up / repair the mini Docker host.
 ---
 
-# /docker — Docker on the Windows host, transparently
+# /docker — Docker on the fleet's Docker host, transparently
 
 **Arguments:** `$ARGUMENTS` (optional: `status`, `doctor`, `clean`, `use <mode>`, `where <name>`, or plain English).
 
-**Naming:** since 2026-11-01 the Docker server is the OpenDental Windows laptop (Ubuntu in WSL2). This
-file and `rdocker` output still call it "the mini", and "the laptop" means the Mac you are on. Every Mac,
-Nick's Mac mini included, is a client.
+**Naming:** the Docker server is the fleet's Docker host: the machine with the `home` role in
+`scripts/rdocker/fleet.json` (the source of truth for which machine that is). This file and `rdocker`
+output still call it "the mini", and "the laptop" means the Mac you are on. Every Mac is a client.
 
-**Running ON the Docker server (inside WSL on that Windows laptop)?** (`~/.local/bin/docker` missing.) Then docker is
+**Running ON the Docker server (the fleet's Docker host)?** (`~/.local/bin/docker` missing.) Then docker is
 its own local engine and nothing here routes it: no shim, no port mirrors, no `rrun`, no `rdocker`
 command. Use docker normally. The Macs' janitor still sweeps this engine, so a DB that must survive
 3 h of quiet needs `--label rdocker.keep=1` + a named volume (or `rdocker.ttl=...`), as below.
 
 ## The mental model
 
-The laptop (16 GB) offloads container CPU+RAM to the always-on **Docker host** (ssh alias `macmini-docker`, a name kept from when it was a Mac ->
-the OpenDental Windows laptop since 2026-11-01, Ubuntu 24.04 in WSL2, x86_64, 6 CPU / about 8 GB RAM; before that Nick's Mac mini, then Omid's `macminim4`, both now clients with Colima stopped). It is the ONLY Docker engine; images run natively as linux/amd64, so an arm64-only image will not run. Normally agent/test-runner
+The laptop (16 GB) offloads container CPU+RAM to the always-on **Docker host** (ssh alias `macmini-docker`, a name kept from when it was a Mac; the current host is the `home`
+machine in `scripts/rdocker/fleet.json`; earlier Mac hosts are now clients with Colima stopped). It is the ONLY Docker engine; images run natively as linux/amd64, so an arm64-only image will not run. Normally agent/test-runner
 CPU stays on the laptop and only the containers move. **Heavy test jobs** (test runner + its DB) move
 whole: `rrun <cmd>` runs the command itself on the mini next to its DB, usually without asking (a hook
 rewrites known heavy commands) — see "Heavy test jobs on the mini" below.
@@ -113,8 +113,8 @@ classes** below: the line `rrun: <class> (...)` right after the output always sa
 
 **Heavy dev work runs on the compute pool automatically - just type the normal command.** A
 `PreToolUse` hook (`scripts/hooks/rrun-route.py`) rewrites every heavy one-shot dev command an agent
-types into `rrun <cmd>`, and rrun picks the best worker in the pool (`fleet.json`: Nick's MacBook M5 Max,
-then the HP, then the Windows laptop) and falls back by itself. The hook covers the common commands
+types into `rrun <cmd>`, and rrun picks the best worker in the pool (the worker machines listed in
+`fleet.json`) and falls back by itself. The hook covers the common commands
 listed below; for any other heavy command, prefix `rrun` yourself (`rrun <cmd>`). Do not look for
 another way to get compute. `rrun --where <cmd>` shows which worker it would pick and why.
 
@@ -827,7 +827,7 @@ every threshold above is a key there).
 
 ## Setup record (done 2026-10-12 — for a rebuild)
 
-**Host since 2026-10-22: Nick's Mac mini** (`nicholass-mac-mini`, Tailscale 100.112.247.23, user
+**Earlier host (2026-10-22, historical; the current host is in `fleet.json`): Nick's Mac mini** (`nicholass-mac-mini`, Tailscale 100.112.247.23, user
 `nicholaspardon`, macOS 15.6, 16 GB). Set up over ssh with the `setup-mini` script (Homebrew colima +
 docker as Nick's user only, VM 6 CPU / 5 GB / 30 GB (raised to 11 GB on 2026-10-26 by editing `memory:` in colima.yaml + `brew services` stop/start; restore running containers after), `brew services` at login, the same docker block +
 Lima override; one PATH line in `~/.zshenv`; Nick's `~/.claude` and `~/dotfiles` untouched). The
@@ -865,7 +865,7 @@ setup-mini, CLI). Docker CLI flag research: `docs/docker-cli-semantics.md`. Brie
 `random/tools/online docker/tmp/briefs/2026-10-12-remote-docker-on-mac-mini.md`.
 
 **Linux server (`server_os=linux`)**: set config `server_os` to `linux` (default `mac` = Colima/launchd,
-unchanged) when the Docker host is Linux (e.g. Ubuntu 24.04 in WSL2, systemd dockerd, user in the
+unchanged) when the Docker host is Linux (e.g. Ubuntu 24.04, systemd dockerd, user in the
 `docker` group). dockerd is the host's own systemd unit, so there is no VM: the disk % is
 `df -P /var/lib/docker`, the engine kick is `sudo -n systemctl start docker` (restart is the same with
 `restart`; status via `systemctl is-active docker`), housekeeping is `sudo -n journalctl --vacuum-size=50M`

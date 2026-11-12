@@ -71,8 +71,14 @@ Multiple agents and people may work the same repo. Don't clobber or overlap.
 ## Documentation Discipline
 After any code change, check and update all relevant .md documentation files. Use the project's file-to-doc map (in `docs/OVERVIEW.md` if it exists) to identify which docs are affected. Never leave documentation out of sync with code.
 
-## Test Before Done
-Before completing a task or pushing code, run both unit/line-level tests and end-to-end tests. Compare output against the project's main documentation to verify changes align with its goals. Skip testing only when explicitly told to.
+## Testing
+- While building: run the targeted tests for what you changed.
+- At a part's close: run the full suite once, and compare the result with the project's main docs.
+- A check that also fails on the current base branch: record it once (command + failure) and move on;
+  do not rerun it every round.
+- A run that broke for machine reasons (lost worker, missing DB, timeout) is invalid: rerun it, and
+  never count it as a pass or as a known failure.
+Skip testing only when explicitly told to.
 
 ## Push Rules — Two Distinct Policies
 **Claude dotfiles repo** (`~/.claude-dotfiles/`): Auto-push freely. Changes to commands, rules, patterns, or this CLAUDE.md commit and push automatically without asking — keeps config synced across devices.
@@ -80,12 +86,13 @@ Before completing a task or pushing code, run both unit/line-level tests and end
 **All other repos** (project code, applications, libraries): NEVER push to GitHub without explicit user approval. Always show what will be pushed and ask first. All branches, all remotes, no exceptions.
 
 ## Credentials
-The user keeps a personal API-key catalog at `~/.config/claude/credentials.md` (env var names + `op://` references, no secret values; local-only, never synced). When a project needs API keys:
+Credentials come from the local catalog `~/.config/claude/credentials.md` (env var names only, never
+synced) or the project's own env files. Never use 1Password or the `op` CLI. When a project needs API keys:
 1. Read `~/.config/claude/credentials.md`. If missing, tell the user to copy `~/.claude-dotfiles/credentials.template.md` there and edit.
-2. **Always invoke `/load-creds`** — don't inline the bash flow; the skill enforces the safety gates (gitignore-before-write, abort-on-tracked, atomic merge, partial-resolution check, multi-account threading).
+2. **Always invoke `/load-creds`** — don't inline the bash flow; the skill enforces the safety gates (gitignore-before-write, abort-on-tracked, atomic merge, never echo values).
 3. Use the same env var names as the catalog when generating `.env.example`.
-4. Never echo resolved secret values; reference by env var name only.
-5. If a credential appears in conversation, treat it as compromised — suggest rotating it and storing it in 1Password referenced as `op://...`. Never commit raw secrets to any repo.
+4. Never echo secret values; reference by env var name only.
+5. If a credential appears in conversation, treat it as compromised — suggest rotating it at the provider. Never commit raw secrets to any repo.
 
 ## Pre-Compaction Handoffs
 When asked to summarize a session, dump context, or save state before compaction, ALWAYS use the `/pre-compact` skill. Never generate freeform handoff-shaped documents.

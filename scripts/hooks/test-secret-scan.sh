@@ -894,7 +894,7 @@ PYEOF
 if [ -n "$_tmpl_cmd" ]; then
     _FH="$P3W/fakehome"; mkdir -p "$_FH/.config/claude"
     # clean catalog -> silent
-    printf 'OPENAI_API_KEY  op://Personal/openai/key\n' > "$_FH/.config/claude/credentials.md"
+    printf 'OPENAI_API_KEY  platform.openai.com\n' > "$_FH/.config/claude/credentials.md"
     chk "template hook: clean catalog says nothing" \
         "$(HOME="$_FH" bash -c "$_tmpl_cmd" 2>&1 | grep -c 'WARNING')" "0"
     # real secret -> tells the human to ROTATE

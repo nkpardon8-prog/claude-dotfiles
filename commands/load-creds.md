@@ -1,78 +1,31 @@
 # Load Credentials
 
-Inject API keys from the user's 1Password vault into the current project's `.env` via `op inject`.
-Catalog lives at `~/.config/claude/credentials.md` (local-only, never synced).
+Fill the current project's `.env` with the API keys it needs. Values come from the project's own env
+files, an env file the user names, or the current shell environment; any value that cannot be found is
+left as an empty placeholder for the user to paste into `.env` themselves. Never use 1Password or the
+`op` CLI.
+Catalog lives at `~/.config/claude/credentials.md` (env var NAMES and where each comes from; local-only,
+never synced, never holds values).
 
 Usage:
-- `/load-creds` — auto-detect env vars referenced by the project, confirm with user, then inject.
+- `/load-creds` — auto-detect env vars referenced by the project, confirm with user, then fill `.env`.
 - `/load-creds OPENAI_API_KEY,SUPABASE_URL` — load a specific comma-separated list.
+- `/load-creds --from /path/to/other/.env OPENAI_API_KEY` — copy matching keys from an env file the user names.
 
 ## Steps
 
-### 1. Verify `op` is available and authenticated
-
-```bash
-which op || { echo "op not installed. Install: brew install --cask 1password-cli (macOS) or per OS." >&2; exit 1; }
-```
-
-Three valid auth modes — detect in this order:
-
-```bash
-# Mode A: service account (non-interactive, headless/CI)
-if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
-  if op whoami >/dev/null 2>&1; then
-    OP_AUTH=service
-  else
-    echo "OP_SERVICE_ACCOUNT_TOKEN is set but op whoami failed — token may be invalid." >&2
-    exit 1
-  fi
-
-# Mode B: signed-in account (desktop integration OR persisted op signin)
-elif op whoami >/dev/null 2>&1; then
-  OP_AUTH=user
-
-# Mode C: not authenticated
-else
-  echo "op is not authenticated. Pick ONE:" >&2
-  echo "  - Desktop integration: open 1Password app → Settings → Developer → 'Integrate with 1Password CLI' (recommended for interactive use)." >&2
-  echo "  - Service account: export OP_SERVICE_ACCOUNT_TOKEN=<token> in your shell." >&2
-  echo "  - eval signin: run 'eval \$(op signin)' in the SAME shell that launched Claude (does not persist across new shells)." >&2
-  exit 1
-fi
-```
-
-### 2. Multi-account: pin the account for the whole flow
-
-Service accounts have exactly one account scope, so skip multi-account handling for `OP_AUTH=service`.
-
-```bash
-OP_ACC=""
-if [ "$OP_AUTH" = "user" ]; then
-  N=$(op account list --format=json | jq 'length')
-  if [ "$N" -gt 1 ] && [ -z "$OP_ACCOUNT" ]; then
-    # Show accounts and ask user which to use
-    op account list --format=json | jq -r '.[] | "\(.url)\t\(.account_uuid)\t\(.email)"'
-    # User selects an address (preferred) or account_uuid
-    # Set OP_ACC for use on every subsequent op call
-    OP_ACC="--account <chosen-address-or-uuid>"
-  fi
-  # If OP_ACCOUNT is already exported, op picks it up automatically — leave OP_ACC empty.
-fi
-```
-
-Use `$OP_ACC` on **every** `op` call below — `op read`, `op inject`, etc.
-
-### 3. Read the catalog
+### 1. Read the catalog
 
 ```bash
 test -f ~/.config/claude/credentials.md || { echo "Catalog missing. Copy template: cp ~/.claude-dotfiles/credentials.template.md ~/.config/claude/credentials.md and edit." >&2; exit 1; }
 cat ~/.config/claude/credentials.md
 ```
-Parse the markdown tables to build `env_var → op_ref` (and remember which refs contain spaces).
+Parse the markdown tables to build `env_var -> source` (the "Where it comes from" column tells the user
+where to get a value they have to paste; it is never a value).
 
 ### 4. Identify what this project needs
 
-- If `$ARGUMENTS` is non-empty: comma-separated list of env var names.
+- If `$ARGUMENTS` is non-empty: comma-separated list of env var names. A `--from <path>` pair names the env file to copy values from (`SRC_FILE`).
 - Otherwise: scan the project for env var references. Be broad — projects vary widely:
   - Files: `.env.example`, `.env.template`, `.env.sample`, `README*`, `package.json`, `next.config.*`, `vite.config.*`, `astro.config.*`, `nuxt.config.*`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`.
   - Dirs: `src/`, `app/`, `pages/`, `lib/`, `server/`, `backend/`, `apps/*/`, `packages/*/`, `.github/workflows/`, `infra/`, `terraform/`.
@@ -87,26 +40,24 @@ Parse the markdown tables to build `env_var → op_ref` (and remember which refs
 
 ### 5. Pre-flight safety — ABORT (don't just warn) on tracked secret files
 
-This step runs **before** any file write or any `op` resolution. If any check fails, **stop with an error**; do not proceed.
+This step runs **before** any file write or any value lookup. If any check fails, **stop with an error**; do not proceed.
 
 ```bash
-# 5a. .env or .env.op already tracked → ABORT
-for f in .env .env.op; do
-  if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-    echo "ERROR: $f is currently tracked by git. Aborting to prevent secret leak." >&2
-    echo "  Fix: git rm --cached $f && git commit -m 'untrack $f'" >&2
-    exit 1
-  fi
-done
+# 5a. .env already tracked -> ABORT
+if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+  echo "ERROR: .env is currently tracked by git. Aborting to prevent secret leak." >&2
+  echo "  Fix: git rm --cached .env && git commit -m 'untrack .env'" >&2
+  exit 1
+fi
 
-# 5b. Ensure .gitignore exists and has both entries
+# 5b. Ensure .gitignore exists and ignores .env and the temp files this flow writes
 touch .gitignore
-for entry in .env .env.op; do
+for entry in .env '.env.tmp.*'; do
   grep -qxF "$entry" .gitignore || echo "$entry" >> .gitignore
 done
 
-# 5c. Check no symlinks pointing outside the project for these files
-for f in .env .env.op .gitignore; do
+# 5c. Refuse symlinks pointing outside the project for these files
+for f in .env .gitignore; do
   if [ -L "$f" ]; then
     target=$(readlink "$f")
     case "$target" in
@@ -116,45 +67,54 @@ for f in .env .env.op .gitignore; do
 done
 ```
 
-### 6. Build `.env.op` (op-references file)
+### 6. Find a value for each requested var (never print it)
 
-- Parse existing `.env.op` if present into a key-value map (preserve comments and blank lines as a separate ordered list — re-emit them in their original positions if possible; otherwise put them at the top).
-- For each requested env var found in the catalog: upsert the key. Last write wins on duplicates.
-- **Quote values containing spaces or special characters**: emit `KEY="op://<VAULT>/Google AI/credential"`, not `KEY=op://<VAULT>/Google AI/credential`.
-- Warn the user about any requested vars NOT in the catalog — those need to be added to `~/.config/claude/credentials.md` or pasted manually.
-- Write the merged result back to `.env.op`.
+For each requested var, in this order, stop at the first hit:
+1. The project's `.env` already has a non-empty value: leave it alone.
+2. An env file the user named with `--from <path>` (or one they point you at when asked): copy that
+   line as written. Read it with `grep`/`cut` into a variable; do not `cat` it.
+3. The current shell environment (`printenv "$KEY"`): emit it quoted.
+4. Not found: emit an empty placeholder `KEY=` and tell the user where the catalog says to get it
+   (the "Where it comes from" column) and to paste the value into `.env` themselves. Do not ask the user to
+   paste a secret into chat; if they do anyway, treat it as compromised and suggest rotating it.
 
-### 7. Inject — atomically, merging into existing `.env`
+Also warn about any requested vars NOT in the catalog: they need adding to `~/.config/claude/credentials.md`.
 
-`.env` is treated as **authoritative for non-catalog values** (manual entries, local overrides). Never overwrite it blindly.
+### 7. Write — atomically, merging into existing `.env`
+
+`.env` is treated as **authoritative for values already set** (manual entries, local overrides). Never overwrite it blindly.
 
 ```bash
-# Use temp files in the PROJECT DIR so the final mv is a same-filesystem rename (truly atomic).
-TMP_RESOLVED=".env.tmp.resolved.$$"
+# Temp files live in the PROJECT DIR so the final mv is a same-filesystem rename (truly atomic).
+TMP_NEW=".env.tmp.new.$$"
 TMP_MERGED=".env.tmp.merged.$$"
-trap 'rm -f "$TMP_RESOLVED" "$TMP_MERGED"' EXIT INT TERM
+trap 'rm -f "$TMP_NEW" "$TMP_MERGED"' EXIT INT TERM
+umask 077
 
-# 7a. Resolve op:// → real values into a temp file (NOT directly to .env)
-if ! op $OP_ACC inject -i .env.op -o "$TMP_RESOLVED"; then
-  echo "ERROR: op inject failed. Verify each ref with: op $OP_ACC read 'op://...'" >&2
-  exit 1
-fi
-chmod 600 "$TMP_RESOLVED"
+# 7a. Build the new lines. KEYS = the confirmed requested var names; SRC_FILE = the --from file, if any.
+: > "$TMP_NEW"
+MISSING=""
+for KEY in $KEYS; do
+  if [ -f .env ] && grep -qE "^$KEY=.+" .env; then continue; fi        # already set: keep it
+  line=""
+  if [ -n "$SRC_FILE" ]; then line=$(grep -E "^$KEY=.+" "$SRC_FILE" | tail -1); fi
+  if [ -z "$line" ]; then
+    val=$(printenv "$KEY" || true)
+    if [ -n "$val" ]; then
+      esc=${val//\\/\\\\}; esc=${esc//\"/\\\"}
+      line="$KEY=\"$esc\""
+    fi
+  fi
+  if [ -z "$line" ]; then line="$KEY="; MISSING="$MISSING $KEY"; fi
+  printf '%s\n' "$line" >> "$TMP_NEW"
+done
 
-# 7b. Verify no unresolved op:// strings remain (partial resolution defense)
-if grep -q 'op://' "$TMP_RESOLVED" 2>/dev/null; then
-  echo "ERROR: Resolved file still contains op:// strings — partial resolution. Refusing to write .env." >&2
-  grep -n 'op://' "$TMP_RESOLVED" >&2
-  exit 1
-fi
-
-# 7c. Merge: preserve existing .env keys NOT being overwritten, append freshly-resolved values.
-# Build the set of keys being injected as a NUL-delimited list passed via env to awk.
-# Newline-delimited would tempt awk to split on space, which breaks with 2+ keys.
-INJECTED_KEYS=$(grep -E '^[A-Z][A-Z0-9_]*=' .env.op | sed 's/=.*$//' | tr '\n' '\037')
+# 7b. Merge: keep comments/blanks and every existing line whose key is NOT being rewritten, then append.
+# Keys are passed as a \037-delimited list (newline- or space-delimited breaks awk with 2+ keys).
+NEW_KEYS=$(grep -E '^[A-Z][A-Z0-9_]*=' "$TMP_NEW" | sed 's/=.*$//' | tr '\n' '\037')
 
 if [ -f .env ]; then
-  awk -v keys="$INJECTED_KEYS" '
+  awk -v keys="$NEW_KEYS" '
     BEGIN {
       n = split(keys, a, "\037")
       for (i = 1; i <= n; i++) if (a[i] != "") inj[a[i]] = 1
@@ -171,26 +131,24 @@ if [ -f .env ]; then
 else
   : > "$TMP_MERGED"
 fi
-
-# Append the resolved values (these win over any matched keys from .env)
-cat "$TMP_RESOLVED" >> "$TMP_MERGED"
+cat "$TMP_NEW" >> "$TMP_MERGED"
 chmod 600 "$TMP_MERGED"
 
-# Atomic same-filesystem rename
+# 7c. Atomic same-filesystem rename
 mv -f "$TMP_MERGED" .env
 ```
 
-The merge logic: keep comments/blanks from old `.env`, drop any line whose key is being re-injected, append the resolved values. Idempotent — re-running with the same catalog yields the same `.env`.
-
-May trigger a Touch ID prompt during step 7a.
+The merge logic: keep comments/blanks and untouched keys from the old `.env`, drop any line whose key is being rewritten, append the new lines. Idempotent: re-running with the same inputs yields the same `.env`.
 
 ### 8. Confirm
 
-Print only the env var **names** that were injected. Never print resolved values. Suggest verifying the project boots: `npm run dev` / `python -m app` / etc.
+Print only the env var **names**: which were filled, which were left as empty placeholders (with the
+catalog's "where it comes from" hint for each). Never print values. Suggest verifying the project boots:
+`npm run dev` / `python -m app` / etc.
 
 ## Safety
-- Never echo `.env` contents.
-- Never log resolved values during debugging.
+- Never echo `.env` contents, and never `cat` a source env file.
+- Never log values during debugging.
 - The `.env` file is `chmod 600` after write so other users can't read it.
-- The slash command commands themselves contain only `op://` references — shell history is fine.
-- If an `op` call fails partway, the trap deletes temp files. The pre-existing `.env` is **not** modified until step 7c's atomic `mv`.
+- The temp files are gitignored and deleted by the trap on any exit. The pre-existing `.env` is **not**
+  modified until step 7c's atomic `mv`.

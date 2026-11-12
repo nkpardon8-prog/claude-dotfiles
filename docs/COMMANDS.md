@@ -88,7 +88,7 @@ Pack subskills (invoked as `/<pack>:<name>`):
 
 | Command | What it does |
 |---|---|
-| `/load-creds` | Injects API keys from the user's 1Password vault into the current project's `.env` via `op inject`. Catalog at `~/.config/claude/credentials.md` (local-only, never synced). |
+| `/load-creds` | Fills the current project's `.env` from the project's env files, a named env file, or the shell environment (missing values left as empty placeholders). Catalog of env var names at `~/.config/claude/credentials.md` (local-only, never synced). |
 
 ## Remote control & GUI
 

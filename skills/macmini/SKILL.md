@@ -160,7 +160,7 @@ The old skill's `paste --secure` never sent the secret to GitHub — it shipped 
 - **Never type a secret char-by-char through the canvas** (shift-map or
   otherwise) — it would be visible in screenshots and in the agent's reasoning.
 - For mini-local work that needs a secret, prefer the **mini-Claude delegation**
-  recipe (below): mini Claude can read it from the mini's Keychain / 1Password
+  recipe (below): mini Claude can read it from the mini's Keychain
   locally without it ever crossing the canvas.
 
 ## Gotchas

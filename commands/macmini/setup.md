@@ -77,9 +77,9 @@ Add it to `~/.config/claude/credentials.md` if you use the creds loader:
 ```markdown
 ## Mac mini remote (CRD skill)
 
-| Env var          | 1Password ref                                |
-|------------------|----------------------------------------------|
-| CRD_DEVICE_NAME  | op://<VAULT>/Mac mini CRD/Device Name        |
+| Env var          | Where it comes from                                     |
+|------------------|---------------------------------------------------------|
+| CRD_DEVICE_NAME  | the device tile name on remotedesktop.google.com/access |
 ```
 
 Then `/load-creds CRD_DEVICE_NAME`. The CRD PIN is **never stored** — you type it

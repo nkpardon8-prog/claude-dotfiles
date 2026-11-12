@@ -9,7 +9,7 @@ How `~/.claude-dotfiles` plugs into Claude Code, and what runs when.
 ```
 ~/.claude-dotfiles/                        ← this repo, version-controlled
 ├── CLAUDE.md                              ← global rules (loaded every session)
-├── credentials.template.md                ← template for the op:// catalog (the real
+├── credentials.template.md                ← template for the env-var catalog (the real
 │                                             catalog is local-only, see "Credential flow")
 ├── settings.json.template                 ← reference copy of ~/.claude/settings.json
 ├── CHANGELOG.md
@@ -137,7 +137,7 @@ Two hooks in `~/.claude/settings.json` make this happen:
 
 | Hook | Trigger | Action |
 |---|---|---|
-| `SessionStart` | New Claude Code session | `git pull --ff-only`, reinstall the local git hooks, and secret-leak scan `~/.config/claude/credentials.md` (warn-only; it should hold `op://` references, never values) |
+| `SessionStart` | New Claude Code session | `git pull --ff-only`, reinstall the local git hooks, and secret-leak scan `~/.config/claude/credentials.md` (warn-only; it should hold env var names only, never values) |
 | `PostToolUse` (Edit\|Write) | Any file edit | Run `scripts/dotfiles-sync.sh` — checks if the edit was inside the dotfiles dir, then `git add + commit + push` |
 
 Project repos are **not** auto-pushed. Only this dotfiles repo. The rule lives in `CLAUDE.md` and the script checks the path before pushing.
@@ -216,24 +216,22 @@ triggers them internally from its own pack directory.
 ## Credential flow
 
 ```
-┌─────────────────┐      catalog (op:// only,     ┌────────────────────────────────┐
-│  1Password app  │ ───── no secret values) ─────▶ │ ~/.config/claude/              │
-│  (vault)        │                                │   credentials.md               │
-└────────┬────────┘                                │ (local-only, NEVER committed)  │
-         │                                         └────────┬───────────────────────┘
-         │ op inject -i .env.op -o .env                     │ /load-creds
-         │ ◀────────────────────────────────────────────────┘ reads catalog
-         ▼
-┌───────────────────────────┐
-│ project/.env (gitignored) │
-└───────────────────────────┘
+┌────────────────────────────────┐
+│ ~/.config/claude/credentials.md│  env var NAMES + where each value
+│ (local-only, NEVER committed)  │  comes from; no values
+└───────────────┬────────────────┘
+                │ /load-creds reads the catalog
+                ▼
+┌───────────────────────────┐   values from: the project's .env, an env file
+│ project/.env (gitignored) │ ◀ named with --from, or the shell environment;
+└───────────────────────────┘   missing ones left as empty KEY= for the user
 ```
 
 Rules:
 - The catalog lives **outside this repo**, at `~/.config/claude/credentials.md`. It is local-only and never synced by git; `credentials.md` is gitignored here too. The committed artifact is `credentials.template.md` - copy it to `~/.config/claude/credentials.md` and edit.
-- The catalog only ever holds `op://` references and env var names. A SessionStart hook scans it for provider key shapes (`sk-*`, `AIza*`, `ghp_*`, `AKIA*`, private-key headers, ...) and warns if a real value landed there.
+- The catalog only ever holds env var names and where each value comes from. A SessionStart hook scans it for provider key shapes (`sk-*`, `AIza*`, `ghp_*`, `AKIA*`, private-key headers, ...) and warns if a real value landed there.
 - `/load-creds` is the canonical way to populate a project `.env`.
-- New credentials shared in chat are treated as compromised: rotate, then store in 1Password and reference as `op://`. Never commit a raw secret to any repo.
+- New credentials shared in chat are treated as compromised: rotate it at the provider. Never commit a raw secret to any repo.
 
 Full rules: `CLAUDE.md` → "Credentials". The end-to-end secret chain is documented in [SECURITY-secret-chain.md](SECURITY-secret-chain.md).
 
@@ -367,7 +365,7 @@ The PostToolUse hook auto-pushes after the edit lands.
 | File | Purpose |
 |---|---|
 | `CLAUDE.md` | The global rules loaded into every session |
-| `credentials.template.md` | Template for the local-only `op://` catalog |
+| `credentials.template.md` | Template for the local-only env-var catalog |
 | `settings.json.template` | Reference copy of `~/.claude/settings.json` (statusline + every hook registration) |
 | `README.md` | Setup-on-a-new-machine guide |
 | `docs/COMMANDS.md` | Full command reference (categorized) |

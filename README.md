@@ -151,7 +151,7 @@ Then add the SessionStart pull + PostToolUse auto-push hooks to `~/.claude/setti
 auto-syncs across devices — pulls at session start, pushes after any edit (behind a pre-push secret
 scan). **Project code repos are never pushed without explicit approval.**
 
-Full install, credentials (1Password-backed), and troubleshooting → **[`docs/SETUP.md`](docs/SETUP.md)**.
+Full install, credentials (local catalog + `.env`), and troubleshooting → **[`docs/SETUP.md`](docs/SETUP.md)**.
 
 ---
 
