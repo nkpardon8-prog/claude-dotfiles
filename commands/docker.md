@@ -355,6 +355,30 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   runs, a run that called `docker` on the worker, an interrupted or hedged run, a sharded run with a lost
   or local shard, a missing-test-DB run, and exit codes 65/69/70/72/73/75/76/77/78/124 or from a signal. A sharded run is one entry (keyed on
   the unsharded command), saved after every shard ended. Hits show as target `cache` in `route.log`.
+- **Pool cache: the same results, shared by every agent Mac (`~rd/rr/rcache/` on the home worker, hp).**
+  This Mac's cache is checked first, then the pool's. The pool lookup rides on the placement probe rrun
+  already sends to hp, so a miss costs no extra round trip. A hit replays the output and exit code with
+  the usual class line (`rrun: pass (exit 0 from the pool cache, 0s)`) and one line naming who made it:
+  `rrun: cached result from the pool cache (same code + command, 3m ago on nickmbp by <agent>); RRUN_CACHE=0
+  to run again`. It is also copied into this Mac's cache. Same key, same rules and same lifetimes (pass 24 h,
+  failure 20 min) as above. One more rule: a pool result is replayed only when every worker that answered
+  reports the node major it was made with (the runner writes it to `~/rr/state/node`). A mixed or unknown
+  pool means no pool hits. Entries over 1 MB are not shared.
+  **Identical runs at the same time run once.** The first run takes a lease on hp. A second identical run
+  (another Mac or agent) prints `rrun: identical run in flight by <agent> on <mac>; waiting for its result`,
+  polls hp every few seconds (a status line each minute) and replays the result when it lands. It runs
+  the job itself when the lease ends without a result: the first run ended with nothing to share (for
+  example an infra exit or it used docker), its owner was killed (no lease refresh for 90 s), or the lease
+  expired (the job's cap + 10 min). Ctrl-C on a waiter just exits (130). After printing its result the
+  owner uploads in one detached ssh and never waits for it; a failed upload only loses the share.
+  `RRUN_CACHE=0` skips both tiers (no lookup, no wait, no upload; this Mac's tier still saves). If hp is
+  unreachable, only this Mac's tier is used. `rrun --where` adds a `pool cache (hp):` line (hit / in flight /
+  miss / did not answer). `route.log`: hits show as target `pcache`, and every pool-eligible run has
+  `pcache=hit|miss|inflight|waited-hit|waited-miss` (+ `pwait_s`). rd-tune prunes the store every 30 min:
+  expired entries and dead leases, then least recently used over 512 MB (`RCACHE_MAX_MB`). Config:
+  `rr_pool_cache` (false = off), `rr_pool_cache_stale_s` 90, `rr_pool_cache_refresh_s` 30,
+  `rr_pool_cache_poll_s` 5. Trust: entries are data (printed, never run), but any job running on hp as
+  `rd` could write one.
 
 ### Exit codes and result classes
 
