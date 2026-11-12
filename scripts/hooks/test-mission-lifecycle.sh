@@ -595,5 +595,56 @@ hasnt "COLLISION" "$(cat "$JLOG")" "J28 no collision"
 OUT=$(lg "[mission] PART-START part=2 name=next" m2-part-start)
 has "re-read commands/mission.md" "$OUT" "J29 the handoff: the next legacy PART-START is refused with the reload text"
 
+# ═════════════════════════════════════════════════════════════════════════════════════════════════
+echo "== K legacy handoff seam: tick lock exactly once; legacy park without a human STOP =="
+mk k
+LPF="$HERE/../../docs/mission/legacy-playbook.md"
+fab "[mission] PART-START part=1 name=legacy" m1-part-start
+TICK="$R/.mission-backups/tick.$S.lock"
+# the frozen §12.1 step-1 acquisition block, verbatim
+LOCKBLK="$ENVD/legacy-lock.sh"
+awk '/^   i_own_lock=0$/{f=1} f{print} f&&/^   fi$/{exit}' "$LPF" | sed 's/^   //' > "$LOCKBLK"
+grep -q 'mkdir "$tick_dir"' "$LOCKBLK" && ok "K0 extracted the frozen playbook's own tick-lock block" || bad "K0 lock block not found in legacy-playbook.md"
+# wake.md order: the protocol read sits BEFORE step 1's lock
+POS=$(python3 - "$WAKE" <<'PY'
+import sys
+s=open(sys.argv[1],encoding='utf-8').read()
+a=s.find('Protocol first, BEFORE the lock'); b=s.find('1. **Tick lock**')
+print('ok' if 0<=a<b else 'bad')
+PY
+)
+eq ok "$POS" "K1 wake.md reads part-state and routes proto=1 BEFORE taking the tick lock"
+has "Legacy compatibility overrides" "$(grep -F 'Protocol first' -A3 "$WAKE")" "K1b ... and names the overrides that win over the frozen text"
+# one full tick, new order: lock-free protocol read -> frozen §12.1 owns the lock
+[ ! -e "$TICK" ] && ok "K2a no tick lock held at the protocol read" || bad "K2a a tick lock is already held"
+has "proto=1 dry=0 closed=0" "$(mw part-state "$S" "$R")" "K2 protocol read routes to legacy"
+OUT=$(tick_dir="$TICK" bash -c ". '$LOCKBLK'; echo i_own_lock=\$i_own_lock" 2>&1)
+has "i_own_lock=1" "$OUT" "K3 the frozen routine acquires the tick lock (no self-contention)"
+C0=$(mw cursor-hash "$S" "$R")
+has "log ok" "$(lg "[mission] part=1 name=legacy phase=research round=1 dry=0" m1-research-r1-d0)" "K4 the tick makes progress (one legacy transition)"
+[ "$C0" != "$(mw cursor-hash "$S" "$R")" ] && ok "K5 cursor advanced" || bad "K5 cursor did not move"
+rmdir "$TICK" 2>/dev/null; [ ! -e "$TICK" ] && ok "K6 released once; nothing left held" || bad "K6 tick lock still held"
+# negative control: the round-4 order (wake.md takes the lock first, then hands off) self-contends
+mkdir -p "$TICK"
+OUT=$(tick_dir="$TICK" bash -c ". '$LOCKBLK'; echo i_own_lock=\$i_own_lock" 2>&1)
+has "i_own_lock=0" "$OUT" "K7 (control) holding wake.md's lock while entering the frozen §12.1 = 'another owner' (the bug)"
+rmdir "$TICK"
+
+# legacy park under the override: no pending-stop, writer-accepted park record, retire, proto=2 successor
+K1C=$(commit "$R" legacy-k1); K2C=$(commit "$R" legacy-k2)
+has "FAILED" "$(lg "[mission] FAIL part=1 phase=review reason=part-over-budget attempt=1 disposition=isolated" m1-fail-part-over-budget-1)" "K8 (why) the frozen text's FAIL ... disposition= shape is refused"
+has "pending-stop" "$(grep -F 'Do NOT open' -A1 "$HERE/../../docs/mission/reference.md")" "K8b the override forbids pending-stop for the park"
+has "log ok" "$(lg "[mission] FAIL part=1 park=part-over-budget disposition=isolated range=$B..$K2C" m1-fail-park)" "K9 the legacy part parks with the writer-accepted record"
+has "FAILED" "$(lg "[mission] FAIL part=1 park=part-over-budget disposition=isolated range=$K2C..$B" m1-fail-park-x)" "K9b (control) a backwards legacy range is refused"
+eq none "$(mw await-state "$S" "$R")" "K10 no human STOP is open"
+has "1 parked" "$(morning_line)" "K11 morning report shows the park"
+has "log ok" "$(lg "[mission] PART-RETIRED part=1" m1-part-retired)" "K12 PART-RETIRED"
+has "re-read commands/mission.md" "$(lg "[mission] PART-START part=2 name=next" m2-part-start)" "K13 the frozen text's next legacy PART-START is refused with the reload text"
+WK="${R}-wtk"; wt "$WK" 2 "$K1C"
+has "isolated" "$(lg "[mission] PART-START part=2 name=next proto=2 worktree=$WK base=$K1C needs=none" m2-part-start)" "K14 a base holding a commit of the isolated legacy range is refused"
+WK2="${R}-wtk2"; wt "$WK2" 2 "$B"
+has "log ok" "$(lg "[mission] PART-START part=2 name=next proto=2 worktree=$WK2 base=$B needs=none" m2-part-start)" "K15 the next part is admitted as proto=2 on a clean base"
+has "part=2 proto=2" "$(mw part-state "$S" "$R")" "K16 the mission continues on proto=2 (no stop)"
+
 printf '\nPASS: %s  FAIL: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

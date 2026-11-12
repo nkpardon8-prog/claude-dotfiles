@@ -1,16 +1,18 @@
 # /mission wake routine (§12.1) - the only file a tick reads
 
-Companion to `commands/mission.md` (the playbook). A tick is a COLD START: no memory, nothing carried.
-`sid`, `root` and every path come from the tick prompt (playbook §12). Every wake source - a tick, a
-background-job completion, a post-compact resume, a peer message - enters here and advances the
-mission by exactly ONE transition. `<MW>` below is the byte-locked
+Companion to `commands/mission.md`. A tick is a COLD START: `sid`, `root` and every path come from
+the tick prompt. Every wake source (tick, job completion, post-compact resume, peer message) enters
+here and advances the mission by exactly ONE transition. `<MW>` below is the byte-locked
 `bash /Users/omidzahrai/.claude-dotfiles/scripts/hooks/mission-write.sh` (never `~`, `$HOME`, `cd` or
-an env prefix). Rare paths (orphan recovery, the lock race note) live in `docs/mission/reference.md`.
+an env prefix). Rare paths live in `docs/mission/reference.md`.
 
 ## §12.1 The wake routine (idempotent)
 
 0. **Arm the liveness guard** (idempotent; the writer also arms on every bridge write):
    `mkdir -p "$HOME/.claude/progress"; printf '{"sid":"%s","root":"%s"}' "<sid>" "<root>" > "$HOME/.claude/progress/mission-liveness-<sid>.json"`
+   **Protocol first, BEFORE the lock:** `ps=$(<MW> part-state "$sid" "$root")` (read-only). `proto=1
+   closed=0` -> do NOT take the lock: run `docs/mission/legacy-playbook.md` §12.1 from its step 1 (it
+   owns the lock), with reference.md "Legacy compatibility overrides" winning over its text. Else go on.
 1. **Tick lock** `tick_dir="$root/.mission-backups/tick.$sid.lock"`; `mkdir "$tick_dir"` succeeds ->
    `i_own_lock=1`. Held and FRESH (<15 min) -> ScheduleWakeup 60 s and return WITHOUT touching it.
    STALE (>15 min) -> `rm -rf` and retry the mkdir ONCE; retry lost -> reschedule 60 s and return. A
@@ -39,13 +41,12 @@ an env prefix). Rare paths (orphan recovery, the lock race note) live in `docs/m
    discard this decision, release, re-enter at step 1 (`reenter_count` per wake, at most 2; the 3rd
    change goes to step 7 STILL HOLDING the lock for a short heartbeat). Empty/`corrupt` -> STOP LOUD.
 6. **Bank / dispatch** with the deterministic idtags (`ok` = appended or idempotent no-op;
-   `COLLISION` -> re-read and reconcile). Before a non-idempotent dispatch (a review panel, a
-   worktree change) re-read `await-state` and skip a lane whose bit is set or whose job is running.
+   `COLLISION` -> re-read and reconcile). Before a non-idempotent dispatch re-read `await-state` and skip a lane whose bit is set or whose job is running.
    Persist each lane's usable result to DURABLE NOTES before setting its got bit. `FAILED` -> retry,
    then STOP LOUD. A refusal `part-retired` for a late completion is an expected drop: no FAIL.
 7. **EXIT GATE - no path returns except through here.** If a §12.3 stop holds: release, return, no
    reschedule. Else call `ScheduleWakeup` WHILE HOLDING the lock: `delaySeconds` 60 while a transition
-   is in flight, 1500-3300 while a tracked job runs (never above 3300: the 1 h cache TTL), `prompt` =
+   is in flight, 1500-3300 while a tracked job runs (never above 3300), `prompt` =
    the tick body verbatim, `reason` = `mission <sid> tick`. Success -> release, return. Failure ->
    retry once, then `pending-stop` under the lock, release, STOP LOUD. Never yield naked.
 
@@ -122,7 +123,7 @@ PLAN -> ACTIVE). **Active iff** the latest `mission_state` line is not `MISSION-
 |---|---|
 | `await kind=human ready=0` and THIS is a real user turn answering it | Consume UNDER the lock, in order: (a) `log "[mission] DECISION op=<seq>-<slug> outcome=<approve\|deny>" "pd-<seq>-decision-<slug>"` with the user's actual answer; (b) approve -> run the idempotent gated action, deny -> abort it; (c) `await` the same barrier (same op/part/phase/round/attempt) `need=1 got=1` (refused until the DECISION exists); (d) `resolve <full pd:id>`. Never close then defer the action. That is the transition: go to step 7. |
 | `await kind=human ready=0` on a wake | `last_decision` NON-EMPTY -> consume it now (action, then got=1, then resolve; each a no-op if done), never re-ask. EMPTY -> STOP, no reschedule, wait for the user. ORPHAN (no `- [pd:<op>]` line, no DECISION) -> reference.md "Orphan human barrier". |
-| `ps` proto=1 closed=0 (legacy part) | Open proto=1 part: follow `docs/mission/legacy-playbook.md` (its own §12 wake routine and decision table) for this part; new parts start proto=2. No row below applies (all are proto=2). |
+| `ps` proto=1 closed=0 (legacy part) | Step 0 routes it; if seen here, release this tick's lock (once), then `docs/mission/legacy-playbook.md` §12.1 plus the overrides. New parts start proto=2; rows below are proto=2. |
 | `bs` = `over ... replan=1` | Re-plan once: stop the part's helpers, run the strategist (`/plan --roadmap`) for this part, bank RECIPE v2, continue. |
 | `bs` = `over ... replan=0` | Park (playbook §J): stop helpers, park FAIL, PushNotification, PART-RETIRED, strategist, next PART-START. Never an AWAIT, never a STOP. |
 | a watchdog status file says `action=stop` (`state=stall`, or `state=deadline` for a non-test helper) | TaskStop it (yours, exact id), `note`, delete the status file, relaunch once; a second stop parks the part. `action=note` (suite `state=overdue`): note + PushNotification only, never a kill. |

@@ -891,7 +891,18 @@ _p2_check() {
     "PART-START "*)
       case "$_pl" in *" proto=2 "*) : ;; *) _mw_emit_refuse log 4 "REFUSED: PART-START without proto=2 - $P2_RELOAD" ;; esac
       _p2_check_ps "$_e" "$_n" "$3" "$4"; return 0 ;;
-    RECIPE*|FULL-SUITE*|SWEEP*|"live-verify part="*" sha="*|"FAIL part="*" park="*)
+    "FAIL part="*" park="*)
+      # Legacy compatibility (reference.md "Legacy compatibility overrides"): a grandfathered proto=1
+      # part parks with the SAME record instead of its frozen playbook's pending-stop + disposition FAIL
+      # (that FAIL shape is refused, and a human STOP would halt the overnight run). Its range lives in
+      # the root checkout (legacy parts build there); an isolated range then blocks later bases as usual.
+      if [ "$P2_PROTO" = 1 ]; then
+        _rg=$(_p2_fv "$_e" range)
+        _p2_isanc "$4" "${_rg%%..*}" "${_rg##*..}" || _mw_emit_refuse log 1 "REFUSED: legacy park range ${_rg} is not base..head in the mission root"
+        return 0
+      fi
+      [ "$P2_PROTO" = 2 ] || _mw_emit_refuse log 4 "REFUSED: ${_pl%% *} needs a PART-START for part $_n first - $P2_RELOAD" ;;
+    RECIPE*|FULL-SUITE*|SWEEP*|"live-verify part="*" sha="*)
       [ "$P2_PROTO" = 2 ] || _mw_emit_refuse log 4 "REFUSED: ${_pl%% *} needs a proto=2 PART-START for part $_n first - $P2_RELOAD" ;;
   esac
   if [ "$P2_PROTO" != 2 ]; then

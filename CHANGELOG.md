@@ -27,6 +27,10 @@ All notable changes to this Claude Code dotfiles repo. Most recent first.
   byte-identical copy of the pre-rework playbook (509fe27b) with its own wake routine; one wake.md
   row routes an open proto=1 part there, every row below it and mission.md's part loop are
   proto=2-only. The file is uncapped and is deleted once no proto=1 part is open.
+  Round 5 (handoff seam): wake.md reads `part-state` BEFORE the tick lock and hands a proto=1 part
+  to the frozen §12.1, which owns the lock (taken once per tick); reference.md "Legacy compatibility
+  overrides" win over the frozen text: a legacy park writes the park FAIL record (now accepted for
+  proto=1, range checked in the root) with no pending-stop, retires, and the next part is proto=2.
 - New `mission-watchdog.sh` (helper stall detection) and `lib/mission-status.sh` (status lines,
   tokens by tag, morning report; deferred parts read from the strategist's `tmp/mission/recipes.md`).
 - `codex-review.md` (`--base`, `--scope full`, `--ledger`, `--verify`; Sol pinned), `plan.md`

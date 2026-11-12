@@ -76,6 +76,23 @@ PART-DONE; its anchor is the `ANCHOR` line. An open legacy part is driven by the
 §12 wake routine and decision table) until its PART-DONE/PART-RETIRED; its next PART-START is
 refused with the reload text, which brings the conductor back to `commands/mission.md` and proto=2.
 
+## Legacy compatibility overrides (win over docs/mission/legacy-playbook.md)
+
+The frozen playbook stays byte-identical; for an open proto=1 part these steps replace its text:
+1. **Entry and the tick lock.** wake.md step 0 reads `part-state` BEFORE any lock and sends a proto=1
+   part here; run the frozen §12.1 from its step 1. It acquires and releases the tick lock itself,
+   exactly once per tick. Never hold wake.md's lock while running it (if one is held, `rmdir` it once
+   first).
+2. **Park** (its §6.1 cap-exhausted path and its §12.1 spend brake, `part-over-budget`). Do NOT open
+   `pending-stop` and do NOT log its `FAIL ... disposition=` line (refused). Stop the part's helpers,
+   then `log "[mission] FAIL part=<N> park=<cap-exhausted-blocking|part-over-budget>
+   disposition=<reverted|isolated|left-with-recorded-risk> range=<base12>..<head12>" "m<N>-fail-park"`
+   (range in the mission root: the commit before the part's first commit .. HEAD; `<head12>..<head12>`
+   if it committed nothing), PushNotification, then `PART-RETIRED part=<N>`. No human STOP.
+3. **After PART-DONE or PART-RETIRED** this file no longer applies: re-read `commands/mission.md`
+   (strategist, then a proto=2 PART-START; a legacy PART-START is refused with the reload text). An
+   `isolated` legacy range blocks any later base that contains one of its commits.
+
 ## Full-suite report and known-reds baseline (FULL-SUITE `report=`)
 
 The suite report the conductor writes and `FULL-SUITE report=` names (absolute path), one header line
