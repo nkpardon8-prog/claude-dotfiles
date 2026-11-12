@@ -111,9 +111,14 @@ runs, bare tool names and pnpm/yarn stay local; for anything else heavy, prefix 
 `rrun --where <cmd>` shows which worker it would pick and why.
 The same check on the same code within 24 h (a failure: 20 min) replays the saved result (`rrun: cached
 result ...`); `RRUN_CACHE=0` runs it again.
-Heavy and DB jobs never fall back to this Mac: exit 75 means no worker could take it, so run
-`rdocker status` and tell the user instead of retrying in a loop. `RRUN=0` opts out, only for something
-that must run here (a GUI, a local file watcher).
+Every rrun result ends with one line naming its class: `rrun: pass`, `rrun: fail` (the command's own
+result: fix the code), `rrun: infra` (the pool, not the code: rerun it, never debug it) or `rrun:
+needs-human` (rerunning will not help: tell the user what it says). rrun's own exit codes: 72 / 73 / 75
+never ran (worktree lock / every worker busy / no worker could start it), 76 may have run (check a DB
+job's side effects, then rerun), 77 needs a human (no worker may take this job), 124 hit its time cap.
+Heavy and DB jobs never fall back to this Mac. The same infra result twice in a row: run `rdocker status`
+and tell the user instead of retrying in a loop. `RRUN=0` opts out, only for something that must run
+here (a GUI, a local file watcher). Codes and classes: /docker, "Exit codes and result classes".
 Heavy dev work that runs on an agent Mac anyway (a test, type-check, build or script burning CPU there) is
 logged as a **leak** on the fleet dashboard's offload panel, with the command, so the routing can learn it:
 when you start one the hook did not catch, prefix `rrun`.
