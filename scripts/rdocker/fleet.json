@@ -27,7 +27,8 @@
         "normal",
         "db"
       ],
-      "max_cost_s": 600
+      "max_cost_s": 600,
+      "history_since": 1794445423
     },
     {
       "name": "hp",
@@ -45,7 +46,8 @@
       "heavy_slots": 4,
       "mem_gb": 24,
       "enabled": true,
-      "ts_key_expiry": "2027-05-09"
+      "ts_key_expiry": "2027-05-09",
+      "history_since": 1794383982
     },
     {
       "name": "nickmbp",
@@ -84,8 +86,7 @@
         "light",
         "normal"
       ],
-      "max_cost_s": 120,
-      "cold_ok": false
+      "max_cost_s": 120
     },
     {
       "name": "mini-b",
@@ -108,8 +109,7 @@
         "light",
         "normal"
       ],
-      "max_cost_s": 120,
-      "cold_ok": false
+      "max_cost_s": 120
     },
     {
       "name": "nick",
