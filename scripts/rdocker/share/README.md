@@ -23,3 +23,16 @@ Optional menu-bar toggle: install [SwiftBar](https://swiftbar.app) (or xbar), th
 Off / Some / Max items. The plugin finds the command next to itself or at `/usr/local/bin/rdocker-share`.
 
 Nothing is installed for you; both scripts are plain shell and touch only the share file.
+
+## Self-healing watchdog (rd-doctor, once, with sudo)
+
+```sh
+sudo sh install-doctor-mac.sh            # LaunchDaemon com.rdocker.doctor, runs as rd every 30 s
+sudo sh install-doctor-mac.sh --uninstall # removes it and lifts any drain it set
+```
+
+It clears stale slot files of dead jobs, stops a job past its hard cap, removes leftover run containers
+(never `rdocker.keep` ones), restarts the reporter, pauses new jobs while the Mac is unhealthy (memory, disk,
+repeated lost jobs) and moves `~rd/rr` to `~rd/rr.noindex` (a symlink stays) while no job runs, so Spotlight
+skips it. Log: `~rd/rr/log/doctor.log`; status: `~rd/rr/state/doctor.json`. Off switch: `DOCTOR_DISABLE=1` in
+`/etc/rdocker/doctor.conf`. It never touches your share switch.

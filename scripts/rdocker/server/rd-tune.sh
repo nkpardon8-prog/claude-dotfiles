@@ -1,7 +1,9 @@
 #!/bin/bash
 # rd-tune: the worker optimizer, run as root every 30 s by rd-tune.timer (installed by provision-linux.sh).
 #  * slots.cap: ~$RD_USER/rr/slots.cap = how many rrun slots the runner may use right now, from live
-#    free memory and temperature (never above MAX_SLOTS from /etc/rdocker/tune.conf);
+#    free memory and temperature (never above MAX_SLOTS from /etc/rdocker/tune.conf); 0 while rd-doctor's
+#    drain marker (/run/rdocker/drain) is fresh (touched in the last 5 min: a dead doctor never holds a
+#    worker drained). Precedence: owner share switch > doctor drain > this cap > fleet slots (rd-doctor.sh);
 #  * WSL only: drop the page cache when memory runs low (the Windows host does not reclaim it);
 #  * restart docker / sshd when they are down (at most once per 5 min each);
 #  * prune ~/rr, also while runs are in progress (never a mirror a run uses, nothing used in the last
@@ -14,7 +16,7 @@
 #    A Mac worker has no rd-tune installed: `rdocker bench-worker <name>` pipes this file over ssh
 #    (`bash -s bench`), so bench must never read stdin and must find mise's node without shims.
 # Test hooks (env): RD_MEMINFO, RD_TEMP_FILES, RD_CAP_FILE, RD_CONF, RD_RR_ROOT, RD_STATE_DIR,
-# RD_NO_SERVICES=1, RD_WSL=0|1, RD_BENCH_N, RD_BENCH_REF, RD_DF_CMD (prints what `df -Pk <path>` does). `rd-tune --source` only defines the functions.
+# RD_NO_SERVICES=1, RD_DRAIN_FILE, RD_WSL=0|1, RD_BENCH_N, RD_BENCH_REF, RD_DF_CMD (prints what `df -Pk <path>` does). `rd-tune --source` only defines the functions.
 set -u
 CONF="${RD_CONF:-/etc/rdocker/tune.conf}"
 # shellcheck disable=SC2034  # HEAVY_SLOTS: read by the runner's probe via tune.conf
@@ -30,6 +32,7 @@ BENCH_REF=${RD_BENCH_REF:-1200000}
 MEMINFO="${RD_MEMINFO:-/proc/meminfo}"
 CAP_FILE="${RD_CAP_FILE:-$(getent passwd "$RD_USER" 2>/dev/null | cut -d: -f6)/rr/slots.cap}"   # no getent on macOS
 STATE="${RD_STATE_DIR:-/run/rdocker-tune}"
+DRAIN_FILE="${RD_DRAIN_FILE:-/run/rdocker/drain}"   # rd-doctor's; only rd-doctor writes or removes it
 
 meminfo_kb() { awk -v k="$1:" '$1 == k { print $2 }' "$MEMINFO"; }
 
@@ -61,6 +64,8 @@ compute_cap() {   # $1 free mem %, $2 temp C -> slots (>= 1: a worker with 0 slo
   [ "$cap" -lt 1 ] && cap=1
   echo "$cap"
 }
+
+doctor_drained() { [ -f "$DRAIN_FILE" ] && [ -n "$(find "$DRAIN_FILE" -mmin -5 2>/dev/null)" ]; }
 
 is_wsl() { [ "${RD_WSL:-}" = 1 ] || { [ "${RD_WSL:-}" != 0 ] && grep -qi microsoft /proc/version 2>/dev/null; }; }
 
@@ -287,6 +292,7 @@ JS
 main() {
   local pct temp cap
   pct=$(mem_free_pct); temp=$(max_temp_c); cap=$(compute_cap "$pct" "$temp")
+  doctor_drained && cap=0
   write_cap "$cap"
   if [ -n "${RD_NO_SERVICES:-}" ]; then echo "cap=$cap mem_free=$pct temp=$temp"; prune; return 0; fi
   if is_wsl && [ "$pct" -lt 30 ]; then sync; echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; fi
