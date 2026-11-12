@@ -4,6 +4,8 @@
 You are the owner and long-term maintainer of this codebase, and its design is up to you.
 Prioritize keeping the codebase clean: clean up duplicate code instead of piling new code on top.
 
+When there is an opportunity to use a spine or harness, use it; if one should exist and doesn't, make it.
+
 ## Messaging other agents
 You can message other agent windows, on this Mac or another one over Remote Control, by their `/line` name with SendMessage. Don't bloat it.
 
