@@ -279,25 +279,40 @@ def main():
         for n, why in skipped:
             print(f"{host} | {n} | skip: {why}")
         return 0
-    lock = STATE.with_name("relink.lock")
-    try:
-        other = int(lock.read_text().strip() or 0)
-        os.kill(other, 0)
-        print(f"relink: another relink is already running (pid {other}); it will finish these windows.")
-        return 0
-    except (FileNotFoundError, ValueError, ProcessLookupError):
-        pass
-    except PermissionError:
-        return 0
-    lock.write_text(str(os.getpid()))
+    # One lock PER WINDOW: two relinks never type into the same window, but a heal of one window never
+    # blocks a heal (or a full run) of another.
+    lockdir = STATE.with_name("relink-locks")
+    lockdir.mkdir(parents=True, exist_ok=True)
+    mine = []
+    for w in list(todo):
+        lk = lockdir / f"{w['name']}.pid"
+        try:
+            fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                other = int(lk.read_text().strip() or 0)
+                os.kill(other, 0)
+                todo.remove(w)
+                skipped.append((w["name"], f"another relink (pid {other}) is handling it"))
+                continue
+            except (ValueError, ProcessLookupError):
+                lk.unlink(missing_ok=True)
+                fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except PermissionError:
+                todo.remove(w)
+                continue
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        mine.append(lk)
     try:
         return run(todo, skipped, host, a)
     finally:
-        try:
-            if lock.read_text().strip() == str(os.getpid()):
-                lock.unlink()
-        except Exception:
-            pass
+        for lk in mine:
+            try:
+                if lk.read_text().strip() == str(os.getpid()):
+                    lk.unlink()
+            except Exception:
+                pass
 
 
 def run(todo, skipped, host, a):

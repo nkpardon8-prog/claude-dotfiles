@@ -9,7 +9,7 @@ allowed-tools: Bash, SendMessage
 Run it after switching Claude accounts, after opening or renaming windows with /line, or whenever the
 Claude app shows wrong names. Safe to run any time: it remembers the Remote Control session it made for
 each window (~/.claude/relink-state.json) and skips windows already linked under their current name, so
-only new, renamed, or re-connected windows are touched (`--force` redoes all). One run per Mac at a time.
+only new, renamed, or re-connected windows are touched (`--force` redoes all). Locks are per window, so runs never type into the same window.
 
 ## Usually you do not need it
 Every Mac carries a Stop hook (`relink.py --heal`, installed by line-ensure-settings.py at session
