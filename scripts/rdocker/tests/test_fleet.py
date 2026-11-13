@@ -129,6 +129,13 @@ class Fleet(unittest.TestCase):
         self.assertEqual(rd_fleet.problems(d), [])
         self.assertIn("shards", rd_fleet.FIELDS)
 
+    def test_optional_flag_is_a_bool(self):
+        d = copy.deepcopy(self.doc)
+        d["machines"][1]["optional"] = True
+        self.assertEqual(rd_fleet.problems(d), [])
+        self.bad(lambda d: d["machines"][1].update(optional="yes"), "wrong type")
+        self.bad(lambda d: d["machines"][1].update(optional=1), "wrong type")
+
     def test_wt_lanes_is_an_optional_small_int_default_3(self):
         for bad in (0, 9, "3", True, 2.5):
             self.bad(lambda d, v=bad: d.update(wt_lanes=v), "wt_lanes")

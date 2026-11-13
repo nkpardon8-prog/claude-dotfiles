@@ -63,7 +63,8 @@
       "max_slots": 8,
       "heavy_slots": 6,
       "mem_gb": 64,
-      "enabled": true
+      "enabled": true,
+      "optional": true
     },
     {
       "name": "mini-a",

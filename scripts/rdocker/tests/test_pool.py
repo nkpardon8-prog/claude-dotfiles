@@ -227,6 +227,177 @@ class PlanUnit(unittest.TestCase):
             self.plan([worker("a"), worker("b")], {}, force="zz")
 
 
+# A fake `ssh` for DownMemo: argv[-2] is the host; its mode comes from MODES (a JSON file).
+FAKE_PROBE_SSH = r"""#!/usr/bin/env python3
+import json, sys, time
+host = sys.argv[-2]
+sys.stdin.read()
+with open(MODES) as f:
+    mode = json.load(f).get(host, "up")
+with open(MODES + ".log", "a") as f:
+    f.write(host + "\n")
+if mode == "hang":
+    time.sleep(30)
+if mode == "unreachable":
+    sys.stderr.write("ssh: connect to host %s port 22: Operation timed out\n" % host)
+    sys.exit(255)
+if mode == "sshd-busy":                        # MaxStartups: connected, then dropped - not down
+    sys.stderr.write("kex_exchange_identification: read: Connection reset by peer\n")
+    sys.exit(255)
+if mode == "closed":
+    sys.stderr.write("Connection closed by 100.64.0.9 port 22\n")
+    sys.exit(255)
+if mode == "perl-died":                        # the worker answered: its probe failed
+    sys.stderr.write("malformed JSON string at -e line 12.\n")
+    sys.exit(255)
+print(json.dumps(json.loads(mode) if mode.startswith("{") else
+                 {"slots_cap": 2, "slots_busy": 0, "mem_avail_mb": 16000, "load1": 0, "ncpu": 4,
+                  "warm_git": 1, "warm_deps": 1, "share": "max"}))
+"""
+
+
+class DownMemo(unittest.TestCase):
+    """A worker that does not answer is remembered (STATE_DIR/down/<alias>.json) and not probed again
+    until its backoff ends; any answer clears it. Real probe_one over a fake ssh."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="down-", dir=rdmods.TEST_HOME)
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.fleet = os.path.join(self.d, "fleet.json")
+        self.cfg = dict(rd_common.DEFAULTS, fleet_path=self.fleet, rr_probe_timeout_s=0.6)
+        self.modes = os.path.join(self.d, "modes.json")
+        ssh = os.path.join(self.d, "ssh")
+        test_run.wfile(ssh, FAKE_PROBE_SSH.replace("MODES", repr(self.modes)), 0o755)
+        for p in (mock.patch.object(rd_common, "STATE_DIR", os.path.join(self.d, "state")),
+                  mock.patch.object(rd_pool, "ssh_base", lambda: [ssh])):
+            p.start()
+            self.addCleanup(p.stop)
+        write_fleet(self.fleet, [worker("a"), worker("b")])
+
+    def plan(self, modes, **kw):
+        with open(self.modes, "w") as f:
+            json.dump(modes, f)
+        open(self.modes + ".log", "w").close()
+        t = time.monotonic()
+        p = rd_pool.plan(self.cfg, rd_pool.classify(["npx", "vitest", "run"]), **kw)
+        with open(self.modes + ".log") as f:
+            probed = sorted(f.read().split())
+        return p, time.monotonic() - t, probed
+
+    def host(self, name):
+        return rd_pool.Host(name, {"host": name})
+
+    def test_unanswering_host_is_skipped_next_time_without_its_timeout(self):
+        p, took, probed = self.plan({"b": "hang"})
+        self.assertEqual((probed, took >= 0.6), (["a", "b"], True))           # the first job pays it
+        self.assertEqual([h.name for h in p.hosts], ["a", "b"])
+        self.assertEqual(rd_pool.down_memo(self.host("b"))["n"], 1)
+        p, took, probed = self.plan({"b": "hang"})
+        self.assertEqual(probed, ["a"])                                       # b: not probed at all
+        self.assertLess(took, 0.5)
+        b = next(h for h in p.hosts if h.name == "b")
+        self.assertEqual((b.state, b.probe), ("down", None))
+        self.assertRegex(b.why, r"^skipped, not answering since \d\d:\d\d; next check in (59|60)s$")
+        row = next(x for x in rd_pool.where_report(self.cfg, rd_pool.classify(["true"]), p) if x.startswith("b "))
+        self.assertRegex(row, r"\bdown\b.*\(skipped, not answering since \d\d:\d\d; next check in \d+s\)$")
+        # ssh's own connect failure (exit 255) is a no-answer too
+        p, _, _ = self.plan({"a": "unreachable"})
+        self.assertEqual(rd_pool.down_memo(self.host("a"))["n"], 1)
+
+    def test_backoff_is_60_then_120_seconds(self):
+        self.assertEqual([rd_pool.down_ttl(n) for n in range(1, 6)], [60, 120, 120, 120, 120])
+        h, t0 = self.host("b"), 1_800_000_000
+        rd_pool.mark_down(h, now=t0)
+        self.assertEqual(rd_pool.down_memo(h, now=t0)["until"], t0 + 60)
+        for k in range(1, 3):
+            rd_pool.mark_down(h, now=t0 + 1000 * k)
+        m = rd_pool.down_memo(h, now=t0 + 2000)
+        self.assertEqual((m["n"], m["since"], m["last"], m["until"]), (3, t0, t0 + 2000, t0 + 2120))
+        self.assertIsNotNone(rd_pool.down_memo(h, now=t0 + 2119))
+        self.assertIsNone(rd_pool.down_memo(h, now=t0 + 2120))                # expired: probe it again
+        self.assertIsNone(rd_pool.down_memo(h, now=t0 + 1000))                # clock went back: probe
+        with open(rd_pool.down_path(h)) as f:                                 # whole JSON (atomic write)
+            self.assertEqual(json.load(f)["n"], 3)
+        # after the TTL the next job probes it; still no answer -> n + 1, a longer skip
+        with open(rd_pool.down_path(h), "w") as f:
+            json.dump({"since": time.time() - 900, "last": time.time() - 121, "n": 3}, f)
+        _, _, probed = self.plan({"b": "hang"})
+        self.assertEqual(probed, ["a", "b"])
+        m = rd_pool.down_memo(h)
+        self.assertEqual((m["n"], round(m["until"] - m["last"])), (4, 120))
+
+    def test_memo_clears_the_moment_the_host_answers(self):
+        h = self.host("b")
+        with open(self.modes, "w") as f:
+            json.dump({}, f)
+        rd_pool.mark_down(h, now=time.time() - 120)                           # n=1: expired
+        self.assertIsNone(rd_pool.down_memo(h))
+        p, _, probed = self.plan({})
+        self.assertEqual(probed, ["a", "b"])
+        self.assertFalse(os.path.exists(rd_pool.down_path(h)))
+        self.assertEqual({x.state for x in p.hosts}, {"free"})
+        # the next outage starts over at 60 s
+        self.plan({"b": "unreachable"})
+        self.assertEqual(rd_pool.down_memo(h)["n"], 1)
+
+    def test_a_busy_or_failing_answer_is_not_down(self):
+        busy = json.dumps({"slots_cap": 2, "slots_busy": 2, "mem_avail_mb": 16000, "load1": 3, "ncpu": 4,
+                           "warm_git": 1, "warm_deps": 1, "share": "max"})
+        h = self.host("b")
+        rd_pool.mark_down(h, now=time.time() - 120)
+        p, _, _ = self.plan({"b": busy})
+        self.assertEqual(next(x.state for x in p.hosts if x.name == "b"), "busy")
+        self.assertFalse(os.path.exists(rd_pool.down_path(h)))                # an answer clears it
+        p, _, _ = self.plan({"b": "perl-died"})                               # answered with an error
+        self.assertEqual(next(x.state for x in p.hosts if x.name == "b"), "down")
+        self.assertFalse(os.path.exists(rd_pool.down_path(h)))
+        _, _, probed = self.plan({"b": "perl-died"})
+        self.assertEqual(probed, ["a", "b"])                                  # still probed every job
+        for mode in ("sshd-busy", "closed"):                                  # past the connect: not down
+            with self.subTest(mode=mode):
+                self.plan({"b": mode})
+                self.assertFalse(os.path.exists(rd_pool.down_path(h)))
+
+    def test_where_probes_every_host_and_updates_the_memos(self):
+        a, b = self.host("a"), self.host("b")
+        rd_pool.mark_down(a)                                                  # fresh memos for both
+        rd_pool.mark_down(b)
+        p, took, probed = self.plan({"b": "hang"}, probe=True, fresh=True)
+        self.assertEqual(probed, ["a", "b"])                                  # nothing skipped
+        self.assertFalse(os.path.exists(rd_pool.down_path(a)))                # a answered: cleared
+        self.assertEqual(rd_pool.down_memo(b)["n"], 2)                        # b: refreshed, backed off
+        hb = next(x for x in p.hosts if x.name == "b")
+        self.assertEqual(hb.why, "no answer in 0.6 s; jobs skip it for 120s")
+        _, _, probed = self.plan({"b": "hang"})                               # the next job keeps the memo
+        self.assertEqual(probed, ["a"])
+
+    def test_optional_worker_that_is_down_is_left_out_quietly(self):
+        write_fleet(self.fleet, [worker("a"), dict(worker("b"), optional=True), worker("c")])
+        p, _, _ = self.plan({"b": "unreachable", "c": "unreachable"})
+        self.assertEqual([h.name for h in p.hosts], ["a", "c"])               # c (not optional) still tried
+        self.assertEqual([h.name for h in p.away], ["b"])
+        p, _, probed = self.plan({"b": "unreachable", "c": "unreachable"})
+        self.assertEqual(probed, ["a"])
+        lines = rd_pool.where_report(self.cfg, rd_pool.classify(["true"]), p)
+        row = next(x for x in lines if x.startswith("b "))
+        self.assertRegex(row, r"\bdown\b +\(skipped, not answering since \d\d:\d\d; next check in \d+s; "
+                              r"optional: not tried\)$")
+        # an optional worker that answers is a normal candidate; one that is the only host stays
+        shutil.rmtree(os.path.join(rd_common.STATE_DIR, "down"))             # the memos ran out
+        p, _, _ = self.plan({})
+        self.assertEqual((sorted(h.name for h in p.hosts), p.away), (["a", "b", "c"], []))
+        write_fleet(self.fleet, [dict(worker("b"), optional=True)])
+        p, _, _ = self.plan({"b": "unreachable"}, probe=True)
+        self.assertEqual(([h.name for h in p.hosts], p.away), (["b"], []))
+        # kept too while no other worker could take the job (share off / down / short of memory)
+        off = json.dumps({"slots_cap": 2, "slots_busy": 0, "mem_avail_mb": 16000, "load1": 0, "ncpu": 4,
+                          "warm_git": 1, "warm_deps": 1, "share": "off"})
+        write_fleet(self.fleet, [worker("a"), dict(worker("b"), optional=True), worker("c")])
+        shutil.rmtree(os.path.join(rd_common.STATE_DIR, "down"))
+        p, _, _ = self.plan({"a": off, "b": "unreachable", "c": "unreachable"})
+        self.assertEqual((sorted(h.name for h in p.hosts), p.away), (["a", "b", "c"], []))
+
+
 class ProbeSnippet(unittest.TestCase):
     """The PROBE perl, run locally against a fake ~/rr (RR_OS=linux + RR_PROC/RR_SYS fixtures)."""
 
@@ -416,6 +587,24 @@ class PoolE2E(test_run.RunBase):
         self.assertIn("w1 unreachable", r.stderr)
         self.assertIn("- trying w2", r.stderr)
         self.assertEqual(self.target(), "w2")
+
+    def test_optional_worker_down_is_silent_and_skipped_next_time(self):
+        write_fleet(self.fleet, [worker("w1", 1.0), dict(worker("w2", 0.5), optional=True)])
+        for k in range(2):
+            open(self.sshlog, "w").close()
+            r = self.rrun("/bin/sh", "-c", "echo hi", FAKE_SSH_DOWN_HOSTS="w2")
+            self.assertEqual((r.returncode, r.stdout), (0, "hi\n"), r.stderr)
+            self.assertNotIn("w2", r.stderr)                     # no note, no warning about it
+            self.assertEqual(self.target(), "w1")
+            probed_w2 = any("'w2'" in ln and "slots_busy" in ln for ln in self.read(self.sshlog).splitlines())
+            self.assertEqual(probed_w2, k == 0)                  # the second job skips it (down memo)
+        r = self.rrun("--where", "true", FAKE_SSH_DOWN_HOSTS="w2")
+        self.assertRegex(r.stdout, r"\nw2 +w2 +down +\(ssh: connect to host w2 port 22: Operation timed out; "
+                                   r"jobs skip it for 120s; optional: not tried\)\n")      # probed afresh
+        r = self.rrun("--jobs", FAKE_SSH_DOWN_HOSTS="w2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("away (optional workers): w2", r.stdout)
+        self.assertNotIn("not answering", r.stdout)
 
     def test_lost_race_for_a_slot_moves_on(self):
         """The probe saw w1 free (another client then took the slot): 73 after a short wait -> w2."""

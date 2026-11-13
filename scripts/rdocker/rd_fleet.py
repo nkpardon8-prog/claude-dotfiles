@@ -34,7 +34,10 @@ FIELDS = {"name": str, "alias": str, "ip": str, "port": int, "user": str, "os": 
           # or config change (an SSD, a CPU swap, new eligibility) so old timings never count.
           # ROLLOUT: rd_fleet before 2026-11-11 rejects unknown fields (the whole fleet.json, so every
           # client falls back to one host): add it only after every client runs this code (Phase B rule)
-          "history_since": int}
+          "history_since": int,
+          # optional: true = a nice addition that is often away (a laptop): while it is down, rrun leaves
+          # it out of the plan and nothing (rrun, rd-steward) warns about it. Same ROLLOUT rule as above
+          "optional": bool}
 # rd_run worktree lanes (Phase C1, 2026-11-13): concurrent rrun jobs per agent worktree; each lane has its
 # own worker mirror and push ref. Small on purpose: every lane is one more checkout + node_modules per worker.
 WT_LANES_DEFAULT, WT_LANES_MAX = 3, 8
@@ -186,7 +189,7 @@ def entry(m):
 def load(cfg=None):
     """FROZEN API: the fleet as list[dict], each with name, alias, ip, port, user, os, roles, speed,
     max_slots, heavy_slots, mem_gb, enabled, wsl (bool); optional keys (ts_key_expiry, shards,
-    classes, max_cost_s, cold_ok, history_since) only when set. `cfg` may carry 'fleet_path' (tests)."""
+    classes, max_cost_s, cold_ok, history_since, optional) only when set. `cfg` may carry 'fleet_path' (tests)."""
     return [entry(m) for m in load_doc((cfg or {}).get("fleet_path"))["machines"]]
 
 

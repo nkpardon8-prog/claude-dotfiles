@@ -190,7 +190,8 @@ def refusal(h, cfg):
         return "share off (fleet.json)"
     rd_pool.score(h, WARM_JOB)       # sets h.state: down / off / busy / low-mem / free
     if h.state == "down":
-        return "down (%s)" % (getattr(h, "why", None) or "no answer")
+        # without the down memo's countdown: the same outage logs one skip line, not one per pass
+        return "down (%s)" % (getattr(h, "why", None) or "no answer").split("; next check")[0]
     if h.state == "off":
         return "share off (owner's switch)"
     if h.state != "free":

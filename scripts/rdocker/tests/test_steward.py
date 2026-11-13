@@ -35,6 +35,12 @@ class Rules(unittest.TestCase):
     def test_unreachable_is_the_only_finding(self):
         self.assertEqual(keys(res(reachable=False, err="timeout")), ["hp:unreachable"])
 
+    def test_optional_worker_unreachable_is_no_finding(self):
+        mbp = {"name": "hp", "os": "mac", "optional": True}
+        self.assertEqual(keys(res(reachable=False, err="ssh timeout"), mbp), [])
+        self.assertEqual(keys(res(reachable=False, err="ssh timeout"), dict(mbp, optional=False)), ["hp:unreachable"])
+        self.assertEqual(keys(res(doctor={"ts": NOW - 10, "disk_free_pct": 3}), mbp), ["hp:disk"])   # up: as before
+
     def test_missing_doctor_only_flagged_on_linux(self):
         self.assertEqual(keys(res(doctor=None)), ["hp:no-doctor"])
         self.assertEqual(keys(res(doctor=None), {"name": "hp", "os": "mac"}), [])

@@ -32,8 +32,10 @@ busy ones by eta (the first is the "wait host" when nothing is free), then low-m
 worker whose eta is <= PROMOTE_RATIO (0.5) x the best free one, and at least PROMOTE_MIN_GAIN_S
 (120 s) sooner, goes first, with a slot wait that ends when
 the best free worker would have finished. Free candidates get a short slot wait so a lost race moves
-on quickly; the wait host gets the full rr_wait_min. Nothing is cached between plan() calls: every
-job sees workers that just went away or came back. shardable() / shard_assign() split a `vitest run`
+on quickly; the wait host gets the full rr_wait_min. Nothing is cached between plan() calls but the
+down memo (probe_all): a worker that did not answer is skipped, unprobed, for 60 s, then 120 s, then
+probed again (`rrun --where` always probes); any answer clears it. An "optional": true worker that is down is left out of the
+order (it is a nice addition, often away) and never warned about. shardable() / shard_assign() split a `vitest run`
 across the free workers in shares proportional to their predicted rate (rd_run.run_shards runs them);
 a worker with "shards": false in fleet.json never gets a shard, only whole jobs.
 
@@ -377,6 +379,7 @@ class Host:
         self.pred_s = self.src = None          # Model.predict: evidence run seconds + where they came from
         self.risk_s, self.p_infra = 0.0, None  # add_risk
         self.overloaded = False                                                  # set by score()
+        self.down_memo = None                  # probe_all: its fresh down memo (it was not probed)
 
     @property
     def speed(self):
@@ -385,6 +388,12 @@ class Host:
             return float(p.get("speed")) if p.get("speed") not in (None, "") else float(_f(self.entry, "speed", 1.0))
         except (TypeError, ValueError):
             return 1.0
+
+
+def optional(h):
+    """True for a worker whose fleet entry says "optional": true (a nice addition, often away): when
+    it is down a pool plan leaves it out, and nothing warns about it."""
+    return _f(h.entry, "optional", False) is True
 
 
 def takes_shards(h):
@@ -613,6 +622,79 @@ def ssh_base():
     return ["ssh", "-T"] + rd_run.ssh_opts()
 
 
+# ---------------------------------------------------------------------------- down memo
+#
+# A worker that does not answer the probe (Nick's MacBook away from home, a sleeping Mac) would cost
+# every rrun the whole PROBE_TIMEOUT_S. So its no-answer is remembered in STATE_DIR/down/<alias>.json
+# ({"since", "last", "n"}: first and latest no-answer, consecutive count; shared by every client on
+# this Mac) and the host is not probed again until DOWN_TTL_S x 2^(n-1) after the latest one (capped
+# at DOWN_TTL_MAX_S: 60 s, then 120 s - nickmbp comes and goes during the day and must rejoin fast);
+# then the next job probes it as usual (that one job pays the timeout). Any answer (busy, share off,
+# low memory: an answer) deletes the memo. `rrun --where` probes every host regardless and records
+# what it sees. Only a real no-answer counts (NoAnswer): the probe timeout, or ssh failing to CONNECT
+# (timed out, refused, no route, unknown name) - never a closed / reset connection after the connect
+# (a busy sshd at MaxStartups does that) and never an answer that was an error.
+DOWN_TTL_S, DOWN_TTL_MAX_S = 60, 120
+_SSH_UNREACHABLE_RE = re.compile(
+    r"connect to host \S+ port \d+: (Operation timed out|Connection timed out|Connection refused|No route to host"
+    r"|Network is unreachable|Host is down)\s*$|Could not resolve hostname", re.I)
+
+
+class NoAnswer(str):
+    """A probe `why` that means the worker never answered (see "down memo")."""
+
+
+def down_path(h):
+    return os.path.join(rd_common.STATE_DIR, "down",
+                        re.sub(r"[^A-Za-z0-9._-]", "_", str(h.cfg.get("host") or h.name))[:80] + ".json")
+
+
+def down_ttl(n):
+    """Seconds a host stays skipped after its n-th no-answer in a row: 60, then 120 (DOWN_TTL_MAX_S)."""
+    return min(DOWN_TTL_S * 2 ** max(0, min(int(n), 16) - 1), DOWN_TTL_MAX_S)
+
+
+def down_memo(h, now=None):
+    """-> h's down memo while it is fresh ({"since", "last", "n", "until"}): do not probe h. Else None
+    (no memo, expired, unreadable, or a clock that went back)."""
+    m = rd_common.load_json(down_path(h), None)
+    if not isinstance(m, dict) or not isinstance(m.get("n"), int) or isinstance(m.get("n"), bool) or m["n"] < 1:
+        return None
+    last, since = _num(m.get("last")), _num(m.get("since"))
+    if last is None or since is None:
+        return None
+    now = time.time() if now is None else now
+    until = last + down_ttl(m["n"])
+    return dict(m, until=until) if last - 60 <= now < until else None
+
+
+def mark_down(h, now=None):
+    """Record one more no-answer from h (locked read-modify-write, atomic; never raises) -> the memo
+    written, or None."""
+    now = time.time() if now is None else now
+
+    def apply(cur):
+        n = cur.get("n") if isinstance(cur.get("n"), int) and not isinstance(cur.get("n"), bool) else 0
+        n = n if n >= 1 else 0
+        return {"host": h.cfg.get("host"), "since": _num(cur.get("since"), now) if n else now, "last": now,
+                "n": n + 1}
+    return rd_common.update_state(down_path(h), apply)
+
+
+def clear_down(h):
+    """h answered: forget its down memo (no file: nothing to do; never raises)."""
+    path = down_path(h)
+    if not os.path.exists(path):
+        return
+    try:
+        with rd_common.file_lock(path + ".lock"):
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        rd_common.log("down memo %s: %s" % (os.path.basename(path), e))
+
+
 def probe_one(host, req, timeout):
     """ssh the PROBE to host -> (dict, rtt_s) or (None, why)."""
     cmd = ssh_base() + [host.cfg["host"], "%sexec /usr/bin/perl -e %s" % (remote_env(host.cfg), shlex.quote(PROBE))]
@@ -620,12 +702,13 @@ def probe_one(host, req, timeout):
     try:
         p = subprocess.run(cmd, input=json.dumps(req).encode(), capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return None, "no answer in %.1f s" % timeout
+        return None, NoAnswer("no answer in %.1f s" % timeout)
     except OSError as e:
         return None, str(e)
     rtt = time.monotonic() - t
     if p.returncode != 0:
-        return None, (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["exit %d" % p.returncode])[-1][:160]
+        why = (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["exit %d" % p.returncode])[-1][:160]
+        return None, NoAnswer(why) if p.returncode == 255 and _SSH_UNREACHABLE_RE.search(why) else why
     try:
         out = json.loads(p.stdout.decode("utf-8", "replace").strip().splitlines()[-1])
     except (ValueError, IndexError):
@@ -633,11 +716,33 @@ def probe_one(host, req, timeout):
     return (out, rtt) if isinstance(out, dict) else (None, "unreadable probe output")
 
 
-def probe_all(hosts, req_for, timeout):
-    """Probe every host in parallel; sets host.probe / host.rtt / host.why."""
+def probe_all(hosts, req_for, timeout, fresh=False):
+    """Probe every host in parallel; sets host.probe / host.rtt / host.why. A host with a fresh down
+    memo (down_memo) is not probed at all: probe None, why says when it is checked again. fresh=True
+    (`rrun --where`): probe every host anyway; the memos are still updated from what it sees."""
+    now = time.time()
+    todo = []
+    for h in hosts:
+        m = None if fresh else down_memo(h, now)
+        if m is None:
+            todo.append(h)
+            continue
+        h.probe, h.rtt, h.down_memo = None, None, m
+        h.why = "skipped, not answering since %s; next check in %ds" % (
+            time.strftime("%H:%M", time.localtime(m["since"])), max(1, int(m["until"] - now + 0.5)))
+
     def run(h):
         h.probe, x = probe_one(h, req_for(h), timeout)
         h.rtt, h.why = (x, None) if h.probe is not None else (None, x)
+        if isinstance(x, NoAnswer):
+            m = mark_down(h)
+            if isinstance(m, dict) and isinstance(m.get("n"), int):
+                h.why = "%s; jobs skip it for %ds" % (x, down_ttl(m["n"]))
+        elif h.probe is not None:
+            clear_down(h)
+    for h in todo:
+        h.down_memo = None
+    hosts = todo
     ts = [threading.Thread(target=run, args=(h,), daemon=True) for h in hosts]
     for t in ts:
         t.start()
@@ -1080,6 +1185,7 @@ class Plan:
         self.promoted = None         # a busy worker put first (its eta beat every free one)
         self.ineligible = list(ineligible)   # [(Host, why)]: never tried (eligibility())
         self.home, self.rcache = None, None   # the pool result cache (plan(rcache=))
+        self.away = []               # optional workers that are down: left out of hosts (plan())
 
 
 def pick_hosts(cfg, force=None):
@@ -1111,9 +1217,9 @@ def home_of(hosts):
     return next((h for h in hosts if "home" in (_f(h.entry, "roles") or [])), None)
 
 
-def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None):
+def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=False):
     """-> Plan with hosts in the order rd_run should try them. Probes only in a real pool (or when
-    probe=True, for `rrun --where`). rcache (rd_cache.Shared.req()): rides on the home worker's
+    probe=True, for `rrun --where`). fresh=True (`rrun --where`): no host is skipped on its down memo. rcache (rd_cache.Shared.req()): rides on the home worker's
     probe; its answer is plan.rcache (None: no home worker, not probed, or it did not answer)."""
     hosts, pool = pick_hosts(cfg, force)
     if not (pool or probe):
@@ -1136,7 +1242,7 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None):
         if h is home:
             r["rcache"] = rcache
         return r
-    probe_all(hosts, req_for, float(cfg.get("rr_probe_timeout_s", PROBE_TIMEOUT_S)))
+    probe_all(hosts, req_for, float(cfg.get("rr_probe_timeout_s", PROBE_TIMEOUT_S)), fresh=fresh)
     rc_answer = (home.probe or {}).get("rcache") if home is not None else None
     model = Model(hosts, job, cfg)
     bad = []
@@ -1179,6 +1285,14 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None):
         promoted.short = True
         promoted.cfg = dict(promoted.cfg, rr_wait_min=min(float(cfg.get("rr_wait_min", 30)), budget / 60.0))
     order = ([promoted] if promoted else []) + free + queued + full + down + off   # off last: refuses (73)
+    # an optional worker that is down is no candidate while another worker could take the job (free or
+    # busy - not down, share-off or short of memory): trying it would only cost a connect timeout and
+    # print a note about a machine that is merely away. With no such worker it stays, tried as before.
+    away = [h for h in down if optional(h)] if pool else []
+    if away and any(h.state in ("free", "busy") for h in order):
+        order = [h for h in order if h not in away]
+    else:
+        away = []
     if pool:
         for h in order[:-1]:
             if h in free:
@@ -1191,6 +1305,7 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None):
             local_after = float(cfg.get("rr_local_after_s", LOCAL_AFTER_S))
     p = Plan(order, pool, local_after, bad)
     p.promoted = promoted
+    p.away = away
     p.req = req
     p.home, p.rcache = home, rc_answer
     return p
@@ -1363,6 +1478,9 @@ def where_report(cfg, job, p, shards=None):
             str(pr.get("share") or "-")[:5],
             "  (overloaded: held off)" if h.overloaded
             else "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
+    for h in p.away:
+        lines.append("%-10s %-16s %-7s  (%s; optional: not tried)" % (h.name[:10], str(h.cfg.get("host"))[:16],
+                                                                   "down", getattr(h, "why", None) or "no answer"))
     for h, why in p.ineligible:
         lines.append("%-10s %-16s %-7s  %s" % (h.name[:10], str(h.cfg.get("host"))[:16], "never", why))
     if not p.hosts:

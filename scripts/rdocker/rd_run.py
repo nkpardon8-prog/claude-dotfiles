@@ -1882,7 +1882,7 @@ def _rrun(argv, env_args, environ0):
     shared = pool_cache_for(cfg, crun, opts, job) if hit is None else None
     try:
         plan = rd_pool.plan(cfg, job, wt["slug"] if wt else "", dshas, force=opts.host, probe=opts.where,
-                            rcache=shared.req(lease=not opts.where) if shared else None)
+                            fresh=bool(opts.where), rcache=shared.req(lease=not opts.where) if shared else None)
     except ValueError as e:
         note(str(e))
         RESULT["job"] = False
@@ -2084,11 +2084,11 @@ def list_jobs(mine_only, force=None, out=None):
         note(str(e))
         return 2
     now = time.time()
-    rows, down = [], []
-    hosts = p.hosts + [h for h, _ in p.ineligible]    # a worker that would not take `true` runs jobs too
+    rows, down, away = [], [], []
+    hosts = p.hosts + p.away + [h for h, _ in p.ineligible]   # a worker that would not take `true` runs jobs too
     for h in hosts:
         if h.probe is None:
-            down.append(h.name)
+            (away if rd_pool.optional(h) else down).append(h.name)
             continue
         for j in h.probe.get("jobs") or []:
             if not isinstance(j, dict) or (mine_only and j.get("id") != me):
@@ -2108,9 +2108,11 @@ def list_jobs(mine_only, force=None, out=None):
                                                      ", ".join(h.name for h in hosts if h.probe) or "any worker"))
     if down:
         out.write("not answering (their jobs are not listed): %s\n" % ", ".join(down))
+    if away:
+        out.write("away (optional workers): %s\n" % ", ".join(away))
     if mine_only:
         out.write("you = %s\n" % me)
-    return 0 if len(down) < len(hosts) else 1
+    return 0 if len(down) + len(away) < len(hosts) else 1
 
 
 def replay_hit(hit, argv, t0):

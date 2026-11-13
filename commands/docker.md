@@ -504,9 +504,27 @@ command. First run in a repo is slow (history push + `npm ci`); later runs add ~
 
 ## Pool scheduler: finish time, shards, hedges
 
-Every job is re-planned from a fresh probe of every enabled worker (one ssh each, in parallel; nothing
-about "down" is remembered between jobs), so a worker that sleeps or drops out is skipped on the next
-job and one that comes back (or is added to fleet.json) is used at once.
+Every job is re-planned from a fresh probe of every enabled worker (one ssh each, in parallel), so a
+worker that sleeps or drops out is skipped on the next job and one that comes back (or is added to
+fleet.json) is used once it answers.
+
+- **Down memo (2026-11-13).** A worker that does not answer the probe at all (the 4 s timeout, or ssh
+  cannot connect: timed out, refused, no route, unknown name) is written to
+  `~/.local/state/rdocker/down/<alias>.json` (first and latest no-answer, count; shared by every client
+  on this Mac) and jobs do **not probe** it for 60 s, then 120 s while it stays silent (a cap kept short:
+  nickmbp comes and goes during the day). So only one job per window pays the timeout; the rest plan in
+  well under a second. Any answer (busy and share-off count) deletes the memo at once. A connection
+  that is closed or reset after connecting (a busy sshd) or an answer that was an error is never
+  "down". `rrun --where` always probes every host and updates the memos from what it sees (a silent
+  one shows `(no answer in 4.0 s; jobs skip it for 60s)`); a job skipping a host shows it as `down
+  (skipped, not answering since HH:MM; next check in Ns)`. No daemon: rrun reads and writes the memo.
+- **Optional workers.** `"optional": true` in fleet.json (`nickmbp`: often away from home, a nice
+  addition) = while it is down, and another worker could take the job (free or busy), it is left out of
+  the job's order entirely (no connect attempt, no note); `rrun --where` adds `optional: not tried`,
+  `rrun --jobs` lists it as `away`, and rd-steward records it as `away (optional)` with **no finding**.
+  When it answers it is a normal candidate. Non-optional workers keep the usual handling (tried last
+  when down, steward `unreachable` finding). ROLLOUT: a client older than this rejects the unknown field (whole
+  fleet.json, one-host fallback), so add the field only once every client runs this code.
 
 - **Eligibility first, and hard (2026-11-11).** Optional fleet.json fields per worker: `classes` (the
   job classes it takes: `light` / `normal` / `heavy` / `db` / `build`), `max_cost_s` (the longest

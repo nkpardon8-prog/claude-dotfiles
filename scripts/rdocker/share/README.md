@@ -40,7 +40,8 @@ skips it. Log: `~rd/rr/log/doctor.log`; status: `~rd/rr/state/doctor.json`. Off 
 ## Pool steward (rd-steward, on the always-on agent Mac only)
 `rd-steward.py` is the pool's supervisor; it runs on Nick's Mac mini, not on workers. Every 30 min it
 reads each enabled worker's rd-doctor status and last-hour job outcomes over ssh, applies fixed rules
-(unreachable, doctor missing or stale, drained over 15 min, disk under 10 %, memory under 8 %,
+(unreachable, except an `"optional": true` worker: reported `away`, no finding; doctor missing or
+stale, drained over 15 min, disk under 10 %, memory under 8 %,
 infra failures over 10 % of the hour: `lost`/`busy`/`refused`/caps/OOM, never test failures or
 `interrupted`), and writes `~/.local/state/rd-steward/reports/`. When there are findings it starts one
 headless Claude agent with a strict runbook (safe, reversible fixes only; "Needs a human" for anything

@@ -174,7 +174,8 @@ def rules(r, m, pool_node=None):
     n = r["name"]
     out = []
     if not r["reachable"]:
-        return [(f"{n}:unreachable", f"{n} unreachable over ssh ({r['err']})")]
+        # an "optional": true worker (often away, e.g. a laptop) being unreachable is normal: no finding
+        return [] if m.get("optional") is True else [(f"{n}:unreachable", f"{n} unreachable over ssh ({r['err']})")]
     d = r.get("doctor")
     if d is None:
         if m.get("os") == "linux":
@@ -294,7 +295,7 @@ def main():
     results, findings = [], []
     for m in workers(fleet):
         try:
-            r = probe(m)
+            r = dict(probe(m), optional=m.get("optional") is True)
             found = rules(r, m, pool_node_major(fleet))
         except Exception as e:  # one worker's odd answer must not stop the others
             r = {"name": m.get("name", "?"), "os": m.get("os"), "reachable": True, "doctor": None,
@@ -313,7 +314,7 @@ def main():
     for r in results:
         d = r.get("doctor") or {}
         oc = " ".join(f"{o}x{c}" for o, c in sorted(r["outcomes"].items())) or "no jobs"
-        lines.append(f"- **{r['name']}** {'up' if r['reachable'] else 'DOWN'}"
+        lines.append(f"- **{r['name']}** {'up' if r['reachable'] else 'away (optional)' if r.get('optional') else 'DOWN'}"
                      f" doctor={'-' if not d else ('drained' if d.get('drained') else 'ok')}"
                      f" disk={d.get('disk_free_pct', '?')}% mem={d.get('mem_free_pct', '?')}% | 1h: {oc}"
                      + (lambda e: f" | pred err 24h: {e[0]:.0f}% (n={e[1]})" if e else "")(pred_error(r.get("pred"))))
