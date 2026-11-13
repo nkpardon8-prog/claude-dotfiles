@@ -89,6 +89,7 @@ import uuid
 
 import rd_cache
 import rd_common
+import rd_pnpm
 import rd_pool
 
 HEARTBEAT_S = 15
@@ -120,6 +121,7 @@ EXIT_CODES = {                 # code -> (class, meaning): the one table the doc
     69: ("infra", "the repo was missing on the worker; never ran"),
     70: ("infra", "the worker's runner failed; never ran"),
     78: ("infra", "installing dependencies on the worker failed; never ran"),
+    79: ("fail", "the DB lane's setup step (migrate / provision) failed on the worker; the command was not started"),
 }
 NEXT = {"pass": "", "fail": "the command's own result: fix the code",
         "infra": "rerun it; never debug it", "needs-human": "tell the owner; rerunning will not help"}
@@ -193,6 +195,10 @@ class RunError(Exception):
 
 class PushRefused(RunError):
     """The mini answered but refused this repo's history (shallow clone, fsck) => local, with why."""
+
+
+class PolicyRefused(RunError):
+    """A policy repo (rd_pnpm.repo_policy) would ship an env file with this push => needs-human, never local."""
 
 
 # ---------------------------------------------------------------------------- small helpers
@@ -332,6 +338,7 @@ def push(cfg, wt):
     env = dict(os.environ, GIT_SSH_COMMAND=" ".join(shlex.quote(a) for a in ["ssh"] + ssh_opts()),
                GIT_TERMINAL_PROMPT="0")
     base = base_refspecs(cfg, wt["top"])
+    env_file_guard(cfg, wt, base)        # rrun and rd_warm both push here: nothing ships past it
     limit = float(cfg.get("rr_push_timeout_s", PUSH_TIMEOUT_S) or PUSH_TIMEOUT_S)
     try:
         p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "push.recurseSubmodules=no",
@@ -419,7 +426,13 @@ def build_overlay(cfg, top, env_dirs=("",)):
     """-> (tar bytes, files, env_files, deleted). files = tracked files changed vs HEAD that exist
     + untracked not-ignored files (regular files only; symlinks are never followed). env files =
     rr_env_allow matches in env_dirs (see env_file_candidates); one whose realpath is not a regular
-    file inside the worktree (e.g. a symlink to ~/secrets/.env) is skipped with a notice; 0600."""
+    file inside the worktree (e.g. a symlink to ~/secrets/.env) is skipped with a notice; 0600.
+    A repo under an rr_pg_lanes policy (rd_pnpm.repo_policy) ships NO env file at all, allowlisted or
+    not: every .env* path (rd_pnpm.is_env_file) is left out of the overlay here, the one place rrun,
+    the cache key and rd_warm all build it (a tracked one is refused at the push: env_file_guard)."""
+    policy = rd_pnpm.repo_policy(cfg, top)
+    if policy:
+        env_dirs = ()
     changed = zsplit(git_out(["diff", "-z", "--name-only", "--no-renames", "HEAD", "--"], top))
     untracked = zsplit(git_out(["ls-files", "-z", "-o", "--exclude-standard"], top))
     rtop = os.path.realpath(top)
@@ -438,6 +451,8 @@ def build_overlay(cfg, top, env_dirs=("",)):
         else:
             deleted.append(rel)
     files += [u for u in untracked if sane_rel(u) and not u.endswith("/")]
+    if policy:
+        files = [f for f in files if not rd_pnpm.is_env_file(f)]
     env_set = set(envs)
     files = [f for f in dict.fromkeys(files) if f not in env_set]
     buf = io.BytesIO()
@@ -463,16 +478,77 @@ def build_overlay(cfg, top, env_dirs=("",)):
 
 
 def env_dirs_for(wt, deps):
-    """Where env files are picked up for a run: the repo root, the cwd and the deps dirs."""
+    """Where env files are picked up for a run: the repo root, the cwd and the deps dirs (none in a
+    policy repo: build_overlay)."""
     return list(dict.fromkeys([""] + ([wt["relcwd"]] if wt["relcwd"] else []) + list(deps)))
 
 
-def ship_env(cfg, env_pairs):
-    """The env dict a runner header carries: rr_env_pass matches from our env, then -e pairs."""
+_DROP_NOTED = set()
+
+
+def ship_env(cfg, env_pairs, top=None):
+    """The env dict a runner header carries: rr_env_pass matches from our env, then -e pairs. In a
+    policy repo (rd_pnpm.repo_policy) no *DATABASE_URL* / PG* name and no strip_env glob ever leaves
+    this machine (only the runner sets the DB URLs); the dropped NAMES are noted, never the values."""
     env = {k: v for k, v in os.environ.items()
            if any(fnmatch.fnmatchcase(k, g) for g in cfg.get("rr_env_pass") or [])}
     env.update(env_pairs)
+    policy = rd_pnpm.repo_policy(cfg, top) if top else None
+    if policy:
+        drop = sorted(k for k in env if policy_drops(policy, k))
+        if drop and tuple(drop) not in _DROP_NOTED:
+            _DROP_NOTED.add(tuple(drop))                       # once per run (the cache key builds it too)
+            note("not forwarding %s: this repo's database URLs are set by rrun only, and its provider "
+                 "secrets never leave this machine" % ", ".join(drop))
+        env = {k: v for k, v in env.items() if k not in drop}
     return env
+
+
+def policy_drops(policy, name):
+    """A name the repo policy never forwards (the runner applies the same rule: rr_runner.pl policy_env)."""
+    return bool(re.search(r"DATABASE_URL", name, re.I) or re.match(r"^PG", name, re.I)
+                or any(fnmatch.fnmatchcase(name, g) for g in policy.get("strip_env") or []))
+
+
+def env_file_guard(cfg, wt, base):
+    """Raise PolicyRefused before a policy repo's push when an env file (rd_pnpm.is_env_file) is in the
+    index, in the commit being pushed (`git ls-tree -r`) or in any base commit pushed with it. The
+    working tree's untracked / ignored ones never ship (build_overlay). Limit, documented: older commits
+    reachable from those are not scanned - their blobs can reach our own worker's bare repo; the
+    guarantee is that no env file is ever in a worker's checkout or sourced there."""
+    if not rd_pnpm.repo_policy(cfg, wt["top"]):
+        return
+    where = {}
+    for f in zsplit(git_out(["ls-files", "-z", "--", ":(glob)**/.env*"], wt["top"])):
+        where.setdefault(f, "the index")
+    for rev in [wt["sha"]] + [spec.lstrip("+").split(":", 1)[0] for spec in base]:
+        for f in zsplit(git_out(["ls-tree", "-r", "-z", "--name-only", rev], wt["top"])):
+            where.setdefault(f, rev[:12])
+    bad = sorted(f for f in where if rd_pnpm.is_env_file(f))
+    if bad:
+        raise PolicyRefused("this repo tracks env file(s) %s (%s); its pool runs never ship one (rr_pg_lanes "
+                            "policy)" % (", ".join(bad[:5]), ", ".join(sorted({where[f] for f in bad}))))
+
+
+def argv_refusal(cfg, wt, argv):
+    """-> Rc 65 (needs-human) when a policy repo's argv carries, ANYWHERE inside any token, an assignment
+    to a name the policy never forwards (`env -S 'X=1 DATABASE_URL=...'`, `sh -c "TWILIO_X=..."`), or an
+    `env` wrapper with any option; else None. Only names are printed."""
+    policy = rd_pnpm.repo_policy(cfg, wt["top"]) if wt else None
+    if not policy:
+        return None
+    globs = "|".join(re.escape(g).replace(r"\*", r"\w*") for g in policy.get("strip_env") or [])
+    rx = re.compile(r"(^|[\s'\"])(\w*DATABASE_URL\w*|PG\w*|TWILIO_\w*|RETELL_\w*|OPENROUTER_\w*|SEED_ALLOW_REMOTE"
+                    + ("|" + globs if globs else "") + r")=", re.I)
+    names = sorted({m.group(2) for a in argv for m in rx.finditer(a)})
+    env_opt = any(os.path.basename(a) == "env" and argv[i + 1:i + 2] and argv[i + 1].startswith("-")
+                  for i, a in enumerate(argv))
+    if not names and not env_opt:
+        return None
+    what = ("sets %s" % ", ".join(names)) if names else "runs `env` with an option"
+    return Rc(65, "needs-human", "the command %s; in this repo only rrun sets database URLs and no provider "
+              "secret is sent to a worker; not run" % what, "drop it from the command; rerunning as is will "
+              "not help")
 
 
 def shipped_reader(wt, tar, deleted):
@@ -495,7 +571,7 @@ def shipped_reader(wt, tar, deleted):
 def cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs):
     """-> (rd_cache.Run, None) for a cacheable run (its key = what would ship + the command), else
     (None, why not). Builds the same overlay and env attempt() ships."""
-    env = ship_env(cfg, env_pairs)
+    env = ship_env(cfg, env_pairs, wt["top"])
     why = rd_cache.why_not_static(argv, job, outputs, env)
     if why:
         return None, why
@@ -515,7 +591,8 @@ def cache_prepare(cfg, wt, argv, env_pairs, deps, job, outputs):
 # ---------------------------------------------------------------------------- deps dirs
 
 def has_lock(d):
-    return any(os.path.isfile(os.path.join(d, n)) for n in ("package-lock.json", "npm-shrinkwrap.json"))
+    """npm's lockfile, or pnpm's (the runner installs that with pnpm via corepack, rr_runner.pl deps)."""
+    return any(os.path.isfile(os.path.join(d, n)) for n in ("package-lock.json", "npm-shrinkwrap.json", rd_pnpm.LOCK))
 
 
 def deps_dirs(top, relcwd, argv):
@@ -1153,7 +1230,8 @@ class Timing:
 
 
 def short_argv(argv):
-    s = " ".join(shlex.quote(a) for a in argv)
+    """The argv as logged (route.log, rrun.json, cache meta): any URL userinfo redacted."""
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@'\"]*@", r"\1****@", " ".join(shlex.quote(a) for a in argv))
     return s if len(s) <= 120 else s[:117] + "..."
 
 
@@ -1480,6 +1558,17 @@ class Opts:
         self.jobs = environ.pop("RRUN_JOBS", "")                    # "all" (--jobs) / "mine" (--mine)
 
 
+def classify_job(cfg, wt, argv, outputs, cwd):
+    """-> (job, wt): rd_pool.classify, plus the repo policy (rd_pnpm.repo_policy -> wt["policy"], sent on
+    every command of that repo) and its Postgres lane (rd_pnpm.needs_pg -> job["pg"], a db job): every
+    command there gets it unless it provably runs only tsc / eslint."""
+    policy = rd_pnpm.repo_policy(cfg, wt["top"]) if wt else None
+    pg = policy if policy and rd_pnpm.needs_pg(wt["top"], cwd, argv) else None
+    if policy:
+        wt = dict(wt, policy=policy)
+    return rd_pool.classify(argv, outputs, cwd, pg=pg), wt
+
+
 def resolve_outputs(cfg, wt, argv, opts):
     """-> repo-relative build outputs: --outputs (relative to the cwd), else rr_outputs for a
     `npm run build` in a mapped package dir, else []. SystemExit on an unsafe --outputs path."""
@@ -1556,7 +1645,10 @@ def _rrun(argv, env_args, environ0):
         # builds go to the pool only with known outputs (rr_outputs): any other build (the npm
         # shim sends every top-level `npm run build` here) runs on this machine, silently
         return run_local(argv, env_pairs)
-    job = rd_pool.classify(argv, outputs, os.getcwd())
+    job, wt = classify_job(cfg, wt, argv, outputs, os.getcwd())
+    refused = argv_refusal(cfg, wt, argv)
+    if refused is not None:
+        return refused
     deps = deps_dirs(wt["top"], wt["relcwd"], argv) if wt else []
     if not opts.where:
         timing.mark("resolve")
@@ -2419,6 +2511,11 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
         header["client"] = client_sha()
     if outputs:
         header["outputs"] = list(outputs)
+    policy = wt.get("policy") or (rd_pnpm.repo_policy(cfg, wt["top"]) if wt.get("top") else None)   # rd_warm's too
+    if policy:                       # the repo policy, on every command (rr_runner.pl policy_env / policy_files)
+        header["repo_policy"] = policy
+    if job.get("pg"):                # the run-local Postgres lane (rr_runner.pl pg_up)
+        header["pg_lane"] = True
     if pool:                     # pool-only gates (a lone host keeps the plain slot logic)
         header.update(cls=job["cls"], need_gb=job["need_gb"])
         hs = rd_pool._f(h.entry, "heavy_slots") if h.entry is not None else None
@@ -2444,6 +2541,9 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     try:
         with host_lock(cfg["host"]):
             base = push(cfg, wt) or []
+    except PolicyRefused as e:
+        return "done", Rc(65, "needs-human", "%s; not run" % e,
+                          "tell the owner: untrack it (git rm --cached + commit) or rename it to *.example")
     except PushRefused as e:
         return "local", "cannot send this repo to %s: %s" % (label(h), e)
     except RunError as e:
@@ -2458,7 +2558,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         note("sending %.1f MB of uncommitted/untracked files" % (len(tar) / 1048576.0))
     timing.mark("overlay (%d files, %d env, %d deleted, %d bytes)" % (len(files), len(envs),
                                                                      len(deleted), len(tar)), "overlay_s")
-    env = ship_env(cfg, env_pairs)
+    env = ship_env(cfg, env_pairs, wt["top"])
     if cache is not None:            # what this attempt really sends must be what the key hashed
         cache.shipped(rd_cache.content_id(wt["sha"], base, tar, envs, deleted, env, deps))
     run_id = str(uuid.uuid4())

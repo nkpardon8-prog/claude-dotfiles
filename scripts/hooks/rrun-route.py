@@ -23,8 +23,16 @@ Behavior:
     `/.../node_modules/.bin/<tool>` inside the worktree (rewritten relative to the cwd: the laptop path
     does not exist on the worker; only for a node_modules rrun installs there - worker_tool_path); `npm test` / `npm run test*` /
     `typecheck*` / `type-check*` / `lint*` when package.json defines the script. Only when the
-    segment's cwd is in a git repo and the nearest lockfile is npm's (workers run `npm ci`; no
-    pnpm / yarn / bun, and no bare `tsc` - a worker's PATH has no node_modules/.bin).
+    segment's cwd is in a git repo and the nearest lockfile is npm's (workers run `npm ci`) or
+    pnpm's (judge_pnpm below); no yarn / bun, and no bare `tsc` in an npm project - a worker's
+    PATH has no node_modules/.bin.
+  * pnpm workspaces (2026-11-12; workers install them with `pnpm install --frozen-lockfile` through
+    corepack): `pnpm [-r | --filter X | -C dir] <test*|typecheck*|lint*>` (also `pnpm run x`,
+    `pnpm test:hammer`, a root script that fans out), `pnpm [--filter X] exec <tsc|vitest|jest|eslint>`,
+    `npx <tool>` / `npm test` in a workspace package, and a bare `vitest run` / `tsc --noEmit` there
+    (rewritten to `rrun pnpm exec vitest run ...`). Every script / tool the command reaches
+    (rd_pnpm.walk) must pass the same vetoes as npm's; anything rd_pnpm cannot read stays here.
+    rrun itself picks the lane (a hammer test gets its run-local Postgres; rd_pnpm.pg_lane).
   * Never offloaded, pattern hit or not: watch / UI / dev-server / write-back runs (--watch*, -w,
     --ui, --coverage, --fix, -u/--update, --outputFile, --outDir, --open, --inspect, --stdin,
     bare `vitest`, vite / next / nodemon heads), script names with dev / start / serve / preview /
@@ -67,6 +75,7 @@ Behavior:
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import unicodedata
@@ -132,6 +141,8 @@ BODY_VETO_RE = re.compile(r"--watch|--ui\b|--fix\b|--write\b|--coverage|--output
                           r"|(^|[\s;&|(/])(vite|next|nuxt|astro|nodemon|concurrently|webpack-dev-server"
                           r"|storybook|start-storybook|http-server|live-server|serve)(\s|$|[;&|)])")
 REDIR_WORD_RE = re.compile(r"^[0-9]*(&?>>?|>&|<)")
+BUILD_SHORT_VETO = {"-w", "-u", "-o"}                         # a mapped build: watch / update / output stays here
+PNPM_LOCK = "pnpm-lock.yaml"
 NPM_LOCKS = ("package-lock.json", "npm-shrinkwrap.json")
 OTHER_LOCKS = ("pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock")
 NOEMIT_RE = re.compile(r'"noEmit"\s*:\s*true')
@@ -339,6 +350,8 @@ def rewrite_segment(cmd, shape, s, e, op, patterns=None, depth=0, builds=None, c
         return None
     flags = "".join("-e %s " % n for n in dict.fromkeys(names))
     tail = cmd[head[0]:e]
+    if head[1] in TOOLS and seg_cwd and pnpm_root(seg_cwd, git_top(seg_cwd)):
+        tail = "pnpm exec " + tail                            # a worker's PATH has no node_modules/.bin
     if os.path.isabs(head[1]):                                # /abs/.../node_modules/.bin/<tool>
         top = git_top(seg_cwd) if seg_cwd else None
         tool = worker_tool_path(head[1], seg_cwd, top) if top else None
@@ -425,6 +438,30 @@ def seg_cwds(cmd, segs, masked, start):
             else:
                 cur = None
     return out
+
+
+def strip_redirects(words):
+    """Words up to the first redirect (what the command itself receives)."""
+    out = []
+    for w in words:
+        if REDIR_WORD_RE.match(w):
+            break
+        out.append(w)
+    return out
+
+
+def decoded(cmd, s, e):
+    """-> (the segment's shell-decoded words, had quoting) or (None, True): heredoc segments and
+    anything shlex cannot split are never judged."""
+    text = cmd[s:e]
+    if "<<" in text:
+        return None, True
+    try:
+        words = shlex.split(text, comments=False)             # the scanner owns comments: an in-word `#`
+                                                              # (case#tag --update) must not swallow the rest
+    except ValueError:
+        return None, True
+    return words, bool(re.search(r"['\"\\]", text))
 
 
 def core_words(words):
@@ -603,20 +640,42 @@ def tsc_checks_only(args, cwd):
     return True
 
 
-def judge(words, cwd, pattern_hit):
-    """Should this segment (masked words) go to rrun? pattern_hit: rr_route_patterns matched.
+def pnpm_root(cwd, top):
+    """The dir of the nearest lockfile at or above cwd when it is pnpm's, else None."""
+    lock = nearest(cwd, top, NPM_LOCKS + OTHER_LOCKS) if top else None
+    return lock[0] if lock and lock[1] == PNPM_LOCK else None
+
+
+def judge_pnpm(dec, cwd, top):
+    """A command in a pnpm workspace: routed ONLY when its decoded words, with nothing before the head
+    (no NAME=value, no wrapper) and no quoting anywhere, are one of rd_pnpm.exact_form's shapes."""
+    import rd_pnpm                                            # beside rd_common (load_cfg put it on sys.path)
+    return bool(dec) and rd_pnpm.exact_form(cwd, dec, top) is not None
+
+
+def judge(words, cwd, pattern_hit, dec=None, quoted=False):
+    """Should this segment go to rrun? pattern_hit: rr_route_patterns matched. words = masked words; dec =
+    the segment's shell-DECODED words (trailing redirects cut) or None; quoted = it had quoting. Every
+    veto below is judged on the decoded words, so `'--watch'` is --watch (review round 2).
     -> True to route it (rewrite_segment still checks it is simple), False to leave it here."""
     if cwd is None:
         return False                                          # cwd unknown (`cd $D`)
     top = git_top(cwd)
     if top is None:
         return False                                          # rrun needs a git repo
-    core = core_words(words)
+    if dec is None:                                           # a heredoc segment: judged on its masked words as
+        dec, quoted = words, True                             # before (it is never rewritable: `<`), so a match
+                                                              # there still leaves the WHOLE command alone
+    core = core_words(dec)
     if not core or os.path.basename(core[0]) in SERVER_HEADS:
         return False
     if any(w.startswith(LONG_VETO) for w in core):
         return False
     job = parse_job(core)
+    if os.path.basename(core[0]) == "pnpm" or (pnpm_root(cwd, top) and "/" not in core[0]
+                                               and not (job and job.get("prefix"))):
+        return bool(pnpm_root(cwd, top)) and not quoted and core == strip_redirects(dec) \
+            and judge_pnpm(core, cwd, top)
     if job is None:
         return pattern_hit and not any(w in ("-w", "-u") for w in core)
     if job.get("tool") and "/" in core[0] and worker_tool_path(core[0], cwd, top) is None:
@@ -669,16 +728,18 @@ def route(cmd, patterns, depth=0, builds=None, cwd=None):
         hit_cwd[s] = c
         text = masked[s:e]
         words = WORD_RE.findall(text)
+        dec, quoted = decoded(cmd, s, e)
         if depth == 0 and any(r.search(shell_c_script(cmd, shape, s, e)) for r in regs):
             hits.append((s, e, op))                           # bash -c '...': judged inside
         elif any(r.search(text) for r in regs):
-            if judge(words, c, True):
+            if judge(words, c, True, dec, quoted):
                 hits.append((s, e, op))
-        elif builds is not None and "build" in text and c and git_top(c) \
-                and builds.is_build(text) and not any(w.startswith(LONG_VETO) for w in words) \
+        elif builds is not None and "build" in text and c and git_top(c) and dec is not None \
+                and builds.is_build(text) \
+                and not any(w.startswith(LONG_VETO) or w in BUILD_SHORT_VETO for w in dec) \
                 and builds.mapped(words, c):
             hits.append((s, e, op))                           # a build rrun copies back
-        elif judge(words, c, False):
+        elif judge(words, c, False, dec, quoted):
             hits.append((s, e, op))
     if not hits:
         return None

@@ -50,7 +50,7 @@ FAIL_TTL_S = 20 * 60
 MAX_BYTES = 200 * 1024 * 1024
 ENTRY_MAX_BYTES = 16 * 1024 * 1024
 # rrun's / the runner's own exit codes (never a tool's verdict worth replaying) and signals
-INFRA_RC = frozenset({65, 69, 70, 72, 73, 75, 76, 77, 78, 124})   # rd_run.EXIT_CODES   # 124: hit its wall-clock cap (rd_run.EXIT_TIMEOUT)
+INFRA_RC = frozenset({65, 69, 70, 72, 73, 75, 76, 77, 78, 79, 124})   # rd_run.EXIT_CODES   # 124: hit its wall-clock cap (rd_run.EXIT_TIMEOUT)
 
 TOOLS = {"tsc", "vue-tsc", "eslint", "vitest", "jest"}
 SCRIPT_NAME_RE = re.compile(r"^(test|typecheck|type-check|lint|tsc)(:[A-Za-z0-9_.-]+)*$")

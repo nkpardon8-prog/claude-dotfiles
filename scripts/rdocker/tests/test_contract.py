@@ -100,6 +100,10 @@ class Emitted(test_run.RunBase):
         self.assertEqual(rd_run.Rc(69).klass, "infra")
         seen[69] = "runner"
         self.doCleanups()
+        # 79: the DB lane's setup step failed before GO - from the runner too (rr_runner.pl pg_up, end to
+        # end in tests/test_pnpm.py PnpmRunner.test_setup_step_failure_is_79_before_go); the class is fail
+        self.assertEqual((rd_run.Rc(79).klass, rd_run.Rc(79).next), ("fail", rd_run.NEXT["fail"]))
+        seen[79] = "runner"
         # 0 / 1: the command's own
         scenario(0, "pass", self.rrun("/bin/sh", "-c", "true"))
         scenario(1, "fail", self.rrun("/bin/sh", "-c", "exit 1"))

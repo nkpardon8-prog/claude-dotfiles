@@ -168,6 +168,26 @@ DEFAULTS = {
     "rr_env_allow": [".env", ".env.test*", ".env.local"],
     # laptop env vars passed through to the remote command (fnmatch); `rrun -e K[=V]` adds more
     "rr_env_pass": ["CI", "DEBUG", "TEST_DB_*", "VITEST_*", "RR_NODE"],
+    # Repo policy + run-local Postgres lane (rd_pnpm; rr_runner.pl; 2026-11-13). A git worktree whose top-level
+    # package.json name is `repo_package` is under the policy for EVERY rrun command: no env file is ever
+    # shipped (rd_run.build_overlay drops .env* except *.example/*.sample/*.template; a TRACKED one refuses the
+    # run before anything ships, needs-human), no client DATABASE_URL* / PG* var is forwarded (only the runner
+    # sets them), `strip_env` globs are dropped, and the runner re-checks the whole mirror for .env* before
+    # installing. Every command there gets the lane unless rd_pnpm proves it runs only tsc / eslint: a fresh
+    # `image` container (superuser user/password, database db, tmpfs data, published on 127.0.0.1 only,
+    # removed by its id at the end), then the `setup` steps BEFORE GO (GITHUB_ENV = a private file), then
+    # `app_url_env` must read exactly postgres://<app_role>:${pw}@127.0.0.1:<this run's port>/<db> or the run is
+    # refused (65); a failed step is exit 79. The app role's password is generated per run by the setup step,
+    # lives only in that container (loopback, tmpfs) and dies with it.
+    "rr_pg_lanes": [{
+        "repo_package": "david",
+        "image": "postgres:16-alpine", "user": "david", "password": "david", "db": "postgres",
+        "setup": [["pnpm", "db:migrate"], ["pnpm", "db:provision"]],   # provision: the david_app_login role
+        "app_role": "david_app_login", "app_url_env": "DATABASE_URL_APP",
+        "env": {"MESSAGING_TRANSPORT": "echo", "CALL_TRANSPORT": "echo"},
+        "strip_env": ["TWILIO_*", "RETELL_*", "OPENROUTER_*", "SEED_ALLOW_REMOTE", "HAMMER_ALLOW_REMOTE_DB",
+                      "APP_LOGIN_PASSWORD", "GITHUB_ENV", "GITHUB_ACTIONS"],
+    }],
     # heavy commands (re.search on a command line or an npm_lifecycle_event) that belong on the mini
     "rr_route_patterns": [r"(^|\s)test:db(:rls)?(\s|$)",
                           r"(^|\s)release:rehearse:migrations(\s|$)",

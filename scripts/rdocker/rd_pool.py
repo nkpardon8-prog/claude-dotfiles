@@ -109,11 +109,12 @@ def note(msg):
 
 # ---------------------------------------------------------------------------- job class
 
-def classify(argv, outputs=None, cwd=None):
+def classify(argv, outputs=None, cwd=None, pg=None):
     """-> job dict: cls, db, need_gb, retry_ok (safe to repeat after a lost worker), local_ok.
-    cwd: where the command runs - a vitest/jest run there may need a test DB (needs_db)."""
+    cwd: where the command runs - a vitest/jest run there may need a test DB (needs_db).
+    pg: its rr_pg_lanes spec (rd_pnpm.pg_lane) - a db job that gets a run-local Postgres (job["pg"])."""
     s = " ".join(argv)
-    db = bool(_DB_RE.search(s)) or needs_db(argv, cwd)
+    db = bool(pg) or bool(_DB_RE.search(s)) or needs_db(argv, cwd)
     if db:
         cls = "db"
     elif outputs:
@@ -126,8 +127,11 @@ def classify(argv, outputs=None, cwd=None):
         cls = "normal"
     retry_ok = not db and (cls == "build" or bool(_TYPECHECK_RE.search(s) or _LINT_RE.search(s)
                                                    or _SUITE_RE.search(s)))
-    return {"cls": cls, "db": db, "need_gb": NEED_GB[cls], "retry_ok": retry_ok,
-            "local_ok": cls == "light", "never_local": cls in ("db", "heavy"), "sig": run_sig(argv)}
+    job = {"cls": cls, "db": db, "need_gb": NEED_GB[cls], "retry_ok": retry_ok,
+           "local_ok": cls == "light", "never_local": cls in ("db", "heavy"), "sig": run_sig(argv)}
+    if pg:
+        job["pg"] = pg
+    return job
 
 
 _DB_TEST_FILE_RE = re.compile(r"\.db\.(test|spec)\.[cm]?[jt]sx?$")
@@ -948,7 +952,8 @@ def deps_shas(top, dirs):
     out = []
     for rel in dirs:
         d = os.path.join(top, rel) if rel else top
-        lock = next((n for n in ("npm-shrinkwrap.json", "package-lock.json") if os.path.isfile(os.path.join(d, n))), None)
+        lock = next((n for n in ("npm-shrinkwrap.json", "package-lock.json", "pnpm-lock.yaml")
+                     if os.path.isfile(os.path.join(d, n))), None)
         if not lock or not os.path.isfile(os.path.join(d, "package.json")):
             continue
         h = hashlib.sha256()
@@ -1242,9 +1247,11 @@ def fmt_s(s):
 
 def where_report(cfg, job, p, shards=None):
     """Lines for `rrun --where` (shards: shard_assign()'s list, or a why-not string, or None)."""
-    lines = ["job class: %s (needs %s GB%s%s)" % (job["cls"], job["need_gb"],
-                                                  ", safe to repeat" if job["retry_ok"] else "",
-                                                  ", never local" if job["never_local"] else "")]
+    lines = ["job class: %s (needs %s GB%s%s%s)" % (job["cls"], job["need_gb"],
+                                                    ", safe to repeat" if job["retry_ok"] else "",
+                                                    ", never local" if job["never_local"] else "",
+                                                    ", run-local %s" % job["pg"].get("image")
+                                                    if job.get("pg") else "")]
     pvs = sorted(set(int(_num((h.probe or {}).get("pool_version"), 0)) for h in p.hosts if h.probe is not None))
     if pvs:      # display only: the runner's handshake (PV) is what enforces it
         lines.append("pool version: workers %s, this client %d" % ("/".join(map(str, pvs)), rd_common.POOL_VERSION))

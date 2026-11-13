@@ -99,7 +99,26 @@ mirrors their published ports, but only after the fact (event-driven, not before
    timeouts) should not talk to a mini DB across that link: run the whole job on the mini with
    `rrun <cmd>` (next section; the known `test:db` commands are routed there automatically). Don't
    reach for `RDOCKER_MODE=local` for those.
-7. Other engines (MySQL, Redis, Mongo, MinIO, ClamAV, ...) behave the same. `docker build`
+7. **Repo policy + run-local Postgres lane (`rr_pg_lanes` in rd_common; today one repo: DAVID, top-level
+   package.json name `david`).** For EVERY rrun command of such a repo, whatever it runs:
+   - no env file reaches a worker's checkout: `.env*` (except `*.example` / `*.sample` / `*.template`) is left out
+     of the overlay, and the push itself (rrun's and the warmer's) is refused, exit 65 needs-human, when one is in
+     the index, in the commit pushed or in a base commit pushed with it; the worker re-checks its whole mirror
+     before installing. Known limit: older commits reachable from those are not scanned, so a secret once
+     committed can sit as a git blob in our own worker's bare repo; it is never checked out or sourced.
+   - no `*DATABASE_URL*`, `PG*`, `TWILIO_*`, `RETELL_*`, `OPENROUTER_*` or `SEED_ALLOW_REMOTE` variable you pass is
+     forwarded (names noted, never values), and a command whose argv sets one (`NAME=value`, also via `env`) is
+     refused, 65. A repo's own committed scripts are its code: they are not inspected.
+   - every command gets a fresh Postgres unless it is a proven tsc form above (unknown = Postgres). Before the
+     command starts: `postgres:16-alpine` on the worker (`rr-pg-<run id>`, tmpfs data, published on 127.0.0.1
+     only), `DATABASE_URL=postgres://david:${password}@127.0.0.1:<port>/postgres` (the lane's throwaway password is `david`), `pnpm db:migrate`, `pnpm
+     db:provision` (output to a log; only a redacted tail if it fails: exit 79, class fail), then
+     `DATABASE_URL_APP` must read exactly `postgres://david_app_login:${pw}@127.0.0.1:<that port>/postgres` or the
+     run is refused (65). `MESSAGING_TRANSPORT=CALL_TRANSPORT=echo`. The container is removed by its id at the end,
+     pass or fail. The app password is generated per run, exists only inside that container (loopback, tmpfs)
+     and dies with it, so test output is relayed as is. Type the normal command (`pnpm --filter @david/hammer
+     exec vitest run src/x.test.ts`); `rrun --where` shows `run-local postgres:16-alpine`.
+8. Other engines (MySQL, Redis, Mongo, MinIO, ClamAV, ...) behave the same. `docker build`
    (incl. `--platform linux/amd64`) runs on the mini.
 
 ## Heavy test jobs on the mini (`rrun`)
@@ -135,6 +154,15 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
     `check:server-test-typecheck`, `tsc ... --noEmit`, a whole `vitest run` / `jest` suite, `eslint .`,
     `node --max-old-space-size=NNNN`, and **by category** every `check*` / `lint*` / `typecheck` /
     `verify*` and `test:*` npm script.
+  - **pnpm** (2026-11-13; every pnpm repo, not only DAVID: workers install a pnpm lockfile with `pnpm install
+    --frozen-lockfile` through corepack). ONLY these exact shapes, judged on the shell-decoded words, with
+    nothing before them and no quoting: `pnpm [-r|--recursive] typecheck`, `pnpm typecheck` (in a package),
+    `pnpm --filter|-F <pkg> test|typecheck`, `pnpm --filter <pkg> exec vitest run [args]`, and in a package
+    dir `pnpm exec vitest run [args]` / `npx vitest run [args]` / `vitest run [args]` (rewritten `rrun pnpm exec
+    vitest run ...`). [args] = test file paths, `-t` / `--testNamePattern <name>`, `--reporter=<x>`. A script
+    form reads only the target package's script, which must be exactly `vitest run [files]` or `tsc --noEmit
+    [-p X] [--pretty false]`, with no pre/post script. Anything else (root scripts, `pnpm lint`, `-u`,
+    `--`, an assignment, a wrapper) runs here; prefix `rrun` yourself if you want it on the pool.
   - Prefixes and plumbing are kept: `cd x && npx tsc --noEmit` -> `cd x && rrun npx tsc --noEmit`;
     `FOO=1 npx vitest run a` -> `FOO=1 rrun -e FOO npx vitest run a` (values stay an env prefix, never in
     rrun's argv; `RRUN_*`/`RDOCKER_*` only configure this side; `RDOCKER_MODE=local` is dropped); pipes
@@ -149,8 +177,8 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   runs that write files you then read here (`--coverage`, `--fix`, `-u` / `--update`, `--outputFile`,
   `eslint -o`, `--outDir`, an emitting `tsc`, `lint:fix` / `format` / `coverage` scripts); builds rrun
   would not copy back (`vite build`, `pnpm build`, `npm run build:*`, an unmapped package dir);
-  `pnpm` / `yarn` / `bun` and pnpm / yarn / bun projects (workers install with `npm ci`); bare
-  `tsc` / `vitest` / `eslint` / `jest` (a worker's PATH has no `node_modules/.bin`; use `npx`);
+  `yarn` / `bun` and yarn / bun projects; any pnpm command that is not one of the exact shapes above; bare
+  `tsc` / `vitest` / `eslint` / `jest` in an npm project (a worker's PATH has no `node_modules/.bin`; use `npx`);
   `ssh ...`, `docker ...`, heredocs, `$(...)` / backticks, a command fed by a pipe, an unknown cwd
   (`cd $D`) or no git repo; an earlier segment that sets shell state (`export`, `set -a`,
   `source`/`.`, a bare `FOO=1;`); an assignment value beyond `[A-Za-z0-9_./:@%+,=-]`; whitespace other
@@ -421,7 +449,8 @@ and runs a scenario that emits each one):
 | 65   | needs-human | the worker refused the request (bad input or an unsafe path, e.g. a symlinked mirror) |
 | 69   | infra       | the repo was missing on the worker; never ran |
 | 70   | infra       | the worker's runner failed; never ran |
-| 78   | infra       | installing dependencies on the worker failed (`npm ci` / `prisma generate`); never ran - the last 25 lines of its npm log are shown, not the whole log |
+| 78   | infra       | installing dependencies on the worker failed (`npm ci` / `pnpm install` / `prisma generate`); never ran - the last 25 lines of its npm log are shown, not the whole log |
+| 79   | fail        | the DB lane's setup step (`pnpm db:migrate` / `pnpm db:provision`) failed on the worker; the command was not started - its redacted log tail is shown: fix the migration / provision script |
 
 128+N: stopped by signal N (Ctrl-C, a tool's TERM) - `infra`, rerun if you still need it. Any other
 code is the command's own (`fail`): after the start only the worker's authenticated EXIT status is

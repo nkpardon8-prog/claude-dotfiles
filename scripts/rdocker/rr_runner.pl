@@ -188,13 +188,19 @@ sub main {
     $env{COMPOSE_PROJECT_NAME} = compose_project();    # never the job's own (see compose_project)
     $env{RRUN_DOCKER_LABEL} = "rdocker.rrun=$label";
     node_heap(\%env);
-    docker_up(\%env) if ($h{cls} // '') eq 'db' && colima_managed();
+    policy_env(\%env) if $h{repo_policy};    # every command of a policy repo: no client DB URL / provider secret
+    docker_up(\%env) if (($h{cls} // '') eq 'db' || $h{pg_lane}) && colima_managed();
 
     my $cwd = prepare_mirror();
+    policy_files() if $h{repo_policy};       # before any install script runs: no env file anywhere in the mirror
     deps(\%env);
     return 128 + 15 if $lost;
     fail("interrupted before the command started", 130) if $intr;
+    pg_up(\%env) if $h{pg_lane};    # Postgres up, setup steps, exact URL check: all before GO
+    return 128 + 15 if $lost;
+    fail("interrupted before the command started", 130) if $intr;
     my $argv = fair_share($h{argv}, \%env, $cwd);    # the spawned argv; $h{argv} stays as requested
+    policy_final(\%env) if $h{repo_policy};
     $t_ready = time;
     await_go();
     $started = 1;
@@ -341,6 +347,8 @@ sub read_header {
     delete $h{pred_s} if defined $h{pred_s} && $h{pred_s} !~ /^\d{1,7}(\.\d+)?$/;
     delete $h{client} if defined $h{client} && $h{client} !~ /^[0-9a-f]{7,40}$/;
     delete $h{pool_version} if defined $h{pool_version} && $h{pool_version} !~ /^\d{1,6}$/;
+    check_policy($h{repo_policy}) if defined $h{repo_policy};
+    fail("bad pg_lane", 65) if $h{pg_lane} && !defined $h{repo_policy};
     $h{tar_len} //= 0;
     fail("bad tar_len", 65) unless $h{tar_len} =~ /^\d+$/;
     @overlay = parse_tar(read_exact($h{tar_len}));    # validated before anything is written
@@ -1074,6 +1082,11 @@ sub deps {
         fail("deps dir ./$rel resolves outside the mirror; refusing", 65)
             unless defined $rd && ($rd eq $rm || index($rd, "$rm/") == 0);
         my ($lock) = grep { -f } map { "$dir/$_" } qw(npm-shrinkwrap.json package-lock.json);
+        if (!$lock && -f "$dir/pnpm-lock.yaml" && !-l "$dir/pnpm-lock.yaml" && -f "$dir/package.json") {
+            pnpm_deps($env, $rel, $dir, $nodev);    # a pnpm workspace (no npm store / prisma step)
+            return if $lost || $intr;
+            next;
+        }
         next unless $lock && -f "$dir/package.json" && !-l $lock;
         # deps stamp: lockfile + package.json + .npmrc + node version + the exact npm args
         my @args = ('ci', '--no-audit', '--no-fund', @{ $h{stamps}{npm_args} }, (-e $legacy ? '--legacy-peer-deps' : ()));
@@ -1153,14 +1166,285 @@ sub deps_failed {
     my $DEPS_TAIL = 25;    # (inside: a file-scope `my` below main() is never assigned when main runs)
     my @l = split /\n/, slurp("$tmp/npm.log");
     print STDERR "rrun: ... (npm log: last $DEPS_TAIL of " . scalar(@l) . " lines)\n" if @l > $DEPS_TAIL;
-    print STDERR map { "$_\n" } @l > $DEPS_TAIL ? @l[-$DEPS_TAIL .. -1] : @l;
-    fail(sprintf("%s failed in ./%s on the Mac mini (exit %d); the command was not started", $what, $rel, $rc), $EX_DEPS);
+    print STDERR map { redact_urls($_) . "\n" } @l > $DEPS_TAIL ? @l[-$DEPS_TAIL .. -1] : @l;
+    fail(sprintf("%s failed in %s on the Mac mini (exit %d); the command was not started", $what,
+                 $rel =~ m{^~} ? $rel : "./$rel", $rc), $EX_DEPS);
 }
 
 sub npm {    # npm/npx under the same heartbeat supervision as the command (a dead laptop stops them)
     my ($env, $dir, @args) = @_;
     unshift @args, 'npm' unless $args[0] eq 'npx';
     supervise(spawn(\@args, $env, $dir, "$tmp/npm.log"));
+}
+
+# ----------------------------------------------------------------------------------- pnpm
+# pnpm workspaces (2026-11-12, DAVID). pnpm comes through corepack, which Node 25 no longer ships: a
+# pinned corepack is installed once per worker into $ROOT/tools/corepack (npm, under the
+# $ROOT/tools/.lock flock) with its pnpm / pnpx shims in $ROOT/tools/bin, which goes on the PATH of the
+# install and of the command. The pnpm version is the repo's packageManager field (the shim reads it);
+# without one, PNPM_DEFAULT, corepack's global default here. COREPACK_HOME (the downloaded pnpm
+# versions) is $ROOT/tools/corepack-home; auto-pin is off, so corepack never edits a package.json.
+# Packages: `pnpm install --frozen-lockfile` in the mirror against ONE content store per worker
+# ($ROOT/pnpm-store: a new mirror links from it instead of downloading), skipped while the deps stamp
+# (lockfile + package.json + .npmrc, then node + pnpm version) matches - the same stamp npm ci keeps,
+# so the probe's warm check (rd_pool.deps_shas) and runs.log setup=warm|cold measure it unchanged.
+# (constants, not file-scope `my`: main() runs before any statement below it executes)
+use constant { COREPACK_PIN => 'corepack@0.36.0', PNPM_DEFAULT => '9.15.9' };
+sub pnpm_version {
+    my ($dir) = @_;
+    my $pkg = eval { JSON::PP->new->decode(slurp("$dir/package.json")) };
+    my $pm = ref $pkg eq 'HASH' && defined $pkg->{packageManager} && !ref $pkg->{packageManager} ? $pkg->{packageManager} : '';
+    $pm =~ /^pnpm\@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)(?:\+[0-9A-Za-z.]+)?$/ ? $1 : PNPM_DEFAULT;
+}
+
+sub corepack_ready {    # -> 1 once $ROOT/tools/bin/pnpm is corepack's shim; 0 when the run was stopped
+    my ($env) = @_;
+    my $tools = mk("$ROOT/tools");
+    my $cp = "$tools/corepack/node_modules/corepack/dist/corepack.js";
+    open(my $lk, '>>', "$tools/.lock") or fail("open $tools/.lock: $!");
+    my $end = time + 600;                 # another run is setting corepack up: wait, still reading heartbeats
+    until (flock($lk, LOCK_EX | LOCK_NB)) {
+        fail("laptop went away while waiting for the corepack setup", 130) if !$stdin_open || $intr;
+        fail("another run's corepack setup held ~/rr/tools/.lock for 10 min", 70) if time >= $end;
+        pump(1);
+    }
+    my $run = sub {    # -> 1 ok, 0 stopped; a failure is exit 78 with the log tail
+        my ($what, @argv) = @_;
+        my $rc = supervise(spawn(\@argv, $env, $tools, "$tmp/npm.log"));
+        return 0 if $lost || $intr;
+        deps_failed($what, '~/rr/tools', $rc) if $rc;
+        1;
+    };
+    if (slurp("$tools/.corepack") ne "@{[COREPACK_PIN]}\n" || !-f $cp || !-e "$tools/bin/pnpm") {
+        print STDERR "rrun: installing @{[COREPACK_PIN]} on this worker (once; pnpm comes through it)\n";
+        unlink "$tools/.corepack";
+        remove_tree("$tools/corepack", "$tools/bin");
+        $run->("npm install @{[COREPACK_PIN]}", 'npm', 'install', '--prefix', "$tools/corepack", '--no-audit',
+               '--no-fund', '--no-package-lock', COREPACK_PIN) or return 0;
+        mk("$tools/bin");
+        $run->("corepack enable pnpm", 'node', $cp, 'enable', '--install-directory', "$tools/bin", 'pnpm') or return 0;
+        write_file("$tools/.corepack", "@{[COREPACK_PIN]}\n");
+    }
+    if (!-e "$tools/.pnpm-default-@{[PNPM_DEFAULT]}") {    # a repo without packageManager gets this one
+        $run->("corepack install -g pnpm\@@{[PNPM_DEFAULT]}", 'node', $cp, 'install', '-g', "pnpm\@@{[PNPM_DEFAULT]}") or return 0;
+        write_file("$tools/.pnpm-default-@{[PNPM_DEFAULT]}", "1\n");
+    }
+    close $lk;
+    1;
+}
+
+sub pnpm_deps {
+    my ($env, $rel, $dir, $nodev) = @_;
+    my $ver = pnpm_version($dir);
+    my $tools = "$ROOT/tools";
+    $env->{COREPACK_HOME} = "$tools/corepack-home";
+    $env->{COREPACK_ENABLE_DOWNLOAD_PROMPT} = '0';
+    $env->{COREPACK_ENABLE_AUTO_PIN} = '0';
+    $env->{PATH} = "$tmp:$tools/bin:" . substr($env->{PATH}, length "$tmp:")
+        if index($env->{PATH}, "$tmp:") == 0 && index($env->{PATH}, "$tools/bin:") < 0;
+    $ENV{PATH} = $env->{PATH};
+    corepack_ready($env) or return;
+    # stamp: the probe's digest first (rd_pool.deps_shas: lockfile + package.json + .npmrc), then every
+    # other install input - pnpm-workspace.yaml, .pnpmfile.cjs, every package.json below, patches/
+    my @ws;
+    File::Find::find({ no_chdir => 1, preprocess => sub { grep { $_ ne 'node_modules' && $_ ne '.git' } @_ },
+                       wanted => sub { push @ws, $_ if -f $_ && (m{/package\.json$} || index($_, "$dir/patches/") == 0) } },
+                     $dir);
+    push @ws, grep { -f } "$dir/pnpm-workspace.yaml", "$dir/.pnpmfile.cjs";
+    my $stamp = sha_files("$dir/pnpm-lock.yaml", "$dir/package.json", "$dir/.npmrc") . ' ' . sha_files(sort @ws)
+              . " $nodev pnpm\@$ver install --frozen-lockfile";
+    return if slurp("$dir/node_modules/.rr-deps-stamp") eq $stamp;    # warm: these packages are there
+    $setup_kind = 'cold';
+    print STDERR "rrun: pnpm\@$ver install --frozen-lockfile  (in ./$rel; this worker's store ~/rr/pnpm-store)\n";
+    my $rc = supervise(spawn(["$tools/bin/pnpm", 'install', '--frozen-lockfile', "--store-dir=$ROOT/pnpm-store",
+                              '--config.confirm-modules-purge=false', '--reporter=append-only'],
+                             $env, $dir, "$tmp/npm.log"));
+    return if $lost || $intr;
+    deps_failed("pnpm install --frozen-lockfile", $rel, $rc) if $rc;
+    write_file("$dir/node_modules/.rr-deps-stamp", $stamp);
+}
+
+# --------------------------------------------------------------------- repo policy + Postgres lane
+# 2026-11-13 (rd_common rr_pg_lanes; header repo_policy, pg_lane). A repo under the policy, on EVERY
+# command: policy_env drops every client-sent *DATABASE_URL* / PG* name and the strip_env globs (the
+# client already did; this is the authority) and sets the spec's env; policy_files, before any install
+# script runs, refuses (65) an env file the client sent and walks the whole mirror (not node_modules /
+# .git) for .env* (not *.example / *.sample / *.template): a tracked one refuses (65), an ignored
+# leftover is deleted. The lane (pg_lane) adds, all BEFORE GO: a fresh container (pg_up: name
+# rr-pg-<run id>, its id from --cidfile, this run's rdocker.rrun label, tmpfs data, published on
+# 127.0.0.1 only; not answering = 70, never ran), DATABASE_URL = postgres://user:${password}@127.0.0.1:
+# <port>/db, the setup steps in the mirror root with GITHUB_ENV = a private file (output to a log;
+# only a userinfo-redacted tail is shown on failure; a failed step = 79), then app_url_env must read
+# EXACTLY postgres(ql)://<app_role>:<pw>@127.0.0.1:<port>/<db> (no query, no fragment) or the run is
+# refused (65). policy_final, the last look before GO: only those exact URLs, no other DB URL name.
+# pg_down (finish) removes the container by its id, only after checking it carries this run's label,
+# and says so when that fails; it is never KEPT. The app role's password is made per run by the setup
+# step, exists only in that container (loopback, tmpfs) and dies with it; values are never printed.
+my ($pg_id, $pg_port);
+sub is_env_name { my ($n) = @_; $n =~ s{.*/}{}; $n =~ /^\.env/ && $n !~ /\.(?:example|sample|template)$/ }
+sub redact_urls { (my $s = $_[0] // '') =~ s{([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@'"]*@}{$1****@}g; $s }
+sub show_tail {    # the last $n lines of a log, userinfo redacted
+    my ($path, $n) = @_;
+    my @l = grep { length } split /\n/, slurp($path);
+    print STDERR map { '  ' . redact_urls($_) . "\n" } @l > $n ? @l[-$n .. -1] : @l;
+}
+
+sub check_policy {
+    my ($p) = @_;
+    my $word = qr/^[A-Za-z0-9_]{1,63}$/;
+    my $name = qr/^[A-Za-z_][A-Za-z0-9_]*$/;
+    fail("bad repo_policy", 65) unless ref $p eq 'HASH';
+    ($p->{$_} // '') =~ $word or fail("bad repo_policy $_", 65) for qw(user password db app_role);
+    ($p->{app_url_env} // '') =~ $name or fail("bad repo_policy app_url_env", 65);
+    ($p->{image} // '') =~ m{^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+$} or fail("bad repo_policy image", 65);
+    $p->{$_} //= [] for qw(setup strip_env);
+    $p->{env} //= {};
+    fail("bad repo_policy setup", 65) unless ref $p->{setup} eq 'ARRAY'
+        && !grep { ref ne 'ARRAY' || !@$_ || grep { ref || !length || /\0/ } @$_ } @{ $p->{setup} };
+    fail("bad repo_policy env", 65) unless ref $p->{env} eq 'HASH'
+        && !grep { !/$name/ || ref $p->{env}{$_} || $p->{env}{$_} =~ /\0/ || /DATABASE_URL/i } keys %{ $p->{env} };
+    fail("bad repo_policy strip_env", 65)
+        unless ref $p->{strip_env} eq 'ARRAY' && !grep { ref || !/^[A-Za-z_*][A-Za-z0-9_*]*$/ } @{ $p->{strip_env} };
+}
+
+sub policy_env {
+    my ($env) = @_;
+    my $p = $h{repo_policy};
+    my @strip = map { (my $g = quotemeta) =~ s/\\\*/.*/g; qr/^$g$/ } @{ $p->{strip_env} };
+    for my $k (keys %$env) {
+        delete $env->{$k} if $k =~ /DATABASE_URL/i || $k =~ /^PG/i || grep { $k =~ $_ } @strip;
+    }
+    $env->{$_} = $p->{env}{$_} for keys %{ $p->{env} };
+}
+
+sub policy_files {
+    my @sent = grep { is_env_name($_) } map { $_->[0] } @overlay;
+    fail("refusing: env file(s) were sent (" . join(', ', @sent) . "); this repo's runs never take one", 65) if @sent;
+    run_cmd("$tmp/envls", 'git', '-C', $mirror, 'ls-files', '-z', '--', ':(glob)**/.env*') == 0
+        or fail("git ls-files failed in the mirror");
+    my %tracked = map { $_ => 1 } split /\0/, slurp("$tmp/envls");
+    my @found;
+    File::Find::find({ no_chdir => 1, preprocess => sub { grep { $_ ne 'node_modules' && $_ ne '.git' } @_ },
+                       wanted => sub { push @found, $_ if (-f $_ || -l $_) && is_env_name($_) } }, $mirror);
+    for my $f (sort @found) {
+        my $rel = substr($f, length("$mirror/"));
+        fail("refusing: this repo tracks env file $rel; its pool runs never take one", 65) if $tracked{$rel};
+        unlink $f or fail("could not remove a leftover $rel from the mirror: $!", 65);
+        print STDERR "rrun: removed a leftover $rel from the worker's mirror (this repo's runs never take env files)\n";
+    }
+}
+
+sub db_url_ok { my ($u, $port) = @_; my $p = $h{repo_policy};
+    defined $u && defined $port && $u eq "postgres://$p->{user}:$p->{password}\@127.0.0.1:$port/$p->{db}" }
+sub app_url_ok { my ($u, $port) = @_; my $p = $h{repo_policy};
+    defined $u && defined $port
+        && $u =~ m{\Apostgres(?:ql)?://\Q$p->{app_role}\E:[A-Za-z0-9_-]{16,128}\@127\.0\.0\.1:\Q$port\E/\Q$p->{db}\E\z} }
+
+sub pg_up {
+    my ($env) = @_;
+    my $p = $h{repo_policy};
+    my $sh = <<'SH';
+#!/bin/sh
+# rrun db lane: start this run's Postgres and wait until it answers (generated; deleted when the run ends)
+D='@REAL@' N='@NAME@' U='@USER@' B='@DB@'
+"$D" run -d --cidfile '@TMP@/pg.cid' --name "$N" --label 'rdocker.rrun=@LABEL@' --label rdocker.pg-lane=1 \
+  -e POSTGRES_USER="$U" -e POSTGRES_PASSWORD='@PW@' -e POSTGRES_DB="$B" \
+  -p 127.0.0.1::5432 --tmpfs /var/lib/postgresql/data --shm-size 256m '@IMAGE@' \
+  -c fsync=off -c synchronous_commit=off -c full_page_writes=off >/dev/null || exit 1
+C=$(cat '@TMP@/pg.cid')
+end=$(( $(date +%s) + @WAIT@ ))
+until "$D" exec "$C" pg_isready -q -h 127.0.0.1 -p 5432 -U "$U" -d "$B"; do
+  [ "$(date +%s)" -ge "$end" ] && { echo "postgres did not answer within @WAIT@ s" >&2; "$D" logs --tail 20 "$C" >&2; exit 1; }
+  sleep 0.5
+done
+P=$("$D" port "$C" 5432/tcp | sed -n 's/^127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -n 1)
+[ -n "$P" ] || { echo "no 127.0.0.1 port published for $N" >&2; exit 1; }
+until '@PERL@' -MIO::Socket::INET -e 'exit(IO::Socket::INET->new(PeerAddr => "127.0.0.1", PeerPort => $ARGV[0], Timeout => 1) ? 0 : 1)' "$P"; do
+  [ "$(date +%s)" -ge "$end" ] && { echo "127.0.0.1:$P did not answer within @WAIT@ s" >&2; exit 1; }
+  sleep 0.5
+done
+echo "$P" > '@TMP@/pg.port'
+SH
+    for ($REAL_DOCKER, $^X, $tmp) { fail("db lane: path must not contain a quote", 65) if /'/ }
+    my $name = 'rr-pg-' . ($run_id // $label);
+    my %v = (REAL => $REAL_DOCKER, NAME => $name, USER => $p->{user}, DB => $p->{db}, LABEL => $label,
+             PW => $p->{password}, IMAGE => $p->{image}, WAIT => 120, PERL => $^X, TMP => $tmp);
+    $sh =~ s/\@([A-Z]+)\@/$v{$1}/g;
+    write_file("$tmp/pg-up", $sh);
+    print STDERR "rrun: db lane: starting a run-local $p->{image} on this worker\n";
+    my $rc = supervise(spawn(['/bin/sh', "$tmp/pg-up"], $env, $tmp, "$tmp/pg.log"));
+    ($pg_id) = slurp("$tmp/pg.cid") =~ /^([0-9a-f]{64})\s*$/;    # set once created: cleanup by this id only
+    return if $lost || $intr;
+    my ($port) = slurp("$tmp/pg.port") =~ /^(\d{1,5})$/m;
+    if ($rc || !$port || !$pg_id) {
+        show_tail("$tmp/pg.log", 20);
+        fail("the run-local Postgres ($p->{image}) did not come up on this worker; the command was not started", 70);
+    }
+    $env->{DATABASE_URL} = "postgres://$p->{user}:$p->{password}\@127.0.0.1:$port/$p->{db}";
+    my $gh = "$tmp/pg.ghenv";
+    my %senv = (%$env, GITHUB_ENV => $gh);
+    my $i = 0;
+    for my $step (@{ $p->{setup} }) {
+        my $log = "$tmp/pg-step" . $i++ . ".log";
+        write_file($gh, '');
+        my $t0 = time;
+        my $src = supervise(spawn($step, \%senv, $mirror, $log));
+        return if $lost || $intr;
+        if ($src) {
+            show_tail($log, 25);
+            fail(sprintf("db lane: `%s` failed on the worker (exit %d); the command was not started",
+                         join(' ', @$step), $src), 79);
+        }
+        print STDERR sprintf("rrun: db lane: %s ok (%.0fs)\n", join(' ', @$step), time - $t0);
+    }
+    my $k = $p->{app_url_env};
+    my ($app) = (map { /^\Q$k\E=(.*)$/ ? $1 : () } split /\n/, slurp($gh))[-1];
+    unlink $gh;
+    fail("refusing the db lane: the setup steps did not provide $k (the tests that need it would skip "
+       . "silently); the command was not started", 65) unless defined $app;
+    fail("refusing the db lane: $k is not exactly this run's Postgres ($p->{app_role} on 127.0.0.1:$port/"
+       . "$p->{db}, no query); the command was not started", 65) unless app_url_ok($app, $port);
+    $env->{$k} = $app;
+    $pg_port = $port;
+    print STDERR "rrun: db lane: ready - DATABASE_URL and $k point at this run's Postgres "
+               . "(127.0.0.1:$port on the worker, removed when the run ends)\n";
+}
+
+sub policy_final {    # the last look before GO: only this run's exact DB URLs
+    my ($env) = @_;
+    my $p = $h{repo_policy};
+    my %ok;
+    if ($h{pg_lane}) {
+        fail("refusing: DATABASE_URL is not exactly this run's Postgres", 65) unless db_url_ok($env->{DATABASE_URL}, $pg_port);
+        fail("refusing: $p->{app_url_env} is not exactly this run's Postgres", 65)
+            unless app_url_ok($env->{ $p->{app_url_env} }, $pg_port);
+        %ok = (DATABASE_URL => 1, $p->{app_url_env} => 1);
+    }
+    my @extra = sort grep { /DATABASE_URL/i && !$ok{$_} } keys %$env;
+    fail("refusing: " . join(', ', @extra) . " would reach the command; only rrun sets this repo's DB URLs", 65) if @extra;
+}
+
+sub pg_down {
+    return unless defined $pg_id && $role ne 'follower' && -x $REAL_DOCKER;
+    my $id = $pg_id;
+    undef $pg_id;
+    open(my $ph, '-|', $REAL_DOCKER, 'inspect', '-f', '{{index .Config.Labels "rdocker.rrun"}}', $id) or return;
+    my $lab = do { local $/; <$ph> } // '';
+    close $ph;
+    my $irc = $?;
+    chomp $lab;
+    if ($irc) {    # gone already (or the engine is down: then the doctor reaps it by its label)
+        print STDERR "rrun-runner: db lane container " . substr($id, 0, 12) . " could not be inspected for removal\n"
+            if run_cmd('/dev/null', $REAL_DOCKER, 'container', 'inspect', $id) == 0;
+        return;
+    }
+    if ($lab ne $label) {
+        print STDERR "rrun-runner: not removing container " . substr($id, 0, 12) . ": it is not this run's\n";
+        return;
+    }
+    run_cmd('/dev/null', $REAL_DOCKER, 'rm', '-f', '-v', $id) == 0
+        or print STDERR "rrun-runner: could not remove the db lane container " . substr($id, 0, 12)
+                      . " (rdocker.rrun label: the doctor reaps it once the run is gone)\n";
 }
 
 # ------------------------------------------------------------------------------- process
@@ -1551,6 +1835,7 @@ sub finish {
     local $SIG{$_} = 'IGNORE' for qw(INT TERM HUP);    # cleanup must not be cut short
     eval { end_node_probe() };    # a signal during node_version(): its probe must not outlive us
     eval { delete_env_files(0) };
+    eval { pg_down() };                # the lane's Postgres goes whatever the result (never KEPT)
     eval { containers($rc) } if $started;
     leave_waiters();
     unlink $own if $own;

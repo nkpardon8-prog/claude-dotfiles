@@ -329,13 +329,16 @@ class RewriteMatrix(HookBase):
                 self.assertIsNone(self.rewritten(cmd))
 
     def test_project_kinds(self):
-        """No git repo -> nothing; pnpm/yarn lockfile -> nothing; no lockfile -> only the patterns."""
+        """No git repo -> nothing; yarn lockfile -> nothing; no lockfile -> only the patterns; a pnpm
+        project (workers install it with pnpm via corepack) routes only rd_pnpm.exact_form's shapes
+        (tests/test_pnpm.py covers workspaces)."""
         pn = project(self.home, "pn", lock="pnpm-lock.yaml")
         yn = project(self.home, "yn", lock="yarn.lock")
         bare = project(self.home, "nolock", lock=None)
         loose = project(self.home, "loose", git=False)
         for cmd, cwd, want in (
-                ("npx vitest run a", pn, None), ("npm run lint", pn, None), ("pnpm typecheck", pn, None),
+                ("npx vitest run a", pn, "rrun npx vitest run a"), ("npm run lint", pn, None),   # not an exact form
+                ("pnpm typecheck", pn, "rrun pnpm typecheck"), ("pnpm build", pn, None),
                 ("npm run test:db", yn, None), ("npx tsc --noEmit", yn, None),
                 ("npx vitest run a", bare, None), ("npm test", bare, None),
                 ("npm run test:db", bare, "rrun npm run test:db"),          # a pattern: as before
@@ -566,6 +569,17 @@ class Builds(HookBase):
                 ("npm run build", self.home, None)):             # not a git repo
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assertEqual(self.at(cmd, cwd), want)
+
+    def test_a_mapped_build_with_a_watch_or_update_flag_stays(self):
+        """Review round 2 finding 8: the mapped-build fast path skipped judge(); its decoded words now get
+        the same veto (-w / -u / -o / --watch / --update ..., quoted or not)."""
+        admin = os.path.join(self.repo, "admin-client")
+        for cmd in ("npm run build -w", "npm run build -- --watch", "npm run build '--watch'", "npm run build -u",
+                    "npm run build -- -o out", "cd ../server && npm run build --update",
+                    "npm run build -- x#y --watch", "npm run build -- a#b -w"):   # an in-word # hides nothing
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.at(cmd, admin))
+        self.assertEqual(self.at("npm run build", admin), "rrun npm run build")
 
     def test_rr_outputs_config_replaces_the_map(self):
         d = os.path.join(self.home, ".config", "rdocker")
