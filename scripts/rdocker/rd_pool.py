@@ -430,6 +430,21 @@ if ($o{os} eq "linux") {
     if (defined $lvl && $tot) { $o{mem_free_pct} = $lvl + 0; $o{mem_avail_mb} = int($tot / 1048576 * $lvl / 100) }
     ($o{load1}) = sc("vm.loadavg") =~ /([\d.]+)/; ($o{ncpu}) = sc("hw.ncpu") =~ /^(\d+)/;
 }
+# x86: the CPU's x86-64 level (1-4) from its feature flags; none on ARM (rd_pool.no_newer_cpu)
+{
+    my $fl = $o{os} eq "linux" ? (slurp(($ENV{RR_PROC} // "/proc") . "/cpuinfo") =~ /^flags\s*:([^\n]*)/m)[0]
+           : lc(join " ", map { sc("machdep.cpu.$_") } qw(features extfeatures leaf7_features));
+    my %mac = ("sse4.1" => "sse4_1", "sse4.2" => "sse4_2", "avx1.0" => "avx", sse3 => "pni", lahf => "lahf_lm",
+               lzcnt => "abm");
+    my $f = " " . join(" ", map { $mac{$_} // $_ } split ' ', $fl // "") . " ";
+    my $has = sub { !grep { index($f, " $_ ") < 0 } @_ };
+    if ($has->(qw(sse2))) {
+        $o{x86} = 1;
+        $o{x86} = 2 if $has->(qw(cx16 pni ssse3 sse4_1 sse4_2 lahf_lm popcnt));
+        $o{x86} = 3 if $o{x86} == 2 && $has->(qw(avx avx2 bmi1 bmi2 fma movbe abm f16c));
+        $o{x86} = 4 if $o{x86} == 3 && $has->(qw(avx512f avx512bw avx512cd avx512dq avx512vl));
+    }
+}
 sub busy { my ($f) = @_; sysopen(my $h, $f, O_RDONLY | O_NOFOLLOW) or return 0;
     return 0 if flock($h, LOCK_SH | LOCK_NB); 1 }
 # the owner's share switch (same rule as rr_runner.pl share_level): no file = max; off/some/max; else off
@@ -521,6 +536,7 @@ $o{rcache} = rcache($R, $q->{rcache}) if ref $q->{rcache} eq "HASH";
 #   kind  [n, median] of completed command seconds of the job's kind (q.kind, kinds = q.kinds: first match)
 #   pk    {sha1(sig)[0,8]: [n, median]} for the job's kind (paired-command ratios across workers)
 #   all   [n, median] of every completed command (a slot holder's typical run, queue estimate)
+#   isa   [n, last epoch] of this repo's (q.slug) rc=132 runs (SIGILL) in the last q.isa_days days
 #   jobs[].med  the median of a running job's own command here (queue estimate)
 if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     require Time::Local; require Digest::SHA;
@@ -540,7 +556,9 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         my @l = do { local $/ = "\n"; <$lf> }; shift @l if $sz > $max;
         unshift @text, @l;
     }
-    my (@rows, %by, @kc);
+    my (@rows, %by, @kc, @isa);
+    my $slug = $q->{slug} // "";
+    my $isa_lo = $now - 86400 * (($q->{isa_days} // "") =~ /^\d+$/ ? $q->{isa_days} : 7);
     my $med = sub { my @v = sort { $a <=> $b } @_; my $n = @v; $n ? ($n % 2 ? $v[$n >> 1] : ($v[$n / 2 - 1] + $v[$n / 2]) / 2) : undef };
     for my $l (@text) {
         my ($y, $mo, $d, $hh, $mi, $ss, $sg, $oh, $om, $out, $ps, $cs, $argv, $tail) = $l =~
@@ -550,7 +568,8 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         next if $t < $lo || $t > $now;
         my %kv = map { /^([a-z_]+)=(.*)$/ ? ($1 => $2) : () } split / /, $tail // "";
         $argv =~ s/ \[cpu_share=[^\]]*\]$//;
-        my $code = $out =~ /^rc=0$/ ? "pass" : $out =~ /^rc=(134|137)$/ ? "infra" : $out =~ /^rc=\d+$/ ? "fail"
+        my $code = $out =~ /^rc=0$/ ? "pass" : $out =~ /^rc=(134|137)$/ ? "infra" : $out eq "rc=132" ? "isa"
+                 : $out =~ /^rc=\d+$/ ? "fail"
                  : $out =~ /^(timeout|lost) rc=\d+$/ || $out =~ /^(deps-failed|error rc=\d+|refused rc=\d+)$/ ? "infra"
                  : $out =~ /^interrupted rc=\d+$/ ? "stop" : $out =~ /^(lost|interrupted|abandoned-setup)$/ ? "aband"
                  : $out eq "moved" ? "moved" : $out eq "busy" ? "busy" : $out eq "warm" ? "warm" : "other";
@@ -558,6 +577,8 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         my $cold = ($kv{setup} // "") eq "cold" ? 1 : ($kv{setup} // "") =~ /^(warm|clone)$/ ? 0
                  : defined $p ? ($p > 15 ? 1 : 0) : undef;     # rows before setup= : > 15 s means an install ran
         push @rows, [$code, $p, $cold];
+        if ($code eq "isa" && $t >= $isa_lo && $slug ne "" && index($l, " repo=$slug ") >= 0) {
+            $isa[0]++; $isa[1] = $t if !defined $isa[1] || $t > $isa[1] }
         if ($out =~ /^rc=[01]$/ && $cs =~ /^\d+(\.\d+)?$/) {
             push @{ $by{$argv} }, $cs + 0;
         }
@@ -572,6 +593,7 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         $ev{pk}{substr(Digest::SHA::sha1_hex($sig), 0, 8)} = [scalar @{ $by{$sig} }, $med->(@{ $by{$sig} })];
     }
     $ev{kind} = [scalar @kc, $med->(@kc)];
+    $ev{isa} = \@isa if @isa;
     my @all = map { @$_ } values %by;
     $ev{all} = [scalar @all, $med->(@all)];
     for my $j (@jobs) { my $v = $by{$j->{cmd} // ""}; $j->{med} = $med->(@$v) if $v }
@@ -680,6 +702,15 @@ WARM_SETUP_S = 2.0           # a warm prepare (checkout + overlay) without evide
 COLD_BUDGET_S = 60.0         # rr_cold_budget_s: measured cold-setup p75 above this -> warm jobs only
 SHARD_SLOW_X = 2.0           # a worker whose shard would take > this x the fastest's gets none
 FAIR = ("pass", "fail", "infra")     # outcomes of runs that got a fair start (p_infra's denominator)
+# A worker whose CPU lacks an instruction a repo's code uses (a native package built for a newer x86
+# level: x86-64-v3 code on an AVX-only i5) kills the command with SIGILL, exit 132. That is not the
+# code's failure and not the worker's health (other repos run fine there): runs.log keeps it as
+# outcome=rc=132 (probe code "isa", outside FAIR), and the probe sends this repo's count (ev.isa) -
+# see isa_skips for who is skipped for this repo for ISA_DAYS (rr_isa_days, capped at rr_history_days).
+# Measured, never declared; a new history_since forgets it. A SIGILL on every CPU tier is the code's
+# own (a trap, an explicit exit 132): it skips nobody, so a repo is never locked out of the pool.
+ISA_RC = 128 + 4             # SIGILL
+ISA_DAYS = 7
 
 
 def kind_of(sig):
@@ -707,6 +738,62 @@ def ev(host):
 
 def ev_rows(host):
     return [r for r in ev(host).get("rows") or [] if isinstance(r, list) and len(r) == 3]
+
+
+def isa_crashes(host):
+    """How many times this repo's command crashed with SIGILL on this worker lately (probe ev.isa)."""
+    v = ev(host).get("isa")
+    return int(_num(v[0], 0)) if isinstance(v, list) and v else 0
+
+
+def x86_level(host):
+    v = _num((host.probe or {}).get("x86"))
+    return int(v) if v in (1, 2, 3, 4) else None
+
+
+def no_newer_cpu(h, than):
+    """True when both CPUs' x86 levels are known and h's is no newer than `than`'s: code that hit an
+    illegal instruction on `than` would hit it on h too."""
+    a, b = x86_level(h), x86_level(than)
+    return a is not None and b is not None and a <= b
+
+
+def isa_days(cfg):
+    """The SIGILL window in days: rr_isa_days, capped at the evidence window (rr_history_days) - the
+    probe only reads rows inside that one."""
+    return max(1, min(int(_num(cfg.get("rr_isa_days"), ISA_DAYS)), int(_num(cfg.get("rr_history_days"), EV_DAYS))))
+
+
+def isa_skips(hosts, cfg, bad=()):
+    """-> [(h, why)]: the workers (not already in `bad`) skipped for this repo because of SIGILL runs
+    in its runs.log evidence (isa_crashes), judged across the whole pool:
+      - a crash on a CPU tier while a HIGHER tier crashed too = the code's own: no worker is skipped
+      - a crash on the top known tier alone says nothing about the CPU: no worker is skipped
+      - a crash below a higher known tier: that worker and every worker whose CPU is no newer
+      - a crash on a worker whose tier is unknown: that worker only
+    and never every worker that is left (unknown tiers that all crashed): then no worker is skipped."""
+    crashed = [c for c in hosts if isa_crashes(c)]
+    lv = {h: x86_level(h) for h in hosts}
+    known = [x for x in lv.values() if x is not None]
+    if any(lv[a] is not None and lv[b] is not None and lv[b] > lv[a] for a in crashed for b in crashed):
+        return []
+    days, out = isa_days(cfg), {}
+    for c in crashed:
+        if lv[c] is not None and not any(x > lv[c] for x in known):
+            continue
+        n = isa_crashes(c)
+        out.setdefault(c, "this repo crashed there with SIGILL (exit 132, illegal instruction) %s in the last %d "
+                          "days: its CPU%s lacks an instruction this repo's code needs" % (
+                              "once" if n == 1 else "%d times" % n, days,
+                              " (x86-64-v%d)" % lv[c] if lv[c] else ""))
+        for h in hosts:
+            if h not in out and lv[c] is not None and no_newer_cpu(h, c):
+                out[h] = "its CPU (x86-64-v%d) is no newer than %s's (v%d), where this repo crashed with SIGILL " \
+                         "(exit 132)" % (lv[h], c.name, lv[c])
+    skip = dict(bad)
+    if not [h for h in hosts if h not in skip and h not in out]:
+        return []                        # a SIGILL everywhere is the code's: never lock the repo out
+    return [(h, why) for h, why in out.items() if h not in skip]
 
 
 def p_infra(host):
@@ -813,6 +900,7 @@ def eligibility(host, job, cost_s=None, probed=False, cfg=None):
                   must be <= rr_cold_budget_s (COLD_BUDGET_S): a slow-disk worker is warm-only
                   until its measured cold setup is fast enough (an SSD), with no fleet change
     cost / cold need a probe (probed=True); an unprobed plan (one worker, --host) checks the class only.
+    SIGILL skips are judged across the pool, not per worker: plan() adds isa_skips.
     A worker that did not answer the probe is judged on its class and cost (cold unknown)."""
     classes = _f(host.entry, "classes")
     if isinstance(classes, list) and job["cls"] not in classes:
@@ -843,7 +931,8 @@ def no_eligible_msg(job, ineligible):
     if costs:
         what += ", predicted ~%s" % fmt_s(min(costs))
     return ("no eligible worker for this job (%s): %s - each worker's classes / max_cost_s / cold_ok are "
-            "set in fleet.json" % (what, "; ".join("%s %s" % (h.name, why) for h, why in ineligible)))
+            "set in fleet.json; a SIGILL skip is measured (rr_isa_days)"
+            % (what, "; ".join("%s %s" % (h.name, why) for h, why in ineligible)))
 
 
 def mem_factor(avail_mb, need_gb):
@@ -1033,7 +1122,8 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None):
     home = home_of(hosts) if rcache else None
     req = {"slug": slug, "deps": [list(d) for d in deps], "sig": job.get("sig") or "",
            "kind": kind_of(job.get("sig") or ""), "kinds": [list(k) for k in KINDS],
-           "days": int(_num(cfg.get("rr_history_days"), EV_DAYS)), "rows": int(_num(cfg.get("rr_history_rows"), EV_ROWS))}
+           "days": int(_num(cfg.get("rr_history_days"), EV_DAYS)), "rows": int(_num(cfg.get("rr_history_rows"), EV_ROWS)),
+           "isa_days": isa_days(cfg)}
 
     def req_for(h):
         r = dict(req, slots=h.cfg.get("rr_slots", 1))
@@ -1058,6 +1148,7 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None):
         why = eligibility(h, job, h.cost_s, probed=True, cfg=cfg)
         if why:
             bad.append((h, why))
+    bad += isa_skips(hosts, cfg, bad)
     # measured cold eligibility never leaves a job with nowhere to go: when no worker that can take
     # work (free, or busy with an eta) is left, the one whose cold setup measured fastest takes it after
     # all - a worker that merely answered (share off, low memory) does not count

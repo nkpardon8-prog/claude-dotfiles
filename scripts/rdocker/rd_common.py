@@ -165,6 +165,7 @@ DEFAULTS = {
     "rr_cold_budget_s": 60,            # a worker whose measured cold-setup p75 is above this takes warm jobs only
     "rr_history_days": 14,             # evidence window (fleet.json history_since cuts it further per worker)
     "rr_history_rows": 300,            # rates (infra, setup) over the last this many runs of it
+    "rr_isa_days": 7,                  # a repo whose command died of SIGILL (exit 132) on a worker skips it this long
     # untracked/ignored env files copied for a run (basename globs), looked up ONLY in the repo
     # root, the command's cwd and the deps (lockfile) dirs; a symlink resolving outside the
     # worktree is skipped. 0600 on the mini and deleted when the run ends

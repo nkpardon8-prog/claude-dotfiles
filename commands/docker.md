@@ -462,15 +462,18 @@ and runs a scenario that emits each one):
 | 73   | infra       | every worker stayed busy past `rr_wait_min`; never ran |
 | 75   | infra       | never ran: no worker reachable, lost before the start, `RRUN_STRICT=1`, a heavy/DB job with no worker |
 | 76   | infra       | may have run: the link (every reconnect) or the worker's record of the result was lost after the start, the runner ended after the start without the command's exit status, or a build's outputs could not be copied back |
-| 77   | needs-human | no worker may take this job (fleet.json `classes` / `max_cost_s` / `cold_ok`) |
+| 77   | needs-human | no worker may take this job (fleet.json `classes` / `max_cost_s` / `cold_ok`, or this repo crashed with SIGILL on every candidate) |
 | 124  | infra       | hit its wall-clock cap (`RRUN_TIMEOUT`) and was killed |
+| 132  | infra       | SIGILL on a worker: its CPU lacks an instruction this repo's code uses (a native package built for a newer x86 level, e.g. x86-64-v3 code on the AVX-only minis). A job safe to repeat (tests, typecheck, lint, build, a DB job's throwaway DB) has already re-run once on a worker whose CPU is not known to be as old; this code means no such rerun was possible. That CPU tier is skipped for this repo for `rr_isa_days` (7) while the pool has a newer one - see the scheduler's eligibility. A SIGILL on the rerun too is `fail` (exit 132, `crashed with SIGILL on every CPU tier tried`): a trap or an explicit exit 132 in the code |
 | 65   | needs-human | the worker refused the request (bad input or an unsafe path, e.g. a symlinked mirror) |
 | 69   | infra       | the repo was missing on the worker; never ran |
 | 70   | infra       | the worker's runner failed; never ran |
 | 78   | infra       | installing dependencies on the worker failed (`npm ci` / `pnpm install` / `prisma generate`); never ran - the last 25 lines of its npm log are shown, not the whole log |
 | 79   | fail        | the DB lane's setup step (`pnpm db:migrate` / `pnpm db:provision`) failed on the worker; the command was not started - its redacted log tail is shown: fix the migration / provision script |
 
-128+N: stopped by signal N (Ctrl-C, a tool's TERM) - `infra`, rerun if you still need it. Any other
+128+N: stopped by signal N (Ctrl-C, a tool's TERM) - `infra`, rerun if you still need it. A command that
+dies of SIGILL on a worker (exit 132) is not the code's result either (row 132); on this machine (local
+fallback, `RDOCKER_MODE=local`) a 132 stays the command's own `fail`. Any other
 code is the command's own (`fail`): after the start only the worker's authenticated EXIT status is
 the command's result. A sharded run is the test result when every shard ran (any real shard failure is
 the result), `infra` when a shard gave none.
@@ -486,7 +489,8 @@ names the last test file; fix the teardown, or `RRUN_TIMEOUT=<min>` if it is rea
 back to the laptop every time → `rdocker doctor` (the push over ssh is the reachability test). Exit 73 →
 every worker stayed busy for `rr_wait_min` (the wait lines name the holders). Exit 75 → no worker could
 start it (check `rdocker status`, then rerun). A `... mention DATABASE_URL` line → rerun through `npm
-run test:db`, which provisions the DB.
+run test:db`, which provisions the DB. Exit 132 → a worker's CPU could not run this repo's code; just
+rerun (`rrun --where` lists the skipped workers as `never this repo crashed there with SIGILL ...`).
 Exit 76 → the link or the result was lost after the start (rerun; a DB job: check its side effects).
 Exit 77 → `rrun: needs-human (exit 77, 0s; no eligible worker for this job (class heavy, predicted ~15m):
 laptop takes only light/normal/db jobs (this is heavy); ...` - every worker's fleet.json eligibility
@@ -514,6 +518,16 @@ job and one that comes back (or is added to fleet.json) is used at once.
   change. If that rule alone would leave a job nowhere to go, the worker with the fastest measured cold
   setup takes it. No field = no limit. A worker that fails one is **not a candidate at all** for that
   job: not ranked, not the wait host, no shard, no hedge. `rrun --where` lists it as `never <why>`.
+  **SIGILL is measured too (2026-11-13), no field:** the probe reads each worker's x86-64 level (1-4)
+  from its CPU flags (`/proc/cpuinfo`, macOS `sysctl machdep.cpu`; v2 = cx16 pni ssse3 sse4_1 sse4_2
+  lahf_lm popcnt, v3 = + avx avx2 bmi1 bmi2 fma movbe abm f16c, v4 = + AVX-512) and this repo's
+  SIGILL runs (`runs.log` `outcome=rc=132`) in the last `rr_isa_days` (7, capped at `rr_history_days`).
+  Judged across the pool: a crash on a tier below a newer known tier skips that worker and every worker
+  whose CPU is no newer for this repo (other repos still run there) - one crash on mini-a (v2) also
+  skips mini-b (v2) while hp (v3) takes it; a crash on a worker whose tier is unknown skips that worker
+  only. It skips **nobody** when a higher tier crashed too, when only the top known tier crashed, or
+  when it would skip every worker left: a SIGILL everywhere is the code's own, so a repo is never
+  locked out. A 132 row is not counted in the worker's infra rate. A new `history_since` forgets it.
   Nothing eligible → exit 77 at once with the reasons. A plan without a probe (`--host`, a one-worker
   fleet) checks the class only. `history_since` (a unix epoch, per worker): its `runs.log` rows before
   it are ignored - set it at a hardware or config change. New fields need the matching code on every

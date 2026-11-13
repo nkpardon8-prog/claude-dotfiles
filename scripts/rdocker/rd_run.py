@@ -118,6 +118,7 @@ EXIT_BUSY = 73                 # infra: every worker stayed busy (never ran)
 PUSH_TIMEOUT_S = 300            # rr_push_timeout_s: a git push that hangs longer = that worker is out
 EXIT_WT_BUSY = 72              # this worktree stayed busy (lanes / its gate) past our wait
 EXIT_TIMEOUT = 124             # like timeout(1): the command ran past its wall-clock cap and was killed
+EXIT_SIGILL = rd_pool.ISA_RC   # 132: SIGILL on a worker - its CPU cannot run this repo's code (rd_pool "isa")
 EXIT_CODES = {                 # code -> (class, meaning): the one table the docs and the test follow
     EXIT_WT_BUSY: ("infra", "this worktree stayed busy (its lanes, or a run writing into it) past the wait; never ran"),
     EXIT_BUSY: ("infra", "every worker stayed busy; never ran"),
@@ -125,6 +126,8 @@ EXIT_CODES = {                 # code -> (class, meaning): the one table the doc
     EXIT_MAY_HAVE_RUN: ("infra", "may have run: the link or the result was lost after the start"),
     EXIT_CONFIG: ("needs-human", "no worker may take this job (fleet.json)"),
     EXIT_TIMEOUT: ("infra", "hit its wall-clock cap (RRUN_TIMEOUT) and was killed"),
+    EXIT_SIGILL: ("infra", "SIGILL on a worker: its CPU lacks an instruction this repo's code uses; that CPU tier "
+                           "is skipped for this repo for rr_isa_days (a SIGILL on every tier tried is fail)"),
     65: ("needs-human", "the worker refused the request (bad input or an unsafe path)"),
     69: ("infra", "the repo was missing on the worker; never ran"),
     70: ("infra", "the worker's runner failed; never ran"),
@@ -2312,6 +2315,7 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
     whole job this run is (a shard: 1/n), for the hedge's expected time."""
     job, t0 = ctx.job, ctx.t0
     i, tries, retried, failed = 0, 0, False, set()
+    crashed = []                         # workers where it died of SIGILL in this rrun (kind "isa")
     busy_t0 = round_t0 = time.monotonic()
     slot_busy = False
     total = 60.0 * float(ctx.cfg.get("rr_wait_min", 30))
@@ -2329,6 +2333,32 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
             return "local", val
         failed.add(i)
         nxt = next_host(hosts, failed)
+        if kind == "isa":
+            # the worker's CPU cannot run this repo's code (SIGILL): it and every worker whose CPU is no
+            # newer (rd_pool.no_newer_cpu) leave this job's list for good - a later "no slot, next host"
+            # must not land there either - then it reruns once, like a lost worker; placement skips them
+            # from the next plan on (runs.log rc=132). A SIGILL again on the rerun's worker (picked as a
+            # newer CPU, or one not known to be as old) is the code's own: a trap or an explicit exit 132
+            crashed.append(h)
+            if len(crashed) > 1:
+                return "done", Rc(EXIT_SIGILL, "fail", "%scrashed with SIGILL on every CPU tier tried (%s): a bug "
+                                  "in the code, not the worker" % (tag, ", ".join(
+                                      "%s x86-64-v%d" % (c.name, rd_pool.x86_level(c)) if rd_pool.x86_level(c)
+                                      else c.name for c in crashed)))
+            keep = [k for k, o in enumerate(hosts) if k != i and not rd_pool.no_newer_cpu(o, h)]
+            failed = {keep.index(k) for k in failed if k in keep}
+            if 0 not in keep:
+                give_up = None                   # the wait host (hosts[0]) is gone: no hand-off to it
+            hosts = [hosts[k] for k in keep]
+            nxt = next_host(hosts, failed)
+            if (job["retry_ok"] or job["db"]) and not retried and nxt is not None:
+                note("%s%s; re-running once on %s" % (tag, val, hosts[nxt].name))
+                if threaded and ctx.cache is not None:   # the crashed part's output is mixed in
+                    ctx.cache.taint("a shard re-ran after a SIGILL")
+                retried, i = True, nxt
+                continue
+            return "done", infra(EXIT_SIGILL, tag + val, "rerun it" + ("; placement sends this repo to a newer CPU "
+                                                                      "when the pool has one" if ctx.plan.pool else ""))
         if kind == "busy" and "not taking jobs" not in val:
             slot_busy = True                    # a real slot wait (not a refusal): worth a re-plan
         if kind == "lost_go":
@@ -2423,7 +2453,7 @@ def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0)
     finally:
         drop_lane(key, n)
     if hedge:
-        won = hedge.finish(primary_lost=kind == "lost_go")
+        won = hedge.finish(primary_lost=kind in ("lost_go", "isa"))
         if won is not None:
             return "done", won
     return kind, val
@@ -2753,7 +2783,8 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             lane=None, cache=None):
     """One try on host h -> ("done", rc) | ("lost", why: dropped before the command started) |
     ("busy", why: a race-wait host had no slot after all) | ("lost_go", why: dropped after GO -
-    the command may have run) | ("local", why: run it on the laptop now, waiting would not help).
+    the command may have run) | ("isa", why: it died of SIGILL there - the worker's CPU cannot run
+    this repo's code) | ("local", why: run it on the laptop now, waiting would not help).
     lane (shards, hedges): output sinks + a per-lane mirror id; lane.session is set once it runs.
     cache (rd_cache.Run): told what this attempt shipped and how its command ended."""
     cfg = h.cfg
@@ -2856,6 +2887,13 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             note("the link to %s dropped after the command finished there (exit %d); that is the result"
                  % (label(h), sess.exit_rc))
         rc = sess.exit_rc
+        if rc == EXIT_SIGILL and not (sess.timed_out or sess.first_sig or sess.ints):
+            # not the code's verdict and not this worker's health: host_loop reruns it elsewhere; the
+            # cache never sees it (no attempt_done), runs.log keeps rc=132 for placement (rd_pool isa)
+            record(h.name, argv, rc, secs)
+            timing.report()
+            return "isa", ("%s crashed with SIGILL (exit 132, illegal instruction): its CPU lacks an instruction "
+                           "this repo's code uses" % h.name)
         if cache is not None:
             cache.attempt_done(h.name, rc, sess.used_docker, bool(sess.ints or sess.first_sig), sess.node_major)
         if sess.timed_out and rc == EXIT_TIMEOUT:

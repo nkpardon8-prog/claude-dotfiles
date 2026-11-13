@@ -128,6 +128,8 @@ class Emitted(test_run.RunBase):
         self.write_cfg(rr_reattach_backoff_s=[0, 0, 0])
         scenario(76, "infra", self.rrun("/bin/sh", "-c", "true", FAKE_SSH_DROP="1"))
         self.write_cfg()
+        # 132: SIGILL on the worker (its CPU cannot run the code): infra, never the code's fail
+        scenario(132, "infra", self.rrun("/bin/sh", "-c", "kill -ILL $$"))
         # 124: its wall-clock cap
         scenario(124, "infra", self.rrun("/bin/sh", "-c", "sleep 60", RRUN_TIMEOUT="0.02", timeout=60))
         # 65: the worker refuses an unsafe mirror dir (a symlink)
