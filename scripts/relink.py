@@ -285,6 +285,8 @@ def step(w, now):
             cur = account_fp()
             if NOTIFY_ALL or (w.get("prev_acct") and cur and w["prev_acct"] != cur):
                 w["state"], w["t"] = "notify", now
+        elif now - w["t"] > STEP_TIMEOUT:
+            w["state"], w["result"] = "done", "FAILED: no new Remote Control session (check the tab)"
     elif w["state"] == "notify":
         if idle(d):
             ok = type_into(w, RESET_NOTICE)
@@ -293,8 +295,6 @@ def step(w, now):
         elif now - w["t"] > STEP_TIMEOUT * 4:
             w["state"] = "done"
             w["result"] += "; limits-reset notice not sent (window stayed busy)"
-        elif now - w["t"] > STEP_TIMEOUT:
-            w["state"], w["result"] = "done", "FAILED: no new Remote Control session (check the tab)"
 
 
 def heal():
@@ -413,7 +413,9 @@ def run(todo, skipped, host, a):
         print(f"  {n:<40} skipped: {why}")
     if not todo:
         print("  nothing to relink")
-    return 0 if all(w["result"].startswith("relinked") for w in todo) else 1
+    good = ("relinked", "not relinked; told it limits reset")
+    return 0 if all(w["result"].startswith(good) and "could NOT" not in w["result"]
+                    and "not sent" not in w["result"] for w in todo) else 1
 
 
 if __name__ == "__main__":
