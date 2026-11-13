@@ -143,5 +143,6 @@
       "mem_gb": 16,
       "enabled": true
     }
-  ]
+  ],
+  "pool_node_major": 25
 }
