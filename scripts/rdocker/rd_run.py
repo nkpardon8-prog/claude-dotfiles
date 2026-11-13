@@ -30,15 +30,21 @@ Result contract (2026-11-11): every job's result is one class - pass / fail / in
 named by ONE `rrun:` line after the command's output (rrun() / result_line); rrun's own codes are
 EXIT_CODES (72 / 73 / 75 never ran, 76 may have run, 77 config, 124 cap, the runner's 65 / 69 / 70 /
 78). A run whose output shows a missing test DB is infra (75), not a test failure.
-Eligibility (rd_pool.eligibility, fleet.json classes / max_cost_s / cold_ok): a worker that may not
-take the job is never tried; none may => exit 77 at once, naming each worker's reason.
-Pool (rd_pool): with 2+ enabled fleet workers, each job is placed on the best worker right now
-and the hosts are tried in that order: a worker lost before GO, or one that had no free slot after
-all (73 from a short race wait), moves the job to the next one. After GO a lost worker means exit 76
-- except for jobs that are safe to repeat (tsc/typecheck, lint, vitest/jest, builds; never DB
-tests), which run once more on the next worker. In a pool, heavy and DB jobs never fall back to
-this machine (exit 75 instead); light jobs (lint, check scripts) run here when every worker stayed
-busy for rr_local_after_s. No fleet / one worker: one host, exactly as before.
+Eligibility (rd_pool.eligibility, fleet.json classes / heavy_slots / cold_ok): a worker that may not
+take the job is never tried; none may => exit 77 at once, naming each worker's reason (max_cost_s is a
+ranking penalty, not a rule: rd_pool.slow_why).
+Pool (rd_pool): with 2+ enabled fleet workers, each job is placed on the worker with the earliest
+predicted finish (queue wait + setup + run) and QUEUES there for its whole rr_wait_min (no short wait
+and bounce: 73 only when that runs out); a Mover re-plans every rr_move_poll_s and moves it at most
+once (rr_move_max) to a worker that became clearly faster. A worker lost before GO, refusing (share
+off) or whose runner fails moves the job to the next one. After GO a lost worker means exit 76 -
+except for jobs that are safe to repeat (tsc/typecheck, lint, vitest/jest, builds; never DB tests),
+which run once more on the next worker. When the pool itself fails (every worker unreachable, a
+repeatable run lost twice, a runner failure twice: host_loop "fallback") the job runs HERE, loudly
+(POOL_DOWN_LINE, route.log `fallback-local`), unless RRUN_STRICT=1 or it is a heavy / DB job (75: never
+on an agent machine). Light jobs (lint, check scripts) also run here when every worker stayed busy for
+rr_local_after_s. No fleet / one worker: one host, exactly as before. route.log gets ONE line per rrun
+(its final outcome; attempts that moved on only clear rrun.json's in-flight entry).
 Shards (run_shards): a `vitest run` rd_pool.shardable() accepts, with 2+ free workers, runs as
 vitest --shard=i/n on several workers at once (threads; signals forwarded from the main thread to
 every LIVE session), each with its own failover list, output prefixed "[shard i/n host]", rc =
@@ -54,12 +60,13 @@ main process exits the leftovers get rr_exit_grace_s, then the group is TERMed /
 ends with the main's rc. A hard cap per job class (rr_timeout_min; RRUN_TIMEOUT=<min|0>) ends a run
 with exit 124; silence only prints "no output for N min" with the last test file the output named
 (rr_silent_min; RRUN_SILENT_MIN). A slot
-wait on one worker lasts rr_slot_wait_s, then host_loop re-plans (rr_wait_min in all -> 73); the
+wait lasts what is left of rr_wait_min (-> 73), printed as "queued on <worker>: about N (k ahead)"; the
 worktree-lane wait is at most the job's cap (-> 72). Slot / lane waits print a line every
 rr_status_every_s. Every job carries owner_info() (session id / parent pid, /line caption, host):
 `rrun --jobs` / `--mine` list them from every worker's slots/<i>.own.
 Fast start: route.log gets every job's client stage timings (Timing / STAGES: cache plan push overlay
-remote start), pred_s and the client sha; a worker cold for the job triggers one background warm
+remote start; retry_s = time in earlier attempts that did not start, so push_s is the push alone),
+pred_s, miss_x (the run took over rr_miss_x x pred_s) and the client sha; a worker cold for the job triggers one background warm
 (trigger_warm). Version (VERSION / version_seen): the runner's first status, before any prepare, is the
 worker's pool_version (PV, "?" = unknown); newer or unknown never blocks the job: it runs and ends with
 one line saying this Mac is behind (the 2-minute dotfiles autopull updates it).
@@ -122,7 +129,8 @@ EXIT_SIGILL = rd_pool.ISA_RC   # 132: SIGILL on a worker - its CPU cannot run th
 EXIT_CODES = {                 # code -> (class, meaning): the one table the docs and the test follow
     EXIT_WT_BUSY: ("infra", "this worktree stayed busy (its lanes, or a run writing into it) past the wait; never ran"),
     EXIT_BUSY: ("infra", "every worker stayed busy; never ran"),
-    EXIT_NEVER_RAN: ("infra", "never ran: no worker reachable / lost before the start / RRUN_STRICT"),
+    EXIT_NEVER_RAN: ("infra", "never ran: no worker reachable and it may not run here (RRUN_STRICT, a heavy / DB "
+                              "job) / lost before the start"),
     EXIT_MAY_HAVE_RUN: ("infra", "may have run: the link or the result was lost after the start"),
     EXIT_CONFIG: ("needs-human", "no worker may take this job (fleet.json)"),
     EXIT_TIMEOUT: ("infra", "hit its wall-clock cap (RRUN_TIMEOUT) and was killed"),
@@ -132,6 +140,7 @@ EXIT_CODES = {                 # code -> (class, meaning): the one table the doc
     69: ("infra", "the repo was missing on the worker; never ran"),
     70: ("infra", "the worker's runner failed; never ran"),
     78: ("infra", "installing dependencies on the worker failed; never ran"),
+    127: ("infra", "a command was not found on the worker (a tool missing there): a pool problem, not the code"),
     79: ("fail", "the DB lane's setup step (migrate / provision) failed on the worker; the command was not started"),
 }
 NEXT = {"pass": "", "fail": "the command's own result: fix the code",
@@ -942,6 +951,9 @@ TEST_FILE_RE = re.compile(r"(?:^|[\s(])((?:[\w@.-]+/)*[\w@.-]+\.(?:test|spec)\.[
 # the run had no test database (2026-11-11: a sharded server vitest run on workers without one -
 # 2,500 of 2,868 "failures" were this): Prisma's / a setup's missing DATABASE_URL, or a refused
 # connection to a Postgres / MySQL port
+# "sh: 1: pnpm: not found" / "bash: pnpm: command not found" / "env: 'pnpm': No such file or directory"
+NOT_FOUND_RE = re.compile(r"(?:^|[\s:])'?([\w.+@/-]+)'?: (?:command )?not found\s*$|^env: '?([\w.+@/-]+)'?: No such file",
+                          re.M)
 NO_DB_RE = re.compile(r"Environment variable not found: (?:TEST_)?DATABASE_URL|(?:TEST_)?DATABASE_URL (?:is )?"
                       r"not (?:found|set|defined)|ECONNREFUSED (?:127\.0\.0\.1|::1|\[::1\]|localhost|0\.0\.0\.0)"
                       r":(?:5432|54\d\d|55\d\d\d|3306)\b")
@@ -1057,9 +1069,14 @@ class Session:
         self.last_file_at = None             # monotonic time it was named
         self.scan_tail = {}                  # per stream: a line cut by a read boundary
         self.no_db_n = 0                     # lines of the command's output with the missing-test-DB signature
+        self.missing = None                  # the last "<tool>: command not found" its output named (exit 127)
         self.worker_pv = None                # "<nonce> PV <n>": the worker's pool_version (before any prepare)
         self.node_major = None               # "<nonce> NODE <major|?>": the node this run really uses
         self.outdated = None                 # that version, when it is newer than ours: never GO
+        self.ahead = 0                       # the runner's last WAIT: runs waiting ahead of this one
+        self.move_to = None                  # Mover: leave the slot wait for this Host (before the slot only)
+        self.got_slot = False                # the runner's SLOT status without BUSY: it holds a slot now
+        self.may_move = False                # a Mover watches this wait (said on the queue line)
 
     host_name = None     # the worker's name, for messages
     tag = ""             # shards: "[shard i/n host] "
@@ -1071,9 +1088,23 @@ class Session:
         return "the Mac mini" if self.host_name in (None, "mini") else self.host_name
 
     def wait_note(self, rest):
-        """One line per runner WAIT: what the slot wait is for, how long it should take."""
+        """One line per runner WAIT: where the job queues, how long the scheduler expects, how many wait
+        ahead ("queued on hp: about 2 min (2 ahead); ..."), then a short repeat every rr_status_every_s."""
         kv = dict(x.split("=", 1) for x in rest.split() if "=" in x)
         waited = time.monotonic() - self.wait_since
+        try:
+            self.ahead = int(kv.get("ahead", 0))
+        except ValueError:
+            self.ahead = 0
+        if self.wait_eta_s is not None:
+            left = self.wait_eta_s - waited
+            est = "about %s" % fmt_wait(left) if left >= 1 else "a slot is due any moment (past the estimate)"
+        else:
+            est = "a slot should free soon (it looked free when planned)"
+        head = "queued on %s: %s (%s)" % (self.where(), est, "%d ahead" % self.ahead if self.ahead else "next in line")
+        if self.waits > 1:                  # one short line a minute after the first: no repeated banner
+            note("%sstill %s; waited %s" % (self.tag, head, fmt_wait(waited)))
+            return
         parts = []
         if kv.get("busy") and kv.get("slots"):
             parts.append("%s of %s slots busy" % (kv["busy"], kv["slots"]))
@@ -1083,24 +1114,20 @@ class Session:
         if kv.get("holder", "?") != "?":
             parts.append("held longest by %s%s for %ss" % (kv["holder"], " (%s)" % kv["howner"]
                                                            if kv.get("howner") else "", kv.get("age", "?")))
-        try:
-            ahead = int(kv.get("ahead", 0))
-        except ValueError:
-            ahead = 0
-        parts.append("%d other run%s waiting ahead of this one" % (ahead, "" if ahead == 1 else "s")
-                     if ahead else "next in line")
-        if self.wait_eta_s is not None:
-            left = self.wait_eta_s - waited
-            parts.append("expected wait ~%s" % fmt_wait(left) if left >= 1
-                         else "a slot is due any moment (past the scheduler's estimate)")
-        if self.waits > 1:                  # one short line a minute after the first: no repeated banner
-            short = [x for x in parts if x.startswith(("next in line", "expected wait", "a slot is due"))
-                     or " waiting ahead" in x]
-            note("%sstill waiting for a slot on %s (%s so far; %s)" % (self.tag, self.where(), fmt_wait(waited),
-                                                                     "; ".join(short)))
-            return
-        note("%swaiting for a slot on %s: %s; tries elsewhere after %s" % (self.tag, self.where(), "; ".join(parts),
-                                                                          fmt_wait(slot_wait_min(self.cfg) * 60)))
+        parts.append("waits here up to %s%s" % (fmt_wait(wait_min(self.cfg) * 60),
+                                                 ", moving once if another worker becomes clearly faster"
+                                                 if self.may_move else ""))
+        note("%s%s; %s" % (self.tag, head, "; ".join(parts)))
+
+    def request_move(self, host):
+        """Mover: leave this slot wait for `host` ((Host, plan, note)) -> True when it will (no slot / READY /
+        GO yet); attempt() hands it back as ("move", host)."""
+        with self.go_lock:
+            if self.ready or self.go_sent or self.got_slot or self.done.is_set() or self.move_to is not None:
+                return False             # never once it has a slot: its prepare is under way there
+            self.move_to = host
+        self.wake.set()
+        return True
 
     def saw_output(self):
         self.last_out = time.monotonic()
@@ -1127,6 +1154,8 @@ class Session:
         if files:
             self.last_file, self.last_file_at = files[-1], time.monotonic()
         self.no_db_n += sum(1 for ln in s.splitlines() if NO_DB_RE.search(ln))
+        for m in NOT_FOUND_RE.finditer(s):           # exit 127: name the missing tool
+            self.missing = os.path.basename(m.group(1) or m.group(2))
 
     def watchdog(self, now):
         """A silent command gets a stderr line (never killed for it); a command past its cap
@@ -1181,6 +1210,7 @@ class Session:
             self.waits += 1
             self.wait_note(rest)
         elif word == "SLOT":             # the runner's own slot wait (taken, or given up: BUSY follows)
+            self.got_slot = True             # (a BUSY after it ends the session anyway: no move then)
             try:
                 add_stage("slot_s", float(rest.strip()))
             except ValueError:
@@ -1207,7 +1237,7 @@ class Session:
         elif word == "GONE":
             self.gone = rest.strip() or "its result is lost"
         elif word == "BUSY":
-            note("%sno slot on %s within %s" % (self.tag, self.where(), fmt_wait(slot_wait_min(self.cfg) * 60)))
+            note("%sno slot on %s within %s" % (self.tag, self.where(), fmt_wait(wait_min(self.cfg) * 60)))
         elif word == "KEPT":
             note("the run failed; its containers stay on the Mac mini for inspection: %s "
                  "(docker ps / docker logs reach them; the janitor reaps them after 3 h idle)" % rest)
@@ -1245,7 +1275,13 @@ class Session:
             return True
 
     def give_up_left(self):
-        """Seconds until we stop waiting for a slot (None = never); 0 marks gave_up (no GO after)."""
+        """Seconds until we stop waiting for a slot (None = never); 0 marks gave_up (no GO after). A
+        move request (Mover) ends the wait now."""
+        if self.move_to is not None:
+            with self.go_lock:
+                if not (self.ready or self.go_sent):
+                    self.gave_up = True
+                    return 0
         if self.give_up_s is None or self.wait_since is None:
             return None
         with self.go_lock:
@@ -1418,6 +1454,12 @@ class Timing:
     def __init__(self, on):
         self.on, self.t0, self.last, self.parts = on, time.monotonic(), time.monotonic(), []
 
+    def attempt(self, retry):
+        """At the start of each attempt: the time since the last mark goes under its own label, so the
+        push_s that follows is the push alone. retry (not this invocation's first attempt): it was spent
+        in earlier attempts that did not start (their slot wait, a lost link) -> route.log retry_s."""
+        self.mark("earlier attempts" if retry else "before the first attempt", "retry_s" if retry else None)
+
     def mark(self, label, key=None):
         now = time.monotonic()
         self.parts.append("%s %.2fs" % (label, now - self.last))
@@ -1440,9 +1482,12 @@ def short_argv(argv):
     return s if len(s) <= 120 else s[:117] + "..."
 
 
-def record(target, argv, rc, secs, wt12=None, start=False, cap=None, pred=None):
+def record(target, argv, rc, secs, wt12=None, start=False, cap=None, pred=None, log=True):
     """route.log line + rrun.json (last result, runs in flight: argv, worker, owner, start, cap, the
-    placement's run estimate) for `rdocker status` and the worktree-lane wait line."""
+    placement's run estimate) for `rdocker status` and the worktree-lane wait line. log=False: an
+    attempt that is not the invocation's result (it moves on: another worker, a re-run, this machine)
+    only clears its in-flight entry - route.log gets ONE line per rrun, its final outcome, so a reader
+    summing the stage timings never counts them twice."""
     pid = str(os.getpid())
 
     def apply(cur):
@@ -1462,7 +1507,7 @@ def record(target, argv, rc, secs, wt12=None, start=False, cap=None, pred=None):
         rd_common.update_json(rd_common.RRUN_STATE, apply, default={})
     except OSError:
         pass
-    if not start:
+    if not start and log:
         RESULT["host"], RESULT["secs"] = target, secs
         extra = " ".join("%s=%s" % kv for kv in list(STAGES.items()) + list(ROUTE_EXTRA.items()))
         rd_common.log("%-5s %-8s %s rc=%s %.1fs | %s%s" % (target, "rrun", short_argv(argv), int(rc) if isinstance(
@@ -1549,10 +1594,17 @@ def _ago(ts, now):
 
 # ---------------------------------------------------------------------------- entry
 
-def run_local(argv, env_pairs, why=None):
-    """exec the command on the laptop (RDOCKER_MODE=local: its containers stay on the laptop too)."""
+POOL_DOWN_LINE = "pool unavailable (%s), ran LOCALLY on this Mac"
+
+
+def run_local(argv, env_pairs, why=None, pool_down=False):
+    """exec the command on the laptop (RDOCKER_MODE=local: its containers stay on the laptop too).
+    pool_down: the pool failed (fallback): one loud line, before the exec (nothing of rrun runs after
+    it; the exit code is the command's own)."""
     mark_started()
-    if why:
+    if pool_down:
+        note(POOL_DOWN_LINE % why)
+    elif why:
         note("%s - running on the laptop instead (RDOCKER_MODE=local)" % why)
     env = dict(os.environ, RDOCKER_MODE="local", RRUN="0")   # RRUN=0: the npm shim must not re-route
     env.update(env_pairs)
@@ -1570,19 +1622,25 @@ def run_local(argv, env_pairs, why=None):
         return 127
 
 
-def fallback(argv, env_pairs, why, t0, job=None, pool=False):
+def fallback(argv, env_pairs, why, t0, job=None, pool=False, pool_down=False):
+    """The one local-run path of a job rrun could not (or need not) run on a worker. pool_down (host_loop
+    "fallback": every worker unreachable, or a pool-side failure twice): route.log `fallback-local` and
+    the loud POOL_DOWN_LINE, so the steward and the dashboard count it; it is never used for a busy pool
+    (that queues), a `fail` result or a needs-human one. Either way RRUN_STRICT=1 stays fail-closed
+    (75), and a job that must not run on an agent machine (db - its run-local Postgres lane too - and
+    heavy: never_local) ends 75 instead: a DB job must never meet a real database here."""
     if os.environ.get("RRUN_STRICT") == "1":
         record("mini", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
         return infra(EXIT_NEVER_RAN, "%s; RRUN_STRICT=1: not running it on this machine" % why)
-    if pool and job and job.get("never_local"):
+    if (pool or pool_down) and job and job.get("never_local"):
         record("none", argv, EXIT_NEVER_RAN, time.monotonic() - t0)
         return infra(EXIT_NEVER_RAN, "%s; a %s job never runs on this machine (the pool keeps it off "
                      "agent machines)" % (why, job["cls"]), "rerun it when a worker is back")
     busy = own_worktree(argv, t0)    # it writes into the worktree: it runs alone (or 72, logged as such)
     if busy is not None:
         return busy
-    record("local", argv, "exec", time.monotonic() - t0)
-    return run_local(argv, env_pairs, why)
+    record("fallback-local" if pool_down else "local", argv, "exec", time.monotonic() - t0)
+    return run_local(argv, env_pairs, why, pool_down=pool_down)
 
 
 def parse_env(pairs, environ=None):
@@ -1652,14 +1710,12 @@ def timeout_s(cfg, cls, environ=None):
         return TIMEOUT_MIN.get(cls, 30) * 60.0
 
 
-def slot_wait_min(cfg):
-    """Minutes one runner waits for a slot before answering busy (73): rr_slot_wait_s (120 s), never
-    more than rr_wait_min. A busy answer re-plans (host_loop), so a job never sits 30 min on one
-    worker while another frees up; rr_wait_min bounds the whole search."""
-    try:
-        return min(float(cfg.get("rr_wait_min", 30)), float(cfg.get("rr_slot_wait_s", 120)) / 60.0)
-    except (TypeError, ValueError):
-        return 2.0
+def wait_min(cfg):
+    """Minutes this attempt's runner may wait for a slot (header wait_min): what is left of rr_wait_min
+    for the whole job (host_loop sets it per attempt). The job queues on its best worker for all of it
+    (it may move once: Mover), never a short wait followed by a bounce to another worker (2026-11-13:
+    68 busy bounces a day, 15,025 s, before)."""
+    return max(0.0, float(cfg.get("rr_wait_min", 30)))
 
 
 def wt_wait_s(cfg, job, environ=None):
@@ -1938,8 +1994,8 @@ def _rrun(argv, env_args, environ0):
         out = Sink(rd_cache.Tee(std_stream("stdout"), crun.rec, 1))
         err = Sink(rd_cache.Tee(std_stream("stderr"), crun.rec, 2))
     kind, val = host_loop(ctx, plan.hosts, argv, give_up=plan.local_after_s, out=out, err=err)
-    if kind == "local":
-        return fallback(argv, env_pairs, val, t0, job, plan.pool)
+    if kind in ("local", "fallback"):
+        return fallback(argv, env_pairs, val, t0, job, ctx.plan.pool, pool_down=kind == "fallback")
     return cache_save(ctx, val, argv)
 
 
@@ -2306,21 +2362,27 @@ class Ctx:
         self.job, self.plan, self.outputs, self.deps = job, plan, outputs, deps
         self.cache = cache           # rd_cache.Run for a cacheable run, else None
         self.force = None            # --host NAME: re-plans keep to that worker
+        self.moves = 0               # Mover moves used (rr_move_max)
 
 
 def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False, tag="", frac=1.0,
               on_host=None):
-    """Try `hosts` in order -> ("done", rc) | ("local", why: run it on this machine). Lost before
-    GO / no slot after a race wait -> the next host; lost after GO -> once more on the next host
-    for a job that is safe to repeat, else exit 75. threaded (a shard): no reconnect wait (it
-    needs the main thread's signals) - "local" once every host failed. frac: the share of the
-    whole job this run is (a shard: 1/n), for the hedge's expected time."""
+    """Try `hosts` in order -> ("done", rc) | ("local", why: run it on this machine, by design) |
+    ("fallback", why: the pool itself failed - every worker unreachable, or a pool-side failure twice;
+    the caller runs it here when the job may run here, loudly). The job queues on hosts[0] for the
+    whole rr_wait_min (no bounce); a Mover may move it once to a clearly faster worker (not threaded).
+    Lost before GO / a runner failure -> the next host; lost after GO -> once more on the next host
+    for a job that is safe to repeat, else exit 76. threaded (a shard): no reconnect wait (it needs the
+    main thread's signals), no move. frac: the share of the whole job this run is (a shard: 1/n), for
+    the hedge's expected time."""
     job, t0 = ctx.job, ctx.t0
     i, tries, retried, failed = 0, 0, False, set()
     crashed = []                         # workers where it died of SIGILL in this rrun (kind "isa")
     busy_t0 = round_t0 = time.monotonic()
     slot_busy = False
+    n_attempts, infra_n = 0, 0
     total = 60.0 * float(ctx.cfg.get("rr_wait_min", 30))
+    local_ok = job["retry_ok"] and not job.get("never_local")   # a lost / crashed run may be repeated here
     while True:
         if threaded and STOP_SIG[0]:
             return "done", stopped(STOP_SIG[0])
@@ -2328,13 +2390,40 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
         if on_host:
             on_host(h)
         g = give_up if i == 0 else None    # set only when all were busy: hosts[0] = wait host
-        kind, val = attempt_on(ctx, h, argv, g, out, err, tag, frac)
+        # this attempt's slot wait: what is left of the job's rr_wait_min (at least a few seconds)
+        left = total - (time.monotonic() - busy_t0)
+        h.cfg = dict(h.cfg, rr_wait_min=max(0.05, left / 60.0))
+        mover = not threaded and ctx.plan.pool and ctx.moves < int(ctx.cfg.get("rr_move_max", MOVE_MAX)) \
+            and len(hosts) > 1
+        kind, val = attempt_on(ctx, h, argv, g, out, err, tag, frac, retry=n_attempts > 0, mover=mover)
+        n_attempts += 1
         if kind == "done":
             return "done", val
         if kind == "local":
             return "local", val
+        if kind == "move":
+            # a Mover found a clearly faster worker while this one's slot wait went on: there, once
+            c, p, msg = val
+            ctx.moves += 1
+            ctx.plan = p
+            note(msg)
+            hosts = [c] + [x for x in p.hosts if x.name != c.name]
+            i, failed = 0, set()
+            continue
         failed.add(i)
         nxt = next_host(hosts, failed)
+        if kind == "infra":
+            # the worker's runner broke or lacks the repo (69 / 70; never ran): the next worker, and a
+            # second such failure is the pool failing - this machine (fallback) rather than a third try
+            infra_n += 1
+            if nxt is not None and infra_n < 2:
+                note("%s%s - trying %s" % (tag, val.why, hosts[nxt].name))
+                i = nxt
+                continue
+            if job.get("never_local") or os.environ.get("RRUN_STRICT") == "1":
+                record(h.name, argv, int(val), time.monotonic() - t0)
+                return "done", val           # no run here allowed: the runner's own code (69 / 70)
+            return "fallback", tag + val.why + ("" if infra_n < 2 else " (twice)")
         if kind == "isa":
             # the worker's CPU cannot run this repo's code (SIGILL): it and every worker whose CPU is no
             # newer (rd_pool.no_newer_cpu) leave this job's list for good - a later "no slot, next host"
@@ -2343,6 +2432,7 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
             # newer CPU, or one not known to be as old) is the code's own: a trap or an explicit exit 132
             crashed.append(h)
             if len(crashed) > 1:
+                record(h.name, argv, EXIT_SIGILL, time.monotonic() - t0)
                 return "done", Rc(EXIT_SIGILL, "fail", "%scrashed with SIGILL on every CPU tier tried (%s): a bug "
                                   "in the code, not the worker" % (tag, ", ".join(
                                       "%s x86-64-v%d" % (c.name, rd_pool.x86_level(c)) if rd_pool.x86_level(c)
@@ -2359,6 +2449,9 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
                     ctx.cache.taint("a shard re-ran after a SIGILL")
                 retried, i = True, nxt
                 continue
+            if local_ok:                     # no other CPU in the pool: this machine's is another one
+                return "fallback", tag + val
+            record(h.name, argv, EXIT_SIGILL, time.monotonic() - t0)
             return "done", infra(EXIT_SIGILL, tag + val, "rerun it" + ("; placement sends this repo to a newer CPU "
                                                                       "when the pool has one" if ctx.plan.pool else ""))
         if kind == "busy" and "not taking jobs" not in val:
@@ -2375,6 +2468,8 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
                     ctx.cache.taint("a shard re-ran after a lost worker")
                 retried, i = True, nxt
                 continue
+            if local_ok:                     # safe to repeat, and the pool lost it (again): run it here
+                return "fallback", "%slost %s mid-run%s" % (tag, h.name, " after a re-run" if retried else "")
             record(h.name, argv, EXIT_MAY_HAVE_RUN, time.monotonic() - t0)
             return "done", infra(EXIT_MAY_HAVE_RUN, "%slost %s mid-run and could not reconnect; it may have "
                                  "run there, so it is not re-run automatically" % (tag, h.name),
@@ -2404,10 +2499,11 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
                                       "tell the owner (fleet.json); rerunning will not help")
                 i, failed, round_t0, slot_busy = 0, set(), time.monotonic(), False
                 continue
+            record("none", argv, EXIT_BUSY, time.monotonic() - t0)
             return "done", infra(EXIT_BUSY, "%sno worker had a free slot%s; never ran"
                                  % (tag, " for %s" % fmt_wait(total) if slot_busy else ""))
         if threaded or tries >= RECONNECT_TRIES:
-            return "local", val
+            return "fallback", val
         tries += 1
         i, failed, h = 0, set(), hosts[0]
         # Nothing has started anywhere yet. A mini that answers right away (a blip, or a failure
@@ -2415,7 +2511,7 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
         # waited for (rr_reconnect_wait_min), so a short outage never moves a heavy run here.
         if mini_answers(h.cfg):
             if tries > 1:
-                return "local", val
+                return "fallback", val
             continue
         try:
             back = wait_for_mini(h.cfg, val)
@@ -2423,7 +2519,7 @@ def host_loop(ctx, hosts, argv, give_up=None, out=None, err=None, threaded=False
             return "done", Rc(128 + e.signum, "infra", "stopped while waiting for a worker; not running it "
                               "anywhere", "rerun it if you still need the result")
         if not back:
-            return "local", "%s, and it did not come back within %s" % (val, fmt_wait(reconnect_wait_s(h.cfg)))
+            return "fallback", "%s, and it did not come back within %s" % (val, fmt_wait(reconnect_wait_s(h.cfg)))
 
 
 def replan(ctx, hosts):
@@ -2439,26 +2535,110 @@ def replan(ctx, hosts):
     return p.hosts
 
 
-def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0):
-    """attempt() on a free lane of h, with a hedge watching it when hedging is on for this job."""
+def attempt_on(ctx, h, argv, give_up=None, out=None, err=None, tag="", frac=1.0, retry=False, mover=False):
+    """attempt() on a free lane of h, with a hedge watching it when hedging is on for this job, and a
+    Mover watching its slot wait when mover (host_loop: the job's one move is still unused)."""
     key = h.cfg["host"]
     n = take_lane(key)
     mid = lane_mirror_id(ctx.wt["wt12"], wt_lane(), n)
     lane = Lane(out, err, None if mid == ctx.wt["wt12"] else mid)
     lane.tag = tag
     hedge = Hedge(ctx, h, argv, lane, tag, frac, out, err) if hedge_on(ctx) else None
+    mv = Mover(ctx, h, lane) if mover else None
+    lane.may_move = bool(mover)
     try:
         if hedge:
             hedge.start()
+        if mv:
+            mv.start()
         kind, val = attempt(h, ctx.wt, argv, ctx.env_pairs, ctx.timing, ctx.t0, ctx.job, ctx.plan.pool,
-                            ctx.outputs, ctx.deps, give_up, lane, cache=ctx.cache)
+                            ctx.outputs, ctx.deps, give_up, lane, cache=ctx.cache, retry=retry)
     finally:
+        if mv:
+            mv.stop()
         drop_lane(key, n)
     if hedge:
         won = hedge.finish(primary_lost=kind in ("lost_go", "isa"))
         if won is not None:
             return "done", won
     return kind, val
+
+
+# ---------------------------------------------------------------------------- move (one, bounded)
+
+MOVE_MAX = 1             # rr_move_max: moves per job while it waits for a slot (never ping-pong)
+MOVE_POLL_S = 15.0       # rr_move_poll_s: how often a waiting job re-plans (one probe round each time)
+MOVE_GAIN_RATIO = 0.25   # rr_move_gain_ratio: another worker must finish this much sooner (of the finish here)...
+MOVE_MIN_GAIN_S = 30.0   # rr_move_min_gain_s: ...plus this, so a rough estimate never moves a job for nothing
+
+
+class Mover:
+    """Watches one attempt's slot wait (after the runner's first WAIT, before READY). Every
+    rr_move_poll_s it re-plans; when another worker's predicted finish (its eta: queue + setup + run,
+    a slow worker on its pessimistic run) beats the finish here - the queue from this job's own place
+    in line (the runner's `ahead`), then setup + run - by MOVE_GAIN_RATIO of it + MOVE_MIN_GAIN_S, it
+    asks the session to leave (MOVE: runs.log `moved`) and host_loop starts there. host_loop allows
+    rr_move_max (1) per job, so a job moves at most once."""
+
+    def __init__(self, ctx, h, lane):
+        self.ctx, self.h, self.lane = ctx, h, lane
+        self.poll = float(ctx.cfg.get("rr_move_poll_s", MOVE_POLL_S))
+        self.ratio = float(ctx.cfg.get("rr_move_gain_ratio", MOVE_GAIN_RATIO))
+        self.gain = float(ctx.cfg.get("rr_move_min_gain_s", MOVE_MIN_GAIN_S))
+        self.stopped = threading.Event()
+        self.thread = None
+
+    def start(self):
+        self.thread = threading.Thread(target=self.watch, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stopped.set()
+
+    def here_finish(self, p, s):
+        """The finish here for this job, as it stands now (the fresh probe of this worker, our place in line)."""
+        h = next((x for x in p.hosts if x.name == self.h.name), None)
+        if h is None or h.probe is None or h.setup_s is None:
+            h = self.h                                   # not answering now: what the first plan said, less the wait
+            waited = time.monotonic() - (s.wait_since or time.monotonic())
+            return max(0.0, (h.queue_s or 0.0) - waited) + (h.setup_s or 0.0) + (h.rank_s or h.run_s or 0.0)
+        q = 0.0 if h.state == "free" else rd_pool.queue_wait(h, self.ctx.job, ahead=s.ahead) or 0.0
+        return q + h.setup_s + (h.rank_s or h.run_s or 0.0)
+
+    def candidate(self, s):
+        ctx = self.ctx
+        try:
+            p = rd_pool.plan(ctx.cfg, ctx.job, ctx.wt["slug"], rd_pool.deps_shas(ctx.wt["top"], ctx.deps),
+                             force=ctx.force)
+        except Exception:            # a fleet that changed under us: stay
+            return None, None, None
+        here = self.here_finish(p, s)
+        for c in p.hosts:            # in finish order: the first other worker with an eta is the best one
+            if c.name == self.h.name or c.eta is None or c.state not in ("free", "busy"):
+                continue
+            if c.eta <= here * (1.0 - self.ratio) - self.gain:
+                return c, here, p
+            break
+        return None, here, p
+
+    def watch(self):
+        while not self.stopped.wait(self.poll):
+            s = self.lane.session
+            if s is None:
+                continue
+            s.may_move = True
+            if s.wait_since is None or s.got_slot or s.ready or s.go_sent or s.done.is_set():
+                if s.got_slot or s.ready or s.go_sent or s.done.is_set():
+                    return               # it got its slot (or ended): nothing to move
+                continue
+            c, here, p = self.candidate(s)
+            if c is None or self.stopped.is_set():
+                continue
+            msg = ("%smoving to %s: it finishes in about %s, this queue on %s in about %s (%d ahead); "
+                   "a job moves at most once" % (s.tag, c.name, fmt_wait(c.eta), self.h.name, fmt_wait(here), s.ahead))
+            if s.request_move((c, p, msg)):
+                return               # host_loop adopts the fresh plan and says so once the session has left
+            # refused (it got its slot meanwhile): nothing changes, nothing said
 
 
 # ---------------------------------------------------------------------------- hedge
@@ -2675,7 +2855,7 @@ def run_shards(ctx, assign, argv):
         try:
             kind, val = host_loop(ctx, hosts, sargv, out=out, err=err, threaded=True, tag=tag,
                                   frac=1.0 / n, on_host=on_host)
-            if kind == "local":
+            if kind in ("local", "fallback"):
                 out.prefix = err.prefix = "[shard %d/%d local] " % (i + 1, n)
                 if ctx.cache is not None:
                     ctx.cache.taint("a shard ran on this machine")
@@ -2749,7 +2929,7 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
               "relcwd": wt["relcwd"], "argv": argv, "env": env, "deleted": deleted,
               "tar_len": len(tar), "env_files": envs,
               "stamps": {"dirs": deps, "npm_args": []},
-              "slots": cfg.get("rr_slots", 1), "wait_min": slot_wait_min(cfg),
+              "slots": cfg.get("rr_slots", 1), "wait_min": wait_min(cfg),
               "slots_base": cfg.get("rr_slots_base", cfg.get("rr_slots", 1)),
               "spare_min_free_pct": cfg.get("rr_spare_min_free_pct", 25),
               "spare_max_load": cfg.get("rr_spare_max_load", 1.5),
@@ -2782,17 +2962,21 @@ def runner_frames(h, wt, argv, env, deps, tar, envs, deleted, job, pool, outputs
 
 
 def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None, give_up_s=None,
-            lane=None, cache=None):
+            lane=None, cache=None, retry=False):
     """One try on host h -> ("done", rc) | ("lost", why: dropped before the command started) |
-    ("busy", why: a race-wait host had no slot after all) | ("lost_go", why: dropped after GO -
+    ("busy", why: no slot within its wait, or the worker refused) | ("lost_go", why: dropped after GO -
     the command may have run) | ("isa", why: it died of SIGILL there - the worker's CPU cannot run
-    this repo's code) | ("local", why: run it on the laptop now, waiting would not help).
+    this repo's code) | ("infra", why: the worker's runner failed or lacks the repo; never ran) |
+    ("move", (Host, plan, note): a Mover found a clearly faster worker during the slot wait) | ("local", why: run it
+    on the laptop now, waiting would not help). Only a "done" writes its route.log line here.
+    retry: not this invocation's first attempt (its time so far goes to retry_s, not push_s).
     lane (shards, hedges): output sinks + a per-lane mirror id; lane.session is set once it runs.
     cache (rd_cache.Run): told what this attempt shipped and how its command ended."""
     cfg = h.cfg
     wt12 = wt["wt12"]                # the worktree's own id: rrun.json, the lane wait line
     if lane is not None and lane.wt12:
         wt = dict(wt, wt12=lane.wt12)
+    timing.attempt(retry)
     try:
         base = push(cfg, wt) or []
     except PolicyRefused as e:
@@ -2829,6 +3013,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     sess.host_name, sess.timeout_s, sess.silent_s = h.name, cap, silent_s(cfg)
     sess.run_id = run_id
     sess.tag = lane.tag if lane is not None else ""
+    sess.may_move = bool(getattr(lane, "may_move", False))
     if h.queue_s is not None and h.state == "busy":
         sess.wait_eta_s = h.queue_s      # the scheduler's estimate of this worker's slot wait
     if cache is not None and not cache.sharded:
@@ -2848,7 +3033,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
             record(h.name, argv, 128 + sess.first_sig, time.monotonic() - t0)
             return "done", stopped(sess.first_sig)   # the caller wants it to end: never re-run it
         if att is not None and att.norun:
-            record(h.name, argv, rc, time.monotonic() - t0)
+            record(h.name, argv, rc, time.monotonic() - t0, log=False)
             timing.report()
             return "lost", "lost %s before the command started (it never ran there)" % label(h)
         if att is not None:
@@ -2859,28 +3044,34 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
     if not sess.go_sent:
         # GO was never written, so the runner never started the command: running it here is
         # safe when the connection dropped; any other rc is the runner's own (73, 78, ...).
-        record(h.name, argv, rc, secs)     # clears the in-flight entry before a local exec
-        timing.report()
         if sess.first_sig:
             # stopped (Ctrl-C, or a tool's timeout sent TERM) while the mini was still preparing:
             # the caller wants it to end - never start it here instead (2026-10-15: a 10-min tool
             # timeout during a slot wait turned into a full local run)
-            return "done", Rc(128 + sess.first_sig, "infra", "stopped by signal %d before the command started; "
-                              "not running it anywhere" % sess.first_sig, "rerun it if you still need the result")
-        if sess.gave_up:
-            return "local", "every worker stayed busy for %d s" % round(give_up_s)
-        if rc == 255:
-            return "lost", "lost %s before the command started" % label(h)
-        if rc == 73 and sess.unavail:      # refused before anything ran: always safe to move on
+            res = ("done", Rc(128 + sess.first_sig, "infra", "stopped by signal %d before the command started; "
+                              "not running it anywhere" % sess.first_sig, "rerun it if you still need the result"))
+        elif sess.move_to is not None:
+            res = ("move", sess.move_to)
+        elif sess.gave_up:
+            res = ("local", "every worker stayed busy for %d s" % round(give_up_s))
+        elif rc == 255:
+            res = ("lost", "lost %s before the command started" % label(h))
+        elif rc == 73 and sess.unavail:    # refused before anything ran: always safe to move on
             why = {"share=off": "its owner turned sharing off",
                    "docker": "its Docker engine did not start"}.get(sess.unavail, sess.unavail)
-            return "busy", "%s is not taking jobs (%s)" % (h.name, why)
-        if rc == 73:                       # no slot within the runner's wait: re-plan (host_loop)
-            return "busy", "%s had no free slot after %s" % (h.name, fmt_wait(slot_wait_min(cfg) * 60))
-        if rc in EXIT_CODES:             # the runner's own code (65 / 69 / 70 / 78): the command never ran
-            return "done", Rc(rc, None, "%s on %s" % (EXIT_CODES[rc][1], h.name))
-        return "done", infra(rc if 0 < rc < 256 else EXIT_NEVER_RAN,
-                             "the runner on %s ended with %s before the command started" % (h.name, rc))
+            res = ("busy", "%s is not taking jobs (%s)" % (h.name, why))
+        elif rc == 73:                     # no slot within the job's whole wait (rr_wait_min)
+            res = ("busy", "%s had no free slot after %s" % (h.name, fmt_wait(wait_min(cfg) * 60)))
+        elif rc in (69, 70):               # the pool's fault (no repo there, its runner broke): another worker
+            res = ("infra", Rc(rc, None, "%s on %s" % (EXIT_CODES[rc][1], h.name)))
+        elif rc in EXIT_CODES:             # the runner's own code (65 / 78): the command never ran
+            res = ("done", Rc(rc, None, "%s on %s" % (EXIT_CODES[rc][1], h.name)))
+        else:
+            res = ("done", infra(rc if 0 < rc < 256 else EXIT_NEVER_RAN,
+                                 "the runner on %s ended with %s before the command started" % (h.name, rc)))
+        record(h.name, argv, rc, secs, log=res[0] == "done")   # clears the in-flight entry before a local exec
+        timing.report()
+        return res
     timing.mark("command")
     if sess.timed_out and sess.exit_rc is None:
         rc = sess.exit_rc = EXIT_TIMEOUT     # our backstop closed it: the cap was hit, never re-run
@@ -2892,7 +3083,7 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         if rc == EXIT_SIGILL and not (sess.timed_out or sess.first_sig or sess.ints):
             # not the code's verdict and not this worker's health: host_loop reruns it elsewhere; the
             # cache never sees it (no attempt_done), runs.log keeps rc=132 for placement (rd_pool isa)
-            record(h.name, argv, rc, secs)
+            record(h.name, argv, rc, secs, log=False)
             timing.report()
             return "isa", ("%s crashed with SIGILL (exit 132, illegal instruction): its CPU lacks an instruction "
                            "this repo's code uses" % h.name)
@@ -2905,6 +3096,13 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         elif rc != 0 and (sess.first_sig or sess.ints):
             rc = Rc(rc, "infra", "stopped by signal %d while it ran on %s" % (sess.first_sig or 2, h.name),
                     "rerun it if you still need the result")
+        elif rc == 127:
+            # the shell's "command not found": a tool missing on the worker (2026-11: pnpm), never the code's
+            # verdict; the agent's way out is RRUN=0 (here) until the worker has it
+            tool = sess.missing or os.path.basename(argv[0])
+            rc = infra(127, "`%s` was not found on %s (exit 127): a tool missing on that worker, not a code "
+                       "failure" % (tool, h.name), "run it here with RRUN=0 <command>, and tell the owner "
+                       "%s lacks %s" % (h.name, tool))
         if rc != 0 and sess.no_db_n:
             # advisory only (the exit and its class stay the command's: a real failure must never be
             # hidden behind a DB message); the fix is placement - a DB-needing suite is a db job
@@ -2932,6 +3130,10 @@ def attempt(h, wt, argv, env_pairs, timing, t0, job, pool, outputs=(), deps=None
         return "done", infra(EXIT_MAY_HAVE_RUN, "the runner on %s ended (exit %s) after the start without the "
                              "command's result; it may have run" % (label(h), rc),
                              "rerun it (a DB job: check its side effects first)")
+    if pred and sess.started is not None and sess.exit_at is not None:
+        ran = sess.exit_at - sess.started    # a wild miss (rd_pool ev.miss reads the worker's runs.log): route.log too
+        if ran > float(cfg.get("rr_miss_x", rd_pool.MISS_X)) * pred and ran - pred >= 30:
+            ROUTE_EXTRA["miss_x"] = round(ran / pred, 1)
     if rc == 0 and outputs:
         why = copy_back(cfg, wt, outputs)
         timing.mark("copy-back")

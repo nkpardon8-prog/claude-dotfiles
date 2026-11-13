@@ -189,7 +189,7 @@ class HostLoopIsa(unittest.TestCase):
             return {"mini-a": ("isa", "mini-a crashed with SIGILL"),
                     "hp": ("busy", "hp had no free slot after 2 min")}[h.name]
         ctx = SimpleNamespace(job=rd_pool.classify(["npx", "vitest", "run"]), t0=0.0, cache=None,
-                              cfg={"rr_wait_min": 0}, plan=SimpleNamespace(pool=True))
+                              cfg={"rr_wait_min": 0}, plan=SimpleNamespace(pool=True), moves=0)
         with unittest.mock.patch.object(rd_run, "attempt_on", side_effect=fake), \
                 unittest.mock.patch.object(rd_run, "note"):
             kind, rc = rd_run.host_loop(ctx, [a, hp, b], ["npx", "vitest", "run"])

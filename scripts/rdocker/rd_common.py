@@ -143,8 +143,15 @@ DEFAULTS = {
     "rr_silent_min": 1,                # "no output for N min" on stderr after this, then every 5x it;
                                        # never kills (RRUN_SILENT_MIN; 0 = off)
     "rr_status_every_s": 60,           # a run waiting for a slot / a worktree lane says so this often
-    "rr_slot_wait_s": 120,             # wait this long for a slot on one worker, then re-plan (all of it
-                                       # bounded by rr_wait_min, then exit 73)
+    # placement (rd_pool.rank, rd_run.Mover): a job queues on the worker with the earliest predicted
+    # finish for all of rr_wait_min, and moves at most rr_move_max times to one that became clearly faster
+    "rr_move_max": 1,                  # moves per job while it waits for a slot (0 = never)
+    "rr_move_poll_s": 15,              # a waiting job re-plans this often
+    "rr_move_gain_ratio": 0.25,        # another worker must finish this share sooner than here...
+    "rr_move_min_gain_s": 30,          # ...plus this many seconds
+    "rr_slow_gain_ratio": 0.25,        # a worker over its fleet.json max_cost_s goes first only when its
+    "rr_slow_gain_s": 15,              #    pessimistic finish beats the best other's by this share + seconds
+    "rr_miss_x": 5,                    # a run over this x its prediction is a wild miss (fed back: rd_pool ev.miss)
     "rr_push_timeout_s": 300,          # a git push to a worker that takes longer = that worker is out
     # the pool tier of the result cache (rd_cache: ~rd/rr/rcache on the fleet's home worker, singleflight)
     "rr_pool_cache": True,             # false: this Mac's cache only
@@ -205,7 +212,7 @@ DEFAULTS = {
                           # BY CATEGORY, so new job names need no new rule: every check / lint / typecheck /
                           # verify script and every test:* script, except browser/e2e/watch ones (laptop)
                           r"(^|\s)(check|lint|typecheck|type-check|verify)"
-                          r"(?![\w:.-]*(e2e|playwright|browser|watch|:ui\b))(:[\w:.-]*)?(\s|$)",
+                          r"(?![\w:.-]*(e2e|playwright|browser|watch|:ui(?=$|[\s:])))(:[\w:.-]*)?(\s|$)",   # check:ui-* is a check
                           r"(^|\s)test:(?![\w:.-]*(e2e|playwright|browser|watch|ui\b))[\w:.-]+(\s|$)",
                           r"(^|[\s/])jest(\s+(-\S+|[0-9]*>>?\s*&?\S+))*\s*$",   # a whole jest suite
                           r"(^|[\s/])eslint(\s+\S+)*\s+\.(\s|$)",               # eslint over the whole tree

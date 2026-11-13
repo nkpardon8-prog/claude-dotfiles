@@ -378,11 +378,17 @@ class RunTest(RunBase):
                       RRUN_RECONNECT_WAIT="0")
         self.assertEqual(r.returncode, 4, r.stderr)
         self.assertEqual(r.stdout, "mode=local\n")
-        self.assertIn("running on the laptop instead", r.stderr)
+        # the pool failed: one loud line, and route.log's own decision for it (the steward counts it)
+        self.assertRegex(r.stderr, r"^rrun: pool unavailable \(Mac mini unreachable \(.*\), and it did not come back "
+                                   r"within 0 s\), ran LOCALLY on this Mac\n$")
+        route = self.read(os.path.join(self.home, ".local", "state", "rdocker", "route.log"))
+        self.assertRegex(route.splitlines()[-1], r"^\S+ \S+ fallback-local rrun .* rc=exec ")
+        self.assertEqual(len([ln for ln in route.splitlines() if " rrun " in ln]), 1, route)   # one line, not two
         r = self.rrun("/bin/sh", "-c", "echo ran", FAKE_SSH_DOWN="1", RRUN_STRICT="1",
                       RRUN_RECONNECT_WAIT="0")
         self.assertEqual(r.returncode, 75)
         self.assertEqual(r.stdout, "")
+        self.assertNotIn("LOCALLY", r.stderr)
         # a push to a missing repo (mini fine, push broken) is the same "before anything started"
         r = self.rrun("/bin/sh", "-c", "echo ran", RRUN_GIT_URL=os.path.join(self.d, "nope", "x.git"))
         self.assertEqual((r.returncode, r.stdout), (0, "ran\n"), r.stderr)
@@ -411,7 +417,8 @@ class RunTest(RunBase):
                       RRUN_RECONNECT_WAIT="1", RRUN_RECONNECT_POLL="0.2")
         self.assertEqual((r.returncode, r.stdout), (0, "mode=local\n"), r.stderr)
         self.assertGreaterEqual(time.time() - t0, 1.0)
-        self.assertIn("did not come back within 1 s - running on the laptop instead", r.stderr)
+        self.assertIn("rrun: pool unavailable (Mac mini unreachable", r.stderr)
+        self.assertIn("did not come back within 1 s), ran LOCALLY on this Mac", r.stderr)
 
     def test_stopped_while_waiting_for_the_mini_runs_nowhere(self):
         marker = os.path.join(self.d, "ran")
@@ -431,12 +438,13 @@ class RunTest(RunBase):
         marker = os.path.join(self.d, "ran")
         r = self.rrun("/bin/sh", "-c", 'echo "$RDOCKER_MODE" >> %s' % marker, FAKE_SSH_EARLY_DROP="1")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("lost the Mac mini before the command started - running on the laptop", r.stderr)
+        self.assertIn("rrun: pool unavailable (lost the Mac mini before the command started), ran LOCALLY on this Mac",
+                      r.stderr)
         self.assertEqual(self.read(marker), "local\n")        # exactly one run, on the laptop
         ok, _, detail = rd_run.status_row(time.time())
         st = json.loads(self.read(rd_common.RRUN_STATE.replace(rdmods.TEST_HOME, self.home)))
         self.assertEqual(st["active"], {})                     # no stale "mini slot busy"
-        self.assertEqual(st["last"]["target"], "local")
+        self.assertEqual(st["last"]["target"], "fallback-local")
 
     def test_origin_base_branches_reach_the_mini(self):
         """`origin/dev` resolves inside rrun (guards diff against it); a missing base is skipped."""
@@ -589,7 +597,7 @@ class RunTest(RunBase):
             p = subprocess.Popen([RRUN, "/bin/sh", "-c", "trap '' INT; touch %s; while :; do sleep 0.1; done"
                                   % ready], cwd=self.wt, env=self.env(), stdout=subprocess.DEVNULL, stderr=ef)
         end = time.time() + 30
-        while "waiting for a slot on the Mac mini" not in self.read(errf):
+        while "queued on the Mac mini" not in self.read(errf):
             self.assertLess(time.time(), end, self.read(errf))
             time.sleep(0.05)
         self.assertIn("held longest by other.repo for 4", self.read(errf))
@@ -602,7 +610,7 @@ class RunTest(RunBase):
         self.assertIsNone(p.poll())
         p.send_signal(signal.SIGINT)                         # second: stdin closed -> group TERM
         self.assertEqual(p.wait(30), 128 + signal.SIGTERM)
-        self.assertEqual(self.read(errf).count("waiting for a slot on the Mac mini"), 1)
+        self.assertEqual(self.read(errf).count("queued on the Mac mini"), 1)
 
     def test_worktree_lock_serialises(self):
         fds = self.hold_lanes()                              # every lane busy: it waits
@@ -737,8 +745,10 @@ class HangsAndOwners(RunBase):
             self.drop(fds)
         self.assertEqual(rd_run.wt_wait_s({}, {"cls": "db"}, {}), 90 * 60)  # default: the job's own cap
 
-    def test_busy_worker_re_plans_instead_of_sitting_30_min(self):
-        self.write_cfg(rr_slots=1, rr_slot_wait_s=1, rr_wait_min=0.1)
+    def test_busy_worker_queues_for_the_whole_wait_then_73(self):
+        """No short wait and bounce (2026-11-13): the job queues on its worker for all of rr_wait_min,
+        one wait, then exit 73 (one route.log line); a slot freed during the wait is taken."""
+        self.write_cfg(rr_slots=1, rr_wait_min=0.1)
         slots = os.path.join(self.home, "rr", "slots")
         os.makedirs(slots)
         fd = os.open(os.path.join(slots, "0"), os.O_RDWR | os.O_CREAT, 0o600)
@@ -748,10 +758,14 @@ class HangsAndOwners(RunBase):
             r = self.rrun("/bin/sh", "-c", "echo ran", timeout=90)
             self.assertEqual(r.returncode, 73, r.stderr)
             self.assertLess(time.time() - t0, 60)
-            self.assertIn("re-planning", r.stderr)
+            self.assertNotIn("re-planning", r.stderr)
+            self.assertEqual(r.stderr.count("queued on the Mac mini"), 1, r.stderr)
+            self.assertIn("waits here up to 6 s", r.stderr)
             self.assertIn("rrun: infra (exit 73", r.stderr)
             self.assertIn("no worker had a free slot for 6 s; never ran", r.stderr)
-            # freed while it re-plans: it runs
+            route = self.read(os.path.join(self.home, ".local", "state", "rdocker", "route.log"))
+            self.assertEqual([ln.split()[2] for ln in route.splitlines() if " rrun " in ln], ["none"])
+            # freed during the wait: it runs
             threading_timer = __import__("threading").Timer(2.5, lambda: os.close(fd))
             threading_timer.start()
             r = self.rrun("/bin/sh", "-c", "echo ran", timeout=90)

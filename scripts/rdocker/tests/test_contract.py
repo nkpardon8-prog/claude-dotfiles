@@ -116,7 +116,7 @@ class Emitted(test_run.RunBase):
         scenario(72, "infra", self.rrun("/bin/sh", "-c", "true"))
         self.doCleanups()
         # 73: every slot busy past rr_wait_min
-        self.write_cfg(rr_slots=1, rr_slot_wait_s=1, rr_wait_min=0.03)
+        self.write_cfg(rr_slots=1, rr_wait_min=0.03)
         self.hold(os.path.join(self.home, "rr", "slots", "0"))
         scenario(73, "infra", self.rrun("/bin/sh", "-c", "true", timeout=90))
         self.doCleanups()
@@ -130,6 +130,12 @@ class Emitted(test_run.RunBase):
         self.write_cfg()
         # 132: SIGILL on the worker (its CPU cannot run the code): infra, never the code's fail
         scenario(132, "infra", self.rrun("/bin/sh", "-c", "kill -ILL $$"))
+        # 127: a tool missing on the worker - infra, naming it, never "fix the code"
+        line = self.check(self.rrun("/bin/sh", "-c", "rr-no-such-tool --x"), 127, "infra")
+        self.assertIn("`rr-no-such-tool` was not found on mini (exit 127)", line)
+        self.assertIn("RRUN=0", line)
+        self.assertNotIn("fix the code", line)
+        seen[127] = line
         # 124: its wall-clock cap
         scenario(124, "infra", self.rrun("/bin/sh", "-c", "sleep 60", RRUN_TIMEOUT="0.02", timeout=60))
         # 65: the worker refuses an unsafe mirror dir (a symlink)
@@ -146,7 +152,16 @@ class Emitted(test_run.RunBase):
         if os.path.isdir(tmp):
             os.rename(tmp, tmp + ".old")
         test_run.wfile(tmp, "not a dir\n")
-        scenario(70, "infra", self.rrun("/bin/sh", "-c", "true"))
+        scenario(70, "infra", self.rrun("/bin/sh", "-c", "true", RRUN_STRICT="1"))   # no local run allowed
+        # a heavy job may never run here either: the runner's own 70, not 75
+        r = self.rrun("/bin/sh", "-c", "true; : tsc --noEmit")
+        self.check(r, 70, "infra")
+        self.assertNotIn("LOCALLY", r.stderr)
+        # ...without RRUN_STRICT the pool failed for a job that may run here: it runs here, loudly
+        r = self.rrun("/bin/sh", "-c", "echo here")
+        self.assertEqual((r.returncode, r.stdout), (0, "here\n"), r.stderr)
+        self.assertIn("rrun: pool unavailable (the worker's runner failed; never ran on mini), ran LOCALLY "
+                      "on this Mac", r.stderr)
         os.unlink(tmp)
         # 78: installing dependencies fails (npm ci exits 1 on the worker)
         test_run.wfile(os.path.join(self.wt, "package.json"), '{"name": "x", "version": "1.0.0"}\n')

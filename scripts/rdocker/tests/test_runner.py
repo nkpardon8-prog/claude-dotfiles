@@ -810,6 +810,25 @@ class RunnerTest(unittest.TestCase):
         with open(os.path.join(self.root, "log", "runs.log")) as f:
             return f.read().splitlines()
 
+    def test_a_helper_fork_hit_by_the_runners_signal_never_writes_a_second_row(self):
+        """2026-11-13: 15 run ids on hp had two identical runs.log rows (all abandoned-setup in a store
+        clone). A helper fork (run_cmd / spawn / node -v) that receives the runner's INT/TERM/HUP handler
+        before it resets it - perl's pending-signal flag survives fork - died into main()'s eval and
+        ran finish() a second time. Forced here: the first helper child gets a HUP at once."""
+        lib = os.path.join(self.d, "lib")
+        os.makedirs(lib)
+        with open(os.path.join(lib, "RRForkHup.pm"), "w") as f:
+            f.write("package RRForkHup;\nBEGIN { *CORE::GLOBAL::fork = sub () { my $p = CORE::fork();\n"
+                    "  if (defined $p && !$p && mkdir($ENV{RR_T_FORKHUP})) { kill 'HUP', $$; "
+                    "select(undef, undef, undef, 0.5) } $p } }\n1;\n")
+        flag = os.path.join(self.d, "forked-once")
+        r = self.run_runner(["true"], run_id=str(uuid.uuid4()),
+                            env_extra={"PERL5OPT": "-I%s -MRRForkHup" % lib, "RR_T_FORKHUP": flag})
+        self.assertTrue(os.path.isdir(flag), r.err)                        # the injected HUP did fire
+        rows = self.runs_log()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "slots")), r.err)
+
     # ------------------------------------------------- 2026-11-11: hung jobs, owners, queue lines
     def alive(self, pid):
         try:
@@ -1516,7 +1535,7 @@ class DetachedRuns(RunnerTest):
         self.assertGreaterEqual(float(re.search(r"wait_s=(\S+)", line).group(1)), 2.5)
         # rd_pool's probe (perl, as on a worker): the command's evidence without the v2 fields
         import rd_pool
-        req = {"sig": "/bin/sh -c exit 0", "kind": "other", "kinds": [list(k) for k in rd_pool.KINDS]}
+        req = {"slug": SLUG, "sig": "/bin/sh -c exit 0", "kind": "other", "kinds": [list(k) for k in rd_pool.KINDS]}
         pr = subprocess.run(["/usr/bin/perl", "-e", rd_pool.PROBE], input=json.dumps(req).encode(),
                             capture_output=True, env=self.env(), timeout=30)
         ev = json.loads(pr.stdout.decode().strip().splitlines()[-1])["ev"]

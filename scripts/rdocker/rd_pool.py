@@ -8,11 +8,15 @@ small `perl -e` snippet (PROBE; nothing is installed on the worker) and given an
 completion time (score() + add_risk(); lower is better), every term measured from the workers'
 runs.log (see "evidence" below; 2026-11-11, replacing a bench-speed scalar and constant cold costs):
 
-    eta   = setup + queue + run + rtt + risk                (rtt capped at RTT_CAP_S)
-    run   = Model.predict (this command's evidence) / (cpu_share * mem_factor)
+    eta   = setup + queue + rank + rtt + risk               (rtt capped at RTT_CAP_S): the FINISH time
+    run   = Model.predict (this command's evidence, keyed on repo + argv) / (cpu_share * mem_factor)
+    rank  = run for a command with OWN_MIN+ runs there, else the pessimistic run (Model.predict_hi:
+            estimate x UNCERTAIN_X of its source); a slow worker (over its max_cost_s) always ranks on
+            the pessimistic run (p90 of its own runs when it has them)
     setup = measured prepare p75 there, warm or cold (+ COLD_GIT_S without the bare git mirror)
-    queue = 0 with a free slot, else when the first slot holder should be done (its own command's
-            median there, minus how long it has run)
+    queue = 0 with a free slot of the job's kind, else queue_wait: the holders' ends (their own
+            command's median there, minus how long it has run) with the runs already waiting there
+            (probe "waiting") served first
     risk  = p_infra there x (setup + run / 2 lost + a rerun on the best other worker)
     free  = free slots (heavy jobs: min with free heavy slots); capped by ~/rr/slots.cap and the
             owner's share switch (some = half; off = state "off", no eta, tried last)
@@ -21,18 +25,18 @@ runs.log (see "evidence" below; 2026-11-11, replacing a bench-speed scalar and c
 Each job logs its prediction (runs.log pred_s, the evidence run seconds), so it can be checked.
 
 Eligibility (eligibility(); fleet.json per worker, a missing field = no limit) is decided BEFORE any
-of that and is hard: a worker whose `classes` leave out the job's class, whose `max_cost_s` is below the
-job's predicted command time there (Model.predict, no momentary load factor), or that lacks the
-packages for this lockfile while it is warm-only (`cold_ok: false`, or - without cold_ok - a measured
-cold-setup p75 over rr_cold_budget_s), is no candidate at all - not
-ranked, not a wait host, no shard, no hedge, no warm. Unprobed plans (one worker, --host) check the
-class only. Nothing eligible at all: plan.hosts is empty and plan.ineligible says why (rd_run: exit 77, config).
-A worker with less memory than the job needs is "low-mem" (no eta). Order: free workers by eta, then
-busy ones by eta (the first is the "wait host" when nothing is free), then low-mem, down, off. A busy
-worker whose eta is <= PROMOTE_RATIO (0.5) x the best free one, and at least PROMOTE_MIN_GAIN_S
-(120 s) sooner, goes first, with a slot wait that ends when
-the best free worker would have finished. Free candidates get a short slot wait so a lost race moves
-on quickly; the wait host gets the full rr_wait_min. Nothing is cached between plan() calls but the
+of that and is hard: a worker whose `classes` leave out the job's class, that has no heavy slot for a
+heavy job, or that lacks the packages for this lockfile while it is warm-only (`cold_ok: false`, or -
+without cold_ok - a measured cold-setup p75 over rr_cold_budget_s), is no candidate at all - not ranked,
+not a wait host, no shard, no hedge, no warm. Unprobed plans (one worker, --host) check the class only.
+Nothing eligible at all: plan.hosts is empty and plan.ineligible says why (rd_run: exit 77, config).
+`max_cost_s` is soft (2026-11-13; before, a hard exclusion that left the minis idle while jobs queued):
+a worker whose predicted command is over it is "slow" (slow_why) and goes first only when its
+pessimistic finish beats the best other worker's by SLOW_GAIN_RATIO (25 %) of it + SLOW_GAIN_S (15 s).
+Order (rank()): every worker that can take the job now, free or queued, by eta (the predicted finish);
+slow ones that do not win after them; then no-eta (low-mem, no slot of the kind), down, off. The first
+is where the job waits for its slot (rd_run: the whole rr_wait_min there, no bounce; it may move once
+when another worker becomes clearly better). Nothing is cached between plan() calls but the
 down memo (probe_all): a worker that did not answer is skipped, unprobed, for 60 s, then 120 s, then
 probed again (`rrun --where` always probes); any answer clears it. An "optional": true worker that is down is left out of the
 order (it is a nice addition, often away) and never warned about. shardable() / shard_assign() split a `vitest run`
@@ -59,7 +63,6 @@ import rd_common
 
 RTT_CAP_S = 0.5
 PROBE_TIMEOUT_S = 4.0   # covers a cold ssh master over a DERP relay (~1.5-2.5 s); warm probes answer in ~0.3 s
-RACE_WAIT_MIN = 0.5          # slot wait on a worker the probe saw free (a lost race moves on)
 LOCAL_AFTER_S = 20           # light jobs: run locally after waiting this long for any worker
 LOCAL_MIN_FREE_GB = 4
 COLD_GIT_S, COLD_DEPS_S = 30.0, 90.0   # eta: no bare git mirror yet / packages not installed there
@@ -70,14 +73,6 @@ JOB_CPUS = {"heavy": 2, "normal": 4, "db": 2, "light": 1, "build": 2}   # cores 
 MIN_RUN_S = 1.0              # a finished run's cost is never below this (ssh + spawn alone take that)
 HIST_MIN = 3                 # runs of a class before its median replaces the default cost
 HOLDER_COST_S = 60.0         # a slot holder's run at speed 1.0 when the worker has no history (queue wait)
-# a busy worker goes first when its eta (queue included) <= this x the best free one (0 = never):
-# a quick job still spreads to an idle machine; this is for "free" workers that would be about 2x
-# or more slower (hp swapping on a tsc: 26 min vs 77 s on nickmbp; 2026-11-11 a whole vitest suite
-# ran 66-80 min on the free rd-mini-a while faster workers would have freed up sooner). Was 0.25.
-PROMOTE_RATIO = 0.5
-# ...and only when that saves at least this much (rr_queue_promote_min_gain_s): a quick job's queue
-# estimate is too rough to make it wait on a busy worker for a few seconds' gain
-PROMOTE_MIN_GAIN_S = 120.0
 # a worker whose 1-min load per CPU thread is at least this at probe time counts as busy (its free
 # slot notwithstanding) and its run estimate grows by load/ncpu (rr_overload_ratio; 0 = off).
 # 2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still being sent jobs
@@ -374,8 +369,11 @@ class Host:
 
     def __init__(self, name, cfg, entry=None):
         self.name, self.cfg, self.entry = name, cfg, entry
-        self.probe, self.state, self.short = None, "-", False
+        self.probe, self.state = None, "-"
         self.eta = self.run_s = self.setup_s = self.queue_s = self.eff = None   # set by score()
+        self.run_hi = self.rank_s = None       # pessimistic run; the run the eta ranks on
+        self.ahead = 0                         # runs already waiting for a slot there (probe "waiting")
+        self.slow = None                       # slow_why(): over its max_cost_s (a ranking penalty)
         self.pred_s = self.src = None          # Model.predict: evidence run seconds + where they came from
         self.risk_s, self.p_infra = 0.0, None  # add_risk
         self.overloaded = False                                                  # set by score()
@@ -481,13 +479,20 @@ for my $f (glob("$R/slots/*.own")) {
     my ($i) = $f =~ m{/(\d+)\.own$} or next;
     next if -l $f || !busy("$R/slots/$i");
     my %j = map { /^([a-z]+)=(.*)$/ ? ($1 => $2) : () } split /\t/, ((slurp($f) =~ /^([^\n]*)/)[0] // "");
-    my (undef, undef, $wpid) = split ' ', slurp("$R/slots/$i.who");
+    my ($wslug, undef, $wpid) = split ' ', slurp("$R/slots/$i.who");
     next unless defined $j{pid} && defined $wpid && $j{pid} eq $wpid;
     $j{slot} = $i + 0;
+    $j{repo} = $wslug if defined $wslug && $wslug ne "";
     $j{start} = ($j{start} // "") =~ /^\d+$/ ? $j{start} + 0 : undef;
     push @jobs, \%j;
 }
 $o{jobs} = \@jobs;
+# runs waiting for a slot here (the runner's wait/<pid>, a live pid only): the queue a new job joins
+my $nw = 0;
+if (!-l "$R/wait" && opendir(my $wd, "$R/wait")) {
+    for (readdir $wd) { next unless /^(\d+)$/; $nw++ if kill(0, $1) || $!{EPERM} }
+}
+$o{waiting} = $nw;
 if (($q->{heavy_slots} // "") =~ /^(\d+)$/) {
     my $hc = half($1);
     $o{heavy_cap} = $hc; $o{heavy_busy} = 0; $o{heavy_busy} += busy("$R/slots/heavy-$_") for 0 .. $hc - 1 }
@@ -541,12 +546,17 @@ $o{rcache} = rcache($R, $q->{rcache}) if ref $q->{rcache} eq "HASH";
 # workers keep different time zones). Outcomes are relabelled truthfully (ev_code): a bare pre-GO
 # "lost"/"interrupted" from before 2026-11-11 is "aband" (abandoned-setup), never a lost job.
 #   rows  the last EV_ROWS: [code, prepare_s|null, setup 0 warm / 1 cold / null]
-#   sig   this job's exact command (q.sig): its completed (rc 0/1) command seconds, newest last (<= 30)
-#   kind  [n, median] of completed command seconds of the job's kind (q.kind, kinds = q.kinds: first match)
-#   pk    {sha1(sig)[0,8]: [n, median]} for the job's kind (paired-command ratios across workers)
+# A command's timing is keyed on (repo, argv): `npm run test` is a different script in every repo
+# (2026-11-13: dentall's took 30 min where another repo's took 5 s).
+#   sig   this job's exact command in this repo (q.slug, q.sig): completed (rc 0/1) seconds, newest last (<= 30)
+#   miss  [n, max cmd_s] of this command's started runs here that took over q.miss_x (5) x their pred_s
+#         (and 30 s more): wild misses, any outcome (a cap kill too), fed back into the next prediction
+#   kind  [n, median] of completed command seconds of the job's kind in this repo (kinds = q.kinds: first match)
+#   kany  [n, median] of the same kind across every repo (a weaker fallback)
+#   pk    {sha1(repo TAB sig)[0,8]: [n, median]} for the job's kind (paired-command ratios across workers)
 #   all   [n, median] of every completed command (a slot holder's typical run, queue estimate)
 #   isa   [n, last epoch] of this repo's (q.slug) rc=132 runs (SIGILL) in the last q.isa_days days
-#   jobs[].med  the median of a running job's own command here (queue estimate)
+#   jobs[].med  the median of a running job's own command (in its repo) here (queue estimate)
 if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
     require Time::Local; require Digest::SHA;
     my $now = ($q->{now} // "") =~ /^\d+(\.\d+)?$/ ? $q->{now} : time;
@@ -565,13 +575,15 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         my @l = do { local $/ = "\n"; <$lf> }; shift @l if $sz > $max;
         unshift @text, @l;
     }
-    my (@rows, %by, @kc, @isa);
+    my (@rows, %by, @kc, @ka, @isa, @miss);
     my $slug = $q->{slug} // "";
+    my $js = $q->{sig} // "";
+    my $mx = ($q->{miss_x} // "") =~ /^\d+(\.\d+)?$/ ? $q->{miss_x} : 5;
     my $isa_lo = $now - 86400 * (($q->{isa_days} // "") =~ /^\d+$/ ? $q->{isa_days} : 7);
     my $med = sub { my @v = sort { $a <=> $b } @_; my $n = @v; $n ? ($n % 2 ? $v[$n >> 1] : ($v[$n / 2 - 1] + $v[$n / 2]) / 2) : undef };
     for my $l (@text) {
-        my ($y, $mo, $d, $hh, $mi, $ss, $sg, $oh, $om, $out, $ps, $cs, $argv, $tail) = $l =~
-            /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)([+-])(\d\d):?(\d\d) .*? outcome=(.+?) prepare_s=(\S+) cmd_s=(\S+) argv=([^\t\n]*)(?:\t([^\n]*))?/ or next;
+        my ($y, $mo, $d, $hh, $mi, $ss, $sg, $oh, $om, $repo, $out, $ps, $cs, $argv, $tail) = $l =~
+            /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)([+-])(\d\d):?(\d\d) repo=(\S*) .*? outcome=(.+?) prepare_s=(\S+) cmd_s=(\S+) argv=([^\t\n]*)(?:\t([^\n]*))?/ or next;
         my $t = eval { Time::Local::timegm($ss, $mi, $hh, $d, $mo - 1, $y) } // next;
         $t -= ($sg eq "-" ? -1 : 1) * ($oh * 3600 + $om * 60);
         next if $t < $lo || $t > $now;
@@ -589,23 +601,31 @@ if (ref $q->{kinds} eq "ARRAY" && defined $q->{kind}) {
         if ($code eq "isa" && $t >= $isa_lo && $slug ne "" && index($l, " repo=$slug ") >= 0) {
             $isa[0]++; $isa[1] = $t if !defined $isa[1] || $t > $isa[1] }
         if ($out =~ /^rc=[01]$/ && $cs =~ /^\d+(\.\d+)?$/) {
-            push @{ $by{$argv} }, $cs + 0;
+            push @{ $by{"$repo\t$argv"} }, $cs + 0;
         }
+        if ($repo eq $slug && $argv eq $js && $out =~ /^(?:(?:timeout|lost) )?rc=\d+$/ && $cs =~ /^\d+(\.\d+)?$/
+                && ($kv{pred_s} // "") =~ /^\d+(\.\d+)?$/ && $kv{pred_s} > 0
+                && $cs > $mx * $kv{pred_s} && $cs - $kv{pred_s} >= 30) {
+            push @miss, $cs + 0 }
     }
     splice(@rows, 0, @rows - $cap) if @rows > $cap;
     my %ev = (rows => \@rows, sig => [], pk => {});
-    my $js = $q->{sig} // "";
-    if (my $v = $by{$js}) { $ev{sig} = [@$v > 30 ? @$v[-30 .. -1] : @$v] }
-    for my $sig (keys %by) {
+    if (my $v = $by{"$slug\t$js"}) { $ev{sig} = [@$v > 30 ? @$v[-30 .. -1] : @$v] }
+    for my $key (keys %by) {
+        my ($r, $sig) = split /\t/, $key, 2;
         next unless $kof->($sig) eq $q->{kind};
-        push @kc, @{ $by{$sig} };
-        $ev{pk}{substr(Digest::SHA::sha1_hex($sig), 0, 8)} = [scalar @{ $by{$sig} }, $med->(@{ $by{$sig} })];
+        push @ka, @{ $by{$key} };
+        next unless $r eq $slug;
+        push @kc, @{ $by{$key} };
+        $ev{pk}{substr(Digest::SHA::sha1_hex($key), 0, 8)} = [scalar @{ $by{$key} }, $med->(@{ $by{$key} })];
     }
     $ev{kind} = [scalar @kc, $med->(@kc)];
+    $ev{kany} = [scalar @ka, $med->(@ka)];
+    $ev{miss} = [scalar @miss, (sort { $b <=> $a } @miss)[0]] if @miss;
     $ev{isa} = \@isa if @isa;
     my @all = map { @$_ } values %by;
     $ev{all} = [scalar @all, $med->(@all)];
-    for my $j (@jobs) { my $v = $by{$j->{cmd} // ""}; $j->{med} = $med->(@$v) if $v }
+    for my $j (@jobs) { my $v = $by{($j->{repo} // "") . "\t" . ($j->{cmd} // "")}; $j->{med} = $med->(@$v) if $v }
     $o{ev} = \%ev;
 }
 print JSON::PP->new->canonical->encode(\%o), "\n";
@@ -771,14 +791,18 @@ def _median(xs):
 # Every number the placement uses comes from what the workers' runs.log says actually happened
 # (PROBE "ev", parsed on the worker with its own clock offset, since fleet.json history_since, last
 # EV_DAYS days), never from a guess. Fallbacks, in order, only where evidence is missing:
-#   run_s    1. this worker's median of the exact command (>= OWN_MIN completed rc 0/1 runs)
+#   run_s    (a "command" = repo + argv: one script name means different work in each repo)
+#            1. this worker's median of the exact command (>= OWN_MIN completed rc 0/1 runs)
 #            2. the pool's median of that command (each worker's median / its ratio) x this
 #               worker's ratio; a worker's ratio (per kind) = median over commands it ran that
 #               another worker ran too of (its median / the pool median), >= RATIO_MIN such pairs,
 #               else its bench speed calibrated against the workers that have a learned ratio
 #            3. the command's own runs here (1-2 of them)
-#            4. this worker's median for the job's kind (>= OWN_MIN), else the pool's x ratio
-#            5. JOB_COST_S[class] / bench speed (the last resort; rr_job_cost_s overrides)
+#            4. this worker's median for the job's kind in this repo (>= OWN_MIN), else the pool's x ratio
+#            5. the kind's median across all repos ("kind-any"), never below the class default (6.)
+#            6. JOB_COST_S[class] / bench speed (the last resort; rr_job_cost_s overrides)
+#            then, with < OWN_MIN own runs: a wild miss of this command (ev.miss, a run over MISS_X x
+#            its pred_s, any outcome) on any worker lifts it to that run's time ("+miss")
 #   setup_s  p75 of this worker's prepares, warm vs cold (>= OWN_MIN of that kind), else
 #            WARM_SETUP_S / COLD_DEPS_S; + COLD_GIT_S without the bare repo
 #   risk_s   p_infra x (setup + run / 2 lost + a rerun on the best other worker); p_infra = infra
@@ -825,10 +849,10 @@ def kind_of(sig):
     return "other"
 
 
-def sig_key(sig):
-    """The 8-hex key the PROBE uses for a command in ev.pk (sha1 of the runs.log argv text)."""
+def sig_key(sig, slug=""):
+    """The 8-hex key the PROBE uses for a command in ev.pk (sha1 of "<repo> TAB <runs.log argv text>")."""
     import hashlib
-    return hashlib.sha1((sig or "").encode("utf-8", "surrogateescape")).hexdigest()[:8]
+    return hashlib.sha1(("%s\t%s" % (slug or "", sig or "")).encode("utf-8", "surrogateescape")).hexdigest()[:8]
 
 
 def _pct(xs, q):
@@ -933,6 +957,16 @@ def setup_s(host):
     return s + (0.0 if p.get("warm_git") else COLD_GIT_S)
 
 
+# How far a run estimate may be off, by where it came from: the ranking (eta) uses estimate x this
+# (a well-known command's own median: its p90 instead, for a slow worker only). A worker with little
+# evidence must win by more than its estimate's slack, so a misprediction never costs a long wait.
+UNCERTAIN_X = {"own": 1.5, "pool": 1.25, "kind": 1.5, "pool-kind": 1.5, "kind-any": 2.0, "default": 2.0}
+MISS_X = 5.0                 # rr_miss_x: a run that took over this x its prediction is a wild miss (probe ev.miss)
+# max_cost_s is soft (2026-11-13): a worker whose predicted command is over it is "slow" and is used
+# only when its pessimistic finish beats the best other worker's by SLOW_GAIN_RATIO of that + SLOW_GAIN_S
+SLOW_GAIN_RATIO, SLOW_GAIN_S = 0.25, 15.0
+
+
 class Model:
     """What the pool's evidence says about one job, shared by every worker's score (built once per
     plan from all probes): per-worker per-kind ratios and the pool's medians."""
@@ -962,9 +996,32 @@ class Model:
     def r(self, h):
         return self.ratio.get(h.name) or self.k / max(0.01, h.speed)
 
+    @staticmethod
+    def own(h):
+        return [x for x in (_num(v) for v in ev(h).get("sig") or []) if x is not None]
+
     def predict(self, h):
-        """-> (command seconds on h at its usual load, source): see the table above."""
-        own = [x for x in (_num(v) for v in ev(h).get("sig") or []) if x is not None]
+        """-> (command seconds on h at its usual load, source): see the table above. Fewer than
+        OWN_MIN runs of this command here and a wild miss of it anywhere (ev.miss: a run that took
+        over MISS_X x its prediction): at least that run's time (scaled to h), source "+miss"."""
+        s, src = self._predict(h)
+        if len(self.own(h)) < OWN_MIN:
+            ms = [_num(m[1]) / self.r(w) * self.r(h) for w in self.hosts
+                  for m in [ev(w).get("miss")] if isinstance(m, list) and len(m) == 2 and _num(m[1]) is not None]
+            if ms and max(ms) > s:
+                return max(ms), src + "+miss"
+        return s, src
+
+    def predict_hi(self, h, s, src):
+        """A pessimistic run estimate: this command's own p90 here when it ran OWN_MIN+ times, else
+        the estimate x UNCERTAIN_X of its source."""
+        own = self.own(h)
+        if len(own) >= OWN_MIN and src == "own":
+            return max(s, _pct(own, 0.9))
+        return s * UNCERTAIN_X.get(src.split("+")[0], 1.5)
+
+    def _predict(self, h):
+        own = self.own(h)
         if len(own) >= OWN_MIN:
             return max(MIN_RUN_S, _median(own)), "own"
         refs = []
@@ -986,7 +1043,17 @@ class Model:
                 and _num((ev(w).get("kind") or [0, None])[1]) is not None]
         if refs:
             return max(MIN_RUN_S, _median(refs) * self.r(h)), "pool-kind"
-        return default_cost(self.cfg, self.job["cls"]) / max(0.01, h.speed), "default"   # (config: no clamp)
+        # the kind in other repos only: a weak hint (a script name says little about its work), never
+        # below the class default - an unknown `npm run test` is not assumed to take 5 s
+        dflt = default_cost(self.cfg, self.job["cls"]) / max(0.01, h.speed)
+        ka = ev(h).get("kany") or [0, None]
+        refs = [_num(ka[1])] if _num(ka[0], 0) >= OWN_MIN and _num(ka[1]) is not None else \
+            [_num((ev(w).get("kany") or [0, None])[1]) / self.r(w) * self.r(h) for w in self.hosts
+             if _num((ev(w).get("kany") or [0, None])[0], 0) >= OWN_MIN
+             and _num((ev(w).get("kany") or [0, None])[1]) is not None]
+        if refs:
+            return max(MIN_RUN_S, dflt, _median(refs)), "kind-any"
+        return dflt, "default"   # (config: no clamp)
 
 
 def default_cost(cfg, cls):
@@ -999,22 +1066,23 @@ def eligibility(host, job, cost_s=None, probed=False, cfg=None):
     """-> None when the worker may take this job, else why not. Hard rules from its fleet entry (a
     missing field = no limit):
       classes     the job classes it takes (light / normal / heavy / db / build)
-      max_cost_s  the longest predicted command it takes, in seconds on this worker (cost_s)
+      heavy_slots 0 (probe heavy_cap 0, also after the share switch halves it): no heavy job ever gets a slot
       cold_ok     the manual override for a job whose packages it lacks (probe warm_deps = 0):
                   false = never; true = always; missing = MEASURED - its cold-setup p75 (runs.log)
                   must be <= rr_cold_budget_s (COLD_BUDGET_S): a slow-disk worker is warm-only
                   until its measured cold setup is fast enough (an SSD), with no fleet change
-    cost / cold need a probe (probed=True); an unprobed plan (one worker, --host) checks the class only.
+    max_cost_s is not a rule here but a ranking penalty (slow_why). cold needs a probe (probed=True); an
+    unprobed plan (one worker, --host) checks the class and fleet.json heavy_slots only.
     SIGILL skips are judged across the pool, not per worker: plan() adds isa_skips.
     A worker that did not answer the probe is judged on its class and cost (cold unknown)."""
     classes = _f(host.entry, "classes")
     if isinstance(classes, list) and job["cls"] not in classes:
         return "takes only %s jobs (this is %s)" % ("/".join(classes), job["cls"])
+    if job["cls"] == "heavy" and (_f(host.entry, "heavy_slots") == 0 or
+                                  (host.probe is not None and _num(host.probe.get("heavy_cap")) == 0)):
+        return "has no heavy-job slot (heavy_slots 0)"   # fleet.json says so, or the probe (share some)
     if not probed:
         return None
-    mc = _num(_f(host.entry, "max_cost_s"))
-    if mc is not None and cost_s is not None and cost_s > mc:
-        return "expected ~%s there, over its max_cost_s %s" % (fmt_s(cost_s), fmt_s(mc))
     if host.probe is not None and not host.probe.get("warm_deps"):
         ok = _f(host.entry, "cold_ok")
         if ok is False:
@@ -1023,6 +1091,15 @@ def eligibility(host, job, cost_s=None, probed=False, cfg=None):
         c = cold_p75(host)
         if ok is not True and c is not None and c > budget:
             return COLD_WHY % (fmt_s(c), fmt_s(budget))
+    return None
+
+
+def slow_why(host, cost_s):
+    """-> why this worker is slow for the job (its predicted command is over its fleet.json max_cost_s),
+    else None. A slow worker is still a candidate: plan() puts it first only when it wins by the margin."""
+    mc = _num(_f(host.entry, "max_cost_s"))
+    if mc is not None and cost_s is not None and cost_s > mc:
+        return "expected ~%s there, over its max_cost_s %s" % (fmt_s(cost_s), fmt_s(mc))
     return None
 
 
@@ -1035,7 +1112,7 @@ def no_eligible_msg(job, ineligible):
     costs = [h.cost_s for h, _ in ineligible if getattr(h, "cost_s", None) is not None]
     if costs:
         what += ", predicted ~%s" % fmt_s(min(costs))
-    return ("no eligible worker for this job (%s): %s - each worker's classes / max_cost_s / cold_ok are "
+    return ("no eligible worker for this job (%s): %s - each worker's classes / heavy_slots / cold_ok are "
             "set in fleet.json; a SIGILL skip is measured (rr_isa_days)"
             % (what, "; ".join("%s %s" % (h.name, why) for h, why in ineligible)))
 
@@ -1057,29 +1134,83 @@ def cpu_share(load, ncpu, cls):
     return min(1.0, max(idle, ncpu * want / (load + want)) / want)
 
 
+def holder_typ(host):
+    """A slot holder's (or waiter's) typical run here: the worker's median completed run, else the default."""
+    allm = ev(host).get("all") or [0, None]
+    return _num(allm[1]) if _num(allm[0], 0) >= OWN_MIN and _num(allm[1]) is not None \
+        else HOLDER_COST_S / max(0.01, host.speed)
+
+
+def slot_releases(host, job, now=None):
+    """-> (free slots of the kind the job needs, [seconds until each held one should free]). A holder
+    whose command ran here before ends at its own median (slots/<i>.own + the probe's median), else at
+    this worker's typical run counted from its slot age. A heavy job with every heavy slot taken waits
+    for a heavy holder: the longest-running holders are assumed to be the heavy ones (pessimistic)."""
+    p = host.probe or {}
+    now, typ = time.time() if now is None else now, holder_typ(host)
+    busy = max(0, int(_num(p.get("slots_busy"), 0)))
+    free = int(_num(p.get("slots_cap"), 1)) - busy
+    rel = []
+    for j in p.get("jobs") or []:
+        c = _num(j.get("med")) if isinstance(j, dict) else None
+        st = _num(j.get("start")) if isinstance(j, dict) else None
+        if c is not None and st is not None:
+            rel.append(max(0.2 * c, c - max(0.0, now - st)))
+    ages = sorted((a for a in (_num(x) for x in p.get("ages") or []) if a is not None), reverse=True)
+    for a in ages[len(rel):]:
+        if len(rel) >= busy:
+            break
+        rel.append(max(0.2 * typ, typ - a))
+    rel += [typ / 2.0] * max(0, busy - len(rel))
+    rel = sorted(rel[:busy]) if busy else []
+    if job["cls"] == "heavy" and p.get("heavy_cap") is not None:
+        hfree = int(_num(p.get("heavy_cap"), 0) - _num(p.get("heavy_busy"), 0))
+        if hfree <= 0:
+            hb = max(0, int(_num(p.get("heavy_busy"), 0)))
+            return 0, (rel[-hb:] if hb and rel else [typ / 2.0] * hb)
+        free = min(free, hfree)
+    return max(0, free), rel
+
+
+def queue_wait(host, job, ahead=None, now=None):
+    """Seconds until this job gets a slot here, with `ahead` runs (default: the probe's waiters) served
+    first, each holding its slot for this worker's typical run. None: no slot of its kind exists."""
+    import heapq
+    free, rel = slot_releases(host, job, now)
+    ahead = int(_num((host.probe or {}).get("waiting"), 0)) if ahead is None else max(0, int(ahead))
+    heap = [0.0] * free + list(rel)
+    if not heap:
+        return None
+    heapq.heapify(heap)
+    typ = holder_typ(host)
+    for _ in range(ahead):
+        heapq.heappush(heap, heapq.heappop(heap) + typ)
+    return heap[0]
+
+
 def score(host, job, cfg=None, model=None):
     """-> (eta seconds or None when the host cannot take the job at all now, free slots). Lower is
     better. Sets host.state (down/off/busy/low-mem/free) and, with an eta, host.eta and its parts:
 
-        eta = setup + queue + run + rtt + risk     (risk: plan() adds it once every host is scored)
-        run = Model.predict / (cpu_share * mem_factor)   (the evidence's run at the load seen now)
-        queue = 0 with a free slot, else when the first holder should finish (its own command's
-                median here, else this worker's median run, minus how long it has run)
+        eta = setup + queue + rank + rtt + risk     (risk: plan() adds it once every host is scored)
+        run = Model.predict / (cpu_share * mem_factor)   (the evidence's run at the load seen now: pred_s)
+        rank = run, or the pessimistic run (Model.predict_hi) when the estimate is not this worker's
+               own median of the command (uncertain); a slow worker (slow_why) always ranks on it
+        queue = 0 with a free slot of the job's kind, else queue_wait: when a slot frees after the
+                runs already waiting there (probe "waiting") got theirs
         overloaded (load1 / ncpu >= rr_overload_ratio): busy with queue 0, run x= load1 / ncpu
     """
     cfg = cfg or {}
     p = host.probe
-    host.eta = host.run_s = host.setup_s = host.queue_s = host.pred_s = None
-    host.risk_s, host.src, host.overloaded = 0.0, None, False
+    host.eta = host.run_s = host.setup_s = host.queue_s = host.pred_s = host.run_hi = None
+    host.risk_s, host.src, host.overloaded, host.ahead = 0.0, None, False, 0
     if p is None:
         host.state = "down"
         return None, 0
     if p.get("share") == "off":          # the owner paused this worker: no new jobs
         host.state = "off"
         return None, 0
-    free = int(_num(p.get("slots_cap"), 1) - _num(p.get("slots_busy"), 0))
-    if job["cls"] == "heavy" and p.get("heavy_cap") is not None:
-        free = min(free, int(_num(p.get("heavy_cap"), 0) - _num(p.get("heavy_busy"), 0)))
+    free, _ = slot_releases(host, job)
     mem = _num(p.get("mem_avail_mb"))
     if mem is not None and mem < job["need_gb"] * 1024:
         host.state = "low-mem" if free > 0 else "busy"
@@ -1089,6 +1220,7 @@ def score(host, job, cfg=None, model=None):
     host.pred_s, host.src = model.predict(host)
     host.eff = max(0.01, cpu_share(load, ncpu, job["cls"]) * mem_factor(mem, job["need_gb"]))
     host.run_s = host.pred_s / host.eff
+    host.run_hi = model.predict_hi(host, host.pred_s, host.src) / host.eff
     host.setup_s = setup_s(host)
     per_cpu = load / ncpu
     over = _num(cfg.get("rr_overload_ratio"), OVERLOAD_RATIO)
@@ -1097,28 +1229,20 @@ def score(host, job, cfg=None, model=None):
         # slower in proportion to the overload, so it only gets a job when it still finishes first
         host.overloaded = True
         host.run_s *= per_cpu
+        host.run_hi *= per_cpu
         host.state, host.queue_s = "busy", 0.0
     elif free > 0:
         host.state, host.queue_s = "free", 0.0
     else:
-        allm = ev(host).get("all") or [0, None]
-        typ = _num(allm[1]) if _num(allm[0], 0) >= OWN_MIN and _num(allm[1]) is not None \
-            else HOLDER_COST_S / max(0.01, host.speed)
-        ages = [a for a in (_num(x) for x in p.get("ages") or []) if a is not None]
-        busy = max(1, int(_num(p.get("slots_busy"), 1)))
         host.state = "busy"
-        host.queue_s = (min(max(0.2 * typ, typ - a) for a in ages) if ages else typ / (busy + 1))
-        # holders whose command ran here before (slots/<i>.own + the probe's median): their own end
-        now, known = time.time(), []
-        for j in p.get("jobs") or []:
-            c = _num(j.get("med")) if isinstance(j, dict) else None
-            st = _num(j.get("start")) if isinstance(j, dict) else None
-            if c is not None and st is not None:
-                known.append(max(0.2 * c, c - max(0.0, now - st)))
-        if known and len(known) >= busy:
-            host.queue_s = min(known)
+        host.ahead = int(_num(p.get("waiting"), 0))
+        host.queue_s = queue_wait(host, job)
+        if host.queue_s is None:         # no slot of its kind here at all (a drained worker): no eta
+            return None, free
+    well_known = host.src == "own" and len(Model.own(host)) >= OWN_MIN
+    host.rank_s = host.run_s if well_known else max(host.run_s, host.run_hi)
     # rtt capped: a cold ssh master's one-off handshake (~2 s over a relay) is not the link's latency
-    host.eta = host.setup_s + host.queue_s + host.run_s + min(host.rtt or 0.0, RTT_CAP_S)
+    host.eta = host.setup_s + host.queue_s + host.rank_s + min(host.rtt or 0.0, RTT_CAP_S)
     return host.eta, free
 
 
@@ -1182,7 +1306,6 @@ def local_free_gb():
 class Plan:
     def __init__(self, hosts, pool, local_after_s=None, ineligible=()):
         self.hosts, self.pool, self.local_after_s = hosts, pool, local_after_s
-        self.promoted = None         # a busy worker put first (its eta beat every free one)
         self.ineligible = list(ineligible)   # [(Host, why)]: never tried (eligibility())
         self.home, self.rcache = None, None   # the pool result cache (plan(rcache=))
         self.away = []               # optional workers that are down: left out of hosts (plan())
@@ -1217,6 +1340,35 @@ def home_of(hosts):
     return next((h for h in hosts if "home" in (_f(h.entry, "roles") or [])), None)
 
 
+def slow_wins(s, best, cfg=None):
+    """True when slow worker s (its eta on its pessimistic run) beats `best` (the best other worker's
+    eta, None = there is none) by rr_slow_gain_ratio (0.25) of it plus rr_slow_gain_s (15 s)."""
+    cfg = cfg or {}
+    if best is None:
+        return True
+    gain = _num(cfg.get("rr_slow_gain_ratio"), SLOW_GAIN_RATIO) * best + _num(cfg.get("rr_slow_gain_s"), SLOW_GAIN_S)
+    return s.eta <= best - gain
+
+
+def rank(hosts, cfg, pool):
+    """Candidates (eligible) -> the order to try: every worker that can take the job now (free or
+    queued, with an eta) by its predicted FINISH (queue wait + setup + run), so a busy worker whose
+    queue clears soon beats a free slow one and a free fast one beats waiting. A slow worker (over its
+    max_cost_s) comes first only when it wins by the margin (slow_wins), else after the others. Then
+    workers with no eta (busy with no slot of the kind / short of memory), down, off (refuses: 73)."""
+    by_eta = lambda h: (h.eta, h.rtt or 0)                                     # noqa: E731
+    live = [h for h in hosts if h.eta is not None and h.state in ("free", "busy")]
+    fast = sorted((h for h in live if not h.slow), key=by_eta)
+    best = fast[0].eta if fast else None
+    slow = sorted((h for h in live if h.slow), key=by_eta)
+    won = [h for h in slow if slow_wins(h, best, cfg)]
+    cap = lambda h: _num((h.probe or {}).get("slots_cap"), h.cfg.get("rr_slots", 1)) * h.speed  # noqa: E731
+    full = sorted((h for h in hosts if h.state in ("busy", "low-mem") and h.eta is None), key=lambda h: -cap(h))
+    down = sorted((h for h in hosts if h.state == "down"), key=lambda h: -(h.cfg.get("rr_slots", 1) * h.speed))
+    off = [h for h in hosts if h.state == "off"]
+    return sorted(fast + won, key=by_eta) + [h for h in slow if h not in won] + full + down + off
+
+
 def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=False):
     """-> Plan with hosts in the order rd_run should try them. Probes only in a real pool (or when
     probe=True, for `rrun --where`). fresh=True (`rrun --where`): no host is skipped on its down memo. rcache (rd_cache.Shared.req()): rides on the home worker's
@@ -1229,7 +1381,7 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
     req = {"slug": slug, "deps": [list(d) for d in deps], "sig": job.get("sig") or "",
            "kind": kind_of(job.get("sig") or ""), "kinds": [list(k) for k in KINDS],
            "days": int(_num(cfg.get("rr_history_days"), EV_DAYS)), "rows": int(_num(cfg.get("rr_history_rows"), EV_ROWS)),
-           "isa_days": isa_days(cfg)}
+           "isa_days": isa_days(cfg), "miss_x": _num(cfg.get("rr_miss_x"), MISS_X)}
 
     def req_for(h):
         r = dict(req, slots=h.cfg.get("rr_slots", 1))
@@ -1251,6 +1403,10 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
         if h.pred_s is None and h.probe is None:
             h.pred_s, h.src = model.predict(h)      # a down worker: still judged on its cost
         h.cost_s = h.pred_s                         # eligibility: no momentary load factor
+        h.slow = slow_why(h, h.cost_s)
+        if h.slow and h.eta is not None and h.run_hi is not None and h.rank_s < h.run_hi:
+            h.eta += h.run_hi - h.rank_s            # a slow worker ranks on its pessimistic run
+            h.rank_s = h.run_hi
         why = eligibility(h, job, h.cost_s, probed=True, cfg=cfg)
         if why:
             bad.append((h, why))
@@ -1265,46 +1421,21 @@ def plan(cfg, job, slug="", deps=(), force=None, probe=None, rcache=None, fresh=
         bad = [(h, w) for h, w in bad if h is not back]
     add_risk([h for h in hosts if h not in dict(bad)])
     hosts = [h for h in hosts if h not in dict(bad)]   # never a candidate: not ranked, not a wait host
-    by_eta = lambda h: (h.eta, h.rtt or 0)                                     # noqa: E731
-    free = sorted((h for h in hosts if h.state == "free"), key=by_eta)
-    queued = sorted((h for h in hosts if h.state == "busy" and h.eta is not None), key=by_eta)
-    cap = lambda h: _num((h.probe or {}).get("slots_cap"), h.cfg.get("rr_slots", 1)) * h.speed  # noqa: E731
-    full = sorted((h for h in hosts if h.state in ("busy", "low-mem") and h.eta is None), key=lambda h: -cap(h))
-    down = sorted((h for h in hosts if h.state == "down"), key=lambda h: -(h.cfg.get("rr_slots", 1) * h.speed))
-    off = [h for h in hosts if h.state == "off"]
-    # finish time, not just "free first": a busy worker whose eta (its queue wait included) is far
-    # better than every free one goes first, but waits for its slot only while that still pays off
-    # (until the best free worker would have finished), then the job moves on to the free ones
-    promoted = None
-    ratio = float(cfg.get("rr_queue_promote_ratio", PROMOTE_RATIO))
-    gain = float(cfg.get("rr_queue_promote_min_gain_s", PROMOTE_MIN_GAIN_S))
-    if pool and free and queued and ratio > 0 and queued[0].eta <= ratio * free[0].eta \
-            and free[0].eta - queued[0].eta >= gain:
-        promoted = queued.pop(0)
-        budget = max(RACE_WAIT_MIN * 60, free[0].eta - (promoted.eta - promoted.queue_s))
-        promoted.short = True
-        promoted.cfg = dict(promoted.cfg, rr_wait_min=min(float(cfg.get("rr_wait_min", 30)), budget / 60.0))
-    order = ([promoted] if promoted else []) + free + queued + full + down + off   # off last: refuses (73)
+    order = rank(hosts, cfg, pool)
     # an optional worker that is down is no candidate while another worker could take the job (free or
     # busy - not down, share-off or short of memory): trying it would only cost a connect timeout and
     # print a note about a machine that is merely away. With no such worker it stays, tried as before.
-    away = [h for h in down if optional(h)] if pool else []
+    away = [h for h in order if h.state == "down" and optional(h)] if pool else []
     if away and any(h.state in ("free", "busy") for h in order):
         order = [h for h in order if h not in away]
     else:
         away = []
-    if pool:
-        for h in order[:-1]:
-            if h in free:
-                h.short = True
-                h.cfg = dict(h.cfg, rr_wait_min=float(cfg.get("rr_race_wait_min", RACE_WAIT_MIN)))
     local_after = None
-    if pool and order and not free and job.get("local_ok"):
+    if pool and order and not any(h.state == "free" for h in order) and job.get("local_ok"):
         lf = local_free_gb()
         if lf is not None and lf > float(cfg.get("rr_local_min_free_gb", LOCAL_MIN_FREE_GB)):
             local_after = float(cfg.get("rr_local_after_s", LOCAL_AFTER_S))
     p = Plan(order, pool, local_after, bad)
-    p.promoted = promoted
     p.away = away
     p.req = req
     p.home, p.rcache = home, rc_answer
@@ -1452,7 +1583,9 @@ def fmt_s(s):
 
 
 def where_report(cfg, job, p, shards=None):
-    """Lines for `rrun --where` (shards: shard_assign()'s list, or a why-not string, or None)."""
+    """Lines for `rrun --where` (shards: shard_assign()'s list, or a why-not string, or None). Per
+    worker: its free slots, the queue wait (and how many runs wait there), the run estimate and where it
+    came from, setup, infra rate and the predicted finish (eta) the order is sorted on."""
     lines = ["job class: %s (needs %s GB%s%s%s)" % (job["cls"], job["need_gb"],
                                                     ", safe to repeat" if job["retry_ok"] else "",
                                                     ", never local" if job["never_local"] else "",
@@ -1461,9 +1594,9 @@ def where_report(cfg, job, p, shards=None):
     pvs = sorted(set(int(_num((h.probe or {}).get("pool_version"), 0)) for h in p.hosts if h.probe is not None))
     if pvs:      # display only: the runner's handshake (PV) is what enforces it
         lines.append("pool version: workers %s, this client %d" % ("/".join(map(str, pvs)), rd_common.POOL_VERSION))
-    lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %7s %-9s %6s %6s %7s %5s" % (
-        "worker", "ssh", "state", "free", "load/cpu", "mem GB", "git", "deps", "run", "(from)", "setup",
-        "infra", "eta", "share"))
+    lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %9s %7s %-14s %6s %6s %7s %5s" % (
+        "worker", "ssh", "state", "free", "load/cpu", "mem GB", "git", "deps", "queue", "run", "(from)", "setup",
+        "infra", "finish", "share"))
     for h in p.hosts:
         pr = h.probe or {}
         free = "-" if not pr else "%d/%d" % (_num(pr.get("slots_cap"), 0) - _num(pr.get("slots_busy"), 0),
@@ -1471,12 +1604,17 @@ def where_report(cfg, job, p, shards=None):
         load = "-" if not pr else "%.2f" % (_num(pr.get("load1"), 0) / (_num(pr.get("ncpu"), 1) or 1))
         mem = "-" if pr.get("mem_avail_mb") is None else "%.1f" % (_num(pr["mem_avail_mb"]) / 1024)
         yn = lambda k: "-" if not pr else ("warm" if pr.get(k) else "cold")  # noqa: E731
-        lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %7s %-9s %6s %6s %7s %5s%s" % (
+        queue = "-" if h.queue_s is None else fmt_s(h.queue_s) + ("/%d" % h.ahead if h.ahead else "")
+        run = fmt_s(h.run_s) if h.rank_s is None or h.rank_s <= h.run_s else "%s-%s" % (fmt_s(h.run_s), fmt_s(h.rank_s))
+        lines.append("%-10s %-16s %-7s %5s %9s %8s %5s %5s %9s %7s %-14s %6s %6s %7s %5s%s" % (
             h.name[:10], str(h.cfg.get("host"))[:16], h.state, free, load, mem, yn("warm_git"),
-            yn("warm_deps"), fmt_s(h.run_s), "(%s)" % (h.src or "-"), fmt_s(h.setup_s),
+            yn("warm_deps"), queue, run, "(%s)" % (h.src or "-"), fmt_s(h.setup_s),
             "-" if h.p_infra is None else "%.0f%%" % (100 * h.p_infra), fmt_s(h.eta),
             str(pr.get("share") or "-")[:5],
             "  (overloaded: held off)" if h.overloaded
+            else "  (slow: %s; first only when it finishes %d%% + %ds sooner)" % (
+                h.slow, round(100 * _num(cfg.get("rr_slow_gain_ratio"), SLOW_GAIN_RATIO)),
+                round(_num(cfg.get("rr_slow_gain_s"), SLOW_GAIN_S))) if h.slow and h.eta is not None
             else "" if h.probe is not None or not getattr(h, "why", None) else "  (%s)" % h.why))
     for h in p.away:
         lines.append("%-10s %-16s %-7s  (%s; optional: not tried)" % (h.name[:10], str(h.cfg.get("host"))[:16],
@@ -1494,15 +1632,19 @@ def where_report(cfg, job, p, shards=None):
     elif shards:
         lines.append("shards: no (%s)" % shards)
     first = p.hosts[0]
-    if p.promoted is first:
-        lines.append("pick: %s (busy, but its eta beats every free worker: waits for a slot up to %s, "
-                     "then moves on)" % (first.name, fmt_s(60 * first.cfg["rr_wait_min"])))
+    if first.state == "busy" and first.eta is not None and p.pool:
+        lines.append("pick: %s (earliest finish ~%s: queues there about %s%s, then runs; no other worker "
+                     "finishes sooner)%s" % (first.name, fmt_s(first.eta), fmt_s(first.queue_s),
+                                             " behind %d waiting" % first.ahead if first.ahead else "",
+                                             "" if p.local_after_s is None
+                                             else "; runs on this machine after %d s of waiting" % p.local_after_s))
     elif p.local_after_s is not None:
         lines.append("pick: %s (all busy: queues there; runs on this machine after %d s of waiting)"
                      % (first.name, p.local_after_s))
     else:
         lines.append("pick: %s%s" % (first.name, " (its owner turned sharing off: nothing runs there now)"
                                      if first.state == "off"
+                                     else (" (earliest finish ~%s)" % fmt_s(first.eta)) if p.pool and first.eta is not None
                                      else "" if p.pool or first.probe is None or first.state == "free"
                                      else " (only host: queues there)" if first.state != "down"
                                      else " (only host)"))

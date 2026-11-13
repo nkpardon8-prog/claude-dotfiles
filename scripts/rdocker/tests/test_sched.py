@@ -47,8 +47,10 @@ class Eta(unittest.TestCase):
         self.assertAlmostEqual(a.setup_s, rd_pool.WARM_SETUP_S + rd_pool.COLD_GIT_S)
         self.assertAlmostEqual(a.run_s, 60.0 / 2.0)                     # vitest 60 s at speed 1
         self.assertAlmostEqual(a.p_infra, rd_pool.PRIOR_P)               # no runs yet: the prior
+        # no evidence: the eta (the finish) ranks on the pessimistic run, the default x UNCERTAIN_X 2
+        self.assertAlmostEqual(a.rank_s, 30.0 * rd_pool.UNCERTAIN_X["default"])
         # risk = p_infra x (setup + run/2 lost + a rerun on the best other: none here, so itself)
-        base = a.setup_s + 30 + 0.01
+        base = a.setup_s + a.rank_s + 0.01
         self.assertAlmostEqual(a.risk_s, rd_pool.PRIOR_P * (a.setup_s + 15 + base))
         self.assertAlmostEqual(a.eta, base + a.risk_s)
         p, _ = self.plan([worker("a", 2.0), worker("b")], {"a": probe(warm_deps=0, ncpu=8)}, job=LINT)
@@ -79,29 +81,29 @@ class Eta(unittest.TestCase):
         lap = probe(slots_cap=4, mem_mb=7000, ncpu=6)
         p, _ = self.plan(self.real_fleet(), {"nickmbp": dict(nick, ages=[5, 50, 50, 50, 50, 50]), "hp": hp,
                                         "laptop": lap}, job=TSC)
-        self.assertEqual(self.names(p), ["nickmbp", "hp", "laptop"])
+        self.assertEqual(self.names(p), ["nickmbp", "hp", "laptop"])     # by finish: the queue pays
         n, h = p.hosts[0], p.hosts[1]
-        self.assertIs(p.promoted, n)
         self.assertEqual(n.state, "busy")
         self.assertGreater(h.run_s, 10 * n.run_s)                         # hp would swap
-        self.assertTrue(n.short)                                          # waits only while it pays
-        self.assertAlmostEqual(n.cfg["rr_wait_min"] * 60, h.eta - (n.eta - n.queue_s), places=3)
+        self.assertLess(n.eta, h.eta)
         lines = rd_pool.where_report(self.cfg, TSC, p)
-        self.assertRegex("\n".join(lines), r"worker .* eta +share")
-        self.assertIn("pick: nickmbp (busy, but its eta beats every free worker", lines[-1])
-        # promotion off: free first, as before
-        self.cfg["rr_queue_promote_ratio"] = 0
-        p, _ = self.plan(self.real_fleet(), {"nickmbp": nick, "hp": hp, "laptop": lap}, job=TSC)
-        self.assertEqual(self.names(p)[:2], ["hp", "laptop"])
-        self.assertIsNone(p.promoted)
+        self.assertRegex("\n".join(lines), r"worker .* queue .* finish +share")
+        self.assertIn("pick: nickmbp (earliest finish ~", lines[-1])
+        self.assertIn("queues there about", lines[-1])
 
-    def test_quick_lint_spreads_to_the_idle_laptop(self):
+    def test_quick_lint_goes_where_it_finishes_first(self):
+        """By finish time, not "free first": a lint behind a short queue on nickmbp (3x faster) beats
+        the idle laptop; behind a long queue (holders that just started a 10-min command) it does not."""
         nick = probe(slots_cap=8, slots_busy=8, mem_mb=40000, ncpu=18, load=8)
-        p, _ = self.plan(self.real_fleet(), {"nickmbp": dict(nick, ages=[1] * 8),
-                                        "laptop": probe(slots_cap=4, mem_mb=7000, ncpu=6)}, job=LINT)
-        self.assertEqual(self.names(p), ["laptop", "nickmbp", "hp"])     # free, busy, down
-        self.assertIsNone(p.promoted)
-        self.assertTrue(p.hosts[0].short)
+        lap = probe(slots_cap=4, mem_mb=7000, ncpu=6)
+        p, _ = self.plan(self.real_fleet(), {"nickmbp": dict(nick, ages=[1] * 8), "laptop": lap}, job=LINT)
+        self.assertEqual(self.names(p), ["nickmbp", "laptop", "hp"])     # a ~19 s queue: still first
+        now = time.time()
+        long_ = [{"cmd": "npx tsc --noEmit", "start": now - 5, "med": 600} for _ in range(8)]
+        p, _ = self.plan(self.real_fleet(), {"nickmbp": dict(nick, ages=[5] * 8, jobs=long_), "laptop": lap},
+                         job=LINT)
+        self.assertEqual(self.names(p), ["laptop", "nickmbp", "hp"])     # free, queued, down
+        self.assertAlmostEqual(p.hosts[1].queue_s, 595, delta=3)
 
     def test_evidence_sets_run_setup_and_risk(self):
         """2026-11-11 (owner: "true to how it would actually come out"): every number from runs.log."""
@@ -201,15 +203,13 @@ class Eta(unittest.TestCase):
         self.assertAlmostEqual(f.pred_s, 1200)
         self.assertAlmostEqual(a.pred_s, 1200 * 2.0 / 0.42)                # bench-calibrated ratio
         self.assertEqual(self.names(p)[0], "fast")
-        self.assertIs(p.promoted, f)
-        self.assertLessEqual(f.eta, rd_pool.PROMOTE_RATIO * a.eta)
-        # a one-file run still goes to the free worker: the busy one is not 2x better
+        self.assertLess(f.eta, a.eta)
+        # a one-file run still goes to the free worker: the busy one's queue costs more than it saves
         one = rd_pool.classify(["npx", "vitest", "run", "src/a.test.ts"])
         p, _ = self.plan([worker("mini-a", 0.42), worker("fast", 2.0)],
                          {"mini-a": dict(probe(ncpu=4), ev=ev(sig=[30] * 6)), "fast": dict(fast, ev=ev(sig=[30] * 6))},
                          job=one)
         self.assertEqual(self.names(p)[0], "mini-a")
-        self.assertIsNone(p.promoted)
         self.assertEqual(rd_pool.run_sig(["env", "TOK=s", "npx", "-e", "x", "a\tb"]),
                          "env TOK=<redacted> npx -e <redacted> a b")
 
@@ -230,11 +230,19 @@ class Eta(unittest.TestCase):
             sess.wait_since -= 120
             sess.on_status("WAIT holder=dentall.1 age=240 busy=4 slots=4 ahead=0 gate=heavy")
         a, b = err.getvalue().splitlines()
-        self.assertEqual(a, "rrun: waiting for a slot on hp: 4 of 4 slots busy; held longest by dentall.1 "
-                            "(billing) for 120s; 2 other runs waiting ahead of this one; expected wait ~5 min; "
-                            "tries elsewhere after 2 min")
+        self.assertEqual(a, "rrun: queued on hp: about 5 min (2 ahead); 4 of 4 slots busy; held longest by dentall.1 "
+                            "(billing) for 120s; waits here up to 30 min")
+        self.assertEqual(sess.ahead, 0)                                   # the latest WAIT's position
         # later lines are short: no repeated banner (agent contract)
-        self.assertEqual(b, "rrun: still waiting for a slot on hp (2 min so far; next in line; expected wait ~3 min)")
+        self.assertEqual(b, "rrun: still queued on hp: about 3 min (next in line); waited 2 min")
+        sess = rd_run.Session({"rr_wait_min": 12}, [], "0" * 32, rd_run.Timing(False))
+        sess.host_name, sess.may_move = "hp", True
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err):
+            sess.on_status("WAIT holder=? age=0 busy=1 slots=1 ahead=0")
+        self.assertEqual(err.getvalue(), "rrun: queued on hp: a slot should free soon (it looked free when planned) "
+                                         "(next in line); 1 of 1 slots busy; waits here up to 12 min, moving once "
+                                         "if another worker becomes clearly faster\n")
 
     def test_an_overloaded_worker_is_held_off_not_piled_on(self):
         """2026-11-10: the WSL laptop (8 threads, 4 slots) reached load1 19 while still taking jobs.
@@ -281,6 +289,190 @@ class Eta(unittest.TestCase):
         self.assertIn("no answer", p.hosts[1].why)
 
 
+class FinishPlacement(unittest.TestCase):
+    """2026-11-13 (pool-speed study): placement by predicted FINISH; max_cost_s soft with a margin;
+    wild misses corrected; evidence keyed on repo + argv."""
+    setUp = test_pool.PlanUnit.setUp
+    plan = test_pool.PlanUnit.plan
+
+    def names(self, p):
+        return [h.name for h in p.hosts]
+
+    def busy(self, secs_left, slots=4, cap=4, **kw):
+        now = time.time()
+        return dict(probe(slots_cap=cap, slots_busy=slots, ncpu=8, **kw), ages=[10] * slots,
+                    jobs=[{"cmd": "x", "start": now - 10, "med": secs_left + 10} for _ in range(slots)])
+
+    DB = rd_pool.classify(["npm", "run", "test:db"])
+
+    def test_picks_the_minimum_finish_and_where_prints_each(self):
+        """hp (fast, DB 48 s) is full but its next slot frees in ~30 s; the laptop is free but DB takes
+        109 s there: hp wins (30 + 48 < 109). With hp's queue at 5 min the laptop wins."""
+        hp = dict(self.busy(30), ev=ev(sig=[48] * 5))
+        lap = dict(probe(slots_cap=3, ncpu=8), ev=ev(sig=[109] * 5))
+        ms = [worker("hp", 1.5, max_slots=4), worker("laptop", 0.45, max_slots=3)]
+        p, _ = self.plan(ms, {"hp": hp, "laptop": lap}, job=self.DB)
+        self.assertEqual(self.names(p), ["hp", "laptop"])
+        h, l = p.hosts
+        self.assertEqual((h.state, l.state), ("busy", "free"))
+        self.assertAlmostEqual(h.queue_s, 30, delta=2)
+        self.assertAlmostEqual(h.eta, h.queue_s + h.setup_s + 48 + h.risk_s, delta=1)   # well known: median
+        lines = "\n".join(rd_pool.where_report(self.cfg, self.DB, p))
+        self.assertRegex(lines, r"\nhp +hp +busy +0/4 .* +30s +48s +\(own\) .* +\d+s +max\n")
+        self.assertRegex(lines, r"\nlaptop +laptop +free +3/3 .* +0s +109s +\(own\) .* +\d+s +max\n")
+        self.assertIn("pick: hp (earliest finish ~", lines)
+        p, _ = self.plan(ms, {"hp": dict(self.busy(300), ev=ev(sig=[48] * 5)), "laptop": lap}, job=self.DB)
+        self.assertEqual(self.names(p), ["laptop", "hp"])
+        # runs already waiting there count: 4 holders freeing at ~30 s and 6 queued (48 s each) ahead
+        p, _ = self.plan(ms, {"hp": dict(hp, waiting=6), "laptop": lap}, job=self.DB)
+        hp_ = next(x for x in p.hosts if x.name == "hp")
+        self.assertEqual(hp_.ahead, 6)
+        self.assertGreater(hp_.queue_s, 60)
+        self.assertEqual(self.names(p)[0], "laptop")
+
+    def test_a_slow_worker_only_when_it_wins_by_the_margin(self):
+        """mini-a (max_cost_s 120) predicted over it: not excluded (the owner: "if they're just waiting
+        it wouldn't hurt to use the Mac Mini"), but it goes first only when its PESSIMISTIC finish beats
+        the best other's by 25 % + 15 s."""
+        mini = dict(worker("mini", 0.42, max_slots=2), max_cost_s=120)
+        hpw = worker("hp", 1.5, max_slots=4)
+        mini_ev = ev(sig=[140, 143, 150, 160, 200])                       # median 150, p90 200
+        hp_ev = ev(sig=[50] * 5)
+        # hp's queue is 10 min: the mini (p90 200 s) finishes far sooner -> first
+        p, _ = self.plan([mini, hpw], {"mini": dict(probe(), ev=mini_ev), "hp": dict(self.busy(600), ev=hp_ev)},
+                         job=VITEST)
+        self.assertEqual(self.names(p), ["mini", "hp"])
+        m = p.hosts[0]
+        self.assertIn("over its max_cost_s 120s", m.slow)
+        self.assertAlmostEqual(m.rank_s, 200, delta=1)                    # ranked on its p90, not 150
+        self.assertIn("(slow: expected ~", "\n".join(rd_pool.where_report(self.cfg, VITEST, p)))
+        # hp's queue ~ 2.5 min: hp ~ 150 + 50 = 200 s; mini 200 s at p90 is not 25 % + 15 s better
+        p, _ = self.plan([mini, hpw], {"mini": dict(probe(), ev=mini_ev), "hp": dict(self.busy(150), ev=hp_ev)},
+                         job=VITEST)
+        self.assertEqual(self.names(p), ["hp", "mini"])
+        h, m = p.hosts
+        self.assertLess(m.eta - m.rank_s + m.run_s, h.eta)               # on its median the mini looked faster...
+        self.assertFalse(rd_pool.slow_wins(m, h.eta, self.cfg))          # ...but not by the margin
+        # the margin is config: 0 + 0 -> plain finish order
+        cfg = dict(self.cfg, rr_slow_gain_ratio=0, rr_slow_gain_s=0)
+        self.assertEqual(rd_pool.slow_wins(m, m.eta + 1, cfg), True)
+        # only slow workers left (hp down): the mini takes it, no exit 77
+        p, _ = self.plan([mini, hpw], {"mini": dict(probe(), ev=mini_ev)}, job=VITEST)
+        self.assertEqual(self.names(p)[0], "mini")
+        self.assertEqual(p.ineligible, [])
+
+    def test_wild_miss_lifts_the_next_prediction(self):
+        """`npm run test` predicted 5.2 s took 1,807 s (route.log 2026-11-13 12:30). A run over 5x its
+        pred_s (ev.miss, any outcome) lifts the estimate until the command has OWN_MIN runs there."""
+        job = rd_pool.classify(["npm", "run", "test"])
+        e = dict(ev(sig=[5.2]), miss=[1, 1807.0])
+        p, _ = self.plan([worker("hp", 1.0), worker("b", 1.0)], {"hp": dict(probe(), ev=e), "b": probe()}, job=job)
+        hp = next(h for h in p.hosts if h.name == "hp")
+        self.assertTrue(hp.src.endswith("+miss"), hp.src)
+        self.assertAlmostEqual(hp.pred_s, 1807.0)
+        b = next(h for h in p.hosts if h.name == "b")                     # the other worker learns it too
+        self.assertTrue(b.src.endswith("+miss"), b.src)
+        self.assertGreater(b.pred_s, 1000)
+        # with OWN_MIN real runs the median rules (one hang does not poison it)
+        e = dict(ev(sig=[6, 5, 7]), miss=[1, 1807.0])
+        p, _ = self.plan([worker("hp", 1.0), worker("b", 1.0)], {"hp": dict(probe(), ev=e), "b": probe()}, job=job)
+        hp = next(h for h in p.hosts if h.name == "hp")
+        self.assertEqual((hp.src, hp.pred_s), ("own", 6))
+
+    def test_another_repos_script_is_not_this_ones(self):
+        """Evidence is keyed on repo + argv: a 5 s `npm run test` in another repo only gives the weak
+        kind-any hint, never below the class default, and its slack doubles in the ranking."""
+        job = rd_pool.classify(["npm", "run", "test"])
+        p, _ = self.plan([worker("hp", 1.0), worker("b", 1.0)],
+                         {"hp": dict(probe(), ev=dict(ev(), kany=[20, 5.0])), "b": probe()}, job=job)
+        hp = next(h for h in p.hosts if h.name == "hp")
+        self.assertEqual(hp.src, "kind-any")
+        self.assertEqual(hp.pred_s, rd_pool.default_cost(self.cfg, "normal"))
+        self.assertAlmostEqual(hp.rank_s, hp.run_s * rd_pool.UNCERTAIN_X["kind-any"])
+
+    def test_probe_reports_wild_misses_for_this_repo_and_command(self):
+        rt = test_pool.ProbeSnippet("setUp")
+        rt.setUp()
+        self.addCleanup(rt.doCleanups)
+
+        def line(repo, out, cmd, argv, pred):
+            return ("2026-11-11T11:00:00+0000 repo=%s wt=b sha=c outcome=%s prepare_s=0.1 cmd_s=%s argv=%s"
+                    "\trun=x owner=- cls=normal wait_s=0 exit_reason=x setup=warm pred_s=%s client=- pv=1\n"
+                    % (repo, out, cmd, argv, pred))
+        log = "".join([line("a", "rc=0", "1807.0", "npm run test", "5.2"),             # a wild miss
+                       line("a", "timeout rc=124", "1800.0", "npm run test", "5.2"),   # a cap kill: one too
+                       line("a", "rc=0", "20.0", "npm run test", "5.2"),               # 3.8x: not wild
+                       line("a", "rc=0", "30.0", "npm run test", "1"),                 # < pred + 30 s
+                       line("other", "rc=0", "999.0", "npm run test", "5"),            # another repo
+                       line("a", "rc=0", "999.0", "npm run lint", "5")])               # another command
+        test_run.wfile(os.path.join(rt.root, "log", "runs.log"), log)
+        e = rt.run_probe({"slots": 1, "slug": "a", "sig": "npm run test", "kind": "npm-test",
+                          "kinds": [list(k) for k in rd_pool.KINDS], "now": NOW})["ev"]
+        self.assertEqual(e["miss"], [2, 1807])
+        self.assertEqual(e["sig"], [1807, 20, 30])                        # repo a only
+        self.assertEqual(e["kind"], [3, 30])
+        self.assertEqual(e["kany"], [4, 514.5])                           # the kind in every repo (rc 0/1)
+
+    def test_waiting_runs_and_holder_repo_in_the_probe(self):
+        rt = test_pool.ProbeSnippet("setUp")
+        rt.setUp()
+        self.addCleanup(rt.doCleanups)
+        w = os.path.join(rt.root, "wait")
+        os.makedirs(w)
+        test_run.wfile(os.path.join(w, str(os.getpid())), "1.0\n")           # alive
+        test_run.wfile(os.path.join(w, "999999"), "1.0\n")                   # gone
+        self.assertEqual(rt.run_probe({"slots": 1})["waiting"], 1)
+
+
+class MoverUnit(unittest.TestCase):
+    def test_a_refused_move_changes_nothing_and_says_nothing(self):
+        """The session got its slot between the re-plan and the request: no move, ctx.plan untouched,
+        no "moving to" line (host_loop prints it only when the move happened)."""
+        plan0, fresh = object(), object()
+        ctx = mock.Mock(plan=plan0, cfg={"rr_move_poll_s": 0.01})
+        sess = rd_run.Session({"rr_wait_min": 5}, [], "0" * 32, rd_run.Timing(False))
+        sess.wait_since = time.monotonic()
+        sess.got_slot = False
+        lane = mock.Mock(session=sess)
+        mv = rd_run.Mover(ctx, mock.Mock(name="hp"), lane)
+        c = mock.Mock(eta=10.0)
+        c.name = "w2"
+
+        def candidate(s):
+            s.got_slot = True                       # the slot arrived meanwhile
+            return c, 300.0, fresh
+        err = io.StringIO()
+        with mock.patch.object(mv, "candidate", side_effect=candidate), mock.patch.object(sys, "stderr", err):
+            mv.watch()
+        self.assertIs(ctx.plan, plan0)
+        self.assertIsNone(sess.move_to)
+        self.assertEqual(err.getvalue(), "")
+        # accepted: the session carries (host, plan, note) and still nothing is printed by the Mover
+        sess.got_slot = False
+        with mock.patch.object(mv, "candidate", return_value=(c, 300.0, fresh)), \
+                mock.patch.object(sys, "stderr", err):
+            mv.watch()
+        self.assertEqual(sess.move_to[:2], (c, fresh))
+        self.assertIn("moving to w2", sess.move_to[2])
+        self.assertIs(ctx.plan, plan0)
+        self.assertEqual(err.getvalue(), "")
+
+
+class Retry(unittest.TestCase):
+    def test_push_s_is_the_push_alone_after_an_earlier_attempt(self):
+        rd_run.STAGES.clear()
+        self.addCleanup(rd_run.STAGES.clear)
+        t = rd_run.Timing(False)
+        t.mark("plan", "plan_s")
+        t.attempt(False)
+        t.mark("push", "push_s")
+        time.sleep(0.3)                     # the first attempt's slot wait, then it moved on
+        t.attempt(True)
+        t.mark("push", "push_s")
+        self.assertGreaterEqual(rd_run.STAGES["retry_s"], 0.3)
+        self.assertLess(rd_run.STAGES["push_s"], 0.1)
+
+
 class ProbeExtras(unittest.TestCase):
     setUp, run_probe = test_pool.ProbeSnippet.setUp, test_pool.ProbeSnippet.run_probe
 
@@ -295,7 +487,7 @@ class ProbeExtras(unittest.TestCase):
         test_run.wfile(os.path.join(sl, "0.own"), "id=session:old\tstart=1\tpid=7\tcmd=x\n")
         o = self.run_probe({"slots": 2})
         self.assertEqual(o["jobs"], [{"id": "session:s1", "name": "win a", "client": "mac", "start": 100,
-                                      "pid": "4242", "cmd": "npx tsc", "slot": 1}])
+                                      "pid": "4242", "cmd": "npx tsc", "slot": 1, "repo": "app.1"}])
         test_run.wfile(os.path.join(sl, "1.who"), "app.1 100 5555 abcdef012345\n")           # a new holder
         self.assertEqual(self.run_probe({"slots": 2})["jobs"], [])
 
@@ -312,7 +504,7 @@ class ProbeExtras(unittest.TestCase):
         self.assertNotIn("ev", o)                                         # no kinds asked: no evidence
 
     def evreq(self, **kw):
-        return dict({"slots": 2, "sig": "npx tsc --noEmit", "kind": "tsc",
+        return dict({"slots": 2, "slug": "a", "sig": "npx tsc --noEmit", "kind": "tsc",
                      "kinds": [list(k) for k in rd_pool.KINDS], "now": NOW}, **kw)
 
     def test_runs_log_evidence(self):
@@ -340,8 +532,10 @@ class ProbeExtras(unittest.TestCase):
         self.assertEqual(e["rows"][2], ["pass", 20, 0])                   # setup=warm beats the 15 s guess
         self.assertEqual(e["rows"][4], ["aband", 999, 1])
         self.assertEqual(e["kind"], [4, 110])                             # tsc kind: 100 120 140 30
-        self.assertEqual(e["pk"][rd_pool.sig_key("npx tsc --noEmit")], [3, 120])
-        self.assertNotIn(rd_pool.sig_key("npm run lint"), e["pk"])        # another kind
+        self.assertEqual(e["kany"], [4, 110])                             # (every row here is repo a)
+        self.assertEqual(e["pk"][rd_pool.sig_key("npx tsc --noEmit", "a")], [3, 120])
+        self.assertNotIn(rd_pool.sig_key("npm run lint", "a"), e["pk"])   # another kind
+        self.assertNotIn("miss", e)                                       # no run over 5x its pred_s
         self.assertEqual(e["all"], [5, 100])
         # history_since cuts the older rows; rows caps the rate window
         e = self.run_probe(self.evreq(since=NOW - 3600))["ev"]
@@ -352,9 +546,11 @@ class ProbeExtras(unittest.TestCase):
         fh = open(os.path.join(self.root, "slots", "0"), "a")
         fcntl.flock(fh, fcntl.LOCK_EX)
         self.addCleanup(fh.close)
-        test_run.wfile(os.path.join(self.root, "slots", "0.who"), "app.1 100 4242 abcdef012345\n")
+        test_run.wfile(os.path.join(self.root, "slots", "0.who"), "a 100 4242 abcdef012345\n")
         test_run.wfile(os.path.join(self.root, "slots", "0.own"), "id=s\tstart=100\tpid=4242\tcmd=npx tsc --noEmit\n")
         self.assertEqual(self.run_probe(self.evreq())["jobs"][0]["med"], 120)
+        test_run.wfile(os.path.join(self.root, "slots", "0.who"), "other.2 100 4242 abcdef012345\n")
+        self.assertNotIn("med", self.run_probe(self.evreq())["jobs"][0])  # the same argv in another repo
         # never through a symlink
         os.unlink(os.path.join(self.root, "log", "runs.log"))
         os.symlink(os.path.join(self.d, "elsewhere"), os.path.join(self.root, "log", "runs.log"))
@@ -650,12 +846,14 @@ class SchedE2E(test_run.RunBase):
         self.assertEqual(r.stdout.splitlines()[0], "fake vitest shard none on home-w2", r.stderr)
 
     def seed(self, w, secs, argv="vitest run", n=9):
+        """runs.log evidence of `argv` in this test's repo (evidence is keyed on repo + argv)."""
         d = os.path.join(self.whome[w], "rr", "log")
         os.makedirs(d, exist_ok=True)
         t = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - 60))
+        slug = rd_run.resolve_worktree(self.wt)["slug"]
         with open(os.path.join(d, "runs.log"), "a") as f:
             for _ in range(n):
-                f.write("%s repo=a wt=b sha=c outcome=rc=0 prepare_s=0.2 cmd_s=%s argv=%s\n" % (t, secs, argv))
+                f.write("%s repo=%s wt=b sha=c outcome=rc=0 prepare_s=0.2 cmd_s=%s argv=%s\n" % (t, slug, secs, argv))
 
     def test_sharded_run_is_cached_as_one_unit(self):
         """Keyed on the unsharded command, saved once every shard ended on a worker; a repeat
@@ -714,13 +912,18 @@ class SchedE2E(test_run.RunBase):
         for w in ("w1", "w2"):                                            # no seeded vitest evidence here
             os.unlink(os.path.join(self.whome[w], "rr", "log", "runs.log"))
         write_fleet(self.fleet, [worker("w1", 1.0, max_slots=1), worker("w2", 0.04, max_slots=1)])
-        self.write_cfg(fleet_path=self.fleet, rr_job_cost_s={"normal": 0.1}, rr_hedge_poll_s=0.2,
-                       rr_queue_promote_ratio=0, rr_race_wait_min=0.05)
+        self.write_cfg(fleet_path=self.fleet, rr_job_cost_s={"normal": 0.1}, rr_hedge_poll_s=0.2, rr_move_max=0)
         for w in ("w1", "w2"):                                            # warm: no cold-start cost
             for _ in range(3):                                            # (3 prepares: a measured setup)
                 self.assertEqual(self.rrun("--host", w, "true").returncode, 0)
-        fh = open(os.path.join(self.whome["w1"], "rr", "slots", "0"), "a")
-        fcntl.flock(fh, fcntl.LOCK_EX)                                    # w1 busy at plan time
+        # w1 busy at plan time, with a holder whose command takes 5 min there: w2 finishes first
+        self.seed("w1", 300, argv="long-holder", n=3)
+        sl = os.path.join(self.whome["w1"], "rr", "slots")
+        fh = open(os.path.join(sl, "0"), "a")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        slug, now = rd_run.resolve_worktree(self.wt)["slug"], int(time.time())
+        test_run.wfile(os.path.join(sl, "0.who"), "%s %d %d abcdef012345\n" % (slug, now, os.getpid()))
+        test_run.wfile(os.path.join(sl, "0.own"), "id=t\tstart=%d\tpid=%d\tcmd=long-holder\n" % (now, os.getpid()))
         marker = os.path.join(self.d, "slow-finished")
         script = 'case "$HOME" in *home-w2) sleep 25; echo x > %s; echo slow-done;; *) echo fast-done;; esac' % marker
         t = time.monotonic()

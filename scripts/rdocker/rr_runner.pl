@@ -129,6 +129,13 @@ my $NODE_V_S = ($ENV{RR_NODE_V_S} // '') =~ /^\d{1,3}(\.\d+)?$/ ? $ENV{RR_NODE_V
 # Detached runs (header run_id; see the top): runner = before GO, or a run without run_id (attached,
 # as before); keeper = the forked owner of a started command; follower = relays a run's spool
 our $role = 'runner';
+# The pid that owns this run's cleanup (finish / runs.log): the runner, then the keeper it forks. A
+# helper fork (git / cp / npm via run_cmd, spawn, node -v) that got the runner's INT / TERM / HUP handler
+# before it reset it - perl's pending-signal flag is copied into the child by fork - dies into main()'s
+# eval like the runner itself; without this it ran finish() too: a second runs.log row for the same run id
+# (hp 2026-11-13: 15 run ids, every one an abandoned-setup during a store clone) and the slot files unlinked
+# under the runner. It now leaves with _exit and touches nothing.
+our $OWNER_PID = $$;
 my $UUID = qr/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 my ($run_id, $spool_fh, @kstat);      # spool lock (held by runner, then keeper); keeper's status lines
 my ($ctl_off, $killed, $touched) = (0, 0, 0);
@@ -1685,6 +1692,7 @@ sub detach {
     if (!defined $kpid) { POSIX::sigprocmask(SIG_SETMASK, $old); fail("fork: $!") }
     if (!$kpid) {
         $role = 'keeper';
+        $OWNER_PID = $$;
         POSIX::sigprocmask(SIG_SETMASK, $old);
         setsid();                         # no session of the ssh login: a lost link never reaches it
         open STDIN, '<', '/dev/null';
@@ -1841,6 +1849,7 @@ sub spool_sweep {
 # ------------------------------------------------------------------------------------ end
 sub finish {
     my ($rc) = @_;
+    POSIX::_exit($rc // 70) if $$ != $OWNER_PID;    # a helper fork unwound into here: not ours to clean up
     return if $role eq 'follower';    # it owns nothing: the keeper (or nobody, on a reattach) cleans up
     local $SIG{$_} = 'IGNORE' for qw(INT TERM HUP);    # cleanup must not be cut short
     eval { end_node_probe() };    # a signal during node_version(): its probe must not outlive us

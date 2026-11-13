@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -23,6 +24,7 @@ import test_run  # noqa: E402  (fixture base + fake ssh; its RunTest is not re-c
 import rd_pool  # noqa: E402
 
 rd_common = rdmods.owner("RRUN_STATE")
+rd_run = rdmods.owner("rrun")
 
 
 def worker(name, speed=1.0, max_slots=2, heavy_slots=1, enabled=True, mem_gb=16):
@@ -75,6 +77,18 @@ class Classify(unittest.TestCase):
         self.assertEqual((b["cls"], b["retry_ok"], b["local_ok"]), ("build", True, False))
         self.assertEqual(rd_pool.classify(["npx", "tsc", "--noEmit"])["need_gb"], 6)
 
+    def test_check_ui_names_are_check_scripts(self):
+        """rr_route_patterns (the hook / npm shim): `check:ui-*` is a check; a bare `:ui` segment
+        (`check:ui`, `check:ui:fast`) is an interactive UI run and stays here."""
+        import re
+        pats = rd_common.DEFAULTS["rr_route_patterns"]
+        hit = lambda cmd: any(re.search(p, cmd) for p in pats)               # noqa: E731
+        for cmd, want in (("npm run check:ui-mirror-coverage", True), ("npm run check:ui-tokens", True),
+                          ("npm run check:ui", False), ("npm run check:ui:fast", False),
+                          ("npm run check:e2e", False), ("npm run check:links", True)):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(hit(cmd), want)
+
     def test_build_shape_and_outputs_map(self):
         for argv, want in ((["npm", "run", "build"], True), (["npm", "--prefix", "server", "run", "build"], True),
                            (["pnpm", "run", "build"], True), (["npm", "run", "build:prod"], False),
@@ -116,15 +130,13 @@ class PlanUnit(unittest.TestCase):
     def names(self, p):
         return [h.name for h in p.hosts]
 
-    def test_fastest_free_first_ties_and_race_wait(self):
+    def test_fastest_free_first_ties(self):
         p, _ = self.plan([worker("fast", 1.0), worker("slow", 0.5)],
                          {"fast": probe(), "slow": probe()})
         self.assertEqual(self.names(p), ["fast", "slow"])
         self.assertTrue(p.pool)
-        self.assertTrue(p.hosts[0].short)                         # a lost race moves on quickly
-        self.assertEqual(p.hosts[0].cfg["rr_wait_min"], rd_pool.RACE_WAIT_MIN)
-        self.assertFalse(p.hosts[1].short)                        # the last one waits fully
-        self.assertEqual(p.hosts[1].cfg["rr_wait_min"], self.cfg["rr_wait_min"])
+        # no per-host short waits any more: host_loop gives each attempt what is left of rr_wait_min
+        self.assertNotIn("rr_wait_min", {k for h in p.hosts for k in h.cfg if h.cfg[k] != self.cfg.get(k)})
         self.assertEqual(p.hosts[0].cfg["host"], "fast")
         self.assertEqual(p.hosts[0].cfg["rr_slots"], 2)            # fleet max_slots
         # load counts: a loaded fast worker loses to an idle slow one
@@ -145,12 +157,26 @@ class PlanUnit(unittest.TestCase):
 
     def test_heavy_needs_memory_and_a_heavy_slot(self):
         heavy = rd_pool.classify(["npx", "tsc", "--noEmit"])
+        # b's one heavy slot is held by a run that just started: c (free) finishes first
         p, _ = self.plan([worker("a", 1.0), worker("b", 0.5), worker("c", 0.4)],
-                         {"a": probe(mem_mb=4000), "b": probe(heavy_busy=1), "c": probe()}, job=heavy)
+                         {"a": probe(mem_mb=4000), "b": dict(probe(slots_busy=1, heavy_busy=1), ages=[1]), "c": probe()},
+                         job=heavy)
         self.assertEqual(self.names(p)[0], "c")
         st = {h.name: h.state for h in p.hosts}
         self.assertEqual(st, {"a": "low-mem", "b": "busy", "c": "free"})
-        self.assertTrue(p.hosts[0].short)                          # c is not last: a lost race moves on
+        # a worker with no heavy slot at all (heavy_slots 0) never takes a heavy job
+        p, _ = self.plan([worker("a", 1.0, heavy_slots=0), worker("b", 0.5)],
+                         {"a": probe(heavy_cap=0), "b": probe()}, job=heavy)
+        self.assertEqual(self.names(p), ["b"])
+        self.assertEqual([(h.name, w) for h, w in p.ineligible], [("a", "has no heavy-job slot (heavy_slots 0)")])
+        # ...also from fleet.json alone: a worker that did not answer, and an unprobed one-worker plan
+        p, _ = self.plan([worker("a", 1.0, heavy_slots=0), worker("b", 0.5)], {"b": probe()}, job=heavy)
+        self.assertEqual((self.names(p), [h.name for h, _ in p.ineligible]), (["b"], ["a"]))
+        p, m = self.plan([worker("a", 1.0, heavy_slots=0)], {}, job=heavy)
+        self.assertFalse(m.called)                                  # one worker: no probe
+        self.assertEqual((p.hosts, [w for _, w in p.ineligible]), ([], ["has no heavy-job slot (heavy_slots 0)"]))
+        p, _ = self.plan([worker("a", 1.0, heavy_slots=0)], {}, job=rd_pool.classify(["npm", "run", "lint"]))
+        self.assertEqual(self.names(p), ["a"])                      # other classes still go there
         # ... yet the same small-memory host takes a light job
         p, _ = self.plan([worker("a", 1.0), worker("b", 0.5)], {"a": probe(mem_mb=4000), "b": probe()},
                          job=rd_pool.classify(["npm", "run", "lint"]))
@@ -172,7 +198,6 @@ class PlanUnit(unittest.TestCase):
             self.assertEqual([h.state for h in p.hosts], ["busy", "busy"])
             self.assertAlmostEqual(p.hosts[0].queue_s, 12.0)          # floor: 0.2 x 60 s
             self.assertIsNone(p.local_after_s)
-            self.assertFalse(any(h.short for h in p.hosts))
             p, _ = self.plan(ms, busy, job=rd_pool.classify(["npm", "run", "lint"]))
             self.assertEqual(p.local_after_s, rd_pool.LOCAL_AFTER_S)
             p, _ = self.plan(ms, busy, job=rd_pool.classify(["npx", "tsc", "--noEmit"]))
@@ -587,6 +612,29 @@ class PoolE2E(test_run.RunBase):
         self.assertIn("w1 unreachable", r.stderr)
         self.assertIn("- trying w2", r.stderr)
         self.assertEqual(self.target(), "w2")
+        # ONE route.log line for the invocation (2026-11-13: a host line + a `none` line double-counted)
+        self.assertEqual([ln.split()[2] for ln in self.route_lines()], ["w2"])
+
+    def test_pool_down_runs_here_loudly_but_never_a_db_job_or_strict(self):
+        """Owner (2026-11-13): "if the compute's failing then it should just run locally, but really it
+        should not like to do that." Every worker unreachable: a normal job runs here with one loud line
+        and route.log `fallback-local`; a DB job never (75: it must never meet a real DB here), nor
+        RRUN_STRICT=1 (75)."""
+        down = dict(FAKE_SSH_RUNDOWN_HOSTS="w1,w2", RRUN_RECONNECT_WAIT="0")
+        r = self.rrun("/bin/sh", "-c", 'echo "mode=$RDOCKER_MODE"', **down)
+        self.assertEqual((r.returncode, r.stdout), (0, "mode=local\n"), r.stderr)
+        self.assertRegex(r.stderr, r"\nrrun: pool unavailable \(w2 unreachable .*\), ran LOCALLY on this Mac\n$")
+        self.assertEqual([ln.split()[2] for ln in self.route_lines()], ["fallback-local"])
+        r = self.rrun("/bin/sh", "-c", "echo ran", RRUN_STRICT="1", **down)
+        self.assertEqual((r.returncode, r.stdout), (75, ""), r.stderr)
+        self.assertNotIn("LOCALLY", r.stderr)
+        marker = os.path.join(self.d, "db-ran")
+        r = self.rrun("/bin/sh", "-c", "touch %s; : test:db" % marker, **down)
+        self.assertEqual(r.returncode, 75, r.stderr)
+        self.assertIn("a db job never runs on this machine", r.stderr)
+        self.assertNotIn("LOCALLY", r.stderr)
+        self.assertFalse(os.path.exists(marker))
+        self.assertEqual([ln.split()[2] for ln in self.route_lines()][-2:], ["mini", "none"])
 
     def test_optional_worker_down_is_silent_and_skipped_next_time(self):
         write_fleet(self.fleet, [worker("w1", 1.0), dict(worker("w2", 0.5), optional=True)])
@@ -606,16 +654,113 @@ class PoolE2E(test_run.RunBase):
         self.assertIn("away (optional workers): w2", r.stdout)
         self.assertNotIn("not answering", r.stdout)
 
-    def test_lost_race_for_a_slot_moves_on(self):
-        """The probe saw w1 free (another client then took the slot): 73 after a short wait -> w2."""
-        self.set_fleet(w1_slots=1, w2_slots=1, rr_race_wait_min=0.02)
-        self.hold_slot("w1")
+    def slug(self):
+        return rd_run.resolve_worktree(self.wt)["slug"]
+
+    def hold_known(self, worker, secs, name="0"):
+        """Hold a slot on `worker` the way a runner does (slots/<i> flock + .who + .own), with a holder
+        command whose runs.log median there is `secs`: the probe's queue estimate sees a real holder."""
+        d = os.path.join(self.whome[worker], "rr", "slots")
+        os.makedirs(d, exist_ok=True)
+        fh = open(os.path.join(d, name), "a")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        self.addCleanup(fh.close)
+        now = int(time.time())
+        test_run.wfile(os.path.join(d, name + ".who"), "%s %d %d abcdef012345\n" % (self.slug(), now, os.getpid()))
+        test_run.wfile(os.path.join(d, name + ".own"), "id=t\tstart=%d\tpid=%d\tcmd=holder-%d\n"
+                       % (now, os.getpid(), secs))
+        logd = os.path.join(self.whome[worker], "rr", "log")
+        os.makedirs(logd, exist_ok=True)
+        t = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now - 60))
+        with open(os.path.join(logd, "runs.log"), "a") as f:
+            for _ in range(3):
+                f.write("%s repo=%s wt=b sha=c outcome=rc=0 prepare_s=0.2 cmd_s=%d argv=holder-%d\n"
+                        % (t, self.slug(), secs, secs))
+        return fh
+
+    def route_lines(self):
+        p = os.path.join(self.home, ".local", "state", "rdocker", "route.log")
+        return [ln for ln in self.read(p).splitlines() if " rrun " in ln] if os.path.exists(p) else []
+
+    def test_lost_race_waits_there_no_bounce(self):
+        """The probe saw w1 free (another client then took the slot): the job queues on w1 - it says so
+        - and runs there when the slot frees, never a 73 bounce to w2 (2026-11-13: 68 bounces a day)."""
+        self.set_fleet(w1_slots=1, w2_slots=1, rr_move_max=0)
+        os.makedirs(os.path.join(self.whome["w1"], "rr", "slots"), exist_ok=True)
+        fh = open(os.path.join(self.whome["w1"], "rr", "slots", "0"), "a")
+        fcntl.flock(fh, fcntl.LOCK_EX)
         empty = os.path.join(self.d, "probe-home")
         os.makedirs(empty)
-        r = self.rrun("/bin/sh", "-c", "echo hi", FAKE_SSH_PROBE_HOMES="w1=" + empty)
-        self.assertEqual((r.returncode, r.stdout), (0, "hi\n"), r.stderr)
-        self.assertRegex(r.stderr, r"w1 had no free slot after \d+ s - trying w2")
+        p = self.popen("/bin/sh", "-c", "echo hi", FAKE_SSH_PROBE_HOMES="w1=" + empty)
+        time.sleep(4)
+        fh.close()
+        out, err = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out), (0, "hi\n"), err)
+        self.assertIn("rrun: queued on w1: a slot should free soon (it looked free when planned) (next in line)", err)
+        self.assertNotIn("trying w2", err)
+        self.assertNotIn("no free slot", err)
+        self.assertEqual(self.target(), "w1")
+        self.assertEqual(len(self.route_lines()), 1, self.route_lines())
+
+    def test_waits_on_the_best_busy_worker_with_a_visible_line(self):
+        """w1 (2x w2's speed) is busy, its holder ends in ~20 s: finishing there beats the free w2,
+        so the job queues on w1 with an estimate, and runs there once the slot frees."""
+        self.set_fleet(w1_slots=1, w2_slots=1, rr_move_max=0)
+        fh = self.hold_known("w1", 20)
+        r = self.rrun("--where", "/bin/sh", "-c", "echo hi")
+        self.assertRegex(r.stdout, r"\nw1 +w1 +busy +0/1 .* +\d+s +\d+s-\d+s +\(default\) .*\n")   # queue, run-rank
+        self.assertRegex(r.stdout, r"pick: w1 \(earliest finish ~\d+s: queues there about \d+s, then runs")
+        p = self.popen("/bin/sh", "-c", "echo hi")
+        time.sleep(3)
+        fh.close()
+        out, err = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out), (0, "hi\n"), err)
+        self.assertRegex(err, r"rrun: queued on w1: about \d+ s \(next in line\); 1 of 1 slots busy")
+        self.assertEqual(self.target(), "w1")
+
+    def test_moves_at_most_once(self):
+        """Both workers busy with long holders: the job queues on w1. w2 frees -> it moves there once
+        (runs.log on w1: moved). w2 is taken again and then w1 frees: no second move; it waits on w2."""
+        self.set_fleet(w1_slots=1, w2_slots=1, rr_move_poll_s=0.3)
+        f1 = self.hold_known("w1", 600)
+        f2 = self.hold_known("w2", 900)
+        p = self.popen("/bin/sh", "-c", "echo hi")
+        err = []
+
+        def read():
+            for ln in p.stderr:
+                err.append(ln)
+        t = threading.Thread(target=read, daemon=True)
+        t.start()
+        end = time.time() + 20
+        while time.time() < end and not any("queued on w1" in ln for ln in err):
+            time.sleep(0.1)
+        self.assertTrue(any("queued on w1" in ln for ln in err), err)
+        time.sleep(1.5)
+        f2.close()                                                   # w2 frees: clearly better now
+        while time.time() < end and not any("moving to w2" in ln for ln in err):
+            time.sleep(0.05)
+        f2 = self.hold_known("w2", 900)                              # ...and is taken again at once
+        self.assertTrue(any("moving to w2" in ln for ln in err), err)
+        while time.time() < end and not any("queued on w2" in ln for ln in err):
+            time.sleep(0.1)
+        f1.close()                                                   # w1 frees: it may not move back
+        time.sleep(2)
+        f2.close()
+        out, _ = p.communicate(timeout=60)
+        t.join(5)
+        text = "".join(err)
+        self.assertEqual((p.returncode, out), (0, "hi\n"), text)
+        self.assertEqual(text.count("moving to"), 1, text)
+        self.assertIn("a job moves at most once", text)
         self.assertEqual(self.target(), "w2")
+        runs = self.read(os.path.join(self.whome["w1"], "rr", "log", "runs.log"))
+        self.assertIn("outcome=moved", runs)
+        # one route.log line; push_s is the push alone, the wait on w1 is retry_s
+        (ln,), = [self.route_lines()]
+        st = dict(kv.split("=", 1) for kv in ln.split("\t")[1].split())
+        self.assertGreater(float(st["retry_s"]), 1.0, ln)
+        self.assertLess(float(st["push_s"]), 5, ln)
 
     def test_lost_after_go_repeatable_job_runs_once_more_elsewhere(self):
         self.set_fleet(rr_reattach_backoff_s=[0, 0, 0])     # every reattach to w1 drops too
@@ -743,8 +888,15 @@ class PoolE2E(test_run.RunBase):
 
 
 class Eligibility(PlanUnit):
-    """Phase B (2026-11-11): fleet.json classes / max_cost_s / cold_ok are hard - an ineligible
-    worker is no candidate at all (not ranked, not a wait host, no shard, no hedge, no warm)."""
+    """Phase B (2026-11-11): fleet.json classes / cold_ok are hard - an ineligible worker is no
+    candidate at all (not ranked, not a wait host, no shard, no hedge, no warm). max_cost_s is soft
+    since 2026-11-13 (SlowWorker)."""
+
+    def long_queue(self, slots=2):
+        """A busy hp whose holders just started a 10-minute command: its queue is ~10 min."""
+        now = time.time()
+        return dict(probe(slots_busy=slots), ages=[5] * slots,
+                    jobs=[{"cmd": "x", "start": now - 5, "med": 600} for _ in range(slots)])
 
     def ev(self, secs, n=3):
         return {"ev": {"sig": [secs] * n, "kind": [0, None], "pk": {}, "rows": []}}
@@ -757,8 +909,8 @@ class Eligibility(PlanUnit):
         self.assertEqual(self.names(p), ["hp"])
         self.assertEqual([(h.name, why) for h, why in p.ineligible],
                          [("lap", "takes only light/normal/db jobs (this is heavy)")])
-        # ... while a normal job may go there
-        p, _ = self.plan([lap, worker("hp", 1.5)], {"lap": probe(), "hp": probe(slots_busy=2)})
+        # ... while a normal job may go there (when it finishes there first)
+        p, _ = self.plan([lap, worker("hp", 1.5)], {"lap": probe(), "hp": self.long_queue()})
         self.assertEqual(self.names(p)[0], "lap")
         self.assertEqual(p.ineligible, [])
         # a down worker is still judged on its class (it is not even "down, try last")
@@ -771,10 +923,10 @@ class Eligibility(PlanUnit):
         mini = dict(worker("mini", 0.42), max_cost_s=120)
         ans = {"mini": dict(probe(), **self.ev(1500.0)), "hp": dict(probe(slots_busy=2), **self.ev(1500.0))}
         p, _ = self.plan([mini, worker("hp", 1.5)], ans, job=full)
-        self.assertEqual(self.names(p), ["hp"])
-        (h, why), = p.ineligible
-        self.assertEqual(h.name, "mini")
-        self.assertRegex(why, r"^expected ~\d+m there, over its max_cost_s 120s$")
+        self.assertEqual(self.names(p), ["hp", "mini"])            # slow, not excluded: after hp
+        self.assertEqual(p.ineligible, [])
+        m = p.hosts[1]
+        self.assertRegex(m.slow, r"^expected ~\d+m there, over its max_cost_s 120s$")
         ans = {"mini": dict(probe(), **self.ev(20.0)), "hp": dict(probe(slots_busy=2), **self.ev(20.0))}
         p, _ = self.plan([mini, worker("hp", 1.5)], ans, job=named)
         self.assertEqual(self.names(p)[0], "mini")                 # 20 s there: fine
@@ -784,7 +936,7 @@ class Eligibility(PlanUnit):
         p, _ = self.plan([mini, worker("hp", 1.5)], {"mini": probe(warm_deps=0), "hp": probe(slots_busy=2)})
         self.assertEqual(self.names(p), ["hp"])
         self.assertIn("cold_ok: false", p.ineligible[0][1])
-        p, _ = self.plan([mini, worker("hp", 1.5)], {"mini": probe(warm_deps=1), "hp": probe(slots_busy=2)})
+        p, _ = self.plan([mini, worker("hp", 1.5)], {"mini": probe(warm_deps=1), "hp": self.long_queue()})
         self.assertEqual(self.names(p)[0], "mini")
 
     def test_no_eligible_worker_at_all_says_why(self):
