@@ -362,10 +362,11 @@ another way to get compute. `rrun --where <cmd>` shows which worker it would pic
   `rrun: cached result from the pool cache (same code + command, 3m ago on nickmbp by <agent>); RRUN_CACHE=0
   to run again`. A pool hit is never copied into this Mac's cache (that cache has no node check), so each
   repeat asks hp again. Same key, same rules and same lifetimes (pass 24 h, failure 20 min) as above.
-  Node rule: a pool result is replayed only when every worker that answered the probe resolves the same
-  node major the result was made with. The probe resolves the node the runner would use, by path (brew's
-  `opt/node`, else mise's global node, or the `RR_NODE` pin), without starting anything. The maker tags the
-  result with the node its runner really ran (`node -v`). Unknown or mixed = no pool hits.
+  Node rule: fleet.json's top-level `"pool_node_major"` (e.g. `25`) declares which node the pool runs. A
+  run shares its result only when its runner really ran that major (`node -v`, reported by the runner); a
+  result is replayed only when its signed node tag equals it. No `pool_node_major` = no pool cache; an
+  unknown runtime = nothing shared; a worker on another major never shares. **When node is upgraded on
+  the workers, bump `pool_node_major` in fleet.json** (until then the upgraded workers share nothing).
   Entries over 1 MB are not shared.
   **Signed entries.** Every pool entry carries an HMAC made on the agent Mac with
   `~/.config/rdocker/pool-cache.key` (0600). That secret exists only on agent Macs: never on a worker, never
