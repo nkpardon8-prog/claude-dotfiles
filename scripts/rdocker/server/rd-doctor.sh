@@ -342,7 +342,7 @@ if (!-l "$R/tmp" && opendir(my $td, "$R/tmp")) {
         my @st = stat $s or next;
         sysopen(my $f, $s, O_RDONLY | O_NOFOLLOW) or next;
         local $/; my $txt = <$f> // ""; close $f;
-        my ($tok) = $txt =~ /LABEL=.rdocker\.rrun=([0-9a-f]+)/ or next;
+        my ($tok) = $txt =~ /LABEL\s*=\s*.rdocker\.rrun=([0-9a-f]+)/ or next;   # the shim says: my $LABEL = <quote>rdocker.rrun=<t><quote>;
         $live{$tok} = 1 if grep { abs($st[9] - $_) <= $win } @epochs;
     }
 }

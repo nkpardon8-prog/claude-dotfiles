@@ -766,7 +766,11 @@ sub write_slot_files {
     write_file($who, "$h{repo_slug} $slot_t $$ $h{wt12}\n");
     $own = $who =~ s/\.who$/.own/r;
     eval { write_file($own, join("\t", "id=" . ($owner_id // '?'), "name=" . ($owner_name // ''),
-        "client=" . ($h{owner_client} // ''), "start=$slot_t", "pid=$$", "cmd=" . redact_argv()) . "\n") };
+        "client=" . ($h{owner_client} // ''), "start=$slot_t", "pid=$$",
+        # label: rd-doctor's orphan-container rule keeps this run's containers while the slot is held
+        # (before 2026-11-13 it was missing and the doctor's shim fallback never matched: live run DBs
+        # were removed at ~2 min)
+        "label=$label", "cmd=" . redact_argv()) . "\n") };
 }
 
 sub take_slot {
