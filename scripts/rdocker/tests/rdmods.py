@@ -50,6 +50,22 @@ if _OWNED:
         os.chmod(_p, 0o755)
     atexit.register(shutil.rmtree, TEST_HOME, True)
 os.environ["RDOCKER_HOME"] = TEST_HOME
+
+# A test that writes the REAL ~/rr/git turns this Mac into a "worker" for the rrun-route hook, which
+# then silently stops routing every agent's heavy commands here (2026-11-13: a push test did this for
+# an hour). Fail the whole run loudly if any test creates it.
+_REAL_RR_GIT = os.path.join(os.path.expanduser("~"), "rr", "git")
+_RR_GIT_BEFORE = os.path.exists(_REAL_RR_GIT)
+
+
+def _rr_git_leak_check():
+    if not _RR_GIT_BEFORE and os.path.exists(_REAL_RR_GIT):
+        sys.stderr.write("rdocker tests: LEAK - a test created %s (this disables rrun routing on this Mac); "
+                         "remove it and give that test a temp HOME\n" % _REAL_RR_GIT)
+        os._exit(3)
+
+
+atexit.register(_rr_git_leak_check)
 if not os.environ.get("PATH", "").startswith(STUB_BIN + ":"):
     os.environ["PATH"] = STUB_BIN + ":" + os.environ.get("PATH", "")
 

@@ -310,6 +310,10 @@ class Client(unittest.TestCase):
         subprocess.run(["git", "init", "-q", "--bare", bare], check=True, capture_output=True)
         os.environ["RRUN_GIT_URL"] = bare
         self.addCleanup(os.environ.pop, "RRUN_GIT_URL", None)
+        # a local push URL runs --receive-pack's `mkdir -p ~/rr/git` HERE: never the real HOME
+        real_home = os.environ.get("HOME")
+        os.environ["HOME"] = self.d
+        self.addCleanup(os.environ.__setitem__, "HOME", real_home)
         cfg = dict(CFG, host="x", rr_base_branches=["main"])
         return rd_run.push(cfg, rd_run.resolve_worktree(ws))
 
