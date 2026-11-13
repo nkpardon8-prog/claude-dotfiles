@@ -32,7 +32,8 @@ fingerprint exists. `--notify-only` sends the notice without relinking.
 
 ## Steps
 1. Show the plan: `python3 ~/.claude-dotfiles/scripts/relink.py --dry-run` (pass through any `--only`).
-   Windows without a /line name, or not in Terminal.app, are listed as skipped.
+   A window without a /line name is linked under the name its status line already shows (e.g. "david-4f");
+   only a window with no name at all, or not in Pane or Terminal.app, is listed as skipped.
 2. Run it in the BACKGROUND (Bash `run_in_background: true`, never `&`):
    `python3 ~/.claude-dotfiles/scripts/relink.py [--only NAME ...] [--notify-reset]`
    It types only into IDLE windows (never mid-task, never over a permission prompt), waits up to 45 min

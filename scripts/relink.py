@@ -9,7 +9,8 @@ How: reads ~/.claude/sessions/<pid>.json for each live window (name, nameSource,
 finds where it runs - a Pane panel (PANE_PANEL_ID in its environment; typed via `runpane panels input`,
 which also works over ssh) or a Terminal.app tab (by TTY; typed via AppleScript) - and types the commands ONLY while the window is idle (never mid-task, never
 over a permission prompt). Each step is confirmed by watching bridgeSessionId in the session file.
-Windows without a /line name (nameSource != "explicit"), or in neither Pane nor Terminal, are skipped and listed.
+A window without a /line name is linked under the name its status line shows (its auto-derived name);
+only a window with no name at all, or in neither Pane nor Terminal, is skipped and listed.
 Another Mac: `ssh <host> python3 ~/.claude-dotfiles/scripts/relink.py` (Pane windows only; macOS blocks
 AppleScript control of Terminal from an ssh login).
 
@@ -185,8 +186,10 @@ def plan(rows, tabs, only, force=False):
         name = d.get("name") or ""
         if only and name not in only:
             continue
-        if d.get("nameSource") != "explicit":
-            skipped.append((name or f"pid {d['pid']}", "no /line name"))
+        # No /line name: use the name the window's status line already shows (its auto-derived name), so every
+        # window appears in the Claude app under the name on its line. Only a window with no name at all is skipped.
+        if not name:
+            skipped.append((f"pid {d['pid']}", "no name on its line"))
             continue
         if not NAME_RE.match(name):
             skipped.append((name, "name has characters /rc cannot take"))
@@ -304,7 +307,7 @@ def heal():
         if not sid or os.environ.get("RELINK_CHILD"):
             return 0
         me = next((d for d in read_sessions() if d.get("sessionId") == sid), None)
-        if not me or me.get("nameSource") != "explicit" or not NAME_RE.match(me.get("name") or ""):
+        if not me or not NAME_RE.match(me.get("name") or ""):
             return 0
         st = load_state()
         prev = st.get(sid) or {}
