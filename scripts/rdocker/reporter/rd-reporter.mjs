@@ -21,7 +21,9 @@
 // macOS: vm_stat, sysctl, memory_pressure; temperature needs root there, so it is reported as null.
 //   watts: the root rd-power sampler if present, else on laptops whole-system draw from ioreg
 //   AppleSmartBattery (adapter input on AC, incl. charging; battery discharge otherwise).
-// rrun: running jobs from <rrRoot>/slots/*.who, finished runs from <rrRoot>/log/runs.log.
+// rrun: running jobs from <rrRoot>/slots/*.who (+ each job's cap, timeoutS, from <i>.own), finished
+//   runs from <rrRoot>/log/runs.log. Linux: deadSlots = slots whose lock is still held (/proc/locks)
+//   while the runner named in <i>.who is dead (readSlots; not measured on macOS).
 // Pool health (about once a minute): rd-doctor's status file (/run/rdocker/doctor, macOS <rrRoot>/state/
 //   doctor.json, or "doctorFile" in the config), last-hour runs.log outcomes, 24 h prediction error.
 // Install: copy this file to ~/.local/share/rdocker/reporter/ and load units/rd-reporter.service
@@ -34,7 +36,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0'; // 1.1.0: jobs[].timeoutS, deadSlots
 const INGEST_V = 1;
 const SAMPLE_MS = 5_000;
 const SLOW_MS = 60_000;
@@ -502,6 +504,92 @@ export function parseWho(text, slot) {
   return { slot, repo, since: Number(t) * 1000, pid: Number(pid) || null, cmd: null };
 }
 
+/** A slot's .own is one line (cmd= is redacted and capped by the runner); anything larger is not ours. */
+const OWN_READ_MAX = 16_384;
+
+/** <slot>.own (rr_runner.pl write_slot_files): one line of tab-separated key=value, cmd= last. */
+export function parseOwn(text) {
+  const o = {};
+  for (const kv of (text.split('\n')[0] ?? '').split('\t')) {
+    const m = /^([a-z_]+)=(.*)$/s.exec(kv);
+    if (m) o[m[1]] = m[2];
+  }
+  return o;
+}
+
+/** userspace dev_t -> "major:minor" (glibc encoding), the form /proc/locks uses (there in hex). */
+export function devKey(dev) {
+  const d = BigInt(dev);
+  const major = ((d >> 8n) & 0xfffn) | ((d >> 32n) & ~0xfffn);
+  const minor = (d & 0xffn) | ((d >> 12n) & ~0xffn);
+  return `${major}:${minor}`;
+}
+
+/**
+ * /proc/locks -> the set of "major:minor:inode" that some process holds a lock on (any kind; the
+ * runner's slot lock is FLOCK). Blocked waiters ("N: -> FLOCK ...") hold nothing and are skipped.
+ * Read-only: looking never takes or disturbs a lock.
+ */
+export function parseProcLocks(text) {
+  const held = new Set();
+  for (const line of text.split('\n')) {
+    const m = /^\d+:\s+(?!->)\S+\s+\S+\s+\S+\s+\S+\s+([0-9a-f]+):([0-9a-f]+):(\d+)\s/i.exec(line);
+    if (m) held.add(`${parseInt(m[1], 16)}:${parseInt(m[2], 16)}:${m[3]}`);
+  }
+  return held;
+}
+
+/**
+ * <rrRoot>/slots -> { jobs, deadSlots }.
+ * jobs: one per <i>.who; `timeoutS` (the command's cap, s, 0 = none) when the slot's .own names the
+ * same pid (never a leftover's). On Linux a .who whose pid is gone is not a job:
+ *   - its slot lock (slots/<i>) still held (per /proc/locks, matched by device + inode) and the .who
+ *     not older than the lock -> a DEAD SLOT: the runner died but something that inherited its lock
+ *     fd keeps the slot taken, so the slot is lost until that process ends. (A .who older than the
+ *     lock is the moment a new runner has flocked but not yet rewritten it: not dead.)
+ *   - lock free -> a stale .who (rd-doctor removes it).
+ * deadSlots is null where it is not measured: macOS has no /proc/locks, and its lsof does not report
+ * flock state (an open fd, e.g. a runner probing the slot, is not a held lock), so it is skipped there.
+ * opts: { linux, alive(pid), locks() -> /proc/locks text | null, cmd(pid) -> string | null }.
+ */
+export function readSlots(dir, { linux, alive, locks, cmd }) {
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => /^\d+\.who$/.test(f));
+  } catch {
+    return { jobs: [], deadSlots: linux ? [] : null };
+  }
+  const jobs = [];
+  const deadSlots = [];
+  let held = null;
+  const statOf = (p) => {
+    try {
+      return fs.statSync(p);
+    } catch {
+      return null;
+    }
+  };
+  for (const f of files) {
+    const slot = Number(f.split('.')[0]);
+    const j = parseWho(read(path.join(dir, f)) ?? '', slot);
+    if (!j) continue;
+    if (linux && j.pid && !alive(j.pid)) {
+      const lk = statOf(path.join(dir, String(slot)));
+      const who = statOf(path.join(dir, f));
+      if (!lk || !who || who.mtimeMs < lk.mtimeMs) continue;
+      held ??= parseProcLocks(locks() ?? '');
+      if (held.has(`${devKey(lk.dev)}:${lk.ino}`)) deadSlots.push({ slot, repo: j.repo, since: j.since, pid: j.pid });
+      continue;
+    }
+    const own = parseOwn(readBounded(path.join(dir, `${slot}.own`), OWN_READ_MAX) ?? ''); // no symlink, no FIFO
+    if (j.pid && own.pid === String(j.pid) && /^\d+$/.test(own.timeout_s ?? '')) j.timeoutS = Number(own.timeout_s);
+    if (linux && j.pid) j.cmd = cmd(j.pid);
+    jobs.push(j);
+  }
+  const bySlot = (a, b) => a.slot - b.slot;
+  return { jobs: jobs.sort(bySlot), deadSlots: linux ? deadSlots.sort(bySlot) : null };
+}
+
 /** Redact env-looking argv tokens, like rr_runner.pl redact_argv. */
 export function redactArgv(argv) {
   const out = [];
@@ -931,23 +1019,13 @@ export class Collector {
     return out ? parsePsMem(out) : null;
   }
 
-  jobs() {
-    const dir = path.join(this.rrRoot, 'slots');
-    let files = [];
-    try {
-      files = fs.readdirSync(dir).filter((f) => /^\d+\.who$/.test(f));
-    } catch {
-      return [];
-    }
-    const out = [];
-    for (const f of files) {
-      const j = parseWho(read(path.join(dir, f)) ?? '', Number(f.split('.')[0]));
-      if (!j) continue;
-      if (this.linux && j.pid && fs.existsSync(`/proc/${j.pid}`)) j.cmd = jobCommand(j.pid);
-      else if (this.linux && j.pid) continue; // stale .who of a dead runner
-      out.push(j);
-    }
-    return out.sort((a, b) => a.slot - b.slot);
+  slots() {
+    return readSlots(path.join(this.rrRoot, 'slots'), {
+      linux: this.linux,
+      alive: (pid) => fs.existsSync(`/proc/${pid}`),
+      locks: () => read('/proc/locks'),
+      cmd: jobCommand,
+    });
   }
 
   newRuns() {
@@ -1037,7 +1115,7 @@ export class Collector {
     }
 
     const leaks = this.agentHost ? scanLeaks(await sh('ps', ['-eo', 'pid=,time=,args='], 3000), this.leakState, now) : [];
-    const jobs = this.jobs();
+    const { jobs, deadSlots } = this.slots();
     const q = this.linux ? runnerQueue(new Set(jobs.map((j) => j.pid).filter(Boolean)), uptime) : { queued: 0, waitS: null };
     const hist = this.hist;
     this.hist = [];
@@ -1062,6 +1140,7 @@ export class Collector {
       hostMem: await this.hostMem(),
       pressure,
       ...(leaks.length ? { leaks } : {}),
+      ...(deadSlots?.length ? { deadSlots } : {}), // Linux only; absent = none (or not measured)
     };
     if (withInfo) frame.info = this.info();
     // Pool health: only when recomputed (about once a minute) or with info (a new connection).

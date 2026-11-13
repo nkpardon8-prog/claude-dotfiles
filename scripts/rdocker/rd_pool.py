@@ -450,7 +450,7 @@ for my $i (0 .. $n - 1) {
     push @ages, time - $t if defined $t && $t =~ /^\d+$/ && $t <= time;
 }
 $o{ages} = \@ages;
-# who runs what (<i>.own = tab-separated id= name= client= start= pid= cmd=, written by the runner
+# who runs what (<i>.own = tab-separated id= name= client= start= pid= label= timeout_s= cmd=, written by the runner
 # beside <i>.who): only for a held slot whose .who names the same pid (never a leftover's)
 my @jobs;
 for my $f (glob("$R/slots/*.own")) {

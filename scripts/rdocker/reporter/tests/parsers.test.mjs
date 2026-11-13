@@ -115,6 +115,71 @@ test('.who slots and argv redaction', () => {
   assert.equal(r.redactArgv(['node', 'x.js', '--token=abc', '-e', 'SECRET=1', 'FOO=bar']), 'node x.js --token=<redacted> -e <redacted> FOO=<redacted>');
 });
 
+test('.own fields, dev_t -> major:minor, /proc/locks holders (waiters hold nothing)', () => {
+  assert.deepEqual(r.parseOwn('id=s:1\tname=a b\tpid=42\tlabel=ab\ttimeout_s=600\tcmd=x=1\ty\n'), { id: 's:1', name: 'a b', pid: '42', label: 'ab', timeout_s: '600', cmd: 'x=1' });
+  assert.equal(r.devKey(2050), '8:2'); // rd-hp /dev/sda2: stat %d 2050, /proc/locks "08:02"
+  assert.equal(r.devKey(0x10302), '259:2'); // nvme0n1p2 (major 259 needs the high bits)
+  const held = r.parseProcLocks(
+    ['1: FLOCK  ADVISORY  WRITE 164104 08:02:9870908 0 EOF', '1: -> FLOCK  ADVISORY  WRITE 999 08:02:777 0 EOF', '2: POSIX  ADVISORY  WRITE 419 00:19:610 0 EOF', '3: FLOCK  ADVISORY  WRITE 5 103:02:12 0 EOF'].join('\n'),
+  );
+  assert.deepEqual([...held].sort(), ['0:25:610', '259:2:12', '8:2:9870908']);
+});
+
+test('readSlots: timeoutS from a matching .own; Linux dead slot = lock held + .who pid dead + .who not older than the lock', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rdrep-slots-'));
+  try {
+    const put = (f, s, mtimeS) => {
+      fs.writeFileSync(path.join(dir, f), s);
+      if (mtimeS) fs.utimesSync(path.join(dir, f), mtimeS, mtimeS);
+    };
+    const T = 1_800_000_000;
+    // 0: live job with a cap; 1: live job whose .own is a leftover (other pid); 2: dead pid, lock held;
+    // 3: dead pid, lock free (stale .who); 4: dead pid, lock held, .who OLDER than the lock (a new runner
+    // has just flocked and not yet rewritten it: not dead); 5: live job, .own with no timeout_s (old runner).
+    for (let i = 0; i <= 5; i++) put(String(i), '', T + 100);
+    put('0.who', `acme ${T} 100 aaaaaaaaaaaa\n`, T + 100);
+    put('0.own', 'id=s\tpid=100\ttimeout_s=600\tcmd=npm test\n');
+    put('1.who', `acme ${T} 101 aaaaaaaaaaaa\n`, T + 100);
+    put('1.own', 'id=s\tpid=7\ttimeout_s=60\tcmd=npm test\n');
+    put('2.who', `beta ${T} 202 bbbbbbbbbbbb\n`, T + 100);
+    put('3.who', `gamma ${T} 303 cccccccccccc\n`, T + 100);
+    put('4.who', `delta ${T} 404 dddddddddddd\n`, T + 50);
+    put('5.who', `acme ${T} 105 aaaaaaaaaaaa\n`, T + 100);
+    put('5.own', 'id=s\tpid=105\tlabel=ab\tcmd=npm test\n');
+    const key = (i) => {
+      const st = fs.statSync(path.join(dir, String(i)));
+      const [maj, min] = r.devKey(st.dev).split(':').map((n) => Number(n).toString(16));
+      return `${maj}:${min}:${st.ino}`;
+    };
+    const locks = [2, 4].map((i, n) => `${n + 1}: FLOCK  ADVISORY  WRITE 1 ${key(i)} 0 EOF`).join('\n') + '\n';
+    const alive = (pid) => [100, 101, 105].includes(pid);
+    let lockReads = 0;
+    const opts = { linux: true, alive, locks: () => (lockReads++, locks), cmd: (pid) => `cmd-${pid}` };
+    const { jobs, deadSlots } = r.readSlots(dir, opts);
+    assert.deepEqual(jobs.map((j) => [j.slot, j.timeoutS, j.cmd]), [[0, 600, 'cmd-100'], [1, undefined, 'cmd-101'], [5, undefined, 'cmd-105']]);
+    assert.deepEqual(deadSlots, [{ slot: 2, repo: 'beta', since: T * 1000, pid: 202 }]);
+    assert.equal(lockReads, 1); // /proc/locks read once per scan, and only when some .who pid is dead
+
+    // .own read like the other slot files: a symlink is never followed (nor a FIFO opened blocking).
+    fs.renameSync(path.join(dir, '0.own'), path.join(dir, 'real.own'));
+    fs.symlinkSync(path.join(dir, 'real.own'), path.join(dir, '0.own'));
+    assert.equal(r.readSlots(dir, opts).jobs[0].timeoutS, undefined);
+    fs.rmSync(path.join(dir, '0.own'));
+    fs.renameSync(path.join(dir, 'real.own'), path.join(dir, '0.own'));
+
+    // macOS: no liveness check, every .who is a job; dead slots not measured (null), /proc/locks never read.
+    lockReads = 0;
+    const mac = r.readSlots(dir, { ...opts, linux: false });
+    assert.deepEqual(mac.jobs.map((j) => j.slot), [0, 1, 2, 3, 4, 5]);
+    assert.equal(mac.deadSlots, null);
+    assert.equal(lockReads, 0);
+    // No slots dir yet.
+    assert.deepEqual(r.readSlots(path.join(dir, 'nope'), opts), { jobs: [], deadSlots: [] });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('WSL host memory from powershell JSON', () => {
   assert.deepEqual(r.parsePsMem('{"TotalVisibleMemorySize":16000000,"FreePhysicalMemory":4000000}'), { total: 16000000 * 1024, free: 4000000 * 1024 });
   assert.equal(r.parsePsMem('not json'), null);
@@ -161,7 +226,7 @@ test('Collector on a fake rr root: jobs + incremental runs.log', () => {
   fs.writeFileSync(path.join(root, 'slots', '0.who'), 'dentall 1800000000 999999 abc\n');
   fs.copyFileSync(path.join(here, 'fixtures', 'runs.log'), path.join(root, 'log', 'runs.log'));
   const c = new r.Collector({ name: 't', rrRoot: root }, 'darwin');
-  assert.deepEqual(c.jobs().map((j) => [j.slot, j.repo]), [[0, 'dentall']]);
+  assert.deepEqual(c.slots().jobs.map((j) => [j.slot, j.repo]), [[0, 'dentall']]);
   assert.equal(c.newRuns().length, 3);
   assert.equal(c.newRuns().length, 0);
   fs.appendFileSync(path.join(root, 'log', 'runs.log'), '2026-11-09T11:00:00+0000 repo=x wt=y sha=z outcome=rc=0 prepare_s=1.0 cmd_s=2.0 argv=eslint .\n');

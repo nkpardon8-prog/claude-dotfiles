@@ -779,7 +779,15 @@ sub write_slot_files {
         # label: rd-doctor's orphan-container rule keeps this run's containers while the slot is held
         # (before 2026-11-13 it was missing and the doctor's shim fallback never matched: live run DBs
         # were removed at ~2 min)
-        "label=$label", "cmd=" . redact_argv()) . "\n") };
+        "label=$label",
+        # timeout_s: the command's hard cap (whole seconds, rounded up; 0 = none), only when the client
+        # sent one: rd-doctor reads 0 as "no limit", so an old client's missing cap must stay missing
+        # (the doctor then uses its class limit, the dashboard its 95 min fallback).
+        timeout_field(), "cmd=" . redact_argv()) . "\n") };
+}
+sub timeout_field {
+    my $t = num_or($h{timeout_s}, undef);
+    defined $t ? 'timeout_s=' . (int($t) + ($t > int($t) ? 1 : 0)) : ();
 }
 
 sub take_slot {

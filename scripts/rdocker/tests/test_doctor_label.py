@@ -70,6 +70,22 @@ class RunnerNamesItsLabel(unittest.TestCase):
         self.assertEqual(own["label"], label)
         self.assertTrue(r.out.splitlines()[0].split("\t")[-1].startswith("cmd="))   # cmd stays last
 
+    def own_of(self, **kw):
+        r = self.run_runner(["/bin/sh", "-c", 'cat "%s"/slots/*.own' % self.root], **kw)
+        self.assertEqual(r.rc, 0, r.err)
+        fields = r.out.splitlines()[0].split("\t")
+        self.assertTrue(fields[-1].startswith("cmd="))                              # cmd stays last
+        return dict(kv.split("=", 1) for kv in fields)
+
+    def test_own_has_the_time_cap(self):
+        """timeout_s=<whole s> in .own (the dashboard's jobcap line and rd-doctor's cap_s): the
+        header's cap, rounded up; 0 only when the header says 0 (no cap). A client that sent none gets
+        no field (rd-doctor reads 0 as "no limit" and would skip its class-limit fallback)."""
+        self.assertEqual(self.own_of(timeout_s=600)["timeout_s"], "600")
+        self.assertEqual(self.own_of(timeout_s=90.2)["timeout_s"], "91")
+        self.assertEqual(self.own_of(timeout_s=0)["timeout_s"], "0")
+        self.assertNotIn("timeout_s", self.own_of())
+
 
 if __name__ == "__main__":
     unittest.main()
