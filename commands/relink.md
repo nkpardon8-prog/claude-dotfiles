@@ -23,11 +23,18 @@ reach it, and `/rc NAME` while already connected does nothing. A disconnect (`/r
 connected) followed by `/rc NAME` creates a fresh session with the right name, and it overrides a name
 set by hand in the app (proven 2026-11-11 on the MacBook Air).
 
+## After switching accounts (out of credits)
+Agents that stopped on a usage limit do not notice the switch on their own. Relink detects it (each link
+stores a fingerprint of the account it was made under) and, right after reconnecting such a window, types
+one notice into it: usage limits reset, resume anything that stopped on a limit. When the user says they
+just switched accounts, pass `--notify-reset` so every relinked window gets the notice even if no earlier
+fingerprint exists. `--notify-only` sends the notice without relinking.
+
 ## Steps
 1. Show the plan: `python3 ~/.claude-dotfiles/scripts/relink.py --dry-run` (pass through any `--only`).
    Windows without a /line name, or not in Terminal.app, are listed as skipped.
 2. Run it in the BACKGROUND (Bash `run_in_background: true`, never `&`):
-   `python3 ~/.claude-dotfiles/scripts/relink.py [--only NAME ...]`
+   `python3 ~/.claude-dotfiles/scripts/relink.py [--only NAME ...] [--notify-reset]`
    It types only into IDLE windows (never mid-task, never over a permission prompt), waits up to 45 min
    for busy ones, and confirms each reconnect from the window's session file. This window is relinked
    too, once this turn ends and it goes idle.

@@ -18,6 +18,11 @@ window finishes a turn it checks itself in milliseconds; if it is /line-named bu
 name (new window, /line rename, /resume, Pane restore, account switch), it starts a detached relink of
 itself, which types once the window is idle. Retries at most every HEAL_BACKOFF seconds per window.
 
+Account switch: each link is stored with a fingerprint of the claude.ai account it was made under.
+When a window is relinked under a DIFFERENT account (or with --notify-reset), relink then types one
+notice into it, once idle, telling the agent that usage limits reset, so work that stopped on a usage
+or rate limit resumes. The fingerprint is a salted hash; the account id itself is never stored.
+
 Usage: relink.py [--dry-run] [--only NAME ...] [--timeout-min N] [--force] | --heal (hook, JSON on stdin)
 """
 import argparse
@@ -34,6 +39,7 @@ SESS = Path(os.environ.get("RELINK_SESSIONS_DIR", Path.home() / ".claude" / "ses
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 POLL = 3.0
 HEAL_BACKOFF = 300
+NOTIFY_ALL = False
 HEAL_LOG = Path.home() / ".claude" / "logs" / "relink-heal.log"
 STEP_TIMEOUT = 90.0
 
@@ -56,6 +62,21 @@ def read_sessions():
     return rows
 
 
+RESET_NOTICE = ("Account switched: usage limits have reset. If any of your work stopped on a usage or rate "
+                "limit (including a helper agent or background job), resume it now. Otherwise carry on; no reply needed.")
+
+
+def account_fp():
+    """Salted fingerprint of the signed-in claude.ai account, or "" if unknown. Never the raw id."""
+    import hashlib
+    try:
+        a = (json.loads((Path.home() / ".claude.json").read_text()).get("oauthAccount") or {})
+        ident = str(a.get("accountUuid") or "").strip() or str(a.get("emailAddress") or "").strip().lower()
+    except Exception:
+        ident = ""
+    return hashlib.sha256(f"relink-acct:{ident}".encode()).hexdigest()[:16] if ident else ""
+
+
 def load_state():
     """{sessionId: {"name", "bridge"}} for windows this script already linked. Never raises."""
     try:
@@ -67,7 +88,7 @@ def load_state():
 
 def save_linked(sid, name, bridge):
     st = load_state()
-    st[sid] = {"name": name, "bridge": bridge, "at": int(time.time())}
+    st[sid] = {"name": name, "bridge": bridge, "acct": account_fp(), "at": int(time.time())}
     tmp = STATE.with_suffix(".tmp")
     tmp.write_text(json.dumps(st, indent=1))
     os.replace(tmp, STATE)
@@ -181,7 +202,8 @@ def plan(rows, tabs, only, force=False):
                 "not a Pane panel, and Terminal cannot be scripted from here"
             skipped.append((name, why))
             continue
-        todo.append({"sid": d.get("sessionId") or "", "pid": d["pid"], "name": name, "tty": tty, "panel": panel, "state": "start", "t": 0.0,
+        prev_acct = (linked.get(d.get("sessionId") or "") or {}).get("acct") or (load_state().get(d.get("sessionId") or "") or {}).get("acct") or ""
+        todo.append({"prev_acct": prev_acct, "sid": d.get("sessionId") or "", "pid": d["pid"], "name": name, "tty": tty, "panel": panel, "state": "start", "t": 0.0,
                      "old": d.get("bridgeSessionId"), "result": ""})
     return todo, skipped
 
@@ -260,6 +282,17 @@ def step(w, now):
             w["state"], w["result"] = "done", f"relinked ({bridge})"
             if w["sid"]:
                 save_linked(w["sid"], w["name"], bridge)
+            cur = account_fp()
+            if NOTIFY_ALL or (w.get("prev_acct") and cur and w["prev_acct"] != cur):
+                w["state"], w["t"] = "notify", now
+    elif w["state"] == "notify":
+        if idle(d):
+            ok = type_into(w, RESET_NOTICE)
+            w["state"] = "done"
+            w["result"] += "; told it limits reset" if ok else "; could NOT tell it limits reset"
+        elif now - w["t"] > STEP_TIMEOUT * 4:
+            w["state"] = "done"
+            w["result"] += "; limits-reset notice not sent (window stayed busy)"
         elif now - w["t"] > STEP_TIMEOUT:
             w["state"], w["result"] = "done", "FAILED: no new Remote Control session (check the tab)"
 
@@ -303,11 +336,20 @@ def main():
     ap = argparse.ArgumentParser(description="Reconnect Remote Control under each window's /line name.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--only", action="append", default=[])
+    ap.add_argument("--notify-reset", action="store_true",
+                    help="after relinking, tell each window its usage limits reset (use after switching accounts)")
+    ap.add_argument("--notify-only", action="store_true",
+                    help="do not relink; just tell every named window its usage limits reset")
     ap.add_argument("--force", action="store_true", help="relink even windows already linked under their name")
     ap.add_argument("--timeout-min", type=float, default=45.0, help="how long to wait for busy windows")
     a = ap.parse_args()
+    global NOTIFY_ALL
+    NOTIFY_ALL = a.notify_reset
     tabs = terminal_ttys()
-    todo, skipped = plan(read_sessions(), tabs, set(a.only), a.force)
+    todo, skipped = plan(read_sessions(), tabs, set(a.only), a.force or a.notify_only)
+    if a.notify_only:
+        for w in todo:
+            w["state"], w["t"], w["result"] = "notify", time.time(), "not relinked"
     host = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True).stdout.strip()
     if a.dry_run:
         for w in todo:
