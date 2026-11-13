@@ -2250,7 +2250,7 @@ sub colima_managed { $OS ne 'linux' && -x $COLIMA }
 sub colima_sock { -S ($ENV{RR_COLIMA_SOCK} || "$ENV{HOME}/.colima/default/docker.sock") }
 sub colima_timeout { ($ENV{RR_COLIMA_TIMEOUT} // '') =~ /^(\d+)$/ ? $1 : 120 }
 
-# $tmp/docker-up: exit 0 once `docker info` answers; else start Colima under the $ROOT/colima.lock
+# $tmp/docker-up: exit 0 once `docker info` answers (20 s limit per try); else start Colima under the $ROOT/colima.lock
 # mkdir lock (one start at a time across runs; a lock older than 15 min is stale) and wait for the
 # engine up to RR_COLIMA_TIMEOUT s, else exit 73. The start itself runs in its own session, so a run
 # that gives up (or is lost) never kills a half-done first start (about 90 s cold); the next run
@@ -2265,7 +2265,7 @@ sub write_docker_up {
 PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; export PATH
 REAL='@REAL@' COLIMA='@COLIMA@' ROOT='@ROOT@' OK='@OK@'
 LOCK="$ROOT/colima.lock" MARK="$ROOT/state/colima.started"
-up() { "$REAL" info >/dev/null 2>&1; }
+up() { /usr/bin/perl -e 'alarm shift; exec @ARGV' 20 "$REAL" info >/dev/null 2>&1; }   # a VM wedged by sleep must not hang the job
 [ -f "$OK" ] && exit 0
 up && { : > "$OK"; exit 0; }
 end=$(( $(date +%s) + @TIMEOUT@ ))

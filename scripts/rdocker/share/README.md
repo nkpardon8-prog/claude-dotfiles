@@ -10,7 +10,31 @@ rdocker-share status   # current level and how many jobs run right now
 ```
 
 It takes effect on the next job, with no restart and no admin password. The level is stored in
-`/Users/Shared/rdocker/share` (one word; delete the file = max).
+`/Users/Shared/rdocker/share` (one word; delete the file = max). It is **sticky**: sleep, a wifi change,
+a Tailscale reconnect or a reboot never change it, and no timer, idle rule or battery rule turns it off.
+Only you do (`rdocker-share off` or the menu's Off). `rdocker-share level` prints just the word.
+What can lower capacity on its own, temporarily: the pool's overload hold-off (a busy Mac gets fewer
+jobs) and the doctor's health pause (below), which reopens by itself.
+
+## Everything in one go (once, with sudo; safe to re-run)
+
+```sh
+sudo sh install-worker-mac.sh     # from the unpacked bundle: share/ + server/rd-doctor.sh + reporter/
+```
+
+It installs `rdocker-share` in `/usr/local/bin`, the doctor and power daemons (below), refreshes your
+reporter (LaunchAgent `com.rdocker.reporter`) when it is installed, and adds `com.rdocker.worker`
+(`rd-worker-mac.sh`, a root LaunchDaemon, RunAtLoad + KeepAlive, a 15 s loop):
+
+- **Awake while lent out:** share some/max -> it holds `caffeinate -s`, an assertion that is valid only on
+  AC power: plugged in, the Mac does not idle-sleep; on battery, or with the lid closed, it sleeps as usual
+  (asleep = unreachable, and the pool routes around it). Share off -> released.
+- **ssh back after Tailscale:** the worker's sshd (`com.rdocker.sshd`) listens on the Tailscale address only,
+  and Tailscale comes up after the boot daemons and can drop and return on wake or a wifi change. When that
+  address is up but nothing listens on it for 2 ticks, it runs `launchctl kickstart -k system/com.rdocker.sshd`
+  (or bootstraps the plist when the job is not loaded). Log: `/var/log/rd-worker-mac.log` (changes only).
+
+It never touches the share level, the `rd` user, the sshd config or Tailscale.
 
 ## Install (once, as yourself)
 
@@ -32,8 +56,12 @@ sudo sh install-doctor-mac.sh --uninstall # removes it and lifts any drain it se
 ```
 
 It clears stale slot files of dead jobs, stops a job past its hard cap, removes leftover run containers
-(never `rdocker.keep` ones), restarts the reporter, pauses new jobs while the Mac is unhealthy (memory, disk,
-repeated lost jobs) and moves `~rd/rr` to `~rd/rr.noindex` (a symlink stays) while no job runs, so Spotlight
+(never `rdocker.keep` ones), restarts a reporter loaded in rd's own launchd domain (yours, in your login session,
+is kept alive by launchd's KeepAlive instead), pauses new jobs while the Mac is unhealthy (memory, disk,
+repeated lost jobs; jobs cut by a lid close and logged in the 5 min after the wake do not count, and the
+pause lifts itself after 3 healthy checks), stops a Colima VM that came back from sleep with an engine that
+no longer answers (2 checks; the stop runs only while it holds every job slot, so no job can start under it;
+the next job starts it fresh) and moves `~rd/rr` to `~rd/rr.noindex` (a symlink stays) while no job runs, so Spotlight
 skips it. Log: `~rd/rr/log/doctor.log`; status: `~rd/rr/state/doctor.json`. Off switch: `DOCTOR_DISABLE=1` in
 `/etc/rdocker/doctor.conf`. It never touches your share switch.
 

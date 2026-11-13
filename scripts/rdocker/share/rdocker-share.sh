@@ -1,21 +1,28 @@
 #!/bin/sh
-# rdocker share [off|some|max|status] - the OWNER's switch for a Mac rdocker worker.
+# rdocker share [off|some|max|status|level] - the OWNER's switch for a Mac rdocker worker.
 #
 # Lends this Mac's compute to the rdocker pool (jobs run as the separate, non-admin `rd` user;
 # nothing here touches your account or files). The pool reads the level live before every job:
 #   off   no new jobs (running ones finish); the Docker VM stops once the worker is idle
 #   some  half the job slots; the Docker VM gets 6 CPU / 12 GB when it next starts
 #   max   all job slots; the Docker VM gets 12 CPU / 24 GB when it next starts
-# No root needed. Install: see share/README.md (copy to /usr/local/bin/rdocker-share).
+# The level is sticky: it survives sleep, wifi changes and reboots, and nothing but this switch changes it.
+# `level` prints just the word (rd-worker-mac reads it). No root needed. Install: see share/README.md.
 # Env (tests): RR_SHARE_FILE (default /Users/Shared/rdocker/share), RR_SLOTS_DIR (default /Users/rd/rr/slots).
 set -u
 FILE=${RR_SHARE_FILE:-/Users/Shared/rdocker/share}
 SLOTS=${RR_SLOTS_DIR:-/Users/rd/rr/slots}
 
 level() {   # same rule as the worker: no file = max; off/some/max; anything else = off
-  [ -e "$FILE" ] || { echo max; return; }
-  v=$(tr -d ' \t\r\n' < "$FILE" 2>/dev/null)
-  case $v in off|some|max) echo "$v" ;; *) echo off ;; esac
+  # Read safely (the root daemon rd-worker-mac calls this): never through a symlink, never a FIFO or a
+  # device (opened non-blocking, must be a regular file), at most 64 bytes.
+  # shellcheck disable=SC2016  # Perl, expanded by perl
+  /usr/bin/perl -e 'use Fcntl; my $f = shift;
+    if (!lstat $f) { print $!{ENOENT} ? "max\n" : "off\n"; exit }
+    my ($v, $h) = ("");
+    sysread($h, $v, 64) if -f _ && sysopen($h, $f, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) && -f $h;
+    $v =~ s/[ \t\r\n]//g;
+    print $v =~ /^(?:off|some|max)$/ ? "$v\n" : "off\n"' "$FILE"
 }
 
 meaning() {
@@ -58,10 +65,13 @@ case "${1:-status}" in
     j=$(jobs_running)
     [ "$j" = "?" ] || echo "Jobs running now: $j"
     exit 0 ;;
+  level)
+    level
+    exit 0 ;;
   -h|--help|help)
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   *)
-    echo "usage: rdocker share [off|some|max|status]" >&2
+    echo "usage: rdocker share [off|some|max|status|level]" >&2
     exit 2 ;;
 esac

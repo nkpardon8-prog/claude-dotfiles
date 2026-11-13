@@ -24,8 +24,16 @@
 #                    drain marker and slots.cap = 0 (the runner and the pool probe then admit nothing; jobs
 #                    already running are untouched). Re-open after DOCTOR_REOPEN_OK healthy ticks in a
 #                    row: remove the marker and restore the slots.cap from before the drain.
+#                    macOS: rows logged within DOCTOR_WAKE_GRACE_S of the last wake or boot are not counted -
+#                    a lid close cuts every running job (no heartbeat while asleep), and each one is logged
+#                    `lost rc=N` at once on wake; that is the sleep, not a sick worker.
 #  disk              ~/rr (and /var/lib/docker) below DOCTOR_DISK_CRIT_PCT % free -> a `critical` line
 #                    (at most every 10 min). rd-tune owns pruning; the doctor never deletes data.
+#  colima            macOS only: rd's Colima socket is there but `docker info` has not answered for
+#                    DOCTOR_COLIMA_BAD_N ticks in a row (a VM that came back wedged from sleep), no slot is
+#                    held and no start/stop holds ~/rr/colima.lock -> `colima stop --force` (at most every
+#                    10 min), run while holding every slot's lock (a job that took a slot meanwhile = skip).
+#                    Never starts it: the next job that needs Docker starts it fresh.
 #  spotlight         macOS only: ~/rr a real directory -> while no slot is held and no runner runs, move it
 #                    to ~/rr.noindex and leave the symlink ~/rr -> rr.noindex (Spotlight skips *.noindex).
 #
@@ -48,7 +56,8 @@
 # Test hooks (env): RD_OS (linux|darwin), RD_DOCTOR_CONF, RD_CONF (tune.conf), RD_RR_ROOT, RD_STATE_DIR,
 # RD_DOCTOR_STATUS, RD_DRAIN_FILE, RD_PS_CMD (an executable printing what `ps -A -o pid=,ppid=,pgid=,uid=,
 # etime=,stat=,args=` prints), RD_DOCKER (docker binary), RD_MEMINFO, RD_MEM_PCT, RD_DF_CMD (prints what
-# `df -Pk <path>` does), RD_NO_SERVICES=1 (no reporter rule), RD_DOCTOR_DRY.
+# `df -Pk <path>` does), RD_NO_SERVICES=1 (no reporter rule), RD_DOCTOR_DRY, RD_WAKE_TIME (epoch of the last
+# wake), RD_COLIMA (colima binary), RD_COLIMA_SOCK (rd's Colima docker socket).
 set -u
 OS=$(printf '%s' "${RD_OS:-$(uname -s)}" | tr '[:upper:]' '[:lower:]')
 CONF="${RD_DOCTOR_CONF:-/etc/rdocker/doctor.conf}"
@@ -60,11 +69,11 @@ else
   RD_USER=$(id -un)   # the LaunchDaemon runs as rd
 fi
 DOCTOR_DISABLE=0 DOCTOR_DRY=0
-DOCTOR_RULES="orphan-slot hung-job orphan-container reporter drain disk spotlight"
+DOCTOR_RULES="orphan-slot hung-job orphan-container reporter drain disk colima spotlight"
 DOCTOR_CAPS="light=1800 normal=1800 heavy=3600 db=5400 build=3600"   # s; = rd_run TIMEOUT_MIN
 DOCTOR_GRACE_S=300 DOCTOR_TERM_WAIT_S=10 DOCTOR_START_SLOP_S=5
 DOCTOR_CT_MIN_AGE_S=120 DOCTOR_SHIM_WINDOW_S=600
-DOCTOR_INFRA_N=3 DOCTOR_INFRA_WINDOW_S=300 DOCTOR_REOPEN_OK=3
+DOCTOR_INFRA_N=3 DOCTOR_INFRA_WINDOW_S=300 DOCTOR_REOPEN_OK=3 DOCTOR_WAKE_GRACE_S=300 DOCTOR_COLIMA_BAD_N=2
 DOCTOR_MEM_CRIT_PCT=5 DOCTOR_DISK_DRAIN_PCT=5 DOCTOR_DISK_CRIT_PCT=10
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
@@ -110,7 +119,7 @@ print {$fh} "$line\n";
 close $fh;
 chown $uid, $gid, $f if $< == 0 && $uid >= 0;
 '
-ACTION_VERBS=" remove kill rm restart drain undrain move "
+ACTION_VERBS=" remove kill rm restart drain undrain move stop "
 logl() {   # rule action target detail...
   local line
   line="$(date +%Y-%m-%dT%H:%M:%S%z) $1 $2 $3${4:+ ${*:4}}"
@@ -426,14 +435,14 @@ disk_free_pct() {  # $1 path -> free %; empty when unknown
 # shellcheck disable=SC2016  # Perl, expanded by perl
 INFRA_PL='
 use strict; use warnings; use Time::Local qw(timegm); use Fcntl qw(O_RDONLY O_NOFOLLOW);
-my ($f, $now, $win) = @ARGV;
+my ($f, $now, $win, $floor) = @ARGV;
 sysopen(my $fh, $f, O_RDONLY | O_NOFOLLOW) or do { print "0\n"; exit 0 };
 my $sz = -s $fh || 0; seek($fh, $sz > 262144 ? $sz - 262144 : 0, 0);
 my $n = 0;
 while (my $l = <$fh>) {
     my ($y, $mo, $d, $h, $mi, $s, $sg, $oh, $om) = $l =~ /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)([+-])(\d\d):?(\d\d)\s/ or next;
     my $t = timegm($s, $mi, $h, $d, $mo - 1, $y) - ($sg eq "-" ? -1 : 1) * ($oh * 3600 + $om * 60);
-    next if $now - $t > $win || $t - $now > 60;
+    next if $now - $t > $win || $t - $now > 60 || $t < ($floor || 0);
     # truthful labels (2026-11-11): only a STARTED run lost for good is "lost rc=N"; a bare "lost" is the
     # old label of a client that left before the start (now abandoned-setup / moved): not a worker fault
     $n++ if $l =~ /\soutcome=(?:lost rc=\d+|deps-failed)\s/ || $l =~ /\soutcome=(?:[a-z]+ )?rc=134\b/;
@@ -476,10 +485,19 @@ drain_off() {   # $1 why
   logl drain undrain worker "$1 (slots.cap -> ${prev:-none})"
 }
 
+# macOS: epoch before which runs.log rows are the last sleep's own losses (last wake or boot + the grace);
+# 0 elsewhere. RD_WAKE_TIME (tests) stands in for sysctl's kern.waketime / kern.boottime.
+infra_floor() {
+  local w
+  [ "$OS" = darwin ] || { echo 0; return; }
+  w=${RD_WAKE_TIME:-$(sysctl -n kern.waketime kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9][0-9]*\),.*/\1/p' | sort -n | tail -1)}
+  case "$w" in ''|*[!0-9]*) echo 0 ;; *) echo $(( w + DOCTOR_WAKE_GRACE_S )) ;; esac
+}
+
 INFRA="" MEMP="" DISKP=""
 rule_drain() {
   local why="" streak
-  INFRA=$(perl -e "$INFRA_PL" "$RR/log/runs.log" "$NOW" "$DOCTOR_INFRA_WINDOW_S" 2>/dev/null)
+  INFRA=$(perl -e "$INFRA_PL" "$RR/log/runs.log" "$NOW" "$DOCTOR_INFRA_WINDOW_S" "$(infra_floor)" 2>/dev/null)
   [ "${INFRA:-0}" -ge "$DOCTOR_INFRA_N" ] 2>/dev/null && why="infra=${INFRA}/${DOCTOR_INFRA_WINDOW_S}s"
   [ -n "$MEMP" ] && [ "$MEMP" -lt "$DOCTOR_MEM_CRIT_PCT" ] 2>/dev/null && why="${why:+$why,}mem_free=${MEMP}%"
   [ -n "$DISKP" ] && [ "$DISKP" -lt "$DOCTOR_DISK_DRAIN_PCT" ] 2>/dev/null && why="${why:+$why,}disk_free=${DISKP}%"
@@ -509,13 +527,12 @@ rule_disk() {
   done
 }
 
-# ----------------------------------------------------------------------------------- spotlight (g, macOS)
-# Holds every slot's flock (and refuses when any is taken) while it renames ~/rr -> ~/rr.noindex and links
-# ~/rr back, so no run can start in between; a failed link renames it back.
+# Prologue of the two rules that act only while NO run can start: take every slot's flock (non-blocking;
+# fds are close-on-exec) or print "BUSY <slot>" and exit. $R = $ARGV[0]. The locks hold until perl exits.
 # shellcheck disable=SC2016  # Perl, expanded by perl
-SPOT_PL='
+HOLD_ALL_PL='
 use strict; use warnings; use Fcntl qw(:flock O_RDWR O_NOFOLLOW);
-my ($R, $N, $dry) = @ARGV;
+my $R = $ARGV[0];
 my @held;
 if (opendir(my $d, "$R/slots")) {
     for my $s (grep { /^(?:\d+|heavy-\d+)$/ } readdir $d) {
@@ -525,6 +542,48 @@ if (opendir(my $d, "$R/slots")) {
         push @held, $fh;
     }
 }
+'
+# colima: run `<colima> stop --force` (120 s limit) while holding every slot -> OK | FAILED ... | BUSY <slot>
+# shellcheck disable=SC2016  # Perl, expanded by perl
+COLIMA_STOP_PL=$HOLD_ALL_PL'
+my $pid = fork; defined $pid or do { print "FAILED fork\n"; exit 0 };
+if (!$pid) { open STDOUT, ">", "/dev/null"; open STDERR, ">&", \*STDOUT; alarm 120; exec $ARGV[1], "stop", "--force"; exit 127 }
+waitpid($pid, 0);
+print $? == 0 ? "OK\n" : "FAILED rc=" . ($? >> 8) . "\n";
+'
+
+# ------------------------------------------------------------------------------------- colima (macOS)
+rule_colima() {
+  [ "$OS" = darwin ] || return 0
+  local sock="${RD_COLIMA_SOCK:-$HOME/.colima/default/docker.sock}" colima="${RD_COLIMA:-/opt/homebrew/bin/colima}"
+  local bad="$STATE/colima_bad" n lock="$RR/colima.lock" out
+  if ! [ -x "$colima" ] || ! [ -S "$sock" ] || dk info >/dev/null 2>&1; then rm -f "$bad"; return 0; fi
+  mkdir -p "$STATE"
+  n=$(( $(cat "$bad" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$bad"
+  [ "$n" -ge "$DOCTOR_COLIMA_BAD_N" ] || return 0
+  [ -d "$lock" ] && return 0                                  # a start or stop is under way
+  grep -q '^JOB ' <<< "$SLOT_OUT" && return 0                 # a job held a slot at the tick's start
+  cooldown_ok colima 600 || return 0
+  if is_dry; then act colima stop colima "engine not answering for $n checks (socket there)"; return 0; fi
+  mkdir "$lock" 2>/dev/null || { rm -f "$STATE/cd-colima"; return 0; }
+  # the stop itself runs holding EVERY slot lock: a job that took a slot since the tick began wins (skip)
+  out=$(perl -e "$COLIMA_STOP_PL" "$RR" "$colima" 2>/dev/null)
+  rmdir "$lock" 2>/dev/null
+  case "$out" in
+    BUSY*) rm -f "$STATE/cd-colima"; return 0 ;;               # retried next tick; no cooldown spent
+    OK) logl colima stop colima "engine not answering for $n checks: stopped; the next job starts it" ;;
+    *) logl colima failed colima "colima stop --force: ${out:-no output}" ;;
+  esac
+  rm -f "$bad" "$RR/state/colima.started"
+  return 0
+}
+
+# ----------------------------------------------------------------------------------- spotlight (g, macOS)
+# Holds every slot's flock (and refuses when any is taken) while it renames ~/rr -> ~/rr.noindex and links
+# ~/rr back, so no run can start in between; a failed link renames it back.
+# shellcheck disable=SC2016  # Perl, expanded by perl
+SPOT_PL=$HOLD_ALL_PL'
+my $N = $ARGV[1]; my $dry = $ARGV[2];
 if ($dry) { print "WOULD\n"; exit 0 }
 rename($R, $N) or do { print "FAILED rename: $!\n"; exit 0 };
 if (symlink((split m{/}, $N)[-1], $R)) { print "MOVED\n"; exit 0 }
@@ -598,6 +657,7 @@ main() {
   rule_on reporter && rule_reporter
   rule_on drain && rule_drain
   rule_on disk && rule_disk
+  rule_on colima && rule_colima
   rule_on spotlight && rule_spotlight
   write_status false
 }

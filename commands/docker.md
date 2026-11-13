@@ -628,6 +628,16 @@ takes jobs is the **owner's live switch**, read on the worker before every job (
   (also one started by hand) is used as is; a level change resizes it only on its next start.
   With the share **off and no slot held**, the probe (and a job's end) runs `colima stop` in the
   background. No root, no LaunchAgent (`rd` has no GUI session). Log: `~/rr/log/colima.log` there.
+- **Stays in the pool by itself (sticky share).** The share level survives sleep, wifi changes,
+  Tailscale reconnects and reboots; nothing but the owner's switch turns it off (capacity can only dip
+  for a while: the overload hold-off, the doctor's self-lifting health pause). One root installer,
+  `sudo sh share/install-worker-mac.sh` (re-runnable), sets up the switch, rd-doctor, the power sampler,
+  the owner's reporter refresh and `com.rdocker.worker` (`share/rd-worker-mac.sh`, RunAtLoad + KeepAlive):
+  while sharing is some/max it holds `caffeinate -s` (AC only: plugged in = no idle sleep; lid closed or on
+  battery = normal sleep), and it re-kicks `com.rdocker.sshd` (bound to the Tailscale address only) when
+  that address is up but nothing listens. rd-doctor on macOS ignores `lost` rows logged within 5 min of a
+  wake (the lid close's own losses, `DOCTOR_WAKE_GRACE_S`) and stops a Colima VM whose engine no longer
+  answers after sleep (2 checks, no slot held). A db job's `docker info` probe has a 20 s limit.
 - **Speed:** `rdocker bench-worker <name>` runs the same benchmark as Linux's `rd-tune bench` over ssh
   (on a Mac the script is piped in, nothing installed) and stores `~/rr/speed` there, which the probe
   prefers over fleet.json's placeholder. `rrun --bench` also creates a missing `~/rr` (0700) now.

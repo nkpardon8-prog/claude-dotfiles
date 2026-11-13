@@ -59,6 +59,27 @@ class ShareScript(unittest.TestCase):
         self.assertIn("Sharing is OFF", self.share("status").stdout)  # same rule as the worker
         self.assertEqual(self.probe_level(), "off")
 
+    def test_level_refuses_a_symlink_fifo_or_oversized_file(self):
+        # rd-worker-mac (root) reads `level`: anything but a small regular file is off, and never blocks
+        os.makedirs(os.path.dirname(self.file))
+        target = os.path.join(self.d, "elsewhere")
+        with open(target, "w") as f:
+            f.write("max\n")
+        os.symlink(target, self.file)
+        self.assertEqual(self.share("level").stdout, "off\n")
+        os.unlink(self.file)
+        os.mkfifo(self.file)
+        self.assertEqual(self.share("level").stdout, "off\n")              # returns (timeout=30) instead of hanging
+        os.unlink(self.file)
+        with open(self.file, "w") as f:
+            f.write("max" + "0" * 100)
+        self.assertEqual(self.share("level").stdout, "off\n")
+        with open(self.file, "w") as f:
+            f.write(" some\r\n")
+        self.assertEqual(self.share("level").stdout, "some\n")
+        os.unlink(self.file)
+        self.assertEqual(self.share("level").stdout, "max\n")              # no file = max
+
     def test_status_counts_live_jobs_when_the_slots_are_readable(self):
         os.makedirs(self.slots)
         with open(os.path.join(self.slots, "0.who"), "w") as f:

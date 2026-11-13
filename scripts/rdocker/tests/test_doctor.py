@@ -522,6 +522,125 @@ class Drain(DoctorBase):
         self.assertEqual(read(self.cap).strip(), "2")
 
 
+class WakeGrace(DoctorBase):
+    """A lid close cuts every running job; on wake each is logged `lost rc=N` at once. On macOS rows from the
+    DOCTOR_WAKE_GRACE_S after the last wake are the sleep's, not a sick worker's: no drain."""
+    LOSSES = ((10, "lost rc=255"), (20, "lost rc=255"), (30, "lost rc=255"))
+    runs = Drain.runs
+
+    def test_losses_logged_right_after_a_wake_do_not_drain_a_mac(self):
+        self.runs(*self.LOSSES)
+        self.doctor(os_name="darwin", conf={"DOCTOR_RULES": "drain"}, RD_WAKE_TIME=str(int(time.time()) - 60))
+        self.assertFalse(os.path.exists(self.drain))
+        self.assertEqual(self.status_json()["infra_recent"], 0)
+
+    def test_losses_long_after_the_wake_still_drain(self):
+        self.runs(*self.LOSSES)
+        self.doctor(os_name="darwin", conf={"DOCTOR_RULES": "drain"}, RD_WAKE_TIME=str(int(time.time()) - 3600))
+        self.assertTrue(os.path.exists(self.drain))
+        self.assertEqual(self.status_json()["infra_recent"], 3)
+
+    def test_linux_has_no_wake_grace(self):
+        self.runs(*self.LOSSES)
+        self.doctor(RD_WAKE_TIME=str(int(time.time()) - 60))
+        self.assertTrue(os.path.exists(self.drain))
+
+
+class ColimaWedged(DoctorBase):
+    """macOS: rd's Colima socket is there but the engine does not answer (a VM wedged by sleep) -> after
+    DOCTOR_COLIMA_BAD_N ticks, with no slot held, `colima stop --force`; the next job starts it fresh."""
+    def setUp(self):
+        super().setUp()
+        import socket
+        self.sock_path = os.path.join(self.tmp, "c.sock")
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.bind(self.sock_path)
+        self.addCleanup(self.sock.close)
+        self.calls = os.path.join(self.tmp, "colima.calls")
+        self.colima = self.stub("colima", 'echo "$*" >> "%s"' % self.calls)
+        self.docker_bad = self.stub("docker-bad", "exit 1")
+        self.docker_ok = self.stub("docker-ok", "exit 0")
+        write(os.path.join(self.rr, "state", "colima.started"), "")
+
+    def tick(self, docker=None, os_name="darwin"):
+        return self.doctor(os_name=os_name, conf={"DOCTOR_RULES": "colima"}, RD_COLIMA=self.colima,
+                           RD_COLIMA_SOCK=self.sock_path, RD_DOCKER=docker or self.docker_bad)
+
+    def stops(self):
+        return read(self.calls).splitlines() if os.path.exists(self.calls) else []
+
+    def test_two_wedged_ticks_stop_it_once(self):
+        self.tick()
+        self.assertEqual(self.stops(), [])                              # one bad tick: could be a slow answer
+        self.tick()
+        self.assertEqual(self.stops(), ["stop --force"])
+        self.assertIn("colima stop colima engine not answering for 2 checks", self.log())
+        self.assertFalse(os.path.exists(os.path.join(self.rr, "state", "colima.started")))
+        self.assertFalse(os.path.exists(os.path.join(self.rr, "colima.lock")))
+        self.tick()
+        self.tick()
+        self.assertEqual(self.stops(), ["stop --force"])                # 10 min cooldown
+
+    def test_an_answering_engine_resets_the_count(self):
+        self.tick()
+        self.tick(docker=self.docker_ok)
+        self.tick()
+        self.assertEqual(self.stops(), [])
+
+    def test_never_under_a_held_slot_or_a_start_in_progress(self):
+        self.hold(self.who(0, os.getpid()))
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(self.stops(), [])
+
+    def test_a_job_taking_a_slot_after_the_slot_scan_blocks_the_stop(self):
+        """The race: the tick's slot list is empty, then a runner takes a slot before the stop. The stop runs
+        only while the doctor holds every slot lock, so it must not happen (and no cooldown is spent)."""
+        lock = os.path.join(self.slots, "0")
+        open(lock, "a").close()
+        pidf, ready = os.path.join(self.tmp, "holder.pid"), os.path.join(self.tmp, "holder.ready")
+        # `docker info` runs after rule_slots: it starts a detached holder of slot 0, then reports a dead engine
+        racer = self.stub("docker-race",
+                          '[ -f "%s" ] || { /usr/bin/perl -e \'use Fcntl ":flock"; open(my $f, ">>", $ARGV[0]) or die;'
+                          ' flock($f, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close $r; sleep 30\' "%s" "%s" '
+                          '</dev/null >/dev/null 2>&1 & echo $! > "%s"; while [ ! -f "%s" ]; do sleep 0.05; done; }\n'
+                          'exit 1' % (pidf, lock, ready, pidf, ready))
+
+        def kill_holder():
+            if os.path.exists(pidf):
+                try:
+                    os.kill(int(read(pidf)), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.addCleanup(kill_holder)
+        self.tick(docker=self.docker_bad)
+        self.tick(docker=racer)                                         # 2nd bad tick: would stop, but slot 0 is taken
+        self.assertTrue(os.path.exists(ready))
+        self.assertEqual(self.stops(), [])
+        self.assertFalse(os.path.exists(os.path.join(self.rr, "colima.lock")))
+        kill_holder()
+        time.sleep(0.2)
+        self.tick()                                                     # slot free again: no cooldown was spent
+        self.assertEqual(self.stops(), ["stop --force"])
+
+    def test_never_while_colima_lock_is_held(self):
+        os.makedirs(os.path.join(self.rr, "colima.lock"))
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(self.stops(), [])
+
+    def test_dry_run_and_linux_never_stop(self):
+        self.doctor(os_name="darwin", conf={"DOCTOR_RULES": "colima"}, RD_COLIMA=self.colima,
+                    RD_COLIMA_SOCK=self.sock_path, RD_DOCKER=self.docker_bad, RD_DOCTOR_DRY="1")
+        self.doctor(os_name="darwin", conf={"DOCTOR_RULES": "colima"}, RD_COLIMA=self.colima,
+                    RD_COLIMA_SOCK=self.sock_path, RD_DOCKER=self.docker_bad, RD_DOCTOR_DRY="1")
+        self.assertEqual(self.stops(), [])
+        self.assertIn("colima would-stop colima", self.log())
+        self.tick(os_name="linux")
+        self.tick(os_name="linux")
+        self.assertEqual(self.stops(), [])
+
+
 class TuneHonoursDrain(unittest.TestCase):
     """rd-tune keeps slots.cap at 0 while the doctor's drain marker is fresh, and ignores a stale one."""
 
