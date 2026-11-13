@@ -461,6 +461,24 @@ class PoolCacheE2E(test_run.RunBase):
         self.assertEqual((r5.returncode, self.runs()), (1, 2), r5.stderr)
         self.assertIn("rrun: fail (exit 1 from the pool cache", r5.stderr)
 
+    def test_same_mac_local_entry_moved_aside_then_the_pool_serves_it(self):
+        """The 2026-11-12 live check, exactly: one Mac runs a check (stored in both tiers), its local
+        entry is moved aside, the same command again -> a pool hit (not a second run), and the local
+        tier stays empty (pool hits are never promoted). The live miss that prompted this test was a
+        runner change (810abba) between the two runs: the runner's hash is part of the key on purpose."""
+        r1 = self.rrun("vitest", "run")
+        self.assertEqual((r1.returncode, self.runs()), (0, 1), r1.stderr)
+        self.assertTrue(self.wait_for(lambda: len(self.entries()) == 1), "never uploaded")
+        local = os.path.join(self.home, ".local", "state", "rdocker", "cache")
+        mine = [n for n in os.listdir(local) if n.endswith(".entry")]
+        self.assertEqual(mine, self.entries())                 # the same key in both tiers
+        aside = os.path.join(self.d, "aside.entry")
+        os.rename(os.path.join(local, mine[0]), aside)
+        r2 = self.rrun("vitest", "run")
+        self.assertEqual((r2.returncode, self.runs()), (0, 1), r2.stderr)
+        self.assertIn("rrun: pass (exit 0 from the pool cache", r2.stderr)
+        self.assertEqual([n for n in os.listdir(local) if n.endswith(".entry")], [])
+
     def test_a_miss_costs_no_extra_round_trip(self):
         r = self.rrun("vitest", "run")
         self.assertEqual(r.returncode, 0, r.stderr)
